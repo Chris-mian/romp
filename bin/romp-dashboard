@@ -1,0 +1,378 @@
+#!/usr/bin/env bash
+# romp-dashboard — Live monitor for romp Claude sessions
+#
+# Mirrors the Obsidian (vault-code) romp pane: no column headers, the session
+# NAME carries its identity color in bold (no background bar), and the status is
+# a small colored badge pill (same hexes as the Obsidian dashboard CSS).
+#
+# Every row is laid out to fit the terminal width on ONE line — columns are
+# dropped in priority order (summary → effort → model → time) and text is
+# ellipsis-truncated as needed, so nothing ever wraps onto a second line.
+set -euo pipefail
+
+# --- Colors (literal escape sequences) ---
+C_RESET=$'\033[0m'
+C_BOLD=$'\033[1m'
+C_DIM=$'\033[2m'
+C_RED=$'\033[1;31m'
+C_TEAL=$'\033[38;2;78;168;169m'   # palette-4 #4EA8A9 — request summaries
+C_CLR_EOS=$'\033[J'
+C_HOME=$'\033[H'
+
+# Animated typing-dot colors (pending-summary indicator).
+C_DOT_HI=$'\033[38;2;210;210;210m'   # the lit dot
+C_DOT_LO=$'\033[38;2;90;90;90m'      # the dim dots
+
+# Badge pills — same colors as the Obsidian dashboard's .romp-badge.* CSS.
+# State semantics: working = yellow, ready = blue, awaiting = red.
+BADGE_WORKING_BG=$'\033[48;2;224;176;32m'   ; BADGE_WORKING_FG=$'\033[38;2;51;38;0m'       # #E0B020 / #332600
+BADGE_READY_BG=$'\033[48;2;43;127;184m'     ; BADGE_READY_FG=$'\033[38;2;255;255;255m'     # #2b7fb8 / white
+BADGE_ATTN_BG=$'\033[48;2;192;57;43m'       ; BADGE_ATTN_FG=$'\033[38;2;255;255;255m'     # #c0392b / white
+BADGE_UNKNOWN_BG=$'\033[48;2;58;58;58m'     ; BADGE_UNKNOWN_FG=$'\033[38;2;154;154;154m'  # muted
+# Stale rows: keep each badge's hue but darken the fill (≈0.42) so it reads as a
+# faded blue / yellow / red pill — NOT a flat gray box that vanishes on a dark
+# terminal. One muted-gray text across all of them. Mirrors the Obsidian pane's
+# opacity-faded badges.
+BADGE_WORKING_BG_STALE=$'\033[48;2;94;74;13m'    # faded #E0B020
+BADGE_READY_BG_STALE=$'\033[48;2;18;53;77m'      # faded #2b7fb8
+BADGE_ATTN_BG_STALE=$'\033[48;2;81;24;18m'       # faded #c0392b
+BADGE_UNKNOWN_BG_STALE=$'\033[48;2;40;40;40m'    # faded muted
+BADGE_FG_STALE=$'\033[38;2;150;150;150m'
+
+# Context-window % traffic-light colors — same thresholds as statusline.sh and
+# the Obsidian dashboard: green <50, yellow 50-79, red >=80.
+C_CTX_LOW=$'\033[38;2;87;181;15m'    # #57B50F
+C_CTX_MID=$'\033[38;2;224;176;32m'   # #E0B020
+C_CTX_HIGH=$'\033[38;2;192;57;43m'   # #c0392b
+
+# Two-level metadata gray (time/model/effort): a readable gray on active rows,
+# fainter on stale ones, so idle sessions visibly recede (mirrors the Obsidian
+# pane's opacity-0.3 fade on stale rows).
+C_MUTED=$'\033[38;2;140;140;140m'
+C_FAINT=$'\033[38;2;84;84;84m'
+
+# Fixed column widths (visible chars). The name column sizes to the longest
+# session name at render time (capped at NAME_CAP); the rest are fixed so badges
+# and metadata line up across rows.
+NAME_CAP=28
+BADGE_COL=10   # fits " AWAITING " (the widest label)
+TIME_COL=4
+CTX_COL=4      # fits "100%"
+MODEL_COL=10
+EFFORT_COL=6
+INDENT=2
+GAP=2
+
+# A session whose state hasn't changed in this long (the tmux-status hook
+# stamps @claude-state-since on every event) is treated as stale/idle, and
+# its row is faded. Mirrors vault-code's STALE_AFTER_SECS.
+STALE_AFTER_SECS=3600  # 1 hour
+
+# A "…" / pending summary that lingers on a READY row past this long is a
+# stuck/dead summarizer job, shown as an error rather than perpetual motion.
+# Mirrors vault-code's PENDING_TIMEOUT_SECS.
+PENDING_TIMEOUT_SECS=150
+
+# Redraw cadence. bash 3.2 has no fractional `read -t`, so we drive sub-second
+# refreshes by putting the tty in non-canonical, no-echo mode with a read timer
+# (VMIN=0, VTIME=N deciseconds). The single-byte `dd` read in the main loop then
+# returns within N×0.1s whether or not a key was pressed. 2 = 0.2s (~5 fps).
+REFRESH_DECISECS=2
+
+# Enter alternate screen buffer, hide cursor, arm the read timer above. The
+# cleanup (run on EXIT and on Ctrl-C / TERM) restores the tty mode, cursor, and
+# main screen — leaving the tty in -icanon/-echo would break the shell.
+_stty_save="$(stty -g 2>/dev/null || true)"
+_cleanup() { [[ -n "$_stty_save" ]] && stty "$_stty_save" 2>/dev/null; tput cnorm; tput rmcup; }
+tput smcup
+tput civis
+stty -echo -icanon min 0 time "$REFRESH_DECISECS" 2>/dev/null || true
+trap _cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+format_duration() {
+    local secs=$1
+    if (( secs < 60 )); then
+        echo "${secs}s"
+    elif (( secs < 3600 )); then
+        echo "$(( secs / 60 ))m"
+    elif (( secs < 86400 )); then
+        echo "$(( secs / 3600 ))h"
+    else
+        echo "$(( secs / 86400 ))d"
+    fi
+}
+
+shorten_dir() {
+    local dir="$1"
+    echo "${dir/#$HOME/~}"
+}
+
+# Truncate a (plain, escape-free) string to at most <max> display chars,
+# appending "…" when it was cut. Used everywhere a cell might overflow so the
+# row never wraps. Counts characters (UTF-8 locale), like Obsidian's ellipsis.
+clip() {
+    local s="$1" max="$2"
+    (( max <= 0 )) && { printf ''; return; }
+    if (( ${#s} > max )); then
+        printf '%s…' "${s:0:max-1}"
+    else
+        printf '%s' "$s"
+    fi
+}
+
+# Animated typing indicator (a row of 4 dots; the lit one steps left→right each
+# frame, so across the dashboard's ~1 Hz redraw it reads as a "…" wave). Mirrors
+# the Obsidian pane's pulsing dots, used while a summary is still generating.
+render_dots() {
+    local frame="$1" i bright out=""
+    bright=$(( frame % 4 ))
+    for (( i = 0; i < 4; i++ )); do
+        if (( i == bright )); then out+="${C_DOT_HI}•"; else out+="${C_DOT_LO}•"; fi
+        (( i < 3 )) && out+=" "
+    done
+    printf '%s%s' "$out" "$C_RESET"
+}
+
+# An identity color (the @identity-bg hex, or a colourN name) → a FOREGROUND
+# escape, so the session name can be drawn in its color (bold), the way the
+# Obsidian dashboard colors the name text. Empty for an unparseable color.
+identity_fg_escape() {
+    local c="$1"
+    if [[ "$c" =~ ^colour([0-9]+)$ ]]; then
+        printf '\033[38;5;%sm' "${BASH_REMATCH[1]}"
+    elif [[ "$c" =~ ^#([0-9A-Fa-f]{2})([0-9A-Fa-f]{2})([0-9A-Fa-f]{2})$ ]]; then
+        printf '\033[38;2;%d;%d;%dm' \
+            "$((16#${BASH_REMATCH[1]}))" "$((16#${BASH_REMATCH[2]}))" "$((16#${BASH_REMATCH[3]}))"
+    fi
+}
+
+# Actual terminal width, in columns. `tput cols` is unreliable here: when its
+# stdout is captured in $(...), macOS tput reports the terminfo default (80)
+# instead of the real size, which truncated rows far too early. Query the real
+# pty size instead — stty on the controlling terminal (correct in or out of
+# tmux), then tmux's client width, then tput / COLUMNS / 80 as last resorts.
+get_cols() {
+    local c
+    c=$(stty size </dev/tty 2>/dev/null | awk '{print $2}')
+    [[ "$c" =~ ^[1-9][0-9]*$ ]] && { printf '%s' "$c"; return; }
+    if [[ -n "${TMUX:-}" ]]; then
+        c=$(tmux display-message -p '#{client_width}' 2>/dev/null || true)
+        [[ "$c" =~ ^[1-9][0-9]*$ ]] && { printf '%s' "$c"; return; }
+    fi
+    c=$(tput cols 2>/dev/null || true)
+    [[ "$c" =~ ^[1-9][0-9]*$ ]] && { printf '%s' "$c"; return; }
+    c=${COLUMNS:-80}
+    [[ "$c" =~ ^[1-9][0-9]*$ ]] && { printf '%s' "$c"; return; }
+    printf '80'
+}
+
+render() {
+    local frame="${1:-0}" now cols
+    now=$(date +%s)
+    cols=$(get_cols)
+
+    # One tmux call fetches every session's data; oldest-first (sort by
+    # session_created, field 13) so rows keep a stable order.
+    local raw
+    # Mail fields (14-16) go AFTER session_created so the -k13 sort key is unchanged.
+    raw=$(tmux list-sessions -F '#{@romp}|#{session_name}|#{@claude-state}|#{@claude-state-since}|#{@claude-dir}|#{@identity-bg}|#{@identity-fg}|#{@claude-model}|#{@claude-effort}|#{@claude-summary}|#{@claude-summary-kind}|#{@claude-context}|#{session_created}|#{@romp-mail-from}|#{@romp-mail-bg}|#{@romp-mail-fg}' 2>/dev/null | sort -t'|' -k13,13n) || raw=""
+
+    # No header at all (no title, clock, or rule) — just the session rows,
+    # matching the deliberately minimal Obsidian pane.
+    local lines=()
+
+    # First pass: widest session name → name column width (capped).
+    local max_name=0 _is _nm _rest
+    while IFS='|' read -r _is _nm _rest; do
+        [[ "$_is" == "1" ]] || continue
+        (( ${#_nm} > max_name )) && max_name=${#_nm}
+    done <<< "$raw"
+
+    if (( max_name == 0 )); then
+        lines+=("  ${C_DIM}No romp sessions running${C_RESET}")
+        lines+=("  ${C_DIM}Start one with  romp <name>  in a terminal.${C_RESET}")
+    else
+        local name_col=$max_name
+        (( name_col > NAME_CAP )) && name_col=$NAME_CAP
+        # Shrink the name if even name+indent won't fit (tiny terminal).
+        (( INDENT + name_col > cols )) && name_col=$(( cols - INDENT ))
+        (( name_col < 1 )) && name_col=1
+
+        # Decide which columns fit, in priority order. Name always shows; each
+        # later column is included only if it (plus its gap) still fits, so the
+        # total visible width never exceeds `cols` — no wrapping, ever.
+        local used=$(( INDENT + name_col ))
+        local show_badge=false show_time=false show_ctx=false show_model=false show_effort=false
+        if (( used + GAP + BADGE_COL <= cols )); then show_badge=true; used=$(( used + GAP + BADGE_COL )); fi
+        if $show_badge && (( used + GAP + TIME_COL <= cols )); then show_time=true; used=$(( used + GAP + TIME_COL )); fi
+        if $show_time && (( used + GAP + CTX_COL <= cols )); then show_ctx=true; used=$(( used + GAP + CTX_COL )); fi
+        if $show_ctx && (( used + GAP + MODEL_COL <= cols )); then show_model=true; used=$(( used + GAP + MODEL_COL )); fi
+        if $show_model && (( used + GAP + EFFORT_COL <= cols )); then show_effort=true; used=$(( used + GAP + EFFORT_COL )); fi
+        local sum_budget=$(( cols - used - GAP ))
+        (( sum_budget < 1 )) && sum_budget=0
+
+        local is_romp sess state since dir id_bg id_fg model effort summary kind context created mail_from mail_bg mail_fg
+        while IFS='|' read -r is_romp sess state since dir id_bg id_fg model effort summary kind context created mail_from mail_bg mail_fg; do
+            [[ "$is_romp" == "1" ]] || continue
+
+            # Stale = idle longer than STALE_AFTER_SECS → fade the whole row.
+            local is_stale=false duration_str="--"
+            if [[ -n "$since" ]]; then
+                local elapsed=$(( now - since ))
+                duration_str=$(format_duration "$elapsed")
+                (( elapsed > STALE_AFTER_SECS )) && is_stale=true
+            fi
+
+            # Badge label + colors by Claude lifecycle state (Obsidian mapState).
+            local label badge_bg badge_fg badge_bg_stale
+            case "$state" in
+                working)      label="WORKING";  badge_bg="$BADGE_WORKING_BG"; badge_fg="$BADGE_WORKING_FG"; badge_bg_stale="$BADGE_WORKING_BG_STALE" ;;
+                waiting|idle) label="READY";    badge_bg="$BADGE_READY_BG";   badge_fg="$BADGE_READY_FG";   badge_bg_stale="$BADGE_READY_BG_STALE"   ;;
+                permission)   label="AWAITING"; badge_bg="$BADGE_ATTN_BG";    badge_fg="$BADGE_ATTN_FG";    badge_bg_stale="$BADGE_ATTN_BG_STALE"    ;;
+                *)            label="--";       badge_bg="$BADGE_UNKNOWN_BG"; badge_fg="$BADGE_UNKNOWN_FG"; badge_bg_stale="$BADGE_UNKNOWN_BG_STALE" ;;
+            esac
+
+            # Name: bold + identity color (faded, color kept, when stale).
+            local name_pad name_fg row
+            printf -v name_pad '%-*s' "$name_col" "$(clip "$sess" "$name_col")"
+            name_fg="$(identity_fg_escape "$id_bg")"
+            if $is_stale; then
+                row="$(printf '%*s' "$INDENT" '')${name_fg}${C_DIM}${name_pad}${C_RESET}"
+            else
+                row="$(printf '%*s' "$INDENT" '')${name_fg}${C_BOLD}${name_pad}${C_RESET}"
+            fi
+
+            # Badge pill: colored " LABEL ", then plain padding to align the
+            # next column (so the pill itself stays shrink-to-fit, left-aligned).
+            if $show_badge; then
+                local pill=" ${label} " pad_n badge_pad
+                pad_n=$(( BADGE_COL - ${#pill} )); (( pad_n < 0 )) && pad_n=0
+                printf -v badge_pad '%*s' "$pad_n" ''
+                if $is_stale; then
+                    row+="  ${badge_bg_stale}${BADGE_FG_STALE}${pill}${C_RESET}${badge_pad}"
+                else
+                    row+="  ${badge_bg}${badge_fg}${pill}${C_RESET}${badge_pad}"
+                fi
+            fi
+
+            # Metadata gray: readable on active rows, fainter when stale.
+            local meta="$C_MUTED"; $is_stale && meta="$C_FAINT"
+
+            if $show_time; then
+                local t; printf -v t '%*s' "$TIME_COL" "$duration_str"
+                row+="  ${meta}${t}${C_RESET}"
+            fi
+            if $show_ctx; then
+                # Context-window % (right-aligned), traffic-light colored; faded
+                # when stale; blank (holds the column) until the session reports.
+                local cx cx_render
+                if [[ "$context" =~ ^[0-9]+$ ]]; then
+                    printf -v cx '%*s' "$CTX_COL" "${context}%"
+                    if $is_stale; then
+                        cx_render="${C_FAINT}${cx}${C_RESET}"
+                    else
+                        local cx_color="$C_CTX_LOW"
+                        (( context >= 50 )) && cx_color="$C_CTX_MID"
+                        (( context >= 80 )) && cx_color="$C_CTX_HIGH"
+                        cx_render="${cx_color}${cx}${C_RESET}"
+                    fi
+                else
+                    printf -v cx '%*s' "$CTX_COL" ''
+                    cx_render="$cx"
+                fi
+                row+="  ${cx_render}"
+            fi
+            if $show_model; then
+                local m; printf -v m '%-*s' "$MODEL_COL" "$(clip "${model:-—}" "$MODEL_COL")"
+                row+="  ${meta}${m}${C_RESET}"
+            fi
+            if $show_effort; then
+                local e ev; ev="$(printf '%s' "$effort" | tr '[:lower:]' '[:upper:]')"
+                printf -v e '%-*s' "$EFFORT_COL" "$(clip "$ev" "$EFFORT_COL")"
+                row+="  ${meta}${e}${C_RESET}"
+            fi
+            if (( sum_budget > 0 )); then
+                # Incoming peer-message badge (📬 + sender, in the SENDER's identity
+                # colour), shown the moment mail arrives — before/independent of the
+                # Haiku summary, which then fills in where the "…" is.
+                if [[ -n "$mail_from" ]]; then
+                    local mfg mname mvis
+                    mfg="$(identity_fg_escape "$mail_bg")"
+                    mname="$(clip "$mail_from" 16)"
+                    mvis=$(( 3 + ${#mname} ))            # 📬 ≈ 2 cols + space + name
+                    if (( sum_budget > mvis + 2 )); then
+                        row+="  ${mfg}${C_BOLD}📬 ${mname}${C_RESET}"
+                        sum_budget=$(( sum_budget - mvis - 2 ))
+                    fi
+                fi
+                # Classify the summary cell (mirrors vault romp-logic.summaryState):
+                #   pending → animated dots (job still generating)
+                #   error   → red "⚠ …" (failed/stuck job)
+                #   request → your prompt, teal; reply → gray; empty → nothing.
+                local sumstate="reply"
+                if [[ "$kind" == "error" ]]; then
+                    sumstate="error"
+                elif [[ "$kind" == "pending" || "$summary" == "…" ]]; then
+                    if [[ "$state" == "waiting" || "$state" == "idle" ]] && \
+                       [[ -n "$since" ]] && (( now - since > PENDING_TIMEOUT_SECS )); then
+                        sumstate="error"
+                    else
+                        sumstate="pending"
+                    fi
+                elif [[ -z "$summary" ]]; then
+                    sumstate="empty"
+                elif [[ "$kind" == "request" ]]; then
+                    sumstate="request"
+                fi
+
+                case "$sumstate" in
+                    pending)
+                        if (( sum_budget >= 7 )); then
+                            row+="  $(render_dots "$frame")"
+                        else
+                            row+="  ${C_DIM}$(clip "…" "$sum_budget")${C_RESET}"
+                        fi
+                        ;;
+                    error)
+                        local msg
+                        if [[ "$kind" == "error" ]]; then msg="${summary:-summarizer error}"
+                        else                              msg="summarizer timed out"; fi
+                        row+="  ${C_RED}$(clip "⚠ ${msg}" "$sum_budget")${C_RESET}"
+                        ;;
+                    request) row+="  ${C_TEAL}$(clip "$summary" "$sum_budget")${C_RESET}" ;;
+                    empty)   : ;;
+                    *)       row+="  ${C_DIM}$(clip "$summary" "$sum_budget")${C_RESET}" ;;
+                esac
+            fi
+
+            lines+=("$row")
+        done <<< "$raw"
+    fi
+
+    # Render: home, each line cleared to end-of-line, then clear below. The
+    # \033[K after every line wipes any leftover from a previous, wider frame.
+    local output="${C_HOME}" line
+    for line in "${lines[@]}"; do
+        output+="${line}"$'\033[K\n'
+    done
+    output+="${C_CLR_EOS}"
+    printf '%s' "$output"
+}
+
+# Clear screen once on first draw
+tput clear
+
+# Main loop. `frame` advances each redraw (~5 fps, or sooner on a keypress) to
+# drive the pending-summary dot animation. The keypress wait is a single-byte
+# `dd` read that honors the VMIN/VTIME timer set above: it returns within ~0.2s
+# with the key or empty, so the dashboard stays responsive without a fractional
+# `read -t` (which bash 3.2 rejects).
+frame=0
+while true; do
+    render "$frame"
+    frame=$(( frame + 1 ))
+    key="$(dd bs=1 count=1 2>/dev/null || true)"
+    case "$key" in q|Q) break ;; esac
+done

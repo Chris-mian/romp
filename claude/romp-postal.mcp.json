@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "romp-postal": {
+      "type": "stdio",
+      "command": "romp-postal",
+      "args": ["mcp"]
+    }
+  }
+}

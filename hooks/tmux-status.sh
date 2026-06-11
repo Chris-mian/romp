@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Exit silently if not in tmux
+[[ -z "${TMUX:-}" ]] && exit 0
+
+session_name=$(tmux display-message -p '#S')
+
+# Only act on romp sessions — identified by the @romp flag, not the name.
+is_romp=$(tmux show -t "$session_name" -v @romp 2>/dev/null || true)
+[[ -n "$is_romp" ]] || exit 0
+
+# Parse hook JSON with pure bash regex — no jq, no process spawns
+input=$(cat)
+[[ "$input" =~ \"hook_event_name\":\"([^\"]+)\" ]] && EVENT="${BASH_REMATCH[1]}" || EVENT=""
+[[ "$input" =~ \"notification_type\":\"([^\"]+)\" ]] && NOTIF_TYPE="${BASH_REMATCH[1]}" || NOTIF_TYPE=""
+[[ "$input" =~ \"cwd\":\"([^\"]+)\" ]] && WORK_DIR="${BASH_REMATCH[1]}" || WORK_DIR=""
+[[ "$input" =~ \"source\":\"([^\"]+)\" ]] && SOURCE="${BASH_REMATCH[1]}" || SOURCE=""
+
+case "$EVENT" in
+    SessionStart)          state="waiting" ;;
+    UserPromptSubmit)      state="working" ;;
+    PostToolUse)           state="working" ;;
+    Stop)                  state="waiting" ;;
+    PreCompact)            state="compacting" ;;   # context compaction STARTED (manual /compact or auto)
+    PostCompact)           state="waiting" ;;      # compaction done → idle for next prompt (any real event re-corrects)
+    Notification)
+        case "$NOTIF_TYPE" in
+            permission_prompt) state="permission" ;;
+            idle_prompt)       state="idle" ;;
+            *) exit 0 ;;
+        esac ;;
+    *) exit 0 ;;
+esac
+
+# Status emoji for the ghostty tab dot (tmux.conf set-titles-string reads
+# @romp-emoji). Mirrors the dashboard's state→color: 🔵 ready (waiting/
+# idle), 🟡 working, 🔴 awaiting (permission). Updated here on every event
+# so the dot tracks Claude's live status. (A fourth dot, ⚪ inactive, is set
+# NOT here but by scripts/romp-idle-dots once a ready session sits idle > 1h —
+# the tab analog of the dashboard/timeline fade; the next event resets it here.)
+case "$state" in
+    working)      emoji="🟡" ;;
+    permission)   emoji="🔴" ;;
+    compacting)   emoji="🟠" ;;   # 🟠 context compacting
+    *)            emoji="🔵" ;;   # waiting / idle
+esac
+
+now=$(date +%s)
+
+# Append a state-transition log (only on an actual change) so the timeline can
+# reconstruct HISTORICAL state intervals — e.g. how long a session sat AWAITING
+# your input — not just the current @claude-state-since. One small JSONL per
+# session, keyed by @romp-session-id; the timeline reads permission intervals from it.
+sid=$(tmux show -t "$session_name" -v @romp-session-id 2>/dev/null || true)
+prev=$(tmux show -t "$session_name" -v @claude-state 2>/dev/null || true)
+if [[ -n "$sid" && "$prev" != "$state" ]]; then
+    sdir="${XDG_STATE_HOME:-$HOME/.local/state}/romp/states"
+    mkdir -p "$sdir"
+    printf '{"t":%s,"state":"%s"}\n' "$now" "$state" >> "$sdir/$sid.jsonl"
+fi
+
+# Keep the timer-side watcher alive (scripts/romp-idle-dots): Claude fires NO
+# event while a session sits quiet, so nothing else would ever fade its ghostty
+# tab dot to ⚪ — and NO hook at all on an Esc-interrupt, so nothing else would
+# ever clear a stranded @claude-state=working (the watcher heals both). Ensured
+# on waiting/idle AND on UserPromptSubmit (once per typed prompt — a turn can
+# only get stuck after a prompt starts it) — never the high-frequency
+# PostToolUse path. The watcher self-exits once no romp session remains.
+if [[ "$state" == "waiting" || "$state" == "idle" || "$EVENT" == "UserPromptSubmit" ]]; then
+    command -v romp-idle-dots >/dev/null 2>&1 && romp-idle-dots --ensure >/dev/null 2>&1 || true
+fi
+
+# Store session state for dashboard + tab dot — single tmux invocation
+if [[ -n "$WORK_DIR" ]]; then
+    tmux set -t "$session_name" @claude-state "$state" \;\
+         set -t "$session_name" @claude-state-since "$now" \;\
+         set -t "$session_name" @romp-emoji "$emoji" \;\
+         set -t "$session_name" @claude-dir "$WORK_DIR"
+else
+    tmux set -t "$session_name" @claude-state "$state" \;\
+         set -t "$session_name" @claude-state-since "$now" \;\
+         set -t "$session_name" @romp-emoji "$emoji"
+fi
+
+# Clear the transient "←/→ peer:" top-line message prefix when a NORMAL prompt
+# starts — but KEEP it when the prompt is an injected peer-message banner (which
+# carries a long "####…" rule), so the label rides along with that message's turn.
+# (Set by scripts/romp-postal _set_msg_prefix; rendered by status-right.)
+if [[ "$EVENT" == "UserPromptSubmit" && "$input" != *"####################"* ]]; then
+    tmux set -t "$session_name" @romp-msg-dir "" \;\
+         set -t "$session_name" @romp-msg-peer "" \;\
+         set -t "$session_name" @romp-msg-id-cur "" || true
+fi
+
+# On a FRESH session start, push Claude's /color so the pill (approximately)
+# matches the romp identity color. Only source=startup: on resume Claude is still
+# loading the transcript and the keystrokes get dropped, and the resumed session
+# restores its own color anyway. The name is handled separately (--name at launch
+# / resume, and /rename on the after-rename hook). No-op for non-romp sessions.
+if [[ "$EVENT" == "SessionStart" && "$SOURCE" == "startup" ]]; then
+    # Resolve romp via PATH, falling back to the repo this hook lives in
+    # (readlink -f follows the ~/.claude/hooks symlink back to romp/hooks/).
+    ROMP_BIN="$(command -v romp || true)"
+    if [[ -z "$ROMP_BIN" ]]; then
+        SELF="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
+        ROMP_BIN="$(dirname "$SELF")/../bin/romp"
+    fi
+    "$ROMP_BIN" _color "$session_name" 2>/dev/null || true
+fi

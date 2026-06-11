@@ -1,0 +1,227 @@
+#!/usr/bin/env python3
+"""romp-ledger — a live, recency-biased "what is every session doing" view.
+
+Standalone EXPLORATORY tool (not yet wired into the `romp` dispatcher). By default
+it CONSTANTLY REFRESHES and shows only LIVE sessions, most-recently-active first,
+each as a concise block:
+
+  ● name  dir · state · age
+    <one-line summary of the session's purpose / current focus>
+    · synthesized bullet (responsibility / recent result / scope)
+
+Summary+bullets come from the rolling digest (~/.local/state/romp/digest/<sid>.json)
+the romp-summarize Stop hook regenerates every turn via `romp-digest`; reads are
+instant (no model call). Falls back to the latest turn phrase if a session has no
+digest yet. Distributed-systems framing: a CQRS read-model over single-writer logs;
+liveness from the exact tmux oracle, not a failure detector.
+
+  romp-ledger                 live sessions, refreshing every 2s
+  romp-ledger --once          print once and exit
+  romp-ledger --watch 5       refresh every 5s
+  romp-ledger --digest        backfill missing/stale digests once at startup
+  romp-ledger --all           also include dead sessions (within --dead-window),
+                              incl. the ⚠ dropped-mid-task flag
+  romp-ledger -k 2            at most 2 bullets per session (default 3)
+  romp-ledger --no-color
+"""
+import os, sys, json, glob, time, math, argparse, subprocess
+from concurrent.futures import ThreadPoolExecutor
+
+STATE = os.path.expanduser("~/.local/state/romp")
+NAMES, SUMM, STATES, DIGEST = (os.path.join(STATE, d) for d in ("names", "summaries", "states", "digest"))
+ALIVE_STATES = {"working", "permission"}
+
+# The bullet TEXT stays at default brightness; only the "(age)" LABEL is colored by
+# recency. The colormap is SHARED — scripts/romp_colormap.py — so the ledger, romp-feed,
+# and any future view all use one definition (change it there once). Currently cmasher
+# "solar" (recent -> bright gold, old -> dark maroon), log age scale.
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+from romp_colormap import age_rgb
+
+# ── helpers ──────────────────────────────────────────────────────────────────
+def _last_lines(path, k):
+    try:
+        with open(path) as f:
+            return f.read().splitlines()[-k:]
+    except OSError:
+        return []
+
+def _last_json(path):
+    ls = _last_lines(path, 1)
+    try:
+        return json.loads(ls[-1]) if ls else None
+    except ValueError:
+        return None
+
+def _agehms(secs):
+    secs = max(0, int(secs))
+    if secs < 60:    return f"{secs}s"
+    if secs < 3600:  return f"{secs//60}m"
+    if secs < 86400: return f"{secs//3600}h"
+    return f"{secs//86400}d"
+
+def _hex(h):
+    h = (h or "").lstrip("#")
+    if len(h) != 6:
+        return None
+    try:
+        return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
+    except ValueError:
+        return None
+
+class C:
+    on = True
+    @staticmethod
+    def rgb(t):  return f"\033[38;2;{t[0]};{t[1]};{t[2]}m" if (C.on and t) else ""
+    @staticmethod
+    def code(s): return s if C.on else ""
+    RESET="\033[0m"; BOLD="\033[1m"; DIM="\033[2m"
+    GRAY="\033[38;5;245m"; TEAL="\033[38;5;37m"; RED="\033[38;5;203m"; YEL="\033[38;5;179m"; GRN="\033[38;5;71m"
+
+# ── data ─────────────────────────────────────────────────────────────────────
+def live_sessions():
+    out = {}
+    try:
+        raw = subprocess.run(
+            ["tmux", "list-sessions", "-F",
+             "#{@romp-session-id}|#{@romp-working}|#{@claude-state}|#{@claude-summary}"],
+            capture_output=True, text=True, timeout=5).stdout
+    except Exception:
+        return out
+    for ln in raw.splitlines():
+        sid, _, rest = ln.partition("|")
+        if sid:
+            f = rest.split("|")
+            out[sid] = {"working": f[0] if f else "",
+                        "state": f[1] if len(f) > 1 else "",
+                        "summary": "|".join(f[2:]) if len(f) > 2 else ""}
+    return out
+
+def load():
+    live = live_sessions()
+    rows = []
+    for nf in glob.glob(os.path.join(NAMES, "*")):
+        sid = os.path.basename(nf)
+        parts = open(nf).read().rstrip("\n").split("\t")
+        name = parts[0] if parts else sid[:8]
+        d = parts[1] if len(parts) > 1 else ""
+        color = parts[2] if len(parts) > 2 else ""
+        summ = []
+        for ln in _last_lines(os.path.join(SUMM, sid + ".jsonl"), 12):
+            try: summ.append(json.loads(ln))
+            except ValueError: pass
+        st = _last_json(os.path.join(STATES, sid + ".jsonl")) or {}
+        activity = max(st.get("t", 0), summ[-1]["t"] if summ else 0)
+        newd = os.path.join(STATE, "postal", "mail", sid, "new")     # undelivered mail count
+        try: parked = len(os.listdir(newd)) if os.path.isdir(newd) else 0
+        except OSError: parked = 0
+        if not activity and not parked:
+            continue
+        dpath = os.path.join(DIGEST, sid + ".json")
+        digest = _last_json(dpath) if os.path.exists(dpath) else None
+        fallback = ""
+        for e in reversed(summ):
+            if e.get("kind") == "reply":
+                fallback = e.get("text", ""); break
+        if not fallback and summ:
+            fallback = summ[-1].get("text", "")
+        if not fallback:                    # brand-new session, no turn history yet:
+            fallback = live.get(sid, {}).get("summary", "")   # the live "doing now" phrase
+        rows.append({
+            "sid": sid, "name": name, "dir": os.path.basename(d.rstrip("/")) or d,
+            "rgb": _hex(color), "digest": digest, "fallback": fallback,
+            "live": sid in live, "live_state": live.get(sid, {}).get("state", ""),
+            "last_state": st.get("state", ""), "activity": activity, "parked": parked,
+            "dropped": (sid not in live) and (st.get("state", "") in ALIVE_STATES),
+        })
+    rows.sort(key=lambda r: r["activity"], reverse=True)
+    return rows
+
+def backfill(rows):
+    def gen(r):
+        try:
+            subprocess.run(["romp-digest", r["sid"]], timeout=60,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        list(ex.map(gen, rows))
+
+# ── render ───────────────────────────────────────────────────────────────────
+def header(row, now):
+    if row["live"]:
+        dot, col, state = "●", (C.GRN if row["live_state"] in ALIVE_STATES else C.TEAL), (row["live_state"] or "live")
+    elif row["dropped"]:
+        dot, col, state = "○", C.RED, "⚠ dropped " + row["last_state"]
+    else:
+        dot, col, state = "○", C.DIM, "done"
+    name = f"{C.rgb(row['rgb'])}{C.code(C.BOLD)}{row['name']}{C.code(C.RESET)}"
+    meta = " · ".join(p for p in (state, _agehms(now - row["activity"])) if p)
+    mail = f"  {C.code(C.YEL)}📬 {row['parked']} waiting{C.code(C.RESET)}" if row.get("parked") else ""
+    return f"{C.code(col)}{dot}{C.code(C.RESET)} {name}  {C.code(C.DIM)}{meta}{C.code(C.RESET)}{mail}"
+
+def render(rows, k, now):
+    out = []
+    for r in rows:
+        out.append(header(r, now))
+        dg = r["digest"] or {}
+        summary = dg.get("summary") or r["fallback"]
+        if summary:
+            out.append(f"  {summary}")
+        for b in dg.get("bullets", [])[:k]:
+            if isinstance(b, dict):
+                txt = b.get("text", "")
+                bt = b.get("t")
+                age = (f"  {C.rgb(age_rgb(now - bt))}({_agehms(now - bt)} ago){C.code(C.RESET)}"
+                       if bt else "")
+                out.append(f"    {txt}{age}")          # text default; only the label is Inferno-colored
+            else:                            # legacy string bullet (pre-timestamp digests)
+                out.append(f"    {b}")
+    return "\n".join(out)
+
+def select(rows, args, now):
+    if args.all:
+        win = args.dead_window * 3600
+        rows = [r for r in rows if r["live"] or r["parked"] or (now - r["activity"]) <= win]
+    else:
+        rows = [r for r in rows if r["live"] or r["parked"]]   # always surface waiting mail
+    return rows[:args.n] if args.n else rows
+
+def build(args, now):
+    rows = select(load(), args, now)
+    live_n = sum(r["live"] for r in rows)
+    drop_n = sum(r["dropped"] for r in rows)
+    hdr = (f"{C.code(C.BOLD)}romp ledger{C.code(C.RESET)}  {C.code(C.GRN)}{live_n} live{C.code(C.RESET)}"
+           + (f" · {C.code(C.RED)}{drop_n} dropped{C.code(C.RESET)}" if drop_n else "")
+           + f"  {C.code(C.DIM)}{time.strftime('%H:%M:%S')}{C.code(C.RESET)}")
+    return hdr + "\n\n" + render(rows, args.k, now)
+
+def main():
+    ap = argparse.ArgumentParser(add_help=True)
+    ap.add_argument("--all", action="store_true", help="include dead sessions (within --dead-window)")
+    ap.add_argument("-n", type=int, default=0, help="max sessions")
+    ap.add_argument("-k", type=int, default=5, help="max bullets per session")
+    ap.add_argument("--dead-window", type=float, default=24, help="hours (with --all)")
+    ap.add_argument("--digest", action="store_true", help="backfill missing/stale digests once at startup")
+    ap.add_argument("--watch", type=float, default=2.0, help="refresh seconds (default 2)")
+    ap.add_argument("--once", action="store_true", help="print once and exit")
+    ap.add_argument("--no-color", action="store_true")
+    a = ap.parse_args()
+    C.on = (not a.no_color) and sys.stdout.isatty()
+    if not sys.stdout.isatty():
+        a.once = True                       # piped: print once, no escape codes
+    if a.digest:
+        backfill(select(load(), a, time.time()))
+    if a.once:
+        print(build(a, time.time()))
+        return
+    try:
+        while True:
+            sys.stdout.write("\033[2J\033[H")
+            print(build(a, time.time()), flush=True)
+            time.sleep(a.watch)
+    except KeyboardInterrupt:
+        pass
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,1838 @@
+import { marked } from "marked";
+import hljs from "highlight.js/lib/core";
+import bash from "highlight.js/lib/languages/bash";
+import python from "highlight.js/lib/languages/python";
+import javascript from "highlight.js/lib/languages/javascript";
+import typescript from "highlight.js/lib/languages/typescript";
+import json from "highlight.js/lib/languages/json";
+import xml from "highlight.js/lib/languages/xml";
+import cssLang from "highlight.js/lib/languages/css";
+import markdown from "highlight.js/lib/languages/markdown";
+import diff from "highlight.js/lib/languages/diff";
+import yaml from "highlight.js/lib/languages/yaml";
+import type { ParsedAsk } from "../askparse";
+
+for (const [name, lang] of Object.entries({
+  bash, sh: bash, shell: bash, python, py: python, javascript, js: javascript,
+  typescript, ts: typescript, json, xml, html: xml, css: cssLang, markdown, md: markdown,
+  diff, yaml, yml: yaml,
+})) {
+  try { hljs.registerLanguage(name, lang as any); } catch { /* dup alias */ }
+}
+
+marked.setOptions({ gfm: true, breaks: false });
+
+type ChatEvent =
+  | { kind: "user"; md: string; uuid?: string; ts?: string; reminders?: string[]; human?: boolean; images?: string[] }
+  | { kind: "assistant"; md: string; uuid?: string; ts?: string }
+  | { kind: "thinking"; text: string; encrypted: boolean; uuid?: string; ts?: string }
+  | {
+      kind: "tool";
+      name: string;
+      desc: string;
+      input: string;
+      output: string;
+      isError: boolean;
+      uuid?: string;
+      resultUuid?: string;   // tool_result line uuid (AUQ answer) — the deep-link anchor the timeline emits
+      ts?: string;
+      file?: string;
+      diff?: string;
+    }
+  | {
+      kind: "postal";
+      direction: "in" | "out";
+      peer: string;
+      color: { bg: string; fg: string } | null;
+      body: string;
+      t?: number;        // epoch seconds (incoming)
+      park?: boolean;
+      status?: "delivered" | "parked"; // outgoing
+      ts?: string;
+      uuid?: string;
+    }
+  // Claude Code's Task to-do list, folded into one live checklist.
+  | { kind: "todo"; tasks: TodoTask[]; ts?: string; uuid?: string }
+  | { kind: "queued"; texts: string[]; ts?: string; uuid?: string };
+
+interface TodoTask { id: string; subject: string; activeForm?: string; status: string }
+
+type ChipState = "working" | "ready" | "awaiting" | "idle" | "closed" | "compacting";
+interface Status { state: ChipState; sinceEpoch: number | null; effort?: string; model?: string; ctx?: string; faded?: boolean; }
+interface Color { bg: string; fg: string; }
+interface Session { id: string; name: string; color: Color | null; events: ChatEvent[]; status: Status; firstSeen?: number; }
+
+const vscodeApi =
+  typeof (window as any).acquireVsCodeApi === "function" ? (window as any).acquireVsCodeApi() : undefined;
+
+const sessions = new Map<string, Session>();
+const order: string[] = [];           // positional tab order (for cycling)
+const mru: string[] = [];             // recency stack, front = most-recently-active (close → return to previous)
+let activeId: string | null = null;
+let pendingAnchor: string | null = null; // deep-link target waiting to be scrolled to
+let pendingAnchorIntent: string | null = null; // kind the uuid anchor must honor — sticks with pendingAnchor across render-pass retries (pendingAnchorKind is cleared each pass, this isn't)
+let pendingAnchorT: number | null = null; // time fallback (epoch s) when the uuid can't resolve
+let pendingAnchorKind: string | null = null; // intent for the time fallback: "user" = land on the user's own turn
+// Landing diagnostics (the user's ask, 2026-06-10): record HOW each deep-link
+// landing resolved — exact pointer / refused wrong-kind pointer / time-nearby
+// / gave up. The trail is posted to the host (→ ~/.local/state/romp/
+// locate-diag.jsonl) on every attempt, and DEGRADED landings show a transient
+// toast, so a bad jump is visibly flagged instead of looking like a confident
+// (but wrong) link. "That click landed weird" + the log = a diagnosable bug.
+let landTrail: string[] = [];
+
+// Per-session rendered DOM, kept alive so switching tabs doesn't rebuild the
+// whole transcript — only the active view is shown, others are display:none.
+// Invariant: each ChatEvent renders to exactly one .turn child, so
+// view.el.childNodes.length === view.rendered.
+interface View { el: HTMLElement; rendered: number; scrollTop: number; stick: boolean; shown: boolean; stale: boolean; }
+const views = new Map<string, View>();
+
+// Pending pickers (AskUserQuestion / tool-permission) keyed by session id. These
+// live ONLY in the session's tmux pane (Claude Code doesn't write a pending
+// prompt to the transcript until it's answered), so the host captures+parses the
+// pane and pushes them here. Kept OUT of the transcript `events` list so syncView
+// never clobbers them; rendered into the dedicated #live-ask region instead.
+// The pending prompt per session (its `kind` selects the widget). Kept OUT of the
+// transcript events so syncView can't clobber it. A stored null = awaiting an
+// unstructured screen (e.g. the free-text "type something" field) → a text input;
+// no entry at all = not awaiting → hidden.
+const liveAsks = new Map<string, ParsedAsk | null>();
+
+// Per-session rolling digest (purpose + a few timestamped bullets), shown in the
+// #ledger box just below the tabs. Swaps with the active tab; pushed by the host.
+interface LedgerBullet { text: string; t?: number; id?: string; sid?: string; }   // id/sid = timeline hover/locate anchor (reply's romp-events id)
+interface Ledger { summary: string; bullets: LedgerBullet[]; }
+const ledgers = new Map<string, Ledger | null>();
+
+function el(tag: string, cls?: string): HTMLElement {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  return e;
+}
+
+function md(src: string): string {
+  try { return marked.parse(src) as string; }
+  catch { const d = document.createElement("div"); d.textContent = src; return d.innerHTML; }
+}
+
+function highlight(container: HTMLElement) {
+  container.querySelectorAll("pre code").forEach((node) => {
+    const code = node as HTMLElement;
+    const lang = (code.className.match(/language-([\w-]+)/) || [])[1];
+    try {
+      code.innerHTML = lang && hljs.getLanguage(lang)
+        ? hljs.highlight(code.textContent || "", { language: lang }).value
+        : hljs.highlightAuto(code.textContent || "").value;
+      code.classList.add("hljs");
+    } catch { /* leave as-is */ }
+  });
+}
+
+function dot(kind: "green" | "ring"): HTMLElement { return el("span", "dot " + kind); }
+
+function ioRow(label: "IN" | "OUT", text: string, isError: boolean): HTMLElement {
+  const row = el("div", "io-row" + (label === "OUT" ? " io-out" : "") + (isError ? " io-error" : ""));
+  const lab = el("span", "io-label"); lab.textContent = label;
+  const pre = el("pre", "io-pre"); pre.textContent = text;
+  row.appendChild(lab); row.appendChild(pre);
+  return row;
+}
+
+// Tools whose result is pure boilerplate ("…updated successfully", "Task #N
+// created") — on success we show just a ✓; the OUT box is suppressed. On error
+// the real message is always shown. (The Agent/Task subagent tool is NOT here —
+// its output is the agent's report, which is signal.)
+const ACK_TOOLS = new Set([
+  "Edit", "Write", "MultiEdit", "NotebookEdit",
+  "TodoWrite", "TaskCreate", "TaskUpdate", "TaskGet", "TaskList",
+]);
+
+function shortPath(p: string): string {
+  const parts = p.split("/").filter(Boolean);
+  return parts.length <= 2 ? p : ".../" + parts.slice(-2).join("/");
+}
+
+function countLines(s: string): number {
+  if (!s) return 0;
+  const n = s.split("\n").length;
+  return s.endsWith("\n") ? n - 1 : n;
+}
+
+function preEl(text: string): HTMLElement {
+  const pre = el("pre", "io-pre fold-pre");
+  pre.textContent = text;
+  return pre;
+}
+
+// A clickable file name that opens the real file in the editor (shared
+// open/navigate surface — see extension.ts openFile handler).
+function fileLink(path: string): HTMLElement {
+  const a = el("span", "tool-file");
+  a.textContent = shortPath(path);
+  a.title = "Open " + path;
+  a.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (vscodeApi) vscodeApi.postMessage({ type: "openFile", path });
+  });
+  return a;
+}
+
+// Visible-but-bounded IN/OUT block (clamped ~300px, click to expand fully).
+function ioClamp(input: string, output: string, isError: boolean): HTMLElement {
+  const clamp = el("div", "io-clamp");
+  const io = el("div", "tool-io");
+  if (input) io.appendChild(ioRow("IN", input, false));
+  if (output) io.appendChild(ioRow("OUT", output, isError));
+  clamp.appendChild(io);
+  clamp.addEventListener("click", () => clamp.classList.toggle("expanded"));
+  return clamp;
+}
+
+// Compact fold: the AFFORDANCE (caret + a summary like "12 lines" / "+5 −2") sits
+// on the RIGHT of the tool's HEAD line; the expandable content hangs below the
+// head, hidden until clicked — so each tool stays ONE row by default (the user:
+// vertical-compact). `head` must already be appended to `turn`.
+function inlineFold(head: HTMLElement, turn: HTMLElement, label: string, content: HTMLElement) {
+  const toggle = el("span", "tool-fold-toggle");
+  toggle.textContent = label;   // just the clickable summary ("+14 −0" / "12 lines") — no caret/bullet
+  toggle.title = "click to expand";
+  toggle.addEventListener("click", (e) => { e.stopPropagation(); turn.classList.toggle("fold-open"); });
+  content.classList.add("tool-fold-body");
+  head.appendChild(toggle);
+  turn.appendChild(content);
+}
+
+// Hidden-until-clicked disclosure (caret + label) — for noise-by-default
+// content like Read dumps and folded system reminders.
+function foldable(label: string, content: HTMLElement): HTMLElement {
+  const wrap = el("div", "fold");
+  const head = el("div", "fold-head");
+  const caret = el("span", "fold-caret"); caret.textContent = "▸";
+  const lab = el("span", "fold-label"); lab.textContent = label;
+  head.appendChild(caret); head.appendChild(lab);
+  head.addEventListener("click", () => wrap.classList.toggle("open"));
+  wrap.appendChild(head);
+  wrap.appendChild(content);
+  return wrap;
+}
+
+// ---- path-source pasted images ----
+// A user turn may carry a "path:<abs path>" image (Claude Code's image-cache or a
+// screenshot from disk). The webview can't read files, so we ask the host once per
+// path; until/unless it returns a dataURL we show a "🖼 filename" chip, then swap in
+// the real thumbnail when the host answers. Re-renders rebuild the element from these
+// caches, so a thumbnail already fetched stays a thumbnail.
+const imgUrlCache = new Map<string, string>();   // path → dataURL (loaded)
+const imgFailed = new Set<string>();             // path → keep the chip, never retry
+const imgRequested = new Set<string>();          // path → request in flight
+function fillPathImg(wrap: HTMLElement, p: string): void {
+  wrap.textContent = "";
+  const url = imgUrlCache.get(p);
+  if (url) {
+    const img = document.createElement("img"); img.className = "user-img"; img.src = url; img.loading = "lazy"; img.title = p;
+    wrap.appendChild(img);
+  } else {
+    const chip = el("div", "user-img-path"); chip.textContent = "🖼 " + (p.split("/").pop() || p); chip.title = p;
+    wrap.appendChild(chip);
+  }
+}
+function buildPathImg(p: string): HTMLElement {
+  const wrap = el("span", "js-pathimg"); wrap.dataset.imgpath = p;
+  fillPathImg(wrap, p);
+  if (!imgUrlCache.has(p) && !imgFailed.has(p) && !imgRequested.has(p)) {
+    imgRequested.add(p);
+    if (vscodeApi) vscodeApi.postMessage({ type: "imgRequest", path: p });
+  }
+  return wrap;
+}
+function onImgData(p: string, url: string | null): void {
+  imgRequested.delete(p);
+  if (url) imgUrlCache.set(p, url); else imgFailed.add(p);
+  document.querySelectorAll(".js-pathimg").forEach((n) => {
+    const e = n as HTMLElement; if (e.dataset.imgpath === p) fillPathImg(e, p);
+  });
+}
+
+function renderEvent(ev: ChatEvent, prevEpoch?: number | null): HTMLElement {
+  const turn = renderEventInner(ev);
+  // Deep-link anchor. An AskUserQuestion widget carries the ANSWER-line (tool_result
+  // user line) uuid — that's the uuid the timeline emits for the decision, and the
+  // answer line produces no standalone event/DOM node of its own. Everything else
+  // anchors on its own uuid.
+  const anchorUuid = (ev.kind === "tool" && ev.name === "AskUserQuestion" && ev.resultUuid) ? ev.resultUuid : ev.uuid;
+  if (anchorUuid) turn.dataset.uuid = anchorUuid; // deep-link anchor (shared with vs_chat)
+  // epoch-seconds stamp → time-based anchor fallback (when a uuid anchor is
+  // stale/orphaned, the deep link can still land on the nearest moment)
+  const epoch = eventEpoch(ev);
+  if (epoch != null) turn.dataset.t = String(epoch);
+  // rail time-stamp: HH:MM just to the LEFT of every dot (the user 2026-06-10) — a left
+  // timestamp column so each event on the rail shows when it happened. Only on turns
+  // that HAVE a dot (user bubbles are right-aligned with their own time). The date is
+  // shown only on the first turn of a new (non-today) day.
+  if (epoch != null && turn.querySelector(".dot")) turn.insertBefore(timeMarker(epoch, prevEpoch ?? null), turn.firstChild);
+  return turn;
+}
+
+function eventEpoch(ev: ChatEvent): number | null {
+  if (!ev.ts) return null;
+  const t = Date.parse(ev.ts);
+  return isNaN(t) ? null : Math.floor(t / 1000);
+}
+
+// A rail time-stamp (HH:MM) for a turn. On the first turn of a new (non-today) day it
+// also shows the date, with emphasis. One per dotted turn (no minute dedup).
+function timeMarker(epoch: number, prevEpoch: number | null): HTMLElement {
+  const d = new Date(epoch * 1000);
+  const dayKey = (x: Date) => `${x.getFullYear()}/${x.getMonth()}/${x.getDate()}`;
+  const time = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  const now = new Date();
+  const dayChanged = prevEpoch == null || dayKey(d) !== dayKey(new Date(prevEpoch * 1000));
+  const isToday = dayKey(d) === dayKey(now);
+  const m = el("div", "time-marker");
+  if (dayChanged && !isToday) {
+    m.classList.add("day");
+    const sod = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+    const days = Math.round((sod(now) - sod(d)) / 86400000);
+    const date = days === 1 ? "Yesterday" : days < 7 ? WEEKDAY[d.getDay()] : `${MONTH[d.getMonth()]} ${d.getDate()}`;
+    m.textContent = `${date} · ${time}`;
+  } else {
+    m.textContent = time;
+  }
+  return m;
+}
+
+function renderEventInner(ev: ChatEvent): HTMLElement {
+  if (ev.kind === "user") {
+    // Only GENUINE typed/queued prompts get the blue "your message" bubble. Harness-
+    // injected user-role lines (compact summary, /command stdout, system reminders,
+    // postal pushes — all promptSource≠typed/queued) fall back to a neutral note box.
+    const injected = !ev.human;
+    const turn = el("div", "turn turn-user" + (injected ? " injected" : ""));
+    const hasImgs = !!(ev.images && ev.images.length);
+    if (ev.md || hasImgs) {
+      const bubble = el("div", (injected ? "user-note" : "user-bubble") + " md");
+      if (ev.md) bubble.innerHTML = md(ev.md);
+      // pasted images, IN the bubble (part of his message). base64 → a real thumbnail;
+      // a path source → a compact "🖼 filename" chip (the file isn't loadable here).
+      if (ev.images) for (const src of ev.images) {
+        if (src.startsWith("path:")) {
+          bubble.appendChild(buildPathImg(src.slice(5)));   // host reads it → real thumbnail; chip until then / on failure
+        } else {
+          const img = document.createElement("img"); img.className = "user-img"; img.src = src; img.loading = "lazy";
+          bubble.appendChild(img);
+        }
+      }
+      // timestamp in the top-right corner (floated → short messages don't gain a
+      // line; the message text wraps to its left). Must be the FIRST child to float.
+      const t = hhmm(ev.ts);
+      if (t) { const time = el("span", "user-time"); time.textContent = t; bubble.insertBefore(time, bubble.firstChild); }
+      turn.appendChild(bubble);
+    }
+    if (ev.reminders && ev.reminders.length) {
+      const body = el("div", "reminder-body");
+      for (const r of ev.reminders) body.appendChild(preEl(r));
+      const n = ev.reminders.length;
+      const f = foldable(`ⓘ ${n} system reminder${n > 1 ? "s" : ""}`, body);
+      f.classList.add("reminder-fold");
+      turn.appendChild(f);
+    }
+    return turn;
+  }
+  if (ev.kind === "assistant") {
+    const turn = el("div", "turn turn-assistant");
+    turn.appendChild(dot("ring"));
+    const body = el("div", "assistant md");
+    body.innerHTML = md(ev.md);
+    highlight(body);
+    turn.appendChild(body);
+    return turn;
+  }
+  if (ev.kind === "thinking") {
+    const turn = el("div", "turn turn-thinking");
+    turn.appendChild(dot("ring"));
+    const t = el("div", "thinking" + (ev.encrypted ? " encrypted" : ""));
+    t.textContent = ev.encrypted ? "Thinking…" : ev.text;
+    if (ev.encrypted) { turn.appendChild(t); return turn; }   // already a one-liner
+    // condense: clamp to ~2 lines with a fade; click to expand (the user: don't let
+    // the interspersed thinking blocks dominate vertically).
+    const clamp = el("div", "think-clamp");
+    clamp.appendChild(t);
+    clamp.title = "click to expand";
+    clamp.addEventListener("click", () => clamp.classList.toggle("expanded"));
+    turn.appendChild(clamp);
+    return turn;
+  }
+  if (ev.kind === "postal") return renderPostal(ev);
+  if (ev.kind === "todo") return renderTodo(ev);
+  if (ev.kind === "queued") return renderQueued(ev);
+  return renderTool(ev);
+}
+
+// AskUserQuestion (a "choose one" prompt) — render the question + options with the
+// chosen one marked, instead of the raw folded JSON blob.
+function renderAsk(ev: Extract<ChatEvent, { kind: "tool" }>): HTMLElement | null {
+  let data: any;
+  try { data = JSON.parse(ev.input); } catch { return null; }
+  const qs = data && Array.isArray(data.questions) ? data.questions : null;
+  if (!qs || !qs.length) return null;
+  const out = ev.output || "";
+  // The answer is recorded as `"<question>"="<answer>"` pairs (multi-select joins the
+  // chosen labels as "A, B, C"; a free-text "Other" answer is the user's verbatim text,
+  // which matches NO option label). Parse pairs → question→answer so each question can
+  // mark its picked option(s) OR surface an "Other" row with the typed text.
+  const pairs = new Map<string, string>();
+  for (const m of out.matchAll(/[“"]([^”"]*)[”"]\s*=\s*[“"]([^”"]*)[”"]/g)) pairs.set(m[1].trim(), m[2]);
+  const pairVals = Array.from(pairs.values());
+  const answerFor = (q: any): string =>
+    qs.length === 1 && pairVals.length ? pairVals[0]
+      : pairs.get(String(q.question || "").trim()) ?? pairs.get(String(q.header || "").trim()) ?? "";
+  const turn = el("div", "turn turn-ask");
+  turn.appendChild(dot("ring"));
+  const card = el("div", "ask-card");
+  const head = el("div", "ask-head");
+  head.textContent = qs.length > 1 ? `${qs.length} questions` : "Question";
+  card.appendChild(head);
+  for (const q of qs) {
+    const qel = el("div", "ask-q");
+    const qt = el("div", "ask-qtext"); qt.textContent = q.question || q.header || ""; qel.appendChild(qt);
+    const opts = Array.isArray(q.options) ? q.options : [];
+    const labels = opts.map((o: any) => String(o.label || "")).filter(Boolean);
+    const ans = answerFor(q);
+    // split the answer into picked option labels + any leftover free-text ("Other").
+    // Comma-split only when a label actually matches (so a free-text answer that
+    // happens to contain commas isn't shredded).
+    const picked = new Set<string>();
+    let other = "";
+    if (ans) {
+      if (labels.includes(ans)) picked.add(ans);
+      else {
+        const parts = ans.split(/,\s*/).map((s) => s.trim()).filter(Boolean);
+        const matched = parts.filter((p) => labels.includes(p));
+        if (matched.length) { matched.forEach((p) => picked.add(p)); other = parts.filter((p) => !labels.includes(p)).join(", "); }
+        else other = ans;   // nothing matched a label → the whole answer is free-text "Other"
+      }
+    }
+    for (const o of opts) {
+      const chosen = !!o.label && picked.has(String(o.label));
+      const opt = el("div", "ask-opt" + (chosen ? " chosen" : ""));
+      const mark = el("span", "ask-mark"); mark.textContent = chosen ? "●" : "○"; opt.appendChild(mark);
+      const lab = el("span", "ask-optlabel"); lab.textContent = o.label || ""; opt.appendChild(lab);
+      if (o.description) { const d = el("span", "ask-optdesc"); d.textContent = o.description; opt.appendChild(d); }
+      qel.appendChild(opt);
+    }
+    // free-text "Other" answer → a selected "Other" row + the user's verbatim words (quoted),
+    // so a typed answer is never silently dropped to an empty-looking menu.
+    if (other) {
+      const opt = el("div", "ask-opt chosen ask-other");
+      const mark = el("span", "ask-mark"); mark.textContent = "●"; opt.appendChild(mark);
+      const lab = el("span", "ask-optlabel"); lab.textContent = "Other"; opt.appendChild(lab);
+      const d = el("span", "ask-answer-text"); d.textContent = "“" + other + "”"; opt.appendChild(d);
+      qel.appendChild(opt);
+    }
+    card.appendChild(qel);
+  }
+  turn.appendChild(card);
+  return turn;
+}
+
+// Claude Code's Task to-do list — a compact live checklist mirroring the terminal:
+// ○ pending / ◐ in_progress / ✓ completed (done is struck through).
+function renderTodo(ev: Extract<ChatEvent, { kind: "todo" }>): HTMLElement {
+  const turn = el("div", "turn turn-todo");
+  turn.appendChild(dot("ring"));
+  const card = el("div", "todo-card");
+  const done = ev.tasks.filter((t) => t.status === "completed").length;
+  const head = el("div", "todo-head"); head.textContent = `To-do · ${done}/${ev.tasks.length}`;
+  card.appendChild(head);
+  for (const t of ev.tasks) {
+    const row = el("div", "todo-item todo-" + t.status);
+    const mark = el("span", "todo-mark");
+    mark.textContent = t.status === "completed" ? "✓" : t.status === "in_progress" ? "◐" : "○";
+    row.appendChild(mark);
+    const txt = el("span", "todo-text");
+    txt.textContent = t.status === "in_progress" && t.activeForm ? t.activeForm : t.subject;
+    row.appendChild(txt);
+    card.appendChild(row);
+  }
+  turn.appendChild(card);
+  return turn;
+}
+
+// Pending queued messages — the user's inputs submitted while the session was still
+// working, not yet processed. Rendered at the bottom (closest to the composer),
+// styled as faint right-aligned "you" bubbles so they read as his words, waiting.
+function renderQueued(ev: Extract<ChatEvent, { kind: "queued" }>): HTMLElement {
+  const turn = el("div", "turn turn-queued");
+  const n = ev.texts.length;
+  const head = el("div", "queued-head");
+  head.textContent = `⌛ ${n} queued message${n === 1 ? "" : "s"}`;
+  turn.appendChild(head);
+  for (const t of ev.texts) {
+    const bubble = el("div", "queued-bubble");
+    bubble.textContent = t;
+    turn.appendChild(bubble);
+  }
+  return turn;
+}
+
+function renderTool(ev: Extract<ChatEvent, { kind: "tool" }>): HTMLElement {
+  if (ev.name === "AskUserQuestion") { const a = renderAsk(ev); if (a) return a; }
+  const turn = el("div", "turn turn-tool" + (ev.isError ? " tool-err" : ""));
+  const d = dot(ev.isError ? "ring" : "green");
+  if (ev.isError) d.classList.add("err");
+  turn.appendChild(d);
+
+  const head = el("div", "tool-head");
+  const name = el("span", "tool-name"); name.textContent = ev.name;
+  head.appendChild(name);
+  if (ev.file) head.appendChild(fileLink(ev.file));
+  else if (ev.desc) { const c = el("span", "tool-desc"); c.textContent = ev.desc; head.appendChild(c); }
+
+  const ack = ACK_TOOLS.has(ev.name);
+  turn.appendChild(head);   // status ✓/✗ appended LAST below, so it right-justifies past the fold summary
+
+  if (ev.isError) {
+    if (ev.input || ev.output) turn.appendChild(ioClamp(ev.input, ev.output, true)); // errors: always show
+  } else if (ev.diff) {
+    // Edit/MultiEdit: "+add −del" on the head line; the red/green diff hangs below, hidden.
+    let add = 0, del = 0;
+    for (const l of ev.diff.split("\n")) { if (l[0] === "+") add++; else if (l[0] === "-") del++; }
+    const pre = el("pre", "io-pre fold-pre diff-fold");
+    const code = el("code", "language-diff"); code.textContent = ev.diff; pre.appendChild(code);
+    inlineFold(head, turn, `+${add} −${del}`, pre);
+    highlight(pre);
+  } else if (ev.name === "Read") {
+    if (ev.output) inlineFold(head, turn, `${countLines(ev.output)} lines`, preEl(ev.output));
+  } else if (!ack && (ev.input || ev.output)) {
+    const signal = ev.name === "Task" || ev.name === "Agent";
+    if (signal) {
+      turn.appendChild(ioClamp(ev.input, ev.output, false));        // Agent/Task report IS the signal
+    } else if (!ev.output) {
+      const io = el("div", "tool-io"); if (ev.input) io.appendChild(ioRow("IN", ev.input, false)); turn.appendChild(io);
+    } else {
+      // Bash/Grep/Glob/…: output line-count on the head line (right of the command);
+      // the command + full output hang below, hidden until clicked.
+      const io = el("div", "tool-io tool-io-fold");
+      if (ev.input) io.appendChild(ioRow("IN", ev.input, false));
+      io.appendChild(ioRow("OUT", ev.output, false));
+      const n = countLines(ev.output);
+      inlineFold(head, turn, `${n} line${n === 1 ? "" : "s"}`, io);
+    }
+  }
+  // status LAST → right-justified (CSS margin-left:auto), past the name/file/fold
+  // summary. ack + success with no body → header is just name/file + ✓.
+  if (ev.isError) { const g = el("span", "tool-status err"); g.textContent = "✗"; head.appendChild(g); }
+  else if (ack) { const g = el("span", "tool-status ok"); g.textContent = "✓"; head.appendChild(g); }
+  return turn;
+}
+
+// "HH:MM" from an epoch-seconds (t) or ISO-string (ts) timestamp; "" if neither parses.
+function hhmm(ts?: string, t?: number): string {
+  const ms = t ? t * 1000 : ts ? Date.parse(ts) : NaN;
+  if (!ms || Number.isNaN(ms)) return "";
+  const d = new Date(ms);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+function clock(ev: Extract<ChatEvent, { kind: "postal" }>): string { return hhmm(ev.ts, ev.t); }
+
+// Navigate to a session by its romp NAME. If it's an open tab, just select it
+// (no host round-trip); otherwise ask the host to resolve the name → transcript
+// and open/revive it.
+function navToSession(name: string) {
+  const open = order.find((id) => sessions.get(id)?.name === name);
+  if (open) { setActive(open); return; }
+  if (vscodeApi) vscodeApi.postMessage({ type: "openByName", name });
+}
+
+// Turn an element into a clickable session-name chip (cursor + hover underline,
+// click navigates). Used for the sender/recipient chip on a postal card.
+function makeSessionChip(elm: HTMLElement, name: string) {
+  elm.classList.add("chip-nav");
+  elm.title = `Go to ${name}`;
+  elm.addEventListener("click", (e) => { e.stopPropagation(); navToSession(name); });
+}
+
+// Names of sessions currently WORKING (broadcast by the host) → a working dot
+// before that name wherever it renders (postal sender/recipient chips).
+let workingSet = new Set<string>();
+// Ensure a working dot (the same `.tab-dot` used on working tabs) sits before a
+// postal peer name iff that session is working. Idempotent.
+function setPeerDot(peerEl: HTMLElement, on: boolean) {
+  const prev = peerEl.previousElementSibling;
+  const has = !!prev && prev.classList.contains("peer-dot");
+  if (on && !has) peerEl.parentElement?.insertBefore(el("span", "tab-dot peer-dot"), peerEl);
+  else if (!on && has) prev!.remove();
+}
+function refreshPostalDots() {
+  document.querySelectorAll(".postal-peer").forEach((p) => setPeerDot(p as HTMLElement, workingSet.has((p.textContent || "").trim())));
+}
+
+// A romp postal message, as a compact identity-coloured card.
+function renderPostal(ev: Extract<ChatEvent, { kind: "postal" }>): HTMLElement {
+  const turn = el("div", "turn turn-postal postal-" + ev.direction);
+  const d = dot("ring");
+  d.classList.add("mail");
+  if (ev.color) d.style.background = ev.color.bg;
+  turn.appendChild(d);
+
+  const card = el("div", "postal-card");
+  if (ev.color) {
+    card.style.setProperty("--peer-bg", ev.color.bg);
+    card.style.setProperty("--peer-fg", ev.color.fg);
+  }
+
+  const head = el("div", "postal-head");
+  const arrow = el("span", "postal-arrow");
+  arrow.textContent = ev.direction === "in" ? "↙" : "↗";
+  const verb = el("span", "postal-dir");
+  verb.textContent = ev.direction === "in" ? "from" : "to";
+  const peer = el("span", "postal-peer");
+  peer.textContent = ev.peer;
+  makeSessionChip(peer, ev.peer); // click the sender/recipient name → go to that session's tab
+  head.appendChild(arrow);
+  head.appendChild(verb);
+  head.appendChild(peer);
+  setPeerDot(peer, workingSet.has(ev.peer));   // working dot before the peer name if that session is working
+
+  if (ev.park || ev.status === "parked") {
+    const b = el("span", "postal-badge parked");
+    b.textContent = "⏸ parked";
+    head.appendChild(b);
+  } else if (ev.status === "delivered") {
+    const b = el("span", "postal-badge delivered");
+    b.textContent = "✓ delivered";
+    head.appendChild(b);
+  }
+
+  const t = clock(ev);
+  if (t) { const time = el("span", "postal-time"); time.textContent = t; head.appendChild(time); }
+  card.appendChild(head);
+
+  const body = el("div", "postal-body md");
+  body.innerHTML = md(ev.body);
+  highlight(body);
+  card.appendChild(body);
+
+  turn.appendChild(card);
+  return turn;
+}
+
+// (statusline chips removed — working state shows the spinner, other states show
+//  on the tab outline; CHIP_LABEL is no longer needed.)
+
+function bgRgb(): [number, number, number] {
+  try {
+    const m = /(\d+)\D+(\d+)\D+(\d+)/.exec(getComputedStyle(document.body).backgroundColor || "");
+    if (m) return [+m[1], +m[2], +m[3]];
+  } catch { /* ignore */ }
+  return [30, 30, 30];
+}
+
+// Perceptual fade for an idle session's color: blend toward the background until
+// its luminance hits a uniform low target, so a bright hue (yellow) fades as much
+// as a dim one (blue) — consistent "faded-ness" regardless of color. Never
+// touches the bright color (only used for at-rest tabs).
+function fadedColor(hex: string): string {
+  const m = /^#?([0-9a-fA-F]{6})$/.exec(hex.trim());
+  if (!m) return hex;
+  const n = parseInt(m[1], 16);
+  const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+  const [br, bgc, bb] = bgRgb();
+  const lum = (x: number, y: number, z: number) => 0.2126 * x + 0.7152 * y + 0.0722 * z;
+  const Lc = lum(r, g, b), Lb = lum(br, bgc, bb), Lt = Lb + 38;
+  if (Lc <= Lt) return hex; // already dim — leave it
+  const t = Math.min(0.85, (Lc - Lt) / (Lc - Lb));
+  const hx = (a: number, c: number) => Math.round(a * (1 - t) + c * t).toString(16).padStart(2, "0");
+  return `#${hx(r, br)}${hx(g, bgc)}${hx(b, bb)}`;
+}
+
+// Tab display order mirrors the romp timeline's lanes: three tiers, each by
+// first-seen (launch) ascending. tier 0 = active live (within the last hour),
+// tier 1 = ended/closed, tier 2 = idle live (>1h quiet).
+function tierOf(s: Session): number {
+  if (s.status.state === "closed") return 1;
+  if (s.status.faded) return 2;
+  return 0;
+}
+// The shared, drag-set order (SID array) from the host — synced with the timeline.
+// Sessions listed here come first in that explicit order; the rest fall back to the
+// tier/first-seen default and append.
+let sharedOrder: string[] = [];
+function sortTabs() {
+  order.sort((a, b) => {
+    const ia = sharedOrder.indexOf(a), ib = sharedOrder.indexOf(b);
+    if (ia >= 0 || ib >= 0) {
+      if (ia >= 0 && ib >= 0) return ia - ib;     // both explicitly ordered
+      return ia >= 0 ? -1 : 1;                     // listed before unlisted
+    }
+    const sa = sessions.get(a), sb = sessions.get(b);
+    if (!sa || !sb) return 0;
+    const ta = tierOf(sa), tb = tierOf(sb);
+    if (ta !== tb) return ta - tb;
+    return (sa.firstSeen ?? 0) - (sb.firstSeen ?? 0); // oldest-launched first within a tier (Array.sort is stable)
+  });
+}
+// Persist the current full tab order to the shared store (host writes the file →
+// the timeline picks it up). Called after a drag.
+function commitTabOrder() {
+  sharedOrder = order.slice();
+  if (vscodeApi) vscodeApi.postMessage({ type: "reorderTabs", order: order.slice() });
+}
+// Apply a shared order pushed from the host (e.g. the timeline reordered it).
+function applyTabOrder(o: any) {
+  sharedOrder = Array.isArray(o) ? o.filter((x: any) => typeof x === "string") : [];
+  sortTabs();
+  renderTabs();
+}
+let draggedId: string | null = null;
+function reorderTo(dragId: string, targetId: string, after: boolean) {
+  const di = order.indexOf(dragId);
+  if (di < 0) return;
+  order.splice(di, 1);
+  const ti = order.indexOf(targetId);
+  if (ti < 0) order.push(dragId);
+  else order.splice(after ? ti + 1 : ti, 0, dragId);
+  commitTabOrder();
+  renderTabs();
+}
+
+function renderTabs() {
+  const bar = document.getElementById("tabs");
+  if (!bar) return;
+  bar.replaceChildren();
+  for (const id of order) {
+    const s = sessions.get(id);
+    if (!s) continue;
+    const tab = el("div", "tab" + (id === activeId ? " active" : ""));
+    tab.tabIndex = 0;            // focusable for keyboard nav
+    tab.dataset.id = id;
+    tab.addEventListener("keydown", onTabKey);
+    // drag-to-reorder (synced with the timeline via the shared session-order file)
+    tab.draggable = true;
+    tab.addEventListener("dragstart", (e) => { draggedId = id; if (e.dataTransfer) e.dataTransfer.effectAllowed = "move"; tab.classList.add("dragging"); });
+    tab.addEventListener("dragend", () => { draggedId = null; document.querySelectorAll(".tab.dragging,.tab.drop-before,.tab.drop-after").forEach((t) => t.classList.remove("dragging", "drop-before", "drop-after")); });
+    tab.addEventListener("dragover", (e) => {
+      if (!draggedId || draggedId === id) return;
+      e.preventDefault();
+      const r = tab.getBoundingClientRect();
+      const after = e.clientX > r.left + r.width / 2;
+      tab.classList.toggle("drop-after", after);
+      tab.classList.toggle("drop-before", !after);
+    });
+    tab.addEventListener("dragleave", () => tab.classList.remove("drop-before", "drop-after"));
+    tab.addEventListener("drop", (e) => {
+      tab.classList.remove("drop-before", "drop-after");
+      if (!draggedId || draggedId === id) return;
+      e.preventDefault();
+      const r = tab.getBoundingClientRect();
+      reorderTo(draggedId, id, e.clientX > r.left + r.width / 2);
+    });
+    if (s.color) {
+      tab.style.setProperty("--chip-bg", s.color.bg);
+      tab.style.setProperty("--chip-fg", s.color.fg);
+      tab.classList.add("colored");
+    }
+    const st = s.status.state;
+    if (st === "working") tab.classList.add("tab-working");
+    else if (st === "awaiting") tab.classList.add("tab-awaiting");
+    else if (st === "compacting") tab.classList.add("tab-compacting");
+    if (s.status.faded) tab.classList.add("at-rest");
+    // WORKING shows a yellow dot to the left of the name (not a yellow outline —
+    // the outline is now reserved for the SELECTED tab, in its identity color).
+    if (st === "working") tab.appendChild(el("span", "tab-dot"));
+    const label = el("span", "tab-label");
+    label.textContent = s.name;
+    if (s.status.faded && id !== activeId && s.color) {
+      const full = s.color.bg;
+      label.style.color = fadedColor(full);
+      // hover un-fades the name to its full (readable) identity color, reverting on leave
+      tab.addEventListener("mouseenter", () => { label.style.color = full; });
+      tab.addEventListener("mouseleave", () => { label.style.color = fadedColor(full); });
+    }
+    tab.appendChild(label);
+    const close = el("span", "tab-close");
+    close.textContent = "×";
+    close.title = "Close tab (or end the session)";
+    close.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (vscodeApi) vscodeApi.postMessage({ type: "closeSession", id });
+    });
+    tab.appendChild(close);
+    tab.addEventListener("click", () => setActive(id));
+    // double-click a tab to show/hide the ledger summary — same as the ▾/▸ button
+    tab.addEventListener("dblclick", (e) => { e.preventDefault(); toggleLedgerCollapsed(); });
+    bar.appendChild(tab);
+  }
+  const add = el("div", "tab tab-add");
+  add.textContent = "+";
+  add.title = "Open a session";
+  add.addEventListener("click", () => openPicker());
+  bar.appendChild(add);
+  // Collapse/expand the ledger summary (placed next to +, per the user).
+  const coll = el("div", "tab tab-collapse");
+  coll.textContent = ledgerCollapsed ? "▸" : "▾";
+  coll.title = ledgerCollapsed ? "Show session summary" : "Hide session summary";
+  coll.addEventListener("click", toggleLedgerCollapsed);
+  bar.appendChild(coll);
+}
+
+// Keyboard nav on a focused tab: ←/→ step prev/next; ↑/↓ jump to the nearest tab
+// in the row above/below (tabs wrap via flex-wrap).
+function onTabKey(e: KeyboardEvent) {
+  if (!activeId || !order.length) return;
+  if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
+    e.preventDefault();
+    const i = order.indexOf(activeId);
+    if (i < 0) return;
+    const dir = e.key === "ArrowRight" ? 1 : -1;
+    setActive(order[(i + dir + order.length) % order.length]);
+    focusActiveTab();
+  } else if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+    e.preventDefault();
+    const t = tabInAdjacentRow(activeId, e.key === "ArrowDown" ? 1 : -1);
+    if (t) { setActive(t); focusActiveTab(); }
+  }
+}
+function focusActiveTab() {
+  const bar = document.getElementById("tabs");
+  (bar?.querySelector(`.tab[data-id="${activeId}"]`) as HTMLElement | null)?.focus();
+}
+// Nearest tab in the row above (dir<0) or below (dir>0) the given tab, by column.
+function tabInAdjacentRow(id: string, dir: number): string | null {
+  const bar = document.getElementById("tabs");
+  const cur = bar?.querySelector(`.tab[data-id="${id}"]`) as HTMLElement | null;
+  if (!bar || !cur) return null;
+  const cr = cur.getBoundingClientRect();
+  const cx = cr.left + cr.width / 2;
+  let best: { id: string; score: number } | null = null;
+  for (const t of Array.from(bar.querySelectorAll(".tab[data-id]")) as HTMLElement[]) {
+    const r = t.getBoundingClientRect();
+    const vGap = dir < 0 ? cr.top - r.bottom : r.top - cr.bottom; // >0 only if on a row in that direction
+    if (vGap < -1) continue;
+    if ((dir < 0 && r.bottom > cr.top + 1) || (dir > 0 && r.top < cr.bottom - 1)) continue;
+    const score = Math.max(0, vGap) * 1000 + Math.abs(r.left + r.width / 2 - cx); // nearest row, then nearest column
+    if (!best || score < best.score) best = { id: t.dataset.id!, score };
+  }
+  return best?.id ?? null;
+}
+
+// ---- session picker overlay (colored, Claude-Code-history style) ----
+
+// When true, picking a row returns the selection to the extension (cross-ext
+// pickSession) instead of opening a tab. pickAllowNew adds a "New session…" row.
+let pickMode = false;
+let pickAllowNew = false;
+
+function openPicker(pick = false, prompt?: string, allowNew = false) {
+  pickMode = pick;
+  pickAllowNew = pick && allowNew;
+  let overlay = document.getElementById("picker");
+  if (!overlay) {
+    overlay = el("div", "picker-overlay"); overlay.id = "picker";
+    const box = el("div", "picker-box");
+    const search = el("input", "picker-search") as HTMLInputElement;
+    search.id = "picker-search";
+    search.placeholder = "Search sessions…";
+    search.spellcheck = false;
+    search.addEventListener("input", () => filterPicker(search.value));
+    const list = el("div", "picker-list"); list.id = "picker-list";
+    // hover and keyboard share one "active" row
+    list.addEventListener("mouseover", (e) => {
+      const row = (e.target as HTMLElement).closest(".picker-row");
+      if (row) setActiveRow(row as HTMLElement);
+    });
+    const actions = el("div", "picker-actions");
+    const newSess = el("button", "picker-action");
+    newSess.textContent = "✛ New session…";
+    newSess.title = "create a fresh romp session and open it as a tab";
+    newSess.addEventListener("click", () => {
+      if (vscodeApi) vscodeApi.postMessage({ type: "createSession" });
+      closePicker();
+    });
+    const openAll = el("button", "picker-action");
+    openAll.textContent = "↗ Open all running sessions";
+    openAll.addEventListener("click", () => {
+      if (vscodeApi) vscodeApi.postMessage({ type: "openAll" });
+      closePicker();
+    });
+    actions.appendChild(newSess);
+    actions.appendChild(openAll);
+    box.appendChild(search);
+    box.appendChild(list);
+    box.appendChild(actions);
+    overlay.appendChild(box);
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) closePicker(); });
+    document.body.appendChild(overlay);
+    document.addEventListener("keydown", pickerKey);
+  }
+  overlay.style.display = "flex";
+  const actions = overlay.querySelector(".picker-actions") as HTMLElement | null;
+  if (actions) actions.style.display = pick ? "none" : "";
+  const s = document.getElementById("picker-search") as HTMLInputElement | null;
+  if (s) { s.value = ""; s.placeholder = prompt || "Search sessions…"; s.focus(); }
+  if (vscodeApi) vscodeApi.postMessage({ type: "requestSessions" });
+}
+
+function closePicker() {
+  const o = document.getElementById("picker");
+  if (o) o.style.display = "none";
+  if (pickMode) {
+    if (vscodeApi) vscodeApi.postMessage({ type: "pickResult", id: null });
+    pickMode = false;
+  }
+}
+
+function pickerRows(): HTMLElement[] {
+  return Array.from(document.querySelectorAll("#picker-list .picker-row:not(.hidden)")) as HTMLElement[];
+}
+
+function setActiveRow(row: HTMLElement | null) {
+  document.querySelectorAll("#picker-list .picker-row.active").forEach((r) => r.classList.remove("active"));
+  if (row) { row.classList.add("active"); row.scrollIntoView({ block: "nearest" }); }
+}
+
+function moveActive(delta: number) {
+  const rows = pickerRows();
+  if (!rows.length) return;
+  const cur = rows.findIndex((r) => r.classList.contains("active"));
+  const next = cur < 0 ? (delta > 0 ? 0 : rows.length - 1) : (cur + delta + rows.length) % rows.length;
+  setActiveRow(rows[next]);
+}
+
+function pickerKey(e: KeyboardEvent) {
+  const o = document.getElementById("picker");
+  if (!o || o.style.display === "none") return;
+  if (e.key === "Escape") closePicker();
+  else if (e.key === "ArrowDown") { e.preventDefault(); moveActive(1); }
+  else if (e.key === "ArrowUp") { e.preventDefault(); moveActive(-1); }
+  else if (e.key === "Enter") {
+    e.preventDefault();
+    const active = document.querySelector("#picker-list .picker-row.active:not(.hidden)") as HTMLElement | null;
+    (active ?? pickerRows()[0])?.click();
+  }
+}
+
+function renderPicker(items: any[]) {
+  const list = document.getElementById("picker-list");
+  if (!list) return;
+  list.replaceChildren();
+  for (const it of items) {
+    const row = el("div", "picker-row" + (it.running ? " running" : ""));
+    row.dataset.search = (it.name + " " + (it.summary || "")).toLowerCase();
+    const top = el("div", "picker-row-top");
+    const name = el("span", "picker-name");
+    name.textContent = it.name;
+    if (it.color && it.color.bg) name.style.color = it.color.bg;
+    const time = el("span", "picker-time");
+    time.textContent = it.running ? "running" : it.time;
+    top.appendChild(name);
+    top.appendChild(time);
+    row.appendChild(top);
+    if (it.summary) {
+      const sum = el("div", "picker-summary");
+      sum.textContent = it.summary;
+      row.appendChild(sum);
+    }
+    row.addEventListener("click", () => {
+      if (pickMode) {
+        if (vscodeApi) vscodeApi.postMessage({ type: "pickResult", id: it.id, name: it.name });
+        pickMode = false; // so closePicker doesn't also post a cancel
+      } else if (vscodeApi) {
+        vscodeApi.postMessage({ type: "openSession", id: it.id });
+      }
+      closePicker();
+    });
+    list.appendChild(row);
+  }
+  if (pickAllowNew) {
+    const row = el("div", "picker-row picker-new");
+    row.dataset.search = "new session";
+    const top = el("div", "picker-row-top");
+    const label = el("span", "picker-name"); label.textContent = "+ New session…";
+    top.appendChild(label);
+    row.appendChild(top);
+    row.addEventListener("click", () => {
+      if (vscodeApi) vscodeApi.postMessage({ type: "pickResult", createNew: true });
+      pickMode = false;
+      closePicker();
+    });
+    list.appendChild(row);
+  }
+  setActiveRow(pickerRows()[0] ?? null); // highlight the first row so arrows/Enter work immediately
+}
+
+function filterPicker(q: string) {
+  const query = q.toLowerCase();
+  document.querySelectorAll("#picker-list .picker-row").forEach((r) => {
+    const row = r as HTMLElement;
+    const hit = !query || (row.dataset.search || "").includes(query);
+    row.classList.toggle("hidden", !hit);
+  });
+  setActiveRow(pickerRows()[0] ?? null); // keep the highlight on the top of the filtered list
+}
+
+function nearBottom(c: HTMLElement): boolean {
+  return c.scrollHeight - c.scrollTop - c.clientHeight < 80;
+}
+
+function cssEscape(s: string): string {
+  return typeof (window as any).CSS?.escape === "function" ? CSS.escape(s) : s.replace(/["\\]/g, "\\$&");
+}
+
+// Scroll the thread to the event carrying this source JSONL uuid (the deep-link
+// anchor) and flash it. Multiple events can share one line's uuid (a multi-block
+// assistant turn) — target the first. If it's not rendered yet, stash it as
+// pendingAnchor for the next render pass to retry.
+function scrollToAnchor(uuid: string): boolean {
+  if (!uuid) return false;
+  const v = activeId ? views.get(activeId) : null;
+  const target = v?.el.querySelector(`.turn[data-uuid="${cssEscape(uuid)}"]`) as HTMLElement | null;
+  if (!target) { pendingAnchor = uuid; landTrail.push("pointer-not-rendered"); return false; }
+  // KIND GUARD — the robust half of "title clicks always land on the user's
+  // instructions". Upstream producers substitute a reply uuid when the prompt
+  // line is off the active path (compaction orphans it), so a prompt-intent
+  // anchor can arrive pointing at an assistant turn. The uuid is checked
+  // against the rendered DOM here, the one place that can't be fooled: if the
+  // intent says "user" and the match isn't a user turn, refuse the uuid and
+  // let the time fallback (which is kind-restricted) take over. A landing may
+  // lose PRECISION, never KIND — regardless of which upstream hop lied.
+  if (pendingAnchorIntent === "user" && !target.classList.contains("turn-user")) {
+    pendingAnchor = null; pendingAnchorIntent = null; landTrail.push("pointer-wrong-kind"); return false;
+  }
+  pendingAnchor = null; pendingAnchorIntent = null;
+  landTrail.push("pointer-exact");
+  target.scrollIntoView({ block: "center", behavior: "auto" });
+  target.classList.add("anchor-flash");
+  setTimeout(() => target.classList.remove("anchor-flash"), 1700);
+  return true;
+}
+
+// Time-based anchor FALLBACK: when the uuid anchor can't resolve (orphaned by a
+// rewind, an id from another era, a bookkeeping line the chat doesn't render),
+// land on the turn nearest the moment instead of silently dumping to the bottom.
+// Skips thinking blocks, and PRESERVES INTENT: a prompt-intent click (kind
+// "user") restricts to the user's own turns first — a fallback may degrade the
+// PRECISION of a landing, never its KIND (the assistant-answer landing bug).
+function scrollToNearestT(t: number, kind?: string): boolean {
+  const v = activeId ? views.get(activeId) : null;
+  if (!v) return false;
+  const pick = (userOnly: boolean): { el: HTMLElement | null; d: number } => {
+    let best: HTMLElement | null = null, bestd = Infinity;
+    for (const elx of Array.from(v.el.querySelectorAll(".turn[data-t]")) as HTMLElement[]) {
+      if (elx.classList.contains("turn-thinking")) continue;
+      if (userOnly && !elx.classList.contains("turn-user")) continue;
+      const d = Math.abs(Number(elx.dataset.t) - t);
+      if (d < bestd) { bestd = d; best = elx; }
+    }
+    return { el: best, d: bestd };
+  };
+  const hit = pick(kind === "user");
+  // Prompt intent NEVER degrades to a non-user turn: every card is minted from
+  // a typed turn, so the nearest user turn IS the instruction (or a neighbor
+  // of it) — whereas "the adjacent assistant turn" is exactly the wrong-kind
+  // landing the guard upstream just refused. No user turn within the cap →
+  // honest default scroll beats a confident wrong landing.
+  if (!hit.el || hit.d > 6 * 3600) {               // nothing within 6h → not a real match
+    landTrail.push(!hit.el ? (kind === "user" ? "no-user-turns" : "no-turns") : `nearest-too-far-${Math.round(hit.d)}s`);
+    return false;
+  }
+  landTrail.push(`time-near-${Math.round(hit.d)}s`);
+  const best = hit.el;
+  best.scrollIntoView({ block: "center", behavior: "auto" });
+  best.classList.add("anchor-flash");
+  setTimeout(() => best.classList.remove("anchor-flash"), 1700);
+  return true;
+}
+
+// Transient bottom-center notice for DEGRADED deep-link landings only (see
+// the diagnostics block in showActive) — a bad jump announces itself instead
+// of impersonating a successful one.
+function landToast(msg: string) {
+  const t = el("div", "locate-toast");
+  t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(() => t.classList.add("fade"), 5200);
+  setTimeout(() => t.remove(), 6000);
+}
+
+// Trailing events to re-render on each sync, in case they mutated in place
+// (e.g. a tool's output arriving after its tool_use was first shown). Earlier
+// events are immutable in an append-only transcript, so they stay cached.
+const TAIL_RECHECK = 25;
+
+function ensureView(id: string): View {
+  let v = views.get(id);
+  if (!v) {
+    const content = document.getElementById("content");
+    const elv = el("div", "thread");
+    elv.dataset.session = id;
+    elv.style.display = "none";
+    content?.appendChild(elv);
+    v = { el: elv, rendered: 0, scrollTop: 0, stick: true, shown: false, stale: false };
+    views.set(id, v);
+  }
+  return v;
+}
+
+// Bring this view's DOM up to date with its session's events: append new ones
+// and re-render a bounded trailing window (cheap), or rebuild fully on a shrink
+// (rewind). Does NOT touch scroll. No-op cost when nothing changed is ~O(TAIL).
+function syncView(id: string): View {
+  const v = ensureView(id);
+  const s = sessions.get(id);
+  if (!s) return v;
+  const len = s.events.length;
+  let from: number;
+  if (len < v.rendered) from = 0;                                   // shrink/rewind → full rebuild
+  else if (v.stale) from = Math.min(v.rendered, lastTurnStart(s.events)); // updated while hidden → re-render the whole current turn
+  else from = Math.min(v.rendered, Math.max(0, len - TAIL_RECHECK)); // append + re-check a trailing window
+  v.stale = false;
+  while (v.el.childNodes.length > from) v.el.removeChild(v.el.lastChild as ChildNode);
+  for (let i = from; i < len; i++) {
+    // the previous TIMED event's epoch → lets renderEvent decide if the minute/day
+    // advanced (untimed events like todo/queued are skipped so the chain holds)
+    let prevEpoch: number | null = null;
+    for (let j = i - 1; j >= 0; j--) { const e = eventEpoch(s.events[j]); if (e != null) { prevEpoch = e; break; } }
+    v.el.appendChild(renderEvent(s.events[i], prevEpoch));
+  }
+  v.rendered = len;
+  return v;
+}
+
+// Index of the last human-prompt event = start of the current turn, where any
+// in-place mutations (a tool's output arriving, etc.) live. 0 if none.
+function lastTurnStart(events: ChatEvent[]): number {
+  for (let i = events.length - 1; i >= 0; i--) if (events[i].kind === "user") return i;
+  return 0;
+}
+
+// Show only the active session's (lazily built) view and set its scroll: a
+// deep-link anchor wins; else stick to bottom on first show / if it was left at
+// the bottom; else restore the saved position. Switching tabs never rebuilds —
+// the cached DOM is just revealed.
+// Tell the extension which tab is active, so it can publish it to the romp
+// timeline (which outlines the open lane). activeId may be null (no session).
+function notifyActive() {
+  if (vscodeApi) vscodeApi.postMessage({ type: "activeTab", id: activeId });
+}
+
+// Move id to the front of the recency stack (most-recently-active).
+function touchMru(id: string) {
+  const i = mru.indexOf(id);
+  if (i >= 0) mru.splice(i, 1);
+  mru.unshift(id);
+}
+
+function showActive() {
+  const content = document.getElementById("content");
+  if (!content) return;
+  notifyActive();
+  renderLedger();  // swap in the active session's digest box (or hide if none)
+  renderLiveAsk(); // swap in the active session's pending picker (or hide if none)
+  let empty = document.getElementById("empty-state");
+  const s = activeId ? sessions.get(activeId) : null;
+  if (!s) {
+    for (const v of views.values()) v.el.style.display = "none";
+    if (!empty) {
+      empty = el("div", "empty"); empty.id = "empty-state";
+      empty.textContent = "No session open — click + to add one.";
+      content.appendChild(empty);
+    } else { empty.style.display = ""; }
+    document.body.style.removeProperty("--active-accent"); // no session → neutral window border
+    updateStatusline();
+    return;
+  }
+  if (empty) empty.style.display = "none";
+  // tint the whole-window border with the active session's identity color
+  if (s.color && s.color.bg) document.body.style.setProperty("--active-accent", s.color.bg);
+  else document.body.style.removeProperty("--active-accent");
+  touchMru(activeId!); // record activation order so close returns to the previous tab
+  const v = syncView(activeId!);
+  for (const [vid, vv] of views) vv.el.style.display = vid === activeId ? "" : "none";
+  updateStatusline();
+  const att = { anchor: pendingAnchor, t: pendingAnchorT, kind: pendingAnchorKind };   // this pass's landing attempt, for diagnostics
+  if (att.anchor || att.t != null) landTrail = [];
+  let scrolled = pendingAnchor ? scrollToAnchor(pendingAnchor) : false;
+  // uuid anchor failed (or none) → time fallback; only then default scroll
+  if (!scrolled && pendingAnchorT != null) { scrolled = scrollToNearestT(pendingAnchorT, pendingAnchorKind ?? undefined); }
+  if (!scrolled) { pendingAnchor = null; pendingAnchorIntent = null; pendingAnchorT = null; pendingAnchorKind = null; } // give up, use default scroll
+  else { pendingAnchorT = null; pendingAnchorKind = null; }
+  // Diagnostics: log every landing attempt; surface the degraded ones. Toasts
+  // only fire when a time target existed (att.t) — a stale pointer-upgrade
+  // retry on a later tab switch has no target and must not cry wolf.
+  if (att.anchor || att.t != null) {
+    vscodeApi?.postMessage({
+      type: "locateDiag", id: activeId, ok: scrolled, trail: landTrail.slice(),
+      anchor: att.anchor ?? undefined, anchorT: att.t ?? undefined, kind: att.kind ?? undefined,
+    });
+    const near = landTrail.find((s) => s.startsWith("time-near-"));
+    const nearSec = near ? parseInt(near.slice(10), 10) : NaN;
+    if (att.t != null && !scrolled)
+      landToast("couldn't find that moment in this conversation — showing the latest instead (logged)");
+    else if (att.t != null && !landTrail.includes("pointer-exact") && (!near || nearSec > 120))
+      landToast("the exact line is gone from this conversation's active path (rewound or compacted) — landed nearby (logged)");
+  }
+  if (!scrolled) {
+    if (!v.shown || v.stick) content.scrollTop = content.scrollHeight;
+    else content.scrollTop = v.scrollTop;
+  }
+  v.shown = true;
+}
+
+// Live tail-append to the ACTIVE view, preserving stick-to-bottom.
+function appendActive() {
+  const content = document.getElementById("content");
+  if (!content || !activeId) { showActive(); return; }
+  const stick = nearBottom(content);
+  syncView(activeId);
+  updateStatusline();
+  if (stick) content.scrollTop = content.scrollHeight;
+}
+
+// ---- ledger box (rolling per-session digest, just below the tabs) ----
+
+function setLedger(id: string, ledger: Ledger | null) {
+  ledgers.set(id, ledger);
+  if (id === activeId) renderLedger();
+}
+
+function agehms(secs: number): string {
+  secs = Math.max(0, Math.floor(secs));
+  if (secs < 60) return `${secs}s`;
+  if (secs < 3600) return `${Math.floor(secs / 60)}m`;
+  if (secs < 86400) return `${Math.floor(secs / 3600)}h`;
+  return `${Math.floor(secs / 86400)}d`;
+}
+
+// The "(age)" label is colored by recency on the SHARED romp colormap (crameri
+// "hawaii": dark-magenta → orange → olive → green → teal → pale-cyan), log age
+// scale — these STOPS + age_rgb are kept identical to scripts/romp_colormap.py so
+// the ledger matches the terminal `romp -f` feed. The bullet TEXT stays at default
+// brightness; only the age label is colored.
+const STOPS: Array<[number, number, number]> = [
+  [140, 2, 115], [146, 46, 85], [151, 78, 62], [155, 111, 40], [156, 150, 28],
+  [137, 189, 74], [107, 212, 142], [103, 233, 213], [179, 242, 253],
+];
+function ramp(v: number): [number, number, number] {
+  v = Math.max(0, Math.min(1, v));
+  const x = v * (STOPS.length - 1), i = Math.floor(x), fr = x - i;
+  if (i >= STOPS.length - 1) return STOPS[STOPS.length - 1];
+  const a = STOPS[i], b = STOPS[i + 1];
+  return [Math.round(a[0] + (b[0] - a[0]) * fr), Math.round(a[1] + (b[1] - a[1]) * fr), Math.round(a[2] + (b[2] - a[2]) * fr)];
+}
+// recency → ramp position [0..1] (recent → 1, old → 0), shared log age scale.
+function recencyV(ageSecs: number): number {
+  const LO = 120, HI = 345600; // 2 min (brightest) .. 96 h (darkest) — matches romp_colormap.py FADE_HI
+  const a = Math.max(LO, Math.min(HI, ageSecs));
+  return 1.0 - (Math.log(a) - Math.log(LO)) / (Math.log(HI) - Math.log(LO));
+}
+function ageColor(ageSecs: number): string {
+  const c = ramp(recencyV(ageSecs));
+  return `rgb(${c[0]}, ${c[1]}, ${c[2]})`;
+}
+function rgbToHsl(r: number, g: number, b: number): [number, number, number] {
+  r /= 255; g /= 255; b /= 255;
+  const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
+  let h = 0; const l = (mx + mn) / 2;
+  const s = d === 0 ? 0 : l > 0.5 ? d / (2 - mx - mn) : d / (mx + mn);
+  if (d !== 0) {
+    if (mx === r) h = (g - b) / d + (g < b ? 6 : 0);
+    else if (mx === g) h = (b - r) / d + 2;
+    else h = (r - g) / d + 4;
+    h /= 6;
+  }
+  return [h, s, l];
+}
+function hslToRgb(h: number, s: number, l: number): [number, number, number] {
+  if (s === 0) { const v = Math.round(l * 255); return [v, v, v]; }
+  const q = l < 0.5 ? l * (1 + s) : l + s - l * s, p = 2 * l - q;
+  const hk = (t: number) => {
+    if (t < 0) t += 1; if (t > 1) t -= 1;
+    if (t < 1 / 6) return p + (q - p) * 6 * t;
+    if (t < 1 / 2) return q;
+    if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+    return p;
+  };
+  return [Math.round(hk(h + 1 / 3) * 255), Math.round(hk(h) * 255), Math.round(hk(h - 1 / 3) * 255)];
+}
+// Recency for the ledger: take the shared hawaii ramp color (same hue progression
+// as the terminal `romp -f` feed) but remap its LIGHTNESS into a legible band so
+// no bullet drops into the unreadable dark-magenta the raw ramp produces at the
+// old end. Brightness still carries recency as a secondary cue — recent bullets
+// are bright, oldest ones fade darker/muted — but the fade is floored (~L0.50) so
+// even the oldest stays readable on the dark panel. Hue carries recency too
+// (magenta = old → cyan = recent).
+function ageColorReadable(ageSecs: number): string {
+  const v = recencyV(ageSecs);             // 0 = oldest, 1 = most recent
+  const c = ramp(v);
+  const [h, s] = rgbToHsl(c[0], c[1], c[2]);
+  const L = 0.50 + 0.22 * v;               // oldest → 0.50 (faded), recent → 0.72 (bright)
+  const S = Math.max(0.4, s) * (0.65 + 0.35 * v); // mute the old end a touch; full vividness when recent
+  const o = hslToRgb(h, Math.min(1, S), L);
+  return `rgb(${o[0]}, ${o[1]}, ${o[2]})`;
+}
+
+// Collapse state for the ledger summary box (toggled from the tab bar, persisted
+// per-panel via the webview state so it survives reloads).
+let ledgerCollapsed = false;
+try { ledgerCollapsed = !!((vscodeApi && vscodeApi.getState && vscodeApi.getState()) || {}).ledgerCollapsed; } catch { /* ignore */ }
+function toggleLedgerCollapsed() {
+  ledgerCollapsed = !ledgerCollapsed;
+  try { if (vscodeApi && vscodeApi.setState) vscodeApi.setState({ ...(vscodeApi.getState() || {}), ledgerCollapsed }); } catch { /* ignore */ }
+  renderLedger();
+  renderTabs(); // refresh the ▾/▸ glyph
+}
+
+// (Relevance categorization — colored labels + filter checkboxes — was removed
+// from the ledger per the user; that lives in the FEED panel now. The ledger keeps
+// the plain newest-first bullets, no "·", live-refresh.)
+function renderLedger() {
+  const host = document.getElementById("ledger");
+  if (!host) return;
+  const l = activeId ? ledgers.get(activeId) : null;
+  if (ledgerCollapsed || !l || (!l.summary && !l.bullets.length)) { host.replaceChildren(); host.style.display = "none"; (host as any)._sig = ""; return; }
+  host.style.display = "";
+  const now = Date.now() / 1000;
+  // SAME content as last render (an interim host push, e.g. the session just worked)
+  // → DON'T tear the rows down: that would drop an in-progress hover (the fresh row
+  // gets no mouseenter under a stationary pointer). Only tick ages/colors in place.
+  const sig = (activeId || "") + "§" + (l.summary || "") + "‖" + l.bullets.slice(0, 8).map((b) => `${b.id || ""}:${b.t ?? ""}:${b.text}`).join("|");
+  if ((host as any)._sig === sig) { refreshLedgerAges(host, l, now); return; }
+  (host as any)._sig = sig;
+  host.replaceChildren();
+  if (l.summary) {
+    const sum = el("div", "ledger-summary");
+    sum.textContent = l.summary;
+    // Title inherits the NEWEST change's recency color (the top bullet's hue), not
+    // the session identity color — so the box's headline tracks how fresh its
+    // latest activity is. Falls back to the default fg if nothing is timestamped.
+    const newest = l.bullets.find((b) => b.t);
+    if (newest && newest.t) sum.style.color = ageColorReadable(now - newest.t);
+    host.appendChild(sum);
+  }
+  if (l.bullets.length) {
+    // Two left-aligned columns (CSS grid, col 1 = max-content so every text cell
+    // starts past the WIDEST timestamp): [ (X ago) ]  [ bullet text ]. No "·".
+    // age + text are direct grid cells (no row wrapper) so they share the grid.
+    const list = el("div", "ledger-bullets");
+    for (const b of l.bullets.slice(0, 8)) {
+      const col = b.t ? ageColorReadable(now - b.t) : ""; // recency hue, constant-lightness, legible
+      const row = el("div", "ledger-bullet" + (b.id ? " nav" : ""));   // a real row so it gets one clean hover bg + handlers
+      const age = el("span", "ledger-bullet-age");
+      age.textContent = b.t ? `${agehms(now - b.t)} ago` : ""; // empty cell keeps the column aligned
+      if (col) age.style.color = col;
+      const txt = el("span", "ledger-bullet-text");
+      txt.textContent = b.text;
+      if (col) txt.style.color = col;
+      row.append(age, txt);
+      if (b.id) wireBulletNav(row, b);   // hover → timeline highlight; click → locate (same as a feed row)
+      list.appendChild(row);
+    }
+    host.appendChild(list);
+  }
+}
+
+// Same-content tick: refresh the existing bullets' "Xm ago" ages + recency colors
+// in place (rows kept alive so a hover/click survives). Order matches bullets[0..8).
+function refreshLedgerAges(host: HTMLElement, l: Ledger, now: number) {
+  const bs = l.bullets.slice(0, 8);
+  const newest = l.bullets.find((b) => b.t);
+  const sum = host.querySelector(".ledger-summary") as HTMLElement | null;
+  if (sum && newest && newest.t) sum.style.color = ageColorReadable(now - newest.t);
+  host.querySelectorAll(".ledger-bullet").forEach((row, i) => {
+    const b = bs[i]; if (!b) return;
+    const col = b.t ? ageColorReadable(now - b.t) : "";
+    const age = row.querySelector(".ledger-bullet-age") as HTMLElement | null;
+    const txt = row.querySelector(".ledger-bullet-text") as HTMLElement | null;
+    if (age) { age.textContent = b.t ? `${agehms(now - b.t)} ago` : ""; if (col) age.style.color = col; }
+    if (txt && col) txt.style.color = col;
+  });
+}
+
+// Wire a ledger bullet exactly like a feed row: hover (120ms intent debounce) →
+// transient timeline highlight of the bullet's event; leave → clear; click →
+// locate (the host pans the timeline + opens the chat at that turn). The host
+// resolves b.id (the reply's romp-events id) → turn.
+function wireBulletNav(row: HTMLElement, b: LedgerBullet) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  row.title = "jump to this on the timeline";
+  row.addEventListener("mouseenter", () => {
+    timer = setTimeout(() => { timer = undefined; vscodeApi?.postMessage({ type: "ledgerHover", id: b.id }); }, 120);
+  });
+  row.addEventListener("mouseleave", () => {
+    if (timer) { clearTimeout(timer); timer = undefined; }
+    vscodeApi?.postMessage({ type: "ledgerHover", id: null });
+  });
+  row.addEventListener("click", () => {
+    vscodeApi?.postMessage({ type: "ledgerLocate", id: b.id, sid: b.sid, t: b.t });
+  });
+}
+
+// ---- live "awaiting your input" widgets (structured: radio / checkbox / submit / text) ----
+
+function setLiveAsk(id: string, ask: ParsedAsk | null) {
+  liveAsks.set(id, ask);
+  if (id === activeId) renderLiveAsk();
+}
+function clearLiveAsk(id: string) {
+  if (liveAsks.delete(id) && id === activeId) renderLiveAsk();
+}
+
+let sendingTimer: ReturnType<typeof setTimeout> | undefined;
+// Local UI highlight for the single-select card (↑/↓); the actual selection is the
+// delta send on confirm. Keyed so incidental re-posts of the same prompt keep it.
+let liveAskFocus = 0;
+let liveAskFocusKey = "";
+
+// Render the widget matching the active session's pending prompt; it takes over
+// the message box. single → radio rows, multi → checkboxes + Submit/Cancel,
+// submit → review + action buttons, null → free-text input.
+function renderLiveAsk() {
+  const host = document.getElementById("live-ask");
+  const footer = document.getElementById("footer");
+  if (!host) return;
+  host.replaceChildren();
+  host.classList.remove("sending");
+  if (sendingTimer) { clearTimeout(sendingTimer); sendingTimer = undefined; }
+  sendingGuard = false; // a fresh render = the previous action resolved; re-enable
+  const cur = activeId ? liveAsks.get(activeId) : undefined;
+  if (cur) liveTextValue = ""; // leaving the free-text field (a structured screen is up)
+  if (!activeId || !liveAsks.has(activeId)) {
+    host.style.display = "none";
+    liveTextValue = "";
+    if (footer) footer.style.display = ""; // restore the message box
+    return;
+  }
+  host.style.display = "";
+  if (footer) footer.style.display = "none"; // the prompt takes over the message box
+  const ask = liveAsks.get(activeId) ?? null;
+  if (!ask) renderUnknownCard();
+  else if (ask.kind === "multi") renderMultiCard(ask);
+  else if (ask.kind === "submit") renderSubmitCard(ask);
+  else renderSingleCard(ask);
+}
+
+function askCard(extraClass = ""): HTMLElement {
+  const card = el("div", "ask-card ask-live" + (extraClass ? " " + extraClass : ""));
+  document.getElementById("live-ask")!.appendChild(card);
+  return card;
+}
+function qline(card: HTMLElement, text?: string) {
+  if (text) { const qt = el("div", "ask-qtext"); qt.textContent = text; card.appendChild(qt); }
+}
+
+// SINGLE-select: clickable radio rows; ↑/↓ highlight, Enter/number confirm.
+function renderSingleCard(ask: ParsedAsk) {
+  const card = askCard();
+  qline(card, ask.question || ask.header);
+  const key = (activeId || "") + "§" + ask.options.map((o) => `${o.n}:${o.label}`).join("|");
+  if (key !== liveAskFocusKey) { liveAskFocusKey = key; const sel = ask.options.findIndex((o) => o.selected); liveAskFocus = sel >= 0 ? sel : 0; }
+  liveAskFocus = Math.max(0, Math.min(liveAskFocus, ask.options.length - 1));
+  ask.options.forEach((o, i) => {
+    const row = el("div", "ask-live-opt" + (i === liveAskFocus ? " focus" : ""));
+    const lab = el("span", "ask-optlabel"); lab.textContent = `${o.n}. ${o.label}`; row.appendChild(lab);
+    if (o.desc) { const d = el("span", "ask-optdesc"); d.textContent = o.desc; row.appendChild(d); }
+    row.addEventListener("click", () => answerLiveAsk(o.n));
+    row.addEventListener("mousemove", () => { if (liveAskFocus !== i) { liveAskFocus = i; paintLiveAskFocus(); } });
+    card.appendChild(row);
+  });
+  card.tabIndex = 0;
+  card.addEventListener("keydown", onSingleKey);
+  card.focus({ preventScroll: true });
+}
+
+// "Type something" is the inline free-text slot (handled by the +custom field);
+// "Chat about this" / "Submit" are TUI chrome, not selectable answers.
+function isTypeSomething(label: string): boolean { return /^\s*type something/i.test(label); }
+function isMetaOption(label: string): boolean { return /^\s*(type something|chat about|submit$)/i.test(label.trim()); }
+
+// MULTI-select: a real checkbox per real option, an inline "add your own" field
+// (drives the TUI's Type-something slot), and Submit / Cancel buttons.
+function renderMultiCard(ask: ParsedAsk) {
+  const card = askCard("ask-live-multi");
+  qline(card, ask.question || ask.header);
+  // A custom answer that's already been typed shows up as a normal checked option
+  // (its label is the text, no longer "Type something"), so it renders as a checkbox.
+  for (const o of ask.options) {
+    if (o.checked === undefined || isMetaOption(o.label)) continue;
+    const row = el("label", "ask-check");
+    const box = document.createElement("input"); box.type = "checkbox"; box.checked = !!o.checked;
+    box.addEventListener("change", () => toggleLiveAsk(o.n));
+    row.appendChild(box);
+    const lab = el("span", "ask-optlabel"); lab.textContent = o.label; row.appendChild(lab);
+    if (o.desc && o.desc.toLowerCase() !== "submit") { const d = el("span", "ask-optdesc"); d.textContent = o.desc; row.appendChild(d); }
+    card.appendChild(row);
+  }
+  // Inline custom-answer field — only while the TUI still offers a Type-something slot.
+  if (ask.options.some((o) => isTypeSomething(o.label))) {
+    const row = el("div", "ask-custom");
+    const plus = el("span", "ask-custom-plus"); plus.textContent = "+"; row.appendChild(plus);
+    const inp = document.createElement("input");
+    inp.type = "text"; inp.className = "ask-custom-input"; inp.placeholder = "add your own answer…";
+    inp.value = liveTextValue;
+    inp.addEventListener("input", () => { liveTextValue = inp.value; });
+    inp.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); const v = inp.value.trim(); if (v) addCustomLiveAsk(v); } });
+    row.appendChild(inp);
+    card.appendChild(row);
+  }
+  const actions = el("div", "ask-actions");
+  const submit = el("button", "ask-btn ask-btn-primary"); submit.textContent = "Submit"; submit.addEventListener("click", () => submitLiveAsk()); actions.appendChild(submit);
+  const cancel = el("button", "ask-btn"); cancel.textContent = "Cancel"; cancel.addEventListener("click", () => cancelLiveAsk()); actions.appendChild(cancel);
+  card.appendChild(actions);
+}
+
+// MULTI-select review screen: show chosen answers + the Submit answers / Cancel
+// options as buttons (each is just an option pick, reusing answerLiveAsk).
+function renderSubmitCard(ask: ParsedAsk) {
+  const card = askCard("ask-live-submit");
+  qline(card, ask.question);
+  const chosen = el("div", "ask-chosen");
+  chosen.textContent = ask.chosen && ask.chosen.length ? "Selected: " + ask.chosen.join(", ") : "(nothing selected)";
+  card.appendChild(chosen);
+  const actions = el("div", "ask-actions");
+  for (const o of ask.options) {
+    const b = el("button", "ask-btn" + (/submit/i.test(o.label) ? " ask-btn-primary" : ""));
+    b.textContent = o.label;
+    b.addEventListener("click", () => answerLiveAsk(o.n));
+    actions.appendChild(b);
+  }
+  card.appendChild(actions);
+}
+
+// Free-text (any unstructured awaiting screen): a text input. The value is held
+// in liveTextValue so a re-render (re-mirror) doesn't wipe what's been typed.
+let liveTextValue = "";
+// Safeguard: the session is awaiting input but the parser can't map the screen to
+// a known widget (an unrecognized prompt, a free-text editor, etc.). Warn loudly
+// so a prompt is never silently missed — and offer a best-effort text input in
+// case it IS a plain text prompt.
+function renderUnknownCard() {
+  const card = askCard("ask-live-unknown");
+  const warn = el("div", "ask-warn");
+  warn.textContent = "⚠ Waiting on a prompt the panel can’t read — answer it in the terminal.";
+  card.appendChild(warn);
+  const input = document.createElement("input");
+  input.type = "text"; input.className = "ask-text-input"; input.placeholder = "…or, if it’s a text prompt, type here + Enter";
+  input.value = liveTextValue;
+  input.addEventListener("input", () => { liveTextValue = input.value; });
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); const v = input.value.trim(); if (v) sendTextLiveAsk(v); }
+  });
+  card.appendChild(input);
+  const len = input.value.length; try { input.setSelectionRange(len, len); } catch { /* ignore */ }
+}
+
+function paintLiveAskFocus() {
+  const rows = document.querySelectorAll("#live-ask .ask-live-opt");
+  rows.forEach((r, i) => r.classList.toggle("focus", i === liveAskFocus));
+}
+
+// Single-select keyboard: ↑/↓ highlight, Enter confirms, number jumps to + confirms.
+function onSingleKey(e: KeyboardEvent) {
+  const ask = activeId ? liveAsks.get(activeId) : null;
+  if (!ask || ask.kind !== "single") return;
+  const n = ask.options.length;
+  if (e.key === "ArrowDown") { e.preventDefault(); liveAskFocus = (liveAskFocus + 1) % n; paintLiveAskFocus(); }
+  else if (e.key === "ArrowUp") { e.preventDefault(); liveAskFocus = (liveAskFocus - 1 + n) % n; paintLiveAskFocus(); }
+  else if (e.key === "Enter") { e.preventDefault(); answerLiveAsk(ask.options[liveAskFocus].n); }
+  else if (/^[1-9]$/.test(e.key)) {
+    const idx = ask.options.findIndex((o) => o.n === parseInt(e.key, 10));
+    if (idx >= 0) { liveAskFocus = idx; answerLiveAsk(ask.options[idx].n); }
+  }
+}
+
+// One terminal-bound action in flight at a time (prevents double-submit); a short
+// safety un-dim re-enables the card if a click aborted host-side (no-op) instead
+// of hanging dimmed. Reset on every re-render (a new screen = the action resolved).
+let sendingGuard = false;
+function dimSending() {
+  const host = document.getElementById("live-ask");
+  if (!host) return;
+  sendingGuard = true;
+  host.classList.add("sending");
+  if (sendingTimer) clearTimeout(sendingTimer);
+  sendingTimer = setTimeout(() => { host.classList.remove("sending"); sendingTimer = undefined; sendingGuard = false; }, 700);
+}
+function answerLiveAsk(target: number) {
+  if (!activeId || sendingGuard) return;
+  if (vscodeApi) vscodeApi.postMessage({ type: "answerAsk", id: activeId, target });
+  dimSending();
+}
+function toggleLiveAsk(target: number) { // optimistic; host toggles + re-mirrors. NOT guarded — rapid toggles allowed.
+  if (activeId && vscodeApi) vscodeApi.postMessage({ type: "toggleAsk", id: activeId, target });
+}
+function addCustomLiveAsk(text: string) { // fills the TUI's Type-something slot inline; re-mirror shows it as a checked option
+  if (activeId && vscodeApi) vscodeApi.postMessage({ type: "addCustomAsk", id: activeId, text });
+  liveTextValue = "";
+}
+function submitLiveAsk() {
+  if (!activeId || sendingGuard) return;
+  if (vscodeApi) vscodeApi.postMessage({ type: "submitAsk", id: activeId });
+  dimSending();
+}
+function cancelLiveAsk() {
+  if (!activeId || sendingGuard) return;
+  if (vscodeApi) vscodeApi.postMessage({ type: "cancelAsk", id: activeId });
+  dimSending();
+}
+function sendTextLiveAsk(text: string) {
+  if (!activeId || sendingGuard) return;
+  if (vscodeApi) vscodeApi.postMessage({ type: "askText", id: activeId, text });
+  liveTextValue = "";
+  dimSending();
+}
+
+// Animated Claude-Code-style "working" line (sparkle + rotating gerund).
+function elapsedMs(sinceMs: number | null): string {
+  if (!sinceMs) return "";
+  const s = Math.max(0, Math.floor((Date.now() - sinceMs) / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ${s % 60}s`;
+  return `${Math.floor(m / 60)}h ${m % 60}m`;
+}
+
+// Right side of the status line: "Opus 4.8 xhigh" (model + effort) — the context %
+// is shown separately as a battery bar (ctxBar). Sourced from the @claude-model /
+// @claude-effort / @claude-context tmux vars. Shown in EVERY state, not just working.
+function modelMetaText(st: Status): string {
+  return [st.model, st.effort].filter(Boolean).join(" ");
+}
+
+// Context "battery": a small bar that FILLS with the context-used %, recolors as it
+// fills (green → amber → red), with the % written inside. Replaces the plain "40%".
+function ctxBar(): HTMLElement {
+  const bar = el("span", "ctx-bar"); bar.id = "ctx-bar";
+  bar.appendChild(el("span", "ctx-fill"));
+  bar.appendChild(el("span", "ctx-text"));
+  return bar;
+}
+function setCtxBar(bar: HTMLElement, ctxStr: string | undefined) {
+  if (!ctxStr) { bar.style.display = "none"; return; }
+  bar.style.display = "";
+  const pct = Math.max(0, Math.min(100, parseInt(ctxStr, 10) || 0));
+  const fill = bar.querySelector(".ctx-fill") as HTMLElement | null;
+  const txt = bar.querySelector(".ctx-text") as HTMLElement | null;
+  if (fill) { fill.style.width = pct + "%"; fill.style.background = pct >= 85 ? "#c0392b" : pct >= 60 ? "#e0b020" : "#54B204"; }
+  if (txt) txt.textContent = pct + "%";
+  bar.title = `context ${pct}% used`;
+}
+
+const CHIP_LABEL: Record<ChipState, string> = {
+  working: "WORKING", ready: "READY", awaiting: "AWAITING",
+  idle: "IDLE", closed: "CLOSED", compacting: "COMPACTING",
+};
+
+function updateStatusline() {
+  const sl = document.getElementById("statusline");
+  const s = activeId ? sessions.get(activeId) : null;
+  if (!sl || !s) return;
+  sl.replaceChildren();
+  // Left: the state chip — WORKING gets a rainbow shimmer + elapsed timer; idle
+  // states get the plain chip (no timer). Right: model + effort · ctx%, always.
+  if (s.status.state === "working") {
+    // pill bg stays on the chip; the gradient text-clip lives on an inner span
+    // (background-clip:text on the chip itself would erase the pill background)
+    const chip = el("span", "chip chip-working");
+    const label = el("span", "chip-rainbow");
+    label.textContent = CHIP_LABEL.working;
+    chip.appendChild(label);
+    sl.appendChild(chip);
+    const timer = el("span", "status-timer");
+    timer.id = "work-timer";
+    timer.textContent = elapsedMs(s.status.sinceEpoch);
+    sl.appendChild(timer);
+  } else if (s.status.state === "compacting") {
+    const c = el("span", "compacting-line");
+    c.textContent = "⟳ Compacting context…";
+    sl.appendChild(c);
+  } else {
+    const chip = el("span", `chip chip-${s.status.state}`);
+    chip.textContent = CHIP_LABEL[s.status.state] ?? s.status.state.toUpperCase();
+    sl.appendChild(chip);
+  }
+  const meta = el("span", "spinner-meta");
+  meta.id = "spinner-meta";
+  meta.textContent = modelMetaText(s.status);
+  sl.appendChild(meta);
+  const bar = ctxBar();
+  setCtxBar(bar, s.status.ctx);
+  sl.appendChild(bar);
+}
+
+function setActive(id: string, anchor?: string, anchorT?: number, anchorKind?: string) {
+  if (activeId === id && anchor == null && anchorT == null) return; // already active, nothing to do
+  pendingAnchorT = anchorT ?? null;
+  pendingAnchorKind = anchorKind ?? null;
+  // Remember where we were in the tab we're leaving, so we can restore it.
+  const content = document.getElementById("content");
+  if (content && activeId && activeId !== id) {
+    const cur = views.get(activeId);
+    if (cur) { cur.scrollTop = content.scrollTop; cur.stick = nearBottom(content); }
+  }
+  pendingAnchor = anchor ?? null;
+  pendingAnchorIntent = anchor ? (anchorKind ?? null) : null;
+  activeId = id;
+  sortTabs(); // re-sort on switch — applies any tier change deferred while a tab was active
+  renderTabs();
+  showActive();
+}
+
+function cycleTab(dir: number) {
+  if (order.length < 2 || !activeId) return;
+  const i = order.indexOf(activeId);
+  if (i < 0) return;
+  setActive(order[(i + dir + order.length) % order.length]);
+}
+
+function upsert(msg: any) {
+  const existed = sessions.has(msg.id);
+  const prev = sessions.get(msg.id);
+  const s: Session = {
+    id: msg.id,
+    name: msg.name,
+    color: msg.color || null,
+    events: msg.events || (prev ? prev.events : []),
+    status: msg.status || (prev ? prev.status : { state: "idle", sinceEpoch: null }),
+    firstSeen: msg.firstSeen ?? (prev ? prev.firstSeen : undefined),
+  };
+  sessions.set(msg.id, s);
+  if ("ledger" in msg) ledgers.set(msg.id, msg.ledger ?? null);
+  if (!existed) order.push(msg.id);
+  if (!activeId) activeId = msg.id;
+  sortTabs();
+  renderTabs();
+  if (msg.id === activeId) showActive();
+  // A non-active session's view is left to sync lazily when it's next shown.
+}
+
+function update(msg: any) {
+  const s = sessions.get(msg.id);
+  if (!s) return;
+  s.events = msg.events || s.events;
+  s.status = msg.status || s.status;
+  if (msg.id !== activeId) sortTabs(); // re-sort on a non-active tier change; defer the active tab so it won't jump mid-read
+  renderTabs();
+  if (msg.id === activeId) {
+    appendActive();
+    renderLedger(); // refresh the summary box (ages + any new items) as the active session works
+  } else {
+    const v = views.get(msg.id);
+    if (v) v.stale = true; // re-render its current turn when it's next shown
+  }
+}
+
+function statusOnly(msg: any) {
+  const s = sessions.get(msg.id);
+  if (!s) return;
+  s.status = msg.status || s.status;
+  if (msg.id !== activeId) sortTabs(); // tier change on a non-active tab can re-order; active tab deferred
+  renderTabs();
+  if (msg.id === activeId) updateStatusline();
+}
+
+window.addEventListener("message", (e: MessageEvent) => {
+  const m = e.data;
+  if (!m) return;
+  if (m.type === "session") upsert(m);
+  else if (m.type === "update") update(m);
+  else if (m.type === "status") statusOnly(m);
+  else if (m.type === "focus") setActive(m.id, m.anchor, typeof m.anchorT === "number" ? m.anchorT : undefined, typeof m.anchorKind === "string" ? m.anchorKind : undefined);
+  else if (m.type === "nextTab") cycleTab(1);
+  else if (m.type === "prevTab") cycleTab(-1);
+  else if (m.type === "sessionList") renderPicker(m.items || []);
+  else if (m.type === "openPicker") openPicker(!!m.pick, m.prompt, !!m.allowNew);
+  else if (m.type === "focusComposer") { const ta = document.getElementById("composer-input") as HTMLTextAreaElement | null; ta?.focus(); }
+  else if (m.type === "askLive") setLiveAsk(m.id, m.ask ?? null);
+  else if (m.type === "askLiveClear") clearLiveAsk(m.id);
+  else if (m.type === "ledger") setLedger(m.id, m.ledger ?? null);
+  else if (m.type === "working") { workingSet = new Set(Array.isArray(m.names) ? m.names : []); refreshPostalDots(); }
+  else if (m.type === "imgData" && typeof m.path === "string") onImgData(m.path, typeof m.url === "string" ? m.url : null);
+  else if (m.type === "tabOrder") applyTabOrder(m.order);
+  else if (m.type === "closed") {
+    sessions.delete(m.id);
+    liveAsks.delete(m.id);
+    ledgers.delete(m.id);
+    const v = views.get(m.id);
+    if (v) { v.el.remove(); views.delete(m.id); }
+    const oi = order.indexOf(m.id); if (oi >= 0) order.splice(oi, 1);
+    const mi = mru.indexOf(m.id); if (mi >= 0) mru.splice(mi, 1);
+    sortTabs();
+    renderTabs();
+    if (activeId === m.id) {
+      activeId = mru[0] || null; // MRU: return to the previously-active tab, not the positional neighbor
+      showActive();
+    }
+  }
+});
+
+// Tick the working timer (the rainbow shimmer is pure CSS) and keep the model/ctx
+// meta fresh as status updates land.
+setInterval(() => {
+  const s = activeId ? sessions.get(activeId) : null;
+  if (!s) return;
+  if (s.status.state === "working") {
+    const timer = document.getElementById("work-timer");
+    if (timer) timer.textContent = elapsedMs(s.status.sinceEpoch);
+    else updateStatusline();
+  }
+  const meta = document.getElementById("spinner-meta");
+  if (meta) meta.textContent = modelMetaText(s.status);
+  const bar = document.getElementById("ctx-bar");
+  if (bar) setCtxBar(bar, s.status.ctx);
+}, 1000);
+
+// the last message we delivered per session — so a Ctrl+C interrupt can put it back
+// in the box, mirroring Claude Code (which restores the in-flight prompt on Esc).
+const lastSent = new Map<string, string>();
+let interruptFlashT: number | undefined;
+function flashInterrupted(ta: HTMLTextAreaElement) {
+  ta.classList.add("interrupted-flash");
+  if (interruptFlashT) window.clearTimeout(interruptFlashT);
+  interruptFlashT = window.setTimeout(() => ta.classList.remove("interrupted-flash"), 650);
+}
+function growComposer(ta: HTMLTextAreaElement) {
+  ta.style.height = "auto";
+  ta.style.height = Math.min(ta.scrollHeight, 120) + "px";
+}
+
+// Composer: Enter sends the message to the active session as its next prompt,
+// Shift+Enter inserts a newline; the box auto-grows a few lines.
+function setupComposer() {
+  const ta = document.getElementById("composer-input") as HTMLTextAreaElement | null;
+  if (!ta) return;
+  ta.addEventListener("keydown", (e) => {
+    // Ctrl+C = terminal-style interrupt of the active session (Control, not Cmd — on
+    // macOS copy is Cmd+C, so this never collides with copy). The host sends Esc to
+    // the pane; here we mirror Claude Code's UI: flash a cue, and drop the just-sent
+    // prompt back into the (empty) box so you can edit and resend.
+    if (e.ctrlKey && !e.metaKey && (e.key === "c" || e.key === "C")) {
+      e.preventDefault();
+      if (!activeId || !vscodeApi) return;
+      vscodeApi.postMessage({ type: "interrupt", id: activeId });
+      const restore = lastSent.get(activeId);
+      if (restore && !ta.value.trim()) { ta.value = restore; growComposer(ta); }
+      lastSent.delete(activeId);
+      flashInterrupted(ta);
+      return;
+    }
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      const text = ta.value.trim();
+      if (!text || !activeId) return;
+      lastSent.set(activeId, text);   // remembered for a possible Ctrl+C restore
+      if (vscodeApi) vscodeApi.postMessage({ type: "sendMessage", id: activeId, text });
+      ta.value = "";
+      ta.style.height = "";
+    }
+  });
+  ta.addEventListener("input", () => growComposer(ta));
+}
+
+// Day/month names for the timeline-rail time markers (see timeMarker()).
+const WEEKDAY = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const MONTH = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+setupComposer();
+if (vscodeApi) vscodeApi.postMessage({ type: "ready" });

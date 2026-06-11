@@ -1,0 +1,403 @@
+/* romp feed — a stream of rounded "deliverable cards" floating on a darker
+   background. Shares the romp panel's theme-variable palette (see styles.css). */
+
+:root {
+  --bg: var(--vscode-editor-background, #1e1e1e);
+  --fg: var(--vscode-foreground, #cccccc);
+  --dim: var(--vscode-descriptionForeground, #9a9a9a);
+  --green: #74c991;
+
+  /* Card background + border are set inline per card (the hawaii recency tint).
+     These neutral tokens are for the chrome that frames them (header, detail box,
+     day rules, toggle buttons). */
+  --card-border: rgba(255, 255, 255, 0.10);
+  --detail-bg: rgba(255, 255, 255, 0.05);
+
+  /* Relevance category colors — single source, the CLASSIC identity-palette hexes
+     (same as scripts/romp / the Vault section-palette). Categorical, NOT the hawaii
+     recency ramp (which encodes time). Used by BOTH the header filter badges and
+     the per-card labels. */
+  --rel-done: #54B204;       /* classic green */
+  --rel-decision: #1EA1EB;   /* classic blue */
+  --rel-action: #E0A030;     /* amber — a to-do the user must DO (vs decide) */
+  --rel-details: var(--dim); /* already theme-consistent */
+
+  --sans: var(--vscode-chat-font-family, var(--vscode-font-family, system-ui, -apple-system, "Segoe UI", sans-serif));
+  --fs: var(--vscode-chat-font-size, 13px);
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0; padding: 0; height: 100%;
+  background: var(--bg); color: var(--fg);
+  font-family: var(--sans); font-size: var(--fs); line-height: 1.5;
+}
+body { display: flex; flex-direction: column; }
+
+/* ---------- header ---------- */
+/* header bar removed per the user — the columns are self-labeling */
+#feed-head { display: none; }
+.fh-title { font-weight: 600; }
+.fh-meta { color: var(--dim); font-size: 0.9em; }
+.fh-live { color: var(--green); }
+.fh-spacer { flex: 1 1 auto; }
+.fh-toggle {
+  font: inherit; font-size: 0.82em; color: var(--dim);
+  background: transparent; border: 1px solid var(--card-border);
+  border-radius: 6px; padding: 2px 9px; cursor: pointer;
+}
+.fh-toggle:hover { color: var(--fg); }
+.fh-toggle.on { color: var(--fg); border-color: var(--fg); background: rgba(255, 255, 255, 0.08); }
+
+/* relevance filter badges — colored per class; click toggles that class off
+   (dimmed + struck) */
+.fh-rel { display: flex; gap: 5px; }
+.fh-chip {
+  font: inherit; font-size: 0.78em; cursor: pointer;
+  background: transparent; border: 1px solid currentColor; border-radius: 999px;
+  padding: 1px 9px; opacity: 0.95;
+}
+.fh-chip.off { opacity: 0.4; text-decoration: line-through; }
+
+/* per-card relevance label */
+.frel {
+  flex: 0 0 auto; font-size: 0.64em; font-weight: 700; letter-spacing: 0.05em;
+  padding: 1px 6px; border-radius: 999px; border: 1px solid currentColor;
+  text-transform: uppercase; opacity: 0.9; line-height: 1.4;
+}
+/* relevance colors — single source (the --rel-* vars), used by chip + label */
+.fh-chip.rel-DONE,     .frel.rel-DONE     { color: var(--rel-done); }
+.fh-chip.rel-DECISION, .frel.rel-DECISION { color: var(--rel-decision); }
+.fh-chip.rel-DETAILS,  .frel.rel-DETAILS  { color: var(--rel-details); }
+/* origin chip — agent-prompted ("internal") items, off (struck) by default */
+.fh-chip.origin                           { color: var(--dim); }
+
+/* ---------- asks mode (the open-asks inbox) ---------- */
+/* tally chips on an ask card — evidence from the linked work, not state */
+.ftally { display: inline-flex; gap: 6px; align-items: baseline; }
+.ftally-chip {
+  font-size: 0.68em; font-weight: 700; letter-spacing: 0.04em;
+  padding: 1px 7px; border-radius: 999px; border: 1px solid currentColor;
+  line-height: 1.4; white-space: nowrap;
+}
+.ftally-chip.done { color: var(--rel-done); }
+.ftally-chip.dec  { color: var(--rel-decision); }
+.ftally-chip.none { color: var(--dim); border-style: dashed; opacity: 0.75; }
+
+/* linked-work rows inside an expanded ask */
+.flinked { display: flex; gap: 8px; align-items: baseline; margin: 5px 0; }
+.flinked-did { flex: 1 1 auto; min-width: 0; word-break: break-word; }
+/* a linked-work row that navigates on click (jump to it on the timeline) */
+.flinked.nav { cursor: pointer; border-radius: 6px; padding: 3px 6px; margin: 2px -6px; transition: background 0.1s ease; }
+.flinked.nav:hover { background: rgba(255, 255, 255, 0.07); }
+/* status marker — done ✓ (green) / question ? (amber) / update · (dim), so the
+   linked work says what's finished vs what needs the user at a glance */
+.flinked-mark { flex: 0 0 auto; width: 1.1em; text-align: center; font-weight: 700; }
+.flinked.st-done .flinked-mark { color: var(--rel-done); }
+.flinked.st-question .flinked-mark { color: #e0b020; }
+.flinked.st-question .flinked-did { color: #e0b020; }     /* the actionable one stands out */
+.flinked.st-update { opacity: 0.62; }
+.flinked.st-update .flinked-mark { color: var(--dim); }
+
+/* ---------- scrolling card column ---------- */
+#feed-list {
+  flex: 1 1 auto; overflow-y: auto; overflow-x: hidden;
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 12px 12px 28px;
+  container-type: inline-size;   /* so the columns can stack responsively (see @container below) */
+}
+.feed-empty { color: var(--dim); padding: 28px 14px; text-align: center; }
+
+/* ---------- two columns: Done (left) | In progress (right) ---------- */
+.feed-cols { display: flex; align-items: flex-start; gap: 12px; }
+.feed-col { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; }
+.feed-col-head {
+  position: sticky; top: -12px; z-index: 3;
+  display: flex; align-items: baseline; gap: 7px;
+  padding: 2px 2px 7px;
+  font-size: 0.72em; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase;
+  color: var(--dim); background: var(--bg);
+}
+.feed-col-count { font-weight: 600; opacity: 0.7; }
+.feed-col-list { display: flex; flex-direction: column; gap: 8px; min-height: 8px; }
+.feed-col-empty { color: var(--dim); opacity: 0.4; text-align: center; padding: 14px 0; }
+/* column header accents matching the session-chip state colors (the user's ruling
+   2026-06-10): AWAITING = the awaiting-chip red (#c0392b — something needs him,
+   same meaning as a session awaiting him); COMPLETED = the ready-chip blue
+   (#2b7fb8 — finished work puts things back in a ready state). Values mirror
+   --st-awaiting-bg / --st-ready-bg in styles.css (separate webview, no shared
+   :root). Asks stays neutral. */
+.col-needsInput .feed-col-head { color: #c0392b; }
+.col-completed  .feed-col-head { color: #2b7fb8; }
+
+/* responsive: stack the three columns when the panel is too narrow for them to
+   sit side by side — prevents thin columns that break words mid-word ("Shippe/d") */
+@container (max-width: 540px) {
+  .feed-cols { flex-direction: column; }
+}
+
+/* ---------- ask card (the inbox unit): two rows ---------- */
+/* row 1 — ask title (hit-area fits its TEXT, not the row) + age top-right. The
+   title must NOT flex-grow, else clicking blank space right of it triggers locate
+   (the user's hover hit-area bug); the empty space is card body → opens the modal. */
+.fask-row1 { display: flex; align-items: baseline; gap: 10px; }
+.fask-row1 .fcard-title { flex: 0 1 auto; min-width: 0; }
+.fask-row1 .ftime { flex: 0 0 auto; margin-left: auto; }
+/* row 2 — agent (hit-area fits its name) on the left, [reopened?] [Clear] right */
+.fask-row2 { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+.fask-id { flex: 0 1 auto; min-width: 0; display: flex; align-items: baseline; gap: 6px; }
+.fask-id .fname { flex: 0 1 auto; }   /* the link sizes to its text */
+.fask-actions { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; margin-left: auto; }
+/* card body is clickable (single → modal, double → pin). Hover lights a white
+   ring + the timeline journey; pin persists it. Order matters: .focused after
+   .pinned so a pinned-AND-focused card shows the bright ring. */
+.fitem.ask { cursor: pointer; }
+.fitem.ask.pinned { box-shadow: 0 0 0 1.5px rgba(255, 255, 255, 0.45), 0 1px 2px rgba(0, 0, 0, 0.2); }   /* pinned: faint persistent ring */
+.fitem.ask.focused { box-shadow: 0 0 0 2px #fff, 0 1px 2px rgba(0, 0, 0, 0.2); }                          /* effective focus: bright white ring */
+.ask .ftally { color: var(--dim); font-size: 0.85em; }
+.ask .ftally.none { opacity: 0.7; font-style: italic; }
+
+/* decision sub-card — an OPEN question needing the user, rendered in the ask card */
+.fask-questions { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+.fq { border: 1px solid rgba(30, 161, 235, 0.4); border-left: 3px solid var(--rel-decision); border-radius: 8px; padding: 8px 10px; background: rgba(30, 161, 235, 0.07); }
+.fq-context { font-size: 0.85em; color: var(--dim); line-height: 1.45; margin-bottom: 5px; }
+.fq-question { font-weight: 600; line-height: 1.4; margin-bottom: 7px; }
+.fq-opts { display: flex; flex-direction: column; gap: 5px; margin-bottom: 7px; }
+.fq-opt { font: inherit; font-size: 0.86em; cursor: pointer; text-align: left; color: var(--fg);
+  background: rgba(255, 255, 255, 0.06); border: 1px solid var(--card-border); border-radius: 6px; padding: 5px 10px; }
+.fq-opt:hover { border-color: var(--rel-decision); background: rgba(30, 161, 235, 0.16); }
+.fq-form { display: flex; gap: 6px; }
+.fq-input { flex: 1 1 auto; min-width: 0; font: inherit; font-size: 0.88em; outline: none;
+  background: var(--vscode-input-background, rgba(255, 255, 255, 0.05)); color: var(--fg);
+  border: 1px solid var(--card-border); border-radius: 6px; padding: 5px 8px; }
+/* action (to-do) card: amber accent instead of decision-blue; ☐ glyph on the task
+   line; the "✓ Done — I did it" button greens on hover (it's a check-off). */
+.fq.fq-action { border-color: rgba(224, 160, 48, 0.4); border-left-color: var(--rel-action); background: rgba(224, 160, 48, 0.08); }
+.fq-todo-box { color: var(--rel-action); font-weight: 700; margin-right: 6px; }
+.fq-send.fq-done:hover { border-color: var(--rel-done); color: var(--rel-done); }
+.fq-send { flex: 0 0 auto; font: inherit; font-size: 0.85em; cursor: pointer; color: var(--fg);
+  background: rgba(255, 255, 255, 0.08); border: 1px solid var(--card-border); border-radius: 6px; padding: 5px 12px; }
+.fq-send:hover { border-color: var(--rel-decision); }
+/* "didn't need me" — the false-awaiting teaching dismissal */
+.fq-notneeded { display: inline-block; margin-top: 6px; font-size: 0.8em; color: var(--dim); cursor: pointer; }
+.fq-notneeded:hover { color: var(--fg); text-decoration: underline; text-underline-offset: 2px; }
+
+/* drop-point lines on an asks-column card: where the work is currently parked */
+.fask-paths { display: flex; flex-direction: column; gap: 2px; margin-top: 6px; }
+.fpath { font-size: 0.82em; color: var(--dim); opacity: 0.85; }
+
+/* "reopened" badge — a cleared ask resurrected by a new question */
+.fask-reopened { flex: 0 0 auto; font-size: 0.64em; font-weight: 700; letter-spacing: 0.04em;
+  text-transform: uppercase; padding: 1px 6px; border-radius: 999px; line-height: 1.4;
+  color: #e0b020; border: 1px solid rgba(224, 176, 32, 0.6); }
+
+/* ---- ask DAG tree (expanded body) — nodes only; click a node for its history ---- */
+.fexpand-slot { position: relative; }
+.ftree-fs { position: absolute; top: 4px; right: 2px; z-index: 1; font: inherit; line-height: 1; cursor: pointer;
+  color: var(--dim); background: transparent; border: 1px solid var(--card-border); border-radius: 5px; padding: 2px 7px; }
+.ftree-fs:hover { color: var(--fg); border-color: var(--fg); }
+.ftree { margin-top: 8px; font-size: 0.9em; line-height: 1.5; }
+/* hierarchy via indentation only (paddingLeft set inline per depth) */
+.ftree-node, .frow { display: flex; align-items: baseline; gap: 6px; border-radius: 5px; padding: 1px 4px; }
+.ftree-node.nav, .frow.nav { cursor: pointer; }
+.ftree-node.nav:hover, .frow.nav:hover { background: rgba(255, 255, 255, 0.06); }
+/* disclosure triangle (▶/▼) before the mark; .empty = blank spacer, keeps alignment.
+   .nav = expandable: the triangle is the ONLY toggle (the line itself navigates). */
+.ftree-tri { flex: 0 0 auto; width: 1em; text-align: center; color: var(--dim); font-size: 0.74em; }
+.ftree-tri.nav { cursor: pointer; }
+.ftree-tri.nav:hover { color: var(--fg); }
+.ftree-mark, .frow-mark { flex: 0 0 auto; width: 1.1em; text-align: center; font-weight: 700; }
+/* every report that arrived is a completed sub-thing → filled green dot;
+   the report that IS the open question keeps its ? */
+.frow .frow-mark { color: var(--rel-done); }
+.frow.st-question .frow-mark, .frow.st-question .flinked-did { color: #e0b020; }
+.ftree-text, .flinked-did { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+/* agent label in the tree = bold colored session link (color set inline) */
+.ftree-who { flex: 0 0 auto; font-size: 0.92em; font-weight: 600; color: var(--dim); cursor: pointer; text-decoration: none; }
+.ftree-who:hover { text-decoration: underline; text-underline-offset: 2px; }
+/* working dot before a handed-to agent's name (it's live-working on this) */
+.ftree-who-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: #e0b020; vertical-align: middle; margin: 0 4px 1px 1px; }
+/* working dot before any session name on a card / modal title (live-working) */
+/* margin-right is negative to offset the .fask-id flex gap (6px) → the dot sits
+   snug against the name (~3px), not floating ~11px away (the user 2026-06-10) */
+.fwork-dot { display: inline-block; flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: #e0b020; vertical-align: middle; margin-right: -3px; }
+.ftree-meta { flex: 0 0 auto; margin-left: 6px; color: var(--dim); font-size: 0.82em; white-space: nowrap; }
+.st-done .ftree-mark { color: var(--rel-done); }
+.st-question .ftree-mark, .st-question .ftree-meta { color: #e0b020; }
+.st-open .ftree-mark { color: var(--dim); }
+/* drop-point fix: the user adjudicates a stale leaf done (writes a correction) */
+.ftree-fix { flex: 0 0 auto; margin-left: 8px; font-size: 0.8em; color: var(--dim); cursor: pointer; }
+.ftree-fix:hover { color: var(--rel-done); text-decoration: underline; text-underline-offset: 2px; }
+.ftree-node.repeat { opacity: 0.5; }
+.fq-wrap { margin: 5px 0; }
+
+/* grouped sibling-asks card: a member line per sub-ask under the title, each with
+   a status circle (● done / ? needs you / ○ not finished) that fills in over time */
+.fgroup-count { color: var(--dim); font-size: 0.85em; margin-left: 6px; }
+.fgroup-members { display: flex; flex-direction: column; gap: 3px; margin-top: 7px; }
+.fgroup-member { display: flex; align-items: baseline; gap: 7px; font-size: 0.92em; line-height: 1.35; }
+.fgroup-dot { flex: 0 0 auto; width: 1.1em; text-align: center; font-weight: 700; }
+.fgroup-member.st-done .fgroup-dot { color: var(--rel-done); }
+.fgroup-member.st-question .fgroup-dot { color: #e0b020; }
+.fgroup-member.st-open .fgroup-dot { color: var(--dim); }
+/* completed marker = a filled green disc with a white ✓ (the user: distinct from a plain
+   dot, which other states + recency tints also use). One badge for EVERY "done" mark
+   in the feed, matching the chat transcript's .dot.green. */
+.st-done .ftree-mark, .frow:not(.st-question) .frow-mark, .fgroup-member.st-done .fgroup-dot, .flinked.st-done .flinked-mark {
+  align-self: center; box-sizing: border-box;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 13px; height: 13px; min-width: 13px; border-radius: 50%;
+  background: var(--rel-done); color: transparent; font-size: 0;
+}
+.st-done .ftree-mark::before, .frow:not(.st-question) .frow-mark::before, .fgroup-member.st-done .fgroup-dot::before, .flinked.st-done .flinked-mark::before {
+  content: "✓"; font-size: 9px; font-weight: 900; line-height: 1; color: #fff;
+}
+.fgroup-member.st-question .fgroup-mtext { color: #e0b020; }   /* the actionable sub-ask stands out */
+.fgroup-mtext { color: var(--fg); flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+/* group modal: each member's tree stacked, separated by a faint rule */
+.fgroup-modal-member { padding: 9px 0; }
+.fgroup-modal-member:first-child { padding-top: 0; }
+.fgroup-modal-member + .fgroup-modal-member { border-top: 1px solid rgba(255, 255, 255, 0.08); }
+
+/* ⛶ full-screen tree modal (deep hierarchies) */
+#feed-modal { position: fixed; inset: 0; z-index: 100; background: rgba(0, 0, 0, 0.55);
+  display: flex; align-items: center; justify-content: center; padding: 4vh 4vw; }
+.feed-modal-inner { display: flex; flex-direction: column; width: 100%; max-width: 1280px; max-height: 92vh;
+  background: var(--bg); border: 1px solid var(--card-border); border-radius: 12px; overflow: hidden; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5); }
+.feed-modal-head { display: flex; align-items: baseline; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--card-border); }
+.feed-modal-title { flex: 1 1 auto; min-width: 0; font-weight: 600; overflow-wrap: anywhere; }
+/* the modal title is a locate link, same affordance as the card title */
+.feed-modal-title.nav { cursor: pointer; }
+.feed-modal-title.nav:hover { text-decoration: underline; text-underline-offset: 2px; }
+.feed-modal-agent { flex: 0 0 auto; font-weight: 600; cursor: pointer; text-decoration: none; }
+.feed-modal-agent:hover { text-decoration: underline; }
+.feed-modal-age { flex: 0 0 auto; color: var(--dim); font-size: 0.85em; }
+.feed-modal-clear { flex: 0 0 auto; }
+.feed-modal-close { flex: 0 0 auto; font: inherit; font-size: 1.1em; cursor: pointer; color: var(--dim); background: transparent; border: none; align-self: center; }
+.feed-modal-close:hover { color: var(--fg); }
+.feed-modal-body { flex: 1 1 auto; overflow: auto; padding: 14px 18px; }
+
+/* header "N need you" headline number */
+.fh-need { font-weight: 700; color: var(--rel-decision); }
+
+.feed-day {
+  position: sticky; top: -12px; z-index: 2;
+  margin: 6px 0 -2px; padding: 4px 4px;
+  font-size: 0.72em; font-weight: 700; letter-spacing: 0.07em;
+  text-transform: uppercase; color: var(--dim);
+  background: var(--bg);
+}
+
+/* ---------- a deliverable card ---------- */
+/* background + border-color are set INLINE per card (the hawaii recency tint);
+   recent cards read brighter, older ones fade toward dark magenta. The WHOLE card
+   is clickable (locate on timeline). Two columns: main content + right rail. */
+.fitem {
+  display: flex; gap: 10px; align-items: flex-start;
+  border: 1px solid transparent;
+  border-radius: 11px;
+  padding: 10px 12px 11px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.20);
+  cursor: pointer;
+  transition: box-shadow 0.12s ease, opacity 0.18s ease, transform 0.18s ease;
+}
+/* hover lightens via an inset overlay + lifts — never touches the inline tint */
+.fitem:hover { box-shadow: inset 0 0 0 999px rgba(255, 255, 255, 0.07), 0 2px 7px rgba(0, 0, 0, 0.30); }
+.fitem.dismissing { opacity: 0; transform: translateX(16px); }
+
+.fitem-main { flex: 1 1 auto; min-width: 0; }
+/* right rail: just the timestamp now (Expand/Dismiss moved into the main column) */
+.fitem-side { flex: 0 0 auto; display: flex; flex-direction: column; align-items: flex-end; }
+
+/* HEAD row — title (left, grows + wraps within itself) and the session name +
+   relevance chip pinned to the RIGHT of it, on the SAME row. Keeps the card to
+   two rows (head + controls) regardless of title length. */
+.fcard-head { display: flex; align-items: baseline; gap: 12px; }
+/* TITLE — the deliverable headline */
+.fcard-title { flex: 1 1 auto; min-width: 0; font-weight: 600; line-height: 1.4; overflow-wrap: break-word; }
+/* clickable ask title → locate the typed turn (same affordance as the agent name) */
+.fcard-title.nav { cursor: pointer; }
+.fcard-title.nav:hover { text-decoration: underline; text-underline-offset: 2px; }
+/* session name + relevance chip — right of the title, one line, never wraps */
+.fcard-sub { flex: 0 0 auto; display: flex; align-items: baseline; gap: 8px; white-space: nowrap; }
+.fname {
+  font-size: 0.92em; font-weight: 600; cursor: pointer; text-decoration: none;
+}
+/* ONE underline on hover (a solid text-decoration, matching .ftree-who / modal-agent).
+   The old dotted border-bottom stacked with the <a>'s hover underline → two lines. */
+.fname:hover { text-decoration: underline; text-underline-offset: 2px; }
+/* a dead/inactive session: fade just the name (replaces the old ●/○ dot) */
+.fitem.dead .fname { opacity: 0.42; }
+
+/* blocked-session state card — distinct amber "attention" treatment (bg set here,
+   not inline, since it carries no recency tint); pinned to the top of NEEDS INPUT */
+.fitem.blocked { border-color: rgba(224, 176, 32, 0.55); background: rgba(224, 176, 32, 0.11); }
+.fitem.blocked .fcard-title { font-weight: 600; }
+.fitem.blocked .ftime { color: #e0b020; font-weight: 600; }
+/* picker cards are actionable — a "click to answer →" affordance, brighter hover */
+.blocked-hint { margin-left: auto; white-space: nowrap; font-size: 0.78em; font-weight: 600; color: #e0b020; }
+.fitem.blocked.actionable:hover { background: rgba(224, 176, 32, 0.18); }
+
+.ftime {
+  flex: 0 0 auto; font-size: 0.8em; color: var(--dim);
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+/* controls row — the "+" expand toggle (left, below the title) + Dismiss to its
+   right; replaces the old right-rail button stack. */
+.fcard-controls { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
+.fx-expand, .fdismiss {
+  font: inherit; font-size: 0.74em; cursor: pointer; white-space: nowrap;
+  color: var(--dim); background: transparent;
+  border: 1px solid var(--card-border); border-radius: 6px;
+  transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease;
+}
+/* the expand toggle is a compact square showing "+" (collapsed) / "−" (open) */
+.fx-expand {
+  width: 22px; height: 22px; padding: 0; line-height: 1; font-size: 1.05em;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.fdismiss { padding: 2px 10px; }
+.fx-expand:hover { color: var(--fg); border-color: var(--fg); }
+.fdismiss:hover { color: #fff; border-color: var(--err, #c74e39); background: var(--err, #c74e39); }
+/* "Follow up" reuses the action-button chrome but hovers BLUE (it reopens the
+   card to ASKS — a continuation, not the red destructive Clear) */
+.fdismiss.ffollow:hover { color: #fff; border-color: #2b7fb8; background: #2b7fb8; }
+/* downstream sessions an ask is waiting on (drop points) — experiment
+   2026-06-10; live working dot + age per session, newest first */
+/* active downstream sessions (the user's handoff spec, 2026-06-10): one line per
+   session BELOW the main row — bold, identity color, working dot always on
+   (a line only exists while its session is live-working on an open branch) */
+.fask-handoffs { display: flex; flex-direction: column; gap: 2px; margin-top: 5px; }
+.fask-handoff-line { display: flex; align-items: baseline; gap: 4px; padding-left: 2px; }
+.fask-handoff { font-weight: 600; font-size: 0.88em; cursor: pointer; }
+.fask-handoff:hover { text-decoration: underline; text-underline-offset: 2px; }
+/* standalone-completion modal: same tree vocabulary as ask cards; pending
+   next-steps render as dim hollow rows, the paragraph as secondary detail */
+.frow.st-open { opacity: 0.8; }
+.frow.st-open .frow-mark { color: var(--dim); }
+.fstandalone-par { margin-top: 10px; opacity: 0.75; }
+/* follow-up composer under a completed card's rows */
+.ffollow-box { display: flex; gap: 5px; margin-top: 6px; }
+/* in the modal the composer is a header sub-bar (the user 2026-06-10: follow-up
+   moved off the card into the modal); align its padding with the head row */
+.feed-modal-follow-box { margin: 0; padding: 8px 16px; border-bottom: 1px solid var(--card-border); }
+
+/* expanded view — Ask on top, Response below */
+.fexpand-slot { /* show/hide toggled inline by the script */ }
+.fexpand {
+  margin-top: 9px; padding: 10px 12px;
+  background: var(--detail-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 8px;
+}
+.fx-resp { margin-top: 10px; }
+.fx-label {
+  font-size: 0.66em; font-weight: 700; letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--dim); margin-bottom: 3px;
+}
+.fx-body { line-height: 1.55; word-break: break-word; }
+.fx-body.loading { color: var(--dim); font-style: italic; animation: fpulse 1.1s ease-in-out infinite; }
+@keyframes fpulse { 0%, 100% { opacity: 0.5; } 50% { opacity: 0.95; } }
+.fdetail-steps { margin: 8px 0 0; padding-left: 18px; }
+.fdetail-steps li { margin: 3px 0; }
