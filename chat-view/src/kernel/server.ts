@@ -1528,8 +1528,8 @@ function combinedHtml(): string {
     }
     #chat-pane.collapsed .pane-label, #feed-pane.collapsed .pane-label { writing-mode: vertical-rl; }
     #tl-pane.collapsed {
-      display: flex; flex-direction: row; align-items: center; justify-content: flex-end;
-      gap: 8px; padding-right: 6px;
+      display: flex; flex-direction: row; align-items: center; justify-content: center;
+      gap: 8px;
     }
     /* feed collapsed → the chat must GROW into the freed width (its flex-basis
        is otherwise fixed), which also pushes the feed strip to the screen edge */
