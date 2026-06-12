@@ -23,7 +23,7 @@ import type { SessionBackend, SessionState } from "./backend";
 import {
   Session, ChipState, chipState, statusPayload, sig, firstSeenOf,
   readParsedSession, liveTranscriptOf, customTitleOf, AskDriver,
-  metaSigOf, filterInterrupted, RESTED, pendingAskReplays,
+  metaSigOf, filterInterrupted, RESTED, pendingAskReplays, chatAnchorFor,
 } from "./chat";
 import {
   ROMP_STATE, PROJECTS, rompIds, rompMeta, rompDir, rewriteName, scanTranscripts,
@@ -945,7 +945,12 @@ function resolveSession(fsid: string): { id: string; file: string; liveName: str
 // clicks); undefined lands on the nearest turn of any kind (work rows).
 function locateInChat(sid: string, t: number, kind?: "user") {
   if (!sid || !t) return;
-  const focus = (id: string) => postFocus({ type: "focus", id, anchorT: t, ...(kind ? { anchorKind: kind } : {}) });
+  // Carry the resolved event's own uuid anchor (chatAnchorFor): a time-only
+  // locate landed "near" — typically on a tool block — so feed work-row clicks
+  // looked broken (the user's report, 2026-06-12). anchorT stays as the
+  // belt-and-braces fallback for ids/lines the chat can't resolve.
+  const anchor = chatAnchorFor(turnEvent(sid, null, t), kind);
+  const focus = (id: string) => postFocus({ type: "focus", id, ...(anchor ? { anchor } : {}), anchorT: t, ...(kind ? { anchorKind: kind } : {}) });
   const direct = resolveSessionRef(sid);
   if (direct && sessions.has(direct.id)) { focus(direct.id); return; }
   const target = resolveSession(sid);

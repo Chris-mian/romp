@@ -52,6 +52,12 @@ function esc(s) { return (s || '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<'
 function clock(t) { const d = new Date(t * 1000); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); }
 function fmtWin(s) { return s < 3600 ? Math.round(s / 60) + 'm' : (s / 3600 < 10 ? (s / 3600).toFixed(1) : Math.round(s / 3600)) + 'h'; }
 function niceStep(W) { for (const s of NICE) if (W / s <= 8) return s; return 172800; }
+// The uuid anchor a WORK-intent click opens in the chat: the period's READABLE
+// reply line (replyUuid = last assistant line with text, NOT the first which is
+// usually a thinking block), then workUuid (first reply line), then the boundary
+// uuid (an interrupted period has no reply at all). Shared by the focus handler
+// and the work-bar click so the two landings can never drift apart again.
+function workAnchorOf(t) { return (t && (t.replyUuid || t.workUuid || t.uuid)) || null; }
 
 function badgeFor(s) {
   if (!s || !s.live) return null;
@@ -798,7 +804,7 @@ class TimelinePanel {
     // the chat scrolls by time if the uuid anchor misses. On a _focusTargetById MISS (event outside the
     // loaded window) we STILL open the lane by time (anchorT=f.t) rather than silently doing nothing.
     if (byId && byId.tid) {
-      const a = onWork ? (byId.replyUuid || byId.workUuid || byId.uuid) : byId.uuid;
+      const a = onWork ? workAnchorOf(byId) : byId.uuid;
       // !onWork = we resolved to the boundary uuid = PROMPT-intent → anchorKind=user (kind-safe fallback)
       this.openChat(byId.tid, a, false, false, byId.t, onWork ? undefined : 'user');
     } else if (sid && f.t != null) {
@@ -1206,9 +1212,11 @@ class TimelinePanel {
         hit.addEventListener('mouseenter', (e) => { grow(eh); bar.setAttribute('opacity', '1'); this.showTip(html(), e); });
         hit.addEventListener('mousemove', (e) => this.moveTip(e));
         hit.addEventListener('mouseleave', () => { grow(BAR_H); bar.setAttribute('opacity', '0.9'); this.hideTip(); });
-        // the BAR = the work/response; anchor to the period's first reply line (workUuid) so clicking it
-        // lands on the thinking/response, NOT the prompt. The prompt dot keeps the prompt-line uuid.
-        hit.addEventListener('click', () => { this._select(s.id); this.openChat(this._laneTid(s), null, true); });
+        // the BAR = the work/response: open the period's readable reply (workAnchorOf), with the
+        // period's start as the by-time fallback. This was a bare lane-open with NO anchor, so every
+        // work-bar click visibly did nothing while prompt-dot clicks worked (the user, 2026-06-12).
+        // The prompt dot keeps the prompt-line uuid.
+        hit.addEventListener('click', () => { this._select(s.id); this.openChat(t.tid || this._laneTid(s), workAnchorOf(t), false, false, t.start); });
         svg.appendChild(hit);
       });
       // AWAITING (permission) → candy-stripe every span the session sat blocked on your
@@ -1446,7 +1454,7 @@ class TimelinePanel {
     // (the recipient's transcript at exec). No longer separate hover/click targets.
     const msgUI = {};   // message index → { hl, dot }, shared across the line + dot passes
     const msgHtml = (mm) => () => { const col = colorOf(mm.fromId); return '<div class="r"><span class="chip" style="background:' + col + '"></span><span class="who" style="color:' + col + '">' + esc(mm.from) + '</span><span class="ar">→</span><span class="who" style="color:' + colorOf(mm.toId) + '">' + esc(mm.to) + '</span>' + (mm.pending ? ' <span class="k">pending</span>' : '') + '<span class="t">' + clock(mm.sent) + (mm.pending ? ' → …' : ' → ' + clock(mm.exec)) + '</span></div>' + this.body(esc(mm.summary || mm.text || '')); };
-    const msgNav = (mm) => () => { const an = this.nearestTurnAnchor(mm.toId, execAt(mm)); this._select(mm.toId); this.openChat((an && an.tid) || mm.toId, an && (an.replyUuid || an.uuid), false, false, execAt(mm)); };   // land on the readable reply, scroll-by-time fallback
+    const msgNav = (mm) => () => { const an = this.nearestTurnAnchor(mm.toId, execAt(mm)); this._select(mm.toId); this.openChat((an && an.tid) || mm.toId, an && (an.uuid || an.replyUuid), false, false, execAt(mm)); };   // land on the message's OWN line (the boundary anchor — for a queue-delivered message that's its postal card); reply/time fallback
     // PASS 1: connector line + highlight (drawn first so the dots sit on top).
     data.messages.forEach((mm, i) => {
       if (vidx[mm.fromId] == null || vidx[mm.toId] == null) return;
@@ -1533,4 +1541,4 @@ class TimelinePanel {
   body(s) { return s ? '<div class="b">' + s + '</div>' : ''; }
 }
 
-module.exports = { TimelinePanel, badgeFor, roundedPath, crossX };
+module.exports = { TimelinePanel, badgeFor, roundedPath, crossX, workAnchorOf };

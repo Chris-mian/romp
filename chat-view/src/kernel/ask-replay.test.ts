@@ -7,7 +7,7 @@
 // nothing even when a stale askSig lingers.
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
-import { pendingAskReplays, Session } from "./chat";
+import { pendingAskReplays, chatAnchorFor, Session } from "./chat";
 import type { SessionState } from "./backend";
 import type { ParsedAsk } from "../askparse";
 
@@ -67,6 +67,27 @@ test("stale askSig with the composer back replays nothing", () => {
   const a = asker({ healed: null });
   const out = pendingAskReplays([sess({ name: "healed", askSig: "old" })], states({ healed: "waiting" }), a);
   assert.deepEqual(out, []);
+});
+
+// ---- chatAnchorFor: the uuid anchor a kernel locate carries (2026-06-12) ----
+// The 60c811c rework made feed work-row locates time-only; every click landed
+// "near" (typically a tool block). These pin the anchor selection per intent.
+
+test("work-intent locate anchors on the readable reply", () => {
+  assert.equal(chatAnchorFor({ uuid: "p1", replyUuid: "r1" }), "r1");
+});
+
+test("work-intent falls back to the prompt line when the slice has no reply (interrupted turn)", () => {
+  assert.equal(chatAnchorFor({ uuid: "p1", replyUuid: null }), "p1");
+});
+
+test("prompt-intent locate anchors on the turn's own line", () => {
+  assert.equal(chatAnchorFor({ uuid: "p1", replyUuid: "r1" }, "user"), "p1");
+});
+
+test("unresolvable event yields no anchor (anchorT fallback handles it)", () => {
+  assert.equal(chatAnchorFor(null), undefined);
+  assert.equal(chatAnchorFor({ uuid: null, replyUuid: null }), undefined);
 });
 
 test("empty states map (probe unreliable): only askSig-bearing sessions replay", () => {

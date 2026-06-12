@@ -372,6 +372,21 @@ export class AskDriver {
 // hookless picker (askSig set while the chip reads ready/idle). Targeted at
 // the connecting client only: a broadcast would re-render peers' live-ask
 // widgets and wipe a half-typed free-text answer.
+// The uuid anchor a kernel-side chat locate should carry for the events-cache
+// event a click resolved to. The 60c811c rework made feed work-row locates
+// TIME-ONLY — every click landed "near" (typically a tool block) instead of
+// pointer-exact, and looked broken (the user's report, 2026-06-12). Prompt-intent
+// clicks land on the turn's own (user) line; work-intent on the readable reply,
+// falling back to the prompt line — an INTERRUPTED slice has no reply to land on.
+export function chatAnchorFor(
+  ev: { uuid?: string | null; replyUuid?: string | null } | null,
+  kind?: "user",
+): string | undefined {
+  if (!ev) return undefined;
+  const a = kind === "user" ? ev.uuid : (ev.replyUuid || ev.uuid);
+  return a || undefined;
+}
+
 export function pendingAskReplays(
   sessions: Iterable<Session>,
   states: Map<string, SessionState> | null,
