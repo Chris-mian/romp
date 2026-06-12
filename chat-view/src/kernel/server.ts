@@ -38,6 +38,7 @@ import {
   missedHandoffSuspects, FeedItem, AskItem,
 } from "./feed";
 import { loadTimeline, timelineHtml, timelineUnavailableHtml } from "./timeline";
+import { chatBody, FEED_BODY, ATTACH_TITLE_WEB } from "../page-skeleton";
 
 const POLL_MS = 800;
 const FEED_LIMIT = 200;
@@ -1443,15 +1444,7 @@ function chatHtml(): string {
   <style>${THEME_CSS}</style>
 </head>
 <body>
-  <div id="winframe"></div>
-  <div id="tabbar"><span id="tabs"></span></div>
-  <div id="ledger" style="display:none"></div>
-  <div id="content"></div>
-  <div id="live-ask" style="display:none"></div>
-  <div id="footer">
-    <div id="statusline" class="statusline"></div>
-    <div id="composer"><textarea id="composer-input" rows="1" placeholder="Message this session…  (⏎ send · ⇧⏎ newline)"></textarea><button id="composer-attach" title="Attach a file — inserts its path" aria-label="Attach file">📎</button></div>
-  </div>
+${chatBody(ATTACH_TITLE_WEB)}
   <script>${shimJs("chat")}</script>
   <script src="/dist/render.js"></script>
 </body>
@@ -1469,8 +1462,7 @@ function feedHtml(): string {
   <style>${THEME_CSS}</style>
 </head>
 <body>
-  <div id="feed-head"></div>
-  <div id="feed-list"></div>
+${FEED_BODY}
   <script>${shimJs("feed")}</script>
   <script src="/dist/feed.js"></script>
 </body>
@@ -1515,16 +1507,30 @@ function combinedHtml(): string {
     .collapse-btn .bar-v { width: 4px; height: 13px; border-radius: 2px; background: currentColor; display: block; }
     .collapse-btn .bar-h { width: 13px; height: 4px; border-radius: 2px; background: currentColor; display: block; }
     #chat-collapse { top: 6px; right: 6px; }
-    #feed-collapse { top: 6px; right: 6px; }
+    #feed-collapse { top: 6px; left: 6px; }
     #tl-collapse { top: 6px; right: 6px; }
-    /* collapsed: the pane becomes a thin strip holding only its expand button.
+    /* the pane's name, shown only in its collapsed strip — rotated for the
+       vertical side strips, inline for the horizontal timeline strip */
+    .pane-label {
+      display: none; color: #8a8a8a; font: 11px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      letter-spacing: 0.06em; user-select: none; cursor: pointer;
+    }
+    /* collapsed: the pane becomes a thin strip holding its expand button + name.
        chat's strip hugs the LEFT edge, feed's the RIGHT (the expanded neighbor
-       takes the freed width via the feed-collapsed override below). */
-    .pane.collapsed { flex: 0 0 26px !important; }
+       takes the freed width via the feed-collapsed override below); the whole
+       strip is clickable to expand. */
+    .pane.collapsed { flex: 0 0 26px !important; cursor: pointer; background: #181818; }
     .pane.collapsed iframe { display: none; }
-    .pane.collapsed .collapse-btn { position: static; margin: 6px auto; opacity: 0.8; }
-    .pane.collapsed { display: flex; align-items: flex-start; justify-content: center; background: #181818; }
-    #tl-pane.collapsed { align-items: center; justify-content: flex-end; padding-right: 6px; }
+    .pane.collapsed .collapse-btn { position: static; margin: 0; opacity: 0.8; flex: 0 0 auto; }
+    .pane.collapsed .pane-label { display: block; }
+    #chat-pane.collapsed, #feed-pane.collapsed {
+      display: flex; flex-direction: column; align-items: center; gap: 8px; padding-top: 6px;
+    }
+    #chat-pane.collapsed .pane-label, #feed-pane.collapsed .pane-label { writing-mode: vertical-rl; }
+    #tl-pane.collapsed {
+      display: flex; flex-direction: row; align-items: center; justify-content: flex-end;
+      gap: 8px; padding-right: 6px;
+    }
     /* feed collapsed → the chat must GROW into the freed width (its flex-basis
        is otherwise fixed), which also pushes the feed strip to the screen edge */
     #top.feed-collapsed #chat-pane:not(.collapsed) { flex: 1 1 auto; }
@@ -1536,17 +1542,20 @@ function combinedHtml(): string {
     <div id="top">
       <div class="pane" id="chat-pane">
         <div class="collapse-btn" id="chat-collapse" title="collapse the chat"><span class="bar-v"></span></div>
+        <span class="pane-label">chat</span>
         <iframe id="chat-frame"></iframe>
       </div>
       <div class="divider-v" id="divider-v"></div>
       <div class="pane" id="feed-pane">
         <div class="collapse-btn" id="feed-collapse" title="collapse the feed"><span class="bar-v"></span></div>
+        <span class="pane-label">feed</span>
         <iframe id="feed-frame"></iframe>
       </div>
     </div>
     <div id="divider-h"></div>
     <div class="pane" id="tl-pane">
       <div class="collapse-btn" id="tl-collapse" title="collapse the timeline"><span class="bar-h"></span></div>
+      <span class="pane-label">timeline</span>
       <iframe id="tl-frame"></iframe>
     </div>
   </div>
@@ -1596,9 +1605,13 @@ function combinedHtml(): string {
       document.getElementById("divider-h").classList.toggle("hidden", !!layout.tl);
     }
     function toggle(k) { layout[k] = !layout[k]; apply(); save(); }
-    btns.chat.onclick = function () { toggle("chat"); };
-    btns.feed.onclick = function () { toggle("feed"); };
-    btns.tl.onclick = function () { toggle("tl"); };
+    btns.chat.onclick = function (e) { e.stopPropagation(); toggle("chat"); };
+    btns.feed.onclick = function (e) { e.stopPropagation(); toggle("feed"); };
+    btns.tl.onclick = function (e) { e.stopPropagation(); toggle("tl"); };
+    // the whole collapsed strip (label included) expands on click
+    Object.keys(panes).forEach(function (k) {
+      panes[k].addEventListener("click", function () { if (layout[k]) toggle(k); });
+    });
 
     // divider drags (iframes eat mousemove — overlay a shield while dragging)
     function shieldOn(cursor) {
