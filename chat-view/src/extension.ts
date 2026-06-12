@@ -20,6 +20,7 @@ import * as os from "os";
 import * as path from "path";
 import { execFileSync, spawn } from "child_process";
 import WebSocket from "ws";
+import { chatBody, FEED_BODY, ATTACH_TITLE_VSCODE } from "./page-skeleton";
 
 const HOST = "127.0.0.1";
 function kernelPort(): number {
@@ -383,7 +384,7 @@ function wireFeedPanel(p: vscode.WebviewPanel) {
     // the CHAT panel forward — panel reveal is this host's job; the kernel
     // opens/focuses the tab itself.
     if (m.type === "openSession") openPanel(false);
-    else if (m.type === "showOnTimeline" && m.anchor === "prompt") openPanel(true);
+    else if (m.type === "showOnTimeline") openPanel(true);   // kernel locates the chat for prompt AND work clicks
     else if (m.type === "showAskPath" && m.locate !== false && !m.jump && !m.off) openPanel(true);
     pipe.send(m);
   });
@@ -498,15 +499,7 @@ function buildHtml(webview: vscode.Webview): string {
   <title>romp</title>
 </head>
 <body>
-  <div id="winframe"></div>
-  <div id="tabbar"><span id="tabs"></span></div>
-  <div id="ledger" style="display:none"></div>
-  <div id="content"></div>
-  <div id="live-ask" style="display:none"></div>
-  <div id="footer">
-    <div id="statusline" class="statusline"></div>
-    <div id="composer"><textarea id="composer-input" rows="1" placeholder="Message this session…  (⏎ send · ⇧⏎ newline)"></textarea><button id="composer-attach" title="Attach a file — inserts its path (drag-and-drop is intercepted by VS Code; use this or paste instead)" aria-label="Attach file">📎</button></div>
-  </div>
+${chatBody(ATTACH_TITLE_VSCODE)}
   <script nonce="${n}" src="${js}"></script>
 </body>
 </html>`;
@@ -533,8 +526,7 @@ function buildFeedHtml(webview: vscode.Webview): string {
   <title>romp feed</title>
 </head>
 <body>
-  <div id="feed-head"></div>
-  <div id="feed-list"></div>
+${FEED_BODY}
   <script nonce="${n}" src="${js}"></script>
 </body>
 </html>`;

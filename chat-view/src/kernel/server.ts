@@ -941,22 +941,19 @@ function resolveSession(fsid: string): { id: string; file: string; liveName: str
 // first-party data only (the card's session + mint epoch). Fork/incarnation-
 // aware: a card stamped with an old fsid still belongs to a live session under
 // its customTitle. A passive locate never offers revive — dead just highlights.
-function locateInChat(sid: string, t: number) {
+// kind: "user" restricts the landing to the user's own turns (prompt-intent
+// clicks); undefined lands on the nearest turn of any kind (work rows).
+function locateInChat(sid: string, t: number, kind?: "user") {
   if (!sid || !t) return;
+  const focus = (id: string) => postFocus({ type: "focus", id, anchorT: t, ...(kind ? { anchorKind: kind } : {}) });
   const direct = resolveSessionRef(sid);
-  if (direct && sessions.has(direct.id)) {
-    postFocus({ type: "focus", id: direct.id, anchorT: t, anchorKind: "user" });
-    return;
-  }
+  if (direct && sessions.has(direct.id)) { focus(direct.id); return; }
   const target = resolveSession(sid);
   if (!target || !target.liveName) return;   // dead + unopened: highlight only
   const lr = resolveSessionRef(target.liveName) ?? target;
-  if (sessions.has(lr.id)) {
-    postFocus({ type: "focus", id: lr.id, anchorT: t, anchorKind: "user" });
-    return;
-  }
+  if (sessions.has(lr.id)) { focus(lr.id); return; }
   addSession(lr.file);
-  postFocus({ type: "focus", id: lr.id, anchorT: t, anchorKind: "user" });
+  focus(lr.id);
 }
 
 // ---- open-in-editor (the one genuinely editor-bound feature) ----
@@ -1104,7 +1101,14 @@ function handleChatMessage(c: Client, m: any) {
   else if (m.type === "compactSession" && m.id) compactSession(String(m.id));
   else if (m.type === "reorderTabs" && Array.isArray(m.order)) { writeSessionOrder(m.order.map(String)); lastOrderSig = m.order.join(","); }
   else if (m.type === "ledgerHover") hoverFan(m.id ? [String(m.id)] : null);
-  else if (m.type === "ledgerLocate" && m.id) focusTimeline(String(m.id), String(m.sid ?? ""), Number(m.t) || 0, undefined, "work");
+  // locate:false — the focus FILE is a broadcast (every timeline instance, in
+  // every front end, watches it); carrying locate intent in it made the VS
+  // Code timeline deep-link ITS chat for a click made in the browser. The
+  // kernel does the chat-locating itself, routed to the asking window.
+  else if (m.type === "ledgerLocate" && m.id) {
+    focusTimeline(String(m.id), String(m.sid ?? ""), Number(m.t) || 0, undefined, "work", false);
+    locateInChat(String(m.sid ?? ""), Number(m.t) || 0);
+  }
   else if (m.type === "imgRequest" && typeof m.path === "string") postTo(c, { type: "imgData", path: m.path, url: imgDataUrl(String(m.path)) });
   else if (m.type === "locateDiag") appendLocateDiag(m);
 }
@@ -1156,9 +1160,13 @@ function handleFeedMessage(c: Client, m: any) {
   else if (m.type === "openSession" && m.id) openSessionById(String(m.id));
   else if (m.type === "expand" && m.itemId) requestFeedDetail(String(m.itemId), !!m.generate);
   else if (m.type === "showOnTimeline" && m.itemId) {
+    // locate:false always (see ledgerLocate above): the kernel locates the
+    // chat itself — prompt clicks land on the user's turn, work-row clicks on
+    // the nearest turn of any kind — instead of asking every watching
+    // timeline to do it (which yanked VS Code forward on a browser click).
     const prompt = m.anchor === "prompt";
-    focusTimeline(String(m.itemId), String(m.sid ?? ""), Number(m.t) || 0, undefined, prompt ? "prompt" : "work", prompt ? false : undefined);
-    if (prompt) locateInChat(String(m.sid ?? ""), Number(m.t) || 0);
+    focusTimeline(String(m.itemId), String(m.sid ?? ""), Number(m.t) || 0, undefined, prompt ? "prompt" : "work", false);
+    locateInChat(String(m.sid ?? ""), Number(m.t) || 0, prompt ? "user" : undefined);
   }
   else if (m.type === "showAskPath" && m.itemId) {
     const a = lastAskItems.find((x) => x.itemId === String(m.itemId));
