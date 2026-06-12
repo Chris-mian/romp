@@ -1024,8 +1024,10 @@ function onChatReady(c: Client) {
     }
   }
   // Replay the shared tab set to THIS client only — peers already have it.
+  // restore:true → the shim must NOT treat this boot-time focus as a reveal
+  // hint (it would un-collapse a deliberately-collapsed chat pane on load).
   for (const s of sessions.values()) postSession(s, c);
-  if (kstate.activeTab && sessions.has(kstate.activeTab)) postTo(c, { type: "focus", id: kstate.activeTab });
+  if (kstate.activeTab && sessions.has(kstate.activeTab)) postTo(c, { type: "focus", id: kstate.activeTab, restore: true });
   c.rompActiveTab = kstate.activeTab && sessions.has(kstate.activeTab) ? kstate.activeTab : null;
   const ord = readSessionOrder();
   lastOrderSig = ord.join(",");
@@ -1329,8 +1331,9 @@ function shimJs(app: "chat" | "feed"): string {
     ws.onmessage = function (ev) {
       var msg; try { msg = JSON.parse(ev.data); } catch (e) { return; }
       // reveal hints for the combined page: a focus landing on the chat pane /
-      // a card opening in the feed pane should un-collapse that pane.
-      if (embedded && msg && (msg.type === "focus" || msg.type === "openCard"))
+      // a card opening in the feed pane should un-collapse that pane — but a
+      // boot-time focus RESTORE must not (it would defeat a deliberate collapse).
+      if (embedded && msg && !msg.restore && (msg.type === "focus" || msg.type === "openCard"))
         try { window.parent.postMessage({ romp: "reveal", pane: "${app}" }, "*"); } catch (e) { /* ignore */ }
       window.dispatchEvent(new MessageEvent("message", { data: msg }));
     };
@@ -1504,18 +1507,27 @@ function combinedHtml(): string {
       position: absolute; z-index: 10; width: 22px; height: 22px;
       display: flex; align-items: center; justify-content: center;
       background: #2a2a2a; color: #999; border: 1px solid #3a3a3a; border-radius: 5px;
-      cursor: pointer; font-size: 12px; user-select: none; opacity: 0.6;
+      cursor: pointer; user-select: none; opacity: 0.6;
     }
     .collapse-btn:hover { opacity: 1; color: #fff; }
+    /* the icon: a bold bar in the direction the pane collapses — vertical for
+       the side panes (they fold into a side strip), horizontal for the timeline */
+    .collapse-btn .bar-v { width: 4px; height: 13px; border-radius: 2px; background: currentColor; display: block; }
+    .collapse-btn .bar-h { width: 13px; height: 4px; border-radius: 2px; background: currentColor; display: block; }
     #chat-collapse { top: 6px; right: 6px; }
     #feed-collapse { top: 6px; right: 6px; }
     #tl-collapse { top: 6px; right: 6px; }
-    /* collapsed: the pane becomes a thin strip holding only its expand button */
+    /* collapsed: the pane becomes a thin strip holding only its expand button.
+       chat's strip hugs the LEFT edge, feed's the RIGHT (the expanded neighbor
+       takes the freed width via the feed-collapsed override below). */
     .pane.collapsed { flex: 0 0 26px !important; }
     .pane.collapsed iframe { display: none; }
     .pane.collapsed .collapse-btn { position: static; margin: 6px auto; opacity: 0.8; }
     .pane.collapsed { display: flex; align-items: flex-start; justify-content: center; background: #181818; }
     #tl-pane.collapsed { align-items: center; justify-content: flex-end; padding-right: 6px; }
+    /* feed collapsed → the chat must GROW into the freed width (its flex-basis
+       is otherwise fixed), which also pushes the feed strip to the screen edge */
+    #top.feed-collapsed #chat-pane:not(.collapsed) { flex: 1 1 auto; }
     .divider-v.hidden, #divider-h.hidden { display: none; }
   </style>
 </head>
@@ -1523,18 +1535,18 @@ function combinedHtml(): string {
   <div id="grid">
     <div id="top">
       <div class="pane" id="chat-pane">
-        <div class="collapse-btn" id="chat-collapse" title="collapse the chat">⟨</div>
+        <div class="collapse-btn" id="chat-collapse" title="collapse the chat"><span class="bar-v"></span></div>
         <iframe id="chat-frame"></iframe>
       </div>
       <div class="divider-v" id="divider-v"></div>
       <div class="pane" id="feed-pane">
-        <div class="collapse-btn" id="feed-collapse" title="collapse the feed">⟩</div>
+        <div class="collapse-btn" id="feed-collapse" title="collapse the feed"><span class="bar-v"></span></div>
         <iframe id="feed-frame"></iframe>
       </div>
     </div>
     <div id="divider-h"></div>
     <div class="pane" id="tl-pane">
-      <div class="collapse-btn" id="tl-collapse" title="collapse the timeline">⌄</div>
+      <div class="collapse-btn" id="tl-collapse" title="collapse the timeline"><span class="bar-h"></span></div>
       <iframe id="tl-frame"></iframe>
     </div>
   </div>
@@ -1549,6 +1561,12 @@ function combinedHtml(): string {
     var KEY = "romp-combined-layout";
     var layout = { chatW: 55, tlH: 30, chat: false, feed: false, tl: false }; // % sizes + collapsed flags
     try { var saved = JSON.parse(localStorage.getItem(KEY) || "null"); if (saved) layout = Object.assign(layout, saved); } catch (e) {}
+    // ?collapse=feed,tl — start with those panes collapsed (bookmarkable layouts)
+    var collapseParam = new URLSearchParams(location.search).get("collapse");
+    if (collapseParam !== null) {
+      layout.chat = layout.feed = layout.tl = false;
+      collapseParam.split(",").forEach(function (k) { k = k.trim(); if (k in layout) layout[k] = true; });
+    }
     function save() { try { localStorage.setItem(KEY, JSON.stringify(layout)); } catch (e) {} }
 
     var panes = {
@@ -1561,17 +1579,19 @@ function combinedHtml(): string {
       feed: document.getElementById("feed-collapse"),
       tl: document.getElementById("tl-collapse"),
     };
-    var GLYPH = { chat: ["⟨", "⟩"], feed: ["⟩", "⟨"], tl: ["⌄", "⌃"] };   // [expanded, collapsed]
     function apply() {
       document.documentElement.style.setProperty("--chat-w", layout.chatW + "%");
       document.documentElement.style.setProperty("--tl-h", layout.tlH + "%");
       for (var k in panes) {
         panes[k].classList.toggle("collapsed", !!layout[k]);
-        btns[k].textContent = GLYPH[k][layout[k] ? 1 : 0];
         btns[k].title = (layout[k] ? "expand" : "collapse") + " the " + (k === "tl" ? "timeline" : k);
       }
-      // a collapsed chat hands its width to the feed (flex handles it); hide
-      // the divider when either side of it is collapsed
+      // a collapsed FEED frees its width to the chat (the .feed-collapsed CSS
+      // override lets the chat grow past its fixed basis, pushing the feed's
+      // strip to the right edge); a collapsed chat frees width to the feed
+      // automatically (the feed is the flexible pane). Hide a divider when a
+      // pane beside it is collapsed.
+      document.getElementById("top").classList.toggle("feed-collapsed", !!layout.feed);
       document.getElementById("divider-v").classList.toggle("hidden", !!(layout.chat || layout.feed));
       document.getElementById("divider-h").classList.toggle("hidden", !!layout.tl);
     }
