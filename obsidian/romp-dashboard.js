@@ -16,11 +16,8 @@
 
 const { ItemView } = require('obsidian');
 const logic = require('./romp-logic.js');
-const { TimelinePanel } = require('./romp-timeline-view.js');
-const timelineData = require('./romp-timeline-data.js');
 
 const VIEW_TYPE = 'romp-dashboard';
-const TIMELINE_VIEW_TYPE = 'romp-timeline';
 const STYLE_ID = 'romp-dashboard-styles';
 
 // [r,g,b] of the surface a node sits on (Obsidian theme bg), for the perceptual idle-fade blend.
@@ -256,58 +253,12 @@ class RompDashboardView extends ItemView {
   }
 }
 
-// Sibling tab to the dashboard: the activity-over-time timeline. Its own view
-// type so it's a real Obsidian tab ("romp timeline") next to "romp dashboard"
-// in the same pane, not a custom in-view toggle. Renders via TimelinePanel,
-// fed by the native buildTimelineData().
-class RompTimelineView extends ItemView {
-  constructor(leaf, plugin) { super(leaf); this.plugin = plugin; this._busy = false; this._panel = null; }
-
-  getViewType() { return TIMELINE_VIEW_TYPE; }
-  getDisplayText() { return 'romp timeline'; }
-  getIcon() { return 'gantt-chart'; }
-
-  async onOpen() {
-    this.contentEl.addClass('romp-tl');
-    this._panel = new TimelinePanel(this.contentEl);
-    this.tick();
-    this.registerInterval(window.setInterval(() => this.tick(), POLL_MS));
-    this._watchOrder();
-  }
-
-  // Re-render the instant a shared state file changes — session-order.json (a chat-tab drag / the VS
-  // Code timeline) or timeline-focus.json (a feed-card click → locate) — rather than waiting up to one
-  // POLL_MS. tick() rebuilds the payload (which carries the new order + the focus nonce). Poll = fallback.
-  _watchOrder() {
-    try {
-      const fs = require('fs'), path = require('path'), os = require('os');
-      const dir = path.join(process.env.XDG_STATE_HOME || path.join(os.homedir(), '.local', 'state'), 'romp');
-      let dbnc = null;
-      this._orderWatcher = fs.watch(dir, (_e, fn) => {
-        const f = fn ? String(fn) : '';
-        if (f && f !== 'session-order.json' && f !== 'timeline-focus.json' && f !== 'timeline-hover.json') return;
-        if (dbnc) clearTimeout(dbnc);
-        dbnc = setTimeout(() => this.tick(), 40);
-      });
-    } catch (e) { /* best-effort; the poll still updates it */ }
-  }
-
-  async onClose() {
-    if (this._orderWatcher) { try { this._orderWatcher.close(); } catch (e) {} this._orderWatcher = null; }
-    if (this._panel) { this._panel.destroy(); this._panel = null; }
-    this.contentEl.empty();
-  }
-
-  _isVisible() { return !!this.contentEl.offsetParent; }
-
-  async tick() {
-    if (this._busy || !this._isVisible() || !this._panel) return;
-    this._busy = true;
-    try { this._panel.update(await timelineData.buildTimelineData()); }
-    catch (e) { console.error('[vault-code] romp timeline tick failed:', e); }
-    finally { this._busy = false; }
-  }
-}
+// (The in-process timeline view that used to live here was retired 2026-06-12:
+// the timeline now reaches Obsidian through the romp web kernel — see
+// romp-kernel-views.js, which registers the same 'romp-timeline' view
+// type as an iframe onto the kernel's /timeline page. One data path, no
+// duplicated plumbing; romp-timeline-view.js itself remains the SHARED
+// renderer the kernel serves.)
 
 const CSS = `
 /* Maximally compact: collapse the whole in-leaf view-header for the romp
@@ -316,8 +267,7 @@ const CSS = `
    pane stays reachable via its "romp" tab in the strip above (right-click
    → Close, or the command palette); the green divider lives on the tab
    GROUP, not here, so it's unaffected. */
-.workspace-leaf-content[data-type="${VIEW_TYPE}"] .view-header,
-.workspace-leaf-content[data-type="${TIMELINE_VIEW_TYPE}"] .view-header { display: none !important; }
+.workspace-leaf-content[data-type="${VIEW_TYPE}"] .view-header { display: none !important; }
 
 /* Green divider along the very top of the romp bottom pane, so it reads
    as its own region (the default split divider is too dark to see). The
@@ -327,8 +277,7 @@ const CSS = `
    draws above the tab strip, at the true top edge. Uses the standard
    Vault section-palette green (--palette-2, #54B204), with a literal
    fallback in case the vault plugin isn't loaded to define it. */
-.workspace-tabs:has(.workspace-leaf-content[data-type="${VIEW_TYPE}"]),
-.workspace-tabs:has(.workspace-leaf-content[data-type="${TIMELINE_VIEW_TYPE}"]) {
+.workspace-tabs:has(.workspace-leaf-content[data-type="${VIEW_TYPE}"]) {
   border-top: 2px solid var(--palette-2, #54B204) !important;
 }
 
@@ -336,33 +285,10 @@ const CSS = `
    .view-content padding is ~12px top / 32px bottom, which left a big
    black band below the list. Scope to the view type + !important so it
    actually wins the cascade (a bare .romp rule lost to the theme). */
-.workspace-leaf-content[data-type="${VIEW_TYPE}"] .view-content.romp,
-.workspace-leaf-content[data-type="${TIMELINE_VIEW_TYPE}"] .view-content.romp-tl {
+.workspace-leaf-content[data-type="${VIEW_TYPE}"] .view-content.romp {
   padding: 4px 10px 6px !important;
 }
 .romp { font-size: 15px; height: 100%; overflow: auto; }
-.romp-tl { height: 100%; overflow: auto; }
-/* Timeline tab: window slider + scrollable SVG + floating hover tip. */
-.romp-tl-top { display: flex; align-items: center; gap: 12px; padding: 2px 0 8px; flex: 0 0 auto; }
-.romp-tl-winlabel { color: var(--text-muted); font-size: 12px; min-width: 92px; }
-.romp-tl-src { color: var(--text-faint); font-size: 11px; margin-left: auto; }
-.romp-tl-slider { flex: 1; max-width: 420px; -webkit-appearance: none; appearance: none; height: 6px;
-  border-radius: 3px; background: #2a2f37; outline: none; }
-.romp-tl-slider::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 14px; height: 14px;
-  border-radius: 50%; background: #e6edf3; cursor: pointer; }
-.romp-tl-wrap { overflow-x: auto; }
-.romp-tl-wrap svg { display: block; }
-.romp-tl-tip { position: fixed; pointer-events: none; z-index: 1000; max-width: 320px;
-  background: #1c2430; border: 1px solid #ffffff1f; border-radius: 8px; padding: 7px 9px;
-  font-size: 12px; color: #e6edf3; box-shadow: 0 8px 24px #00000066; opacity: 0;
-  transform: translateY(4px); transition: opacity .1s, transform .1s; }
-.romp-tl-tip.show { opacity: 1; transform: translateY(0); }
-.romp-tl-tip .r { display: flex; align-items: center; gap: 6px; }
-.romp-tl-tip .chip { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
-.romp-tl-tip .who { font-weight: 650; } .romp-tl-tip .ar { color: #6e7681; }
-.romp-tl-tip .t { color: #8b949e; margin-left: 2px; font-variant-numeric: tabular-nums; }
-.romp-tl-tip .k { color: #6e7681; font-size: 10px; text-transform: uppercase; letter-spacing: .04em; }
-.romp-tl-tip .b { margin-top: 4px; color: #cdd9e5; }
 /* The whole table is ONE grid so columns line up across every row. Each
    row is a subgrid spanning all 3 tracks, so the name column sizes to the
    LONGEST name across all rows and every badge starts at the same x (just
@@ -460,38 +386,23 @@ function injectStyles() {
 // `getLeaf('split', 'horizontal')` splits the active root leaf along a
 // horizontal divider, so the new pane sits underneath it spanning the
 // width — the "bottom strip" position. If one already exists we just
-// reveal it instead of stacking duplicates.
-// Open (or reveal) the romp pane at the bottom of the window, as TWO sibling
-// tabs in one tab group: "romp dashboard" and "romp timeline". Ensures both
-// exist (adding whichever is missing) so it's whole after a reload restored
-// only one. `getLeaf('split','horizontal')` makes the bottom strip.
+// reveal it instead of stacking duplicates. (The timeline used to be a
+// sibling tab here; it's its own kernel-backed view now — romp-kernel-views.js.)
 async function openRompPane(plugin) {
   const ws = plugin.app.workspace;
   let dash = ws.getLeavesOfType(VIEW_TYPE)[0];
-  let tl = ws.getLeavesOfType(TIMELINE_VIEW_TYPE)[0];
-  if (!dash && !tl) {
+  if (!dash) {
     dash = ws.getLeaf('split', 'horizontal');
     await dash.setViewState({ type: VIEW_TYPE, active: true });
-  }
-  const anchor = dash || tl;
-  if (!tl) {
-    const idx = (anchor.parent && anchor.parent.children) ? anchor.parent.children.length : 1;
-    tl = ws.createLeafInParent(anchor.parent, idx);
-    await tl.setViewState({ type: TIMELINE_VIEW_TYPE });
-  }
-  if (!dash) {
-    dash = ws.createLeafInParent(tl.parent, 0);
-    await dash.setViewState({ type: VIEW_TYPE });
   }
   ws.revealLeaf(dash);
 }
 
 function register(plugin) {
   injectStyles();
-  // Register both views synchronously in onload so saved bottom-pane tabs are
-  // restored on reload (Cmd+R) without us re-opening them.
+  // Register the view synchronously in onload so a saved bottom-pane tab is
+  // restored on reload (Cmd+R) without us re-opening it.
   plugin.registerView(VIEW_TYPE, (leaf) => new RompDashboardView(leaf, plugin));
-  plugin.registerView(TIMELINE_VIEW_TYPE, (leaf) => new RompTimelineView(leaf, plugin));
   plugin.addCommand({
     id: 'vault-launch-romp-dashboard',
     name: 'Launch romp dashboard',
@@ -504,9 +415,7 @@ function register(plugin) {
 
 module.exports = {
   RompDashboardView,
-  RompTimelineView,
   VIEW_TYPE,
-  TIMELINE_VIEW_TYPE,
   register,
   openRompPane,
 };
