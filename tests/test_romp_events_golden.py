@@ -61,6 +61,13 @@ def qop(t, op, content=None):
             "content": content}
 
 
+def attline(t, prompt, uuid=None, parent=None):
+    # Claude Code re-writes a CONSUMED queued message as a queued_command
+    # attachment line — the only uuid-bearing record of a queue-delivered prompt
+    return {"type": "attachment", "timestamp": iso(t), "uuid": uuid, "parentUuid": parent,
+            "isSidechain": False, "attachment": {"type": "queued_command", "prompt": prompt}}
+
+
 def tool_result_line(t, tool_use_id, content="", uuid=None, parent=None,
                      tool_use_result=None, is_error=False):
     block = {"type": "tool_result", "tool_use_id": tool_use_id, "content": content}
@@ -96,13 +103,17 @@ def scenario_typed_two_turns():
 
 
 def scenario_queued_and_absorbed():
-    """enqueue→dequeue = its own `queued` turn; enqueue→remove = `absorbed` boundary at fold ts."""
+    """enqueue→dequeue = its own `queued` turn; enqueue→remove = `absorbed` boundary
+    at the fold ts, ANCHORED at the queued_command attachment line Claude writes at
+    consume time (2026-06-12 — queue-operation rows carry no uuid, and the reply-prose
+    fallback made message-connector clicks land on unrelated text)."""
     return [
         uline(T0, "refactor the ledger", uuid="u1"),
         aline(T0 + 20, "Working through romp-ledger.", tools=("Read",), uuid="a1", parent="u1"),
         qop(T0 + 40, "enqueue", "also rename the digest file"),
         qop(T0 + 60, "remove"),                       # folded mid-turn → absorbed @ T0+60
-        aline(T0 + 80, "Folded the rename in too.", uuid="a2", parent="a1"),
+        attline(T0 + 60, "also rename the digest file", uuid="att1", parent="a1"),
+        aline(T0 + 80, "Folded the rename in too.", uuid="a2", parent="att1"),
         qop(T0 + 100, "enqueue", "and check the tests pass"),
         qop(T0 + 200, "dequeue"),                     # re-surfaced as the queued user line below
         uline(T0 + 200, "and check the tests pass", ps="queued", uuid="u2", parent="a2"),
@@ -342,6 +353,35 @@ class RewindResubmit(unittest.TestCase):
         out = run_scenario("broken_chain_kept")
         self.assertEqual([e["text"] for e in out["events"]],
                          ["orphaned-looking but real prompt", "later prompt, chain not linked"])
+
+
+class AbsorbedAnchor(unittest.TestCase):
+    """Absorbed boundaries anchor at the queued_command attachment line (2026-06-12):
+    queue-operation rows carry no uuid, so without this join a mid-turn message's
+    click anchor fell back to the slice's reply prose — timeline message-connector
+    clicks landed on unrelated text instead of the message."""
+
+    def test_absorbed_event_anchors_on_the_attachment_line(self):
+        out = run_scenario("queued_and_absorbed")
+        ab = next(e for e in out["events"] if e["kind"] == "absorbed")
+        self.assertEqual(ab["uuid"], "att1")
+
+    def test_no_attachment_falls_back_to_the_reply_anchor(self):
+        # an absorbed fold with no matching attachment row (older transcripts):
+        # the pre-existing substitute applies — anchor on the readable reply
+        records = [
+            uline(T0, "start", uuid="u1"),
+            aline(T0 + 10, "working", uuid="a1", parent="u1"),
+            qop(T0 + 20, "enqueue", "queued text"),
+            qop(T0 + 30, "remove"),
+            aline(T0 + 40, "done", uuid="a2", parent="a1"),
+        ]
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / (SID + ".jsonl")
+            path.write_text("\n".join(json.dumps(r) for r in records) + "\n")
+            out = ev.extract_events(SID, str(path), NOW)
+        ab = next(e for e in out["events"] if e["kind"] == "absorbed")
+        self.assertEqual(ab["uuid"], "a2")
 
 
 def regen():

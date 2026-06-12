@@ -191,6 +191,7 @@ def extract_events(sid, transcript, now):
         cutoff = now - HORIZON
         tid = p.stem                           # source transcript basename (fork fsid) — for click-to-open
         bnds, asst, qops, stops = [], [], [], []   # boundaries (ts,text,kind,mids,uuid) / asst (ts,..,uuid) / queue-ops / (ts, stop_reason)
+        qatt = {}                              # flattened queued_command attachment text -> [line uuids] (FIFO)
         dec_uses = {}                          # open decision tool_use ids → {name, input}, joined to their tool_result
         compactions, last_real = [], None      # context-compaction MARKERS + last real conversational ts
         parent_of, leaf = {}, None             # uuid→parentUuid + the leaf, to reconstruct the active path
@@ -260,6 +261,14 @@ def extract_events(sid, transcript, now):
                     bnds.append((ts, flat[:140], ps, mids, r.get("uuid"), flat[:4000]))   # anchor = this user line
                 elif ps is None and flat.startswith("Stop hook feedback"):
                     bnds.append((ts, flat[:140], "drain", mids, None, flat[:4000]))       # anchor = 1st assistant of the period
+            elif typ == "attachment":
+                # Claude Code re-writes a CONSUMED queued message as a queued_command
+                # attachment line — the only uuid-bearing record of a queue-delivered
+                # prompt (the queue-operation rows carry none). Collected so absorbed
+                # boundaries can anchor on it (FIFO per identical text).
+                a = r.get("attachment") or {}
+                if a.get("type") == "queued_command" and a.get("prompt"):
+                    qatt.setdefault(" ".join(str(a["prompt"]).split()), []).append(r.get("uuid"))
             elif typ == "queue-operation":
                 op = r.get("operation")
                 if op == "enqueue":
@@ -316,8 +325,14 @@ def extract_events(sid, transcript, now):
                     pending.append({"id": _eid(sid, e["ts"], flat), "t": e["ts"], "text": flat[:140],
                                     "tid": tid, "uuid": puid})
             elif e["restype"] == "remove":               # folded mid-turn → its own boundary
+                # anchor at the queued_command ATTACHMENT line carrying this text, so a
+                # click on a mid-turn message/prompt lands on its own chat line instead
+                # of falling back to the slice's reply prose (the user's report,
+                # 2026-06-12); the active-path guard below still applies to the uuid.
+                lst = qatt.get(flat)
+                quid = lst.pop(0) if lst else None
                 bnds.append((e["proc"], flat[:140], "absorbed",
-                             re.findall(r'romp-msg-id:\s*(\S+)', flat), None, flat[:4000]))
+                             re.findall(r'romp-msg-id:\s*(\S+)', flat), quid, flat[:4000]))
         bnds.sort(key=lambda b: b[0])
         events = []
         for i, (ts, text, kind, mids, buid, full) in enumerate(bnds):
@@ -386,7 +401,7 @@ def extract_events(sid, transcript, now):
         return {"events": [], "pending": [], "compactions": []}
 
 EVCACHE = STATE / "events-cache"
-CACHE_VERSION = 13       # bump whenever extract_events' output shape changes (forces re-extract)
+CACHE_VERSION = 14       # bump whenever extract_events' output shape changes (forces re-extract)
 def events_for(sid, transcript, now):
     """extract_events, memoized on disk by the transcript's (mtime, size). Repeated --emit
     calls (Obsidian polls ~1s while visible) spawn a FRESH process each time, so the cache

@@ -287,12 +287,19 @@ export function buildParsed(p: IncParser): ParsedTranscript {
       // Claude Code resolves those ops (clearing that block) and re-writes the
       // message as a queued_command attachment chained into the conversation —
       // NOT as a user line. Without this branch every consumed queued message
-      // vanished from the chat (the user's report, 2026-06-11). Harness plumbing
-      // (task notifications, postal banners) is filtered exactly like the
-      // pending queue filters it.
+      // vanished from the chat (the user's report, 2026-06-11). Task
+      // notifications stay invisible (harness plumbing), but a POSTAL BANNER
+      // attachment is real correspondence: pass it through so hydratePostal
+      // swaps it into a postal-in card anchored at THIS line. Dropping banners
+      // here left queue-delivered mail with no chat line at all, so a timeline
+      // message-connector click had nothing to land on (the user's report,
+      // 2026-06-12). An unresolved msg-id renders the raw banner — visible
+      // beats vanished.
       const att = o.attachment;
-      if (att?.type === "queued_command" && typeof att.prompt === "string" && isGenuineQueued(att.prompt)) {
-        events.push({ kind: "user", md: att.prompt.trim(), ts, uuid, human: true });
+      if (att?.type === "queued_command" && typeof att.prompt === "string") {
+        const t = att.prompt.trim();
+        if (t && !t.startsWith("<task-notification>"))
+          events.push({ kind: "user", md: t, ts, uuid, human: true });
       }
     } else if (o.type === "assistant") {
       const blocks = o.message?.content;

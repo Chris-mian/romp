@@ -145,6 +145,29 @@ test("consumed queued messages (queued_command attachments) render as user turns
   assert.ok(users[1].human && users[2].human, "consumed queued messages are his (blue) bubbles");
 });
 
+test("a consumed POSTAL BANNER attachment stays visible, anchored at its own line", () => {
+  // Queue-delivered mail used to be dropped here as "harness plumbing" — leaving
+  // the message with NO chat line at all, so a timeline message-connector click
+  // had nothing to land on (2026-06-12). It must flow through as a user event
+  // (hydratePostal later swaps it into a postal-in card) carrying THIS line's
+  // uuid — the same uuid romp-events now anchors the absorbed boundary on.
+  const banner = "####################\n## \u{1F4EC} from peer_sess \u00b7 10:40\n####################\n"
+    + "ASK: do the thing\n<!-- romp-msg-id: 1781000000.11111_22222.TESTHOST -->";
+  const raw = join(
+    uline("u1", null, "main ask"),
+    aline("a1", "u1", [{ type: "text", text: "working" }], { stop: "tool_use" }),
+    qline("enqueue", banner),
+    qline("remove"),
+    JSON.stringify({ type: "attachment", uuid: "qb1", parentUuid: "a1", timestamp: NOW(),
+      attachment: { type: "queued_command", prompt: banner, commandMode: "prompt" } }),
+    aline("a2", "qb1", [{ type: "text", text: "replied to the peer" }]),
+  );
+  const out = parse(raw);
+  const banners = out.events.filter((e) => e.kind === "user" && e.md.includes("romp-msg-id"));
+  assert.equal(banners.length, 1, "the banner attachment renders instead of vanishing");
+  assert.equal((banners[0] as any).uuid, "qb1", "anchored at the attachment line");
+});
+
 test("todo fold: one checklist, dropped when everything is completed", () => {
   const mk = (status: string) => join(
     uline("u1", null, "do the tasks"),
