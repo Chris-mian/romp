@@ -31,4 +31,5 @@ fi
 
 export ROMP_BIN="${ROMP_BIN:-$ROMP_DIR/bin/romp}"
 export ROMP_FEED_DETAIL_BIN="${ROMP_FEED_DETAIL_BIN:-$ROMP_DIR/bin/romp-feed-detail}"
+export ROMP_DIR   # the kernel's /timeline loads obsidian/romp-timeline-{data,view}.js from here
 exec node "$KERNEL" "$@"

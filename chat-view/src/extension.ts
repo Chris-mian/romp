@@ -227,7 +227,10 @@ class KernelPipe {
     const ok = await ensureKernel();
     if (!this.alive) return;
     if (!ok) { setTimeout(() => void this.connect(), 5000); return; }
-    const ws = new WebSocket(`ws://${HOST}:${kernelPort()}/ws?app=${this.app}`);
+    // One window-group id per VS Code window: the kernel routes a feed click's
+    // focus to THIS window's chat panel (same mechanism as the combined
+    // browser page's panes).
+    const ws = new WebSocket(`ws://${HOST}:${kernelPort()}/ws?app=${this.app}&wid=${encodeURIComponent(vscode.env.sessionId)}`);
     this.ws = ws;
     ws.on("open", () => {
       if (!this.alive) { ws.close(); return; }
@@ -273,7 +276,7 @@ function openPanel(preserveFocus = false) {
   }
   const p = vscode.window.createWebviewPanel(
     "rompChat",
-    "romp",
+    "romp chat",
     { viewColumn: vscode.ViewColumn.Beside, preserveFocus },
     {
       enableScripts: true,

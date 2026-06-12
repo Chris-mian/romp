@@ -37,6 +37,7 @@ import {
   computeFeedItems, computeAskItems, workingNames, ageRgbTuple, lastReqBySid,
   missedHandoffSuspects, FeedItem, AskItem,
 } from "./feed";
+import { loadTimeline, timelineHtml, timelineUnavailableHtml } from "./timeline";
 
 const POLL_MS = 800;
 const FEED_LIMIT = 200;
@@ -99,7 +100,12 @@ let focusOverlayItem: string | null = null;
 let activeTab: { tid: string; name: string } | null = null;
 
 // ---- WS clients ----
-interface Client extends WebSocket { rompApp?: "chat" | "feed"; rompReady?: boolean; rompActiveTab?: string | null; }
+interface Client extends WebSocket {
+  rompApp?: "chat" | "feed" | "timeline";
+  rompReady?: boolean;
+  rompActiveTab?: string | null;
+  rompWid?: string;   // window-group id: panes of ONE browser window / editor window share it
+}
 const clients = new Set<Client>();
 function post(msg: any) {
   const s = JSON.stringify(msg);
@@ -108,14 +114,30 @@ function post(msg: any) {
 
 // Shared tabs, PER-CLIENT focus (the user's choice 2026-06-11): the open-tab set
 // is one kernel-global thing — open/close anywhere applies everywhere — but
-// which tab is FOCUSED is each client's own. A focus triggered by a client's
-// request goes back to THAT client only; unprompted focuses (deep links, with
-// no requesting client) still broadcast. reqClient is set for the duration of
-// one message dispatch (handlers are synchronous; async paths capture it).
+// which tab is FOCUSED is each client's own. Focus messages are chat-app
+// payloads, so they route to a CHAT client:
+//   chat requester              → itself;
+//   feed/timeline requester     → the chat client(s) sharing its window group
+//                                 (?wid= — the combined page / one VS Code
+//                                 window), else every chat client (a lone feed
+//                                 tab still drives the lone chat tab);
+//   no requester (external)     → every chat client.
+// reqClient is set for the duration of one message dispatch (handlers are
+// synchronous; async paths capture and restore it).
 let reqClient: Client | null = null;
 function postFocus(msg: any) {
-  if (reqClient && reqClient.readyState === WebSocket.OPEN) reqClient.send(JSON.stringify(msg));
-  else post(msg);
+  const rc = reqClient;
+  if (rc && rc.rompApp === "chat" && rc.readyState === WebSocket.OPEN) { rc.send(JSON.stringify(msg)); return; }
+  if (rc && rc.rompWid) {
+    const peers = Array.from(clients).filter((c) =>
+      c.rompApp === "chat" && c.rompReady && c.rompWid === rc.rompWid && c.readyState === WebSocket.OPEN);
+    if (peers.length) {
+      const s = JSON.stringify(msg);
+      for (const c of peers) c.send(s);
+      return;
+    }
+  }
+  post(msg);
 }
 function feedPost(msg: any) {
   const s = JSON.stringify(msg);
@@ -1212,6 +1234,78 @@ function handleFeedMessage(c: Client, m: any) {
   }
 }
 
+// ---- the timeline (obsidian/romp-timeline-*.js, served at /timeline) ----
+
+function timelinePost(msg: any) {
+  const s = JSON.stringify(msg);
+  for (const c of clients) if (c.rompApp === "timeline" && c.rompReady && c.readyState === WebSocket.OPEN) c.send(s);
+}
+const hasTimelineClients = () => Array.from(clients).some((c) => c.rompApp === "timeline" && c.rompReady);
+
+let tlBuilding = false;
+async function timelineTick() {
+  const tl = loadTimeline();
+  if (!tl || !hasTimelineClients() || tlBuilding) return;
+  tlBuilding = true;
+  try {
+    const data = await tl.build();
+    timelinePost({ type: "data", data });
+  } catch {
+    timelinePost({ type: "data", data: { unavailable: true } });
+  } finally {
+    tlBuilding = false;
+  }
+}
+
+function readActiveChat(): { tid: string | null; name: string | null } | null {
+  try {
+    const raw = fs.readFileSync(path.join(ROMP_STATE(), "chat-active"), "utf8").trim();
+    if (!raw) return null;
+    const o = JSON.parse(raw);
+    return { tid: o.tid || null, name: o.name || null };
+  } catch { return null; }
+}
+
+// Watch the romp state dir so the timeline reacts instantly: chat-active →
+// the lane outline moves on tab switch; session-order / timeline-focus /
+// timeline-hover → full rebuild (carries the new order + focus/hover state).
+// Mirrors the trackchanges wrapper's watcher.
+function watchTimelineState() {
+  let dbnc: NodeJS.Timeout | undefined;
+  let dbncOrder: NodeJS.Timeout | undefined;
+  try {
+    fs.watch(ROMP_STATE(), (_evt, filename) => {
+      if (!hasTimelineClients()) return;
+      const f = filename ? String(filename) : "";
+      if (f === "session-order.json" || f === "timeline-focus.json" || f === "timeline-hover.json") {
+        if (dbncOrder) clearTimeout(dbncOrder);
+        dbncOrder = setTimeout(() => void timelineTick(), 40);
+        return;
+      }
+      if (f && f !== "chat-active") return;
+      if (dbnc) clearTimeout(dbnc);
+      dbnc = setTimeout(() => timelinePost({ type: "activeChat", activeChat: readActiveChat() }), 30);
+    });
+  } catch { /* best-effort; the 3s poll covers it */ }
+}
+
+function handleTimelineMessage(c: Client, m: any) {
+  if (!m) return;
+  if (m.type === "ready") { c.rompReady = true; void timelineTick(); }
+  else if (m.type === "deepLink" && m.session) deepLink(String(m.session), m);
+  else if (m.type === "writeOrder" && Array.isArray(m.order)) { writeSessionOrder(m.order.map(String)); lastOrderSig = m.order.join(","); }
+  else if (m.type === "compact" && typeof m.name === "string" && m.name) backend.send(String(m.name), "/compact");
+  // Model/effort drop-down pickers → slash command into the pane. `/model`
+  // opens a hookless "Switch model?" confirmation that fires no hook and
+  // waits — give it a second Enter to accept (effort applies directly; the
+  // extra Enter there would just be an empty-composer submit anyway).
+  else if (m.type === "sendCommand" && typeof m.name === "string" && m.name && typeof m.cmd === "string" && m.cmd) {
+    const name = String(m.name);
+    backend.send(name, String(m.cmd));
+    if (/^\s*\/model\b/.test(String(m.cmd))) setTimeout(() => backend.tui?.sendKeys(name, ["Enter"]), 850);
+  }
+}
+
 // ---- HTTP ----
 
 // The acquireVsCodeApi shim: postMessage ↔ WebSocket, state ↔ localStorage.
@@ -1224,12 +1318,20 @@ function shimJs(app: "chat" | "feed"): string {
   var KEY = "romp-webview-state-${app}";
   var queue = [];
   var ws = null;
+  // window-group id: the combined page loads this page in an iframe with
+  // ?wid=… so the kernel can route cross-pane focus inside ONE window.
+  var wid = new URLSearchParams(location.search).get("wid") || "";
+  var embedded = window.parent !== window;
   function connect() {
     var proto = location.protocol === "https:" ? "wss://" : "ws://";
-    ws = new WebSocket(proto + location.host + "/ws?app=${app}");
+    ws = new WebSocket(proto + location.host + "/ws?app=${app}" + (wid ? "&wid=" + encodeURIComponent(wid) : ""));
     ws.onopen = function () { for (var i = 0; i < queue.length; i++) ws.send(queue[i]); queue = []; };
     ws.onmessage = function (ev) {
       var msg; try { msg = JSON.parse(ev.data); } catch (e) { return; }
+      // reveal hints for the combined page: a focus landing on the chat pane /
+      // a card opening in the feed pane should un-collapse that pane.
+      if (embedded && msg && (msg.type === "focus" || msg.type === "openCard"))
+        try { window.parent.postMessage({ romp: "reveal", pane: "${app}" }, "*"); } catch (e) { /* ignore */ }
       window.dispatchEvent(new MessageEvent("message", { data: msg }));
     };
     ws.onclose = function () { setTimeout(function () { location.reload(); }, 1500); };
@@ -1372,6 +1474,161 @@ function feedHtml(): string {
 </html>`;
 }
 
+// The combined page (served at /): chat left, feed right, timeline bottom —
+// three iframes sharing one window-group id, so a session-name click in the
+// feed focuses the chat PANE BESIDE IT (the kernel routes focus by wid).
+// Each pane has a collapse chevron: chat/feed collapse to thin side strips,
+// the timeline to a bottom strip. Divider drags + collapsed state persist in
+// localStorage. Pure inline page — no bundle.
+function combinedHtml(): string {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>romp</title>
+  <style>
+    html, body { height: 100%; margin: 0; background: #1e1e1e; overflow: hidden; }
+    #grid { display: flex; flex-direction: column; height: 100vh; }
+    #top { display: flex; flex: 1 1 auto; min-height: 0; }
+    .pane { position: relative; min-width: 0; min-height: 0; }
+    .pane iframe { width: 100%; height: 100%; border: 0; display: block; }
+    #chat-pane { flex: 0 0 var(--chat-w, 55%); }
+    #feed-pane { flex: 1 1 auto; }
+    #tl-pane { flex: 0 0 var(--tl-h, 30%); border-top: 1px solid #303031; }
+    .divider-v { flex: 0 0 5px; cursor: col-resize; background: #161616; }
+    .divider-v:hover { background: #007fd4; }
+    #divider-h { flex: 0 0 5px; cursor: row-resize; background: #161616; }
+    #divider-h:hover { background: #007fd4; }
+    .collapse-btn {
+      position: absolute; z-index: 10; width: 22px; height: 22px;
+      display: flex; align-items: center; justify-content: center;
+      background: #2a2a2a; color: #999; border: 1px solid #3a3a3a; border-radius: 5px;
+      cursor: pointer; font-size: 12px; user-select: none; opacity: 0.6;
+    }
+    .collapse-btn:hover { opacity: 1; color: #fff; }
+    #chat-collapse { top: 6px; right: 6px; }
+    #feed-collapse { top: 6px; right: 6px; }
+    #tl-collapse { top: 6px; right: 6px; }
+    /* collapsed: the pane becomes a thin strip holding only its expand button */
+    .pane.collapsed { flex: 0 0 26px !important; }
+    .pane.collapsed iframe { display: none; }
+    .pane.collapsed .collapse-btn { position: static; margin: 6px auto; opacity: 0.8; }
+    .pane.collapsed { display: flex; align-items: flex-start; justify-content: center; background: #181818; }
+    #tl-pane.collapsed { align-items: center; justify-content: flex-end; padding-right: 6px; }
+    .divider-v.hidden, #divider-h.hidden { display: none; }
+  </style>
+</head>
+<body>
+  <div id="grid">
+    <div id="top">
+      <div class="pane" id="chat-pane">
+        <div class="collapse-btn" id="chat-collapse" title="collapse the chat">⟨</div>
+        <iframe id="chat-frame"></iframe>
+      </div>
+      <div class="divider-v" id="divider-v"></div>
+      <div class="pane" id="feed-pane">
+        <div class="collapse-btn" id="feed-collapse" title="collapse the feed">⟩</div>
+        <iframe id="feed-frame"></iframe>
+      </div>
+    </div>
+    <div id="divider-h"></div>
+    <div class="pane" id="tl-pane">
+      <div class="collapse-btn" id="tl-collapse" title="collapse the timeline">⌄</div>
+      <iframe id="tl-frame"></iframe>
+    </div>
+  </div>
+  <script>
+  (function () {
+    // one window-group id per page load: the kernel routes cross-pane focus by it
+    var wid = "w" + Math.random().toString(36).slice(2, 10);
+    document.getElementById("chat-frame").src = "/chat?wid=" + wid;
+    document.getElementById("feed-frame").src = "/feed?wid=" + wid;
+    document.getElementById("tl-frame").src = "/timeline?wid=" + wid;
+
+    var KEY = "romp-combined-layout";
+    var layout = { chatW: 55, tlH: 30, chat: false, feed: false, tl: false }; // % sizes + collapsed flags
+    try { var saved = JSON.parse(localStorage.getItem(KEY) || "null"); if (saved) layout = Object.assign(layout, saved); } catch (e) {}
+    function save() { try { localStorage.setItem(KEY, JSON.stringify(layout)); } catch (e) {} }
+
+    var panes = {
+      chat: document.getElementById("chat-pane"),
+      feed: document.getElementById("feed-pane"),
+      tl: document.getElementById("tl-pane"),
+    };
+    var btns = {
+      chat: document.getElementById("chat-collapse"),
+      feed: document.getElementById("feed-collapse"),
+      tl: document.getElementById("tl-collapse"),
+    };
+    var GLYPH = { chat: ["⟨", "⟩"], feed: ["⟩", "⟨"], tl: ["⌄", "⌃"] };   // [expanded, collapsed]
+    function apply() {
+      document.documentElement.style.setProperty("--chat-w", layout.chatW + "%");
+      document.documentElement.style.setProperty("--tl-h", layout.tlH + "%");
+      for (var k in panes) {
+        panes[k].classList.toggle("collapsed", !!layout[k]);
+        btns[k].textContent = GLYPH[k][layout[k] ? 1 : 0];
+        btns[k].title = (layout[k] ? "expand" : "collapse") + " the " + (k === "tl" ? "timeline" : k);
+      }
+      // a collapsed chat hands its width to the feed (flex handles it); hide
+      // the divider when either side of it is collapsed
+      document.getElementById("divider-v").classList.toggle("hidden", !!(layout.chat || layout.feed));
+      document.getElementById("divider-h").classList.toggle("hidden", !!layout.tl);
+    }
+    function toggle(k) { layout[k] = !layout[k]; apply(); save(); }
+    btns.chat.onclick = function () { toggle("chat"); };
+    btns.feed.onclick = function () { toggle("feed"); };
+    btns.tl.onclick = function () { toggle("tl"); };
+
+    // divider drags (iframes eat mousemove — overlay a shield while dragging)
+    function shieldOn(cursor) {
+      var s = document.createElement("div");
+      s.id = "drag-shield";
+      s.style.cssText = "position:fixed;inset:0;z-index:99;cursor:" + cursor + ";";
+      document.body.appendChild(s);
+      return s;
+    }
+    document.getElementById("divider-v").addEventListener("mousedown", function (e) {
+      e.preventDefault();
+      var shield = shieldOn("col-resize");
+      var move = function (ev) {
+        var pct = (ev.clientX / window.innerWidth) * 100;
+        layout.chatW = Math.min(85, Math.max(15, pct));
+        apply();
+      };
+      var up = function () { shield.remove(); save(); window.removeEventListener("mousemove", move); window.removeEventListener("mouseup", up); };
+      window.addEventListener("mousemove", move);
+      window.addEventListener("mouseup", up);
+    });
+    document.getElementById("divider-h").addEventListener("mousedown", function (e) {
+      e.preventDefault();
+      var shield = shieldOn("row-resize");
+      var move = function (ev) {
+        var pct = ((window.innerHeight - ev.clientY) / window.innerHeight) * 100;
+        layout.tlH = Math.min(70, Math.max(10, pct));
+        apply();
+      };
+      var up = function () { shield.remove(); save(); window.removeEventListener("mousemove", move); window.removeEventListener("mouseup", up); };
+      window.addEventListener("mousemove", move);
+      window.addEventListener("mouseup", up);
+    });
+
+    // reveal hints from the panes (a focus landed in chat / a card opened in
+    // the feed / the timeline deep-linked into chat) → un-collapse that pane
+    window.addEventListener("message", function (e) {
+      var m = e.data;
+      if (!m || m.romp !== "reveal") return;
+      var k = m.pane === "timeline" ? "tl" : m.pane;
+      if (layout[k]) { layout[k] = false; apply(); save(); }
+    });
+
+    apply();
+  })();
+  </script>
+</body>
+</html>`;
+}
+
 // ---- auth (for serving beyond localhost) ----
 // ROMP_SERVE_TOKEN (or --token) gates every route: pages accept ?token=… once
 // and set a cookie; static/WS requests then ride the cookie. No token
@@ -1439,9 +1696,15 @@ export function main() {
     if (serveToken() && url.searchParams.get("token") === serveToken())
       headers["Set-Cookie"] = `romp_token=${serveToken()}; HttpOnly; SameSite=Strict; Path=/`;
     if (url.pathname === "/" || url.pathname === "/index.html") {
+      res.writeHead(200, headers); res.end(combinedHtml());
+    } else if (url.pathname === "/chat") {
       res.writeHead(200, headers); res.end(chatHtml());
     } else if (url.pathname === "/feed") {
       res.writeHead(200, headers); res.end(feedHtml());
+    } else if (url.pathname === "/timeline") {
+      const tl = loadTimeline();
+      res.writeHead(200, headers);
+      res.end(tl ? timelineHtml(tl.viewJs) : timelineUnavailableHtml());
     } else if (url.pathname.startsWith("/dist/")) {
       serveStatic(res, DIST, url.pathname.slice("/dist/".length));
     } else if (url.pathname.startsWith("/media/")) {
@@ -1468,9 +1731,11 @@ export function main() {
   wss.on("connection", (socket: Client, req) => {
     const url = new URL(req.url || "/", "http://x");
     if (!authorized(req, url)) { socket.close(4401, "unauthorized"); return; }
-    const app = url.searchParams.get("app") === "feed" ? "feed" : "chat";
+    const appParam = url.searchParams.get("app");
+    const app = appParam === "feed" ? "feed" : appParam === "timeline" ? "timeline" : "chat";
     socket.rompApp = app;
     socket.rompReady = false;
+    socket.rompWid = url.searchParams.get("wid") || undefined;
     clients.add(socket);
     socket.on("message", (data) => {
       let m: any;
@@ -1478,7 +1743,8 @@ export function main() {
       reqClient = socket;   // focus replies target the asking client (handlers are sync)
       try {
         if (app === "chat") handleChatMessage(socket, m);
-        else handleFeedMessage(socket, m);
+        else if (app === "feed") handleFeedMessage(socket, m);
+        else handleTimelineMessage(socket, m);
       } catch (e) {
         console.error("romp-serve: handler error for", m?.type, e);
       } finally {
@@ -1490,6 +1756,8 @@ export function main() {
   });
 
   setInterval(tick, POLL_MS);
+  setInterval(() => void timelineTick(), 3000);
+  watchTimelineState();
   // Single-instance by port: a second kernel on the same port is the
   // spawn-or-attach race (two hosts starting at once) — if the occupant is a
   // romp kernel, defer to it quietly so the spawner just attaches.
