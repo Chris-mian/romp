@@ -45,9 +45,17 @@ class RegistryFixture(unittest.TestCase):
         self._saved = (feed.REQS, feed.SUMM, feed.NAMES, pipe.REQS)
         feed.REQS, feed.SUMM, feed.NAMES = self.reqs, self.summ, self.names
         pipe.REQS = self.reqs
+        # Deterministic liveness: the fold now reads tmux (auto-filing parity,
+        # 2026-06-11) — stub it so tests never depend on the machine's real
+        # sessions. Fixture sessions read as WORKING with no resolvable open
+        # turn -> the conservative claim rule holds cards in WORKING, preserving
+        # the pre-auto-filing expectations these tests encode.
+        self._saved_states = feed.live_session_ids
+        feed.live_session_ids = lambda: {"s1": "working", "s2": "working", "s3": "working"}
 
     def tearDown(self):
         feed.REQS, feed.SUMM, feed.NAMES, pipe.REQS = self._saved
+        feed.live_session_ids = self._saved_states
         shutil.rmtree(self.dir, ignore_errors=True)
 
     def write(self, fname, content):
@@ -142,7 +150,7 @@ class TestAsksFold(RegistryFixture):
             f.write(jl({"kind": "link", "reply_id": "r", "request_ids": ["a#0"], "relevance": "DECISION", "sid": "s1", "t": 120}))
         items = feed.ask_items(AGENTS)
         self.assertEqual(items[0]["column"], "needs_input")
-        self.assertIn("needs you — alpha", items[0]["did"])
+        self.assertIn("blocked on you — alpha", items[0]["did"])
 
     # ---- DAG path accounting (the user's status model, 2026-06-09) ----
 
@@ -158,7 +166,7 @@ class TestAsksFold(RegistryFixture):
             {"kind": "request", "id": "s1:200:bb", "t": 205, "text": "my answer"}))
         items = feed.ask_items(AGENTS)
         self.assertEqual(items[0]["column"], "asks")
-        self.assertNotIn("needs you", items[0]["did"])
+        self.assertNotIn("blocked on you", items[0]["did"])
 
     def test_all_paths_done_completes(self):
         # every node (root + handoff) terminal-DONE → completed
@@ -173,7 +181,7 @@ class TestAsksFold(RegistryFixture):
                 {"kind": "link", "reply_id": "r2", "request_ids": ["a#0"], "relevance": "DONE", "sid": "s1", "t": 130}))
         items = feed.ask_items(AGENTS)
         self.assertEqual(items[0]["column"], "completed")
-        self.assertIn("all done", items[0]["did"])
+        self.assertIn("judged done", items[0]["did"])   # judged but owner busy (stub) -> not settled
 
     def test_open_branch_holds_ask_open_with_drop_point(self):
         # root DONE but the handoff never got a terminal reply: NOT completed —
@@ -188,10 +196,12 @@ class TestAsksFold(RegistryFixture):
         agents = dict(AGENTS, s2={"name": "beta", "dir": "", "rgb": None})
         items = feed.ask_items(agents)
         self.assertEqual(items[0]["column"], "asks")
-        self.assertIn("waiting on beta", items[0]["did"])
+        self.assertIn("waiting on beta", items[0]["did"])   # recipient working -> delegated, plain waiting
 
-    def test_later_work_reopens_a_done_node(self):
-        # newest link wins per node: DETAILS after a DONE = work continued
+    def test_details_does_not_reopen_a_done_node(self):
+        # LATCHING (the user 2026-06-11 evening): routine DETAILS progress filed
+        # after a DONE stamp rides the node without erasing the verdict — without
+        # this, every wrap-up link un-stamped its card and Completed was all-green
         self.write("nodes.jsonl", jl(
             {"kind": "ask", "id": "a#0", "sid": "s1", "turn_id": "s1:100:aa", "t": 100, "text": "root"}))
         with open(os.path.join(self.reqs, "links.jsonl"), "w") as f:
@@ -199,7 +209,19 @@ class TestAsksFold(RegistryFixture):
                 {"kind": "link", "reply_id": "r1", "request_ids": ["a#0"], "relevance": "DONE", "sid": "s1", "t": 120},
                 {"kind": "link", "reply_id": "r2", "request_ids": ["a#0"], "relevance": "DETAILS", "sid": "s1", "t": 130}))
         items = feed.ask_items(AGENTS)
-        self.assertEqual(items[0]["column"], "asks")
+        self.assertEqual(items[0]["column"], "completed")
+        self.assertIn("judged done", items[0]["did"])   # stamp survives the wrap-up link
+
+    def test_question_still_reopens_a_done_node(self):
+        # the latch yields to anything NON-routine: a later DECISION re-opens
+        self.write("nodes.jsonl", jl(
+            {"kind": "ask", "id": "a#0", "sid": "s1", "turn_id": "s1:100:aa", "t": 100, "text": "root"}))
+        with open(os.path.join(self.reqs, "links.jsonl"), "w") as f:
+            f.write(jl(
+                {"kind": "link", "reply_id": "r1", "request_ids": ["a#0"], "relevance": "DONE", "sid": "s1", "t": 120},
+                {"kind": "link", "reply_id": "r2", "request_ids": ["a#0"], "relevance": "DECISION", "sid": "s1", "t": 130}))
+        items = feed.ask_items(AGENTS)
+        self.assertEqual(items[0]["column"], "needs_input")
 
     # ---- clear vs late-work race (resurrection rule) ----
 

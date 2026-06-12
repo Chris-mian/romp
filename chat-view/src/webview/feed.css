@@ -21,6 +21,10 @@
   --rel-decision: #1EA1EB;   /* classic blue */
   --rel-action: #E0A030;     /* amber — a to-do the user must DO (vs decide) */
   --rel-details: var(--dim); /* already theme-consistent */
+  /* ✓ badge background — the DEFAULT session identity blue (bin/romp _palette[0]);
+     every checkmark disc panel-wide sits on this, per the user 2026-06-11. DONE
+     status text/chips stay --rel-done green (they encode status, not a check). */
+  --check-bg: #1EA1EB;
 
   --sans: var(--vscode-chat-font-family, var(--vscode-font-family, system-ui, -apple-system, "Segoe UI", sans-serif));
   --fs: var(--vscode-chat-font-size, 13px);
@@ -120,14 +124,17 @@ body { display: flex; flex-direction: column; }
   color: var(--dim); background: var(--bg);
 }
 .feed-col-count { font-weight: 600; opacity: 0.7; }
-.feed-col-list { display: flex; flex-direction: column; gap: 8px; min-height: 8px; }
+/* margin-top, NOT header padding: the liveness rings are outlines drawn ~2.5px
+   OUTSIDE the first card's top edge, and the sticky header paints its padding as
+   opaque background over them — only unpainted margin space lets them show */
+.feed-col-list { display: flex; flex-direction: column; gap: 8px; min-height: 8px; margin-top: 6px; }
 .feed-col-empty { color: var(--dim); opacity: 0.4; text-align: center; padding: 14px 0; }
 /* column header accents matching the session-chip state colors (the user's ruling
-   2026-06-10): AWAITING = the awaiting-chip red (#c0392b — something needs him,
-   same meaning as a session awaiting him); COMPLETED = the ready-chip blue
-   (#2b7fb8 — finished work puts things back in a ready state). Values mirror
-   --st-awaiting-bg / --st-ready-bg in styles.css (separate webview, no shared
-   :root). Asks stays neutral. */
+   2026-06-10): BLOCKED (né Awaiting, renamed 2026-06-11) = the awaiting-chip red
+   (#c0392b — something needs him, same meaning as a session awaiting him);
+   COMPLETED = the ready-chip blue (#2b7fb8 — finished work puts things back in a
+   ready state). Values mirror --st-awaiting-bg / --st-ready-bg in styles.css
+   (separate webview, no shared :root). Working stays neutral. */
 .col-needsInput .feed-col-head { color: #c0392b; }
 .col-completed  .feed-col-head { color: #2b7fb8; }
 
@@ -241,14 +248,15 @@ body { display: flex; flex-direction: column; }
 .fgroup-member.st-done .fgroup-dot { color: var(--rel-done); }
 .fgroup-member.st-question .fgroup-dot { color: #e0b020; }
 .fgroup-member.st-open .fgroup-dot { color: var(--dim); }
-/* completed marker = a filled green disc with a white ✓ (the user: distinct from a plain
+/* completed marker = a filled disc with a white ✓ (the user: distinct from a plain
    dot, which other states + recency tints also use). One badge for EVERY "done" mark
-   in the feed, matching the chat transcript's .dot.green. */
+   in the feed, matching the chat transcript's .dot.green — on the default-session
+   blue like every checkmark panel-wide (the user 2026-06-11). */
 .st-done .ftree-mark, .frow:not(.st-question) .frow-mark, .fgroup-member.st-done .fgroup-dot, .flinked.st-done .flinked-mark {
   align-self: center; box-sizing: border-box;
   display: inline-flex; align-items: center; justify-content: center;
   width: 13px; height: 13px; min-width: 13px; border-radius: 50%;
-  background: var(--rel-done); color: transparent; font-size: 0;
+  background: var(--check-bg); color: transparent; font-size: 0;
 }
 .st-done .ftree-mark::before, .frow:not(.st-question) .frow-mark::before, .fgroup-member.st-done .fgroup-dot::before, .flinked.st-done .flinked-mark::before {
   content: "✓"; font-size: 9px; font-weight: 900; line-height: 1; color: #fff;
@@ -305,6 +313,52 @@ body { display: flex; flex-direction: column; }
 /* hover lightens via an inset overlay + lifts — never touches the inline tint */
 .fitem:hover { box-shadow: inset 0 0 0 999px rgba(255, 255, 255, 0.07), 0 2px 7px rgba(0, 0, 0, 0.30); }
 .fitem.dismissing { opacity: 0; transform: translateX(16px); }
+
+/* ⏸ live block badge on an ask card: the owning session is stopped mid-turn on a
+   permission prompt / picker for THIS card's work; click opens the session.
+   Same red as the BLOCKED column header. */
+.fask-blocked {
+  flex: 0 0 auto; font-size: 0.72em; font-weight: 700; letter-spacing: 0.03em;
+  color: #c0392b; cursor: pointer; white-space: nowrap;
+}
+.fask-blocked:hover { text-decoration: underline; }
+
+/* ↩ answer row — the user's recorded reply to an agent question (an explicit
+   child event on the card, kind:"answer"): decision blue, never dimmed — it's
+   his input, not routine agent progress. */
+.frow.st-answer .frow-mark { color: var(--rel-decision); }
+.frow.st-answer { opacity: 1; }
+
+/* ⚠ suspect badge — ONLY on the synthetic (unattributed) blocked card: the
+   registry missed this turn's ask; click opens the error-explanation modal.
+   Amber, not red: it flags a bookkeeping error, not something the user owes. */
+.fask-suspect {
+  flex: 0 0 auto; font-size: 0.72em; font-weight: 700; letter-spacing: 0.03em;
+  color: #E0A030; cursor: pointer; white-space: nowrap;
+}
+.fask-suspect:hover { text-decoration: underline; }
+
+/* ---------- liveness anomaly rings (2026-06-11) ---------- */
+/* The OUTLINE ring marks a card whose LIVE state disagrees with the column it's
+   filed in (agreement = no ring; the user's simplification). Host-computed from
+   live tmux state + open handoffs; colors only, decides nothing. The border
+   keeps the recency tint; focus/pin keep box-shadow.
+   green  = settled-but-in-Asks (nothing can move it without you — likely done)
+   dashed = stalled-in-Asks (unfinished handoff, nobody working)
+   gold   = active-but-Completed (owner still mid-turn). */
+/* rings live ONLY in Completed (2026-06-12-eve simplification): agreement = no
+   ink; green = auto-filed only (verify, then Clear / Follow up); blue = judged
+   done only (not settled yet — glance first). */
+.fitem.ask.lv-settled   { outline: 1.5px solid  rgba(87, 181, 15, 0.80);  outline-offset: 1px; }
+.fitem.ask.lv-done      { outline: 1.5px solid  rgba(43, 127, 184, 0.95); outline-offset: 1px; }
+/* ⏳ external-wait chip: paused on the world, not on the user — dim cyan */
+.fask-wait { flex: 0 0 auto; font-size: 0.72em; font-weight: 700; letter-spacing: 0.03em;
+             color: #4EA8A9; white-space: nowrap; cursor: default; }
+/* legend chips above the columns — same rings, label inside */
+.lv-legend { display: flex; gap: 12px; padding: 2px 10px 7px; font-size: 10.5px; opacity: 0.7; }
+.lv-chip { padding: 0 7px; line-height: 16px; border-radius: 8px; cursor: default; }
+.lv-chip.lv-settled   { outline: 1.5px solid  rgba(87, 181, 15, 0.80); }
+.lv-chip.lv-done      { outline: 1.5px solid  rgba(43, 127, 184, 0.95); }
 
 .fitem-main { flex: 1 1 auto; min-width: 0; }
 /* right rail: just the timestamp now (Expand/Dismiss moved into the main column) */
@@ -363,6 +417,13 @@ body { display: flex; flex-direction: column; }
 /* "Follow up" reuses the action-button chrome but hovers BLUE (it reopens the
    card to ASKS — a continuation, not the red destructive Clear) */
 .fdismiss.ffollow:hover { color: #fff; border-color: #2b7fb8; background: #2b7fb8; }
+/* UndoClear (top right) — restorative, so it hovers BLUE like Follow up, not
+   Clear's red. On the legend strip margin-left:auto pins it to the right edge;
+   on the empty state it floats in the same corner (container-type on #feed-list
+   makes it the containing block). */
+.fh-undoclear { margin-left: auto; opacity: 0.95; font-size: 10.5px; padding: 1px 9px; }
+.fh-undoclear:hover { color: #fff; border-color: #2b7fb8; background: #2b7fb8; }
+#feed-list > .fh-undoclear { position: absolute; top: 8px; right: 14px; }
 /* downstream sessions an ask is waiting on (drop points) — experiment
    2026-06-10; live working dot + age per session, newest first */
 /* active downstream sessions (the user's handoff spec, 2026-06-10): one line per
@@ -378,10 +439,13 @@ body { display: flex; flex-direction: column; }
 .frow.st-open .frow-mark { color: var(--dim); }
 .fstandalone-par { margin-top: 10px; opacity: 0.75; }
 /* follow-up composer under a completed card's rows */
-.ffollow-box { display: flex; gap: 5px; margin-top: 6px; }
+.ffollow-box { display: flex; gap: 5px; margin-top: 6px; align-items: flex-end; }
 /* in the modal the composer is a header sub-bar (the user 2026-06-10: follow-up
    moved off the card into the modal); align its padding with the head row */
 .feed-modal-follow-box { margin: 0; padding: 8px 16px; border-bottom: 1px solid var(--card-border); }
+/* the follow-up box is a textarea sized like the main composer: auto-grows with
+   input (capped in growFollowUp), Shift+Enter for newlines */
+.feed-modal-follow-input { resize: none; box-sizing: border-box; line-height: 1.4; padding: 8px 10px; }
 
 /* expanded view — Ask on top, Response below */
 .fexpand-slot { /* show/hide toggled inline by the script */ }
@@ -401,3 +465,63 @@ body { display: flex; flex-direction: column; }
 @keyframes fpulse { 0%, 100% { opacity: 0.5; } 50% { opacity: 0.95; } }
 .fdetail-steps { margin: 8px 0 0; padding-left: 18px; }
 .fdetail-steps li { margin: 3px 0; }
+
+/* white outline mirroring the timeline's hover highlight — applied to the
+   card(s) built from the turn whose rail dot is hovered in the chat panel */
+.dot-hl { outline: 1.5px solid rgba(255, 255, 255, 0.9); outline-offset: 1px; }
+
+/* ---------- ⚠ exception report box (modal bottom) ---------- */
+/* The exception path of the user's three buckets: evidence (when the sweep
+   attached suspects) + category + free text → requests/reports.jsonl. */
+.feed-modal-report { margin-top: 10px; border-top: 1px solid var(--card-border); padding-top: 8px; }
+.frep-toggle { font-size: 0.8em; color: #E0A030; cursor: pointer; }
+.frep-toggle:hover { text-decoration: underline; }
+.frep-box { display: flex; flex-direction: column; gap: 6px; margin-top: 7px; }
+.frep-sel {
+  font: inherit; font-size: 0.85em; color: var(--fg);
+  background: rgba(255, 255, 255, 0.06); border: 1px solid var(--card-border); border-radius: 6px;
+  padding: 3px 6px; max-width: 360px;
+}
+.frep-input {
+  font: inherit; font-size: 0.9em; color: var(--fg);
+  background: rgba(255, 255, 255, 0.06); border: 1px solid var(--card-border); border-radius: 6px;
+  padding: 5px 8px; resize: vertical;
+}
+.frep-send { align-self: flex-start; }
+.fsuspect-lab { color: #E0A030; }
+.fsuspect { border-left: 2px solid #E0A030; padding-left: 8px; }
+.fsuspect-hint { opacity: 0.65; font-size: 0.9em; }
+
+/* ---------- help overlay (the "?" in the legend) ---------- */
+.lv-spacer { flex: 1 1 auto; }
+.lv-help {
+  flex: 0 0 auto; width: 17px; height: 17px; line-height: 16px; text-align: center;
+  border: 1px solid var(--card-border); border-radius: 50%;
+  color: var(--dim); cursor: pointer; font-weight: 700; margin-left: 8px;
+}
+.lv-help:hover { color: var(--fg); border-color: var(--fg); }
+#feed-help {
+  position: fixed; inset: 0; z-index: 60;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex; align-items: flex-start; justify-content: center;
+  overflow-y: auto; padding: 5vh 16px;
+}
+.feed-help-inner {
+  position: relative; max-width: 680px; width: 100%;
+  background: var(--bg); border: 1px solid var(--card-border); border-radius: 12px;
+  padding: 18px 22px 22px; box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+}
+.feed-help-close { position: absolute; top: 10px; right: 12px; }
+.fh2 { font-size: 1.15em; font-weight: 700; margin-bottom: 8px; }
+.fh3 { font-size: 0.78em; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+       color: var(--dim); margin: 14px 0 4px; }
+#feed-help .fbody { line-height: 1.55; }
+
+/* colored words inside the help overlay — render the word in the color it wears
+   on the feed itself */
+.hl { font-weight: 700; }
+.hl-green { color: #57B50F; }
+.hl-blue  { color: #2b7fb8; }
+.hl-amber { color: #E0A030; }
+.hl-cyan  { color: #4EA8A9; }
+.hl-red   { color: #c0392b; }

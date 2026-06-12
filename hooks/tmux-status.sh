@@ -1,14 +1,27 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Exit silently if not in tmux
-[[ -z "${TMUX:-}" ]] && exit 0
-
-session_name=$(tmux display-message -p '#S')
-
-# Only act on romp sessions — identified by the @romp flag, not the name.
-is_romp=$(tmux show -t "$session_name" -v @romp 2>/dev/null || true)
-[[ -n "$is_romp" ]] || exit 0
+# Two membership paths (the same hook serves both session backends):
+#   tmux     — the session lives in a tmux session tagged @romp; durable state
+#              goes to states/<sid>.jsonl AND the tmux display vars
+#              (@claude-state, @romp-emoji, …) that the status line / dashboard
+#              / ghostty dot render.
+#   headless — the launcher exported ROMP_SESSION_ID (no tmux); only the
+#              durable states/<sid>.jsonl record is written. Every tmux-var
+#              write below is display-only and skipped.
+DISPLAY_TMUX=0
+session_name=""
+if [[ -n "${TMUX:-}" ]]; then
+    session_name=$(tmux display-message -p '#S')
+    # Only act on romp sessions — identified by the @romp flag, not the name.
+    is_romp=$(tmux show -t "$session_name" -v @romp 2>/dev/null || true)
+    [[ -n "$is_romp" ]] || exit 0
+    DISPLAY_TMUX=1
+elif [[ -n "${ROMP_SESSION_ID:-}" ]]; then
+    session_name="${ROMP_SESSION_NAME:-$ROMP_SESSION_ID}"
+else
+    exit 0
+fi
 
 # Parse hook JSON with pure bash regex — no jq, no process spawns
 input=$(cat)
@@ -51,14 +64,26 @@ now=$(date +%s)
 # Append a state-transition log (only on an actual change) so the timeline can
 # reconstruct HISTORICAL state intervals — e.g. how long a session sat AWAITING
 # your input — not just the current @claude-state-since. One small JSONL per
-# session, keyed by @romp-session-id; the timeline reads permission intervals from it.
-sid=$(tmux show -t "$session_name" -v @romp-session-id 2>/dev/null || true)
-prev=$(tmux show -t "$session_name" -v @claude-state 2>/dev/null || true)
+# session; this is the DURABLE record (written on both backends — the tmux vars
+# below are display only).
+if [[ "$DISPLAY_TMUX" == 1 ]]; then
+    sid=$(tmux show -t "$session_name" -v @romp-session-id 2>/dev/null || true)
+    prev=$(tmux show -t "$session_name" -v @claude-state 2>/dev/null || true)
+else
+    sid="$ROMP_SESSION_ID"
+    # No tmux var to diff against — read the last recorded state instead.
+    prev=$(tail -1 "${XDG_STATE_HOME:-$HOME/.local/state}/romp/states/$sid.jsonl" 2>/dev/null \
+        | sed -n 's/.*"state":"\([^"]*\)".*/\1/p' || true)
+fi
 if [[ -n "$sid" && "$prev" != "$state" ]]; then
     sdir="${XDG_STATE_HOME:-$HOME/.local/state}/romp/states"
     mkdir -p "$sdir"
     printf '{"t":%s,"state":"%s"}\n' "$now" "$state" >> "$sdir/$sid.jsonl"
 fi
+
+# Everything below is DISPLAY: tmux vars, the ghostty dot watcher, the /color
+# push. A headless session has none of these surfaces.
+[[ "$DISPLAY_TMUX" == 1 ]] || exit 0
 
 # Keep the timer-side watcher alive (scripts/romp-idle-dots): Claude fires NO
 # event while a session sits quiet, so nothing else would ever fade its ghostty

@@ -299,14 +299,55 @@ class RequestParser(unittest.TestCase):
                "ASK :: linked-work clicks jump to timeline\n"
                "AMEND 2 :: also select in chat tabs\n"
                "ASK :: add color legend")
-        phrase, asks, amends = bf._parse_request(out)
+        phrase, asks, amends, answers, verdict = bf._parse_request(out)
         self.assertEqual(phrase, "wants dashboard linking")
         self.assertEqual(asks, ["linked-work clicks jump to timeline", "add color legend"])
         self.assertEqual(amends, [(2, "also select in chat tabs")])
+        self.assertEqual(verdict, "ask")
 
-    def test_phrase_only(self):
-        phrase, asks, amends = bf._parse_request("PHRASE :: small talk")
-        self.assertEqual((asks, amends), ([], []))
+    def test_phrase_only_is_unclassified(self):
+        # a bare PHRASE is a capture FAILURE (verdict None), not a 'no ask' judgment —
+        # the f752575d misses (2026-06-11) were exactly this shape
+        phrase, asks, amends, answers, verdict = bf._parse_request("PHRASE :: small talk")
+        self.assertEqual((asks, amends, verdict), ([], [], None))
+
+    def test_explicit_ack(self):
+        _, asks, _, _, verdict = bf._parse_request("PHRASE :: thanks, looks good\nACK")
+        self.assertEqual((asks, verdict), ([], "ack"))
+
+    def test_explicit_answer(self):
+        _, asks, _, answers, verdict = bf._parse_request("PHRASE :: picks the second option\nANSWER 2 :: chose stacking when narrow")
+        self.assertEqual((asks, verdict, answers), ([], "answer", [(2, "chose stacking when narrow")]))
+
+    def test_asks_win_over_stray_ack(self):
+        _, asks, _, _, verdict = bf._parse_request("PHRASE :: fix and thanks\nASK :: fix the gate\nACK")
+        self.assertEqual((asks, verdict), (["fix the gate"], "ask"))
+
+
+class CaptureBackstop(unittest.TestCase):
+    """Deterministic under-fire guard (mystery's handoff, 2026-06-11): zero-ask captures
+    must be EXPLICIT to stand; bare or suspicious ones auto-mint from the phrase."""
+
+    def test_unclassified_always_mints(self):
+        self.assertEqual(bf._capture_backstop(None, [], [], "short note"), "unclassified")
+
+    def test_explicit_ack_short_respected(self):
+        self.assertIsNone(bf._capture_backstop("ack", [], [], "sounds good, thanks"))
+
+    def test_ack_with_question_mark_mints(self):
+        self.assertEqual(bf._capture_backstop("ack", [], [], "why is this popping up?"),
+                         "suspicious-ack")
+
+    def test_ack_long_turn_mints(self):
+        long_txt = " ".join(["word"] * 31)
+        self.assertEqual(bf._capture_backstop("ack", [], [], long_txt), "suspicious-ack")
+
+    def test_explicit_answer_trusted_even_long(self):
+        long_answer = " ".join(["detail"] * 40)
+        self.assertIsNone(bf._capture_backstop("answer", [], [], long_answer))
+
+    def test_no_backstop_when_asks_exist(self):
+        self.assertIsNone(bf._capture_backstop("ask", ["do x"], [], "do x please?"))
 
 
 class BallInCourt(unittest.TestCase):
@@ -409,6 +450,24 @@ class OverrideFlow(unittest.TestCase):
                        "DECISION :: Asked which version to pin :: LINK 1")
         self.assertEqual([d for d in self.log["dec"] if d["kind"] == "tag-override"], [])
 
+    def test_own_turn_ask_linked_structurally(self):
+        # the user 2026-06-11: the reply of the turn that minted an ask can never float
+        # free of it — even when the model says LINK none, the own-turn ask attaches
+        cand = [{"id": "OTHER#0", "text": "Unrelated ask"},
+                {"id": "E5#0", "text": "This turn's own ask"}]
+        bf._handle_rep(("rep", "anc", "sid", "E5", NOW, cand, False),
+                       "DETAILS :: Investigated the flag :: LINK none :: DONE none")
+        self.assertEqual(self.log["links"][0]["request_ids"], ["E5#0"])
+        self.assertEqual(self.log["links"][0]["relevance"], "DETAILS")
+
+    def test_wait_tag_parses_and_carries(self):
+        # WAIT = paused on an external event (not the user): valid tag, link carries it,
+        # no completion marks, no needs-user routing
+        bf._handle_rep(("rep", "anc", "sid", "E6", NOW, self.cand, False),
+                       "WAIT :: Kicked off CI run, awaiting result :: LINK 1 :: DONE none")
+        self.assertEqual(self.log["sum"][0][1], "WAIT")
+        self.assertEqual(self.log["links"][0]["relevance"], "WAIT")
+
     def test_review_carved_idea_survives_with_suppressed_completion(self):
         # 0045ccce end-to-end: review-offer tail carved upstream (tailq=False); the model's
         # IDEA (bottom-right alternative) stands un-flipped, completion marks suppressed
@@ -441,7 +500,8 @@ class OverrideFlow(unittest.TestCase):
 
     def test_reply_sys_teaches_mixed_completion(self):
         self.assertIn("MIXED TURNS ARE THE NORM", bf.REPLY_SYS)
-        self.assertIn("PER-REQUEST", bf.REPLY_SYS)
+        self.assertIn("doubt about one request must not blank the others", bf.REPLY_SYS)
+        self.assertIn("MANDATORY", bf.REPLY_SYS)   # the DONE segment may never be silently omitted (2026-06-11)
 
     # ── per-request scoped phrases (incident dde32f03: one whole-turn phrase rendered
     # under 3 cards spanning 2 workstreams, leaking material across them) ──
@@ -543,12 +603,47 @@ class RegistryDir(unittest.TestCase):
         self.assertEqual(self.read(bf.NODESF), [])
 
     def test_ask_capture_always_logged_with_raw(self):
-        out = "PHRASE :: small talk"                       # ZERO asks — the silent-drop class
-        bf._handle_req(("req", "anc", "sid", "T1", NOW, []), out, {})
+        out = "PHRASE :: small talk\nACK"                  # EXPLICIT zero-ask (the new convention)
+        bf._handle_req(("req", "anc", "sid", "T1", NOW, [], None, "thanks"), out, {})
         dec = self.read(bf.DECLOG)
         self.assertEqual(dec[0]["kind"], "ask-capture")
         self.assertEqual(dec[0]["asks"], [])
+        self.assertEqual(dec[0]["verdict"], "ack")
+        self.assertIsNone(dec[0]["backstop"])
         self.assertIn("PHRASE", dec[0]["raw"])
+
+    def test_anchored_answer_writes_child_event(self):
+        # the user's ruling (2026-06-11): an ANSWER with a number lands as an explicit
+        # 'answer' node row on that card — recorded, never inferred from later typing
+        cand = [{"id": "ROOT#0", "text": "fix the gate"}]
+        out = "PHRASE :: picks option two\nANSWER 1 :: use the stricter gate"
+        bf._handle_req(("req", "anc", "sid", "T9", NOW, cand, None, "use the stricter gate"), out, {})
+        rows = self.read(bf.NODESF)
+        self.assertEqual([r["kind"] for r in rows], ["answer"])
+        self.assertEqual(rows[0]["id"], "ROOT#0")
+        self.assertEqual(rows[0]["turn_id"], "T9")
+        self.assertEqual(rows[0]["text"], "use the stricter gate")
+        dec = self.read(bf.DECLOG)
+        self.assertEqual(dec[0]["answers"], [[1, "use the stricter gate"]])
+        self.assertIsNone(dec[0]["backstop"])             # explicit answer: no mint
+
+    def test_unanchored_answer_writes_nothing(self):
+        out = "PHRASE :: answers the question\nANSWER :: just context, no entry fits"
+        bf._handle_req(("req", "anc", "sid", "T10", NOW, [], None, "some short answer"), out, {})
+        self.assertEqual(self.read(bf.NODESF), [])        # verdict-only; logged, not anchored
+        self.assertEqual(self.read(bf.DECLOG)[0]["verdict"], "answer")
+
+    def test_bare_phrase_backstop_mints_and_logs(self):
+        # the f752575d silent-drop class: bare PHRASE → auto-mint from the phrase,
+        # node written, and the declog row says WHY (backstop: unclassified)
+        out = "PHRASE :: identify recurring notification source"
+        bf._handle_req(("req", "anc", "sid", "T1", NOW, [], None, "where does this keep coming from?"), out, {})
+        nodes = self.read(bf.NODESF)
+        self.assertEqual([n["kind"] for n in nodes], ["ask"])
+        self.assertEqual(nodes[0]["text"], "identify recurring notification source")
+        dec = self.read(bf.DECLOG)
+        self.assertEqual(dec[0]["backstop"], "unclassified")
+        self.assertEqual(dec[0]["asks"], ["identify recurring notification source"])
 
     def test_asks_minted_with_indexed_ids(self):
         out = "PHRASE :: two things\nASK :: first thing\nASK :: second thing"
@@ -817,13 +912,13 @@ class TwoWavePass(unittest.TestCase):
         import types
         bf.time = types.SimpleNamespace(time=lambda: float(NOW))
 
-        def fake_llm(sysp, txt, raw=False):
+        def fake_llm(sysp, txt, raw=False, model=None):
             # discriminate on the right PROMPT SECTION: the ask text also appears in
             # <open-asks>/<candidates>/<preceding> blocks of OTHER turns' prompts.
             if sysp is bf.REQUEST_SYS:
                 if "widget" in txt.split("</request>")[0]:
                     return "PHRASE :: build dashboard widget\nASK :: build the dashboard widget"
-                return "PHRASE :: acknowledged result"
+                return "PHRASE :: acknowledged result\nACK"   # explicit zero-ask (closed classification)
             if sysp is bf.REPLY_SYS:
                 turn = txt.split("<candidates>")[0]
                 if "<candidates>" in txt and "Please build the widget" in turn:
@@ -859,17 +954,27 @@ class BriefParser(unittest.TestCase):
                "QUESTION :: You're being asked to pick a scope.\n"
                "OPTION :: contained afternoon build\n"
                "OPTION :: full VS Code client")
-        ctx, q, opts = bf._parse_brief(out)
+        ctx, q, opts, needed = bf._parse_brief(out)
         self.assertTrue(ctx.startswith("You asked"))
         self.assertEqual(len(opts), 2)
 
     def test_no_options(self):
-        ctx, q, opts = bf._parse_brief("CONTEXT :: a\nQUESTION :: b")
+        ctx, q, opts, needed = bf._parse_brief("CONTEXT :: a\nQUESTION :: b")
         self.assertEqual((ctx, q, opts), ("a", "b", []))
 
     def test_junk_tolerated(self):
-        ctx, q, opts = bf._parse_brief("noise\nCONTEXT :: a\ngarbage line\nQUESTION :: b\n")
+        ctx, q, opts, needed = bf._parse_brief("noise\nCONTEXT :: a\ngarbage line\nQUESTION :: b\n")
         self.assertEqual((ctx, q), ("a", "b"))
+    def test_needed_no_parsed(self):
+        # the second-opinion demotion (2026-06-11): NEEDED no must parse explicitly
+        ctx, q, opts, needed = bf._parse_brief(
+            "NEEDED :: no\nCONTEXT :: work done\nQUESTION :: nothing to decide")
+        self.assertIs(needed, False)
+
+    def test_needed_missing_is_none(self):
+        ctx, q, opts, needed = bf._parse_brief("CONTEXT :: a\nQUESTION :: b")
+        self.assertIsNone(needed)   # fail open: treated as yes downstream
+
 
 
 class BriefChain(unittest.TestCase):
@@ -929,7 +1034,7 @@ class BriefGenerate(unittest.TestCase):
         self.calls = []
         self._llm = bf.llm
 
-        def fake_llm(sysp, txt, raw=False):
+        def fake_llm(sysp, txt, raw=False, model=None):
             self.calls.append(txt)
             return ("CONTEXT :: You asked to build the feature; the core is done.\n"
                     "QUESTION :: You're being asked to choose the storage backend.\n"
@@ -1163,7 +1268,7 @@ class Rejudge(unittest.TestCase):
              "rec": "USER ASKED: build the widget\nASSISTANT SAID: Widget built, "
                     "tested and shipped. Nothing pending.\nTOOLS USED: Edit"}]}
         self.calls = []
-        def fake_llm(sysp, txt, raw=False):
+        def fake_llm(sysp, txt, raw=False, model=None):
             self.calls.append(txt)
             return "DONE :: Built and shipped the widget :: LINK 1 :: DONE 1"
         bf.llm = fake_llm

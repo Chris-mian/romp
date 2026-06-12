@@ -2,10 +2,15 @@
 // the ACTIVE conversation path (leaf -> root), folding tool results into their
 // calls. Runs in the extension host (Node). See README for the format notes.
 
+// An image in a user turn: src is what the webview can display (a data: URL for
+// an inline base64 paste, or "path:<p>" for an on-disk file the host hydrates);
+// path is the image's on-disk location when known — shown as an open/copy link.
+export interface UserImage { src: string; path?: string }
+
 // Every event carries `uuid` = the source JSONL line it came from, so the
 // webview can anchor each rendered turn with data-uuid (deep-link target).
 export type ChatEvent =
-  | { kind: "user"; md: string; ts?: string; uuid?: string; reminders?: string[]; human?: boolean; images?: string[] }
+  | { kind: "user"; md: string; ts?: string; uuid?: string; reminders?: string[]; human?: boolean; images?: UserImage[] }
   | { kind: "assistant"; md: string; ts?: string; uuid?: string }
   | { kind: "thinking"; text: string; encrypted: boolean; ts?: string; uuid?: string }
   | {
@@ -30,6 +35,7 @@ export type ChatEvent =
       peer: string;
       color: { bg: string; fg: string } | null;
       body: string;
+      mid?: string;      // postal message id (joins to the feed modal's handoff nodes)
       t?: number;        // epoch seconds (incoming, from the timeline log)
       park?: boolean;    // delivered while the recipient was offline
       status?: "delivered" | "parked"; // outgoing send result
@@ -223,7 +229,7 @@ export function buildParsed(p: IncParser): ParsedTranscript {
     if (o.type === "user") {
       const c = o.message?.content;
       let raw = "";
-      const images: string[] = [];   // inline base64 → data URL; a path source → "path:<path>"
+      const images: UserImage[] = [];   // inline base64 → data URL; a path source → "path:<path>"
       if (typeof c === "string") raw = c;
       else if (Array.isArray(c)) {
         for (const b of c as any[]) {
@@ -231,17 +237,42 @@ export function buildParsed(p: IncParser): ParsedTranscript {
           if (b.type === "text") raw += (raw ? "\n" : "") + (b.text || "");
           else if (b.type === "image") {
             const s = b.source || {};
-            if (s.type === "base64" && s.data) images.push(`data:${s.media_type || "image/png"};base64,${s.data}`);
-            else if (s.path) images.push("path:" + s.path);
+            if (s.type === "base64" && s.data) images.push({ src: `data:${s.media_type || "image/png"};base64,${s.data}` });
+            else if (s.path) images.push({ src: "path:" + s.path, path: s.path });
           }
         }
       }
+      // the composer's "[Image #N]" placeholder chips arrive as literal text in the
+      // same line as the attachment blocks; the image renders as a thumbnail below,
+      // so the markers are noise (guarded by images.length: typed "[Image #1]" with
+      // no attachment stays verbatim)
+      if (images.length) raw = raw.replace(/\[Image #\d+\]\s?/g, "");
       // a standalone "[Image: source: <path>]" line (Claude Code emits one per pasted
-      // file) → treat as a path image, not gray prose
+      // file) → when the paste's real prompt — the line just emitted — already carries
+      // the image inline as base64, this isMeta record names that image's on-disk
+      // copy: attach the path to it (the open/copy link) instead of rendering a
+      // second image-only bubble. With no preceding paste it's a path image itself.
       const ref = raw.match(/^\s*\[Image: source: (.+?)\]\s*$/);
-      if (ref && !images.length) { images.push("path:" + ref[1]); raw = ""; }
+      if (ref && !images.length) {
+        const prev = events[events.length - 1];
+        if (prev?.kind === "user" && prev.images?.length) {
+          const orphan = prev.images.find((im) => !im.path);
+          if (orphan) orphan.path = ref[1];
+          continue;
+        }
+        images.push({ src: "path:" + ref[1], path: ref[1] });
+        raw = "";
+      }
       // an image-bearing user line is one of the user's PASTES → his (blue) styling
       const human = o.promptSource === "typed" || o.promptSource === "queued" || images.length > 0;
+      // a bare image PATH typed (or file-dragged) into the composer arrives as plain
+      // text — show the thumbnail too (the webview swaps the inline path for a link)
+      if (human && !images.length) {
+        for (const m of raw.matchAll(/(?:^|[\s'"`(])((?:~\/|\/)[^\s'"`()]+\.(?:png|jpe?g|gif|webp|bmp|svg))\b/gi)) {
+          if (!images.some((im) => im.path === m[1])) images.push({ src: "path:" + m[1], path: m[1] });
+          if (images.length >= 4) break;
+        }
+      }
       if (raw.trim() || images.length) {
         const { clean, reminders } = splitReminders(raw);
         if (clean || reminders.length || images.length)
@@ -249,6 +280,19 @@ export function buildParsed(p: IncParser): ParsedTranscript {
           // other injected user-role lines (compact summary, /command stdout, reminders,
           // postal pushes) are not styled as "his message".
           events.push({ kind: "user", md: clean, ts, uuid, reminders: reminders.length ? reminders : undefined, human, images: images.length ? images : undefined });
+      }
+    } else if (o.type === "attachment") {
+      // A CONSUMED queued message. While pending it lives as queue-operation
+      // records (the "queued" block below); when the turn it waited on ends,
+      // Claude Code resolves those ops (clearing that block) and re-writes the
+      // message as a queued_command attachment chained into the conversation —
+      // NOT as a user line. Without this branch every consumed queued message
+      // vanished from the chat (the user's report, 2026-06-11). Harness plumbing
+      // (task notifications, postal banners) is filtered exactly like the
+      // pending queue filters it.
+      const att = o.attachment;
+      if (att?.type === "queued_command" && typeof att.prompt === "string" && isGenuineQueued(att.prompt)) {
+        events.push({ kind: "user", md: att.prompt.trim(), ts, uuid, human: true });
       }
     } else if (o.type === "assistant") {
       const blocks = o.message?.content;

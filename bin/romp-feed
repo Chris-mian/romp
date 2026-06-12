@@ -211,16 +211,25 @@ def ask_items(agents):
     (the user's mark-done both completes the card and trains the linker). Clear
     remains the only retirement."""
     asks, internals, parent_ids = {}, {}, {}
+    tids, answer_rows = {}, []                # ask id → typed turn ids (mint+amend+answer); answer rows
     for n in _req_rows("nodes.jsonl"):
         k = n.get("kind")
         if k == "ask" and n.get("id"):
             asks.setdefault(n["id"], dict(n))
+            if n.get("turn_id"):
+                tids.setdefault(n["id"], set()).add(n["turn_id"])
         elif k == "internal" and n.get("id"):
             internals.setdefault(n["id"], dict(n))
         elif k == "parents" and n.get("id"):
             parent_ids[n["id"]] = n.get("parent_ids", [])
         elif k == "amend" and n.get("id") in asks:
             asks[n["id"]]["text"] = n.get("text", asks[n["id"]].get("text", ""))
+            if n.get("turn_id"):
+                tids.setdefault(n["id"], set()).add(n["turn_id"])
+        elif k == "answer" and n.get("id"):
+            answer_rows.append(n)
+            if n.get("turn_id"):
+                tids.setdefault(n["id"], set()).add(n["turn_id"])
     # newest clear per id (re-clears append; max-t wins). A clear hides the ask
     # UNLESS an open question ARRIVES after it (resurrection): a post-clear
     # question must never be invisible; one the user saw and cleared stays cleared.
@@ -258,6 +267,17 @@ def ask_items(agents):
                     "request_ids": [rid], "relevance": sh["relevance"],
                     "sid": c.get("by_sid", ""), "t": c.get("t", 0),
                     "_corr": True})   # re-verdict of an existing report, not new activity
+    # ANSWER rows (REQUESTS.md 2026-06-11): the user's recorded reply to an agent
+    # question — link-equivalent, so as the newest link it crosses the pending
+    # question off exactly like the panel's fold does.
+    for n in answer_rows:
+        rid = n.get("id")
+        if rid in asks or rid in internals:
+            node_links.setdefault(rid, []).append({
+                "reply_id": n.get("turn_id") or f"ans:{rid}:{n.get('t', 0)}",
+                "request_ids": [rid], "relevance": "ANSWER",
+                "sid": (asks.get(rid) or internals.get(rid, {})).get("sid", ""),
+                "t": n.get("t", 0), "_answer": True})
     for ls in node_links.values():
         ls.sort(key=lambda l: l.get("t", 0))
     last_req = _last_req_by_sid()
@@ -272,9 +292,11 @@ def ask_items(agents):
 
     def node_status(nid):
         ls = node_links.get(nid, [])
-        if not ls:
+        # DETAILS never re-opens a verdict (latching rule, panel parity): routine
+        # progress after a DONE stamp rides the node without erasing it.
+        newest = next((l for l in reversed(ls) if l.get("relevance") != "DETAILS"), None)
+        if newest is None:
             return "open", None
-        newest = ls[-1]
         rel = newest.get("relevance", "")
         sid, t = newest.get("sid", ""), newest.get("t", 0)
         if rel == "DONE":
@@ -288,6 +310,18 @@ def ask_items(agents):
         if rel == "IDEA" and last_req.get(sid, 0) <= t:
             return "question", newest
         return "open", None                       # DETAILS, or an answered question/idea
+
+    states = live_session_ids()                   # sid → @claude-state (liveness parity with the panel)
+
+    def _open_turn(sid):
+        """The session's currently-open turn id from the romp-events disk cache —
+        the liveness claim-join ('active' needs the current turn ON this card)."""
+        try:
+            with open(os.path.join(STATE, "events-cache", sid + ".json")) as f:
+                evs = (json.load(f).get("data") or {}).get("events") or []
+            return evs[-1]["id"] if evs and evs[-1].get("open") else None
+        except Exception:
+            return None
 
     items = []
     for aid, a in asks.items():
@@ -361,6 +395,38 @@ def ask_items(agents):
         column = ("needs_input" if questions
                   else "completed" if rollup(aid) == "done" and not fu_open
                   else "asks")
+        # ── liveness + auto-filing, PARITY with the panel (FEED-ASKS-SPEC.md
+        # 2026-06-11): active = owner's CURRENT turn claimed by this card;
+        # delegated/stalled via open handoffs; settled otherwise. A settled card
+        # never sits in WORKING — it auto-files to completed (kept distinct from
+        # the explicit DONE-stamp fold below). WAIT (newest link) exempts.
+        sid_a = a.get("sid", "")
+        busy = states.get(sid_a) in ("working", "compacting", "permission")
+        cur = _open_turn(sid_a) if busy else None
+        # conservative claim: a busy owner whose open turn can't be resolved
+        # (no events cache yet) HOLDS its cards — never auto-file blind
+        claimed = busy and (cur is None or cur in tids.get(aid, set()) or any(
+            l.get("reply_id") == cur for nid in sub for l in node_links.get(nid, [])))
+        open_handoffs = [nid for nid in sub if nid in internals and roll.get(nid) != "done"]
+        deleg = any(states.get(internals[h].get("to_sid") or "") in ("working", "compacting", "permission")
+                    for h in open_handoffs)
+        ext_wait = any((node_links.get(nid) or [{"relevance": ""}])[-1].get("relevance") == "WAIT"
+                       for nid in sub)
+        lv = ("active" if busy and claimed
+              else "delegated" if deleg
+              else "stalled" if open_handoffs
+              else "settled")
+        # states empty = tmux unreachable: liveness is unknowable, NOT "everyone
+        # quiet" — never mass-auto-file on a blind read. CLAIM-LAG hold (panel
+        # parity): a busy owner whose open turn no card claims yet (ask capture
+        # in flight) holds this session's filing — the worked card is unknown.
+        auto_filed = False
+        held = False
+        if busy and cur and cur not in tids.get(aid, set()):
+            held = not any(cur in tids.get(oid, set()) for oid in asks) and not any(
+                l.get("reply_id") == cur for nl in node_links.values() for l in nl)
+        if states and not held and column == "asks" and lv == "settled" and not fu_open and not ext_wait:
+            column, auto_filed = "completed", True
         # corrections re-verdict existing reports: they close nodes (status) but
         # are NOT activity — keep them out of the tally and the recency time
         done = len({l.get("reply_id") for nid in sub for l in node_links.get(nid, [])
@@ -372,21 +438,36 @@ def ask_items(agents):
 
         now = time.time()
         if column == "completed":
-            mark, suffix = f"{C.code(C.GRN)}✓{C.code(C.RESET)}", f"  {C.code(C.GRN)}all done{C.code(C.RESET)}"
+            # two independent done-detectors (panel parity): explicit DONE-stamp
+            # fold vs the settled-liveness detector; both agreeing is the goal state
+            judged = rollup(aid) == "done"
+            mark = f"{C.code(C.GRN)}✓{C.code(C.RESET)}"
+            if judged and lv == "settled":
+                suffix = f"  {C.code(C.DIM)}done{C.code(C.RESET)}"                # both agree: quiet
+            elif judged:
+                suffix = f"  {C.code(C.TEAL)}judged done — not settled yet{C.code(C.RESET)}"
+            else:
+                suffix = f"  {C.code(C.GRN)}auto-filed — verify, then clear{C.code(C.RESET)}"
         elif column == "needs_input":
             who = agents.get(questions[0].get("sid", ""), {}).get("name", "?")
             mark = f"{C.code(C.TEAL)}?{C.code(C.RESET)}"
-            suffix = f"  {C.code(C.TEAL)}needs you — {who}{C.code(C.RESET)}"
+            suffix = f"  {C.code(C.TEAL)}blocked on you — {who}{C.code(C.RESET)}"
             if reopened:
                 suffix += f"  {C.code(C.YEL)}reopened after clear{C.code(C.RESET)}"
         else:
             mark = f"{C.code(C.DIM)}·{C.code(C.RESET)}"
-            if drops:
+            if ext_wait:
+                suffix = f"  {C.code(C.TEAL)}⏳ waiting on an external event{C.code(C.RESET)}"
+            elif lv == "stalled" and drops:
+                nm, since = drops[0]
+                more = f" +{len(drops) - 1}" if len(drops) > 1 else ""
+                suffix = f"  {C.code(C.YEL)}stalled — {nm} owes an ending {_agehms(now - since)}{more}{C.code(C.RESET)}"
+            elif drops:
                 nm, since = drops[0]
                 more = f" +{len(drops) - 1}" if len(drops) > 1 else ""
                 suffix = f"  {C.code(C.YEL)}waiting on {nm} {_agehms(now - since)}{more}{C.code(C.RESET)}"
             else:
-                suffix = f"  {C.code(C.DIM)}in flight{C.code(C.RESET)}"
+                suffix = f"  {C.code(C.DIM)}working{C.code(C.RESET)}"
         if done and column != "completed":
             suffix += f"  {C.code(C.GRN)}{done} done{C.code(C.RESET)}"
 

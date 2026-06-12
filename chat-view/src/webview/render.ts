@@ -23,7 +23,7 @@ for (const [name, lang] of Object.entries({
 marked.setOptions({ gfm: true, breaks: false });
 
 type ChatEvent =
-  | { kind: "user"; md: string; uuid?: string; ts?: string; reminders?: string[]; human?: boolean; images?: string[] }
+  | { kind: "user"; md: string; uuid?: string; ts?: string; reminders?: string[]; human?: boolean; images?: { src: string; path?: string }[] }
   | { kind: "assistant"; md: string; uuid?: string; ts?: string }
   | { kind: "thinking"; text: string; encrypted: boolean; uuid?: string; ts?: string }
   | {
@@ -45,6 +45,7 @@ type ChatEvent =
       peer: string;
       color: { bg: string; fg: string } | null;
       body: string;
+      mid?: string;      // postal message id (joins feed-modal handoff hovers to this card)
       t?: number;        // epoch seconds (incoming)
       park?: boolean;
       status?: "delivered" | "parked"; // outgoing
@@ -165,6 +166,21 @@ function preEl(text: string): HTMLElement {
   return pre;
 }
 
+// Markdown links: the webview sandbox only auto-opens http(s) — a vscode://
+// link (e.g. a romp chat deep link pasted into a conversation) silently dies
+// on click. Route every absolute-scheme anchor through the host instead: it
+// openExternal()s normal URLs and feeds vscode://romp.romp-chat-view deep
+// links straight into the extension's own URI handler.
+document.addEventListener("click", (e) => {
+  const a = (e.target as HTMLElement)?.closest?.("a[href]") as HTMLAnchorElement | null;
+  if (!a) return;
+  const href = a.getAttribute("href") || "";
+  if (!/^[a-z][a-z0-9+.-]*:/i.test(href)) return; // fragment/relative — leave alone
+  e.preventDefault();
+  e.stopPropagation();
+  if (vscodeApi) vscodeApi.postMessage({ type: "openLink", href });
+}, true);
+
 // A clickable file name that opens the real file in the editor (shared
 // open/navigate surface — see extension.ts openFile handler).
 function fileLink(path: string): HTMLElement {
@@ -254,6 +270,74 @@ function onImgData(p: string, url: string | null): void {
   });
 }
 
+// One image of a user turn: the picture (or its hydration chip) plus, when the
+// on-disk path is known, a caption line — the full absolute path (click → open),
+// ⧉ copies it. So both the rendered image AND its path stay accessible no matter
+// how the image arrived (pasted inline, referenced by path, typed as text).
+function userImage(im: { src: string; path?: string }): HTMLElement {
+  const fig = el("span", "user-img-wrap");
+  if (im.src.startsWith("path:")) {
+    fig.appendChild(buildPathImg(im.src.slice(5)));   // host reads it → real thumbnail; chip until then / on failure
+  } else {
+    const img = document.createElement("img"); img.className = "user-img"; img.src = im.src; img.loading = "lazy";
+    fig.appendChild(img);
+  }
+  if (im.path) fig.appendChild(imgCaption(im.path));
+  return fig;
+}
+function imgCaption(path: string): HTMLElement {
+  const cap = el("span", "img-caption");
+  const icon = el("span", "img-icon");   // separate node, so selecting the path text doesn't grab the emoji
+  icon.textContent = "🖼";
+  cap.appendChild(icon);
+  cap.appendChild(imgPathLink(path));
+  const copy = el("span", "img-copy");
+  copy.textContent = "⧉";
+  copy.title = "Copy path: " + path;
+  copy.addEventListener("click", (e) => {
+    e.stopPropagation();
+    navigator.clipboard?.writeText(path).then(() => {
+      copy.textContent = "✓";
+      setTimeout(() => { copy.textContent = "⧉"; }, 900);
+    });
+  });
+  cap.appendChild(copy);
+  return cap;
+}
+// The full absolute path, clickable — opens the image file in the editor. Shown
+// verbatim (never shortened to a basename) so it can also be read and selected/
+// copied right where it stands.
+function imgPathLink(path: string): HTMLElement {
+  const a = el("span", "img-link");
+  a.textContent = path;
+  a.title = "Open " + path;
+  a.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (vscodeApi) vscodeApi.postMessage({ type: "openFile", path });
+  });
+  return a;
+}
+// Make literal occurrences of the images' paths inside the rendered message text
+// clickable with the same open-the-file link the captions use — the typed path
+// stays visible verbatim, it just gains the link behavior.
+function linkifyImgPaths(root: HTMLElement, paths: string[]): void {
+  if (!paths.length) return;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const nodes: Text[] = [];
+  let n: Node | null;
+  while ((n = walker.nextNode())) nodes.push(n as Text);
+  for (const tn of nodes) {
+    for (const p of paths) {
+      const i = tn.data.indexOf(p);
+      if (i < 0) continue;
+      tn.splitText(i + p.length);
+      const mid = tn.splitText(i);
+      mid.replaceWith(imgPathLink(p));
+      break;   // the split invalidated this node's tail — one link per original node
+    }
+  }
+}
+
 function renderEvent(ev: ChatEvent, prevEpoch?: number | null): HTMLElement {
   const turn = renderEventInner(ev);
   // Deep-link anchor. An AskUserQuestion widget carries the ANSWER-line (tool_result
@@ -271,7 +355,55 @@ function renderEvent(ev: ChatEvent, prevEpoch?: number | null): HTMLElement {
   // that HAVE a dot (user bubbles are right-aligned with their own time). The date is
   // shown only on the first turn of a new (non-today) day.
   if (epoch != null && turn.querySelector(".dot")) turn.insertBefore(timeMarker(epoch, prevEpoch ?? null), turn.firstChild);
+  // rail-dot fleet links: hover → white-highlight this turn's event on the
+  // timeline AND outline its feed card(s); click → open that card's modal in
+  // the feed (the host resolves turn → event → cards and disambiguates).
+  const railDot = turn.querySelector(".dot") as HTMLElement | null;
+  if (railDot && (anchorUuid || epoch != null)) wireRailDot(railDot, anchorUuid ?? null, epoch ?? 0);
   return turn;
+}
+
+// Hover uses the same 120ms intent debounce as ledger bullets / feed rows so
+// scrolling past the rail doesn't strobe the timeline; leave clears. The sid
+// is read at event time (only the ACTIVE session's view is hoverable).
+function wireRailDot(d: HTMLElement, uuid: string | null, t: number) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  d.classList.add("dot-nav");
+  d.title = "hover: highlight on timeline + feed · click: open the feed card";
+  d.addEventListener("mouseenter", () => {
+    timer = setTimeout(() => { timer = undefined; if (activeId) vscodeApi?.postMessage({ type: "dotHover", sid: activeId, uuid, t }); }, 120);
+  });
+  d.addEventListener("mouseleave", () => {
+    if (timer) { clearTimeout(timer); timer = undefined; return; } // never fired — nothing to clear
+    vscodeApi?.postMessage({ type: "dotHover" });
+  });
+  d.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (activeId) vscodeApi?.postMessage({ type: "dotOpen", sid: activeId, uuid, t });
+  });
+}
+
+// Transient cross-highlight FROM the feed modal (host fans its row-hover here as
+// glowTurns): white-ring the rail dot of every chat turn inside a hovered event's
+// [start, end] span (per session), and any postal card carrying a hovered message
+// id. Empty groups+mids = clear. Glow is hover-transient, so a re-render that
+// drops it mid-hover self-heals on the next 40ms hover tick.
+function applyGlow(groups: Array<{ sid: string; ranges: Array<[number, number]> }>, mids: string[]) {
+  document.querySelectorAll(".ext-glow").forEach((n) => n.classList.remove("ext-glow"));
+  const midSet = new Set(mids);
+  if (midSet.size) {
+    document.querySelectorAll<HTMLElement>(".turn[data-mid]").forEach((n) => {
+      if (midSet.has(n.dataset.mid || "")) n.classList.add("ext-glow");
+    });
+  }
+  for (const g of groups) {
+    const v = views.get(g.sid);
+    if (!v) continue;
+    v.el.querySelectorAll<HTMLElement>(".turn[data-t]").forEach((n) => {
+      const t = parseInt(n.dataset.t || "", 10);
+      if (t && (g.ranges || []).some(([s, e]) => t >= s - 2 && t <= e + 2)) n.classList.add("ext-glow");
+    });
+  }
 }
 
 function eventEpoch(ev: ChatEvent): number | null {
@@ -313,15 +445,11 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
     if (ev.md || hasImgs) {
       const bubble = el("div", (injected ? "user-note" : "user-bubble") + " md");
       if (ev.md) bubble.innerHTML = md(ev.md);
-      // pasted images, IN the bubble (part of his message). base64 → a real thumbnail;
-      // a path source → a compact "🖼 filename" chip (the file isn't loadable here).
-      if (ev.images) for (const src of ev.images) {
-        if (src.startsWith("path:")) {
-          bubble.appendChild(buildPathImg(src.slice(5)));   // host reads it → real thumbnail; chip until then / on failure
-        } else {
-          const img = document.createElement("img"); img.className = "user-img"; img.src = src; img.loading = "lazy";
-          bubble.appendChild(img);
-        }
+      // images, IN the bubble (part of his message): thumbnail + open/copy caption;
+      // a literal path in the typed text becomes the same open-link inline.
+      if (ev.images) {
+        linkifyImgPaths(bubble, ev.images.map((im) => im.path).filter((p): p is string => !!p));
+        for (const im of ev.images) bubble.appendChild(userImage(im));
       }
       // timestamp in the top-right corner (floated → short messages don't gain a
       // line; the message text wraps to its left). Must be the FIRST child to float.
@@ -571,6 +699,7 @@ function refreshPostalDots() {
 // A romp postal message, as a compact identity-coloured card.
 function renderPostal(ev: Extract<ChatEvent, { kind: "postal" }>): HTMLElement {
   const turn = el("div", "turn turn-postal postal-" + ev.direction);
+  if (ev.mid) turn.dataset.mid = ev.mid;   // joins feed-modal handoff hovers to this card
   const d = dot("ring");
   d.classList.add("mail");
   if (ev.color) d.style.background = ev.color.bg;
@@ -697,7 +826,12 @@ function reorderTo(dragId: string, targetId: string, after: boolean) {
   renderTabs();
 }
 
+// While a tab name is being edited in place, defer re-renders (a tick's status
+// refresh would otherwise replace the tab bar and destroy the input mid-edit).
+let renameActive = false;
+let renderPendingAfterRename = false;
 function renderTabs() {
+  if (renameActive) { renderPendingAfterRename = true; return; }
   const bar = document.getElementById("tabs");
   if (!bar) return;
   bar.replaceChildren();
@@ -762,6 +896,8 @@ function renderTabs() {
     tab.addEventListener("click", () => setActive(id));
     // double-click a tab to show/hide the ledger summary — same as the ▾/▸ button
     tab.addEventListener("dblclick", (e) => { e.preventDefault(); toggleLedgerCollapsed(); });
+    // right-click → context menu; "Rename" edits the title in place
+    tab.addEventListener("contextmenu", (e) => { e.preventDefault(); e.stopPropagation(); showTabMenu(e, tab, label, id); });
     bar.appendChild(tab);
   }
   const add = el("div", "tab tab-add");
@@ -775,6 +911,72 @@ function renderTabs() {
   coll.title = ledgerCollapsed ? "Show session summary" : "Hide session summary";
   coll.addEventListener("click", toggleLedgerCollapsed);
   bar.appendChild(coll);
+}
+
+// Right-click context menu on a tab. Webviews can't use VS Code's native menus,
+// so this is a small themed floating menu; one open at a time, dismissed by any
+// outside click, Escape, scroll, or losing window focus.
+let ctxMenuEl: HTMLElement | null = null;
+function dismissTabMenu() {
+  ctxMenuEl?.remove();
+  ctxMenuEl = null;
+}
+function showTabMenu(e: MouseEvent, tab: HTMLElement, label: HTMLElement, id: string) {
+  dismissTabMenu();
+  const menu = el("div", "ctx-menu");
+  const rename = el("div", "ctx-item");
+  rename.textContent = "Rename";
+  rename.addEventListener("click", (ev) => { ev.stopPropagation(); dismissTabMenu(); startTabRename(tab, label, id); });
+  menu.appendChild(rename);
+  document.body.appendChild(menu);
+  ctxMenuEl = menu;
+  // at the cursor, clamped so it never overflows the pane
+  const r = menu.getBoundingClientRect();
+  menu.style.left = Math.max(0, Math.min(e.clientX, window.innerWidth - r.width - 4)) + "px";
+  menu.style.top = Math.max(0, Math.min(e.clientY, window.innerHeight - r.height - 4)) + "px";
+}
+window.addEventListener("mousedown", (e) => { if (ctxMenuEl && !ctxMenuEl.contains(e.target as Node)) dismissTabMenu(); }, true);
+window.addEventListener("keydown", (e) => { if (e.key === "Escape") dismissTabMenu(); }, true);
+window.addEventListener("scroll", dismissTabMenu, true);
+window.addEventListener("blur", () => dismissTabMenu());
+
+// "Rename" (tab context menu): swap the tab's label for an inline input. Enter
+// or clicking away commits (the host renames the tmux session and confirms with
+// a "renamed" message — the label only changes once that lands), Esc cancels.
+function startTabRename(tab: HTMLElement, label: HTMLElement, id: string) {
+  const s = sessions.get(id);
+  if (!s || tab.querySelector(".tab-rename")) return;
+  const input = document.createElement("input") as HTMLInputElement;
+  input.className = "tab-rename";
+  input.value = s.name;
+  input.spellcheck = false;
+  input.size = Math.max(s.name.length, 4);
+  renameActive = true;
+  tab.draggable = false;            // dragging would eat the text selection
+  label.style.display = "none";
+  label.after(input);
+  let finished = false;
+  const done = (commit: boolean) => {
+    if (finished) return;
+    finished = true;
+    const v = input.value.trim();
+    input.remove();
+    label.style.display = "";
+    tab.draggable = true;
+    renameActive = false;
+    if (renderPendingAfterRename) { renderPendingAfterRename = false; renderTabs(); }
+    if (commit && v && v !== s.name && vscodeApi) vscodeApi.postMessage({ type: "renameSession", id, name: v });
+  };
+  input.addEventListener("keydown", (e) => {
+    e.stopPropagation();
+    if (e.key === "Enter") { e.preventDefault(); done(true); }
+    else if (e.key === "Escape") { e.preventDefault(); done(false); }
+  });
+  input.addEventListener("blur", () => done(true));
+  // keep clicks inside the input from selecting/dragging the tab underneath
+  for (const ev of ["click", "mousedown", "dblclick", "contextmenu"]) input.addEventListener(ev, (e) => e.stopPropagation());
+  input.focus();
+  input.select();
 }
 
 // Keyboard nav on a focused tab: ←/→ step prev/next; ↑/↓ jump to the nearest tab
@@ -835,7 +1037,8 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
     search.id = "picker-search";
     search.placeholder = "Search sessions…";
     search.spellcheck = false;
-    search.addEventListener("input", () => filterPicker(search.value));
+    search.addEventListener("input", () => { filterPicker(search.value); pickerError(null); });
+    const errLine = el("div", "picker-error"); errLine.id = "picker-error";
     const list = el("div", "picker-list"); list.id = "picker-list";
     // hover and keyboard share one "active" row
     list.addEventListener("mouseover", (e) => {
@@ -844,10 +1047,15 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
     });
     const actions = el("div", "picker-actions");
     const newSess = el("button", "picker-action");
-    newSess.textContent = "✛ New session…";
-    newSess.title = "create a fresh romp session and open it as a tab";
+    newSess.id = "picker-new-btn";
+    newSess.textContent = "✛ New session";
+    newSess.title = "create a fresh romp session, named by the search box, and open it as a tab";
     newSess.addEventListener("click", () => {
-      if (vscodeApi) vscodeApi.postMessage({ type: "createSession" });
+      // The search box doubles as the name field — no native dialog.
+      const name = search.value.trim();
+      if (!name) { pickerError("Type the new session's name in the box above first."); search.focus(); return; }
+      if (!/^[A-Za-z0-9._-]+$/.test(name)) { pickerError("Session names: letters, digits, . _ - only."); search.focus(); return; }
+      if (vscodeApi) vscodeApi.postMessage({ type: "createSession", name });
       closePicker();
     });
     const openAll = el("button", "picker-action");
@@ -859,6 +1067,7 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
     actions.appendChild(newSess);
     actions.appendChild(openAll);
     box.appendChild(search);
+    box.appendChild(errLine);
     box.appendChild(list);
     box.appendChild(actions);
     overlay.appendChild(box);
@@ -870,8 +1079,18 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
   const actions = overlay.querySelector(".picker-actions") as HTMLElement | null;
   if (actions) actions.style.display = pick ? "none" : "";
   const s = document.getElementById("picker-search") as HTMLInputElement | null;
-  if (s) { s.value = ""; s.placeholder = prompt || "Search sessions…"; s.focus(); }
+  if (s) { s.value = ""; s.placeholder = prompt || "Search sessions, or type a new session's name…"; s.focus(); }
+  filterPicker(""); // reset row visibility and disarm the New-session button from a prior open
+  pickerError(null);
   if (vscodeApi) vscodeApi.postMessage({ type: "requestSessions" });
+}
+
+// Inline validation message under the search box (null hides it).
+function pickerError(msg: string | null) {
+  const e = document.getElementById("picker-error");
+  if (!e) return;
+  e.textContent = msg || "";
+  e.classList.toggle("show", !!msg);
 }
 
 function closePicker() {
@@ -909,7 +1128,12 @@ function pickerKey(e: KeyboardEvent) {
   else if (e.key === "Enter") {
     e.preventDefault();
     const active = document.querySelector("#picker-list .picker-row.active:not(.hidden)") as HTMLElement | null;
-    (active ?? pickerRows()[0])?.click();
+    const target = active ?? pickerRows()[0];
+    if (target) { target.click(); return; }
+    // No matching session row — if the New-session button is armed (unique
+    // name typed), Enter creates it.
+    const btn = document.getElementById("picker-new-btn");
+    if (btn?.classList.contains("active")) btn.click();
   }
 }
 
@@ -959,7 +1183,10 @@ function renderPicker(items: any[]) {
     });
     list.appendChild(row);
   }
-  setActiveRow(pickerRows()[0] ?? null); // highlight the first row so arrows/Enter work immediately
+  // Re-apply the current filter (the list may refresh while the user is mid-
+  // type) — it also sets the active row / arms the New-session button.
+  const s = document.getElementById("picker-search") as HTMLInputElement | null;
+  filterPicker(s?.value || "");
 }
 
 function filterPicker(q: string) {
@@ -970,6 +1197,14 @@ function filterPicker(q: string) {
     row.classList.toggle("hidden", !hit);
   });
   setActiveRow(pickerRows()[0] ?? null); // keep the highlight on the top of the filtered list
+  // A name that matches NO session is a new one: move the highlight to the
+  // "✛ New session" button so a bare Enter creates it (mirrors how the first
+  // matching row is auto-selected when there ARE matches).
+  const btn = document.getElementById("picker-new-btn");
+  if (btn) {
+    const actionsShown = (btn.closest(".picker-actions") as HTMLElement | null)?.style.display !== "none";
+    btn.classList.toggle("active", actionsShown && !!q.trim() && pickerRows().length === 0);
+  }
 }
 
 function nearBottom(c: HTMLElement): boolean {
@@ -1002,10 +1237,33 @@ function scrollToAnchor(uuid: string): boolean {
   }
   pendingAnchor = null; pendingAnchorIntent = null;
   landTrail.push("pointer-exact");
-  target.scrollIntoView({ block: "center", behavior: "auto" });
+  landOn(target);
+  return true;
+}
+
+// Land on a turn and KEEP it landed while the chrome above the scroll container
+// settles. scrollIntoView is a one-shot: when a jump also switches tabs, the
+// tab bar re-renders (possibly wrapping to a SECOND row) and the ledger box for
+// the new session appears — both AFTER the scroll ran. #content shrinks by that
+// growth and the centered turn slides up under the bar (the "cut off top"
+// landing). So: re-center whenever the bar/ledger actually resizes, plus two
+// timed retries for late layout (images, markdown), for ~1.2s — canceled the
+// moment the user wheel-scrolls so we never fight a real gesture.
+function landOn(target: HTMLElement) {
+  const recenter = () => target.scrollIntoView({ block: "center", behavior: "auto" });
+  recenter();
   target.classList.add("anchor-flash");
   setTimeout(() => target.classList.remove("anchor-flash"), 1700);
-  return true;
+  const until = Date.now() + 1200;
+  let ro: ResizeObserver | null = null;
+  const stop = () => { ro?.disconnect(); ro = null; window.removeEventListener("wheel", stop); };
+  if (typeof ResizeObserver === "function") {
+    ro = new ResizeObserver(() => { if (Date.now() < until) recenter(); else stop(); });
+    for (const id of ["tabbar", "ledger"]) { const c = document.getElementById(id); if (c) ro.observe(c); }
+  }
+  window.addEventListener("wheel", stop, { passive: true });
+  setTimeout(() => { if (ro && Date.now() < until + 100) recenter(); }, 250);
+  setTimeout(() => { if (ro) recenter(); stop(); }, 1200);
 }
 
 // Time-based anchor FALLBACK: when the uuid anchor can't resolve (orphaned by a
@@ -1038,10 +1296,7 @@ function scrollToNearestT(t: number, kind?: string): boolean {
     return false;
   }
   landTrail.push(`time-near-${Math.round(hit.d)}s`);
-  const best = hit.el;
-  best.scrollIntoView({ block: "center", behavior: "auto" });
-  best.classList.add("anchor-flash");
-  setTimeout(() => best.classList.remove("anchor-flash"), 1700);
+  landOn(hit.el);
   return true;
 }
 
@@ -1422,14 +1677,25 @@ function qline(card: HTMLElement, text?: string) {
   if (text) { const qt = el("div", "ask-qtext"); qt.textContent = text; card.appendChild(qt); }
 }
 
+// The pickable rows of a single-select card — the TUI's "Type something." /
+// "Chat about this" chrome rows are driven by dedicated UI instead (the inline
+// custom field / nothing). Falls back to everything rather than render zero rows.
+function singleOptions(ask: ParsedAsk) {
+  const real = ask.options.filter((o) => !isMetaOption(o.label));
+  return real.length ? real : ask.options;
+}
+
 // SINGLE-select: clickable radio rows; ↑/↓ highlight, Enter/number confirm.
+// Also each question tab of the multi-QUESTION wizard (Enter picks + advances);
+// its "Type something." slot is driven by the inline custom-answer field.
 function renderSingleCard(ask: ParsedAsk) {
   const card = askCard();
   qline(card, ask.question || ask.header);
-  const key = (activeId || "") + "§" + ask.options.map((o) => `${o.n}:${o.label}`).join("|");
-  if (key !== liveAskFocusKey) { liveAskFocusKey = key; const sel = ask.options.findIndex((o) => o.selected); liveAskFocus = sel >= 0 ? sel : 0; }
-  liveAskFocus = Math.max(0, Math.min(liveAskFocus, ask.options.length - 1));
-  ask.options.forEach((o, i) => {
+  const opts = singleOptions(ask);
+  const key = (activeId || "") + "§" + opts.map((o) => `${o.n}:${o.label}`).join("|");
+  if (key !== liveAskFocusKey) { liveAskFocusKey = key; const sel = opts.findIndex((o) => o.selected); liveAskFocus = sel >= 0 ? sel : 0; }
+  liveAskFocus = Math.max(0, Math.min(liveAskFocus, opts.length - 1));
+  opts.forEach((o, i) => {
     const row = el("div", "ask-live-opt" + (i === liveAskFocus ? " focus" : ""));
     const lab = el("span", "ask-optlabel"); lab.textContent = `${o.n}. ${o.label}`; row.appendChild(lab);
     if (o.desc) { const d = el("span", "ask-optdesc"); d.textContent = o.desc; row.appendChild(d); }
@@ -1437,6 +1703,22 @@ function renderSingleCard(ask: ParsedAsk) {
     row.addEventListener("mousemove", () => { if (liveAskFocus !== i) { liveAskFocus = i; paintLiveAskFocus(); } });
     card.appendChild(row);
   });
+  if (ask.options.some((o) => isTypeSomething(o.label))) {
+    const row = el("div", "ask-custom");
+    const plus = el("span", "ask-custom-plus"); plus.textContent = "+"; row.appendChild(plus);
+    const inp = document.createElement("input");
+    inp.type = "text"; inp.className = "ask-custom-input"; inp.placeholder = "add your own answer…";
+    inp.value = liveTextValue;
+    inp.addEventListener("input", () => { liveTextValue = inp.value; });
+    // stop ALL keys from bubbling to onSingleKey (digits would jump-confirm rows)
+    inp.addEventListener("keydown", (e) => {
+      e.stopPropagation();
+      if (e.key === "Enter") { e.preventDefault(); const v = inp.value.trim(); if (v) addCustomLiveAsk(v); }
+    });
+    wirePasteFallback(inp);
+    row.appendChild(inp);
+    card.appendChild(row);
+  }
   card.tabIndex = 0;
   card.addEventListener("keydown", onSingleKey);
   card.focus({ preventScroll: true });
@@ -1473,6 +1755,7 @@ function renderMultiCard(ask: ParsedAsk) {
     inp.value = liveTextValue;
     inp.addEventListener("input", () => { liveTextValue = inp.value; });
     inp.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); const v = inp.value.trim(); if (v) addCustomLiveAsk(v); } });
+    wirePasteFallback(inp);
     row.appendChild(inp);
     card.appendChild(row);
   }
@@ -1482,14 +1765,26 @@ function renderMultiCard(ask: ParsedAsk) {
   card.appendChild(actions);
 }
 
-// MULTI-select review screen: show chosen answers + the Submit answers / Cancel
-// options as buttons (each is just an option pick, reusing answerLiveAsk).
+// Review screen: show chosen answers + the Submit answers / Cancel options as
+// buttons (each is just an option pick, reusing answerLiveAsk). A multi-question
+// wizard reviews every question→answer pair here; a single question keeps the
+// flat "Selected: …" line.
 function renderSubmitCard(ask: ParsedAsk) {
   const card = askCard("ask-live-submit");
-  qline(card, ask.question);
-  const chosen = el("div", "ask-chosen");
-  chosen.textContent = ask.chosen && ask.chosen.length ? "Selected: " + ask.chosen.join(", ") : "(nothing selected)";
-  card.appendChild(chosen);
+  if (ask.pairs && ask.pairs.length > 1) {
+    qline(card, "Review your answers");
+    for (const p of ask.pairs) {
+      const row = el("div", "ask-pair");
+      if (p.q) { const q = el("div", "ask-pair-q"); q.textContent = p.q; row.appendChild(q); }
+      const a = el("div", "ask-pair-a"); a.textContent = "→ " + (p.a || "(no answer)"); row.appendChild(a);
+      card.appendChild(row);
+    }
+  } else {
+    qline(card, ask.question);
+    const chosen = el("div", "ask-chosen");
+    chosen.textContent = ask.chosen && ask.chosen.length ? "Selected: " + ask.chosen.join(", ") : "(nothing selected)";
+    card.appendChild(chosen);
+  }
   const actions = el("div", "ask-actions");
   for (const o of ask.options) {
     const b = el("button", "ask-btn" + (/submit/i.test(o.label) ? " ask-btn-primary" : ""));
@@ -1503,6 +1798,41 @@ function renderSubmitCard(ask: ParsedAsk) {
 // Free-text (any unstructured awaiting screen): a text input. The value is held
 // in liveTextValue so a re-render (re-mirror) doesn't wipe what's been typed.
 let liveTextValue = "";
+
+// Paste fallback. In the VS Code webview, native Cmd+V reliably reaches the
+// composer textarea but NOT these dynamically-created fields — typing works,
+// the paste event simply never fires (the user's report, 2026-06-11). On
+// Cmd/Ctrl+V: give native paste ~150ms to land (a paste event disarms the
+// fallback — e.g. in the browser, where it just works), then ask the HOST for
+// vscode.env.clipboard text ("readClipboard" → "clipboardText") and insert it
+// at the cursor ourselves.
+let pasteTarget: HTMLInputElement | HTMLTextAreaElement | null = null;
+let pasteArm = 0;
+function wirePasteFallback(inp: HTMLInputElement | HTMLTextAreaElement) {
+  inp.addEventListener("paste", () => { pasteArm++; }); // native worked — disarm any pending fallback
+  inp.addEventListener("keydown", (ev) => {
+    const e = ev as KeyboardEvent; // union element type degrades the overload to plain Event
+    if (!(e.metaKey || e.ctrlKey) || e.altKey || e.key.toLowerCase() !== "v") return;
+    const arm = ++pasteArm;
+    setTimeout(() => {
+      if (pasteArm !== arm) return; // a real paste event landed in the meantime
+      pasteTarget = inp;
+      vscodeApi?.postMessage({ type: "readClipboard" });
+    }, 150);
+  });
+}
+function insertClipboardText(text: string) {
+  const inp = pasteTarget;
+  pasteTarget = null;
+  if (!inp || !text || !document.contains(inp)) return;
+  const s = inp.selectionStart ?? inp.value.length;
+  const t = inp.selectionEnd ?? s;
+  inp.value = inp.value.slice(0, s) + text + inp.value.slice(t);
+  const pos = s + text.length;
+  try { inp.setSelectionRange(pos, pos); } catch { /* ignore */ }
+  inp.dispatchEvent(new Event("input", { bubbles: true })); // keep liveTextValue/draft sync
+  inp.focus();
+}
 // Safeguard: the session is awaiting input but the parser can't map the screen to
 // a known widget (an unrecognized prompt, a free-text editor, etc.). Warn loudly
 // so a prompt is never silently missed — and offer a best-effort text input in
@@ -1519,6 +1849,7 @@ function renderUnknownCard() {
   input.addEventListener("keydown", (e) => {
     if (e.key === "Enter") { e.preventDefault(); const v = input.value.trim(); if (v) sendTextLiveAsk(v); }
   });
+  wirePasteFallback(input);
   card.appendChild(input);
   const len = input.value.length; try { input.setSelectionRange(len, len); } catch { /* ignore */ }
 }
@@ -1532,13 +1863,14 @@ function paintLiveAskFocus() {
 function onSingleKey(e: KeyboardEvent) {
   const ask = activeId ? liveAsks.get(activeId) : null;
   if (!ask || ask.kind !== "single") return;
-  const n = ask.options.length;
+  const opts = singleOptions(ask); // same rows the card renders
+  const n = opts.length;
   if (e.key === "ArrowDown") { e.preventDefault(); liveAskFocus = (liveAskFocus + 1) % n; paintLiveAskFocus(); }
   else if (e.key === "ArrowUp") { e.preventDefault(); liveAskFocus = (liveAskFocus - 1 + n) % n; paintLiveAskFocus(); }
-  else if (e.key === "Enter") { e.preventDefault(); answerLiveAsk(ask.options[liveAskFocus].n); }
+  else if (e.key === "Enter") { e.preventDefault(); answerLiveAsk(opts[liveAskFocus].n); }
   else if (/^[1-9]$/.test(e.key)) {
-    const idx = ask.options.findIndex((o) => o.n === parseInt(e.key, 10));
-    if (idx >= 0) { liveAskFocus = idx; answerLiveAsk(ask.options[idx].n); }
+    const idx = opts.findIndex((o) => o.n === parseInt(e.key, 10));
+    if (idx >= 0) { liveAskFocus = idx; answerLiveAsk(opts[idx].n); }
   }
 }
 
@@ -1596,19 +1928,142 @@ function elapsedMs(sinceMs: number | null): string {
 // Right side of the status line: "Opus 4.8 xhigh" (model + effort) — the context %
 // is shown separately as a battery bar (ctxBar). Sourced from the @claude-model /
 // @claude-effort / @claude-context tmux vars. Shown in EVERY state, not just working.
-function modelMetaText(st: Status): string {
-  return [st.model, st.effort].filter(Boolean).join(" ");
+// Each value is a little dropdown: picking an entry has the host inject the matching
+// /model or /effort slash command into the session's pane; the label then updates
+// when the TUI's statusline republishes the tmux vars (meta-pending bridges the gap).
+type MetaKind = "model" | "effort";
+const MODEL_CHOICES: { label: string; value: string }[] = [
+  { label: "Fable", value: "fable" },
+  { label: "Opus", value: "opus" },
+  { label: "Sonnet", value: "sonnet" },
+  { label: "Haiku", value: "haiku" },
+  { label: "Default", value: "default" },
+];
+const EFFORT_CHOICES: { label: string; value: string }[] =
+  ["low", "medium", "high", "xhigh", "max"].map((v) => ({ label: v, value: v }));
+
+// Is this menu entry the session's current value? Effort matches exactly; the
+// model var holds a display name ("Opus 4.8"), so match on the leading word.
+function isCurrentMeta(kind: MetaKind, st: Status, value: string): boolean {
+  if (kind === "effort") return (st.effort || "").toLowerCase() === value;
+  return (st.model || "").toLowerCase().startsWith(value);
 }
+
+// "<sessionId>:<kind>" → set when the user picks a value, cleared when the tmux
+// var actually changes (or after 20s, if the TUI rejected/ignored the command).
+const metaPending = new Map<string, { was: string; until: number }>();
+function isMetaPending(kind: MetaKind, st: Status): boolean {
+  if (!activeId) return false;
+  const key = `${activeId}:${kind}`;
+  const p = metaPending.get(key);
+  if (!p) return false;
+  const cur = (kind === "model" ? st.model : st.effort) || "";
+  if (cur !== p.was || Date.now() > p.until) { metaPending.delete(key); return false; }
+  return true;
+}
+
+function metaButton(kind: MetaKind, text: string): HTMLElement {
+  const btn = el("span", "meta-btn");
+  btn.dataset.kind = kind;
+  const label = el("span", "meta-label");
+  label.textContent = text;
+  btn.appendChild(label);
+  const caret = el("span", "meta-caret");
+  caret.textContent = "▾";
+  btn.appendChild(caret);
+  btn.title = kind === "model" ? "change model (sends /model)" : "change thinking effort (sends /effort)";
+  btn.addEventListener("click", (e) => { e.stopPropagation(); toggleMetaMenu(kind, btn); });
+  return btn;
+}
+
+// Build or refresh the model/effort buttons inside #spinner-meta. Called from
+// updateStatusline (fresh container) and the 1s ticker (label refresh in place).
+function syncMetaControls(meta: HTMLElement, st: Status) {
+  const want = [st.model ? "model" : "", st.effort ? "effort" : ""].filter(Boolean).join();
+  const btns = Array.from(meta.querySelectorAll(".meta-btn")) as HTMLElement[];
+  if (btns.map((b) => b.dataset.kind).join() !== want) {
+    meta.replaceChildren();
+    if (st.model) meta.appendChild(metaButton("model", st.model));
+    if (st.effort) meta.appendChild(metaButton("effort", st.effort));
+  }
+  for (const b of Array.from(meta.querySelectorAll(".meta-btn")) as HTMLElement[]) {
+    const kind = b.dataset.kind as MetaKind;
+    const cur = (kind === "model" ? st.model : st.effort) || "";
+    const label = b.querySelector(".meta-label") as HTMLElement | null;
+    if (label && label.textContent !== cur) label.textContent = cur;
+    b.classList.toggle("meta-pending", isMetaPending(kind, st));
+  }
+}
+
+let metaMenuEl: HTMLElement | null = null;
+function closeMetaMenu() {
+  metaMenuEl?.remove();
+  metaMenuEl = null;
+}
+function toggleMetaMenu(kind: MetaKind, btn: HTMLElement) {
+  const wasOpen = metaMenuEl?.dataset.kind === kind;
+  closeMetaMenu();
+  if (wasOpen) return;
+  const s = activeId ? sessions.get(activeId) : null;
+  if (!s) return;
+  // a pending permission/picker prompt owns the pane's keyboard — injecting a
+  // slash command there would answer the prompt instead (host guards this too)
+  if (s.status.state === "awaiting") return;
+  const menu = el("div", "meta-menu");
+  menu.dataset.kind = kind;
+  for (const c of kind === "model" ? MODEL_CHOICES : EFFORT_CHOICES) {
+    const item = el("div", "meta-item" + (isCurrentMeta(kind, s.status, c.value) ? " current" : ""));
+    item.textContent = c.label;
+    item.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (activeId && vscodeApi) {
+        vscodeApi.postMessage({ type: kind === "model" ? "setModel" : "setEffort", id: activeId, value: c.value });
+        const was = (kind === "model" ? s.status.model : s.status.effort) || "";
+        metaPending.set(`${activeId}:${kind}`, { was, until: Date.now() + 20_000 });
+        btn.classList.add("meta-pending");
+      }
+      closeMetaMenu();
+    });
+    menu.appendChild(item);
+  }
+  document.body.appendChild(menu);
+  // anchored ABOVE the button (the statusline sits at the bottom of the panel)
+  const r = btn.getBoundingClientRect();
+  menu.style.right = Math.max(8, window.innerWidth - r.right) + "px";
+  menu.style.bottom = (window.innerHeight - r.top + 6) + "px";
+  metaMenuEl = menu;
+}
+document.addEventListener("click", () => closeMetaMenu());
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeMetaMenu(); });
 
 // Context "battery": a small bar that FILLS with the context-used %, recolors as it
 // fills (green → amber → red), with the % written inside. Replaces the plain "40%".
+// CLICK → /compact the session, same as the timeline's battery click.
 function ctxBar(): HTMLElement {
   const bar = el("span", "ctx-bar"); bar.id = "ctx-bar";
   bar.appendChild(el("span", "ctx-fill"));
   bar.appendChild(el("span", "ctx-text"));
+  bar.appendChild(el("span", "ctx-scan"));   // compacting: thin rainbow bar scanning right→left (as on the timeline)
+  bar.addEventListener("click", () => {
+    const s = activeId ? sessions.get(activeId) : null;
+    if (!s || !vscodeApi) return;
+    // awaiting: the pane's keyboard belongs to the prompt; compacting/closed: nothing to do
+    if (s.status.state === "awaiting" || s.status.state === "compacting" || s.status.state === "closed") return;
+    vscodeApi.postMessage({ type: "compactSession", id: activeId });
+    bar.classList.add("ctx-clicked");   // immediate cue; the real compacting state takes over via the poll
+  });
   return bar;
 }
-function setCtxBar(bar: HTMLElement, ctxStr: string | undefined) {
+function setCtxBar(bar: HTMLElement, ctxStr: string | undefined, compacting = false) {
+  // Compacting: hide the fill/% (the number is about to be wrong anyway) and run
+  // the scanning bar instead, mirroring the timeline's battery. No ctx% needed.
+  bar.classList.toggle("ctx-compacting", compacting);
+  if (compacting) {
+    bar.classList.remove("ctx-clicked");   // the click's pulse cue did its job
+    bar.style.display = "";
+    bar.title = "compacting context…";
+    return;
+  }
   if (!ctxStr) { bar.style.display = "none"; return; }
   bar.style.display = "";
   const pct = Math.max(0, Math.min(100, parseInt(ctxStr, 10) || 0));
@@ -1616,7 +2071,7 @@ function setCtxBar(bar: HTMLElement, ctxStr: string | undefined) {
   const txt = bar.querySelector(".ctx-text") as HTMLElement | null;
   if (fill) { fill.style.width = pct + "%"; fill.style.background = pct >= 85 ? "#c0392b" : pct >= 60 ? "#e0b020" : "#54B204"; }
   if (txt) txt.textContent = pct + "%";
-  bar.title = `context ${pct}% used`;
+  bar.title = `context ${pct}% used — click to /compact`;
 }
 
 const CHIP_LABEL: Record<ChipState, string> = {
@@ -1654,15 +2109,21 @@ function updateStatusline() {
   }
   const meta = el("span", "spinner-meta");
   meta.id = "spinner-meta";
-  meta.textContent = modelMetaText(s.status);
+  syncMetaControls(meta, s.status);
   sl.appendChild(meta);
   const bar = ctxBar();
-  setCtxBar(bar, s.status.ctx);
+  setCtxBar(bar, s.status.ctx, s.status.state === "compacting");
   sl.appendChild(bar);
 }
 
+// Unsent composer text, per session — a draft belongs to the tab it was typed
+// in: switching away stashes it (the box empties for the new tab's own draft),
+// switching back restores it.
+const drafts = new Map<string, string>();
+
 function setActive(id: string, anchor?: string, anchorT?: number, anchorKind?: string) {
   if (activeId === id && anchor == null && anchorT == null) return; // already active, nothing to do
+  closeMetaMenu(); // an open model/effort menu targets the tab we're leaving
   pendingAnchorT = anchorT ?? null;
   pendingAnchorKind = anchorKind ?? null;
   // Remember where we were in the tab we're leaving, so we can restore it.
@@ -1670,6 +2131,15 @@ function setActive(id: string, anchor?: string, anchorT?: number, anchorKind?: s
   if (content && activeId && activeId !== id) {
     const cur = views.get(activeId);
     if (cur) { cur.scrollTop = content.scrollTop; cur.stick = nearBottom(content); }
+  }
+  // Stash the leaving tab's draft; show the entering tab's own (usually empty).
+  const ta = document.getElementById("composer-input") as HTMLTextAreaElement | null;
+  if (ta && activeId !== id) {
+    if (activeId) {
+      if (ta.value) drafts.set(activeId, ta.value); else drafts.delete(activeId);
+    }
+    ta.value = drafts.get(id) ?? "";
+    growComposer(ta);
   }
   pendingAnchor = anchor ?? null;
   pendingAnchorIntent = anchor ? (anchorKind ?? null) : null;
@@ -1698,6 +2168,16 @@ function upsert(msg: any) {
     firstSeen: msg.firstSeen ?? (prev ? prev.firstSeen : undefined),
   };
   sessions.set(msg.id, s);
+  // A full "session" re-targeting an EXISTING tab means its event set was
+  // REPLACED wholesale (the host re-pointed the tab onto a new transcript after a
+  // /clear-style fork), not appended to — drop the cached DOM so syncView rebuilds
+  // from scratch instead of appending the new file's turns onto the old file's
+  // stale nodes. (On a fresh webview, onReady re-posts "session" too, but views is
+  // empty then, so this is a no-op there.)
+  if (existed && msg.events) {
+    const v = views.get(msg.id);
+    if (v) { v.el.remove(); views.delete(msg.id); }
+  }
   if ("ledger" in msg) ledgers.set(msg.id, msg.ledger ?? null);
   if (!existed) order.push(msg.id);
   if (!activeId) activeId = msg.id;
@@ -1744,16 +2224,24 @@ window.addEventListener("message", (e: MessageEvent) => {
   else if (m.type === "sessionList") renderPicker(m.items || []);
   else if (m.type === "openPicker") openPicker(!!m.pick, m.prompt, !!m.allowNew);
   else if (m.type === "focusComposer") { const ta = document.getElementById("composer-input") as HTMLTextAreaElement | null; ta?.focus(); }
+  else if (m.type === "glowTurns") applyGlow(Array.isArray(m.groups) ? m.groups : [], Array.isArray(m.mids) ? m.mids : []);
   else if (m.type === "askLive") setLiveAsk(m.id, m.ask ?? null);
   else if (m.type === "askLiveClear") clearLiveAsk(m.id);
+  else if (m.type === "clipboardText") insertClipboardText(String(m.text ?? ""));
   else if (m.type === "ledger") setLedger(m.id, m.ledger ?? null);
   else if (m.type === "working") { workingSet = new Set(Array.isArray(m.names) ? m.names : []); refreshPostalDots(); }
   else if (m.type === "imgData" && typeof m.path === "string") onImgData(m.path, typeof m.url === "string" ? m.url : null);
   else if (m.type === "tabOrder") applyTabOrder(m.order);
+  else if (m.type === "renamed" && m.id && typeof m.name === "string") {
+    const s = sessions.get(m.id);
+    if (s && s.name !== m.name) { s.name = m.name; renderTabs(); }
+  }
+  else if (m.type === "droppedPath" && typeof m.path === "string") insertComposerText(m.path);
   else if (m.type === "closed") {
     sessions.delete(m.id);
     liveAsks.delete(m.id);
     ledgers.delete(m.id);
+    drafts.delete(m.id);
     const v = views.get(m.id);
     if (v) { v.el.remove(); views.delete(m.id); }
     const oi = order.indexOf(m.id); if (oi >= 0) order.splice(oi, 1);
@@ -1762,6 +2250,8 @@ window.addEventListener("message", (e: MessageEvent) => {
     renderTabs();
     if (activeId === m.id) {
       activeId = mru[0] || null; // MRU: return to the previously-active tab, not the positional neighbor
+      const ta = document.getElementById("composer-input") as HTMLTextAreaElement | null;
+      if (ta) { ta.value = (activeId && drafts.get(activeId)) || ""; growComposer(ta); }
       showActive();
     }
   }
@@ -1778,9 +2268,9 @@ setInterval(() => {
     else updateStatusline();
   }
   const meta = document.getElementById("spinner-meta");
-  if (meta) meta.textContent = modelMetaText(s.status);
+  if (meta) syncMetaControls(meta, s.status);
   const bar = document.getElementById("ctx-bar");
-  if (bar) setCtxBar(bar, s.status.ctx);
+  if (bar) setCtxBar(bar, s.status.ctx, s.status.state === "compacting");
 }, 1000);
 
 // the last message we delivered per session — so a Ctrl+C interrupt can put it back
@@ -1823,11 +2313,97 @@ function setupComposer() {
       if (!text || !activeId) return;
       lastSent.set(activeId, text);   // remembered for a possible Ctrl+C restore
       if (vscodeApi) vscodeApi.postMessage({ type: "sendMessage", id: activeId, text });
+      drafts.delete(activeId);        // sent — no draft to restore on a later switch-back
       ta.value = "";
       ta.style.height = "";
     }
   });
   ta.addEventListener("input", () => growComposer(ta));
+
+  // Drag a file onto the box → insert its PATH at the cursor. NOTE: VS Code's
+  // workbench drop overlay captures plain external file drags over any editor
+  // group ("drop to open", which is why a bare drop opened the PNG) before the
+  // webview sees them — hold SHIFT while dropping to suppress the overlay and
+  // hand the drop here. Pasting (below) is overlay-free and covers the same
+  // need. Best path source first: File.path (Electron, when exposed), then
+  // text/uri-list file:// entries (explorer drags), else the bytes go to the
+  // host, which saves them and posts the saved path back ("droppedPath") —
+  // sandboxed webviews expose NO filesystem path for OS drags, only content.
+  ta.addEventListener("dragover", (e) => {
+    e.preventDefault(); e.stopPropagation();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+    ta.classList.add("drop-target");
+  });
+  ta.addEventListener("dragleave", () => ta.classList.remove("drop-target"));
+  ta.addEventListener("drop", (e) => {
+    e.preventDefault(); e.stopPropagation();
+    ta.classList.remove("drop-target");
+    const dt = e.dataTransfer;
+    if (!dt) return;
+    const uris = (dt.getData("text/uri-list") || "").split(/\r?\n/).filter((u) => u && !u.startsWith("#"));
+    const fromUri = (u: string) => insertComposerText(decodeURIComponent(u.replace(/^file:\/\//, "")));
+    const files = Array.from(dt.files || []);
+    if (!files.length) { for (const u of uris) if (u.startsWith("file://")) fromUri(u); return; }
+    files.forEach((f, i) => {
+      const p = (f as any).path as string | undefined;
+      if (p) { insertComposerText(p); return; }
+      if (uris[i] && uris[i].startsWith("file://")) { fromUri(uris[i]); return; }
+      shipFileToHost(f);
+    });
+  });
+
+  // Cmd+V a copied file (Finder "Copy") or a clipboard screenshot → insert its
+  // path, same pipeline as drops. Plain text pastes have no files on the
+  // clipboard and keep the default behavior.
+  ta.addEventListener("paste", (e) => {
+    const files = Array.from(e.clipboardData?.files || []);
+    if (!files.length) return;
+    e.preventDefault();
+    files.forEach((f) => {
+      const p = (f as any).path as string | undefined;
+      if (p) insertComposerText(p);
+      else shipFileToHost(f);
+    });
+  });
+  wirePasteFallback(ta); // belt-and-braces: native paste disarms it, so no double-insert
+
+  // The bulletproof path: 📎 asks the host to run a native open dialog (no
+  // workbench drop overlay to fight) and the picked path comes back as
+  // droppedPath → insertComposerText. Mousedown (not click) so the textarea
+  // keeps focus and the path lands at the existing cursor.
+  const attach = document.getElementById("composer-attach") as HTMLButtonElement | null;
+  attach?.addEventListener("mousedown", (e) => {
+    e.preventDefault();
+    vscodeApi?.postMessage({ type: "pickFile" });
+  });
+}
+
+// No filesystem path available for a dropped/pasted file → ship the bytes to
+// the host, which saves them under ~/.local/state/romp/drops/ and posts back
+// {type:"droppedPath", path} for insertion.
+function shipFileToHost(f: File) {
+  if (f.size > 50 * 1024 * 1024) return;   // too big to ship over postMessage
+  const reader = new FileReader();
+  reader.onload = () => {
+    const b64 = String(reader.result || "").split(",")[1] || "";
+    if (b64 && vscodeApi) vscodeApi.postMessage({ type: "dropFile", name: f.name || "pasted.png", b64 });
+  };
+  reader.readAsDataURL(f);
+}
+
+// Insert text into the composer at the cursor, with whitespace separation on
+// both sides so a dropped path never fuses with surrounding words.
+function insertComposerText(text: string) {
+  const ta = document.getElementById("composer-input") as HTMLTextAreaElement | null;
+  if (!ta || !text) return;
+  const s = ta.selectionStart ?? ta.value.length, epos = ta.selectionEnd ?? ta.value.length;
+  const before = ta.value.slice(0, s), after = ta.value.slice(epos);
+  const sep = before && !/\s$/.test(before) ? " " : "";
+  ta.value = before + sep + text + (after && !/^\s/.test(after) ? " " : "") + after;
+  const pos = (before + sep + text).length;
+  ta.selectionStart = ta.selectionEnd = Math.min(pos, ta.value.length);
+  growComposer(ta);
+  ta.focus();
 }
 
 // Day/month names for the timeline-rail time markers (see timeMarker()).

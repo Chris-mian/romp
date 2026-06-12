@@ -1,0 +1,25 @@
+{
+ "compactions": [],
+ "events": [
+  {
+   "end": 1781096430,
+   "ended": false,
+   "id": "11111111-2222-3333-4444-555555555555:1781096400:be7677eb",
+   "kind": "typed",
+   "mids": [
+    "1781051207.67474_57710.TESTHOST"
+   ],
+   "open": true,
+   "peer": true,
+   "rec": "USER ASKED: ASK: bump the colorm\nASSISTANT SAID: On it \u2014 bumping the alpha.\nTOOLS USED: Edit",
+   "replyUuid": "a1",
+   "t": 1781096400,
+   "text": "ASK: bump the colorm",
+   "text_full": "ASK: bump the colormap alpha on the recency tint.",
+   "tid": "11111111-2222-3333-4444-555555555555",
+   "uuid": "u1",
+   "workUuid": "a1"
+  }
+ ],
+ "pending": []
+}

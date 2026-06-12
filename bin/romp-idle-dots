@@ -37,7 +37,7 @@ Usage:
   romp-idle-dots --once     # a single sweep (used by tests / manual checks)
   romp-idle-dots --ensure   # spawn the daemon if not already running
 """
-import os, sys, time, subprocess
+import os, re, sys, time, subprocess
 from pathlib import Path
 
 HOME    = Path.home()
@@ -50,11 +50,17 @@ DOT_INACTIVE     = "⚫"      # ⚫ black circle
 FADEABLE         = ("waiting", "idle")   # only READY fades (not 🔴 permission / 🟡 working)
 
 # ── stuck-working healer (case 2 in the docstring) ──────────────────────────
-STUCK_STATES     = ("working", "compacting")  # what the hook's Stop branch would clear
+# permission/picker joined 2026-06-11 (timeline_window incident): a phantom or
+# answered prompt strands those states the same way an Esc strands "working" —
+# no hook ever fires to clear them. The DIALOG_ROW guard keeps a REAL pending
+# prompt safe: its cursor sits on a numbered row (❯ 1. Yes …), which an idle
+# composer never shows.
+STUCK_STATES     = ("working", "compacting", "permission", "picker")
 STUCK_AFTER_SECS = 120     # since-staleness gate before we even capture the pane;
                            # an ACTIVE session refreshes since on every PostToolUse
 BUSY_MARKER      = "esc to interrupt"   # the live-spinner suffix a working Claude shows
 IDLE_MARKER      = "❯"     # the composer prompt an interrupted/idle pane shows
+DIALOG_ROW       = re.compile(r"(?m)^\s*❯\s*\d+\.\s")   # a picker/permission cursor row
 
 
 def diagnose(state, since, now, in_mode, pane):
@@ -70,6 +76,8 @@ def diagnose(state, since, now, in_mode, pane):
         return "leave"                  # scrolled back: pane content unjudgeable
     if BUSY_MARKER in pane:
         return "leave"                  # long tool call / streaming: genuinely working
+    if DIALOG_ROW.search(pane):
+        return "leave"                  # a REAL prompt is on screen — the state is true
     if IDLE_MARKER not in pane:
         return "leave"                  # unrecognized content: be conservative
     return "heal"

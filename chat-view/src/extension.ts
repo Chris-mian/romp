@@ -3,7 +3,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { execSync, execFileSync, execFile, spawn } from "child_process";
-import { newIncParser, feed, buildParsed, type IncParser } from "./transcript";
+import { newIncParser, feed, buildParsed, type IncParser, type ChatEvent } from "./transcript";
 import { hydratePostal } from "./postal-spec";
 import { parseAskPane } from "./askparse";
 
@@ -42,6 +42,10 @@ interface Session {
   askSig?: string;              // signature of the live picker last pushed (dedupes re-posts)
   ledgerSig?: string;           // signature of the digest/ledger last pushed (dedupes re-posts)
   firstSeen?: number;           // launch/earliest-activity epoch (transcript first line) — cached; tab sort key
+  lastMetaSig?: string;         // model|effort|ctx|faded last pushed — a reopened/revived session's
+                                // tmux vars land AFTER the tab opens, with no state change to ride on
+  askComposerTicks?: number;    // consecutive composer-screen ticks while awaiting — heals a hookless
+                                // picker's stranded "permission" state after it's answered
 }
 
 let extUri: vscode.Uri;
@@ -97,9 +101,16 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.window.registerUriHandler({ handleUri: onDeepLink }),
   );
   context.subscriptions.push(
-    vscode.commands.registerCommand("rompChat.open", () => {
+    vscode.commands.registerCommand("rompChat.open", async () => {
       const had = !!panel;
       openPanel();
+      // The icon opens the whole romp surface: feed beside the chat (next
+      // editor group over, created if needed) and the timeline in the bottom
+      // panel (vscode-trackchanges' view; silently skipped if not installed).
+      const chatCol = panel?.viewColumn;
+      openFeedPanel(true, chatCol !== undefined ? ((chatCol as number) + 1) as vscode.ViewColumn : undefined);
+      try { await vscode.commands.executeCommand("trackchanges.timeline.focus"); } catch { /* not installed */ }
+      panel?.reveal(panel.viewColumn ?? vscode.ViewColumn.Beside, false); // focus ends on the chat
       if (had) post({ type: "openPicker" }); // re-click while open -> pick another
     }),
     vscode.commands.registerCommand("rompChat.openFeed", () => openFeedPanel()),
@@ -170,13 +181,20 @@ function wirePanel(p: vscode.WebviewPanel) {
     if (!m) return;
     if (m.type === "ready") onReady();
     else if (m.type === "addSession") openCustomPicker();
-    else if (m.type === "createSession") createNewSession();
+    else if (m.type === "createSession") createNewSession(String(m.name ?? ""));
     else if (m.type === "closeSession" && m.id) requestCloseTab(String(m.id));
+    else if (m.type === "renameSession" && m.id && typeof m.name === "string") renameSession(String(m.id), String(m.name));
     else if (m.type === "requestSessions") post({ type: "sessionList", items: sessionPayload() });
     else if (m.type === "openSession" && m.id) openSessionById(m.id);
     else if (m.type === "openByName" && m.name) openByName(String(m.name));
     else if (m.type === "openAll") openAllRunning();
     else if (m.type === "openFile" && m.path) openFileInEditor(m.path, m.line);
+    else if (m.type === "openLink" && typeof m.href === "string") openLink(String(m.href));
+    // rail-dot fleet links: hover → timeline + feed highlight; click → feed card modal
+    else if (m.type === "dotHover") onDotHover(m.sid ? String(m.sid) : null, m.uuid ? String(m.uuid) : null, Number(m.t) || 0);
+    else if (m.type === "dotOpen" && m.sid) onDotOpen(String(m.sid), m.uuid ? String(m.uuid) : null, Number(m.t) || 0);
+    else if (m.type === "dropFile" && typeof m.name === "string" && typeof m.b64 === "string") saveDroppedFile(String(m.name), String(m.b64));
+    else if (m.type === "pickFile") pickFileForComposer();
     else if (m.type === "activeTab") setActiveTab(m.id ?? null);
     else if (m.type === "pickResult") resolvePick(m.createNew ? { createNew: true } : m.id ? { id: String(m.id), name: String(m.name ?? "") } : undefined);
     else if (m.type === "sendMessage" && m.id && m.text) sendMessageToTab(String(m.id), String(m.text));
@@ -187,6 +205,12 @@ function wirePanel(p: vscode.WebviewPanel) {
     else if (m.type === "addCustomAsk" && m.id && typeof m.text === "string") addCustomAsk(String(m.id), m.text);
     else if (m.type === "cancelAsk" && m.id) cancelAsk(String(m.id));
     else if (m.type === "askText" && m.id && typeof m.text === "string") askSendText(String(m.id), m.text);
+    // paste fallback for webview <input> fields: native Cmd+V never reaches
+    // them (typing does) — the webview asks for the clipboard text instead.
+    else if (m.type === "readClipboard") vscode.env.clipboard.readText().then((text) => post({ type: "clipboardText", text }), () => post({ type: "clipboardText", text: "" }));
+    else if (m.type === "setModel" && m.id && typeof m.value === "string") setSessionMeta(String(m.id), "model", String(m.value));
+    else if (m.type === "setEffort" && m.id && typeof m.value === "string") setSessionMeta(String(m.id), "effort", String(m.value));
+    else if (m.type === "compactSession" && m.id) compactSession(String(m.id));
     else if (m.type === "reorderTabs" && Array.isArray(m.order)) writeSessionOrder(m.order.map(String));
     // ledger bullets drive the timeline like feed rows: hover → transient highlight,
     // click → locate (pan + openChat). The bullet id is the reply's romp-events id.
@@ -333,17 +357,18 @@ function launchEnv(): NodeJS.ProcessEnv {
   return env;
 }
 
-// "✛ New session…" from the + picker: create a fresh detached romp session and open
-// it as a tab here. Mirrors vscode-trackchanges' createSession (romp --detach <name>),
-// then waits for Claude to boot (its hook sets @claude-state) before opening the tab.
-async function createNewSession() {
+// "✛ New session" from the + picker: create a fresh detached romp session and open
+// it as a tab here. The name comes from the picker's search box (validated there —
+// no native input dialog). Mirrors vscode-trackchanges' createSession
+// (romp --detach <name>), then waits for Claude to boot (its hook sets
+// @claude-state) before opening the tab.
+async function createNewSession(rawName: string) {
   openPanel();
-  const name = (await vscode.window.showInputBox({
-    prompt: "New romp session name",
-    placeHolder: "e.g. feature-x",
-    validateInput: (v) => /^[A-Za-z0-9._-]+$/.test((v || "").trim()) ? null : "letters, digits, . _ - only",
-  }))?.trim();
-  if (!name) return;
+  const name = rawName.trim();
+  if (!name || !/^[A-Za-z0-9._-]+$/.test(name)) {
+    vscode.window.showWarningMessage("romp: session names use letters, digits, . _ - only.");
+    return;
+  }
   const states0 = rompTmuxState();
   if (states0 && states0.has(name)) { vscode.window.showWarningMessage(`romp: a session named "${name}" already exists.`); openByName(name); return; }
   const folders = vscode.workspace.workspaceFolders || [];
@@ -397,6 +422,41 @@ function sendMessageToTab(id: string, text: string) {
   sendToSession(name, body);
 }
 
+// The statusline's model/effort dropdowns: inject the matching slash command into
+// the pane (Claude Code parses a pasted "/model …" / "/effort …" on submit, same
+// as a typed one). Values are allowlisted — the webview only ever sends these, so
+// anything else means a confused message, not a command to forward. Refused while
+// a prompt is pending: the pane's keyboard belongs to the picker, and the pasted
+// text + Enter would answer it instead.
+const META_VALUES: Record<"model" | "effort", Set<string>> = {
+  model: new Set(["fable", "opus", "sonnet", "haiku", "opusplan", "best", "default"]),
+  effort: new Set(["low", "medium", "high", "xhigh", "max", "auto"]),
+};
+function setSessionMeta(id: string, kind: "model" | "effort", value: string) {
+  if (!META_VALUES[kind].has(value)) return;
+  const s = sessions.get(id);
+  const name = s?.name ?? rompMeta(id).name;
+  if (!name) return;
+  if (s && chipState(s.name, lastStates, s.lastWorking) === "awaiting") {
+    vscode.window.showWarningMessage(`romp: answer "${name}"'s pending prompt before changing the ${kind}.`);
+    return;
+  }
+  sendToSession(name, `/${kind === "model" ? "model" : "effort"} ${value}`);
+}
+
+// The ctx battery's click → /compact, mirroring the timeline's battery click
+// (same awaiting guard as setSessionMeta — a pending prompt owns the keyboard).
+function compactSession(id: string) {
+  const s = sessions.get(id);
+  const name = s?.name ?? rompMeta(id).name;
+  if (!name) return;
+  if (s && chipState(s.name, lastStates, s.lastWorking) === "awaiting") {
+    vscode.window.showWarningMessage(`romp: answer "${name}"'s pending prompt before compacting.`);
+    return;
+  }
+  sendToSession(name, "/compact");
+}
+
 function tmuxArgs(extra: string[]): string[] {
   const sock = tmuxSocket();
   return sock ? ["-S", sock, ...extra] : extra;
@@ -418,6 +478,16 @@ function interruptSession(id: string) {
   // out a late PostToolUse from the cancelled tool, then refresh the chip immediately.
   const tInt = Math.floor(Date.now() / 1000);
   for (const ms of [600, 2000]) setTimeout(() => { markPaneIdle(name, tInt); refreshStatusFor(id); }, ms);
+  // A pre-first-token interrupt restores the prompt into the TUI's composer and
+  // hides the turn; filterInterrupted mirrors that, but its just-sent age guard
+  // (2.5s) can outlast the refreshes above when Ctrl+C follows the send almost
+  // immediately. One more re-post after the guard expires catches that window.
+  setTimeout(() => {
+    const s = sessions.get(id);
+    if (!s) return;
+    const state = chipState(s.name, lastStates, s.lastWorking);
+    if (RESTED.has(state)) repostEventsFor(s, state);
+  }, 3200);
 }
 
 // Force a pane's @claude-state to idle (mirrors the Stop branch of tmux-status.sh:
@@ -444,6 +514,12 @@ function markPaneIdle(name: string, notAfter: number) {
   } catch { /* pane gone */ }
 }
 
+// The displayed-meta dedupe key (pairs with Session.lastMetaSig): every status
+// post carries these four, so every post site should stamp it.
+function metaSigOf(name: string, states: Map<string, TmuxInfo> | null): string {
+  return [modelOf(name, states), effortOf(name, states), ctxOf(name, states), fadedFor(name, states)].join("|");
+}
+
 // Re-read tmux state and push a status update for one session if its chip changed.
 // Used to make an interrupt feel immediate without waiting for the next poll tick.
 function refreshStatusFor(id: string) {
@@ -452,7 +528,12 @@ function refreshStatusFor(id: string) {
   lastStates = rompTmuxState();
   const state = chipState(s.name, lastStates, s.lastWorking);
   if (state === s.lastState) return;
+  const wasBusy = s.lastState === "working" || s.lastState === "compacting";
   s.lastState = state;
+  s.lastMetaSig = metaSigOf(s.name, lastStates);
+  // an interrupt settling the session = the trailing turn may have been
+  // restored to the composer — re-post events so its bubble disappears too
+  if (wasBusy && RESTED.has(state)) { repostEventsFor(s, state); return; }
   post({ type: "status", id: s.id, status: { state, sinceEpoch: workingSinceMs(s, state, lastStates, s.lastSince), effort: effortOf(s.name, lastStates), model: modelOf(s.name, lastStates), ctx: ctxOf(s.name, lastStates), faded: fadedFor(s.name, lastStates) } });
 }
 
@@ -501,19 +582,80 @@ function postLiveAskFor(s: Session) {
   const parsed = parseAskPane(pane);
   if (!parsed && (!pane.trim() || isComposerScreen(pane))) {
     if (s.askSig) { s.askSig = undefined; post({ type: "askLiveClear", id: s.id }); }
+    // HOOKLESS prompt answered: a picker that fired no hook (e.g. the /model
+    // switch confirmation) fires none on dismissal either, so the "permission"
+    // we painted below would strand the red chip forever. After the composer
+    // has been back for a few consecutive ticks (riding out the ~3s transient
+    // lag noted above, which real prompts' own hooks heal), reset the state.
+    s.askComposerTicks = (s.askComposerTicks ?? 0) + 1;
+    if (s.askComposerTicks >= 4) markPaneState(s.name, "waiting", ["permission"]);
     return;
   }
+  s.askComposerTicks = 0;
   const sig = parsed ? parsed.sig : "TEXT";
   if (sig !== s.askSig) { s.askSig = sig; post({ type: "askLive", id: s.id, ask: parsed }); }
 }
 
+// HOOKLESS pickers. @claude-state only learns "permission" from the Notification
+// hook, and Claude Code fires NO hook for TUI confirmations like the /model
+// switch prompt — so such a session keeps its old chip and the chat view never
+// even looked at its pane (the user's report, 2026-06-11). Probe live panes for
+// a structured picker; on a hit, paint the pane awaiting in tmux — which heals
+// EVERY consumer (chip, dashboard, timeline, feed) — and post the live ask now.
+// Only a real parse counts (the footer/submit-row requirement in parseAskPane
+// keeps ordinary numbered output from matching); the TEXT fallback card stays
+// exclusive to hook-confirmed awaiting states.
+let probeTick = 0;
+function probeHooklessAsk(s: Session): boolean {
+  const pane = capturePane(s.name);
+  const parsed = parseAskPane(pane);
+  if (!parsed) return false;
+  s.askComposerTicks = 0;
+  if (parsed.sig !== s.askSig) { s.askSig = parsed.sig; post({ type: "askLive", id: s.id, ask: parsed }); }
+  markPaneState(s.name, "permission", ["waiting", "working", "idle", ""]);
+  return true;
+}
+
 // For every awaiting session, push its pending prompt to the webview; clear it
-// the moment the session stops awaiting.
+// the moment the session stops awaiting. Non-awaiting live sessions get probed
+// for hookless pickers — the active tab every tick, the rest every 4th tick
+// (and any tick while their ask card is up, so it clears promptly).
 function refreshLiveAsks() {
+  probeTick++;
   for (const s of sessions.values()) {
-    if (chipState(s.name, lastStates, s.lastWorking) === "awaiting") postLiveAskFor(s);
-    else if (s.askSig) { s.askSig = undefined; post({ type: "askLiveClear", id: s.id }); }
+    const st = chipState(s.name, lastStates, s.lastWorking);
+    if (st === "awaiting") { postLiveAskFor(s); continue; }
+    // Probe ONLY quiet sessions (2026-06-11 timeline_window incident): a WORKING
+    // session cannot have a picker up — Claude is running — but its pane is full
+    // of arbitrary output, and a parser false-positive here painted "permission"
+    // over a live turn (then flapped against PostToolUse for minutes). Hookless
+    // pickers only ever appear on a session that looks ready/idle.
+    if ((st === "ready" || st === "idle") && (s.id === activeTab?.tid || s.askSig || probeTick % 4 === 0)) {
+      if (probeHooklessAsk(s)) continue;
+    }
+    if (s.askSig) { s.askSig = undefined; post({ type: "askLiveClear", id: s.id }); }
   }
+}
+
+// Set a pane's @claude-state (with emoji + since + the states-log line the
+// timeline reads), but ONLY from one of the expected prior states — never
+// clobbering a newer hook-set value. Mirrors markPaneIdle's guards.
+function markPaneState(name: string, to: string, fromStates: string[]) {
+  const env = tmuxEnv();
+  const T = (args: string[]): string => execFileSync("tmux", tmuxArgs(args), { env, timeout: 4000, encoding: "utf8" });
+  try {
+    const prev = T(["show", "-t", name, "-v", "@claude-state"]).trim();
+    if (prev === to || !fromStates.includes(prev)) return;
+    const now = Math.floor(Date.now() / 1000);
+    T(["set", "-t", name, "@claude-state", to]);
+    T(["set", "-t", name, "@claude-state-since", String(now)]);
+    T(["set", "-t", name, "@romp-emoji", to === "permission" ? "🔴" : "🔵"]);
+    const sid = T(["show", "-t", name, "-v", "@romp-session-id"]).trim();
+    if (sid) {
+      const dir = path.join(process.env.XDG_STATE_HOME || path.join(os.homedir(), ".local", "state"), "romp", "states");
+      try { fs.mkdirSync(dir, { recursive: true }); fs.appendFileSync(path.join(dir, `${sid}.jsonl`), JSON.stringify({ t: now, state: to }) + "\n"); } catch { /* ignore */ }
+    }
+  } catch { /* pane gone */ }
 }
 
 // Send a key/text sequence into a session's pane (exits copy-mode first so the
@@ -631,22 +773,26 @@ function submitMultiAsk(id: string) {
   remirrorSoon(id, 700);
 }
 
-// Multi-select custom answer: drive the TUI's "Type something" slot. Navigate to
-// it, confirm the cursor landed, then type → Enter → Space. VERIFIED sequence:
-// typing alone is only a PROVISIONAL edit (discarded if you navigate away); Enter
-// COMMITS the text as a real option but toggles it OFF; Space re-checks it — so it
-// lands committed AND selected and shows up in the review/answer. No terminal.
+// Custom answer: drive the TUI's "Type something" slot. Navigate to it, confirm
+// the cursor landed, then type. VERIFIED sequences:
+//  • multi-select: typing alone is only a PROVISIONAL edit (discarded if you
+//    navigate away); Enter COMMITS the text as a real option but toggles it OFF;
+//    Space re-checks it — so it lands committed AND selected.
+//  • single-select (incl. each tab of the multi-QUESTION wizard): typing on the
+//    slot replaces its label inline; Enter commits it as this question's answer
+//    (and advances to the next tab). No Space — Enter already picked.
 function addCustomAsk(id: string, text: string) {
   if (!text.trim()) return;
   const name = sessions.get(id)?.name ?? rompMeta(id).name ?? "";
   const parsed = parseAskPane(capturePane(name));
-  if (!parsed || parsed.kind !== "multi") return;
+  if (!parsed || parsed.kind === "submit") return;
   const slot = parsed.options.find((o) => /^\s*type something/i.test(o.label));
   if (!slot) return;
-  stepNavTo(id, slot.n, (p) => !!p && p.kind === "multi", () => {
+  const kind = parsed.kind;
+  stepNavTo(id, slot.n, (p) => !!p && p.kind === kind, () => {
     sendToPane(id, (T, nm) => T(["send-keys", "-t", nm, "-l", text])); // type the text
-    setTimeout(() => keySeq(id, ["Enter"]), 170);                       // commit it as a real option (toggles OFF)
-    setTimeout(() => keySeq(id, ["Space"]), 350);                       // re-check it so it's selected
+    setTimeout(() => keySeq(id, ["Enter"]), 170);                       // commit (multi: toggles OFF; single: answers)
+    if (kind === "multi") setTimeout(() => keySeq(id, ["Space"]), 350); // multi only: re-check it so it's selected
   });
   remirrorSoon(id, 650);
 }
@@ -766,7 +912,95 @@ function pushUpdate(s: Session) {
   s.lastWorking = p.status.working;
   const state = chipState(s.name, lastStates, s.lastWorking);
   s.lastState = state;
-  post({ type: "update", id: s.id, events: p.events, status: { state, sinceEpoch: workingSinceMs(s, state, lastStates, s.lastSince), effort: effortOf(s.name, lastStates), model: modelOf(s.name, lastStates), ctx: ctxOf(s.name, lastStates), faded: fadedFor(s.name, lastStates) } });
+  s.lastMetaSig = metaSigOf(s.name, lastStates);
+  post({ type: "update", id: s.id, events: filterInterrupted(p.events, state), status: { state, sinceEpoch: workingSinceMs(s, state, lastStates, s.lastSince), effort: effortOf(s.name, lastStates), model: modelOf(s.name, lastStates), ctx: ctxOf(s.name, lastStates), faded: fadedFor(s.name, lastStates) } });
+}
+
+// ---- transcript-fork following (/clear, /ide, resume, skill) ----
+// Claude Code forks a session onto a NEW transcript fsid on /clear (and /ide,
+// resume, a skill) while romp's anchor (@romp-session-id, the names-dir key, and
+// this tab's id) stays put — so the live conversation moves to a DIFFERENT .jsonl
+// in the SAME project dir, carrying the SAME customTitle. A tab pinned to one
+// fsid would tail the now-static old file forever: frozen chat, new prompts
+// invisible (the user's report, 2026-06-11). We follow the fork by re-pointing
+// the watcher to the newest same-title transcript — the exact fork-grouping the
+// daemon uses (romp-summarize-backfill custom_title()/sessions()).
+const titleCache = new Map<string, { key: string; title: string | null }>();
+// The romp NAME stamped into a transcript's `custom-title` line — read from a
+// bounded 64KB head and cached by (mtime,size). KEEP THIS IDENTICAL to the
+// daemon's custom_title() (type=="custom-title", first 64KB) so the hosts never
+// disagree on which transcripts belong to one session.
+function readCustomTitle(file: string): string | null {
+  let st: fs.Stats;
+  try { st = fs.statSync(file); } catch { return null; }
+  const key = `${st.mtimeMs}:${st.size}`;
+  const hit = titleCache.get(file);
+  if (hit && hit.key === key) return hit.title;
+  let title: string | null = null;
+  try {
+    const fd = fs.openSync(file, "r");
+    const buf = Buffer.alloc(65536);
+    const n = fs.readSync(fd, buf, 0, buf.length, 0);
+    fs.closeSync(fd);
+    for (const line of buf.toString("utf8", 0, n).split("\n")) {
+      if (!line || !line.includes("custom-title")) continue;
+      try {
+        const o = JSON.parse(line);
+        if (o.type === "custom-title" && o.customTitle) { title = String(o.customTitle); break; }
+      } catch { /* a partial / non-JSON head line */ }
+    }
+  } catch { /* unreadable */ }
+  titleCache.set(file, { key, title });
+  return title;
+}
+
+// The tab's CURRENT live transcript: the newest *.jsonl in its project dir whose
+// customTitle matches its romp name. Returns null (→ never repoint) for a tab
+// with no real romp name (an 8-char fsid fallback can't match a customTitle) or a
+// keepOpen tab — a read-only / deep-link view is pinned to a specific fsid on
+// purpose and must NOT chase forks. Steady-state the current (growing) file IS
+// the newest, so this only differs from s.file right after a fork.
+function currentTranscriptFor(s: Session): string | null {
+  if (s.keepOpen) return null;
+  if (!s.name || s.name === s.id.slice(0, 8)) return null;
+  const dir = path.dirname(s.file);
+  let files: string[];
+  try { files = fs.readdirSync(dir); } catch { return null; }
+  // Seed the bar with the CURRENTLY-watched file's own mtime: only a STRICTLY
+  // newer same-title sibling can win, so a tab only ever re-points FORWARD onto a
+  // fresher fork — never backwards onto an abandoned one, and never flaps on an
+  // mtime tie (parity with the kernel host's fork-follow). Returns null when
+  // nothing newer exists (the steady state — the live file is its own newest).
+  let bestM = -1;
+  try { bestM = fs.statSync(s.file).mtimeMs; } catch { /* current file gone → any match wins */ }
+  let best: string | null = null;
+  for (const f of files) {
+    if (!f.endsWith(".jsonl") || f.startsWith("agent-")) continue;
+    const fp = path.join(dir, f);
+    let st: fs.Stats;
+    try { st = fs.statSync(fp); } catch { continue; }
+    if (st.mtimeMs <= bestM) continue;
+    if (readCustomTitle(fp) !== s.name) continue;
+    bestM = st.mtimeMs; best = fp;
+  }
+  return best;
+}
+
+// Follow a fork: swap the tab onto a new transcript file IN PLACE, preserving the
+// tab's identity (id = anchor, name, colour, firstSeen) so it stays the same tab
+// in the same sort slot — only the watched bytes change. A fresh parser + offset
+// re-read the new file from the top; postSession re-posts a full "session", which
+// the webview rebuilds from scratch (the upsert() view-reset) — so the post-fork
+// conversation replaces the old thread instead of appending onto it.
+function repointSession(s: Session, file: string) {
+  try { s.watcher?.close(); } catch { /* ignore */ }
+  if (s.debounce) { clearTimeout(s.debounce); s.debounce = undefined; }
+  s.file = file;
+  s.parser = undefined;
+  s.offset = 0;
+  s.lastSig = "";
+  watch(s);
+  postSession(s);
 }
 
 function closeSession(id: string) {
@@ -799,6 +1033,42 @@ async function requestCloseTab(id: string) {
   if (choice === "End session") { endSession(s.name); closeSession(id); }
   else if (choice === "Close tab") closeSession(id);
   // dismissed (Esc/Cancel) → leave the tab open, untouched
+}
+
+// Inline rename from a tab (right-click → edit in place). Renames the tmux
+// session itself; the after-rename-session hook (`romp _renamed`) then resyncs
+// the name map and pushes /rename to Claude's pill, so the timeline, feed, and
+// postal addressing all follow. The webview label only updates when we post
+// "renamed" back — on any failure we just warn and the tab keeps its old name.
+function renameSession(id: string, newName: string) {
+  const s = sessions.get(id);
+  const name = newName.trim();
+  if (!s || !name || name === s.name) return;
+  if (!/^[A-Za-z0-9._-]+$/.test(name)) { vscode.window.showWarningMessage("romp: session names are letters, digits, . _ - only."); return; }
+  const states = rompTmuxState();
+  if (!states || !states.has(s.name)) { vscode.window.showWarningMessage(`romp: "${s.name}" isn't running — only a live session can be renamed.`); return; }
+  if (states.has(name)) { vscode.window.showWarningMessage(`romp: a session named "${name}" already exists.`); return; }
+  try { execFileSync("tmux", tmuxArgs(["rename-session", "-t", "=" + s.name, name]), { env: tmuxEnv(), timeout: 4000, encoding: "utf8" }); }
+  catch (e) { vscode.window.showWarningMessage(`romp: rename failed — ${(e as Error).message ?? e}`); return; }
+  // Update the name map ourselves too (same record `romp _renamed` rewrites):
+  // the hook is async — and if it's ever broken, the map would stay stale and
+  // pickers/restores would keep resolving the dead old name.
+  try {
+    const f = path.join(ROMP_NAMES, s.id);
+    const parts = fs.readFileSync(f, "utf8").replace(/\n$/, "").split("\t");
+    parts[0] = name;
+    fs.writeFileSync(f, parts.join("\t") + "\n");
+  } catch { /* no record for this id — the hook covers it */ }
+  applyRename(s, name);
+}
+
+// Adopt a session's new name everywhere the extension holds it: the Session
+// record, the webview tab, and the published chat-active file (the timeline
+// matches lanes by it).
+function applyRename(s: Session, name: string) {
+  s.name = name;
+  post({ type: "renamed", id: s.id, name });
+  if (activeTab?.tid === s.id) { activeTab = { tid: s.id, name }; writeChatActive(); }
 }
 
 // End a session for good: kill its tmux session (the pane closes → Claude exits).
@@ -887,6 +1157,37 @@ function firstSeenOf(s: Session): number {
   return ms;
 }
 
+// An interrupt that lands BEFORE the first response token makes the TUI pop the
+// prompt back into the composer and drop the turn from its conversation — but
+// the user line already hit the transcript, and NOTHING marks the restore
+// (verified 2026-06-11: the line just sits as the leaf until the next submit
+// orphans it). Mirror the TUI: hide a trailing typed user turn once the session
+// is back at rest. Not for working/compacting (a reply is coming), and not for
+// closed (history should stand whole). The age guard rides out the
+// submit→UserPromptSubmit-hook lag, so a just-sent prompt whose state still
+// reads "waiting" is never hidden.
+const RESTED = new Set<ChipState>(["ready", "idle", "awaiting"]);
+function filterInterrupted(events: ChatEvent[], state: ChipState): ChatEvent[] {
+  if (!RESTED.has(state)) return events;
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e: any = events[i];
+    if (e.kind === "queued" || e.kind === "todo") continue;   // trailing fixtures, not the turn itself
+    if (e.kind === "user" && e.human && e.md && e.ts && Date.now() - Date.parse(e.ts) > 2500)
+      return events.slice(0, i).concat(events.slice(i + 1));
+    break;
+  }
+  return events;
+}
+
+// Re-post a session's (filtered) events without a transcript change — used when
+// a working→rest transition means the trailing turn may have just been
+// interrupt-restored and should disappear, mirroring the TUI.
+function repostEventsFor(s: Session, state: ChipState) {
+  const p = readParsedSession(s);
+  if (!p) return;
+  post({ type: "update", id: s.id, events: filterInterrupted(p.events, state), status: { state, sinceEpoch: workingSinceMs(s, state, lastStates, s.lastSince), effort: effortOf(s.name, lastStates), model: modelOf(s.name, lastStates), ctx: ctxOf(s.name, lastStates), faded: fadedFor(s.name, lastStates) } });
+}
+
 function postSession(s: Session) {
   const p = readParsedSession(s);
   if (!p) return;
@@ -896,6 +1197,7 @@ function postSession(s: Session) {
   s.lastSig = sig(s.file);
   s.lastSince = p.status.sinceEpoch;
   s.lastState = state;
+  s.lastMetaSig = metaSigOf(s.name, states);
   const ledger = digestOf(s);
   s.ledgerSig = ledgerSigOf(ledger);
   post({
@@ -903,7 +1205,7 @@ function postSession(s: Session) {
     id: s.id,
     name: s.name,
     color: s.color,
-    events: p.events,
+    events: filterInterrupted(p.events, state),
     status: { state, sinceEpoch: workingSinceMs(s, state, states, p.status.sinceEpoch), effort: effortOf(s.name, states), model: modelOf(s.name, states), ctx: ctxOf(s.name, states), faded: fadedFor(s.name, states) },
     ledger,
     firstSeen: firstSeenOf(s),
@@ -917,6 +1219,22 @@ function tick() {
   if (feedPanel) refreshFeed();
   if (!chatActive) return;
   for (const s of Array.from(sessions.values())) {
+    // Follow renames made anywhere (this panel, tmux prefix-$, :rename-session):
+    // the after-rename hook resyncs the name map, so re-read it. Without this the
+    // tab keeps the old name, which tmux no longer knows → chipState says
+    // "closed" → the tab auto-closes two ticks after a rename. CRITICAL: only
+    // adopt a map name tmux actually knows — the hook is async (and can be
+    // broken entirely, e.g. a stale path), so blindly adopting a lagging map
+    // entry would revert a just-renamed session to its dead old name and the
+    // auto-close below would eat the tab.
+    const nm = rompMeta(s.id).name;
+    if (nm && nm !== s.name && lastStates?.has(nm)) applyRename(s, nm);
+    // Follow a /clear (or /ide / resume / skill) fork: if this session's live
+    // conversation has moved to a new fsid transcript, re-point the tab onto it
+    // BEFORE the freshness check below — else the tab tails the now-static old
+    // file forever (frozen chat; new prompts land in the unwatched new file).
+    const live = currentTranscriptFor(s);
+    if (live && live !== s.file) { repointSession(s, live); continue; }
     const cur = sig(s.file);
     if (cur && cur !== s.lastSig) { pushUpdate(s); continue; }
     const state = chipState(s.name, lastStates, s.lastWorking);
@@ -928,9 +1246,20 @@ function tick() {
     } else {
       s.closedTicks = 0;
     }
-    if (state !== s.lastState) {
+    // Re-post on a state change OR a model/effort/ctx/faded change. The meta
+    // check matters for a reopened/revived session: its tab opens before the
+    // TUI's statusline republishes the tmux vars, so the values arrive a few
+    // seconds later with NO chip-state change to carry them (the user's report,
+    // 2026-06-11). Also keeps an idle session's display fresh after /model//effort.
+    const metaSig = metaSigOf(s.name, lastStates);
+    if (state !== s.lastState || metaSig !== s.lastMetaSig) {
+      const wasBusy = s.lastState === "working" || s.lastState === "compacting";
       s.lastState = state;
-      post({ type: "status", id: s.id, status: { state, sinceEpoch: workingSinceMs(s, state, lastStates, s.lastSince), effort: effortOf(s.name, lastStates), model: modelOf(s.name, lastStates), ctx: ctxOf(s.name, lastStates), faded: fadedFor(s.name, lastStates) } });
+      s.lastMetaSig = metaSig;
+      // settling out of work with no transcript change = a possible interrupt-
+      // restore: re-post events so the trailing turn is (un)hidden to match
+      if (wasBusy && RESTED.has(state)) repostEventsFor(s, state);
+      else post({ type: "status", id: s.id, status: { state, sinceEpoch: workingSinceMs(s, state, lastStates, s.lastSince), effort: effortOf(s.name, lastStates), model: modelOf(s.name, lastStates), ctx: ctxOf(s.name, lastStates), faded: fadedFor(s.name, lastStates) } });
     }
   }
   refreshLiveAsks();
@@ -1122,16 +1451,15 @@ function sessionPayload(): Array<{ id: string; name: string; color: ChipColor | 
 }
 
 function openSessionById(id: string) {
-  const tr = scanTranscripts().get(id);
-  if (!tr) return;
-  const name = rompMeta(id).name ?? id.slice(0, 8);
-  const states = rompTmuxState();
-  const running = !!(states && states.size > 0 && states.has(name));
-  if (running) {
-    addSession(tr.file);
-  } else {
-    promptReopen(id, name);
-  }
+  const t = resolveSession(id);
+  if (!t) return;
+  // Live under its customTitle (even when the clicked fsid is an old/forked
+  // incarnation) → focus the running session by name. Otherwise revive/open the
+  // MOST RECENT incarnation, named by its customTitle — never the stale fork's
+  // fsid or a garbage fallback name (the user's "go to the most recent one").
+  if (t.liveName) { openByName(t.liveName); return; }
+  const name = readCustomTitle(t.file) ?? rompMeta(t.id).name ?? t.id.slice(0, 8);
+  promptReopen(t.id, name);
 }
 
 // Navigate to a session by its romp NAME (the clickable sender/recipient chip in
@@ -1151,6 +1479,52 @@ function openByName(name: string) {
 // The romp dashboard fires this on click. Reveal the panel, open the session's
 // tab (read-only — render straight from the on-disk JSONL even if it's closed,
 // bypassing the reopen prompt), and scroll the webview to the event with <uuid>.
+// A file dropped on the composer from the OS carries NO filesystem path in a
+// sandboxed webview — only its bytes. Save them under the romp state dir and
+// hand the path back ("droppedPath") so the prompt references a real, readable
+// file. Drops that DO expose a path never reach here (inserted in-webview).
+const ROMP_DROPS = path.join(ROMP_STATE, "drops");
+function saveDroppedFile(name: string, b64: string) {
+  try {
+    fs.mkdirSync(ROMP_DROPS, { recursive: true });
+    const safe = name.replace(/[^\w.-]+/g, "_").slice(-80) || "drop";
+    const file = path.join(ROMP_DROPS, `${Date.now()}-${safe}`);
+    fs.writeFileSync(file, Buffer.from(b64, "base64"));
+    post({ type: "droppedPath", path: file });
+  } catch (e) {
+    vscode.window.showWarningMessage(`romp: couldn't save the dropped file — ${(e as Error).message ?? e}`);
+  }
+}
+
+// The reliable way to get a file path into the composer. OS file drags onto the
+// webview are swallowed by the workbench's editor drop overlay ("drop to open"),
+// so instead of fighting it the 📎 button asks the host to run a native open
+// dialog and inserts each picked file's real fsPath via the same droppedPath
+// pipeline as an in-webview drop.
+async function pickFileForComposer() {
+  const picks = await vscode.window.showOpenDialog({
+    canSelectMany: true,
+    canSelectFiles: true,
+    canSelectFolders: false,
+    openLabel: "Insert path",
+    title: "Attach file — inserts its path into the message",
+  });
+  if (!picks?.length) return;
+  for (const uri of picks) post({ type: "droppedPath", path: uri.fsPath });
+}
+
+// A link clicked inside a chat webview (the webview sandbox swallows anything
+// that isn't http(s)). Deep links addressed to THIS extension skip the OS
+// round-trip and go straight to the URI handler — so a vscode://… chat anchor
+// pasted into a conversation is clickable right in the transcript. Everything
+// else goes to the OS (browser, mail, other apps' schemes).
+function openLink(href: string) {
+  let uri: vscode.Uri;
+  try { uri = vscode.Uri.parse(href, true); } catch { return; }
+  if (uri.scheme === "vscode" && uri.authority.toLowerCase() === "romp.romp-chat-view") { onDeepLink(uri); return; }
+  vscode.env.openExternal(uri);
+}
+
 function onDeepLink(uri: vscode.Uri) {
   const q = new URLSearchParams(uri.query);
   const session = (q.get("session") || "").trim();
@@ -1173,28 +1547,37 @@ function onDeepLink(uri: vscode.Uri) {
     vscode.window.showWarningMessage(`romp: no transcript found for "${session}".`);
     return;
   }
-  // Already open as a tab → just focus it (+ scroll/compose), live or not.
+  // Already open as a tab (by this exact fsid) → just focus it (+ scroll/compose).
   if (sessions.has(r.id)) {
     openPanel(preserveFocus);
     post({ type: "focus", id: r.id, anchor, anchorT, anchorKind });
     if (compose) post({ type: "focusComposer" });
     return;
   }
-  // Not open yet — only open silently if the session is LIVE. If it's dead, ask
-  // whether to revive instead of opening a read-only tab that then auto-closes.
-  const name = rompMeta(r.id).name ?? r.id.slice(0, 8);
-  const states = rompTmuxState();
-  const running = !!(states && states.size > 0 && states.has(name));
-  if (running) {
+  // Fork/incarnation-aware: the clicked fsid may be an old or forked incarnation
+  // while the session runs NOW under its customTitle (a DIFFERENT anchor sid). Open
+  // the session that's live so a stale-stamped deep-link focuses it instead of
+  // offering to revive a fork — and when nothing's live, target the MOST RECENT
+  // incarnation, not the clicked stale fork.
+  const t = resolveSession(session) ?? { id: r.id, file: r.file, liveName: null };
+  if (t.liveName) {
+    const lr = resolveDeepLink(t.liveName) ?? t;   // the live session's tab/anchor
+    if (sessions.has(lr.id)) {
+      openPanel(preserveFocus);
+      post({ type: "focus", id: lr.id, anchor, anchorT, anchorKind });
+      if (compose) post({ type: "focusComposer" });
+      return;
+    }
     const cold = !panel; // a freshly-created webview isn't listening yet
     openPanel(preserveFocus);
-    addSession(r.file, anchor);
+    addSession(lr.file, anchor);
     if (compose) post({ type: "focusComposer" });
-    // On a cold open the posts above are dropped (webview not ready); re-deliver in onReady.
-    if (cold) pendingFocus = { id: r.id, anchor, anchorT, anchorKind, compose };
-  } else {
-    promptReviveDeepLink(r.id, name, r.file, anchor, compose);
+    if (cold) pendingFocus = { id: lr.id, anchor, anchorT, anchorKind, compose };
+    return;
   }
+  // Genuinely not live under any name → revive / view the most recent incarnation.
+  const name = readCustomTitle(t.file) ?? rompMeta(t.id).name ?? t.id.slice(0, 8);
+  promptReviveDeepLink(t.id, name, t.file, anchor, compose);
 }
 
 // Resolve a deep-link `session` (a transcript id; falls back to a romp name →
@@ -1210,6 +1593,47 @@ function resolveDeepLink(session: string): { id: string; file: string } | null {
     if (t && (!best || t.mtime > best.mtime)) best = { id: tid, file: t.file, mtime: t.mtime };
   }
   return best ? { id: best.id, file: best.file } : null;
+}
+
+// Resolve a clicked / deep-linked transcript fsid to the SESSION it belongs to,
+// accounting for a session that has lived across several fsids over its life
+// (/clear forks, kill+relaunch, revive — each a fresh fsid, but the transcript's
+// customTitle stays the session's name). Returns the session's CURRENT
+// incarnation — the newest same-customTitle transcript in the project dir — plus
+// the live tmux name if it's running now. So a stamp carrying an OLD or forked
+// fsid resolves to the session that's live now (focus it), or, when nothing's
+// live, to the MOST RECENT incarnation (revive/open that) — never the specific
+// stale fork that happened to be clicked. This is why a deliverable produced under
+// timeline_window's former anchor (dc1291fb) must NOT offer to revive "dc1291fb":
+// its customTitle is "timeline_window", which is live (the user's report,
+// 2026-06-11). Falls back to the clicked fsid when it has no customTitle.
+function resolveSession(fsid: string): { id: string; file: string; liveName: string | null } | null {
+  const tr = scanTranscripts().get(fsid);
+  if (!tr) return null;
+  const title = readCustomTitle(tr.file);
+  let id = fsid, file = tr.file;
+  if (title) {
+    const dir = path.dirname(tr.file);
+    let bestM = -1;
+    try {
+      for (const f of fs.readdirSync(dir)) {
+        if (!f.endsWith(".jsonl") || f.startsWith("agent-")) continue;
+        const fp = path.join(dir, f);
+        let st: fs.Stats;
+        try { st = fs.statSync(fp); } catch { continue; }
+        if (st.mtimeMs <= bestM) continue;
+        if (readCustomTitle(fp) !== title) continue;
+        bestM = st.mtimeMs; file = fp; id = f.replace(/\.jsonl$/, "");
+      }
+    } catch { /* unreadable dir → keep the clicked transcript */ }
+  }
+  const states = rompTmuxState();
+  let liveName: string | null = null;
+  if (states && states.size > 0) {
+    if (title && states.has(title)) liveName = title;   // customTitle is authoritative over a stale names entry
+    else { const nm = rompMeta(id).name; if (nm && states.has(nm)) liveName = nm; }
+  }
+  return { id, file, liveName };
 }
 
 async function promptReopen(id: string, name: string) {
@@ -1509,7 +1933,7 @@ function djb2(s: string): string {
   return (h >>> 0).toString(36);
 }
 
-type Relevance = "DONE" | "DECISION" | "ACTION" | "IDEA" | "DETAILS" | "UNTAGGED";
+type Relevance = "DONE" | "DECISION" | "ACTION" | "IDEA" | "WAIT" | "DETAILS" | "UNTAGGED";
 interface FeedItem {
   itemId: string; sid: string; name: string; color: ChipColor | null;
   did: string; ask: string; t: number; live: boolean; relevance: Relevance;
@@ -1522,7 +1946,7 @@ interface FeedItem {
 // is UNTAGGED (kept VISIBLE by default with no label; only EXPLICIT DETAILS hides).
 function normRelevance(v: any): Relevance {
   const s = String(v || "").toUpperCase();
-  return s === "DONE" || s === "DECISION" || s === "ACTION" || s === "IDEA" || s === "DETAILS" ? s : "UNTAGGED";
+  return s === "DONE" || s === "DECISION" || s === "ACTION" || s === "IDEA" || s === "WAIT" || s === "DETAILS" ? s : "UNTAGGED";
 }
 
 // the user's last typed-turn time per session (anchor sid) — rebuilt on every feed
@@ -1629,7 +2053,7 @@ const ROMP_REQUESTS = path.join(ROMP_STATE, "requests");
 
 type RowStatus = "done" | "question" | "update";
 type AskColumn = "asks" | "needs_input" | "completed";
-interface AskLinked { did: string; relevance: Relevance; t: number; reply_id: string; status: RowStatus; sid: string; name: string; color: ChipColor | null }
+interface AskLinked { did: string; relevance: Relevance; t: number; reply_id: string; status: RowStatus; sid: string; name: string; color: ChipColor | null; answer?: boolean }
 // qtype: what kind of input the user owes — answer a question (decision), do
 // something outside chat (action: closed only via "did it"), react to a
 // suggestion (idea). Mirrors the linker's needs-user tag on the link.
@@ -1661,11 +2085,45 @@ interface AskItem {
   // (romp-events ids) and every handoff in the subgraph (postal message ids)
   path: { events: string[]; msgs: string[] };
   tree: AskTreeNode[];                 // flat node list, root first; nest via children
+  // liveness reveal (2026-06-11): outline color in the feed — what an automated
+  // "is this still being worked?" rule WOULD say. Colors only, decides nothing.
+  liveness: AskLiveness; livenessWhy: string;
+  // settled card moved out of WORKING by the read-time auto-filing rule — the
+  // webview keeps its green ring in COMPLETED (verify before Clear)
+  autoFiled?: boolean;
+  // every path ends with an explicit DONE stamp (model or corrections) — the
+  // OTHER door into COMPLETED; webview ring = blue (green+blue when the
+  // settled detector agrees: the goal state where both systems intersect)
+  explicitDone?: boolean;
+  // newest link on some node is WAIT: paused on an EXTERNAL event — held in
+  // WORKING, exempt from auto-filing and the green ring; ⏳ chip on the card
+  waiting?: boolean;
+  // every typed turn that touched this card (mint + amends) — joins a LIVE
+  // blocked turn (permission/picker) to the card it's blocked on
+  turnIds: string[];
+  // set by refreshFeed when the owning session is blocked ON this card's work:
+  // the card itself moves to BLOCKED (the user's ruling 2026-06-11 — a blocked
+  // session is not its own card)
+  blocked?: { state: string; since: number; what: string };
+  // missed-handoff suspects attached by refreshFeed (deterministic sweep): a
+  // dismissed-as-FYI message from this card's session followed by the
+  // recipient's orphan work — ⚠ badge + modal section + Report box
+  suspects?: Array<{ mid: string; to: string; t: number; snippet: string; why: string }>;
   // one typed prompt often mints SEVERAL asks: siblings share turnId and render
   // as ONE card (title = the turn's phrase) with a circle-line per member —
   // presentation only, each member keeps its own DAG/column/Clear
   groupTitle?: string; groupN?: number;
 }
+// The four liveness verdicts, session-level by construction (a busy owner MAY be
+// working on something else — that coarseness is what the reveal is meant to
+// expose before any auto-filing is built on it):
+//   active    — the owning session is mid-turn
+//   delegated — owner quiet, but a session holding an UNFINISHED handoff is mid-turn
+//   stalled   — an unfinished handoff whose recipient is quiet or gone (that branch
+//               owes a terminal and nobody is producing one)
+//   settled   — no turn anywhere, no open handoff: nothing can change without the
+//               user, so an auto-filing rule would move this card now
+type AskLiveness = "active" | "delegated" | "stalled" | "settled";
 
 // Decision briefs (haiku's pipeline): prewarmed on DECISION links — context from
 // the upstream DAG walk + the concrete question. May lag or be absent; render
@@ -1695,11 +2153,20 @@ function computeAskItems(states: Map<string, TmuxInfo> | null, didById: Map<stri
   const asks = new Map<string, any>();
   const internals = new Map<string, any>();
   const parents = new Map<string, string[]>();
+  const amendTurns = new Map<string, string[]>();   // ask id → turn ids that amended/answered it (joins a live turn to its card)
+  const answerRows: any[] = [];                     // kind:"answer" rows — injected as pseudo-links below
   for (const n of readReqRows("nodes.jsonl")) {
     if (n.kind === "ask" && typeof n.id === "string") { if (!asks.has(n.id)) asks.set(n.id, { ...n }); }
     else if (n.kind === "internal" && typeof n.id === "string") { if (!internals.has(n.id)) internals.set(n.id, { ...n }); }
     else if (n.kind === "parents" && typeof n.id === "string") parents.set(n.id, Array.isArray(n.parent_ids) ? n.parent_ids : []);
-    else if (n.kind === "amend" && asks.has(n.id)) asks.get(n.id).text = String(n.text || asks.get(n.id).text || "");
+    else if (n.kind === "amend" && asks.has(n.id)) {
+      asks.get(n.id).text = String(n.text || asks.get(n.id).text || "");
+      if (n.turn_id) { if (!amendTurns.has(n.id)) amendTurns.set(n.id, []); amendTurns.get(n.id)!.push(String(n.turn_id)); }
+    }
+    else if (n.kind === "answer" && typeof n.id === "string") {
+      answerRows.push(n);
+      if (n.turn_id) { if (!amendTurns.has(n.id)) amendTurns.set(n.id, []); amendTurns.get(n.id)!.push(String(n.turn_id)); }
+    }
   }
   // newest clear per id (re-clears append; max-t wins). A clear hides the card
   // UNLESS an open question ARRIVES after it — then the card resurrects into
@@ -1775,6 +2242,24 @@ function computeAskItems(states: Map<string, TmuxInfo> | null, didById: Map<stri
       });
     }
   }
+  // ANSWER rows (kind:"answer", the user 2026-06-11): the user's typed reply to an
+  // agent question, recorded by the capture side as an explicit child event on
+  // the card — never inferred. Injected as a pseudo-link so the newest-link
+  // fold crosses the pending question off naturally (an ANSWER as newest link
+  // reads "in flight again"), the row renders in the card's history (↩), and
+  // recency/path joins pick the turn up. The next-typed-turn inference below
+  // (`answered`) survives only as the fallback for UNANCHORED answers.
+  for (const n of answerRows) {
+    const key = String(n.id);
+    if (!asks.has(key) && !internals.has(key)) continue;
+    if (!nodeLinks.has(key)) nodeLinks.set(key, []);
+    nodeLinks.get(key)!.push({
+      kind: "link", reply_id: String(n.turn_id || `ans:${key}:${n.t || 0}`),
+      request_ids: [key], relevance: "ANSWER",
+      sid: String((asks.get(key) ?? internals.get(key))?.sid || ""), t: n.t || 0,
+      _did: n.text ? String(n.text) : undefined, _answer: true,
+    });
+  }
   for (const ls of nodeLinks.values()) ls.sort((a, b) => (a.t || 0) - (b.t || 0));
   // A question is OPEN until the user's next typed turn in the asking session —
   // his answer crosses it off (the node reverts to open: in flight again).
@@ -1801,8 +2286,17 @@ function computeAskItems(states: Map<string, TmuxInfo> | null, didById: Map<stri
     if (hit) return hit;
     const ls = nodeLinks.get(nid) || [];
     let st: NodeStatus = { st: "open" };
-    if (ls.length) {
-      const newest = ls[ls.length - 1];
+    // DETAILS never re-opens a verdict (the user's latching rule applied to the
+    // judged fold, 2026-06-11 evening): routine progress filed after a DONE stamp
+    // is cleanup riding the same node — only a question, an answer, or a new
+    // non-routine verdict changes state. Without this, any wrap-up DETAILS link
+    // erased the judge's DONE and every Completed card rendered auto-filed green.
+    let newest: any = null;
+    for (let i = ls.length - 1; i >= 0; i--) {
+      if (normRelevance(ls[i].relevance) === "DETAILS") continue;
+      newest = ls[i]; break;
+    }
+    if (newest) {
       const rel = normRelevance(newest.relevance);
       if (rel === "DONE") st = { st: "done" };
       // ACTION = the user must DO something (reload, install, approve) — typing in
@@ -1813,6 +2307,14 @@ function computeAskItems(states: Map<string, TmuxInfo> | null, didById: Map<stri
       else if (rel === "DECISION" && !answered(newest) && !movedOn(newest)) st = { st: "question", qlink: newest };
       // IDEA is dismissed by his next typed turn alone (it asks for HIS reaction)
       else if (rel === "IDEA" && !answered(newest)) st = { st: "question", qlink: newest };
+      // brief second-opinion gate (the user 2026-06-11): the brief sees the full
+      // chain; when it judged NEEDED=no ("no decision needed — just a completion
+      // report"), the needs-user verdict loses INSTANTLY here — the daemon's
+      // demotion correction makes it durable for every other surface.
+      if (st.st === "question") {
+        const b: any = readDecisionBrief(String(newest.reply_id || ""));
+        if (b && b.needed === false) st = { st: "open" };
+      }
     }
     statusCache.set(nid, st);
     return st;
@@ -1911,7 +2413,7 @@ function computeAskItems(states: Map<string, TmuxInfo> | null, didById: Map<stri
     const reopened = clearedT !== undefined &&
       (openQuestions.some((q) => q.t > clearedT) || fuOpen.some((f) => (f.t || 0) > clearedT));
     if (clearedT !== undefined && !reopened) continue;
-    const column: AskColumn = openQuestions.length ? "needs_input" : allDone && !fuOpen.length ? "completed" : "asks";
+    let column: AskColumn = openQuestions.length ? "needs_input" : allDone && !fuOpen.length ? "completed" : "asks";
     // linked rows: every reply in the subgraph, one row per reply (a reply that
     // serves several nodes keeps its strongest status: question > done > update)
     const rowRank = { question: 2, done: 1, update: 0 } as const;
@@ -1926,6 +2428,7 @@ function computeAskItems(states: Map<string, TmuxInfo> | null, didById: Map<stri
         status: rel === "DONE" ? "done" : (rel === "DECISION" || rel === "ACTION" || rel === "IDEA") && open.qlink === l ? "question" : "update",
         sid: String(l.sid || ""), name: nameOf(String(l.sid || "")),
         color: rompMeta(String(l.sid || "")).color,
+        answer: l._answer ? true : undefined,    // the user's recorded answer → ↩ row
       };
     };
     // Display rows: ONE row per underlying report. A correction re-verdicts an
@@ -1984,6 +2487,74 @@ function computeAskItems(states: Map<string, TmuxInfo> | null, didById: Map<stri
     });
     const meta = rompMeta(String(a.sid || ""));
     const name = meta.name ?? String(a.sid || "").slice(0, 8);
+    // ---- liveness (see AskLiveness): deterministic from live tmux state + the
+    // tree's open handoffs. "Mid-turn" = working/compacting/permission — a
+    // permission prompt is a paused turn, not a finished one.
+    const busyOf = (nm: string): string => {
+      const st = states?.get(nm)?.state || "";
+      return st === "working" || st === "compacting" || st === "permission" ? st : "";
+    };
+    const stateOf = (nm: string): string => (liveNames.has(nm) ? states?.get(nm)?.state || "?" : "gone");
+    const openHandoffs = tree.filter((n) => n.kind === "handoff" && n.status !== "done" && n.who !== name);
+    const ownerBusy = busyOf(name);
+    const delegates = openHandoffs.filter((n) => busyOf(n.who));
+    // LATCHED looks-done (the user's ruling 2026-06-11): a busy owner counts as
+    // "active" only when its CURRENT turn is CLAIMED by this card — the turn
+    // minted/amended/answered it, or its work is linked into the graph. A turn
+    // on something else leaves the settled verdict standing: a card that ever
+    // looks done stays looking done until real work touches it (a new link or
+    // amend refreshes the fold on its own).
+    const tids = [String(a.turn_id || ""), ...(amendTurns.get(id) || [])].filter(Boolean);
+    const curTurn = ownerBusy ? openTurnId(String(a.sid || "")) : null;
+    // conservative claim: a busy owner whose open turn can't be resolved (no
+    // events cache yet) HOLDS its cards — never auto-file blind
+    const claimed = !!ownerBusy && (curTurn === null || tids.includes(curTurn) || linked.some((r) => r.reply_id === curTurn));
+    let liveness: AskLiveness; let livenessWhy: string;
+    if (ownerBusy && claimed) {
+      liveness = "active";
+      livenessWhy = `${name} is mid-turn on THIS card (${ownerBusy})`;
+    } else if (delegates.length) {
+      liveness = "delegated";
+      livenessWhy = delegates.map((n) => `${n.who} is mid-turn (${busyOf(n.who)}) holding "${n.text}"`).join("; ");
+    } else if (openHandoffs.length) {
+      liveness = "stalled";
+      livenessWhy = openHandoffs.map((n) => `handoff "${n.text}" unfinished, ${n.who} ${stateOf(n.who)}`).join("; ")
+        + " — that branch owes an ending and nobody is working";
+    } else {
+      liveness = "settled";
+      const owner = stateOf(name) === "gone" ? "is gone"
+        : ownerBusy ? "is mid-turn on something ELSE (this card untouched)"
+        : `is quiet (${stateOf(name)})`;
+      livenessWhy = `${name} ${owner}, no open handoffs — nothing is moving this card without you`;
+    }
+    // AUTO-FILING (turned on 2026-06-11 after the user's green-ring sweep validated
+    // every settled-in-WORKING card as genuinely done): a settled card never
+    // sits in WORKING — nothing is moving it, so it rests in COMPLETED now and
+    // pulls itself back the moment real work touches it (a new link freshens
+    // the fold; liveness goes active when a turn claims it). autoFiled keeps
+    // the green ring visible in COMPLETED during the trust-building period —
+    // these are the cards to verify before Clear, vs model-stamped DONE.
+    // WAIT exemption (the user 2026-06-11): a node whose newest link is WAIT ended
+    // its turn on purpose pending an EXTERNAL event (CI, build, a peer's future
+    // reply) — not the user. The card is settled but NOT done: it stays in
+    // WORKING, no green ring, no auto-filing. New work landing lifts it naturally.
+    const extWait = subgraph.some((nid) => {
+      const ls = nodeLinks.get(nid) || [];
+      const newest = ls.length ? ls[ls.length - 1] : null;
+      return !!newest && normRelevance(newest.relevance) === "WAIT";
+    });
+    if (extWait && liveness === "settled") livenessWhy += " — but it is WAITING on an external event (exempt from auto-filing)";
+    // fuOpen guard: a just-sent follow-up holds the card in WORKING until the
+    // bookkeeper mints the delivered turn — auto-filing in that gap would show
+    // the card as completed at the exact moment the user reopened it.
+    // states empty = tmux unreachable: liveness is unknowable, NOT "everyone
+    // quiet" — never mass-auto-file on a blind read.
+    let autoFiled = false;
+    if (states && states.size > 0 && column === "asks" && liveness === "settled" && !fuOpen.length && !extWait) {
+      column = "completed";
+      autoFiled = true;
+      livenessWhy += " — auto-filed from WORKING; verify, then Clear";
+    }
     out.push({
       itemId: id, sid: String(a.sid || ""), name, color: meta.color,
       text: String(a.text || ""), t: last, created: a.t || 0,
@@ -1991,13 +2562,37 @@ function computeAskItems(states: Map<string, TmuxInfo> | null, didById: Map<stri
       done: linked.filter((r) => r.status === "done").length,
       needsYou: openQuestions.length,
       linked, turnId: String(a.turn_id || ""),
-      column, openQuestions, openPaths, reopened,
+      column, openQuestions, openPaths, reopened, liveness, livenessWhy, autoFiled,
+      explicitDone: allDone, waiting: extWait,
+      turnIds: tids,
       path: {
         events: [String(a.turn_id || ""), ...linked.map((r) => r.reply_id)].filter(Boolean),
         msgs: subgraph.filter((nid) => internals.has(nid)),
       },
       tree,
     });
+  }
+  // CLAIM-LAG hold (the user 2026-06-11 evening, timeline_window mis-file): while
+  // a session is mid-turn and its open turn is claimed by NO card yet (the ask
+  // capture for that prompt hasn't landed), the turn's true card is unknown —
+  // one of this session's "settled" cards is probably being worked right now.
+  // Hold the whole session's auto-filing until capture lands; the claimed card
+  // then goes active and the rest file. Self-heals in seconds.
+  const heldSids = new Set<string>();
+  for (const a of out) {
+    if (heldSids.has(a.sid)) continue;
+    const stt = states?.get(a.name)?.state || "";
+    if (!(stt === "working" || stt === "compacting" || stt === "permission")) continue;
+    const cur = openTurnId(a.sid);
+    if (cur && !out.some((b) => b.sid === a.sid
+        && (b.turnIds.includes(cur) || b.path.events.includes(cur)))) heldSids.add(a.sid);
+  }
+  for (const a of out) {
+    if (a.autoFiled && heldSids.has(a.sid)) {
+      a.autoFiled = false;
+      a.column = "asks";
+      a.livenessWhy += " — HELD: the session is mid-turn on a not-yet-attributed prompt (it may be this card)";
+    }
   }
   out.sort((x, y) => y.t - x.t);
   // group annotation: siblings = visible asks sharing a typed turn
@@ -2010,6 +2605,62 @@ function computeAskItems(states: Map<string, TmuxInfo> | null, didById: Map<stri
   return out;
 }
 
+// Exception report (the user's refinement loop, 2026-06-11): free-text + category
+// from the modal's ⚠ Report box, with a snapshot of the card's computed state so
+// the report is diagnosable later without replaying history. Own file (not
+// corrections.jsonl — these carry no should_have verdict for the read-side fold);
+// consumed by prompt-rework passes as labeled failure examples.
+function appendReport(itemId: string, category: string, note: string, snapshot: any) {
+  try {
+    fs.mkdirSync(ROMP_REQUESTS, { recursive: true });
+    fs.appendFileSync(path.join(ROMP_REQUESTS, "reports.jsonl"),
+      JSON.stringify({ kind: "report", id: itemId, t: Math.floor(Date.now() / 1000),
+        category, note, snapshot }) + "\n");
+  } catch { /* ignore */ }
+}
+
+// ---- missed-handoff suspect sweep (deterministic, the user 2026-06-11) ----
+// A message the classifier judged "not a delegation" (req-decision, req=false)
+// is SUSPECT when the recipient then produced work linked to NOTHING within the
+// window — orphan work right after a dismissed message is the classic missed
+// handoff. Read from the decision log (mtime-cached); surfaced as a ⚠ badge on
+// the sender's most plausible open card, where the user confirms or rejects via
+// the Report box. Pure joins, no model.
+const SUSPECT_WINDOW = 45 * 60;        // recipient orphan work this soon after the message
+const SUSPECT_HORIZON = 48 * 3600;     // ignore older history
+let _suspectCache: { key: string; rows: any[] } | null = null;
+function missedHandoffSuspects(now: number): Array<{ mid: string; fromSid: string; toSid: string; t: number; snippet: string; orphanT: number }> {
+  const files = [path.join(ROMP_REQUESTS, "decision-log.jsonl"), path.join(ROMP_REQUESTS, "decision-log.jsonl.1")];
+  const key = files.map((f) => { try { return String(fs.statSync(f).mtimeMs); } catch { return "0"; } }).join("|");
+  if (_suspectCache && _suspectCache.key === key) return _suspectCache.rows;
+  const dismissed: any[] = []; const orphanLinks: Array<{ sid: string; t: number }> = [];
+  const audits = new Map<string, string>();   // msg_id → Opus verdict (handoff/fyi/unsure)
+  for (const f of files) {
+    let raw = "";
+    try { raw = fs.readFileSync(f, "utf8"); } catch { continue; }
+    for (const ln of raw.split("\n")) {
+      if (!ln.trim()) continue;
+      let o: any; try { o = JSON.parse(ln); } catch { continue; }
+      if (o.kind === "suspect-audit" && o.msg_id) { audits.set(String(o.msg_id), String(o.verdict || "unsure")); continue; }
+      if ((o.t || 0) < now - SUSPECT_HORIZON) continue;
+      if (o.kind === "req-decision" && o.req === false && o.msg_id) dismissed.push(o);
+      else if (o.kind === "link" && Array.isArray(o.chosen) && !o.chosen.length && o.sid) orphanLinks.push({ sid: String(o.sid), t: o.t || 0 });
+    }
+  }
+  // Only UNSURE Opus audits reach the human (the user 2026-06-11: 41 raw
+  // correlations in 48h, almost all FYIs). The daemon's auditor repairs real
+  // handoffs automatically and suppresses coincidences; unaudited suspects just
+  // wait their turn in the queue rather than nagging.
+  const rows = dismissed.flatMap((d) => {
+    if (audits.get(String(d.msg_id)) !== "unsure") return [];
+    const orphan = orphanLinks.find((l) => l.sid === String(d.to_sid) && l.t > (d.t || 0) && l.t <= (d.t || 0) + SUSPECT_WINDOW);
+    return orphan ? [{ mid: String(d.msg_id), fromSid: String(d.from_sid || ""), toSid: String(d.to_sid || ""),
+      t: d.t || 0, snippet: String(d.snippet || "").slice(0, 160), orphanT: orphan.t }] : [];
+  });
+  _suspectCache = { key, rows };
+  return rows;
+}
+
 // the user's Clear — the one human-asserted fact in the registry. cleared.jsonl is
 // the UI's file (the daemon only reads it); single-writer holds because the feed
 // is the only surface that clears today. Append-only, one JSON line per clear.
@@ -2019,6 +2670,41 @@ function appendCleared(id: string) {
     fs.appendFileSync(path.join(ROMP_REQUESTS, "cleared.jsonl"),
       JSON.stringify({ id, t: Math.floor(Date.now() / 1000) }) + "\n");
   } catch { /* ignore */ }
+}
+
+// UndoClear: pop the NEWEST cleared.jsonl row (single-writer + append-only, so
+// the last line is always the most recent Clear) and the card comes back for
+// every reader — daemon and pipeline included — with no schema change. The
+// rewrite goes through tmp+rename so the read-only consumers never see a torn
+// file. Note: a clear that came from "didn't need me" leaves its relevance
+// correction in place — undo restores the card, it doesn't retract the label.
+function undoLastClear(): boolean {
+  try {
+    const p = path.join(ROMP_REQUESTS, "cleared.jsonl");
+    const lines = fs.readFileSync(p, "utf8").split("\n").filter((l) => l.trim());
+    if (!lines.length) return false;
+    const popped = lines.pop()!;
+    const tmp = p + ".tmp";
+    fs.writeFileSync(tmp, lines.length ? lines.join("\n") + "\n" : "");
+    fs.renameSync(tmp, p);
+    // An undone clear means "I didn't mean that" — so the cleared-as-done labels
+    // that clear minted are wrong too. Retract exactly them (matched by the card
+    // id stamped into their note), keeping the training data honest.
+    try {
+      const id = String(JSON.parse(popped).id || "");
+      if (id) {
+        const cp = path.join(ROMP_REQUESTS, "corrections.jsonl");
+        const rows = fs.readFileSync(cp, "utf8").split("\n").filter((l) => l.trim());
+        const kept = rows.filter((l) => !(l.includes(`(card ${id})`) && l.includes("cleared-as-done")));
+        if (kept.length !== rows.length) {
+          const ctmp = cp + ".tmp";
+          fs.writeFileSync(ctmp, kept.length ? kept.join("\n") + "\n" : "");
+          fs.renameSync(ctmp, cp);
+        }
+      }
+    } catch { /* corrections file absent — nothing to retract */ }
+    return true;
+  } catch { return false; }
 }
 
 // the user's mark-done — an adjudication, not a dismissal. corrections.jsonl is
@@ -2045,6 +2731,22 @@ function appendCorrection(nodeId: string, decisionRef: string | null, note: stri
         t: Math.floor(Date.now() / 1000), by_sid: "feed-panel", kind: "link",
         decision_ref: decisionRef,
         should_have: { request_ids: [nodeId], relevance: "DONE" }, note,
+      }) + "\n");
+  } catch { /* ignore */ }
+}
+
+// "didn't need me" on a STANDALONE awaiting item: no request node to re-verdict,
+// so the correction carries only the relevance the tag should have had. The fold
+// readers skip rows without request_ids (read-side merge rule), so this is purely
+// a training label for the relevance classifier; the paired Clear retires the card.
+function appendRelevanceCorrection(replyId: string, note: string) {
+  try {
+    fs.mkdirSync(ROMP_REQUESTS, { recursive: true });
+    fs.appendFileSync(path.join(ROMP_REQUESTS, "corrections.jsonl"),
+      JSON.stringify({
+        t: Math.floor(Date.now() / 1000), by_sid: "feed-panel", kind: "relevance",
+        decision_ref: replyId,
+        should_have: { relevance: "DONE" }, note,
       }) + "\n");
   } catch { /* ignore */ }
 }
@@ -2078,7 +2780,8 @@ function refreshFeed(force = false) {
   // the user has Cleared (ask ids and reply ids share cleared.jsonl).
   const linkedReplies = new Set<string>(
     readReqRows("links.jsonl").filter((l) => l.kind === "link" && l.reply_id).map((l) => String(l.reply_id)));
-  const clearedIds = new Set<string>(readReqRows("cleared.jsonl").map((c) => String(c.id)));
+  const clearedRows = readReqRows("cleared.jsonl");
+  const clearedIds = new Set<string>(clearedRows.map((c) => String(c.id)));
   const all = computeFeedItems(lastStates).filter((i) => i.t >= FEED_FLOOR)    // drop pre-tagging backlog
     .map((i) => ({
       ...i,
@@ -2131,25 +2834,162 @@ function refreshFeed(force = false) {
       if (!BLOCKED_STATES.has(info.state)) continue;
       const id = rompIds().find((i) => (rompMeta(i).name ?? i.slice(0, 8)) === name);
       const sinceT = Number(info.since) || 0;
+      // auto-mode debounce (2026-06-11): with auto mode on, every tool fires a
+      // permission notification that the classifier allows seconds later — a
+      // "permission" younger than this isn't blocked, it's mid-decision.
+      if (info.state === "permission" && now - sinceT < 15) continue;
+      const what = info.state === "permission" ? "waiting for your approval (permission prompt)"
+        : "blocked on the resume picker";
+      // The user's ruling (2026-06-11): a blocked session is NOT its own card — the
+      // ask the session is blocked ON moves to BLOCKED itself. Resolve the live
+      // turn to its card(s) via the turn ids that minted/amended each ask plus
+      // its linked events. The synthetic session card below is an ERROR FLAG,
+      // not a supported card type: under the every-prompt-mints rule an
+      // unclaimed live turn means capture/linking missed (or the card was
+      // cleared — the benign overlap), so the webview renders it with a ⚠
+      // suspect badge whose modal explains the miss. It also keeps the block
+      // visible — a block must never be invisible, even when bookkeeping failed.
+      const ev = id ? turnEvent(id, null, sinceT || now) : null;
+      const hit = ev ? asks.filter((a) => a.sid === id
+        && (a.turnIds.includes(String(ev.id)) || (a.path?.events || []).includes(String(ev.id)))) : [];
+      if (hit.length) {
+        for (const a of hit) a.blocked = { state: info.state, since: sinceT, what };
+        continue;
+      }
       blocked.push({
         sid: id ?? "", name, color: id ? rompMeta(id).color : null,
-        state: info.state, since: sinceT,
-        what: info.state === "permission" ? "waiting for your approval (permission prompt)"
-          : "blocked on the resume picker",
+        state: info.state, since: sinceT, what,
       });
     }
   }
-  const sig = `${feedShowDismissed ? "D" : "L"}:${dismissed.size}:${clearedIds.size}:`
+  // missed-handoff suspects → ⚠ on the sender's most plausible open card (the
+  // one with the newest activity at send time); confirm/reject via the Report box
+  for (const s of missedHandoffSuspects(now)) {
+    const cands = asks.filter((a) => a.sid === s.fromSid && a.created <= s.t);
+    if (!cands.length) continue;
+    const actAt = (a: any) => Math.max(a.created, ...(a.linked || []).filter((r: any) => (r.t || 0) <= s.t).map((r: any) => r.t || 0));
+    const card: any = cands.reduce((x: any, y: any) => (actAt(y) > actAt(x) ? y : x));
+    const toName = rompMeta(s.toSid).name ?? s.toSid.slice(0, 8);
+    (card.suspects = card.suspects || []).push({
+      mid: s.mid, to: toName, t: s.t, snippet: s.snippet,
+      why: `a message to ${toName} was judged not-a-delegation, but ${toName} then did work linked to no card`,
+    });
+  }
+  const sig = `${feedShowDismissed ? "D" : "L"}:${dismissed.size}:${clearedRows.length}:`
     + items.map((i) => `${i.itemId}:${i.live ? 1 : 0}:${i.relevance}:${i.origin === "user" ? "u" : "a"}:${i.inAsk ? 1 : 0}:${Math.floor((now - i.t) / 60)}`).join("|")
-    + "‖A:" + asks.map((a) => `${a.itemId}:${a.live ? 1 : 0}:${a.done}:${a.needsYou}:${a.linked.length}:${Math.floor((now - a.t) / 60)}:${a.text.length}:${a.column}:${a.reopened ? "R" : ""}:${a.openPaths.length}:${a.tree.map((n) => n.status[0] + (n.whoWorking ? "W" : "")).join("")}:${a.openQuestions.map((q) => q.reply_id + q.qtype[0] + (q.brief ? "+b" : "")).join(",")}`).join("|")
+    + "‖A:" + asks.map((a) => `${a.itemId}:${a.live ? 1 : 0}:${a.done}:${a.needsYou}:${a.linked.length}:${Math.floor((now - a.t) / 60)}:${a.text.length}:${a.column}:${a.reopened ? "R" : ""}:${a.liveness}:${a.blocked ? "B" : ""}:${a.autoFiled ? "AF" : ""}:${a.explicitDone ? "X" : ""}:${a.waiting ? "W" : ""}:${(a as any).suspects ? (a as any).suspects.length : 0}:${a.openPaths.length}:${a.tree.map((n) => n.status[0] + (n.whoWorking ? "W" : "")).join("")}:${a.openQuestions.map((q) => q.reply_id + q.qtype[0] + (q.brief ? "+b" : "")).join(",")}`).join("|")
     + "‖B:" + blocked.map((b) => `${b.name}:${b.state}:${Math.floor((now - b.since) / 60)}`).join("|")
     + "‖W:" + workingNames(lastStates).join(",");   // working-name set → re-push so name dots update live
+  lastFeedItems = items;   // kept for the rail-dot handlers (event → standalone card)
   if (!force && sig === feedSig) return;
   feedSig = sig;
-  feedPost({ type: "feed", items, asks, blocked, now, working: workingNames(lastStates), dismissedCount: dismissed.size, showDismissed: feedShowDismissed });
+  feedPost({ type: "feed", items, asks, blocked, now, working: workingNames(lastStates), dismissedCount: dismissed.size, showDismissed: feedShowDismissed, canUndoClear: clearedRows.length > 0 });
 }
 
 function feedPost(msg: any) { feedPanel?.webview.postMessage(msg); }
+
+// ---- chat rail-dot ↔ timeline/feed links ----
+// A dot on the chat's rail IS a turn; the turn (if work started there) IS a
+// romp-events event; that event can be the root or a linked reply of feed
+// cards. Hovering a dot fans out to both surfaces (timeline white highlight +
+// feed card outline); clicking opens the matching feed card's modal.
+let lastFeedItems: any[] = [];   // final standalone-item payload of the last feed push (cleared/dismissed already filtered)
+let pendingDotOpen: { sid: string; uuid: string | null; t: number } | null = null; // dot click while the feed webview is cold — replayed on its ready
+
+// Map a chat turn (anchor uuid + epoch) to its romp-events event via the
+// events-cache snapshot romp-events maintains per session: uuid identity first
+// (event.uuid = the prompt line, workUuid/replyUuid = its work/reply anchors),
+// then containment in the event's [t, end) work period, then the last event
+// started before t (reply tails past `end` still belong to that turn's work).
+function turnEvent(sid: string, uuid: string | null, t: number): any | null {
+  try {
+    const raw = JSON.parse(fs.readFileSync(path.join(ROMP_STATE, "events-cache", `${sid}.json`), "utf8"));
+    const evs: any[] = raw?.data?.events || [];
+    if (uuid) {
+      const byU = evs.find((e) => e.uuid === uuid || e.workUuid === uuid || e.replyUuid === uuid);
+      if (byU) return byU;
+    }
+    if (t) {
+      const inPeriod = evs.find((e) => t >= e.t && t < (e.end || e.t + 1));
+      if (inPeriod) return inPeriod;
+      const before = evs.filter((e) => e.t <= t);
+      if (before.length) return before[before.length - 1];
+    }
+  } catch { /* no events cache for this session */ }
+  return null;
+}
+
+// The session's currently-OPEN turn id, from the romp-events disk cache
+// (mtime-cached). Drives the liveness claim-join: "active" requires the owner's
+// current turn to be claimed by the card (latched looks-done, the user 2026-06-11).
+const _openTurnCache = new Map<string, { m: number; id: string | null }>();
+function openTurnId(sid: string): string | null {
+  const f = path.join(ROMP_STATE, "events-cache", `${sid}.json`);
+  let st: fs.Stats;
+  try { st = fs.statSync(f); } catch { return null; }
+  const hit = _openTurnCache.get(sid);
+  if (hit && hit.m === st.mtimeMs) return hit.id;
+  let id: string | null = null;
+  try {
+    const evs: any[] = JSON.parse(fs.readFileSync(f, "utf8"))?.data?.events || [];
+    const last = evs[evs.length - 1];
+    id = last && last.open ? String(last.id) : null;
+  } catch { /* unreadable cache → claim unknown */ }
+  _openTurnCache.set(sid, { m: st.mtimeMs, id });
+  return id;
+}
+
+// The still-open feed cards built from an event: ask cards whose DAG contains
+// it + standalone deliverable cards keyed by it. Both source lists come from
+// the last feed compute, which already filters Cleared/dismissed — so "in the
+// list" = "still open". `open` is the feed modal key (fullscreenAskId); `dom`
+// lists the data-key candidates for the hover outline (an ask folded into a
+// sibling group renders as the group card g:<turnId>, not its own card).
+function cardsForEvent(eid: string): Array<{ open: string; dom: string[]; label: string; detail: string }> {
+  const out: Array<{ open: string; dom: string[]; label: string; detail: string }> = [];
+  for (const a of lastAskItems) {
+    const hit = a.turnId === eid || (a.path?.events || []).includes(eid)
+      || (a.linked || []).some((l: any) => String(l.reply_id) === eid);
+    if (hit) out.push({ open: a.itemId, dom: ["a:" + a.itemId, "g:" + a.turnId], label: a.text, detail: `ask · ${a.name}` });
+  }
+  for (const i of lastFeedItems) {
+    if (i.standalone && String(i.itemId) === eid)
+      out.push({ open: "i:" + i.itemId, dom: ["i:" + i.itemId], label: i.did, detail: `deliverable · ${i.name}` });
+  }
+  return out;
+}
+
+function onDotHover(sid: string | null, uuid: string | null, t: number) {
+  const ev = sid ? turnEvent(sid, uuid, t) : null;
+  if (!ev) { hoverTimeline(null); feedPost({ type: "hoverCards", keys: [], eid: null }); return; }
+  hoverTimeline(String(ev.id));
+  // eid → the feed also white-rings the matching ROWS inside an open modal
+  feedPost({ type: "hoverCards", keys: cardsForEvent(String(ev.id)).flatMap((c) => c.dom), eid: String(ev.id) });
+}
+
+async function onDotOpen(sid: string, uuid: string | null, t: number) {
+  // Cold feed → card lists may be stale/empty. Open the panel and replay this
+  // click from its ready handler, where refreshFeed has just recomputed them.
+  if (!feedPanel || !feedReady) {
+    pendingDotOpen = { sid, uuid, t };
+    openFeedPanel(false);
+    return;
+  }
+  const ev = turnEvent(sid, uuid, t);
+  const cards = ev ? cardsForEvent(String(ev.id)) : [];
+  if (!cards.length) { vscode.window.setStatusBarMessage("romp: this turn has no open feed card", 4000); return; }
+  let chosen = cards[0];
+  if (cards.length > 1) {
+    const pick = await vscode.window.showQuickPick(
+      cards.map((c) => ({ label: c.label, description: c.detail, card: c })),
+      { placeHolder: "This turn appears in several feed cards — open which one?" });
+    if (!pick) return;
+    chosen = (pick as vscode.QuickPickItem & { card: typeof chosen }).card;
+  }
+  openFeedPanel(false); // reveal + focus the feed
+  // hl → the modal opens with the clicked turn's row(s) white-ringed + scrolled to
+  feedPost({ type: "openCard", key: chosen.open, hl: ev ? String(ev.id) : null });
+}
 
 // ---- expand → action paragraph (lazy, cached per deliverable) ----
 // On expand the webview asks for feed-detail/<id>.json (produced by the separate
@@ -2183,21 +3023,29 @@ const ROMP_TIMELINE_FOCUS = path.join(ROMP_STATE, "timeline-focus.json");
 // kind restriction means the worst case is a NEARBY prompt, never a reply.
 function locateInChat(sid: string, t: number) {
   if (!sid || !t) return;
-  const r = resolveDeepLink(sid);
-  if (!r) return;
-  if (sessions.has(r.id)) {
+  // Exact-fsid tab already open → focus it.
+  const direct = resolveDeepLink(sid);
+  if (direct && sessions.has(direct.id)) {
     openPanel(false);
-    post({ type: "focus", id: r.id, anchorT: t, anchorKind: "user" });
+    post({ type: "focus", id: direct.id, anchorT: t, anchorKind: "user" });
     return;
   }
-  const name = rompMeta(r.id).name ?? r.id.slice(0, 8);
-  const states = rompTmuxState();
-  if (!(states && states.size > 0 && states.has(name))) return;   // dead + unopened: highlight only
+  // Fork/incarnation-aware: a card stamped with an old/forked fsid still belongs
+  // to a live session under its customTitle — locate into THAT, not the stale
+  // fork. A passive locate never offers revive, so a dead session just highlights.
+  const target = resolveSession(sid);
+  if (!target || !target.liveName) return;   // dead + unopened: highlight only
+  const lr = resolveDeepLink(target.liveName) ?? target;
+  if (sessions.has(lr.id)) {
+    openPanel(false);
+    post({ type: "focus", id: lr.id, anchorT: t, anchorKind: "user" });
+    return;
+  }
   const cold = !panel;          // a freshly-created webview isn't listening yet
   openPanel(false);
-  addSession(r.file);
-  if (cold) pendingFocus = { id: r.id, anchorT: t, anchorKind: "user" };
-  else post({ type: "focus", id: r.id, anchorT: t, anchorKind: "user" });
+  addSession(lr.file);
+  if (cold) pendingFocus = { id: lr.id, anchorT: t, anchorKind: "user" };
+  else post({ type: "focus", id: lr.id, anchorT: t, anchorKind: "user" });
 }
 
 // Landing-diagnostics log: one JSON line per deep-link landing attempt, from
@@ -2256,7 +3104,35 @@ function hoverTimeline(ids: string[] | string | null) {
       }));
       fs.renameSync(tmp, ROMP_TIMELINE_HOVER);
     } catch { /* ignore */ }
+    chatGlow(hoverPendingIds);   // same transient hover, fanned to the chat panel
   }, 40);
+}
+
+// Fan the modal-row hover out to the CHAT panel too (the user 2026-06-11):
+// white-ring the rail dots of every chat turn inside the hovered event's span,
+// and any postal card carrying a hovered message id. An event id self-describes
+// its session and start (`<sid>:<turn-start>:<hash>`); the matching feed row's
+// t (the period end) bounds the span. Ids without the event shape are postal
+// message ids. null/empty → clear. Rides hoverTimeline's 40ms debounce.
+function chatGlow(ids: string[] | null) {
+  if (!panel) return;
+  const groups = new Map<string, Array<[number, number]>>();
+  const mids: string[] = [];
+  for (const id of ids || []) {
+    const parts = id.split(":");
+    if (parts.length >= 3 && /^\d+$/.test(parts[1])) {
+      const sid = parts[0];
+      const start = parseInt(parts[1], 10);
+      let end = start;
+      for (const a of lastAskItems) {
+        for (const l of a.linked || []) if (String(l.reply_id) === id) end = Math.max(end, l.t || start);
+        for (const n of a.tree || []) for (const r of n.rows || []) if (String(r.reply_id) === id) end = Math.max(end, r.t || start);
+      }
+      if (!groups.has(sid)) groups.set(sid, []);
+      groups.get(sid)!.push([start, end]);
+    } else if (id) mids.push(id);
+  }
+  post({ type: "glowTurns", groups: Array.from(groups, ([sid, ranges]) => ({ sid, ranges })), mids });
 }
 
 function readFeedDetail(id: string): any | null {
@@ -2358,16 +3234,22 @@ function openSessionFromFeed(id: string) {
 }
 
 // One feed webview, opened beside the chat panel (its own viewType so the two are
-// independent editor tabs side by side).
-function openFeedPanel(preserveFocus = false) {
+// independent editor tabs side by side). `column` pins where it lands (the icon
+// passes the group after the chat's); when the feed already exists it stays
+// where the user put it, unless it's stacked as a tab in the chat's own group —
+// then it's moved out so the two are actually side by side.
+function openFeedPanel(preserveFocus = false, column?: vscode.ViewColumn) {
   if (feedPanel) {
-    feedPanel.reveal(feedPanel.viewColumn ?? vscode.ViewColumn.Beside, preserveFocus);
+    let col = feedPanel.viewColumn ?? vscode.ViewColumn.Beside;
+    if (column !== undefined && feedPanel.viewColumn !== undefined && feedPanel.viewColumn === panel?.viewColumn)
+      col = column;
+    feedPanel.reveal(col, preserveFocus);
     return;
   }
   const p = vscode.window.createWebviewPanel(
     "rompFeed",
     "romp feed",
-    { viewColumn: vscode.ViewColumn.Beside, preserveFocus },
+    { viewColumn: column ?? vscode.ViewColumn.Beside, preserveFocus },
     {
       enableScripts: true,
       retainContextWhenHidden: true,
@@ -2389,7 +3271,13 @@ function wireFeedPanel(p: vscode.WebviewPanel) {
   p.webview.html = buildFeedHtml(p.webview);
   p.webview.onDidReceiveMessage((m) => {
     if (!m) return;
-    if (m.type === "ready") { feedReady = true; refreshFeed(true); }
+    if (m.type === "ready") {
+      feedReady = true;
+      refreshFeed(true);
+      // a rail-dot click arrived while this webview was cold — resolve it now,
+      // against the card lists refreshFeed just recomputed
+      if (pendingDotOpen) { const p = pendingDotOpen; pendingDotOpen = null; onDotOpen(p.sid, p.uuid, p.t); }
+    }
     else if (m.type === "openSession" && m.id) openSessionFromFeed(String(m.id));
     else if (m.type === "expand" && m.itemId) requestFeedDetail(String(m.itemId), !!m.generate);
     // deliverable/work-row clicks always mean the WORK, even on a typed turn.
@@ -2429,6 +3317,22 @@ function wireFeedPanel(p: vscode.WebviewPanel) {
       Array.isArray(m.ids) && m.ids.length ? m.ids.map(String) : m.id ? String(m.id) : null);
     else if (m.type === "askClear" && m.itemId) {
       const id = String(m.itemId);
+      // CLEAR-ON-GREEN implicit label (the user 2026-06-11: "I'm just clearing them
+      // because they are done" — 57 manual mark-done clicks/day): clearing an
+      // auto-filed card that the judge never stamped IS the user asserting it was
+      // done, so file the done-corrections automatically. His one click now both
+      // retires the card and labels the judge's miss. UndoClear leaves the labels
+      // (a deliberate un-clear is about the card, not the verdicts).
+      const ca: any = lastAskItems.find((x) => x.itemId === id);
+      if (ca && ca.autoFiled && !ca.explicitDone) {
+        for (const n of ca.tree || []) {
+          if (n.status === "done") continue;
+          const rows = n.rows || [];
+          // note carries the card id so UndoClear can retract exactly these labels
+          appendCorrection(String(n.id), rows.length ? String(rows[rows.length - 1].reply_id) : null,
+            `cleared-as-done: the user cleared an auto-filed card (implicit done label) (card ${id})`);
+        }
+      }
       appendCleared(id);
       // if the cleared card is the one currently painted on the timeline (e.g. a
       // double-click PIN, whose white DAG overlay would otherwise survive the clear
@@ -2441,21 +3345,48 @@ function wireFeedPanel(p: vscode.WebviewPanel) {
       }
       refreshFeed(true);
     }
+    // UndoClear (header button): restore the most recently cleared card
+    else if (m.type === "undoClear") {
+      undoLastClear();
+      refreshFeed(true);
+    }
     // the user adjudicates a stale node done (modal "Mark done" on a drop point):
     // append a correction — the fold reads it as a DONE link on that node, and
     // the same row is the linker's training label. decisionRef = the newest
     // reply on the node (the filing the linker should have made terminal).
+    // ⚠ Report box: category + free text + a snapshot of the card's computed
+    // state, appended to requests/reports.jsonl as a labeled failure example
+    else if (m.type === "askReport" && m.itemId) {
+      const a: any = lastAskItems.find((x) => x.itemId === String(m.itemId));
+      appendReport(String(m.itemId), String(m.category || "other"), String(m.text || ""),
+        a ? { column: a.column, liveness: a.liveness, autoFiled: !!a.autoFiled, explicitDone: !!a.explicitDone,
+              waiting: !!a.waiting, text: a.text, sid: a.sid, suspects: a.suspects || [] } : null);
+      vscode.window.setStatusBarMessage("romp: exception report filed — thank you, it becomes a regression label", 5000);
+    }
     else if (m.type === "askMarkDone" && m.nodeId) {
       appendCorrection(String(m.nodeId), m.decisionRef ? String(m.decisionRef) : null,
         typeof m.note === "string" && m.note.trim() ? m.note.trim() : "marked done by the user (feed panel)");
+      refreshFeed(true);
+    }
+    // "didn't need me" on a standalone awaiting item: label the mis-tag for the
+    // classifier AND clear the card (a standalone has no DAG node to mark done).
+    else if (m.type === "itemNotNeeded" && m.itemId) {
+      const id = String(m.itemId);
+      appendRelevanceCorrection(id, "the user marked this as not needing input (false awaiting)");
+      appendCleared(id);
       refreshFeed(true);
     }
     else if (m.type === "answerPicker" && m.name) void answerPicker(String(m.name));
     // Answer an open question from the panel: the user's text becomes that session's
     // next typed prompt (same delivery as the chat composer), which is also what
     // crosses the question off — the summarizer records it as a typed turn.
+    // Prefixed with the question being answered (mirrors askFollowUp below) so
+    // the session knows which of its questions this is — a bare "yes" or an
+    // option label carries no context on its own.
     else if (m.type === "answerQuestion" && m.name && typeof m.text === "string" && m.text.trim()) {
-      sendToSession(String(m.name), String(m.text));
+      const q = typeof m.question === "string" ? m.question.trim() : "";
+      const qShort = q.length > 200 ? q.slice(0, 200) + "…" : q;
+      sendToSession(String(m.name), qShort ? `Answering your question "${qShort}": ${String(m.text).trim()}` : String(m.text));
       setTimeout(() => refreshFeed(true), 1500);
     }
     // Follow-up on a COMPLETED card: deliver to the session with the card's
@@ -2464,8 +3395,20 @@ function wireFeedPanel(p: vscode.WebviewPanel) {
     else if (m.type === "askFollowUp" && m.itemId && typeof m.text === "string" && m.text.trim()) {
       const a = lastAskItems.find((x) => x.itemId === String(m.itemId));
       if (a) {
-        sendToSession(a.name, `Follow-up on "${a.text}": ${String(m.text).trim()}`);
+        // m.title = a GROUP follow-up: prefix with the group's typed-turn phrase
+        // (the whole prompt) rather than the single member ask it's filed under.
+        const about = typeof m.title === "string" && m.title.trim() ? m.title.trim() : a.text;
+        sendToSession(a.name, `Follow-up on "${about}": ${String(m.text).trim()}`);
         appendFollowup(a.itemId, a.sid, String(m.text).trim());
+        // a follow-up on an AUTO-FILED card is the auto-filer's false-positive
+        // label (the card was NOT done) — record it with a snapshot, automatically,
+        // mirroring how Clear-on-green records the true-positive side.
+        const af: any = a;
+        if (af.autoFiled && !af.explicitDone) {
+          appendReport(a.itemId, "premature-auto-file", `follow-up sent: ${String(m.text).trim().slice(0, 300)}`,
+            { column: af.column, liveness: af.liveness, autoFiled: true, explicitDone: false,
+              waiting: !!af.waiting, text: a.text, sid: a.sid });
+        }
         setTimeout(() => refreshFeed(true), 1500);
       }
     }
@@ -2536,7 +3479,7 @@ function buildHtml(webview: vscode.Webview): string {
   <div id="live-ask" style="display:none"></div>
   <div id="footer">
     <div id="statusline" class="statusline"></div>
-    <div id="composer"><textarea id="composer-input" rows="1" placeholder="Message this session…  (⏎ send · ⇧⏎ newline)"></textarea></div>
+    <div id="composer"><textarea id="composer-input" rows="1" placeholder="Message this session…  (⏎ send · ⇧⏎ newline)"></textarea><button id="composer-attach" title="Attach a file — inserts its path (drag-and-drop is intercepted by VS Code; use this or paste instead)" aria-label="Attach file">📎</button></div>
   </div>
   <script nonce="${n}" src="${js}"></script>
 </body>

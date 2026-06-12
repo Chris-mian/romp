@@ -23,6 +23,11 @@ activity feed and timeline.
   `obsidian/romp-timeline-*.js`) — event-level history of all sessions.
 - **chat-view/** — a VS Code/Cursor extension: per-session chat tabs, the
   feed, request cards, live status.
+- **Web kernel** (`bin/romp-serve`, `chat-view/src/kernel/`) — the same chat +
+  feed UI served to any browser, no VS Code required: run `romp-serve`, open
+  `http://127.0.0.1:7433/` (chat) and `/feed`. Sessions are driven through a
+  pluggable backend — tmux (default) or `--backend headless` (`claude -p`,
+  no tmux at all). Design: `docs/web-kernel-design.md`.
 - **obsidian/** — view modules (timeline, dashboard) consumable by an
   Obsidian plugin via a thin wrapper.
 - **hooks/** — Claude Code hooks: tmux status-line state, per-turn summarize,

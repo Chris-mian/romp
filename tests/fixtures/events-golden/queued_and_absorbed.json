@@ -1,0 +1,57 @@
+{
+ "compactions": [],
+ "events": [
+  {
+   "end": 1781096420,
+   "ended": false,
+   "id": "11111111-2222-3333-4444-555555555555:1781096400:646e7ca2",
+   "kind": "typed",
+   "mids": [],
+   "open": false,
+   "peer": false,
+   "rec": "USER ASKED: refactor the ledger\nASSISTANT SAID: Working through romp-ledger.\nTOOLS USED: Read",
+   "replyUuid": "a1",
+   "t": 1781096400,
+   "text": "refactor the ledger",
+   "text_full": "refactor the ledger",
+   "tid": "11111111-2222-3333-4444-555555555555",
+   "uuid": "u1",
+   "workUuid": "a1"
+  },
+  {
+   "end": 1781096480,
+   "ended": false,
+   "id": "11111111-2222-3333-4444-555555555555:1781096460:84e8535c",
+   "kind": "absorbed",
+   "mids": [],
+   "open": false,
+   "peer": false,
+   "rec": "USER ASKED: also rename the digest file\nASSISTANT SAID: Folded the rename in too.",
+   "replyUuid": "a2",
+   "t": 1781096460,
+   "text": "also rename the digest file",
+   "text_full": "also rename the digest file",
+   "tid": "11111111-2222-3333-4444-555555555555",
+   "uuid": "a2",
+   "workUuid": "a2"
+  },
+  {
+   "end": 1781096630,
+   "ended": false,
+   "id": "11111111-2222-3333-4444-555555555555:1781096600:e11dd43a",
+   "kind": "queued",
+   "mids": [],
+   "open": true,
+   "peer": false,
+   "rec": "USER ASKED: and check the tests pass\nASSISTANT SAID: Tests pass.\nTOOLS USED: Bash",
+   "replyUuid": "a3",
+   "t": 1781096600,
+   "text": "and check the tests pass",
+   "text_full": "and check the tests pass",
+   "tid": "11111111-2222-3333-4444-555555555555",
+   "uuid": "u2",
+   "workUuid": "a3"
+  }
+ ],
+ "pending": []
+}

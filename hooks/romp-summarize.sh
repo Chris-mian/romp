@@ -24,9 +24,20 @@ set -uo pipefail
 # Only inside a romp tmux session. The nested `claude` call below runs with
 # TMUX unset + ROMP_SUMMARIZING=1, so its OWN hooks land here and bail on these
 # two guards — that's the recursion guard (don't summarize the summarizer).
-[[ -z "${TMUX:-}" ]] && exit 0
 [[ -n "${ROMP_SUMMARIZING:-}" ]] && exit 0
 [[ -f "$HOME/.claude/romp-summarize-off" ]] && exit 0
+
+# Headless romp session (no tmux; the launcher exported ROMP_SESSION_ID): there
+# is no status line to paint the live phrase on, but the DURABLE summaries
+# still matter — keep the backfill daemon alive, then skip the display work.
+# Plain non-romp claude sessions (no tmux, no ROMP_SESSION_ID) exit silently.
+if [[ -z "${TMUX:-}" ]]; then
+    if [[ -n "${ROMP_SESSION_ID:-}" ]]; then
+        command -v romp-summarize-backfill >/dev/null 2>&1 && \
+            romp-summarize-backfill --ensure >/dev/null 2>&1 || true
+    fi
+    exit 0
+fi
 
 session_name=$(tmux display-message -p '#S' 2>/dev/null || true)
 [[ -n "$session_name" ]] || exit 0

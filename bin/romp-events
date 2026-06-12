@@ -28,6 +28,8 @@ from pathlib import Path
 HORIZON  = 48 * 3600                 # how far back to read transcripts (matches the slider max)
 IDLE_GAP = 15 * 60                   # a silence this long between a period's assistant lines = the session
                                      # went idle/dead; lines after it belong to a later turn, so clip there
+REPLY_MEAT = 160                     # replyUuid prefers the last text block at least this long — a click on a
+                                     # deliverable should land on its prose, not a closing one-liner
 HOME     = Path.home()
 STATE    = Path(os.environ.get("XDG_STATE_HOME", str(HOME / ".local/state"))) / "romp"
 NAMES    = STATE / "names"
@@ -188,7 +190,7 @@ def extract_events(sid, transcript, now):
             return {"events": [], "pending": [], "compactions": []}
         cutoff = now - HORIZON
         tid = p.stem                           # source transcript basename (fork fsid) — for click-to-open
-        bnds, asst, qops = [], [], []          # boundaries (ts,text,kind,mids,uuid) / asst (ts,..,uuid) / queue-ops
+        bnds, asst, qops, stops = [], [], [], []   # boundaries (ts,text,kind,mids,uuid) / asst (ts,..,uuid) / queue-ops / (ts, stop_reason)
         dec_uses = {}                          # open decision tool_use ids → {name, input}, joined to their tool_result
         compactions, last_real = [], None      # context-compaction MARKERS + last real conversational ts
         parent_of, leaf = {}, None             # uuid→parentUuid + the leaf, to reconstruct the active path
@@ -223,6 +225,13 @@ def extract_events(sid, transcript, now):
                 tools = [b.get("name", "tool") for b in c
                          if isinstance(b, dict) and b.get("type") == "tool_use"] if isinstance(c, list) else []
                 asst.append((ts, atext, tools, r.get("uuid")))   # (ts, text, tools, uuid)
+                # stop_reason of the LAST assistant line per period → the event's
+                # `ended` flag: the transcript's OWN end-of-turn signal (same one
+                # chat-view's working indicator uses). The summarizer requires it
+                # before treating an open turn as finished — the tmux state var
+                # alone has three non-hook writers and got silently flipped
+                # mid-turn (the 2026-06-11 'found it' post-mortem).
+                stops.append((ts, (r.get("message") or {}).get("stop_reason")))
                 last_real = ts
                 if isinstance(c, list):           # stash decision tool_uses; the matching tool_result splits the turn
                     for b in c:
@@ -307,12 +316,17 @@ def extract_events(sid, transcript, now):
             if end <= ts:
                 end = min(nxt, ts + 5)                   # tiny stub if no assistant reply recorded
             work_uid = next((b[3] for b in blocks if b[3] in active), None)   # period's 1st active-path ASSISTANT line
-            # replyUuid = the LAST assistant line with actual TEXT (b[1] non-empty —
-            # thinking blocks extract as empty text): where the user-readable reply
-            # lives. The first assistant line is usually a thinking block, so a
-            # "show me this deliverable" click anchored on work_uid lands the chat
-            # on thinking; the deliverable is at the END of the turn.
-            reply_uid = next((b[3] for b in reversed(blocks) if b[1] and b[3] in active), None)
+            # replyUuid = the turn's READABLE reply: the last SUBSTANTIAL text block
+            # (b[1] non-empty — thinking blocks extract as empty text). Plain
+            # last-text landed clicks on closing one-liners and mid-work status
+            # lines ("render.ts keeps its own copy…" — the user, 2026-06-11); the
+            # deliverable prose is the last LONG block, so prefer that, falling
+            # back to the longest text in the period, then to any last text. The
+            # first assistant line is usually a thinking block, so a "show me
+            # this deliverable" click anchored on work_uid would land on thinking.
+            texted = [b for b in blocks if b[1] and b[3] in active]
+            reply_uid = (next((b[3] for b in reversed(texted) if len(b[1]) >= REPLY_MEAT), None)
+                         or (max(texted, key=lambda b: len(b[1]))[3] if texted else None))
             # uuid = the boundary/prompt line when anchorable; the SUBSTITUTE when it
             # isn't is the turn's readable reply — never work_uid (the first assistant
             # line is usually a THINKING block, and a "prompt" click landing on
@@ -325,7 +339,12 @@ def extract_events(sid, transcript, now):
             # peer: computed from the RAW text (banner frame / 📬 / msg-id) + mids BEFORE the
             # cosmetic strip — `text`/`disp` lose those markers, so downstream consumers can't
             # re-derive this. A peer-prompted turn must never mint a user-ask.
+            # ended = the period's last assistant line closed the turn (end_turn /
+            # stop_sequence). Interrupted or still-streaming turns read False; a
+            # later boundary closing the period makes the flag moot (open=False).
+            last_stop = next((sr for sts, sr in reversed(stops) if ts <= sts < nxt), None)
             events.append({"id": _eid(sid, ts, text), "t": ts, "end": min(end, now),
+                           "ended": last_stop in ("end_turn", "stop_sequence"),
                            "kind": kind, "text": disp, "text_full": _strip_banner(full),
                            "peer": bool(mids) or _is_peer_banner(text) or _is_peer_banner(full),
                            "mids": mids, "tid": tid,
@@ -339,7 +358,7 @@ def extract_events(sid, transcript, now):
         return {"events": [], "pending": [], "compactions": []}
 
 EVCACHE = STATE / "events-cache"
-CACHE_VERSION = 10       # bump whenever extract_events' output shape changes (forces re-extract)
+CACHE_VERSION = 12       # bump whenever extract_events' output shape changes (forces re-extract)
 def events_for(sid, transcript, now):
     """extract_events, memoized on disk by the transcript's (mtime, size). Repeated --emit
     calls (Obsidian polls ~1s while visible) spawn a FRESH process each time, so the cache

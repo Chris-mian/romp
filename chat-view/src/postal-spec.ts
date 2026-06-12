@@ -47,6 +47,11 @@ const MSG_ID_RE = /<!--\s*romp-msg-id:\s*([^\s>]+)\s*-->/g;
 // (3) The MCP send tool. May be namespaced, e.g. mcp__romp-postal__send_message.
 const SEND_TOOL_RE = /(?:^|__)send_message$/;
 
+// (4) The CLI send path — a Bash tool call running `romp --mail send <to> <body>`
+// (cli_send in bin/romp-postal: body = remaining argv joined). The same send,
+// just made from the shell, so it gets the same outgoing card as the MCP tool.
+const CLI_SEND_RE = /\bromp\s+--mail\s+send\s+([A-Za-z0-9._-]+)\s+([\s\S]+)$/;
+
 export interface PeerColor { bg: string; fg: string; }
 
 // One "sent" record from the timeline log (the fields we render).
@@ -120,6 +125,7 @@ function postalIn(rec: PostalRecord | undefined, colors: ColorResolvers, ts?: st
     peer: rec.from || "?",
     color: rec.fromId ? colors.byId(rec.fromId) : null,
     body: rec.body,
+    mid: rec.id,
     t: rec.t || undefined,
     park: rec.park,
     ts,
@@ -146,6 +152,46 @@ function postalOut(ev: Extract<ChatEvent, { kind: "tool" }>, colors: ColorResolv
   };
 }
 
+// Undo shell quoting on the CLI send's <body> argument. Handles the two forms
+// agents actually type — one double- or single-quoted string, or bare words —
+// and returns null for anything fancier (heredoc, interpolation, a trailing
+// `&& …`), so an ambiguous command stays a visible Bash row rather than risk
+// rendering a wrong body.
+function shellUnquote(s: string): string | null {
+  s = s.trim();
+  if (!s) return null;
+  if (s.startsWith('"')) {
+    const m = s.match(/^"((?:[^"\\]|\\[\s\S])*)"\s*$/);
+    return m ? m[1].replace(/\\([$`"\\\n])/g, "$1") : null;
+  }
+  if (s.startsWith("'")) {
+    const m = s.match(/^'([^']*)'\s*$/);
+    return m ? m[1] : null;
+  }
+  return /[|&;<>$`"'\\]/.test(s) ? null : s;
+}
+
+// A `romp --mail send` made from the shell. Only folded once the CLI confirmed
+// the send ("[romp mail] delivered to …" / the parked banner) — a failed or
+// still-running command keeps its raw Bash row so the failure stays visible.
+function cliSendOut(ev: Extract<ChatEvent, { kind: "tool" }>, colors: ColorResolvers): ChatEvent | null {
+  const m = (ev.input || "").match(CLI_SEND_RE);
+  if (!m) return null;
+  const body = shellUnquote(m[2]);
+  if (!body || !body.trim()) return null;
+  if (ev.isError || !/delivered to|parked as a handoff/i.test(ev.output || "")) return null;
+  return {
+    kind: "postal",
+    direction: "out",
+    peer: m[1],
+    color: colors.byName(m[1]),
+    body,
+    status: /parked/i.test(ev.output) ? "parked" : "delivered",
+    ts: ev.ts,
+    uuid: ev.uuid,
+  };
+}
+
 // Replace postal traffic in an event list with structured postal cards. Any
 // event we can't fully resolve is passed through unchanged (never dropped).
 export function hydratePostal(events: ChatEvent[], stateDir: string, colors: ColorResolvers): ChatEvent[] {
@@ -154,6 +200,10 @@ export function hydratePostal(events: ChatEvent[], stateDir: string, colors: Col
   for (const ev of events) {
     if (ev.kind === "tool" && isSendTool(ev.name)) {
       const card = postalOut(ev, colors);
+      if (card) { out.push(card); continue; }
+    }
+    if (ev.kind === "tool" && ev.name === "Bash") {
+      const card = cliSendOut(ev, colors);
       if (card) { out.push(card); continue; }
     }
     // Incoming: drain/push arrive as user text; check_inbox as tool output.

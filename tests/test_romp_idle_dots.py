@@ -49,8 +49,19 @@ class TestDiagnose(unittest.TestCase):
         self.assertEqual(dots.diagnose("working", FRESH, NOW, False, PANE_IDLE), "leave")
 
     def test_non_stuckable_states_left_alone(self):
-        for st in ("waiting", "idle", "permission"):
+        for st in ("waiting", "idle"):
             self.assertEqual(dots.diagnose(st, STALE, NOW, False, PANE_IDLE), "leave")
+
+    def test_stranded_permission_heals_on_idle_pane(self):
+        # 2026-06-11 timeline_window incident: a phantom/answered permission strands
+        # the state forever (no hook clears it) — an idle composer pane heals it
+        self.assertEqual(dots.diagnose("permission", STALE, NOW, False, PANE_IDLE), "heal")
+        self.assertEqual(dots.diagnose("picker", STALE, NOW, False, PANE_IDLE), "heal")
+
+    def test_real_dialog_on_screen_never_heals(self):
+        # a REAL pending prompt shows its cursor on a numbered row — the state is true
+        pane_dialog = "Do you want to proceed?\n❯ 1. Yes\n  2. No\n\n  ctx:7%\n"
+        self.assertEqual(dots.diagnose("permission", STALE, NOW, False, pane_dialog), "leave")
 
     def test_copy_mode_pane_is_unjudgeable(self):
         # scrolled-back pane shows history, not live state — never judge it

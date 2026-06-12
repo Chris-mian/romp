@@ -182,3 +182,37 @@ run_hook() {
     [ "$status" -eq 0 ]
     grep -q 'set -t test @claude-state-since' "$MOCK_LOG"
 }
+
+# ─── headless (no-tmux) backend tests ─────────────────────────────────
+# A session launched by a non-tmux backend exports ROMP_SESSION_ID; the hook
+# must write the durable states/<sid>.jsonl record and touch tmux not at all.
+
+@test "headless: ROMP_SESSION_ID writes the durable state record, no tmux" {
+    unset TMUX
+    export ROMP_SESSION_ID="headless-sid-1"
+    export XDG_STATE_HOME="$TEST_DIR/state"
+    run run_hook '{"hook_event_name":"UserPromptSubmit","cwd":"/tmp"}'
+    [ "$status" -eq 0 ]
+    grep -q '"state":"working"' "$TEST_DIR/state/romp/states/headless-sid-1.jsonl"
+    ! grep -q 'tmux set -t' "$MOCK_LOG"
+}
+
+@test "headless: repeated same-state events append only one record" {
+    unset TMUX
+    export ROMP_SESSION_ID="headless-sid-2"
+    export XDG_STATE_HOME="$TEST_DIR/state"
+    run_hook '{"hook_event_name":"UserPromptSubmit","cwd":"/tmp"}'
+    run_hook '{"hook_event_name":"PostToolUse","cwd":"/tmp"}'
+    [ "$(wc -l < "$TEST_DIR/state/romp/states/headless-sid-2.jsonl")" -eq 1 ]
+    run_hook '{"hook_event_name":"Stop","cwd":"/tmp"}'
+    [ "$(wc -l < "$TEST_DIR/state/romp/states/headless-sid-2.jsonl")" -eq 2 ]
+}
+
+@test "headless: no ROMP_SESSION_ID still exits silently" {
+    unset TMUX
+    unset ROMP_SESSION_ID
+    export XDG_STATE_HOME="$TEST_DIR/state"
+    run run_hook '{"hook_event_name":"SessionStart","cwd":"/tmp"}'
+    [ "$status" -eq 0 ]
+    [ ! -d "$TEST_DIR/state/romp/states" ]
+}

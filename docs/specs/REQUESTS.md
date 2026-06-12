@@ -118,6 +118,13 @@ Backup: no conf change needed — `romp-cache.conf` is exclude-based, so
 
 ## Model output formats (fused into existing summarizer calls — no new calls)
 
+- 2026-06-11 additions: TAG gains `WAIT` (turn ended on purpose pending an
+  EXTERNAL event — not the user; read side holds the card in WORKING, exempt
+  from auto-filing and the settled ring, ⏳ chip). And the STRUCTURAL own-turn
+  link: whatever the model's LINK says, the reply of a turn that minted ask X
+  is attached to X deterministically (same-pass candidates guarantee) — a
+  user-prompted reply can never float free of its own ask, which closes the
+  standalone-card class for good. DONE still requires the model/corrections.
 - Reply call: `TAG :: phrase :: LINK <#[,#]|none> :: DONE <#[,#]|none>` —
   numbers index the prompt's numbered candidate list; the daemon maps #→id at
   write time (no id hallucination). DONE marks which LINKed requests this reply
@@ -128,9 +135,27 @@ Backup: no conf change needed — `romp-cache.conf` is exclude-based, so
   completion marker, never the link. Decision log carries `done` + `raw_done`
   per link decision (watch for completion inflation).
 - Request call: `PHRASE :: <8-word phrase>` (byte-compatible with the existing
-  `summaries/` request line) then 0..N of `ASK :: <text>` / `AMEND <#> :: <text>`.
+  `summaries/` request line) then a CLOSED classification (2026-06-11): either
+  1..N of `ASK :: <text>` / `AMEND <#> :: <text>`, or exactly one explicit
+  terminal line — `ANSWER :: <text>` (the turn only answers/decides for work
+  already underway) or `ACK` (small talk / approves nothing). A bare PHRASE is
+  a capture FAILURE, not a judgment: the daemon's deterministic backstop then
+  auto-mints one ask from the phrase (also on an `ACK` whose turn contains a
+  `?` or runs >30 words — real acks are short and ask nothing; explicit
+  `ANSWER` is trusted). Every capture row in the decision log carries
+  `verdict` (ask/answer/ack/null) + `backstop` (null when the verdict stood),
+  so under-fire is measurable. Rationale: cost asymmetry — an over-minted ask
+  costs one Clear; a silent drop breaks the registry's only hard guarantee.
   The prompt carries a <context> block (tail of the preceding assistant reply)
   so approvals can draw ask content from the proposal.
+- Answer rows (2026-06-11): an anchored `ANSWER <number> :: <text>` writes
+  `{kind:"answer", id:<ask id>, turn_id, t, text}` to nodes.jsonl — the user's
+  reply to a pending question recorded as an explicit child event on the card,
+  never inferred. Read side injects it as a link-equivalent: as the newest link
+  it crosses the pending DECISION off and reads "in flight again"; it renders
+  as a ↩ row in the card's history, and its turn_id joins the live turn to the
+  card (blocked-fold + liveness claim). The old next-typed-turn inference
+  survives ONLY as the fallback for unanchored answers.
 - Message call: `phrase :: REQ <yes|no> :: PARENTS <#[,#]|none>` — REQ filters
   FYI/acks out of node creation; PARENTS candidates = the sender's open
   received-requests.

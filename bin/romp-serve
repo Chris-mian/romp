@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# romp-serve — the romp web UI kernel: serves the chat + feed webviews to any
+# browser and drives sessions through the tmux backend. Usage:
+#   romp-serve [--port N] [--host 127.0.0.1]
+# Builds dist/kernel.js on first run (or when sources are newer).
+set -euo pipefail
+
+src="${BASH_SOURCE[0]}"
+while [[ -L "$src" ]]; do
+    tgt="$(readlink "$src")"
+    case "$tgt" in
+        /*) src="$tgt" ;;
+        *)  src="$(cd "$(dirname "$src")" && pwd)/$tgt" ;;
+    esac
+done
+ROMP_DIR="$(cd "$(dirname "$src")/.." && pwd)"
+CHAT_VIEW="$ROMP_DIR/chat-view"
+KERNEL="$CHAT_VIEW/dist/kernel.js"
+
+command -v node >/dev/null 2>&1 || { echo "romp-serve: node not found" >&2; exit 1; }
+
+# Build when the bundle is missing or any source is newer than it.
+needs_build() {
+    [[ -f "$KERNEL" ]] || return 0
+    [[ -n "$(find "$CHAT_VIEW/src" -name '*.ts' -newer "$KERNEL" 2>/dev/null | head -1)" ]]
+}
+if needs_build; then
+    echo "romp-serve: building kernel…" >&2
+    (cd "$CHAT_VIEW" && npm run --silent build) >&2
+fi
+
+export ROMP_BIN="${ROMP_BIN:-$ROMP_DIR/bin/romp}"
+export ROMP_FEED_DETAIL_BIN="${ROMP_FEED_DETAIL_BIN:-$ROMP_DIR/bin/romp-feed-detail}"
+exec node "$KERNEL" "$@"

@@ -84,6 +84,28 @@ function modelLabel(s) {
   return s.effort ? s.model + ' ' + s.effort : s.model;
 }
 
+// The model + effort labels are little drop-down pickers (mirror of the chat-view statusline's): on a
+// LIVE lane, clicking the model or effort word opens a menu whose pick injects the matching /model or
+// /effort slash command into that session's pane (see _sendCommand → tmux, like _compactSession). The
+// label refreshes on the next poll when the TUI republishes @claude-model/@claude-effort; _metaPending
+// dims the word in the gap. Values mirror chat-view's allowlist (extension.ts META_VALUES) verbatim.
+const META_HOVER_FG = '#e6edf3';   // brighten the word + reveal its caret on hover
+const META_CARET = ' ▾';           // appended (hair-spaced) after each clickable word
+const MODEL_CHOICES = [
+  { label: 'Fable', value: 'fable' },
+  { label: 'Opus', value: 'opus' },
+  { label: 'Sonnet', value: 'sonnet' },
+  { label: 'Haiku', value: 'haiku' },
+  { label: 'Default', value: 'default' },
+];
+const EFFORT_CHOICES = ['low', 'medium', 'high', 'xhigh', 'max'].map((v) => ({ label: v, value: v }));
+// Is this menu entry the lane's CURRENT value? Effort matches exactly; the model var holds a display
+// name ("Opus 4.8"), so match on the leading word — same rule as the chat-view's isCurrentMeta.
+function isCurrentMeta(kind, s, value) {
+  const cur = ((kind === 'model' ? s.model : s.effort) || '').toLowerCase();
+  return kind === 'effort' ? cur === value : cur.startsWith(value);
+}
+
 // rounded orthogonal path through waypoints (message connectors)
 function roundedPath(pts, r) {
   const p = pts.filter((q, i) => i === 0 || q.x !== pts[i - 1].x || q.y !== pts[i - 1].y);
@@ -121,14 +143,21 @@ class TimelinePanel {
     this.WSTORE = 'romp-tl-winsec';
     this.OSTORE = 'romp-tl-offsec';
     this.CSTORE = 'romp-tl-collapse';
+    this.LSTORE = 'romp-tl-locknow';
     this._winSec = null; this._offSec = 0; this._drawRAF = null;
     // broken-axis: collapse long idle gaps (no work on any lane — e.g. overnight) into a thin squiggle
     // break, so the active periods get the width. ON by default; the checkbox below the axis toggles it.
     this._collapseGaps = true;
+    // 🔒 lock-to-now (the user 2026-06-11): the live edge is pinned PERMANENTLY — pan gestures can't
+    // leave it, and a focus that's off-screen ZOOMS OUT (window widens leftward, right edge stays at
+    // now, target lands ~mid-window) instead of panning away. OFF by default; checkbox far right.
+    this._lockNow = false;
     this._compactClicked = {};   // sid → click ts: show the compacting cue OPTIMISTICALLY until the real state catches up
     try { if (localStorage.getItem(this.CSTORE) === '0') this._collapseGaps = false; } catch (e) {}
+    try { if (localStorage.getItem(this.LSTORE) === '1') this._lockNow = true; } catch (e) {}
     try { const v = localStorage.getItem(this.WSTORE); if (v != null && /^\d+(\.\d+)?$/.test(v)) { this._winSec = +v; this.fitted = true; } } catch (e) {}
     try { const v = localStorage.getItem(this.OSTORE); if (v != null && /^\d+(\.\d+)?$/.test(v)) this._offSec = +v; } catch (e) {}
+    if (this._lockNow) this._offSec = 0;   // a restored mid-pan offset never overrides the lock
     // Live-follow vs hold-position. PINNED (default) = the window's right edge tracks `now`, so it
     // auto-scrolls. The instant the user pans/zooms off the now-edge it UNPINS and HOLDS its absolute
     // real-time position (no creep as `now` advances); a far-right ⟩⟩ button re-pins + resumes follow.
@@ -141,23 +170,14 @@ class TimelinePanel {
     this.svg = document.createElementNS(SVGNS, 'svg');
     this.svg.setAttribute('xmlns', SVGNS); this.wrap.appendChild(this.svg);
 
-    // controls row BELOW the time axis: a checkbox to collapse long idle (overnight) gaps.
+    // controls row BELOW the time axis. Layout (the user 2026-06-11): usage bars LEFT-justified,
+    // then a flexible spacer, then RIGHT-justified "collapse idle gaps" with the 🔒 lock-to-now
+    // toggle at the far right, under the lanes.
     this.controls = this.wrap.createDiv({ cls: 'romp-tl-controls' });
     this.controls.setAttribute('style', 'display:flex;align-items:center;gap:16px;padding:4px 8px;font-size:11px;color:#9aa0a6;user-select:none;');
-    const cbWrap = this.controls.createEl('label');
-    cbWrap.setAttribute('style', 'display:inline-flex;align-items:center;gap:5px;cursor:pointer;');
-    this._collapseBox = cbWrap.createEl('input');
-    this._collapseBox.type = 'checkbox';   // set as a property (the VS Code createEl shim ignores {type})
-    this._collapseBox.checked = this._collapseGaps;
-    cbWrap.createSpan({ text: 'collapse idle gaps' });
-    this._collapseBox.addEventListener('change', () => {
-      this._collapseGaps = this._collapseBox.checked;
-      try { localStorage.setItem(this.CSTORE, this._collapseGaps ? '1' : '0'); } catch (e) {}
-      this.draw();
-    });
 
-    // Claude usage bars (the /usage rate-limit %: 5-hour + weekly), placed to the RIGHT of the
-    // checkbox. Hidden until statusline.sh reports usage (Pro/Max only); _updateUsage() fills them each
+    // Claude usage bars (the /usage rate-limit %: 5-hour + weekly), LEFT-justified. Hidden until
+    // statusline.sh reports usage (Pro/Max only); _updateUsage() fills them each
     // poll from data.usage. The pct bar is color-coded green/amber/red; the reset countdown is in the
     // hover title.
     this._usageWrap = this.controls.createDiv();
@@ -189,7 +209,60 @@ class TimelinePanel {
     mkUsageBar('fiveHour', 'session', 5 * 3600);
     mkUsageBar('sevenDay', 'week', 7 * 86400);
 
+    // spacer: everything after it sits flush right
+    const ctlSpacer = this.controls.createDiv();
+    ctlSpacer.setAttribute('style', 'flex:1 1 auto;');
+
+    const cbWrap = this.controls.createEl('label');
+    cbWrap.setAttribute('style', 'display:inline-flex;align-items:center;gap:5px;cursor:pointer;');
+    this._collapseBox = cbWrap.createEl('input');
+    this._collapseBox.type = 'checkbox';   // set as a property (the VS Code createEl shim ignores {type})
+    this._collapseBox.checked = this._collapseGaps;
+    cbWrap.createSpan({ text: 'collapse idle gaps' });
+    this._collapseBox.addEventListener('change', () => {
+      this._collapseGaps = this._collapseBox.checked;
+      try { localStorage.setItem(this.CSTORE, this._collapseGaps ? '1' : '0'); } catch (e) {}
+      this.draw();
+    });
+
+    // Lock-to-now, far right: while checked the live edge can't be left — pans snap back,
+    // and an off-screen focus ZOOMS OUT (right edge stays at now) instead of panning away.
+    // The icon is an inline SVG padlock (not the emoji): locked = shackle seated on the body;
+    // unlocked = shackle hinged at the top-right, swung clearly out to the SIDE (the user 2026-06-11).
+    const LOCK_CLOSED = '<svg viewBox="0 0 15 14" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" style="display:block">'
+      + '<rect x="3" y="6.2" width="8" height="5.6" rx="1.2"/>'
+      + '<path d="M4.8 6.2 V4.4 a2.2 2.2 0 0 1 4.4 0 V6.2"/></svg>';
+    const LOCK_OPEN = '<svg viewBox="0 0 15 14" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" style="display:block">'
+      + '<rect x="3" y="6.2" width="8" height="5.6" rx="1.2"/>'
+      + '<path d="M9.4 6.2 V5.3 A2.4 2.4 0 0 1 13.6 3.7"/></svg>';
+    const lockWrap = this.controls.createEl('label');
+    lockWrap.setAttribute('style', 'display:inline-flex;align-items:center;gap:5px;cursor:pointer;');
+    lockWrap.title = 'keep the timeline at the present: focus jumps zoom out instead of panning away';
+    this._lockBox = lockWrap.createEl('input');
+    this._lockBox.type = 'checkbox';
+    this._lockBox.checked = this._lockNow;
+    const lockIcon = lockWrap.createSpan();
+    lockIcon.setAttribute('style', 'display:inline-flex;align-items:center;opacity:' + (this._lockNow ? '1' : '0.7') + ';');
+    lockIcon.innerHTML = this._lockNow ? LOCK_CLOSED : LOCK_OPEN;
+    lockWrap.createSpan({ text: 'now' });
+    this._lockBox.addEventListener('change', () => {
+      this._lockNow = this._lockBox.checked;
+      lockIcon.innerHTML = this._lockNow ? LOCK_CLOSED : LOCK_OPEN;
+      lockIcon.style.opacity = this._lockNow ? '1' : '0.7';
+      try { localStorage.setItem(this.LSTORE, this._lockNow ? '1' : '0'); } catch (e) {}
+      if (this._lockNow) this._jumpToNow();   // snap to the live edge the moment it locks
+      this.draw();
+    });
+
     this.tip = document.body.createDiv({ cls: 'romp-tl-tip' });
+
+    // model/effort drop-down pickers: the open menu element + per-lane optimistic "pending" cues
+    // ('sid:kind' → {was, until}) that dim a word until the tmux var actually flips (or 20s elapses).
+    this._metaMenu = null; this._metaPending = {};
+    this._onDocClick = () => this._closeMetaMenu();
+    this._onDocKey = (e) => { if (e.key === 'Escape') this._closeMetaMenu(); };
+    document.addEventListener('click', this._onDocClick);
+    document.addEventListener('keydown', this._onDocKey);
 
     this._onResize = () => this.draw();
     this._onWheel = (e) => this.onWheel(e);
@@ -222,6 +295,9 @@ class TimelinePanel {
     if (this._autoOpenT) clearTimeout(this._autoOpenT);
     if (this._onDragMove) window.removeEventListener('mousemove', this._onDragMove, true);
     if (this._onDragUp) window.removeEventListener('mouseup', this._onDragUp, true);
+    document.removeEventListener('click', this._onDocClick);
+    document.removeEventListener('keydown', this._onDocKey);
+    this._closeMetaMenu();
     if (this.tip) this.tip.remove();
   }
 
@@ -321,6 +397,7 @@ class TimelinePanel {
       const dt = e.deltaX * scaleX * (curWin / g.plotW);      // compressed-sec per px (CONSTANT → smooth pan)
       this._offSec = Math.max(0, Math.min(MAX_OFFSET, curOff - dt));
     }
+    if (this._lockNow) this._offSec = 0;   // 🔒 locked: zoom is free but the right edge never leaves now
     this._markOffsetGesture();   // honor this _offSec verbatim next frame; re-pin if it lands at the now-edge
     try { localStorage.setItem(this.WSTORE, String(this.winSec())); } catch (e2) {}
     try { localStorage.setItem(this.OSTORE, String(Math.round(this._offSec))); } catch (e2) {}
@@ -612,13 +689,20 @@ class TimelinePanel {
   // showLeft/showRight (default true) gate each boundary gridline+clock: a gap that STRADDLES a window
   // edge (its start before t0, or end past t1) has that boundary clamped to the plot edge, so we suppress
   // its label/gridline rather than draw it into the gutter (over the battery column) or off the plot.
-  _drawGapBreak(svg, x0, x1, ra, rb, top, axisY, showLeft, showRight) {
+  // placeLabel (the caller's axis-row occupancy fn) gates each boundary CLOCK: when it would overlap a
+  // label already on the row (a regular tick, or another gap's clock) the text is dropped — the
+  // gridline and squiggle still draw, so the break stays visible without doubled-up labels.
+  _drawGapBreak(svg, x0, x1, ra, rb, top, axisY, showLeft, showRight, placeLabel) {
     const ends = [];
     if (showLeft !== false) ends.push([x0, ra, 'end', -2]);
     if (showRight !== false) ends.push([x1, rb, 'start', 2]);
     for (const e of ends) {
       svg.appendChild(el('line', { x1: e[0], y1: top, x2: e[0], y2: axisY, stroke: '#ffffff20', 'stroke-width': 1, 'pointer-events': 'none' }));
-      const tx = el('text', { x: e[0] + e[3], y: axisY + 14, 'text-anchor': e[2], fill: 'var(--text-muted)', 'font-size': 9, 'pointer-events': 'none' }); tx.textContent = clock(e[1]); svg.appendChild(tx);
+      const s = clock(e[1]), lx = e[0] + e[3];
+      this._mc.font = '9px ' + FONT;
+      const w = this._mc.measureText(s).width;
+      if (placeLabel && !placeLabel(e[2] === 'end' ? lx - w : lx, e[2] === 'end' ? lx : lx + w)) continue;
+      const tx = el('text', { x: lx, y: axisY + 14, 'text-anchor': e[2], fill: 'var(--text-muted)', 'font-size': 9, 'pointer-events': 'none' }); tx.textContent = s; svg.appendChild(tx);
     }
     const cx = (x0 + x1) / 2, amp = 3, seg = 7;
     let d = 'M ' + cx + ' ' + top, yy = top, k = 0;
@@ -642,6 +726,17 @@ class TimelinePanel {
     const g = this._geom, compress = (g && g.compress) ? g.compress : ((x) => x);
     const win = this.winSec(), cNow = compress(this.data.now), ct = compress(t);
     const cT1 = cNow - this.offSec(), cT0 = cT1 - win;
+    // 🔒 locked to now: never pan off the live edge — ZOOM OUT instead. Widen the window (right
+    // edge stays at now) until the target is on-screen, sitting ~mid-window, so the right half
+    // spans target → now. Already-visible targets change nothing.
+    if (this._lockNow) {
+      if (ct >= cT0 && ct <= cT1 && this.offSec() === 0) return false;
+      this._winSec = Math.max(MIN_W, Math.min(MAX_W, 2 * Math.max(1, cNow - ct)));
+      this._offSec = 0; this._offDirty = true; this._pinned = true;
+      try { localStorage.setItem(this.WSTORE, String(this.winSec())); } catch (e) {}
+      try { localStorage.setItem(this.OSTORE, '0'); } catch (e) {}
+      return true;
+    }
     if (ct < cT0 || ct > cT1) {                        // off-screen in time → pan so t sits ~mid-window
       this._offSec = Math.max(0, Math.min(MAX_OFFSET, cNow - ct - win * 0.5));
       this._markOffsetGesture();                       // hold at the navigated target (don't creep)
@@ -806,6 +901,79 @@ class TimelinePanel {
       });
     } catch (e) { /* no host hook + no Node → can't send */ }
   }
+  // Inject a slash command into a session's pane (the model/effort pickers). VS Code surface: hand it
+  // to the host hook if present; Obsidian: shell tmux. We BRACKETED-PASTE the command (set-buffer +
+  // paste-buffer -p) rather than send-keys -l, then submit with a delayed Enter — mirroring the
+  // chat-view's sendToSession. A literal type would feed "/model …" to Claude Code's slash-command
+  // AUTOCOMPLETE char-by-char and an immediate Enter would race the TUI; a bracketed paste lands the
+  // whole string atomically (no autocomplete), and the 250ms gap lets the paste arrive before Enter.
+  //
+  // confirm=true → send a SECOND Enter after the submit. /model doesn't switch on submit: it opens a
+  // "Switch model?" picker (cursor pre-seated on "Yes, switch …") that fires no hook and waits — so the
+  // one Enter only OPENS the dialog and the model never changes. The extra Enter accepts the default
+  // "Yes". /effort and /compact apply directly (no cache-invalidation confirmation), so they don't pass
+  // it. The extra Enter is harmless even if a build skips the dialog (an empty composer submit is a no-op).
+  _sendCommand(name, cmd, confirm) {
+    if (!name || !cmd) return;
+    try {
+      if (typeof window !== 'undefined' && typeof window.__rompTimelineSendCommand === 'function') {
+        window.__rompTimelineSendCommand(name, cmd); return;
+      }
+      const cp = require('child_process'), tmux = this._tmuxPath();
+      const env = Object.assign({}, process.env, { LANG: 'en_US.UTF-8', LC_ALL: 'en_US.UTF-8', LC_CTYPE: 'en_US.UTF-8' });
+      const run = (args, cb) => cp.execFile(tmux, args, { timeout: 4000, encoding: 'utf8', env }, (err, out) => { if (cb) cb(err, out); });
+      const enter = () => run(['send-keys', '-t', name, 'Enter']);
+      const BUF = 'romp-timeline';
+      const submit = () => { enter(); if (confirm) setTimeout(enter, 600); };   // 2nd Enter → accept "Switch model? Yes"
+      const paste = () => run(['set-buffer', '-b', BUF, cmd], () =>
+        run(['paste-buffer', '-b', BUF, '-d', '-p', '-t', name], () => setTimeout(submit, 250)));
+      // exit copy-mode first if the pane is scrolled, so the paste + Enter actually land
+      run(['display-message', '-p', '-t', name, '#{pane_in_mode}'], (err, out) => {
+        if (!err && String(out || '').trim() === '1') run(['send-keys', '-t', name, '-X', 'cancel'], paste);
+        else paste();
+      });
+    } catch (e) { /* no host hook + no Node → can't send */ }
+  }
+
+  _closeMetaMenu() { if (this._metaMenu) { this._metaMenu.remove(); this._metaMenu = null; } }
+
+  // Open the model/effort drop-down anchored under the clicked label. Re-clicking the same word's
+  // caret toggles it shut. Refused while the lane is AWAITING a prompt — the pane's keyboard belongs to
+  // the picker, so a pasted "/model …" + Enter would answer it instead (chat-view guards the same way).
+  _openMetaMenu(kind, s, anchorEl) {
+    const reopen = this._metaMenu && this._metaMenu._kind === kind && this._metaMenu._sid === s.id;
+    this._closeMetaMenu();
+    if (reopen) return;
+    if (s.state === 'awaiting' || s.state === 'permission') return;
+    // Styled inline (NOT via a CSS class): injectStyles() guards on an existing <style> id, so a CSS
+    // rule added later never lands after a plugin reload — only a full restart. Inline always applies.
+    const menu = document.body.createDiv();
+    menu.setAttribute('style', 'position:fixed;z-index:1001;min-width:96px;padding:4px;background:#1c2430;border:1px solid #ffffff1f;border-radius:8px;box-shadow:0 8px 24px #00000066;font-size:12px;color:#e6edf3;user-select:none;');
+    menu._kind = kind; menu._sid = s.id;
+    for (const c of (kind === 'model' ? MODEL_CHOICES : EFFORT_CHOICES)) {
+      const cur = isCurrentMeta(kind, s, c.value);
+      const item = menu.createDiv({ text: c.label });
+      item.setAttribute('style', 'padding:4px 22px 4px 9px;border-radius:5px;cursor:pointer;position:relative;white-space:nowrap;' + (cur ? 'color:#54B204;' : ''));
+      if (cur) { const ck = item.createSpan({ text: '✓' }); ck.setAttribute('style', 'position:absolute;right:8px;'); }
+      item.addEventListener('mouseenter', () => { item.style.background = '#ffffff14'; });
+      item.addEventListener('mouseleave', () => { item.style.background = 'transparent'; });
+      item.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this._sendCommand(s.name, '/' + kind + ' ' + c.value, kind === 'model');
+        const now = (typeof Date !== 'undefined' && Date.now) ? Date.now() : 0;
+        this._metaPending[s.id + ':' + kind] = { was: (kind === 'model' ? s.model : s.effort) || '', until: now + 20000 };
+        this._closeMetaMenu();
+        this.draw();
+      });
+    }
+    const r = anchorEl.getBoundingClientRect();
+    // clamp to the viewport so a right-edge lane's menu stays on-screen
+    const left = Math.min(Math.round(r.left), (window.innerWidth || 9999) - 140);
+    menu.style.left = Math.max(6, left) + 'px';
+    menu.style.top = Math.round(r.bottom + 4) + 'px';
+    this._metaMenu = menu;
+  }
+
   _tmuxPath() {
     if (this._tmux) return this._tmux;
     this._tmux = 'tmux';
@@ -870,6 +1038,7 @@ class TimelinePanel {
     // Unpinned → re-derive `off` each POLL so the right edge stays at `_holdReal` (absolute → no creep);
     // a fresh gesture/nav (_offDirty) is taken verbatim this frame, then we resume holding.
     let off;
+    if (this._lockNow) this._pinned = true;   // 🔒 the lock wins over any state that slipped through
     if (this._pinned) off = 0;
     else if (!this._offDirty && this._holdReal != null) off = Math.max(0, Math.min(MAX_OFFSET, cNow - compress(this._holdReal)));
     else off = this.offSec();
@@ -915,9 +1084,12 @@ class TimelinePanel {
     // like the dashboard's badge column). Names left-aligned, chips follow.
     const visB = vis.map((s) => compactingNow(s) ? { label: 'COMPACTING', bg: BADGE.compacting.bg, fg: BADGE.compacting.fg } : badgeFor(s));
     const visC = vis.map((s) => ctxInfo(s));
-    const visM = vis.map((s) => modelLabel(s));
     const maxName = Math.max(40, ...(vis.length ? vis : data.sessions).map((s) => this.labelWidth(s.name)));
-    const maxModel = Math.max(0, ...visM.map((m) => (m ? this.ctxWidth(m) : 0)));   // model+effort (same 11px font as ctx)
+    // model+effort column: each word is a clickable picker drawn as [model ▾] [effort ▾], so reserve the
+    // word + caret widths (+ a gap between the two pickers). Same 11px font as ctx (ctxWidth).
+    const META_GAP = 6, caretW = this.ctxWidth(META_CARET);
+    const metaWidth = (s) => { if (!s.model) return 0; let w = this.ctxWidth(s.model) + caretW; if (s.effort) w += META_GAP + this.ctxWidth(s.effort) + caretW; return w; };
+    const maxModel = Math.max(0, ...vis.map(metaWidth));
     const maxChip = Math.max(0, ...visB.map((b) => (b ? this.badgeWidth(b.label) + 12 : 0)));
     const maxCtx = (visC.some((c) => c) || vis.some((s) => compactingNow(s))) ? BAT_W : 0;   // ctx column = battery bar
     const modelColX = PADL + Math.ceil(maxName) + COLGAP;                            // [name] [model+effort] [chip] [ctx]
@@ -945,9 +1117,17 @@ class TimelinePanel {
     // squiggle break + its two boundary-time labels stand in for that span.
     const inGap = (t) => cmap && cmap.gaps.some((g) => t > g.ra && t < g.rb);
     const axisY = H - M.bottom;
+    // axis-label collision guard: every clock on the label row claims its x-extent; a label that
+    // would overlap an already-placed one is dropped (its gridline still draws). Regular interval
+    // ticks draw first so they always win — the gap-break boundary clocks (drawn after) yield.
+    const placedLabels = [];
+    const placeLabel = (a, b) => { for (const p of placedLabels) if (a < p[1] + 6 && b > p[0] - 6) return false; placedLabels.push([a, b]); return true; };
     for (let tk = Math.ceil(t0 / step) * step; tk <= t1; tk += step) {
       if (inGap(tk)) continue;
       svg.appendChild(el('line', { x1: x(tk), y1: M.top, x2: x(tk), y2: axisY, stroke: '#ffffff10', 'stroke-width': 1 }));
+      this._mc.font = '10px ' + FONT;
+      const hw = this._mc.measureText(clock(tk)).width / 2;
+      if (!placeLabel(x(tk) - hw, x(tk) + hw)) continue;
       const tx = el('text', { x: x(tk), y: axisY + 14, 'text-anchor': 'middle', fill: 'var(--text-muted)', 'font-size': 10 }); tx.textContent = clock(tk); svg.appendChild(tx);
     }
     svg.appendChild(el('line', { x1: x(t1), y1: M.top, x2: x(t1), y2: axisY, stroke: '#ffffff22', 'stroke-width': 1 }));
@@ -959,7 +1139,7 @@ class TimelinePanel {
       for (const g of cmap.gaps) if (g.rb > t0 && g.ra < t1) {
         const rx0 = x(g.ra), rx1 = x(g.rb);
         const gx0 = Math.max(M.left, rx0), gx1 = Math.min(plotR, rx1);
-        if (gx1 > gx0 + 0.5) this._drawGapBreak(svg, gx0, gx1, g.ra, g.rb, M.top, axisY, rx0 >= M.left - 0.5, rx1 <= plotR + 0.5);
+        if (gx1 > gx0 + 0.5) this._drawGapBreak(svg, gx0, gx1, g.ra, g.rb, M.top, axisY, rx0 >= M.left - 0.5, rx1 <= plotR + 0.5, placeLabel);
       }
     }
     if (!vis.length) { const tx = el('text', { x: M.left, y: M.top + 16, fill: 'var(--text-muted)', 'font-size': 12 }); tx.textContent = 'no romp activity in this window'; svg.appendChild(tx); }
@@ -1124,12 +1304,36 @@ class TimelinePanel {
       // fade via F(), consistent across hues + with the chat tabs), instead of a flat opacity.
       const lbl = el('text', { x: PADL, y: y + 3.5, 'text-anchor': 'start', 'font-weight': 650, 'font-size': 12, fill: F(s.color), 'pointer-events': 'none' }); lbl.textContent = s.name; svg.appendChild(lbl);
       if (s.faded) fadedEls.push({ el: lbl, full: s.color, faded: F(s.color) });
-      // model + effort, muted, between the name and the state chip (left-aligned in its column)
-      const ml = visM[i];
-      if (ml) {
-        const mt = el('text', { x: modelColX, y: y + 3.5, 'text-anchor': 'start', 'font-size': 11, 'font-weight': 600, fill: F(MODEL_FG), 'pointer-events': 'none' });
-        mt.textContent = ml; svg.appendChild(mt);
-        if (s.faded) fadedEls.push({ el: mt, full: MODEL_FG, faded: F(MODEL_FG) });
+      // model + effort, muted, between the name and the state chip (left-aligned in its column). On a
+      // LIVE lane each word is a drop-down picker — hover reveals a ▾ caret, click opens a menu whose
+      // pick injects /model or /effort into that pane. Dead/historical lanes render it as static text.
+      if (s.model) {
+        if (!s.live) {
+          const mt = el('text', { x: modelColX, y: y + 3.5, 'text-anchor': 'start', 'font-size': 11, 'font-weight': 600, fill: F(MODEL_FG), 'pointer-events': 'none' });
+          mt.textContent = modelLabel(s); svg.appendChild(mt);
+          if (s.faded) fadedEls.push({ el: mt, full: MODEL_FG, faded: F(MODEL_FG) });
+        } else {
+          const pendingOf = (kind) => {
+            const p = this._metaPending[s.id + ':' + kind]; if (!p) return false;
+            const cur = (kind === 'model' ? s.model : s.effort) || '';
+            if (cur !== p.was || nowMs > p.until) { delete this._metaPending[s.id + ':' + kind]; return false; }
+            return true;
+          };
+          let px = modelColX;
+          const drawPiece = (kind, word) => {
+            const pend = pendingOf(kind), ww = this.ctxWidth(word);
+            const wt = el('text', { x: px, y: y + 3.5, 'text-anchor': 'start', 'font-size': 11, 'font-weight': 600, fill: MODEL_FG, 'pointer-events': 'auto' });
+            wt.textContent = word; wt.style.cursor = 'pointer'; if (pend) wt.setAttribute('opacity', '0.45'); svg.appendChild(wt);
+            const ct = el('text', { x: px + ww, y: y + 3.5, 'text-anchor': 'start', 'font-size': 11, 'font-weight': 600, fill: MODEL_FG, opacity: pend ? '0.45' : '0', 'pointer-events': 'none' });
+            ct.textContent = META_CARET; svg.appendChild(ct);
+            wt.addEventListener('mouseenter', () => { wt.setAttribute('fill', META_HOVER_FG); ct.setAttribute('fill', META_HOVER_FG); ct.setAttribute('opacity', '1'); });
+            wt.addEventListener('mouseleave', () => { wt.setAttribute('fill', MODEL_FG); ct.setAttribute('fill', MODEL_FG); ct.setAttribute('opacity', pendingOf(kind) ? '0.45' : '0'); });
+            wt.addEventListener('click', (e) => { e.stopPropagation(); this._openMetaMenu(kind, s, wt); });
+            px += ww + caretW;
+          };
+          drawPiece('model', s.model);
+          if (s.effort) { px += META_GAP; drawPiece('effort', s.effort); }
+        }
       }
       const bdg = visB[i];
       if (bdg) {

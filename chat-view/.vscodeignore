@@ -6,3 +6,6 @@ tsconfig.json
 .gitignore
 **/*.map
 **/*.ts
+out-tests/**
+dist/kernel.js
+dist/kernel.js.map
