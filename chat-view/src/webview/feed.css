@@ -129,14 +129,21 @@ body { display: flex; flex-direction: column; }
    opaque background over them — only unpainted margin space lets them show */
 .feed-col-list { display: flex; flex-direction: column; gap: 8px; min-height: 8px; margin-top: 6px; }
 .feed-col-empty { color: var(--dim); opacity: 0.4; text-align: center; padding: 14px 0; }
-/* column header accents matching the session-chip state colors (the user's ruling
-   2026-06-10): BLOCKED (né Awaiting, renamed 2026-06-11) = the awaiting-chip red
-   (#c0392b — something needs him, same meaning as a session awaiting him);
-   COMPLETED = the ready-chip blue (#2b7fb8 — finished work puts things back in a
-   ready state). Values mirror --st-awaiting-bg / --st-ready-bg in styles.css
-   (separate webview, no shared :root). Working stays neutral. */
-.col-needsInput .feed-col-head { color: #c0392b; }
-.col-completed  .feed-col-head { color: #2b7fb8; }
+/* column headers are filled state CHIPS reproducing the chat status chips
+   (styles.css .chip), on top of each column (the user's ruling 2026-06-11):
+   WORKING = the solid yellow working-chip (the SOLID chip, NOT the rainbow shimmer
+   — near-black text); BLOCKED (né Awaiting) = the awaiting-chip red; COMPLETED =
+   the ready-chip blue (finished work returns to a ready state — same color, distinct
+   label). Hex literals mirror --st-working/awaiting/ready in styles.css (separate
+   webview, no shared :root). The neutral count sits dim beside the chip. */
+.fcol-chip {
+  display: inline-flex; align-items: center;
+  padding: 2px 9px; border-radius: 11px;
+  font-weight: 700; letter-spacing: 0.07em;
+}
+.fcol-chip-working   { background: #e0b020; color: #332600; }
+.fcol-chip-blocked   { background: #c0392b; color: #ffffff; }
+.fcol-chip-completed { background: #2b7fb8; color: #ffffff; }
 
 /* responsive: stack the three columns when the panel is too narrow for them to
    sit side by side — prevents thin columns that break words mid-word ("Shippe/d") */

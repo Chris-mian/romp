@@ -45,7 +45,6 @@ const BADGE_FS = 9;
 const NICE = [60, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400, 172800];
 const BADGE = { working: { bg: '#E0B020', fg: '#332600' }, ready: { bg: '#2B7FB8', fg: '#ffffff' },
                 attention: { bg: '#C0392B', fg: '#ffffff' }, compacting: { bg: '#11808f', fg: '#ffffff' } };
-const RAINBOW_STOPS = ['#a61e1e', '#b35309', '#6d5900', '#1f7a33', '#14538f', '#6b21a8', '#a61e1e'];
 const FONT = '-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif';
 
 function el(t, a) { const n = document.createElementNS(SVGNS, t); for (const k in a) n.setAttribute(k, a[k]); return n; }
@@ -59,7 +58,7 @@ function badgeFor(s) {
   let m = null;
   if (s.state === 'working') m = { label: 'WORKING', kind: 'working' };
   else if (s.state === 'waiting' || s.state === 'idle') m = { label: 'READY', kind: 'ready' };
-  else if (s.state === 'permission' || s.state === 'awaiting') m = { label: 'AWAITING', kind: 'attention' };
+  else if (s.state === 'permission' || s.state === 'awaiting') m = { label: 'BLOCKED', kind: 'attention' };
   if (!m) return null;
   return { label: m.label, bg: BADGE[m.kind].bg, fg: BADGE[m.kind].fg };
 }
@@ -255,6 +254,7 @@ class TimelinePanel {
     });
 
     this.tip = document.body.createDiv({ cls: 'romp-tl-tip' });
+    this._tipOwner = null;   // the hit element that opened the current tip (see _onTipSweep)
 
     // model/effort drop-down pickers: the open menu element + per-lane optimistic "pending" cues
     // ('sid:kind' → {was, until}) that dim a word until the tmux var actually flips (or 20s elapses).
@@ -286,11 +286,25 @@ class TimelinePanel {
     this._focusWrap = () => this.wrap.focus();
     this.wrap.addEventListener('keydown', this._onKey);
     this.wrap.addEventListener('mousedown', this._focusWrap);
+    // SAFETY NET for a stuck tooltip: a hit's own mouseleave never fires if a redraw
+    // (expand/collapse, a live update) pulls the element out from under a stationary
+    // cursor — so the tip stays shown over empty timeline. On any move over the plot,
+    // drop the tip once the cursor is no longer over the element that opened it (or
+    // that element is gone). hideTip() on the owner's mouseleave still handles the
+    // normal case; this only catches the orphaned ones.
+    this._onTipSweep = (e) => {
+      if (!this.tip || !this.tip.classList.contains('show')) return;
+      const o = this._tipOwner;
+      if (!o || !o.isConnected) { this.hideTip(); return; }   // owner removed by a redraw
+      const r = o.getBoundingClientRect();
+      if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) this.hideTip();
+    };
+    this.wrap.addEventListener('mousemove', this._onTipSweep);
   }
 
   destroy() {
     window.removeEventListener('resize', this._onResize);
-    if (this.wrap) { this.wrap.removeEventListener('wheel', this._onWheel); this.wrap.removeEventListener('keydown', this._onKey); this.wrap.removeEventListener('mousedown', this._focusWrap); }
+    if (this.wrap) { this.wrap.removeEventListener('wheel', this._onWheel); this.wrap.removeEventListener('keydown', this._onKey); this.wrap.removeEventListener('mousedown', this._focusWrap); this.wrap.removeEventListener('mousemove', this._onTipSweep); }
     if (this._drawRAF) cancelAnimationFrame(this._drawRAF);
     if (this._autoOpenT) clearTimeout(this._autoOpenT);
     if (this._onDragMove) window.removeEventListener('mousemove', this._onDragMove, true);
@@ -846,11 +860,11 @@ class TimelinePanel {
     const t = el('text', { x: 14, y: 34, fill: 'var(--text-muted)', 'font-size': 13 }); t.textContent = msg; this.svg.appendChild(t);
   }
 
-  showTip(html, ev) { this.tip.innerHTML = html; this.tip.classList.add('show'); this.moveTip(ev); }
+  showTip(html, ev) { this.tip.innerHTML = html; this.tip.classList.add('show'); this._tipOwner = (ev && ev.currentTarget) || null; this.moveTip(ev); }
   moveTip(ev) { const pad = 14; let lx = ev.clientX + pad, ly = ev.clientY + pad; const r = this.tip.getBoundingClientRect();
     if (lx + r.width > innerWidth) lx = ev.clientX - r.width - pad; if (ly + r.height > innerHeight) ly = ev.clientY - r.height - pad;
     this.tip.style.left = lx + 'px'; this.tip.style.top = ly + 'px'; }
-  hideTip() { this.tip.classList.remove('show'); }
+  hideTip() { this.tip.classList.remove('show'); this._tipOwner = null; }
 
   // Deep-link a click on a timeline item into the romp Chat View VS Code extension,
   // focusing that session's tab and scrolling to the EXACT transcript line. Contract
@@ -1009,18 +1023,9 @@ class TimelinePanel {
     cpat.appendChild(el('line', { x1: 0, y1: 0, x2: 0, y2: 6, stroke: '#86e1ff', 'stroke-width': 2, opacity: 0.9 }));
     cpat.appendChild(el('line', { x1: 0, y1: 0, x2: 6, y2: 0, stroke: '#86e1ff', 'stroke-width': 2, opacity: 0.9 }));
     defs.appendChild(cpat);
-    // WORKING-chip rainbow shimmer — mirrors romp-chat-view's `.chip-rainbow` (webview/styles.css): the
-    // SAME deep darker-toned stops (tuned for contrast on the light #E0B020 yellow pill, which both
-    // surfaces share) sweeping across the letters. SVG text can't do CSS background-clip:text, so it's a
-    // gradient text-fill animated by SMIL. The SVG is rebuilt every 1s poll, which would restart the
-    // 2.4s sweep mid-cycle — so `begin` is offset by the NEGATIVE wall-clock phase, making each rebuild
-    // resume at the right phase (continuous, no stutter). Static rainbow is a fine fallback if SMIL is off.
-    const rg = el('linearGradient', { id: 'vault-rainbow-working', x1: '0', y1: '0', x2: '3', y2: '0', gradientUnits: 'objectBoundingBox', spreadMethod: 'repeat' });
-    const RAINBOW = ['#a61e1e', '#b35309', '#6d5900', '#1f7a33', '#14538f', '#6b21a8', '#a61e1e'];
-    RAINBOW.forEach((c, i) => rg.appendChild(el('stop', { offset: (i / (RAINBOW.length - 1)).toFixed(4), 'stop-color': c })));
-    const RB_DUR = 2.4, rbPhase = (Date.now() / 1000) % RB_DUR;
-    rg.appendChild(el('animateTransform', { attributeName: 'gradientTransform', type: 'translate', from: '0 0', to: '-3 0', dur: RB_DUR + 's', begin: (-rbPhase).toFixed(3) + 's', repeatCount: 'indefinite' }));
-    defs.appendChild(rg);
+    // WORKING-chip color-pulse mirrors romp-chat-view's `.chip-pulse`: the letters are ONE solid color
+    // that breathes between two tones on a sine ease. That's a per-<text> SMIL `<animate fill>` (added
+    // where the chip is drawn below), so no gradient def is needed here.
     svg.appendChild(defs);
     // Pan: the window's RIGHT edge is `now` minus the offset slider; the actual live `now` (nowS)
     // is separate, so pending events still ride the true now (off-screen to the right when panned back).
@@ -1096,13 +1101,7 @@ class TimelinePanel {
     const chipColX = modelColX + (maxModel > 0 ? Math.ceil(maxModel) + COLGAP : 0);
     const ctxColX = chipColX + (maxChip > 0 ? Math.ceil(maxChip) + COLGAP : 0);
     M.left = ctxColX + (maxCtx > 0 ? Math.ceil(maxCtx) + COLGAP : 4);
-    // ONE fixed userSpaceOnUse rainbow spanning the battery column (all lanes' compacting scan-bars
-    // share it): a thin bar filled with this shows the rainbow color AT its x, so it cycles as it moves.
-    if (vis.some((s) => compactingNow(s))) {
-      const grad = el('linearGradient', { id: 'vault-compact-scan', gradientUnits: 'userSpaceOnUse', x1: ctxColX + 1, y1: 0, x2: ctxColX + BAT_W - 1, y2: 0 });
-      RAINBOW_STOPS.forEach((c, i) => grad.appendChild(el('stop', { offset: (i / (RAINBOW_STOPS.length - 1)).toFixed(3), 'stop-color': c })));
-      svg.appendChild(grad);
-    }
+    // (the compacting cue is now a solid teal "compression" rect drawn per-lane below — no shared gradient)
 
     const W = Math.max(640, this.wrap.clientWidth || 900);
     const plotW = W - M.left - M.right, H = M.top + Math.max(1, vis.length) * LANE_GAP + M.bottom;
@@ -1243,7 +1242,7 @@ class TimelinePanel {
         svg.appendChild(stripe);
         const sh = el('rect', { x: bx0, y: y - 7, width: Math.max(2, bx1 - bx0), height: 14, fill: 'transparent' }); sh.style.cursor = 'pointer';
         const end = b0 >= data.now - 2 ? 'now' : clock(b0);
-        const shtml = () => '<div class="r"><span class="chip" style="background:' + BADGE.attention.bg + '"></span><span class="who" style="color:' + s.color + '">' + esc(s.name) + '</span><span class="k">awaiting</span></div><div class="b">awaiting your input · ' + clock(a0) + '–' + end + '</div>';
+        const shtml = () => '<div class="r"><span class="chip" style="background:' + BADGE.attention.bg + '"></span><span class="who" style="color:' + s.color + '">' + esc(s.name) + '</span><span class="k">blocked</span></div><div class="b">blocked on your input · ' + clock(a0) + '–' + end + '</div>';
         const grow = (h) => { for (const r of [back, stripe]) { r.setAttribute('y', y - h / 2); r.setAttribute('height', h); } };
         sh.addEventListener('mouseenter', (e) => { grow(eh); this.showTip(shtml(), e); });
         sh.addEventListener('mousemove', (e) => this.moveTip(e));
@@ -1339,11 +1338,18 @@ class TimelinePanel {
       if (bdg) {
         const h = 14, padX = 6, w = Math.ceil(this.badgeWidth(bdg.label)) + padX * 2, by = y - h / 2;
         const chipBg = el('rect', { x: chipColX, y: by, width: w, height: h, rx: h / 2, fill: F(bdg.bg), 'pointer-events': 'none' }); svg.appendChild(chipBg);
-        // WORKING chip letters get the rainbow-shimmer text fill (mirrors romp-chat-view); other chips
-        // keep their solid fg. Working sessions are never faded, so no fade interaction.
-        const chipFill = s.state === 'working' ? 'url(#vault-rainbow-working)' : F(bdg.fg);
+        // WORKING chip letters are a SOLID color that breathes between two tones on a sine ease (mirrors
+        // romp-chat-view's .chip-pulse); other chips keep their solid fg. Working sessions are never faded.
+        const WK_A = '#1a1a1a', WK_B = '#0d9488';   // near-black ↔ teal, both contrast the yellow pill
+        const chipFill = s.state === 'working' ? WK_A : F(bdg.fg);
         const bt = el('text', { x: chipColX + w / 2, y: y + 3, 'text-anchor': 'middle', fill: chipFill, 'font-size': BADGE_FS, 'font-weight': 700, 'pointer-events': 'none' });
-        bt.setAttribute('letter-spacing', '0.03em'); bt.textContent = bdg.label; svg.appendChild(bt);
+        bt.setAttribute('letter-spacing', '0.03em'); bt.textContent = bdg.label;
+        if (s.state === 'working') {
+          // calcMode=spline keySplines 0.37 0 0.63 1 = ease-in-out-sine; begin='0s' rides the persistent
+          // SVG doc-time phase so the ~1s poll rebuild resumes mid-cycle, seamless.
+          bt.appendChild(el('animate', { attributeName: 'fill', values: WK_A + ';' + WK_B + ';' + WK_A, keyTimes: '0;0.5;1', calcMode: 'spline', keySplines: '0.37 0 0.63 1;0.37 0 0.63 1', dur: '3s', begin: '0s', repeatCount: 'indefinite' }));
+        }
+        svg.appendChild(bt);
         if (s.faded) { fadedEls.push({ el: chipBg, full: bdg.bg, faded: F(bdg.bg) }); fadedEls.push({ el: bt, full: bdg.fg, faded: F(bdg.fg) }); }
       }
       // context-window battery bar (matches the chat-view): faint box + level-colored fill (width ∝ pct)
@@ -1353,17 +1359,15 @@ class TimelinePanel {
         const byTop = y - BAT_H / 2;
         svg.appendChild(el('rect', { x: ctxColX, y: byTop, width: BAT_W, height: BAT_H, rx: 3, fill: 'rgba(255,255,255,0.07)', stroke: 'rgba(255,255,255,0.35)', 'stroke-width': 1, 'pointer-events': 'none' }));
         if (isComp) {
-          // a thin vertical bar SCANS right→left, filled with the fixed battery rainbow (→ its color
-          // cycles with position). No % while compacting. draw() recreates this <rect> every ~1s poll, but
-          // `this.svg` — and thus its SMIL document timeline / getCurrentTime() — PERSISTS, so an offset
-          // `begin` is measured from document-time 0. begin='0s' therefore lands each freshly-created rect
-          // at the SAME phase a continuously-running animation is at right now (phase = docTime % DUR) → the
-          // per-poll rebuild is seamless. (The earlier begin=-phase DOUBLE-counted the phase and made the
-          // bar visibly jump backward on every poll; it only looked fine on the WORKING-chip shimmer because
-          // a spreadMethod:repeat gradient makes any phase error invisible — this non-seamless sweep exposes it.)
-          const ix0 = ctxColX + 1, ix1 = ctxColX + BAT_W - 1, barW = 4, DUR = 1.6;
-          const bar = el('rect', { x: ix1 - barW, y: byTop + 1, width: barW, height: BAT_H - 2, rx: 1, fill: 'url(#vault-compact-scan)', 'pointer-events': 'none' });
-          bar.appendChild(el('animate', { attributeName: 'x', from: ix1 - barW, to: ix0, dur: DUR + 's', begin: '0s', repeatCount: 'indefinite' }));
+          // a solid TEAL rectangle fills the battery, then its RIGHT edge slides left (width shrinks from a
+          // fixed left x) — a "compression" cue. It fades in at full width and out when compressed so the
+          // loop never snaps. No % while compacting. draw() recreates this <rect> every ~1s poll, but
+          // `this.svg` — and thus its SMIL document timeline — PERSISTS, so begin='0s' lands each freshly-
+          // created rect at the current phase (docTime % DUR) → the per-poll rebuild is seamless.
+          const ix0 = ctxColX + 1, innerW = BAT_W - 2, minW = 1, DUR = 3.2, TEAL = '#14b8a6';
+          const bar = el('rect', { x: ix0, y: byTop + 1, width: innerW, height: BAT_H - 2, rx: 1, fill: TEAL, 'pointer-events': 'none' });
+          bar.appendChild(el('animate', { attributeName: 'width', values: innerW + ';' + innerW + ';' + minW + ';' + minW, keyTimes: '0;0.1;0.9;1', dur: DUR + 's', begin: '0s', repeatCount: 'indefinite' }));
+          bar.appendChild(el('animate', { attributeName: 'opacity', values: '0;1;1;0', keyTimes: '0;0.1;0.9;1', dur: DUR + 's', begin: '0s', repeatCount: 'indefinite' }));
           svg.appendChild(bar);
         } else {
           const innerW = BAT_W - 2, fillW = Math.max(0, Math.min(1, cinfo.pct / 100)) * innerW, fillCol = F(cinfo.color);

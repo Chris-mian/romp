@@ -19,23 +19,6 @@
    "workUuid": "a1"
   },
   {
-   "end": 1781096730,
-   "ended": false,
-   "id": "11111111-2222-3333-4444-555555555555:1781096700:081fbd1b",
-   "kind": "typed",
-   "mids": [],
-   "open": false,
-   "peer": false,
-   "rec": "USER ASKED: abandoned follow-up\nASSISTANT SAID: Going down a dead end.",
-   "replyUuid": null,
-   "t": 1781096700,
-   "text": "abandoned follow-up",
-   "text_full": "abandoned follow-up",
-   "tid": "11111111-2222-3333-4444-555555555555",
-   "uuid": null,
-   "workUuid": null
-  },
-  {
    "end": 1781097030,
    "ended": false,
    "id": "11111111-2222-3333-4444-555555555555:1781097000:88bc674f",

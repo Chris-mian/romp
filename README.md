@@ -43,10 +43,36 @@ activity feed and timeline.
 export PATH="$PATH:$(pwd)/bin"   # add to your shell rc
 ```
 
-Hook registration (which hooks fire on which Claude Code events) lives in your
-own `~/.claude/settings.json`; see `hooks/` headers for the expected events.
+`install.sh` also registers the hooks in your `~/.claude/settings.json`
+(idempotently — it only adds missing romp entries and never touches other
+hooks; see `hooks/` headers for what fires on which event).
 
 State lives under `${XDG_STATE_HOME:-~/.local/state}/romp/`.
+
+## What romp records, where it lives, what it costs
+
+Everything stays on your machine. romp itself only ever talks to `127.0.0.1`
+(the local kernel and postal bus); the only external traffic is the `claude`
+CLI you already use.
+
+- **Per-turn summaries.** On each prompt and each finished turn,
+  `hooks/romp-summarize.sh` runs a nested `claude` call (zero tools, MCP
+  disabled — it structurally cannot act) over a slice of that session's
+  transcript and stores a short phrase for the dashboard/feed/timeline. This
+  spends a little of your own Claude quota on every turn of every romp
+  session — that is the cost of the live summaries.
+- **What gets stored:** summaries, timeline events, request cards, and
+  inter-session mail, all under `${XDG_STATE_HOME:-~/.local/state}/romp/`.
+  Transcripts themselves are read in place from where Claude Code already
+  writes them (`~/.claude/projects/`) and are never copied elsewhere.
+- **Nothing is uploaded, and nothing is written inside this repo.** A test
+  (`tests/test_no_personal_identifiers.py`) enforces that no tracked file
+  contains your hostname or home path, so recorded data can't leak into
+  commits.
+
+Kill switches — `touch` to disable, `rm` to re-enable, effective immediately:
+`~/.claude/romp-summarize-off` (summaries), `~/.claude/romp-digest-off`
+(digests), `~/.claude/romp-postal-off` (postal service).
 
 ## Tests
 

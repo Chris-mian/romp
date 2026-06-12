@@ -1,0 +1,40 @@
+{
+ "compactions": [],
+ "events": [
+  {
+   "end": 1781096430,
+   "ended": false,
+   "id": "11111111-2222-3333-4444-555555555555:1781096400:bfce36e0",
+   "kind": "typed",
+   "mids": [],
+   "open": false,
+   "peer": false,
+   "rec": "USER ASKED: orphaned-looking but real prompt\nASSISTANT SAID: Worked on it.\nTOOLS USED: Bash",
+   "replyUuid": null,
+   "t": 1781096400,
+   "text": "orphaned-looking but real prompt",
+   "text_full": "orphaned-looking but real prompt",
+   "tid": "11111111-2222-3333-4444-555555555555",
+   "uuid": null,
+   "workUuid": null
+  },
+  {
+   "end": 1781097030,
+   "ended": false,
+   "id": "11111111-2222-3333-4444-555555555555:1781097000:0078c0f3",
+   "kind": "typed",
+   "mids": [],
+   "open": true,
+   "peer": false,
+   "rec": "USER ASKED: later prompt, chain not linked\nASSISTANT SAID: Did that too.",
+   "replyUuid": "a2",
+   "t": 1781097000,
+   "text": "later prompt, chain not linked",
+   "text_full": "later prompt, chain not linked",
+   "tid": "11111111-2222-3333-4444-555555555555",
+   "uuid": "u2",
+   "workUuid": "a2"
+  }
+ ],
+ "pending": []
+}

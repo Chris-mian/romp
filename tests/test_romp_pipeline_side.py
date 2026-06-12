@@ -946,6 +946,89 @@ class TwoWavePass(unittest.TestCase):
         self.assertEqual(done[0]["request_ids"], [asks[0]["id"]])   # linked IN THE SAME PASS
 
 
+class RunAwareLink(unittest.TestCase):
+    """Run-aware structural link (2026-06-12): a queued prompt folds into the SAME
+    physical turn (an `absorbed` slice), and its work routinely ships under that
+    later slice's reply. The reply must attach to the still-open asks of EVERY
+    earlier slice in its run even when the model links none of them — before
+    this, the earlier card kept no anchor to the shipping reply and was free to
+    auto-file as looks-done (the tab-rename and compaction-% incidents)."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="romp-ptest-run-")
+        req = os.path.join(self.dir, "requests")
+        self._saved = {}
+        for k, v in {"REQDIR": Path(req), "NODESF": Path(req) / "nodes.jsonl",
+                     "LINKSF": Path(req) / "links.jsonl", "CLEARF": Path(req) / "cleared.jsonl",
+                     "DECLOG": Path(req) / "decision-log.jsonl",
+                     "SUMDIR": Path(self.dir) / "summaries"}.items():
+            self._saved[k] = getattr(bf, k)
+            setattr(bf, k, v)
+        # one physical turn, two prompts: a typed ask, then a second ask queued
+        # mid-turn (enqueue->remove = absorbed slice); the work for BOTH ships in
+        # the absorbed slice's reply; a final typed ack closes that period.
+        self.tp = os.path.join(self.dir, "R.jsonl")
+        lines = [
+            uline(NOW - 900, "Add a duration footer to finished cards", uuid="u1"),
+            aline(NOW - 870, "Mapping the layout.", tools=("Read",), uuid="a1", parent="u1"),
+            qop(NOW - 860, "enqueue", "Also recolor the working chip yellow"),
+            qop(NOW - 855, "remove"),
+            aline(NOW - 850, "Recolored the chip and added the duration footer.",
+                  tools=("Edit",), uuid="a2", parent="a1"),
+            uline(NOW - 300, "thanks, looks good", uuid="u2", parent="a2"),
+            aline(NOW - 290, "ack", uuid="a3", parent="u2"),
+        ]
+        with open(self.tp, "w") as f:
+            for ln in lines:
+                f.write(json.dumps(ln) + "\n")
+        self._fn = {n: getattr(bf, n) for n in
+                    ("sessions", "session_states", "_reconcile_statusbars", "_msg_pending",
+                     "events_for", "llm", "time")}
+        bf.sessions = lambda now: [("R", Path(self.tp), "ANCHOR")]
+        bf.session_states = lambda: {"R": "idle"}
+        bf._reconcile_statusbars = lambda: None
+        bf._msg_pending = lambda *a, **k: []
+        bf.events_for = lambda sid, tp, now: ev.extract_events(sid, tp, now)
+        import types
+        bf.time = types.SimpleNamespace(time=lambda: float(NOW))
+
+        def fake_llm(sysp, txt, raw=False, model=None):
+            if sysp is bf.REQUEST_SYS:
+                req = txt.split("</request>")[0]
+                if "duration footer" in req:
+                    return "PHRASE :: add duration footer\nASK :: add a duration footer to finished cards"
+                if "recolor" in req:
+                    return "PHRASE :: recolor working chip\nASK :: recolor the working chip yellow"
+                return "PHRASE :: acknowledged\nACK"
+            if sysp is bf.REPLY_SYS:
+                turn = txt.split("<candidates>")[0]
+                if "Recolored the chip" in turn:
+                    # the model misses BOTH links — the structural layers must cover
+                    return "DONE :: Recolored chip and added footer :: LINK none :: DONE none"
+                return "DETAILS :: routine work"
+            return ""
+        bf.llm = fake_llm
+
+    def tearDown(self):
+        for k, v in self._saved.items():
+            setattr(bf, k, v)
+        for n, fn in self._fn.items():
+            setattr(bf, n, fn)
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def test_absorbed_slice_reply_attaches_to_earlier_slice_asks(self):
+        bf.backfill_pass(50)
+        nodes = [json.loads(l) for l in bf.NODESF.read_text().splitlines()]
+        links = [json.loads(l) for l in bf.LINKSF.read_text().splitlines()]
+        asks = [n for n in nodes if n["kind"] == "ask"]
+        a_ask = next(n for n in asks if "duration" in n["text"])          # slice1 (typed)
+        b_ask = next(n for n in asks if "recolor" in n["text"].lower())   # slice2 (absorbed)
+        rep_eid = b_ask["id"].rsplit("#", 1)[0]                           # the absorbed slice's reply
+        linked = {r for l in links if l["reply_id"] == rep_eid for r in l["request_ids"]}
+        self.assertIn(b_ask["id"], linked, "own-turn structural link (pre-existing)")
+        self.assertIn(a_ask["id"], linked, "RUN-AWARE link to the earlier slice's ask (the fix)")
+
+
 # ───────────────────────── decision briefs ─────────────────────────
 
 class BriefParser(unittest.TestCase):

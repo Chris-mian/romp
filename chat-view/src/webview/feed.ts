@@ -928,7 +928,7 @@ function buildDecisionCard(q: AskQuestion, fallbackQuestion: string, depth: numb
   // routed to Awaiting") the classifier trains on — the teaching counterpart
   // of Clear, same correction path as "mark done"
   const notNeeded = el("a", "fq-notneeded"); notNeeded.textContent = "didn't need me";
-  notNeeded.title = "record this as wrongly routed to Awaiting — also teaches the filing pipeline";
+  notNeeded.title = "record this as wrongly routed to Blocked — also teaches the filing pipeline";
   notNeeded.onclick = (ev) => {
     ev.stopPropagation();
     vscodeApi?.postMessage({ type: "askMarkDone", nodeId: q.nodeId, decisionRef: q.reply_id,
@@ -1282,7 +1282,7 @@ function renderStandaloneTreeInto(host: HTMLElement, fitem: FeedItem) {
   // the link) — clears the item AND files the mis-tag label for the classifier
   if (fitem.relevance !== "DONE") {
     const notNeeded = el("a", "fq-notneeded"); notNeeded.textContent = "didn't need me";
-    notNeeded.title = "record this as wrongly routed to Awaiting — also teaches the filing pipeline";
+    notNeeded.title = "record this as wrongly routed to Blocked — also teaches the filing pipeline";
     notNeeded.onclick = (ev) => {
       ev.stopPropagation();
       vscodeApi?.postMessage({ type: "itemNotNeeded", itemId: fitem.itemId });
@@ -1392,10 +1392,12 @@ function ensureCols(list: HTMLElement) {
     const cols = el("div", "feed-cols"); cols.id = "feed-cols";
     // "Working" (the user's rename, 2026-06-11): every card is an ASK; the left
     // column holds the ones being worked — internal keys keep the old names
-    for (const [key, label] of [["asks", "Working"], ["needsInput", "Blocked"], ["completed", "Completed"]] as const) {
+    // each header is a filled state chip reproducing the chat status chips
+    // (styles.css .chip): working=yellow, blocked=awaiting-red, completed=ready-blue.
+    for (const [key, label, chip] of [["asks", "Working", "working"], ["needsInput", "Blocked", "blocked"], ["completed", "Completed", "completed"]] as const) {
       const col = el("div", "feed-col col-" + key);
       const head = el("div", "feed-col-head");
-      const name = el("span", "feed-col-name"); name.textContent = label;
+      const name = el("span", "feed-col-name fcol-chip fcol-chip-" + chip); name.textContent = label;
       const count = el("span", "feed-col-count"); count.id = "col-" + key + "-count";
       head.append(name, count);
       const body = el("div", "feed-col-list"); body.id = "col-" + key + "-list";

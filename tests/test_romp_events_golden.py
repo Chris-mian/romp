@@ -205,8 +205,10 @@ def scenario_peer_banner_typed():
 
 
 def scenario_rewind_off_path():
-    """A rewound branch: the abandoned turn's uuids are off the active path, so its
-    event anchors fall back (uuid=None) instead of pointing at unreachable lines."""
+    """A rewound branch: the abandoned prompt's user line is off the active path, so
+    it produces NO boundary at all (contract change 2026-06-12; it used to emit an
+    event with null anchors, which downstream minted an ask for a branch that never
+    ran). Its period's work folds into the surviving timeline."""
     return [
         uline(T0, "first attempt", uuid="u1"),
         aline(T0 + 30, "Did it one way.", uuid="a1", parent="u1"),
@@ -215,6 +217,36 @@ def scenario_rewind_off_path():
         # the user rewinds to a1 and takes a different branch — leaf chain skips u2/a2
         uline(T0 + 600, "second attempt instead", uuid="u3", parent="a1"),
         aline(T0 + 630, "Better approach done.", uuid="a3", parent="u3"),
+    ]
+
+
+def scenario_rewind_resubmit_dupe():
+    """The dupe-ask incident (2026-06-12): a dictated prompt is submitted, then
+    edited/resubmitted seconds later — a same-parent SIBLING user line. The first
+    line is orphaned (off the active path) and must emit no boundary; exactly ONE
+    event survives, id minted from the surviving line's timestamp. Before the fix
+    this produced two near-identical events and the capture side minted two asks."""
+    prompt = "could you add a small footer to every completed prompt that shows how long the turn ran for"
+    return [
+        aline(T0 - 60, "Previous turn's reply.", uuid="a0"),
+        uline(T0, prompt, uuid="u1", parent="a0"),
+        # resubmitted 10s later: same parent a0, slightly extended text
+        uline(T0 + 10, prompt + " and keep it minimal", uuid="u2", parent="a0"),
+        aline(T0 + 40, "Adding a duration footer to finished turns.",
+              tools=("Read", "Edit"), uuid="a1", parent="u2"),
+    ]
+
+
+def scenario_broken_chain_kept():
+    """Safety floor for the dead-branch drop: a turn DISCONNECTED from the active
+    tree (broken/absent parent chain) is neither active nor a proven rewind fork —
+    it must be KEPT. Silently dropping a real ask is the registry's one fatal
+    error; a phantom event costs one Clear."""
+    return [
+        uline(T0, "orphaned-looking but real prompt", uuid="u1"),          # no parent
+        aline(T0 + 30, "Worked on it.", tools=("Bash",), uuid="a1", parent="u1"),
+        uline(T0 + 600, "later prompt, chain not linked", uuid="u2"),      # no parent
+        aline(T0 + 630, "Did that too.", uuid="a2", parent="u2"),
     ]
 
 
@@ -229,6 +261,8 @@ SCENARIOS = {
     "compaction_marker": scenario_compaction_marker,
     "peer_banner_typed": scenario_peer_banner_typed,
     "rewind_off_path": scenario_rewind_off_path,
+    "rewind_resubmit_dupe": scenario_rewind_resubmit_dupe,
+    "broken_chain_kept": scenario_broken_chain_kept,
 }
 
 
@@ -283,6 +317,31 @@ class IdStability(unittest.TestCase):
         flat = " ".join(BANNER.split())[:140]
         self.assertEqual(e["id"], ev._eid(SID, e["t"], flat))
         self.assertNotIn("####", e["text"])               # display IS stripped
+
+
+class RewindResubmit(unittest.TestCase):
+    """Regression (2026-06-12): a dictated prompt resubmitted seconds later forked a
+    same-parent sibling; the orphaned first line emitted its own boundary and the
+    capture side minted a DUPLICATE ask. Off-path boundaries must be dropped."""
+
+    def test_single_event_from_surviving_line(self):
+        out = run_scenario("rewind_resubmit_dupe")
+        self.assertEqual(len(out["events"]), 1)
+        e = out["events"][0]
+        self.assertEqual(e["uuid"], "u2")           # the surviving (resubmitted) line
+        self.assertEqual(e["t"], T0 + 10)           # id/time from the survivor, not the orphan
+        self.assertEqual(e["kind"], "typed")
+
+    def test_rewound_branch_emits_no_boundary(self):
+        out = run_scenario("rewind_off_path")
+        self.assertEqual([e["text"] for e in out["events"]],
+                         ["first attempt", "second attempt instead"])
+
+    def test_disconnected_turns_are_kept(self):
+        """Deadness needs a PROVEN fork; a broken parent chain must not drop asks."""
+        out = run_scenario("broken_chain_kept")
+        self.assertEqual([e["text"] for e in out["events"]],
+                         ["orphaned-looking but real prompt", "later prompt, chain not linked"])
 
 
 def regen():

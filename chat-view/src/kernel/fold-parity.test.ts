@@ -226,6 +226,50 @@ test("WAIT exempts a settled card from auto-filing (⏳, stays in WORKING)", () 
   assert.equal(a.waiting, true);
 });
 
+test("run-aware claim: a later absorbed slice of the same run holds the earlier slice's card", () => {
+  // The incident shape (2026-06-12): the user queues prompt B while prompt A's
+  // turn runs; romp slices the one physical turn at the fold. A's work ships
+  // under B's slice id. A's card must stay ACTIVE while any slice of the open
+  // run is unclosed — judging by the newest slice alone auto-filed A mid-work.
+  writeRows("nodes.jsonl", [ask("a1", T0)]);                         // minted by slice1
+  writeEventsCache(SID, [
+    { id: `${SID}:${T0}:abcd1234`, t: T0, kind: "queued", open: false },          // slice1: minted a1
+    { id: `${SID}:${T0 + 300}:beef0002`, t: T0 + 300, kind: "absorbed", open: true },  // slice2: queued prompt folded in
+  ]);
+  const a = foldWith(statesWith("working")).find((x) => x.itemId === "a1")!;
+  assert.equal(a.liveness, "active", "the open absorbed run contains a1's minting slice");
+  assert.equal(a.column, "asks");
+  assert.equal(a.autoFiled, false);
+});
+
+test("run-aware claim: a fresh typed turn is a NEW run — the old card settles", () => {
+  // the new typed turn minted its own card (a2), so the claim-lag hold doesn't
+  // apply; a1's run is over and nothing is moving it → settled → auto-filed
+  writeRows("nodes.jsonl", [ask("a1", T0), ask("a2", T0 + 300, "the new prompt")]);
+  writeEventsCache(SID, [
+    { id: `${SID}:${T0}:abcd1234`, t: T0, kind: "queued", open: false },
+    { id: `${SID}:${T0 + 300}:abcd1234`, t: T0 + 300, kind: "typed", open: true },  // new physical turn = a2's
+  ]);
+  const asks = foldWith(statesWith("working"));
+  const a = asks.find((x) => x.itemId === "a1")!;
+  assert.equal(a.liveness, "settled", "a typed boundary ends the run; busy-on-something-else");
+  assert.equal(a.column, "completed");
+  assert.equal(a.autoFiled, true);
+  assert.equal(asks.find((x) => x.itemId === "a2")!.liveness, "active");
+});
+
+test("run-aware claim: a linked reply anywhere in the open run claims the card", () => {
+  writeRows("nodes.jsonl", [ask("a1", T0)]);
+  // a1's work was linked from a reply in slice2; slice3 of the same run is open
+  writeRows("links.jsonl", [link(`${SID}:${T0 + 300}:beef0002`, ["a1"], "DETAILS", T0 + 350)]);
+  writeEventsCache(SID, [
+    { id: `${SID}:${T0 + 300}:beef0002`, t: T0 + 300, kind: "typed", open: false },
+    { id: `${SID}:${T0 + 600}:beef0003`, t: T0 + 600, kind: "absorbed", open: true },
+  ]);
+  const a = foldWith(statesWith("working")).find((x) => x.itemId === "a1")!;
+  assert.equal(a.liveness, "active", "the run's earlier slice linked work into this card");
+});
+
 test("claim-lag hold: a busy owner with an unclaimed open turn holds auto-filing", () => {
   writeRows("nodes.jsonl", [ask("a1", T0)]);
   // the owner is mid-turn on a prompt no card has claimed yet

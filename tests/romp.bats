@@ -53,6 +53,11 @@ case "$1" in
       [[ -n "$result" ]] && { echo "$result"; exit 0; }
       exit 1
     fi
+    # global status-format[0] — the default main-row composition the
+    # provisioning pins onto each session (sentinel for assertions)
+    if [[ "$2" == "-gv" && "$3" == "status-format[0]" ]]; then
+      echo "GLOBAL_ROW0"; exit 0
+    fi
     exit 0
     ;;
 esac
@@ -62,6 +67,12 @@ MOCK
 
     export PATH="$MOCK_DIR:$PATH"
     unset TMUX            # default: outside tmux → attach-session branch
+    # Hermetic HOME: bin/romp probes $HOME/.claude/romp-postal.mcp.json (would
+    # nondeterministically append --mcp-config on a dev machine) and writes the
+    # names map under XDG_STATE_HOME (was polluting the REAL state dir).
+    export HOME="$TEST_DIR/home"
+    export XDG_STATE_HOME="$HOME/.local/state"
+    mkdir -p "$HOME"
     cd "$WORK_DIR"
 }
 
@@ -76,15 +87,25 @@ run_romp() {
 
 # ─── Launch tests ────────────────────────────────────────────────────
 
-@test "no args: session named after the folder, claude exec'd with empty --name" {
+@test "no args: session named after the folder, claude exec'd with --name + --session-id" {
     run run_romp
     [ "$status" -eq 0 ]
     grep -q 'tmux new-session -d -s myproject' "$MOCK_LOG"
     grep -q 'tmux set -t myproject @romp 1' "$MOCK_LOG"
-    # Empty --name → no auto-title pill in Claude's prompt box; the session
-    # is identified by its tmux name (ghostty tab + dashboard) instead.
-    grep -q 'tmux send-keys -t myproject exec claude --name "" Enter' "$MOCK_LOG"
+    # The pill carries the session name, and a self-assigned --session-id lets
+    # romp record name<->id up front (names map → resume picker).
+    grep -qE 'tmux send-keys -t myproject exec claude --name "myproject" --session-id [0-9a-f-]{36} Enter' "$MOCK_LOG"
     grep -q 'tmux attach-session -t myproject' "$MOCK_LOG"
+}
+
+@test "provisioning pins status-format[0] alongside the session-scoped peers row" {
+    # tmux gotcha (2026-06-12): a session-scoped status-format[1] shadows the
+    # whole inherited array — without [0] pinned to the global composition the
+    # main status row (status-left + windows + status-right) renders EMPTY.
+    run run_romp
+    [ "$status" -eq 0 ]
+    grep -q 'tmux set -t myproject status-format\[0\] GLOBAL_ROW0' "$MOCK_LOG"
+    grep -q 'tmux set -t myproject status-format\[1\]' "$MOCK_LOG"
 }
 
 @test "named session: romp my-task → my-task" {
@@ -98,27 +119,43 @@ run_romp() {
     run run_romp "my.task:v2"
     [ "$status" -eq 0 ]
     grep -q 'tmux new-session -d -s my-task-v2' "$MOCK_LOG"
-    grep -q 'exec claude --name ""' "$MOCK_LOG"
+    grep -q 'exec claude --name "my-task-v2"' "$MOCK_LOG"
 }
 
 # ─── Resume tests ────────────────────────────────────────────────────
 
-@test "resume: romp -r launches claude --resume" {
+@test "resume: bare -r with no resumable sessions is a no-op" {
+    # bare -r opens the by-name picker; with an empty names map there is
+    # nothing to offer — no session may be created as a side effect. The names
+    # dir exists-but-empty (steady state on any machine that ran romp before);
+    # a MISSING dir is the silent first-run path, exercised below.
+    # NOTE bats/macOS gotcha: a false [[ ]] mid-test is SWALLOWED (only the
+    # last command's status fails a test) — assert with simple commands
+    # (grep, [ ]) so failures actually fire.
+    mkdir -p "$XDG_STATE_HOME/romp/names"
     run run_romp -r
     [ "$status" -eq 0 ]
-    grep -q 'tmux new-session -d -s myproject' "$MOCK_LOG"
-    grep -q 'exec claude --name "" --resume Enter' "$MOCK_LOG"
+    grep -q "no resumable sessions" <<<"$output"
+    [ "$(grep -c 'tmux new-session' "$MOCK_LOG")" -eq 0 ]
 }
 
 @test "resume: -r and --resume are equivalent" {
+    mkdir -p "$XDG_STATE_HOME/romp/names"
     run run_romp -r
     [ "$status" -eq 0 ]
-    grep -q 'exec claude --name "" --resume Enter' "$MOCK_LOG"
+    grep -q "no resumable sessions" <<<"$output"
 
-    : > "$MOCK_LOG"
     run run_romp --resume
     [ "$status" -eq 0 ]
-    grep -q 'exec claude --name "" --resume Enter' "$MOCK_LOG"
+    grep -q "no resumable sessions" <<<"$output"
+}
+
+@test "resume: first run ever (no names dir) exits silently, creating nothing" {
+    touch "$MOCK_LOG"    # this path may make no tmux calls at all
+    run run_romp -r
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    [ "$(grep -c 'tmux new-session' "$MOCK_LOG")" -eq 0 ]
 }
 
 @test "resume: 'resume' is now a normal session name, not a directive" {
@@ -129,27 +166,28 @@ run_romp() {
     ! grep -q -- '--resume' "$MOCK_LOG"
 }
 
-@test "resume: named session plus -r" {
+@test "resume: named session plus -r still goes through the picker" {
+    mkdir -p "$XDG_STATE_HOME/romp/names"
     run run_romp my-task -r
     [ "$status" -eq 0 ]
-    grep -q 'tmux new-session -d -s my-task' "$MOCK_LOG"
-    grep -q 'tmux send-keys -t my-task exec claude --name "" --resume Enter' "$MOCK_LOG"
+    grep -q "no resumable sessions" <<<"$output"
+    [ "$(grep -c 'tmux new-session' "$MOCK_LOG")" -eq 0 ]
 }
 
 @test "resume: explicit session id (--resume <id>) resumes that conversation" {
     run run_romp --resume abc123-uuid
     [ "$status" -eq 0 ]
-    grep -q 'tmux send-keys -t myproject exec claude --name "" --resume abc123-uuid Enter' "$MOCK_LOG"
+    grep -q 'tmux send-keys -t myproject exec claude --resume abc123-uuid --name "myproject" Enter' "$MOCK_LOG"
 }
 
 @test "resume: name collision uniquifies instead of hijacking the session" {
     echo "myproject" > "$MOCK_TMUX_SESSIONS_FILE"
 
-    run run_romp -r
+    run run_romp --resume abc123-uuid
     [ "$status" -eq 0 ]
     ! grep -qE 'tmux attach-session -t myproject$' "$MOCK_LOG"
     grep -q 'tmux new-session -d -s myproject-2' "$MOCK_LOG"
-    grep -q 'tmux send-keys -t myproject-2 exec claude --name "" --resume Enter' "$MOCK_LOG"
+    grep -q 'tmux send-keys -t myproject-2 exec claude --resume abc123-uuid --name "myproject-2" Enter' "$MOCK_LOG"
 }
 
 # ─── Detach tests ────────────────────────────────────────────────────
@@ -158,7 +196,7 @@ run_romp() {
     run run_romp --detach
     [ "$status" -eq 0 ]
     grep -q 'tmux new-session -d -s myproject' "$MOCK_LOG"
-    grep -q 'tmux send-keys -t myproject exec claude --name "" Enter' "$MOCK_LOG"
+    grep -qE 'tmux send-keys -t myproject exec claude --name "myproject" --session-id [0-9a-f-]{36} Enter' "$MOCK_LOG"
     ! grep -q 'tmux attach-session' "$MOCK_LOG"
     [[ "$output" == *"attach with: tmux attach -t myproject"* ]]
 }
@@ -167,7 +205,7 @@ run_romp() {
     run run_romp --resume sess-xyz --detach
     [ "$status" -eq 0 ]
     grep -q 'tmux new-session -d -s myproject' "$MOCK_LOG"
-    grep -q 'tmux send-keys -t myproject exec claude --name "" --resume sess-xyz Enter' "$MOCK_LOG"
+    grep -q 'tmux send-keys -t myproject exec claude --resume sess-xyz --name "myproject" Enter' "$MOCK_LOG"
     ! grep -q 'tmux attach-session' "$MOCK_LOG"
     [[ "$output" == *"(detached)"* ]]
 }
@@ -252,6 +290,9 @@ run_romp() {
 echo "romp-dashboard called" >> "$MOCK_LOG"
 MOCK
     chmod +x "$MOCK_DIR/romp-dashboard"
+    # bin/romp prepends its own dir to PATH, so the real (never-exiting)
+    # dashboard shadows the mock — use the test seam instead
+    export ROMP_DASHBOARD_BIN="$MOCK_DIR/romp-dashboard"
 
     run run_romp -d
     [ "$status" -eq 0 ]
@@ -293,6 +334,9 @@ MOCK
 echo "romp-postal called: $*" >> "$MOCK_LOG"
 MOCK
     chmod +x "$MOCK_DIR/romp-postal"
+    # same PATH-prepend shadowing as the dashboard test — without the seam this
+    # exec'd the REAL romp-postal (a live mail send) instead of the mock
+    export ROMP_POSTAL_BIN="$MOCK_DIR/romp-postal"
 
     run run_romp --mail send beta "hello"
     [ "$status" -eq 0 ]

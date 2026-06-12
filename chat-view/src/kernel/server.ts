@@ -23,7 +23,7 @@ import type { SessionBackend, SessionState } from "./backend";
 import {
   Session, ChipState, chipState, statusPayload, sig, firstSeenOf,
   readParsedSession, liveTranscriptOf, customTitleOf, AskDriver,
-  metaSigOf, filterInterrupted, RESTED,
+  metaSigOf, filterInterrupted, RESTED, pendingAskReplays,
 } from "./chat";
 import {
   ROMP_STATE, PROJECTS, rompIds, rompMeta, rompDir, rewriteName, scanTranscripts,
@@ -1048,6 +1048,12 @@ function onChatReady(c: Client) {
   const ord = readSessionOrder();
   lastOrderSig = ord.join(",");
   postTo(c, { type: "tabOrder", order: ord });
+  // Pending prompts are change-gated (askSig), so a freshly connected client
+  // would never see one that appeared before it connected — replay them here
+  // (a reload hid a blocked session's permission prompt, 2026-06-12).
+  for (const r of pendingAskReplays(sessions.values(), lastStates, asker)) {
+    postTo(c, { type: "askLive", id: r.id, ask: r.ask });
+  }
 }
 
 function handleChatMessage(c: Client, m: any) {

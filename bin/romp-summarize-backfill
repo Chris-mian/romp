@@ -310,6 +310,21 @@ def _split_relevance(out):
             return tag, rest.strip()
     return "DETAILS", out.strip()
 
+RUN_FOLD_KINDS = ("absorbed", "decision", "drain")
+
+def _run_prefix_ids(events, i):
+    """Earlier slices of the PHYSICAL run containing events[i]. romp-events slices
+    one continuous Claude Code turn at queue folds and mid-turn decisions, so an
+    absorbed/decision/drain boundary CONTINUES its predecessor's run while
+    typed/queued starts a new one. Returns the same-run predecessors' ids
+    (nearest first); empty when events[i] is itself a run root."""
+    out = []
+    k = i
+    while k > 0 and events[k].get("kind") in RUN_FOLD_KINDS:
+        k -= 1
+        out.append(events[k]["id"])
+    return out
+
 def _is_real_ask(e):
     """Whether an event deserves a REQUEST summary (a typed/queued/absorbed user prompt). A
     drained message, a pushed-mail banner, or a system task-notification gets no request phrase
@@ -874,7 +889,8 @@ def backfill_pass(budget):
                         and not (st is None and now - e["end"] > FINAL_FALLBACK):
                     continue                          # mid-period — don't summarize the open turn yet
                 done.add((eid, "reply")); added += 1
-                wave2.append((anchor, sid, eid, e["end"], e["rec"], e.get("peer")))
+                wave2.append((anchor, sid, eid, e["end"], e["rec"], e.get("peer"),
+                              _run_prefix_ids(events, i)))
     if not wave1 and not wave2:
         return 0, bool(sess)
     from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -901,10 +917,10 @@ def backfill_pass(budget):
                     ans_by_turn.setdefault(n["turn_id"], []).append(n["id"])
         except OSError:
             pass
-        for anchor, sid, eid, end, rec, peer in wave2:   # candidates now include wave-1 nodes
+        for anchor, sid, eid, end, rec, peer, runp in wave2:   # candidates now include wave-1 nodes
             cand = _candidates(nodes, cleared, done_linked, anchor, before=end)
             tailq = not peer and _tail_question(rec)     # peer turns ask PEERS, not the user
-            reps.append((("rep", anchor, sid, eid, end, cand, tailq, ans_by_turn.get(eid, [])),
+            reps.append((("rep", anchor, sid, eid, end, cand, tailq, ans_by_turn.get(eid, []), runp),
                          REPLY_SYS, _reply_prompt(rec, cand)))
         futs = {pool.submit(llm, sysp, txt, True): meta for meta, sysp, txt in reps}
         for fut in as_completed(futs):
@@ -1012,6 +1028,7 @@ def _handle_rep(meta, out):
     offered (chosen-vs-offered is the linker's measurement data)."""
     _, anchor, sid, eid, t, cand, tailq = meta[:7]
     anchored = list(meta[7]) if len(meta) > 7 else []   # cards this turn amended/answered
+    runp = list(meta[8]) if len(meta) > 8 else []       # earlier slices of this reply's physical run
     tag, phrase, links, dones, did = _split_reply(out)
     phrase = _clean_phrase(phrase)
     if not phrase:
@@ -1035,6 +1052,18 @@ def _handle_rep(meta, out):
         # guarantees the own asks are in cand; DONE still requires the model.
         own = [c["id"] for c in cand if str(c["id"]).startswith(eid + "#")]
         own += [r for r in anchored if r not in own]     # + amended/answered cards (ids, not numbers)
+        # RUN-AWARE structural link (2026-06-12): an absorbed/decision/drain
+        # boundary continues ONE physical turn that romp slices per prompt, and
+        # work for an earlier prompt routinely ships under a later slice (the
+        # tab-rename and compaction-% incidents: the shipping reply linked only
+        # its own slice's asks, leaving the earlier card unanchored — and free
+        # to auto-file as looks-done). Attach the reply to the still-open asks
+        # minted by EVERY earlier slice of its run, whatever the model chose
+        # (cand is already the open palette, so DONE-closed asks don't rejoin).
+        # DONE still requires the model.
+        own += [c["id"] for c in cand
+                if any(str(c["id"]).startswith(p + "#") for p in runp)
+                and c["id"] not in own]
         rids = rids + [r for r in own if r not in rids]
         # completion is ask-RELATIVE (a routine-looking dispatch turn can fully discharge an
         # ask): DONE upgrades the LINK's relevance per chosen request, the reply's own summary

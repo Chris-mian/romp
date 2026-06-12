@@ -362,3 +362,26 @@ export class AskDriver {
     setTimeout(() => this.keySeq(name, ["Enter"]), 120);
   }
 }
+
+// askLive pushes are change-gated on the kernel-side askSig, so a client that
+// connects AFTER a prompt appeared never hears about it — the kernel believes
+// "already sent" and the prompt stays invisible to that client until it changes
+// (a reload made a blocked session's permission prompt vanish in both front
+// ends, 2026-06-12). On client ready, compute the replay set: every session
+// with a pending prompt — hook-confirmed awaiting, OR an already-signed
+// hookless picker (askSig set while the chip reads ready/idle). Targeted at
+// the connecting client only: a broadcast would re-render peers' live-ask
+// widgets and wipe a half-typed free-text answer.
+export function pendingAskReplays(
+  sessions: Iterable<Session>,
+  states: Map<string, SessionState> | null,
+  asker: Pick<AskDriver, "liveAsk">,
+): Array<{ id: string; ask: ParsedAsk | null }> {
+  const out: Array<{ id: string; ask: ParsedAsk | null }> = [];
+  for (const s of sessions) {
+    if (!s.askSig && chipState(s.name, states, s.lastWorking) !== "awaiting") continue;
+    const live = asker.liveAsk(s.name);   // re-parse the pane: the pane IS the truth
+    if (live) out.push({ id: s.id, ask: live.ask });
+  }
+  return out;
+}

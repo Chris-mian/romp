@@ -231,7 +231,7 @@ def extract_events(sid, transcript, now):
                 # before treating an open turn as finished — the tmux state var
                 # alone has three non-hook writers and got silently flipped
                 # mid-turn (the 2026-06-11 'found it' post-mortem).
-                stops.append((ts, (r.get("message") or {}).get("stop_reason")))
+                stops.append((ts, (r.get("message") or {}).get("stop_reason"), r.get("uuid")))
                 last_real = ts
                 if isinstance(c, list):           # stash decision tool_uses; the matching tool_result splits the turn
                     for b in c:
@@ -275,6 +275,29 @@ def extract_events(sid, transcript, now):
         active = set(); _u = leaf; _g = 0
         while _u is not None and _u not in active and _g < 200000:
             active.add(_u); _u = parent_of.get(_u); _g += 1
+        # DEAD branches: a rewind/edit-resubmit forks the parent chain — the abandoned
+        # line is a non-active CHILD of an active-path line, and everything under it
+        # never ran. Mark those subtrees dead, transitively (a deep rewind orphans
+        # several turns). Deadness requires a PROVEN fork: a line merely disconnected
+        # from the active tree (broken/absent parent chain) is neither active nor dead
+        # and is KEPT — silently dropping a real ask is the one fatal error, while a
+        # phantom costs one Clear. Emitting dead boundaries gave one dictated-then-
+        # resubmitted prompt TWO events and the capture side minted a duplicate ask
+        # (post-mortem 2026-06-12).
+        children = {}
+        for _u, _pu in parent_of.items():
+            if _pu is not None:
+                children.setdefault(_pu, []).append(_u)
+        dead = set()
+        stack = [c for a in active for c in children.get(a, []) if c not in active]
+        while stack:
+            _u = stack.pop()
+            if _u in dead:
+                continue
+            dead.add(_u)
+            stack.extend(children.get(_u, []))
+        # an anchorless boundary (drain, absorbed) has no line to judge — always passes
+        bnds = [b for b in bnds if b[4] is None or b[4] not in dead]
         enqueues, fifo = [], []
         for qts, qop, qtext, quuid in qops:
             if qop == "enqueue":
@@ -299,7 +322,11 @@ def extract_events(sid, transcript, now):
         events = []
         for i, (ts, text, kind, mids, buid, full) in enumerate(bnds):
             nxt = bnds[i+1][0] if i + 1 < len(bnds) else now
-            blocks = [b for b in asst if ts <= b[0] < nxt]   # assistant work in THIS period (chronological)
+            # assistant work in THIS period (chronological). Dead-branch lines are
+            # REWOUND work (same fork-drop rule as boundaries above) — without the
+            # check, a dead branch's lines bleed into the PRECEDING surviving turn's
+            # rec/end once their own boundary is dropped.
+            blocks = [b for b in asst if ts <= b[0] < nxt and b[3] not in dead]
             # Clip at a large idle gap between consecutive assistant lines: a multi-minute silence means
             # the session went idle/dead, so lines after it belong to a LATER turn (e.g. after a revive an
             # hour later), not this one. Without this, a session that dies mid-turn and is revived sweeps
@@ -342,7 +369,8 @@ def extract_events(sid, transcript, now):
             # ended = the period's last assistant line closed the turn (end_turn /
             # stop_sequence). Interrupted or still-streaming turns read False; a
             # later boundary closing the period makes the flag moot (open=False).
-            last_stop = next((sr for sts, sr in reversed(stops) if ts <= sts < nxt), None)
+            last_stop = next((sr for sts, sr, suid in reversed(stops)
+                              if ts <= sts < nxt and suid not in dead), None)
             events.append({"id": _eid(sid, ts, text), "t": ts, "end": min(end, now),
                            "ended": last_stop in ("end_turn", "stop_sequence"),
                            "kind": kind, "text": disp, "text_full": _strip_banner(full),
@@ -358,7 +386,7 @@ def extract_events(sid, transcript, now):
         return {"events": [], "pending": [], "compactions": []}
 
 EVCACHE = STATE / "events-cache"
-CACHE_VERSION = 12       # bump whenever extract_events' output shape changes (forces re-extract)
+CACHE_VERSION = 13       # bump whenever extract_events' output shape changes (forces re-extract)
 def events_for(sid, transcript, now):
     """extract_events, memoized on disk by the transcript's (mtime, size). Repeated --emit
     calls (Obsidian polls ~1s while visible) spawn a FRESH process each time, so the cache

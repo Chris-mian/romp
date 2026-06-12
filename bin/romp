@@ -141,6 +141,13 @@ _romp_provision_session() {   # <session>
     # Postal flash (peer + direction, auto-expiring) when present; else the live
     # <=8-word summary (an ellipsis while one is being generated).
     tmux set -t "$s" status-right ' #{?@romp-msg-peer,#[bg=#{@romp-msg-bg}#,fg=#{@romp-msg-fg}#,bold] #{@romp-msg-dir} #{@romp-msg-peer} #[default] #{=80:@romp-msg-summary},#{?#{==:#{@claude-summary-kind},pending},…,#{=90:@claude-summary}}} '
+    # tmux array gotcha: defining ANY index of status-format at SESSION scope
+    # shadows the entire inherited array — with only [1] set below, [0] (the
+    # default status-left + windows + status-right composition) rendered EMPTY
+    # and the main row vanished (regressed when these settings moved from the
+    # dotfiles' global tmux.conf to session scope; the user's report 2026-06-12).
+    # Pin [0] to the live global composition before defining [1].
+    tmux set -t "$s" 'status-format[0]' "$(tmux show -gv 'status-format[0]')"
     # Second status row: who this session is talking to (romp-postal maintains
     # @romp-peerN and flips `status 2` when the list is non-empty).
     tmux set -t "$s" 'status-format[1]' '#[align=right]#{?@romp-peer1, #[bg=#{@romp-peer1c}#,fg=#{@romp-peer1f}] #{@romp-peer1} #[default],}#{?@romp-peer2, #[bg=#{@romp-peer2c}#,fg=#{@romp-peer2f}] #{@romp-peer2} #[default],}#{?@romp-peer3, #[bg=#{@romp-peer3c}#,fg=#{@romp-peer3f}] #{@romp-peer3} #[default],}#{?@romp-peer4, #[bg=#{@romp-peer4c}#,fg=#{@romp-peer4f}] #{@romp-peer4} #[default],}#{?@romp-peer5, #[bg=#{@romp-peer5c}#,fg=#{@romp-peer5f}] #{@romp-peer5} #[default],}#{?@romp-peer6, #[bg=#{@romp-peer6c}#,fg=#{@romp-peer6f}] #{@romp-peer6} #[default],}#{?@romp-peer7, #[bg=#{@romp-peer7c}#,fg=#{@romp-peer7f}] #{@romp-peer7} #[default],}#{?@romp-peer8, #[bg=#{@romp-peer8c}#,fg=#{@romp-peer8f}] #{@romp-peer8} #[default],}#{?@romp-peer9, #[bg=#{@romp-peer9c}#,fg=#{@romp-peer9f}] #{@romp-peer9} #[default],}#{?@romp-peer10, #[bg=#{@romp-peer10c}#,fg=#{@romp-peer10f}] #{@romp-peer10} #[default],} '
@@ -498,7 +505,11 @@ fi
 # "dashboard" stays free as a session name — `romp dashboard` makes a session
 # called dashboard. Matched only as the FIRST arg, like the other dispatches.
 if [[ "${1:-}" == "-d" ]]; then
-    exec romp-dashboard
+    # ROMP_DASHBOARD_BIN: test seam (same pattern as the kernel's
+    # ROMP_FEED_DETAIL_BIN) — the sibling-dir PATH prepend above otherwise
+    # shadows any mock, and the real dashboard is an infinite watch loop
+    # (romp.bats hung on it and leaked a spinning process per run, 2026-06-12).
+    exec "${ROMP_DASHBOARD_BIN:-romp-dashboard}"
 fi
 
 # (Retired) `romp -g` browser timeline — superseded by the VS Code / Obsidian
@@ -537,7 +548,8 @@ fi
 # use the MCP tools). Delegates to romp-postal, same pattern as `-d` -> dashboard.
 if [[ "${1:-}" == "--mail" ]]; then
     shift
-    exec romp-postal "$@"
+    # ROMP_POSTAL_BIN: test seam — see the -d dispatch above.
+    exec "${ROMP_POSTAL_BIN:-romp-postal}" "$@"
 fi
 
 # NB: there's no `romp rename` / `romp a` command. Rename from inside tmux

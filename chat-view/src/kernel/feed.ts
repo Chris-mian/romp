@@ -4,7 +4,7 @@
 // tests/test_romp_read_side.py (the Python twin used by romp -f).
 import type { SessionState } from "./backend";
 import {
-  ChipColor, rompIds, rompMeta, readReqRows, readDecisionBrief, openTurnId,
+  ChipColor, rompIds, rompMeta, readReqRows, readDecisionBrief, openTurnId, openRunIds,
   ROMP_SUMMARIES, ROMP_REQUESTS,
 } from "./state";
 import * as fs from "fs";
@@ -460,11 +460,18 @@ export function computeAskItems(states: Map<string, SessionState> | null, didByI
     // "active" only when its CURRENT turn is CLAIMED by this card — the turn
     // minted/amended/answered it, or its work is linked into the graph. A turn
     // on something else leaves the settled verdict standing.
+    // RUN-AWARE (2026-06-12): "current turn" means the whole contiguous run,
+    // not the newest slice — queued prompts fold into one physical turn that
+    // romp slices per prompt, and work for an earlier slice routinely ships
+    // under a later slice's id. Judging by the newest slice alone auto-filed
+    // cards whose work was literally executing (three same-day incidents).
     const tids = [String(a.turn_id || ""), ...(amendTurns.get(id) || [])].filter(Boolean);
-    const curTurn = ownerBusy ? openTurnId(String(a.sid || "")) : null;
-    // conservative claim: a busy owner whose open turn can't be resolved (no
+    const curRun = ownerBusy ? openRunIds(String(a.sid || "")) : null;
+    // conservative claim: a busy owner whose open run can't be resolved (no
     // events cache yet) HOLDS its cards — never auto-file blind
-    const claimed = !!ownerBusy && (curTurn === null || tids.includes(curTurn) || linked.some((r) => r.reply_id === curTurn));
+    const claimed = !!ownerBusy && (curRun === null
+      || curRun.some((t) => tids.includes(t))
+      || linked.some((r) => curRun.includes(String(r.reply_id))));
     let liveness: AskLiveness; let livenessWhy: string;
     if (ownerBusy && claimed) {
       liveness = "active";

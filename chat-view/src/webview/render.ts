@@ -11,6 +11,7 @@ import markdown from "highlight.js/lib/languages/markdown";
 import diff from "highlight.js/lib/languages/diff";
 import yaml from "highlight.js/lib/languages/yaml";
 import type { ParsedAsk } from "../askparse";
+import { quoteReply } from "../quote";
 
 for (const [name, lang] of Object.entries({
   bash, sh: bash, shell: bash, python, py: python, javascript, js: javascript,
@@ -338,7 +339,7 @@ function linkifyImgPaths(root: HTMLElement, paths: string[]): void {
   }
 }
 
-function renderEvent(ev: ChatEvent, prevEpoch?: number | null): HTMLElement {
+function renderEvent(ev: ChatEvent, prevEpoch?: number | null, worked?: number | null): HTMLElement {
   const turn = renderEventInner(ev);
   // Deep-link anchor. An AskUserQuestion widget carries the ANSWER-line (tool_result
   // user line) uuid — that's the uuid the timeline emits for the decision, and the
@@ -360,7 +361,28 @@ function renderEvent(ev: ChatEvent, prevEpoch?: number | null): HTMLElement {
   // the feed (the host resolves turn → event → cards and disambiguates).
   const railDot = turn.querySelector(".dot") as HTMLElement | null;
   if (railDot && (anchorUuid || epoch != null)) wireRailDot(railDot, anchorUuid ?? null, epoch ?? 0);
+  // a finished prompt's last reply carries a small "worked 2m 14s" tick in the rail
+  // gutter (left, by the time-markers) — how long the session ran on that prompt.
+  if (worked != null) turn.appendChild(elapsedFooter(worked));
   return turn;
+}
+
+// Format a worked-duration (seconds) the same way the live work-timer formats its
+// elapsed (elapsedMs): "45s" / "2m 14s" / "1h 03m". Units distinguish it from the
+// HH:MM rail time-markers.
+function durLabel(secs: number): string {
+  secs = Math.max(0, Math.floor(secs));
+  if (secs < 60) return `${secs}s`;
+  const m = Math.floor(secs / 60);
+  if (m < 60) return `${m}m ${secs % 60}s`;
+  return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, "0")}m`;
+}
+
+function elapsedFooter(secs: number): HTMLElement {
+  const f = el("div", "turn-elapsed");
+  f.textContent = durLabel(secs);
+  f.title = `worked ${durLabel(secs)} on this prompt`;
+  return f;
 }
 
 // Hover uses the same 120ms intent debounce as ledger bullets / feed rows so
@@ -921,6 +943,50 @@ function dismissTabMenu() {
   ctxMenuEl?.remove();
   ctxMenuEl = null;
 }
+
+// Right-clicking a SELECTION in the transcript pops a small menu with Reply (quote
+// the selection into the composer as a "> …" blockquote) and Copy. With no selection
+// inside the chat we leave the native/default menu alone. Reuses the tab menu's
+// ctx-menu chrome + its global dismissal (outside-click / Esc / scroll / blur).
+function showSelectionMenu(e: MouseEvent) {
+  const content = document.getElementById("content");
+  const sel = window.getSelection();
+  const text = sel ? sel.toString() : "";
+  if (!content || !sel || !sel.anchorNode || !content.contains(sel.anchorNode) || !text.trim()) return;
+  e.preventDefault();
+  dismissTabMenu();
+  const menu = el("div", "ctx-menu");
+  const mk = (labelText: string, fn: () => void) => {
+    const item = el("div", "ctx-item");
+    item.textContent = labelText;
+    item.addEventListener("click", (ev) => { ev.stopPropagation(); dismissTabMenu(); fn(); });
+    menu.appendChild(item);
+  };
+  mk("Reply", () => quoteSelectionIntoComposer(text));
+  mk("Copy", () => copyToClipboard(text));
+  document.body.appendChild(menu);
+  ctxMenuEl = menu;
+  const r = menu.getBoundingClientRect();
+  menu.style.left = Math.max(0, Math.min(e.clientX, window.innerWidth - r.width - 4)) + "px";
+  menu.style.top = Math.max(0, Math.min(e.clientY, window.innerHeight - r.height - 4)) + "px";
+}
+
+// Drop the selection into the composer as a markdown blockquote (quote.ts does the
+// formatting), cursor on the blank line below it, and remember it as the draft.
+function quoteSelectionIntoComposer(text: string) {
+  const ta = document.getElementById("composer-input") as HTMLTextAreaElement | null;
+  if (!ta) return;
+  const { value, caret } = quoteReply(text, ta.value);
+  ta.value = value;
+  ta.selectionStart = ta.selectionEnd = caret;
+  growComposer(ta);
+  ta.focus();
+  if (activeId) drafts.set(activeId, ta.value);
+}
+
+function copyToClipboard(text: string) {
+  navigator.clipboard?.writeText(text).catch(() => { try { document.execCommand("copy"); } catch { /* best effort */ } });
+}
 function showTabMenu(e: MouseEvent, tab: HTMLElement, label: HTMLElement, id: string) {
   dismissTabMenu();
   const menu = el("div", "ctx-menu");
@@ -1026,6 +1092,33 @@ function tabInAdjacentRow(id: string, dir: number): string | null {
 let pickMode = false;
 let pickAllowNew = false;
 
+// "Opening session…" modal — shown the instant the user creates a session and
+// dismissed when its tab actually arrives (the kernel spawn → tmux → first
+// transcript poll has a visible delay; this is the "something is happening" cue).
+let pendingNewSession: string | null = null;
+let openingTimer: ReturnType<typeof setTimeout> | undefined;
+function showOpeningModal(name: string) {
+  hideOpeningModal();
+  pendingNewSession = name;
+  const overlay = el("div", "picker-overlay opening-overlay");
+  overlay.id = "opening";
+  overlay.style.display = "flex";
+  const box = el("div", "picker-box opening-box");
+  const title = el("div", "opening-title"); title.textContent = "Opening session";
+  const nm = el("div", "opening-name"); nm.textContent = name;
+  const dots = el("div", "opening-dots"); dots.append(el("span"), el("span"), el("span"));
+  box.append(title, nm, dots);
+  overlay.appendChild(box);
+  document.body.appendChild(overlay);
+  // safety net: never strand the modal if the session never materializes (spawn failed)
+  openingTimer = setTimeout(hideOpeningModal, 30000);
+}
+function hideOpeningModal() {
+  pendingNewSession = null;
+  if (openingTimer) { clearTimeout(openingTimer); openingTimer = undefined; }
+  document.getElementById("opening")?.remove();
+}
+
 function openPicker(pick = false, prompt?: string, allowNew = false) {
   pickMode = pick;
   pickAllowNew = pick && allowNew;
@@ -1057,6 +1150,7 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
       if (!/^[A-Za-z0-9._-]+$/.test(name)) { pickerError("Session names: letters, digits, . _ - only."); search.focus(); return; }
       if (vscodeApi) vscodeApi.postMessage({ type: "createSession", name });
       closePicker();
+      showOpeningModal(name);   // "Opening…" cue until the new tab arrives (see upsert)
     });
     const openAll = el("button", "picker-action");
     openAll.textContent = "↗ Open all running sessions";
@@ -1383,12 +1477,13 @@ function syncView(id: string): View {
   else from = Math.min(v.rendered, Math.max(0, len - TAIL_RECHECK)); // append + re-check a trailing window
   v.stale = false;
   while (v.el.childNodes.length > from) v.el.removeChild(v.el.lastChild as ChildNode);
+  const working = s.status.state === "working" || s.status.state === "compacting";
   for (let i = from; i < len; i++) {
     // the previous TIMED event's epoch → lets renderEvent decide if the minute/day
     // advanced (untimed events like todo/queued are skipped so the chain holds)
     let prevEpoch: number | null = null;
     for (let j = i - 1; j >= 0; j--) { const e = eventEpoch(s.events[j]); if (e != null) { prevEpoch = e; break; } }
-    v.el.appendChild(renderEvent(s.events[i], prevEpoch));
+    v.el.appendChild(renderEvent(s.events[i], prevEpoch, turnWorkedSecs(s.events, i, working)));
   }
   v.rendered = len;
   return v;
@@ -1399,6 +1494,32 @@ function syncView(id: string): View {
 function lastTurnStart(events: ChatEvent[]): number {
   for (let i = events.length - 1; i >= 0; i--) if (events[i].kind === "user") return i;
   return 0;
+}
+
+// If event i is the LAST reply of a COMPLETED prompt-turn, return the seconds the
+// session worked on it (the turn's genuine prompt timestamp → this reply); else
+// null. A turn is "completed" when a new GENUINE prompt follows it (injected
+// user-role lines — postal pushes, /command stdout — are skipped, NOT treated as the
+// next prompt), or it's the final turn and the session is no longer working (the
+// live spinner owns the in-progress turn). Drives the "worked …" rail footer.
+function turnWorkedSecs(events: ChatEvent[], i: number, working: boolean): number | null {
+  const ev = events[i];
+  if (ev.kind === "user") return null;                 // a prompt, not a reply
+  let completed = false;
+  for (let j = i + 1; j < events.length; j++) {
+    const e = events[j];
+    if (e.kind !== "user") return null;                // another reply in this turn → i isn't its last
+    if (e.human) { completed = true; break; }          // next genuine prompt → the turn ended at i
+    // injected user line (postal push, /command stdout, …) → same turn, keep scanning
+  }
+  if (!completed && working) return null;              // final turn still in progress → spinner owns it
+  const end = eventEpoch(ev);
+  if (end == null) return null;
+  let start: number | null = null;
+  for (let j = i; j >= 0; j--) { const e = events[j]; if (e.kind === "user" && e.human) { start = eventEpoch(e); break; } }
+  if (start == null) return null;
+  const secs = end - start;
+  return secs > 0 ? secs : null;
 }
 
 // Show only the active session's (lazily built) view and set its scroll: a
@@ -2082,7 +2203,7 @@ function ctxBar(): HTMLElement {
   const bar = el("span", "ctx-bar"); bar.id = "ctx-bar";
   bar.appendChild(el("span", "ctx-fill"));
   bar.appendChild(el("span", "ctx-text"));
-  bar.appendChild(el("span", "ctx-scan"));   // compacting: thin rainbow bar scanning right→left (as on the timeline)
+  bar.appendChild(el("span", "ctx-scan"));   // compacting: teal rectangle whose right edge compresses leftward (as on the timeline)
   bar.addEventListener("click", () => {
     const s = activeId ? sessions.get(activeId) : null;
     if (!s || !vscodeApi) return;
@@ -2114,7 +2235,7 @@ function setCtxBar(bar: HTMLElement, ctxStr: string | undefined, compacting = fa
 }
 
 const CHIP_LABEL: Record<ChipState, string> = {
-  working: "WORKING", ready: "READY", awaiting: "AWAITING",
+  working: "WORKING", ready: "READY", awaiting: "BLOCKED",
   idle: "IDLE", closed: "CLOSED", compacting: "COMPACTING",
 };
 
@@ -2123,13 +2244,13 @@ function updateStatusline() {
   const s = activeId ? sessions.get(activeId) : null;
   if (!sl || !s) return;
   sl.replaceChildren();
-  // Left: the state chip — WORKING gets a rainbow shimmer + elapsed timer; idle
+  // Left: the state chip — WORKING gets a sine color-pulse + elapsed timer; idle
   // states get the plain chip (no timer). Right: model + effort · ctx%, always.
   if (s.status.state === "working") {
     // pill bg stays on the chip; the gradient text-clip lives on an inner span
     // (background-clip:text on the chip itself would erase the pill background)
     const chip = el("span", "chip chip-working");
-    const label = el("span", "chip-rainbow");
+    const label = el("span", "chip-pulse");
     label.textContent = CHIP_LABEL.working;
     chip.appendChild(label);
     sl.appendChild(chip);
@@ -2224,6 +2345,12 @@ function upsert(msg: any) {
   renderTabs();
   if (msg.id === activeId) showActive();
   // A non-active session's view is left to sync lazily when it's next shown.
+  // The session the user just created has arrived → drop the "Opening…" cue and
+  // focus its fresh tab (the whole point of opening it).
+  if (!existed && pendingNewSession && msg.name === pendingNewSession) {
+    hideOpeningModal();
+    setActive(msg.id);
+  }
 }
 
 function update(msg: any) {
@@ -2318,7 +2445,7 @@ window.addEventListener("message", (e: MessageEvent) => {
   }
 });
 
-// Tick the working timer (the rainbow shimmer is pure CSS) and keep the model/ctx
+// Tick the working timer (the chip color-pulse is pure CSS) and keep the model/ctx
 // meta fresh as status updates land.
 setInterval(() => {
   const s = activeId ? sessions.get(activeId) : null;
@@ -2472,4 +2599,6 @@ const WEEKDAY = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const MONTH = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 setupComposer();
+// right-click a selection in the transcript → Reply (quote it) / Copy
+document.getElementById("content")?.addEventListener("contextmenu", showSelectionMenu);
 if (vscodeApi) vscodeApi.postMessage({ type: "ready" });

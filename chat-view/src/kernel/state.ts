@@ -373,6 +373,37 @@ export function openTurnId(sid: string): string | null {
   return id;
 }
 
+// The open turn's whole contiguous RUN, newest first (null when no open turn).
+// romp-events slices one physical Claude Code turn at queue folds and mid-turn
+// decisions: absorbed/decision/drain boundaries CONTINUE the same run, while
+// typed/queued boundaries start a new one. Work for a queued prompt routinely
+// ships under a LATER slice's id (three same-day incidents, 2026-06-12), so
+// run-aware consumers (the liveness claim) must see every slice of the run,
+// not just the newest one.
+const _openRunCache = new Map<string, { m: number; ids: string[] | null }>();
+export function openRunIds(sid: string): string[] | null {
+  const f = path.join(ROMP_STATE(), "events-cache", `${sid}.json`);
+  let st: fs.Stats;
+  try { st = fs.statSync(f); } catch { return null; }
+  const hit = _openRunCache.get(sid);
+  if (hit && hit.m === st.mtimeMs) return hit.ids;
+  let ids: string[] | null = null;
+  try {
+    const evs: any[] = JSON.parse(fs.readFileSync(f, "utf8"))?.data?.events || [];
+    const last = evs[evs.length - 1];
+    if (last && last.open) {
+      ids = [];
+      for (let i = evs.length - 1; i >= 0; i--) {
+        ids.push(String(evs[i].id));
+        const k = String(evs[i].kind || "");
+        if (k !== "absorbed" && k !== "decision" && k !== "drain") break;  // run root
+      }
+    }
+  } catch { /* unreadable cache → claim unknown */ }
+  _openRunCache.set(sid, { m: st.mtimeMs, ids });
+  return ids;
+}
+
 // ---- feed-detail cache ----
 
 export function readFeedDetail(id: string): any | null {
