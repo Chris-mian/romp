@@ -336,7 +336,13 @@ def extract_events(sid, transcript, now):
         bnds.sort(key=lambda b: b[0])
         events = []
         for i, (ts, text, kind, mids, buid, full) in enumerate(bnds):
-            nxt = bnds[i+1][0] if i + 1 < len(bnds) else now
+            # The last period has NO next boundary, so its window must be unbounded —
+            # not capped at `now`: an extraction racing the turn's own closing write
+            # (now == the closing line's second) excluded that line from `< nxt`,
+            # reading ended=False — then the (mtime,size) memo froze that answer
+            # forever for an idle session (turn "working" permanently, summarizer
+            # skipping it — 2026-06-12). Cap on the next boundary EVENT or nothing.
+            nxt = bnds[i+1][0] if i + 1 < len(bnds) else float("inf")
             # assistant work in THIS period (chronological). Dead-branch lines are
             # REWOUND work (same fork-drop rule as boundaries above) — without the
             # check, a dead branch's lines bleed into the PRECEDING surviving turn's
@@ -401,7 +407,7 @@ def extract_events(sid, transcript, now):
         return {"events": [], "pending": [], "compactions": []}
 
 EVCACHE = STATE / "events-cache"
-CACHE_VERSION = 14       # bump whenever extract_events' output shape changes (forces re-extract)
+CACHE_VERSION = 15       # bump whenever extract_events' output shape changes (forces re-extract)
 def events_for(sid, transcript, now):
     """extract_events, memoized on disk by the transcript's (mtime, size). Repeated --emit
     calls (Obsidian polls ~1s while visible) spawn a FRESH process each time, so the cache

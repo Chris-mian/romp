@@ -384,6 +384,32 @@ class AbsorbedAnchor(unittest.TestCase):
         self.assertEqual(ab["uuid"], "a2")
 
 
+class SameSecondClose(unittest.TestCase):
+    """The last period's window must be unbounded, not capped at `now` (2026-06-12):
+    an extraction racing the turn's own closing write (the closing end_turn line
+    timestamped in the extraction second) excluded that line from `< nxt`, so the
+    turn read ended=False — and the (mtime, size) cache memo then froze that answer
+    for as long as the session stayed idle: permanently "working", never summarized,
+    handoff branches never closing."""
+
+    def test_closing_stop_in_the_extraction_second_still_ends_the_turn(self):
+        closing = aline(NOW, "shipped the requested fix", uuid="a2", parent="a1")
+        closing["message"]["stop_reason"] = "end_turn"
+        records = [
+            uline(NOW - 60, "do the thing", uuid="u1"),
+            aline(NOW - 30, "working", uuid="a1", parent="u1"),
+            closing,
+        ]
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / (SID + ".jsonl")
+            path.write_text("\n".join(json.dumps(r) for r in records) + "\n")
+            out = ev.extract_events(SID, str(path), NOW)
+        (e,) = out["events"]
+        self.assertTrue(e["open"], "last period is the still-open one by definition")
+        self.assertTrue(e["ended"], "closing stop at ts == now must count")
+        self.assertEqual(e["replyUuid"], "a2", "the same race dropped the reply line")
+
+
 def regen():
     GOLDEN.mkdir(parents=True, exist_ok=True)
     for name in sorted(SCENARIOS):

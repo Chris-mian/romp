@@ -1392,6 +1392,37 @@ class Rejudge(unittest.TestCase):
         self.assertEqual(self.calls, [])
 
 
+# ───────────────────────── daemon lifecycle ─────────────────────────
+
+class PidfileRelease(unittest.TestCase):
+    """An exiting daemon instance must release ONLY its own pidfile claim
+    (2026-06-12): the unconditional finally-unlink let a dying instance remove a
+    successor's pidfile, after which --ensure saw nothing running and spawned
+    duplicate daemons that doubled every pass."""
+
+    def setUp(self):
+        self._td = tempfile.TemporaryDirectory()
+        self._orig = bf.PIDFILE
+        bf.PIDFILE = Path(self._td.name) / "backfill.pid"
+
+    def tearDown(self):
+        bf.PIDFILE = self._orig
+        self._td.cleanup()
+
+    def test_releases_its_own_claim(self):
+        bf.PIDFILE.write_text(str(os.getpid()))
+        bf._release_pidfile()
+        self.assertFalse(bf.PIDFILE.exists())
+
+    def test_leaves_a_successors_claim_alone(self):
+        bf.PIDFILE.write_text(str(os.getpid() + 1))
+        bf._release_pidfile()
+        self.assertTrue(bf.PIDFILE.exists())
+
+    def test_missing_pidfile_is_a_quiet_no_op(self):
+        bf._release_pidfile()   # nothing to remove — must not raise
+
+
 # ───────────────────────── d. anchor-sid fork resolution ─────────────────────────
 
 class ForkResolution(unittest.TestCase):

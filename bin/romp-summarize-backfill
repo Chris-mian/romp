@@ -1587,6 +1587,16 @@ def _running():
     except Exception:
         return None
 
+def _release_pidfile():
+    """Remove the pidfile ONLY if it still holds OUR pid. An exiting (or crashing)
+    instance must never unlink a successor's claim — that pointed --ensure at
+    nothing, so duplicate daemons piled up and doubled every pass (2026-06-12)."""
+    try:
+        if int(PIDFILE.read_text().strip()) == os.getpid():
+            PIDFILE.unlink()
+    except Exception:
+        pass
+
 def watch_paths(now):
     paths = [MSGLOG] if MSGLOG.exists() else []
     paths += [tp for _, tp, _ in sessions(now)]
@@ -1630,7 +1640,15 @@ def daemon_loop():
     idle_since = last_pass = time.time()
     try:
         while True:
-            wait_for_change(watch_paths(int(time.time())), INTERVAL)   # sleep until a log is written
+            # watch_paths/sessions() are not covered by the per-section try blocks
+            # below — an exception here killed the daemon SILENTLY (no log line,
+            # pidfile gone via finally), which is how instances vanished and
+            # duplicates piled in behind them (2026-06-12).
+            try:
+                paths = watch_paths(int(time.time()))
+            except Exception as e:
+                log("[backfill] watch error: %s" % e); paths = []
+            wait_for_change(paths, INTERVAL)   # sleep until a log is written
             gap = time.time() - last_pass                              # coalesce a burst of writes
             if gap < DEBOUNCE:
                 time.sleep(DEBOUNCE - gap)
@@ -1656,8 +1674,7 @@ def daemon_loop():
             elif last_pass - idle_since > IDLE_EXIT:
                 log("[backfill] idle — exiting"); break
     finally:
-        try: PIDFILE.unlink()
-        except Exception: pass
+        _release_pidfile()
 
 def ensure():
     if _running():
