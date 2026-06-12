@@ -17,7 +17,7 @@ const extension = {
   platform: "node",
   target: "node18",
   outfile: "dist/extension.js",
-  external: ["vscode"],
+  external: ["vscode", "bufferutil", "utf-8-validate"],   // ws optional native addons
   sourcemap: !production,
   minify: production,
   logLevel: "info",

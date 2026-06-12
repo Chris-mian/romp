@@ -167,3 +167,74 @@ test("amend rewrites the ask text in place", () => {
   ]);
   assert.equal(fold().find((a) => a.itemId === "a1")!.text, "actually make it blue");
 });
+
+// ---- the 2026-06-11 fold layers: latching, answers, liveness/auto-filing ----
+
+function statesWith(state: string, name = "main_sess"): Map<string, any> {
+  return new Map([[name, { state, effort: "", model: "", ctx: "", since: String(T0), summary: "" }]]);
+}
+function foldWith(states: Map<string, any> | null) {
+  const all = computeFeedItems(states as any);
+  const didById = new Map<string, FeedItem>(all.map((i) => [i.itemId, i] as const));
+  return computeAskItems(states as any, didById);
+}
+function writeEventsCache(sid: string, events: any[]) {
+  const dir = path.join(STATE, "romp", "events-cache");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, `${sid}.json`), JSON.stringify({ data: { events } }));
+}
+
+test("DETAILS never re-opens a DONE verdict (latching)", () => {
+  writeRows("nodes.jsonl", [ask("a1", T0)]);
+  writeRows("links.jsonl", [
+    link("r1", ["a1"], "DONE", T0 + 100),
+    link("r2", ["a1"], "DETAILS", T0 + 200),   // wrap-up cleanup riding the node
+  ]);
+  assert.equal(colOf(fold(), "a1"), "completed", "routine DETAILS after DONE is transparent");
+});
+
+test("an ANSWER row crosses a DECISION off and renders as the user's ↩ row", () => {
+  writeRows("nodes.jsonl", [
+    ask("a1", T0),
+    { kind: "answer", id: "a1", t: T0 + 200, text: "yes, ship it", turn_id: `${SID}:${T0 + 200}:cafe0001` },
+  ]);
+  writeRows("links.jsonl", [link("r1", ["a1"], "DECISION", T0 + 100)]);
+  const asks = fold();
+  assert.equal(colOf(asks, "a1"), "asks", "anchored answer reads in-flight again");
+  const a = asks.find((x) => x.itemId === "a1")!;
+  assert.ok(a.linked.some((r) => r.answer === true), "the answer renders in the history");
+});
+
+test("auto-filing: a settled card rests in COMPLETED; blind/empty states never auto-file", () => {
+  writeRows("nodes.jsonl", [ask("a1", T0)]);
+  // owner idle, no handoffs, nothing filed → settled → auto-filed
+  const a = foldWith(statesWith("idle")).find((x) => x.itemId === "a1")!;
+  assert.equal(a.liveness, "settled");
+  assert.equal(a.column, "completed");
+  assert.equal(a.autoFiled, true);
+  assert.equal(a.explicitDone, false, "green ring, not blue: the judge never stamped it");
+  // tmux unreachable (null/empty states) → liveness unknowable → no auto-filing
+  assert.equal(colOf(fold(), "a1"), "asks");
+});
+
+test("WAIT exempts a settled card from auto-filing (⏳, stays in WORKING)", () => {
+  writeRows("nodes.jsonl", [ask("a1", T0)]);
+  writeRows("links.jsonl", [link("r1", ["a1"], "WAIT", T0 + 100)]);
+  const a = foldWith(statesWith("idle")).find((x) => x.itemId === "a1")!;
+  assert.equal(a.column, "asks");
+  assert.equal(a.autoFiled, false);
+  assert.equal(a.waiting, true);
+});
+
+test("claim-lag hold: a busy owner with an unclaimed open turn holds auto-filing", () => {
+  writeRows("nodes.jsonl", [ask("a1", T0)]);
+  // the owner is mid-turn on a prompt no card has claimed yet
+  writeEventsCache(SID, [{ id: `${SID}:${T0 + 500}:feed9999`, t: T0 + 500, open: true }]);
+  const a = foldWith(statesWith("working")).find((x) => x.itemId === "a1")!;
+  assert.equal(a.column, "asks", "held: the unattributed turn may be this card");
+  assert.equal(a.autoFiled, false);
+  // …and once the open turn IS this card's (claimed), the card goes active
+  writeEventsCache(SID, [{ id: `${SID}:${T0}:abcd1234`, t: T0, open: true }]);
+  const b = foldWith(statesWith("working")).find((x) => x.itemId === "a1")!;
+  assert.equal(b.liveness, "active");
+});

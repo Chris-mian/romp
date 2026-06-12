@@ -80,11 +80,34 @@ rail-dot click that matches several feed cards opens the first;
 `ROMP_SERVE_OPEN_CMD="cmd {file}:{line}"`). The resume-picker QuickPick
 (`answerPicker`) is not yet supported in the web UI.
 
-The extension is untouched and fully functional; it and the kernel can run at
-the same time (they read the same files and both drive tmux idempotently).
-The intended end-state is for the extension host to shrink to a thin client
-of the same kernel, deleting the ~2,000 duplicated lines — deferred until the
-kernel has seen real daily use.
+**The extension IS a thin client of this kernel** (consolidated 2026-06-11,
+same day as the first draft — the dual-host interim lasted hours, tagged
+`dual-host-baseline`). `extension.ts` went from ~3,500 lines to ~550: it
+ensures a kernel is running (spawn-or-attach below), hosts the two webview
+panels, pipes their postMessage traffic over this same WebSocket protocol, and
+keeps only the genuinely client-side capabilities (open-in-editor, the OS file
+picker, clipboard, external links, panel reveal). A browser tab and the VS
+Code panel are now two clients of ONE kernel process: same tab set
+(open/close anywhere applies everywhere), per-client focus.
+
+Spawn-or-attach: on activation the extension GETs `/healthz`; if a kernel
+answers it attaches, otherwise it launches one detached ($ROMP_SERVE_BIN →
+the checkout's bin/romp-serve → `romp-serve` on the login PATH → the
+kernel.js bundled in the VSIX, run with the editor's node). The kernel
+outlives VS Code, so browser tabs stay live across editor restarts. A version
+mismatch on `/healthz` (a kernel from before the last VSIX install) triggers
+one `POST /shutdown` + respawn — without it, the editor would silently keep
+talking to stale host code. A second kernel racing for the port detects the
+occupant via `/healthz` and exits 0 ("attaching to that one").
+
+Where the extension used to show native dialogs, BOTH front ends now use
+in-webview dialogs driven by the kernel: end-session confirmation on closing
+a live tab (`confirmClose` → End/Close/Cancel), the dead-session revive
+prompt (`confirmRevive` → Revive/read-only), and the resume-picker
+(`pickerOptions` → in-page choice → forwarded keystrokes). The browser shim
+additionally implements `pickFile` (a real file input → the dropFile
+pipeline) and `readClipboard` (navigator.clipboard) client-side, mirroring
+the VS Code host's native versions.
 
 ## 3. The SessionBackend seam
 
@@ -186,16 +209,20 @@ several, fed by the same records; absent tmux, nothing else degrades.
 
 Done: token auth (`ROMP_SERVE_TOKEN`/`--token` — pages take `?token=` once
 and set a cookie for static+WS), identity colors for headless sessions (same
-palette + first-unused rule as bin/romp), and the TS↔Python fold parity tests
+palette + first-unused rule as bin/romp), the TS↔Python fold parity tests
 (`src/kernel/fold-parity.test.ts` — answered crossoff, ACTION survival,
 leaf-path completion, clear/resurrect, follow-up reopen, child-ask nesting,
-amend).
+amend, plus the 06-11 layers: DETAILS latching, ANSWER rows, auto-filing,
+WAIT exemption, claim-lag hold), **the extension-as-thin-client consolidation
+itself** (§2 — one kernel, two front ends, ~2,900 duplicated host lines
+deleted), in-webview dialogs for end-session / revive / resume-picker, and
+client-side pickFile/readClipboard in the browser shim.
 
 Still deferred:
 
-- Extension host → thin client of the kernel (delete the duplicated host).
-  Until then the kernel and the extension are two independent hosts over the
-  same records; they run fine simultaneously (verified live), but host-logic
-  changes must land in both.
-- `answerPicker` (resume-picker QuickPick) in the web UI.
-- End-session confirmation in the web UI (close-tab is always tab-only today).
+- The multi-card rail-dot click opens the first matching feed card (the old
+  host offered a QuickPick); an in-page chooser would restore the choice.
+- `/open` deep-link route on the kernel (the browser equivalent of the
+  vscode:// deep link — the message protocol already supports it).
+- Per-client tab SETS (today: shared set per the user's choice; a future
+  `?profile=` could give a client its own).

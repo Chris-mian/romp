@@ -31,6 +31,12 @@ export interface TuiOps {
   sendKeys(name: string, keys: string[]): void;
   // Type a literal string (no key-name interpretation).
   sendLiteral(name: string, text: string): void;
+  // Set the session's published state (+ durable states-log line), but ONLY
+  // from one of `fromStates` — never clobbering a newer hook-set value. Used by
+  // the hookless-picker probe: paint "permission" on a parsed picker (heals
+  // every consumer), reset to "waiting" once the composer is back. TUI-only
+  // because hookless pickers exist only where a TUI does.
+  markState(name: string, to: string, fromStates: string[]): void;
 }
 
 export interface SessionBackend {

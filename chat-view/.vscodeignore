@@ -7,5 +7,4 @@ tsconfig.json
 **/*.map
 **/*.ts
 out-tests/**
-dist/kernel.js
 dist/kernel.js.map

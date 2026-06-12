@@ -251,6 +251,20 @@ export function appendRelevanceCorrection(replyId: string, note: string, by = "w
   } catch { /* ignore */ }
 }
 
+// Exception report (the user's refinement loop, 2026-06-11): free-text + category
+// from the modal's ⚠ Report box, with a snapshot of the card's computed state so
+// the report is diagnosable later without replaying history. Own file (not
+// corrections.jsonl — these carry no should_have verdict for the read-side fold);
+// consumed by prompt-rework passes as labeled failure examples.
+export function appendReport(itemId: string, category: string, note: string, snapshot: any) {
+  try {
+    fs.mkdirSync(ROMP_REQUESTS(), { recursive: true });
+    fs.appendFileSync(path.join(ROMP_REQUESTS(), "reports.jsonl"),
+      JSON.stringify({ kind: "report", id: itemId, t: Math.floor(Date.now() / 1000),
+        category, note, snapshot }) + "\n");
+  } catch { /* ignore */ }
+}
+
 // ---- shared tab/lane order ----
 
 export function readSessionOrder(): string[] {
@@ -337,6 +351,26 @@ export function turnEvent(sid: string, uuid: string | null, t: number): any | nu
     }
   } catch { /* no events cache for this session */ }
   return null;
+}
+
+// The session's currently-OPEN turn id, from the romp-events disk cache
+// (mtime-cached). Drives the liveness claim-join: "active" requires the owner's
+// current turn to be claimed by the card (latched looks-done, the user 2026-06-11).
+const _openTurnCache = new Map<string, { m: number; id: string | null }>();
+export function openTurnId(sid: string): string | null {
+  const f = path.join(ROMP_STATE(), "events-cache", `${sid}.json`);
+  let st: fs.Stats;
+  try { st = fs.statSync(f); } catch { return null; }
+  const hit = _openTurnCache.get(sid);
+  if (hit && hit.m === st.mtimeMs) return hit.id;
+  let id: string | null = null;
+  try {
+    const evs: any[] = JSON.parse(fs.readFileSync(f, "utf8"))?.data?.events || [];
+    const last = evs[evs.length - 1];
+    id = last && last.open ? String(last.id) : null;
+  } catch { /* unreadable cache → claim unknown */ }
+  _openTurnCache.set(sid, { m: st.mtimeMs, id });
+  return id;
 }
 
 // ---- feed-detail cache ----

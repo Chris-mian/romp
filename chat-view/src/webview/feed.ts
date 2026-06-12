@@ -1654,8 +1654,40 @@ window.addEventListener("message", (e: MessageEvent) => {
     renderModal();
     applyExtHover();
     if (extHoverEid) document.querySelector(".dot-hl[data-eid]")?.scrollIntoView({ block: "center" });
+  } else if (m.type === "pickerOptions" && typeof m.name === "string") {
+    // the host read the blocked session's live resume-picker screen — show the
+    // same options in-page; a choice goes back as keystrokes (transport only,
+    // the user decides — the never-auto-answer rule holds).
+    showPickerDialog(String(m.name), Array.isArray(m.options) ? m.options.map(String) : []);
   }
 });
+
+// ---- in-page resume-picker dialog (the answerPicker flow, no native QuickPick) ----
+function showPickerDialog(name: string, options: string[]) {
+  document.getElementById("picker-dialog")?.remove();
+  if (!options.length) return;   // host already toasted "no longer on screen"
+  const overlay = el("div", "pickdlg-overlay"); overlay.id = "picker-dialog";
+  const box = el("div", "pickdlg-box");
+  const title = el("div", "pickdlg-title");
+  title.textContent = `${name} is waiting on the resume picker — choose to answer it`;
+  box.append(title);
+  options.forEach((opt, i) => {
+    const btn = el("button", "pickdlg-opt");
+    btn.textContent = opt;
+    btn.onclick = () => {
+      vscodeApi?.postMessage({ type: "answerPickerChoice", name, n: i });
+      overlay.remove();
+    };
+    box.append(btn);
+  });
+  const cancel = el("button", "pickdlg-opt pickdlg-cancel");
+  cancel.textContent = "Cancel";
+  cancel.onclick = () => overlay.remove();
+  box.append(cancel);
+  overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+  document.body.appendChild(overlay);
+  (box.querySelector("button") as HTMLElement | null)?.focus();
+}
 
 // White outline for cards named by a chat rail-dot hover — and, when a modal is
 // open, for the modal rows/node-lines whose event matches (data-eid, set in

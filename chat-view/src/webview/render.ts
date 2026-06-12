@@ -1085,6 +1085,45 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
   if (vscodeApi) vscodeApi.postMessage({ type: "requestSessions" });
 }
 
+// ---- in-webview confirm dialog (replaces the host's native modals) ----
+// One overlay at a time; Esc / backdrop click cancels (cb(null)). Buttons carry
+// a value handed to cb. Reuses the picker overlay's backdrop styling.
+let confirmCb: ((v: string | null) => void) | null = null;
+function showConfirm(title: string, detail: string, buttons: Array<{ label: string; value: string; danger?: boolean }>, cb: (v: string | null) => void) {
+  closeConfirm(null);   // a newer dialog replaces (and cancels) an older one
+  confirmCb = cb;
+  const overlay = el("div", "picker-overlay confirm-overlay"); overlay.id = "confirm";
+  const box = el("div", "picker-box confirm-box");
+  const h = el("div", "confirm-title"); h.textContent = title;
+  const d = el("div", "confirm-detail"); d.textContent = detail;
+  const actions = el("div", "confirm-actions");
+  for (const b of buttons) {
+    const btn = el("button", "picker-action confirm-btn" + (b.danger ? " danger" : ""));
+    btn.textContent = b.label;
+    btn.addEventListener("click", () => closeConfirm(b.value));
+    actions.appendChild(btn);
+  }
+  box.appendChild(h); box.appendChild(d); box.appendChild(actions);
+  overlay.appendChild(box);
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) closeConfirm(null); });
+  document.body.appendChild(overlay);
+  const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") { e.stopPropagation(); closeConfirm(null); } };
+  (overlay as any)._key = onKey;
+  document.addEventListener("keydown", onKey, true);
+  (actions.firstElementChild as HTMLElement | null)?.focus();
+}
+function closeConfirm(value: string | null) {
+  const o = document.getElementById("confirm");
+  if (o) {
+    const k = (o as any)._key;
+    if (k) document.removeEventListener("keydown", k, true);
+    o.remove();
+  }
+  const cb = confirmCb;
+  confirmCb = null;
+  if (cb) cb(value);
+}
+
 // Inline validation message under the search box (null hides it).
 function pickerError(msg: string | null) {
   const e = document.getElementById("picker-error");
@@ -2223,6 +2262,28 @@ window.addEventListener("message", (e: MessageEvent) => {
   else if (m.type === "prevTab") cycleTab(-1);
   else if (m.type === "sessionList") renderPicker(m.items || []);
   else if (m.type === "openPicker") openPicker(!!m.pick, m.prompt, !!m.allowNew);
+  // The host asks US to confirm (in-page, no native dialogs): ending a live
+  // session on tab-close, and reviving a dead one on open.
+  else if (m.type === "confirmClose" && m.id) {
+    const nm = String(m.name || "");
+    showConfirm(`End “${nm}”?`,
+      "“Close tab” just removes it from this panel and leaves the session running. “End session” shuts it down (the transcript stays on disk).",
+      [{ label: "Close tab", value: "close" }, { label: "End session", value: "end", danger: true }, { label: "Cancel", value: "" }],
+      (v) => {
+        if (v === "close") vscodeApi?.postMessage({ type: "closeTab", id: m.id });
+        else if (v === "end") vscodeApi?.postMessage({ type: "endSession", id: m.id });
+      });
+  }
+  else if (m.type === "confirmRevive" && m.id) {
+    const nm = String(m.name || "");
+    showConfirm(`“${nm}” is closed — revive it?`,
+      "Revive restarts the session and resumes its conversation. Read-only just shows the transcript.",
+      [{ label: "Revive", value: "revive" }, { label: "View read-only", value: "ro" }, { label: "Cancel", value: "" }],
+      (v) => {
+        if (v === "revive") vscodeApi?.postMessage({ type: "reviveSession", id: m.id });
+        else if (v === "ro") vscodeApi?.postMessage({ type: "viewReadOnly", id: m.id });
+      });
+  }
   else if (m.type === "focusComposer") { const ta = document.getElementById("composer-input") as HTMLTextAreaElement | null; ta?.focus(); }
   else if (m.type === "glowTurns") applyGlow(Array.isArray(m.groups) ? m.groups : [], Array.isArray(m.mids) ? m.mids : []);
   else if (m.type === "askLive") setLiveAsk(m.id, m.ask ?? null);

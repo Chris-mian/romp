@@ -22,19 +22,20 @@ import { HeadlessBackend } from "./headless-backend";
 import type { SessionBackend, SessionState } from "./backend";
 import {
   Session, ChipState, chipState, statusPayload, sig, firstSeenOf,
-  readParsedSession, liveTranscriptOf, AskDriver,
+  readParsedSession, liveTranscriptOf, customTitleOf, AskDriver,
+  metaSigOf, filterInterrupted, RESTED,
 } from "./chat";
 import {
-  ROMP_STATE, rompIds, rompMeta, rompDir, rewriteName, scanTranscripts,
+  ROMP_STATE, PROJECTS, rompIds, rompMeta, rompDir, rewriteName, scanTranscripts,
   resolveSessionRef, digestOf, ledgerSigOf, lastSummary, readSessionOrder,
   writeSessionOrder, writeChatActive, focusTimeline, hoverTimeline,
   appendLocateDiag, appendCleared, undoLastClear, appendFollowup, appendCorrection,
-  appendRelevanceCorrection, readReqRows, readFeedDetail, isEventId, turnEvent,
-  relTime, ChipColor,
+  appendRelevanceCorrection, appendReport, readReqRows, readFeedDetail, isEventId,
+  turnEvent, relTime, ChipColor,
 } from "./state";
 import {
   computeFeedItems, computeAskItems, workingNames, ageRgbTuple, lastReqBySid,
-  FeedItem, AskItem,
+  missedHandoffSuspects, FeedItem, AskItem,
 } from "./feed";
 
 const POLL_MS = 800;
@@ -98,11 +99,23 @@ let focusOverlayItem: string | null = null;
 let activeTab: { tid: string; name: string } | null = null;
 
 // ---- WS clients ----
-interface Client extends WebSocket { rompApp?: "chat" | "feed"; rompReady?: boolean; }
+interface Client extends WebSocket { rompApp?: "chat" | "feed"; rompReady?: boolean; rompActiveTab?: string | null; }
 const clients = new Set<Client>();
 function post(msg: any) {
   const s = JSON.stringify(msg);
   for (const c of clients) if (c.rompApp === "chat" && c.rompReady && c.readyState === WebSocket.OPEN) c.send(s);
+}
+
+// Shared tabs, PER-CLIENT focus (the user's choice 2026-06-11): the open-tab set
+// is one kernel-global thing — open/close anywhere applies everywhere — but
+// which tab is FOCUSED is each client's own. A focus triggered by a client's
+// request goes back to THAT client only; unprompted focuses (deep links, with
+// no requesting client) still broadcast. reqClient is set for the duration of
+// one message dispatch (handlers are synchronous; async paths capture it).
+let reqClient: Client | null = null;
+function postFocus(msg: any) {
+  if (reqClient && reqClient.readyState === WebSocket.OPEN) reqClient.send(JSON.stringify(msg));
+  else post(msg);
 }
 function feedPost(msg: any) {
   const s = JSON.stringify(msg);
@@ -116,7 +129,10 @@ const hasFeedClients = () => Array.from(clients).some((c) => c.rompApp === "feed
 
 function warn(text: string) {
   console.warn("romp-serve:", text);
-  post({ type: "kernelToast", text });        // unknown to render.ts today — harmless
+  // Both surfaces: the thin client turns this into a status-bar message; the
+  // webview bundles ignore the unknown type.
+  post({ type: "kernelToast", text });
+  feedPost({ type: "kernelToast", text });
 }
 
 // ---- session tabs (ported from extension.ts, dialogs removed) ----
@@ -130,7 +146,7 @@ function sessionStatus(s: Session, states: Map<string, SessionState> | null) {
   return statusPayload(s, chipState(s.name, states, s.lastWorking), states, s.lastSince);
 }
 
-function postSession(s: Session) {
+function postSession(s: Session, target?: Client) {
   const p = readParsedSession(s);
   if (!p) return;
   s.lastWorking = p.status.working;
@@ -139,16 +155,18 @@ function postSession(s: Session) {
   s.lastSig = sig(s.file);
   s.lastSince = p.status.sinceEpoch;
   s.lastState = state;
+  s.lastMetaSig = metaSigOf(s.name, states);
   const ledger = digestOf(s.id, states.get(s.name)?.summary);
   s.ledgerSig = ledgerSigOf(ledger);
-  post({
+  const msg = {
     type: "session",
     id: s.id, name: s.name, color: s.color,
-    events: p.events,
+    events: filterInterrupted(p.events, state),
     status: statusPayload(s, state, states, p.status.sinceEpoch),
     ledger,
     firstSeen: firstSeenOf(s),
-  });
+  };
+  if (target) postTo(target, msg); else post(msg);
 }
 
 function pushUpdate(s: Session) {
@@ -162,7 +180,17 @@ function pushUpdate(s: Session) {
   s.lastWorking = p.status.working;
   const state = chipState(s.name, lastStates, s.lastWorking);
   s.lastState = state;
-  post({ type: "update", id: s.id, events: p.events, status: statusPayload(s, state, lastStates, s.lastSince) });
+  s.lastMetaSig = metaSigOf(s.name, lastStates);
+  post({ type: "update", id: s.id, events: filterInterrupted(p.events, state), status: statusPayload(s, state, lastStates, s.lastSince) });
+}
+
+// Re-post a session's (filtered) events without a transcript change — used when
+// a working→rest transition means the trailing turn may have just been
+// interrupt-restored and should disappear, mirroring the TUI.
+function repostEventsFor(s: Session, state: ChipState) {
+  const p = readParsedSession(s);
+  if (!p) return;
+  post({ type: "update", id: s.id, events: filterInterrupted(p.events, state), status: statusPayload(s, state, lastStates, s.lastSince) });
 }
 
 function watch(s: Session) {
@@ -177,7 +205,7 @@ function watch(s: Session) {
 function addSession(file: string, anchor?: string, keepOpen?: boolean) {
   const id = path.basename(file, ".jsonl");
   if (sessions.has(id)) {
-    post({ type: "focus", id, anchor });
+    postFocus({ type: "focus", id, anchor });
     return;
   }
   const meta = rompMeta(id);
@@ -191,7 +219,7 @@ function addSession(file: string, anchor?: string, keepOpen?: boolean) {
   };
   sessions.set(id, sess);
   postSession(sess);
-  post({ type: "focus", id, anchor });
+  postFocus({ type: "focus", id, anchor });
   watch(sess);
   persistOpen();
 }
@@ -201,15 +229,15 @@ function addSession(file: string, anchor?: string, keepOpen?: boolean) {
 // (names/, digest/, ledger all key on it) and firstSeen stays cached from the
 // anchor. Re-post the full session so the webview rebuilds from the new file.
 function repointSession(s: Session, file: string) {
-  s.watcher?.close();
+  try { s.watcher?.close(); } catch { /* ignore */ }
   s.watcher = undefined;
   if (s.debounce) { clearTimeout(s.debounce); s.debounce = undefined; }
   s.file = file;
   s.parser = undefined;
   s.offset = 0;
   s.lastSig = "";
-  postSession(s);
   watch(s);
+  postSession(s);
 }
 
 function closeSession(id: string) {
@@ -269,33 +297,127 @@ async function createNewSession(rawName: string) {
   if (!name || !/^[A-Za-z0-9._-]+$/.test(name)) { warn("session names use letters, digits, . _ - only."); return; }
   const states0 = backend.liveSessions();
   if (states0.has(name)) { warn(`a session named "${name}" already exists.`); openByName(name); return; }
+  const rc = reqClient;   // survives the awaits below, so the new tab focuses the asker
   const cwd = process.env.ROMP_SERVE_CWD || os.homedir();
   const made = await backend.spawn(name, cwd);
   if (!made) { warn(`couldn't create session "${name}" — is the romp launcher on your PATH?`); return; }
   for (let i = 0; i < 20; i++) {
     await new Promise((r) => setTimeout(r, 800));
     const states = backend.liveSessions();
-    if (states.has(name) && resolveSessionRef(name)) { openByName(name); return; }
+    if (states.has(name) && resolveSessionRef(name)) {
+      reqClient = rc;
+      try { openByName(name); } finally { reqClient = null; }
+      return;
+    }
   }
   warn(`"${name}" is starting — open it from the + picker once it appears.`);
 }
 
 function openSessionById(id: string) {
-  const tr = scanTranscripts().get(id);
-  if (!tr) return;
-  const name = rompMeta(id).name ?? id.slice(0, 8);
-  const states = backend.liveSessions();
-  if (states.size > 0 && states.has(name)) addSession(tr.file);
-  else addSession(tr.file, undefined, true);   // dead → read-only tab (no native revive dialog here)
+  // Fork/incarnation-aware: live under its customTitle (even when the clicked
+  // fsid is an old fork) → focus the running session by name; otherwise offer
+  // to revive the MOST RECENT incarnation (in-webview dialog).
+  const t = resolveSession(id);
+  if (!t) return;
+  if (t.liveName) { openByName(t.liveName); return; }
+  const name = customTitleOf(t.file) ?? rompMeta(t.id).name ?? t.id.slice(0, 8);
+  postFocus({ type: "confirmRevive", id: t.id, name });
 }
 
 function openByName(name: string) {
   const r = resolveSessionRef(name);
   if (!r) { warn(`no session named "${name}".`); return; }
-  if (sessions.has(r.id)) { post({ type: "focus", id: r.id }); return; }
+  if (sessions.has(r.id)) { postFocus({ type: "focus", id: r.id }); return; }
   const states = backend.liveSessions();
   if (states.size > 0 && states.has(name)) addSession(r.file);
-  else addSession(r.file, undefined, true);
+  else postFocus({ type: "confirmRevive", id: r.id, name });
+}
+
+// External deep-link (vscode://…/open?session=&anchor= forwarded by the thin
+// client, or a future /open route): focus the session's tab, opening it first
+// if needed. Fork/incarnation-aware like openSessionById; a dead session gets
+// the in-page revive dialog.
+function deepLink(session: string, m: any) {
+  const anchor = m.anchor ? String(m.anchor) : undefined;
+  const anchorT = Number(m.anchorT) || undefined;
+  const anchorKind = m.anchorKind ? String(m.anchorKind) : undefined;
+  const compose = !!m.compose;
+  const r = resolveSessionRef(session);
+  if (!r) { warn(`no transcript found for "${session}".`); return; }
+  if (sessions.has(r.id)) {
+    postFocus({ type: "focus", id: r.id, anchor, anchorT, anchorKind });
+    if (compose) postFocus({ type: "focusComposer" });
+    return;
+  }
+  const t = resolveSession(session) ?? { id: r.id, file: r.file, liveName: null };
+  if (t.liveName) {
+    const lr = resolveSessionRef(t.liveName) ?? t;
+    if (sessions.has(lr.id)) postFocus({ type: "focus", id: lr.id, anchor, anchorT, anchorKind });
+    else addSession(lr.file, anchor);
+    if (compose) postFocus({ type: "focusComposer" });
+    return;
+  }
+  const name = customTitleOf(t.file) ?? rompMeta(t.id).name ?? t.id.slice(0, 8);
+  postFocus({ type: "confirmRevive", id: t.id, name });
+}
+
+// The × on a live session's tab: confirm in-page before anything irreversible.
+// A dead session's tab just closes (nothing to end). The tick's AUTO-close
+// calls closeSession directly, so it never prompts.
+function requestCloseTab(id: string) {
+  const s = sessions.get(id);
+  if (!s) return;
+  const states = backend.liveSessions();
+  const running = states.size > 0 && states.has(s.name);
+  if (!running) { closeSession(id); return; }
+  postFocus({ type: "confirmClose", id, name: s.name });
+}
+
+// Revive a dead session (the in-webview dialog's "Revive"): relaunch detached
+// under its original name + dir, wait for it to register live, then open the
+// now-current transcript. Ported from the extension's reopenSession.
+function reviveSession(id: string) {
+  const name = rompMeta(id).name ?? customTitleOf(scanTranscripts().get(id)?.file || "") ?? id.slice(0, 8);
+  const rc = reqClient;
+  if (!backend.resume(name, id, rompDir(id))) { warn(`failed to reopen "${name}".`); return; }
+  let tries = 0;
+  const openLatest = () => {
+    const transcripts = scanTranscripts();
+    let best: { file: string; mtime: number } | undefined;
+    for (const tid of rompIds()) {
+      if (rompMeta(tid).name !== name) continue;
+      const t = transcripts.get(tid);
+      if (t && (!best || t.mtime > best.mtime)) best = t;
+    }
+    if (best) {
+      reqClient = rc;
+      try { addSession(best.file); } finally { reqClient = null; }
+    }
+  };
+  const poll = () => {
+    const states = backend.liveSessions();
+    const live = states.size > 0 && states.has(name);
+    if (live || tries++ >= 20) openLatest();
+    else setTimeout(poll, 1000);
+  };
+  setTimeout(poll, 800);
+}
+
+// A file dropped on the composer from the OS carries NO filesystem path in a
+// sandboxed webview — only its bytes. Save them under the romp state dir and
+// hand the path back ("droppedPath") so the prompt references a real, readable
+// file. Drops that DO expose a path never reach here (inserted in-webview).
+function saveDroppedFile(name: string, b64: string) {
+  try {
+    const drops = path.join(ROMP_STATE(), "drops");
+    fs.mkdirSync(drops, { recursive: true });
+    const safe = name.replace(/[^\w.-]+/g, "_").slice(-80) || "drop";
+    const file = path.join(drops, `${Date.now()}-${safe}`);
+    fs.writeFileSync(file, Buffer.from(b64, "base64"));
+    post({ type: "droppedPath", path: file });
+  } catch (e) {
+    warn(`couldn't save the dropped file — ${(e as Error).message ?? e}`);
+  }
 }
 
 function openAllRunning() {
@@ -340,6 +462,10 @@ function sessionPayload() {
 }
 
 function setActiveTab(id: string | null) {
+  if (reqClient) reqClient.rompActiveTab = id;   // each client keeps its own focus
+  // The kernel-global active tab (probe priority, the timeline's lane outline,
+  // and the restore default for a fresh page) follows the most recent client
+  // to change focus — last-writer-wins, same as two hosts sharing a file.
   if (id) {
     const name = sessions.get(id)?.name ?? rompMeta(id).name ?? id.slice(0, 8);
     activeTab = { tid: id, name };
@@ -367,15 +493,32 @@ function interruptSession(id: string) {
   // (re-asserted at two delays to ride out a late PostToolUse).
   const tInt = Math.floor(Date.now() / 1000);
   for (const ms of [600, 2000]) setTimeout(() => { backend.markIdle(name, tInt); refreshStatusFor(id); }, ms);
+  // A pre-first-token interrupt restores the prompt into the TUI's composer and
+  // hides the turn; filterInterrupted mirrors that, but its just-sent age guard
+  // (2.5s) can outlast the refreshes above when the interrupt follows the send
+  // almost immediately. One more re-post after the guard expires catches that.
+  setTimeout(() => {
+    const s = sessions.get(id);
+    if (!s) return;
+    const state = chipState(s.name, lastStates, s.lastWorking);
+    if (RESTED.has(state)) repostEventsFor(s, state);
+  }, 3200);
 }
 
+// Re-read live state and push a status update for one session if its chip
+// changed — makes an interrupt feel immediate without waiting for the poll tick.
 function refreshStatusFor(id: string) {
   const s = sessions.get(id);
   if (!s || !hasChatClients()) return;
   lastStates = backend.liveSessions();
   const state = chipState(s.name, lastStates, s.lastWorking);
   if (state === s.lastState) return;
+  const wasBusy = s.lastState === "working" || s.lastState === "compacting";
   s.lastState = state;
+  s.lastMetaSig = metaSigOf(s.name, lastStates);
+  // an interrupt settling the session = the trailing turn may have been
+  // restored to the composer — re-post events so its bubble disappears too
+  if (wasBusy && RESTED.has(state)) { repostEventsFor(s, state); return; }
   post({ type: "status", id: s.id, status: statusPayload(s, state, lastStates, s.lastSince) });
 }
 
@@ -409,18 +552,63 @@ function compactSession(id: string) {
 // ---- live asks ----
 
 function postLiveAskFor(s: Session) {
+  if (!backend.tui) return;
   const live = asker.liveAsk(s.name);
   if (!live) {
     if (s.askSig) { s.askSig = undefined; post({ type: "askLiveClear", id: s.id }); }
+    // HOOKLESS prompt answered: a picker that fired no hook (e.g. the /model
+    // switch confirmation) fires none on dismissal either, so the "permission"
+    // we painted below would strand the red chip forever. After the composer
+    // has been back for a few consecutive ticks (riding out the ~3s transient
+    // lag of a decline/cancel, which real prompts' own hooks heal), reset.
+    s.askComposerTicks = (s.askComposerTicks ?? 0) + 1;
+    if (s.askComposerTicks >= 4) backend.tui.markState(s.name, "waiting", ["permission"]);
     return;
   }
+  s.askComposerTicks = 0;
   if (live.sig !== s.askSig) { s.askSig = live.sig; post({ type: "askLive", id: s.id, ask: live.ask }); }
 }
 
+// HOOKLESS pickers. The published state only learns "permission" from the
+// Notification hook, and Claude Code fires NO hook for TUI confirmations like
+// the /model switch prompt — so such a session keeps its old chip and the chat
+// view never even looked at its pane (the user's report, 2026-06-11). Probe live
+// panes for a structured picker; on a hit, paint the pane awaiting — which
+// heals EVERY consumer (chip, dashboard, timeline, feed) — and post the live
+// ask now. Only a real parse counts; the TEXT fallback card stays exclusive to
+// hook-confirmed awaiting states.
+let probeTick = 0;
+function probeHooklessAsk(s: Session): boolean {
+  if (!backend.tui) return false;
+  const parsed = asker.parse(s.name);
+  if (!parsed) return false;
+  s.askComposerTicks = 0;
+  if (parsed.sig !== s.askSig) { s.askSig = parsed.sig; post({ type: "askLive", id: s.id, ask: parsed }); }
+  backend.tui.markState(s.name, "permission", ["waiting", "working", "idle", ""]);
+  return true;
+}
+
+// For every awaiting session, push its pending prompt to the webview; clear it
+// the moment the session stops awaiting. Non-awaiting live sessions get probed
+// for hookless pickers — the active tab every tick, the rest every 4th tick
+// (and any tick while their ask card is up, so it clears promptly).
 function refreshLiveAsks() {
+  probeTick++;
+  // a tab focused in ANY client gets the every-tick probe (per-client focus)
+  const activeIds = new Set<string>();
+  if (activeTab) activeIds.add(activeTab.tid);
+  for (const c of clients) if (c.rompApp === "chat" && c.rompActiveTab) activeIds.add(c.rompActiveTab);
   for (const s of sessions.values()) {
-    if (chipState(s.name, lastStates, s.lastWorking) === "awaiting") postLiveAskFor(s);
-    else if (s.askSig) { s.askSig = undefined; post({ type: "askLiveClear", id: s.id }); }
+    const st = chipState(s.name, lastStates, s.lastWorking);
+    if (st === "awaiting") { postLiveAskFor(s); continue; }
+    // Probe ONLY quiet sessions (2026-06-11 timeline_window incident): a WORKING
+    // session cannot have a picker up — Claude is running — but its pane is full
+    // of arbitrary output, and a parser false-positive here painted "permission"
+    // over a live turn. Hookless pickers only ever appear on a ready/idle session.
+    if ((st === "ready" || st === "idle") && (activeIds.has(s.id) || s.askSig || probeTick % 4 === 0)) {
+      if (probeHooklessAsk(s)) continue;
+    }
+    if (s.askSig) { s.askSig = undefined; post({ type: "askLiveClear", id: s.id }); }
   }
 }
 
@@ -461,7 +649,7 @@ function tick() {
     // tabs (keepOpen) stay pinned to the file they were opened on.
     if (!s.keepOpen && lastStates && lastStates.size > 0 && lastStates.has(s.name)) {
       const live = liveTranscriptOf(s);
-      if (live !== s.file) repointSession(s, live);
+      if (live !== s.file) { repointSession(s, live); continue; }
     }
     const cur = sig(s.file);
     if (cur && cur !== s.lastSig) { pushUpdate(s); continue; }
@@ -473,9 +661,19 @@ function tick() {
     } else {
       s.closedTicks = 0;
     }
-    if (state !== s.lastState) {
+    // Re-post on a state change OR a model/effort/ctx/faded change. The meta
+    // check matters for a reopened/revived session: its tab opens before the
+    // TUI's statusline republishes the live vars, so the values arrive a few
+    // seconds later with NO chip-state change to carry them.
+    const mSig = metaSigOf(s.name, lastStates);
+    if (state !== s.lastState || mSig !== s.lastMetaSig) {
+      const wasBusy = s.lastState === "working" || s.lastState === "compacting";
       s.lastState = state;
-      post({ type: "status", id: s.id, status: statusPayload(s, state, lastStates, s.lastSince) });
+      s.lastMetaSig = mSig;
+      // settling out of work with no transcript change = a possible interrupt-
+      // restore: re-post events so the trailing turn is (un)hidden to match
+      if (wasBusy && RESTED.has(state)) repostEventsFor(s, state);
+      else post({ type: "status", id: s.id, status: statusPayload(s, state, lastStates, s.lastSince) });
     }
   }
   refreshLiveAsks();
@@ -524,6 +722,9 @@ function refreshFeed(force = false) {
     })),
   }));
   lastAskItems = asks;
+  // NEEDS INPUT is a UNION: text-DECISION links + sessions LIVE-blocked on the
+  // user (permission prompt / resume picker). Ephemeral session states, not
+  // registry objects: no Clear button, the card's click opens the session.
   const BLOCKED_STATES = new Set(["permission", "picker"]);
   const blocked: any[] = [];
   if (lastStates) {
@@ -531,17 +732,46 @@ function refreshFeed(force = false) {
       if (!BLOCKED_STATES.has(info.state)) continue;
       const id = rompIds().find((i) => (rompMeta(i).name ?? i.slice(0, 8)) === name);
       const sinceT = Number(info.since) || 0;
+      // auto-mode debounce (2026-06-11): with auto mode on, every tool fires a
+      // permission notification that the classifier allows seconds later — a
+      // "permission" younger than this isn't blocked, it's mid-decision.
+      if (info.state === "permission" && now - sinceT < 15) continue;
+      const what = info.state === "permission" ? "waiting for your approval (permission prompt)"
+        : "blocked on the resume picker";
+      // The user's ruling (2026-06-11): a blocked session is NOT its own card —
+      // the ask the session is blocked ON moves to BLOCKED itself. Resolve the
+      // live turn to its card(s); the synthetic session card below is an ERROR
+      // FLAG for an unclaimed live turn (capture/linking missed), kept so a
+      // block is never invisible.
+      const ev = id ? turnEvent(id, null, sinceT || now) : null;
+      const hit = ev ? asks.filter((a) => a.sid === id
+        && (a.turnIds.includes(String(ev.id)) || (a.path?.events || []).includes(String(ev.id)))) : [];
+      if (hit.length) {
+        for (const a of hit) a.blocked = { state: info.state, since: sinceT, what };
+        continue;
+      }
       blocked.push({
         sid: id ?? "", name, color: id ? rompMeta(id).color : null,
-        state: info.state, since: sinceT,
-        what: info.state === "permission" ? "waiting for your approval (permission prompt)"
-          : "blocked on the resume picker",
+        state: info.state, since: sinceT, what,
       });
     }
   }
+  // missed-handoff suspects → ⚠ on the sender's most plausible open card (the
+  // one with the newest activity at send time); confirm/reject via the Report box
+  for (const s of missedHandoffSuspects(now)) {
+    const cands = asks.filter((a) => a.sid === s.fromSid && a.created <= s.t);
+    if (!cands.length) continue;
+    const actAt = (a: any) => Math.max(a.created, ...(a.linked || []).filter((r: any) => (r.t || 0) <= s.t).map((r: any) => r.t || 0));
+    const card: any = cands.reduce((x: any, y: any) => (actAt(y) > actAt(x) ? y : x));
+    const toName = rompMeta(s.toSid).name ?? s.toSid.slice(0, 8);
+    (card.suspects = card.suspects || []).push({
+      mid: s.mid, to: toName, t: s.t, snippet: s.snippet,
+      why: `a message to ${toName} was judged not-a-delegation, but ${toName} then did work linked to no card`,
+    });
+  }
   const sg = `${feedShowDismissed ? "D" : "L"}:${dismissed.size}:${clearedRows.length}:`
     + items.map((i) => `${i.itemId}:${i.live ? 1 : 0}:${i.relevance}:${i.origin === "user" ? "u" : "a"}:${i.inAsk ? 1 : 0}:${Math.floor((now - i.t) / 60)}`).join("|")
-    + "‖A:" + asks.map((a) => `${a.itemId}:${a.live ? 1 : 0}:${a.done}:${a.needsYou}:${a.linked.length}:${Math.floor((now - a.t) / 60)}:${a.text.length}:${a.column}:${a.reopened ? "R" : ""}:${a.openPaths.length}:${a.tree.map((n) => n.status[0] + (n.whoWorking ? "W" : "")).join("")}:${a.openQuestions.map((q) => q.reply_id + q.qtype[0] + (q.brief ? "+b" : "")).join(",")}`).join("|")
+    + "‖A:" + asks.map((a) => `${a.itemId}:${a.live ? 1 : 0}:${a.done}:${a.needsYou}:${a.linked.length}:${Math.floor((now - a.t) / 60)}:${a.text.length}:${a.column}:${a.reopened ? "R" : ""}:${a.liveness}:${a.blocked ? "B" : ""}:${a.autoFiled ? "AF" : ""}:${a.explicitDone ? "X" : ""}:${a.waiting ? "W" : ""}:${(a as any).suspects ? (a as any).suspects.length : 0}:${a.openPaths.length}:${a.tree.map((n) => n.status[0] + (n.whoWorking ? "W" : "")).join("")}:${a.openQuestions.map((q) => q.reply_id + q.qtype[0] + (q.brief ? "+b" : "")).join(",")}`).join("|")
     + "‖B:" + blocked.map((b) => `${b.name}:${b.state}:${Math.floor((now - b.since) / 60)}`).join("|")
     + "‖W:" + workingNames(lastStates).join(",");
   lastFeedItems = items;
@@ -595,33 +825,115 @@ function cardsForEvent(eid: string): Array<{ open: string; dom: string[]; label:
   return out;
 }
 
+// Fan the modal-row hover out to the CHAT panel too (the user 2026-06-11):
+// white-ring the rail dots of every chat turn inside the hovered event's span,
+// and any postal card carrying a hovered message id. An event id self-describes
+// its session and start (`<sid>:<turn-start>:<hash>`); the matching feed row's
+// t (the period end) bounds the span. Ids without the event shape are postal
+// message ids. null/empty → clear.
+function chatGlow(ids: string[] | null) {
+  if (!hasChatClients()) return;
+  const groups = new Map<string, Array<[number, number]>>();
+  const mids: string[] = [];
+  for (const id of ids || []) {
+    const parts = id.split(":");
+    if (parts.length >= 3 && /^\d+$/.test(parts[1])) {
+      const sid = parts[0];
+      const start = parseInt(parts[1], 10);
+      let end = start;
+      for (const a of lastAskItems) {
+        for (const l of a.linked || []) if (String(l.reply_id) === id) end = Math.max(end, l.t || start);
+        for (const n of a.tree || []) for (const r of n.rows || []) if (String(r.reply_id) === id) end = Math.max(end, r.t || start);
+      }
+      if (!groups.has(sid)) groups.set(sid, []);
+      groups.get(sid)!.push([start, end]);
+    } else if (id) mids.push(id);
+  }
+  post({ type: "glowTurns", groups: Array.from(groups, ([sid, ranges]) => ({ sid, ranges })), mids });
+}
+
+// hoverTimeline + the chat glow fan, debounced together (rides the same ~40ms
+// cadence the timeline-hover file write uses).
+let glowTimer: NodeJS.Timeout | undefined;
+let glowPending: string[] | null = null;
+function hoverFan(ids: string[] | string | null) {
+  hoverTimeline(ids);
+  glowPending = ids == null ? null : Array.isArray(ids) ? ids : [ids];
+  if (glowTimer) return;
+  glowTimer = setTimeout(() => { glowTimer = undefined; chatGlow(glowPending); }, 40);
+}
+
 function onDotHover(sid: string | null, uuid: string | null, t: number) {
   const ev = sid ? turnEvent(sid, uuid, t) : null;
-  if (!ev) { hoverTimeline(null); feedPost({ type: "hoverCards", keys: [] }); return; }
+  if (!ev) { hoverTimeline(null); feedPost({ type: "hoverCards", keys: [], eid: null }); return; }
   hoverTimeline(String(ev.id));
-  feedPost({ type: "hoverCards", keys: cardsForEvent(String(ev.id)).flatMap((c) => c.dom) });
+  // eid → the feed also white-rings the matching ROWS inside an open modal
+  feedPost({ type: "hoverCards", keys: cardsForEvent(String(ev.id)).flatMap((c) => c.dom), eid: String(ev.id) });
 }
 
 function onDotOpen(sid: string, uuid: string | null, t: number) {
   const ev = turnEvent(sid, uuid, t);
   const cards = ev ? cardsForEvent(String(ev.id)) : [];
   if (!cards.length) { warn("this turn has no open feed card"); return; }
-  feedPost({ type: "openCard", key: cards[0].open });   // multi-card: open the first (no native picker)
+  // multi-card: open the first (no native picker here); hl white-rings the
+  // clicked turn's row(s) inside the opened modal
+  feedPost({ type: "openCard", key: cards[0].open, hl: ev ? String(ev.id) : null });
 }
 
+// Resolve a clicked / deep-linked transcript fsid to the SESSION it belongs to,
+// accounting for a session that has lived across several fsids (/clear forks,
+// kill+relaunch, revive — each a fresh fsid, but the transcript's customTitle
+// stays the session's name). Returns the session's CURRENT incarnation — the
+// newest same-customTitle transcript — plus the live name if it's running now.
+function resolveSession(fsid: string): { id: string; file: string; liveName: string | null } | null {
+  const tr = scanTranscripts().get(fsid);
+  if (!tr) return null;
+  const title = customTitleOf(tr.file);
+  let id = fsid, file = tr.file;
+  if (title) {
+    const dir = path.dirname(tr.file);
+    let bestM = -1;
+    try {
+      for (const f of fs.readdirSync(dir)) {
+        if (!f.endsWith(".jsonl") || f.startsWith("agent-")) continue;
+        const fp = path.join(dir, f);
+        let st: fs.Stats;
+        try { st = fs.statSync(fp); } catch { continue; }
+        if (st.mtimeMs <= bestM) continue;
+        if (customTitleOf(fp) !== title) continue;
+        bestM = st.mtimeMs; file = fp; id = f.replace(/\.jsonl$/, "");
+      }
+    } catch { /* unreadable dir → keep the clicked transcript */ }
+  }
+  const states = backend.liveSessions();
+  let liveName: string | null = null;
+  if (states.size > 0) {
+    if (title && states.has(title)) liveName = title;   // customTitle is authoritative over a stale names entry
+    else { const nm = rompMeta(id).name; if (nm && states.has(nm)) liveName = nm; }
+  }
+  return { id, file, liveName };
+}
+
+// Jump the CHAT panel to the user's instruction behind a feed card, from
+// first-party data only (the card's session + mint epoch). Fork/incarnation-
+// aware: a card stamped with an old fsid still belongs to a live session under
+// its customTitle. A passive locate never offers revive — dead just highlights.
 function locateInChat(sid: string, t: number) {
   if (!sid || !t) return;
-  const r = resolveSessionRef(sid);
-  if (!r) return;
-  if (sessions.has(r.id)) {
-    post({ type: "focus", id: r.id, anchorT: t, anchorKind: "user" });
+  const direct = resolveSessionRef(sid);
+  if (direct && sessions.has(direct.id)) {
+    postFocus({ type: "focus", id: direct.id, anchorT: t, anchorKind: "user" });
     return;
   }
-  const name = rompMeta(r.id).name ?? r.id.slice(0, 8);
-  const states = backend.liveSessions();
-  if (!(states.size > 0 && states.has(name))) return;   // dead + unopened: highlight only
-  addSession(r.file);
-  post({ type: "focus", id: r.id, anchorT: t, anchorKind: "user" });
+  const target = resolveSession(sid);
+  if (!target || !target.liveName) return;   // dead + unopened: highlight only
+  const lr = resolveSessionRef(target.liveName) ?? target;
+  if (sessions.has(lr.id)) {
+    postFocus({ type: "focus", id: lr.id, anchorT: t, anchorKind: "user" });
+    return;
+  }
+  addSession(lr.file);
+  postFocus({ type: "focus", id: lr.id, anchorT: t, anchorKind: "user" });
 }
 
 // ---- open-in-editor (the one genuinely editor-bound feature) ----
@@ -689,8 +1001,10 @@ function onChatReady(c: Client) {
       if (recent) { addSession(recent.file); return; }
     }
   }
-  for (const s of sessions.values()) postSession(s);
+  // Replay the shared tab set to THIS client only — peers already have it.
+  for (const s of sessions.values()) postSession(s, c);
   if (kstate.activeTab && sessions.has(kstate.activeTab)) postTo(c, { type: "focus", id: kstate.activeTab });
+  c.rompActiveTab = kstate.activeTab && sessions.has(kstate.activeTab) ? kstate.activeTab : null;
   const ord = readSessionOrder();
   lastOrderSig = ord.join(",");
   postTo(c, { type: "tabOrder", order: ord });
@@ -701,16 +1015,38 @@ function handleChatMessage(c: Client, m: any) {
   if (m.type === "ready") onChatReady(c);
   else if (m.type === "addSession") post({ type: "openPicker", pick: false });
   else if (m.type === "createSession") void createNewSession(String(m.name ?? ""));
-  else if (m.type === "closeSession" && m.id) closeSession(String(m.id));   // close tab only; never kills the session
+  else if (m.type === "closeSession" && m.id) requestCloseTab(String(m.id));   // live → in-page End/Close confirm
+  else if (m.type === "closeTab" && m.id) closeSession(String(m.id));
+  else if (m.type === "endSession" && m.id) {
+    const s = sessions.get(String(m.id));
+    if (s) { backend.kill(s.name); closeSession(String(m.id)); }
+  }
+  else if (m.type === "reviveSession" && m.id) reviveSession(String(m.id));
+  else if (m.type === "viewReadOnly" && m.id) {
+    const tr = scanTranscripts().get(String(m.id));
+    if (tr) addSession(tr.file, undefined, true);   // keepOpen: exempt from auto-close
+  }
   else if (m.type === "renameSession" && m.id && typeof m.name === "string") renameSession(String(m.id), String(m.name));
   else if (m.type === "requestSessions") postTo(c, { type: "sessionList", items: sessionPayload() });
   else if (m.type === "openSession" && m.id) openSessionById(String(m.id));
   else if (m.type === "openByName" && m.name) openByName(String(m.name));
   else if (m.type === "openAll") openAllRunning();
+  else if (m.type === "deepLink" && m.session) deepLink(String(m.session), m);
+  else if (m.type === "openTranscript" && typeof m.file === "string") {
+    // a host asking to view a transcript file directly (rompChat.openCurrent)
+    const file = path.resolve(String(m.file));
+    if (file.startsWith(PROJECTS() + path.sep) && file.endsWith(".jsonl")) addSession(file);
+  }
   else if (m.type === "openFile" && m.path) openFileInEditor(String(m.path), m.line);
   else if (m.type === "openLink" && typeof m.href === "string") openLink(String(m.href));
   else if (m.type === "dotHover") onDotHover(m.sid ? String(m.sid) : null, m.uuid ? String(m.uuid) : null, Number(m.t) || 0);
   else if (m.type === "dotOpen" && m.sid) onDotOpen(String(m.sid), m.uuid ? String(m.uuid) : null, Number(m.t) || 0);
+  else if (m.type === "dropFile" && typeof m.name === "string" && typeof m.b64 === "string") saveDroppedFile(String(m.name), String(m.b64));
+  // pickFile/readClipboard are CLIENT capabilities — the browser shim intercepts
+  // them (file input / navigator.clipboard) before they ever reach this socket.
+  // Reaching here means an old shim: answer with the empty fallback.
+  else if (m.type === "readClipboard") postTo(c, { type: "clipboardText", text: "" });
+  else if (m.type === "pickFile") { /* handled client-side by the shim */ }
   else if (m.type === "activeTab") setActiveTab(m.id ?? null);
   else if (m.type === "sendMessage" && m.id && m.text) sendMessageToTab(String(m.id), String(m.text));
   else if (m.type === "interrupt" && m.id) interruptSession(String(m.id));
@@ -724,7 +1060,7 @@ function handleChatMessage(c: Client, m: any) {
   else if (m.type === "setEffort" && m.id && typeof m.value === "string") setSessionMeta(String(m.id), "effort", String(m.value));
   else if (m.type === "compactSession" && m.id) compactSession(String(m.id));
   else if (m.type === "reorderTabs" && Array.isArray(m.order)) { writeSessionOrder(m.order.map(String)); lastOrderSig = m.order.join(","); }
-  else if (m.type === "ledgerHover") hoverTimeline(m.id ? [String(m.id)] : null);
+  else if (m.type === "ledgerHover") hoverFan(m.id ? [String(m.id)] : null);
   else if (m.type === "ledgerLocate" && m.id) focusTimeline(String(m.id), String(m.sid ?? ""), Number(m.t) || 0, undefined, "work");
   else if (m.type === "imgRequest" && typeof m.path === "string") postTo(c, { type: "imgData", path: m.path, url: imgDataUrl(String(m.path)) });
   else if (m.type === "locateDiag") appendLocateDiag(m);
@@ -733,6 +1069,42 @@ function handleChatMessage(c: Client, m: any) {
 function withName(id: any, fn: (name: string) => void) {
   const name = sessions.get(String(id))?.name ?? rompMeta(String(id)).name;
   if (name) fn(name);
+}
+
+// ---- answering the resume picker (in-page dialog instead of a QuickPick) ----
+// The picker lives in the session's TUI, invisible here. Read the live screen,
+// hand the SAME options to the asking feed client; its choice comes back as
+// answerPickerChoice and we forward keystrokes. The user decides; we only
+// transport (the never-auto-answer rule holds).
+const PICKER_OPTS = ["Resume from summary (recommended)", "Resume full session as-is"];
+function answerPicker(c: Client, name: string) {
+  if (!backend.tui) { warn(`"${name}" is blocked on the resume picker — this backend can't drive it.`); return; }
+  const lines = backend.tui.capturePane(name).split("\n");
+  const opts = PICKER_OPTS.filter((o) => lines.some((l) => l.includes(o)));
+  if (!opts.length) {
+    warn(`${name}: the picker is no longer on screen.`);
+    refreshFeed(true);
+    return;
+  }
+  postTo(c, { type: "pickerOptions", name, options: opts });
+}
+function answerPickerChoice(name: string, want: number) {
+  if (!backend.tui) return;
+  const lines = backend.tui.capturePane(name).split("\n");
+  const opts = PICKER_OPTS.filter((o) => lines.some((l) => l.includes(o)));
+  if (want < 0 || want >= opts.length) return;
+  // Current highlight = the option line carrying the selector glyph (Ink uses ❯);
+  // when not found, the picker default is the first option.
+  let cur = 0;
+  opts.forEach((o, i) => {
+    const l = lines.find((x) => x.includes(o));
+    if (l && l.includes("❯")) cur = i;
+  });
+  const keys: string[] = [];
+  for (let i = 0; i < Math.abs(want - cur); i++) keys.push(want > cur ? "Down" : "Up");
+  keys.push("Enter");
+  backend.tui.sendKeys(name, keys);
+  setTimeout(() => refreshFeed(true), 1200);   // state hook flips picker→working shortly after
 }
 
 function handleFeedMessage(c: Client, m: any) {
@@ -754,10 +1126,24 @@ function handleFeedMessage(c: Client, m: any) {
       if (m.locate !== false && !m.jump) locateInChat(a.sid, a.created);
     }
   }
-  else if (m.type === "hoverHighlight") hoverTimeline(
+  else if (m.type === "hoverHighlight") hoverFan(
     Array.isArray(m.ids) && m.ids.length ? m.ids.map(String) : m.id ? String(m.id) : null);
   else if (m.type === "askClear" && m.itemId) {
     const id = String(m.itemId);
+    // CLEAR-ON-GREEN implicit label (the user 2026-06-11): clearing an
+    // auto-filed card that the judge never stamped IS the user asserting it was
+    // done, so file the done-corrections automatically — one click both retires
+    // the card and labels the judge's miss. UndoClear leaves the labels.
+    const ca: any = lastAskItems.find((x) => x.itemId === id);
+    if (ca && ca.autoFiled && !ca.explicitDone) {
+      for (const n of ca.tree || []) {
+        if (n.status === "done") continue;
+        const rows = n.rows || [];
+        // note carries the card id so UndoClear can retract exactly these labels
+        appendCorrection(String(n.id), rows.length ? String(rows[rows.length - 1].reply_id) : null,
+          `cleared-as-done: the user cleared an auto-filed card (implicit done label) (card ${id})`);
+      }
+    }
     appendCleared(id);
     if (id === focusOverlayItem) {
       const a = lastAskItems.find((x) => x.itemId === id);
@@ -782,7 +1168,17 @@ function handleFeedMessage(c: Client, m: any) {
     appendCleared(id);
     refreshFeed(true);
   }
-  else if (m.type === "answerPicker" && m.name) warn(`"${m.name}" is blocked on the resume picker — answer it in the terminal (not supported here yet).`);
+  // ⚠ Report box: category + free text + a snapshot of the card's computed
+  // state, appended to requests/reports.jsonl as a labeled failure example
+  else if (m.type === "askReport" && m.itemId) {
+    const a: any = lastAskItems.find((x) => x.itemId === String(m.itemId));
+    appendReport(String(m.itemId), String(m.category || "other"), String(m.text || ""),
+      a ? { column: a.column, liveness: a.liveness, autoFiled: !!a.autoFiled, explicitDone: !!a.explicitDone,
+            waiting: !!a.waiting, text: a.text, sid: a.sid, suspects: a.suspects || [] } : null);
+    warn("exception report filed — it becomes a regression label");
+  }
+  else if (m.type === "answerPicker" && m.name) answerPicker(c, String(m.name));
+  else if (m.type === "answerPickerChoice" && m.name && typeof m.n === "number") answerPickerChoice(String(m.name), m.n);
   else if (m.type === "answerQuestion" && m.name && typeof m.text === "string" && m.text.trim()) {
     const q = typeof m.question === "string" ? m.question.trim() : "";
     const qShort = q.length > 200 ? q.slice(0, 200) + "…" : q;
@@ -795,6 +1191,15 @@ function handleFeedMessage(c: Client, m: any) {
       const about = typeof m.title === "string" && m.title.trim() ? m.title.trim() : a.text;
       backend.send(a.name, `Follow-up on "${about}": ${String(m.text).trim()}`);
       appendFollowup(a.itemId, a.sid, String(m.text).trim());
+      // a follow-up on an AUTO-FILED card is the auto-filer's false-positive
+      // label (the card was NOT done) — record it with a snapshot, automatically,
+      // mirroring how Clear-on-green records the true-positive side.
+      const af: any = a;
+      if (af.autoFiled && !af.explicitDone) {
+        appendReport(a.itemId, "premature-auto-file", `follow-up sent: ${String(m.text).trim().slice(0, 300)}`,
+          { column: af.column, liveness: af.liveness, autoFiled: true, explicitDone: false,
+            waiting: !!af.waiting, text: a.text, sid: a.sid });
+      }
       setTimeout(() => refreshFeed(true), 1500);
     }
   }
@@ -829,11 +1234,46 @@ function shimJs(app: "chat" | "feed"): string {
     };
     ws.onclose = function () { setTimeout(function () { location.reload(); }, 1500); };
   }
+  function send(m) {
+    var s = JSON.stringify(m);
+    if (ws && ws.readyState === 1) ws.send(s); else queue.push(s);
+  }
+  function deliver(data) {
+    window.dispatchEvent(new MessageEvent("message", { data: data }));
+  }
   window.acquireVsCodeApi = function () {
     return {
       postMessage: function (m) {
-        var s = JSON.stringify(m);
-        if (ws && ws.readyState === 1) ws.send(s); else queue.push(s);
+        // CLIENT capabilities — things a real browser does better locally than
+        // the kernel can remotely. Same protocol, intercepted before the wire.
+        if (m && m.type === "readClipboard") {
+          var done = function (text) { deliver({ type: "clipboardText", text: text || "" }); };
+          if (navigator.clipboard && navigator.clipboard.readText) navigator.clipboard.readText().then(done, function () { done(""); });
+          else done("");
+          return;
+        }
+        if (m && m.type === "pickFile") {
+          // The 📎 button: a real file input; picked bytes ride the same
+          // dropFile→droppedPath pipeline as an in-page drop.
+          var inp = document.createElement("input");
+          inp.type = "file"; inp.multiple = true; inp.style.display = "none";
+          inp.onchange = function () {
+            var files = Array.prototype.slice.call(inp.files || []);
+            files.forEach(function (f) {
+              var r = new FileReader();
+              r.onload = function () {
+                var b64 = String(r.result || "").split(",")[1] || "";
+                send({ type: "dropFile", name: f.name, b64: b64 });
+              };
+              r.readAsDataURL(f);
+            });
+            inp.remove();
+          };
+          document.body.appendChild(inp);
+          inp.click();
+          return;
+        }
+        send(m);
       },
       getState: function () {
         try { return JSON.parse(localStorage.getItem(KEY) || "null"); } catch (e) { return null; }
@@ -905,7 +1345,7 @@ function chatHtml(): string {
   <div id="live-ask" style="display:none"></div>
   <div id="footer">
     <div id="statusline" class="statusline"></div>
-    <div id="composer"><textarea id="composer-input" rows="1" placeholder="Message this session…  (⏎ send · ⇧⏎ newline)"></textarea></div>
+    <div id="composer"><textarea id="composer-input" rows="1" placeholder="Message this session…  (⏎ send · ⇧⏎ newline)"></textarea><button id="composer-attach" title="Attach a file — inserts its path" aria-label="Attach file">📎</button></div>
   </div>
   <script>${shimJs("chat")}</script>
   <script src="/dist/render.js"></script>
@@ -955,6 +1395,16 @@ function deny(res: http.ServerResponse) {
   res.end("unauthorized — open /?token=<ROMP_SERVE_TOKEN>");
 }
 
+// The package version (dist/kernel.js sits beside ../package.json) — surfaced
+// on /healthz so an attaching host can detect a stale kernel and restart it.
+let _kver: string | null = null;
+function kernelVersion(): string {
+  if (_kver !== null) return _kver;
+  try { _kver = String(JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8")).version || ""); }
+  catch { _kver = ""; }
+  return _kver;
+}
+
 const STATIC_MIME: { [ext: string]: string } = {
   ".js": "text/javascript", ".css": "text/css", ".map": "application/json",
   ".svg": "image/svg+xml", ".png": "image/png", ".woff2": "font/woff2",
@@ -998,13 +1448,23 @@ export function main() {
       serveStatic(res, MEDIA, url.pathname.slice("/media/".length));
     } else if (url.pathname === "/healthz") {
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ ok: true, sessions: sessions.size, clients: clients.size }));
+      res.end(JSON.stringify({ ok: true, sessions: sessions.size, clients: clients.size, version: kernelVersion() }));
+    } else if (url.pathname === "/shutdown" && req.method === "POST") {
+      // The thin client's stale-kernel restart (version mismatch after a VSIX
+      // install): acknowledge, then exit — the requester respawns the new build.
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+      console.log("romp-serve: shutdown requested (stale-kernel restart)");
+      setTimeout(() => process.exit(0), 150);
     } else {
       res.writeHead(404); res.end("not found");
     }
   });
 
   const wss = new WebSocketServer({ server, path: "/ws" });
+  // ws re-emits the http server's errors here; unhandled, they'd throw and
+  // mask the EADDRINUSE handling below.
+  wss.on("error", () => { /* handled on the http server */ });
   wss.on("connection", (socket: Client, req) => {
     const url = new URL(req.url || "/", "http://x");
     if (!authorized(req, url)) { socket.close(4401, "unauthorized"); return; }
@@ -1015,11 +1475,14 @@ export function main() {
     socket.on("message", (data) => {
       let m: any;
       try { m = JSON.parse(String(data)); } catch { return; }
+      reqClient = socket;   // focus replies target the asking client (handlers are sync)
       try {
         if (app === "chat") handleChatMessage(socket, m);
         else handleFeedMessage(socket, m);
       } catch (e) {
         console.error("romp-serve: handler error for", m?.type, e);
+      } finally {
+        reqClient = null;
       }
     });
     socket.on("close", () => clients.delete(socket));
@@ -1027,6 +1490,22 @@ export function main() {
   });
 
   setInterval(tick, POLL_MS);
+  // Single-instance by port: a second kernel on the same port is the
+  // spawn-or-attach race (two hosts starting at once) — if the occupant is a
+  // romp kernel, defer to it quietly so the spawner just attaches.
+  server.on("error", (err: NodeJS.ErrnoException) => {
+    if (err.code !== "EADDRINUSE") { console.error("romp-serve:", err.message); process.exit(1); }
+    http.get({ host, port, path: "/healthz", timeout: 2000 }, (res) => {
+      let body = "";
+      res.on("data", (d) => (body += d));
+      res.on("end", () => {
+        let ok = false;
+        try { ok = !!JSON.parse(body).ok; } catch { /* not ours */ }
+        if (ok) { console.log(`romp-serve: already running on ${host}:${port} — attaching to that one.`); process.exit(0); }
+        console.error(`romp-serve: port ${port} is taken by something that isn't a romp kernel.`); process.exit(1);
+      });
+    }).on("error", () => { console.error(`romp-serve: port ${port} is taken and not answering /healthz.`); process.exit(1); });
+  });
   server.listen(port, host, () => {
     console.log(`romp-serve: chat  http://${host}:${port}/`);
     console.log(`romp-serve: feed  http://${host}:${port}/feed`);

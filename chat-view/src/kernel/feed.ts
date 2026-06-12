@@ -4,7 +4,8 @@
 // tests/test_romp_read_side.py (the Python twin used by romp -f).
 import type { SessionState } from "./backend";
 import {
-  ChipColor, rompIds, rompMeta, readReqRows, readDecisionBrief, ROMP_SUMMARIES,
+  ChipColor, rompIds, rompMeta, readReqRows, readDecisionBrief, openTurnId,
+  ROMP_SUMMARIES, ROMP_REQUESTS,
 } from "./state";
 import * as fs from "fs";
 import * as path from "path";
@@ -36,7 +37,7 @@ function djb2(s: string): string {
   return (h >>> 0).toString(36);
 }
 
-export type Relevance = "DONE" | "DECISION" | "ACTION" | "IDEA" | "DETAILS" | "UNTAGGED";
+export type Relevance = "DONE" | "DECISION" | "ACTION" | "IDEA" | "WAIT" | "DETAILS" | "UNTAGGED";
 export interface FeedItem {
   itemId: string; sid: string; name: string; color: ChipColor | null;
   did: string; ask: string; t: number; live: boolean; relevance: Relevance;
@@ -46,7 +47,7 @@ export interface FeedItem {
 
 export function normRelevance(v: any): Relevance {
   const s = String(v || "").toUpperCase();
-  return s === "DONE" || s === "DECISION" || s === "ACTION" || s === "IDEA" || s === "DETAILS" ? s : "UNTAGGED";
+  return s === "DONE" || s === "DECISION" || s === "ACTION" || s === "IDEA" || s === "WAIT" || s === "DETAILS" ? s : "UNTAGGED";
 }
 
 // Rebuilt on every feed pass: the user's last typed-turn time per session, and
@@ -120,7 +121,7 @@ export function computeFeedItems(states: Map<string, SessionState> | null): Feed
 
 type RowStatus = "done" | "question" | "update";
 export type AskColumn = "asks" | "needs_input" | "completed";
-export interface AskLinked { did: string; relevance: Relevance; t: number; reply_id: string; status: RowStatus; sid: string; name: string; color: ChipColor | null }
+export interface AskLinked { did: string; relevance: Relevance; t: number; reply_id: string; status: RowStatus; sid: string; name: string; color: ChipColor | null; answer?: boolean }
 export interface AskQuestion { reply_id: string; sid: string; name: string; t: number; brief: any | null; qtype: "decision" | "action" | "idea"; nodeId: string }
 export interface AskPath { name: string; sid: string; color: ChipColor | null; since: number; lastPhrase: string }
 export interface AskTreeNode {
@@ -140,22 +141,56 @@ export interface AskItem {
   text: string; t: number; created: number; live: boolean;
   done: number; needsYou: number; linked: AskLinked[]; turnId: string;
   column: AskColumn; openQuestions: AskQuestion[]; openPaths: AskPath[];
-  reopened: boolean;
+  reopened: boolean;                   // resurrected: a question arrived AFTER the user's clear
   path: { events: string[]; msgs: string[] };
   tree: AskTreeNode[];
+  // liveness reveal (2026-06-11): outline color in the feed — what an automated
+  // "is this still being worked?" rule WOULD say. Colors only, decides nothing.
+  liveness: AskLiveness; livenessWhy: string;
+  // settled card moved out of WORKING by the read-time auto-filing rule — the
+  // webview keeps its green ring in COMPLETED (verify before Clear)
+  autoFiled?: boolean;
+  // every path ends with an explicit DONE stamp (model or corrections) — the
+  // OTHER door into COMPLETED; webview ring = blue
+  explicitDone?: boolean;
+  // newest link on some node is WAIT: paused on an EXTERNAL event — held in
+  // WORKING, exempt from auto-filing and the green ring; ⏳ chip on the card
+  waiting?: boolean;
+  // every typed turn that touched this card (mint + amends) — joins a LIVE
+  // blocked turn (permission/picker) to the card it's blocked on
+  turnIds: string[];
+  // set by refreshFeed when the owning session is blocked ON this card's work
+  blocked?: { state: string; since: number; what: string };
+  // missed-handoff suspects attached by refreshFeed (deterministic sweep)
+  suspects?: Array<{ mid: string; to: string; t: number; snippet: string; why: string }>;
   groupTitle?: string; groupN?: number;
 }
+// The four liveness verdicts, session-level by construction:
+//   active    — the owning session is mid-turn on THIS card
+//   delegated — owner quiet, but a session holding an UNFINISHED handoff is mid-turn
+//   stalled   — an unfinished handoff whose recipient is quiet or gone
+//   settled   — no turn anywhere, no open handoff: nothing moves without the user
+export type AskLiveness = "active" | "delegated" | "stalled" | "settled";
 
 export function computeAskItems(states: Map<string, SessionState> | null, didById: Map<string, FeedItem>): AskItem[] {
   const liveNames = new Set<string>(states ? Array.from(states.keys()) : []);
   const asks = new Map<string, any>();
   const internals = new Map<string, any>();
   const parents = new Map<string, string[]>();
+  const amendTurns = new Map<string, string[]>();   // ask id → turn ids that amended/answered it (joins a live turn to its card)
+  const answerRows: any[] = [];                     // kind:"answer" rows — injected as pseudo-links below
   for (const n of readReqRows("nodes.jsonl")) {
     if (n.kind === "ask" && typeof n.id === "string") { if (!asks.has(n.id)) asks.set(n.id, { ...n }); }
     else if (n.kind === "internal" && typeof n.id === "string") { if (!internals.has(n.id)) internals.set(n.id, { ...n }); }
     else if (n.kind === "parents" && typeof n.id === "string") parents.set(n.id, Array.isArray(n.parent_ids) ? n.parent_ids : []);
-    else if (n.kind === "amend" && asks.has(n.id)) asks.get(n.id).text = String(n.text || asks.get(n.id).text || "");
+    else if (n.kind === "amend" && asks.has(n.id)) {
+      asks.get(n.id).text = String(n.text || asks.get(n.id).text || "");
+      if (n.turn_id) { if (!amendTurns.has(n.id)) amendTurns.set(n.id, []); amendTurns.get(n.id)!.push(String(n.turn_id)); }
+    }
+    else if (n.kind === "answer" && typeof n.id === "string") {
+      answerRows.push(n);
+      if (n.turn_id) { if (!amendTurns.has(n.id)) amendTurns.set(n.id, []); amendTurns.get(n.id)!.push(String(n.turn_id)); }
+    }
   }
   const clearedAt = new Map<string, number>();
   for (const c of readReqRows("cleared.jsonl")) {
@@ -206,6 +241,24 @@ export function computeAskItems(states: Map<string, SessionState> | null, didByI
       });
     }
   }
+  // ANSWER rows (kind:"answer", the user 2026-06-11): the user's typed reply to an
+  // agent question, recorded by the capture side as an explicit child event on
+  // the card — never inferred. Injected as a pseudo-link so the newest-link
+  // fold crosses the pending question off naturally (an ANSWER as newest link
+  // reads "in flight again"), the row renders in the card's history (↩), and
+  // recency/path joins pick the turn up. The next-typed-turn inference below
+  // (`answered`) survives only as the fallback for UNANCHORED answers.
+  for (const n of answerRows) {
+    const key = String(n.id);
+    if (!asks.has(key) && !internals.has(key)) continue;
+    if (!nodeLinks.has(key)) nodeLinks.set(key, []);
+    nodeLinks.get(key)!.push({
+      kind: "link", reply_id: String(n.turn_id || `ans:${key}:${n.t || 0}`),
+      request_ids: [key], relevance: "ANSWER",
+      sid: String((asks.get(key) ?? internals.get(key))?.sid || ""), t: n.t || 0,
+      _did: n.text ? String(n.text) : undefined, _answer: true,
+    });
+  }
   for (const ls of nodeLinks.values()) ls.sort((a, b) => (a.t || 0) - (b.t || 0));
   const answered = (l: any): boolean => (lastReqBySid.get(String(l.sid || "")) || 0) > (l.t || 0);
   const lastLinkBySid = new Map<string, number>();
@@ -222,13 +275,35 @@ export function computeAskItems(states: Map<string, SessionState> | null, didByI
     if (hit) return hit;
     const ls = nodeLinks.get(nid) || [];
     let st: NodeStatus = { st: "open" };
-    if (ls.length) {
-      const newest = ls[ls.length - 1];
+    // DETAILS never re-opens a verdict (the user's latching rule applied to the
+    // judged fold, 2026-06-11 evening): routine progress filed after a DONE stamp
+    // is cleanup riding the same node — only a question, an answer, or a new
+    // non-routine verdict changes state. Without this, any wrap-up DETAILS link
+    // erased the judge's DONE and every Completed card rendered auto-filed green.
+    let newest: any = null;
+    for (let i = ls.length - 1; i >= 0; i--) {
+      if (normRelevance(ls[i].relevance) === "DETAILS") continue;
+      newest = ls[i]; break;
+    }
+    if (newest) {
       const rel = normRelevance(newest.relevance);
       if (rel === "DONE") st = { st: "done" };
+      // ACTION = the user must DO something (reload, install, approve) — typing in
+      // the session does NOT cross it off; only an explicit "did it" (a DONE
+      // correction, newest-wins) closes it.
       else if (rel === "ACTION") st = { st: "question", qlink: newest };
+      // DECISION is answered by the user's next typed turn OR by the session moving on
       else if (rel === "DECISION" && !answered(newest) && !movedOn(newest)) st = { st: "question", qlink: newest };
+      // IDEA is dismissed by the user's next typed turn alone (it asks for a reaction)
       else if (rel === "IDEA" && !answered(newest)) st = { st: "question", qlink: newest };
+      // brief second-opinion gate (the user 2026-06-11): the brief sees the full
+      // chain; when it judged NEEDED=no ("no decision needed — just a completion
+      // report"), the needs-user verdict loses INSTANTLY here — the daemon's
+      // demotion correction makes it durable for every other surface.
+      if (st.st === "question") {
+        const b: any = readDecisionBrief(String(newest.reply_id || ""));
+        if (b && b.needed === false) st = { st: "open" };
+      }
     }
     statusCache.set(nid, st);
     return st;
@@ -309,7 +384,7 @@ export function computeAskItems(states: Map<string, SessionState> | null, didByI
     const reopened = clearedT !== undefined &&
       (openQuestions.some((q) => q.t > clearedT) || fuOpen.some((f) => (f.t || 0) > clearedT));
     if (clearedT !== undefined && !reopened) continue;
-    const column: AskColumn = openQuestions.length ? "needs_input" : allDone && !fuOpen.length ? "completed" : "asks";
+    let column: AskColumn = openQuestions.length ? "needs_input" : allDone && !fuOpen.length ? "completed" : "asks";
     const rowRank = { question: 2, done: 1, update: 0 } as const;
     const rowFor = (l: any, open: { qlink?: any }): AskLinked => {
       const rel = normRelevance(l.relevance);
@@ -320,6 +395,7 @@ export function computeAskItems(states: Map<string, SessionState> | null, didByI
         status: rel === "DONE" ? "done" : (rel === "DECISION" || rel === "ACTION" || rel === "IDEA") && open.qlink === l ? "question" : "update",
         sid: String(l.sid || ""), name: nameOf(String(l.sid || "")),
         color: rompMeta(String(l.sid || "")).color,
+        answer: l._answer ? true : undefined,    // the user's recorded answer → ↩ row
       };
     };
     const displayRows = (nid: string, open: NodeStatus): AskLinked[] => {
@@ -369,6 +445,65 @@ export function computeAskItems(states: Map<string, SessionState> | null, didByI
     });
     const meta = rompMeta(String(a.sid || ""));
     const name = meta.name ?? String(a.sid || "").slice(0, 8);
+    // ---- liveness: deterministic from live state + the tree's open handoffs.
+    // "Mid-turn" = working/compacting/permission — a permission prompt is a
+    // paused turn, not a finished one.
+    const busyOf = (nm: string): string => {
+      const st = states?.get(nm)?.state || "";
+      return st === "working" || st === "compacting" || st === "permission" ? st : "";
+    };
+    const stateOf = (nm: string): string => (liveNames.has(nm) ? states?.get(nm)?.state || "?" : "gone");
+    const openHandoffs = tree.filter((n) => n.kind === "handoff" && n.status !== "done" && n.who !== name);
+    const ownerBusy = busyOf(name);
+    const delegates = openHandoffs.filter((n) => busyOf(n.who));
+    // LATCHED looks-done (the user's ruling 2026-06-11): a busy owner counts as
+    // "active" only when its CURRENT turn is CLAIMED by this card — the turn
+    // minted/amended/answered it, or its work is linked into the graph. A turn
+    // on something else leaves the settled verdict standing.
+    const tids = [String(a.turn_id || ""), ...(amendTurns.get(id) || [])].filter(Boolean);
+    const curTurn = ownerBusy ? openTurnId(String(a.sid || "")) : null;
+    // conservative claim: a busy owner whose open turn can't be resolved (no
+    // events cache yet) HOLDS its cards — never auto-file blind
+    const claimed = !!ownerBusy && (curTurn === null || tids.includes(curTurn) || linked.some((r) => r.reply_id === curTurn));
+    let liveness: AskLiveness; let livenessWhy: string;
+    if (ownerBusy && claimed) {
+      liveness = "active";
+      livenessWhy = `${name} is mid-turn on THIS card (${ownerBusy})`;
+    } else if (delegates.length) {
+      liveness = "delegated";
+      livenessWhy = delegates.map((n) => `${n.who} is mid-turn (${busyOf(n.who)}) holding "${n.text}"`).join("; ");
+    } else if (openHandoffs.length) {
+      liveness = "stalled";
+      livenessWhy = openHandoffs.map((n) => `handoff "${n.text}" unfinished, ${n.who} ${stateOf(n.who)}`).join("; ")
+        + " — that branch owes an ending and nobody is working";
+    } else {
+      liveness = "settled";
+      const owner = stateOf(name) === "gone" ? "is gone"
+        : ownerBusy ? "is mid-turn on something ELSE (this card untouched)"
+        : `is quiet (${stateOf(name)})`;
+      livenessWhy = `${name} ${owner}, no open handoffs — nothing is moving this card without you`;
+    }
+    // WAIT exemption (the user 2026-06-11): a node whose newest link is WAIT ended
+    // its turn on purpose pending an EXTERNAL event — settled but NOT done: stays
+    // in WORKING, no green ring, no auto-filing. New work landing lifts it.
+    const extWait = subgraph.some((nid) => {
+      const ls = nodeLinks.get(nid) || [];
+      const newest = ls.length ? ls[ls.length - 1] : null;
+      return !!newest && normRelevance(newest.relevance) === "WAIT";
+    });
+    if (extWait && liveness === "settled") livenessWhy += " — but it is WAITING on an external event (exempt from auto-filing)";
+    // AUTO-FILING (turned on 2026-06-11): a settled card never sits in WORKING —
+    // nothing is moving it, so it rests in COMPLETED now and pulls itself back
+    // the moment real work touches it. autoFiled keeps the green ring visible.
+    // fuOpen guard: a just-sent follow-up holds the card until the bookkeeper
+    // mints the delivered turn. states empty = probe unreachable: liveness is
+    // unknowable, NOT "everyone quiet" — never mass-auto-file on a blind read.
+    let autoFiled = false;
+    if (states && states.size > 0 && column === "asks" && liveness === "settled" && !fuOpen.length && !extWait) {
+      column = "completed";
+      autoFiled = true;
+      livenessWhy += " — auto-filed from WORKING; verify, then Clear";
+    }
     out.push({
       itemId: id, sid: String(a.sid || ""), name, color: meta.color,
       text: String(a.text || ""), t: last, created: a.t || 0,
@@ -376,13 +511,36 @@ export function computeAskItems(states: Map<string, SessionState> | null, didByI
       done: linked.filter((r) => r.status === "done").length,
       needsYou: openQuestions.length,
       linked, turnId: String(a.turn_id || ""),
-      column, openQuestions, openPaths, reopened,
+      column, openQuestions, openPaths, reopened, liveness, livenessWhy, autoFiled,
+      explicitDone: allDone, waiting: extWait,
+      turnIds: tids,
       path: {
         events: [String(a.turn_id || ""), ...linked.map((r) => r.reply_id)].filter(Boolean),
         msgs: subgraph.filter((nid) => internals.has(nid)),
       },
       tree,
     });
+  }
+  // CLAIM-LAG hold (the user 2026-06-11 evening): while a session is mid-turn and
+  // its open turn is claimed by NO card yet (the ask capture for that prompt
+  // hasn't landed), the turn's true card is unknown — one of this session's
+  // "settled" cards is probably being worked right now. Hold the whole
+  // session's auto-filing until capture lands; self-heals in seconds.
+  const heldSids = new Set<string>();
+  for (const a of out) {
+    if (heldSids.has(a.sid)) continue;
+    const stt = states?.get(a.name)?.state || "";
+    if (!(stt === "working" || stt === "compacting" || stt === "permission")) continue;
+    const cur = openTurnId(a.sid);
+    if (cur && !out.some((b) => b.sid === a.sid
+        && (b.turnIds.includes(cur) || b.path.events.includes(cur)))) heldSids.add(a.sid);
+  }
+  for (const a of out) {
+    if (a.autoFiled && heldSids.has(a.sid)) {
+      a.autoFiled = false;
+      a.column = "asks";
+      a.livenessWhy += " — HELD: the session is mid-turn on a not-yet-attributed prompt (it may be this card)";
+    }
   }
   out.sort((x, y) => y.t - x.t);
   const byTurn = new Map<string, number>();
@@ -392,6 +550,46 @@ export function computeAskItems(states: Map<string, SessionState> | null, didByI
     if (n > 1) { a.groupN = n; a.groupTitle = reqPhraseById.get(a.turnId) || ""; }
   }
   return out;
+}
+
+// ---- missed-handoff suspect sweep (deterministic, the user 2026-06-11) ----
+// A message the classifier judged "not a delegation" (req-decision, req=false)
+// is SUSPECT when the recipient then produced work linked to NOTHING within the
+// window — orphan work right after a dismissed message is the classic missed
+// handoff. Read from the decision log (mtime-cached); surfaced as a ⚠ badge on
+// the sender's most plausible open card. Pure joins, no model.
+const SUSPECT_WINDOW = 45 * 60;        // recipient orphan work this soon after the message
+const SUSPECT_HORIZON = 48 * 3600;     // ignore older history
+let _suspectCache: { key: string; rows: any[] } | null = null;
+export function missedHandoffSuspects(now: number): Array<{ mid: string; fromSid: string; toSid: string; t: number; snippet: string; orphanT: number }> {
+  const files = [path.join(ROMP_REQUESTS(), "decision-log.jsonl"), path.join(ROMP_REQUESTS(), "decision-log.jsonl.1")];
+  const key = files.map((f) => { try { return String(fs.statSync(f).mtimeMs); } catch { return "0"; } }).join("|");
+  if (_suspectCache && _suspectCache.key === key) return _suspectCache.rows;
+  const dismissed: any[] = []; const orphanLinks: Array<{ sid: string; t: number }> = [];
+  const audits = new Map<string, string>();   // msg_id → Opus verdict (handoff/fyi/unsure)
+  for (const f of files) {
+    let raw = "";
+    try { raw = fs.readFileSync(f, "utf8"); } catch { continue; }
+    for (const ln of raw.split("\n")) {
+      if (!ln.trim()) continue;
+      let o: any; try { o = JSON.parse(ln); } catch { continue; }
+      if (o.kind === "suspect-audit" && o.msg_id) { audits.set(String(o.msg_id), String(o.verdict || "unsure")); continue; }
+      if ((o.t || 0) < now - SUSPECT_HORIZON) continue;
+      if (o.kind === "req-decision" && o.req === false && o.msg_id) dismissed.push(o);
+      else if (o.kind === "link" && Array.isArray(o.chosen) && !o.chosen.length && o.sid) orphanLinks.push({ sid: String(o.sid), t: o.t || 0 });
+    }
+  }
+  // Only UNSURE audits reach the human (the user 2026-06-11): the daemon's
+  // auditor repairs real handoffs automatically and suppresses coincidences;
+  // unaudited suspects wait their turn in the queue rather than nagging.
+  const rows = dismissed.flatMap((d) => {
+    if (audits.get(String(d.msg_id)) !== "unsure") return [];
+    const orphan = orphanLinks.find((l) => l.sid === String(d.to_sid) && l.t > (d.t || 0) && l.t <= (d.t || 0) + SUSPECT_WINDOW);
+    return orphan ? [{ mid: String(d.msg_id), fromSid: String(d.from_sid || ""), toSid: String(d.to_sid || ""),
+      t: d.t || 0, snippet: String(d.snippet || "").slice(0, 160), orphanT: orphan.t }] : [];
+  });
+  _suspectCache = { key, rows };
+  return rows;
 }
 
 export function workingNames(states: Map<string, SessionState> | null): string[] {

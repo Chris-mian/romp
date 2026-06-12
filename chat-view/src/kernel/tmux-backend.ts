@@ -117,6 +117,24 @@ const tui: TuiOps = {
       T(["send-keys", "-t", name, "-l", text]);
     } catch { /* pane gone */ }
   },
+  // Set a pane's @claude-state (with emoji + since + the states-log line the
+  // timeline reads), but ONLY from one of the expected prior states — never
+  // clobbering a newer hook-set value. Mirrors markIdle's guards.
+  markState(name: string, to: string, fromStates: string[]): void {
+    try {
+      const prev = T(["show", "-t", name, "-v", "@claude-state"]).trim();
+      if (prev === to || !fromStates.includes(prev)) return;
+      const now = Math.floor(Date.now() / 1000);
+      T(["set", "-t", name, "@claude-state", to]);
+      T(["set", "-t", name, "@claude-state-since", String(now)]);
+      T(["set", "-t", name, "@romp-emoji", to === "permission" ? "🔴" : "🔵"]);
+      const sid = T(["show", "-t", name, "-v", "@romp-session-id"]).trim();
+      if (sid) {
+        const dir = path.join(ROMP_STATE(), "states");
+        try { fs.mkdirSync(dir, { recursive: true }); fs.appendFileSync(path.join(dir, `${sid}.jsonl`), JSON.stringify({ t: now, state: to }) + "\n"); } catch { /* ignore */ }
+      }
+    } catch { /* pane gone */ }
+  },
 };
 
 export class TmuxBackend implements SessionBackend {

@@ -3,7 +3,7 @@
 // chat-view/src/extension.ts, with all substrate access behind SessionBackend.
 import * as fs from "fs";
 import * as path from "path";
-import { newIncParser, feed, buildParsed, type IncParser, type ParsedTranscript } from "../transcript";
+import { newIncParser, feed, buildParsed, type IncParser, type ParsedTranscript, type ChatEvent } from "../transcript";
 import { hydratePostal } from "../postal-spec";
 import { parseAskPane, type ParsedAsk } from "../askparse";
 import type { SessionBackend, SessionState } from "./backend";
@@ -31,6 +31,10 @@ export interface Session {
   askSig?: string;
   ledgerSig?: string;
   firstSeen?: number;
+  lastMetaSig?: string;         // model|effort|ctx|faded last pushed — a reopened/revived session's
+                                // substrate vars land AFTER the tab opens, with no state change to ride on
+  askComposerTicks?: number;    // consecutive composer-screen ticks while awaiting — heals a hookless
+                                // picker's stranded "permission" state after it's answered
 }
 
 export function chipState(name: string, states: Map<string, SessionState> | null, working: boolean): ChipState {
@@ -72,6 +76,35 @@ export function workingSinceMs(s: Session, state: ChipState, states: Map<string,
   }
   if (state !== "awaiting" && state !== "compacting") s.workingSince = null;
   return s.workingSince ?? null;
+}
+
+// The displayed-meta dedupe key (pairs with Session.lastMetaSig): every status
+// post carries these four, so every post site should stamp it.
+export function metaSigOf(name: string, states: Map<string, SessionState> | null): string {
+  const i = states?.get(name);
+  return [i?.model || "", i?.effort || "", i?.ctx || "", fadedFor(name, states)].join("|");
+}
+
+// An interrupt that lands BEFORE the first response token makes the TUI pop the
+// prompt back into the composer and drop the turn from its conversation — but
+// the user line already hit the transcript, and NOTHING marks the restore
+// (verified 2026-06-11: the line just sits as the leaf until the next submit
+// orphans it). Mirror the TUI: hide a trailing typed user turn once the session
+// is back at rest. Not for working/compacting (a reply is coming), and not for
+// closed (history should stand whole). The age guard rides out the
+// submit→UserPromptSubmit-hook lag, so a just-sent prompt whose state still
+// reads "waiting" is never hidden.
+export const RESTED = new Set<ChipState>(["ready", "idle", "awaiting"]);
+export function filterInterrupted(events: ChatEvent[], state: ChipState): ChatEvent[] {
+  if (!RESTED.has(state)) return events;
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e: any = events[i];
+    if (e.kind === "queued" || e.kind === "todo") continue;   // trailing fixtures, not the turn itself
+    if (e.kind === "user" && e.human && e.md && e.ts && Date.now() - Date.parse(e.ts) > 2500)
+      return events.slice(0, i).concat(events.slice(i + 1));
+    break;
+  }
+  return events;
 }
 
 export function statusPayload(s: Session, state: ChipState, states: Map<string, SessionState> | null, sinceFallback: number | null) {
@@ -152,7 +185,7 @@ export function liveTranscriptOf(s: Session): string {
   let names: string[];
   try { names = fs.readdirSync(dir); } catch { return s.file; }
   for (const n of names) {
-    if (!n.endsWith(".jsonl")) continue;
+    if (!n.endsWith(".jsonl") || n.startsWith("agent-")) continue;   // subagent transcripts: never a session fork
     const f = path.join(dir, n);
     if (f === s.file) continue;
     let m: number;

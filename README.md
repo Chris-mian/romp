@@ -21,13 +21,15 @@ activity feed and timeline.
   folded into per-request cards (spec: `docs/specs/REQUESTS.md`).
 - **Timeline** (`bin/romp-events`, `bin/romp-timeline-serve`,
   `obsidian/romp-timeline-*.js`) — event-level history of all sessions.
-- **chat-view/** — a VS Code/Cursor extension: per-session chat tabs, the
-  feed, request cards, live status.
-- **Web kernel** (`bin/romp-serve`, `chat-view/src/kernel/`) — the same chat +
-  feed UI served to any browser, no VS Code required: run `romp-serve`, open
-  `http://127.0.0.1:7433/` (chat) and `/feed`. Sessions are driven through a
-  pluggable backend — tmux (default) or `--backend headless` (`claude -p`,
-  no tmux at all). Design: `docs/web-kernel-design.md`.
+- **Kernel** (`bin/romp-serve`, `chat-view/src/kernel/`) — THE UI host: chat
+  tabs, the feed, request cards, live status, served over HTTP + WebSocket.
+  Run `romp-serve` and open `http://127.0.0.1:7433/` (chat) and `/feed` in
+  any browser — no VS Code required. Sessions are driven through a pluggable
+  backend — tmux (default) or `--backend headless` (`claude -p`, no tmux at
+  all). Design: `docs/web-kernel-design.md`.
+- **chat-view/** — the VS Code/Cursor extension: a thin client of the same
+  kernel (it spawn-or-attaches one automatically). The editor panel and a
+  browser tab share one kernel — same tabs, per-client focus.
 - **obsidian/** — view modules (timeline, dashboard) consumable by an
   Obsidian plugin via a thin wrapper.
 - **hooks/** — Claude Code hooks: tmux status-line state, per-turn summarize,
