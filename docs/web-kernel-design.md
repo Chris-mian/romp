@@ -53,10 +53,21 @@ extension did.
 `bin/romp-serve [--port N] [--host H] [--backend tmux|headless]` builds (if
 stale) and runs `chat-view/dist/kernel.js`:
 
-- `GET /` — the chat page: the same `render.js` bundle VS Code loads, plus
-  the shim and a Dark+ default block for the `--vscode-*` CSS variables VS
-  Code would otherwise inject.
+- `GET /` — the COMBINED page: chat left, feed right, timeline bottom, as
+  three iframes sharing a window-group id (`?wid=`) so cross-pane links work
+  (a feed click focuses the chat pane BESIDE it). Draggable dividers,
+  per-pane collapse chevrons, layout persisted; a cross-pane focus
+  auto-reveals a collapsed pane.
+- `GET /chat` — the chat page alone: the same `render.js` bundle VS Code
+  loads, plus the shim and a Dark+ default block for the `--vscode-*` CSS
+  variables VS Code would otherwise inject.
 - `GET /feed` — the feed page (`feed.js`), same treatment.
+- `GET /timeline` — the timeline: the same `TimelinePanel`
+  (obsidian/romp-timeline-view.js) the editor's bottom panel renders, read
+  live from the romp checkout ($ROMP_DIR); the kernel runs
+  `buildTimelineData()` (3s poll + a state-dir watcher) and carries the host
+  bridges (deep links → chat focus, lane reorder, /compact, /model) over a
+  timeline WebSocket.
 - `WS /ws?app=chat|feed` — the postMessage bridge. Message types and
   semantics are IDENTICAL to `extension.ts` in both directions (`update`,
   `status`, `askLive`, `ledger`, … down; `sendMessage`, `answerAsk`,
