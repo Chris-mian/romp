@@ -979,6 +979,24 @@ function openFileInEditor(file: string, line?: number) {
 }
 
 function openLink(href: string) {
+  // Deep links addressed to the romp chat view (timeline anchors pasted into
+  // conversations, card sub-item links) are OUR links: resolve them in-app —
+  // focus the asking window's own chat pane — instead of bouncing through the
+  // OS into VS Code, which would yank a web-app user into another editor.
+  try {
+    const u = new URL(href);
+    if (u.protocol === "vscode:" && u.host.toLowerCase() === "romp.romp-chat-view") {
+      const q = u.searchParams;
+      const session = (q.get("session") || "").trim();
+      if (session) deepLink(session, {
+        anchor: q.get("anchor") || undefined,
+        anchorT: Number(q.get("anchorT")) || undefined,
+        anchorKind: q.get("anchorKind") || undefined,
+        compose: q.get("compose") === "1",
+      });
+      return;
+    }
+  } catch { /* not parseable as a URL — let the OS decide */ }
   // The browser page can open http(s) links itself; this handler only fires for
   // schemes the webview bundle forwards (it can't know it's in a real browser).
   try {
