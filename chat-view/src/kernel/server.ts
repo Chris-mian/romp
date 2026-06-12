@@ -19,6 +19,7 @@ import { spawn } from "child_process";
 import { WebSocketServer, WebSocket } from "ws";
 import { TmuxBackend } from "./tmux-backend";
 import { HeadlessBackend } from "./headless-backend";
+import { StreamBackend } from "./stream-backend";
 import type { SessionBackend, SessionState } from "./backend";
 import {
   Session, ChipState, chipState, statusPayload, sig, firstSeenOf,
@@ -78,12 +79,15 @@ function saveKernelState() {
 }
 
 // ---- backend + globals ----
-// --backend tmux (default) | headless, or ROMP_SERVE_BACKEND. tmux hosts
-// sessions in tmux panes (full TUI mirroring); headless runs turns through
-// `claude -p` — no tmux required, no live picker mirroring.
+// --backend tmux (default) | stream | headless, or ROMP_SERVE_BACKEND. tmux
+// hosts sessions in tmux panes (full TUI mirroring); stream hosts each on one
+// long-lived `claude` stream-json process (no tmux, no picker mirroring,
+// interrupts/state via protocol events); headless is the older
+// process-per-turn variant of stream, kept for one-shot/test use.
 function pickBackend(): SessionBackend {
   const i = process.argv.indexOf("--backend");
   const which = (i >= 0 ? process.argv[i + 1] : process.env.ROMP_SERVE_BACKEND) || "tmux";
+  if (which === "stream") return new StreamBackend();
   if (which === "headless") return new HeadlessBackend();
   return new TmuxBackend();
 }
