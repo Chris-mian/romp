@@ -40,7 +40,11 @@ const REGISTRY = () => path.join(rompState(), "headless");
 const NAMES = () => path.join(rompState(), "names");
 const STATES = () => path.join(rompState(), "states");
 
-interface Reg {
+// The registry + identity + durable-state model is SHARED with StreamBackend
+// (stream-backend.ts): both engines host "headless" sessions — same registry
+// dir, same names/<sid> records, same states/<sid>.jsonl — so a session
+// started under one engine can be picked up by the other (resume via lastSid).
+export interface Reg {
   name: string;
   sid: string;       // anchor session id (names/<sid> identity record key)
   lastSid: string;   // newest transcript uuid (resume target)
@@ -48,18 +52,18 @@ interface Reg {
   alive: boolean;
 }
 
-function claudeBin(): string {
+export function claudeBin(): string {
   return process.env.ROMP_CLAUDE_BIN || "claude";
 }
 
-function readReg(name: string): Reg | null {
+export function readReg(name: string): Reg | null {
   try {
     const o = JSON.parse(fs.readFileSync(path.join(REGISTRY(), name + ".json"), "utf8"));
     return o && o.sid ? o as Reg : null;
   } catch { return null; }
 }
 
-function writeReg(r: Reg) {
+export function writeReg(r: Reg) {
   try {
     fs.mkdirSync(REGISTRY(), { recursive: true });
     const f = path.join(REGISTRY(), r.name + ".json");
@@ -68,7 +72,7 @@ function writeReg(r: Reg) {
   } catch { /* ignore */ }
 }
 
-function listRegs(): Reg[] {
+export function listRegs(): Reg[] {
   try {
     return fs.readdirSync(REGISTRY())
       .filter((f) => f.endsWith(".json"))
@@ -77,7 +81,7 @@ function listRegs(): Reg[] {
   } catch { return []; }
 }
 
-function lastState(sid: string): { state: string; t: number } {
+export function lastState(sid: string): { state: string; t: number } {
   try {
     const lines = fs.readFileSync(path.join(STATES(), sid + ".jsonl"), "utf8").trim().split("\n");
     const o = JSON.parse(lines[lines.length - 1]);
@@ -85,7 +89,7 @@ function lastState(sid: string): { state: string; t: number } {
   } catch { return { state: "", t: 0 }; }
 }
 
-function appendState(sid: string, state: string) {
+export function appendState(sid: string, state: string) {
   if (lastState(sid).state === state) return;   // same dedupe rule as the hook
   try {
     fs.mkdirSync(STATES(), { recursive: true });
@@ -119,7 +123,7 @@ function pickColor(name: string): [string, string] {
   return PALETTE[h % PALETTE.length];
 }
 
-function recordIdentity(sid: string, name: string, dir: string, color?: [string, string]) {
+export function recordIdentity(sid: string, name: string, dir: string, color?: [string, string]) {
   // names/<sid> = name\tdir\tbg\tfg — same record bin/romp's _romp_record
   // writes. Keep an existing color when present (a resume/rename must not
   // re-roll identity); assign from the palette otherwise.
@@ -180,17 +184,24 @@ export class HeadlessBackend implements SessionBackend {
     appendState(r.sid, "working");
     let out = "";
     child.stdout?.on("data", (d) => { out += String(d); });
-    child.on("error", () => {
-      this.running.delete(name);
-      appendState(r.sid, "waiting");
-    });
+    // Turn-end handlers key on the child + the stable anchor sid, NOT the
+    // captured name or reg object: a mid-turn rename() moves the running-map
+    // entry and rewrites the registry under the new name, so deleting the old
+    // key would leak the entry (stuck "working") and writeReg(r) would
+    // resurrect the old-name registry file with a stale lastSid.
+    const sid = r.sid;
+    const done = () => {
+      for (const [n, c] of this.running) if (c === child) this.running.delete(n);
+      appendState(sid, "waiting");
+    };
+    child.on("error", done);
     child.on("close", () => {
-      this.running.delete(name);
-      appendState(r.sid, "waiting");
+      done();
       try {
         const res = JSON.parse(out);
         const fsid = String(res.session_id || "");
-        if (fsid) { r.lastSid = fsid; writeReg(r); }
+        const cur = listRegs().find((x) => x.sid === sid);
+        if (fsid && cur) { cur.lastSid = fsid; writeReg(cur); }
       } catch { /* non-JSON output (error turn) — keep the old resume target */ }
     });
     return true;

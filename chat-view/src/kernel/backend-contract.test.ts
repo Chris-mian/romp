@@ -106,6 +106,25 @@ test("headless: interrupt kills the in-flight turn", async () => {
   assert.equal(b.liveSessions().get("hl-int")!.state, "waiting");
 });
 
+test("headless: rename MID-TURN — completion lands under the new name", async () => {
+  // Regression: the turn-end handlers used to capture the old name and reg
+  // object, so a rename during a turn leaked the running-map entry (stuck
+  // "working") and wrote lastSid back under the resurrected old-name file.
+  const b = new HeadlessBackend();
+  await b.spawn("hl-mid-old", TEST_STATE);
+  const sid = JSON.parse(fs.readFileSync(path.join(ROMP, "headless", "hl-mid-old.json"), "utf8")).sid;
+  assert.equal(b.send("hl-mid-old", "synthetic turn"), true);
+  assert.equal(b.rename("hl-mid-old", "hl-mid-new"), true);   // turn still in flight
+  await new Promise((r) => setTimeout(r, 700));               // mock turn takes ~200ms
+  assert.equal(b.liveSessions().get("hl-mid-new")!.state, "waiting", "not stuck working");
+  assert.equal(b.send("hl-mid-new", "synthetic follow-up"), true, "no leaked running entry");
+  await new Promise((r) => setTimeout(r, 700));
+  const r2 = JSON.parse(fs.readFileSync(path.join(ROMP, "headless", "hl-mid-new.json"), "utf8"));
+  assert.equal(r2.sid, sid);
+  assert.equal(r2.lastSid, "forked-fsid-123", "lastSid landed under the NEW name");
+  assert.ok(!fs.existsSync(path.join(ROMP, "headless", "hl-mid-old.json")), "old-name registry not resurrected");
+});
+
 test("headless: rename moves the registry + identity; kill marks dead", async () => {
   const b = new HeadlessBackend();
   await b.spawn("hl-old", TEST_STATE);
