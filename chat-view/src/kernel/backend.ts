@@ -20,6 +20,7 @@ export interface SessionState {
   ctx: string;      // context % string
   since: string;    // epoch seconds (string, as stored)
   summary: string;  // live one-phrase summary
+  mode: string;     // permission mode: "" | default | plan | acceptEdits | auto | dontAsk | bypassPermissions ("" when the substrate hasn't reported one)
 }
 
 // TUI-only operations (the tmux backend). `null` from SessionBackend.tui means

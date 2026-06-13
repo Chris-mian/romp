@@ -154,6 +154,9 @@ export class HeadlessBackend implements SessionBackend {
         effort: "", model: "", ctx: "",
         since: st.t ? String(st.t) : "",
         summary: "",
+        // no live stream in --output-format json mode → no permissionMode to
+        // report; the stream backend is the one that surfaces it.
+        mode: "",
       });
     }
     return map;

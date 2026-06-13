@@ -97,6 +97,27 @@ test("one process serves sequential AND queued turns; argv claims the anchor sid
   b.kill("st-multi");   // end the child or its open pipes keep the test process alive
 });
 
+test("permission mode flows from system:init into SessionState.mode", async () => {
+  // before a process exists mode is "" (nothing has reported one); once a turn
+  // starts the init event's permissionMode populates it. small_fix's server.ts
+  // gate keys the permission-block debounce on this instead of a 15s timer.
+  const gate = path.join(TEST_STATE, "gate-mode");
+  useMock("mode", {
+    sessionId: "00000000-0000-4000-8000-0000000000c1",
+    permissionMode: "plan",
+    turns: [{ steps: [{ kind: "gate", file: gate }], resultText: "M1" }],
+  });
+  const b = track(new StreamBackend(), "st-mode");
+  await b.spawn("st-mode", TEST_STATE);
+  assert.equal(b.liveSessions().get("st-mode")!.mode, "", "no process yet → no mode");
+  b.send("st-mode", "synthetic turn");
+  await until("init delivered mode", () => b.liveSessions().get("st-mode")!.mode === "plan");
+  fs.writeFileSync(gate, "go");
+  await until("turn done", () => b.liveSessions().get("st-mode")!.state === "waiting");
+  assert.equal(b.liveSessions().get("st-mode")!.mode, "plan", "mode persists across the turn");
+  b.kill("st-mode");
+});
+
 test("interrupt aborts the turn via control protocol; the process survives", async () => {
   const gate = path.join(TEST_STATE, "gate-interrupt");
   const dir = useMock("intr", {

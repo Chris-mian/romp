@@ -43,6 +43,7 @@ export interface MockTurn {
 export interface MockScenario {
   sessionId: string;       // session_id when not overridden by --session-id
   forkSessionId?: string;  // session_id when launched with --resume (default "fork-" + resumed id)
+  permissionMode?: string; // system:init permissionMode (default "default")
   turns: MockTurn[];       // turn k of the process plays turns[min(k, last)]
 }
 
@@ -69,7 +70,7 @@ let interrupted = false;
 
 const emit = (o) => process.stdout.write(JSON.stringify(o) + "\\n");
 const init = () => emit({ type: "system", subtype: "init", cwd: process.cwd(), session_id: SID,
-  model: MODEL, permissionMode: "default", claude_code_version: "mock", uuid: "u-init-" + turnIdx });
+  model: MODEL, permissionMode: (scenario().permissionMode || "default"), claude_code_version: "mock", uuid: "u-init-" + turnIdx });
 const usage = () => ({ input_tokens: 7, output_tokens: 11, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 });
 const result = (turn, ok) => emit({ type: "result",
   subtype: ok ? "success" : "error_during_execution", is_error: !ok,

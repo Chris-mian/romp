@@ -31,7 +31,7 @@ process.env.ROMP_CLAUDE_BIN = path.join(MOCK_BIN, "claude");
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import type { SessionBackend } from "./backend";
-import { TmuxBackend } from "./tmux-backend";
+import { TmuxBackend, parseTmux } from "./tmux-backend";
 import { HeadlessBackend } from "./headless-backend";
 
 const ROMP = path.join(TEST_STATE, "romp");
@@ -47,6 +47,25 @@ function shapeCheck(b: SessionBackend, name: string) {
 
 shapeCheck(new TmuxBackend(), "TmuxBackend");
 shapeCheck(new HeadlessBackend(), "HeadlessBackend");
+
+test("tmux: parseTmux maps @claude-permission-mode and keeps summary's pipes", () => {
+  // field order: name|@romp|state|effort|model|context|since|permission-mode|summary
+  // summary stays last and may contain '|' (rejoined). Empty mode = field absent.
+  const out = [
+    "alpha|1|working|high|opus|42%|1781300000|plan|fixing the parser | and tests",
+    "beta|1|waiting|||||auto|",          // empty model/ctx/since, mode auto, empty summary
+    "gamma|1|idle|||||| no mode here",   // empty permission-mode field
+    "delta|0|working|||||plan|not romp", // @romp != 1 → excluded
+  ].join("\n");
+  const m = parseTmux(out);
+  assert.deepEqual([...m.keys()], ["alpha", "beta", "gamma"], "only @romp=1 rows");
+  assert.equal(m.get("alpha")!.mode, "plan");
+  assert.equal(m.get("alpha")!.summary, "fixing the parser | and tests", "pipes in summary survive");
+  assert.equal(m.get("beta")!.mode, "auto");
+  assert.equal(m.get("beta")!.summary, "");
+  assert.equal(m.get("gamma")!.mode, "", "absent permission-mode → empty");
+  assert.equal(m.get("gamma")!.summary, "no mode here");
+});
 
 test("TmuxBackend exposes TUI ops; HeadlessBackend has none", () => {
   const t = new TmuxBackend();

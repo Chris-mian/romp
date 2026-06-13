@@ -53,7 +53,9 @@ function T(args: string[]): string {
   return execFileSync("tmux", tmuxArgs(args), { env: tmuxEnv(), timeout: 4000, encoding: "utf8" });
 }
 
-const TMUX_FMT = "'#{session_name}|#{@romp}|#{@claude-state}|#{@claude-effort}|#{@claude-model}|#{@claude-context}|#{@claude-state-since}|#{@claude-summary}'";
+// @claude-summary stays LAST (it may itself contain '|', rejoined in parseTmux);
+// @claude-permission-mode goes just before it.
+const TMUX_FMT = "'#{session_name}|#{@romp}|#{@claude-state}|#{@claude-effort}|#{@claude-model}|#{@claude-context}|#{@claude-state-since}|#{@claude-permission-mode}|#{@claude-summary}'";
 
 function runShell(cmd: string): string {
   try {
@@ -63,13 +65,13 @@ function runShell(cmd: string): string {
   }
 }
 
-function parseTmux(out: string): Map<string, SessionState> {
+export function parseTmux(out: string): Map<string, SessionState> {
   const map = new Map<string, SessionState>();
   for (const line of out.split("\n")) {
     const p = line.split("|");
     if (p.length < 2 || p[1].trim() !== "1") continue;
     // @claude-summary may itself contain '|', so it's the last field — rejoin the tail.
-    map.set(p[0].trim(), { state: (p[2] || "").trim(), effort: (p[3] || "").trim(), model: (p[4] || "").trim(), ctx: (p[5] || "").trim(), since: (p[6] || "").trim(), summary: p.slice(7).join("|").trim() });
+    map.set(p[0].trim(), { state: (p[2] || "").trim(), effort: (p[3] || "").trim(), model: (p[4] || "").trim(), ctx: (p[5] || "").trim(), since: (p[6] || "").trim(), mode: (p[7] || "").trim(), summary: p.slice(8).join("|").trim() });
   }
   return map;
 }

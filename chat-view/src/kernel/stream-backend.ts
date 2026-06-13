@@ -42,6 +42,7 @@ interface Proc {
   inflight: number;      // user turns written minus results seen
   sinceT: number;        // epoch s of the current working stretch
   model: string;         // from the latest system:init
+  mode: string;          // permissionMode from the latest system:init
   buf: string;
   reqSeq: number;        // control_request id counter
   endedByUs: boolean;    // kill() in progress — suppress crash recovery
@@ -66,6 +67,7 @@ export class StreamBackend implements SessionBackend {
         ctx: "",
         since: st.t ? String(st.t) : "",
         summary: "",
+        mode: p?.mode || "",
       });
     }
     return map;
@@ -193,7 +195,7 @@ export class StreamBackend implements SessionBackend {
         stdio: ["pipe", "pipe", "ignore"],
       });
     } catch { return null; }
-    const p: Proc = { child, inflight: 0, sinceT: 0, model: "", buf: "", reqSeq: 0, endedByUs: false };
+    const p: Proc = { child, inflight: 0, sinceT: 0, model: "", mode: "", buf: "", reqSeq: 0, endedByUs: false };
     // Handlers key on the ANCHOR SID, not the name: a session can be renamed
     // while a turn is in flight, and events that resolve the registry by a
     // captured name would miss and leave the state stuck on "working".
@@ -217,6 +219,7 @@ export class StreamBackend implements SessionBackend {
       const r = regBySid(sid);
       if (o.type === "system" && o.subtype === "init") {
         if (o.model) p.model = String(o.model);
+        if (o.permissionMode !== undefined) p.mode = String(o.permissionMode || "");
         // a resumed process announces its forked uuid here — track it as the
         // next resume target (the anchor sid, and states keyed on it, stay)
         const fsid = String(o.session_id || "");
