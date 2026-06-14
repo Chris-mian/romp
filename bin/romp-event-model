@@ -1,0 +1,609 @@
+#!/usr/bin/env python3
+"""romp-event-model — the rebuilt bottom-layer parser (design/event-model.md).
+
+Turns a romp session's transcript(s) into the Session -> Turn -> Atom tree the
+design doc pins down: the Claude streaming protocol made graph-aware. An atom is
+a streaming message, a turn is the user-to-`end_turn` cycle, and the on-disk
+transcript is those messages plus the graph metadata needed to rebuild them
+after rewinds and resume-forks.
+
+NOT wired into the live pipeline. This is a standalone module built for
+side-by-side evaluation against bin/romp-events (inventory Decision 1); it does
+NO summaries / relevance / asks / links / model calls — only the event layer.
+
+The Session/Turn/Atom shapes are substrate-neutral. Everything specific to
+rebuilding them from the append-only on-disk graph lives in the FILE ADAPTER
+section and only there; on a future stream substrate the same tree is filled
+directly (steps that recover linearity, `ended`, and idle simply disappear).
+
+CLI:
+  romp-event-model --test <transcript>   # human dump of one session's turn/atom tree
+  romp-event-model --emit <transcript>   # the Session tree as JSON
+
+Auxiliary inputs the file adapter may read (same category as the transcript):
+  states/<sid>.jsonl        -> idle atoms (real idle transitions, not a silence heuristic)
+  timeline/messages.jsonl   -> peer rompUuid for a postal atom (join on the msg id)
+"""
+import json, os, re, sys, time, hashlib
+from datetime import datetime
+from pathlib import Path
+
+HOME     = Path.home()
+STATE    = Path(os.environ.get("XDG_STATE_HOME", str(HOME / ".local/state"))) / "romp"
+PROJECTS = HOME / ".claude" / "projects"
+NAMES    = STATE / "names"
+STATES_DIR   = STATE / "states"
+MESSAGES_LOG = STATE / "timeline" / "messages.jsonl"
+
+# A turn ends when the model hands the floor back: stream `end_turn` / `stop_sequence`.
+# Mid-turn the model stops with `tool_use` (a tool cycle) — that does NOT end the turn.
+END_STOPS = ("end_turn", "stop_sequence")
+# romp's own postal marker, injected into a delivered message body. It is the ONLY
+# postal signal — never the generic "Stop hook feedback:" prefix (any blocking Stop
+# hook produces that). The sender rompUuid is resolved from timeline/messages.jsonl
+# by joining this id (the on-disk marker carries the id but not the sender).
+POSTAL_RE = re.compile(r"romp-msg-id:\s*(\S+)")
+# Claude Code's slash-command transcript wrappers (`/model`, `/effort`, …). They are
+# user lines with NO promptSource and isMeta unset, so the absent->human default would
+# otherwise mint a spurious human turn for every slash command. They are harness echoes,
+# never conversational messages — skipped as atoms (but kept in the parentUuid graph).
+CMD_WRAP_RE = re.compile(r"^\s*<(?:command-(?:name|message|args|contents)|local-command-(?:stdout|caveat))>")
+
+
+# ───────────────────────── small helpers ─────────────────────────
+def parse_z(s):
+    """Transcript timestamp (ISO-8601 UTC, '…Z') -> epoch int, or None."""
+    if not s:
+        return None
+    s = s.strip().replace("Z", "+0000")
+    for fmt in ("%Y-%m-%dT%H:%M:%S.%f%z", "%Y-%m-%dT%H:%M:%S%z"):
+        try:
+            return int(datetime.strptime(s, fmt).timestamp())
+        except Exception:
+            pass
+    return None
+
+
+def _read_jsonl(path):
+    """Yield parsed json objects from a .jsonl file; [] on any error."""
+    try:
+        with open(path, errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    yield json.loads(line)
+                except Exception:
+                    continue
+    except OSError:
+        return
+
+
+def _content(message):
+    """The content[] of a message, normalized: a bare string becomes one text block,
+    so every atom carries a list of blocks (the 'one atom, many blocks' shape)."""
+    if not isinstance(message, dict):
+        return []
+    c = message.get("content")
+    if isinstance(c, str):
+        return [{"type": "text", "text": c}] if c.strip() else []
+    return c if isinstance(c, list) else []
+
+
+def _text_of(blocks):
+    """Joined text of the text blocks in a content list (thinking/tool_use/tool_result skipped)."""
+    return " ".join(b.get("text", "") for b in blocks
+                    if isinstance(b, dict) and b.get("type") == "text").strip()
+
+
+def _block_types(blocks):
+    return [b.get("type") for b in blocks if isinstance(b, dict)]
+
+
+def _is_real_prompt(blocks):
+    """A user line is a genuine PROMPT (vs a tool_result-only harness line) when it
+    carries any text. A tool_result-only line has no text block."""
+    return bool(_text_of(blocks))
+
+
+def _has_tool_result(blocks):
+    return any(isinstance(b, dict) and b.get("type") == "tool_result" for b in blocks)
+
+
+def _norm_message(message):
+    """The Anthropic message object kept verbatim where it exists (role, content blocks,
+    model, usage, stop_reason). Content is normalized to a block list."""
+    if not isinstance(message, dict):
+        return None
+    out = {"role": message.get("role"), "content": _content(message)}
+    for k in ("model", "stop_reason", "usage"):
+        if message.get(k) is not None:
+            out[k] = message[k]
+    return out
+
+
+# ───────────────────────── authorship (the one real addition over the stream) ─────────────────────────
+# A user atom's author is the ONE field the stream lacks: it cannot tell a peer romp
+# message from a human prompt (both are `user` messages). Everything else the old
+# typed/queued/absorbed/decision/postal enum encoded is derived from position
+# (opener vs mid-turn) and content, not stored here.
+def author_of(blocks, prompt_source, postal_index):
+    """human | sdk | system | {"peer": <rompUuid|None>} | None.
+
+    Order matters: the postal marker wins over promptSource (a delivered message can
+    arrive with any promptSource). A tool_result-only user atom has no author."""
+    text = _text_of(blocks)
+    if text:
+        mids = POSTAL_RE.findall(text)
+        if mids:
+            peer = None
+            for mid in mids:
+                peer = postal_index.get(mid)
+                if peer:
+                    break
+            return {"peer": peer}
+    if prompt_source == "sdk":
+        return "sdk"
+    if prompt_source == "system":
+        return "system"
+    if prompt_source in ("typed", "queued"):
+        return "human"
+    # promptSource absent: a genuine prompt with no SDK/system/postal signal is presumed
+    # human (a typed prompt the harness recorded without the field — ~10% on disk). A
+    # tool_result-only line (no text) gets no author.
+    if _is_real_prompt(blocks):
+        return "human"
+    return None
+
+
+# ═════════════════════════ FILE ADAPTER: graph recovery, quarantined ═════════════════════════
+class FileAdapter:
+    """Rebuilds the active linear message sequence from the append-only on-disk graph.
+
+    Reads every candidate transcript once into a uuid index, then does a DIRECTED
+    backward walk from the leaf via parentUuid (crossing files on resume), so the
+    active path is exactly the leaf->root ancestors. Rewound branches are non-
+    ancestors and drop out for free; `/clear` leaves no parent link so the walk
+    stops there and pre-clear history drops out naturally."""
+
+    def __init__(self, candidate_files, leaf_path):
+        self.by_uuid = {}        # uuid -> record
+        self.fsid_of = {}        # uuid -> transcript file stem (provenance / click-to-open)
+        self.seq_of = {}         # uuid -> global read order (tie-break for equal timestamps)
+        self.parent_of = {}      # uuid -> parentUuid (or logicalParentUuid, for the compaction stitch)
+        self.queue_ops = []      # (ts, op, content, seq) — no uuid on disk; for absorb derivation
+        self.qattach = {}        # normalized queued_command text -> [attachment uuids] (FIFO)
+        self.leaf_uuid = None
+        leaf_stem = Path(leaf_path).stem
+        seq = 0
+        # read the leaf last so its trailing uuid wins as the walk anchor even if a
+        # sibling file happens to sort after it
+        files = [f for f in candidate_files if Path(f).stem != leaf_stem] + [Path(leaf_path)]
+        for fp in files:
+            fsid = Path(fp).stem
+            is_leaf = (fsid == leaf_stem)
+            for r in _read_jsonl(fp):
+                seq += 1
+                t = r.get("type")
+                u = r.get("uuid")
+                if u:
+                    self.by_uuid[u] = r
+                    self.fsid_of[u] = fsid
+                    self.seq_of[u] = seq
+                    # parentUuid normally; compact_boundary carries parentUuid:null +
+                    # logicalParentUuid:<pre-compaction leaf> — follow that so the active
+                    # path survives compaction instead of orphaning every pre-compaction turn.
+                    self.parent_of[u] = r.get("parentUuid") or r.get("logicalParentUuid")
+                    if is_leaf:
+                        self.leaf_uuid = u
+                if t == "queue-operation":
+                    self.queue_ops.append((parse_z(r.get("timestamp")), r.get("operation"),
+                                           r.get("content"), seq))
+                elif t == "attachment":
+                    a = r.get("attachment") or {}
+                    if a.get("type") == "queued_command" and a.get("prompt"):
+                        key = " ".join(str(a["prompt"]).split())
+                        self.qattach.setdefault(key, []).append(u)
+
+    def active_path(self):
+        """The set of uuids on the leaf->root chain (directed walk, O(chain length))."""
+        active, u, guard = set(), self.leaf_uuid, 0
+        while u is not None and u not in active and guard < 500000:
+            active.add(u)
+            u = self.parent_of.get(u)
+            guard += 1
+        return active
+
+    def kept_uuids(self, active):
+        """The active leaf-ancestors PLUS any line on a BROKEN chain (its parentUuid points
+        at a uuid that exists in NO transcript — corruption / a partial write). The two
+        kinds of off-path line we DO drop are both intentional: a rewind fork (its chain
+        rejoins the active spine) and a clear branch (its chain reaches a clean null root
+        the leaf does not share — `/clear` breaks the parent link, spec-mandated drop). A
+        dangling chain is the one thing we cannot prove dead, and silently dropping a real
+        ask is this repo's one fatal error, so we keep it. (Verified 0 dangling cases
+        across the live corpus: this is a safety net, not a behavior change.)"""
+        verdict = {}
+        def classify(start):
+            path, u = [], start
+            while True:
+                if u in active:
+                    res = "rewind"; break          # chain rejoins the active spine -> rewound fork
+                if u in verdict:
+                    res = verdict[u]; break
+                if u not in self.by_uuid:
+                    res = "broken"; break           # dangling target uuid (corruption)
+                if u in path:
+                    res = "broken"; break           # cycle -> unprovable, keep
+                path.append(u)
+                p = self.parent_of.get(u)
+                if p is None:
+                    res = "clear"; break            # clean null root, not the leaf's -> pre-clear
+                u = p
+            for x in path:
+                verdict[x] = res
+            return res
+        kept = set(active)
+        for u in self.by_uuid:
+            if u not in active and classify(u) == "broken":
+                kept.add(u)
+        return kept
+
+    def _absorbed(self, kept, rompuuid, postal_index):
+        """Mid-turn prompts spliced into a running turn (transcript queue-operation
+        `remove`, or `popAll` clearing the whole queue at once). These have NO native
+        user line — their only uuid-bearing record is the queued_command attachment —
+        so we synthesize a user atom, anchored on that attachment when present. FIFO-
+        pairs enqueues to their resolution, exactly the client's own bookkeeping."""
+        enqueues, fifo = [], []
+        for ts, op, content, seq in self.queue_ops:
+            if op == "enqueue":
+                e = {"ts": ts, "text": " ".join((content or "").split()),
+                     "proc": None, "restype": None, "seq": seq}
+                enqueues.append(e)
+                fifo.append(e)
+            elif op in ("dequeue", "remove") and fifo:
+                e = fifo.pop(0)
+                e["proc"], e["restype"] = ts, op
+            elif op == "popAll":
+                # clear the whole queue at once: every still-queued item is spliced into
+                # the continuation == absorbed at this ts (seen once in the real corpus).
+                while fifo:
+                    e = fifo.pop(0)
+                    e["proc"], e["restype"] = ts, "remove"
+        atoms = []
+        for e in enqueues:
+            if e["restype"] != "remove":
+                continue   # dequeue -> resurfaced as a native `queued` user line; pending -> not run yet
+            text = e["text"]
+            lst = self.qattach.get(text)
+            auid = lst.pop(0) if lst else None
+            if auid is not None and auid not in kept:
+                continue   # the fold happened on a rewound branch
+            blocks = [{"type": "text", "text": text}]
+            atoms.append({
+                "type": "user", "uuid": auid, "session_id": rompuuid,
+                "t": e["proc"], "fsid": self.fsid_of.get(auid),
+                "parentUuid": (self.by_uuid.get(auid) or {}).get("parentUuid"),
+                "message": {"role": "user", "content": blocks},
+                "author": author_of(blocks, None, postal_index),
+                "_seq": e["seq"],
+            })
+        return atoms
+
+    def atoms(self, rompuuid, postal_index):
+        """Every emitted atom on the active path (plus broken-chain survivors), plus
+        synthesized absorbed atoms. (Idle atoms are added separately from the state log.)"""
+        active = self.active_path()
+        kept = self.kept_uuids(active)
+        out = []
+        for u in kept:
+            r = self.by_uuid.get(u)
+            if not r:
+                continue
+            t = r.get("type")
+            ts = parse_z(r.get("timestamp"))
+            fsid = self.fsid_of.get(u)
+            seq = self.seq_of.get(u, 0)
+            if t == "assistant":
+                out.append({"type": "assistant", "uuid": u, "session_id": rompuuid,
+                            "t": ts, "fsid": fsid, "parentUuid": r.get("parentUuid"),
+                            "message": _norm_message(r.get("message")), "_seq": seq})
+            elif t == "user":
+                if r.get("isMeta") is True:
+                    continue   # `<command-…>` echoes, local-command-stdout — harness noise, not a message
+                if r.get("isCompactSummary") is True:
+                    continue   # the compaction SUMMARY payload — kept in the graph (above) but not an atom;
+                               # the compaction itself is the system:compact_boundary atom below
+                blocks = _content(r.get("message"))
+                if not blocks:
+                    continue
+                if CMD_WRAP_RE.match(_text_of(blocks)):
+                    continue   # slash-command echo, not a message
+                ps = r.get("promptSource")
+                atom = {"type": "user", "uuid": u, "session_id": rompuuid, "t": ts,
+                        "fsid": fsid, "parentUuid": r.get("parentUuid"),
+                        "message": _norm_message(r.get("message")), "_seq": seq}
+                if ps:
+                    atom["promptSource"] = ps
+                author = author_of(blocks, ps, postal_index)
+                if author is not None:
+                    atom["author"] = author
+                out.append(atom)
+            elif t == "system" and r.get("subtype") == "compact_boundary":
+                cm = r.get("compactMetadata") or r.get("compact_metadata") or {}
+                out.append({"type": "system", "subtype": "compact_boundary", "uuid": u,
+                            "session_id": rompuuid, "t": ts, "fsid": fsid,
+                            "parentUuid": r.get("parentUuid") or r.get("logicalParentUuid"),
+                            "compact_metadata": {"trigger": cm.get("trigger"),
+                                                 "pre_tokens": cm.get("preTokens") or cm.get("pre_tokens")},
+                            "_seq": seq})
+            # other system subtypes (turn_duration, stop_hook_summary, local_command,
+            # away_summary) are harness bookkeeping, not conversational messages -> skipped.
+        out += self._absorbed(kept, rompuuid, postal_index)
+        return out
+
+
+def synthesize_idle(states, atoms, now):
+    """Idle atoms from real idle transitions in states/<sid>.jsonl — NOT a 15-minute
+    silence heuristic. An idle span runs from a `state:"idle"` record to the next
+    state record (or to `now` if it is the last). Only spans overlapping the session's
+    atom timespan are kept, so unrelated history doesn't leak in."""
+    rows = sorted([r for r in states if isinstance(r, dict) and r.get("t") is not None],
+                  key=lambda r: r["t"])
+    if not rows or not atoms:
+        return []
+    lo = min(a["t"] for a in atoms)
+    hi = max(a.get("end", a["t"]) for a in atoms)
+    out = []
+    for i, r in enumerate(rows):
+        if r.get("state") != "idle":
+            continue
+        start = r["t"]
+        end = rows[i + 1]["t"] if i + 1 < len(rows) else (now if now is not None else hi)
+        if end <= start:
+            continue
+        if end < lo or start > max(hi, now or hi):
+            continue   # span entirely outside the session's activity window
+        out.append({"type": "idle", "uuid": None, "session_id": atoms[0]["session_id"],
+                    "t": start, "end": end, "_seq": 10 ** 12 + start})
+    return out
+
+
+# ═════════════════════════ SUBSTRATE-NEUTRAL: turns over atoms ═════════════════════════
+def _is_opener(atom):
+    """A genuine new prompt opens a turn: author human / sdk / peer. `system`
+    (`<task-notification>`) and tool_result-only atoms fold in, never open."""
+    if atom["type"] != "user":
+        return False
+    a = atom.get("author")
+    return a in ("human", "sdk") or isinstance(a, dict)
+
+
+def _turn_id(rompuuid, turn):
+    """`${rompUuid}:${t}:${hash}` — anchor-keyed, fork-stable (the trigger's text, or the
+    first atom's text for an autonomous turn)."""
+    atoms = turn["atoms"]
+    text = ""
+    trig = turn["trigger"]
+    if trig:
+        a = next((x for x in atoms if x.get("uuid") == trig["uuid"]), None)
+        if a:
+            text = _text_of(_content(a.get("message")))
+    elif atoms:
+        text = _text_of(_content(atoms[0].get("message")))
+    h = hashlib.sha1(text.encode("utf-8", "replace")).hexdigest()[:8]
+    return "%s:%d:%s" % (rompuuid, turn["t"], h)
+
+
+def segment_turns(atoms, rompuuid):
+    """Group atoms into `end_turn`-bounded turns. A turn opens at an opener atom (or at
+    the first non-opener if work begins without one) and runs until the next opener
+    that arrives AFTER the turn hit `end_turn`. A new prompt arriving while the turn is
+    still open (last assistant stop_reason != end_turn) is a mid-turn input (absorb),
+    kept inside the turn — that is how one turn holds several inputs."""
+    atoms = sorted(atoms, key=lambda a: (a["t"], a.get("_seq", 0)))
+    turns = []
+    cur = None
+    ended = False     # has the current turn hit end_turn since its last opener?
+    for atom in atoms:
+        if _is_opener(atom):
+            if cur is None or ended:
+                cur = {"trigger": {"uuid": atom.get("uuid")}, "atoms": [atom]}
+                turns.append(cur)
+                ended = False
+            else:
+                cur["atoms"].append(atom)   # mid-turn input (absorbed)
+        else:
+            if cur is None:
+                cur = {"trigger": None, "atoms": [atom]}   # autonomous / continuation
+                turns.append(cur)
+                ended = False
+            else:
+                cur["atoms"].append(atom)
+        if atom["type"] == "assistant":
+            sr = (atom.get("message") or {}).get("stop_reason")
+            ended = sr in END_STOPS
+    for turn in turns:
+        _finalize_turn(turn, rompuuid)
+    turns.sort(key=lambda t: t["t"])
+    return turns
+
+
+def _finalize_turn(turn, rompuuid):
+    atoms = turn["atoms"]
+    turn["t"] = atoms[0]["t"]
+    turn["end"] = max(a.get("end", a["t"]) for a in atoms)
+    # ended (FILE substrate): inferred from the turn's last assistant stop_reason, since
+    # the transcript carries no `result` line. Interrupted / still-streaming -> False.
+    last_sr = None
+    for a in atoms:
+        if a["type"] == "assistant":
+            last_sr = (a.get("message") or {}).get("stop_reason")
+    turn["ended"] = last_sr in END_STOPS
+    turn["id"] = _turn_id(rompuuid, turn)
+
+
+# ── segment derivation: a turn split at its input atoms (timeline grain). DERIVED, not stored.
+def _is_segment_input(atom):
+    """A segment boundary is a genuine new input (opener or absorbed human/peer prompt).
+    tool_result and `system` (task-notification) atoms do not start a segment; a
+    higher layer MAY additionally split at a decision atom — the bottom layer does not."""
+    return _is_opener(atom)
+
+
+def segments(turn):
+    """The per-input spans of a turn (what the timeline draws as bars). A segment runs
+    from one input to the next (or to the turn end). Pure function over a turn."""
+    atoms = turn["atoms"]
+    starts = [i for i, a in enumerate(atoms) if _is_segment_input(a)]
+    if not starts:
+        return [{"t": turn["t"], "end": turn["end"],
+                 "trigger": turn["trigger"]["uuid"] if turn["trigger"] else None,
+                 "atoms": list(atoms)}]
+    bounds = starts + [len(atoms)]
+    segs = []
+    for k, i0 in enumerate(starts):
+        i1 = bounds[k + 1]
+        segs.append({"t": atoms[i0]["t"],
+                     "end": atoms[i1]["t"] if i1 < len(atoms) else turn["end"],
+                     "trigger": atoms[i0].get("uuid"),
+                     "atoms": atoms[i0:i1]})
+    if starts[0] > 0:   # leading atoms before the first input attach to the first segment
+        lead = atoms[:starts[0]]
+        segs[0]["atoms"] = lead + segs[0]["atoms"]
+        segs[0]["t"] = turn["t"]
+    return segs
+
+
+# ═════════════════════════ assembly ═════════════════════════
+def _load_postal_index(postal_log):
+    """{msg-id -> sender rompUuid} from timeline/messages.jsonl (`from_id` is the sender's
+    anchor sid). Accepts a path or an in-memory list of rows (tests)."""
+    idx = {}
+    rows = postal_log if isinstance(postal_log, list) else _read_jsonl(postal_log or MESSAGES_LOG)
+    for o in rows:
+        if not isinstance(o, dict):
+            continue
+        mid, frm = o.get("id"), o.get("from_id")
+        if mid and frm and mid not in idx:
+            idx[mid] = frm
+    return idx
+
+
+def _load_states(states):
+    if states is None:
+        return []
+    return list(states) if isinstance(states, list) else list(_read_jsonl(states))
+
+
+def parse_session(leaf_path, rompuuid=None, name=None, color="#888888", dir=None,
+                  candidate_files=None, states=None, postal_log=None, now=None):
+    """Build one session's Session -> Turn -> Atom tree from the on-disk transcript graph.
+
+    leaf_path        the newest (leaf) transcript file; the walk's start pointer.
+    rompuuid         stable session identity (binds everything). Real runs resolve it from
+                     names/<sid> (the anchor sid); defaults to the leaf file stem for --test.
+    candidate_files  files the resume walk may cross into (default: leaf's directory).
+    states           states/<sid>.jsonl path or rows -> idle atoms.
+    postal_log       timeline/messages.jsonl path or rows -> peer rompUuid.
+    """
+    leaf_path = Path(leaf_path)
+    if dir is None:
+        dir = str(leaf_path.parent)
+    if rompuuid is None:
+        rompuuid = leaf_path.stem
+    if candidate_files is None:
+        candidate_files = sorted(str(p) for p in Path(dir).glob("*.jsonl"))
+    postal_index = _load_postal_index(postal_log)
+    adapter = FileAdapter(candidate_files, leaf_path)
+    atoms = adapter.atoms(rompuuid, postal_index)
+    atoms += synthesize_idle(_load_states(states), atoms, now)
+    turns = segment_turns(atoms, rompuuid)
+    for turn in turns:
+        for a in turn["atoms"]:
+            a.pop("_seq", None)
+        turn_keys = {"id": turn["id"], "trigger": turn["trigger"], "t": turn["t"],
+                     "end": turn["end"], "ended": turn["ended"], "atoms": turn["atoms"]}
+        turn.clear()
+        turn.update(turn_keys)
+    return {"rompUuid": rompuuid, "name": name or rompuuid, "dir": dir,
+            "color": color, "leafFsid": leaf_path.stem, "turns": turns}
+
+
+# ───────────────────────── CLI ─────────────────────────
+def _hh(t):
+    return datetime.fromtimestamp(t).strftime("%H:%M:%S") if t else "--:--:--"
+
+
+def _atom_line(a):
+    t = a["type"]
+    if t == "idle":
+        return "    · idle            %s-%s  (not working)" % (_hh(a["t"]), _hh(a.get("end")))
+    if t == "system":
+        cm = a.get("compact_metadata") or {}
+        return "    · system:%-9s %s  trigger=%s pre_tokens=%s" % (
+            a.get("subtype", "?"), _hh(a["t"]), cm.get("trigger"), cm.get("pre_tokens"))
+    blocks = _content(a.get("message"))
+    kinds = _block_types(blocks)
+    if t == "assistant":
+        sr = (a.get("message") or {}).get("stop_reason")
+        tools = [b.get("name") for b in blocks if isinstance(b, dict) and b.get("type") == "tool_use"]
+        extra = ("tools=" + ",".join(tools)) if tools else ""
+        return "    · assistant       %s  %s %s (stop=%s)" % (_hh(a["t"]), "+".join(kinds), extra, sr)
+    # user
+    author = a.get("author")
+    auth = (("peer:" + str(author.get("peer"))) if isinstance(author, dict)
+            else (author or "-"))
+    snippet = _text_of(blocks)[:48].replace("\n", " ")
+    if not snippet and _has_tool_result(blocks):
+        snippet = "(tool_result)"
+    return "    · user/%-11s %s  %s" % (auth, _hh(a["t"]), snippet)
+
+
+def _dump(session):
+    s = session
+    print("Session %s  [%s]  leaf=%s" % (s["name"], s["rompUuid"], s["leafFsid"]))
+    print("  dir=%s  color=%s  turns=%d" % (s["dir"], s["color"], len(s["turns"])))
+    for i, turn in enumerate(s["turns"], 1):
+        trig = turn["trigger"]
+        tatom = next((a for a in turn["atoms"] if trig and a.get("uuid") == trig["uuid"]), None)
+        tlabel = "autonomous"
+        if tatom:
+            author = tatom.get("author")
+            tlabel = (("peer:" + str(author.get("peer"))) if isinstance(author, dict)
+                      else (author or "?")) + " " + repr(_text_of(_content(tatom.get("message")))[:40])
+        segs = segments(turn)
+        print("\n  Turn %d  [%s-%s]  ended=%s  segments=%d  trigger=%s" % (
+            i, _hh(turn["t"]), _hh(turn["end"]), turn["ended"], len(segs), tlabel))
+        for a in turn["atoms"]:
+            print(_atom_line(a))
+
+
+def main():
+    args = sys.argv[1:]
+    if len(args) < 2 or args[0] not in ("--test", "--emit"):
+        sys.stderr.write("usage: romp-event-model [--test | --emit] <transcript> "
+                         "[--rompuuid X] [--states PATH] [--name N]\n")
+        sys.exit(2)
+    mode, path = args[0], args[1]
+    opts = {}
+    rest = args[2:]
+    for i in range(0, len(rest) - 1, 2):
+        opts[rest[i].lstrip("-")] = rest[i + 1]
+    states = opts.get("states")
+    if states is None:                       # default: states/<leaf-stem>.jsonl if present
+        cand = STATES_DIR / (Path(path).stem + ".jsonl")
+        states = str(cand) if cand.exists() else None
+    session = parse_session(path, rompuuid=opts.get("rompuuid"), name=opts.get("name"),
+                            states=states, now=int(time.time()))
+    if mode == "--emit":
+        sys.stdout.write(json.dumps(session, indent=1, sort_keys=True))
+        sys.stdout.write("\n")
+    else:
+        _dump(session)
+
+
+if __name__ == "__main__":
+    main()

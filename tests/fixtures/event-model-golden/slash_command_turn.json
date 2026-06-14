@@ -1,0 +1,42 @@
+{
+ "color": "#888888",
+ "dir": "/TESTDIR",
+ "leafFsid": "11111111-2222-3333-4444-555555555555",
+ "name": "impl",
+ "rompUuid": "11111111-2222-3333-4444-555555555555",
+ "turns": [
+  {
+   "atoms": [
+    {
+     "fsid": "11111111-2222-3333-4444-555555555555",
+     "message": {
+      "content": [
+       {
+        "text": "Reviewing the diff.",
+        "type": "text"
+       },
+       {
+        "id": "tu_a1_0",
+        "input": {},
+        "name": "Bash",
+        "type": "tool_use"
+       }
+      ],
+      "role": "assistant",
+      "stop_reason": "end_turn"
+     },
+     "parentUuid": "cmd1",
+     "session_id": "11111111-2222-3333-4444-555555555555",
+     "t": 1781096430,
+     "type": "assistant",
+     "uuid": "a1"
+    }
+   ],
+   "end": 1781096430,
+   "ended": true,
+   "id": "11111111-2222-3333-4444-555555555555:1781096430:ef7d194e",
+   "t": 1781096430,
+   "trigger": null
+  }
+ ]
+}

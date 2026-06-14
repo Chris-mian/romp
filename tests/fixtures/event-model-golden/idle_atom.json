@@ -1,0 +1,118 @@
+{
+ "color": "#888888",
+ "dir": "/TESTDIR",
+ "leafFsid": "11111111-2222-3333-4444-555555555555",
+ "name": "impl",
+ "rompUuid": "11111111-2222-3333-4444-555555555555",
+ "turns": [
+  {
+   "atoms": [
+    {
+     "author": "human",
+     "fsid": "11111111-2222-3333-4444-555555555555",
+     "message": {
+      "content": [
+       {
+        "text": "investigate the crash",
+        "type": "text"
+       }
+      ],
+      "role": "user"
+     },
+     "parentUuid": null,
+     "promptSource": "typed",
+     "session_id": "11111111-2222-3333-4444-555555555555",
+     "t": 1781096400,
+     "type": "user",
+     "uuid": "u1"
+    },
+    {
+     "fsid": "11111111-2222-3333-4444-555555555555",
+     "message": {
+      "content": [
+       {
+        "text": "Reproduced it.",
+        "type": "text"
+       },
+       {
+        "id": "tu_a1_0",
+        "input": {},
+        "name": "Bash",
+        "type": "tool_use"
+       }
+      ],
+      "role": "assistant",
+      "stop_reason": "end_turn"
+     },
+     "parentUuid": "u1",
+     "session_id": "11111111-2222-3333-4444-555555555555",
+     "t": 1781096430,
+     "type": "assistant",
+     "uuid": "a1"
+    },
+    {
+     "end": 1781100000,
+     "session_id": "11111111-2222-3333-4444-555555555555",
+     "t": 1781096460,
+     "type": "idle",
+     "uuid": null
+    }
+   ],
+   "end": 1781100000,
+   "ended": true,
+   "id": "11111111-2222-3333-4444-555555555555:1781096400:20ba163c",
+   "t": 1781096400,
+   "trigger": {
+    "uuid": "u1"
+   }
+  },
+  {
+   "atoms": [
+    {
+     "author": "sdk",
+     "fsid": "11111111-2222-3333-4444-555555555555",
+     "message": {
+      "content": [
+       {
+        "text": "continue please",
+        "type": "text"
+       }
+      ],
+      "role": "user"
+     },
+     "parentUuid": "a1",
+     "promptSource": "sdk",
+     "session_id": "11111111-2222-3333-4444-555555555555",
+     "t": 1781100000,
+     "type": "user",
+     "uuid": "u2"
+    },
+    {
+     "fsid": "11111111-2222-3333-4444-555555555555",
+     "message": {
+      "content": [
+       {
+        "text": "Resumed work.",
+        "type": "text"
+       }
+      ],
+      "role": "assistant",
+      "stop_reason": "end_turn"
+     },
+     "parentUuid": "u2",
+     "session_id": "11111111-2222-3333-4444-555555555555",
+     "t": 1781100030,
+     "type": "assistant",
+     "uuid": "a2"
+    }
+   ],
+   "end": 1781100030,
+   "ended": true,
+   "id": "11111111-2222-3333-4444-555555555555:1781100000:d3a34133",
+   "t": 1781100000,
+   "trigger": {
+    "uuid": "u2"
+   }
+  }
+ ]
+}

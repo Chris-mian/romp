@@ -1,0 +1,191 @@
+{
+ "color": "#888888",
+ "dir": "/TESTDIR",
+ "leafFsid": "11111111-2222-3333-4444-555555555555",
+ "name": "impl",
+ "rompUuid": "11111111-2222-3333-4444-555555555555",
+ "turns": [
+  {
+   "atoms": [
+    {
+     "author": "human",
+     "fsid": "11111111-2222-3333-4444-555555555555",
+     "message": {
+      "content": [
+       {
+        "text": "human typed prompt",
+        "type": "text"
+       }
+      ],
+      "role": "user"
+     },
+     "parentUuid": null,
+     "promptSource": "typed",
+     "session_id": "11111111-2222-3333-4444-555555555555",
+     "t": 1781096400,
+     "type": "user",
+     "uuid": "u1"
+    },
+    {
+     "fsid": "11111111-2222-3333-4444-555555555555",
+     "message": {
+      "content": [
+       {
+        "text": "ack human",
+        "type": "text"
+       }
+      ],
+      "role": "assistant",
+      "stop_reason": "end_turn"
+     },
+     "parentUuid": "u1",
+     "session_id": "11111111-2222-3333-4444-555555555555",
+     "t": 1781096410,
+     "type": "assistant",
+     "uuid": "a1"
+    }
+   ],
+   "end": 1781096410,
+   "ended": true,
+   "id": "11111111-2222-3333-4444-555555555555:1781096400:dbab2018",
+   "t": 1781096400,
+   "trigger": {
+    "uuid": "u1"
+   }
+  },
+  {
+   "atoms": [
+    {
+     "author": "sdk",
+     "fsid": "11111111-2222-3333-4444-555555555555",
+     "message": {
+      "content": [
+       {
+        "text": "sdk injected prompt",
+        "type": "text"
+       }
+      ],
+      "role": "user"
+     },
+     "parentUuid": "a1",
+     "promptSource": "sdk",
+     "session_id": "11111111-2222-3333-4444-555555555555",
+     "t": 1781096500,
+     "type": "user",
+     "uuid": "u2"
+    },
+    {
+     "fsid": "11111111-2222-3333-4444-555555555555",
+     "message": {
+      "content": [
+       {
+        "text": "ack sdk",
+        "type": "text"
+       }
+      ],
+      "role": "assistant",
+      "stop_reason": "end_turn"
+     },
+     "parentUuid": "u2",
+     "session_id": "11111111-2222-3333-4444-555555555555",
+     "t": 1781096510,
+     "type": "assistant",
+     "uuid": "a2"
+    }
+   ],
+   "end": 1781096510,
+   "ended": true,
+   "id": "11111111-2222-3333-4444-555555555555:1781096500:9c218ae3",
+   "t": 1781096500,
+   "trigger": {
+    "uuid": "u2"
+   }
+  },
+  {
+   "atoms": [
+    {
+     "author": {
+      "peer": "99999999-8888-7777-6666-000000000000"
+     },
+     "fsid": "11111111-2222-3333-4444-555555555555",
+     "message": {
+      "content": [
+       {
+        "text": "ASK: bump the recency alpha\n<!-- romp-msg-id: 1700000000.111_222.TESTHOST -->",
+        "type": "text"
+       }
+      ],
+      "role": "user"
+     },
+     "parentUuid": "a2",
+     "session_id": "11111111-2222-3333-4444-555555555555",
+     "t": 1781096600,
+     "type": "user",
+     "uuid": "u3"
+    },
+    {
+     "fsid": "11111111-2222-3333-4444-555555555555",
+     "message": {
+      "content": [
+       {
+        "text": "ack peer",
+        "type": "text"
+       }
+      ],
+      "role": "assistant",
+      "stop_reason": "end_turn"
+     },
+     "parentUuid": "u3",
+     "session_id": "11111111-2222-3333-4444-555555555555",
+     "t": 1781096610,
+     "type": "assistant",
+     "uuid": "a3"
+    },
+    {
+     "author": "system",
+     "fsid": "11111111-2222-3333-4444-555555555555",
+     "message": {
+      "content": [
+       {
+        "text": "<task-notification>\nbackground agent finished\n</task-notification>",
+        "type": "text"
+       }
+      ],
+      "role": "user"
+     },
+     "parentUuid": "a3",
+     "promptSource": "system",
+     "session_id": "11111111-2222-3333-4444-555555555555",
+     "t": 1781096700,
+     "type": "user",
+     "uuid": "u4"
+    },
+    {
+     "fsid": "11111111-2222-3333-4444-555555555555",
+     "message": {
+      "content": [
+       {
+        "text": "continued after the task note",
+        "type": "text"
+       }
+      ],
+      "role": "assistant",
+      "stop_reason": "end_turn"
+     },
+     "parentUuid": "u4",
+     "session_id": "11111111-2222-3333-4444-555555555555",
+     "t": 1781096710,
+     "type": "assistant",
+     "uuid": "a4"
+    }
+   ],
+   "end": 1781096710,
+   "ended": true,
+   "id": "11111111-2222-3333-4444-555555555555:1781096600:220e7cbc",
+   "t": 1781096600,
+   "trigger": {
+    "uuid": "u3"
+   }
+  }
+ ]
+}

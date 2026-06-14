@@ -1,0 +1,57 @@
+{
+ "color": "#888888",
+ "dir": "/TESTDIR",
+ "leafFsid": "11111111-2222-3333-4444-555555555555",
+ "name": "impl",
+ "rompUuid": "11111111-2222-3333-4444-555555555555",
+ "turns": [
+  {
+   "atoms": [
+    {
+     "author": "human",
+     "fsid": "11111111-2222-3333-4444-555555555555",
+     "message": {
+      "content": [
+       {
+        "text": "post-clear ask",
+        "type": "text"
+       }
+      ],
+      "role": "user"
+     },
+     "parentUuid": null,
+     "promptSource": "typed",
+     "session_id": "11111111-2222-3333-4444-555555555555",
+     "t": 1781096500,
+     "type": "user",
+     "uuid": "u2"
+    },
+    {
+     "fsid": "11111111-2222-3333-4444-555555555555",
+     "message": {
+      "content": [
+       {
+        "text": "post-clear reply",
+        "type": "text"
+       }
+      ],
+      "role": "assistant",
+      "stop_reason": "end_turn"
+     },
+     "parentUuid": "u2",
+     "session_id": "11111111-2222-3333-4444-555555555555",
+     "t": 1781096530,
+     "type": "assistant",
+     "uuid": "a2"
+    }
+   ],
+   "end": 1781096530,
+   "ended": true,
+   "id": "11111111-2222-3333-4444-555555555555:1781096500:25e73eed",
+   "t": 1781096500,
+   "trigger": {
+    "uuid": "u2"
+   }
+  }
+ ]
+}
