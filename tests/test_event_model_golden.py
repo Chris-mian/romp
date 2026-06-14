@@ -573,6 +573,40 @@ class PopAll(unittest.TestCase):
         self.assertEqual(absorbed, ["att1", "att2"])
 
 
+class SafeDefault(unittest.TestCase):
+    """parse_session must NOT glob the project dir by default (a footgun: it would read
+    every unrelated transcript in the dir). The default candidate set is just [leaf];
+    cross-file resume requires the caller to pass the explicit session file set."""
+
+    def _two_files(self, td):
+        # `other` is a resume PARENT of `leaf` (leaf's first prompt parents into other's x2)
+        other = Path(td) / "cccccccc-0000-0000-0000-000000000000.jsonl"
+        other.write_text("\n".join(json.dumps(r) for r in [
+            uline(T0, "sibling parent ask", "x1", ps="typed"),
+            aline(T0 + 20, "sibling reply", "x2", "x1", stop="end_turn")]) + "\n")
+        leaf = Path(td) / (SID + ".jsonl")
+        leaf.write_text("\n".join(json.dumps(r) for r in [
+            uline(T0 + 100, "leaf ask resuming sibling", "u1", parent="x2", ps="typed"),
+            aline(T0 + 120, "leaf reply", "a1", "u1", stop="end_turn")]) + "\n")
+        return leaf, other
+
+    def test_default_does_not_read_sibling_files(self):
+        with tempfile.TemporaryDirectory() as td:
+            leaf, other = self._two_files(td)
+            out = em.parse_session(str(leaf), rompuuid=SID, dir="/TESTDIR", now=NOW)  # NO candidate_files
+        texts = [_text(a) for t in out["turns"] for a in t["atoms"] if a["type"] == "user"]
+        self.assertIn("leaf ask resuming sibling", texts)
+        self.assertNotIn("sibling parent ask", texts, "default must not glob/read sibling transcripts")
+
+    def test_explicit_file_set_enables_cross_file_resume(self):
+        with tempfile.TemporaryDirectory() as td:
+            leaf, other = self._two_files(td)
+            out = em.parse_session(str(leaf), rompuuid=SID, dir="/TESTDIR",
+                                   candidate_files=[str(leaf), str(other)], now=NOW)
+        texts = [_text(a) for t in out["turns"] for a in t["atoms"] if a["type"] == "user"]
+        self.assertIn("sibling parent ask", texts, "explicit candidate_files enables cross-file resume")
+
+
 def regen():
     GOLDEN.mkdir(parents=True, exist_ok=True)
     for name in ALL_SCENARIOS:

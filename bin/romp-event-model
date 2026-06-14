@@ -527,7 +527,12 @@ def parse_session(leaf_path, rompuuid=None, name=None, color="#888888", dir=None
     leaf_path        the newest (leaf) transcript file; the walk's start pointer.
     rompuuid         stable session identity (binds everything). Real runs resolve it from
                      names/<sid> (the anchor sid); defaults to the leaf file stem for --test.
-    candidate_files  files the resume walk may cross into (default: leaf's directory).
+    candidate_files  the session's transcript files the resume walk may cross into.
+                     Defaults to JUST [leaf_path] — a safe single-file parse. Cross-file
+                     resume requires the caller to pass the explicit session file set;
+                     we deliberately do NOT glob the project dir (that would read every
+                     unrelated transcript in it). Session->files resolution is a
+                     higher-layer concern, not the parser's.
     states           states/<sid>.jsonl path or rows -> idle atoms.
     postal_log       timeline/messages.jsonl path or rows -> peer rompUuid.
     """
@@ -537,7 +542,7 @@ def parse_session(leaf_path, rompuuid=None, name=None, color="#888888", dir=None
     if rompuuid is None:
         rompuuid = leaf_path.stem
     if candidate_files is None:
-        candidate_files = sorted(str(p) for p in Path(dir).glob("*.jsonl"))
+        candidate_files = [str(leaf_path)]
     postal_index = _load_postal_index(postal_log)
     adapter = FileAdapter(candidate_files, leaf_path)
     atoms = adapter.atoms(rompuuid, postal_index)
