@@ -81,6 +81,18 @@ def compact_line(t, uuid, logical_parent, trigger="manual", pre=263239):
             "compactMetadata": {"trigger": trigger, "preTokens": pre}}
 
 
+def compact_line_broken(t, uuid, dangling_logical, preserved_tail, trigger="auto", pre=99999):
+    # a compact_boundary whose logicalParentUuid points at a uuid that exists NOWHERE
+    # (as seen in real transcripts); the real in-file pre-compaction leaf is in
+    # compactMetadata.preservedSegment.tailUuid
+    return {"type": "system", "subtype": "compact_boundary", "timestamp": iso(t), "uuid": uuid,
+            "parentUuid": None, "logicalParentUuid": dangling_logical, "isMeta": False,
+            "compactMetadata": {"trigger": trigger, "preTokens": pre,
+                                "preservedSegment": {"headUuid": preserved_tail,
+                                                     "anchorUuid": preserved_tail,
+                                                     "tailUuid": preserved_tail}}}
+
+
 def compact_summary_line(t, uuid, parent):
     return {"type": "user", "timestamp": iso(t), "uuid": uuid, "parentUuid": parent,
             "isCompactSummary": True, "isVisibleInTranscriptOnly": True,
@@ -156,6 +168,21 @@ def scenario_compaction_atom():
         compact_summary_line(T0 + 505, "cs1", parent="c1"),
         uline(T0 + 520, "continue post-compaction", "u2", "cs1", ps="sdk"),
         aline(T0 + 530, "Continuing.", "a2", "u2", stop="end_turn"),
+    ]
+
+
+def scenario_compaction_broken_stitch():
+    """Real-data case (3/69 compactions): a compact_boundary whose logicalParentUuid points
+    at a uuid present in NO transcript line. Followed blindly it orphans ALL pre-compaction
+    history; the repair re-points the stitch at compactMetadata.preservedSegment.tailUuid
+    (the real in-file pre-compaction leaf), so u1 is retained, not dropped."""
+    return [
+        uline(T0, "pre-compaction ask", "u1", parent=None, ps="typed"),
+        aline(T0 + 30, "pre-compaction reply", "a1", "u1", stop="end_turn"),
+        compact_line_broken(T0 + 500, "c1", dangling_logical="ghost-pre-compaction-leaf",
+                            preserved_tail="a1", trigger="auto", pre=99999),
+        uline(T0 + 520, "post-compaction ask", "u2", parent="c1", ps="sdk"),
+        aline(T0 + 530, "post-compaction reply", "a2", "u2", stop="end_turn"),
     ]
 
 
@@ -262,6 +289,7 @@ SINGLE_FILE = {
     "author_kinds": (scenario_author_kinds, SENT_LOG),
     "queued_new_turn": (scenario_queued_new_turn, None),
     "compaction_atom": (scenario_compaction_atom, None),
+    "compaction_broken_stitch": (scenario_compaction_broken_stitch, None),
     "idle_atom": (scenario_idle_atom, IDLE_STATES),
     "popall": (scenario_popall, None),
     "clear_breaks_lineage": (scenario_clear_breaks_lineage, None),
@@ -439,6 +467,17 @@ class Compaction(unittest.TestCase):
         uuids = [a.get("uuid") for t in out["turns"] for a in t["atoms"]]
         self.assertIn("u1", uuids, "the stitch (logicalParentUuid) keeps pre-compaction history on path")
         self.assertIn("a1", uuids)
+
+    def test_broken_stitch_repaired_via_preserved_segment(self):
+        """When logicalParentUuid dangles, preservedSegment.tailUuid repairs the stitch so
+        pre-compaction history is retained instead of orphaned."""
+        out = run_scenario("compaction_broken_stitch")
+        uuids = [a.get("uuid") for t in out["turns"] for a in t["atoms"]]
+        self.assertIn("u1", uuids, "pre-compaction history must survive a dangling logicalParentUuid")
+        self.assertIn("a1", uuids)
+        self.assertIn("u2", uuids)
+        comp = [a for t in out["turns"] for a in t["atoms"] if a.get("subtype") == "compact_boundary"]
+        self.assertEqual(comp[0]["parentUuid"], "a1", "the compaction atom's parent is the repaired stitch")
 
 
 class Lineage(unittest.TestCase):

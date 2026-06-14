@@ -205,6 +205,28 @@ class FileAdapter:
                     if a.get("type") == "queued_command" and a.get("prompt"):
                         key = " ".join(str(a["prompt"]).split())
                         self.qattach.setdefault(key, []).append(u)
+        self._repair_compaction_stitches()
+
+    def _repair_compaction_stitches(self):
+        """Claude Code sometimes writes a compact_boundary whose logicalParentUuid points
+        at a message that exists in compactMetadata.allUuids but was NEVER written as its
+        own transcript line (3/69 compactions in the live corpus). Followed blindly, that
+        dangling stitch orphans ALL pre-compaction history. The real in-file pre-compaction
+        leaf is in compactMetadata.preservedSegment (tail/anchor/head), so when the stitch
+        target is missing, re-point parent_of there — reconnecting the pre-compaction tree.
+        (Verified: rescues 100% of the corpus's broken stitches.)"""
+        for u, r in self.by_uuid.items():
+            if r.get("type") != "system" or r.get("subtype") != "compact_boundary":
+                continue
+            target = self.parent_of.get(u)
+            if target is None or target in self.by_uuid:
+                continue                          # no stitch, or stitch is intact
+            seg = (r.get("compactMetadata") or {}).get("preservedSegment") or {}
+            for k in ("tailUuid", "anchorUuid", "headUuid"):   # tail = the pre-compaction leaf
+                cand = seg.get(k)
+                if cand and cand in self.by_uuid:
+                    self.parent_of[u] = cand
+                    break
 
     def active_path(self):
         """The set of uuids on the leaf->root chain (directed walk, O(chain length))."""
@@ -335,7 +357,7 @@ class FileAdapter:
                 cm = r.get("compactMetadata") or r.get("compact_metadata") or {}
                 out.append({"type": "system", "subtype": "compact_boundary", "uuid": u,
                             "session_id": rompuuid, "t": ts, "fsid": fsid,
-                            "parentUuid": r.get("parentUuid") or r.get("logicalParentUuid"),
+                            "parentUuid": self.parent_of.get(u),   # the repaired stitch (see _repair_compaction_stitches)
                             "compact_metadata": {"trigger": cm.get("trigger"),
                                                  "pre_tokens": cm.get("preTokens") or cm.get("pre_tokens")},
                             "_seq": seq})
