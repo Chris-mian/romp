@@ -161,6 +161,14 @@ class CleanCaption(unittest.TestCase):
         self.assertEqual(jd._clean_caption("..."), "")
         self.assertEqual(jd._clean_caption(""), "")
 
+    def test_strips_tool_name_leak(self):
+        # an agent-tool name leak is stripped; the accomplishment is kept
+        self.assertEqual(jd._clean_caption("Explained the edit to a reviewer via reply tool"),
+                         "Explained the edit to a reviewer")
+        self.assertEqual(jd._clean_caption("Fixed the null check using the Edit tool"), "Fixed the null check")
+        # legit work that isn't an agent-tool-usage clause is untouched
+        self.assertEqual(jd._clean_caption("Built a small CLI tool"), "Built a small CLI tool")
+
     def test_rejects_meta_refusals(self):
         # the model narrating that it can't caption is a failed capture, not a caption
         self.assertEqual(jd._clean_caption("Nothing to summarize"), "")
