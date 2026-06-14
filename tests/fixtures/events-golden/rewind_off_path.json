@@ -9,6 +9,7 @@
    "mids": [],
    "open": false,
    "peer": false,
+   "promptId": "11111111-2222-3333-4444-555555555555:1781096400:afac1a51#p",
    "rec": "USER ASKED: first attempt\nASSISTANT SAID: Did it one way.",
    "replyUuid": "a1",
    "t": 1781096400,
@@ -16,6 +17,7 @@
    "text_full": "first attempt",
    "tid": "11111111-2222-3333-4444-555555555555",
    "uuid": "u1",
+   "workId": "11111111-2222-3333-4444-555555555555:1781096400:afac1a51#w",
    "workUuid": "a1"
   },
   {
@@ -26,6 +28,7 @@
    "mids": [],
    "open": true,
    "peer": false,
+   "promptId": "11111111-2222-3333-4444-555555555555:1781097000:88bc674f#p",
    "rec": "USER ASKED: second attempt instead\nASSISTANT SAID: Better approach done.",
    "replyUuid": "a3",
    "t": 1781097000,
@@ -33,6 +36,7 @@
    "text_full": "second attempt instead",
    "tid": "11111111-2222-3333-4444-555555555555",
    "uuid": "u3",
+   "workId": "11111111-2222-3333-4444-555555555555:1781097000:88bc674f#w",
    "workUuid": "a3"
   }
  ],

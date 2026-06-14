@@ -5,7 +5,8 @@
 // No in-process rendering or data plumbing here: the kernel is the single UI
 // host (same bundles + WebSocket protocol the VS Code thin client and the
 // browser pages use), and Obsidian is just a third front end. The module
-// spawn-or-attaches the kernel exactly like the VS Code extension does.
+// ensure-then-attaches (asks the `romp on` manager to bring the kernel up if
+// needed) exactly like the VS Code extension does.
 //
 // All three panes in one Obsidian window share a window-group id (?wid=), so
 // cross-pane links work: a session-name click in the feed focuses the chat
@@ -14,13 +15,11 @@
 
 const { ItemView, Plugin } = require('obsidian');
 const http = require('http');
-const fs = require('fs');
-const os = require('os');
-const path = require('path');
-const { execFileSync, spawn } = require('child_process');
+// No child_process/fs/os/path: Obsidian never LAUNCHES the kernel itself — it asks the manager to (see ensureKernel).
 
 const HOST = '127.0.0.1';
 const PORT = Number(process.env.ROMP_SERVE_PORT) || 7433;
+const MANAGER_PORT = Number(process.env.ROMP_MANAGER_PORT) || 7432;
 
 const CHAT_VIEW_TYPE = 'romp-chat';
 const FEED_VIEW_TYPE = 'romp-feed';
@@ -38,7 +37,12 @@ const PANES = {
 // instance links to the others
 const WID = 'obs-' + Math.random().toString(36).slice(2, 10);
 
-// ---- spawn-or-attach (mirrors chat-view/src/extension.ts) ----
+// ---- ensure-then-attach (the user 2026-06-13) ----
+// Obsidian must NEVER spawn the kernel itself: a kernel it spawned would be an invisible orphan, and
+// two front ends both spawning would fight over its lifetime. Instead it attaches to a manager-owned
+// kernel on PORT; if none is there it asks the `romp on` manager to ENSURE one (the manager spawns +
+// owns it), waits, and attaches — same model as the VS Code extension. If neither a kernel nor a
+// manager is reachable, onOpen shows an error pointing at `romp on`.
 
 function healthz() {
   return new Promise((resolve) => {
@@ -52,47 +56,30 @@ function healthz() {
   });
 }
 
-let loginPath = null;
-function loginShellPath() {
-  if (loginPath !== null) return loginPath;
-  const shell = process.env.SHELL || '/bin/zsh';
-  try {
-    loginPath = (execFileSync(shell, ['-lic', 'printf %s "$PATH"'], { timeout: 4000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }) || '').trim();
-  } catch (e) { loginPath = ''; }
-  return loginPath;
-}
-
-function spawnKernel() {
-  const env = Object.assign({}, process.env);
-  const login = loginShellPath();
-  if (login) env.PATH = login + ':' + (env.PATH || '');
-  const candidates = [];
-  if (process.env.ROMP_SERVE_BIN) candidates.push(process.env.ROMP_SERVE_BIN);
-  if (process.env.ROMP_DIR) candidates.push(path.join(process.env.ROMP_DIR, 'bin', 'romp-serve'));
-  candidates.push(path.join(os.homedir(), 'GitRepos', 'romp', 'bin', 'romp-serve'));
-  candidates.push('romp-serve');
-  const tryNext = (i) => {
-    if (i >= candidates.length) return;
-    if (i < candidates.length - 1 && candidates[i] !== 'romp-serve') {
-      try { if (!fs.existsSync(candidates[i])) { tryNext(i + 1); return; } } catch (e) { tryNext(i + 1); return; }
-    }
-    try {
-      const child = spawn(candidates[i], [], { detached: true, stdio: 'ignore', env });
-      child.on('error', () => tryNext(i + 1));
-      child.unref();
-    } catch (e) { tryNext(i + 1); }
-  };
-  tryNext(0);
+// POST the `romp on` manager's /ensure?port=N so it spawns+owns a kernel there. Resolves true iff a
+// manager answered (i.e. one is running) — Obsidian never spawns the kernel itself.
+function ensureViaManager() {
+  return new Promise((resolve) => {
+    const req = http.request(
+      { host: HOST, port: MANAGER_PORT, path: '/ensure?port=' + PORT, method: 'POST', timeout: 4000 },
+      (res) => { res.resume(); resolve((res.statusCode || 500) < 400); });
+    req.on('timeout', () => { req.destroy(); resolve(false); });
+    req.on('error', () => resolve(false));
+    req.end();
+  });
 }
 
 let ensuring = null;
 function ensureKernel() {
   if (ensuring) return ensuring;
   ensuring = (async () => {
+    // 1. Already serving on PORT? attach straight away (the common case once `romp on` is up).
     if (await healthz()) return true;
-    spawnKernel();
+    // 2. None there — ask the manager to bring one up (it owns it). No manager → give up (onOpen errors).
+    if (!(await ensureViaManager())) return false;
+    // 3. Poll until the freshly-ensured kernel is serving (~5s), then attach.
     for (let i = 0; i < 25; i++) {
-      await new Promise((r) => setTimeout(r, 400));
+      await new Promise((r) => setTimeout(r, 200));
       if (await healthz()) return true;
     }
     return false;
@@ -120,13 +107,13 @@ class RompKernelView extends ItemView {
     el.setAttribute('style', 'padding:0;overflow:hidden;');
     const note = el.createDiv();
     note.setAttribute('style', 'padding:12px;color:var(--text-muted);font-size:12px;');
-    note.textContent = 'starting the romp kernel…';
+    note.textContent = 'connecting to the romp kernel…';
     const ok = await ensureKernel();
     note.remove();
     if (!ok) {
       const err = el.createDiv();
       err.setAttribute('style', 'padding:12px;color:var(--text-error);font-size:12px;');
-      err.textContent = 'romp kernel unreachable — run `romp-serve` (or check that the romp checkout is at ~/GitRepos/romp / $ROMP_DIR).';
+      err.textContent = 'romp kernel not running — start it with `romp on` in a terminal, then reopen this pane. (Obsidian attaches to a kernel; it doesn’t launch one — only `romp on` does.)';
       return;
     }
     this._frame = el.createEl('iframe');

@@ -2,15 +2,16 @@
 """romp-icon — generate the romp app icon.
 
 The icon renders the romp *timeline* visual language as a small mark: three
-session-colored lines (the first three palette colors — blue/green/purple)
+session-colored lines (the first three palette colors — blue/green/teal)
 swirling/orbiting a center, each ending in a "prompt dot" (the colored circle
 with a light border that the timeline draws at the start of every turn).
 
-Design language pulled straight from prototypes/romp-timeline.html:
+Colors are the first three of bin/romp's default _palette (reordered to put
+teal third, ahead of purple, 2026-06):
   --bg       #0e1116   dark canvas
-  palette-1  #179EE8   blue   (postal)
-  palette-2  #57B50F   green  (vscode_plugin)
-  palette-3  #9C95FE   purple (karibener)
+  palette-1  #1EA1EB   blue
+  palette-2  #54B204   green
+  palette-3  #4EA8A9   teal
   --dotBorder #e8eef5  light ring on every dot
   lines      rounded caps/joins, with a wider faint same-color "glow" understroke
 
@@ -22,14 +23,17 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 
-# --- palette (exact hex from the romp timeline / Vault dashboard) ------------
+# --- palette: the first THREE default session colors, in bin/romp _palette order
+# (the user reordered the default palette to blue, green, TEAL — teal replaced
+# purple in the top three, 2026-06; purple is now last). Exact hexes from
+# bin/romp's _palette so the mark matches session identity everywhere. ----------
 BG        = "#0e1116"
 BG_CENTER = "#171c24"
-BLUE      = "#179EE8"
-GREEN     = "#57B50F"
-PURPLE    = "#9C95FE"
+BLUE      = "#1EA1EB"   # _palette[0]
+GREEN     = "#54B204"   # _palette[1]
+TEAL      = "#4EA8A9"   # _palette[2]  (was purple #9088F0, now demoted to last)
 DOTBORDER = "#e8eef5"
-COLORS    = [BLUE, GREEN, PURPLE]
+COLORS    = [BLUE, GREEN, TEAL]
 
 SIZE   = 1024          # master canvas (square)
 C      = SIZE / 2      # center
@@ -135,7 +139,10 @@ def line(d, col, w_main, w_glow):
 
 
 # --- variant: swirl (logarithmic-ish spiral arms) ---------------------------
-def variant_swirl():
+# with_bg=False → the arms+dots on a TRANSPARENT canvas (no rounded-square
+# background): the favicon / VS Code activity-bar GLYPH, which sits on the host's
+# own surface. With background → the full app-icon tile.
+def variant_swirl(with_bg=True):
     r0, r1 = 96, 352
     sweep = 252
     rot0 = -100
@@ -157,11 +164,15 @@ def variant_swirl():
         dots.append(dot(last[0], last[1], col))
     body = (f'<svg xmlns="http://www.w3.org/2000/svg" width="{SIZE}" height="{SIZE}" '
             f'viewBox="0 0 {SIZE} {SIZE}">'
-            + background()
+            + (background() if with_bg else "")
             + f'<defs>{defs_for_colors(r0, r1)}{center_glow_def()}</defs>'
             + "".join(arms) + center_node() + "".join(dots)
             + "</svg>")
     return body
+
+
+def variant_swirl_glyph():
+    return variant_swirl(with_bg=False)
 
 
 # --- variant: orbit (three elliptical orbital arcs, atom-like) --------------
@@ -303,6 +314,9 @@ def main():
         svg_path = HERE / f"romp-icon-{name}.svg"
         svg_path.write_text(svg)
         print("wrote", svg_path.name)
+    # transparent-background swirl glyph (favicon + VS Code activity-bar icon)
+    (HERE / "romp-icon-swirl-glyph.svg").write_text(variant_swirl_glyph())
+    print("wrote romp-icon-swirl-glyph.svg")
 
     # 2) try to rasterize via cairosvg if the native cairo lib is present
     try:

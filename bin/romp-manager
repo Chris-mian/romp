@@ -1,0 +1,224 @@
+#!/usr/bin/env node
+'use strict';
+// romp-manager — the thin, cross-platform supervisor you launch with `romp on`.
+//
+// It is the durable OWNER of the romp kernel(s): you start it (foreground, like `jupyter lab`), it
+// spawns each kernel via romp-serve, respawns one if it crashes OR on a restart request, and exposes
+// a loopback control endpoint so ANY front end (the web dashboard's reload button, VS Code, the CLI)
+// can ask it to restart a kernel — without that front end having to own the process. The manager
+// itself stays up across kernel restarts, so the front ends just reconnect.
+//
+// This is the Jupyter shape: manager : kernel :: jupyter-server : ipython-kernel. Pure Node (no
+// launchd/systemd) → identical on macOS and Linux. Front ends ATTACH to the kernel; only the manager
+// owns it, so there is never an invisible orphan and never two owners fighting over the lifecycle.
+//
+// MULTI-KERNEL by construction: kernels live in a registry keyed by id, so a future release can run
+// several kernels (e.g. different subsets of agents on different kernels) by registering more specs.
+// v1 supervises one default kernel, 'main', on the standard port.
+//
+// CLI (dispatched from bin/romp's top-level verbs):
+//   romp on        → `up`          run the manager in the foreground (Ctrl+C stops it + its kernels)
+//   romp refresh   → `restart-all` restart EVERY kernel the manager owns (loops the registry)
+//   romp status    → `status`      print the manager + kernel status
+// (`restart [kernel]` (single) and `down`/`/stop` also exist for front ends / SIGINT — no romp verb.)
+
+const http = require('http');
+const { spawn } = require('child_process');
+const os = require('os');
+const path = require('path');
+const fs = require('fs');
+
+const HOST = '127.0.0.1';
+const CONTROL_PORT = Number(process.env.ROMP_MANAGER_PORT) || 7432;
+const KERNEL_PORT = Number(process.env.ROMP_SERVE_PORT) || 7433;
+
+function log(msg) { process.stderr.write('[romp-manager] ' + msg + '\n'); }
+
+// romp-serve is the kernel launcher (rebuilds dist if stale, then execs node on it). Resolve it the
+// same way the other consumers do: $ROMP_SERVE_BIN → $ROMP_DIR/bin → next to this script → the
+// conventional checkout → PATH.
+function rompServeBin() {
+  const cands = [
+    process.env.ROMP_SERVE_BIN,
+    process.env.ROMP_DIR && path.join(process.env.ROMP_DIR, 'bin', 'romp-serve'),
+    path.join(__dirname, 'romp-serve'),
+    path.join(os.homedir(), 'GitRepos', 'romp', 'bin', 'romp-serve'),
+  ].filter(Boolean);
+  for (const c of cands) { try { if (fs.existsSync(c)) return c; } catch (e) { /* skip */ } }
+  return 'romp-serve';
+}
+
+// ── the kernel registry (multi-kernel-ready) ───────────────────────────────
+// id → { spec:{id,port}, child, restarts, quickCrashes, startedAt, stopping }. The default port is
+// the unfiltered 'main' kernel; additional kernels (added on demand via /ensure) are 'k<port>'.
+const kernels = new Map();
+const SPECS = [{ id: 'main', port: KERNEL_PORT }];
+
+// Front ends are configured by PORT, not id; the manager maps a port to a stable kernel id so the
+// control verbs (status/restart/stop) can name it. The default port is the canonical 'main' kernel.
+function idForPort(port) { return Number(port) === KERNEL_PORT ? 'main' : 'k' + Number(port); }
+
+// Respawn backoff: a kernel that exits almost immediately is crash-looping (most often because its
+// port is held by a foreign process). Escalate the delay so we never hot-spin a doomed spawn.
+const QUICK_CRASH_MS = 2000;
+const MAX_BACKOFF_MS = 10000;
+
+function spawnKernel(spec) {
+  const prev = kernels.get(spec.id);
+  // ROMP_MANAGER_PID lets the kernel run a parent-death watchdog (see chat-view/src/kernel/parent-watch):
+  // if we die uncleanly (SIGKILL / crash / closed terminal) and never SIGTERM it, it sees us vanish and
+  // exits itself instead of orphaning. ROMP_SERVE_PORT is the kernel's listen port.
+  const env = Object.assign({}, process.env, {
+    ROMP_SERVE_PORT: String(spec.port),
+    ROMP_MANAGER_PID: String(process.pid),     // → kernel's parent-death watchdog
+    ROMP_MANAGER_PORT: String(CONTROL_PORT),   // → kernel's /restart forwards the web button here
+  });
+  // stdio inherited → the kernel's own logs surface in this foreground terminal (visible owner).
+  const child = spawn(rompServeBin(), ['--port', String(spec.port)], { stdio: 'inherit', env });
+  kernels.set(spec.id, {
+    spec, child,
+    restarts: prev ? prev.restarts : 0,
+    quickCrashes: prev ? prev.quickCrashes : 0,
+    startedAt: Date.now(), stopping: false,
+  });
+  log(`kernel '${spec.id}' → :${spec.port} (pid ${child.pid})`);
+  child.on('error', (e) => log(`kernel '${spec.id}' spawn error: ${e.message}`));
+  child.on('exit', (code, sig) => {
+    const cur = kernels.get(spec.id);
+    if (!cur || cur.child !== child) return;                 // already superseded by a fresh spawn
+    if (cur.stopping) { kernels.delete(spec.id); log(`kernel '${spec.id}' stopped`); return; }
+    cur.restarts++;
+    // crash-loop? back off. A healthy run (uptime ≥ QUICK_CRASH_MS) resets the counter.
+    cur.quickCrashes = (Date.now() - cur.startedAt) < QUICK_CRASH_MS ? cur.quickCrashes + 1 : 0;
+    const delay = Math.min(cur.quickCrashes * 1000, MAX_BACKOFF_MS);
+    log(`kernel '${spec.id}' exited (code=${code} sig=${sig || '-'}) — respawning in ${delay}ms [#${cur.restarts}]`);
+    setTimeout(() => {
+      const c = kernels.get(spec.id);
+      if (c && c.child === child && !c.stopping) spawnKernel(spec);   // still ours & not asked to stop
+    }, delay);                                               // crash OR requested restart → bring it back
+  });
+}
+
+// /ensure's worker: return the kernel for `port` if the manager already owns one, else spawn it.
+// This is how a front end (configured for a port) gets a kernel there without owning the process.
+function ensureKernel(port) {
+  const id = idForPort(port);
+  const existing = kernels.get(id);
+  if (existing) return { id, port: existing.spec.port, pid: existing.child.pid, spawned: false };
+  spawnKernel({ id, port: Number(port) });
+  const rec = kernels.get(id);
+  return { id, port: Number(port), pid: rec ? rec.child.pid : null, spawned: true };
+}
+
+function restartKernel(id) {
+  const rec = kernels.get(id);
+  if (!rec) return false;
+  rec.stopping = false;          // ensure the exit handler RESPAWNS rather than reaps
+  rec.child.kill('SIGTERM');     // the exit handler spawns a fresh one (romp-serve rebuilds if stale)
+  return true;
+}
+
+// Restart EVERY kernel the manager owns — the `romp refresh` action (loops the registry, not just
+// 'main'). Returns the ids it kicked, so the caller can report them.
+function restartAll() {
+  const ids = [...kernels.keys()];
+  for (const id of ids) restartKernel(id);
+  return ids;
+}
+
+function stopKernel(id) {
+  const rec = kernels.get(id);
+  if (!rec) return false;
+  rec.stopping = true;
+  rec.child.kill('SIGTERM');
+  return true;
+}
+
+let shuttingDown = false;
+function shutdownAll(exitCode) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  log('shutting down — stopping all kernels');
+  for (const id of kernels.keys()) stopKernel(id);
+  // give the kernels a moment to exit, then go regardless
+  setTimeout(() => process.exit(exitCode || 0), 800);
+}
+
+// ── control endpoint (loopback only) ───────────────────────────────────────
+function runManager() {
+  // Refuse to start a second manager — that would mean two owners fighting over the kernel port.
+  probeControl((alive) => {
+    if (alive) { log(`a manager is already running on :${CONTROL_PORT} (use \`romp on status|restart|down\`).`); process.exit(1); }
+    startManager();
+  });
+}
+
+function startManager() {
+  const server = http.createServer((req, res) => {
+    const url = new URL(req.url || '/', 'http://x');
+    const kid = url.searchParams.get('kernel') || 'main';
+    const json = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj)); };
+    if (req.method === 'GET' && url.pathname === '/status') {
+      return json(200, {
+        ok: true,
+        manager: { pid: process.pid, controlPort: CONTROL_PORT },
+        kernels: [...kernels].map(([id, r]) => ({ id, port: r.spec.port, pid: r.child.pid, restarts: r.restarts, upSec: Math.round((Date.now() - r.startedAt) / 1000) })),
+      });
+    }
+    if (req.method === 'POST' && url.pathname === '/ensure') {
+      // A front end configured for `port` asks us to guarantee a kernel there, then attaches. We own
+      // it; the front end never spawns. Idempotent: spawned:false means one was already running.
+      const port = Number(url.searchParams.get('port')) || KERNEL_PORT;
+      return json(200, Object.assign({ ok: true }, ensureKernel(port)));
+    }
+    if (req.method === 'POST' && url.pathname === '/restart-all') {
+      return json(200, { ok: true, restarted: restartAll() });   // `romp refresh` — every kernel
+    }
+    if (req.method === 'POST' && url.pathname === '/restart') {
+      return restartKernel(kid) ? json(200, { ok: true, restarted: kid }) : json(404, { ok: false, error: `no kernel '${kid}'` });
+    }
+    if (req.method === 'POST' && url.pathname === '/stop') {
+      if (url.searchParams.has('kernel')) {
+        return stopKernel(kid) ? json(200, { ok: true, stopped: kid }) : json(404, { ok: false, error: `no kernel '${kid}'` });
+      }
+      json(200, { ok: true, stopping: 'all' });            // no ?kernel → stop everything + exit the manager
+      return shutdownAll(0);
+    }
+    json(404, { ok: false, error: 'not found' });
+  });
+  server.on('error', (e) => { log(`control port :${CONTROL_PORT} unavailable: ${e.message}`); process.exit(1); });
+  server.listen(CONTROL_PORT, HOST, () => {
+    log(`up — control :${CONTROL_PORT} · Ctrl+C to stop`);
+    for (const spec of SPECS) spawnKernel(spec);
+  });
+  process.on('SIGINT', () => shutdownAll(0));
+  process.on('SIGTERM', () => shutdownAll(0));
+}
+
+// ── control client (romp on restart|status|down) ───────────────────────────
+function probeControl(cb) {
+  const req = http.get({ host: HOST, port: CONTROL_PORT, path: '/status', timeout: 1200 }, (res) => { res.resume(); cb(res.statusCode === 200); });
+  req.on('timeout', () => { req.destroy(); cb(false); });
+  req.on('error', () => cb(false));
+}
+
+function control(method, pathname, kernel) {
+  const u = new URL(`http://${HOST}:${CONTROL_PORT}${pathname}`);
+  if (kernel) u.searchParams.set('kernel', kernel);
+  const req = http.request(u, { method, timeout: 4000 }, (res) => {
+    let b = ''; res.on('data', (d) => (b += d));
+    res.on('end', () => { try { process.stdout.write(JSON.stringify(JSON.parse(b), null, 2) + '\n'); } catch (e) { process.stdout.write(b + '\n'); } process.exit(res.statusCode < 400 ? 0 : 1); });
+  });
+  req.on('timeout', () => { req.destroy(); console.error(`romp manager did not respond on :${CONTROL_PORT}`); process.exit(1); });
+  req.on('error', () => { console.error(`romp manager is not running on :${CONTROL_PORT} — start it with \`romp on\`.`); process.exit(1); });
+  req.end();
+}
+
+// ── dispatch ────────────────────────────────────────────────────────────────
+const cmd = process.argv[2];
+if (cmd === 'restart') control('POST', '/restart', process.argv[3]);
+else if (cmd === 'restart-all') control('POST', '/restart-all');
+else if (cmd === 'status') control('GET', '/status');
+else if (cmd === 'down') control('POST', '/stop');
+else if (!cmd || cmd === 'up') runManager();
+else { console.error('usage: romp-manager [up | restart-all | restart [kernel] | status | down]'); process.exit(2); }

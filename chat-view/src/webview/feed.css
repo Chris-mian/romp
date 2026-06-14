@@ -111,7 +111,7 @@ body { display: flex; flex-direction: column; }
   padding: 12px 12px 28px;
   container-type: inline-size;   /* so the columns can stack responsively (see @container below) */
 }
-.feed-empty { color: var(--dim); padding: 28px 14px; text-align: center; }
+.feed-empty { color: var(--dim); padding: 40px 14px; text-align: center; font-size: 96px; line-height: 1; user-select: none; }
 
 /* ---------- two columns: Done (left) | In progress (right) ---------- */
 .feed-cols { display: flex; align-items: flex-start; gap: 12px; }
@@ -276,6 +276,21 @@ body { display: flex; flex-direction: column; }
 .fgroup-modal-member + .fgroup-modal-member { border-top: 1px solid rgba(255, 255, 255, 0.08); }
 
 /* ⛶ full-screen tree modal (deep hierarchies) */
+/* feedConfirm() overlay — a small yes/no (e.g. revive a closed session). Above
+   #feed-modal so it can sit over an open card modal. */
+.fconfirm-back { position: fixed; inset: 0; z-index: 200; background: rgba(0, 0, 0, 0.55);
+  display: flex; align-items: center; justify-content: center; padding: 4vh 4vw; }
+.fconfirm-box { background: var(--bg); border: 1px solid var(--card-border, rgba(255, 255, 255, 0.18));
+  border-radius: 10px; padding: 18px 20px; max-width: 380px; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5); }
+.fconfirm-msg { color: var(--fg); line-height: 1.45; margin-bottom: 14px; overflow-wrap: anywhere; }
+.fconfirm-btns { display: flex; justify-content: flex-end; gap: 8px; }
+.fconfirm-btn { font: inherit; padding: 5px 13px; border-radius: 6px; cursor: pointer;
+  border: 1px solid var(--card-border, rgba(255, 255, 255, 0.18)); background: transparent; color: var(--fg); }
+.fconfirm-btn:hover { background: rgba(255, 255, 255, 0.08); }
+.fconfirm-btn.primary { border-color: transparent;
+  background: var(--vscode-button-background, #2b7fb8); color: var(--vscode-button-foreground, #fff); }
+.fconfirm-btn.primary:hover { background: var(--vscode-button-hoverBackground, #3690cc); }
+
 #feed-modal { position: fixed; inset: 0; z-index: 100; background: rgba(0, 0, 0, 0.55);
   display: flex; align-items: center; justify-content: center; padding: 4vh 4vw; }
 .feed-modal-inner { display: flex; flex-direction: column; width: 100%; max-width: 1280px; max-height: 92vh;

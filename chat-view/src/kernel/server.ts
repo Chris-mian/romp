@@ -20,6 +20,8 @@ import { WebSocketServer, WebSocket } from "ws";
 import { TmuxBackend } from "./tmux-backend";
 import { HeadlessBackend } from "./headless-backend";
 import { StreamBackend } from "./stream-backend";
+import { watchParent } from "./parent-watch";
+import { NO_STORE } from "./web-restart";
 import type { SessionBackend, SessionState } from "./backend";
 import {
   Session, ChipState, chipState, statusPayload, sig, firstSeenOf,
@@ -36,7 +38,7 @@ import {
 } from "./state";
 import {
   computeFeedItems, computeAskItems, workingNames, ageRgbTuple, lastReqBySid,
-  missedHandoffSuspects, FeedItem, AskItem,
+  missedHandoffSuspects, isGenuinePermissionBlock, FeedItem, AskItem,
 } from "./feed";
 import { loadTimeline, timelineHtml, timelineUnavailableHtml } from "./timeline";
 import { chatBody, FEED_BODY, ATTACH_TITLE_WEB } from "../page-skeleton";
@@ -759,10 +761,14 @@ function refreshFeed(force = false) {
       if (!BLOCKED_STATES.has(info.state)) continue;
       const id = rompIds().find((i) => (rompMeta(i).name ?? i.slice(0, 8)) === name);
       const sinceT = Number(info.since) || 0;
-      // auto-mode debounce (2026-06-11): with auto mode on, every tool fires a
-      // permission notification that the classifier allows seconds later — a
-      // "permission" younger than this isn't blocked, it's mid-decision.
-      if (info.state === "permission" && now - sinceT < 15) continue;
+      // Auto-mode permission notifications are the classifier's transient
+      // mid-decision blips (allowed moments later), not blocks. Suppress those by
+      // MODE, not by elapsed time — the old `now - sinceT < 15` debounce also ate
+      // genuine fast blocks like a /model confirm answered in <15s (the
+      // inconsistency the user reported). default/plan (and unreported "") prompt
+      // for real, so a permission there surfaces immediately. See
+      // isGenuinePermissionBlock.
+      if (info.state === "permission" && !isGenuinePermissionBlock(info.mode)) continue;
       const what = info.state === "permission" ? "waiting for your approval (permission prompt)"
         : "blocked on the resume picker";
       // The user's ruling (2026-06-11): a blocked session is NOT its own card —
@@ -808,6 +814,8 @@ function refreshFeed(force = false) {
 }
 
 // ---- feed detail (lazy, cached per deliverable) ----
+// THE WRITER (docs/figures.md figure 2): the kernel never writes prose itself;
+// card paragraphs come from spawning romp-feed-detail and waiting for the file.
 
 const feedDetailPending = new Set<string>();
 function feedDetailBin(): string {
@@ -879,12 +887,24 @@ function chatGlow(ids: string[] | null) {
   post({ type: "glowTurns", groups: Array.from(groups, ([sid, ranges]) => ({ sid, ranges })), mids });
 }
 
-// hoverTimeline + the chat glow fan, debounced together (rides the same ~40ms
-// cadence the timeline-hover file write uses).
+// Set the timeline hover AND fast-push it to THIS kernel's own /timeline clients.
+// hoverTimeline still writes timeline-hover.json (the cross-front-end channel: VS
+// Code trackchanges + the Obsidian vault read the FILE, not this ws); the direct
+// push just skips the fs.watch → full tl.build() round-trip so the highlight lands
+// as fast as the chat glow (the user 2026-06-12: the timeline lagged the chat on a
+// modal hover). Same monotonic nonce on file + push → a trailing data-poll reading
+// the identical nonce ties instead of clobbering (the view honors max-nonce).
+function pushHover(ids: string[] | string | null) {
+  const nonce = hoverTimeline(ids);
+  timelinePost({ type: "hover", ids: ids == null ? null : Array.isArray(ids) ? ids : [ids], nonce });
+}
+
+// hover + the chat glow fan, debounced together (rides the same ~40ms cadence the
+// timeline-hover file write uses).
 let glowTimer: NodeJS.Timeout | undefined;
 let glowPending: string[] | null = null;
 function hoverFan(ids: string[] | string | null) {
-  hoverTimeline(ids);
+  pushHover(ids);
   glowPending = ids == null ? null : Array.isArray(ids) ? ids : [ids];
   if (glowTimer) return;
   glowTimer = setTimeout(() => { glowTimer = undefined; chatGlow(glowPending); }, 40);
@@ -892,10 +912,21 @@ function hoverFan(ids: string[] | string | null) {
 
 function onDotHover(sid: string | null, uuid: string | null, t: number) {
   const ev = sid ? turnEvent(sid, uuid, t) : null;
-  if (!ev) { hoverTimeline(null); feedPost({ type: "hoverCards", keys: [], eid: null }); return; }
-  hoverTimeline(String(ev.id));
+  if (!ev) { pushHover(null); feedPost({ type: "hoverCards", keys: [], eid: null }); chatGlow(null); return; }
+  // Which ATOM does the hovered chat line stand for? The event's OWN anchors decide (data model,
+  // not a render guess): the boundary line (ev.uuid) IS the prompt → light the start dot; anything
+  // else in the period (a reply/work line, or a time-resolved mid-period line) → light the work
+  // bar. Emit that atom's id (romp-events mints promptId/workId); fall back to the whole-turn id if
+  // a stale pre-atom cache lacks the field (degrades to the old light-both behavior, never crashes).
+  const isPrompt = !!uuid && String(ev.uuid) === uuid;
+  const atomId = isPrompt ? (ev.promptId || ev.id) : (ev.workId || ev.id);
+  pushHover(String(atomId));
   // eid → the feed also white-rings the matching ROWS inside an open modal
   feedPost({ type: "hoverCards", keys: cardsForEvent(String(ev.id)).flatMap((c) => c.dom), eid: String(ev.id) });
+  // …and the CHAT reciprocally glows this turn's whole span (the user 2026-06-12:
+  // hovering the message must light the work period in-chat too) — the same glow
+  // the feed→chat fan paints, so hovering either end of the join looks identical.
+  chatGlow([String(ev.id)]);
 }
 
 function onDotOpen(sid: string, uuid: string | null, t: number) {
@@ -1189,7 +1220,11 @@ function handleFeedMessage(c: Client, m: any) {
     else if (a) {
       focusTimeline(a.turnId, a.sid, a.created, { ask: a.itemId, events: a.path.events, msgs: a.path.msgs }, "prompt", false, m.jump === true);
       focusOverlayItem = String(m.itemId);
-      if (m.locate !== false && !m.jump) locateInChat(a.sid, a.created);
+      // A title click means "take me to what STARTED this card" — its originating turn (a.turnId
+      // at a.created), which is usually the user's prompt. "user" makes the chat land on that turn's
+      // PROMPT line (chatAnchorFor → ev.uuid), not its reply (replyUuid) — matching the timeline's
+      // "prompt" anchor above — and restricts the time-fallback to user turns. (the user 2026-06-12)
+      if (m.locate !== false && !m.jump) locateInChat(a.sid, a.created, "user");
     }
   }
   else if (m.type === "hoverHighlight") hoverFan(
@@ -1480,6 +1515,7 @@ function chatHtml(): string {
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="icon" type="image/svg+xml" href="/media/romp-swirl-glyph.svg" />
   <link href="/dist/styles.css" rel="stylesheet" />
   <title>romp</title>
   <style>${THEME_CSS}</style>
@@ -1498,6 +1534,7 @@ function feedHtml(): string {
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="icon" type="image/svg+xml" href="/media/romp-swirl-glyph.svg" />
   <link href="/dist/feed.css" rel="stylesheet" />
   <title>romp feed</title>
   <style>${THEME_CSS}</style>
@@ -1522,6 +1559,7 @@ function combinedHtml(): string {
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="icon" type="image/svg+xml" href="/media/romp-swirl-glyph.svg" />
   <title>romp</title>
   <style>
     html, body { height: 100%; margin: 0; background: #1e1e1e; overflow: hidden; }
@@ -1536,20 +1574,31 @@ function combinedHtml(): string {
     .divider-v:hover { background: #007fd4; }
     #divider-h { flex: 0 0 5px; cursor: row-resize; background: #161616; }
     #divider-h:hover { background: #007fd4; }
+    /* Small, faint handles tucked onto the MIDDLE of each pane's collapse-toward
+       edge (the user 2026-06-13) — clear of the top-corner control clusters they
+       used to overlap (the feed's ?/undo + refresh, the timeline's gap+lock, the
+       feed badges). They sit ON the pane edge so they cost no extra layout space,
+       and stay faint until hovered so they don't compete with pane content. */
     .collapse-btn {
-      position: absolute; z-index: 10; width: 22px; height: 22px;
+      position: absolute; z-index: 30;
       display: flex; align-items: center; justify-content: center;
-      background: #2a2a2a; color: #999; border: 1px solid #3a3a3a; border-radius: 5px;
-      cursor: pointer; user-select: none; opacity: 0.6;
+      background: #2a2a2a; color: #999; border: 1px solid #3a3a3a;
+      cursor: pointer; user-select: none; opacity: 0.3; transition: opacity 0.1s;
     }
     .collapse-btn:hover { opacity: 1; color: #fff; }
     /* the icon: a bold bar in the direction the pane collapses — vertical for
        the side panes (they fold into a side strip), horizontal for the timeline */
-    .collapse-btn .bar-v { width: 4px; height: 13px; border-radius: 2px; background: currentColor; display: block; }
-    .collapse-btn .bar-h { width: 13px; height: 4px; border-radius: 2px; background: currentColor; display: block; }
-    #chat-collapse { top: 6px; right: 6px; }
-    #feed-collapse { top: 6px; left: 6px; }
-    #tl-collapse { top: 6px; right: 6px; }
+    .collapse-btn .bar-v { width: 3px; height: 12px; border-radius: 2px; background: currentColor; display: block; }
+    .collapse-btn .bar-h { width: 12px; height: 3px; border-radius: 2px; background: currentColor; display: block; }
+    /* Elongated edge TABS built flush into each pane's collapse-toward border, the
+       chat + feed handles FLANKING the central divider (chat on its right edge, feed
+       on its LEFT edge); the timeline a wide handle centered on its top edge. Flush
+       (offset 0, not stuck out) + the flush-side border dropped + a high z-index, so
+       the divider never crosses them and they read as part of the edge. Tall/wide so
+       they're easy to hit along the edge they ride. */
+    #chat-collapse { top: 50%; right: 0; transform: translateY(-50%); width: 13px; height: 46px; border-radius: 5px 0 0 5px; border-right: 0; }
+    #feed-collapse { top: 50%; left: 0; transform: translateY(-50%); width: 13px; height: 46px; border-radius: 0 5px 5px 0; border-left: 0; }
+    #tl-collapse { left: 50%; top: 0; transform: translateX(-50%); width: 46px; height: 13px; border-radius: 0 0 5px 5px; border-top: 0; }
     /* the pane's name, shown only in its collapsed strip — rotated for the
        vertical side strips, inline for the horizontal timeline strip */
     .pane-label {
@@ -1562,10 +1611,13 @@ function combinedHtml(): string {
        strip is clickable to expand. */
     .pane.collapsed { flex: 0 0 26px !important; cursor: pointer; background: #181818; }
     .pane.collapsed iframe { display: none; }
-    .pane.collapsed .collapse-btn { position: static; margin: 0; opacity: 0.8; flex: 0 0 auto; }
+    .pane.collapsed .collapse-btn { position: static; transform: none; margin: 0; opacity: 0.8; flex: 0 0 auto; width: 22px; height: 22px; border: 1px solid #3a3a3a; border-radius: 5px; }
     .pane.collapsed .pane-label { display: block; }
     #chat-pane.collapsed, #feed-pane.collapsed {
-      display: flex; flex-direction: column; align-items: center; gap: 8px; padding-top: 6px;
+      /* center the expand button + label vertically in the strip (the user
+         2026-06-13) — they used to pack to the TOP (flex-start + padding-top),
+         leaving the re-expand button riding up and easy to miss */
+      display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
     }
     #chat-pane.collapsed .pane-label, #feed-pane.collapsed .pane-label { writing-mode: vertical-rl; }
     #tl-pane.collapsed {
@@ -1584,20 +1636,20 @@ function combinedHtml(): string {
       <div class="pane" id="chat-pane">
         <div class="collapse-btn" id="chat-collapse" title="collapse the chat"><span class="bar-v"></span></div>
         <span class="pane-label">chat</span>
-        <iframe id="chat-frame"></iframe>
+        <iframe id="chat-frame" allow="clipboard-read; clipboard-write"></iframe>
       </div>
       <div class="divider-v" id="divider-v"></div>
       <div class="pane" id="feed-pane">
         <div class="collapse-btn" id="feed-collapse" title="collapse the feed"><span class="bar-v"></span></div>
         <span class="pane-label">feed</span>
-        <iframe id="feed-frame"></iframe>
+        <iframe id="feed-frame" allow="clipboard-read; clipboard-write"></iframe>
       </div>
     </div>
     <div id="divider-h"></div>
     <div class="pane" id="tl-pane">
       <div class="collapse-btn" id="tl-collapse" title="collapse the timeline"><span class="bar-h"></span></div>
       <span class="pane-label">timeline</span>
-      <iframe id="tl-frame"></iframe>
+      <iframe id="tl-frame" allow="clipboard-read; clipboard-write"></iframe>
     </div>
   </div>
   <script>
@@ -1747,7 +1799,7 @@ function serveStatic(res: http.ServerResponse, root: string, rel: string) {
   if (!fp.startsWith(root)) { res.writeHead(403); res.end(); return; }
   fs.readFile(fp, (err, data) => {
     if (err) { res.writeHead(404); res.end("not found"); return; }
-    res.writeHead(200, { "Content-Type": STATIC_MIME[path.extname(fp)] || "application/octet-stream" });
+    res.writeHead(200, { "Content-Type": STATIC_MIME[path.extname(fp)] || "application/octet-stream", ...NO_STORE });
     res.end(data);
   });
 }
@@ -1766,7 +1818,7 @@ export function main() {
     if (!authorized(req, url)) { deny(res); return; }
     // A page request carrying a valid ?token sets the cookie the static/WS
     // requests will ride (the shim's WebSocket can't add headers).
-    const headers: http.OutgoingHttpHeaders = { "Content-Type": "text/html" };
+    const headers: http.OutgoingHttpHeaders = { "Content-Type": "text/html", ...NO_STORE };
     if (serveToken() && url.searchParams.get("token") === serveToken())
       headers["Set-Cookie"] = `romp_token=${serveToken()}; HttpOnly; SameSite=Strict; Path=/`;
     if (url.pathname === "/" || url.pathname === "/index.html") {
@@ -1779,6 +1831,15 @@ export function main() {
       const tl = loadTimeline();
       res.writeHead(200, headers);
       res.end(tl ? timelineHtml(tl.viewJs) : timelineUnavailableHtml());
+    } else if (url.pathname === "/restart" && req.method === "POST") {
+      // The web/Obsidian Restart button. Same-origin (page → kernel) so there's no cross-origin call to
+      // the manager. Respond FIRST, then ask the manager to restart everything (it SIGTERMs this kernel);
+      // the button then polls /healthz and reloads onto the fresh bundle.
+      res.writeHead(200, { "Content-Type": "application/json", ...NO_STORE });
+      res.end(JSON.stringify({ ok: true, restarting: true }));
+      const mport = Number(process.env.ROMP_MANAGER_PORT) || 7432;
+      const fwd = http.request({ host: "127.0.0.1", port: mport, path: "/restart-all", method: "POST", timeout: 4000 }, (r) => r.resume());
+      fwd.on("error", () => { /* no manager reachable — nothing to restart */ }); fwd.end();
     } else if (url.pathname.startsWith("/dist/")) {
       serveStatic(res, DIST, url.pathname.slice("/dist/".length));
     } else if (url.pathname.startsWith("/media/")) {
@@ -1849,8 +1910,14 @@ export function main() {
     }).on("error", () => { console.error(`romp-serve: port ${port} is taken and not answering /healthz.`); process.exit(1); });
   });
   server.listen(port, host, () => {
-    console.log(`romp-serve: chat  http://${host}:${port}/`);
-    console.log(`romp-serve: feed  http://${host}:${port}/feed`);
+    console.log(`romp-serve: ready on http://${host}:${port}  (chat · /feed · /timeline)`);
+  });
+  // Parent-death watchdog: if the `romp on` manager that owns us vanishes (SIGKILL / crash / closed
+  // terminal — i.e. never got to send us SIGTERM), exit so we don't linger as an orphan kernel. The
+  // manager passes its pid in ROMP_MANAGER_PID; a manual romp-serve launch has none → no watchdog.
+  watchParent(Number(process.env.ROMP_MANAGER_PID) || 0, () => {
+    console.log("romp-serve: manager is gone — exiting so no orphan kernel lingers.");
+    process.exit(0);
   });
 }
 

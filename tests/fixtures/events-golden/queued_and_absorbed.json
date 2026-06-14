@@ -9,6 +9,7 @@
    "mids": [],
    "open": false,
    "peer": false,
+   "promptId": "11111111-2222-3333-4444-555555555555:1781096400:646e7ca2#p",
    "rec": "USER ASKED: refactor the ledger\nASSISTANT SAID: Working through romp-ledger.\nTOOLS USED: Read",
    "replyUuid": "a1",
    "t": 1781096400,
@@ -16,6 +17,7 @@
    "text_full": "refactor the ledger",
    "tid": "11111111-2222-3333-4444-555555555555",
    "uuid": "u1",
+   "workId": "11111111-2222-3333-4444-555555555555:1781096400:646e7ca2#w",
    "workUuid": "a1"
   },
   {
@@ -26,6 +28,7 @@
    "mids": [],
    "open": false,
    "peer": false,
+   "promptId": "11111111-2222-3333-4444-555555555555:1781096460:84e8535c#p",
    "rec": "USER ASKED: also rename the digest file\nASSISTANT SAID: Folded the rename in too.",
    "replyUuid": "a2",
    "t": 1781096460,
@@ -33,6 +36,7 @@
    "text_full": "also rename the digest file",
    "tid": "11111111-2222-3333-4444-555555555555",
    "uuid": "att1",
+   "workId": "11111111-2222-3333-4444-555555555555:1781096460:84e8535c#w",
    "workUuid": "a2"
   },
   {
@@ -43,6 +47,7 @@
    "mids": [],
    "open": true,
    "peer": false,
+   "promptId": "11111111-2222-3333-4444-555555555555:1781096600:e11dd43a#p",
    "rec": "USER ASKED: and check the tests pass\nASSISTANT SAID: Tests pass.\nTOOLS USED: Bash",
    "replyUuid": "a3",
    "t": 1781096600,
@@ -50,6 +55,7 @@
    "text_full": "and check the tests pass",
    "tid": "11111111-2222-3333-4444-555555555555",
    "uuid": "u2",
+   "workId": "11111111-2222-3333-4444-555555555555:1781096600:e11dd43a#w",
    "workUuid": "a3"
   }
  ],

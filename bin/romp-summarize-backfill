@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
-"""romp-summarize-backfill — fill in the Haiku summaries that the hook can't.
+"""romp-summarize-backfill — THE JUDGE and THE AUDITOR of the event pipeline.
+
+Role names (docs/figures.md figure 2): this daemon is THE JUDGE — the three fused
+per-event calls (request / reply / message) on JUDGE_MODEL — and THE AUDITOR — the
+rare second opinions (decision briefs + missed-handoff audits) on AUDITOR_MODEL.
+The hook's live phrase is THE ANNOUNCER (hooks/romp-summarize.sh); romp-feed-detail
+and romp-digest are THE WRITER.
 
 The romp-summarize.sh hook fires on UserPromptSubmit (typed prompts) + Stop (the
 last reply). It MISSES: queued prompts (Claude Code doesn't fire UserPromptSubmit
 for them) and the intermediate replies of a drained queue. It also doesn't touch
 inter-session messages. This watcher reads the source of truth — each session's
 transcript and the postal message log — and backfills every missing summary, so
-the timeline shows a Haiku phrase for EVERY prompt (typed or queued) and every
+the timeline shows a phrase for EVERY prompt (typed or queued) and every
 message, not the raw text.
 
 It writes the SAME per-session history the hook/timeline already use
@@ -56,16 +62,17 @@ INTERVAL  = 5            # poll-fallback seconds (kqueue wakes us instantly on a
 DEDUP     = 20           # a summary within this many seconds of an item = already done (same
                          # event is keyed within ~1-2s by the hook/backfill; >20s apart = a
                          # DISTINCT event that must get its own summary, not be merged away)
-PER_PASS  = 16           # max Haiku calls gathered per pass
+PER_PASS  = 16           # max judge calls gathered per pass
 PER_SESSION = 5          # …of which at most this many from any ONE session, so a backlogged
                          # session can't hog the whole pass and starve the others
-CONCURRENCY = 10         # Haiku calls run this many at a time (parallel)
+CONCURRENCY = 10         # judge calls run this many at a time (parallel)
 FINAL_FALLBACK = 120     # only if @claude-state is unavailable: treat a turn idle this long as done (deep backstop)
 DEBOUNCE  = 0.8          # min seconds between passes, so a burst of writes coalesces into one pass
 IDLE_EXIT = 20 * 60      # daemon exits after this long with no romp session activity
-SUMMARY_MODEL = "claude-sonnet-4-6"   # The user's call: Sonnet across the whole pipeline (was Haiku)
-BRIEF_MODEL = "claude-opus-4-8"       # the auditor (2026-06-11): ~30 calls/day vs ~470 for the
-                                      # per-turn callers, and it DEMOTES with authority — worth Opus
+JUDGE_MODEL = "claude-sonnet-4-6"     # THE JUDGE: the user's call, Sonnet across the whole
+                                      # pipeline (was Haiku)
+AUDITOR_MODEL = "claude-opus-4-8"     # THE AUDITOR (2026-06-11): ~30 calls/day vs ~470 for the
+                                      # judge, and it DEMOTES with authority — worth Opus
 
 # Eager feed-detail: keep each deliverable's expand-paragraph warm BEFORE the user expands it.
 # Generation is delegated to romp-feed-detail as a DETACHED subprocess so its ~6-10s Sonnet call
@@ -238,7 +245,7 @@ def llm(sys_prompt, user_text, raw=False, model=None):
     try:
         # portable 45s cap (macOS has no `timeout`): perl alarm + exec
         p = subprocess.run(
-            ["perl", "-e", "alarm 45; exec @ARGV", "claude", "-p", "--model", model or SUMMARY_MODEL,
+            ["perl", "-e", "alarm 45; exec @ARGV", "claude", "-p", "--model", model or JUDGE_MODEL,
              "--tools", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
              "--append-system-prompt", sys_prompt],
             input=user_text, capture_output=True, text=True, cwd="/tmp", env=env, timeout=50)
@@ -1287,7 +1294,7 @@ def _generate_brief(reply_id):
     sess = ("<session>%s</session>\n\n" % name) if name else ""
     out = llm(BRIEF_SYS, "%s<chain>\n%s\n</chain>\n\n<reply>\n%s\n</reply>\n\nWrite the NEEDED, CONTEXT, "
               "QUESTION and any OPTION lines." % (sess, "\n".join(chain[:12]), "\n".join(reply)), True,
-              model=BRIEF_MODEL)
+              model=AUDITOR_MODEL)
     ctx, q, opts, needed = _parse_brief(out)
     if not ctx or not q:
         return False
@@ -1449,7 +1456,7 @@ def _suspect_pass(now):
             int(o.get("t", 0) - d["t"]), (o.get("raw") or "")[:300]))
         if cand:
             parts.append(_cand_block(cand, "sender-asks"))
-        out = llm(SUSPECT_SYS, "\n\n".join(parts) + "\n\nWrite the VERDICT line.", True, model=BRIEF_MODEL)
+        out = llm(SUSPECT_SYS, "\n\n".join(parts) + "\n\nWrite the VERDICT line.", True, model=AUDITOR_MODEL)
         verdict, pnums, reason = _parse_suspect(out)
         if verdict == "handoff":
             phrase = phrases.get(mid) or (body.get(mid) or d.get("snippet") or "")[:80]

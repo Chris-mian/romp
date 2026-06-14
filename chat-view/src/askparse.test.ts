@@ -250,3 +250,72 @@ test("PATH C: footer-less confirmation (the /model switch prompt) parses; answer
   const listOutput = ["⏺ Here are your choices:", "  ❯ 1. First thing", "    2. Second thing", "", "  ctx:5%   Fable 5 high   /tmp/x"].join("\n");
   assert.equal(parseAskPane(listOutput), null);
 });
+
+test("side-by-side preview box is captured into ask.preview, kept out of the option labels", () => {
+  // An AskUserQuestion whose options carry a `preview` renders the option list
+  // on the LEFT and a bordered diagram box on the RIGHT, on the SAME pane rows.
+  // Capturing that pane would otherwise glue the box text onto each option (the
+  // greedy OPT_RE swallowing it into the label, box-only rows landing in the
+  // previous option's desc). Invented content — no real session data. The box's
+  // left border aligns at a fixed column (padEnd) exactly as the TUI lays it out.
+  const W = 30;
+  const row = (left: string, box: string) => left.padEnd(W) + box;
+  const pane = [
+    "☐ Deploy strategy",
+    "Which rollout should the canary use?",
+    row("❯ 1. Blue-green",          "╭─ Topology ───────────────╮"),
+    row("     instant cutover",      "│ inbound → LB → [a] (live) │"),
+    row("  2. Rolling",              "│           ↘ [b] (staged)  │"),
+    row("     gradual, N at a time", "╰───────────────────────────╯"),
+    "",
+    FOOTER,
+  ].join("\n");
+  const ask = parseAskPane(pane)!;
+  assert.ok(ask, "preview-bearing picker must still parse");
+  assert.equal(ask.kind, "single");
+  assert.equal(ask.options.length, 2);
+  assert.equal(ask.options[0].label, "Blue-green");
+  assert.equal(ask.options[1].label, "Rolling");
+  assert.equal(ask.options[0].desc, "instant cutover");
+  assert.equal(ask.options[1].desc, "gradual, N at a time");
+  assert.equal(ask.cursor, 1);
+  assert.equal(ask.cursorFound, true);
+  // The preview must stay OUT of the options/question/header (no garble)…
+  const optText = JSON.stringify({ q: ask.question, h: ask.header, opts: ask.options });
+  for (const leak of ["Topology", "LB", "staged", "↘", "│", "╭", "╰"]) {
+    assert.ok(!optText.includes(leak), `preview text "${leak}" leaked into the options`);
+  }
+  // …and be captured VERBATIM in ask.preview, so the card can reproduce the box
+  // exactly as the TUI drew it (the user 2026-06-13).
+  assert.ok(ask.preview, "the preview box must be captured into ask.preview");
+  assert.match(ask.preview!, /╭─ Topology ─+╮/);
+  assert.match(ask.preview!, /│ inbound → LB → \[a\] \(live\) │/);
+  assert.match(ask.preview!, /↘ \[b\] \(staged\)/);
+  assert.match(ask.preview!, /╰─+╯/);
+  // it carries the border verbatim and never bleeds into the option column
+  assert.ok(!ask.preview!.includes("Blue-green") && !ask.preview!.includes("Rolling"));
+});
+
+test("the preview is captured per focused option and re-keys the sig when it changes", () => {
+  // Moving the cursor swaps which option's box the TUI draws; a re-capture must
+  // surface the new box AND change sig so the host re-posts it. Synthetic boxes.
+  const W = 22;
+  const row = (l: string, b: string) => l.padEnd(W) + b;
+  const pane = (box: string[]) => [
+    "Which layout?",
+    row("❯ 1. Stacked", box[0]),
+    row("  2. Columns", box[1]),
+    row("", box[2]),
+    row("", box[3]),
+    "",
+    FOOTER,
+  ].join("\n");
+  const a = parseAskPane(pane(["╭──────╮", "│ A    │", "│      │", "╰──────╯"]))!;
+  const b = parseAskPane(pane(["╭──────╮", "│ B  B │", "│ B    │", "╰──────╯"]))!;
+  assert.ok(a.preview && b.preview, "both captures carry a preview");
+  assert.match(a.preview!, /│ A {4}│/);
+  assert.match(b.preview!, /│ B {2}B │/);
+  assert.notEqual(a.preview, b.preview);
+  assert.notEqual(a.sig, b.sig);
+  assert.deepEqual(a.options.map((o) => o.label), ["Stacked", "Columns"]); // options unaffected
+});

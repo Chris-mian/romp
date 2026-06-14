@@ -61,7 +61,7 @@ const webview = {
 // Unit tests for the pure modules (src/*.test.ts): bundled to out-tests/ and
 // run with the built-in `node --test` runner — no extra test framework.
 function testBuild() {
-  const entries = ["src", "src/kernel"].flatMap((dir) =>
+  const entries = ["src", "src/kernel", "src/webview"].flatMap((dir) =>
     fs
       .readdirSync(path.join(__dirname, dir))
       .filter((f) => f.endsWith(".test.ts"))

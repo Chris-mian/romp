@@ -60,6 +60,10 @@ export interface ParsedAsk {
   chosen?: string[];    // submit screen: the answers under review (all questions, flattened)
   pairs?: { q: string; a: string }[]; // submit screen: every ● question / → answer pair, in order
   multiSelect: boolean; // back-compat: kind === "multi"
+  preview?: string;     // the side-by-side preview box (verbatim monospace text, with its border) the
+                        // focused option draws to the RIGHT of the option list — undefined when none.
+                        // It changes as the cursor moves (a re-capture re-posts it), so the card mirrors
+                        // exactly what the TUI shows. (the user 2026-06-13)
   sig: string;          // change-signature, so the host only re-posts when it actually changed
 }
 
@@ -73,12 +77,39 @@ const FOOTER_RE = /to navigate|Enter to select|Esc to (cancel|exit)/;
 // footer-less confirmation (PATH C below).
 const COMPOSER_RE = /⏵⏵|shift\s*\+\s*tab to cycle|auto mode (on|off)|\bctx:\s*\d+%/;
 
+// Side-by-side preview (an AskUserQuestion whose options carry a `preview`):
+// Claude Code lays the option list on the LEFT and a bordered preview box on the
+// RIGHT, on the SAME pane rows. Capturing that pane glues the box's text onto
+// every option row, so OPT_RE (greedy to EOL) swallows the preview INTO the
+// label and the box-only rows fall into the previous option's description — the
+// card renders as garbled noise. We detect the box's left-border column and clip
+// every row there before parsing, so only the left (option) column survives.
+// Match VERTICAL and CORNER box glyphs ONLY — never horizontals (─━═) or the
+// em/en dashes that legitimately appear inside a diagram.
+const BOX_EDGE_RE = /[│┃┆┇┊┋╎╏║▏▕╭╮╯╰┌┐┘└┏┓┛┗╔╗╝╚├┤┣┫╠╣]/;
+
 function isOpt(line: string): boolean { return OPT_RE.test(line); }
 function isRule(line: string): boolean { return RULE_RE.test(line); }
 function isBlank(line: string): boolean { return line.trim() === ""; }
 function isIndented(line: string): boolean { return /^\s/.test(line) && line.trim() !== ""; }
 // The `←  ☒ Header  ✔ Submit  →` tab bar (multi-select AND the multi-question wizard).
 function isTabBar(line: string): boolean { return /[←→]/.test(line) && /Submit|☒|✔|☑/.test(line); }
+
+// The column of a side-by-side preview box's LEFT border, or -1 when there is no
+// such box. The left border is the leftmost glyph on its row, so we take the
+// FIRST box edge per line; a genuine box spans ≥4 rows (≥2 corners + content) at
+// one fixed column. Anything from that column rightward is preview, not options.
+function previewBorderCol(lines: string[]): number {
+  const hits = new Map<number, number>();
+  for (const ln of lines) {
+    for (let c = 0; c < ln.length; c++) {
+      if (BOX_EDGE_RE.test(ln[c])) { hits.set(c, (hits.get(c) || 0) + 1); break; }
+    }
+  }
+  let col = -1;
+  for (const [c, n] of hits) if (c > 0 && n >= 4 && (col === -1 || c < col)) col = c;
+  return col;
+}
 
 function gapIsSkippable(lines: string[], a: number, b: number): boolean {
   for (let i = a + 1; i < b; i++) {
@@ -130,18 +161,37 @@ function parseOptions(lines: string[], block: number[], endIdx: number) {
   return { options, cursor, cursorFound, hasCheckbox };
 }
 
-function mk(kind: AskKind, header: string | undefined, question: string | undefined, opts: ReturnType<typeof parseOptions>, chosen?: string[], pairs?: { q: string; a: string }[]): ParsedAsk {
+function mk(kind: AskKind, header: string | undefined, question: string | undefined, opts: ReturnType<typeof parseOptions>, preview?: string, chosen?: string[], pairs?: { q: string; a: string }[]): ParsedAsk {
   const sig = [
     kind, header || "", question || "",
     opts.options.map((o) => `${o.n}:${o.label}:${o.checked === undefined ? "" : o.checked ? "x" : "o"}`).join("|"),
     `cur${opts.cursor}`, (chosen || []).join(","), (pairs || []).map((p) => `${p.q}=${p.a}`).join(";"),
+    preview ? `pv${preview.length}:${preview}` : "",   // re-post when the focused option's preview changes
   ].join("§");
-  return { kind, header, question, options: opts.options, cursor: opts.cursor, cursorFound: opts.cursorFound, chosen, pairs, multiSelect: kind === "multi", sig };
+  return { kind, header, question, options: opts.options, cursor: opts.cursor, cursorFound: opts.cursorFound, chosen, pairs, multiSelect: kind === "multi", preview, sig };
+}
+
+// Extract the side-by-side preview box: everything from the box's left border
+// (bcol) rightward, with surrounding all-blank rows trimmed, kept VERBATIM (border
+// glyphs and all) so the card reproduces the TUI's monospace layout exactly. The
+// inverse of the clip at parseAskPane: the options keep the LEFT of bcol, the
+// preview keeps the RIGHT.
+function extractPreview(lines: string[], bcol: number): string | undefined {
+  const col = lines.map((ln) => (ln.length > bcol ? ln.slice(bcol).replace(/\s+$/, "") : ""));
+  let a = 0, b = col.length;
+  while (a < b && col[a].trim() === "") a++;          // drop leading blank rows
+  while (b > a && col[b - 1].trim() === "") b--;       // …and trailing
+  return b > a ? col.slice(a, b).join("\n") : undefined;
 }
 
 export function parseAskPane(text: string): ParsedAsk | null {
   if (!text) return null;
-  const lines = text.replace(/\r/g, "").split("\n");
+  const raw = text.replace(/\r/g, "").split("\n");
+  // Clip a side-by-side preview box so its text can't bleed into the options.
+  // No box (the common case) → bcol < 0 → `raw` passes through untouched.
+  const bcol = previewBorderCol(raw);
+  const lines = bcol >= 0 ? raw.map((ln) => ln.slice(0, bcol)) : raw;
+  const preview = bcol >= 0 ? extractPreview(raw, bcol) : undefined;   // the box we clipped off the right
 
   // PATH A — footer-anchored: single-select or the multi-select SELECTION screen.
   let footIdx = -1;
@@ -175,7 +225,7 @@ export function parseAskPane(text: string): ParsedAsk | null {
         // (Enter picks). Classifying those as "multi" made the webview drop every
         // checkbox-less row and render an empty card (2026-06-11 bug).
         const kind: AskKind = opts.hasCheckbox ? "multi" : "single";
-        return mk(kind, header, question, opts);
+        return mk(kind, header, question, opts, preview);
       }
     }
   }
@@ -209,7 +259,7 @@ export function parseAskPane(text: string): ParsedAsk | null {
         }
         const chosen = pairs.flatMap((p) => p.a.split(/,\s*/)).map((s) => s.trim()).filter(Boolean);
         const question = pairs.length === 1 ? pairs[0].q || undefined : undefined;
-        if (pairs.length) return mk("submit", undefined, question, opts, chosen.length ? chosen : undefined, pairs);
+        if (pairs.length) return mk("submit", undefined, question, opts, preview, chosen.length ? chosen : undefined, pairs);
       }
     }
   }
@@ -238,7 +288,7 @@ export function parseAskPane(text: string): ParsedAsk | null {
           if (hm && !header) { header = hm[1].trim(); continue; }
           qLines.push(t.trim());
         }
-        return mk("single", header, qLines.length ? qLines.reverse().join(" ") : undefined, opts);
+        return mk("single", header, qLines.length ? qLines.reverse().join(" ") : undefined, opts, preview);
       }
     }
   }

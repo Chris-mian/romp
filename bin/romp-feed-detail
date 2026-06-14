@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""romp-feed-detail — the EXPAND text for one feed entry (a deliverable).
+"""romp-feed-detail — THE WRITER's card-paragraph pass (docs/figures.md figure 2):
+the EXPAND text for one feed entry (a deliverable).
 
-The `romp -f` feed shows a Haiku one-liner per deliverable. When the user EXPANDS an
+The `romp -f` feed shows the judge's one-liner per deliverable. When the user EXPANDS an
 entry, they want one tight paragraph: exactly the context needed to act on it plus what
 the next steps are, nothing more. This generates that paragraph LAZILY (on first expand),
 keyed by the deliverable's stable romp-events event id, and caches it so a re-expand is free.
@@ -12,7 +13,7 @@ composes under the JLD method (reader-first, direct, no LLM rhetorical tells).
   romp-feed-detail <entry_id>            generate + cache feed-detail/<id>.json (skip if fresh)
   romp-feed-detail --force <entry_id>    regenerate even if cached
   romp-feed-detail --print <entry_id>    write nothing; emit the JSON to stdout (benchmarking)
-  romp-feed-detail --model <id> ...      override the model (default claude-haiku-4-5)
+  romp-feed-detail --model <id> ...      override the model (default WRITER_MODEL)
 
 entry_id is the romp-events event id `<fsid>:<process_start_ts>:<sha1[:8]>` — update_feed's
 feed itemId verbatim. A legacy/non-matching id (no transcript or no such event) writes
@@ -22,6 +23,9 @@ Safe by construction: zero tools / MCP off on the model call, errors swallowed, 
 write, next-steps are best-effort (never fabricated).
 """
 import os, sys, json, time, glob, tempfile, subprocess, importlib.machinery
+
+WRITER_MODEL = "claude-sonnet-4-6"   # THE WRITER: lazy/on-expand → low volume; Sonnet's
+                                     # prose is worth it (benchmarked)
 
 HOME = os.path.expanduser("~")
 PROJECTS = os.path.join(HOME, ".claude", "projects")
@@ -174,7 +178,7 @@ def main():
     args = sys.argv[1:]
     force = "--force" in args
     do_print = "--print" in args
-    model = "claude-sonnet-4-6"             # lazy/on-expand → low volume; Sonnet's prose is worth it (benchmarked)
+    model = WRITER_MODEL
     if "--model" in args:
         i = args.index("--model")
         if i + 1 < len(args):

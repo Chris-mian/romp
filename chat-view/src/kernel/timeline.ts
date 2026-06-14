@@ -9,10 +9,14 @@
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import { createRequire } from "module";
 
-// esbuild must not try to bundle the runtime-resolved obsidian modules.
-// eslint-disable-next-line no-eval
-const dynRequire: NodeRequire = eval("require");
+// esbuild must not bundle the runtime-resolved obsidian modules — we need the REAL runtime require.
+// module.createRequire (resolving from this bundle's path) gives exactly that AND dodges esbuild's
+// direct-eval warning. NOTE: do NOT "silence" it with (0, eval)("require") — indirect eval runs in
+// GLOBAL scope, where `require` is undefined in the CJS bundle, so the kernel crashes on load with
+// "require is not defined" (the user 2026-06-13 regression). createRequire is the correct fix.
+const dynRequire: NodeRequire = createRequire(__filename);
 
 // Locate romp's obsidian/ view-module dir: $ROMP_DIR (bin/romp-serve exports
 // it) → the checkout this kernel was built in (dist/kernel.js → chat-view →
@@ -32,17 +36,30 @@ function findRompDir(): string | null {
 }
 
 let _loaded: { build: () => Promise<any>; viewJs: string } | null | undefined;
+let _loadedKey = "";   // mtime signature of the two obsidian sources → reload when either is edited
+// Re-read on MTIME CHANGE rather than caching forever: an edit to the obsidian view/data sources then
+// goes live without a kernel restart (a browser reload re-fetches the page → fresh viewJs; the data
+// build re-requires per poll) — this is what retires the cached-stale-view-JS trap (2026-06-12), now
+// that loadTimeline no longer freezes the first read for the life of the process. Cost: two stats per
+// call, and a re-require only when the mtime actually changes.
 export function loadTimeline(): { build: () => Promise<any>; viewJs: string } | null {
-  if (_loaded !== undefined) return _loaded;
   const dir = findRompDir();
   if (!dir) { _loaded = null; return null; }
+  const dataPath = path.join(dir, "obsidian", "romp-timeline-data.js");
+  const viewPath = path.join(dir, "obsidian", "romp-timeline-view.js");
+  let key: string;
+  try { key = fs.statSync(dataPath).mtimeMs + ":" + fs.statSync(viewPath).mtimeMs; }
+  catch { _loaded = null; _loadedKey = ""; return null; }   // a source went missing
+  if (_loaded !== undefined && key === _loadedKey) return _loaded;   // unchanged → cached
   try {
-    const mod = dynRequire(path.join(dir, "obsidian", "romp-timeline-data.js"));
-    const viewJs = fs.readFileSync(path.join(dir, "obsidian", "romp-timeline-view.js"), "utf8");
+    try { delete (dynRequire as any).cache[dataPath]; } catch { /* not cached yet */ }   // bust the require cache so the re-require is fresh
+    const mod = dynRequire(dataPath);
+    const viewJs = fs.readFileSync(viewPath, "utf8");
     _loaded = typeof mod.buildTimelineData === "function" && viewJs.length > 0
       ? { build: mod.buildTimelineData, viewJs }
       : null;
   } catch { _loaded = null; }
+  _loadedKey = key;
   return _loaded;
 }
 
@@ -114,6 +131,9 @@ export function timelineHtml(viewJs: string): string {
       var m; try { m = JSON.parse(ev.data); } catch (e) { return; }
       if (m.type === "data") panel.update(m.data);
       else if (m.type === "activeChat" && panel.setActiveChat) panel.setActiveChat(m.activeChat);
+      // Direct hover push (server.ts pushHover) — the fast path that skips the timeline-hover.json
+      // write→fs.watch→rebuild, so modal/chat hover lights the timeline as instantly as the chat glow.
+      else if (m.type === "hover" && panel.setHover) panel.setHover(m);
     };
     ws.onclose = function () { setTimeout(function () { location.reload(); }, 1500); };
   }

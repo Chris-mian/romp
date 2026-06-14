@@ -12,6 +12,7 @@ import diff from "highlight.js/lib/languages/diff";
 import yaml from "highlight.js/lib/languages/yaml";
 import type { ParsedAsk } from "../askparse";
 import { quoteReply } from "../quote";
+import { markerLabel, chooseStamps } from "./time-marker";
 
 for (const [name, lang] of Object.entries({
   bash, sh: bash, shell: bash, python, py: python, javascript, js: javascript,
@@ -131,7 +132,7 @@ function highlight(container: HTMLElement) {
   });
 }
 
-function dot(kind: "green" | "ring"): HTMLElement { return el("span", "dot " + kind); }
+function dot(kind: "green" | "ring" | "user"): HTMLElement { return el("span", "dot " + kind); }
 
 function ioRow(label: "IN" | "OUT", text: string, isError: boolean): HTMLElement {
   const row = el("div", "io-row" + (label === "OUT" ? " io-out" : "") + (isError ? " io-error" : ""));
@@ -352,15 +353,18 @@ function renderEvent(ev: ChatEvent, prevEpoch?: number | null, worked?: number |
   const epoch = eventEpoch(ev);
   if (epoch != null) turn.dataset.t = String(epoch);
   // rail time-stamp: HH:MM just to the LEFT of every dot (the user 2026-06-10) — a left
-  // timestamp column so each event on the rail shows when it happened. Only on turns
-  // that HAVE a dot (user bubbles are right-aligned with their own time). The date is
-  // shown only on the first turn of a new (non-today) day.
-  if (epoch != null && turn.querySelector(".dot")) turn.insertBefore(timeMarker(epoch, prevEpoch ?? null), turn.firstChild);
-  // rail-dot fleet links: hover → white-highlight this turn's event on the
-  // timeline AND outline its feed card(s); click → open that card's modal in
-  // the feed (the host resolves turn → event → cards and disambiguates).
+  // timestamp column so each event on the rail shows when it happened. On every dotted
+  // turn EXCEPT postal cards (they show their own time in-card, so a rail marker would
+  // duplicate it). Prompts now ride this rail too instead of an in-bubble stamp (the human
+  // via debugger, 2026-06-12). The date shows only on the first turn of a new (non-today) day.
+  if (epoch != null && ev.kind !== "postal" && turn.querySelector(".dot")) turn.insertBefore(timeMarker(epoch, prevEpoch ?? null), turn.firstChild);
+  // rail-dot fleet links: hover anywhere on the turn → white-highlight this turn's
+  // event on the timeline AND outline its feed card(s); click the DOT → open that
+  // card's modal in the feed (the host resolves turn → event → cards). The whole
+  // turn is the hover target (the user 2026-06-12) — hovering the MESSAGE bubble or
+  // the WORK/reply body must light the timeline, not only the rail dot.
   const railDot = turn.querySelector(".dot") as HTMLElement | null;
-  if (railDot && (anchorUuid || epoch != null)) wireRailDot(railDot, anchorUuid ?? null, epoch ?? 0);
+  if (anchorUuid || epoch != null) wireTurnHover(turn, railDot, anchorUuid ?? null, epoch ?? 0);
   // a finished prompt's last reply carries a small "worked 2m 14s" tick in the rail
   // gutter (left, by the time-markers) — how long the session ran on that prompt.
   if (worked != null) turn.appendChild(elapsedFooter(worked));
@@ -386,23 +390,31 @@ function elapsedFooter(secs: number): HTMLElement {
 }
 
 // Hover uses the same 120ms intent debounce as ledger bullets / feed rows so
-// scrolling past the rail doesn't strobe the timeline; leave clears. The sid
-// is read at event time (only the ACTIVE session's view is hoverable).
-function wireRailDot(d: HTMLElement, uuid: string | null, t: number) {
+// scrolling the transcript doesn't strobe the timeline; leave clears. The sid is
+// read at event time (only the ACTIVE session's view is hoverable). The host
+// decides which timeline ATOM to light (the prompt DOT vs the work BAR) from the
+// hovered line's uuid: a user-prompt turn carries the event's boundary uuid →
+// dot; an assistant/tool/thinking turn carries a work-line uuid (or resolves by
+// time into the period) → bar. So hovering the message lights the dot and
+// hovering the work body lights the bar — the chat just reports its own uuid.
+// HOVER is on the whole turn; the DOT keeps the click (open the feed card).
+function wireTurnHover(turn: HTMLElement, dot: HTMLElement | null, uuid: string | null, t: number) {
   let timer: ReturnType<typeof setTimeout> | undefined;
-  d.classList.add("dot-nav");
-  d.title = "hover: highlight on timeline + feed · click: open the feed card";
-  d.addEventListener("mouseenter", () => {
+  turn.addEventListener("mouseenter", () => {
     timer = setTimeout(() => { timer = undefined; if (activeId) vscodeApi?.postMessage({ type: "dotHover", sid: activeId, uuid, t }); }, 120);
   });
-  d.addEventListener("mouseleave", () => {
+  turn.addEventListener("mouseleave", () => {
     if (timer) { clearTimeout(timer); timer = undefined; return; } // never fired — nothing to clear
     vscodeApi?.postMessage({ type: "dotHover" });
   });
-  d.addEventListener("click", (e) => {
-    e.stopPropagation();
-    if (activeId) vscodeApi?.postMessage({ type: "dotOpen", sid: activeId, uuid, t });
-  });
+  if (dot) {
+    dot.classList.add("dot-nav");
+    dot.title = "click: open the feed card · hover: highlight on the timeline + feed";
+    dot.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (activeId) vscodeApi?.postMessage({ type: "dotOpen", sid: activeId, uuid, t });
+    });
+  }
 }
 
 // Transient cross-highlight FROM the feed modal (host fans its row-hover here as
@@ -429,31 +441,72 @@ function applyGlow(groups: Array<{ sid: string; ranges: Array<[number, number]> 
 }
 
 function eventEpoch(ev: ChatEvent): number | null {
-  if (!ev.ts) return null;
-  const t = Date.parse(ev.ts);
-  return isNaN(t) ? null : Math.floor(t / 1000);
+  if (ev.ts) {
+    const ms = Date.parse(ev.ts);
+    if (!isNaN(ms)) return Math.floor(ms / 1000);
+  }
+  // postal "in" events carry their epoch in `t` (seconds) rather than an ISO `ts`,
+  // so they still anchor a rail dot's hover wiring and deep-link fallback.
+  if (ev.kind === "postal" && ev.t != null) return Math.floor(ev.t);
+  return null;
 }
 
 // A rail time-stamp (HH:MM) for a turn. On the first turn of a new (non-today) day it
-// also shows the date, with emphasis. One per dotted turn (no minute dedup).
+// also shows the date, with emphasis. A run of same-minute turns shows the stamp only
+// on the first (the user 2026-06-12); see markerLabel() for the rules. A suppressed turn
+// keeps an EMPTY marker (so the dot keeps its column alignment) but stashes its HH:MM in
+// data-hm; restampMarkers() may later light it up if too much space has gone unstamped.
+// data-hard marks the markerLabel-assigned stamps, which the spacing pass never touches.
 function timeMarker(epoch: number, prevEpoch: number | null): HTMLElement {
-  const d = new Date(epoch * 1000);
-  const dayKey = (x: Date) => `${x.getFullYear()}/${x.getMonth()}/${x.getDate()}`;
-  const time = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-  const now = new Date();
-  const dayChanged = prevEpoch == null || dayKey(d) !== dayKey(new Date(prevEpoch * 1000));
-  const isToday = dayKey(d) === dayKey(now);
+  const { text, day, hm } = markerLabel(epoch, prevEpoch, Date.now());
   const m = el("div", "time-marker");
-  if (dayChanged && !isToday) {
-    m.classList.add("day");
-    const sod = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
-    const days = Math.round((sod(now) - sod(d)) / 86400000);
-    const date = days === 1 ? "Yesterday" : days < 7 ? WEEKDAY[d.getDay()] : `${MONTH[d.getMonth()]} ${d.getDate()}`;
-    m.textContent = `${date} · ${time}`;
-  } else {
-    m.textContent = time;
-  }
+  if (day) m.classList.add("day");
+  m.dataset.hm = hm;
+  if (text) { m.textContent = text; m.dataset.hard = "1"; }
   return m;
+}
+
+// Post-layout spacing pass: minute-change stamps alone can leave a long unstamped scroll
+// when many turns share a minute. After render we measure each timed turn's vertical
+// position and reveal a suppressed stamp wherever >6 one-line rows have passed without one
+// (the user 2026-06-12). Markers are absolutely-positioned in the gutter, so toggling their
+// text never reflows the rail — the measurement is stable and the pass is idempotent
+// (soft reveals are cleared and recomputed each run; data-hard stamps are left alone).
+function restampMarkers(root: HTMLElement): void {
+  const ms: HTMLElement[] = [];
+  const ys: number[] = [];
+  const hard: boolean[] = [];
+  let prevY: number | null = null;
+  let oneRow = Infinity;
+  for (const t of Array.from(root.children) as HTMLElement[]) {
+    const m = t.firstChild as HTMLElement | null;
+    if (!m || m.nodeType !== 1 || !m.classList.contains("time-marker")) continue;
+    const y = t.getBoundingClientRect().top;
+    if (prevY != null) oneRow = Math.min(oneRow, y - prevY);
+    prevY = y;
+    if (m.dataset.hard !== "1") { m.textContent = ""; m.classList.remove("auto"); } // reset soft reveal
+    ms.push(m); ys.push(y); hard.push(m.dataset.hard === "1");
+  }
+  if (!ms.length) return;
+  if (!isFinite(oneRow) || oneRow <= 0) oneRow = 24;       // single row / degenerate → a sane default
+  oneRow = Math.max(18, Math.min(oneRow, 80));             // clamp against noisy extremes
+  const show = chooseStamps(ys, hard, oneRow, 6);
+  for (let i = 0; i < ms.length; i++) {
+    if (!hard[i] && show[i]) { ms[i].textContent = ms[i].dataset.hm || ""; ms[i].classList.add("auto"); }
+  }
+}
+
+// Debounced rAF wrapper — coalesces the many syncView calls of a busy tail into one
+// measure-and-restamp of the active view per frame.
+let restampPending = false;
+function scheduleRestamp(): void {
+  if (restampPending) return;
+  restampPending = true;
+  requestAnimationFrame(() => {
+    restampPending = false;
+    const v = activeId ? views.get(activeId) : null;
+    if (v) restampMarkers(v.el);
+  });
 }
 
 function renderEventInner(ev: ChatEvent): HTMLElement {
@@ -463,6 +516,11 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
     // postal pushes — all promptSource≠typed/queued) fall back to a neutral note box.
     const injected = !ev.human;
     const turn = el("div", "turn turn-user" + (injected ? " injected" : ""));
+    // Prompts ride the rail like every other turn: their own dot + a left-gutter HH:MM
+    // marker (added in renderEvent), instead of a timestamp printed inside the bubble
+    // (the human via debugger, 2026-06-12). Genuine prompts get a solid blue dot to match
+    // the bubble; injected user-role notes get the hollow ring used by assistant turns.
+    turn.appendChild(dot(injected ? "ring" : "user"));
     const hasImgs = !!(ev.images && ev.images.length);
     if (ev.md || hasImgs) {
       const bubble = el("div", (injected ? "user-note" : "user-bubble") + " md");
@@ -473,10 +531,6 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
         linkifyImgPaths(bubble, ev.images.map((im) => im.path).filter((p): p is string => !!p));
         for (const im of ev.images) bubble.appendChild(userImage(im));
       }
-      // timestamp in the top-right corner (floated → short messages don't gain a
-      // line; the message text wraps to its left). Must be the FIRST child to float.
-      const t = hhmm(ev.ts);
-      if (t) { const time = el("span", "user-time"); time.textContent = t; bubble.insertBefore(time, bubble.firstChild); }
       turn.appendChild(bubble);
     }
     if (ev.reminders && ev.reminders.length) {
@@ -1066,6 +1120,42 @@ function focusActiveTab() {
   const bar = document.getElementById("tabs");
   (bar?.querySelector(`.tab[data-id="${activeId}"]`) as HTMLElement | null)?.focus();
 }
+
+// Window-level arrow nav for when the CHAT WINDOW (not the composer or a dialog)
+// has focus: ←/→ step between tabs, ↑/↓ scroll the transcript. Deliberately
+// yields to anything more specific —
+//   • a typing target (textarea/input/contenteditable) keeps its native caret;
+//   • an open picker/confirm overlay (.picker-overlay) owns its own keys;
+//   • a handler that already acted (defaultPrevented) wins — a FOCUSED tab's
+//     onTabKey (which also does ↑/↓ row-jumps) and the live-ask card both
+//     preventDefault before this bubbles to window.
+// On ←/→ we do NOT focus the tab, so focus stays in the window and ↑/↓ keep
+// scrolling. Any modifier (so Cmd/Ctrl/Alt/Shift shortcuts and selection are
+// untouched) bails out.
+const NAV_SCROLL_STEP = 60;
+function isTypingTarget(t: EventTarget | null): boolean {
+  const elm = t as HTMLElement | null;
+  if (!elm || typeof elm.tagName !== "string") return false;
+  return elm.tagName === "TEXTAREA" || elm.tagName === "INPUT" || elm.isContentEditable === true;
+}
+window.addEventListener("keydown", (e) => {
+  if (e.defaultPrevented || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+  if (isTypingTarget(e.target)) return;
+  if (document.querySelector(".picker-overlay")) return;   // #picker / #confirm open
+  if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+    if (!activeId || order.length < 2) return;
+    const i = order.indexOf(activeId);
+    if (i < 0) return;
+    e.preventDefault();
+    const dir = e.key === "ArrowRight" ? 1 : -1;
+    setActive(order[(i + dir + order.length) % order.length]);
+  } else if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+    const content = document.getElementById("content");
+    if (!content) return;
+    e.preventDefault();
+    content.scrollBy({ top: e.key === "ArrowDown" ? NAV_SCROLL_STEP : -NAV_SCROLL_STEP });
+  }
+});
 // Nearest tab in the row above (dir<0) or below (dir>0) the given tab, by column.
 function tabInAdjacentRow(id: string, dir: number): string | null {
   const bar = document.getElementById("tabs");
@@ -1374,29 +1464,31 @@ function scrollToAnchor(uuid: string): boolean {
   return true;
 }
 
-// Land on a turn and KEEP it landed while the chrome above the scroll container
-// settles. scrollIntoView is a one-shot: when a jump also switches tabs, the
-// tab bar re-renders (possibly wrapping to a SECOND row) and the ledger box for
-// the new session appears — both AFTER the scroll ran. #content shrinks by that
-// growth and the centered turn slides up under the bar (the "cut off top"
-// landing). So: re-center whenever the bar/ledger actually resizes, plus two
+// Land on a turn at the TOP of the viewport and KEEP it landed while the chrome
+// above the scroll container settles. Top-align (not center) so a jump lands on
+// the START of the thing and you read DOWN into it — a long work period isn't
+// half-scrolled-past on arrival (the user 2026-06-12). scrollIntoView is a
+// one-shot: when a jump also switches tabs, the tab bar re-renders (possibly
+// wrapping to a SECOND row) and the ledger box for the new session appears — both
+// AFTER the scroll ran. #content shrinks by that growth and the landed turn drifts
+// off its mark. So: re-align whenever the bar/ledger actually resizes, plus two
 // timed retries for late layout (images, markdown), for ~1.2s — canceled the
 // moment the user wheel-scrolls so we never fight a real gesture.
 function landOn(target: HTMLElement) {
-  const recenter = () => target.scrollIntoView({ block: "center", behavior: "auto" });
-  recenter();
+  const realign = () => target.scrollIntoView({ block: "start", behavior: "auto" });
+  realign();
   target.classList.add("anchor-flash");
   setTimeout(() => target.classList.remove("anchor-flash"), 1700);
   const until = Date.now() + 1200;
   let ro: ResizeObserver | null = null;
   const stop = () => { ro?.disconnect(); ro = null; window.removeEventListener("wheel", stop); };
   if (typeof ResizeObserver === "function") {
-    ro = new ResizeObserver(() => { if (Date.now() < until) recenter(); else stop(); });
+    ro = new ResizeObserver(() => { if (Date.now() < until) realign(); else stop(); });
     for (const id of ["tabbar", "ledger"]) { const c = document.getElementById(id); if (c) ro.observe(c); }
   }
   window.addEventListener("wheel", stop, { passive: true });
-  setTimeout(() => { if (ro && Date.now() < until + 100) recenter(); }, 250);
-  setTimeout(() => { if (ro) recenter(); stop(); }, 1200);
+  setTimeout(() => { if (ro && Date.now() < until + 100) realign(); }, 250);
+  setTimeout(() => { if (ro) realign(); stop(); }, 1200);
 }
 
 // Time-based anchor FALLBACK: when the uuid anchor can't resolve (orphaned by a
@@ -1593,6 +1685,7 @@ function showActive() {
     else content.scrollTop = v.scrollTop;
   }
   v.shown = true;
+  scheduleRestamp();
 }
 
 // Live tail-append to the ACTIVE view, preserving stick-to-bottom.
@@ -1603,7 +1696,12 @@ function appendActive() {
   syncView(activeId);
   updateStatusline();
   if (stick) content.scrollTop = content.scrollHeight;
+  scheduleRestamp();
 }
+
+// Row heights change when the pane is resized (text re-wraps), so the spacing-based
+// stamps must be recomputed against the new layout.
+window.addEventListener("resize", scheduleRestamp);
 
 // ---- ledger box (rolling per-session digest, just below the tabs) ----
 
@@ -1688,6 +1786,11 @@ function ageColorReadable(ageSecs: number): string {
   return `rgb(${o[0]}, ${o[1]}, ${o[2]})`;
 }
 
+// How many bullets the ledger box renders. The box is a scroll-pane (~6 rows tall,
+// see .ledger-bullets in styles.css) so the rest scroll into view (the user 2026-06-12).
+// Matches the host's recentReplyBullets cap in state.ts.
+const LEDGER_BULLET_CAP = 30;
+
 // Collapse state for the ledger summary box (toggled from the tab bar, persisted
 // per-panel via the webview state so it survives reloads).
 let ledgerCollapsed = false;
@@ -1712,7 +1815,7 @@ function renderLedger() {
   // SAME content as last render (an interim host push, e.g. the session just worked)
   // → DON'T tear the rows down: that would drop an in-progress hover (the fresh row
   // gets no mouseenter under a stationary pointer). Only tick ages/colors in place.
-  const sig = (activeId || "") + "§" + (l.summary || "") + "‖" + l.bullets.slice(0, 8).map((b) => `${b.id || ""}:${b.t ?? ""}:${b.text}`).join("|");
+  const sig = (activeId || "") + "§" + (l.summary || "") + "‖" + l.bullets.slice(0, LEDGER_BULLET_CAP).map((b) => `${b.id || ""}:${b.t ?? ""}:${b.text}`).join("|");
   if ((host as any)._sig === sig) { refreshLedgerAges(host, l, now); return; }
   (host as any)._sig = sig;
   host.replaceChildren();
@@ -1731,7 +1834,7 @@ function renderLedger() {
     // starts past the WIDEST timestamp): [ (X ago) ]  [ bullet text ]. No "·".
     // age + text are direct grid cells (no row wrapper) so they share the grid.
     const list = el("div", "ledger-bullets");
-    for (const b of l.bullets.slice(0, 8)) {
+    for (const b of l.bullets.slice(0, LEDGER_BULLET_CAP)) {
       const col = b.t ? ageColorReadable(now - b.t) : ""; // recency hue, constant-lightness, legible
       const row = el("div", "ledger-bullet" + (b.id ? " nav" : ""));   // a real row so it gets one clean hover bg + handlers
       const age = el("span", "ledger-bullet-age");
@@ -1751,7 +1854,7 @@ function renderLedger() {
 // Same-content tick: refresh the existing bullets' "Xm ago" ages + recency colors
 // in place (rows kept alive so a hover/click survives). Order matches bullets[0..8).
 function refreshLedgerAges(host: HTMLElement, l: Ledger, now: number) {
-  const bs = l.bullets.slice(0, 8);
+  const bs = l.bullets.slice(0, LEDGER_BULLET_CAP);
   const newest = l.bullets.find((b) => b.t);
   const sum = host.querySelector(".ledger-summary") as HTMLElement | null;
   if (sum && newest && newest.t) sum.style.color = ageColorReadable(now - newest.t);
@@ -1826,6 +1929,20 @@ function renderLiveAsk() {
   else if (ask.kind === "multi") renderMultiCard(ask);
   else if (ask.kind === "submit") renderSubmitCard(ask);
   else renderSingleCard(ask);
+  if (ask?.preview) appendPreview(host, ask.preview);
+}
+
+// The focused option's side-by-side preview box, reproduced VERBATIM in a monospace
+// block (the user 2026-06-13). The TUI draws it to the RIGHT of the options; the
+// chat rail is narrow, so it sits BELOW the card and scrolls sideways if wider than
+// the rail. Re-rendered on every re-post, so it tracks the cursor exactly — moving
+// between options swaps the picture, mirroring the terminal. textContent, never
+// innerHTML: the pane text is untrusted terminal output.
+function appendPreview(host: HTMLElement, preview: string) {
+  const card = (host.querySelector(".ask-card") as HTMLElement | null) ?? host;
+  const pre = el("pre", "ask-preview");
+  pre.textContent = preview;
+  card.appendChild(pre);
 }
 
 function askCard(extraClass = ""): HTMLElement {
@@ -2593,10 +2710,6 @@ function insertComposerText(text: string) {
   growComposer(ta);
   ta.focus();
 }
-
-// Day/month names for the timeline-rail time markers (see timeMarker()).
-const WEEKDAY = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-const MONTH = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 setupComposer();
 // right-click a selection in the transcript → Reply (quote it) / Copy

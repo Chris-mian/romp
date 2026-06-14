@@ -183,6 +183,26 @@ run_hook() {
     grep -q 'set -t test @claude-state-since' "$MOCK_LOG"
 }
 
+# ─── permission_mode extraction (feed block detection) ───────────────
+
+@test "permission_mode is published as @claude-permission-mode (auto mode)" {
+    run run_hook '{"hook_event_name":"Notification","notification_type":"permission_prompt","permission_mode":"acceptEdits","cwd":"/tmp"}'
+    [ "$status" -eq 0 ]
+    grep -q 'set -t test @claude-permission-mode acceptEdits' "$MOCK_LOG"
+}
+
+@test "permission_mode is published on ordinary events too (default mode)" {
+    run run_hook '{"hook_event_name":"UserPromptSubmit","permission_mode":"default","cwd":"/tmp"}'
+    [ "$status" -eq 0 ]
+    grep -q 'set -t test @claude-permission-mode default' "$MOCK_LOG"
+}
+
+@test "absent permission_mode never writes the var (no clobber)" {
+    run run_hook '{"hook_event_name":"UserPromptSubmit","cwd":"/tmp"}'
+    [ "$status" -eq 0 ]
+    ! grep -q '@claude-permission-mode' "$MOCK_LOG"
+}
+
 # ─── headless (no-tmux) backend tests ─────────────────────────────────
 # A session launched by a non-tmux backend exports ROMP_SESSION_ID; the hook
 # must write the durable states/<sid>.jsonl record and touch tmux not at all.

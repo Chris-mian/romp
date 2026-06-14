@@ -485,6 +485,10 @@ Usage:
   romp -l              Ledger — live "what is each session doing" view (purpose + bullets)
   romp -f              Feed — fleet-wide timeline of deliverables (what got done, in order)
   romp -p              Pipeline — live status table of the summarization DAG (stage + timing)
+  romp on              Start the kernel manager (owns the romp kernel; front ends attach).
+                       Runs in the foreground — Ctrl+C stops it and its kernels
+  romp refresh         Restart all romp kernels (picks up new code — run after an update)
+  romp status          Show manager + kernel status
   romp -h              Show this help
 
 Any name is fine — sessions are tagged with the tmux @romp flag, not a naming
@@ -551,6 +555,23 @@ if [[ "${1:-}" == "--mail" ]]; then
     # ROMP_POSTAL_BIN: test seam — see the -d dispatch above.
     exec "${ROMP_POSTAL_BIN:-romp-postal}" "$@"
 fi
+
+# Kernel-MANAGER control verbs. The manager (bin/romp-manager) is the thin, durable supervisor you
+# launch yourself, à la `jupyter lab`: it owns + supervises the romp kernel(s); front ends (VS Code,
+# the web dashboard, Obsidian) ATTACH rather than spawn. `romp on` is PURELY "start the manager" — the
+# actions are their OWN top-level verbs, none hidden under `romp on` (the user 2026-06-13):
+#   romp on        run the manager in the foreground (Ctrl+C stops it AND its kernels)
+#   romp refresh   restart EVERY kernel the manager owns (picks up new code — run after an update)
+#   romp status    manager + kernel status
+# No `romp down`: `romp on` is foreground, so Ctrl+C stops it (the user 2026-06-13). The manager still
+# honors SIGINT/SIGTERM + a direct /stop for that path — there's just no romp verb for it.
+# Bare words (not flags), reserved as commands — like `on` before them (the user's request).
+# ROMP_MANAGER_BIN is the test seam (same pattern as ROMP_DASHBOARD_BIN / ROMP_POSTAL_BIN above).
+case "${1:-}" in
+    on)      exec "${ROMP_MANAGER_BIN:-romp-manager}" up ;;
+    refresh) exec "${ROMP_MANAGER_BIN:-romp-manager}" restart-all ;;
+    status)  exec "${ROMP_MANAGER_BIN:-romp-manager}" status ;;
+esac
 
 # NB: there's no `romp rename` / `romp a` command. Rename from inside tmux
 # (prefix-$, choose-tree, :rename-session) — the after-rename-session hook fires
@@ -710,13 +731,20 @@ else
         IFS=$'\t' read -r _ _ bg fg < "$ROMP_NAMES_DIR/$sid" || true
     fi
     if [[ -z "$bg" ]]; then
+        # Assignment order is colorblind-tuned (the user 2026-06-12): blue, green first
+        # (favorites + reasonably distinct), then teal — the more colorblind-friendly of
+        # teal/purple against blue+green under deuteran/protan (Machado 2009; teal differs
+        # from blue on the PRESERVED blue-yellow axis, purple only on the lost red channel).
+        # Remaining slots are ordered most-distinct-first; purple lands last. Note this no
+        # longer matches the vault/styles.css --palette-N NUMBERING (which is the same hex
+        # SET, used as fixed semantic colors elsewhere) — only the set must agree, not order.
         _palette=(
-            "#1EA1EB"  "#54B204"  "#9088F0"  "#4EA8A9"  "#DD42FF"
-            "#E87221"  "#98998A"  "#F85B5A"  "#F9D849"
+            "#1EA1EB"  "#54B204"  "#4EA8A9"  "#DD42FF"  "#E87221"
+            "#98998A"  "#F85B5A"  "#F9D849"  "#9088F0"
         )
         _fg=(
-            "white"    "black"    "black"    "white"    "white"
-            "black"    "black"    "white"    "black"
+            "white"    "black"    "white"    "white"    "black"
+            "black"    "white"    "black"    "black"
         )
         # Collect colors already in use by other romp sessions.
         _used=()

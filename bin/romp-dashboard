@@ -104,6 +104,22 @@ format_duration() {
     fi
 }
 
+# A row fades to "stale" only when it is a READY/idle state sitting quiet past
+# STALE_AFTER_SECS. Active states (working/compacting/permission) NEVER fade on
+# wall-clock: an elapsed-time gate can't tell "asleep / long tool call" from
+# "stuck", and a laptop-sleep clock jump snaps `now - since` past the threshold,
+# which would wrongly fade a live WORKING row (the 2026-06-12 sleep/wake
+# incident). Mirrors chat-view's fadedFor; a genuinely stuck 'working' is healed
+# to 'waiting' by romp-idle-dots (pane check) and THEN fades here as a ready row.
+# Pure (state, elapsed) -> "true"/"false" so it can be tested. Event-based.
+row_is_stale() {
+    local state=$1 elapsed=$2
+    case "$state" in
+        working|compacting|permission) echo false; return ;;
+    esac
+    (( elapsed > STALE_AFTER_SECS )) && echo true || echo false
+}
+
 shorten_dir() {
     local dir="$1"
     echo "${dir/#$HOME/~}"
@@ -217,12 +233,14 @@ render() {
         while IFS='|' read -r is_romp sess state since dir id_bg id_fg model effort summary kind context created mail_from mail_bg mail_fg; do
             [[ "$is_romp" == "1" ]] || continue
 
-            # Stale = idle longer than STALE_AFTER_SECS → fade the whole row.
+            # Stale = a READY/idle row sitting quiet longer than STALE_AFTER_SECS
+            # → fade the whole row. Active states never fade on wall-clock; see
+            # row_is_stale (the sleep/wake guard).
             local is_stale=false duration_str="--"
             if [[ -n "$since" ]]; then
                 local elapsed=$(( now - since ))
                 duration_str=$(format_duration "$elapsed")
-                (( elapsed > STALE_AFTER_SECS )) && is_stale=true
+                is_stale=$(row_is_stale "$state" "$elapsed")
             fi
 
             # Badge label + colors by Claude lifecycle state (Obsidian mapState).

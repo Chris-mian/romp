@@ -147,7 +147,7 @@ export function lastReplySummary(id: string): string {
 
 // digest summary + live bullets (fallback chain: digest → latest reply → live var)
 export function digestOf(id: string, liveSummary?: string): Ledger | null {
-  const bullets = recentReplyBullets(id, 8);
+  const bullets = recentReplyBullets(id, 30);   // the box is a scroll-pane (~6 visible); send a deep tail to scroll
   let summary = "";
   try {
     const raw = fs.readFileSync(path.join(ROMP_STATE(), "digest", `${id}.json`), "utf8").trim();
@@ -305,20 +305,30 @@ export function focusTimeline(id: string, sid: string, t: number, dag?: { ask: s
 let hoverNonce = 0;
 let hoverTimer: ReturnType<typeof setTimeout> | undefined;
 let hoverPendingIds: string[] | null = null;
-export function hoverTimeline(ids: string[] | string | null) {
+let hoverPendingNonce = 0;
+// The ids are the highlight set written to timeline-hover.json. They may be whole-turn event ids
+// (light the whole glyph — a DAG journey / a coarse card hover) OR per-ATOM ids minted by
+// romp-events (promptId → the start dot only, workId → the work bar only): the dot/bar split lives
+// in the id itself, so the timeline never needs an out-of-band "which half" flag to interpret it.
+// Returns the monotonic NONCE this hover will carry into the file. It's assigned at CALL time (not
+// at the debounced write) so the kernel can push the SAME nonce straight to its /timeline clients
+// (server.ts pushHover) — a fast lane past the fs.watch→rebuild — and a trailing data-poll, reading
+// the identical nonce from the file, ties instead of clobbering (setHover honors max-nonce).
+export function hoverTimeline(ids: string[] | string | null): number {
   hoverPendingIds = ids == null ? null : Array.isArray(ids) ? ids : [ids];
-  if (hoverTimer) return;
-  hoverTimer = setTimeout(() => {
+  hoverPendingNonce = ++hoverNonce;   // assigned now; the debounced writer commits this exact value
+  if (!hoverTimer) hoverTimer = setTimeout(() => {
     hoverTimer = undefined;
     try {
       const tmp = ROMP_TIMELINE_HOVER() + ".tmp";
       fs.writeFileSync(tmp, JSON.stringify({
         id: hoverPendingIds ? hoverPendingIds[0] : null,
-        ids: hoverPendingIds, nonce: ++hoverNonce,
+        ids: hoverPendingIds, nonce: hoverPendingNonce,
       }));
       fs.renameSync(tmp, ROMP_TIMELINE_HOVER());
     } catch { /* ignore */ }
   }, 40);
+  return hoverPendingNonce;
 }
 
 export function appendLocateDiag(m: any) {

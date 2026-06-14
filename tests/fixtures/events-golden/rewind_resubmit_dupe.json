@@ -9,6 +9,7 @@
    "mids": [],
    "open": true,
    "peer": false,
+   "promptId": "11111111-2222-3333-4444-555555555555:1781096410:a9f18694#p",
    "rec": "USER ASKED: could you add a small footer to every completed prompt that shows how long the turn ran for and keep it minimal\nASSISTANT SAID: Adding a duration footer to finished turns.\nTOOLS USED: Read, Edit",
    "replyUuid": "a1",
    "t": 1781096410,
@@ -16,6 +17,7 @@
    "text_full": "could you add a small footer to every completed prompt that shows how long the turn ran for and keep it minimal",
    "tid": "11111111-2222-3333-4444-555555555555",
    "uuid": "u2",
+   "workId": "11111111-2222-3333-4444-555555555555:1781096410:a9f18694#w",
    "workUuid": "a1"
   }
  ],

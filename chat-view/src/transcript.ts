@@ -55,7 +55,6 @@ export interface TodoTask { id: string; subject: string; activeForm?: string; st
 export interface SessionStatus {
   working: boolean;
   sinceEpoch: number | null; // start of the current turn (last human prompt)
-  lastActivityEpoch: number | null;
 }
 
 export interface ParsedTranscript {
@@ -65,8 +64,6 @@ export interface ParsedTranscript {
 }
 
 type Line = Record<string, any>;
-
-const WORKING_STALE_MS = 5 * 60 * 1000;
 
 const EMPTY = Buffer.alloc(0);
 
@@ -395,8 +392,12 @@ function computeStatus(ordered: Line[], path: Line[]): SessionStatus {
       break;
     }
   }
-  const lastActivityEpoch = last?.timestamp ? Date.parse(last.timestamp) : null;
-
+  // `working` is keyed PURELY on the transcript's own last-line stop_reason — an
+  // event, never wall-clock age. An age threshold here can't tell "asleep / long
+  // tool call" from "interrupted", and a laptop-sleep clock jump trips it (the
+  // 2026-06-12 sleep/wake incident; see the Design rule in CLAUDE.md). The
+  // pane/@claude-state layer (romp-idle-dots) is the authority that resolves a
+  // genuinely interrupted turn — the transcript alone never should.
   let working = false;
   if (last) {
     if (last.type === "assistant") {
@@ -409,14 +410,6 @@ function computeStatus(ordered: Line[], path: Line[]): SessionStatus {
       working = true;
     }
   }
-  // Don't claim "working" on a session nobody has touched in a while.
-  if (
-    working &&
-    lastActivityEpoch != null &&
-    Date.now() - lastActivityEpoch > WORKING_STALE_MS
-  ) {
-    working = false;
-  }
 
   // Start of the current turn = timestamp of the most recent human prompt.
   let sinceEpoch: number | null = null;
@@ -428,7 +421,7 @@ function computeStatus(ordered: Line[], path: Line[]): SessionStatus {
     }
   }
 
-  return { working, sinceEpoch, lastActivityEpoch };
+  return { working, sinceEpoch };
 }
 
 function contentToText(c: any): string {

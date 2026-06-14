@@ -7,6 +7,8 @@
 // nothing even when a stale askSig lingers.
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { pendingAskReplays, chatAnchorFor, Session } from "./chat";
 import type { SessionState } from "./backend";
 import type { ParsedAsk } from "../askparse";
@@ -83,6 +85,16 @@ test("work-intent falls back to the prompt line when the slice has no reply (int
 
 test("prompt-intent locate anchors on the turn's own line", () => {
   assert.equal(chatAnchorFor({ uuid: "p1", replyUuid: "r1" }, "user"), "p1");
+});
+
+// A card title means "take me to what STARTED this card" — its originating turn, usually the user's
+// prompt (the user 2026-06-12). showAskPath (the title click for ask + group, collapsed and modal)
+// must therefore locate with "user" intent so chatAnchorFor lands on that turn's PROMPT line, not its
+// reply. No handler harness here, so pin the wiring at the source (same approach as the timeline tests).
+test("ask/group title locate carries prompt (user) intent, not the reply", () => {
+  const src = fs.readFileSync(path.resolve(process.cwd(), "src", "kernel", "server.ts"), "utf8");
+  const m = src.match(/showAskPath[\s\S]*?locateInChat\(a\.sid, a\.created, "user"\)/);
+  assert.ok(m, "showAskPath must locate the originating turn with \"user\" (prompt) intent");
 });
 
 test("unresolvable event yields no anchor (anchorT fallback handles it)", () => {

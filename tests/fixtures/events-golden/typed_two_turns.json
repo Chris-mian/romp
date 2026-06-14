@@ -9,6 +9,7 @@
    "mids": [],
    "open": false,
    "peer": false,
+   "promptId": "11111111-2222-3333-4444-555555555555:1781096400:216da8b2#p",
    "rec": "USER ASKED: fix the flicker in the feed panel\nASSISTANT SAID: Found the cause in feed.css. Fixed: debounced the repaint.\nTOOLS USED: Read, Edit",
    "replyUuid": "a2",
    "t": 1781096400,
@@ -16,6 +17,7 @@
    "text_full": "fix the flicker in the feed panel",
    "tid": "11111111-2222-3333-4444-555555555555",
    "uuid": "u1",
+   "workId": "11111111-2222-3333-4444-555555555555:1781096400:216da8b2#w",
    "workUuid": "a1"
   },
   {
@@ -26,6 +28,7 @@
    "mids": [],
    "open": true,
    "peer": false,
+   "promptId": "11111111-2222-3333-4444-555555555555:1781097000:1def4332#p",
    "rec": "USER ASKED: now add some color to the cards\nASSISTANT SAID: Tinted cards by recency.\nTOOLS USED: Edit",
    "replyUuid": "a3",
    "t": 1781097000,
@@ -33,6 +36,7 @@
    "text_full": "now add some color to the cards",
    "tid": "11111111-2222-3333-4444-555555555555",
    "uuid": "u2",
+   "workId": "11111111-2222-3333-4444-555555555555:1781097000:1def4332#w",
    "workUuid": "a3"
   }
  ],

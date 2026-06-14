@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""romp-digest — regenerate ONE session's rolling profile from its summary feed.
+"""romp-digest — THE WRITER's digest pass (docs/figures.md figure 2): ONE
+session's rolling profile, regenerated from its summary feed.
 
-The per-turn Haiku phrases (summaries/<sid>.jsonl) are turn-scoped and don't tell
-the through-line of what a session is FOR. This does a second Haiku pass over the
-session's origin + recent turns and caches a compact profile to
-~/.local/state/romp/digest/<sid>.json:
+The judge's per-turn phrases (summaries/<sid>.jsonl) are turn-scoped and don't
+tell the through-line of what a session is FOR. This does a second model pass
+(WRITER_MODEL) over the session's origin + recent turns and caches a compact
+profile to ~/.local/state/romp/digest/<sid>.json:
 
     {"t": <epoch>, "summary": "<one line: purpose / current focus>",
      "bullets": ["responsibility / recent result / purpose", ...]}
@@ -16,10 +17,12 @@ on demand to backfill (skips work when the cache is already fresh).
     romp-digest <sid>            regenerate if stale (cache older than the feed)
     romp-digest --force <sid>    regenerate unconditionally
 
-Safe by construction: zero tools / MCP off on the Haiku call (it can only emit
+Safe by construction: zero tools / MCP off on the model call (it can only emit
 text), errors swallowed, atomic write, never blocks a turn (the hook detaches it).
 """
 import os, re, sys, json, time, tempfile, subprocess
+
+WRITER_MODEL = "claude-sonnet-4-6"   # THE WRITER: prose passes; Sonnet's prose is worth it
 
 STATE = os.path.expanduser("~/.local/state/romp")
 SUMM = os.path.join(STATE, "summaries")
@@ -84,7 +87,7 @@ def llm(prompt):
     env.pop("TMUX", None); env.pop("TMUX_PANE", None)
     env["ROMP_SUMMARIZING"] = "1"           # the summarize hook bails when this is set (no recursion)
     r = subprocess.run(
-        ["claude", "-p", "--model", "claude-sonnet-4-6", "--tools", "",
+        ["claude", "-p", "--model", WRITER_MODEL, "--tools", "",
          "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
          "--append-system-prompt", SYS],
         input=prompt, capture_output=True, text=True, timeout=45, env=env, cwd="/tmp")

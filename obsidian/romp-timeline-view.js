@@ -9,7 +9,7 @@
 // update(data) each poll to redraw the SVG (the slider persists across redraws).
 
 const SVGNS = 'http://www.w3.org/2000/svg';
-const MIN_W = 600, MAX_W = 172800;                 // 10 min … 48 h window
+const MIN_W = 60, MAX_W = 172800;                  // 1 min … 48 h window (NICE has 60 → 1-min ticks render)
 const MAX_OFFSET = 72 * 3600;                      // pan slider: right edge from now (0) back to −72 h (linear)
 // Compact metrics: rows collapse to the minimum height a bar+dots+label need.
 const LANE_GAP = 26, BAR_H = 8, CORNER = 6, MSG_DROP = 10, DOT_R = 6, CLEAR = DOT_R + 4, COINCIDE = 45;
@@ -52,12 +52,77 @@ function esc(s) { return (s || '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<'
 function clock(t) { const d = new Date(t * 1000); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); }
 function fmtWin(s) { return s < 3600 ? Math.round(s / 60) + 'm' : (s / 3600 < 10 ? (s / 3600).toFixed(1) : Math.round(s / 3600)) + 'h'; }
 function niceStep(W) { for (const s of NICE) if (W / s <= 8) return s; return 172800; }
+// Smooth live-edge advance (the user 2026-06-13): between data polls, advance the effective `now` by the
+// wall-clock elapsed since the current data.now was observed, so the live edge GLIDES instead of jumping
+// each poll (most visible zoomed in). Pure + exported so the clamp is unit-tested.
+//   baseSec — the data's `now` (epoch sec)      live  — are we live-following right now?
+//   baseMs  — monotonic ms when baseSec observed  nowMs — monotonic ms now
+// Clamp the advance to [0, maxAheadSec]: never run backward (a clock hiccup), and never fling the edge
+// far ahead if the tab was backgrounded (rAF paused → huge elapsed) or the kernel went quiet.
+const MAX_INTERP_AHEAD = 30;   // seconds the edge may glide past the last data.now before it just waits
+const LIVE_MIN_PX = 0.15;      // live-tick repaints once the edge would move ≥ this many px — small so the
+                               // glide stays smooth at high zoom (effectively native rAF), but >0 so a
+                               // near-static (zoomed-out) edge idles instead of repainting for nothing
+function perfNow() { return (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now(); }
+function interpNow(baseSec, baseMs, nowMs, live, maxAheadSec) {
+  if (!live || baseMs == null) return baseSec;
+  const cap = maxAheadSec == null ? MAX_INTERP_AHEAD : maxAheadSec;
+  return baseSec + Math.max(0, Math.min((nowMs - baseMs) / 1000, cap));
+}
+
+// Right edge a work bar is DRAWN to. An OPEN ("still working") bar has its `end` baked to data.now at
+// emit, so between polls it would sit at the stale now while the axis glides past — then jump forward on
+// the next re-emit (the user saw this 2026-06-13). So draw an open bar to the interpolated live edge
+// (nowS) instead, so it advances WITH the axis; a closed bar keeps its real end. "open" = the data's
+// flag if present, else (robust) its end reached the emit-time now (open intervals ride `now`).
+function barEndT(t, nowS, dataNow) {
+  const liveBar = t.open === true || (typeof t.end === 'number' && t.end >= dataNow);
+  return liveBar ? Math.max(nowS, t.start) : t.end;
+}
+
+// Which axis a click-drag commits to once it passes the threshold (the user 2026-06-13's mouse model):
+// horizontal-dominant → PAN the plot, vertical-dominant → REORDER the lane (mirrors onWheel's horiz/vert
+// split). null until it moves enough to decide, so a plain click still selects/opens the lane.
+function dragAxis(dx, dy, threshold) {
+  const t = threshold == null ? 4 : threshold;
+  if (Math.abs(dx) < t && Math.abs(dy) < t) return null;
+  return Math.abs(dx) > Math.abs(dy) ? 'pan' : 'row';
+}
 // The uuid anchor a WORK-intent click opens in the chat: the period's READABLE
 // reply line (replyUuid = last assistant line with text, NOT the first which is
 // usually a thinking block), then workUuid (first reply line), then the boundary
 // uuid (an interrupted period has no reply at all). Shared by the focus handler
 // and the work-bar click so the two landings can never drift apart again.
 function workAnchorOf(t) { return (t && (t.replyUuid || t.workUuid || t.uuid)) || null; }
+
+// Which ATOM of a turn a highlight set covers — `hit(id)` = membership in the active DAG-journey
+// ∪ hover set. A turn renders two glyphs: the prompt DOT and the work-period BAR. The DOT lights
+// for the whole-turn id (a DAG journey / a coarse card hover wants the whole turn) OR the PROMPT
+// atom id; the BAR for the whole-turn id OR the WORK atom id. Because the two atom ids are minted
+// distinctly by romp-events (t.promptId / t.workId), a chat 'message' hover (emitting promptId)
+// rings ONLY the dot and an 'action' hover (emitting workId) ONLY the bar — the split is read from
+// the data model, never guessed at render time. Exported for tests.
+function dotLit(t, hit) { return hit(t.id) || hit(t.promptId); }
+function barLit(t, hit) { return hit(t.id) || hit(t.workId); }
+
+// Pure (exported for tests): from MERGED activity intervals [[a,b],…] (sorted, non-overlapping)
+// the list of idle stretches worth collapsing on the broken axis — each ≥GAP_MIN AND wider than the
+// collapsed width gapCT. Two sources: gaps BETWEEN activity, plus — when `now` is given — the TRAILING
+// gap from the last activity's end up to now (the user 2026-06-12), so a quiet period before the
+// present collapses too. Returns [{ ra, rb, trailing }] in ascending order; the trailing gap (if any)
+// is last and flagged so its right boundary (now) draws no "resumed" clock.
+function idleGaps(merged, gapCT, now) {
+  const gaps = [];
+  for (let i = 1; i < merged.length; i++) {
+    const ga = merged[i - 1][1], gb = merged[i][0], D = gb - ga;
+    if (D >= GAP_MIN && D > gapCT) gaps.push({ ra: ga, rb: gb, trailing: false });
+  }
+  if (now != null && merged.length) {
+    const ga = merged[merged.length - 1][1], D = now - ga;
+    if (D >= GAP_MIN && D > gapCT) gaps.push({ ra: ga, rb: now, trailing: true });
+  }
+  return gaps;
+}
 
 function badgeFor(s) {
   if (!s || !s.live) return null;
@@ -170,6 +235,11 @@ class TimelinePanel {
     // _offSec, so draw() honors it verbatim this frame before resuming the hold. Restored mid-pan stays
     // unpinned (loaded off>0). [[contract with vs_chat]] is unaffected — this is pan state only.
     this._offDirty = true; this._holdReal = null; this._pinned = !(this._offSec > 0);
+    // Smooth live-edge advance (see interpNow): while live-following, a rAF loop (_liveRAF) advances the
+    // effective `now` by wall-clock between polls so the window glides. _nowBaseMs = monotonic ms when the
+    // current data.now was observed; _lastLiveNow = effective-now of the last live repaint (sub-pixel guard
+    // so we only repaint when the edge would actually move). Re-armed each poll; self-stops when not live.
+    this._nowBaseMs = null; this._liveRAF = null; this._lastLiveNow = null;
 
     this.wrap = host.createDiv({ cls: 'romp-tl-wrap' });
     this.svg = document.createElementNS(SVGNS, 'svg');
@@ -180,6 +250,18 @@ class TimelinePanel {
     // toggle at the far right, under the lanes.
     this.controls = this.wrap.createDiv({ cls: 'romp-tl-controls' });
     this.controls.setAttribute('style', 'display:flex;align-items:center;gap:16px;padding:4px 8px;font-size:11px;color:#9aa0a6;user-select:none;');
+
+    // Restart-kernel button — FIRST in the row, so it sits at the far bottom-left of the app (the user
+    // 2026-06-13). A global action EMBEDDED in the timeline panel, not a floating overlay (which kept
+    // overlapping other panes' corner controls). Click → the kernel's same-origin /restart (it relays to
+    // the `romp on` manager), then wait for the fresh kernel and reload onto the new bundle.
+    const restartBtn = this.controls.createEl('button');
+    restartBtn.textContent = '↻';
+    restartBtn.setAttribute('title', 'Restart the romp kernel');
+    restartBtn.setAttribute('style', 'flex:0 0 auto;width:22px;height:22px;display:inline-flex;align-items:center;justify-content:center;border-radius:5px;cursor:pointer;background:#2a2a2a;color:#bbb;border:1px solid #3a3a3a;font:13px/1 system-ui;opacity:0.7;');
+    restartBtn.addEventListener('mouseenter', () => { restartBtn.style.opacity = '1'; restartBtn.style.color = '#fff'; });
+    restartBtn.addEventListener('mouseleave', () => { restartBtn.style.opacity = '0.7'; restartBtn.style.color = '#bbb'; });
+    restartBtn.addEventListener('click', () => this._restartKernel(restartBtn));
 
     // Claude usage bars (the /usage rate-limit %: 5-hour + weekly), LEFT-justified. Hidden until
     // statusline.sh reports usage (Pro/Max only); _updateUsage() fills them each
@@ -223,7 +305,7 @@ class TimelinePanel {
     this._collapseBox = cbWrap.createEl('input');
     this._collapseBox.type = 'checkbox';   // set as a property (the VS Code createEl shim ignores {type})
     this._collapseBox.checked = this._collapseGaps;
-    cbWrap.createSpan({ text: 'collapse idle gaps' });
+    cbWrap.createSpan({ text: 'collapse gaps' });
     this._collapseBox.addEventListener('change', () => {
       this._collapseGaps = this._collapseBox.checked;
       try { localStorage.setItem(this.CSTORE, this._collapseGaps ? '1' : '0'); } catch (e) {}
@@ -246,15 +328,13 @@ class TimelinePanel {
     this._lockBox = lockWrap.createEl('input');
     this._lockBox.type = 'checkbox';
     this._lockBox.checked = this._lockNow;
-    const lockIcon = lockWrap.createSpan();
-    lockIcon.setAttribute('style', 'display:inline-flex;align-items:center;opacity:' + (this._lockNow ? '1' : '0.7') + ';');
-    lockIcon.innerHTML = this._lockNow ? LOCK_CLOSED : LOCK_OPEN;
+    this._lockIcon = lockWrap.createSpan();
+    this._LOCK_CLOSED = LOCK_CLOSED; this._LOCK_OPEN = LOCK_OPEN;   // stashed so _setLock can repaint the icon (e.g. a drag unlocks)
+    this._lockIcon.setAttribute('style', 'display:inline-flex;align-items:center;opacity:' + (this._lockNow ? '1' : '0.7') + ';');
+    this._lockIcon.innerHTML = this._lockNow ? LOCK_CLOSED : LOCK_OPEN;
     lockWrap.createSpan({ text: 'now' });
     this._lockBox.addEventListener('change', () => {
-      this._lockNow = this._lockBox.checked;
-      lockIcon.innerHTML = this._lockNow ? LOCK_CLOSED : LOCK_OPEN;
-      lockIcon.style.opacity = this._lockNow ? '1' : '0.7';
-      try { localStorage.setItem(this.LSTORE, this._lockNow ? '1' : '0'); } catch (e) {}
+      this._setLock(this._lockBox.checked);
       if (this._lockNow) this._jumpToNow();   // snap to the live edge the moment it locks
       this.draw();
     });
@@ -286,7 +366,10 @@ class TimelinePanel {
     // mouseup-click from also firing a select after a real drag.
     this._drag = null; this._dragOrder = null; this._suppressClick = false;
     this._dag = null;   // request-DAG journey overlay (set by focusEvent when the feed supplies a dag)
-    this._hover = null; // feed→timeline hover highlight {id,...} (set by update from data.hover; null = none)
+    this._hover = null; // feed→timeline hover highlight {ids,...} (set by update from data.hover OR setHover; null = none)
+    this._hoverNonce = null;  // highest hover nonce applied — gates the direct push vs the file poll so neither clobbers the other (the same monotonic nonce rides both; see setHover)
+    this._frozeFromPin = false;  // freeze-on-hover: true while a tooltip has paused live-follow that WAS pinned (so hideTip knows to resume)
+    this._dirtyWhileTip = false; // a data poll arrived while a tooltip was up (draw was skipped) → hideTip repaints the catch-up
     this.wrap.tabIndex = 0; this.wrap.style.outline = 'none';
     this._onKey = (e) => this.onKey(e);
     this._focusWrap = () => this.wrap.focus();
@@ -312,6 +395,7 @@ class TimelinePanel {
     window.removeEventListener('resize', this._onResize);
     if (this.wrap) { this.wrap.removeEventListener('wheel', this._onWheel); this.wrap.removeEventListener('keydown', this._onKey); this.wrap.removeEventListener('mousedown', this._focusWrap); this.wrap.removeEventListener('mousemove', this._onTipSweep); }
     if (this._drawRAF) cancelAnimationFrame(this._drawRAF);
+    this._stopLiveTick();
     if (this._autoOpenT) clearTimeout(this._autoOpenT);
     if (this._onDragMove) window.removeEventListener('mousemove', this._onDragMove, true);
     if (this._onDragUp) window.removeEventListener('mouseup', this._onDragUp, true);
@@ -396,7 +480,6 @@ class TimelinePanel {
     const g = this._geom; if (!g || !this.data || !this.data.sessions) return;
     const pinch = e.ctrlKey;                                   // Chromium maps trackpad pinch → ctrl+wheel
     const horiz = Math.abs(e.deltaX) > Math.abs(e.deltaY);
-    if (!pinch && !horiz) return;                             // plain vertical scroll → let it pass through
     e.preventDefault();
     const rect = this.svg.getBoundingClientRect();
     const scaleX = rect.width ? g.W / rect.width : 1;          // svg user-units per client px
@@ -405,8 +488,11 @@ class TimelinePanel {
     // compressed seconds. Pan = translate at a CONSTANT compressed-sec-per-px scale → smooth, no rescale.
     const compress = g.compress || ((t) => t);
     const cNow = compress(this.data.now), cT1 = cNow - curOff, cT0 = cT1 - curWin;
-    if (pinch) {
-      const factor = Math.exp(e.deltaY * 0.01);               // squeeze (deltaY>0) → wider window (zoom out)
+    // wheel model (the user 2026-06-13): ZOOM on pinch OR vertical scroll (cursor-anchored); PAN on
+    // horizontal scroll. Click-drag also pans — and BREAKS the lock; the wheel keeps HONORING it.
+    if (pinch || !horiz) {
+      const dy = pinch ? e.deltaY : Math.max(-25, Math.min(25, e.deltaY));   // clamp a mouse wheel's big notch; pinch stays smooth
+      const factor = Math.exp(dy * 0.01);                      // dy>0 → wider window (zoom out)
       const newWin = Math.max(MIN_W, Math.min(MAX_W, curWin * factor));
       const svgX = (e.clientX - rect.left) * scaleX;
       const frac = Math.max(0, Math.min(1, (svgX - g.ml) / g.plotW));   // cursor position across the plot
@@ -414,14 +500,15 @@ class TimelinePanel {
       this._winSec = newWin;
       this._offSec = Math.max(0, Math.min(MAX_OFFSET, cNow - (cc + (1 - frac) * newWin)));
     } else {
-      const dt = e.deltaX * scaleX * (curWin / g.plotW);      // compressed-sec per px (CONSTANT → smooth pan)
+      const dt = e.deltaX * scaleX * (curWin / g.plotW);       // compressed-sec per px (CONSTANT → smooth pan)
       this._offSec = Math.max(0, Math.min(MAX_OFFSET, curOff - dt));
     }
-    if (this._lockNow) this._offSec = 0;   // 🔒 locked: zoom is free but the right edge never leaves now
+    if (this._lockNow) this._offSec = 0;   // 🔒 the wheel HONORS the lock: zoom/scroll keep the right edge at now (a DRAG breaks it)
     this._markOffsetGesture();   // honor this _offSec verbatim next frame; re-pin if it lands at the now-edge
     try { localStorage.setItem(this.WSTORE, String(this.winSec())); } catch (e2) {}
     try { localStorage.setItem(this.OSTORE, String(Math.round(this._offSec))); } catch (e2) {}
     this._scheduleDraw();
+    this._startLiveTick();   // a pan back to the now-edge re-pins → resume smooth advance (no-op otherwise)
   }
 
   // A user gesture/nav just wrote _offSec → draw() honors it verbatim this frame (_offDirty), then
@@ -434,6 +521,17 @@ class TimelinePanel {
     this._offDirty = true;
   }
 
+  // Programmatically toggle 🔒 lock-to-now, keeping the checkbox + icon + persisted state in sync. A
+  // click-drag uses this to BREAK the lock (the user 2026-06-13: drag away from now = free pan).
+  _setLock(on) {
+    on = !!on;
+    if (this._lockNow === on) return;
+    this._lockNow = on;
+    if (this._lockBox) this._lockBox.checked = on;
+    if (this._lockIcon) { this._lockIcon.innerHTML = on ? this._LOCK_CLOSED : this._LOCK_OPEN; this._lockIcon.style.opacity = on ? '1' : '0.7'; }
+    try { localStorage.setItem(this.LSTORE, on ? '1' : '0'); } catch (e) {}
+  }
+
   // Far-right ⟩⟩ button (see _drawNowButton): snap the window all the way to the live edge and resume
   // auto-scroll. Only reachable while unpinned (the button hides at the edge).
   _jumpToNow() {
@@ -441,6 +539,71 @@ class TimelinePanel {
     this._holdReal = this.data ? this.data.now : null;
     try { localStorage.setItem(this.OSTORE, '0'); } catch (e) {}
     this.draw();
+    this._startLiveTick();   // resume the smooth-advance loop now that we're following the edge again
+  }
+
+  // --- smooth live-edge advance (see interpNow + the constructor field comment) ---
+  // Are we auto-scrolling the live edge right now? (lock forces follow; a hover-freeze or a pan stops it.)
+  _liveFollowing() { return (this._pinned || this._lockNow) && !this._frozeFromPin; }
+  // On-screen? rAF already pauses for a hidden TAB; this also catches a hidden Obsidian leaf / detached
+  // node (no offsetParent) so the loop doesn't spin for an invisible pane. False-negative just degrades
+  // to per-poll redraw (no interpolation), never breaks.
+  _isVisible() {
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return false;
+    const w = this.wrap;
+    return !!(w && w.offsetParent !== null);
+  }
+  // The effective `now` draw() renders the right edge at: data.now plus wall-clock since that poll while
+  // live-following, else the raw data.now (a held/frozen view must NOT creep as time passes).
+  _liveNow() {
+    const base = this.data ? this.data.now : 0;
+    // Frozen on hover → hold EVERYTHING at the hover instant (_holdReal): the axis edge AND, via barEndT /
+    // execAt / startAt which read this, the open work bars + pending items. Otherwise they keep advancing
+    // per poll while the edge sits still — the "doesn't stop on hover" bug. Not frozen → glide, or data.now.
+    if (this._frozeFromPin && this._holdReal != null) return this._holdReal;
+    return interpNow(base, this._nowBaseMs, perfNow(), this._liveFollowing(), MAX_INTERP_AHEAD);
+  }
+  // Arm the rAF loop (no-op if already running or not currently live+visible). Re-armed each poll by
+  // update(), so even after the loop self-stops it returns within one poll once we're live again. NOT
+  // called from draw() — draw() runs inside the tick, and re-arming there would double the loop.
+  _startLiveTick() {
+    if (this._liveRAF != null || !this._liveFollowing() || !this._isVisible()) return;
+    this._liveRAF = requestAnimationFrame(() => this._tickLive());
+  }
+  _tickLive() {
+    this._liveRAF = null;
+    if (!this._liveFollowing() || !this._isVisible() || !this.data) return;   // gate closed → stop the loop
+    const g = this._geom;
+    // Only repaint when the edge would actually move ≥ LIVE_MIN_PX since the last live draw — a wide
+    // (zoomed-out) window where the edge barely creeps costs ~nothing, a zoomed-in one repaints every
+    // native frame. Keep looping either way so we catch the moment it does move.
+    if (!g || this._lastLiveNow == null || ((this._liveNow() - this._lastLiveNow) / g.winSec * g.plotW) >= LIVE_MIN_PX) {
+      this.draw();
+    }
+    this._liveRAF = requestAnimationFrame(() => this._tickLive());
+  }
+  _stopLiveTick() { if (this._liveRAF != null) { cancelAnimationFrame(this._liveRAF); this._liveRAF = null; } }
+
+  // Restart-button handler (the controls-row ↻): POST the kernel's SAME-ORIGIN /restart (it relays to the
+  // `romp on` manager's /restart-all), then poll /healthz and reload onto the fresh bundle. Browser-only
+  // (fetch/location); guarded so a double-click can't fire twice.
+  _restartKernel(btn) {
+    if (this._restarting) return;
+    this._restarting = true;
+    if (btn) { btn.textContent = '…'; btn.style.color = '#e0b020'; btn.style.cursor = 'default'; }
+    const t0 = (typeof Date !== 'undefined' && Date.now) ? Date.now() : 0;
+    const reload = () => { try { location.reload(); } catch (e) {} };
+    const poll = () => {
+      try {
+        fetch('/healthz', { cache: 'no-store' }).then((r) => { if (r && r.ok) reload(); else again(); }).catch(again);
+      } catch (e) { again(); }
+    };
+    const again = () => {
+      const now = (typeof Date !== 'undefined' && Date.now) ? Date.now() : 0;
+      if (now - t0 < 30000) setTimeout(poll, 600); else reload();
+    };
+    try { fetch('/restart', { method: 'POST' }).catch(() => {}); } catch (e) {}
+    setTimeout(poll, 1500);   // let the old kernel go down first, then poll for the fresh one
   }
 
   // A small vertical ⟩⟩ button hugging the far-right edge, shown ONLY when the view is held back off the
@@ -508,19 +671,32 @@ class TimelinePanel {
   update(data) {
     if (!data || data.unavailable || !data.sessions) { this.data = data; this.drawMessage(data && data.unavailable ? 'Timeline needs a desktop Obsidian with tmux.' : 'No romp activity.'); return; }
     this.data = data;
+    this._nowBaseMs = perfNow();   // baseline for smooth live-edge advance: wall-clock when this data.now was observed
     if (!this.fitted) { this.fitWindow(); this.fitted = true; }
     // first paint with a chat already open → seed the highlight from it (don't override a later local pick)
     if (this.selectedSid == null) { const sid = this._sidForActiveChat(data.activeChat); if (sid) this.selectedSid = sid; }
-    // Feed→timeline HOVER: reflect the current hovered set (data.hover.ids = the subtree's events +
-    // delegation messages, or null = cleared) so draw() outlines each in the white focus border. No
-    // nonce gating — the file content IS the live state; a separate transient channel from the click
-    // focus (no pan/pulse/open). [[contract with vs_chat]]
-    this._hover = (data.hover && data.hover.ids && data.hover.ids.length) ? data.hover : null;
+    // Feed→timeline HOVER from the FILE (timeline-hover.json — the cross-front-end broadcast channel,
+    // also read by VS Code trackchanges + the Obsidian vault). data.hover.ids = the subtree's events +
+    // delegation messages ([] = cleared). The SAME monotonic nonce rides both this file and the direct
+    // setHover push (server.ts pushHover), so gate on it: apply only when it's not OLDER than the last
+    // hover we showed — a poll that races a fresh push ties (same nonce, no-op) instead of reverting it,
+    // and a stale read (lower nonce) is ignored. nonce absent (old writer) → always apply (today's
+    // behavior). A separate transient channel from the click focus (no pan/pulse/open). [[contract with vs_chat]]
+    const _hvN = (data.hover && typeof data.hover.nonce === 'number') ? data.hover.nonce : null;
+    if (_hvN == null || this._hoverNonce == null || _hvN >= this._hoverNonce) {
+      this._hover = (data.hover && data.hover.ids && data.hover.ids.length) ? data.hover : null;
+      if (_hvN != null) this._hoverNonce = _hvN;
+    }
     // DAG overlay is DERIVED state: re-synced from the current focus file on EVERY poll, so it clears
     // the instant the feed clears/replaces the focus's dag — even when no fresh focusEvent fires (e.g.
     // the double-clicked card is un-highlighted). The nonce-gated focusEvent below only does the JUMP.
     this._dag = this._dagFromFocus(data.focus);
     this._updateUsage(data.usage);   // Claude /usage rate-limit bars in the controls row (HTML, outside the SVG)
+    // STILL SNAPSHOT while a tooltip is up (the user 2026-06-13): the data + derived state above are
+    // buffered, but DON'T re-lay-out the SVG — a fresh layout (new events, recompressed idle gaps) shifts
+    // every x-position = the jump the user saw under the held edge. Keep the last frame; hideTip repaints
+    // the buffered data as ONE catch-up. (Also skips the focus-jump + live-tick below — both move the view.)
+    if (this.tip && this.tip.classList && this.tip.classList.contains('show')) { this._dirtyWhileTip = true; return; }
     this.draw();
     // feed→timeline locate: a NEW focus nonce (update_feed wrote timeline-focus.json on a card click)
     // → pan/scroll/pulse to that event. Adopt the nonce silently on first load (don't jump to a stale
@@ -529,6 +705,22 @@ class TimelinePanel {
       if (this._focusNonce === undefined) this._focusNonce = data.focus.nonce;
       else if (data.focus.nonce !== this._focusNonce) { this._focusNonce = data.focus.nonce; this.focusEvent(data.focus); }
     }
+    this._startLiveTick();   // re-arm the smooth-advance loop each poll (no-op unless live-following + visible)
+  }
+
+  // Direct hover push from the kernel (server.ts pushHover) — the FAST path that skips the
+  // timeline-hover.json write → fs.watch → full rebuild that otherwise made modal/chat hover lag
+  // behind the (instant, ws-pushed) chat glow. m = {ids: string[]|null, nonce}. The SAME hover also
+  // lands in the file (the cross-front-end broadcast), carrying the SAME monotonic nonce — so honor
+  // max-nonce: a following data-poll reading the file ties (same nonce, no-op) and any stale/out-of-
+  // order push (lower nonce) is ignored. Redraws ONLY (no update()/rebuild). nonce absent → always apply.
+  setHover(m) {
+    if (!m) return;
+    const nonce = (typeof m.nonce === 'number') ? m.nonce : null;
+    if (nonce != null && this._hoverNonce != null && nonce < this._hoverNonce) return;   // stale → ignore
+    if (nonce != null) this._hoverNonce = nonce;
+    this._hover = (m.ids && m.ids.length) ? { ids: m.ids } : null;
+    this._scheduleDraw();
   }
 
   // resolve the chat's active tab {tid,name} to a lane sid: precise by transcript id (a lane's turn
@@ -567,24 +759,53 @@ class TimelinePanel {
     const scaleY = rect.height ? g.H / rect.height : 1;   // svg user-units per client px
     return (e.clientY - rect.top) * scaleY;
   }
-  _beginRowDrag(sid, e) {
+  // One mousedown on a lane; the first real movement decides via dragAxis: horizontal → PAN the plot,
+  // vertical → REORDER the lane. A plain click (no movement) falls through to the row's select handler.
+  _beginDrag(sid, e) {
     if (e.button !== 0 || !this._geom) return;                 // left button, need geometry
     const order = (this._vis || []).map((s) => s.id);
     const fromIdx = order.indexOf(sid);
     if (fromIdx < 0) return;
     this._suppressClick = false;
-    this._drag = { sid, fromIdx, order, startY: this._svgY(e), moved: false, toIdx: fromIdx };
-    this._onDragMove = (ev) => this._rowDragMove(ev);
-    this._onDragUp = (ev) => this._rowDragUp(ev);
+    this._drag = {
+      sid, fromIdx, order, toIdx: fromIdx, moved: false, mode: null,
+      startX: e.clientX, startY: e.clientY,                    // client coords → axis decision
+      panOff: this.offSec(), panWin: this.winSec(),           // pan baseline (constant scale from gesture start)
+    };
+    this._onDragMove = (ev) => this._dragMove(ev);
+    this._onDragUp = (ev) => this._dragUp(ev);
     window.addEventListener('mousemove', this._onDragMove, true);
     window.addEventListener('mouseup', this._onDragUp, true);
     e.preventDefault();
   }
+  _dragMove(ev) {
+    const d = this._drag; if (!d) return;
+    if (d.mode == null) {
+      d.mode = dragAxis(ev.clientX - d.startX, ev.clientY - d.startY);
+      if (d.mode == null) return;                              // below threshold → still a potential click
+      d.moved = true; this.svg.style.cursor = 'grabbing';
+      if (d.mode === 'row') this.selectedSid = d.sid;
+    }
+    if (d.mode === 'pan') this._panDragMove(ev); else this._rowDragMove(ev);
+  }
+  // Horizontal click-drag → pan at a CONSTANT compressed-sec-per-px scale (same as onWheel's pan branch),
+  // measured from the gesture start. BREAKS pin + 🔒lock so you can drag away from now freely.
+  _panDragMove(ev) {
+    const d = this._drag, g = this._geom; if (!d || !g || !g.plotW) return;
+    const rect = this.svg.getBoundingClientRect();
+    const scaleX = rect.width ? g.W / rect.width : 1;
+    const dt = (ev.clientX - d.startX) * scaleX * (d.panWin / g.plotW);
+    this._offSec = Math.max(0, Math.min(MAX_OFFSET, d.panOff - dt));
+    this._setLock(false);                                      // a drag turns OFF 🔒 — no snap-back to now
+    this._pinned = false;
+    this._offDirty = true;
+    this._suppressClick = true;
+    this._scheduleDraw();
+    ev.preventDefault();
+  }
   _rowDragMove(ev) {
     const d = this._drag; if (!d) return;
     const n = d.order.length, y = this._svgY(ev);
-    if (!d.moved && Math.abs(y - d.startY) < 4) return;        // below threshold → still a potential click
-    if (!d.moved) { d.moved = true; this.selectedSid = d.sid; this.svg.style.cursor = 'grabbing'; }
     let toIdx = Math.round((y - this._geom.top - LANE_GAP / 2) / LANE_GAP);
     toIdx = Math.max(0, Math.min(n - 1, toIdx));
     d.toIdx = toIdx;
@@ -595,13 +816,21 @@ class TimelinePanel {
     this._scheduleDraw();
     ev.preventDefault();
   }
-  _rowDragUp(ev) {
+  _dragUp(ev) {
     const d = this._drag;
     window.removeEventListener('mousemove', this._onDragMove, true);
     window.removeEventListener('mouseup', this._onDragUp, true);
     this._onDragMove = this._onDragUp = null;
     this._drag = null; this.svg.style.cursor = '';
-    if (!d || !d.moved) { this._dragOrder = null; return; }    // no movement → it was a click, let select fire
+    if (!d || !d.moved) { this._dragOrder = null; return; }    // no movement → a click; let select fire
+    if (d.mode === 'pan') {
+      this._markOffsetGesture();                               // re-pin if dragged back to the now-edge
+      try { localStorage.setItem(this.OSTORE, String(Math.round(this._offSec))); } catch (e) {}
+      this.draw();
+      this._startLiveTick();                                   // re-pinned at the edge → resume smooth advance
+      ev.preventDefault();
+      return;
+    }
     this._suppressClick = true;
     const visOrder = this._dragOrder || d.order;
     this._dragOrder = null;
@@ -669,7 +898,7 @@ class TimelinePanel {
   // gap set is GLOBAL (not window-clipped) and gapCT is fixed for a given zoom, the map is STABLE while
   // panning — so x() only rescales on zoom, never on pan (no edge-snap jank). Returns {compress(t),
   // decompress(c), gaps:[{ra,rb}]} or null (no qualifying gaps → caller uses identity).
-  _buildCompressMap(turns, gapCT) {
+  _buildCompressMap(turns, gapCT, now) {
     const iv = [];
     for (const sid in turns) for (const t of (turns[sid] || [])) {
       const s0 = (t.proc != null ? t.proc : t.start), a = s0, b = Math.max(t.end || s0, s0);
@@ -679,15 +908,14 @@ class TimelinePanel {
     iv.sort((p, q) => p[0] - q[0]);
     const merged = [];
     for (const [a, b] of iv) { const last = merged[merged.length - 1]; if (last && a <= last[1] + 1) last[1] = Math.max(last[1], b); else merged.push([a, b]); }
-    const gaps = [];
-    for (let i = 1; i < merged.length; i++) { const ga = merged[i - 1][1], gb = merged[i][0], D = gb - ga; if (D >= GAP_MIN && D > gapCT) gaps.push([ga, gb]); }
+    const gaps = idleGaps(merged, gapCT, now);                // [{ra, rb, trailing}], collapse-worthy idle stretches
     if (!gaps.length) return null;
     const segs = [];                                          // real [ra,rb] → compressed [ca,cb]
-    let curC = gaps[0][0];
+    let curC = gaps[0].ra;
     for (let i = 0; i < gaps.length; i++) {
-      const [ga, gb] = gaps[i], D = gb - ga, ct = Math.min(D, gapCT);
+      const ga = gaps[i].ra, gb = gaps[i].rb, D = gb - ga, ct = Math.min(D, gapCT);
       segs.push({ ra: ga, rb: gb, ca: curC, cb: curC + ct }); curC += ct;
-      if (i + 1 < gaps.length) { const nga = gaps[i + 1][0], len = nga - gb; segs.push({ ra: gb, rb: nga, ca: curC, cb: curC + len }); curC += len; }
+      if (i + 1 < gaps.length) { const nga = gaps[i + 1].ra, len = nga - gb; segs.push({ ra: gb, rb: nga, ca: curC, cb: curC + len }); curC += len; }
     }
     const first = segs[0], last = segs[segs.length - 1];
     const compress = (t) => {                                 // identity outside the gap range, slope 1
@@ -702,7 +930,7 @@ class TimelinePanel {
       for (const s of segs) if (c <= s.cb) { const f = s.cb > s.ca ? (c - s.ca) / (s.cb - s.ca) : 0; return s.ra + f * (s.rb - s.ra); }
       return last.rb + (c - last.cb);
     };
-    return { compress, decompress, gaps: gaps.map(([ra, rb]) => ({ ra, rb })) };
+    return { compress, decompress, gaps };
   }
   // broken-axis marker for one collapsed gap: just a vertical zigzag squiggle (no band), framed by two
   // boundary gridlines labelled with the time work STOPPED (left) and RESUMED (right).
@@ -866,11 +1094,30 @@ class TimelinePanel {
     const t = el('text', { x: 14, y: 34, fill: 'var(--text-muted)', 'font-size': 13 }); t.textContent = msg; this.svg.appendChild(t);
   }
 
-  showTip(html, ev) { this.tip.innerHTML = html; this.tip.classList.add('show'); this._tipOwner = (ev && ev.currentTarget) || null; this.moveTip(ev); }
+  // FREEZE-ON-HOVER (the user 2026-06-12): while a glyph tooltip is shown, pause live-follow so the
+  // content stops sliding out from under the cursor. Only when we were PINNED (following now) and not
+  // 🔒-locked — a user who has panned into history is already frozen, and the lock means "always now".
+  // We hold at the current now (unpin to a fixed _holdReal); hideTip resumes. The poll redraws against
+  // the hold, so the now-edge stops advancing — no continuous slide to fight.
+  showTip(html, ev) {
+    this.tip.innerHTML = html; this.tip.classList.add('show'); this._tipOwner = (ev && ev.currentTarget) || null; this.moveTip(ev);
+    // Freeze the live edge while hovering, so the user can actually read a bar (the user 2026-06-13).
+    // Freeze whenever we're following the live edge — pinned OR 🔒locked (lock no longer blocks it).
+    // Do NOT mark _offDirty: that makes the next poll take the offset verbatim (off=0 → edge jumps to the
+    // new now); leaving it false lets draw()'s hold branch pin the edge at _holdReal (the hover instant).
+    if ((this._pinned || this._lockNow) && this.data) {
+      this._frozeFromPin = true; this._pinned = false; this._holdReal = this.data.now; this._offDirty = false;
+    }
+  }
   moveTip(ev) { const pad = 14; let lx = ev.clientX + pad, ly = ev.clientY + pad; const r = this.tip.getBoundingClientRect();
     if (lx + r.width > innerWidth) lx = ev.clientX - r.width - pad; if (ly + r.height > innerHeight) ly = ev.clientY - r.height - pad;
     this.tip.style.left = lx + 'px'; this.tip.style.top = ly + 'px'; }
-  hideTip() { this.tip.classList.remove('show'); this._tipOwner = null; }
+  hideTip() {
+    this.tip.classList.remove('show'); this._tipOwner = null;
+    const dirty = this._dirtyWhileTip; this._dirtyWhileTip = false;
+    if (this._frozeFromPin) { this._frozeFromPin = false; this._jumpToNow(); }   // resume live-follow + snap to now (redraws the catch-up)
+    else if (dirty && this.data) this.draw();   // a held/panned view buffered poll(s) while the tooltip was up → paint the catch-up now
+  }
 
   // Deep-link a click on a timeline item into the romp Chat View VS Code extension,
   // focusing that session's tab and scrolling to the EXACT transcript line. Contract
@@ -1035,13 +1282,14 @@ class TimelinePanel {
     svg.appendChild(defs);
     // Pan: the window's RIGHT edge is `now` minus the offset slider; the actual live `now` (nowS)
     // is separate, so pending events still ride the true now (off-screen to the right when panned back).
-    const nowS = data.now, winSec = this.winSec();
+    const nowS = this._liveNow(), winSec = this.winSec();   // effective now: glides between polls while live-following
+    this._lastLiveNow = nowS;                               // baseline for the live-tick's sub-pixel guard
     // Broken-axis (see _buildCompressMap): the window (winSec/off) is in COMPRESSED seconds; each long
     // idle gap collapses to one tick interval (step). The map is GLOBAL + stable, so panning is a pure
     // translate (x only rescales on zoom). When collapse is off, compress is identity = plain linear.
     const step = niceStep(winSec);                            // axis tick interval (discrete nice value)
     const gapCT = winSec * GAP_FRAC;                          // gap compressed width — CONTINUOUS → smooth zoom
-    const cmap = this._collapseGaps ? this._buildCompressMap(data.turns, gapCT) : null;
+    const cmap = this._collapseGaps ? this._buildCompressMap(data.turns, gapCT, nowS) : null;
     const compress = cmap ? cmap.compress : (t) => t;
     const decompress = cmap ? cmap.decompress : (c) => c;
     const cNow = compress(nowS);
@@ -1049,7 +1297,7 @@ class TimelinePanel {
     // Unpinned → re-derive `off` each POLL so the right edge stays at `_holdReal` (absolute → no creep);
     // a fresh gesture/nav (_offDirty) is taken verbatim this frame, then we resume holding.
     let off;
-    if (this._lockNow) this._pinned = true;   // 🔒 the lock wins over any state that slipped through
+    if (this._lockNow && !this._frozeFromPin) this._pinned = true;   // 🔒 lock pins to now — but a hover-freeze still wins (hold at the hovered instant)
     if (this._pinned) off = 0;
     else if (!this._offDirty && this._holdReal != null) off = Math.max(0, Math.min(MAX_OFFSET, cNow - compress(this._holdReal)));
     else off = this.offSec();
@@ -1144,7 +1392,7 @@ class TimelinePanel {
       for (const g of cmap.gaps) if (g.rb > t0 && g.ra < t1) {
         const rx0 = x(g.ra), rx1 = x(g.rb);
         const gx0 = Math.max(M.left, rx0), gx1 = Math.min(plotR, rx1);
-        if (gx1 > gx0 + 0.5) this._drawGapBreak(svg, gx0, gx1, g.ra, g.rb, M.top, axisY, rx0 >= M.left - 0.5, rx1 <= plotR + 0.5, placeLabel);
+        if (gx1 > gx0 + 0.5) this._drawGapBreak(svg, gx0, gx1, g.ra, g.rb, M.top, axisY, rx0 >= M.left - 0.5, !g.trailing && rx1 <= plotR + 0.5, placeLabel);
       }
     }
     if (!vis.length) { const tx = el('text', { x: M.left, y: M.top + 16, fill: 'var(--text-muted)', 'font-size': 12 }); tx.textContent = 'no romp activity in this window'; svg.appendChild(tx); }
@@ -1158,7 +1406,12 @@ class TimelinePanel {
     const hoverSet = (this._hover && this._hover.ids && this._hover.ids.length) ? new Set(this._hover.ids) : null;
     // An event glyph (bar + start dot) / a message glyph (connector + arrival dot) gets the SAME white
     // focus border whether it's part of the DAG journey (card hover) OR is in the hovered set — the user
-    // wants line-hover and card-hover identical (no separate faint glow).
+    // wants line-hover and card-hover identical (no separate faint glow). `dagOrHover(id)` = membership
+    // in either; dotLit/barLit then split the event glyph by ATOM id, so a hover that carries the PROMPT
+    // atom (promptId) lights only the start dot and one that carries the WORK atom (workId) lights only
+    // the bar — the whole-turn id (DAG journey, coarse card hover) still lights both halves. (NB: name it
+    // dagOrHover, NOT `hit` — the bar/connector loops use a LOCAL `const hit` rect; a `const hit` here
+    // would put those blocks in a TDZ and crash draw() on the first in-window bar.)
     const dagOrHover = (id) => !!id && ((dag && dag.events.has(id)) || (hoverSet && hoverSet.has(id)));
     const dagOrHoverMsg = (id) => !!id && ((dag && dag.msgs.has(id)) || (hoverSet && hoverSet.has(id)));
     vis.forEach((s, i) => {
@@ -1177,8 +1430,8 @@ class TimelinePanel {
       // it at the bottom (latest) — same as a bar, just no anchor. Non-interactive lane elements below
       // are pointer-events:none so their area falls through here; bars/dots keep their handlers on top.
       const rowHit = el('rect', { x: 0, y: y - LANE_GAP / 2, width: W, height: LANE_GAP, fill: 'transparent' });
-      rowHit.style.cursor = 'grab';   // grab = draggable to reorder; a plain click still selects/opens
-      rowHit.addEventListener('mousedown', (e) => this._beginRowDrag(s.id, e));
+      rowHit.style.cursor = 'grab';   // grab = drag to PAN (horizontal) or REORDER (vertical); a plain click still selects/opens
+      rowHit.addEventListener('mousedown', (e) => this._beginDrag(s.id, e));
       rowHit.addEventListener('click', () => {
         if (this._suppressClick) { this._suppressClick = false; return; }   // just finished a drag → not a select
         this._select(s.id); this.openChat(this._laneTid(s), null, true);
@@ -1190,7 +1443,7 @@ class TimelinePanel {
       svg.appendChild(rowHit);
       svg.appendChild(el('line', { x1: M.left, y1: y, x2: x(t1), y2: y, stroke: '#ffffff14', 'stroke-width': 2, 'stroke-linecap': 'round', 'pointer-events': 'none' }));
       turnsOf(s.id).forEach((t) => {
-        const a = Math.max(t.start, t0), b = Math.min(t.end, t1); if (b <= a) return;
+        const a = Math.max(t.start, t0), b = Math.min(barEndT(t, nowS, data.now), t1); if (b <= a) return;
         // ONE bar per work period = ONE hover/summary. A permission pause is a gate WITHIN one task
         // (same ask before & after), so it does NOT split the work — it's an overlay (candy-stripe
         // below). Only a new ASK (typed/queued/absorbed/drain) starts a new period. The bar's color
@@ -1199,7 +1452,7 @@ class TimelinePanel {
         // White focus border HUGGING this work period — drawn for a DAG journey event (card hover) OR
         // the single event hovered in the feed modal (same style for both, per the user). Offset by DAG_W/2
         // so the stroke's inner edge sits exactly on the bar's edge (entirely outside, no dark gap).
-        if (dagOrHover(t.id)) {
+        if (barLit(t, dagOrHover)) {
           svg.appendChild(el('rect', { x: bx - DAG_W / 2, y: y - BAR_H / 2 - DAG_W / 2, width: bw + DAG_W, height: BAR_H + DAG_W, rx: (BAR_H + DAG_W) / 2, fill: 'none', stroke: DAG_HL, 'stroke-width': DAG_W, 'pointer-events': 'none' }));
         }
         const bar = el('rect', { x: bx, y: y - BAR_H / 2, width: bw, height: BAR_H, rx: BAR_H / 2, fill: s.color, opacity: 0.9 });
@@ -1516,7 +1769,7 @@ class TimelinePanel {
       turnsOf(s.id).forEach((t) => {
         if (!inWin(startAt(t))) return;
         if (data.messages.some((mm) => mm.toId === s.id && !mm.pending && Math.abs(execAt(mm) - startAt(t)) <= 1)) return;
-        if (dagOrHover(t.id)) svg.appendChild(el('circle', { cx: x(startAt(t)), cy: y, r: DOT_R + DAG_W / 2, fill: 'none', stroke: DAG_HL, 'stroke-width': DAG_W, 'pointer-events': 'none' }));   // white focus ring: DAG journey node OR the single hovered event (same style)
+        if (dotLit(t, dagOrHover)) svg.appendChild(el('circle', { cx: x(startAt(t)), cy: y, r: DOT_R + DAG_W / 2, fill: 'none', stroke: DAG_HL, 'stroke-width': DAG_W, 'pointer-events': 'none' }));   // white focus ring: DAG journey node, a coarse card hover (whole-turn id), OR a prompt-atom hover (promptId) — never a work-only (workId) hover
         dot(x(startAt(t)), y, s.color, () => '<div class="r"><span class="chip" style="background:' + s.color + '"></span><span class="who" style="color:' + s.color + '">' + esc(s.name) + '</span><span class="t">' + clock(startAt(t)) + '</span>' + (t.src === 'enqueue' ? (t.pending ? '<span class="k">queued</span>' : '') : '') + '</div>' + this.body(this.req(t)), () => { this._select(s.id); this.openChat(t.tid || s.id, t.uuid, false, false, startAt(t), 'user'); });   // prompt dot = prompt-intent → time fallback restricted to user turns
       });
     });
@@ -1541,4 +1794,4 @@ class TimelinePanel {
   body(s) { return s ? '<div class="b">' + s + '</div>' : ''; }
 }
 
-module.exports = { TimelinePanel, badgeFor, roundedPath, crossX, workAnchorOf };
+module.exports = { TimelinePanel, badgeFor, roundedPath, crossX, workAnchorOf, idleGaps, dotLit, barLit, interpNow, barEndT, dragAxis };

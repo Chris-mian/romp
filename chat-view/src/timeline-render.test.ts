@@ -1,0 +1,238 @@
+// Headless draw() smoke test (2026-06-12 regression): the timeline view's draw() runs only in a
+// browser, so the unit tests for its pure helpers never executed the render path — and a `const hit`
+// name collision (a membership helper shadowing the bar loop's local `const hit` rect) TDZ-crashed
+// draw() on the first in-window bar, blanking the whole timeline while every test stayed green. This
+// test stands up a minimal DOM shim, feeds the view a synthetic payload with IN-WINDOW turns (the
+// exact path that crashed), and asserts draw() completes and emits lanes. It is the guard that any
+// future draw()-level crash trips.
+import { test } from "node:test";
+import * as assert from "node:assert/strict";
+import * as path from "node:path";
+import { createRequire } from "node:module";
+
+// ---- minimal DOM shim (only what the view touches: SVG/HTML nodes, canvas measureText, localStorage) ----
+function makeNode(tag: string): any {
+  const n: any = {
+    tag, _attrs: {}, children: [] as any[], style: {}, dataset: {}, textContent: "", parentNode: null,
+    classList: { _s: new Set<string>(), add(...a: string[]) { a.forEach((c) => this._s.add(c)); },
+      remove(...a: string[]) { a.forEach((c) => this._s.delete(c)); },
+      toggle(c: string, f?: boolean) { f ? this._s.add(c) : this._s.delete(c); }, contains(c: string) { return this._s.has(c); } },
+    setAttribute(k: string, v: any) { this._attrs[k] = v; }, getAttribute(k: string) { return this._attrs[k]; },
+    setAttributeNS(_n: any, k: string, v: any) { this._attrs[k] = v; }, removeAttribute(k: string) { delete this._attrs[k]; },
+    appendChild(c: any) { c.parentNode = n; this.children.push(c); return c; },
+    insertBefore(c: any, ref: any) { c.parentNode = n; const i = this.children.indexOf(ref); i < 0 ? this.children.push(c) : this.children.splice(i, 0, c); return c; },
+    removeChild(c: any) { const i = this.children.indexOf(c); if (i >= 0) this.children.splice(i, 1); return c; },
+    get firstChild() { return this.children[0] || null; },
+    addEventListener() {}, removeEventListener() {}, querySelector() { return null; }, querySelectorAll() { return []; },
+    getBoundingClientRect() { return { width: 1400, height: 420, left: 0, top: 0, right: 1400, bottom: 420 }; },
+    closest() { return null; }, focus() {},
+    createEl(t: string, o: any) { const e = makeNode(t); if (o && o.cls) e.classList.add(o.cls); if (o && o.text) e.textContent = o.text; this.appendChild(e); return e; },
+    createDiv(o: any) { return this.createEl("div", o); }, createSpan(o: any) { return this.createEl("span", o); },
+  };
+  return n;
+}
+const g: any = global;
+g.document = {
+  createElement(t: string) { return t === "canvas" ? { getContext() { return { font: "", measureText(s: string) { return { width: (s ? s.length : 0) * 6 }; } }; } } : makeNode(t); },
+  createElementNS(_n: any, t: string) { return makeNode(t); },
+  body: makeNode("body"), documentElement: makeNode("html"), head: makeNode("head"),
+  addEventListener() {}, removeEventListener() {},
+};
+g.localStorage = { getItem() { return null; }, setItem() {}, removeItem() {} };
+g.getComputedStyle = () => ({ backgroundColor: "rgb(30,30,30)" });
+g.requestAnimationFrame = () => 0;
+g.addEventListener = () => {}; g.removeEventListener = () => {};
+g.matchMedia = () => ({ matches: false, addEventListener() {}, addListener() {} });
+g.window = g;   // the view reads window.* (event listeners / globals) in its constructor
+g.innerWidth = 1400; g.innerHeight = 800;   // moveTip() clamps the tooltip to the viewport
+
+const viewPath = path.resolve(process.cwd(), "..", "obsidian", "romp-timeline-view.js");
+const { TimelinePanel } = createRequire(__filename)(viewPath);
+
+// A synthetic payload with TWO live lanes, each with an IN-WINDOW turn carrying the atom ids — the
+// precise shape that exercises barLit/dotLit (where the TDZ crash lived).
+function synthData() {
+  const now = 1_781_000_000;
+  const turn = (id: string, dt0: number, dt1: number) => ({
+    id, promptId: id + "#p", workId: id + "#w",
+    start: now - dt0, end: now - dt1, prompt: "do the thing", src: "typed", mids: [],
+    pending: false, summary: "did the thing", reply: "did it", tid: "fork-" + id, uuid: "u-" + id,
+    workUuid: "w-" + id, replyUuid: "r-" + id,
+  });
+  const sess = (id: string, name: string) => ({
+    id, name, color: "#7aa2f7", state: "working", live: true, model: "Opus 4.8", effort: "xhigh",
+    context: 40, since: now - 60, awaiting: [], compacting: [], pendingMail: 0, compactions: [], faded: false, stale: false,
+  });
+  return {
+    now,
+    sessions: [sess("S1", "alpha"), sess("S2", "beta")],
+    turns: { S1: [turn("S1:1:aa", 300, 60), turn("S1:2:bb", 50, 5)], S2: [turn("S2:1:cc", 200, 30)] },
+    messages: [], activeChat: null, focus: null, hover: null, usage: null,
+  };
+}
+
+test("draw() renders multiple lanes without throwing (no const-hit TDZ crash)", () => {
+  const host = makeNode("div");
+  const panel = new TimelinePanel(host);
+  panel.data = synthData();
+  assert.doesNotThrow(() => panel.draw(), "draw() must not throw on in-window bars");
+  assert.ok(panel.svg.children.length > 10, "draw() should emit a populated SVG (lanes/bars/dots)");
+  assert.equal(panel._vis.length, 2, "both live lanes must survive the render");
+});
+
+test("draw() also survives with an active hover set (atom-id highlight path)", () => {
+  const host = makeNode("div");
+  const panel = new TimelinePanel(host);
+  const data: any = synthData();
+  panel.data = data;
+  // a work-atom hover + a prompt-atom hover → exercises barLit/dotLit membership inside the loops
+  panel._hover = { ids: ["S1:1:aa#w", "S2:1:cc#p"] };
+  assert.doesNotThrow(() => panel.draw(), "draw() must not throw while a hover highlight is active");
+  assert.equal(panel._vis.length, 2);
+});
+
+// Direct hover push (setHover) + nonce gate — the fast path that skips the file→watch→rebuild.
+test("setHover applies by atom ids and gates on nonce (stale push ignored, clear works)", () => {
+  const panel = new TimelinePanel(makeNode("div"));
+  panel.data = synthData();
+  panel.setHover({ ids: ["S1:1:aa#w"], nonce: 5 });
+  assert.deepEqual(panel._hover && panel._hover.ids, ["S1:1:aa#w"]);
+  assert.equal(panel._hoverNonce, 5);
+  panel.setHover({ ids: ["S2:1:cc#p"], nonce: 4 });          // older → ignored
+  assert.deepEqual(panel._hover.ids, ["S1:1:aa#w"]);
+  panel.setHover({ ids: ["S2:1:cc#p"], nonce: 6 });          // newer → applied
+  assert.deepEqual(panel._hover.ids, ["S2:1:cc#p"]);
+  panel.setHover({ ids: null, nonce: 7 });                   // clear
+  assert.equal(panel._hover, null);
+  assert.equal(panel._hoverNonce, 7);
+});
+
+test("a file-poll hover cannot revert a fresher direct push (nonce gate in update)", () => {
+  const panel = new TimelinePanel(makeNode("div"));
+  const data: any = synthData();
+  panel.update(data);                                        // no hover yet
+  panel.setHover({ ids: ["S1:1:aa#w"], nonce: 9 });          // fresh push
+  panel.update({ ...data, hover: { ids: ["S2:1:cc#p"], nonce: 8 } });   // OLDER poll → ignored
+  assert.deepEqual(panel._hover.ids, ["S1:1:aa#w"]);
+  panel.update({ ...data, hover: { ids: ["S2:1:cc#p"], nonce: 10 } });  // NEWER poll → wins
+  assert.deepEqual(panel._hover.ids, ["S2:1:cc#p"]);
+});
+
+// Freeze-on-hover: a tooltip pauses live-follow only when we were pinned (following now).
+const fakeEv = () => ({ clientX: 100, clientY: 100, currentTarget: makeNode("rect") });
+
+test("freeze-on-hover: showTip pauses live-follow when pinned; hideTip resumes", () => {
+  const panel = new TimelinePanel(makeNode("div"));
+  panel.update(synthData());
+  assert.equal(panel._pinned, true, "starts pinned (following now)");
+  panel.showTip("<div>tip</div>", fakeEv());
+  assert.equal(panel._frozeFromPin, true);
+  assert.equal(panel._pinned, false, "live-follow paused while hovering");
+  assert.equal(panel._holdReal, panel.data.now, "held at the now-edge captured at hover-start");
+  panel.hideTip();
+  assert.equal(panel._frozeFromPin, false);
+  assert.equal(panel._pinned, true, "live-follow resumed on un-hover");
+});
+
+test("freeze-on-hover does NOT fire (or snap to now) when the user has panned into history", () => {
+  const panel = new TimelinePanel(makeNode("div"));
+  panel.update(synthData());
+  panel._pinned = false;                                     // user panned back
+  panel.showTip("<div>tip</div>", fakeEv());
+  assert.equal(panel._frozeFromPin, false, "no freeze when already unpinned");
+  panel.hideTip();
+  assert.equal(panel._pinned, false, "un-hover must NOT yank a history-browsing user to now");
+});
+
+// Restart button is EMBEDDED in the timeline controls row (left of the usage bars), not a floating
+// overlay — the user 2026-06-13 (the overlay kept colliding with other panes' corner controls).
+test("the timeline controls embed a kernel-restart button, left of the usage bars", () => {
+  const panel = new TimelinePanel(makeNode("div"));
+  const kids = panel.controls.children;
+  const btn = kids.find((c: any) => c.tag === "button" && c.getAttribute("title") === "Restart the romp kernel");
+  assert.ok(btn, "controls row must contain the embedded restart button");
+  assert.ok(kids.indexOf(btn) < kids.indexOf(panel._usageWrap), "restart button must be leftmost (before usage bars)");
+});
+
+// Freeze-on-hover must actually STOP the edge (the user 2026-06-13: "timeline doesn't stop when I hover").
+test("freeze-on-hover also fires under 🔒 lock-to-now, and never marks offDirty", () => {
+  const panel = new TimelinePanel(makeNode("div"));
+  panel.update(synthData());
+  panel._lockNow = true; panel._pinned = true;
+  panel.showTip("<div>tip</div>", fakeEv());
+  assert.equal(panel._frozeFromPin, true, "lock must NOT block the hover-freeze");
+  assert.equal(panel._offDirty, false, "freeze must not mark offDirty, or the next poll jumps the edge to the new now");
+});
+
+test("freeze-on-hover: _liveNow holds at the hover instant so open bars + pending stop advancing", () => {
+  const panel = new TimelinePanel(makeNode("div"));
+  panel.data = { now: 5000 } as any;
+  panel._frozeFromPin = true; panel._holdReal = 4000;
+  assert.equal(panel._liveNow(), 4000, "frozen → _holdReal (the hover instant), not the advancing data.now");
+});
+
+// Round 2: holding the EDGE wasn't enough — update() re-laid-out the SVG every poll (new events +
+// recompressed gaps shift x), which read as an intermittent jump. While a tooltip is up, update() must
+// buffer the data but skip the redraw; hideTip paints the catch-up. (the user 2026-06-13)
+test("update() keeps a still snapshot while a tooltip is up; hideTip paints the catch-up", () => {
+  const panel = new TimelinePanel(makeNode("div"));
+  panel.update(synthData());                       // initial real layout
+  let draws = 0; panel.draw = () => { draws++; };  // count further redraws
+  panel.tip.classList.add("show");                 // a tooltip is showing
+  const d2 = synthData();
+  panel.update(d2);
+  assert.equal(draws, 0, "a poll while a tooltip is up must NOT redraw (the re-layout was the jump)");
+  assert.equal(panel.data, d2, "the fresh data is still buffered for the catch-up");
+  assert.equal(panel._dirtyWhileTip, true);
+  panel.hideTip();
+  assert.ok(draws >= 1, "hideTip paints the buffered data (one catch-up)");
+  assert.equal(panel._dirtyWhileTip, false);
+});
+
+// Mouse model (the user 2026-06-13): wheel=zoom (honors 🔒lock), click-drag=pan (breaks 🔒lock),
+// vertical drag=reorder. These drive the real handlers through the DOM shim and assert the state moves.
+function wheelEv(over: any) { return { deltaX: 0, deltaY: 0, ctrlKey: false, clientX: 700, clientY: 200, preventDefault() {}, ...over }; }
+function mouseEv(over: any) { return { button: 0, clientX: 500, clientY: 200, preventDefault() {}, ...over }; }
+
+test("onWheel: vertical scroll zooms; horizontal scroll pans", () => {
+  const panel = new TimelinePanel(makeNode("div"));
+  panel.update(synthData());
+  const w0 = panel.winSec();
+  panel.onWheel(wheelEv({ deltaY: 20 }));                 // vertical → zoom (window widens, deltaY>0)
+  assert.notEqual(panel.winSec(), w0, "vertical wheel changes the zoom window");
+  const off0 = panel.offSec();
+  panel.onWheel(wheelEv({ deltaX: -40, deltaY: 0 }));     // horizontal → pan into history (offset grows)
+  assert.ok(panel.offSec() > off0, "horizontal wheel pans (offset moves off now)");
+});
+
+test("onWheel: zoom HONORS 🔒 lock (right edge stays at now)", () => {
+  const panel = new TimelinePanel(makeNode("div"));
+  panel.update(synthData());
+  panel._setLock(true);
+  panel.onWheel(wheelEv({ deltaY: 20 }));
+  assert.equal(panel.offSec(), 0, "locked zoom keeps offset 0 — edge pinned at now");
+});
+
+test("click-drag pan BREAKS 🔒 lock and unpins", () => {
+  const panel = new TimelinePanel(makeNode("div"));
+  panel.update(synthData());
+  panel._setLock(true); panel._pinned = true;
+  const sid = panel._vis[0].id;
+  panel._beginDrag(sid, mouseEv({ clientX: 500, clientY: 200 }));
+  panel._dragMove(mouseEv({ clientX: 440, clientY: 202 }));   // horizontal-dominant → pan
+  assert.equal(panel._lockNow, false, "a pan-drag turns OFF the lock");
+  assert.equal(panel._pinned, false, "a pan-drag unpins (edge leaves now)");
+  panel._dragUp(mouseEv({ clientX: 440, clientY: 202 }));
+});
+
+test("vertical click-drag reorders the lane (not pan), leaving the lock alone", () => {
+  const panel = new TimelinePanel(makeNode("div"));
+  panel.update(synthData());
+  const lockBefore = panel._lockNow;
+  const sid = panel._vis[0].id;
+  panel._beginDrag(sid, mouseEv({ clientX: 500, clientY: 200 }));
+  panel._dragMove(mouseEv({ clientX: 502, clientY: 270 }));   // vertical-dominant → reorder
+  assert.equal(panel._drag.mode, "row", "vertical drag → reorder mode");
+  assert.equal(panel._lockNow, lockBefore, "reorder must not touch the lock");
+  panel._dragUp(mouseEv({ clientX: 502, clientY: 270 }));
+});

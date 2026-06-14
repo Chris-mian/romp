@@ -9,6 +9,7 @@
    "mids": [],
    "open": false,
    "peer": false,
+   "promptId": "11111111-2222-3333-4444-555555555555:1781096400:17b5ace9#p",
    "rec": "USER ASKED: make the feed responsive\nASSISTANT SAID: Two options for narrow widths.\nTOOLS USED: AskUserQuestion",
    "replyUuid": "a1",
    "t": 1781096400,
@@ -16,6 +17,7 @@
    "text_full": "make the feed responsive",
    "tid": "11111111-2222-3333-4444-555555555555",
    "uuid": "u1",
+   "workId": "11111111-2222-3333-4444-555555555555:1781096400:17b5ace9#w",
    "workUuid": "a1"
   },
   {
@@ -26,6 +28,7 @@
    "mids": [],
    "open": true,
    "peer": false,
+   "promptId": "11111111-2222-3333-4444-555555555555:1781096700:9546f078#p",
    "rec": "USER ASKED: Chose Layout=Stack\nASSISTANT SAID: Stacking columns under 700px.\nTOOLS USED: Edit",
    "replyUuid": "a2",
    "t": 1781096700,
@@ -33,6 +36,7 @@
    "text_full": "Chose Layout=Stack",
    "tid": "11111111-2222-3333-4444-555555555555",
    "uuid": "u2",
+   "workId": "11111111-2222-3333-4444-555555555555:1781096700:9546f078#w",
    "workUuid": "a2"
   }
  ],

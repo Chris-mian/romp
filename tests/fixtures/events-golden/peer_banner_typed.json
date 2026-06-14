@@ -11,6 +11,7 @@
    ],
    "open": true,
    "peer": true,
+   "promptId": "11111111-2222-3333-4444-555555555555:1781096400:be7677eb#p",
    "rec": "USER ASKED: ASK: bump the colorm\nASSISTANT SAID: On it \u2014 bumping the alpha.\nTOOLS USED: Edit",
    "replyUuid": "a1",
    "t": 1781096400,
@@ -18,6 +19,7 @@
    "text_full": "ASK: bump the colormap alpha on the recency tint.",
    "tid": "11111111-2222-3333-4444-555555555555",
    "uuid": "u1",
+   "workId": "11111111-2222-3333-4444-555555555555:1781096400:be7677eb#w",
    "workUuid": "a1"
   }
  ],

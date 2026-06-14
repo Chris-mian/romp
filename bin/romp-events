@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""romp-events — the SINGLE source of truth for a romp session's work-period events.
+"""romp-events — the turn chopper (docs/figures.md figure 2): the SINGLE source
+of truth for a romp session's work-period events.
 
 Every consumer (the romp -g Python timeline, the vault-code Obsidian/VS Code timeline,
-and the Haiku summary backfill) reads ITS boundaries from here instead of re-parsing the
+and the summarize backfill — the judge) reads ITS boundaries from here instead of re-parsing the
 transcript. That collapses what used to be three byte-identical parsers into one, and —
 because each event carries a STABLE ID — lets summaries bind by id-equality instead of a
 fuzzy time window (which is what caused the forward-bleed + dedup bugs).
@@ -62,6 +63,18 @@ def _eid(sid, t, text):
     boundaries in the same one-second tick can't collide). Same event → same id, always."""
     h = hashlib.sha1((text or "").encode("utf-8", "replace")).hexdigest()[:8]
     return "%s:%d:%s" % (sid, t, h)
+
+# Each event has TWO renderable ATOMS, and the data model names them so the views never have
+# to GUESS which half a hover means: the PROMPT atom (the boundary itself — the timeline dot /
+# the chat 'message' row, anchored at `uuid`) and the WORK atom (the period that followed — the
+# timeline bar [t,end] / the chat 'action' rows, anchored at `workUuid`/`replyUuid`). The event
+# `id` stays the whole-turn join key (summaries, feed cards, the DAG all bind to it); the atom
+# ids are `id` plus a one-char part tag, so a consumer can highlight the dot WITHOUT the bar (or
+# vice-versa) by matching the atom id instead of the turn id. Suffix is defined ONLY here.
+def _prompt_atom(eid):
+    return eid + "#p"
+def _work_atom(eid):
+    return eid + "#w"
 
 def _is_peer_banner(flat):
     """A pushed-mail banner (drawn as an inter-session connector, not its own prompt dot)."""
@@ -182,7 +195,8 @@ def attach_summaries(fsid, events):
 # ───────────────────────── the one extractor ─────────────────────────
 def extract_events(sid, transcript, now):
     """Parse one transcript into {events:[…], pending:[…]} (last HORIZON only).
-    events: [{id, t, end, kind, text, mids, open}] — one per work-period boundary, ordered.
+    events: [{id, promptId, workId, t, end, kind, text, mids, open}] — one per work-period
+    boundary, ordered. promptId/workId name the event's two atoms (dot vs bar — see _eid).
     pending: [{id, t, text}] — still-queued enqueues (ride `now`). [] on any error."""
     try:
         p = Path(transcript)
@@ -392,7 +406,10 @@ def extract_events(sid, transcript, now):
             # later boundary closing the period makes the flag moot (open=False).
             last_stop = next((sr for sts, sr, suid in reversed(stops)
                               if ts <= sts < nxt and suid not in dead), None)
-            events.append({"id": _eid(sid, ts, text), "t": ts, "end": min(end, now),
+            eid = _eid(sid, ts, text)
+            events.append({"id": eid, "t": ts, "end": min(end, now),
+                           "promptId": _prompt_atom(eid),  # the boundary atom → timeline DOT / chat 'message' row
+                           "workId": _work_atom(eid),      # the work-period atom → timeline BAR / chat 'action' rows
                            "ended": last_stop in ("end_turn", "stop_sequence"),
                            "kind": kind, "text": disp, "text_full": _strip_banner(full),
                            "peer": bool(mids) or _is_peer_banner(text) or _is_peer_banner(full),
@@ -407,7 +424,7 @@ def extract_events(sid, transcript, now):
         return {"events": [], "pending": [], "compactions": []}
 
 EVCACHE = STATE / "events-cache"
-CACHE_VERSION = 15       # bump whenever extract_events' output shape changes (forces re-extract)
+CACHE_VERSION = 16       # bump whenever extract_events' output shape changes (forces re-extract)
 def events_for(sid, transcript, now):
     """extract_events, memoized on disk by the transcript's (mtime, size). Repeated --emit
     calls (Obsidian polls ~1s while visible) spawn a FRESH process each time, so the cache
@@ -451,14 +468,41 @@ def _custom_title(p):
         pass
     return None
 
-def _session_sids(work_dir, sid, name, now):
-    """Every transcript UUID for a romp session: its anchor sid + any forked UUID in the same
-    project dir with the matching customTitle (a skill/`/clear`/resume forks a fresh id)."""
-    sids = [sid] if sid else []
-    if not work_dir:
-        return sids
-    proj = _proj_dir(work_dir)
-    cutoff = now - HORIZON
+_NODES_CACHE = {}
+def _transcript_nodes(fp):
+    """The set of conversation-graph node uuids in a transcript: every line's own `uuid` plus the
+    `parentUuid`/`logicalParentUuid` it points at. Two transcripts whose node sets INTERSECT belong to
+    the same conversation — a resume-fork's first line points (parentUuid) at a line in its parent, so
+    the two sets share that node; a `/clear` or a brand-new session starts a DISJOINT graph (fresh root,
+    no shared node). This is what tells a genuine fork apart from a different session that merely reused
+    the name (the user 2026-06-12). Cached per run (keyed by path) — a transcript is tested against
+    several anchors. uuids are globally unique, so an intersection is a real shared node, never a clash."""
+    key = str(fp)
+    cached = _NODES_CACHE.get(key)
+    if cached is not None:
+        return cached
+    nodes = set()
+    try:
+        with open(fp, errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try: r = json.loads(line)
+                except Exception: continue
+                u = r.get("uuid")
+                if u: nodes.add(u)
+                p = r.get("parentUuid") or r.get("logicalParentUuid")
+                if p: nodes.add(p)
+    except OSError:
+        pass
+    _NODES_CACHE[key] = nodes
+    return nodes
+
+def _samename_candidates(proj, sid, name, cutoff):
+    """Fresh-within-HORIZON transcripts in `proj` (excluding the anchor `sid`) whose customTitle == name —
+    the cheap head-read pre-filter pool the lineage gate then runs over. [] on any error."""
+    cands = []
     try:
         for fp in proj.iterdir():
             if fp.suffix != ".jsonl" or fp.stem == sid:
@@ -469,9 +513,47 @@ def _session_sids(work_dir, sid, name, now):
             except OSError:
                 continue
             if name and _custom_title(fp) == name:
-                sids.append(fp.stem)
+                cands.append(fp)
     except Exception:
         pass
+    return cands
+
+def _lineage_fold(proj, sid, cands):
+    """From same-customTitle candidate transcripts, the subset sharing the anchor's CONVERSATION LINEAGE
+    — TRANSITIVELY. A resume/skill fork links only to its IMMEDIATE parent (a back-pointer in the first
+    line's parentUuid, NOT a copy of the parent's lines — see the identity test), so a 3-hop chain
+    A→B→C shares NO node between A and C directly. So we grow the merged node set with every fork we
+    accept and re-scan to a FIXPOINT: the whole chain folds into one lane, matching the old name-keyed
+    merge — minus the false same-name merges a disjoint graph would have caused. Returns accepted fork
+    stems (anchor excluded). [] if the anchor transcript is unreadable (can't establish lineage)."""
+    merged = set(_transcript_nodes(proj / (sid + ".jsonl"))) if sid else set()
+    if not merged:
+        return []
+    out, remaining, grew = [], list(cands), True
+    while grew:
+        grew = False
+        still = []
+        for fp in remaining:
+            fn = _transcript_nodes(fp)
+            if fn & merged:
+                out.append(fp.stem); merged |= fn; grew = True   # absorb its nodes so a grandchild fork bridges in next pass
+            else:
+                still.append(fp)
+        remaining = still
+    return out
+
+def _session_sids(work_dir, sid, name, now):
+    """Every transcript UUID for a romp session: its anchor sid + any forked UUID in the same project
+    dir that shares the session's CONVERSATION LINEAGE. A matching customTitle is necessary but NOT
+    sufficient (the user 2026-06-12): a new session reusing a dead one's name has the same title but a
+    DISJOINT conversation graph, so it must NOT merge. A skill/resume fork keeps the name AND links into
+    the parent's graph (shared node) → merged; a `/clear` or a brand-new same-name session starts a fresh
+    graph → its own lane. (customTitle stays as a cheap head-read pre-filter before the full-read check.)"""
+    sids = [sid] if sid else []
+    if not work_dir or not sid:
+        return sids
+    proj = _proj_dir(work_dir)
+    sids.extend(_lineage_fold(proj, sid, _samename_candidates(proj, sid, name, now - HORIZON)))
     return sids
 
 def _live_sessions():
@@ -535,16 +617,12 @@ def _ended_sessions(now, live_sids):
             active = anchor.exists() and anchor.stat().st_mtime >= cutoff
         except OSError:
             pass
-        if not active:                                   # a forked session: anchor stale, fork live
-            try:
-                for fp in proj.iterdir():
-                    if fp.suffix == ".jsonl" and fp.stem != sid:
-                        try: fresh = fp.stat().st_mtime >= cutoff
-                        except OSError: continue
-                        if fresh and _custom_title(fp) == name:
-                            active = True; break
-            except Exception:
-                pass
+        if not active:                                   # a forked session: anchor stale, a fork live.
+            # Same transitive lineage gate as _session_sids: a fresh same-NAME fork revives THIS session
+            # only if it shares the conversation graph (directly or through an intermediate fork) — not a
+            # different session that merely reused the name.
+            if _lineage_fold(proj, sid, _samename_candidates(proj, sid, name, cutoff)):
+                active = True
         if active:
             out.append((name, sid, cdir, color))
     return out

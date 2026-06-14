@@ -9,6 +9,7 @@
    "mids": [],
    "open": false,
    "peer": false,
+   "promptId": "11111111-2222-3333-4444-555555555555:1781096400:bfce36e0#p",
    "rec": "USER ASKED: orphaned-looking but real prompt\nASSISTANT SAID: Worked on it.\nTOOLS USED: Bash",
    "replyUuid": null,
    "t": 1781096400,
@@ -16,6 +17,7 @@
    "text_full": "orphaned-looking but real prompt",
    "tid": "11111111-2222-3333-4444-555555555555",
    "uuid": null,
+   "workId": "11111111-2222-3333-4444-555555555555:1781096400:bfce36e0#w",
    "workUuid": null
   },
   {
@@ -26,6 +28,7 @@
    "mids": [],
    "open": true,
    "peer": false,
+   "promptId": "11111111-2222-3333-4444-555555555555:1781097000:0078c0f3#p",
    "rec": "USER ASKED: later prompt, chain not linked\nASSISTANT SAID: Did that too.",
    "replyUuid": "a2",
    "t": 1781097000,
@@ -33,6 +36,7 @@
    "text_full": "later prompt, chain not linked",
    "tid": "11111111-2222-3333-4444-555555555555",
    "uuid": "u2",
+   "workId": "11111111-2222-3333-4444-555555555555:1781097000:0078c0f3#w",
    "workUuid": "a2"
   }
  ],

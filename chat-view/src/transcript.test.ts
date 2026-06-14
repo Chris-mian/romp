@@ -4,7 +4,7 @@ import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import { parse, newIncParser, feed, buildParsed, ChatEvent } from "./transcript";
 
-const NOW = () => new Date(Date.now() - 30_000).toISOString(); // recent: avoids the working-stale clamp
+const NOW = () => new Date(Date.now() - 30_000).toISOString(); // timestamps just-in-the-past, like real recorded lines
 
 function uline(uuid: string, parent: string | null, text: string, opts: any = {}) {
   return JSON.stringify({
@@ -217,6 +217,20 @@ test("status: trailing user line means working; mid-stream assistant means worki
     aline("a1", "u1", [{ type: "text", text: "thinking about it" }], { stop: null }),
   ));
   assert.equal(t2.status.working, true);
+});
+
+test("working survives a stale last line (laptop sleep): keyed on stop_reason, not wall-clock", () => {
+  // A turn still in flight whose last line is OLD — e.g. the machine slept
+  // mid-tool-call. `working` must stay true: it is keyed on the transcript's own
+  // stop_reason, never wall-clock age, which a sleep-induced clock jump trips
+  // (the 2026-06-12 sleep/wake incident; see the Design rule in CLAUDE.md). The
+  // pane/@claude-state layer (romp-idle-dots) is the authority for "interrupted".
+  const OLD = new Date(Date.now() - 60 * 60 * 1000).toISOString(); // 1h ago
+  const out = parse(join(
+    uline("u1", null, "do a thing", { ts: OLD }),
+    aline("a1", "u1", [{ type: "text", text: "on it" }], { stop: "tool_use", ts: OLD }),
+  ));
+  assert.equal(out.status.working, true);
 });
 
 test("typed image path becomes a thumbnail; [Image: source:] attaches to the paste", () => {

@@ -29,6 +29,12 @@ input=$(cat)
 [[ "$input" =~ \"notification_type\":\"([^\"]+)\" ]] && NOTIF_TYPE="${BASH_REMATCH[1]}" || NOTIF_TYPE=""
 [[ "$input" =~ \"cwd\":\"([^\"]+)\" ]] && WORK_DIR="${BASH_REMATCH[1]}" || WORK_DIR=""
 [[ "$input" =~ \"source\":\"([^\"]+)\" ]] && SOURCE="${BASH_REMATCH[1]}" || SOURCE=""
+# Current permission mode (default|plan|acceptEdits|auto|dontAsk|bypassPermissions).
+# Not every event carries it — leave empty when absent so we never clobber a good
+# value with "". Consumers use it to tell a GENUINE permission block from auto
+# mode's transient permission notifications (which the classifier allows moments
+# later) — an event-based replacement for the feed's old time-threshold debounce.
+[[ "$input" =~ \"permission_mode\":\"([^\"]+)\" ]] && PERM_MODE="${BASH_REMATCH[1]}" || PERM_MODE=""
 
 case "$EVENT" in
     SessionStart)          state="waiting" ;;
@@ -106,6 +112,13 @@ else
     tmux set -t "$session_name" @claude-state "$state" \;\
          set -t "$session_name" @claude-state-since "$now" \;\
          set -t "$session_name" @romp-emoji "$emoji"
+fi
+
+# Publish the permission mode for the feed's block detection (see PERM_MODE
+# above). Only when this event actually carried it — an unconditional set would
+# write "" on the events that omit the field and erase the last known mode.
+if [[ -n "$PERM_MODE" ]]; then
+    tmux set -t "$session_name" @claude-permission-mode "$PERM_MODE"
 fi
 
 # Clear the transient "←/→ peer:" top-line message prefix when a NORMAL prompt

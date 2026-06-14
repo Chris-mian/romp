@@ -14,18 +14,22 @@
 // The browser pages romp-serve serves are this same pipe minus VS Code — both
 // front ends are clients of one kernel, sharing tabs with per-client focus.
 import * as vscode from "vscode";
-import * as fs from "fs";
 import * as http from "http";
-import * as os from "os";
-import * as path from "path";
-import { execFileSync, spawn } from "child_process";
 import WebSocket from "ws";
 import { chatBody, FEED_BODY, ATTACH_TITLE_VSCODE } from "./page-skeleton";
+import { ensureThenAttach } from "./kernel-attach";
 
 const HOST = "127.0.0.1";
-function kernelPort(): number {
-  return Number(process.env.ROMP_SERVE_PORT) || 7433;
+
+// Ports are CONFIGURABLE so different VS Code windows can attach to different kernels (each kernel
+// scopes its own group of agents). Precedence: the VS Code setting (if set) → env var → default.
+function cfgPort(key: "kernelPort" | "managerPort", env: string | undefined, dflt: number): number {
+  const v = vscode.workspace.getConfiguration("romp").get<number>(key);
+  if (typeof v === "number" && v > 0) return v;
+  return Number(env) || dflt;
 }
+function kernelPort(): number { return cfgPort("kernelPort", process.env.ROMP_SERVE_PORT, 7433); }
+function managerPort(): number { return cfgPort("managerPort", process.env.ROMP_MANAGER_PORT, 7432); }
 
 let ctx: vscode.ExtensionContext;
 let extUri: vscode.Uri;
@@ -83,6 +87,8 @@ export function activate(context: vscode.ExtensionContext) {
 }
 
 export function deactivate() {
+  // Attach-only: VS Code does NOT own the kernel (the `romp on` manager does), so there's nothing to
+  // reap here — closing/reloading VS Code just drops our attach; the kernel keeps running.
   chatPipe?.dispose();
   feedPipe?.dispose();
 }
@@ -95,12 +101,13 @@ function toWebview(msg: any) {
   else pendingToWebview.push(msg);
 }
 
-// ---- the kernel: spawn-or-attach ----
-
-function myVersion(): string {
-  try { return String(JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8")).version || ""); }
-  catch { return ""; }
-}
+// ---- the kernel: ENSURE-THEN-ATTACH (the manager owns it; we never spawn) ----
+// VS Code does NOT spawn the kernel. It attaches to a manager-owned kernel on romp.kernelPort; if none
+// is there, it asks the `romp on` manager to ENSURE one (the manager spawns + owns it), waits for it,
+// and attaches. A second front-end spawner would fight the manager for the port and re-create the
+// invisible-orphan problem — so the only spawner is ever the manager (the user's 2026-06-13 ruling).
+// The decision sequence lives in ./kernel-attach (headless-testable); ensureKernel just supplies the
+// VS Code-flavoured deps (real healthz, a manager POST, real sleep) and turns failures into a toast.
 
 function healthz(): Promise<{ ok: boolean; version?: string }> {
   return new Promise((resolve) => {
@@ -117,90 +124,45 @@ function healthz(): Promise<{ ok: boolean; version?: string }> {
   });
 }
 
-function postShutdown(): Promise<void> {
-  return new Promise((resolve) => {
-    const req = http.request({ host: HOST, port: kernelPort(), path: "/shutdown", method: "POST", timeout: 1500 }, (res) => {
-      res.resume();
-      res.on("end", () => resolve());
-    });
-    req.on("timeout", () => { req.destroy(); resolve(); });
-    req.on("error", () => resolve());
-    req.end();
-  });
-}
-
-// The real login-shell PATH (cached): the romp launchers live on the
-// interactive shell's PATH, not on the extension host's minimal one.
-let loginPath: string | null = null;
-function loginShellPath(): string {
-  if (loginPath !== null) return loginPath;
-  const shell = process.env.SHELL || "/bin/zsh";
-  try {
-    loginPath = (execFileSync(shell, ["-lic", 'printf %s "$PATH"'], { timeout: 4000, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }) || "").trim();
-  } catch { loginPath = ""; }
-  return loginPath;
-}
-
-// Launch the kernel detached, by preference: $ROMP_SERVE_BIN → the romp
-// checkout's bin/romp-serve (rebuilds a stale dist/kernel.js itself) → a
-// `romp-serve` on the login PATH → the kernel.js bundled in this VSIX (run
-// with VS Code's own node via ELECTRON_RUN_AS_NODE).
-function spawnKernel() {
-  const env: NodeJS.ProcessEnv = { ...process.env };
-  const login = loginShellPath();
-  if (login) env.PATH = login + ":" + (env.PATH || "");
-  const candidates: Array<{ cmd: string; args: string[]; env: NodeJS.ProcessEnv }> = [];
-  if (process.env.ROMP_SERVE_BIN) candidates.push({ cmd: process.env.ROMP_SERVE_BIN, args: [], env });
-  const local = path.join(os.homedir(), "GitRepos", "romp", "bin", "romp-serve");
-  try { if (fs.existsSync(local)) candidates.push({ cmd: local, args: [], env }); } catch { /* ignore */ }
-  candidates.push({ cmd: "romp-serve", args: [], env });
-  candidates.push({
-    cmd: process.execPath,
-    args: [ctx.asAbsolutePath(path.join("dist", "kernel.js"))],
-    env: { ...env, ELECTRON_RUN_AS_NODE: "1" },
-  });
-  const tryNext = (i: number) => {
-    if (i >= candidates.length) return;
-    const c = candidates[i];
-    try {
-      const child = spawn(c.cmd, c.args, { detached: true, stdio: "ignore", env: c.env });
-      child.on("error", () => tryNext(i + 1));
-      child.unref();
-    } catch { tryNext(i + 1); }
-  };
-  tryNext(0);
-}
-
 let ensuring: Promise<boolean> | null = null;
-let restartedOnce = false;
+let notRunningWarned = false;
 function ensureKernel(): Promise<boolean> {
   if (ensuring) return ensuring;
   ensuring = (async () => {
-    let h = await healthz();
-    if (h.ok) {
-      // A kernel from before the last VSIX install would silently serve old
-      // behavior (the classic stale-host trap) — restart it once per session.
-      const mine = myVersion();
-      if (!restartedOnce && h.version && mine && h.version !== mine) {
-        restartedOnce = true;
-        await postShutdown();
-        await new Promise((r) => setTimeout(r, 500));
-      } else {
-        return true;
-      }
+    const res = await ensureThenAttach({
+      healthz: async () => (await healthz()).ok,
+      ensureViaManager: () => askManagerEnsure(kernelPort()),
+      delay: (ms) => new Promise((r) => setTimeout(r, ms)),
+    });
+    if (res.ok) { notRunningWarned = false; return true; }
+    // Point the user at the fix, once (not on every panel mount / reconnect poll).
+    if (!notRunningWarned) {
+      notRunningWarned = true;
+      const port = kernelPort();
+      vscode.window.showErrorMessage(
+        res.reason === "no-manager"
+          ? `romp: no kernel on port ${port} and no manager on :${managerPort()} — start it with \`romp on\` in a terminal.`
+          : `romp: the manager couldn't bring up a kernel on port ${port} — is that port already in use? Check \`romp on status\`.`,
+      );
     }
-    spawnKernel();
-    for (let i = 0; i < 25; i++) {
-      await new Promise((r) => setTimeout(r, 400));
-      h = await healthz();
-      if (h.ok) return true;
-    }
-    vscode.window.showErrorMessage("romp: couldn't start the kernel (romp-serve) — is romp installed?");
     return false;
   })();
   const p = ensuring;
   void p.finally(() => { if (ensuring === p) ensuring = null; });
   return p;
+}
+
+// POST the manager's /ensure?port=N so it spawns+owns a kernel there. Resolves true iff a manager
+// answered (i.e. one is running) — we never spawn the kernel ourselves.
+function askManagerEnsure(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const req = http.request(
+      { host: HOST, port: managerPort(), path: `/ensure?port=${port}`, method: "POST", timeout: 4000 },
+      (res) => { res.resume(); resolve((res.statusCode ?? 500) < 400); });
+    req.on("timeout", () => { req.destroy(); resolve(false); });
+    req.on("error", () => resolve(false));
+    req.end();
+  });
 }
 
 // ---- the pipe: one WebSocket per panel, postMessage in both directions ----

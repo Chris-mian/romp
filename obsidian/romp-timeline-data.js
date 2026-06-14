@@ -11,7 +11,9 @@
 // exactly one place, and a summary can never bind to the wrong event (id-equality, no time window).
 //
 // Payload shape (unchanged): { now, sessions:[{name,color,state,live,…}], turns:{name:[turn]},
-// messages:[…] }, where turn = { start, end, prompt, src, mids, pending, summary, reply }.
+// messages:[…] }, where turn = { id, promptId, workId, start, end, prompt, src, mids, pending,
+// summary, reply }. promptId/workId name the turn's two atoms (the dot vs the bar) so a hover can
+// light one without the other; both come straight from romp-events (see _eid there).
 
 const HORIZON = 48 * 3600;   // how far back the awaiting-stripe log is read (matches slider max)
 // Max wall-clock age for a message to still be "in flight" (riding the live `now` edge). A genuinely
@@ -139,13 +141,18 @@ function readHover(node) {
     const o = JSON.parse(raw);
     if (o == null) return null;
     // `ids` = the UNION of every event + delegation-message under the hovered line (a parent line covers
-    // its whole subtree); `id` is kept as the first entry for back-compat. Each id matches EITHER a
-    // romp-events event id (turn → bar/dot) OR a postal message id (connector/arrival dot). ids:null/
-    // absent AND no id = cleared (nothing hovered).
+    // its whole subtree); `id` is kept as the first entry for back-compat. Each id is EITHER a romp-events
+    // whole-turn id (light both halves), a per-ATOM id (promptId → dot only / workId → bar only — the
+    // dot/bar split is carried in the id itself, no separate flag), OR a postal message id (connector/
+    // arrival dot). ids:null/absent AND no id = cleared (nothing hovered).
     const arr = Array.isArray(o.ids) ? o.ids.filter((x) => x) : null;
     const ids = (arr && arr.length) ? arr : (o.id ? [o.id] : []);
-    if (!ids.length) return null;
-    return { id: ids[0], ids: ids, sid: o.sid || null, nonce: (o.nonce != null ? o.nonce : null) };
+    const nonce = (o.nonce != null ? o.nonce : null);
+    // A CLEAR carries ids:[] but still its (higher) monotonic nonce — KEEP the nonce so the view can
+    // nonce-gate the clear against a racing direct setHover push (without it, a stale cleared-file poll
+    // could wipe a fresh hover). Only a truly empty/garbage file (no ids AND no nonce) is "nothing" → null.
+    if (!ids.length && nonce == null) return null;
+    return { id: ids[0] || null, ids: ids, sid: o.sid || null, nonce };
   } catch (e) { return null; }
 }
 
@@ -209,8 +216,8 @@ function parseISO(s) {                        // maildir Date: "...T..-0700" or 
 }
 
 // ── the single producer: romp-events --emit ─────────────────────────────────
-// {now, sessions:{<sid>:{name,color,live,events:[{id,t,end,kind,text,mids,open,summary,reply}],
-//  pending:[{id,t,text}]}}}. null on any failure (timeline then shows lanes without bars rather
+// {now, sessions:{<sid>:{name,color,live,events:[{id,promptId,workId,t,end,kind,text,mids,open,
+//  summary,reply}], pending:[{id,t,text}]}}}. null on any failure (timeline then shows lanes rather
 // than breaking). A disk cache inside romp-events keeps repeated polls cheap (~0.05s warm).
 function runRompEvents() {
   return new Promise((resolve) => {
@@ -233,6 +240,8 @@ function mapEventsToTurns(events, pending) {
   const out = [];
   for (const e of (events || [])) {
     out.push({ id: e.id || null,                              // romp-events event id (== feed itemId) → canonical join
+               promptId: e.promptId || null,                  // PROMPT atom (the dot) — minted by romp-events, NOT synthesized here
+               workId: e.workId || null,                      // WORK atom (the bar [start,end]) — lets the dot light without the bar
                start: e.t, end: e.end, prompt: e.text, src: e.kind, mids: e.mids || [],
                pending: false, summary: e.summary || null, reply: e.reply || null,
                tid: e.tid || null, uuid: e.uuid || null,       // deep-link anchors: uuid = prompt/boundary line;
@@ -241,6 +250,7 @@ function mapEventsToTurns(events, pending) {
   }
   for (const e of (pending || [])) {
     out.push({ id: e.id || null,
+               promptId: null, workId: null,                  // a pending enqueue is a bare prompt dot, no work period → no atoms to split
                start: e.t, end: e.t, prompt: e.text, src: 'enqueue', mids: [],
                pending: true, summary: null, reply: null,
                tid: e.tid || null, uuid: e.uuid || null });

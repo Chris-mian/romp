@@ -74,12 +74,18 @@ body { display: flex; flex-direction: column; }
 .tab.drop-after::after { right: -3px; }
 .tab:hover { color: var(--fg); background: rgba(255, 255, 255, 0.06); }
 .tab.tab-awaiting { --state: var(--st-awaiting-bg); }
-/* STATE: colored box on ALL FOUR sides (inset box-shadow → no layout jitter).
-   WORKING shows a yellow dot (.tab-dot) instead, and COMPACTING intentionally
-   gets NO outline (the user: it's transient plumbing, not something to flag —
-   the statusline's scan bar is the compacting cue); a selected compacting tab
-   just keeps its normal active styling below. */
-.tab.tab-awaiting { box-shadow: inset 0 0 0 1.5px var(--state); }
+/* STATE ring on all four sides, no layout jitter. WORKING shows a yellow dot
+   (.tab-dot) instead; COMPACTING intentionally gets NO outline (the user: it's
+   transient plumbing, not something to flag — the statusline's scan bar is the
+   compacting cue); a selected compacting tab keeps its normal active styling.
+   BLOCKED/awaiting gets a DASHED red ring (the user: dashed with long dashes +
+   gaps, not a solid line — reads as "needs you", not a hard error border). It's
+   an outline, not an inset box-shadow (box-shadow can't dash); dash/gap length
+   scales with the outline width, so 2px gives the long segments the user wants.
+   outline-offset:-2px insets it where the old shadow sat; Chromium follows the
+   border-radius. (For a dash length decoupled from thickness we'd need an SVG
+   border — say the word if 2px dashes aren't long enough.) */
+.tab.tab-awaiting { outline: 2px dashed var(--state); outline-offset: -2px; }
 /* WORKING: a small yellow dot left of the name (replaces the old yellow outline). */
 .tab-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--st-working-bg); }
 /* SELECTED: gray fill PLUS an outline in the session's own identity color. */
@@ -151,7 +157,9 @@ body { display: flex; flex-direction: column; }
    left column (col 1 = max-content → sized to the widest timestamp), and the
    bullet text lines up in a consistent column to their right, past a fixed gap.
    age + text are direct grid cells; each is recency-tinted inline. */
-.ledger-bullets { display: flex; flex-direction: column; row-gap: 3px; margin-top: 1px; }
+/* scroll-pane: ~6 bullets tall, the rest scroll into view (the user 2026-06-12). The title
+   (.ledger-summary) sits ABOVE this box so it stays put while the bullets scroll. */
+.ledger-bullets { display: flex; flex-direction: column; row-gap: 3px; margin-top: 1px; max-height: 9.4em; overflow-y: auto; overflow-x: hidden; }
 /* each bullet is a real row → one clean hover bg; the -5px margin/5px padding lets
    the highlight breathe without shifting content. age column aligned via min-width. */
 .ledger-bullet { display: flex; align-items: baseline; column-gap: 16px; border-radius: 4px; padding: 1px 5px; margin: 0 -5px; }
@@ -181,6 +189,11 @@ body { display: flex; flex-direction: column; }
 #composer-attach:hover { opacity: 1; background: var(--vscode-toolbar-hoverBackground, rgba(255,255,255,0.08)); }
 #composer-input {
   width: 100%; resize: none; box-sizing: border-box;
+  /* Floor at one line + padding + border, so the box can never collapse to a
+     sliver: growComposer() sets an inline height from scrollHeight, which reads
+     ~0 when it runs mid-pane-switch (textarea momentarily unlaid-out); min-height
+     wins over that bad inline value and keeps the composer at least one row. */
+  min-height: calc(1.4em + 18px);
   background: var(--vscode-input-background, rgba(255, 255, 255, 0.05));
   color: var(--vscode-input-foreground, var(--fg));
   border: 1px solid var(--vscode-input-border, var(--box-border));
@@ -309,7 +322,10 @@ body { display: flex; flex-direction: column; }
 }
 
 /* ---------- timeline rail ---------- */
-.turn { position: relative; padding-left: 30px; padding-top: 9px; padding-bottom: 9px; }
+/* scroll-margin-top: a jump lands the turn at the TOP of the viewport (landOn uses
+   block:"start") — a few px of breathing room so it isn't glued to the edge and the
+   anchor-flash border isn't clipped. */
+.turn { position: relative; padding-left: 30px; padding-top: 9px; padding-bottom: 9px; scroll-margin-top: 10px; }
 /* tool + thinking rows pack tighter than prose turns (the user: ~half the spacing) */
 .turn-tool, .turn-thinking { padding-top: 4px; padding-bottom: 4px; }
 /* …and their dots drop the same 5px so the label still centers on its dot */
@@ -346,6 +362,10 @@ body { display: flex; flex-direction: column; }
 .dot.green { background: var(--check-bg); display: flex; align-items: center; justify-content: center; }
 .dot.green::before { content: "✓"; color: #fff; font-size: 8px; font-weight: 900; line-height: 1; }
 .dot.ring { background: var(--bg); border: 1.5px solid var(--dim); }
+.dot.user { background: #2b6cef; border: none; }   /* genuine prompt — solid, matches the bubble */
+/* user turns pad 14px on top (vs 9px for assistant), so nudge their dot + rail marker
+   down to sit on the bubble's first line */
+.turn-user .dot, .turn-user .time-marker { top: 20px; }
 
 /* deep-link target: brief highlight when the dashboard scrolls us to an event */
 @keyframes anchor-flash {
@@ -365,9 +385,8 @@ body { display: flex; flex-direction: column; }
   max-width: 72%;
   background: #2b6cef; border: 1px solid #2b6cef;
   border-radius: 14px; padding: 9px 14px; color: #ffffff;
-  display: flow-root;   /* contain the floated .user-time */
+  display: flow-root;   /* contain inner floats (e.g. image captions) */
 }
-.user-time { float: right; margin: 0 0 4px 10px; color: rgba(255, 255, 255, 0.78); font-size: 0.8em; font-variant-numeric: tabular-nums; }
 /* white-on-blue legibility for inner markdown */
 .user-bubble a { color: #fff; text-decoration: underline; text-underline-offset: 2px; }
 .user-bubble :not(pre) > code { background: rgba(255, 255, 255, 0.2); color: #fff; }
@@ -404,7 +423,6 @@ body { display: flex; flex-direction: column; }
   border-radius: 6px; padding: 10px 14px; color: var(--dim);
   display: flow-root;
 }
-.user-note .user-time { color: var(--dim); }
 
 /* ---------- thinking ---------- */
 .thinking { color: var(--dim); font-style: italic; }
@@ -473,6 +491,17 @@ body { display: flex; flex-direction: column; }
 .ask-live-opt.focus { background: rgba(255, 255, 255, 0.10); box-shadow: inset 2px 0 0 var(--st-awaiting-bg); }
 .ask-live-opt .ask-optlabel { flex: 0 0 auto; font-weight: 600; }
 .ask-live-note { color: var(--dim); font-size: 0.82em; margin-top: 7px; }
+/* The focused option's side-by-side TUI preview box, reproduced verbatim (the user
+   2026-06-13). Monospace + preserved whitespace so the box-drawing/ASCII aligns;
+   never wraps (wrapping would shear the layout) — scroll sideways when wider than
+   the rail. Tracks the cursor: each re-post swaps it for the focused option's box. */
+.ask-preview {
+  margin: 9px 0 1px; padding: 8px 10px;
+  font-family: var(--mono); font-size: 0.82em; line-height: 1.35;
+  white-space: pre; overflow-x: auto; overflow-y: hidden;
+  background: rgba(255, 255, 255, 0.04); border: 1px solid var(--box-border);
+  border-radius: 5px; color: var(--vscode-foreground, #ddd);
+}
 #live-ask.sending { opacity: 0.5; pointer-events: none; }
 /* multi-select checkboxes */
 /* inline "add your own answer" field (drives the TUI Type-something slot) */

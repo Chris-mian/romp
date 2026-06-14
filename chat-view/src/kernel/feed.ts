@@ -31,6 +31,19 @@ export function ageRgbTuple(ageSec: number): [number, number, number] {
   return feedRamp(1 - f);
 }
 
+// In an auto-resolving permission mode, a permission_prompt notification is the
+// classifier's transient mid-decision blip (allowed moments later), NOT a block
+// the user must clear. default/plan (and an unreported "") prompt for real, so a
+// permission there IS a genuine block. This is the event-based discriminator
+// that replaced the feed's old `now - since < 15s` permission debounce: it keys
+// on the session's actual mode, never on elapsed time (the user's no-time-
+// thresholds rule). NOTE: if an auto mode ever surfaces a permission the
+// classifier does NOT auto-resolve, it would be suppressed here — revisit if so.
+const AUTO_RESOLVING_MODES = new Set(["acceptEdits", "auto", "dontAsk", "bypassPermissions"]);
+export function isGenuinePermissionBlock(mode: string): boolean {
+  return !AUTO_RESOLVING_MODES.has(mode);
+}
+
 function djb2(s: string): string {
   let h = 5381;
   for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;

@@ -48,6 +48,31 @@ extract_fn() {
     [ "$result" = "1d" ]
 }
 
+# ─── row_is_stale tests ───────────────────────────────────────────────
+
+@test "row_is_stale: a READY/idle row quiet past the threshold is stale" {
+    eval "$(extract_fn "$DASHBOARD_SCRIPT" row_is_stale)"
+    STALE_AFTER_SECS=3600
+    [ "$(row_is_stale waiting 4000)" = "true" ]
+    [ "$(row_is_stale idle 4000)" = "true" ]
+}
+
+@test "row_is_stale: a READY row within the threshold is not stale" {
+    eval "$(extract_fn "$DASHBOARD_SCRIPT" row_is_stale)"
+    STALE_AFTER_SECS=3600
+    [ "$(row_is_stale waiting 100)" = "false" ]
+}
+
+@test "row_is_stale: an active row never fades on wall-clock (sleep/wake guard)" {
+    eval "$(extract_fn "$DASHBOARD_SCRIPT" row_is_stale)"
+    STALE_AFTER_SECS=3600
+    # A huge elapsed (the machine slept for hours) must NOT fade a live
+    # working/compacting/permission row — the 2026-06-12 sleep/wake incident.
+    [ "$(row_is_stale working 99999)" = "false" ]
+    [ "$(row_is_stale compacting 99999)" = "false" ]
+    [ "$(row_is_stale permission 99999)" = "false" ]
+}
+
 # ─── shorten_dir tests ────────────────────────────────────────────────
 
 @test "shorten_dir: home directory replaced with ~" {

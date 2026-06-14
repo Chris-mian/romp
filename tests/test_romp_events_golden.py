@@ -330,6 +330,31 @@ class IdStability(unittest.TestCase):
         self.assertNotIn("####", e["text"])               # display IS stripped
 
 
+class AtomIds(unittest.TestCase):
+    """Each event names its two renderable ATOMS so the views highlight the dot WITHOUT the
+    bar (or vice-versa) by matching the atom id, not the turn id (no rendering-time guess).
+    The atom ids derive from the event `id` (the whole-turn join key) — they must stay in
+    lock-step with it and be distinct from each other."""
+
+    def test_atoms_derive_from_the_event_id(self):
+        for e in run_scenario("typed_two_turns")["events"]:
+            self.assertEqual(e["promptId"], e["id"] + "#p")
+            self.assertEqual(e["workId"], e["id"] + "#w")
+            self.assertNotEqual(e["promptId"], e["workId"])
+
+    def test_every_kind_carries_both_atoms(self):
+        # one event of every boundary kind reaches a consumer; all must be atom-addressable
+        kinds = {}
+        for name in ("typed_two_turns", "queued_and_absorbed", "drain",
+                     "decision_ask_user", "decision_plan"):
+            for e in run_scenario(name)["events"]:
+                kinds[e["kind"]] = e
+        self.assertEqual(set(kinds), {"typed", "queued", "absorbed", "drain", "decision"})
+        for e in kinds.values():
+            self.assertTrue(e["promptId"].endswith("#p") and e["promptId"].startswith(e["id"]))
+            self.assertTrue(e["workId"].endswith("#w") and e["workId"].startswith(e["id"]))
+
+
 class RewindResubmit(unittest.TestCase):
     """Regression (2026-06-12): a dictated prompt resubmitted seconds later forked a
     same-parent sibling; the orphaned first line emitted its own boundary and the

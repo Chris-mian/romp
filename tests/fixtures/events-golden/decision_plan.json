@@ -9,6 +9,7 @@
    "mids": [],
    "open": false,
    "peer": false,
+   "promptId": "11111111-2222-3333-4444-555555555555:1781096400:622d6232#p",
    "rec": "USER ASKED: plan the nag plugin port\nASSISTANT SAID: Here is a plan.\nTOOLS USED: ExitPlanMode",
    "replyUuid": "a1",
    "t": 1781096400,
@@ -16,6 +17,7 @@
    "text_full": "plan the nag plugin port",
    "tid": "11111111-2222-3333-4444-555555555555",
    "uuid": "u1",
+   "workId": "11111111-2222-3333-4444-555555555555:1781096400:622d6232#w",
    "workUuid": "a1"
   },
   {
@@ -26,6 +28,7 @@
    "mids": [],
    "open": false,
    "peer": false,
+   "promptId": "11111111-2222-3333-4444-555555555555:1781096520:a62eb227#p",
    "rec": "USER ASKED: Approved plan: Port the nag plugin\nASSISTANT SAID: Porting now. Proposing a second plan.\nTOOLS USED: Edit, ExitPlanMode",
    "replyUuid": "a3",
    "t": 1781096520,
@@ -33,6 +36,7 @@
    "text_full": "Approved plan: Port the nag plugin",
    "tid": "11111111-2222-3333-4444-555555555555",
    "uuid": "u2",
+   "workId": "11111111-2222-3333-4444-555555555555:1781096520:a62eb227#w",
    "workUuid": "a2"
   },
   {
@@ -43,6 +47,7 @@
    "mids": [],
    "open": true,
    "peer": false,
+   "promptId": "11111111-2222-3333-4444-555555555555:1781096800:608c5ee0#p",
    "rec": "USER ASKED: Rejected plan: too risky, just patch it\nASSISTANT SAID: Patching instead.",
    "replyUuid": "a4",
    "t": 1781096800,
@@ -50,6 +55,7 @@
    "text_full": "Rejected plan: too risky, just patch it",
    "tid": "11111111-2222-3333-4444-555555555555",
    "uuid": "u3",
+   "workId": "11111111-2222-3333-4444-555555555555:1781096800:608c5ee0#w",
    "workUuid": "a4"
   }
  ],

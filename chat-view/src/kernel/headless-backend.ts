@@ -98,12 +98,15 @@ export function appendState(sid: string, state: string) {
   } catch { /* ignore */ }
 }
 
-// The romp identity palette — same hexes (and fg pairings) bin/romp assigns,
-// so headless and tmux sessions draw from one visual identity system.
+// The romp identity palette — same hexes, fg pairings, AND ORDER bin/romp assigns,
+// so headless and tmux sessions draw from one visual identity system. The user
+// reordered the default palette (teal to 3rd, purple demoted to last, 2026-06);
+// this list must stay in lockstep with bin/romp's _palette or a session gets a
+// different color headless vs tmux.
 const PALETTE: Array<[string, string]> = [
-  ["#1EA1EB", "white"], ["#54B204", "black"], ["#9088F0", "black"],
-  ["#4EA8A9", "white"], ["#DD42FF", "white"], ["#E87221", "black"],
-  ["#98998A", "black"], ["#F85B5A", "white"], ["#F9D849", "black"],
+  ["#1EA1EB", "white"], ["#54B204", "black"], ["#4EA8A9", "white"],
+  ["#DD42FF", "white"], ["#E87221", "black"], ["#98998A", "black"],
+  ["#F85B5A", "white"], ["#F9D849", "black"], ["#9088F0", "black"],
 ];
 
 // First palette color not used by another ALIVE headless session; name-hash

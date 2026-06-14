@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# romp-summarize.sh — fires on two events and writes a <=8-word phrase to the
-# @claude-summary tmux var that the romp dashboard renders. The badge tells
-# you which phase the phrase describes:
+# romp-summarize.sh — THE ANNOUNCER (docs/figures.md figure 2): fires on two
+# events and writes a <=8-word phrase (the live phrase) to the @claude-summary
+# tmux var that the status line and dashboards render. Display-only and
+# terminal-only: the headless path below skips it (no status line to paint).
+# The badge tells you which phase the phrase describes:
 #
 #   UserPromptSubmit → what you JUST ASKED FOR   (shown while WORKING)
 #   Stop             → what the assistant JUST DID (shown when READY)
@@ -20,6 +22,10 @@
 #
 # Disable any time:   touch ~/.claude/romp-summarize-off     (rm to re-enable)
 set -uo pipefail
+
+# THE ANNOUNCER's model: the live phrase is latency-critical and display-only,
+# so it gets the small fast model.
+ANNOUNCER_MODEL="claude-haiku-4-5"
 
 # Only inside a romp tmux session. The nested `claude` call below runs with
 # TMUX unset + ROMP_SUMMARIZING=1, so its OWN hooks land here and bail on these
@@ -283,7 +289,7 @@ Reply with ONLY the <=8-word past-tense phrase describing what the ASSISTANT acc
       ;;
   esac
 
-  # Run Haiku headless, up to 2 attempts. These are concurrent network calls
+  # The announcer's call: run Haiku headless, up to 2 attempts. These are concurrent network calls
   # (several sessions can stop at once when you poke them), and an occasional
   # one comes back empty; a single retry recovers it instead of the turn
   # silently producing no summary. Safety is structural, not just prompt wording:
@@ -299,7 +305,7 @@ Reply with ONLY the <=8-word past-tense phrase describing what the ASSISTANT acc
   for _attempt in 1 2; do
     summary=$(printf '%s' "$prompt" | (cd /tmp 2>/dev/null && \
       env -u TMUX -u TMUX_PANE ROMP_SUMMARIZING=1 perl -e 'alarm 45; exec @ARGV' \
-        claude -p --model claude-haiku-4-5 --tools "" \
+        claude -p --model "$ANNOUNCER_MODEL" --tools "" \
           --strict-mcp-config --mcp-config '{"mcpServers":{}}' \
           --append-system-prompt "$sys" 2>/dev/null) | tr '\n' ' ')
     summary="$(printf '%s' "$summary" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"

@@ -77,6 +77,9 @@ MOCK
 }
 
 teardown() {
+    # Tests that launch a background romp-manager record its pid in MGR_PID so we
+    # always reap it (and its child kernels), even if an assertion aborted the test.
+    [[ -n "${MGR_PID:-}" ]] && kill "$MGR_PID" 2>/dev/null
     rm -rf "$TEST_DIR"
 }
 
@@ -247,8 +250,19 @@ run_romp() {
     grep -q 'tmux set -t myproject @identity-bg #54B204' "$MOCK_LOG"
 }
 
+@test "color: third session gets teal (colorblind-tuned order: blue, green, teal)" {
+    # The 3rd slot is teal #4EA8A9, the more colorblind-friendly of teal/purple against
+    # the blue+green pair (the user 2026-06-12) — pin both earlier colors as taken.
+    printf '%s\n' "s1" "s2" > "$MOCK_TMUX_SESSIONS_FILE"
+    printf '%s\n' "s1=#1EA1EB" "s2=#54B204" > "$MOCK_TMUX_IDENTITY_FILE"
+
+    run run_romp
+    [ "$status" -eq 0 ]
+    grep -q 'tmux set -t myproject @identity-bg #4EA8A9' "$MOCK_LOG"
+}
+
 @test "color: all colors taken falls back to a hash pick" {
-    local palette=("#1EA1EB" "#54B204" "#9088F0" "#4EA8A9" "#DD42FF" "#E87221" "#98998A" "#F85B5A" "#F9D849")
+    local palette=("#1EA1EB" "#54B204" "#4EA8A9" "#DD42FF" "#E87221" "#98998A" "#F85B5A" "#F9D849" "#9088F0")
     > "$MOCK_TMUX_SESSIONS_FILE"
     > "$MOCK_TMUX_IDENTITY_FILE"
     for i in "${!palette[@]}"; do
@@ -304,6 +318,161 @@ MOCK
     run run_romp dashboard
     [ "$status" -eq 0 ]
     grep -q 'tmux new-session -d -s dashboard' "$MOCK_LOG"
+}
+
+# ─── `romp on` — the kernel manager ──────────────────────────────────
+
+@test "manager verbs (on/refresh/status) dispatch to romp-manager with the right sub-command" {
+    cat > "$MOCK_DIR/romp-manager" << 'MOCK'
+#!/usr/bin/env bash
+echo "romp-manager called: $*" >> "$MOCK_LOG"
+MOCK
+    chmod +x "$MOCK_DIR/romp-manager"
+    export ROMP_MANAGER_BIN="$MOCK_DIR/romp-manager"
+
+    run run_romp on            # `romp on` is PURELY start-the-manager
+    [ "$status" -eq 0 ]
+    grep -q 'romp-manager called: up' "$MOCK_LOG"
+
+    : > "$MOCK_LOG"
+    run run_romp refresh       # restart ALL kernels
+    [ "$status" -eq 0 ]
+    grep -q 'romp-manager called: restart-all' "$MOCK_LOG"
+
+    : > "$MOCK_LOG"
+    run run_romp status
+    [ "$status" -eq 0 ]
+    grep -q 'romp-manager called: status' "$MOCK_LOG"
+}
+
+@test "romp on no longer forwards a restart sub-verb (romp refresh replaces it)" {
+    cat > "$MOCK_DIR/romp-manager" << 'MOCK'
+#!/usr/bin/env bash
+echo "romp-manager called: $*" >> "$MOCK_LOG"
+MOCK
+    chmod +x "$MOCK_DIR/romp-manager"
+    export ROMP_MANAGER_BIN="$MOCK_DIR/romp-manager"
+    run run_romp on restart main
+    [ "$status" -eq 0 ]
+    grep -q 'romp-manager called: up' "$MOCK_LOG"   # starts the manager; trailing words are NOT forwarded
+    ! grep -q 'restart' "$MOCK_LOG"
+}
+
+@test "refresh/status are reserved manager verbs, NOT session names" {
+    cat > "$MOCK_DIR/romp-manager" << 'MOCK'
+#!/usr/bin/env bash
+echo "romp-manager called: $*" >> "$MOCK_LOG"
+MOCK
+    chmod +x "$MOCK_DIR/romp-manager"
+    export ROMP_MANAGER_BIN="$MOCK_DIR/romp-manager"
+    for verb in refresh status; do
+        : > "$MOCK_LOG"
+        run run_romp "$verb"
+        [ "$status" -eq 0 ]
+        grep -q 'romp-manager called' "$MOCK_LOG"
+        ! grep -q "tmux new-session -d -s ${verb}" "$MOCK_LOG"
+    done
+}
+
+@test "'down' is a normal session name again (no romp down verb — Ctrl+C the foreground romp on)" {
+    run run_romp down
+    [ "$status" -eq 0 ]
+    grep -q 'tmux new-session -d -s down' "$MOCK_LOG"
+}
+
+@test "on is the manager command, NOT a session name" {
+    cat > "$MOCK_DIR/romp-manager" << 'MOCK'
+#!/usr/bin/env bash
+echo "romp-manager called" >> "$MOCK_LOG"
+MOCK
+    chmod +x "$MOCK_DIR/romp-manager"
+    export ROMP_MANAGER_BIN="$MOCK_DIR/romp-manager"
+    run run_romp on
+    [ "$status" -eq 0 ]
+    grep -q 'romp-manager called' "$MOCK_LOG"
+    # must NOT create a tmux session named "on"
+    ! grep -q 'tmux new-session -d -s on' "$MOCK_LOG"
+}
+
+@test "romp-manager: control verbs error cleanly when no manager is running" {
+    command -v node >/dev/null 2>&1 || skip "node not available"
+    local mgr; mgr="$(cd "$(dirname "$BATS_TEST_FILENAME")/../bin" && pwd)/romp-manager"
+    # port nothing is listening on → the control client must fail fast with a clear message
+    run env ROMP_MANAGER_PORT=7531 node "$mgr" status
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"not running"* ]]
+}
+
+@test "romp-manager: /ensure spawns an additional kernel on demand, idempotently" {
+    command -v node >/dev/null 2>&1 || skip "node not available"
+    command -v curl >/dev/null 2>&1 || skip "curl not available"
+    local mgr; mgr="$(cd "$(dirname "$BATS_TEST_FILENAME")/../bin" && pwd)/romp-manager"
+
+    # Fake kernel launcher: ignore --port and just stay alive, so the manager keeps it "running"
+    # without any real port binding (the test asserts on the manager's bookkeeping, not a live kernel).
+    local fake="$TEST_DIR/fake-serve"
+    printf '#!/usr/bin/env bash\nexec sleep 30\n' > "$fake"
+    chmod +x "$fake"
+
+    local cport=7541 mport=7542 kport=7543
+    # Launch the manager in the background; it auto-spawns 'main' on mport via the fake launcher.
+    ROMP_MANAGER_PORT=$cport ROMP_SERVE_PORT=$mport ROMP_SERVE_BIN="$fake" \
+        node "$mgr" up >/dev/null 2>&1 &
+    MGR_PID=$!   # teardown reaps this
+
+    # Wait for the control endpoint to come up (≤ ~3s)
+    local i
+    for i in $(seq 1 30); do
+        curl -fsS "http://127.0.0.1:$cport/status" >/dev/null 2>&1 && break
+        sleep 0.1
+    done
+
+    # Ensure a second kernel on kport → freshly spawned
+    run curl -fsS -X POST "http://127.0.0.1:$cport/ensure?port=$kport"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *'"spawned":true'* ]]
+    [[ "$output" == *"\"port\":$kport"* ]]
+    [[ "$output" == *"\"id\":\"k$kport\""* ]]
+
+    # Ensuring the same port again is idempotent — no second spawn
+    run curl -fsS -X POST "http://127.0.0.1:$cport/ensure?port=$kport"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *'"spawned":false'* ]]
+
+    # /status now lists both the default 'main' kernel and the on-demand one
+    run curl -fsS "http://127.0.0.1:$cport/status"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *'"id":"main"'* ]]
+    [[ "$output" == *"\"id\":\"k$kport\""* ]]
+
+    # Graceful shutdown (teardown also reaps via MGR_PID as a backstop)
+    curl -fsS -X POST "http://127.0.0.1:$cport/stop" >/dev/null 2>&1 || true
+}
+
+@test "romp-manager: /restart-all kicks every kernel in the registry (romp refresh)" {
+    command -v node >/dev/null 2>&1 || skip "node not available"
+    command -v curl >/dev/null 2>&1 || skip "curl not available"
+    local mgr; mgr="$(cd "$(dirname "$BATS_TEST_FILENAME")/../bin" && pwd)/romp-manager"
+    local fake="$TEST_DIR/fake-serve"
+    printf '#!/usr/bin/env bash\nexec sleep 30\n' > "$fake"
+    chmod +x "$fake"
+
+    local cport=7551 mport=7552 kport=7553
+    ROMP_MANAGER_PORT=$cport ROMP_SERVE_PORT=$mport ROMP_SERVE_BIN="$fake" \
+        node "$mgr" up >/dev/null 2>&1 &
+    MGR_PID=$!
+    local i
+    for i in $(seq 1 30); do curl -fsS "http://127.0.0.1:$cport/status" >/dev/null 2>&1 && break; sleep 0.1; done
+    curl -fsS -X POST "http://127.0.0.1:$cport/ensure?port=$kport" >/dev/null   # a 2nd kernel in the registry
+
+    run curl -fsS -X POST "http://127.0.0.1:$cport/restart-all"
+    [ "$status" -eq 0 ]
+    # the response lists EVERY kernel it kicked — the default 'main' AND the on-demand one (not just main)
+    [[ "$output" == *'"restarted"'* ]]
+    [[ "$output" == *'main'* ]]
+    [[ "$output" == *"k$kport"* ]]
+
+    curl -fsS -X POST "http://127.0.0.1:$cport/stop" >/dev/null 2>&1 || true
 }
 
 # ─── Help (-h / --help) ──────────────────────────────────────────────

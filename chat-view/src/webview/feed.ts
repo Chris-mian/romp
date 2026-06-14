@@ -167,6 +167,38 @@ function el(tag: string, cls?: string): HTMLElement {
   return e;
 }
 
+// A lightweight yes/no overlay for the feed. Separate from the ask #feed-modal
+// (a different state machine); Esc or a backdrop click cancels.
+function feedConfirm(message: string, confirmLabel: string, onConfirm: () => void): void {
+  const back = el("div", "fconfirm-back");
+  const box = el("div", "fconfirm-box");
+  const msg = el("div", "fconfirm-msg"); msg.textContent = message;
+  const btns = el("div", "fconfirm-btns");
+  const cancel = el("button", "fconfirm-btn"); cancel.textContent = "Cancel";
+  const ok = el("button", "fconfirm-btn primary"); ok.textContent = confirmLabel;
+  btns.append(cancel, ok);
+  box.append(msg, btns);
+  back.append(box);
+  const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") close(); };
+  const close = () => { back.remove(); document.removeEventListener("keydown", onKey); };
+  cancel.onclick = (e) => { e.stopPropagation(); close(); };
+  ok.onclick = (e) => { e.stopPropagation(); close(); onConfirm(); };
+  back.onclick = (e) => { if (e.target === back) close(); };
+  document.addEventListener("keydown", onKey);
+  document.body.appendChild(back);
+  ok.focus();
+}
+
+// A feed click on a session link. Live → open its tab. Closed (tab gone) → offer
+// to revive it: the kernel's own confirmRevive dialog routes only to chat
+// clients, so from a feed-only view an "open" would silently no-op; ask here and
+// post reviveSession directly (the kernel reopens the most-recent incarnation).
+function openOrReviveSession(sid: string, live: boolean, name: string): void {
+  if (live) { vscodeApi?.postMessage({ type: "openSession", id: sid }); return; }
+  feedConfirm(`“${name}” is closed — revive it?`, "Revive",
+    () => vscodeApi?.postMessage({ type: "reviveSession", id: sid }));
+}
+
 function relAge(sec: number): string {
   const s = Math.max(0, sec);
   if (s < 60) return `${Math.round(s)}s ago`;
@@ -252,7 +284,7 @@ function makeCard(it: FeedItem): HTMLElement {
   // anchor just selects the prompt glyph over the work bar.
   card.onclick = () => { fullscreenAskId = "i:" + it.itemId; renderModal(); };
   title.onclick = (ev) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: it.itemId, sid: it.sid, t: it.t, anchor: "prompt" }); };
-  name.onclick = (ev) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "openSession", id: it.sid }); };
+  name.onclick = (ev) => { ev.stopPropagation(); openOrReviveSession(it.sid, it.live, it.name); };
   clr.onclick = (ev) => {
     ev.stopPropagation();
     card.classList.add("dismissing");
@@ -382,7 +414,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   // title → locate the typed turn; agent → open session; Clear → inbox-zero. These
   // stopPropagation so the card-body single/double handlers don't also fire.
   title.onclick = (ev) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "showAskPath", itemId: it.itemId }); };
-  name.onclick = (ev) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "openSession", id: it.sid }); };
+  name.onclick = (ev) => { ev.stopPropagation(); openOrReviveSession(it.sid, it.live, it.name); };
   clr.onclick = (ev) => {
     ev.stopPropagation();
     card.classList.add("dismissing");
@@ -609,7 +641,7 @@ function makeGroupCard(g: AskGroup): HTMLElement {
 
   const m0 = () => ((card as any)._g as AskGroup | undefined)?.members?.[0];
   title.onclick = (ev) => { ev.stopPropagation(); const m = m0(); if (m) vscodeApi?.postMessage({ type: "showAskPath", itemId: m.itemId }); };
-  name.onclick = (ev) => { ev.stopPropagation(); const cur = (card as any)._g as AskGroup; if (cur?.sid) vscodeApi?.postMessage({ type: "openSession", id: cur.sid }); };
+  name.onclick = (ev) => { ev.stopPropagation(); const cur = (card as any)._g as AskGroup; if (cur?.sid) openOrReviveSession(cur.sid, cur.live, cur.name); };
   clr.onclick = (ev) => {
     ev.stopPropagation();
     const cur = (card as any)._g as AskGroup;
@@ -1094,8 +1126,10 @@ function renderModal() {
   ttlEl.classList.add("nav");
   ttlEl.title = "locate this in the text";
   clrEl.style.display = "";   // re-shown here because the blocked branch below hides it
+  let titleHoverId: string | null = null;   // the originating typed turn → chat/timeline hover highlight
   if (grp) {
     ttlEl.textContent = grp.title;
+    titleHoverId = grp.turnId;
     ttlEl.onclick = () => vscodeApi?.postMessage({ type: "showAskPath", itemId: grp.members[0].itemId });
     agent.textContent = grp.name; if (grp.color) agent.style.color = grp.color.bg; setWorkDot(agent, workingSet.has(grp.name));
     agent.onclick = () => vscodeApi?.postMessage({ type: "openSession", id: grp.sid });
@@ -1110,6 +1144,7 @@ function renderModal() {
       grp.members.flatMap((mm) => mm.suspects || []));
   } else if (it) {
     ttlEl.textContent = it.text;
+    titleHoverId = it.turnId;
     ttlEl.onclick = () => vscodeApi?.postMessage({ type: "showAskPath", itemId: it.itemId });
     agent.textContent = it.name; if (it.color) agent.style.color = it.color.bg; setWorkDot(agent, workingSet.has(it.name));
     agent.onclick = () => vscodeApi?.postMessage({ type: "openSession", id: it.sid });
@@ -1151,6 +1186,13 @@ function renderModal() {
     renderBlockedSuspectInto(body, blk);
     renderReportInto(document.getElementById("feed-modal-report")!, "blocked:" + blk.sid, undefined);
   }
+  // modal title hover → light the originating message in the chat (+ its timeline
+  // glyph), the same join the title CLICK locates to (the user 2026-06-12). Asks
+  // and groups carry the typed-turn id; deliverable/blocked modals have no chat
+  // message to point at, so they clear. onmouseenter/leave (assignable props, not
+  // addEventListener) so each re-render overwrites instead of stacking handlers.
+  ttlEl.onmouseenter = titleHoverId ? () => hoverEmit(titleHoverId) : null;
+  ttlEl.onmouseleave = titleHoverId ? () => hoverEmit(null) : null;
 }
 
 // ⚠ Report box (the user's three-bucket model, 2026-06-11): the EXCEPTION path.
@@ -1499,7 +1541,9 @@ function render() {
 
   if (!asks.length && !standalone.length && !blocked.length) {
     list.innerHTML = ""; askEls.clear(); groupEls.clear(); cardEls.clear(); blockedEls.clear();
-    const e = el("div", "feed-empty"); e.textContent = "Nothing open — inbox zero.";
+    // inbox zero → a big happy beaver instead of words (the user 2026-06-13). Title
+    // keeps the meaning for hover / screen readers.
+    const e = el("div", "feed-empty"); e.textContent = "🦫"; e.title = "inbox zero — nothing open";
     list.appendChild(e);
     if (canUndoClear) list.appendChild(makeUndoClearBtn());
     return;
@@ -1616,6 +1660,33 @@ function toggleHelp(show: boolean) {
 window.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && document.getElementById("feed-help")) { toggleHelp(false); return; }
   if (e.key === "Escape" && fullscreenAskId) { fullscreenAskId = null; renderModal(); }
+});
+
+// Focus policy (the user 2026-06-13): the feed is MOUSE-driven and almost never
+// needs the keyboard — but clicking a card stole focus from the CHAT iframe,
+// killing the chat's keyboard nav until you clicked back into it. So after any
+// click in the feed, hand focus straight BACK to the chat — UNLESS the feed
+// genuinely wants keys right now: a modal/help overlay is open (Esc closes it, its
+// follow-up/report fields type) or the click landed in a text field. The check
+// runs AFTER the click's own handler (deferred a tick), so a card click that just
+// OPENED a modal keeps focus, and clicking ✕/backdrop to CLOSE one returns focus
+// to chat. Same-origin combined page only — a no-op on the standalone /feed page
+// or inside VS Code, where there's no sibling chat-frame to reach.
+function feedWantsKeys(t: EventTarget | null): boolean {
+  if (document.getElementById("feed-modal") || document.getElementById("feed-help")) return true;
+  const el = t as HTMLElement | null;
+  return !!el && (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) || el.isContentEditable);
+}
+function returnFocusToChat(): void {
+  try {
+    if (!window.parent || window.parent === window) return;
+    const chat = window.parent.document.getElementById("chat-frame") as HTMLIFrameElement | null;
+    chat?.contentWindow?.focus();   // restores the chat document's last-focused element (tab/composer)
+  } catch { /* cross-origin / not embedded → leave focus where it is */ }
+}
+window.addEventListener("click", (e) => {
+  const t = e.target;
+  setTimeout(() => { if (!feedWantsKeys(t)) returnFocusToChat(); }, 0);
 });
 
 window.addEventListener("message", (e: MessageEvent) => {
