@@ -475,27 +475,47 @@ def _is_segment_input(atom):
     return _is_opener(atom)
 
 
+def _segment_id(rompuuid, seg_t, atoms, trigger_uuid):
+    """`${rompUuid}:${seg.t}:${hash}` — parallel to the turn id; the summarizer layer's
+    dedup key for a segment. Hash of the trigger atom's text (or the first atom's text
+    for a triggerless/autonomous segment)."""
+    text = ""
+    if trigger_uuid:
+        a = next((x for x in atoms if x.get("uuid") == trigger_uuid), None)
+        if a:
+            text = _text_of(_content(a.get("message")))
+    if not text and atoms:
+        text = _text_of(_content(atoms[0].get("message")))
+    h = hashlib.sha1(text.encode("utf-8", "replace")).hexdigest()[:8]
+    return "%s:%d:%s" % (rompuuid, seg_t, h)
+
+
 def segments(turn):
     """The per-input spans of a turn (what the timeline draws as bars). A segment runs
-    from one input to the next (or to the turn end). Pure function over a turn."""
+    from one input to the next (or to the turn end). Each carries a stable `id` for the
+    summarizer layer. Pure function over a turn."""
     atoms = turn["atoms"]
+    rompuuid = atoms[0]["session_id"] if atoms else ""
     starts = [i for i, a in enumerate(atoms) if _is_segment_input(a)]
     if not starts:
-        return [{"t": turn["t"], "end": turn["end"],
+        segs = [{"t": turn["t"], "end": turn["end"],
                  "trigger": turn["trigger"]["uuid"] if turn["trigger"] else None,
                  "atoms": list(atoms)}]
-    bounds = starts + [len(atoms)]
-    segs = []
-    for k, i0 in enumerate(starts):
-        i1 = bounds[k + 1]
-        segs.append({"t": atoms[i0]["t"],
-                     "end": atoms[i1]["t"] if i1 < len(atoms) else turn["end"],
-                     "trigger": atoms[i0].get("uuid"),
-                     "atoms": atoms[i0:i1]})
-    if starts[0] > 0:   # leading atoms before the first input attach to the first segment
-        lead = atoms[:starts[0]]
-        segs[0]["atoms"] = lead + segs[0]["atoms"]
-        segs[0]["t"] = turn["t"]
+    else:
+        bounds = starts + [len(atoms)]
+        segs = []
+        for k, i0 in enumerate(starts):
+            i1 = bounds[k + 1]
+            segs.append({"t": atoms[i0]["t"],
+                         "end": atoms[i1]["t"] if i1 < len(atoms) else turn["end"],
+                         "trigger": atoms[i0].get("uuid"),
+                         "atoms": atoms[i0:i1]})
+        if starts[0] > 0:   # leading atoms before the first input attach to the first segment
+            lead = atoms[:starts[0]]
+            segs[0]["atoms"] = lead + segs[0]["atoms"]
+            segs[0]["t"] = turn["t"]
+    for seg in segs:        # id last: after the leading-attach may have moved seg[0]'s t/atoms
+        seg["id"] = _segment_id(rompuuid, seg["t"], seg["atoms"], seg["trigger"])
     return segs
 
 
