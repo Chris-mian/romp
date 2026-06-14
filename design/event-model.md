@@ -49,15 +49,17 @@ future stream substrate is a near passthrough.
   several inputs. A *segment* runs from one input to the next (or to `end_turn`)
   and is what the timeline draws as a bar. The bottom layer stays unopinionated;
   consumers pick the grain.
-- **Postal is detected by romp's own marker**, a namespaced versioned sentinel
-  romp injects (`<!-- romp-postal:v1 id=… from=… -->`), never the generic
-  `"Stop hook feedback"` prefix (which any blocking Stop hook produces).
+- **Postal is detected by the existing `<!-- romp-msg-id: <id> -->` marker**, with
+  the peer ROMP UUID filled by joining the id to `timeline/messages.jsonl`
+  (`from_id` = sender anchor sid). Never the `"Stop hook feedback"` prefix (any
+  blocking Stop hook produces it). No new marker, no romp-postal change.
 - **The event layer is not opinionated** about which atom matters. No `workUuid`,
   no `replyUuid`. "Which line a click lands on" is a render-time function over a
   turn's atoms.
-- **Clear drops pre-clear history; resume keeps it.** This needs no special
-  logic: the `parentUuid` graph already encodes it (resume links across files,
-  clear breaks the link), so the leaf-to-root walk takes exactly the right atoms.
+- **Clear drops pre-clear history.** Within a file the `parentUuid` graph encodes
+  it for free: clear breaks the link, so the leaf-to-root walk stops there. (Resume
+  KEEPING history across files is NOT free — resume forks don't link via
+  `parentUuid` in practice; that's the deferred session→files concern below.)
 - **Idle comes from the state log**, not a 15-minute silence heuristic. Period
   clipping keys on the real idle transition in `states/<sid>.jsonl`.
 - **Delete the per-turn headless backend now.** Build nothing to replace it yet.
@@ -248,7 +250,7 @@ author: "human" | "sdk" | "system" | { peer: <rompUuid> }
 |---|---|---|---|
 | `human` | `promptSource: "typed" | "queued"` | yes | typed, queued, absorbed |
 | `sdk` | `promptSource: "sdk"` | yes | (dropped by old code) |
-| `{peer}` | the romp-postal marker (sender id) | yes | drain |
+| `{peer}` | the `romp-msg-id` marker + `messages.jsonl` `from_id` join | yes | drain |
 | `system` | `promptSource: "system"` | no (folds in) | (dropped by old code) |
 | (none) | a `tool_result`-only user atom | no | (decision is read from content) |
 
@@ -271,11 +273,14 @@ boundaries only for typed and queued (`romp-events:274`), so it silently dropped
 every `sdk` prompt, meaning SDK/headless sessions got no triggers at all. Keying
 on `author` covers all origins uniformly.
 
-**Postal detection.** A user atom is postal when it carries romp's own marker, a
-namespaced versioned sentinel romp injects and fully controls
-(`<!-- romp-postal:v1 id=<msgid> from=<rompUuid> -->`), which also carries the
-sender. Never key on the `"Stop hook feedback"` prefix: that is Claude Code's
-generic wrapper around any blocking Stop hook, not a postal signal.
+**Postal detection.** A user atom is postal when it carries the existing
+`<!-- romp-msg-id: <id> -->` marker. Fill the peer ROMP UUID by joining that id to
+`timeline/messages.jsonl`: the `sent` row's `from_id` is the sender's anchor sid,
+`to_id` the recipient. peer = null only when the id isn't in the log (legacy/rare).
+The postal log is the authoritative sender-identity source (the same contract
+postal-spec.ts relies on), so no inline `from=` and no romp-postal change are
+needed. Never key on the `"Stop hook feedback"` prefix: Claude Code's generic
+wrapper around any blocking Stop hook, not a postal signal.
 
 **Queue operations** seen on disk: `enqueue`, `dequeue`, `remove`, and a single
 `popAll` (clear the whole queue at once). These are only used to derive position
@@ -288,16 +293,26 @@ The `Session`/`Turn`/`Atom` types are substrate-neutral. Everything specific to
 reconstructing them from the append-only graph on disk lives in the file adapter,
 and only there.
 
-1. **Find the files (lineage reduce).** Start at `leafFsid`; follow `parentUuid`
-   back through the fork chain using a `uuid → file` index built once. This is a
-   directed backward walk, not a fixpoint (see below).
-2. **Resolve the active path.** Walk leaf-to-root by `parentUuid`; drop dead /
-   rewound branches. Clear is handled for free: it leaves no parent link, so the
-   walk stops at it and pre-clear atoms are never reached.
+1. **Get the file set.** The caller provides the session's transcript file(s).
+   NOTE (verified against the corpus 2026-06-14): resume forks do NOT link
+   child→parent via `parentUuid` in real data (0/8 multi-file dirs stitch), so the
+   parser CANNOT discover a session's files by walking `parentUuid` across files.
+   "Which files belong to one session" is a DEFERRED higher-layer concern (see
+   below); the parser consumes the files it is given.
+2. **Resolve the active path.** Walk leaf-to-root by `parentUuid` (within the
+   given files); drop dead / rewound branches. Clear is handled for free: it
+   leaves no parent link, so the walk stops at it and pre-clear atoms are never
+   reached. COMPACTION STITCH: a `compact_boundary` carries `logicalParentUuid` to
+   the pre-compaction leaf, but Claude Code sometimes points it at a uuid listed in
+   `compactMetadata.allUuids` yet never written as a line; following it blindly
+   orphans ALL pre-compaction history (3/69 corpus compactions, ~156 prompts). Fall
+   back to `compactMetadata.preservedSegment.tailUuid` (the in-file pre-compaction
+   leaf).
 3. **Order atoms** by timestamp; tag each with its `fsid`.
 4. **Set `author` and detect triggers.** A prompt atom whose `author ∈ {human,
    sdk}` (from `promptSource`), or a postal atom (`author: {peer}`, from the
-   romp-postal marker), that arrives after `end_turn` is a trigger. `system` atoms
+   romp-msg-id marker + the `messages.jsonl` `from_id` join), that arrives after
+   `end_turn` is a trigger. `system` atoms
    (`<task-notification>` etc.) and mid-turn prompts/decisions are kept inline,
    not treated as openers. (Do not restrict openers to typed/queued, the old bug
    that dropped every SDK/headless turn.)
@@ -311,21 +326,23 @@ On a future stream substrate, steps 1, 2, 5, and 6 disappear (the stream is
 already linear and marks turn-end), and steps 3 and 4 reduce to reading messages
 in arrival order. Same `Session`/`Turn`/`Atom` out either way.
 
-### Why the lineage walk is directed, not a fixpoint
+### Session → files is a deferred higher-layer concern
 
-A resume forks a new transcript file whose first line's `parentUuid` points at a
-line in the parent file. The link is directional, child to parent: a child
-records its parent, a parent never records its children. So:
+The original spec assumed a resume fork's first line links to its parent via
+`parentUuid`, so a directed leaf→root walk would gather a session's files.
+VERIFIED FALSE against the corpus (2026-06-14): 0/8 multi-file dirs stitch that
+way; the only cross-file `parentUuid` link was an aborted 0-turn fork. So the
+parser cannot resolve "which files are one session" from the transcript graph. The
+old `romp-events` did it a layer up (same `customTitle` + shared-node
+intersection), but that inference is fragile and node-intersection does not hold
+here either.
 
-- Anchor on the **newest** leaf and walk **backward** by `parentUuid`. You follow
-  the arrows; it is linear, O(chain length).
-- Anchoring on the **oldest** origin forces a forward search (a parent does not
-  know its children), which is what made the old code intersect whole node sets
-  and grow to a fixpoint.
-
-Anchor on the leaf, follow parent pointers, with a `uuid → file` index. The chain
-is linear in normal use; it branches only if the same session is resumed from two
-different points, which is rare and arguably two sessions.
+So this is OWNED ABOVE the parser and is DEFERRED: caption-only works per-file and
+does not need it; it matters only for stitching a resumed session's history and
+for the goals layer. Lean when we build it: track it EXPLICITLY, a `rompUuid → its
+fork files` registry updated on resume (the headless backend's `lastSid` pattern,
+extended to the interactive launcher), rather than re-inferring. The parser stays
+correct, it consumes a caller-provided file set.
 
 ### Identity vs the walk vs click-landing
 
