@@ -40,6 +40,10 @@ Engine:
 
 ## Layer 3 — read side (`design/read-side.md`)
 
+UI port + parity: the existing tuned `chat-view` UI is ported as the render layer
+onto the Python kernel. The curated KEEP / ADAPT / DROP checklist (what to reuse,
+rewire, and leave behind against the new data model) lives in `design/ui-parity.md`.
+
 MINIMAL (build first — browser-able):
 - [x] Merged always-on kernel `bin/romp-kernel` (PYTHON — producer + server co-located in
   one process, single writer; presence-gated producer thread, no model calls when no
