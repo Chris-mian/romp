@@ -42,10 +42,11 @@ PLAN_SESSIONS = 12                       # max sessions the planner advances per
 PLAN_FAIRNESS = 8                        # max segments planned per session per pass
 SWEEP_FAIRNESS = 8                       # max turn-end completion sweeps per session per pass (backfill spread)
 CONCURRENCY = 6                          # concurrent claude -p calls
-# The negative turn-end completion sweep (judge.md HYBRID). Toggleable so positive-only vs
-# positive+negative can be A/B'd on the fleet (--ab-sweep, no state mutation) before flipping the
-# default. The kernel runs the LIVE sweep (run_sweep) only when this is on.
-NEG_SWEEP = os.environ.get("ROMP_NEG_SWEEP", "") == "1"
+# The negative turn-end completion sweep (judge.md HYBRID). SHIPPED as the default 2026-06-15 after
+# the fleet A/B (25→30 completed top-goals, zero false-positives — `romp-judge --ab-sweep` re-measures).
+# Kept toggleable for a cheap revert: set ROMP_NEG_SWEEP=0 to disable. The kernel runs the LIVE sweep
+# (run_sweep) whenever this is on.
+NEG_SWEEP = os.environ.get("ROMP_NEG_SWEEP", "1") != "0"
 TEST_UNITS  = 12                         # --test: caption at most this many recent units
 # Index tier (captioner + archiver) is the Haiku cost lever per design/judge.md; Sonnet for now.
 
@@ -927,9 +928,12 @@ def run_sweep(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, ver
     return n
 
 
-def _ab_sweep_session(fsid, path, now, turns_cap):
+def _ab_sweep_session(fsid, path, now):
     """Measure positive-only (a) vs positive+negative-sweep (b) completed-top-goal counts for ONE
-    session WITHOUT mutating live state (sweeps a deep copy). Returns (a, b, new_goal_texts, samples)."""
+    session WITHOUT mutating live state (sweeps a deep copy). Sweeps EVERY end-known turn (no cap, so a
+    late completion isn't missed), OLDEST-FIRST and sequential — like the live forward sweep, so each
+    goal is credited to the earliest turn that finished it (clean sample attribution; a completed top
+    drops from later menus, no double-counting). Returns (a, b, new_goal_texts, samples)."""
     session = em.parse_session(path, rompuuid=fsid, candidate_files=[path],
                                postal_log=str(MESSAGES), now=now)
     store = load_goals(fsid)
@@ -940,20 +944,18 @@ def _ab_sweep_session(fsid, path, now, turns_cap):
         return {nid for nid, st in s.get("status", {}).items() if st == "completed"}
     a = completed_tops(store)
     work = json.loads(json.dumps(store))               # deep copy — swept and discarded, never saved
-    samples, did = [], 0
-    turns = session["turns"]
+    samples, turns = [], session["turns"]
     for turn in turns:
-        if _turn_open(turn, turns) or did >= turns_cap:
+        if _turn_open(turn, turns):
             continue
-        if _sweep_turn(work, turn, samples=samples) is not None:
-            did += 1
+        _sweep_turn(work, turn, samples=samples)       # oldest-first → the earliest done-turn gets the credit
     rollup_status(work, closed)
     b = completed_tops(work)
     new_texts = [work["nodes"][nid]["text"] for nid in (b - a) if nid in work["nodes"]]
     return (len(a), len(b), new_texts, samples)
 
 
-def _ab_sweep(sessions_cap=PLAN_SESSIONS, turns_cap=25):
+def _ab_sweep(sessions_cap=PLAN_SESSIONS):
     """A/B the negative sweep on the live fleet WITHOUT mutating state: print positive-only vs
     positive+negative completed-top-goal counts, the goals (b) newly completes, and a sample of the
     turn-end sweeps so the false-completion rate can be eyeballed before flipping the default."""
@@ -961,16 +963,21 @@ def _ab_sweep(sessions_cap=PLAN_SESSIONS, turns_cap=25):
     fleet = discover(now)[:sessions_cap]
     tot_a = tot_b = 0
     all_new, all_samples = [], []
-    for fsid, path, anchor, name in fleet:
-        try:
-            a, b, new_texts, samples = _ab_sweep_session(fsid, str(path), now, turns_cap)
-        except Exception as e:
-            sys.stderr.write("  [ab %s] error: %s\n" % (fsid[:8], e)); continue
-        tot_a += a; tot_b += b
-        label = name or fsid[:8]
-        if new_texts:
-            all_new.append((label, new_texts))
-        all_samples += [(label, s) for s in samples]
+    # Parallel ACROSS sessions (each session sweeps its own turns sequentially for clean attribution).
+    with ThreadPoolExecutor(max_workers=min(len(fleet) or 1, 2 * CONCURRENCY)) as ex:
+        futs = {ex.submit(_ab_sweep_session, fsid, str(path), now): (name or fsid[:8])
+                for fsid, path, anchor, name in fleet}
+        for fut in as_completed(futs):
+            label = futs[fut]
+            try:
+                a, b, new_texts, samples = fut.result()
+            except Exception as e:
+                sys.stderr.write("  [ab %s] error: %s\n" % (label[:8], e)); continue
+            tot_a += a; tot_b += b
+            sys.stderr.write("  [ab %-16s] a=%d b=%d (+%d)\n" % (label[:16], a, b, b - a))
+            if new_texts:
+                all_new.append((label, new_texts))
+            all_samples += [(label, s) for s in samples]
     print("\n=== A/B: planner completion — positive-only vs positive+negative-sweep ===")
     print("sessions: %d   completed top-goals  (a) positive-only: %d   (b) +negative-sweep: %d   delta: +%d\n"
           % (len(fleet), tot_a, tot_b, tot_b - tot_a))

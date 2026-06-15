@@ -33,6 +33,18 @@ Triage tier (on-demand):
     0/27 ever reached it. completed 0→10 on the fleet.)
   - [x] Un-block: clear a node's block when later work under the goal progresses
     (newest-wins). (Clears `blocked` on the top-ancestor subtree on later non-block work.)
+  - [x] HYBRID completion (positive per-segment + negative turn-end sweep) — SHIPPED
+    (1f7ac8d build, default flipped on after A/B). At every end-known turn the sweep
+    asks which OPEN top-goals THAT TURN TOUCHED are still OUTSTANDING and completes the
+    complement; scoped to the turn's placed-segment top-ancestors (false-positive guard),
+    idempotent per turn id, `settled`+`blocked` compose unchanged. Separate toggleable
+    pass (`run_sweep`, `NEG_SWEEP` env default-on, `ROMP_NEG_SWEEP=0` to revert);
+    `romp-judge --ab-sweep` measures positive-only vs +sweep without mutating state.
+    Fleet A/B: 25→30 completed top-goals (+5, a FLOOR — settled defers active-focus
+    swept-completes), zero false-positives, calibration confirmed. Premise-shift noted:
+    positive-only already ~52%, so the sweep is the precision backstop, not the driver.
+    Watch: sweep quality rides on planner placement (a mis-filed segment can sweep the
+    wrong goal) — fix is better placement, helps both paths (per simplify).
 - [~] Courier (handoffs) — judge side BUILT (1c8dc06): classifies each peer
   (postal) segment propagating/FYI; PROPAGATING plants a top-level goal in the
   RECIPIENT's tree with `origin:{peer,goalId,msgId}`; FYI no goal-edit. The planner
