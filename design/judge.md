@@ -196,12 +196,27 @@ core. Each prompt is decomposed from the corresponding part of the old fused
   - Prompt sketch: "Here is a segment and the session's open goals. Place it: a new
     top-level request → mint; a step or refinement of goal #N → sub-goal/amend under
     it. Did the work finish a goal (complete #N)? Does it now need the user?"
-- **courier** (later) — peer-message segments.
-  - In: the peer message + the **sender's** open goals (numbered).
-  - Out: **propagating** (carries sender-goal #N forward) or **FYI**; plants a goal in
-    the recipient's tree that the planner then works under.
-  - Prompt sketch: "One session messaged another. Handing off work or just FYI? Which
-    of the sender's goals does it carry forward?"
+- **courier** (next; spec locked 2026-06-15) — the placer for `author:{peer}` (postal)
+  segments. The planner SKIPS those (the courier owns them, else double-placement);
+  the planner only files the recipient's subsequent WORK segments under the planted goal.
+  - In: the peer-message segment + the **sender's** open goals (numbered), resolved
+    **as-of-send** (requires global cross-session time-order — process peer segments
+    oldest-first across sessions so the sender's tree is its send-time state).
+  - Classify (MVP): **propagating** (hands work forward → plant a goal) or **FYI**
+    (informational, no action owed → NO goal-edit; the captioner still captions it, and
+    the message renders in chat + drives a timeline connector from the postal log).
+    Defer **ack** (a result returning on a delegated goal → completes a node; needs the
+    provenance link below in place first).
+  - Plant (propagating): a **real top-level goal in the RECIPIENT's tree** (not a
+    separate `kind:"handoff"` — the recipient genuinely owns the work now), carrying
+    provenance: `origin: { peer: <senderRompUuid>, goalId: <senderGoalId>, msgId }`.
+    The planner then files the recipient's follow-on work under it (newest-wins focus).
+  - Link back to the sender's goal via `origin.{peer, goalId}` (the sender's open-goal
+    #N it carries forward); the read side uses it for the timeline connector + a
+    "↪ from <sender>" marker on the feed card.
+  - **Dedup key: the postal `msgId`** — one planted node per message, idempotent.
+  - Prompt sketch: "Session A messaged session B. Handing work forward (propagating) or
+    just FYI? If propagating, which of A's open goals #N does it carry?"
 
 Writers (not judges; deferred): the expand-paragraph and the session digest.
 
