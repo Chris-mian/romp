@@ -465,12 +465,16 @@ def _ws_recv(rfile):
 
 
 def _push_all():
-    """Build fresh payloads and push to every connected client (per its app)."""
+    """Build fresh payloads and push to every connected client (per its app). The timeline payload
+    re-parses every session, so it's built only when a timeline client is actually connected."""
     now = int(time.time())
+    with _clients_lock:
+        want_tl = any(c["app"] == "timeline" for c in _clients)
     try:
         chat_sessions = [build_session(s["sid"], now) for s in _sessions(now)]
         chat_sessions = [m for m in chat_sessions if m]
         feed = build_feed(now)
+        timeline = build_timeline(now) if want_tl else None
     except Exception:
         sys.stderr.write("push build: %s\n" % traceback.format_exc())
         return
@@ -484,6 +488,8 @@ def _push_all():
                 c["send"](json.dumps({"type": "working", "names": feed["working"]}))
             elif c["app"] == "feed":
                 c["send"](json.dumps(feed))
+            elif c["app"] == "timeline":
+                c["send"](json.dumps({"type": "data", "data": timeline}))
         except Exception:
             c["alive"] = False
     with _clients_lock:
@@ -558,6 +564,78 @@ def _feed_page():
             % (THEME_CSS, '<div id="feed-head"></div><div id="feed-list"></div>', _shim("feed")))
 
 
+# The romp-tl-* styles, verbatim from the obsidian/VS-Code timeline wrapper.
+TIMELINE_CSS = """:root{--text-muted:#9aa0a6;--text-faint:#6e7681;}#host{width:100%;}
+.romp-tl-top{display:flex;align-items:center;gap:12px;padding:2px 0 8px;flex:0 0 auto;}
+.romp-tl-winlabel{color:var(--text-muted);font-size:12px;min-width:92px;}
+.romp-tl-src{color:var(--text-faint);font-size:11px;margin-left:auto;}
+.romp-tl-slider{flex:1;max-width:420px;-webkit-appearance:none;appearance:none;height:6px;
+border-radius:3px;background:#2a2f37;outline:none;}
+.romp-tl-slider::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:14px;height:14px;
+border-radius:50%;background:#e6edf3;cursor:pointer;}
+.romp-tl-wrap{overflow-x:auto;}.romp-tl-wrap svg{display:block;}
+.romp-tl-tip{position:fixed;pointer-events:none;z-index:1000;max-width:320px;background:#1c2430;
+border:1px solid #ffffff1f;border-radius:8px;padding:7px 9px;font-size:12px;color:#e6edf3;
+box-shadow:0 8px 24px #00000066;opacity:0;transform:translateY(4px);transition:opacity .1s,transform .1s;}
+.romp-tl-tip.show{opacity:1;transform:translateY(0);}
+.romp-tl-tip .r{display:flex;align-items:center;gap:6px;}
+.romp-tl-tip .chip{width:9px;height:9px;border-radius:50%;display:inline-block;}
+.romp-tl-tip .who{font-weight:650;}.romp-tl-tip .ar{color:#6e7681;}
+.romp-tl-tip .t{color:#8b949e;margin-left:2px;font-variant-numeric:tabular-nums;}
+.romp-tl-tip .k{color:#6e7681;font-size:10px;text-transform:uppercase;letter-spacing:.04em;}
+.romp-tl-tip .b{margin-top:4px;color:#cdd9e5;}"""
+
+
+# The timeline page bootstrap (adapted from chat-view/src/kernel/timeline.ts): shim the 3 Obsidian
+# DOM helpers TimelinePanel uses, connect the kernel WS (app=timeline), drive panel.update() from the
+# {type:"data"} payload, and provide the host bridges as WS messages (the view can't shell out from a
+# browser). deepLink/writeOrder/compact/sendCommand are accepted-and-ignored by the kernel for now
+# (cross-pane nav + reorder + tmux pickers are later increments) — the page degrades cleanly.
+_TIMELINE_BOOT = """
+(function(){var P=HTMLElement.prototype;
+if(!P.createEl)P.createEl=function(tag,o){var e=document.createElement(tag);if(o&&o.cls)e.className=o.cls;if(o&&o.text)e.textContent=o.text;this.appendChild(e);return e;};
+if(!P.createDiv)P.createDiv=function(o){return this.createEl('div',o);};
+if(!P.createSpan)P.createSpan=function(o){return this.createEl('span',o);};})();
+(function(){var wid=new URLSearchParams(location.search).get("wid")||"";var queue=[],ws=null,panel=null;
+function send(m){var s=JSON.stringify(m);if(ws&&ws.readyState===1)ws.send(s);else queue.push(s);}
+function connect(){var proto=location.protocol==="https:"?"wss://":"ws://";
+ws=new WebSocket(proto+location.host+"/ws?app=timeline"+(wid?"&wid="+encodeURIComponent(wid):""));
+ws.onopen=function(){for(var i=0;i<queue.length;i++)ws.send(queue[i]);queue=[];};
+ws.onmessage=function(ev){var m;try{m=JSON.parse(ev.data);}catch(e){return;}
+if(m.type==="data")panel.update(m.data);
+else if(m.type==="activeChat"&&panel.setActiveChat)panel.setActiveChat(m.activeChat);
+else if(m.type==="hover"&&panel.setHover)panel.setHover(m);};
+ws.onclose=function(){setTimeout(function(){location.reload();},1500);};}
+window.__rompTimelineOpenExternal=function(url){try{var u=new URL(url);if(u.protocol==="vscode:"){var q=u.searchParams;
+send({type:"deepLink",session:q.get("session"),anchor:q.get("anchor")||undefined,anchorT:Number(q.get("anchorT"))||undefined,anchorKind:q.get("anchorKind")||undefined,compose:q.get("compose")==="1"});
+if(window.parent!==window)window.parent.postMessage({romp:"reveal",pane:"chat"},"*");return;}}catch(e){}window.open(url,"_blank");};
+window.__rompTimelineWriteOrder=function(order){send({type:"writeOrder",order:order});};
+window.__rompTimelineCompact=function(name){send({type:"compact",name:name});};
+window.__rompTimelineSendCommand=function(name,cmd){send({type:"sendCommand",name:name,cmd:cmd});};
+window.__rompConnectTimeline=function(p){panel=p;connect();send({type:"ready"});};})();
+"""
+
+
+def _timeline_page():
+    """The timeline pane: the shared obsidian TimelinePanel (romp-timeline-view.js) injected verbatim
+    and driven by build_timeline over the kernel WS (app=timeline) — the same view the VS Code/Obsidian
+    surfaces use. The view JS is read live from OBSIDIAN/ so an edit goes live on a browser reload."""
+    try:
+        view_js = (OBSIDIAN / "romp-timeline-view.js").read_text()
+    except OSError:
+        return ("<!DOCTYPE html><html><body style='font-family:-apple-system,sans-serif;color:#999;"
+                "background:#1e1e1e;padding:12px'>romp timeline needs the obsidian/ modules "
+                "(romp-timeline-view.js).</body></html>")
+    return ("<!DOCTYPE html><html lang=en><head><meta charset=UTF-8>"
+            "<meta name=viewport content='width=device-width,initial-scale=1'>"
+            "<title>romp timeline</title><style>%s\n%s</style></head><body><div id=host></div>"
+            "<script>%s</script>"
+            "<script>var module={exports:{}};(function(module,exports){\n%s\n})(module,module.exports);"
+            "var TimelinePanel=module.exports.TimelinePanel;"
+            "window.__rompConnectTimeline(new TimelinePanel(document.getElementById('host')));"
+            "</script></body></html>" % (THEME_CSS, TIMELINE_CSS, _TIMELINE_BOOT, view_js))
+
+
 def _chat_body():
     # ported from chat-view page-skeleton.chatBody
     return ('<div id="winframe"></div><div id="tabbar"><span id="tabs"></span></div>'
@@ -570,13 +648,16 @@ def _chat_body():
 
 
 def _landing():
-    # minimal combined shell: chat + feed side by side (timeline pane deferred)
+    # combined 3-pane shell: chat + feed side by side on top, the timeline band full-width below
     return ("<!DOCTYPE html><html lang=en><head><meta charset=UTF-8><title>romp</title>"
-            "<style>html,body{margin:0;height:100%%;background:#1e1e1e}"
-            ".row{display:flex;height:100vh}iframe{border:0;height:100%%}"
-            "#c{flex:1 1 60%%;border-right:1px solid #303031}#f{flex:1 1 40%%}</style></head>"
-            "<body><div class=row><iframe id=c src=/chat></iframe>"
-            "<iframe id=f src=/feed></iframe></div></body></html>")
+            "<style>html,body{margin:0;height:100%;background:#1e1e1e}"
+            ".col{display:flex;flex-direction:column;height:100vh}"
+            ".row{display:flex;flex:1 1 auto;min-height:0}iframe{border:0}"
+            "#c{flex:1 1 60%;height:100%;border-right:1px solid #303031}#f{flex:1 1 40%;height:100%}"
+            "#t{flex:0 0 34%;width:100%;border-top:1px solid #303031}</style></head>"
+            "<body><div class=col><div class=row><iframe id=c src=/chat></iframe>"
+            "<iframe id=f src=/feed></iframe></div><iframe id=t src=/timeline></iframe></div>"
+            "</body></html>")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -659,6 +740,9 @@ class Handler(BaseHTTPRequestHandler):
             if p == "/feed":
                 _client_seen[0] = time.time()
                 return self._send(200, _feed_page(), "text/html; charset=utf-8")
+            if p == "/timeline":
+                _client_seen[0] = time.time()
+                return self._send(200, _timeline_page(), "text/html; charset=utf-8")
             if p.startswith("/dist/") or p.startswith("/media/"):
                 base = DIST if p.startswith("/dist/") else MEDIA
                 fp = (base / p.split("/", 2)[2]).resolve()
@@ -723,6 +807,8 @@ class Handler(BaseHTTPRequestHandler):
                 if m:
                     client["send"](json.dumps(m))
             client["send"](json.dumps({"type": "working", "names": build_feed(now)["working"]}))
+        elif client["app"] == "timeline":
+            client["send"](json.dumps({"type": "data", "data": build_timeline(now)}))
         else:
             client["send"](json.dumps(build_feed(now)))
 

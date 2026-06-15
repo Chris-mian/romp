@@ -192,6 +192,22 @@ class ServeSecurity(unittest.TestCase):
     def test_local_request_allowed(self):
         self.assertEqual(self._code("/feed", {}), 200)
 
+    def test_timeline_page_served(self):
+        # the combined shell's third pane: /timeline injects the shared obsidian TimelinePanel verbatim
+        import urllib.request
+        with urllib.request.urlopen("http://127.0.0.1:%d/timeline" % self.port, timeout=5) as r:
+            self.assertEqual(r.status, 200)
+            body = r.read().decode("utf-8", "replace")
+        self.assertIn("TimelinePanel", body, "the shared obsidian view is injected")
+        self.assertIn("app=timeline", body, "the page drives panel.update over the kernel WS")
+
+    def test_landing_has_three_panes(self):
+        import urllib.request
+        with urllib.request.urlopen("http://127.0.0.1:%d/" % self.port, timeout=5) as r:
+            body = r.read().decode("utf-8", "replace")
+        for pane in ("src=/chat", "src=/feed", "src=/timeline"):
+            self.assertIn(pane, body)
+
     def test_cross_site_origin_rejected(self):
         self.assertEqual(self._code("/feed", {"Origin": "http://evil.example"}), 403)
 

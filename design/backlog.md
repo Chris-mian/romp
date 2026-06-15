@@ -53,8 +53,9 @@ MINIMAL (build first — browser-able): the tuned chat-view UI ported onto the k
   Hand-rolled stdlib WS reusing the chat-view `shimJs` VERBATIM — the same protocol the bundles
   + extension speak (no poll bridge). Builds the UI bundles if stale.
 - [~] UI = the human's tuned chat-view render bundles, served verbatim (render.js/feed.js +
-  styles/feed.css). Chat ported; feed.ts goal-tree surgery + obsidian timeline fold pending.
-  `ui/` rename + `romp-events --emit` delete deferred (build-beside).
+  styles/feed.css) + the shared obsidian TimelinePanel injected at `/timeline`. Chat, feed, and
+  timeline panes all render real data. feed.ts dead-path tidy + `ui/` rename + `romp-events --emit`
+  delete deferred (build-beside).
 - [x] One view-builder: the kernel's Python projection emits the `{type:"session"/"feed"}` WS
   payloads the bundles consume; bundles only render. (Old reducers exist beside until cutover.)
 - [x] Chat pane: atoms→ChatEvent (user / assistant / thinking / tool with output-pairing + diff /
@@ -64,7 +65,11 @@ MINIMAL (build first — browser-able): the tuned chat-view UI ported onto the k
   DROP concepts (relevance/liveness/suspects/openQuestions) left empty so the render's
   conditional paths hide them — ZERO edits to the tuned feed code. Literal dead-path code removal
   + segment-nested modal trail = follow-up tidy. `/` now serves the combined chat+feed view.
-- [ ] Timeline pane: obsidian timeline port (segments-as-bars, event-based idle gaps) pending.
+- [x] Timeline pane: the shared obsidian TimelinePanel served at `/timeline` + as the 3rd pane of
+  the combined shell, driven by `build_timeline` over WS (segments-as-bars from the event model,
+  caption tooltips, awaiting/compacting stripes from `states/`, usage bars). The view is injected
+  verbatim (no fork — same code VS Code/Obsidian use). Later increments: message connectors
+  (courier), model/effort pickers + context battery (tmux-only), cross-pane focus/hover.
 - [x] TOC ledger: archiver headline + turn captions, click-to-jump (segment nesting pending).
 - [x] RUNNABLE: `python3 ~/GitRepos/romp-event-model/bin/romp-kernel` → auto-opens
   http://127.0.0.1:7878 (full path: rebuild bin is off PATH; `cd chat-view && npm install` once
