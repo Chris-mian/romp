@@ -187,6 +187,10 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(km.build_session(SID, NOW)["status"]["state"], "ready",
                          "ended turn -> ready even when tmux says working")
 
+    def test_colors_by_name(self):
+        # postal cards paint in the SENDER's identity color, looked up by session name
+        self.assertEqual(km._colors_by_name().get("testsess"), {"bg": "#abcdef", "fg": "#ffffff"})
+
     def test_postal_connectors(self):
         # timeline message connectors from the postal log: a sent row joined to its exec by id, with
         # BOTH ends alive lanes; a message to a non-alive session is dropped (no endpoint)

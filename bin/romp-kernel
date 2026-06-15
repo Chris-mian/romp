@@ -84,6 +84,23 @@ def _name_color(sid):
     return None
 
 
+def _colors_by_name():
+    """{session name → {bg,fg}} from the names registry — so a postal card can paint in its SENDER's
+    identity color (the event model gives the peer by name, not sid)."""
+    out = {}
+    try:
+        for f in NAMES.iterdir():
+            try:
+                parts = f.read_text().rstrip("\n").split("\t")
+            except Exception:
+                continue
+            if parts and len(parts) > 2 and parts[2].startswith("#"):
+                out[parts[0]] = {"bg": parts[2], "fg": "#ffffff"}
+    except Exception:
+        pass
+    return out
+
+
 def _rgb(color):
     """The card's recency-tint [r,g,b] — the session color (the old hawaii recency colormap is
     a later refinement), defaulting to a neutral slate."""
@@ -223,6 +240,7 @@ def build_session(sid, now, tmux=None):
     session = em.parse_session(sess["path"], rompuuid=sid, candidate_files=[sess["path"]],
                                postal_log=str(jd.MESSAGES), now=now)
     caps = _captions(sid)
+    peer_colors = _colors_by_name()           # name → identity color, for postal cards
     events, by_tool = [], {}                  # by_tool: tool_use_id → its tool event (fill output later)
     last_t = None
     for turn in session["turns"]:
@@ -237,13 +255,14 @@ def build_session(sid, now, tmux=None):
                 if isinstance(author, dict):                     # peer message → postal card
                     text = " ".join(b.get("text", "") for b in blocks if b.get("type") == "text")
                     events.append({"kind": "postal", "direction": "in", "peer": (author.get("peer") or "peer"),
+                                   "color": peer_colors.get(author.get("peer") or ""),
                                    "body": text, "uuid": a.get("uuid"), "ts": ts, "t": t, "status": "delivered"})
                 elif trs:                                        # tool_result → fill the matching tool event's output
                     for tr in trs:
                         ev = by_tool.get(tr.get("tool_use_id"))
                         if ev is not None:
                             c = tr.get("content")
-                            ev["output"] = c if isinstance(c, str) else json.dumps(c)[:4000]
+                            ev["output"] = (c if isinstance(c, str) else json.dumps(c))[:16000]
                             ev["isError"] = bool(tr.get("is_error"))
                             ev["resultUuid"] = a.get("uuid")
                 else:                                            # genuine prompt
@@ -263,8 +282,9 @@ def build_session(sid, now, tmux=None):
                         events.append({"kind": "assistant", "md": b["text"], "uuid": a.get("uuid"), "ts": ts})
                     elif b.get("type") == "tool_use":
                         inp = b.get("input") or {}
-                        ev = {"kind": "tool", "name": b.get("name", "tool"), "desc": "",
-                              "input": json.dumps(inp)[:2000], "output": "", "isError": False,
+                        ev = {"kind": "tool", "name": b.get("name", "tool"),
+                              "desc": str(inp.get("description") or "")[:200],
+                              "input": json.dumps(inp)[:4000], "output": "", "isError": False,
                               "uuid": a.get("uuid"), "ts": ts,
                               "file": inp.get("file_path") or inp.get("path") or "",
                               "diff": _edit_diff(inp) if b.get("name") in ("Edit", "MultiEdit", "Write") else ""}
