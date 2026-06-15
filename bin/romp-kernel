@@ -106,6 +106,15 @@ def _sessions(now):
     return out
 
 
+def _chat_sessions_list(now, tmux):
+    """Sessions to show as chat TABS: only those currently RUNNING (in tmux). discover() keeps a dead
+    session's transcript in its 48h window, but a closed session must NOT keep a tab (the old UI
+    dropped the tab when its tmux session ended) — the + picker and the timeline still reach closed
+    ones. Empty tmux (rare headless) → fall back to discover so the tabs aren't all gone."""
+    live = [s for s in _sessions(now) if s["sid"] in tmux]
+    return live if tmux else _sessions(now)
+
+
 TMUX_FMT = ("#{@romp}|#{@romp-session-id}|#{@claude-state}|#{@claude-state-since}|"
             "#{@claude-model}|#{@claude-effort}|#{@claude-context}|#{@claude-compact-pct}|#{@identity-bg}")
 
@@ -285,23 +294,35 @@ def _cleared_ids():
 
 
 def _clear_ask(item_id):
-    """Clear a feed card (inbox-zero): append a clear row. Append-only + single-writer (the kernel),
-    so it's crash-safe and an undo just appends an 'undo' row — no rewrite."""
+    """Clear one feed card (inbox-zero) — a batch of one (see _clear_all)."""
+    _clear_all([item_id])
+
+
+def _clear_all(item_ids):
+    """Clear every given card in ONE batch (shared float timestamp = the batch key) so a single
+    UndoClear restores the whole batch. Append-only + single-writer (the kernel) → crash-safe; an
+    undo just appends 'undo' rows. Used by the feed's Clear-all and by single-card clears."""
+    item_ids = [i for i in item_ids if i]
+    if not item_ids:
+        return
     p = jd.STATE / "cleared.jsonl"
     p.parent.mkdir(parents=True, exist_ok=True)
+    t = time.time()
     with p.open("a") as f:
-        f.write(json.dumps({"id": item_id, "t": int(time.time()), "op": "clear"}) + "\n")
+        for iid in item_ids:
+            f.write(json.dumps({"id": iid, "t": t, "op": "clear"}) + "\n")
 
 
 def _undo_clear():
-    """Restore the most-recently-cleared card (the feed's single UndoClear) — append an undo row for
-    the newest still-cleared id."""
+    """Restore the most-recent clear BATCH — every id cleared at the latest timestamp. So one
+    UndoClear undoes a Clear-all as a unit, and a single-card clear restores just that card."""
     cur = _cleared_ids()
     if not cur:
         return
-    newest = max(cur, key=lambda k: cur[k])
+    newest = max(cur.values())
     with (jd.STATE / "cleared.jsonl").open("a") as f:
-        f.write(json.dumps({"id": newest, "t": int(time.time()), "op": "undo"}) + "\n")
+        for iid in [i for i, ct in cur.items() if ct == newest]:
+            f.write(json.dumps({"id": iid, "t": time.time(), "op": "undo"}) + "\n")
 
 
 # ───────────────────────── view-builder: goals → feed (parity: feed = ADAPT; minimal here) ─────────────────────────
@@ -585,7 +606,7 @@ def _push_all():
     with _clients_lock:
         want_tl = any(c["app"] == "timeline" for c in _clients)
     try:
-        chat_sessions = [build_session(s["sid"], now, tmux) for s in _sessions(now)]
+        chat_sessions = [build_session(s["sid"], now, tmux) for s in _chat_sessions_list(now, tmux)]
         chat_sessions = [m for m in chat_sessions if m]
         feed = build_feed(now, tmux)
         timeline = build_timeline(now, tmux) if want_tl else None
@@ -765,10 +786,14 @@ def _chat_body():
 # persisted in localStorage. Iframes get pointer-events:none mid-drag so the gutter keeps the mouse
 # (an iframe otherwise swallows mousemove the instant the cursor crosses it).
 _LANDING_JS = """
-(function(){var col=document.querySelector('.col'),row=document.querySelector('.row');
-var KC='romp-split-chat',KT='romp-split-tl';
-try{var c=localStorage.getItem(KC);if(c)row.style.setProperty('--chat',c);
-var t=localStorage.getItem(KT);if(t)col.style.setProperty('--tl',t);}catch(e){}
+(function(){var col=document.querySelector('.col'),row=document.querySelector('.row'),
+tf=document.getElementById('t');var KC='romp-split-chat';
+try{var c=localStorage.getItem(KC);if(c)row.style.setProperty('--chat',c);}catch(e){}
+// timeline AUTO-FITS its content (only as tall as its lanes need): set --tl from the iframe's
+// content height, re-fit on a lane add/remove (ResizeObserver) and on window resize. Capped at 70vh.
+function tlContentH(){try{return tf.contentDocument.body.scrollHeight;}catch(e){return 0;}}
+function cap(){return Math.round(window.innerHeight*0.7);}
+function autosize(){var h=tlContentH();if(!h)return;col.style.setProperty('--tl',Math.min(h+2,cap())+'px');}
 function drag(h,cls,apply){if(!h)return;h.addEventListener('mousedown',function(e){e.preventDefault();
 document.body.classList.add('drag',cls);
 function mv(ev){apply(ev);}function up(){document.body.classList.remove('drag',cls);
@@ -778,8 +803,11 @@ drag(document.getElementById('gv'),'dragv',function(ev){var r=row.getBoundingCli
 var pct=Math.max(15,Math.min(85,(ev.clientX-r.left)/r.width*100));var v=pct.toFixed(1)+'%';
 row.style.setProperty('--chat',v);try{localStorage.setItem(KC,v);}catch(e){}});
 drag(document.getElementById('gh'),'dragh',function(ev){var r=col.getBoundingClientRect();
-var pct=Math.max(10,Math.min(80,(r.bottom-ev.clientY)/r.height*100));var v=pct.toFixed(1)+'%';
-col.style.setProperty('--tl',v);try{localStorage.setItem(KT,v);}catch(e){}});})();
+var px=r.bottom-ev.clientY;var ch=tlContentH();var mx=ch?ch+2:cap();   // can SHRINK, never exceed content
+col.style.setProperty('--tl',Math.max(48,Math.min(mx,px))+'px');});
+tf.addEventListener('load',function(){autosize();
+try{new ResizeObserver(autosize).observe(tf.contentDocument.body);}catch(e){}});
+window.addEventListener('resize',autosize);})();
 """
 
 
@@ -788,11 +816,13 @@ def _landing():
     # full-width below (draggable row-resize gutter). Pane sizes persist in localStorage.
     return ("<!DOCTYPE html><html lang=en><head><meta charset=UTF-8><title>romp</title><style>"
             "html,body{margin:0;height:100%;background:#1e1e1e;overflow:hidden}"
-            ".col{display:grid;grid-template-rows:1fr 6px var(--tl,34%);height:100vh}"
-            ".row{display:grid;grid-template-columns:var(--chat,60%) 6px 1fr;min-height:0}"
+            ".col{display:grid;grid-template-rows:1fr 5px var(--tl,160px);height:100vh}"
+            ".row{display:grid;grid-template-columns:var(--chat,60%) 5px 1fr;min-height:0}"
             "iframe{border:0;width:100%;height:100%}"
-            ".gv{cursor:col-resize}.gh{cursor:row-resize}.gv,.gh{background:#303031}"
-            ".gv:hover,.gh:hover{background:#007fd4}"
+            ".gv{cursor:col-resize;background:linear-gradient(90deg,transparent 2px,#333 2px,#333 3px,transparent 3px)}"
+            ".gh{cursor:row-resize;background:linear-gradient(180deg,transparent 2px,#333 2px,#333 3px,transparent 3px)}"
+            ".gv:hover{background:linear-gradient(90deg,transparent 2px,#007fd4 2px,#007fd4 3px,transparent 3px)}"
+            ".gh:hover{background:linear-gradient(180deg,transparent 2px,#007fd4 2px,#007fd4 3px,transparent 3px)}"
             "body.drag iframe{pointer-events:none}body.dragv{cursor:col-resize}body.dragh{cursor:row-resize}"
             "</style></head><body><div class=col>"
             "<div class=row><iframe src=/chat></iframe><div class=gv id=gv></div>"
@@ -938,6 +968,10 @@ class Handler(BaseHTTPRequestHandler):
                 elif msg and msg.get("type") == "askClear" and msg.get("itemId"):
                     _clear_ask(msg["itemId"])
                     _push_all()                        # reflect the clear on every feed client now
+                elif msg and msg.get("type") == "clearAll":
+                    d = build_feed(int(time.time()))
+                    _clear_all([a["itemId"] for a in d["asks"]] + [c["itemId"] for c in d["items"]])
+                    _push_all()
                 elif msg and msg.get("type") == "undoClear":
                     _undo_clear()
                     _push_all()
@@ -953,7 +987,7 @@ class Handler(BaseHTTPRequestHandler):
         now = int(time.time())
         tmux = _tmux_sessions()
         if client["app"] == "chat":
-            for s in _sessions(now):
+            for s in _chat_sessions_list(now, tmux):
                 m = build_session(s["sid"], now, tmux)
                 if m:
                     client["send"](json.dumps(m))

@@ -147,6 +147,25 @@ class ViewBuilder(unittest.TestCase):
         self.assertTrue(any(a["itemId"] == g1 for a in d2["asks"]), "undo restores it")
         self.assertFalse(d2["canUndoClear"])
 
+    def test_feed_clear_all_then_undo_restores_the_batch(self):
+        d0 = km.build_feed(NOW)
+        ids = [a["itemId"] for a in d0["asks"]] + [c["itemId"] for c in d0["items"]]
+        self.assertTrue(ids, "fixture has cards to clear")
+        km._clear_all(ids)
+        d1 = km.build_feed(NOW)
+        self.assertEqual(len(d1["asks"]) + len(d1["items"]), 0, "clear-all empties the feed")
+        self.assertTrue(d1["canUndoClear"])
+        km._undo_clear()
+        d2 = km.build_feed(NOW)
+        self.assertEqual(len(d2["asks"]), len(d0["asks"]), "one undo restores the whole batch")
+        self.assertFalse(d2["canUndoClear"])
+
+    def test_chat_tabs_live_only(self):
+        # a closed session (not in tmux) gets no chat tab; a running one does (old UI dropped dead tabs)
+        self.assertEqual(km._chat_sessions_list(NOW, {"other-sid": {}}), [], "closed session -> no tab")
+        live = km._chat_sessions_list(NOW, {SID: {"state": "working"}})
+        self.assertEqual([s["sid"] for s in live], [SID])
+
     def test_timeline_lane_and_segment_bar(self):
         # the fixture wrote only a turn-grain caption; bind a segment-grain one so the bar tooltip resolves
         session = em.parse_session(str(self.tpath), rompuuid=SID, candidate_files=[str(self.tpath)], now=NOW)

@@ -1411,6 +1411,24 @@ function ensureUndoClear(): HTMLElement {
   return b;
 }
 
+// Clear all (top-right, left of UndoClear): inbox-zero every open card at once. Destructive, so it
+// hovers RED like Clear; the single UndoClear restores the whole batch (the host clears them as one
+// cleared.jsonl batch). Shown by render() whenever there's anything to clear.
+function makeClearAllBtn(): HTMLElement {
+  const b = el("button", "fdismiss fclearall-corner");
+  b.id = "feed-clearall";
+  b.textContent = "Clear all";
+  b.title = "clear every open card (inbox-zero) — UndoClear restores them";
+  b.onclick = (ev) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "clearAll" }); };
+  return b;
+}
+
+function ensureClearAll(): HTMLElement {
+  let b = document.getElementById("feed-clearall");
+  if (!b) { b = makeClearAllBtn(); document.body.appendChild(b); }
+  return b;
+}
+
 // Build the three columns (Asks | Awaiting | Completed) inside #feed-list once;
 // rebuild if torn down (empty state). "Awaiting" (the user's ruling 2026-06-10):
 // matches the session-chip vocabulary — anything here awaits HIM (a question,
@@ -1497,7 +1515,8 @@ function render() {
   const list = document.getElementById("feed-list")!;
   const prevScroll = list.scrollTop;
   const standalone = standaloneItems();
-  ensureUndoClear().style.display = canUndoClear ? "" : "none";   // fixed at the pane's bottom-right
+  ensureUndoClear().style.display = canUndoClear ? "" : "none";   // fixed at the pane's top-right
+  ensureClearAll().style.display = (asks.length || standalone.length || blocked.length) ? "" : "none";
 
   if (!asks.length && !standalone.length && !blocked.length) {
     list.innerHTML = ""; askEls.clear(); groupEls.clear(); cardEls.clear(); blockedEls.clear();
