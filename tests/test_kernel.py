@@ -135,6 +135,18 @@ class ViewBuilder(unittest.TestCase):
         self.assertNotEqual(comp[0]["trgb"], km._rgb(comp[0]["color"]), "not the flat session color")
         self.assertTrue(all(c["standalone"] for c in d["items"]), "stream cards must be standalone or the render hides them")
 
+    def test_feed_clear_and_undo(self):
+        g1 = "%s:g1" % SID
+        self.assertTrue(any(a["itemId"] == g1 for a in km.build_feed(NOW)["asks"]))
+        km._clear_ask(g1)
+        d = km.build_feed(NOW)
+        self.assertFalse(any(a["itemId"] == g1 for a in d["asks"]), "a cleared ask is hidden")
+        self.assertTrue(d["canUndoClear"]); self.assertEqual(d["dismissedCount"], 1)
+        km._undo_clear()
+        d2 = km.build_feed(NOW)
+        self.assertTrue(any(a["itemId"] == g1 for a in d2["asks"]), "undo restores it")
+        self.assertFalse(d2["canUndoClear"])
+
     def test_timeline_lane_and_segment_bar(self):
         # the fixture wrote only a turn-grain caption; bind a segment-grain one so the bar tooltip resolves
         session = em.parse_session(str(self.tpath), rompuuid=SID, candidate_files=[str(self.tpath)], now=NOW)
@@ -184,6 +196,12 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(st["state"], "awaiting", "permission -> awaiting chip")
         self.assertEqual(st["model"], "Opus 4.8")
         self.assertEqual(st["ctx"], "20")
+
+
+class ParentWatch(unittest.TestCase):
+    def test_pid_alive(self):
+        self.assertTrue(km._pid_alive(os.getpid()))
+        self.assertFalse(km._pid_alive(2147483646), "a non-existent pid is not alive")
 
 
 class WsFraming(unittest.TestCase):

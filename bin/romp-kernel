@@ -260,6 +260,50 @@ def build_session(sid, now, tmux=None):
             if session["turns"] else now}
 
 
+# ───────────────────────── feed clear / undo (inbox-zero) ─────────────────────────
+def _cleared_ids():
+    """The set of currently-cleared feed itemIds (asks + stream), replayed from the append-only
+    cleared.jsonl: a 'clear' row adds an id, an 'undo' row removes it (newest-wins). Mirrors the old
+    kernel's shared cleared.jsonl so one Clear hides both an ask card and its stream deliverable."""
+    cur = {}
+    try:
+        for line in (jd.STATE / "cleared.jsonl").read_text().splitlines():
+            try:
+                o = json.loads(line)
+            except Exception:
+                continue
+            iid = o.get("id")
+            if not iid:
+                continue
+            if o.get("op") == "undo":
+                cur.pop(iid, None)
+            else:
+                cur[iid] = o.get("t", 0)
+    except OSError:
+        pass
+    return cur
+
+
+def _clear_ask(item_id):
+    """Clear a feed card (inbox-zero): append a clear row. Append-only + single-writer (the kernel),
+    so it's crash-safe and an undo just appends an 'undo' row — no rewrite."""
+    p = jd.STATE / "cleared.jsonl"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with p.open("a") as f:
+        f.write(json.dumps({"id": item_id, "t": int(time.time()), "op": "clear"}) + "\n")
+
+
+def _undo_clear():
+    """Restore the most-recently-cleared card (the feed's single UndoClear) — append an undo row for
+    the newest still-cleared id."""
+    cur = _cleared_ids()
+    if not cur:
+        return
+    newest = max(cur, key=lambda k: cur[k])
+    with (jd.STATE / "cleared.jsonl").open("a") as f:
+        f.write(json.dumps({"id": newest, "t": int(time.time()), "op": "undo"}) + "\n")
+
+
 # ───────────────────────── view-builder: goals → feed (parity: feed = ADAPT; minimal here) ─────────────────────────
 def build_feed(now, tmux=None):
     """The {type:"feed"} message the tuned feed.js bundle consumes (ui-parity.md: feed = ADAPT).
@@ -269,6 +313,7 @@ def build_feed(now, tmux=None):
     conditional paths hide them — no edits to the tuned card code. Stream = turn captions."""
     if tmux is None:
         tmux = _tmux_sessions()
+    cleared = _cleared_ids()
     asks, stream, working = [], [], []
     for s in _sessions(now):
         fsid, name = s["sid"], s["name"]
@@ -298,7 +343,7 @@ def build_feed(now, tmux=None):
             return out
         for nid in children.get(None, []):
             col = status.get(nid, "working")
-            if col == "cleared":
+            if col == "cleared" or nid in cleared:
                 continue
             asks.append({
                 "itemId": nid, "sid": fsid, "name": name, "color": color, "text": nodes[nid]["text"],
@@ -308,13 +353,14 @@ def build_feed(now, tmux=None):
                 "column": ("needs_input" if col == "blocked" else "completed" if col == "completed" else "working"),
                 "openQuestions": [], "openPaths": [], "tree": flatten(nid, [])})
         for c in _captions(fsid).values():
-            if c.get("grain") == "turn":
+            if c.get("grain") == "turn" and c["id"] not in cleared:
                 stream.append({"itemId": c["id"], "sid": fsid, "name": name, "color": color,
                                "did": c["caption"], "t": c["t"], "trgb": list(cm.age_rgb(now - c["t"])),
                                "relevance": "DETAILS", "live": live, "standalone": True})
     stream.sort(key=lambda c: c["t"], reverse=True)
     return {"type": "feed", "asks": asks, "items": stream[:200], "blocked": [], "now": now,
-            "working": working, "dismissedCount": 0, "showDismissed": False, "canUndoClear": False}
+            "working": working, "dismissedCount": len(cleared), "showDismissed": False,
+            "canUndoClear": len(cleared) > 0}
 
 
 # ───────────────────────── view-builder: segments → timeline (parity: timeline = ADAPT) ─────────────────────────
@@ -889,6 +935,12 @@ class Handler(BaseHTTPRequestHandler):
                     msg = None
                 if msg and msg.get("type") == "ready":
                     self._push_one(client)
+                elif msg and msg.get("type") == "askClear" and msg.get("itemId"):
+                    _clear_ask(msg["itemId"])
+                    _push_all()                        # reflect the clear on every feed client now
+                elif msg and msg.get("type") == "undoClear":
+                    _undo_clear()
+                    _push_all()
         except (BrokenPipeError, ConnectionResetError, OSError):
             pass
         finally:
@@ -931,10 +983,34 @@ def _ensure_bundles():
             sys.stderr.write("romp-kernel: bundle build failed (%s) — UI may be stale\n" % e)
 
 
+def _pid_alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def _parent_watch():
+    """Exit if the manager that spawned us (ROMP_MANAGER_PID) dies, so a supervisor crash doesn't
+    orphan the kernel — the python analogue of chat-view/src/kernel/parent-watch, for simplify's
+    romp-manager integration. No-op when launched standalone (no ROMP_MANAGER_PID)."""
+    pid = os.environ.get("ROMP_MANAGER_PID")
+    if not (pid and pid.isdigit()):
+        return
+    pid = int(pid)
+    while _pid_alive(pid):
+        time.sleep(2)
+    os._exit(0)
+
+
 def main():
     _ensure_bundles()
     threading.Thread(target=_producer, daemon=True).start()
     threading.Thread(target=_pusher, daemon=True).start()
+    threading.Thread(target=_parent_watch, daemon=True).start()
     srv = ThreadingHTTPServer((BIND, PORT), Handler)
     url = "http://127.0.0.1:%d" % PORT
     sys.stderr.write("romp-kernel: serving the ported UI at %s  (Ctrl-C to stop)\n" % url)
