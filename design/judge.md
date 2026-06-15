@@ -64,15 +64,17 @@ messages regardless, and the courier catches up from the durable log.
 - **The planner runs on every segment** (it merges the old goal-setter + filer).
 - **status is a goal property** (open / blocked / completed), never on a raw segment.
   - `blocked` comes from the planner's per-node verdict that a node now needs the user.
-  - **Completion is two-step, both in THIS layer:** the planner marks a node
-    complete when its *direct* work discharges it (explicit, per node, the only
-    completion the judges emit); then this layer (NOT the read side) derives a
-    goal's rolled-up completion by **rollup** (all sub-nodes complete) **gated by
-    the "settled" heuristic** (nothing live still working it). The producer
-    publishes the rolled-up status; the read side only displays columns. The settled
-    gate is what keeps accreting sub-goals from completing a goal prematurely. No
-    separate "the whole goal is done" judge-mark. (Moved down from the old feed
-    layer per the read side's no-logic principle, `design/read-side.md`.)
+  - **Completion (LOCKED on the live feed, 2026-06-15):** a top-goal is `completed`
+    when its TOP node is `nodeComplete` AND **settled** AND not blocked. The planner
+    marks a node complete when its direct work discharges it (explicit, per node);
+    marking the TOP node is its "this segment discharged the whole ask" verdict. We
+    do NOT require the whole subtree complete — that never fires (a trailing SUB'd
+    step is rarely DONE'd), and the top-done verdict is the reliable signal. This
+    self-sorts by goal type: a command goal gets a discharging segment → top-done →
+    completes; an accreting umbrella never gets one → stays working (correct). The
+    producer computes this; the read side only displays columns. (Fallback, NOT built
+    speculatively: if a goal ever has all leaves DONE'd but the top unmarked, add an
+    all-subtree path then.)
   - `cleared` (user retire) and `completed` both leave the planner's candidate menu;
     they differ only in the feed (completed = a review column you verify then clear).
 - **Global time-order processing.** Process a pass's segments oldest-first across
@@ -250,8 +252,10 @@ earns its place.
 - **`completed` may bifurcate** (PARKED): completed-that-raises-new-questions,
   completed-that-answers-a-question (show a concise answer), pure done-FYI. A sub-tag,
   a separate status, or derived. Revisit at the feed-behavior design.
-- **the "settled" heuristic's exact definition** (kept from the old higher layer): the
-  liveness condition that gates goal-level completion. Tune when the planner is in.
+- **the "settled" heuristic** — LOCKED (see Completion above): settled = the goal is
+  no longer the session's active focus (a newer top-goal was minted, or the session
+  closed). Holds an in-focus top-done goal as working; reopens a completed goal if new
+  work makes it the focus again.
 - **un-block lag on answers:** a blocked goal un-blocks a beat after you answer (when
   the follow-on work files under it). Fine; the planner can attribute the
   answer-segment itself if the lag ever bothers us.
