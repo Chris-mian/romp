@@ -25,8 +25,10 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 em = SourceFileLoader("romp_event_model", str(HERE / "romp-event-model")).load_module()
 jd = SourceFileLoader("romp_judge", str(HERE / "romp-judge")).load_module()
-DIST = ROOT / "chat-view" / "dist"          # the human's tuned UI bundles (built; reused verbatim)
-MEDIA = ROOT / "chat-view" / "media"
+CHAT_VIEW = ROOT / "chat-view"               # the tuned UI, current in this worktree via `git merge main`
+DIST = CHAT_VIEW / "dist"                    # bundles built from CHAT_VIEW/src (the human's tuned render layer)
+MEDIA = CHAT_VIEW / "media"
+OBSIDIAN = ROOT / "obsidian"
 NAMES = jd.STATE / "names"
 PORT = int(os.environ.get("ROMP_KERNEL_PORT", "7878"))
 
