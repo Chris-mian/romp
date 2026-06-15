@@ -67,11 +67,13 @@ class ViewBuilder(unittest.TestCase):
         self.tpath.write_text("\n".join(json.dumps(r) for r in recs) + "\n")
         names = td / "names"; names.mkdir()
         (names / SID).write_text("testsess\t%s\t#abcdef\n" % str(cdir))
-        self.saved = (jd.NAMES, jd.PROJECTS, jd.CAPDIR, jd.ARCHDIR, jd.GOALDIR, jd.STATE, km.NAMES)
+        self.saved = (jd.NAMES, jd.PROJECTS, jd.CAPDIR, jd.ARCHDIR, jd.GOALDIR, jd.STATE,
+                      km.NAMES, km._tmux_sessions)
         jd.NAMES, jd.PROJECTS = names, proj
         jd.CAPDIR, jd.ARCHDIR, jd.GOALDIR = td / "captions", td / "archive", td / "goals"
         jd.STATE = td                                  # sandbox the timeline helpers (usage/states/mail)
         km.NAMES = names
+        km._tmux_sessions = lambda: {}                 # deterministic: no live tmux in tests (builders fall back)
         session = em.parse_session(str(self.tpath), rompuuid=SID, candidate_files=[str(self.tpath)], now=NOW)
         turn = session["turns"][0]
         jd.CAPDIR.mkdir(parents=True)
@@ -89,7 +91,8 @@ class ViewBuilder(unittest.TestCase):
             "placements": {}, "status": {"%s:g1" % SID: "completed"}}))
 
     def tearDown(self):
-        (jd.NAMES, jd.PROJECTS, jd.CAPDIR, jd.ARCHDIR, jd.GOALDIR, jd.STATE, km.NAMES) = self.saved
+        (jd.NAMES, jd.PROJECTS, jd.CAPDIR, jd.ARCHDIR, jd.GOALDIR, jd.STATE,
+         km.NAMES, km._tmux_sessions) = self.saved
         self.td.cleanup()
 
     def test_session_payload_shape(self):
@@ -159,6 +162,28 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(bar["workUuid"], "a1", "first assistant atom = work anchor")
         self.assertEqual(bar["replyUuid"], "a2", "last assistant-with-text = reply anchor")
         self.assertFalse(bar["open"], "the turn ended -> bar not open")
+
+    def test_timeline_state_and_metadata_from_tmux(self):
+        # live lanes take state + model/effort/context from tmux @claude-* vars (the READY badge =
+        # state "waiting"); badgeFor hides the badge unless live, so live must be true here
+        km._tmux_sessions = lambda: {SID: {"state": "waiting", "since": NOW - 10, "model": "Opus 4.8",
+                                           "effort": "xhigh", "context": 43, "compactPct": None,
+                                           "color": "#abcdef"}}
+        lane = next(s for s in km.build_timeline(NOW)["sessions"] if s["id"] == SID)
+        self.assertTrue(lane["live"])
+        self.assertEqual(lane["state"], "waiting", "tmux state drives the lane (waiting -> READY badge)")
+        self.assertEqual(lane["model"], "Opus 4.8")
+        self.assertEqual(lane["effort"], "xhigh")
+        self.assertEqual(lane["context"], 43)
+
+    def test_chat_chip_maps_tmux_state(self):
+        # the chat chip maps tmux state: permission -> awaiting, plus model/effort/ctx for the statusline
+        km._tmux_sessions = lambda: {SID: {"state": "permission", "since": NOW - 5, "model": "Opus 4.8",
+                                           "effort": "max", "context": 20, "compactPct": None, "color": None}}
+        st = km.build_session(SID, NOW)["status"]
+        self.assertEqual(st["state"], "awaiting", "permission -> awaiting chip")
+        self.assertEqual(st["model"], "Opus 4.8")
+        self.assertEqual(st["ctx"], "20")
 
 
 class WsFraming(unittest.TestCase):

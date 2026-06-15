@@ -106,6 +106,41 @@ def _sessions(now):
     return out
 
 
+TMUX_FMT = ("#{@romp}|#{@romp-session-id}|#{@claude-state}|#{@claude-state-since}|"
+            "#{@claude-model}|#{@claude-effort}|#{@claude-context}|#{@claude-compact-pct}|#{@identity-bg}")
+
+
+def _num(x):
+    x = (x or "").strip()
+    return int(x) if x.lstrip("-").isdigit() else None
+
+
+def _tmux_sessions():
+    """Live lane metadata from tmux @claude-* vars (state / model / effort / context% / compaction% /
+    state-since / identity color), keyed by romp-session-id. This is the ONE source that isn't a file
+    — everything else the kernel reads is file-derived. The kernel runs on the HOST (where the tmux
+    sessions + Claude live), so tmux is present; the phone reaches it through its browser → this host
+    kernel → tmux (no Claude runs on the phone). Best-effort {} when tmux is absent (rare headless
+    run); the builders then fall back to file-derived state. Canonical @claude-state values:
+    working | waiting | idle | permission | compacting (hooks/tmux-status.sh)."""
+    try:
+        r = subprocess.run(["tmux", "list-sessions", "-F", TMUX_FMT],
+                           capture_output=True, text=True, timeout=2.5)
+    except Exception:
+        return {}
+    if r.returncode != 0:
+        return {}
+    out = {}
+    for line in r.stdout.splitlines():
+        p = line.split("|")
+        if len(p) < 9 or p[0] != "1" or not p[1]:           # p[0]=@romp tag (1 = a romp session)
+            continue
+        out[p[1]] = {"state": p[2].strip(), "since": _num(p[3]), "model": p[4].strip(),
+                     "effort": p[5].strip(), "context": _num(p[6]), "compactPct": _num(p[7]),
+                     "color": p[8].strip() if p[8].startswith("#") else None}
+    return out
+
+
 def _captions(fsid):
     out = {}
     try:
@@ -135,9 +170,11 @@ def _edit_diff(inp):
     return "\n".join(lines)
 
 
-def build_session(sid, now):
+def build_session(sid, now, tmux=None):
     """A {type:"session"} message the render.js bundle consumes: the event tree reshaped to
     ChatEvent[], plus the TOC ledger (archiver headline + turn captions) and a status chip."""
+    if tmux is None:
+        tmux = _tmux_sessions()
     sess = next((s for s in _sessions(now) if s["sid"] == sid), None)
     if not sess:
         return None
@@ -205,25 +242,40 @@ def build_session(sid, now):
     last_turn = session["turns"][-1] if session["turns"] else None
     open_now = bool(last_turn and not last_turn["ended"]
                     and not any(x["type"] == "idle" for x in last_turn["atoms"]))
-    status = {"state": "working" if open_now else "idle",
-              "sinceEpoch": last_t, "faded": not open_now}
+    tm = tmux.get(sid)
+    if tm:                                             # live: tmux state is authoritative for the chip
+        st = tm["state"]
+        chip = ("working" if st == "working" else "awaiting" if st == "permission"
+                else "compacting" if st == "compacting" else "ready")
+        faded = chip == "ready" and bool(tm["since"]) and now - tm["since"] > 3600
+        status = {"state": chip, "sinceEpoch": tm["since"] or last_t, "faded": faded,
+                  "model": tm["model"], "effort": tm["effort"],
+                  "ctx": str(tm["context"]) if tm["context"] is not None else ""}
+    elif tmux:                                         # tmux present but this session isn't running → closed
+        status = {"state": "closed", "sinceEpoch": last_t, "faded": True}
+    else:                                              # no tmux (rare headless) → event-model fallback
+        status = {"state": "working" if open_now else "idle", "sinceEpoch": last_t, "faded": not open_now}
     return {"type": "session", "id": sid, "name": sess["name"], "color": _name_color(sid),
             "events": events, "status": status, "ledger": ledger, "firstSeen": session["turns"][0]["t"]
             if session["turns"] else now}
 
 
 # ───────────────────────── view-builder: goals → feed (parity: feed = ADAPT; minimal here) ─────────────────────────
-def build_feed(now):
+def build_feed(now, tmux=None):
     """The {type:"feed"} message the tuned feed.js bundle consumes (ui-parity.md: feed = ADAPT).
     Goals map onto the AskItem/AskTreeNode shape the render already speaks: the goal tree IS the
     card's tree, rolled-up status → the Working/Blocked/Completed column, dead-concept fields
     (relevance/liveness/suspects/openQuestions/decision-briefs) left empty so the render's
     conditional paths hide them — no edits to the tuned card code. Stream = turn captions."""
+    if tmux is None:
+        tmux = _tmux_sessions()
     asks, stream, working = [], [], []
     for s in _sessions(now):
         fsid, name = s["sid"], s["name"]
-        color = _name_color(fsid); live = s["mtime"] >= now - 90
-        if live:
+        color = _name_color(fsid)
+        tm = tmux.get(fsid); live = tm is not None
+        who_working = bool(tm and tm["state"] == "working")
+        if who_working:
             working.append(name)
         store = jd.load_goals(fsid)
         nodes, status = store.get("nodes", {}), store.get("status", {})
@@ -238,7 +290,7 @@ def build_feed(now):
             nd = nodes[nid]
             kids = sorted(children.get(nid, []), key=lambda c: nodes[c]["t"])
             out.append({"id": nid, "kind": "ask", "text": nd["text"], "who": name, "whoSid": fsid,
-                        "whoColor": color, "whoWorking": False, "status": node_status(nd),
+                        "whoColor": color, "whoWorking": who_working, "status": node_status(nd),
                         "t": nd["t"], "last": nd["t"], "trgb": list(cm.age_rgb(now - nd["t"])),
                         "children": kids, "rows": []})
             for c in kids:
@@ -367,19 +419,22 @@ def _seg_prompt(seg):
     return blocks if isinstance(blocks, str) else ""
 
 
-def build_timeline(now):
+def build_timeline(now, tmux=None):
     """A {type:"timeline"} message the ported timeline bundle consumes (ui-parity.md: timeline =
     ADAPT). Lanes per session; work bars are SEGMENTS [t,end] from the event model (not the deleted
     `romp-events --emit`); prompt dots at segment starts; tooltips from the captioner; awaiting/
     compacting stripes from states/; compaction markers from compact_boundary atoms; usage from
-    usage.json. Message connectors (need the courier) and model/effort pickers + context battery
-    (tmux-only) are later increments — emitted empty/absent so the render's conditional paths hide
-    them."""
+    usage.json; live state + model/effort/context%/compaction% per lane from tmux @claude-* vars.
+    Message connectors (need the courier) and cross-pane focus/hover are later increments — emitted
+    empty/null so the render's conditional paths hide them."""
+    if tmux is None:
+        tmux = _tmux_sessions()
     sessions, turns = [], {}
     for s in _sessions(now):
         sid, name = s["sid"], s["name"]
-        hexcol = (_name_color(sid) or {}).get("bg", "#888888")
-        live = s["mtime"] >= now - 90
+        tm = tmux.get(sid)
+        live = tm is not None
+        hexcol = (tm and tm["color"]) or (_name_color(sid) or {}).get("bg", "#888888")
         try:
             session = em.parse_session(s["path"], rompuuid=sid, candidate_files=[s["path"]],
                                        postal_log=str(jd.MESSAGES), now=now)
@@ -390,8 +445,11 @@ def build_timeline(now):
         last_turn = st_turns[-1] if st_turns else None
         open_now = bool(last_turn and not last_turn["ended"]
                         and not any(x["type"] == "idle" for x in last_turn["atoms"]))
-        blocked = "blocked" in jd.load_goals(sid).get("status", {}).values()
-        state = "working" if open_now else ("awaiting" if blocked else "idle")
+        if tm:                            # live: tmux state drives the lane badge (working/waiting/idle/permission/compacting)
+            state = tm["state"] or "idle"
+        else:                             # dead lane: coarse file-derived (badgeFor hides the badge when !live anyway)
+            blocked = "blocked" in jd.load_goals(sid).get("status", {}).values()
+            state = "awaiting" if blocked else ("working" if open_now else "idle")
         bars, last_t = [], None
         for ti, turn in enumerate(st_turns):
             turn_open = (ti == len(st_turns) - 1 and not turn["ended"]
@@ -414,13 +472,19 @@ def build_timeline(now):
         turns[sid] = bars
         compactions = [{"t": a["t"]} for turn in st_turns for a in turn["atoms"]
                        if a.get("type") == "system" and a.get("subtype") == "compact_boundary" and a.get("t")]
+        active = bool(tm and tm["state"] in ("working", "permission", "compacting", "waiting"))
+        faded = (not live) or (not active and bool(tm and tm["since"]) and now - tm["since"] > 3600)
         sessions.append({
-            "id": sid, "name": name, "live": live, "state": state, "since": last_t,
-            "color": hexcol, "model": "", "effort": "", "context": None, "compactPct": None,
+            "id": sid, "name": name, "live": live, "state": state,
+            "since": (tm["since"] if tm and tm["since"] else last_t),
+            "color": hexcol,
+            "model": (tm["model"] if tm else ""), "effort": (tm["effort"] if tm else ""),
+            "context": (tm["context"] if tm else None),
+            "compactPct": (tm["compactPct"] if tm else None),
             "awaiting": _state_intervals(sid, "permission", now),
             "compacting": _state_intervals(sid, "compacting", now),
             "compactions": compactions, "pendingMail": _pending_mail(sid),
-            "stale": not live, "faded": not live})
+            "stale": faded, "faded": faded})
     return {"type": "timeline", "now": now, "sessions": sessions, "turns": turns,
             "messages": [], "activeChat": None, "focus": None, "hover": None, "usage": _usage()}
 
@@ -471,13 +535,14 @@ def _push_all():
     """Build fresh payloads and push to every connected client (per its app). The timeline payload
     re-parses every session, so it's built only when a timeline client is actually connected."""
     now = int(time.time())
+    tmux = _tmux_sessions()                       # one tmux read per push, shared by all builders
     with _clients_lock:
         want_tl = any(c["app"] == "timeline" for c in _clients)
     try:
-        chat_sessions = [build_session(s["sid"], now) for s in _sessions(now)]
+        chat_sessions = [build_session(s["sid"], now, tmux) for s in _sessions(now)]
         chat_sessions = [m for m in chat_sessions if m]
-        feed = build_feed(now)
-        timeline = build_timeline(now) if want_tl else None
+        feed = build_feed(now, tmux)
+        timeline = build_timeline(now, tmux) if want_tl else None
     except Exception:
         sys.stderr.write("push build: %s\n" % traceback.format_exc())
         return
@@ -701,8 +766,11 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
-        if getattr(self, "_set_cookie", None):       # auto-inject the token so a local client never 401-loops
-            self.send_header("Set-Cookie", "romp_token=%s; Path=/; SameSite=Strict; HttpOnly" % self._set_cookie)
+        if getattr(self, "_set_cookie", None):       # auto-inject the token so a client never 401-loops
+            # Max-Age=1yr so the phone persists the token past its browser session (no re-prompt on
+            # the tailnet after the tab is closed) — for simplify's auto-serve/permanence work.
+            self.send_header("Set-Cookie", "romp_token=%s; Path=/; Max-Age=31536000; "
+                             "SameSite=Strict; HttpOnly" % self._set_cookie)
         self.end_headers()
         self.wfile.write(body)
 
@@ -831,16 +899,17 @@ class Handler(BaseHTTPRequestHandler):
 
     def _push_one(self, client):
         now = int(time.time())
+        tmux = _tmux_sessions()
         if client["app"] == "chat":
             for s in _sessions(now):
-                m = build_session(s["sid"], now)
+                m = build_session(s["sid"], now, tmux)
                 if m:
                     client["send"](json.dumps(m))
-            client["send"](json.dumps({"type": "working", "names": build_feed(now)["working"]}))
+            client["send"](json.dumps({"type": "working", "names": build_feed(now, tmux)["working"]}))
         elif client["app"] == "timeline":
-            client["send"](json.dumps({"type": "data", "data": build_timeline(now)}))
+            client["send"](json.dumps({"type": "data", "data": build_timeline(now, tmux)}))
         else:
-            client["send"](json.dumps(build_feed(now)))
+            client["send"](json.dumps(build_feed(now, tmux)))
 
 
 def _ensure_bundles():
