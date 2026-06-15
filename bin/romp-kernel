@@ -712,7 +712,8 @@ def _feed_page():
             "<link href=/dist/feed.css rel=stylesheet><title>romp feed</title>"
             "<style>%s</style></head><body>%s<script>%s</script>"
             "<script src=/dist/feed.js></script></body></html>"
-            % (THEME_CSS, '<div id="feed-head"></div><div id="feed-list"></div>', _shim("feed")))
+            % (THEME_CSS, '<div id="feed-head"></div><div id="feed-list"></div><div id="feed-foot"></div>',
+               _shim("feed")))
 
 
 # The romp-tl-* styles, verbatim from the obsidian/VS-Code timeline wrapper.

@@ -1395,7 +1395,7 @@ type Entry =
 // the legend row when columns exist, and on the empty state too (clearing the
 // LAST card is exactly when undo is wanted).
 function makeUndoClearBtn(): HTMLElement {
-  const b = el("button", "fdismiss fundo-corner");
+  const b = el("button", "fdismiss ffollow");   // restorative → blue hover (.ffollow), not Clear's red
   b.id = "feed-undoclear";
   b.textContent = "UndoClear";
   b.title = "restore the most recently cleared card";
@@ -1403,19 +1403,19 @@ function makeUndoClearBtn(): HTMLElement {
   return b;
 }
 
-// The single UndoClear button, fixed at the bottom-right of the feed pane (the user 2026-06-14).
-// Created once on document.body so it survives list rebuilds + scrolls; render() toggles its display.
+// Clear-all + UndoClear live in #feed-foot — a footer bar in normal flow BELOW the scrolling card
+// list, so they can never overlap a card (the user 2026-06-15). Appended once; render() toggles
+// each one's display. Clear all is appended first (left); UndoClear second (far right).
 function ensureUndoClear(): HTMLElement {
   let b = document.getElementById("feed-undoclear");
-  if (!b) { b = makeUndoClearBtn(); document.body.appendChild(b); }
+  if (!b) { b = makeUndoClearBtn(); (document.getElementById("feed-foot") || document.body).appendChild(b); }
   return b;
 }
 
-// Clear all (top-right, left of UndoClear): inbox-zero every open card at once. Destructive, so it
-// hovers RED like Clear; the single UndoClear restores the whole batch (the host clears them as one
-// cleared.jsonl batch). Shown by render() whenever there's anything to clear.
+// Clear all: inbox-zero every open card at once. Destructive, so it hovers RED (.fdismiss); the single
+// UndoClear restores the whole batch (the host clears them as one cleared.jsonl batch).
 function makeClearAllBtn(): HTMLElement {
-  const b = el("button", "fdismiss fclearall-corner");
+  const b = el("button", "fdismiss");
   b.id = "feed-clearall";
   b.textContent = "Clear all";
   b.title = "clear every open card (inbox-zero) — UndoClear restores them";
@@ -1425,7 +1425,7 @@ function makeClearAllBtn(): HTMLElement {
 
 function ensureClearAll(): HTMLElement {
   let b = document.getElementById("feed-clearall");
-  if (!b) { b = makeClearAllBtn(); document.body.appendChild(b); }
+  if (!b) { b = makeClearAllBtn(); (document.getElementById("feed-foot") || document.body).appendChild(b); }
   return b;
 }
 
@@ -1515,8 +1515,12 @@ function render() {
   const list = document.getElementById("feed-list")!;
   const prevScroll = list.scrollTop;
   const standalone = standaloneItems();
-  ensureUndoClear().style.display = canUndoClear ? "" : "none";   // fixed at the pane's top-right
-  ensureClearAll().style.display = (asks.length || standalone.length || blocked.length) ? "" : "none";
+  // footer buttons (below the cards, no overlap): Clear all first (left), UndoClear far right
+  const showCA = !!(asks.length || standalone.length || blocked.length);
+  ensureClearAll().style.display = showCA ? "" : "none";
+  ensureUndoClear().style.display = canUndoClear ? "" : "none";
+  const foot = document.getElementById("feed-foot");
+  if (foot) foot.style.display = (showCA || canUndoClear) ? "" : "none";
 
   if (!asks.length && !standalone.length && !blocked.length) {
     list.innerHTML = ""; askEls.clear(); groupEls.clear(); cardEls.clear(); blockedEls.clear();
