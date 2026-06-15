@@ -787,6 +787,7 @@ def _producer():
                 jd.run_once()
             if browser:
                 jd.run_plan()
+                jd.run_courier()
         except Exception:
             sys.stderr.write("producer: %s\n" % traceback.format_exc())
         time.sleep(20)

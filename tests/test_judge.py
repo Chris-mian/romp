@@ -409,6 +409,33 @@ class PlanRollup(unittest.TestCase):
                          "top-done + settled completes even with a trailing open step")
 
 
+class Courier(unittest.TestCase):
+    def test_seg_peer_extracts_sender_and_msgid(self):
+        seg = {"trigger": "u1", "atoms": [{"uuid": "u1", "type": "user", "author": {"peer": "SENDERSID"},
+               "message": {"content": [{"type": "text", "text": "ASK: do X\nromp-msg-id: abc.123"}]}}]}
+        self.assertEqual(jd._seg_peer(seg), ("SENDERSID", "abc.123"))
+        human = {"trigger": "u2", "atoms": [{"uuid": "u2", "type": "user", "author": "human",
+                 "message": {"content": [{"type": "text", "text": "hi"}]}}]}
+        self.assertIsNone(jd._seg_peer(human), "a human prompt is not a peer segment")
+
+    def test_parse_courier(self):
+        self.assertEqual(jd._parse_courier("PROPAGATING 2 :: fix the build", 3),
+                         {"propagating": True, "n": 2, "text": "fix the build"})
+        self.assertFalse(jd._parse_courier("FYI ::", 3)["propagating"])
+        self.assertIsNone(jd._parse_courier("garbage", 3))
+        self.assertIsNone(jd._parse_courier("PROPAGATING 9 :: x", 3)["n"], "out-of-range sender goal -> no link")
+
+    def test_apply_courier_plants_top_goal_with_origin_and_dedups(self):
+        s = _store()
+        origin = {"peer": "SENDER", "goalId": "SENDER:g1", "msgId": "m1"}
+        nid = jd.apply_courier(s, "seg1", T0, "do the handoff", origin)
+        self.assertIsNone(s["nodes"][nid]["parentId"], "handoff is a top-level goal in the recipient tree")
+        self.assertEqual(s["nodes"][nid]["origin"], origin)
+        n2 = jd.apply_courier(s, "seg2", T0 + 10, "again", {"peer": "SENDER", "goalId": None, "msgId": "m1"})
+        self.assertEqual(n2, nid, "same msgId -> reuse the planted node (idempotent)")
+        self.assertEqual(sum(1 for nd in s["nodes"].values() if nd.get("origin")), 1, "no duplicate handoff")
+
+
 class PlanPass(unittest.TestCase):
     def test_pass_accretes_menu_then_dedups(self):
         """Per-session sequential: segment 2's menu contains segment 1's minted goal (accretion);
