@@ -41,18 +41,21 @@ Engine:
 ## Layer 3 — read side (`design/read-side.md`)
 
 MINIMAL (build first — browser-able):
-- [ ] Merged always-on kernel: L1+L2 producer running continuously + HTTP/WS server.
-  Single writer.
-- [ ] `ui/` package (rename `chat-view/` → `ui/`; fold the timeline in from
-  `obsidian/`; delete `romp-events --emit`).
-- [ ] One view-builder (replaces `feed.ts` + `bin/romp-feed` + `chat.ts`'s parser +
-  `romp-events --emit`).
-- [ ] Chat pane: render the event tree directly (no second parser).
-- [ ] Feed pane: inbox (`goals/` → working / blocked / completed columns) + caption
-  stream.
-- [ ] Timeline pane: segments-as-bars + idle gaps + caption labels.
-- [ ] TOC ledger: archiver headline + turn/segment captions, clickable to jump.
-- [ ] RUNNABLE by the human: a clear start command + browser URL.
+- [x] Merged always-on kernel `bin/romp-kernel` (PYTHON — producer + server co-located in
+  one process, single writer; presence-gated producer thread, no model calls when no
+  browser open). HTTP + polling; WS push deferred (the JSON payload shapes are the contract).
+- [~] `ui/` package: built fresh `ui/index.html` (thin render client) served by the kernel.
+  Deferred (build-beside, old stays): rename/retire `chat-view/`, fold `obsidian/` timeline,
+  delete `romp-events --emit`.
+- [x] One view-builder: the kernel's Python projection (`view_feed`/`view_chat`/`view_timeline`)
+  IS the single view-builder; `ui/` only renders payloads. (Old `feed.ts`/`bin/romp-feed`/
+  `chat.ts` parser/`romp-events --emit` still exist beside until cutover.)
+- [x] Chat pane: event tree rendered directly from the parser (no second parser).
+- [x] Feed pane: inbox (`goals/` → working/blocked/completed columns) + caption stream.
+- [x] Timeline pane: segments-as-bars + idle gaps + caption-on-hover.
+- [x] TOC ledger: archiver headline + turn/segment captions, clickable to jump.
+- [x] RUNNABLE: `python3 ~/GitRepos/romp-event-model/bin/romp-kernel` → auto-opens
+  http://127.0.0.1:7878 (the rebuild bin is off the human's PATH, so run it by full path).
 
 INCREMENTAL (add after the three panes show real data):
 - [ ] Browser-presence gating of the triage tier; run-when-disconnected setting.
