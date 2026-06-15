@@ -204,17 +204,19 @@ class EnginePass(unittest.TestCase):
         munged = jd.re.sub(r"[/.]", "-", os.path.realpath(str(cdir)))
         pdir = proj / munged
         pdir.mkdir(parents=True)
-        (pdir / (SID + ".jsonl")).write_text("\n".join(json.dumps(r) for r in records) + "\n")
+        self._tpath = pdir / (SID + ".jsonl")
+        self._tpath.write_text("\n".join(json.dumps(r) for r in records) + "\n")
         names = td / "names"
         names.mkdir()
         (names / SID).write_text("testsess\t%s\t#abcdef\n" % str(cdir))
-        saved = (jd.NAMES, jd.PROJECTS, jd.CAPDIR, jd.PCACHE, jd.caption_llm)
+        saved = (jd.NAMES, jd.PROJECTS, jd.CAPDIR, jd.ARCHDIR, jd.PCACHE, jd.caption_llm, jd.archive_llm)
         jd.NAMES, jd.PROJECTS = names, proj
-        jd.CAPDIR, jd.PCACHE = td / "captions", td / "pcache"
+        jd.CAPDIR, jd.ARCHDIR, jd.PCACHE = td / "captions", td / "archive", td / "pcache"
         jd.caption_llm = lambda text: "stub caption"
+        jd.archive_llm = lambda log: {"headline": "stub headline", "abstract": "stub abstract"}
 
         def restore():
-            (jd.NAMES, jd.PROJECTS, jd.CAPDIR, jd.PCACHE, jd.caption_llm) = saved
+            (jd.NAMES, jd.PROJECTS, jd.CAPDIR, jd.ARCHDIR, jd.PCACHE, jd.caption_llm, jd.archive_llm) = saved
         return restore
 
     def test_pass_writes_both_grains_then_dedups(self):
@@ -225,15 +227,21 @@ class EnginePass(unittest.TestCase):
             try:
                 # recent activity: set now near the transcript's time so the WINDOW includes it
                 now = T0 + 120
-                n1 = jd.run_once(now=now)
+                r1 = jd.run_once(now=now)
                 recs = [json.loads(l) for l in (jd.CAPDIR / (SID + ".jsonl")).read_text().splitlines()]
                 grains = sorted(r["grain"] for r in recs)
                 self.assertEqual(grains, ["segment", "turn"], "single-segment turn writes both grains from one call")
                 self.assertTrue(all(r["caption"] == "stub caption" for r in recs))
-                self.assertEqual(n1, 2, "two records from one model call")
-                # second pass: everything already captioned -> nothing written (id dedup)
-                n2 = jd.run_once(now=now)
-                self.assertEqual(n2, 0, "idempotent: a captioned unit is never re-captioned")
+                self.assertEqual(r1["captions"], 2, "two records from one model call")
+                # the archiver ran after captioning and wrote one session archive from the turn caption
+                self.assertEqual(r1["archives"], 1)
+                arch = json.loads((jd.ARCHDIR / (SID + ".json")).read_text())
+                self.assertEqual(arch["headline"], "stub headline")
+                self.assertEqual(arch["turns"], 1, "archive records the turn-caption count it was built from")
+                # second pass: captions deduped AND the archive is unchanged (turn count same) -> no rework
+                r2 = jd.run_once(now=now)
+                self.assertEqual(r2["captions"], 0, "idempotent: a captioned unit is never re-captioned")
+                self.assertEqual(r2["archives"], 0, "archive not rebuilt when the turn-caption count is unchanged")
             finally:
                 restore()
 
@@ -260,6 +268,47 @@ class EnginePass(unittest.TestCase):
                 self.assertGreater(len(recs), 0)
             finally:
                 restore()
+
+    def test_archive_refreshes_when_session_gains_a_turn(self):
+        """Event-based refresh: the archive rebuilds when the turn-caption count grows, never on a timer."""
+        with tempfile.TemporaryDirectory() as td:
+            restore = self._fleet(td, [uline(T0, "first ask", "u1", ps="typed"),
+                                       aline(T0 + 30, "first reply", "a1", "u1", stop="end_turn")])
+            try:
+                now = T0 + 5000
+                jd.run_once(now=now)
+                self.assertEqual(json.loads((jd.ARCHDIR / (SID + ".json")).read_text())["turns"], 1)
+                # the session gains a second ended turn (rewrite the transcript; mtime/size change
+                # invalidates the units cache, so the new turn is captioned, then re-archived)
+                self._tpath.write_text("\n".join(json.dumps(r) for r in [
+                    uline(T0, "first ask", "u1", ps="typed"),
+                    aline(T0 + 30, "first reply", "a1", "u1", stop="end_turn"),
+                    uline(T0 + 100, "second ask", "u2", "a1", ps="typed"),
+                    aline(T0 + 130, "second reply", "a2", "u2", stop="end_turn")]) + "\n")
+                jd.run_once(now=now)
+                self.assertEqual(json.loads((jd.ARCHDIR / (SID + ".json")).read_text())["turns"], 2,
+                                 "archive refreshes when the session gains a turn")
+            finally:
+                restore()
+
+
+class ArchiveParse(unittest.TestCase):
+    def test_parses_headline_and_abstract(self):
+        out = "HEADLINE: Rebuilding the romp event model\nABSTRACT: Built the parser and its tests. Validated it against the corpus."
+        rec = jd._parse_archive(out)
+        self.assertEqual(rec["headline"], "Rebuilding the romp event model")
+        self.assertTrue(rec["abstract"].startswith("Built the parser"))
+        self.assertIn("corpus", rec["abstract"])
+
+    def test_multi_line_abstract_is_joined(self):
+        out = "HEADLINE: Tuning the captioner\nABSTRACT: Pulled the word target down.\nKilled the comma-splice tail."
+        rec = jd._parse_archive(out)
+        self.assertIn("Pulled the word target down. Killed the comma-splice tail.", rec["abstract"])
+
+    def test_missing_field_is_failed_capture(self):
+        self.assertIsNone(jd._parse_archive("HEADLINE: only a headline, no abstract"))
+        self.assertIsNone(jd._parse_archive("just some prose with no labels"))
+        self.assertIsNone(jd._parse_archive(""))
 
 
 if __name__ == "__main__":
