@@ -46,6 +46,7 @@ PIDFILE = STATE / "idle-dots.pid"
 
 STALE_AFTER_SECS = 3600          # 1h — matches dashboard STALE_AFTER_SECS + timeline STALE
 INTERVAL         = 60            # sweep cadence; a 1h threshold doesn't need finer
+COMPACT_INTERVAL = 4             # while a session is COMPACTING, sweep this fast to publish a live %
 DOT_INACTIVE     = "⚫"      # ⚫ black circle
 FADEABLE         = ("waiting", "idle")   # only READY fades (not 🔴 permission / 🟡 working)
 
@@ -81,6 +82,20 @@ def diagnose(state, since, now, in_mode, pane):
     if IDLE_MARKER not in pane:
         return "leave"                  # unrecognized content: be conservative
     return "heal"
+
+
+def compact_pct(pane):
+    """Extract the live compaction progress % from a captured pane — the TUI's
+    '✶ Compacting conversation… (2m 1s) ▰▰▱ NN%' bar (the % sits on the bar line,
+    which follows the 'Compacting…' line). Pure → unit-tested. None if absent."""
+    i = pane.find("Compacting")
+    if i < 0:
+        return None
+    m = re.search(r"(\d{1,3})\s*%", pane[i:i + 200])   # the next % after 'Compacting' = the bar
+    if not m:
+        return None
+    v = int(m.group(1))
+    return v if 0 <= v <= 100 else None
 
 
 def _heal(name, since0, now):
@@ -122,7 +137,7 @@ def sweep():
             capture_output=True, text=True, timeout=5)
     except Exception:
         return True
-    any_romp = changed = False
+    any_romp = changed = compacting = False
     for line in (p.stdout or "").splitlines():
         f = line.split("|")
         if len(f) < 5 or f[0] != "1":
@@ -130,6 +145,23 @@ def sweep():
         any_romp = True
         name, state, since, emoji = f[1], f[2], f[3], f[4]
         in_mode = len(f) > 5 and f[5] == "1"
+        # COMPACTING → publish the live % off the TUI bar into @claude-compact-pct, which the timeline
+        # badge + chat chip read (the UI only shows it while state==compacting, so no clearing needed).
+        if state == "compacting":
+            compacting = True
+            try:
+                pane = subprocess.run(["tmux", "capture-pane", "-p", "-t", name],
+                                      capture_output=True, text=True, timeout=5).stdout
+                pct = compact_pct(pane)
+            except Exception:
+                pct = None
+            if pct is not None:
+                try:
+                    subprocess.run(["tmux", "set", "-t", name, "@claude-compact-pct", str(pct)],
+                                   capture_output=True, timeout=5)
+                    changed = True
+                except Exception:
+                    pass
         # stuck-working heal — staleness gate first so we only capture-pane on
         # the rare candidate, never on every working session each sweep
         if state in STUCK_STATES and since.isdigit() and now - int(since) > STUCK_AFTER_SECS:
@@ -156,7 +188,7 @@ def sweep():
             subprocess.run(["tmux", "refresh-client", "-S"], capture_output=True, timeout=5)
         except Exception:
             pass
-    return any_romp
+    return any_romp, compacting
 
 
 def _running():
@@ -171,8 +203,11 @@ def daemon():
     STATE.mkdir(parents=True, exist_ok=True)
     PIDFILE.write_text(str(os.getpid()))
     try:
-        while sweep():            # exits as soon as a sweep finds no romp sessions
-            time.sleep(INTERVAL)
+        while True:
+            alive, compacting = sweep()
+            if not alive:         # exits as soon as a sweep finds no romp sessions
+                break
+            time.sleep(COMPACT_INTERVAL if compacting else INTERVAL)   # fast cadence for a live compact %
     finally:
         try:
             PIDFILE.unlink()

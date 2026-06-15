@@ -14,13 +14,14 @@ const RENDER = read("src", "webview", "render.ts");
 const FEED = read("src", "webview", "feed.ts");
 const SERVER = read("src", "kernel", "server.ts");
 
-// #9a — hovering the MESSAGE bubble or the WORK body (not only the rail dot) must
-// light the timeline. The hover target is the whole TURN; the DOT keeps the click.
-test("chat hover is wired on the whole turn, not just the rail dot", () => {
-  assert.match(RENDER, /wireTurnHover\(turn, railDot/, "call site passes the turn as the hover target");
+// The user 2026-06-15: hovering the message TEXT must NOT light the timeline — only the rail DOT (the
+// "timeline" gutter) does. The hover target is the DOT (turn fallback only when a turn has no dot).
+test("chat hover is wired on the rail dot, not the whole turn", () => {
+  assert.match(RENDER, /wireTurnHover\(turn, railDot/, "call site still passes turn + dot");
   assert.match(RENDER, /function wireTurnHover\(turn: HTMLElement, dot: HTMLElement \| null/);
-  assert.match(RENDER, /turn\.addEventListener\("mouseenter"/, "hover (mouseenter) is on the turn");
-  assert.match(RENDER, /turn\.addEventListener\("mouseleave"/);
+  assert.match(RENDER, /const hoverTarget = dot \|\| turn/, "the hover target is the dot, falling back to turn");
+  assert.match(RENDER, /hoverTarget\.addEventListener\("mouseenter"/, "hover (mouseenter) is on the dot");
+  assert.match(RENDER, /hoverTarget\.addEventListener\("mouseleave"/);
 });
 
 test("the rail dot keeps the click (open the feed card), separate from turn hover", () => {

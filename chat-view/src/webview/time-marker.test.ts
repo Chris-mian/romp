@@ -12,7 +12,7 @@ const NOW = new Date(2026, 5, 12, 12, 0, 0).getTime();
 
 test("markerLabel: first timed turn (no previous) shows HH:MM", () => {
   const r = markerLabel(at(2026, 5, 12, 11, 3), null, NOW);
-  assert.deepEqual(r, { text: "11:03", day: false, hm: "11:03" });
+  assert.deepEqual(r, { text: "11:03", day: false, hm: "11:03", date: "" });
 });
 
 test("markerLabel: a run of same-minute turns shows the stamp only on the first", () => {
@@ -33,7 +33,7 @@ test("markerLabel: a suppressed turn still carries its HH:MM in hm (for the spac
 test("markerLabel: the stamp reappears when the minute changes", () => {
   const prev = at(2026, 5, 12, 11, 3, 50);
   const next = at(2026, 5, 12, 11, 4, 1);
-  assert.deepEqual(markerLabel(next, prev, NOW), { text: "11:04", day: false, hm: "11:04" });
+  assert.deepEqual(markerLabel(next, prev, NOW), { text: "11:04", day: false, hm: "11:04", date: "" });
 });
 
 test("markerLabel: same HH:MM on a different day is NOT deduped", () => {
@@ -45,7 +45,7 @@ test("markerLabel: same HH:MM on a different day is NOT deduped", () => {
 test("markerLabel: first turn of a past day shows the date, emphasised", () => {
   const prev = at(2026, 5, 10, 9, 0);
   const r = markerLabel(at(2026, 5, 11, 9, 0), prev, NOW); // 2026-06-11 = yesterday
-  assert.deepEqual(r, { text: "Yesterday · 09:00", day: true, hm: "09:00" });
+  assert.deepEqual(r, { text: "Yesterday · 09:00", day: true, hm: "09:00", date: "Yesterday" });
 });
 
 test("markerLabel: a past day within a week shows the weekday", () => {
@@ -56,7 +56,7 @@ test("markerLabel: a past day within a week shows the weekday", () => {
 
 test("markerLabel: a past day older than a week shows month + day", () => {
   const r = markerLabel(at(2026, 4, 20, 8, 5), null, NOW); // 2026-05-20
-  assert.deepEqual(r, { text: "May 20 · 08:05", day: true, hm: "08:05" });
+  assert.deepEqual(r, { text: "May 20 · 08:05", day: true, hm: "08:05", date: "May 20" });
 });
 
 test("markerLabel: a new day still shows the date even when same minute as prev day", () => {

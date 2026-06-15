@@ -79,7 +79,7 @@ function resolveRompEvents(node) {
 }
 
 const TMUX_FORMAT =
-  '#{@romp}|#{session_name}|#{@romp-session-id}|#{@claude-state}|#{@claude-state-since}|#{@identity-bg}|#{@claude-summary}|#{@claude-dir}|#{@claude-context}|#{@claude-model}|#{@claude-effort}';
+  '#{@romp}|#{session_name}|#{@romp-session-id}|#{@claude-state}|#{@claude-state-since}|#{@identity-bg}|#{@claude-summary}|#{@claude-dir}|#{@claude-context}|#{@claude-model}|#{@claude-effort}|#{@claude-compact-pct}';
 
 function stateDir(node) {
   const base = process.env.XDG_STATE_HOME || node.path.join(homedir(), '.local', 'state');
@@ -359,6 +359,8 @@ function liveSessions(node, lines) {
     const context = /^\d+$/.test(ctxRaw) ? Number(ctxRaw) : null;   // context-window fill %
     const model = (p[9] || '').trim();   // @claude-model e.g. "Opus 4.8" (statusline.sh publishes it)
     const effort = (p[10] || '').trim(); // @claude-effort e.g. "xhigh"; may be empty for some models
+    const cpRaw = p[11] || '';           // @claude-compact-pct — live compaction % (romp-idle-dots publishes it)
+    const compactPct = /^\d+$/.test(cpRaw) ? Number(cpRaw) : null;
     let color = idbg && idbg.startsWith('#') ? idbg : '#888888';
     try {
       const parts = node.fs.readFileSync(node.path.join(stateDir(node), 'names', sid), 'utf8').replace(/\n+$/, '').split('\t');
@@ -367,7 +369,7 @@ function liveSessions(node, lines) {
     } catch (e) {}
     if (!cdir) cdir = claudeDir;       // fall back to @claude-dir only if the names dir is missing
     sessions[sid] = { name, color, state: state || '', since: /^\d+$/.test(since) ? parseInt(since, 10) : null,
-                      summary, id: sid, dir: cdir, context, model, effort, live: true };
+                      summary, id: sid, dir: cdir, context, model, effort, compactPct, live: true };
     id2name[sid] = name;
   }
   return { sessions, id2name };
@@ -475,6 +477,8 @@ function assemble(node, lines, eventsData, now) {
       state: m ? m.state : '', since: m ? m.since : null,
       context: m ? m.context : null, summary: m ? m.summary : '',
       model: m ? m.model : '', effort: m ? m.effort : '',   // status-bar model+effort (tmux-only, like state/context)
+      compactPct: m ? m.compactPct : null,                  // live compaction % while state==compacting
+
       _events: es.events, _pending: es.pending, _compactions: es.compactions || [],
     };
     id2name[sid] = es.name;
@@ -607,6 +611,7 @@ function assemble(node, lines, eventsData, now) {
              id: s.id || null,                                // romp session id → deep-link into the chat view
              model: s.model || '', effort: s.effort || '',    // @claude-model/@claude-effort → lane label "Opus 4.8 xhigh"
              context: (s.context != null ? s.context : null),
+             compactPct: (s.compactPct != null ? s.compactPct : null),   // live compaction % → COMPACTING badge
              since: (s.since != null ? s.since : null),     // state-change time → current awaiting stripe fallback
              awaiting: awaitingIntervals(node, s.id, now),   // historical AWAITING [start,end] spans → candy stripes
              compacting: compactingIntervals(node, s.id, now), // live+historical COMPACTING [start,end] spans → cross-hatch

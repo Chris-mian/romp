@@ -263,6 +263,18 @@ class TimelinePanel {
     restartBtn.addEventListener('mouseleave', () => { restartBtn.style.opacity = '0.7'; restartBtn.style.color = '#bbb'; });
     restartBtn.addEventListener('click', () => this._restartKernel(restartBtn));
 
+    // Settings gear — RIGHT NEXT to the restart button at the bottom-left (the user 2026-06-14). Opens a
+    // modal of GLOBAL webview settings backed by the shared localStorage 'romp:settings' key, which the
+    // chat view also reads (see chat-view/src/webview/settings.ts — keep the key + shape in sync). Today
+    // the one option is "Compact transcript", which collapses the CHAT's tool runs / hides thinking.
+    const gearBtn = this.controls.createEl('button');
+    gearBtn.textContent = '⛭';
+    gearBtn.setAttribute('title', 'Settings');
+    gearBtn.setAttribute('style', 'flex:0 0 auto;width:22px;height:22px;display:inline-flex;align-items:center;justify-content:center;border-radius:5px;cursor:pointer;background:#2a2a2a;color:#bbb;border:1px solid #3a3a3a;font:16px/1 system-ui;opacity:0.7;');
+    gearBtn.addEventListener('mouseenter', () => { gearBtn.style.opacity = '1'; gearBtn.style.color = '#fff'; });
+    gearBtn.addEventListener('mouseleave', () => { gearBtn.style.opacity = '0.7'; gearBtn.style.color = '#bbb'; });
+    gearBtn.addEventListener('click', () => this._toggleSettings());
+
     // Claude usage bars (the /usage rate-limit %: 5-hour + weekly), LEFT-justified. Hidden until
     // statusline.sh reports usage (Pro/Max only); _updateUsage() fills them each
     // poll from data.usage. The pct bar is color-coded green/amber/red; the reset countdown is in the
@@ -604,6 +616,62 @@ class TimelinePanel {
     };
     try { fetch('/restart', { method: 'POST' }).catch(() => {}); } catch (e) {}
     setTimeout(poll, 1500);   // let the old kernel go down first, then poll for the fresh one
+  }
+
+  // ---- global settings (gear) — shared with the chat via localStorage 'romp:settings' ----
+  // Contract MUST match chat-view/src/webview/settings.ts: key 'romp:settings', JSON { compact: bool }.
+  // Writing here fires a `storage` event in other same-origin tabs (the chat), which live-applies it.
+  _loadSettings() {
+    try { const raw = localStorage.getItem('romp:settings'); if (raw) return Object.assign({ compact: false }, JSON.parse(raw)); } catch (e) {}
+    return { compact: false };
+  }
+  _saveSetting(key, val) {
+    const next = Object.assign(this._loadSettings(), { [key]: val });
+    try { localStorage.setItem('romp:settings', JSON.stringify(next)); } catch (e) {}
+    return next;
+  }
+  _toggleSettings() {
+    if (this._settingsEl) {
+      this._settingsEl.remove(); this._settingsEl = null;
+      if (this._settingsEsc) { window.removeEventListener('keydown', this._settingsEsc); this._settingsEsc = null; }
+      return;
+    }
+    const m = document.createElement('div');
+    m.setAttribute('style', 'position:fixed;inset:0;z-index:10000;display:flex;align-items:flex-start;justify-content:center;padding:56px 16px;background:rgba(0,0,0,0.45);');
+    const inner = document.createElement('div');
+    inner.setAttribute('style', 'width:380px;max-width:100%;max-height:80vh;overflow-y:auto;background:#1c2430;color:#e6edf3;border:1px solid #ffffff1f;border-radius:10px;box-shadow:0 12px 32px #00000066;padding:14px 16px 16px;font:13px/1.4 system-ui,-apple-system,sans-serif;');
+    const head = document.createElement('div');
+    head.setAttribute('style', 'display:flex;align-items:center;gap:8px;margin-bottom:6px;');
+    const title = document.createElement('div'); title.textContent = 'Settings';
+    title.setAttribute('style', 'font-size:1.05em;font-weight:700;flex:1 1 auto;');
+    const close = document.createElement('button'); close.textContent = '✕'; close.title = 'close (Esc)';
+    close.setAttribute('style', 'width:24px;height:24px;border:none;background:transparent;color:#9aa0a6;cursor:pointer;font-size:14px;border-radius:6px;');
+    close.addEventListener('click', () => this._toggleSettings());
+    head.appendChild(title); head.appendChild(close);
+    inner.appendChild(head);
+    inner.appendChild(this._settingRow('compact', 'Compact transcript',
+      'Collapse each run of tool uses into one line (“3 Edits, 2 Reads”) and hide thinking blocks in the chat.'));
+    m.appendChild(inner);
+    m.addEventListener('click', (e) => { if (e.target === m) this._toggleSettings(); });   // backdrop closes
+    document.body.appendChild(m);
+    this._settingsEl = m;
+    this._settingsEsc = (e) => { if (e.key === 'Escape') this._toggleSettings(); };
+    window.addEventListener('keydown', this._settingsEsc);
+  }
+  _settingRow(key, label, desc) {
+    const cur = this._loadSettings();
+    const row = document.createElement('label');
+    row.setAttribute('style', 'display:flex;align-items:flex-start;gap:10px;padding:8px 0;cursor:pointer;');
+    const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = !!cur[key];
+    cb.setAttribute('style', 'margin:2px 0 0;flex:0 0 auto;cursor:pointer;');
+    cb.addEventListener('change', () => { this._saveSetting(key, cb.checked); });
+    const txt = document.createElement('div'); txt.setAttribute('style', 'flex:1 1 auto;min-width:0;');
+    const lab = document.createElement('div'); lab.textContent = label; lab.setAttribute('style', 'font-weight:600;');
+    const sub = document.createElement('div'); sub.textContent = desc;
+    sub.setAttribute('style', 'font-size:0.85em;color:#9aa0a6;margin-top:2px;line-height:1.35;');
+    txt.appendChild(lab); txt.appendChild(sub);
+    row.appendChild(cb); row.appendChild(txt);
+    return row;
   }
 
   // A small vertical ⟩⟩ button hugging the far-right edge, shown ONLY when the view is held back off the
@@ -1341,7 +1409,9 @@ class TimelinePanel {
     const compactingNow = (s) => s.state === 'compacting' || (this._compactClicked[s.id] != null && (nowMs - this._compactClicked[s.id]) < 6000);
     // gutter = name column (left-aligned) + chip column (every chip shares an x,
     // like the dashboard's badge column). Names left-aligned, chips follow.
-    const visB = vis.map((s) => compactingNow(s) ? { label: 'COMPACTING', bg: BADGE.compacting.bg, fg: BADGE.compacting.fg } : badgeFor(s));
+    const visB = vis.map((s) => compactingNow(s)
+      ? { label: 'COMPACTING' + (s.compactPct != null ? ' ' + s.compactPct + '%' : ''), bg: BADGE.compacting.bg, fg: BADGE.compacting.fg }   // live % from @claude-compact-pct
+      : badgeFor(s));
     const visC = vis.map((s) => ctxInfo(s));
     const maxName = Math.max(40, ...(vis.length ? vis : data.sessions).map((s) => this.labelWidth(s.name)));
     // model+effort column: each word is a clickable picker drawn as [model ▾] [effort ▾], so reserve the
@@ -1562,7 +1632,9 @@ class TimelinePanel {
       // name left-aligned; status chip in the shared chip column to its right. ENDED or idle >1h
       // (s.faded) → name/chip/ctx blended toward the surface bg to a uniform low luminance (perceptual
       // fade via F(), consistent across hues + with the chat tabs), instead of a flat opacity.
-      const lbl = el('text', { x: PADL, y: y + 3.5, 'text-anchor': 'start', 'font-weight': 650, 'font-size': 12, fill: F(s.color), 'pointer-events': 'none' }); lbl.textContent = s.name; svg.appendChild(lbl);
+      const lblA = { x: PADL, y: y + 3.5, 'text-anchor': 'start', 'font-weight': 650, 'font-size': 12, fill: F(s.color), 'pointer-events': 'none' };
+      if (!s.live) lblA['text-decoration'] = 'line-through';   // dead lane → strike the name (mirrors the feed)
+      const lbl = el('text', lblA); lbl.textContent = s.name; svg.appendChild(lbl);
       if (s.faded) fadedEls.push({ el: lbl, full: s.color, faded: F(s.color) });
       // model + effort, muted, between the name and the state chip (left-aligned in its column). On a
       // LIVE lane each word is a drop-down picker — hover reveals a ▾ caret, click opens a menu whose

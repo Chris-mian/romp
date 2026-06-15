@@ -251,10 +251,10 @@ function updateHeader() {
     + (liveN ? ` · <span class="fh-live">${liveN} live</span>` : ``);
 }
 
-// ---- standalone deliverable card (same v2 anatomy as an ask card) ----
-// row 1 = deliverable text + age; row 2 = owner name + [+] [Clear] right-aligned
-// (no tally — a standalone deliverable has no subgraph). Clear shares the asks'
-// cleared.jsonl (reply ids work in askClear). Whole-card click locates the turn.
+// ---- standalone deliverable card (same v3 anatomy as an ask card) ----
+// row 1 = deliverable text (full width); row 2 = owner name; row 3 = age (bottom-left)
+// + [Clear] (bottom-right). (No tally — a standalone deliverable has no subgraph.) Clear
+// shares the asks' cleared.jsonl (reply ids work in askClear). Whole-card click locates the turn.
 function makeCard(it: FeedItem): HTMLElement {
   const card = el("div", "fitem");
   card.dataset.key = "i:" + it.itemId;
@@ -266,16 +266,17 @@ function makeCard(it: FeedItem): HTMLElement {
   const title = el("div", "fcard-title nav");      // the deliverable phrase (headline)
   title.title = "jump to this on the timeline";
   const time = el("span", "ftime");
-  row1.append(title, time);
+  row1.append(title);
   const row2 = el("div", "fask-row2");
   const idwrap = el("div", "fask-id");
   const name = el("a", "fname"); name.title = "open this session";
   idwrap.append(name);
+  row2.append(idwrap);
   const actions = el("div", "fask-actions");
   const clr = el("button", "fdismiss"); clr.textContent = "Clear"; clr.title = "clear this item (inbox-zero)";
   actions.append(clr);
-  row2.append(idwrap, actions);
-  main.append(row1, row2);
+  const row3 = el("div", "fask-row3"); row3.append(time, actions);   // time bottom-left · Clear bottom-right
+  main.append(row1, row2, row3);
   card.append(main);
 
   // same click model as ask cards: body → modal, title → locate the originating
@@ -369,12 +370,12 @@ function renderExpandInto(slot: HTMLElement, it: FeedItem) {
   slot.appendChild(box);
 }
 
-// ---- ask cards (the inbox unit) ----
-// Anatomy: row 1 = ask text (bold, full width) + age top-right; row 2 = owner name
-// (identity color, clickable) + evidence tally text, with [+] and [Clear] right-
 // ---- ask card (the inbox unit) ----
-// Collapsed: row1 = ask text + age; row2 = worker name + reopened badge | Clear
-// (no [+], no tally). Click the CARD → expand + light the DAG path on the timeline.
+// Anatomy (the user 2026-06-14): row1 = ask text, full width across the top; row2 = worker
+// name (identity color, clickable) on its own row below it; row3 = age bottom-left, status
+// badges + Clear bottom-right. Stacking the age/actions onto their own row frees the title
+// and the (often long) session name to use the full card width instead of competing for it.
+// Click the CARD → expand + light the DAG path on the timeline.
 // Expanded body = the request DAG as a tree of NODES (state machine only); each
 // node clicks to reveal its OWN reply history; ? nodes carry a decision sub-card.
 function makeAskCard(it: AskItem): HTMLElement {
@@ -382,12 +383,13 @@ function makeAskCard(it: AskItem): HTMLElement {
   card.dataset.key = "a:" + it.itemId;
 
   const main = el("div", "fitem-main");
-  // ROW 1 — ask title (left, hit-area fits its text) · age (top right)
+  // ROW 1 — ask title, full width across the top (the user 2026-06-14); hit-area still
+  // fits its text (it must NOT flex-grow, or blank space right of it triggers locate)
   const row1 = el("div", "fask-row1");
   const title = el("div", "fcard-title nav"); title.title = "locate this in the text";
   const time = el("span", "ftime");
-  row1.append(title, time);
-  // ROW 2 — agent (left, hit-area fits its text) · [reopened?] [Clear] (right)
+  row1.append(title);
+  // ROW 2 — the session name on its own row, directly below the title
   const row2 = el("div", "fask-row2");
   const idwrap = el("div", "fask-id");
   const name = el("a", "fname"); name.title = "open this session";
@@ -401,13 +403,15 @@ function makeAskCard(it: AskItem): HTMLElement {
   const stallBadge = el("a", "fask-suspect"); stallBadge.style.display = "none"; // ⚠ stalled delegation (exception bucket, formerly a dashed ring)
   const clr = el("button", "fdismiss"); clr.textContent = "Clear"; clr.title = "clear this ask (inbox-zero; the one human-asserted fact)";
   actions.append(stallBadge, suspBadge, waitBadge, blkBadge, reBadge, clr);
-  row2.append(idwrap, actions);
+  row2.append(idwrap);
+  // ROW 3 — timestamp bottom-left · status badges + Clear bottom-right
+  const row3 = el("div", "fask-row3"); row3.append(time, actions);
   // the user's handoff spec (2026-06-10): below the main session, list the OTHER
   // sessions this ask was handed to — but only while they are LIVE-WORKING on
   // an unfinished branch. Idle or finished recipients disappear; presence on
   // the list therefore always means active, so the dot is always on.
   const handoffs = el("div", "fask-handoffs");
-  main.append(row1, row2, handoffs);        // no expand button — body click opens the modal
+  main.append(row1, row2, row3, handoffs);        // no expand button — body click opens the modal
   card.append(main);
   // Follow-up lives in the modal now (the user 2026-06-10), not on the card.
 
@@ -473,10 +477,7 @@ function makeAskCard(it: AskItem): HTMLElement {
 
 function updateAskCard(card: HTMLElement, it: AskItem) {
   const a = card as any;
-  const anom = lvAnomaly(it);
-  card.className = "fitem ask" + (it.live ? " live" : " dead") + (it.itemId === (hoverAskId ?? pinnedAskId) ? " focused" : "") + (it.itemId === pinnedAskId ? " pinned" : "")
-    + (anom ? " lv-" + anom : "");
-  card.title = it.livenessWhy ? `${it.liveness}: ${it.livenessWhy}` : "";
+  card.className = "fitem ask" + (it.live ? " live" : " dead") + (it.itemId === (hoverAskId ?? pinnedAskId) ? " focused" : "") + (it.itemId === pinnedAskId ? " pinned" : "");
   const [r, g, b] = it.trgb;
   card.style.background = `rgba(${r}, ${g}, ${b}, ${TINT_ALPHA})`;
   card.style.borderColor = `rgba(${r}, ${g}, ${b}, ${Math.min(TINT_ALPHA + 0.2, 0.9)})`;
@@ -573,18 +574,6 @@ function focusAnchorId(key: string | null): string | null {
 //                      Clear (right) or Follow up (wrong); either click is a label
 //   blue             = judged done only — not settled yet (often still mid-turn
 //                      on it, or waiting); glance before clearing
-// Everything formerly ring-coded in WORKING is now either invisible (settled
-// auto-files within a tick) or an amber ⚠ badge (stalled = exception bucket).
-function lvAnomaly(it: AskItem): "settled" | "done" | null {
-  if (askColumn(it) !== "completed") return null;
-  const auto = !!it.autoFiled || it.liveness === "settled";
-  const judged = !!it.explicitDone;
-  if (judged && auto) return null;
-  if (auto) return "settled";
-  if (judged) return "done";
-  return null;
-}
-
 // A member's rolled-up status → the chat-timeline mark vocabulary (● done /
 // ? needs the user / ○ not finished), derived from the host's per-ask column.
 function memberStatus(m: AskItem): "done" | "question" | "open" {
@@ -625,18 +614,18 @@ function makeGroupCard(g: AskGroup): HTMLElement {
   const row1 = el("div", "fask-row1");
   const title = el("div", "fcard-title nav"); title.title = "locate this in the text";
   const time = el("span", "ftime");
-  row1.append(title, time);
+  row1.append(title);
   const row2 = el("div", "fask-row2");
   const idwrap = el("div", "fask-id");
   const name = el("a", "fname"); name.title = "open this session";
-  const count = el("span", "fgroup-count");
-  idwrap.append(name, count);
+  idwrap.append(name);   // no "· N parts" label — the member checklist below already shows the count
+  row2.append(idwrap);
   const actions = el("div", "fask-actions");
   const clr = el("button", "fdismiss"); clr.textContent = "Clear"; clr.title = "clear ALL sub-asks of this request (inbox-zero)";
   actions.append(clr);
-  row2.append(idwrap, actions);
+  const row3 = el("div", "fask-row3"); row3.append(time, actions);   // time bottom-left · Clear bottom-right
   const memberList = el("div", "fgroup-members");
-  main.append(row1, row2, memberList);
+  main.append(row1, row2, row3, memberList);
   card.append(main);
 
   const m0 = () => ((card as any)._g as AskGroup | undefined)?.members?.[0];
@@ -692,7 +681,7 @@ function makeGroupCard(g: AskGroup): HTMLElement {
   });
 
   const a = card as any;
-  a._title = title; a._name = name; a._time = time; a._count = count; a._members = memberList;
+  a._title = title; a._name = name; a._time = time; a._members = memberList;
   return card;
 }
 
@@ -701,17 +690,8 @@ function updateGroupCard(card: HTMLElement, g: AskGroup) {
   a._g = g;                                          // current group for the (reused) handlers
   const fkey = "g:" + g.turnId;
   const eff = hoverAskId ?? pinnedAskId;
-  // group ring = the first member whose liveness disagrees with its column
-  // (anomalies only, like single cards); agreement renders nothing
-  let lv: ReturnType<typeof lvAnomaly> = null; let lvWhy = "";
-  for (const m of g.members) {
-    const a = lvAnomaly(m);
-    if (a) { lv = a; lvWhy = m.livenessWhy || ""; break; }
-  }
   card.className = "fitem ask fgroup" + (g.live ? " live" : " dead")
-    + (fkey === eff ? " focused" : "") + (fkey === pinnedAskId ? " pinned" : "")
-    + (lv ? " lv-" + lv : "");
-  card.title = lvWhy ? `${lv}: ${lvWhy}` : "";
+    + (fkey === eff ? " focused" : "") + (fkey === pinnedAskId ? " pinned" : "");
   const [r, gg, b] = g.trgb;
   card.style.background = `rgba(${r}, ${gg}, ${b}, ${TINT_ALPHA})`;
   card.style.borderColor = `rgba(${r}, ${gg}, ${b}, ${Math.min(TINT_ALPHA + 0.2, 0.9)})`;
@@ -720,7 +700,6 @@ function updateGroupCard(card: HTMLElement, g: AskGroup) {
   if (g.color) a._name.style.color = g.color.bg;
   setWorkDot(a._name, workingSet.has(g.name));   // working dot before the session name
   a._time.textContent = relAge(hostNow - g.t);
-  a._count.textContent = "· " + g.members.length + " parts";
   // member lines — rebuilt only when the member set or any member's status changes
   const memSig = g.members.map((m) => m.itemId + ":" + memberStatus(m)).join("|");
   if (a._memSig !== memSig) {
@@ -1131,7 +1110,7 @@ function renderModal() {
     ttlEl.textContent = grp.title;
     titleHoverId = grp.turnId;
     ttlEl.onclick = () => vscodeApi?.postMessage({ type: "showAskPath", itemId: grp.members[0].itemId });
-    agent.textContent = grp.name; if (grp.color) agent.style.color = grp.color.bg; setWorkDot(agent, workingSet.has(grp.name));
+    agent.textContent = grp.name; if (grp.color) agent.style.color = grp.color.bg; setWorkDot(agent, workingSet.has(grp.name)); agent.classList.toggle("dead", !grp.live);
     agent.onclick = () => vscodeApi?.postMessage({ type: "openSession", id: grp.sid });
     ageEl.textContent = relAge(hostNow - grp.t);
     clrEl.onclick = () => { for (const mem of grp.members) vscodeApi?.postMessage({ type: "askClear", itemId: mem.itemId }); fullscreenAskId = null; renderModal(); };
@@ -1146,7 +1125,7 @@ function renderModal() {
     ttlEl.textContent = it.text;
     titleHoverId = it.turnId;
     ttlEl.onclick = () => vscodeApi?.postMessage({ type: "showAskPath", itemId: it.itemId });
-    agent.textContent = it.name; if (it.color) agent.style.color = it.color.bg; setWorkDot(agent, workingSet.has(it.name));
+    agent.textContent = it.name; if (it.color) agent.style.color = it.color.bg; setWorkDot(agent, workingSet.has(it.name)); agent.classList.toggle("dead", !it.live);
     agent.onclick = () => vscodeApi?.postMessage({ type: "openSession", id: it.sid });
     ageEl.textContent = relAge(hostNow - it.t);
     clrEl.onclick = () => { vscodeApi?.postMessage({ type: "askClear", itemId: it.itemId }); fullscreenAskId = null; renderModal(); };
@@ -1159,7 +1138,7 @@ function renderModal() {
   } else if (fitem) {
     ttlEl.textContent = fitem.did;
     ttlEl.onclick = () => vscodeApi?.postMessage({ type: "showOnTimeline", itemId: fitem.itemId, sid: fitem.sid, t: fitem.t, anchor: "prompt" });
-    agent.textContent = fitem.name; if (fitem.color) agent.style.color = fitem.color.bg; setWorkDot(agent, workingSet.has(fitem.name));
+    agent.textContent = fitem.name; if (fitem.color) agent.style.color = fitem.color.bg; setWorkDot(agent, workingSet.has(fitem.name)); agent.classList.toggle("dead", !fitem.live);
     agent.onclick = () => vscodeApi?.postMessage({ type: "openSession", id: fitem.sid });
     ageEl.textContent = relAge(hostNow - fitem.t);
     clrEl.onclick = () => { vscodeApi?.postMessage({ type: "askClear", itemId: fitem.itemId }); fullscreenAskId = null; renderModal(); };
@@ -1178,7 +1157,7 @@ function renderModal() {
     // inherently suspicious — explain the miss and what a correction needs.
     ttlEl.textContent = "Unattributed blocked session";
     ttlEl.classList.remove("nav"); ttlEl.onclick = null; ttlEl.title = "";
-    agent.textContent = blk.name; if (blk.color) agent.style.color = blk.color.bg; setWorkDot(agent, workingSet.has(blk.name));
+    agent.textContent = blk.name; if (blk.color) agent.style.color = blk.color.bg; setWorkDot(agent, workingSet.has(blk.name)); agent.classList.remove("dead");   // a blocked card is always a live session
     agent.onclick = () => vscodeApi?.postMessage({ type: "openSession", id: blk.sid });
     ageEl.textContent = "blocked " + relAge(hostNow - blk.since).replace(/ ago$/, "");
     clrEl.style.display = "none";                                   // nothing to clear — self-resolves
@@ -1416,11 +1395,19 @@ type Entry =
 // the legend row when columns exist, and on the empty state too (clearing the
 // LAST card is exactly when undo is wanted).
 function makeUndoClearBtn(): HTMLElement {
-  const b = el("button", "fdismiss fh-undoclear");
+  const b = el("button", "fdismiss fundo-corner");
   b.id = "feed-undoclear";
   b.textContent = "UndoClear";
   b.title = "restore the most recently cleared card";
   b.onclick = (ev) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "undoClear" }); };
+  return b;
+}
+
+// The single UndoClear button, fixed at the bottom-right of the feed pane (the user 2026-06-14).
+// Created once on document.body so it survives list rebuilds + scrolls; render() toggles its display.
+function ensureUndoClear(): HTMLElement {
+  let b = document.getElementById("feed-undoclear");
+  if (!b) { b = makeUndoClearBtn(); document.body.appendChild(b); }
   return b;
 }
 
@@ -1446,34 +1433,6 @@ function ensureCols(list: HTMLElement) {
       col.append(head, body);
       cols.appendChild(col);
     }
-    // liveness legend: rings mark ANOMALIES only — cards whose live state
-    // disagrees with the column they're filed in (agreement shows nothing)
-    const legend = el("div", "lv-legend");
-    // rings live ONLY in Completed; agreement gets no ink (see the "?" help)
-    for (const [k, lab, tip] of [
-      ["settled", "auto-filed",
-        "GREEN RING (Completed only) — auto-filed without a done-stamp.\n\n"
-        + "Nothing was moving this card (owner quiet on it, no open handoffs), so it filed itself, "
-        + "but the judge model never stamped the work done. If it IS done, Clear: that click records "
-        + "the judge missed a stamp. If it is NOT, Follow up: that records the auto-filer was wrong. "
-        + "Either way one ordinary click becomes a labeled example for the next prompt rework.\n\n"
-        + "No ring at all means the judge AND the auto-filer agree it is done: Clear with confidence."],
-      ["done", "judged done",
-        "BLUE RING (Completed only) — done-stamped but not settled.\n\n"
-        + "The judge stamped every path done, but the liveness detector still sees motion: usually the "
-        + "owning session is mid-turn (possibly on this very card) or the card waits on something. "
-        + "Glance before you Clear; if new work lands and links here, the card returns to Working on "
-        + "its own.\n\nNo ring at all means both systems agree: Clear with confidence."],
-    ] as const) {
-      const chip = el("span", "lv-chip lv-" + k); chip.textContent = lab; chip.title = tip;
-      legend.appendChild(chip);
-    }
-    legend.appendChild(makeUndoClearBtn());   // pinned right via margin-left:auto
-    const helpBtn = el("a", "lv-help"); helpBtn.textContent = "?";
-    helpBtn.title = "how to read this feed — categories, rings, and what each needs from you";
-    helpBtn.onclick = () => toggleHelp(true);
-    legend.appendChild(helpBtn);
-    list.appendChild(legend);
     list.appendChild(cols);
   }
   return {
@@ -1538,20 +1497,20 @@ function render() {
   const list = document.getElementById("feed-list")!;
   const prevScroll = list.scrollTop;
   const standalone = standaloneItems();
+  ensureUndoClear().style.display = canUndoClear ? "" : "none";   // fixed at the pane's bottom-right
 
   if (!asks.length && !standalone.length && !blocked.length) {
     list.innerHTML = ""; askEls.clear(); groupEls.clear(); cardEls.clear(); blockedEls.clear();
-    // inbox zero → a big happy beaver instead of words (the user 2026-06-13). Title
-    // keeps the meaning for hover / screen readers.
-    const e = el("div", "feed-empty"); e.textContent = "🦫"; e.title = "inbox zero — nothing open";
+    // inbox zero → the romp otters (media/romp-otter.png, a CSS background) instead of
+    // words (the user 2026-06-13). role/aria-label + title keep the meaning for hover /
+    // screen readers, since a background image carries no accessible text of its own.
+    const e = el("div", "feed-empty"); e.title = "inbox zero — nothing open";
+    e.setAttribute("role", "img"); e.setAttribute("aria-label", "inbox zero — nothing open");
     list.appendChild(e);
-    if (canUndoClear) list.appendChild(makeUndoClearBtn());
     return;
   }
 
   const cols = ensureCols(list);
-  const undoBtn = document.getElementById("feed-undoclear");
-  if (undoBtn) undoBtn.style.display = canUndoClear ? "" : "none";
   const buckets: Record<Column, Entry[]> = { asks: [], needsInput: [], completed: [] };
   // Derive sibling GROUPS at render time, keyed by the shared typed turn (turnId).
   // Only host-flagged asks (groupTitle) participate, and a turn needs ≥2 current
@@ -1596,69 +1555,7 @@ function render() {
   applyExtHover(); // reconcile/renderModal may have rebuilt nodes — re-apply the rail-dot outlines (cards AND modal rows)
 }
 
-// ---- help overlay (the user 2026-06-11): the "?" in the legend opens this. ----
-// Copy follows the JLD method: lead with what the reader does, plain declarative
-// sentences, one idea each. Organized by the user's three buckets so he can tell
-// at a glance whether a marker is routine, a teaching click, or a bug to report.
-function toggleHelp(show: boolean) {
-  let h = document.getElementById("feed-help");
-  if (!show) { h?.remove(); return; }
-  if (h) return;
-  h = el("div", ""); h.id = "feed-help";
-  const inner = el("div", "feed-help-inner");
-  const close = el("button", "feed-modal-close feed-help-close"); close.textContent = "✕"; close.title = "close (Esc)";
-  close.onclick = () => toggleHelp(false);
-  inner.appendChild(close);
-  // rich(): colored words render IN their color (the user 2026-06-12-eve), so the
-  // help shows what the feed shows. Segment = plain string | [text, colorClass].
-  const rich = (cls: string, segs: Array<string | [string, string]>) => {
-    const d = el("div", cls);
-    for (const sg of segs) {
-      if (typeof sg === "string") d.appendChild(document.createTextNode(sg));
-      else { const sp = el("span", "hl hl-" + sg[1]); sp.textContent = sg[0]; d.appendChild(sp); }
-    }
-    inner!.appendChild(d);
-  };
-  rich("fh2", ["How to read this feed"]);
-  rich("fbody", ["Every card is something you asked for. Cards move between columns on their own. ",
-    "You do two things: answer what is in Blocked, and clear what is in Completed. ",
-    "Clear is the only way a card dies."]);
-  rich("fh3", ["The columns"]);
-  rich("fbody", ["WORKING: an agent is on it, a delegation is pending, or it is ", ["⏳ waiting", "cyan"],
-    " on an outside event (CI, a build, a peer). Nothing here needs you. "]);
-  rich("fbody", [["BLOCKED", "red"], ": you are the blocker. Answer the question, do the action, or click ",
-    ["⏸ approval", "red"], " to approve the prompt. A card marked reopened came back after you cleared it: treat it as new."]);
-  rich("fbody", [["COMPLETED", "blue"], ": at rest. Every card here was either stamped done by the judge model, ",
-    "auto-filed because nothing was moving it, or both. The rings say which:"]);
-  rich("fbody", ["No ring: judged done and settled. The two systems agree. Clear with confidence."]);
-  rich("fbody", [["green ring", "green"], ": auto-filed only. The judge never stamped it. If it is done, Clear. ",
-    "If it is not, Follow up. Each of those ordinary clicks is recorded as a labeled example, and the next ",
-    "prompt rework trains on them. That is the whole teaching loop: you never do anything extra."]);
-  rich("fbody", [["blue ring", "blue"], ": judged done only, not settled. Usually the owner is still mid-turn, ",
-    "possibly on this card. Glance before clearing; new linked work pulls the card back to Working by itself."]);
-  rich("fh3", [["⚠ exceptions", "amber"], " (amber)"]);
-  rich("fbody", ["These should not happen. Each is a bug worth a minute. Open the card, read the evidence, and use ",
-    ["⚠ Report an exception", "amber"], " at the bottom of the modal: pick a category, say what you saw. ",
-    "Each report stores a snapshot of the card and becomes a labeled failure example."]);
-  rich("fbody", [["⚠ stalled", "amber"], ": a delegation died and nobody will finish it. Nudge or revive the ",
-    "named session, or mark the branch done if it is moot."]);
-  rich("fbody", [["⚠ handoff?", "amber"], ": a message between agents was dismissed as FYI and the recipient ",
-    "then did work belonging to no card. Opus audits every such case automatically, repairing real ",
-    "handoffs and dismissing coincidences, so this badge appears only when it answered 'unsure'. ",
-    "Read the evidence and settle it in the report box."]);
-  rich("fbody", [["⚠ unattributed", "amber"], ": a blocked session that no card claims. ",
-    "A brand-new standalone deliverable card is the same bucket: both should be impossible now."]);
-  rich("fh3", ["Inside a card"]);
-  rich("fbody", ["The tree is the ask's full history: ● finished work, ? a pending question, ○ a branch still open, ",
-    ["↩", "blue"], " your own recorded answers. Rows jump to the work they name; hovering lights the same ",
-    "moments in the chat and on the timeline."]);
-  h.appendChild(inner);
-  h.onclick = (ev) => { if (ev.target === h) toggleHelp(false); };
-  document.body.appendChild(h);
-}
-
 window.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && document.getElementById("feed-help")) { toggleHelp(false); return; }
   if (e.key === "Escape" && fullscreenAskId) { fullscreenAskId = null; renderModal(); }
 });
 
@@ -1673,7 +1570,7 @@ window.addEventListener("keydown", (e) => {
 // to chat. Same-origin combined page only — a no-op on the standalone /feed page
 // or inside VS Code, where there's no sibling chat-frame to reach.
 function feedWantsKeys(t: EventTarget | null): boolean {
-  if (document.getElementById("feed-modal") || document.getElementById("feed-help")) return true;
+  if (document.getElementById("feed-modal")) return true;
   const el = t as HTMLElement | null;
   return !!el && (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) || el.isContentEditable);
 }

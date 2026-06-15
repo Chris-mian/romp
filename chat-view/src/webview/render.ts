@@ -13,6 +13,8 @@ import yaml from "highlight.js/lib/languages/yaml";
 import type { ParsedAsk } from "../askparse";
 import { quoteReply } from "../quote";
 import { markerLabel, chooseStamps } from "./time-marker";
+import { compactDisplay, toolCounts } from "./compact";
+import { loadSettings, onExternalSettingsChange, type RompSettings } from "./settings";
 
 for (const [name, lang] of Object.entries({
   bash, sh: bash, shell: bash, python, py: python, javascript, js: javascript,
@@ -56,7 +58,8 @@ type ChatEvent =
     }
   // Claude Code's Task to-do list, folded into one live checklist.
   | { kind: "todo"; tasks: TodoTask[]; ts?: string; uuid?: string }
-  | { kind: "queued"; texts: string[]; ts?: string; uuid?: string };
+  | { kind: "queued"; texts: string[]; ts?: string; uuid?: string }
+  | { kind: "compact"; ts?: string; uuid?: string };
 
 interface TodoTask { id: string; subject: string; activeForm?: string; status: string }
 
@@ -67,6 +70,9 @@ interface Session { id: string; name: string; color: Color | null; events: ChatE
 
 const vscodeApi =
   typeof (window as any).acquireVsCodeApi === "function" ? (window as any).acquireVsCodeApi() : undefined;
+
+let settings: RompSettings = loadSettings();   // global webview settings (compact mode, …) — see settings.ts
+const expandedGroups = new Set<string>();      // compact mode: tool-group keys the user clicked open
 
 const sessions = new Map<string, Session>();
 const order: string[] = [];           // positional tab order (for cycling)
@@ -143,9 +149,9 @@ function ioRow(label: "IN" | "OUT", text: string, isError: boolean): HTMLElement
 }
 
 // Tools whose result is pure boilerplate ("…updated successfully", "Task #N
-// created") — on success we show just a ✓; the OUT box is suppressed. On error
-// the real message is always shown. (The Agent/Task subagent tool is NOT here —
-// its output is the agent's report, which is signal.)
+// created") — on success the OUT box is suppressed (the green ✓ rail dot is the
+// success signal). On error the real message is always shown. (The Agent/Task
+// subagent tool is NOT here — its output is the agent's report, which is signal.)
 const ACK_TOOLS = new Set([
   "Edit", "Write", "MultiEdit", "NotebookEdit",
   "TodoWrite", "TaskCreate", "TaskUpdate", "TaskGet", "TaskList",
@@ -353,11 +359,12 @@ function renderEvent(ev: ChatEvent, prevEpoch?: number | null, worked?: number |
   const epoch = eventEpoch(ev);
   if (epoch != null) turn.dataset.t = String(epoch);
   // rail time-stamp: HH:MM just to the LEFT of every dot (the user 2026-06-10) — a left
-  // timestamp column so each event on the rail shows when it happened. On every dotted
-  // turn EXCEPT postal cards (they show their own time in-card, so a rail marker would
-  // duplicate it). Prompts now ride this rail too instead of an in-bubble stamp (the human
-  // via debugger, 2026-06-12). The date shows only on the first turn of a new (non-today) day.
-  if (epoch != null && ev.kind !== "postal" && turn.querySelector(".dot")) turn.insertBefore(timeMarker(epoch, prevEpoch ?? null), turn.firstChild);
+  // timestamp column so each event on the rail shows when it happened. On every dotted turn,
+  // postal cards included (the user 2026-06-13: a postal message rides the rail like every other
+  // event instead of stamping the time inside its own card). Prompts ride this rail too instead
+  // of an in-bubble stamp (the human via debugger, 2026-06-12). The date shows only on the first
+  // turn of a new (non-today) day.
+  if (epoch != null && turn.querySelector(".dot")) turn.insertBefore(timeMarker(epoch, prevEpoch ?? null), turn.firstChild);
   // rail-dot fleet links: hover anywhere on the turn → white-highlight this turn's
   // event on the timeline AND outline its feed card(s); click the DOT → open that
   // card's modal in the feed (the host resolves turn → event → cards). The whole
@@ -397,13 +404,15 @@ function elapsedFooter(secs: number): HTMLElement {
 // dot; an assistant/tool/thinking turn carries a work-line uuid (or resolves by
 // time into the period) → bar. So hovering the message lights the dot and
 // hovering the work body lights the bar — the chat just reports its own uuid.
-// HOVER is on the whole turn; the DOT keeps the click (open the feed card).
+// HOVER is on the RAIL DOT only (the user 2026-06-15: hovering the message TEXT must not light the
+// timeline — only the rail/"timeline" gutter does); the dot also keeps the click (open the feed card).
 function wireTurnHover(turn: HTMLElement, dot: HTMLElement | null, uuid: string | null, t: number) {
   let timer: ReturnType<typeof setTimeout> | undefined;
-  turn.addEventListener("mouseenter", () => {
+  const hoverTarget = dot || turn;   // only the dot triggers the timeline highlight (turn fallback if no dot)
+  hoverTarget.addEventListener("mouseenter", () => {
     timer = setTimeout(() => { timer = undefined; if (activeId) vscodeApi?.postMessage({ type: "dotHover", sid: activeId, uuid, t }); }, 120);
   });
-  turn.addEventListener("mouseleave", () => {
+  hoverTarget.addEventListener("mouseleave", () => {
     if (timer) { clearTimeout(timer); timer = undefined; return; } // never fired — nothing to clear
     vscodeApi?.postMessage({ type: "dotHover" });
   });
@@ -458,11 +467,21 @@ function eventEpoch(ev: ChatEvent): number | null {
 // data-hm; restampMarkers() may later light it up if too much space has gone unstamped.
 // data-hard marks the markerLabel-assigned stamps, which the spacing pass never touches.
 function timeMarker(epoch: number, prevEpoch: number | null): HTMLElement {
-  const { text, day, hm } = markerLabel(epoch, prevEpoch, Date.now());
+  const { text, day, hm, date } = markerLabel(epoch, prevEpoch, Date.now());
   const m = el("div", "time-marker");
   if (day) m.classList.add("day");
   m.dataset.hm = hm;
-  if (text) { m.textContent = text; m.dataset.hard = "1"; }
+  if (text) {
+    m.dataset.hard = "1";
+    if (day && date) {
+      // Two lines: the date floats on its own row ABOVE, the time stays on the dot's row —
+      // a combined "Yesterday · 21:24" overruns the 58px gutter and collides with the dot.
+      const dd = el("span", "tm-date"); dd.textContent = date; m.appendChild(dd);
+      const tt = el("span", "tm-time"); tt.textContent = hm; m.appendChild(tt);
+    } else {
+      m.textContent = text;
+    }
+  }
   return m;
 }
 
@@ -570,6 +589,7 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
   if (ev.kind === "postal") return renderPostal(ev);
   if (ev.kind === "todo") return renderTodo(ev);
   if (ev.kind === "queued") return renderQueued(ev);
+  if (ev.kind === "compact") return renderCompact(ev);
   return renderTool(ev);
 }
 
@@ -663,6 +683,19 @@ function renderTodo(ev: Extract<ChatEvent, { kind: "todo" }>): HTMLElement {
   return turn;
 }
 
+// A context compaction → one clean teal rail marker (the user 2026-06-14): replaces the raw /compact
+// stdout (leaked ANSI dim codes + hook-completion noise). renderEvent adds the rail time-marker +
+// hover wiring (this turn has a .dot); in compact mode it passes through unchanged → the same marker.
+function renderCompact(_ev: Extract<ChatEvent, { kind: "compact" }>): HTMLElement {
+  const turn = el("div", "turn turn-compact");
+  turn.appendChild(dot("ring"));
+  const line = el("div", "compact-line");
+  line.textContent = "✦ Compacted";
+  line.title = "the conversation was compacted here";
+  turn.appendChild(line);
+  return turn;
+}
+
 // Pending queued messages — the user's inputs submitted while the session was still
 // working, not yet processed. Rendered at the bottom (closest to the composer),
 // styled as faint right-aligned "you" bubbles so they read as his words, waiting.
@@ -694,7 +727,7 @@ function renderTool(ev: Extract<ChatEvent, { kind: "tool" }>): HTMLElement {
   else if (ev.desc) { const c = el("span", "tool-desc"); c.textContent = ev.desc; head.appendChild(c); }
 
   const ack = ACK_TOOLS.has(ev.name);
-  turn.appendChild(head);   // status ✓/✗ appended LAST below, so it right-justifies past the fold summary
+  turn.appendChild(head);
 
   if (ev.isError) {
     if (ev.input || ev.output) turn.appendChild(ioClamp(ev.input, ev.output, true)); // errors: always show
@@ -711,7 +744,17 @@ function renderTool(ev: Extract<ChatEvent, { kind: "tool" }>): HTMLElement {
   } else if (!ack && (ev.input || ev.output)) {
     const signal = ev.name === "Task" || ev.name === "Agent";
     if (signal) {
-      turn.appendChild(ioClamp(ev.input, ev.output, false));        // Agent/Task report IS the signal
+      // Subagent (Task/Agent) = a delegated mini-conversation. Its PROMPT is context, not the signal,
+      // so it folds onto the head line ("prompt"); the agent's REPORT renders as a faded, green-edged
+      // sub-transcript block — clamped, click to expand. (the user 2026-06-14: not a big text box.)
+      if (ev.input) inlineFold(head, turn, "prompt", preEl(ev.input));
+      if (ev.output) {
+        const clamp = el("div", "io-clamp agent-clamp");
+        const report = el("div", "agent-report md"); report.innerHTML = md(ev.output); highlight(report);
+        clamp.appendChild(report);
+        clamp.addEventListener("click", () => clamp.classList.toggle("expanded"));
+        turn.appendChild(clamp);
+      }
     } else if (!ev.output) {
       const io = el("div", "tool-io"); if (ev.input) io.appendChild(ioRow("IN", ev.input, false)); turn.appendChild(io);
     } else {
@@ -724,21 +767,12 @@ function renderTool(ev: Extract<ChatEvent, { kind: "tool" }>): HTMLElement {
       inlineFold(head, turn, `${n} line${n === 1 ? "" : "s"}`, io);
     }
   }
-  // status LAST → right-justified (CSS margin-left:auto), past the name/file/fold
-  // summary. ack + success with no body → header is just name/file + ✓.
-  if (ev.isError) { const g = el("span", "tool-status err"); g.textContent = "✗"; head.appendChild(g); }
-  else if (ack) { const g = el("span", "tool-status ok"); g.textContent = "✓"; head.appendChild(g); }
+  // No right-side status glyph: the LEFT rail dot already carries the outcome — a green ✓
+  // disc on success, a red ✗ disc on error (the user 2026-06-13). The old in-head ✓/✗ sat
+  // right beside an identical dot, so it was pure duplication.
   return turn;
 }
 
-// "HH:MM" from an epoch-seconds (t) or ISO-string (ts) timestamp; "" if neither parses.
-function hhmm(ts?: string, t?: number): string {
-  const ms = t ? t * 1000 : ts ? Date.parse(ts) : NaN;
-  if (!ms || Number.isNaN(ms)) return "";
-  const d = new Date(ms);
-  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-}
-function clock(ev: Extract<ChatEvent, { kind: "postal" }>): string { return hhmm(ev.ts, ev.t); }
 
 // Navigate to a session by its romp NAME. If it's an open tab, just select it
 // (no host round-trip); otherwise ask the host to resolve the name → transcript
@@ -810,8 +844,8 @@ function renderPostal(ev: Extract<ChatEvent, { kind: "postal" }>): HTMLElement {
     head.appendChild(b);
   }
 
-  const t = clock(ev);
-  if (t) { const time = el("span", "postal-time"); time.textContent = t; head.appendChild(time); }
+  // (no in-card time — the rail time-marker to the left of the dot carries it, like every
+  // other event; see renderEvent's rail time-stamp.)
   card.appendChild(head);
 
   const body = el("div", "postal-body md");
@@ -1562,6 +1596,11 @@ function syncView(id: string): View {
   const v = ensureView(id);
   const s = sessions.get(id);
   if (!s) return v;
+  const working = s.status.state === "working" || s.status.state === "compacting";
+  // Compact mode: hide thinking, collapse consecutive tool runs, then run the SAME rail-timestamp
+  // chain over the resulting display stream. It's a global transform (runs can span the trailing
+  // window), so the compact path always does a full rebuild rather than the incremental append.
+  if (settings.compact) { rebuildCompact(v, s, working); return v; }
   const len = s.events.length;
   let from: number;
   if (len < v.rendered) from = 0;                                   // shrink/rewind → full rebuild
@@ -1569,7 +1608,6 @@ function syncView(id: string): View {
   else from = Math.min(v.rendered, Math.max(0, len - TAIL_RECHECK)); // append + re-check a trailing window
   v.stale = false;
   while (v.el.childNodes.length > from) v.el.removeChild(v.el.lastChild as ChildNode);
-  const working = s.status.state === "working" || s.status.state === "compacting";
   for (let i = from; i < len; i++) {
     // the previous TIMED event's epoch → lets renderEvent decide if the minute/day
     // advanced (untimed events like todo/queued are skipped so the chain holds)
@@ -1579,6 +1617,92 @@ function syncView(id: string): View {
   }
   v.rendered = len;
   return v;
+}
+
+// Compact-mode full rebuild: drop thinking, fold consecutive tool runs to a summary line, then walk
+// the resulting display stream computing prevEpoch over IT (same rail-timestamp rules, applied after
+// compaction — the user's requirement). prevEpoch is the previous TIMED display item's epoch.
+function rebuildCompact(v: View, s: Session, working: boolean): void {
+  while (v.el.firstChild) v.el.removeChild(v.el.firstChild);
+  const disp = compactDisplay(s.events.map((e) => e.kind));
+  let prevEpoch: number | null = null;
+  const advance = (i: number) => { const ep = eventEpoch(s.events[i]); if (ep != null) prevEpoch = ep; };
+  for (const item of disp) {
+    if (item.kind === "toolgroup") {
+      const first = s.events[item.indices[0]];
+      const key = toolGroupKey(first);
+      const tools = item.indices.map((i) => s.events[i]) as Extract<ChatEvent, { kind: "tool" }>[];
+      const open = expandedGroups.has(key);
+      v.el.appendChild(renderToolGroup(tools, prevEpoch, key, open));   // summary line (caret = collapse toggle)
+      advance(item.indices[0]);
+      if (open) {
+        // expand to the full non-compact portion: the original contiguous span (tools + any thinking
+        // between them), each rendered as its normal turn, with timestamps continuing the chain.
+        const start = item.indices[0], end = item.indices[item.indices.length - 1];
+        for (let i = start; i <= end; i++) {
+          const child = renderEvent(s.events[i], prevEpoch, turnWorkedSecs(s.events, i, working));
+          child.classList.add("tg-child");   // indented under the open arrow → clearly part of the group
+          v.el.appendChild(child);
+          advance(i);
+        }
+      }
+    } else {
+      v.el.appendChild(renderEvent(s.events[item.index], prevEpoch, turnWorkedSecs(s.events, item.index, working)));
+      advance(item.index);
+    }
+  }
+  v.rendered = s.events.length;
+}
+
+// Stable identity for a collapsed tool run (survives rebuilds) = the first tool's uuid (else its epoch).
+function toolGroupKey(first: ChatEvent): string { return "tg:" + (first.uuid || String(eventEpoch(first) ?? "")); }
+
+// A collapsed run of consecutive tool uses → one rail line: a caret + "3 Edits, 2 Reads" with each
+// tool word bold (matching the non-compact .tool-name, so it reads AS tools). Clicking the line toggles
+// expand → the full non-compact cards (the user 2026-06-14). Carries the rail dot + time-marker + hover
+// wiring like any event so it anchors on the timeline; the dot is a green ✓ disc, red ✗ if any errored.
+function renderToolGroup(tools: Extract<ChatEvent, { kind: "tool" }>[], prevEpoch: number | null, key: string, open: boolean): HTMLElement {
+  const turn = el("div", "turn turn-toolgroup" + (open ? " expanded" : ""));
+  const anyErr = tools.some((t) => t.isError);
+  const d = dot(anyErr ? "ring" : "green");
+  if (anyErr) d.classList.add("err");
+  turn.appendChild(d);
+  const line = el("div", "toolgroup-line");
+  line.title = open ? "click to collapse" : "click to expand";
+  const caret = el("span", "toolgroup-caret"); caret.textContent = open ? "▾" : "▸"; line.appendChild(caret);
+  if (!open) {   // collapsed → the "3 Edits, 2 Reads" summary; expanded → just the open arrow (the cards say it)
+    toolCounts(tools.map((t) => t.name)).forEach((c, i) => {
+      line.appendChild(document.createTextNode((i ? ", " : " ") + c.count + " "));
+      const w = el("span", "toolgroup-tool"); w.textContent = c.label; line.appendChild(w);   // bold, like .tool-name
+    });
+  }
+  line.addEventListener("click", (e) => { e.stopPropagation(); toggleToolGroup(key); });
+  turn.appendChild(line);
+  const epoch = eventEpoch(tools[0]);
+  const anchorUuid = tools[0].uuid ?? null;
+  if (anchorUuid) turn.dataset.uuid = anchorUuid;
+  if (epoch != null) turn.dataset.t = String(epoch);
+  if (epoch != null) turn.insertBefore(timeMarker(epoch, prevEpoch ?? null), turn.firstChild);
+  const railDot = turn.querySelector(".dot") as HTMLElement | null;
+  if (anchorUuid || epoch != null) wireTurnHover(turn, railDot, anchorUuid, epoch ?? 0);
+  return turn;
+}
+
+// Toggle a collapsed tool run open/closed and repaint the active view in place (scroll preserved).
+function toggleToolGroup(key: string): void {
+  if (expandedGroups.has(key)) expandedGroups.delete(key); else expandedGroups.add(key);
+  const content = document.getElementById("content");
+  const top = content ? content.scrollTop : 0;
+  if (activeId) syncView(activeId);
+  if (content) content.scrollTop = top;
+  scheduleRestamp();
+}
+
+// Re-render every view from scratch (used when a setting like compact flips): reset each view so the
+// next syncView rebuilds it via the right path, then repaint the active one.
+function rerenderAll(): void {
+  for (const v of views.values()) { while (v.el.firstChild) v.el.removeChild(v.el.firstChild); v.rendered = 0; v.stale = false; }
+  showActive();
 }
 
 // Index of the last human-prompt event = start of the current turn, where any
@@ -2711,7 +2835,15 @@ function insertComposerText(text: string) {
   ta.focus();
 }
 
+// ---- settings: the gear + modal live on the TIMELINE now (the user 2026-06-14). The chat just
+// CONSUMES the shared 'romp:settings' (compact mode) — applying a change made there, in a same-origin
+// tab, live via the storage event; and reading it at startup. ----
+function setupSettings(): void {
+  onExternalSettingsChange((s) => { settings = s; rerenderAll(); });
+}
+
 setupComposer();
+setupSettings();
 // right-click a selection in the transcript → Reply (quote it) / Copy
 document.getElementById("content")?.addEventListener("contextmenu", showSelectionMenu);
 if (vscodeApi) vscodeApi.postMessage({ type: "ready" });

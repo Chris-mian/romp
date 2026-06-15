@@ -53,6 +53,10 @@ const webview = {
   platform: "browser",
   target: "es2020",
   outdir: "dist",
+  // Leave media url()s verbatim — they're served from chat-view/media at runtime (kernel
+  // /media or VS Code localResourceRoot), NOT bundled. `../media/x.png` is correct relative
+  // to the emitted dist/feed.css; esbuild must not try to resolve it against the source tree.
+  external: ["*.png", "*.svg"],
   sourcemap: !production,
   minify: production,
   logLevel: "info",

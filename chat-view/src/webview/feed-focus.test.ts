@@ -16,9 +16,9 @@ test("a feed click returns focus to the chat-frame, deferred past the click hand
   assert.match(FEED, /getElementById\("chat-frame"\)[\s\S]*?contentWindow\?\.focus\(\)/, "focuses the chat iframe window");
 });
 
-test("focus is NOT stolen back while a modal/help overlay is open or a text field is focused", () => {
-  // open overlay → feed keeps focus (Esc closes it, its fields type)
-  assert.match(FEED, /if \(document\.getElementById\("feed-modal"\) \|\| document\.getElementById\("feed-help"\)\) return true;/);
+test("focus is NOT stolen back while a modal is open or a text field is focused", () => {
+  // open modal → feed keeps focus (Esc closes it, its fields type)
+  assert.match(FEED, /if \(document\.getElementById\("feed-modal"\)\) return true;/);
   // text inputs keep focus
   assert.match(FEED, /INPUT\|TEXTAREA\|SELECT/);
   assert.match(FEED, /isContentEditable/);

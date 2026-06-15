@@ -80,6 +80,36 @@ test("draw() renders multiple lanes without throwing (no const-hit TDZ crash)", 
   assert.equal(panel._vis.length, 2, "both live lanes must survive the render");
 });
 
+// Dead lanes strike their name (the user 2026-06-13: a dead agent's name should be struck through
+// wherever it appears — timeline + feed). Keys on the data-model `live` field, NOT a render heuristic.
+function findText(node: any, txt: string): any {
+  if (node.tag === "text" && node.textContent === txt) return node;
+  for (const c of node.children || []) { const r = findText(c, txt); if (r) return r; }
+  return null;
+}
+test("a dead lane's name is struck through; a live lane's is not", () => {
+  const panel = new TimelinePanel(makeNode("div"));
+  const data: any = synthData();
+  // turn lane "beta" into an ended (dead) session — its in-window turn keeps it on screen
+  Object.assign(data.sessions[1], { live: false, faded: true, state: "idle" });
+  panel.data = data;
+  assert.doesNotThrow(() => panel.draw());
+  const live = findText(panel.svg, "alpha");
+  const dead = findText(panel.svg, "beta");
+  assert.ok(live && dead, "both lane names must render");
+  assert.equal(dead.getAttribute("text-decoration"), "line-through", "the dead lane's name is struck through");
+  assert.ok(!live.getAttribute("text-decoration"), "the live lane's name is NOT struck");
+});
+
+test("a compacting lane's badge shows the live compaction % (the user 2026-06-15)", () => {
+  const panel = new TimelinePanel(makeNode("div"));
+  const data: any = synthData();
+  Object.assign(data.sessions[0], { state: "compacting", compactPct: 74 });
+  panel.data = data;
+  assert.doesNotThrow(() => panel.draw());
+  assert.ok(findText(panel.svg, "COMPACTING 74%"), "the COMPACTING badge includes the %");
+});
+
 test("draw() also survives with an active hover set (atom-id highlight path)", () => {
   const host = makeNode("div");
   const panel = new TimelinePanel(host);
@@ -152,6 +182,17 @@ test("the timeline controls embed a kernel-restart button, left of the usage bar
   const btn = kids.find((c: any) => c.tag === "button" && c.getAttribute("title") === "Restart the romp kernel");
   assert.ok(btn, "controls row must contain the embedded restart button");
   assert.ok(kids.indexOf(btn) < kids.indexOf(panel._usageWrap), "restart button must be leftmost (before usage bars)");
+});
+
+// Settings gear sits right next to the restart button at the bottom-left (the user 2026-06-14).
+test("the timeline controls embed a settings gear immediately after the restart button", () => {
+  const panel = new TimelinePanel(makeNode("div"));
+  const kids = panel.controls.children;
+  const restart = kids.find((c: any) => c.tag === "button" && c.getAttribute("title") === "Restart the romp kernel");
+  const gear = kids.find((c: any) => c.tag === "button" && c.getAttribute("title") === "Settings");
+  assert.ok(gear, "controls row must contain the settings gear");
+  assert.equal(kids.indexOf(gear), kids.indexOf(restart) + 1, "gear sits immediately after the restart button");
+  assert.ok(kids.indexOf(gear) < kids.indexOf(panel._usageWrap), "gear is left of the usage bars");
 });
 
 // Freeze-on-hover must actually STOP the edge (the user 2026-06-13: "timeline doesn't stop when I hover").

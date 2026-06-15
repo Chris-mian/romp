@@ -75,5 +75,25 @@ class TestDiagnose(unittest.TestCase):
         self.assertEqual(dots.diagnose("working", "nope", NOW, False, PANE_IDLE), "leave")
 
 
+class TestCompactPct(unittest.TestCase):
+    # the TUI's compaction bar: 'Compacting…' line, then the bar + NN% on the NEXT line
+    PANE = "✶ Compacting conversation… (2m 1s)\n  ▰▰▰▱▱ 74%\n  ctx:80%  Opus 4.8\n"
+
+    def test_reads_the_bar_percent(self):
+        self.assertEqual(dots.compact_pct(self.PANE), 74)
+
+    def test_none_when_not_compacting(self):
+        self.assertIsNone(dots.compact_pct("  Finished.\n❯ \n  ctx:7%\n"))
+
+    def test_none_when_bar_not_drawn_yet(self):
+        # just started — 'Compacting…' shown but no % bar yet
+        self.assertIsNone(dots.compact_pct("✶ Compacting conversation… (0s)\n❯ \n"))
+
+    def test_grabs_the_compaction_percent_not_an_unrelated_one(self):
+        # an unrelated 7% (ctx) BEFORE the bar must not be picked up
+        pane = "  ctx:7%\n✶ Compacting conversation…\n  ▰▰ 41%\n"
+        self.assertEqual(dots.compact_pct(pane), 41)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

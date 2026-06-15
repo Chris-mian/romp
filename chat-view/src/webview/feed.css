@@ -111,7 +111,17 @@ body { display: flex; flex-direction: column; }
   padding: 12px 12px 28px;
   container-type: inline-size;   /* so the columns can stack responsively (see @container below) */
 }
-.feed-empty { color: var(--dim); padding: 40px 14px; text-align: center; font-size: 96px; line-height: 1; user-select: none; }
+/* inbox zero → the romp swirl logo (no otters), stretched to fill the whole feed list (the user
+   2026-06-15). The logo's square bg matches the pane, so it sits seamlessly. Relative url() resolves
+   against dist/feed.css → /media in both hosts (browser kernel serves /media; VS Code localResourceRoot). */
+.feed-empty {
+  flex: 1 1 auto; align-self: stretch; min-height: 320px; padding: 16px;
+  background-image: url(../media/romp-swirl-square.svg);
+  background-repeat: no-repeat;
+  background-position: center center;
+  background-size: contain;   /* as large as fits the list area, centered */
+  user-select: none;
+}
 
 /* ---------- two columns: Done (left) | In progress (right) ---------- */
 .feed-cols { display: flex; align-items: flex-start; gap: 12px; }
@@ -151,18 +161,23 @@ body { display: flex; flex-direction: column; }
   .feed-cols { flex-direction: column; }
 }
 
-/* ---------- ask card (the inbox unit): two rows ---------- */
-/* row 1 — ask title (hit-area fits its TEXT, not the row) + age top-right. The
-   title must NOT flex-grow, else clicking blank space right of it triggers locate
-   (the user's hover hit-area bug); the empty space is card body → opens the modal. */
+/* ---------- ask card (the inbox unit): three rows (the user 2026-06-14) ---------- */
+/* row 1 — ask title, full width across the top. Hit-area still fits its TEXT (the title must
+   NOT flex-grow, else clicking blank space right of it triggers locate instead of the modal —
+   the user's hover hit-area bug); with the age moved to row 3, a long title runs the full width. */
 .fask-row1 { display: flex; align-items: baseline; gap: 10px; }
 .fask-row1 .fcard-title { flex: 0 1 auto; min-width: 0; }
-.fask-row1 .ftime { flex: 0 0 auto; margin-left: auto; }
-/* row 2 — agent (hit-area fits its name) on the left, [reopened?] [Clear] right */
-.fask-row2 { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+/* the blocked (amber) card still carries its age inline on row 1 (it has no row 3) */
+.fitem.blocked .fask-row1 .ftime { flex: 0 0 auto; margin-left: auto; }
+/* row 2 — the session name on its own row below the title; sized to its text so blank space
+   to its right stays card-body (opens the modal), and wrapping so a long name can't overflow. */
+.fask-row2 { display: flex; align-items: center; gap: 8px; margin-top: 3px; }
 .fask-id { flex: 0 1 auto; min-width: 0; display: flex; align-items: baseline; gap: 6px; }
-.fask-id .fname { flex: 0 1 auto; }   /* the link sizes to its text */
+.fask-id .fname { flex: 0 1 auto; min-width: 0; overflow-wrap: anywhere; }   /* sizes to text, wraps if long */
 .fask-actions { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; margin-left: auto; }
+/* row 3 — age bottom-left, status badges + Clear bottom-right */
+.fask-row3 { display: flex; align-items: baseline; gap: 8px; margin-top: 6px; }
+.fask-row3 .ftime { flex: 0 0 auto; }
 /* card body is clickable (single → modal, double → pin). Hover lights a white
    ring + the timeline journey; pin persists it. Order matters: .focused after
    .pinned so a pinned-AND-focused card shows the bright ring. */
@@ -248,7 +263,6 @@ body { display: flex; flex-direction: column; }
 
 /* grouped sibling-asks card: a member line per sub-ask under the title, each with
    a status circle (● done / ? needs you / ○ not finished) that fills in over time */
-.fgroup-count { color: var(--dim); font-size: 0.85em; margin-left: 6px; }
 .fgroup-members { display: flex; flex-direction: column; gap: 3px; margin-top: 7px; }
 .fgroup-member { display: flex; align-items: baseline; gap: 7px; font-size: 0.92em; line-height: 1.35; }
 .fgroup-dot { flex: 0 0 auto; width: 1.1em; text-align: center; font-weight: 700; }
@@ -368,19 +382,9 @@ body { display: flex; flex-direction: column; }
    green  = settled-but-in-Asks (nothing can move it without you — likely done)
    dashed = stalled-in-Asks (unfinished handoff, nobody working)
    gold   = active-but-Completed (owner still mid-turn). */
-/* rings live ONLY in Completed (2026-06-12-eve simplification): agreement = no
-   ink; green = auto-filed only (verify, then Clear / Follow up); blue = judged
-   done only (not settled yet — glance first). */
-.fitem.ask.lv-settled   { outline: 1.5px solid  rgba(87, 181, 15, 0.80);  outline-offset: 1px; }
-.fitem.ask.lv-done      { outline: 1.5px solid  rgba(43, 127, 184, 0.95); outline-offset: 1px; }
 /* ⏳ external-wait chip: paused on the world, not on the user — dim cyan */
 .fask-wait { flex: 0 0 auto; font-size: 0.72em; font-weight: 700; letter-spacing: 0.03em;
              color: #4EA8A9; white-space: nowrap; cursor: default; }
-/* legend chips above the columns — same rings, label inside */
-.lv-legend { display: flex; gap: 12px; padding: 2px 10px 7px; font-size: 10.5px; opacity: 0.7; }
-.lv-chip { padding: 0 7px; line-height: 16px; border-radius: 8px; cursor: default; }
-.lv-chip.lv-settled   { outline: 1.5px solid  rgba(87, 181, 15, 0.80); }
-.lv-chip.lv-done      { outline: 1.5px solid  rgba(43, 127, 184, 0.95); }
 
 .fitem-main { flex: 1 1 auto; min-width: 0; }
 /* right rail: just the timestamp now (Expand/Dismiss moved into the main column) */
@@ -403,8 +407,12 @@ body { display: flex; flex-direction: column; }
 /* ONE underline on hover (a solid text-decoration, matching .ftree-who / modal-agent).
    The old dotted border-bottom stacked with the <a>'s hover underline → two lines. */
 .fname:hover { text-decoration: underline; text-underline-offset: 2px; }
-/* a dead/inactive session: fade just the name (replaces the old ●/○ dot) */
-.fitem.dead .fname { opacity: 0.42; }
+/* a dead/inactive session: fade + strike the name (replaces the old ●/○ dot) */
+.fitem.dead .fname { opacity: 0.42; text-decoration: line-through; }
+.fitem.dead .fname:hover { text-decoration: line-through underline; }   /* keep the hover affordance */
+/* the modal's agent name carries the same strike when its session is dead */
+.feed-modal-agent.dead { text-decoration: line-through; }
+.feed-modal-agent.dead:hover { text-decoration: line-through underline; }
 
 /* blocked-session state card — distinct amber "attention" treatment (bg set here,
    not inline, since it carries no recency tint); pinned to the top of NEEDS INPUT */
@@ -439,13 +447,10 @@ body { display: flex; flex-direction: column; }
 /* "Follow up" reuses the action-button chrome but hovers BLUE (it reopens the
    card to ASKS — a continuation, not the red destructive Clear) */
 .fdismiss.ffollow:hover { color: #fff; border-color: #2b7fb8; background: #2b7fb8; }
-/* UndoClear (top right) — restorative, so it hovers BLUE like Follow up, not
-   Clear's red. On the legend strip margin-left:auto pins it to the right edge;
-   on the empty state it floats in the same corner (container-type on #feed-list
-   makes it the containing block). */
-.fh-undoclear { margin-left: auto; opacity: 0.95; font-size: 10.5px; padding: 1px 9px; }
-.fh-undoclear:hover { color: #fff; border-color: #2b7fb8; background: #2b7fb8; }
-#feed-list > .fh-undoclear { position: absolute; top: 8px; right: 14px; }
+/* UndoClear — restorative, so it hovers BLUE like Follow up, not Clear's red. Pinned to the
+   TOP-RIGHT of the feed pane (the user 2026-06-14), fixed so it stays put while the list scrolls. */
+.fundo-corner { position: fixed; top: 10px; right: 14px; z-index: 5; opacity: 0.95; font-size: 10.5px; padding: 1px 9px; }
+.fundo-corner:hover { color: #fff; border-color: #2b7fb8; background: #2b7fb8; }
 /* downstream sessions an ask is waiting on (drop points) — experiment
    2026-06-10; live working dot + age per session, newest first */
 /* active downstream sessions (the user's handoff spec, 2026-06-10): one line per
@@ -514,30 +519,7 @@ body { display: flex; flex-direction: column; }
 .fsuspect { border-left: 2px solid #E0A030; padding-left: 8px; }
 .fsuspect-hint { opacity: 0.65; font-size: 0.9em; }
 
-/* ---------- help overlay (the "?" in the legend) ---------- */
-.lv-spacer { flex: 1 1 auto; }
-.lv-help {
-  flex: 0 0 auto; width: 17px; height: 17px; line-height: 16px; text-align: center;
-  border: 1px solid var(--card-border); border-radius: 50%;
-  color: var(--dim); cursor: pointer; font-weight: 700; margin-left: 8px;
-}
-.lv-help:hover { color: var(--fg); border-color: var(--fg); }
-#feed-help {
-  position: fixed; inset: 0; z-index: 60;
-  background: rgba(0, 0, 0, 0.55);
-  display: flex; align-items: flex-start; justify-content: center;
-  overflow-y: auto; padding: 5vh 16px;
-}
-.feed-help-inner {
-  position: relative; max-width: 680px; width: 100%;
-  background: var(--bg); border: 1px solid var(--card-border); border-radius: 12px;
-  padding: 18px 22px 22px; box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
-}
-.feed-help-close { position: absolute; top: 10px; right: 12px; }
-.fh2 { font-size: 1.15em; font-weight: 700; margin-bottom: 8px; }
-.fh3 { font-size: 0.78em; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
-       color: var(--dim); margin: 14px 0 4px; }
-#feed-help .fbody { line-height: 1.55; }
+/* (help overlay removed 2026-06-14 — the feed is self-explanatory now) */
 
 /* colored words inside the help overlay — render the word in the color it wears
    on the feed itself */

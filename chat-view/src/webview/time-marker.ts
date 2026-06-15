@@ -10,6 +10,9 @@ export interface MarkerLabel {
   day: boolean; // true → first turn of a past day; emphasise + show the date
   hm: string;   // the bare "HH:MM", ALWAYS — what a suppressed turn shows if the
                 // spacing pass later lights it up (see chooseStamps).
+  date: string; // the date word ("Yesterday" / "Mon" / "Jun 3") on a day marker, else "".
+                // Named so the renderer can stack it on its OWN line above hm — a combined
+                // "Yesterday · 21:24" overruns the narrow rail gutter and hits the dot.
 }
 
 // HH:MM for a turn, given the previous TIMED turn's epoch (or null) and "now".
@@ -32,14 +35,14 @@ export function markerLabel(epoch: number, prevEpoch: number | null, nowMs: numb
     const sod = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
     const days = Math.round((sod(now) - sod(d)) / 86400000);
     const date = days === 1 ? "Yesterday" : days < 7 ? WEEKDAY[d.getDay()] : `${MONTH[d.getMonth()]} ${d.getDate()}`;
-    return { text: `${date} · ${time}`, day: true, hm: time };
+    return { text: `${date} · ${time}`, day: true, hm: time, date };
   }
   const sameMinute = prev != null
     && dayKey(d) === dayKey(prev)
     && d.getHours() === prev.getHours()
     && d.getMinutes() === prev.getMinutes();
-  if (sameMinute) return { text: "", day: false, hm: time };
-  return { text: time, day: false, hm: time };
+  if (sameMinute) return { text: "", day: false, hm: time, date: "" };
+  return { text: time, day: false, hm: time, date: "" };
 }
 
 // Minute-change stamps alone can be too sparse: dozens of turns can land in one minute,
