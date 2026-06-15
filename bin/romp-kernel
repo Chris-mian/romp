@@ -213,6 +213,35 @@ def _tmux_sessions():
     return out
 
 
+def _tmux_send(name, text, model_cmd=False, _async=True):
+    """Inject text into a session's tmux pane — set-buffer + bracketed paste-buffer + Enter, the old
+    TmuxBackend.send sequence (a 250ms gap lets the bracketed paste land before Enter submits). name =
+    the tmux session name. Drives the chat composer, /compact, and the model/effort pickers. Runs in a
+    daemon thread so the WS recv loop isn't blocked by the gaps. model_cmd: /model opens a confirm that
+    needs a second Enter."""
+    if not name or not text:
+        return
+
+    def run(args, t=3):
+        try:
+            return subprocess.run(["tmux"] + args, capture_output=True, text=True, timeout=t)
+        except Exception:
+            return None
+
+    def go():
+        r = run(["display-message", "-p", "-t", name, "#{pane_in_mode}"], 2)
+        if r and r.stdout.strip() == "1":
+            run(["send-keys", "-t", name, "-X", "cancel"], 2)        # exit copy-mode so paste+Enter land
+        run(["set-buffer", "-b", "rompkernel", text])
+        run(["paste-buffer", "-b", "rompkernel", "-d", "-p", "-t", name])   # -p bracketed, -d delete buf
+        time.sleep(0.25)
+        run(["send-keys", "-t", name, "Enter"])
+        if model_cmd:
+            time.sleep(0.85)
+            run(["send-keys", "-t", name, "Enter"])                 # accept the hookless /model confirm
+    threading.Thread(target=go, daemon=True).start() if _async else go()
+
+
 def _captions(fsid):
     out = {}
     try:
@@ -1139,6 +1168,19 @@ class Handler(BaseHTTPRequestHandler):
                 elif msg and msg.get("type") == "openSession" and msg.get("id"):
                     _set_hidden_tab(msg["id"], False)    # feed/timeline click reopens a hidden tab
                     _push_all()
+                elif msg and msg.get("type") == "sendMessage" and msg.get("id") and msg.get("text"):
+                    _tmux_send(_name_of(msg["id"]) or msg["id"], str(msg["text"]))   # composer → session
+                elif msg and msg.get("type") == "interrupt" and msg.get("id"):
+                    nm = _name_of(msg["id"]) or msg["id"]
+                    try:
+                        subprocess.run(["tmux", "send-keys", "-t", nm, "Escape"], timeout=3)
+                    except Exception:
+                        pass
+                elif msg and msg.get("type") == "compact" and msg.get("name"):
+                    _tmux_send(str(msg["name"]), "/compact")
+                elif msg and msg.get("type") == "sendCommand" and msg.get("name") and msg.get("cmd"):
+                    cmd = str(msg["cmd"])
+                    _tmux_send(str(msg["name"]), cmd, model_cmd=cmd.strip().startswith("/model"))
         except (BrokenPipeError, ConnectionResetError, OSError):
             pass
         finally:

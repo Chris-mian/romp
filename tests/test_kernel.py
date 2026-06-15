@@ -296,6 +296,22 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(st["ctx"], "20")
 
 
+class TmuxInject(unittest.TestCase):
+    def test_tmux_send_sequence(self):
+        calls = []
+        real_run, real_sleep = km.subprocess.run, km.time.sleep
+        km.subprocess.run = lambda args, **k: calls.append(list(args)) or type("R", (), {"stdout": ""})()
+        km.time.sleep = lambda s: None
+        try:
+            km._tmux_send("mysess", "hello world", _async=False)
+        finally:
+            km.subprocess.run, km.time.sleep = real_run, real_sleep
+        # set-buffer the text → bracketed paste-buffer to the session → Enter to submit
+        self.assertTrue(any(a[:2] == ["tmux", "set-buffer"] and "hello world" in a for a in calls))
+        self.assertTrue(any(a[:2] == ["tmux", "paste-buffer"] and "mysess" in a for a in calls))
+        self.assertTrue(any(a[:2] == ["tmux", "send-keys"] and "Enter" in a for a in calls))
+
+
 class ParentWatch(unittest.TestCase):
     def test_pid_alive(self):
         self.assertTrue(km._pid_alive(os.getpid()))
