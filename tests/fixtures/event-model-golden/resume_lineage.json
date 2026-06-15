@@ -1,0 +1,105 @@
+{
+ "color": "#888888",
+ "dir": "/TESTDIR",
+ "leafFsid": "bbbbbbbb-0000-0000-0000-000000000000",
+ "name": "impl",
+ "rompUuid": "11111111-2222-3333-4444-555555555555",
+ "turns": [
+  {
+   "atoms": [
+    {
+     "author": "human",
+     "fsid": "aaaaaaaa-0000-0000-0000-000000000000",
+     "message": {
+      "content": [
+       {
+        "text": "first ask before resume",
+        "type": "text"
+       }
+      ],
+      "role": "user"
+     },
+     "parentUuid": null,
+     "promptSource": "typed",
+     "session_id": "11111111-2222-3333-4444-555555555555",
+     "t": 1781096400,
+     "type": "user",
+     "uuid": "u1"
+    },
+    {
+     "fsid": "aaaaaaaa-0000-0000-0000-000000000000",
+     "message": {
+      "content": [
+       {
+        "text": "reply in the parent transcript",
+        "type": "text"
+       }
+      ],
+      "role": "assistant",
+      "stop_reason": "end_turn"
+     },
+     "parentUuid": "u1",
+     "session_id": "11111111-2222-3333-4444-555555555555",
+     "t": 1781096430,
+     "type": "assistant",
+     "uuid": "a1"
+    }
+   ],
+   "end": 1781096430,
+   "ended": true,
+   "id": "11111111-2222-3333-4444-555555555555:1781096400:74a10ea2",
+   "t": 1781096400,
+   "trigger": {
+    "uuid": "u1"
+   }
+  },
+  {
+   "atoms": [
+    {
+     "author": "human",
+     "fsid": "bbbbbbbb-0000-0000-0000-000000000000",
+     "message": {
+      "content": [
+       {
+        "text": "second ask after resume",
+        "type": "text"
+       }
+      ],
+      "role": "user"
+     },
+     "parentUuid": "a1",
+     "promptSource": "typed",
+     "session_id": "11111111-2222-3333-4444-555555555555",
+     "t": 1781096500,
+     "type": "user",
+     "uuid": "u2"
+    },
+    {
+     "fsid": "bbbbbbbb-0000-0000-0000-000000000000",
+     "message": {
+      "content": [
+       {
+        "text": "reply in the resumed transcript",
+        "type": "text"
+       }
+      ],
+      "role": "assistant",
+      "stop_reason": "end_turn"
+     },
+     "parentUuid": "u2",
+     "session_id": "11111111-2222-3333-4444-555555555555",
+     "t": 1781096530,
+     "type": "assistant",
+     "uuid": "a2"
+    }
+   ],
+   "end": 1781096530,
+   "ended": true,
+   "id": "11111111-2222-3333-4444-555555555555:1781096500:aafaeb09",
+   "t": 1781096500,
+   "trigger": {
+    "uuid": "u2"
+   }
+  }
+ ]
+}

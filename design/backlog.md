@@ -44,19 +44,28 @@ UI port + parity: the existing tuned `chat-view` UI is ported as the render laye
 onto the Python kernel. The curated KEEP / ADAPT / DROP checklist (what to reuse,
 rewire, and leave behind against the new data model) lives in `design/ui-parity.md`.
 
-MINIMAL (build first — browser-able):
-- [ ] Merged always-on kernel: L1+L2 producer running continuously + HTTP/WS server.
-  Single writer.
-- [ ] `ui/` package (rename `chat-view/` → `ui/`; fold the timeline in from
-  `obsidian/`; delete `romp-events --emit`).
-- [ ] One view-builder (replaces `feed.ts` + `bin/romp-feed` + `chat.ts`'s parser +
-  `romp-events --emit`).
-- [ ] Chat pane: render the event tree directly (no second parser).
-- [ ] Feed pane: inbox (`goals/` → working / blocked / completed columns) + caption
-  stream.
-- [ ] Timeline pane: segments-as-bars + idle gaps + caption labels.
-- [ ] TOC ledger: archiver headline + turn/segment captions, clickable to jump.
-- [ ] RUNNABLE by the human: a clear start command + browser URL.
+MINIMAL (build first — browser-able): the tuned chat-view UI ported onto the kernel over WS.
+- [x] Merged always-on kernel `bin/romp-kernel` (PYTHON — producer + WebSocket/HTTP server in
+  one process, single writer; presence-gated producer, no model calls when no browser open).
+  Hand-rolled stdlib WS reusing the chat-view `shimJs` VERBATIM — the same protocol the bundles
+  + extension speak (no poll bridge). Builds the UI bundles if stale.
+- [~] UI = the human's tuned chat-view render bundles, served verbatim (render.js/feed.js +
+  styles/feed.css). Chat ported; feed.ts goal-tree surgery + obsidian timeline fold pending.
+  `ui/` rename + `romp-events --emit` delete deferred (build-beside).
+- [x] One view-builder: the kernel's Python projection emits the `{type:"session"/"feed"}` WS
+  payloads the bundles consume; bundles only render. (Old reducers exist beside until cutover.)
+- [x] Chat pane: atoms→ChatEvent (user / assistant / thinking / tool with output-pairing + diff /
+  postal / compaction marker) over WS — the tuned transcript, tabs, rail, ledger.
+- [x] Feed pane: RENDERS on real goals. Goals map onto the AskItem/AskTreeNode shape feed.js
+  already consumes (goal tree = card tree, status → Working/Blocked/Completed column), with the
+  DROP concepts (relevance/liveness/suspects/openQuestions) left empty so the render's
+  conditional paths hide them — ZERO edits to the tuned feed code. Literal dead-path code removal
+  + segment-nested modal trail = follow-up tidy. `/` now serves the combined chat+feed view.
+- [ ] Timeline pane: obsidian timeline port (segments-as-bars, event-based idle gaps) pending.
+- [x] TOC ledger: archiver headline + turn captions, click-to-jump (segment nesting pending).
+- [x] RUNNABLE: `python3 ~/GitRepos/romp-event-model/bin/romp-kernel` → auto-opens
+  http://127.0.0.1:7878 (full path: rebuild bin is off PATH; `cd chat-view && npm install` once
+  if UI deps are missing).
 
 INCREMENTAL (add after the three panes show real data):
 - [ ] **Serve-layer security (do BEFORE serving beyond localhost)**: always-on

@@ -1,0 +1,117 @@
+{
+ "color": "#888888",
+ "dir": "/TESTDIR",
+ "leafFsid": "11111111-2222-3333-4444-555555555555",
+ "name": "impl",
+ "rompUuid": "11111111-2222-3333-4444-555555555555",
+ "turns": [
+  {
+   "atoms": [
+    {
+     "author": "human",
+     "fsid": "11111111-2222-3333-4444-555555555555",
+     "message": {
+      "content": [
+       {
+        "text": "start the big task",
+        "type": "text"
+       }
+      ],
+      "role": "user"
+     },
+     "parentUuid": null,
+     "promptSource": "typed",
+     "session_id": "11111111-2222-3333-4444-555555555555",
+     "t": 1781096400,
+     "type": "user",
+     "uuid": "u1"
+    },
+    {
+     "fsid": "11111111-2222-3333-4444-555555555555",
+     "message": {
+      "content": [
+       {
+        "text": "Working.",
+        "type": "text"
+       },
+       {
+        "id": "tu_a1_0",
+        "input": {},
+        "name": "Read",
+        "type": "tool_use"
+       }
+      ],
+      "role": "assistant",
+      "stop_reason": "tool_use"
+     },
+     "parentUuid": "u1",
+     "session_id": "11111111-2222-3333-4444-555555555555",
+     "t": 1781096420,
+     "type": "assistant",
+     "uuid": "a1"
+    },
+    {
+     "author": "human",
+     "fsid": "11111111-2222-3333-4444-555555555555",
+     "message": {
+      "content": [
+       {
+        "text": "first queued note",
+        "type": "text"
+       }
+      ],
+      "role": "user"
+     },
+     "parentUuid": "a1",
+     "session_id": "11111111-2222-3333-4444-555555555555",
+     "t": 1781096450,
+     "type": "user",
+     "uuid": "att1"
+    },
+    {
+     "author": "human",
+     "fsid": "11111111-2222-3333-4444-555555555555",
+     "message": {
+      "content": [
+       {
+        "text": "second queued note",
+        "type": "text"
+       }
+      ],
+      "role": "user"
+     },
+     "parentUuid": "att1",
+     "session_id": "11111111-2222-3333-4444-555555555555",
+     "t": 1781096450,
+     "type": "user",
+     "uuid": "att2"
+    },
+    {
+     "fsid": "11111111-2222-3333-4444-555555555555",
+     "message": {
+      "content": [
+       {
+        "text": "Folded both notes in.",
+        "type": "text"
+       }
+      ],
+      "role": "assistant",
+      "stop_reason": "end_turn"
+     },
+     "parentUuid": "att2",
+     "session_id": "11111111-2222-3333-4444-555555555555",
+     "t": 1781096490,
+     "type": "assistant",
+     "uuid": "a2"
+    }
+   ],
+   "end": 1781096490,
+   "ended": true,
+   "id": "11111111-2222-3333-4444-555555555555:1781096400:bcaafb8b",
+   "t": 1781096400,
+   "trigger": {
+    "uuid": "u1"
+   }
+  }
+ ]
+}

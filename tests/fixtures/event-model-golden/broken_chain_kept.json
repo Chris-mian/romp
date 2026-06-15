@@ -1,0 +1,153 @@
+{
+ "color": "#888888",
+ "dir": "/TESTDIR",
+ "leafFsid": "11111111-2222-3333-4444-555555555555",
+ "name": "impl",
+ "rompUuid": "11111111-2222-3333-4444-555555555555",
+ "turns": [
+  {
+   "atoms": [
+    {
+     "author": "human",
+     "fsid": "11111111-2222-3333-4444-555555555555",
+     "message": {
+      "content": [
+       {
+        "text": "main line ask",
+        "type": "text"
+       }
+      ],
+      "role": "user"
+     },
+     "parentUuid": null,
+     "promptSource": "typed",
+     "session_id": "11111111-2222-3333-4444-555555555555",
+     "t": 1781096400,
+     "type": "user",
+     "uuid": "u1"
+    },
+    {
+     "fsid": "11111111-2222-3333-4444-555555555555",
+     "message": {
+      "content": [
+       {
+        "text": "main reply",
+        "type": "text"
+       }
+      ],
+      "role": "assistant",
+      "stop_reason": "end_turn"
+     },
+     "parentUuid": "u1",
+     "session_id": "11111111-2222-3333-4444-555555555555",
+     "t": 1781096430,
+     "type": "assistant",
+     "uuid": "a1"
+    }
+   ],
+   "end": 1781096430,
+   "ended": true,
+   "id": "11111111-2222-3333-4444-555555555555:1781096400:93d84c51",
+   "t": 1781096400,
+   "trigger": {
+    "uuid": "u1"
+   }
+  },
+  {
+   "atoms": [
+    {
+     "author": "human",
+     "fsid": "11111111-2222-3333-4444-555555555555",
+     "message": {
+      "content": [
+       {
+        "text": "orphaned but real ask",
+        "type": "text"
+       }
+      ],
+      "role": "user"
+     },
+     "parentUuid": "ghost-missing-uuid",
+     "promptSource": "typed",
+     "session_id": "11111111-2222-3333-4444-555555555555",
+     "t": 1781096500,
+     "type": "user",
+     "uuid": "ux"
+    },
+    {
+     "fsid": "11111111-2222-3333-4444-555555555555",
+     "message": {
+      "content": [
+       {
+        "text": "orphan reply",
+        "type": "text"
+       }
+      ],
+      "role": "assistant",
+      "stop_reason": "end_turn"
+     },
+     "parentUuid": "ux",
+     "session_id": "11111111-2222-3333-4444-555555555555",
+     "t": 1781096530,
+     "type": "assistant",
+     "uuid": "ax"
+    }
+   ],
+   "end": 1781096530,
+   "ended": true,
+   "id": "11111111-2222-3333-4444-555555555555:1781096500:b1e8e2e0",
+   "t": 1781096500,
+   "trigger": {
+    "uuid": "ux"
+   }
+  },
+  {
+   "atoms": [
+    {
+     "author": "human",
+     "fsid": "11111111-2222-3333-4444-555555555555",
+     "message": {
+      "content": [
+       {
+        "text": "second main ask",
+        "type": "text"
+       }
+      ],
+      "role": "user"
+     },
+     "parentUuid": "a1",
+     "promptSource": "typed",
+     "session_id": "11111111-2222-3333-4444-555555555555",
+     "t": 1781096600,
+     "type": "user",
+     "uuid": "u2"
+    },
+    {
+     "fsid": "11111111-2222-3333-4444-555555555555",
+     "message": {
+      "content": [
+       {
+        "text": "second main reply",
+        "type": "text"
+       }
+      ],
+      "role": "assistant",
+      "stop_reason": "end_turn"
+     },
+     "parentUuid": "u2",
+     "session_id": "11111111-2222-3333-4444-555555555555",
+     "t": 1781096630,
+     "type": "assistant",
+     "uuid": "a2"
+    }
+   ],
+   "end": 1781096630,
+   "ended": true,
+   "id": "11111111-2222-3333-4444-555555555555:1781096600:274b4e7e",
+   "t": 1781096600,
+   "trigger": {
+    "uuid": "u2"
+   }
+  }
+ ]
+}

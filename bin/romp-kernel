@@ -1,0 +1,533 @@
+#!/usr/bin/env python3
+"""romp-kernel — the merged read-side kernel (design/read-side.md). One always-on process:
+the Layer-1 parser + Layer-2 judges (producer) co-located with an HTTP+WebSocket server,
+single writer. It serves the HUMAN'S TUNED chat-view UI (render.js/feed.js bundles, reused
+verbatim) and pushes reshaped payloads built ONLY from the new records (captions/ goals/
+archive/). The Python projection here is the SINGLE view-builder; the bundles only render.
+
+Transport is the SAME WebSocket postMessage protocol the bundles already speak (the
+`shimJs` bridge is reused verbatim), so the VS Code extension repoints to this kernel with
+zero protocol change at switchover. WS is hand-rolled on the stdlib socket (no dependency).
+
+Sits beside the untouched chat-view Node kernel during the minimal phase (extension stays on
+old). Port status (KEEP/ADAPT/DROP) tracked in design/ui-parity.md + backlog.md.
+
+Run:  python3 ~/GitRepos/romp-event-model/bin/romp-kernel   → opens http://127.0.0.1:7878
+"""
+import json, os, sys, time, threading, traceback, base64, hashlib, struct, subprocess
+from pathlib import Path
+from datetime import datetime
+from importlib.machinery import SourceFileLoader
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlparse, parse_qs
+
+HERE = Path(__file__).resolve().parent
+ROOT = HERE.parent
+em = SourceFileLoader("romp_event_model", str(HERE / "romp-event-model")).load_module()
+jd = SourceFileLoader("romp_judge", str(HERE / "romp-judge")).load_module()
+CHAT_VIEW = ROOT / "chat-view"               # the tuned UI, current in this worktree via `git merge main`
+DIST = CHAT_VIEW / "dist"                    # bundles built from CHAT_VIEW/src (the human's tuned render layer)
+MEDIA = CHAT_VIEW / "media"
+OBSIDIAN = ROOT / "obsidian"
+NAMES = jd.STATE / "names"
+PORT = int(os.environ.get("ROMP_KERNEL_PORT", "7878"))
+
+_clients = []                                # connected WS clients: {app, wid, send, alive}
+_clients_lock = threading.Lock()
+_client_seen = [0.0]
+
+
+# ───────────────────────── helpers ─────────────────────────
+def iso(t):
+    try:
+        return datetime.fromtimestamp(t).strftime("%Y-%m-%dT%H:%M:%S")
+    except Exception:
+        return ""
+
+
+def _name_color(sid):
+    """Session display color {bg,fg} from the names registry (3rd tab field), or null."""
+    try:
+        parts = (NAMES / sid).read_text().rstrip("\n").split("\t")
+        if len(parts) > 2 and parts[2].startswith("#"):
+            return {"bg": parts[2], "fg": "#ffffff"}
+    except Exception:
+        pass
+    return None
+
+
+def _rgb(color):
+    """The card's recency-tint [r,g,b] — the session color (the old hawaii recency colormap is
+    a later refinement), defaulting to a neutral slate."""
+    h = (color or {}).get("bg", "#7088aa").lstrip("#")
+    try:
+        return [int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)]
+    except Exception:
+        return [112, 136, 170]
+
+
+def _sessions(now):
+    out = []
+    for fsid, path, anchor, name in jd.discover(now):
+        try:
+            mtime = os.stat(path).st_mtime
+        except OSError:
+            mtime = 0
+        out.append({"sid": fsid, "name": name or fsid[:8], "path": str(path), "mtime": mtime})
+    out.sort(key=lambda s: s["mtime"], reverse=True)
+    return out
+
+
+def _captions(fsid):
+    out = {}
+    try:
+        for line in (jd.CAPDIR / (fsid + ".jsonl")).read_text(errors="replace").splitlines():
+            try:
+                o = json.loads(line)
+            except Exception:
+                continue
+            if o.get("id"):
+                out[o["id"]] = o
+    except OSError:
+        pass
+    return out
+
+
+# ───────────────────────── view-builder: atoms → chat ChatEvent[] (parity: chat = KEEP) ─────────────────────────
+def _edit_diff(inp):
+    """A minimal unified-ish diff string for an Edit/MultiEdit tool_use input (the render folds it)."""
+    edits = inp.get("edits") or ([{"old_string": inp.get("old_string", ""),
+                                   "new_string": inp.get("new_string", "")}] if "old_string" in inp else [])
+    lines = []
+    for e in edits:
+        for ln in str(e.get("old_string", "")).splitlines():
+            lines.append("- " + ln)
+        for ln in str(e.get("new_string", "")).splitlines():
+            lines.append("+ " + ln)
+    return "\n".join(lines)
+
+
+def build_session(sid, now):
+    """A {type:"session"} message the render.js bundle consumes: the event tree reshaped to
+    ChatEvent[], plus the TOC ledger (archiver headline + turn captions) and a status chip."""
+    sess = next((s for s in _sessions(now) if s["sid"] == sid), None)
+    if not sess:
+        return None
+    session = em.parse_session(sess["path"], rompuuid=sid, candidate_files=[sess["path"]],
+                               postal_log=str(jd.MESSAGES), now=now)
+    caps = _captions(sid)
+    events, by_tool = [], {}                  # by_tool: tool_use_id → its tool event (fill output later)
+    last_t = None
+    for turn in session["turns"]:
+        for a in turn["atoms"]:
+            t = a.get("t"); ts = iso(t) if t else None
+            last_t = t or last_t
+            msg = a.get("message") or {}
+            blocks = msg.get("content", []) if isinstance(msg.get("content"), list) else []
+            if a["type"] == "user":
+                author = a.get("author")
+                trs = [b for b in blocks if isinstance(b, dict) and b.get("type") == "tool_result"]
+                if isinstance(author, dict):                     # peer message → postal card
+                    text = " ".join(b.get("text", "") for b in blocks if b.get("type") == "text")
+                    events.append({"kind": "postal", "direction": "in", "peer": (author.get("peer") or "peer"),
+                                   "body": text, "uuid": a.get("uuid"), "ts": ts, "t": t, "status": "delivered"})
+                elif trs:                                        # tool_result → fill the matching tool event's output
+                    for tr in trs:
+                        ev = by_tool.get(tr.get("tool_use_id"))
+                        if ev is not None:
+                            c = tr.get("content")
+                            ev["output"] = c if isinstance(c, str) else json.dumps(c)[:4000]
+                            ev["isError"] = bool(tr.get("is_error"))
+                            ev["resultUuid"] = a.get("uuid")
+                else:                                            # genuine prompt
+                    text = " ".join(b.get("text", "") for b in blocks if b.get("type") == "text").strip() \
+                           if blocks else (msg.get("content") if isinstance(msg.get("content"), str) else "")
+                    if text:
+                        events.append({"kind": "user", "md": text, "uuid": a.get("uuid"), "ts": ts,
+                                       "human": author == "human"})
+            elif a["type"] == "assistant":
+                for b in blocks:
+                    if not isinstance(b, dict):
+                        continue
+                    if b.get("type") == "thinking":
+                        events.append({"kind": "thinking", "text": b.get("thinking", ""),
+                                       "encrypted": bool(b.get("signature")), "uuid": a.get("uuid"), "ts": ts})
+                    elif b.get("type") == "text" and b.get("text", "").strip():
+                        events.append({"kind": "assistant", "md": b["text"], "uuid": a.get("uuid"), "ts": ts})
+                    elif b.get("type") == "tool_use":
+                        inp = b.get("input") or {}
+                        ev = {"kind": "tool", "name": b.get("name", "tool"), "desc": "",
+                              "input": json.dumps(inp)[:2000], "output": "", "isError": False,
+                              "uuid": a.get("uuid"), "ts": ts,
+                              "file": inp.get("file_path") or inp.get("path") or "",
+                              "diff": _edit_diff(inp) if b.get("name") in ("Edit", "MultiEdit", "Write") else ""}
+                        by_tool[b.get("id")] = ev
+                        events.append(ev)
+            elif a["type"] == "system" and a.get("subtype") == "compact_boundary":
+                events.append({"kind": "assistant", "md": "✦ Compacted", "uuid": a.get("uuid"), "ts": ts})
+    # TOC ledger: archiver headline + turn captions (click-to-jump via the turn's anchor uuid)
+    arch = jd.load_archive(sid) or {}
+    bullets = []
+    for turn in session["turns"]:
+        cap = caps.get(turn["id"], {}).get("caption")
+        anchor = next((x.get("uuid") for x in turn["atoms"] if x.get("uuid")), None)
+        if cap:
+            bullets.append({"text": cap, "t": turn["t"], "id": anchor, "sid": sid})
+    ledger = {"summary": arch.get("headline", ""), "bullets": bullets}
+    last_turn = session["turns"][-1] if session["turns"] else None
+    open_now = bool(last_turn and not last_turn["ended"]
+                    and not any(x["type"] == "idle" for x in last_turn["atoms"]))
+    status = {"state": "working" if open_now else "idle",
+              "sinceEpoch": last_t, "faded": not open_now}
+    return {"type": "session", "id": sid, "name": sess["name"], "color": _name_color(sid),
+            "events": events, "status": status, "ledger": ledger, "firstSeen": session["turns"][0]["t"]
+            if session["turns"] else now}
+
+
+# ───────────────────────── view-builder: goals → feed (parity: feed = ADAPT; minimal here) ─────────────────────────
+def build_feed(now):
+    """The {type:"feed"} message the tuned feed.js bundle consumes (ui-parity.md: feed = ADAPT).
+    Goals map onto the AskItem/AskTreeNode shape the render already speaks: the goal tree IS the
+    card's tree, rolled-up status → the Working/Blocked/Completed column, dead-concept fields
+    (relevance/liveness/suspects/openQuestions/decision-briefs) left empty so the render's
+    conditional paths hide them — no edits to the tuned card code. Stream = turn captions."""
+    asks, stream, working = [], [], []
+    for s in _sessions(now):
+        fsid, name = s["sid"], s["name"]
+        color = _name_color(fsid); rgb = _rgb(color); live = s["mtime"] >= now - 90
+        if live:
+            working.append(name)
+        store = jd.load_goals(fsid)
+        nodes, status = store.get("nodes", {}), store.get("status", {})
+        children = {}
+        for nid, nd in nodes.items():
+            children.setdefault(nd.get("parentId"), []).append(nid)
+
+        def node_status(nd):
+            return "done" if nd.get("nodeComplete") else ("question" if nd.get("blocked") else "open")
+
+        def flatten(nid, out):                       # AskTreeNode flat list, root first; nest via children ids
+            nd = nodes[nid]
+            kids = sorted(children.get(nid, []), key=lambda c: nodes[c]["t"])
+            out.append({"id": nid, "kind": "ask", "text": nd["text"], "who": name, "whoSid": fsid,
+                        "whoColor": color, "whoWorking": False, "status": node_status(nd),
+                        "t": nd["t"], "last": nd["t"], "trgb": rgb, "children": kids, "rows": []})
+            for c in kids:
+                flatten(c, out)
+            return out
+        for nid in children.get(None, []):
+            col = status.get(nid, "working")
+            if col == "cleared":
+                continue
+            asks.append({
+                "itemId": nid, "sid": fsid, "name": name, "color": color, "text": nodes[nid]["text"],
+                "t": nodes[nid]["t"], "created": nodes[nid]["t"], "live": live, "trgb": rgb,
+                "done": 0, "needsYou": 0, "linked": [], "turnId": nid, "turnIds": [nid],
+                "column": ("needs_input" if col == "blocked" else "completed" if col == "completed" else "working"),
+                "openQuestions": [], "openPaths": [], "tree": flatten(nid, [])})
+        for c in _captions(fsid).values():
+            if c.get("grain") == "turn":
+                stream.append({"itemId": c["id"], "sid": fsid, "name": name, "color": color,
+                               "did": c["caption"], "t": c["t"], "trgb": rgb, "relevance": "DETAILS",
+                               "live": live, "standalone": False})
+    stream.sort(key=lambda c: c["t"], reverse=True)
+    return {"type": "feed", "asks": asks, "items": stream[:200], "blocked": [], "now": now,
+            "working": working, "dismissedCount": 0, "showDismissed": False, "canUndoClear": False}
+
+
+# ───────────────────────── WebSocket (stdlib, hand-rolled) ─────────────────────────
+WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+
+def _ws_accept(key):
+    return base64.b64encode(hashlib.sha1((key + WS_GUID).encode()).digest()).decode()
+
+
+def _ws_send(wfile, lock, text):
+    data = text.encode("utf-8")
+    n = len(data)
+    hdr = bytearray([0x81])                   # FIN + text frame
+    if n < 126:
+        hdr.append(n)
+    elif n < 65536:
+        hdr.append(126); hdr += struct.pack(">H", n)
+    else:
+        hdr.append(127); hdr += struct.pack(">Q", n)
+    with lock:
+        wfile.write(bytes(hdr) + data)
+        wfile.flush()
+
+
+def _ws_recv(rfile):
+    """Read one client (masked) frame → (opcode, payload bytes), or (None, None) on close/EOF."""
+    b = rfile.read(2)
+    if len(b) < 2:
+        return None, None
+    opcode = b[0] & 0x0F
+    masked = b[1] & 0x80
+    ln = b[1] & 0x7F
+    if ln == 126:
+        ln = struct.unpack(">H", rfile.read(2))[0]
+    elif ln == 127:
+        ln = struct.unpack(">Q", rfile.read(8))[0]
+    mask = rfile.read(4) if masked else b"\x00\x00\x00\x00"
+    payload = bytearray(rfile.read(ln))
+    for i in range(len(payload)):
+        payload[i] ^= mask[i % 4]
+    return opcode, bytes(payload)
+
+
+def _push_all():
+    """Build fresh payloads and push to every connected client (per its app)."""
+    now = int(time.time())
+    try:
+        chat_sessions = [build_session(s["sid"], now) for s in _sessions(now)]
+        chat_sessions = [m for m in chat_sessions if m]
+        feed = build_feed(now)
+    except Exception:
+        sys.stderr.write("push build: %s\n" % traceback.format_exc())
+        return
+    with _clients_lock:
+        clients = list(_clients)
+    for c in clients:
+        try:
+            if c["app"] == "chat":
+                for m in chat_sessions:
+                    c["send"](json.dumps(m))
+                c["send"](json.dumps({"type": "working", "names": feed["working"]}))
+            elif c["app"] == "feed":
+                c["send"](json.dumps(feed))
+        except Exception:
+            c["alive"] = False
+    with _clients_lock:
+        _clients[:] = [c for c in _clients if c.get("alive", True)]
+
+
+# ───────────────────────── producer + push threads ─────────────────────────
+def _producer():
+    while True:
+        try:
+            if time.time() - _client_seen[0] < 90:
+                jd.run_once(); jd.run_plan()
+        except Exception:
+            sys.stderr.write("producer: %s\n" % traceback.format_exc())
+        time.sleep(20)
+
+
+def _pusher():
+    while True:
+        with _clients_lock:
+            any_client = bool(_clients)
+        if any_client:
+            _push_all()
+        time.sleep(4)
+
+
+# ───────────────────────── HTTP / page serving ─────────────────────────
+THEME_CSS = """:root{--vscode-font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+--vscode-editor-font-family:Menlo,Monaco,"Courier New",monospace;--vscode-chat-font-family:var(--vscode-font-family);
+--vscode-chat-font-size:13px;--vscode-foreground:#cccccc;--vscode-descriptionForeground:rgba(204,204,204,.7);
+--vscode-errorForeground:#f48771;--vscode-editor-background:#1e1e1e;--vscode-editorWidget-background:#252526;
+--vscode-editorHoverWidget-border:#454545;--vscode-sideBar-background:#252526;--vscode-widget-border:#303031;
+--vscode-focusBorder:#007fd4;--vscode-input-background:#3c3c3c;--vscode-input-foreground:#cccccc;
+--vscode-input-border:#3c3c3c;--vscode-menu-background:#252526;--vscode-menu-foreground:#cccccc;
+--vscode-menu-selectionBackground:#094771;--vscode-menu-selectionForeground:#fff;
+--vscode-scrollbarSlider-background:rgba(121,121,121,.4);--vscode-textLink-foreground:#3794ff;}
+html,body{background:var(--vscode-editor-background);}
+body{font-family:var(--vscode-font-family);font-size:13px;color:var(--vscode-foreground);margin:0;padding:0;}"""
+
+# The WS bridge shim (ported verbatim from chat-view server.ts shimJs — same protocol).
+def _shim(app):
+    return """
+(function(){var queue=[],ws=null;var wid=new URLSearchParams(location.search).get("wid")||"";
+function connect(){var proto=location.protocol==="https:"?"wss://":"ws://";
+ws=new WebSocket(proto+location.host+"/ws?app=%s"+(wid?"&wid="+encodeURIComponent(wid):""));
+ws.onopen=function(){for(var i=0;i<queue.length;i++)ws.send(queue[i]);queue=[];};
+ws.onmessage=function(ev){var msg;try{msg=JSON.parse(ev.data);}catch(e){return;}
+window.dispatchEvent(new MessageEvent("message",{data:msg}));};
+ws.onclose=function(){setTimeout(function(){location.reload();},1500);};}
+function send(m){var s=JSON.stringify(m);if(ws&&ws.readyState===1)ws.send(s);else queue.push(s);}
+window.acquireVsCodeApi=function(){return{postMessage:function(m){send(m);},
+getState:function(){return null;},setState:function(){}};};connect();})();
+""" % app
+
+
+def _chat_page():
+    return ("<!DOCTYPE html><html lang=en><head><meta charset=UTF-8>"
+            "<meta name=viewport content='width=device-width,initial-scale=1'>"
+            "<link rel=icon type=image/svg+xml href=/media/romp-swirl-glyph.svg>"
+            "<link href=/dist/styles.css rel=stylesheet><title>romp</title>"
+            "<style>%s</style></head><body>%s<script>%s</script>"
+            "<script src=/dist/render.js></script></body></html>"
+            % (THEME_CSS, _chat_body(), _shim("chat")))
+
+
+def _feed_page():
+    return ("<!DOCTYPE html><html lang=en><head><meta charset=UTF-8>"
+            "<meta name=viewport content='width=device-width,initial-scale=1'>"
+            "<link href=/dist/feed.css rel=stylesheet><title>romp feed</title>"
+            "<style>%s</style></head><body>%s<script>%s</script>"
+            "<script src=/dist/feed.js></script></body></html>"
+            % (THEME_CSS, '<div id="feed-head"></div><div id="feed-list"></div>', _shim("feed")))
+
+
+def _chat_body():
+    # ported from chat-view page-skeleton.chatBody
+    return ('<div id="winframe"></div><div id="tabbar"><span id="tabs"></span></div>'
+            '<div id="ledger" style="display:none"></div><div id="content"></div>'
+            '<div id="live-ask" style="display:none"></div>'
+            '<div id="footer"><div id="statusline" class="statusline"></div>'
+            '<div id="composer"><textarea id="composer-input" rows="1" '
+            'placeholder="Message this session…"></textarea>'
+            '<button id="composer-attach" title="Attach a file — inserts its path">📎</button></div></div>')
+
+
+def _landing():
+    # minimal combined shell: chat + feed side by side (timeline pane deferred)
+    return ("<!DOCTYPE html><html lang=en><head><meta charset=UTF-8><title>romp</title>"
+            "<style>html,body{margin:0;height:100%%;background:#1e1e1e}"
+            ".row{display:flex;height:100vh}iframe{border:0;height:100%%}"
+            "#c{flex:1 1 60%%;border-right:1px solid #303031}#f{flex:1 1 40%%}</style></head>"
+            "<body><div class=row><iframe id=c src=/chat></iframe>"
+            "<iframe id=f src=/feed></iframe></div></body></html>")
+
+
+class Handler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, *a):
+        pass
+
+    def _send(self, code, body, ctype):
+        body = body.encode("utf-8") if isinstance(body, str) else body
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        u = urlparse(self.path)
+        p = u.path
+        try:
+            if p == "/ws":
+                return self._ws()
+            if p in ("/", ""):
+                # combined chat + feed (both ported); the timeline pane joins this layout next.
+                _client_seen[0] = time.time()
+                return self._send(200, _landing(), "text/html; charset=utf-8")
+            if p == "/chat":
+                _client_seen[0] = time.time()
+                return self._send(200, _chat_page(), "text/html; charset=utf-8")
+            if p == "/feed":
+                _client_seen[0] = time.time()
+                return self._send(200, _feed_page(), "text/html; charset=utf-8")
+            if p.startswith("/dist/") or p.startswith("/media/"):
+                base = DIST if p.startswith("/dist/") else MEDIA
+                fp = (base / p.split("/", 2)[2]).resolve()
+                if base.resolve() not in fp.parents or not fp.is_file():
+                    return self._send(404, "not found", "text/plain")
+                ct = {"js": "text/javascript", "css": "text/css", "svg": "image/svg+xml",
+                      "map": "application/json"}.get(fp.suffix.lstrip("."), "text/plain")
+                return self._send(200, fp.read_bytes(), ct + "; charset=utf-8")
+            return self._send(404, "not found", "text/plain")
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        except Exception:
+            try:
+                self._send(500, traceback.format_exc(), "text/plain")
+            except Exception:
+                pass
+
+    def _ws(self):
+        key = self.headers.get("Sec-WebSocket-Key")
+        if not key:
+            return self._send(400, "expected websocket", "text/plain")
+        q = parse_qs(urlparse(self.path).query)
+        app = (q.get("app") or ["chat"])[0]
+        self.send_response(101)
+        self.send_header("Upgrade", "websocket")
+        self.send_header("Connection", "Upgrade")
+        self.send_header("Sec-WebSocket-Accept", _ws_accept(key))
+        self.end_headers()
+        self.close_connection = True              # hijacked socket — don't let the handler keep-alive after
+        _client_seen[0] = time.time()
+        lock = threading.Lock()
+        client = {"app": app, "send": lambda s: _ws_send(self.wfile, lock, s), "alive": True}
+        with _clients_lock:
+            _clients.append(client)
+        try:
+            while client["alive"]:
+                op, payload = _ws_recv(self.rfile)
+                if op is None or op == 0x8:           # EOF / close
+                    break
+                if op == 0x9:                          # ping → we ignore (browsers rarely ping)
+                    continue
+                # webview→kernel messages: on "ready", push the initial state to this client
+                try:
+                    msg = json.loads(payload.decode("utf-8", "replace"))
+                except Exception:
+                    msg = None
+                if msg and msg.get("type") == "ready":
+                    self._push_one(client)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+        finally:
+            client["alive"] = False
+            with _clients_lock:
+                if client in _clients:
+                    _clients.remove(client)
+
+    def _push_one(self, client):
+        now = int(time.time())
+        if client["app"] == "chat":
+            for s in _sessions(now):
+                m = build_session(s["sid"], now)
+                if m:
+                    client["send"](json.dumps(m))
+            client["send"](json.dumps({"type": "working", "names": build_feed(now)["working"]}))
+        else:
+            client["send"](json.dumps(build_feed(now)))
+
+
+def _ensure_bundles():
+    """Build the chat-view webview bundles (the human's tuned UI) if missing/stale — keeps the
+    kernel a single command and auto-rebuilds after TS edits (mirrors bin/romp-serve)."""
+    cv = ROOT / "chat-view"
+    render = DIST / "render.js"
+    if not (cv / "node_modules").exists():
+        sys.stderr.write("romp-kernel: UI deps missing — run once: (cd %s && npm install)\n" % cv)
+        return
+    stale = not render.exists() or any(
+        ts.stat().st_mtime > render.stat().st_mtime for ts in (cv / "src").rglob("*.ts"))
+    if stale:
+        sys.stderr.write("romp-kernel: building UI bundles…\n")
+        try:
+            subprocess.run(["node", "esbuild.js"], cwd=str(cv), check=True,
+                           capture_output=True, timeout=120)
+        except Exception as e:
+            sys.stderr.write("romp-kernel: bundle build failed (%s) — UI may be stale\n" % e)
+
+
+def main():
+    _ensure_bundles()
+    threading.Thread(target=_producer, daemon=True).start()
+    threading.Thread(target=_pusher, daemon=True).start()
+    srv = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    url = "http://127.0.0.1:%d" % PORT
+    sys.stderr.write("romp-kernel: serving the ported UI at %s  (Ctrl-C to stop)\n" % url)
+    sys.stderr.write("romp-kernel: records under %s ; bundles from %s\n" % (jd.STATE, DIST))
+    if not os.environ.get("ROMP_KERNEL_NO_OPEN"):
+        try:
+            import webbrowser
+            webbrowser.open(url)
+        except Exception:
+            pass
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        sys.stderr.write("\nromp-kernel: stopped\n")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,99 @@
+{
+ "color": "#888888",
+ "dir": "/TESTDIR",
+ "leafFsid": "11111111-2222-3333-4444-555555555555",
+ "name": "impl",
+ "rompUuid": "11111111-2222-3333-4444-555555555555",
+ "turns": [
+  {
+   "atoms": [
+    {
+     "author": "human",
+     "fsid": "11111111-2222-3333-4444-555555555555",
+     "message": {
+      "content": [
+       {
+        "text": "refactor the ledger",
+        "type": "text"
+       }
+      ],
+      "role": "user"
+     },
+     "parentUuid": null,
+     "promptSource": "typed",
+     "session_id": "11111111-2222-3333-4444-555555555555",
+     "t": 1781096400,
+     "type": "user",
+     "uuid": "u1"
+    },
+    {
+     "fsid": "11111111-2222-3333-4444-555555555555",
+     "message": {
+      "content": [
+       {
+        "text": "Reading romp-ledger.",
+        "type": "text"
+       },
+       {
+        "id": "tu_a1_0",
+        "input": {},
+        "name": "Read",
+        "type": "tool_use"
+       }
+      ],
+      "role": "assistant",
+      "stop_reason": "tool_use"
+     },
+     "parentUuid": "u1",
+     "session_id": "11111111-2222-3333-4444-555555555555",
+     "t": 1781096420,
+     "type": "assistant",
+     "uuid": "a1"
+    },
+    {
+     "author": "human",
+     "fsid": "11111111-2222-3333-4444-555555555555",
+     "message": {
+      "content": [
+       {
+        "text": "also rename the digest file",
+        "type": "text"
+       }
+      ],
+      "role": "user"
+     },
+     "parentUuid": "a1",
+     "session_id": "11111111-2222-3333-4444-555555555555",
+     "t": 1781096460,
+     "type": "user",
+     "uuid": "att1"
+    },
+    {
+     "fsid": "11111111-2222-3333-4444-555555555555",
+     "message": {
+      "content": [
+       {
+        "text": "Folded the rename in too.",
+        "type": "text"
+       }
+      ],
+      "role": "assistant",
+      "stop_reason": "end_turn"
+     },
+     "parentUuid": "att1",
+     "session_id": "11111111-2222-3333-4444-555555555555",
+     "t": 1781096490,
+     "type": "assistant",
+     "uuid": "a2"
+    }
+   ],
+   "end": 1781096490,
+   "ended": true,
+   "id": "11111111-2222-3333-4444-555555555555:1781096400:646e7ca2",
+   "t": 1781096400,
+   "trigger": {
+    "uuid": "u1"
+   }
+  }
+ ]
+}
