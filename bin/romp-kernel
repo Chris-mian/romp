@@ -835,7 +835,7 @@ def _chat_page():
     return ("<!DOCTYPE html><html lang=en><head><meta charset=UTF-8>"
             "<meta name=viewport content='width=device-width,initial-scale=1'>"
             "<link rel=icon type=image/svg+xml href=/media/romp-swirl-glyph.svg>"
-            "<link href=/dist/styles.css rel=stylesheet><title>romp</title>"
+            "<link href=/dist/styles.css rel=stylesheet><title>Romp</title>"
             "<style>%s</style></head><body>%s<script>%s</script>"
             "<script src=/dist/render.js></script></body></html>"
             % (THEME_CSS, _chat_body(), _shim("chat")))
@@ -844,7 +844,8 @@ def _chat_page():
 def _feed_page():
     return ("<!DOCTYPE html><html lang=en><head><meta charset=UTF-8>"
             "<meta name=viewport content='width=device-width,initial-scale=1'>"
-            "<link href=/dist/feed.css rel=stylesheet><title>romp feed</title>"
+            "<link rel=icon type=image/svg+xml href=/media/romp-swirl-glyph.svg>"
+            "<link href=/dist/feed.css rel=stylesheet><title>Romp · feed</title>"
             "<style>%s</style></head><body>%s<script>%s</script>"
             "<script src=/dist/feed.js></script></body></html>"
             % (THEME_CSS, '<div id="feed-head"></div><div id="feed-list"></div><div id="feed-foot"></div>',
@@ -915,7 +916,8 @@ def _timeline_page():
                 "(romp-timeline-view.js).</body></html>")
     return ("<!DOCTYPE html><html lang=en><head><meta charset=UTF-8>"
             "<meta name=viewport content='width=device-width,initial-scale=1'>"
-            "<title>romp timeline</title><style>%s\n%s</style></head><body><div id=host></div>"
+            "<link rel=icon type=image/svg+xml href=/media/romp-swirl-glyph.svg>"
+            "<title>Romp · timeline</title><style>%s\n%s</style></head><body><div id=host></div>"
             "<script>%s</script>"
             "<script>var module={exports:{}};(function(module,exports){\n%s\n})(module,module.exports);"
             "var TimelinePanel=module.exports.TimelinePanel;"
@@ -966,7 +968,8 @@ window.addEventListener('resize',autosize);})();
 def _landing():
     # combined 3-pane shell: chat | feed on top (draggable col-resize gutter), the timeline band
     # full-width below (draggable row-resize gutter). Pane sizes persist in localStorage.
-    return ("<!DOCTYPE html><html lang=en><head><meta charset=UTF-8><title>romp</title><style>"
+    return ("<!DOCTYPE html><html lang=en><head><meta charset=UTF-8>"
+            "<link rel=icon type=image/svg+xml href=/media/romp-swirl-glyph.svg><title>Romp</title><style>"
             "html,body{margin:0;height:100%;background:#1e1e1e;overflow:hidden}"
             ".col{display:grid;grid-template-rows:1fr 5px var(--tl,160px);height:100vh}"
             ".row{display:grid;grid-template-columns:var(--chat,60%) 5px 1fr;min-height:0}"
