@@ -56,9 +56,11 @@ MINIMAL (build first — browser-able): the tuned chat-view UI ported onto the k
   payloads the bundles consume; bundles only render. (Old reducers exist beside until cutover.)
 - [x] Chat pane: atoms→ChatEvent (user / assistant / thinking / tool with output-pairing + diff /
   postal / compaction marker) over WS — the tuned transcript, tabs, rail, ledger.
-- [~] Feed pane: goals→cards bucketed BLOCKED/WORKING/COMPLETED + caption stream payload built;
-  feed.ts render surgery (DROP relevance/liveness/suspect per ui-parity.md, ADAPT to goal tree)
-  pending.
+- [x] Feed pane: RENDERS on real goals. Goals map onto the AskItem/AskTreeNode shape feed.js
+  already consumes (goal tree = card tree, status → Working/Blocked/Completed column), with the
+  DROP concepts (relevance/liveness/suspects/openQuestions) left empty so the render's
+  conditional paths hide them — ZERO edits to the tuned feed code. Literal dead-path code removal
+  + segment-nested modal trail = follow-up tidy. `/` now serves the combined chat+feed view.
 - [ ] Timeline pane: obsidian timeline port (segments-as-bars, event-based idle gaps) pending.
 - [x] TOC ledger: archiver headline + turn captions, click-to-jump (segment nesting pending).
 - [x] RUNNABLE: `python3 ~/GitRepos/romp-event-model/bin/romp-kernel` → auto-opens

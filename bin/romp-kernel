@@ -54,6 +54,16 @@ def _name_color(sid):
     return None
 
 
+def _rgb(color):
+    """The card's recency-tint [r,g,b] — the session color (the old hawaii recency colormap is
+    a later refinement), defaulting to a neutral slate."""
+    h = (color or {}).get("bg", "#7088aa").lstrip("#")
+    try:
+        return [int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)]
+    except Exception:
+        return [112, 136, 170]
+
+
 def _sessions(now):
     out = []
     for fsid, path, anchor, name in jd.discover(now):
@@ -174,39 +184,53 @@ def build_session(sid, now):
 
 # ───────────────────────── view-builder: goals → feed (parity: feed = ADAPT; minimal here) ─────────────────────────
 def build_feed(now):
-    """A minimal {type:"feed"} message: goal cards bucketed BLOCKED/WORKING/COMPLETED with the
-    goal tree, + the caption stream. Dead-concept fields (relevance/liveness/suspects) omitted
-    per ui-parity.md; feed.ts render surgery is the next increment."""
+    """The {type:"feed"} message the tuned feed.js bundle consumes (ui-parity.md: feed = ADAPT).
+    Goals map onto the AskItem/AskTreeNode shape the render already speaks: the goal tree IS the
+    card's tree, rolled-up status → the Working/Blocked/Completed column, dead-concept fields
+    (relevance/liveness/suspects/openQuestions/decision-briefs) left empty so the render's
+    conditional paths hide them — no edits to the tuned card code. Stream = turn captions."""
     asks, stream, working = [], [], []
     for s in _sessions(now):
-        fsid = s["sid"]
-        if s["mtime"] >= now - 90:
-            working.append(s["name"])
+        fsid, name = s["sid"], s["name"]
+        color = _name_color(fsid); rgb = _rgb(color); live = s["mtime"] >= now - 90
+        if live:
+            working.append(name)
         store = jd.load_goals(fsid)
         nodes, status = store.get("nodes", {}), store.get("status", {})
         children = {}
         for nid, nd in nodes.items():
             children.setdefault(nd.get("parentId"), []).append(nid)
 
-        def tree(nid):
+        def node_status(nd):
+            return "done" if nd.get("nodeComplete") else ("question" if nd.get("blocked") else "open")
+
+        def flatten(nid, out):                       # AskTreeNode flat list, root first; nest via children ids
             nd = nodes[nid]
-            st = "done" if nd.get("nodeComplete") else ("question" if nd.get("blocked") else "open")
-            return {"id": nid, "text": nd["text"], "status": st,
-                    "children": [tree(c) for c in sorted(children.get(nid, []), key=lambda c: nodes[c]["t"])]}
+            kids = sorted(children.get(nid, []), key=lambda c: nodes[c]["t"])
+            out.append({"id": nid, "kind": "ask", "text": nd["text"], "who": name, "whoSid": fsid,
+                        "whoColor": color, "whoWorking": False, "status": node_status(nd),
+                        "t": nd["t"], "last": nd["t"], "trgb": rgb, "children": kids, "rows": []})
+            for c in kids:
+                flatten(c, out)
+            return out
         for nid in children.get(None, []):
             col = status.get(nid, "working")
             if col == "cleared":
                 continue
-            asks.append({"itemId": nid, "sid": fsid, "name": s["name"], "color": _name_color(fsid),
-                         "text": nodes[nid]["text"], "t": nodes[nid]["t"], "column": col,
-                         "tree": [tree(nid)]})
+            asks.append({
+                "itemId": nid, "sid": fsid, "name": name, "color": color, "text": nodes[nid]["text"],
+                "t": nodes[nid]["t"], "created": nodes[nid]["t"], "live": live, "trgb": rgb,
+                "done": 0, "needsYou": 0, "linked": [], "turnId": nid, "turnIds": [nid],
+                "column": ("needs_input" if col == "blocked" else "completed" if col == "completed" else "working"),
+                "openQuestions": [], "openPaths": [], "tree": flatten(nid, [])})
         for c in _captions(fsid).values():
             if c.get("grain") == "turn":
-                stream.append({"itemId": c["id"], "sid": fsid, "name": s["name"], "color": _name_color(fsid),
-                               "did": c["caption"], "t": c["t"]})
+                stream.append({"itemId": c["id"], "sid": fsid, "name": name, "color": color,
+                               "did": c["caption"], "t": c["t"], "trgb": rgb, "relevance": "DETAILS",
+                               "live": live, "standalone": False})
     stream.sort(key=lambda c: c["t"], reverse=True)
-    return {"type": "feed", "asks": asks, "items": stream[:120], "blocked": [], "now": now,
-            "working": working}
+    return {"type": "feed", "asks": asks, "items": stream[:200], "blocked": [], "now": now,
+            "working": working, "dismissedCount": 0, "showDismissed": False, "canUndoClear": False}
 
 
 # ───────────────────────── WebSocket (stdlib, hand-rolled) ─────────────────────────
@@ -386,9 +410,11 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if p == "/ws":
                 return self._ws()
-            if p in ("/", "", "/chat"):
-                # / serves the working CHAT pane full-window for now; the feed/timeline panes
-                # join the combined layout once their port (feed.ts surgery, timeline) lands.
+            if p in ("/", ""):
+                # combined chat + feed (both ported); the timeline pane joins this layout next.
+                _client_seen[0] = time.time()
+                return self._send(200, _landing(), "text/html; charset=utf-8")
+            if p == "/chat":
                 _client_seen[0] = time.time()
                 return self._send(200, _chat_page(), "text/html; charset=utf-8")
             if p == "/feed":
