@@ -473,11 +473,16 @@ def apply_goal_edit(store, seg_id, seg_t, edit, menu):
 
 def rollup_status(store, session_closed):
     """Each top-level goal's rolled-up status. Precedence: BLOCKED (any open descendant needs the
-    user) > COMPLETED > working. A goal COMPLETES only when its whole subtree is nodeComplete AND it
-    is SETTLED — settled = it is no longer the session's ACTIVE FOCUS (a later segment filed under a
-    different top-level goal) OR the session is closed. This holds an accreting/umbrella goal open
-    while it is still the focus (no flicker during thinking pauses), and completes a command-style
-    goal once the session moves on. (Provisional defn — locked at the checkpoint on real trees.)"""
+    user) > COMPLETED > working. A goal COMPLETES when its TOP node is nodeComplete AND it is
+    SETTLED — settled = it is no longer the session's ACTIVE FOCUS (a later segment filed under a
+    different top-level goal) OR the session is closed. The planner's explicit top-done verdict
+    ("DONE the top when a segment discharges the whole ask") is the completion signal — more
+    reliable than every leaf getting DONE'd (0/27 top-goals ever reached whole-subtree-complete on
+    the real fleet, because there's always a trailing step left open). It self-sorts by goal type:
+    a command goal gets a discharging segment → top-done → completes once settled; an accreting
+    umbrella never gets one → top stays open → stays working. The settled gate holds an in-focus
+    top-done goal working until the session moves on (no flicker), and reopens a completed goal if
+    new work makes it the active focus again."""
     nodes = store["nodes"]
     children = {}
     for nid, nd in nodes.items():
@@ -487,9 +492,6 @@ def rollup_status(store, session_closed):
         while nodes.get(nid, {}).get("parentId") is not None:
             nid = nodes[nid]["parentId"]
         return nid
-
-    def all_complete(nid):
-        return nodes[nid].get("nodeComplete") and all(all_complete(c) for c in children.get(nid, []))
 
     def any_blocked(nid):
         return nodes[nid].get("blocked") or any(any_blocked(c) for c in children.get(nid, []))
@@ -502,7 +504,7 @@ def rollup_status(store, session_closed):
             status[nid] = "cleared"
         elif any_blocked(nid):
             status[nid] = "blocked"
-        elif all_complete(nid) and settled:
+        elif nodes[nid].get("nodeComplete") and settled:
             status[nid] = "completed"
         else:
             status[nid] = "working"

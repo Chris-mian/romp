@@ -20,16 +20,19 @@ Index tier (always on):
 - [x] Archiver (per-session headline + abstract from captions). Accepted.
 
 Triage tier (on-demand):
-- [~] Planner (goal-tree placement + per-node completion + soft-block + settled
-  rollup). Built; needs completion tuning (agreed at the checkpoint, queued):
-  - [ ] Flatten: file steps as SIBLINGS under the goal / a real sub-goal, not chained
-    to the latest leaf.
-  - [ ] Mark DONE readily, including completing the TOP goal when a segment discharges
-    the whole ask.
-  - [ ] Settled lock: focus-hold + "a newer top goal minted" as the move-on signal;
-    reject complete-on-turn-end (reintroduces flicker).
-  - [ ] Un-block: clear a node's block when later work under the goal progresses
-    (newest-wins).
+- [x] Planner (goal-tree placement + per-node completion + soft-block + settled
+  rollup). Built + completion tuning landed (db5d3d5 + rollup top-done rule):
+  - [x] Flatten: file steps as SIBLINGS under the goal / a real sub-goal, not chained
+    to the latest leaf. (`MAX_DEPTH=2` re-parent + shallow-tree prompt; depth 18→3.)
+  - [x] Mark DONE readily, including completing the TOP goal when a segment discharges
+    the whole ask. (Prompt: "DON'T BE SHY… DONE the TOP-LEVEL goal".)
+  - [x] Settled lock: focus-hold + "a newer top goal minted" as the move-on signal;
+    reject complete-on-turn-end (reintroduces flicker). (`settled = nid != focus or
+    session_closed`; closed = last turn idle-terminated, NOT turn-end. Completion =
+    top node nodeComplete AND settled — confirmed by simplify; whole-subtree dropped,
+    0/27 ever reached it. completed 0→10 on the fleet.)
+  - [x] Un-block: clear a node's block when later work under the goal progresses
+    (newest-wins). (Clears `blocked` on the top-ancestor subtree on later non-block work.)
 - [ ] Courier (handoffs: propagating / FYI + sender goal; plants a goal in the
   recipient's tree). Needs global cross-session time-order.
 - [ ] Writers: expand-paragraph feed-card detail (TBD, remake). Session digest is
@@ -68,10 +71,12 @@ MINIMAL (build first — browser-able): the tuned chat-view UI ported onto the k
   if UI deps are missing).
 
 INCREMENTAL (add after the three panes show real data):
-- [ ] **Serve-layer security (do BEFORE serving beyond localhost)**: always-on
+- [x] **Serve-layer security (do BEFORE serving beyond localhost)**: always-on
   Origin/Host validation on HTTP + `/ws` (kills ClawJacked, CVE-2026-25253);
   `ROMP_SERVE_TOKEN` usable without breaking local clients (auto-inject); token
   REQUIRED beyond `127.0.0.1`; token baked into launch. See `read-side.md`.
+  (Done — de58481: Origin/Host gate before routing, SameSite=Strict cookie
+  auto-inject, `/healthz` exempt, `ROMP_SERVE_HOST=0.0.0.0` + tokened banner.)
 - [ ] Browser-presence gating of the triage tier; run-when-disconnected setting.
 - [ ] Liveness: working / blocked / completed; hard-block floor from live state
   (merge: hard OR soft, hard wins).

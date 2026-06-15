@@ -389,6 +389,25 @@ class PlanRollup(unittest.TestCase):
         jd.rollup_status(s, session_closed=True)
         self.assertEqual(s["status"][gid], "blocked", "a blocked descendant beats completion")
 
+    def test_top_done_with_open_step_completes_when_settled(self):
+        """The real-fleet pattern (17/27 top-goals): the planner DONE's the TOP goal (the segment
+        discharged the whole ask) but a trailing step was never DONE'd. The old whole-subtree rule
+        held this working forever (0/27 ever reached all-leaves-complete); the top-done rule
+        completes it once settled."""
+        s = _store()
+        self._mint(s, "s1", T0, "G1")                                            # top goal
+        jd.apply_goal_edit(s, "s2", T0 + 10, {"op": "SUB", "n": 1, "text": "a step", "done": None,
+                                              "block": False}, jd.open_menu(s))   # step under G1, never DONE'd
+        jd.apply_goal_edit(s, "s3", T0 + 20, {"op": "AMEND", "n": 1, "text": "G1", "done": 1,
+                                              "block": False}, jd.open_menu(s))   # DONE the TOP goal #1
+        self._mint(s, "s4", T0 + 30, "G2")                                       # G2 now the focus → G1 settled
+        g1, step = s["placements"]["s1"], s["placements"]["s2"]
+        self.assertTrue(s["nodes"][g1]["nodeComplete"])
+        self.assertFalse(s["nodes"][step]["nodeComplete"], "the trailing step is still open")
+        jd.rollup_status(s, session_closed=False)
+        self.assertEqual(s["status"][g1], "completed",
+                         "top-done + settled completes even with a trailing open step")
+
 
 class PlanPass(unittest.TestCase):
     def test_pass_accretes_menu_then_dedups(self):
