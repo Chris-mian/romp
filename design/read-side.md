@@ -22,14 +22,24 @@ completed); the feed just paints columns. (Reflected back into `design/judge.md`
 
 ## Decisions locked
 
-- **One always-on process: the kernel.** It is the core. It runs Layer 1 (parse) +
-  Layer 2 (the judges) **and** an HTTP server. It comes up with the first romp
-  session, like the postal bus, and stays up. There is no separate UI server
-  process and nothing to "start."
+- **The kernel is the core, supervised by `romp-manager`.** One process: Layer 1
+  (parse) + Layer 2 (the judges) **and** an HTTP server, single writer. Its
+  *lifecycle* is owned by **`romp-manager`** — a durable, jupyter-lab-style supervisor
+  you start with `romp on` that spawns + respawns the kernel (via `romp-serve` →
+  `romp-kernel`) and stays up across kernel restarts. Front ends (browser, phone, VS
+  Code) ATTACH to the kernel; they never spawn it. (CORRECTION 2026-06-15: an earlier
+  draft said the kernel "auto-starts with the first session like the postal bus" —
+  wrong; the real, pre-existing design is the manager supervisor. `romp-serve` was
+  repointed at the new Python kernel so `romp on` supervises it; runs on the manager's
+  port (7433) so the existing front-ends + tailscale serve attach unchanged.)
 - **The UI is served by the kernel.** The front-end (the three panes) is `ui/`
   (renamed from `chat-view/`). A browser hits the kernel's port and gets it.
-- **`romp --on` is removed.** It was only ever "start the UI server"; the kernel is
-  always on, so it is vestigial. No backwards-compatibility shim. The UI is a URL.
+- **`romp on` starts the supervisor.** It runs `romp-manager` (foreground, like
+  `jupyter lab`); `romp refresh` restarts the kernel(s), `romp status` reports them.
+  (The old standalone `romp --on` node UI server is superseded by the manager.)
+  `romp serve on|off` is the persisted tailnet opt-in the manager honors via
+  `romp-serve` (binds 0.0.0.0 for direct tailnet/phone reach). The UI itself is just
+  a URL the kernel serves.
 - **Clean break, no backwards compatibility.** The old record stores (`summaries/`,
   `requests/`, `decision-log`, `corrections/`, `digest/`, ...) are **disposable**.
   The new system does not read or migrate them. We need not delete them, but the
