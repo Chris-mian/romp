@@ -311,5 +311,120 @@ class ArchiveParse(unittest.TestCase):
         self.assertIsNone(jd._parse_archive(""))
 
 
+class PlanParse(unittest.TestCase):
+    def test_mint_sub_amend(self):
+        self.assertEqual(jd._parse_goal_edit("MINT :: Rebuild the parser :: DONE none :: BLOCK no", 3)["op"], "MINT")
+        e = jd._parse_goal_edit("SUB 2 :: added a test :: DONE 2 :: BLOCK yes", 3)
+        self.assertEqual((e["op"], e["n"], e["done"], e["block"]), ("SUB", 2, 2, True))
+        self.assertEqual(jd._parse_goal_edit("AMEND 1 :: new goal text :: DONE none :: BLOCK no", 3)["op"], "AMEND")
+
+    def test_out_of_range_ref_falls_back_to_mint(self):
+        e = jd._parse_goal_edit("SUB 9 :: orphan step :: DONE none :: BLOCK no", 3)  # only 3 open
+        self.assertEqual(e["op"], "MINT", "an invalid ref must still place the segment, never orphan")
+
+    def test_bad_done_dropped_and_garbage_none(self):
+        self.assertIsNone(jd._parse_goal_edit("SUB 1 :: step :: DONE 9 :: BLOCK no", 3)["done"])
+        self.assertIsNone(jd._parse_goal_edit("i cannot help with that", 3))
+
+
+def _store():
+    return {"rompUuid": SID, "seq": 0, "nodes": {}, "placements": {}, "status": {}}
+
+
+class PlanApply(unittest.TestCase):
+    def test_mint_then_sub_under_it(self):
+        s = _store()
+        jd.apply_goal_edit(s, "seg1", T0, {"op": "MINT", "n": None, "text": "Goal A", "done": None, "block": False}, [])
+        jd.apply_goal_edit(s, "seg2", T0 + 10, {"op": "SUB", "n": 1, "text": "step 1", "done": None, "block": False},
+                           jd.open_menu(s))
+        sub = [n for n in s["nodes"].values() if n["parentId"] is not None]
+        self.assertEqual(len(sub), 1)
+        self.assertEqual(s["placements"]["seg2"], sub[0]["id"])
+        self.assertEqual(s["nodes"][sub[0]["parentId"]]["text"], "Goal A", "sub files under the minted goal")
+
+    def test_done_marks_complete_and_clears_block(self):
+        s = _store()
+        jd.apply_goal_edit(s, "seg1", T0, {"op": "MINT", "n": None, "text": "G", "done": None, "block": True}, [])
+        nid = s["placements"]["seg1"]
+        self.assertTrue(s["nodes"][nid]["blocked"])
+        jd.apply_goal_edit(s, "seg2", T0 + 10, {"op": "AMEND", "n": 1, "text": "G", "done": 1, "block": False},
+                           jd.open_menu(s))
+        self.assertTrue(s["nodes"][nid]["nodeComplete"])
+        self.assertFalse(s["nodes"][nid]["blocked"], "completing a node clears its soft block")
+
+
+class PlanRollup(unittest.TestCase):
+    def _mint(self, s, seg, t, text, done=None, block=False):
+        jd.apply_goal_edit(s, seg, t, {"op": "MINT", "n": None, "text": text, "done": done, "block": block},
+                           jd.open_menu(s))
+
+    def test_nonfocus_complete_goal_completes_focus_held_open(self):
+        s = _store()
+        self._mint(s, "s1", T0, "G1")
+        jd.apply_goal_edit(s, "s2", T0 + 10, {"op": "AMEND", "n": 1, "text": "G1", "done": 1, "block": False},
+                           jd.open_menu(s))                       # complete G1
+        self._mint(s, "s3", T0 + 20, "G2")                       # G2 is now the active focus
+        g1, g2 = s["placements"]["s1"], s["placements"]["s3"]
+        jd.rollup_status(s, session_closed=False)
+        self.assertEqual(s["status"][g1], "completed", "complete AND no longer the focus -> completed")
+        self.assertEqual(s["status"][g2], "working")
+
+    def test_focus_complete_goal_held_until_session_closed(self):
+        s = _store()
+        self._mint(s, "s1", T0, "G")
+        jd.apply_goal_edit(s, "s2", T0 + 10, {"op": "AMEND", "n": 1, "text": "G", "done": 1, "block": False},
+                           jd.open_menu(s))                       # G complete, still the only/active focus
+        gid = s["placements"]["s1"]
+        jd.rollup_status(s, session_closed=False)
+        self.assertEqual(s["status"][gid], "working", "complete but still the active focus -> held open (no flicker)")
+        jd.rollup_status(s, session_closed=True)
+        self.assertEqual(s["status"][gid], "completed", "session closed -> the focus goal may complete")
+
+    def test_blocked_beats_completed(self):
+        s = _store()
+        self._mint(s, "s1", T0, "G")
+        jd.apply_goal_edit(s, "s2", T0 + 10, {"op": "SUB", "n": 1, "text": "needs a decision", "done": None,
+                                              "block": True}, jd.open_menu(s))   # blocked sub-node under G
+        gid = s["placements"]["s1"]
+        jd.rollup_status(s, session_closed=True)
+        self.assertEqual(s["status"][gid], "blocked", "a blocked descendant beats completion")
+
+
+class PlanPass(unittest.TestCase):
+    def test_pass_accretes_menu_then_dedups(self):
+        """Per-session sequential: segment 2's menu contains segment 1's minted goal (accretion);
+        a second pass re-places nothing (dedup by segment id)."""
+        records = [uline(T0, "first ask", "u1", ps="typed"),
+                   aline(T0 + 30, "did first", "a1", "u1", stop="end_turn"),
+                   uline(T0 + 100, "second ask", "u2", "a1", ps="typed"),
+                   aline(T0 + 130, "did second", "a2", "u2", stop="end_turn")]
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            cdir = td / "launchdir"; cdir.mkdir()
+            proj = td / "projects"
+            pdir = proj / jd.re.sub(r"[/.]", "-", os.path.realpath(str(cdir)))
+            pdir.mkdir(parents=True)
+            (pdir / (SID + ".jsonl")).write_text("\n".join(json.dumps(r) for r in records) + "\n")
+            names = td / "names"; names.mkdir()
+            (names / SID).write_text("testsess\t%s\t#abcdef\n" % str(cdir))
+            saved = (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.plan_llm)
+            jd.NAMES, jd.PROJECTS, jd.GOALDIR = names, proj, td / "goals"
+            jd.plan_llm = lambda text, menu: ("MINT :: Goal one :: DONE none :: BLOCK no"
+                                              if "no open goals" in menu else "SUB 1 :: a step :: DONE none :: BLOCK no")
+            try:
+                now = T0 + 5000
+                n1 = jd.run_plan(now=now)
+                self.assertEqual(n1, 2, "both segments placed")
+                store = jd.load_goals(SID)
+                tops = [nd for nd in store["nodes"].values() if nd["parentId"] is None]
+                subs = [nd for nd in store["nodes"].values() if nd["parentId"] is not None]
+                self.assertEqual(len(tops), 1, "second segment filed UNDER the first's goal (menu accreted)")
+                self.assertEqual(len(subs), 1)
+                n2 = jd.run_plan(now=now)
+                self.assertEqual(n2, 0, "idempotent: placed segments are not re-placed")
+            finally:
+                (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.plan_llm) = saved
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
