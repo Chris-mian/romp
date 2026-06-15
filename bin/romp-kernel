@@ -386,9 +386,9 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if p == "/ws":
                 return self._ws()
-            if p in ("/", ""):
-                return self._send(200, _landing(), "text/html; charset=utf-8")
-            if p == "/chat":
+            if p in ("/", "", "/chat"):
+                # / serves the working CHAT pane full-window for now; the feed/timeline panes
+                # join the combined layout once their port (feed.ts surgery, timeline) lands.
                 _client_seen[0] = time.time()
                 return self._send(200, _chat_page(), "text/html; charset=utf-8")
             if p == "/feed":
