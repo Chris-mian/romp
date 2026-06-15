@@ -84,21 +84,13 @@ def _name_color(sid):
     return None
 
 
-def _colors_by_name():
-    """{session name → {bg,fg}} from the names registry — so a postal card can paint in its SENDER's
-    identity color (the event model gives the peer by name, not sid)."""
-    out = {}
+def _name_of(sid):
+    """Session display name from the names registry (1st tab field), or None. The event model gives a
+    postal atom's peer as the sender's rompUuid (sid), so a postal card resolves it to a name + color."""
     try:
-        for f in NAMES.iterdir():
-            try:
-                parts = f.read_text().rstrip("\n").split("\t")
-            except Exception:
-                continue
-            if parts and len(parts) > 2 and parts[2].startswith("#"):
-                out[parts[0]] = {"bg": parts[2], "fg": "#ffffff"}
+        return (NAMES / sid).read_text().rstrip("\n").split("\t")[0] or None
     except Exception:
-        pass
-    return out
+        return None
 
 
 def _rgb(color):
@@ -282,7 +274,6 @@ def build_session(sid, now, tmux=None):
     session = em.parse_session(sess["path"], rompuuid=sid, candidate_files=[sess["path"]],
                                postal_log=str(jd.MESSAGES), now=now)
     caps = _captions(sid)
-    peer_colors = _colors_by_name()           # name → identity color, for postal cards
     events, by_tool = [], {}                  # by_tool: tool_use_id → its tool event (fill output later)
     last_t = None
     for turn in session["turns"]:
@@ -296,8 +287,10 @@ def build_session(sid, now, tmux=None):
                 trs = [b for b in blocks if isinstance(b, dict) and b.get("type") == "tool_result"]
                 if isinstance(author, dict):                     # peer message → postal card
                     text = " ".join(b.get("text", "") for b in blocks if b.get("type") == "text")
-                    events.append({"kind": "postal", "direction": "in", "peer": (author.get("peer") or "peer"),
-                                   "color": peer_colors.get(author.get("peer") or ""),
+                    psid = author.get("peer")        # the SENDER's rompUuid (sid), per the event model
+                    events.append({"kind": "postal", "direction": "in",
+                                   "peer": _name_of(psid) or psid or "peer",
+                                   "color": _name_color(psid) if psid else None,
                                    "body": text, "uuid": a.get("uuid"), "ts": ts, "t": t, "status": "delivered"})
                 elif trs:                                        # tool_result → fill the matching tool event's output
                     for tr in trs:

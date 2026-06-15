@@ -201,9 +201,11 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(r, ["be careful"])
         self.assertEqual(km._split_reminders("plain prompt"), ("plain prompt", []))
 
-    def test_colors_by_name(self):
-        # postal cards paint in the SENDER's identity color, looked up by session name
-        self.assertEqual(km._colors_by_name().get("testsess"), {"bg": "#abcdef", "fg": "#ffffff"})
+    def test_name_of_resolves_sid(self):
+        # a postal atom's peer is the sender's SID; resolve it to a name (+ color via _name_color)
+        self.assertEqual(km._name_of(SID), "testsess")
+        self.assertEqual(km._name_color(SID), {"bg": "#abcdef", "fg": "#ffffff"})
+        self.assertIsNone(km._name_of("no-such-sid"))
 
     def test_postal_connectors(self):
         # timeline message connectors from the postal log: a sent row joined to its exec by id, with
