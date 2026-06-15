@@ -33,8 +33,20 @@ Triage tier (on-demand):
     0/27 ever reached it. completed 0→10 on the fleet.)
   - [x] Un-block: clear a node's block when later work under the goal progresses
     (newest-wins). (Clears `blocked` on the top-ancestor subtree on later non-block work.)
-- [ ] Courier (handoffs: propagating / FYI + sender goal; plants a goal in the
-  recipient's tree). Needs global cross-session time-order.
+- [~] Courier (handoffs) — judge side BUILT (1c8dc06): classifies each peer
+  (postal) segment propagating/FYI; PROPAGATING plants a top-level goal in the
+  RECIPIENT's tree with `origin:{peer,goalId,msgId}`; FYI no goal-edit. The planner
+  SKIPS peer segments (`_seg_peer` is the shared discriminator) — no double-place.
+  Global oldest-first across sessions; idempotent by msgId. Triage tier (run_courier,
+  browser-gated). Dry-verified: 42 peer / 85 planner segs, zero leakage.
+  - [ ] Read-side origin wiring: ↪ from <sender> on the feed card (ask.origin /
+    AskTreeNode kind:"handoff") + bind the timeline connector to the planted goal.
+  - [ ] Sender goals as-of-SEND (MVP reads as-of-now). Live handoffs: as-of-now ≈
+    as-of-send (tiny gap). Matters for BACKFILL — when the courier processes OLD
+    messages, the sender's tree has since evolved, so as-of-now can pick a goalId
+    that didn't exist at send / miss a since-closed one → mis-attribution. Land
+    before relying on backfilled handoff attribution (per simplify).
+  - [ ] Ack taxonomy: a result returning on a delegated goal → completes that node.
 - [ ] Writers: expand-paragraph feed-card detail (TBD, remake). Session digest is
   subsumed by the archiver (done).
 
@@ -82,12 +94,30 @@ INCREMENTAL (add after the three panes show real data):
   REQUIRED beyond `127.0.0.1`; token baked into launch. See `read-side.md`.
   (Done — de58481: Origin/Host gate before routing, SameSite=Strict cookie
   auto-inject, `/healthz` exempt, `ROMP_SERVE_HOST=0.0.0.0` + tokened banner.)
-- [ ] Browser-presence gating of the triage tier; run-when-disconnected setting.
-- [ ] Liveness: working / blocked / completed; hard-block floor from live state
-  (merge: hard OR soft, hard wins).
-- [ ] Live-state read (`states/` + open turns) for the chip + timeline stripes.
+- [x] Browser-presence gating of the triage tier (planner + courier gate on a
+  connected WS client `_clients`); INDEX tier (captioner + archiver) is always-on
+  for any active tmux session. (The freeze bug was a 90s-since-HTTP timer a
+  long-lived WS never refreshed — gate on the real events instead.)
+- [~] Liveness: working / blocked / completed — lane badges + chat chip from tmux
+  @claude-state (working/waiting=READY/permission=BLOCKED/compacting); chat chip's
+  WORKING uses the event-model open-turn (stable) not the laggy @claude-state. Hard
+  live-prompt floor merge: TODO.
+- [x] Live-state read: lane/chip state, model/effort/context% from tmux; awaiting/
+  compacting stripes + usage from `states/`/`usage.json` (file-based).
 - [ ] rompUuid birth-stamp discovery (new-model only; 48h window = parse bound only).
-- [ ] Clear-all + undo.
+- [x] Clear-all + undo (cleared.jsonl, append-only; clear-all = one batch, one undo
+  restores the batch; per-card Clear + the footer UndoClear button).
+
+Read-side parity hardening (2026-06-15, the user's live review):
+- [x] Hard liveness filter: feed/timeline/chat show only tmux-alive sessions
+  (dead-session tabs/lanes/cards gone); living sessions shown fully.
+- [x] Shared tab↔timeline order (session-order.json drag-sync, tabOrder push).
+- [x] Recency colormap on feed cards (age → hawaii ramp), stream cards visible.
+- [x] Timeline message connectors from the postal log (both-ends-alive).
+- [x] Resizable panes (thin sashes); timeline auto-fits its lanes (drag can't exceed).
+- [x] Work-timer ms fix; chat richness (postal sender color, reminders fold, tool
+  desc, bigger IO); tab × hides the tab (reversible, not a kill).
+- [ ] Remaining chat richness: image thumbnails (path: refs), postal parked badge + mid.
 - [ ] Re-judging progress surface.
 - [ ] Timeline connectors (needs the courier) + focus/hover overlays.
 - [ ] Tags: `dir → tag` map + per-session override; views via URL hash + gear default
