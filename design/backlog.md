@@ -44,22 +44,26 @@ UI port + parity: the existing tuned `chat-view` UI is ported as the render laye
 onto the Python kernel. The curated KEEP / ADAPT / DROP checklist (what to reuse,
 rewire, and leave behind against the new data model) lives in `design/ui-parity.md`.
 
-MINIMAL (build first — browser-able):
-- [x] Merged always-on kernel `bin/romp-kernel` (PYTHON — producer + server co-located in
-  one process, single writer; presence-gated producer thread, no model calls when no
-  browser open). HTTP + polling; WS push deferred (the JSON payload shapes are the contract).
-- [~] `ui/` package: built fresh `ui/index.html` (thin render client) served by the kernel.
-  Deferred (build-beside, old stays): rename/retire `chat-view/`, fold `obsidian/` timeline,
-  delete `romp-events --emit`.
-- [x] One view-builder: the kernel's Python projection (`view_feed`/`view_chat`/`view_timeline`)
-  IS the single view-builder; `ui/` only renders payloads. (Old `feed.ts`/`bin/romp-feed`/
-  `chat.ts` parser/`romp-events --emit` still exist beside until cutover.)
-- [x] Chat pane: event tree rendered directly from the parser (no second parser).
-- [x] Feed pane: inbox (`goals/` → working/blocked/completed columns) + caption stream.
-- [x] Timeline pane: segments-as-bars + idle gaps + caption-on-hover.
-- [x] TOC ledger: archiver headline + turn/segment captions, clickable to jump.
+MINIMAL (build first — browser-able): the tuned chat-view UI ported onto the kernel over WS.
+- [x] Merged always-on kernel `bin/romp-kernel` (PYTHON — producer + WebSocket/HTTP server in
+  one process, single writer; presence-gated producer, no model calls when no browser open).
+  Hand-rolled stdlib WS reusing the chat-view `shimJs` VERBATIM — the same protocol the bundles
+  + extension speak (no poll bridge). Builds the UI bundles if stale.
+- [~] UI = the human's tuned chat-view render bundles, served verbatim (render.js/feed.js +
+  styles/feed.css). Chat ported; feed.ts goal-tree surgery + obsidian timeline fold pending.
+  `ui/` rename + `romp-events --emit` delete deferred (build-beside).
+- [x] One view-builder: the kernel's Python projection emits the `{type:"session"/"feed"}` WS
+  payloads the bundles consume; bundles only render. (Old reducers exist beside until cutover.)
+- [x] Chat pane: atoms→ChatEvent (user / assistant / thinking / tool with output-pairing + diff /
+  postal / compaction marker) over WS — the tuned transcript, tabs, rail, ledger.
+- [~] Feed pane: goals→cards bucketed BLOCKED/WORKING/COMPLETED + caption stream payload built;
+  feed.ts render surgery (DROP relevance/liveness/suspect per ui-parity.md, ADAPT to goal tree)
+  pending.
+- [ ] Timeline pane: obsidian timeline port (segments-as-bars, event-based idle gaps) pending.
+- [x] TOC ledger: archiver headline + turn captions, click-to-jump (segment nesting pending).
 - [x] RUNNABLE: `python3 ~/GitRepos/romp-event-model/bin/romp-kernel` → auto-opens
-  http://127.0.0.1:7878 (the rebuild bin is off the human's PATH, so run it by full path).
+  http://127.0.0.1:7878 (full path: rebuild bin is off PATH; `cd chat-view && npm install` once
+  if UI deps are missing).
 
 INCREMENTAL (add after the three panes show real data):
 - [ ] Browser-presence gating of the triage tier; run-when-disconnected setting.
