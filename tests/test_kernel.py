@@ -127,6 +127,10 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(comp[0]["text"], "Fix the feed flicker")
         self.assertEqual(comp[0]["tree"][0]["status"], "done")
         self.assertTrue(any(c["did"] == "Fixed the feed flicker" for c in d["items"]))
+        # card tint is the recency colormap (age → hawaii ramp), not a flat session color
+        self.assertEqual(comp[0]["trgb"], list(km.cm.age_rgb(NOW - comp[0]["t"])))
+        self.assertNotEqual(comp[0]["trgb"], km._rgb(comp[0]["color"]), "not the flat session color")
+        self.assertTrue(all(c["standalone"] for c in d["items"]), "stream cards must be standalone or the render hides them")
 
     def test_timeline_lane_and_segment_bar(self):
         # the fixture wrote only a turn-grain caption; bind a segment-grain one so the bar tooltip resolves

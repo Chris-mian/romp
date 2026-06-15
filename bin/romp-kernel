@@ -25,6 +25,7 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 em = SourceFileLoader("romp_event_model", str(HERE / "romp-event-model")).load_module()
 jd = SourceFileLoader("romp_judge", str(HERE / "romp-judge")).load_module()
+cm = SourceFileLoader("romp_colormap", str(HERE / "romp_colormap.py")).load_module()  # age → recency tint
 CHAT_VIEW = ROOT / "chat-view"               # the tuned UI, current in this worktree via `git merge main`
 DIST = CHAT_VIEW / "dist"                    # bundles built from CHAT_VIEW/src (the human's tuned render layer)
 MEDIA = CHAT_VIEW / "media"
@@ -221,7 +222,7 @@ def build_feed(now):
     asks, stream, working = [], [], []
     for s in _sessions(now):
         fsid, name = s["sid"], s["name"]
-        color = _name_color(fsid); rgb = _rgb(color); live = s["mtime"] >= now - 90
+        color = _name_color(fsid); live = s["mtime"] >= now - 90
         if live:
             working.append(name)
         store = jd.load_goals(fsid)
@@ -238,7 +239,8 @@ def build_feed(now):
             kids = sorted(children.get(nid, []), key=lambda c: nodes[c]["t"])
             out.append({"id": nid, "kind": "ask", "text": nd["text"], "who": name, "whoSid": fsid,
                         "whoColor": color, "whoWorking": False, "status": node_status(nd),
-                        "t": nd["t"], "last": nd["t"], "trgb": rgb, "children": kids, "rows": []})
+                        "t": nd["t"], "last": nd["t"], "trgb": list(cm.age_rgb(now - nd["t"])),
+                        "children": kids, "rows": []})
             for c in kids:
                 flatten(c, out)
             return out
@@ -248,15 +250,16 @@ def build_feed(now):
                 continue
             asks.append({
                 "itemId": nid, "sid": fsid, "name": name, "color": color, "text": nodes[nid]["text"],
-                "t": nodes[nid]["t"], "created": nodes[nid]["t"], "live": live, "trgb": rgb,
+                "t": nodes[nid]["t"], "created": nodes[nid]["t"], "live": live,
+                "trgb": list(cm.age_rgb(now - nodes[nid]["t"])),
                 "done": 0, "needsYou": 0, "linked": [], "turnId": nid, "turnIds": [nid],
                 "column": ("needs_input" if col == "blocked" else "completed" if col == "completed" else "working"),
                 "openQuestions": [], "openPaths": [], "tree": flatten(nid, [])})
         for c in _captions(fsid).values():
             if c.get("grain") == "turn":
                 stream.append({"itemId": c["id"], "sid": fsid, "name": name, "color": color,
-                               "did": c["caption"], "t": c["t"], "trgb": rgb, "relevance": "DETAILS",
-                               "live": live, "standalone": False})
+                               "did": c["caption"], "t": c["t"], "trgb": list(cm.age_rgb(now - c["t"])),
+                               "relevance": "DETAILS", "live": live, "standalone": True})
     stream.sort(key=lambda c: c["t"], reverse=True)
     return {"type": "feed", "asks": asks, "items": stream[:200], "blocked": [], "now": now,
             "working": working, "dismissedCount": 0, "showDismissed": False, "canUndoClear": False}
@@ -647,17 +650,44 @@ def _chat_body():
             '<button id="composer-attach" title="Attach a file — inserts its path">📎</button></div></div>')
 
 
+# The combined-shell splitter JS: draggable v-split (chat|feed) + h-split (top row | timeline),
+# persisted in localStorage. Iframes get pointer-events:none mid-drag so the gutter keeps the mouse
+# (an iframe otherwise swallows mousemove the instant the cursor crosses it).
+_LANDING_JS = """
+(function(){var col=document.querySelector('.col'),row=document.querySelector('.row');
+var KC='romp-split-chat',KT='romp-split-tl';
+try{var c=localStorage.getItem(KC);if(c)row.style.setProperty('--chat',c);
+var t=localStorage.getItem(KT);if(t)col.style.setProperty('--tl',t);}catch(e){}
+function drag(h,cls,apply){if(!h)return;h.addEventListener('mousedown',function(e){e.preventDefault();
+document.body.classList.add('drag',cls);
+function mv(ev){apply(ev);}function up(){document.body.classList.remove('drag',cls);
+window.removeEventListener('mousemove',mv);window.removeEventListener('mouseup',up);}
+window.addEventListener('mousemove',mv);window.addEventListener('mouseup',up);});}
+drag(document.getElementById('gv'),'dragv',function(ev){var r=row.getBoundingClientRect();
+var pct=Math.max(15,Math.min(85,(ev.clientX-r.left)/r.width*100));var v=pct.toFixed(1)+'%';
+row.style.setProperty('--chat',v);try{localStorage.setItem(KC,v);}catch(e){}});
+drag(document.getElementById('gh'),'dragh',function(ev){var r=col.getBoundingClientRect();
+var pct=Math.max(10,Math.min(80,(r.bottom-ev.clientY)/r.height*100));var v=pct.toFixed(1)+'%';
+col.style.setProperty('--tl',v);try{localStorage.setItem(KT,v);}catch(e){}});})();
+"""
+
+
 def _landing():
-    # combined 3-pane shell: chat + feed side by side on top, the timeline band full-width below
-    return ("<!DOCTYPE html><html lang=en><head><meta charset=UTF-8><title>romp</title>"
-            "<style>html,body{margin:0;height:100%;background:#1e1e1e}"
-            ".col{display:flex;flex-direction:column;height:100vh}"
-            ".row{display:flex;flex:1 1 auto;min-height:0}iframe{border:0}"
-            "#c{flex:1 1 60%;height:100%;border-right:1px solid #303031}#f{flex:1 1 40%;height:100%}"
-            "#t{flex:0 0 34%;width:100%;border-top:1px solid #303031}</style></head>"
-            "<body><div class=col><div class=row><iframe id=c src=/chat></iframe>"
-            "<iframe id=f src=/feed></iframe></div><iframe id=t src=/timeline></iframe></div>"
-            "</body></html>")
+    # combined 3-pane shell: chat | feed on top (draggable col-resize gutter), the timeline band
+    # full-width below (draggable row-resize gutter). Pane sizes persist in localStorage.
+    return ("<!DOCTYPE html><html lang=en><head><meta charset=UTF-8><title>romp</title><style>"
+            "html,body{margin:0;height:100%;background:#1e1e1e;overflow:hidden}"
+            ".col{display:grid;grid-template-rows:1fr 6px var(--tl,34%);height:100vh}"
+            ".row{display:grid;grid-template-columns:var(--chat,60%) 6px 1fr;min-height:0}"
+            "iframe{border:0;width:100%;height:100%}"
+            ".gv{cursor:col-resize}.gh{cursor:row-resize}.gv,.gh{background:#303031}"
+            ".gv:hover,.gh:hover{background:#007fd4}"
+            "body.drag iframe{pointer-events:none}body.dragv{cursor:col-resize}body.dragh{cursor:row-resize}"
+            "</style></head><body><div class=col>"
+            "<div class=row><iframe src=/chat></iframe><div class=gv id=gv></div>"
+            "<iframe src=/feed></iframe></div>"
+            "<div class=gh id=gh></div><iframe src=/timeline></iframe></div>"
+            "<script>" + _LANDING_JS + "</script></body></html>")
 
 
 class Handler(BaseHTTPRequestHandler):
