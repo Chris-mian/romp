@@ -296,6 +296,23 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(st["ctx"], "20")
 
 
+class CrossPane(unittest.TestCase):
+    def test_send_to_app_routes_by_app(self):
+        got = {"chat": [], "feed": []}
+        chat = {"app": "chat", "send": lambda s: got["chat"].append(s), "alive": True}
+        feed = {"app": "feed", "send": lambda s: got["feed"].append(s), "alive": True}
+        with km._clients_lock:
+            km._clients[:] = [chat, feed]
+        try:
+            km._send_to_app("chat", {"type": "focus", "id": "S1"})
+        finally:
+            with km._clients_lock:
+                km._clients[:] = []
+        self.assertEqual(len(got["chat"]), 1, "only chat clients get the chat-routed message")
+        self.assertEqual(len(got["feed"]), 0)
+        self.assertIn("focus", got["chat"][0]); self.assertIn("S1", got["chat"][0])
+
+
 class TmuxInject(unittest.TestCase):
     def test_tmux_send_sequence(self):
         calls = []

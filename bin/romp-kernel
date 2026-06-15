@@ -765,6 +765,27 @@ def _ws_recv(rfile):
     return opcode, bytes(payload)
 
 
+def _send_to_app(app, msg):
+    """Push one message to every connected client of an app (chat/feed/timeline) — cross-pane routing
+    so a feed/timeline click drives the chat (e.g. focus a tab + scroll to a transcript anchor)."""
+    s = json.dumps(msg)
+    with _clients_lock:
+        targets = [c for c in _clients if c["app"] == app]
+    for c in targets:
+        try:
+            c["send"](s)
+        except Exception:
+            c["alive"] = False
+
+
+_nonce = [0]
+
+
+def _next_nonce():
+    _nonce[0] += 1
+    return _nonce[0]
+
+
 def _push_all():
     """Build fresh payloads and push to every connected client (per its app). The timeline payload
     re-parses every session, so it's built only when a timeline client is actually connected."""
@@ -1168,6 +1189,16 @@ class Handler(BaseHTTPRequestHandler):
                 elif msg and msg.get("type") == "openSession" and msg.get("id"):
                     _set_hidden_tab(msg["id"], False)    # feed/timeline click reopens a hidden tab
                     _push_all()
+                    _send_to_app("chat", {"type": "focus", "id": msg["id"]})   # + switch the chat to it
+                elif msg and msg.get("type") == "deepLink" and msg.get("session"):
+                    _send_to_app("chat", {"type": "focus", "id": msg["session"], "anchor": msg.get("anchor"),
+                                          "anchorT": msg.get("anchorT"), "anchorKind": msg.get("anchorKind")})
+                elif msg and msg.get("type") == "showOnTimeline" and msg.get("sid"):
+                    _send_to_app("chat", {"type": "focus", "id": msg["sid"],
+                                          "anchorT": msg.get("t"), "anchor": msg.get("anchor")})
+                elif msg and msg.get("type") == "hoverHighlight":
+                    ids = msg["ids"] if isinstance(msg.get("ids"), list) else ([msg["id"]] if msg.get("id") else [])
+                    _send_to_app("timeline", {"type": "hover", "ids": ids, "nonce": _next_nonce()})
                 elif msg and msg.get("type") == "sendMessage" and msg.get("id") and msg.get("text"):
                     _tmux_send(_name_of(msg["id"]) or msg["id"], str(msg["text"]))   # composer → session
                 elif msg and msg.get("type") == "interrupt" and msg.get("id"):
