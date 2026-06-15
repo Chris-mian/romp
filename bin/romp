@@ -556,6 +556,34 @@ if [[ "${1:-}" == "--mail" ]]; then
     exec "${ROMP_POSTAL_BIN:-romp-postal}" "$@"
 fi
 
+# `romp serve on|off|status` — persist the kernel's serve-host so the supervisor
+# (romp on → romp-manager → romp-serve → romp-kernel) binds the tailnet WITHOUT a
+# per-launch flag. `on` exposes to the tailnet/phone (token-gated; the token is
+# already baked in ~/.local/state/romp/serve-token); `off` reverts to local-only.
+# Set it once; apply to a running kernel with `romp refresh`.
+if [[ "${1:-}" == "serve" ]]; then
+    shift
+    _serve_conf="${XDG_STATE_HOME:-$HOME/.local/state}/romp/serve-host"
+    case "${1:-status}" in
+        on|tailnet)
+            mkdir -p "$(dirname "$_serve_conf")"
+            printf '0.0.0.0\n' > "$_serve_conf"
+            echo "[romp] serve-host → 0.0.0.0 (tailnet/phone, token-gated). Apply now: romp refresh" ;;
+        off|local)
+            rm -f "$_serve_conf"
+            echo "[romp] serve-host → 127.0.0.1 (local only). Apply now: romp refresh" ;;
+        status)
+            if [[ -r "$_serve_conf" ]]; then
+                echo "serve-host: $(tr -d '[:space:]' < "$_serve_conf") (tailnet)"
+            else
+                echo "serve-host: 127.0.0.1 (local only)"
+            fi ;;
+        *)
+            echo "usage: romp serve [on|off|status]" >&2; exit 2 ;;
+    esac
+    exit 0
+fi
+
 # Kernel-MANAGER control verbs. The manager (bin/romp-manager) is the thin, durable supervisor you
 # launch yourself, à la `jupyter lab`: it owns + supervises the romp kernel(s); front ends (VS Code,
 # the web dashboard, Obsidian) ATTACH rather than spawn. `romp on` is PURELY "start the manager" — the

@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
-# romp-serve — the romp web UI kernel: serves the chat + feed webviews to any
-# browser and drives sessions through the tmux backend. Usage:
-#   romp-serve [--port N] [--host 127.0.0.1]
-# Builds dist/kernel.js on first run (or when sources are newer).
+# romp-serve — launches the romp web UI kernel for the manager (bin/romp-manager) to
+# supervise. It is the seam between the manager's spawn contract and the kernel: the
+# manager runs `romp-serve --port N` (with ROMP_SERVE_PORT / ROMP_MANAGER_PID in env)
+# and supervises the resulting PID. We map those onto the Python kernel's env and
+# `exec` it, so the manager keeps supervising the same PID and the kernel self-builds
+# its UI bundles if stale.
+#   romp-serve [--port N] [--host H]
+# Host precedence: --host > the persisted serve-host opt-in (`romp serve on`) > local.
 set -euo pipefail
 
+# Resolve the repo root through any symlink (matches the other bin/ consumers).
 src="${BASH_SOURCE[0]}"
 while [[ -L "$src" ]]; do
     tgt="$(readlink "$src")"
@@ -14,28 +19,38 @@ while [[ -L "$src" ]]; do
     esac
 done
 ROMP_DIR="$(cd "$(dirname "$src")/.." && pwd)"
-CHAT_VIEW="$ROMP_DIR/chat-view"
-KERNEL="$CHAT_VIEW/dist/kernel.js"
+# ROMP_KERNEL_BIN is the test seam (same pattern as ROMP_*_BIN elsewhere).
+KERNEL="${ROMP_KERNEL_BIN:-$ROMP_DIR/bin/romp-kernel}"
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/romp"
 
-command -v node >/dev/null 2>&1 || { echo "romp-serve: node not found" >&2; exit 1; }
+# Port: the manager passes --port; fall back to ROMP_SERVE_PORT, then the kernel default.
+port="${ROMP_SERVE_PORT:-}"
+host=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --port) port="${2:-}"; shift 2 ;;
+        --host) host="${2:-}"; shift 2 ;;
+        *) shift ;;
+    esac
+done
 
-# Build when the bundle is missing or any source is newer than it.
-needs_build() {
-    [[ -f "$KERNEL" ]] || return 0
-    [[ -n "$(find "$CHAT_VIEW/src" -name '*.ts' -newer "$KERNEL" 2>/dev/null | head -1)" ]]
-}
-if needs_build; then
-    echo "romp-serve: building kernel…" >&2
-    # Keep startup output succinct (the user 2026-06-13): swallow the esbuild size dump / warnings on
-    # success; surface the whole log only if the build actually fails.
-    if ! build_out="$(cd "$CHAT_VIEW" && npm run --silent build 2>&1)"; then
-        printf '%s\n' "$build_out" >&2
-        echo "romp-serve: kernel build FAILED (see above)" >&2
-        exit 1
-    fi
+# Host: explicit --host wins; else the persisted serve-host opt-in (set once via
+# `romp serve on`, so tailnet serving survives restarts without a per-launch flag);
+# else local-only. This is the "serve to my phone, set once" knob.
+if [[ -z "$host" ]]; then
+    [[ -r "$STATE/serve-host" ]] && host="$(tr -d '[:space:]' < "$STATE/serve-host" 2>/dev/null || true)"
+    host="${host:-127.0.0.1}"
 fi
 
+[[ -x "$KERNEL" ]] || { echo "romp-serve: kernel not found/executable at $KERNEL" >&2; exit 1; }
+
+# Map onto the kernel's env, then exec it (preserving the PID for the manager).
+# ROMP_MANAGER_PID (parent-death watchdog) and ROMP_SERVE_TOKEN (auto-loaded from the
+# persisted token file if unset) flow through untouched. ROMP_KERNEL_NO_OPEN keeps a
+# supervised kernel from popping a browser on every (re)spawn.
+export ROMP_DIR
 export ROMP_BIN="${ROMP_BIN:-$ROMP_DIR/bin/romp}"
-export ROMP_FEED_DETAIL_BIN="${ROMP_FEED_DETAIL_BIN:-$ROMP_DIR/bin/romp-feed-detail}"
-export ROMP_DIR   # the kernel's /timeline loads obsidian/romp-timeline-{data,view}.js from here
-exec node "$KERNEL" "$@"
+[[ -n "$port" ]] && export ROMP_KERNEL_PORT="$port"
+export ROMP_SERVE_HOST="$host"
+export ROMP_KERNEL_NO_OPEN=1
+exec "$KERNEL"
