@@ -78,6 +78,8 @@ const sessions = new Map<string, Session>();
 const order: string[] = [];           // positional tab order (for cycling)
 const mru: string[] = [];             // recency stack, front = most-recently-active (close → return to previous)
 let activeId: string | null = null;
+// restore the last-active tab on refresh (persisted via setState); one-shot, applied when its session arrives
+let wantActive: string | null = (() => { try { return ((vscodeApi?.getState?.() || {}) as any).activeId || null; } catch { return null; } })();
 let pendingAnchor: string | null = null; // deep-link target waiting to be scrolled to
 let pendingAnchorIntent: string | null = null; // kind the uuid anchor must honor — sticks with pendingAnchor across render-pass retries (pendingAnchorKind is cleared each pass, this isn't)
 let pendingAnchorT: number | null = null; // time fallback (epoch s) when the uuid can't resolve
@@ -2545,6 +2547,7 @@ function setActive(id: string, anchor?: string, anchorT?: number, anchorKind?: s
   pendingAnchor = anchor ?? null;
   pendingAnchorIntent = anchor ? (anchorKind ?? null) : null;
   activeId = id;
+  try { vscodeApi?.setState?.({ ...(vscodeApi.getState?.() || {}), activeId: id }); } catch { /* ignore */ }
   sortTabs(); // re-sort on switch — applies any tier change deferred while a tab was active
   renderTabs();
   showActive();
@@ -2582,6 +2585,7 @@ function upsert(msg: any) {
   if ("ledger" in msg) ledgers.set(msg.id, msg.ledger ?? null);
   if (!existed) order.push(msg.id);
   if (!activeId) activeId = msg.id;
+  if (wantActive && msg.id === wantActive) { wantActive = null; setActive(msg.id); }   // restore persisted tab on arrival
   sortTabs();
   renderTabs();
   if (msg.id === activeId) showActive();

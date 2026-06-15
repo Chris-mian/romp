@@ -876,9 +876,11 @@ ws.onmessage=function(ev){var msg;try{msg=JSON.parse(ev.data);}catch(e){return;}
 window.dispatchEvent(new MessageEvent("message",{data:msg}));};
 ws.onclose=function(){setTimeout(function(){location.reload();},1500);};}
 function send(m){var s=JSON.stringify(m);if(ws&&ws.readyState===1)ws.send(s);else queue.push(s);}
+var SK="romp-vscode-state-%s";   // persist webview state to localStorage so UI prefs survive a refresh
 window.acquireVsCodeApi=function(){return{postMessage:function(m){send(m);},
-getState:function(){return null;},setState:function(){}};};connect();})();
-""" % app
+getState:function(){try{return JSON.parse(localStorage.getItem(SK)||"null");}catch(e){return null;}},
+setState:function(s){try{localStorage.setItem(SK,JSON.stringify(s));}catch(e){}}};};connect();})();
+""" % (app, app)
 
 
 def _chat_page():
