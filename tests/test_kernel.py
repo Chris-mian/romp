@@ -67,9 +67,10 @@ class ViewBuilder(unittest.TestCase):
         self.tpath.write_text("\n".join(json.dumps(r) for r in recs) + "\n")
         names = td / "names"; names.mkdir()
         (names / SID).write_text("testsess\t%s\t#abcdef\n" % str(cdir))
-        self.saved = (jd.NAMES, jd.PROJECTS, jd.CAPDIR, jd.ARCHDIR, jd.GOALDIR, km.NAMES)
+        self.saved = (jd.NAMES, jd.PROJECTS, jd.CAPDIR, jd.ARCHDIR, jd.GOALDIR, jd.STATE, km.NAMES)
         jd.NAMES, jd.PROJECTS = names, proj
         jd.CAPDIR, jd.ARCHDIR, jd.GOALDIR = td / "captions", td / "archive", td / "goals"
+        jd.STATE = td                                  # sandbox the timeline helpers (usage/states/mail)
         km.NAMES = names
         session = em.parse_session(str(self.tpath), rompuuid=SID, candidate_files=[str(self.tpath)], now=NOW)
         turn = session["turns"][0]
@@ -88,7 +89,7 @@ class ViewBuilder(unittest.TestCase):
             "placements": {}, "status": {"%s:g1" % SID: "completed"}}))
 
     def tearDown(self):
-        (jd.NAMES, jd.PROJECTS, jd.CAPDIR, jd.ARCHDIR, jd.GOALDIR, km.NAMES) = self.saved
+        (jd.NAMES, jd.PROJECTS, jd.CAPDIR, jd.ARCHDIR, jd.GOALDIR, jd.STATE, km.NAMES) = self.saved
         self.td.cleanup()
 
     def test_session_payload_shape(self):
@@ -126,6 +127,34 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(comp[0]["text"], "Fix the feed flicker")
         self.assertEqual(comp[0]["tree"][0]["status"], "done")
         self.assertTrue(any(c["did"] == "Fixed the feed flicker" for c in d["items"]))
+
+    def test_timeline_lane_and_segment_bar(self):
+        # the fixture wrote only a turn-grain caption; bind a segment-grain one so the bar tooltip resolves
+        session = em.parse_session(str(self.tpath), rompuuid=SID, candidate_files=[str(self.tpath)], now=NOW)
+        seg = em.segments(session["turns"][0])[0]
+        with (jd.CAPDIR / (SID + ".jsonl")).open("a") as fh:
+            fh.write(json.dumps({"id": seg["id"], "grain": "segment", "t": seg["t"],
+                                 "caption": "Fixed the feed flicker"}) + "\n")
+        m = km.build_timeline(NOW)
+        self.assertEqual(m["type"], "timeline")
+        self.assertEqual(m["messages"], [], "connectors are a later (courier) increment")
+        self.assertIsNone(m["usage"], "no usage.json in the temp state")
+        self.assertIsNone(m["focus"]); self.assertIsNone(m["hover"])
+        lane = next(s for s in m["sessions"] if s["id"] == SID)
+        self.assertEqual(lane["color"], "#abcdef", "lane color is the hex string, not {bg,fg}")
+        self.assertEqual(lane["state"], "idle", "turn ended, no blocked goal -> idle")
+        self.assertEqual(lane["model"], "", "tmux-sourced lane decorations are deferred")
+        bars = m["turns"][SID]
+        self.assertEqual(len(bars), 1, "the one-input turn is one segment bar")
+        bar = bars[0]
+        self.assertEqual(bar["start"], T0)
+        self.assertGreater(bar["end"], bar["start"])
+        self.assertEqual(bar["prompt"], "fix the feed flicker")
+        self.assertEqual(bar["summary"], "Fixed the feed flicker", "caption binds to the segment id")
+        self.assertEqual(bar["src"], "typed")
+        self.assertEqual(bar["workUuid"], "a1", "first assistant atom = work anchor")
+        self.assertEqual(bar["replyUuid"], "a2", "last assistant-with-text = reply anchor")
+        self.assertFalse(bar["open"], "the turn ended -> bar not open")
 
 
 class WsFraming(unittest.TestCase):
