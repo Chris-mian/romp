@@ -165,6 +165,27 @@ def _ordered_alive(now, tmux):
     return alive
 
 
+def _hidden_tabs():
+    """SIDs the user closed (×) from the chat tab strip — hidden from the tabs but NOT killed: the
+    session keeps running, and clicking it in the feed/timeline (openSession) reopens the tab. A view
+    preference, deliberately not a session kill."""
+    try:
+        a = json.loads((jd.STATE / "hidden-tabs.json").read_text())
+        return set(x for x in a if isinstance(x, str)) if isinstance(a, list) else set()
+    except Exception:
+        return set()
+
+
+def _set_hidden_tab(sid, hidden):
+    cur = _hidden_tabs()
+    cur.add(sid) if hidden else cur.discard(sid)
+    p = jd.STATE / "hidden-tabs.json"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_name("hidden-tabs.json.tmp.%d" % os.getpid())
+    tmp.write_text(json.dumps(sorted(cur)))
+    tmp.rename(p)
+
+
 TMUX_FMT = ("#{@romp}|#{@romp-session-id}|#{@claude-state}|#{@claude-state-since}|"
             "#{@claude-model}|#{@claude-effort}|#{@claude-context}|#{@claude-compact-pct}|#{@identity-bg}")
 
@@ -730,9 +751,10 @@ def _push_all():
     with _clients_lock:
         want_tl = any(c["app"] == "timeline" for c in _clients)
     try:
-        ordered = _ordered_alive(now, tmux)
-        chat_sessions = [m for m in (build_session(s["sid"], now, tmux) for s in ordered) if m]
-        tab_order = [s["sid"] for s in ordered]
+        hidden = _hidden_tabs()
+        chat_list = [s for s in _ordered_alive(now, tmux) if s["sid"] not in hidden]   # × hides a tab
+        chat_sessions = [m for m in (build_session(s["sid"], now, tmux) for s in chat_list) if m]
+        tab_order = [s["sid"] for s in chat_list]
         feed = build_feed(now, tmux)
         timeline = build_timeline(now, tmux) if want_tl else None
     except Exception:
@@ -1114,6 +1136,12 @@ class Handler(BaseHTTPRequestHandler):
                 elif msg and msg.get("type") in ("reorderTabs", "writeOrder") and isinstance(msg.get("order"), list):
                     _write_session_order(msg["order"])   # tab-drag or lane-drag → reorder BOTH surfaces
                     _push_all()
+                elif msg and msg.get("type") == "closeSession" and msg.get("id"):
+                    _set_hidden_tab(msg["id"], True)     # × hides the tab (session keeps running)
+                    _push_all()
+                elif msg and msg.get("type") == "openSession" and msg.get("id"):
+                    _set_hidden_tab(msg["id"], False)    # feed/timeline click reopens a hidden tab
+                    _push_all()
         except (BrokenPipeError, ConnectionResetError, OSError):
             pass
         finally:
@@ -1126,7 +1154,8 @@ class Handler(BaseHTTPRequestHandler):
         now = int(time.time())
         tmux = _tmux_sessions()
         if client["app"] == "chat":
-            ordered = _ordered_alive(now, tmux)
+            hidden = _hidden_tabs()
+            ordered = [s for s in _ordered_alive(now, tmux) if s["sid"] not in hidden]
             for s in ordered:
                 m = build_session(s["sid"], now, tmux)
                 if m:

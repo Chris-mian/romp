@@ -187,6 +187,14 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(km.build_session(SID, NOW)["status"]["state"], "ready",
                          "ended turn -> ready even when tmux says working")
 
+    def test_close_session_hides_tab(self):
+        # the × hides the tab (reversible), does not kill the session
+        self.assertEqual(km._hidden_tabs(), set())
+        km._set_hidden_tab(SID, True)
+        self.assertIn(SID, km._hidden_tabs())
+        km._set_hidden_tab(SID, False)
+        self.assertNotIn(SID, km._hidden_tabs())
+
     def test_split_reminders(self):
         p, r = km._split_reminders("do the thing <system-reminder>be careful</system-reminder> now")
         self.assertNotIn("system-reminder", p); self.assertIn("do the thing", p); self.assertIn("now", p)
