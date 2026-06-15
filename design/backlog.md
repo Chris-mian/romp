@@ -59,6 +59,10 @@ MINIMAL (build first — browser-able):
 - [ ] RUNNABLE by the human: a clear start command + browser URL.
 
 INCREMENTAL (add after the three panes show real data):
+- [ ] **Serve-layer security (do BEFORE serving beyond localhost)**: always-on
+  Origin/Host validation on HTTP + `/ws` (kills ClawJacked, CVE-2026-25253);
+  `ROMP_SERVE_TOKEN` usable without breaking local clients (auto-inject); token
+  REQUIRED beyond `127.0.0.1`; token baked into launch. See `read-side.md`.
 - [ ] Browser-presence gating of the triage tier; run-when-disconnected setting.
 - [ ] Liveness: working / blocked / completed; hard-block floor from live state
   (merge: hard OR soft, hard wins).

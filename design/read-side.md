@@ -261,6 +261,30 @@ The pieces already exist; here is how they compose with the merged kernel.
 - **Comms across machines**: directory groups are per-machine, so cross-machine is
   inherently cross-group and runs through the same approval gate / config allowlist.
 
+## Serve-layer security (auth / CSRF hardening)
+
+Binding `127.0.0.1` is not an auth boundary: any webpage the user opens can reach
+localhost, and WebSockets are not covered by CORS, so without origin checks a
+malicious page can open `ws://127.0.0.1:PORT/ws` and drive the kernel (inject
+prompts, spawn/interrupt sessions). This is the ClawJacked class (CVE-2026-25253).
+The new Python kernel (`bin/romp-kernel`) must close it from the start.
+
+- **Always-on Origin/Host validation (token-independent).** Validate `Origin` and
+  `Host` on every HTTP request AND the `/ws` upgrade; allow only the kernel's own
+  origin plus known local client origins (the browser at the kernel's host, the
+  `vscode-webview://` extension, the timeline), reject everything cross-site. Kills
+  ClawJacked for free; legit local clients send the right Origin/Host.
+- **Token usable without breaking local clients.** `ROMP_SERVE_TOKEN` gates reach
+  beyond the validated local origin. Local clients auto-inject it (`?token=` once →
+  `SameSite=Strict` cookie) so enabling a token never 401s them into a respawn loop
+  (the old Node kernel's blocker). `healthz`/liveness must not break tokened clients.
+- **Token REQUIRED whenever serving beyond `127.0.0.1`** (tailscale serve/funnel,
+  `--host 0.0.0.0`). The Origin check is the always-on floor; the token is the gate
+  for non-local reach. Bake the token into how the kernel launches (env/autostart),
+  never a manual per-launch flag.
+- Applies to the NEW Python kernel; the Node kernel is being retired. Regression
+  test: a cross-site `/ws` upgrade with a foreign `Origin` must be rejected.
+
 ## Naming
 
 - **kernel** — the one always-on core (Layer 1 + Layer 2 + HTTP/WS serving).
