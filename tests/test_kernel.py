@@ -187,6 +187,19 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(km.build_session(SID, NOW)["status"]["state"], "ready",
                          "ended turn -> ready even when tmux says working")
 
+    def test_session_order_roundtrip_and_sort(self):
+        # the shared order persists, and chat tabs + timeline lanes follow it (drag-sync parity)
+        km._write_session_order(["b", "a", "c"])
+        self.assertEqual(km._session_order(), ["b", "a", "c"])
+        fake = [{"sid": "a", "mtime": 3}, {"sid": "b", "mtime": 2}, {"sid": "c", "mtime": 1}]
+        saved = km._alive_sessions
+        km._alive_sessions = lambda now, tmux: list(fake)
+        try:
+            self.assertEqual([s["sid"] for s in km._ordered_alive(NOW, {})], ["b", "a", "c"],
+                             "living sessions follow the saved shared order")
+        finally:
+            km._alive_sessions = saved
+
     def test_chat_chip_sinceepoch_is_millis(self):
         # render's elapsedMs does Date.now()(ms) - sinceEpoch, so sinceEpoch must be epoch MILLIS,
         # not seconds (a seconds value rendered ~494,000h — the "400,000 hours" bug)

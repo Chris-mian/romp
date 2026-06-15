@@ -117,6 +117,37 @@ def _alive_sessions(now, tmux):
     return alive if tmux else _sessions(now)
 
 
+def _session_order():
+    """The shared session order (SID list), persisted by a tab-drag (reorderTabs) or a lane-drag
+    (writeOrder). Chat tabs AND timeline lanes both order by it, so dragging either reorders both
+    (parity with the old UI's session-order.json). [] when unset."""
+    try:
+        a = json.loads((jd.STATE / "session-order.json").read_text())
+        return [x for x in a if isinstance(x, str)] if isinstance(a, list) else []
+    except Exception:
+        return []
+
+
+def _write_session_order(order):
+    if not isinstance(order, list):
+        return
+    p = jd.STATE / "session-order.json"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_name("session-order.json.tmp.%d" % os.getpid())
+    tmp.write_text(json.dumps([x for x in order if isinstance(x, str)]))
+    tmp.rename(p)                                     # atomic publish
+
+
+def _ordered_alive(now, tmux):
+    """Living sessions in the SHARED order (session-order.json first, then the rest newest-first) —
+    used for chat tabs AND timeline lanes so the two stay in lockstep."""
+    alive = _alive_sessions(now, tmux)
+    idx = {sid: i for i, sid in enumerate(_session_order())}
+    n = len(idx)
+    alive.sort(key=lambda s: (idx.get(s["sid"], n), -s["mtime"]))
+    return alive
+
+
 TMUX_FMT = ("#{@romp}|#{@romp-session-id}|#{@claude-state}|#{@claude-state-since}|"
             "#{@claude-model}|#{@claude-effort}|#{@claude-context}|#{@claude-compact-pct}|#{@identity-bg}")
 
@@ -508,7 +539,7 @@ def build_timeline(now, tmux=None):
     if tmux is None:
         tmux = _tmux_sessions()
     sessions, turns = [], {}
-    for s in _alive_sessions(now, tmux):             # hard filter: living sessions only (no dead lanes)
+    for s in _ordered_alive(now, tmux):              # living sessions only, in the shared lane/tab order
         sid, name = s["sid"], s["name"]
         tm = tmux.get(sid)
         live = tm is not None
@@ -617,8 +648,9 @@ def _push_all():
     with _clients_lock:
         want_tl = any(c["app"] == "timeline" for c in _clients)
     try:
-        chat_sessions = [build_session(s["sid"], now, tmux) for s in _alive_sessions(now, tmux)]
-        chat_sessions = [m for m in chat_sessions if m]
+        ordered = _ordered_alive(now, tmux)
+        chat_sessions = [m for m in (build_session(s["sid"], now, tmux) for s in ordered) if m]
+        tab_order = [s["sid"] for s in ordered]
         feed = build_feed(now, tmux)
         timeline = build_timeline(now, tmux) if want_tl else None
     except Exception:
@@ -631,6 +663,7 @@ def _push_all():
             if c["app"] == "chat":
                 for m in chat_sessions:
                     c["send"](json.dumps(m))
+                c["send"](json.dumps({"type": "tabOrder", "order": tab_order}))   # sync tab order ↔ timeline
                 c["send"](json.dumps({"type": "working", "names": feed["working"]}))
             elif c["app"] == "feed":
                 c["send"](json.dumps(feed))
@@ -992,6 +1025,9 @@ class Handler(BaseHTTPRequestHandler):
                 elif msg and msg.get("type") == "undoClear":
                     _undo_clear()
                     _push_all()
+                elif msg and msg.get("type") in ("reorderTabs", "writeOrder") and isinstance(msg.get("order"), list):
+                    _write_session_order(msg["order"])   # tab-drag or lane-drag → reorder BOTH surfaces
+                    _push_all()
         except (BrokenPipeError, ConnectionResetError, OSError):
             pass
         finally:
@@ -1004,10 +1040,12 @@ class Handler(BaseHTTPRequestHandler):
         now = int(time.time())
         tmux = _tmux_sessions()
         if client["app"] == "chat":
-            for s in _alive_sessions(now, tmux):
+            ordered = _ordered_alive(now, tmux)
+            for s in ordered:
                 m = build_session(s["sid"], now, tmux)
                 if m:
                     client["send"](json.dumps(m))
+            client["send"](json.dumps({"type": "tabOrder", "order": [s["sid"] for s in ordered]}))
             client["send"](json.dumps({"type": "working", "names": build_feed(now, tmux)["working"]}))
         elif client["app"] == "timeline":
             client["send"](json.dumps({"type": "data", "data": build_timeline(now, tmux)}))
