@@ -837,6 +837,8 @@ def _producer():
                 jd.run_once()
             if browser:
                 jd.run_plan()
+                if jd.NEG_SWEEP:                       # HYBRID completion: the negative turn-end backstop
+                    jd.run_sweep()                     # (toggleable for A/B — see judge.md; --ab-sweep to measure)
                 jd.run_courier()
         except Exception:
             sys.stderr.write("producer: %s\n" % traceback.format_exc())

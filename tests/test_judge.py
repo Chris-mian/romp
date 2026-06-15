@@ -331,6 +331,16 @@ def _store():
     return {"rompUuid": SID, "seq": 0, "nodes": {}, "placements": {}, "status": {}}
 
 
+def _mknode(s, text, parent=None, t=T0, complete=False):
+    """Add a goal node directly (bypassing the planner) — for the sweep unit tests."""
+    s["seq"] = s.get("seq", 0) + 1
+    nid = "%s:g%d" % (SID, s["seq"])
+    nd = {"id": nid, "text": text, "parentId": parent, "nodeComplete": complete,
+          "blocked": False, "cleared": False, "trail": [], "t": t}
+    s["nodes"][nid] = nd
+    return nd
+
+
 class PlanApply(unittest.TestCase):
     def test_mint_then_sub_under_it(self):
         s = _store()
@@ -505,6 +515,186 @@ class PlanTuning(unittest.TestCase):
         jd.apply_goal_edit(s, "s3", T0 + 20, {"op": "SUB", "n": 1, "text": "did the next thing",
                                               "done": None, "block": False}, jd.open_menu(s))
         self.assertFalse(any(nd["blocked"] for nd in s["nodes"].values()), "newer work un-blocks the goal")
+
+
+# ───────────────────────── the negative turn-end sweep (HYBRID completion) ─────────────────────────
+class SweepParse(unittest.TestCase):
+    def test_outstanding_numbers(self):
+        self.assertEqual(jd._parse_sweep("1, 3", 4), {1, 3})
+        self.assertEqual(jd._parse_sweep("2", 4), {2})
+        self.assertEqual(jd._parse_sweep("Goals 2 and 4 are still outstanding", 4), {2, 4},
+                         "digits are extracted even with surrounding prose")
+
+    def test_none_completes_all(self):
+        self.assertEqual(jd._parse_sweep("none", 3), set(),
+                         "explicit 'none outstanding' -> empty set (complete every candidate)")
+
+    def test_garbage_skips(self):
+        self.assertIsNone(jd._parse_sweep("", 3), "empty output -> skip the turn")
+        self.assertIsNone(jd._parse_sweep("i can't help with that", 3),
+                          "no numbers and no 'none' -> skip (complete nothing, the safe default)")
+
+    def test_out_of_range_dropped(self):
+        self.assertEqual(jd._parse_sweep("1, 9", 3), {1}, "out-of-range index is dropped")
+        self.assertIsNone(jd._parse_sweep("9", 3), "only an out-of-range index -> nothing usable -> skip")
+
+
+class SweepApply(unittest.TestCase):
+    def test_completes_complement_and_tags_provenance(self):
+        s = _store()
+        g1, g2, g3 = _mknode(s, "G1"), _mknode(s, "G2"), _mknode(s, "G3")
+        newly = jd.apply_sweep(s, [g1, g2, g3], {2})              # only #2 still outstanding
+        self.assertEqual(set(newly), {g1["id"], g3["id"]}, "the complement (1, 3) is completed")
+        self.assertTrue(g1["nodeComplete"] and g3["nodeComplete"])
+        self.assertFalse(g2["nodeComplete"], "the outstanding goal stays open")
+        self.assertTrue(g1.get("negComplete"), "sweep-completed nodes are tagged for the A/B sample")
+
+    def test_none_outstanding_completes_all(self):
+        s = _store()
+        g1, g2 = _mknode(s, "G1"), _mknode(s, "G2")
+        self.assertEqual(set(jd.apply_sweep(s, [g1, g2], set())), {g1["id"], g2["id"]})
+
+    def test_already_complete_not_recounted(self):
+        s = _store()
+        g1 = _mknode(s, "G1", complete=True)
+        self.assertEqual(jd.apply_sweep(s, [g1], set()), [], "an already-complete node isn't re-completed")
+
+
+class SweepMenu(unittest.TestCase):
+    def _two_seg_turn(self):
+        s = build_session([
+            uline(T0, "ask A", "u1", ps="typed"),
+            aline(T0 + 20, "did A", "a1", "u1", tools=("Read",), stop="tool_use"),
+            qop(T0 + 40, "enqueue", "ask B"),
+            qop(T0 + 60, "remove"),
+            attline(T0 + 60, "ask B", "att1", "a1"),
+            aline(T0 + 90, "did B", "a2", "att1", stop="end_turn"),
+        ])
+        turn = s["turns"][0]
+        return turn, em.segments(turn)
+
+    def test_scoped_to_open_touched_top_ancestors(self):
+        turn, segs = self._two_seg_turn()
+        self.assertEqual(len(segs), 2, "the absorbed turn has two segments")
+        s = _store()
+        g1 = _mknode(s, "G1")
+        g2 = _mknode(s, "G2"); sub2 = _mknode(s, "step of G2", parent=g2["id"])
+        _mknode(s, "G3 untouched")                                 # a dormant goal no segment touched
+        s["placements"][segs[0]["id"]] = g1["id"]
+        s["placements"][segs[1]["id"]] = sub2["id"]               # placed deep, under a step of G2
+        ids = {nd["id"] for nd in jd._turn_menu(turn, s)}
+        self.assertEqual(ids, {g1["id"], g2["id"]},
+                         "the menu is the OPEN top-ancestors the turn touched; G3 (untouched) is excluded")
+
+    def test_completed_top_is_not_a_candidate(self):
+        turn, segs = self._two_seg_turn()
+        s = _store()
+        g1 = _mknode(s, "G1", complete=True)
+        g2 = _mknode(s, "G2")
+        s["placements"][segs[0]["id"]] = g1["id"]
+        s["placements"][segs[1]["id"]] = g2["id"]
+        self.assertEqual([nd["id"] for nd in jd._turn_menu(turn, s)], [g2["id"]],
+                         "an already-completed top is no longer a sweep candidate")
+
+    def test_two_segments_one_top_deduped(self):
+        turn, segs = self._two_seg_turn()
+        s = _store()
+        g = _mknode(s, "G"); sub = _mknode(s, "step", parent=g["id"])
+        s["placements"][segs[0]["id"]] = g["id"]
+        s["placements"][segs[1]["id"]] = sub["id"]
+        self.assertEqual([nd["id"] for nd in jd._turn_menu(turn, s)], [g["id"]],
+                         "two segments under one top -> the top appears once")
+
+
+class SweepTurn(unittest.TestCase):
+    def setUp(self):
+        self._llm = jd.sweep_llm
+        self.s = build_session([uline(T0, "do X", "u1", ps="typed"),
+                                aline(T0 + 20, "did X", "a1", "u1", stop="end_turn")])
+        self.turn = self.s["turns"][0]
+        self.seg = em.segments(self.turn)[0]
+
+    def tearDown(self):
+        jd.sweep_llm = self._llm
+
+    def test_completes_the_touched_top(self):
+        store = _store(); g1 = _mknode(store, "Do X")
+        store["placements"][self.seg["id"]] = g1["id"]
+        jd.sweep_llm = lambda tt, mt: "none"
+        self.assertEqual(jd._sweep_turn(store, self.turn), [g1["id"]])
+        self.assertTrue(store["nodes"][g1["id"]]["nodeComplete"])
+
+    def test_llm_failure_completes_nothing(self):
+        store = _store(); g1 = _mknode(store, "Do X")
+        store["placements"][self.seg["id"]] = g1["id"]
+        jd.sweep_llm = lambda tt, mt: ""                          # -> _parse_sweep None -> retry, complete nothing
+        self.assertIsNone(jd._sweep_turn(store, self.turn))
+        self.assertFalse(store["nodes"][g1["id"]]["nodeComplete"], "an LLM failure must not complete a goal")
+
+    def test_no_touched_goal_is_a_noop_without_calling_the_llm(self):
+        jd.sweep_llm = lambda tt, mt: (_ for _ in ()).throw(AssertionError("LLM must not run on an empty menu"))
+        self.assertEqual(jd._sweep_turn(_store(), self.turn), [], "a turn that placed nothing -> no-op")
+
+
+class SweepSession(unittest.TestCase):
+    """End-to-end on a sandboxed fleet: the planner (positive-only, never DONE'ing) leaves tops
+    working; the negative sweep completes the ones it's told are no longer outstanding, while the
+    settled gate and per-turn idempotency compose unchanged."""
+
+    def setUp(self):
+        self._saved = (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.plan_llm, jd.sweep_llm)
+        self._td = tempfile.TemporaryDirectory()
+        td = Path(self._td.name)
+        cdir = td / "launchdir"; cdir.mkdir()
+        proj = td / "projects"
+        pdir = proj / jd.re.sub(r"[/.]", "-", os.path.realpath(str(cdir)))
+        pdir.mkdir(parents=True)
+        records = [uline(T0, "task A", "u1", ps="typed"),
+                   aline(T0 + 30, "did A", "a1", "u1", stop="end_turn"),
+                   uline(T0 + 100, "task B", "u2", "a1", ps="typed"),
+                   aline(T0 + 130, "did B", "a2", "u2", stop="end_turn")]
+        (pdir / (SID + ".jsonl")).write_text("\n".join(json.dumps(r) for r in records) + "\n")
+        names = td / "names"; names.mkdir()
+        (names / SID).write_text("testsess\t%s\t#abcdef\n" % str(cdir))
+        jd.NAMES, jd.PROJECTS, jd.GOALDIR = names, proj, td / "goals"
+        # positive-only: always MINT a top, never DONE -> every top is left 'working'
+        jd.plan_llm = lambda text, menu: "MINT :: Goal :: DONE none :: BLOCK no"
+        self.now = T0 + 5000
+
+    def tearDown(self):
+        (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.plan_llm, jd.sweep_llm) = self._saved
+        self._td.cleanup()
+
+    def test_completes_silently_finished_top_and_settled_still_gates(self):
+        jd.run_plan(now=self.now)
+        store = jd.load_goals(SID)
+        tops = sorted((nd for nd in store["nodes"].values() if nd["parentId"] is None), key=lambda nd: nd["t"])
+        self.assertEqual(len(tops), 2)
+        self.assertTrue(all(not nd["nodeComplete"] for nd in tops), "positive-only DONE'd nothing")
+        self.assertTrue(all(store["status"][nd["id"]] == "working" for nd in tops), "both working before the sweep")
+        jd.sweep_llm = lambda tt, mt: "none"                     # nothing outstanding -> complete each touched top
+        n = jd.run_sweep(now=self.now)
+        store = jd.load_goals(SID)
+        g1, g2 = tops[0]["id"], tops[1]["id"]
+        self.assertTrue(store["nodes"][g1]["nodeComplete"] and store["nodes"][g2]["nodeComplete"],
+                        "the sweep marked both touched tops nodeComplete")
+        self.assertEqual(store["status"][g1], "completed", "the earlier top is settled (not the focus) -> completed")
+        self.assertEqual(store["status"][g2], "working",
+                         "the focus top is held working by the settled gate despite the sweep (no flicker)")
+        self.assertEqual(n, 2, "two nodes completed by the sweep")
+
+    def test_dormant_goal_untouched_and_idempotent(self):
+        seed = jd.load_goals(SID)
+        g0 = _mknode(seed, "Dormant goal from another topic", t=T0 - 1000)
+        jd.save_goals(SID, seed)
+        jd.run_plan(now=self.now)
+        jd.sweep_llm = lambda tt, mt: "none"
+        jd.run_sweep(now=self.now)
+        store = jd.load_goals(SID)
+        self.assertFalse(store["nodes"][g0["id"]]["nodeComplete"],
+                         "a goal no turn touched is never completed by the sweep (the false-positive guard)")
+        jd.sweep_llm = lambda tt, mt: (_ for _ in ()).throw(AssertionError("an idempotent pass must not call the LLM"))
+        self.assertEqual(jd.run_sweep(now=self.now), 0, "every turn already swept -> re-running completes nothing")
 
 
 if __name__ == "__main__":
