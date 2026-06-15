@@ -151,7 +151,7 @@ test("a file-poll hover cannot revert a fresher direct push (nonce gate in updat
 // Freeze-on-hover: a tooltip pauses live-follow only when we were pinned (following now).
 const fakeEv = () => ({ clientX: 100, clientY: 100, currentTarget: makeNode("rect") });
 
-test("freeze-on-hover: showTip pauses live-follow when pinned; hideTip resumes", () => {
+test("freeze-on-hover: showTip pauses live-follow when pinned; hideTip resumes (deferred)", async () => {
   const panel = new TimelinePanel(makeNode("div"));
   panel.update(synthData());
   assert.equal(panel._pinned, true, "starts pinned (following now)");
@@ -160,8 +160,22 @@ test("freeze-on-hover: showTip pauses live-follow when pinned; hideTip resumes",
   assert.equal(panel._pinned, false, "live-follow paused while hovering");
   assert.equal(panel._holdReal, panel.data.now, "held at the now-edge captured at hover-start");
   panel.hideTip();
+  assert.equal(panel._frozeFromPin, true, "resume is DEFERRED — still frozen right after hideTip");
+  await new Promise((r) => setTimeout(r, 60));   // let the grace-window timer fire
   assert.equal(panel._frozeFromPin, false);
-  assert.equal(panel._pinned, true, "live-follow resumed on un-hover");
+  assert.equal(panel._pinned, true, "live-follow resumed after the grace window");
+});
+
+test("freeze-on-hover: a quick glyph→glyph handoff keeps the freeze (no mid-handoff jump)", async () => {
+  const panel = new TimelinePanel(makeNode("div"));
+  panel.update(synthData());
+  panel.showTip("<div>bar</div>", fakeEv());
+  assert.equal(panel._frozeFromPin, true);
+  panel.hideTip();                              // leaving the bar — resume is SCHEDULED
+  panel.showTip("<div>dot</div>", fakeEv());    // …but the dot grabs it before the grace elapses
+  await new Promise((r) => setTimeout(r, 60));
+  assert.equal(panel._frozeFromPin, true, "still frozen — the handoff cancelled the resume");
+  assert.equal(panel._pinned, false, "timeline did not resume/jump mid-handoff");
 });
 
 test("freeze-on-hover does NOT fire (or snap to now) when the user has panned into history", () => {
@@ -215,7 +229,7 @@ test("freeze-on-hover: _liveNow holds at the hover instant so open bars + pendin
 // Round 2: holding the EDGE wasn't enough — update() re-laid-out the SVG every poll (new events +
 // recompressed gaps shift x), which read as an intermittent jump. While a tooltip is up, update() must
 // buffer the data but skip the redraw; hideTip paints the catch-up. (the user 2026-06-13)
-test("update() keeps a still snapshot while a tooltip is up; hideTip paints the catch-up", () => {
+test("update() keeps a still snapshot while a tooltip is up; hideTip paints the catch-up (deferred)", async () => {
   const panel = new TimelinePanel(makeNode("div"));
   panel.update(synthData());                       // initial real layout
   let draws = 0; panel.draw = () => { draws++; };  // count further redraws
@@ -226,6 +240,7 @@ test("update() keeps a still snapshot while a tooltip is up; hideTip paints the 
   assert.equal(panel.data, d2, "the fresh data is still buffered for the catch-up");
   assert.equal(panel._dirtyWhileTip, true);
   panel.hideTip();
+  await new Promise((r) => setTimeout(r, 60));      // the catch-up repaint is deferred with the unfreeze
   assert.ok(draws >= 1, "hideTip paints the buffered data (one catch-up)");
   assert.equal(panel._dirtyWhileTip, false);
 });

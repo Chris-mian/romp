@@ -382,6 +382,7 @@ class TimelinePanel {
     this._hoverNonce = null;  // highest hover nonce applied — gates the direct push vs the file poll so neither clobbers the other (the same monotonic nonce rides both; see setHover)
     this._frozeFromPin = false;  // freeze-on-hover: true while a tooltip has paused live-follow that WAS pinned (so hideTip knows to resume)
     this._dirtyWhileTip = false; // a data poll arrived while a tooltip was up (draw was skipped) → hideTip repaints the catch-up
+    this._unfreezeTimer = null;  // deferred hideTip resume — cancelled by a quick glyph→glyph hover handoff
     this.wrap.tabIndex = 0; this.wrap.style.outline = 'none';
     this._onKey = (e) => this.onKey(e);
     this._focusWrap = () => this.wrap.focus();
@@ -409,6 +410,7 @@ class TimelinePanel {
     if (this._drawRAF) cancelAnimationFrame(this._drawRAF);
     this._stopLiveTick();
     if (this._autoOpenT) clearTimeout(this._autoOpenT);
+    if (this._unfreezeTimer) clearTimeout(this._unfreezeTimer);
     if (this._onDragMove) window.removeEventListener('mousemove', this._onDragMove, true);
     if (this._onDragUp) window.removeEventListener('mouseup', this._onDragUp, true);
     document.removeEventListener('click', this._onDocClick);
@@ -1168,6 +1170,10 @@ class TimelinePanel {
   // We hold at the current now (unpin to a fixed _holdReal); hideTip resumes. The poll redraws against
   // the hold, so the now-edge stops advancing — no continuous slide to fight.
   showTip(html, ev) {
+    // bridge a glyph→glyph hover handoff (e.g. work-bar → its prompt dot): cancel any pending unfreeze
+    // so the now-edge doesn't resume in the gap and slip the next glyph out from under the cursor (the
+    // user 2026-06-15). An already-frozen state carries straight into the new tooltip.
+    if (this._unfreezeTimer) { clearTimeout(this._unfreezeTimer); this._unfreezeTimer = null; }
     this.tip.innerHTML = html; this.tip.classList.add('show'); this._tipOwner = (ev && ev.currentTarget) || null; this.moveTip(ev);
     // Freeze the live edge while hovering, so the user can actually read a bar (the user 2026-06-13).
     // Freeze whenever we're following the live edge — pinned OR 🔒locked (lock no longer blocks it).
@@ -1181,10 +1187,17 @@ class TimelinePanel {
     if (lx + r.width > innerWidth) lx = ev.clientX - r.width - pad; if (ly + r.height > innerHeight) ly = ev.clientY - r.height - pad;
     this.tip.style.left = lx + 'px'; this.tip.style.top = ly + 'px'; }
   hideTip() {
-    this.tip.classList.remove('show'); this._tipOwner = null;
-    const dirty = this._dirtyWhileTip; this._dirtyWhileTip = false;
-    if (this._frozeFromPin) { this._frozeFromPin = false; this._jumpToNow(); }   // resume live-follow + snap to now (redraws the catch-up)
-    else if (dirty && this.data) this.draw();   // a held/panned view buffered poll(s) while the tooltip was up → paint the catch-up now
+    this.tip.classList.remove('show'); this._tipOwner = null;   // tooltip hides at once…
+    // …but DEFER the live-follow resume a beat: a quick move onto another glyph (bar→dot) fires its
+    // showTip, which cancels this timer, so the now-edge never resumes/jumps mid-handoff. If nothing
+    // grabs it within the grace window, the timer resumes live-follow + snaps to now (the catch-up).
+    if (this._unfreezeTimer) return;
+    this._unfreezeTimer = setTimeout(() => {
+      this._unfreezeTimer = null;
+      const dirty = this._dirtyWhileTip; this._dirtyWhileTip = false;
+      if (this._frozeFromPin) { this._frozeFromPin = false; this._jumpToNow(); }
+      else if (dirty && this.data) this.draw();
+    }, 40);
   }
 
   // Deep-link a click on a timeline item into the romp Chat View VS Code extension,
