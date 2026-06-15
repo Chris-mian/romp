@@ -31,6 +31,33 @@ MEDIA = CHAT_VIEW / "media"
 OBSIDIAN = ROOT / "obsidian"
 NAMES = jd.STATE / "names"
 PORT = int(os.environ.get("ROMP_KERNEL_PORT", "7878"))
+BIND = os.environ.get("ROMP_SERVE_HOST", "127.0.0.1")   # set 0.0.0.0 to reach the kernel over the tailnet / a phone
+
+
+def _load_token():
+    """The serve token, baked into launch so the human never passes --token: ROMP_SERVE_TOKEN if
+    set, else a stable random token persisted under the state dir. Required only for NON-local
+    reach; local clients pass on the Origin check + auto-injected cookie."""
+    t = (os.environ.get("ROMP_SERVE_TOKEN") or "").strip()
+    if t:
+        return t
+    f = jd.STATE / "serve-token"
+    try:
+        v = f.read_text().strip()
+        if v:
+            return v
+    except OSError:
+        pass
+    v = base64.urlsafe_b64encode(os.urandom(18)).decode().rstrip("=")
+    try:
+        jd.STATE.mkdir(parents=True, exist_ok=True)
+        f.write_text(v)
+        os.chmod(f, 0o600)
+    except OSError:
+        pass
+    return v
+
+TOKEN = _load_token()
 
 _clients = []                                # connected WS clients: {app, wid, send, alive}
 _clients_lock = threading.Lock()
@@ -403,13 +430,63 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
+        if getattr(self, "_set_cookie", None):       # auto-inject the token so a local client never 401-loops
+            self.send_header("Set-Cookie", "romp_token=%s; Path=/; SameSite=Strict; HttpOnly" % self._set_cookie)
         self.end_headers()
         self.wfile.write(body)
+
+    # ── serve-layer security (design/read-side.md): Origin/Host gate always; token for non-local reach ──
+    def _is_local_host(self):
+        host = (self.headers.get("Host") or "").rsplit(":", 1)[0].strip("[]")
+        return host in ("127.0.0.1", "localhost", "::1", "")
+
+    def _origin_ok(self):
+        """Reject cross-site browser origins — the ClawJacked/WS hole (WS isn't covered by CORS, so
+        this is the real gate). Allow same-origin, the local kernel origin, vscode-webview, and an
+        ABSENT Origin (non-browser clients like the obsidian fetch / curl; the Host/token gate covers
+        those). A cross-site page cannot forge Origin, so matching it is safe."""
+        origin = self.headers.get("Origin")
+        if not origin:
+            return True
+        o = origin.lower().rstrip("/")
+        if o.startswith("vscode-webview://"):
+            return True
+        host = (self.headers.get("Host") or "").lower()
+        if host and o in ("http://" + host, "https://" + host):
+            return True                              # same-origin (covers local AND tailnet self-access)
+        return o in ("http://127.0.0.1:%d" % PORT, "http://localhost:%d" % PORT)
+
+    def _cookie_token(self):
+        for part in (self.headers.get("Cookie") or "").split(";"):
+            k, _, v = part.strip().partition("=")
+            if k == "romp_token":
+                return v
+        return ""
+
+    def _authorize(self, q):
+        """(ok, cookie_to_set, reason). Origin gate always; token gate only for non-local Host —
+        a valid ?token sets the cookie so the client (and its same-origin /ws) never re-prompts."""
+        if not self._origin_ok():
+            return False, None, "cross-site origin"
+        if self._is_local_host():
+            return True, None, ""                    # local passes on the Origin check alone
+        if (q.get("token") or [""])[0] == TOKEN and TOKEN:
+            return True, TOKEN, ""                    # first non-local hit with ?token → set the cookie
+        if self._cookie_token() == TOKEN and TOKEN:
+            return True, None, ""
+        return False, None, "token required for non-local access"
 
     def do_GET(self):
         u = urlparse(self.path)
         p = u.path
+        q = parse_qs(u.query)
+        self._set_cookie = None
         try:
+            if p == "/healthz":
+                return self._send(200, "ok", "text/plain")   # liveness probe — exempt from auth
+            ok, self._set_cookie, why = self._authorize(q)
+            if not ok:
+                return self._send(403, "forbidden: " + why, "text/plain")
             if p == "/ws":
                 return self._ws()
             if p in ("/", ""):
@@ -513,10 +590,15 @@ def main():
     _ensure_bundles()
     threading.Thread(target=_producer, daemon=True).start()
     threading.Thread(target=_pusher, daemon=True).start()
-    srv = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    srv = ThreadingHTTPServer((BIND, PORT), Handler)
     url = "http://127.0.0.1:%d" % PORT
     sys.stderr.write("romp-kernel: serving the ported UI at %s  (Ctrl-C to stop)\n" % url)
     sys.stderr.write("romp-kernel: records under %s ; bundles from %s\n" % (jd.STATE, DIST))
+    if BIND != "127.0.0.1":
+        # reachable off-box (tailnet/phone): the Origin gate blocks cross-site browsers token-free,
+        # and a token is REQUIRED for any non-local Host. Local 127.0.0.1 access still needs nothing.
+        sys.stderr.write("romp-kernel: bound %s — REMOTE access needs the token. Open from the phone:\n"
+                         "  http://<this-host>:%d/?token=%s\n" % (BIND, PORT, TOKEN))
     if not os.environ.get("ROMP_KERNEL_NO_OPEN"):
         try:
             import webbrowser

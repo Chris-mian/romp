@@ -17,6 +17,7 @@ BIN = os.path.join(os.path.dirname(HERE), "bin")
 em = SourceFileLoader("romp_event_model", os.path.join(BIN, "romp-event-model")).load_module()
 jd = SourceFileLoader("romp_judge", os.path.join(BIN, "romp-judge")).load_module()
 os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
+os.environ["ROMP_SERVE_TOKEN"] = "testtok"            # known token for the serve-security test
 km = SourceFileLoader("romp_kernel", os.path.join(BIN, "romp-kernel")).load_module()
 
 NOW = 1781100000
@@ -131,6 +132,61 @@ class WsFraming(unittest.TestCase):
     def test_accept_key(self):
         # RFC6455 example key → accept
         self.assertEqual(km._ws_accept("dGhlIHNhbXBsZSBub25jZQ=="), "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=")
+
+
+class ServeSecurity(unittest.TestCase):
+    """The serve-layer gate (design/read-side.md): Origin/Host validation on every request AND the
+    /ws upgrade (kills the cross-site WS hole token-free), + ROMP_SERVE_TOKEN for non-local reach.
+    Runs the REAL handler over a loopback server (GET /feed is a static page → no model calls)."""
+
+    @classmethod
+    def setUpClass(cls):
+        import threading
+        from http.server import ThreadingHTTPServer
+        cls.srv = ThreadingHTTPServer(("127.0.0.1", 0), km.Handler)
+        cls.port = cls.srv.server_address[1]
+        threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.srv.shutdown()
+
+    def _code(self, path, headers):
+        import urllib.request, urllib.error
+        req = urllib.request.Request("http://127.0.0.1:%d%s" % (self.port, path), headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=5) as r:
+                return r.status
+        except urllib.error.HTTPError as e:
+            return e.code
+
+    def test_local_request_allowed(self):
+        self.assertEqual(self._code("/feed", {}), 200)
+
+    def test_cross_site_origin_rejected(self):
+        self.assertEqual(self._code("/feed", {"Origin": "http://evil.example"}), 403)
+
+    def test_cross_site_ws_upgrade_rejected(self):
+        # the ClawJacked hole: a foreign-Origin /ws upgrade must be rejected before upgrading
+        self.assertEqual(self._code("/ws?app=chat", {
+            "Origin": "http://evil.example", "Upgrade": "websocket", "Connection": "Upgrade",
+            "Sec-WebSocket-Key": "x", "Sec-WebSocket-Version": "13"}), 403)
+
+    def test_same_origin_ws_passes_gate(self):
+        # same-origin upgrade passes the gate (101); urllib can't complete the upgrade, so a 101
+        # surfaces as a non-403 — assert it's NOT rejected
+        self.assertNotEqual(self._code("/ws?app=chat", {
+            "Origin": "http://127.0.0.1:%d" % self.port, "Host": "127.0.0.1:%d" % self.port,
+            "Upgrade": "websocket", "Connection": "Upgrade",
+            "Sec-WebSocket-Key": "x", "Sec-WebSocket-Version": "13"}), 403)
+
+    def test_healthz_exempt(self):
+        self.assertEqual(self._code("/healthz", {"Origin": "http://evil.example"}), 200)
+
+    def test_nonlocal_host_needs_token(self):
+        h = {"Host": "100.64.1.2:%d" % self.port}
+        self.assertEqual(self._code("/feed", h), 403)
+        self.assertEqual(self._code("/feed?token=testtok", h), 200)
 
 
 if __name__ == "__main__":
