@@ -73,7 +73,10 @@ class ViewBuilder(unittest.TestCase):
         jd.CAPDIR, jd.ARCHDIR, jd.GOALDIR = td / "captions", td / "archive", td / "goals"
         jd.STATE = td                                  # sandbox the timeline helpers (usage/states/mail)
         km.NAMES = names
-        km._tmux_sessions = lambda: {}                 # deterministic: no live tmux in tests (builders fall back)
+        # deterministic tmux: the fixture session is ALIVE + idle (so the alive-only filter shows it);
+        # individual tests override this map to exercise other states.
+        km._tmux_sessions = lambda: {SID: {"state": "idle", "since": NOW - 100, "model": "",
+                                           "effort": "", "context": None, "compactPct": None, "color": None}}
         session = em.parse_session(str(self.tpath), rompuuid=SID, candidate_files=[str(self.tpath)], now=NOW)
         turn = session["turns"][0]
         jd.CAPDIR.mkdir(parents=True)
@@ -83,12 +86,14 @@ class ViewBuilder(unittest.TestCase):
         (jd.ARCHDIR / (SID + ".json")).write_text(json.dumps(
             {"headline": "Fixing the feed", "abstract": "Fixed a flicker.", "turns": 1}))
         jd.GOALDIR.mkdir(parents=True)
+        g1, g2 = "%s:g1" % SID, "%s:g2" % SID
         (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
-            "rompUuid": SID, "seq": 1, "lastNode": "%s:g1" % SID,
-            "nodes": {"%s:g1" % SID: {"id": "%s:g1" % SID, "text": "Fix the feed flicker", "parentId": None,
-                                      "nodeComplete": True, "blocked": False, "cleared": False,
-                                      "trail": [], "t": turn["t"]}},
-            "placements": {}, "status": {"%s:g1" % SID: "completed"}}))
+            "rompUuid": SID, "seq": 2, "lastNode": g1,
+            "nodes": {g1: {"id": g1, "text": "Fix the feed flicker", "parentId": None,
+                           "nodeComplete": True, "blocked": False, "cleared": False, "trail": [], "t": turn["t"]},
+                      g2: {"id": g2, "text": "Awaiting a decision", "parentId": None,
+                           "nodeComplete": False, "blocked": True, "cleared": False, "trail": [], "t": turn["t"]}},
+            "placements": {}, "status": {g1: "completed", g2: "blocked"}}))
 
     def tearDown(self):
         (jd.NAMES, jd.PROJECTS, jd.CAPDIR, jd.ARCHDIR, jd.GOALDIR, jd.STATE,
@@ -160,11 +165,34 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(len(d2["asks"]), len(d0["asks"]), "one undo restores the whole batch")
         self.assertFalse(d2["canUndoClear"])
 
-    def test_chat_tabs_live_only(self):
-        # a closed session (not in tmux) gets no chat tab; a running one does (old UI dropped dead tabs)
-        self.assertEqual(km._chat_sessions_list(NOW, {"other-sid": {}}), [], "closed session -> no tab")
-        live = km._chat_sessions_list(NOW, {SID: {"state": "working"}})
-        self.assertEqual([s["sid"] for s in live], [SID])
+    def test_alive_filter_drops_dead_sessions(self):
+        # the hard filter: only sessions alive in tmux appear anywhere (feed/timeline/chat tabs)
+        self.assertEqual(km._alive_sessions(NOW, {"other-sid": {}}), [], "dead session dropped")
+        alive = km._alive_sessions(NOW, {SID: {"state": "working"}})
+        self.assertEqual([s["sid"] for s in alive], [SID])
+
+    def test_clear_all_clears_blocked_too(self):
+        d0 = km.build_feed(NOW)
+        self.assertTrue([a for a in d0["asks"] if a["column"] == "needs_input"], "fixture has a blocked ask")
+        km._clear_all([a["itemId"] for a in d0["asks"]])
+        self.assertEqual([a for a in km.build_feed(NOW)["asks"] if a["column"] == "needs_input"], [],
+                         "clear-all clears the blocked column too")
+
+    def test_chat_chip_working_is_event_model_not_tmux(self):
+        # @claude-state says "working" but the fixture's turn ENDED -> chip is ready, not working:
+        # working is the stable event-model signal (open turn), not the laggy tmux state (the user's
+        # "working shows blue / flickers" regression)
+        km._tmux_sessions = lambda: {SID: {"state": "working", "since": NOW - 5, "model": "Opus 4.8",
+                                           "effort": "max", "context": 30, "compactPct": None, "color": None}}
+        self.assertEqual(km.build_session(SID, NOW)["status"]["state"], "ready",
+                         "ended turn -> ready even when tmux says working")
+
+    def test_chat_chip_sinceepoch_is_millis(self):
+        # render's elapsedMs does Date.now()(ms) - sinceEpoch, so sinceEpoch must be epoch MILLIS,
+        # not seconds (a seconds value rendered ~494,000h — the "400,000 hours" bug)
+        st = km.build_session(SID, NOW)["status"]
+        self.assertIsNotNone(st["sinceEpoch"])
+        self.assertGreater(st["sinceEpoch"], 10 ** 12, "sinceEpoch is epoch millis")
 
     def test_timeline_lane_and_segment_bar(self):
         # the fixture wrote only a turn-grain caption; bind a segment-grain one so the bar tooltip resolves

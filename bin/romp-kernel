@@ -106,13 +106,15 @@ def _sessions(now):
     return out
 
 
-def _chat_sessions_list(now, tmux):
-    """Sessions to show as chat TABS: only those currently RUNNING (in tmux). discover() keeps a dead
-    session's transcript in its 48h window, but a closed session must NOT keep a tab (the old UI
-    dropped the tab when its tmux session ended) — the + picker and the timeline still reach closed
-    ones. Empty tmux (rare headless) → fall back to discover so the tabs aren't all gone."""
-    live = [s for s in _sessions(now) if s["sid"] in tmux]
-    return live if tmux else _sessions(now)
+def _alive_sessions(now, tmux):
+    """The sessions shown on EVERY surface (feed / timeline / chat tabs): only those alive in tmux
+    right now. The hard liveness filter (the user 2026-06-15) — ignore everything that isn't a living
+    session: a dead session's transcript stays in discover()'s window but is dropped from all
+    surfaces. A living session is shown FULLY — the event model re-parses its whole transcript with
+    the new core each build, so old-system sessions are reprocessed. Empty tmux (rare headless run) →
+    fall back to discover so the surfaces aren't blank on a transient tmux miss."""
+    alive = [s for s in _sessions(now) if s["sid"] in tmux]
+    return alive if tmux else _sessions(now)
 
 
 TMUX_FMT = ("#{@romp}|#{@romp-session-id}|#{@claude-state}|#{@claude-state-since}|"
@@ -251,19 +253,28 @@ def build_session(sid, now, tmux=None):
     last_turn = session["turns"][-1] if session["turns"] else None
     open_now = bool(last_turn and not last_turn["ended"]
                     and not any(x["type"] == "idle" for x in last_turn["atoms"]))
+    # work-timer base, in MILLISECONDS (render's elapsedMs does Date.now()ms - sinceEpoch; a seconds
+    # value showed ~494,000h — the user's "400,000 hours" bug): the current open turn's start while
+    # working, else the last activity; None when unknown (render then shows no timer).
+    work_start = last_turn["t"] if (open_now and last_turn) else last_t
+    since_ms = int(work_start * 1000) if work_start else None
     tm = tmux.get(sid)
-    if tm:                                             # live: tmux state is authoritative for the chip
+    if tm:
+        # WORKING comes from the event model (open turn, no idle atom) — a stable, transcript-derived
+        # signal — NOT @claude-state, which lags/flips between hook events (the user saw the chip go
+        # blue mid-work + flicker). tmux supplies only what the transcript can't see: permission
+        # (awaiting) and compacting, plus the model/effort/ctx metadata.
         st = tm["state"]
-        chip = ("working" if st == "working" else "awaiting" if st == "permission"
-                else "compacting" if st == "compacting" else "ready")
+        chip = ("awaiting" if st == "permission" else "compacting" if st == "compacting"
+                else "working" if open_now else "ready")
         faded = chip == "ready" and bool(tm["since"]) and now - tm["since"] > 3600
-        status = {"state": chip, "sinceEpoch": tm["since"] or last_t, "faded": faded,
+        status = {"state": chip, "sinceEpoch": since_ms, "faded": faded,
                   "model": tm["model"], "effort": tm["effort"],
                   "ctx": str(tm["context"]) if tm["context"] is not None else ""}
     elif tmux:                                         # tmux present but this session isn't running → closed
-        status = {"state": "closed", "sinceEpoch": last_t, "faded": True}
+        status = {"state": "closed", "sinceEpoch": since_ms, "faded": True}
     else:                                              # no tmux (rare headless) → event-model fallback
-        status = {"state": "working" if open_now else "idle", "sinceEpoch": last_t, "faded": not open_now}
+        status = {"state": "working" if open_now else "idle", "sinceEpoch": since_ms, "faded": not open_now}
     return {"type": "session", "id": sid, "name": sess["name"], "color": _name_color(sid),
             "events": events, "status": status, "ledger": ledger, "firstSeen": session["turns"][0]["t"]
             if session["turns"] else now}
@@ -336,7 +347,7 @@ def build_feed(now, tmux=None):
         tmux = _tmux_sessions()
     cleared = _cleared_ids()
     asks, stream, working = [], [], []
-    for s in _sessions(now):
+    for s in _alive_sessions(now, tmux):             # hard filter: living sessions only
         fsid, name = s["sid"], s["name"]
         color = _name_color(fsid)
         tm = tmux.get(fsid); live = tm is not None
@@ -497,7 +508,7 @@ def build_timeline(now, tmux=None):
     if tmux is None:
         tmux = _tmux_sessions()
     sessions, turns = [], {}
-    for s in _sessions(now):
+    for s in _alive_sessions(now, tmux):             # hard filter: living sessions only (no dead lanes)
         sid, name = s["sid"], s["name"]
         tm = tmux.get(sid)
         live = tm is not None
@@ -606,7 +617,7 @@ def _push_all():
     with _clients_lock:
         want_tl = any(c["app"] == "timeline" for c in _clients)
     try:
-        chat_sessions = [build_session(s["sid"], now, tmux) for s in _chat_sessions_list(now, tmux)]
+        chat_sessions = [build_session(s["sid"], now, tmux) for s in _alive_sessions(now, tmux)]
         chat_sessions = [m for m in chat_sessions if m]
         feed = build_feed(now, tmux)
         timeline = build_timeline(now, tmux) if want_tl else None
@@ -635,7 +646,12 @@ def _push_all():
 def _producer():
     while True:
         try:
-            if time.time() - _client_seen[0] < 90:
+            with _clients_lock:
+                present = bool(_clients)
+            # Presence-gate on a LIVE WS client, not a 90s-since-last-HTTP-hit timer: a browser that
+            # stays connected over WS never re-hits HTTP, so the old timer expired after 90s and froze
+            # the judge — no new captions/goals while you watched (the user's "no new tasks" bug).
+            if present:
                 jd.run_once(); jd.run_plan()
         except Exception:
             sys.stderr.write("producer: %s\n" % traceback.format_exc())
@@ -987,7 +1003,7 @@ class Handler(BaseHTTPRequestHandler):
         now = int(time.time())
         tmux = _tmux_sessions()
         if client["app"] == "chat":
-            for s in _chat_sessions_list(now, tmux):
+            for s in _alive_sessions(now, tmux):
                 m = build_session(s["sid"], now, tmux)
                 if m:
                     client["send"](json.dumps(m))
