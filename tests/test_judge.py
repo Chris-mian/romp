@@ -426,5 +426,40 @@ class PlanPass(unittest.TestCase):
                 (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.plan_llm) = saved
 
 
+class PlanTuning(unittest.TestCase):
+    """The completion tuning (agreed at the planner checkpoint): flatten (cap depth so steps are
+    siblings, not an ever-deepening chain) and un-block newest-wins."""
+
+    def _depth_of(self, store, nid):
+        d = 0
+        while store["nodes"].get(nid, {}).get("parentId") is not None:
+            nid = store["nodes"][nid]["parentId"]; d += 1
+        return d
+
+    def test_steps_do_not_chain_past_max_depth(self):
+        s = _store()
+        # mint G, then keep SUB-ing under the most-recently-created node (the old chaining bug)
+        jd.apply_goal_edit(s, "s0", T0, {"op": "MINT", "n": None, "text": "G", "done": None, "block": False}, [])
+        for i in range(1, 6):
+            menu = jd.open_menu(s)
+            last = max(s["nodes"].values(), key=lambda nd: nd["t"])           # newest node
+            n = next(j for j, nd in enumerate(menu, 1) if nd["id"] == last["id"])
+            jd.apply_goal_edit(s, "s%d" % i, T0 + i, {"op": "SUB", "n": n, "text": "step %d" % i,
+                                                      "done": None, "block": False}, menu)
+        depths = [self._depth_of(s, nid) for nid in s["nodes"]]
+        self.assertLessEqual(max(depths), jd.MAX_DEPTH, "the tree stays shallow; steps don't chain")
+
+    def test_unblock_newest_wins(self):
+        s = _store()
+        jd.apply_goal_edit(s, "s1", T0, {"op": "MINT", "n": None, "text": "G", "done": None, "block": False}, [])
+        jd.apply_goal_edit(s, "s2", T0 + 10, {"op": "SUB", "n": 1, "text": "needs a decision",
+                                              "done": None, "block": True}, jd.open_menu(s))
+        self.assertTrue(any(nd["blocked"] for nd in s["nodes"].values()), "blocked after the BLOCK segment")
+        # later non-block work under the goal clears the stale block (the user answered + work moved on)
+        jd.apply_goal_edit(s, "s3", T0 + 20, {"op": "SUB", "n": 1, "text": "did the next thing",
+                                              "done": None, "block": False}, jd.open_menu(s))
+        self.assertFalse(any(nd["blocked"] for nd in s["nodes"].values()), "newer work un-blocks the goal")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

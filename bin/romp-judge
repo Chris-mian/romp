@@ -332,13 +332,16 @@ PLAN_SYS = (
     "<MINT | SUB n | AMEND n> :: <text> :: DONE <n|none> :: BLOCK <yes|no>\n"
     "- MINT: this segment is a GENUINELY NEW top-level request from the user → mint a new top-level "
     "goal; <text> = the outcome, ≤10 words. Be selective: only a real new ask mints a top-level goal.\n"
-    "- SUB n: this segment is a step, refinement, or progress on open goal #n → add a sub-goal/step "
-    "under it; <text> = what this step is, ≤10 words. This is the DEFAULT — most segments file under "
-    "an existing goal, they do not mint.\n"
+    "- SUB n: this segment is a step or progress on open goal #n → add it as a step under #n; "
+    "<text> = the step, ≤10 words. KEEP THE TREE SHALLOW: file the step under the GOAL (or a genuine "
+    "sub-goal) it belongs to, as a SIBLING of the other steps — do NOT chain it under the most recent "
+    "step. This is the DEFAULT — most segments are steps under an existing goal, not new mints.\n"
     "- AMEND n: this segment redirects or restates open goal #n ITSELF → <text> = the updated goal "
     "text. Only when the goal's own definition changed.\n"
-    "- DONE n: open node #n's work is now fully DISCHARGED by this segment (nothing left for it) → "
-    "its number; 'none' if this segment finished nothing. You may DONE the node you just placed under.\n"
+    "- DONE n: mark node #n done whenever this segment FINISHES its work — and DON'T BE SHY: if the "
+    "segment discharges the whole ask, DONE the TOP-LEVEL goal #n itself. Finished work should be "
+    "marked done, not left open. 'none' only if the segment genuinely finished nothing. You may DONE "
+    "the node you just placed under.\n"
     "- BLOCK yes: the work now NEEDS THE USER (a question, decision, or approval) to proceed; else no.\n"
     "Every segment gets a placement (MINT, SUB, or AMEND) — never 'none' for the placement. When "
     "unsure between MINT and SUB, prefer SUB. No quotes, no trailing punctuation, exactly one line.")
@@ -407,6 +410,23 @@ def _menu_text(store, menu):
     return "\n".join(out) if out else "(no open goals yet)"
 
 
+MAX_DEPTH = 2                                         # goal(0) → sub-goal(1) → step(2); keeps trees shallow
+
+
+def _depth(nodes, nid):
+    d = 0
+    while nodes.get(nid, {}).get("parentId") is not None:
+        nid = nodes[nid]["parentId"]
+        d += 1
+    return d
+
+
+def _top_ancestor(nodes, nid):
+    while nodes.get(nid, {}).get("parentId") is not None:
+        nid = nodes[nid]["parentId"]
+    return nid
+
+
 def apply_goal_edit(store, seg_id, seg_t, edit, menu):
     """Mutate the goal store for one segment's placement (idempotent per seg_id via placements)."""
     nodes, placements = store["nodes"], store["placements"]
@@ -421,7 +441,12 @@ def apply_goal_edit(store, seg_id, seg_t, edit, menu):
     if op == "MINT":
         nid = new_node(edit["text"] or "(untitled goal)", None)
     elif op == "SUB":
-        nid = new_node(edit["text"] or "(step)", menu[edit["n"] - 1]["id"])
+        parent = menu[edit["n"] - 1]["id"]
+        # FLATTEN: a step never chains under another step — re-parent up to the nearest goal/sub-goal
+        # so a new node sits at depth ≤ MAX_DEPTH (steps become siblings, not an ever-deepening chain).
+        while _depth(nodes, parent) >= MAX_DEPTH:
+            parent = nodes[parent]["parentId"]
+        nid = new_node(edit["text"] or "(step)", parent)
     else:  # AMEND
         nid = menu[edit["n"] - 1]["id"]
         if edit["text"]:
@@ -433,6 +458,13 @@ def apply_goal_edit(store, seg_id, seg_t, edit, menu):
     store["lastNode"] = nid                           # the active focus = top-goal of the latest placement
     if edit["block"]:
         nodes[nid]["blocked"] = True
+    elif store.get("lastNode"):
+        # UN-BLOCK (newest-wins): later non-block work under a goal clears that goal's stale blocks —
+        # e.g. a blocked goal un-blocks the beat the user's answer + follow-on work files under it.
+        top = _top_ancestor(nodes, nid)
+        for x, nd in nodes.items():
+            if _top_ancestor(nodes, x) == top:
+                nd["blocked"] = False
     if edit["done"]:                                  # complete a node (clears its soft block)
         dnid = menu[edit["done"] - 1]["id"]
         nodes[dnid]["nodeComplete"] = True
