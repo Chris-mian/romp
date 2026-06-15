@@ -401,8 +401,9 @@ function makeAskCard(it: AskItem): HTMLElement {
   waitBadge.title = "paused on an EXTERNAL event (CI, build, a peer's reply) — not on you; stays in Working, exempt from auto-filing; lifts when new work lands";
   const suspBadge = el("a", "fask-suspect"); suspBadge.style.display = "none";   // ⚠ possible missed handoff → modal evidence + Report
   const stallBadge = el("a", "fask-suspect"); stallBadge.style.display = "none"; // ⚠ stalled delegation (exception bucket, formerly a dashed ring)
+  const fup = el("button", "fdismiss ffollow"); fup.textContent = "Follow up"; fup.title = "send a follow-up to this session"; fup.style.display = "none";
   const clr = el("button", "fdismiss"); clr.textContent = "Clear"; clr.title = "clear this ask (inbox-zero; the one human-asserted fact)";
-  actions.append(stallBadge, suspBadge, waitBadge, blkBadge, reBadge, clr);
+  actions.append(stallBadge, suspBadge, waitBadge, blkBadge, reBadge, fup, clr);
   row2.append(idwrap);
   // ROW 3 — timestamp bottom-left · status badges + Clear bottom-right
   const row3 = el("div", "fask-row3"); row3.append(time, actions);
@@ -472,6 +473,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   a._title = title; a._name = name; a._time = time; a._reopened = reBadge;
   a._blocked = blkBadge; a._wait = waitBadge; a._susp = suspBadge; a._stall = stallBadge;
   a._handoffs = handoffs;
+  a._fup = fup;
   return card;
 }
 
@@ -513,6 +515,9 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
     a._blocked.title = it.blocked.what + " — click to open the session";
     a._blocked.onclick = (ev: Event) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "openSession", id: it.sid }); };
   }
+  // Follow up on a BLOCKED card → open the modal (its composer sends a follow-up to the session).
+  a._fup.style.display = askColumn(it) === "needsInput" ? "" : "none";
+  a._fup.onclick = (ev: Event) => { ev.stopPropagation(); fullscreenAskId = it.itemId; renderModal(); };
   // the user's handoff spec (2026-06-10): every session this ask was handed to,
   // ANYWHERE in its tree (not just the last hop), shown below the main session
   // — bold, identity color, always with the working dot — but ONLY while that
@@ -714,14 +719,6 @@ function updateGroupCard(card: HTMLElement, g: AskGroup) {
   }
 }
 
-function answerQuestion(name: string, text: string, question?: string) {
-  if (!text.trim()) return;
-  // `question` = the card's displayed question text; the host prefixes the
-  // delivered prompt with it so the session sees WHAT is being answered (same
-  // idea as the follow-up box's `Follow-up on "<title>": …`).
-  vscodeApi?.postMessage({ type: "answerQuestion", name, text, question });   // delivered as the session's next typed prompt
-}
-
 // Transient hover-highlight signal: hovering a modal line emits its event id(s);
 // the host writes timeline-hover.json {id, ids, nonce} (debounced) and db_timeline
 // draws a light transient outline on the matching timeline events. null = clear.
@@ -756,11 +753,6 @@ function nodeStatusClass(n: AskTreeNode): string {
   if (n.status === "question") return "question";
   return "open";
 }
-function questionForNode(node: AskTreeNode, briefs: Map<string, AskQuestion>): AskQuestion {
-  for (const r of node.rows) { const q = briefs.get(r.reply_id); if (q) return q; }
-  return { reply_id: node.id, sid: "", name: node.who, t: node.last, brief: null };   // synthetic: answer the node owner
-}
-
 // True if any DESCENDANT of `node` is itself a question. Node status is ROLLED UP
 // (a ? anywhere below makes every ancestor ?), so this distinguishes the ACTUAL
 // pending question (the LOWEST ? in a branch) from its rolled-up ancestors — only
@@ -842,18 +834,6 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
   meta.textContent = node.status === "question" ? "needs you" : relAge(hostNow - node.last);
   if (node.status !== "question" && node.trgb) meta.style.color = "rgb(" + node.trgb.join(",") + ")";   // Hawaii recency tint
   line.appendChild(meta);
-  // open LEAF = a drop point: the path ended here without a completion or a
-  // question. the user can adjudicate it done — the host appends a correction row
-  // that completes the card AND becomes linker training data (corrections loop).
-  if (!repeat && node.status === "open" && !(node.children || []).length) {
-    const fix = el("a", "ftree-fix"); fix.textContent = "mark done";
-    fix.title = "record this as completed — also teaches the filing pipeline";
-    fix.onclick = (ev) => {
-      ev.stopPropagation();
-      vscodeApi?.postMessage({ type: "askMarkDone", nodeId: node.id, decisionRef: node.rows.length ? node.rows[node.rows.length - 1].reply_id : null });   // rows are oldest-first; the newest is the verdict to correct
-    };
-    line.appendChild(fix);
-  }
   // Whole-line click NAVIGATES to this node's timeline anchor — the same target
   // the line-hover highlights (collectHoverIds: handoff → its own event id, ask →
   // the ask's turn). The triangle (above) is the only thing that toggles collapse.
@@ -877,11 +857,8 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
   box.appendChild(line);
   if (repeat) return;                                   // dim repeat: line only, no descent
   seen.add(node.id);
-  // ? node → decision sub-card, but ONLY on the LOWEST ? in the branch (the actual
-  // pending question). Rolled-up ? ancestors keep their ? marker but render no box,
-  // so there's a single reply box per real question, not one at every level (the user).
-  if (node.status === "question" && !hasQuestionDescendant(node, byId))
-    box.appendChild(buildDecisionCard(questionForNode(node, briefs), node.text, depth + 1));
+  // (the in-feed decision sub-card was removed — a blocked node shows its "needs you" marker and
+  // links to the session; answering happens in the session, not in the feed. the user 2026-06-15.)
   // node history (rows) — progressive, only when this node was clicked open.
   // the user's ruling: every report that arrived IS a completed sub-thing — it
   // gets a filled green dot. (State still lives on the node line: the dot on a
@@ -920,70 +897,6 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
     entries.sort((a, b) => a.t - b.t);
     for (const e of entries) e.render();
   }
-}
-
-// Needs-you sub-card under a ? node, shaped by what the user owes (qtype):
-// decision/idea → context + question + option buttons + free-text answer box;
-// action → context + the thing to do + a "Done — I did it" button (typing in
-// the session does NOT cross an action off; this click is what closes it, via
-// the host's mark-done correction). `depth` indents it one level under its node.
-function buildDecisionCard(q: AskQuestion, fallbackQuestion: string, depth: number): HTMLElement {
-  const wrap = el("div", "fq-wrap"); wrap.style.paddingLeft = (depth * TREE_INDENT_EM + 1) + "em";
-  const card = el("div", "fq");
-  const b = q.brief;
-  if (b && b.context) { const ctx = el("div", "fq-context"); ctx.textContent = b.context; card.appendChild(ctx); }
-  const qText = (b && b.question) || fallbackQuestion || "";
-  const qt = el("div", "fq-question"); qt.textContent = qText || "Needs your input"; card.appendChild(qt);
-  // false-awaiting escape hatch (BOTH qtypes — actions need it as much as
-  // questions): completes the item AND files the labeled example ("wrongly
-  // routed to Awaiting") the classifier trains on — the teaching counterpart
-  // of Clear, same correction path as "mark done"
-  const notNeeded = el("a", "fq-notneeded"); notNeeded.textContent = "didn't need me";
-  notNeeded.title = "record this as wrongly routed to Blocked — also teaches the filing pipeline";
-  notNeeded.onclick = (ev) => {
-    ev.stopPropagation();
-    vscodeApi?.postMessage({ type: "askMarkDone", nodeId: q.nodeId, decisionRef: q.reply_id,
-      note: "the user marked this as not needing input (false awaiting)" });
-  };
-  if (q.qtype === "action") {
-    // a to-do, not a question → amber to-do styling + a ☐ glyph on the task line;
-    // "✓ Done — I did it" is the ONLY control (typing can't cross an action off —
-    // the click closes it via the host's mark-done correction path).
-    card.classList.add("fq-action");
-    const box = el("span", "fq-todo-box"); box.textContent = "☐"; qt.prepend(box);
-    const form = el("div", "fq-form");
-    const didIt = el("button", "fq-send fq-done"); didIt.textContent = "✓ Done — I did it";
-    didIt.onclick = (ev) => {
-      ev.stopPropagation();
-      vscodeApi?.postMessage({ type: "askMarkDone", nodeId: q.nodeId, decisionRef: q.reply_id });
-    };
-    form.appendChild(didIt);
-    card.appendChild(form);
-    card.appendChild(notNeeded);
-    wrap.appendChild(card);
-    return wrap;
-  }
-  if (b && b.options && b.options.length) {
-    const opts = el("div", "fq-opts");
-    for (const opt of b.options) {
-      const btn = el("button", "fq-opt"); btn.textContent = opt;
-      btn.onclick = (ev) => { ev.stopPropagation(); answerQuestion(q.name, opt, qText); };
-      opts.appendChild(btn);
-    }
-    card.appendChild(opts);
-  }
-  const form = el("div", "fq-form");
-  const inp = document.createElement("input");
-  inp.type = "text"; inp.className = "fq-input"; inp.placeholder = "type an answer…";
-  inp.onclick = (ev) => ev.stopPropagation();
-  inp.onkeydown = (ev) => { if (ev.key === "Enter") { ev.preventDefault(); answerQuestion(q.name, inp.value, qText); inp.value = ""; } };
-  const send = el("button", "fq-send"); send.textContent = "Send";
-  send.onclick = (ev) => { ev.stopPropagation(); answerQuestion(q.name, inp.value, qText); inp.value = ""; };
-  form.append(inp, send);
-  card.appendChild(form);
-  card.appendChild(notNeeded);
-  wrap.appendChild(card);
-  return wrap;
 }
 
 // auto-grow the follow-up composer like the main message box (capped a few lines)
@@ -1298,19 +1211,6 @@ function renderStandaloneTreeInto(host: HTMLElement, fitem: FeedItem) {
   const par = el("div", "fx-body fstandalone-par");
   par.textContent = det && det.paragraph ? det.paragraph : d && d.state === "loading" ? "…" : "";
   if (par.textContent) host.appendChild(par);
-  // false-awaiting escape hatch, standalone flavor: a standalone item sits in
-  // Awaiting purely on its relevance tag (no ? node, so no decision card to host
-  // the link) — clears the item AND files the mis-tag label for the classifier
-  if (fitem.relevance !== "DONE") {
-    const notNeeded = el("a", "fq-notneeded"); notNeeded.textContent = "didn't need me";
-    notNeeded.title = "record this as wrongly routed to Blocked — also teaches the filing pipeline";
-    notNeeded.onclick = (ev) => {
-      ev.stopPropagation();
-      vscodeApi?.postMessage({ type: "itemNotNeeded", itemId: fitem.itemId });
-      fullscreenAskId = null; renderModal();
-    };
-    host.appendChild(notNeeded);
-  }
 }
 
 // Group modal body: each member's own flat tree stacked, member text as its root

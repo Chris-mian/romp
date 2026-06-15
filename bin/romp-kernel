@@ -1181,6 +1181,9 @@ class Handler(BaseHTTPRequestHandler):
                 elif msg and msg.get("type") == "sendCommand" and msg.get("name") and msg.get("cmd"):
                     cmd = str(msg["cmd"])
                     _tmux_send(str(msg["name"]), cmd, model_cmd=cmd.strip().startswith("/model"))
+                elif msg and msg.get("type") == "askFollowUp" and msg.get("itemId") and msg.get("text"):
+                    sid = str(msg["itemId"]).rsplit(":", 1)[0]   # goal node id → session → inject the follow-up
+                    _tmux_send(_name_of(sid) or sid, str(msg["text"]))
         except (BrokenPipeError, ConnectionResetError, OSError):
             pass
         finally:
