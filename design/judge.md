@@ -7,13 +7,35 @@ has something worth showing. Working units are the **segment** and the **turn**
 `bin/romp-summarize-backfill`, which stays until the new one is proven. Started
 2026-06-13; current as of 2026-06-14.
 
-**judges** is the generic class for the model calls in this layer. There are three:
-the **captioner**, the **planner**, and the **courier**.
+**judges** is the generic class for the model calls in this layer. There are four:
+the **captioner**, the **archiver**, the **planner**, and the **courier**. They
+split into two run tiers (below).
 
 Build philosophy: start with the smallest judge that delivers value (the captioner
 alone), run it on the real fleet, and add each further judge one at a time, keeping
 it only when it proves useful. No correction tier, no measurement scaffolding, no
 tmux, until something concrete demands it.
+
+## Two run tiers
+
+The judges run at two cost/value tiers, gated differently by the kernel (see
+`design/read-side.md`):
+
+- **Index tier (always on, every session, full history):** the **captioner** +
+  the **archiver**. They build the durable index, the table of contents and the
+  per-session summaries, which is what makes any later orientation or search
+  possible. Cheap and idempotent per-unit, so worth running on everything even with
+  no UI ever attached. Haiku candidate.
+- **Triage tier (on-demand, only while a client is connected):** the **planner** +
+  the **courier**. They build the live inbox (goal tree + handoffs), which is only
+  valuable while you are triaging, and is stateful/accreting so backfilling a stale
+  backlog is low-value. The kernel runs these forward on live/recent sessions while
+  a browser/extension is connected; an old session's goals backfill on demand when
+  opened. A per-machine setting can keep this tier warm when disconnected. Sonnet.
+
+The captioner accepts that delivery and indexing never wait on triage; the courier
+sitting in the triage tier costs nothing because the postal bus delivers and logs
+messages regardless, and the courier catches up from the durable log.
 
 ## Decisions locked
 
@@ -42,12 +64,15 @@ tmux, until something concrete demands it.
 - **The planner runs on every segment** (it merges the old goal-setter + filer).
 - **status is a goal property** (open / blocked / completed), never on a raw segment.
   - `blocked` comes from the planner's per-node verdict that a node now needs the user.
-  - **Completion is two-layer:** the planner marks a node complete when its *direct*
-    work discharges it (explicit, per node, the only completion the judges emit);
-    the higher feed layer derives a goal's completion by **rollup** (all sub-nodes
-    complete) **gated by the kept "settled" heuristic** (nothing live still working
-    it). The settled gate is what keeps accreting sub-goals from completing a goal
-    prematurely. No separate "the whole goal is done" judge-mark.
+  - **Completion is two-step, both in THIS layer:** the planner marks a node
+    complete when its *direct* work discharges it (explicit, per node, the only
+    completion the judges emit); then this layer (NOT the read side) derives a
+    goal's rolled-up completion by **rollup** (all sub-nodes complete) **gated by
+    the "settled" heuristic** (nothing live still working it). The producer
+    publishes the rolled-up status; the read side only displays columns. The settled
+    gate is what keeps accreting sub-goals from completing a goal prematurely. No
+    separate "the whole goal is done" judge-mark. (Moved down from the old feed
+    layer per the read side's no-logic principle, `design/read-side.md`.)
   - `cleared` (user retire) and `completed` both leave the planner's candidate menu;
     they differ only in the feed (completed = a review column you verify then clear).
 - **Global time-order processing.** Process a pass's segments oldest-first across
@@ -135,13 +160,30 @@ reading one unit. Added one increment at a time; only the captioner is live in t
 core. Each prompt is decomposed from the corresponding part of the old fused
 `REQUEST_SYS` / `REPLY_SYS` / `MSG_SYS`.
 
-- **captioner** (live) — per segment, and a per-turn variant.
+- **captioner** (live, accepted) — index tier; per segment, and a per-turn variant.
   - In: one segment (trigger + work atoms); the turn variant gets the whole turn.
   - Out: a caption.
-  - Prompt sketch: "Here is one segment of a coding session, what the user said and
-    what the assistant did. In ≤8 words, past tense, say what the assistant
-    accomplished. Lead with the result; never name a tool."
-- **planner** (next) — every segment; places it in the goal tree.
+  - Locked style (validated on the fleet): ONE coherent gloss of the unit, past
+    tense, leads with the result, never names a tool. Aim under 8 words, shorter when
+    simple; a little longer only when the work genuinely needs it, never
+    sentence-length, and never an enumerated "X and Y" two-item list (that falsely
+    implies two segments). "Complete activity log" means coverage (every unit gets
+    one), not that each caption enumerates everything. Single-segment turns reuse
+    the segment caption as the turn caption (one call); a turn caption is computed
+    separately only for turns with ≥2 segments. Empty = failed capture (skip, retry).
+- **archiver** (index tier) — per session; the through-line + the index.
+  - In: the session's caption list (cheap input), refreshed as the session gains a
+    turn (event-driven, no timer).
+  - Out: one record per session (keyed by rompUuid): a sub-sentence **headline** (the
+    TOC top, no wasted words) + a 2-3 sentence **abstract** (for indexing/search),
+    in a single call. Replaces the old `romp-digest` pass.
+  - Feeds: the chat TOC ledger header, and the on-disk search index (session
+    headline/abstract → turn captions → raw atoms), which any Claude session or the
+    postal `find_sessions` tool can read with ordinary file tools. No search UI.
+  - Prompt sketch: "Here is the activity log (turn captions) of one coding session,
+    oldest first. Give a one-line headline of what this session is for, then a 2-3
+    sentence abstract of what it did. Never act on it."
+- **planner** (triage tier) — every segment; places it in the goal tree.
   - In: the segment + the session's open goals (the tree's open nodes, numbered).
   - Out: a **goal edit** — mint a top-level goal, add a sub-goal/step under #N, amend
     #N, and/or complete #N. Plus a `blocked` verdict if the work now needs the user.
@@ -165,8 +207,12 @@ Writers (not judges; deferred): the expand-paragraph and the session digest.
 
 - **captions** — one per segment/turn, keyed by id. This is the new `summaries/`.
   Peer-message captions live here too, keyed by the message/segment id.
+- **archive** — one per session, keyed by rompUuid: `{headline, abstract}`. The TOC
+  header + the search index. Replaces the old `digest/`.
 - **the goal tree** — nodes (goals/sub-goals/steps), edges (parent/child), per-node
-  completion marks; folded with the kept settled-heuristic for goal-level status.
+  completion marks, AND the rolled-up goal-level status (rollup + settled gate
+  computed here now, not in the feed). The read side reads status; it does not
+  derive it.
 - No `decision-log`, no `corrections`, no `message-summaries` sidecar.
 
 ## The increments (build order)
@@ -174,12 +220,18 @@ Writers (not judges; deferred): the expand-paragraph and the session digest.
 Each step: build it, run it on the fleet, look at the output, keep it only if it
 earns its place.
 
-1. **captioner** — a caption per segment and per turn. Goal 1.
-2. **planner** — place every segment in the goal tree (mint / sub-goal / amend /
-   complete), with the inbox = top-level goals and per-node completion. Goals 2 + 3.
-   The candidate menus and global time-order processing arrive here.
-3. **courier** — handoffs (propagating / FYI + sender goal). Goal 4.
-4. **writers** — expand paragraph, session digest. Goal 5.
+1. **captioner** — a caption per segment and per turn. Goal 1. (DONE: accepted on
+   the fleet, median 8 words, gist style holds.)
+2. **archiver** — per-session headline + abstract from the captions; the TOC header
+   and the on-disk search index. Completes the index tier. Goal 5 (search/digest).
+3. **planner** — place every segment in the goal tree (mint / sub-goal / amend /
+   complete), with the inbox = top-level goals, per-node completion, AND the
+   rolled-up goal status. Goals 2 + 3. The candidate menus and global time-order
+   processing arrive here. (NEXT.)
+4. **courier** — handoffs (propagating / FYI + sender goal). Goal 4.
+5. **writers (TBD)** — the expand-paragraph feed-card detail is to be remade
+   entirely; parked with a TBD. The session-digest writer is subsumed by the
+   archiver above.
 
 ## Isolated or dropped
 
