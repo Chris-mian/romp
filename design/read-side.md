@@ -33,9 +33,13 @@ completed); the feed just paints columns. (Reflected back into `design/judge.md`
 - **Clean break, no backwards compatibility.** The old record stores (`summaries/`,
   `requests/`, `decision-log`, `corrections/`, `digest/`, ...) are **disposable**.
   The new system does not read or migrate them. We need not delete them, but the
-  producer ignores them and the kernel discovers only new-model sessions, so old
-  data cannot pollute the new model or confuse future sessions that never knew the
-  old shape. It is fine for pre-rebuild sessions to never appear (no resume picker
+  producer ignores them and the kernel discovers only new-model sessions: those
+  carrying the new rompUuid birth stamp the launcher writes, NOT a time window
+  (a fragile proxy and a banned time-heuristic; this is the same rompUuid registry
+  `event-model.md` defers, which also powers session→files stitching). A 48h window
+  is allowed only as a perf bound on how far back to parse, never as the new-vs-old
+  test. So old data cannot pollute the new model or confuse future sessions that
+  never knew the old shape. It is fine for pre-rebuild sessions to never appear (no resume picker
   entry, no scrollback over old history). Actively reject any back-compat path that
   makes the system more confusing to reason about.
 - **The VS Code extension is a thin client, unchanged in kind.** It already speaks
