@@ -64,17 +64,34 @@ messages regardless, and the courier catches up from the durable log.
 - **The planner runs on every segment** (it merges the old goal-setter + filer).
 - **status is a goal property** (open / blocked / completed), never on a raw segment.
   - `blocked` comes from the planner's per-node verdict that a node now needs the user.
-  - **Completion (LOCKED on the live feed, 2026-06-15):** a top-goal is `completed`
-    when its TOP node is `nodeComplete` AND **settled** AND not blocked. The planner
-    marks a node complete when its direct work discharges it (explicit, per node);
-    marking the TOP node is its "this segment discharged the whole ask" verdict. We
-    do NOT require the whole subtree complete — that never fires (a trailing SUB'd
-    step is rarely DONE'd), and the top-done verdict is the reliable signal. This
-    self-sorts by goal type: a command goal gets a discharging segment → top-done →
-    completes; an accreting umbrella never gets one → stays working (correct). The
-    producer computes this; the read side only displays columns. (Fallback, NOT built
-    speculatively: if a goal ever has all leaves DONE'd but the top unmarked, add an
-    all-subtree path then.)
+  - **Completion (HYBRID: positive during the turn + negative at turn-end; 2026-06-15).**
+    The display rule is unchanged — a top-goal is `completed` when its TOP node is
+    `nodeComplete` AND **settled** AND not blocked. What changed is HOW `nodeComplete`
+    is set: **two sources, same model, different prompts.** Old positive-only marking
+    left almost everything in `working` because the agent rarely narrates "done".
+    - **Positive, per-segment (during the turn) — keep as is.** The planner marks a
+      node complete the moment a segment discharges it. Eager, high-precision; catches
+      a sub-node or the whole ask finishing mid-turn and reflects it immediately.
+    - **Negative, at turn-end (the new backstop).** Every turn-end fires a separate
+      sweep prompt to the same model: *"which of these open goals are still explicitly
+      OUTSTANDING?"* — and the **complement is completed**. High-recall: catches goals
+      the agent finished but never said "done". FALSE-POSITIVE GUARD: the agent's
+      silence is evidence of doneness only for goals it actually WORKED, so scope the
+      sweep to the goals the just-ended turn bore on (the active-focus goal + the
+      subtree it touched) and **default any un-addressed goal to outstanding** (keep
+      open) — never close a dormant goal from another topic just because this turn
+      didn't mention it.
+    - **Structural vs semantic split.** "A turn has ended" is the engine's (the
+      `end_turn`/end-known gate); the model NEVER detects turn boundaries — it only
+      does the outstanding-check on the goals it's handed.
+    - **Composes unchanged.** settled (focus-hold) still gates the DISPLAYED completion
+      so eager negative-completes don't flicker; `blocked` still wins; the producer
+      computes it, the read side only paints columns. A false negative-complete
+      self-corrects — new work on the goal re-opens it.
+    - Build the turn-end sweep as a **separate, toggleable pass** so positive-only vs
+      positive+negative can be A/B'd on the fleet (kept count reaching `completed` +
+      false-completion rate), then shipped as default. (The old whole-subtree-complete
+      path is dropped — it never fired.)
   - `cleared` (user retire) and `completed` both leave the planner's candidate menu;
     they differ only in the feed (completed = a review column you verify then clear).
 - **Global time-order processing.** Process a pass's segments oldest-first across
