@@ -30,6 +30,14 @@ completed); the feed just paints columns. (Reflected back into `design/judge.md`
   (renamed from `chat-view/`). A browser hits the kernel's port and gets it.
 - **`romp --on` is removed.** It was only ever "start the UI server"; the kernel is
   always on, so it is vestigial. No backwards-compatibility shim. The UI is a URL.
+- **Clean break, no backwards compatibility.** The old record stores (`summaries/`,
+  `requests/`, `decision-log`, `corrections/`, `digest/`, ...) are **disposable**.
+  The new system does not read or migrate them. We need not delete them, but the
+  producer ignores them and the kernel discovers only new-model sessions, so old
+  data cannot pollute the new model or confuse future sessions that never knew the
+  old shape. It is fine for pre-rebuild sessions to never appear (no resume picker
+  entry, no scrollback over old history). Actively reject any back-compat path that
+  makes the system more confusing to reason about.
 - **The VS Code extension is a thin client, unchanged in kind.** It already speaks
   the kernel's WebSocket protocol (`chat-view/src/extension.ts`: "a THIN CLIENT of
   the romp web kernel", `ws://HOST:kernelPort()/ws?app=...`). Browser and extension
