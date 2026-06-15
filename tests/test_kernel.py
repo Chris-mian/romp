@@ -187,6 +187,12 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(km.build_session(SID, NOW)["status"]["state"], "ready",
                          "ended turn -> ready even when tmux says working")
 
+    def test_split_reminders(self):
+        p, r = km._split_reminders("do the thing <system-reminder>be careful</system-reminder> now")
+        self.assertNotIn("system-reminder", p); self.assertIn("do the thing", p); self.assertIn("now", p)
+        self.assertEqual(r, ["be careful"])
+        self.assertEqual(km._split_reminders("plain prompt"), ("plain prompt", []))
+
     def test_colors_by_name(self):
         # postal cards paint in the SENDER's identity color, looked up by session name
         self.assertEqual(km._colors_by_name().get("testsess"), {"bg": "#abcdef", "fg": "#ffffff"})

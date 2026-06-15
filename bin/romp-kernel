@@ -229,6 +229,27 @@ def _edit_diff(inp):
     return "\n".join(lines)
 
 
+def _split_reminders(text):
+    """Split a user message into (prompt, [reminders]): harness-injected <system-reminder>…
+    </system-reminder> blocks become folded reminders (render.ts shows them as a 'ⓘ N system
+    reminders' fold); the rest is the real prompt. Precise — keys on the exact wrapper, not a guess."""
+    OPEN, CLOSE = "<system-reminder>", "</system-reminder>"
+    if OPEN not in text:
+        return text, []
+    reminders, out, i = [], [], 0
+    while True:
+        j = text.find(OPEN, i)
+        if j < 0:
+            out.append(text[i:]); break
+        out.append(text[i:j])
+        k = text.find(CLOSE, j)
+        if k < 0:
+            reminders.append(text[j + len(OPEN):].strip()); break
+        reminders.append(text[j + len(OPEN):k].strip())
+        i = k + len(CLOSE)
+    return " ".join("".join(out).split()), [r for r in reminders if r]
+
+
 def build_session(sid, now, tmux=None):
     """A {type:"session"} message the render.js bundle consumes: the event tree reshaped to
     ChatEvent[], plus the TOC ledger (archiver headline + turn captions) and a status chip."""
@@ -269,8 +290,10 @@ def build_session(sid, now, tmux=None):
                     text = " ".join(b.get("text", "") for b in blocks if b.get("type") == "text").strip() \
                            if blocks else (msg.get("content") if isinstance(msg.get("content"), str) else "")
                     if text:
-                        events.append({"kind": "user", "md": text, "uuid": a.get("uuid"), "ts": ts,
-                                       "human": author == "human"})
+                        prompt, reminders = _split_reminders(text)
+                        if prompt or reminders:
+                            events.append({"kind": "user", "md": prompt, "uuid": a.get("uuid"), "ts": ts,
+                                           "human": author == "human", "reminders": reminders})
             elif a["type"] == "assistant":
                 for b in blocks:
                     if not isinstance(b, dict):
@@ -739,12 +762,16 @@ def _producer():
     while True:
         try:
             with _clients_lock:
-                present = bool(_clients)
-            # Presence-gate on a LIVE WS client, not a 90s-since-last-HTTP-hit timer: a browser that
-            # stays connected over WS never re-hits HTTP, so the old timer expired after 90s and froze
-            # the judge — no new captions/goals while you watched (the user's "no new tasks" bug).
-            if present:
-                jd.run_once(); jd.run_plan()
+                browser = bool(_clients)
+            # INDEX tier (captioner + archiver) is ALWAYS-ON for any active session — it keeps the
+            # TOC/search index current even with no browser (the kernel is always up via the login
+            # service). TRIAGE tier (planner; courier later) stays browser-gated — the live goal inbox
+            # only matters while someone's looking. (The freeze bug was the old 90s-since-HTTP timer a
+            # long-lived WS never refreshed; gate on the real signals — active tmux / connected client.)
+            if _tmux_sessions():
+                jd.run_once()
+            if browser:
+                jd.run_plan()
         except Exception:
             sys.stderr.write("producer: %s\n" % traceback.format_exc())
         time.sleep(20)
