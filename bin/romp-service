@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+# romp-service — install/remove the login agent that keeps romp-manager (and thus the
+# kernel) running at login, so you never run `romp on`: log in, open the browser, and
+# you can even start sessions FROM it (the kernel is up before any session exists).
+# Cross-platform: a launchd user agent on macOS, a systemd --user service on Linux.
+#   romp-service install     write + load the agent (auto-start at login)
+#   romp-service uninstall    unload + remove it
+#   romp-service status       installed? running?
+# Safe + idle-free: the kernel is hardened (Origin gate + token) and the producer is
+# presence-gated (zero model calls when no browser is connected). Runs as a USER-level
+# agent (no root). PATH + ROMP_DIR are baked into the unit so the service finds
+# node / python3 / claude / the romp bins (reinstall after a PATH change to refresh).
+set -euo pipefail
+
+# Resolve the repo root through any symlink (matches the other bin/ consumers).
+src="${BASH_SOURCE[0]}"
+while [[ -L "$src" ]]; do
+    tgt="$(readlink "$src")"
+    case "$tgt" in /*) src="$tgt" ;; *) src="$(cd "$(dirname "$src")" && pwd)/$tgt" ;; esac
+done
+ROMP_DIR="$(cd "$(dirname "$src")/.." && pwd)"
+MANAGER="${ROMP_MANAGER_BIN:-$ROMP_DIR/bin/romp-manager}"
+LABEL="com.romp.manager"
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/romp"
+LOG="$STATE/manager.log"
+
+# Seams: OS, where the unit is written, and whether to actually (un)load it (tests set
+# ROMP_SERVICE_NO_LOAD=1 and point the dirs at a tmp path to assert unit content).
+os="${ROMP_OS_OVERRIDE:-$(uname -s)}"
+LAUNCHD_DIR="${ROMP_LAUNCHD_DIR:-$HOME/Library/LaunchAgents}"
+SYSTEMD_DIR="${ROMP_SYSTEMD_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user}"
+NO_LOAD="${ROMP_SERVICE_NO_LOAD:-}"
+PLIST="$LAUNCHD_DIR/$LABEL.plist"
+UNIT="$SYSTEMD_DIR/romp-manager.service"
+
+write_plist() {
+    mkdir -p "$LAUNCHD_DIR" "$STATE"
+    cat > "$PLIST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$LABEL</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$MANAGER</string>
+    <string>up</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>$PATH</string>
+    <key>ROMP_DIR</key><string>$ROMP_DIR</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>$LOG</string>
+  <key>StandardErrorPath</key><string>$LOG</string>
+</dict>
+</plist>
+EOF
+}
+
+write_unit() {
+    mkdir -p "$SYSTEMD_DIR" "$STATE"
+    cat > "$UNIT" <<EOF
+[Unit]
+Description=romp kernel supervisor (romp-manager)
+After=default.target
+
+[Service]
+ExecStart=$MANAGER up
+Restart=always
+RestartSec=2
+Environment=PATH=$PATH
+Environment=ROMP_DIR=$ROMP_DIR
+
+[Install]
+WantedBy=default.target
+EOF
+}
+
+case "${1:-status}" in
+  install)
+    case "$os" in
+      Darwin)
+        write_plist
+        if [[ -z "$NO_LOAD" ]]; then
+            launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true   # drop any prior copy
+            launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>/dev/null || launchctl load -w "$PLIST"
+        fi
+        echo "  Installed launchd agent: $PLIST"
+        echo "  romp-manager now auto-starts at login — just open the browser." ;;
+      Linux)
+        write_unit
+        if [[ -z "$NO_LOAD" ]]; then
+            systemctl --user daemon-reload
+            systemctl --user enable --now romp-manager.service
+            loginctl enable-linger "$(id -un)" 2>/dev/null || true   # survive logout (best-effort)
+        fi
+        echo "  Installed systemd --user service: $UNIT"
+        echo "  romp-manager now auto-starts at login — just open the browser." ;;
+      *) echo "romp-service: unsupported OS '$os'" >&2; exit 1 ;;
+    esac ;;
+  uninstall)
+    case "$os" in
+      Darwin)
+        if [[ -z "$NO_LOAD" ]]; then
+            launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || launchctl unload "$PLIST" 2>/dev/null || true
+        fi
+        rm -f "$PLIST"
+        echo "  Removed launchd agent." ;;
+      Linux)
+        if [[ -z "$NO_LOAD" ]]; then
+            systemctl --user disable --now romp-manager.service 2>/dev/null || true
+        fi
+        rm -f "$UNIT"
+        if [[ -z "$NO_LOAD" ]]; then systemctl --user daemon-reload 2>/dev/null || true; fi
+        echo "  Removed systemd --user service." ;;
+      *) echo "romp-service: unsupported OS '$os'" >&2; exit 1 ;;
+    esac ;;
+  status)
+    case "$os" in
+      Darwin)
+        if [[ -f "$PLIST" ]]; then echo "installed: $PLIST"; else echo "not installed"; fi
+        if [[ -z "$NO_LOAD" ]] && launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; then echo "running"; fi ;;
+      Linux)
+        if [[ -f "$UNIT" ]]; then echo "installed: $UNIT"; else echo "not installed"; fi
+        if [[ -z "$NO_LOAD" ]] && [[ "$(systemctl --user is-active romp-manager.service 2>/dev/null || true)" == "active" ]]; then echo "running"; fi ;;
+      *) echo "romp-service: unsupported OS '$os'" >&2; exit 1 ;;
+    esac ;;
+  *) echo "usage: romp-service [install|uninstall|status]" >&2; exit 2 ;;
+esac
