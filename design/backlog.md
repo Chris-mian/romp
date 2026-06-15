@@ -124,7 +124,11 @@ Read-side parity hardening (2026-06-15, the user's live review):
   + timeline-bottom selector.
 - [ ] Comms scope: directory groups, group-wide, alive-gated edges + config allowlist
   + approval prompt.
-- [ ] Remove `romp --on`; per-machine port config.
+- [x] `romp --on` superseded: `romp on` → `romp-manager up`; the kernel is supervised
+  by romp-manager, auto-started at login by `bin/romp-service` (launchd/systemd) which
+  `install.sh` installs. romp-serve repointed to the Python kernel on the manager's
+  port 7433. Port is env-configurable (`ROMP_SERVE_PORT`/`ROMP_KERNEL_PORT`); a
+  per-machine port config FILE is an optional nicety, not built.
 - [ ] VS Code extension: keep working as a thin WS client (protocol stable).
 - [ ] Remote kernels + postal federation (read-federation deferred).
 - [ ] Hard data isolation via a separate `ROMP_STATE` root (manual).
