@@ -214,11 +214,24 @@ function control(method, pathname, kernel) {
   req.end();
 }
 
+// `romp-manager ensure` — idempotent, non-blocking auto-start: if a manager is already
+// up, do nothing; otherwise spawn `up` DETACHED and return immediately. The SessionStart
+// hook calls this so romp usage auto-starts the supervisor (and the kernel) — no `romp on`.
+// Race-safe: the detached `up` re-probes and exits cleanly if another session won.
+function ensureUp() {
+  probeControl((alive) => {
+    if (alive) return process.exit(0);
+    spawn(process.execPath, [__filename, 'up'], { detached: true, stdio: 'ignore' }).unref();
+    process.exit(0);
+  });
+}
+
 // ── dispatch ────────────────────────────────────────────────────────────────
 const cmd = process.argv[2];
 if (cmd === 'restart') control('POST', '/restart', process.argv[3]);
 else if (cmd === 'restart-all') control('POST', '/restart-all');
 else if (cmd === 'status') control('GET', '/status');
 else if (cmd === 'down') control('POST', '/stop');
+else if (cmd === 'ensure') ensureUp();
 else if (!cmd || cmd === 'up') runManager();
-else { console.error('usage: romp-manager [up | restart-all | restart [kernel] | status | down]'); process.exit(2); }
+else { console.error('usage: romp-manager [up | ensure | restart-all | restart [kernel] | status | down]'); process.exit(2); }

@@ -13,7 +13,7 @@ ROMP_DIR="$(cd "$(dirname "$0")" && pwd)"
 mkdir -p "$HOME/.claude/hooks" "$HOME/.claude/skills"
 
 for h in romp-summarize.sh romp-postal-drain.sh romp-postal-ensure.sh \
-         romp-postal-revive.sh tmux-status.sh; do
+         romp-postal-revive.sh romp-manager-ensure.sh tmux-status.sh; do
     ln -sf "$ROMP_DIR/hooks/$h" "$HOME/.claude/hooks/$h"
 done
 echo "  Symlinked romp hooks into ~/.claude/hooks/"
@@ -28,6 +28,7 @@ SETTINGS = os.path.expanduser("~/.claude/settings.json")
 WANT = {  # event -> [(hook script, timeout secs, async)]
     "SessionStart":     [("tmux-status.sh", 5, False),
                          ("romp-postal-ensure.sh", 5, True),
+                         ("romp-manager-ensure.sh", 5, True),
                          ("romp-postal-revive.sh", 8, False)],
     "UserPromptSubmit": [("tmux-status.sh", 5, False),
                          ("romp-summarize.sh", 10, True)],
