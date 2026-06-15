@@ -427,7 +427,8 @@ def build_feed(now, tmux=None):
 
 
 # ───────────────────────── view-builder: segments → timeline (parity: timeline = ADAPT) ─────────────────────────
-TL_HORIZON = 48 * 3600                        # how far back stripes are read (matches the slider max)
+TL_HORIZON = 48 * 3600                        # how far back stripes/connectors are read (slider max)
+MSG_INFLIGHT_MAX = 1800                        # a message older than this isn't "in flight" (30 min)
 
 
 def _state_intervals(sid, want, now):
@@ -480,6 +481,41 @@ def _usage():
         return None
     t = o.get("t")
     return {"fiveHour": five, "sevenDay": seven, "t": t if isinstance(t, (int, float)) else None}
+
+
+def _postal_messages(now, alive_sids, id2name):
+    """Inter-session connectors for the timeline, from the postal log (timeline/messages.jsonl): each
+    'sent' row joined to its 'exec' by id → a [sent,exec] arrow between two lanes. File-based (the old
+    romp-timeline-data.readMessages, trimmed): BOTH ends must be alive lanes, recent only, no
+    self-messages. Connectors that need true process-start binding (the courier) come later."""
+    try:
+        lines = (jd.STATE / "timeline" / "messages.jsonl").read_text(errors="replace").splitlines()
+    except OSError:
+        return []
+    sent, execd = {}, {}
+    for ln in lines:
+        try:
+            o = json.loads(ln)
+        except Exception:
+            continue
+        if o.get("ev") == "sent" and o.get("id"):
+            sent[o["id"]] = o
+        elif o.get("ev") == "exec" and o.get("id"):
+            execd[o["id"]] = o.get("t")
+    cutoff, out = now - TL_HORIZON, []
+    for mid, e in sent.items():
+        f, t, st = e.get("from_id"), e.get("to_id"), e.get("t")
+        if f not in alive_sids or t not in alive_sids or f == t or not st or st < cutoff:
+            continue
+        ex = execd.get(mid)
+        out.append({"id": mid, "fromId": f, "toId": t,
+                    "from": id2name.get(f, e.get("from", "")), "to": id2name.get(t, ""),
+                    "fromOrig": e.get("from", id2name.get(f, f)),
+                    "sent": st, "exec": ex if ex else st, "hasExec": ex is not None,
+                    "pending": ex is None and (now - st) < MSG_INFLIGHT_MAX,
+                    "text": (e.get("body", "") or "").strip()[:240], "summary": None, "parked": False})
+    out.sort(key=lambda m: m["sent"])
+    return out
 
 
 def _pending_mail(sid):
@@ -538,8 +574,10 @@ def build_timeline(now, tmux=None):
     empty/null so the render's conditional paths hide them."""
     if tmux is None:
         tmux = _tmux_sessions()
+    alive = _ordered_alive(now, tmux)                # living sessions only, in the shared lane/tab order
+    id2name = {s["sid"]: s["name"] for s in alive}
     sessions, turns = [], {}
-    for s in _ordered_alive(now, tmux):              # living sessions only, in the shared lane/tab order
+    for s in alive:
         sid, name = s["sid"], s["name"]
         tm = tmux.get(sid)
         live = tm is not None
@@ -595,7 +633,8 @@ def build_timeline(now, tmux=None):
             "compactions": compactions, "pendingMail": _pending_mail(sid),
             "stale": faded, "faded": faded})
     return {"type": "timeline", "now": now, "sessions": sessions, "turns": turns,
-            "messages": [], "activeChat": None, "focus": None, "hover": None, "usage": _usage()}
+            "messages": _postal_messages(now, set(id2name), id2name),
+            "activeChat": None, "focus": None, "hover": None, "usage": _usage()}
 
 
 # ───────────────────────── WebSocket (stdlib, hand-rolled) ─────────────────────────

@@ -187,6 +187,24 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(km.build_session(SID, NOW)["status"]["state"], "ready",
                          "ended turn -> ready even when tmux says working")
 
+    def test_postal_connectors(self):
+        # timeline message connectors from the postal log: a sent row joined to its exec by id, with
+        # BOTH ends alive lanes; a message to a non-alive session is dropped (no endpoint)
+        md = jd.STATE / "timeline"; md.mkdir(parents=True, exist_ok=True)
+        a, b = "aaaa1111", "bbbb2222"
+        (md / "messages.jsonl").write_text(
+            json.dumps({"ev": "sent", "id": "m1", "from_id": a, "to_id": b, "t": NOW - 30,
+                        "from": "alpha", "body": "do X"}) + "\n"
+            + json.dumps({"ev": "exec", "id": "m1", "t": NOW - 20}) + "\n"
+            + json.dumps({"ev": "sent", "id": "m2", "from_id": a, "to_id": "deadsid", "t": NOW - 30,
+                          "from": "alpha", "body": "y"}) + "\n")
+        msgs = km._postal_messages(NOW, {a, b}, {a: "alpha", b: "beta"})
+        self.assertEqual(len(msgs), 1, "only the connector with BOTH ends alive")
+        m = msgs[0]
+        self.assertEqual((m["fromId"], m["toId"]), (a, b))
+        self.assertEqual(m["exec"], NOW - 20); self.assertTrue(m["hasExec"]); self.assertFalse(m["pending"])
+        self.assertEqual(m["text"], "do X")
+
     def test_session_order_roundtrip_and_sort(self):
         # the shared order persists, and chat tabs + timeline lanes follow it (drag-sync parity)
         km._write_session_order(["b", "a", "c"])
@@ -216,7 +234,7 @@ class ViewBuilder(unittest.TestCase):
                                  "caption": "Fixed the feed flicker"}) + "\n")
         m = km.build_timeline(NOW)
         self.assertEqual(m["type"], "timeline")
-        self.assertEqual(m["messages"], [], "connectors are a later (courier) increment")
+        self.assertEqual(m["messages"], [], "no postal log in the test sandbox")
         self.assertIsNone(m["usage"], "no usage.json in the temp state")
         self.assertIsNone(m["focus"]); self.assertIsNone(m["hover"])
         lane = next(s for s in m["sessions"] if s["id"] == SID)
