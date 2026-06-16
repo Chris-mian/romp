@@ -51,8 +51,10 @@ Triage tier (on-demand):
   SKIPS peer segments (`_seg_peer` is the shared discriminator) — no double-place.
   Global oldest-first across sessions; idempotent by msgId. Triage tier (run_courier,
   browser-gated). Dry-verified: 42 peer / 85 planner segs, zero leakage.
-  - [ ] Read-side origin wiring: ↪ from <sender> on the feed card (ask.origin /
-    AskTreeNode kind:"handoff") + bind the timeline connector to the planted goal.
+  - [~] Read-side origin wiring (94a2146): ↪ from <sender> marker on the feed card
+    DONE — build_feed resolves `origin.peer` (sender sid) → name+color, the
+    `.fask-origin` chip shows it, click opens the sender. STILL TODO: bind the
+    timeline connector to the planted goal (the postal-log connector → the goal node).
   - [ ] Sender goals as-of-SEND (MVP reads as-of-now). Live handoffs: as-of-now ≈
     as-of-send (tiny gap). Matters for BACKFILL — when the courier processes OLD
     messages, the sender's tree has since evolved, so as-of-now can pick a goalId
