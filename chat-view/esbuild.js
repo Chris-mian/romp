@@ -23,23 +23,6 @@ const extension = {
   logLevel: "info",
 };
 
-// The standalone web kernel (bin/romp-serve runs dist/kernel.js): same host
-// logic as the extension, no vscode. ws's optional native addons are external
-// (pure-JS fallbacks are used when they're absent).
-/** @type {import('esbuild').BuildOptions} */
-const kernel = {
-  entryPoints: ["src/kernel/server.ts"],
-  bundle: true,
-  format: "cjs",
-  platform: "node",
-  target: "node18",
-  outfile: "dist/kernel.js",
-  external: ["bufferutil", "utf-8-validate"],
-  sourcemap: !production,
-  minify: production,
-  logLevel: "info",
-};
-
 /** @type {import('esbuild').BuildOptions} */
 const webview = {
   entryPoints: [
@@ -65,7 +48,7 @@ const webview = {
 // Unit tests for the pure modules (src/*.test.ts): bundled to out-tests/ and
 // run with the built-in `node --test` runner — no extra test framework.
 function testBuild() {
-  const entries = ["src", "src/kernel", "src/webview"].flatMap((dir) =>
+  const entries = ["src", "src/webview"].flatMap((dir) =>
     fs
       .readdirSync(path.join(__dirname, dir))
       .filter((f) => f.endsWith(".test.ts"))
@@ -90,13 +73,11 @@ async function main() {
   } else if (watch) {
     const a = await esbuild.context(extension);
     const b = await esbuild.context(webview);
-    const c = await esbuild.context(kernel);
-    await Promise.all([a.watch(), b.watch(), c.watch()]);
+    await Promise.all([a.watch(), b.watch()]);
     console.log("watching…");
   } else {
     await esbuild.build(extension);
     await esbuild.build(webview);
-    await esbuild.build(kernel);
   }
 }
 

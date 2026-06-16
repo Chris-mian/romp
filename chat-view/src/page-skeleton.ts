@@ -1,15 +1,17 @@
-// THE single source of truth for the webview <body> skeletons — the container
-// elements that decide WHAT each view renders. Shared by BOTH front ends so they
-// can never drift in which features/containers they expose:
-//   • the VS Code extension  — buildHtml / buildFeedHtml in extension.ts
-//   • the web kernel         — chatHtml / feedHtml in src/kernel/server.ts
+// THE source of truth for the webview <body> skeletons — the container elements
+// that decide WHAT each view renders. Consumed directly by the VS Code extension
+// (buildHtml / buildFeedHtml in extension.ts).
 //
-// Each host still owns its own <head> (VS Code: a CSP meta + nonce; the browser:
-// the --vscode-* theme vars) and its own trailing <script> tags (VS Code:
+// The web front end is the Python kernel (bin/romp-kernel), which carries a
+// hand-PORTED copy of these bodies (grep its "ported from page-skeleton.chatBody"
+// note). They are NOT auto-shared — if you add or rename a container here, mirror
+// it in bin/romp-kernel by hand or the web view drifts from VS Code.
+//
+// Each host owns its own <head> (VS Code: a CSP meta + nonce; the browser: the
+// --vscode-* theme vars) and its own trailing <script> tags (VS Code:
 // asWebviewUri + nonce; the browser: an acquireVsCodeApi() shim + /dist/*). Only
-// the body — the part that defines the UI — lives here, once. Add a container here
-// and both hosts get it. (render.ts/feed.ts already compile to one shared bundle
-// each; this closes the last gap — the HTML that hosts those bundles.)
+// the body — the part that defines the UI — lives here. (render.ts/feed.ts already
+// compile to one shared bundle each; this is the HTML that hosts those bundles.)
 
 // Chat view: window frame, tab bar, ledger, transcript, the live-ask picker, and
 // the footer (statusline + composer). The composer's attach-button tooltip is the

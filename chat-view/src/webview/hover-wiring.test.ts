@@ -2,8 +2,8 @@
 // highlight join had asymmetric gaps. These pin the fixes at the SOURCE level —
 // the wiring lives in DOM event handlers with no jsdom harness here, so (as the
 // timeline-view tests do) we assert the handlers exist and are attached to the
-// right element. Behavioural coverage of the nonce contract is in
-// kernel/hover-push.test.ts.
+// right element. The kernel side of the join (hover push, glow, nonce) moved to
+// the Python kernel (bin/romp-kernel); it's covered by tests/test_kernel.py.
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
@@ -12,7 +12,6 @@ import * as path from "node:path";
 const read = (...p: string[]) => fs.readFileSync(path.resolve(process.cwd(), ...p), "utf8");
 const RENDER = read("src", "webview", "render.ts");
 const FEED = read("src", "webview", "feed.ts");
-const SERVER = read("src", "kernel", "server.ts");
 
 // The user 2026-06-15: hovering the message TEXT must NOT light the timeline — only the rail DOT (the
 // "timeline" gutter) does. The hover target is the DOT (turn fallback only when a turn has no dot).
@@ -30,14 +29,6 @@ test("the rail dot keeps the click (open the feed card), separate from turn hove
   assert.match(RENDER, /dot\.addEventListener\("click"[\s\S]*?type: "dotOpen"/);
 });
 
-// #9a (chat side) — hovering a chat turn reciprocally glows the turn's whole span
-// in the chat too (light the work period when you hover the message, and vice
-// versa), matching the feed→chat glow so either end of the join looks identical.
-test("onDotHover reciprocally glows the chat turn span and clears it on leave", () => {
-  assert.match(SERVER, /chatGlow\(\[String\(ev\.id\)\]\)/, "set: glow this turn's span in the chat");
-  assert.match(SERVER, /if \(!ev\) \{ pushHover\(null\);[\s\S]*?chatGlow\(null\);/, "clear: drop the glow");
-});
-
 // #9b — the feed MODAL title, hovered, lights the originating message in the chat
 // (and its timeline glyph). Assignable props (not addEventListener) so a re-render
 // overwrites instead of stacking handlers; clears for modals with no chat anchor.
@@ -46,15 +37,6 @@ test("the feed modal title hover lights the originating chat message", () => {
   assert.match(FEED, /ttlEl\.onmouseleave = titleHoverId \? \(\) => hoverEmit\(null\) : null/);
   assert.match(FEED, /titleHoverId = it\.turnId/);
   assert.match(FEED, /titleHoverId = grp\.turnId/);
-});
-
-// #10 — both hover paths push directly to the timeline (not only the modal one),
-// so a chat-message hover lights the timeline instantly too.
-test("both hover paths route through the direct pushHover", () => {
-  assert.match(SERVER, /function pushHover\(ids: string\[\] \| string \| null\)/);
-  assert.match(SERVER, /timelinePost\(\{ type: "hover", ids:[^,]+, nonce \}\)/);
-  assert.match(SERVER, /function hoverFan[\s\S]*?pushHover\(ids\)/, "feed→ path pushes");
-  assert.match(SERVER, /pushHover\(String\(atomId\)\)/, "chat→ path pushes");
 });
 
 // #11 — a timeline (or any) jump lands the target at the TOP of the viewport so
