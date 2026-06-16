@@ -355,7 +355,9 @@ PLAN_SYS = (
     "- SUB n: this segment is a step or progress on open goal #n → add it as a step under #n; "
     "<text> = the step, ≤10 words. KEEP THE TREE SHALLOW: file the step under the GOAL (or a genuine "
     "sub-goal) it belongs to, as a SIBLING of the other steps — do NOT chain it under the most recent "
-    "step. This is the DEFAULT — most segments are steps under an existing goal, not new mints.\n"
+    "step. This is the DEFAULT — most segments are steps under an existing goal, not new mints. SCAN "
+    "THE WHOLE list and file under the goal whose TOPIC matches, even if it is OLDER or lower-numbered; "
+    "NEVER default to the most recent goal. MINT only when NO open goal matches this segment's topic.\n"
     "- AMEND n: this segment redirects or restates open goal #n ITSELF → <text> = the updated goal "
     "text. Only when the goal's own definition changed.\n"
     "- DONE n: mark node #n done whenever this segment FINISHES its work — and DON'T BE SHY: if the "
@@ -428,9 +430,10 @@ def save_goals(fsid, store):
     tmp.rename(GOALDIR / (fsid + ".json"))            # atomic publish
 
 
-def open_menu(store, cap=12):
+def open_menu(store, cap=20):
     """The session's open nodes (not complete, not cleared), numbered oldest-first, capped — the
-    planner's candidate menu. Kept small so placement stays accurate."""
+    planner's candidate menu. Cap 20 covers every real session (max ~18 open goals) while bounding the
+    prompt on a pathological one, so topic-matching can scan the WHOLE list (no old goal scrolls off)."""
     opens = [nd for nd in store["nodes"].values()
              if not nd.get("nodeComplete") and not nd.get("cleared")]
     opens.sort(key=lambda nd: nd.get("t", 0))

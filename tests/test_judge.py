@@ -647,6 +647,29 @@ class PlanTuning(unittest.TestCase):
                                               "done": None, "block": False}, menu)
         self.assertFalse(any(nd["blocked"] for nd in s["nodes"].values()), "newer work on the branch un-blocks it")
 
+    def test_topic_placement_prompt_and_menu_cap(self):
+        # the recency-bias fix: the prompt tells the model to scan the WHOLE list + file by topic, and the
+        # menu cap is wide enough that an old topic-matching goal doesn't scroll off.
+        self.assertIn("SCAN", jd.PLAN_SYS); self.assertIn("NEVER default to the most recent goal", jd.PLAN_SYS)
+        self.assertIn("MINT only when NO open goal matches", jd.PLAN_SYS)
+        self.assertGreaterEqual(jd.open_menu.__defaults__[0], 20, "menu cap covers old goals (≥20)")
+
+    def test_sub_files_under_the_old_topic_goal_not_the_newest(self):
+        # mechanics: a SUB targeting an OLD goal lands there, not the newer one — the planner can reach
+        # any menu index, so the topic clause's older-goal choice is honored end-to-end.
+        s = _store()
+        jd.apply_goal_edit(s, "old", T0, {"op": "MINT", "n": None, "text": "the OLD topic",
+                                          "done": None, "block": False}, [])
+        jd.apply_goal_edit(s, "new", T0 + 1000, {"op": "MINT", "n": None, "text": "a NEWER topic",
+                                                 "done": None, "block": False}, jd.open_menu(s))
+        menu = jd.open_menu(s)                                    # oldest-first: [OLD, NEWER]
+        self.assertEqual([nd["text"] for nd in menu], ["the OLD topic", "a NEWER topic"])
+        old_idx = next(i for i, nd in enumerate(menu, 1) if nd["text"] == "the OLD topic")
+        jd.apply_goal_edit(s, "seg", T0 + 2000, {"op": "SUB", "n": old_idx, "text": "on the old topic",
+                                                 "done": None, "block": False}, menu)
+        step = next(nd for nd in s["nodes"].values() if nd["parentId"] is not None)
+        self.assertEqual(s["nodes"][step["parentId"]]["text"], "the OLD topic", "filed under the OLD goal")
+
 
 class BlockCompletionCorrectness(unittest.TestCase):
     """simplify's block/completion-correctness handoff (2026-06-15, human-designed): the weighing BLOCK
