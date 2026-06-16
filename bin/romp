@@ -489,21 +489,32 @@ fi
 # Help. Only the flags `-h` / `--help` (not a bare `help` word), so `romp help`
 # stays free to name a session — same rule as `-d` for the dashboard.
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+    # The command list is GENERATED with a presence check per command, so it can't drift from what's
+    # actually installed: a command whose backing romp-* binary is missing is hidden, and adding a new
+    # romp-* front end (+ a line here) makes it appear (the user 2026-06-16). "-" = built into this
+    # script (always shown). PATH already has romp's own bin dir (prepended at the top).
+    _romp_cmd() {   # <invocation> <backing-bin|"-"> <description...>
+        local inv="$1" bin="$2"; shift 2
+        [[ "$bin" == "-" ]] || command -v "$bin" >/dev/null 2>&1 || return 0
+        printf '  %-28s %s\n' "$inv" "$*"
+    }
     cat <<'EOF'
 romp — launch & manage persistent Claude Code tmux sessions
 
 Usage:
-  romp                 Start a session named after the current folder
-  romp <name>          Start a session with the given name
-  romp -r              Resume a past conversation (full-screen picker, by name)
-  romp -d              Live session monitor (dashboard)
-  romp -f              Feed — terminal Working/Blocked/Completed board (mirrors the web feed)
-  romp on              Start the kernel manager (owns the romp kernel; front ends attach).
-                       Runs in the foreground — Ctrl+C stops it and its kernels
-  romp refresh         Restart all romp kernels (picks up new code — run after an update)
-  romp status          Show manager + kernel status
-  romp --version       Versions across the parts (working tree, kernel, served vs built bundles)
-  romp -h              Show this help
+EOF
+    _romp_cmd "romp"                       -            "Start a session named after the current folder"
+    _romp_cmd "romp <name>"                -            "Start a session with the given name"
+    _romp_cmd "romp -r"                    -            "Resume a past conversation (full-screen picker, by name)"
+    _romp_cmd "romp -d"                    romp-dashboard "Live session monitor (dashboard)"
+    _romp_cmd "romp -f"                    romp-feed    "Feed — terminal Working/Blocked/Completed board (mirrors the web feed)"
+    _romp_cmd "romp serve [on|off|status]" -            "Expose the kernel to the tailnet/phone (token-gated), or revert to local-only"
+    _romp_cmd "romp on"                    romp-manager "Start the kernel manager (foreground — Ctrl+C stops it and its kernels)"
+    _romp_cmd "romp refresh"               romp-manager "Restart all romp kernels (picks up new code — run after an update)"
+    _romp_cmd "romp status"                romp-manager "Show manager + kernel status"
+    _romp_cmd "romp --version"             romp-version "Versions across the parts (tree, kernel, served vs built bundles)"
+    _romp_cmd "romp -h"                    -            "Show this help"
+    cat <<'EOF'
 
 Any name is fine — sessions are tagged with the tmux @romp flag, not a naming
 convention, so "dashboard", "help", etc. don't collide with the flags above.
@@ -511,11 +522,10 @@ Rename from inside tmux (prefix-$ or :rename-session); it auto-syncs. Attach
 with `tmux a`. Quitting Claude ends the session (it's exec'd; no shell lingers).
 
 For scripts / agents (double-dash = not for everyday use):
-  romp --resume <id>   Resume a specific conversation by its UUID
-  romp --detach        Create the session without attaching (prints attach cmd)
-  romp --mail ...      Romp Postal Service: send <to> <text> | inbox | agents |
-                       remote  (agents normally use the MCP tools instead)
 EOF
+    _romp_cmd "romp --resume <id>"         -            "Resume a specific conversation by its UUID"
+    _romp_cmd "romp --detach"              -            "Create the session without attaching (prints attach cmd)"
+    _romp_cmd "romp --mail ..."            romp-postal  "Romp Postal Service: send <to> <text> | inbox | agents | remote"
     exit 0
 fi
 

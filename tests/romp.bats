@@ -579,3 +579,23 @@ MOCK
     [ "$status" -eq 0 ]
     [[ "$output" == $'reply\tLatest thing done' ]]
 }
+
+@test "help -h reflects which commands are PRESENT (presence-checked, no drift)" {
+    # Run a copy of romp with only SOME backing romp-* binaries reachable: present commands show, absent
+    # ones are hidden, built-ins always show — so the help can't drift from what's installed (the user 2026-06-16).
+    local td; td="$TEST_DIR/help"; mkdir -p "$td"
+    cp "$ROMP_SCRIPT" "$td/romp"
+    local b; for b in romp-manager romp-version; do printf '#!/bin/sh\nexit 0\n' > "$td/$b"; chmod +x "$td/$b"; done
+    run env PATH="$td:/usr/bin:/bin:/opt/homebrew/bin" bash "$td/romp" -h
+    [ "$status" -eq 0 ]
+    # built-ins (no backing binary) always shown — incl. `serve`, which the old static help omitted
+    [[ "$output" == *"romp serve"* ]]
+    [[ "$output" == *"romp --detach"* ]]
+    # present backing → shown
+    [[ "$output" == *"romp on"* ]]
+    [[ "$output" == *"romp --version"* ]]
+    # absent backing → hidden
+    [[ "$output" != *"romp -d"* ]]
+    [[ "$output" != *"romp -f"* ]]
+    [[ "$output" != *"romp --mail"* ]]
+}
