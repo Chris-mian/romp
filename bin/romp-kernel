@@ -14,7 +14,7 @@ old). Port status (KEEP/ADAPT/DROP) tracked in design/ui-parity.md + backlog.md.
 
 Run:  python3 ~/GitRepos/romp-event-model/bin/romp-kernel   → opens http://127.0.0.1:7878
 """
-import json, os, sys, time, threading, traceback, base64, hashlib, struct, subprocess
+import json, os, re, sys, time, threading, traceback, base64, hashlib, struct, subprocess
 from pathlib import Path
 from datetime import datetime
 from importlib.machinery import SourceFileLoader
@@ -292,6 +292,126 @@ def _split_reminders(text):
     return " ".join("".join(out).split()), [r for r in reminders if r]
 
 
+# ───────────────────────── postal hydration (parity with chat-view/src/postal-spec.ts) ─────────────────────────
+# Postal traffic lands INSIDE the transcript: a received message as user text carrying the
+# `romp-msg-id` marker; a sent message as a send_message tool call (or a `romp --mail send` Bash). We
+# swap both for clean identity-coloured cards — and read the message BODY from the timeline log (not
+# the delivered text with its #### banner/footer), so a card shows the message, not the boilerplate.
+_SEND_TOOL_RE = re.compile(r"(?:^|__)send_message$")
+_CLI_SEND_RE = re.compile(r"\bromp\s+--mail\s+send\s+([A-Za-z0-9._-]+)\s+([\s\S]+)$")
+
+
+def _postal_index():
+    """messages.jsonl 'sent' rows keyed by msg id → {id, from, fromId, toId, body, t, park}. The clean
+    body lives here, not in the delivered text. Mirrors postal-spec.ts loadPostalIndex."""
+    idx = {}
+    try:
+        lines = (jd.STATE / "timeline" / "messages.jsonl").read_text(errors="replace").splitlines()
+    except OSError:
+        return idx
+    for ln in lines:
+        try:
+            o = json.loads(ln)
+        except Exception:
+            continue
+        if o.get("ev") == "sent" and o.get("id"):
+            idx[o["id"]] = {"id": o["id"], "from": o.get("from", "?"), "fromId": o.get("from_id", ""),
+                            "toId": o.get("to_id", ""), "body": o.get("body", ""),
+                            "t": o["t"] if isinstance(o.get("t"), (int, float)) else 0, "park": bool(o.get("park"))}
+    return idx
+
+
+def _name_color_by_name(name):
+    """Identity color {bg,fg} for a session by NAME (outgoing postal carries the recipient name, not a
+    sid). Scans the names registry. None if not found."""
+    try:
+        for f in NAMES.iterdir():
+            parts = f.read_text().rstrip("\n").split("\t")
+            if parts and parts[0] == name and len(parts) > 2 and parts[2].startswith("#"):
+                return {"bg": parts[2], "fg": "#ffffff"}
+    except Exception:
+        pass
+    return None
+
+
+def _shell_unquote(s):
+    """Undo shell quoting on a CLI-send <body> arg (one quoted string or bare words); None for anything
+    fancier (heredoc, interpolation, trailing &&) so an ambiguous command stays a Bash row."""
+    s = (s or "").strip()
+    if not s:
+        return None
+    if s.startswith('"'):
+        m = re.match(r'^"((?:[^"\\]|\\[\s\S])*)"\s*$', s)
+        return re.sub(r'\\([$`"\\\n])', r"\1", m.group(1)) if m else None
+    if s.startswith("'"):
+        m = re.match(r"^'([^']*)'\s*$", s)
+        return m.group(1) if m else None
+    return None if re.search(r"[|&;<>$`\"'\\]", s) else s
+
+
+def _postal_out_card(ev):
+    """A send_message tool event → an outgoing postal card ({to, body} from the tool input). None if
+    the input doesn't parse. Mirrors postal-spec.ts postalOut."""
+    try:
+        args = json.loads(ev.get("input") or "")
+    except Exception:
+        return None
+    if not isinstance(args, dict) or not isinstance(args.get("to"), str) or not isinstance(args.get("body"), str):
+        return None
+    parked = "parked" in (ev.get("output") or "").lower()
+    status = None if ev.get("isError") else ("parked" if parked else "delivered")
+    return {"kind": "postal", "direction": "out", "peer": args["to"], "color": _name_color_by_name(args["to"]),
+            "body": args["body"], "status": status, "ts": ev.get("ts"), "uuid": ev.get("uuid")}
+
+
+def _cli_send_card(ev):
+    """A Bash `romp --mail send <to> <body>` tool event → an outgoing card, only once the CLI confirmed
+    delivery (else it stays a Bash row so a failure is visible). Mirrors postal-spec.ts cliSendOut."""
+    m = _CLI_SEND_RE.search(ev.get("input") or "")
+    if not m:
+        return None
+    body = _shell_unquote(m.group(2))
+    if not body or not body.strip():
+        return None
+    out = ev.get("output") or ""
+    if ev.get("isError") or not re.search(r"delivered to|parked as a handoff", out, re.I):
+        return None
+    return {"kind": "postal", "direction": "out", "peer": m.group(1), "color": _name_color_by_name(m.group(1)),
+            "body": body, "status": "parked" if re.search(r"parked", out, re.I) else "delivered",
+            "ts": ev.get("ts"), "uuid": ev.get("uuid")}
+
+
+def _hydrate_postal(events, index):
+    """Replace postal traffic with clean cards: a send_message tool (or `romp --mail send` Bash) → an
+    OUTGOING card; a user/tool event carrying romp-msg-id marker(s) → INCOMING card(s) with the clean
+    body from the log. Anything not fully resolved passes through unchanged. Mirrors hydratePostal."""
+    out = []
+    for ev in events:
+        if ev.get("kind") == "tool" and _SEND_TOOL_RE.search(ev.get("name") or ""):
+            card = _postal_out_card(ev)
+            if card:
+                out.append(card); continue
+        if ev.get("kind") == "tool" and ev.get("name") == "Bash":
+            card = _cli_send_card(ev)
+            if card:
+                out.append(card); continue
+        text = ev.get("md") if ev.get("kind") == "user" else (ev.get("output") if ev.get("kind") == "tool" else "")
+        ids = em.POSTAL_RE.findall(text or "")
+        if ids:
+            cards = []
+            for mid in ids:
+                rec = index.get(mid)
+                if rec:
+                    cards.append({"kind": "postal", "direction": "in", "peer": rec["from"] or "?",
+                                  "color": _name_color(rec["fromId"]) if rec["fromId"] else None,
+                                  "body": rec["body"], "mid": rec["id"], "t": rec["t"] or None,
+                                  "park": rec["park"], "ts": ev.get("ts"), "uuid": ev.get("uuid")})
+            if len(cards) == len(ids):                   # all-or-nothing: a partial log never half-renders
+                out.extend(cards); continue
+        out.append(ev)
+    return out
+
+
 def build_session(sid, now, tmux=None):
     """A {type:"session"} message the render.js bundle consumes: the event tree reshaped to
     ChatEvent[], plus the TOC ledger (archiver headline + turn captions) and a status chip."""
@@ -320,14 +440,7 @@ def build_session(sid, now, tmux=None):
             if a["type"] == "user":
                 author = a.get("author")
                 trs = [b for b in blocks if isinstance(b, dict) and b.get("type") == "tool_result"]
-                if isinstance(author, dict):                     # peer message → postal card
-                    text = " ".join(b.get("text", "") for b in blocks if b.get("type") == "text")
-                    psid = author.get("peer")        # the SENDER's rompUuid (sid), per the event model
-                    events.append({"kind": "postal", "direction": "in",
-                                   "peer": _name_of(psid) or psid or "peer",
-                                   "color": _name_color(psid) if psid else None,
-                                   "body": text, "uuid": a.get("uuid"), "ts": ts, "t": t, "status": "delivered"})
-                elif trs:                                        # tool_result → fill the matching tool event's output
+                if trs:                                          # tool_result → fill the matching tool event's output
                     for tr in trs:
                         ev = by_tool.get(tr.get("tool_use_id"))
                         if ev is not None:
@@ -335,10 +448,10 @@ def build_session(sid, now, tmux=None):
                             ev["output"] = (c if isinstance(c, str) else json.dumps(c))[:16000]
                             ev["isError"] = bool(tr.get("is_error"))
                             ev["resultUuid"] = a.get("uuid")
-                else:                                            # genuine prompt
+                else:                                            # a genuine prompt OR a delivered peer message
                     text = " ".join(b.get("text", "") for b in blocks if b.get("type") == "text").strip() \
                            if blocks else (msg.get("content") if isinstance(msg.get("content"), str) else "")
-                    if text:
+                    if text:                                     # a peer message → swapped to a clean card by _hydrate_postal
                         prompt, reminders = _split_reminders(text)
                         if prompt or reminders:
                             events.append({"kind": "user", "md": prompt, "uuid": a.get("uuid"), "ts": ts,
@@ -364,6 +477,7 @@ def build_session(sid, now, tmux=None):
                         events.append(ev)
             elif a["type"] == "system" and a.get("subtype") == "compact_boundary":
                 events.append({"kind": "assistant", "md": "✦ Compacted", "uuid": a.get("uuid"), "ts": ts})
+    events = _hydrate_postal(events, _postal_index())   # swap postal traffic for clean in/out cards (no boilerplate)
     for ev in events:                         # tag each event with its segment (the timeline bar a chat hover lights)
         ev["segId"] = uuid2seg.get(ev.get("uuid"))
     # TOC ledger: archiver headline + turn captions (click-to-jump via the turn's anchor uuid)

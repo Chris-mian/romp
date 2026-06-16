@@ -338,6 +338,47 @@ class ViewBuilder(unittest.TestCase):
         self.assertTrue(m["ledger"]["bullets"] and all(b.get("segId") == real for b in m["ledger"]["bullets"]),
                         "ledger bullets carry segId too")
 
+    def test_hydrate_postal_in_uses_clean_body_not_boilerplate(self):
+        """A received message (user text with the romp-msg-id marker) → a clean 'in' card whose body
+        comes from the timeline log, NOT the delivered #### banner/footer boilerplate (the user)."""
+        a = "aaaa1111"
+        (jd.NAMES / a).write_text("alpha\t/dir\t#00ff00\n")
+        index = {"m1": {"id": "m1", "from": "alpha", "fromId": a, "toId": SID,
+                        "body": "the clean message", "t": NOW - 10, "park": False}}
+        raw = ("####################\n## 📬 from alpha\n####################\n"
+               "the clean message\n<!-- romp-msg-id: m1 -->\n(to reply: romp --mail send ...)")
+        out = km._hydrate_postal([{"kind": "user", "md": raw, "uuid": "u1", "ts": "x", "human": False}], index)
+        self.assertEqual(len(out), 1)
+        self.assertEqual((out[0]["kind"], out[0]["direction"]), ("postal", "in"))
+        self.assertEqual(out[0]["body"], "the clean message", "renders the log body, not the boilerplate")
+        self.assertEqual(out[0]["peer"], "alpha")
+        self.assertEqual(out[0]["color"], {"bg": "#00ff00", "fg": "#ffffff"})
+
+    def test_hydrate_postal_out_from_send_tool(self):
+        """A send_message tool call → an OUTGOING card (the sent-message rendering the user wants back)."""
+        (jd.NAMES / "zzzz9999").write_text("beta\t/dir\t#0000ff\n")
+        ev = {"kind": "tool", "name": "mcp__romp-postal__send_message",
+              "input": json.dumps({"to": "beta", "body": "ASK: do X"}), "output": "Delivered to 'beta'.",
+              "isError": False, "uuid": "t1", "ts": "x"}
+        out = km._hydrate_postal([ev], {})
+        self.assertEqual((out[0]["kind"], out[0]["direction"]), ("postal", "out"))
+        self.assertEqual((out[0]["peer"], out[0]["body"], out[0]["status"]), ("beta", "ASK: do X", "delivered"))
+        self.assertEqual(out[0]["color"], {"bg": "#0000ff", "fg": "#ffffff"}, "recipient color resolved by name")
+
+    def test_hydrate_postal_out_from_cli_bash_send(self):
+        """A `romp --mail send` Bash call → an outgoing card too, once delivery is confirmed."""
+        ev = {"kind": "tool", "name": "Bash", "input": 'romp --mail send beta "hi there"',
+              "output": "[romp mail] delivered to beta", "isError": False, "uuid": "t2", "ts": "x"}
+        out = km._hydrate_postal([ev], {})
+        self.assertEqual((out[0]["direction"], out[0]["peer"], out[0]["body"]), ("out", "beta", "hi there"))
+
+    def test_hydrate_postal_passes_through_unresolved(self):
+        """A marker with no matching log entry, or a plain event, stays unchanged (never half-rendered)."""
+        ev = {"kind": "user", "md": "hi <!-- romp-msg-id: missing -->", "uuid": "u9"}
+        self.assertEqual(km._hydrate_postal([ev], {}), [ev], "unresolved marker → unchanged")
+        plain = {"kind": "assistant", "md": "just a reply", "uuid": "a1"}
+        self.assertEqual(km._hydrate_postal([plain], {}), [plain], "a non-postal event is untouched")
+
     def test_session_order_roundtrip_and_sort(self):
         # the shared order persists, and chat tabs + timeline lanes follow it (drag-sync parity)
         km._write_session_order(["b", "a", "c"])
