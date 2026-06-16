@@ -494,11 +494,16 @@ def build_feed(now, tmux=None):
             col = status.get(nid, "working")
             if col == "cleared" or nid in cleared:
                 continue
+            o = nodes[nid].get("origin")             # courier handoff provenance: planted by a peer
+            origin = None
+            if isinstance(o, dict) and o.get("peer"):
+                psid = o["peer"]                     # the sender's rompUuid → resolve to name + color
+                origin = {"peer": _name_of(psid) or psid[:8], "peerSid": psid, "color": _name_color(psid)}
             asks.append({
                 "itemId": nid, "sid": fsid, "name": name, "color": color, "text": nodes[nid]["text"],
                 "t": nodes[nid]["t"], "created": nodes[nid]["t"], "live": live,
                 "trgb": list(cm.age_rgb(now - nodes[nid]["t"])),
-                "done": 0, "needsYou": 0, "linked": [], "turnId": nid, "turnIds": [nid],
+                "done": 0, "needsYou": 0, "linked": [], "turnId": nid, "turnIds": [nid], "origin": origin,
                 "column": ("needs_input" if col == "blocked" else "completed" if col == "completed" else "working"),
                 "openQuestions": [], "openPaths": [], "tree": flatten(nid, [])})
         for c in _captions(fsid).values():

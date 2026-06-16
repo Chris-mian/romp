@@ -26,3 +26,13 @@ test("row3 + name-wrap are styled; blocked keeps its inline age", () => {
   assert.match(FEED, /row1\.append\(title, time\);/, "blocked card still appends the age inline on row1");
   assert.match(CSS, /\.fitem\.blocked \.fask-row1 \.ftime/);
 });
+
+test("courier handoff: the '↪ from <sender>' origin marker is wired and styled", () => {
+  // a chip beside the session name, hidden until the card carries a courier origin
+  assert.match(FEED, /const origin = el\("a", "fask-origin"\); origin\.style\.display = "none"/);
+  assert.match(FEED, /idwrap\.append\(name, origin\)/, "the origin marker sits beside the session name");
+  // populated from it.origin in the update path: "↪ from <peer>", click opens the sender
+  assert.match(FEED, /og\.textContent = "↪ from " \+ it\.origin\.peer/);
+  assert.match(FEED, /type: "openSession", id: it\.origin!\.peerSid/, "clicking the marker opens the sender");
+  assert.match(CSS, /\.fask-origin \{[^}]*cursor: pointer/);
+});

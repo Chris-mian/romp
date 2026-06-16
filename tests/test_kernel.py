@@ -140,6 +140,41 @@ class ViewBuilder(unittest.TestCase):
         self.assertNotEqual(comp[0]["trgb"], km._rgb(comp[0]["color"]), "not the flat session color")
         self.assertTrue(all(c["standalone"] for c in d["items"]), "stream cards must be standalone or the render hides them")
 
+    def test_feed_non_handoff_card_has_no_origin(self):
+        comp = next(a for a in km.build_feed(NOW)["asks"] if a["column"] == "completed")
+        self.assertIsNone(comp["origin"], "a normal (non-courier) card carries no handoff origin")
+
+    def test_feed_courier_handoff_resolves_origin_sender(self):
+        """A goal planted by the courier carries origin:{peer:<senderSid>,...}; build_feed resolves
+        the sender's rompUuid to a display name + color for the '↪ from <sender>' marker."""
+        sender = "99999999-8888-7777-6666-555555555555"
+        (jd.NAMES / sender).write_text("sendersess\t/elsewhere\t#ff8800\n")
+        g = "%s:g7" % SID
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+            "rompUuid": SID, "seq": 7, "lastNode": g,
+            "nodes": {g: {"id": g, "text": "Do the handed-off work", "parentId": None,
+                          "nodeComplete": False, "blocked": False, "cleared": False, "trail": [], "t": NOW - 50,
+                          "origin": {"peer": sender, "goalId": sender + ":g1", "msgId": "m-abc.123"}}},
+            "placements": {}, "status": {g: "working"}}))
+        card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
+        self.assertEqual(card["origin"], {"peer": "sendersess", "peerSid": sender,
+                                          "color": {"bg": "#ff8800", "fg": "#ffffff"}},
+                         "origin.peer (a sid) resolves to the sender's name + color")
+
+    def test_feed_handoff_origin_falls_back_to_short_sid_when_unnamed(self):
+        """If the sender isn't in the names registry, fall back to a short sid (never crash / show blank)."""
+        sender = "abcdef00-0000-0000-0000-000000000000"
+        g = "%s:g8" % SID
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+            "rompUuid": SID, "seq": 8, "lastNode": g,
+            "nodes": {g: {"id": g, "text": "Orphaned handoff", "parentId": None,
+                          "nodeComplete": False, "blocked": False, "cleared": False, "trail": [], "t": NOW - 50,
+                          "origin": {"peer": sender, "goalId": None, "msgId": "m-x.1"}}},
+            "placements": {}, "status": {g: "working"}}))
+        card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
+        self.assertEqual(card["origin"]["peer"], sender[:8])
+        self.assertIsNone(card["origin"]["color"])
+
     def test_feed_clear_and_undo(self):
         g1 = "%s:g1" % SID
         self.assertTrue(any(a["itemId"] == g1 for a in km.build_feed(NOW)["asks"]))

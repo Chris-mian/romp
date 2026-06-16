@@ -216,6 +216,11 @@ body { display: flex; flex-direction: column; }
 .fask-paths { display: flex; flex-direction: column; gap: 2px; margin-top: 6px; }
 .fpath { font-size: 0.82em; color: var(--dim); opacity: 0.85; }
 
+/* "↪ from <sender>" — courier handoff provenance beside the owning session */
+.fask-origin { flex: 0 1 auto; min-width: 0; font-size: 0.8em; opacity: 0.85; cursor: pointer;
+  overflow-wrap: anywhere; }
+.fask-origin:hover { text-decoration: underline; text-underline-offset: 2px; opacity: 1; }
+
 /* "reopened" badge — a cleared ask resurrected by a new question */
 .fask-reopened { flex: 0 0 auto; font-size: 0.64em; font-weight: 700; letter-spacing: 0.04em;
   text-transform: uppercase; padding: 1px 6px; border-radius: 999px; line-height: 1.4;

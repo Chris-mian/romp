@@ -74,6 +74,7 @@ interface AskItem {
   // the card itself files under BLOCKED (the user's ruling 2026-06-11)
   blocked?: { state: string; since: number; what: string };
   suspects?: Array<{ mid: string; to: string; t: number; snippet: string; why: string }>;  // ⚠ possible missed handoffs (host sweep)
+  origin?: { peer: string; peerSid: string; color: { bg: string; fg: string } | null } | null;  // courier handoff: planted by a peer's message → "↪ from <peer>"
   groupTitle?: string;                             // host: this ask shares a typed turn with siblings → the group's title
   groupN?: number;                                 // host: sibling count for that turn (>1 ⇒ fold into one group card)
   tree: AskTreeNode[];                             // the ask's DAG, rendered as a tree in the expanded body
@@ -393,7 +394,11 @@ function makeAskCard(it: AskItem): HTMLElement {
   const row2 = el("div", "fask-row2");
   const idwrap = el("div", "fask-id");
   const name = el("a", "fname"); name.title = "open this session";
-  idwrap.append(name);
+  // ↪ courier handoff provenance: this goal was planted by a peer's message — shows
+  // "↪ from <sender>" beside the owning session, click opens the sender. Hidden unless origin.
+  const origin = el("a", "fask-origin"); origin.style.display = "none";
+  origin.title = "this work was handed off from another session — click to open it";
+  idwrap.append(name, origin);
   const actions = el("div", "fask-actions");
   const reBadge = el("span", "fask-reopened"); reBadge.textContent = "reopened"; reBadge.title = "a question arrived after you cleared this"; reBadge.style.display = "none";
   const blkBadge = el("a", "fask-blocked"); blkBadge.style.display = "none";   // ⏸ live permission/picker block → click opens the session
@@ -474,6 +479,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   a._blocked = blkBadge; a._wait = waitBadge; a._susp = suspBadge; a._stall = stallBadge;
   a._handoffs = handoffs;
   a._fup = fup;
+  a._origin = origin;
   return card;
 }
 
@@ -487,6 +493,16 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   a._name.textContent = it.name;
   if (it.color) a._name.style.color = it.color.bg;
   setWorkDot(a._name, workingSet.has(it.name));   // working dot before the session name
+  // ↪ courier handoff: planted by a peer's message → "↪ from <sender>", click opens the sender
+  const og = a._origin as HTMLElement;
+  if (it.origin && it.origin.peer) {
+    og.style.display = "";
+    og.textContent = "↪ from " + it.origin.peer;
+    og.style.color = it.origin.color ? it.origin.color.bg : "";
+    og.onclick = (ev: Event) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "openSession", id: it.origin!.peerSid }); };
+  } else {
+    og.style.display = "none";
+  }
   a._time.textContent = relAge(hostNow - it.t);
   a._reopened.style.display = it.reopened ? "" : "none";
   a._wait.style.display = it.waiting ? "" : "none";   // ⏳ paused on an external event
