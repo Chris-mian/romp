@@ -197,6 +197,24 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(ts, sorted(ts, reverse=True), "ledger bullets must be newest-first")
         self.assertEqual(bullets[0]["text"], "Sorted the ledger", "newest caption sits on top")
 
+    def test_ledger_current_and_goals(self):
+        # The chat overview strip feeds off the ledger's new fields: open graph goals (what the session
+        # MIGHT do next) + the live "working on" line (what it's doing NOW). The fixture's g2 ("Awaiting
+        # a decision") is open; g1 is done → excluded. An idle session (last turn ended) shows no current
+        # line (the user 2026-06-16).
+        led = km.build_session(SID, NOW)["ledger"]
+        self.assertEqual([g["text"] for g in led["goals"]], ["Awaiting a decision"],
+                         "open top-level goals only — g1 is nodeComplete, excluded")
+        self.assertIsNone(led["current"], "idle session (last turn ended) → no working-on line")
+        # Now the session is actively working: a fresh prompt with no closing assistant turn → open_now,
+        # so current = that prompt (no caption yet), matching the timeline work-bar's `working on:` hover.
+        with self.tpath.open("a") as f:
+            f.write(json.dumps(uline(NOW, "wire the ledger overview strip", "uOpen", parent="a2")) + "\n")
+        km._parse_cache.clear()
+        cur = km.build_session(SID, NOW)["ledger"]["current"]
+        self.assertIsNotNone(cur, "an open (unfinished) turn → a working-on line")
+        self.assertEqual(cur["text"], "wire the ledger overview strip")
+
     def test_session_list_for_picker(self):
         # the + picker's payload (requestSessions → sessionList). Was always empty: bin/romp-kernel had
         # no requestSessions handler, so the kernel never replied. Running sessions first; archive headline

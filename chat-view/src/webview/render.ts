@@ -121,7 +121,10 @@ const liveAsks = new Map<string, ParsedAsk | null>();
 // Per-session rolling digest (purpose + a few timestamped bullets), shown in the
 // #ledger box just below the tabs. Swaps with the active tab; pushed by the host.
 interface LedgerBullet { text: string; t?: number; id?: string; sid?: string; tlId?: string; }   // id/sid = locate anchor; tlId = the timeline atom (turn DOT) to light on hover
-interface Ledger { summary: string; bullets: LedgerBullet[]; }
+interface LedgerGoal { text: string; id?: string; t?: number; }   // an open graph goal — what the session might do next
+// current = the in-progress "working on" line (same shape as a bullet so it wires nav identically);
+// goals = open graph goals. The overview renders goals → working-on → done (the user 2026-06-16).
+interface Ledger { summary: string; bullets: LedgerBullet[]; current?: LedgerBullet | null; goals?: LedgerGoal[]; }
 const ledgers = new Map<string, Ledger | null>();
 
 function el(tag: string, cls?: string): HTMLElement {
@@ -1072,7 +1075,7 @@ function renderTabs() {
     });
     tab.appendChild(close);
     tab.addEventListener("click", () => setActive(id));
-    // double-click a tab to show/hide the ledger summary — same as the ▾/▸ button
+    // double-click a tab to show/hide the ledger overview — same as the strip's caret
     tab.addEventListener("dblclick", (e) => { e.preventDefault(); toggleLedgerCollapsed(); });
     // right-click → context menu; "Rename" edits the title in place
     tab.addEventListener("contextmenu", (e) => { e.preventDefault(); e.stopPropagation(); showTabMenu(e, tab, label, id); });
@@ -1083,12 +1086,8 @@ function renderTabs() {
   add.title = "Open a session";
   add.addEventListener("click", () => openPicker());
   bar.appendChild(add);
-  // Collapse/expand the ledger summary (placed next to +, per the user).
-  const coll = el("div", "tab tab-collapse");
-  coll.textContent = ledgerCollapsed ? "▸" : "▾";
-  coll.title = ledgerCollapsed ? "Show session summary" : "Hide session summary";
-  coll.addEventListener("click", toggleLedgerCollapsed);
-  bar.appendChild(coll);
+  // (The collapse caret moved OFF the tab bar into the #ledger strip's title row — the strip now always
+  // shows the session title + caret, expanding to goals / working-on / done. See renderLedger. 2026-06-16)
 }
 
 // Right-click context menu on a tab. Webviews can't use VS Code's native menus,
@@ -1997,34 +1996,79 @@ function toggleLedgerCollapsed() {
 // (Relevance categorization — colored labels + filter checkboxes — was removed
 // from the ledger per the user; that lives in the FEED panel now. The ledger keeps
 // the plain newest-first bullets, no "·", live-refresh.)
+// A small dim section header inside the overview (goals / working on / done).
+function ledgerLabel(text: string): HTMLElement {
+  const lab = el("div", "ledger-label");
+  lab.textContent = text;
+  return lab;
+}
+
 function renderLedger() {
   const host = document.getElementById("ledger");
   if (!host) return;
   const l = activeId ? ledgers.get(activeId) : null;
-  if (ledgerCollapsed || !l || (!l.summary && !l.bullets.length)) { host.replaceChildren(); host.style.display = "none"; (host as any)._sig = ""; return; }
+  const goals = (l && l.goals) || [];
+  const cur = (l && l.current) || null;
+  // Title is the archiver headline; fall back to the session name so the strip always has a label.
+  const titleText = l ? (l.summary || (activeId ? (sessions.get(activeId)?.name || "") : "")) : "";
+  const hasBody = !!(cur || goals.length || (l && l.bullets.length));
+  // Nothing at all to show → hide the strip. Otherwise it's ALWAYS visible (even collapsed) so the
+  // title + caret stay on screen — the user wants to see what a session is up to at a glance.
+  if (!l || (!titleText && !hasBody)) { host.replaceChildren(); host.style.display = "none"; (host as any)._sig = ""; return; }
   host.style.display = "";
   const now = Date.now() / 1000;
-  // SAME content as last render (an interim host push, e.g. the session just worked)
-  // → DON'T tear the rows down: that would drop an in-progress hover (the fresh row
-  // gets no mouseenter under a stationary pointer). Only tick ages/colors in place.
-  const sig = (activeId || "") + "§" + (l.summary || "") + "‖" + l.bullets.slice(0, LEDGER_BULLET_CAP).map((b) => `${b.id || ""}:${b.t ?? ""}:${b.text}`).join("|");
+  // SAME content as last render (an interim host push, e.g. the session just worked) → DON'T tear the
+  // rows down: that would drop an in-progress hover (the fresh row gets no mouseenter under a stationary
+  // pointer). Only tick ages/colors in place. Collapse state is in the sig so a toggle forces a rebuild.
+  const sig = (ledgerCollapsed ? "C" : "O") + "§" + (activeId || "") + "§" + titleText
+    + "‖cur:" + (cur ? `${cur.id || ""}:${cur.t ?? ""}:${cur.text}` : "")
+    + "‖goals:" + goals.map((g) => `${g.id || ""}:${g.text}`).join(",")
+    + "‖" + l.bullets.slice(0, LEDGER_BULLET_CAP).map((b) => `${b.id || ""}:${b.t ?? ""}:${b.text}`).join("|");
   if ((host as any)._sig === sig) { refreshLedgerAges(host, l, now); return; }
   (host as any)._sig = sig;
   host.replaceChildren();
-  if (l.summary) {
-    const sum = el("div", "ledger-summary");
-    sum.textContent = l.summary;
-    // Title inherits the NEWEST change's recency color (the top bullet's hue), not
-    // the session identity color — so the box's headline tracks how fresh its
-    // latest activity is. Falls back to the default fg if nothing is timestamped.
-    const newest = l.bullets.find((b) => b.t);
-    if (newest && newest.t) sum.style.color = ageColorReadable(now - newest.t);
-    host.appendChild(sum);
+
+  // --- always-visible title strip: caret + headline; a click anywhere on it toggles the overview ---
+  const head = el("div", "ledger-head");
+  const caret = el("span", "ledger-caret");
+  caret.textContent = ledgerCollapsed ? "▸" : "▾";
+  const sum = el("div", "ledger-summary");
+  sum.textContent = titleText;
+  // Title hue tracks the freshest activity (newest bullet, or the live "working on" line).
+  const newest = l.bullets.find((b) => b.t) || (cur && cur.t ? cur : null);
+  if (newest && newest.t) sum.style.color = ageColorReadable(now - newest.t);
+  head.append(caret, sum);
+  head.title = ledgerCollapsed ? "Show session overview" : "Hide session overview";
+  head.addEventListener("click", toggleLedgerCollapsed);
+  host.appendChild(head);
+  if (ledgerCollapsed) return;   // collapsed → just the title strip
+
+  // --- expanded overview: open goals (top) → working-on (middle) → done (bottom), per the user ---
+  // 1. open goals — what the session might do next (the graph's open top-level nodes)
+  if (goals.length) {
+    host.appendChild(ledgerLabel("goals"));
+    const wrap = el("div", "ledger-goals");
+    for (const g of goals) {
+      const row = el("div", "ledger-goal");
+      const dot = el("span", "ledger-goal-dot"); dot.textContent = "◦";
+      const txt = el("span", "ledger-goal-text"); txt.textContent = g.text;
+      row.append(dot, txt);
+      wrap.appendChild(row);
+    }
+    host.appendChild(wrap);
   }
+  // 2. working on — the in-progress turn (same hover→timeline / click→locate wiring as a bullet)
+  if (cur && cur.text) {
+    host.appendChild(ledgerLabel("working on"));
+    const row = el("div", "ledger-current" + (cur.id ? " nav" : ""));
+    row.textContent = cur.text;
+    if (cur.id) wireBulletNav(row, cur);
+    host.appendChild(row);
+  }
+  // 3. done — recent accomplishments (the existing newest-first captioned bullets)
   if (l.bullets.length) {
-    // Two left-aligned columns (CSS grid, col 1 = max-content so every text cell
-    // starts past the WIDEST timestamp): [ (X ago) ]  [ bullet text ]. No "·".
-    // age + text are direct grid cells (no row wrapper) so they share the grid.
+    host.appendChild(ledgerLabel("done"));
+    // Two left-aligned columns: [ (X ago) ]  [ bullet text ]. age + text share the row's grid.
     const list = el("div", "ledger-bullets");
     for (const b of l.bullets.slice(0, LEDGER_BULLET_CAP)) {
       const col = b.t ? ageColorReadable(now - b.t) : ""; // recency hue, constant-lightness, legible
@@ -2047,7 +2091,7 @@ function renderLedger() {
 // in place (rows kept alive so a hover/click survives). Order matches bullets[0..8).
 function refreshLedgerAges(host: HTMLElement, l: Ledger, now: number) {
   const bs = l.bullets.slice(0, LEDGER_BULLET_CAP);
-  const newest = l.bullets.find((b) => b.t);
+  const newest = l.bullets.find((b) => b.t) || (l.current && l.current.t ? l.current : null);
   const sum = host.querySelector(".ledger-summary") as HTMLElement | null;
   if (sum && newest && newest.t) sum.style.color = ageColorReadable(now - newest.t);
   host.querySelectorAll(".ledger-bullet").forEach((row, i) => {

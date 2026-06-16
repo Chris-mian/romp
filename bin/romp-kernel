@@ -1065,10 +1065,36 @@ def build_session(sid, now, tmux=None):
     # newest-first: render shows bullets[0] at the TOP (and reads it as "the newest" for the summary
     # hue) — turns iterate oldest→newest, so reverse. Matches state.ts recentReplyBullets' "newest first".
     bullets.sort(key=lambda b: b["t"], reverse=True)
-    ledger = {"summary": arch.get("headline", ""), "bullets": bullets}
     last_turn = session["turns"][-1] if session["turns"] else None
     open_now = bool(last_turn and not last_turn["ended"]
                     and not any(x["type"] == "idle" for x in last_turn["atoms"]))
+    # "working on" — what the session is doing RIGHT NOW: the in-progress turn's caption if it has one
+    # yet, else its prompt (≤140 chars), matching the timeline work-bar's `working on:` hover. Only while
+    # actually working; idle/ready → no current line (the user 2026-06-16).
+    current = None
+    if open_now and last_turn:
+        ctext = (caps.get(last_turn["id"], {}).get("caption")
+                 or _split_reminders(_seg_prompt(last_turn))[0][:140].strip())
+        if ctext:
+            _ca = next((x.get("uuid") for x in last_turn["atoms"] if x.get("uuid")), None)
+            _cax = seg_anchors.get(uuid2seg.get(_ca))
+            current = {"text": ctext, "t": last_turn["t"], "id": _ca, "sid": sid,
+                       "tlId": (_cax[0] if _cax else uuid2seg.get(_ca))}
+    # Open goals still on the graph — the "might do next" view: top-level nodes not done and not cleared
+    # (same predicate + cleared set as the feed cards), oldest-first (the user 2026-06-16).
+    gstore = jd.load_goals(sid)
+    gnodes, gstatus, gcleared = gstore.get("nodes", {}), gstore.get("status", {}), _cleared_ids()
+    gkids = {}
+    for _gid, _gn in gnodes.items():
+        gkids.setdefault(_gn.get("parentId"), []).append(_gid)
+    goals = []
+    for _gid in sorted(gkids.get(None, []), key=lambda c: gnodes[c]["t"]):
+        _gn = gnodes[_gid]
+        if _gn.get("nodeComplete") or _gn.get("cleared") or _gid in gcleared or gstatus.get(_gid) == "cleared":
+            continue
+        goals.append({"text": _gn["text"], "id": _gid, "t": _gn["t"]})
+    ledger = {"summary": arch.get("headline", ""), "bullets": bullets,
+              "current": current, "goals": goals[:8]}
     # work-timer base, in MILLISECONDS (render's elapsedMs does Date.now()ms - sinceEpoch; a seconds
     # value showed ~494,000h — the user's "400,000 hours" bug): the current open turn's start while
     # working, else the last activity; None when unknown (render then shows no timer).

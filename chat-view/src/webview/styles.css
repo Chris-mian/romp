@@ -132,8 +132,6 @@ body { display: flex; flex-direction: column; }
 .tab-close:hover { opacity: 1; background: rgba(255, 255, 255, 0.12); }
 .tab-add { color: var(--dim); font-size: 1.1em; padding: 6px 10px; border-radius: 6px; }
 .tab-add:hover { color: var(--fg); background: rgba(255, 255, 255, 0.04); }
-.tab-collapse { color: var(--dim); font-size: 0.85em; padding: 6px 9px; border-radius: 6px; }
-.tab-collapse:hover { color: var(--fg); background: rgba(255, 255, 255, 0.04); }
 .tab:focus-visible { outline: 1.5px solid var(--fg); outline-offset: 1px; } /* keyboard focus ring for arrow-nav */
 
 /* ---------- content ---------- */
@@ -152,7 +150,22 @@ body { display: flex; flex-direction: column; }
   padding: 7px 24px 9px; border-bottom: 1px solid var(--box-border); font-size: 0.9em;
   background: rgba(255, 255, 255, 0.05); border-radius: 0 0 7px 7px; /* subtle dark panel → max contrast for the bright, constant-lightness recency bullets (ageColorReadable) */
 }
-.ledger-summary { color: var(--fg); font-weight: 600; margin-bottom: 3px; overflow-wrap: anywhere; }
+/* title strip: caret + headline, always visible (even collapsed); a click toggles the overview below */
+.ledger-head { display: flex; align-items: baseline; column-gap: 6px; cursor: pointer; border-radius: 4px; margin: 0 -4px; padding: 0 4px; }
+.ledger-head:hover { background: rgba(255, 255, 255, 0.04); }
+.ledger-caret { flex: 0 0 auto; color: var(--dim); font-size: 0.8em; }
+.ledger-summary { flex: 1 1 auto; min-width: 0; color: var(--fg); font-weight: 600; overflow-wrap: anywhere; }
+/* dim section header inside the overview: goals / working on / done */
+.ledger-label { color: var(--dim); font-size: 0.78em; text-transform: uppercase; letter-spacing: 0.04em; margin: 7px 0 2px; }
+/* open goals — what the session might do next */
+.ledger-goals { display: flex; flex-direction: column; row-gap: 2px; }
+.ledger-goal { display: flex; align-items: baseline; column-gap: 8px; line-height: 1.45; }
+.ledger-goal-dot { flex: 0 0 auto; color: var(--dim); }
+.ledger-goal-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+/* working on — the live in-progress turn (italic, like the timeline's `working on:` hover) */
+.ledger-current { font-style: italic; line-height: 1.45; overflow-wrap: anywhere; border-radius: 4px; padding: 1px 5px; margin: 0 -5px; }
+.ledger-current.nav { cursor: pointer; }
+.ledger-current.nav:hover { background: rgba(255, 255, 255, 0.06); }
 /* two LEFT-aligned columns (no "·" markers): the "(X ago)" timestamps form a
    left column (col 1 = max-content → sized to the widest timestamp), and the
    bullet text lines up in a consistent column to their right, past a fixed gap.
