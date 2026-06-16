@@ -51,10 +51,12 @@ Triage tier (on-demand):
   SKIPS peer segments (`_seg_peer` is the shared discriminator) — no double-place.
   Global oldest-first across sessions; idempotent by msgId. Triage tier (run_courier,
   browser-gated). Dry-verified: 42 peer / 85 planner segs, zero leakage.
-  - [~] Read-side origin wiring (94a2146): ↪ from <sender> marker on the feed card
-    DONE — build_feed resolves `origin.peer` (sender sid) → name+color, the
-    `.fask-origin` chip shows it, click opens the sender. STILL TODO: bind the
-    timeline connector to the planted goal (the postal-log connector → the goal node).
+  - [~] Read-side origin wiring: ↪ from <sender> marker (94a2146) + connector→goal
+    DATA binding (479b5fa) DONE — build_feed resolves `origin.peer`→name+color (the
+    `.fask-origin` chip, click opens sender); `_postal_messages` sets `toGoal` =
+    the goal a message planted (origin.msgId match). STILL TODO: the timeline
+    draw() consuming toGoal (light the connector when its goal is focused) —
+    browser-only, deferred until there's live handoff data to verify against.
   - [ ] Sender goals as-of-SEND (MVP reads as-of-now). Live handoffs: as-of-now ≈
     as-of-send (tiny gap). Matters for BACKFILL — when the courier processes OLD
     messages, the sender's tree has since evolved, so as-of-now can pick a goalId
@@ -138,7 +140,11 @@ Read-side parity hardening (2026-06-15, the user's live review):
 - [x] Courier handoff marker (94a2146): "↪ from <sender>" on a planted card.
 - [ ] Remaining chat richness: image thumbnails (path: refs), postal parked badge + mid.
 - [ ] Re-judging progress surface.
-- [ ] Timeline connectors (needs the courier) + focus/hover overlays.
+- [~] Reverse-direction hover (479b5fa feed, 00c8746 chat): chat message / TOC bullet
+  (dotHover/ledgerHover, via segId) AND feed card (showAskPath → goal subtree segments)
+  hover now light the timeline (kernel routes → setHover, bars light via hit(segId)).
+  Timeline message connectors land from the postal log. STILL TODO: draw() consuming
+  toGoal for the connector-overlay; chat `jump` (dblclick → pan the timeline).
 - [ ] Tags: `dir → tag` map + per-session override; views via URL hash + gear default
   + timeline-bottom selector.
 - [ ] Comms scope: directory groups, group-wide, alive-gated edges + config allowlist
