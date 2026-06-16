@@ -728,15 +728,6 @@ function hoverEmit(ids: string | string[] | null) {
   if (Array.isArray(ids)) vscodeApi?.postMessage({ type: "hoverHighlight", ids });
   else vscodeApi?.postMessage({ type: "hoverHighlight", id: ids });
 }
-// Everything this node covers, for union hover: its delegation-message dot (or
-// the ask's typed-turn dot at the root) + every report under it, recursively.
-function collectHoverIds(it: AskItem, node: AskTreeNode, byId: Map<string, AskTreeNode>, out: string[], walked: Set<string>) {
-  if (walked.has(node.id)) return;
-  walked.add(node.id);
-  out.push(node.kind === "handoff" ? node.id : it.turnId);
-  for (const r of node.rows) out.push(r.reply_id);
-  for (const c of node.children || []) { const k = byId.get(c); if (k) collectHoverIds(it, k, byId, out, walked); }
-}
 
 // Node STATE → mark, exactly three (the user's model: completed / needing input /
 // not finished), in the chat timeline's visual language: ● filled green = done,
@@ -847,25 +838,25 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
   meta.textContent = node.status === "question" ? "needs you" : relAge(hostNow - node.last);
   if (node.status !== "question" && node.trgb) meta.style.color = "rgb(" + node.trgb.join(",") + ")";   // Hawaii recency tint
   line.appendChild(meta);
-  // Whole-line click NAVIGATES to this node's timeline anchor — the same target
-  // the line-hover highlights (collectHoverIds: handoff → its own event id, ask →
-  // the ask's turn). The triangle (above) is the only thing that toggles collapse.
+  // Whole-line click NAVIGATES to THIS node's own creation point in the chat — showOnTimeline is
+  // time-based (it scrolls to the nearest turn to `t`), so each node sends ITS OWN time, not the
+  // card's top turn. (Before: ask nodes sent it.t → every sub-item jumped to the top-level message
+  // instead of where that step happened — the user 2026-06-16.) navSid is the node's session
+  // (a handoff node lives in the recipient's transcript).
   if (!repeat) {
     line.classList.add("nav");
     const navId = node.kind === "handoff" ? node.id : it.turnId;
-    const navSid = node.kind === "handoff" ? (node.whoSid || node.id.split(":")[0]) : it.sid;
-    const navT = node.kind === "handoff" ? node.t : it.t;
-    line.onclick = (ev) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: navId, sid: navSid, t: navT }); };
+    const navSid = node.whoSid || (node.kind === "handoff" ? node.id.split(":")[0] : it.sid);
+    line.onclick = (ev) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: navId, sid: navSid, t: node.t }); };
   }
-  // hovering a parent line highlights the UNION of everything underneath it on
-  // the timeline; leaf reports highlight just themselves (in the rows below)
+  // Hovering a node lights ITS OWN work-bars on the timeline — the union of this node's segment trail
+  // and everything under it — via the SAME showAskPath the card uses, just scoped to this node (the
+  // host resolves the node's subtree segments). Leaving restores the card's full path. (Before: it
+  // emitted the goal-node id through hoverHighlight, which the timeline matches against SEGMENT ids,
+  // so a sub-node hover never lit anything — the user 2026-06-16.)
   if (!repeat) {
-    line.addEventListener("mouseenter", () => {
-      const ids: string[] = [];
-      collectHoverIds(it, node, byId, ids, new Set());
-      hoverEmit(ids);
-    });
-    line.addEventListener("mouseleave", () => hoverEmit(null));
+    line.addEventListener("mouseenter", () => vscodeApi?.postMessage({ type: "showAskPath", itemId: node.id, locate: false }));
+    line.addEventListener("mouseleave", () => vscodeApi?.postMessage({ type: "showAskPath", itemId: it.itemId, locate: false }));
   }
   box.appendChild(line);
   if (repeat) return;                                   // dim repeat: line only, no descent
