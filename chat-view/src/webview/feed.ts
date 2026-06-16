@@ -62,10 +62,6 @@ interface AskItem {
   openQuestions: AskQuestion[];                    // live unanswered DECISIONs → decision sub-cards
   openPaths: AskPath[];                            // open leaves → "waiting on X" drop-point lines
   reopened?: boolean;                              // resurrected: a question arrived AFTER the user cleared it
-  // liveness reveal (host-computed, decides nothing): outline color = what an
-  // automated "still being worked?" rule WOULD say; the tooltip carries the why.
-  liveness?: "active" | "delegated" | "stalled" | "settled";
-  livenessWhy?: string;
   autoFiled?: boolean;                             // settled → moved to COMPLETED by the auto-filing rule (keeps the green ring)
   explicitDone?: boolean;                          // every path explicitly DONE-stamped → blue ring (blue+green when settled agrees)
   waiting?: boolean;                               // paused on an EXTERNAL event → held in Working, ⏳ chip, no ring
@@ -73,7 +69,6 @@ interface AskItem {
   // the owning session is live-blocked (permission/picker) ON this card's work →
   // the card itself files under BLOCKED (the user's ruling 2026-06-11)
   blocked?: { state: string; since: number; what: string };
-  suspects?: Array<{ mid: string; to: string; t: number; snippet: string; why: string }>;  // ⚠ possible missed handoffs (host sweep)
   origin?: { peer: string; peerSid: string; color: { bg: string; fg: string } | null } | null;  // courier handoff: planted by a peer's message → "↪ from <peer>"
   groupTitle?: string;                             // host: this ask shares a typed turn with siblings → the group's title
   groupN?: number;                                 // host: sibling count for that turn (>1 ⇒ fold into one group card)
@@ -112,15 +107,6 @@ const askEls = new Map<string, HTMLElement>();
 // "g:"+turnId; applyFocus + focusAnchorId understand both.
 const groupEls = new Map<string, HTMLElement>();
 
-// A session LIVE-blocked on the user (permission prompt / stuck picker) — a session
-// STATE, not an ask. Rendered as a distinct card pinned to the top of NEEDS INPUT;
-// no Clear (self-resolves when the user acts), whole-card click → openSession.
-interface Blocked {
-  sid: string; name: string; color: { bg: string; fg: string } | null;
-  state: "permission" | "picker"; since: number; what: string;
-}
-let blocked: Blocked[] = [];
-const blockedEls = new Map<string, HTMLElement>();
 
 // The three columns. The HOST decides each ask's column by DAG path accounting
 // (completed only when every subgraph node is DONE); we just map its snake_case.
@@ -404,11 +390,9 @@ function makeAskCard(it: AskItem): HTMLElement {
   const blkBadge = el("a", "fask-blocked"); blkBadge.style.display = "none";   // ⏸ live permission/picker block → click opens the session
   const waitBadge = el("span", "fask-wait"); waitBadge.textContent = "⏳ waiting"; waitBadge.style.display = "none";
   waitBadge.title = "paused on an EXTERNAL event (CI, build, a peer's reply) — not on you; stays in Working, exempt from auto-filing; lifts when new work lands";
-  const suspBadge = el("a", "fask-suspect"); suspBadge.style.display = "none";   // ⚠ possible missed handoff → modal evidence + Report
-  const stallBadge = el("a", "fask-suspect"); stallBadge.style.display = "none"; // ⚠ stalled delegation (exception bucket, formerly a dashed ring)
   const fup = el("button", "fdismiss ffollow"); fup.textContent = "Follow up"; fup.title = "send a follow-up to this session"; fup.style.display = "none";
   const clr = el("button", "fdismiss"); clr.textContent = "Clear"; clr.title = "clear this ask (inbox-zero; the one human-asserted fact)";
-  actions.append(stallBadge, suspBadge, waitBadge, blkBadge, reBadge, fup, clr);
+  actions.append(waitBadge, blkBadge, reBadge, fup, clr);
   row2.append(idwrap);
   // ROW 3 — timestamp bottom-left · status badges + Clear bottom-right
   const row3 = el("div", "fask-row3"); row3.append(time, actions);
@@ -476,7 +460,7 @@ function makeAskCard(it: AskItem): HTMLElement {
 
   const a = card as any;
   a._title = title; a._name = name; a._time = time; a._reopened = reBadge;
-  a._blocked = blkBadge; a._wait = waitBadge; a._susp = suspBadge; a._stall = stallBadge;
+  a._blocked = blkBadge; a._wait = waitBadge;
   a._handoffs = handoffs;
   a._fup = fup;
   a._origin = origin;
@@ -506,23 +490,6 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   a._time.textContent = relAge(hostNow - it.t);
   a._reopened.style.display = it.reopened ? "" : "none";
   a._wait.style.display = it.waiting ? "" : "none";   // ⏳ paused on an external event
-  // ⚠ stalled: an unfinished delegation nobody is working — exception bucket
-  // (the user 2026-06-12-eve: this is a should-not-happen, not a ring)
-  const stalled = it.liveness === "stalled" && askColumn(it) === "asks";
-  a._stall.style.display = stalled ? "" : "none";
-  if (stalled) {
-    a._stall.textContent = "⚠ stalled";
-    a._stall.title = (it.livenessWhy || "an unfinished handoff nobody is working") + " — nudge or revive that session, mark done if moot, or file a report";
-    a._stall.onclick = (ev: Event) => { ev.stopPropagation(); fullscreenAskId = it.itemId; renderModal(); };
-  }
-  // ⚠ possible missed handoff: deterministic-sweep evidence → review + report in the modal
-  const sn = it.suspects?.length || 0;
-  a._susp.style.display = sn ? "" : "none";
-  if (sn) {
-    a._susp.textContent = sn > 1 ? `⚠ ${sn} handoffs?` : "⚠ handoff?";
-    a._susp.title = it.suspects![0].why + " — click to review the evidence and file a report";
-    a._susp.onclick = (ev: Event) => { ev.stopPropagation(); fullscreenAskId = it.itemId; renderModal(); };
-  }
   // ⏸ live block badge: the session is stopped mid-turn on a permission prompt /
   // picker FOR THIS CARD's work — the card files under BLOCKED while it lasts
   a._blocked.style.display = it.blocked ? "" : "none";
@@ -953,11 +920,9 @@ function renderModal() {
     ? items.find((i) => i.itemId === fullscreenAskId!.slice(2)) : null;
   // …OR a synthetic blocked-session card ("b:<sid>") — its modal is the ERROR
   // explanation (what's suspicious + what to note for a correction), nothing else.
-  const blk = (fullscreenAskId && fullscreenAskId.startsWith("b:"))
-    ? blocked.find((b) => "b:" + b.sid === fullscreenAskId) : null;
-  const it = (fullscreenAskId && !fullscreenAskId.startsWith("g:") && !fullscreenAskId.startsWith("i:") && !fullscreenAskId.startsWith("b:"))
+  const it = (fullscreenAskId && !fullscreenAskId.startsWith("g:") && !fullscreenAskId.startsWith("i:"))
     ? asks.find((a) => a.itemId === fullscreenAskId) : null;
-  if (!it && !grp && !fitem && !blk) { if (m) { m.remove(); hoverEmit(null); } modalRenderedId = null; return; }   // closed / dissolved → clear hover highlight
+  if (!it && !grp && !fitem) { if (m) { m.remove(); hoverEmit(null); } modalRenderedId = null; return; }   // closed / dissolved → clear hover highlight
   if (!m) {
     m = el("div", ""); m.id = "feed-modal";
     const inner = el("div", "feed-modal-inner");
@@ -978,8 +943,7 @@ function renderModal() {
     const fusend = el("button", "fq-send feed-modal-follow-send"); fusend.id = "feed-modal-follow-send"; fusend.textContent = "Send";
     fubox.append(fuin, fusend);
     const body = el("div", "feed-modal-body"); body.id = "feed-modal-body";
-    const rep = el("div", "feed-modal-report"); rep.id = "feed-modal-report";
-    inner.append(head, fubox, body, rep);
+    inner.append(head, fubox, body);
     m.appendChild(inner);
     m.onclick = (ev) => { if (ev.target === m) { fullscreenAskId = null; renderModal(); } };  // backdrop closes
     document.body.appendChild(m);
@@ -1060,8 +1024,6 @@ function renderModal() {
     wireFollowUp(fupEl, fuboxEl, fuinEl, fusendEl, (txt) =>
       vscodeApi?.postMessage({ type: "askFollowUp", itemId: grp.members[0].itemId, title: grp.title, text: txt }));
     renderGroupModalBody(body, grp.members);
-    renderReportInto(document.getElementById("feed-modal-report")!, grp.members[0].itemId,
-      grp.members.flatMap((mm) => mm.suspects || []));
   } else if (it) {
     ttlEl.textContent = it.text;
     titleHoverId = it.turnId;
@@ -1075,7 +1037,6 @@ function renderModal() {
     wireFollowUp(fupEl, fuboxEl, fuinEl, fusendEl, (txt) =>
       vscodeApi?.postMessage({ type: "askFollowUp", itemId: it.itemId, text: txt }));
     renderTreeBody(body, it, true);   // single-ask modal: header shows the root, so skip its body line
-    renderReportInto(document.getElementById("feed-modal-report")!, it.itemId, it.suspects);
   } else if (fitem) {
     ttlEl.textContent = fitem.did;
     ttlEl.onclick = () => vscodeApi?.postMessage({ type: "showOnTimeline", itemId: fitem.itemId, sid: fitem.sid, t: fitem.t, anchor: "prompt" });
@@ -1092,19 +1053,6 @@ function renderModal() {
         generate: fitem.relevance === "DONE" || fitem.relevance === "DECISION" });
     }
     renderStandaloneTreeInto(body, fitem);
-    renderReportInto(document.getElementById("feed-modal-report")!, fitem.itemId, undefined);
-  } else if (blk) {
-    // ERROR-FLAG modal (the user's ruling 2026-06-11): a synthetic blocked card is
-    // inherently suspicious — explain the miss and what a correction needs.
-    ttlEl.textContent = "Unattributed blocked session";
-    ttlEl.classList.remove("nav"); ttlEl.onclick = null; ttlEl.title = "";
-    agent.textContent = blk.name; if (blk.color) agent.style.color = blk.color.bg; setWorkDot(agent, workingSet.has(blk.name)); agent.classList.remove("dead");   // a blocked card is always a live session
-    agent.onclick = () => vscodeApi?.postMessage({ type: "openSession", id: blk.sid });
-    ageEl.textContent = "blocked " + relAge(hostNow - blk.since).replace(/ ago$/, "");
-    clrEl.style.display = "none";                                   // nothing to clear — self-resolves
-    fupEl.style.display = "none"; fuboxEl.style.display = "none";   // and nothing to follow up on
-    renderBlockedSuspectInto(body, blk);
-    renderReportInto(document.getElementById("feed-modal-report")!, "blocked:" + blk.sid, undefined);
   }
   // modal title hover → light the originating message in the chat (+ its timeline
   // glyph), the same join the title CLICK locates to (the user 2026-06-12). Asks
@@ -1115,81 +1063,6 @@ function renderModal() {
   ttlEl.onmouseleave = titleHoverId ? () => hoverEmit(null) : null;
 }
 
-// ⚠ Report box (the user's three-bucket model, 2026-06-11): the EXCEPTION path.
-// Shown in every card modal; when the deterministic sweep attached missed-handoff
-// suspects, their evidence renders above it and the category preselects. Filing
-// posts askReport -> requests/reports.jsonl: a labeled failure example for the
-// next prompt rework. Normal actions (Clear, answer, mark done) are NOT reports;
-// this box is only for "the system got something wrong".
-function renderReportInto(host: HTMLElement, itemId: string, suspects?: Array<{ mid: string; to: string; t: number; snippet: string; why: string }>) {
-  const sig = "rep:" + itemId + ":" + (suspects?.length || 0);
-  if ((host as any)._sig === sig) return;
-  (host as any)._sig = sig;
-  host.innerHTML = "";
-  if (suspects?.length) {
-    const lab = el("div", "fx-label fsuspect-lab"); lab.textContent = "\u26a0 possible missed handoff"; host.appendChild(lab);
-    for (const sp of suspects) {
-      const row = el("div", "fx-body fsuspect");
-      row.textContent = `${sp.why} (${relAge(hostNow - sp.t)}): \u201c${sp.snippet}\u2026\u201d`;
-      host.appendChild(row);
-    }
-    const hint = el("div", "fx-body fsuspect-hint");
-    hint.textContent = "Real handoff? File the report below as 'missed handoff'. False alarm? File it as 'other' and say so. Both teach the classifier.";
-    host.appendChild(hint);
-  }
-  const toggle = el("a", "frep-toggle"); toggle.textContent = "\u26a0 Report an exception";
-  toggle.title = "something here is wrong (wrong column, missed handoff, junk card\u2026) \u2014 describe it and it becomes a labeled example for prompt refinement";
-  const box = el("div", "frep-box"); box.style.display = suspects?.length ? "" : "none";
-  const sel = document.createElement("select"); sel.className = "frep-sel";
-  for (const [v, lab2] of [
-    ["not-done", "this is shown as done but isn't"],
-    ["missed-handoff", "this WAS a real handoff (confirm the ⚠)"],
-    ["false-flag", "this flag/badge is wrong (false alarm)"],
-    ["other", "something else — describe it"],
-  ] as const) { const o = document.createElement("option"); o.value = v; o.textContent = lab2; sel.appendChild(o); }
-  if (suspects?.length) sel.value = "missed-handoff";
-  const ta = document.createElement("textarea"); ta.className = "frep-input"; ta.placeholder = "what happened / what should have happened\u2026"; ta.rows = 2;
-  const send = el("button", "fq-send frep-send"); send.textContent = "File report";
-  send.onclick = () => {
-    vscodeApi?.postMessage({ type: "askReport", itemId, category: sel.value, text: ta.value.trim() });
-    ta.value = ""; box.style.display = "none";
-    toggle.textContent = "\u2713 report filed"; setTimeout(() => { toggle.textContent = "\u26a0 Report an exception"; }, 2500);
-  };
-  toggle.onclick = () => { box.style.display = box.style.display === "none" ? "" : "none"; };
-  box.append(sel, ta, send);
-  host.append(toggle, box);
-}
-
-// Body of the unattributed-blocked modal. This card type exists ONLY to flag a
-// registry error: under the every-prompt-mints-an-ask rule, a live blocked turn
-// that no card claims means capture or linking failed (or the card was cleared
-// — the benign overlap). It is NOT a supported steady-state card.
-function renderBlockedSuspectInto(host: HTMLElement, b: Blocked) {
-  const sig = "blk:" + b.sid + ":" + b.state;
-  if ((host as any)._sig === sig) return;
-  (host as any)._sig = sig;
-  host.innerHTML = "";
-  const mk = (label: string, text: string) => {
-    const lab = el("div", "fx-label"); lab.textContent = label;
-    const bod = el("div", "fx-body"); bod.textContent = text;
-    host.append(lab, bod);
-  };
-  mk("What this card is",
-    `${b.name} is stopped mid-turn (${b.what}), but no card claims the turn it is blocked on. ` +
-    "Every typed prompt is supposed to mint or amend an ask, so an unclaimed live turn means the " +
-    "registry missed something. This card exists only to flag that miss — and to keep the block " +
-    "itself visible so you can act on it (click the session name to answer the prompt).");
-  mk("Likely causes",
-    "1) The prompt that started this work never minted an ask — the capture model under-fired; " +
-    "its verdict for the turn is in requests/decision-log.jsonl (ask-capture row, verdict/backstop fields). " +
-    "2) You already cleared the card this work belongs to — benign; the card vanishes when you unblock the session. " +
-    "3) The work hasn't been linked to its ask yet — a linking miss if this persists after the turn ends.");
-  mk("To file a correction",
-    "Note the session name, when you typed the prompt behind this work, and which ask it should have " +
-    "been filed under (or the new ask it should have minted). Tell any session to record it — the row " +
-    "becomes a labeled regression example in corrections.jsonl, and the next capture-prompt rework " +
-    "trains against it.");
-}
 
 // Standalone completion rendered in the SAME visual language as ask cards
 // (the user 2026-06-10: "I would prefer if that particular simple card had a
@@ -1257,66 +1130,12 @@ function renderGroupModalBody(host: HTMLElement, members: AskItem[]) {
   }
 }
 
-// ---- SYNTHETIC blocked-session card: an ERROR FLAG, not a card type ----
-// A blocked session normally surfaces as its OWN ask card moving to BLOCKED
-// (host annotates it via the turn→card join). This synthetic card renders only
-// when NO card claims the blocked turn — which the every-prompt-mints rule says
-// should never happen — so it is inherently suspicious and wears the ⚠ badge;
-// the badge's modal explains the miss and what a correction needs. NO Clear
-// (self-resolves when the user acts); whole-card click opens the session.
-function makeBlockedCard(b: Blocked): HTMLElement {
-  const card = el("div", "fitem blocked");
-  card.dataset.key = "b:" + b.sid;
-  const main = el("div", "fitem-main");
-  const row1 = el("div", "fask-row1");
-  const title = el("div", "fcard-title");
-  const time = el("span", "ftime");
-  row1.append(title, time);
-  const row2 = el("div", "fask-row2");
-  const idwrap = el("div", "fask-id");
-  const name = el("span", "fname");
-  idwrap.append(name);
-  const warn = el("a", "fask-suspect"); warn.textContent = "⚠ unattributed";
-  warn.title = "no card claims this blocked turn — that's a registry miss; click for what it means and how to correct it";
-  warn.onclick = (ev) => { ev.stopPropagation(); fullscreenAskId = "b:" + b.sid; renderModal(); };
-  const hint = el("span", "blocked-hint"); hint.textContent = "click to answer →"; // picker only
-  row2.append(idwrap, warn, hint);
-  main.append(row1, row2);
-  card.append(main);
-  // Read the CURRENT state on click (the card is reused across state flips, so the
-  // closure must not capture the creation-time state): picker → drive it via a
-  // QuickPick (answerPicker); permission → just open the session.
-  card.onclick = () => {
-    const cur = (card as any)._b as Blocked | undefined;
-    if (!cur) return;
-    if (cur.state === "picker") vscodeApi?.postMessage({ type: "answerPicker", name: cur.name });
-    else if (cur.sid) vscodeApi?.postMessage({ type: "openSession", id: cur.sid });
-  };
-  const a = card as any;
-  a._title = title; a._name = name; a._time = time; a._hint = hint;
-  return card;
-}
-
-function updateBlockedCard(card: HTMLElement, b: Blocked) {
-  const a = card as any;
-  a._b = b;                                          // current state for the click handler
-  a._title.textContent = b.what;
-  a._name.textContent = b.name;
-  if (b.color) a._name.style.color = b.color.bg;
-  a._time.textContent = "blocked " + relAge(hostNow - b.since).replace(/ ago$/, "");
-  const isPicker = b.state === "picker";
-  a._hint.style.display = isPicker ? "" : "none";    // affordance hint only for actionable picker cards
-  card.title = isPicker ? "click to answer the picker" : "open this session";
-  card.classList.toggle("actionable", isPicker);
-}
-
-// A column entry is an ask card, a standalone deliverable card, or a blocked-
-// session state card; the reconcile picks the right builder + cache map by kind.
+// A column entry is an ask card or a standalone deliverable card; the reconcile
+// picks the right builder + cache map by kind.
 type Entry =
   | { kind: "ask"; t: number; ask: AskItem }
   | { kind: "group"; t: number; group: AskGroup }
-  | { kind: "item"; t: number; item: FeedItem }
-  | { kind: "blocked"; t: number; blocked: Blocked };
+  | { kind: "item"; t: number; item: FeedItem };
 
 // UndoClear (top right): restore the most recently cleared card — the host pops
 // the newest cleared.jsonl row. Built fresh wherever the top strip renders: on
@@ -1414,11 +1233,6 @@ function reconcileCol(listEl: HTMLElement, entries: Entry[], globalDesired: Set<
       card = groupEls.get(e.group.turnId) || makeGroupCard(e.group);
       groupEls.set(e.group.turnId, card);
       updateGroupCard(card, e.group);
-    } else if (e.kind === "blocked") {
-      key = "b:" + e.blocked.sid;
-      card = blockedEls.get(e.blocked.sid) || makeBlockedCard(e.blocked);
-      blockedEls.set(e.blocked.sid, card);
-      updateBlockedCard(card, e.blocked);
     } else {
       key = "i:" + e.item.itemId;
       card = cardEls.get(e.item.itemId) || makeCard(e.item);
@@ -1444,14 +1258,14 @@ function render() {
   const prevScroll = list.scrollTop;
   const standalone = standaloneItems();
   // footer buttons (below the cards, no overlap): Clear all first (left), UndoClear far right
-  const showCA = !!(asks.length || standalone.length || blocked.length);
+  const showCA = !!(asks.length || standalone.length);
   ensureClearAll().style.display = showCA ? "" : "none";
   ensureUndoClear().style.display = canUndoClear ? "" : "none";
   const foot = document.getElementById("feed-foot");
   if (foot) foot.style.display = (showCA || canUndoClear) ? "" : "none";
 
-  if (!asks.length && !standalone.length && !blocked.length) {
-    list.innerHTML = ""; askEls.clear(); groupEls.clear(); cardEls.clear(); blockedEls.clear();
+  if (!asks.length && !standalone.length) {
+    list.innerHTML = ""; askEls.clear(); groupEls.clear(); cardEls.clear();
     // inbox zero → the romp otters (media/romp-otter.png, a CSS background) instead of
     // words (the user 2026-06-13). role/aria-label + title keep the meaning for hover /
     // screen readers, since a background image carries no accessible text of its own.
@@ -1481,12 +1295,6 @@ function render() {
   for (const a of asks) { if (grouped.has(a.itemId)) continue; buckets[askColumn(a)].push({ kind: "ask", t: a.t, ask: a }); }
   for (const it of standalone) buckets[it.relevance === "DONE" ? "completed" : "needsInput"].push({ kind: "item", t: it.t, item: it });
   for (const k of Object.keys(buckets) as Column[]) buckets[k].sort((x, y) => y.t - x.t);   // newest first
-  // blocked-session cards pin to the TOP of NEEDS INPUT (a live state, not an ask),
-  // longest-blocked first (smallest `since`).
-  const blockedEntries: Entry[] = blocked.slice()
-    .sort((a, b) => a.since - b.since)
-    .map((b) => ({ kind: "blocked", t: b.since, blocked: b }));
-  buckets.needsInput = [...blockedEntries, ...buckets.needsInput];
 
   const desired = new Set<string>();
   reconcileCol(cols.asks, buckets.asks, desired);
@@ -1499,7 +1307,6 @@ function render() {
   for (const id of Array.from(askEls.keys())) if (!desired.has("a:" + id)) { askEls.get(id)?.remove(); askEls.delete(id); }
   for (const tid of Array.from(groupEls.keys())) if (!desired.has("g:" + tid)) { groupEls.get(tid)?.remove(); groupEls.delete(tid); }
   for (const id of Array.from(cardEls.keys())) if (!desired.has("i:" + id)) { cardEls.get(id)?.remove(); cardEls.delete(id); }
-  for (const id of Array.from(blockedEls.keys())) if (!desired.has("b:" + id)) { blockedEls.get(id)?.remove(); blockedEls.delete(id); }
 
   list.scrollTop = prevScroll;
   renderModal();   // keep the ⛶ full-screen tree (if open) in sync with this push
@@ -1543,7 +1350,6 @@ window.addEventListener("message", (e: MessageEvent) => {
   if (m.type === "feed") {
     items = Array.isArray(m.items) ? m.items : [];
     asks = Array.isArray(m.asks) ? m.asks : [];
-    blocked = Array.isArray(m.blocked) ? m.blocked : [];
     workingSet = new Set(Array.isArray(m.working) ? m.working : []);
     hostNow = typeof m.now === "number" ? m.now : Math.floor(Date.now() / 1000);
     if (typeof m.dismissedCount === "number") dismissedCount = m.dismissedCount;
@@ -1637,11 +1443,6 @@ setInterval(() => {
     const it = asks.find((a) => a.itemId === id);
     const t = (card as any)._time as HTMLElement | undefined;
     if (it && t) t.textContent = relAge(now - it.t);
-  }
-  for (const [id, card] of blockedEls) {
-    const b = blocked.find((x) => x.sid === id);
-    const t = (card as any)._time as HTMLElement | undefined;
-    if (b && t) t.textContent = "blocked " + relAge(now - b.since).replace(/ ago$/, "");
   }
 }, 15000);
 

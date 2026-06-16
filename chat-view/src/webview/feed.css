@@ -167,8 +167,6 @@ body { display: flex; flex-direction: column; }
    the user's hover hit-area bug); with the age moved to row 3, a long title runs the full width. */
 .fask-row1 { display: flex; align-items: baseline; gap: 10px; }
 .fask-row1 .fcard-title { flex: 0 1 auto; min-width: 0; }
-/* the blocked (amber) card still carries its age inline on row 1 (it has no row 3) */
-.fitem.blocked .fask-row1 .ftime { flex: 0 0 auto; margin-left: auto; }
 /* row 2 — the session name on its own row below the title; sized to its text so blank space
    to its right stays card-body (opens the modal), and wrapping so a long name can't overflow. */
 .fask-row2 { display: flex; align-items: center; gap: 8px; margin-top: 3px; }
@@ -370,15 +368,6 @@ body { display: flex; flex-direction: column; }
 .frow.st-answer .frow-mark { color: var(--rel-decision); }
 .frow.st-answer { opacity: 1; }
 
-/* ⚠ suspect badge — ONLY on the synthetic (unattributed) blocked card: the
-   registry missed this turn's ask; click opens the error-explanation modal.
-   Amber, not red: it flags a bookkeeping error, not something the user owes. */
-.fask-suspect {
-  flex: 0 0 auto; font-size: 0.72em; font-weight: 700; letter-spacing: 0.03em;
-  color: #E0A030; cursor: pointer; white-space: nowrap;
-}
-.fask-suspect:hover { text-decoration: underline; }
-
 /* ---------- liveness anomaly rings (2026-06-11) ---------- */
 /* The OUTLINE ring marks a card whose LIVE state disagrees with the column it's
    filed in (agreement = no ring; the user's simplification). Host-computed from
@@ -418,15 +407,6 @@ body { display: flex; flex-direction: column; }
 /* the modal's agent name carries the same strike when its session is dead */
 .feed-modal-agent.dead { text-decoration: line-through; }
 .feed-modal-agent.dead:hover { text-decoration: line-through underline; }
-
-/* blocked-session state card — distinct amber "attention" treatment (bg set here,
-   not inline, since it carries no recency tint); pinned to the top of NEEDS INPUT */
-.fitem.blocked { border-color: rgba(224, 176, 32, 0.55); background: rgba(224, 176, 32, 0.11); }
-.fitem.blocked .fcard-title { font-weight: 600; }
-.fitem.blocked .ftime { color: #e0b020; font-weight: 600; }
-/* picker cards are actionable — a "click to answer →" affordance, brighter hover */
-.blocked-hint { margin-left: auto; white-space: nowrap; font-size: 0.78em; font-weight: 600; color: #e0b020; }
-.fitem.blocked.actionable:hover { background: rgba(224, 176, 32, 0.18); }
 
 .ftime {
   flex: 0 0 auto; font-size: 0.8em; color: var(--dim);
@@ -505,28 +485,6 @@ body { display: flex; flex-direction: column; }
 /* white outline mirroring the timeline's hover highlight — applied to the
    card(s) built from the turn whose rail dot is hovered in the chat panel */
 .dot-hl { outline: 1.5px solid rgba(255, 255, 255, 0.9); outline-offset: 1px; }
-
-/* ---------- ⚠ exception report box (modal bottom) ---------- */
-/* The exception path of the user's three buckets: evidence (when the sweep
-   attached suspects) + category + free text → requests/reports.jsonl. */
-.feed-modal-report { margin-top: 10px; border-top: 1px solid var(--card-border); padding-top: 8px; }
-.frep-toggle { font-size: 0.8em; color: #E0A030; cursor: pointer; }
-.frep-toggle:hover { text-decoration: underline; }
-.frep-box { display: flex; flex-direction: column; gap: 6px; margin-top: 7px; }
-.frep-sel {
-  font: inherit; font-size: 0.85em; color: var(--fg);
-  background: rgba(255, 255, 255, 0.06); border: 1px solid var(--card-border); border-radius: 6px;
-  padding: 3px 6px; max-width: 360px;
-}
-.frep-input {
-  font: inherit; font-size: 0.9em; color: var(--fg);
-  background: rgba(255, 255, 255, 0.06); border: 1px solid var(--card-border); border-radius: 6px;
-  padding: 5px 8px; resize: vertical;
-}
-.frep-send { align-self: flex-start; }
-.fsuspect-lab { color: #E0A030; }
-.fsuspect { border-left: 2px solid #E0A030; padding-left: 8px; }
-.fsuspect-hint { opacity: 0.65; font-size: 0.9em; }
 
 /* (help overlay removed 2026-06-14 — the feed is self-explanatory now) */
 
