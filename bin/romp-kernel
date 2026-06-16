@@ -2056,22 +2056,35 @@ def _chat_page():
 # tab loaded, flagged ⚠ when the tab is stale (a reload is owed). This is the version display the user
 # asked for, off the Clear-all/Undo bar and behind the gear.
 _GEAR_CSS = ("#rgear{position:fixed;top:6px;right:8px;z-index:60;background:none;border:0;color:#9aa0a6;"
-             "font-size:15px;cursor:pointer;opacity:.55;line-height:1;padding:2px}#rgear:hover{opacity:1}"
-             "#rsettings{position:fixed;top:30px;right:8px;z-index:60;min-width:210px;background:#252526;"
+             "font-size:16px;cursor:pointer;opacity:.55;line-height:1;padding:2px}#rgear:hover{opacity:1}"
+             "#rsettings{position:fixed;top:30px;right:8px;z-index:60;min-width:240px;max-width:300px;background:#252526;"
              "border:1px solid #3a3a3a;border-radius:8px;padding:10px 12px;font:12px/1.5 -apple-system,sans-serif;"
              "color:#ccc;box-shadow:0 8px 24px #00000066}#rsettings .rs-h{font-weight:600;margin-bottom:6px;"
-             "color:#9aa0a6}#rsver{white-space:pre-line}")
-_GEAR_HTML = ("<button id=rgear title=Settings aria-label=Settings>⚙</button>"
-              "<div id=rsettings hidden><div class=rs-h>romp · version</div>"
+             "color:#9aa0a6}#rsver{white-space:pre-line}"
+             "#rsettings .rs-row{display:flex;align-items:flex-start;gap:8px;padding:2px 0 6px;cursor:pointer}"
+             "#rsettings .rs-row input{margin:3px 0 0;flex:0 0 auto;cursor:pointer}"
+             "#rsettings .rs-sub{display:block;color:#9aa0a6;font-size:.9em;margin-top:1px;line-height:1.35}"
+             "#rsettings .rs-sep{border-top:1px solid #3a3a3a;margin-top:6px;padding-top:8px}")
+_GEAR_HTML = ("<button id=rgear title=Settings aria-label=Settings>⛭</button>"
+              "<div id=rsettings hidden>"
+              "<div class=rs-h>Settings</div>"
+              "<label class=rs-row><input type=checkbox id=rs-compact>"
+              "<span><b>Compact transcript</b>"
+              "<span class=rs-sub>Collapse each run of tool uses into one line and hide thinking blocks in the chat.</span>"
+              "</span></label>"
+              "<div class='rs-h rs-sep'>romp · version</div>"
               "<div id=rsver>…</div></div>")
 _GEAR_JS = r"""(function(){var g=document.getElementById('rgear'),p=document.getElementById('rsettings'),
-b=document.getElementById('rsver');function lv(){var t=document.querySelector('script[src*="feed.js"]');
+b=document.getElementById('rsver'),cc=document.getElementById('rs-compact');
+function load(){try{return Object.assign({compact:false},JSON.parse(localStorage.getItem('romp:settings')||'null'));}catch(e){return {compact:false};}}
+cc.addEventListener('change',function(){var s=load();s.compact=cc.checked;try{localStorage.setItem('romp:settings',JSON.stringify(s));}catch(e){}});
+function lv(){var t=document.querySelector('script[src*="feed.js"]');
 var m=t&&t.getAttribute('src').match(/[?&]v=(\d+)/);return m?+m[1]:0;}
 function fill(){fetch('/version',{cache:'no-store'}).then(function(r){return r.json();}).then(function(v){
 var x=lv();b.innerHTML='kernel '+(v.kernel_sha||'?')+'\nserving v'+
 v.dist_ver+'\nthis tab v'+(x||'?');
 }).catch(function(){b.textContent='(version unavailable)';});}
-g.onclick=function(e){e.stopPropagation();if(p.hidden){p.hidden=false;fill();}else p.hidden=true;};
+g.onclick=function(e){e.stopPropagation();if(p.hidden){p.hidden=false;cc.checked=!!load().compact;fill();}else p.hidden=true;};
 document.addEventListener('click',function(e){if(!p.hidden&&e.target!==g&&!p.contains(e.target))p.hidden=true;});})();"""
 
 
