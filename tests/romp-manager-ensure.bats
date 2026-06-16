@@ -52,3 +52,28 @@ teardown() {
     [ "$status" -eq 0 ]
     [[ "$output" == *'"id":"main"'* ]]
 }
+
+@test "manager bootstraps a tmux server (launchd-rooted) with exit-empty off" {
+    command -v node >/dev/null 2>&1 || skip "node not available"
+
+    # Fake tmux on PATH that records its args — so we assert WHAT the manager asks of tmux at startup,
+    # without touching the real tmux server. (The fix: a launchd-rooted server so new sessions don't
+    # inherit a terminal's TCC identity → the "VS Code wants to access" prompt.)
+    BIN="$TEST_DIR/bin"; mkdir -p "$BIN"
+    CALLS="$TEST_DIR/tmux-calls"
+    printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s"\nexit 0\n' "$CALLS" > "$BIN/tmux"
+    chmod +x "$BIN/tmux"
+
+    # Run `up` directly on a UNIQUE port (so it doesn't no-op against the other test's manager); the
+    # manager calls startTmuxServer() at startup, before it ever binds the control port.
+    env PATH="$BIN:$PATH" ROMP_MANAGER_PORT=7571 ROMP_SERVE_PORT=7572 ROMP_SERVE_BIN="$FAKE" node "$MGR" up >/dev/null 2>&1 &
+    MGR_PID=$!
+    local i
+    for i in $(seq 1 50); do [ -f "$CALLS" ] && break; sleep 0.1; done
+    kill "$MGR_PID" 2>/dev/null || true
+
+    # startManager() → startTmuxServer() ran our fake tmux with start-server + exit-empty off.
+    [ -f "$CALLS" ]
+    grep -q "start-server" "$CALLS"
+    grep -q "exit-empty off" "$CALLS"
+}

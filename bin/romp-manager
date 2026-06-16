@@ -23,7 +23,7 @@
 // (`restart [kernel]` (single) and `down`/`/stop` also exist for front ends / SIGINT — no romp verb.)
 
 const http = require('http');
-const { spawn } = require('child_process');
+const { spawn, execFileSync } = require('child_process');
 const os = require('os');
 const path = require('path');
 const fs = require('fs');
@@ -153,7 +153,21 @@ function runManager() {
   });
 }
 
+// Start the tmux server under THIS launchd-rooted manager so every romp session inherits a clean launchd
+// lineage. macOS TCC blames the GUI app at the root of the tmux SERVER's process lineage for any
+// protected access, so a server first started from a VS Code integrated terminal makes every new session
+// prompt "Visual Studio Code wants to access…" — even with VS Code closed (its helpers linger). Starting
+// the server here at login fixes it permanently. `exit-empty off` keeps the (initially empty) server alive
+// until real sessions join; it's a no-op if a server is already running (the user 2026-06-16).
+function startTmuxServer() {
+  try {
+    execFileSync('tmux', ['start-server', ';', 'set', '-g', 'exit-empty', 'off'], { stdio: 'ignore', timeout: 5000 });
+    log('tmux server ensured (launchd-rooted) — new sessions won\'t inherit a terminal\'s TCC identity');
+  } catch (e) { /* tmux not installed, or a server is already up — nothing to do */ }
+}
+
 function startManager() {
+  startTmuxServer();
   const server = http.createServer((req, res) => {
     const url = new URL(req.url || '/', 'http://x');
     const kid = url.searchParams.get('kernel') || 'main';
