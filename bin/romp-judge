@@ -972,6 +972,94 @@ def _ab_sweep(sessions_cap=PLAN_SESSIONS):
             print("       · kept open: %s" % " | ".join(s["kept"]))
 
 
+# ───────────────────────── A/B: the planner's blocked/working classification ─────────────────────────
+CLASSIFY_ARMS = [("sonnet", TRIAGE_MODEL, None),            # baseline (current)
+                 ("sonnet+think", TRIAGE_MODEL, "medium"),  # thinking
+                 ("opus+think", "claude-opus-4-8", "medium")]
+
+
+def _latest_subtree_segment(nid, nodes, children, seg_by_id):
+    """The most-recent segment in a goal's subtree (its trail seg ids, max by t). For a currently-
+    BLOCKED goal this is the blocking segment (newest-wins un-block means no later work cleared it); for
+    a WORKING goal it's the latest activity. None if the subtree has no resolvable segment."""
+    segs, stack = [], [nid]
+    while stack:
+        x = stack.pop()
+        for s in nodes.get(x, {}).get("trail", []):
+            if s in seg_by_id:
+                segs.append(seg_by_id[s])
+        stack.extend(children.get(x, []))
+    return max(segs, key=lambda s: s["t"]) if segs else None
+
+
+def _ab_classify(sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY):
+    """Measure-only: re-run the planner's BLOCKED/WORKING verdict on the current uncleared top-goals
+    (working + blocked) under 3 arms — sonnet / sonnet+effort medium / opus+effort medium — and diff vs
+    the live status, WITHOUT mutating goal state. The question: do the soft blocks hold under
+    thinking/opus, or were they over-blocks the bigger model corrects?"""
+    now = int(time.time())
+    fleet = discover(now)[:sessions_cap]
+    jobs = []
+    for fsid, path, anchor, name in fleet:
+        try:
+            session = em.parse_session(str(path), rompuuid=fsid, candidate_files=[str(path)],
+                                       postal_log=str(MESSAGES), now=now)
+        except Exception:
+            continue
+        store = load_goals(fsid)
+        nodes, status = store.get("nodes", {}), store.get("status", {})
+        seg_by_id = {seg["id"]: seg for turn in session["turns"] for seg in em.segments(turn)}
+        children = {}
+        for x, nd in nodes.items():
+            children.setdefault(nd.get("parentId"), []).append(x)
+        menu = open_menu(store)
+        menu_text = _menu_text(store, menu)
+        for nid in children.get(None, []):
+            st = status.get(nid)
+            if st not in ("working", "blocked"):
+                continue
+            seg = _latest_subtree_segment(nid, nodes, children, seg_by_id)
+            if not seg:
+                continue
+            jobs.append({"session": name or fsid[:8], "goal": nodes[nid]["text"], "current": st,
+                         "text": _unit_text(seg["atoms"]), "menu_text": menu_text, "menu_len": len(menu)})
+
+    def classify(job):
+        v = {}
+        for arm, model, effort in CLASSIFY_ARMS:
+            edit = _parse_goal_edit(plan_llm(job["text"], job["menu_text"], model=model, effort=effort), job["menu_len"])
+            v[arm] = ("blocked" if edit["block"] else "working") if edit else "?"
+        return dict(job, v=v)
+    with ThreadPoolExecutor(max_workers=concurrency) as ex:
+        rows = list(ex.map(classify, jobs))
+
+    armnames = [a[0] for a in CLASSIFY_ARMS]
+    print("\n=== A/B: planner BLOCKED/WORKING classification (measure-only, no state change) ===")
+    print("%d uncleared top-goals (working + blocked) across %d sessions\n" % (len(rows), len(fleet)))
+    print("                current    " + "  ".join("%-13s" % a for a in armnames))
+
+    def cnt(arm, verdict):
+        return sum(1 for r in rows if r["v"].get(arm) == verdict)
+    print("blocked:        %-10d %s" % (sum(1 for r in rows if r["current"] == "blocked"),
+                                        "  ".join("%-13d" % cnt(a, "blocked") for a in armnames)))
+    print("working:        %-10d %s" % (sum(1 for r in rows if r["current"] == "working"),
+                                        "  ".join("%-13d" % cnt(a, "working") for a in armnames)))
+    print("\n--- current SOFT BLOCKS: do they HOLD as blocked, or flip to working? ---")
+    blk = [r for r in rows if r["current"] == "blocked"]
+    for r in blk:
+        print("  [%s] %s" % (r["session"], r["goal"][:62]))
+        print("       " + "   ".join("%s=%s" % (a, r["v"].get(a)) for a in armnames))
+    if not blk:
+        print("  (none currently blocked)")
+    print("\n--- current WORKING goals an arm flips to BLOCKED (new over-blocks?) ---")
+    flips = [r for r in rows if r["current"] == "working" and any(r["v"].get(a) == "blocked" for a in armnames)]
+    for r in flips:
+        print("  [%s] %s" % (r["session"], r["goal"][:62]))
+        print("       " + "   ".join("%s=%s" % (a, r["v"].get(a)) for a in armnames))
+    if not flips:
+        print("  (none)")
+
+
 # ───────────────────────── the courier (triage tier; postal handoffs) ─────────────────────────
 # The courier is the PLACER for peer-message (postal) segments — the planner SKIPS those (no
 # double-placement). For a PROPAGATING message it plants a top-level goal in the RECIPIENT's tree
@@ -1174,6 +1262,8 @@ def main():
         sys.stderr.write("romp-judge: negative sweep completed %d nodes\n" % n)
     elif args and args[0] == "--ab-sweep":
         _ab_sweep()
+    elif args and args[0] == "--ab-classify":
+        _ab_classify()
     elif len(args) >= 2 and args[0] == "--test":
         _test(args[1])
     elif args and args[0] == "--archives":
@@ -1181,7 +1271,7 @@ def main():
     elif args and args[0] == "--goals":
         _dump_goals()
     else:
-        sys.stderr.write("usage: romp-judge [--once | --plan | --sweep | --ab-sweep | --test <transcript> | --archives | --goals]\n")
+        sys.stderr.write("usage: romp-judge [--once | --plan | --sweep | --ab-sweep | --ab-classify | --test <transcript> | --archives | --goals]\n")
         sys.exit(2)
 
 

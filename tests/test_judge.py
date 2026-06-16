@@ -732,5 +732,28 @@ class ModelTiers(unittest.TestCase):
             jd._judge_run = saved
 
 
+class ClassifyExperiment(unittest.TestCase):
+    """The blocked/working classification A/B (measure-only) picks each goal's latest subtree segment
+    to re-classify — for a blocked goal that's the blocking segment (newest-wins)."""
+
+    def test_latest_subtree_segment_is_the_most_recent_across_the_subtree(self):
+        s = _store()
+        top = _mknode(s, "G", t=T0)
+        sub = _mknode(s, "sub", parent=top["id"], t=T0 + 10)
+        s["nodes"][top["id"]]["trail"] = ["sA"]
+        s["nodes"][sub["id"]]["trail"] = ["sB", "sC"]
+        nodes = s["nodes"]
+        children = {}
+        for x, nd in nodes.items():
+            children.setdefault(nd.get("parentId"), []).append(x)
+        seg_by_id = {"sA": {"id": "sA", "t": T0, "atoms": []},
+                     "sB": {"id": "sB", "t": T0 + 5, "atoms": []},
+                     "sC": {"id": "sC", "t": T0 + 20, "atoms": []}}
+        seg = jd._latest_subtree_segment(top["id"], nodes, children, seg_by_id)
+        self.assertEqual(seg["id"], "sC", "the most recent segment anywhere in the subtree")
+        self.assertIsNone(jd._latest_subtree_segment(top["id"], nodes, children, {}),
+                          "no resolvable segment → None")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
