@@ -80,6 +80,10 @@ body { display: flex; flex-direction: column; }
 .tab.drop-after::after { right: -3px; }
 .tab:hover { color: var(--fg); background: rgba(255, 255, 255, 0.06); }
 .tab.tab-awaiting { --state: var(--st-awaiting-bg); }
+/* BLOCKED (API error): the SAME dashed ring as awaiting but in the alarm-red blocked color, PLUS a faint
+   red fill so a stopped session is highlighted (not just outlined). It isn't working, so it has NO dot
+   (the user 2026-06-16). */
+.tab.tab-blocked { --state: var(--st-blocked-bg); background: rgba(229, 72, 77, 0.13); }
 /* STATE ring on all four sides, no layout jitter. WORKING shows a yellow dot
    (.tab-dot) instead; COMPACTING intentionally gets NO outline (the user: it's
    transient plumbing, not something to flag — the statusline's scan bar is the
@@ -91,7 +95,7 @@ body { display: flex; flex-direction: column; }
    outline-offset:-2px insets it where the old shadow sat; Chromium follows the
    border-radius. (For a dash length decoupled from thickness we'd need an SVG
    border — say the word if 2px dashes aren't long enough.) */
-.tab.tab-awaiting { outline: 2px dashed var(--state); outline-offset: -2px; }
+.tab.tab-awaiting, .tab.tab-blocked { outline: 2px dashed var(--state); outline-offset: -2px; }
 /* WORKING: a small yellow dot left of the name (replaces the old yellow outline). */
 .tab-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--st-working-bg); }
 /* SELECTED: gray fill PLUS an outline in the session's own identity color. */
@@ -233,14 +237,15 @@ body { display: flex; flex-direction: column; }
 .tab.tab-subagent .tab-dot { background: var(--st-subagent-bg); }
 .turn-subagent { padding: 5px 0 9px; }
 .subagent-head { font-size: 0.8em; color: var(--st-subagent-bg); letter-spacing: 0.02em; font-weight: 600; }
-/* blocked = API error: red chip + red name-dot so a stalled session stands out (the user 2026-06-16). */
+/* blocked = API error: red chip; the TAB itself goes dashed-red (above), no dot — it isn't working. */
 .chip-blocked { background: var(--st-blocked-bg); color: var(--st-blocked-fg); }
-.tab.tab-blocked .tab-dot { background: var(--st-blocked-bg); }
-/* API-error card: a red dot on the rail + a red-outlined "API error" badge with a Retry button. */
+/* API-error card: a red dot on the rail + a red-outlined "API error" badge, a live auto-retry countdown,
+   and a "Retry now" button. */
 .turn-apierror { padding: 6px 0 10px; }
 .dot.red { background: var(--st-blocked-bg); border: none; }
 .apierror-card { border: 1px solid var(--st-blocked-bg); border-radius: 7px; padding: 7px 9px; background: rgba(229, 72, 77, 0.07); }
 .apierror-head { display: flex; align-items: center; gap: 8px; }
+.apierror-countdown { flex: 0 0 auto; font-size: 0.8em; color: var(--st-blocked-bg); font-variant-numeric: tabular-nums; opacity: 0.9; }
 .apierror-badge { flex: 0 0 auto; font-size: 0.72em; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase;
   color: var(--st-blocked-bg); border: 1px solid var(--st-blocked-bg); border-radius: 5px; padding: 1px 7px; }
 .apierror-retry { margin-left: auto; font-size: 11px; padding: 2px 11px; border-radius: 5px; cursor: pointer;

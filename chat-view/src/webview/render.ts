@@ -758,13 +758,16 @@ function renderApiError(ev: Extract<ChatEvent, { kind: "apiError" }>): HTMLEleme
   const badge = el("span", "apierror-badge");
   badge.textContent = ev.status ? `API error · ${ev.status}` : "API error";
   head.appendChild(badge);
+  // Live countdown to the next AUTO-retry — apiRetryTick() (below) updates this text every second.
+  const countdown = el("span", "apierror-countdown");
+  countdown.textContent = "retrying soon…";
+  head.appendChild(countdown);
   const retry = el("button", "apierror-retry") as HTMLButtonElement;
-  retry.textContent = "Retry";
-  retry.title = "send “retry” into this session to resume";
+  retry.textContent = "Retry now";
+  retry.title = "send “retry” into this session right now (also resets the auto-retry countdown)";
   retry.addEventListener("click", () => {
     if (vscodeApi) vscodeApi.postMessage({ type: "apiRetry", id: activeId });
-    retry.disabled = true;
-    retry.textContent = "Retrying…";
+    if (activeId) apiRetryNext.set(activeId, Date.now() + API_RETRY_MS);   // restart the countdown
   });
   head.appendChild(retry);
   card.appendChild(head);
@@ -774,6 +777,34 @@ function renderApiError(ev: Extract<ChatEvent, { kind: "apiError" }>): HTMLEleme
   turn.appendChild(card);
   return turn;
 }
+
+// ── API-error auto-retry ──────────────────────────────────────────────────────────────────────────
+// While a session sits BLOCKED on an API error (status.state === "blocked"), retry it every 10s until it
+// recovers (the kernel stops marking it blocked → its timer is dropped). Client-side, self-cancelling, and
+// covers EVERY blocked session (not just the visible tab); the active session's card shows a live
+// countdown. The API may be down, so this deliberately doesn't depend on the summary/caption pipeline.
+const API_RETRY_MS = 10_000;
+const apiRetryNext = new Map<string, number>();   // sid -> epoch ms of its next auto-retry
+function apiRetryTick(): void {
+  const now = Date.now();
+  const blocked = new Set<string>();
+  sessions.forEach((s, id) => { if (s.status.state === "blocked") blocked.add(id); });
+  apiRetryNext.forEach((_, id) => { if (!blocked.has(id)) apiRetryNext.delete(id); });   // recovered → stop
+  blocked.forEach((id) => {
+    if (!apiRetryNext.has(id)) apiRetryNext.set(id, now + API_RETRY_MS);
+    if (now >= (apiRetryNext.get(id) as number)) {
+      if (vscodeApi) vscodeApi.postMessage({ type: "apiRetry", id });
+      apiRetryNext.set(id, now + API_RETRY_MS);                                          // reset the countdown
+    }
+  });
+  // live "retrying in Ns" on the active session's card, if it's the blocked one being viewed
+  const cd = document.querySelector(".apierror-countdown") as HTMLElement | null;
+  if (cd) {
+    const at = activeId ? apiRetryNext.get(activeId) : undefined;
+    cd.textContent = at ? `retrying in ${Math.max(0, Math.ceil((at - now) / 1000))}s` : "retrying soon…";
+  }
+}
+setInterval(apiRetryTick, 1000);
 
 function renderTool(ev: Extract<ChatEvent, { kind: "tool" }>): HTMLElement {
   if (ev.name === "AskUserQuestion") { const a = renderAsk(ev); if (a) return a; }
@@ -1052,10 +1083,9 @@ function renderTabs() {
     else if (st === "awaiting") tab.classList.add("tab-awaiting");
     else if (st === "compacting") tab.classList.add("tab-compacting");
     if (s.status.faded) tab.classList.add("at-rest");
-    // WORKING shows a yellow dot to the left of the name (not a yellow outline —
-    // the outline is now reserved for the SELECTED tab, in its identity color). BLOCKED (API error) gets
-    // a RED dot so a stalled session stands out at a glance (the user 2026-06-16).
-    if (st === "working" || st === "subagent" || st === "blocked") tab.appendChild(el("span", "tab-dot"));
+    // WORKING/SUBAGENT show a dot (the session is busy). BLOCKED (API error) gets NO dot — it isn't
+    // working — it gets the dashed red highlight on the tab itself instead (the user 2026-06-16).
+    if (st === "working" || st === "subagent") tab.appendChild(el("span", "tab-dot"));
     const label = el("span", "tab-label");
     label.textContent = s.name;
     if (s.status.faded && id !== activeId && s.color) {
