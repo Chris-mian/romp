@@ -607,6 +607,21 @@ def _postal_messages(now, alive_sids, id2name):
         elif o.get("ev") == "exec" and o.get("id"):
             execd[o["id"]] = o.get("t")
     cutoff, out = now - TL_HORIZON, []
+    goalcache = {}                                     # recipient sid → goal nodes (loaded once per build)
+
+    def planted(recip, mid):
+        """The courier-planted goal id in the recipient's tree for this message (origin.msgId match),
+        or None — binds the connector to the goal it created (the read side highlights both together)."""
+        if recip not in goalcache:
+            try:
+                goalcache[recip] = jd.load_goals(recip).get("nodes", {})
+            except Exception:
+                goalcache[recip] = {}
+        for nid, nd in goalcache[recip].items():
+            o = nd.get("origin")
+            if isinstance(o, dict) and o.get("msgId") == mid:
+                return nid
+        return None
     for mid, e in sent.items():
         f, t, st = e.get("from_id"), e.get("to_id"), e.get("t")
         if f not in alive_sids or t not in alive_sids or f == t or not st or st < cutoff:
@@ -617,7 +632,8 @@ def _postal_messages(now, alive_sids, id2name):
                     "fromOrig": e.get("from", id2name.get(f, f)),
                     "sent": st, "exec": ex if ex else st, "hasExec": ex is not None,
                     "pending": ex is None and (now - st) < MSG_INFLIGHT_MAX,
-                    "text": (e.get("body", "") or "").strip()[:240], "summary": None, "parked": False})
+                    "text": (e.get("body", "") or "").strip()[:240], "summary": None, "parked": False,
+                    "toGoal": planted(t, mid)})           # courier handoff: the goal this message planted
     out.sort(key=lambda m: m["sent"])
     return out
 
@@ -802,6 +818,31 @@ _nonce = [0]
 def _next_nonce():
     _nonce[0] += 1
     return _nonce[0]
+
+
+def _goal_segments(item_id):
+    """Every segment id under a goal — the union of the trails of the goal node and its whole subtree.
+    These are the timeline work-bars to light when the goal's feed card is hovered/focused (the bar's
+    `id` IS the segment id, so `hit(segId)` lights both its dot and bar). item_id is the goal node id;
+    its prefix (before ':gN') is the owning session's rompUuid. Empty list if unknown."""
+    sid = item_id.rsplit(":", 1)[0]
+    nodes = jd.load_goals(sid).get("nodes", {})
+    if item_id not in nodes:
+        return []
+    children = {}
+    for nid, nd in nodes.items():
+        children.setdefault(nd.get("parentId"), []).append(nid)
+    seg_ids, stack, seen = [], [item_id], set()
+    while stack:
+        nid = stack.pop()
+        if nid in seen:
+            continue
+        seen.add(nid)
+        for s in nodes.get(nid, {}).get("trail", []):
+            if s not in seg_ids:
+                seg_ids.append(s)
+        stack.extend(children.get(nid, []))
+    return seg_ids
 
 
 def _push_all():
@@ -1220,6 +1261,11 @@ class Handler(BaseHTTPRequestHandler):
                                           "anchorT": msg.get("t"), "anchor": msg.get("anchor")})
                 elif msg and msg.get("type") == "hoverHighlight":
                     ids = msg["ids"] if isinstance(msg.get("ids"), list) else ([msg["id"]] if msg.get("id") else [])
+                    _send_to_app("timeline", {"type": "hover", "ids": ids, "nonce": _next_nonce()})
+                elif msg and msg.get("type") == "showAskPath":
+                    # feed card hover/click/leave → light that goal's work-bars on the timeline (reverse
+                    # of the timeline→chat jump). `off` clears; otherwise resolve the goal's subtree segments.
+                    ids = [] if msg.get("off") else _goal_segments(msg.get("itemId") or "")
                     _send_to_app("timeline", {"type": "hover", "ids": ids, "nonce": _next_nonce()})
                 elif msg and msg.get("type") == "sendMessage" and msg.get("id") and msg.get("text"):
                     _tmux_send(_name_of(msg["id"]) or msg["id"], str(msg["text"]))   # composer → session

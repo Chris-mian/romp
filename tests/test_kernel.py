@@ -289,6 +289,42 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(m["exec"], NOW - 20); self.assertTrue(m["hasExec"]); self.assertFalse(m["pending"])
         self.assertEqual(m["text"], "do X")
 
+    def test_postal_connector_binds_to_planted_goal(self):
+        # a courier connector carries toGoal = the goal it planted in the recipient (origin.msgId match)
+        md = jd.STATE / "timeline"; md.mkdir(parents=True, exist_ok=True)
+        a, b = "aaaa1111", "bbbb2222"
+        (md / "messages.jsonl").write_text(
+            json.dumps({"ev": "sent", "id": "m1", "from_id": a, "to_id": b, "t": NOW - 30, "from": "alpha", "body": "do X"}) + "\n"
+            + json.dumps({"ev": "exec", "id": "m1", "t": NOW - 20}) + "\n"
+            + json.dumps({"ev": "sent", "id": "m9", "from_id": a, "to_id": b, "t": NOW - 25, "from": "alpha", "body": "fyi"}) + "\n")
+        gb = "%s:g1" % b
+        (jd.GOALDIR / (b + ".json")).write_text(json.dumps({
+            "rompUuid": b, "seq": 1, "nodes": {gb: {"id": gb, "text": "Handed-off work", "parentId": None,
+                "nodeComplete": False, "blocked": False, "cleared": False, "trail": [], "t": NOW - 20,
+                "origin": {"peer": a, "goalId": a + ":g1", "msgId": "m1"}}},
+            "placements": {}, "status": {gb: "working"}}))
+        msgs = {m["id"]: m for m in km._postal_messages(NOW, {a, b}, {a: "alpha", b: "beta"})}
+        self.assertEqual(msgs["m1"]["toGoal"], gb, "the connector binds to the goal it planted")
+        self.assertIsNone(msgs["m9"]["toGoal"], "a message that planted no goal has toGoal None")
+
+    def test_goal_segments_collects_subtree_trails(self):
+        """_goal_segments(goalId) → every segment id in the goal's subtree (the timeline work-bars to
+        light when the feed card is hovered — showAskPath reverse highlight)."""
+        top, sub, step = "%s:g1" % SID, "%s:g2" % SID, "%s:g3" % SID
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+            "rompUuid": SID, "seq": 3,
+            "nodes": {
+                top:  {"id": top,  "text": "Top",  "parentId": None, "nodeComplete": False, "blocked": False,
+                       "cleared": False, "trail": ["segA"], "t": NOW - 90},
+                sub:  {"id": sub,  "text": "Sub",  "parentId": top,  "nodeComplete": False, "blocked": False,
+                       "cleared": False, "trail": ["segB", "segC"], "t": NOW - 80},
+                step: {"id": step, "text": "Step", "parentId": sub,  "nodeComplete": True,  "blocked": False,
+                       "cleared": False, "trail": ["segD"], "t": NOW - 70}},
+            "placements": {}, "status": {top: "working"}}))
+        self.assertEqual(set(km._goal_segments(top)), {"segA", "segB", "segC", "segD"}, "the whole subtree")
+        self.assertEqual(set(km._goal_segments(sub)), {"segB", "segC", "segD"}, "a sub-goal → itself + its steps")
+        self.assertEqual(km._goal_segments("%s:gX" % SID), [], "unknown goal → empty")
+
     def test_session_order_roundtrip_and_sort(self):
         # the shared order persists, and chat tabs + timeline lanes follow it (drag-sync parity)
         km._write_session_order(["b", "a", "c"])
