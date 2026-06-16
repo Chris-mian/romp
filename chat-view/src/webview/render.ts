@@ -2561,6 +2561,14 @@ function cycleTab(dir: number) {
   setActive(order[(i + dir + order.length) % order.length]);
 }
 
+// First event carrying a uuid — a stable identity for "which transcript is this".
+// A fork (the tab re-pointed onto a new transcript) changes it; more turns on the
+// same transcript keep it.
+function firstUuid(events: ChatEvent[]): string | null {
+  for (const e of events) if (e.uuid) return e.uuid;
+  return null;
+}
+
 function upsert(msg: any) {
   const existed = sessions.has(msg.id);
   const prev = sessions.get(msg.id);
@@ -2573,13 +2581,15 @@ function upsert(msg: any) {
     firstSeen: msg.firstSeen ?? (prev ? prev.firstSeen : undefined),
   };
   sessions.set(msg.id, s);
-  // A full "session" re-targeting an EXISTING tab means its event set was
-  // REPLACED wholesale (the host re-pointed the tab onto a new transcript after a
-  // /clear-style fork), not appended to — drop the cached DOM so syncView rebuilds
-  // from scratch instead of appending the new file's turns onto the old file's
-  // stale nodes. (On a fresh webview, onReady re-posts "session" too, but views is
-  // empty then, so this is a no-op there.)
-  if (existed && msg.events) {
+  // The kernel re-sends the FULL "session" payload on every push. Distinguish an APPEND (more turns
+  // on the SAME transcript — the common case) from a FORK (the tab re-pointed onto a NEW transcript,
+  // events replaced wholesale, e.g. a /clear-style fork). Only a FORK drops the cached DOM and
+  // rebuilds; an append lets syncView add just the new turns AND keeps the user's scroll position —
+  // so new content no longer snaps the view to the bottom (the user 2026-06-15). Fork = the
+  // transcript identity (first event's uuid) changed; an append keeps it.
+  const forked = !!(existed && msg.events && prev && prev.events.length && msg.events.length
+                    && firstUuid(msg.events) !== firstUuid(prev.events));
+  if (forked) {
     const v = views.get(msg.id);
     if (v) { v.el.remove(); views.delete(msg.id); }
   }
@@ -2589,7 +2599,9 @@ function upsert(msg: any) {
   if (wantActive && msg.id === wantActive) { wantActive = null; setActive(msg.id); }   // restore persisted tab on arrival
   sortTabs();
   renderTabs();
-  if (msg.id === activeId) showActive();
+  // Active tab: a content refresh appends + preserves scroll (appendActive); a new tab or a fork
+  // lands at the bottom/anchor (showActive). This is what keeps new pushes from snapping to bottom.
+  if (msg.id === activeId) { if (existed && !forked) appendActive(); else showActive(); }
   // A non-active session's view is left to sync lazily when it's next shown.
   // The session the user just created has arrived → drop the "Opening…" cue and
   // focus its fresh tab (the whole point of opening it).
