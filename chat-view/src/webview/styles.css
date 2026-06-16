@@ -141,7 +141,13 @@ body { display: flex; flex-direction: column; }
 /* ---------- content ---------- */
 /* overflow-x:hidden — never let a wide child scroll the whole pane sideways
    (overflow-y:auto alone makes overflow-x compute to auto, which allowed it) */
-#content { flex: 1 1 auto; overflow-y: auto; overflow-x: hidden; padding: 8px 0 12px; }
+/* overflow-y: scroll (not auto) so the chat scrollbar + its gutter are ALWAYS shown and never
+   auto-hide on the side — and the content doesn't shift when it would appear (the user 2026-06-16). */
+#content { flex: 1 1 auto; overflow-y: scroll; overflow-x: hidden; padding: 8px 0 12px; }
+/* a clearly-visible always-on thumb for the chat pane (brighter than the faint global thumb) */
+#content::-webkit-scrollbar-track { background: rgba(255, 255, 255, 0.04); }
+#content::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.24); border-radius: 5px; min-height: 36px; }
+#content::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.36); }
 /* The rail time-markers (.time-marker) + the "worked" footer hang ~55px LEFT of each turn. The
    column now fills the pane (var(--chat-col)), so we ALWAYS reserve that left gutter as real padding
    (54px) — otherwise the HH:MM timestamps overflow left and get clipped by overflow-x:hidden. */
