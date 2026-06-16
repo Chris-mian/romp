@@ -11,7 +11,7 @@ import cssLang from "highlight.js/lib/languages/css";
 import markdown from "highlight.js/lib/languages/markdown";
 import diff from "highlight.js/lib/languages/diff";
 import yaml from "highlight.js/lib/languages/yaml";
-import type { ParsedAsk } from "../askparse";
+import type { ParsedAsk } from "../ask-types";
 import { quoteReply } from "../quote";
 import { markerLabel, chooseStamps } from "./time-marker";
 import { compactDisplay, toolCounts } from "./compact";
