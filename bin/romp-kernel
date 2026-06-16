@@ -14,7 +14,7 @@ old). Port status (KEEP/ADAPT/DROP) tracked in design/ui-parity.md + backlog.md.
 
 Run:  python3 ~/GitRepos/romp-event-model/bin/romp-kernel   → opens http://127.0.0.1:7878
 """
-import json, os, re, sys, time, threading, traceback, base64, hashlib, struct, subprocess, http.client
+import json, os, re, sys, time, threading, traceback, base64, hashlib, hmac, struct, subprocess, http.client
 from pathlib import Path
 from datetime import datetime
 from importlib.machinery import SourceFileLoader
@@ -59,6 +59,14 @@ def _load_token():
     return v
 
 TOKEN = _load_token()
+
+def _ct_eq(a, b):
+    """Constant-time string compare (no timing oracle on the serve token); never
+    raises on odd input."""
+    try:
+        return hmac.compare_digest(str(a).encode("utf-8"), str(b).encode("utf-8"))
+    except Exception:
+        return False
 
 _clients = []                                # connected WS clients: {app, wid, send, alive}
 _clients_lock = threading.Lock()
@@ -183,6 +191,61 @@ def _set_hidden_tab(sid, hidden):
     tmp = p.with_name("hidden-tabs.json.tmp.%d" % os.getpid())
     tmp.write_text(json.dumps(sorted(cur)))
     tmp.rename(p)
+
+
+# ─── new-session / picker / close lifecycle (the + button and × tab control) ───────────────────
+# The TS kernel (chat-view/src/kernel/server.ts) handled createSession / requestSessions / pickResult /
+# closeTab / endSession; the Python rewrite dropped them, so the webview's + picker stayed blank and
+# "New session" spun on its 30s "Opening…" modal forever. Ported here (the user 2026-06-15).
+NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def _rel_ago(now, t):
+    """Compact 'Nx ago' for the picker's non-running rows (mirrors the old kernel's relTime)."""
+    d = max(0, int(now - (t or 0)))
+    if d < 60:
+        return "just now"
+    if d < 3600:
+        return "%dm ago" % (d // 60)
+    if d < 86400:
+        return "%dh ago" % (d // 3600)
+    return "%dd ago" % (d // 86400)
+
+
+def _live_names(tmux):
+    """name → sid for the sessions alive in tmux right now (tmux is keyed by sid)."""
+    return {n: sid for sid in (tmux or {}) for n in [_name_of(sid)] if n}
+
+
+def _session_list(now, tmux):
+    """Picker payload: recent sessions, RUNNING ones first then by recency, each
+    {id,name,color,running,time,summary} — the shape render.ts's renderPicker expects."""
+    live = set(tmux or {})
+    items = []
+    for s in _sessions(now)[:150]:
+        sid = s["sid"]
+        arch = jd.load_archive(sid) or {}
+        items.append({"id": sid, "name": s["name"], "color": _name_color(sid),
+                      "running": sid in live,
+                      "time": "running" if sid in live else _rel_ago(now, s["mtime"]),
+                      "summary": arch.get("headline", "")})
+    items.sort(key=lambda it: 0 if it["running"] else 1)   # stable: running first, recency within
+    return items
+
+
+def _spawn_session(name):
+    """Create a detached romp session named `name` — the same launch the old TS backend ran
+    (`romp --detach <name>`, tmux-backend.ts). Threaded so the ~seconds-long launch never blocks the WS
+    recv loop; the 4s pusher then delivers the new tab and closes the webview's 'Opening…' modal. Scrub
+    TMUX* so the child launcher never thinks it is already inside a tmux client."""
+    cwd = os.environ.get("ROMP_SERVE_CWD") or os.path.expanduser("~")
+    env = {k: v for k, v in os.environ.items() if k not in ("TMUX", "TMUX_PANE")}
+    try:
+        subprocess.run([str(HERE / "romp"), "--detach", name], cwd=cwd, env=env, timeout=25,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        sys.stderr.write("spawn '%s': %s\n" % (name, traceback.format_exc()))
+    _push_all()   # surface the new tab promptly (the periodic pusher would catch it within 4s anyway)
 
 
 TMUX_FMT = ("#{@romp}|#{@romp-session-id}|#{@claude-state}|#{@claude-state-since}|"
@@ -419,6 +482,48 @@ def _hydrate_postal(events, index):
     return out
 
 
+def _fold_tasks(session):
+    """Fold a session's TaskCreate/TaskUpdate tool calls into ONE checklist (mirrors the old TS
+    transcript.foldTasks the Python rewrite dropped). Task id = the number in TaskCreate's RESULT text
+    ('Task #N created…'); status rides each TaskUpdate {taskId,status}. Returns the tasks in creation
+    order, or None if there were none. The webview renders this as a todo card (kind:'todo') and hides the
+    raw Task* calls (ACK_TOOLS) — so the kernel emits the folded card and skips the raw tool events."""
+    out = {}                                              # tool_use_id → result text (carries 'Task #N')
+    for turn in session["turns"]:
+        for a in turn["atoms"]:
+            if a.get("type") != "user":
+                continue
+            for b in (a.get("message") or {}).get("content", []) or []:
+                if isinstance(b, dict) and b.get("type") == "tool_result" and b.get("tool_use_id"):
+                    c = b.get("content")
+                    out[b["tool_use_id"]] = c if isinstance(c, str) else json.dumps(c)
+    tasks, order = {}, 0
+    for turn in session["turns"]:
+        for a in turn["atoms"]:
+            if a.get("type") != "assistant":
+                continue
+            for b in (a.get("message") or {}).get("content", []) or []:
+                if not isinstance(b, dict) or b.get("type") != "tool_use":
+                    continue
+                inp = b.get("input") or {}
+                if b.get("name") == "TaskCreate":
+                    m = re.search(r"Task #(\d+)", out.get(b.get("id"), "") or "")
+                    tid = m.group(1) if m else "c%d" % order
+                    af = inp.get("activeForm")
+                    tasks[tid] = {"_order": order, "id": tid, "subject": str(inp.get("subject") or ""),
+                                  "activeForm": str(af) if af else None, "status": "pending"}
+                    order += 1
+                elif b.get("name") == "TaskUpdate":
+                    t = tasks.get(str(inp.get("taskId", "")))
+                    if t:
+                        t["status"] = str(inp.get("status") or t["status"])
+    if not tasks:
+        return None
+    ordered = sorted(tasks.values(), key=lambda t: t["_order"])
+    return [{"id": t["id"], "subject": t["subject"], "activeForm": t["activeForm"], "status": t["status"]}
+            for t in ordered]
+
+
 def build_session(sid, now, tmux=None):
     """A {type:"session"} message the render.js bundle consumes: the event tree reshaped to
     ChatEvent[], plus the TOC ledger (archiver headline + turn captions) and a status chip."""
@@ -474,6 +579,8 @@ def build_session(sid, now, tmux=None):
                     elif b.get("type") == "text" and b.get("text", "").strip():
                         events.append({"kind": "assistant", "md": b["text"], "uuid": a.get("uuid"), "ts": ts})
                     elif b.get("type") == "tool_use":
+                        if b.get("name") in ("TaskCreate", "TaskUpdate"):
+                            continue                     # folded into the one todo checklist (see _fold_tasks)
                         inp = b.get("input") or {}
                         ev = {"kind": "tool", "name": b.get("name", "tool"),
                               "desc": str(inp.get("description") or "")[:200],
@@ -493,6 +600,12 @@ def build_session(sid, now, tmux=None):
         anchors = seg_anchors.get(seg)
         is_prompt = ev.get("kind") == "user" or (ev.get("kind") == "postal" and ev.get("direction") == "in")
         ev["tlId"] = ((anchors[0] if is_prompt else anchors[1]) or seg) if anchors else seg
+    # Claude Code Task to-do list: ONE folded checklist event (renderTodo), appended last (bottom, by the
+    # composer). Only while work is OUTSTANDING — a fully completed/cancelled list isn't a live to-do, so
+    # drop it rather than let it read as recent (the user 2026-06-10, ported from the old TS kernel).
+    todo = _fold_tasks(session)
+    if todo and any(t["status"] not in ("completed", "cancelled") for t in todo):
+        events.append({"kind": "todo", "tasks": todo})
     # TOC ledger: archiver headline + turn captions (click-to-jump via the turn's anchor uuid)
     arch = jd.load_archive(sid) or {}
     bullets = []
@@ -504,6 +617,9 @@ def build_session(sid, now, tmux=None):
             _anc = seg_anchors.get(_seg)
             bullets.append({"text": cap, "t": turn["t"], "id": anchor, "sid": sid,
                             "tlId": (_anc[0] if _anc else _seg)})   # a TOC entry → the turn's start DOT
+    # newest-first: render shows bullets[0] at the TOP (and reads it as "the newest" for the summary
+    # hue) — turns iterate oldest→newest, so reverse. Matches state.ts recentReplyBullets' "newest first".
+    bullets.sort(key=lambda b: b["t"], reverse=True)
     ledger = {"summary": arch.get("headline", ""), "bullets": bullets}
     last_turn = session["turns"][-1] if session["turns"] else None
     open_now = bool(last_turn and not last_turn["ended"]
@@ -1314,7 +1430,12 @@ class Handler(BaseHTTPRequestHandler):
     # ── serve-layer security (design/read-side.md): Origin/Host gate always; token for non-local reach ──
     def _is_local_host(self):
         host = (self.headers.get("Host") or "").rsplit(":", 1)[0].strip("[]")
-        return host in ("127.0.0.1", "localhost", "::1", "")
+        if host in ("127.0.0.1", "localhost", "::1"):
+            return True
+        # An ABSENT Host counts as local only when we're bound to loopback. When
+        # serving off-box (ROMP_SERVE_HOST=0.0.0.0), a Host-less client must NOT
+        # bypass the token gate.
+        return host == "" and BIND in ("127.0.0.1", "localhost", "::1")
 
     def _origin_ok(self):
         """Reject cross-site browser origins — the ClawJacked/WS hole (WS isn't covered by CORS, so
@@ -1346,9 +1467,9 @@ class Handler(BaseHTTPRequestHandler):
             return False, None, "cross-site origin"
         if self._is_local_host():
             return True, None, ""                    # local passes on the Origin check alone
-        if (q.get("token") or [""])[0] == TOKEN and TOKEN:
+        if TOKEN and _ct_eq((q.get("token") or [""])[0], TOKEN):
             return True, TOKEN, ""                    # first non-local hit with ?token → set the cookie
-        if self._cookie_token() == TOKEN and TOKEN:
+        if TOKEN and _ct_eq(self._cookie_token(), TOKEN):
             return True, None, ""
         return False, None, "token required for non-local access"
 
@@ -1477,8 +1598,45 @@ class Handler(BaseHTTPRequestHandler):
                 elif msg and msg.get("type") in ("reorderTabs", "writeOrder") and isinstance(msg.get("order"), list):
                     _write_session_order(msg["order"])   # tab-drag or lane-drag → reorder BOTH surfaces
                     _push_all()
+                elif msg and msg.get("type") == "createSession" and msg.get("name"):
+                    nm = str(msg["name"]).strip()
+                    if not NAME_RE.match(nm):
+                        client["send"](json.dumps({"type": "warn", "text": "session names use letters, digits, . _ - only."}))
+                    else:
+                        live = _live_names(_tmux_sessions())
+                        if nm in live:                   # already running → just (re)open it, don't re-spawn
+                            _set_hidden_tab(live[nm], False); _push_all()
+                            _send_to_app("chat", {"type": "focus", "id": live[nm]})
+                        else:
+                            threading.Thread(target=_spawn_session, args=(nm,), daemon=True).start()
+                elif msg and msg.get("type") == "requestSessions":
+                    client["send"](json.dumps({"type": "sessionList",
+                                               "items": _session_list(int(time.time()), _tmux_sessions())}))
+                elif msg and msg.get("type") in ("pickResult", "openByName") and (msg.get("id") or msg.get("name")):
+                    sid = msg.get("id") or _live_names(_tmux_sessions()).get(str(msg.get("name")))
+                    if sid:
+                        _set_hidden_tab(sid, False); _push_all()
+                        _send_to_app("chat", {"type": "focus", "id": sid})
+                elif msg and msg.get("type") == "openAll":
+                    for s in _alive_sessions(int(time.time()), _tmux_sessions()):
+                        _set_hidden_tab(s["sid"], False)
+                    _push_all()
                 elif msg and msg.get("type") == "closeSession" and msg.get("id"):
-                    _set_hidden_tab(msg["id"], True)     # × hides the tab (session keeps running)
+                    # × → ask (Close tab vs End session) instead of hiding straightaway (the user 2026-06-15)
+                    client["send"](json.dumps({"type": "confirmClose", "id": msg["id"],
+                                               "name": _name_of(msg["id"]) or msg["id"]}))
+                elif msg and msg.get("type") == "closeTab" and msg.get("id"):
+                    _set_hidden_tab(msg["id"], True)     # hide the tab; session keeps running
+                    _send_to_app("chat", {"type": "closed", "id": msg["id"]})   # prune it in the live view now
+                    _push_all()
+                elif msg and msg.get("type") == "endSession" and msg.get("id"):
+                    nm = _name_of(msg["id"])
+                    if nm:
+                        try:
+                            subprocess.run(["tmux", "kill-session", "-t", nm], timeout=4)
+                        except Exception:
+                            pass
+                    _send_to_app("chat", {"type": "closed", "id": msg["id"]})
                     _push_all()
                 elif msg and msg.get("type") == "openSession" and msg.get("id"):
                     _set_hidden_tab(msg["id"], False)    # feed/timeline click reopens a hidden tab

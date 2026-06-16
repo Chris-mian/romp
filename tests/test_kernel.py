@@ -127,6 +127,70 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(m["ledger"]["summary"], "Fixing the feed")
         self.assertTrue(any(b["text"] == "Fixed the feed flicker" for b in m["ledger"]["bullets"]))
 
+    def test_ledger_bullets_are_newest_first(self):
+        # A second, LATER captioned turn → the ledger must list newest-first: render shows bullets[0] at
+        # the TOP and reads it as "the newest" for the summary hue. Regression for the oldest-on-top bug.
+        # u2's parentUuid chains to the prior turn's last assistant (a2) so the leaf (a3) traces back
+        # through BOTH turns — that's how a real transcript tree links successive prompts.
+        with self.tpath.open("a") as f:
+            f.write(json.dumps(uline(T0 + 100, "now fix the sort order", "u2", parent="a2", ps="typed")) + "\n")
+            f.write(json.dumps(aline(T0 + 120, "Sorted it.", "a3", "u2", stop="end_turn")) + "\n")
+        session = em.parse_session(str(self.tpath), rompuuid=SID, candidate_files=[str(self.tpath)], now=NOW)
+        turns = session["turns"]
+        self.assertGreaterEqual(len(turns), 2, "fixture should now span two turns")
+        caps = [{"id": turns[0]["id"], "grain": "turn", "t": turns[0]["t"], "caption": "Fixed the feed flicker"},
+                {"id": turns[1]["id"], "grain": "turn", "t": turns[1]["t"], "caption": "Sorted the ledger"}]
+        (jd.CAPDIR / (SID + ".jsonl")).write_text("\n".join(json.dumps(c) for c in caps) + "\n")
+        bullets = km.build_session(SID, NOW)["ledger"]["bullets"]
+        ts = [b["t"] for b in bullets]
+        self.assertEqual(ts, sorted(ts, reverse=True), "ledger bullets must be newest-first")
+        self.assertEqual(bullets[0]["text"], "Sorted the ledger", "newest caption sits on top")
+
+    def test_session_list_for_picker(self):
+        # the + picker's payload (requestSessions → sessionList). Was always empty: bin/romp-kernel had
+        # no requestSessions handler, so the kernel never replied. Running sessions first; archive headline
+        # as the summary; the names-registry color.
+        items = km._session_list(NOW, km._tmux_sessions())
+        self.assertTrue(items, "picker must list the live session")
+        it = next(i for i in items if i["id"] == SID)
+        self.assertEqual(it["name"], "testsess")
+        self.assertTrue(it["running"], "SID is alive in tmux → running")
+        self.assertEqual(it["time"], "running")
+        self.assertEqual(it["summary"], "Fixing the feed")
+        self.assertEqual(it["color"], {"bg": "#abcdef", "fg": "#ffffff"})
+
+    def test_rel_ago_buckets(self):
+        self.assertEqual(km._rel_ago(1000, 1000), "just now")
+        self.assertEqual(km._rel_ago(1000, 1000 - 120), "2m ago")
+        self.assertEqual(km._rel_ago(1000 + 7200, 1000), "2h ago")
+        self.assertEqual(km._rel_ago(3 * 86400, 0), "3d ago")
+
+    def test_todo_card_folds_taskcreate_taskupdate(self):
+        # TaskCreate/TaskUpdate fold into ONE {kind:"todo"} card (the old TS transcript.foldTasks); the
+        # task id comes from TaskCreate's "Task #N" result; the raw Task* tool calls are NOT emitted (the
+        # webview hides them via ACK_TOOLS, so the kernel skips them and emits only the folded checklist).
+        def asst(t, uuid, parent, blocks, stop="end_turn"):
+            return {"type": "assistant", "timestamp": iso(t), "uuid": uuid, "parentUuid": parent,
+                    "message": {"role": "assistant", "content": blocks, "stop_reason": stop}}
+        tc = {"type": "tool_use", "id": "tc1", "name": "TaskCreate",
+              "input": {"subject": "Wire the picker", "activeForm": "Wiring the picker"}}
+        tu = {"type": "tool_use", "id": "tu1", "name": "TaskUpdate", "input": {"taskId": "1", "status": "in_progress"}}
+        with self.tpath.open("a") as f:
+            f.write(json.dumps(uline(T0 + 100, "make a plan", "u2", parent="a2", ps="typed")) + "\n")
+            f.write(json.dumps(asst(T0 + 110, "a3", "u2", [{"type": "text", "text": "Planning."}, tc], stop="tool_use")) + "\n")
+            f.write(json.dumps(trline(T0 + 112, "tc1", "r2", "a3", content="Task #1 created successfully: Wire the picker")) + "\n")
+            f.write(json.dumps(asst(T0 + 120, "a4", "r2", [tu])) + "\n")
+        m = km.build_session(SID, NOW)
+        todos = [e for e in m["events"] if e["kind"] == "todo"]
+        self.assertEqual(len(todos), 1, "exactly one folded todo card")
+        tasks = todos[0]["tasks"]
+        self.assertEqual([t["id"] for t in tasks], ["1"])
+        self.assertEqual(tasks[0]["subject"], "Wire the picker")
+        self.assertEqual(tasks[0]["activeForm"], "Wiring the picker")
+        self.assertEqual(tasks[0]["status"], "in_progress", "TaskUpdate moved it to in_progress")
+        self.assertFalse(any(e["kind"] == "tool" and e["name"] in ("TaskCreate", "TaskUpdate") for e in m["events"]),
+                         "raw Task* tool calls are folded away, not shown as tool cards")
+
     def test_feed_buckets_goal_and_streams_caption(self):
         d = km.build_feed(NOW)
         self.assertEqual(d["type"], "feed")
