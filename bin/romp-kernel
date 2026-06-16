@@ -12,7 +12,7 @@ zero protocol change at switchover. WS is hand-rolled on the stdlib socket (no d
 Sits beside the untouched chat-view Node kernel during the minimal phase (extension stays on
 old). Port status (KEEP/ADAPT/DROP) tracked in design/ui-parity.md + backlog.md.
 
-Run:  python3 ~/GitRepos/romp-event-model/bin/romp-kernel   → opens http://127.0.0.1:7878
+Run:  python3 ~/GitRepos/romp-event-model/bin/romp-kernel   → opens http://127.0.0.1:7433
 """
 import json, os, re, sys, time, threading, traceback, base64, hashlib, hmac, struct, subprocess, http.client
 from pathlib import Path
@@ -32,7 +32,7 @@ DIST = CHAT_VIEW / "dist"                    # bundles built from CHAT_VIEW/src 
 MEDIA = CHAT_VIEW / "media"
 OBSIDIAN = ROOT / "obsidian"
 NAMES = jd.STATE / "names"
-PORT = int(os.environ.get("ROMP_KERNEL_PORT", "7878"))
+PORT = int(os.environ.get("ROMP_KERNEL_PORT", "7433"))   # 7433 = the manager/extension default (the user 2026-06-16); env still overrides
 BIND = os.environ.get("ROMP_SERVE_HOST", "127.0.0.1")   # set 0.0.0.0 to reach the kernel over the tailnet / a phone
 
 
