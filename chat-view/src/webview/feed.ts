@@ -392,9 +392,10 @@ function makeAskCard(it: AskItem): HTMLElement {
   const apiRetry = el("button", "fdismiss fretry"); apiRetry.textContent = "Retry"; apiRetry.title = "send “retry” into this session to resume"; apiRetry.style.display = "none";
   const waitBadge = el("span", "fask-wait"); waitBadge.textContent = "⏳ waiting"; waitBadge.style.display = "none";
   waitBadge.title = "paused on an EXTERNAL event (CI, build, a peer's reply) — not on you; stays in Working, exempt from auto-filing; lifts when new work lands";
-  const fup = el("button", "fdismiss ffollow"); fup.textContent = "Follow up"; fup.title = "send a follow-up to this session"; fup.style.display = "none";
   const clr = el("button", "fdismiss"); clr.textContent = "Clear"; clr.title = "clear this ask (inbox-zero; the one human-asserted fact)";
-  actions.append(waitBadge, apiBadge, blkBadge, reBadge, fup, apiRetry, clr);
+  // No "Follow up" button on the card — open the card's modal (body click) to follow up there
+  // (the user 2026-06-16). The modal composer is the single follow-up surface.
+  actions.append(waitBadge, apiBadge, blkBadge, reBadge, apiRetry, clr);
   row2.append(idwrap);
   // ROW 3 — timestamp bottom-left · status badges + Clear bottom-right
   const row3 = el("div", "fask-row3"); row3.append(time, actions);
@@ -467,7 +468,6 @@ function makeAskCard(it: AskItem): HTMLElement {
   a._blocked = blkBadge; a._wait = waitBadge;
   a._apiBadge = apiBadge; a._apiRetry = apiRetry;
   a._handoffs = handoffs;
-  a._fup = fup;
   a._origin = origin;
   return card;
 }
@@ -518,9 +518,7 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
       a._apiRetry.disabled = true; a._apiRetry.textContent = "Retrying…";
     };
   }
-  // Follow up on a BLOCKED card → open the modal (its composer sends a follow-up to the session).
-  a._fup.style.display = askColumn(it) === "needsInput" ? "" : "none";
-  a._fup.onclick = (ev: Event) => { ev.stopPropagation(); fullscreenAskId = it.itemId; renderModal(); };
+  // (Follow-up is modal-only now — no card button; the body click opens the modal. the user 2026-06-16.)
   // the user's handoff spec (2026-06-10): every session this ask was handed to,
   // ANYWHERE in its tree (not just the last hop), shown below the main session
   // — bold, identity color, always with the working dot — but ONLY while that

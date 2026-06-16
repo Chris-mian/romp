@@ -29,3 +29,9 @@ test("clicking the CARD title locates the originating user message (anchor:promp
   assert.match(FEED, /title\.onclick = .*showOnTimeline".*itemId: it\.itemId.*anchor: "prompt"/);
   assert.doesNotMatch(FEED, /title\.onclick = .*showAskPath", itemId: it\.itemId/, "the card title no longer just lights the timeline");
 });
+
+test("a blocked card has NO follow-up button — the follow-up is modal-only", () => {
+  assert.doesNotMatch(FEED, /a\._fup/, "no card-level follow-up button wiring");
+  assert.doesNotMatch(FEED, /actions\.append\([^)]*\bfup\b/, "fup is not appended to the card actions row");
+  assert.match(FEED, /id = "feed-modal-follow"/, "the modal keeps its follow-up button");
+});
