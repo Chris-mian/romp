@@ -29,6 +29,7 @@
   --st-ready-bg: #2b7fb8;   --st-ready-fg: #ffffff;
   --st-awaiting-bg: #c0392b;--st-awaiting-fg: #ffffff;
   --st-compacting-bg: #14b8a6; --st-compacting-fg: #ffffff;   /* teal — the compacting accent (text + compression bar) */
+  --st-blocked-bg: #e5484d; --st-blocked-fg: #ffffff;   /* alarm red — session stopped on an API error */
 
   --mono: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
   --sans: var(--vscode-chat-font-family, var(--vscode-font-family, system-ui, -apple-system, "Segoe UI", sans-serif));
@@ -219,6 +220,21 @@ body { display: flex; flex-direction: column; }
 .tab.tab-subagent .tab-dot { background: var(--st-subagent-bg); }
 .turn-subagent { padding: 5px 0 9px; }
 .subagent-head { font-size: 0.8em; color: var(--st-subagent-bg); letter-spacing: 0.02em; font-weight: 600; }
+/* blocked = API error: red chip + red name-dot so a stalled session stands out (the user 2026-06-16). */
+.chip-blocked { background: var(--st-blocked-bg); color: var(--st-blocked-fg); }
+.tab.tab-blocked .tab-dot { background: var(--st-blocked-bg); }
+/* API-error card: a red dot on the rail + a red-outlined "API error" badge with a Retry button. */
+.turn-apierror { padding: 6px 0 10px; }
+.dot.red { background: var(--st-blocked-bg); border: none; }
+.apierror-card { border: 1px solid var(--st-blocked-bg); border-radius: 7px; padding: 7px 9px; background: rgba(229, 72, 77, 0.07); }
+.apierror-head { display: flex; align-items: center; gap: 8px; }
+.apierror-badge { flex: 0 0 auto; font-size: 0.72em; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase;
+  color: var(--st-blocked-bg); border: 1px solid var(--st-blocked-bg); border-radius: 5px; padding: 1px 7px; }
+.apierror-retry { margin-left: auto; font-size: 11px; padding: 2px 11px; border-radius: 5px; cursor: pointer;
+  color: var(--st-blocked-bg); background: transparent; border: 1px solid var(--st-blocked-bg); }
+.apierror-retry:hover:not(:disabled) { color: #fff; background: var(--st-blocked-bg); }
+.apierror-retry:disabled { opacity: 0.55; cursor: default; }
+.apierror-body { margin-top: 5px; font-size: 0.86em; color: var(--dim); line-height: 1.35; }
 .chip-ready { background: var(--st-ready-bg); color: var(--st-ready-fg); }
 .chip-awaiting { background: var(--st-awaiting-bg); color: var(--st-awaiting-fg); }
 .chip-idle { background: rgba(255, 255, 255, 0.08); color: var(--dim); }

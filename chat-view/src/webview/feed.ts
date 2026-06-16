@@ -66,9 +66,9 @@ interface AskItem {
   explicitDone?: boolean;                          // every path explicitly DONE-stamped → blue ring (blue+green when settled agrees)
   waiting?: boolean;                               // paused on an EXTERNAL event → held in Working, ⏳ chip, no ring
   turnIds?: string[];                              // typed turns that minted/amended this card
-  // the owning session is live-blocked (permission/picker) ON this card's work →
-  // the card itself files under BLOCKED (the user's ruling 2026-06-11)
-  blocked?: { state: string; since: number; what: string };
+  // the owning session is live-blocked (permission/picker, or stopped on an API error) ON this card's
+  // work → the card itself files under BLOCKED (the user's ruling 2026-06-11; apiError 2026-06-16).
+  blocked?: { state: string; since: number; what: string; status?: number; category?: string; text?: string };
   origin?: { peer: string; peerSid: string; color: { bg: string; fg: string } | null } | null;  // courier handoff: planted by a peer's message → "↪ from <peer>"
   groupTitle?: string;                             // host: this ask shares a typed turn with siblings → the group's title
   groupN?: number;                                 // host: sibling count for that turn (>1 ⇒ fold into one group card)
@@ -388,11 +388,13 @@ function makeAskCard(it: AskItem): HTMLElement {
   const actions = el("div", "fask-actions");
   const reBadge = el("span", "fask-reopened"); reBadge.textContent = "reopened"; reBadge.title = "a question arrived after you cleared this"; reBadge.style.display = "none";
   const blkBadge = el("a", "fask-blocked"); blkBadge.style.display = "none";   // ⏸ live permission/picker block → click opens the session
+  const apiBadge = el("span", "fask-apierror"); apiBadge.textContent = "⚠ API error"; apiBadge.style.display = "none";   // red: session stopped on an API error
+  const apiRetry = el("button", "fdismiss fretry"); apiRetry.textContent = "Retry"; apiRetry.title = "send “retry” into this session to resume"; apiRetry.style.display = "none";
   const waitBadge = el("span", "fask-wait"); waitBadge.textContent = "⏳ waiting"; waitBadge.style.display = "none";
   waitBadge.title = "paused on an EXTERNAL event (CI, build, a peer's reply) — not on you; stays in Working, exempt from auto-filing; lifts when new work lands";
   const fup = el("button", "fdismiss ffollow"); fup.textContent = "Follow up"; fup.title = "send a follow-up to this session"; fup.style.display = "none";
   const clr = el("button", "fdismiss"); clr.textContent = "Clear"; clr.title = "clear this ask (inbox-zero; the one human-asserted fact)";
-  actions.append(waitBadge, blkBadge, reBadge, fup, clr);
+  actions.append(waitBadge, apiBadge, blkBadge, reBadge, fup, apiRetry, clr);
   row2.append(idwrap);
   // ROW 3 — timestamp bottom-left · status badges + Clear bottom-right
   const row3 = el("div", "fask-row3"); row3.append(time, actions);
@@ -461,6 +463,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   const a = card as any;
   a._title = title; a._name = name; a._time = time; a._reopened = reBadge;
   a._blocked = blkBadge; a._wait = waitBadge;
+  a._apiBadge = apiBadge; a._apiRetry = apiRetry;
   a._handoffs = handoffs;
   a._fup = fup;
   a._origin = origin;
@@ -492,11 +495,26 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   a._wait.style.display = it.waiting ? "" : "none";   // ⏳ paused on an external event
   // ⏸ live block badge: the session is stopped mid-turn on a permission prompt /
   // picker FOR THIS CARD's work — the card files under BLOCKED while it lasts
-  a._blocked.style.display = it.blocked ? "" : "none";
-  if (it.blocked) {
+  const isApiErr = it.blocked?.state === "apiError";
+  a._blocked.style.display = (it.blocked && !isApiErr) ? "" : "none";
+  if (it.blocked && !isApiErr) {
     a._blocked.textContent = it.blocked.state === "permission" ? "⏸ approval" : "⏸ picker";
     a._blocked.title = it.blocked.what + " — click to open the session";
     a._blocked.onclick = (ev: Event) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "openSession", id: it.sid }); };
+  }
+  // API error → a red "API error" badge + a Retry button that pastes "retry" into the session to resume
+  // the stalled turn (the user 2026-06-16). The card already files under BLOCKED (askColumn → needsInput).
+  a._apiBadge.style.display = isApiErr ? "" : "none";
+  a._apiRetry.style.display = isApiErr ? "" : "none";
+  if (isApiErr && it.blocked) {
+    a._apiBadge.textContent = it.blocked.status ? `⚠ API error · ${it.blocked.status}` : "⚠ API error";
+    a._apiBadge.title = it.blocked.text || it.blocked.what;
+    a._apiRetry.disabled = false; a._apiRetry.textContent = "Retry";
+    a._apiRetry.onclick = (ev: Event) => {
+      ev.stopPropagation();
+      vscodeApi?.postMessage({ type: "apiRetry", id: it.sid });
+      a._apiRetry.disabled = true; a._apiRetry.textContent = "Retrying…";
+    };
   }
   // Follow up on a BLOCKED card → open the modal (its composer sends a follow-up to the session).
   a._fup.style.display = askColumn(it) === "needsInput" ? "" : "none";

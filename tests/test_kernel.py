@@ -60,6 +60,17 @@ def qop(operation, content=None):
     return o
 
 
+def apierr_line(t, uuid, parent, text="API Error: 500 Internal server error.", status=500, category="server_error"):
+    # An API-failure assistant record as Claude Code writes it: the top-level isApiErrorMessage flag is the
+    # INVARIANT (the human text + status vary — 500 / timeout / model-not-found). _api_error keys on it.
+    o = {"type": "assistant", "timestamp": iso(t), "uuid": uuid, "parentUuid": parent,
+         "message": {"role": "assistant", "content": [{"type": "text", "text": text}], "stop_reason": "stop_sequence"},
+         "isApiErrorMessage": True, "error": category}
+    if status is not None:
+        o["apiErrorStatus"] = status
+    return o
+
+
 class ViewBuilder(unittest.TestCase):
     def setUp(self):
         self.td = tempfile.TemporaryDirectory()
@@ -286,6 +297,45 @@ class ViewBuilder(unittest.TestCase):
         m = km.build_session(SID, NOW)
         self.assertNotEqual(m["status"]["state"], "subagent")
         self.assertFalse(any(e["kind"] == "subagent" for e in m["events"]))
+
+    def test_api_error_chat_card_and_blocked_chip(self):
+        # an API error as the last record → a {kind:"apiError"} card at the bottom + the chip flips to
+        # "blocked" (red) so a stalled session stands out (the user 2026-06-16).
+        km._api_err_cache.clear()
+        with self.tpath.open("a") as f:
+            f.write(json.dumps(apierr_line(T0 + 60, "e1", "a2")) + "\n")
+        m = km.build_session(SID, NOW)
+        self.assertEqual(m["status"]["state"], "blocked", "API error → blocked chip")
+        cards = [e for e in m["events"] if e["kind"] == "apiError"]
+        self.assertEqual(len(cards), 1)
+        self.assertEqual(cards[0]["status"], 500)
+        self.assertEqual(m["events"][-1]["kind"], "apiError", "the API-error card sits at the bottom")
+
+    def test_api_error_clears_after_retry(self):
+        # the user (or the Retry button) sends "retry" → a genuine user record after the error → no longer
+        # blocked: no card, chip back to a normal state.
+        km._api_err_cache.clear()
+        with self.tpath.open("a") as f:
+            f.write(json.dumps(apierr_line(T0 + 60, "e1", "a2")) + "\n")
+            f.write(json.dumps(uline(T0 + 65, "retry", "u2", parent="e1")) + "\n")
+        m = km.build_session(SID, NOW)
+        self.assertNotEqual(m["status"]["state"], "blocked")
+        self.assertFalse(any(e["kind"] == "apiError" for e in m["events"]))
+
+    def test_api_error_floors_feed_goal(self):
+        # the session's focus top-goal files under BLOCKED with an apiError reason → the card carries the
+        # red badge + Retry (blocked.state == "apiError", column "needs_input").
+        km._api_err_cache.clear()
+        store = json.loads((jd.GOALDIR / (SID + ".json")).read_text())
+        store["lastNode"] = "%s:g2" % SID          # focus the OPEN top-goal (g1 is complete → never floored)
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps(store))
+        with self.tpath.open("a") as f:
+            f.write(json.dumps(apierr_line(T0 + 60, "e1", "a2")) + "\n")
+        d = km.build_feed(NOW)
+        card = next(a for a in d["asks"] if a["text"] == "Awaiting a decision")
+        self.assertEqual(card["blocked"]["state"], "apiError")
+        self.assertEqual(card["blocked"]["status"], 500)
+        self.assertEqual(card["column"], "needs_input", "an API-error card files under BLOCKED")
 
     def test_feed_cards_are_top_level_goals_only(self):
         # The feed's cards are top-level GOALS only (read-side.md, the user 2026-06-16). A completed
@@ -788,6 +838,78 @@ class FeedDetail(unittest.TestCase):
                 self.assertIsNone(km._read_feed_detail("E"), "empty paragraph → None")
             finally:
                 km.FEEDDETAIL = orig
+
+
+class TestApiError(unittest.TestCase):
+    """km._api_error — is the session BLOCKED on an API error right now? Event-based on the transcript's
+    isApiErrorMessage flag (the invariant across 500 / timeout / model-not-found). Synthetic records only."""
+
+    def setUp(self):
+        km._api_err_cache.clear()
+        self.td = tempfile.TemporaryDirectory()
+        self.p = os.path.join(self.td.name, "t.jsonl")
+
+    def tearDown(self):
+        self.td.cleanup()
+
+    def _write(self, *recs):
+        with open(self.p, "w") as f:
+            f.write("\n".join(json.dumps(r) for r in recs) + "\n")
+
+    def test_error_is_last_returns_it(self):
+        self._write(uline(T0, "do it", "u1"), apierr_line(T0 + 5, "e1", "u1"))
+        e = km._api_error(self.p)
+        self.assertIsNotNone(e)
+        self.assertEqual(e["status"], 500)
+        self.assertEqual(e["category"], "server_error")
+        self.assertIn("Internal server error", e["text"])
+
+    def test_user_retry_after_error_clears(self):
+        self._write(uline(T0, "do it", "u1"), apierr_line(T0 + 5, "e1", "u1"),
+                    uline(T0 + 9, "retry", "u2", parent="e1"))
+        self.assertIsNone(km._api_error(self.p))
+
+    def test_fresh_assistant_output_after_error_clears(self):
+        self._write(uline(T0, "do it", "u1"), apierr_line(T0 + 5, "e1", "u1"),
+                    aline(T0 + 9, "Back on track.", "a2", "e1"))
+        self.assertIsNone(km._api_error(self.p))
+
+    def test_no_error_returns_none(self):
+        self._write(uline(T0, "do it", "u1"), aline(T0 + 5, "done", "a1", "u1"))
+        self.assertIsNone(km._api_error(self.p))
+
+    def test_burst_returns_latest(self):
+        # Claude Code logs several consecutive retries; while none recovered, the LATEST stands.
+        self._write(uline(T0, "do it", "u1"),
+                    apierr_line(T0 + 5, "e1", "u1", text="Request timed out", status=None, category="unknown"),
+                    apierr_line(T0 + 7, "e2", "e1"))
+        self.assertEqual(km._api_error(self.p)["status"], 500)
+
+    def test_timeout_has_no_status(self):
+        self._write(apierr_line(T0 + 5, "e1", None, text="Request timed out", status=None, category="unknown"))
+        e = km._api_error(self.p)
+        self.assertIsNone(e["status"])
+        self.assertEqual(e["category"], "unknown")
+
+    def test_cache_keys_on_mtime_size(self):
+        self._write(uline(T0, "do it", "u1"), apierr_line(T0 + 5, "e1", "u1"))
+        self.assertIsNotNone(km._api_error(self.p))
+        with open(self.p, "a") as f:                       # append a retry → recovered; the cache must bust
+            f.write(json.dumps(uline(T0 + 9, "retry", "u2", parent="e1")) + "\n")
+        self.assertIsNone(km._api_error(self.p), "append busts the (mtime,size) cache")
+
+
+class ApiRetryAndTabOrderRoutes(unittest.TestCase):
+    """WS handlers hard to drive through the socket — assert the routing is wired in source (mirrors
+    CompactSessionRoute): the Retry button pastes "retry"; the kernel pushes the saved tab order on connect."""
+
+    def test_routes_present(self):
+        src = Path(BIN, "romp-kernel").read_text()
+        self.assertIn('msg.get("type") == "apiRetry"', src, "Retry button → apiRetry handler")
+        self.assertIn('_tmux_send(_name_of(msg["id"]) or msg["id"], "retry")', src,
+                      "apiRetry pastes 'retry' into the session's pane")
+        self.assertIn('"type": "tabOrder"', src,
+                      "kernel pushes the saved tab order on connect so the UI stops reordering (#11)")
 
 
 class TestPendingQueued(unittest.TestCase):

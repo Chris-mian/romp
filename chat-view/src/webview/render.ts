@@ -63,12 +63,15 @@ type ChatEvent = (
   | { kind: "queued"; texts: string[]; ts?: string; uuid?: string }
   // The session is delegating to a subagent (Task/Agent) — quiet but still working.
   | { kind: "subagent"; desc: string; ts?: string; uuid?: string }
+  // The turn stopped on an API error (event-based: transcript isApiErrorMessage). The session is BLOCKED
+  // until retried — a red-dot card at the bottom with a Retry button (the user 2026-06-16).
+  | { kind: "apiError"; text: string; status?: number; category?: string; ts?: string; uuid?: string }
   | { kind: "compact"; ts?: string; uuid?: string }
 ) & { tlId?: string };   // tlId: the timeline atom this event's hover lights — a prompt → the DOT, work → the BAR
 
 interface TodoTask { id: string; subject: string; activeForm?: string; status: string }
 
-type ChipState = "working" | "subagent" | "ready" | "awaiting" | "idle" | "closed" | "compacting";
+type ChipState = "working" | "subagent" | "ready" | "awaiting" | "idle" | "closed" | "compacting" | "blocked";
 interface Status { state: ChipState; sinceEpoch: number | null; effort?: string; model?: string; ctx?: string; faded?: boolean; }
 interface Color { bg: string; fg: string; }
 interface Session { id: string; name: string; color: Color | null; events: ChatEvent[]; status: Status; firstSeen?: number; }
@@ -154,7 +157,7 @@ function highlight(container: HTMLElement) {
   });
 }
 
-function dot(kind: "green" | "ring" | "user"): HTMLElement { return el("span", "dot " + kind); }
+function dot(kind: "green" | "ring" | "user" | "red"): HTMLElement { return el("span", "dot " + kind); }
 
 function ioRow(label: "IN" | "OUT", text: string, isError: boolean): HTMLElement {
   const row = el("div", "io-row" + (label === "OUT" ? " io-out" : "") + (isError ? " io-error" : ""));
@@ -606,6 +609,7 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
   if (ev.kind === "todo") return renderTodo(ev);
   if (ev.kind === "queued") return renderQueued(ev);
   if (ev.kind === "subagent") return renderSubagent(ev);
+  if (ev.kind === "apiError") return renderApiError(ev);
   if (ev.kind === "compact") return renderCompact(ev);
   return renderTool(ev);
 }
@@ -737,6 +741,34 @@ function renderSubagent(ev: Extract<ChatEvent, { kind: "subagent" }>): HTMLEleme
   const head = el("div", "subagent-head");
   head.textContent = ev.desc ? `⚙ subagent · ${ev.desc}` : "⚙ subagent running…";
   turn.appendChild(head);
+  return turn;
+}
+
+// The turn stopped on an API error — the session is BLOCKED until retried. A red-dot card at the bottom
+// (so it stands out, the user 2026-06-16) carrying the error text + a red "API error" badge and a Retry
+// button that pastes "retry" into the session to resume the stalled turn.
+function renderApiError(ev: Extract<ChatEvent, { kind: "apiError" }>): HTMLElement {
+  const turn = el("div", "turn turn-apierror");
+  turn.appendChild(dot("red"));
+  const card = el("div", "apierror-card");
+  const head = el("div", "apierror-head");
+  const badge = el("span", "apierror-badge");
+  badge.textContent = ev.status ? `API error · ${ev.status}` : "API error";
+  head.appendChild(badge);
+  const retry = el("button", "apierror-retry") as HTMLButtonElement;
+  retry.textContent = "Retry";
+  retry.title = "send “retry” into this session to resume";
+  retry.addEventListener("click", () => {
+    if (vscodeApi) vscodeApi.postMessage({ type: "apiRetry", id: activeId });
+    retry.disabled = true;
+    retry.textContent = "Retrying…";
+  });
+  head.appendChild(retry);
+  card.appendChild(head);
+  const body = el("div", "apierror-body");
+  body.textContent = ev.text || "The session stopped on an API error.";
+  card.appendChild(body);
+  turn.appendChild(card);
   return turn;
 }
 
@@ -918,11 +950,6 @@ function fadedColor(hex: string): string {
 // Tab display order mirrors the romp timeline's lanes: three tiers, each by
 // first-seen (launch) ascending. tier 0 = active live (within the last hour),
 // tier 1 = ended/closed, tier 2 = idle live (>1h quiet).
-function tierOf(s: Session): number {
-  if (s.status.state === "closed") return 1;
-  if (s.status.faded) return 2;
-  return 0;
-}
 // The shared, drag-set order (SID array) from the host — synced with the timeline.
 // Sessions listed here come first in that explicit order; the rest fall back to the
 // tier/first-seen default and append.
@@ -942,9 +969,10 @@ function sortTabs() {
     if (ia !== ib) return ia - ib;                  // current OR last-known position — no jump when a tab dies
     const sa = sessions.get(a), sb = sessions.get(b);
     if (!sa || !sb) return 0;
-    const ta = tierOf(sa), tb = tierOf(sb);
-    if (ta !== tb) return ta - tb;
-    return (sa.firstSeen ?? 0) - (sb.firstSeen ?? 0); // oldest-launched first within a tier (Array.sort is stable)
+    // Sessions not covered by the shared order tie here → order by LAUNCH TIME only, NEVER by state, so a
+    // tab never moves on its own when its chip changes (working→ready→blocked/faded). The host now pushes
+    // the saved order on connect, so covered tabs already resolve via effIdx above (the user 2026-06-16, #11).
+    return (sa.firstSeen ?? 0) - (sb.firstSeen ?? 0);
   });
 }
 // Persist the current full tab order to the shared store (host writes the file →
@@ -1017,12 +1045,14 @@ function renderTabs() {
     const st = s.status.state;
     if (st === "working") tab.classList.add("tab-working");
     else if (st === "subagent") tab.classList.add("tab-subagent");   // orange: quiet but a subagent runs
+    else if (st === "blocked") tab.classList.add("tab-blocked");     // red: stopped on an API error
     else if (st === "awaiting") tab.classList.add("tab-awaiting");
     else if (st === "compacting") tab.classList.add("tab-compacting");
     if (s.status.faded) tab.classList.add("at-rest");
     // WORKING shows a yellow dot to the left of the name (not a yellow outline —
-    // the outline is now reserved for the SELECTED tab, in its identity color).
-    if (st === "working" || st === "subagent") tab.appendChild(el("span", "tab-dot"));
+    // the outline is now reserved for the SELECTED tab, in its identity color). BLOCKED (API error) gets
+    // a RED dot so a stalled session stands out at a glance (the user 2026-06-16).
+    if (st === "working" || st === "subagent" || st === "blocked") tab.appendChild(el("span", "tab-dot"));
     const label = el("span", "tab-label");
     label.textContent = s.name;
     if (s.status.faded && id !== activeId && s.color) {
@@ -2515,7 +2545,7 @@ function setCtxBar(bar: HTMLElement, ctxStr: string | undefined, compacting = fa
 
 const CHIP_LABEL: Record<ChipState, string> = {
   working: "WORKING", subagent: "SUBAGENT", ready: "READY", awaiting: "BLOCKED",
-  idle: "IDLE", closed: "CLOSED", compacting: "COMPACTING",
+  idle: "IDLE", closed: "CLOSED", compacting: "COMPACTING", blocked: "API ERROR",
 };
 
 function updateStatusline() {

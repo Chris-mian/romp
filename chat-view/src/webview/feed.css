@@ -362,6 +362,16 @@ body { display: flex; flex-direction: column; }
 }
 .fask-blocked:hover { text-decoration: underline; }
 
+/* ⚠ API error: a red-OUTLINED badge (the session stopped on an API error) + a Retry button beside it
+   that pastes "retry" into the session to resume (the user 2026-06-16). */
+.fask-apierror {
+  flex: 0 0 auto; font-size: 0.7em; font-weight: 800; letter-spacing: 0.03em; white-space: nowrap;
+  color: #e5484d; border: 1px solid #e5484d; border-radius: 5px; padding: 1px 6px;
+}
+.fdismiss.fretry { color: #e5484d; border-color: #e5484d; }
+.fdismiss.fretry:hover:not(:disabled) { color: #fff; background: #e5484d; border-color: #e5484d; }
+.fdismiss.fretry:disabled { opacity: 0.55; cursor: default; }
+
 /* ↩ answer row — the user's recorded reply to an agent question (an explicit
    child event on the card, kind:"answer"): decision blue, never dimmed — it's
    his input, not routine agent progress. */
