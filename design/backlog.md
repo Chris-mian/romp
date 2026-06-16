@@ -45,6 +45,15 @@ Triage tier (on-demand):
     positive-only already ~52%, so the sweep is the precision backstop, not the driver.
     Watch: sweep quality rides on planner placement (a mis-filed segment can sweep the
     wrong goal) — fix is better placement, helps both paths (per simplify).
+  - [x] Planner-correctness wave (simplify-designed, A/B-validated on real data; landed
+    6e1a147 / 56d557a / b794ea3 / 3b3461b / 425f774): (1) weighing BLOCK rule — a decision
+    owed by the user wins over answer/report; (2) surgical branch-only un-block (a sibling's
+    block survives); (3) completion clears descendant blocks; (4) bottom-up rollup
+    (all-children-complete → top complete); (5) generous head+tail `_unit_text` shaping (no
+    mid-word truncation; framing kept — also removed a false-block cause); (6) empty-segment
+    SKIP (no-work → recorded processed, no node, idempotent); (7) DONE-self (atomic
+    mint-and-complete); (8) topic-placement (file under the topic-matching goal, not the most
+    recent; menu cap 12→20). Each with synthetic tests; behavioural A/B was simplify's.
 - [~] Courier (handoffs) — judge side BUILT (1c8dc06): classifies each peer
   (postal) segment propagating/FYI; PROPAGATING plants a top-level goal in the
   RECIPIENT's tree with `origin:{peer,goalId,msgId}`; FYI no goal-edit. The planner
@@ -138,6 +147,19 @@ Read-side parity hardening (2026-06-15, the user's live review):
   status, distinct from the planner's soft "needs user" block. Render already
   supported `it.blocked`; build_feed now populates it.
 - [x] Courier handoff marker (94a2146): "↪ from <sender>" on a planted card.
+- [x] Event-driven kernel (db552ff): parse cache (`_parse`, mtime-keyed — no re-parse of an
+  unchanged transcript), diff-push (`_send_client`/`_push`, per-client dedup — the big chat
+  payloads stop re-sending every 4s), change-gated triage (`_producer_sig` — planner/sweep/
+  courier run only on a new turn / postal msg / browser connect). The 4s/20s loops remain as
+  a cheap fallback poll (+ the hook for the coming live-AUQ pane scrape). Change-detection
+  (stdlib, no watchdog dep), NOT OS file-events. Connector `summary` now shows the Haiku
+  caption over the raw body (f946ef3, `_msg_summaries()`).
+- [x] Chat-rendering fixes (the user's live review): sent postal cards render + received-msg
+  boilerplate stripped (2e9d6ef, postal-spec port); new content no longer snaps the view to
+  bottom (0122f46); stable tab/lane order, no auto-shuffle on activity (5532c81); dot/bar
+  hover split restored (e72b2f5); connector transit binding (7c9ebd0); `/restart` restored so
+  the ↻ button works (c188918); compaction %: catch-the-start (idle-dots, 2cbd358) + sticky
+  'compacting' so a mid-compaction message can't split it (32d52f7); glyph→glyph hover (9e5cb4d).
 - [ ] Remaining chat richness: image thumbnails (path: refs), postal parked badge + mid.
 - [ ] Re-judging progress surface.
 - [~] Reverse-direction hover (479b5fa feed, 00c8746 chat): chat message / TOC bullet
