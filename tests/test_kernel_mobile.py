@@ -60,6 +60,25 @@ class LandingShell(unittest.TestCase):
         html = km._landing()
         self.assertEqual(html.count("<script>"), 2)
 
+    def test_bottom_bar_is_text_only_and_compact(self):
+        html = km._landing()
+        self.assertNotIn("class=ic", html)            # no icon spans — text labels only
+        self.assertIn(">Chat</button>", html)         # plain text label, no icon child
+        self.assertIn("34px", html)                   # compact bar height (was 52px)
+
+
+class ChatSessionPicker(unittest.TestCase):
+    def test_chat_page_collapses_tabs_into_a_picker_on_mobile(self):
+        chat = km._chat_page()
+        self.assertIn("#msess", chat)                       # the picker is styled into the page
+        self.assertIn("#tabbar #tabs{display:none}", chat)  # the wrapping multi-row tab strip is hidden
+        self.assertIn("sel.id='msess'", km._CHAT_MOBILE_JS)  # ...and built as a native <select>
+
+    def test_picker_routes_a_pick_back_to_the_real_tab(self):
+        js = km._CHAT_MOBILE_JS
+        self.assertIn(".tab[data-id", js)             # reads/clicks the real tab so render.js focuses it
+        self.assertIn("MutationObserver", js)         # and re-syncs as tabs change
+
 
 class RevealRouting(unittest.TestCase):
     def test_reveal_chat_focuses_chat_and_nudges_shell(self):

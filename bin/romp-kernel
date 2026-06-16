@@ -729,6 +729,29 @@ def _parse(path, sid, now):
     return session
 
 
+def _subagent_running(session):
+    """The session is delegating to a subagent: a Task/Agent tool_use with no matching tool_result yet (the
+    mini-conversation hasn't returned — the main thread is quiet but still working). Returns the subagent's
+    description (the Task input, '' if undescribed) when one is in flight, else None. The chip then reads
+    'subagent' (orange) instead of 'working' (the user 2026-06-15)."""
+    started, result_ids = {}, set()
+    for turn in session["turns"]:
+        for a in turn["atoms"]:
+            t, msg = a.get("type"), (a.get("message") or {})
+            content = msg.get("content")
+            if not isinstance(content, list):
+                continue
+            for b in content:
+                if not isinstance(b, dict):
+                    continue
+                if t == "assistant" and b.get("type") == "tool_use" and b.get("name") in ("Task", "Agent"):
+                    started[b.get("id")] = str((b.get("input") or {}).get("description") or "").strip()
+                elif t == "user" and b.get("type") == "tool_result" and b.get("tool_use_id"):
+                    result_ids.add(b["tool_use_id"])
+    pending = [desc for tid, desc in started.items() if tid not in result_ids]
+    return pending[-1] if pending else None              # '' (running, undescribed) vs None (no subagent)
+
+
 def build_session(sid, now, tmux=None):
     """A {type:"session"} message the render.js bundle consumes: the event tree reshaped to
     ChatEvent[], plus the TOC ledger (archiver headline + turn captions) and a status chip."""
@@ -807,6 +830,9 @@ def build_session(sid, now, tmux=None):
     # Claude Code Task to-do list: ONE folded checklist event (renderTodo), appended last (bottom, by the
     # composer). Only while work is OUTSTANDING — a fully completed/cancelled list isn't a live to-do, so
     # drop it rather than let it read as recent (the user 2026-06-10, ported from the old TS kernel).
+    # Subagent in flight → a bottom card so the chat shows WHY the session is quiet-but-working (like todo).
+    if sub is not None:
+        events.append({"kind": "subagent", "desc": sub})
     todo = _fold_tasks(session)
     if todo and any(t["status"] not in ("completed", "cancelled") for t in todo):
         events.append({"kind": "todo", "tasks": todo})
@@ -834,6 +860,7 @@ def build_session(sid, now, tmux=None):
     last_turn = session["turns"][-1] if session["turns"] else None
     open_now = bool(last_turn and not last_turn["ended"]
                     and not any(x["type"] == "idle" for x in last_turn["atoms"]))
+    sub = _subagent_running(session)                     # delegating to a subagent → 'subagent' chip (orange)
     # work-timer base, in MILLISECONDS (render's elapsedMs does Date.now()ms - sinceEpoch; a seconds
     # value showed ~494,000h — the user's "400,000 hours" bug): the current open turn's start while
     # working, else the last activity; None when unknown (render then shows no timer).
@@ -847,7 +874,7 @@ def build_session(sid, now, tmux=None):
         # (awaiting) and compacting, plus the model/effort/ctx metadata.
         st = tm["state"]
         chip = ("awaiting" if st == "permission" else "compacting" if st == "compacting"
-                else "working" if open_now else "ready")
+                else "subagent" if sub is not None else "working" if open_now else "ready")
         faded = chip == "ready" and bool(tm["since"]) and now - tm["since"] > 3600
         status = {"state": chip, "sinceEpoch": since_ms, "faded": faded,
                   "model": tm["model"], "effort": tm["effort"],
