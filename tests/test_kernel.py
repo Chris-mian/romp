@@ -100,6 +100,37 @@ class ViewBuilder(unittest.TestCase):
          km.NAMES, km._tmux_sessions) = self.saved
         self.td.cleanup()
 
+    def test_parse_cache_hits_until_the_file_changes(self):
+        """The build hot path parses via _parse, cached by the transcript's (mtime,size): an unchanged
+        transcript returns the SAME parsed object; a changed one re-parses."""
+        km._parse_cache.clear()
+        a = km._parse(str(self.tpath), SID, NOW)
+        b = km._parse(str(self.tpath), SID, NOW)
+        self.assertIs(a, b, "unchanged transcript → cached parse re-used")
+        with self.tpath.open("a") as f:                  # append → size (and mtime) change
+            f.write(json.dumps(uline(NOW, "more", "uX", ps="typed")) + "\n")
+        c = km._parse(str(self.tpath), SID, NOW)
+        self.assertIsNot(a, c, "changed transcript → re-parsed")
+
+    def test_send_client_dedups_per_client(self):
+        """A client gets a payload once; an identical re-push is skipped; a changed one is sent (the
+        diff-push that stops the 4s pusher from re-sending unchanged chat sessions)."""
+        out = []
+        c = {"app": "feed", "send": lambda s: out.append(s), "alive": True}
+        km._send_client(c, ("feed",), {"type": "feed", "x": 1})
+        km._send_client(c, ("feed",), {"type": "feed", "x": 1})
+        self.assertEqual(len(out), 1, "identical payload is not re-sent")
+        km._send_client(c, ("feed",), {"type": "feed", "x": 2})
+        self.assertEqual(len(out), 2, "a changed payload is sent")
+
+    def test_producer_sig_tracks_browser_and_transcripts(self):
+        """The producer gate's fingerprint: a browser connecting changes it (so triage runs to build the
+        new client's inbox), and each discovered transcript's mtime is in it (so a new turn triggers)."""
+        s_off, s_on = km._producer_sig(False), km._producer_sig(True)
+        self.assertEqual((s_off["__browser__"], s_on["__browser__"]), (False, True))
+        self.assertNotEqual(s_off, s_on, "a browser connecting changes the sig → triage runs")
+        self.assertIn(str(self.tpath), s_on, "each discovered transcript's mtime is fingerprinted")
+
     def test_session_payload_shape(self):
         m = km.build_session(SID, NOW)
         self.assertEqual(m["type"], "session")

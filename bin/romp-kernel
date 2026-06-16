@@ -524,6 +524,32 @@ def _fold_tasks(session):
             for t in ordered]
 
 
+_parse_cache = {}                                # realpath → ((mtime, size), parsed session)
+
+
+def _parse(path, sid, now):
+    """em.parse_session, CACHED by the transcript's (mtime, size). The build hot path re-parsed every
+    transcript on every push (4s); an unchanged transcript now returns the cached parse. Safe: the
+    kernel's parse is now-independent except the 48h window cutoff, which doesn't change a recent
+    session's atoms. (postal_log resolution lags at most one cycle — a delivery appends to the
+    transcript anyway, busting the cache.)"""
+    try:
+        st = os.stat(path)
+        key = (st.st_mtime, st.st_size)
+    except OSError:
+        key = None
+    hit = _parse_cache.get(path)
+    if hit is not None and key is not None and hit[0] == key:
+        return hit[1]
+    session = em.parse_session(path, rompuuid=sid, candidate_files=[path],
+                               postal_log=str(jd.MESSAGES), now=now)
+    if key is not None:
+        if len(_parse_cache) > 256:              # backstop: bounded by fleet size, but never unbounded
+            _parse_cache.clear()
+        _parse_cache[path] = (key, session)
+    return session
+
+
 def build_session(sid, now, tmux=None):
     """A {type:"session"} message the render.js bundle consumes: the event tree reshaped to
     ChatEvent[], plus the TOC ledger (archiver headline + turn captions) and a status chip."""
@@ -532,8 +558,7 @@ def build_session(sid, now, tmux=None):
     sess = next((s for s in _sessions(now) if s["sid"] == sid), None)
     if not sess:
         return None
-    session = em.parse_session(sess["path"], rompuuid=sid, candidate_files=[sess["path"]],
-                               postal_log=str(jd.MESSAGES), now=now)
+    session = _parse(sess["path"], sid, now)
     caps = _captions(sid)
     events, by_tool = [], {}                  # by_tool: tool_use_id → its tool event (fill output later)
     uuid2seg, seg_anchors = {}, {}            # atom uuid → seg id; seg id → (promptId, workId) for the dot/bar split
@@ -1007,8 +1032,7 @@ def build_timeline(now, tmux=None):
         live = tm is not None
         hexcol = (tm and tm["color"]) or (_name_color(sid) or {}).get("bg", "#888888")
         try:
-            session = em.parse_session(s["path"], rompuuid=sid, candidate_files=[s["path"]],
-                                       postal_log=str(jd.MESSAGES), now=now)
+            session = _parse(s["path"], sid, now)
         except Exception:
             session = {"turns": []}
         caps = _captions(sid)
@@ -1154,56 +1178,102 @@ def _goal_segments(item_id):
     return seg_ids
 
 
-def _push_all():
-    """Build fresh payloads and push to every connected client (per its app). The timeline payload
-    re-parses every session, so it's built only when a timeline client is actually connected."""
+def _send_client(c, key, msg):
+    """Send a payload to ONE client only if it differs from what that client last received (per-client
+    dedup, key = the slot e.g. ("chat", sid)) — so the periodic push re-sends nothing when unchanged."""
+    s = json.dumps(msg)
+    if c.setdefault("sent", {}).get(key) == s:
+        return
+    c["sent"][key] = s
+    try:
+        c["send"](s)
+    except Exception:
+        c["alive"] = False
+
+
+def _push(targets):
+    """Build the payloads once (cached parses) and send each target only the pieces that CHANGED for it.
+    Drives both the periodic pusher (all clients) and a fresh connect (one client): a new/reconnecting
+    client (empty dedup) gets the full state; steady-state sends only diffs. Builds only the apps the
+    targets actually need (no timeline parse with no timeline client)."""
+    if not targets:
+        return
     now = int(time.time())
     tmux = _tmux_sessions()                       # one tmux read per push, shared by all builders
-    with _clients_lock:
-        want_tl = any(c["app"] == "timeline" for c in _clients)
+    want_chat = any(c["app"] == "chat" for c in targets)
+    want_feed = any(c["app"] in ("feed", "chat") for c in targets)   # chat needs feed["working"]
+    want_tl = any(c["app"] == "timeline" for c in targets)
     try:
         hidden = _hidden_tabs()
         chat_list = [s for s in _ordered_alive(now, tmux) if s["sid"] not in hidden]   # × hides a tab
-        chat_sessions = [m for m in (build_session(s["sid"], now, tmux) for s in chat_list) if m]
+        chat_sessions = [m for m in (build_session(s["sid"], now, tmux) for s in chat_list) if m] if want_chat else []
         tab_order = [s["sid"] for s in chat_list]
-        feed = build_feed(now, tmux)
+        feed = build_feed(now, tmux) if want_feed else None
         timeline = build_timeline(now, tmux) if want_tl else None
     except Exception:
         sys.stderr.write("push build: %s\n" % traceback.format_exc())
         return
-    with _clients_lock:
-        clients = list(_clients)
-    for c in clients:
-        try:
-            if c["app"] == "chat":
-                for m in chat_sessions:
-                    c["send"](json.dumps(m))
-                c["send"](json.dumps({"type": "tabOrder", "order": tab_order}))   # sync tab order ↔ timeline
-                c["send"](json.dumps({"type": "working", "names": feed["working"]}))
-            elif c["app"] == "feed":
-                c["send"](json.dumps(feed))
-            elif c["app"] == "timeline":
-                c["send"](json.dumps({"type": "data", "data": timeline}))
-        except Exception:
-            c["alive"] = False
+    for c in targets:
+        if c["app"] == "chat":
+            for m in chat_sessions:
+                _send_client(c, ("chat", m["id"]), m)
+            _send_client(c, ("taborder",), {"type": "tabOrder", "order": tab_order})   # sync tab order ↔ timeline
+            _send_client(c, ("working",), {"type": "working", "names": feed["working"]})
+        elif c["app"] == "feed":
+            _send_client(c, ("feed",), feed)
+        elif c["app"] == "timeline" and timeline is not None:
+            _send_client(c, ("timeline",), {"type": "data", "data": timeline})
     with _clients_lock:
         _clients[:] = [c for c in _clients if c.get("alive", True)]
 
 
+def _push_all():
+    with _clients_lock:
+        clients = list(_clients)
+    _push(clients)
+
+
 # ───────────────────────── producer + push threads ─────────────────────────
+_last_producer_sig = [None]
+
+
+def _producer_sig(browser):
+    """A cheap fingerprint that changes iff the TRIAGE judges have new work: each discovered transcript's
+    mtime, the postal log's mtime, and whether a browser is connected (False→True must run triage to
+    build the inbox for the new client). Lets the producer skip the (uncached) planner/courier parses
+    when nothing changed — event-driven in effect, no blind re-run on a timer."""
+    sig = {"__browser__": browser}
+    try:
+        for fsid, path, anchor, name in jd.discover(int(time.time())):
+            try:
+                sig[str(path)] = os.stat(path).st_mtime
+            except OSError:
+                pass
+    except Exception:
+        pass
+    try:
+        sig["__msgs__"] = os.stat(jd.MESSAGES).st_mtime
+    except OSError:
+        pass
+    return sig
+
+
 def _producer():
     while True:
         try:
             with _clients_lock:
                 browser = bool(_clients)
-            # INDEX tier (captioner + archiver) is ALWAYS-ON for any active session — it keeps the
-            # TOC/search index current even with no browser (the kernel is always up via the login
-            # service). TRIAGE tier (planner; courier later) stays browser-gated — the live goal inbox
-            # only matters while someone's looking. (The freeze bug was the old 90s-since-HTTP timer a
-            # long-lived WS never refreshed; gate on the real signals — active tmux / connected client.)
+            # INDEX tier (captioner + archiver) is ALWAYS-ON for any active session — keeps the
+            # TOC/search index current even with no browser. It's already cheap when idle (jd.PCACHE
+            # makes unit-selection a no-parse no-op) AND must keep running to retry a failed capture, so
+            # it stays ungated. TRIAGE tier (planner/sweep/courier) parses UNCACHED and only matters
+            # while a browser's looking, so it's gated on a real change (new turn / postal msg / a
+            # browser just connected) — no re-parse+re-run on a blind 20s tick.
             if _tmux_sessions():
                 jd.run_once()
-            if browser:
+            sig = _producer_sig(browser)
+            if browser and sig != _last_producer_sig[0]:
+                _last_producer_sig[0] = sig
                 jd.run_plan()
                 if jd.NEG_SWEEP:                       # HYBRID completion: the negative turn-end backstop
                     jd.run_sweep()                     # (toggleable for A/B — see judge.md; --ab-sweep to measure)
@@ -1687,21 +1757,7 @@ class Handler(BaseHTTPRequestHandler):
                     _clients.remove(client)
 
     def _push_one(self, client):
-        now = int(time.time())
-        tmux = _tmux_sessions()
-        if client["app"] == "chat":
-            hidden = _hidden_tabs()
-            ordered = [s for s in _ordered_alive(now, tmux) if s["sid"] not in hidden]
-            for s in ordered:
-                m = build_session(s["sid"], now, tmux)
-                if m:
-                    client["send"](json.dumps(m))
-            client["send"](json.dumps({"type": "tabOrder", "order": [s["sid"] for s in ordered]}))
-            client["send"](json.dumps({"type": "working", "names": build_feed(now, tmux)["working"]}))
-        elif client["app"] == "timeline":
-            client["send"](json.dumps({"type": "data", "data": build_timeline(now, tmux)}))
-        else:
-            client["send"](json.dumps(build_feed(now, tmux)))
+        _push([client])                           # full state to a fresh client (its per-client dedup is empty)
 
 
 def _ensure_bundles():
