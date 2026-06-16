@@ -946,6 +946,36 @@ def _parse(path, sid, now):
     return session
 
 
+_compact_clicked = {}         # sid -> ts of a compact WE initiated → optimistic cross-surface "compacting"
+
+
+def _mark_compacting(sid):
+    """A compact we just sent /compact for → show 'compacting' on every surface AT ONCE, now."""
+    if sid:
+        _compact_clicked[sid] = time.time()
+        _push_all()
+
+
+def _compacting_optimistic(sid, session, now):
+    """True if we just sent /compact to this session and it hasn't finished yet. The compacting badge is
+    otherwise derived from a fleeting tmux @claude-state caught only by the 4s diff-push, which a reload or
+    a too-brief flip can miss entirely; since the kernel ITSELF sends /compact it knows the start exactly,
+    so it shows 'compacting' immediately on chat + timeline + badges. Cleared EVENT-BASED the instant a
+    compact_boundary lands at/after the click; 180s safety cap covers a cancelled compaction (2026-06-16)."""
+    t0 = _compact_clicked.get(sid)
+    if t0 is None:
+        return False
+    for turn in session["turns"]:
+        for a in turn["atoms"]:
+            if a.get("type") == "system" and a.get("subtype") == "compact_boundary" and (a.get("t") or 0) >= t0:
+                _compact_clicked.pop(sid, None)
+                return False
+    if now - t0 > 180:
+        _compact_clicked.pop(sid, None)
+        return False
+    return True
+
+
 def _subagent_running(session):
     """A subagent the session is delegating to RIGHT NOW: a Task/Agent tool_use IN THE LAST TURN with no
     matching tool_result yet. Returns its description ('' if undescribed) or None.
@@ -1154,7 +1184,8 @@ def build_session(sid, now, tmux=None):
         # subagent is now an ADDITIVE signal (status.subagent), NOT a chip state: working+subagent shows
         # only WORKING; ready+subagent shows the ready chip AND a separate orange subagent chip (the render
         # decides). So the chip itself is the real state (the user 2026-06-16, re-spec from subagents #9).
-        chip = ("blocked" if aerr else "awaiting" if st == "permission" else "compacting" if st == "compacting"
+        compacting = st == "compacting" or _compacting_optimistic(sid, session, now)
+        chip = ("blocked" if aerr else "awaiting" if st == "permission" else "compacting" if compacting
                 else "working" if open_now else "ready")
         faded = chip == "ready" and sub is None and bool(tm["since"]) and now - tm["since"] > 3600
         status = {"state": chip, "sinceEpoch": since_ms, "faded": faded, "subagent": sub,
@@ -1585,6 +1616,8 @@ def build_timeline(now, tmux=None):
                         and not any(x["type"] == "idle" for x in last_turn["atoms"]))
         if tm:                            # live: tmux state drives the lane badge (working/waiting/idle/permission/compacting)
             state = tm["state"] or "idle"
+            if state != "compacting" and _compacting_optimistic(sid, session, now):
+                state = "compacting"      # optimistic cue the moment we sent /compact (matches the chat chip)
         else:                             # dead lane: coarse file-derived (badgeFor hides the badge when !live anyway)
             blocked = "blocked" in jd.load_goals(sid).get("status", {}).values()
             state = "awaiting" if blocked else ("working" if open_now else "idle")
@@ -2597,11 +2630,13 @@ class Handler(BaseHTTPRequestHandler):
                         pass
                 elif msg and msg.get("type") == "compact" and msg.get("name"):
                     _tmux_send(str(msg["name"]), "/compact")
+                    _mark_compacting(_live_names(_tmux_sessions()).get(str(msg["name"])))   # instant cue
                 elif msg and msg.get("type") == "compactSession" and msg.get("id"):
                     # chat context-battery click → same /compact path as the timeline's `compact` (the chat
                     # button posted compactSession by id but the kernel had no handler, so it silently did
                     # nothing — the user 2026-06-16). The webview already guards awaiting/compacting/closed.
                     _tmux_send(_name_of(msg["id"]) or msg["id"], "/compact")
+                    _mark_compacting(msg["id"])          # show 'compacting' at once, don't wait for the hook poll
                 elif msg and msg.get("type") == "sendCommand" and msg.get("name") and msg.get("cmd"):
                     cmd = str(msg["cmd"])
                     _tmux_send(str(msg["name"]), cmd, model_cmd=cmd.strip().startswith("/model"))

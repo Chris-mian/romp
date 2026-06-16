@@ -381,6 +381,26 @@ class ViewBuilder(unittest.TestCase):
         self.assertNotEqual(m["status"]["state"], "subagent")
         self.assertFalse(any(e["kind"] == "subagent" for e in m["events"]))
 
+    def test_optimistic_compacting_until_boundary(self):
+        # clicking compact marks the session 'compacting' AT ONCE on chat + timeline (no waiting for the
+        # hook→tmux→4s-poll round-trip, which a reload can swallow); a compact_boundary at/after the click
+        # clears it event-based (the user 2026-06-16).
+        km._compact_clicked.clear()
+        km._compact_clicked[SID] = NOW - 5                      # we just sent /compact
+        m = km.build_session(SID, NOW)
+        self.assertEqual(m["status"]["state"], "compacting", "optimistic cue shows immediately on the chip")
+        tl = km.build_timeline(NOW)
+        lane = next(s for s in tl["sessions"] if s["id"] == SID)
+        self.assertEqual(lane["state"], "compacting", "and on the timeline lane, same instant")
+        # the compaction completes → a compact_boundary lands after the click → the cue clears
+        boundary = {"type": "system", "subtype": "compact_boundary", "timestamp": iso(NOW + 1),
+                    "uuid": "cb1", "parentUuid": "a2"}
+        with self.tpath.open("a") as f:
+            f.write(json.dumps(boundary) + "\n")
+        m2 = km.build_session(SID, NOW + 2)
+        self.assertNotEqual(m2["status"]["state"], "compacting", "a compact_boundary clears the optimistic cue")
+        self.assertNotIn(SID, km._compact_clicked, "the flag is popped once the boundary lands")
+
     def test_api_error_chat_card_and_blocked_chip(self):
         # an API error as the last record → a {kind:"apiError"} card at the bottom + the chip flips to
         # "blocked" (red) so a stalled session stands out (the user 2026-06-16).
