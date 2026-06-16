@@ -1408,34 +1408,43 @@ def _usage():
     return {"fiveHour": five, "sevenDay": seven, "t": t if isinstance(t, (int, float)) else None}
 
 
-_msg_sum_cache = {}                               # cached {id: summary}, keyed by the file's (mtime, size)
+_msg_sum_cache = {}                               # cached {msg id: caption}, keyed by the transcripts' signature
 
 
 def _msg_summaries():
-    """{msg id: Haiku summary} from timeline/message-summaries.jsonl (one {"id","summary"} per line),
-    cached by (mtime, size). The timeline renders summary || text, so this shows the caption instead of
-    the verbose raw body. Shared helper — the chat-card half (smallbugs) reuses it."""
-    p = jd.STATE / "timeline" / "message-summaries.jsonl"
+    """{msg id: caption} — the caption of the recipient segment a peer message triggered. Join the
+    msgId (its `romp-msg-id` marker, via _seg_mids) to the segment that bore it, then to that segment's
+    caption in captions/. Replaces the old timeline/message-summaries.jsonl the retired backfill wrote;
+    the timeline connectors (_postal_messages) and chat incoming cards (_hydrate_postal) render this
+    ≤9-word gloss over the verbose raw body. Memoized on the live transcripts' (path, mtime) signature,
+    so the scan runs only when a transcript changed — i.e. exactly when a build re-runs anyway; _parse
+    is itself mtime-cached, so a same-cycle re-parse is a hit."""
+    now = time.time()
     try:
-        st = p.stat()
-        key = (st.st_mtime, st.st_size)
-    except OSError:
-        return {}
-    if _msg_sum_cache.get("key") == key:
+        sess = _sessions(now)
+    except Exception:
+        return _msg_sum_cache.get("map", {})
+    sig = tuple((s["path"], s["mtime"]) for s in sess)
+    if _msg_sum_cache.get("sig") == sig:
         return _msg_sum_cache["map"]
     m = {}
-    try:
-        for ln in p.read_text(errors="replace").splitlines():
-            try:
-                o = json.loads(ln)
-            except Exception:
+    for s in sess:
+        try:
+            caps = _captions(s["sid"])
+            if not caps:                                 # no captions yet → nothing to join, skip the parse
                 continue
-            if o.get("id") and isinstance(o.get("summary"), str):
-                m[o["id"]] = o["summary"]
-    except OSError:
-        return {}
+            session = _parse(s["path"], s["sid"], now)
+            for turn in session["turns"]:
+                for seg in em.segments(turn):
+                    cap = caps.get(seg["id"], {}).get("caption")
+                    if not cap:
+                        continue
+                    for mid in _seg_mids(seg):            # a peer-message segment carries its msgId marker
+                        m[mid] = cap
+        except Exception:
+            continue
     _msg_sum_cache.clear()
-    _msg_sum_cache["key"], _msg_sum_cache["map"] = key, m
+    _msg_sum_cache["sig"], _msg_sum_cache["map"] = sig, m
     return m
 
 

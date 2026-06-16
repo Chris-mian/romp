@@ -675,43 +675,60 @@ class ViewBuilder(unittest.TestCase):
         self.assertIsNone(msgs["m9"]["toGoal"], "a message that planted no goal has toGoal None")
 
     def test_postal_connector_summary_from_captions(self):
-        # the connector carries the Haiku caption (message-summaries.jsonl); the timeline shows it over
-        # the verbose raw body, which stays as the fallback
+        # the connector carries the caption (from _msg_summaries, now sourced from captions/); the
+        # timeline shows it over the verbose raw body, which stays as the fallback
         md = jd.STATE / "timeline"; md.mkdir(parents=True, exist_ok=True)
         a, b = "aaaa1111", "bbbb2222"
         (md / "messages.jsonl").write_text(
             json.dumps({"ev": "sent", "id": "m1", "from_id": a, "to_id": b, "t": NOW - 30, "from": "alpha",
                         "body": "a long verbose body that the user finds too noisy"}) + "\n"
             + json.dumps({"ev": "exec", "id": "m1", "t": NOW - 20}) + "\n")
-        (md / "message-summaries.jsonl").write_text(json.dumps({"id": "m1", "summary": "asked for X"}) + "\n")
-        km._msg_sum_cache.clear()
-        m = km._postal_messages(NOW, {a, b}, {a: "alpha", b: "beta"})[0]
+        saved = km._msg_summaries
+        km._msg_summaries = lambda: {"m1": "asked for X"}
+        try:
+            m = km._postal_messages(NOW, {a, b}, {a: "alpha", b: "beta"})[0]
+        finally:
+            km._msg_summaries = saved
         self.assertEqual(m["summary"], "asked for X", "connector carries the caption")
         self.assertEqual(m["text"], "a long verbose body that the user finds too noisy", "raw body kept as fallback")
 
     def test_postal_card_carries_caption(self):
-        # the incoming CHAT card carries the Haiku caption too (renderPostal shows it over the verbose
-        # body, full message on hover); the raw body stays as the fallback
-        md = jd.STATE / "timeline"; md.mkdir(parents=True, exist_ok=True)
-        (md / "message-summaries.jsonl").write_text(json.dumps({"id": "m1", "summary": "asks to rebase onto main"}) + "\n")
-        km._msg_sum_cache.clear()
-        ev = {"kind": "user", "md": "see this <!-- romp-msg-id: m1 -->", "uuid": "u", "ts": "t"}
-        index = {"m1": {"from": "alpha", "fromId": None, "body": "a long verbose handoff body the user finds noisy",
-                        "id": "m1", "t": NOW - 30, "park": False}}
-        cards = km._hydrate_postal([ev], index)
+        # the incoming CHAT card carries the caption too (renderPostal shows it over the verbose body,
+        # full message on hover); the raw body stays as the fallback
+        saved = km._msg_summaries
+        km._msg_summaries = lambda: {"m1": "asks to rebase onto main"}
+        try:
+            ev = {"kind": "user", "md": "see this <!-- romp-msg-id: m1 -->", "uuid": "u", "ts": "t"}
+            index = {"m1": {"from": "alpha", "fromId": None, "body": "a long verbose handoff body the user finds noisy",
+                            "id": "m1", "t": NOW - 30, "park": False}}
+            cards = km._hydrate_postal([ev], index)
+        finally:
+            km._msg_summaries = saved
         self.assertEqual(len(cards), 1)
         self.assertEqual((cards[0]["kind"], cards[0]["direction"]), ("postal", "in"))
         self.assertEqual(cards[0]["summary"], "asks to rebase onto main", "card carries the caption")
         self.assertEqual(cards[0]["body"], "a long verbose handoff body the user finds noisy", "raw body kept (hover)")
 
-    def test_msg_summaries_cached_until_change(self):
-        md = jd.STATE / "timeline"; md.mkdir(parents=True, exist_ok=True)
-        f = md / "message-summaries.jsonl"
-        km._msg_sum_cache.clear()
-        f.write_text(json.dumps({"id": "x", "summary": "one"}) + "\n")
-        self.assertEqual(km._msg_summaries(), {"x": "one"})
-        f.write_text(json.dumps({"id": "x", "summary": "a longer caption"}) + "\n")   # size change → invalidate
-        self.assertEqual(km._msg_summaries(), {"x": "a longer caption"}, "re-read after the file changes")
+    def test_msg_summaries_joins_caption_to_msgid(self):
+        # _msg_summaries maps a postal msgId -> the caption of the RECIPIENT segment that bore the
+        # romp-msg-id marker, sourced from captions/ (replacing the retired message-summaries.jsonl
+        # the old backfill wrote). Join: msgId --_seg_mids--> segment --captions/--> its caption.
+        recs = [uline(T0, "please take this over <!-- romp-msg-id: m1 -->", "p1", ps="typed"),
+                aline(T0 + 10, "Picked it up.", "pa1", "p1", stop="end_turn")]
+        self.tpath.write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+        saved_t, saved_sess = km.time.time, km._sessions
+        km.time.time = lambda: NOW                       # keep _parse's window consistent with the fixture
+        km._sessions = lambda now: [{"sid": SID, "name": "testsess", "path": str(self.tpath), "mtime": NOW}]
+        try:
+            session = km._parse(str(self.tpath), SID, NOW)
+            seg = next(s for t in session["turns"] for s in em.segments(t) if "m1" in km._seg_mids(s))
+            (jd.CAPDIR / (SID + ".jsonl")).write_text(json.dumps(
+                {"id": seg["id"], "grain": "segment", "t": seg["t"], "caption": "handoff received"}) + "\n")
+            km._msg_sum_cache.clear()
+            self.assertEqual(km._msg_summaries().get("m1"), "handoff received")
+        finally:
+            km.time.time, km._sessions = saved_t, saved_sess
+            km._msg_sum_cache.clear()
 
     def test_seg_mids_extracts_markers(self):
         seg = {"atoms": [
