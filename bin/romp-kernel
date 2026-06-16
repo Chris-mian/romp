@@ -1920,7 +1920,7 @@ _GEAR_CSS = ("#rgear{position:fixed;top:6px;right:8px;z-index:60;background:none
              "#rsettings{position:fixed;top:30px;right:8px;z-index:60;min-width:210px;background:#252526;"
              "border:1px solid #3a3a3a;border-radius:8px;padding:10px 12px;font:12px/1.5 -apple-system,sans-serif;"
              "color:#ccc;box-shadow:0 8px 24px #00000066}#rsettings .rs-h{font-weight:600;margin-bottom:6px;"
-             "color:#9aa0a6}#rsver{white-space:pre-line}#rsver .stale{color:#e2b341;font-weight:600}")
+             "color:#9aa0a6}#rsver{white-space:pre-line}")
 _GEAR_HTML = ("<button id=rgear title=Settings aria-label=Settings>⚙</button>"
               "<div id=rsettings hidden><div class=rs-h>romp · version</div>"
               "<div id=rsver>…</div></div>")
@@ -1928,8 +1928,8 @@ _GEAR_JS = r"""(function(){var g=document.getElementById('rgear'),p=document.get
 b=document.getElementById('rsver');function lv(){var t=document.querySelector('script[src*="feed.js"]');
 var m=t&&t.getAttribute('src').match(/[?&]v=(\d+)/);return m?+m[1]:0;}
 function fill(){fetch('/version',{cache:'no-store'}).then(function(r){return r.json();}).then(function(v){
-var x=lv(),stale=x&&v.dist_ver&&v.dist_ver>x;b.innerHTML='kernel '+(v.kernel_sha||'?')+'\nserving v'+
-v.dist_ver+'\nthis tab v'+(x||'?')+(stale?'  <span class=stale>⚠ reload</span>':'  ✓');
+var x=lv();b.innerHTML='kernel '+(v.kernel_sha||'?')+'\nserving v'+
+v.dist_ver+'\nthis tab v'+(x||'?');
 }).catch(function(){b.textContent='(version unavailable)';});}
 g.onclick=function(e){e.stopPropagation();if(p.hidden){p.hidden=false;fill();}else p.hidden=true;};
 document.addEventListener('click',function(e){if(!p.hidden&&e.target!==g&&!p.contains(e.target))p.hidden=true;});})();"""
@@ -2087,6 +2087,45 @@ var last='chat';try{var s=localStorage.getItem(KT);if(s&&F[s])last=s;}catch(e){}
 """
 
 
+# Build-staleness notification (combined shell only). When the kernel serves a NEWER bundle than
+# the one this tab loaded (dist_ver > the tab's load-time version), show a centered top notification
+# with Reload + Dismiss — proactive, "near the top of the whole window" (the user 2026-06-16), not
+# buried in the feed pane. Supersedes the gear panel's inline "⚠ reload" hint (the gear now shows
+# version only). Self-contained block (own style + node + script) so it injects at one point.
+_STALE_CSS = (
+    "#rstale{position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:99999;display:none;"
+    "align-items:center;gap:12px;max-width:92vw;background:#2b2d30;border:1px solid #4a4d51;"
+    "border-radius:10px;padding:10px 14px;color:#e6e6e6;box-shadow:0 10px 30px #0000008a;"
+    "font:13px/1.4 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}"
+    "#rstale.show{display:flex}#rstale .rs-msg{font-weight:500}"
+    "#rstale button{font:inherit;cursor:pointer;border-radius:6px;padding:5px 11px;"
+    "border:1px solid transparent;white-space:nowrap}"
+    "#rstale .rs-reload{background:#54B204;color:#0c1a00;font-weight:600;border-color:#3f8a00}"
+    "#rstale .rs-reload:hover{background:#62c80a}"
+    "#rstale .rs-dismiss{background:none;color:#9aa0a6;border-color:#4a4d51}"
+    "#rstale .rs-dismiss:hover{color:#e6e6e6}")
+_STALE_HTML = (
+    "<div id=rstale role=alert><span class=rs-msg>A newer romp build is available.</span>"
+    "<button class=rs-reload id=rstale-reload>Reload</button>"
+    "<button class=rs-dismiss id=rstale-dismiss>Dismiss</button></div>")
+_STALE_JS = (
+    "(function(){var box=document.getElementById('rstale'),"
+    "rl=document.getElementById('rstale-reload'),dm=document.getElementById('rstale-dismiss');"
+    "var loaded=__LOADEDVER__,dismissed=0,served=0;"
+    "function check(){fetch('/version',{cache:'no-store'}).then(function(r){return r.json();}).then(function(v){"
+    "served=v.dist_ver||0;"
+    "if(loaded&&served>loaded&&served!==dismissed)box.classList.add('show');"
+    "else if(served<=loaded)box.classList.remove('show');}).catch(function(){});}"
+    "rl.onclick=function(){location.reload();};"
+    "dm.onclick=function(){dismissed=served;box.classList.remove('show');};"
+    "check();setInterval(check,30000);})();")
+
+
+def _stale_block(v):
+    return ("<style>" + _STALE_CSS + "</style>" + _STALE_HTML
+            + "<script>" + _STALE_JS.replace("__LOADEDVER__", str(int(v))) + "</script>")
+
+
 def _landing():
     # combined 3-pane shell: chat | feed on top (draggable col-resize gutter), the timeline band
     # full-width below (draggable row-resize gutter). Pane sizes persist in localStorage.
@@ -2095,6 +2134,7 @@ def _landing():
     # full-screen pane at a time, switched by the bottom tab bar (Chat / Feed / Timeline). All three
     # iframes stay in the DOM with their WebSockets live, so switching is instant and the background
     # panes keep updating; _LANDING_MOBILE_JS drives the switcher + cross-pane reveal.
+    v = _dist_ver()
     return ("<!DOCTYPE html><html lang=en><head><meta charset=UTF-8>"
             "<meta name=viewport content='width=device-width,initial-scale=1,viewport-fit=cover'>"
             "<link rel=icon type=image/svg+xml href=/media/romp-swirl-glyph.svg><title>Romp</title><style>"
@@ -2143,7 +2183,9 @@ def _landing():
             # the mobile tab bar. (The splitter used to query a stale id=t for the timeline iframe and
             # throw on every load — fixed above by giving that iframe id=f-timeline.)
             "<script>" + _LANDING_JS + "</script>"
-            "<script>" + _LANDING_MOBILE_JS + "</script></body></html>")
+            "<script>" + _LANDING_MOBILE_JS + "</script>"
+            + _stale_block(v) +
+            "</body></html>")
 
 
 class Handler(BaseHTTPRequestHandler):

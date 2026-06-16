@@ -62,3 +62,21 @@ def test_send_emits_cache_control():
     Fake().wfile = Fake.wfile
     Fake._send(Fake(), 200, "hi", "text/plain", cache="no-cache")
     assert ("Cache-Control", "no-cache") in sent
+
+
+def test_landing_shows_build_staleness_banner():
+    # the combined shell injects a centered Reload/Dismiss notification, shown when the served
+    # dist_ver exceeds the version this tab loaded (baked in at serve time, not a placeholder).
+    html = km._landing()
+    assert "id=rstale" in html
+    assert "rstale-reload" in html and "rstale-dismiss" in html
+    assert "__LOADEDVER__" not in html, "load-time version must be interpolated, not a placeholder"
+    assert "/version" in html and "location.reload()" in html
+
+
+def test_gear_panel_drops_inline_stale_hint():
+    # the gear stays the version display, but the proactive reload alert now lives in the banner,
+    # so the gear no longer shows its own inline "stale" hint (one stale surface, not two).
+    feed = km._feed_page()
+    assert "id=rgear" in feed, "the version gear should remain"
+    assert "reload</span>" not in feed
