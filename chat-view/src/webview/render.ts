@@ -50,6 +50,7 @@ type ChatEvent = (
       peer: string;
       color: { bg: string; fg: string } | null;
       body: string;
+      summary?: string;  // incoming Haiku caption (≤9 words) — shown instead of the verbose body; body on hover
       mid?: string;      // postal message id (joins feed-modal handoff hovers to this card)
       t?: number;        // epoch seconds (incoming)
       park?: boolean;
@@ -862,7 +863,9 @@ function renderPostal(ev: Extract<ChatEvent, { kind: "postal" }>): HTMLElement {
   card.appendChild(head);
 
   const body = el("div", "postal-body md");
-  body.innerHTML = md(ev.body);
+  const caption = ev.summary && ev.summary.trim();   // incoming: show the concise caption, full message on hover
+  body.innerHTML = md(caption || ev.body);
+  if (caption) { body.title = ev.body; body.classList.add("postal-captioned"); }
   highlight(body);
   card.appendChild(body);
 

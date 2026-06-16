@@ -417,6 +417,21 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(m["summary"], "asked for X", "connector carries the caption")
         self.assertEqual(m["text"], "a long verbose body that the user finds too noisy", "raw body kept as fallback")
 
+    def test_postal_card_carries_caption(self):
+        # the incoming CHAT card carries the Haiku caption too (renderPostal shows it over the verbose
+        # body, full message on hover); the raw body stays as the fallback
+        md = jd.STATE / "timeline"; md.mkdir(parents=True, exist_ok=True)
+        (md / "message-summaries.jsonl").write_text(json.dumps({"id": "m1", "summary": "asks to rebase onto main"}) + "\n")
+        km._msg_sum_cache.clear()
+        ev = {"kind": "user", "md": "see this <!-- romp-msg-id: m1 -->", "uuid": "u", "ts": "t"}
+        index = {"m1": {"from": "alpha", "fromId": None, "body": "a long verbose handoff body the user finds noisy",
+                        "id": "m1", "t": NOW - 30, "park": False}}
+        cards = km._hydrate_postal([ev], index)
+        self.assertEqual(len(cards), 1)
+        self.assertEqual((cards[0]["kind"], cards[0]["direction"]), ("postal", "in"))
+        self.assertEqual(cards[0]["summary"], "asks to rebase onto main", "card carries the caption")
+        self.assertEqual(cards[0]["body"], "a long verbose handoff body the user finds noisy", "raw body kept (hover)")
+
     def test_msg_summaries_cached_until_change(self):
         md = jd.STATE / "timeline"; md.mkdir(parents=True, exist_ok=True)
         f = md / "message-summaries.jsonl"
