@@ -866,6 +866,37 @@ def _usage():
     return {"fiveHour": five, "sevenDay": seven, "t": t if isinstance(t, (int, float)) else None}
 
 
+_msg_sum_cache = {}                               # cached {id: summary}, keyed by the file's (mtime, size)
+
+
+def _msg_summaries():
+    """{msg id: Haiku summary} from timeline/message-summaries.jsonl (one {"id","summary"} per line),
+    cached by (mtime, size). The timeline renders summary || text, so this shows the caption instead of
+    the verbose raw body. Shared helper — the chat-card half (smallbugs) reuses it."""
+    p = jd.STATE / "timeline" / "message-summaries.jsonl"
+    try:
+        st = p.stat()
+        key = (st.st_mtime, st.st_size)
+    except OSError:
+        return {}
+    if _msg_sum_cache.get("key") == key:
+        return _msg_sum_cache["map"]
+    m = {}
+    try:
+        for ln in p.read_text(errors="replace").splitlines():
+            try:
+                o = json.loads(ln)
+            except Exception:
+                continue
+            if o.get("id") and isinstance(o.get("summary"), str):
+                m[o["id"]] = o["summary"]
+    except OSError:
+        return {}
+    _msg_sum_cache.clear()
+    _msg_sum_cache["key"], _msg_sum_cache["map"] = key, m
+    return m
+
+
 def _postal_messages(now, alive_sids, id2name):
     """Inter-session connectors for the timeline, from the postal log (timeline/messages.jsonl): each
     'sent' row joined to its 'exec' by id → a [sent,exec] arrow between two lanes. File-based (the old
@@ -886,6 +917,7 @@ def _postal_messages(now, alive_sids, id2name):
         elif o.get("ev") == "exec" and o.get("id"):
             execd[o["id"]] = o.get("t")
     cutoff, out = now - TL_HORIZON, []
+    msgsum = _msg_summaries()                           # {id: Haiku caption} → the timeline shows it over the raw body
     goalcache = {}                                     # recipient sid → goal nodes (loaded once per build)
 
     def planted(recip, mid):
@@ -911,7 +943,7 @@ def _postal_messages(now, alive_sids, id2name):
                     "fromOrig": e.get("from", id2name.get(f, f)),
                     "sent": st, "exec": ex if ex else st, "hasExec": ex is not None,
                     "pending": ex is None and (now - st) < MSG_INFLIGHT_MAX,
-                    "text": (e.get("body", "") or "").strip()[:240], "summary": None, "parked": False,
+                    "text": (e.get("body", "") or "").strip()[:240], "summary": msgsum.get(mid), "parked": False,
                     "toGoal": planted(t, mid)})           # courier handoff: the goal this message planted
     out.sort(key=lambda m: m["sent"])
     return out

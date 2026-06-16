@@ -402,6 +402,30 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(msgs["m1"]["toGoal"], gb, "the connector binds to the goal it planted")
         self.assertIsNone(msgs["m9"]["toGoal"], "a message that planted no goal has toGoal None")
 
+    def test_postal_connector_summary_from_captions(self):
+        # the connector carries the Haiku caption (message-summaries.jsonl); the timeline shows it over
+        # the verbose raw body, which stays as the fallback
+        md = jd.STATE / "timeline"; md.mkdir(parents=True, exist_ok=True)
+        a, b = "aaaa1111", "bbbb2222"
+        (md / "messages.jsonl").write_text(
+            json.dumps({"ev": "sent", "id": "m1", "from_id": a, "to_id": b, "t": NOW - 30, "from": "alpha",
+                        "body": "a long verbose body that the user finds too noisy"}) + "\n"
+            + json.dumps({"ev": "exec", "id": "m1", "t": NOW - 20}) + "\n")
+        (md / "message-summaries.jsonl").write_text(json.dumps({"id": "m1", "summary": "asked for X"}) + "\n")
+        km._msg_sum_cache.clear()
+        m = km._postal_messages(NOW, {a, b}, {a: "alpha", b: "beta"})[0]
+        self.assertEqual(m["summary"], "asked for X", "connector carries the caption")
+        self.assertEqual(m["text"], "a long verbose body that the user finds too noisy", "raw body kept as fallback")
+
+    def test_msg_summaries_cached_until_change(self):
+        md = jd.STATE / "timeline"; md.mkdir(parents=True, exist_ok=True)
+        f = md / "message-summaries.jsonl"
+        km._msg_sum_cache.clear()
+        f.write_text(json.dumps({"id": "x", "summary": "one"}) + "\n")
+        self.assertEqual(km._msg_summaries(), {"x": "one"})
+        f.write_text(json.dumps({"id": "x", "summary": "a longer caption"}) + "\n")   # size change → invalidate
+        self.assertEqual(km._msg_summaries(), {"x": "a longer caption"}, "re-read after the file changes")
+
     def test_seg_mids_extracts_markers(self):
         seg = {"atoms": [
             {"message": {"content": [{"type": "text", "text": "hi <!-- romp-msg-id: m1 -->"}]}},
