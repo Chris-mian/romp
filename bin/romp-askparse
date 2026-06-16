@@ -332,3 +332,28 @@ def parse_ask_pane(pane, cols=None):
 
 # Back-compat / TS-name alias so callers can use either spelling.
 parseAskPane = parse_ask_pane
+
+
+def parse_queued(pane):
+    """Messages the user submitted while the session was busy/compacting — still waiting in Claude Code's
+    TUI queue, NOT yet in the transcript (so a transcript-only kernel never sees them). Claude lists them
+    as `❯ <text>` lines just above the composer border, and the composer placeholder reads "Press up to
+    edit queued messages". Returns the queued texts top→bottom (submission order), or [] if none. Pure;
+    the kernel's pane-poll feeds it the capture and emits a {kind:"queued"} chat event + now-anchored
+    timeline atom. (Format captured live 2026-06-15; works during a compaction or a working turn.)"""
+    if "edit queued message" not in pane.lower():        # the composer placeholder when ≥1 is queued
+        return []
+    lines = pane.split("\n")
+    ph = next((i for i in range(len(lines) - 1, -1, -1) if "edit queued message" in lines[i].lower()), None)
+    if ph is None:
+        return []
+    out, i = [], ph - 2                                   # ph-1 is the composer border; queued ❯-lines sit above it
+    while i >= 0:
+        s = lines[i].strip()
+        if s.startswith("❯ ") and s[2:].strip():
+            out.append(s[2:].strip())
+            i -= 1
+        else:
+            break
+    out.reverse()                                        # walked upward → restore submission order
+    return out
