@@ -4,7 +4,7 @@ Romp turns a fleet of Claude Code sessions into one coordinated,
 observable system. This series of figures explains how. Figure 1 gives the
 overall shape. Figure 2 follows a turn through the event pipeline: the model
 roles that judge it and the rules that fold it into cards. Later figures zoom
-into the subsystems: the postal service, the request DAG, the timeline, and
+into the subsystems: the Romp Postal Service, the request DAG, the timeline, and
 the two session backends.
 
 Every figure uses the same conventions, with colors from romp's identity
@@ -48,7 +48,7 @@ flowchart TB
     SA("claude<br/>(session A)")
     SB("claude<br/>(session B)")
     SC("claude<br/>(session …)")
-    HOOKS("hooks in every session, plus the<br/>shared daemons they keep alive<br/>(status · summarizer · postal bus)")
+    HOOKS("hooks in every session, plus the<br/>shared daemons they keep alive<br/>(status · summarizer · Romp Postal Service)")
   end
 
   subgraph DISK["Records on disk"]

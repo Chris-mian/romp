@@ -34,7 +34,7 @@ The judges run at two cost/value tiers, gated differently by the kernel (see
   opened. A per-machine setting can keep this tier warm when disconnected. Sonnet.
 
 The captioner accepts that delivery and indexing never wait on triage; the courier
-sitting in the triage tier costs nothing because the postal bus delivers and logs
+sitting in the triage tier costs nothing because the Romp Postal Service delivers and logs
 messages regardless, and the courier catches up from the durable log.
 
 ## Decisions locked

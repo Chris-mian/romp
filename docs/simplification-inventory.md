@@ -42,7 +42,7 @@ The design's own note points at the fix: attach a reply to its own turn's ask st
 
 ### Finding 4: whole features can be removed without touching the spine
 
-About 1,500 lines sit in coherent features that can be deleted outright, and several are already flagged in their own comments. The missed-handoff suspect auditor admits "near-zero precision, nearly all FYIs." The `--rejudge` path is dead one-time backfill keyed to a hardcoded date. The two non-tmux backends (`headless` and `stream`, 527 lines) are non-default, and `stream` supersedes `headless`. In the postal service, the immediate-wake injection (about 370 lines of prompt-box reverse-engineering) plus the retry, wake, and orphan-sweep loops can go, because the Stop-hook drain is the documented sufficient backstop. The session-search behind `find_sessions` (about 130 lines) serves one MCP tool. The postal HTTP bus exists only for the remote-tunnel feature; a local-only design could use a file lock instead. The blocked-session card in the feed describes itself as "NOT a supported steady-state card type."
+About 1,500 lines sit in coherent features that can be deleted outright, and several are already flagged in their own comments. The missed-handoff suspect auditor admits "near-zero precision, nearly all FYIs." The `--rejudge` path is dead one-time backfill keyed to a hardcoded date. The two non-tmux backends (`headless` and `stream`, 527 lines) are non-default, and `stream` supersedes `headless`. In the Romp Postal Service, the immediate-wake injection (about 370 lines of prompt-box reverse-engineering) plus the retry, wake, and orphan-sweep loops can go, because the Stop-hook drain is the documented sufficient backstop. The session-search behind `find_sessions` (about 130 lines) serves one MCP tool. The postal HTTP bus exists only for the remote-tunnel feature; a local-only design could use a file lock instead. The blocked-session card in the feed describes itself as "NOT a supported steady-state card type."
 
 These removals are independent of the spine, so they are the low-risk way to clear noise before the data-model work. The deletion checklist in the reference half lists each one with its line range and rough line count.
 
@@ -110,7 +110,7 @@ The consumer half folds the records into surfaces: the feed, the ask columns, th
 | File | LoC | Role |
 |---|---|---|
 | `romp` | 829 | Launcher: spawn/resume/attach, identity colors, self-provisioning tmux glue, resume picker, `--mail` dispatch. |
-| `romp-postal` | 1776 | Postal bus, MCP server (8 tools), CLI, hook helpers, tmux mail decoration. |
+| `romp-postal` | 1776 | Romp Postal Service, MCP server (8 tools), CLI, hook helpers, tmux mail decoration. |
 | `romp-manager` | 205 | Supervises the kernel (`romp-serve`): respawn and control endpoint. |
 | `romp-interrupt-reset` | 61 | Esc-interrupt workaround (no hook fires); pane-scrape heal. |
 | `romp-mail-clear` | 16 | Clears mail-badge tmux vars. |

@@ -52,7 +52,7 @@ State lives under `${XDG_STATE_HOME:-~/.local/state}/romp/`.
 ## What romp records, where it lives, what it costs
 
 Everything stays on your machine. romp itself only ever talks to `127.0.0.1`
-(the local kernel and postal bus); the only external traffic is the `claude`
+(the local kernel and Romp Postal Service); the only external traffic is the `claude`
 CLI you already use.
 
 - **Per-turn summaries.** On each prompt and each finished turn,

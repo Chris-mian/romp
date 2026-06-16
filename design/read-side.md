@@ -28,7 +28,7 @@ completed); the feed just paints columns. (Reflected back into `design/judge.md`
   you start with `romp on` that spawns + respawns the kernel (via `romp-serve` →
   `romp-kernel`) and stays up across kernel restarts. Front ends (browser, phone, VS
   Code) ATTACH to the kernel; they never spawn it. (CORRECTION 2026-06-15: an earlier
-  draft said the kernel "auto-starts with the first session like the postal bus" —
+  draft said the kernel "auto-starts with the first session like the Romp Postal Service" —
   wrong; the real, pre-existing design is the manager supervisor. `romp-serve` was
   repointed at the new Python kernel so `romp on` supervises it; runs on the manager's
   port (7433) so the existing front-ends + tailscale serve attach unchanged.)
@@ -107,7 +107,7 @@ THE KERNEL  (one always-on process, single writer)
   HTTP/WS   serve the UI + push pane payloads
   writes →  ~/.local/state/romp/   (the interface)
 
-POSTAL BUS  (always-on infra, below Layer 2)        delivery never waits on a judge
+ROMP POSTAL SERVICE  (always-on infra, below Layer 2)  delivery never waits on a judge
 
 CLIENTS  (0..N, pure readers, render only)
   browser tab(s)      ── each a view (URL-hash tags)
@@ -299,7 +299,7 @@ The new Python kernel (`bin/romp-kernel`) must close it from the start.
 
 - **kernel** — the one always-on core (Layer 1 + Layer 2 + HTTP/WS serving).
 - **ui/** — the front-end package (the three panes), renamed from `chat-view/`.
-- **postal bus** — always-on messaging infra, below Layer 2.
+- **Romp Postal Service** — always-on messaging infra, below Layer 2.
 - (No "UI server" / "UI kernel" process: merged into the kernel. No `romp --on`.)
 
 ## Open questions
