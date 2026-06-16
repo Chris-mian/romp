@@ -158,6 +158,17 @@ function startManager() {
     const url = new URL(req.url || '/', 'http://x');
     const kid = url.searchParams.get('kernel') || 'main';
     const json = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj)); };
+    // CSRF / drive-by gate. Legit clients (the kernel's Restart proxy, the
+    // `romp on` CLI) are server-side and send NO Origin header; a browser
+    // cross-site fetch/form POST DOES send an Origin it cannot forge. So reject
+    // any request carrying a non-loopback Origin — otherwise a malicious tab
+    // could POST /restart-all or /stop and kill the user's kernels.
+    const origin = req.headers.origin;
+    if (origin) {
+      let okOrigin = false;
+      try { const ou = new URL(origin); okOrigin = ['127.0.0.1', 'localhost', '::1'].includes(ou.hostname); } catch { okOrigin = false; }
+      if (!okOrigin) return json(403, { ok: false, error: 'cross-site origin' });
+    }
     if (req.method === 'GET' && url.pathname === '/status') {
       return json(200, {
         ok: true,

@@ -43,6 +43,11 @@ _romp_record() {   # <sid> <name> <dir> [bg] [fg] — write/replace the map entr
     local sid="$1" nm="$2" dir="$3" bg="${4:-}" fg="${5:-}"
     [[ -n "$sid" ]] || return 0
     mkdir -p "$ROMP_NAMES_DIR"
+    # Keep the romp state root private — it holds session names, prompts,
+    # captions, and postal message bodies. 0700 on the root blocks other local
+    # users from reading anything beneath it (the traverse bit is enough).
+    # Idempotent; best-effort.
+    chmod 700 "${XDG_STATE_HOME:-$HOME/.local/state}/romp" 2>/dev/null || true
     printf '%s\t%s\t%s\t%s\n' "$nm" "$dir" "$bg" "$fg" > "$ROMP_NAMES_DIR/$sid"
 }
 
@@ -119,9 +124,9 @@ _romp_provision_server() {
     keys="$(tmux list-keys -T root 2>/dev/null || true)"
     if ! grep -q 'romp-interrupt-reset' <<<"$keys"; then
         grep -Eq 'bind-key +(-T root +)?C-c\b' <<<"$keys" || \
-            tmux bind -n C-c send-keys C-c \; run-shell -b "$bin_dir/romp-interrupt-reset #{session_name}"
+            tmux bind -n C-c send-keys C-c \; run-shell -b "$bin_dir/romp-interrupt-reset #{q:session_name}"
         grep -Eq 'bind-key +(-T root +)?Escape\b' <<<"$keys" || \
-            tmux bind -n Escape send-keys Escape \; run-shell -b "$bin_dir/romp-interrupt-reset #{session_name}"
+            tmux bind -n Escape send-keys Escape \; run-shell -b "$bin_dir/romp-interrupt-reset #{q:session_name}"
     fi
 }
 
@@ -672,9 +677,13 @@ if [[ -n "$session_arg" ]]; then
 else
     display="$(basename "$PWD")"
 fi
-# Sanitize: tmux disallows '.' and ':' in session names.
-display="${display//./-}"
-display="${display//:/-}"
+# Sanitize the session name to a shell- and tmux-safe charset. This name is
+# typed into the launch pane's shell (`exec claude --name "<name>"`, below) and
+# interpolated into tmux run-shell hooks, so any char outside [A-Za-z0-9_-]
+# (spaces, quotes, $, ;, backticks — and the tmux-illegal '.'/':') could inject
+# a command. Fold every such char to '-'. (Previously only '.'/':' were
+# replaced, which left command injection via the name wide open.)
+display="$(printf '%s' "$display" | LC_ALL=C tr -c 'A-Za-z0-9_-' '-')"
 name="$display"
 
 # Canonicalize to the PHYSICAL path (resolve symlinks): Claude writes its
@@ -715,6 +724,14 @@ if $resume; then
     # the picker above (which exits if cancelled). Pass --name so the pill matches
     # the tmux session — otherwise Claude restores its (possibly stale) stored name.
     sid="$resume_id"
+    # resume_id is a conversation UUID and gets typed into the launch shell
+    # (`claude --resume <id>`), so reject anything that isn't hex+hyphens. This
+    # stops a crafted id (e.g. arriving via the postal `revive` path) from
+    # injecting a command at the `exec` send-keys below.
+    if [[ ! "$resume_id" =~ ^[0-9a-zA-Z][0-9a-zA-Z-]*$ ]]; then
+        echo "[romp] refusing to resume: invalid session id" >&2
+        exit 1
+    fi
     claude_cmd="claude --resume $resume_id --name \"$display\""
 else
     sid="$(uuidgen | tr 'A-Z' 'a-z')"

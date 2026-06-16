@@ -1,4 +1,5 @@
 import { marked } from "marked";
+import DOMPurify from "dompurify";
 import hljs from "highlight.js/lib/core";
 import bash from "highlight.js/lib/languages/bash";
 import python from "highlight.js/lib/languages/python";
@@ -124,8 +125,17 @@ function el(tag: string, cls?: string): HTMLElement {
 }
 
 function md(src: string): string {
-  try { return marked.parse(src) as string; }
-  catch { const d = document.createElement("div"); d.textContent = src; return d.innerHTML; }
+  // Transcript text (user prompts, assistant output, subagent reports, postal
+  // bodies) is UNTRUSTED and `marked` emits raw HTML verbatim, so its output
+  // must be sanitized before it ever reaches .innerHTML — otherwise a payload
+  // like `<img src=x onerror=...>` or `[x](javascript:...)` runs in the webview
+  // (which can postMessage the host to open files / drive sessions). DOMPurify
+  // strips event-handler attributes and dangerous URL schemes. Keep data: URIs
+  // on <img> (the CSP allows them and inline transcript images rely on them).
+  try {
+    const dirty = marked.parse(src) as string;
+    return DOMPurify.sanitize(dirty, { USE_PROFILES: { html: true }, ADD_DATA_URI_TAGS: ["img"] });
+  } catch { const d = document.createElement("div"); d.textContent = src; return d.innerHTML; }
 }
 
 function highlight(container: HTMLElement) {

@@ -125,6 +125,47 @@ run_romp() {
     grep -q 'exec claude --name "my-task-v2"' "$MOCK_LOG"
 }
 
+@test "session name sanitization: shell metacharacters folded to dashes (no command injection)" {
+    # A name/dir carrying $(), ;, or quotes must NOT survive into the launch
+    # command that gets typed into the pane's shell — every unsafe char becomes
+    # '-'. Regression for the command-injection-via-session-name hole.
+    run run_romp 'pwn$(touch INJECTED);x"y'
+    [ "$status" -eq 0 ]
+    local line
+    line="$(grep -F 'send-keys' "$MOCK_LOG" | grep -F 'exec claude')"
+    [ -n "$line" ]
+    # no shell metacharacters survive in the exec line
+    ! grep -qE '[$();]' <<<"$line"
+    # exactly the two quotes that wrap --name "<name>", no injected extras
+    [ "$(grep -o '"' <<<"$line" | wc -l | tr -d ' ')" -eq 2 ]
+}
+
+@test "interrupt/escape key bindings route the session name through tmux #{q:} quoting" {
+    run run_romp myproject
+    [ "$status" -eq 0 ]
+    grep -F 'bind -n C-c' "$MOCK_LOG"    | grep -qF 'romp-interrupt-reset #{q:session_name}'
+    grep -F 'bind -n Escape' "$MOCK_LOG" | grep -qF 'romp-interrupt-reset #{q:session_name}'
+    # the unquoted (injectable) form must be gone
+    ! grep -qF 'romp-interrupt-reset #{session_name}' "$MOCK_LOG"
+}
+
+@test "resume: a session id with shell metacharacters is refused before any launch" {
+    # resume_id is typed into `claude --resume <id>`; a non-alphanumeric id must
+    # be rejected before a session is created.
+    run run_romp myproject --resume 'abc;touch INJECTED' --detach
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"invalid session id"* ]]
+    [ "$(grep -c 'tmux new-session' "$MOCK_LOG")" -eq 0 ]
+}
+
+@test "state dir is created private (0700)" {
+    run run_romp myproject
+    [ "$status" -eq 0 ]
+    local perms
+    perms="$(stat -f '%Lp' "$XDG_STATE_HOME/romp" 2>/dev/null || stat -c '%a' "$XDG_STATE_HOME/romp")"
+    [ "$perms" = "700" ]
+}
+
 # ─── Resume tests ────────────────────────────────────────────────────
 
 @test "resume: bare -r with no resumable sessions is a no-op" {

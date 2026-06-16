@@ -124,7 +124,23 @@ def my_id():
 def _iso_now():
     return datetime.now().astimezone().strftime("%Y-%m-%dT%H:%M:%S%z")
 
+_SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+def _safe_id(s):
+    """True iff `s` is safe as a single path component under the mail/names roots.
+    Blocks path traversal (`..`, `/`, `\\`, NUL, leading dot, absolute paths) in
+    any id/name that arrives over the (unauthenticated) bus. Session ids are
+    UUIDs and names are sanitized to [A-Za-z0-9_-] at creation, so both match;
+    anything else is a crafted reference (e.g. `../../../etc`) and is rejected."""
+    if not s or len(s) > 128:
+        return False
+    if "/" in s or "\\" in s or "\x00" in s or s.startswith("."):
+        return False
+    return bool(_SAFE_ID_RE.match(s))
+
 def _mailbox(sid):
+    if not _safe_id(sid):
+        raise ValueError("unsafe session id")
     mb = MAILROOT / sid
     for d in ("tmp", "new", "cur"):
         (mb / d).mkdir(parents=True, exist_ok=True)
@@ -191,6 +207,8 @@ def deliver(to_id, from_name, from_id, body, park=False):
     return name   # the message id (maildir filename); joins to the log + status-bar prefix
 
 def read_box(sid, consume):
+    if not _safe_id(sid):            # reject traversal in the id from /inbox, /drain
+        return []
     mb = MAILROOT / sid
     newd = mb / "new"
     if not newd.is_dir():
@@ -355,7 +373,7 @@ def _recip_id_for(to):
     for a in all_agents():
         if a["name"] == to:
             return a["id"]
-    if (MAILROOT / to).is_dir() or (NAMES_DIR / to).is_file():   # already an id
+    if _safe_id(to) and ((MAILROOT / to).is_dir() or (NAMES_DIR / to).is_file()):  # already an id
         return to
     return _dead_id_for_name(to)
 
@@ -521,6 +539,11 @@ def _resolve_session(name_or_id):
     if x in by_name:                          # a live session by that name -> already running
         a = by_name[x]
         return a["id"], a["name"], a.get("dir", ""), True
+    # `x` is used as a path component below; reject traversal so a crafted
+    # revive target (e.g. `../../../etc/hosts`) can't read an arbitrary file or
+    # feed attacker-chosen contents into the spawn.
+    if not _safe_id(x):
+        return None, None, None, False
     if (NAMES_DIR / x).is_file() or (SUMMARIES_DIR / (x + ".jsonl")).is_file():
         sid = x
     else:
@@ -1053,19 +1076,19 @@ class Handler(BaseHTTPRequestHandler):
             return self._send({"agents": agents, "me": me})
         if u.path == "/sent":
             sid = (q.get("id") or [""])[0]
-            if not sid:
-                return self._send({"error": "missing id"}, 400)
+            if not _safe_id(sid):
+                return self._send({"error": "missing or invalid id"}, 400)
             return self._send({"sent": _sent_receipts(sid)})
         if u.path == "/inbox":
             sid = (q.get("id") or [""])[0]
             peek = (q.get("peek") or ["0"])[0] == "1"
-            if not sid:
-                return self._send({"error": "missing id"}, 400)
+            if not _safe_id(sid):
+                return self._send({"error": "missing or invalid id"}, 400)
             return self._send({"messages": read_box(sid, consume=not peek)})
         if u.path == "/drain":
             sid = (q.get("id") or [""])[0]
-            if not sid:
-                return self._send({"error": "missing id"}, 400)
+            if not _safe_id(sid):
+                return self._send({"error": "missing or invalid id"}, 400)
             return self._send(_drain(sid))
         self._send({"error": "not found"}, 404)
 
@@ -1110,12 +1133,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._send({"ok": True, "removed": removed})
         if u.path == "/wake":
             sid = data.get("id", "")
-            if sid:                                           # force-deliver on revive once the prompt is live
+            if sid and _safe_id(sid):                         # force-deliver on revive once the prompt is live
                 threading.Thread(target=_wake_when_ready, args=(sid,), daemon=True).start()
             return self._send({"ok": True})
         if u.path == "/heartbeat":
             sid = data.get("id")
-            if sid:
+            if sid and _safe_id(sid):
                 HEARTBEATS[sid] = (data.get("name", "?"), time.time())
             return self._send({"ok": True})
         self._send({"error": "not found"}, 404)
