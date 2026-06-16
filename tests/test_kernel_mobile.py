@@ -82,6 +82,11 @@ class ChatSessionPicker(unittest.TestCase):
         self.assertIn("id='mcur'", km._CHAT_MOBILE_JS)      # current-session button that opens the list
         self.assertIn("id='mlist'", km._CHAT_MOBILE_JS)     # the dropdown list of sessions
 
+    def test_desktop_hides_the_mobile_header_and_list(self):
+        # regression: #mlist (a #tabbar sibling, not inside #mhdr) had no desktop rule, so on desktop it
+        # rendered the session rows as plain text in the tab bar. Both must be hidden off-mobile.
+        self.assertIn("#mhdr,#mlist{display:none}", km._CHAT_MOBILE_CSS)
+
     def test_picker_is_custom_colored_not_native_select(self):
         # a native <select> can't render the per-session identity colors, so the picker is our own element
         js, css = km._CHAT_MOBILE_JS, km._CHAT_MOBILE_CSS

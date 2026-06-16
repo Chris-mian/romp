@@ -1733,14 +1733,29 @@ body{font-family:var(--vscode-font-family);font-size:13px;color:var(--vscode-for
 
 # The WS bridge shim (ported verbatim from chat-view server.ts shimJs — same protocol).
 def _shim(app):
+    # ws.onclose→reload reconnects on a CLEAN close, but a backgrounded mobile tab whose kernel died
+    # gets a ZOMBIE socket (readyState stays OPEN, onclose never fires) → it would sit on stale data
+    # forever (the 10h-old feed the user hit). The push is diff-only, so "no messages" ≠ "dead"; the
+    # only proof of life is a pong. So: ping every 8s, and reload when VISIBLE and we've heard nothing
+    # back for 24s (3 missed pongs) or the socket is closed — plus an immediate check when the tab is
+    # brought back to the foreground. Heals together with the ?v= bundle cache-bust (a reload now also
+    # picks up fresh JS).
     return """
-(function(){var queue=[],ws=null;var wid=new URLSearchParams(location.search).get("wid")||"";
+(function(){var queue=[],ws=null,lastRx=Date.now();
+var wid=new URLSearchParams(location.search).get("wid")||"";
 function connect(){var proto=location.protocol==="https:"?"wss://":"ws://";
 ws=new WebSocket(proto+location.host+"/ws?app=%s"+(wid?"&wid="+encodeURIComponent(wid):""));
-ws.onopen=function(){for(var i=0;i<queue.length;i++)ws.send(queue[i]);queue=[];};
-ws.onmessage=function(ev){var msg;try{msg=JSON.parse(ev.data);}catch(e){return;}
+ws.onopen=function(){lastRx=Date.now();for(var i=0;i<queue.length;i++)ws.send(queue[i]);queue=[];};
+ws.onmessage=function(ev){lastRx=Date.now();var msg;try{msg=JSON.parse(ev.data);}catch(e){return;}
+if(msg&&msg.type==="pong")return;
 window.dispatchEvent(new MessageEvent("message",{data:msg}));};
-ws.onclose=function(){setTimeout(function(){location.reload();},1500);};}
+ws.onclose=function(){setTimeout(function(){location.reload();},1500);};
+ws.onerror=function(){try{ws.close();}catch(e){}};}
+function dead(){return !ws||ws.readyState===3||(ws.readyState===1&&Date.now()-lastRx>24000);}
+setInterval(function(){if(ws&&ws.readyState===1){try{ws.send('{"type":"ping"}');}catch(e){}}
+if(document.visibilityState==="visible"&&dead())location.reload();},8000);
+document.addEventListener("visibilitychange",function(){
+if(document.visibilityState==="visible"&&dead())location.reload();});
 function send(m){var s=JSON.stringify(m);if(ws&&ws.readyState===1)ws.send(s);else queue.push(s);}
 var SK="romp-vscode-state-%s";   // persist webview state to localStorage so UI prefs survive a refresh
 window.acquireVsCodeApi=function(){return{postMessage:function(m){send(m);},
@@ -1757,7 +1772,7 @@ setState:function(s){try{localStorage.setItem(SK,JSON.stringify(s));}catch(e){}}
 # opens a CUSTOM dropdown list (a native <select> can't render the per-session identity colors, so this
 # is our own element). The list, the current button, and each row carry the session's color.
 _CHAT_MOBILE_CSS = (
-    "#mhdr{display:none}"
+    "#mhdr,#mlist{display:none}"    # both hidden on desktop (#mlist is a #tabbar sibling, not inside #mhdr)
     "@media (max-width:820px),(pointer:coarse) and (max-width:1024px){"
     "#tabbar{max-height:none;overflow:visible;position:relative;padding:6px 8px}"
     "#tabbar #tabs{display:none}"                       # the wrapping multi-row tab strip
@@ -2234,6 +2249,10 @@ class Handler(BaseHTTPRequestHandler):
                     msg = json.loads(payload.decode("utf-8", "replace"))
                 except Exception:
                     msg = None
+                if msg and msg.get("type") == "ping":
+                    client["send"](json.dumps({"type": "pong"}))   # app heartbeat: lets a tab detect a
+                    continue                                        # zombie socket (push is diff-only, so
+                    #                                                 silence ≠ dead — only a pong proves live)
                 if msg and msg.get("type") == "ready":
                     self._push_one(client)
                 elif msg and msg.get("type") == "askClear" and msg.get("itemId"):
