@@ -131,6 +131,11 @@ Read-side parity hardening (2026-06-15, the user's live review):
 - [x] Resizable panes (thin sashes); timeline auto-fits its lanes (drag can't exceed).
 - [x] Work-timer ms fix; chat richness (postal sender color, reminders fold, tool
   desc, bigger IO); tab × hides the tab (reversible, not a kill).
+- [x] Hard blocked floor (3d25e80): a LIVE permission prompt (tmux state) floors the
+  session's active-focus card under BLOCKED with the ⏸ approval badge — beats goal
+  status, distinct from the planner's soft "needs user" block. Render already
+  supported `it.blocked`; build_feed now populates it.
+- [x] Courier handoff marker (94a2146): "↪ from <sender>" on a planted card.
 - [ ] Remaining chat richness: image thumbnails (path: refs), postal parked badge + mid.
 - [ ] Re-judging progress surface.
 - [ ] Timeline connectors (needs the courier) + focus/hover overlays.
