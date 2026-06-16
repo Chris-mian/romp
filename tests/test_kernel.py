@@ -287,18 +287,22 @@ class ViewBuilder(unittest.TestCase):
         self.assertNotEqual(m["status"]["state"], "subagent")
         self.assertFalse(any(e["kind"] == "subagent" for e in m["events"]))
 
-    def test_feed_buckets_goal_and_streams_caption(self):
+    def test_feed_cards_are_top_level_goals_only(self):
+        # The feed's cards are top-level GOALS only (read-side.md, the user 2026-06-16). A completed
+        # goal → its own COMPLETED card; the blocked goal → a BLOCKED card. Turn captions are NOT cards:
+        # despite a "Fixed the feed flicker" caption in the fixture, the stream is empty — emitting
+        # captions as standalone DETAILS cards is the bug that flooded the columns.
         d = km.build_feed(NOW)
         self.assertEqual(d["type"], "feed")
+        self.assertEqual(d["items"], [], "no caption stream — feed cards are top-level goals only")
         comp = [a for a in d["asks"] if a["column"] == "completed"]
         self.assertEqual(len(comp), 1)
         self.assertEqual(comp[0]["text"], "Fix the feed flicker")
         self.assertEqual(comp[0]["tree"][0]["status"], "done")
-        self.assertTrue(any(c["did"] == "Fixed the feed flicker" for c in d["items"]))
+        self.assertTrue(any(a["column"] == "needs_input" for a in d["asks"]), "the blocked goal is a BLOCKED card")
         # card tint is the recency colormap (age → hawaii ramp), not a flat session color
         self.assertEqual(comp[0]["trgb"], list(km.cm.age_rgb(NOW - comp[0]["t"])))
         self.assertNotEqual(comp[0]["trgb"], km._rgb(comp[0]["color"]), "not the flat session color")
-        self.assertTrue(all(c["standalone"] for c in d["items"]), "stream cards must be standalone or the render hides them")
 
     def test_feed_non_handoff_card_has_no_origin(self):
         comp = next(a for a in km.build_feed(NOW)["asks"] if a["column"] == "completed")
@@ -418,6 +422,41 @@ class ViewBuilder(unittest.TestCase):
         self.assertIn(SID, km._hidden_tabs())
         km._set_hidden_tab(SID, False)
         self.assertNotIn(SID, km._hidden_tabs())
+
+    def test_open_dead_session_prompts_revive(self):
+        # picking a DEAD session in the chat picker must ask to revive it (the webview's confirmRevive
+        # modal), not silently no-op. Regression: openSession on a dead sid only un-hid a tab with no
+        # running session, so the click did nothing — no modal, no revive (the user 2026-06-16).
+        sent = []
+        km._open_or_revive("deadsid000", "chat", lambda m: sent.append(m))
+        self.assertEqual([m["type"] for m in sent], ["confirmRevive"])
+        self.assertEqual(sent[0]["id"], "deadsid000")
+        # a LIVE session (SID is alive in tmux) reopens its tab instead of prompting
+        sent2 = []
+        km._open_or_revive(SID, "chat", lambda m: sent2.append(m))
+        self.assertFalse(any(m.get("type") == "confirmRevive" for m in sent2),
+                         "a live session reopens, no revive prompt")
+        # a feed client has no confirmRevive modal → a dead tap reveals the read-only transcript, no prompt
+        sent3 = []
+        km._open_or_revive("deadsid000", "feed", lambda m: sent3.append(m))
+        self.assertFalse(any(m.get("type") == "confirmRevive" for m in sent3))
+
+    def test_revive_session_resumes_and_unhides_tab(self):
+        # confirming the modal's "Revive" must actually resume the session (romp-postal revive → romp
+        # --resume --detach) AND un-hide its tab. Regression: the kernel had no reviveSession handler,
+        # so the modal's Revive did nothing — "it didn't revive it" (the user 2026-06-16).
+        km._set_hidden_tab("deadsid000", True)            # it was hidden when closed
+        calls, saved = [], km.subprocess.run
+        km.subprocess.run = lambda *a, **k: calls.append(list(a[0]))
+        try:
+            km._revive_session("deadsid000")
+        finally:
+            km.subprocess.run = saved
+        self.assertTrue(calls, "revive must shell out to the resume path")
+        argv = calls[0]
+        self.assertTrue(str(argv[0]).endswith("romp-postal"))
+        self.assertEqual(argv[-2:], ["revive", "deadsid000"])
+        self.assertNotIn("deadsid000", km._hidden_tabs(), "the revived tab is un-hidden")
 
     def test_split_reminders(self):
         p, r = km._split_reminders("do the thing <system-reminder>be careful</system-reminder> now")

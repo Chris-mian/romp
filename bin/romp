@@ -494,6 +494,7 @@ Usage:
                        Runs in the foreground — Ctrl+C stops it and its kernels
   romp refresh         Restart all romp kernels (picks up new code — run after an update)
   romp status          Show manager + kernel status
+  romp --version       Versions across the parts (working tree, kernel, served vs built bundles)
   romp -h              Show this help
 
 Any name is fine — sessions are tagged with the tmux @romp flag, not a naming
@@ -559,6 +560,12 @@ if [[ "${1:-}" == "--mail" ]]; then
     shift
     # ROMP_POSTAL_BIN: test seam — see the -d dispatch above.
     exec "${ROMP_POSTAL_BIN:-romp-postal}" "$@"
+fi
+
+# `romp --version` — what's running across the moving parts (working tree, kernel /version, bundles
+# served vs on disk). Delegates to romp-version (python); quick, non-watch, so no test seam needed.
+if [[ "${1:-}" == "--version" || "${1:-}" == "version" ]]; then
+    exec romp-version
 fi
 
 # `romp serve on|off|status` — persist the kernel's serve-host so the supervisor

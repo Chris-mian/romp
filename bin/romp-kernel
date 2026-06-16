@@ -62,8 +62,8 @@ def _kernel_sha():
 
 
 def _version_info():
-    """What this kernel is running — code sha + per-bundle build mtimes + pid/uptime. Lets a settings
-    panel / `romp-board --versions` / a curl tell at a glance whether the browser is on a stale bundle
+    """What this kernel is running — code sha + per-bundle build mtimes + pid/uptime. Lets the feed's
+    settings gear / `romp --version` / a curl tell at a glance whether the browser is on a stale bundle
     (compare the served ?v= against bundles[].mtime here). No filesystem paths (privacy)."""
     bundles = {}
     try:
@@ -302,6 +302,37 @@ def _spawn_session(name):
     except Exception:
         sys.stderr.write("spawn '%s': %s\n" % (name, traceback.format_exc()))
     _push_all()   # surface the new tab promptly (the periodic pusher would catch it within 4s anyway)
+
+
+def _open_or_revive(sid, app, send):
+    """openSession routing. A LIVE session whose tab was hidden → un-hide it + focus the chat (the
+    feed/timeline/picker reopen). A DEAD session picked from the chat picker → don't silently no-op
+    (the old bug: openSession just un-hid a tab with no running session, so nothing happened); ask
+    first via the webview's confirmRevive modal, and the reviveSession reply runs _revive_session.
+    A feed/timeline client has no confirmRevive modal, so for those a dead tap still reveals the
+    read-only transcript as before. Split out so the live/dead branch is unit-testable. (2026-06-16)"""
+    if sid not in _tmux_sessions() and app == "chat":
+        send({"type": "confirmRevive", "id": sid, "name": _name_of(sid) or sid})
+        return
+    _set_hidden_tab(sid, False)
+    _push_all()
+    _reveal_chat({"type": "focus", "id": sid})
+
+
+def _revive_session(sid):
+    """Bring a DEAD session back: `romp-postal revive <sid>` (→ romp <name> --resume <sid> --detach in
+    the session's recorded dir, reusing the SAME UUID), then un-hide its tab and focus the chat on it.
+    Reuses the battle-tested postal revive path (dir resolution, picker-grace, parked-mail wake). Runs
+    in a thread off the WS recv loop — the ~seconds-long resume must not block it; the sid is unchanged,
+    so the focus lands on the same tab once the periodic pusher delivers it. (the user 2026-06-16)"""
+    try:
+        subprocess.run([str(HERE / "romp-postal"), "revive", sid], timeout=40,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        sys.stderr.write("revive '%s': %s\n" % (sid, traceback.format_exc()))
+    _set_hidden_tab(sid, False)   # it was hidden when closed; show the revived tab
+    _push_all()                   # surface it promptly (the 4s pusher would catch it anyway)
+    _reveal_chat({"type": "focus", "id": sid})
 
 
 TMUX_FMT = ("#{@romp}|#{@romp-session-id}|#{@claude-state}|#{@claude-state-since}|"
@@ -567,6 +598,65 @@ def _pending_queued(path):
             _queued_parse_cache.clear()
         _queued_parse_cache[path] = (key, out)
     return out
+
+
+_api_err_cache = {}           # path -> ((mtime, size), err|None)
+
+
+def _api_error(path):
+    """If the session is sitting BLOCKED on an API error right now, the error; else None. Claude Code
+    writes every API failure to the transcript as an assistant record with top-level
+    isApiErrorMessage:true — the human text varies (500 server_error, 'Request timed out', 404
+    model_not_found) but that flag is the invariant, so detection is exact, not a text heuristic (the
+    user 2026-06-16). The session is blocked iff such a record is the LAST productive thing in the
+    transcript: a later genuine user prompt (a retry) or fresh assistant output (an internal retry that
+    succeeded) clears it. Returns {text,status,category} or None. Event-based; cached by (mtime,size)
+    like _parse, since build_session/build_feed call it per push."""
+    try:
+        st = os.stat(path)
+        key = (st.st_mtime, st.st_size)
+    except OSError:
+        key = None
+    hit = _api_err_cache.get(path)
+    if hit is not None and key is not None and hit[0] == key:
+        return hit[1]
+    err = None
+    try:
+        with open(path, errors="replace") as f:
+            for line in f:
+                if '"type"' not in line:
+                    continue
+                try:
+                    o = json.loads(line)
+                except Exception:
+                    continue
+                t = o.get("type")
+                if t == "assistant":
+                    msg = o.get("message") or {}
+                    c = msg.get("content")
+                    if o.get("isApiErrorMessage"):
+                        text = (" ".join(b.get("text", "") for b in c
+                                         if isinstance(b, dict) and b.get("type") == "text").strip()
+                                if isinstance(c, list) else (c.strip() if isinstance(c, str) else ""))
+                        err = {"text": text, "status": o.get("apiErrorStatus"),
+                               "category": o.get("error") or "unknown"}
+                    elif (isinstance(c, list) and any(isinstance(b, dict)
+                            and b.get("type") in ("text", "tool_use", "thinking") for b in c)) \
+                            or (isinstance(c, str) and c.strip()):
+                        err = None                            # fresh assistant output → recovered
+                elif t == "user":
+                    c = (o.get("message") or {}).get("content")
+                    is_tool_result = isinstance(c, list) and any(
+                        isinstance(b, dict) and b.get("type") == "tool_result" for b in c)
+                    if not is_tool_result:                    # a genuine prompt (e.g. a retry) clears it
+                        err = None
+    except OSError:
+        return None
+    if key is not None:
+        if len(_api_err_cache) > 256:
+            _api_err_cache.clear()
+        _api_err_cache[path] = (key, err)
+    return err
 
 
 def _ask_poll():
@@ -954,6 +1044,13 @@ def build_session(sid, now, tmux=None):
     queued = _pending_queued(sess["path"])
     if queued:
         events.append({"kind": "queued", "texts": queued})
+    # API error → the session is BLOCKED until retried: a bottom card (renderApiError, a RED dot) AND the
+    # chip flips to "blocked" below. Detected event-based from the transcript (isApiErrorMessage), so the
+    # exact text (500 / timeout / model-not-found) doesn't matter (the user 2026-06-16).
+    aerr = _api_error(sess["path"])
+    if aerr:
+        events.append({"kind": "apiError", "text": aerr["text"], "status": aerr["status"],
+                       "category": aerr["category"]})
     # TOC ledger: archiver headline + turn captions (click-to-jump via the turn's anchor uuid)
     arch = jd.load_archive(sid) or {}
     bullets = []
@@ -984,7 +1081,9 @@ def build_session(sid, now, tmux=None):
         # blue mid-work + flicker). tmux supplies only what the transcript can't see: permission
         # (awaiting) and compacting, plus the model/effort/ctx metadata.
         st = tm["state"]
-        chip = ("awaiting" if st == "permission" else "compacting" if st == "compacting"
+        # blocked (API error) is the strongest signal — the turn ended in an error, so it beats the live
+        # tmux states (the session can't simultaneously be compacting or at a permission prompt).
+        chip = ("blocked" if aerr else "awaiting" if st == "permission" else "compacting" if st == "compacting"
                 else "subagent" if sub is not None else "working" if open_now else "ready")
         faded = chip == "ready" and bool(tm["since"]) and now - tm["since"] > 3600
         status = {"state": chip, "sinceEpoch": since_ms, "faded": faded,
@@ -1065,7 +1164,7 @@ def build_feed(now, tmux=None):
     if tmux is None:
         tmux = _tmux_sessions()
     cleared = _cleared_ids()
-    asks, stream, working = [], [], []
+    asks, working = [], []
     for s in _alive_sessions(now, tmux):             # hard filter: living sessions only
         fsid, name = s["sid"], s["name"]
         color = _name_color(fsid)
@@ -1103,6 +1202,17 @@ def build_feed(now, tmux=None):
                 f = nodes[f]["parentId"]
             if f in nodes and not nodes[f].get("nodeComplete") and not nodes[f].get("cleared"):
                 perm_top = f
+        # API-error floor: a session stopped on an API error (transcript isApiErrorMessage, event-based)
+        # floors its focus top-goal under BLOCKED with an apiError reason → the feed card shows a red
+        # "API error" badge + a Retry button (the user 2026-06-16). Same focus-goal walk as the perm floor.
+        aerr = _api_error(s["path"]) if not who_working else None
+        api_top = None
+        if aerr:
+            f = store.get("lastNode")
+            while f and nodes.get(f, {}).get("parentId") is not None:
+                f = nodes[f]["parentId"]
+            if f in nodes and not nodes[f].get("nodeComplete") and not nodes[f].get("cleared"):
+                api_top = f
         for nid in children.get(None, []):
             col = status.get(nid, "working")
             if col == "cleared" or nid in cleared:
@@ -1117,17 +1227,23 @@ def build_feed(now, tmux=None):
                 "t": nodes[nid]["t"], "created": nodes[nid]["t"], "live": live,
                 "trgb": list(cm.age_rgb(now - nodes[nid]["t"])),
                 "done": 0, "needsYou": 0, "linked": [], "turnId": nid, "turnIds": [nid], "origin": origin,
-                "blocked": ({"state": "permission", "since": tm.get("since"),
-                             "what": "this session is stopped awaiting your approval"} if nid == perm_top else None),
-                "column": ("needs_input" if col == "blocked" else "completed" if col == "completed" else "working"),
+                "blocked": ({"state": "apiError", "since": (tm.get("since") if tm else None),
+                             "status": aerr.get("status"), "category": aerr.get("category"),
+                             "text": aerr.get("text"),
+                             "what": "this session stopped on an API error — Retry to resume"} if nid == api_top
+                            else {"state": "permission", "since": tm.get("since"),
+                                  "what": "this session is stopped awaiting your approval"} if nid == perm_top
+                            else None),
+                "column": ("needs_input" if (nid == api_top or col == "blocked")
+                           else "completed" if col == "completed" else "working"),
                 "openQuestions": [], "openPaths": [], "tree": flatten(nid, [])})
-        for c in _captions(fsid).values():
-            if c.get("grain") == "turn" and c["id"] not in cleared:
-                stream.append({"itemId": c["id"], "sid": fsid, "name": name, "color": color,
-                               "did": c["caption"], "t": c["t"], "trgb": list(cm.age_rgb(now - c["t"])),
-                               "relevance": "DETAILS", "live": live, "standalone": True})
-    stream.sort(key=lambda c: c["t"], reverse=True)
-    return {"type": "feed", "asks": asks, "items": stream[:200], "blocked": [], "now": now,
+    # NO caption stream. The feed's cards are TOP-LEVEL GOALS ONLY (read-side.md: Inbox = goal cards;
+    # a sub-goal's block rolls UP to its top card → that card moves to BLOCKED, and the modal shows
+    # which leaf). Turn captions are NOT cards — emitting them as standalone DETAILS items piled
+    # finished deliverables into the columns, which both this spec and the original FEED-ASKS-SPEC.md
+    # ("details turns never appear at all") forbid. Captions live in the card's trail, the ledger, and
+    # the timeline — not here. (the user 2026-06-16; reverts commit 05505fa "show stream cards".)
+    return {"type": "feed", "asks": asks, "items": [], "blocked": [], "now": now,
             "working": working, "dismissedCount": len(cleared), "showDismissed": False,
             "canUndoClear": len(cleared) > 0}
 
@@ -1733,29 +1849,14 @@ body{font-family:var(--vscode-font-family);font-size:13px;color:var(--vscode-for
 
 # The WS bridge shim (ported verbatim from chat-view server.ts shimJs — same protocol).
 def _shim(app):
-    # ws.onclose→reload reconnects on a CLEAN close, but a backgrounded mobile tab whose kernel died
-    # gets a ZOMBIE socket (readyState stays OPEN, onclose never fires) → it would sit on stale data
-    # forever (the 10h-old feed the user hit). The push is diff-only, so "no messages" ≠ "dead"; the
-    # only proof of life is a pong. So: ping every 8s, and reload when VISIBLE and we've heard nothing
-    # back for 24s (3 missed pongs) or the socket is closed — plus an immediate check when the tab is
-    # brought back to the foreground. Heals together with the ?v= bundle cache-bust (a reload now also
-    # picks up fresh JS).
     return """
-(function(){var queue=[],ws=null,lastRx=Date.now();
-var wid=new URLSearchParams(location.search).get("wid")||"";
+(function(){var queue=[],ws=null;var wid=new URLSearchParams(location.search).get("wid")||"";
 function connect(){var proto=location.protocol==="https:"?"wss://":"ws://";
 ws=new WebSocket(proto+location.host+"/ws?app=%s"+(wid?"&wid="+encodeURIComponent(wid):""));
-ws.onopen=function(){lastRx=Date.now();for(var i=0;i<queue.length;i++)ws.send(queue[i]);queue=[];};
-ws.onmessage=function(ev){lastRx=Date.now();var msg;try{msg=JSON.parse(ev.data);}catch(e){return;}
-if(msg&&msg.type==="pong")return;
+ws.onopen=function(){for(var i=0;i<queue.length;i++)ws.send(queue[i]);queue=[];};
+ws.onmessage=function(ev){var msg;try{msg=JSON.parse(ev.data);}catch(e){return;}
 window.dispatchEvent(new MessageEvent("message",{data:msg}));};
-ws.onclose=function(){setTimeout(function(){location.reload();},1500);};
-ws.onerror=function(){try{ws.close();}catch(e){}};}
-function dead(){return !ws||ws.readyState===3||(ws.readyState===1&&Date.now()-lastRx>24000);}
-setInterval(function(){if(ws&&ws.readyState===1){try{ws.send('{"type":"ping"}');}catch(e){}}
-if(document.visibilityState==="visible"&&dead())location.reload();},8000);
-document.addEventListener("visibilitychange",function(){
-if(document.visibilityState==="visible"&&dead())location.reload();});
+ws.onclose=function(){setTimeout(function(){location.reload();},1500);};}
 function send(m){var s=JSON.stringify(m);if(ws&&ws.readyState===1)ws.send(s);else queue.push(s);}
 var SK="romp-vscode-state-%s";   // persist webview state to localStorage so UI prefs survive a refresh
 window.acquireVsCodeApi=function(){return{postMessage:function(m){send(m);},
@@ -1856,16 +1957,41 @@ def _chat_page():
             % (v, THEME_CSS, _CHAT_MOBILE_CSS, _chat_body(), _shim("chat"), v, _CHAT_MOBILE_JS))
 
 
+# Settings gear (WEB KERNEL ONLY — kernel-injected, never in the shared feed.ts). A ⚙ in the corner
+# opens a small panel with the build version: the kernel sha + what dist_ver it serves vs the ?v= THIS
+# tab loaded, flagged ⚠ when the tab is stale (a reload is owed). This is the version display the user
+# asked for, off the Clear-all/Undo bar and behind the gear.
+_GEAR_CSS = ("#rgear{position:fixed;top:6px;right:8px;z-index:60;background:none;border:0;color:#9aa0a6;"
+             "font-size:15px;cursor:pointer;opacity:.55;line-height:1;padding:2px}#rgear:hover{opacity:1}"
+             "#rsettings{position:fixed;top:30px;right:8px;z-index:60;min-width:210px;background:#252526;"
+             "border:1px solid #3a3a3a;border-radius:8px;padding:10px 12px;font:12px/1.5 -apple-system,sans-serif;"
+             "color:#ccc;box-shadow:0 8px 24px #00000066}#rsettings .rs-h{font-weight:600;margin-bottom:6px;"
+             "color:#9aa0a6}#rsver{white-space:pre-line}#rsver .stale{color:#e2b341;font-weight:600}")
+_GEAR_HTML = ("<button id=rgear title=Settings aria-label=Settings>⚙</button>"
+              "<div id=rsettings hidden><div class=rs-h>romp · version</div>"
+              "<div id=rsver>…</div></div>")
+_GEAR_JS = r"""(function(){var g=document.getElementById('rgear'),p=document.getElementById('rsettings'),
+b=document.getElementById('rsver');function lv(){var t=document.querySelector('script[src*="feed.js"]');
+var m=t&&t.getAttribute('src').match(/[?&]v=(\d+)/);return m?+m[1]:0;}
+function fill(){fetch('/version',{cache:'no-store'}).then(function(r){return r.json();}).then(function(v){
+var x=lv(),stale=x&&v.dist_ver&&v.dist_ver>x;b.innerHTML='kernel '+(v.kernel_sha||'?')+'\nserving v'+
+v.dist_ver+'\nthis tab v'+(x||'?')+(stale?'  <span class=stale>⚠ reload</span>':'  ✓');
+}).catch(function(){b.textContent='(version unavailable)';});}
+g.onclick=function(e){e.stopPropagation();if(p.hidden){p.hidden=false;fill();}else p.hidden=true;};
+document.addEventListener('click',function(e){if(!p.hidden&&e.target!==g&&!p.contains(e.target))p.hidden=true;});})();"""
+
+
 def _feed_page():
     v = _dist_ver()
     return ("<!DOCTYPE html><html lang=en><head><meta charset=UTF-8>"
             "<meta name=viewport content='width=device-width,initial-scale=1'>"
             "<link rel=icon type=image/svg+xml href=/media/romp-swirl-glyph.svg>"
             "<link href=/dist/feed.css?v=%d rel=stylesheet><title>Romp · feed</title>"
-            "<style>%s</style></head><body>%s<script>%s</script>"
-            "<script src=/dist/feed.js?v=%d></script></body></html>"
-            % (v, THEME_CSS, '<div id="feed-head"></div><div id="feed-list"></div><div id="feed-foot"></div>',
-               _shim("feed"), v))
+            "<style>%s\n%s</style></head><body>%s%s<script>%s</script>"
+            "<script src=/dist/feed.js?v=%d></script><script>%s</script></body></html>"
+            % (v, THEME_CSS, _GEAR_CSS,
+               '<div id="feed-head"></div><div id="feed-list"></div><div id="feed-foot"></div>', _GEAR_HTML,
+               _shim("feed"), v, _GEAR_JS))
 
 
 # The romp-tl-* styles, verbatim from the obsidian/VS-Code timeline wrapper.
@@ -2249,12 +2375,17 @@ class Handler(BaseHTTPRequestHandler):
                     msg = json.loads(payload.decode("utf-8", "replace"))
                 except Exception:
                     msg = None
-                if msg and msg.get("type") == "ping":
-                    client["send"](json.dumps({"type": "pong"}))   # app heartbeat: lets a tab detect a
-                    continue                                        # zombie socket (push is diff-only, so
-                    #                                                 silence ≠ dead — only a pong proves live)
                 if msg and msg.get("type") == "ready":
                     self._push_one(client)
+                    # Push the SHARED, STABLE tab order so the UI honors it on connect/reload. Without this
+                    # the webview only learns the order from a live drag, loses it on every reload, and falls
+                    # back to ordering tabs by session STATE — so they drift on their own (worse now that the
+                    # heartbeat auto-reloads). _ordered_alive is the same order chat tabs + timeline lanes use.
+                    try:
+                        _o = [s["sid"] for s in _ordered_alive(int(time.time()), _tmux_sessions())]
+                        client["send"](json.dumps({"type": "tabOrder", "order": _o}))
+                    except Exception:
+                        pass
                 elif msg and msg.get("type") == "askClear" and msg.get("itemId"):
                     _clear_ask(msg["itemId"])
                     _push_all()                        # reflect the clear on every feed client now
@@ -2309,9 +2440,16 @@ class Handler(BaseHTTPRequestHandler):
                     _send_to_app("chat", {"type": "closed", "id": msg["id"]})
                     _push_all()
                 elif msg and msg.get("type") == "openSession" and msg.get("id"):
-                    _set_hidden_tab(msg["id"], False)    # feed/timeline click reopens a hidden tab
-                    _push_all()
-                    _reveal_chat({"type": "focus", "id": msg["id"]})   # + switch the chat to it
+                    # live → reopen the hidden tab + focus; dead (picked from the picker) → ask to revive
+                    _open_or_revive(msg["id"], client["app"], lambda m: client["send"](json.dumps(m)))
+                elif msg and msg.get("type") == "reviveSession" and msg.get("id"):
+                    # confirmRevive → "Revive": resume the dead session in the background (the kernel had
+                    # no handler, so the modal's Revive silently did nothing — the user 2026-06-16)
+                    threading.Thread(target=_revive_session, args=(msg["id"],), daemon=True).start()
+                elif msg and msg.get("type") == "viewReadOnly" and msg.get("id"):
+                    _set_hidden_tab(msg["id"], False)    # confirmRevive → "View read-only": show the dead
+                    _push_all()                          # transcript as a tab without resuming the session
+                    _reveal_chat({"type": "focus", "id": msg["id"]})
                 elif msg and msg.get("type") == "deepLink" and msg.get("session"):
                     _reveal_chat({"type": "focus", "id": msg["session"], "anchor": msg.get("anchor"),
                                   "anchorT": msg.get("anchorT"), "anchorKind": msg.get("anchorKind")})
@@ -2371,6 +2509,10 @@ class Handler(BaseHTTPRequestHandler):
                     _ask_thread(_ask_cancel, _name_of(msg["id"]) or msg["id"])
                 elif msg and msg.get("type") == "askText" and msg.get("id") and msg.get("text"):
                     _ask_thread(_ask_send_text, _name_of(msg["id"]) or msg["id"], str(msg["text"]))
+                elif msg and msg.get("type") == "apiRetry" and msg.get("id"):
+                    # the "Retry" button on an API-error card → paste "retry" into that session's pane to
+                    # resume the stalled turn (the user 2026-06-16)
+                    _tmux_send(_name_of(msg["id"]) or msg["id"], "retry")
         except (BrokenPipeError, ConnectionResetError, OSError):
             pass
         finally:

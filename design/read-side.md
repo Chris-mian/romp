@@ -158,14 +158,22 @@ permission prompt's *content* may exist only in tmux, not the transcript; a live
 AskUserQuestion/ExitPlanMode is in the tree as an unanswered tool_use. The chip
 state comes from `states/` regardless.)
 
-### Feed = the goal tree + the caption stream
+### Feed = top-level-goal cards, nothing else
 
-- **Inbox**: top-level goals are the cards, bucketed into the three columns by the
-  rolled-up status the producer already wrote (working / blocked / completed). A
-  card's modal shows the goal's trail (its filed segments, interleaved). No
-  read-time DAG rebuild, no status derivation, no handoff repair.
-- **Stream**: captions, newest-first, faded by recency (the one kept display
-  heuristic; pure cosmetics).
+**The only cards are top-level goals** (the user 2026-06-16). One card per top-level
+goal, bucketed into the three columns by the rolled-up status the producer already
+wrote (working / blocked / completed). A sub-goal never gets its own card: a block
+anywhere in the tree rolls UP, so the *top-level card* moves to BLOCKED and its modal
+shows which leaf is blocking; likewise a completed step shows inside the modal, not as
+its own Completed card. No read-time DAG rebuild, no status derivation, no handoff repair.
+
+- A card's modal shows the goal's trail (its filed segments + sub-goal tree, interleaved).
+- **No caption stream.** Turn/segment captions are NOT feed cards — they live in the
+  card's trail, the ledger, and the timeline. (Superseded the earlier "Inbox + caption
+  Stream" split: emitting captions as standalone DETAILS cards piled finished
+  deliverables into the columns, which the original FEED-ASKS-SPEC.md — "details turns
+  never appear at all" — already forbade. Reverts kernel commit 05505fa "show stream
+  cards"; the fix is in `build_feed` only, the tuned `feed.ts` stays unedited.)
 - **Card detail (TBD)**: the old expand-paragraph card detail (`romp-feed-detail`,
   the deferred expand writer) is to be **remade entirely** and is parked until the
   inbox is in. Until then a card shows its caption trail.

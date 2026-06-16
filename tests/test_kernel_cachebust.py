@@ -1,0 +1,64 @@
+#!/usr/bin/env python3
+"""Tests for the kernel's bundle cache-busting (the stale-client fix). The browser was running an old
+cached feed.js across kernel restarts; the fix versions every bundle url with the build mtime and
+serves HTML no-cache, so a reload always pulls fresh JS. We pin the page-builder + version helpers
+(the HTTP layer isn't unit-tested in this repo — see test_kernel.py's header).
+"""
+import os
+from importlib.machinery import SourceFileLoader
+
+BIN = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "bin")
+SourceFileLoader("romp_event_model", os.path.join(BIN, "romp-event-model")).load_module()
+SourceFileLoader("romp_judge", os.path.join(BIN, "romp-judge")).load_module()
+os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
+km = SourceFileLoader("romp_kernel_cb", os.path.join(BIN, "romp-kernel")).load_module()
+
+
+def test_dist_ver_is_int():
+    assert isinstance(km._dist_ver(), int)
+
+
+def test_feed_page_versions_its_bundle():
+    html = km._feed_page()
+    assert "/dist/feed.js?v=" in html
+    assert "/dist/feed.css?v=" in html
+
+
+def test_chat_page_versions_its_bundle():
+    html = km._chat_page()
+    assert "/dist/render.js?v=" in html
+    assert "/dist/styles.css?v=" in html
+
+
+def test_version_info_shape():
+    info = km._version_info()
+    for k in ("kernel_sha", "pid", "started", "uptime_s", "dist_ver", "bundles"):
+        assert k in info, k
+    assert isinstance(info["bundles"], dict)
+
+
+def test_send_emits_cache_control():
+    # _send(..., cache="no-cache") must add the Cache-Control header. Drive it with a tiny fake handler
+    # capturing send_header calls (no socket).
+    sent = []
+
+    class Fake:
+        _send = km.Handler._send
+
+        def send_response(self, *a):
+            pass
+
+        def send_header(self, k, v):
+            sent.append((k, v))
+
+        def end_headers(self):
+            pass
+
+        class wfile:
+            @staticmethod
+            def write(_b):
+                pass
+
+    Fake().wfile = Fake.wfile
+    Fake._send(Fake(), 200, "hi", "text/plain", cache="no-cache")
+    assert ("Cache-Control", "no-cache") in sent
