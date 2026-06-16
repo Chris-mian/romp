@@ -510,14 +510,70 @@ def _ask_thread(fn, *a):
     threading.Thread(target=fn, args=a, daemon=True).start()
 
 
-_queued_cache = {}            # {sid: [queued msg texts]} — pane-scraped (never in the transcript); build_session reads it
+# Messages the user submitted while a session was busy/compacting and Claude Code hasn't dequeued yet —
+# read EVENT-BASED from the transcript's queue-operation records (NOT pane-scraped, which silently broke
+# with >1 queued message). Cached by the transcript's (mtime, size) like _parse, since build_session calls
+# this on every push.
+_queued_parse_cache = {}      # path → ((mtime, size), [pending queued texts])
+
+
+def _genuine_queued(text):
+    """A queued enqueue is the user's typed message — not a harness/romp auto-injection (a delivered postal
+    message is queued carrying the romp-msg-id marker / 📬 / a #### banner). Mirrors the archive's
+    isGenuineQueued, so those don't masquerade as the user's pending input."""
+    t = (text or "").strip()
+    if not t:
+        return False
+    return not ("romp-msg-id" in t or t.startswith("####################") or "\U0001F4EC" in t)
+
+
+def _pending_queued(path):
+    """Still-pending queued messages, folded FIFO from the transcript's queue-operation records
+    (type:"queue-operation"; operation enqueue/dequeue/remove; content on enqueue). enqueue appends; each
+    dequeue/remove resolves the oldest pending one; the unresolved genuine tail is what's still queued, in
+    submission order. Claude Code writes these the instant a message is queued (while busy/compacting), so
+    they show before reaching the turn DAG — the archive's foldQueue, event-based instead of pane-scraped
+    (the pane scrape mis-parsed a second queued message and dropped both — the user 2026-06-16)."""
+    try:
+        st = os.stat(path)
+        key = (st.st_mtime, st.st_size)
+    except OSError:
+        key = None
+    hit = _queued_parse_cache.get(path)
+    if hit is not None and key is not None and hit[0] == key:
+        return hit[1]
+    texts, resolved = [], 0
+    try:
+        with open(path, errors="replace") as f:
+            for line in f:
+                if '"queue-operation"' not in line:          # fast skip: most lines aren't queue ops
+                    continue
+                try:
+                    o = json.loads(line)
+                except Exception:
+                    continue
+                if o.get("type") != "queue-operation":
+                    continue
+                op = o.get("operation")
+                if op == "enqueue":
+                    texts.append(o.get("content") if isinstance(o.get("content"), str) else "")
+                elif op in ("dequeue", "remove") and resolved < len(texts):
+                    resolved += 1                            # FIFO: this dequeue clears the oldest enqueue
+    except OSError:
+        return []
+    out = [t.strip() for t in texts[resolved:] if _genuine_queued(t)]
+    if key is not None:
+        if len(_queued_parse_cache) > 256:                   # bounded by fleet size; never unbounded
+            _queued_parse_cache.clear()
+        _queued_parse_cache[path] = (key, out)
+    return out
 
 
 def _ask_poll():
-    """Scrape each live session's pane for an in-flight AskUserQuestion picker (push to chat) AND the
-    messages queued while it's busy/compacting (stash in _queued_cache for build_session's {kind:queued}
-    card). ONE capture per session per ~1.2s tick feeds both. Per-client dedup (_send_client) means an
-    unchanged picker isn't re-sent and a fresh client gets the current one; the webview renders the active tab."""
+    """Scrape each live session's pane for an in-flight AskUserQuestion picker and push it to chat. ONE
+    capture per session per ~1.2s tick. Per-client dedup (_send_client) means an unchanged picker isn't
+    re-sent and a fresh client gets the current one; the webview renders the active tab. (Queued messages
+    are no longer scraped here — they're read event-based from the transcript by _pending_queued.)"""
     while True:
         try:
             with _clients_lock:
@@ -532,7 +588,6 @@ def _ask_poll():
                         ask = ap.parse_ask_pane(pane)
                     except Exception:
                         ask = None
-                    _queued_cache[sid] = ap.parse_queued(pane)   # → build_session's {kind:queued} dotted card
                     payload = ({"type": "askLive", "id": sid, "ask": ask} if ask
                                else {"type": "askLiveClear", "id": sid})
                     for c in chat_clients:
@@ -892,10 +947,11 @@ def build_session(sid, now, tmux=None):
     todo = _fold_tasks(session)
     if todo and any(t["status"] not in ("completed", "cancelled") for t in todo):
         events.append({"kind": "todo", "tasks": todo})
-    # Messages QUEUED in the TUI (submitted while busy/compacting, not yet in the transcript) — pane-scraped
-    # by _ask_poll into _queued_cache. Append last (at the bottom, by the composer, like the old TS kernel)
-    # so a message queued during a compaction is visible instead of vanishing (the user 2026-06-15).
-    queued = _queued_cache.get(sid)
+    # Messages QUEUED in the TUI (submitted while busy/compacting) — folded EVENT-BASED from the
+    # transcript's queue-operation records (_pending_queued), so any number show in submission order.
+    # Append last (at the bottom, by the composer, like the old TS kernel) so they're visible instead of
+    # vanishing (the user 2026-06-15; pane-scrape dropped a 2nd queued message → both vanished, 2026-06-16).
+    queued = _pending_queued(sess["path"])
     if queued:
         events.append({"kind": "queued", "texts": queued})
     # TOC ledger: archiver headline + turn captions (click-to-jump via the turn's anchor uuid)
@@ -2272,6 +2328,11 @@ class Handler(BaseHTTPRequestHandler):
                         pass
                 elif msg and msg.get("type") == "compact" and msg.get("name"):
                     _tmux_send(str(msg["name"]), "/compact")
+                elif msg and msg.get("type") == "compactSession" and msg.get("id"):
+                    # chat context-battery click → same /compact path as the timeline's `compact` (the chat
+                    # button posted compactSession by id but the kernel had no handler, so it silently did
+                    # nothing — the user 2026-06-16). The webview already guards awaiting/compacting/closed.
+                    _tmux_send(_name_of(msg["id"]) or msg["id"], "/compact")
                 elif msg and msg.get("type") == "sendCommand" and msg.get("name") and msg.get("cmd"):
                     cmd = str(msg["cmd"])
                     _tmux_send(str(msg["name"]), cmd, model_cmd=cmd.strip().startswith("/model"))

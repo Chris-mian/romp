@@ -347,36 +347,9 @@ class TestAskParse(unittest.TestCase):
         self.assertEqual([o["label"] for o in a["options"]], ["Stacked", "Columns"])  # options unaffected
 
 
-class TestParseQueued(unittest.TestCase):
-    """ap.parse_queued — messages waiting in Claude Code's TUI queue (submitted while busy/compacting).
-    The format (queued ❯-lines above the composer border + a "Press up to edit queued messages"
-    placeholder) was captured live 2026-06-15; fixtures here use SYNTHETIC message text only."""
-
-    def _pane(self, queued):
-        body = ["✳ Compacting conversation… (1m 9s)", "  ▰▰▰▰▱▱▱ 53%", "", ""]
-        body += ["  ❯ " + q for q in queued]
-        body += ["──────────────────────────── testsess ──",
-                 "❯ Press up to edit queued messages",
-                 "────────────────────────────",
-                 "  ctx:26%   Opus 4.8 xhigh   main   ~/repo"]
-        return "\n".join(body)
-
-    def test_single_queued_message(self):
-        self.assertEqual(ap.parse_queued(self._pane(["fix the flaky timeout test"])),
-                         ["fix the flaky timeout test"])
-
-    def test_multiple_queued_keep_submission_order(self):
-        self.assertEqual(ap.parse_queued(self._pane(["fix the flaky test", "then bump the version"])),
-                         ["fix the flaky test", "then bump the version"])
-
-    def test_no_queue_when_placeholder_absent(self):
-        pane = "\n".join(["some output", "──── testsess ──", "❯ ", "────", "  ctx:26%"])
-        self.assertEqual(ap.parse_queued(pane), [])
-
-    def test_queued_text_mentioning_queue_not_confused(self):
-        # a queued message whose TEXT contains "queued" must still parse (placeholder match is specific)
-        self.assertEqual(ap.parse_queued(self._pane(["why was my message queued?"])),
-                         ["why was my message queued?"])
+# Queued-message detection moved OUT of this pane parser to an EVENT-BASED reader in bin/romp-kernel
+# (_pending_queued, folding the transcript's queue-operation records). Its tests live in test_kernel.py
+# (TestPendingQueued); the old pane-scrape parse_queued + its tests were removed (the user 2026-06-16).
 
 
 if __name__ == "__main__":

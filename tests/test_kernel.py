@@ -51,6 +51,15 @@ def trline(t, tool_use_id, uuid, parent, content="ok", is_error=False):
             "message": {"role": "user", "content": [b]}}
 
 
+def qop(operation, content=None):
+    # A Claude Code queue-operation transcript record (no uuid → not in the turn DAG): enqueue carries the
+    # queued text; dequeue/remove resolve the oldest pending one. _pending_queued folds these.
+    o = {"type": "queue-operation", "operation": operation, "sessionId": SID, "timestamp": iso(NOW)}
+    if content is not None:
+        o["content"] = content
+    return o
+
+
 class ViewBuilder(unittest.TestCase):
     def setUp(self):
         self.td = tempfile.TemporaryDirectory()
@@ -222,18 +231,32 @@ class ViewBuilder(unittest.TestCase):
         self.assertFalse(any(e["kind"] == "tool" and e["name"] in ("TaskCreate", "TaskUpdate") for e in m["events"]),
                          "raw Task* tool calls are folded away, not shown as tool cards")
 
-    def test_queued_event_from_cache(self):
-        # a message queued in the TUI while busy/compacting (pane-scraped into _queued_cache) surfaces as a
-        # {kind:"queued"} card at the bottom — the "vanished during compaction" fix
-        km._queued_cache[SID] = ["fix the flaky test", "bump the version"]
-        try:
-            m = km.build_session(SID, NOW)
-            q = [e for e in m["events"] if e["kind"] == "queued"]
-            self.assertEqual(len(q), 1, "one queued card")
-            self.assertEqual(q[0]["texts"], ["fix the flaky test", "bump the version"])
-            self.assertEqual(m["events"][-1]["kind"], "queued", "queued sits at the bottom, by the composer")
-        finally:
-            km._queued_cache.pop(SID, None)
+    def test_queued_card_from_transcript_queue_ops(self):
+        # Messages queued in the TUI while busy/compacting are written to the transcript as queue-operation
+        # records; _pending_queued folds them so they surface as a {kind:"queued"} card at the bottom (the
+        # "vanished during compaction" fix). EVENT-BASED (was pane-scraped) — and BOTH of two queued messages
+        # show: the pane scrape dropped the 2nd and lost both (the user 2026-06-16).
+        km._queued_parse_cache.clear()
+        with self.tpath.open("a") as f:
+            f.write(json.dumps(qop("enqueue", "fix the flaky test")) + "\n")
+            f.write(json.dumps(qop("enqueue", "then bump the version")) + "\n")
+        m = km.build_session(SID, NOW)
+        q = [e for e in m["events"] if e["kind"] == "queued"]
+        self.assertEqual(len(q), 1, "one queued card")
+        self.assertEqual(q[0]["texts"], ["fix the flaky test", "then bump the version"],
+                         "BOTH queued messages, in submission order (the 2-message regression)")
+        self.assertEqual(m["events"][-1]["kind"], "queued", "queued sits at the bottom, by the composer")
+
+    def test_queued_card_absent_when_all_dequeued(self):
+        # once Claude Code consumes the queue (dequeue records), nothing is still pending → no card.
+        km._queued_parse_cache.clear()
+        with self.tpath.open("a") as f:
+            f.write(json.dumps(qop("enqueue", "fix the flaky test")) + "\n")
+            f.write(json.dumps(qop("enqueue", "then bump the version")) + "\n")
+            f.write(json.dumps(qop("dequeue")) + "\n")
+            f.write(json.dumps(qop("dequeue")) + "\n")
+        m = km.build_session(SID, NOW)
+        self.assertFalse([e for e in m["events"] if e["kind"] == "queued"], "fully-drained queue → no card")
 
     def _asst(self, t, uuid, parent, blocks, stop="end_turn"):
         return {"type": "assistant", "timestamp": iso(t), "uuid": uuid, "parentUuid": parent,
@@ -726,6 +749,92 @@ class FeedDetail(unittest.TestCase):
                 self.assertIsNone(km._read_feed_detail("E"), "empty paragraph → None")
             finally:
                 km.FEEDDETAIL = orig
+
+
+class TestPendingQueued(unittest.TestCase):
+    """km._pending_queued / _genuine_queued — still-pending queued messages folded FIFO from the
+    transcript's queue-operation records (event-based; replaces the pane scrape that dropped a 2nd queued
+    message and lost both). Synthetic records only — no real session data."""
+
+    def setUp(self):
+        km._queued_parse_cache.clear()
+        self.td = tempfile.TemporaryDirectory()
+        self.p = os.path.join(self.td.name, "t.jsonl")
+
+    def tearDown(self):
+        self.td.cleanup()
+
+    def _write(self, *ops):
+        # each op is (operation,) or (operation, content)
+        recs = []
+        for op in ops:
+            o = {"type": "queue-operation", "operation": op[0]}
+            if len(op) > 1:
+                o["content"] = op[1]
+            recs.append(json.dumps(o))
+        with open(self.p, "w") as f:
+            f.write("\n".join(recs) + "\n")
+
+    def test_single_pending(self):
+        self._write(("enqueue", "fix the flaky test"))
+        self.assertEqual(km._pending_queued(self.p), ["fix the flaky test"])
+
+    def test_two_pending_keep_submission_order(self):
+        # the regression: TWO queued messages must BOTH show, oldest→newest (the user 2026-06-16).
+        self._write(("enqueue", "first"), ("enqueue", "second"))
+        self.assertEqual(km._pending_queued(self.p), ["first", "second"])
+
+    def test_dequeue_resolves_fifo_front(self):
+        self._write(("enqueue", "first"), ("enqueue", "second"), ("dequeue",))
+        self.assertEqual(km._pending_queued(self.p), ["second"], "the oldest enqueue is the one consumed")
+
+    def test_remove_also_resolves(self):
+        self._write(("enqueue", "first"), ("enqueue", "second"), ("remove",), ("remove",))
+        self.assertEqual(km._pending_queued(self.p), [], "remove drains like dequeue")
+
+    def test_drops_postal_and_harness_injections(self):
+        # romp delivers a peer message by ENQUEUEing it (carries romp-msg-id / 📬 / a #### banner); those
+        # must not masquerade as the user's pending input — only the genuine typed message remains.
+        self._write(("enqueue", "#################### \U0001F4EC from peer\nromp-msg-id: 11111111-2222"),
+                    ("enqueue", "my real queued ask"))
+        self.assertEqual(km._pending_queued(self.p), ["my real queued ask"])
+
+    def test_empty_when_no_records_or_missing_file(self):
+        self._write(("enqueue", ""))                       # blank content is not genuine
+        self.assertEqual(km._pending_queued(self.p), [])
+        self.assertEqual(km._pending_queued(os.path.join(self.td.name, "nope.jsonl")), [])
+
+    def test_genuine_queued_filter(self):
+        self.assertTrue(km._genuine_queued("fix the bug"))
+        self.assertFalse(km._genuine_queued(""))
+        self.assertFalse(km._genuine_queued("   "))
+        self.assertFalse(km._genuine_queued("text with romp-msg-id: 11111111 inside"))
+        self.assertFalse(km._genuine_queued("\U0001F4EC delivered"))
+        self.assertFalse(km._genuine_queued("####################\nbanner"))
+
+    def test_cache_keys_on_mtime_size(self):
+        # build_session calls this every push; an unchanged transcript returns the cached list, a changed
+        # one (an enqueue appended) re-reads.
+        self._write(("enqueue", "first"))
+        a = km._pending_queued(self.p)
+        self.assertEqual(a, ["first"])
+        with open(self.p, "a") as f:
+            f.write(json.dumps({"type": "queue-operation", "operation": "enqueue", "content": "second"}) + "\n")
+        self.assertEqual(km._pending_queued(self.p), ["first", "second"], "append busts the (mtime,size) cache")
+
+
+class CompactSessionRoute(unittest.TestCase):
+    """The chat context-battery posts {compactSession, id}; the kernel must route it to /compact for that
+    session's tmux name — the SAME action as the timeline's {compact, name}. Without the handler the click
+    was silently dropped (the user 2026-06-16)."""
+
+    def test_compact_handler_source_routes_both_shapes(self):
+        # both the chat (compactSession/id) and timeline (compact/name) branches end in _tmux_send(.,"/compact")
+        src = Path(BIN, "romp-kernel").read_text()
+        self.assertIn('msg.get("type") == "compactSession" and msg.get("id")', src,
+                      "kernel has a compactSession handler (was missing → chat button did nothing)")
+        self.assertIn('_tmux_send(_name_of(msg["id"]) or msg["id"], "/compact")', src,
+                      "compactSession resolves id→name and sends the same /compact as `compact`")
 
 
 class TmuxInject(unittest.TestCase):
