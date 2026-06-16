@@ -539,7 +539,7 @@ class PlanRollup(unittest.TestCase):
                          "top-done + settled completes even with a trailing open step")
 
     def test_top_done_with_open_blocked_step_not_stuck(self):
-        """The stuck-'blocked' bug (Henry, 2026-06-15; 5/13 real stores): the negative sweep
+        """The stuck-'blocked' bug (the user, 2026-06-15): the negative sweep
         completes the TOP (clearing only the top's own block) but a trailing step is left open AND
         blocked. A completed (sub)tree has no outstanding work, so the stale descendant block must
         not keep the finished goal rolling up to 'blocked'."""
