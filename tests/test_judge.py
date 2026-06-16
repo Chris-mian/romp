@@ -360,6 +360,12 @@ class PlanParse(unittest.TestCase):
         self.assertEqual(jd._parse_goal_edit("MINT :: skip the cache :: DONE none :: BLOCK no", 3)["op"], "MINT",
                          "a placement whose TEXT contains 'skip' is not mistaken for SKIP")
 
+    def test_done_self_parsed(self):
+        e = jd._parse_goal_edit("MINT :: a small task :: DONE self :: BLOCK no", 3)
+        self.assertTrue(e["done_self"]); self.assertIsNone(e["done"], "self is distinct from a numeric done index")
+        e2 = jd._parse_goal_edit("SUB 1 :: step :: DONE 1 :: BLOCK no", 2)
+        self.assertFalse(e2["done_self"]); self.assertEqual(e2["done"], 1, "numeric DONE n still parses")
+
 
 def _store():
     return {"rompUuid": SID, "seq": 0, "nodes": {}, "placements": {}, "status": {}}
@@ -395,6 +401,53 @@ class PlanApply(unittest.TestCase):
                            jd.open_menu(s))
         self.assertTrue(s["nodes"][nid]["nodeComplete"])
         self.assertFalse(s["nodes"][nid]["blocked"], "completing a node clears its soft block")
+
+
+class DoneSelf(unittest.TestCase):
+    """simplify's DONE-self: atomic mint-and-complete — complete the node placed in THIS reply,
+    clearing its subtree blocks, composing with numeric DONE n."""
+
+    def test_mint_born_complete(self):
+        s = _store()
+        jd.apply_goal_edit(s, "s1", T0, {"op": "MINT", "n": None, "text": "small task",
+                                         "done": None, "block": False, "done_self": True}, [])
+        self.assertTrue(s["nodes"][s["placements"]["s1"]]["nodeComplete"],
+                        "MINT + DONE self → the new top is born complete")
+
+    def test_sub_step_self_completes_only_the_step(self):
+        s = _store()
+        jd.apply_goal_edit(s, "s1", T0, {"op": "MINT", "n": None, "text": "G",
+                                         "done": None, "block": False, "done_self": False}, [])
+        jd.apply_goal_edit(s, "s2", T0 + 10, {"op": "SUB", "n": 1, "text": "step",
+                                              "done": None, "block": False, "done_self": True}, jd.open_menu(s))
+        step = next(nd for nd in s["nodes"].values() if nd["parentId"] is not None)
+        self.assertTrue(step["nodeComplete"], "SUB + DONE self → the step is complete")
+        self.assertFalse(s["nodes"][s["placements"]["s1"]]["nodeComplete"], "the parent goal is NOT completed")
+
+    def test_self_clears_new_node_subtree_blocks(self):
+        s = _store()
+        jd.apply_goal_edit(s, "s1", T0, {"op": "MINT", "n": None, "text": "G",
+                                         "done": None, "block": False, "done_self": False}, [])
+        jd.apply_goal_edit(s, "s2", T0 + 10, {"op": "SUB", "n": 1, "text": "sub",
+                                              "done": None, "block": True, "done_self": False}, jd.open_menu(s))
+        sub = next(nd for nd in s["nodes"].values() if nd["parentId"] is not None)
+        self.assertTrue(sub["blocked"])
+        menu = jd.open_menu(s)
+        gn = next(i for i, nd in enumerate(menu, 1) if nd["text"] == "G")
+        jd.apply_goal_edit(s, "s3", T0 + 20, {"op": "AMEND", "n": gn, "text": "G",
+                                              "done": None, "block": False, "done_self": True}, menu)
+        self.assertTrue(s["nodes"][s["placements"]["s1"]]["nodeComplete"], "AMEND G + DONE self → G complete")
+        self.assertFalse(sub["blocked"], "DONE self clears the completed node's subtree blocks")
+
+    def test_self_composes_with_numeric_done(self):
+        s = _store()
+        jd.apply_goal_edit(s, "s1", T0, {"op": "MINT", "n": None, "text": "G1",
+                                         "done": None, "block": False, "done_self": False}, [])
+        menu = jd.open_menu(s)                                   # [G1]
+        jd.apply_goal_edit(s, "s2", T0 + 10, {"op": "MINT", "n": None, "text": "G2",
+                                              "done": 1, "block": False, "done_self": True}, menu)
+        self.assertTrue(s["nodes"][s["placements"]["s1"]]["nodeComplete"], "numeric DONE 1 completes G1")
+        self.assertTrue(s["nodes"][s["placements"]["s2"]]["nodeComplete"], "DONE self completes the new G2")
 
 
 class PlanRollup(unittest.TestCase):
