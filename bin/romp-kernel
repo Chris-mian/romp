@@ -1922,7 +1922,10 @@ setState:function(s){try{localStorage.setItem(SK,JSON.stringify(s));}catch(e){}}
 # is our own element). The list, the current button, and each row carry the session's color.
 _CHAT_MOBILE_CSS = (
     "#mhdr,#mlist{display:none}"    # both hidden on desktop (#mlist is a #tabbar sibling, not inside #mhdr)
-    "@media (max-width:820px),(pointer:coarse) and (max-width:1024px){"
+    # Gate the picker on a TOUCH device, not pane width: the chat iframe is one of three desktop panes, so
+    # it's always narrow — a bare max-width would swap in the mobile picker on desktop too (the user wants
+    # the real tab strip on desktop). pointer:coarse is true on the phone, false on a mouse/trackpad desktop.
+    "@media (pointer:coarse) and (max-width:1024px){"
     "#tabbar{max-height:none;overflow:visible;position:relative;padding:6px 8px}"
     "#tabbar #tabs{display:none}"                       # the wrapping multi-row tab strip
     "#mhdr{display:flex;align-items:stretch;gap:6px;width:100%}"

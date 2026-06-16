@@ -94,6 +94,14 @@ class ChatSessionPicker(unittest.TestCase):
         self.assertIn("--chip-bg", js)                    # reads each session's identity color
         self.assertIn("#mcur.colored", css)               # the current button wears that color
 
+    def test_picker_is_gated_on_touch_not_pane_width(self):
+        # regression: the chat iframe is one of three desktop panes, so it's ALWAYS narrow. A bare
+        # max-width breakpoint matched that narrow pane and swapped the mobile picker in on desktop,
+        # replacing the real tab strip. The picker must trigger only on a touch device (pointer:coarse).
+        css = km._CHAT_MOBILE_CSS
+        self.assertIn("@media (pointer:coarse) and (max-width:1024px){", css)
+        self.assertNotIn("(max-width:820px),", css)   # the width-only OR-clause that leaked onto desktop is gone
+
     def test_picker_routes_a_pick_and_wires_new_session_and_summary(self):
         js = km._CHAT_MOBILE_JS
         self.assertIn(".tab[data-id", js)             # a row tap clicks the real tab (render.js focuses it)

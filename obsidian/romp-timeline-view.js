@@ -444,7 +444,8 @@ class TimelinePanel {
 
   destroy() {
     window.removeEventListener('resize', this._onResize);
-    if (this.wrap) { this.wrap.removeEventListener('wheel', this._onWheel); this.wrap.removeEventListener('keydown', this._onKey); this.wrap.removeEventListener('mousedown', this._focusWrap); this.wrap.removeEventListener('mousemove', this._onTipSweep); }
+    if (this.wrap) { this.wrap.removeEventListener('wheel', this._onWheel); this.wrap.removeEventListener('keydown', this._onKey); this.wrap.removeEventListener('mousedown', this._focusWrap); this.wrap.removeEventListener('mousemove', this._onTipSweep);
+      this.wrap.removeEventListener('touchstart', this._onTouchStart); this.wrap.removeEventListener('touchmove', this._onTouchMove); this.wrap.removeEventListener('touchend', this._onTouchEnd); this.wrap.removeEventListener('touchcancel', this._onTouchEnd); }
     if (this._drawRAF) cancelAnimationFrame(this._drawRAF);
     this._stopLiveTick();
     if (this._autoOpenT) clearTimeout(this._autoOpenT);
@@ -561,6 +562,87 @@ class TimelinePanel {
     try { localStorage.setItem(this.OSTORE, String(Math.round(this._offSec))); } catch (e2) {}
     this._scheduleDraw();
     this._startLiveTick();   // a pan back to the now-edge re-pins → resume smooth advance (no-op otherwise)
+  }
+
+  _touchDist(a, b) { return Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY); }
+
+  // Touchscreen pan/zoom (phones — no wheel events). ONE finger, horizontal: PAN the window (free, breaks
+  // 🔒 like a mouse drag) — content tracks the finger (drag right → earlier time slides in). When 🔒locked
+  // a horizontal drag ZOOMS instead (the right edge stays pinned at now, so there's nowhere to pan) — this
+  // is the user's "locked-to-now drag does a zoom." ONE finger, vertical: falls through to native lane
+  // scroll (touch-action:pan-y), and a tap with no movement falls through to the lane's click/select. TWO
+  // fingers: PINCH-zoom the window width, anchored at the midpoint. Math mirrors onWheel/_panDragMove in
+  // COMPRESSED time (linear there). _winSec/_offSec are the same continuous state the wheel + sliders write.
+  onTouchStart(e) {
+    const g = this._geom; if (!g || !this.data || !this.data.sessions) return;
+    if (e.touches.length >= 2) {
+      const a = e.touches[0], b = e.touches[1];
+      const rect = this.svg.getBoundingClientRect();
+      const scaleX = rect.width ? g.W / rect.width : 1;            // svg user-units per client px
+      const curWin = this.winSec(), curOff = this.offSec();
+      const compress = g.compress || ((t) => t);
+      const cNow = compress(this.data.now), cT1 = cNow - curOff, cT0 = cT1 - curWin;
+      const svgX = ((a.clientX + b.clientX) / 2 - rect.left) * scaleX;   // midpoint across the plot
+      const frac = Math.max(0, Math.min(1, (svgX - g.ml) / g.plotW));
+      this._touch = { mode: 'pinch', startDist: Math.max(1, this._touchDist(a, b)), frac,
+        cc: cT0 + frac * curWin, cNow, startWin: curWin };          // pin the compressed time under the midpoint
+      e.preventDefault();
+    } else if (e.touches.length === 1) {
+      const t = e.touches[0];
+      this._touch = { mode: 'drag', axis: null, startX: t.clientX, startY: t.clientY,
+        startOff: this.offSec(), startWin: this.winSec(), locked: this._lockNow };
+      // no preventDefault yet — the first real move decides ours (horizontal) vs. native (vertical scroll)
+    }
+  }
+  onTouchMove(e) {
+    const d = this._touch, g = this._geom; if (!d || !g || !g.plotW || !this.data) return;
+    const rect = this.svg.getBoundingClientRect();
+    const scaleX = rect.width ? g.W / rect.width : 1;
+    if (d.mode === 'pinch') {
+      if (e.touches.length < 2) return;
+      const dist = Math.max(1, this._touchDist(e.touches[0], e.touches[1]));
+      const newWin = Math.max(MIN_W, Math.min(MAX_W, d.startWin * (d.startDist / dist)));   // spread → narrower window (zoom in)
+      this._winSec = newWin;
+      this._offSec = Math.max(0, Math.min(MAX_OFFSET, d.cNow - (d.cc + (1 - d.frac) * newWin)));
+      e.preventDefault();
+    } else if (d.mode === 'drag') {
+      const dx = e.touches[0].clientX - d.startX, dy = e.touches[0].clientY - d.startY;
+      if (d.axis == null) {
+        if (Math.max(Math.abs(dx), Math.abs(dy)) < 6) return;        // below threshold → still undecided (could be a tap)
+        d.axis = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y';
+      }
+      if (d.axis === 'y') return;                                     // vertical → leave it to native lane scroll
+      const dxc = dx * scaleX;                                        // client px → svg user-units
+      if (d.locked) {                                                 // 🔒 → a horizontal drag ZOOMS, right edge stays at now
+        this._winSec = Math.max(MIN_W, Math.min(MAX_W, d.startWin * Math.exp(-dxc / g.plotW)));   // drag right → zoom in
+        this._offSec = 0;
+      } else {                                                        // free PAN — content tracks the finger; breaks 🔒
+        const dt = dxc * (d.startWin / g.plotW);
+        this._offSec = Math.max(0, Math.min(MAX_OFFSET, d.startOff + dt));   // drag right → window slides to earlier time
+        this._setLock(false);
+        this._pinned = false;
+      }
+      this._offDirty = true;
+      this._scheduleDraw();
+      e.preventDefault();
+    }
+  }
+  onTouchEnd(e) {
+    const d = this._touch; if (!d) return;
+    if (e.touches && e.touches.length >= 1) {                         // a finger lifted but one remains (pinch→drag): rebaseline
+      const t = e.touches[0];
+      this._touch = { mode: 'drag', axis: null, startX: t.clientX, startY: t.clientY,
+        startOff: this.offSec(), startWin: this.winSec(), locked: this._lockNow };
+      return;
+    }
+    this._touch = null;
+    if (d.mode === 'drag' && d.axis !== 'x') return;                  // a native scroll or a tap — nothing of ours to persist
+    if (this._lockNow) this._offSec = 0;                              // a 🔒locked zoom keeps the right edge at now
+    this._markOffsetGesture();                                        // honor _offSec next frame; re-pin if it landed at the now-edge
+    try { localStorage.setItem(this.WSTORE, String(this.winSec())); } catch (e2) {}
+    try { localStorage.setItem(this.OSTORE, String(Math.round(this._offSec))); } catch (e2) {}
+    this._scheduleDraw();
+    this._startLiveTick();
   }
 
   // A user gesture/nav just wrote _offSec → draw() honors it verbatim this frame (_offDirty), then
