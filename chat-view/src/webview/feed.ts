@@ -1014,7 +1014,7 @@ function renderModal() {
   if (grp) {
     ttlEl.textContent = grp.title;
     titleHoverId = grp.turnId;
-    ttlEl.onclick = () => vscodeApi?.postMessage({ type: "showAskPath", itemId: grp.members[0].itemId });
+    ttlEl.onclick = () => vscodeApi?.postMessage({ type: "showOnTimeline", itemId: grp.members[0].itemId, sid: grp.sid, t: grp.t, anchor: "prompt" });
     agent.textContent = grp.name; if (grp.color) agent.style.color = grp.color.bg; setWorkDot(agent, workingSet.has(grp.name)); agent.classList.toggle("dead", !grp.live);
     agent.onclick = () => vscodeApi?.postMessage({ type: "openSession", id: grp.sid });
     ageEl.textContent = relAge(hostNow - grp.t);
@@ -1027,7 +1027,7 @@ function renderModal() {
   } else if (it) {
     ttlEl.textContent = it.text;
     titleHoverId = it.turnId;
-    ttlEl.onclick = () => vscodeApi?.postMessage({ type: "showAskPath", itemId: it.itemId });
+    ttlEl.onclick = () => vscodeApi?.postMessage({ type: "showOnTimeline", itemId: it.itemId, sid: it.sid, t: it.t, anchor: "prompt" });
     agent.textContent = it.name; if (it.color) agent.style.color = it.color.bg; setWorkDot(agent, workingSet.has(it.name)); agent.classList.toggle("dead", !it.live);
     agent.onclick = () => vscodeApi?.postMessage({ type: "openSession", id: it.sid });
     ageEl.textContent = relAge(hostNow - it.t);

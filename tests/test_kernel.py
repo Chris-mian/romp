@@ -645,6 +645,13 @@ class CrossPane(unittest.TestCase):
         self.assertEqual(len(got["feed"]), 0)
         self.assertIn("focus", got["chat"][0]); self.assertIn("S1", got["chat"][0])
 
+    def test_showontimeline_anchor_maps_to_focus_kind(self):
+        # a feed TITLE click sends anchor:"prompt" → land on the user's MESSAGE turn; a sub-thing /
+        # work click sends no anchor → the nearest turn (the assistant response). (the user 2026-06-15)
+        self.assertEqual(km._focus_kind("prompt"), "user")
+        self.assertIsNone(km._focus_kind("work"))
+        self.assertIsNone(km._focus_kind(None))
+
 
 class TmuxInject(unittest.TestCase):
     def test_tmux_send_sequence(self):

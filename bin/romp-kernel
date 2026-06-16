@@ -1354,6 +1354,14 @@ def _reveal_chat(focus_msg):
     _send_to_app("shell", {"type": "reveal", "pane": "chat"})
 
 
+def _focus_kind(anchor):
+    """showOnTimeline's `anchor` → the chat focus land-on intent. "prompt" means the user's typed
+    MESSAGE, so land on the nearest USER turn; "work"/absent means the work that was done, so land on
+    the nearest turn (the assistant response). The anchor string is NOT a transcript uuid, so the chat
+    resolves it via the kind-restricted time fallback (scrollToNearestT)."""
+    return "user" if anchor == "prompt" else None
+
+
 _nonce = [0]
 
 
@@ -1981,8 +1989,11 @@ class Handler(BaseHTTPRequestHandler):
                     _reveal_chat({"type": "focus", "id": msg["session"], "anchor": msg.get("anchor"),
                                   "anchorT": msg.get("anchorT"), "anchorKind": msg.get("anchorKind")})
                 elif msg and msg.get("type") == "showOnTimeline" and msg.get("sid"):
-                    _reveal_chat({"type": "focus", "id": msg["sid"],
-                                  "anchorT": msg.get("t"), "anchor": msg.get("anchor")})
+                    # anchor:"prompt" → land on the user's MESSAGE turn (kind "user"); "work"/absent →
+                    # the nearest turn to the work time (the assistant response that did it). The string
+                    # anchor isn't a transcript uuid, so the chat uses the kind-restricted time fallback.
+                    _reveal_chat({"type": "focus", "id": msg["sid"], "anchorT": msg.get("t"),
+                                  "anchorKind": _focus_kind(msg.get("anchor"))})
                 elif msg and msg.get("type") == "hoverHighlight":
                     ids = msg["ids"] if isinstance(msg.get("ids"), list) else ([msg["id"]] if msg.get("id") else [])
                     _send_to_app("timeline", {"type": "hover", "ids": ids, "nonce": _next_nonce()})
