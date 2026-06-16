@@ -558,3 +558,24 @@ MOCK
     [ "$status" -eq 0 ]
     grep -q 'tmux new-session -d -s mail' "$MOCK_LOG"
 }
+
+@test "resume picker summary: archive headline, then caption fallback" {
+    # _romp_last_summary now reads the judges' index (archive headline, else the
+    # latest caption), not the retired summaries/ store. Extract just the function.
+    local adir="$TEST_DIR/archive" cdir="$TEST_DIR/captions" sid="uuid-z"
+    local fn="$TEST_DIR/_lastsum.sh"
+    mkdir -p "$adir" "$cdir"
+    sed -n '/^_romp_last_summary()/,/^}/p' "$ROMP_SCRIPT" > "$fn"
+    printf '{"headline":"Fixing the feed flicker","abstract":"x"}\n' > "$adir/$sid.json"
+    run env ROMP_ARCHIVE_DIR="$adir" ROMP_CAPTIONS_DIR="$cdir" \
+        bash -c 'source "$1"; _romp_last_summary "$2"' _ "$fn" "$sid"
+    [ "$status" -eq 0 ]
+    [[ "$output" == $'reply\tFixing the feed flicker' ]]
+    # no archive yet -> fall back to the most recent caption
+    rm "$adir/$sid.json"
+    printf '{"grain":"turn","t":1,"caption":"An older step"}\n{"grain":"turn","t":2,"caption":"Latest thing done"}\n' > "$cdir/$sid.jsonl"
+    run env ROMP_ARCHIVE_DIR="$adir" ROMP_CAPTIONS_DIR="$cdir" \
+        bash -c 'source "$1"; _romp_last_summary "$2"' _ "$fn" "$sid"
+    [ "$status" -eq 0 ]
+    [[ "$output" == $'reply\tLatest thing done' ]]
+}

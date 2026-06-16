@@ -34,10 +34,12 @@ PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd):$PATH"
 # concurrent sessions from racing on a shared file.
 ROMP_NAMES_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/romp/names"
 
-# Per-session Haiku-summary history the romp-summarize hook appends to (one
-# {"t","kind","text"} JSON line per turn). The resume picker reads the LAST line
-# of each to show what a stopped session was doing — see _romp_last_summary.
-ROMP_SUMMARY_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/romp/summaries"
+# The judges' per-session index the resume picker reads to show what a stopped
+# session was about: the archiver's headline (archive/<sid>.json — the session's
+# through-line) with the latest turn caption (captions/<sid>.jsonl) as the
+# fallback — see _romp_last_summary.
+ROMP_ARCHIVE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/romp/archive"
+ROMP_CAPTIONS_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/romp/captions"
 
 _romp_record() {   # <sid> <name> <dir> [bg] [fg] — write/replace the map entry
     local sid="$1" nm="$2" dir="$3" bg="${4:-}" fg="${5:-}"
@@ -263,27 +265,35 @@ _romp_menu() {
     return 0
 }
 
-# Last cached Haiku summary for a session id, or nothing. Prints "<kind>\t<text>"
-# (kind = request|reply|error). Pure cache read: just the FINAL line of the
-# per-session history the romp-summarize hook writes — no model call, nothing
-# computed. Whitespace in the phrase is collapsed so it can't break the tab-
-# delimited picker rows.
+# The session's one-line gloss for the picker, from the judges' index: the
+# archiver's headline (archive/<sid>.json — the session's through-line), else the
+# latest turn caption (captions/<sid>.jsonl). Prints "<kind>\t<text>"; kind drives
+# the picker color and is a neutral 'reply' here (the new model has no
+# request/reply/error split). Whitespace collapsed so it can't break the tab-
+# delimited picker rows. Pure cache read — no model call.
 _romp_last_summary() {   # <sid>
-    local f="$ROMP_SUMMARY_DIR/$1.jsonl" line
-    [[ -f "$f" ]] || return 0
-    line="$(tail -n 1 "$f" 2>/dev/null)" || return 0
-    [[ -n "$line" ]] || return 0
-    python3 - "$line" <<'PY' 2>/dev/null || true
+    local af="$ROMP_ARCHIVE_DIR/$1.json" cf="$ROMP_CAPTIONS_DIR/$1.jsonl"
+    [[ -f "$af" || -f "$cf" ]] || return 0
+    python3 - "$af" "$cf" <<'PY' 2>/dev/null || true
 import sys, json
+af, cf = sys.argv[1], sys.argv[2]
+text = ""
 try:
-    o = json.loads(sys.argv[1])
+    text = " ".join(str((json.load(open(af)) or {}).get("headline") or "").split())
 except Exception:
-    sys.exit(0)
-text = " ".join(str(o.get("text") or "").split())
-kind = str(o.get("kind") or "")
+    pass
+if not text:                                  # no archive yet → most recent caption
+    try:
+        for ln in open(cf, errors="replace"):
+            try: o = json.loads(ln)
+            except Exception: continue
+            c = " ".join(str(o.get("caption") or "").split())
+            if c: text = c
+    except Exception:
+        pass
 if not text:
     sys.exit(0)
-sys.stdout.write(kind + "\t" + text)
+sys.stdout.write("reply\t" + text)
 PY
 }
 
