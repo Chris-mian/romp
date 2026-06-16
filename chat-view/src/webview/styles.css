@@ -163,7 +163,7 @@ body { display: flex; flex-direction: column; }
 /* title strip: caret + headline, always visible (even collapsed); a click toggles the overview below */
 .ledger-head { display: flex; align-items: baseline; column-gap: 6px; cursor: pointer; border-radius: 4px; margin: 0 -4px; padding: 0 4px; }
 .ledger-head:hover { background: rgba(255, 255, 255, 0.04); }
-.ledger-caret { flex: 0 0 auto; color: var(--dim); font-size: 0.8em; }
+.ledger-caret { flex: 0 0 auto; color: var(--fg); font-size: 1.3em; line-height: 1; opacity: 0.8; }
 .ledger-summary { flex: 1 1 auto; min-width: 0; color: var(--fg); font-weight: 600; overflow-wrap: anywhere; }
 /* dim section header inside the overview: goals / working on / done */
 .ledger-label { color: var(--dim); font-size: 0.78em; text-transform: uppercase; letter-spacing: 0.04em; margin: 7px 0 2px; }
