@@ -927,13 +927,19 @@ function tierOf(s: Session): number {
 // Sessions listed here come first in that explicit order; the rest fall back to the
 // tier/first-seen default and append.
 let sharedOrder: string[] = [];
+// A session's LAST position in the shared order. A tab that drops out of the live order (its session
+// died or /cleared → new id) keeps THIS slot instead of re-tiering to the end — so rows don't move on
+// their own (the user 2026-06-16). Only sessions never seen in any order fall to the tier/first-seen default.
+const lastIdx = new Map<string, number>();
+function recordOrder(arr: string[]) { arr.forEach((id, i) => lastIdx.set(id, i)); }
+function effIdx(id: string): number {
+  const i = sharedOrder.indexOf(id);
+  return i >= 0 ? i : (lastIdx.has(id) ? (lastIdx.get(id) as number) : Infinity);
+}
 function sortTabs() {
   order.sort((a, b) => {
-    const ia = sharedOrder.indexOf(a), ib = sharedOrder.indexOf(b);
-    if (ia >= 0 || ib >= 0) {
-      if (ia >= 0 && ib >= 0) return ia - ib;     // both explicitly ordered
-      return ia >= 0 ? -1 : 1;                     // listed before unlisted
-    }
+    const ia = effIdx(a), ib = effIdx(b);
+    if (ia !== ib) return ia - ib;                  // current OR last-known position — no jump when a tab dies
     const sa = sessions.get(a), sb = sessions.get(b);
     if (!sa || !sb) return 0;
     const ta = tierOf(sa), tb = tierOf(sb);
@@ -945,11 +951,13 @@ function sortTabs() {
 // the timeline picks it up). Called after a drag.
 function commitTabOrder() {
   sharedOrder = order.slice();
+  recordOrder(sharedOrder);
   if (vscodeApi) vscodeApi.postMessage({ type: "reorderTabs", order: order.slice() });
 }
 // Apply a shared order pushed from the host (e.g. the timeline reordered it).
 function applyTabOrder(o: any) {
   sharedOrder = Array.isArray(o) ? o.filter((x: any) => typeof x === "string") : [];
+  recordOrder(sharedOrder);
   sortTabs();
   renderTabs();
 }
