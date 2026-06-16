@@ -33,26 +33,16 @@ ANNOUNCER_MODEL="claude-haiku-4-5"
 [[ -n "${ROMP_SUMMARIZING:-}" ]] && exit 0
 [[ -f "$HOME/.claude/romp-summarize-off" ]] && exit 0
 
-# Headless romp session (no tmux; the launcher exported ROMP_SESSION_ID): there
-# is no status line to paint the live phrase on, but the DURABLE summaries
-# still matter — keep the backfill daemon alive, then skip the display work.
-# Plain non-romp claude sessions (no tmux, no ROMP_SESSION_ID) exit silently.
+# Headless romp session (no tmux): there is no status line to paint the live phrase
+# on, so this hook has nothing to do — the kernel's always-on index judges produce
+# the durable captions now. Plain non-romp claude sessions exit silently too.
 if [[ -z "${TMUX:-}" ]]; then
-    if [[ -n "${ROMP_SESSION_ID:-}" ]]; then
-        command -v romp-summarize-backfill >/dev/null 2>&1 && \
-            romp-summarize-backfill --ensure >/dev/null 2>&1 || true
-    fi
     exit 0
 fi
 
 session_name=$(tmux display-message -p '#S' 2>/dev/null || true)
 [[ -n "$session_name" ]] || exit 0
 [[ -n "$(tmux show -t "$session_name" -v @romp 2>/dev/null || true)" ]] || exit 0
-
-# Keep the backfill watcher alive — it produces the summaries this hook can't
-# (queued prompts, drained-queue replies, inter-session messages). Cheap: just a
-# pidfile check + spawn-if-missing.
-command -v romp-summarize-backfill >/dev/null 2>&1 && romp-summarize-backfill --ensure >/dev/null 2>&1 || true
 
 input=$(cat)
 [[ "$input" =~ \"hook_event_name\":\"([^\"]+)\" ]] && event="${BASH_REMATCH[1]}" || event=""
@@ -66,28 +56,10 @@ esac
 # transcript_path (clean — no quotes — so a bash regex is fine) for the Stop path.
 [[ "$input" =~ \"transcript_path\":\"([^\"]+)\" ]] && transcript="${BASH_REMATCH[1]}" || transcript=""
 
-# Rolling per-session DIGEST — regenerate every turn (Stop). This is a SEPARATE
-# Haiku pass from the per-turn phrase below: it synthesizes the session's purpose
-# + recent responsibilities into ~/.local/state/romp/digest/<sid>.json, which the
-# ledger/dashboard read (the per-turn phrases are turn-scoped and don't tell the
-# through-line). Fully detached + swallowed + guarded like everything else here,
-# so it can never slow or fail a turn. romp-digest's own claude call sets
-# ROMP_SUMMARIZING=1, so it bails out of this hook on re-entry (no recursion).
-# Disable any time:  touch ~/.claude/romp-digest-off
-if [[ "$event" == "Stop" && ! -f "$HOME/.claude/romp-digest-off" ]] \
-   && [[ "$input" =~ \"session_id\":\"([^\"]+)\" ]] \
-   && command -v romp-digest >/dev/null 2>&1; then
-  ( romp-digest --force "${BASH_REMATCH[1]}" >/dev/null 2>&1 & )
-  disown 2>/dev/null || true
-fi
-
-# The romp timeline's per-event summary HISTORY is now written SOLELY by the backfill
-# daemon (romp-summarize-backfill), keyed by STABLE EVENT ID (from romp-events) so the
-# timeline binds each phrase by id, not by a fuzzy timestamp window. This hook only sets
-# the LIVE @claude-summary tmux var below (the dashboard's current phrase); it no longer
-# appends history — that ends the hook↔backfill double-write/race. The backfill is kept
-# alive by the --ensure call above, so no phrase is lost.
-record_summary() { :; }   # no-op (history is the backfill's job now)
+# The live @claude-summary tmux var below is all this hook does now: the durable
+# per-turn captions are written by the kernel's always-on index judges, not here.
+# record_summary is a retained no-op so its (now inert) call sites stay valid.
+record_summary() { :; }
 
 # Mark the row as GENERATING immediately (synchronously) so the dashboard shows
 # its animated dots within one poll. We signal this via the KIND field with the

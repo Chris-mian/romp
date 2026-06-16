@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for bin/romp-board — the independent terminal mirror of the dashboard feed. The point of the
+"""Tests for bin/romp-feed — the independent terminal mirror of the dashboard feed. The point of the
 tool is to re-implement the rollup separately from romp-judge, so these tests pin THAT math directly:
 a buried blocked leaf flips a top to BLOCKED (the reported bug), a complete subtree heals a stale leaf
 block, and the settled gate / cleared filter behave. Synthetic stores only: placeholder UUIDs, invented
@@ -13,7 +13,7 @@ from pathlib import Path
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
-board = SourceFileLoader("romp_board", os.path.join(BIN, "romp-board")).load_module()
+board = SourceFileLoader("romp_feed", os.path.join(BIN, "romp-feed")).load_module()
 
 SID = "11111111-2222-3333-4444-555555555555"
 
