@@ -36,6 +36,13 @@ class LandingShell(unittest.TestCase):
         self.assertIn("src=/feed", html)
         self.assertIn("src=/timeline", html)
 
+    def test_mobile_pane_has_explicit_height_not_auto(self):
+        # regression: the mobile pane was sized with height:auto + bottom offset; mobile browsers read
+        # height:auto on an iframe as "size to content" and collapse it (chat shrank to its tab bar).
+        html = km._landing()
+        self.assertIn("100dvh", html)                          # explicit, address-bar-aware pane height
+        self.assertNotIn("height:auto;display:none", html)     # the collapsing iframe rule is gone
+
     def test_shell_reveal_listener_wired(self):
         html = km._landing()
         self.assertIn("app=shell", html)              # shell WS catches kernel reveals (feed/timeline tap)

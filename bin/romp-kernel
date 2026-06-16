@@ -1724,8 +1724,12 @@ def _landing():
             # narrow OR a touch device up to 1024px → one pane + bottom tabs; mouse desktops keep the grid
             "@media (max-width:820px),(pointer:coarse) and (max-width:1024px){"
             ".col,.row{display:block;height:auto}.gv,.gh{display:none}"
+            # explicit height, NOT height:auto+bottom — mobile browsers read height:auto on an iframe
+            # as "size to content", collapsing it to the inner content's height (the chat shrank to its
+            # tab bar). 100dvh tracks the mobile address bar; the 100vh line is the no-dvh fallback.
             "iframe{position:fixed;top:0;left:0;right:0;"
-            "bottom:calc(52px + env(safe-area-inset-bottom,0px));height:auto;display:none}"
+            "height:calc(100vh - 52px - env(safe-area-inset-bottom,0px));"
+            "height:calc(100dvh - 52px - env(safe-area-inset-bottom,0px));display:none}"
             "iframe.m-on{display:block}"
             "#mtabs{display:flex;position:fixed;left:0;right:0;bottom:0;z-index:20;"
             "height:calc(52px + env(safe-area-inset-bottom,0px));"
