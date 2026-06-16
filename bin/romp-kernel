@@ -431,9 +431,10 @@ def build_session(sid, now, tmux=None):
                                postal_log=str(jd.MESSAGES), now=now)
     caps = _captions(sid)
     events, by_tool = [], {}                  # by_tool: tool_use_id → its tool event (fill output later)
-    uuid2seg = {}                             # atom uuid → its segment id (so a chat hover lights the right timeline bar)
+    uuid2seg, seg_anchors = {}, {}            # atom uuid → seg id; seg id → (promptId, workId) for the dot/bar split
     for turn in session["turns"]:
         for seg in em.segments(turn):
+            seg_anchors[seg["id"]] = (seg.get("trigger"), _seg_anchors(seg["atoms"])[0])
             for at in seg["atoms"]:
                 if at.get("uuid"):
                     uuid2seg[at["uuid"]] = seg["id"]
@@ -485,8 +486,13 @@ def build_session(sid, now, tmux=None):
             elif a["type"] == "system" and a.get("subtype") == "compact_boundary":
                 events.append({"kind": "assistant", "md": "✦ Compacted", "uuid": a.get("uuid"), "ts": ts})
     events = _hydrate_postal(events, _postal_index())   # swap postal traffic for clean in/out cards (no boilerplate)
-    for ev in events:                         # tag each event with its segment (the timeline bar a chat hover lights)
-        ev["segId"] = uuid2seg.get(ev.get("uuid"))
+    for ev in events:
+        # tlId = the timeline atom a chat hover lights: a message/prompt → the DOT (segment promptId),
+        # work (assistant/tool/sent message) → the BAR (segment workId). Falls back to the segment id.
+        seg = uuid2seg.get(ev.get("uuid"))
+        anchors = seg_anchors.get(seg)
+        is_prompt = ev.get("kind") == "user" or (ev.get("kind") == "postal" and ev.get("direction") == "in")
+        ev["tlId"] = ((anchors[0] if is_prompt else anchors[1]) or seg) if anchors else seg
     # TOC ledger: archiver headline + turn captions (click-to-jump via the turn's anchor uuid)
     arch = jd.load_archive(sid) or {}
     bullets = []
@@ -494,8 +500,10 @@ def build_session(sid, now, tmux=None):
         cap = caps.get(turn["id"], {}).get("caption")
         anchor = next((x.get("uuid") for x in turn["atoms"] if x.get("uuid")), None)
         if cap:
+            _seg = uuid2seg.get(anchor)
+            _anc = seg_anchors.get(_seg)
             bullets.append({"text": cap, "t": turn["t"], "id": anchor, "sid": sid,
-                            "segId": uuid2seg.get(anchor)})
+                            "tlId": (_anc[0] if _anc else _seg)})   # a TOC entry → the turn's start DOT
     ledger = {"summary": arch.get("headline", ""), "bullets": bullets}
     last_turn = session["turns"][-1] if session["turns"] else None
     open_now = bool(last_turn and not last_turn["ended"]
@@ -910,7 +918,10 @@ def build_timeline(now, tmux=None):
                 src = "queued" if isinstance(author, dict) else "typed"
                 last_t = max(last_t or 0, seg["end"])
                 bars.append({
-                    "id": seg["id"], "promptId": None, "workId": None,
+                    # promptId = the prompt atom (the DOT), workId = the first work atom (the BAR) — so a
+                    # chat message-hover lights only the dot and a work-hover only the bar (dotLit/barLit
+                    # in the view). Restores the old romp-events split lost in the kernel rewrite.
+                    "id": seg["id"], "promptId": seg.get("trigger"), "workId": work_uuid,
                     "start": seg["t"], "end": seg["end"], "open": turn_open and si == len(segs) - 1,
                     "prompt": _seg_prompt(seg), "summary": cap, "reply": "",
                     "src": src, "mids": _seg_mids(seg), "pending": False,
@@ -1450,10 +1461,10 @@ class Handler(BaseHTTPRequestHandler):
                     ids = [] if msg.get("off") else _goal_segments(msg.get("itemId") or "")
                     _send_to_app("timeline", {"type": "hover", "ids": ids, "nonce": _next_nonce()})
                 elif msg and msg.get("type") in ("dotHover", "ledgerHover"):
-                    # chat message / TOC-bullet hover → light that segment's bar on the timeline. The
-                    # event/bullet carries its segId (build_session); empty/absent → clear the highlight.
-                    seg = msg.get("segId")
-                    _send_to_app("timeline", {"type": "hover", "ids": ([seg] if seg else []),
+                    # chat message / TOC-bullet hover → light the matching timeline glyph. The event/bullet
+                    # carries tlId (build_session): a prompt → the DOT, work → the BAR. Absent → clear.
+                    tl = msg.get("tlId")
+                    _send_to_app("timeline", {"type": "hover", "ids": ([tl] if tl else []),
                                               "nonce": _next_nonce()})
                 elif msg and msg.get("type") == "sendMessage" and msg.get("id") and msg.get("text"):
                     _tmux_send(_name_of(msg["id"]) or msg["id"], str(msg["text"]))   # composer → session

@@ -359,18 +359,29 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(set(km._goal_segments(sub)), {"segB", "segC", "segD"}, "a sub-goal → itself + its steps")
         self.assertEqual(km._goal_segments("%s:gX" % SID), [], "unknown goal → empty")
 
-    def test_session_events_and_ledger_carry_segid(self):
-        """Each ChatEvent + ledger bullet carries segId (its timeline segment) so a chat-message or
-        TOC-bullet hover lights the right bar (dotHover/ledgerHover → timeline)."""
+    def test_session_events_and_ledger_carry_tlid_dot_vs_bar(self):
+        """Each event carries tlId — a message/prompt → the segment's DOT (promptId), work → the BAR
+        (workId) — and a TOC bullet → the turn's DOT, so a chat hover lights the right glyph (the
+        restored dot/bar split)."""
         m = km.build_session(SID, NOW)
-        segids = {e.get("segId") for e in m["events"]}
-        self.assertEqual(len(segids), 1, "the single-segment fixture → one segId shared across its events")
-        seg = next(iter(segids))
-        real = em.segments(em.parse_session(str(self.tpath), rompuuid=SID,
-                                            candidate_files=[str(self.tpath)], now=NOW)["turns"][0])[0]["id"]
-        self.assertEqual(seg, real, "segId is the event-model segment id == the timeline bar id")
-        self.assertTrue(m["ledger"]["bullets"] and all(b.get("segId") == real for b in m["ledger"]["bullets"]),
-                        "ledger bullets carry segId too")
+        seg = em.segments(em.parse_session(str(self.tpath), rompuuid=SID,
+                                           candidate_files=[str(self.tpath)], now=NOW)["turns"][0])[0]
+        prompt_id, work_id = seg["trigger"], km._seg_anchors(seg["atoms"])[0]
+        u = next(e for e in m["events"] if e["kind"] == "user")
+        self.assertEqual(u["tlId"], prompt_id, "a user message lights the DOT (promptId)")
+        work = [e for e in m["events"] if e["kind"] in ("assistant", "tool")]
+        self.assertTrue(work and all(e["tlId"] == work_id for e in work), "work events light the BAR (workId)")
+        self.assertTrue(m["ledger"]["bullets"] and all(b.get("tlId") == prompt_id for b in m["ledger"]["bullets"]),
+                        "a TOC bullet lights the turn's start dot")
+
+    def test_timeline_bars_carry_prompt_and_work_ids(self):
+        """Timeline bars carry promptId (the dot atom) + workId (the bar atom) — the targets the chat
+        hover's tlId matches, splitting message→dot from work→bar in the view's dotLit/barLit."""
+        bars = km.build_timeline(NOW)["turns"][SID]
+        seg = em.segments(em.parse_session(str(self.tpath), rompuuid=SID,
+                                           candidate_files=[str(self.tpath)], now=NOW)["turns"][0])[0]
+        self.assertEqual(bars[0]["promptId"], seg["trigger"], "bar promptId = the prompt atom (dot)")
+        self.assertEqual(bars[0]["workId"], km._seg_anchors(seg["atoms"])[0], "bar workId = the first work atom (bar)")
 
     def test_hydrate_postal_in_uses_clean_body_not_boilerplate(self):
         """A received message (user text with the romp-msg-id marker) → a clean 'in' card whose body
