@@ -459,6 +459,14 @@ body { display: flex; flex-direction: column; }
 .fask-handoff-line { display: flex; align-items: baseline; gap: 4px; padding-left: 2px; }
 .fask-handoff { font-weight: 600; font-size: 0.88em; cursor: pointer; }
 .fask-handoff:hover { text-decoration: underline; text-underline-offset: 2px; }
+/* inline sub-goal checklist on a card: the goal's DIRECT sub-goals (top 2 levels) — ✓ done / ? / ▢ open */
+.fask-checklist { display: flex; flex-direction: column; row-gap: 1px; margin: 4px 0 1px; padding-left: 2px; }
+.fcheck { display: flex; align-items: baseline; column-gap: 7px; line-height: 1.4; font-size: 0.9em; }
+.fcheck-mark { flex: 0 0 auto; width: 1em; text-align: center; color: var(--dim); font-size: 0.9em; }
+.fcheck-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; color: var(--fg); }
+.fcheck.done .fcheck-mark { color: var(--green); }
+.fcheck.done .fcheck-text { color: var(--dim); text-decoration: line-through; }
+.fcheck.question .fcheck-mark { color: #d8a657; }
 /* standalone-completion modal: same tree vocabulary as ask cards; pending
    next-steps render as dim hollow rows, the paragraph as secondary detail */
 .frow.st-open { opacity: 0.8; }

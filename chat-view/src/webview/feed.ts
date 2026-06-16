@@ -403,8 +403,9 @@ function makeAskCard(it: AskItem): HTMLElement {
   // sessions this ask was handed to — but only while they are LIVE-WORKING on
   // an unfinished branch. Idle or finished recipients disappear; presence on
   // the list therefore always means active, so the dot is always on.
+  const checklist = el("div", "fask-checklist");   // inline sub-goal list (top 2 levels); filled in updateAskCard
   const handoffs = el("div", "fask-handoffs");
-  main.append(row1, row2, row3, handoffs);        // no expand button — body click opens the modal
+  main.append(row1, row2, row3, checklist, handoffs);   // no expand button — body click opens the modal
   card.append(main);
   // Follow-up lives in the modal now (the user 2026-06-10), not on the card.
 
@@ -468,6 +469,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   a._blocked = blkBadge; a._wait = waitBadge;
   a._apiBadge = apiBadge; a._apiRetry = apiRetry;
   a._handoffs = handoffs;
+  a._checklist = checklist;
   a._origin = origin;
   return card;
 }
@@ -542,6 +544,26 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
     ho.appendChild(line);
   }
   ho.style.display = ho.children.length ? "" : "none";
+
+  // Inline sub-goal checklist (the user 2026-06-16): the top-level goal IS the card title, so show its
+  // DIRECT sub-goals (the top 2 levels) as a ✓ done / ? question / ▢ open list — the deeper steps stay
+  // in the modal. Skips handoff nodes (those render in the handoffs section above).
+  const cl = a._checklist as HTMLElement;
+  cl.innerHTML = "";
+  const tree = it.tree || [];
+  const root = tree.find((n) => n.id === it.itemId) || tree[0];
+  const subs = root
+    ? root.children.map((id) => tree.find((n) => n.id === id)).filter((n): n is AskTreeNode => !!n && n.kind !== "handoff")
+    : [];
+  for (const s of subs.slice(0, 8)) {
+    const row = el("div", "fcheck " + nodeStatusClass(s));
+    const mark = el("span", "fcheck-mark");
+    mark.textContent = s.status === "done" ? "✓" : s.status === "question" ? "?" : "▢";
+    const txt = el("span", "fcheck-text"); txt.textContent = s.text;
+    row.append(mark, txt);
+    cl.appendChild(row);
+  }
+  cl.style.display = cl.children.length ? "" : "none";
 }
 
 // Resolve a focus key (set on hoverAskId/pinnedAskId) to the itemId the timeline
