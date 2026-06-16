@@ -33,7 +33,10 @@ GOALDIR  = STATE / "goals"               # per-session goal tree (the inbox), ke
 PCACHE   = STATE / "judge-units-cache"   # (mtime,size) cache of a transcript's ready units
 MESSAGES = STATE / "timeline" / "messages.jsonl"
 
-JUDGE_MODEL = "claude-sonnet-4-6"        # THE judge model (the user's call, Sonnet across the layer)
+# Two model tiers (the Haiku cost lever, judge.md §Two run tiers; shipped 2026-06-15): cheap always-on
+# INDEXING on Haiku, judgment-heavy TRIAGE on Sonnet.
+INDEX_MODEL  = "claude-haiku-4-5-20251001"   # captioner + archiver (index tier — high volume, low stakes)
+TRIAGE_MODEL = "claude-sonnet-4-6"           # planner + courier + negative-sweep (triage tier — judgment)
 WINDOW      = 48 * 3600                  # only caption transcripts touched in the last N hours (matches the parse horizon)
 BUDGET      = 60                         # max captions written per pass
 FAIRNESS    = 10                         # max captions per session per pass (so one busy session can't starve the rest)
@@ -48,7 +51,6 @@ CONCURRENCY = 6                          # concurrent claude -p calls
 # (run_sweep) whenever this is on.
 NEG_SWEEP = os.environ.get("ROMP_NEG_SWEEP", "1") != "0"
 TEST_UNITS  = 12                         # --test: caption at most this many recent units
-# Index tier (captioner + archiver) is the Haiku cost lever per design/judge.md; Sonnet for now.
 
 # The captioner prompt — decomposed from the old REPLY_SYS's "phrase" part ONLY (no TAG / LINK /
 # DONE / DID): just "what the assistant accomplished".
@@ -95,23 +97,30 @@ def _clean_caption(out):
     return out
 
 
-def caption_llm(unit_text):
-    """One caption from the judge model, zero tools / MCP off (it can't act). '' on failure."""
+def _judge_run(model, sys_prompt, user, effort=None):
+    """Run ONE judge model call (claude -p, zero tools, MCP off, portable 45s alarm cap — macOS has no
+    `timeout`). Returns raw stdout, '' on any failure. `model` selects the tier (INDEX_MODEL=Haiku,
+    TRIAGE_MODEL=Sonnet); `effort` sets --effort (thinking) when given. The single subprocess point for
+    every judge, so the tier/effort knobs live in one place."""
     env = dict(os.environ)
     for k in ("TMUX", "TMUX_PANE"):
         env.pop(k, None)
     env["ROMP_SUMMARIZING"] = "1"                     # trips the Stop-hook recursion guard
+    cmd = ["perl", "-e", "alarm 45; exec @ARGV", "claude", "-p", "--model", model,
+           "--tools", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
+           "--append-system-prompt", sys_prompt]
+    if effort:
+        cmd += ["--effort", effort]
     try:
-        # portable 45s cap (macOS has no `timeout`): perl alarm + exec
-        p = subprocess.run(
-            ["perl", "-e", "alarm 45; exec @ARGV", "claude", "-p", "--model", JUDGE_MODEL,
-             "--tools", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
-             "--append-system-prompt", CAPTION_SYS],
-            input="<unit>\n%s\n</unit>" % unit_text,
-            capture_output=True, text=True, cwd="/tmp", env=env, timeout=50)
+        p = subprocess.run(cmd, input=user, capture_output=True, text=True, cwd="/tmp", env=env, timeout=50)
     except Exception:
         return ""
-    return _clean_caption(p.stdout or "")
+    return p.stdout or ""
+
+
+def caption_llm(unit_text):
+    """One caption from the INDEX-tier model (Haiku), zero tools / MCP off (it can't act). '' on failure."""
+    return _clean_caption(_judge_run(INDEX_MODEL, CAPTION_SYS, "<unit>\n%s\n</unit>" % unit_text))
 
 
 # ───────────────────────── unit text (caption input) ─────────────────────────
@@ -274,21 +283,10 @@ def _parse_archive(out):
 
 
 def archive_llm(session_log):
-    """One {headline, abstract} from the index model over a session's turn-caption log. None on failure."""
-    env = dict(os.environ)
-    for k in ("TMUX", "TMUX_PANE"):
-        env.pop(k, None)
-    env["ROMP_SUMMARIZING"] = "1"
-    try:
-        p = subprocess.run(
-            ["perl", "-e", "alarm 45; exec @ARGV", "claude", "-p", "--model", JUDGE_MODEL,
-             "--tools", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
-             "--append-system-prompt", ARCHIVE_SYS],
-            input="<session>\n%s\n</session>" % session_log,
-            capture_output=True, text=True, cwd="/tmp", env=env, timeout=50)
-    except Exception:
-        return None
-    return _parse_archive(p.stdout or "")
+    """One {headline, abstract} from the INDEX-tier model (Haiku) over a session's turn-caption log.
+    None on failure."""
+    out = _judge_run(INDEX_MODEL, ARCHIVE_SYS, "<session>\n%s\n</session>" % session_log)
+    return _parse_archive(out) if out else None
 
 
 def session_turn_captions(fsid):
@@ -517,22 +515,11 @@ def rollup_status(store, session_closed):
     store["status"] = status
 
 
-def plan_llm(segment_text, menu_text):
-    """One goal-edit line from the triage model over a segment + the open-goals menu. '' on failure."""
-    env = dict(os.environ)
-    for k in ("TMUX", "TMUX_PANE"):
-        env.pop(k, None)
-    env["ROMP_SUMMARIZING"] = "1"
+def plan_llm(segment_text, menu_text, model=None, effort=None):
+    """One goal-edit line from the TRIAGE-tier model (Sonnet) over a segment + the open-goals menu.
+    '' on failure. model/effort override the tier + enable thinking (the classification A/B)."""
     user = "<segment>\n%s\n</segment>\n<open-goals>\n%s\n</open-goals>" % (segment_text, menu_text)
-    try:
-        p = subprocess.run(
-            ["perl", "-e", "alarm 45; exec @ARGV", "claude", "-p", "--model", JUDGE_MODEL,
-             "--tools", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
-             "--append-system-prompt", PLAN_SYS],
-            input=user, capture_output=True, text=True, cwd="/tmp", env=env, timeout=50)
-    except Exception:
-        return ""
-    return (p.stdout or "").strip()[:300]
+    return _judge_run(model or TRIAGE_MODEL, PLAN_SYS, user, effort=effort).strip()[:300]
 
 
 # ───────────────────────── discovery (names/, file-based) ─────────────────────────
@@ -798,22 +785,10 @@ def _parse_sweep(line, menu_len):
 
 
 def sweep_llm(turn_text, menu_text):
-    """One outstanding-goals line from the triage model over a turn + the touched open-goals menu.
-    '' on failure."""
-    env = dict(os.environ)
-    for k in ("TMUX", "TMUX_PANE"):
-        env.pop(k, None)
-    env["ROMP_SUMMARIZING"] = "1"
+    """One outstanding-goals line from the TRIAGE-tier model (Sonnet) over a turn + the touched
+    open-goals menu. '' on failure."""
     user = "<turn>\n%s\n</turn>\n<open-goals>\n%s\n</open-goals>" % (turn_text, menu_text)
-    try:
-        p = subprocess.run(
-            ["perl", "-e", "alarm 45; exec @ARGV", "claude", "-p", "--model", JUDGE_MODEL,
-             "--tools", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
-             "--append-system-prompt", SWEEP_SYS],
-            input=user, capture_output=True, text=True, cwd="/tmp", env=env, timeout=50)
-    except Exception:
-        return ""
-    return (p.stdout or "").strip()[:120]
+    return _judge_run(TRIAGE_MODEL, SWEEP_SYS, user).strip()[:120]
 
 
 def _turn_menu(turn, store):
@@ -1051,21 +1026,10 @@ def _parse_courier(line, menu_len):
 
 
 def courier_llm(message_text, menu_text):
-    """One courier verdict line over a postal message + the sender's open goals. '' on failure."""
-    env = dict(os.environ)
-    for k in ("TMUX", "TMUX_PANE"):
-        env.pop(k, None)
-    env["ROMP_SUMMARIZING"] = "1"
+    """One courier verdict line from the TRIAGE-tier model (Sonnet) over a postal message + the
+    sender's open goals. '' on failure."""
     user = "<message>\n%s\n</message>\n<sender-open-goals>\n%s\n</sender-open-goals>" % (message_text, menu_text)
-    try:
-        p = subprocess.run(
-            ["perl", "-e", "alarm 45; exec @ARGV", "claude", "-p", "--model", JUDGE_MODEL,
-             "--tools", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
-             "--append-system-prompt", COURIER_SYS],
-            input=user, capture_output=True, text=True, cwd="/tmp", env=env, timeout=50)
-    except Exception:
-        return ""
-    return (p.stdout or "").strip()[:300]
+    return _judge_run(TRIAGE_MODEL, COURIER_SYS, user).strip()[:300]
 
 
 def apply_courier(store, seg_id, seg_t, text, origin):

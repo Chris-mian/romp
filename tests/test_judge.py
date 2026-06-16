@@ -697,5 +697,40 @@ class SweepSession(unittest.TestCase):
         self.assertEqual(jd.run_sweep(now=self.now), 0, "every turn already swept -> re-running completes nothing")
 
 
+class ModelTiers(unittest.TestCase):
+    """The Haiku cost lever (judge.md §Two run tiers): captioner + archiver run on the cheap INDEX
+    model (Haiku); planner + courier + negative-sweep on the TRIAGE model (Sonnet)."""
+
+    def test_index_vs_triage_split(self):
+        self.assertIn("haiku", jd.INDEX_MODEL, "index tier is Haiku")
+        self.assertEqual(jd.TRIAGE_MODEL, "claude-sonnet-4-6", "triage tier is Sonnet")
+        self.assertNotEqual(jd.INDEX_MODEL, jd.TRIAGE_MODEL)
+        calls, saved = [], jd._judge_run
+        jd._judge_run = lambda model, sysp, user, effort=None: (calls.append((model, sysp)) or "")
+        try:
+            jd.caption_llm("x"); jd.archive_llm("x"); jd.plan_llm("x", "y")
+            jd.courier_llm("x", "y"); jd.sweep_llm("x", "y")
+        finally:
+            jd._judge_run = saved
+        by_sys = {sysp: m for (m, sysp) in calls}
+        self.assertEqual(by_sys[jd.CAPTION_SYS], jd.INDEX_MODEL, "captioner → index (Haiku)")
+        self.assertEqual(by_sys[jd.ARCHIVE_SYS], jd.INDEX_MODEL, "archiver → index (Haiku)")
+        self.assertEqual(by_sys[jd.PLAN_SYS], jd.TRIAGE_MODEL, "planner → triage (Sonnet)")
+        self.assertEqual(by_sys[jd.COURIER_SYS], jd.TRIAGE_MODEL, "courier → triage (Sonnet)")
+        self.assertEqual(by_sys[jd.SWEEP_SYS], jd.TRIAGE_MODEL, "negative sweep → triage (Sonnet)")
+
+    def test_plan_llm_model_and_effort_override(self):
+        """plan_llm takes model + effort overrides (for the classification A/B); default is triage, no effort."""
+        seen, saved = {}, jd._judge_run
+        jd._judge_run = lambda model, sysp, user, effort=None: (seen.update(model=model, effort=effort) or "")
+        try:
+            jd.plan_llm("seg", "menu")
+            self.assertEqual((seen["model"], seen["effort"]), (jd.TRIAGE_MODEL, None), "default: triage, no thinking")
+            jd.plan_llm("seg", "menu", model="claude-opus-4-8", effort="medium")
+            self.assertEqual((seen["model"], seen["effort"]), ("claude-opus-4-8", "medium"), "overrides pass through")
+        finally:
+            jd._judge_run = saved
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
