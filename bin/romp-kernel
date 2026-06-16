@@ -1621,6 +1621,7 @@ def build_timeline(now, tmux=None):
         else:                             # dead lane: coarse file-derived (badgeFor hides the badge when !live anyway)
             blocked = "blocked" in jd.load_goals(sid).get("status", {}).values()
             state = "awaiting" if blocked else ("working" if open_now else "idle")
+        sub = _subagent_running(session) if live else None   # additive: orange subagent marker on a quiet lane
         bars, last_t = [], None
         for ti, turn in enumerate(st_turns):
             turn_open = (ti == len(st_turns) - 1 and not turn["ended"]
@@ -1649,7 +1650,7 @@ def build_timeline(now, tmux=None):
         active = bool(tm and tm["state"] in ("working", "permission", "compacting", "waiting"))
         faded = (not live) or (not active and bool(tm and tm["since"]) and now - tm["since"] > 3600)
         sessions.append({
-            "id": sid, "name": name, "live": live, "state": state,
+            "id": sid, "name": name, "live": live, "state": state, "subagent": sub,
             "since": (tm["since"] if tm and tm["since"] else last_t),
             "color": hexcol,
             "model": (tm["model"] if tm else ""), "effort": (tm["effort"] if tm else ""),

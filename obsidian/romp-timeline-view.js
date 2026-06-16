@@ -147,10 +147,10 @@ function idleGaps(merged, gapCT, now) {
 function badgeFor(s) {
   if (!s || !s.live) return null;
   let m = null;
-  if (s.state === 'working') m = { label: 'WORKING', kind: 'working' };
-  else if (s.state === 'subagent') m = { label: 'SUBAGENT', kind: 'subagent' };   // quiet, but a subagent runs
-  else if (s.state === 'waiting' || s.state === 'idle') m = { label: 'READY', kind: 'ready' };
+  if (s.state === 'working') m = { label: 'WORKING', kind: 'working' };   // busy → WORKING hides the subagent
   else if (s.state === 'permission' || s.state === 'awaiting') m = { label: 'BLOCKED', kind: 'attention' };
+  else if (s.subagent != null) m = { label: 'SUBAGENT', kind: 'subagent' };   // quiet, but a background subagent runs
+  else if (s.state === 'waiting' || s.state === 'idle') m = { label: 'READY', kind: 'ready' };
   if (!m) return null;
   return { label: m.label, bg: BADGE[m.kind].bg, fg: BADGE[m.kind].fg };
 }
