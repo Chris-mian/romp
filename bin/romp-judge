@@ -359,15 +359,23 @@ PLAN_SYS = (
     "reporting is not blocking. WEIGHING: if the segment both answers/reports something AND still leaves "
     "a decision or approval owed by the user, the owed decision WINS → BLOCK yes. When nothing is owed, "
     "BLOCK no.\n"
-    "Every segment gets a placement (MINT, SUB, or AMEND) — never 'none' for the placement. When "
-    "unsure between MINT and SUB, prefer SUB. No quotes, no trailing punctuation, exactly one line.")
+    "- SKIP: this segment did NO real work — an interruption, an empty or aborted turn, a bare "
+    "acknowledgement or check-in, or a system notification. A segment that RAN TOOLS (edited files, "
+    "committed, ran commands) IS real work — never SKIP it. Reply EXACTLY the word SKIP and nothing else.\n"
+    "Most segments get a placement (MINT, SUB, or AMEND); use SKIP ONLY for a genuinely empty/no-work "
+    "segment. When unsure between MINT and SUB, prefer SUB; when unsure whether to SKIP, PLACE it. No "
+    "quotes, no trailing punctuation, exactly one line.")
 
 
 def _parse_goal_edit(line, menu_len):
     """Parse '<MINT|SUB n|AMEND n> :: text :: DONE <n|none> :: BLOCK <yes|no>' into
-    {op, n, text, done, block}. Robust: an out-of-range SUB/AMEND ref falls back to MINT (every
-    segment must be placed); a bad DONE ref is dropped. None only if there's no usable placement."""
-    parts = [p.strip() for p in " ".join((line or "").split()).split("::")]
+    {op, n, text, done, block}. A line starting with SKIP → {op:"SKIP"} (no-work segment; the caller
+    records it processed but places nothing). Robust: an out-of-range SUB/AMEND ref falls back to MINT
+    (never orphan real work); a bad DONE ref is dropped. None only if there's no usable placement."""
+    s = " ".join((line or "").split())
+    if re.match(r"SKIP\b", s, re.I):
+        return {"op": "SKIP", "n": None, "text": "", "done": None, "block": False}
+    parts = [p.strip() for p in s.split("::")]
     if not parts or not parts[0]:
         return None
     m = re.match(r"(MINT|SUB|AMEND)\s*(\d+)?", parts[0], re.I)
@@ -744,6 +752,10 @@ def _plan_session(fsid, path, now):
         edit = _parse_goal_edit(plan_llm(text, _menu_text(store, menu)), len(menu))
         if not edit:
             continue                                  # failed parse → retry next pass
+        if edit["op"] == "SKIP":                      # no-work segment → record processed, place nothing
+            store["placements"][seg_id] = None        # so it's not re-judged every pass (idempotent)
+            save_goals(fsid, store)
+            continue
         apply_goal_edit(store, seg_id, seg_t, edit, menu)
         placed += 1
         save_goals(fsid, store)                       # crash-safe: persist each placement

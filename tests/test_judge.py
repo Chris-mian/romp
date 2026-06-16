@@ -353,6 +353,13 @@ class PlanParse(unittest.TestCase):
         self.assertIsNone(jd._parse_goal_edit("SUB 1 :: step :: DONE 9 :: BLOCK no", 3)["done"])
         self.assertIsNone(jd._parse_goal_edit("i cannot help with that", 3))
 
+    def test_skip_verdict(self):
+        self.assertEqual(jd._parse_goal_edit("SKIP", 3)["op"], "SKIP")
+        self.assertEqual(jd._parse_goal_edit("skip", 3)["op"], "SKIP", "case-insensitive")
+        self.assertEqual(jd._parse_goal_edit("SKIP — nothing happened", 3)["op"], "SKIP", "leading SKIP wins")
+        self.assertEqual(jd._parse_goal_edit("MINT :: skip the cache :: DONE none :: BLOCK no", 3)["op"], "MINT",
+                         "a placement whose TEXT contains 'skip' is not mistaken for SKIP")
+
 
 def _store():
     return {"rompUuid": SID, "seq": 0, "nodes": {}, "placements": {}, "status": {}}
@@ -505,6 +512,47 @@ class PlanPass(unittest.TestCase):
                 self.assertEqual(len(subs), 1)
                 n2 = jd.run_plan(now=now)
                 self.assertEqual(n2, 0, "idempotent: placed segments are not re-placed")
+            finally:
+                (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.plan_llm) = saved
+
+
+class PlanSkip(unittest.TestCase):
+    """simplify's SKIP verdict: a no-work segment is recorded processed but creates no node (and isn't
+    re-judged); a tool-running segment is still placed."""
+
+    def test_skip_no_work_place_tool_work_idempotent(self):
+        records = [uline(T0, "just an ack", "u1", ps="typed"),
+                   aline(T0 + 10, "ok", "a1", "u1", stop="end_turn"),                  # no-work → SKIP
+                   uline(T0 + 100, "do it", "u2", "a1", ps="typed"),
+                   aline(T0 + 110, "", "a2", "u2", tools=("Bash",), stop="end_turn")]  # silent tool-work → place
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            cdir = td / "launchdir"; cdir.mkdir()
+            proj = td / "projects"
+            pdir = proj / jd.re.sub(r"[/.]", "-", os.path.realpath(str(cdir)))
+            pdir.mkdir(parents=True)
+            (pdir / (SID + ".jsonl")).write_text("\n".join(json.dumps(r) for r in records) + "\n")
+            names = td / "names"; names.mkdir()
+            (names / SID).write_text("testsess\t%s\t#abcdef\n" % str(cdir))
+            saved = (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.plan_llm)
+            jd.NAMES, jd.PROJECTS, jd.GOALDIR = names, proj, td / "goals"
+            calls = []
+
+            def fake_plan(text, menu):
+                calls.append(text)
+                return "MINT :: did tool work :: DONE none :: BLOCK no" if "TOOLS USED" in text else "SKIP"
+            jd.plan_llm = fake_plan
+            try:
+                now = T0 + 5000
+                jd.run_plan(now=now)
+                store = jd.load_goals(SID)
+                self.assertEqual(len(store["nodes"]), 1, "only the tool-running segment created a node")
+                self.assertEqual(next(iter(store["nodes"].values()))["text"], "did tool work")
+                self.assertEqual(len(store["placements"]), 2, "BOTH segments recorded processed")
+                self.assertIn(None, store["placements"].values(), "the SKIP is recorded as None (no node)")
+                n_calls = len(calls)
+                jd.run_plan(now=now)                          # 2nd pass
+                self.assertEqual(len(calls), n_calls, "neither the skipped nor the placed segment is re-judged")
             finally:
                 (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.plan_llm) = saved
 
