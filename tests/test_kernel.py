@@ -235,6 +235,35 @@ class ViewBuilder(unittest.TestCase):
         finally:
             km._queued_cache.pop(SID, None)
 
+    def _asst(self, t, uuid, parent, blocks, stop="end_turn"):
+        return {"type": "assistant", "timestamp": iso(t), "uuid": uuid, "parentUuid": parent,
+                "message": {"role": "assistant", "content": blocks, "stop_reason": stop}}
+
+    def test_subagent_running_state_and_card(self):
+        # an in-flight Task (tool_use with no tool_result yet) → 'subagent' chip + a {kind:"subagent"} card
+        task = {"type": "tool_use", "id": "tk1", "name": "Task", "input": {"description": "audit the auth flow"}}
+        with self.tpath.open("a") as f:
+            f.write(json.dumps(uline(T0 + 100, "go audit auth", "u2", parent="a2", ps="typed")) + "\n")
+            f.write(json.dumps(self._asst(T0 + 110, "a3", "u2",
+                    [{"type": "text", "text": "Delegating."}, task], stop="tool_use")) + "\n")
+        m = km.build_session(SID, NOW)
+        self.assertEqual(m["status"]["state"], "subagent", "in-flight subagent → orange subagent chip")
+        cards = [e for e in m["events"] if e["kind"] == "subagent"]
+        self.assertEqual(len(cards), 1)
+        self.assertEqual(cards[0]["desc"], "audit the auth flow")
+
+    def test_completed_subagent_not_running(self):
+        # a Task WITH a tool_result → not in flight → no subagent chip/card
+        task = {"type": "tool_use", "id": "tk2", "name": "Task", "input": {"description": "x"}}
+        with self.tpath.open("a") as f:
+            f.write(json.dumps(uline(T0 + 100, "go", "u2", parent="a2", ps="typed")) + "\n")
+            f.write(json.dumps(self._asst(T0 + 110, "a3", "u2", [task], stop="tool_use")) + "\n")
+            f.write(json.dumps(trline(T0 + 120, "tk2", "r2", "a3", content="subagent report")) + "\n")
+            f.write(json.dumps(self._asst(T0 + 130, "a4", "r2", [{"type": "text", "text": "done"}])) + "\n")
+        m = km.build_session(SID, NOW)
+        self.assertNotEqual(m["status"]["state"], "subagent")
+        self.assertFalse(any(e["kind"] == "subagent" for e in m["events"]))
+
     def test_feed_buckets_goal_and_streams_caption(self):
         d = km.build_feed(NOW)
         self.assertEqual(d["type"], "feed")

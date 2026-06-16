@@ -827,12 +827,13 @@ def build_session(sid, now, tmux=None):
         anchors = seg_anchors.get(seg)
         is_prompt = ev.get("kind") == "user" or (ev.get("kind") == "postal" and ev.get("direction") == "in")
         ev["tlId"] = ((anchors[0] if is_prompt else anchors[1]) or seg) if anchors else seg
+    # Subagent in flight → a bottom card so the chat shows WHY the session is quiet-but-working (like todo).
+    sub = _subagent_running(session)
+    if sub is not None:
+        events.append({"kind": "subagent", "desc": sub})
     # Claude Code Task to-do list: ONE folded checklist event (renderTodo), appended last (bottom, by the
     # composer). Only while work is OUTSTANDING — a fully completed/cancelled list isn't a live to-do, so
     # drop it rather than let it read as recent (the user 2026-06-10, ported from the old TS kernel).
-    # Subagent in flight → a bottom card so the chat shows WHY the session is quiet-but-working (like todo).
-    if sub is not None:
-        events.append({"kind": "subagent", "desc": sub})
     todo = _fold_tasks(session)
     if todo and any(t["status"] not in ("completed", "cancelled") for t in todo):
         events.append({"kind": "todo", "tasks": todo})
@@ -860,7 +861,6 @@ def build_session(sid, now, tmux=None):
     last_turn = session["turns"][-1] if session["turns"] else None
     open_now = bool(last_turn and not last_turn["ended"]
                     and not any(x["type"] == "idle" for x in last_turn["atoms"]))
-    sub = _subagent_running(session)                     # delegating to a subagent → 'subagent' chip (orange)
     # work-timer base, in MILLISECONDS (render's elapsedMs does Date.now()ms - sinceEpoch; a seconds
     # value showed ~494,000h — the user's "400,000 hours" bug): the current open turn's start while
     # working, else the last activity; None when unknown (render then shows no timer).
