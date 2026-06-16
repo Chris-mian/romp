@@ -61,12 +61,14 @@ type ChatEvent = (
   // Claude Code's Task to-do list, folded into one live checklist.
   | { kind: "todo"; tasks: TodoTask[]; ts?: string; uuid?: string }
   | { kind: "queued"; texts: string[]; ts?: string; uuid?: string }
+  // The session is delegating to a subagent (Task/Agent) — quiet but still working.
+  | { kind: "subagent"; desc: string; ts?: string; uuid?: string }
   | { kind: "compact"; ts?: string; uuid?: string }
 ) & { tlId?: string };   // tlId: the timeline atom this event's hover lights — a prompt → the DOT, work → the BAR
 
 interface TodoTask { id: string; subject: string; activeForm?: string; status: string }
 
-type ChipState = "working" | "ready" | "awaiting" | "idle" | "closed" | "compacting";
+type ChipState = "working" | "subagent" | "ready" | "awaiting" | "idle" | "closed" | "compacting";
 interface Status { state: ChipState; sinceEpoch: number | null; effort?: string; model?: string; ctx?: string; faded?: boolean; }
 interface Color { bg: string; fg: string; }
 interface Session { id: string; name: string; color: Color | null; events: ChatEvent[]; status: Status; firstSeen?: number; }
@@ -603,6 +605,7 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
   if (ev.kind === "postal") return renderPostal(ev);
   if (ev.kind === "todo") return renderTodo(ev);
   if (ev.kind === "queued") return renderQueued(ev);
+  if (ev.kind === "subagent") return renderSubagent(ev);
   if (ev.kind === "compact") return renderCompact(ev);
   return renderTool(ev);
 }
@@ -724,6 +727,16 @@ function renderQueued(ev: Extract<ChatEvent, { kind: "queued" }>): HTMLElement {
     bubble.textContent = t;
     turn.appendChild(bubble);
   }
+  return turn;
+}
+
+// Subagent in flight (Task/Agent) — the session is quiet but still working. A compact
+// orange card at the bottom so it's clear WHY there's no streaming output.
+function renderSubagent(ev: Extract<ChatEvent, { kind: "subagent" }>): HTMLElement {
+  const turn = el("div", "turn turn-subagent");
+  const head = el("div", "subagent-head");
+  head.textContent = ev.desc ? `⚙ subagent · ${ev.desc}` : "⚙ subagent running…";
+  turn.appendChild(head);
   return turn;
 }
 
@@ -995,12 +1008,13 @@ function renderTabs() {
     }
     const st = s.status.state;
     if (st === "working") tab.classList.add("tab-working");
+    else if (st === "subagent") tab.classList.add("tab-subagent");   // orange: quiet but a subagent runs
     else if (st === "awaiting") tab.classList.add("tab-awaiting");
     else if (st === "compacting") tab.classList.add("tab-compacting");
     if (s.status.faded) tab.classList.add("at-rest");
     // WORKING shows a yellow dot to the left of the name (not a yellow outline —
     // the outline is now reserved for the SELECTED tab, in its identity color).
-    if (st === "working") tab.appendChild(el("span", "tab-dot"));
+    if (st === "working" || st === "subagent") tab.appendChild(el("span", "tab-dot"));
     const label = el("span", "tab-label");
     label.textContent = s.name;
     if (s.status.faded && id !== activeId && s.color) {
@@ -2492,7 +2506,7 @@ function setCtxBar(bar: HTMLElement, ctxStr: string | undefined, compacting = fa
 }
 
 const CHIP_LABEL: Record<ChipState, string> = {
-  working: "WORKING", ready: "READY", awaiting: "BLOCKED",
+  working: "WORKING", subagent: "SUBAGENT", ready: "READY", awaiting: "BLOCKED",
   idle: "IDLE", closed: "CLOSED", compacting: "COMPACTING",
 };
 

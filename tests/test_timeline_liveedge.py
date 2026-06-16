@@ -23,8 +23,13 @@ NODE = shutil.which("node")
 
 # Pure-JS harness: require the real module, run the cases, print {name: [got, want]} as JSON.
 _HARNESS = r"""
-const { interpNow, shouldReanchorEdge } = require(process.argv[1]);
+const { interpNow, shouldReanchorEdge, badgeFor } = require(process.argv[1]);
 const r = {};
+
+// --- badgeFor: a session delegating to a subagent shows the orange SUBAGENT chip (#9) ---
+r["badge_subagent_label"] = [badgeFor({live: true, state: "subagent"}).label, "SUBAGENT"];
+r["badge_subagent_orange"] = [badgeFor({live: true, state: "subagent"}).bg, "#E67E22"];
+r["badge_working_unchanged"] = [badgeFor({live: true, state: "working"}).label, "WORKING"];
 
 // --- shouldReanchorEdge: when the live edge's baseline must snap to a fresh data.now ---
 r["first_poll_null_anchor"]   = [shouldReanchorEdge(null, null, 1000, 5.0, true,  false), true];

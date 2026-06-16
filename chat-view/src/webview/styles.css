@@ -25,6 +25,7 @@
 
   /* romp dashboard badge colors */
   --st-working-bg: #e0b020; --st-working-fg: #332600;
+  --st-subagent-bg: #e67e22; --st-subagent-fg: #ffffff;   /* orange — quiet session, but a subagent is running */
   --st-ready-bg: #2b7fb8;   --st-ready-fg: #ffffff;
   --st-awaiting-bg: #c0392b;--st-awaiting-fg: #ffffff;
   --st-compacting-bg: #14b8a6; --st-compacting-fg: #ffffff;   /* teal — the compacting accent (text + compression bar) */
@@ -213,6 +214,11 @@ body { display: flex; flex-direction: column; }
   padding: 3px 10px; border-radius: 11px;
 }
 .chip-working { background: var(--st-working-bg); color: var(--st-working-fg); }
+.chip-subagent { background: var(--st-subagent-bg); color: var(--st-subagent-fg); }
+/* subagent: the name-dot turns orange (quiet but working); the bottom card explains what it's delegated. */
+.tab.tab-subagent .tab-dot { background: var(--st-subagent-bg); }
+.turn-subagent { padding: 5px 0 9px; }
+.subagent-head { font-size: 0.8em; color: var(--st-subagent-bg); letter-spacing: 0.02em; font-weight: 600; }
 .chip-ready { background: var(--st-ready-bg); color: var(--st-ready-fg); }
 .chip-awaiting { background: var(--st-awaiting-bg); color: var(--st-awaiting-fg); }
 .chip-idle { background: rgba(255, 255, 255, 0.08); color: var(--dim); }
