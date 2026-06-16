@@ -94,6 +94,13 @@ class TestCompactPct(unittest.TestCase):
         pane = "  ctx:7%\n✶ Compacting conversation…\n  ▰▰ 41%\n"
         self.assertEqual(dots.compact_pct(pane), 41)
 
+    def test_sweep_cadence_catches_a_compaction_start(self):
+        """The daemon must detect a compaction's START fast — a ~20s compaction needs the sweep to come
+        around within a few seconds (then COMPACT_INTERVAL polls the live %). A 60s cadence missed the
+        first ~50% (the user). Guards against regressing INTERVAL back up."""
+        self.assertLessEqual(dots.INTERVAL, 10, "sweep cadence must catch a compaction's start")
+        self.assertLessEqual(dots.COMPACT_INTERVAL, dots.INTERVAL, "fast-poll while compacting")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)

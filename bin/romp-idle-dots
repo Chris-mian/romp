@@ -45,7 +45,10 @@ STATE   = Path(os.environ.get("XDG_STATE_HOME", str(HOME / ".local/state"))) / "
 PIDFILE = STATE / "idle-dots.pid"
 
 STALE_AFTER_SECS = 3600          # 1h — matches dashboard STALE_AFTER_SECS + timeline STALE
-INTERVAL         = 60            # sweep cadence; a 1h threshold doesn't need finer
+INTERVAL         = 5             # sweep cadence — must be fast enough to CATCH a compaction's START
+                                 # (then COMPACT_INTERVAL polls the live %); a 60s cadence missed the
+                                 # first ~50% of a ~20s compaction (the user). Cheap: a normal sweep is
+                                 # just `tmux list-sessions` — capture-pane fires only while compacting/stuck.
 COMPACT_INTERVAL = 4             # while a session is COMPACTING, sweep this fast to publish a live %
 DOT_INACTIVE     = "⚫"      # ⚫ black circle
 FADEABLE         = ("waiting", "idle")   # only READY fades (not 🔴 permission / 🟡 working)
