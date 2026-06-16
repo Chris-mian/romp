@@ -198,15 +198,14 @@ test("the timeline controls embed a kernel-restart button, left of the usage bar
   assert.ok(kids.indexOf(btn) < kids.indexOf(panel._usageWrap), "restart button must be leftmost (before usage bars)");
 });
 
-// Settings gear sits right next to the restart button at the bottom-left (the user 2026-06-14).
-test("the timeline controls embed a settings gear immediately after the restart button", () => {
+// The settings gear was MERGED into the feed's top-right ⛭ (the user 2026-06-16): one gear now holds the
+// compact toggle + version info. So the timeline controls NO LONGER embed a settings gear — only the
+// restart button + usage bars remain at the bottom-left.
+test("the timeline controls no longer embed a settings gear (merged into the feed's ⛭)", () => {
   const panel = new TimelinePanel(makeNode("div"));
   const kids = panel.controls.children;
-  const restart = kids.find((c: any) => c.tag === "button" && c.getAttribute("title") === "Restart the romp kernel");
   const gear = kids.find((c: any) => c.tag === "button" && c.getAttribute("title") === "Settings");
-  assert.ok(gear, "controls row must contain the settings gear");
-  assert.equal(kids.indexOf(gear), kids.indexOf(restart) + 1, "gear sits immediately after the restart button");
-  assert.ok(kids.indexOf(gear) < kids.indexOf(panel._usageWrap), "gear is left of the usage bars");
+  assert.equal(gear, undefined, "the timeline's settings gear moved to the feed's top-right ⛭");
 });
 
 // Freeze-on-hover must actually STOP the edge (the user 2026-06-13: "timeline doesn't stop when I hover").

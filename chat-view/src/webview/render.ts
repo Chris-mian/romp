@@ -153,7 +153,7 @@ function md(src: string): string {
   } catch { const d = document.createElement("div"); d.textContent = src; return d.innerHTML; }
 }
 
-function highlight(container: HTMLElement) {
+function highlight(container: HTMLElement, lineNos = true) {
   container.querySelectorAll("pre code").forEach((node) => {
     const code = node as HTMLElement;
     const lang = (code.className.match(/language-([\w-]+)/) || [])[1];
@@ -162,8 +162,26 @@ function highlight(container: HTMLElement) {
         ? hljs.highlight(code.textContent || "", { language: lang }).value
         : hljs.highlightAuto(code.textContent || "").value;
       code.classList.add("hljs");
+      if (lineNos) wrapCodeLines(code);   // per-line gutter so a soft-wrap reads distinctly from a real newline
     } catch { /* leave as-is */ }
   });
+}
+
+// Wrap each logical line of (hljs-highlighted) code in <span class=cl><span class=ct>…</span></span>,
+// re-opening any hljs span that straddles a newline so the markup stays valid. A CSS counter on .cl
+// draws the subtle line numbers; .ct holds the wrapping content (the user 2026-06-16).
+function wrapCodeLines(code: HTMLElement) {
+  const lines = code.innerHTML.split("\n");
+  if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();   // a trailing newline isn't a blank line
+  let open: string[] = [];
+  code.innerHTML = lines.map((ln) => {
+    const prefix = open.join("");
+    const re = /<span[^>]*>|<\/span>/g; let m; const stack = open.slice();
+    while ((m = re.exec(ln))) { if (m[0] === "</span>") stack.pop(); else stack.push(m[0]); }
+    const suffix = "</span>".repeat(Math.max(0, stack.length));
+    open = stack;
+    return `<span class="cl"><span class="ct">${prefix}${ln}${suffix}</span></span>`;
+  }).join("");
 }
 
 function dot(kind: "green" | "ring" | "user" | "red"): HTMLElement { return el("span", "dot " + kind); }
@@ -837,7 +855,7 @@ function renderTool(ev: Extract<ChatEvent, { kind: "tool" }>): HTMLElement {
     const pre = el("pre", "io-pre fold-pre diff-fold");
     const code = el("code", "language-diff"); code.textContent = ev.diff; pre.appendChild(code);
     inlineFold(head, turn, `+${add} −${del}`, pre);
-    highlight(pre);
+    highlight(pre, false);   // diffs carry +/− markers + already wrap (io-pre); no line-number gutter
   } else if (ev.name === "Read") {
     if (ev.output) inlineFold(head, turn, `${countLines(ev.output)} lines`, preEl(ev.output));
   } else if (!ack && (ev.input || ev.output)) {

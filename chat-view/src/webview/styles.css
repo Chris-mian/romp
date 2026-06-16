@@ -770,12 +770,23 @@ body { display: flex; flex-direction: column; }
 }
 .md pre {
   background: var(--box-bg); border: 1px solid var(--box-border); border-radius: 6px;
-  padding: 11px 14px; margin: 0.6em 0; overflow: auto;
+  padding: 11px 14px; margin: 0.6em 0; overflow-x: hidden; overflow-y: auto;   /* WRAP, don't scroll sideways */
 }
 .md pre code {
   background: none; padding: 0; display: block;
   font-family: var(--mono); font-size: 0.9em; line-height: 1.5; color: var(--code-fg);
+  white-space: pre-wrap; overflow-wrap: anywhere;   /* fallback wrap if line-numbering didn't run */
 }
+/* subtle line-number gutter on wrapped code blocks: .cl = one logical line, .ct = its wrapping content;
+   the counter sits faint to the left so a soft-wrap reads distinctly from a real newline (the user 2026-06-16) */
+pre code.hljs { counter-reset: ln; }
+pre code .cl { display: flex; align-items: baseline; }
+pre code .cl::before {
+  counter-increment: ln; content: counter(ln);
+  flex: 0 0 2.3em; margin-right: 0.85em; text-align: right;
+  color: var(--dim); opacity: 0.32; user-select: none; font-size: 0.9em;
+}
+pre code .ct { flex: 1 1 auto; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .md table { border-collapse: collapse; margin: 0.6em 0; }
 .md th, .md td { border: 1px solid var(--box-border); padding: 4px 10px; text-align: left; }
 .md th { background: rgba(255, 255, 255, 0.03); }
