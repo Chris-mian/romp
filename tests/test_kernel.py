@@ -307,6 +307,40 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(msgs["m1"]["toGoal"], gb, "the connector binds to the goal it planted")
         self.assertIsNone(msgs["m9"]["toGoal"], "a message that planted no goal has toGoal None")
 
+    def test_seg_mids_extracts_markers(self):
+        seg = {"atoms": [
+            {"message": {"content": [{"type": "text", "text": "hi <!-- romp-msg-id: m1 -->"}]}},
+            {"message": {"content": [{"type": "tool_result", "content": "inbox: <!-- romp-msg-id: m2 -->"}]}},
+            {"message": {"content": "plain <!-- romp-msg-id: m3 -->"}}]}
+        self.assertEqual(set(km._seg_mids(seg)), {"m1", "m2", "m3"},
+                         "msg ids from text blocks, check_inbox tool_results, and string content")
+
+    def test_bind_message_exec_id_join(self):
+        """A connector binds its exec to the recipient segment that carries its msg id (process-start),
+        so the line shows transit = sent → became-actionable, not the log delivery time."""
+        turns = {"B": [{"start": 1000, "mids": ["m1"], "prompt": "x"}]}
+        messages = [{"id": "m1", "toId": "B", "fromId": "A", "from": "alpha", "fromOrig": "alpha",
+                     "sent": 900, "exec": 905, "pending": False}]
+        km._bind_message_execs(messages, turns)
+        self.assertEqual(messages[0]["exec"], 1000, "exec bound to the recipient's process-start")
+        self.assertFalse(messages[0]["pending"])
+
+    def test_bind_message_exec_text_heuristic(self):
+        """No marker on the recipient turn → bind by a turn soon after send whose prompt names the sender."""
+        turns = {"B": [{"start": 1000, "mids": [], "prompt": "picking up a note from alpha"}]}
+        messages = [{"id": "m9", "toId": "B", "fromId": "A", "from": "alpha", "fromOrig": "alpha",
+                     "sent": 998, "exec": 998, "pending": False}]
+        km._bind_message_execs(messages, turns)
+        self.assertEqual(messages[0]["exec"], 1000, "bound by the sender-naming turn")
+
+    def test_bind_message_exec_unbound_left_alone(self):
+        turns = {"B": [{"start": 1000, "mids": [], "prompt": "unrelated work"}]}
+        messages = [{"id": "mz", "toId": "B", "from": "alpha", "fromOrig": "alpha",
+                     "sent": 900, "exec": 905, "pending": True}]
+        km._bind_message_execs(messages, turns)
+        self.assertEqual((messages[0]["exec"], messages[0]["pending"]), (905, True),
+                         "no id-join and no text match → connector keeps its log exec/pending")
+
     def test_goal_segments_collects_subtree_trails(self):
         """_goal_segments(goalId) → every segment id in the goal's subtree (the timeline work-bars to
         light when the feed card is hovered — showAskPath reverse highlight)."""

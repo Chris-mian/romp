@@ -814,6 +814,56 @@ def _seg_prompt(seg):
     return blocks if isinstance(blocks, str) else ""
 
 
+def _seg_mids(seg):
+    """Postal message ids referenced anywhere in a segment (its romp-msg-id markers, in text blocks or
+    a check_inbox tool_result) — joins a recipient's WORK segment to the message that triggered it, so
+    the timeline connector can bind to the true process-start."""
+    ids = []
+    for a in seg.get("atoms", []):
+        msg = a.get("message") or {}
+        content = msg.get("content")
+        if isinstance(content, str):
+            ids += jd.em.POSTAL_RE.findall(content)
+        elif isinstance(content, list):
+            for b in content:
+                if not isinstance(b, dict):
+                    continue
+                if b.get("type") == "text":
+                    ids += jd.em.POSTAL_RE.findall(b.get("text", ""))
+                elif b.get("type") == "tool_result":
+                    c = b.get("content")
+                    ids += jd.em.POSTAL_RE.findall(c if isinstance(c, str) else json.dumps(c))
+    return ids
+
+
+def _bind_message_execs(messages, turns):
+    """Refine each connector's exec to the recipient's true PROCESS-START (when it picked the message
+    up), not the log delivery time — which for a busy recipient is QUEUE/paste time, not when the work
+    began. Exact id-join via the recipient segment's mids; else a text-heuristic (a segment soon after
+    send whose prompt names the sender). Mutates messages. Ported from obsidian/romp-timeline-data.js —
+    the connector then honestly shows transit = sent → became-actionable."""
+    idTurn = {}
+    for sid, bars in turns.items():
+        for bar in bars:
+            for mid in bar.get("mids") or []:
+                k = (mid, sid)
+                if k not in idTurn or bar["start"] < idTurn[k]:
+                    idTurn[k] = bar["start"]
+    MSG_MAX_LAG = 3600
+    for m in messages:
+        exact = idTurn.get((m.get("id"), m.get("toId")))
+        if exact is not None:
+            m["exec"], m["pending"] = exact, False          # exact id-join → true process-start
+            continue
+        for bar in sorted(turns.get(m.get("toId"), []), key=lambda b: b["start"]):
+            if bar["start"] > m["sent"] + MSG_MAX_LAG:
+                break                                       # sorted: nothing further can match
+            p = bar.get("prompt") or ""
+            if bar["start"] >= m["sent"] - 5 and p and (m.get("fromOrig", "") in p or m.get("from", "") in p):
+                m["exec"], m["pending"] = bar["start"], False   # text-heuristic match → process-start
+                break
+
+
 def build_timeline(now, tmux=None):
     """A {type:"timeline"} message the ported timeline bundle consumes (ui-parity.md: timeline =
     ADAPT). Lanes per session; work bars are SEGMENTS [t,end] from the event model (not the deleted
@@ -863,7 +913,7 @@ def build_timeline(now, tmux=None):
                     "id": seg["id"], "promptId": None, "workId": None,
                     "start": seg["t"], "end": seg["end"], "open": turn_open and si == len(segs) - 1,
                     "prompt": _seg_prompt(seg), "summary": cap, "reply": "",
-                    "src": src, "mids": [], "pending": False,
+                    "src": src, "mids": _seg_mids(seg), "pending": False,
                     "tid": sid, "uuid": seg.get("trigger"),
                     "workUuid": work_uuid, "replyUuid": reply_uuid})
         turns[sid] = bars
@@ -882,8 +932,10 @@ def build_timeline(now, tmux=None):
             "compacting": _state_intervals(sid, "compacting", now),
             "compactions": compactions, "pendingMail": _pending_mail(sid),
             "stale": faded, "faded": faded})
+    messages = _postal_messages(now, set(id2name), id2name)
+    _bind_message_execs(messages, turns)                 # connector exec → the recipient's process-start (real transit)
     return {"type": "timeline", "now": now, "sessions": sessions, "turns": turns,
-            "messages": _postal_messages(now, set(id2name), id2name),
+            "messages": messages,
             "activeChat": None, "focus": None, "hover": None, "usage": _usage()}
 
 
