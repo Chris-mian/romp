@@ -455,11 +455,14 @@ def _ask_thread(fn, *a):
     threading.Thread(target=fn, args=a, daemon=True).start()
 
 
+_queued_cache = {}            # {sid: [queued msg texts]} — pane-scraped (never in the transcript); build_session reads it
+
+
 def _ask_poll():
-    """Scrape each live session's pane for an in-flight AskUserQuestion picker and push it to the chat
-    webview (it already renders the picker + posts answer clicks). Per-client dedup (_send_client) means an
-    unchanged picker isn't re-sent and a fresh client gets the current one. ~1.2s tick — responsive
-    without flooding; capture-pane is cheap. The webview stores per-session and only renders the active tab."""
+    """Scrape each live session's pane for an in-flight AskUserQuestion picker (push to chat) AND the
+    messages queued while it's busy/compacting (stash in _queued_cache for build_session's {kind:queued}
+    card). ONE capture per session per ~1.2s tick feeds both. Per-client dedup (_send_client) means an
+    unchanged picker isn't re-sent and a fresh client gets the current one; the webview renders the active tab."""
     while True:
         try:
             with _clients_lock:
@@ -469,7 +472,12 @@ def _ask_poll():
                     name = _name_of(sid)
                     if not name:
                         continue
-                    ask = _ask_parse(name)
+                    pane = _capture_pane(name)
+                    try:
+                        ask = ap.parse_ask_pane(pane)
+                    except Exception:
+                        ask = None
+                    _queued_cache[sid] = ap.parse_queued(pane)   # → build_session's {kind:queued} dotted card
                     payload = ({"type": "askLive", "id": sid, "ask": ask} if ask
                                else {"type": "askLiveClear", "id": sid})
                     for c in chat_clients:
@@ -802,6 +810,12 @@ def build_session(sid, now, tmux=None):
     todo = _fold_tasks(session)
     if todo and any(t["status"] not in ("completed", "cancelled") for t in todo):
         events.append({"kind": "todo", "tasks": todo})
+    # Messages QUEUED in the TUI (submitted while busy/compacting, not yet in the transcript) — pane-scraped
+    # by _ask_poll into _queued_cache. Append last (at the bottom, by the composer, like the old TS kernel)
+    # so a message queued during a compaction is visible instead of vanishing (the user 2026-06-15).
+    queued = _queued_cache.get(sid)
+    if queued:
+        events.append({"kind": "queued", "texts": queued})
     # TOC ledger: archiver headline + turn captions (click-to-jump via the turn's anchor uuid)
     arch = jd.load_archive(sid) or {}
     bullets = []
@@ -1597,14 +1611,52 @@ setState:function(s){try{localStorage.setItem(SK,JSON.stringify(s));}catch(e){}}
 """ % (app, app)
 
 
+# On a narrow / touch viewport the chat's session tabs wrap into several rows and eat vertical space.
+# Hide the tab row and show ONE compact native <select> (#msess) instead — tap it, pick a session from
+# the list. _CHAT_MOBILE_JS keeps the select in sync with the real tabs and routes a pick back to them.
+_CHAT_MOBILE_CSS = (
+    "#msess{display:none}"
+    "@media (max-width:820px),(pointer:coarse) and (max-width:1024px){"
+    "#tabbar{max-height:none;padding:6px 8px}"
+    "#tabbar #tabs{display:none}"                       # the wrapping multi-row tab strip
+    "#msess{display:block;flex:1 1 auto;width:100%;box-sizing:border-box;"
+    "background:#252526;color:#cccccc;border:1px solid #3a3a3a;border-radius:6px;"
+    "padding:8px 10px;font:600 13px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}"
+    "}"
+)
+
+# Build a native session picker from the live tab DOM (#tabs .tab[data-id] -> <option>), mirror the
+# active tab into its value, and route a pick by clicking the matching tab (which drives render.js's own
+# setActive). A MutationObserver re-syncs as tabs are added/removed/activated; a signature guard skips
+# the rebuild (which would close an open native picker) when nothing relevant changed. Working sessions
+# get a leading dot so the one-line picker still shows which sessions are active.
+_CHAT_MOBILE_JS = """
+(function(){var tabbar=document.getElementById('tabbar'),tabs=document.getElementById('tabs');
+if(!tabbar||!tabs)return;
+var sel=document.createElement('select');sel.id='msess';tabbar.insertBefore(sel,tabs);
+function sync(){var opts=[],active=null;
+tabs.querySelectorAll('.tab[data-id]').forEach(function(t){var id=t.getAttribute('data-id');
+var lab=t.querySelector('.tab-label');var nm=lab?lab.textContent:id;
+if(t.classList.contains('tab-working'))nm='• '+nm;
+opts.push({id:id,nm:nm});if(t.classList.contains('active'))active=id;});
+var sig=opts.map(function(o){return o.id+':'+o.nm;}).join('|')+'#'+active;
+if(sig===sel._sig)return;sel._sig=sig;
+sel.innerHTML='';opts.forEach(function(o){var e=document.createElement('option');e.value=o.id;e.textContent=o.nm;sel.appendChild(e);});
+if(active)sel.value=active;}
+sel.addEventListener('change',function(){var t=tabs.querySelector('.tab[data-id="'+sel.value+'"]');if(t)t.click();});
+new MutationObserver(sync).observe(tabs,{childList:true,subtree:true,attributes:true,attributeFilter:['class']});
+sync();})();
+"""
+
+
 def _chat_page():
     return ("<!DOCTYPE html><html lang=en><head><meta charset=UTF-8>"
             "<meta name=viewport content='width=device-width,initial-scale=1'>"
             "<link rel=icon type=image/svg+xml href=/media/romp-swirl-glyph.svg>"
             "<link href=/dist/styles.css rel=stylesheet><title>Romp</title>"
-            "<style>%s</style></head><body>%s<script>%s</script>"
-            "<script src=/dist/render.js></script></body></html>"
-            % (THEME_CSS, _chat_body(), _shim("chat")))
+            "<style>%s\n%s</style></head><body>%s<script>%s</script>"
+            "<script src=/dist/render.js></script><script>%s</script></body></html>"
+            % (THEME_CSS, _CHAT_MOBILE_CSS, _chat_body(), _shim("chat"), _CHAT_MOBILE_JS))
 
 
 def _feed_page():

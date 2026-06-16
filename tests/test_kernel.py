@@ -222,6 +222,19 @@ class ViewBuilder(unittest.TestCase):
         self.assertFalse(any(e["kind"] == "tool" and e["name"] in ("TaskCreate", "TaskUpdate") for e in m["events"]),
                          "raw Task* tool calls are folded away, not shown as tool cards")
 
+    def test_queued_event_from_cache(self):
+        # a message queued in the TUI while busy/compacting (pane-scraped into _queued_cache) surfaces as a
+        # {kind:"queued"} card at the bottom — the "vanished during compaction" fix
+        km._queued_cache[SID] = ["fix the flaky test", "bump the version"]
+        try:
+            m = km.build_session(SID, NOW)
+            q = [e for e in m["events"] if e["kind"] == "queued"]
+            self.assertEqual(len(q), 1, "one queued card")
+            self.assertEqual(q[0]["texts"], ["fix the flaky test", "bump the version"])
+            self.assertEqual(m["events"][-1]["kind"], "queued", "queued sits at the bottom, by the composer")
+        finally:
+            km._queued_cache.pop(SID, None)
+
     def test_feed_buckets_goal_and_streams_caption(self):
         d = km.build_feed(NOW)
         self.assertEqual(d["type"], "feed")
