@@ -478,7 +478,9 @@ def _menu_text(store, menu):
     return "\n".join(out) if out else "(no open goals yet)"
 
 
-MAX_DEPTH = 2                                         # goal(0) → sub-goal(1) → step(2); keeps trees shallow
+MAX_DEPTH = 5                                         # goal(0) → sub-goal(1) → step(2) → … ; raised from 2
+                                                      # (the user 2026-06-16): the prompt still nudges shallow
+                                                      # trees, but allow deeper nesting when work warrants it
 
 
 def _depth(nodes, nid):
