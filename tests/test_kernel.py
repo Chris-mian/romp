@@ -238,6 +238,16 @@ class ViewBuilder(unittest.TestCase):
         self.assertTrue(shown["current"], "lastNode is flagged current (the pointer target)")
         self.assertEqual(shown["depth"], 1, "child sits at depth 1 under its top-level parent")
 
+    def test_followup_body_quotes_context(self):
+        # A feed follow-up quotes the ask it answers ('> <ask>') so the recipient session has context;
+        # an explicit group title wins over the node lookup; unknown/none → bare text (the user 2026-06-16).
+        iid = SID + ":g2"                                   # fixture g2 = "Awaiting a decision"
+        self.assertEqual(km._followup_body(iid, None, "go with option A"),
+                         "> Awaiting a decision\n\ngo with option A")
+        self.assertEqual(km._followup_body(iid, "Pick a database", "postgres"),
+                         "> Pick a database\n\npostgres")
+        self.assertEqual(km._followup_body(SID + ":nope", None, "hi"), "hi", "no context → no empty quote")
+
     def test_session_list_for_picker(self):
         # the + picker's payload (requestSessions → sessionList). Was always empty: bin/romp-kernel had
         # no requestSessions handler, so the kernel never replied. Running sessions first; archive headline

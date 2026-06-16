@@ -157,6 +157,23 @@ def _name_of(sid):
         return None
 
 
+def _followup_body(iid, title, text):
+    """Pane message for a feed follow-up: QUOTE the ask being followed up ('> <ask>') above the user's
+    text, so the recipient session knows what the reply answers. A bare, context-free follow-up left the
+    session with no idea what it was for — this restores the context the old version carried (the user
+    2026-06-16). Context = an explicit title (the group modal) else the goal node's own text; none → the
+    text alone (no empty quote). Split out from the WS handler so it's unit-testable."""
+    sid = str(iid).rsplit(":", 1)[0]
+    ctx = (title or "").strip()
+    if not ctx:
+        try:
+            ctx = str((jd.load_goals(sid).get("nodes", {}).get(str(iid)) or {}).get("text", "")).strip()
+        except Exception:
+            ctx = ""
+    body = str(text)
+    return ("> " + ctx.replace("\n", "\n> ") + "\n\n" + body) if ctx else body
+
+
 def _rgb(color):
     """The card's recency-tint [r,g,b] — the session color (the old hawaii recency colormap is
     a later refinement), defaulting to a neutral slate."""
@@ -2589,8 +2606,9 @@ class Handler(BaseHTTPRequestHandler):
                     cmd = str(msg["cmd"])
                     _tmux_send(str(msg["name"]), cmd, model_cmd=cmd.strip().startswith("/model"))
                 elif msg and msg.get("type") == "askFollowUp" and msg.get("itemId") and msg.get("text"):
-                    sid = str(msg["itemId"]).rsplit(":", 1)[0]   # goal node id → session → inject the follow-up
-                    _tmux_send(_name_of(sid) or sid, str(msg["text"]))
+                    iid = str(msg["itemId"])                     # goal node id → session → inject the follow-up
+                    sid = iid.rsplit(":", 1)[0]
+                    _tmux_send(_name_of(sid) or sid, _followup_body(iid, msg.get("title"), msg["text"]))
                 # live AskUserQuestion picker: a webview click → keystrokes into the session's pane (AskDriver)
                 elif msg and msg.get("type") == "answerAsk" and msg.get("id") and msg.get("target") is not None:
                     _ask_thread(_ask_answer, _name_of(msg["id"]) or msg["id"], msg["target"])
