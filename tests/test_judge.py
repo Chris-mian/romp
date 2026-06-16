@@ -505,6 +505,20 @@ class PlanRollup(unittest.TestCase):
         self.assertEqual(s["status"][g1], "completed",
                          "top-done + settled completes even with a trailing open step")
 
+    def test_top_done_with_open_blocked_step_not_stuck(self):
+        """The stuck-'blocked' bug (Henry, 2026-06-15; 5/13 real stores): the negative sweep
+        completes the TOP (clearing only the top's own block) but a trailing step is left open AND
+        blocked. A completed (sub)tree has no outstanding work, so the stale descendant block must
+        not keep the finished goal rolling up to 'blocked'."""
+        s = _store()
+        g = _mknode(s, "G", complete=True)                 # top discharged (e.g. by the sweep)
+        step = _mknode(s, "a step", parent=g["id"])        # trailing step: still open...
+        step["blocked"] = True                             # ...and carrying a stale block
+        s["lastNode"] = g["id"]
+        jd.rollup_status(s, session_closed=True)            # settled
+        self.assertEqual(s["status"][g["id"]], "completed",
+                         "top-done goal completes despite a trailing open+blocked step")
+
 
 class Courier(unittest.TestCase):
     def test_seg_peer_extracts_sender_and_msgid(self):

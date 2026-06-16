@@ -549,6 +549,13 @@ def rollup_status(store, session_closed):
         return nid
 
     def any_blocked(nid):
+        # A completed (sub)tree has no outstanding work, so it can't be blocked: the planner's
+        # top-done verdict (or the sweep) discharges the ask even when a trailing step was left
+        # open+blocked, and that block's answer is now moot. Without this short-circuit one stale
+        # leftover block keeps a finished goal stuck on "blocked" (precedence puts blocked above
+        # complete). Heals existing stuck stores on the next rollup. (Henry, 2026-06-15.)
+        if is_complete(nid):
+            return False
         return nodes[nid].get("blocked") or any(any_blocked(c) for c in children.get(nid, []))
 
     def is_complete(nid):
