@@ -511,10 +511,82 @@ class PlanTuning(unittest.TestCase):
         jd.apply_goal_edit(s, "s2", T0 + 10, {"op": "SUB", "n": 1, "text": "needs a decision",
                                               "done": None, "block": True}, jd.open_menu(s))
         self.assertTrue(any(nd["blocked"] for nd in s["nodes"].values()), "blocked after the BLOCK segment")
-        # later non-block work under the goal clears the stale block (the user answered + work moved on)
-        jd.apply_goal_edit(s, "s3", T0 + 20, {"op": "SUB", "n": 1, "text": "did the next thing",
-                                              "done": None, "block": False}, jd.open_menu(s))
-        self.assertFalse(any(nd["blocked"] for nd in s["nodes"].values()), "newer work un-blocks the goal")
+        # later non-block work ON THAT BRANCH (under the blocked node) clears the stale block — the user
+        # answered and work resumed there (surgical newest-wins; a sibling branch is left alone, below).
+        menu = jd.open_menu(s)
+        nb = next(i for i, nd in enumerate(menu, 1) if nd["text"] == "needs a decision")
+        jd.apply_goal_edit(s, "s3", T0 + 20, {"op": "SUB", "n": nb, "text": "did the next thing",
+                                              "done": None, "block": False}, menu)
+        self.assertFalse(any(nd["blocked"] for nd in s["nodes"].values()), "newer work on the branch un-blocks it")
+
+
+class BlockCompletionCorrectness(unittest.TestCase):
+    """simplify's block/completion-correctness handoff (2026-06-15, human-designed): the weighing BLOCK
+    rule, surgical (branch-only) un-block, completion clearing descendant blocks, bottom-up rollup."""
+
+    def _mint(self, s, seg, t, text):
+        jd.apply_goal_edit(s, seg, t, {"op": "MINT", "n": None, "text": text, "done": None, "block": False},
+                           jd.open_menu(s))
+
+    def _sub(self, s, seg, t, parent_text, text, block=False):
+        menu = jd.open_menu(s)
+        n = next(i for i, nd in enumerate(menu, 1) if nd["text"] == parent_text)
+        jd.apply_goal_edit(s, seg, t, {"op": "SUB", "n": n, "text": text, "done": None, "block": block}, menu)
+
+    def test_block_prompt_uses_the_weighing_rule(self):
+        # #1: source-level guard that the validated weighing rule is in the planner prompt (the
+        # behavioural A/B is simplify's; this locks the prompt against an accidental revert).
+        for phrase in ("WAITING ON THE USER", "answering or reporting is not", "WEIGHING",
+                       "the owed decision WINS"):
+            self.assertIn(phrase, jd.PLAN_SYS, phrase)
+
+    def test_surgical_unblock_leaves_sibling_block(self):
+        # #2: two blocked sibling sub-goals; non-block work on ONE branch clears only that branch.
+        s = _store()
+        self._mint(s, "s1", T0, "G")
+        self._sub(s, "s2", T0 + 1, "G", "subA", block=True)
+        self._sub(s, "s3", T0 + 2, "G", "subB", block=True)
+        b0 = {nd["text"]: nd["blocked"] for nd in s["nodes"].values()}
+        self.assertTrue(b0["subA"] and b0["subB"], "both siblings blocked")
+        self._sub(s, "s4", T0 + 3, "subA", "did subA work", block=False)   # non-block work under subA
+        byname = {nd["text"]: nd for nd in s["nodes"].values()}
+        self.assertFalse(byname["subA"]["blocked"], "the worked branch un-blocks")
+        self.assertTrue(byname["subB"]["blocked"], "the unrelated sibling stays blocked")
+
+    def test_completion_clears_descendant_blocks(self):
+        # #3: DONE'ing a node clears blocks across its WHOLE subtree (a checked-off goal's child blocks are moot).
+        s = _store()
+        self._mint(s, "s1", T0, "G")
+        self._sub(s, "s2", T0 + 1, "G", "sub", block=True)
+        sub = next(nd for nd in s["nodes"].values() if nd["text"] == "sub")
+        self.assertTrue(sub["blocked"])
+        menu = jd.open_menu(s)
+        n = next(i for i, nd in enumerate(menu, 1) if nd["text"] == "G")
+        jd.apply_goal_edit(s, "s3", T0 + 2, {"op": "AMEND", "n": n, "text": "G", "done": n, "block": False}, menu)
+        self.assertFalse(sub["blocked"], "completing the parent clears the descendant's block")
+
+    def test_bottom_up_completion_when_all_children_done(self):
+        # #4: a top whose children are ALL complete rolls up complete even if the top was never DONE'd.
+        s = _store()
+        self._mint(s, "s1", T0, "G")
+        self._sub(s, "s2", T0 + 1, "G", "c1")
+        self._sub(s, "s3", T0 + 2, "G", "c2")
+        g = s["placements"]["s1"]
+        for c in [nd for nd in s["nodes"].values() if nd["parentId"] == g]:
+            c["nodeComplete"] = True
+        self.assertFalse(s["nodes"][g]["nodeComplete"], "the top itself was never DONE'd")
+        self._mint(s, "s4", T0 + 3, "G2")                 # a newer top is the focus → G settles
+        jd.rollup_status(s, session_closed=False)
+        self.assertEqual(s["status"][g], "completed", "all children complete → the top rolls up complete")
+
+    def test_childless_top_still_needs_its_own_done(self):
+        # #4 guard: bottom-up must NOT complete a childless node that was never DONE'd.
+        s = _store()
+        self._mint(s, "s1", T0, "G")
+        self._mint(s, "s2", T0 + 1, "G2")                 # settle G
+        g = s["placements"]["s1"]
+        jd.rollup_status(s, session_closed=False)
+        self.assertEqual(s["status"][g], "working", "a childless, never-DONE'd top stays working")
 
 
 # ───────────────────────── the negative turn-end sweep (HYBRID completion) ─────────────────────────

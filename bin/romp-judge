@@ -346,7 +346,12 @@ PLAN_SYS = (
     "segment discharges the whole ask, DONE the TOP-LEVEL goal #n itself. Finished work should be "
     "marked done, not left open. 'none' only if the segment genuinely finished nothing. You may DONE "
     "the node you just placed under.\n"
-    "- BLOCK yes: the work now NEEDS THE USER (a question, decision, or approval) to proceed; else no.\n"
+    "- BLOCK yes: the assistant is now WAITING ON THE USER — its next step needs a decision, approval, "
+    "or answer from the user before the work can proceed or finish. BLOCK no when the segment only "
+    "ANSWERS the user's question, EXPLAINS something, or REPORTS work already done — answering or "
+    "reporting is not blocking. WEIGHING: if the segment both answers/reports something AND still leaves "
+    "a decision or approval owed by the user, the owed decision WINS → BLOCK yes. When nothing is owed, "
+    "BLOCK no.\n"
     "Every segment gets a placement (MINT, SUB, or AMEND) — never 'none' for the placement. When "
     "unsure between MINT and SUB, prefer SUB. No quotes, no trailing punctuation, exactly one line.")
 
@@ -463,16 +468,26 @@ def apply_goal_edit(store, seg_id, seg_t, edit, menu):
     if edit["block"]:
         nodes[nid]["blocked"] = True
     elif store.get("lastNode"):
-        # UN-BLOCK (newest-wins): later non-block work under a goal clears that goal's stale blocks —
-        # e.g. a blocked goal un-blocks the beat the user's answer + follow-on work files under it.
-        top = _top_ancestor(nodes, nid)
-        for x, nd in nodes.items():
-            if _top_ancestor(nodes, x) == top:
-                nd["blocked"] = False
-    if edit["done"]:                                  # complete a node (clears its soft block)
+        # UN-BLOCK (newest-wins, SURGICAL): later non-block work clears stale blocks only on the placed
+        # node's OWN BRANCH — the node and its ancestor chain up to the top — so a still-owed block on an
+        # unrelated SIBLING sub-goal survives (the user answered THIS branch, not that one).
+        x = nid
+        while x is not None:
+            nodes[x]["blocked"] = False
+            x = nodes.get(x, {}).get("parentId")
+    if edit["done"]:                                  # complete a node → its child blocks are moot too
         dnid = menu[edit["done"] - 1]["id"]
         nodes[dnid]["nodeComplete"] = True
-        nodes[dnid]["blocked"] = False
+        # clear `blocked` across the completed node's WHOLE subtree (a checked-off goal's child-blocks
+        # are moot), not just the node itself.
+        kids = {}
+        for x, nd in nodes.items():
+            kids.setdefault(nd.get("parentId"), []).append(x)
+        stack = [dnid]
+        while stack:
+            x = stack.pop()
+            nodes[x]["blocked"] = False
+            stack.extend(kids.get(x, []))
 
 
 def rollup_status(store, session_closed):
@@ -500,15 +515,22 @@ def rollup_status(store, session_closed):
     def any_blocked(nid):
         return nodes[nid].get("blocked") or any(any_blocked(c) for c in children.get(nid, []))
 
+    def is_complete(nid):
+        # Complete if explicitly nodeComplete (TOP-DOWN — the sweep / a DONE marks the top, the common
+        # driver) OR it has children and they are ALL recursively complete (BOTTOM-UP backstop for when
+        # every leaf does get DONE'd). A childless node needs its own nodeComplete.
+        kids = children.get(nid, [])
+        return nodes[nid].get("nodeComplete") or (bool(kids) and all(is_complete(c) for c in kids))
+
     focus = top_ancestor(store["lastNode"]) if store.get("lastNode") in nodes else None
     status = {}
-    for nid in children.get(None, []):
+    for nid in children.get(None, []):                # precedence (unchanged): cleared > blocked > complete+settled > working
         settled = (nid != focus) or session_closed
         if nodes[nid].get("cleared"):
             status[nid] = "cleared"
         elif any_blocked(nid):
             status[nid] = "blocked"
-        elif nodes[nid].get("nodeComplete") and settled:
+        elif is_complete(nid) and settled:
             status[nid] = "completed"
         else:
             status[nid] = "working"
