@@ -822,24 +822,6 @@ class CrossPane(unittest.TestCase):
         self.assertIsNone(km._focus_kind(None))
 
 
-class FeedDetail(unittest.TestCase):
-    def test_read_feed_detail_cache(self):
-        # the expand paragraph that fills the feed-card modal's "…": present in cache → returned;
-        # missing → None; empty paragraph (the writer wrote nothing for a legacy id) → None.
-        import tempfile, pathlib
-        orig = km.FEEDDETAIL
-        with tempfile.TemporaryDirectory() as td:
-            km.FEEDDETAIL = pathlib.Path(td)
-            try:
-                (km.FEEDDETAIL / "D1.json").write_text(json.dumps({"paragraph": "shipped the fix", "next_steps": ["watch CI"]}))
-                self.assertEqual(km._read_feed_detail("D1")["paragraph"], "shipped the fix")
-                self.assertIsNone(km._read_feed_detail("nope"), "no cache file → None")
-                (km.FEEDDETAIL / "E.json").write_text(json.dumps({"paragraph": ""}))
-                self.assertIsNone(km._read_feed_detail("E"), "empty paragraph → None")
-            finally:
-                km.FEEDDETAIL = orig
-
-
 class TestApiError(unittest.TestCase):
     """km._api_error — is the session BLOCKED on an API error right now? Event-based on the transcript's
     isApiErrorMessage flag (the invariant across 500 / timeout / model-not-found). Synthetic records only."""

@@ -1,688 +1,338 @@
 #!/usr/bin/env python3
-"""romp-feed — a unified TIMELINE of what every session has done.
+"""romp-feed — an INDEPENDENT terminal mirror of the dashboard feed (Working / Blocked / Completed).
 
-Sibling of `romp-ledger`, but pivoted: the ledger groups BY SESSION ("what is
-each agent doing"); the feed groups BY DELIVERABLE ("what got done across the
-whole fleet, in order"). One line per turn-deliverable, interleaved across all
-agents, newest-first — a fleet-wide activity stream / stand-up view.
+WHY THIS EXISTS: the web feed is goal-stores → build_feed (romp-kernel) → feed.js (browser). When the
+board disagrees with the browser, that localises the bug: if they AGREE, the goal stores are the truth
+and both renders are faithful (so a wrong card is upstream, in the judge/planner); if they DIFFER, the
+divergence is in build_feed or the browser bundle (e.g. a stale cached feed.js). To make that a real
+cross-check, this tool deliberately does NOT import romp-kernel / romp-judge: it re-reads the SAME raw
+inputs and re-implements the rollup itself. Independence is the whole point — keep it that way.
 
-Source: ~/.local/state/romp/summaries/<sid>.jsonl. Each `reply` event is one
-deliverable (the "did" phrase the Haiku summarizer wrote for that turn); the
-most recent preceding `request` in the same session is its prompting "ask".
-Items from every session are merge-sorted by completion time. Agent attribution
-+ color come from names/<sid>; liveness from the tmux oracle.
+RAW INPUTS (all under $XDG_STATE_HOME/romp, default ~/.local/state/romp):
+  goals/<sid>.json   per-session goal tree  {nodes:{id:{text,parentId,nodeComplete,blocked,cleared,t}},
+                                              status:{topId:..}, lastNode, rompUuid}
+  cleared.jsonl      append-only feed-clear log ({id,t,op})  — newest op per id wins; 'undo' un-clears
+  names/<sid>        tab-separated: name \t .. \t #color
+  tmux (live)        @romp / @romp-session-id / @claude-state  → which sessions are alive + their state
 
-ORIGIN: the summarizer writes a `request` line ONLY for turns the user actually
-typed (`_is_real_ask` skips postal banners / drains / task-notifications), so a
-reply whose id has a same-id request line was user-prompted; one without was
-agent-prompted (a peer's postal message). The feed shows USER-prompted
-deliverables by default — `--all` adds the agent-internal ones back.
-
-  romp-feed                  user-prompted deliverables, newest-first, 2s refresh
-  romp-feed --all            include agent-prompted (peer-message) deliverables
-  romp-feed --asks           OPEN ASKS inbox: one row per uncleared ask from the
-                             request registry (~/.local/state/romp/requests/,
-                             spec in REQUESTS.md), with linked-work tallies
-  romp-feed --once           print once and exit
-  romp-feed -n 40            at most 40 deliverables
-  romp-feed --since 6h       only the last 6h (also: 90m, 2d, or `--today`)
-  romp-feed --agent NAME     only deliverables from agents whose name matches NAME
-  romp-feed --live           only deliverables from currently-live agents
-  romp-feed --ask            show each item's prompting ask as a dim sub-line
-  romp-feed --chrono         oldest-first (default newest-first)
-  romp-feed --no-color
+The status math here is a from-scratch re-implementation of romp-judge.rollup_status (precedence
+cleared > blocked > completed+settled > working) plus the kernel's live-permission blocked floor. If
+the rules change in romp-judge, this will (correctly) diverge until updated — that divergence is a
+signal, not a bug.
 """
-import os, sys, json, glob, time, re, argparse, subprocess, termios, tty, signal
-signal.signal(signal.SIGPIPE, signal.SIG_DFL)   # clean exit when piped to head
-from select import select as _poll          # stdin readiness; module fn aliased to
-                                            # avoid clashing with this file's select()
+import os
+import sys
+import json
+import time
+import subprocess
+from pathlib import Path
 
-# Recency colormap is single-sourced in romp_colormap.py (owned by romp-ledger)
-# so the feed and ledger always match — changing the look is ONE edit there.
-sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
-from romp_colormap import age_rgb
+# ───────────────────────── raw readers (independent of the kernel) ─────────────────────────
 
-STATE = os.path.expanduser("~/.local/state/romp")
-NAMES, SUMM, STATES = (os.path.join(STATE, d) for d in ("names", "summaries", "states"))
-REQS = os.path.join(STATE, "requests")       # the request registry (see REQUESTS.md)
-ALIVE_STATES = {"working", "permission"}
-NAME_W = 14                                  # agent-chip column width (truncated)
+def state_dir():
+    home = Path(os.environ.get("HOME") or Path.home())
+    base = os.environ.get("XDG_STATE_HOME") or str(home / ".local/state")
+    return Path(base) / "romp"
 
-class C:
-    on = True
-    @staticmethod
-    def rgb(t):  return f"\033[38;2;{t[0]};{t[1]};{t[2]}m" if (C.on and t) else ""
-    @staticmethod
-    def code(s): return s if C.on else ""
-    RESET="\033[0m"; BOLD="\033[1m"; DIM="\033[2m"
-    GRAY="\033[38;5;245m"; TEAL="\033[38;5;37m"; RED="\033[38;5;203m"
-    YEL="\033[38;5;179m"; GRN="\033[38;5;71m"
 
-# ── helpers ──────────────────────────────────────────────────────────────────
-def _hex(h):
-    h = (h or "").lstrip("#")
-    if len(h) != 6:
-        return None
-    try:
-        return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
-    except ValueError:
-        return None
-
-def _agehms(secs):
-    secs = max(0, int(secs))
-    if secs < 60:    return f"{secs}s"
-    if secs < 3600:  return f"{secs//60}m"
-    if secs < 86400: return f"{secs//3600}h"
-    return f"{secs//86400}d"
-
-def _parse_dur(s):
-    m = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*([smhd]?)\s*", s or "")
-    if not m:
-        raise argparse.ArgumentTypeError(f"bad duration {s!r} (use 90m, 6h, 2d)")
-    return float(m.group(1)) * {"": 3600, "s": 1, "m": 60, "h": 3600, "d": 86400}[m.group(2)]
-
-def _last_state(path):
-    try:
-        with open(path) as f:
-            ls = f.read().splitlines()
-        return json.loads(ls[-1]) if ls else {}
-    except (OSError, ValueError, IndexError):
-        return {}
-
-def live_session_ids():
-    try:
-        raw = subprocess.run(
-            ["tmux", "list-sessions", "-F", "#{@romp-session-id}|#{@claude-state}"],
-            capture_output=True, text=True, timeout=5).stdout
-    except Exception:
-        return {}
+def load_stores(state):
+    """{sid: store} for every goals/<sid>.json, skipping unreadable/!dict ones."""
     out = {}
-    for ln in raw.splitlines():
-        sid, _, state = ln.partition("|")
-        if sid:
-            out[sid] = state
+    for fp in sorted((state / "goals").glob("*.json")):
+        try:
+            d = json.loads(fp.read_text())
+            if isinstance(d, dict) and isinstance(d.get("nodes"), dict):
+                out[fp.stem] = d
+        except Exception:
+            pass
     return out
 
-# ── data ─────────────────────────────────────────────────────────────────────
-def load_agents():
-    """sid -> {name, dir, rgb}."""
-    agents = {}
-    for nf in glob.glob(os.path.join(NAMES, "*")):
-        sid = os.path.basename(nf)
-        parts = open(nf).read().rstrip("\n").split("\t")
-        agents[sid] = {
-            "name": parts[0] if parts and parts[0] else sid[:8],
-            "dir": os.path.basename(parts[1].rstrip("/")) if len(parts) > 1 else "",
-            "rgb": _hex(parts[2]) if len(parts) > 2 else None,
-        }
-    return agents
 
-def feed_items(agents):
-    """One item per `reply` deliverable, across all sessions, each carrying the
-    most recent preceding `request` (the prompting ask) in that session."""
-    items = []
-    for sid, ag in agents.items():
-        path = os.path.join(SUMM, sid + ".jsonl")
-        if not os.path.exists(path):
-            continue
-        evs = []
-        try:
-            with open(path) as f:
-                for ln in f:
-                    ln = ln.strip()
-                    if ln:
-                        evs.append(json.loads(ln))
-        except (OSError, ValueError):
-            pass
-        evs.sort(key=lambda e: e.get("t", 0))
-        # Same-id request line == the turn was user-typed (the summarizer only
-        # writes request lines for real asks): that's the ORIGIN signal, and its
-        # text is the exact prompting ask (better than "most recent preceding").
-        reqs = {e["id"]: e for e in evs if e.get("kind") == "request" and e.get("id")}
-        ask, ask_t = "", 0
-        for e in evs:
-            if e.get("kind") == "request":
-                ask, ask_t = e.get("text", ""), e.get("t", 0)
-            elif e.get("kind") == "reply":
-                r = reqs.get(e.get("id"))
-                items.append({
-                    "sid": sid, "name": ag["name"], "rgb": ag["rgb"], "dir": ag["dir"],
-                    "t": e.get("t", 0), "did": e.get("text", ""),
-                    "ask": r.get("text", "") if r else ask, "ask_t": r.get("t", 0) if r else ask_t,
-                    "origin": "user" if r else "agent",
-                })
-    items.sort(key=lambda x: x["t"], reverse=True)
-    return items
-
-# ── asks inbox (request registry; read-time fold per REQUESTS.md) ────────────
-def _req_rows(name):
-    out = []
+def cleared_ids(state):
+    """Currently-cleared feed itemIds, replayed in file order from cleared.jsonl (a non-'undo' row sets
+    the id, an 'undo' row removes it) — mirrors romp-kernel._cleared_ids exactly."""
+    cur = {}
     try:
-        with open(os.path.join(REQS, name)) as f:
-            for ln in f:
-                ln = ln.strip()
-                if ln:
-                    try: out.append(json.loads(ln))
-                    except ValueError: pass
+        for line in (state / "cleared.jsonl").read_text().splitlines():
+            try:
+                o = json.loads(line)
+            except Exception:
+                continue
+            iid = o.get("id")
+            if not iid:
+                continue
+            if o.get("op") == "undo":
+                cur.pop(iid, None)
+            else:
+                cur[iid] = o.get("t", 0)
     except OSError:
         pass
-    return out
+    return set(cur)
 
-def _last_req_by_sid():
-    """The user's last typed-turn time per session (request lines across all
-    summaries logs). A DECISION link older than his next typed turn in that
-    session has been ANSWERED — it stops counting as an open question."""
-    out = {}
-    for path in glob.glob(os.path.join(SUMM, "*.jsonl")):
-        sid = os.path.basename(path)[:-len(".jsonl")]
-        best = 0
-        try:
-            with open(path) as f:
-                for ln in f:
-                    if '"request"' not in ln:
-                        continue
-                    try: e = json.loads(ln)
-                    except ValueError: continue
-                    if e.get("kind") != "request":
-                        continue
-                    # typed-turn time = the id's process-start (middle field),
-                    # not the line's late backfill write-time
-                    try: t = int(str(e.get("id", "")).split(":")[1])
-                    except (IndexError, ValueError): t = 0
-                    best = max(best, t or e.get("t", 0))
-        except OSError:
-            continue
-        if best:
-            out[sid] = best
-    return out
 
-def ask_items(agents):
-    """One item per OPEN (uncleared) ask, shaped like a feed item so the whole
-    render/select pipeline applies unchanged.
-
-    COLUMN = DAG path accounting (the user's model): each node's status comes from
-    the newest link directly on it — DONE closes it, an unanswered DECISION is
-    an open question, anything else leaves it open. An ask is judged by where
-    its paths END: every leaf done → completed (✓); any open question anywhere
-    → needs_input (?); else open, with a drop point per OPEN LEAF — the
-    responsible session that still owes the user a completion or a question.
-    Intermediate restatements / answered questions are transparent (the work
-    continued downstream). corrections.jsonl rows merge as links at read time
-    (the user's mark-done both completes the card and trains the linker). Clear
-    remains the only retirement."""
-    asks, internals, parent_ids = {}, {}, {}
-    tids, answer_rows = {}, []                # ask id → typed turn ids (mint+amend+answer); answer rows
-    for n in _req_rows("nodes.jsonl"):
-        k = n.get("kind")
-        if k == "ask" and n.get("id"):
-            asks.setdefault(n["id"], dict(n))
-            if n.get("turn_id"):
-                tids.setdefault(n["id"], set()).add(n["turn_id"])
-        elif k == "internal" and n.get("id"):
-            internals.setdefault(n["id"], dict(n))
-        elif k == "parents" and n.get("id"):
-            parent_ids[n["id"]] = n.get("parent_ids", [])
-        elif k == "amend" and n.get("id") in asks:
-            asks[n["id"]]["text"] = n.get("text", asks[n["id"]].get("text", ""))
-            if n.get("turn_id"):
-                tids.setdefault(n["id"], set()).add(n["turn_id"])
-        elif k == "answer" and n.get("id"):
-            answer_rows.append(n)
-            if n.get("turn_id"):
-                tids.setdefault(n["id"], set()).add(n["turn_id"])
-    # newest clear per id (re-clears append; max-t wins). A clear hides the ask
-    # UNLESS an open question ARRIVES after it (resurrection): a post-clear
-    # question must never be invisible; one the user saw and cleared stays cleared.
-    cleared_at = {}
-    for c in _req_rows("cleared.jsonl"):
-        if c.get("id"):
-            cleared_at[c["id"]] = max(cleared_at.get(c["id"], 0), c.get("t", 0))
-    # Follow-ups (followups.jsonl, the feed UI's file): "Follow up" on a
-    # completed card delivered a new instruction to the session; the record
-    # deterministically reopens the card to ASKS until the bookkeeper mints
-    # the delivered turn under the root (or a newer verdict lands on it).
-    followups = {}
-    for f in _req_rows("followups.jsonl"):
-        if f.get("id"):
-            followups.setdefault(f["id"], []).append(f)
-    children = {}
-    for cid, pids in parent_ids.items():
-        for p in pids:
-            children.setdefault(p, []).append(cid)
-    node_links = {}
-    for l in _req_rows("links.jsonl"):
-        for rid in l.get("request_ids", []):
-            if rid in asks or rid in internals:   # unknown ids stay out of view
-                node_links.setdefault(rid, []).append(l)
-    # The user's adjudications act as links at read time: newest-wins then closes
-    # the node the same way a real terminal reply would.
-    for c in _req_rows("corrections.jsonl"):
-        sh = c.get("should_have") or {}
-        if not isinstance(sh, dict) or not sh.get("request_ids") or not sh.get("relevance"):
-            continue
-        for rid in sh["request_ids"]:
-            if rid in asks or rid in internals:
-                node_links.setdefault(rid, []).append({
-                    "reply_id": c.get("decision_ref") or f"corr:{rid}:{c.get('t', 0)}",
-                    "request_ids": [rid], "relevance": sh["relevance"],
-                    "sid": c.get("by_sid", ""), "t": c.get("t", 0),
-                    "_corr": True})   # re-verdict of an existing report, not new activity
-    # ANSWER rows (REQUESTS.md 2026-06-11): the user's recorded reply to an agent
-    # question — link-equivalent, so as the newest link it crosses the pending
-    # question off exactly like the panel's fold does.
-    for n in answer_rows:
-        rid = n.get("id")
-        if rid in asks or rid in internals:
-            node_links.setdefault(rid, []).append({
-                "reply_id": n.get("turn_id") or f"ans:{rid}:{n.get('t', 0)}",
-                "request_ids": [rid], "relevance": "ANSWER",
-                "sid": (asks.get(rid) or internals.get(rid, {})).get("sid", ""),
-                "t": n.get("t", 0), "_answer": True})
-    for ls in node_links.values():
-        ls.sort(key=lambda l: l.get("t", 0))
-    last_req = _last_req_by_sid()
-    # a session's newest FILED reply anywhere: a blocked session can only file
-    # new work after its question was resolved, so a DECISION whose session
-    # moved on is moot — catches answer channels that type nothing (plan
-    # approvals, permission clicks, picker answers, peer-mail wake-ups)
-    last_link = {}
-    for l in _req_rows("links.jsonl"):
-        if l.get("kind") == "link" and l.get("sid"):
-            last_link[l["sid"]] = max(last_link.get(l["sid"], 0), l.get("t", 0))
-
-    def node_status(nid):
-        ls = node_links.get(nid, [])
-        # DETAILS never re-opens a verdict (latching rule, panel parity): routine
-        # progress after a DONE stamp rides the node without erasing it.
-        newest = next((l for l in reversed(ls) if l.get("relevance") != "DETAILS"), None)
-        if newest is None:
-            return "open", None
-        rel = newest.get("relevance", "")
-        sid, t = newest.get("sid", ""), newest.get("t", 0)
-        if rel == "DONE":
-            return "done", None
-        if rel == "ACTION":                       # The user must DO something; typing
-            return "question", newest             # doesn't cross it — only "did it"
-        # DECISION: crossed by the user's next typed turn OR the session moving on
-        if rel == "DECISION" and last_req.get(sid, 0) <= t and last_link.get(sid, 0) <= t:
-            return "question", newest
-        # IDEA: dismissed by the user's next typed turn alone (asks for HIS reaction)
-        if rel == "IDEA" and last_req.get(sid, 0) <= t:
-            return "question", newest
-        return "open", None                       # DETAILS, or an answered question/idea
-
-    states = live_session_ids()                   # sid → @claude-state (liveness parity with the panel)
-
-    def _open_turn(sid):
-        """The session's currently-open turn id from the romp-events disk cache —
-        the liveness claim-join ('active' needs the current turn ON this card)."""
-        try:
-            with open(os.path.join(STATE, "events-cache", sid + ".json")) as f:
-                evs = (json.load(f).get("data") or {}).get("events") or []
-            return evs[-1]["id"] if evs and evs[-1].get("open") else None
-        except Exception:
-            return None
-
-    items = []
-    for aid, a in asks.items():
-        # an ask minted UNDER another node (a follow-up turn filed as a child
-        # of its completed root) renders inside that root — never its own card
-        if parent_ids.get(aid):
-            continue
-        sub, seen, queue = [], set(), [aid]
-        while queue:                              # subgraph walk, cycle-guarded
-            nid = queue.pop()
-            if nid in seen:
-                continue
-            seen.add(nid)
-            sub.append(nid)
-            queue.extend(children.get(nid, []))
-        st = {nid: node_status(nid) for nid in sub}
-
-        def kids_of(nid):
-            return [c for c in children.get(nid, []) if c in seen]
-
-        # Rolled-up status: leaves keep their own; an intermediate node is done
-        # when every path below it ends DONE (its own restatement / answered
-        # question is transparent). Questions bubble up from anywhere.
-        roll = {}
-
-        def rollup(nid):
-            if nid in roll:
-                return roll[nid]
-            roll[nid] = "open"                    # cycle sentinel
-            own = st[nid][0]
-            kids = kids_of(nid)
-            if not kids:
-                r = own
-            else:
-                below = [rollup(c) for c in kids]
-                r = ("question" if own == "question" or "question" in below
-                     else "done" if all(b == "done" for b in below) else "open")
-            roll[nid] = r
-            return r
-
-        questions = [q for s, q in st.values() if s == "question"]
-        # open follow-ups: each holds the card in ASKS until the bookkeeper
-        # mints the delivered turn as a child of the root or a newer verdict
-        # lands on the root — from then on the leaf-path fold owns the card
-        fu_open = []
-        for f in followups.get(aid, []):
-            ft = f.get("t", 0)
-            minted = any((asks.get(c) or internals.get(c, {})).get("t", 0) >= ft
-                         for c in kids_of(aid))
-            refiled = any(l.get("t", 0) > ft for l in node_links.get(aid, []))
-            if not minted and not refiled:
-                fu_open.append(f)
-        # cleared gate (post-question-fold so resurrection can see the questions)
-        clr_t = cleared_at.get(aid)
-        reopened = clr_t is not None and (
-            any(q.get("t", 0) > clr_t for q in questions)
-            or any(f.get("t", 0) > clr_t for f in fu_open))
-        if clr_t is not None and not reopened:
-            continue
-        drops = []                                # open leaves: who owes what, since when
-        for nid, (s, _) in st.items():
-            if s == "open" and not kids_of(nid):
-                node = asks.get(nid) or internals.get(nid, {})
-                owner = node.get("to_sid") or node.get("sid", "")
-                ls = node_links.get(nid, [])
-                drops.append((agents.get(owner, {}).get("name", owner[:8]),
-                              ls[-1].get("t", 0) if ls else node.get("t", 0)))
-        for f in fu_open:                         # a sent follow-up is an owed answer
-            drops.append((agents.get(a.get("sid", ""), {}).get("name", a.get("sid", "")[:8]),
-                          f.get("t", 0)))
-        column = ("needs_input" if questions
-                  else "completed" if rollup(aid) == "done" and not fu_open
-                  else "asks")
-        # ── liveness + auto-filing, PARITY with the panel (FEED-ASKS-SPEC.md
-        # 2026-06-11): active = owner's CURRENT turn claimed by this card;
-        # delegated/stalled via open handoffs; settled otherwise. A settled card
-        # never sits in WORKING — it auto-files to completed (kept distinct from
-        # the explicit DONE-stamp fold below). WAIT (newest link) exempts.
-        sid_a = a.get("sid", "")
-        busy = states.get(sid_a) in ("working", "compacting", "permission")
-        cur = _open_turn(sid_a) if busy else None
-        # conservative claim: a busy owner whose open turn can't be resolved
-        # (no events cache yet) HOLDS its cards — never auto-file blind
-        claimed = busy and (cur is None or cur in tids.get(aid, set()) or any(
-            l.get("reply_id") == cur for nid in sub for l in node_links.get(nid, [])))
-        open_handoffs = [nid for nid in sub if nid in internals and roll.get(nid) != "done"]
-        deleg = any(states.get(internals[h].get("to_sid") or "") in ("working", "compacting", "permission")
-                    for h in open_handoffs)
-        ext_wait = any((node_links.get(nid) or [{"relevance": ""}])[-1].get("relevance") == "WAIT"
-                       for nid in sub)
-        lv = ("active" if busy and claimed
-              else "delegated" if deleg
-              else "stalled" if open_handoffs
-              else "settled")
-        # states empty = tmux unreachable: liveness is unknowable, NOT "everyone
-        # quiet" — never mass-auto-file on a blind read. CLAIM-LAG hold (panel
-        # parity): a busy owner whose open turn no card claims yet (ask capture
-        # in flight) holds this session's filing — the worked card is unknown.
-        auto_filed = False
-        held = False
-        if busy and cur and cur not in tids.get(aid, set()):
-            held = not any(cur in tids.get(oid, set()) for oid in asks) and not any(
-                l.get("reply_id") == cur for nl in node_links.values() for l in nl)
-        if states and not held and column == "asks" and lv == "settled" and not fu_open and not ext_wait:
-            column, auto_filed = "completed", True
-        # corrections re-verdict existing reports: they close nodes (status) but
-        # are NOT activity — keep them out of the tally and the recency time
-        done = len({l.get("reply_id") for nid in sub for l in node_links.get(nid, [])
-                    if l.get("relevance") == "DONE"})
-        last = max([a.get("t", 0)]
-                   + [l.get("t", 0) for nid in sub for l in node_links.get(nid, [])
-                      if not l.get("_corr")]
-                   + [f.get("t", 0) for f in fu_open])   # a fresh follow-up bumps the card
-
-        now = time.time()
-        if column == "completed":
-            # two independent done-detectors (panel parity): explicit DONE-stamp
-            # fold vs the settled-liveness detector; both agreeing is the goal state
-            judged = rollup(aid) == "done"
-            mark = f"{C.code(C.GRN)}✓{C.code(C.RESET)}"
-            if judged and lv == "settled":
-                suffix = f"  {C.code(C.DIM)}done{C.code(C.RESET)}"                # both agree: quiet
-            elif judged:
-                suffix = f"  {C.code(C.TEAL)}judged done — not settled yet{C.code(C.RESET)}"
-            else:
-                suffix = f"  {C.code(C.GRN)}auto-filed — verify, then clear{C.code(C.RESET)}"
-        elif column == "needs_input":
-            who = agents.get(questions[0].get("sid", ""), {}).get("name", "?")
-            mark = f"{C.code(C.TEAL)}?{C.code(C.RESET)}"
-            suffix = f"  {C.code(C.TEAL)}blocked on you — {who}{C.code(C.RESET)}"
-            if reopened:
-                suffix += f"  {C.code(C.YEL)}reopened after clear{C.code(C.RESET)}"
-        else:
-            mark = f"{C.code(C.DIM)}·{C.code(C.RESET)}"
-            if ext_wait:
-                suffix = f"  {C.code(C.TEAL)}⏳ waiting on an external event{C.code(C.RESET)}"
-            elif lv == "stalled" and drops:
-                nm, since = drops[0]
-                more = f" +{len(drops) - 1}" if len(drops) > 1 else ""
-                suffix = f"  {C.code(C.YEL)}stalled — {nm} owes an ending {_agehms(now - since)}{more}{C.code(C.RESET)}"
-            elif drops:
-                nm, since = drops[0]
-                more = f" +{len(drops) - 1}" if len(drops) > 1 else ""
-                suffix = f"  {C.code(C.YEL)}waiting on {nm} {_agehms(now - since)}{more}{C.code(C.RESET)}"
-            else:
-                suffix = f"  {C.code(C.DIM)}working{C.code(C.RESET)}"
-        if done and column != "completed":
-            suffix += f"  {C.code(C.GRN)}{done} done{C.code(C.RESET)}"
-
-        ag = agents.get(a.get("sid", ""), {})
-        items.append({
-            "sid": a.get("sid", ""), "name": ag.get("name", a.get("sid", "")[:8]),
-            "rgb": ag.get("rgb"), "dir": ag.get("dir", ""),
-            "t": last, "did": f"{mark} " + a.get("text", "") + suffix, "ask": "", "ask_t": 0,
-            "origin": "user",                      # asks are the user's by construction
-            "column": column,
-        })
-    items.sort(key=lambda x: x["t"], reverse=True)
-    return items
-
-# ── render ───────────────────────────────────────────────────────────────────
-def _daylabel(ts, now):
-    day = time.strftime("%Y-%m-%d", time.localtime(ts))
-    tod = time.strftime("%Y-%m-%d", time.localtime(now))
-    ystd = time.strftime("%Y-%m-%d", time.localtime(now - 86400))
-    if day == tod:  return "Today"
-    if day == ystd: return "Yesterday"
-    return time.strftime("%a %b %-d", time.localtime(ts))
-
-def _chip(it, live):
-    name = it["name"][:NAME_W]
-    dot = "●" if it["sid"] in live else "○"
-    col = C.rgb(it["rgb"]) if it["rgb"] else C.code(C.GRAY)
-    pad = " " * max(0, NAME_W - len(name))
-    return f"{col}{dot} {C.code(C.BOLD)}{name}{C.code(C.RESET)}{pad}"
-
-def body_lines(items, args, now, live):
-    """Render to a list where each element is exactly ONE screen row (no embedded
-    newlines) — the TUI scroller indexes this list directly."""
-    out, last_day = [], None
-    for it in items:
-        day = _daylabel(it["t"], now)
-        if day != last_day:
-            if out:
-                out.append("")                       # blank spacer between day groups
-            out.append(f"  {C.code(C.BOLD)}{C.code(C.GRAY)}{day}{C.code(C.RESET)}")
-            last_day = day
-        age = now - it["t"]
-        agestr = f"{_agehms(age):>3} ago"            # relative "how long ago", left column
-        agec = f"{C.rgb(age_rgb(age))}{agestr}{C.code(C.RESET)}"
-        out.append(f"  {agec}  {_chip(it, live)}  {it['did']}")
-        if args.ask and it["ask"]:
-            out.append(f"           {C.code(C.DIM)}↳ {it['ask']}{C.code(C.RESET)}")
-    return out
-
-def select(items, args, now):
-    """Filtered items + how many AGENT-prompted ones the default view hid
-    (within the same agent/live/time range, so the count matches what --all adds)."""
-    if args.agent:
-        q = args.agent.lower()
-        items = [i for i in items if q in i["name"].lower()]
-    if args.live:
-        live = live_session_ids()
-        items = [i for i in items if i["sid"] in live]
-    cutoff = None
-    if args.today:
-        cutoff = time.mktime(time.strptime(time.strftime("%Y-%m-%d", time.localtime(now)), "%Y-%m-%d"))
-    elif args.since:
-        cutoff = now - args.since
-    if cutoff is not None:
-        items = [i for i in items if i["t"] >= cutoff]
-    hidden = 0
-    if not args.all:
-        n0 = len(items)
-        items = [i for i in items if i["origin"] == "user"]
-        hidden = n0 - len(items)
-    if args.chrono:
-        items = list(reversed(items))
-    if args.n:
-        items = items[:args.n]
-        if args.chrono:                      # keep the newest n, still oldest-first
-            items = items[-args.n:]
-    return items, hidden
-
-def compute(args, now):
-    agents = load_agents()
-    items, hidden = select(ask_items(agents) if args.asks else feed_items(agents), args, now)
-    return items, live_session_ids(), hidden
-
-def header_line(items, live, now, hidden, asks=False):
-    n_agents = len({i["sid"] for i in items})
-    n_live = len({i["sid"] for i in items if i["sid"] in live})
-    return (f"{C.code(C.BOLD)}romp {'asks' if asks else 'feed'}{C.code(C.RESET)}  "
-            f"{len(items)} {'open asks' if asks else 'deliverables'} · {n_agents} agents"
-            + (f" · {C.code(C.GRN)}{n_live} live{C.code(C.RESET)}" if n_live else "")
-            + (f" · {C.code(C.DIM)}{hidden} agent-internal hidden (--all){C.code(C.RESET)}" if hidden else "")
-            + f"  {C.code(C.DIM)}updated {time.strftime('%H:%M:%S')}{C.code(C.RESET)}")
-
-def _empty_msg(args):
-    if args.asks:
-        return ("  (no open asks — inbox zero)" if os.path.isdir(REQS)
-                else "  (no open asks — registry not emitting yet)")
-    return "  (no deliverables in range)"
-
-def build(args, now):                        # one-shot (piped / --once)
-    items, live, hidden = compute(args, now)
-    body = body_lines(items, args, now, live)
-    return header_line(items, live, now, hidden, args.asks) + "\n" + (
-        "\n".join(body) if body else "\n" + _empty_msg(args))
-
-# ── scrollable TUI ─────────────────────────────────────────────────────────────
-_ANSI = re.compile(r"\033\[[0-9;?]*[A-Za-z]")
-
-def _vis_trunc(s, width):
-    """Truncate to `width` VISIBLE columns without cutting an ANSI escape; always
-    close with a reset so a clipped color can't bleed into the next row."""
-    out, vis, i = [], 0, 0
-    while i < len(s):
-        m = _ANSI.match(s, i)
-        if m:
-            out.append(m.group()); i = m.end(); continue
-        if vis >= width:
-            break
-        out.append(s[i]); vis += 1; i += 1
-    res = "".join(out)
-    return res + (C.RESET if (C.on and "\033" in res) else "")
-
-def _read_key(fd):
-    ch = os.read(fd, 1)
-    if ch != b"\x1b":
-        return ch.decode("latin1", "ignore")
-    if not _poll([fd], [], [], 0.02)[0]:     # bare ESC (nothing follows) -> quit
-        return "\x1b"
-    return "\x1b" + os.read(fd, 6).decode("latin1", "ignore")
-
-_UP   = {"\x1b[A", "k"};            _DOWN = {"\x1b[B", "j"}
-_PGUP = {"\x1b[5~", "b", "\x15"};   _PGDN = {"\x1b[6~", "f", " ", "\x04"}
-_HOME = {"\x1b[H", "\x1b[1~", "g"}; _END  = {"\x1b[F", "\x1b[4~", "G"}
-
-def _apply_key(key, offset, view_h, max_off):
-    if   key in _UP:   offset -= 1
-    elif key in _DOWN: offset += 1
-    elif key in _PGUP: offset -= view_h
-    elif key in _PGDN: offset += view_h
-    elif key in _HOME: offset = 0
-    elif key in _END:  offset = max_off
-    return min(max(0, offset), max_off)
-
-def _frame(header, body, offset, view_h, cols, max_off):
-    rows = ["\033[H", _vis_trunc(header, cols) + "\033[K"]
-    window = body[offset:offset + view_h]
-    for ln in window:
-        rows.append(_vis_trunc(ln, cols) + "\033[K")
-    rows.extend("\033[K" for _ in range(view_h - len(window)))
-    shown = f"{offset + 1}-{min(offset + view_h, len(body))}/{len(body)}" if body else "0/0"
-    arrows = ("↑" if offset > 0 else " ") + ("↓" if offset < max_off else " ")
-    foot = (f"{C.code(C.DIM)}{arrows} scroll · g/G top·bottom · q quit"
-            f"   {shown}{C.code(C.RESET)}")
-    rows.append(_vis_trunc(foot, cols) + "\033[K")
-    return "\r\n".join(rows) + "\033[J"
-
-def run_tui(args):
-    fd = sys.stdin.fileno()
-    old = termios.tcgetattr(fd)
-    out = sys.stdout
-    out.write("\033[?1049h\033[?25l"); out.flush()      # alt screen + hide cursor
-    offset, anchor, body, header, next_refresh = 0, None, [], "", 0.0
+def session_name(state, sid):
     try:
-        tty.setcbreak(fd)
-        first = True
-        while True:
-            now = time.time()
-            if first or now >= next_refresh:
-                items, live, hidden = compute(args, now)
-                header = header_line(items, live, now, hidden, args.asks)
-                newbody = body_lines(items, args, now, live) or [_empty_msg(args)]
-                if not first and offset > 0 and anchor:          # keep the user's view
-                    try: offset = newbody.index(anchor)          # pinned to its content,
-                    except ValueError: pass                      # not its row number
-                body, next_refresh, first = newbody, now + args.watch, False
-            sz = os.get_terminal_size()
-            view_h = max(1, sz.lines - 2)                        # header + footer rows
-            max_off = max(0, len(body) - view_h)
-            offset = min(max(0, offset), max_off)
-            anchor = body[offset] if offset < len(body) and body[offset].strip() else None
-            out.write(_frame(header, body, offset, view_h, sz.columns, max_off)); out.flush()
-            if _poll([sys.stdin], [], [], max(0.05, next_refresh - time.time()))[0]:
-                key = _read_key(fd)
-                if key in ("q", "\x1b", "\x03"):
-                    break
-                offset = _apply_key(key, offset, view_h, max_off)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, old)
-        out.write("\033[?25h\033[?1049l"); out.flush()           # restore screen + cursor
+        return (state / "names" / sid).read_text().rstrip("\n").split("\t")[0] or sid[:8]
+    except Exception:
+        return sid[:8]
 
-def main():
-    ap = argparse.ArgumentParser(add_help=True)
-    ap.add_argument("-n", type=int, default=0, help="max deliverables")
-    ap.add_argument("--since", type=_parse_dur, default=None, help="only last DUR (90m, 6h, 2d)")
-    ap.add_argument("--today", action="store_true", help="only today's deliverables")
-    ap.add_argument("--agent", type=str, default=None, help="filter to agents matching NAME")
-    ap.add_argument("--all", action="store_true",
-                    help="include agent-prompted deliverables (default: only user-prompted)")
-    ap.add_argument("--asks", action="store_true",
-                    help="open-asks inbox from the request registry (REQUESTS.md)")
-    ap.add_argument("--live", action="store_true", help="only live agents")
-    ap.add_argument("--ask", action="store_true", help="show each item's prompting ask")
-    ap.add_argument("--chrono", action="store_true", help="oldest-first (default newest-first)")
-    ap.add_argument("--watch", type=float, default=2.0, help="refresh seconds (default 2)")
-    ap.add_argument("--once", action="store_true", help="print once and exit")
-    ap.add_argument("--no-color", action="store_true")
-    a = ap.parse_args()
-    C.on = (not a.no_color) and sys.stdout.isatty()
-    if not sys.stdout.isatty():
-        a.once = True
-    if a.once or not sys.stdin.isatty():
-        print(build(a, time.time()))
-        return
-    run_tui(a)
+
+def session_color(state, sid):
+    """[r,g,b] from the names registry (3rd tab field), or None."""
+    try:
+        parts = (state / "names" / sid).read_text().rstrip("\n").split("\t")
+        if len(parts) > 2 and parts[2].startswith("#"):
+            h = parts[2].lstrip("#")
+            return [int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)]
+    except Exception:
+        pass
+    return None
+
+
+def tmux_sessions():
+    """{sid: state} for alive romp sessions, queried straight from tmux (the one non-file source). {}
+    when tmux is absent (headless) — the caller then treats every store as alive, like the kernel."""
+    try:
+        r = subprocess.run(["tmux", "list-sessions", "-F",
+                            "#{@romp}|#{@romp-session-id}|#{@claude-state}"],
+                           capture_output=True, text=True, timeout=2.5)
+    except Exception:
+        return {}
+    if r.returncode != 0:
+        return {}
+    out = {}
+    for line in r.stdout.splitlines():
+        p = line.split("|")
+        if len(p) >= 3 and p[0] == "1" and p[1]:
+            out[p[1]] = p[2].strip()
+    return out
+
+
+# ───────────────────────── rollup (re-implemented from romp-judge.rollup_status) ─────────────────────────
+
+def _children_map(nodes):
+    ch = {}
+    for nid, nd in nodes.items():
+        ch.setdefault(nd.get("parentId"), []).append(nid)
+    return ch
+
+
+def _top_ancestor(nodes, nid):
+    while nodes.get(nid, {}).get("parentId") is not None:
+        nid = nodes[nid]["parentId"]
+    return nid
+
+
+def classify_store(store, session_closed, perm_floor=False):
+    """Each top-goal's rolled-up status: 'cleared' | 'blocked' | 'completed' | 'working'.
+    Precedence cleared > blocked > completed(+settled) > working. A node is complete if nodeComplete or
+    (has kids and all kids complete); a (sub)tree that is complete can't be blocked (a finished ask's
+    leftover child-block is moot); a goal completes only once SETTLED — no longer the focus, or the
+    session is closed. perm_floor floors the focus top to blocked (a live permission prompt)."""
+    nodes = store["nodes"]
+    children = _children_map(nodes)
+
+    def is_complete(nid):
+        kids = children.get(nid, [])
+        return nodes[nid].get("nodeComplete") or (bool(kids) and all(is_complete(c) for c in kids))
+
+    def any_blocked(nid):
+        if is_complete(nid):
+            return False
+        return bool(nodes[nid].get("blocked")) or any(any_blocked(c) for c in children.get(nid, []))
+
+    focus = _top_ancestor(nodes, store["lastNode"]) if store.get("lastNode") in nodes else None
+    perm_top = focus if (perm_floor and focus in nodes
+                         and not nodes[focus].get("nodeComplete")
+                         and not nodes[focus].get("cleared")) else None
+    out = {}
+    for nid in children.get(None, []):
+        settled = (nid != focus) or session_closed
+        if nodes[nid].get("cleared"):
+            out[nid] = "cleared"
+        elif nid == perm_top or any_blocked(nid):
+            out[nid] = "blocked"
+        elif is_complete(nid) and settled:
+            out[nid] = "completed"
+        else:
+            out[nid] = "working"
+    return out
+
+
+def node_mark(nd):
+    """Per-node state in the feed's vocabulary: done / blocked(needs-you) / open."""
+    if nd.get("nodeComplete"):
+        return "done"
+    if nd.get("blocked"):
+        return "blocked"
+    return "open"
+
+
+# ───────────────────────── render ─────────────────────────
+
+COLUMNS = [("working", "WORKING"), ("blocked", "BLOCKED"), ("completed", "COMPLETED")]
+MARK = {"done": "✓", "blocked": "!", "open": "○"}
+
+
+class Style:
+    def __init__(self, color):
+        self.color = color
+
+    def c(self, s, code):
+        return ("\033[%sm%s\033[0m" % (code, s)) if self.color else s
+
+    def rgb(self, s, rgb):
+        if not self.color or not rgb:
+            return s
+        return "\033[38;2;%d;%d;%dm%s\033[0m" % (rgb[0], rgb[1], rgb[2], s)
+
+    def mark(self, m):
+        glyph = MARK[m]
+        if not self.color:
+            return glyph
+        return {"done": "\033[32m%s\033[0m", "blocked": "\033[31m%s\033[0m",
+                "open": "\033[90m%s\033[0m"}[m] % glyph
+
+
+def build_board(state, include_dead=False, session_filter=None):
+    """The full picture: {sid: {name,color,alive,state, tops:{status:[topId..]}, store}} for the
+    sessions to show, plus the per-column ordering. One place builds it; render/json both consume it."""
+    stores = load_stores(state)
+    cleared = cleared_ids(state)
+    tmux = tmux_sessions()
+    rows = []
+    for sid, store in stores.items():
+        alive = (sid in tmux) if tmux else True
+        if not alive and not include_dead:
+            continue
+        name = session_name(state, sid)
+        if session_filter and session_filter.lower() not in (name.lower(), sid.lower(), sid[:8].lower()):
+            continue
+        st = tmux.get(sid, "" if alive else "closed")
+        status = classify_store(store, session_closed=not alive, perm_floor=(st == "permission"))
+        rows.append({"sid": sid, "name": name, "color": session_color(state, sid),
+                     "alive": alive, "state": st, "status": status, "store": store,
+                     "cleared": cleared})
+    return rows
+
+
+def _flatten(store, top, marks_only=False):
+    """The top's subtree as (depth, node) pairs, children oldest-first — build_feed's flatten order."""
+    nodes = store["nodes"]
+    children = _children_map(nodes)
+    out = []
+
+    def walk(nid, depth):
+        out.append((depth, nodes[nid]))
+        for c in sorted(children.get(nid, []), key=lambda c: nodes[c].get("t", 0)):
+            walk(c, depth + 1)
+    walk(top, 0)
+    return out
+
+
+def render(rows, style, header=None):
+    """The board: three columns, every node line carrying its raw flags + short id (so a divergence
+    from the browser is debuggable at a glance — there's no terse mode, this IS the mode)."""
+    out = []
+    if header:
+        out.append(style.c(header, "90"))
+        out.append("")
+    # bucket every visible top under its column, tagged with its owning session row
+    buckets = {k: [] for k, _ in COLUMNS}
+    for r in rows:
+        for top, col in r["status"].items():
+            if col == "cleared" or top in r["cleared"]:
+                continue
+            buckets[col].append((r, top))
+
+    def flags(nd):
+        return style.c("  [c=%s b=%s id=%s]" % (1 if nd.get("nodeComplete") else 0,
+                       1 if nd.get("blocked") else 0, nd.get("id", "?")[-6:]), "90")
+
+    for col, label in COLUMNS:
+        items = buckets[col]
+        head = "%s  (%d)" % (label, len(items))
+        out.append(style.c(head, "1;33" if col == "working" else "1;31" if col == "blocked" else "1;34"))
+        if not items:
+            out.append("  " + style.c("—", "90"))
+            out.append("")
+            continue
+        for r, top in items:
+            store = r["store"]
+            who = style.rgb(r["name"], r["color"])
+            if not r["alive"]:
+                who += style.c(" (dead)", "90")
+            tree = _flatten(store, top)
+            roottext = store["nodes"][top].get("text") or "(untitled)"
+            out.append("  %s %s   %s%s" % (style.mark(node_mark(store["nodes"][top])), roottext, who,
+                                           flags(store["nodes"][top])))
+            for depth, nd in tree[1:]:
+                ind = "    " + "  " * depth
+                txt = nd.get("text") or "(node)"
+                line = "%s%s %s%s%s" % (ind, style.mark(node_mark(nd)), txt,
+                                        style.c("  [cleared]", "90") if nd.get("cleared") else "", flags(nd))
+                if nd.get("cleared"):
+                    line = style.c(line, "90")
+                out.append(line)
+            out.append("")
+    return "\n".join(out).rstrip("\n") + "\n"
+
+
+# ───────────────────────── cli ─────────────────────────
+
+def _parse_args(argv):
+    a = {"all": False, "session": None, "color": None, "help": False}
+    it = iter(argv)
+    for tok in it:
+        if tok in ("--all", "-a"):
+            a["all"] = True
+        elif tok == "--no-color":
+            a["color"] = False
+        elif tok in ("--session", "-s"):
+            a["session"] = next(it, None)
+        elif tok in ("--help", "-h"):
+            a["help"] = True
+    return a
+
+
+HELP = """romp-feed — live terminal mirror of the dashboard feed (independent of the kernel render path)
+
+Working / blocked / completed for non-cleared goals, every node showing its raw complete/blocked
+flags + id. Redraws every second in a terminal (^C to stop); prints once when piped. For build/kernel
+versions use `romp --version`.
+
+  romp-feed                      alive sessions
+  romp-feed --all                include dead sessions too
+  romp-feed --session web_view   only that session (name, sid, or sid prefix)
+  romp-feed --no-color           plain text
+"""
+
+
+def main(argv):
+    a = _parse_args(argv)
+    if a["help"]:
+        sys.stdout.write(HELP)
+        return 0
+    state = state_dir()
+    tty = sys.stdout.isatty()
+    style = Style(tty if a["color"] is None else a["color"])
+
+    def once():
+        rows = build_board(state, include_dead=a["all"], session_filter=a["session"])
+        return render(rows, style, header="romp-feed · %s  (romp --version for builds)" % time.strftime("%H:%M:%S"))
+
+    if not tty:                                  # piped/redirected → single snapshot, no watch loop
+        sys.stdout.write(once())
+        return 0
+    try:
+        while True:                              # interactive → live board, redraw every second
+            sys.stdout.write("\033[2J\033[H")
+            sys.stdout.write(once())
+            sys.stdout.flush()
+            time.sleep(1.0)
+    except KeyboardInterrupt:
+        return 0
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main(sys.argv[1:]))

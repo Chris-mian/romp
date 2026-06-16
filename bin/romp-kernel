@@ -1632,59 +1632,13 @@ def _focus_kind(anchor):
     return "user" if anchor == "prompt" else None
 
 
-FEEDDETAIL = jd.STATE / "feed-detail"          # romp-feed-detail's per-deliverable {paragraph, next_steps} cache
-_feed_detail_pending = set()                   # itemIds with a generation in flight → no double-spawn
-
-
-def _read_feed_detail(item_id):
-    """The cached expand paragraph for a deliverable, or None if absent/empty (the writer wrote nothing
-    for a legacy / unmatched id)."""
-    try:
-        d = json.loads((FEEDDETAIL / (item_id + ".json")).read_text())
-    except Exception:
-        return None
-    return d if isinstance(d, dict) and d.get("paragraph") else None
-
-
 def _request_feed_detail(item_id, generate):
-    """Serve the expand paragraph for one deliverable — fills the '…' in the feed-card modal. Push the
-    cached detail if present; else, when the user expanded a DONE/DECISION card (generate), spawn the
-    writer (romp-feed-detail) and poll for the file it writes, pushing detail/detailFailed to the feed.
-    Ported from the TS kernel's requestFeedDetail/pollFeedDetail."""
-    d = _read_feed_detail(item_id)
-    if d:
-        _send_to_app("feed", {"type": "detail", "itemId": item_id, "detail": d})
-        return
-    if not generate or item_id in _feed_detail_pending:
-        if not generate:                                   # nothing to generate (non-DONE/DECISION) and no cache
-            _send_to_app("feed", {"type": "detailFailed", "itemId": item_id, "reason": "unavailable"})
-        return
-    _feed_detail_pending.add(item_id)
-    try:
-        subprocess.Popen([str(HERE / "romp-feed-detail"), item_id],
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
-    except Exception:
-        _feed_detail_pending.discard(item_id)
-        _send_to_app("feed", {"type": "detailFailed", "itemId": item_id, "reason": "spawn"})
-        return
-
-    def _poll(tries=0):
-        with _clients_lock:
-            has_feed = any(c["app"] == "feed" for c in _clients)
-        if not has_feed:                                   # nobody watching → stop (a re-expand re-requests)
-            _feed_detail_pending.discard(item_id)
-            return
-        d2 = _read_feed_detail(item_id)
-        if d2:
-            _feed_detail_pending.discard(item_id)
-            _send_to_app("feed", {"type": "detail", "itemId": item_id, "detail": d2})
-        elif tries >= 30:                                  # ~15s → the writer failed or no-op'd a legacy id
-            _feed_detail_pending.discard(item_id)
-            _send_to_app("feed", {"type": "detailFailed", "itemId": item_id, "reason": "timeout"})
-        else:
-            threading.Timer(0.5, _poll, args=(tries + 1,)).start()
-
-    threading.Timer(0.5, _poll).start()
+    """Card-detail expand. The old expand-paragraph writer (romp-feed-detail + the feed-detail/ store)
+    is retired with the clean-break rebuild: a goal card's modal shows its caption trail directly
+    (design/read-side.md — "until [the remade card detail] is in, a card shows its caption trail").
+    We still answer the `expand` protocol so the UI's '…' resolves to the trail-only view; no old-store
+    read, no writer spawn. Re-add a real detail source here when the card detail is remade."""
+    _send_to_app("feed", {"type": "detailFailed", "itemId": item_id, "reason": "unavailable"})
 
 
 _nonce = [0]

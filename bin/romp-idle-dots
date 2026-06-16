@@ -27,7 +27,7 @@ Healing is conservative: a pane in copy-mode (scrolled back) or with
 unrecognizable content is left alone, and `since` is re-read just before
 writing so a real hook event mid-sweep always wins.
 
-Lifecycle mirrors romp-summarize-backfill: `--ensure` spawns a detached daemon
+Lifecycle: `--ensure` spawns a detached daemon
 if one isn't already running, re-ensured from the status hook on idle AND on
 prompt-submit (a turn can only get stuck after a prompt started it). The
 daemon exits once no romp session remains.
@@ -221,8 +221,8 @@ def daemon():
 def ensure():
     if _running():
         return
-    # double-fork into a detached daemon (no controlling terminal) — same shape
-    # as romp-summarize-backfill, so it survives the short-lived hook that spawns it.
+    # double-fork into a detached daemon (no controlling terminal) so it survives
+    # the short-lived hook that spawns it.
     if os.fork() > 0:
         return
     os.setsid()

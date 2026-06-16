@@ -487,9 +487,7 @@ Usage:
   romp <name>          Start a session with the given name
   romp -r              Resume a past conversation (full-screen picker, by name)
   romp -d              Live session monitor (dashboard)
-  romp -l              Ledger — live "what is each session doing" view (purpose + bullets)
-  romp -f              Feed — fleet-wide timeline of deliverables (what got done, in order)
-  romp -p              Pipeline — live status table of the summarization DAG (stage + timing)
+  romp -f              Feed — terminal Working/Blocked/Completed board (mirrors the web feed)
   romp on              Start the kernel manager (owns the romp kernel; front ends attach).
                        Runs in the foreground — Ctrl+C stops it and its kernels
   romp refresh         Restart all romp kernels (picks up new code — run after an update)
@@ -523,34 +521,16 @@ if [[ "${1:-}" == "-d" ]]; then
 fi
 
 # (Retired) `romp -g` browser timeline — superseded by the VS Code / Obsidian
-# vault-code timeline (db_timeline). The python prototype (romp-timeline-serve,
-# prototypes/romp-timeline-data) is left on disk but no longer wired.
+# vault-code timeline (db_timeline).
 
-# Ledger — live, recency-biased "what is every session doing" view (per-session
-# purpose + synthesized bullets from the rolling digest). Spelled `-l` for the
-# same reason as `-d`/`-g`. Constantly refreshes; passes flags through (e.g.
-# `romp -l --all`, `romp -l --once`). ^C to stop.
-if [[ "${1:-}" == "-l" ]]; then
-    shift
-    exec romp-ledger "$@"
-fi
-
-# Feed — fleet-wide timeline of deliverables, pivoted by what-got-done rather
-# than by-session (the ledger's axis). Spelled `-f` for the same reason as the
-# others. Constantly refreshes; passes flags through (e.g. `romp -f --ask`,
-# `romp -f --since 6h`, `romp -f --once`). ^C to stop.
+# Feed — terminal Working/Blocked/Completed board: a lightweight, kernel-independent
+# mirror of the web feed. It re-reads the goal stores and re-implements the rollup
+# itself, so it doubles as a cross-check on the kernel/judge render path. Spelled
+# `-f` for the same reason as `-d`. Flags pass through (e.g. `romp -f --all`,
+# `romp -f --session NAME`, `romp -f --no-color`). ^C to stop.
 if [[ "${1:-}" == "-f" ]]; then
     shift
     exec romp-feed "$@"
-fi
-
-# Pipeline — live status table of the summarization DAG: for each turn-event,
-# whether it's been summarized / detailed and how long each stage took. A debug
-# view to watch the pipeline keep up. Flags pass through (e.g. `romp -p --pending`,
-# `romp -p --once`). ^C to stop.
-if [[ "${1:-}" == "-p" ]]; then
-    shift
-    exec romp-pipeline "$@"
 fi
 
 # Romp Postal Service — peer messaging between romp sessions. Double-dash because

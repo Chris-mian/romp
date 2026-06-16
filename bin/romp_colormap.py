@@ -1,7 +1,7 @@
 """romp_colormap — the ONE recency colormap shared by every romp view.
 
-Single source of truth: romp-ledger and romp-feed (and any future view / tmux
-segment) import age_rgb from here, so changing the look is ONE edit, not N.
+Single source of truth: romp-feed, the kernel, and the render bundle (and any future
+view / tmux segment) import age_rgb from here, so changing the look is ONE edit, not N.
 
 age_rgb(age_seconds) -> (r,g,b): recency on a LOG scale — most recent maps to the
 colormap's BRIGHT/light end, oldest to its DARK end.
