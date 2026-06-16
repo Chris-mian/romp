@@ -146,6 +146,33 @@ class UnitText(unittest.TestCase):
         self.assertEqual(txt.count("USER ASKED:"), 1, "only the real prompt is user input")
         self.assertIn("do the thing", txt)
 
+    def test_shape_passthrough_and_trim(self):
+        self.assertEqual(jd._shape("hello", 10, 10), "hello", "fits within head+tail → unchanged")
+        big = "A" * 50 + "MID" + "Z" * 50
+        out = jd._shape(big, 20, 20)
+        self.assertIn(" […] ", out, "oversized → head+tail with the elision marker")
+        self.assertTrue(out.startswith("A" * 20), "the opening (head) is kept")
+        self.assertTrue(out.endswith("Z" * 20), "the trailing end (tail) is kept")
+        self.assertNotIn("MID", out, "the middle is dropped")
+
+    def test_unit_text_shapes_a_long_assistant_reply(self):
+        # > head+tail (2500+5500=8000) → keep the opening framing AND the trailing ask, drop the middle
+        text = "HEAD_START " + "a" * 3000 + " MIDDLE_DROP " + "b" * 6000 + " TAIL_END"
+        s = build_session([uline(T0, "q", "u1", ps="typed"),
+                           aline(T0 + 30, text, "a1", "u1", stop="end_turn")])
+        out = jd._unit_text(s["turns"][0]["atoms"])
+        self.assertIn(" […] ", out, "an assistant reply over 8000 chars is trimmed with the marker")
+        self.assertIn("HEAD_START", out); self.assertIn("TAIL_END", out)
+        self.assertNotIn("MIDDLE_DROP", out, "the middle is dropped; head + tail survive")
+
+    def test_unit_text_full_passthrough_when_short(self):
+        text = "SHORT_ANSWER " + "c" * 500
+        s = build_session([uline(T0, "q", "u1", ps="typed"),
+                           aline(T0 + 30, text, "a1", "u1", stop="end_turn")])
+        out = jd._unit_text(s["turns"][0]["atoms"])
+        self.assertNotIn(" […] ", out, "under the limit → full passthrough, no marker")
+        self.assertIn("SHORT_ANSWER", out); self.assertIn("c" * 500, out)
+
 
 # ───────────────────────── caption cleaning ─────────────────────────
 class CleanCaption(unittest.TestCase):

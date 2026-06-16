@@ -130,6 +130,13 @@ def _atom_text(atom):
                     if isinstance(b, dict) and b.get("type") == "text").strip()
 
 
+def _shape(s, head, tail):
+    """Trim only OVERSIZED text, keeping both the opening framing AND the trailing ask (drop the
+    middle). A blunt head- or tail-only cut loses one end — and a tail-only cut on a pure-answer
+    segment drops its framing, which measurably caused false blocks. Full passthrough when it fits."""
+    return s if len(s) <= head + tail else s[:head].rstrip() + " […] " + s[-tail:].lstrip()
+
+
 def _unit_text(atoms):
     """The caption model's input for one unit (segment or turn): what the user asked, what the
     assistant said, and the tools it used — drawn from the unit's atoms."""
@@ -150,9 +157,9 @@ def _unit_text(atoms):
                         tools.append(n)
     out = []
     if user_said:
-        out.append("USER ASKED: " + " | ".join(user_said)[:600])
+        out.append("USER ASKED: " + _shape(" | ".join(user_said), 1200, 1800))
     if asst_said:
-        out.append("ASSISTANT SAID: " + " ".join(asst_said)[-1800:])
+        out.append("ASSISTANT SAID: " + _shape(" ".join(asst_said), 2500, 5500))
     if tools:
         out.append("TOOLS USED: " + ", ".join(tools[:15]))
     return "\n".join(out).strip()
