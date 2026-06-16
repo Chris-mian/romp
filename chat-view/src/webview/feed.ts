@@ -407,9 +407,11 @@ function makeAskCard(it: AskItem): HTMLElement {
   card.append(main);
   // Follow-up lives in the modal now (the user 2026-06-10), not on the card.
 
-  // title → locate the typed turn; agent → open session; Clear → inbox-zero. These
-  // stopPropagation so the card-body single/double handlers don't also fire.
-  title.onclick = (ev) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "showAskPath", itemId: it.itemId }); };
+  // title → locate the user MESSAGE that gave rise to the card (the originating prompt), same as the
+  // modal title — anchor:"prompt" lands the chat on the nearest user turn. (Was showAskPath, which only
+  // lit the timeline path; the card hover already does that. the user 2026-06-16.) agent → open session;
+  // Clear → inbox-zero. These stopPropagation so the card-body single/double handlers don't also fire.
+  title.onclick = (ev) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: it.itemId, sid: it.sid, t: it.t, anchor: "prompt" }); };
   name.onclick = (ev) => { ev.stopPropagation(); openOrReviveSession(it.sid, it.live, it.name); };
   clr.onclick = (ev) => {
     ev.stopPropagation();

@@ -24,3 +24,8 @@ test("a tree-node hover lights the NODE's own segments via showAskPath(node.id)"
 test("the broken collectHoverIds path (emitted goal-node ids the timeline can't match) is gone", () => {
   assert.doesNotMatch(FEED, /function collectHoverIds/);
 });
+
+test("clicking the CARD title locates the originating user message (anchor:prompt), like the modal", () => {
+  assert.match(FEED, /title\.onclick = .*showOnTimeline".*itemId: it\.itemId.*anchor: "prompt"/);
+  assert.doesNotMatch(FEED, /title\.onclick = .*showAskPath", itemId: it\.itemId/, "the card title no longer just lights the timeline");
+});
