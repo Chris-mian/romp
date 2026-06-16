@@ -14,7 +14,7 @@ old). Port status (KEEP/ADAPT/DROP) tracked in design/ui-parity.md + backlog.md.
 
 Run:  python3 ~/GitRepos/romp-event-model/bin/romp-kernel   → opens http://127.0.0.1:7878
 """
-import json, os, re, sys, time, threading, traceback, base64, hashlib, struct, subprocess
+import json, os, re, sys, time, threading, traceback, base64, hashlib, struct, subprocess, http.client
 from pathlib import Path
 from datetime import datetime
 from importlib.machinery import SourceFileLoader
@@ -1386,6 +1386,44 @@ class Handler(BaseHTTPRequestHandler):
                 ct = {"js": "text/javascript", "css": "text/css", "svg": "image/svg+xml",
                       "map": "application/json"}.get(fp.suffix.lstrip("."), "text/plain")
                 return self._send(200, fp.read_bytes(), ct + "; charset=utf-8")
+            return self._send(404, "not found", "text/plain")
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        except Exception:
+            try:
+                self._send(500, traceback.format_exc(), "text/plain")
+            except Exception:
+                pass
+
+    def do_POST(self):
+        u = urlparse(self.path)
+        q = parse_qs(u.query)
+        self._set_cookie = None
+        try:
+            n = int(self.headers.get("Content-Length") or 0)   # drain any body (keep-alive safety)
+            if n:
+                self.rfile.read(n)
+        except Exception:
+            pass
+        try:
+            ok, self._set_cookie, why = self._authorize(q)
+            if not ok:
+                return self._send(403, "forbidden: " + why, "text/plain")
+            if u.path == "/restart":
+                # The web Restart button (↻ in the timeline controls). Ack FIRST, then ask the
+                # romp-manager to restart-all — it SIGTERMs this kernel and its exit handler spawns a
+                # fresh one, so new Python code loads (the button then polls /healthz and reloads).
+                # Standalone (no manager) → nothing to restart; the ack still returns. Restores the
+                # endpoint the TS kernel had (chat-view/src/kernel/server.ts), dropped in the rewrite.
+                self._send(200, json.dumps({"ok": True, "restarting": True}), "application/json")
+                mport = os.environ.get("ROMP_MANAGER_PORT")
+                if mport:
+                    try:
+                        c = http.client.HTTPConnection("127.0.0.1", int(mport), timeout=4)
+                        c.request("POST", "/restart-all"); c.getresponse(); c.close()
+                    except Exception:
+                        pass                                   # no manager reachable → nothing to restart
+                return
             return self._send(404, "not found", "text/plain")
         except (BrokenPipeError, ConnectionResetError):
             pass

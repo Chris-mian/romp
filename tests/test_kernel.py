@@ -584,6 +584,32 @@ class ServeSecurity(unittest.TestCase):
     def test_local_request_allowed(self):
         self.assertEqual(self._code("/feed", {}), 200)
 
+    def test_restart_endpoint_acks_post(self):
+        """The web Restart button (↻) POSTs /restart; the kernel must ACK {ok,restarting} (and, with a
+        manager, relay /restart-all so the kernel process relaunches). Regression guard: the Python
+        rewrite dropped do_POST entirely, so the button silently no-op'd and the user had to pkill.
+        No ROMP_MANAGER_PORT here → it acks without restarting anything."""
+        import urllib.request, json as _json
+        saved = os.environ.pop("ROMP_MANAGER_PORT", None)   # never trigger a real restart-all in a test
+        try:
+            req = urllib.request.Request("http://127.0.0.1:%d/restart" % self.port, method="POST", data=b"")
+            with urllib.request.urlopen(req, timeout=5) as r:
+                self.assertEqual(r.status, 200)
+                self.assertEqual(_json.loads(r.read().decode()), {"ok": True, "restarting": True})
+        finally:
+            if saved is not None:
+                os.environ["ROMP_MANAGER_PORT"] = saved
+
+    def test_unknown_post_path_is_404(self):
+        import urllib.request, urllib.error
+        req = urllib.request.Request("http://127.0.0.1:%d/nope" % self.port, method="POST", data=b"")
+        try:
+            with urllib.request.urlopen(req, timeout=5) as r:
+                code = r.status
+        except urllib.error.HTTPError as e:
+            code = e.code
+        self.assertEqual(code, 404)
+
     def test_timeline_page_served(self):
         # the combined shell's third pane: /timeline injects the shared obsidian TimelinePanel verbatim
         import urllib.request
