@@ -74,6 +74,25 @@ class LandingShell(unittest.TestCase):
         self.assertIn(">Chat</button>", html)                    # plain text label, no icon child
         self.assertIn("#mtabs{display:flex;flex:0 0 auto", html)  # sized to its text, not a tall fixed bar
 
+    def test_landing_disables_browser_pinch_zoom(self):
+        # the top document governs pinch-zoom for the whole visual viewport (incl. the timeline iframe), so
+        # it must disable page zoom or iOS page-zooms on a timeline pinch instead of running the gesture.
+        html = km._landing()
+        self.assertIn("user-scalable=no", html)
+        self.assertIn("maximum-scale=1", html)
+
+
+class TimelineTouchSurface(unittest.TestCase):
+    def test_timeline_fits_svg_and_drops_overflow_scroller_on_touch(self):
+        # regression: the view forces a >=640px SVG; on a ~390px phone the default overflow-x:auto turned
+        # that into a native horizontal scroller that beat the one-finger pan gesture. On a touch device the
+        # SVG must fit the screen (width:100%) with no overflow scroller, so the gesture owns horizontal pan.
+        css = km.TIMELINE_CSS
+        self.assertIn("@media (pointer:coarse)", css)
+        self.assertIn("overflow-x:hidden", css)
+        self.assertIn("touch-action:pan-y", css)
+        self.assertIn(".romp-tl-wrap svg{width:100%", css)
+
 
 class ChatSessionPicker(unittest.TestCase):
     def test_chat_page_collapses_tabs_into_a_header_on_mobile(self):

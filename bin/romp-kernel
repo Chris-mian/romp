@@ -2098,6 +2098,12 @@ border-radius:3px;background:#2a2f37;outline:none;}
 .romp-tl-slider::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:14px;height:14px;
 border-radius:50%;background:#e6edf3;cursor:pointer;}
 .romp-tl-wrap{overflow-x:auto;}.romp-tl-wrap svg{display:block;}
+/* Touch devices: the view forces a >=640px-wide SVG, which on a ~390px phone overflowed into a NATIVE
+   horizontal scroller that competed with (and beat) the one-finger pan gesture. Fit the SVG to the screen
+   instead (uniform scale via its viewBox) and kill the overflow scroller, so the touch handlers own all
+   horizontal motion and pinch-zoom is the way to get detail (the user 2026-06-16). */
+@media (pointer:coarse){.romp-tl-wrap{overflow-x:hidden;touch-action:pan-y;}
+.romp-tl-wrap svg{width:100%;height:auto;}}
 .romp-tl-tip{position:fixed;pointer-events:none;z-index:1000;max-width:320px;background:#1c2430;
 border:1px solid #ffffff1f;border-radius:8px;padding:7px 9px;font-size:12px;color:#e6edf3;
 box-shadow:0 8px 24px #00000066;opacity:0;transform:translateY(4px);transition:opacity .1s,transform .1s;}
@@ -2305,7 +2311,10 @@ def _landing():
     # panes keep updating; _LANDING_MOBILE_JS drives the switcher + cross-pane reveal.
     v = _dist_ver()
     return ("<!DOCTYPE html><html lang=en><head><meta charset=UTF-8>"
-            "<meta name=viewport content='width=device-width,initial-scale=1,viewport-fit=cover'>"
+            # maximum-scale=1,user-scalable=no: the top document governs pinch-zoom for the whole visual
+            # viewport (incl. iframes), so without this iOS page-zooms on a timeline pinch instead of letting
+            # the timeline's own pinch handler run (the user 2026-06-16). Disables browser zoom on the mobile UI.
+            "<meta name=viewport content='width=device-width,initial-scale=1,viewport-fit=cover,maximum-scale=1,user-scalable=no'>"
             "<link rel=icon type=image/svg+xml href=/media/romp-swirl-glyph.svg><title>Romp</title><style>"
             "html,body{margin:0;height:100%;background:#1e1e1e;overflow:hidden}"
             ".col{display:grid;grid-template-rows:1fr 5px var(--tl,160px);height:100vh}"
