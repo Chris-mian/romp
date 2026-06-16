@@ -304,6 +304,12 @@ def build_session(sid, now, tmux=None):
                                postal_log=str(jd.MESSAGES), now=now)
     caps = _captions(sid)
     events, by_tool = [], {}                  # by_tool: tool_use_id → its tool event (fill output later)
+    uuid2seg = {}                             # atom uuid → its segment id (so a chat hover lights the right timeline bar)
+    for turn in session["turns"]:
+        for seg in em.segments(turn):
+            for at in seg["atoms"]:
+                if at.get("uuid"):
+                    uuid2seg[at["uuid"]] = seg["id"]
     last_t = None
     for turn in session["turns"]:
         for a in turn["atoms"]:
@@ -358,6 +364,8 @@ def build_session(sid, now, tmux=None):
                         events.append(ev)
             elif a["type"] == "system" and a.get("subtype") == "compact_boundary":
                 events.append({"kind": "assistant", "md": "✦ Compacted", "uuid": a.get("uuid"), "ts": ts})
+    for ev in events:                         # tag each event with its segment (the timeline bar a chat hover lights)
+        ev["segId"] = uuid2seg.get(ev.get("uuid"))
     # TOC ledger: archiver headline + turn captions (click-to-jump via the turn's anchor uuid)
     arch = jd.load_archive(sid) or {}
     bullets = []
@@ -365,7 +373,8 @@ def build_session(sid, now, tmux=None):
         cap = caps.get(turn["id"], {}).get("caption")
         anchor = next((x.get("uuid") for x in turn["atoms"] if x.get("uuid")), None)
         if cap:
-            bullets.append({"text": cap, "t": turn["t"], "id": anchor, "sid": sid})
+            bullets.append({"text": cap, "t": turn["t"], "id": anchor, "sid": sid,
+                            "segId": uuid2seg.get(anchor)})
     ledger = {"summary": arch.get("headline", ""), "bullets": bullets}
     last_turn = session["turns"][-1] if session["turns"] else None
     open_now = bool(last_turn and not last_turn["ended"]
@@ -1267,6 +1276,12 @@ class Handler(BaseHTTPRequestHandler):
                     # of the timeline→chat jump). `off` clears; otherwise resolve the goal's subtree segments.
                     ids = [] if msg.get("off") else _goal_segments(msg.get("itemId") or "")
                     _send_to_app("timeline", {"type": "hover", "ids": ids, "nonce": _next_nonce()})
+                elif msg and msg.get("type") in ("dotHover", "ledgerHover"):
+                    # chat message / TOC-bullet hover → light that segment's bar on the timeline. The
+                    # event/bullet carries its segId (build_session); empty/absent → clear the highlight.
+                    seg = msg.get("segId")
+                    _send_to_app("timeline", {"type": "hover", "ids": ([seg] if seg else []),
+                                              "nonce": _next_nonce()})
                 elif msg and msg.get("type") == "sendMessage" and msg.get("id") and msg.get("text"):
                     _tmux_send(_name_of(msg["id"]) or msg["id"], str(msg["text"]))   # composer → session
                 elif msg and msg.get("type") == "interrupt" and msg.get("id"):

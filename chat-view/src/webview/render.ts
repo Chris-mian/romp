@@ -26,7 +26,7 @@ for (const [name, lang] of Object.entries({
 
 marked.setOptions({ gfm: true, breaks: false });
 
-type ChatEvent =
+type ChatEvent = (
   | { kind: "user"; md: string; uuid?: string; ts?: string; reminders?: string[]; human?: boolean; images?: { src: string; path?: string }[] }
   | { kind: "assistant"; md: string; uuid?: string; ts?: string }
   | { kind: "thinking"; text: string; encrypted: boolean; uuid?: string; ts?: string }
@@ -59,7 +59,8 @@ type ChatEvent =
   // Claude Code's Task to-do list, folded into one live checklist.
   | { kind: "todo"; tasks: TodoTask[]; ts?: string; uuid?: string }
   | { kind: "queued"; texts: string[]; ts?: string; uuid?: string }
-  | { kind: "compact"; ts?: string; uuid?: string };
+  | { kind: "compact"; ts?: string; uuid?: string }
+) & { segId?: string };   // segId: the timeline segment this event belongs to (chat hover → light that bar)
 
 interface TodoTask { id: string; subject: string; activeForm?: string; status: string }
 
@@ -112,7 +113,7 @@ const liveAsks = new Map<string, ParsedAsk | null>();
 
 // Per-session rolling digest (purpose + a few timestamped bullets), shown in the
 // #ledger box just below the tabs. Swaps with the active tab; pushed by the host.
-interface LedgerBullet { text: string; t?: number; id?: string; sid?: string; }   // id/sid = timeline hover/locate anchor (reply's romp-events id)
+interface LedgerBullet { text: string; t?: number; id?: string; sid?: string; segId?: string; }   // id/sid = locate anchor; segId = the timeline segment to highlight on hover
 interface Ledger { summary: string; bullets: LedgerBullet[]; }
 const ledgers = new Map<string, Ledger | null>();
 
@@ -373,7 +374,7 @@ function renderEvent(ev: ChatEvent, prevEpoch?: number | null, worked?: number |
   // turn is the hover target (the user 2026-06-12) — hovering the MESSAGE bubble or
   // the WORK/reply body must light the timeline, not only the rail dot.
   const railDot = turn.querySelector(".dot") as HTMLElement | null;
-  if (anchorUuid || epoch != null) wireTurnHover(turn, railDot, anchorUuid ?? null, epoch ?? 0);
+  if (anchorUuid || epoch != null) wireTurnHover(turn, railDot, anchorUuid ?? null, epoch ?? 0, ev.segId ?? null);
   // a finished prompt's last reply carries a small "worked 2m 14s" tick in the rail
   // gutter (left, by the time-markers) — how long the session ran on that prompt.
   if (worked != null) turn.appendChild(elapsedFooter(worked));
@@ -408,11 +409,11 @@ function elapsedFooter(secs: number): HTMLElement {
 // hovering the work body lights the bar — the chat just reports its own uuid.
 // HOVER is on the RAIL DOT only (the user 2026-06-15: hovering the message TEXT must not light the
 // timeline — only the rail/"timeline" gutter does); the dot also keeps the click (open the feed card).
-function wireTurnHover(turn: HTMLElement, dot: HTMLElement | null, uuid: string | null, t: number) {
+function wireTurnHover(turn: HTMLElement, dot: HTMLElement | null, uuid: string | null, t: number, segId?: string | null) {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const hoverTarget = dot || turn;   // only the dot triggers the timeline highlight (turn fallback if no dot)
   hoverTarget.addEventListener("mouseenter", () => {
-    timer = setTimeout(() => { timer = undefined; if (activeId) vscodeApi?.postMessage({ type: "dotHover", sid: activeId, uuid, t }); }, 120);
+    timer = setTimeout(() => { timer = undefined; if (activeId) vscodeApi?.postMessage({ type: "dotHover", sid: activeId, uuid, t, segId }); }, 120);
   });
   hoverTarget.addEventListener("mouseleave", () => {
     if (timer) { clearTimeout(timer); timer = undefined; return; } // never fired — nothing to clear
@@ -1686,7 +1687,7 @@ function renderToolGroup(tools: Extract<ChatEvent, { kind: "tool" }>[], prevEpoc
   if (epoch != null) turn.dataset.t = String(epoch);
   if (epoch != null) turn.insertBefore(timeMarker(epoch, prevEpoch ?? null), turn.firstChild);
   const railDot = turn.querySelector(".dot") as HTMLElement | null;
-  if (anchorUuid || epoch != null) wireTurnHover(turn, railDot, anchorUuid, epoch ?? 0);
+  if (anchorUuid || epoch != null) wireTurnHover(turn, railDot, anchorUuid, epoch ?? 0, tools[0].segId ?? null);
   return turn;
 }
 
@@ -2002,7 +2003,7 @@ function wireBulletNav(row: HTMLElement, b: LedgerBullet) {
   let timer: ReturnType<typeof setTimeout> | undefined;
   row.title = "jump to this on the timeline";
   row.addEventListener("mouseenter", () => {
-    timer = setTimeout(() => { timer = undefined; vscodeApi?.postMessage({ type: "ledgerHover", id: b.id }); }, 120);
+    timer = setTimeout(() => { timer = undefined; vscodeApi?.postMessage({ type: "ledgerHover", id: b.id, segId: b.segId }); }, 120);
   });
   row.addEventListener("mouseleave", () => {
     if (timer) { clearTimeout(timer); timer = undefined; }

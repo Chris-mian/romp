@@ -325,6 +325,19 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(set(km._goal_segments(sub)), {"segB", "segC", "segD"}, "a sub-goal → itself + its steps")
         self.assertEqual(km._goal_segments("%s:gX" % SID), [], "unknown goal → empty")
 
+    def test_session_events_and_ledger_carry_segid(self):
+        """Each ChatEvent + ledger bullet carries segId (its timeline segment) so a chat-message or
+        TOC-bullet hover lights the right bar (dotHover/ledgerHover → timeline)."""
+        m = km.build_session(SID, NOW)
+        segids = {e.get("segId") for e in m["events"]}
+        self.assertEqual(len(segids), 1, "the single-segment fixture → one segId shared across its events")
+        seg = next(iter(segids))
+        real = em.segments(em.parse_session(str(self.tpath), rompuuid=SID,
+                                            candidate_files=[str(self.tpath)], now=NOW)["turns"][0])[0]["id"]
+        self.assertEqual(seg, real, "segId is the event-model segment id == the timeline bar id")
+        self.assertTrue(m["ledger"]["bullets"] and all(b.get("segId") == real for b in m["ledger"]["bullets"]),
+                        "ledger bullets carry segId too")
+
     def test_session_order_roundtrip_and_sort(self):
         # the shared order persists, and chat tabs + timeline lanes follow it (drag-sync parity)
         km._write_session_order(["b", "a", "c"])
