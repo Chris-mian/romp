@@ -81,6 +81,14 @@ else
     prev=$(tail -1 "${XDG_STATE_HOME:-$HOME/.local/state}/romp/states/$sid.jsonl" 2>/dev/null \
         | sed -n 's/.*"state":"\([^"]*\)".*/\1/p' || true)
 fi
+# Compaction is STICKY: once PreCompact set state=compacting, ONLY PostCompact ends it. A postal
+# message (or any other hook) firing mid-compaction must NOT clobber @claude-state back to
+# working/waiting — that split the timeline's compacting span and stopped the live % partway (the
+# user). With this guard prev==state==compacting, so no spurious transition is logged and the span
+# stays continuous. A missed PostCompact can't strand it: romp-idle-dots heals a stuck 'compacting'.
+if [[ "$prev" == "compacting" && "$EVENT" != "PostCompact" ]]; then
+    state="compacting"; emoji="🟠"
+fi
 if [[ -n "$sid" && "$prev" != "$state" ]]; then
     sdir="${XDG_STATE_HOME:-$HOME/.local/state}/romp/states"
     mkdir -p "$sdir"

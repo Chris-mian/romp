@@ -22,6 +22,10 @@ fi
 if [[ "$1" == "show" && "$5" == "@romp" ]]; then
     echo "${MOCK_IS_ROMP-1}"
 fi
+# show -t NAME -v @claude-state → the PREVIOUS state (for the sticky-compaction guard)
+if [[ "$1" == "show" && "$5" == "@claude-state" ]]; then
+    echo "${MOCK_PREV_STATE-}"
+fi
 exit 0
 MOCK
     chmod +x "$MOCK_DIR/tmux"
@@ -73,6 +77,34 @@ run_hook() {
 
 @test "Stop sets state to waiting" {
     run run_hook '{"hook_event_name":"Stop","cwd":"/tmp/project"}'
+    [ "$status" -eq 0 ]
+    grep -q 'tmux set -t test @claude-state waiting' "$MOCK_LOG"
+}
+
+@test "PreCompact sets state to compacting" {
+    run run_hook '{"hook_event_name":"PreCompact","cwd":"/tmp/project"}'
+    [ "$status" -eq 0 ]
+    grep -q 'tmux set -t test @claude-state compacting' "$MOCK_LOG"
+}
+
+@test "compacting is STICKY: a Stop mid-compaction keeps compacting (no split)" {
+    export MOCK_PREV_STATE=compacting
+    run run_hook '{"hook_event_name":"Stop","cwd":"/tmp/project"}'
+    [ "$status" -eq 0 ]
+    grep -q 'tmux set -t test @claude-state compacting' "$MOCK_LOG"
+    ! grep -q '@claude-state waiting' "$MOCK_LOG"
+}
+
+@test "compacting is STICKY against a working event too" {
+    export MOCK_PREV_STATE=compacting
+    run run_hook '{"hook_event_name":"PostToolUse","cwd":"/tmp/project"}'
+    [ "$status" -eq 0 ]
+    grep -q 'tmux set -t test @claude-state compacting' "$MOCK_LOG"
+}
+
+@test "PostCompact ENDS compacting (the only exit)" {
+    export MOCK_PREV_STATE=compacting
+    run run_hook '{"hook_event_name":"PostCompact","cwd":"/tmp/project"}'
     [ "$status" -eq 0 ]
     grep -q 'tmux set -t test @claude-state waiting' "$MOCK_LOG"
 }
