@@ -26,6 +26,7 @@ ROOT = HERE.parent
 em = SourceFileLoader("romp_event_model", str(HERE / "romp-event-model")).load_module()
 jd = SourceFileLoader("romp_judge", str(HERE / "romp-judge")).load_module()
 cm = SourceFileLoader("romp_colormap", str(HERE / "romp_colormap.py")).load_module()  # age → recency tint
+ap = SourceFileLoader("romp_askparse", str(HERE / "romp-askparse")).load_module()  # tmux-pane → live AskUserQuestion picker
 CHAT_VIEW = ROOT / "chat-view"               # the tuned UI, current in this worktree via `git merge main`
 DIST = CHAT_VIEW / "dist"                    # bundles built from CHAT_VIEW/src (the human's tuned render layer)
 MEDIA = CHAT_VIEW / "media"
@@ -310,6 +311,174 @@ def _tmux_send(name, text, model_cmd=False, _async=True):
             time.sleep(0.85)
             run(["send-keys", "-t", name, "Enter"])                 # accept the hookless /model confirm
     threading.Thread(target=go, daemon=True).start() if _async else go()
+
+
+# ───────────────── live AskUserQuestion picker: tmux pane → webview → keystrokes ─────────────────
+# The interactive picker exists only in the live TUI pane (until answered). _ask_poll scrapes it
+# (ap.parse_ask_pane) and pushes it to the chat webview, which already renders it + posts answer clicks;
+# the driver below translates those clicks back into tmux keystrokes — a Python port of the old TS
+# AskDriver (chat-view/src/kernel/chat.ts). Navigation sends ONE arrow at a time, re-reading the pane
+# between presses (the TUI drops rapidly-batched arrows). Each action runs in a daemon thread so the WS
+# recv loop never blocks on the ~110ms gaps. NOTE: end-to-end behavior needs live tmux verification — a
+# real picker — since a static-pane unit test can't model the cursor moving in response to the keys.
+def _capture_pane(name):
+    try:
+        r = subprocess.run(["tmux", "capture-pane", "-p", "-t", name], capture_output=True, text=True, timeout=2.5)
+        return r.stdout if r.returncode == 0 else ""
+    except Exception:
+        return ""
+
+
+def _send_keys(name, keys):
+    try:
+        subprocess.run(["tmux", "send-keys", "-t", name] + list(keys), timeout=3)
+    except Exception:
+        pass
+
+
+def _send_literal(name, text):
+    try:
+        subprocess.run(["tmux", "send-keys", "-t", name, "-l", "--", text], timeout=3)
+    except Exception:
+        pass
+
+
+def _nav_key(cur, target):
+    """One arrow toward `target` from cursor `cur` (None when already there) — pure, unit-tested."""
+    return None if cur == target else ("Down" if cur < target else "Up")
+
+
+def _ask_parse(name):
+    try:
+        return ap.parse_ask_pane(_capture_pane(name))
+    except Exception:
+        return None
+
+
+def _ask_step_nav_to(name, target, kind_ok, act, budget=16):
+    """Move the picker cursor to `target` one arrow at a time, re-reading the pane between presses, then
+    act(). Aborts if the screen changes kind or the cursor is lost. Mirrors AskDriver.stepNavTo."""
+    while budget > 0:
+        budget -= 1
+        p = _ask_parse(name)
+        if not p or not kind_ok(p):
+            return
+        if not p.get("cursorFound"):
+            time.sleep(0.11); continue
+        k = _nav_key(p["cursor"], target)
+        if k is None:
+            act(); return
+        _send_keys(name, [k])
+        time.sleep(0.11)
+
+
+def _ask_when_ready(name, ready, act, tries=8, gap=0.08):
+    for _ in range(tries):
+        if ready(_ask_parse(name)):
+            act(); return
+        time.sleep(gap)
+
+
+def _ask_answer(name, target):
+    p = _ask_parse(name)
+    if not p or p.get("kind") == "multi" or not p.get("cursorFound"):
+        return
+    _ask_step_nav_to(name, target, lambda q: bool(q) and q.get("kind") != "multi",
+                     lambda: _send_keys(name, ["Enter"]))
+
+
+def _ask_toggle(name, target):
+    p = _ask_parse(name)
+    if not p or p.get("kind") != "multi" or not p.get("cursorFound"):
+        return
+    _ask_step_nav_to(name, target, lambda q: bool(q) and q.get("kind") == "multi",
+                     lambda: _send_keys(name, ["Space"]))
+
+
+def _ask_submit(name):
+    parsed = _ask_parse(name)
+    if not parsed:
+        return
+
+    def commit():
+        p = _ask_parse(name)
+        if not p or p.get("kind") != "submit" or not p.get("options"):
+            return
+        sub = next((o for o in p["options"] if re.search(r"submit\b", o["label"], re.I)), p["options"][0])
+        _ask_step_nav_to(name, sub["n"], lambda q: bool(q) and q.get("kind") == "submit",
+                         lambda: _send_keys(name, ["Enter"]))
+
+    if parsed.get("kind") == "multi":
+        first = parsed["options"][0]["n"] if parsed.get("options") else 1
+
+        def after_first():
+            _send_keys(name, ["Right"])                          # cross to the Submit tab
+            _ask_when_ready(name, lambda p: bool(p) and p.get("kind") == "submit", commit)
+
+        _ask_step_nav_to(name, first, lambda q: bool(q) and q.get("kind") == "multi", after_first)
+    elif parsed.get("kind") == "submit":
+        commit()
+
+
+def _ask_add_custom(name, text):
+    if not (text or "").strip():
+        return
+    parsed = _ask_parse(name)
+    if not parsed or parsed.get("kind") == "submit":
+        return
+    slot = next((o for o in parsed.get("options", []) if re.match(r"\s*type something", o["label"], re.I)), None)
+    if not slot:
+        return
+    kind = parsed.get("kind")
+
+    def act():
+        _send_literal(name, text)
+        time.sleep(0.17); _send_keys(name, ["Enter"])           # commit the typed answer
+        if kind == "multi":
+            time.sleep(0.18); _send_keys(name, ["Space"])       # re-check it (Enter toggled it off)
+
+    _ask_step_nav_to(name, slot["n"], lambda q: bool(q) and q.get("kind") == kind, act)
+
+
+def _ask_cancel(name):
+    _send_keys(name, ["Escape"])
+
+
+def _ask_send_text(name, text):
+    if not text:
+        return
+    _send_literal(name, text)
+    time.sleep(0.12); _send_keys(name, ["Enter"])
+
+
+def _ask_thread(fn, *a):
+    threading.Thread(target=fn, args=a, daemon=True).start()
+
+
+def _ask_poll():
+    """Scrape each live session's pane for an in-flight AskUserQuestion picker and push it to the chat
+    webview (it already renders the picker + posts answer clicks). Per-client dedup (_send_client) means an
+    unchanged picker isn't re-sent and a fresh client gets the current one. ~1.2s tick — responsive
+    without flooding; capture-pane is cheap. The webview stores per-session and only renders the active tab."""
+    while True:
+        try:
+            with _clients_lock:
+                chat_clients = [c for c in _clients if c["app"] == "chat"]
+            if chat_clients:
+                for sid in list(_tmux_sessions()):
+                    name = _name_of(sid)
+                    if not name:
+                        continue
+                    ask = _ask_parse(name)
+                    payload = ({"type": "askLive", "id": sid, "ask": ask} if ask
+                               else {"type": "askLiveClear", "id": sid})
+                    for c in chat_clients:
+                        _send_client(c, ("asklive", sid), payload)
+                with _clients_lock:
+                    _clients[:] = [c for c in _clients if c.get("alive", True)]
+        except Exception:
+            sys.stderr.write("ask poll: %s\n" % traceback.format_exc())
+        time.sleep(1.2)
 
 
 def _captions(fsid):
@@ -1780,6 +1949,19 @@ class Handler(BaseHTTPRequestHandler):
                 elif msg and msg.get("type") == "askFollowUp" and msg.get("itemId") and msg.get("text"):
                     sid = str(msg["itemId"]).rsplit(":", 1)[0]   # goal node id → session → inject the follow-up
                     _tmux_send(_name_of(sid) or sid, str(msg["text"]))
+                # live AskUserQuestion picker: a webview click → keystrokes into the session's pane (AskDriver)
+                elif msg and msg.get("type") == "answerAsk" and msg.get("id") and msg.get("target") is not None:
+                    _ask_thread(_ask_answer, _name_of(msg["id"]) or msg["id"], msg["target"])
+                elif msg and msg.get("type") == "toggleAsk" and msg.get("id") and msg.get("target") is not None:
+                    _ask_thread(_ask_toggle, _name_of(msg["id"]) or msg["id"], msg["target"])
+                elif msg and msg.get("type") == "submitAsk" and msg.get("id"):
+                    _ask_thread(_ask_submit, _name_of(msg["id"]) or msg["id"])
+                elif msg and msg.get("type") == "addCustomAsk" and msg.get("id") and msg.get("text"):
+                    _ask_thread(_ask_add_custom, _name_of(msg["id"]) or msg["id"], str(msg["text"]))
+                elif msg and msg.get("type") == "cancelAsk" and msg.get("id"):
+                    _ask_thread(_ask_cancel, _name_of(msg["id"]) or msg["id"])
+                elif msg and msg.get("type") == "askText" and msg.get("id") and msg.get("text"):
+                    _ask_thread(_ask_send_text, _name_of(msg["id"]) or msg["id"], str(msg["text"]))
         except (BrokenPipeError, ConnectionResetError, OSError):
             pass
         finally:
@@ -1838,6 +2020,7 @@ def main():
     _ensure_bundles()
     threading.Thread(target=_producer, daemon=True).start()
     threading.Thread(target=_pusher, daemon=True).start()
+    threading.Thread(target=_ask_poll, daemon=True).start()   # scrape live AskUserQuestion pickers → chat
     threading.Thread(target=_parent_watch, daemon=True).start()
     srv = ThreadingHTTPServer((BIND, PORT), Handler)
     url = "http://127.0.0.1:%d" % PORT
