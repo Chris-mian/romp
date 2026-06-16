@@ -125,10 +125,12 @@ const liveAsks = new Map<string, ParsedAsk | null>();
 // Per-session rolling digest (purpose + a few timestamped bullets), shown in the
 // #ledger box just below the tabs. Swaps with the active tab; pushed by the host.
 interface LedgerBullet { text: string; t?: number; id?: string; sid?: string; tlId?: string; }   // id/sid = locate anchor; tlId = the timeline atom (turn DOT) to light on hover
-interface LedgerGoal { text: string; id?: string; t?: number; }   // an open graph goal — what the session might do next
-// current = the in-progress "working on" line (same shape as a bullet so it wires nav identically);
-// goals = open graph goals. The overview renders goals → working-on → done (the user 2026-06-16).
-interface Ledger { summary: string; bullets: LedgerBullet[]; current?: LedgerBullet | null; goals?: LedgerGoal[]; }
+// A node of the goal-graph overview tree: open paths are expanded, done nodes are pruned to leaves.
+// `current` = the focus node being worked on (gets a pointer + the live elapsed); a `done` node shows
+// its completion time, recency-coloured, on the right (the user 2026-06-16).
+interface LedgerTreeNode { id: string; text: string; depth: number; done: boolean; blocked: boolean; t?: number; current: boolean; }
+// tree = the goal overview (preferred view); bullets = captioned-turn fallback for goal-less sessions.
+interface Ledger { summary: string; tree?: LedgerTreeNode[]; bullets: LedgerBullet[]; current?: LedgerBullet | null; }
 const ledgers = new Map<string, Ledger | null>();
 
 function el(tag: string, cls?: string): HTMLElement {
@@ -2045,11 +2047,12 @@ function renderLedger() {
   const host = document.getElementById("ledger");
   if (!host) return;
   const l = activeId ? ledgers.get(activeId) : null;
-  const goals = (l && l.goals) || [];
+  const tree = (l && l.tree) || [];
   const cur = (l && l.current) || null;
+  const bullets = (l && l.bullets) || [];
   // Title is the archiver headline; fall back to the session name so the strip always has a label.
   const titleText = l ? (l.summary || (activeId ? (sessions.get(activeId)?.name || "") : "")) : "";
-  const hasBody = !!(cur || goals.length || (l && l.bullets.length));
+  const hasBody = !!(tree.length || cur || bullets.length);
   // Nothing at all to show → hide the strip. Otherwise it's ALWAYS visible (even collapsed) so the
   // title + caret stay on screen — the user wants to see what a session is up to at a glance.
   if (!l || (!titleText && !hasBody)) { host.replaceChildren(); host.style.display = "none"; (host as any)._sig = ""; return; }
@@ -2058,10 +2061,11 @@ function renderLedger() {
   // SAME content as last render (an interim host push, e.g. the session just worked) → DON'T tear the
   // rows down: that would drop an in-progress hover (the fresh row gets no mouseenter under a stationary
   // pointer). Only tick ages/colors in place. Collapse state is in the sig so a toggle forces a rebuild.
+  // (raw n.t/b.t in the sig, NOT the elapsed — wall-clock ticking is refreshLedgerAges's job.)
   const sig = (ledgerCollapsed ? "C" : "O") + "§" + (activeId || "") + "§" + titleText
     + "‖cur:" + (cur ? `${cur.id || ""}:${cur.t ?? ""}:${cur.text}` : "")
-    + "‖goals:" + goals.map((g) => `${g.id || ""}:${g.text}`).join(",")
-    + "‖" + l.bullets.slice(0, LEDGER_BULLET_CAP).map((b) => `${b.id || ""}:${b.t ?? ""}:${b.text}`).join("|");
+    + "‖tree:" + tree.map((n) => `${n.id}:${n.depth}:${n.done ? "d" : ""}${n.current ? "c" : ""}${n.blocked ? "b" : ""}:${n.t ?? ""}:${n.text}`).join("|")
+    + "‖b:" + (tree.length ? "" : bullets.slice(0, LEDGER_BULLET_CAP).map((b) => `${b.id || ""}:${b.t ?? ""}:${b.text}`).join("|"));
   if ((host as any)._sig === sig) { refreshLedgerAges(host, l, now); return; }
   (host as any)._sig = sig;
   host.replaceChildren();
@@ -2072,66 +2076,92 @@ function renderLedger() {
   caret.textContent = ledgerCollapsed ? "▸" : "▾";
   const sum = el("div", "ledger-summary");
   sum.textContent = titleText;
-  // Title hue tracks the freshest activity (newest bullet, or the live "working on" line).
-  const newest = l.bullets.find((b) => b.t) || (cur && cur.t ? cur : null);
-  if (newest && newest.t) sum.style.color = ageColorReadable(now - newest.t);
+  // Title hue tracks the freshest activity across the whole overview.
+  const newestT = Math.max(cur && cur.t ? cur.t : 0, ...tree.map((n) => n.t || 0), ...bullets.map((b) => b.t || 0));
+  if (newestT) sum.style.color = ageColorReadable(now - newestT);
   head.append(caret, sum);
   head.title = ledgerCollapsed ? "Show session overview" : "Hide session overview";
   head.addEventListener("click", toggleLedgerCollapsed);
   host.appendChild(head);
   if (ledgerCollapsed) return;   // collapsed → just the title strip
 
-  // --- expanded overview: open goals (top) → working-on (middle) → done (bottom), per the user ---
-  // 1. open goals — what the session might do next (the graph's open top-level nodes)
-  if (goals.length) {
-    host.appendChild(ledgerLabel("goals"));
-    const wrap = el("div", "ledger-goals");
-    for (const g of goals) {
-      const row = el("div", "ledger-goal");
-      const dot = el("span", "ledger-goal-dot"); dot.textContent = "◦";
-      const txt = el("span", "ledger-goal-text"); txt.textContent = g.text;
-      row.append(dot, txt);
+  if (tree.length) {
+    // --- the goal-graph overview tree (the user's "that view"): open paths expanded, done nodes are
+    //     pruned leaves with a recency-coloured time on the right; the ▸ row IS what's being worked on.
+    const wrap = el("div", "ledger-tree");
+    for (const n of tree) {
+      const row = el("div", "ledger-tnode" + (n.current ? " current" : "") + (n.done ? " done" : ""));
+      row.style.paddingLeft = (4 + n.depth * 15) + "px";        // indent by graph depth (a line of descent)
+      const mark = el("span", "ledger-tmark");
+      mark.textContent = n.current ? "▸" : n.done ? "✓" : n.blocked ? "⏸" : "◦";
+      const txt = el("span", "ledger-ttext");
+      txt.textContent = n.text;
+      const time = el("span", "ledger-ttime");
+      setTnodeTime(time, n, cur, now);                          // "(Xm)" live for current, "(Xm ago)" for done
+      row.append(mark, txt, time);
       wrap.appendChild(row);
     }
     host.appendChild(wrap);
-  }
-  // 2. working on — the in-progress turn (same hover→timeline / click→locate wiring as a bullet)
-  if (cur && cur.text) {
-    host.appendChild(ledgerLabel("working on"));
-    const row = el("div", "ledger-current" + (cur.id ? " nav" : ""));
-    row.textContent = cur.text;
-    if (cur.id) wireBulletNav(row, cur);
-    host.appendChild(row);
-  }
-  // 3. done — recent accomplishments (the existing newest-first captioned bullets)
-  if (l.bullets.length) {
-    host.appendChild(ledgerLabel("done"));
-    // Two left-aligned columns: [ (X ago) ]  [ bullet text ]. age + text share the row's grid.
-    const list = el("div", "ledger-bullets");
-    for (const b of l.bullets.slice(0, LEDGER_BULLET_CAP)) {
-      const col = b.t ? ageColorReadable(now - b.t) : ""; // recency hue, constant-lightness, legible
-      const row = el("div", "ledger-bullet" + (b.id ? " nav" : ""));   // a real row so it gets one clean hover bg + handlers
-      const age = el("span", "ledger-bullet-age");
-      age.textContent = b.t ? `${agehms(now - b.t)} ago` : ""; // empty cell keeps the column aligned
-      if (col) age.style.color = col;
-      const txt = el("span", "ledger-bullet-text");
-      txt.textContent = b.text;
-      if (col) txt.style.color = col;
-      row.append(age, txt);
-      if (b.id) wireBulletNav(row, b);   // hover → timeline highlight; click → locate (same as a feed row)
-      list.appendChild(row);
+  } else {
+    // --- fallback for goal-less sessions: the live "working on" line + the captioned "done" bullets ---
+    if (cur && cur.text) {
+      host.appendChild(ledgerLabel("working on"));
+      const row = el("div", "ledger-current" + (cur.id ? " nav" : ""));
+      row.textContent = cur.text + (cur.t ? `  (${agehms(now - cur.t)})` : "");
+      if (cur.id) wireBulletNav(row, cur);
+      host.appendChild(row);
     }
-    host.appendChild(list);
+    if (bullets.length) {
+      host.appendChild(ledgerLabel("done"));
+      const list = el("div", "ledger-bullets");
+      for (const b of bullets.slice(0, LEDGER_BULLET_CAP)) {
+        const col = b.t ? ageColorReadable(now - b.t) : "";
+        const row = el("div", "ledger-bullet" + (b.id ? " nav" : ""));
+        const age = el("span", "ledger-bullet-age");
+        age.textContent = b.t ? `${agehms(now - b.t)} ago` : "";
+        if (col) age.style.color = col;
+        const txt = el("span", "ledger-bullet-text");
+        txt.textContent = b.text;
+        if (col) txt.style.color = col;
+        row.append(age, txt);
+        if (b.id) wireBulletNav(row, b);
+        list.appendChild(row);
+      }
+      host.appendChild(list);
+    }
+  }
+}
+
+// A tree node's right-side time: the CURRENT node shows its live elapsed "(Xm)" (how long it's been
+// worked on, from the in-progress turn's start); a DONE node shows when it finished "(Xm ago)". Both
+// recency-tinted. Open non-current nodes show nothing. Factored out so refreshLedgerAges ticks it too.
+function setTnodeTime(time: HTMLElement, n: LedgerTreeNode, cur: LedgerBullet | null, now: number) {
+  if (n.current && cur && cur.t) {
+    time.textContent = `(${agehms(now - cur.t)})`; time.style.color = ageColorReadable(now - cur.t);
+  } else if (n.done && n.t) {
+    time.textContent = `(${agehms(now - n.t)} ago)`; time.style.color = ageColorReadable(now - n.t);
+  } else {
+    time.textContent = "";
   }
 }
 
 // Same-content tick: refresh the existing bullets' "Xm ago" ages + recency colors
 // in place (rows kept alive so a hover/click survives). Order matches bullets[0..8).
 function refreshLedgerAges(host: HTMLElement, l: Ledger, now: number) {
-  const bs = l.bullets.slice(0, LEDGER_BULLET_CAP);
-  const newest = l.bullets.find((b) => b.t) || (l.current && l.current.t ? l.current : null);
+  const tree = l.tree || [];
+  const bullets = l.bullets || [];
+  // title hue tracks the freshest activity across the whole overview
+  const newestT = Math.max(l.current && l.current.t ? l.current.t : 0,
+    ...tree.map((n) => n.t || 0), ...bullets.map((b) => b.t || 0));
   const sum = host.querySelector(".ledger-summary") as HTMLElement | null;
-  if (sum && newest && newest.t) sum.style.color = ageColorReadable(now - newest.t);
+  if (sum && newestT) sum.style.color = ageColorReadable(now - newestT);
+  // tree node times ("(Xm)" live current + "(Xm ago)" done) tick with the wall clock
+  host.querySelectorAll(".ledger-tnode").forEach((row, i) => {
+    const n = tree[i]; const time = row.querySelector(".ledger-ttime") as HTMLElement | null;
+    if (n && time) setTnodeTime(time, n, l.current || null, now);
+  });
+  // fallback bullets (goal-less sessions)
+  const bs = bullets.slice(0, LEDGER_BULLET_CAP);
   host.querySelectorAll(".ledger-bullet").forEach((row, i) => {
     const b = bs[i]; if (!b) return;
     const col = b.t ? ageColorReadable(now - b.t) : "";

@@ -197,23 +197,46 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(ts, sorted(ts, reverse=True), "ledger bullets must be newest-first")
         self.assertEqual(bullets[0]["text"], "Sorted the ledger", "newest caption sits on top")
 
-    def test_ledger_current_and_goals(self):
-        # The chat overview strip feeds off the ledger's new fields: open graph goals (what the session
-        # MIGHT do next) + the live "working on" line (what it's doing NOW). The fixture's g2 ("Awaiting
-        # a decision") is open; g1 is done → excluded. An idle session (last turn ended) shows no current
-        # line (the user 2026-06-16).
+    def test_ledger_tree_and_current(self):
+        # The overview's goal TREE: top-level goals, done nodes kept as timed leaves, open nodes expanded.
+        # Fixture: g1 done ("Fix the feed flicker"), g2 open+blocked ("Awaiting a decision"). An idle
+        # session (last turn ended) shows no working-on line (the user 2026-06-16).
         led = km.build_session(SID, NOW)["ledger"]
-        self.assertEqual([g["text"] for g in led["goals"]], ["Awaiting a decision"],
-                         "open top-level goals only — g1 is nodeComplete, excluded")
+        byid = {n["text"]: n for n in led["tree"]}
+        self.assertIn("Fix the feed flicker", byid)
+        self.assertTrue(byid["Fix the feed flicker"]["done"], "g1 is nodeComplete → a done leaf")
+        self.assertIn("Awaiting a decision", byid)
+        self.assertFalse(byid["Awaiting a decision"]["done"])
+        self.assertTrue(byid["Awaiting a decision"]["blocked"])
         self.assertIsNone(led["current"], "idle session (last turn ended) → no working-on line")
-        # Now the session is actively working: a fresh prompt with no closing assistant turn → open_now,
-        # so current = that prompt (no caption yet), matching the timeline work-bar's `working on:` hover.
+        # Active work: a fresh prompt with no closing assistant turn → open_now → current = that prompt.
         with self.tpath.open("a") as f:
             f.write(json.dumps(uline(NOW, "wire the ledger overview strip", "uOpen", parent="a2")) + "\n")
         km._parse_cache.clear()
         cur = km.build_session(SID, NOW)["ledger"]["current"]
         self.assertIsNotNone(cur, "an open (unfinished) turn → a working-on line")
         self.assertEqual(cur["text"], "wire the ledger overview strip")
+
+    def test_ledger_tree_prunes_done_subtree(self):
+        # A done intermediate hides its descendants even when they're open; an open intermediate expands
+        # them, and the graph's lastNode is flagged `current` (the pointer target) (the user 2026-06-16).
+        pd, pdk, po, pok = (SID + ":pd", SID + ":pdk", SID + ":po", SID + ":pok")
+        def gn(nid, text, parent, done):
+            return {"id": nid, "text": text, "parentId": parent, "nodeComplete": done,
+                    "blocked": False, "cleared": False, "trail": [], "t": T0}
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+            "rompUuid": SID, "seq": 4, "lastNode": pok,
+            "nodes": {pd: gn(pd, "done parent", None, True), pdk: gn(pdk, "hidden child", pd, False),
+                      po: gn(po, "open parent", None, False), pok: gn(pok, "shown child", po, False)},
+            "placements": {}, "status": {}}))
+        tree = km.build_session(SID, NOW)["ledger"]["tree"]
+        texts = [n["text"] for n in tree]
+        self.assertIn("done parent", texts)
+        self.assertNotIn("hidden child", texts, "a done parent's descendants are pruned")
+        self.assertIn("shown child", texts, "an open parent's children are shown")
+        shown = next(n for n in tree if n["text"] == "shown child")
+        self.assertTrue(shown["current"], "lastNode is flagged current (the pointer target)")
+        self.assertEqual(shown["depth"], 1, "child sits at depth 1 under its top-level parent")
 
     def test_session_list_for_picker(self):
         # the + picker's payload (requestSessions → sessionList). Was always empty: bin/romp-kernel had

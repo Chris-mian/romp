@@ -165,14 +165,20 @@ body { display: flex; flex-direction: column; }
 .ledger-head:hover { background: rgba(255, 255, 255, 0.04); }
 .ledger-caret { flex: 0 0 auto; color: var(--fg); font-size: 1.3em; line-height: 1; opacity: 0.8; }
 .ledger-summary { flex: 1 1 auto; min-width: 0; color: var(--fg); font-weight: 600; overflow-wrap: anywhere; }
-/* dim section header inside the overview: goals / working on / done */
+/* dim section header inside the overview (used by the goal-less fallback: working on / done) */
 .ledger-label { color: var(--dim); font-size: 0.78em; text-transform: uppercase; letter-spacing: 0.04em; margin: 7px 0 2px; }
-/* open goals — what the session might do next */
-.ledger-goals { display: flex; flex-direction: column; row-gap: 2px; }
-.ledger-goal { display: flex; align-items: baseline; column-gap: 8px; line-height: 1.45; }
-.ledger-goal-dot { flex: 0 0 auto; color: var(--dim); }
-.ledger-goal-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
-/* working on — the live in-progress turn (italic, like the timeline's `working on:` hover) */
+/* ---- goal-graph overview tree: open paths expanded, done nodes pruned to timed leaves ---- */
+.ledger-tree { display: flex; flex-direction: column; row-gap: 1px; margin-top: 2px; max-height: 17em; overflow-y: auto; overflow-x: hidden; }
+.ledger-tnode { display: flex; align-items: baseline; column-gap: 7px; line-height: 1.4; border-radius: 4px; padding: 1px 5px; margin: 0 -5px; }
+.ledger-tmark { flex: 0 0 auto; width: 1em; text-align: center; color: var(--dim); }
+.ledger-ttext { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.ledger-ttime { flex: 0 0 auto; font-size: 0.85em; font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--dim); }
+.ledger-tnode.done .ledger-ttext { color: var(--dim); }                          /* done nodes recede */
+/* the line pointing at what's being worked on: a left accent bar + bright row */
+.ledger-tnode.current { background: rgba(255, 255, 255, 0.06); box-shadow: inset 2px 0 0 var(--fg); }
+.ledger-tnode.current .ledger-tmark { color: var(--fg); }
+.ledger-tnode.current .ledger-ttext { color: var(--fg); font-weight: 600; }
+/* working on — the live in-progress turn (italic), shown in the goal-less fallback view */
 .ledger-current { font-style: italic; line-height: 1.45; overflow-wrap: anywhere; border-radius: 4px; padding: 1px 5px; margin: 0 -5px; }
 .ledger-current.nav { cursor: pointer; }
 .ledger-current.nav:hover { background: rgba(255, 255, 255, 0.06); }
