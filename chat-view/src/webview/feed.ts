@@ -796,8 +796,8 @@ function treeSig(it: AskItem): string {
 // Render the DAG as a Linux-style node tree (modal body only). Sig-guarded so a
 // host re-push never collapses a node the user just opened or clobbers a
 // half-typed answer.
-function renderTreeBody(host: HTMLElement, it: AskItem) {
-  const sig = treeSig(it);
+function renderTreeBody(host: HTMLElement, it: AskItem, skipRoot = false) {
+  const sig = (skipRoot ? "s|" : "") + treeSig(it);
   if ((host as any)._sig === sig) return;
   (host as any)._sig = sig;
   host.innerHTML = "";
@@ -807,8 +807,20 @@ function renderTreeBody(host: HTMLElement, it: AskItem) {
   const briefs = new Map(it.openQuestions.map((q) => [q.reply_id, q] as const));
   const seen = new Set<string>();
   const root = it.tree[0];
-  // pass root.who as parentWho → the root isn't re-attributed (the modal header credits it)
-  renderTreeNode(box, it, root, byId, briefs, seen, 0, root.who);
+  if (skipRoot) {
+    // The single-ask modal HEADER already shows the root goal's text (and credits it), so
+    // rendering the root's own line here duplicated the title (the user 2026-06-15). Render the
+    // root's CHILDREN at depth 0 instead; mark the root seen so a child linking back won't redraw
+    // it. build_feed gives every goal node rows:[], so the root has no history rows to preserve.
+    seen.add(root.id);
+    const kids = (root.children || []).map((c) => byId.get(c)).filter(Boolean) as AskTreeNode[];
+    if (!kids.length) { const b = el("div", "fx-body"); b.textContent = "No sub-work yet."; host.appendChild(b); return; }
+    for (const k of kids) renderTreeNode(box, it, k, byId, briefs, seen, 0, root.who);
+  } else {
+    // group modal: each member's tree is stacked with the member's text AS its root line (no
+    // per-member header), so the root line stays. pass root.who → the root isn't re-attributed.
+    renderTreeNode(box, it, root, byId, briefs, seen, 0, root.who);
+  }
   host.appendChild(box);
 }
 
@@ -1062,7 +1074,7 @@ function renderModal() {
     // toggling the button reveals the composer.
     wireFollowUp(fupEl, fuboxEl, fuinEl, fusendEl, (txt) =>
       vscodeApi?.postMessage({ type: "askFollowUp", itemId: it.itemId, text: txt }));
-    renderTreeBody(body, it);
+    renderTreeBody(body, it, true);   // single-ask modal: header shows the root, so skip its body line
     renderReportInto(document.getElementById("feed-modal-report")!, it.itemId, it.suspects);
   } else if (fitem) {
     ttlEl.textContent = fitem.did;
