@@ -379,6 +379,21 @@ class ViewBuilder(unittest.TestCase):
         plain = {"kind": "assistant", "md": "just a reply", "uuid": "a1"}
         self.assertEqual(km._hydrate_postal([plain], {}), [plain], "a non-postal event is untouched")
 
+    def test_ordered_alive_is_stable_under_activity(self):
+        """Lanes/tabs must not auto-shuffle when a session becomes active: a fresh session is appended
+        once and keeps its slot even when its mtime later jumps ahead (the user 2026-06-15)."""
+        saved = km._alive_sessions
+        try:
+            km._alive_sessions = lambda now, tmux: [{"sid": "A", "mtime": 100}, {"sid": "B", "mtime": 50}]
+            first = [s["sid"] for s in km._ordered_alive(NOW, {})]
+            # B now becomes the most-recently-active (its mtime jumps past A) — the order must NOT change
+            km._alive_sessions = lambda now, tmux: [{"sid": "A", "mtime": 100}, {"sid": "B", "mtime": 999}]
+            second = [s["sid"] for s in km._ordered_alive(NOW, {})]
+            self.assertEqual(first, ["A", "B"], "new sessions frozen newest-active-first, once")
+            self.assertEqual(second, first, "activity (mtime) must not reorder existing lanes/tabs")
+        finally:
+            km._alive_sessions = saved
+
     def test_session_order_roundtrip_and_sort(self):
         # the shared order persists, and chat tabs + timeline lanes follow it (drag-sync parity)
         km._write_session_order(["b", "a", "c"])

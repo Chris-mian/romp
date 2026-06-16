@@ -148,12 +148,19 @@ def _write_session_order(order):
 
 
 def _ordered_alive(now, tmux):
-    """Living sessions in the SHARED order (session-order.json first, then the rest newest-first) —
-    used for chat tabs AND timeline lanes so the two stay in lockstep."""
+    """Living sessions in the SHARED, STABLE order: session-order.json decides it; a session NEW to the
+    order is appended ONCE (newest-active first) and persisted, so it keeps a fixed slot and never
+    re-sorts by activity afterward (the user 2026-06-15: tabs/lanes must NOT auto-shuffle as sessions
+    work — only a drag reorders). Chat tabs AND timeline lanes both use this, staying in lockstep."""
     alive = _alive_sessions(now, tmux)
-    idx = {sid: i for i, sid in enumerate(_session_order())}
-    n = len(idx)
-    alive.sort(key=lambda s: (idx.get(s["sid"], n), -s["mtime"]))
+    order = _session_order()
+    known = set(order)
+    fresh = sorted((s for s in alive if s["sid"] not in known), key=lambda s: -s["mtime"])
+    if fresh:
+        order = order + [s["sid"] for s in fresh]    # freeze the new slots; activity never re-sorts them
+        _write_session_order(order)
+    idx = {sid: i for i, sid in enumerate(order)}
+    alive.sort(key=lambda s: idx.get(s["sid"], len(idx)))   # stable index only — no activity tiebreaker
     return alive
 
 
