@@ -394,6 +394,19 @@ class TimelinePanel {
     // zooms the window width (anchored at the cursor). Pinch reaches us as a ctrlKey wheel event in
     // Chromium/Electron. Non-passive so we can preventDefault.
     this.wrap.addEventListener('wheel', this._onWheel, { passive: false });
+    // Touchscreen equivalents (phones/tablets, where there are no wheel events): one finger PANS — or,
+    // when 🔒locked, ZOOMS with the right edge pinned at now; two fingers PINCH-zoom anchored at the
+    // midpoint. Mirrors onWheel's math. touch-action:pan-y keeps vertical lane-scroll native while we own
+    // horizontal + pinch and stop the browser from page-zooming the whole view. Touch never breaks 🔒.
+    this._touch = null;
+    this.wrap.style.touchAction = 'pan-y';
+    this._onTouchStart = (e) => this.onTouchStart(e);
+    this._onTouchMove = (e) => this.onTouchMove(e);
+    this._onTouchEnd = (e) => this.onTouchEnd(e);
+    this.wrap.addEventListener('touchstart', this._onTouchStart, { passive: false });
+    this.wrap.addEventListener('touchmove', this._onTouchMove, { passive: false });
+    this.wrap.addEventListener('touchend', this._onTouchEnd, { passive: false });
+    this.wrap.addEventListener('touchcancel', this._onTouchEnd, { passive: false });
     // keyboard: ↑/↓ move a SELECTED lane cursor, Enter opens it in the chat. Scoped to the timeline
     // (wrap is focusable + focused on click) so arrows act only when the timeline has focus, not globally.
     this.selectedSid = null; this._vis = [];
