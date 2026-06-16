@@ -490,6 +490,17 @@ def build_feed(now, tmux=None):
             for c in kids:
                 flatten(c, out)
             return out
+        # HARD blocked floor: a session stopped RIGHT NOW on a live permission prompt (tmux state)
+        # floors its ACTIVE-FOCUS card under BLOCKED — the strongest signal, beats the goal's planner
+        # status. (The planner's SOFT block, nd["blocked"], is the model's "needs user" verdict; this is
+        # the live event.) Floors only the focus top-goal, and only while it is still open.
+        perm_top = None
+        if tm and tm.get("state") == "permission":
+            f = store.get("lastNode")
+            while f and nodes.get(f, {}).get("parentId") is not None:
+                f = nodes[f]["parentId"]
+            if f in nodes and not nodes[f].get("nodeComplete") and not nodes[f].get("cleared"):
+                perm_top = f
         for nid in children.get(None, []):
             col = status.get(nid, "working")
             if col == "cleared" or nid in cleared:
@@ -504,6 +515,8 @@ def build_feed(now, tmux=None):
                 "t": nodes[nid]["t"], "created": nodes[nid]["t"], "live": live,
                 "trgb": list(cm.age_rgb(now - nodes[nid]["t"])),
                 "done": 0, "needsYou": 0, "linked": [], "turnId": nid, "turnIds": [nid], "origin": origin,
+                "blocked": ({"state": "permission", "since": tm.get("since"),
+                             "what": "this session is stopped awaiting your approval"} if nid == perm_top else None),
                 "column": ("needs_input" if col == "blocked" else "completed" if col == "completed" else "working"),
                 "openQuestions": [], "openPaths": [], "tree": flatten(nid, [])})
         for c in _captions(fsid).values():

@@ -144,6 +144,35 @@ class ViewBuilder(unittest.TestCase):
         comp = next(a for a in km.build_feed(NOW)["asks"] if a["column"] == "completed")
         self.assertIsNone(comp["origin"], "a normal (non-courier) card carries no handoff origin")
 
+    def test_feed_live_permission_floors_focus_card_to_blocked(self):
+        """A session stopped on a LIVE permission prompt floors its active-focus card under BLOCKED
+        (it.blocked) — the hard floor, beats the goal's planner status; the render's askColumn then
+        files it under needsInput and shows the ⏸ approval badge."""
+        g = "%s:g5" % SID
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+            "rompUuid": SID, "seq": 5, "lastNode": g,
+            "nodes": {g: {"id": g, "text": "Work in progress", "parentId": None,
+                          "nodeComplete": False, "blocked": False, "cleared": False, "trail": [], "t": NOW - 50}},
+            "placements": {}, "status": {g: "working"}}))
+        km._tmux_sessions = lambda: {SID: {"state": "permission", "since": NOW - 30, "model": "",
+                                           "effort": "", "context": None, "compactPct": None, "color": None}}
+        card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
+        self.assertEqual(card["blocked"]["state"], "permission", "a live permission prompt floors the focus card")
+        self.assertEqual(card["blocked"]["since"], NOW - 30)
+
+    def test_feed_permission_does_not_floor_a_completed_focus(self):
+        """The floor applies only to an OPEN focus goal — a live prompt while the focus is already
+        completed (the block is on not-yet-placed new work) leaves the completed card alone."""
+        # default store: lastNode = g1 (completed). A permission state must NOT floor g1.
+        km._tmux_sessions = lambda: {SID: {"state": "permission", "since": NOW - 30, "model": "",
+                                           "effort": "", "context": None, "compactPct": None, "color": None}}
+        comp = next(a for a in km.build_feed(NOW)["asks"] if a["column"] == "completed")
+        self.assertIsNone(comp["blocked"], "a completed focus card is not floored by a live prompt")
+
+    def test_feed_no_permission_no_hard_block(self):
+        comp = next(a for a in km.build_feed(NOW)["asks"] if a["column"] == "completed")
+        self.assertIsNone(comp["blocked"], "no live permission (idle) → no hard block floor")
+
     def test_feed_courier_handoff_resolves_origin_sender(self):
         """A goal planted by the courier carries origin:{peer:<senderSid>,...}; build_feed resolves
         the sender's rompUuid to a display name + color for the '↪ from <sender>' marker."""
