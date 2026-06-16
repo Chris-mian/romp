@@ -29,7 +29,7 @@ class LandingShell(unittest.TestCase):
         html = km._landing()
         self.assertIn("#mtabs{display:none}", html)   # hidden by default (desktop)
         self.assertIn("@media", html)                 # a breakpoint reveals it + collapses to one pane
-        self.assertIn("iframe.m-on", html)            # the single active pane on mobile
+        self.assertIn(".m-on{display:block}", html)   # the single active pane on mobile
         # the desktop 3-pane grid is still here untouched
         self.assertIn(".col{display:grid", html)
         self.assertIn("src=/chat", html)
@@ -40,8 +40,15 @@ class LandingShell(unittest.TestCase):
         # regression: the mobile pane was sized with height:auto + bottom offset; mobile browsers read
         # height:auto on an iframe as "size to content" and collapse it (chat shrank to its tab bar).
         html = km._landing()
-        self.assertIn("100dvh", html)                          # explicit, address-bar-aware pane height
+        self.assertIn("100dvh", html)                          # explicit, address-bar-aware viewport height
         self.assertNotIn("height:auto;display:none", html)     # the collapsing iframe rule is gone
+
+    def test_shell_uses_flex_column_so_bar_cannot_cover_the_pane(self):
+        # regression: the fixed-position bar overlapped the chat composer. A flex column tiles the pane
+        # and the bar so they can't overlap; one pane shows at a time, keyed off body[data-tab].
+        html = km._landing()
+        self.assertIn("body[data-tab=timeline] .row{display:none}", html)
+        self.assertIn("data-tab", km._LANDING_MOBILE_JS)       # show() marks the active pane on <body>
 
     def test_shell_reveal_listener_wired(self):
         html = km._landing()
@@ -62,22 +69,32 @@ class LandingShell(unittest.TestCase):
 
     def test_bottom_bar_is_text_only_and_compact(self):
         html = km._landing()
-        self.assertNotIn("class=ic", html)            # no icon spans — text labels only
-        self.assertIn(">Chat</button>", html)         # plain text label, no icon child
-        self.assertIn("34px", html)                   # compact bar height (was 52px)
+        self.assertNotIn("class=ic", html)                       # no icon spans — text labels only
+        self.assertIn(">Chat</button>", html)                    # plain text label, no icon child
+        self.assertIn("#mtabs{display:flex;flex:0 0 auto", html)  # sized to its text, not a tall fixed bar
 
 
 class ChatSessionPicker(unittest.TestCase):
-    def test_chat_page_collapses_tabs_into_a_picker_on_mobile(self):
+    def test_chat_page_collapses_tabs_into_a_header_on_mobile(self):
         chat = km._chat_page()
-        self.assertIn("#msess", chat)                       # the picker is styled into the page
+        self.assertIn("#mhdr", chat)                        # the compact header replaces the tab strip
         self.assertIn("#tabbar #tabs{display:none}", chat)  # the wrapping multi-row tab strip is hidden
-        self.assertIn("sel.id='msess'", km._CHAT_MOBILE_JS)  # ...and built as a native <select>
+        self.assertIn("id='mcur'", km._CHAT_MOBILE_JS)      # current-session button that opens the list
+        self.assertIn("id='mlist'", km._CHAT_MOBILE_JS)     # the dropdown list of sessions
 
-    def test_picker_routes_a_pick_back_to_the_real_tab(self):
+    def test_picker_is_custom_colored_not_native_select(self):
+        # a native <select> can't render the per-session identity colors, so the picker is our own element
+        js, css = km._CHAT_MOBILE_JS, km._CHAT_MOBILE_CSS
+        self.assertNotIn("createElement('select')", js)   # not native
+        self.assertIn("--chip-bg", js)                    # reads each session's identity color
+        self.assertIn("#mcur.colored", css)               # the current button wears that color
+
+    def test_picker_routes_a_pick_and_wires_new_session_and_summary(self):
         js = km._CHAT_MOBILE_JS
-        self.assertIn(".tab[data-id", js)             # reads/clicks the real tab so render.js focuses it
-        self.assertIn("MutationObserver", js)         # and re-syncs as tabs change
+        self.assertIn(".tab[data-id", js)             # a row tap clicks the real tab (render.js focuses it)
+        self.assertIn("MutationObserver", js)         # re-syncs as tabs change
+        self.assertIn(".tab-add", js)                 # + → open / new session
+        self.assertIn(".tab-collapse", js)            # ▾ → toggle the summary
 
 
 class RevealRouting(unittest.TestCase):
