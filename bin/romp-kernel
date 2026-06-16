@@ -1720,6 +1720,28 @@ def _goal_segments(item_id):
     return seg_ids
 
 
+def _cards_for_segments(sid, seg_ids):
+    """The feed card itemIds (top goal nodes) whose subtree trail covers any of seg_ids — the inverse of
+    _goal_segments. Lets a timeline-bar hover light the card that owns that work (reverse of the
+    feed→timeline showAskPath). Empty when nothing matches."""
+    seg_set = set(seg_ids or [])
+    if not seg_set:
+        return []
+    nodes = jd.load_goals(sid).get("nodes", {})
+
+    def top(nid):
+        while nodes.get(nid, {}).get("parentId") is not None:
+            nid = nodes[nid]["parentId"]
+        return nid
+    tops = []
+    for nid, nd in nodes.items():
+        if seg_set.intersection(nd.get("trail", [])):
+            t = top(nid)
+            if t not in tops:
+                tops.append(t)
+    return tops
+
+
 def _send_client(c, key, msg):
     """Send a payload to ONE client only if it differs from what that client last received (per-client
     dedup, key = the slot e.g. ("chat", sid)) — so the periodic push re-sends nothing when unchanged."""
@@ -2042,6 +2064,7 @@ if(window.parent!==window)window.parent.postMessage({romp:"reveal",pane:"chat"},
 window.__rompTimelineWriteOrder=function(order){send({type:"writeOrder",order:order});};
 window.__rompTimelineCompact=function(name){send({type:"compact",name:name});};
 window.__rompTimelineSendCommand=function(name,cmd){send({type:"sendCommand",name:name,cmd:cmd});};
+window.__rompTimelineHover=function(sid,segIds,t0,t1){send(sid?{type:"timelineHover",sid:sid,segIds:segIds||[],t0:t0,t1:t1}:{type:"timelineHover",off:true});};
 window.__rompConnectTimeline=function(p){panel=p;connect();send({type:"ready"});};})();
 """
 
@@ -2475,6 +2498,20 @@ class Handler(BaseHTTPRequestHandler):
                     tl = msg.get("tlId")
                     _send_to_app("timeline", {"type": "hover", "ids": ([tl] if tl else []),
                                               "nonce": _next_nonce()})
+                elif msg and msg.get("type") == "timelineHover":
+                    # the REVERSE of the feed/chat→timeline hovers: a timeline bar hover lights the feed
+                    # card that owns that work (hoverCards, resolved by segment) AND glows the chat turns in
+                    # the bar's time window (glowTurns — render.ts already has both receivers). off → clear.
+                    if msg.get("off"):
+                        _send_to_app("feed", {"type": "hoverCards", "keys": [], "eid": None})
+                        _send_to_app("chat", {"type": "glowTurns", "groups": [], "mids": []})
+                    else:
+                        hsid = str(msg.get("sid") or "")
+                        _send_to_app("feed", {"type": "hoverCards",
+                                              "keys": _cards_for_segments(hsid, msg.get("segIds") or []), "eid": None})
+                        t0, t1 = msg.get("t0"), msg.get("t1")
+                        groups = [{"sid": hsid, "ranges": [[t0, t1]]}] if (t0 is not None and t1 is not None) else []
+                        _send_to_app("chat", {"type": "glowTurns", "groups": groups, "mids": []})
                 elif msg and msg.get("type") == "sendMessage" and msg.get("id") and msg.get("text"):
                     _tmux_send(_name_of(msg["id"]) or msg["id"], str(msg["text"]))   # composer → session
                 elif msg and msg.get("type") == "interrupt" and msg.get("id"):

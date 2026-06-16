@@ -852,6 +852,12 @@ class TimelinePanel {
   // set the single selection highlight + redraw only on a real change.
   _select(sid) { if (sid && this.selectedSid !== sid) { this.selectedSid = sid; this.draw(); } }
 
+  // Reverse hover: a glyph hover tells the host to light the matching feed card + glow the chat turns
+  // in [t0,t1] (the host has the receivers; web kernel only — no-op in Obsidian). sid null → clear.
+  _emitHover(sid, segIds, t0, t1) {
+    try { if (typeof window !== 'undefined' && typeof window.__rompTimelineHover === 'function') window.__rompTimelineHover(sid, segIds, t0, t1); } catch (e) {}
+  }
+
   // The chat published a new active tab (host fs-watches chat-active and pushes this instantly on tab
   // switch). Move the highlight to follow it — but DON'T fire openChat back (that would loop).
   setActiveChat(ac) {
@@ -1589,9 +1595,9 @@ class TimelinePanel {
         const hit = el('rect', { x: bx, y: y - 7, width: bw, height: 14, fill: 'transparent' }); hit.style.cursor = 'pointer';
         const html = () => '<div class="r"><span class="chip" style="background:' + s.color + '"></span><span class="who" style="color:' + s.color + '">' + esc(s.name) + '</span><span class="t">' + clock(t.start) + '–' + clock(t.end) + '</span></div>' + this.barBody(t, ongoing);
         const grow = (h) => { bar.setAttribute('y', y - h / 2); bar.setAttribute('height', h); bar.setAttribute('rx', h / 2); };
-        hit.addEventListener('mouseenter', (e) => { grow(eh); bar.setAttribute('opacity', '1'); this.showTip(html(), e); });
+        hit.addEventListener('mouseenter', (e) => { grow(eh); bar.setAttribute('opacity', '1'); this.showTip(html(), e); this._emitHover(s.id, [t.id], t.start, t.end); });
         hit.addEventListener('mousemove', (e) => this.moveTip(e));
-        hit.addEventListener('mouseleave', () => { grow(BAR_H); bar.setAttribute('opacity', '0.9'); this.hideTip(); });
+        hit.addEventListener('mouseleave', () => { grow(BAR_H); bar.setAttribute('opacity', '0.9'); this.hideTip(); this._emitHover(null); });
         // the BAR = the work/response: open the period's readable reply (workAnchorOf), with the
         // period's start as the by-time fallback. This was a bare lane-open with NO anchor, so every
         // work-bar click visibly did nothing while prompt-dot clicks worked (the user, 2026-06-12).

@@ -354,6 +354,21 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(comp[0]["trgb"], list(km.cm.age_rgb(NOW - comp[0]["t"])))
         self.assertNotEqual(comp[0]["trgb"], km._rgb(comp[0]["color"]), "not the flat session color")
 
+    def test_cards_for_segments_resolves_segment_to_owning_top_card(self):
+        # reverse-hover: a hovered timeline bar's segment id → the TOP goal card that owns it (inverse
+        # of _goal_segments), so the kernel can light that feed card.
+        g1, g1c, g2 = "%s:g1" % SID, "%s:g1c" % SID, "%s:g2" % SID
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+            "rompUuid": SID, "nodes": {
+                g1: {"id": g1, "text": "top", "parentId": None, "trail": ["segA"]},
+                g1c: {"id": g1c, "text": "child", "parentId": g1, "trail": ["segB"]},
+                g2: {"id": g2, "text": "other", "parentId": None, "trail": ["segC"]}}}))
+        self.assertEqual(km._cards_for_segments(SID, ["segB"]), [g1])   # a CHILD's segment → its top card
+        self.assertEqual(km._cards_for_segments(SID, ["segC"]), [g2])
+        self.assertEqual(set(km._cards_for_segments(SID, ["segA", "segC"])), {g1, g2})
+        self.assertEqual(km._cards_for_segments(SID, ["nope"]), [])
+        self.assertEqual(km._cards_for_segments(SID, []), [])
+
     def test_feed_non_handoff_card_has_no_origin(self):
         comp = next(a for a in km.build_feed(NOW)["asks"] if a["column"] == "completed")
         self.assertIsNone(comp["origin"], "a normal (non-courier) card carries no handoff origin")
