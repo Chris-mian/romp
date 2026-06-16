@@ -132,6 +132,39 @@ class UnitText(unittest.TestCase):
         self.assertIn("ASSISTANT SAID: Tinted cards by recency.", txt)
         self.assertIn("TOOLS USED: Read, Edit", txt)
 
+    def test_tools_used_carries_key_args(self):
+        """simplify's enrichment: TOOLS USED shows the key arg per tool (file path / Bash
+        description), never the payload — no full scripts, diffs, or tool outputs."""
+        big = "echo " + "X" * 5000                      # a huge bash script must NOT be dumped
+        atoms = [
+            {"type": "user", "author": "human",
+             "message": {"content": [{"type": "text", "text": "do the thing"}]}},
+            {"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": "Edit",
+                 "input": {"file_path": "/work/romp/bin/romp-judge"}},
+                {"type": "tool_use", "name": "Bash",
+                 "input": {"description": "run the test suite", "command": big}},
+                {"type": "tool_use", "name": "Read",
+                 "input": {"file_path": "/work/romp/chat-view/src/webview/feed.ts"}},
+            ]}},
+        ]
+        txt = jd._unit_text(atoms)
+        self.assertIn("Edit(bin/romp-judge)", txt, "file tools show the path (last 2 components)")
+        self.assertIn("Read(webview/feed.ts)", txt)
+        self.assertIn("Bash(run the test suite)", txt, "Bash shows its description")
+        self.assertNotIn("X" * 200, txt, "the full bash script is never dumped")
+        self.assertIn("USER ASKED: do the thing", txt)
+
+    def test_tools_used_bash_falls_back_to_command_head(self):
+        """No description on a Bash → the command head (capped at 60) stands in, never the script."""
+        cmd = "git rebase --onto main feature~3 feature && make all && ./deploy.sh prod extra extra"
+        atoms = [{"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "name": "Bash", "input": {"command": cmd}}]}}]
+        txt = jd._unit_text(atoms)
+        self.assertIn("Bash(git rebase", txt, "no description → the command head stands in")
+        arg = txt.split("Bash(", 1)[1].split(")", 1)[0]
+        self.assertLessEqual(len(arg), 60, "the command head is capped at 60 chars")
+
     def test_tool_result_atoms_are_not_user_input(self):
         # a tool_result-only user atom (author None) must not become "USER ASKED"
         s = build_session([

@@ -146,9 +146,27 @@ def _shape(s, head, tail):
     return s if len(s) <= head + tail else s[:head].rstrip() + " […] " + s[-tail:].lstrip()
 
 
+def _tool_arg(name, inp):
+    """The ONE key arg for a tool on the TOOLS USED line — enough to know WHAT was done, never the
+    payload (NO full scripts, diffs, file contents, or tool outputs; this is a compact signal for the
+    captioner). Edit/Write/Read/NotebookEdit -> file path (last 2 components); Bash -> its
+    description else the command head; Grep/Glob -> the pattern; everything else -> name only."""
+    if not isinstance(inp, dict):
+        return ""
+    if name in ("Edit", "Write", "Read", "NotebookEdit"):
+        p = str(inp.get("file_path") or inp.get("notebook_path") or "")
+        parts = [x for x in p.split("/") if x]
+        return "/".join(parts[-2:]) if len(parts) > 2 else "/".join(parts)
+    if name == "Bash":
+        return str(inp.get("description") or inp.get("command") or "")[:60]
+    if name in ("Grep", "Glob"):
+        return str(inp.get("pattern") or "")[:40]
+    return ""
+
+
 def _unit_text(atoms):
     """The caption model's input for one unit (segment or turn): what the user asked, what the
-    assistant said, and the tools it used — drawn from the unit's atoms."""
+    assistant said, and the tools it used (with each tool's key arg) — drawn from the unit's atoms."""
     user_said, asst_said, tools = [], [], []
     for a in atoms:
         if a["type"] == "user" and a.get("author") is not None:
@@ -162,15 +180,25 @@ def _unit_text(atoms):
             for b in (a.get("message") or {}).get("content", []):
                 if isinstance(b, dict) and b.get("type") == "tool_use":
                     n = b.get("name")
-                    if n and n not in tools:
-                        tools.append(n)
+                    if not n:
+                        continue
+                    arg = _tool_arg(n, b.get("input"))           # the key arg, never the payload
+                    label = "%s(%s)" % (n, arg) if arg else n
+                    if label not in tools:
+                        tools.append(label)
     out = []
     if user_said:
         out.append("USER ASKED: " + _shape(" | ".join(user_said), 1200, 1800))
     if asst_said:
         out.append("ASSISTANT SAID: " + _shape(" ".join(asst_said), 2500, 5500))
     if tools:
-        out.append("TOOLS USED: " + ", ".join(tools[:15]))
+        picked, total = [], 0
+        for t in tools[:15]:                          # cap ~15 entries AND ~400 chars (a compact signal)
+            if picked and total + len(t) + 2 > 400:
+                break
+            picked.append(t)
+            total += len(t) + 2
+        out.append("TOOLS USED: " + ", ".join(picked))
     return "\n".join(out).strip()
 
 
