@@ -14,7 +14,7 @@
 #   romp-postal working <text>   publish what this session is working on          [CLI]
 #   romp-postal sent             this session's sent messages + read status       [CLI]
 #   romp-postal recall <to> [id] unsend an unread/parked message you sent          [CLI]
-#   romp-postal find [query]     search past+present sessions by saved summaries   [CLI]
+#   romp-postal find [query]     search past+present sessions by summary + captions [CLI]
 #   romp-postal revive <name>    revive a dead session (romp --resume, detached)   [CLI]
 #   romp-postal drain --id <id>  loop-guarded consume, for the Stop hook
 #
@@ -65,7 +65,8 @@ LOG = STATE / "server.log"
 PIDFILE = STATE / "server.pid"
 NAMES_DIR = Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "romp" / "names"
 TLDIR = STATE.parent / "timeline"     # append-only logs for the timeline view (messages.jsonl)
-SUMMARIES_DIR = STATE.parent / "summaries"   # per-session Haiku request/reply summaries (romp-summarize backfill)
+ARCHIVE_DIR = STATE.parent / "archive"        # per-session {headline, abstract} (the archiver — the search index)
+CAPTIONS_DIR = STATE.parent / "captions"      # per-transcript turn/segment captions (the activity log)
 STATESDIR = STATE.parent / "states"          # per-session state-transition log (tmux-status.sh schema)
 
 # The romp launcher (same dir as this script); used to REVIVE a dead session via
@@ -421,21 +422,22 @@ def _recall(from_id, to, mid):
 
 # ───────────────────── session discovery + revival ─────────────────────
 # Every past/present romp session leaves a persistent trail on disk: names/<sid>
-# (name, dir, identity colour) and summaries/<sid>.jsonl (per-turn Haiku
-# request/reply summaries — what it asked + what it did). That's a searchable
-# index of expertise: a live session can find a DEAD session that worked on a
-# relevant problem and REVIVE it (`romp <name> --resume <uuid> --detach`).
+# (name, dir, identity colour) and the NEW index the judges write: archive/<sid>.json
+# (a one-line headline + a 2-3 sentence abstract per session) and captions/<sid>.jsonl
+# (the per-turn/segment activity log). That's a searchable index of expertise: a live
+# session can find a DEAD session that worked on a relevant problem and REVIVE it
+# (`romp <name> --resume <uuid> --detach`). (Replaces the retired summaries/ store.)
 
 def _session_records():
-    """Join names/ + summaries/ into one record per session:
-       {id, name, dir, alive, last, summaries:[{t,kind,text}]}, newest first.
-       last = most recent summary epoch, else the file mtime."""
+    """Join names/ + the judges' index (archive/ headline+abstract + captions/ activity log)
+       into one record per session: {id, name, dir, alive, last, headline, abstract,
+       caps:[{t,text}]}, newest first. last = most recent caption epoch, else the file mtime."""
     live = {a["id"]: a for a in local_agents()}
     ids = set()
     if NAMES_DIR.is_dir():
         ids |= {f.name for f in NAMES_DIR.iterdir() if f.is_file()}
-    if SUMMARIES_DIR.is_dir():
-        ids |= {f.stem for f in SUMMARIES_DIR.iterdir() if f.suffix == ".jsonl"}
+    if CAPTIONS_DIR.is_dir():
+        ids |= {f.stem for f in CAPTIONS_DIR.iterdir() if f.suffix == ".jsonl"}
     out = []
     for sid in ids:
         name, d = sid[:8], ""
@@ -450,20 +452,31 @@ def _session_records():
         if sid in live:                       # a live session's name/dir may be newer than the record
             name = live[sid].get("name", name)
             d = live[sid].get("dir", "") or d
-        sums, last = [], 0
-        sf = SUMMARIES_DIR / (sid + ".jsonl")
-        if sf.is_file():
-            for ln in sf.read_text(errors="replace").splitlines():
+        headline, abstract = "", ""
+        af = ARCHIVE_DIR / (sid + ".json")
+        if af.is_file():
+            try:
+                a = json.loads(af.read_text())
+                headline = (a.get("headline") or "").strip()
+                abstract = (a.get("abstract") or "").strip()
+            except Exception:
+                pass
+        caps, last = [], 0
+        cf = CAPTIONS_DIR / (sid + ".jsonl")
+        if cf.is_file():
+            for ln in cf.read_text(errors="replace").splitlines():
                 try: e = json.loads(ln)
                 except Exception: continue
+                txt = (e.get("caption") or "").strip()
+                if not txt: continue
                 t = int(e.get("t", 0))
-                sums.append({"t": t, "kind": e.get("kind", ""), "text": e.get("text", "")})
+                caps.append({"t": t, "text": txt})
                 last = max(last, t)
         if not last:
-            try: last = int((sf if sf.is_file() else nf).stat().st_mtime)
+            try: last = int((cf if cf.is_file() else (af if af.is_file() else nf)).stat().st_mtime)
             except Exception: last = 0
         out.append({"id": sid, "name": name, "dir": d, "alive": sid in live,
-                    "last": last, "summaries": sums})
+                    "last": last, "headline": headline, "abstract": abstract, "caps": caps})
     out.sort(key=lambda s: s["last"], reverse=True)
     return out
 
@@ -478,15 +491,15 @@ def _rel_age(t):
     return "%dd ago" % (h // 24)
 
 def _find_sessions(query, limit=12):
-    """Rank sessions by how well name/dir/summaries match the query tokens (empty
-    query -> most recent). Returns (ranked records [each + 'snips'], fell_back)."""
+    """Rank sessions by how well name/dir/headline/abstract/captions match the query tokens
+    (empty query -> most recent). Returns (ranked records [each + 'snips'], fell_back)."""
     recs = _session_records()
     toks = [w for w in re.split(r"\s+", (query or "").lower().strip()) if w]
     fell_back = False
     if toks:
         def score(r):
-            hay = (r["name"] + " " + r["dir"] + " " +
-                   " ".join(s["text"] for s in r["summaries"])).lower()
+            hay = (r["name"] + " " + r["dir"] + " " + r["headline"] + " " + r["abstract"] + " " +
+                   " ".join(c["text"] for c in r["caps"])).lower()
             return sum(hay.count(t) for t in toks)
         hits = [(score(r), r) for r in recs]
         hits = [(sc, r) for sc, r in hits if sc > 0]
@@ -497,10 +510,10 @@ def _find_sessions(query, limit=12):
             ranked, fell_back = recs[:limit], True
     else:
         ranked = recs[:limit]
-    for r in ranked:                          # attach the most relevant snippet lines
-        snips = [s for s in r["summaries"] if any(t in s["text"].lower() for t in toks)] if toks else []
+    for r in ranked:                          # attach the most relevant snippet lines (matching captions)
+        snips = [c for c in r["caps"] if any(t in c["text"].lower() for t in toks)] if toks else []
         if not snips:
-            snips = r["summaries"][-3:]        # fall back to the latest few
+            snips = r["caps"][-3:]             # fall back to the latest few
         r["snips"] = snips[-4:]
     return ranked, fell_back
 
@@ -508,7 +521,7 @@ def format_find(ranked, query, fell_back, me_id=None):
     if not ranked:
         return "No past romp sessions on record."
     if fell_back:
-        head = 'No session summaries matched "%s" — showing the most recent instead:' % query
+        head = 'No sessions matched "%s" — showing the most recent instead:' % query
     elif query:
         head = 'Past & present romp sessions matching "%s":' % query
     else:
@@ -521,9 +534,10 @@ def format_find(ranked, query, fell_back, me_id=None):
         dirb = os.path.basename(r["dir"]) if r["dir"] else "?"
         out.append("%s %s%s  [%s]  %s · last active %s  ·  %s"
                    % (dot, r["name"], you, dirb, st, _rel_age(r["last"]), r["id"][:8]))
-        for s in r.get("snips", []):
-            verb = {"request": "asked", "reply": "did"}.get(s["kind"], s["kind"] or "—")
-            out.append("    - %s: %s" % (verb, s["text"]))
+        if r.get("headline"):
+            out.append("    %s" % r["headline"])
+        for c in r.get("snips", []):
+            out.append("    - %s" % c["text"])
     out += ["", '(to wake one: revive_session("<name>")  ·  romp --mail revive <name>)']
     return "\n".join(out)
 
@@ -544,7 +558,7 @@ def _resolve_session(name_or_id):
     # feed attacker-chosen contents into the spawn.
     if not _safe_id(x):
         return None, None, None, False
-    if (NAMES_DIR / x).is_file() or (SUMMARIES_DIR / (x + ".jsonl")).is_file():
+    if (NAMES_DIR / x).is_file() or (CAPTIONS_DIR / (x + ".jsonl")).is_file():
         sid = x
     else:
         sid = _dead_id_for_name(x)
@@ -1374,7 +1388,7 @@ MCP_TOOLS = [
                      "properties": {"to": {"type": "string", "description": "recipient session name (or UUID) whose queued message(s) from you to cancel"},
                                     "id": {"type": "string", "description": "optional specific message id (from check_sent) to recall just that one"}}}},
     {"name": "find_sessions",
-     "description": "Search PAST and present romp sessions by their saved Haiku summaries (what each one asked + did), plus name and directory — to find a session with expertise or context worth reusing. Returns matching sessions (alive ● / dead ○) with directory, last-active time, UUID, and the matching summary snippets. Omit the query to list the most recent sessions. Read-only; follow up with revive_session to wake a dead one.",
+     "description": "Search PAST and present romp sessions by their archived summary + activity log (what each one was about and did), plus name and directory — to find a session with expertise or context worth reusing. Returns matching sessions (alive ● / dead ○) with directory, last-active time, UUID, and the matching caption snippets. Omit the query to list the most recent sessions. Read-only; follow up with revive_session to wake a dead one.",
      "inputSchema": {"type": "object",
                      "properties": {"query": {"type": "string", "description": "keywords describing the expertise/topic you're after; omit to list recent sessions"}}}},
     {"name": "revive_session",
@@ -1760,7 +1774,7 @@ USAGE = """romp-postal — the Romp Postal Service
   romp --mail working <text>          publish what you're working on (empty to clear)
   romp --mail sent                    show your sent messages + whether each was read
   romp --mail recall <to> [id]        unsend an unread/parked message you sent to <to>
-  romp --mail find [query]            search past+present sessions by their saved summaries
+  romp --mail find [query]            search past+present sessions by summary + captions
   romp --mail revive <name> [msg]     revive a dead session (resumes it; optional wake message)
   romp --mail remote                  connect this (remote) machine to your laptop's bus
 (internal: serve | ensure | mcp | drain --id <id> | wake --id <id> | picker-check --name <n> --id <id>)"""

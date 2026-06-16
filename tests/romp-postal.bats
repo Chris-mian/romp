@@ -139,11 +139,13 @@ cnt() { ls -1 "$1" 2>/dev/null | wc -l | tr -d ' '; }
     [ ! -e "$XDG_STATE_HOME/romp/postal/mail-pending/uuid-ghost" ]   # reconciled away
 }
 
-@test "find searches past sessions by their saved Haiku summaries" {
-    mkdir -p "$XDG_STATE_HOME/romp/names" "$XDG_STATE_HOME/romp/summaries"
+@test "find searches past sessions by their archived summary + captions" {
+    mkdir -p "$XDG_STATE_HOME/romp/names" "$XDG_STATE_HOME/romp/archive" "$XDG_STATE_HOME/romp/captions"
     printf 'oldzot\t/tmp/proj\t#179EE8\twhite\n' > "$XDG_STATE_HOME/romp/names/uuid-z"
-    printf '{"t":1780000000,"kind":"reply","text":"Fixed the zotero metadata sync"}\n' \
-        > "$XDG_STATE_HOME/romp/summaries/uuid-z.jsonl"
+    printf '{"headline":"Zotero sync work","abstract":"Worked on the zotero metadata sync."}\n' \
+        > "$XDG_STATE_HOME/romp/archive/uuid-z.json"
+    printf '{"id":"uuid-z:1","grain":"turn","t":1780000000,"caption":"Fixed the zotero metadata sync"}\n' \
+        > "$XDG_STATE_HOME/romp/captions/uuid-z.jsonl"
     run "$POSTAL" find zotero
     [ "$status" -eq 0 ]
     [[ "$output" == *"oldzot"* ]]
