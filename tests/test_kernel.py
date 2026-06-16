@@ -291,18 +291,50 @@ class ViewBuilder(unittest.TestCase):
         return {"type": "assistant", "timestamp": iso(t), "uuid": uuid, "parentUuid": parent,
                 "message": {"role": "assistant", "content": blocks, "stop_reason": stop}}
 
-    def test_subagent_running_state_and_card(self):
-        # an in-flight Task (tool_use with no tool_result yet) → 'subagent' chip + a {kind:"subagent"} card
+    def test_subagent_additive_while_working(self):
+        # an in-flight Task in the CURRENT (open) turn → status.subagent set (ADDITIVE), a {kind:"subagent"}
+        # card, and the chip STATE stays the real state (working) — NEVER "subagent" (the re-spec: a working
+        # session shows only WORKING; the render hides the additive chip while working). The user 2026-06-16.
         task = {"type": "tool_use", "id": "tk1", "name": "Task", "input": {"description": "audit the auth flow"}}
         with self.tpath.open("a") as f:
             f.write(json.dumps(uline(T0 + 100, "go audit auth", "u2", parent="a2", ps="typed")) + "\n")
             f.write(json.dumps(self._asst(T0 + 110, "a3", "u2",
                     [{"type": "text", "text": "Delegating."}, task], stop="tool_use")) + "\n")
         m = km.build_session(SID, NOW)
-        self.assertEqual(m["status"]["state"], "subagent", "in-flight subagent → orange subagent chip")
+        self.assertNotEqual(m["status"]["state"], "subagent", "subagent is additive, never the chip state")
+        self.assertEqual(m["status"]["state"], "working", "open turn → working")
+        self.assertEqual(m["status"]["subagent"], "audit the auth flow", "the additive subagent desc is carried")
         cards = [e for e in m["events"] if e["kind"] == "subagent"]
         self.assertEqual(len(cards), 1)
         self.assertEqual(cards[0]["desc"], "audit the auth flow")
+
+    def test_subagent_additive_while_ready(self):
+        # the case the human cares about: a session at REST (turn ended) with a background subagent still
+        # dangling in the LAST turn → state "ready" AND status.subagent set, so the render shows BOTH the
+        # ready chip and a separate orange subagent chip (the user 2026-06-16).
+        task = {"type": "tool_use", "id": "tk3", "name": "Agent", "input": {"description": "research in the background"}}
+        with self.tpath.open("a") as f:
+            f.write(json.dumps(uline(T0 + 100, "kick off research", "u2", parent="a2", ps="typed")) + "\n")
+            f.write(json.dumps(self._asst(T0 + 110, "a3", "u2",
+                    [{"type": "text", "text": "Dispatched a background agent."}, task], stop="end_turn")) + "\n")
+        m = km.build_session(SID, NOW)
+        self.assertEqual(m["status"]["state"], "ready", "turn ended → ready")
+        self.assertEqual(m["status"]["subagent"], "research in the background")
+        self.assertFalse(m["status"]["faded"], "an active subagent keeps the session from fading to at-rest")
+
+    def test_subagent_not_running_when_main_thread_moved_on(self):
+        # a dangling Task in an EARLIER turn (its completion arrived as a task-notification, not a tool_result,
+        # OR it was abandoned/killed) → NOT in flight once a LATER main-thread turn exists. The last-turn
+        # guard kills the forever-stale card (the user 2026-06-16; subagents' resumed-background case).
+        task = {"type": "tool_use", "id": "tkX", "name": "Task", "input": {"description": "stale research"}}
+        with self.tpath.open("a") as f:
+            f.write(json.dumps(uline(T0 + 100, "go research", "u2", parent="a2", ps="typed")) + "\n")
+            f.write(json.dumps(self._asst(T0 + 110, "a3", "u2", [task], stop="end_turn")) + "\n")
+            f.write(json.dumps(uline(T0 + 200, "ok, different thing now", "u3", parent="a3", ps="typed")) + "\n")
+            f.write(json.dumps(self._asst(T0 + 210, "a4", "u3", [{"type": "text", "text": "On it."}])) + "\n")
+        m = km.build_session(SID, NOW)
+        self.assertIsNone(m["status"]["subagent"], "a dangling Task in an earlier turn is not in flight")
+        self.assertFalse(any(e["kind"] == "subagent" for e in m["events"]), "no stale subagent card")
 
     def test_completed_subagent_not_running(self):
         # a Task WITH a tool_result → not in flight → no subagent chip/card

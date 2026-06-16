@@ -72,7 +72,11 @@ type ChatEvent = (
 interface TodoTask { id: string; subject: string; activeForm?: string; status: string }
 
 type ChipState = "working" | "subagent" | "ready" | "awaiting" | "idle" | "closed" | "compacting" | "blocked";
-interface Status { state: ChipState; sinceEpoch: number | null; effort?: string; model?: string; ctx?: string; faded?: boolean; }
+interface Status { state: ChipState; sinceEpoch: number | null; effort?: string; model?: string; ctx?: string; faded?: boolean;
+  // ADDITIVE subagent signal: the desc of a subagent running in the background (or "" if undescribed), else
+  // null. Shown as a separate orange chip/dot ONLY while the session is otherwise quiet (ready/idle) — a
+  // working session hides it (the user 2026-06-16).
+  subagent?: string | null; }
 interface Color { bg: string; fg: string; }
 interface Session { id: string; name: string; color: Color | null; events: ChatEvent[]; status: Status; firstSeen?: number; }
 
@@ -1077,15 +1081,19 @@ function renderTabs() {
       tab.classList.add("colored");
     }
     const st = s.status.state;
+    // ADDITIVE: a background subagent shows ONLY while the session is otherwise quiet (ready/idle); a
+    // working session hides it (the user 2026-06-16, re-spec from #9).
+    const subActive = s.status.subagent != null && (st === "ready" || st === "idle");
     if (st === "working") tab.classList.add("tab-working");
-    else if (st === "subagent") tab.classList.add("tab-subagent");   // orange: quiet but a subagent runs
     else if (st === "blocked") tab.classList.add("tab-blocked");     // red: stopped on an API error
     else if (st === "awaiting") tab.classList.add("tab-awaiting");
     else if (st === "compacting") tab.classList.add("tab-compacting");
+    if (subActive) tab.classList.add("tab-subagent");                // orange accent ADDED to the quiet tab
     if (s.status.faded) tab.classList.add("at-rest");
-    // WORKING/SUBAGENT show a dot (the session is busy). BLOCKED (API error) gets NO dot — it isn't
-    // working — it gets the dashed red highlight on the tab itself instead (the user 2026-06-16).
-    if (st === "working" || st === "subagent") tab.appendChild(el("span", "tab-dot"));
+    // WORKING shows a yellow dot; a quiet tab with a background subagent shows an ORANGE dot (additive).
+    // BLOCKED (API error) gets NO dot — the dashed red tab highlight instead (the user 2026-06-16).
+    if (st === "working") tab.appendChild(el("span", "tab-dot"));
+    else if (subActive) tab.appendChild(el("span", "tab-dot tab-dot-subagent"));
     const label = el("span", "tab-label");
     label.textContent = s.name;
     if (s.status.faded && id !== activeId && s.color) {
@@ -2649,6 +2657,15 @@ function updateStatusline() {
     const chip = el("span", `chip chip-${s.status.state}`);
     chip.textContent = CHIP_LABEL[s.status.state] ?? s.status.state.toUpperCase();
     sl.appendChild(chip);
+  }
+  // ADDITIVE orange SUBAGENT chip: a quiet session (ready/idle) with a background subagent still running —
+  // the signal explaining why a seemingly-idle session is doing work. A working session hides it (it's
+  // already obviously busy). (the user 2026-06-16, re-spec from #9.)
+  if (s.status.subagent != null && (s.status.state === "ready" || s.status.state === "idle")) {
+    const sub = el("span", "chip chip-subagent");
+    sub.textContent = "SUBAGENT";
+    sub.title = s.status.subagent ? `a subagent is running in the background: ${s.status.subagent}` : "a subagent is running in the background";
+    sl.appendChild(sub);
   }
   const meta = el("span", "spinner-meta");
   meta.id = "spinner-meta";

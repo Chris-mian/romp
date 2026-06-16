@@ -930,24 +930,36 @@ def _parse(path, sid, now):
 
 
 def _subagent_running(session):
-    """The session is delegating to a subagent: a Task/Agent tool_use with no matching tool_result yet (the
-    mini-conversation hasn't returned — the main thread is quiet but still working). Returns the subagent's
-    description (the Task input, '' if undescribed) when one is in flight, else None. The chip then reads
-    'subagent' (orange) instead of 'working' (the user 2026-06-15)."""
-    started, result_ids = {}, set()
-    for turn in session["turns"]:
+    """A subagent the session is delegating to RIGHT NOW: a Task/Agent tool_use IN THE LAST TURN with no
+    matching tool_result yet. Returns its description ('' if undescribed) or None.
+
+    Restricting to the LAST turn is the event-based staleness guard (the user 2026-06-16): a dangling Task
+    in an EARLIER turn means the main thread already moved past it — the subagent finished (its completion
+    can arrive as a task-notification, NOT a tool_result block, so the old whole-transcript matcher saw it
+    dangling forever — subagents' resumed/background case) or it was abandoned / killed mid-run. Either way
+    it's no longer a live 'quiet-but-working' signal, so it must not keep the chip/card stuck on."""
+    turns = session["turns"]
+    if not turns:
+        return None
+    result_ids = set()                                   # a result clears its Task wherever in the session it lands
+    for turn in turns:
         for a in turn["atoms"]:
-            t, msg = a.get("type"), (a.get("message") or {})
-            content = msg.get("content")
-            if not isinstance(content, list):
+            if a.get("type") != "user":
                 continue
+            content = (a.get("message") or {}).get("content")
+            if isinstance(content, list):
+                for b in content:
+                    if isinstance(b, dict) and b.get("type") == "tool_result" and b.get("tool_use_id"):
+                        result_ids.add(b["tool_use_id"])
+    started = {}                                          # but only Tasks STARTED in the current (last) turn count
+    for a in turns[-1]["atoms"]:
+        if a.get("type") != "assistant":
+            continue
+        content = (a.get("message") or {}).get("content")
+        if isinstance(content, list):
             for b in content:
-                if not isinstance(b, dict):
-                    continue
-                if t == "assistant" and b.get("type") == "tool_use" and b.get("name") in ("Task", "Agent"):
+                if isinstance(b, dict) and b.get("type") == "tool_use" and b.get("name") in ("Task", "Agent"):
                     started[b.get("id")] = str((b.get("input") or {}).get("description") or "").strip()
-                elif t == "user" and b.get("type") == "tool_result" and b.get("tool_use_id"):
-                    result_ids.add(b["tool_use_id"])
     pending = [desc for tid, desc in started.items() if tid not in result_ids]
     return pending[-1] if pending else None              # '' (running, undescribed) vs None (no subagent)
 
@@ -1109,16 +1121,20 @@ def build_session(sid, now, tmux=None):
         st = tm["state"]
         # blocked (API error) is the strongest signal — the turn ended in an error, so it beats the live
         # tmux states (the session can't simultaneously be compacting or at a permission prompt).
+        # subagent is now an ADDITIVE signal (status.subagent), NOT a chip state: working+subagent shows
+        # only WORKING; ready+subagent shows the ready chip AND a separate orange subagent chip (the render
+        # decides). So the chip itself is the real state (the user 2026-06-16, re-spec from subagents #9).
         chip = ("blocked" if aerr else "awaiting" if st == "permission" else "compacting" if st == "compacting"
-                else "subagent" if sub is not None else "working" if open_now else "ready")
-        faded = chip == "ready" and bool(tm["since"]) and now - tm["since"] > 3600
-        status = {"state": chip, "sinceEpoch": since_ms, "faded": faded,
+                else "working" if open_now else "ready")
+        faded = chip == "ready" and sub is None and bool(tm["since"]) and now - tm["since"] > 3600
+        status = {"state": chip, "sinceEpoch": since_ms, "faded": faded, "subagent": sub,
                   "model": tm["model"], "effort": tm["effort"],
                   "ctx": str(tm["context"]) if tm["context"] is not None else ""}
     elif tmux:                                         # tmux present but this session isn't running → closed
-        status = {"state": "closed", "sinceEpoch": since_ms, "faded": True}
+        status = {"state": "closed", "sinceEpoch": since_ms, "faded": True, "subagent": None}
     else:                                              # no tmux (rare headless) → event-model fallback
-        status = {"state": "working" if open_now else "idle", "sinceEpoch": since_ms, "faded": not open_now}
+        status = {"state": "working" if open_now else "idle", "sinceEpoch": since_ms,
+                  "faded": not open_now, "subagent": sub if open_now else None}
     return {"type": "session", "id": sid, "name": sess["name"], "color": _name_color(sid),
             "events": events, "status": status, "ledger": ledger, "firstSeen": session["turns"][0]["t"]
             if session["turns"] else now}
