@@ -70,6 +70,25 @@ function interpNow(baseSec, baseMs, nowMs, live, maxAheadSec) {
   return baseSec + Math.max(0, Math.min((nowMs - baseMs) / 1000, cap));
 }
 
+// Re-anchor decision for the live edge's time-baseline (pure + exported for unit tests). The edge
+// FREE-RUNS on the local clock between re-anchors (interpNow off a FIXED baseSec/baseMs); we re-snap the
+// baseline onto a fresh data.now only on a genuine STEP — never for the few-ms poll-ARRIVAL jitter which,
+// snapped every poll, made the live edge hiccup ~1-2px while otherwise gliding smoothly (the user
+// 2026-06-15; worse zoomed in, where a px is fewer ms). Re-anchor when:
+//   • no anchor yet (first poll), or we're not live-following (held/frozen: nowS doesn't drive the window
+//     position — `off` cancels it — so keeping data.now fresh is jump-free AND keeps off-screen pending
+//     items advancing), or we just (re)entered live-following (adopt the current now), or
+//   • the free-running edge has drifted from data.now past REANCHOR_SEC — a backgrounded-tab resume
+//     (interpNow's clamp left us behind), a seek, or real client↔kernel clock skew → one clean catch-up.
+// Same physical machine → data.now and the local clock share a rate, so a live edge re-anchored once then
+// free-run stays locked to data.now (drift ~0); the constant transport-latency offset is invisible.
+const REANCHOR_SEC = 0.5;   // s of edge↔data.now drift tolerated before a single corrective snap
+function shouldReanchorEdge(baseSec, baseMs, nowMs, dataNow, live, wasLive) {
+  if (baseSec == null || baseMs == null || !live || !wasLive) return true;
+  const displayed = interpNow(baseSec, baseMs, nowMs, true, MAX_INTERP_AHEAD);
+  return Math.abs(dataNow - displayed) > REANCHOR_SEC;
+}
+
 // Right edge a work bar is DRAWN to. An OPEN ("still working") bar has its `end` baked to data.now at
 // emit, so between polls it would sit at the stale now while the axis glides past — then jump forward on
 // the next re-emit (the user saw this 2026-06-13). So draw an open bar to the interpolated live edge
@@ -236,10 +255,14 @@ class TimelinePanel {
     // unpinned (loaded off>0). [[contract with vs_chat]] is unaffected — this is pan state only.
     this._offDirty = true; this._holdReal = null; this._pinned = !(this._offSec > 0);
     // Smooth live-edge advance (see interpNow): while live-following, a rAF loop (_liveRAF) advances the
-    // effective `now` by wall-clock between polls so the window glides. _nowBaseMs = monotonic ms when the
-    // current data.now was observed; _lastLiveNow = effective-now of the last live repaint (sub-pixel guard
-    // so we only repaint when the edge would actually move). Re-armed each poll; self-stops when not live.
-    this._nowBaseMs = null; this._liveRAF = null; this._lastLiveNow = null;
+    // effective `now` by wall-clock between polls so the window glides. _nowBaseSec/_nowBaseMs = the edge's
+    // time-baseline (epoch sec + the monotonic ms when it was observed); the edge FREE-RUNS off this fixed
+    // pair and shouldReanchorEdge re-snaps it only on a genuine step, so per-poll arrival jitter no longer
+    // hiccups the edge. _wasLive = were we live-following at the last poll (→ re-anchor on re-entry).
+    // _lastLiveNow = effective-now of the last live repaint (sub-pixel guard so we only repaint when the
+    // edge would actually move). Re-armed each poll; self-stops when not live.
+    this._nowBaseSec = null; this._nowBaseMs = null; this._wasLive = false;
+    this._liveRAF = null; this._lastLiveNow = null;
 
     this.wrap = host.createDiv({ cls: 'romp-tl-wrap' });
     this.svg = document.createElementNS(SVGNS, 'svg');
@@ -570,7 +593,7 @@ class TimelinePanel {
   // The effective `now` draw() renders the right edge at: data.now plus wall-clock since that poll while
   // live-following, else the raw data.now (a held/frozen view must NOT creep as time passes).
   _liveNow() {
-    const base = this.data ? this.data.now : 0;
+    const base = (this._nowBaseSec != null) ? this._nowBaseSec : (this.data ? this.data.now : 0);
     // Frozen on hover → hold EVERYTHING at the hover instant (_holdReal): the axis edge AND, via barEndT /
     // execAt / startAt which read this, the open work bars + pending items. Otherwise they keep advancing
     // per poll while the edge sits still — the "doesn't stop on hover" bug. Not frozen → glide, or data.now.
@@ -741,7 +764,13 @@ class TimelinePanel {
   update(data) {
     if (!data || data.unavailable || !data.sessions) { this.data = data; this.drawMessage(data && data.unavailable ? 'Timeline needs a desktop Obsidian with tmux.' : 'No romp activity.'); return; }
     this.data = data;
-    this._nowBaseMs = perfNow();   // baseline for smooth live-edge advance: wall-clock when this data.now was observed
+    // Live-edge baseline: free-run off a FIXED anchor and re-snap only on a genuine step, so the few-ms
+    // poll-arrival jitter no longer hiccups the gliding edge ~1-2px (the user 2026-06-15). See shouldReanchorEdge.
+    const _live = this._liveFollowing(), _tMs = perfNow();
+    if (shouldReanchorEdge(this._nowBaseSec, this._nowBaseMs, _tMs, data.now, _live, this._wasLive)) {
+      this._nowBaseSec = data.now; this._nowBaseMs = _tMs;   // monotonic ms when this data.now was observed
+    }
+    this._wasLive = _live;
     if (!this.fitted) { this.fitWindow(); this.fitted = true; }
     // first paint with a chat already open → seed the highlight from it (don't override a later local pick)
     if (this.selectedSid == null) { const sid = this._sidForActiveChat(data.activeChat); if (sid) this.selectedSid = sid; }
@@ -1879,4 +1908,4 @@ class TimelinePanel {
   body(s) { return s ? '<div class="b">' + s + '</div>' : ''; }
 }
 
-module.exports = { TimelinePanel, badgeFor, roundedPath, crossX, workAnchorOf, idleGaps, dotLit, barLit, interpNow, barEndT, dragAxis };
+module.exports = { TimelinePanel, badgeFor, roundedPath, crossX, workAnchorOf, idleGaps, dotLit, barLit, interpNow, shouldReanchorEdge, barEndT, dragAxis };
