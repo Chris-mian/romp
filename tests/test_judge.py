@@ -745,6 +745,23 @@ class PlanTuning(unittest.TestCase):
         self.assertIn("%d levels deep" % jd.MAX_DEPTH, jd.PLAN_SYS,
                       "the depth budget is embedded in the planner prompt, kept in sync with MAX_DEPTH")
 
+    def test_why_messages_get_concise_writing_guidance(self):
+        # The user's planner "why" is shown on the feed cards (why / blockWhy / doneWhy), so the prompt
+        # carries distilled concise-writing rules (the user 2026-06-16, from the JLD method): real reason
+        # first, concrete verbs, no filler, no stock AI words, no em dashes, confidence calibration.
+        for phrase in ("Write each \"why\" plainly", "the real reason first", "concrete verbs",
+                       "no em dashes", "say it once"):
+            self.assertIn(phrase, jd.PLAN_SYS, phrase)
+        # at least one stock-AI word must be named as a thing to cut
+        self.assertTrue(any(w in jd.PLAN_SYS for w in ("delve", "leverage", "crucial")),
+                        "the prompt names stock AI words to avoid")
+        # the courier's handoff label gets the same plain-words steer
+        self.assertIn("plain concrete words", jd.COURIER_SYS)
+        # the closer now writes a doneWhy per completed goal, with the same writing guidance
+        self.assertIn("<n> :: <why>", jd.CLOSER_SYS, "the closer emits a reason per done goal")
+        for phrase in ("Write each \"why\" plainly", "no em dashes", "say it once"):
+            self.assertIn(phrase, jd.CLOSER_SYS, phrase)
+
     def test_sub_files_under_the_old_topic_goal_not_the_newest(self):
         # mechanics: a SUB targeting an OLD goal lands there, not the newer one — the planner can reach
         # any menu index, so the topic clause's older-goal choice is honored end-to-end.
@@ -833,45 +850,51 @@ class BlockCompletionCorrectness(unittest.TestCase):
 
 # ───────────────────────── the negative turn-end sweep (HYBRID completion) ─────────────────────────
 class SweepParse(unittest.TestCase):
-    def test_outstanding_numbers(self):
-        self.assertEqual(jd._parse_close("1, 3", 4), {1, 3})
-        self.assertEqual(jd._parse_close("2", 4), {2})
-        self.assertEqual(jd._parse_close("Goals 2 and 4 are still outstanding", 4), {2, 4},
-                         "digits are extracted even with surrounding prose")
+    def test_done_lines_with_reasons(self):
+        self.assertEqual(jd._parse_close("2 :: shipped it", 4), {2: "shipped it"})
+        self.assertEqual(jd._parse_close("1 :: fixed the parser\n3 :: wired the CLI flags", 4),
+                         {1: "fixed the parser", 3: "wired the CLI flags"})
+        self.assertEqual(jd._parse_close("Goal 2 :: done", 4), {2: "done"},
+                         "a leading label before the number is tolerated")
 
-    def test_none_completes_all(self):
-        self.assertEqual(jd._parse_close("none", 3), set(),
-                         "explicit 'none outstanding' -> empty set (complete every candidate)")
+    def test_none_means_nothing_done(self):
+        self.assertEqual(jd._parse_close("none", 3), {},
+                         "explicit 'none done' -> empty dict (complete nothing)")
 
     def test_garbage_skips(self):
         self.assertIsNone(jd._parse_close("", 3), "empty output -> skip the turn")
         self.assertIsNone(jd._parse_close("i can't help with that", 3),
-                          "no numbers and no 'none' -> skip (complete nothing, the safe default)")
+                          "no done-lines and no 'none' -> skip (complete nothing, the safe default)")
+        self.assertIsNone(jd._parse_close("1, 3", 3),
+                          "the old numbers-only format is no longer accepted -> skip (safe)")
 
-    def test_out_of_range_dropped(self):
-        self.assertEqual(jd._parse_close("1, 9", 3), {1}, "out-of-range index is dropped")
-        self.assertIsNone(jd._parse_close("9", 3), "only an out-of-range index -> nothing usable -> skip")
+    def test_out_of_range_and_dupes_dropped(self):
+        self.assertEqual(jd._parse_close("1 :: a\n9 :: b", 3), {1: "a"}, "out-of-range index is dropped")
+        self.assertIsNone(jd._parse_close("9 :: b", 3), "only an out-of-range index -> nothing usable -> skip")
+        self.assertEqual(jd._parse_close("2 :: first\n2 :: second", 3), {2: "first"}, "first reason wins")
 
 
 class SweepApply(unittest.TestCase):
-    def test_completes_complement_and_tags_provenance(self):
+    def test_completes_listed_dones_with_reason_and_provenance(self):
         s = _store()
         g1, g2, g3 = _mknode(s, "G1"), _mknode(s, "G2"), _mknode(s, "G3")
-        newly = jd.apply_close(s, [g1, g2, g3], {2})              # only #2 still outstanding
-        self.assertEqual(set(newly), {g1["id"], g3["id"]}, "the complement (1, 3) is completed")
+        newly = jd.apply_close(s, [g1, g2, g3], {1: "shipped G1", 3: "shipped G3"}, t=T0 + 50)
+        self.assertEqual(set(newly), {g1["id"], g3["id"]}, "the listed-done goals (1, 3) are completed")
         self.assertTrue(g1["nodeComplete"] and g3["nodeComplete"])
-        self.assertFalse(g2["nodeComplete"], "the outstanding goal stays open")
-        self.assertTrue(g1.get("negComplete"), "sweep-completed nodes are tagged for the A/B sample")
+        self.assertFalse(g2["nodeComplete"], "a goal not listed stays open")
+        self.assertEqual(g1["doneWhy"], "shipped G1", "the closer's reason is persisted as doneWhy")
+        self.assertEqual(g1["mt"], T0 + 50, "the close bumps mt so the done node deep-links to the turn")
+        self.assertTrue(g1.get("negComplete"), "closer-completed nodes are tagged for the A/B sample")
 
-    def test_none_outstanding_completes_all(self):
+    def test_empty_done_completes_nothing(self):
         s = _store()
         g1, g2 = _mknode(s, "G1"), _mknode(s, "G2")
-        self.assertEqual(set(jd.apply_close(s, [g1, g2], set())), {g1["id"], g2["id"]})
+        self.assertEqual(jd.apply_close(s, [g1, g2], {}), [], "'none done' -> complete nothing")
 
     def test_already_complete_not_recounted(self):
         s = _store()
         g1 = _mknode(s, "G1", complete=True)
-        self.assertEqual(jd.apply_close(s, [g1], set()), [], "an already-complete node isn't re-completed")
+        self.assertEqual(jd.apply_close(s, [g1], {1: "x"}), [], "an already-complete node isn't re-completed")
 
 
 class SweepMenu(unittest.TestCase):
@@ -934,9 +957,13 @@ class SweepTurn(unittest.TestCase):
     def test_completes_the_touched_top(self):
         store = _store(); g1 = _mknode(store, "Do X")
         store["placements"][self.seg["id"]] = g1["id"]
-        jd.closer_llm = lambda tt, mt: "none"
+        jd.closer_llm = lambda tt, mt: "1 :: finished X"
         self.assertEqual(jd._close_turn(store, self.turn), [g1["id"]])
         self.assertTrue(store["nodes"][g1["id"]]["nodeComplete"])
+        self.assertEqual(store["nodes"][g1["id"]]["doneWhy"], "finished X",
+                         "the closer's reason becomes the node's doneWhy")
+        self.assertEqual(store["nodes"][g1["id"]]["mt"], self.turn["t"],
+                         "mt is bumped to the turn time so the done node deep-links to where it resolved")
 
     def test_llm_failure_completes_nothing(self):
         store = _store(); g1 = _mknode(store, "Do X")
@@ -986,7 +1013,7 @@ class SweepSession(unittest.TestCase):
         self.assertEqual(len(tops), 2)
         self.assertTrue(all(not nd["nodeComplete"] for nd in tops), "positive-only DONE'd nothing")
         self.assertTrue(all(store["status"][nd["id"]] == "working" for nd in tops), "both working before the sweep")
-        jd.closer_llm = lambda tt, mt: "none"                     # nothing outstanding -> complete each touched top
+        jd.closer_llm = lambda tt, mt: "1 :: done"                # each turn's single touched top reported done
         n = jd.run_close(now=self.now)
         store = jd.load_goals(SID)
         g1, g2 = tops[0]["id"], tops[1]["id"]
@@ -1002,7 +1029,7 @@ class SweepSession(unittest.TestCase):
         g0 = _mknode(seed, "Dormant goal from another topic", t=T0 - 1000)
         jd.save_goals(SID, seed)
         jd.run_plan(now=self.now)
-        jd.closer_llm = lambda tt, mt: "none"
+        jd.closer_llm = lambda tt, mt: "1 :: done"
         jd.run_close(now=self.now)
         store = jd.load_goals(SID)
         self.assertFalse(store["nodes"][g0["id"]]["nodeComplete"],
