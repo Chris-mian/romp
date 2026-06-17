@@ -52,6 +52,17 @@ function el(t, a) { const n = document.createElementNS(SVGNS, t); for (const k i
 function esc(s) { return (s || '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c])); }
 function clock(t) { const d = new Date(t * 1000); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); }
 function fmtWin(s) { return s < 3600 ? Math.round(s / 60) + 'm' : (s / 3600 < 10 ? (s / 3600).toFixed(1) : Math.round(s / 3600)) + 'h'; }
+// Pure (exported for tests): a long idle gap's SPAN as a concise day/week/month label ("2 days", "1 week",
+// "3 weeks", "2 months") so a multi-day broken-axis break isn't ambiguous between its two HH:MM boundary
+// clocks ("23:40 → 08:50" could be 9h or 2 days). Day-scale only — callers gate on span ≥ 1 day (the user
+// 2026-06-17). Each unit's count is clamped below the next unit's threshold so it never reads "7 days".
+function fmtSpan(s) {
+  const DAY = 86400, WEEK = 7 * DAY, MONTH = 30 * DAY;
+  const u = (n, w) => n + ' ' + w + (n === 1 ? '' : 's');
+  if (s < WEEK)  return u(Math.min(6, Math.max(1, Math.round(s / DAY))),  'day');
+  if (s < MONTH) return u(Math.min(4, Math.max(1, Math.round(s / WEEK))), 'week');
+  return u(Math.max(1, Math.round(s / MONTH)), 'month');
+}
 function niceStep(W) { for (const s of NICE) if (W / s <= 8) return s; return 172800; }
 // Smooth live-edge advance (the user 2026-06-13): between data polls, advance the effective `now` by the
 // wall-clock elapsed since the current data.now was observed, so the live edge GLIDES instead of jumping
@@ -1095,7 +1106,15 @@ class TimelinePanel {
       const tx = el('text', { x: lx, y: axisY + 14, 'text-anchor': e[2], fill: 'var(--text-muted)', 'font-size': 9, 'pointer-events': 'none' }); tx.textContent = s; svg.appendChild(tx);
     }
     const cx = (x0 + x1) / 2, amp = 3, seg = 7;
-    let d = 'M ' + cx + ' ' + top, yy = top, k = 0;
+    // SPAN label (the user 2026-06-17): a multi-day collapsed gap shows its concise duration ("2 days",
+    // "1 week") centered at the TOP of the break — a different row from the boundary clocks below the axis,
+    // so it never collides — making clear how long the gap is. Sub-day gaps draw the squiggle full-height.
+    const span = rb - ra, hasSpan = span >= 86400, sqTop = top + (hasSpan ? 14 : 0);
+    if (hasSpan) {
+      const tx = el('text', { x: cx, y: top + 10, 'text-anchor': 'middle', fill: 'var(--text-muted)', 'font-size': 9, 'font-weight': 600, 'pointer-events': 'none' });
+      tx.textContent = fmtSpan(span); svg.appendChild(tx);
+    }
+    let d = 'M ' + cx + ' ' + sqTop, yy = sqTop, k = 0;
     while (yy < axisY) { const ny = Math.min(yy + seg, axisY); d += ' L ' + (cx + (k % 2 ? amp : -amp)) + ' ' + ny; yy = ny; k++; }
     svg.appendChild(el('path', { d, fill: 'none', stroke: '#ffffff', 'stroke-width': 1.4, opacity: 0.5, 'pointer-events': 'none' }));
   }
@@ -1951,4 +1970,4 @@ class TimelinePanel {
   body(s) { return s ? '<div class="b">' + s + '</div>' : ''; }
 }
 
-module.exports = { TimelinePanel, badgeFor, roundedPath, crossX, workAnchorOf, idleGaps, dotLit, barLit, interpNow, shouldReanchorEdge, barEndT, dragAxis };
+module.exports = { TimelinePanel, badgeFor, roundedPath, crossX, workAnchorOf, idleGaps, fmtSpan, dotLit, barLit, interpNow, shouldReanchorEdge, barEndT, dragAxis };

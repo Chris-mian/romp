@@ -47,7 +47,23 @@ g.window = g;   // the view reads window.* (event listeners / globals) in its co
 g.innerWidth = 1400; g.innerHeight = 800;   // moveTip() clamps the tooltip to the viewport
 
 const viewPath = path.resolve(process.cwd(), "..", "obsidian", "romp-timeline-view.js");
-const { TimelinePanel } = createRequire(__filename)(viewPath);
+const { TimelinePanel, fmtSpan } = createRequire(__filename)(viewPath);
+
+const DAY = 86400, WEEK = 7 * DAY, MONTH = 30 * DAY;
+test("fmtSpan: concise day/week/month label for long collapsed gaps", () => {
+  assert.equal(fmtSpan(DAY), "1 day");
+  assert.equal(fmtSpan(2 * DAY), "2 days");
+  assert.equal(fmtSpan(2.4 * DAY), "2 days");           // rounds to nearest day
+  assert.equal(fmtSpan(6 * DAY), "6 days");
+  assert.equal(fmtSpan(WEEK), "1 week");
+  assert.equal(fmtSpan(3 * WEEK), "3 weeks");
+  assert.equal(fmtSpan(MONTH), "1 month");
+  assert.equal(fmtSpan(2 * MONTH), "2 months");
+});
+test("fmtSpan: never reads '7 days' or '5 weeks' — each unit clamps below the next threshold", () => {
+  assert.equal(fmtSpan(WEEK - 1), "6 days");            // just under a week stays "6 days", not "7 days"
+  assert.equal(fmtSpan(MONTH - 1), "4 weeks");          // just under a month stays "4 weeks", not "5 weeks"
+});
 
 // A synthetic payload with TWO live lanes, each with an IN-WINDOW turn carrying the atom ids — the
 // precise shape that exercises barLit/dotLit (where the TDZ crash lived).
