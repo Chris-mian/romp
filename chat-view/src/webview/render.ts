@@ -2209,6 +2209,9 @@ function renderLedger() {
     + "‖b:" + (tree.length ? "" : bullets.slice(0, LEDGER_BULLET_CAP).map((b) => `${b.id || ""}:${b.t ?? ""}:${b.text}`).join("|"));
   if ((host as any)._sig === sig) { refreshLedgerAges(host, l, now); return; }
   (host as any)._sig = sig;
+  // preserve the tree's scroll position across a fold/expand re-render so clicking a caret doesn't
+  // jump the scroll-pane back to the top (the user 2026-06-17). Restored after the new tree is built.
+  const prevTreeScroll = (host.querySelector(".ledger-tree") as HTMLElement | null)?.scrollTop ?? 0;
   host.replaceChildren();
 
   // --- always-visible title strip: caret + headline; a click anywhere on it toggles the overview ---
@@ -2299,6 +2302,7 @@ function renderLedger() {
     };
     for (const r of orderedRoots) renderNode(r, 0);
     host.appendChild(wrap);
+    if (prevTreeScroll) wrap.scrollTop = prevTreeScroll;   // keep the scroll-pane where it was (no jump-to-top on expand)
   } else {
     // --- fallback for goal-less sessions: the live "working on" line + the captioned "done" bullets ---
     if (cur && cur.text) {

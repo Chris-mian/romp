@@ -228,7 +228,10 @@ body { display: flex; flex-direction: column; }
 .ledger-tnode.current .ledger-ttext { color: var(--fg); font-weight: 600; }
 /* the → "most recent change" arrow to the LEFT of the freshest node (the user 2026-06-16) — the kernel
    sorts its top goal first and auto-expands the path down to it. */
-.ledger-recent { flex: 0 0 auto; margin-left: -14px; width: 12px; text-align: center; color: var(--check-bg); font-weight: 700; }
+/* the → "most recent" arrow hangs in the left gutter at NET-ZERO width (margin-left -19 = -(width 12 +
+   column-gap 7)) so it never shifts the row's content — the recent row aligns with its siblings instead
+   of looking more indented (the user 2026-06-17). */
+.ledger-recent { flex: 0 0 auto; margin-left: -19px; width: 12px; text-align: center; color: var(--check-bg); font-weight: 700; }
 /* working on — the live in-progress turn (italic), shown in the goal-less fallback view */
 .ledger-current { font-style: italic; line-height: 1.45; overflow-wrap: anywhere; border-radius: 4px; padding: 1px 5px; margin: 0 -5px; }
 .ledger-current.nav { cursor: pointer; }

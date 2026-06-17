@@ -109,6 +109,14 @@ test("ledger rows click → jump to chat: done/blocked by mt, open by t (the use
   assert.match(CSS, /\.ledger-tnode\.nav \{[^}]*cursor: pointer/);
 });
 
+test("expanding preserves scroll; the → arrow doesn't shift the recent row (the user 2026-06-17)", () => {
+  // fold/expand re-render restores the tree scroll-pane (no jump to top)
+  assert.match(RENDER, /const prevTreeScroll = \(host\.querySelector\(".ledger-tree"\) as HTMLElement \| null\)\?\.scrollTop \?\? 0/);
+  assert.match(RENDER, /wrap\.scrollTop = prevTreeScroll/);
+  // the recency arrow hangs net-zero (-(width 12 + gap 7)) so a recent row aligns with its siblings
+  assert.match(CSS, /\.ledger-recent \{[^}]*margin-left: -19px/);
+});
+
 test("leaf-row tri spacers don't inherit the placeholder's 40px padding (no giant ledger gaps)", () => {
   // REGRESSION (the user 2026-06-16): a leaf row's disclosure-triangle slot is a zero-content
   // `el("span", "ledger-tri" + " empty")` spacer. The transcript "No session open" placeholder was
