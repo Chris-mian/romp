@@ -19,9 +19,12 @@ test("all three main cards build a row3 with the age (left) and actions (right)"
   assert.match(FEED, /row1\.append\(title\);/);
 });
 
-test("row3 + name-wrap are styled", () => {
+test("row3 + name row are styled", () => {
   assert.match(CSS, /\.fask-row3 \{[^}]*display: flex/);
-  assert.match(CSS, /\.fask-id \.fname \{[^}]*overflow-wrap: anywhere/, "a long session name wraps instead of overflowing");
+  // the session name stays on ONE line (ellipsis only if truly too long) — it used to wrap mid-word
+  // while the "↪ from" provenance crowded it; now the row fills its width and origin goes right (the
+  // user 2026-06-16).
+  assert.match(CSS, /\.fask-id \.fname \{[^}]*white-space: nowrap/, "the session name stays on one line, never mid-word");
 });
 
 test("the ⏸ blocked (permission/picker) badge is a rounded-rect pill outlined in its own red", () => {
