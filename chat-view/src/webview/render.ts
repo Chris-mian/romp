@@ -2199,7 +2199,11 @@ function renderLedger() {
     //     EVERY level; completed / cleared ("previous") nodes fold by default so only their top line
     //     shows, the recent path + open work stay expanded, and the user can fold/expand any node. ✓ disc
     //     = done (DIMMED for derived / cleared); ○ = not done; ▸ = working; ⏸ = blocked; → = freshest change.
-    const wrap = el("div", "ledger-tree");
+    // A FLAT ledger (no node anywhere has children) has no carets to align under, so drop the disclosure
+    // column entirely — otherwise every leaf reserves an empty spacer and the whole list reads as dead-
+    // indented (the user 2026-06-16). Keep the column when ANY node is expandable, for alignment.
+    const anyExpandable = tree.some((n) => !!(n.children && n.children.length));
+    const wrap = el("div", "ledger-tree" + (anyExpandable ? "" : " flat"));
     const byId = new Map(tree.map((n) => [n.id, n] as const));
     const roots = tree.filter((n) => n.depth === 0);
     const defaultFold = (n: LedgerTreeNode) => !!n.done && !n.onpath;   // a "previous" task folds unless it's the recent path
@@ -2210,6 +2214,7 @@ function renderLedger() {
       const folded = isFolded(n);
       const row = el("div", "ledger-tnode" + (depth === 0 ? " ledger-top" : "")
         + (n.current ? " current" : "") + (n.done ? " done" : "")
+        + (n.blocked && !n.current && !n.done ? " blocked" : "")
         + ((n.derived || n.cleared) ? " derived" : "") + (n.recent ? " recent" : ""));
       row.style.paddingLeft = (4 + depth * 15) + "px";          // indent by graph depth (a line of descent)
       // disclosure triangle at every level (▶ folded / ▼ open); a blank spacer keeps leaves aligned
@@ -2222,7 +2227,10 @@ function renderLedger() {
         renderLedger();
       };
       const mark = el("span", "ledger-tmark");
-      mark.textContent = n.current ? "▸" : n.done ? "✓" : n.blocked ? "⏸" : "○";
+      // ✓ done, ⏸ blocked; not-done (○) and current are CSS-drawn discs (no glyph) so every mark is the
+      // SAME 13px size (the user 2026-06-16). Current is a filled dot, NOT a ▸ triangle — the triangle
+      // read as a clickable disclosure caret that didn't expand (the user 2026-06-16).
+      mark.textContent = n.done ? "✓" : (n.blocked && !n.current) ? "⏸" : "";
       const txt = el("span", "ledger-ttext");
       txt.textContent = n.text;
       const time = el("span", "ledger-ttime");
@@ -2230,8 +2238,10 @@ function renderLedger() {
       if (n.done && n.t) txt.style.color = ageColorReadable(now - n.t);   // a done item's text matches its time colour
       // a → "most recent change" arrow to the LEFT of the freshest node; the kernel flags it + its path
       // (onpath) so it stays auto-expanded even inside an otherwise-folded done branch.
-      if (n.recent) { const arr = el("span", "ledger-recent"); arr.textContent = "→"; arr.title = "most recent change"; row.append(arr, tri, mark, txt, time); }
-      else row.append(tri, mark, txt, time);
+      const lead: HTMLElement[] = [];
+      if (n.recent) { const arr = el("span", "ledger-recent"); arr.textContent = "→"; arr.title = "most recent change"; lead.push(arr); }
+      if (anyExpandable) lead.push(tri);                         // no caret column in a flat ledger (see anyExpandable)
+      row.append(...lead, mark, txt, time);
       wrap.appendChild(row);
       if (expandable && !folded) for (const cid of n.children!) { const c = byId.get(cid); if (c) renderNode(c, depth + 1); }
     };

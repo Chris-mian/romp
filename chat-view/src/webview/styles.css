@@ -165,7 +165,7 @@ body { display: flex; flex-direction: column; }
 /* ---------- ledger: rolling per-session digest, just below the tabs ---------- */
 #ledger {
   flex: 0 0 auto; box-sizing: border-box; width: 100%; max-width: var(--chat-col); margin: 0 auto;
-  padding: 7px 24px 9px; border-bottom: 1px solid var(--box-border); font-size: 0.9em;
+  padding: 5px 24px 6px; border-bottom: 1px solid var(--box-border); font-size: 0.9em;
   background: rgba(255, 255, 255, 0.05); border-radius: 0 0 7px 7px; /* subtle dark panel → max contrast for the bright, constant-lightness recency bullets (ageColorReadable) */
 }
 /* title strip: caret + headline, always visible (even collapsed); a click toggles the overview below */
@@ -179,35 +179,46 @@ body { display: flex; flex-direction: column; }
 /* width:fit-content hugs the widest row so the right-aligned "(Xm ago)" times sit just past the longest
    checklist item instead of way out at the box's right edge (the user 2026-06-16); max-width keeps a long
    line wrapping inside the box. */
-.ledger-tree { display: flex; flex-direction: column; row-gap: 1px; margin-top: 2px; max-height: 17em; overflow-y: auto; overflow-x: hidden; width: fit-content; max-width: 100%; }
-.ledger-tnode { display: flex; align-items: baseline; column-gap: 7px; line-height: 1.4; border-radius: 4px; padding: 1px 5px; margin: 0 -5px; }
+.ledger-tree { display: flex; flex-direction: column; row-gap: 0; margin-top: 2px; max-height: 17em; overflow-y: auto; overflow-x: hidden; width: fit-content; max-width: 100%; }
+/* align-items:center so the 13px discs, text and times share a centre line; tight line-height + zero
+   vertical padding keep the list compact (~30% shorter than before — the user 2026-06-16). */
+.ledger-tnode { display: flex; align-items: center; column-gap: 7px; line-height: 1.2; border-radius: 4px; padding: 0 5px; margin: 0 -5px; }
 /* disclosure triangle at EVERY level (▶ folded / ▼ open); .empty = a blank spacer that keeps leaves
-   aligned under their expandable siblings (the user 2026-06-16). */
-.ledger-tri { flex: 0 0 auto; width: 0.85em; text-align: center; color: var(--dim); font-size: 0.7em; line-height: 1; }
+   aligned under their expandable siblings. A FLAT ledger (no expandable node anywhere) drops the whole
+   column via .ledger-tree.flat so bullets sit flush instead of dead-indented (the user 2026-06-16).
+   margin-right gives the caret breathing room from the mark disc so it doesn't read as "in" the box. */
+.ledger-tri { flex: 0 0 auto; width: 0.85em; margin-right: 3px; text-align: center; color: var(--dim); font-size: 0.7em; line-height: 1; }
 .ledger-tri.nav { cursor: pointer; }
 .ledger-tri.nav:hover { color: var(--fg); }
-/* a completed ("previous") top goal gets ~1.5 lines of space above it, so done items breathe apart as
-   you scroll — not a full double space (the user 2026-06-16). */
-.ledger-tnode.ledger-top.done { margin-top: 0.5em; }
-.ledger-tmark { flex: 0 0 auto; width: 1em; text-align: center; color: var(--dim); }
-/* done = the blue ✓ disc, same as the chat to-do checklist (.todo-completed .todo-mark): white ✓ on
-   --check-bg (the user 2026-06-16). The ✓ is the mark's own text, so no ::before is needed. */
-.ledger-tnode.done .ledger-tmark {
-  width: 13px; height: 13px; min-width: 13px; font-size: 9px; font-weight: 700;
-  background: var(--check-bg); color: #fff; border-radius: 50%;
-  display: inline-flex; align-items: center; justify-content: center; align-self: center; line-height: 1;
+.ledger-tree.flat .ledger-tri { display: none; }
+/* thin separator between top-level goals so distinct goals read apart (the user 2026-06-16); the first
+   top goal gets none. */
+.ledger-tnode.ledger-top { border-top: 1px solid var(--box-border); margin-top: 3px; padding-top: 3px; }
+.ledger-tree > .ledger-tnode.ledger-top:first-child { border-top: 0; margin-top: 0; padding-top: 0; }
+/* every mark is the SAME 13px disc (the user 2026-06-16): not-done = hollow ring, current = filled dot,
+   done = blue ✓ disc, blocked = red ⏸ ring. ✓/⏸ are the mark's own text; ring/dot are pure CSS. */
+.ledger-tmark {
+  flex: 0 0 auto; box-sizing: border-box; width: 13px; height: 13px; min-width: 13px;
+  font-size: 9px; font-weight: 700; line-height: 1;
+  border: 1.5px solid var(--dim); border-radius: 50%; color: var(--dim);
+  display: inline-flex; align-items: center; justify-content: center; align-self: center;
 }
-/* derived done = done only because all children are (kernel-propagated), not explicitly asserted →
-   the same blue ✓ disc dimmed, so it reads as complete-by-its-parts (the user 2026-06-16). */
+.ledger-tnode.done .ledger-tmark { background: var(--check-bg); border-color: transparent; color: #fff; }
+/* derived done = done only because all children are (kernel-propagated) → the same disc dimmed. */
 .ledger-tnode.done.derived .ledger-tmark { opacity: 0.55; }
+/* blocked = a red ⏸ ring (only when not current/done; render gates the .blocked class the same way). */
+.ledger-tnode.blocked .ledger-tmark { border-color: var(--err); color: var(--err); }
 .ledger-ttext { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
-.ledger-ttime { flex: 0 0 auto; font-size: 0.85em; font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--dim); }
+/* extra whitespace before the right-aligned times so they don't crowd the text (the user 2026-06-16). */
+.ledger-ttime { flex: 0 0 auto; margin-left: 1.75em; font-size: 0.85em; font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--dim); }
 /* a done item's text is tinted to its recency colour inline (renderLedger); this is the fallback for a
    done node with no timestamp. */
 .ledger-tnode.done .ledger-ttext { color: var(--dim); }
 /* the line pointing at what's being worked on: a left accent bar + bright row */
 .ledger-tnode.current { background: rgba(255, 255, 255, 0.06); box-shadow: inset 2px 0 0 var(--fg); }
-.ledger-tnode.current .ledger-tmark { color: var(--fg); }
+/* working = a filled dot (NOT the old ▸ triangle, which read as a clickable disclosure caret that
+   wouldn't expand — the user 2026-06-16). */
+.ledger-tnode.current .ledger-tmark { background: var(--fg); border-color: transparent; color: var(--fg); }
 .ledger-tnode.current .ledger-ttext { color: var(--fg); font-weight: 600; }
 /* the → "most recent change" arrow to the LEFT of the freshest node (the user 2026-06-16) — the kernel
    sorts its top goal first and auto-expands the path down to it. */
@@ -225,7 +236,7 @@ body { display: flex; flex-direction: column; }
 .ledger-bullets { display: flex; flex-direction: column; row-gap: 3px; margin-top: 1px; max-height: 9.4em; overflow-y: auto; overflow-x: hidden; }
 /* each bullet is a real row → one clean hover bg; the -5px margin/5px padding lets
    the highlight breathe without shifting content. age column aligned via min-width. */
-.ledger-bullet { display: flex; align-items: baseline; column-gap: 16px; border-radius: 4px; padding: 1px 5px; margin: 0 -5px; }
+.ledger-bullet { display: flex; align-items: baseline; column-gap: 22px; border-radius: 4px; padding: 1px 5px; margin: 0 -5px; }
 .ledger-bullet.nav { cursor: pointer; }
 .ledger-bullet.nav:hover { background: rgba(255, 255, 255, 0.06); }
 .ledger-bullet-age { flex: 0 0 auto; min-width: 5em; white-space: nowrap; text-align: left; font-size: 0.85em; font-variant-numeric: tabular-nums; }

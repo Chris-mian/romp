@@ -12,11 +12,17 @@ import * as path from "node:path";
 const RENDER = fs.readFileSync(path.resolve(process.cwd(), "src", "webview", "render.ts"), "utf8");
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "src", "webview", "styles.css"), "utf8");
 
-test("ledger marks: ▸ working, blue ✓ disc done, hollow ○ not-yet-done, ⏸ blocked", () => {
-  assert.match(RENDER, /n\.current \? "▸" : n\.done \? "✓" : n\.blocked \? "⏸" : "○"/);
-  // the done ✓ is the chat-style blue disc (white ✓ on --check-bg, round)
-  assert.match(CSS, /\.ledger-tnode\.done \.ledger-tmark \{[^}]*var\(--check-bg\)/);
-  assert.match(CSS, /\.ledger-tnode\.done \.ledger-tmark \{[^}]*border-radius: 50%/);
+test("ledger marks: every state is the SAME 13px disc — ○ hollow, ● working, ✓ done, ⏸ blocked", () => {
+  // ✓/⏸ are the mark's own text; not-done (○) and current (●) are CSS-drawn discs (no glyph) so the
+  // working mark is a filled dot, NOT a ▸ triangle that read as a clickable caret (the user 2026-06-16).
+  assert.match(RENDER, /mark\.textContent = n\.done \? "✓" : \(n\.blocked && !n\.current\) \? "⏸" : "";/);
+  assert.doesNotMatch(RENDER, /n\.current \? "▸"/);                          // the old triangle is gone
+  // base mark = a 13px round disc shared by every state (sizes normalized — the user 2026-06-16)
+  assert.match(CSS, /\.ledger-tmark \{[^}]*width: 13px;[^}]*border-radius: 50%/);
+  assert.match(CSS, /\.ledger-tmark \{[^}]*border: 1\.5px solid var\(--dim\)/);   // not-done = hollow ring
+  assert.match(CSS, /\.ledger-tnode\.done \.ledger-tmark \{[^}]*var\(--check-bg\)/);   // done = blue disc
+  assert.match(CSS, /\.ledger-tnode\.current \.ledger-tmark \{[^}]*background: var\(--fg\)/);  // working = filled dot
+  assert.match(CSS, /\.ledger-tnode\.blocked \.ledger-tmark \{[^}]*var\(--err\)/);    // blocked = red ring
 });
 
 test("ledger: a done item's text takes its time's recency colour (ticks with the clock)", () => {
@@ -32,7 +38,7 @@ test("ledger times hug the content (tree is fit-content) yet stay right-aligned"
 
 test("the blue ✓ disc is standardized: ledger + feed card check carry the chat to-do's 9px/700 ✓", () => {
   const FEED_CSS = fs.readFileSync(path.resolve(process.cwd(), "src", "webview", "feed.css"), "utf8");
-  assert.match(CSS, /\.ledger-tnode\.done \.ledger-tmark \{[^}]*font-size: 9px; font-weight: 700/);
+  assert.match(CSS, /\.ledger-tmark \{[^}]*font-size: 9px; font-weight: 700/);   // now on the shared base mark
   assert.match(FEED_CSS, /\.fcheck\.done \.fcheck-mark \{[^}]*font-size: 9px; font-weight: 700/);
 });
 
@@ -59,13 +65,29 @@ test("the ledger tree is a COLLAPSIBLE checklist — toggle arrows at every leve
   assert.match(CSS, /\.ledger-tri \{/);
 });
 
-test("a cleared node renders as a FADED ✓; completed top goals get ~1.5-line spacing", () => {
+test("a cleared node renders as a FADED ✓; top-level goals are separated by a thin rule", () => {
   // cleared reuses the dimmed-disc treatment (the .derived rule); the kernel flags `cleared`
   assert.match(RENDER, /\(n\.derived \|\| n\.cleared\) \? " derived" : ""/);
   assert.match(RENDER, /cleared\?: boolean/);
-  // spacing above each completed top goal (a .ledger-top.done margin), not a full double-space
+  // a thin separator above every top-level goal so distinct goals read apart (the user 2026-06-16);
+  // the first top goal gets none.
   assert.match(RENDER, /depth === 0 \? " ledger-top" : ""/);
-  assert.match(CSS, /\.ledger-tnode\.ledger-top\.done \{[^}]*margin-top/);
+  assert.match(CSS, /\.ledger-tnode\.ledger-top \{[^}]*border-top: 1px solid var\(--box-border\)/);
+  assert.match(CSS, /\.ledger-tree > \.ledger-tnode\.ledger-top:first-child \{[^}]*border-top: 0/);
+});
+
+test("a FLAT ledger (no expandable node anywhere) drops the disclosure column so bullets sit flush", () => {
+  // the user 2026-06-16: a caret-less list shouldn't reserve a caret column on every leaf
+  assert.match(RENDER, /const anyExpandable = tree\.some\(\(n\) => !!\(n\.children && n\.children\.length\)\)/);
+  assert.match(RENDER, /el\("div", "ledger-tree" \+ \(anyExpandable \? "" : " flat"\)\)/);
+  assert.match(RENDER, /if \(anyExpandable\) lead\.push\(tri\)/);          // tri appended only when something can expand
+  assert.match(CSS, /\.ledger-tree\.flat \.ledger-tri \{[^}]*display: none/);
+});
+
+test("ledger spacing: extra gap before the right-aligned times; compact rows (the user 2026-06-16)", () => {
+  assert.match(CSS, /\.ledger-ttime \{[^}]*margin-left: 1\.75em/);          // whitespace before the times
+  assert.match(CSS, /\.ledger-tnode \{[^}]*line-height: 1\.2/);             // tighter rows (~30% shorter)
+  assert.match(CSS, /\.ledger-tree \{[^}]*row-gap: 0/);
 });
 
 test("leaf-row tri spacers don't inherit the placeholder's 40px padding (no giant ledger gaps)", () => {
