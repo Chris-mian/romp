@@ -1378,8 +1378,9 @@ def build_session(sid, now, tmux=None):
         explicit = bool(nd.get("nodeComplete"))
         # done rolls BOTH ways, like the ask-tree flatten() (the user 2026-06-16): a node under a done
         # parent is derived-done too (roll-DOWN via ancestor_done), not just when its own subtree is done
-        # (roll-UP via _subtree_done). So a completed subtree reads as all-dimmed-✓ and the two tree views
-        # agree, instead of a child showing ○ under a done top.
+        # (roll-UP via _subtree_done). So a completed subtree reads as all-dimmed-✓, instead of a child
+        # showing ○ under a done top. A CLEARED (dismissed) top counts as done for this roll-down too: its
+        # open children fade with it rather than sitting as ○ under a faded-✓ parent (the user 2026-06-16).
         derived = (not explicit) and (not clr) and (_subtree_done(nid) or ancestor_done)
         kids = sorted(gkids.get(nid, []), key=_submax, reverse=True)
         tree.append({"id": nid, "text": nd["text"], "depth": depth,
@@ -1392,7 +1393,7 @@ def build_session(sid, now, tmux=None):
                      "recent": nid == recent, "onpath": nid in onpath,
                      "children": [c for c in kids if c in gnodes]})
         for c in kids:
-            _twalk(c, depth + 1, ancestor_done=explicit or derived)
+            _twalk(c, depth + 1, ancestor_done=explicit or derived or clr)
     for _rid in sorted(gkids.get(None, []), key=_submax, reverse=True):
         _twalk(_rid, 0)
     # bullets kept as a fallback for goal-less sessions (render shows the tree when it's non-empty).

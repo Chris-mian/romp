@@ -424,6 +424,24 @@ class ViewBuilder(unittest.TestCase):
         self.assertTrue(byid["open child"]["derived"], "and it's DERIVED (dimmed ✓), not explicit")
         self.assertTrue(byid["open grandchild"]["derived"], "roll-down reaches the whole subtree")
 
+    def test_ledger_tree_rolls_down_through_a_cleared_top(self):
+        # A CLEARED (dismissed) top counts as done for roll-down too (the user 2026-06-16): its open
+        # children fade with it (derived ✓) instead of sitting as ○ under a faded-✓ parent.
+        top, child = (SID + ":top", SID + ":child")
+        def gn(nid, text, parent, **kw):
+            d = {"id": nid, "text": text, "parentId": parent, "nodeComplete": False,
+                 "blocked": False, "cleared": False, "trail": [], "t": T0}
+            d.update(kw); return d
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+            "rompUuid": SID, "seq": 2, "lastNode": None,
+            "nodes": {top: gn(top, "dismissed top", None, cleared=True),
+                      child: gn(child, "open child", top)},
+            "placements": {}, "status": {}}))
+        byid = {n["text"]: n for n in km.build_session(SID, NOW)["ledger"]["tree"]}
+        self.assertTrue(byid["dismissed top"]["cleared"] and byid["dismissed top"]["done"])
+        self.assertTrue(byid["open child"]["done"], "a child under a CLEARED top is done (roll-down through clear)")
+        self.assertTrue(byid["open child"]["derived"], "and shown as a derived (faded) ✓, not ○")
+
     def test_followup_body_quotes_context(self):
         # A feed follow-up quotes the ask it answers ('> <ask>') so the recipient session has context;
         # an explicit group title wins over the node lookup; unknown/none → bare text (the user 2026-06-16).
