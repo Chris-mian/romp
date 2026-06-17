@@ -539,6 +539,22 @@ class ViewBuilder(unittest.TestCase):
         s2 = km._producer_sig(browser=True)
         self.assertNotEqual(s1, s2, "a names-file change must change the producer signature")
 
+    def test_producer_sig_tracks_state_transitions(self):
+        # The user 2026-06-17 (release-session settled-gate bug): a session going IDLE writes
+        # states/<sid>.jsonl but NOT the transcript, so the push fingerprint must include it — else
+        # run_plan/run_close never re-run on a pure idle and a now-done focus goal stays stuck "working".
+        sd = jd.STATE / "states"; sd.mkdir(parents=True, exist_ok=True)
+        sf = sd / (SID + ".jsonl")
+        sf.write_text(json.dumps({"t": NOW - 50, "state": "working"}) + "\n")
+        os.utime(sf, (NOW - 50, NOW - 50))
+        s1 = km._producer_sig(browser=True)
+        self.assertIn("s:" + SID, s1, "the session's states-file mtime is part of the signature")
+        # a new idle record (a state transition) rewrites the states file → newer mtime
+        sf.write_text(sf.read_text() + json.dumps({"t": NOW - 10, "state": "idle"}) + "\n")
+        os.utime(sf, (NOW - 10, NOW - 10))
+        s2 = km._producer_sig(browser=True)
+        self.assertNotEqual(s1, s2, "a states-file transition (e.g. going idle) must change the signature")
+
     def test_rename_session_live_renames_tmux(self):
         # A LIVE session renames via tmux; the after-rename-session hook then syncs the names file + pill.
         saved_name, saved_run = km._tmux_name_of, km.subprocess.run
@@ -1763,6 +1779,68 @@ class ServeSecurity(unittest.TestCase):
         h = {"Host": "100.64.1.2:%d" % self.port}
         self.assertEqual(self._code("/feed", h), 403)
         self.assertEqual(self._code("/feed?token=testtok", h), 200)
+
+
+class NeedsJudgingTest(unittest.TestCase):
+    """km._needs_judging is the feed's blue "judging" pill predicate: a thin DEFENSIVE wrapper over the
+    judges' single-source-of-truth jd.pending_judgment (planner placements + closer closedTurns + grouper
+    groupedSig, extended there as judges land). These pin the wrapper's two jobs — it DELEGATES (fsid/path/
+    now passed straight through) and it NEVER lets an error escape into build_feed — plus one real-
+    transcript smoke that the wiring fires then clears. Synthetic transcript only (placeholder UUIDs)."""
+
+    def setUp(self):
+        self._saved = {k: getattr(jd, k) for k in ("GOALDIR", "STATESDIR", "MESSAGES", "pending_judgment")}
+        self._cache = dict(jd._PARSE_CACHE)
+
+    def tearDown(self):
+        for k, v in self._saved.items():
+            setattr(jd, k, v)
+        jd._PARSE_CACHE.clear(); jd._PARSE_CACHE.update(self._cache)
+
+    def test_delegates_passing_args_through(self):
+        seen = {}
+        def fake(fsid, path, now):
+            seen.update(fsid=fsid, path=path, now=now); return True
+        jd.pending_judgment = fake
+        self.assertTrue(km._needs_judging("fsid-x", "/t/x.jsonl", 123))
+        self.assertEqual(seen, {"fsid": "fsid-x", "path": "/t/x.jsonl", "now": 123})
+        jd.pending_judgment = lambda *a: False
+        self.assertFalse(km._needs_judging("fsid-x", "/t/x.jsonl", 123))
+
+    def test_never_raises_into_the_feed(self):
+        def boom(*a, **k):
+            raise RuntimeError("parse blew up")
+        jd.pending_judgment = boom
+        self.assertFalse(km._needs_judging(SID, "/t/x.jsonl", NOW))   # swallowed → no pill, feed survives
+
+    def test_real_transcript_fires_then_clears(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            jd.GOALDIR = d / "goals"; jd.GOALDIR.mkdir()
+            jd.STATESDIR = d / "states"; jd.MESSAGES = d / "messages.jsonl"   # keep the parse off real state
+            jd._PARSE_CACHE.clear()
+            # TWO turns so the FIRST is unambiguously ENDED (the last turn stays open → excluded, matching
+            # the live "the turn it's on isn't filed yet" rule): one ready segment + one ended turn.
+            recs = [
+                uline(T0, "first ask", "u1"),
+                aline(T0 + 1, "did the first thing", "a1", parent="u1"),
+                uline(T0 + 10, "second ask", "u2", parent="a1"),
+                aline(T0 + 11, "doing the second thing", "a2", parent="u2"),
+            ]
+            path = d / (SID + ".jsonl")
+            path.write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+            # no goal store yet → the first (ended) turn's segment is unplaced → pill lit
+            self.assertTrue(km._needs_judging(SID, str(path), NOW))
+            # file every ready segment + close every ended turn, keep <2 open tops (grouper idle) → cleared
+            jd._PARSE_CACHE.clear()
+            session = jd.parsed_session(SID, [str(path)], NOW)
+            placed = {seg_id: "n1" for seg_id, *_ in jd.plan_segments(session)}
+            closed = sorted(t["id"] for t in session["turns"] if not jd._turn_open(t, session["turns"]))
+            self.assertTrue(placed and closed)          # guard: the fixture really produced units to clear
+            (jd.GOALDIR / (SID + ".json")).write_text(json.dumps(
+                {"rompUuid": SID, "nodes": {}, "placements": placed, "closedTurns": closed,
+                 "status": {}, "groupedSig": []}))
+            self.assertFalse(km._needs_judging(SID, str(path), NOW))
 
 
 if __name__ == "__main__":
