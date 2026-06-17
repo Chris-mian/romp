@@ -43,3 +43,27 @@ test("the most-recently-changed ledger node gets a → marker on its left (kerne
   assert.match(RENDER, /recent\?: boolean/);                           // LedgerTreeNode carries the flag
   assert.match(CSS, /\.ledger-recent \{/);
 });
+
+test("the ledger tree is a COLLAPSIBLE checklist — toggle arrows at every level, done folds by default", () => {
+  // recursive render over the kernel's children ids, with a per-node fold state
+  assert.match(RENDER, /const ledgerFolded = new Set<string>\(\)/);
+  assert.match(RENDER, /const ledgerExpanded = new Set<string>\(\)/);
+  assert.match(RENDER, /const renderNode = \(n: LedgerTreeNode, depth: number\)/);
+  // a "previous" (done) task folds by default unless it's the recent path; the user can override
+  assert.match(RENDER, /const defaultFold = \(n: LedgerTreeNode\) => !!n\.done && !n\.onpath/);
+  // a disclosure triangle (▶/▼) at every level; clicking toggles fold state + re-renders
+  assert.match(RENDER, /el\("span", "ledger-tri"/);
+  assert.match(RENDER, /folded \? "▶" : "▼"/);
+  assert.match(RENDER, /ledgerFolded\.add\(n\.id\)/);
+  assert.match(RENDER, /ledgerExpanded\.add\(n\.id\)/);
+  assert.match(CSS, /\.ledger-tri \{/);
+});
+
+test("a cleared node renders as a FADED ✓; completed top goals get ~1.5-line spacing", () => {
+  // cleared reuses the dimmed-disc treatment (the .derived rule); the kernel flags `cleared`
+  assert.match(RENDER, /\(n\.derived \|\| n\.cleared\) \? " derived" : ""/);
+  assert.match(RENDER, /cleared\?: boolean/);
+  // spacing above each completed top goal (a .ledger-top.done margin), not a full double-space
+  assert.match(RENDER, /depth === 0 \? " ledger-top" : ""/);
+  assert.match(CSS, /\.ledger-tnode\.ledger-top\.done \{[^}]*margin-top/);
+});

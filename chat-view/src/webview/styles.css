@@ -177,6 +177,14 @@ body { display: flex; flex-direction: column; }
    line wrapping inside the box. */
 .ledger-tree { display: flex; flex-direction: column; row-gap: 1px; margin-top: 2px; max-height: 17em; overflow-y: auto; overflow-x: hidden; width: fit-content; max-width: 100%; }
 .ledger-tnode { display: flex; align-items: baseline; column-gap: 7px; line-height: 1.4; border-radius: 4px; padding: 1px 5px; margin: 0 -5px; }
+/* disclosure triangle at EVERY level (▶ folded / ▼ open); .empty = a blank spacer that keeps leaves
+   aligned under their expandable siblings (the user 2026-06-16). */
+.ledger-tri { flex: 0 0 auto; width: 0.85em; text-align: center; color: var(--dim); font-size: 0.7em; line-height: 1; }
+.ledger-tri.nav { cursor: pointer; }
+.ledger-tri.nav:hover { color: var(--fg); }
+/* a completed ("previous") top goal gets ~1.5 lines of space above it, so done items breathe apart as
+   you scroll — not a full double space (the user 2026-06-16). */
+.ledger-tnode.ledger-top.done { margin-top: 0.5em; }
 .ledger-tmark { flex: 0 0 auto; width: 1em; text-align: center; color: var(--dim); }
 /* done = the blue ✓ disc, same as the chat to-do checklist (.todo-completed .todo-mark): white ✓ on
    --check-bg (the user 2026-06-16). The ✓ is the mark's own text, so no ::before is needed. */

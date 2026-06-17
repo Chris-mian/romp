@@ -140,7 +140,7 @@ interface LedgerBullet { text: string; t?: number; id?: string; sid?: string; tl
 // `derived` = this node is done only because all its children are (the kernel propagates completion up
 // the tree), as opposed to an explicitly-asserted done. Rendered as the blue ✓ disc dimmed (the user
 // 2026-06-16). Empty/false → explicit done (full disc).
-interface LedgerTreeNode { id: string; text: string; depth: number; done: boolean; blocked: boolean; t?: number; current: boolean; derived?: boolean; recent?: boolean; }
+interface LedgerTreeNode { id: string; text: string; depth: number; done: boolean; blocked: boolean; t?: number; current: boolean; derived?: boolean; recent?: boolean; cleared?: boolean; onpath?: boolean; children?: string[]; }
 // tree = the goal overview (preferred view); bullets = captioned-turn fallback for goal-less sessions.
 interface Ledger { summary: string; tree?: LedgerTreeNode[]; bullets: LedgerBullet[]; current?: LedgerBullet | null; }
 const ledgers = new Map<string, Ledger | null>();
@@ -2126,6 +2126,11 @@ const LEDGER_BULLET_CAP = 30;
 // per-panel via the webview state so it survives reloads).
 let ledgerCollapsed = false;
 try { ledgerCollapsed = !!((vscodeApi && vscodeApi.getState && vscodeApi.getState()) || {}).ledgerCollapsed; } catch { /* ignore */ }
+// Per-node fold state for the ledger tree (the user 2026-06-16): a node folds by DEFAULT once it's done
+// (a "previous" task) unless it's on the recent path; the user can override either way. Keyed by node id
+// (ids are session-scoped, so the sets are safe to keep global across session switches).
+const ledgerFolded = new Set<string>();    // explicitly folded by the user (overrides a default-open)
+const ledgerExpanded = new Set<string>();  // explicitly expanded by the user (overrides a default-fold)
 function toggleLedgerCollapsed() {
   ledgerCollapsed = !ledgerCollapsed;
   try { if (vscodeApi && vscodeApi.setState) vscodeApi.setState({ ...(vscodeApi.getState() || {}), ledgerCollapsed }); } catch { /* ignore */ }
@@ -2167,7 +2172,8 @@ function renderLedger() {
   // (raw n.t/b.t in the sig, NOT the elapsed — wall-clock ticking is refreshLedgerAges's job.)
   const sig = (ledgerCollapsed ? "C" : "O") + "§" + (activeId || "") + "§" + titleText
     + "‖cur:" + (cur ? `${cur.id || ""}:${cur.t ?? ""}:${cur.text}` : "")
-    + "‖tree:" + tree.map((n) => `${n.id}:${n.depth}:${n.done ? "d" : ""}${n.derived ? "v" : ""}${n.current ? "c" : ""}${n.blocked ? "b" : ""}${n.recent ? "r" : ""}:${n.t ?? ""}:${n.text}`).join("|")
+    + "‖tree:" + tree.map((n) => `${n.id}:${n.depth}:${n.done ? "d" : ""}${n.derived ? "v" : ""}${n.cleared ? "x" : ""}${n.current ? "c" : ""}${n.blocked ? "b" : ""}${n.recent ? "r" : ""}${n.onpath ? "p" : ""}:${n.t ?? ""}:${n.text}`).join("|")
+    + "‖fold:" + [...ledgerFolded].sort().join(",") + "/" + [...ledgerExpanded].sort().join(",")
     + "‖b:" + (tree.length ? "" : bullets.slice(0, LEDGER_BULLET_CAP).map((b) => `${b.id || ""}:${b.t ?? ""}:${b.text}`).join("|"));
   if ((host as any)._sig === sig) { refreshLedgerAges(host, l, now); return; }
   (host as any)._sig = sig;
@@ -2189,27 +2195,47 @@ function renderLedger() {
   if (ledgerCollapsed) return;   // collapsed → just the title strip
 
   if (tree.length) {
-    // --- the goal-graph overview tree (the user's "that view"): open paths expanded, done nodes are
-    //     pruned leaves with a recency-coloured time on the right; the ▸ row IS what's being worked on.
+    // --- the goal-graph overview tree: a COLLAPSIBLE checklist (the user 2026-06-16). Toggle arrows at
+    //     EVERY level; completed / cleared ("previous") nodes fold by default so only their top line
+    //     shows, the recent path + open work stay expanded, and the user can fold/expand any node. ✓ disc
+    //     = done (DIMMED for derived / cleared); ○ = not done; ▸ = working; ⏸ = blocked; → = freshest change.
     const wrap = el("div", "ledger-tree");
-    for (const n of tree) {
-      const row = el("div", "ledger-tnode" + (n.current ? " current" : "") + (n.done ? " done" : "") + (n.done && n.derived ? " derived" : "") + (n.recent ? " recent" : ""));
-      row.style.paddingLeft = (4 + n.depth * 15) + "px";        // indent by graph depth (a line of descent)
+    const byId = new Map(tree.map((n) => [n.id, n] as const));
+    const roots = tree.filter((n) => n.depth === 0);
+    const defaultFold = (n: LedgerTreeNode) => !!n.done && !n.onpath;   // a "previous" task folds unless it's the recent path
+    const isFolded = (n: LedgerTreeNode) => !!(n.children && n.children.length) &&
+      (ledgerFolded.has(n.id) || (defaultFold(n) && !ledgerExpanded.has(n.id)));
+    const renderNode = (n: LedgerTreeNode, depth: number) => {
+      const expandable = !!(n.children && n.children.length);
+      const folded = isFolded(n);
+      const row = el("div", "ledger-tnode" + (depth === 0 ? " ledger-top" : "")
+        + (n.current ? " current" : "") + (n.done ? " done" : "")
+        + ((n.derived || n.cleared) ? " derived" : "") + (n.recent ? " recent" : ""));
+      row.style.paddingLeft = (4 + depth * 15) + "px";          // indent by graph depth (a line of descent)
+      // disclosure triangle at every level (▶ folded / ▼ open); a blank spacer keeps leaves aligned
+      const tri = el("span", "ledger-tri" + (expandable ? " nav" : " empty"));
+      tri.textContent = expandable ? (folded ? "▶" : "▼") : "";
+      if (expandable) tri.onclick = (ev) => {
+        ev.stopPropagation();
+        if (isFolded(n)) { ledgerExpanded.add(n.id); ledgerFolded.delete(n.id); }
+        else { ledgerFolded.add(n.id); ledgerExpanded.delete(n.id); }
+        renderLedger();
+      };
       const mark = el("span", "ledger-tmark");
-      // done = the blue ✓ disc (styled in CSS, matching the chat to-do / feed); not-yet-done = a hollow
-      // circle ○ (the user 2026-06-16); ▸ = being worked on, ⏸ = blocked.
       mark.textContent = n.current ? "▸" : n.done ? "✓" : n.blocked ? "⏸" : "○";
       const txt = el("span", "ledger-ttext");
       txt.textContent = n.text;
       const time = el("span", "ledger-ttime");
       setTnodeTime(time, n, cur, now);                          // "(Xm)" live for current, "(Xm ago)" for done
       if (n.done && n.t) txt.style.color = ageColorReadable(now - n.t);   // a done item's text matches its time colour
-      // a → "most recent change" arrow to the LEFT of the freshest node (the user 2026-06-16); the kernel
-      // auto-expands the path to it so it's revealed even inside an otherwise-pruned done branch.
-      if (n.recent) { const arr = el("span", "ledger-recent"); arr.textContent = "→"; arr.title = "most recent change"; row.append(arr, mark, txt, time); }
-      else row.append(mark, txt, time);
+      // a → "most recent change" arrow to the LEFT of the freshest node; the kernel flags it + its path
+      // (onpath) so it stays auto-expanded even inside an otherwise-folded done branch.
+      if (n.recent) { const arr = el("span", "ledger-recent"); arr.textContent = "→"; arr.title = "most recent change"; row.append(arr, tri, mark, txt, time); }
+      else row.append(tri, mark, txt, time);
       wrap.appendChild(row);
-    }
+      if (expandable && !folded) for (const cid of n.children!) { const c = byId.get(cid); if (c) renderNode(c, depth + 1); }
+    };
+    for (const r of roots) renderNode(r, 0);
     host.appendChild(wrap);
   } else {
     // --- fallback for goal-less sessions: the live "working on" line + the captioned "done" bullets ---
