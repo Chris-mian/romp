@@ -1057,6 +1057,21 @@ class PlanTuning(unittest.TestCase):
         for phrase in ("Write each \"why\" plainly", "no em dashes", "say it once"):
             self.assertIn(phrase, jd.CLOSER_SYS, phrase)
 
+    def test_whys_are_user_vantage_and_blocks_read_as_questions(self):
+        # the user 2026-06-17: whys speak to the user (no self-narration), and a block reads as the
+        # question/ask itself rather than "Assistant asked …".
+        self.assertIn("from the USER's vantage", jd.PLAN_SYS)
+        self.assertIn("Drop self-narration", jd.PLAN_SYS)
+        self.assertIn("PHRASE the \"why\" as the QUESTION OR ASK", jd.PLAN_SYS)
+        self.assertIn("from the USER's vantage", jd.CLOSER_SYS, "the closer's doneWhy gets the same steer")
+
+    def test_why_cap_raised_to_300(self):
+        long = "word " * 100                                   # ~500 chars after normalization
+        ops = jd._parse_plan('{"ops":[{"why":"%s","do":"mint","text":"G"}]}' % long.strip(), 1)
+        self.assertEqual(len(ops[0]["why"]), 300, "planner why capped at 300 (was 200)")
+        done = jd._parse_close('{"done":[{"goal":1,"why":"%s"}]}' % long.strip(), 1)
+        self.assertEqual(len(done[1]), 300, "closer doneWhy capped at 300 (was 200)")
+
     def test_planner_eager_done_and_no_grouping(self):
         # the user 2026-06-17: the planner biases toward marking goals done EAGERLY, and (split out the
         # same day) NO LONGER groups — grouping moved to the grouper judge. Guard against a revert.

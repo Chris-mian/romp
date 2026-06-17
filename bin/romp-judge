@@ -480,8 +480,10 @@ PLAN_SYS = (
     '{\"ops\": [ {\"why\": \"...\", \"do\": \"...\", ...}, ... ]}\n'
     "\"ops\" is a list of ONE OR MORE operations, applied in order. EVERY op starts with \"why\": ONE "
     "plain sentence giving the real reason for THAT action (it is shown to the user — a reason, "
-    "not a restatement of the text). Write each \"why\" plainly: the real reason first, concrete verbs, "
-    "the words a person actually says. Cut filler (\"in order to\", \"it is worth noting\", \"notably\"); "
+    "not a restatement of the text). Write each \"why\" plainly, from the USER's vantage — the outcome or "
+    "the ask, only what they need to know, NOT a play-by-play of what you did. Drop self-narration (\"The "
+    "assistant…\", \"The segment…\"): say what happened or what's needed; the real reason first, concrete "
+    "verbs, the words a person actually says. Cut filler (\"in order to\", \"it is worth noting\", \"notably\"); "
     "no em dashes; state facts plainly and hedge only actual guesses; say it once. Most segments do ONE "
     "thing, but emit MORE ops when the segment actually did more (e.g. finished one goal AND started "
     "another). Op kinds:\n"
@@ -504,7 +506,11 @@ PLAN_SYS = (
     'this reply) instead of \"goal\".\n'
     '- {\"why\",\"do\":\"block\",\"goal\":<n>} — goal/step #n now NEEDS THE USER, one of two ways. '
     "(a) WAITING ON THE USER: its next step needs a decision, approval, or answer FROM THE USER (the "
-    "human) before it can proceed; the \"why\" is the one-sentence reason it is blocked. (b) ANSWERED "
+    "human) before it can proceed. PHRASE the \"why\" as the QUESTION OR ASK itself, addressed to the "
+    "user — the decision you need plus only the context to make it — NOT a narration of what you did. "
+    "Never write \"Assistant asked…\" / \"The assistant flagged…\"; write the ask, e.g. \"Approve the "
+    "staged commit? Nothing is committed yet.\" or \"Keep goal #4 or clear it — it tracks a dropped "
+    "approach.\" (b) ANSWERED "
     "THE USER: the user asked a QUESTION and your reply IS the answer (information for them to READ, no "
     "action or work product) — block this answer-goal with the \"why\" = a concise summary of the answer "
     "(a sentence or two; the full answer stays in the chat) INSTEAD of doing it, so the user sees the "
@@ -557,7 +563,7 @@ def _parse_plan(raw, menu_len):
         if not isinstance(o, dict):
             continue
         do = str(o.get("do", "")).strip().lower()
-        why = " ".join(str(o.get("why", "")).split())[:200]
+        why = " ".join(str(o.get("why", "")).split())[:300]
         text = " ".join(str(o.get("text", "")).split())[:120]
         if do == "skip":
             ops.append({"do": "skip", "why": why})
@@ -1143,7 +1149,7 @@ def _parse_group(raw, menu_len):
         if not isinstance(o, dict):
             continue
         do = str(o.get("do", "")).strip().lower()
-        why = " ".join(str(o.get("why", "")).split())[:200]
+        why = " ".join(str(o.get("why", "")).split())[:300]
         text = " ".join(str(o.get("text", "")).split())[:120]
         if do == "mint":
             if re.sub(r"[^A-Za-z]", "", text):                          # an umbrella needs real text
@@ -1307,8 +1313,9 @@ CLOSER_SYS = (
     "Reply with ONLY a JSON object (no prose, no markdown fences):\n"
     '{\"done\": [ {\"goal\": <n>, \"why\": \"...\"}, ... ]}\n'
     "\"done\" lists ONLY the goals now fully done; goals you omit stay open. goal = the goal's number; "
-    "why = ONE sentence saying what got it done (it is shown to the user). If no listed goal is fully "
-    "done yet, \"done\" is an empty list: {\"done\": []}.\n"
+    "why = ONE sentence saying what got it done, from the USER's vantage — only what they need to know, "
+    "NOT a play-by-play; drop self-narration (\"The assistant…\", \"The segment…\"). If no listed goal is "
+    "fully done yet, \"done\" is an empty list: {\"done\": []}.\n"
     "Write each \"why\" plainly: the real reason first, concrete verbs, the words a person actually says; "
     "cut filler (\"in order to\", \"it is worth noting\", \"notably\") and stock AI words (\"delve\", "
     "\"leverage\", \"crucial\", \"pivotal\", \"robust\", \"underscores\"); no em dashes; state facts "
@@ -1335,7 +1342,7 @@ def _parse_close(raw, menu_len):
         except (TypeError, ValueError):
             continue
         if 1 <= n <= menu_len and n not in done:
-            done[n] = " ".join(str(it.get("why", "")).split())[:200]
+            done[n] = " ".join(str(it.get("why", "")).split())[:300]
     return done
 
 
