@@ -2712,7 +2712,8 @@ def _chat_body():
             '<div id="footer"><div id="statusline" class="statusline"></div>'
             '<div id="composer"><textarea id="composer-input" rows="1" '
             'placeholder="Message this session…"></textarea>'
-            '<button id="composer-attach" title="Attach a file — inserts its path">📎</button></div></div>')
+            '<button id="composer-attach" title="Attach a file — inserts its path">📎</button>'
+            '<button id="composer-send" title="Send (Enter)" aria-label="Send">➤</button></div></div>')
 
 
 # The combined-shell splitter JS: draggable v-split (chat|feed) + h-split (top row | timeline),

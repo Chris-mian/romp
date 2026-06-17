@@ -833,6 +833,14 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(card["blocked"]["status"], 500)
         self.assertEqual(card["column"], "needs_input", "an API-error card files under BLOCKED")
 
+    def test_chat_body_has_an_explicit_send_button(self):
+        # The web-dashboard composer (kernel _chat_body, a SECOND copy of chat-view page-skeleton.chatBody)
+        # carries an explicit send button beside 📎, so ⏎ isn't the only way to send (the user 2026-06-17).
+        body = km._chat_body()
+        self.assertIn('id="composer-send"', body)
+        self.assertLess(body.index("composer-attach"), body.index("composer-send"),
+                        "send sits to the RIGHT of the 📎 attach button")
+
     def test_feed_cards_are_top_level_goals_only(self):
         # The feed's cards are top-level GOALS only (read-side.md, the user 2026-06-16). A completed
         # goal → its own COMPLETED card; the blocked goal → a BLOCKED card. Turn captions are NOT cards:

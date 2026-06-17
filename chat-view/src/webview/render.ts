@@ -2024,6 +2024,8 @@ function showActive() {
     const closed = s.status.state === "closed";
     composer.disabled = closed;
     composer.placeholder = closed ? "Session closed — read-only" : "Message this session…  (⏎ send · ⇧⏎ newline)";
+    const sendBtn = document.getElementById("composer-send") as HTMLButtonElement | null;
+    if (sendBtn) sendBtn.disabled = closed;   // read-only session → the explicit send button is dead too
   }
   // tint the whole-window border with the active session's identity color
   if (s.color && s.color.bg) document.body.style.setProperty("--active-accent", s.color.bg);
@@ -3215,6 +3217,21 @@ function growComposer(ta: HTMLTextAreaElement) {
 function setupComposer() {
   const ta = document.getElementById("composer-input") as HTMLTextAreaElement | null;
   if (!ta) return;
+  // Send the composer's text to the active session — the single path shared by ⏎ and the explicit send
+  // button (the user 2026-06-17). Trims, remembers for a Ctrl+C restore, clears the box.
+  const sendComposer = () => {
+    const text = ta.value.trim();
+    if (!text || !activeId) return;
+    lastSent.set(activeId, text);   // remembered for a possible Ctrl+C restore
+    if (vscodeApi) vscodeApi.postMessage({ type: "sendMessage", id: activeId, text });
+    drafts.delete(activeId);        // sent — no draft to restore on a later switch-back
+    ta.value = "";
+    ta.style.height = "";
+  };
+  // an explicit send button on the right of the box (touch devices have no easy ⏎; desktop gets a click
+  // affordance too). mousedown, not click, so the textarea keeps focus and a follow-up keeps typing.
+  const sendBtn = document.getElementById("composer-send") as HTMLButtonElement | null;
+  sendBtn?.addEventListener("mousedown", (e) => { e.preventDefault(); sendComposer(); ta.focus(); });
   ta.addEventListener("keydown", (e) => {
     // Ctrl+C = terminal-style interrupt of the active session (Control, not Cmd — on
     // macOS copy is Cmd+C, so this never collides with copy). The host sends Esc to
@@ -3232,13 +3249,7 @@ function setupComposer() {
     }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      const text = ta.value.trim();
-      if (!text || !activeId) return;
-      lastSent.set(activeId, text);   // remembered for a possible Ctrl+C restore
-      if (vscodeApi) vscodeApi.postMessage({ type: "sendMessage", id: activeId, text });
-      drafts.delete(activeId);        // sent — no draft to restore on a later switch-back
-      ta.value = "";
-      ta.style.height = "";
+      sendComposer();
     }
   });
   ta.addEventListener("input", () => growComposer(ta));

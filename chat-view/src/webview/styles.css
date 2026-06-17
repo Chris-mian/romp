@@ -279,14 +279,18 @@ body { display: flex; flex-direction: column; }
   display: flex; align-items: center; gap: 10px;
 }
 #composer { position: relative; max-width: var(--chat-col); margin: 0 auto; padding: 8px 24px 12px; }
-#composer-attach {
-  position: absolute; right: 30px; bottom: 18px;
+#composer-attach, #composer-send {
+  position: absolute; bottom: 18px;
   width: 26px; height: 26px; padding: 0; line-height: 1;
   display: flex; align-items: center; justify-content: center;
   background: transparent; border: none; border-radius: 5px;
   font-size: 15px; opacity: 0.55; cursor: pointer;
 }
-#composer-attach:hover { opacity: 1; background: var(--vscode-toolbar-hoverBackground, rgba(255,255,255,0.08)); }
+#composer-attach { right: 58px; }   /* 📎 sits LEFT of the send button */
+#composer-send   { right: 30px; font-size: 13px; }   /* the explicit ⏎ send button, rightmost */
+#composer-attach:hover, #composer-send:hover { opacity: 1; background: var(--vscode-toolbar-hoverBackground, rgba(255,255,255,0.08)); }
+#composer-send:not(:disabled) { color: var(--vscode-button-background, #2b7fb8); opacity: 0.85; }   /* a primary-action tint */
+#composer-send:disabled { opacity: 0.3; cursor: not-allowed; }
 #composer-input {
   width: 100%; resize: none; box-sizing: border-box;
   /* Floor at one line + padding + border, so the box can never collapse to a
@@ -297,7 +301,7 @@ body { display: flex; flex-direction: column; }
   background: var(--vscode-input-background, rgba(255, 255, 255, 0.05));
   color: var(--vscode-input-foreground, var(--fg));
   border: 1px solid var(--vscode-input-border, var(--box-border));
-  border-radius: 6px; padding: 8px 36px 8px 10px;
+  border-radius: 6px; padding: 8px 64px 8px 10px;   /* right room for the 📎 + send buttons */
   font-family: var(--sans); font-size: var(--fs); line-height: 1.4; outline: none;
 }
 #composer-input:disabled { opacity: 0.55; cursor: not-allowed; }
