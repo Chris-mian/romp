@@ -1743,5 +1743,86 @@ class FollowUp(unittest.TestCase):
         self.assertEqual(len(tops), 1, "a stale follow-up id falls back to normal placement (minted a top)")
 
 
+class Distiller(unittest.TestCase):
+    """The distiller (the user 2026-06-17): when a TOP completes, summarize the goal's full WORK history —
+    its trail + subtree trails across all open→done cycles (DISCONTINUOUS; never the unrelated work
+    between) — into node["summary"] for the card modal. Event-gated per goal (distilledMt vs mt)."""
+
+    def _setup(self, records):
+        td = Path(tempfile.mkdtemp())
+        cdir = td / "launchdir"; cdir.mkdir()
+        proj = td / "projects"
+        pdir = proj / jd.re.sub(r"[/.]", "-", os.path.realpath(str(cdir)))
+        pdir.mkdir(parents=True)
+        path = pdir / (SID + ".jsonl")
+        path.write_text("\n".join(json.dumps(r) for r in records) + "\n")
+        names = td / "names"; names.mkdir()
+        (names / SID).write_text("testsess\t%s\t#abcdef\n" % str(cdir))
+        self._saved = (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.STATESDIR, jd.distill_llm)
+        jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.STATESDIR = names, proj, td / "goals", td / "states"
+        jd._PARSE_CACHE.clear()
+        return str(path)
+
+    def tearDown(self):
+        if hasattr(self, "_saved"):
+            (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.STATESDIR, jd.distill_llm) = self._saved
+            jd._PARSE_CACHE.clear()
+
+    def test_distills_completed_top_from_its_discontinuous_trail(self):
+        records = [uline(T0, "do part one", "u1", ps="typed"),
+                   aline(T0 + 10, "did part one", "a1", "u1", stop="end_turn"),
+                   uline(T0 + 100, "an unrelated other thing", "u2", "a1", ps="typed"),
+                   aline(T0 + 110, "did the unrelated thing", "a2", "u2", stop="end_turn"),
+                   uline(T0 + 200, "now finish part two", "u3", "a2", ps="typed"),
+                   aline(T0 + 210, "finished part two", "a3", "u3", stop="end_turn")]
+        path = self._setup(records)
+        now = T0 + 5000
+        session = jd.parsed_session(SID, [path], now)
+        s1 = em.segments(session["turns"][0])[0]["id"]      # part one
+        s3 = em.segments(session["turns"][2])[0]["id"]      # part two (turn 2 = unrelated work, NOT in the trail)
+        gid = SID + ":g1"
+        jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "status": {gid: "completed"}, "placements": {},
+                            "nodes": {gid: {"id": gid, "text": "Build the thing", "parentId": None,
+                                            "nodeComplete": True, "blocked": False, "cleared": False,
+                                            "trail": [s1, s3], "t": T0, "mt": T0 + 210}}})
+        captured = {}
+
+        def fake_distill(goal_text, work_text):
+            captured["goal"], captured["work"] = goal_text, work_text
+            return "Part one and part two delivered."
+        jd.distill_llm = fake_distill
+        self.assertEqual(jd.run_distill(now=now), 1, "the completed top is distilled")
+        st = jd.load_goals(SID)
+        self.assertEqual(st["nodes"][gid]["summary"], "Part one and part two delivered.")
+        self.assertEqual(st["nodes"][gid]["distilledMt"], T0 + 210, "distilledMt records the completion it summarized")
+        self.assertIn("part one", captured["work"])
+        self.assertIn("part two", captured["work"])
+        self.assertNotIn("unrelated", captured["work"], "only the goal's OWN trail segs, not the work between cycles")
+        calls = []                                          # event-gated: re-running distills nothing
+        jd.distill_llm = lambda g, w: (calls.append(1), "x")[1]
+        self.assertEqual(jd.run_distill(now=now), 0)
+        self.assertEqual(calls, [], "a goal already distilled at this mt is not re-distilled")
+
+    def test_redistills_only_after_mt_advances(self):
+        records = [uline(T0, "x", "u1", ps="typed"), aline(T0 + 10, "done", "a1", "u1", stop="end_turn")]
+        path = self._setup(records)
+        now = T0 + 5000
+        s1 = em.segments(jd.parsed_session(SID, [path], now)["turns"][0])[0]["id"]
+        gid = SID + ":g1"
+        jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "status": {gid: "completed"}, "placements": {},
+                            "nodes": {gid: {"id": gid, "text": "G", "parentId": None, "nodeComplete": True,
+                                            "blocked": False, "cleared": False, "trail": [s1], "t": T0,
+                                            "mt": T0 + 10, "distilledMt": T0 + 10, "summary": "old"}}})
+        jd.distill_llm = lambda g, w: "fresh"
+        self.assertEqual(jd.run_distill(now=now), 0, "already distilled at this mt -> no-op")
+        st = jd.load_goals(SID); st["nodes"][gid]["mt"] = T0 + 999; jd.save_goals(SID, st)   # reopened + re-completed
+        self.assertEqual(jd.run_distill(now=now), 1, "mt advanced (re-completed) -> re-distill")
+        self.assertEqual(jd.load_goals(SID)["nodes"][gid]["summary"], "fresh")
+
+    def test_prompt_asks_for_artifact_or_summary(self):
+        for phrase in ("concrete ARTIFACT", "copy", "discontinuous"):
+            self.assertIn(phrase, jd.DISTILL_SYS, phrase)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
