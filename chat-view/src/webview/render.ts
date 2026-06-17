@@ -1183,6 +1183,13 @@ function renderTabs() {
     // BLOCKED (API error) gets NO dot — the dashed red tab highlight instead (the user 2026-06-16).
     if (st === "working") tab.appendChild(el("span", "tab-dot"));
     else if (subActive) tab.appendChild(el("span", "tab-dot tab-dot-subagent"));
+    // compacting → a 🗜 compression icon before the name (the tab gets no outline for this state, so the
+    // icon IS the cue — the user 2026-06-16). Compacting can't coincide with working, so no dot clash.
+    if (st === "compacting") {
+      const ci = el("span", "tab-compacting-icon"); ci.textContent = "🗜";
+      ci.title = "compacting — compressing the conversation to free up context";
+      tab.appendChild(ci);
+    }
     const label = el("span", "tab-label");
     label.textContent = s.name;
     if (s.status.faded && id !== activeId && s.color) {
