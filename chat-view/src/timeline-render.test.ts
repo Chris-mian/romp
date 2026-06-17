@@ -334,7 +334,7 @@ test("judging band: with Debug mode on, data.judging renders a compact, labelled
   assert.doesNotThrow(() => panel.draw(), "draw() must not throw with a judging band");
   for (const j of ["captioner", "archiver", "planner", "grouper", "closer", "courier"])
     assert.ok(findText(panel.svg, j), `judge row '${j}' must be labelled in the gutter`);
-  assert.ok(findText(panel.svg, "JUDGING"), "the band carries a gutter heading");
+  assert.ok(findText(panel.svg, "judges"), "the band carries a gutter heading");
   const cap = findAll(panel.svg, (n) => n.getAttribute && n.getAttribute("data-judge") === "captioner");
   assert.equal(cap.length, 1, "two adjacent same-session captions merge into ONE attention mark");
   assert.equal(cap[0].getAttribute("fill"), "#7aa2f7", "a mark is FILLED with the session it judged");
@@ -347,12 +347,12 @@ test("judging band is gated on Debug mode: OFF by default hides it; Debug on dra
   const base: any = synthData();
   panel.data = { ...base, judging: [{ judge: "planner", sid: "S1", t: base.now - 50, kind: "mint", text: "g" }] };
   panel.draw();                                               // Debug off (default)
-  assert.ok(!findText(panel.svg, "JUDGING"), "no band heading while Debug is off");
+  assert.ok(!findText(panel.svg, "judges"), "no band heading while Debug is off");
   assert.equal(findAll(panel.svg, (n) => n.getAttribute && n.getAttribute("data-judge")).length, 0, "no judge marks drawn while off");
   const hOff = Number(panel.svg.getAttribute("height"));
   setDebug(true);
   panel.draw();                                               // a storage event from the gear would trigger this in the browser
-  assert.ok(findText(panel.svg, "JUDGING"), "Debug on reveals the band");
+  assert.ok(findText(panel.svg, "judges"), "Debug on reveals the band");
   assert.ok(Number(panel.svg.getAttribute("height")) > hOff, "the band adds height below the lanes");
   g.localStorage.getItem = () => null;                        // reset the shared mock
 });

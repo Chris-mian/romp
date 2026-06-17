@@ -317,12 +317,12 @@ class TimelinePanel {
     // faster than the window refills. Only the two account-wide windows (5h + weekly); no model-specific.
     const mkUsageBar = (key, label, winSec) => {
       const g = this._usageWrap.createDiv();
-      g.setAttribute('style', 'display:inline-flex;align-items:center;gap:8px;');
-      const lab = g.createSpan({ text: label }); lab.setAttribute('style', 'opacity:0.85;min-width:50px;');
+      g.setAttribute('style', 'display:inline-flex;align-items:center;gap:6px;');
+      const lab = g.createSpan({ text: label }); lab.setAttribute('style', 'opacity:0.85;');
       const col = g.createDiv(); col.setAttribute('style', 'display:flex;flex-direction:column;gap:3px;');
       const mkRow = (kindLabel, fillColor, txtOpacity) => {
-        const row = col.createDiv(); row.setAttribute('style', 'display:inline-flex;align-items:center;gap:5px;');
-        const kl = row.createSpan({ text: kindLabel }); kl.setAttribute('style', 'opacity:0.55;min-width:46px;');
+        const row = col.createDiv(); row.setAttribute('style', 'display:inline-flex;align-items:center;gap:4px;');
+        const kl = row.createSpan({ text: kindLabel }); kl.setAttribute('style', 'opacity:0.55;min-width:42px;');
         const track = row.createDiv();
         track.setAttribute('style', 'width:64px;height:6px;border-radius:3px;background:rgba(255,255,255,0.10);overflow:hidden;');
         const fill = track.createDiv();
@@ -1952,7 +1952,9 @@ class TimelinePanel {
       const nameOf = (sid) => { const s = data.sessions.find((z) => z.id === sid); return s ? s.name : sid; };
       const sepY = jb0 - JB_TOPGAP * 0.5;
       svg.appendChild(el('line', { x1: M.left, y1: sepY, x2: x(t1), y2: sepY, stroke: '#ffffff14', 'stroke-width': 1, 'pointer-events': 'none' }));
-      const hd = el('text', { x: PADL, y: sepY - 4, fill: 'var(--text-faint)', 'font-size': 9, 'font-weight': 700, 'letter-spacing': '.06em' }); hd.textContent = 'JUDGING'; svg.appendChild(hd);
+      // vertical "judges" section label in the freed gutter space, just left of the right-justified judge names
+      const jcx = Math.max(12, M.left - 72), jcy = (jY(0) + jY(JUDGES.length - 1)) / 2;
+      const hd = el('text', { x: jcx, y: jcy, fill: 'var(--text-faint)', 'font-size': 9, 'font-weight': 700, 'letter-spacing': '.08em', 'text-anchor': 'middle', transform: 'rotate(-90 ' + jcx + ' ' + jcy + ')' }); hd.textContent = 'judges'; svg.appendChild(hd);
       JUDGES.forEach((J, ji) => {
         const y = jY(ji);
         // baseline rail through the row, faintly tinted in the judge's colour so each row is identifiable
