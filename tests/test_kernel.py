@@ -906,6 +906,17 @@ class ViewBuilder(unittest.TestCase):
         self.assertNotIn("system-reminder", p); self.assertIn("do the thing", p); self.assertIn("now", p)
         self.assertEqual(r, ["be careful"])
         self.assertEqual(km._split_reminders("plain prompt"), ("plain prompt", []))
+        # background-task notifications are peeled too, so they don't render as a blue "your message"
+        # bubble (the user 2026-06-16). A message that's ONLY a notification → empty prompt.
+        p2, r2 = km._split_reminders("<task-notification><task-id>abc</task-id> done (exit code 0)</task-notification>")
+        self.assertEqual(p2, "", "a pure task-notification leaves no prompt → no bubble")
+        self.assertEqual(len(r2), 1)
+        self.assertIn("exit code 0", r2[0])
+        # mixed: a real prompt with both kinds of injected block → only the prompt survives
+        p3, r3 = km._split_reminders("real ask <system-reminder>x</system-reminder> mid <task-notification>y</task-notification> end")
+        self.assertNotIn("task-notification", p3); self.assertNotIn("system-reminder", p3)
+        self.assertIn("real ask", p3); self.assertIn("mid", p3); self.assertIn("end", p3)
+        self.assertEqual(r3, ["x", "y"])
 
     def test_name_of_resolves_sid(self):
         # a postal atom's peer is the sender's SID; resolve it to a name (+ color via _name_color)

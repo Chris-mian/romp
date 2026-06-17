@@ -831,17 +831,22 @@ def _edit_diff(inp):
 
 
 def _split_reminders(text):
-    """Split a user message into (prompt, [reminders]): harness-injected <system-reminder>…
-    </system-reminder> blocks become folded reminders (render.ts shows them as a 'ⓘ N system
-    reminders' fold); the rest is the real prompt. Precise — keys on the exact wrapper, not a guess."""
-    OPEN, CLOSE = "<system-reminder>", "</system-reminder>"
-    if OPEN not in text:
+    """Split a user message into (prompt, [reminders]): harness-injected blocks become folded reminders
+    (render.ts shows them as a 'ⓘ N system reminders' fold); the rest is the real prompt. Precise — keys
+    on the EXACT wrappers, not a guess. Two wrappers are peeled: <system-reminder>…</system-reminder>
+    AND <task-notification>…</task-notification> (background-task events — the user 2026-06-16: a
+    background-task notification was rendering as a blue 'your message' bubble; peeling it leaves the
+    prompt empty so no bubble shows)."""
+    WRAPPERS = (("<system-reminder>", "</system-reminder>"), ("<task-notification>", "</task-notification>"))
+    if not any(o in text for o, _ in WRAPPERS):
         return text, []
     reminders, out, i = [], [], 0
     while True:
-        j = text.find(OPEN, i)
-        if j < 0:
+        cand = [(text.find(o, i), o, c) for o, c in WRAPPERS]
+        cand = [(j, o, c) for j, o, c in cand if j >= 0]
+        if not cand:
             out.append(text[i:]); break
+        j, OPEN, CLOSE = min(cand, key=lambda t: t[0])    # earliest opener of any wrapper kind
         out.append(text[i:j])
         k = text.find(CLOSE, j)
         if k < 0:
