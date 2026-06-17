@@ -18,7 +18,7 @@ test("the card builds a fask-donewhy element next to fask-blockwhy, styled the s
   // same inline style as blockReason (no styles.css rule — ui owns that file): dim italic, hidden by default
   assert.match(FEED, /doneReason\.style\.cssText = "display:none;[^"]*font-style:italic/);
   // it sits right after blockReason, between the title (row1) and the session name (row2)
-  assert.match(FEED, /main\.append\(row1, blockReason, doneReason, row2/);
+  assert.match(FEED, /main\.append\(row1, blockReason, doneReason, summaryLine, row2/);
   assert.match(FEED, /a\._donewhy = doneReason;/);
 });
 
