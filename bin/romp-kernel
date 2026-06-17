@@ -167,19 +167,40 @@ def _name_of(sid):
 
 def _followup_body(iid, title, text):
     """Pane message for a feed follow-up: QUOTE the ask being followed up ('> <ask>') above the user's
-    text, so the recipient session knows what the reply answers. A bare, context-free follow-up left the
-    session with no idea what it was for — this restores the context the old version carried (the user
-    2026-06-16). Context = an explicit title (the group modal) else the goal node's own text; none → the
-    text alone (no empty quote). Split out from the WS handler so it's unit-testable."""
+    text, so the recipient session knows what the reply answers. An explicit `title` (the group modal) is
+    used verbatim; otherwise the quote is built from the goal NODE — its text, the TOP goal it sits under,
+    its status, and the planner's one-line why — so the recipient understands WHAT is being followed up on
+    instead of a bare ≤10-word line (the user 2026-06-17). None of these → the text alone (no empty quote).
+    Split out from the WS handler so it's unit-testable."""
     sid = str(iid).rsplit(":", 1)[0]
-    ctx = (title or "").strip()
-    if not ctx:
-        try:
-            ctx = str((jd.load_goals(sid).get("nodes", {}).get(str(iid)) or {}).get("text", "")).strip()
-        except Exception:
-            ctx = ""
+    nodes = {}
+    try:
+        nodes = jd.load_goals(sid).get("nodes", {})
+    except Exception:
+        pass
+    title = (title or "").strip()
+    quote = []
+    if title:                                          # explicit group-modal title → verbatim, no node lookup
+        quote.append(title)
+    else:
+        nd = nodes.get(str(iid)) or {}
+        head = str(nd.get("text", "")).strip()
+        if head:
+            tags, top, seen = [], str(iid), set()      # walk to the TOP goal this node sits under
+            while nodes.get(top, {}).get("parentId") and top not in seen:
+                seen.add(top); top = nodes[top]["parentId"]
+            toptext = str(nodes.get(top, {}).get("text", "")).strip()
+            if toptext and top != str(iid) and toptext != head:
+                tags.append('under "%s"' % toptext)
+            tags.append("blocked" if nd.get("blocked") else "done" if nd.get("nodeComplete") else None)
+            tags = [t for t in tags if t]
+            quote.append(head + ((" (" + ", ".join(tags) + ")") if tags else ""))
+            why = (nd.get("blockWhy") if nd.get("blocked")
+                   else nd.get("doneWhy") if nd.get("nodeComplete") else nd.get("why")) or ""
+            if why.strip():                            # the planner's rationale = the real "what/why"
+                quote.append(why.strip())
     body = str(text)
-    msg = ("> " + ctx.replace("\n", "\n> ") + "\n\n" + body) if ctx else body
+    msg = ("> " + "\n".join(quote).replace("\n", "\n> ") + "\n\n" + body) if quote else body
     # Hidden goal marker for the follow-up judge (coordinated w/ the `judges` session, 2026-06-17): it
     # parses `romp-goal-id:\s*([^\s>]+)`, REOPENS that top-goal node (even if completed/blocked), and
     # force-files this follow-up as a step under it. iid IS the card's top-goal node id (what the feed

@@ -514,14 +514,32 @@ class ViewBuilder(unittest.TestCase):
         # A feed follow-up quotes the ask it answers ('> <ask>') so the recipient session has context;
         # an explicit group title wins over the node lookup; unknown/none → bare text (the user 2026-06-16).
         # Every follow-up ALSO ends with the hidden goal marker (see the dedicated test below); fold it in.
-        iid = SID + ":g2"                                   # fixture g2 = "Awaiting a decision"
+        iid = SID + ":g2"                                   # fixture g2 = "Awaiting a decision", blocked, a top
         def mk(s, i=iid): return s + "\n\n<!-- romp-goal-id: " + i + " -->"
+        # no title → node path: the node text + its status (g2 is blocked; it's a top so no "under")
         self.assertEqual(km._followup_body(iid, None, "go with option A"),
-                         mk("> Awaiting a decision\n\ngo with option A"))
+                         mk("> Awaiting a decision (blocked)\n\ngo with option A"))
+        # explicit title (group modal) → verbatim, no node enrichment
         self.assertEqual(km._followup_body(iid, "Pick a database", "postgres"),
                          mk("> Pick a database\n\npostgres"))
         self.assertEqual(km._followup_body(SID + ":nope", None, "hi"),
                          mk("hi", SID + ":nope"), "no context → no empty quote (marker still appended)")
+
+    def test_followup_body_enriches_with_path_status_and_why(self):
+        # the user 2026-06-17: the follow-up must carry more than a one-line title so the recipient session
+        # understands WHAT it's following up on — the node's place (top goal), status, and the planner's why.
+        top, sub = SID + ":g1", SID + ":g3"
+        store = {"rompUuid": SID, "seq": 3, "nodes": {
+            top: {"id": top, "text": "Ship the release", "parentId": None,
+                  "nodeComplete": False, "blocked": False, "t": T0},
+            sub: {"id": sub, "text": "Decide the version bump", "parentId": top, "nodeComplete": False,
+                  "blocked": True, "blockWhy": "Need you to choose major vs minor.", "t": T0}},
+            "placements": {}, "status": {}}
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps(store))
+        out = km._followup_body(sub, None, "go minor")
+        self.assertIn('> Decide the version bump (under "Ship the release", blocked)', out)
+        self.assertIn("> Need you to choose major vs minor.", out)   # the planner's why = the real question
+        self.assertTrue(out.endswith("<!-- romp-goal-id: " + sub + " -->"))
 
     def test_followup_body_appends_goal_marker(self):
         # The follow-up judge reopens the tagged goal: every injected follow-up ends with a hidden
