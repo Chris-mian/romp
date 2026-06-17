@@ -61,3 +61,15 @@ test("a blocked card has NO follow-up button — the follow-up is modal-only", (
   assert.doesNotMatch(FEED, /actions\.append\([^)]*\bfup\b/, "fup is not appended to the card actions row");
   assert.match(FEED, /id = "feed-modal-follow"/, "the modal keeps its follow-up button");
 });
+
+test("the card's why-tagline (block/done reason) deep-links like the title (judges delegation, 2026-06-17)", () => {
+  // text the same showOnTimeline as the title, reusing the card's anchorUuid; anchor "work" → where the
+  // planner NOTED it (for a DONE card, where it got checked off).
+  assert.match(FEED, /const goNoted = \(ev: Event\) => \{ ev\.stopPropagation\(\); vscodeApi\?\.postMessage\(\{ type: "showOnTimeline", itemId: it\.itemId, sid: it\.sid, t: it\.t, anchor: "work", anchorUuid: cardAnchorUuid \}\); \};/);
+  assert.match(FEED, /blockReason\.onclick = goNoted;/);
+  assert.match(FEED, /doneReason\.onclick = goNoted;/);
+  // they read as clickable (cursor) + a hover affordance
+  assert.match(FEED, /cursor:pointer/);
+  const FEED_CSS = fs.readFileSync(path.resolve(process.cwd(), "src", "webview", "feed.css"), "utf8");
+  assert.match(FEED_CSS, /\.fask-blockwhy:hover, \.fask-donewhy:hover \{[^}]*text-decoration: underline/);
+});

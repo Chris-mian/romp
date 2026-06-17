@@ -223,6 +223,8 @@ body { display: flex; flex-direction: column; }
 .fask-origin { flex: 0 0 auto; margin-left: auto; padding-left: 8px; font-size: 0.8em; cursor: pointer; white-space: nowrap; }
 .fask-origin-pre { color: var(--dim); }
 .fask-origin-peer { font-weight: 600; }
+/* the why-tagline (block/done reason) deep-links like the title — a hover affordance for it (the user 2026-06-17) */
+.fask-blockwhy:hover, .fask-donewhy:hover { opacity: 1; text-decoration: underline; text-underline-offset: 2px; }
 .fask-origin:hover { text-decoration: underline; text-underline-offset: 2px; }
 
 /* "reopened" badge — a cleared ask resurrected by a new question */

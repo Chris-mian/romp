@@ -424,11 +424,11 @@ function makeAskCard(it: AskItem): HTMLElement {
   // soft-block reason (the planner's one-sentence "why blocked"), shown under the title on a blocked
   // card. Inline-styled, no styles.css rule (ui owns that file). Filled/toggled in updateAskCard.
   const blockReason = el("div", "fask-blockwhy");
-  blockReason.style.cssText = "display:none;font-size:11px;line-height:1.3;opacity:.75;font-style:italic;margin:1px 0 3px";
+  blockReason.style.cssText = "display:none;font-size:11px;line-height:1.3;opacity:.75;font-style:italic;margin:1px 0 3px;cursor:pointer";
   // DONE rationale (the planner's one-sentence "why done"), shown under the title on a COMPLETED card —
   // the mirror of blockReason on the done page (the user 2026-06-17). Same inline style, no styles.css rule.
   const doneReason = el("div", "fask-donewhy");
-  doneReason.style.cssText = "display:none;font-size:11px;line-height:1.3;opacity:.75;font-style:italic;margin:1px 0 3px";
+  doneReason.style.cssText = "display:none;font-size:11px;line-height:1.3;opacity:.75;font-style:italic;margin:1px 0 3px;cursor:pointer";
   main.append(row1, blockReason, doneReason, row2, row3, checklist, delegations);   // no expand button — body click opens the modal
   card.append(main);
   // Follow-up lives in the modal now (the user 2026-06-10), not on the card.
@@ -447,6 +447,13 @@ function makeAskCard(it: AskItem): HTMLElement {
   // a reply uuid falls back to time as before — no regression; delegation "work" cards deep-link.)
   const cardAnchorUuid = it.tree?.find((n) => n.id === it.itemId)?.anchorUuid ?? null;
   title.onclick = (ev) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: it.itemId, sid: it.sid, t: it.t, anchor: titleAnchor, anchorUuid: cardAnchorUuid }); };
+  // The why-tagline (block/done reason) deep-links like the title — to where the planner NOTED it: the
+  // card's anchorUuid (which, for a DONE card, lands where it got checked off) + the "work" assistant-turn
+  // intent. Henry's ask, relayed by the judges session (2026-06-17). (The inline sub-goal checkmarks are
+  // already clickable via wireNodeZones.)
+  const goNoted = (ev: Event) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: it.itemId, sid: it.sid, t: it.t, anchor: "work", anchorUuid: cardAnchorUuid }); };
+  blockReason.onclick = goNoted; blockReason.title = "jump to where this was noted";
+  doneReason.onclick = goNoted; doneReason.title = "jump to where this was noted";
   name.onclick = (ev) => { ev.stopPropagation(); openOrReviveSession(it.sid, it.live, it.name); };
   clr.onclick = (ev) => {
     ev.stopPropagation();
