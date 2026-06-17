@@ -417,11 +417,14 @@ function makeAskCard(it: AskItem): HTMLElement {
   card.append(main);
   // Follow-up lives in the modal now (the user 2026-06-10), not on the card.
 
-  // title → locate the user MESSAGE that gave rise to the card (the originating prompt), same as the
-  // modal title — anchor:"prompt" lands the chat on the nearest user turn. (Was showAskPath, which only
-  // lit the timeline path; the card hover already does that. the user 2026-06-16.) agent → open session;
-  // Clear → inbox-zero. These stopPropagation so the card-body single/double handlers don't also fire.
-  title.onclick = (ev) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: it.itemId, sid: it.sid, t: it.t, anchor: "prompt" }); };
+  // title → locate the turn the card stands for. A normal card anchors on "prompt" (the originating
+  // user message). A DELEGATION card (it.origin) has NO originating user prompt — it was planted by a
+  // peer's postal message — so "prompt" lands on whatever user turn is nearest in time (an unrelated
+  // message — the user hit this). For origin cards anchor on "work" instead, landing where the
+  // delegation was processed, mirroring the modal tree-node nav (rompinfra, the user 2026-06-16).
+  // agent → open session; Clear → inbox-zero. stopPropagation so the card-body handlers don't also fire.
+  const titleAnchor = it.origin ? "work" : "prompt";
+  title.onclick = (ev) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: it.itemId, sid: it.sid, t: it.t, anchor: titleAnchor }); };
   name.onclick = (ev) => { ev.stopPropagation(); openOrReviveSession(it.sid, it.live, it.name); };
   clr.onclick = (ev) => {
     ev.stopPropagation();
