@@ -575,7 +575,8 @@ def apply_plan(store, seg_id, seg_t, ops, menu):
         store["seq"] = store.get("seq", 0) + 1
         nid = "%s:g%d" % (store["rompUuid"], store["seq"])
         nodes[nid] = {"id": nid, "text": text, "parentId": parent, "nodeComplete": False,
-                      "blocked": False, "cleared": False, "trail": [seg_id], "t": seg_t, "why": why}
+                      "blocked": False, "cleared": False, "trail": [seg_id],
+                      "t": seg_t, "mt": seg_t, "why": why}   # mt = last-modified (create/amend/done/block); t stays create
         created.append(nid)
         return nid
 
@@ -584,6 +585,7 @@ def apply_plan(store, seg_id, seg_t, ops, menu):
         checked-off goal's child-blocks are moot)."""
         nodes[node_id]["nodeComplete"] = True
         nodes[node_id]["doneWhy"] = why
+        nodes[node_id]["mt"] = seg_t                   # a done bumps last-modified (for recency ordering)
         kids = {}
         for x, nd in nodes.items():
             kids.setdefault(nd.get("parentId"), []).append(x)
@@ -630,7 +632,7 @@ def apply_plan(store, seg_id, seg_t, ops, menu):
                 nodes[nid]["why"] = o["why"]
             if seg_id not in nodes[nid]["trail"]:
                 nodes[nid]["trail"].append(seg_id)
-            nodes[nid]["t"] = seg_t
+            nodes[nid]["t"] = seg_t; nodes[nid]["mt"] = seg_t
             _unblock_branch(nid); focus = touched = nid
         elif do == "done":
             t = _target(o)
@@ -639,7 +641,8 @@ def apply_plan(store, seg_id, seg_t, ops, menu):
         elif do == "block":
             t = _target(o)
             if t:
-                nodes[t]["blocked"] = True; nodes[t]["blockWhy"] = o["why"]; touched = t
+                nodes[t]["blocked"] = True; nodes[t]["blockWhy"] = o["why"]
+                nodes[t]["mt"] = seg_t; touched = t
     placements[seg_id] = focus if focus is not None else touched   # key presence marks the seg processed
     if focus is not None:
         store["lastNode"] = focus                     # the active focus = top-goal of the latest placement

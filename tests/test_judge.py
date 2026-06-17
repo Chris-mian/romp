@@ -449,6 +449,17 @@ class PlanApply(unittest.TestCase):
         jd.apply_plan(s, "seg2", T0 + 10, [{"do": "done", "why": "finished", "goal": 1}], jd.open_menu(s))
         self.assertIn("seg2", s["placements"], "a done-only segment still records a placements key (idempotent)")
 
+    def test_mt_tracks_last_modified_t_stays_create(self):
+        s = _store()
+        jd.apply_plan(s, "s1", T0, [{"do": "mint", "why": "x", "text": "G"}], [])
+        nid = s["placements"]["s1"]
+        self.assertEqual((s["nodes"][nid]["t"], s["nodes"][nid]["mt"]), (T0, T0), "create sets t and mt")
+        jd.apply_plan(s, "s2", T0 + 50, [{"do": "block", "why": "owed", "goal": 1}], jd.open_menu(s))
+        self.assertEqual(s["nodes"][nid]["mt"], T0 + 50, "a block bumps mt")
+        jd.apply_plan(s, "s3", T0 + 90, [{"do": "done", "why": "shipped", "goal": 1}], jd.open_menu(s))
+        self.assertEqual(s["nodes"][nid]["mt"], T0 + 90, "a done bumps mt")
+        self.assertEqual(s["nodes"][nid]["t"], T0, "t stays the create time — feed/ledger reading t are unaffected")
+
 
 class PlanRef(unittest.TestCase):
     """A done/block op targets a node CREATED earlier in the SAME reply via "ref" (1-based among this
