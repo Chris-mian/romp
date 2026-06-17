@@ -140,7 +140,7 @@ interface LedgerBullet { text: string; t?: number; id?: string; sid?: string; tl
 // `derived` = this node is done only because all its children are (the kernel propagates completion up
 // the tree), as opposed to an explicitly-asserted done. Rendered as the blue ✓ disc dimmed (the user
 // 2026-06-16). Empty/false → explicit done (full disc).
-interface LedgerTreeNode { id: string; text: string; depth: number; done: boolean; blocked: boolean; t?: number; current: boolean; derived?: boolean; recent?: boolean; cleared?: boolean; onpath?: boolean; children?: string[]; }
+interface LedgerTreeNode { id: string; text: string; depth: number; done: boolean; blocked: boolean; t?: number; mt?: number; current: boolean; derived?: boolean; recent?: boolean; cleared?: boolean; onpath?: boolean; children?: string[]; }
 // tree = the goal overview (preferred view); bullets = captioned-turn fallback for goal-less sessions.
 interface Ledger { summary: string; tree?: LedgerTreeNode[]; bullets: LedgerBullet[]; current?: LedgerBullet | null; }
 const ledgers = new Map<string, Ledger | null>();
@@ -2249,6 +2249,15 @@ function renderLedger() {
       const lead: HTMLElement[] = [];
       if (n.recent) { const arr = el("span", "ledger-recent"); arr.textContent = "→"; arr.title = "most recent change"; lead.push(arr); }
       if (anyExpandable) lead.push(tri);                         // no caret column in a flat ledger (see anyExpandable)
+      // click a row to jump to its chat turn — done/blocked land on the assistant turn that resolved it
+      // (its mt), open goals on where they began (t). The caret's own onclick stops propagation, so
+      // clicking it only folds (the user 2026-06-16). scrollToNearestT lands on the nearest turn.
+      const navT = (n.done || n.blocked) ? (n.mt ?? n.t) : n.t;
+      if (navT) {
+        row.classList.add("nav");
+        row.title = "jump to this in the chat";
+        row.addEventListener("click", () => { scrollToNearestT(navT, "assistant"); });
+      }
       row.append(...lead, mark, txt, time);
       wrap.appendChild(row);
       if (expandable && !folded) for (const cid of n.children!) { const c = byId.get(cid); if (c) renderNode(c, depth + 1); }

@@ -1339,7 +1339,11 @@ def build_session(sid, now, tmux=None):
         kids = sorted(gkids.get(nid, []), key=_submax, reverse=True)
         tree.append({"id": nid, "text": nd["text"], "depth": depth,
                      "done": explicit or derived or clr, "derived": derived, "cleared": clr,
-                     "blocked": bool(nd.get("blocked")), "t": nd["t"], "current": nid == focus,
+                     "blocked": bool(nd.get("blocked")), "t": nd["t"],
+                     # mt = the segment where this node was last touched (resolved/blocked) — the click-
+                     # to-jump nav lands done/blocked goals on their mt (the assistant turn that finished
+                     # them), open goals on t (where they began). Matches build_feed (the user 2026-06-16).
+                     "mt": nd.get("mt", nd["t"]), "current": nid == focus,
                      "recent": nid == recent, "onpath": nid in onpath,
                      "children": [c for c in kids if c in gnodes]})
         for c in kids:

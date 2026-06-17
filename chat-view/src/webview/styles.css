@@ -184,6 +184,9 @@ body { display: flex; flex-direction: column; }
    little row padding/gap so the discs never kiss and an expanded child doesn't crowd its parent
    (the user 2026-06-16 walked back the earlier over-compaction). */
 .ledger-tnode { display: flex; align-items: center; column-gap: 7px; line-height: 1.45; border-radius: 4px; padding: 2px 5px; margin: 0 -5px; }
+/* a row is clickable → jumps to its chat turn (the user 2026-06-16) */
+.ledger-tnode.nav { cursor: pointer; }
+.ledger-tnode.nav:hover { background: rgba(255, 255, 255, 0.08); }
 /* disclosure triangle at EVERY level (▶ folded / ▼ open); .empty = a blank spacer that keeps leaves
    aligned under their expandable siblings. A FLAT ledger (no expandable node anywhere) drops the whole
    column via .ledger-tree.flat so bullets sit flush instead of dead-indented (the user 2026-06-16).

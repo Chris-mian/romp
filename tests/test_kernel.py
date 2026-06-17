@@ -239,6 +239,20 @@ class ViewBuilder(unittest.TestCase):
         self.assertTrue(byid["shown child"]["current"], "lastNode is flagged current (the pointer target)")
         self.assertEqual(byid["shown child"]["depth"], 1, "child sits at depth 1 under its top-level parent")
 
+    def test_ledger_tree_carries_mt_for_click_to_jump_nav(self):
+        # Each tree node carries `mt` (the segment where it was last resolved/blocked), distinct from `t`
+        # (where it began) — the chat-view click-to-jump nav lands done/blocked goals on mt, open on t
+        # (the user 2026-06-16). Mirrors build_feed.
+        nid = SID + ":n1"
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+            "rompUuid": SID, "seq": 1, "lastNode": nid,
+            "nodes": {nid: {"id": nid, "text": "wire it up", "parentId": None, "nodeComplete": True,
+                            "blocked": False, "cleared": False, "trail": [], "t": T0, "mt": T0 + 500}},
+            "placements": {}, "status": {}}))
+        n = {x["text"]: x for x in km.build_session(SID, NOW)["ledger"]["tree"]}["wire it up"]
+        self.assertEqual(n["t"], T0)
+        self.assertEqual(n["mt"], T0 + 500, "mt = the resolution segment, distinct from t (creation)")
+
     def test_ledger_tree_derives_done_when_all_children_complete(self):
         # Completion propagates UP (the user 2026-06-16): a parent that ISN'T explicitly nodeComplete but
         # whose children are ALL done is "derived done" — done=True + derived=True (render dims its ✓

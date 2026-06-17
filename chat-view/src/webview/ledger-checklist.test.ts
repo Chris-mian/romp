@@ -99,6 +99,14 @@ test("ledger sorts unfinished goals on top, finished at the bottom (recency with
   assert.match(RENDER, /for \(const r of orderedRoots\) renderNode\(r, 0\)/);
 });
 
+test("ledger rows click → jump to chat: done/blocked by mt, open by t (the user 2026-06-16)", () => {
+  assert.match(RENDER, /mt\?: number/);                                     // node carries the resolution time
+  assert.match(RENDER, /const navT = \(n\.done \|\| n\.blocked\) \? \(n\.mt \?\? n\.t\) : n\.t/);
+  assert.match(RENDER, /row\.addEventListener\("click", \(\) => \{ scrollToNearestT\(navT, "assistant"\); \}\)/);
+  assert.match(RENDER, /row\.classList\.add\("nav"\)/);
+  assert.match(CSS, /\.ledger-tnode\.nav \{[^}]*cursor: pointer/);
+});
+
 test("leaf-row tri spacers don't inherit the placeholder's 40px padding (no giant ledger gaps)", () => {
   // REGRESSION (the user 2026-06-16): a leaf row's disclosure-triangle slot is a zero-content
   // `el("span", "ledger-tri" + " empty")` spacer. The transcript "No session open" placeholder was
