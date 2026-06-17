@@ -863,6 +863,21 @@ class ViewBuilder(unittest.TestCase):
         many = " ".join("/srv/a%d.png" % i for i in range(8))
         self.assertEqual(len(km._user_images([], many, True)), 4)
 
+    def test_gear_has_card_display_toggles_and_button_chrome(self):
+        # the ⛭ settings gear (web dashboard) carries Explanations + Sub-goals toggles that default ON and,
+        # on change, signal the same-doc feed to re-gate its cards; the gear reads as a rounded-rect BUTTON
+        # (the user 2026-06-17).
+        self.assertIn("id=rs-explanations", km._GEAR_HTML)
+        self.assertIn("id=rs-subgoals", km._GEAR_HTML)
+        self.assertIn("explanations:true,subgoals:true", km._GEAR_JS)               # defaults ON
+        self.assertIn("dispatchEvent(new Event('romp:settings'))", km._GEAR_JS)     # same-doc re-render signal
+        self.assertIn("border-radius:6px", km._GEAR_CSS)                            # gear = a rounded-rect button
+        self.assertRegex(km._GEAR_CSS, r"#rgear\{[^}]*border:1px solid")
+        # the kernel-restart ↻ button moved UP next to the gear (the user 2026-06-17): top-right, POST /restart
+        self.assertIn("id=rrefresh", km._GEAR_HTML)
+        self.assertRegex(km._GEAR_CSS, r"#rrefresh\{[^}]*position:fixed;top:6px")
+        self.assertIn("fetch('/restart',{method:'POST'})", km._GEAR_JS)
+
     def test_chat_body_has_an_explicit_send_button(self):
         # The web-dashboard composer (kernel _chat_body, a SECOND copy of chat-view page-skeleton.chatBody)
         # carries an explicit send button beside 📎, so ⏎ isn't the only way to send (the user 2026-06-17).
