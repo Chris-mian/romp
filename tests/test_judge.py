@@ -583,11 +583,11 @@ class Courier(unittest.TestCase):
         self.assertIsNone(jd._seg_peer(human), "a human prompt is not a peer segment")
 
     def test_parse_courier(self):
-        self.assertEqual(jd._parse_courier("PROPAGATING 2 :: fix the build", 3),
-                         {"propagating": True, "n": 2, "text": "fix the build"})
-        self.assertFalse(jd._parse_courier("FYI ::", 3)["propagating"])
+        self.assertEqual(jd._parse_courier("DELEGATING 2 :: fix the build", 3),
+                         {"delegating": True, "n": 2, "text": "fix the build"})
+        self.assertFalse(jd._parse_courier("COORDINATING ::", 3)["delegating"])
         self.assertIsNone(jd._parse_courier("garbage", 3))
-        self.assertIsNone(jd._parse_courier("PROPAGATING 9 :: x", 3)["n"], "out-of-range sender goal -> no link")
+        self.assertIsNone(jd._parse_courier("DELEGATING 9 :: x", 3)["n"], "out-of-range sender goal -> no link")
 
     def test_apply_courier_plants_top_goal_with_origin_and_dedups(self):
         s = _store()

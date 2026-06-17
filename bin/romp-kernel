@@ -1533,7 +1533,7 @@ def build_feed(now, tmux=None):
             col = status.get(nid, "working")
             if col == "cleared" or nid in cleared:
                 continue
-            o = nodes[nid].get("origin")             # courier handoff provenance: planted by a peer
+            o = nodes[nid].get("origin")             # courier delegation provenance: planted by a peer
             origin = None
             if isinstance(o, dict) and o.get("peer"):
                 psid = o["peer"]                     # the sender's rompUuid → resolve to name + color
@@ -1715,7 +1715,7 @@ def _postal_messages(now, alive_sids, id2name):
                     "sent": st, "exec": ex if ex else st, "hasExec": ex is not None,
                     "pending": ex is None and (now - st) < MSG_INFLIGHT_MAX,
                     "text": (e.get("body", "") or "").strip()[:240], "summary": msgsum.get(mid), "parked": False,
-                    "toGoal": planted(t, mid)})           # courier handoff: the goal this message planted
+                    "toGoal": planted(t, mid)})           # courier delegation: the goal this message planted
     out.sort(key=lambda m: m["sent"])
     return out
 
