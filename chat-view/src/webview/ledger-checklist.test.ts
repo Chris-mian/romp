@@ -42,12 +42,13 @@ test("the blue ✓ disc is standardized: ledger + feed card check carry the chat
   assert.match(FEED_CSS, /\.fcheck\.done \.fcheck-mark \{[^}]*font-size: 9px; font-weight: 700/);
 });
 
-test("the most-recently-changed ledger node gets a → marker on its left (kernel flags it `recent`)", () => {
-  assert.match(RENDER, /n\.recent \? " recent" : ""/);                 // row carries the .recent class
-  assert.match(RENDER, /el\("span", "ledger-recent"\)/);               // a → arrow element
-  assert.match(RENDER, /arr\.textContent = "→"/);
-  assert.match(RENDER, /recent\?: boolean/);                           // LedgerTreeNode carries the flag
-  assert.match(CSS, /\.ledger-recent \{/);
+test("the → 'most recent' arrow is GONE — the highlight alone marks the node (the user 2026-06-17)", () => {
+  // arrow + highlight were unified onto the same node, so the arrow was redundant; dropped per the user.
+  assert.doesNotMatch(RENDER, /el\("span", "ledger-recent"\)/);        // no arrow element
+  assert.doesNotMatch(RENDER, /arr\.textContent = "→"/);
+  assert.doesNotMatch(CSS, /\.ledger-recent \{/);                      // no arrow CSS
+  // the kernel's `recent` flag still exists — it drives the auto-expand (onpath) of that node's branch
+  assert.match(RENDER, /recent\?: boolean/);
 });
 
 test("the ledger tree is a COLLAPSIBLE checklist — toggle arrows at every level, done folds by default", () => {
@@ -101,12 +102,10 @@ test("ledger spacing: gap before the times; roomy rows + separated top goals (th
   assert.match(CSS, /\.ledger-tnode\.ledger-top \{[^}]*margin-top: 9px/);   // extra space between top-level goals
 });
 
-test("ledger has a left gutter so the → recent arrow isn't clipped at the edge (the user 2026-06-17)", () => {
-  // the arrow hangs at margin-left:-19px (net-zero width); the tree must reserve a matching left gutter,
-  // else overflow-x:hidden clips it on the freshest row — and it shifts every row a touch right so nested
-  // rows don't crowd the edge.
-  assert.match(CSS, /\.ledger-tree \{[^}]*padding-left: 20px/);
-  assert.match(CSS, /\.ledger-recent \{[^}]*margin-left: -19px/);   // arrow still net-zero, now with a gutter to hang in
+test("ledger keeps a small left indent so the marks aren't clipped at the edge (the user 2026-06-17)", () => {
+  // the wider 20px gutter was for the (now-removed) → arrow's -19px hang; tightened to a small indent that
+  // still keeps the disc marks off the overflow-x:hidden edge.
+  assert.match(CSS, /\.ledger-tree \{[^}]*padding-left: 8px/);
 });
 
 test("ledger sorts unfinished goals on top, finished at the bottom (recency within each — the user 2026-06-16)", () => {
@@ -163,12 +162,10 @@ test("scrollToNearestT: 'assistant' PREFERS the assistant turn (fallback any); '
   assert.match(RENDER, /if \(kind === "assistant" && \(!hit\.el \|\| hit\.d > 6 \* 3600\)\) hit = pick\(null\)/);
 });
 
-test("expanding preserves scroll; the → arrow doesn't shift the recent row (the user 2026-06-17)", () => {
-  // fold/expand re-render restores the tree scroll-pane (no jump to top)
+test("expanding the ledger preserves the scroll position (no jump to top) (the user 2026-06-17)", () => {
+  // fold/expand re-render restores the tree scroll-pane
   assert.match(RENDER, /const prevTreeScroll = \(host\.querySelector\(".ledger-tree"\) as HTMLElement \| null\)\?\.scrollTop \?\? 0/);
   assert.match(RENDER, /wrap\.scrollTop = prevTreeScroll/);
-  // the recency arrow hangs net-zero (-(width 12 + gap 7)) so a recent row aligns with its siblings
-  assert.match(CSS, /\.ledger-recent \{[^}]*margin-left: -19px/);
 });
 
 test("the ledger recency colour uses the globally-selected colormap (the user 2026-06-17)", () => {

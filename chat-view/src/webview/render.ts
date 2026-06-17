@@ -2323,7 +2323,7 @@ function renderLedger() {
       const row = el("div", "ledger-tnode" + (depth === 0 ? " ledger-top" : "")
         + (n.current ? " current" : "") + (n.done ? " done" : "")
         + (n.blocked && !n.current && !n.done ? " blocked" : "")
-        + (n.derived ? " derived" : "") + (n.cleared ? " cleared" : "") + (n.recent ? " recent" : ""));
+        + (n.derived ? " derived" : "") + (n.cleared ? " cleared" : ""));
       row.style.paddingLeft = (4 + depth * 15) + "px";          // indent by graph depth (a line of descent)
       // disclosure triangle at every level (▶ folded / ▼ open); a blank spacer keeps leaves aligned
       const tri = el("span", "ledger-tri" + (expandable ? " nav" : " empty"));
@@ -2344,10 +2344,10 @@ function renderLedger() {
       const time = el("span", "ledger-ttime");
       setTnodeTime(time, n, cur, now);                          // "(Xm)" live for current, "(Xm ago)" for done
       if (n.done && (n.mt ?? n.t)) txt.style.color = ageColorReadable(now - (n.mt ?? n.t)!);   // a done item's text matches its (resolution-time) colour
-      // a → "most recent change" arrow to the LEFT of the freshest node; the kernel flags it + its path
-      // (onpath) so it stays auto-expanded even inside an otherwise-folded done branch.
+      // The → "most recent change" arrow was dropped (the user 2026-06-17): the highlight alone marks the
+      // node (arrow + highlight were unified onto the same node, so the arrow was redundant). The kernel's
+      // `recent`/`onpath` flags still drive the auto-expand of that node's branch.
       const lead: HTMLElement[] = [];
-      if (n.recent) { const arr = el("span", "ledger-recent"); arr.textContent = "→"; arr.title = "most recent change"; lead.push(arr); }
       if (anyExpandable) lead.push(tri);                         // no caret column in a flat ledger (see anyExpandable)
       // Click/hover zones (the user 2026-06-17). A RESOLVED node (checked off = done, or marked blocked)
       // has a SEPARATE resolution point, so it splits in three: the TEXT jumps to the MESSAGE that minted

@@ -184,11 +184,10 @@ body { display: flex; flex-direction: column; }
 /* width:fit-content hugs the widest row so the right-aligned "(Xm ago)" times sit just past the longest
    checklist item instead of way out at the box's right edge (the user 2026-06-16); max-width keeps a long
    line wrapping inside the box. */
-/* padding-left = the LEFT GUTTER the → "recent" arrow hangs into (it sits at margin-left:-19px, net-zero
-   width — see .ledger-recent). Without it the arrow on the freshest row hangs into negative space and is
-   clipped by overflow-x:hidden ("the left side getting cut off"); the gutter also shifts every row a touch
-   right so nested rows aren't crowded against the edge (the user 2026-06-17). */
-.ledger-tree { display: flex; flex-direction: column; row-gap: 4px; margin-top: 2px; padding-left: 20px; max-height: 19em; overflow-y: auto; overflow-x: hidden; width: fit-content; max-width: 100%; }
+/* a small left indent so the marks aren't crowded against the edge / clipped by overflow-x:hidden. (Was a
+   wider 20px gutter to clear the → "recent" arrow's -19px hang; the arrow is gone now, so tightened — the
+   user 2026-06-17.) */
+.ledger-tree { display: flex; flex-direction: column; row-gap: 4px; margin-top: 2px; padding-left: 8px; max-height: 19em; overflow-y: auto; overflow-x: hidden; width: fit-content; max-width: 100%; }
 /* align-items:center so the 13px discs, text and times share a centre line. Roomy line-height + a
    little row padding/gap so the discs never kiss and an expanded child doesn't crowd its parent
    (the user 2026-06-16 walked back the earlier over-compaction). */
@@ -246,12 +245,6 @@ body { display: flex; flex-direction: column; }
    wouldn't expand — the user 2026-06-16). */
 .ledger-tnode.current .ledger-tmark { background: var(--fg); border-color: transparent; color: var(--fg); }
 .ledger-tnode.current .ledger-ttext { color: var(--fg); font-weight: 600; }
-/* the → "most recent change" arrow to the LEFT of the freshest node (the user 2026-06-16) — the kernel
-   sorts its top goal first and auto-expands the path down to it. */
-/* the → "most recent" arrow hangs in the left gutter at NET-ZERO width (margin-left -19 = -(width 12 +
-   column-gap 7)) so it never shifts the row's content — the recent row aligns with its siblings instead
-   of looking more indented (the user 2026-06-17). */
-.ledger-recent { flex: 0 0 auto; margin-left: -19px; width: 12px; text-align: center; color: var(--check-bg); font-weight: 700; }
 /* working on — the live in-progress turn (italic), shown in the goal-less fallback view */
 .ledger-current { font-style: italic; line-height: 1.45; overflow-wrap: anywhere; border-radius: 4px; padding: 1px 5px; margin: 0 -5px; }
 .ledger-current.nav { cursor: pointer; }
