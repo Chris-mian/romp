@@ -129,5 +129,39 @@ class MonitorJudgeUsage(unittest.TestCase):
         self.assertLess(txt.index("planner"), txt.index("captioner"), "judges sorted by cost (planner first)")
 
 
+class AttachRunUsage(unittest.TestCase):
+    """_attach_run_usage greedily matches each judging mark to the judge's nearest real call in
+    judge-usage.jsonl (same fsid+judge), so a band block's tooltip can sum members' ms + tokens."""
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory()
+        self.saved = jd.STATE
+        jd.STATE = pathlib.Path(self.td.name)
+
+    def tearDown(self):
+        jd.STATE = self.saved
+        self.td.cleanup()
+
+    def test_matches_marks_to_nearest_runs_same_session(self):
+        (jd.STATE / "judge-usage.jsonl").write_text("\n".join(json.dumps(r) for r in [
+            {"t": NOW - 95, "judge": "captioner", "fsid": "S1", "ms": 800, "in": 10, "out": 5},
+            {"t": NOW - 45, "judge": "captioner", "fsid": "S1", "ms": 900, "in": 20, "out": 8},
+            {"t": NOW - 40, "judge": "captioner", "fsid": "S2", "ms": 700, "in": 30, "out": 9},
+        ]) + "\n")
+        judging = [
+            {"judge": "captioner", "sid": "S1", "t": NOW - 100, "kind": "segment", "text": "a"},
+            {"judge": "captioner", "sid": "S1", "t": NOW - 50, "kind": "turn", "text": "b"},
+            {"judge": "planner", "sid": "S1", "t": NOW - 50, "kind": "mint", "text": "c"},
+        ]
+        km._attach_run_usage(judging, NOW - 3600, {"S1", "S2"})
+        self.assertEqual((judging[0]["ms"], judging[0]["in"], judging[0]["out"]), (800, 10, 5))
+        self.assertEqual((judging[1]["ms"], judging[1]["in"], judging[1]["out"]), (900, 20, 8), "each run consumed once")
+        self.assertEqual((judging[2]["ms"], judging[2]["in"], judging[2]["out"]), (0, 0, 0), "planner mark unmatched → zeros")
+
+    def test_no_log_leaves_zeros(self):
+        judging = [{"judge": "captioner", "sid": "S1", "t": NOW, "kind": "segment", "text": "x"}]
+        km._attach_run_usage(judging, NOW - 3600, {"S1"})
+        self.assertEqual((judging[0]["ms"], judging[0]["in"], judging[0]["out"]), (0, 0, 0))
+
+
 if __name__ == "__main__":
     unittest.main()

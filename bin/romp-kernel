@@ -2107,6 +2107,50 @@ def _judge_usage(t0):
     return {"total": total, "byJudge": by_judge, "byTier": by_tier}
 
 
+def _attach_run_usage(judging, t0, alive_sids):
+    """Attach each judging mark's real run cost (ms / in / out tokens) by greedy nearest-time matching it
+    to the judge's actual calls in judge-usage.jsonl (same fsid + judge). Marks with no matching call keep
+    zeros. Lets a merged block's hover tooltip sum its members' real compute time + tokens. No-op (zeros)
+    until the log exists; fully defensive."""
+    for mk in judging:
+        mk["ms"] = mk["in"] = mk["out"] = 0
+    runs = {}                                            # (sid, judge) -> [{t,ms,in,out}] sorted by t
+    try:
+        lines = (jd.STATE / "judge-usage.jsonl").read_text(errors="replace").splitlines()
+    except OSError:
+        return
+    for ln in lines:
+        try:
+            o = json.loads(ln)
+        except Exception:
+            continue
+        t, sid = o.get("t"), o.get("fsid")
+        if not isinstance(t, (int, float)) or t < t0 or sid not in alive_sids:
+            continue
+        runs.setdefault((sid, o.get("judge")), []).append(
+            {"t": t, "ms": int(o.get("ms") or 0), "in": int(o.get("in") or 0), "out": int(o.get("out") or 0)})
+    for v in runs.values():
+        v.sort(key=lambda r: r["t"])
+    marks_by = {}
+    for mk in judging:
+        marks_by.setdefault((mk["sid"], mk["judge"]), []).append(mk)
+    for key, mks in marks_by.items():
+        pool = runs.get(key) or []
+        used = [False] * len(pool)
+        for mk in mks:                                   # greedy nearest call within 180s, each consumed once
+            best_i, best_d = None, 181
+            for i, r in enumerate(pool):
+                if used[i]:
+                    continue
+                d = abs(r["t"] - mk["t"])
+                if d < best_d:
+                    best_i, best_d = i, d
+            if best_i is not None:
+                used[best_i] = True
+                r = pool[best_i]
+                mk["ms"], mk["in"], mk["out"] = r["ms"], r["in"], r["out"]
+
+
 def build_timeline(now, tmux=None):
     """A {type:"timeline"} message the ported timeline bundle consumes (ui-parity.md: timeline =
     ADAPT). Lanes per session; work bars are SEGMENTS [t,end] from the event model (not the deleted
@@ -2188,6 +2232,7 @@ def build_timeline(now, tmux=None):
     # token-usage split: SESSIONS = summed transcript usage of the alive lanes; PIPELINE = the judges'
     # per-call log (empty until romp-judge writes judge-usage.jsonl). Same horizon as the rest of the band.
     sess_tok = {k: sum(se["tokens"][k] for se in sessions) for k in ("in", "out", "cache_w", "cache_r")}
+    _attach_run_usage(judging, now - TL_HORIZON, set(id2name))   # per-mark ms/in/out for the band tooltips
     return {"type": "timeline", "now": now, "sessions": sessions, "turns": turns,
             "messages": messages, "judging": judging,
             "tokens": {"sessions": sess_tok, "pipeline": _judge_usage(now - TL_HORIZON)},

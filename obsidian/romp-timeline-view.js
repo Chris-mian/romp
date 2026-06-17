@@ -67,6 +67,7 @@ function esc(s) { return (s || '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<'
 function clock(t) { const d = new Date(t * 1000); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); }
 function fmtWin(s) { return s < 3600 ? Math.round(s / 60) + 'm' : (s / 3600 < 10 ? (s / 3600).toFixed(1) : Math.round(s / 3600)) + 'h'; }
 function fmtTokens(n) { n = Math.round(n || 0); return n >= 1e6 ? (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + 'M' : n >= 1e3 ? Math.round(n / 1e3) + 'k' : String(n); }
+function fmtDur(ms) { ms = Math.round(ms || 0); return ms < 1000 ? ms + 'ms' : ms < 60000 ? (ms / 1000).toFixed(1) + 's' : Math.round(ms / 60000) + 'm'; }
 // Pure (exported for tests): a long idle gap's SPAN as a concise day/week/month label ("2 days", "1 week",
 // "3 weeks", "2 months") so a multi-day broken-axis break isn't ambiguous between its two HH:MM boundary
 // clocks ("23:40 → 08:50" could be 9h or 2 days). Day-scale only — callers gate on span ≥ 1 day (the user
@@ -2018,8 +2019,12 @@ class TimelinePanel {
           svg.appendChild(r);
           const html = () => {
             const span = b.start === b.end ? clock(b.start) : clock(b.start) + '–' + clock(b.end);
+            // elapsed (total judge compute) + tokens for this stretch, summed from each mark's matched run
+            const ms = b.members.reduce((a, m) => a + (m.ms || 0), 0);
+            const tin = b.members.reduce((a, m) => a + (m['in'] || 0), 0), tout = b.members.reduce((a, m) => a + (m['out'] || 0), 0);
+            const usage = (ms || tin || tout) ? '<div style="opacity:.7;margin-top:3px">⏱ ' + fmtDur(ms) + ' · ' + fmtTokens(tin + tout) + ' tok</div>' : '';
             const rows = b.members.slice(-5).map((m) => '<div class="b" style="opacity:.85"><span class="k">' + esc(JUDGE_KIND[m.kind] || m.kind) + '</span> ' + esc((m.text || '').slice(0, 90)) + '</div>').join('');
-            return '<div class="r"><span class="who" style="color:' + J.color + '">' + esc(J.key) + '</span><span class="ar">▸</span><span style="color:' + col + '">' + esc(nameOf(b.sid)) + '</span><span class="t">' + span + (b.members.length > 1 ? ' · ' + b.members.length : '') + '</span></div>' + rows;
+            return '<div class="r"><span class="who" style="color:' + J.color + '">' + esc(J.key) + '</span><span class="ar">▸</span><span style="color:' + col + '">' + esc(nameOf(b.sid)) + '</span><span class="t">' + span + (b.members.length > 1 ? ' · ' + b.members.length : '') + '</span></div>' + usage + rows;
           };
           const hit = el('rect', { x: x1 - 2, y: y - JROW / 2, width: (x2 - x1) + 4, height: JROW, fill: 'transparent' }); hit.style.cursor = 'default';
           hit.addEventListener('mouseenter', (e) => this.showTip(html(), e));
