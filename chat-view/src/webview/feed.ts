@@ -50,6 +50,7 @@ interface AskTreeNode {
   whoSid: string; whoColor: { bg: string; fg: string } | null;   // agent → colored session link
   whoWorking?: boolean;                                          // that agent is currently WORKING → yellow dot before its name
   status: "done" | "question" | "open"; t: number; last: number;
+  derived?: boolean;                                             // done by roll-up/roll-down (kernel), not explicit → DIMMED ✓ disc
   trgb?: [number, number, number];                               // last-activity recency tint (timestamp)
   children: string[]; rows: AskLinked[];
 }
@@ -839,7 +840,7 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
   const repeat = seen.has(node.id);
   const nodeKey = it.itemId + ":" + node.id;
   const expandable = !repeat && (node.rows.length > 0 || (node.children || []).length > 0);
-  const line = el("div", "ftree-node st-" + nodeStatusClass(node) + (repeat ? " repeat" : "") + (depth === 0 ? " ftree-root" : ""));
+  const line = el("div", "ftree-node st-" + nodeStatusClass(node) + (repeat ? " repeat" : "") + (depth === 0 ? " ftree-root" : "") + (node.derived ? " derived" : ""));
   // the event this line stands for (handoff → its postal msg id; root → the typed
   // turn) — lets a chat rail-dot hover ring this line back (applyExtHover)
   line.dataset.eid = node.kind === "handoff" ? node.id : it.turnId;

@@ -46,3 +46,13 @@ test("the age is recency-tinted in every modal variant (ask / group / standalone
   assert.match(FEED, /ageEl\.style\.color = "rgb\(" \+ grp\.trgb\.join\(","\) \+ "\)"/);
   assert.match(FEED, /ageEl\.style\.color = "rgb\(" \+ fitem\.trgb\.join\(","\) \+ "\)"/);
 });
+
+test("modal marks: not-yet-done is a hollow RING the same 13px size as the ✓ disc; derived done is dimmed", () => {
+  // an empty checkbox sized like the filled one (the user 2026-06-16), not a tiny ○ glyph
+  assert.match(CSS, /\.st-open \.ftree-mark \{[^}]*width: 13px/);
+  assert.match(CSS, /\.st-open \.ftree-mark \{[^}]*border-radius: 50%/);
+  assert.match(CSS, /\.st-open \.ftree-mark \{[^}]*border: 1\.5px solid/);
+  // derived done (kernel roll-up / roll-down) = the same blue ✓ disc, dimmed; wired via a .derived class
+  assert.match(FEED, /\(node\.derived \? " derived" : ""\)/);
+  assert.match(CSS, /\.ftree-node\.st-done\.derived \.ftree-mark \{[^}]*opacity/);
+});

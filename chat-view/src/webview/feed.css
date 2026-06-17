@@ -263,7 +263,13 @@ body { display: flex; flex-direction: column; }
 .ftree-meta { flex: 0 0 auto; margin-left: 6px; color: var(--dim); font-size: 0.82em; white-space: nowrap; }
 .st-done .ftree-mark { color: var(--rel-done); }
 .st-question .ftree-mark, .st-question .ftree-meta { color: #e0b020; }
-.st-open .ftree-mark { color: var(--dim); }
+/* not-yet-done = a hollow ring the SAME 13px size as the ✓ disc it'll become (the user 2026-06-16) —
+   an empty checkbox, not a tiny ○ glyph. The "○" text is hidden; the border IS the circle. */
+.st-open .ftree-mark {
+  width: 13px; height: 13px; min-width: 13px; box-sizing: border-box; align-self: center;
+  border-radius: 50%; border: 1.5px solid var(--dim); background: transparent;
+  color: transparent; font-size: 0;
+}
 /* drop-point fix: the user adjudicates a stale leaf done (writes a correction) */
 .ftree-fix { flex: 0 0 auto; margin-left: 8px; font-size: 0.8em; color: var(--dim); cursor: pointer; }
 .ftree-fix:hover { color: var(--rel-done); text-decoration: underline; text-underline-offset: 2px; }
@@ -291,6 +297,9 @@ body { display: flex; flex-direction: column; }
 .st-done .ftree-mark::before, .frow:not(.st-question) .frow-mark::before, .fgroup-member.st-done .fgroup-dot::before, .flinked.st-done .flinked-mark::before {
   content: "✓"; font-size: 9px; font-weight: 900; line-height: 1; color: #fff;
 }
+/* derived done — completion rolled UP (all children done) or DOWN (a done ancestor checks it off), not
+   explicitly asserted: the same blue ✓ disc, DIMMED, so the propagation is visible (the user 2026-06-16). */
+.ftree-node.st-done.derived .ftree-mark { opacity: 0.5; }
 .fgroup-member.st-question .fgroup-mtext { color: #e0b020; }   /* the actionable sub-ask stands out */
 .fgroup-mtext { color: var(--fg); flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
 /* group modal: each member's tree stacked, separated by a faint rule */
