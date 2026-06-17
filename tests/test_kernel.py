@@ -598,6 +598,19 @@ class ViewBuilder(unittest.TestCase):
         s2 = km._producer_sig(browser=True)
         self.assertNotEqual(s1, s2, "a states-file transition (e.g. going idle) must change the signature")
 
+    def test_resolve_node_crosses_off_a_blocked_goal(self):
+        # the user 2026-06-17: clicking a blocked node's mark in the modal CROSSES IT OFF (nodeOverride
+        # op:resolve). g2 is the fixture's blocked top goal. After resolve it must be nodeComplete, no
+        # longer blocked, and its rolled-up status must leave "blocked" (a complete node can't block).
+        g2 = "%s:g2" % SID
+        self.assertTrue(jd.load_goals(SID)["nodes"][g2].get("blocked"), "fixture: g2 starts blocked")
+        self.assertTrue(km._resolve_node(SID, g2), "resolve applies")
+        after = jd.load_goals(SID)
+        self.assertTrue(after["nodes"][g2].get("nodeComplete"), "resolve sets nodeComplete")
+        self.assertFalse(after["nodes"][g2].get("blocked"), "resolve clears the block flag")
+        self.assertNotEqual(after.get("status", {}).get(g2), "blocked", "rolled-up status leaves blocked")
+        self.assertFalse(km._resolve_node(SID, g2), "resolve on an already-complete node is a no-op")
+
     def test_rename_session_live_renames_tmux(self):
         # A LIVE session renames via tmux; the after-rename-session hook then syncs the names file + pill.
         saved_name, saved_run = km._tmux_name_of, km.subprocess.run

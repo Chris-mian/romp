@@ -1579,6 +1579,33 @@ def _undo_clear():
             f.write(json.dumps({"id": iid, "t": time.time(), "op": "undo"}) + "\n")
 
 
+def _resolve_node(sid, node_id):
+    """User override from the modal: cross a goal node off (mark it RESOLVED). Sets nodeComplete on the
+    node — the SAME flag the planner/closer set — so a now-resolved BLOCK drops out of the rollup (a
+    complete node can't block, so the parent goes off-blocked and the thread's other work continues), and
+    the planner SEALS the completed subtree so it won't silently re-block. Durable + event-consistent, no
+    new state. We do NOT reuse the view-level `cleared` path: that only hides the card, leaving the
+    rollup's block (and a card that was the last open work stuck on 'working'). Recomputes the rolled-up
+    status right here so the BLOCKED chip clears now, not on the next judge pass. (the user 2026-06-17.)"""
+    store = jd.load_goals(sid)
+    nd = store.get("nodes", {}).get(node_id)
+    if not nd or nd.get("nodeComplete"):
+        return False
+    now = int(time.time())
+    nd["nodeComplete"] = True
+    nd["blocked"] = False
+    nd["doneWhy"] = nd.get("doneWhy") or "Resolved by the user."
+    nd["mt"] = now                                    # deep-link / recency land on the resolution moment
+    try:                                              # session_closed gate for the rollup, same as run_plan
+        path = next((s["path"] for s in _sessions(now) if s["sid"] == sid), None)
+        closed = jd._session_closed(_parse(path, sid, now)) if path else False
+    except Exception:
+        closed = False
+    jd.rollup_status(store, closed)
+    jd.save_goals(sid, store)
+    return True
+
+
 # ───────────────────────── view-builder: goals → feed (parity: feed = ADAPT; minimal here) ─────────────────────────
 def build_feed(now, tmux=None):
     """The {type:"feed"} message the tuned feed.js bundle consumes (ui-parity.md: feed = ADAPT).
@@ -3420,6 +3447,11 @@ class Handler(BaseHTTPRequestHandler):
                 elif msg and msg.get("type") == "askClear" and msg.get("itemId"):
                     _clear_ask(msg["itemId"])
                     _push_all()                        # reflect the clear on every feed client now
+                elif msg and msg.get("type") == "nodeOverride" and msg.get("sid") and msg.get("nodeId"):
+                    # modal surgical override: cross a node off (op:resolve → nodeComplete). Other ops can
+                    # extend this later; resolve is the one Henry asked for (the user 2026-06-17).
+                    if msg.get("op") == "resolve" and _resolve_node(str(msg["sid"]), str(msg["nodeId"])):
+                        _push_all()
                 elif msg and msg.get("type") == "clearAll":
                     d = build_feed(int(time.time()))
                     _clear_all([a["itemId"] for a in d["asks"]] + [c["itemId"] for c in d["items"]])
