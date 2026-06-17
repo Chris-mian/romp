@@ -332,6 +332,43 @@ class ViewBuilder(unittest.TestCase):
     def test_rename_session_rejects_invalid_name(self):
         self.assertIsNone(km._rename_session(SID, "has spaces!"), "invalid chars → rejected, no rename")
 
+    def test_dead_session_kept_as_tab_after_being_seen_live(self):
+        # The user 2026-06-16: keep a tab when its session dies. A session shown alive this run, then
+        # dead (tmux empty), stays in the chat tab list and build_session reports it 'closed' so the
+        # tab renders read-only + struck-through.
+        saved_seen, saved_has = set(km._seen_live), km._has_tmux
+        km._has_tmux = lambda: True
+        try:
+            km._seen_live.clear(); km._seen_live.add(SID)
+            tabs = [s["sid"] for s in km._chat_tab_sessions(NOW, {})]
+            self.assertIn(SID, tabs, "a session that died after being shown keeps its tab")
+            self.assertEqual(km.build_session(SID, NOW, {})["status"]["state"], "closed")
+        finally:
+            km._seen_live.clear(); km._seen_live.update(saved_seen); km._has_tmux = saved_has
+
+    def test_dead_session_not_kept_when_never_seen_live(self):
+        # A fresh kernel start (_seen_live empty) must NOT resurrect a dead session's tab (the Part-A rule).
+        saved_seen, saved_has = set(km._seen_live), km._has_tmux
+        km._has_tmux = lambda: True
+        try:
+            km._seen_live.clear()
+            tabs = [s["sid"] for s in km._chat_tab_sessions(NOW, {})]
+            self.assertNotIn(SID, tabs, "never-seen dead session is not shown on a fresh start")
+        finally:
+            km._seen_live.clear(); km._seen_live.update(saved_seen); km._has_tmux = saved_has
+
+    def test_dead_kept_tab_excluded_once_hidden(self):
+        # ×-closing a dead-kept tab dismisses it for good.
+        saved_seen, saved_has = set(km._seen_live), km._has_tmux
+        km._has_tmux = lambda: True
+        try:
+            km._seen_live.clear(); km._seen_live.add(SID)
+            km._set_hidden_tab(SID, True)
+            tabs = [s["sid"] for s in km._chat_tab_sessions(NOW, {})]
+            self.assertNotIn(SID, tabs, "a ×-hidden dead tab is not shown")
+        finally:
+            km._seen_live.clear(); km._seen_live.update(saved_seen); km._has_tmux = saved_has
+
     def test_rel_ago_buckets(self):
         self.assertEqual(km._rel_ago(1000, 1000), "just now")
         self.assertEqual(km._rel_ago(1000, 1000 - 120), "2m ago")

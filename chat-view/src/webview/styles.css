@@ -98,6 +98,10 @@ body { display: flex; flex-direction: column; }
 .tab.tab-awaiting, .tab.tab-blocked { outline: 2px dashed var(--state); outline-offset: -2px; }
 /* WORKING: a small yellow dot left of the name (replaces the old yellow outline). */
 .tab-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--st-working-bg); }
+/* CLOSED (dead session kept as a read-only tab): strike the title + dim, so a tab that's still
+   present but no longer live reads as past tense (the user 2026-06-16). */
+.tab.tab-closed .tab-label { text-decoration: line-through; }
+.tab.tab-closed { opacity: 0.6; }
 /* SELECTED: gray fill PLUS an outline in the session's own identity color. */
 .tab.active { color: var(--fg); background: rgba(255, 255, 255, 0.14); }
 .tab.active.colored { box-shadow: inset 0 0 0 1.5px var(--chip-bg); }

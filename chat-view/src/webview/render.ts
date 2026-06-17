@@ -1173,6 +1173,7 @@ function renderTabs() {
     else if (st === "blocked") tab.classList.add("tab-blocked");     // red: stopped on an API error
     else if (st === "awaiting") tab.classList.add("tab-awaiting");
     else if (st === "compacting") tab.classList.add("tab-compacting");
+    else if (st === "closed") tab.classList.add("tab-closed");       // dead session: read-only, struck-through label
     if (subActive) tab.classList.add("tab-subagent");                // orange accent ADDED to the quiet tab
     if (s.status.faded) tab.classList.add("at-rest");
     // WORKING shows a yellow dot; a quiet tab with a background subagent shows an ORANGE dot (additive).
@@ -1965,6 +1966,15 @@ function showActive() {
     return;
   }
   if (empty) empty.style.display = "none";
+  // A closed (dead) session is READ-ONLY: disable the composer so a message can't be black-holed into
+  // a session that no longer exists (the user 2026-06-16). Re-runs each push, so a session that dies
+  // while you're viewing it disables the box live; switching back to a live tab re-enables it.
+  const composer = document.getElementById("composer-input") as HTMLTextAreaElement | null;
+  if (composer) {
+    const closed = s.status.state === "closed";
+    composer.disabled = closed;
+    composer.placeholder = closed ? "Session closed — read-only" : "Message this session…  (⏎ send · ⇧⏎ newline)";
+  }
   // tint the whole-window border with the active session's identity color
   if (s.color && s.color.bg) document.body.style.setProperty("--active-accent", s.color.bg);
   else document.body.style.removeProperty("--active-accent");

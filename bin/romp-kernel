@@ -127,6 +127,11 @@ def _ct_eq(a, b):
 _clients = []                                # connected WS clients: {app, wid, send, alive}
 _clients_lock = threading.Lock()
 _client_seen = [0.0]
+# SIDs seen ALIVE at any point during THIS kernel run. A session that dies after being shown keeps its
+# (read-only, struck-through) chat tab instead of vanishing the instant it closes (the user 2026-06-16:
+# "keep a tab when it dies"). Reset on kernel restart, so dead tabs are NOT resurrected on a fresh start
+# (that's the Part-A rule) — only sessions you actually watched die linger.
+_seen_live = set()
 
 
 # ───────────────────────── helpers ─────────────────────────
@@ -283,6 +288,23 @@ def _set_hidden_tab(sid, hidden):
     tmp = p.with_name("hidden-tabs.json.tmp.%d" % os.getpid())
     tmp.write_text(json.dumps(sorted(cur)))
     tmp.rename(p)
+
+
+def _chat_tab_sessions(now, tmux):
+    """The sessions shown as CHAT TABS, in the shared session order: living sessions PLUS any session
+    that died AFTER being shown this run (_seen_live), kept as a read-only tab until the user ×-closes
+    it or its transcript ages out of the window — minus ×-hidden tabs (the user 2026-06-16: 'keep a tab
+    when it dies', don't drop it the instant the session closes). Dead-kept tabs hold their session-order
+    slot so the strip never reshuffles. _seen_live resets on kernel restart, so a fresh start shows only
+    living tabs (the Part-A rule) — only sessions actually watched-while-dying linger."""
+    hidden = _hidden_tabs()
+    live = _ordered_alive(now, tmux)
+    live_sids = {s["sid"] for s in live}
+    dead_kept = [s for s in _sessions(now) if s["sid"] in _seen_live and s["sid"] not in live_sids]
+    order = _session_order()
+    idx = {sid: i for i, sid in enumerate(order)}
+    return sorted((s for s in live + dead_kept if s["sid"] not in hidden),
+                  key=lambda s: idx.get(s["sid"], len(idx)))
 
 
 # ─── new-session / picker / close lifecycle (the + button and × tab control) ───────────────────
@@ -1295,9 +1317,9 @@ def build_session(sid, now, tmux=None):
         status = {"state": chip, "sinceEpoch": since_ms, "faded": faded, "subagent": sub,
                   "model": tm["model"], "effort": tm["effort"],
                   "ctx": str(tm["context"]) if tm["context"] is not None else ""}
-    elif tmux:                                         # tmux present but this session isn't running → closed
+    elif tmux or _has_tmux():                          # tmux usable but this session isn't running → closed
         status = {"state": "closed", "sinceEpoch": since_ms, "faded": True, "subagent": None}
-    else:                                              # no tmux (rare headless) → event-model fallback
+    else:                                              # no tmux at all (rare headless) → event-model fallback
         status = {"state": "working" if open_now else "idle", "sinceEpoch": since_ms,
                   "faded": not open_now, "subagent": sub if open_now else None}
     return {"type": "session", "id": sid, "name": sess["name"], "color": _name_color(sid),
@@ -1937,12 +1959,12 @@ def _push(targets):
         return
     now = int(time.time())
     tmux = _tmux_sessions()                       # one tmux read per push, shared by all builders
+    _seen_live.update(tmux)                       # remember who's been alive → keep their tab when they die
     want_chat = any(c["app"] == "chat" for c in targets)
     want_feed = any(c["app"] in ("feed", "chat") for c in targets)   # chat needs feed["working"]
     want_tl = any(c["app"] == "timeline" for c in targets)
     try:
-        hidden = _hidden_tabs()
-        chat_list = [s for s in _ordered_alive(now, tmux) if s["sid"] not in hidden]   # × hides a tab
+        chat_list = _chat_tab_sessions(now, tmux)   # living + recently-died-while-shown, minus ×-hidden
         chat_sessions = [m for m in (build_session(s["sid"], now, tmux) for s in chat_list) if m] if want_chat else []
         tab_order = [s["sid"] for s in chat_list]
         feed = build_feed(now, tmux) if want_feed else None
