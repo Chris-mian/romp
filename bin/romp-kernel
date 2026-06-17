@@ -2543,29 +2543,39 @@ def _producer_sig(browser):
     return sig
 
 
+def _run_tier(fn):
+    """Run one judge tier (run_once / run_triage) in its own thread, logging a crash instead of letting
+    the thread die silently (the per-session futures inside already swallow + log their own errors)."""
+    try:
+        fn()
+    except Exception:
+        sys.stderr.write("producer tier: %s\n" % traceback.format_exc())
+
+
 def _producer():
     while True:
         _producer_wake.clear()   # consume; a /tick arriving DURING this pass re-sets it → we run again (no lost wake)
         try:
             with _clients_lock:
                 browser = bool(_clients)
-            # INDEX tier (captioner + archiver) is ALWAYS-ON for any active session — keeps the
-            # TOC/search index current even with no browser. It's already cheap when idle (jd.PCACHE
-            # makes unit-selection a no-parse no-op) AND must keep running to retry a failed capture, so
-            # it stays ungated. TRIAGE tier (planner/closer/courier) parses UNCACHED and only matters
-            # while a browser's looking, so it's gated on a real change (new turn / postal msg / a
-            # browser just connected) — no re-parse+re-run on a blind 20s tick.
+            # Two tiers, run in PARALLEL (the user 2026-06-17) — they share no store and triage never
+            # reads the captioner's output, so the only cost of overlap is each tier parsing a transcript
+            # instead of sharing one parse. INDEX tier (captioner + archiver) is ALWAYS-ON for any active
+            # session (keeps the TOC/search index current even with no browser; cheap when idle via
+            # jd.PCACHE, and must keep retrying a failed capture). TRIAGE tier (planner → closer → courier
+            # → grouper → distiller, jd.run_triage) parses UNCACHED and only matters while a browser's
+            # looking, so it's gated on a real change (new turn / postal msg / browser-just-connected).
+            tiers = []
             if _tmux_sessions():
-                jd.run_once()
+                tiers.append(threading.Thread(target=_run_tier, args=(jd.run_once,), name="index"))
             sig = _producer_sig(browser)
             if browser and sig != _last_producer_sig[0]:
                 _last_producer_sig[0] = sig
-                jd.run_plan()
-                if jd.CLOSER_ON:                       # HYBRID completion: the turn-end closer backstop
-                    jd.run_close()                     # (toggleable for A/B — see judge.md; --ab-close to measure)
-                jd.run_courier()
-                if jd.GROUPER_ON:                      # reorganize the board: nest related open tops into trees
-                    jd.run_group()                     # (event-gated per session; toggle with ROMP_GROUPER=0)
+                tiers.append(threading.Thread(target=_run_tier, args=(jd.run_triage,), name="triage"))
+            for t in tiers:
+                t.start()
+            for t in tiers:                            # barrier: both tiers finish before the next wake
+                t.join()
         except Exception:
             sys.stderr.write("producer: %s\n" % traceback.format_exc())
         # Event-driven: wake the instant a hook pokes /tick (turn ended / prompt landed / postal msg)

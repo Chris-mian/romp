@@ -1837,6 +1837,27 @@ class Distiller(unittest.TestCase):
             self.assertIn(phrase, jd.DISTILL_SYS, phrase)
 
 
+class RunTriage(unittest.TestCase):
+    """run_triage is the TRIAGE-tier sequence as one unit (so the kernel can run it parallel to the
+    always-on index tier): plan → close → courier → group → distill, in that order."""
+
+    def test_runs_the_sequence_in_order(self):
+        calls = []
+        saved = (jd.run_plan, jd.run_close, jd.run_courier, jd.run_group, jd.run_distill)
+        jd.run_plan = lambda **k: (calls.append("plan"), 3)[1]
+        jd.run_close = lambda **k: calls.append("close")
+        jd.run_courier = lambda **k: calls.append("courier")
+        jd.run_group = lambda **k: calls.append("group")
+        jd.run_distill = lambda **k: calls.append("distill")
+        try:
+            placed = jd.run_triage(now=NOW)
+        finally:
+            (jd.run_plan, jd.run_close, jd.run_courier, jd.run_group, jd.run_distill) = saved
+        self.assertEqual(placed, 3, "returns the planner's placement count")
+        self.assertEqual(calls, ["plan", "close", "courier", "group", "distill"],
+                         "plan → close → courier → group → distill (closer/grouper/distiller on by default)")
+
+
 class JudgeUsageLog(unittest.TestCase):
     """Per-call token/cost logging (judge_ui 2026-06-17): _judge_run unwraps claude -p's JSON envelope to
     .result and appends one usage line to USAGE; fully defensive — an envelope without a result falls back
