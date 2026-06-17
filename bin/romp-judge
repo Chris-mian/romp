@@ -49,7 +49,10 @@ WINDOW      = 48 * 3600                  # only caption transcripts touched in t
 BUDGET      = 60                         # max captions written per pass
 FAIRNESS    = 10                         # max captions per session per pass (so one busy session can't starve the rest)
 ARCH_BUDGET = 30                         # max session archives (re)built per pass
-PLAN_SESSIONS = 12                       # max sessions the planner advances per pass
+PLAN_SESSIONS = 40                       # max sessions the planner/sweep advance per pass — raised now
+                                         # that parsed_session caches the parse (an unchanged session
+                                         # costs ~0), so a live session is never starved past the cap
+                                         # (the goal-less-ledger bug: a working session sat at index 12)
 PLAN_FAIRNESS = 8                        # max segments planned per session per pass
 SWEEP_FAIRNESS = 8                       # max turn-end completion sweeps per session per pass (backfill spread)
 CONCURRENCY = 6                          # concurrent claude -p calls
@@ -242,6 +245,31 @@ def _fileset_key(files):
     return out
 
 
+_PARSE_CACHE = {}          # fsid -> (fileset_key, parsed_session)
+
+
+def parsed_session(fsid, files, now):
+    """ONE event-model parse per (transcript, mtime+size), reused across the captioner, planner, sweep,
+    and courier — which all re-parsed the SAME leaf every pass (up to 4× per change, and once per pass
+    even when nothing changed, which is what forced the PLAN_SESSIONS cap). In-memory: the kernel runs
+    every judge in-process, so the cache lives across a producer pass. An unchanged transcript now costs
+    0 parses; a changed one costs 1. Falls through to a fresh parse if the files can't be stat'd."""
+    try:
+        key = _fileset_key(files)
+    except OSError:
+        key = None
+    hit = _PARSE_CACHE.get(fsid)
+    if key is not None and hit and hit[0] == key:
+        return hit[1]
+    session = em.parse_session(files[0], rompuuid=fsid, candidate_files=list(files),
+                               postal_log=str(MESSAGES), now=now)
+    if key is not None:
+        if len(_PARSE_CACHE) > 256:        # bounded by fleet size; a wholesale clear on overflow is fine
+            _PARSE_CACHE.clear()
+        _PARSE_CACHE[fsid] = (key, session)
+    return session
+
+
 def tasks_for(fsid, leaf, files, now):
     """The transcript's ready caption tasks [{text, writes:[{id,grain,t}]}], memoized on disk
     by the file set's (mtime, size) — repeated passes don't re-parse an unchanged transcript
@@ -257,8 +285,7 @@ def tasks_for(fsid, leaf, files, now):
             return o["tasks"]
     except Exception:
         pass
-    session = em.parse_session(leaf, rompuuid=fsid, candidate_files=files,
-                               postal_log=str(MESSAGES), now=now)
+    session = parsed_session(fsid, files, now)
     tasks = [{"text": _unit_text(t["atoms"]), "writes": t["writes"]}
              for t in _ready_tasks(session)]
     try:
@@ -799,8 +826,7 @@ def plan_segments(session):
 def _plan_session(fsid, path, now):
     """Advance ONE session's goal tree: place its un-placed segments oldest-first (each sees the
     prior tree's open menu), then roll up status gated by settled. Returns placements made."""
-    session = em.parse_session(path, rompuuid=fsid, candidate_files=[path],
-                               postal_log=str(MESSAGES), now=now)
+    session = parsed_session(fsid, [path], now)
     store = load_goals(fsid)
     undone = [s for s in plan_segments(session) if s[0] not in store["placements"]][:PLAN_FAIRNESS]
     placed = 0
@@ -959,8 +985,7 @@ def _sweep_session(fsid, path, now, cap=SWEEP_FAIRNESS):
     """Negative turn-end backstop for ONE session: for each end-known, not-yet-swept turn (oldest
     first, capped per pass), complete the open top-goals it touched that are no longer outstanding.
     Idempotent per turn id. Returns the node ids newly completed."""
-    session = em.parse_session(path, rompuuid=fsid, candidate_files=[path],
-                               postal_log=str(MESSAGES), now=now)
+    session = parsed_session(fsid, [path], now)
     store = load_goals(fsid)
     swept = set(store.get("sweptTurns", []))
     turns = session["turns"]
@@ -1007,8 +1032,7 @@ def _ab_sweep_session(fsid, path, now):
     late completion isn't missed), OLDEST-FIRST and sequential — like the live forward sweep, so each
     goal is credited to the earliest turn that finished it (clean sample attribution; a completed top
     drops from later menus, no double-counting). Returns (a, b, new_goal_texts, samples)."""
-    session = em.parse_session(path, rompuuid=fsid, candidate_files=[path],
-                               postal_log=str(MESSAGES), now=now)
+    session = parsed_session(fsid, [path], now)
     store = load_goals(fsid)
     closed = _session_closed(session)
     rollup_status(store, closed)                        # (a) reflects the current positive-only marks
