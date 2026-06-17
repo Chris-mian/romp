@@ -332,7 +332,7 @@ test("judging band: with Debug mode on, data.judging renders a compact, labelled
     { judge: "closer", sid: "S1", t: now - 30, kind: "close", text: "shipped it" },
   ] };
   assert.doesNotThrow(() => panel.draw(), "draw() must not throw with a judging band");
-  for (const j of ["captioner", "archiver", "planner", "grouper", "closer", "courier"])
+  for (const j of ["captioner", "archiver", "planner", "grouper", "closer", "distiller", "courier"])
     assert.ok(findText(panel.svg, j), `judge row '${j}' must be labelled in the gutter`);
   assert.ok(findText(panel.svg, "judges"), "the band carries a gutter heading");
   const cap = findAll(panel.svg, (n) => n.getAttribute && n.getAttribute("data-judge") === "captioner");

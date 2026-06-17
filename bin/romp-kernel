@@ -2027,6 +2027,9 @@ def _derive_judging(sid, caps, goals, t0, out):
         elif n.get("blocked") and n.get("blockWhy") and mt >= t0:
             out.append({"judge": "planner", "sid": sid, "t": mt, "kind": "block",
                         "text": n.get("blockWhy") or text})
+        if n.get("distilledMt") and n["distilledMt"] >= t0:   # distiller — key takeaway on a completed top goal
+            out.append({"judge": "distiller", "sid": sid, "t": n["distilledMt"], "kind": "distill",
+                        "text": n.get("summary") or text})
     try:                                                      # archiver — the headline/abstract refresh
         arch = json.loads((jd.STATE / "archive" / (sid + ".json")).read_text(errors="replace"))
         if arch.get("t") and arch["t"] >= t0:

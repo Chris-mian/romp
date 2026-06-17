@@ -88,6 +88,16 @@ class DeriveJudging(unittest.TestCase):
     def test_node_without_t_is_skipped(self):
         self.assertEqual(marks({}, {"bad": {"id": "bad", "parentId": None, "text": "no t"}}), [])
 
+    def test_distiller_keyed_off_distilledMt_with_the_summary(self):
+        nodes = {"g1": {"id": "g1", "parentId": None, "t": NOW - 300, "text": "Top goal",
+                        "nodeComplete": True, "doneWhy": "done", "mt": NOW - 80,
+                        "distilledMt": NOW - 70, "summary": "The key takeaway."}}
+        dj = [m for m in marks({}, nodes) if m["judge"] == "distiller"]
+        self.assertEqual(len(dj), 1)
+        self.assertEqual(dj[0]["kind"], "distill")
+        self.assertEqual(dj[0]["t"], NOW - 70)
+        self.assertEqual(dj[0]["text"], "The key takeaway.", "the distiller mark carries the goal's summary")
+
 
 if __name__ == "__main__":
     unittest.main()
