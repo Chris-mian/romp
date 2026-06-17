@@ -50,6 +50,7 @@ interface AskTreeNode {
   whoSid: string; whoColor: { bg: string; fg: string } | null;   // agent → colored session link
   whoWorking?: boolean;                                          // that agent is currently WORKING → yellow dot before its name
   status: "done" | "question" | "open"; t: number; last: number;
+  mt?: number;                                                   // last-modified (done/block segment) → blocked/done nodes deep-link to where they RESOLVED, not where they were minted
   why?: string; blockWhy?: string; doneWhy?: string;             // planner's one-sentence rationales — revealed on hover in the modal
   derived?: boolean;                                             // done by roll-up/roll-down (kernel), not explicit → DIMMED ✓ disc
   trgb?: [number, number, number];                               // last-activity recency tint (timestamp)
@@ -886,16 +887,21 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
   meta.textContent = node.status === "question" ? "needs you" : "(" + relAge(hostNow - node.last) + ")";
   if (node.status !== "question" && node.trgb) meta.style.color = "rgb(" + node.trgb.join(",") + ")";   // Hawaii recency tint
   line.appendChild(meta);
-  // Whole-line click NAVIGATES to THIS node's own creation point in the chat — showOnTimeline is
-  // time-based (it scrolls to the nearest turn to `t`), so each node sends ITS OWN time, not the
-  // card's top turn. (Before: ask nodes sent it.t → every sub-item jumped to the top-level message
-  // instead of where that step happened — the user 2026-06-16.) navSid is the node's session
+  // Whole-line click NAVIGATES into the chat — showOnTimeline is time-based (scrolls to the nearest
+  // turn to the given time), so each node sends ITS OWN time, not the card's top turn. anchor:"work"
+  // lands on the ASSISTANT turn, never the user prompt (the user 2026-06-16: "for blocked and
+  // completed things jump to places in the chat that are NOT the user's message"). A blocked/done
+  // node sends node.mt — the segment where the planner applied the block/done op, i.e. where the work
+  // actually got blocked or finished — so the click lands on THAT assistant action, not where the node
+  // was first minted. An open node sends node.t (its own start). navSid is the node's session
   // (a handoff node lives in the recipient's transcript).
   if (!repeat) {
     line.classList.add("nav");
     const navId = node.kind === "handoff" ? node.id : it.turnId;
     const navSid = node.whoSid || (node.kind === "handoff" ? node.id.split(":")[0] : it.sid);
-    line.onclick = (ev) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: navId, sid: navSid, t: node.t }); };
+    const resolved = node.status === "done" || node.status === "question";   // done / blocked → jump to where it RESOLVED
+    const navT = (resolved && node.mt) ? node.mt : node.t;
+    line.onclick = (ev) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: navId, sid: navSid, t: navT, anchor: "work" }); };
   }
   // Hovering a node lights ITS OWN work-bars on the timeline — the union of this node's segment trail
   // and everything under it — via the SAME showAskPath the card uses, just scoped to this node (the

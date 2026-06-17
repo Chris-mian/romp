@@ -321,6 +321,31 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(nodes["a blocked step"]["blockWhy"], "waiting on the user's choice")
         self.assertEqual(nodes["a finished step"]["doneWhy"], "shipped the fix")
 
+    def test_feed_tree_node_carries_mt_for_deeplink(self):
+        # Every tree node carries mt = last-modified (the user 2026-06-16): a blocked/done node
+        # deep-links to WHERE IT RESOLVED (the segment the planner applied the block/done op), not
+        # where it was minted, so the feed-card click lands on that assistant action. Never-modified
+        # nodes (open work, derived done) fall back to t.
+        top, blk, dn, op = (SID + ":top", SID + ":blk", SID + ":dn", SID + ":op")
+        def gn(nid, text, parent, **kw):
+            d = {"id": nid, "text": text, "parentId": parent, "nodeComplete": False,
+                 "blocked": False, "cleared": False, "trail": [], "t": T0}
+            d.update(kw); return d
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+            "rompUuid": SID, "seq": 4, "lastNode": None,
+            "nodes": {
+                top: gn(top, "the goal", None, mt=T0),
+                blk: gn(blk, "a blocked step", top, blocked=True, mt=T0 + 30),    # resolved 30s after mint
+                dn:  gn(dn, "a finished step", top, nodeComplete=True, mt=T0 + 60),
+                op:  gn(op, "an open step", top),                                 # never modified → no mt key
+            },
+            "placements": {}, "status": {top: "blocked"}}))
+        card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == top)
+        nodes = {n["text"]: n for n in card["tree"]}
+        self.assertEqual(nodes["a blocked step"]["mt"], T0 + 30, "blocked node deep-links to its block segment")
+        self.assertEqual(nodes["a finished step"]["mt"], T0 + 60, "done node deep-links to its done segment")
+        self.assertEqual(nodes["an open step"]["mt"], T0, "a never-modified node falls back to t")
+
     def test_ledger_tree_orders_by_recency_and_expands_to_freshest(self):
         # The ledger TOC mirrors the feed (the user 2026-06-16): top goals sort by most-recently-modified
         # (mt) first, the single freshest node is flagged `recent`, and that node + its ancestors carry

@@ -11,9 +11,20 @@ import * as path from "node:path";
 const FEED = fs.readFileSync(path.resolve(process.cwd(), "src", "webview", "feed.ts"), "utf8");
 
 test("a tree-node click navigates to the NODE's own time, not the card's top turn", () => {
-  // the tree-node onclick must send node.t (per-node), and must NOT fall back to it.t
-  assert.match(FEED, /showOnTimeline".*sid: navSid, t: node\.t/);
+  // the tree-node onclick must send a per-node time (navT), and must NOT fall back to it.t
+  assert.match(FEED, /showOnTimeline".*sid: navSid, t: navT/);
   assert.doesNotMatch(FEED, /const navT = node\.kind === "handoff" \? node\.t : it\.t/, "the old it.t nav fallback must be gone");
+});
+
+test("a blocked/done node deep-links to where it RESOLVED (node.mt), landing on the assistant action", () => {
+  // the user 2026-06-16: "for blocked and completed things jump to places in the chat that are NOT
+  // the user's message." A resolved (done/blocked) node sends node.mt (the block/done segment); an
+  // open node sends node.t (its own start); the click sends anchor:"work" so the chat lands on the
+  // ASSISTANT turn, never anchor:"prompt" (which would land on the user's message).
+  assert.match(FEED, /const resolved = node\.status === "done" \|\| node\.status === "question"/);
+  assert.match(FEED, /const navT = \(resolved && node\.mt\) \? node\.mt : node\.t/);
+  assert.match(FEED, /line\.onclick = .*showOnTimeline".*t: navT, anchor: "work"/, "the tree-line click lands on the assistant action");
+  assert.doesNotMatch(FEED, /line\.onclick = .*showOnTimeline".*anchor: "prompt"/, "a tree-line click must NOT land on the user's message");
 });
 
 test("a tree-node hover lights the NODE's own segments via showAskPath(node.id)", () => {

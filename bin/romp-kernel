@@ -1500,6 +1500,10 @@ def build_feed(now, tmux=None):
             out.append({"id": nid, "kind": "ask", "text": nd["text"], "who": name, "whoSid": fsid,
                         "whoColor": color, "whoWorking": who_working, "status": st, "derived": derived,
                         "t": nd["t"], "last": nd["t"], "trgb": list(cm.age_rgb(now - nd["t"])),
+                        # mt = last-modified (the segment the planner applied done / block) → a blocked or
+                        # done node deep-links to WHERE IT RESOLVED, not where it was minted. Falls back to
+                        # t for never-modified nodes (open work, derived done). (the user 2026-06-16.)
+                        "mt": nd.get("mt", nd["t"]),
                         # the planner's one-sentence rationales — the modal reveals these (why a node
                         # exists / was blocked / was completed). (the user 2026-06-16.)
                         "why": nd.get("why"), "blockWhy": nd.get("blockWhy"), "doneWhy": nd.get("doneWhy"),
