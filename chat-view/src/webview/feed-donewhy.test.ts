@@ -22,7 +22,8 @@ test("the card builds a fask-donewhy element next to fask-blockwhy, styled the s
   assert.match(FEED, /a\._donewhy = doneReason;/);
 });
 
-test("updateAskCard fills + toggles the doneWhy from it.doneWhy", () => {
+test("updateAskCard fills + toggles the doneWhy from it.doneWhy (gated by the Explanations pref)", () => {
   assert.match(FEED, /a\._donewhy\.textContent = it\.doneWhy \|\| "";/);
-  assert.match(FEED, /a\._donewhy\.style\.display = it\.doneWhy \? "" : "none";/);
+  // shown only when there's a doneWhy AND the "Explanations" card pref is on (the user 2026-06-17)
+  assert.match(FEED, /a\._donewhy\.style\.display = \(it\.doneWhy && showWhy\) \? "" : "none";/);
 });

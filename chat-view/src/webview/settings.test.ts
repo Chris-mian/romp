@@ -15,6 +15,11 @@ test("loadSettings returns defaults when nothing is stored", () => {
   assert.deepEqual(loadSettings(), DEFAULT_SETTINGS);
 });
 
+test("the card-display prefs (explanations / sub-goals) default ON (the user 2026-06-17)", () => {
+  assert.equal(DEFAULT_SETTINGS.explanations, true);
+  assert.equal(DEFAULT_SETTINGS.subgoals, true);
+});
+
 test("saveSettings persists a patch and merges over defaults", () => {
   delete store["romp:settings"];
   const next = saveSettings({ compact: true });

@@ -132,6 +132,15 @@ const vscodeApi =
   typeof (window as any).acquireVsCodeApi === "function" ? (window as any).acquireVsCodeApi() : undefined;
 
 let items: FeedItem[] = [];
+// Card-display prefs read straight from the shared 'romp:settings' (the kernel's ⛭ gear writes it; same
+// document as this feed bundle). Default ON. These gate the CARDS only — the modal always shows everything
+// (the user 2026-06-17). `!== false` so a missing key defaults to shown.
+function feedPrefs(): { explanations: boolean; subgoals: boolean } {
+  try {
+    const s = JSON.parse(localStorage.getItem("romp:settings") || "{}");
+    return { explanations: s.explanations !== false, subgoals: s.subgoals !== false };
+  } catch { return { explanations: true, subgoals: true }; }
+}
 // names of sessions currently WORKING → a working dot before that name everywhere
 // it renders (card titles, modal title, group name). Pushed in each feed message.
 let workingSet = new Set<string>();
@@ -563,12 +572,13 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   }
   // soft-block reason: the planner's one-sentence "why blocked", shown under the title on a needs-input
   // card (distinct from the live permission/api badges above — those are live events, this is the verdict).
+  const showWhy = feedPrefs().explanations;   // the "Explanations" toggle gates the why line on CARDS (modal unaffected)
   a._blockwhy.textContent = it.blockWhy || "";
-  a._blockwhy.style.display = it.blockWhy ? "" : "none";
+  a._blockwhy.style.display = (it.blockWhy && showWhy) ? "" : "none";
   // DONE rationale: the planner's one-sentence "why done", shown under the title on a COMPLETED card
   // (the experiment — mirror of blockWhy on the done page; the user 2026-06-17).
   a._donewhy.textContent = it.doneWhy || "";
-  a._donewhy.style.display = it.doneWhy ? "" : "none";
+  a._donewhy.style.display = (it.doneWhy && showWhy) ? "" : "none";
   // API error → a red "API error" badge + a Retry button that pastes "retry" into the session to resume
   // the stalled turn (the user 2026-06-16). The card already files under BLOCKED (askColumn → needsInput).
   a._apiBadge.style.display = isApiErr ? "" : "none";
@@ -615,7 +625,8 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   cl.innerHTML = "";
   const tree = it.tree || [];
   const root = tree.find((n) => n.id === it.itemId) || tree[0];
-  const subs = root
+  // the "Sub goals" toggle gates the inline checklist on CARDS (the modal always shows the full tree)
+  const subs = (root && feedPrefs().subgoals)
     ? root.children.map((id) => tree.find((n) => n.id === id)).filter((n): n is AskTreeNode => !!n && n.kind !== "handoff")
     : [];
   for (const s of subs.slice(0, 8)) {
@@ -1509,6 +1520,12 @@ window.addEventListener("click", (e) => {
   const t = e.target;
   setTimeout(() => { if (!feedWantsKeys(t)) returnFocusToChat(); }, 0);
 });
+
+// Re-render when the card-display prefs change: a 'storage' event fires for a change made in ANOTHER
+// same-origin pane/tab, and the ⛭ gear (same document) dispatches a "romp:settings" event after it writes
+// (a same-doc write fires no storage event). Either way the cards re-gate to the new Explanations/Sub-goals.
+window.addEventListener("storage", (e) => { if (e.key === "romp:settings") render(); });
+window.addEventListener("romp:settings", () => render());
 
 window.addEventListener("message", (e: MessageEvent) => {
   const m = e.data;

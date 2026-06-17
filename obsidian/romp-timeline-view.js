@@ -299,21 +299,10 @@ class TimelinePanel {
     this.controls = this.wrap.createDiv({ cls: 'romp-tl-controls' });
     this.controls.setAttribute('style', 'display:flex;align-items:center;gap:16px;padding:4px 8px;font-size:11px;color:#9aa0a6;user-select:none;');
 
-    // Restart-kernel button — FIRST in the row, so it sits at the far bottom-left of the app (the user
-    // 2026-06-13). A global action EMBEDDED in the timeline panel, not a floating overlay (which kept
-    // overlapping other panes' corner controls). Click → the kernel's same-origin /restart (it relays to
-    // the `romp on` manager), then wait for the fresh kernel and reload onto the new bundle.
-    const restartBtn = this.controls.createEl('button');
-    restartBtn.textContent = '↻';
-    restartBtn.setAttribute('title', 'Restart the romp kernel');
-    restartBtn.setAttribute('style', 'flex:0 0 auto;width:22px;height:22px;display:inline-flex;align-items:center;justify-content:center;border-radius:5px;cursor:pointer;background:#2a2a2a;color:#bbb;border:1px solid #3a3a3a;font:13px/1 system-ui;opacity:0.7;');
-    restartBtn.addEventListener('mouseenter', () => { restartBtn.style.opacity = '1'; restartBtn.style.color = '#fff'; });
-    restartBtn.addEventListener('mouseleave', () => { restartBtn.style.opacity = '0.7'; restartBtn.style.color = '#bbb'; });
-    restartBtn.addEventListener('click', () => this._restartKernel(restartBtn));
-
-    // (Settings gear removed — merged into the feed's top-right ⛭, which now holds BOTH the compact
-    // toggle AND the version info in one modal. The timeline's bottom-left keeps only ↻ + usage bars.
-    // The 'romp:settings' contract still lives in chat-view/src/webview/settings.ts. The user 2026-06-16.)
+    // (The restart-kernel ↻ button moved UP to the feed's top-right, next to the ⛭ settings gear (the
+    // user 2026-06-17) — off the timeline's bottom-left, which now carries only the usage bars + the
+    // right-justified gap/lock toggles. The gear was already there; the ↻ now sits beside it. The
+    // 'romp:settings' contract still lives in chat-view/src/webview/settings.ts.)
 
     // Claude usage bars (the /usage rate-limit %: 5-hour + weekly), LEFT-justified. Hidden until
     // statusline.sh reports usage (Pro/Max only); _updateUsage() fills them each

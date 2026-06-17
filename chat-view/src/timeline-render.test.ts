@@ -204,14 +204,13 @@ test("freeze-on-hover does NOT fire (or snap to now) when the user has panned in
   assert.equal(panel._pinned, false, "un-hover must NOT yank a history-browsing user to now");
 });
 
-// Restart button is EMBEDDED in the timeline controls row (left of the usage bars), not a floating
-// overlay — the user 2026-06-13 (the overlay kept colliding with other panes' corner controls).
-test("the timeline controls embed a kernel-restart button, left of the usage bars", () => {
+// The restart ↻ button MOVED to the feed's top-right next to the ⛭ gear (the user 2026-06-17) — off the
+// timeline's bottom-left. So the timeline controls no longer embed it (the feed gear holds it now).
+test("the timeline controls no longer embed a kernel-restart button (it moved to the feed gear)", () => {
   const panel = new TimelinePanel(makeNode("div"));
   const kids = panel.controls.children;
   const btn = kids.find((c: any) => c.tag === "button" && c.getAttribute("title") === "Restart the romp kernel");
-  assert.ok(btn, "controls row must contain the embedded restart button");
-  assert.ok(kids.indexOf(btn) < kids.indexOf(panel._usageWrap), "restart button must be leftmost (before usage bars)");
+  assert.equal(btn, undefined, "the restart button moved to the feed's top-right, beside the ⛭ gear");
 });
 
 // The settings gear was MERGED into the feed's top-right ⛭ (the user 2026-06-16): one gear now holds the
