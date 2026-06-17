@@ -1618,5 +1618,82 @@ class PendingJudgment(unittest.TestCase):
         self.assertTrue(jd.pending_judgment(SID, path, now), "≥2 tops but groupedSig stale → grouper-pending")
 
 
+class FollowUp(unittest.TestCase):
+    """Follow-up handling (the user 2026-06-17): a "follow up on this card" UI action composes a chat
+    prompt carrying `<!-- romp-goal-id: <id> -->`. The planner reopens that exact goal (the sole exception
+    to the sealed-completed-subtree rule) and FORCES the new work as a step UNDER it; the closer/settled
+    gate re-completes it. No event-model change — the judge parses the marker from the prompt text."""
+
+    def test_seg_followup_extracts_marker(self):
+        gid = SID + ":g3"
+        seg = {"trigger": "u1", "atoms": [{"uuid": "u1", "type": "user", "author": "human",
+               "message": {"content": [{"type": "text", "text": "more please <!-- romp-goal-id: %s -->" % gid}]}}]}
+        self.assertEqual(jd._seg_followup(seg), gid)
+        plain = {"trigger": "u2", "atoms": [{"uuid": "u2", "type": "user", "author": "human",
+                 "message": {"content": [{"type": "text", "text": "no marker here"}]}}]}
+        self.assertIsNone(jd._seg_followup(plain), "no marker → not a follow-up")
+
+    def _setup(self, records, store):
+        td = Path(tempfile.mkdtemp())
+        cdir = td / "launchdir"; cdir.mkdir()
+        proj = td / "projects"
+        pdir = proj / jd.re.sub(r"[/.]", "-", os.path.realpath(str(cdir)))
+        pdir.mkdir(parents=True)
+        (pdir / (SID + ".jsonl")).write_text("\n".join(json.dumps(r) for r in records) + "\n")
+        names = td / "names"; names.mkdir()
+        (names / SID).write_text("testsess\t%s\t#abcdef\n" % str(cdir))
+        self._saved = (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.plan_llm, jd.group_llm)
+        jd.NAMES, jd.PROJECTS, jd.GOALDIR = names, proj, td / "goals"
+        jd._PARSE_CACHE.clear()
+        jd.save_goals(SID, store)
+
+    def tearDown(self):
+        if hasattr(self, "_saved"):
+            (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.plan_llm, jd.group_llm) = self._saved
+            jd._PARSE_CACHE.clear()
+
+    def _completed_top(self, gid, blocked=False):
+        return {"rompUuid": SID, "seq": 1, "status": {gid: "blocked" if blocked else "completed"},
+                "placements": {"s0": gid},
+                "nodes": {gid: {"id": gid, "text": "Ship the release", "parentId": None,
+                                "nodeComplete": not blocked, "blocked": blocked, "cleared": False,
+                                "trail": ["s0"], "t": T0 - 100, "mt": T0 - 100, "doneWhy": "shipped"}}}
+
+    def test_followup_reopens_completed_goal_and_forces_sub_under_it(self):
+        gid = SID + ":g1"
+        records = [uline(T0, "actually also handle the edge case <!-- romp-goal-id: %s -->" % gid, "u1", ps="typed"),
+                   aline(T0 + 10, "handled it", "a1", "u1", stop="end_turn")]
+        self._setup(records, self._completed_top(gid))
+        # the planner describes the work; the parent is forced to the tagged goal regardless of "under"
+        jd.plan_llm = lambda text, menu, human=False: '{"ops":[{"why":"covered the edge case","do":"mint","text":"edge case handled"}]}'
+        jd.run_plan(now=T0 + 5000)
+        st = jd.load_goals(SID)
+        self.assertFalse(st["nodes"][gid]["nodeComplete"], "the tagged goal was reopened")
+        subs = [nd for nd in st["nodes"].values() if nd["parentId"] == gid]
+        self.assertEqual(len(subs), 1, "the follow-up work was filed UNDER the tagged goal (forced), not as a new top")
+        self.assertEqual(subs[0]["text"], "edge case handled", "reuses the planner's description for the step")
+        self.assertEqual(st["status"][gid], "working", "the reopened goal is working again")
+
+    def test_followup_unblocks_a_blocked_goal(self):
+        gid = SID + ":g1"
+        records = [uline(T0, "here's my answer: yes <!-- romp-goal-id: %s -->" % gid, "u1", ps="typed"),
+                   aline(T0 + 10, "proceeding", "a1", "u1", stop="end_turn")]
+        self._setup(records, self._completed_top(gid, blocked=True))
+        jd.plan_llm = lambda text, menu, human=False: '{"ops":[{"why":"answered, moving on","do":"sub","under":1,"text":"resumed after the answer"}]}'
+        jd.run_plan(now=T0 + 5000)
+        st = jd.load_goals(SID)
+        self.assertFalse(st["nodes"][gid]["blocked"], "answering the follow-up unblocked the goal")
+        self.assertEqual(len([nd for nd in st["nodes"].values() if nd["parentId"] == gid]), 1, "work filed under it")
+
+    def test_followup_to_missing_goal_falls_back_to_normal_placement(self):
+        records = [uline(T0, "brand new thing <!-- romp-goal-id: %s:g99 -->" % SID, "u1", ps="typed"),
+                   aline(T0 + 10, "did it", "a1", "u1", stop="end_turn")]
+        self._setup(records, {"rompUuid": SID, "seq": 0, "nodes": {}, "placements": {}, "status": {}})
+        jd.plan_llm = lambda text, menu, human=False: '{"ops":[{"why":"new ask","do":"mint","text":"New thing"}]}'
+        jd.run_plan(now=T0 + 5000)
+        tops = [nd for nd in jd.load_goals(SID)["nodes"].values() if nd["parentId"] is None]
+        self.assertEqual(len(tops), 1, "a stale follow-up id falls back to normal placement (minted a top)")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -202,6 +202,12 @@ def _atom_text(atom):
                     if isinstance(b, dict) and b.get("type") == "text").strip()
 
 
+# A "follow up on this card" UI action composes the chat prompt with a hidden marker carrying the goal's
+# node id, so the planner reopens that exact goal and files the new work UNDER it (the user 2026-06-17).
+FOLLOWUP_RE = re.compile(r"romp-goal-id:\s*([^\s>]+)")              # the tagged target goal-node id
+_FOLLOWUP_MARKER_RE = re.compile(r"<!--\s*romp-goal-id:[^>]*-->")  # the whole marker, stripped from model-facing text
+
+
 def _shape(s, head, tail):
     """Trim only OVERSIZED text, keeping both the opening framing AND the trailing ask (drop the
     middle). A blunt head- or tail-only cut loses one end — and a tail-only cut on a pure-answer
@@ -233,7 +239,7 @@ def _unit_text(atoms):
     user_said, asst_said, tools = [], [], []
     for a in atoms:
         if a["type"] == "user" and a.get("author") is not None:
-            t = _atom_text(a)
+            t = _FOLLOWUP_MARKER_RE.sub("", _atom_text(a)).strip()   # the follow-up marker is plumbing, not user text
             if t:
                 user_said.append(t)
         elif a["type"] == "assistant":
@@ -965,9 +971,10 @@ def _session_closed(session):
 
 
 def plan_segments(session):
-    """Ready segments for the planner (end known), oldest-first: (seg_id, t, unit_text, human).
-    `human` = the segment was opened by a real user prompt (author 'human') — it must be placed,
-    never skipped. Excludes the last segment of an open final turn (still in progress) and empty segments."""
+    """Ready segments for the planner (end known), oldest-first: (seg_id, t, unit_text, human, followup).
+    `human` = opened by a real user prompt (author 'human') — must be placed, never skipped. `followup` =
+    the goal-node id this segment is a tagged follow-up to (reopen + force work under it), or None.
+    Excludes the last segment of an open final turn (still in progress) and empty segments."""
     turns = session["turns"]
     out = []
     for ti, turn in enumerate(turns):
@@ -981,7 +988,7 @@ def plan_segments(session):
                 continue
             text = _unit_text(seg["atoms"])
             if text:
-                out.append((seg["id"], seg["t"], text, _seg_human(seg)))
+                out.append((seg["id"], seg["t"], text, _seg_human(seg), _seg_followup(seg)))
     out.sort(key=lambda x: x[1])
     return out
 
@@ -1012,17 +1019,47 @@ def _coerce_place(menu, text):
     return [{"do": "mint", "text": label, "why": why}]
 
 
+def _reopen(store, gid):
+    """Reopen a completed/blocked goal so a tagged FOLLOW-UP can accrue more work under it: clear
+    nodeComplete + cleared on the node (unsealing its subtree from open_menu) and unblock it and its
+    ancestors. The settled gate re-completes it once the follow-up work is done. This is the ONLY
+    exception to the sealed-completed-subtree rule (the user 2026-06-17)."""
+    nodes = store["nodes"]
+    if gid not in nodes:
+        return
+    nodes[gid]["nodeComplete"] = False
+    nodes[gid]["cleared"] = False
+    x = gid                                            # unblock the node + its ancestor chain
+    while x is not None:
+        nodes[x]["blocked"] = False
+        x = nodes.get(x, {}).get("parentId")
+
+
 def _plan_session(fsid, path, now):
     """Advance ONE session's goal tree: place its un-placed segments oldest-first (each sees the prior
     tree's open menu) and GROUP after every placement (the user 2026-06-17: planner + grouper are both
-    segment-level; the closer is turn-level), then roll up status gated by settled. Returns placements
-    made."""
+    segment-level; the closer is turn-level), then roll up status gated by settled. A tagged FOLLOW-UP
+    segment reopens its target goal and forces the new work UNDER it. Returns placements made."""
     session = parsed_session(fsid, [path], now)
     store = load_goals(fsid)
     undone = [s for s in plan_segments(session) if s[0] not in store["placements"]][:PLAN_FAIRNESS]
     placed = 0
-    for seg_id, seg_t, text, human in undone:
+    for seg_id, seg_t, text, human, followup in undone:
         menu = open_menu(store)
+        if followup and followup in store["nodes"]:   # tagged follow-up: reopen the target, force work UNDER it
+            _reopen(store, followup)
+            menu = open_menu(store)                    # the reopened goal is now back in the menu
+            gi = next((i for i, nd in enumerate(menu, 1) if nd["id"] == followup), None)
+            if gi:
+                ops = _parse_plan(plan_llm(text, _menu_text(store, menu), human=True), len(menu)) or []
+                desc = next((o for o in ops if o.get("text")), None)   # reuse the planner's description, force the parent
+                step = (desc or {}).get("text") or _seg_label(text)
+                why = (desc or {}).get("why") or "followed up on this goal"
+                apply_plan(store, seg_id, seg_t, [{"do": "sub", "under": gi, "text": step, "why": why}], menu)
+                placed += 1
+                _group_store(store, fsid, now)
+                save_goals(fsid, store)
+                continue                               # forced placement done; skip the free-placement path
         ops = _parse_plan(plan_llm(text, _menu_text(store, menu), human=human), len(menu))
         if not ops:
             _log_judge_error("planner", fsid, "parse")
@@ -1490,7 +1527,7 @@ def pending_judgment(fsid, path, now=None):
     session = parsed_session(fsid, [path], now)
     store = load_goals(fsid)
     placements = store.get("placements", {})
-    if any(seg_id not in placements for seg_id, _t, _text, _human in plan_segments(session)):
+    if any(seg_id not in placements for seg_id, _t, _text, _human, _fu in plan_segments(session)):
         return True                                    # planner-pending
     turns = session["turns"]
     closed = _closed_turns(store)
@@ -1705,6 +1742,19 @@ def _seg_human(seg):
     atoms = seg.get("atoms") or []
     trig = next((a for a in atoms if a.get("uuid") == seg.get("trigger")), None) or (atoms[0] if atoms else None)
     return bool(trig and trig.get("author") == "human")
+
+
+def _seg_followup(seg):
+    """The goal-node id a tagged FOLLOW-UP targets, or None. A "follow up on this card" UI action composes
+    the chat prompt with `<!-- romp-goal-id: <id> -->`; this reads it off the segment's trigger atom so the
+    planner reopens that exact goal and files the new work UNDER it. Judge-side (parses the prompt text),
+    so no event-model change. Mirrors _seg_peer's trigger lookup."""
+    atoms = seg.get("atoms") or []
+    trig = next((a for a in atoms if a.get("uuid") == seg.get("trigger")), None) or (atoms[0] if atoms else None)
+    if not trig:
+        return None
+    m = FOLLOWUP_RE.search(_atom_text(trig))
+    return m.group(1) if m else None
 
 
 def _parse_courier(raw, menu_len):
