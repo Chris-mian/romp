@@ -258,6 +258,7 @@ class TimelinePanel {
     this.OSTORE = 'romp-tl-offsec';
     this.CSTORE = 'romp-tl-collapse';
     this.LSTORE = 'romp-tl-locknow';
+    this.JSTORE = 'romp-tl-judging';
     this._winSec = null; this._offSec = 0; this._drawRAF = null;
     // broken-axis: collapse long idle gaps (no work on any lane — e.g. overnight) into a thin squiggle
     // break, so the active periods get the width. ON by default; the checkbox below the axis toggles it.
@@ -266,9 +267,13 @@ class TimelinePanel {
     // leave it, and a focus that's off-screen ZOOMS OUT (window widens leftward, right edge stays at
     // now, target lands ~mid-window) instead of panning away. OFF by default; checkbox far right.
     this._lockNow = false;
+    // Judging band: a second timeline of the summarizer judges under the lanes. OFF by default — the
+    // user opts in via the 'judges' checkbox; the choice persists (JSTORE) so it's remembered once set.
+    this._showJudging = false;
     this._compactClicked = {};   // sid → click ts: show the compacting cue OPTIMISTICALLY until the real state catches up
     try { if (localStorage.getItem(this.CSTORE) === '0') this._collapseGaps = false; } catch (e) {}
     try { if (localStorage.getItem(this.LSTORE) === '1') this._lockNow = true; } catch (e) {}
+    try { if (localStorage.getItem(this.JSTORE) === '1') this._showJudging = true; } catch (e) {}
     try { const v = localStorage.getItem(this.WSTORE); if (v != null && /^\d+(\.\d+)?$/.test(v)) { this._winSec = +v; this.fitted = true; } } catch (e) {}
     try { const v = localStorage.getItem(this.OSTORE); if (v != null && /^\d+(\.\d+)?$/.test(v)) this._offSec = +v; } catch (e) {}
     if (this._lockNow) this._offSec = 0;   // a restored mid-pan offset never overrides the lock
@@ -350,6 +355,21 @@ class TimelinePanel {
     this._collapseBox.addEventListener('change', () => {
       this._collapseGaps = this._collapseBox.checked;
       try { localStorage.setItem(this.CSTORE, this._collapseGaps ? '1' : '0'); } catch (e) {}
+      this.draw();
+    });
+
+    // 'judges' toggle: show the judging band (the summarizer judges, under the lanes). OFF by default;
+    // the choice persists, so once turned on it stays on across reloads.
+    const jbWrap = this.controls.createEl('label');
+    jbWrap.setAttribute('style', 'display:inline-flex;align-items:center;gap:5px;cursor:pointer;');
+    jbWrap.title = 'show a second timeline of the summarizer judges (captioner / planner / …) under the lanes';
+    this._judgeBox = jbWrap.createEl('input');
+    this._judgeBox.type = 'checkbox';
+    this._judgeBox.checked = this._showJudging;
+    jbWrap.createSpan({ text: 'judges' });
+    this._judgeBox.addEventListener('change', () => {
+      this._showJudging = this._judgeBox.checked;
+      try { localStorage.setItem(this.JSTORE, this._showJudging ? '1' : '0'); } catch (e) {}
       this.draw();
     });
 
@@ -1516,7 +1536,7 @@ class TimelinePanel {
     // judging band height: a compact judge row per JUDGES entry, shown only when there's judging
     // activity inside the current window. Folded into H so the shared axis (axisY = H - M.bottom)
     // and its gridlines span BOTH bands, with the time labels at the very bottom.
-    const jShow = !!(data.judging && data.judging.length && data.judging.some((e) => inWin(e.t)));
+    const jShow = !!(this._showJudging && data.judging && data.judging.length && data.judging.some((e) => inWin(e.t)));
     const bandH = jShow ? (JB_TOPGAP + JUDGES.length * JROW + JB_BOTGAP) : 0;
     const W = Math.max(640, this.wrap.clientWidth || 900);
     const plotW = W - M.left - M.right, H = M.top + Math.max(1, vis.length) * LANE_GAP + bandH + M.bottom;
@@ -1949,6 +1969,8 @@ class TimelinePanel {
       const hd = el('text', { x: PADL, y: sepY - 4, fill: 'var(--text-faint)', 'font-size': 9, 'font-weight': 700, 'letter-spacing': '.06em' }); hd.textContent = 'JUDGING'; svg.appendChild(hd);
       JUDGES.forEach((J, ji) => {
         const y = jY(ji);
+        // baseline rail through the row, matching the session lanes above (marks sit centered on it)
+        svg.appendChild(el('line', { x1: M.left, y1: y, x2: x(t1), y2: y, stroke: '#ffffff14', 'stroke-width': 2, 'stroke-linecap': 'round', 'pointer-events': 'none' }));
         svg.appendChild(el('circle', { cx: PADL + 3, cy: y, r: 2.5, fill: TIER_COL[J.tier], opacity: 0.9 }));
         const lbl = el('text', { x: PADL + 10, y: y + 3, fill: 'var(--text-muted)', 'font-size': 10 }); lbl.textContent = J.key; svg.appendChild(lbl);
         // merge this judge's in-window marks into same-session blocks (a stretch of attention)

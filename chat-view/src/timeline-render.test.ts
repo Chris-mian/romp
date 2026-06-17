@@ -314,8 +314,9 @@ function findAll(node: any, pred: (n: any) => boolean, acc: any[] = []): any[] {
   for (const c of node.children || []) findAll(c, pred, acc);
   return acc;
 }
-test("judging band: data.judging renders a compact, labelled row per judge under the lanes", () => {
+test("judging band: when opted in, data.judging renders a compact, labelled row per judge", () => {
   const panel = new TimelinePanel(makeNode("div"));
+  panel._showJudging = true;                                  // the 'judges' setting is on
   const base: any = synthData();
   const now = base.now;
   panel.data = { ...base, judging: [
@@ -334,13 +335,22 @@ test("judging band: data.judging renders a compact, labelled row per judge under
   assert.equal(cap[0].getAttribute("fill"), "#7aa2f7", "a judge mark is coloured by the session it judged");
   assert.equal(findAll(panel.svg, (n) => n.getAttribute && n.getAttribute("data-judge") === "courier").length, 1);
 });
-test("judging band grows the SVG under the lanes; absent when there is no judging data", () => {
-  const withJ = new TimelinePanel(makeNode("div"));
-  withJ.data = { ...synthData(), judging: [{ judge: "planner", sid: "S1", t: synthData().now - 50, kind: "mint", text: "g" }] };
-  withJ.draw();
-  const noJ = new TimelinePanel(makeNode("div"));
-  noJ.data = synthData();
-  noJ.draw();
-  assert.ok(Number(withJ.svg.getAttribute("height")) > Number(noJ.svg.getAttribute("height")),
-    "the band adds height below the lanes");
+test("judging band is OFF by default — present data is not drawn until the setting is on, which grows the SVG", () => {
+  const panel = new TimelinePanel(makeNode("div"));
+  const base: any = synthData();
+  panel.data = { ...base, judging: [{ judge: "planner", sid: "S1", t: base.now - 50, kind: "mint", text: "g" }] };
+  panel.draw();                                               // _showJudging defaults false
+  assert.ok(!findText(panel.svg, "JUDGING"), "no band heading while the setting is off");
+  assert.equal(findAll(panel.svg, (n) => n.getAttribute && n.getAttribute("data-judge")).length, 0, "no judge marks drawn while off");
+  const hOff = Number(panel.svg.getAttribute("height"));
+  panel._showJudging = true;
+  panel.draw();
+  assert.ok(Number(panel.svg.getAttribute("height")) > hOff, "opting in adds the band's height below the lanes");
+});
+test("judging setting is remembered: a saved '1' restores _showJudging on construct; default is OFF", () => {
+  const orig = g.localStorage.getItem;
+  g.localStorage.getItem = (k: string) => (k === "romp-tl-judging" ? "1" : null);
+  try { assert.equal(new TimelinePanel(makeNode("div"))._showJudging, true, "a saved '1' opts the band in on next load"); }
+  finally { g.localStorage.getItem = orig; }
+  assert.equal(new TimelinePanel(makeNode("div"))._showJudging, false, "with nothing saved, the band stays OFF");
 });
