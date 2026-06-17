@@ -842,6 +842,26 @@ class BlockCompletionCorrectness(unittest.TestCase):
                        "avoid a conflict", "only the human blocks"):
             self.assertIn(phrase, jd.PLAN_SYS, phrase)
 
+    def test_block_prompt_surfaces_user_question_answers(self):
+        # the user 2026-06-17: a goal whose deliverable is the ANSWER to the user's question is surfaced
+        # as a needs-you (block) card with the answer as the reason, instead of a silent done — reusing
+        # mint+block+blockWhy + the inline-reason render. Source-level guard against a revert.
+        for phrase in ("ANSWERED THE USER", "INSTEAD of doing it", "concise summary of the answer"):
+            self.assertIn(phrase, jd.PLAN_SYS, phrase)
+        self.assertIn("if the ask was a QUESTION", jd.PLAN_SYS, "the done op points at the block exception")
+
+    def test_block_answer_goal_carries_the_answer_as_blockwhy(self):
+        # mechanics: mint an answer-goal + block it via ref → it lands blocked with the answer as blockWhy
+        # (the inline reason the feed shows), exactly like done would carry a doneWhy. No new op needed.
+        s = _store()
+        jd.apply_plan(s, "qa", T0, [{"do": "mint", "why": "user asked how streaming works", "text": "Explained streaming tiers"},
+                                    {"do": "block", "why": "Tier-1 delivers instantly; tier-2 batches every 20s", "ref": 1}], [])
+        nid = s["placements"]["qa"]
+        self.assertTrue(s["nodes"][nid]["blocked"], "the answer-goal is blocked (needs-you), not done")
+        self.assertFalse(s["nodes"][nid].get("nodeComplete"), "and NOT silently completed")
+        self.assertEqual(s["nodes"][nid]["blockWhy"], "Tier-1 delivers instantly; tier-2 batches every 20s",
+                         "the concise answer rides in blockWhy → shown inline on the needs-you card")
+
     def test_surgical_unblock_leaves_sibling_block(self):
         # #2: two blocked sibling sub-goals; non-block work on ONE branch clears only that branch.
         s = _store()

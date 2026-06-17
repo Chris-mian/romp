@@ -481,18 +481,25 @@ PLAN_SYS = (
     '- {\"why\",\"do\":\"amend\",\"goal\":<n>,\"text\":\"<updated goal text>\"} — the DEFINITION of open '
     "goal #n itself changed.\n"
     '- {\"why\",\"do\":\"done\",\"goal\":<n>} — open goal/step #n is now FINISHED. Be assertive: if the '
-    "segment discharges a whole ask, done the TOP-LEVEL goal. To complete a node you create earlier in "
-    'THIS reply, use \"ref\":<k> (k = the 1-based position of that mint/sub among the ops in this reply) '
-    'instead of \"goal\".\n'
-    '- {\"why\",\"do\":\"block\",\"goal\":<n>} — goal/step #n is now WAITING ON THE USER: its next step '
-    "needs a decision, approval, or answer FROM THE USER (the human) before it can proceed. The \"why\" "
-    "is the one-sentence reason it is blocked. ANSWERING / EXPLAINING / REPORTING work is NOT blocking. "
-    "Waiting on anyone or anything OTHER than the user is NOT blocking — a peer or another session is "
-    "handling it, waiting on a PEER's reply to a message you sent, deferring to avoid a conflict, or "
-    "waiting on a build/CI/external event keeps the goal OPEN, not blocked. An 'answer' or 'reply' from "
-    "a PEER session is NOT a user answer; only the human blocks. WEIGHING: if the segment both reports "
-    "work AND leaves a decision owed by the user, the owed decision WINS → block. (Use \"ref\":<k> to "
-    "block a node created in this reply.)\n"
+    "segment discharges a whole ask, done the TOP-LEVEL goal. EXCEPTION: if the ask was a QUESTION and "
+    "your reply IS the answer (informational, nothing for the user to act on), do NOT done it — block it "
+    "with the answer as the reason so the user reads it (see block). To complete a node you create "
+    'earlier in THIS reply, use \"ref\":<k> (k = the 1-based position of that mint/sub among the ops in '
+    'this reply) instead of \"goal\".\n'
+    '- {\"why\",\"do\":\"block\",\"goal\":<n>} — goal/step #n now NEEDS THE USER, one of two ways. '
+    "(a) WAITING ON THE USER: its next step needs a decision, approval, or answer FROM THE USER (the "
+    "human) before it can proceed; the \"why\" is the one-sentence reason it is blocked. (b) ANSWERED "
+    "THE USER: the user asked a QUESTION and your reply IS the answer (information for them to READ, no "
+    "action or work product) — block this answer-goal with the \"why\" = a concise summary of the answer "
+    "(a sentence or two; the full answer stays in the chat) INSTEAD of doing it, so the user sees the "
+    "answer in the needs-you column and clears it once read. Do (b) only for a genuine question that got "
+    "a substantive answer, not every trivial clarification. Merely EXPLAINING or REPORTING work you DID "
+    "is neither — that goal is DONE, not blocked. Waiting on anyone or anything OTHER than the user is "
+    "NOT blocking — a peer or another session is handling it, waiting on a PEER's reply to a message you "
+    "sent, deferring to avoid a conflict, or waiting on a build/CI/external event keeps the goal OPEN, "
+    "not blocked. A peer's answer/reply is NOT a user answer; only the human blocks. WEIGHING: if the "
+    "segment both reports work AND leaves a decision owed by the user, the owed decision WINS → block. "
+    "(Use \"ref\":<k> to block a node created in this reply.)\n"
     '- {\"why\",\"do\":\"skip\"} — the segment did NO real work (an interruption, an empty/aborted turn, '
     "a bare acknowledgement, a system notification). A segment that RAN TOOLS is real work — never skip "
     "it. If you skip, \"ops\" is exactly one skip op.\n"
