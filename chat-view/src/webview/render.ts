@@ -2206,6 +2206,9 @@ function renderLedger() {
     const wrap = el("div", "ledger-tree" + (anyExpandable ? "" : " flat"));
     const byId = new Map(tree.map((n) => [n.id, n] as const));
     const roots = tree.filter((n) => n.depth === 0);
+    // Unfinished goals on top, finished (done/cleared) at the bottom; each group keeps the kernel's
+    // most-recent-activity-first order (the user 2026-06-16).
+    const orderedRoots = [...roots.filter((r) => !r.done), ...roots.filter((r) => r.done)];
     const defaultFold = (n: LedgerTreeNode) => !!n.done && !n.onpath;   // a "previous" task folds unless it's the recent path
     const isFolded = (n: LedgerTreeNode) => !!(n.children && n.children.length) &&
       (ledgerFolded.has(n.id) || (defaultFold(n) && !ledgerExpanded.has(n.id)));
@@ -2245,7 +2248,7 @@ function renderLedger() {
       wrap.appendChild(row);
       if (expandable && !folded) for (const cid of n.children!) { const c = byId.get(cid); if (c) renderNode(c, depth + 1); }
     };
-    for (const r of roots) renderNode(r, 0);
+    for (const r of orderedRoots) renderNode(r, 0);
     host.appendChild(wrap);
   } else {
     // --- fallback for goal-less sessions: the live "working on" line + the captioned "done" bullets ---

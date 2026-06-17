@@ -84,10 +84,16 @@ test("a FLAT ledger (no expandable node anywhere) drops the disclosure column so
   assert.match(CSS, /\.ledger-tree\.flat \.ledger-tri \{[^}]*display: none/);
 });
 
-test("ledger spacing: extra gap before the right-aligned times; compact rows (the user 2026-06-16)", () => {
+test("ledger spacing: gap before the times; roomy rows + separated top goals (the user 2026-06-16)", () => {
   assert.match(CSS, /\.ledger-ttime \{[^}]*margin-left: 1\.75em/);          // whitespace before the times
-  assert.match(CSS, /\.ledger-tnode \{[^}]*line-height: 1\.2/);             // tighter rows (~30% shorter)
-  assert.match(CSS, /\.ledger-tree \{[^}]*row-gap: 0/);
+  assert.match(CSS, /\.ledger-tnode \{[^}]*line-height: 1\.45/);            // roomy rows so the discs don't kiss
+  assert.match(CSS, /\.ledger-tree \{[^}]*row-gap: 2px/);
+  assert.match(CSS, /\.ledger-tnode\.ledger-top \{[^}]*margin-top: 9px/);   // extra space between top-level goals
+});
+
+test("ledger sorts unfinished goals on top, finished at the bottom (recency within each — the user 2026-06-16)", () => {
+  assert.match(RENDER, /const orderedRoots = \[\.\.\.roots\.filter\(\(r\) => !r\.done\), \.\.\.roots\.filter\(\(r\) => r\.done\)\]/);
+  assert.match(RENDER, /for \(const r of orderedRoots\) renderNode\(r, 0\)/);
 });
 
 test("leaf-row tri spacers don't inherit the placeholder's 40px padding (no giant ledger gaps)", () => {
