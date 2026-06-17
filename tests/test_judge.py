@@ -237,6 +237,16 @@ class CleanCaption(unittest.TestCase):
         # but a real caption that merely contains a normal word is kept
         self.assertEqual(jd._clean_caption("Summarized the release notes"), "Summarized the release notes")
 
+    def test_parse_caption_reads_json_field(self):
+        # the captioner now emits {"caption": "..."}; _parse_caption extracts + cleans the field
+        self.assertEqual(jd._parse_caption('{"caption": "Fixed the feed flicker"}'), "Fixed the feed flicker")
+        self.assertEqual(jd._parse_caption('noise {"caption": "Tinted cards by recency"} more'),
+                         "Tinted cards by recency", "the JSON object is isolated from surrounding prose")
+        self.assertEqual(jd._parse_caption('{"caption": ""}'), "", "empty field (no finished work) -> no caption")
+        self.assertEqual(jd._parse_caption("not json at all"), "", "a non-JSON reply -> no caption")
+        self.assertEqual(jd._parse_caption('{"caption": "How can I help?"}'), "",
+                         "the anti-chat guard still applies to the field value")
+
 
 # ───────────────────────── caption store ─────────────────────────
 class CaptionStore(unittest.TestCase):
@@ -354,20 +364,21 @@ class EnginePass(unittest.TestCase):
 
 class ArchiveParse(unittest.TestCase):
     def test_parses_headline_and_abstract(self):
-        out = "HEADLINE: Rebuilding the romp event model\nABSTRACT: Built the parser and its tests. Validated it against the corpus."
+        out = '{"headline": "Rebuilding the romp event model", "abstract": "Built the parser and its tests. Validated it against the corpus."}'
         rec = jd._parse_archive(out)
         self.assertEqual(rec["headline"], "Rebuilding the romp event model")
         self.assertTrue(rec["abstract"].startswith("Built the parser"))
         self.assertIn("corpus", rec["abstract"])
 
-    def test_multi_line_abstract_is_joined(self):
-        out = "HEADLINE: Tuning the captioner\nABSTRACT: Pulled the word target down.\nKilled the comma-splice tail."
+    def test_tolerates_surrounding_prose(self):
+        out = 'Here is the summary:\n{"headline": "Tuning the captioner", "abstract": "Pulled the word target down. Killed the comma-splice tail."}'
         rec = jd._parse_archive(out)
+        self.assertEqual(rec["headline"], "Tuning the captioner")
         self.assertIn("Pulled the word target down. Killed the comma-splice tail.", rec["abstract"])
 
     def test_missing_field_is_failed_capture(self):
-        self.assertIsNone(jd._parse_archive("HEADLINE: only a headline, no abstract"))
-        self.assertIsNone(jd._parse_archive("just some prose with no labels"))
+        self.assertIsNone(jd._parse_archive('{"headline": "only a headline, no abstract"}'))
+        self.assertIsNone(jd._parse_archive("just some prose with no JSON"))
         self.assertIsNone(jd._parse_archive(""))
 
 
@@ -583,11 +594,14 @@ class Courier(unittest.TestCase):
         self.assertIsNone(jd._seg_peer(human), "a human prompt is not a peer segment")
 
     def test_parse_courier(self):
-        self.assertEqual(jd._parse_courier("DELEGATING 2 :: fix the build", 3),
+        self.assertEqual(jd._parse_courier('{"verdict": "delegating", "goal": 2, "text": "fix the build"}', 3),
                          {"delegating": True, "n": 2, "text": "fix the build"})
-        self.assertFalse(jd._parse_courier("COORDINATING ::", 3)["delegating"])
+        self.assertFalse(jd._parse_courier('{"verdict": "coordinating", "goal": 0, "text": ""}', 3)["delegating"])
         self.assertIsNone(jd._parse_courier("garbage", 3))
-        self.assertIsNone(jd._parse_courier("DELEGATING 9 :: x", 3)["n"], "out-of-range sender goal -> no link")
+        self.assertIsNone(jd._parse_courier('{"verdict": "delegating", "goal": 9, "text": "x"}', 3)["n"],
+                          "out-of-range sender goal -> no link")
+        self.assertIsNone(jd._parse_courier('{"verdict": "delegating", "goal": 0, "text": "x"}', 3)["n"],
+                          "goal 0 (no linkage) -> None")
 
     def test_log_judge_error_appends(self):
         # Swallowed judge-call failures are recorded to ERRORS (judge-errors.jsonl) for romp -j to surface.
@@ -757,8 +771,8 @@ class PlanTuning(unittest.TestCase):
                         "the prompt names stock AI words to avoid")
         # the courier's handoff label gets the same plain-words steer
         self.assertIn("plain concrete words", jd.COURIER_SYS)
-        # the closer now writes a doneWhy per completed goal, with the same writing guidance
-        self.assertIn("<n> :: <why>", jd.CLOSER_SYS, "the closer emits a reason per done goal")
+        # the closer now writes a doneWhy per completed goal (JSON done list), with the same writing guidance
+        self.assertIn('"done"', jd.CLOSER_SYS, "the closer emits a JSON done list with a reason per goal")
         for phrase in ("Write each \"why\" plainly", "no em dashes", "say it once"):
             self.assertIn(phrase, jd.CLOSER_SYS, phrase)
 
@@ -857,28 +871,37 @@ class BlockCompletionCorrectness(unittest.TestCase):
 
 # ───────────────────────── the negative turn-end sweep (HYBRID completion) ─────────────────────────
 class SweepParse(unittest.TestCase):
-    def test_done_lines_with_reasons(self):
-        self.assertEqual(jd._parse_close("2 :: shipped it", 4), {2: "shipped it"})
-        self.assertEqual(jd._parse_close("1 :: fixed the parser\n3 :: wired the CLI flags", 4),
-                         {1: "fixed the parser", 3: "wired the CLI flags"})
-        self.assertEqual(jd._parse_close("Goal 2 :: done", 4), {2: "done"},
-                         "a leading label before the number is tolerated")
+    def test_done_list_with_reasons(self):
+        self.assertEqual(jd._parse_close('{"done": [{"goal": 2, "why": "shipped it"}]}', 4),
+                         {2: "shipped it"})
+        self.assertEqual(jd._parse_close(
+            '{"done": [{"goal": 1, "why": "fixed the parser"}, {"goal": 3, "why": "wired the CLI flags"}]}', 4),
+            {1: "fixed the parser", 3: "wired the CLI flags"})
+        self.assertEqual(jd._parse_close('noise {"done": [{"goal": 2, "why": "done"}]} more', 4),
+                         {2: "done"}, "the outermost JSON object is isolated from surrounding prose")
 
-    def test_none_means_nothing_done(self):
-        self.assertEqual(jd._parse_close("none", 3), {},
-                         "explicit 'none done' -> empty dict (complete nothing)")
+    def test_empty_done_completes_nothing(self):
+        self.assertEqual(jd._parse_close('{"done": []}', 3), {},
+                         "an empty done list -> empty dict (complete nothing)")
 
     def test_garbage_skips(self):
         self.assertIsNone(jd._parse_close("", 3), "empty output -> skip the turn")
         self.assertIsNone(jd._parse_close("i can't help with that", 3),
-                          "no done-lines and no 'none' -> skip (complete nothing, the safe default)")
+                          "no JSON object -> skip (complete nothing, the safe default)")
+        self.assertIsNone(jd._parse_close('{"foo": 1}', 3),
+                          "a JSON object with no done list -> skip (safe)")
         self.assertIsNone(jd._parse_close("1, 3", 3),
                           "the old numbers-only format is no longer accepted -> skip (safe)")
 
     def test_out_of_range_and_dupes_dropped(self):
-        self.assertEqual(jd._parse_close("1 :: a\n9 :: b", 3), {1: "a"}, "out-of-range index is dropped")
-        self.assertIsNone(jd._parse_close("9 :: b", 3), "only an out-of-range index -> nothing usable -> skip")
-        self.assertEqual(jd._parse_close("2 :: first\n2 :: second", 3), {2: "first"}, "first reason wins")
+        self.assertEqual(jd._parse_close('{"done": [{"goal": 1, "why": "a"}, {"goal": 9, "why": "b"}]}', 3),
+                         {1: "a"}, "out-of-range index is dropped")
+        self.assertEqual(jd._parse_close('{"done": [{"goal": 9, "why": "b"}]}', 3), {},
+                         "a structured answer with only out-of-range -> {} (nothing in-range done)")
+        self.assertEqual(jd._parse_close('{"done": [{"goal": 2, "why": "first"}, {"goal": 2, "why": "second"}]}', 3),
+                         {2: "first"}, "first reason wins for a duplicate index")
+        self.assertEqual(jd._parse_close('{"done": ["junk", {"why": "no goal"}, {"goal": 2, "why": "ok"}]}', 3),
+                         {2: "ok"}, "malformed entries are skipped")
 
 
 class SweepApply(unittest.TestCase):
@@ -964,7 +987,7 @@ class SweepTurn(unittest.TestCase):
     def test_completes_the_touched_top(self):
         store = _store(); g1 = _mknode(store, "Do X")
         store["placements"][self.seg["id"]] = g1["id"]
-        jd.closer_llm = lambda tt, mt: "1 :: finished X"
+        jd.closer_llm = lambda tt, mt: '{"done": [{"goal": 1, "why": "finished X"}]}'
         self.assertEqual(jd._close_turn(store, self.turn), [g1["id"]])
         self.assertTrue(store["nodes"][g1["id"]]["nodeComplete"])
         self.assertEqual(store["nodes"][g1["id"]]["doneWhy"], "finished X",
@@ -1020,7 +1043,7 @@ class SweepSession(unittest.TestCase):
         self.assertEqual(len(tops), 2)
         self.assertTrue(all(not nd["nodeComplete"] for nd in tops), "positive-only DONE'd nothing")
         self.assertTrue(all(store["status"][nd["id"]] == "working" for nd in tops), "both working before the sweep")
-        jd.closer_llm = lambda tt, mt: "1 :: done"                # each turn's single touched top reported done
+        jd.closer_llm = lambda tt, mt: '{"done": [{"goal": 1, "why": "done"}]}'   # each turn's single touched top reported done
         n = jd.run_close(now=self.now)
         store = jd.load_goals(SID)
         g1, g2 = tops[0]["id"], tops[1]["id"]
@@ -1036,7 +1059,7 @@ class SweepSession(unittest.TestCase):
         g0 = _mknode(seed, "Dormant goal from another topic", t=T0 - 1000)
         jd.save_goals(SID, seed)
         jd.run_plan(now=self.now)
-        jd.closer_llm = lambda tt, mt: "1 :: done"
+        jd.closer_llm = lambda tt, mt: '{"done": [{"goal": 1, "why": "done"}]}'
         jd.run_close(now=self.now)
         store = jd.load_goals(SID)
         self.assertFalse(store["nodes"][g0["id"]]["nodeComplete"],
@@ -1072,6 +1095,24 @@ class JudgeSystemPrompt(unittest.TestCase):
         self.assertIn("--safe-mode", cmd, "auto-discovered CLAUDE.md / memory / hooks are dropped")
         self.assertEqual(cmd[cmd.index("--system-prompt") + 1], "SYSTEM_PROMPT_BODY",
                          "the judge's prompt follows the --system-prompt flag")
+
+
+class JudgeOutputFormat(unittest.TestCase):
+    """All five judges speak ONE output shape: a single JSON object, parsed by the shared _json_obj
+    (the user 2026-06-16). Guards the consistency against any judge drifting back to a bespoke format."""
+
+    def test_every_judge_prompt_requests_a_json_object(self):
+        for name, sysp in [("captioner", jd.CAPTION_SYS), ("archiver", jd.ARCHIVE_SYS),
+                           ("planner", jd.PLAN_SYS), ("closer", jd.CLOSER_SYS), ("courier", jd.COURIER_SYS)]:
+            self.assertIn("JSON object", sysp, "%s must request a single JSON object" % name)
+
+    def test_json_obj_isolates_the_outermost_object(self):
+        self.assertEqual(jd._json_obj('```json\n{"a": 1}\n```'), {"a": 1}, "code fences are tolerated")
+        self.assertEqual(jd._json_obj('prose {"a": 1, "b": [2]} trailing'), {"a": 1, "b": [2]},
+                         "the outermost object is isolated from surrounding prose")
+        self.assertIsNone(jd._json_obj("no json here"))
+        self.assertIsNone(jd._json_obj("[1, 2, 3]"), "a top-level array is not an object")
+        self.assertIsNone(jd._json_obj(""))
 
 
 class ModelTiers(unittest.TestCase):
