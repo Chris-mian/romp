@@ -30,6 +30,15 @@ test("the kind data VALUE stays 'handoff' (not user-facing; keeps the node logic
   assert.match(FEED, /n\.kind !== "handoff"/);
 });
 
+test("the name row keeps the session name on one line and pushes '↪ from' to the right edge", () => {
+  // the user 2026-06-16: the name was wrapping mid-word while the origin crowded it; instead the row
+  // fills its width, the name stays one line (ellipsis only if truly too long), origin goes right.
+  assert.match(CSS, /\.fask-id \{[^}]*flex: 1 1 auto/);
+  assert.match(CSS, /\.fask-id \.fname \{[^}]*white-space: nowrap/);
+  assert.match(CSS, /\.fask-origin \{[^}]*margin-left: auto/);
+  assert.match(CSS, /\.fask-origin \{[^}]*white-space: nowrap/);
+});
+
 test("a delegation card's title anchors on 'work' (not 'prompt') so it doesn't jump to an unrelated user msg", () => {
   // a delegation card has no originating user prompt; anchor:"prompt" landed on the nearest user turn
   // in time (wrong). origin cards anchor on "work" → land where the delegation was processed (rompinfra).

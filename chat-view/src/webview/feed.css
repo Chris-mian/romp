@@ -170,8 +170,10 @@ body { display: flex; flex-direction: column; }
 /* row 2 — the session name on its own row below the title; sized to its text so blank space
    to its right stays card-body (opens the modal), and wrapping so a long name can't overflow. */
 .fask-row2 { display: flex; align-items: center; gap: 8px; margin-top: 3px; }
-.fask-id { flex: 0 1 auto; min-width: 0; display: flex; align-items: baseline; gap: 6px; }
-.fask-id .fname { flex: 0 1 auto; min-width: 0; overflow-wrap: anywhere; }   /* sizes to text, wraps if long */
+/* the name row fills its width so the "↪ from <peer>" provenance can sit at the RIGHT edge instead of
+   crowding the name into a mid-word wrap (the user 2026-06-16). */
+.fask-id { flex: 1 1 auto; min-width: 0; display: flex; align-items: baseline; gap: 6px; }
+.fask-id .fname { flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }   /* one line; ellipsis only if truly too long — never mid-word */
 .fask-actions { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; margin-left: auto; }
 /* row 3 — age bottom-left, status badges + Clear bottom-right */
 .fask-row3 { display: flex; align-items: baseline; gap: 8px; margin-top: 6px; }
@@ -216,7 +218,9 @@ body { display: flex; flex-direction: column; }
 
 /* "↪ from <sender>" — courier handoff provenance beside the owning session: the "↪ from" reads as dim
    gray chrome, the peer name as a bold, identity-coloured session link (the user 2026-06-16). */
-.fask-origin { flex: 0 1 auto; min-width: 0; font-size: 0.8em; cursor: pointer; overflow-wrap: anywhere; }
+/* pushed to the RIGHT of the name row (margin-left:auto), one line — uses the free space instead of
+   squeezing the session name (the user 2026-06-16). */
+.fask-origin { flex: 0 0 auto; margin-left: auto; padding-left: 8px; font-size: 0.8em; cursor: pointer; white-space: nowrap; }
 .fask-origin-pre { color: var(--dim); }
 .fask-origin-peer { font-weight: 600; }
 .fask-origin:hover { text-decoration: underline; text-underline-offset: 2px; }
