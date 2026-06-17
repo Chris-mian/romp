@@ -50,6 +50,46 @@ class SessionTokens(unittest.TestCase):
                          {"in": 0, "out": 0, "cache_w": 0, "cache_r": 0})
 
 
+class TokenWindows(unittest.TestCase):
+    """_token_windows splits sessions + the judge pipeline across the two Claude meters (5h / 7d),
+    each windowed independently. _judge_usage reads jd.STATE, so point it at a temp dir."""
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory()
+        self.saved = jd.STATE
+        jd.STATE = pathlib.Path(self.td.name)
+
+    def tearDown(self):
+        jd.STATE = self.saved
+        self.td.cleanup()
+
+    def test_splits_sessions_and_pipeline_by_5h_and_week(self):
+        with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False, dir=self.td.name) as f:
+            f.write(_asst({"input_tokens": 100, "output_tokens": 20, "cache_read_input_tokens": 5000}, iso(NOW - 3600)) + "\n")  # in 5h
+            f.write(_asst({"input_tokens": 40, "output_tokens": 10}, iso(NOW - 3 * 86400)) + "\n")    # in week, not 5h
+            f.write(_asst({"input_tokens": 999, "output_tokens": 999}, iso(NOW - 30 * 86400)) + "\n")  # older than a week
+            path = f.name
+        (jd.STATE / "judge-usage.jsonl").write_text("\n".join(json.dumps(r) for r in [
+            {"t": NOW - 1800, "judge": "captioner", "tier": "index", "in": 10, "out": 5, "cost": 0.01, "ms": 100},
+            {"t": NOW - 2 * 86400, "judge": "planner", "tier": "triage", "in": 70, "out": 30, "cost": 0.2, "ms": 200},
+            {"t": NOW - 20 * 86400, "judge": "planner", "tier": "triage", "in": 9, "out": 9, "cost": 9, "ms": 9},
+        ]) + "\n")
+        tk = km._token_windows([path], NOW)
+        # 5h: only the first transcript msg + the first judge call
+        self.assertEqual(tk["fiveHour"]["sessions"], {"in": 100, "out": 20, "cache_r": 5000})
+        self.assertEqual(tk["fiveHour"]["pipeline"]["total"]["in"], 10)
+        self.assertEqual(tk["fiveHour"]["pipeline"]["total"]["calls"], 1)
+        # week: first two transcript msgs + first two judge calls (the >week rows drop)
+        self.assertEqual(tk["week"]["sessions"], {"in": 140, "out": 30, "cache_r": 5000})
+        self.assertEqual(tk["week"]["pipeline"]["total"]["in"], 80)
+        self.assertEqual(tk["week"]["pipeline"]["total"]["calls"], 2)
+        self.assertEqual(tk["windows"], {"fiveHour": km.WIN_5H, "week": km.WIN_WEEK})
+
+    def test_no_paths_no_log_is_zero_but_shaped(self):
+        tk = km._token_windows([], NOW)
+        self.assertEqual(tk["fiveHour"]["sessions"], {"in": 0, "out": 0, "cache_r": 0})
+        self.assertEqual(tk["week"]["pipeline"]["total"]["calls"], 0)
+
+
 class JudgeUsageRollup(unittest.TestCase):
     def setUp(self):
         self.td = tempfile.TemporaryDirectory()

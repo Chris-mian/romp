@@ -1792,7 +1792,8 @@ def build_feed(now, tmux=None):
 
 # ───────────────────────── view-builder: segments → timeline (parity: timeline = ADAPT) ─────────────────────────
 TL_HORIZON = 48 * 3600                        # how far back stripes/connectors are read (slider max)
-TOKEN_WINDOW_SECS = 24 * 3600                 # token-usage split (footer): BOTH halves over the same last-24h window (matches romp -j)
+WIN_5H   = 5 * 3600                            # token-usage windows: the two Claude meters — 5h "session" + 7d "week".
+WIN_WEEK = 7 * 86400                           # The footer shows tokens per window so the count lines up with the /usage %.
 MSG_INFLIGHT_MAX = 1800                        # a message older than this isn't "in flight" (30 min)
 
 
@@ -2173,6 +2174,22 @@ def _judge_usage(t0):
     return {"total": total, "byJudge": by_judge, "byTier": by_tier}
 
 
+def _token_windows(paths, now):
+    """Token usage by the two windows Claude meters — 5h ("session") + 7d ("week") — each split into the
+    coding SESSIONS (summed transcript usage of `paths`) and the judge PIPELINE (_judge_usage), in/out kept
+    apart, cache_r carried for the tooltip. Both halves draw the same subscription quota, so the summed
+    in+out reflects what that window's /usage % is spending. Cheap: _session_tokens caches per-path rows,
+    so re-summing per window just re-iterates the cache."""
+    def split(t0):
+        s = {"in": 0, "out": 0, "cache_r": 0}
+        for p in paths:
+            d = _session_tokens(p, t0)
+            s["in"] += d["in"]; s["out"] += d["out"]; s["cache_r"] += d["cache_r"]
+        return {"sessions": s, "pipeline": _judge_usage(t0)}
+    return {"fiveHour": split(now - WIN_5H), "week": split(now - WIN_WEEK),
+            "windows": {"fiveHour": WIN_5H, "week": WIN_WEEK}}
+
+
 def _attach_run_usage(judging, t0, alive_sids):
     """Attach each judging mark's real run cost (ms / in / out tokens) by greedy nearest-time matching it
     to the judge's actual calls in judge-usage.jsonl (same fsid + judge). Marks with no matching call keep
@@ -2291,18 +2308,18 @@ def build_timeline(now, tmux=None):
             "awaiting": _state_intervals(sid, "permission", now),
             "compacting": _state_intervals(sid, "compacting", now),
             "compactions": compactions, "pendingMail": _pending_mail(sid),
-            "tokens": _session_tokens(s["path"], now - TOKEN_WINDOW_SECS),
+            "tokensAll": _session_tokens(s["path"], 0),    # lifetime in/out for the active-tab token readout
             "stale": faded, "faded": faded})
     messages = _postal_messages(now, set(id2name), id2name)
     _bind_message_execs(messages, turns)                 # connector exec → the recipient's process-start (real transit)
-    # token-usage split: SESSIONS = summed transcript usage of the alive lanes; PIPELINE = the judges'
-    # per-call log (empty until romp-judge writes judge-usage.jsonl). Same horizon as the rest of the band.
-    sess_tok = {k: sum(se["tokens"][k] for se in sessions) for k in ("in", "out", "cache_w", "cache_r")}
+    # token usage by rate-limit WINDOW (the user 2026-06-17): the coding SESSIONS + the judge PIPELINE,
+    # summed over the SAME windows /usage meters (5h "session", 7d "week"), in/out split — so the count
+    # lines up with the % the bars show. Per-session `tokensAll` (lifetime) rides each lane for the
+    # active-tab readout. Both halves draw the same subscription quota.
     _attach_run_usage(judging, now - TL_HORIZON, set(id2name))   # per-mark ms/in/out for the band tooltips
     return {"type": "timeline", "now": now, "sessions": sessions, "turns": turns,
             "messages": messages, "judging": judging,
-            "tokens": {"sessions": sess_tok, "pipeline": _judge_usage(now - TOKEN_WINDOW_SECS),
-                       "windowS": TOKEN_WINDOW_SECS},
+            "tokens": _token_windows([s["path"] for s in alive], now),
             "activeChat": None, "focus": None, "hover": None, "usage": _usage()}
 
 

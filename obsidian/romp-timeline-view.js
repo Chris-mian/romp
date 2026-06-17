@@ -341,19 +341,27 @@ class TimelinePanel {
     mkUsageBar('fiveHour', 'session', 5 * 3600);
     mkUsageBar('sevenDay', 'week', 7 * 86400);
 
-    // Token-usage split (the user 2026-06-17): the coding SESSIONS vs the judge PIPELINE, from
-    // data.tokens. Compact, right of the rate-limit bars. Hidden until data.tokens arrives.
+    // Token usage by rate-limit WINDOW (the user 2026-06-17): how many tokens the coding SESSIONS + the
+    // judge PIPELINE drew in the current 5h and 7d windows — the same quota the /usage bars meter — each
+    // cell split in/out, plus the ACTIVE chat tab's lifetime. Compact grid, right of the rate-limit bars.
+    // Hidden until data.tokens arrives. NOTE: on a Max subscription these are NOT a dollar bill — both
+    // halves draw the shared quota; the count just lines up with the % the bars show.
     this._tokensWrap = this.controls.createDiv();
-    this._tokensWrap.setAttribute('style', 'display:none;align-items:center;gap:6px;');
-    this._tokLabel = this._tokensWrap.createSpan({ text: 'tokens' }); this._tokLabel.setAttribute('style', 'opacity:0.85;');
-    const tcol = this._tokensWrap.createDiv(); tcol.setAttribute('style', 'display:flex;flex-direction:column;gap:3px;');
+    this._tokensWrap.setAttribute('style', 'display:none;flex-direction:column;gap:2px;');
+    const tgrid = this._tokensWrap.createDiv();
+    tgrid.setAttribute('style', 'display:grid;grid-template-columns:auto auto auto;gap:1px 12px;align-items:center;');
+    const tHead = (txt, num) => { const c = tgrid.createSpan({ text: txt }); c.setAttribute('style', 'opacity:0.6;' + (num ? 'text-align:right;' : '')); };
+    tHead('tokens · in/out'); tHead('5h', true); tHead('week', true);
     const tRow = (lbl, color) => {
-      const row = tcol.createDiv(); row.setAttribute('style', 'display:inline-flex;align-items:center;gap:6px;');
-      row.createSpan({ text: lbl }).setAttribute('style', 'min-width:46px;color:' + color + ';opacity:0.9;');
-      const val = row.createSpan({ text: '–' }); val.setAttribute('style', 'font-variant-numeric:tabular-nums;opacity:0.9;');
-      return { row, val };
+      tgrid.createSpan({ text: lbl }).setAttribute('style', 'color:' + color + ';opacity:0.9;');
+      const five = tgrid.createSpan({ text: '–' }); five.setAttribute('style', 'text-align:right;font-variant-numeric:tabular-nums;opacity:0.9;');
+      const week = tgrid.createSpan({ text: '–' }); week.setAttribute('style', 'text-align:right;font-variant-numeric:tabular-nums;opacity:0.9;');
+      return { five, week };
     };
     this._tokRows = { sessions: tRow('sessions', '#8fb3ff'), pipeline: tRow('pipeline', '#c79be0') };
+    // active chat tab's lifetime (the selected lane) — spans the row, dim; refreshed on tab switch.
+    this._tokActive = this._tokensWrap.createSpan({ text: '' });
+    this._tokActive.setAttribute('style', 'opacity:0.7;font-variant-numeric:tabular-nums;');
 
     // spacer: everything after it sits flush right
     const ctlSpacer = this.controls.createDiv();
@@ -806,27 +814,62 @@ class TimelinePanel {
     return (d ? d + 'd ' : '') + (h || d ? h + 'h ' : '') + m + 'm';
   }
 
-  // Fill the token-usage split (data.tokens): coding SESSIONS vs the judge PIPELINE. Compares
-  // prompt+completion tokens (in+out, excluding cache so cache-reads don't dominate); the pipeline row
-  // also shows its share of the total + a per-judge / cost hover. Hidden until there's data.
+  // Fill the per-window token grid (data.tokens.fiveHour / .week): the coding SESSIONS + the judge
+  // PIPELINE, each cell = in/out (cache excluded so cache-reads don't dominate; carried in the hover).
+  // Plus the active-tab lifetime line. Hidden until there's data.
   _updateTokens(tokens) {
     if (!this._tokRows) return;
-    const s = tokens && tokens.sessions, pt = tokens && tokens.pipeline && tokens.pipeline.total;
-    const sTot = s ? (s.in + s.out) : 0, pTot = pt ? (pt.in + pt.out) : 0;
-    if (!sTot && !pTot) { this._tokensWrap.style.display = 'none'; return; }
+    const w5 = tokens && tokens.fiveHour, ww = tokens && tokens.week;
+    const sP = (w) => w && w.sessions, pP = (w) => w && w.pipeline && w.pipeline.total;
+    const io = (d) => d ? (fmtTokens(d.in || 0) + '/' + fmtTokens(d.out || 0)) : '–';
+    const has = (d) => d && ((d.in || 0) + (d.out || 0)) > 0;
+    const anyWin = has(sP(w5)) || has(pP(w5)) || has(sP(ww)) || has(pP(ww));
+    if (!anyWin && !this._activeTabHasTokens()) { this._tokensWrap.style.display = 'none'; return; }
     this._tokensWrap.style.display = 'flex';
-    if (this._tokLabel && tokens.windowS) this._tokLabel.textContent = 'tokens · ' + fmtWin(tokens.windowS);
-    this._tokRows.sessions.val.textContent = fmtTokens(sTot);
-    const share = (sTot + pTot) ? Math.round(pTot / (sTot + pTot) * 100) : 0;
-    this._tokRows.pipeline.val.textContent = fmtTokens(pTot) + (pTot ? '  ' + share + '%' : '');
-    this._tokRows.sessions.row.setAttribute('title', 'coding sessions — ' + fmtTokens(sTot)
-      + ' prompt+completion tokens (excl. cache); ' + fmtTokens(s ? s.cache_r : 0) + ' cache-read');
-    const byJ = (tokens && tokens.pipeline && tokens.pipeline.byJudge) || {};
-    const judgeLines = Object.keys(byJ).sort((a, b) => (byJ[b].in + byJ[b].out) - (byJ[a].in + byJ[a].out))
-      .map((k) => '  ' + k + ': ' + fmtTokens(byJ[k].in + byJ[k].out) + ' · ' + byJ[k].calls + ' calls').join('\n');
-    const cost = pt && pt.cost ? ' · $' + pt.cost.toFixed(2) : '';
-    this._tokRows.pipeline.row.setAttribute('title', 'judge pipeline — ' + fmtTokens(pTot) + ' tokens · '
-      + (pt ? pt.calls : 0) + ' calls' + cost + (judgeLines ? '\n' + judgeLines : ''));
+    this._tokRows.sessions.five.textContent = io(sP(w5));
+    this._tokRows.sessions.week.textContent = io(sP(ww));
+    this._tokRows.pipeline.five.textContent = io(pP(w5));
+    this._tokRows.pipeline.week.textContent = io(pP(ww));
+    // hovers: cache-read on the sessions cells; calls/cost + per-judge breakdown on the pipeline cells.
+    const sessTitle = (w, lbl) => 'coding sessions · last ' + lbl + ' — in ' + fmtTokens((sP(w) || {}).in || 0)
+      + ' / out ' + fmtTokens((sP(w) || {}).out || 0) + '; ' + fmtTokens((sP(w) || {}).cache_r || 0) + ' cache-read';
+    this._tokRows.sessions.five.setAttribute('title', sessTitle(w5, '5h'));
+    this._tokRows.sessions.week.setAttribute('title', sessTitle(ww, 'week'));
+    const pipeTitle = (w, lbl) => {
+      const pt = pP(w), byJ = (w && w.pipeline && w.pipeline.byJudge) || {};
+      const lines = Object.keys(byJ).sort((a, b) => (byJ[b].in + byJ[b].out) - (byJ[a].in + byJ[a].out))
+        .map((k) => '  ' + k + ': ' + fmtTokens(byJ[k].in + byJ[k].out) + ' · ' + byJ[k].calls + ' calls').join('\n');
+      const cost = pt && pt.cost ? ' · $' + pt.cost.toFixed(2) + ' API-equiv' : '';
+      return 'judge pipeline · last ' + lbl + ' — in ' + fmtTokens((pt || {}).in || 0) + ' / out '
+        + fmtTokens((pt || {}).out || 0) + ' · ' + ((pt || {}).calls || 0) + ' calls' + cost + (lines ? '\n' + lines : '');
+    };
+    this._tokRows.pipeline.five.setAttribute('title', pipeTitle(w5, '5h'));
+    this._tokRows.pipeline.week.setAttribute('title', pipeTitle(ww, 'week'));
+    this._updateActiveTabTokens();
+  }
+
+  // The selected lane's session record (the active chat tab), if any.
+  _activeTabSession() {
+    const sid = this.selectedSid, sess = (this.data && this.data.sessions) || [];
+    return sid ? sess.find((x) => x.id === sid) : null;
+  }
+
+  _activeTabHasTokens() {
+    const s = this._activeTabSession(), t = s && s.tokensAll;
+    return !!(t && ((t.in || 0) + (t.out || 0)) > 0);
+  }
+
+  // The active chat tab's LIFETIME usage (in/out) — refreshed both on a new band and on a tab switch
+  // (_select / setActiveChat), so the line follows the focused lane without waiting for the next poll.
+  _updateActiveTabTokens() {
+    if (!this._tokActive) return;
+    const s = this._activeTabSession(), t = s && s.tokensAll;
+    if (!s) { this._tokActive.textContent = ''; this._tokActive.removeAttribute('title'); return; }
+    const name = s.name || s.id;
+    if (!t || !((t.in || 0) + (t.out || 0))) { this._tokActive.textContent = 'this tab · ' + name + ': –'; return; }
+    this._tokActive.textContent = 'this tab · ' + name + ': in ' + fmtTokens(t.in) + ' / out ' + fmtTokens(t.out);
+    this._tokActive.setAttribute('title', 'lifetime usage of the focused chat (' + name + ') — in '
+      + fmtTokens(t.in) + ' / out ' + fmtTokens(t.out) + '; ' + fmtTokens(t.cache_r || 0) + ' cache-read');
   }
 
   fitWindow() {
@@ -911,7 +954,7 @@ class TimelinePanel {
   }
 
   // set the single selection highlight + redraw only on a real change.
-  _select(sid) { if (sid && this.selectedSid !== sid) { this.selectedSid = sid; this.draw(); } }
+  _select(sid) { if (sid && this.selectedSid !== sid) { this.selectedSid = sid; this._updateActiveTabTokens(); this.draw(); } }
 
   // Reverse hover: a glyph hover tells the host to light the matching feed card + glow the chat turns
   // in [t0,t1] (the host has the receivers; web kernel only — no-op in Obsidian). sid null → clear.
@@ -926,6 +969,7 @@ class TimelinePanel {
     this.data.activeChat = ac || null;
     const sid = this._sidForActiveChat(ac);
     if (sid) this.selectedSid = sid;
+    this._updateActiveTabTokens();
     this.draw();
   }
 

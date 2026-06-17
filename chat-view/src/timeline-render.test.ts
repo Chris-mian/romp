@@ -78,6 +78,7 @@ function synthData() {
   const sess = (id: string, name: string) => ({
     id, name, color: "#7aa2f7", state: "working", live: true, model: "Opus 4.8", effort: "xhigh",
     context: 40, since: now - 60, awaiting: [], compacting: [], pendingMail: 0, compactions: [], faded: false, stale: false,
+    tokensAll: { in: 840000, out: 120000, cache_r: 9000000 },
   });
   return {
     now,
@@ -357,21 +358,42 @@ test("judging band is gated on Debug mode: OFF by default hides it; Debug on dra
   g.localStorage.getItem = () => null;                        // reset the shared mock
 });
 
-// ── token-usage footer (2026-06-17): data.tokens = {sessions, pipeline} → a sessions-vs-pipeline split
-// in the controls row, right of the rate-limit bars.
-test("token-usage footer: data.tokens fills the sessions vs pipeline split with the pipeline share", () => {
+// ── token-usage footer (2026-06-17): data.tokens = {fiveHour, week} → a per-window grid (sessions /
+// pipeline rows × 5h / week cols, each cell in/out) + the active chat tab's lifetime line.
+test("token grid: per-window sessions/pipeline split in/out, plus the active tab's lifetime", () => {
   const panel = new TimelinePanel(makeNode("div"));
+  panel.selectedSid = "S1";   // the active chat tab → its lifetime line follows the selected lane
   panel.update({ ...synthData(), tokens: {
-    sessions: { in: 800000, out: 200000, cache_w: 0, cache_r: 5000000 },
-    pipeline: { total: { calls: 12, in: 60000, out: 40000, cost: 0.42, ms: 9000 },
-                byJudge: { captioner: { calls: 8, in: 30000, out: 20000, cost: 0.1, ms: 4000 } }, byTier: {} },
+    fiveHour: { sessions: { in: 800000, out: 200000, cache_r: 5000000 },
+                pipeline: { total: { calls: 12, in: 60000, out: 40000, cost: 0.42, ms: 9000 },
+                            byJudge: { captioner: { calls: 8, in: 30000, out: 20000 } }, byTier: {} } },
+    week:     { sessions: { in: 6000000, out: 900000, cache_r: 40000000 },
+                pipeline: { total: { calls: 50, in: 300000, out: 200000, cost: 2.1, ms: 40000 }, byJudge: {}, byTier: {} } },
+    windows: { fiveHour: 18000, week: 604800 },
   } });
   assert.equal(panel._tokensWrap.style.display, "flex");
-  assert.equal(panel._tokRows.sessions.val.textContent, "1.0M", "sessions in+out = 1.0M");
-  assert.match(panel._tokRows.pipeline.val.textContent, /100k\s+9%/, "pipeline 100k, ~9% of the combined total");
+  assert.equal(panel._tokRows.sessions.five.textContent, "800k/200k", "sessions, last 5h: in/out");
+  assert.equal(panel._tokRows.sessions.week.textContent, "6.0M/900k", "sessions, last week: in/out");
+  assert.equal(panel._tokRows.pipeline.five.textContent, "60k/40k", "pipeline, last 5h: in/out");
+  assert.equal(panel._tokRows.pipeline.week.textContent, "300k/200k", "pipeline, last week: in/out");
+  assert.match(panel._tokActive.textContent, /alpha/, "active-tab line names the focused session");
+  assert.match(panel._tokActive.textContent, /840k/, "active-tab lifetime in");
+  assert.match(panel._tokActive.textContent, /120k/, "active-tab lifetime out");
 });
-test("token-usage footer is hidden when there's no token data", () => {
+test("active-tab token line follows a tab switch without a fresh band (_select)", () => {
   const panel = new TimelinePanel(makeNode("div"));
-  panel.update(synthData());
+  panel.selectedSid = "S1";
+  panel.update({ ...synthData(), tokens: {
+    fiveHour: { sessions: { in: 1, out: 1, cache_r: 0 }, pipeline: { total: { calls: 0, in: 0, out: 0 }, byJudge: {}, byTier: {} } },
+    week: { sessions: { in: 1, out: 1, cache_r: 0 }, pipeline: { total: { calls: 0, in: 0, out: 0 }, byJudge: {}, byTier: {} } },
+    windows: { fiveHour: 18000, week: 604800 },
+  } });
+  assert.match(panel._tokActive.textContent, /alpha/);
+  panel._select("S2");   // switch tabs — the line must repoint immediately, before the next poll
+  assert.match(panel._tokActive.textContent, /beta/, "the line now reflects the newly-selected lane");
+});
+test("token grid is hidden when there's no token data and no active-tab usage", () => {
+  const panel = new TimelinePanel(makeNode("div"));
+  panel.update(synthData());   // no .tokens, no selection
   assert.equal(panel._tokensWrap.style.display, "none");
 });
