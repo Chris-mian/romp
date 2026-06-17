@@ -529,61 +529,19 @@ class PlanRef(unittest.TestCase):
         self.assertTrue(s["nodes"][s["placements"]["s2"]]["nodeComplete"], "done ref 1 completes the new G2")
 
 
-class PlanGroup(unittest.TestCase):
-    """The `group` op relinks an open goal (its whole subtree) under another node — the retroactive-
-    grouping / move primitive (the user 2026-06-17). `sub` gains "ref" so new work can file under an
-    umbrella minted earlier in the SAME reply."""
+class PlanSubRef(unittest.TestCase):
+    """The planner no longer GROUPS (that moved to the grouper judge, 2026-06-17). It keeps `sub` with
+    "ref" so a segment can mint an umbrella and file its own new work under it in the SAME reply."""
 
-    def test_parse_group_and_sub_ref(self):
-        self.assertEqual(jd._parse_plan('{"ops":[{"why":"x","do":"group","goal":2,"under":1}]}', 3),
-                         [{"do": "group", "why": "x", "goal": 2, "under": 1}])
-        ops = jd._parse_plan('{"ops":[{"why":"u","do":"mint","text":"Umbrella"},'
-                             '{"why":"x","do":"group","goal":1,"ref":1}]}', 2)
-        self.assertEqual(ops[1], {"do": "group", "why": "x", "goal": 1, "ref": 1}, "group via a same-reply ref")
-        self.assertIsNone(jd._parse_plan('{"ops":[{"why":"x","do":"group","goal":1,"under":1}]}', 3),
-                          "self-group (goal == under) is dropped")
+    def test_parse_drops_group_keeps_sub_ref(self):
+        # a `group` op from the planner is now dropped (only-op → None; the planner doesn't reshape)
+        self.assertIsNone(jd._parse_plan('{"ops":[{"why":"x","do":"group","goal":2,"under":1}]}', 3),
+                          "the planner no longer emits group")
+        ops = jd._parse_plan('{"ops":[{"why":"x","do":"mint","text":"keep"},'
+                             '{"why":"x","do":"group","goal":1,"under":2}]}', 3)
+        self.assertEqual(ops, [{"do": "mint", "why": "x", "text": "keep"}], "a group op is stripped, the mint stays")
         self.assertEqual(jd._parse_plan('{"ops":[{"why":"x","do":"sub","ref":1,"text":"step"}]}', 0),
-                         [{"do": "sub", "why": "x", "ref": 1, "text": "step"}], "sub accepts a ref parent")
-
-    def _two_tops(self):
-        s = _store()
-        jd.apply_plan(s, "s1", T0, [{"do": "mint", "why": "x", "text": "Goal A"}], [])
-        jd.apply_plan(s, "s2", T0 + 10, [{"do": "mint", "why": "x", "text": "Goal B"}], jd.open_menu(s))
-        return s, s["placements"]["s1"], s["placements"]["s2"]
-
-    def test_group_relinks_a_top_under_another(self):
-        s, a, b = self._two_tops()
-        menu = jd.open_menu(s)                                    # [A, B] oldest-first
-        ai = next(i for i, nd in enumerate(menu, 1) if nd["id"] == a)
-        bi = next(i for i, nd in enumerate(menu, 1) if nd["id"] == b)
-        jd.apply_plan(s, "s3", T0 + 20, [{"do": "group", "why": "both serve X", "goal": bi, "under": ai}], menu)
-        self.assertEqual(s["nodes"][b]["parentId"], a, "B is relinked under A (its subtree moves with it)")
-        self.assertIsNone(s["nodes"][a]["parentId"], "A stays a top")
-
-    def test_group_two_tops_under_a_fresh_umbrella(self):
-        s, a, b = self._two_tops()
-        menu = jd.open_menu(s)
-        ai = next(i for i, nd in enumerate(menu, 1) if nd["id"] == a)
-        bi = next(i for i, nd in enumerate(menu, 1) if nd["id"] == b)
-        jd.apply_plan(s, "s3", T0 + 20, [{"do": "mint", "why": "both serve X", "text": "Umbrella X"},
-                                         {"do": "group", "why": "x", "goal": ai, "ref": 1},
-                                         {"do": "group", "why": "x", "goal": bi, "ref": 1}], menu)
-        um = next(nd for nd in s["nodes"].values() if nd["text"] == "Umbrella X")["id"]
-        self.assertEqual(s["nodes"][a]["parentId"], um, "A grouped under the fresh umbrella")
-        self.assertEqual(s["nodes"][b]["parentId"], um, "B grouped under the fresh umbrella")
-        self.assertIsNone(s["nodes"][um]["parentId"], "the umbrella is the new top")
-
-    def test_group_refuses_a_cycle(self):
-        s = _store()
-        jd.apply_plan(s, "s1", T0, [{"do": "mint", "why": "x", "text": "Parent"}], [])
-        jd.apply_plan(s, "s2", T0 + 10, [{"do": "sub", "why": "x", "under": 1, "text": "Child"}], jd.open_menu(s))
-        parent, child = s["placements"]["s1"], s["placements"]["s2"]
-        menu = jd.open_menu(s)
-        pi = next(i for i, nd in enumerate(menu, 1) if nd["id"] == parent)
-        ci = next(i for i, nd in enumerate(menu, 1) if nd["id"] == child)
-        jd.apply_plan(s, "s3", T0 + 20, [{"do": "group", "why": "x", "goal": pi, "under": ci}], menu)
-        self.assertIsNone(s["nodes"][parent]["parentId"], "grouping Parent under its own Child is refused (no cycle)")
-        self.assertEqual(s["nodes"][child]["parentId"], parent, "Child stays under Parent")
+                         [{"do": "sub", "why": "x", "ref": 1, "text": "step"}], "sub still accepts a ref parent")
 
     def test_sub_ref_files_new_work_under_a_fresh_umbrella(self):
         s = _store()
@@ -593,6 +551,147 @@ class PlanGroup(unittest.TestCase):
         step = next(nd for nd in s["nodes"].values() if nd["text"] == "new step")
         self.assertEqual(step["parentId"], um["id"], "sub ref files the new step under the just-minted umbrella")
         self.assertIsNone(um["parentId"], "the umbrella is the top")
+
+
+class Grouper(unittest.TestCase):
+    """The grouper judge (the user 2026-06-17): a separate pass after the planner that reshapes a
+    session's OPEN top goals into coherent trees — relinking one top under another, or minting a fresh
+    higher-level umbrella and nesting tops under it. Event-gated per session (groupedSig) so a stable
+    board is never re-grouped."""
+
+    def _two_tops(self):
+        s = _store()
+        jd.apply_plan(s, "s1", T0, [{"do": "mint", "why": "x", "text": "Goal A"}], [])
+        jd.apply_plan(s, "s2", T0 + 10, [{"do": "mint", "why": "x", "text": "Goal B"}], jd.open_menu(s))
+        return s, s["placements"]["s1"], s["placements"]["s2"]
+
+    # ── parse ──
+    def test_parse_mint_group_and_empty(self):
+        self.assertEqual(jd._parse_group('{"ops":[{"why":"x","do":"group","goal":2,"under":1}]}', 3),
+                         [{"do": "group", "why": "x", "goal": 2, "under": 1}])
+        ops = jd._parse_group('{"ops":[{"why":"u","do":"mint","text":"Umbrella"},'
+                              '{"why":"x","do":"group","goal":1,"ref":1}]}', 2)
+        self.assertEqual(ops[0], {"do": "mint", "why": "u", "text": "Umbrella"})
+        self.assertEqual(ops[1], {"do": "group", "why": "x", "goal": 1, "ref": 1}, "group via a same-reply ref")
+        self.assertEqual(jd._parse_group('{"ops":[{"why":"x","do":"group","goal":1,"under":1}]}', 3), [],
+                         "self-group (goal == under) is dropped")
+        self.assertEqual(jd._parse_group('{"ops":[]}', 3), [], "empty ops is valid: nothing to group")
+        self.assertIsNone(jd._parse_group("not json", 3), "unusable JSON → None (retry)")
+
+    # ── apply ──
+    def test_relinks_a_top_under_another(self):
+        s, a, b = self._two_tops()
+        tops = jd._group_tops(s)                                  # [A, B] oldest-first
+        ai = next(i for i, nd in enumerate(tops, 1) if nd["id"] == a)
+        bi = next(i for i, nd in enumerate(tops, 1) if nd["id"] == b)
+        n = jd.apply_group(s, tops, [{"do": "group", "why": "both serve X", "goal": bi, "under": ai}], T0 + 20)
+        self.assertEqual(n, 1, "one relink applied")
+        self.assertEqual(s["nodes"][b]["parentId"], a, "B is relinked under A (its subtree moves with it)")
+        self.assertIsNone(s["nodes"][a]["parentId"], "A stays a top")
+
+    def test_two_tops_under_a_fresh_umbrella_with_anchor_backfill(self):
+        s, a, b = self._two_tops()
+        s["nodes"][a]["trail"] = ["s1"]                           # A has a real anchor seg; B has none
+        tops = jd._group_tops(s)
+        ai = next(i for i, nd in enumerate(tops, 1) if nd["id"] == a)
+        bi = next(i for i, nd in enumerate(tops, 1) if nd["id"] == b)
+        jd.apply_group(s, tops, [{"do": "mint", "why": "both serve X", "text": "Umbrella X"},
+                                 {"do": "group", "why": "x", "goal": ai, "ref": 1},
+                                 {"do": "group", "why": "x", "goal": bi, "ref": 1}], T0 + 20)
+        um = next(nd for nd in s["nodes"].values() if nd["text"] == "Umbrella X")
+        self.assertEqual(s["nodes"][a]["parentId"], um["id"], "A grouped under the fresh umbrella")
+        self.assertEqual(s["nodes"][b]["parentId"], um["id"], "B grouped under the fresh umbrella")
+        self.assertIsNone(um["parentId"], "the umbrella is the new top")
+        self.assertTrue(um.get("umbrella"), "a minted umbrella is tagged")
+        self.assertEqual(um["trail"], ["s1"], "umbrella inherits its earliest grouped child's anchor seg")
+
+    def test_refuses_a_cycle(self):
+        s = _store()
+        jd.apply_plan(s, "s1", T0, [{"do": "mint", "why": "x", "text": "Parent"}], [])
+        jd.apply_plan(s, "s2", T0 + 10, [{"do": "sub", "why": "x", "under": 1, "text": "Child"}], jd.open_menu(s))
+        parent, child = s["placements"]["s1"], s["placements"]["s2"]
+        tops = [s["nodes"][parent], s["nodes"][child]]            # force Child into the candidate list to exercise the guard
+        n = jd.apply_group(s, tops, [{"do": "group", "why": "x", "goal": 1, "under": 2}], T0 + 20)
+        self.assertEqual(n, 0, "the cyclic relink is refused")
+        self.assertIsNone(s["nodes"][parent]["parentId"], "grouping Parent under its own Child is refused (no cycle)")
+        self.assertEqual(s["nodes"][child]["parentId"], parent, "Child stays under Parent")
+
+    def test_relink_clamps_at_max_depth(self):
+        s = _store()
+        jd.apply_plan(s, "s0", T0, [{"do": "mint", "why": "x", "text": "A"}], [])
+        for i in range(1, jd.MAX_DEPTH + 1):                     # chain A -> step1 -> ... down to MAX_DEPTH
+            menu = jd.open_menu(s)
+            last = max(s["nodes"].values(), key=lambda nd: nd["t"])
+            n = next(j for j, nd in enumerate(menu, 1) if nd["id"] == last["id"])
+            jd.apply_plan(s, "s%d" % i, T0 + i, [{"do": "sub", "why": "x", "under": n, "text": "step %d" % i}], menu)
+        jd.apply_plan(s, "sb", T0 + 50, [{"do": "mint", "why": "x", "text": "B"}], jd.open_menu(s))
+        deepest = max(s["nodes"].values(), key=lambda nd: jd._depth(s["nodes"], nd["id"]))
+        b = s["placements"]["sb"]
+        tops = [deepest, s["nodes"][b]]                          # group B under the deepest node
+        jd.apply_group(s, tops, [{"do": "group", "why": "x", "goal": 2, "under": 1}], T0 + 60)
+        self.assertLessEqual(jd._depth(s["nodes"], b), jd.MAX_DEPTH, "B's relink is clamped to MAX_DEPTH")
+
+    # ── the session pass: event-gated by the open-top set ──
+    def _setup(self, store, records):
+        td = Path(tempfile.mkdtemp())
+        cdir = td / "launchdir"; cdir.mkdir()
+        proj = td / "projects"
+        pdir = proj / jd.re.sub(r"[/.]", "-", os.path.realpath(str(cdir)))
+        pdir.mkdir(parents=True)
+        (pdir / (SID + ".jsonl")).write_text("\n".join(json.dumps(r) for r in records) + "\n")
+        names = td / "names"; names.mkdir()
+        (names / SID).write_text("testsess\t%s\t#abcdef\n" % str(cdir))
+        self._saved = (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.group_llm)
+        jd.NAMES, jd.PROJECTS, jd.GOALDIR = names, proj, td / "goals"
+        jd.save_goals(SID, store)
+        return str(pdir / (SID + ".jsonl"))
+
+    def tearDown(self):
+        if hasattr(self, "_saved"):
+            (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.group_llm) = self._saved
+
+    def test_session_runs_once_then_gates_until_top_set_changes(self):
+        store, a, b = self._two_tops()
+        records = [uline(T0, "task one", "u1", ps="typed"),
+                   aline(T0 + 10, "did one", "a1", "u1", stop="end_turn")]
+        self._setup(store, records)
+        calls = []
+
+        def fake_group(menu):
+            calls.append(menu)
+            return '{"ops":[{"why":"both serve X","do":"group","goal":2,"under":1}]}'   # B under A
+        jd.group_llm = fake_group
+        now = T0 + 5000
+        jd.run_group(now=now)
+        st = jd.load_goals(SID)
+        self.assertEqual(st["nodes"][b]["parentId"], a, "B nested under A")
+        self.assertEqual(len(calls), 1, "the grouper called the model once")
+        self.assertTrue(st.get("groupedSig"), "groupedSig recorded")
+        jd.run_group(now=now)
+        self.assertEqual(len(calls), 1, "unchanged open-top set → the model is NOT called again (event-gated)")
+        # a NEW top appears → the open-top set changes → the grouper re-runs
+        st = jd.load_goals(SID)
+        jd.apply_plan(st, "s3", T0 + 200, [{"do": "mint", "why": "x", "text": "Goal C"}], jd.open_menu(st))
+        jd.save_goals(SID, st)
+        jd.run_group(now=now)
+        self.assertEqual(len(calls), 2, "a newly minted top re-triggers the grouper")
+
+    def test_single_top_records_sig_without_calling_model(self):
+        store = _store()
+        jd.apply_plan(store, "s1", T0, [{"do": "mint", "why": "x", "text": "Solo"}], [])
+        records = [uline(T0, "task", "u1", ps="typed"), aline(T0 + 10, "did", "a1", "u1", stop="end_turn")]
+        self._setup(store, records)
+        calls = []
+        jd.group_llm = lambda menu: calls.append(menu) or '{"ops":[]}'
+        jd.run_group(now=T0 + 5000)
+        self.assertEqual(len(calls), 0, "fewer than two tops → nothing to group, model not called")
+        self.assertIsNotNone(jd.load_goals(SID).get("groupedSig"), "the (single-top) set is still recorded")
+
+    def test_prompt_carries_the_grouping_steer(self):
+        for phrase in ('"do":"group"', '"do":"mint"', "RELINK open top", "umbrella",
+                       "AGGRESSIVE about grouping", "look-alike wording"):
+            self.assertIn(phrase, jd.GROUP_SYS, phrase)
+        self.assertNotIn("genuine", jd.GROUP_SYS.lower(), "the grouper prompt avoids 'genuine' too")
 
 
 class PlanRollup(unittest.TestCase):
@@ -672,6 +771,15 @@ class Courier(unittest.TestCase):
                  "message": {"content": [{"type": "text", "text": "hi"}]}}]}
         self.assertIsNone(jd._seg_peer(human), "a human prompt is not a peer segment")
 
+    def test_seg_human_detects_human_opener(self):
+        human = {"trigger": "u1", "atoms": [{"uuid": "u1", "type": "user", "author": "human",
+                 "message": {"content": [{"type": "text", "text": "hi"}]}}]}
+        self.assertTrue(jd._seg_human(human), "a human prompt is a user message")
+        for auth in ("sdk", "system", {"peer": "SENDERSID"}):
+            seg = {"trigger": "u2", "atoms": [{"uuid": "u2", "type": "user", "author": auth,
+                   "message": {"content": [{"type": "text", "text": "x"}]}}]}
+            self.assertFalse(jd._seg_human(seg), "%r is not a user message" % (auth,))
+
     def test_parse_courier(self):
         self.assertEqual(jd._parse_courier('{"verdict": "delegating", "goal": 2, "text": "fix the build"}', 3),
                          {"delegating": True, "n": 2, "text": "fix the build"})
@@ -730,9 +838,9 @@ class PlanPass(unittest.TestCase):
             (names / SID).write_text("testsess\t%s\t#abcdef\n" % str(cdir))
             saved = (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.plan_llm)
             jd.NAMES, jd.PROJECTS, jd.GOALDIR = names, proj, td / "goals"
-            jd.plan_llm = lambda text, menu: ('{"ops":[{"why":"x","do":"mint","text":"Goal one"}]}'
-                                              if "no open goals" in menu
-                                              else '{"ops":[{"why":"x","do":"sub","under":1,"text":"a step"}]}')
+            jd.plan_llm = lambda text, menu, human=False: ('{"ops":[{"why":"x","do":"mint","text":"Goal one"}]}'
+                                                           if "no open goals" in menu
+                                                           else '{"ops":[{"why":"x","do":"sub","under":1,"text":"a step"}]}')
             try:
                 now = T0 + 5000
                 n1 = jd.run_plan(now=now)
@@ -749,45 +857,76 @@ class PlanPass(unittest.TestCase):
 
 
 class PlanSkip(unittest.TestCase):
-    """simplify's SKIP verdict: a no-work segment is recorded processed but creates no node (and isn't
-    re-judged); a tool-running segment is still placed."""
+    """skip is now gated on authorship: a NON-user no-work segment (sdk/system/auto) is recorded
+    processed but creates no node; a segment carrying a real USER message can NEVER be skipped — if the
+    model returns skip anyway, the hard guard coerces it onto the board (mint when the board is empty,
+    else a step under the most recent open goal). Event-based: keys on the trigger atom's author."""
 
-    def test_skip_no_work_place_tool_work_idempotent(self):
-        records = [uline(T0, "just an ack", "u1", ps="typed"),
-                   aline(T0 + 10, "ok", "a1", "u1", stop="end_turn"),                  # no-work → SKIP
-                   uline(T0 + 100, "do it", "u2", "a1", ps="typed"),
-                   aline(T0 + 110, "", "a2", "u2", tools=("Bash",), stop="end_turn")]  # silent tool-work → place
-        with tempfile.TemporaryDirectory() as td:
-            td = Path(td)
-            cdir = td / "launchdir"; cdir.mkdir()
-            proj = td / "projects"
-            pdir = proj / jd.re.sub(r"[/.]", "-", os.path.realpath(str(cdir)))
-            pdir.mkdir(parents=True)
-            (pdir / (SID + ".jsonl")).write_text("\n".join(json.dumps(r) for r in records) + "\n")
-            names = td / "names"; names.mkdir()
-            (names / SID).write_text("testsess\t%s\t#abcdef\n" % str(cdir))
-            saved = (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.plan_llm)
-            jd.NAMES, jd.PROJECTS, jd.GOALDIR = names, proj, td / "goals"
-            calls = []
+    def _run(self, records):
+        td = Path(tempfile.mkdtemp())
+        cdir = td / "launchdir"; cdir.mkdir()
+        proj = td / "projects"
+        pdir = proj / jd.re.sub(r"[/.]", "-", os.path.realpath(str(cdir)))
+        pdir.mkdir(parents=True)
+        (pdir / (SID + ".jsonl")).write_text("\n".join(json.dumps(r) for r in records) + "\n")
+        names = td / "names"; names.mkdir()
+        (names / SID).write_text("testsess\t%s\t#abcdef\n" % str(cdir))
+        self._saved = (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.plan_llm)
+        jd.NAMES, jd.PROJECTS, jd.GOALDIR = names, proj, td / "goals"
+        return td
 
-            def fake_plan(text, menu):
-                calls.append(text)
-                return ('{"ops":[{"why":"x","do":"mint","text":"did tool work"}]}' if "TOOLS USED" in text
-                        else '{"ops":[{"why":"just an ack","do":"skip"}]}')
-            jd.plan_llm = fake_plan
-            try:
-                now = T0 + 5000
-                jd.run_plan(now=now)
-                store = jd.load_goals(SID)
-                self.assertEqual(len(store["nodes"]), 1, "only the tool-running segment created a node")
-                self.assertEqual(next(iter(store["nodes"].values()))["text"], "did tool work")
-                self.assertEqual(len(store["placements"]), 2, "BOTH segments recorded processed")
-                self.assertIn(None, store["placements"].values(), "the SKIP is recorded as None (no node)")
-                n_calls = len(calls)
-                jd.run_plan(now=now)                          # 2nd pass
-                self.assertEqual(len(calls), n_calls, "neither the skipped nor the placed segment is re-judged")
-            finally:
-                (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.plan_llm) = saved
+    def tearDown(self):
+        if hasattr(self, "_saved"):
+            (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.plan_llm) = self._saved
+
+    def test_nonuser_skip_recorded_but_user_skip_is_coerced(self):
+        # sdk-opened no-work segment → the model SKIPs and it stays skipped (no node); a HUMAN no-work
+        # ack → the model SKIPs but the hard guard places it anyway (board empty → mint).
+        records = [uline(T0, "auto kickoff", "u0", ps="sdk"),                 # sdk → skip allowed
+                   aline(T0 + 10, "noted", "a0", "u0", stop="end_turn"),
+                   uline(T0 + 100, "just an ack", "u1", "a0", ps="typed"),    # human ack → MUST be placed
+                   aline(T0 + 110, "ok", "a1", "u1", stop="end_turn")]
+        self._run(records)
+        calls = []
+
+        def fake_plan(text, menu, human=False):
+            calls.append((text, human))
+            return '{"ops":[{"why":"nothing to do","do":"skip"}]}'           # model tries to skip BOTH
+        jd.plan_llm = fake_plan
+        now = T0 + 5000
+        jd.run_plan(now=now)
+        store = jd.load_goals(SID)
+        self.assertEqual(len(store["nodes"]), 1, "only the human segment landed; the sdk skip created nothing")
+        node = next(iter(store["nodes"].values()))
+        self.assertIsNone(node["parentId"], "board was empty → coerced to a new top goal")
+        self.assertIn("ack", node["text"], "the coerced label comes from the user's message")
+        self.assertIn(None, store["placements"].values(), "the sdk SKIP is recorded as None (no node)")
+        # the planner saw human=True for the user segment and human=False for the sdk one
+        self.assertEqual(sorted(h for _, h in calls), [False, True])
+        n_calls = len(calls)
+        jd.run_plan(now=now)                                              # 2nd pass
+        self.assertEqual(len(calls), n_calls, "both segments are idempotent — neither is re-judged")
+
+    def test_user_skip_coerced_subs_under_the_active_goal(self):
+        # a human tool-work segment mints a top; a later human ack the model tries to skip is coerced
+        # to a STEP under that goal (the most recent open node), not a second top.
+        records = [uline(T0, "do it", "u1", ps="typed"),
+                   aline(T0 + 10, "", "a1", "u1", tools=("Bash",), stop="end_turn"),   # tool work → real placement
+                   uline(T0 + 100, "thanks", "u2", "a1", ps="typed"),                  # human ack → coerced sub
+                   aline(T0 + 110, "yw", "a2", "u2", stop="end_turn")]
+        self._run(records)
+
+        def fake_plan(text, menu, human=False):
+            return ('{"ops":[{"why":"x","do":"mint","text":"the task"}]}' if "TOOLS USED" in text
+                    else '{"ops":[{"why":"bare thanks","do":"skip"}]}')
+        jd.plan_llm = fake_plan
+        jd.run_plan(now=T0 + 5000)
+        store = jd.load_goals(SID)
+        tops = [nd for nd in store["nodes"].values() if nd["parentId"] is None]
+        subs = [nd for nd in store["nodes"].values() if nd["parentId"] is not None]
+        self.assertEqual(len(tops), 1, "the ack did NOT mint a second top")
+        self.assertEqual(len(subs), 1, "the ack was coerced to a step under the active goal")
+        self.assertEqual(subs[0]["parentId"], tops[0]["id"])
 
 
 class PlanTuning(unittest.TestCase):
@@ -833,6 +972,19 @@ class PlanTuning(unittest.TestCase):
         self.assertIn("mint only when NO open goal matches", jd.PLAN_SYS)
         self.assertGreaterEqual(jd.open_menu.__defaults__[0], 20, "menu cap covers old goals (≥20)")
 
+    def test_user_message_must_be_placed_never_skipped(self):
+        # a segment carrying a real user message can't be skipped: the prompt forbids it and plan_llm
+        # flags the segment with a <note> when human.
+        self.assertIn("NEVER skip", jd.PLAN_SYS)
+        self.assertIn("REAL USER MESSAGE", jd.PLAN_SYS)
+        # human=True appends the note; human=False (the default) does not
+        import unittest.mock as mock
+        with mock.patch.object(jd, "_judge_run", return_value="{}") as m:
+            jd.plan_llm("seg", "menu", human=True)
+            self.assertIn("MUST be placed", m.call_args.args[2])
+            jd.plan_llm("seg", "menu")
+            self.assertNotIn("MUST be placed", m.call_args.args[2])
+
     def test_max_depth_is_4_and_stated_in_the_prompt(self):
         self.assertEqual(jd.MAX_DEPTH, 4, "planning hierarchy capped at 4 (the user, 2026-06-16)")
         self.assertIn("%d levels deep" % jd.MAX_DEPTH, jd.PLAN_SYS,
@@ -856,12 +1008,13 @@ class PlanTuning(unittest.TestCase):
         for phrase in ("Write each \"why\" plainly", "no em dashes", "say it once"):
             self.assertIn(phrase, jd.CLOSER_SYS, phrase)
 
-    def test_planner_prompt_pushes_aggressive_grouping_and_eager_done(self):
-        # the user 2026-06-17: be AGGRESSIVE about grouping (a `group`/relink op, retroactively) and bias
-        # toward marking goals done EAGERLY when the outcome is delivered. Guard against a revert.
-        for phrase in ('"do":"group"', "RELINK open goal", "GROUPING (be aggressive)",
-                       "regroup tops", "genuine shared purpose", "Mark done EAGERLY"):
-            self.assertIn(phrase, jd.PLAN_SYS, phrase)
+    def test_planner_eager_done_and_no_grouping(self):
+        # the user 2026-06-17: the planner biases toward marking goals done EAGERLY, and (split out the
+        # same day) NO LONGER groups — grouping moved to the grouper judge. Guard against a revert.
+        self.assertIn("Mark done EAGERLY", jd.PLAN_SYS)
+        for gone in ('"do":"group"', "RELINK", "GROUPING (be aggressive)", "regroup tops"):
+            self.assertNotIn(gone, jd.PLAN_SYS, "%s should have moved to the grouper" % gone)
+        self.assertIn("do NOT reorganize the board", jd.PLAN_SYS, "the planner is told the grouper handles nesting")
 
     def test_sub_files_under_the_old_topic_goal_not_the_newest(self):
         # mechanics: a SUB targeting an OLD goal lands there, not the newer one — the planner can reach
@@ -1138,7 +1291,7 @@ class SweepSession(unittest.TestCase):
         (names / SID).write_text("testsess\t%s\t#abcdef\n" % str(cdir))
         jd.NAMES, jd.PROJECTS, jd.GOALDIR = names, proj, td / "goals"
         # positive-only: always MINT a top, never DONE -> every top is left 'working'
-        jd.plan_llm = lambda text, menu: '{"ops":[{"why":"x","do":"mint","text":"Goal"}]}'
+        jd.plan_llm = lambda text, menu, human=False: '{"ops":[{"why":"x","do":"mint","text":"Goal"}]}'
         self.now = T0 + 5000
 
     def tearDown(self):
@@ -1280,6 +1433,123 @@ class ClassifyExperiment(unittest.TestCase):
         self.assertEqual(seg["id"], "sC", "the most recent segment anywhere in the subtree")
         self.assertIsNone(jd._latest_subtree_segment(top["id"], nodes, children, {}),
                           "no resolvable segment → None")
+
+
+class SettledGateStates(unittest.TestCase):
+    """parsed_session must pass states/<fsid>.jsonl so REAL idle transitions become idle atoms — without
+    them _session_closed() is permanently False and a discharged focus goal never settles to completed
+    (the user's bug 2026-06-17, handed off by `bugs`). The states file's (mtime,size) is folded into the
+    parse cache key so an idle-only transition (transcript untouched) still busts the cache."""
+
+    def _setup(self, records):
+        td = Path(tempfile.mkdtemp())
+        path = td / (SID + ".jsonl")
+        path.write_text("\n".join(json.dumps(r) for r in records) + "\n")
+        statesdir = td / "states"; statesdir.mkdir()
+        self._saved = (jd.STATESDIR, dict(jd._PARSE_CACHE))
+        jd.STATESDIR = statesdir
+        jd._PARSE_CACHE.clear()
+        return str(path), statesdir
+
+    def tearDown(self):
+        if hasattr(self, "_saved"):
+            jd.STATESDIR = self._saved[0]
+            jd._PARSE_CACHE.clear(); jd._PARSE_CACHE.update(self._saved[1])
+
+    def test_idle_state_makes_session_closed_true(self):
+        records = [uline(T0, "do it", "u1", ps="typed"),
+                   aline(T0 + 10, "done", "a1", "u1", stop="end_turn")]
+        path, statesdir = self._setup(records)
+        now = T0 + 5000
+        self.assertFalse(jd._session_closed(jd.parsed_session(SID, [path], now)),
+                         "no states file → no idle atom → session not closed")
+        # a real idle transition appears in states/<sid>.jsonl; the parse-cache fold re-parses
+        (statesdir / (SID + ".jsonl")).write_text(json.dumps({"t": T0 + 60, "state": "idle"}) + "\n")
+        self.assertTrue(jd._session_closed(jd.parsed_session(SID, [path], now)),
+                        "state:idle reaches the parse → session closed (settled gate alive)")
+
+    def test_idle_append_busts_cache_despite_unchanged_transcript(self):
+        records = [uline(T0, "x", "u1", ps="typed"), aline(T0 + 10, "y", "a1", "u1", stop="end_turn")]
+        path, statesdir = self._setup(records)
+        (statesdir / (SID + ".jsonl")).write_text(json.dumps({"t": T0 + 5, "state": "working"}) + "\n")
+        now = T0 + 5000
+        self.assertFalse(jd._session_closed(jd.parsed_session(SID, [path], now)))
+        with open(statesdir / (SID + ".jsonl"), "a") as fh:           # transcript untouched; states grows
+            fh.write(json.dumps({"t": T0 + 60, "state": "idle"}) + "\n")
+        self.assertTrue(jd._session_closed(jd.parsed_session(SID, [path], now)),
+                        "states-file growth busts the cache → re-parse picks up the idle transition")
+
+    def test_focus_complete_goal_settles_once_session_is_idle(self):
+        # end-to-end: a discharged TOP that is the active focus completes once the session goes idle.
+        records = [uline(T0, "ship it", "u1", ps="typed"),
+                   aline(T0 + 10, "shipped", "a1", "u1", stop="end_turn")]
+        path, statesdir = self._setup(records)
+        now = T0 + 5000
+        s = _store()
+        g = _mknode(s, "Ship the release", t=T0)
+        g["nodeComplete"] = True
+        s["lastNode"] = g["id"]                                       # the completed goal is the active focus
+        jd.rollup_status(s, jd._session_closed(jd.parsed_session(SID, [path], now)))
+        self.assertEqual(s["status"][g["id"]], "working", "focus + not-closed → held working (no idle yet)")
+        (statesdir / (SID + ".jsonl")).write_text(json.dumps({"t": T0 + 60, "state": "idle"}) + "\n")
+        jd.rollup_status(s, jd._session_closed(jd.parsed_session(SID, [path], now)))
+        self.assertEqual(s["status"][g["id"]], "completed", "idle transition settles the focus goal to completed")
+
+
+class PendingJudgment(unittest.TestCase):
+    """jd.pending_judgment — the feed's single 'needs judging' signal (infra 2026-06-17): True while any
+    triage judge (planner / closer / grouper) still has unprocessed ended work for the session."""
+
+    def _setup(self, records):
+        td = Path(tempfile.mkdtemp())
+        cdir = td / "launchdir"; cdir.mkdir()
+        proj = td / "projects"
+        pdir = proj / jd.re.sub(r"[/.]", "-", os.path.realpath(str(cdir)))
+        pdir.mkdir(parents=True)
+        path = pdir / (SID + ".jsonl")
+        path.write_text("\n".join(json.dumps(r) for r in records) + "\n")
+        names = td / "names"; names.mkdir()
+        (names / SID).write_text("testsess\t%s\t#abcdef\n" % str(cdir))
+        self._saved = (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.STATESDIR, jd.plan_llm, jd.closer_llm)
+        jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.STATESDIR = names, proj, td / "goals", td / "states"
+        jd._PARSE_CACHE.clear()
+        return str(path)
+
+    def tearDown(self):
+        if hasattr(self, "_saved"):
+            (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.STATESDIR, jd.plan_llm, jd.closer_llm) = self._saved
+            jd._PARSE_CACHE.clear()
+
+    def test_true_until_planner_and_closer_catch_up(self):
+        records = [uline(T0, "do it", "u1", ps="typed"),
+                   aline(T0 + 10, "", "a1", "u1", tools=("Bash",), stop="end_turn")]
+        path = self._setup(records)
+        now = T0 + 5000
+        self.assertTrue(jd.pending_judgment(SID, path, now), "ended segment not yet placed → pending")
+        jd.plan_llm = lambda text, menu, human=False: '{"ops":[{"why":"x","do":"mint","text":"G"}]}'
+        jd.run_plan(now=now)
+        self.assertTrue(jd.pending_judgment(SID, path, now), "placed, but the ended turn isn't closed yet → pending")
+        jd.closer_llm = lambda turn, menu: '{"done":[]}'
+        jd.run_close(now=now)
+        self.assertFalse(jd.pending_judgment(SID, path, now), "planner + closer caught up, one top → not pending")
+
+    def test_grouper_pending_when_two_tops_ungrouped(self):
+        records = [uline(T0, "one", "u1", ps="typed"),
+                   aline(T0 + 10, "", "a1", "u1", tools=("Bash",), stop="end_turn"),
+                   uline(T0 + 100, "two", "u2", "a1", ps="typed"),
+                   aline(T0 + 110, "", "a2", "u2", tools=("Bash",), stop="end_turn")]
+        path = self._setup(records)
+        now = T0 + 5000
+        jd.plan_llm = (lambda text, menu, human=False:
+                       '{"ops":[{"why":"x","do":"mint","text":"%s"}]}' % ("A" if "one" in text else "B"))
+        jd.run_plan(now=now)
+        jd.closer_llm = lambda turn, menu: '{"done":[]}'
+        jd.run_close(now=now)
+        self.assertTrue(jd.pending_judgment(SID, path, now), "two ungrouped tops → grouper-pending")
+        st = jd.load_goals(SID)
+        st["groupedSig"] = sorted(nd["id"] for nd in jd._group_tops(st))   # grouper has now run
+        jd.save_goals(SID, st)
+        self.assertFalse(jd.pending_judgment(SID, path, now), "groupedSig matches the top-set → not pending")
 
 
 if __name__ == "__main__":
