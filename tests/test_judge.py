@@ -1245,6 +1245,11 @@ class SweepParse(unittest.TestCase):
         for phrase in ('"block"', "BLOCKED", "owed BY the user", "NEEDS THE USER"):
             self.assertIn(phrase, jd.CLOSER_SYS, phrase)
 
+    def test_closer_prompt_prioritizes_top_level(self):
+        # the user 2026-06-17: the closer is level-agnostic but prompted to prioritize top-level goals.
+        self.assertIn("TOP-LEVEL goals are the most important", jd.CLOSER_SYS)
+        self.assertIn("sub-goal", jd.CLOSER_SYS, "it also resolves finished sub-goals")
+
 
 class SweepApply(unittest.TestCase):
     def test_completes_listed_dones_with_reason_and_provenance(self):
@@ -1315,7 +1320,7 @@ class SweepMenu(unittest.TestCase):
         turn = s["turns"][0]
         return turn, em.segments(turn)
 
-    def test_scoped_to_open_touched_top_ancestors(self):
+    def test_scoped_to_open_touched_goals_at_every_level(self):
         turn, segs = self._two_seg_turn()
         self.assertEqual(len(segs), 2, "the absorbed turn has two segments")
         s = _store()
@@ -1325,8 +1330,8 @@ class SweepMenu(unittest.TestCase):
         s["placements"][segs[0]["id"]] = g1["id"]
         s["placements"][segs[1]["id"]] = sub2["id"]               # placed deep, under a step of G2
         ids = {nd["id"] for nd in jd._turn_menu(turn, s)}
-        self.assertEqual(ids, {g1["id"], g2["id"]},
-                         "the menu is the OPEN top-ancestors the turn touched; G3 (untouched) is excluded")
+        self.assertEqual(ids, {g1["id"], sub2["id"], g2["id"]},
+                         "level-agnostic: the touched sub2 AND its top g2 (and g1) are candidates; G3 (untouched) excluded")
 
     def test_completed_top_is_not_a_candidate(self):
         turn, segs = self._two_seg_turn()
@@ -1338,14 +1343,14 @@ class SweepMenu(unittest.TestCase):
         self.assertEqual([nd["id"] for nd in jd._turn_menu(turn, s)], [g2["id"]],
                          "an already-completed top is no longer a sweep candidate")
 
-    def test_two_segments_one_top_deduped(self):
+    def test_touched_node_and_its_ancestors_deduped(self):
         turn, segs = self._two_seg_turn()
         s = _store()
         g = _mknode(s, "G"); sub = _mknode(s, "step", parent=g["id"])
         s["placements"][segs[0]["id"]] = g["id"]
         s["placements"][segs[1]["id"]] = sub["id"]
-        self.assertEqual([nd["id"] for nd in jd._turn_menu(turn, s)], [g["id"]],
-                         "two segments under one top -> the top appears once")
+        self.assertEqual({nd["id"] for nd in jd._turn_menu(turn, s)}, {g["id"], sub["id"]},
+                         "the touched sub AND its top are both candidates, each once (deduped)")
 
 
 class SweepTurn(unittest.TestCase):
