@@ -1997,6 +1997,57 @@ def _bind_message_execs(messages, turns):
                 break
 
 
+JUDGE_CAP_LIMIT = 80   # most-recent caption marks kept per session (the view merges adjacent marks anyway)
+
+
+def _derive_judging(sid, caps, goals, t0, out):
+    """Append this session's JUDGE-activity marks to `out` — the second-timeline (data.judging) feed,
+    read from the real artifacts the summarizer judges write (design/judge.md):
+      captioner ← captions/<sid>.jsonl   (one mark per segment/turn unit)
+      planner   ← goal nodes             (a mint/sub at the node's t; a done/block at its mt)
+      grouper   ← nodes flagged umbrella  · courier ← nodes carrying origin (a peer handoff)
+      closer    ← nodes flagged negComplete (its turn-end sweep) · archiver ← archive/<sid>.json
+    Each mark = {judge, sid, t, kind, text}; the view colours it by the SESSION (sid) being judged.
+    A judge runs within seconds of the unit/node, so the unit time is its run time to within the push
+    interval. This is the goal tree's FINAL state, not a per-call log, so the planner lane shows its
+    tree edits (not every refiled segment); an exact per-run event log is a later increment."""
+    caps_in = sorted((c for c in caps.values() if c.get("t") and c["t"] >= t0), key=lambda c: c["t"])
+    for c in caps_in[-JUDGE_CAP_LIMIT:]:
+        out.append({"judge": "captioner", "sid": sid, "t": c["t"],
+                    "kind": c.get("grain", "segment"), "text": c.get("caption", "")})
+    for n in goals.get("nodes", {}).values():
+        t = n.get("t")
+        if not t:
+            continue
+        text = n.get("text", "")
+        mt = n.get("mt") or t
+        if n.get("origin"):                                   # courier planted it from a peer's handoff
+            if t >= t0:
+                out.append({"judge": "courier", "sid": sid, "t": t, "kind": "plant", "text": text})
+        elif n.get("umbrella"):                               # grouper minted this umbrella
+            if mt >= t0:
+                out.append({"judge": "grouper", "sid": sid, "t": mt, "kind": "group", "text": text})
+        elif t >= t0:                                         # planner placed it (top = mint, else a step)
+            out.append({"judge": "planner", "sid": sid, "t": t,
+                        "kind": ("mint" if not n.get("parentId") else "sub"), "text": text})
+        if n.get("negComplete") and mt >= t0:                 # closer's negative turn-end sweep finished it
+            out.append({"judge": "closer", "sid": sid, "t": mt, "kind": "close",
+                        "text": n.get("doneWhy") or text})
+        elif n.get("nodeComplete") and n.get("doneWhy") and mt >= t0 and not n.get("origin"):
+            out.append({"judge": "planner", "sid": sid, "t": mt, "kind": "done",
+                        "text": n.get("doneWhy") or text})
+        elif n.get("blocked") and n.get("blockWhy") and mt >= t0:
+            out.append({"judge": "planner", "sid": sid, "t": mt, "kind": "block",
+                        "text": n.get("blockWhy") or text})
+    try:                                                      # archiver — the headline/abstract refresh
+        arch = json.loads((jd.STATE / "archive" / (sid + ".json")).read_text(errors="replace"))
+        if arch.get("t") and arch["t"] >= t0:
+            out.append({"judge": "archiver", "sid": sid, "t": arch["t"], "kind": "index",
+                        "text": arch.get("headline", "")})
+    except (OSError, ValueError):
+        pass
+
+
 def build_timeline(now, tmux=None):
     """A {type:"timeline"} message the ported timeline bundle consumes (ui-parity.md: timeline =
     ADAPT). Lanes per session; work bars are SEGMENTS [t,end] from the event model (not the deleted
@@ -2009,7 +2060,7 @@ def build_timeline(now, tmux=None):
         tmux = _tmux_sessions()
     alive = _timeline_sessions(now, tmux)            # living + window-dead lanes; per-session `live` below marks the dead ones (struck), the timeline's active-filter reveals them on scrollback (the user 2026-06-16)
     id2name = {s["sid"]: s["name"] for s in alive}
-    sessions, turns = [], {}
+    sessions, turns, judging = [], {}, []
     for s in alive:
         sid, name = s["sid"], s["name"]
         tm = tmux.get(sid)
@@ -2020,6 +2071,7 @@ def build_timeline(now, tmux=None):
         except Exception:
             session = {"turns": []}
         caps = _captions(sid)
+        goals = jd.load_goals(sid)
         st_turns = session["turns"]
         last_turn = st_turns[-1] if st_turns else None
         open_now = bool(last_turn and not last_turn["ended"]
@@ -2029,7 +2081,7 @@ def build_timeline(now, tmux=None):
             if state != "compacting" and _compacting_optimistic(sid, session, now):
                 state = "compacting"      # optimistic cue the moment we sent /compact (matches the chat chip)
         else:                             # dead lane: coarse file-derived (badgeFor hides the badge when !live anyway)
-            blocked = "blocked" in jd.load_goals(sid).get("status", {}).values()
+            blocked = "blocked" in goals.get("status", {}).values()
             state = "awaiting" if blocked else ("working" if open_now else "idle")
         sub = _subagent_running(session) if live else None   # additive: orange subagent marker on a quiet lane
         bars, last_t = [], None
@@ -2055,6 +2107,7 @@ def build_timeline(now, tmux=None):
                     "tid": sid, "uuid": seg.get("trigger"),
                     "workUuid": work_uuid, "replyUuid": reply_uuid})
         turns[sid] = bars
+        _derive_judging(sid, caps, goals, now - TL_HORIZON, judging)
         compactions = [{"t": a["t"]} for turn in st_turns for a in turn["atoms"]
                        if a.get("type") == "system" and a.get("subtype") == "compact_boundary" and a.get("t")]
         active = bool(tm and tm["state"] in ("working", "permission", "compacting", "waiting"))
@@ -2073,7 +2126,7 @@ def build_timeline(now, tmux=None):
     messages = _postal_messages(now, set(id2name), id2name)
     _bind_message_execs(messages, turns)                 # connector exec → the recipient's process-start (real transit)
     return {"type": "timeline", "now": now, "sessions": sessions, "turns": turns,
-            "messages": messages,
+            "messages": messages, "judging": judging,
             "activeChat": None, "focus": None, "hover": None, "usage": _usage()}
 
 

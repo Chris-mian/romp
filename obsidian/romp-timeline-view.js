@@ -47,6 +47,18 @@ const BADGE = { working: { bg: '#E0B020', fg: '#332600' }, ready: { bg: '#2B7FB8
                 attention: { bg: '#C0392B', fg: '#ffffff' }, compacting: { bg: '#11808f', fg: '#ffffff' },
                 subagent: { bg: '#E67E22', fg: '#ffffff' } };   // orange: quiet session, but a subagent is running
 const FONT = '-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif';
+// Judging band: a compact second timeline UNDER the session lanes, on the SAME axis — one row per
+// summarizer judge (design/judge.md), each mark coloured by the SESSION it acted on. Fed by
+// data.judging = [{judge, sid, t, kind, text}]. Index-tier (always-on) judges above the triage tier.
+const JUDGES = [
+  { key: 'captioner', tier: 'index' }, { key: 'archiver', tier: 'index' },
+  { key: 'planner', tier: 'triage' }, { key: 'grouper', tier: 'triage' },
+  { key: 'closer', tier: 'triage' }, { key: 'courier', tier: 'triage' },
+];
+const JROW = 13, JBAR_H = 7, JB_TOPGAP = 17, JB_BOTGAP = 5, JMARK_MINW = 5, JMERGE_GAP = 110;
+const TIER_COL = { index: '#3B82F6', triage: '#9C6ADE' };   // gutter tier dot
+const JUDGE_KIND = { segment: 'caption', turn: 'turn caption', index: 'archived', mint: 'new goal',
+  sub: 'filed a step', done: 'completed', block: 'needs you', group: 'regrouped', plant: 'handoff in' };
 
 function el(t, a) { const n = document.createElementNS(SVGNS, t); for (const k in a) n.setAttribute(k, a[k]); return n; }
 function esc(s) { return (s || '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c])); }
@@ -1531,8 +1543,13 @@ class TimelinePanel {
     M.left = ctxColX + (maxCtx > 0 ? Math.ceil(maxCtx) + COLGAP : 4);
     // (the compacting cue is now a solid teal "compression" rect drawn per-lane below — no shared gradient)
 
+    // judging band height: a compact judge row per JUDGES entry, shown only when there's judging
+    // activity inside the current window. Folded into H so the shared axis (axisY = H - M.bottom)
+    // and its gridlines span BOTH bands, with the time labels at the very bottom.
+    const jShow = !!(data.judging && data.judging.length && data.judging.some((e) => inWin(e.t)));
+    const bandH = jShow ? (JB_TOPGAP + JUDGES.length * JROW + JB_BOTGAP) : 0;
     const W = Math.max(640, this.wrap.clientWidth || 900);
-    const plotW = W - M.left - M.right, H = M.top + Math.max(1, vis.length) * LANE_GAP + M.bottom;
+    const plotW = W - M.left - M.right, H = M.top + Math.max(1, vis.length) * LANE_GAP + bandH + M.bottom;
     svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H); svg.setAttribute('height', H); svg.setAttribute('width', W);
     // x is LINEAR in compressed time → smooth pan (only zoom rescales). Identity compress = plain linear.
     const x = (t) => M.left + (compress(t) - cT0) / winSec * plotW;
@@ -1949,6 +1966,47 @@ class TimelinePanel {
         dot(x(startAt(t)), y, s.color, () => '<div class="r"><span class="chip" style="background:' + s.color + '"></span><span class="who" style="color:' + s.color + '">' + esc(s.name) + '</span><span class="t">' + clock(startAt(t)) + '</span>' + (t.src === 'enqueue' ? (t.pending ? '<span class="k">queued</span>' : '') : '') + '</div>' + this.body(this.req(t)), () => { this._select(s.id); this.openChat(t.tid || s.id, t.uuid, false, false, startAt(t), 'user'); });   // prompt dot = prompt-intent → time fallback restricted to user turns
       });
     });
+
+    // ── judging band: the summarizer judges on the same axis, under the lanes. Each mark is coloured
+    // by the SESSION it acted on; adjacent same-session marks merge into a stretch of attention. A mark
+    // within ~8s of the live edge is "running now" (white-outlined). (design/judge.md; data.judging.)
+    if (jShow) {
+      const jb0 = M.top + vis.length * LANE_GAP + JB_TOPGAP;     // top of the first judge row
+      const jY = (i) => jb0 + i * JROW + JROW * 0.5;
+      const nameOf = (sid) => { const s = data.sessions.find((z) => z.id === sid); return s ? s.name : sid; };
+      const sepY = jb0 - JB_TOPGAP * 0.5;
+      svg.appendChild(el('line', { x1: M.left, y1: sepY, x2: x(t1), y2: sepY, stroke: '#ffffff14', 'stroke-width': 1, 'pointer-events': 'none' }));
+      const hd = el('text', { x: PADL, y: sepY - 4, fill: 'var(--text-faint)', 'font-size': 9, 'font-weight': 700, 'letter-spacing': '.06em' }); hd.textContent = 'JUDGING'; svg.appendChild(hd);
+      JUDGES.forEach((J, ji) => {
+        const y = jY(ji);
+        svg.appendChild(el('circle', { cx: PADL + 3, cy: y, r: 2.5, fill: TIER_COL[J.tier], opacity: 0.9 }));
+        const lbl = el('text', { x: PADL + 10, y: y + 3, fill: 'var(--text-muted)', 'font-size': 10 }); lbl.textContent = J.key; svg.appendChild(lbl);
+        // merge this judge's in-window marks into same-session blocks (a stretch of attention)
+        const evs = data.judging.filter((e) => e.judge === J.key && inWin(e.t)).sort((a, b) => a.t - b.t);
+        const blocks = [];
+        for (const e of evs) { const last = blocks[blocks.length - 1];
+          if (last && last.sid === e.sid && e.t - last.end <= JMERGE_GAP) { last.end = e.t; last.members.push(e); }
+          else blocks.push({ sid: e.sid, start: e.t, end: e.t, members: [e] }); }
+        for (const b of blocks) {
+          let x1 = x(b.start), x2 = x(b.end);
+          if (x2 - x1 < JMARK_MINW) { const c = (x1 + x2) / 2; x1 = c - JMARK_MINW / 2; x2 = c + JMARK_MINW / 2; }
+          const col = colorOf(b.sid), active = (nowS - b.end) >= 0 && (nowS - b.end) < 8;
+          const r = el('rect', { x: x1, y: y - JBAR_H / 2, width: x2 - x1, height: JBAR_H, rx: 2.5, fill: col, opacity: 0.9, 'data-judge': J.key });
+          if (active) { r.setAttribute('stroke', '#fff'); r.setAttribute('stroke-width', '1'); r.setAttribute('opacity', '1'); }
+          svg.appendChild(r);
+          const html = () => {
+            const span = b.start === b.end ? clock(b.start) : clock(b.start) + '–' + clock(b.end);
+            const rows = b.members.slice(-5).map((m) => '<div class="b" style="opacity:.85"><span class="k">' + esc(JUDGE_KIND[m.kind] || m.kind) + '</span> ' + esc((m.text || '').slice(0, 90)) + '</div>').join('');
+            return '<div class="r"><span class="chip" style="background:' + col + '"></span><span class="who" style="color:' + col + '">' + esc(J.key) + '</span><span class="ar">▸</span><span>' + esc(nameOf(b.sid)) + '</span><span class="t">' + span + (b.members.length > 1 ? ' · ' + b.members.length : '') + '</span></div>' + rows;
+          };
+          const hit = el('rect', { x: x1 - 2, y: y - JROW / 2, width: (x2 - x1) + 4, height: JROW, fill: 'transparent' }); hit.style.cursor = 'default';
+          hit.addEventListener('mouseenter', (e) => this.showTip(html(), e));
+          hit.addEventListener('mousemove', (e) => this.moveTip(e));
+          hit.addEventListener('mouseleave', () => this.hideTip());
+          svg.appendChild(hit);
+        }
+      });
+    }
 
     // far-right ⟩⟩ jump-to-now button — only when held back off the live edge (unpinned)
     if (!this._pinned) this._drawNowButton(svg);

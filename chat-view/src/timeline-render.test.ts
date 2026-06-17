@@ -307,3 +307,41 @@ test("vertical click-drag reorders the lane (not pan), leaving the lock alone", 
   assert.equal(panel._lockNow, lockBefore, "reorder must not touch the lock");
   panel._dragUp(mouseEv({ clientX: 502, clientY: 270 }));
 });
+
+// ── judging band (2026-06-17): a compact second timeline under the lanes, one row per summarizer
+// judge, each mark coloured by the SESSION it acted on. Fed by data.judging = [{judge,sid,t,kind,text}].
+function findAll(node: any, pred: (n: any) => boolean, acc: any[] = []): any[] {
+  if (pred(node)) acc.push(node);
+  for (const c of node.children || []) findAll(c, pred, acc);
+  return acc;
+}
+test("judging band: data.judging renders a compact, labelled row per judge under the lanes", () => {
+  const panel = new TimelinePanel(makeNode("div"));
+  const base: any = synthData();
+  const now = base.now;
+  panel.data = { ...base, judging: [
+    { judge: "captioner", sid: "S1", t: now - 200, kind: "segment", text: "did a thing" },
+    { judge: "captioner", sid: "S1", t: now - 150, kind: "turn", text: "wrapped the turn" },  // merges with the above (same session, <gap)
+    { judge: "planner", sid: "S2", t: now - 120, kind: "mint", text: "new goal" },
+    { judge: "courier", sid: "S2", t: now - 80, kind: "plant", text: "handoff in" },
+    { judge: "closer", sid: "S1", t: now - 30, kind: "close", text: "shipped it" },
+  ] };
+  assert.doesNotThrow(() => panel.draw(), "draw() must not throw with a judging band");
+  for (const j of ["captioner", "archiver", "planner", "grouper", "closer", "courier"])
+    assert.ok(findText(panel.svg, j), `judge row '${j}' must be labelled in the gutter`);
+  assert.ok(findText(panel.svg, "JUDGING"), "the band carries a gutter heading");
+  const cap = findAll(panel.svg, (n) => n.getAttribute && n.getAttribute("data-judge") === "captioner");
+  assert.equal(cap.length, 1, "two adjacent same-session captions merge into ONE attention mark");
+  assert.equal(cap[0].getAttribute("fill"), "#7aa2f7", "a judge mark is coloured by the session it judged");
+  assert.equal(findAll(panel.svg, (n) => n.getAttribute && n.getAttribute("data-judge") === "courier").length, 1);
+});
+test("judging band grows the SVG under the lanes; absent when there is no judging data", () => {
+  const withJ = new TimelinePanel(makeNode("div"));
+  withJ.data = { ...synthData(), judging: [{ judge: "planner", sid: "S1", t: synthData().now - 50, kind: "mint", text: "g" }] };
+  withJ.draw();
+  const noJ = new TimelinePanel(makeNode("div"));
+  noJ.data = synthData();
+  noJ.draw();
+  assert.ok(Number(withJ.svg.getAttribute("height")) > Number(noJ.svg.getAttribute("height")),
+    "the band adds height below the lanes");
+});
