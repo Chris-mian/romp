@@ -335,6 +335,21 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(nodes["a blocked step"]["blockWhy"], "waiting on the user's choice")
         self.assertEqual(nodes["a finished step"]["doneWhy"], "shipped the fix")
 
+    def test_feed_tree_node_carries_anchor_uuid_for_id_deeplink(self):
+        # anchorUuid = the EXACT turn uuid for a node's anchor segment (where it resolved / was minted),
+        # so a card click deep-links BY ID, not by nearest-time-heuristic. (the user 2026-06-17.)
+        session = em.parse_session(str(self.tpath), rompuuid=SID, candidate_files=[str(self.tpath)], now=NOW)
+        seg = next(s for t in session["turns"] for s in em.segments(t))
+        w, r = km._seg_anchors(seg["atoms"])
+        want = r or w                                  # reply uuid preferred (readable assistant text), else work
+        self.assertTrue(want, "fixture has assistant atoms → a real anchor uuid")
+        nid = SID + ":g1"                              # a DONE node → anchors on its (last) trail segment
+        store = json.loads((jd.GOALDIR / (SID + ".json")).read_text())
+        store["nodes"][nid]["trail"] = [seg["id"]]
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps(store))
+        node = next(n for a in km.build_feed(NOW)["asks"] for n in a["tree"] if n["id"] == nid)
+        self.assertEqual(node["anchorUuid"], want, "node deep-links to the exact segment uuid, not a timestamp")
+
     def test_feed_tree_node_carries_mt_for_deeplink(self):
         # Every tree node carries mt = last-modified (the user 2026-06-16): a blocked/done node
         # deep-links to WHERE IT RESOLVED (the segment the planner applied the block/done op), not
