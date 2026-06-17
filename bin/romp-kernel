@@ -127,11 +127,14 @@ def _ct_eq(a, b):
 _clients = []                                # connected WS clients: {app, wid, send, alive}
 _clients_lock = threading.Lock()
 _client_seen = [0.0]
-# SIDs seen ALIVE at any point during THIS kernel run. A session that dies after being shown keeps its
-# (read-only, struck-through) chat tab instead of vanishing the instant it closes (the user 2026-06-16:
-# "keep a tab when it dies"). Reset on kernel restart, so dead tabs are NOT resurrected on a fresh start
-# (that's the Part-A rule) — only sessions you actually watched die linger.
+# SIDs seen ALIVE at any point during THIS kernel run. (Retained for diagnostics; it no longer drives
+# tabs — the user 2026-06-17 reversed "keep a tab when it dies": a dead session is now TIMELINE-ONLY,
+# not an auto-kept chat tab. It gets a chat tab only on demand, via "View read-only" → _kept_open.)
 _seen_live = set()
+# Dead sessions the user explicitly chose to VIEW READ-ONLY (confirmRevive → "View read-only"): these —
+# and only these — get a (struck-through) chat tab while dead; ×-closing one drops it again. So dead =
+# timeline-only by default, a read-only tab only when asked for (the user 2026-06-17).
+_kept_open = set()
 
 
 # ───────────────────────── helpers ─────────────────────────
@@ -291,16 +294,14 @@ def _set_hidden_tab(sid, hidden):
 
 
 def _chat_tab_sessions(now, tmux):
-    """The sessions shown as CHAT TABS, in the shared session order: living sessions PLUS any session
-    that died AFTER being shown this run (_seen_live), kept as a read-only tab until the user ×-closes
-    it or its transcript ages out of the window — minus ×-hidden tabs (the user 2026-06-16: 'keep a tab
-    when it dies', don't drop it the instant the session closes). Dead-kept tabs hold their session-order
-    slot so the strip never reshuffles. _seen_live resets on kernel restart, so a fresh start shows only
-    living tabs (the Part-A rule) — only sessions actually watched-while-dying linger."""
+    """The sessions shown as CHAT TABS, in the shared session order: living sessions PLUS only the dead
+    sessions the user explicitly opened READ-ONLY (_kept_open). A dead session is otherwise TIMELINE-ONLY
+    — it does NOT auto-keep a tab when it dies (the user 2026-06-17 reversed the old 'keep a tab when it
+    dies'); reopen it from the timeline instead. ×-hidden tabs are excluded."""
     hidden = _hidden_tabs()
     live = _ordered_alive(now, tmux)
     live_sids = {s["sid"] for s in live}
-    dead_kept = [s for s in _sessions(now) if s["sid"] in _seen_live and s["sid"] not in live_sids]
+    dead_kept = [s for s in _sessions(now) if s["sid"] in _kept_open and s["sid"] not in live_sids]
     order = _session_order()
     idx = {sid: i for i, sid in enumerate(order)}
     return sorted((s for s in live + dead_kept if s["sid"] not in hidden),
@@ -376,19 +377,24 @@ def _spawn_session(name):
     _push_all()   # surface the new tab promptly (the periodic pusher would catch it within 4s anyway)
 
 
-def _open_or_revive(sid, app, send):
-    """openSession routing. A LIVE session whose tab was hidden → un-hide it + focus the chat (the
-    feed/timeline/picker reopen). A DEAD session picked from the chat picker → don't silently no-op
-    (the old bug: openSession just un-hid a tab with no running session, so nothing happened); ask
-    first via the webview's confirmRevive modal, and the reviveSession reply runs _revive_session.
-    A feed/timeline client has no confirmRevive modal, so for those a dead tap still reveals the
-    read-only transcript as before. Split out so the live/dead branch is unit-testable. (2026-06-16)"""
-    if sid not in _tmux_sessions() and app == "chat":
-        send({"type": "confirmRevive", "id": sid, "name": _name_of(sid) or sid})
-        return
-    _set_hidden_tab(sid, False)
-    _push_all()
-    _reveal_chat({"type": "focus", "id": sid})
+def _reveal_or_confirm(sid, focus_msg):
+    """Bring the chat to `sid`. LIVE → the focus message. DEAD → never silently reveal; pop the chat's
+    confirmRevive modal (Revive / View read-only), bringing the chat forward (the user 2026-06-17: dead
+    = timeline-only, reopen on demand). Routing the prompt through _reveal_chat means a feed/timeline tap
+    lands the modal in the chat, which owns it — even though the tap came from another pane."""
+    if sid and sid not in _tmux_sessions():
+        _reveal_chat({"type": "confirmRevive", "id": sid, "name": _name_of(sid) or sid})
+    else:
+        _reveal_chat(focus_msg)
+
+
+def _open_or_revive(sid):
+    """openSession routing: a LIVE session → un-hide its tab + focus the chat; a DEAD one → the
+    confirmRevive modal (no silent reopen, no auto read-only tab — the user 2026-06-17)."""
+    if sid in _tmux_sessions():
+        _set_hidden_tab(sid, False)
+        _push_all()
+    _reveal_or_confirm(sid, {"type": "focus", "id": sid})
 
 
 def _revive_session(sid):
@@ -402,6 +408,7 @@ def _revive_session(sid):
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception:
         sys.stderr.write("revive '%s': %s\n" % (sid, traceback.format_exc()))
+    _kept_open.discard(sid)       # it's live again → no longer a read-only kept tab
     _set_hidden_tab(sid, False)   # it was hidden when closed; show the revived tab
     _push_all()                   # surface it promptly (the 4s pusher would catch it anyway)
     _reveal_chat({"type": "focus", "id": sid})
@@ -3098,6 +3105,7 @@ class Handler(BaseHTTPRequestHandler):
                                                "name": _name_of(msg["id"]) or msg["id"]}))
                 elif msg and msg.get("type") == "closeTab" and msg.get("id"):
                     _set_hidden_tab(msg["id"], True)     # hide the tab; session keeps running
+                    _kept_open.discard(msg["id"])        # ×-closing a read-only dead tab forgets it (timeline-only again)
                     _send_to_app("chat", {"type": "closed", "id": msg["id"]})   # prune it in the live view now
                     _push_all()
                 elif msg and msg.get("type") == "endSession" and msg.get("id"):
@@ -3110,24 +3118,25 @@ class Handler(BaseHTTPRequestHandler):
                     _send_to_app("chat", {"type": "closed", "id": msg["id"]})
                     _push_all()
                 elif msg and msg.get("type") == "openSession" and msg.get("id"):
-                    # live → reopen the hidden tab + focus; dead (picked from the picker) → ask to revive
-                    _open_or_revive(msg["id"], client["app"], lambda m: client["send"](json.dumps(m)))
+                    # live → reopen the hidden tab + focus; dead → the chat's confirmRevive modal
+                    _open_or_revive(msg["id"])
                 elif msg and msg.get("type") == "reviveSession" and msg.get("id"):
                     # confirmRevive → "Revive": resume the dead session in the background (the kernel had
                     # no handler, so the modal's Revive silently did nothing — the user 2026-06-16)
                     threading.Thread(target=_revive_session, args=(msg["id"],), daemon=True).start()
                 elif msg and msg.get("type") == "viewReadOnly" and msg.get("id"):
-                    _set_hidden_tab(msg["id"], False)    # confirmRevive → "View read-only": show the dead
-                    _push_all()                          # transcript as a tab without resuming the session
+                    _kept_open.add(msg["id"])            # confirmRevive → "View read-only": this dead session
+                    _set_hidden_tab(msg["id"], False)    # gets a (struck) read-only tab now, without resuming it
+                    _push_all()
                     _reveal_chat({"type": "focus", "id": msg["id"]})
                 elif msg and msg.get("type") == "deepLink" and msg.get("session"):
-                    _reveal_chat({"type": "focus", "id": msg["session"], "anchor": msg.get("anchor"),
+                    _reveal_or_confirm(msg["session"], {"type": "focus", "id": msg["session"], "anchor": msg.get("anchor"),
                                   "anchorT": msg.get("anchorT"), "anchorKind": msg.get("anchorKind")})
                 elif msg and msg.get("type") == "showOnTimeline" and msg.get("sid"):
                     # anchor:"prompt" → land on the user's MESSAGE turn (kind "user"); "work"/absent →
                     # the nearest turn to the work time (the assistant response that did it). The string
                     # anchor isn't a transcript uuid, so the chat uses the kind-restricted time fallback.
-                    _reveal_chat({"type": "focus", "id": msg["sid"], "anchorT": msg.get("t"),
+                    _reveal_or_confirm(msg["sid"], {"type": "focus", "id": msg["sid"], "anchorT": msg.get("t"),
                                   "anchorKind": _focus_kind(msg.get("anchor"))})
                 elif msg and msg.get("type") == "expand" and msg.get("itemId"):
                     _request_feed_detail(str(msg["itemId"]), bool(msg.get("generate")))

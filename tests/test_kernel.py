@@ -536,19 +536,20 @@ class ViewBuilder(unittest.TestCase):
     def test_rename_session_rejects_invalid_name(self):
         self.assertIsNone(km._rename_session(SID, "has spaces!"), "invalid chars → rejected, no rename")
 
-    def test_dead_session_kept_as_tab_after_being_seen_live(self):
-        # The user 2026-06-16: keep a tab when its session dies. A session shown alive this run, then
-        # dead (tmux empty), stays in the chat tab list and build_session reports it 'closed' so the
-        # tab renders read-only + struck-through.
-        saved_seen, saved_has = set(km._seen_live), km._has_tmux
+    def test_dead_session_is_not_auto_kept_as_a_tab(self):
+        # the user 2026-06-17 REVERSED "keep a tab when it dies": a session shown alive then dead is now
+        # TIMELINE-ONLY — it does NOT linger as a chat tab (reopen from the timeline instead). It still
+        # reports 'closed' (so wherever it IS shown — a read-only tab — it renders struck-through).
+        saved_seen, saved_has, saved_kept = set(km._seen_live), km._has_tmux, set(km._kept_open)
         km._has_tmux = lambda: True
         try:
-            km._seen_live.clear(); km._seen_live.add(SID)
+            km._seen_live.clear(); km._seen_live.add(SID); km._kept_open.discard(SID)
             tabs = [s["sid"] for s in km._chat_tab_sessions(NOW, {})]
-            self.assertIn(SID, tabs, "a session that died after being shown keeps its tab")
+            self.assertNotIn(SID, tabs, "a dead session no longer auto-keeps a tab (timeline-only)")
             self.assertEqual(km.build_session(SID, NOW, {})["status"]["state"], "closed")
         finally:
             km._seen_live.clear(); km._seen_live.update(saved_seen); km._has_tmux = saved_has
+            km._kept_open.clear(); km._kept_open.update(saved_kept)
 
     def test_dead_session_not_kept_when_never_seen_live(self):
         # A fresh kernel start (_seen_live empty) must NOT resurrect a dead session's tab (the Part-A rule).
@@ -940,22 +941,22 @@ class ViewBuilder(unittest.TestCase):
         self.assertNotIn(SID, km._hidden_tabs())
 
     def test_open_dead_session_prompts_revive(self):
-        # picking a DEAD session in the chat picker must ask to revive it (the webview's confirmRevive
-        # modal), not silently no-op. Regression: openSession on a dead sid only un-hid a tab with no
-        # running session, so the click did nothing — no modal, no revive (the user 2026-06-16).
-        sent = []
-        km._open_or_revive("deadsid000", "chat", lambda m: sent.append(m))
-        self.assertEqual([m["type"] for m in sent], ["confirmRevive"])
-        self.assertEqual(sent[0]["id"], "deadsid000")
-        # a LIVE session (SID is alive in tmux) reopens its tab instead of prompting
-        sent2 = []
-        km._open_or_revive(SID, "chat", lambda m: sent2.append(m))
-        self.assertFalse(any(m.get("type") == "confirmRevive" for m in sent2),
-                         "a live session reopens, no revive prompt")
-        # a feed client has no confirmRevive modal → a dead tap reveals the read-only transcript, no prompt
-        sent3 = []
-        km._open_or_revive("deadsid000", "feed", lambda m: sent3.append(m))
-        self.assertFalse(any(m.get("type") == "confirmRevive" for m in sent3))
+        # opening a DEAD session pops the chat's confirmRevive modal — no silent reopen — and now from
+        # ANY pane (feed/timeline included), since dead = timeline-only (the user 2026-06-17). A LIVE
+        # session just reopens/focuses, no prompt.
+        cap, orig_rc, orig_tx, orig_pa = [], km._reveal_chat, km._tmux_sessions, km._push_all
+        try:
+            km._reveal_chat = lambda m: cap.append(m)
+            km._push_all = lambda: None
+            km._tmux_sessions = lambda: {SID: {}}            # SID alive; deadsid000 dead
+            cap.clear(); km._open_or_revive("deadsid000")
+            self.assertEqual([m["type"] for m in cap], ["confirmRevive"])
+            self.assertEqual(cap[0]["id"], "deadsid000")
+            cap.clear(); km._open_or_revive(SID)
+            self.assertFalse(any(m.get("type") == "confirmRevive" for m in cap), "a live session reopens, no prompt")
+            self.assertTrue(any(m.get("type") == "focus" and m.get("id") == SID for m in cap))
+        finally:
+            km._reveal_chat = orig_rc; km._tmux_sessions = orig_tx; km._push_all = orig_pa
 
     def test_revive_session_resumes_and_unhides_tab(self):
         # confirming the modal's "Revive" must actually resume the session (romp-postal revive → romp
@@ -1335,6 +1336,21 @@ class ViewBuilder(unittest.TestCase):
         s = {x["id"]: x for x in km.build_timeline(NOW, tmux={})["sessions"]}
         self.assertIn(SID, s, "a window-dead session is still a timeline lane")
         self.assertFalse(s[SID]["live"], "no tmux → a dead lane (the render strikes it)")
+
+    def test_dead_session_is_timeline_only_until_viewed(self):
+        # the user 2026-06-17: a dead session is TIMELINE-ONLY — no auto chat tab. It gets a read-only
+        # tab ONLY on demand (View read-only → _kept_open); ×-close forgets it (timeline-only again).
+        saved = set(km._kept_open)
+        try:
+            km._kept_open.discard(SID)
+            tabs = lambda: {x["sid"] for x in km._chat_tab_sessions(NOW, {})}   # tmux={} → SID is dead
+            self.assertNotIn(SID, tabs(), "a dead session is NOT auto-kept as a tab")
+            km._kept_open.add(SID)                       # 'View read-only'
+            self.assertIn(SID, tabs(), "View read-only → a read-only tab")
+            km._kept_open.discard(SID)                   # ×-close
+            self.assertNotIn(SID, tabs(), "×-close forgets it → timeline-only again")
+        finally:
+            km._kept_open.clear(); km._kept_open.update(saved)
 
     def test_chat_chip_maps_tmux_state(self):
         # the chat chip maps tmux state: permission -> awaiting, plus model/effort/ctx for the statusline
