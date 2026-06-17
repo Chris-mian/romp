@@ -1976,7 +1976,7 @@ class TimelinePanel {
           const html = () => {
             const span = b.start === b.end ? clock(b.start) : clock(b.start) + '–' + clock(b.end);
             const rows = b.members.slice(-5).map((m) => '<div class="b" style="opacity:.85"><span class="k">' + esc(JUDGE_KIND[m.kind] || m.kind) + '</span> ' + esc((m.text || '').slice(0, 90)) + '</div>').join('');
-            return '<div class="r"><span class="chip" style="background:' + J.color + '"></span><span class="who" style="color:' + J.color + '">' + esc(J.key) + '</span><span class="ar">▸</span><span style="color:' + col + '">' + esc(nameOf(b.sid)) + '</span><span class="t">' + span + (b.members.length > 1 ? ' · ' + b.members.length : '') + '</span></div>' + rows;
+            return '<div class="r"><span class="who" style="color:' + J.color + '">' + esc(J.key) + '</span><span class="ar">▸</span><span style="color:' + col + '">' + esc(nameOf(b.sid)) + '</span><span class="t">' + span + (b.members.length > 1 ? ' · ' + b.members.length : '') + '</span></div>' + rows;
           };
           const hit = el('rect', { x: x1 - 2, y: y - JROW / 2, width: (x2 - x1) + 4, height: JROW, fill: 'transparent' }); hit.style.cursor = 'default';
           hit.addEventListener('mouseenter', (e) => this.showTip(html(), e));
