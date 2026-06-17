@@ -478,10 +478,10 @@ body { display: flex; flex-direction: column; }
 /* active downstream sessions (the user's handoff spec, 2026-06-10): one line per
    session BELOW the main row — bold, identity color, working dot always on
    (a line only exists while its session is live-working on an open branch) */
-.fask-handoffs { display: flex; flex-direction: column; gap: 2px; margin-top: 5px; }
-.fask-handoff-line { display: flex; align-items: baseline; gap: 4px; padding-left: 2px; }
-.fask-handoff { font-weight: 600; font-size: 0.88em; cursor: pointer; }
-.fask-handoff:hover { text-decoration: underline; text-underline-offset: 2px; }
+.fask-delegations { display: flex; flex-direction: column; gap: 2px; margin-top: 5px; }
+.fask-delegation-line { display: flex; align-items: baseline; gap: 4px; padding-left: 2px; }
+.fask-delegation { font-weight: 600; font-size: 0.88em; cursor: pointer; }
+.fask-delegation:hover { text-decoration: underline; text-underline-offset: 2px; }
 /* inline sub-goal checklist on a card: the goal's DIRECT sub-goals (top 2 levels) — ✓ done / ? / ▢ open */
 .fask-checklist { display: flex; flex-direction: column; row-gap: 1px; margin: 4px 0 1px; padding-left: 2px; }
 .fcheck { display: flex; align-items: baseline; column-gap: 7px; line-height: 1.4; font-size: 0.9em; }

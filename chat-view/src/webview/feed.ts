@@ -387,7 +387,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   // ↪ courier handoff provenance: this goal was planted by a peer's message — shows
   // "↪ from <sender>" beside the owning session, click opens the sender. Hidden unless origin.
   const origin = el("a", "fask-origin"); origin.style.display = "none";
-  origin.title = "this work was handed off from another session — click to open it";
+  origin.title = "this work was delegated from another session — click to open it";
   idwrap.append(name, origin);
   const actions = el("div", "fask-actions");
   const reBadge = el("span", "fask-reopened"); reBadge.textContent = "reopened"; reBadge.title = "a question arrived after you cleared this"; reBadge.style.display = "none";
@@ -408,12 +408,12 @@ function makeAskCard(it: AskItem): HTMLElement {
   // an unfinished branch. Idle or finished recipients disappear; presence on
   // the list therefore always means active, so the dot is always on.
   const checklist = el("div", "fask-checklist");   // inline sub-goal list (top 2 levels); filled in updateAskCard
-  const handoffs = el("div", "fask-handoffs");
+  const delegations = el("div", "fask-delegations");
   // soft-block reason (the planner's one-sentence "why blocked"), shown under the title on a blocked
   // card. Inline-styled, no styles.css rule (ui owns that file). Filled/toggled in updateAskCard.
   const blockReason = el("div", "fask-blockwhy");
   blockReason.style.cssText = "display:none;font-size:11px;line-height:1.3;opacity:.75;font-style:italic;margin:1px 0 3px";
-  main.append(row1, blockReason, row2, row3, checklist, handoffs);   // no expand button — body click opens the modal
+  main.append(row1, blockReason, row2, row3, checklist, delegations);   // no expand button — body click opens the modal
   card.append(main);
   // Follow-up lives in the modal now (the user 2026-06-10), not on the card.
 
@@ -476,7 +476,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   a._title = title; a._name = name; a._time = time; a._reopened = reBadge;
   a._blocked = blkBadge; a._wait = waitBadge;
   a._apiBadge = apiBadge; a._apiRetry = apiRetry;
-  a._handoffs = handoffs;
+  a._delegations = delegations;
   a._checklist = checklist;
   a._blockwhy = blockReason;
   a._origin = origin;
@@ -545,7 +545,7 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   // — bold, identity color, always with the working dot — but ONLY while that
   // session is live-working and its branch is unfinished. Idle or finished →
   // the line disappears. The main session stays on its own row above.
-  const ho = a._handoffs as HTMLElement;
+  const ho = a._delegations as HTMLElement;
   ho.innerHTML = "";
   const hseen = new Set<string>();
   for (const n of it.tree || []) {
@@ -553,8 +553,8 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
     if (!n.whoSid || n.who === it.name || hseen.has(n.whoSid)) continue;
     if (!workingSet.has(n.who)) continue;                            // idle → gone
     hseen.add(n.whoSid);
-    const line = el("div", "fask-handoff-line");
-    const nm = el("a", "fask-handoff"); nm.textContent = n.who;
+    const line = el("div", "fask-delegation-line");
+    const nm = el("a", "fask-delegation"); nm.textContent = n.who;
     if (n.whoColor) nm.style.color = n.whoColor.bg;
     nm.title = n.text || "open this session";
     nm.onclick = (ev) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "openSession", id: n.whoSid }); };
@@ -566,7 +566,7 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
 
   // Inline sub-goal checklist (the user 2026-06-16): the top-level goal IS the card title, so show its
   // DIRECT sub-goals (the top 2 levels) as a ✓ done / ? question / ▢ open list — the deeper steps stay
-  // in the modal. Skips handoff nodes (those render in the handoffs section above).
+  // in the modal. Skips delegation nodes (kind "handoff"; those render in the delegations section above).
   const cl = a._checklist as HTMLElement;
   cl.innerHTML = "";
   const tree = it.tree || [];
