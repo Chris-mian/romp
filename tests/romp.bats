@@ -657,3 +657,46 @@ _resume_rows_fn() {   # writes the extracted function to $1
     [[ "$output" != *"romp -f"* ]]
     [[ "$output" != *"romp --mail"* ]]
 }
+
+# ─── ROMPHOME — never launch a session in $HOME ──────────────────────
+# $HOME is the one cwd whose direct children include the macOS TCC-protected
+# Downloads/Desktop/Documents; indexing them trips spurious OS file-access
+# prompts. A $HOME launch is redirected to ROMPHOME instead.
+
+@test "ROMPHOME: a launch from \$HOME is redirected there, not created in \$HOME" {
+    export ROMPHOME="$TEST_DIR/romphome"
+    mkdir -p "$ROMPHOME"
+    local expect; expect="$(cd "$ROMPHOME" && pwd -P)"
+    local home_real; home_real="$(cd "$HOME" && pwd -P)"
+    cd "$HOME"
+    run run_romp box
+    [ "$status" -eq 0 ]
+    grep -qF "tmux new-session -d -s box -c $expect" "$MOCK_LOG"
+    # the session must NOT be rooted at $HOME
+    ! grep -qF "tmux new-session -d -s box -c $home_real" "$MOCK_LOG"
+    # and the redirect is announced to the user
+    [[ "$output" == *"not launching in \$HOME"* ]]
+}
+
+@test "ROMPHOME: a bare launch from \$HOME is named after ROMPHOME, not \$HOME" {
+    # Regression: basename(\$HOME) is the username — a privacy leak as a session
+    # name. The default name must come from the resolved (redirected) dir.
+    export ROMPHOME="$TEST_DIR/scratchpad"
+    mkdir -p "$ROMPHOME"
+    cd "$HOME"
+    run run_romp
+    [ "$status" -eq 0 ]
+    grep -q 'tmux new-session -d -s scratchpad' "$MOCK_LOG"
+    ! grep -qE 'tmux new-session -d -s home( |$| -)' "$MOCK_LOG"
+}
+
+@test "ROMPHOME: a launch from a normal project dir is unaffected" {
+    export ROMPHOME="$TEST_DIR/romphome"
+    mkdir -p "$ROMPHOME"
+    # setup() already cd'd into $WORK_DIR, a normal project dir
+    local expect; expect="$(cd "$WORK_DIR" && pwd -P)"
+    run run_romp
+    [ "$status" -eq 0 ]
+    grep -qF "tmux new-session -d -s myproject -c $expect" "$MOCK_LOG"
+    [[ "$output" != *"not launching in \$HOME"* ]]
+}

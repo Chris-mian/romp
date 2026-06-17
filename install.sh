@@ -95,3 +95,11 @@ case ":$PATH:" in
     *":$ROMP_DIR/bin:"*) ;;
     *) echo "  NOTE: add to your shell rc:  export PATH=\"\$PATH:$ROMP_DIR/bin\"" ;;
 esac
+
+# ROMPHOME — where a bare `romp` launches when you'd otherwise be in $HOME.
+# $HOME is a bad cwd: its direct children include the macOS TCC-protected
+# Downloads/Desktop/Documents, so Claude indexing them triggers a stream of
+# spurious file-access prompts. romp defaults ROMPHOME to this install dir
+# ($ROMP_DIR) automatically; export it in your shell rc to point elsewhere.
+echo "  romp launches in ROMPHOME (default: $ROMP_DIR), never \$HOME."
+echo "  Override:  export ROMPHOME=\"/path/you/prefer\""

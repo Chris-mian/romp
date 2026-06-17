@@ -742,16 +742,42 @@ if $resume && [[ -z "$resume_id" ]]; then
     IFS=$'\t' read -r resume_id session_arg picked_dir <<<"$pick"
 fi
 
+# --- Resolve the launch directory (PHYSICAL path, never $HOME) ---
+# Canonicalize to the PHYSICAL path (resolve symlinks): Claude writes its
+# transcript under the realpath-munged ~/.claude/projects/<dir>, so recording a
+# symlinked launch dir (e.g. ~/Vault → ~/GitRepos/Vault) would make every
+# path-munging consumer (summary backfill, digest) look in a dir that doesn't
+# exist — no summaries for that session. `pwd -P` gives the real path.
+work_dir="${picked_dir:-$PWD}"
+work_dir="$(cd "$work_dir" 2>/dev/null && pwd -P || printf '%s' "$work_dir")"
+
+# Never launch a session in $HOME. A romp session indexes its working-directory
+# tree, and $HOME is the one cwd whose direct children include the macOS
+# TCC-protected Downloads/Desktop/Documents — so indexing them makes Claude
+# (node) trip a stream of spurious "wants to access your Downloads" OS prompts.
+# Redirect a $HOME launch (a bare `romp` from home, OR resuming a session that
+# was recorded there) to ROMPHOME, which defaults to the romp install dir.
+# Compare physical-to-physical: on macOS $HOME can sit under a symlinked mount
+# (e.g. a test $HOME under /var → /private/var), so `pwd -P` both sides.
+romp_install_dir="$(cd "$(dirname "$0")/.." 2>/dev/null && pwd -P || printf '%s' "$HOME")"
+: "${ROMPHOME:=$romp_install_dir}"
+home_real="$(cd "$HOME" 2>/dev/null && pwd -P || printf '%s' "$HOME")"
+if [[ "$work_dir" == "$home_real" ]]; then
+    work_dir="$(cd "$ROMPHOME" 2>/dev/null && pwd -P)" || work_dir="$romp_install_dir"
+    printf 'romp: not launching in $HOME (it triggers macOS file-access prompts); using %s\n' "$work_dir" >&2
+fi
+
 # --- Resolve session name ---
 # This names the tmux session — it shows in the ghostty tab, the romp
 # dashboard, AND Claude's prompt-box pill (set via --name below, and kept in
 # sync by `romp rename` via Claude's live /rename). Default to the launch
-# folder; pass a (usually one-word) name to override, or `romp rename` it
-# later. No prefix — romp sessions are identified by @romp.
+# folder (the resolved work_dir, so a $HOME launch is named after ROMPHOME, not
+# your username); pass a (usually one-word) name to override, or `romp rename`
+# it later. No prefix — romp sessions are identified by @romp.
 if [[ -n "$session_arg" ]]; then
     display="$session_arg"
 else
-    display="$(basename "$PWD")"
+    display="$(basename "$work_dir")"
 fi
 # Sanitize the session name to a shell- and tmux-safe charset. This name is
 # typed into the launch pane's shell (`exec claude --name "<name>"`, below) and
@@ -761,14 +787,6 @@ fi
 # replaced, which left command injection via the name wide open.)
 display="$(printf '%s' "$display" | LC_ALL=C tr -c 'A-Za-z0-9_-' '-')"
 name="$display"
-
-# Canonicalize to the PHYSICAL path (resolve symlinks): Claude writes its
-# transcript under the realpath-munged ~/.claude/projects/<dir>, so recording a
-# symlinked launch dir (e.g. ~/Vault → ~/GitRepos/Vault) would make every
-# path-munging consumer (summary backfill, digest) look in a dir that doesn't
-# exist — no summaries for that session. `pwd -P` gives the real path.
-work_dir="${picked_dir:-$PWD}"
-work_dir="$(cd "$work_dir" 2>/dev/null && pwd -P || printf '%s' "$work_dir")"
 
 # --- Unset CLAUDECODE so this works when invoked from inside Claude Code ---
 unset CLAUDECODE 2>/dev/null || true
