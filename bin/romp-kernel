@@ -922,6 +922,31 @@ def _split_reminders(text):
     return " ".join("".join(out).split()), [r for r in reminders if r]
 
 
+_IMG_PATH_RE = re.compile(r"(?:^|[\s'\"`(])((?:~/|/)[^\s'\"`()]+\.(?:png|jpe?g|gif|webp|bmp|svg))\b", re.I)
+def _user_images(blocks, text, human):
+    """A user turn's images (ported from chat-view transcript.ts; the Python rebuild had dropped this, so
+    path-pasted images stopped rendering — the user 2026-06-17). Inline base64 → a data: URL; an image
+    source path → "path:<abs>" (the webview hydrates it via imgRequest); and — the common case — a bare
+    image PATH typed or dragged into the composer arrives as PLAIN TEXT, so scan a human turn's text for
+    absolute / ~ paths with a known image extension. Capped at 4."""
+    imgs = []
+    for b in (blocks or []):
+        if isinstance(b, dict) and b.get("type") == "image":
+            s = b.get("source") or {}
+            if s.get("type") == "base64" and s.get("data"):
+                imgs.append({"src": "data:%s;base64,%s" % (s.get("media_type") or "image/png", s["data"])})
+            elif s.get("path"):
+                imgs.append({"src": "path:" + s["path"], "path": s["path"]})
+    if human and not imgs:                            # a bare image path typed/dragged in → plain text
+        for m in _IMG_PATH_RE.finditer(text or ""):
+            p = m.group(1)
+            if not any(im.get("path") == p for im in imgs):
+                imgs.append({"src": "path:" + p, "path": p})
+            if len(imgs) >= 4:
+                break
+    return imgs
+
+
 # ───────────────────────── postal hydration (parity with chat-view/src/postal-spec.ts) ─────────────────────────
 # Postal traffic lands INSIDE the transcript: a received message as user text carrying the
 # `romp-msg-id` marker; a sent message as a send_message tool call (or a `romp --mail send` Bash). We
@@ -1236,9 +1261,15 @@ def build_session(sid, now, tmux=None):
                            if blocks else (msg.get("content") if isinstance(msg.get("content"), str) else "")
                     if text:                                     # a peer message → swapped to a clean card by _hydrate_postal
                         prompt, reminders = _split_reminders(text)
-                        if prompt or reminders:
-                            events.append({"kind": "user", "md": prompt, "uuid": a.get("uuid"), "ts": ts,
-                                           "human": author == "human", "reminders": reminders})
+                        imgs = _user_images(blocks, prompt, author == "human")
+                        if imgs and prompt:                      # drop the composer's "[Image #N]" placeholder chips
+                            prompt = " ".join(re.sub(r"\[Image #\d+\]\s?", "", prompt).split())
+                        if prompt or reminders or imgs:
+                            ev = {"kind": "user", "md": prompt, "uuid": a.get("uuid"), "ts": ts,
+                                  "human": author == "human" or bool(imgs), "reminders": reminders}
+                            if imgs:
+                                ev["images"] = imgs
+                            events.append(ev)
             elif a["type"] == "assistant":
                 for b in blocks:
                     if not isinstance(b, dict):

@@ -833,6 +833,23 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(card["blocked"]["status"], 500)
         self.assertEqual(card["column"], "needs_input", "an API-error card files under BLOCKED")
 
+    def test_user_images_extracts_pasted_path_and_blocks(self):
+        # the user 2026-06-17: path-pasted images stopped rendering after the Python rebuild dropped the
+        # extraction. _user_images mirrors the old transcript.ts: base64 block → data URL; path source →
+        # path:<abs>; and — the reported case — a bare image PATH typed into the composer (plain text).
+        b64 = [{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "QUJD"}}]
+        self.assertEqual(km._user_images(b64, "", True)[0]["src"], "data:image/png;base64,QUJD")
+        psrc = [{"type": "image", "source": {"path": "/srv/img/shot.png"}}]
+        self.assertEqual(km._user_images(psrc, "", True)[0], {"src": "path:/srv/img/shot.png", "path": "/srv/img/shot.png"})
+        # the common case: a bare image path typed/dragged into the composer arrives as plain text
+        self.assertEqual(km._user_images([], "look at ~/pics/diagram.png please", True),
+                         [{"src": "path:~/pics/diagram.png", "path": "~/pics/diagram.png"}])
+        # a non-human (injected) line is NOT scanned for bare paths
+        self.assertEqual(km._user_images([], "/srv/img/x.png", False), [])
+        # capped at 4
+        many = " ".join("/srv/a%d.png" % i for i in range(8))
+        self.assertEqual(len(km._user_images([], many, True)), 4)
+
     def test_chat_body_has_an_explicit_send_button(self):
         # The web-dashboard composer (kernel _chat_body, a SECOND copy of chat-view page-skeleton.chatBody)
         # carries an explicit send button beside 📎, so ⏎ isn't the only way to send (the user 2026-06-17).
