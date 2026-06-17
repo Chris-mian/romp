@@ -8,6 +8,7 @@ import os
 import pathlib
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from importlib.machinery import SourceFileLoader
 
 BIN = os.path.join(os.path.dirname(__file__), "..", "bin")
@@ -17,26 +18,35 @@ km = SourceFileLoader("romp_kernel", os.path.join(BIN, "romp-kernel")).load_modu
 NOW = 1781100000
 
 
-def _asst(usage):
-    return json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [], "usage": usage}})
+def iso(epoch):
+    return datetime.fromtimestamp(epoch, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
+def _asst(usage, ts=None):
+    o = {"type": "assistant", "message": {"role": "assistant", "content": [], "usage": usage}}
+    if ts is not None:
+        o["timestamp"] = ts
+    return json.dumps(o)
 
 
 class SessionTokens(unittest.TestCase):
-    def test_sums_usage_across_assistant_messages(self):
+    def test_sums_windowed_usage_across_assistant_messages(self):
+        t0 = NOW - 3600
         with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as f:
             f.write(_asst({"input_tokens": 10, "output_tokens": 5,
-                           "cache_creation_input_tokens": 100, "cache_read_input_tokens": 200}) + "\n")
+                           "cache_creation_input_tokens": 100, "cache_read_input_tokens": 200}, iso(NOW - 100)) + "\n")
             f.write(json.dumps({"type": "user", "message": {"role": "user", "content": "hi"}}) + "\n")  # ignored
-            f.write(_asst({"input_tokens": 3, "output_tokens": 7, "cache_read_input_tokens": 50}) + "\n")  # missing cache_w
+            f.write(_asst({"input_tokens": 3, "output_tokens": 7, "cache_read_input_tokens": 50}, iso(NOW - 50)) + "\n")  # missing cache_w
+            f.write(_asst({"input_tokens": 999, "output_tokens": 999}, iso(NOW - 99999)) + "\n")  # OUTSIDE the window → dropped
             path = f.name
         try:
-            self.assertEqual(km._session_tokens(path),
+            self.assertEqual(km._session_tokens(path, t0),
                              {"in": 13, "out": 12, "cache_w": 100, "cache_r": 250})
         finally:
             os.unlink(path)
 
     def test_missing_file_returns_zeros(self):
-        self.assertEqual(km._session_tokens("/no/such/transcript.jsonl"),
+        self.assertEqual(km._session_tokens("/no/such/transcript.jsonl", NOW - 3600),
                          {"in": 0, "out": 0, "cache_w": 0, "cache_r": 0})
 
 

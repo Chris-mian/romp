@@ -345,7 +345,7 @@ class TimelinePanel {
     // data.tokens. Compact, right of the rate-limit bars. Hidden until data.tokens arrives.
     this._tokensWrap = this.controls.createDiv();
     this._tokensWrap.setAttribute('style', 'display:none;align-items:center;gap:6px;');
-    this._tokensWrap.createSpan({ text: 'tokens' }).setAttribute('style', 'opacity:0.85;');
+    this._tokLabel = this._tokensWrap.createSpan({ text: 'tokens' }); this._tokLabel.setAttribute('style', 'opacity:0.85;');
     const tcol = this._tokensWrap.createDiv(); tcol.setAttribute('style', 'display:flex;flex-direction:column;gap:3px;');
     const tRow = (lbl, color) => {
       const row = tcol.createDiv(); row.setAttribute('style', 'display:inline-flex;align-items:center;gap:6px;');
@@ -815,6 +815,7 @@ class TimelinePanel {
     const sTot = s ? (s.in + s.out) : 0, pTot = pt ? (pt.in + pt.out) : 0;
     if (!sTot && !pTot) { this._tokensWrap.style.display = 'none'; return; }
     this._tokensWrap.style.display = 'flex';
+    if (this._tokLabel && tokens.windowS) this._tokLabel.textContent = 'tokens · ' + fmtWin(tokens.windowS);
     this._tokRows.sessions.val.textContent = fmtTokens(sTot);
     const share = (sTot + pTot) ? Math.round(pTot / (sTot + pTot) * 100) : 0;
     this._tokRows.pipeline.val.textContent = fmtTokens(pTot) + (pTot ? '  ' + share + '%' : '');
