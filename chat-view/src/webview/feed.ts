@@ -153,28 +153,7 @@ function setWorkDot(nameEl: HTMLElement | null, on: boolean) {
   if (on && !has) nameEl.parentElement?.insertBefore(el("span", "fwork-dot"), nameEl);
   else if (!on && has) prev!.remove();
 }
-// names of QUIET sessions the triage judges still have ended turns to file → a blue "judging" pill
-// right of the card's age. Pushed in each feed message (parallel to `working`). A working session is
-// never in this set (the kernel gates it), so the pill answers "this done-looking ask — is it filed?".
-let judgingSet = new Set<string>();
-// Ensure a `.fjudging` pill sits immediately AFTER `timeEl` (just right of the "Xm ago" age) iff `on`
-// (idempotent on re-render). Mirrors setWorkDot. Inline-styled — `ui` owns styles.css, so feed-only
-// elements carry their own style here (same pattern as blockReason/doneReason). (the user 2026-06-17.)
-function setJudgingPill(timeEl: HTMLElement | null, on: boolean) {
-  if (!timeEl) return;
-  const next = timeEl.nextElementSibling;
-  const has = !!next && next.classList.contains("fjudging");
-  if (on && !has) {
-    const pill = el("span", "fjudging");
-    pill.textContent = "judging";
-    pill.title = "the judges are still filing this session's ended turns into the goal tree";
-    pill.style.cssText = "margin-left:6px;padding:0 6px;border:1px solid #5aa2ff;border-radius:999px;"
-      + "color:#5aa2ff;font-size:10px;line-height:15px;display:inline-block;vertical-align:middle;letter-spacing:.02em";
-    timeEl.parentElement?.insertBefore(pill, timeEl.nextSibling);
-  } else if (!on && has) {
-    next!.remove();
-  }
-}
+
 let hostNow = Math.floor(Date.now() / 1000);
 let showDismissed = false;
 let dismissedCount = 0;
@@ -333,7 +312,6 @@ function updateCard(card: HTMLElement, it: FeedItem) {
   if (it.color) a._name.style.color = it.color.bg;
   setWorkDot(a._name, workingSet.has(it.name));   // working dot before the session name
   a._time.textContent = relAge(hostNow - it.t);
-  setJudgingPill(a._time, judgingSet.has(it.name));   // blue "judging" pill right of the age
 }
 
 // ---- expand → detail ----
@@ -558,7 +536,6 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
     og.style.display = "none";
   }
   a._time.textContent = relAge(hostNow - it.t);
-  setJudgingPill(a._time, judgingSet.has(it.name));   // blue "judging" pill right of the age
   a._reopened.style.display = it.reopened ? "" : "none";
   a._wait.style.display = it.waiting ? "" : "none";   // ⏳ paused on an external event
   // ⏸ live block badge: the session is stopped mid-turn on a permission prompt /
@@ -804,7 +781,6 @@ function updateGroupCard(card: HTMLElement, g: AskGroup) {
   if (g.color) a._name.style.color = g.color.bg;
   setWorkDot(a._name, workingSet.has(g.name));   // working dot before the session name
   a._time.textContent = relAge(hostNow - g.t);
-  setJudgingPill(a._time, judgingSet.has(g.name));   // blue "judging" pill right of the age
   // member lines — rebuilt only when the member set or any member's status changes
   const memSig = g.members.map((m) => m.itemId + ":" + memberStatus(m)).join("|");
   if (a._memSig !== memSig) {
@@ -1534,7 +1510,6 @@ window.addEventListener("message", (e: MessageEvent) => {
     items = Array.isArray(m.items) ? m.items : [];
     asks = Array.isArray(m.asks) ? m.asks : [];
     workingSet = new Set(Array.isArray(m.working) ? m.working : []);
-    judgingSet = new Set(Array.isArray(m.judging) ? m.judging : []);
     hostNow = typeof m.now === "number" ? m.now : Math.floor(Date.now() / 1000);
     if (typeof m.dismissedCount === "number") dismissedCount = m.dismissedCount;
     if (typeof m.showDismissed === "boolean") showDismissed = m.showDismissed;

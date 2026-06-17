@@ -1560,21 +1560,6 @@ def _undo_clear():
 
 
 # ───────────────────────── view-builder: goals → feed (parity: feed = ADAPT; minimal here) ─────────────────────────
-def _needs_judging(fsid, path, now):
-    """True iff the TRIAGE tier still has an ENDED unit from this session to file — the feed's blue
-    "judging" pill. Delegates to the judges' SINGLE SOURCE OF TRUTH jd.pending_judgment (planner
-    placements + closer closedTurns + grouper groupedSig; the judges thread extends it as new judges land,
-    so the pill can't falsely clear early — coordinated with the `judges` session, 2026-06-17). The signal
-    is event-exact: a turn/segment ENDING creates the pending unit, the placement/closure/grouping CLEARS
-    it (no time heuristic, per the design rule). The judge parse is cache-backed, so this is cheap per push.
-    Fully defensive: a feed INDICATOR must never break the feed, so any error → False (no pill) rather than
-    propagating out of build_feed."""
-    try:
-        return bool(jd.pending_judgment(fsid, path, now))
-    except Exception:
-        return False
-
-
 def build_feed(now, tmux=None):
     """The {type:"feed"} message the tuned feed.js bundle consumes (ui-parity.md: feed = ADAPT).
     Goals map onto the AskItem/AskTreeNode shape the render already speaks: the goal tree IS the
@@ -1584,7 +1569,7 @@ def build_feed(now, tmux=None):
     if tmux is None:
         tmux = _tmux_sessions()
     cleared = _cleared_ids()
-    asks, working, judging = [], [], []
+    asks, working = [], []
     for s in _alive_sessions(now, tmux):             # hard filter: living sessions only
         fsid, name = s["sid"], s["name"]
         color = _name_color(fsid)
@@ -1593,12 +1578,6 @@ def build_feed(now, tmux=None):
         if who_working:
             working.append(name)
         store = jd.load_goals(fsid)
-        # The "needs judging" pill: a QUIET session (not actively working) whose ended turns the triage
-        # judges haven't filed yet. Gated on not-working — the same "only while otherwise quiet" rule as
-        # the subagent dot — so it's the informative "is this done-looking ask actually filed?" signal,
-        # not noise on every busy session. (the user 2026-06-17.)
-        if not who_working and _needs_judging(fsid, s["path"], now):
-            judging.append(name)
         nodes, status = store.get("nodes", {}), store.get("status", {})
         # Exact click-to-jump anchors: map each goal segment → the work/reply uuid — the SAME anchors the
         # timeline/ledger already use — so a card click deep-links to the precise turn BY ID instead of the
@@ -1757,7 +1736,7 @@ def build_feed(now, tmux=None):
     # ("details turns never appear at all") forbid. Captions live in the card's trail, the ledger, and
     # the timeline — not here. (the user 2026-06-16; reverts commit 05505fa "show stream cards".)
     return {"type": "feed", "asks": asks, "items": [], "blocked": [], "now": now,
-            "working": working, "judging": judging, "dismissedCount": len(cleared), "showDismissed": False,
+            "working": working, "dismissedCount": len(cleared), "showDismissed": False,
             "canUndoClear": len(cleared) > 0}
 
 
