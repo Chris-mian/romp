@@ -957,18 +957,29 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
   const workTitle = node.status === "question" ? "jump to where this got marked blocked"
                   : resolved ? "jump to where this got checked off" : "jump to this work";
   if (!repeat) {
-    // THREE zones: TEXT → the minting message (goMsg); MARK + META time → where it resolved (goWork).
-    // Hovering the mark or the time lights BOTH (shared target); the text lights on its own.
     txt.classList.add("lz-nav"); txt.title = "jump to the message that asked for this"; txt.onclick = goMsg;
-    mark.classList.add("lz-nav"); mark.title = workTitle; mark.onclick = goWork;
-    meta.classList.add("lz-nav"); meta.title = workTitle; meta.onclick = goWork;
-    const linkHover = (group: HTMLElement[]) => {
+    const linkHover = (group: HTMLElement[], merge = false) => {
+      if (merge) group.forEach((g) => g.classList.add("lz-merge"));
       const on = () => group.forEach((g) => g.classList.add("lz-hl"));
       const off = () => group.forEach((g) => g.classList.remove("lz-hl"));
       group.forEach((g) => { g.addEventListener("mouseenter", on); g.addEventListener("mouseleave", off); });
     };
-    linkHover([txt]);
-    linkHover([mark, meta]);
+    if (resolved) {
+      // RESOLVED (checked off / blocked): MARK + META jump to where it resolved (goWork), as one pair; TEXT
+      // → the minting message, on its own. Hovering the mark or the time lights BOTH (shared target).
+      mark.classList.add("lz-nav"); mark.title = workTitle; mark.onclick = goWork;
+      meta.classList.add("lz-nav"); meta.title = workTitle; meta.onclick = goWork;
+      linkHover([txt]);
+      linkHover([mark, meta]);
+    } else {
+      // NOT yet checked off / blocked → no completion: the checkbox + text are ONE block (both the goal
+      // itself), navigating to the message together and lighting as one continuous highlight. The meta time
+      // stays its own zone → the node's latest work. (the user 2026-06-17.)
+      mark.classList.add("lz-nav"); mark.title = "jump to the message that asked for this"; mark.onclick = goMsg;
+      meta.classList.add("lz-nav"); meta.title = "jump to the latest work here"; meta.onclick = goWork;
+      linkHover([mark, txt], true);
+      linkHover([meta]);
+    }
   }
   // Hovering a node lights ITS OWN work-bars on the timeline — the union of this node's segment trail
   // and everything under it — via the SAME showAskPath the card uses, just scoped to this node (the

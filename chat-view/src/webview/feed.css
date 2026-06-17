@@ -250,6 +250,10 @@ body { display: flex; flex-direction: column; }
 .ftree-node .lz-nav { cursor: pointer; }
 .ftree-text.lz-hl, .ftree-meta.lz-hl { background: rgba(255, 255, 255, 0.12); border-radius: 3px; box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.12); }
 .ftree-mark.lz-hl { box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.16); }
+/* a NOT-yet-resolved node's checkbox + text are ONE block — a single CONTINUOUS highlight bridged across
+   the gap (the offset box-shadows fill it), instead of the separate ring + fill of a resolved node. */
+.ftree-mark.lz-merge.lz-hl { background: rgba(255, 255, 255, 0.12); border-radius: 3px; box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.12), 6px 0 0 0 rgba(255, 255, 255, 0.12); }
+.ftree-text.lz-merge.lz-hl { box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.12), -6px 0 0 0 rgba(255, 255, 255, 0.12); }
 /* disclosure triangle (▶/▼) before the mark; .empty = blank spacer, keeps alignment.
    .nav = expandable: the triangle is the ONLY toggle (the line itself navigates). */
 .ftree-tri { flex: 0 0 auto; width: 1em; text-align: center; color: var(--dim); font-size: 0.74em; }

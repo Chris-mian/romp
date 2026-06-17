@@ -199,6 +199,11 @@ body { display: flex; flex-direction: column; }
 /* .lz-hl is toggled in JS (not :hover) so the checkbox + time can light TOGETHER when either is hovered */
 .ledger-ttext.lz-hl, .ledger-ttime.lz-hl { background: rgba(255, 255, 255, 0.14); border-radius: 3px; box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.14); }
 .ledger-tmark.lz-hl { box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.16); }
+/* a NOT-yet-resolved node's checkbox + text are ONE block (the user 2026-06-17): a single CONTINUOUS
+   highlight bridged across the 7px column gap (the offset box-shadows fill it), instead of the separate
+   ring + fill a resolved node gets. */
+.ledger-tmark.lz-merge.lz-hl { background: rgba(255, 255, 255, 0.14); border-radius: 3px; box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.14), 7px 0 0 0 rgba(255, 255, 255, 0.14); }
+.ledger-ttext.lz-merge.lz-hl { box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.14), -7px 0 0 0 rgba(255, 255, 255, 0.14); }
 /* disclosure triangle at EVERY level (▶ folded / ▼ open); .empty = a blank spacer that keeps leaves
    aligned under their expandable siblings. A FLAT ledger (no expandable node anywhere) drops the whole
    column via .ledger-tree.flat so bullets sit flush instead of dead-indented (the user 2026-06-16).

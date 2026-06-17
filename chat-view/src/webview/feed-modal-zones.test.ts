@@ -26,12 +26,21 @@ test("modal node: mark + time → where it got CHECKED OFF (anchor 'work' @ reso
   assert.doesNotMatch(FEED, /line\.onclick = \(ev\) => \{ ev\.stopPropagation\(\); vscodeApi\?\.postMessage\(\{ type: "showOnTimeline"/);
 });
 
-test("modal node: mark + time are LINKED on hover; text lights alone; styled per zone", () => {
+test("modal RESOLVED node: mark + time LINKED on hover; text lights alone; styled per zone", () => {
+  assert.match(FEED, /if \(resolved\) \{/);                                   // the 3-way split is gated on resolved
   assert.match(FEED, /linkHover\(\[txt\]\);/);
   assert.match(FEED, /linkHover\(\[mark, meta\]\);/);
   assert.match(CSS, /\.ftree-node \.lz-nav \{[^}]*cursor: pointer/);
   assert.match(CSS, /\.ftree-mark\.lz-hl \{[^}]*box-shadow/);                 // mark = halo ring
   assert.match(CSS, /\.ftree-text\.lz-hl[^{]*\{[^}]*background/);             // text = rounded fill
+});
+
+test("modal UNRESOLVED node: checkbox + text are ONE merged block → the message (the user 2026-06-17)", () => {
+  // not yet checked off / blocked → the mark points at the SAME message as the text, lit as one block
+  assert.match(FEED, /mark\.classList\.add\("lz-nav"\); mark\.title = "jump to the message that asked for this"; mark\.onclick = goMsg/);
+  assert.match(FEED, /linkHover\(\[mark, txt\], true\)/);
+  assert.match(CSS, /\.ftree-mark\.lz-merge\.lz-hl \{/);
+  assert.match(CSS, /\.ftree-text\.lz-merge\.lz-hl \{/);
 });
 
 test("modal node shows the planner's rationale INLINE, clickable to where it was authored (the user 2026-06-17)", () => {

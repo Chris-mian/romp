@@ -140,10 +140,20 @@ test("ledger row = 3 zones: text→message (user turn @t), mark+time→checked-o
 
 test("ledger checkbox + time are LINKED — hovering either lights both; text lights alone (the user 2026-06-17)", () => {
   // a class-driven group (not :hover) so one zone can light its partner across the text between them
-  assert.match(RENDER, /const linkHover = \(group: HTMLElement\[\]\) =>/);
+  assert.match(RENDER, /const linkHover = \(group: HTMLElement\[\], merge = false\) =>/);
   assert.match(RENDER, /group\.forEach\(\(g\) => g\.classList\.add\("lz-hl"\)\)/);
-  assert.match(RENDER, /linkHover\(\[txt\]\);/);                                   // text on its own
-  assert.match(RENDER, /linkHover\(time\.textContent \? \[mark, time\] : \[mark\]\)/);  // mark + time together
+  assert.match(RENDER, /linkHover\(\[txt\]\);/);                                   // (resolved) text on its own
+  assert.match(RENDER, /linkHover\(time\.textContent \? \[mark, time\] : \[mark\]\)/);  // (resolved) mark + time together
+});
+
+test("ledger UNRESOLVED node: checkbox + text are ONE merged block → the message (the user 2026-06-17)", () => {
+  // not yet checked off / blocked → the mark points at the SAME message as the text, and they light as one
+  // continuous block (lz-merge), because there is no completion yet — both ARE the goal itself.
+  assert.match(RENDER, /if \(n\.done \|\| n\.blocked\) \{/);                       // the split is gated on resolved
+  assert.match(RENDER, /wireZone\(mark, startT, "user", "jump to the message that asked for this"\)/);
+  assert.match(RENDER, /linkHover\(\[mark, txt\], true\)/);                        // merged, one continuous block
+  assert.match(CSS, /\.ledger-tmark\.lz-merge\.lz-hl \{/);                         // bridged continuous highlight
+  assert.match(CSS, /\.ledger-ttext\.lz-merge\.lz-hl \{/);
 });
 
 test("scrollToNearestT: 'assistant' PREFERS the assistant turn (fallback any); 'user' stays strict", () => {

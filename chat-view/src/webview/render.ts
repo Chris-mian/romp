@@ -2308,33 +2308,41 @@ function renderLedger() {
       const lead: HTMLElement[] = [];
       if (n.recent) { const arr = el("span", "ledger-recent"); arr.textContent = "→"; arr.title = "most recent change"; lead.push(arr); }
       if (anyExpandable) lead.push(tri);                         // no caret column in a flat ledger (see anyExpandable)
-      // Three INDEPENDENT click/hover zones (the user 2026-06-17), instead of one whole-row jump: the TEXT
-      // jumps to the MESSAGE that asked for this (the nearest USER turn at its creation t); the CHECKBOX
-      // (mark) and the right-side TIME both jump to HOW/WHEN it got checked off (the nearest turn at its
-      // resolution mt — the assistant action that resolved it, a different place in the script than the
-      // message). Each zone lights its OWN hover highlight (.lz-nav), so the lit area tells you where a
-      // click will land. The caret's own onclick stops propagation, so clicking it only folds.
+      // Click/hover zones (the user 2026-06-17). A RESOLVED node (checked off = done, or marked blocked)
+      // has a SEPARATE resolution point, so it splits in three: the TEXT jumps to the MESSAGE that minted
+      // it (nearest USER turn at t); the CHECKBOX + the TIME jump to where it RESOLVED (nearest assistant
+      // turn at mt). But a node NOT yet checked off / blocked has NO completion — its checkbox + text are
+      // ONE block (both ARE the goal itself), so they navigate to the message together and light as one
+      // continuous highlight. The caret's own onclick stops propagation, so clicking it only folds.
       const startT = n.t;                          // where the task was STATED → the user message
-      const resolveT = n.mt ?? n.t;                // where/when it got CHECKED OFF (falls back to t while still open)
+      const resolveT = n.mt ?? n.t;                // where/when it got CHECKED OFF / blocked
       const wireZone = (z: HTMLElement, t: number | undefined, kind: string, title: string) => {
         if (!t) return;
         z.classList.add("lz-nav");
         z.title = title;
         z.addEventListener("click", (ev) => { ev.stopPropagation(); scrollToNearestT(t, kind); });
       };
-      wireZone(txt, startT, "user", "jump to the message that asked for this");
-      wireZone(mark, resolveT, "assistant", "jump to where this got checked off");
-      wireZone(time, resolveT, "assistant", "jump to where this got checked off");
-      // The checkbox + time are LINKED — hovering either lights BOTH (they jump to the same place, where it
-      // got checked off); the text lights on its own (the user 2026-06-17). Class-driven so one zone can
-      // light its partner, which :hover alone can't do across non-adjacent siblings.
-      const linkHover = (group: HTMLElement[]) => {
+      // .lz-hl is toggled in JS so a group lights together; pass merge=true for the unresolved checkbox+text
+      // block so they read as ONE continuous highlight (a bridged fill) rather than separate ring + fill.
+      const linkHover = (group: HTMLElement[], merge = false) => {
+        if (merge) group.forEach((g) => g.classList.add("lz-merge"));
         const on = () => group.forEach((g) => g.classList.add("lz-hl"));
         const off = () => group.forEach((g) => g.classList.remove("lz-hl"));
         group.forEach((g) => { g.addEventListener("mouseenter", on); g.addEventListener("mouseleave", off); });
       };
-      linkHover([txt]);
-      linkHover(time.textContent ? [mark, time] : [mark]);   // time only joins the pair when it's shown (done/current)
+      wireZone(txt, startT, "user", "jump to the message that asked for this");
+      if (n.done || n.blocked) {
+        const resTitle = n.done ? "jump to where this got checked off" : "jump to where this got marked blocked";
+        wireZone(mark, resolveT, "assistant", resTitle);
+        wireZone(time, resolveT, "assistant", resTitle);
+        linkHover([txt]);
+        linkHover(time.textContent ? [mark, time] : [mark]);   // time joins the pair only when shown
+      } else {
+        // not yet checked off / blocked → checkbox + text are ONE block, both → the goal's message
+        wireZone(mark, startT, "user", "jump to the message that asked for this");
+        linkHover([mark, txt], true);
+        if (time.textContent) { wireZone(time, resolveT, "assistant", "jump to the latest work here"); linkHover([time]); }
+      }
       row.append(...lead, mark, txt, time);
       wrap.appendChild(row);
       if (expandable && !folded) for (const cid of n.children!) { const c = byId.get(cid); if (c) renderNode(c, depth + 1); }
