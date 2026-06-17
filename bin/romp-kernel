@@ -1434,18 +1434,40 @@ def build_feed(now, tmux=None):
         for nid, nd in nodes.items():
             children.setdefault(nd.get("parentId"), []).append(nid)
 
-        def node_status(nd):
-            return "done" if nd.get("nodeComplete") else ("question" if nd.get("blocked") else "open")
+        # Completion propagates BOTH ways for a transparent checklist (the user 2026-06-16): a node is
+        # "done" if it's explicitly nodeComplete, if ALL its children are done (roll-UP), OR if a done
+        # ancestor checks it off (roll-DOWN). Explicit done → render shows a FULL ✓ disc; either derived
+        # case → a DIMMED disc. _closure_done is the pure roll-up (memoised); flatten threads the roll-down
+        # through ancestor_done.
+        _cdone = {}
+        def _closure_done(nid):
+            if nid in _cdone:
+                return _cdone[nid]
+            nd = nodes.get(nid)
+            if not nd:
+                _cdone[nid] = False
+                return False
+            if nd.get("nodeComplete"):
+                _cdone[nid] = True
+                return True
+            kids = [c for c in children.get(nid, []) if not nodes[c].get("cleared")]
+            res = bool(kids) and all(_closure_done(c) for c in kids)
+            _cdone[nid] = res
+            return res
 
-        def flatten(nid, out):                       # AskTreeNode flat list, root first; nest via children ids
+        def flatten(nid, out, ancestor_done=False):  # AskTreeNode flat list, root first; nest via children ids
             nd = nodes[nid]
             kids = sorted(children.get(nid, []), key=lambda c: nodes[c]["t"])
+            explicit = bool(nd.get("nodeComplete"))
+            done = explicit or _closure_done(nid) or ancestor_done
+            derived = done and not explicit            # roll-up / roll-down → DIMMED ✓ disc, not the full one
+            st = "done" if done else ("question" if nd.get("blocked") else "open")
             out.append({"id": nid, "kind": "ask", "text": nd["text"], "who": name, "whoSid": fsid,
-                        "whoColor": color, "whoWorking": who_working, "status": node_status(nd),
+                        "whoColor": color, "whoWorking": who_working, "status": st, "derived": derived,
                         "t": nd["t"], "last": nd["t"], "trgb": list(cm.age_rgb(now - nd["t"])),
                         "children": kids, "rows": []})
             for c in kids:
-                flatten(c, out)
+                flatten(c, out, ancestor_done=done)
             return out
         # HARD blocked floor: a session stopped RIGHT NOW on a live permission prompt (tmux state)
         # floors its ACTIVE-FOCUS card under BLOCKED — the strongest signal, beats the goal's planner

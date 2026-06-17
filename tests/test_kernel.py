@@ -269,6 +269,31 @@ class ViewBuilder(unittest.TestCase):
         self.assertFalse(byid["blocked parent"]["derived"], "a blocked node is not auto-completed")
         self.assertFalse(byid["blocked parent"]["done"])
 
+    def test_feed_tree_propagates_completion_both_ways(self):
+        # In the FEED card tree completion rolls UP and DOWN (the user 2026-06-16): a done parent checks
+        # off its children (roll-down), and all-children-done makes the parent done (roll-up). Explicit
+        # done → derived False (full ✓ disc); a derived case → derived True (dimmed disc). Unlike the
+        # ledger, the feed does NOT prune, so the rolled-off children stay VISIBLE (dimmed).
+        ta, ca = (SID + ":ta", SID + ":ca")                        # done parent, open child (roll-DOWN)
+        tb, cb1, cb2 = (SID + ":tb", SID + ":cb1", SID + ":cb2")    # open parent, both children done (roll-UP)
+        def gn(nid, text, parent, done):
+            return {"id": nid, "text": text, "parentId": parent, "nodeComplete": done,
+                    "blocked": False, "cleared": False, "trail": [], "t": T0}
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+            "rompUuid": SID, "seq": 3, "lastNode": "other",
+            "nodes": {ta: gn(ta, "done top", None, True), ca: gn(ca, "open child", ta, False),
+                      tb: gn(tb, "rollup top", None, False), cb1: gn(cb1, "kid one", tb, True), cb2: gn(cb2, "kid two", tb, True)},
+            "placements": {}, "status": {}}))
+        nodes = {n["text"]: n for a in km.build_feed(NOW)["asks"] for n in a["tree"]}
+        # roll-DOWN: a done parent checks off its child → the child is done + derived (dimmed), still shown
+        self.assertEqual(nodes["open child"]["status"], "done")
+        self.assertTrue(nodes["open child"]["derived"], "a done ancestor rolls down → derived done")
+        self.assertFalse(nodes["done top"]["derived"], "the explicitly-done parent is a full disc")
+        # roll-UP: all children done → parent derived-done; the explicit children stay explicit (full disc)
+        self.assertEqual(nodes["rollup top"]["status"], "done")
+        self.assertTrue(nodes["rollup top"]["derived"], "all children done → derived done")
+        self.assertFalse(nodes["kid one"]["derived"])
+
     def test_followup_body_quotes_context(self):
         # A feed follow-up quotes the ask it answers ('> <ask>') so the recipient session has context;
         # an explicit group title wins over the node lookup; unknown/none → bare text (the user 2026-06-16).
