@@ -85,7 +85,7 @@ PEER_CAP = 10         # max peers kept on the status-bar "talking to" line (olde
 ORPHAN_GRACE = int(os.environ.get("ROMP_POSTAL_ORPHAN_GRACE", "900"))  # bounce unread mail to a dead recipient after N s
 
 REPLY_HINT = ('To reply (only if you have something substantive to add, not just to '
-              'acknowledge): romp --mail send <name> "<text>" — lead with ASK:/Q:/FYI: '
+              'acknowledge): romp --mail send <name> "<text>" — lead with DELEGATE:/COORDINATE:/QUESTION: '
               'and put the whole point in your first sentence.')
 
 # ───────────────────────── tmux helpers ─────────────────────────
@@ -954,7 +954,7 @@ def format_push(msgs):
         if m.get("id"):
             out.append("<!-- romp-msg-id: %s -->" % m["id"])   # exact id for the timeline join
         out.append(bar)
-    out.append('(to reply, only if substantive: romp --mail send %s "..." — lead with ASK:/Q:/FYI:)'
+    out.append('(to reply, only if substantive: romp --mail send %s "..." — lead with DELEGATE:/COORDINATE:/QUESTION:)'
                % msgs[0].get("from", ""))
     return "\n".join(out)
 
@@ -1350,21 +1350,21 @@ Norms for messaging peer sessions. A peer shares none of your context — only t
 KEEP EXCHANGES TIGHT. Message a peer only with something substantive: a question, information they need, or a result worth sharing. Never reply just to acknowledge; a message wakes the recipient and costs it a whole turn. Stop once the exchange has served its purpose.
 
 WRITE SO THE RECIPIENT CAN ACT FROM YOUR FIRST LINE.
-- Lead with intent: start the body with ASK: (do this), Q: (answer me), FYI: (no reply needed), or HANDOFF:.
+- Lead with intent: start the body with DELEGATE: (you own this now), COORDINATE: (aligning / confirming / heads-up, reply optional), or QUESTION: (reply required, no work transferred).
 - First sentence = the whole point: the conclusion or ask itself, not the story of how you got there. Context after, only as much as the recipient needs to act.
 - Name things exactly: files by path, sessions by name, the same term every time — never "the thing", a synonym, or a codename you invented mid-task.
 - Match wording to evidence: "verified X (repro'd)" and "suspect Y (untested)" are different claims — make established vs. guessed legible from the words alone. When relaying, say whose ask or decision it is (the human's, yours, a peer's).
 - End with the response you need, or that none is.
-- Cut words, not information: one point per message; routine coordination is 1-3 lines, a handoff can be long. When brevity and clarity conflict, clarity wins.
+- Cut words, not information: one point per message; routine coordination is 1-3 lines, a delegation can be long. When brevity and clarity conflict, clarity wins.
 
-COORDINATE BEFORE PARALLEL EDITS. Before editing a shared repo, run list_agents to see peers' working-notes and branches (file overlap only collides on the SAME branch), and publish your own with set_working. When handing off or working alongside a peer, declare ownership in your first line ("I own files A/B — stay off them"). Use check_sent to see if a message was read instead of asking "did you get it?". Confirm substantive coordination (a handoff plan, an ownership boundary) — never just to acknowledge.
+COORDINATE BEFORE PARALLEL EDITS. Before editing a shared repo, run list_agents to see peers' working-notes and branches (file overlap only collides on the SAME branch), and publish your own with set_working. When handing off or working alongside a peer, declare ownership in your first line ("I own files A/B — stay off them"). Use check_sent to see if a message was read instead of asking "did you get it?". Confirm substantive coordination (a delegation plan, an ownership boundary) — never just to acknowledge.
 
 If you message a session that has been killed, it is parked as a handoff: delivered if that session is ever revived, ignored otherwise — and its responsibility is yours now. If YOU are a revived session, mail flagged "parked" may be stale: reconcile before assuming your old task still stands.
 """
 
 MCP_TOOLS = [
     {"name": "send_message",
-     "description": "Send a message to another romp session by its name. A live recipient gets it at the end of its current turn. The recipient shares none of your context, so lead the body with ASK:/Q:/FYI:/HANDOFF: and put the whole point in the first sentence — context after, only what's needed to act. If you name a session that has been KILLED (but really existed), the message is PARKED as a handoff: it waits on disk and is delivered the instant that session is ever revived (even days later), or ignored if it never returns — useful for telling a dead session you've taken over its work. The response says whether it was delivered or parked. A name no session ever had still errors. Use list_agents to see who's live.",
+     "description": "Send a message to another romp session by its name. A live recipient gets it at the end of its current turn. The recipient shares none of your context, so lead the body with DELEGATE:/COORDINATE:/QUESTION: and put the whole point in the first sentence — context after, only what's needed to act. If you name a session that has been KILLED (but really existed), the message is PARKED as a handoff: it waits on disk and is delivered the instant that session is ever revived (even days later), or ignored if it never returns — useful for telling a dead session you've taken over its work. The response says whether it was delivered or parked. A name no session ever had still errors. Use list_agents to see who's live.",
      "inputSchema": {"type": "object",
                      "properties": {"to": {"type": "string", "description": "recipient romp session name"},
                                     "body": {"type": "string", "description": "message text"}},

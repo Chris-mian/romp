@@ -72,7 +72,7 @@ cnt() { ls -1 "$1" 2>/dev/null | wc -l | tr -d ' '; }
     # gamma has a persistent names/ record but is NOT a live session
     mkdir -p "$XDG_STATE_HOME/romp/names"
     printf 'gamma\t/tmp\t#aa3344\twhite\n' > "$XDG_STATE_HOME/romp/names/uuid-g"
-    run "$POSTAL" send gamma "HANDOFF: I'm taking over; you're relieved."
+    run "$POSTAL" send gamma "DELEGATE: I'm taking over; you're relieved."
     [ "$status" -eq 0 ]
     [[ "$output" == *"parked as a handoff"* ]]
     [ "$(cnt "$(mb uuid-g)/new")" = "1" ]

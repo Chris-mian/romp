@@ -9,7 +9,7 @@ setup() {
     TEST_DIR="$(mktemp -d)"
     export HOME="$TEST_DIR/home"
     mkdir -p "$HOME/.claude/skills/romp-postal"
-    printf -- '---\nname: romp-postal\ndescription: d\n---\nPOSTAL NORMS: lead with ASK/Q/FYI/HANDOFF.\n' \
+    printf -- '---\nname: romp-postal\ndescription: d\n---\nPOSTAL NORMS: lead with DELEGATE/COORDINATE/QUESTION.\n' \
         > "$HOME/.claude/skills/romp-postal/SKILL.md"
     MOCK="$TEST_DIR/mock"; mkdir -p "$MOCK"
     # mock tmux: `tmux show -v @romp` prints $FAKE_ROMP
@@ -30,7 +30,7 @@ teardown() { rm -rf "$TEST_DIR"; }
     [ "$status" -eq 0 ]
     [[ "$output" == *'"additionalContext"'* ]]
     [[ "$output" == *'"hookEventName": "SessionStart"'* ]]
-    [[ "$output" == *'POSTAL NORMS: lead with ASK'* ]]
+    [[ "$output" == *'POSTAL NORMS: lead with DELEGATE'* ]]
     [[ "$output" != *'name: romp-postal'* ]]   # YAML frontmatter is stripped
 }
 
