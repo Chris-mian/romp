@@ -849,6 +849,14 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(card["blocked"]["status"], 500)
         self.assertEqual(card["column"], "needs_input", "an API-error card files under BLOCKED")
 
+    def test_injected_img_paths_for_the_send_wait(self):
+        # _tmux_send waits for these to resolve to "[Image #N]" before pressing Enter, so a text+image
+        # message doesn't race the async image read and drop the text (the user 2026-06-17).
+        self.assertEqual(km._injected_img_paths("look at /srv/a.png and ~/pics/b.jpg please"),
+                         ["/srv/a.png", "~/pics/b.jpg"])
+        self.assertEqual(km._injected_img_paths("no images here"), [])
+        self.assertEqual(km._injected_img_paths(""), [])
+
     def test_user_images_extracts_pasted_path_and_blocks(self):
         # the user 2026-06-17: path-pasted images stopped rendering after the Python rebuild dropped the
         # extraction. _user_images mirrors the old transcript.ts: base64 block → data URL; path source →

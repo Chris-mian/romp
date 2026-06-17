@@ -537,7 +537,20 @@ def _tmux_send(name, text, model_cmd=False, _async=True):
             run(["send-keys", "-t", name, "-X", "cancel"], 2)        # exit copy-mode so paste+Enter land
         run(["set-buffer", "-b", "rompkernel", text])
         run(["paste-buffer", "-b", "rompkernel", "-d", "-p", "-t", name])   # -p bracketed, -d delete buf
-        time.sleep(0.25)
+        paths = _injected_img_paths(text)
+        if paths:
+            # Claude Code reads each pasted image PATH asynchronously and rewrites it to "[Image #N]" in the
+            # input. Submitting before that settles races the read and DROPS the surrounding text (intermittent
+            # — the user 2026-06-17). Wait until the raw path(s) leave the input (≤4s) before Enter, then a
+            # last beat for the input to settle. Event-based, not a fixed gap (-J joins wrapped path lines).
+            for _ in range(40):
+                time.sleep(0.1)
+                cap = run(["capture-pane", "-p", "-J", "-t", name], 2)
+                if not cap or all(p not in cap.stdout for p in paths):
+                    break
+            time.sleep(0.2)
+        else:
+            time.sleep(0.25)
         run(["send-keys", "-t", name, "Enter"])
         if model_cmd:
             time.sleep(0.85)
@@ -950,6 +963,13 @@ def _user_images(blocks, text, human):
             if len(imgs) >= 4:
                 break
     return imgs
+
+
+def _injected_img_paths(text):
+    """The image file paths in an OUTGOING message (the user 2026-06-17). _tmux_send waits for Claude Code
+    to finish reading these (it rewrites each to "[Image #N]" async) before pressing Enter, so the submit
+    doesn't race the read and drop the surrounding text."""
+    return [m.group(1) for m in _IMG_PATH_RE.finditer(text or "")]
 
 
 # ───────────────────────── postal hydration (parity with chat-view/src/postal-spec.ts) ─────────────────────────
