@@ -70,8 +70,6 @@ type ChatEvent = (
   // Claude Code's Task to-do list, folded into one live checklist.
   | { kind: "todo"; tasks: TodoTask[]; ts?: string; uuid?: string }
   | { kind: "queued"; texts: string[]; ts?: string; uuid?: string }
-  // The session is delegating to a subagent (Task/Agent) — quiet but still working.
-  | { kind: "subagent"; desc: string; ts?: string; uuid?: string }
   // The turn stopped on an API error (event-based: transcript isApiErrorMessage). The session is BLOCKED
   // until retried — a red-dot card at the bottom with a Retry button (the user 2026-06-16).
   | { kind: "apiError"; text: string; status?: number; category?: string; ts?: string; uuid?: string }
@@ -80,12 +78,8 @@ type ChatEvent = (
 
 interface TodoTask { id: string; subject: string; activeForm?: string; status: string }
 
-type ChipState = "working" | "subagent" | "ready" | "awaiting" | "idle" | "closed" | "compacting" | "blocked";
-interface Status { state: ChipState; sinceEpoch: number | null; effort?: string; model?: string; mode?: string; ctx?: string; faded?: boolean;
-  // ADDITIVE subagent signal: the desc of a subagent running in the background (or "" if undescribed), else
-  // null. Shown as a separate orange chip/dot ONLY while the session is otherwise quiet (ready/idle) — a
-  // working session hides it (the user 2026-06-16).
-  subagent?: string | null; }
+type ChipState = "working" | "ready" | "awaiting" | "idle" | "closed" | "compacting" | "blocked";
+interface Status { state: ChipState; sinceEpoch: number | null; effort?: string; model?: string; mode?: string; ctx?: string; faded?: boolean; }
 interface Color { bg: string; fg: string; }
 interface Session { id: string; name: string; color: Color | null; events: ChatEvent[]; status: Status; firstSeen?: number; }
 
@@ -647,7 +641,6 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
   if (ev.kind === "postal") return renderPostal(ev);
   if (ev.kind === "todo") return renderTodo(ev);
   if (ev.kind === "queued") return renderQueued(ev);
-  if (ev.kind === "subagent") return renderSubagent(ev);
   if (ev.kind === "apiError") return renderApiError(ev);
   if (ev.kind === "compact") return renderCompact(ev);
   return renderTool(ev);
@@ -796,16 +789,6 @@ function renderQueued(ev: Extract<ChatEvent, { kind: "queued" }>): HTMLElement {
     bubble.textContent = t;
     turn.appendChild(bubble);
   }
-  return turn;
-}
-
-// Subagent in flight (Task/Agent) — the session is quiet but still working. A compact
-// orange card at the bottom so it's clear WHY there's no streaming output.
-function renderSubagent(ev: Extract<ChatEvent, { kind: "subagent" }>): HTMLElement {
-  const turn = el("div", "turn turn-subagent");
-  const head = el("div", "subagent-head");
-  head.textContent = ev.desc ? `⚙ subagent · ${ev.desc}` : "⚙ subagent running…";
-  turn.appendChild(head);
   return turn;
 }
 
@@ -1198,20 +1181,15 @@ function renderTabs() {
       tab.classList.add("colored");
     }
     const st = s.status.state;
-    // ADDITIVE: a background subagent shows ONLY while the session is otherwise quiet (ready/idle); a
-    // working session hides it (the user 2026-06-16, re-spec from #9).
-    const subActive = s.status.subagent != null && (st === "ready" || st === "idle");
     if (st === "working") tab.classList.add("tab-working");
     else if (st === "blocked") tab.classList.add("tab-blocked");     // red: stopped on an API error
     else if (st === "awaiting") tab.classList.add("tab-awaiting");
     else if (st === "compacting") tab.classList.add("tab-compacting");
     else if (st === "closed") tab.classList.add("tab-closed");       // dead session: read-only, struck-through label
-    if (subActive) tab.classList.add("tab-subagent");                // orange accent ADDED to the quiet tab
     if (s.status.faded) tab.classList.add("at-rest");
-    // WORKING shows a yellow dot; a quiet tab with a background subagent shows an ORANGE dot (additive).
-    // BLOCKED (API error) gets NO dot — the dashed red tab highlight instead (the user 2026-06-16).
+    // WORKING shows a yellow dot; BLOCKED (API error) gets NO dot — the dashed red tab highlight instead
+    // (the user 2026-06-16).
     if (st === "working") tab.appendChild(el("span", "tab-dot"));
-    else if (subActive) tab.appendChild(el("span", "tab-dot tab-dot-subagent"));
     // compacting → a 🗜 compression icon before the name (the tab gets no outline for this state, so the
     // icon IS the cue — the user 2026-06-16). Compacting can't coincide with working, so no dot clash.
     if (st === "compacting") {
@@ -2983,7 +2961,7 @@ function setCtxBar(bar: HTMLElement, ctxStr: string | undefined, compacting = fa
 }
 
 const CHIP_LABEL: Record<ChipState, string> = {
-  working: "WORKING", subagent: "SUBAGENT", ready: "READY", awaiting: "BLOCKED",
+  working: "WORKING", ready: "READY", awaiting: "BLOCKED",
   idle: "IDLE", closed: "CLOSED", compacting: "COMPACTING", blocked: "API ERROR",
 };
 
@@ -3014,15 +2992,6 @@ function updateStatusline() {
     const chip = el("span", `chip chip-${s.status.state}`);
     chip.textContent = CHIP_LABEL[s.status.state] ?? s.status.state.toUpperCase();
     sl.appendChild(chip);
-  }
-  // ADDITIVE orange SUBAGENT chip: a quiet session (ready/idle) with a background subagent still running —
-  // the signal explaining why a seemingly-idle session is doing work. A working session hides it (it's
-  // already obviously busy). (the user 2026-06-16, re-spec from #9.)
-  if (s.status.subagent != null && (s.status.state === "ready" || s.status.state === "idle")) {
-    const sub = el("span", "chip chip-subagent");
-    sub.textContent = "SUBAGENT";
-    sub.title = s.status.subagent ? `a subagent is running in the background: ${s.status.subagent}` : "a subagent is running in the background";
-    sl.appendChild(sub);
   }
   const meta = el("span", "spinner-meta");
   meta.id = "spinner-meta";

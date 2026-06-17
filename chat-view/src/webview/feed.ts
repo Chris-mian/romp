@@ -77,7 +77,6 @@ interface AskItem {
   blocked?: { state: string; since: number; what: string; status?: number; category?: string; text?: string };
   blockWhy?: string;                               // planner's one-sentence "why blocked" → shown under a blocked card
   doneWhy?: string;                                // planner's one-sentence "why done" → shown under a completed card (the done page)
-  summary?: string;                                // the DISTILLER's key takeaway for a completed goal → shown under a done card (judges 9bc0366)
   origin?: { peer: string; peerSid: string; color: { bg: string; fg: string } | null } | null;  // courier handoff: planted by a peer's message → "↪ from <peer>"
   groupTitle?: string;                             // host: this ask shares a typed turn with siblings → the group's title
   groupN?: number;                                 // host: sibling count for that turn (>1 ⇒ fold into one group card)
@@ -440,12 +439,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   // the mirror of blockReason on the done page (the user 2026-06-17). Same inline style, no styles.css rule.
   const doneReason = el("div", "fask-donewhy");
   doneReason.style.cssText = "display:none;font-size:11px;line-height:1.3;opacity:.75;font-style:italic;margin:1px 0 3px;cursor:pointer";
-  // DISTILLER key takeaway (it.summary) — the substantive "what we learned/shipped" for a completed goal,
-  // distinct from the planner's one-line doneWhy. Reads as a real finding (not italic, ✦-prefixed, a touch
-  // more legible). Always shown when present, independent of the Explanations toggle (judges 9bc0366).
-  const summaryLine = el("div", "fask-summary");
-  summaryLine.style.cssText = "display:none;font-size:11px;line-height:1.35;opacity:.9;margin:1px 0 4px;cursor:pointer";
-  main.append(row1, blockReason, doneReason, summaryLine, row2, row3, checklist, delegations);   // no expand button — body click opens the modal
+  main.append(row1, blockReason, doneReason, row2, row3, checklist, delegations);   // no expand button — body click opens the modal
   card.append(main);
   // Follow-up lives in the modal now (the user 2026-06-10), not on the card.
 
@@ -470,7 +464,6 @@ function makeAskCard(it: AskItem): HTMLElement {
   const goNoted = (ev: Event) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: it.itemId, sid: it.sid, t: it.t, anchor: "work", anchorUuid: cardAnchorUuid }); };
   blockReason.onclick = goNoted; blockReason.title = "jump to where this was noted";
   doneReason.onclick = goNoted; doneReason.title = "jump to where this was noted";
-  summaryLine.onclick = goNoted; summaryLine.title = "the distiller's key takeaway — jump to where this goal completed";
   name.onclick = (ev) => { ev.stopPropagation(); openOrReviveSession(it.sid, it.live, it.name); };
   clr.onclick = (ev) => {
     ev.stopPropagation();
@@ -529,7 +522,6 @@ function makeAskCard(it: AskItem): HTMLElement {
   a._checklist = checklist;
   a._blockwhy = blockReason;
   a._donewhy = doneReason;
-  a._summary = summaryLine;
   a._origin = origin;
   return card;
 }
@@ -584,10 +576,6 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   // (the experiment — mirror of blockWhy on the done page; the user 2026-06-17).
   a._donewhy.textContent = it.doneWhy || "";
   a._donewhy.style.display = (it.doneWhy && showWhy) ? "" : "none";
-  // DISTILLER key takeaway: shown on its own (not gated by the Explanations toggle) — it's the distiller's
-  // deliverable for a completed goal, the thing the user has been waiting to see surface (judges 9bc0366).
-  a._summary.textContent = it.summary ? "✦ " + it.summary : "";
-  a._summary.style.display = it.summary ? "" : "none";
   // API error → a red "API error" badge + a Retry button that pastes "retry" into the session to resume
   // the stalled turn (the user 2026-06-16). The card already files under BLOCKED (askColumn → needsInput).
   a._apiBadge.style.display = isApiErr ? "" : "none";

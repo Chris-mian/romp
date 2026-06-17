@@ -26,12 +26,8 @@ _HARNESS = r"""
 const { interpNow, shouldReanchorEdge, badgeFor } = require(process.argv[1]);
 const r = {};
 
-// --- badgeFor: subagent is now ADDITIVE (status.subagent), not a chip state (#13 re-spec). A QUIET lane
-//     (ready/idle) with a background subagent shows the orange SUBAGENT badge; a WORKING one hides it. ---
-r["badge_subagent_label"] = [badgeFor({live: true, state: "idle", subagent: "research"}).label, "SUBAGENT"];
-r["badge_subagent_orange"] = [badgeFor({live: true, state: "idle", subagent: "research"}).bg, "#E67E22"];
-r["badge_working_hides_subagent"] = [badgeFor({live: true, state: "working", subagent: "research"}).label, "WORKING"];
-r["badge_ready_no_subagent"] = [badgeFor({live: true, state: "idle", subagent: null}).label, "READY"];
+// (subagent detection was removed entirely — kernel no longer emits status.subagent, so the additive
+//  SUBAGENT badge is gone; the user 2026-06-17.)
 
 // --- shouldReanchorEdge: when the live edge's baseline must snap to a fresh data.now ---
 r["first_poll_null_anchor"]   = [shouldReanchorEdge(null, null, 1000, 5.0, true,  false), true];
