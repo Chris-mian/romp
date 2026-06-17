@@ -972,6 +972,22 @@ function postalSummary(ev: Extract<ChatEvent, { kind: "postal" }>): string {
 }
 const collapseWs = (s: string) => s.replace(/\s+/g, " ").trim();
 
+// The interaction TYPE of a postal message, parsed from its leading intent token (the postal norms:
+// DELEGATE / COORDINATE / ASK / Q / FYI / HANDOFF) → a small chip on the card head, shown in both the
+// compact and expanded views (the user 2026-06-16). An unknown/absent token → no chip.
+const POSTAL_INTENTS: Record<string, { label: string; cls: string }> = {
+  DELEGATE: { label: "delegation", cls: "delegate" },
+  HANDOFF: { label: "delegation", cls: "delegate" },     // legacy term → delegation
+  COORDINATE: { label: "coordination", cls: "coordinate" },
+  ASK: { label: "ask", cls: "ask" },
+  Q: { label: "question", cls: "ask" },
+  FYI: { label: "FYI", cls: "fyi" },
+};
+function postalIntent(body: string | undefined): { label: string; cls: string } | null {
+  const m = /^\s*\*{0,2}([A-Za-z]{1,12})\*{0,2}\s*:/.exec(body || "");
+  return m ? (POSTAL_INTENTS[m[1].toUpperCase()] || null) : null;
+}
+
 function renderPostal(ev: Extract<ChatEvent, { kind: "postal" }>): HTMLElement {
   const turn = el("div", "turn turn-postal postal-" + ev.direction);
   if (ev.mid) turn.dataset.mid = ev.mid;   // joins feed-modal handoff hovers to this card
@@ -998,6 +1014,15 @@ function renderPostal(ev: Extract<ChatEvent, { kind: "postal" }>): HTMLElement {
   head.appendChild(verb);
   head.appendChild(peer);
   setPeerDot(peer, workingSet.has(ev.peer));   // working dot before the peer name if that session is working
+
+  // interaction-type chip (delegation / coordination / ask / question / FYI), from the leading intent token
+  const intent = postalIntent(ev.body);
+  if (intent) {
+    const ib = el("span", "postal-intent postal-intent-" + intent.cls);
+    ib.textContent = intent.label;
+    ib.title = "interaction type";
+    head.appendChild(ib);
+  }
 
   if (ev.park || ev.status === "parked") {
     const b = el("span", "postal-badge parked");

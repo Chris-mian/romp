@@ -743,6 +743,14 @@ body { display: flex; flex-direction: column; }
 .postal-badge { font-size: 0.74em; font-weight: 700; letter-spacing: 0.03em; padding: 2px 8px; border-radius: 9px; }
 .postal-badge.parked { background: var(--st-awaiting-bg); color: var(--st-awaiting-fg); }
 .postal-badge.delivered { color: var(--check-bg); }
+/* interaction-type chip on a postal card (the user 2026-06-16): delegation / coordination / ask /
+   question / FYI — a small outlined pill in a per-type colour, scannable in compact + expanded views. */
+.postal-intent { font-size: 0.7em; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
+  padding: 1px 7px; border-radius: 9px; border: 1px solid currentColor; opacity: 0.95; }
+.postal-intent-delegate { color: #b08cff; }       /* delegation — a peer handed off work */
+.postal-intent-coordinate { color: #14b8a6; }      /* coordination — teal */
+.postal-intent-ask { color: var(--st-working-bg); }/* ask / question — amber, needs a response */
+.postal-intent-fyi { color: var(--dim); }          /* FYI — quiet grey, no reply needed */
 .postal-body { color: var(--fg); }
 .postal-body.md > :first-child { margin-top: 0; }
 .postal-body.md > :last-child { margin-bottom: 0; }
