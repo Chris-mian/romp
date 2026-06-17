@@ -2,7 +2,7 @@
 # Install romp onto this machine:
 #   - symlink the Claude Code hooks into ~/.claude/hooks/
 #   - symlink the MCP config (Romp Postal Service) into ~/.claude/
-#   - symlink the /romp skill into ~/.claude/skills/
+#   - symlink the romp + romp-postal skills into ~/.claude/skills/
 #   - build + install the romp-chat-view VS Code extension
 #
 # bin/ is NOT symlinked anywhere — add it to PATH in your shell rc:
@@ -13,7 +13,7 @@ ROMP_DIR="$(cd "$(dirname "$0")" && pwd)"
 mkdir -p "$HOME/.claude/hooks" "$HOME/.claude/skills"
 
 for h in romp-summarize.sh romp-postal-drain.sh romp-postal-ensure.sh \
-         romp-postal-revive.sh romp-wake.sh tmux-status.sh; do
+         romp-postal-revive.sh romp-postal-context.sh romp-wake.sh tmux-status.sh; do
     ln -sf "$ROMP_DIR/hooks/$h" "$HOME/.claude/hooks/$h"
 done
 echo "  Symlinked romp hooks into ~/.claude/hooks/"
@@ -28,7 +28,8 @@ SETTINGS = os.path.expanduser("~/.claude/settings.json")
 WANT = {  # event -> [(hook script, timeout secs, async)]
     "SessionStart":     [("tmux-status.sh", 5, False),
                          ("romp-postal-ensure.sh", 5, True),
-                         ("romp-postal-revive.sh", 8, False)],
+                         ("romp-postal-revive.sh", 8, False),
+                         ("romp-postal-context.sh", 5, False)],  # romp sessions: load the romp-postal skill
     "UserPromptSubmit": [("tmux-status.sh", 5, False),
                          ("romp-summarize.sh", 10, True),
                          ("romp-wake.sh", 5, True)],     # poke the kernel → judges run NOW, not on the 20s tick
@@ -79,7 +80,8 @@ ln -sf "$ROMP_DIR/claude/romp-postal.mcp.json" "$HOME/.claude/romp-postal.mcp.js
 echo "  Symlinked romp-postal.mcp.json (Romp Postal Service MCP config)"
 
 ln -sf "$ROMP_DIR/claude/skills/romp" "$HOME/.claude/skills/romp"
-echo "  Symlinked /romp skill"
+ln -sf "$ROMP_DIR/claude/skills/romp-postal" "$HOME/.claude/skills/romp-postal"
+echo "  Symlinked romp + romp-postal skills"
 
 if [[ -x "$ROMP_DIR/chat-view/install.sh" ]]; then
     echo "  Installing romp-chat-view extension..."
