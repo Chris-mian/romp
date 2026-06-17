@@ -1765,7 +1765,7 @@ class TimelinePanel {
         if (s.state === 'working') {
           // calcMode=spline keySplines 0.37 0 0.63 1 = ease-in-out-sine; begin='0s' rides the persistent
           // SVG doc-time phase so the ~1s poll rebuild resumes mid-cycle, seamless.
-          bt.appendChild(el('animate', { attributeName: 'fill', values: WK_A + ';' + WK_B + ';' + WK_A, keyTimes: '0;0.5;1', calcMode: 'spline', keySplines: '0.37 0 0.63 1;0.37 0 0.63 1', dur: '3s', begin: '0s', repeatCount: 'indefinite' }));
+          bt.appendChild(el('animate', { attributeName: 'fill', values: WK_A + ';' + WK_B + ';' + WK_A, keyTimes: '0;0.5;1', calcMode: 'spline', keySplines: '0.37 0 0.63 1;0.37 0 0.63 1', dur: '1.5s', begin: '0s', repeatCount: 'indefinite' }));   // 1.5s = 2× the old 3s, matches the chat chip-pulse (the user 2026-06-16)
         }
         svg.appendChild(bt);
         if (s.faded) { fadedEls.push({ el: chipBg, full: bdg.bg, faded: F(bdg.bg) }); fadedEls.push({ el: bt, full: bdg.fg, faded: F(bdg.fg) }); }
