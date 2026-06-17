@@ -313,11 +313,17 @@ def _timeline_sessions(now, tmux):
     every DEAD session whose transcript is still in the discover window — so scrolling back surfaces the
     sessions that were active then, struck through. Independent of chat tabs: a dead session is a lane
     without needing a tab. The timeline's own `active` filter shows a dead lane ONLY while the window
-    covers its activity, and ×-hidden tabs are dropped from the timeline too (X in the chat → gone here)."""
-    hidden = _hidden_tabs()
+    covers its activity.
+
+    The timeline is a COMPLETE activity history, so ×-hiding a tab does NOT drop its lane (the user
+    2026-06-17 reversed the earlier "X in the chat also drops the timeline lane"): closing a tab is a
+    tab-strip view preference and must never erase the session from the timeline. A now-dead session that
+    was active during the visible span appears on scrollback regardless of tab/hidden state — the active
+    filter alone gates it. So `_hidden_tabs()` is deliberately NOT consulted here (it still gates the
+    chat tab strip in _chat_tab_sessions)."""
     live = _ordered_alive(now, tmux)
     live_sids = {s["sid"] for s in live}
-    dead = sorted((s for s in _sessions(now) if s["sid"] not in live_sids and s["sid"] not in hidden),
+    dead = sorted((s for s in _sessions(now) if s["sid"] not in live_sids),
                   key=lambda s: s.get("mtime", 0), reverse=True)
     return live + dead
 
@@ -1645,12 +1651,19 @@ def build_feed(now, tmux=None):
                         if nodes[x].get("blocked") and not _closure_done(x) and nodes[x].get("blockWhy")]
                 if blkd:
                     block_why = max(blkd, key=lambda d: d.get("mt", d.get("t", 0)))["blockWhy"]
+            done_why = None
+            if col == "completed":                   # DONE rationale: the most-recently-completed node's "why done"
+                dnz = [nodes[x] for x in _subtree(nid)
+                       if _closure_done(x) and nodes[x].get("doneWhy")]
+                if dnz:
+                    done_why = max(dnz, key=lambda d: d.get("mt", d.get("t", 0)))["doneWhy"]
             asks.append({
                 "itemId": nid, "sid": fsid, "name": name, "color": color, "text": nodes[nid]["text"],
                 "t": nodes[nid]["t"], "created": nodes[nid]["t"], "live": live,
                 "trgb": list(cm.age_rgb(now - nodes[nid]["t"], _colormap())),
                 "done": 0, "needsYou": 0, "linked": [], "turnId": nid, "turnIds": [nid], "origin": origin,
                 "blockWhy": block_why,               # one-sentence "why blocked" on the card (soft planner block)
+                "doneWhy": done_why,                 # one-sentence "why done" on a completed card (the done page)
                 "blocked": ({"state": "apiError", "since": (tm.get("since") if tm else None),
                              "status": aerr.get("status"), "category": aerr.get("category"),
                              "text": aerr.get("text"),

@@ -335,6 +335,28 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(nodes["a blocked step"]["blockWhy"], "waiting on the user's choice")
         self.assertEqual(nodes["a finished step"]["doneWhy"], "shipped the fix")
 
+    def test_feed_completed_card_surfaces_done_why(self):
+        # The done page mirror of blockWhy (the user 2026-06-17): a COMPLETED card carries the
+        # most-recently-completed node's doneWhy, so the planner's "why done" shows inline under the
+        # card instead of only on hover in the modal. A non-completed card carries no doneWhy.
+        top, s1, s2 = (SID + ":top", SID + ":s1", SID + ":s2")
+        def gn(nid, text, parent, **kw):
+            d = {"id": nid, "text": text, "parentId": parent, "nodeComplete": False,
+                 "blocked": False, "cleared": False, "trail": [], "t": T0, "mt": T0}
+            d.update(kw); return d
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+            "rompUuid": SID, "seq": 3, "lastNode": None,
+            "nodes": {
+                top: gn(top, "the goal", None, nodeComplete=True, doneWhy="every step landed", mt=T0 + 5),
+                s1:  gn(s1, "first step", top, nodeComplete=True, doneWhy="wrote the parser", mt=T0 + 20),
+                s2:  gn(s2, "last step", top, nodeComplete=True, doneWhy="shipped the fix", mt=T0 + 40),
+            },
+            "placements": {}, "status": {top: "completed"}}))
+        card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == top)
+        self.assertEqual(card["column"], "completed")
+        self.assertEqual(card["doneWhy"], "shipped the fix",
+                         "the completed card surfaces the most-recently-completed node's doneWhy")
+
     def test_feed_tree_node_carries_anchor_uuid_for_id_deeplink(self):
         # anchorUuid = the EXACT turn uuid for a node's anchor segment (where it resolved / was minted),
         # so a card click deep-links BY ID, not by nearest-time-heuristic. (the user 2026-06-17.)
@@ -1365,6 +1387,23 @@ class ViewBuilder(unittest.TestCase):
         s = {x["id"]: x for x in km.build_timeline(NOW, tmux={})["sessions"]}
         self.assertIn(SID, s, "a window-dead session is still a timeline lane")
         self.assertFalse(s[SID]["live"], "no tmux → a dead lane (the render strikes it)")
+
+    def test_timeline_lane_survives_hidden_tab(self):
+        # the user 2026-06-17 (reversing d52f69f): ×-hiding a tab is a tab-strip preference and must NOT
+        # erase the lane from the timeline — the timeline is a complete activity history. So a dead AND
+        # ×-hidden session still appears on the timeline (the render's active-filter alone gates it by
+        # window overlap); only the chat tab strip honors the hidden set.
+        km._set_hidden_tab(SID, True)
+        try:
+            self.assertIn(SID, km._hidden_tabs(), "SID is ×-hidden from the tab strip")
+            s = {x["id"]: x for x in km.build_timeline(NOW, tmux={})["sessions"]}
+            self.assertIn(SID, s, "a ×-hidden dead session is STILL a timeline lane")
+            self.assertFalse(s[SID]["live"], "and it's a dead (struck) lane")
+            # the tab strip still hides it (the hidden set is the tab-strip's, not the timeline's)
+            self.assertNotIn(SID, {x["sid"] for x in km._chat_tab_sessions(NOW, {})},
+                             "the tab strip still honors the hidden set")
+        finally:
+            km._set_hidden_tab(SID, False)
 
     def test_dead_session_is_timeline_only_until_viewed(self):
         # the user 2026-06-17: a dead session is TIMELINE-ONLY — no auto chat tab. It gets a read-only
