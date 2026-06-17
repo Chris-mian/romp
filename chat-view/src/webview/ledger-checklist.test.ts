@@ -92,7 +92,10 @@ test("ledger spacing: gap before the times; roomy rows + separated top goals (th
 });
 
 test("ledger sorts unfinished goals on top, finished at the bottom (recency within each — the user 2026-06-16)", () => {
-  assert.match(RENDER, /const orderedRoots = \[\.\.\.roots\.filter\(\(r\) => !r\.done\), \.\.\.roots\.filter\(\(r\) => r\.done\)\]/);
+  // within each group, most recent first by the node's own timestamp (matches the shown "(Xm ago)")
+  assert.match(RENDER, /const byRecency = \(a: LedgerTreeNode, b: LedgerTreeNode\) => \(b\.t \|\| 0\) - \(a\.t \|\| 0\)/);
+  assert.match(RENDER, /roots\.filter\(\(r\) => !r\.done\)\.sort\(byRecency\)/);
+  assert.match(RENDER, /roots\.filter\(\(r\) => r\.done\)\.sort\(byRecency\)/);
   assert.match(RENDER, /for \(const r of orderedRoots\) renderNode\(r, 0\)/);
 });
 

@@ -2206,9 +2206,14 @@ function renderLedger() {
     const wrap = el("div", "ledger-tree" + (anyExpandable ? "" : " flat"));
     const byId = new Map(tree.map((n) => [n.id, n] as const));
     const roots = tree.filter((n) => n.depth === 0);
-    // Unfinished goals on top, finished (done/cleared) at the bottom; each group keeps the kernel's
-    // most-recent-activity-first order (the user 2026-06-16).
-    const orderedRoots = [...roots.filter((r) => !r.done), ...roots.filter((r) => r.done)];
+    // Unfinished goals on top, finished (done/cleared) at the bottom; WITHIN each group, most recent
+    // first — sorted by the node's own timestamp (the same value the "(Xm ago)" the row shows), so the
+    // displayed times read monotonically instead of in the kernel's subtree-max order (the user 2026-06-16).
+    const byRecency = (a: LedgerTreeNode, b: LedgerTreeNode) => (b.t || 0) - (a.t || 0);
+    const orderedRoots = [
+      ...roots.filter((r) => !r.done).sort(byRecency),
+      ...roots.filter((r) => r.done).sort(byRecency),
+    ];
     const defaultFold = (n: LedgerTreeNode) => !!n.done && !n.onpath;   // a "previous" task folds unless it's the recent path
     const isFolded = (n: LedgerTreeNode) => !!(n.children && n.children.length) &&
       (ledgerFolded.has(n.id) || (defaultFold(n) && !ledgerExpanded.has(n.id)));
