@@ -1411,7 +1411,7 @@ class SweepSession(unittest.TestCase):
         (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.plan_llm, jd.closer_llm, jd.group_llm) = self._saved
         self._td.cleanup()
 
-    def test_completes_silently_finished_top_and_settled_still_gates(self):
+    def test_completes_and_settles_finished_tops_on_turn_end(self):
         jd.run_plan(now=self.now)
         store = jd.load_goals(SID)
         tops = sorted((nd for nd in store["nodes"].values() if nd["parentId"] is None), key=lambda nd: nd["t"])
@@ -1424,9 +1424,9 @@ class SweepSession(unittest.TestCase):
         g1, g2 = tops[0]["id"], tops[1]["id"]
         self.assertTrue(store["nodes"][g1]["nodeComplete"] and store["nodes"][g2]["nodeComplete"],
                         "the sweep marked both touched tops nodeComplete")
-        self.assertEqual(store["status"][g1], "completed", "the earlier top is settled (not the focus) -> completed")
-        self.assertEqual(store["status"][g2], "working",
-                         "the focus top is held working by the settled gate despite the sweep (no flicker)")
+        self.assertEqual(store["status"][g1], "completed", "the earlier top settles (not the focus) -> completed")
+        self.assertEqual(store["status"][g2], "completed",
+                         "the focus top ALSO finalizes — the last turn ENDED, so it's settled (the user 2026-06-17)")
         self.assertEqual(n, 2, "two nodes completed by the sweep")
 
     def test_dormant_goal_untouched_and_idempotent(self):
@@ -1549,10 +1549,11 @@ class ClassifyExperiment(unittest.TestCase):
 
 
 class SettledGateStates(unittest.TestCase):
-    """parsed_session must pass states/<fsid>.jsonl so REAL idle transitions become idle atoms — without
-    them _session_closed() is permanently False and a discharged focus goal never settles to completed
-    (the user's bug 2026-06-17, handed off by `bugs`). The states file's (mtime,size) is folded into the
-    parse cache key so an idle-only transition (transcript untouched) still busts the cache."""
+    """The rollup's settled gate finalizes a completed focus goal once the session is NOT mid-turn — the
+    last turn ENDED (end_turn) or is idle-terminated (the user 2026-06-17: the old idle-only signal was
+    unreliable, so completions hung at working until the next prompt). parsed_session passes
+    states/<fsid>.jsonl so a real idle transition still settles an unfinished turn (handed off by `bugs`),
+    and the states file's (mtime,size) is folded into the parse-cache key so an idle-only change re-parses."""
 
     def _setup(self, records):
         td = Path(tempfile.mkdtemp())
@@ -1569,20 +1570,26 @@ class SettledGateStates(unittest.TestCase):
             jd.STATESDIR = self._saved[0]
             jd._PARSE_CACHE.clear(); jd._PARSE_CACHE.update(self._saved[1])
 
-    def test_idle_state_makes_session_closed_true(self):
-        records = [uline(T0, "do it", "u1", ps="typed"),
-                   aline(T0 + 10, "done", "a1", "u1", stop="end_turn")]
+    def test_ended_turn_is_settled_without_idle(self):
+        # the fix: an ended turn (assistant handed back the floor) is settled immediately — no idle needed.
+        records = [uline(T0, "do it", "u1", ps="typed"), aline(T0 + 10, "done", "a1", "u1", stop="end_turn")]
+        path, _ = self._setup(records)
+        self.assertTrue(jd._session_closed(jd.parsed_session(SID, [path], T0 + 5000)),
+                        "end_turn → settled (no waiting on an idle signal that may never be written)")
+
+    def test_open_turn_not_settled_until_idle(self):
+        # a turn still in progress (no end_turn) is NOT settled — until a real idle transition lands.
+        records = [uline(T0, "do it", "u1", ps="typed"), aline(T0 + 10, "still going", "a1", "u1", stop=None)]
         path, statesdir = self._setup(records)
         now = T0 + 5000
         self.assertFalse(jd._session_closed(jd.parsed_session(SID, [path], now)),
-                         "no states file → no idle atom → session not closed")
-        # a real idle transition appears in states/<sid>.jsonl; the parse-cache fold re-parses
+                         "mid-turn (assistant still streaming) → not settled (no flicker)")
         (statesdir / (SID + ".jsonl")).write_text(json.dumps({"t": T0 + 60, "state": "idle"}) + "\n")
         self.assertTrue(jd._session_closed(jd.parsed_session(SID, [path], now)),
-                        "state:idle reaches the parse → session closed (settled gate alive)")
+                        "an idle transition still settles an unfinished turn (abandoned / laptop closed)")
 
     def test_idle_append_busts_cache_despite_unchanged_transcript(self):
-        records = [uline(T0, "x", "u1", ps="typed"), aline(T0 + 10, "y", "a1", "u1", stop="end_turn")]
+        records = [uline(T0, "x", "u1", ps="typed"), aline(T0 + 10, "y", "a1", "u1", stop=None)]   # open, not ended
         path, statesdir = self._setup(records)
         (statesdir / (SID + ".jsonl")).write_text(json.dumps({"t": T0 + 5, "state": "working"}) + "\n")
         now = T0 + 5000
@@ -1592,21 +1599,24 @@ class SettledGateStates(unittest.TestCase):
         self.assertTrue(jd._session_closed(jd.parsed_session(SID, [path], now)),
                         "states-file growth busts the cache → re-parse picks up the idle transition")
 
-    def test_focus_complete_goal_settles_once_session_is_idle(self):
-        # end-to-end: a discharged TOP that is the active focus completes once the session goes idle.
-        records = [uline(T0, "ship it", "u1", ps="typed"),
-                   aline(T0 + 10, "shipped", "a1", "u1", stop="end_turn")]
-        path, statesdir = self._setup(records)
+    def test_focus_complete_goal_settles_when_the_turn_ends(self):
+        # end-to-end: a discharged TOP that is the active focus finalizes the moment its turn ends — no
+        # new prompt, no idle. While the turn is still open it's held working (no flicker).
+        open_recs = [uline(T0, "ship it", "u1", ps="typed"), aline(T0 + 10, "shipping", "a1", "u1", stop=None)]
+        path, _ = self._setup(open_recs)
         now = T0 + 5000
         s = _store()
-        g = _mknode(s, "Ship the release", t=T0)
-        g["nodeComplete"] = True
+        g = _mknode(s, "Ship the release", t=T0); g["nodeComplete"] = True
         s["lastNode"] = g["id"]                                       # the completed goal is the active focus
         jd.rollup_status(s, jd._session_closed(jd.parsed_session(SID, [path], now)))
-        self.assertEqual(s["status"][g["id"]], "working", "focus + not-closed → held working (no idle yet)")
-        (statesdir / (SID + ".jsonl")).write_text(json.dumps({"t": T0 + 60, "state": "idle"}) + "\n")
+        self.assertEqual(s["status"][g["id"]], "working", "still mid-turn → held working (no flicker)")
+        # the assistant finishes the turn (end_turn) → settled → completed, with no prompt and no idle
+        Path(path).write_text("\n".join(json.dumps(r) for r in
+                              [uline(T0, "ship it", "u1", ps="typed"),
+                               aline(T0 + 10, "shipped", "a1", "u1", stop="end_turn")]) + "\n")
+        jd._PARSE_CACHE.clear()
         jd.rollup_status(s, jd._session_closed(jd.parsed_session(SID, [path], now)))
-        self.assertEqual(s["status"][g["id"]], "completed", "idle transition settles the focus goal to completed")
+        self.assertEqual(s["status"][g["id"]], "completed", "turn ended → focus goal finalizes (no prompt, no idle)")
 
 
 class PendingJudgment(unittest.TestCase):

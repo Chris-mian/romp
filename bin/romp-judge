@@ -963,14 +963,19 @@ def run_once(now=None, budget=BUDGET, fairness=FAIRNESS, concurrency=CONCURRENCY
 
 # ───────────────────────── the planner pass (triage tier) ─────────────────────────
 def _session_closed(session):
-    """'Closed' for the settled gate: the last turn is idle-terminated — the abandoned/laptop-closed
-    signal the event model emits from states/. A normally-ended turn is NOT closed (the user may
-    continue), so its active-focus goal stays open rather than flickering completed during a thinking
-    pause. Event-based, no timer. (Proxy; the exact condition is locked at the checkpoint.)"""
+    """'Settled' for the rollup gate: the session is NOT mid-turn — the last turn has ENDED (the assistant
+    handed back the floor: stop_reason end_turn) or is idle-terminated. So a goal the closer completes
+    FINALIZES to 'completed' as soon as the turn that finished it ends, instead of hanging at 'working'
+    until the next prompt shifts focus (the user 2026-06-17). The old idle-only signal was unreliable —
+    nothing writes state:idle promptly (it depends on the dashboard observing the pane), so completions
+    lagged indefinitely. An OPEN in-progress turn (assistant still streaming, or a mid-turn thinking pause
+    before end_turn) is NOT settled, so a focus goal still doesn't flicker done mid-work. Event-based,
+    keyed on the turn's end_turn — no timer."""
     turns = session["turns"]
     if not turns:
         return True
-    return any(a["type"] == "idle" for a in turns[-1]["atoms"])
+    last = turns[-1]
+    return bool(last.get("ended")) or any(a["type"] == "idle" for a in last["atoms"])
 
 
 def plan_segments(session):
