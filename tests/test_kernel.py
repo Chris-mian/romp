@@ -238,6 +238,37 @@ class ViewBuilder(unittest.TestCase):
         self.assertTrue(shown["current"], "lastNode is flagged current (the pointer target)")
         self.assertEqual(shown["depth"], 1, "child sits at depth 1 under its top-level parent")
 
+    def test_ledger_tree_derives_done_when_all_children_complete(self):
+        # Completion propagates UP (the user 2026-06-16): a parent that ISN'T explicitly nodeComplete but
+        # whose children are ALL done is "derived done" — done=True + derived=True (render dims its ✓
+        # disc), and like any done node it prunes its subtree. A parent with an open child is NOT derived;
+        # a blocked parent is never auto-completed.
+        dp, dc1, dc2 = (SID + ":dp", SID + ":dc1", SID + ":dc2")   # derived parent, both children done
+        mp, mc1, mc2 = (SID + ":mp", SID + ":mc1", SID + ":mc2")   # mixed parent, one child still open
+        bp, bc = (SID + ":bp", SID + ":bc")                        # blocked parent, child done
+        def gn(nid, text, parent, done, blocked=False):
+            return {"id": nid, "text": text, "parentId": parent, "nodeComplete": done,
+                    "blocked": blocked, "cleared": False, "trail": [], "t": T0}
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+            "rompUuid": SID, "seq": 9, "lastNode": None,
+            "nodes": {dp: gn(dp, "derived parent", None, False), dc1: gn(dc1, "dc one", dp, True), dc2: gn(dc2, "dc two", dp, True),
+                      mp: gn(mp, "mixed parent", None, False), mc1: gn(mc1, "mc done", mp, True), mc2: gn(mc2, "mc open", mp, False),
+                      bp: gn(bp, "blocked parent", None, False, blocked=True), bc: gn(bc, "bc done", bp, True)},
+            "placements": {}, "status": {}}))
+        tree = km.build_session(SID, NOW)["ledger"]["tree"]
+        byid = {n["text"]: n for n in tree}
+        # derived parent: done by virtue of its children, flagged derived, and its (done) subtree pruned
+        self.assertTrue(byid["derived parent"]["done"])
+        self.assertTrue(byid["derived parent"]["derived"], "all children done → derived done")
+        self.assertNotIn("dc one", byid, "a derived-done parent prunes its done subtree")
+        # mixed parent: one child still open → not done, not derived, children shown
+        self.assertFalse(byid["mixed parent"]["done"])
+        self.assertFalse(byid["mixed parent"]["derived"])
+        self.assertIn("mc open", byid, "an open child keeps its parent expanded")
+        # blocked parent: never derived-done, even with all children done
+        self.assertFalse(byid["blocked parent"]["derived"], "a blocked node is not auto-completed")
+        self.assertFalse(byid["blocked parent"]["done"])
+
     def test_followup_body_quotes_context(self):
         # A feed follow-up quotes the ask it answers ('> <ask>') so the recipient session has context;
         # an explicit group title wins over the node lookup; unknown/none → bare text (the user 2026-06-16).

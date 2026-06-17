@@ -1278,14 +1278,41 @@ def build_session(sid, now, tmux=None):
     focus = gstore.get("lastNode")
     tree = []
 
+    def _gvisible(cid):
+        cn = gnodes.get(cid)
+        return bool(cn) and not cn.get("cleared") and cid not in gcleared and gstatus.get(cid) != "cleared"
+
+    # "Derived done" (the user 2026-06-16): a node that ISN'T explicitly nodeComplete but ALL of its
+    # (non-cleared) children are done — completion propagates UP the goal tree. It renders as a DIMMED ✓
+    # disc (vs the full disc for an explicit done) and, like any done node, prunes its subtree to a leaf.
+    # A blocked node (a live "needs you") never counts as derived-done. Memoised; the goal graph is a
+    # parentId tree, so no cycle guard is needed.
+    _dmemo = {}
+    def _subtree_done(nid):
+        if nid in _dmemo:
+            return _dmemo[nid]
+        nd = gnodes.get(nid)
+        if not nd:
+            _dmemo[nid] = False
+            return False
+        if nd.get("nodeComplete"):
+            _dmemo[nid] = True
+            return True
+        kids = [c for c in gkids.get(nid, []) if _gvisible(c)]
+        res = bool(kids) and not nd.get("blocked") and all(_subtree_done(c) for c in kids)
+        _dmemo[nid] = res
+        return res
+
     def _twalk(nid, depth):
         nd = gnodes.get(nid)
         if not nd or nd.get("cleared") or nid in gcleared or gstatus.get(nid) == "cleared":
             return
-        done = bool(nd.get("nodeComplete"))
-        tree.append({"id": nid, "text": nd["text"], "depth": depth, "done": done,
+        explicit = bool(nd.get("nodeComplete"))
+        derived = (not explicit) and _subtree_done(nid)   # done only because all its children are
+        done = explicit or derived
+        tree.append({"id": nid, "text": nd["text"], "depth": depth, "done": done, "derived": derived,
                      "blocked": bool(nd.get("blocked")), "t": nd["t"], "current": nid == focus})
-        if not done:                                   # prune: a done node hides its whole subtree
+        if not done:                                   # prune: a done node (incl. derived) hides its subtree
             for c in sorted(gkids.get(nid, []), key=lambda c: gnodes[c]["t"]):
                 _twalk(c, depth + 1)
     for _rid in sorted(gkids.get(None, []), key=lambda c: gnodes[c]["t"]):
