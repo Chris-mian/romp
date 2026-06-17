@@ -1723,6 +1723,30 @@ class FollowUp(unittest.TestCase):
         finally:
             jd.GOALDIR = saved
 
+    def test_optimistic_followup_on_a_blocked_sub_unblocks_its_top(self):
+        # the per-sub follow-up (the user 2026-06-17): the feed posts the EXISTING askFollowUp with a SUB's
+        # node id, so optimistic_followup reopens just that sub and unblocks its ANCESTOR chain → the TOP card
+        # goes off-blocked at once, and the sub carries followupPending (the modal's per-node "Followed up"
+        # chip). This is the backend contract the feed.ts per-sub action relies on — no kernel change.
+        top, sub = SID + ":g1", SID + ":g2"
+        td = Path(tempfile.mkdtemp()); saved = jd.GOALDIR; jd.GOALDIR = td / "goals"
+        try:
+            jd.save_goals(SID, {"rompUuid": SID, "seq": 2, "status": {top: "blocked"}, "placements": {},
+                "nodes": {
+                    top: {"id": top, "text": "Build it", "parentId": None, "nodeComplete": False,
+                          "blocked": True, "cleared": False, "trail": ["s0"], "t": T0, "mt": T0},
+                    sub: {"id": sub, "text": "decide the API shape", "parentId": top, "nodeComplete": False,
+                          "blocked": True, "cleared": False, "trail": ["s1"], "t": T0, "mt": T0,
+                          "blockWhy": "needs the user's call"}}})
+            self.assertTrue(jd.optimistic_followup(SID, sub), "reopened the specific blocked sub")
+            st = jd.load_goals(SID)
+            self.assertTrue(st["nodes"][sub]["followupPending"], "the SUB carries followupPending (per-node chip)")
+            self.assertFalse(st["nodes"][sub]["blocked"], "the followed-up sub is unblocked")
+            self.assertFalse(st["nodes"][top]["blocked"], "unblocking the sub's ancestor chain clears the top's block")
+            self.assertEqual(st["status"][top], "working", "the top card goes off-blocked → working immediately")
+        finally:
+            jd.GOALDIR = saved
+
 
 class Distiller(unittest.TestCase):
     """The distiller (the user 2026-06-17): when a TOP completes, summarize the goal's full WORK history —

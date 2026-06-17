@@ -54,6 +54,7 @@ interface AskTreeNode {
   anchorUuid?: string | null;                                    // EXACT turn uuid for this node's deep-link target (kernel 996ebd7) — id-based jump, not nearest-time; null when unresolvable → time fallback
   why?: string; blockWhy?: string; doneWhy?: string;             // planner's one-sentence rationales — revealed on hover in the modal
   derived?: boolean;                                             // done by roll-up/roll-down (kernel), not explicit → DIMMED ✓ disc
+  followupPending?: boolean;                                     // this sub was optimistically reopened by a per-sub follow-up → "↻ Followed up" chip (kernel flatten, judges 047264f)
   trgb?: [number, number, number];                               // last-activity recency tint (timestamp)
   children: string[]; rows: AskLinked[];
 }
@@ -100,6 +101,13 @@ const expandedAsks = new Set<string>();
 const collapsedNodes = new Set<string>();
 let fullscreenAskId: string | null = null; // ask itemId OR group key "g:<turnId>" shown in the modal (single-click)
 let modalRenderedId: string | null = null; // last target the modal body was built for → reset body cache on change
+// Per-sub FOLLOW-UP target (the user 2026-06-17): a blocked sub-node's "↳ follow up" re-points the (robust,
+// outside-the-tree-body) footer composer at THAT sub instead of the whole card, so the answer files under it
+// and unblocks just that branch. null = the composer follows up on the whole card (the default).
+let followupSub: { itemId: string; title: string } | null = null;
+// Set by renderModal (captures the footer composer); called from a tree node's "↳ follow up" — kept as a
+// module ref (not threaded through renderTreeBody) so the per-node button reads the CURRENT opener at click time.
+let openSubFollowUp: ((itemId: string, title: string) => void) | null = null;
 let hoverAskId: string | null = null;      // transient hover focus (white border + previewed journey)
 let pinnedAskId: string | null = null;     // double-click PIN (persists after hover-leave)
 // effective focus = hover ?? pinned; the white border + lit timeline journey follow it.
@@ -991,6 +999,33 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
   // Click/hover zones for this node, via the SHARED wireNodeZones (so the card's sub-goal checklist clicks
   // identically). Returns goWork; the inline rationale below links to the same place. (the user 2026-06-17.)
   const goWork = wireNodeZones(it, node, mark, txt, meta, !repeat);
+  // BLOCKED-node surgical actions in the MODAL tree (the user 2026-06-17): resolve or follow up on a
+  // SPECIFIC blocked sub-goal, not just the whole card. Wired AROUND the shared wireNodeZones (which the
+  // card checklist also uses) so only the modal flips — the card checklist + ledger marks stay pure-nav.
+  // Skips repeats (dim back-links) and handoff nodes (those resolve in another session's store).
+  if (!repeat && node.status === "question" && node.kind !== "handoff") {
+    // (A) the MARK "crosses it off": flip it from nav → override. Posts nodeOverride op:resolve; the kernel
+    // marks the node resolved (done) + clears the block + re-rolls inline, so the BLOCKED chip clears on the
+    // click without a judge pass (bugs owns the handler, 3dded52). NAV stays on the TEXT (→ minting message)
+    // and the META time (→ resolving work) — only the mark flips. Immediate-apply (no drafts → nothing to
+    // lose on a live re-render, and you can cross several off in a row).
+    mark.classList.add("ftree-mark-resolve");
+    mark.title = "cross this off — it stops blocking and the thread's other work continues";
+    mark.onclick = (ev) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "nodeOverride", sid: it.sid, nodeId: node.id, op: "resolve" }); };
+    // (#2) a per-sub FOLLOW UP: re-target the footer composer at THIS sub so the answer files under it and
+    // unblocks just this branch (the judge reopens + force-files under any node id — no kernel change).
+    const fu = el("span", "ftree-followup"); fu.textContent = "↳ follow up";
+    fu.title = "follow up on this specific blocked sub-goal";
+    fu.onclick = (ev) => { ev.stopPropagation(); openSubFollowUp?.(node.id, node.text || "(sub-goal)"); };
+    line.appendChild(fu);
+  }
+  // a per-node "↻ Followed up" chip while THIS sub is optimistically reopened by a follow-up, until the judge
+  // re-files it (node.followupPending, emitted per-node by build_feed's flatten — judges 047264f).
+  if (!repeat && node.followupPending) {
+    const chip = el("span", "ftree-followedup"); chip.textContent = "↻ Followed up";
+    chip.title = "you followed up on this sub-goal — reopened to working; the planner will re-file it on the next pass";
+    line.appendChild(chip);
+  }
   // Hovering a node lights ITS OWN work-bars on the timeline — the union of this node's segment trail
   // and everything under it — via the SAME showAskPath the card uses, just scoped to this node (the
   // host resolves the node's subtree segments). Leaving restores the card's full path. (Before: it
@@ -1108,7 +1143,9 @@ function renderModal() {
     fuin.addEventListener("input", () => growFollowUp(fuin));
     const fusend = el("button", "fq-send feed-modal-follow-send"); fusend.id = "feed-modal-follow-send"; fusend.textContent = "Send";
     fubox.append(fuin, fusend);
-    const foot = el("div", "feed-modal-foot"); foot.id = "feed-modal-foot"; foot.append(footRow, fubox);
+    // when a blocked sub is the follow-up target, this label says so (click → revert to the whole card)
+    const futgt = el("div", "feed-modal-follow-target"); futgt.id = "feed-modal-follow-target"; futgt.style.display = "none";
+    const foot = el("div", "feed-modal-foot"); foot.id = "feed-modal-foot"; foot.append(footRow, futgt, fubox);
     const body = el("div", "feed-modal-body"); body.id = "feed-modal-body";
     inner.append(head, body, foot);
     m.appendChild(inner);
@@ -1137,6 +1174,7 @@ function renderModal() {
     // a fresh target gets a fresh, collapsed follow-up composer
     const fb0 = document.getElementById("feed-modal-follow-box") as HTMLElement | null;
     if (fb0) { fb0.style.display = "none"; const i0 = document.getElementById("feed-modal-follow-input") as HTMLTextAreaElement | null; if (i0) { i0.value = ""; i0.style.height = ""; } }
+    followupSub = null;   // a fresh target → the composer follows up on the whole card until a sub is picked
     // fresh open shows ONE level (the user's ruling): the root's reports + its
     // direct children as lines, everything beneath those children folded until
     // clicked. Seeding overrides any unfolds left from a previous open.
@@ -1172,6 +1210,24 @@ function renderModal() {
   const fuboxEl = document.getElementById("feed-modal-follow-box") as HTMLElement;
   const fuinEl = document.getElementById("feed-modal-follow-input") as HTMLTextAreaElement;
   const fusendEl = document.getElementById("feed-modal-follow-send") as HTMLButtonElement;
+  // Per-sub follow-up re-targeting (the user 2026-06-17): a blocked sub's "↳ follow up" points the footer
+  // composer at that sub; the label says which (click it to revert to the whole card); sending reverts too.
+  const futgtEl = document.getElementById("feed-modal-follow-target") as HTMLElement;
+  const setFollowTarget = (sub: { itemId: string; title: string } | null) => {
+    followupSub = sub;
+    if (!futgtEl) return;
+    if (sub) { futgtEl.textContent = "↳ following up on: " + sub.title; futgtEl.style.display = ""; }
+    else { futgtEl.style.display = "none"; }
+  };
+  if (futgtEl) futgtEl.onclick = () => setFollowTarget(null);   // revert to the whole card
+  openSubFollowUp = (itemId, title) => { setFollowTarget({ itemId, title }); fuboxEl.style.display = ""; fuinEl.focus(); };
+  // POST a follow-up to the picked sub if one is set, else the card/group fallback; then revert to the card.
+  const postFollowUp = (txt: string, fbId: string, fbTitle?: string) => {
+    const tgt = followupSub;
+    vscodeApi?.postMessage({ type: "askFollowUp", itemId: tgt ? tgt.itemId : fbId, title: tgt ? tgt.title : fbTitle, text: txt });
+    setFollowTarget(null);
+  };
+  setFollowTarget(followupSub);   // sync the label to the current target on every (re)render
   // modal title = a locate link, same as the collapsed card's title (the user
   // 2026-06-10: every title should jump to the thing in the text/timeline)
   ttlEl.classList.add("nav");
@@ -1191,8 +1247,7 @@ function renderModal() {
     clrEl.onclick = () => { for (const mem of grp.members) vscodeApi?.postMessage({ type: "askClear", itemId: mem.itemId }); fullscreenAskId = null; renderModal(); };
     // follow-up on a group goes to the session that took the typed prompt — one
     // message prefixed with the GROUP title, filed under the first member's ask
-    wireFollowUp(fupEl, fuboxEl, fuinEl, fusendEl, (txt) =>
-      vscodeApi?.postMessage({ type: "askFollowUp", itemId: grp.members[0].itemId, title: grp.title, text: txt }));
+    wireFollowUp(fupEl, fuboxEl, fuinEl, fusendEl, (txt) => postFollowUp(txt, grp.members[0].itemId, grp.title));
     renderGroupModalBody(body, grp.members);
   } else if (it) {
     // The top-level goal IS the modal: render it as the ROOT of the tree list (not a separate header
@@ -1208,8 +1263,7 @@ function renderModal() {
     clrEl.onclick = () => { vscodeApi?.postMessage({ type: "askClear", itemId: it.itemId }); fullscreenAskId = null; renderModal(); };
     // follow-up works in ANY state (the user 2026-06-10) — asks, awaiting, or completed;
     // toggling the button reveals the composer.
-    wireFollowUp(fupEl, fuboxEl, fuinEl, fusendEl, (txt) =>
-      vscodeApi?.postMessage({ type: "askFollowUp", itemId: it.itemId, text: txt }));
+    wireFollowUp(fupEl, fuboxEl, fuinEl, fusendEl, (txt) => postFollowUp(txt, it.itemId));
     renderTreeBody(body, it, false);   // root goal IS the first list line; sub-goals render beneath it
   } else if (fitem) {
     ttlEl.textContent = fitem.did;

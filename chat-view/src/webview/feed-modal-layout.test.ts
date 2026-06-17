@@ -28,7 +28,8 @@ test("TOP bar = session name (left) + ✕ (right); age is no longer in the heade
 
 test("BOTTOM bar = age + Follow up + Clear in one row, the checklist sitting above it", () => {
   assert.match(FEED, /footRow\.append\(age, fup, clr\)/);
-  assert.match(FEED, /foot\.append\(footRow, fubox\)/);
+  // the per-sub follow-up target label sits between the button row and the composer box
+  assert.match(FEED, /foot\.append\(footRow, futgt, fubox\)/);
   assert.match(FEED, /inner\.append\(head, body, foot\)/);            // head, then tree, then footer
   assert.match(CSS, /\.feed-modal-foot-row \{[^}]*display: flex/);
   assert.match(CSS, /\.feed-modal-foot-row \.feed-modal-age \{[^}]*margin-right: auto/);   // age left, buttons right

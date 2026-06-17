@@ -2075,25 +2075,22 @@ function landActive(content: HTMLElement | null, v: View): void {
   if (!content) return;
   const att = { anchor: pendingAnchor, t: pendingAnchorT, kind: pendingAnchorKind };   // this pass's landing attempt, for diagnostics
   if (att.anchor || att.t != null) landTrail = [];
-  let scrolled = pendingAnchor ? scrollToAnchor(pendingAnchor) : false;
-  // uuid anchor failed (or none) → time fallback; only then default scroll
-  if (!scrolled && pendingAnchorT != null) { scrolled = scrollToNearestT(pendingAnchorT, pendingAnchorKind ?? undefined); }
-  if (!scrolled) { pendingAnchor = null; pendingAnchorIntent = null; pendingAnchorT = null; pendingAnchorKind = null; } // give up, use default scroll
-  else { pendingAnchorT = null; pendingAnchorKind = null; }
-  // Diagnostics: log every landing attempt; surface the degraded ones. Toasts
-  // only fire when a time target existed (att.t) — a stale pointer-upgrade
-  // retry on a later tab switch has no target and must not cry wolf.
+  const scrolled = pendingAnchor ? scrollToAnchor(pendingAnchor) : false;
+  // HONEST-FAIL (the user 2026-06-17, via bugs): the uuid anchor is the ONLY landing signal — there is NO
+  // time-based heuristic fallback. When the anchor can't resolve (the turn isn't on this conversation's
+  // active path, or the card carried no precise anchor), say so plainly rather than jumping to an unrelated
+  // nearby moment ("I'd rather get a message it couldn't find than be taken to some unrelated thing by a
+  // heuristic"). The deeper fix — segment-precise anchoring so these links actually resolve, not just fail
+  // honestly — is the kernel+chat data-uuid contract bugs is driving next.
+  pendingAnchor = null; pendingAnchorIntent = null; pendingAnchorT = null; pendingAnchorKind = null;
+  // Diagnostics: log every landing attempt; a deep-link that couldn't resolve announces itself loudly
+  // instead of impersonating a successful jump.
   if (att.anchor || att.t != null) {
     vscodeApi?.postMessage({
       type: "locateDiag", id: activeId, ok: scrolled, trail: landTrail.slice(),
       anchor: att.anchor ?? undefined, anchorT: att.t ?? undefined, kind: att.kind ?? undefined,
     });
-    const near = landTrail.find((s) => s.startsWith("time-near-"));
-    const nearSec = near ? parseInt(near.slice(10), 10) : NaN;
-    if (att.t != null && !scrolled)
-      landToast("couldn't find that moment in this conversation — showing the latest instead (logged)");
-    else if (att.t != null && !landTrail.includes("pointer-exact") && (!near || nearSec > 120))
-      landToast("the exact line is gone from this conversation's active path (rewound or compacted) — landed nearby (logged)");
+    if (!scrolled) landToast("couldn't locate this in the transcript");
   }
   if (!scrolled) {
     if (!v.shown || v.stick) content.scrollTop = content.scrollHeight;
