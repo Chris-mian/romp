@@ -1019,6 +1019,24 @@ def _parse(path, sid, now):
     return session
 
 
+def _ask_fill_chosen(blocks, output):
+    """Fill each AskUserQuestion block's `chosen` from the tool_result string, which records the answers
+    as `"<question>"="<answer>"` pairs (a multiSelect answer joins the picked labels as 'A, B, C'; a
+    free-text 'Other' answer is the user's verbatim text and matches NO option label). Single-question
+    calls map the lone pair; multi-question calls match by question (then header). Render highlights a
+    `chosen` value that equals an option label and shows the rest verbatim."""
+    pairs = {}
+    for m in re.finditer(r'[“"]([^”"]*)[”"]\s*=\s*[“"]([^”"]*)[”"]', output or ""):
+        pairs[m.group(1).strip()] = m.group(2)
+    vals = list(pairs.values())
+    for blk in blocks:
+        ans = (vals[0] if len(blocks) == 1 and vals
+               else pairs.get((blk.get("question") or "").strip())
+               or pairs.get((blk.get("header") or "").strip()) or "")
+        if ans:
+            blk["chosen"] = [s.strip() for s in ans.split(", ")] if blk.get("multiSelect") else [ans]
+
+
 _compact_clicked = {}         # sid -> ts of a compact WE initiated → optimistic cross-surface "compacting"
 
 
@@ -1147,6 +1165,17 @@ def build_session(sid, now, tmux=None):
                               "uuid": a.get("uuid"), "ts": ts,
                               "file": inp.get("file_path") or inp.get("path") or "",
                               "diff": _edit_diff(inp) if b.get("name") in ("Edit", "MultiEdit", "Write") else ""}
+                        if b.get("name") == "AskUserQuestion":
+                            # structured Q+A for the chat's "answered Claude's question" box (render reads
+                            # this instead of regex-parsing the output). chosen is filled below once the
+                            # tool_result (the answer) is in. Built from the UNTRUNCATED input.
+                            ev["askAnswer"] = [{"question": str(q.get("question") or ""),
+                                                "header": str(q.get("header")) if q.get("header") else None,
+                                                "multiSelect": bool(q.get("multiSelect")),
+                                                "options": [{"label": str(o.get("label") or ""),
+                                                             "description": str(o.get("description") or "")}
+                                                            for o in (q.get("options") or [])],
+                                                "chosen": []} for q in (inp.get("questions") or [])]
                         by_tool[b.get("id")] = ev
                         events.append(ev)
             elif a["type"] == "system" and a.get("subtype") == "compact_boundary":
@@ -1159,6 +1188,8 @@ def build_session(sid, now, tmux=None):
         anchors = seg_anchors.get(seg)
         is_prompt = ev.get("kind") == "user" or (ev.get("kind") == "postal" and ev.get("direction") == "in")
         ev["tlId"] = ((anchors[0] if is_prompt else anchors[1]) or seg) if anchors else seg
+        if ev.get("askAnswer"):                       # AskUserQuestion → fill chosen now the answer's in
+            _ask_fill_chosen(ev["askAnswer"], ev.get("output") or "")
     # Subagent in flight → a bottom card so the chat shows WHY the session is quiet-but-working (like todo).
     sub = _subagent_running(session)
     if sub is not None:
