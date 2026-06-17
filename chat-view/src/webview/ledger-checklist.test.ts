@@ -35,3 +35,11 @@ test("the blue ✓ disc is standardized: ledger + feed card check carry the chat
   assert.match(CSS, /\.ledger-tnode\.done \.ledger-tmark \{[^}]*font-size: 9px; font-weight: 700/);
   assert.match(FEED_CSS, /\.fcheck\.done \.fcheck-mark \{[^}]*font-size: 9px; font-weight: 700/);
 });
+
+test("the most-recently-changed ledger node gets a → marker on its left (kernel flags it `recent`)", () => {
+  assert.match(RENDER, /n\.recent \? " recent" : ""/);                 // row carries the .recent class
+  assert.match(RENDER, /el\("span", "ledger-recent"\)/);               // a → arrow element
+  assert.match(RENDER, /arr\.textContent = "→"/);
+  assert.match(RENDER, /recent\?: boolean/);                           // LedgerTreeNode carries the flag
+  assert.match(CSS, /\.ledger-recent \{/);
+});

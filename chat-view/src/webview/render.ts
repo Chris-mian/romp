@@ -140,7 +140,7 @@ interface LedgerBullet { text: string; t?: number; id?: string; sid?: string; tl
 // `derived` = this node is done only because all its children are (the kernel propagates completion up
 // the tree), as opposed to an explicitly-asserted done. Rendered as the blue ✓ disc dimmed (the user
 // 2026-06-16). Empty/false → explicit done (full disc).
-interface LedgerTreeNode { id: string; text: string; depth: number; done: boolean; blocked: boolean; t?: number; current: boolean; derived?: boolean; }
+interface LedgerTreeNode { id: string; text: string; depth: number; done: boolean; blocked: boolean; t?: number; current: boolean; derived?: boolean; recent?: boolean; }
 // tree = the goal overview (preferred view); bullets = captioned-turn fallback for goal-less sessions.
 interface Ledger { summary: string; tree?: LedgerTreeNode[]; bullets: LedgerBullet[]; current?: LedgerBullet | null; }
 const ledgers = new Map<string, Ledger | null>();
@@ -2167,7 +2167,7 @@ function renderLedger() {
   // (raw n.t/b.t in the sig, NOT the elapsed — wall-clock ticking is refreshLedgerAges's job.)
   const sig = (ledgerCollapsed ? "C" : "O") + "§" + (activeId || "") + "§" + titleText
     + "‖cur:" + (cur ? `${cur.id || ""}:${cur.t ?? ""}:${cur.text}` : "")
-    + "‖tree:" + tree.map((n) => `${n.id}:${n.depth}:${n.done ? "d" : ""}${n.derived ? "v" : ""}${n.current ? "c" : ""}${n.blocked ? "b" : ""}:${n.t ?? ""}:${n.text}`).join("|")
+    + "‖tree:" + tree.map((n) => `${n.id}:${n.depth}:${n.done ? "d" : ""}${n.derived ? "v" : ""}${n.current ? "c" : ""}${n.blocked ? "b" : ""}${n.recent ? "r" : ""}:${n.t ?? ""}:${n.text}`).join("|")
     + "‖b:" + (tree.length ? "" : bullets.slice(0, LEDGER_BULLET_CAP).map((b) => `${b.id || ""}:${b.t ?? ""}:${b.text}`).join("|"));
   if ((host as any)._sig === sig) { refreshLedgerAges(host, l, now); return; }
   (host as any)._sig = sig;
@@ -2193,7 +2193,7 @@ function renderLedger() {
     //     pruned leaves with a recency-coloured time on the right; the ▸ row IS what's being worked on.
     const wrap = el("div", "ledger-tree");
     for (const n of tree) {
-      const row = el("div", "ledger-tnode" + (n.current ? " current" : "") + (n.done ? " done" : "") + (n.done && n.derived ? " derived" : ""));
+      const row = el("div", "ledger-tnode" + (n.current ? " current" : "") + (n.done ? " done" : "") + (n.done && n.derived ? " derived" : "") + (n.recent ? " recent" : ""));
       row.style.paddingLeft = (4 + n.depth * 15) + "px";        // indent by graph depth (a line of descent)
       const mark = el("span", "ledger-tmark");
       // done = the blue ✓ disc (styled in CSS, matching the chat to-do / feed); not-yet-done = a hollow
@@ -2204,7 +2204,10 @@ function renderLedger() {
       const time = el("span", "ledger-ttime");
       setTnodeTime(time, n, cur, now);                          // "(Xm)" live for current, "(Xm ago)" for done
       if (n.done && n.t) txt.style.color = ageColorReadable(now - n.t);   // a done item's text matches its time colour
-      row.append(mark, txt, time);
+      // a → "most recent change" arrow to the LEFT of the freshest node (the user 2026-06-16); the kernel
+      // auto-expands the path to it so it's revealed even inside an otherwise-pruned done branch.
+      if (n.recent) { const arr = el("span", "ledger-recent"); arr.textContent = "→"; arr.title = "most recent change"; row.append(arr, mark, txt, time); }
+      else row.append(mark, txt, time);
       wrap.appendChild(row);
     }
     host.appendChild(wrap);
