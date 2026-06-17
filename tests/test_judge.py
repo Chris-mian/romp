@@ -1471,6 +1471,8 @@ class JudgeSystemPrompt(unittest.TestCase):
         self.assertIn("--safe-mode", cmd, "auto-discovered CLAUDE.md / memory / hooks are dropped")
         self.assertEqual(cmd[cmd.index("--system-prompt") + 1], "SYSTEM_PROMPT_BODY",
                          "the judge's prompt follows the --system-prompt flag")
+        self.assertEqual(cmd[cmd.index("--output-format") + 1], "json",
+                         "JSON envelope (for per-call usage logging)")
 
 
 class JudgeOutputFormat(unittest.TestCase):
@@ -1500,7 +1502,7 @@ class ModelTiers(unittest.TestCase):
         self.assertEqual(jd.TRIAGE_MODEL, "claude-sonnet-4-6", "triage tier is Sonnet")
         self.assertNotEqual(jd.INDEX_MODEL, jd.TRIAGE_MODEL)
         calls, saved = [], jd._judge_run
-        jd._judge_run = lambda model, sysp, user, effort=None: (calls.append((model, sysp)) or "")
+        jd._judge_run = lambda model, sysp, user, effort=None, judge=None: (calls.append((model, sysp)) or "")
         try:
             jd.caption_llm("x"); jd.archive_llm("x"); jd.plan_llm("x", "y")
             jd.courier_llm("x", "y"); jd.closer_llm("x", "y")
@@ -1516,7 +1518,7 @@ class ModelTiers(unittest.TestCase):
     def test_plan_llm_model_and_effort_override(self):
         """plan_llm takes model + effort overrides (for the classification A/B); default is triage, no effort."""
         seen, saved = {}, jd._judge_run
-        jd._judge_run = lambda model, sysp, user, effort=None: (seen.update(model=model, effort=effort) or "")
+        jd._judge_run = lambda model, sysp, user, effort=None, judge=None: (seen.update(model=model, effort=effort) or "")
         try:
             jd.plan_llm("seg", "menu")
             self.assertEqual((seen["model"], seen["effort"]), (jd.TRIAGE_MODEL, None), "default: triage, no thinking")
@@ -1833,6 +1835,49 @@ class Distiller(unittest.TestCase):
     def test_prompt_asks_for_artifact_or_summary(self):
         for phrase in ("concrete ARTIFACT", "copy", "discontinuous"):
             self.assertIn(phrase, jd.DISTILL_SYS, phrase)
+
+
+class JudgeUsageLog(unittest.TestCase):
+    """Per-call token/cost logging (judge_ui 2026-06-17): _judge_run unwraps claude -p's JSON envelope to
+    .result and appends one usage line to USAGE; fully defensive — an envelope without a result falls back
+    to raw stdout and logs nothing, never breaking the call."""
+
+    def test_unwraps_result_and_logs_usage(self):
+        import unittest.mock as mock
+        wrapper = json.dumps({"result": '{"ops":[]}',
+                              "usage": {"input_tokens": 100, "output_tokens": 20,
+                                        "cache_creation_input_tokens": 5, "cache_read_input_tokens": 50},
+                              "duration_ms": 1234, "total_cost_usd": 0.0009})
+
+        class _P:
+            stdout = wrapper
+        td = Path(tempfile.mkdtemp()); saved = jd.USAGE
+        jd.USAGE = td / "judge-usage.jsonl"; jd._judge_ctx.fsid = "FSID-X"
+        try:
+            with mock.patch.object(jd.subprocess, "run", return_value=_P()):
+                out = jd._judge_run(jd.TRIAGE_MODEL, "sys", "user", judge="planner")
+        finally:
+            jd.USAGE = saved; jd._judge_ctx.fsid = None
+        self.assertEqual(out, '{"ops":[]}', "_judge_run returns the unwrapped .result text (callers unchanged)")
+        rec = json.loads((td / "judge-usage.jsonl").read_text().strip())
+        self.assertEqual((rec["judge"], rec["tier"], rec["fsid"]), ("planner", "triage", "FSID-X"))
+        self.assertEqual((rec["in"], rec["out"], rec["cache_w"], rec["cache_r"]), (100, 20, 5, 50))
+        self.assertEqual((rec["ms"], rec["cost"]), (1234, 0.0009))
+
+    def test_unparseable_envelope_falls_back_to_raw_and_logs_nothing(self):
+        import unittest.mock as mock
+
+        class _P:
+            stdout = '{"ops":[]}'                      # bare model JSON, not an envelope (no "result" key)
+        td = Path(tempfile.mkdtemp()); saved = jd.USAGE
+        jd.USAGE = td / "judge-usage.jsonl"
+        try:
+            with mock.patch.object(jd.subprocess, "run", return_value=_P()):
+                out = jd._judge_run(jd.TRIAGE_MODEL, "s", "u", judge="planner")
+        finally:
+            jd.USAGE = saved
+        self.assertEqual(out, '{"ops":[]}', "no envelope → raw stdout (defensive; callers' _json_obj still parses)")
+        self.assertFalse((td / "judge-usage.jsonl").exists(), "nothing logged when there's no usage envelope")
 
 
 if __name__ == "__main__":

@@ -14,7 +14,7 @@ CLI:
   romp-judge --once               # one caption pass over the live fleet (writes captions/)
   romp-judge --test <transcript>  # caption one transcript's recent units, print them (no write)
 """
-import json, os, re, sys, time, subprocess
+import json, os, re, sys, time, subprocess, threading
 from pathlib import Path
 from importlib.machinery import SourceFileLoader
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -42,6 +42,7 @@ STATESDIR = STATE / "states"             # per-session real idle/compacting tran
 PCACHE   = STATE / "judge-units-cache"   # (mtime,size) cache of a transcript's ready units
 MESSAGES = STATE / "timeline" / "messages.jsonl"
 ERRORS   = STATE / "judge-errors.jsonl"  # swallowed judge-call failures (parse-fails, call timeouts/exceptions) — surfaced by `romp -j`
+USAGE    = STATE / "judge-usage.jsonl"   # one line per successful judge call: tokens/cost/ms — the kernel/UI roll up pipeline cost
 
 # Two model tiers (the Haiku cost lever, judge.md §Two run tiers; shipped 2026-06-15): cheap always-on
 # INDEXING on Haiku, judgment-heavy TRIAGE on Sonnet.
@@ -138,7 +139,8 @@ def _judge_cmd(model, sys_prompt, effort=None):
         unchanged. (NOT --bare: that drops the login too.) (the user, 2026-06-16.)"""
     cmd = ["perl", "-e", "alarm 45; exec @ARGV", "claude", "-p", "--safe-mode", "--model", model,
            "--tools", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
-           "--system-prompt", sys_prompt, "--exclude-dynamic-system-prompt-sections"]
+           "--system-prompt", sys_prompt, "--exclude-dynamic-system-prompt-sections",
+           "--output-format", "json"]                 # stdout = {"result", "usage", "duration_ms", "total_cost_usd"}
     if effort:
         cmd += ["--effort", effort]
     return cmd
@@ -156,11 +158,34 @@ def _log_judge_error(tier, fsid, err):
         pass
 
 
-def _judge_run(model, sys_prompt, user, effort=None):
+_judge_ctx = threading.local()                       # per-thread: the fsid being judged (set by the session fns)
+
+
+def _log_judge_usage(judge, tier, model, fsid, wrap):
+    """Append ONE per-call usage line to USAGE for the kernel/UI cost rollup (judge_ui 2026-06-17).
+    `wrap` is the claude -p JSON envelope. Best-effort, NEVER raises (mirrors _log_judge_error) — a logging
+    failure must not break a judge call."""
+    try:
+        u = wrap.get("usage") or {}
+        with open(USAGE, "a") as f:
+            f.write(json.dumps({"t": int(time.time()), "judge": judge, "tier": tier, "model": model,
+                                "fsid": fsid or None, "ms": wrap.get("duration_ms"),
+                                "in": u.get("input_tokens"), "out": u.get("output_tokens"),
+                                "cache_w": u.get("cache_creation_input_tokens"),
+                                "cache_r": u.get("cache_read_input_tokens"),
+                                "cost": wrap.get("total_cost_usd")}) + "\n")
+    except Exception:
+        pass
+
+
+def _judge_run(model, sys_prompt, user, effort=None, judge=None):
     """Run ONE judge model call (claude -p, zero tools, MCP off, portable 45s alarm cap — macOS has no
-    `timeout`). Returns raw stdout, '' on any failure. `model` selects the tier (INDEX_MODEL=Haiku,
-    TRIAGE_MODEL=Sonnet); `effort` sets --effort (thinking) when given. The single subprocess point for
-    every judge, so the tier/effort knobs live in one place."""
+    `timeout`). Returns the model's TEXT, '' on any failure. `model` selects the tier (INDEX_MODEL=Haiku,
+    TRIAGE_MODEL=Sonnet); `effort` sets --effort (thinking). The single subprocess point for every judge,
+    so the tier/effort knobs — and per-call usage logging — live in one place. --output-format json wraps
+    stdout as {"result", "usage", ...}; we unwrap to .result and log usage to USAGE. Fully defensive: an
+    unparseable/missing wrapper falls back to returning raw stdout (today's plain-text path), never raising."""
+    tier = "index" if model == INDEX_MODEL else "triage"
     env = dict(os.environ)
     for k in ("TMUX", "TMUX_PANE"):
         env.pop(k, None)
@@ -169,9 +194,17 @@ def _judge_run(model, sys_prompt, user, effort=None):
         p = subprocess.run(_judge_cmd(model, sys_prompt, effort), input=user,
                            capture_output=True, text=True, cwd="/tmp", env=env, timeout=50)
     except Exception:
-        _log_judge_error("index" if model == INDEX_MODEL else "triage", None, "call")
+        _log_judge_error(tier, None, "call")
         return ""
-    return p.stdout or ""
+    out = p.stdout or ""
+    try:
+        wrap = json.loads(out)
+        if isinstance(wrap, dict) and isinstance(wrap.get("result"), str):
+            _log_judge_usage(judge or tier, tier, model, getattr(_judge_ctx, "fsid", None), wrap)
+            return wrap["result"]
+    except Exception:
+        pass
+    return out                                        # wrapper absent/unparseable → raw stdout (defensive)
 
 
 def _json_obj(raw):
@@ -199,7 +232,7 @@ def _parse_caption(raw):
 
 def caption_llm(unit_text):
     """One caption from the INDEX-tier model (Haiku), zero tools / MCP off (it can't act). '' on failure."""
-    return _parse_caption(_judge_run(INDEX_MODEL, CAPTION_SYS, "<unit>\n%s\n</unit>" % unit_text))
+    return _parse_caption(_judge_run(INDEX_MODEL, CAPTION_SYS, "<unit>\n%s\n</unit>" % unit_text, judge="captioner"))
 
 
 # ───────────────────────── unit text (caption input) ─────────────────────────
@@ -436,7 +469,7 @@ def _parse_archive(out):
 def archive_llm(session_log):
     """One {headline, abstract} from the INDEX-tier model (Haiku) over a session's turn-caption log.
     None on failure."""
-    out = _judge_run(INDEX_MODEL, ARCHIVE_SYS, "<session>\n%s\n</session>" % session_log)
+    out = _judge_run(INDEX_MODEL, ARCHIVE_SYS, "<session>\n%s\n</session>" % session_log, judge="archiver")
     return _parse_archive(out) if out else None
 
 
@@ -810,7 +843,7 @@ def plan_llm(segment_text, menu_text, model=None, effort=None, human=False):
     if human:
         user += ("\n<note>This segment contains a real user message, so it MUST be placed "
                  "(mint/sub/done/block) — do NOT return a skip.</note>")
-    return _judge_run(model or TRIAGE_MODEL, PLAN_SYS, user, effort=effort).strip()[:2000]
+    return _judge_run(model or TRIAGE_MODEL, PLAN_SYS, user, effort=effort, judge="planner").strip()[:2000]
 
 
 # ───────────────────────── discovery (names/, file-based) ─────────────────────────
@@ -883,6 +916,18 @@ def discover(now):
 
 
 # ───────────────────────── the pass ─────────────────────────
+def _caption_call(task):
+    """Caption one unit in a worker thread, tagging its session for usage logging."""
+    _judge_ctx.fsid = task.get("fsid")
+    return caption_llm(task["text"])
+
+
+def _archive_call(fsid, caps):
+    """(Re)build one session's archive in a worker thread, tagging it for usage logging."""
+    _judge_ctx.fsid = fsid
+    return archive_llm("\n".join("- " + c for c in caps))
+
+
 def run_once(now=None, budget=BUDGET, fairness=FAIRNESS, concurrency=CONCURRENCY, verbose=False):
     """One INDEX-TIER pass over the fleet: caption ready units, then refresh per-session
     archives whose turn set grew. Returns {"captions": n, "archives": m}."""
@@ -911,7 +956,7 @@ def run_once(now=None, budget=BUDGET, fairness=FAIRNESS, concurrency=CONCURRENCY
         sys.stderr.write("romp-judge: %d undone caption tasks, %d selected\n" % (len(pending), len(selected)))
     captions = 0
     with ThreadPoolExecutor(max_workers=concurrency) as ex:
-        futs = {ex.submit(caption_llm, t["text"]): t for t in selected}
+        futs = {ex.submit(_caption_call, t): t for t in selected}
         for fut in as_completed(futs):
             task = futs[fut]
             try:
@@ -941,7 +986,7 @@ def run_once(now=None, budget=BUDGET, fairness=FAIRNESS, concurrency=CONCURRENCY
         sys.stderr.write("romp-judge: %d sessions need (re)archiving\n" % len(arch_tasks))
     archives = 0
     with ThreadPoolExecutor(max_workers=concurrency) as ex:
-        futs = {ex.submit(archive_llm, "\n".join("- " + c for c in caps)): (fsid, len(caps))
+        futs = {ex.submit(_archive_call, fsid, caps): (fsid, len(caps))
                 for fsid, caps in arch_tasks}
         for fut in as_completed(futs):
             fsid, nturns = futs[fut]
@@ -1048,6 +1093,7 @@ def _plan_session(fsid, path, now):
     tree's open menu) and GROUP after every placement (the user 2026-06-17: planner + grouper are both
     segment-level; the closer is turn-level), then roll up status gated by settled. A tagged FOLLOW-UP
     segment reopens its target goal and forces the new work UNDER it. Returns placements made."""
+    _judge_ctx.fsid = fsid                            # usage logging: attribute this session's judge calls
     session = parsed_session(fsid, [path], now)
     store = load_goals(fsid)
     undone = [s for s in plan_segments(session) if s[0] not in store["placements"]][:PLAN_FAIRNESS]
@@ -1213,7 +1259,7 @@ def group_llm(menu_text):
     """The grouper's {"ops":[...]} reply from the TRIAGE-tier model (Sonnet) over a session's open top
     goals. '' on failure."""
     user = "<open-goals>\n%s\n</open-goals>" % menu_text
-    return _judge_run(TRIAGE_MODEL, GROUP_SYS, user).strip()[:2000]
+    return _judge_run(TRIAGE_MODEL, GROUP_SYS, user, judge="grouper").strip()[:2000]
 
 
 def apply_group(store, tops, ops, t):
@@ -1301,6 +1347,7 @@ def _group_session(fsid, path, now):
     """Pass-level grouper for ONE session, run after the planner/courier passes: reorganizes the open-top
     forest — mainly to catch tops the COURIER planted (the planner already groups inline after each of its
     own placements). Event-gated via _group_store; a status re-roll follows a structural change."""
+    _judge_ctx.fsid = fsid                            # usage logging: attribute this session's judge calls
     store = load_goals(fsid)
     before = store.get("groupedSig")
     relinks = _group_store(store, fsid, now)
@@ -1405,7 +1452,7 @@ def closer_llm(turn_text, menu_text):
     """The closer's {"done":[...], "block":[...]} verdict from the TRIAGE-tier model (Sonnet) over a turn
     + the touched open-goals menu. '' on failure."""
     user = "<turn>\n%s\n</turn>\n<open-goals>\n%s\n</open-goals>" % (turn_text, menu_text)
-    return _judge_run(TRIAGE_MODEL, CLOSER_SYS, user).strip()[:2000]
+    return _judge_run(TRIAGE_MODEL, CLOSER_SYS, user, judge="closer").strip()[:2000]
 
 
 def _turn_menu(turn, store):
@@ -1511,6 +1558,7 @@ def _close_session(fsid, path, now, cap=CLOSE_FAIRNESS):
     """Turn-end backstop for ONE session: for each end-known, not-yet-closed turn (oldest first,
     capped per pass), complete the open top-goals it touched that the model now calls fully done (each
     with a doneWhy). Idempotent per turn id. Returns the node ids newly completed."""
+    _judge_ctx.fsid = fsid                            # usage logging: attribute this session's judge calls
     session = parsed_session(fsid, [path], now)
     store = load_goals(fsid)
     swept = _closed_turns(store)
@@ -1755,7 +1803,7 @@ def distill_llm(goal_text, work_text):
     """The distiller's key-takeaway for one completed goal from the TRIAGE-tier model (Sonnet). '' on
     failure."""
     user = "<goal>\n%s\n</goal>\n<work>\n%s\n</work>" % (goal_text, work_text)
-    return _judge_run(TRIAGE_MODEL, DISTILL_SYS, user).strip()[:600]
+    return _judge_run(TRIAGE_MODEL, DISTILL_SYS, user, judge="distiller").strip()[:600]
 
 
 def _distill_session(fsid, path, now):
@@ -1764,6 +1812,7 @@ def _distill_session(fsid, path, now):
     discontinuous spans across all open→done cycles, never the unrelated work between them) — and store
     the model's key-takeaway as node["summary"]. EVENT-GATED per goal (node["distilledMt"] vs node["mt"]):
     re-distills only when the goal (re-)completed since last time. Returns the number of goals distilled."""
+    _judge_ctx.fsid = fsid                            # usage logging: attribute this session's judge calls
     store = load_goals(fsid)
     status, nodes = store.get("status", {}), store.get("nodes", {})
     todo = [nid for nid, st in status.items()
@@ -1928,7 +1977,7 @@ def courier_llm(message_text, menu_text):
     """One courier verdict line from the TRIAGE-tier model (Sonnet) over a postal message + the
     sender's open goals. '' on failure."""
     user = "<message>\n%s\n</message>\n<sender-open-goals>\n%s\n</sender-open-goals>" % (message_text, menu_text)
-    return _judge_run(TRIAGE_MODEL, COURIER_SYS, user).strip()[:300]
+    return _judge_run(TRIAGE_MODEL, COURIER_SYS, user, judge="courier").strip()[:300]
 
 
 def apply_courier(store, seg_id, seg_t, text, origin):
@@ -1982,6 +2031,7 @@ def run_courier(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, v
             continue
         sender_store = load_goals(sender)
         menu = open_menu(sender_store)
+        _judge_ctx.fsid = fsid                        # usage logging: attribute to the recipient session
         edit = _parse_courier(courier_llm(text, _menu_text(sender_store, menu)), len(menu))
         if not edit:
             _log_judge_error("courier", fsid, "parse")
