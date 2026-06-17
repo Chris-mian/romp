@@ -722,6 +722,11 @@ class PlanTuning(unittest.TestCase):
         self.assertIn("mint only when NO open goal matches", jd.PLAN_SYS)
         self.assertGreaterEqual(jd.open_menu.__defaults__[0], 20, "menu cap covers old goals (≥20)")
 
+    def test_max_depth_is_4_and_stated_in_the_prompt(self):
+        self.assertEqual(jd.MAX_DEPTH, 4, "planning hierarchy capped at 4 (the user, 2026-06-16)")
+        self.assertIn("%d levels deep" % jd.MAX_DEPTH, jd.PLAN_SYS,
+                      "the depth budget is embedded in the planner prompt, kept in sync with MAX_DEPTH")
+
     def test_sub_files_under_the_old_topic_goal_not_the_newest(self):
         # mechanics: a SUB targeting an OLD goal lands there, not the newer one — the planner can reach
         # any menu index, so the topic clause's older-goal choice is honored end-to-end.

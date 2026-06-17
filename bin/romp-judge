@@ -410,6 +410,12 @@ def write_archive(fsid, rec):
 # `blocked` verdict (needs the user). The rolled-up goal status (working/blocked/completed) is
 # derived HERE (judge.md) — rollup gated by the "settled" heuristic. The HARD block floor (a live
 # permission prompt) is the read side's merge, not here.
+MAX_DEPTH = 4                                         # max node depth below a top goal (goal = depth 0);
+                                                      # apply_plan re-parents anything deeper, and PLAN_SYS
+                                                      # embeds this value so the model knows the budget (they
+                                                      # can't drift — a test asserts it). (the user: 5→4)
+
+
 PLAN_SYS = (
     "You are a non-interactive planner in a logging pipeline. The user message contains ONE segment "
     "of a coding session inside <segment> tags (what the user asked and what the assistant did), and "
@@ -428,7 +434,8 @@ PLAN_SYS = (
     "goal #n. This is the DEFAULT — most segments are steps under an existing goal. SCAN THE WHOLE "
     "open-goals list and file under the goal whose TOPIC matches, even if it is OLDER or lower-numbered; "
     "never default to the most recent. File as a SIBLING of that goal's other steps, not chained under "
-    "the latest step. mint only when NO open goal matches.\n"
+    "the latest step. mint only when NO open goal matches. "
+    f"Keep the tree shallow — do not nest more than {MAX_DEPTH} levels deep under a top goal.\n"
     '- {\"why\",\"do\":\"amend\",\"goal\":<n>,\"text\":\"<updated goal text>\"} — the DEFINITION of open '
     "goal #n itself changed.\n"
     '- {\"why\",\"do\":\"done\",\"goal\":<n>} — open goal/step #n is now FINISHED. Be assertive: if the '
@@ -541,11 +548,6 @@ def _menu_text(store, menu):
             ptext = store["nodes"].get(nd["parentId"], {}).get("text", "?")
             out.append("%d. %s  (under: %s)" % (i, nd["text"], ptext))
     return "\n".join(out) if out else "(no open goals yet)"
-
-
-MAX_DEPTH = 5                                         # goal(0) → sub-goal(1) → step(2) → … ; raised from 2
-                                                      # (the user 2026-06-16): the prompt still nudges shallow
-                                                      # trees, but allow deeper nesting when work warrants it
 
 
 def _depth(nodes, nid):
