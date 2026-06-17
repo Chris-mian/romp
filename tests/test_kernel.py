@@ -385,6 +385,29 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(card["doneWhy"], "shipped the fix",
                          "the completed card surfaces the most-recently-completed node's doneWhy")
 
+    def test_feed_distiller_summary_rides_modal_tree_node(self):
+        # The distiller's key takeaway shows in the MODAL, not as the card subline (the user 2026-06-17):
+        # the card keeps doneWhy as its subline, while every modal tree node also carries `summary` so the
+        # render can show the fuller takeaway when the card is expanded.
+        top, s1 = (SID + ":top", SID + ":s1")
+        def gn(nid, text, parent, **kw):
+            d = {"id": nid, "text": text, "parentId": parent, "nodeComplete": False,
+                 "blocked": False, "cleared": False, "trail": [], "t": T0, "mt": T0}
+            d.update(kw); return d
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+            "rompUuid": SID, "seq": 2, "lastNode": None,
+            "nodes": {
+                top: gn(top, "the goal", None, nodeComplete=True, doneWhy="shipped the fix",
+                        summary="Reworked the parser to stream tokens, cutting latency in half.", mt=T0 + 40),
+                s1:  gn(s1, "a step", top, nodeComplete=True, doneWhy="wrote the parser", mt=T0 + 20),
+            },
+            "placements": {}, "status": {top: "completed"}}))
+        card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == top)
+        self.assertEqual(card["doneWhy"], "shipped the fix", "card subline stays the closer's doneWhy")
+        node = next(n for n in card["tree"] if n["id"] == top)
+        self.assertEqual(node["summary"], "Reworked the parser to stream tokens, cutting latency in half.",
+                         "the distiller takeaway rides the modal tree node so the modal can show it")
+
     def test_feed_tree_node_carries_anchor_uuid_for_id_deeplink(self):
         # anchorUuid = the EXACT turn uuid for a node's anchor segment (where it resolved / was minted),
         # so a card click deep-links BY ID, not by nearest-time-heuristic. (the user 2026-06-17.)
@@ -759,67 +782,6 @@ class ViewBuilder(unittest.TestCase):
             f.write(json.dumps(qop("dequeue")) + "\n")
         m = km.build_session(SID, NOW)
         self.assertFalse([e for e in m["events"] if e["kind"] == "queued"], "fully-drained queue → no card")
-
-    def _asst(self, t, uuid, parent, blocks, stop="end_turn"):
-        return {"type": "assistant", "timestamp": iso(t), "uuid": uuid, "parentUuid": parent,
-                "message": {"role": "assistant", "content": blocks, "stop_reason": stop}}
-
-    def test_subagent_additive_while_working(self):
-        # an in-flight Task in the CURRENT (open) turn → status.subagent set (ADDITIVE), a {kind:"subagent"}
-        # card, and the chip STATE stays the real state (working) — NEVER "subagent" (the re-spec: a working
-        # session shows only WORKING; the render hides the additive chip while working). The user 2026-06-16.
-        task = {"type": "tool_use", "id": "tk1", "name": "Task", "input": {"description": "audit the auth flow"}}
-        with self.tpath.open("a") as f:
-            f.write(json.dumps(uline(T0 + 100, "go audit auth", "u2", parent="a2", ps="typed")) + "\n")
-            f.write(json.dumps(self._asst(T0 + 110, "a3", "u2",
-                    [{"type": "text", "text": "Delegating."}, task], stop="tool_use")) + "\n")
-        m = km.build_session(SID, NOW)
-        self.assertNotEqual(m["status"]["state"], "subagent", "subagent is additive, never the chip state")
-        self.assertEqual(m["status"]["state"], "working", "open turn → working")
-        self.assertEqual(m["status"]["subagent"], "audit the auth flow", "the additive subagent desc is carried")
-        cards = [e for e in m["events"] if e["kind"] == "subagent"]
-        self.assertEqual(len(cards), 1)
-        self.assertEqual(cards[0]["desc"], "audit the auth flow")
-
-    def test_subagent_additive_while_ready(self):
-        # the case the human cares about: a session at REST (turn ended) with a background subagent still
-        # dangling in the LAST turn → state "ready" AND status.subagent set, so the render shows BOTH the
-        # ready chip and a separate orange subagent chip (the user 2026-06-16).
-        task = {"type": "tool_use", "id": "tk3", "name": "Agent", "input": {"description": "research in the background"}}
-        with self.tpath.open("a") as f:
-            f.write(json.dumps(uline(T0 + 100, "kick off research", "u2", parent="a2", ps="typed")) + "\n")
-            f.write(json.dumps(self._asst(T0 + 110, "a3", "u2",
-                    [{"type": "text", "text": "Dispatched a background agent."}, task], stop="end_turn")) + "\n")
-        m = km.build_session(SID, NOW)
-        self.assertEqual(m["status"]["state"], "ready", "turn ended → ready")
-        self.assertEqual(m["status"]["subagent"], "research in the background")
-        self.assertFalse(m["status"]["faded"], "an active subagent keeps the session from fading to at-rest")
-
-    def test_subagent_not_running_when_main_thread_moved_on(self):
-        # a dangling Task in an EARLIER turn (its completion arrived as a task-notification, not a tool_result,
-        # OR it was abandoned/killed) → NOT in flight once a LATER main-thread turn exists. The last-turn
-        # guard kills the forever-stale card (the user 2026-06-16; subagents' resumed-background case).
-        task = {"type": "tool_use", "id": "tkX", "name": "Task", "input": {"description": "stale research"}}
-        with self.tpath.open("a") as f:
-            f.write(json.dumps(uline(T0 + 100, "go research", "u2", parent="a2", ps="typed")) + "\n")
-            f.write(json.dumps(self._asst(T0 + 110, "a3", "u2", [task], stop="end_turn")) + "\n")
-            f.write(json.dumps(uline(T0 + 200, "ok, different thing now", "u3", parent="a3", ps="typed")) + "\n")
-            f.write(json.dumps(self._asst(T0 + 210, "a4", "u3", [{"type": "text", "text": "On it."}])) + "\n")
-        m = km.build_session(SID, NOW)
-        self.assertIsNone(m["status"]["subagent"], "a dangling Task in an earlier turn is not in flight")
-        self.assertFalse(any(e["kind"] == "subagent" for e in m["events"]), "no stale subagent card")
-
-    def test_completed_subagent_not_running(self):
-        # a Task WITH a tool_result → not in flight → no subagent chip/card
-        task = {"type": "tool_use", "id": "tk2", "name": "Task", "input": {"description": "x"}}
-        with self.tpath.open("a") as f:
-            f.write(json.dumps(uline(T0 + 100, "go", "u2", parent="a2", ps="typed")) + "\n")
-            f.write(json.dumps(self._asst(T0 + 110, "a3", "u2", [task], stop="tool_use")) + "\n")
-            f.write(json.dumps(trline(T0 + 120, "tk2", "r2", "a3", content="subagent report")) + "\n")
-            f.write(json.dumps(self._asst(T0 + 130, "a4", "r2", [{"type": "text", "text": "done"}])) + "\n")
-        m = km.build_session(SID, NOW)
-        self.assertNotEqual(m["status"]["state"], "subagent")
-        self.assertFalse(any(e["kind"] == "subagent" for e in m["events"]))
 
     def test_optimistic_compacting_until_boundary(self):
         # clicking compact marks the session 'compacting' AT ONCE on chat + timeline (no waiting for the

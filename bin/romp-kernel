@@ -1231,41 +1231,6 @@ def _compacting_optimistic(sid, session, now):
     return True
 
 
-def _subagent_running(session):
-    """A subagent the session is delegating to RIGHT NOW: a Task/Agent tool_use IN THE LAST TURN with no
-    matching tool_result yet. Returns its description ('' if undescribed) or None.
-
-    Restricting to the LAST turn is the event-based staleness guard (the user 2026-06-16): a dangling Task
-    in an EARLIER turn means the main thread already moved past it — the subagent finished (its completion
-    can arrive as a task-notification, NOT a tool_result block, so the old whole-transcript matcher saw it
-    dangling forever — subagents' resumed/background case) or it was abandoned / killed mid-run. Either way
-    it's no longer a live 'quiet-but-working' signal, so it must not keep the chip/card stuck on."""
-    turns = session["turns"]
-    if not turns:
-        return None
-    result_ids = set()                                   # a result clears its Task wherever in the session it lands
-    for turn in turns:
-        for a in turn["atoms"]:
-            if a.get("type") != "user":
-                continue
-            content = (a.get("message") or {}).get("content")
-            if isinstance(content, list):
-                for b in content:
-                    if isinstance(b, dict) and b.get("type") == "tool_result" and b.get("tool_use_id"):
-                        result_ids.add(b["tool_use_id"])
-    started = {}                                          # but only Tasks STARTED in the current (last) turn count
-    for a in turns[-1]["atoms"]:
-        if a.get("type") != "assistant":
-            continue
-        content = (a.get("message") or {}).get("content")
-        if isinstance(content, list):
-            for b in content:
-                if isinstance(b, dict) and b.get("type") == "tool_use" and b.get("name") in ("Task", "Agent"):
-                    started[b.get("id")] = str((b.get("input") or {}).get("description") or "").strip()
-    pending = [desc for tid, desc in started.items() if tid not in result_ids]
-    return pending[-1] if pending else None              # '' (running, undescribed) vs None (no subagent)
-
-
 def build_session(sid, now, tmux=None):
     """A {type:"session"} message the render.js bundle consumes: the event tree reshaped to
     ChatEvent[], plus the TOC ledger (archiver headline + turn captions) and a status chip."""
@@ -1360,10 +1325,6 @@ def build_session(sid, now, tmux=None):
         ev["tlId"] = ((anchors[0] if is_prompt else anchors[1]) or seg) if anchors else seg
         if ev.get("askAnswer"):                       # AskUserQuestion → fill chosen now the answer's in
             _ask_fill_chosen(ev["askAnswer"], ev.get("output") or "")
-    # Subagent in flight → a bottom card so the chat shows WHY the session is quiet-but-working (like todo).
-    sub = _subagent_running(session)
-    if sub is not None:
-        events.append({"kind": "subagent", "desc": sub})
     # Claude Code Task to-do list: ONE folded checklist event (renderTodo), appended last (bottom, by the
     # composer). Only while work is OUTSTANDING — a fully completed/cancelled list isn't a live to-do, so
     # drop it rather than let it read as recent (the user 2026-06-10, ported from the old TS kernel).
@@ -1524,21 +1485,18 @@ def build_session(sid, now, tmux=None):
         st = tm["state"]
         # blocked (API error) is the strongest signal — the turn ended in an error, so it beats the live
         # tmux states (the session can't simultaneously be compacting or at a permission prompt).
-        # subagent is now an ADDITIVE signal (status.subagent), NOT a chip state: working+subagent shows
-        # only WORKING; ready+subagent shows the ready chip AND a separate orange subagent chip (the render
-        # decides). So the chip itself is the real state (the user 2026-06-16, re-spec from subagents #9).
         compacting = st == "compacting" or _compacting_optimistic(sid, session, now)
         chip = ("blocked" if aerr else "awaiting" if st == "permission" else "compacting" if compacting
                 else "working" if open_now else "ready")
-        faded = chip == "ready" and sub is None and bool(tm["since"]) and now - tm["since"] > 3600
-        status = {"state": chip, "sinceEpoch": since_ms, "faded": faded, "subagent": sub,
+        faded = chip == "ready" and bool(tm["since"]) and now - tm["since"] > 3600
+        status = {"state": chip, "sinceEpoch": since_ms, "faded": faded,
                   "model": tm["model"], "effort": tm["effort"], "mode": tm.get("mode", ""),
                   "ctx": str(tm["context"]) if tm["context"] is not None else ""}
     elif tmux or _has_tmux():                          # tmux usable but this session isn't running → closed
-        status = {"state": "closed", "sinceEpoch": since_ms, "faded": True, "subagent": None}
+        status = {"state": "closed", "sinceEpoch": since_ms, "faded": True}
     else:                                              # no tmux at all (rare headless) → event-model fallback
         status = {"state": "working" if open_now else "idle", "sinceEpoch": since_ms,
-                  "faded": not open_now, "subagent": sub if open_now else None}
+                  "faded": not open_now}
     return {"type": "session", "id": sid, "name": sess["name"], "color": _name_color(sid),
             "events": events, "status": status, "ledger": ledger, "firstSeen": session["turns"][0]["t"]
             if session["turns"] else now}
@@ -1728,6 +1686,7 @@ def build_feed(now, tmux=None):
                         # the planner's one-sentence rationales — the modal reveals these (why a node
                         # exists / was blocked / was completed). (the user 2026-06-16.)
                         "why": nd.get("why"), "blockWhy": nd.get("blockWhy"), "doneWhy": nd.get("doneWhy"),
+                        "summary": nd.get("summary"),                   # distiller's key takeaway — shown in the MODAL only (card keeps doneWhy) — the user 2026-06-17
                         "followupPending": nd.get("followupPending"),   # per-node "Followed up" chip in the modal tree (business 2026-06-17)
                         "children": kids, "rows": []})
             for c in kids:
@@ -2290,7 +2249,6 @@ def build_timeline(now, tmux=None):
         else:                             # dead lane: coarse file-derived (badgeFor hides the badge when !live anyway)
             blocked = "blocked" in goals.get("status", {}).values()
             state = "awaiting" if blocked else ("working" if open_now else "idle")
-        sub = _subagent_running(session) if live else None   # additive: orange subagent marker on a quiet lane
         bars, last_t = [], None
         for ti, turn in enumerate(st_turns):
             turn_open = (ti == len(st_turns) - 1 and not turn["ended"]
@@ -2320,7 +2278,7 @@ def build_timeline(now, tmux=None):
         active = bool(tm and tm["state"] in ("working", "permission", "compacting", "waiting"))
         faded = (not live) or (not active and bool(tm and tm["since"]) and now - tm["since"] > 3600)
         sessions.append({
-            "id": sid, "name": name, "live": live, "state": state, "subagent": sub,
+            "id": sid, "name": name, "live": live, "state": state,
             "since": (tm["since"] if tm and tm["since"] else last_t),
             "color": hexcol,
             "model": (tm["model"] if tm else ""), "effort": (tm["effort"] if tm else ""),
