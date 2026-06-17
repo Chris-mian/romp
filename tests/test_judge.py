@@ -1627,63 +1627,6 @@ class SettledGateStates(unittest.TestCase):
         self.assertEqual(s["status"][g["id"]], "completed", "turn ended → focus goal finalizes (no prompt, no idle)")
 
 
-class PendingJudgment(unittest.TestCase):
-    """jd.pending_judgment — the feed's single 'needs judging' signal (infra 2026-06-17): True while any
-    triage judge (planner / closer / grouper) still has unprocessed ended work for the session."""
-
-    def _setup(self, records):
-        td = Path(tempfile.mkdtemp())
-        cdir = td / "launchdir"; cdir.mkdir()
-        proj = td / "projects"
-        pdir = proj / jd.re.sub(r"[/.]", "-", os.path.realpath(str(cdir)))
-        pdir.mkdir(parents=True)
-        path = pdir / (SID + ".jsonl")
-        path.write_text("\n".join(json.dumps(r) for r in records) + "\n")
-        names = td / "names"; names.mkdir()
-        (names / SID).write_text("testsess\t%s\t#abcdef\n" % str(cdir))
-        self._saved = (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.STATESDIR, jd.plan_llm, jd.closer_llm, jd.group_llm)
-        jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.STATESDIR = names, proj, td / "goals", td / "states"
-        jd._PARSE_CACHE.clear()
-        return str(path)
-
-    def tearDown(self):
-        if hasattr(self, "_saved"):
-            (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.STATESDIR, jd.plan_llm, jd.closer_llm, jd.group_llm) = self._saved
-            jd._PARSE_CACHE.clear()
-
-    def test_true_until_planner_and_closer_catch_up(self):
-        records = [uline(T0, "do it", "u1", ps="typed"),
-                   aline(T0 + 10, "", "a1", "u1", tools=("Bash",), stop="end_turn")]
-        path = self._setup(records)
-        now = T0 + 5000
-        self.assertTrue(jd.pending_judgment(SID, path, now), "ended segment not yet placed → pending")
-        jd.plan_llm = lambda text, menu, human=False: '{"ops":[{"why":"x","do":"mint","text":"G"}]}'
-        jd.run_plan(now=now)
-        self.assertTrue(jd.pending_judgment(SID, path, now), "placed, but the ended turn isn't closed yet → pending")
-        jd.closer_llm = lambda turn, menu: '{"done":[]}'
-        jd.run_close(now=now)
-        self.assertFalse(jd.pending_judgment(SID, path, now), "planner + closer caught up, one top → not pending")
-
-    def test_grouper_pending_when_top_set_outpaces_groupedsig(self):
-        records = [uline(T0, "one", "u1", ps="typed"),
-                   aline(T0 + 10, "", "a1", "u1", tools=("Bash",), stop="end_turn"),
-                   uline(T0 + 100, "two", "u2", "a1", ps="typed"),
-                   aline(T0 + 110, "", "a2", "u2", tools=("Bash",), stop="end_turn")]
-        path = self._setup(records)
-        now = T0 + 5000
-        jd.plan_llm = (lambda text, menu, human=False:
-                       '{"ops":[{"why":"x","do":"mint","text":"%s"}]}' % ("A" if "one" in text else "B"))
-        jd.group_llm = lambda menu: '{"ops":[]}'          # planner groups INLINE but leaves the 2 tops as-is
-        jd.run_plan(now=now)
-        jd.closer_llm = lambda turn, menu: '{"done":[]}'
-        jd.run_close(now=now)
-        self.assertFalse(jd.pending_judgment(SID, path, now),
-                         "planner grouped inline (groupedSig caught up) + closer swept → not pending")
-        # a top appears WITHOUT a grouping pass (e.g. courier-planted) → groupedSig goes stale → pending
-        st = jd.load_goals(SID); st["groupedSig"] = []; jd.save_goals(SID, st)
-        self.assertTrue(jd.pending_judgment(SID, path, now), "≥2 tops but groupedSig stale → grouper-pending")
-
-
 class FollowUp(unittest.TestCase):
     """Follow-up handling (the user 2026-06-17): a "follow up on this card" UI action composes a chat
     prompt carrying `<!-- romp-goal-id: <id> -->`. The planner reopens that exact goal (the sole exception

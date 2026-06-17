@@ -1630,31 +1630,6 @@ def run_close(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, ver
     return n
 
 
-def pending_judgment(fsid, path, now=None):
-    """True if this session has ended work the TRIAGE tier has NOT processed yet — the feed's "needs
-    judging" signal (infra 2026-06-17). The SINGLE SOURCE OF TRUTH so the feed needn't couple to judge
-    internals: ORs every triage judge's pending condition, keyed on the SAME per-session markers each
-    judge writes. As judges are added, extend HERE so the indicator can't falsely clear early.
-      - planner: a ready segment not yet in store["placements"];
-      - closer:  an ended (end-known) turn whose id is not in store["closedTurns"];
-      - grouper: the open-top set differs from store["groupedSig"] (and there are ≥2 tops to group)."""
-    if now is None:
-        now = int(time.time())
-    session = parsed_session(fsid, [path], now)
-    store = load_goals(fsid)
-    placements = store.get("placements", {})
-    if any(seg_id not in placements for seg_id, _t, _text, _human, _fu in plan_segments(session)):
-        return True                                    # planner-pending
-    turns = session["turns"]
-    closed = _closed_turns(store)
-    if any(not _turn_open(t, turns) and t["id"] not in closed for t in turns):
-        return True                                    # closer-pending
-    tops = _group_tops(store)
-    if len(tops) >= 2 and sorted(nd["id"] for nd in tops) != store.get("groupedSig"):
-        return True                                    # grouper-pending
-    return False
-
-
 def _ab_close_session(fsid, path, now):
     """Measure positive-only (a) vs positive+closer (b) completed-top-goal counts for ONE
     session WITHOUT mutating live state (sweeps a deep copy). Sweeps EVERY end-known turn (no cap, so a
