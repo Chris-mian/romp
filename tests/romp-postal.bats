@@ -80,6 +80,13 @@ cnt() { ls -1 "$1" 2>/dev/null | wc -l | tr -d ' '; }
     grep -q "taking over" "$(mb uuid-g)/new/"*
 }
 
+@test "tool descriptions use only the DELEGATE/COORDINATE/QUESTION vocabulary (no stale ASK:/FYI:/HANDOFF:)" {
+    # f537fd1 unified the lead-word vocabulary, but missed the revive_session examples; this guards
+    # against any old caps-colon lead word creeping back into the MCP tool descriptions / norms.
+    run grep -nE "\b(ASK|FYI|HANDOFF):" "$POSTAL"
+    [ "$status" -ne 0 ]   # grep finds nothing → non-zero → pass
+}
+
 @test "parked handoff survives the orphan sweep; a normal orphan does not" {
     mkdir -p "$XDG_STATE_HOME/romp/names"
     printf 'gamma\t/tmp\t#aa3344\twhite\n' > "$XDG_STATE_HOME/romp/names/uuid-g"

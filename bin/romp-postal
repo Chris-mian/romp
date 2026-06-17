@@ -1392,10 +1392,10 @@ MCP_TOOLS = [
      "inputSchema": {"type": "object",
                      "properties": {"query": {"type": "string", "description": "keywords describing the expertise/topic you're after; omit to list recent sessions"}}}},
     {"name": "revive_session",
-     "description": "Bring a DEAD romp session back to life — resumes its full conversation in its original directory, reusing its name + identity colour, and it rejoins list_agents. It comes back IDLE (does nothing until messaged). Use after find_sessions to recruit a past session's expertise, or to hand a revived session back its responsibility. Pass an optional 'message' (e.g. 'ASK: ...') to tell it why it was woken — delivered as it finishes loading. Naming a session that's already live is a no-op (just routes your message). Spawns a process, so the human is asked to approve.",
+     "description": "Bring a DEAD romp session back to life — resumes its full conversation in its original directory, reusing its name + identity colour, and it rejoins list_agents. It comes back IDLE (does nothing until messaged). Use after find_sessions to recruit a past session's expertise, or to hand a revived session back its responsibility. Pass an optional 'message' (e.g. 'DELEGATE: ...') to tell it why it was woken — delivered as it finishes loading. Naming a session that's already live is a no-op (just routes your message). Spawns a process, so the human is asked to approve.",
      "inputSchema": {"type": "object",
                      "properties": {"session": {"type": "string", "description": "the session name (or UUID) to revive"},
-                                    "message": {"type": "string", "description": "optional note delivered to it on wake, e.g. 'ASK: take back the build'"}},
+                                    "message": {"type": "string", "description": "optional note delivered to it on wake, e.g. 'DELEGATE: take back the build'"}},
                      "required": ["session"]}},
 ]
 
