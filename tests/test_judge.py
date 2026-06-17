@@ -529,6 +529,72 @@ class PlanRef(unittest.TestCase):
         self.assertTrue(s["nodes"][s["placements"]["s2"]]["nodeComplete"], "done ref 1 completes the new G2")
 
 
+class PlanGroup(unittest.TestCase):
+    """The `group` op relinks an open goal (its whole subtree) under another node — the retroactive-
+    grouping / move primitive (the user 2026-06-17). `sub` gains "ref" so new work can file under an
+    umbrella minted earlier in the SAME reply."""
+
+    def test_parse_group_and_sub_ref(self):
+        self.assertEqual(jd._parse_plan('{"ops":[{"why":"x","do":"group","goal":2,"under":1}]}', 3),
+                         [{"do": "group", "why": "x", "goal": 2, "under": 1}])
+        ops = jd._parse_plan('{"ops":[{"why":"u","do":"mint","text":"Umbrella"},'
+                             '{"why":"x","do":"group","goal":1,"ref":1}]}', 2)
+        self.assertEqual(ops[1], {"do": "group", "why": "x", "goal": 1, "ref": 1}, "group via a same-reply ref")
+        self.assertIsNone(jd._parse_plan('{"ops":[{"why":"x","do":"group","goal":1,"under":1}]}', 3),
+                          "self-group (goal == under) is dropped")
+        self.assertEqual(jd._parse_plan('{"ops":[{"why":"x","do":"sub","ref":1,"text":"step"}]}', 0),
+                         [{"do": "sub", "why": "x", "ref": 1, "text": "step"}], "sub accepts a ref parent")
+
+    def _two_tops(self):
+        s = _store()
+        jd.apply_plan(s, "s1", T0, [{"do": "mint", "why": "x", "text": "Goal A"}], [])
+        jd.apply_plan(s, "s2", T0 + 10, [{"do": "mint", "why": "x", "text": "Goal B"}], jd.open_menu(s))
+        return s, s["placements"]["s1"], s["placements"]["s2"]
+
+    def test_group_relinks_a_top_under_another(self):
+        s, a, b = self._two_tops()
+        menu = jd.open_menu(s)                                    # [A, B] oldest-first
+        ai = next(i for i, nd in enumerate(menu, 1) if nd["id"] == a)
+        bi = next(i for i, nd in enumerate(menu, 1) if nd["id"] == b)
+        jd.apply_plan(s, "s3", T0 + 20, [{"do": "group", "why": "both serve X", "goal": bi, "under": ai}], menu)
+        self.assertEqual(s["nodes"][b]["parentId"], a, "B is relinked under A (its subtree moves with it)")
+        self.assertIsNone(s["nodes"][a]["parentId"], "A stays a top")
+
+    def test_group_two_tops_under_a_fresh_umbrella(self):
+        s, a, b = self._two_tops()
+        menu = jd.open_menu(s)
+        ai = next(i for i, nd in enumerate(menu, 1) if nd["id"] == a)
+        bi = next(i for i, nd in enumerate(menu, 1) if nd["id"] == b)
+        jd.apply_plan(s, "s3", T0 + 20, [{"do": "mint", "why": "both serve X", "text": "Umbrella X"},
+                                         {"do": "group", "why": "x", "goal": ai, "ref": 1},
+                                         {"do": "group", "why": "x", "goal": bi, "ref": 1}], menu)
+        um = next(nd for nd in s["nodes"].values() if nd["text"] == "Umbrella X")["id"]
+        self.assertEqual(s["nodes"][a]["parentId"], um, "A grouped under the fresh umbrella")
+        self.assertEqual(s["nodes"][b]["parentId"], um, "B grouped under the fresh umbrella")
+        self.assertIsNone(s["nodes"][um]["parentId"], "the umbrella is the new top")
+
+    def test_group_refuses_a_cycle(self):
+        s = _store()
+        jd.apply_plan(s, "s1", T0, [{"do": "mint", "why": "x", "text": "Parent"}], [])
+        jd.apply_plan(s, "s2", T0 + 10, [{"do": "sub", "why": "x", "under": 1, "text": "Child"}], jd.open_menu(s))
+        parent, child = s["placements"]["s1"], s["placements"]["s2"]
+        menu = jd.open_menu(s)
+        pi = next(i for i, nd in enumerate(menu, 1) if nd["id"] == parent)
+        ci = next(i for i, nd in enumerate(menu, 1) if nd["id"] == child)
+        jd.apply_plan(s, "s3", T0 + 20, [{"do": "group", "why": "x", "goal": pi, "under": ci}], menu)
+        self.assertIsNone(s["nodes"][parent]["parentId"], "grouping Parent under its own Child is refused (no cycle)")
+        self.assertEqual(s["nodes"][child]["parentId"], parent, "Child stays under Parent")
+
+    def test_sub_ref_files_new_work_under_a_fresh_umbrella(self):
+        s = _store()
+        jd.apply_plan(s, "s1", T0, [{"do": "mint", "why": "x", "text": "Umbrella"},
+                                    {"do": "sub", "why": "x", "ref": 1, "text": "new step"}], [])
+        um = next(nd for nd in s["nodes"].values() if nd["text"] == "Umbrella")
+        step = next(nd for nd in s["nodes"].values() if nd["text"] == "new step")
+        self.assertEqual(step["parentId"], um["id"], "sub ref files the new step under the just-minted umbrella")
+        self.assertIsNone(um["parentId"], "the umbrella is the top")
+
+
 class PlanRollup(unittest.TestCase):
     def _mint(self, s, seg, t, text):
         jd.apply_plan(s, seg, t, [{"do": "mint", "why": "x", "text": text}], jd.open_menu(s))
@@ -790,10 +856,11 @@ class PlanTuning(unittest.TestCase):
         for phrase in ("Write each \"why\" plainly", "no em dashes", "say it once"):
             self.assertIn(phrase, jd.CLOSER_SYS, phrase)
 
-    def test_planner_prompt_suggests_grouping_under_an_umbrella(self):
-        # the user 2026-06-16: the planner may infer a higher-level goal and group related work under one
-        # top card instead of scattering separate tops. Guard the suggestion against a revert.
-        for phrase in ("GROUPING", "higher-level goal", "single top goal", "genuine shared purpose"):
+    def test_planner_prompt_pushes_aggressive_grouping_and_eager_done(self):
+        # the user 2026-06-17: be AGGRESSIVE about grouping (a `group`/relink op, retroactively) and bias
+        # toward marking goals done EAGERLY when the outcome is delivered. Guard against a revert.
+        for phrase in ('"do":"group"', "RELINK open goal", "GROUPING (be aggressive)",
+                       "regroup tops", "genuine shared purpose", "Mark done EAGERLY"):
             self.assertIn(phrase, jd.PLAN_SYS, phrase)
 
     def test_sub_files_under_the_old_topic_goal_not_the_newest(self):

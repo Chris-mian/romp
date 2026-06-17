@@ -476,12 +476,20 @@ PLAN_SYS = (
     "goal #n. This is the DEFAULT — most segments are steps under an existing goal. SCAN THE WHOLE "
     "open-goals list and file under the goal whose TOPIC matches, even if it is OLDER or lower-numbered; "
     "never default to the most recent. File as a SIBLING of that goal's other steps, not chained under "
-    "the latest step. mint only when NO open goal matches. "
+    "the latest step. mint only when NO open goal matches. (\"ref\":<k> files under a node you minted "
+    "earlier in THIS reply instead of \"under\" — e.g. a fresh umbrella goal.) "
     f"Keep the tree shallow — do not nest more than {MAX_DEPTH} levels deep under a top goal.\n"
+    '- {\"why\",\"do\":\"group\",\"goal\":<n>,\"under\":<m>} — RELINK open goal #n (its whole subtree '
+    "comes with it) to sit UNDER node #m, instead of standing as its own top. This is how you GROUP "
+    "retroactively: when two or more open tops serve ONE larger outcome, nest one under another, or mint "
+    "an umbrella top and group each under it (use \"ref\":<k> for that umbrella). #m is a menu goal, or "
+    "use \"ref\":<k> instead of \"under\".\n"
     '- {\"why\",\"do\":\"amend\",\"goal\":<n>,\"text\":\"<updated goal text>\"} — the DEFINITION of open '
     "goal #n itself changed.\n"
-    '- {\"why\",\"do\":\"done\",\"goal\":<n>} — open goal/step #n is now FINISHED. Be assertive: if the '
-    "segment discharges a whole ask, done the TOP-LEVEL goal. EXCEPTION: if the ask was a QUESTION and "
+    '- {\"why\",\"do\":\"done\",\"goal\":<n>} — open goal/step #n is now FINISHED. Mark done EAGERLY: the '
+    "moment a segment delivers a goal's outcome (committed, shipped, tested, or answered), done it in "
+    "THIS reply — do not leave finished work open for a later pass to notice. If the segment discharges "
+    "a whole ask, done the TOP-LEVEL goal. EXCEPTION: if the ask was a QUESTION and "
     "your reply IS the answer (informational, nothing for the user to act on), do NOT done it — block it "
     "with the answer as the reason so the user reads it (see block). To complete a node you create "
     'earlier in THIS reply, use \"ref\":<k> (k = the 1-based position of that mint/sub among the ops in '
@@ -503,10 +511,11 @@ PLAN_SYS = (
     '- {\"why\",\"do\":\"skip\"} — the segment did NO real work (an interruption, an empty/aborted turn, '
     "a bare acknowledgement, a system notification). A segment that RAN TOOLS is real work — never skip "
     "it. If you skip, \"ops\" is exactly one skip op.\n"
-    "GROUPING: when several things the user wants serve ONE larger outcome, you may infer that "
-    "higher-level goal and mint it as a single top goal so the related work collects under one card "
-    "instead of scattering as separate tops; its parts then file under it as steps. Group only a "
-    "genuine shared purpose, not look-alike wording.\n"
+    "GROUPING (be aggressive): keep the board a few REAL trees, not a flat list of every request. "
+    "Whenever several open top goals serve ONE larger outcome, GROUP them with \"group\" — nest one "
+    "under another, or mint an umbrella and group each under it. Do this RETROACTIVELY: regroup tops "
+    "minted separately as soon as you see the cluster. Group only a genuine shared purpose, not "
+    "look-alike wording.\n"
     "Output ONLY the JSON object. When unsure between mint and sub, prefer sub; when unsure whether to "
     "skip, place it.")
 
@@ -547,13 +556,22 @@ def _parse_plan(raw, menu_len):
             if _has_alpha(text):
                 ops.append({"do": "mint", "why": why, "text": text})
         elif do == "sub":
-            n = _int(o, "under")
+            n, r = _int(o, "under"), _int(o, "ref")
             if not _has_alpha(text):
                 continue
             if n and 1 <= n <= menu_len:
                 ops.append({"do": "sub", "why": why, "under": n, "text": text})
+            elif r and r >= 1:
+                ops.append({"do": "sub", "why": why, "ref": r, "text": text})   # under a node minted earlier this reply
             else:
-                ops.append({"do": "mint", "why": why, "text": text})   # bad ref → place it, never orphan
+                ops.append({"do": "mint", "why": why, "text": text})   # no valid parent → place it, never orphan
+        elif do == "group":
+            g, n, r = _int(o, "goal"), _int(o, "under"), _int(o, "ref")
+            if g and 1 <= g <= menu_len:                                # relink an open goal under another node
+                if n and 1 <= n <= menu_len and n != g:
+                    ops.append({"do": "group", "why": why, "goal": g, "under": n})
+                elif r and r >= 1:
+                    ops.append({"do": "group", "why": why, "goal": g, "ref": r})
         elif do == "amend":
             n = _int(o, "goal")
             if n and 1 <= n <= menu_len and _has_alpha(text):
@@ -679,6 +697,20 @@ def apply_plan(store, seg_id, seg_t, ops, menu):
         r = o.get("ref")
         return created[r - 1] if (r and 1 <= r <= len(created)) else None
 
+    def _parent_of(o):                                # a sub/group parent: a menu node OR a same-reply mint ("ref")
+        if "under" in o:
+            return menu[o["under"] - 1]["id"]
+        r = o.get("ref")
+        return created[r - 1] if (r and 1 <= r <= len(created)) else None
+
+    def _is_ancestor(a, b):                           # is node a AT or ABOVE node b? (re-parent cycle/self guard)
+        x, seen = b, set()
+        while x and x not in seen:
+            if x == a:
+                return True
+            seen.add(x); x = nodes.get(x, {}).get("parentId")
+        return False
+
     focus, touched = None, None
     for o in ops:
         do = o["do"]
@@ -688,11 +720,24 @@ def apply_plan(store, seg_id, seg_t, ops, menu):
             nid = new_node(o["text"] or "(untitled goal)", None, o["why"])
             _unblock_branch(nid); focus = touched = nid
         elif do == "sub":
-            parent = menu[o["under"] - 1]["id"]
-            while _depth(nodes, parent) >= MAX_DEPTH:  # never chain past MAX_DEPTH; re-parent up
-                parent = nodes[parent]["parentId"]
-            nid = new_node(o["text"] or "(step)", parent, o["why"])
+            parent = _parent_of(o)                     # menu goal, or a "ref" to an umbrella minted this reply
+            if parent is None:                         # ref pointed nowhere → place as a top, never orphan
+                nid = new_node(o["text"] or "(step)", None, o["why"])
+            else:
+                while _depth(nodes, parent) >= MAX_DEPTH:  # never chain past MAX_DEPTH; re-parent up
+                    parent = nodes[parent]["parentId"]
+                nid = new_node(o["text"] or "(step)", parent, o["why"])
             _unblock_branch(nid); focus = touched = nid
+        elif do == "group":
+            child = menu[o["goal"] - 1]["id"]
+            parent = _parent_of(o)
+            # RELINK child (its whole subtree comes with it) under parent — the group/move primitive. Guard:
+            # parent must exist and NOT be child itself or inside child's own subtree (would cycle).
+            if parent and not _is_ancestor(child, parent):
+                while _depth(nodes, parent) >= MAX_DEPTH:   # keep the tree shallow; clamp the parent up
+                    parent = nodes[parent]["parentId"]
+                nodes[child]["parentId"] = parent
+                nodes[child]["mt"] = seg_t; touched = child
         elif do == "amend":
             nid = menu[o["goal"] - 1]["id"]
             if o.get("text"):
