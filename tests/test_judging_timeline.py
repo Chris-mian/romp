@@ -98,6 +98,19 @@ class DeriveJudging(unittest.TestCase):
         self.assertEqual(dj[0]["t"], NOW - 70)
         self.assertEqual(dj[0]["text"], "The key takeaway.", "the distiller mark carries the goal's summary")
 
+    def test_closer_block_via_negBlock_attributed_to_closer(self):
+        nodes = {"b": {"id": "b", "parentId": "x", "t": NOW - 300, "text": "blocked top",
+                       "blocked": True, "blockWhy": "needs a key", "negBlock": True, "mt": NOW - 70}}
+        blocks = [m for m in marks({}, nodes) if m["kind"] == "block"]
+        self.assertEqual([m["judge"] for m in blocks], ["closer"], "negBlock → closer block, not planner")
+        self.assertEqual(blocks[0]["text"], "needs a key")
+
+    def test_planner_block_when_no_negBlock(self):
+        nodes = {"b": {"id": "b", "parentId": "x", "t": NOW - 300, "text": "blocked top",
+                       "blocked": True, "blockWhy": "needs input", "mt": NOW - 70}}
+        blocks = [m for m in marks({}, nodes) if m["kind"] == "block"]
+        self.assertEqual([m["judge"] for m in blocks], ["planner"], "blocked without negBlock → planner block")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2018,9 +2018,12 @@ def _derive_judging(sid, caps, goals, t0, out):
         elif t >= t0:                                         # planner placed it (top = mint, else a step)
             out.append({"judge": "planner", "sid": sid, "t": t,
                         "kind": ("mint" if not n.get("parentId") else "sub"), "text": text})
-        if n.get("negComplete") and mt >= t0:                 # closer's negative turn-end sweep finished it
+        if n.get("negComplete") and mt >= t0:                 # closer completed this top at turn-end
             out.append({"judge": "closer", "sid": sid, "t": mt, "kind": "close",
                         "text": n.get("doneWhy") or text})
+        elif n.get("negBlock") and mt >= t0:                  # closer BLOCKED this top at turn-end (mirrors negComplete)
+            out.append({"judge": "closer", "sid": sid, "t": mt, "kind": "block",
+                        "text": n.get("blockWhy") or text})
         elif n.get("nodeComplete") and n.get("doneWhy") and mt >= t0 and not n.get("origin"):
             out.append({"judge": "planner", "sid": sid, "t": mt, "kind": "done",
                         "text": n.get("doneWhy") or text})
