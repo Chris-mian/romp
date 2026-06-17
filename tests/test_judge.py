@@ -589,6 +589,24 @@ class Courier(unittest.TestCase):
         self.assertIsNone(jd._parse_courier("garbage", 3))
         self.assertIsNone(jd._parse_courier("DELEGATING 9 :: x", 3)["n"], "out-of-range sender goal -> no link")
 
+    def test_log_judge_error_appends(self):
+        # Swallowed judge-call failures are recorded to ERRORS (judge-errors.jsonl) for romp -j to surface.
+        import tempfile, shutil, json as _json
+        from pathlib import Path
+        d = Path(tempfile.mkdtemp()); saved = jd.ERRORS
+        try:
+            jd.ERRORS = d / "judge-errors.jsonl"
+            jd._log_judge_error("planner", "sid1", "parse")
+            jd._log_judge_error("courier", "sid2", "call")
+            recs = [_json.loads(l) for l in jd.ERRORS.read_text().splitlines()]
+            self.assertEqual([r["tier"] for r in recs], ["planner", "courier"])
+            self.assertEqual(recs[0]["err"], "parse")
+            self.assertEqual(recs[1]["fsid"], "sid2")
+            self.assertIsInstance(recs[0]["t"], int)
+        finally:
+            jd.ERRORS = saved
+            shutil.rmtree(d, ignore_errors=True)
+
     def test_apply_courier_plants_top_goal_with_origin_and_dedups(self):
         s = _store()
         origin = {"peer": "SENDER", "goalId": "SENDER:g1", "msgId": "m1"}

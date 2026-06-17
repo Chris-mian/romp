@@ -154,6 +154,32 @@ def manager_exceptions(state):
             "kernel_crashes": crashes, "last_crash": last_crash}
 
 
+def judge_call_errors(state, now, window_long=3600, window_recent=900):
+    """Swallowed judge-call failures from judge-errors.jsonl (parse-fails, call timeouts/exceptions that
+    romp-judge would otherwise drop silently): counts in the last hour / 15 min + the most recent one."""
+    long_n = recent_n = 0
+    last = None
+    try:
+        lines = (state / "judge-errors.jsonl").read_text().splitlines()
+    except OSError:
+        return {"count_1h": 0, "count_15m": 0, "last": None}
+    for line in lines:
+        try:
+            o = json.loads(line)
+        except Exception:
+            continue
+        t = o.get("t")
+        if not isinstance(t, (int, float)):
+            continue
+        age = now - t
+        if age <= window_long:
+            long_n += 1
+            last = o                                  # lines are chronological → last in-window is newest
+        if age <= window_recent:
+            recent_n += 1
+    return {"count_1h": long_n, "count_15m": recent_n, "last": last}
+
+
 # ───────────────────────── health model ─────────────────────────
 
 def build_model(state, now):
@@ -161,6 +187,7 @@ def build_model(state, now):
     alive = tmux_alive()
     kernel = probe_kernel()
     exc = manager_exceptions(state)
+    je = judge_call_errors(state, now)
 
     sessions = []
     total_pending = 0
@@ -213,13 +240,15 @@ def build_model(state, now):
         verdict = "down"
     elif exc["producer_crashes"] > 0 or exc["kernel_crashes"] > 0:
         verdict = "warn"
+    elif je["count_15m"] >= 3:                        # sustained recent judge-call failures
+        verdict = "warn"
     elif total_pending > 0 and (last_caption_age is None or last_caption_age > 45):
         verdict = "warn"
     else:
         verdict = "ok"
 
     return {
-        "t": now, "verdict": verdict, "kernel": kernel, "exceptions": exc,
+        "t": now, "verdict": verdict, "kernel": kernel, "exceptions": exc, "judge_errors": je,
         "backlog": {"total_pending": total_pending, "oldest_pending_age_s": oldest_pending_age,
                     "last_caption_age_s": last_caption_age, "active_sessions": len(sessions)},
         "sessions": sessions,
@@ -302,6 +331,16 @@ def render(m):
     if e["last_crash"]:
         out.append("             %s" % c("last crash: " + e["last_crash"][:96], "red", "dim"))
 
+    je = m["judge_errors"]
+    jn = je["count_1h"]
+    jcol = "green" if jn == 0 else ("yellow" if je["count_15m"] < 3 else "red")
+    jstr = "call failures: %s in 1h" % c(str(jn), jcol)
+    if je["last"]:
+        L = je["last"]
+        jstr += " · last %s/%s %s ago" % (L.get("tier", "?"), L.get("err", "?"),
+                                          fmt_age(m["t"] - L.get("t", m["t"])))
+    out.append("  judge      %s %s" % (c("●", jcol), jstr))
+
     b = m["backlog"]
     keeping = "pending:%s across %d session(s) · oldest %s · last caption %s ago" % (
         c(str(b["total_pending"]), _countcol(b["total_pending"])), b["active_sessions"],
@@ -322,8 +361,8 @@ def render(m):
             c("%-10s" % fmt_age(s["oldest_pending_age_s"]), _agecol(s["oldest_pending_age_s"]))))
 
     out.append("")
-    out.append(c("  note: individual judge-CALL failures are swallowed upstream and not yet recorded —", "dim"))
-    out.append(c("        this shows producer-level crashes only. ^C to quit.", "dim"))
+    out.append(c("  note: judge-call failures (parse / timeout / exception) are now recorded; a captioner", "dim"))
+    out.append(c("        empty ('no finished work') is NOT counted — too noisy to be a signal. ^C to quit.", "dim"))
     return "\n".join(out)
 
 

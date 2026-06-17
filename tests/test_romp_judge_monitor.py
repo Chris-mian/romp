@@ -106,6 +106,38 @@ class JudgeMonitor(unittest.TestCase):
         out = mon.render(mon.build_model(self.state, NOW))
         self.assertNotIn("\x1b[", out)                    # no ANSI escapes at all
 
+    def _errors(self, recs):
+        (self.state / "judge-errors.jsonl").write_text(
+            "\n".join(json.dumps(r) for r in recs) + ("\n" if recs else ""))
+
+    def test_judge_errors_surfaced_and_warn(self):
+        # judge-errors.jsonl → model counts + render line; >=3 in the last 15m warns even with no backlog.
+        self._cache([NOW - 30]); self._captions([NOW - 30])      # no backlog
+        self._errors([{"t": NOW - 60, "tier": "planner", "fsid": SID, "err": "parse"} for _ in range(4)])
+        m = mon.build_model(self.state, NOW)
+        self.assertEqual(m["judge_errors"]["count_1h"], 4)
+        self.assertEqual(m["judge_errors"]["count_15m"], 4)
+        self.assertEqual(m["judge_errors"]["last"]["tier"], "planner")
+        self.assertEqual(m["verdict"], "warn")
+        mon._USE_COLOR = False
+        try:
+            self.assertIn("call failures: 4 in 1h", mon.render(m))
+            self.assertIn("last planner/parse", mon.render(m))
+        finally:
+            mon._USE_COLOR = False
+
+    def test_old_judge_errors_outside_window_dont_warn(self):
+        self._cache([NOW - 30]); self._captions([NOW - 30])
+        self._errors([{"t": NOW - 7200, "tier": "courier", "fsid": SID, "err": "call"}])   # 2h ago
+        m = mon.build_model(self.state, NOW)
+        self.assertEqual(m["judge_errors"]["count_1h"], 0)       # outside the 1h window
+        self.assertEqual(m["verdict"], "ok")
+
+    def test_no_judge_errors_file(self):
+        self._cache([NOW - 30]); self._captions([NOW - 30])
+        m = mon.build_model(self.state, NOW)
+        self.assertEqual(m["judge_errors"], {"count_1h": 0, "count_15m": 0, "last": None})
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

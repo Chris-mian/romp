@@ -40,6 +40,7 @@ ARCHDIR  = STATE / "archive"             # per-session {headline, abstract} (rep
 GOALDIR  = STATE / "goals"               # per-session goal tree (the inbox), keyed by rompUuid
 PCACHE   = STATE / "judge-units-cache"   # (mtime,size) cache of a transcript's ready units
 MESSAGES = STATE / "timeline" / "messages.jsonl"
+ERRORS   = STATE / "judge-errors.jsonl"  # swallowed judge-call failures (parse-fails, call timeouts/exceptions) — surfaced by `romp -j`
 
 # Two model tiers (the Haiku cost lever, judge.md §Two run tiers; shipped 2026-06-15): cheap always-on
 # INDEXING on Haiku, judgment-heavy TRIAGE on Sonnet.
@@ -126,6 +127,18 @@ def _judge_cmd(model, sys_prompt, effort=None):
     return cmd
 
 
+def _log_judge_error(tier, fsid, err):
+    """Append a swallowed judge-call failure to ERRORS (judge-errors.jsonl) so `romp -j` can surface it.
+    These are otherwise invisible: a judge call that times out, raises, or returns un-parseable output is
+    silently dropped and retried next pass. Best-effort, NEVER raises — it runs inside the very failure
+    paths it records."""
+    try:
+        with open(ERRORS, "a") as f:
+            f.write(json.dumps({"t": int(time.time()), "tier": tier, "fsid": fsid or "", "err": err}) + "\n")
+    except Exception:
+        pass
+
+
 def _judge_run(model, sys_prompt, user, effort=None):
     """Run ONE judge model call (claude -p, zero tools, MCP off, portable 45s alarm cap — macOS has no
     `timeout`). Returns raw stdout, '' on any failure. `model` selects the tier (INDEX_MODEL=Haiku,
@@ -139,6 +152,7 @@ def _judge_run(model, sys_prompt, user, effort=None):
         p = subprocess.run(_judge_cmd(model, sys_prompt, effort), input=user,
                            capture_output=True, text=True, cwd="/tmp", env=env, timeout=50)
     except Exception:
+        _log_judge_error("index" if model == INDEX_MODEL else "triage", None, "call")
         return ""
     return p.stdout or ""
 
@@ -849,6 +863,7 @@ def run_once(now=None, budget=BUDGET, fairness=FAIRNESS, concurrency=CONCURRENCY
             except Exception:
                 rec = None
             if not rec:
+                _log_judge_error("archiver", fsid, "parse")
                 continue
             rec["turns"] = nturns
             rec["t"] = int(time.time())
@@ -903,6 +918,7 @@ def _plan_session(fsid, path, now):
         menu = open_menu(store)
         ops = _parse_plan(plan_llm(text, _menu_text(store, menu)), len(menu))
         if not ops:
+            _log_judge_error("planner", fsid, "parse")
             continue                                  # failed parse → retry next pass
         if len(ops) == 1 and ops[0]["do"] == "skip":  # no-work segment → record processed, place nothing
             store["placements"][seg_id] = None        # so it's not re-judged every pass (idempotent)
@@ -1034,6 +1050,7 @@ def _close_turn(store, turn, samples=None):
         return []
     out = _parse_close(closer_llm(_unit_text(turn["atoms"]), _menu_text(store, menu)), len(menu))
     if out is None:
+        _log_judge_error("closer", store.get("rompUuid"), "parse")
         return None
     newly = apply_close(store, menu, out)
     if samples is not None and newly:
@@ -1373,6 +1390,7 @@ def run_courier(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, v
         menu = open_menu(sender_store)
         edit = _parse_courier(courier_llm(text, _menu_text(sender_store, menu)), len(menu))
         if not edit:
+            _log_judge_error("courier", fsid, "parse")
             continue                                  # failed parse → retry next pass (never orphan)
         if edit["delegating"]:
             goal_id = menu[edit["n"] - 1]["id"] if edit["n"] else None
