@@ -577,6 +577,7 @@ EOF
     _romp_cmd "romp -r"                    -            "Resume a past conversation (full-screen picker, by name)"
     _romp_cmd "romp -d"                    romp-dashboard "Live session monitor (dashboard)"
     _romp_cmd "romp -f"                    romp-feed    "Feed — terminal Working/Blocked/Completed board (mirrors the web feed)"
+    _romp_cmd "romp -j"                    romp-judge-monitor "Judges health monitor — are they keeping up, any exceptions"
     _romp_cmd "romp serve [on|off|status]" -            "Expose the kernel to the tailnet/phone (token-gated), or revert to local-only"
     _romp_cmd "romp on"                    romp-manager "Start the kernel manager (foreground — Ctrl+C stops it and its kernels)"
     _romp_cmd "romp refresh"               romp-manager "Restart all romp kernels (picks up new code — run after an update)"
@@ -620,6 +621,17 @@ fi
 if [[ "${1:-}" == "-f" ]]; then
     shift
     exec romp-feed "$@"
+fi
+
+# Judges health monitor — live "are the judges keeping up + are they throwing
+# exceptions" view. Independent of the kernel (re-reads the judge state files +
+# manager.log + a /version probe), same cross-check spirit as `-f`. Spelled `-j`
+# for the same reason as `-d`/`-f`. Flags pass through (`romp -j --once|--json`).
+# ROMP_JUDGE_MONITOR_BIN is the test seam (the live TUI is an infinite loop — same
+# pattern as ROMP_DASHBOARD_BIN, so romp.bats can mock it without hanging).
+if [[ "${1:-}" == "-j" ]]; then
+    shift
+    exec "${ROMP_JUDGE_MONITOR_BIN:-romp-judge-monitor}" "$@"
 fi
 
 # Romp Postal Service — peer messaging between romp sessions. Double-dash because

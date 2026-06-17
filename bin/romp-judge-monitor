@@ -1,0 +1,329 @@
+#!/usr/bin/env python3
+"""romp-judge-monitor — a live terminal health view of the romp judges (`romp -j`).
+
+Answers two questions at a glance, no log-spelunking:
+  KEEPING UP  — is the judge producer processing units promptly, or is a backlog
+                building? Per active session: pending = parsed units (the
+                judge-units-cache) not yet captioned (the captions store), plus
+                how long since the newest caption was written.
+  EXCEPTIONS  — is the engine crashing? Producer-level tracebacks land in
+                manager.log ('producer:' lines); kernel CRASH-restarts (a non-
+                SIGTERM/non-zero exit) show there too. Both are surfaced here.
+
+Like romp-feed, this is INDEPENDENT of the kernel: it re-reads the same raw state
+files + manager.log and probes the kernel's /version, and never imports
+romp-kernel / romp-judge. That independence is the point — it's a cross-check on
+the machinery, so keep it that way.
+
+KNOWN GAP (surfaced in the footer): individual judge-CALL failures (a `claude -p`
+caption/plan that times out or raises) are currently swallowed in romp-judge and
+recorded NOWHERE, so this view can't show them yet — only producer-level crashes.
+Closing that needs a small instrumentation change in romp-judge.
+
+Usage:
+  romp -j            live TUI, refreshes every few seconds (^C to quit)
+  romp -j --once     render one frame and exit (no alt-screen)
+  romp -j --json     print the computed health model as JSON and exit
+  romp -j --no-color disable ANSI colour
+"""
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+REFRESH_SECS = 3
+ACTIVE_WINDOW_SECS = 2 * 3600     # headless fallback: a session is "active" if its cache changed this recently
+KERNEL_URLS = ["http://127.0.0.1:7433", "http://127.0.0.1:7878", "http://127.0.0.1:7432"]
+
+
+# ───────────────────────── raw readers (independent of the kernel) ─────────────────────────
+
+def state_dir():
+    home = Path(os.environ.get("HOME") or Path.home())
+    base = os.environ.get("XDG_STATE_HOME") or str(home / ".local/state")
+    return Path(base) / "romp"
+
+
+def session_names(state):
+    """{fsid: (name, color)} from names/<fsid> (tab-separated: name \\t dir \\t #bg \\t fg)."""
+    out = {}
+    for fp in (state / "names").glob("*"):
+        try:
+            parts = fp.read_text().split("\t")
+            name = parts[0].strip() if parts else fp.name
+            color = parts[2].strip() if len(parts) > 2 else ""
+            out[fp.name] = (name or fp.name, color)
+        except Exception:
+            pass
+    return out
+
+
+def caption_index(state, fsid):
+    """(set_of_caption_ids, newest_t) for captions/<fsid>.jsonl. ({}, None) if absent/empty."""
+    ids, newest = set(), None
+    fp = state / "captions" / (fsid + ".jsonl")
+    try:
+        for line in fp.read_text().splitlines():
+            try:
+                o = json.loads(line)
+            except Exception:
+                continue
+            cid = o.get("id")
+            if cid:
+                ids.add(cid)
+            t = o.get("t")
+            if isinstance(t, (int, float)) and (newest is None or t > newest):
+                newest = t
+    except OSError:
+        pass
+    return ids, newest
+
+
+def cache_tasks(state, fsid):
+    """(tasks, mtime) for judge-units-cache/<fsid>.json. Each task: {text, writes:[{id,grain,t}]}."""
+    fp = state / "judge-units-cache" / (fsid + ".json")
+    try:
+        d = json.loads(fp.read_text())
+        return (d.get("tasks") or []), fp.stat().st_mtime
+    except (OSError, ValueError):
+        return [], None
+
+
+def tmux_alive():
+    """set of alive romp-session fsids (@romp-session-id where @romp==1), or None when tmux is absent
+    (headless) so the caller can fall back to recently-active caches."""
+    try:
+        out = subprocess.run(
+            ["tmux", "list-sessions", "-F", "#{@romp}|#{@romp-session-id}"],
+            capture_output=True, text=True, timeout=3)
+    except Exception:
+        return None
+    if out.returncode != 0:
+        return None
+    alive = set()
+    for line in out.stdout.splitlines():
+        flag, _, sid = line.partition("|")
+        if flag == "1" and sid:
+            alive.add(sid)
+    return alive
+
+
+def probe_kernel():
+    """The running kernel's self-report from /version: {alive, uptime_s, sha, pid, url} (alive False when
+    nothing answers)."""
+    import urllib.request
+    for u in KERNEL_URLS:
+        try:
+            with urllib.request.urlopen(u + "/version", timeout=1.5) as r:
+                d = json.loads(r.read().decode())
+                return {"alive": True, "uptime_s": d.get("uptime_s"), "sha": d.get("kernel_sha"),
+                        "pid": d.get("pid"), "url": u}
+        except Exception:
+            continue
+    return {"alive": False}
+
+
+_EXIT_RE = re.compile(r"kernel '([^']+)' exited \(code=(\S+) sig=(\S+)\)")
+
+
+def manager_exceptions(state):
+    """Scan manager.log for engine errors: producer tracebacks and kernel CRASH-restarts (exits that are
+    NOT a clean SIGTERM / code=0 manager restart). Returns counts + the last crash line."""
+    producer_crashes = 0
+    restarts = crashes = 0
+    last_crash = None
+    try:
+        text = (state / "manager.log").read_text(errors="replace")
+    except OSError:
+        return {"producer_crashes": 0, "kernel_restarts": 0, "kernel_crashes": 0, "last_crash": None}
+    for line in text.splitlines():
+        if line.startswith("producer:"):
+            producer_crashes += 1
+        m = _EXIT_RE.search(line)
+        if m:
+            restarts += 1
+            code, sig = m.group(2), m.group(3)
+            clean = (sig == "SIGTERM") or (code == "0")     # a romp refresh / managed restart, not a crash
+            if not clean:
+                crashes += 1
+                last_crash = line.strip()
+    return {"producer_crashes": producer_crashes, "kernel_restarts": restarts,
+            "kernel_crashes": crashes, "last_crash": last_crash}
+
+
+# ───────────────────────── health model ─────────────────────────
+
+def build_model(state, now):
+    names = session_names(state)
+    alive = tmux_alive()
+    kernel = probe_kernel()
+    exc = manager_exceptions(state)
+
+    sessions = []
+    total_pending = 0
+    oldest_pending_age = None
+    last_caption_t = None
+
+    for fsid, (name, color) in names.items():
+        cap_ids, newest_cap = caption_index(state, fsid)
+        tasks, cmtime = cache_tasks(state, fsid)
+
+        if alive is not None:
+            active = fsid in alive
+        else:   # headless: no tmux to ask → treat a recently-touched cache as active
+            active = cmtime is not None and (now - cmtime) < ACTIVE_WINDOW_SECS
+        if not active:
+            continue
+
+        pending = 0
+        oldest_pending_t = None
+        for tk in tasks:
+            writes = tk.get("writes") or []
+            done = any(w.get("id") in cap_ids for w in writes)
+            if done:
+                continue
+            pending += 1
+            for w in writes:
+                wt = w.get("t")
+                if isinstance(wt, (int, float)) and (oldest_pending_t is None or wt < oldest_pending_t):
+                    oldest_pending_t = wt
+
+        total_pending += pending
+        if newest_cap is not None and (last_caption_t is None or newest_cap > last_caption_t):
+            last_caption_t = newest_cap
+        op_age = (now - oldest_pending_t) if oldest_pending_t is not None else None
+        if op_age is not None and (oldest_pending_age is None or op_age > oldest_pending_age):
+            oldest_pending_age = op_age
+
+        sessions.append({
+            "fsid": fsid, "name": name, "color": color, "pending": pending,
+            "last_caption_age_s": (now - newest_cap) if newest_cap is not None else None,
+            "oldest_pending_age_s": op_age,
+        })
+
+    sessions.sort(key=lambda s: (-s["pending"], s["name"]))
+    last_caption_age = (now - last_caption_t) if last_caption_t is not None else None
+
+    # Verdict. down = kernel unreachable. warn = an engine crash, or a backlog that hasn't drained
+    # (event-driven now, so pending lingering past a tick means something's stuck). ok otherwise.
+    if not kernel.get("alive"):
+        verdict = "down"
+    elif exc["producer_crashes"] > 0 or exc["kernel_crashes"] > 0:
+        verdict = "warn"
+    elif total_pending > 0 and (last_caption_age is None or last_caption_age > 45):
+        verdict = "warn"
+    else:
+        verdict = "ok"
+
+    return {
+        "t": now, "verdict": verdict, "kernel": kernel, "exceptions": exc,
+        "backlog": {"total_pending": total_pending, "oldest_pending_age_s": oldest_pending_age,
+                    "last_caption_age_s": last_caption_age, "active_sessions": len(sessions)},
+        "sessions": sessions,
+    }
+
+
+# ───────────────────────── rendering ─────────────────────────
+
+C = {"reset": "\x1b[0m", "dim": "\x1b[2m", "bold": "\x1b[1m",
+     "green": "\x1b[32m", "yellow": "\x1b[33m", "red": "\x1b[31m", "cyan": "\x1b[36m"}
+_USE_COLOR = True
+
+
+def c(s, *names):
+    if not _USE_COLOR:
+        return s
+    return "".join(C[n] for n in names) + s + C["reset"]
+
+
+def fmt_age(s):
+    if s is None:
+        return "—"
+    s = int(s)
+    if s < 60:
+        return "%ds" % s
+    if s < 3600:
+        return "%dm%02ds" % (s // 60, s % 60)
+    return "%dh%02dm" % (s // 3600, (s % 3600) // 60)
+
+
+def render(m):
+    out = []
+    v = m["verdict"]
+    badge = {"ok": c(" OK ", "green", "bold"), "warn": c(" WARN ", "yellow", "bold"),
+             "down": c(" DOWN ", "red", "bold")}[v]
+    out.append("%s  romp judges %s" % (c("●", {"ok": "green", "warn": "yellow", "down": "red"}[v]), badge))
+
+    k = m["kernel"]
+    if k.get("alive"):
+        out.append("  kernel     %s up %s  sha=%s pid=%s" % (
+            c("●", "green"), fmt_age(k.get("uptime_s")), k.get("sha") or "?", k.get("pid")))
+    else:
+        out.append("  kernel     %s unreachable — is the manager up? (`romp --version` / `romp status`)"
+                   % c("●", "red"))
+
+    e = m["exceptions"]
+    pc, kc = e["producer_crashes"], e["kernel_crashes"]
+    estr = "producer-crashes:%s  kernel-crashes:%s  (restarts:%s)" % (pc, kc, e["kernel_restarts"])
+    out.append("  exceptions %s %s" % (c("●", "green" if pc == 0 and kc == 0 else "red"), estr))
+    if e["last_crash"]:
+        out.append("             %s" % c("last crash: " + e["last_crash"][:96], "red", "dim"))
+
+    b = m["backlog"]
+    keeping = "pending:%d across %d session(s) · oldest %s · last caption %s ago" % (
+        b["total_pending"], b["active_sessions"], fmt_age(b["oldest_pending_age_s"]),
+        fmt_age(b["last_caption_age_s"]))
+    kcol = "green" if b["total_pending"] == 0 else ("yellow" if v != "down" else "red")
+    out.append("  keeping up %s %s" % (c("●", kcol), keeping))
+
+    out.append("")
+    out.append(c("  %-22s %7s  %-10s  %-10s" % ("SESSION", "PENDING", "LAST-CAP", "OLDEST"), "dim"))
+    if not m["sessions"]:
+        out.append(c("  (no active sessions)", "dim"))
+    for s in m["sessions"]:
+        dotcol = "green" if s["pending"] == 0 else "yellow"
+        out.append("  %s %-20s %7d  %-10s  %-10s" % (
+            c("●", dotcol), s["name"][:20], s["pending"],
+            fmt_age(s["last_caption_age_s"]), fmt_age(s["oldest_pending_age_s"])))
+
+    out.append("")
+    out.append(c("  note: individual judge-CALL failures are swallowed upstream and not yet recorded —", "dim"))
+    out.append(c("        this shows producer-level crashes only. ^C to quit.", "dim"))
+    return "\n".join(out)
+
+
+def run_live():
+    sys.stdout.write("\x1b[?1049h\x1b[?25l")   # alt screen + hide cursor
+    try:
+        while True:
+            frame = render(build_model(state_dir(), time.time()))
+            sys.stdout.write("\x1b[2J\x1b[H" + frame + "\n")
+            sys.stdout.flush()
+            time.sleep(REFRESH_SECS)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        sys.stdout.write("\x1b[?25h\x1b[?1049l")   # restore cursor + main screen
+        sys.stdout.flush()
+
+
+def main(argv):
+    global _USE_COLOR
+    args = set(argv)
+    if "--no-color" in args or not sys.stdout.isatty():
+        _USE_COLOR = False
+    if "--json" in args:
+        print(json.dumps(build_model(state_dir(), time.time()), indent=2))
+        return 0
+    if "--once" in args:
+        print(render(build_model(state_dir(), time.time())))
+        return 0
+    run_live()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

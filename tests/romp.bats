@@ -700,3 +700,24 @@ _resume_rows_fn() {   # writes the extracted function to $1
     grep -qF "tmux new-session -d -s myproject -c $expect" "$MOCK_LOG"
     [[ "$output" != *"not launching in \$HOME"* ]]
 }
+
+# ─── Judges monitor (-j) ─────────────────────────────────────────────
+
+@test "-j dispatches to romp-judge-monitor (honors the ROMP_JUDGE_MONITOR_BIN seam)" {
+    cat > "$MOCK_DIR/romp-judge-monitor" << 'MOCK'
+#!/usr/bin/env bash
+echo "judge-monitor called: $*" >> "$MOCK_LOG"
+MOCK
+    chmod +x "$MOCK_DIR/romp-judge-monitor"
+    export ROMP_JUDGE_MONITOR_BIN="$MOCK_DIR/romp-judge-monitor"
+    run run_romp -j --once
+    [ "$status" -eq 0 ]
+    grep -q 'judge-monitor called: --once' "$MOCK_LOG"
+    ! grep -q 'tmux new-session' "$MOCK_LOG"
+}
+
+@test "'j' is a normal session name, not a subcommand" {
+    run run_romp j
+    [ "$status" -eq 0 ]
+    grep -q 'tmux new-session -d -s j' "$MOCK_LOG"
+}
