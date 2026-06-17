@@ -156,7 +156,11 @@ body { display: flex; flex-direction: column; }
    column now fills the pane (var(--chat-col)), so we ALWAYS reserve that left gutter as real padding
    (54px) — otherwise the HH:MM timestamps overflow left and get clipped by overflow-x:hidden. */
 .thread { max-width: var(--chat-col); margin: 0 auto; padding: 0 24px 0 54px; }
-.empty { color: var(--dim); text-align: center; padding: 40px; }
+/* the transcript "No session open" placeholder (#empty-state). Scoped to its OWN class — a bare
+   `.empty` selector here used to bleed `padding: 40px` onto every leaf-row tree spacer (the ledger's
+   `ledger-tri empty` + the feed's `ftree-tri empty`, both zero-content spans), blowing them up to
+   80×80px boxes and giving the dropdown ledger giant gaps (the user 2026-06-16). */
+.empty-state { color: var(--dim); text-align: center; padding: 40px; }
 
 /* ---------- ledger: rolling per-session digest, just below the tabs ---------- */
 #ledger {

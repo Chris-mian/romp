@@ -1964,7 +1964,7 @@ function showActive() {
   if (!s) {
     for (const v of views.values()) v.el.style.display = "none";
     if (!empty) {
-      empty = el("div", "empty"); empty.id = "empty-state";
+      empty = el("div", "empty-state"); empty.id = "empty-state";
       empty.textContent = "No session open — click + to add one.";
       content.appendChild(empty);
     } else { empty.style.display = ""; }

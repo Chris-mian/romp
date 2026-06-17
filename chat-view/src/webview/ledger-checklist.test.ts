@@ -67,3 +67,18 @@ test("a cleared node renders as a FADED ✓; completed top goals get ~1.5-line s
   assert.match(RENDER, /depth === 0 \? " ledger-top" : ""/);
   assert.match(CSS, /\.ledger-tnode\.ledger-top\.done \{[^}]*margin-top/);
 });
+
+test("leaf-row tri spacers don't inherit the placeholder's 40px padding (no giant ledger gaps)", () => {
+  // REGRESSION (the user 2026-06-16): a leaf row's disclosure-triangle slot is a zero-content
+  // `el("span", "ledger-tri" + " empty")` spacer. The transcript "No session open" placeholder was
+  // styled by a BARE `.empty { padding: 40px }` rule, so its selector also matched the `empty` token on
+  // every leaf spacer → an 80×80px box → rows ~86px tall → the dropdown ledger showed giant gaps.
+  // The fix scopes the placeholder to its own `.empty-state` class so the generic token no longer
+  // collides. Guard both halves so neither can drift back.
+  assert.match(RENDER, /el\("span", "ledger-tri" \+ \(expandable \? " nav" : " empty"\)\)/); // the spacer still uses the `empty` token
+  // the padded placeholder rule must NOT be a bare `.empty` selector (which would re-match the spacer)
+  assert.doesNotMatch(CSS, /(^|[\s,}])\.empty\s*[,{]/m);
+  // the placeholder padding now lives on the scoped `.empty-state` class instead
+  assert.match(CSS, /\.empty-state \{[^}]*padding:\s*40px/);
+  assert.match(RENDER, /el\("div", "empty-state"\); empty\.id = "empty-state"/);
+});
