@@ -37,7 +37,7 @@ ROMP_NAMES_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/romp/names"
 # The judges' per-session index the resume picker reads to show what a stopped
 # session was about: the archiver's headline (archive/<sid>.json — the session's
 # through-line) with the latest turn caption (captions/<sid>.jsonl) as the
-# fallback — see _romp_last_summary.
+# fallback — see _romp_resume_rows.
 ROMP_ARCHIVE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/romp/archive"
 ROMP_CAPTIONS_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/romp/captions"
 
@@ -265,38 +265,6 @@ _romp_menu() {
     return 0
 }
 
-# The session's one-line gloss for the picker, from the judges' index: the
-# archiver's headline (archive/<sid>.json — the session's through-line), else the
-# latest turn caption (captions/<sid>.jsonl). Prints "<kind>\t<text>"; kind drives
-# the picker color and is a neutral 'reply' here (the new model has no
-# request/reply/error split). Whitespace collapsed so it can't break the tab-
-# delimited picker rows. Pure cache read — no model call.
-_romp_last_summary() {   # <sid>
-    local af="$ROMP_ARCHIVE_DIR/$1.json" cf="$ROMP_CAPTIONS_DIR/$1.jsonl"
-    [[ -f "$af" || -f "$cf" ]] || return 0
-    python3 - "$af" "$cf" <<'PY' 2>/dev/null || true
-import sys, json
-af, cf = sys.argv[1], sys.argv[2]
-text = ""
-try:
-    text = " ".join(str((json.load(open(af)) or {}).get("headline") or "").split())
-except Exception:
-    pass
-if not text:                                  # no archive yet → most recent caption
-    try:
-        for ln in open(cf, errors="replace"):
-            try: o = json.loads(ln)
-            except Exception: continue
-            c = " ".join(str(o.get("caption") or "").split())
-            if c: text = c
-    except Exception:
-        pass
-if not text:
-    sys.exit(0)
-sys.stdout.write("reply\t" + text)
-PY
-}
-
 # Render one picker row as "<normal>\t<highlight>". Columns, in order: NAME (in
 # its identity truecolor) · TIME (gray) · SUMMARY (the last cached Haiku phrase,
 # colored by kind: request=teal, reply=gray, error=red) · PATH (gray). The
@@ -373,13 +341,132 @@ _romp_render_row() {
     printf '%s\t%s\n' "$norm" "$high"
 }
 
+# Build the picker's rows in ONE python pass. Prints one FS-delimited
+# "<mtime><FS><sid><FS><name><FS><dir><FS><rgb><FS><sum_kind><FS><sum_text>" line
+# per RESUMABLE session, newest transcript first. <rgb> is "R;G;B" (or empty) from
+# the recorded identity hex; <sum_*> is the session's cached one-line gloss —
+# archive headline, else latest caption — pulled, never computed.
+# Args: <live-newline-list> (live session-ids to EXCLUDE) <fs> (field separator).
+#
+# A single python pass, NOT a shell loop, is deliberate: the old loop ran one
+# `find $HOME/.claude/projects` (a full re-walk of every transcript) AND one
+# python3 spawn PER session — O(sessions x files), ~13s for ~130 sessions. Here
+# the projects tree is walked ONCE into a sid->transcript index and summaries are
+# read in-process, so it's a single ~0.1s pass regardless of session count.
+# Also prunes name files whose transcript is gone. ROMP_PROJECTS_DIR overrides
+# the projects root (tests point it at a fixture).
+_romp_resume_rows() {   # <live-newline-list> <fs>
+    ROMP_NAMES_DIR="$ROMP_NAMES_DIR" ROMP_ARCHIVE_DIR="$ROMP_ARCHIVE_DIR" \
+    ROMP_CAPTIONS_DIR="$ROMP_CAPTIONS_DIR" \
+    ROMP_PROJECTS_DIR="${ROMP_PROJECTS_DIR:-$HOME/.claude/projects}" \
+    ROMP_LIVE="$1" ROMP_FS="$2" python3 - <<'PY' 2>/dev/null || true
+import os, sys, json, re
+
+names_dir = os.environ["ROMP_NAMES_DIR"]
+arch_dir  = os.environ["ROMP_ARCHIVE_DIR"]
+cap_dir   = os.environ["ROMP_CAPTIONS_DIR"]
+proj_dir  = os.environ["ROMP_PROJECTS_DIR"]
+FS        = os.environ["ROMP_FS"]
+live      = set(s for s in os.environ.get("ROMP_LIVE", "").split("\n") if s)
+
+# Walk ~/.claude/projects ONCE (depth <= 2, matching the old `find -maxdepth 2`)
+# into sid -> transcript path. This replaces the per-session re-walk.
+tpath = {}
+def consider(path, name):
+    if name.endswith(".jsonl"):
+        tpath[name[:-6]] = path
+try:
+    for e in os.scandir(proj_dir):
+        try:
+            if e.is_file():
+                consider(e.path, e.name)
+            elif e.is_dir():
+                for f in os.scandir(e.path):
+                    if f.is_file():
+                        consider(f.path, f.name)
+        except OSError:
+            pass
+except OSError:
+    pass
+
+# The session's one-line gloss: archiver headline (archive/<sid>.json), else the
+# latest non-empty caption (captions/<sid>.jsonl). Pure cache read — no model call.
+def summary(sid):
+    text = ""
+    try:
+        text = " ".join(str((json.load(open(os.path.join(arch_dir, sid + ".json"))) or {}).get("headline") or "").split())
+    except Exception:
+        pass
+    if not text:
+        try:
+            for ln in open(os.path.join(cap_dir, sid + ".jsonl"), errors="replace"):
+                try:
+                    o = json.loads(ln)
+                except Exception:
+                    continue
+                c = " ".join(str(o.get("caption") or "").split())
+                if c:
+                    text = c
+        except Exception:
+            pass
+    return text
+
+try:
+    sids = [s for s in os.listdir(names_dir) if not s.startswith(".")]
+except OSError:
+    sids = []
+
+# Only treat "transcript gone" as a reason to PRUNE the name file when we have a
+# populated index to check against. An empty index means the projects tree was
+# missing/unreadable, NOT that every session vanished — pruning then would wipe
+# the whole cache (this exact mismatch once nuked all 127 entries). Be safe: never
+# delete when we couldn't see any transcripts at all.
+prune = bool(tpath)
+
+rows = []
+for sid in sids:
+    if sid in live:                       # running -> skip (attach, don't resume)
+        continue
+    f = os.path.join(names_dir, sid)
+    try:
+        with open(f) as fh:
+            parts = fh.readline().rstrip("\n").split("\t")
+    except OSError:
+        continue
+    nm = parts[0] if len(parts) > 0 else ""
+    dr = parts[1] if len(parts) > 1 else ""
+    bg = parts[2] if len(parts) > 2 else ""
+    tp = tpath.get(sid)
+    if not tp:                            # transcript gone -> prune the stale name file
+        if prune:
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+        continue
+    try:
+        mt = int(os.stat(tp).st_mtime)
+    except OSError:
+        mt = 0
+    rgb = ""
+    if re.match(r"^#[0-9A-Fa-f]{6}$", bg):
+        rgb = "%d;%d;%d" % (int(bg[1:3], 16), int(bg[3:5], 16), int(bg[5:7], 16))
+    st = summary(sid)
+    skind = "reply" if st else ""         # new model has no request/reply/error split
+    rows.append((mt, FS.join([str(mt), sid, nm, dr, rgb, skind, st])))
+
+rows.sort(key=lambda r: r[0], reverse=True)   # newest transcript first
+sys.stdout.write("\n".join(r[1] for r in rows))
+PY
+}
+
 # Interactive picker. Prints "<sid>\t<name>\t<dir>" for the chosen session on
 # stdout; _romp_menu draws the arrow-key UI straight to the terminal. Prints
 # nothing if cancelled. Sessions whose transcript no longer exists are pruned.
 _romp_pick() {
     [[ -d "$ROMP_NAMES_DIR" ]] || return 0
-    local f sid nm dir bg fg rgb tpath mt rows live now n choice line
-    local sline skind stext _mt _sid _nm _dir _rgb _skind _stext sum_w SUM_CAP cols
+    local rows live now n choice line
+    local _mt _sid _nm _dir _rgb _skind _stext sum_w SUM_CAP cols
     # Field separator for the assembled rows. Deliberately a NON-whitespace byte
     # (Unit Separator) rather than a tab: `IFS=$'\t' read` collapses runs of tabs
     # and drops EMPTY fields, which silently mis-shifts a row whose rgb is empty
@@ -392,29 +479,11 @@ _romp_pick() {
     # same conversation), so we exclude these from the picker.
     live="$(tmux list-sessions -F '#{@romp-session-id}' 2>/dev/null | grep -v '^$' || true)"
 
-    # One "<mtime><FS><sid><FS><name><FS><dir><FS><rgb><FS><sum_kind><FS><sum_text>"
-    # row per RESUMABLE session, newest transcript first. Live sessions are
-    # skipped; sessions whose transcript is gone are pruned. <rgb> is "R;G;B" (or
-    # empty) from the recorded identity hex. <sum_*> is the last cached Haiku
-    # phrase (or empty) — pulled, never computed. The names FILE itself is still
-    # tab-delimited (its own format, written by _romp_record).
-    rows="$(
-        for f in "$ROMP_NAMES_DIR"/*; do
-            [[ -e "$f" ]] || continue
-            sid="$(basename "$f")"
-            printf '%s\n' "$live" | grep -qxF -- "$sid" && continue   # running -> skip
-            IFS=$'\t' read -r nm dir bg fg < "$f" || true
-            tpath="$(find "$HOME/.claude/projects" -maxdepth 2 -name "$sid.jsonl" 2>/dev/null | head -1 || true)"
-            if [[ -z "$tpath" ]]; then rm -f "$f"; continue; fi
-            mt="$(stat -f '%m' "$tpath" 2>/dev/null || echo 0)"
-            rgb=""
-            [[ "$bg" =~ ^#[0-9A-Fa-f]{6}$ ]] && \
-                rgb="$((16#${bg:1:2}));$((16#${bg:3:2}));$((16#${bg:5:2}))"
-            sline="$(_romp_last_summary "$sid")"; skind=""; stext=""
-            [[ -n "$sline" ]] && IFS=$'\t' read -r skind stext <<<"$sline"
-            printf '%s\n' "${mt}${FS}${sid}${FS}${nm}${FS}${dir}${FS}${rgb}${FS}${skind}${FS}${stext}"
-        done | sort -rn
-    )"
+    # The resumable-session rows: one FS-delimited
+    # "<mtime><FS><sid><FS><name><FS><dir><FS><rgb><FS><sum_kind><FS><sum_text>"
+    # line per session, newest transcript first. Built by _romp_resume_rows in a
+    # single python pass (which also prunes name files whose transcript is gone).
+    rows="$(_romp_resume_rows "$live" "$FS")"
     if [[ -z "$rows" ]]; then echo "[romp] no resumable sessions." >&2; return 0; fi
     now="$(date +%s)"
     n="$(printf '%s\n' "$rows" | grep -c . || true)"

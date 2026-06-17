@@ -559,25 +559,83 @@ MOCK
     grep -q 'tmux new-session -d -s mail' "$MOCK_LOG"
 }
 
-@test "resume picker summary: archive headline, then caption fallback" {
-    # _romp_last_summary now reads the judges' index (archive headline, else the
-    # latest caption), not the retired summaries/ store. Extract just the function.
-    local adir="$TEST_DIR/archive" cdir="$TEST_DIR/captions" sid="uuid-z"
-    local fn="$TEST_DIR/_lastsum.sh"
-    mkdir -p "$adir" "$cdir"
-    sed -n '/^_romp_last_summary()/,/^}/p' "$ROMP_SCRIPT" > "$fn"
-    printf '{"headline":"Fixing the feed flicker","abstract":"x"}\n' > "$adir/$sid.json"
-    run env ROMP_ARCHIVE_DIR="$adir" ROMP_CAPTIONS_DIR="$cdir" \
-        bash -c 'source "$1"; _romp_last_summary "$2"' _ "$fn" "$sid"
+# _romp_resume_rows builds the resume-picker rows in ONE python pass: it walks the
+# projects tree once into a sid->transcript index, reads each session's name file
+# + cached gloss (archive headline, else latest caption), and emits FS-delimited
+# rows newest-first. These extract JUST the function (never source the whole
+# script — that would re-run its top-level dispatch + reset ROMP_*_DIR) and point
+# the dirs at fixtures. FS is \x1f; fields are mtime|sid|name|dir|rgb|kind|text.
+_resume_rows_fn() {   # writes the extracted function to $1
+    sed -n '/^_romp_resume_rows()/,/^}/p' "$ROMP_SCRIPT" > "$1"
+}
+
+@test "resume rows: archive headline, caption fallback, ordering, live-exclusion" {
+    local ndir="$TEST_DIR/names" adir="$TEST_DIR/archive" cdir="$TEST_DIR/captions"
+    local pdir="$TEST_DIR/projects" fn="$TEST_DIR/_rows.sh"
+    mkdir -p "$ndir" "$adir" "$cdir" "$pdir/proj-a"
+    _resume_rows_fn "$fn"
+
+    # three resumable sessions + one LIVE (must be excluded)
+    printf 'arch-sess\t/tmp/b\t#aabbcc\t#000000\n' > "$ndir/sid-arch"
+    printf 'cap-sess\t/tmp/c\t#ddeeff\t#000000\n'  > "$ndir/sid-cap"
+    printf 'live-sess\t/tmp/a\t#112233\t#ffffff\n' > "$ndir/sid-live"
+    : > "$pdir/proj-a/sid-arch.jsonl"
+    : > "$pdir/proj-a/sid-cap.jsonl"
+    : > "$pdir/proj-a/sid-live.jsonl"
+    # cap-sess transcript OLDER than arch-sess -> arch-sess sorts first
+    touch -t 202606160000 "$pdir/proj-a/sid-cap.jsonl"
+    touch -t 202606161200 "$pdir/proj-a/sid-arch.jsonl"
+    printf '{"headline":"Synthetic archive headline"}\n' > "$adir/sid-arch.json"
+    printf '{"caption":"older step"}\n{"caption":"newest caption step"}\n' > "$cdir/sid-cap.jsonl"
+
+    run env ROMP_NAMES_DIR="$ndir" ROMP_ARCHIVE_DIR="$adir" ROMP_CAPTIONS_DIR="$cdir" \
+        ROMP_PROJECTS_DIR="$pdir" \
+        bash -c 'source "$1"; _romp_resume_rows "$2" "$3"' _ "$fn" $'sid-live' $'\x1f'
     [ "$status" -eq 0 ]
-    [[ "$output" == $'reply\tFixing the feed flicker' ]]
-    # no archive yet -> fall back to the most recent caption
-    rm "$adir/$sid.json"
-    printf '{"grain":"turn","t":1,"caption":"An older step"}\n{"grain":"turn","t":2,"caption":"Latest thing done"}\n' > "$cdir/$sid.jsonl"
-    run env ROMP_ARCHIVE_DIR="$adir" ROMP_CAPTIONS_DIR="$cdir" \
-        bash -c 'source "$1"; _romp_last_summary "$2"' _ "$fn" "$sid"
+    # live session excluded
+    [[ "$output" != *"live-sess"* ]]
+    # newest first: arch row before cap row
+    local first; first="$(printf '%s\n' "$output" | head -1)"
+    [[ "$first" == *"arch-sess"* ]]
+    # archive headline wins for arch-sess; caption fallback for cap-sess (last non-empty)
+    [[ "$output" == *"Synthetic archive headline"* ]]
+    [[ "$output" == *"newest caption step"* ]]
+    [[ "$output" != *"older step"* ]]
+    # rgb derived from the bg hex (#aabbcc -> 170;187;204)
+    [[ "$output" == *$'\x1f'"170;187;204"$'\x1f'* ]]
+}
+
+@test "resume rows: stale name file (transcript gone) is pruned" {
+    local ndir="$TEST_DIR/names" pdir="$TEST_DIR/projects" fn="$TEST_DIR/_rows.sh"
+    mkdir -p "$ndir" "$pdir/proj-a" "$TEST_DIR/archive" "$TEST_DIR/captions"
+    _resume_rows_fn "$fn"
+    printf 'has-tx\t/tmp/x\t\t\n'   > "$ndir/sid-has"
+    printf 'stale\t/tmp/y\t\t\n'    > "$ndir/sid-stale"
+    : > "$pdir/proj-a/sid-has.jsonl"          # only sid-has has a transcript
+    run env ROMP_NAMES_DIR="$ndir" ROMP_ARCHIVE_DIR="$TEST_DIR/archive" \
+        ROMP_CAPTIONS_DIR="$TEST_DIR/captions" ROMP_PROJECTS_DIR="$pdir" \
+        bash -c 'source "$1"; _romp_resume_rows "$2" "$3"' _ "$fn" '' $'\x1f'
     [ "$status" -eq 0 ]
-    [[ "$output" == $'reply\tLatest thing done' ]]
+    [ -f "$ndir/sid-has" ]            # kept
+    [ ! -f "$ndir/sid-stale" ]        # pruned
+}
+
+@test "resume rows: an EMPTY/unreadable projects index never prunes the cache" {
+    # Regression guard: if the projects tree is missing, "transcript gone" is
+    # unverifiable, so we must NOT delete any name files (an env mismatch once
+    # wiped the whole cache this way).
+    local ndir="$TEST_DIR/names" fn="$TEST_DIR/_rows.sh"
+    mkdir -p "$ndir" "$TEST_DIR/archive" "$TEST_DIR/captions"
+    _resume_rows_fn "$fn"
+    printf 'a\t/tmp/a\t\t\n' > "$ndir/sid-a"
+    printf 'b\t/tmp/b\t\t\n' > "$ndir/sid-b"
+    run env ROMP_NAMES_DIR="$ndir" ROMP_ARCHIVE_DIR="$TEST_DIR/archive" \
+        ROMP_CAPTIONS_DIR="$TEST_DIR/captions" ROMP_PROJECTS_DIR="$TEST_DIR/nonexistent" \
+        bash -c 'source "$1"; _romp_resume_rows "$2" "$3"' _ "$fn" '' $'\x1f'
+    [ "$status" -eq 0 ]
+    [ -f "$ndir/sid-a" ]             # both survive — nothing pruned without an index
+    [ -f "$ndir/sid-b" ]
+    [ -z "$output" ]                 # and no rows (no transcripts to show)
 }
 
 @test "help -h reflects which commands are PRESENT (presence-checked, no drift)" {
