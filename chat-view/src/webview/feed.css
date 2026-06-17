@@ -359,8 +359,11 @@ body { display: flex; flex-direction: column; }
 .fask-blocked {
   flex: 0 0 auto; font-size: 0.72em; font-weight: 700; letter-spacing: 0.03em;
   color: #c0392b; cursor: pointer; white-space: nowrap;
+  /* a rounded-rect outline in the badge's own red, mirroring the Clear button's chrome (.fdismiss)
+     so the permission/picker block reads as a contained pill, not loose text (the user 2026-06-16) */
+  border: 1px solid #c0392b; border-radius: 6px; padding: 1px 8px;
 }
-.fask-blocked:hover { text-decoration: underline; }
+.fask-blocked:hover { color: #fff; background: #c0392b; border-color: #c0392b; }
 
 /* ⚠ API error: a red-OUTLINED badge (the session stopped on an API error) + a Retry button beside it
    that pastes "retry" into the session to resume (the user 2026-06-16). */
@@ -464,8 +467,14 @@ body { display: flex; flex-direction: column; }
 .fcheck { display: flex; align-items: baseline; column-gap: 7px; line-height: 1.4; font-size: 0.9em; }
 .fcheck-mark { flex: 0 0 auto; width: 1em; text-align: center; color: var(--dim); font-size: 0.9em; }
 .fcheck-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; color: var(--fg); }
-.fcheck.done .fcheck-mark { color: var(--green); }
-.fcheck.done .fcheck-text { color: var(--dim); text-decoration: line-through; }
+/* done = the SAME blue ✓ disc as the chat view's to-do checklist (.todo-completed .todo-mark): a white
+   ✓ on --check-bg (the user 2026-06-16). The sub-goal text dims to recede but is NOT struck through. */
+.fcheck.done .fcheck-mark {
+  background: var(--check-bg); color: #fff; border-radius: 50%;
+  width: 13px; height: 13px; min-width: 13px; font-size: 9px;
+  display: inline-flex; align-items: center; justify-content: center; align-self: center; line-height: 1;
+}
+.fcheck.done .fcheck-text { color: var(--dim); }
 .fcheck.question .fcheck-mark { color: #d8a657; }
 /* standalone-completion modal: same tree vocabulary as ask cards; pending
    next-steps render as dim hollow rows, the paragraph as secondary detail */

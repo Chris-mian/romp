@@ -24,6 +24,17 @@ test("row3 + name-wrap are styled", () => {
   assert.match(CSS, /\.fask-id \.fname \{[^}]*overflow-wrap: anywhere/, "a long session name wraps instead of overflowing");
 });
 
+test("the ⏸ blocked (permission/picker) badge is a rounded-rect pill outlined in its own red", () => {
+  // mirrors the Clear button's chrome (.fdismiss) — a border + rounded corners + padding — but kept in
+  // the badge's own red (the user 2026-06-16), so a live permission/picker block reads as a pill
+  assert.match(CSS, /\.fask-blocked \{[^}]*border: 1px solid #c0392b/);
+  assert.match(CSS, /\.fask-blocked \{[^}]*border-radius:/);
+  assert.match(CSS, /\.fask-blocked \{[^}]*padding:/);
+  // no longer bare text with an underline hover — the pill fills on hover like Clear
+  assert.match(CSS, /\.fask-blocked:hover \{[^}]*background: #c0392b/);
+  assert.doesNotMatch(CSS, /\.fask-blocked:hover \{[^}]*text-decoration: underline/);
+});
+
 test("courier handoff: the '↪ from <sender>' origin marker is wired and styled", () => {
   // a chip beside the session name, hidden until the card carries a courier origin
   assert.match(FEED, /const origin = el\("a", "fask-origin"\); origin\.style\.display = "none"/);

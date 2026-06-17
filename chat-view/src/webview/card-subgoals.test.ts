@@ -17,9 +17,13 @@ test("ask cards render an inline checklist of the goal's DIRECT sub-goals", () =
   assert.match(FEED, /s\.status === "done" \? "✓"/);         // ✓ done / ? question / ▢ open mark
 });
 
-test("the sub-goal checklist is styled (done = green + struck, question = amber)", () => {
+test("the sub-goal checklist is styled (done = blue ✓ disc, dimmed but NOT struck; question = amber)", () => {
   assert.match(CSS, /\.fask-checklist \{/);
-  assert.match(CSS, /\.fcheck\.done \.fcheck-mark \{[^}]*var\(--green\)/);
-  assert.match(CSS, /\.fcheck\.done \.fcheck-text \{[^}]*line-through/);
+  // done mark = the chat view's blue ✓ disc (--check-bg + round), matching .todo-completed .todo-mark
+  assert.match(CSS, /\.fcheck\.done \.fcheck-mark \{[^}]*var\(--check-bg\)/);
+  assert.match(CSS, /\.fcheck\.done \.fcheck-mark \{[^}]*border-radius: 50%/);
+  // the sub-goal text dims to recede but is NOT struck through (the user 2026-06-16)
+  assert.match(CSS, /\.fcheck\.done \.fcheck-text \{[^}]*var\(--dim\)/);
+  assert.doesNotMatch(CSS, /\.fcheck\.done \.fcheck-text \{[^}]*line-through/);
   assert.match(CSS, /\.fcheck\.question \.fcheck-mark \{[^}]*#d8a657/);
 });

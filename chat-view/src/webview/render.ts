@@ -27,6 +27,11 @@ for (const [name, lang] of Object.entries({
 
 marked.setOptions({ gfm: true, breaks: false });
 
+// One answered (or pending) question on an AskUserQuestion turn: the prompt + its options, plus the
+// user's answer TEXT per question (`chosen`). Answer text may name an option label OR be free-text
+// ("Other"), and is empty while the question is still pending. multiSelect → chosen has >1 entry.
+type AskAnswerBlock = { question: string; header?: string; options: { label: string; description?: string }[]; chosen: string[] };
+
 type ChatEvent = (
   | { kind: "user"; md: string; uuid?: string; ts?: string; reminders?: string[]; human?: boolean; images?: { src: string; path?: string }[] }
   | { kind: "assistant"; md: string; uuid?: string; ts?: string }
@@ -43,6 +48,10 @@ type ChatEvent = (
       ts?: string;
       file?: string;
       diff?: string;
+      // AskUserQuestion only: the kernel joins the posed questions/options to the recorded answer and
+      // attaches them here (the user 2026-06-16). Empty `chosen` while pending; filled once answered →
+      // renderAsk flips the turn to the blue "you answered Claude's question" box.
+      askAnswer?: AskAnswerBlock[];
     }
   | {
       kind: "postal";
@@ -641,61 +650,49 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
   return renderTool(ev);
 }
 
-// AskUserQuestion (a "choose one" prompt) — render the question + options with the
-// chosen one marked, instead of the raw folded JSON blob.
+// AskUserQuestion — render the posed question(s) + options. While the question is still pending it's a
+// neutral "Question" card; once it's been ANSWERED it becomes the blue, right-aligned "you answered
+// Claude's question" box so the scrollback shows it was a reply to a popup, not a typed message (the
+// user 2026-06-16). Prefers the kernel's structured askAnswer (question/options/chosen already joined);
+// falls back to parsing the raw tool input/output when it isn't attached yet, so the turn renders the
+// same either way.
 function renderAsk(ev: Extract<ChatEvent, { kind: "tool" }>): HTMLElement | null {
-  let data: any;
-  try { data = JSON.parse(ev.input); } catch { return null; }
-  const qs = data && Array.isArray(data.questions) ? data.questions : null;
-  if (!qs || !qs.length) return null;
-  const out = ev.output || "";
-  // The answer is recorded as `"<question>"="<answer>"` pairs (multi-select joins the
-  // chosen labels as "A, B, C"; a free-text "Other" answer is the user's verbatim text,
-  // which matches NO option label). Parse pairs → question→answer so each question can
-  // mark its picked option(s) OR surface an "Other" row with the typed text.
-  const pairs = new Map<string, string>();
-  for (const m of out.matchAll(/[“"]([^”"]*)[”"]\s*=\s*[“"]([^”"]*)[”"]/g)) pairs.set(m[1].trim(), m[2]);
-  const pairVals = Array.from(pairs.values());
-  const answerFor = (q: any): string =>
-    qs.length === 1 && pairVals.length ? pairVals[0]
-      : pairs.get(String(q.question || "").trim()) ?? pairs.get(String(q.header || "").trim()) ?? "";
-  const turn = el("div", "turn turn-ask");
-  turn.appendChild(dot("ring"));
-  const card = el("div", "ask-card");
-  const head = el("div", "ask-head");
-  head.textContent = qs.length > 1 ? `${qs.length} questions` : "Question";
-  card.appendChild(head);
-  for (const q of qs) {
+  const blocks = (ev.askAnswer && ev.askAnswer.length) ? ev.askAnswer : parseAskRaw(ev);
+  if (!blocks || !blocks.length) return null;
+  // answered = at least one question has a recorded answer (chosen text). Empty chosen = still pending.
+  const answered = blocks.some((b) => b.chosen && b.chosen.length > 0);
+
+  const turn = el("div", "turn turn-ask" + (answered ? " answered" : ""));
+  turn.appendChild(dot(answered ? "user" : "ring"));   // answered → the blue user dot, matching the box
+  const card = el("div", "ask-card" + (answered ? " ask-answered" : ""));
+  if (answered) {
+    const tag = el("div", "ask-answered-tag");
+    tag.textContent = "↳ You answered Claude’s question";
+    card.appendChild(tag);
+  } else {
+    const head = el("div", "ask-head");
+    head.textContent = blocks.length > 1 ? `${blocks.length} questions` : "Question";
+    card.appendChild(head);
+  }
+  for (const b of blocks) {
     const qel = el("div", "ask-q");
-    const qt = el("div", "ask-qtext"); qt.textContent = q.question || q.header || ""; qel.appendChild(qt);
-    const opts = Array.isArray(q.options) ? q.options : [];
-    const labels = opts.map((o: any) => String(o.label || "")).filter(Boolean);
-    const ans = answerFor(q);
-    // split the answer into picked option labels + any leftover free-text ("Other").
-    // Comma-split only when a label actually matches (so a free-text answer that
-    // happens to contain commas isn't shredded).
-    const picked = new Set<string>();
-    let other = "";
-    if (ans) {
-      if (labels.includes(ans)) picked.add(ans);
-      else {
-        const parts = ans.split(/,\s*/).map((s) => s.trim()).filter(Boolean);
-        const matched = parts.filter((p) => labels.includes(p));
-        if (matched.length) { matched.forEach((p) => picked.add(p)); other = parts.filter((p) => !labels.includes(p)).join(", "); }
-        else other = ans;   // nothing matched a label → the whole answer is free-text "Other"
-      }
-    }
+    const qt = el("div", "ask-qtext"); qt.textContent = b.question || b.header || ""; qel.appendChild(qt);
+    const opts = Array.isArray(b.options) ? b.options : [];
+    const labels = opts.map((o) => String(o.label || "")).filter(Boolean);
+    const chosen = (b.chosen || []).map((c) => String(c));
+    const picked = new Set(chosen.filter((c) => labels.includes(c)));   // answers that name an option
+    const others = chosen.filter((c) => !labels.includes(c));           // free-text "Other" answers
     for (const o of opts) {
-      const chosen = !!o.label && picked.has(String(o.label));
-      const opt = el("div", "ask-opt" + (chosen ? " chosen" : ""));
-      const mark = el("span", "ask-mark"); mark.textContent = chosen ? "●" : "○"; opt.appendChild(mark);
+      const isChosen = !!o.label && picked.has(String(o.label));
+      const opt = el("div", "ask-opt" + (isChosen ? " chosen" : ""));
+      const mark = el("span", "ask-mark"); mark.textContent = isChosen ? "●" : "○"; opt.appendChild(mark);
       const lab = el("span", "ask-optlabel"); lab.textContent = o.label || ""; opt.appendChild(lab);
       if (o.description) { const d = el("span", "ask-optdesc"); d.textContent = o.description; opt.appendChild(d); }
       qel.appendChild(opt);
     }
-    // free-text "Other" answer → a selected "Other" row + the user's verbatim words (quoted),
+    // a free-text answer matching no option → a selected "Other" row + the verbatim words (quoted),
     // so a typed answer is never silently dropped to an empty-looking menu.
-    if (other) {
+    for (const other of others) {
       const opt = el("div", "ask-opt chosen ask-other");
       const mark = el("span", "ask-mark"); mark.textContent = "●"; opt.appendChild(mark);
       const lab = el("span", "ask-optlabel"); lab.textContent = "Other"; opt.appendChild(lab);
@@ -706,6 +703,44 @@ function renderAsk(ev: Extract<ChatEvent, { kind: "tool" }>): HTMLElement | null
   }
   turn.appendChild(card);
   return turn;
+}
+
+// Fallback when the kernel hasn't attached askAnswer yet: parse the posed questions from the tool input
+// (JSON) and the recorded answer from the tool output (`"<q>"="<a>"` pairs) into the same block shape
+// renderAsk consumes. The answer text may name an option label OR be free-text ("Other"); multi-select
+// joins labels as "A, B, C". Comma-split only when a label actually matches, so a free-text answer that
+// happens to contain commas isn't shredded.
+function parseAskRaw(ev: Extract<ChatEvent, { kind: "tool" }>): AskAnswerBlock[] | null {
+  let data: any;
+  try { data = JSON.parse(ev.input); } catch { return null; }
+  const qs = data && Array.isArray(data.questions) ? data.questions : null;
+  if (!qs || !qs.length) return null;
+  const out = ev.output || "";
+  const pairs = new Map<string, string>();
+  for (const m of out.matchAll(/[“"]([^”"]*)[”"]\s*=\s*[“"]([^”"]*)[”"]/g)) pairs.set(m[1].trim(), m[2]);
+  const pairVals = Array.from(pairs.values());
+  const answerFor = (q: any): string =>
+    qs.length === 1 && pairVals.length ? pairVals[0]
+      : pairs.get(String(q.question || "").trim()) ?? pairs.get(String(q.header || "").trim()) ?? "";
+  return qs.map((q: any): AskAnswerBlock => {
+    const opts = Array.isArray(q.options) ? q.options : [];
+    const labels = opts.map((o: any) => String(o.label || "")).filter(Boolean);
+    const ans = answerFor(q);
+    let chosen: string[] = [];
+    if (ans) {
+      if (labels.includes(ans)) chosen = [ans];
+      else {
+        const parts = ans.split(/,\s*/).map((s) => s.trim()).filter(Boolean);
+        chosen = parts.some((p) => labels.includes(p)) ? parts : [ans];   // matched labels highlight; rest → "Other"
+      }
+    }
+    return {
+      question: String(q.question || ""),
+      header: q.header ? String(q.header) : undefined,
+      options: opts.map((o: any) => ({ label: String(o.label || ""), description: o.description ? String(o.description) : undefined })),
+      chosen,
+    };
+  });
 }
 
 // Claude Code's Task to-do list — a compact live checklist mirroring the terminal:
@@ -924,6 +959,16 @@ function refreshPostalDots() {
 }
 
 // A romp postal message, as a compact identity-coloured card.
+// One-line summary for a postal card: the incoming Haiku caption, else the first non-empty line of the
+// body (sent mail carries no caption), truncated. The full message lives behind a click-to-expand.
+function postalSummary(ev: Extract<ChatEvent, { kind: "postal" }>): string {
+  const cap = ev.summary && ev.summary.trim();
+  if (cap) return cap;
+  const first = (ev.body || "").split("\n").map((s) => s.trim()).find(Boolean) || "";
+  return first.length > 100 ? first.slice(0, 99).trimEnd() + "…" : first;
+}
+const collapseWs = (s: string) => s.replace(/\s+/g, " ").trim();
+
 function renderPostal(ev: Extract<ChatEvent, { kind: "postal" }>): HTMLElement {
   const turn = el("div", "turn turn-postal postal-" + ev.direction);
   if (ev.mid) turn.dataset.mid = ev.mid;   // joins feed-modal handoff hovers to this card
@@ -965,11 +1010,31 @@ function renderPostal(ev: Extract<ChatEvent, { kind: "postal" }>): HTMLElement {
   // other event; see renderEvent's rail time-stamp.)
   card.appendChild(head);
 
+  // Body: ALWAYS lead with a one-line summary — the incoming Haiku caption, or (sent mail / no caption)
+  // the first line of the message — and let a click expand the box to the full message inline (the user
+  // 2026-06-16). Both directions read the same now: a summary that opens on demand, instead of a hover
+  // tooltip (incoming) vs. the whole body always (outgoing).
   const body = el("div", "postal-body md");
-  const caption = ev.summary && ev.summary.trim();   // incoming: show the concise caption, full message on hover
-  body.innerHTML = md(caption || ev.body);
-  if (caption) { body.title = ev.body; body.classList.add("postal-captioned"); }
-  highlight(body);
+  const fullText = (ev.body || "").trim();
+  const summaryText = postalSummary(ev);
+  const expandable = !!summaryText && !!fullText && collapseWs(fullText) !== collapseWs(summaryText);
+  if (expandable) {
+    const sum = el("div", "postal-summary");
+    const caret = el("span", "postal-expand-caret"); caret.textContent = "▸"; sum.appendChild(caret);
+    const sumText = el("span", "postal-summary-text"); sumText.textContent = summaryText; sum.appendChild(sumText);
+    const full = el("div", "postal-full md"); full.innerHTML = md(ev.body); highlight(full);
+    sum.title = "click to expand the full message";
+    sum.addEventListener("click", () => {
+      const open = body.classList.toggle("expanded");
+      caret.textContent = open ? "▾" : "▸";
+    });
+    body.classList.add("postal-expandable");
+    body.appendChild(sum);
+    body.appendChild(full);
+  } else {
+    body.innerHTML = md(ev.body);
+    highlight(body);
+  }
   card.appendChild(body);
 
   turn.appendChild(card);
@@ -2071,9 +2136,12 @@ function renderLedger() {
   // Title is the archiver headline; fall back to the session name so the strip always has a label.
   const titleText = l ? (l.summary || (activeId ? (sessions.get(activeId)?.name || "") : "")) : "";
   const hasBody = !!(tree.length || cur || bullets.length);
-  // Nothing at all to show → hide the strip. Otherwise it's ALWAYS visible (even collapsed) so the
-  // title + caret stay on screen — the user wants to see what a session is up to at a glance.
-  if (!l || (!titleText && !hasBody)) { host.replaceChildren(); host.style.display = "none"; (host as any)._sig = ""; return; }
+  // Show the strip only once there's something REAL to show — a digest headline (l.summary) or any
+  // body (goals / working-on / done). A brand-new session with nothing yet renders NOTHING: the bare
+  // session-name fallback used to surface the strip as just a name + caret before anything had
+  // happened, which the user found confusing (2026-06-16). The name fallback still LABELS the strip
+  // once a body exists (an active session whose archiver hasn't titled it yet).
+  if (!l || (!l.summary && !hasBody)) { host.replaceChildren(); host.style.display = "none"; (host as any)._sig = ""; return; }
   host.style.display = "";
   const now = Date.now() / 1000;
   // SAME content as last render (an interim host push, e.g. the session just worked) → DON'T tear the

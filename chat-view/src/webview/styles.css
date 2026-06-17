@@ -549,6 +549,19 @@ body { display: flex; flex-direction: column; }
 /* a free-text "Other" answer: the user's verbatim words, readable (not dimmed) */
 .ask-answer-text { flex: 1 1 auto; min-width: 0; color: var(--fg); font-style: italic; overflow-wrap: anywhere; }
 
+/* an ANSWERED AskUserQuestion → the blue "your reply" box: right-aligned + blue-washed like a sent
+   message (the #2b6cef user blue), still mirroring the dialog (question + options, chosen highlighted)
+   so the scrollback shows it was a reply to Claude's popup, not a typed message (the user 2026-06-16). */
+.turn-ask.answered { display: flex; flex-direction: column; align-items: flex-end; }
+.ask-card.ask-answered {
+  max-width: 88%;
+  background: rgba(43, 108, 239, 0.10);
+  border-color: #2b6cef;
+  box-shadow: inset 3px 0 0 #2b6cef;
+}
+/* the "↳ You answered Claude's question" marker line atop the box */
+.ask-answered-tag { font-size: 0.72em; letter-spacing: 0.04em; font-weight: 700; color: #6da0ff; margin-bottom: 6px; }
+
 /* ---------- live "awaiting your input" picker (pending, click-to-answer) ---------- */
 #live-ask {
   flex: 0 0 auto; max-height: 42vh; overflow-y: auto;
@@ -681,6 +694,15 @@ body { display: flex; flex-direction: column; }
 .postal-body { color: var(--fg); }
 .postal-body.md > :first-child { margin-top: 0; }
 .postal-body.md > :last-child { margin-bottom: 0; }
+/* postal body: ALWAYS a one-line summary that expands to the full message on click — both incoming
+   (Haiku caption) and outgoing (first line) read the same now (the user 2026-06-16). */
+.postal-summary { display: flex; align-items: baseline; gap: 6px; }
+.postal-expandable .postal-summary { cursor: pointer; }
+.postal-expandable .postal-summary:hover .postal-summary-text { text-decoration: underline; text-underline-offset: 2px; }
+.postal-expand-caret { flex: 0 0 auto; font-size: 0.78em; opacity: 0.7; }
+.postal-summary-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.postal-full { display: none; margin-top: 7px; }
+.postal-expandable.expanded .postal-full { display: block; }
 
 /* ---------- progressive disclosure + tool vocabulary ---------- */
 /* error tool: hollow red dot + red name (consistent "this failed" cue) */
