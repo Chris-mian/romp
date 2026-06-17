@@ -81,7 +81,7 @@ type ChatEvent = (
 interface TodoTask { id: string; subject: string; activeForm?: string; status: string }
 
 type ChipState = "working" | "subagent" | "ready" | "awaiting" | "idle" | "closed" | "compacting" | "blocked";
-interface Status { state: ChipState; sinceEpoch: number | null; effort?: string; model?: string; ctx?: string; faded?: boolean;
+interface Status { state: ChipState; sinceEpoch: number | null; effort?: string; model?: string; mode?: string; ctx?: string; faded?: boolean;
   // ADDITIVE subagent signal: the desc of a subagent running in the background (or "" if undescribed), else
   // null. Shown as a separate orange chip/dot ONLY while the session is otherwise quiet (ready/idle) — a
   // working session hides it (the user 2026-06-16).
@@ -2689,7 +2689,7 @@ function elapsedMs(sinceMs: number | null): string {
 // Each value is a little dropdown: picking an entry has the host inject the matching
 // /model or /effort slash command into the session's pane; the label then updates
 // when the TUI's statusline republishes the tmux vars (meta-pending bridges the gap).
-type MetaKind = "model" | "effort";
+type MetaKind = "mode" | "model" | "effort";
 const MODEL_CHOICES: { label: string; value: string }[] = [
   { label: "Fable", value: "fable" },
   { label: "Opus", value: "opus" },
@@ -2699,11 +2699,41 @@ const MODEL_CHOICES: { label: string; value: string }[] = [
 ];
 const EFFORT_CHOICES: { label: string; value: string }[] =
   ["low", "medium", "high", "xhigh", "max"].map((v) => ({ label: v, value: v }));
+// Permission mode: the shift+tab cycle (no slash command), so the picker offers the three cycle modes;
+// the host sets them by sending shift+tab the right number of times (the user 2026-06-16).
+const MODE_CHOICES: { label: string; value: string }[] = [
+  { label: "Normal", value: "default" },
+  { label: "Auto", value: "acceptEdits" },
+  { label: "Plan", value: "plan" },
+];
+// the @claude-permission-mode var → a short readable badge label
+function prettyMode(m: string | undefined): string {
+  switch ((m || "").toLowerCase()) {
+    case "plan": return "Plan";
+    case "acceptedits": case "auto": return "Auto";
+    case "dontask": return "Don’t ask";
+    case "bypasspermissions": return "Bypass";
+    default: return "Normal";   // default / normal / unknown
+  }
+}
+const META_CHOICES: Record<MetaKind, { label: string; value: string }[]> = {
+  mode: MODE_CHOICES, model: MODEL_CHOICES, effort: EFFORT_CHOICES,
+};
+// the live value of a meta kind for the active session
+function metaCurrent(kind: MetaKind, st: Status): string {
+  return (kind === "model" ? st.model : kind === "effort" ? st.effort : st.mode) || "";
+}
 
 // Is this menu entry the session's current value? Effort matches exactly; the
 // model var holds a display name ("Opus 4.8"), so match on the leading word.
 function isCurrentMeta(kind: MetaKind, st: Status, value: string): boolean {
   if (kind === "effort") return (st.effort || "").toLowerCase() === value;
+  if (kind === "mode") {
+    const m = (st.mode || "").toLowerCase();
+    if (value === "default") return m === "" || m === "default" || m === "normal";
+    if (value === "acceptEdits") return m === "acceptedits" || m === "auto";   // "auto" = the var's name for accept-edits
+    return m === value.toLowerCase();                                          // plan
+  }
   return (st.model || "").toLowerCase().startsWith(value);
 }
 
@@ -2715,7 +2745,7 @@ function isMetaPending(kind: MetaKind, st: Status): boolean {
   const key = `${activeId}:${kind}`;
   const p = metaPending.get(key);
   if (!p) return false;
-  const cur = (kind === "model" ? st.model : st.effort) || "";
+  const cur = metaCurrent(kind, st);
   if (cur !== p.was || Date.now() > p.until) { metaPending.delete(key); return false; }
   return true;
 }
@@ -2729,7 +2759,9 @@ function metaButton(kind: MetaKind, text: string): HTMLElement {
   const caret = el("span", "meta-caret");
   caret.textContent = "▾";
   btn.appendChild(caret);
-  btn.title = kind === "model" ? "change model (sends /model)" : "change thinking effort (sends /effort)";
+  btn.title = kind === "model" ? "change model (sends /model)"
+    : kind === "effort" ? "change thinking effort (sends /effort)"
+    : "change permission mode (shift+tab cycle)";
   btn.addEventListener("click", (e) => { e.stopPropagation(); toggleMetaMenu(kind, btn); });
   return btn;
 }
@@ -2737,18 +2769,20 @@ function metaButton(kind: MetaKind, text: string): HTMLElement {
 // Build or refresh the model/effort buttons inside #spinner-meta. Called from
 // updateStatusline (fresh container) and the 1s ticker (label refresh in place).
 function syncMetaControls(meta: HTMLElement, st: Status) {
-  const want = [st.model ? "model" : "", st.effort ? "effort" : ""].filter(Boolean).join();
+  // order left→right: mode · model · effort — the mode selector sits LEFT of the model name (the user 2026-06-16)
+  const want = [st.mode ? "mode" : "", st.model ? "model" : "", st.effort ? "effort" : ""].filter(Boolean).join();
   const btns = Array.from(meta.querySelectorAll(".meta-btn")) as HTMLElement[];
   if (btns.map((b) => b.dataset.kind).join() !== want) {
     meta.replaceChildren();
+    if (st.mode) meta.appendChild(metaButton("mode", prettyMode(st.mode)));
     if (st.model) meta.appendChild(metaButton("model", st.model));
     if (st.effort) meta.appendChild(metaButton("effort", st.effort));
   }
   for (const b of Array.from(meta.querySelectorAll(".meta-btn")) as HTMLElement[]) {
     const kind = b.dataset.kind as MetaKind;
-    const cur = (kind === "model" ? st.model : st.effort) || "";
+    const disp = kind === "mode" ? prettyMode(st.mode) : metaCurrent(kind, st);
     const label = b.querySelector(".meta-label") as HTMLElement | null;
-    if (label && label.textContent !== cur) label.textContent = cur;
+    if (label && label.textContent !== disp) label.textContent = disp;
     b.classList.toggle("meta-pending", isMetaPending(kind, st));
   }
 }
@@ -2769,14 +2803,14 @@ function toggleMetaMenu(kind: MetaKind, btn: HTMLElement) {
   if (s.status.state === "awaiting") return;
   const menu = el("div", "meta-menu");
   menu.dataset.kind = kind;
-  for (const c of kind === "model" ? MODEL_CHOICES : EFFORT_CHOICES) {
+  for (const c of META_CHOICES[kind]) {
     const item = el("div", "meta-item" + (isCurrentMeta(kind, s.status, c.value) ? " current" : ""));
     item.textContent = c.label;
     item.addEventListener("click", (e) => {
       e.stopPropagation();
       if (activeId && vscodeApi) {
-        vscodeApi.postMessage({ type: kind === "model" ? "setModel" : "setEffort", id: activeId, value: c.value });
-        const was = (kind === "model" ? s.status.model : s.status.effort) || "";
+        vscodeApi.postMessage({ type: kind === "model" ? "setModel" : kind === "effort" ? "setEffort" : "setMode", id: activeId, value: c.value });
+        const was = metaCurrent(kind, s.status);
         metaPending.set(`${activeId}:${kind}`, { was, until: Date.now() + 20_000 });
         btn.classList.add("meta-pending");
       }

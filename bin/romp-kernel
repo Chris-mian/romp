@@ -519,14 +519,22 @@ def _tmux_send(name, text, model_cmd=False, _async=True):
 _MODE_CYCLE = ["default", "acceptEdits", "plan"]
 
 
+def _mode_presses(cur, target):
+    """shift+tab presses to cycle from `cur` to `target`; None if target isn't a cycle mode. A flag-only
+    current mode (auto/dontAsk/bypass…) is treated as `default` (step forward from there)."""
+    if target not in _MODE_CYCLE:
+        return None
+    if cur not in _MODE_CYCLE:
+        cur = "default"
+    return (_MODE_CYCLE.index(target) - _MODE_CYCLE.index(cur)) % len(_MODE_CYCLE)
+
+
 def _cycle_mode(name, sid, target):
-    if not name or target not in _MODE_CYCLE:
+    if not name:
         return
     cur = (_tmux_sessions().get(sid) or {}).get("mode") or "default"
-    if cur not in _MODE_CYCLE:
-        cur = "default"                                             # a flag-only mode (auto/bypass…) → step from default
-    presses = (_MODE_CYCLE.index(target) - _MODE_CYCLE.index(cur)) % len(_MODE_CYCLE)
-    if presses == 0:
+    presses = _mode_presses(cur, target)
+    if not presses:
         return
 
     def go():
