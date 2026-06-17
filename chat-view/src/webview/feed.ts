@@ -66,6 +66,7 @@ interface AskItem {
   openQuestions: AskQuestion[];                    // live unanswered DECISIONs → decision sub-cards
   openPaths: AskPath[];                            // open leaves → "waiting on X" drop-point lines
   reopened?: boolean;                              // resurrected: a question arrived AFTER the user cleared it
+  followupPending?: boolean;                       // you followed up on a settled card → optimistically reopened, awaiting the judge's re-file (kernel)
   autoFiled?: boolean;                             // settled → moved to COMPLETED by the auto-filing rule (keeps the green ring)
   explicitDone?: boolean;                          // every path explicitly DONE-stamped → blue ring (blue+green when settled agrees)
   waiting?: boolean;                               // paused on an EXTERNAL event → held in Working, ⏳ chip, no ring
@@ -403,6 +404,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   idwrap.append(name, origin);
   const actions = el("div", "fask-actions");
   const reBadge = el("span", "fask-reopened"); reBadge.textContent = "reopened"; reBadge.title = "a question arrived after you cleared this"; reBadge.style.display = "none";
+  const fupBadge = el("span", "fask-followedup"); fupBadge.textContent = "↻ Followed up"; fupBadge.title = "you followed up — reopened to Working; the planner will re-file it on the next pass"; fupBadge.style.display = "none";
   const blkBadge = el("a", "fask-blocked"); blkBadge.style.display = "none";   // ⏸ live permission/picker block → click opens the session
   const apiBadge = el("span", "fask-apierror"); apiBadge.textContent = "⚠ API error"; apiBadge.style.display = "none";   // red: session stopped on an API error
   const apiRetry = el("button", "fdismiss fretry"); apiRetry.textContent = "Retry"; apiRetry.title = "send “retry” into this session to resume"; apiRetry.style.display = "none";
@@ -411,7 +413,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   const clr = el("button", "fdismiss"); clr.textContent = "Clear"; clr.title = "clear this ask (inbox-zero; the one human-asserted fact)";
   // No "Follow up" button on the card — open the card's modal (body click) to follow up there
   // (the user 2026-06-16). The modal composer is the single follow-up surface.
-  actions.append(waitBadge, apiBadge, blkBadge, reBadge, apiRetry, clr);
+  actions.append(waitBadge, apiBadge, blkBadge, reBadge, fupBadge, apiRetry, clr);
   row2.append(idwrap);
   // ROW 3 — timestamp bottom-left · status badges + Clear bottom-right
   const row3 = el("div", "fask-row3"); row3.append(time, actions);
@@ -505,7 +507,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   });
 
   const a = card as any;
-  a._title = title; a._name = name; a._time = time; a._reopened = reBadge;
+  a._title = title; a._name = name; a._time = time; a._reopened = reBadge; a._followedup = fupBadge;
   a._blocked = blkBadge; a._wait = waitBadge;
   a._apiBadge = apiBadge; a._apiRetry = apiRetry;
   a._delegations = delegations;
@@ -544,6 +546,9 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   }
   a._time.textContent = relAge(hostNow - it.t);
   a._reopened.style.display = it.reopened ? "" : "none";
+  // "↻ Followed up" while the kernel has optimistically reopened a settled card you followed up on, before
+  // the judge re-files it (it.followupPending self-clears on the next pass). (judges delegation, 2026-06-17.)
+  a._followedup.style.display = it.followupPending ? "" : "none";
   a._wait.style.display = it.waiting ? "" : "none";   // ⏳ paused on an external event
   // ⏸ live block badge: the session is stopped mid-turn on a permission prompt /
   // picker FOR THIS CARD's work — the card files under BLOCKED while it lasts

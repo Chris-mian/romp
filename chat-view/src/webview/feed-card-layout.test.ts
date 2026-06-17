@@ -51,3 +51,11 @@ test("courier handoff: the '↪ from <sender>' origin marker is wired and styled
   assert.match(CSS, /\.fask-origin-pre \{[^}]*var\(--dim\)/);     // "↪ from" dim gray
   assert.match(CSS, /\.fask-origin-peer \{[^}]*font-weight: 600/); // peer bold like other session names
 });
+
+test("a 'Followed up' chip shows while the kernel optimistically reopened a followed-up card (judges, 2026-06-17)", () => {
+  assert.match(FEED, /followupPending\?: boolean/);
+  assert.match(FEED, /el\("span", "fask-followedup"\); fupBadge\.textContent = "↻ Followed up"/);
+  assert.match(FEED, /actions\.append\(waitBadge, apiBadge, blkBadge, reBadge, fupBadge, apiRetry, clr\)/);
+  assert.match(FEED, /a\._followedup\.style\.display = it\.followupPending \? "" : "none"/);
+  assert.match(CSS, /\.fask-followedup \{/);
+});
