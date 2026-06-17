@@ -1069,7 +1069,7 @@ class PlanTuning(unittest.TestCase):
         long = "word " * 100                                   # ~500 chars after normalization
         ops = jd._parse_plan('{"ops":[{"why":"%s","do":"mint","text":"G"}]}' % long.strip(), 1)
         self.assertEqual(len(ops[0]["why"]), 300, "planner why capped at 300 (was 200)")
-        done = jd._parse_close('{"done":[{"goal":1,"why":"%s"}]}' % long.strip(), 1)
+        done = jd._parse_close('{"done":[{"goal":1,"why":"%s"}]}' % long.strip(), 1)["done"]
         self.assertEqual(len(done[1]), 300, "closer doneWhy capped at 300 (was 200)")
 
     def test_planner_eager_done_and_no_grouping(self):
@@ -1202,16 +1202,25 @@ class BlockCompletionCorrectness(unittest.TestCase):
 class SweepParse(unittest.TestCase):
     def test_done_list_with_reasons(self):
         self.assertEqual(jd._parse_close('{"done": [{"goal": 2, "why": "shipped it"}]}', 4),
-                         {2: "shipped it"})
+                         {"done": {2: "shipped it"}, "block": {}})
         self.assertEqual(jd._parse_close(
             '{"done": [{"goal": 1, "why": "fixed the parser"}, {"goal": 3, "why": "wired the CLI flags"}]}', 4),
-            {1: "fixed the parser", 3: "wired the CLI flags"})
+            {"done": {1: "fixed the parser", 3: "wired the CLI flags"}, "block": {}})
         self.assertEqual(jd._parse_close('noise {"done": [{"goal": 2, "why": "done"}]} more', 4),
-                         {2: "done"}, "the outermost JSON object is isolated from surrounding prose")
+                         {"done": {2: "done"}, "block": {}}, "the outermost JSON object is isolated from prose")
+
+    def test_block_list_parsed_and_done_wins(self):
+        # the user 2026-06-17: the closer can now BLOCK a touched top (needs the user), not just complete it
+        self.assertEqual(jd._parse_close('{"done": [], "block": [{"goal": 2, "why": "Approve the migration?"}]}', 3),
+                         {"done": {}, "block": {2: "Approve the migration?"}})
+        self.assertEqual(jd._parse_close('{"done": [{"goal": 1, "why": "shipped"}], "block": [{"goal": 1, "why": "?"}]}', 3),
+                         {"done": {1: "shipped"}, "block": {}}, "a goal in both -> done wins, dropped from block")
+        self.assertEqual(jd._parse_close('{"done": [{"goal": 1, "why": "x"}]}', 3),
+                         {"done": {1: "x"}, "block": {}}, "an absent block key is tolerated")
 
     def test_empty_done_completes_nothing(self):
-        self.assertEqual(jd._parse_close('{"done": []}', 3), {},
-                         "an empty done list -> empty dict (complete nothing)")
+        self.assertEqual(jd._parse_close('{"done": []}', 3), {"done": {}, "block": {}},
+                         "empty done list -> empty maps (complete/block nothing)")
 
     def test_garbage_skips(self):
         self.assertIsNone(jd._parse_close("", 3), "empty output -> skip the turn")
@@ -1224,20 +1233,24 @@ class SweepParse(unittest.TestCase):
 
     def test_out_of_range_and_dupes_dropped(self):
         self.assertEqual(jd._parse_close('{"done": [{"goal": 1, "why": "a"}, {"goal": 9, "why": "b"}]}', 3),
-                         {1: "a"}, "out-of-range index is dropped")
-        self.assertEqual(jd._parse_close('{"done": [{"goal": 9, "why": "b"}]}', 3), {},
-                         "a structured answer with only out-of-range -> {} (nothing in-range done)")
+                         {"done": {1: "a"}, "block": {}}, "out-of-range index is dropped")
+        self.assertEqual(jd._parse_close('{"done": [{"goal": 9, "why": "b"}]}', 3), {"done": {}, "block": {}},
+                         "only out-of-range -> empty (nothing in-range done)")
         self.assertEqual(jd._parse_close('{"done": [{"goal": 2, "why": "first"}, {"goal": 2, "why": "second"}]}', 3),
-                         {2: "first"}, "first reason wins for a duplicate index")
+                         {"done": {2: "first"}, "block": {}}, "first reason wins for a duplicate index")
         self.assertEqual(jd._parse_close('{"done": ["junk", {"why": "no goal"}, {"goal": 2, "why": "ok"}]}', 3),
-                         {2: "ok"}, "malformed entries are skipped")
+                         {"done": {2: "ok"}, "block": {}}, "malformed entries are skipped")
+
+    def test_closer_prompt_offers_block(self):
+        for phrase in ('"block"', "BLOCKED", "owed BY the user", "NEEDS THE USER"):
+            self.assertIn(phrase, jd.CLOSER_SYS, phrase)
 
 
 class SweepApply(unittest.TestCase):
     def test_completes_listed_dones_with_reason_and_provenance(self):
         s = _store()
         g1, g2, g3 = _mknode(s, "G1"), _mknode(s, "G2"), _mknode(s, "G3")
-        newly = jd.apply_close(s, [g1, g2, g3], {1: "shipped G1", 3: "shipped G3"}, t=T0 + 50)
+        newly = jd.apply_close(s, [g1, g2, g3], {"done": {1: "shipped G1", 3: "shipped G3"}, "block": {}}, t=T0 + 50)
         self.assertEqual(set(newly), {g1["id"], g3["id"]}, "the listed-done goals (1, 3) are completed")
         self.assertTrue(g1["nodeComplete"] and g3["nodeComplete"])
         self.assertFalse(g2["nodeComplete"], "a goal not listed stays open")
@@ -1245,15 +1258,25 @@ class SweepApply(unittest.TestCase):
         self.assertEqual(g1["mt"], T0 + 50, "the close bumps mt so the done node deep-links to the turn")
         self.assertTrue(g1.get("negComplete"), "closer-completed nodes are tagged for the A/B sample")
 
-    def test_empty_done_completes_nothing(self):
+    def test_blocks_listed_goals_with_the_question_as_blockwhy(self):
+        # the user 2026-06-17: the closer can BLOCK a touched top (needs-you), recording the question.
         s = _store()
         g1, g2 = _mknode(s, "G1"), _mknode(s, "G2")
-        self.assertEqual(jd.apply_close(s, [g1, g2], {}), [], "'none done' -> complete nothing")
+        newly = jd.apply_close(s, [g1, g2], {"done": {1: "shipped"}, "block": {2: "Approve the rename?"}}, t=T0 + 50)
+        self.assertEqual(newly, [g1["id"]], "block does NOT count as a completion")
+        self.assertTrue(g2["blocked"], "the blocked goal is marked needs-you")
+        self.assertEqual(g2["blockWhy"], "Approve the rename?", "the question rides in blockWhy")
+        self.assertFalse(g2["nodeComplete"], "a blocked goal is not completed")
+
+    def test_empty_completes_and_blocks_nothing(self):
+        s = _store()
+        g1, g2 = _mknode(s, "G1"), _mknode(s, "G2")
+        self.assertEqual(jd.apply_close(s, [g1, g2], {"done": {}, "block": {}}), [], "'none' -> nothing")
 
     def test_already_complete_not_recounted(self):
         s = _store()
         g1 = _mknode(s, "G1", complete=True)
-        self.assertEqual(jd.apply_close(s, [g1], {1: "x"}), [], "an already-complete node isn't re-completed")
+        self.assertEqual(jd.apply_close(s, [g1], {"done": {1: "x"}, "block": {}}), [], "an already-complete node isn't re-completed")
 
 
 class SweepMenu(unittest.TestCase):
