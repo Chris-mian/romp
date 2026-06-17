@@ -383,15 +383,16 @@ class ArchiveParse(unittest.TestCase):
 
 
 class PlanParse(unittest.TestCase):
-    def test_mint_sub_amend(self):
+    def test_mint_sub_and_amend_dropped(self):
         self.assertEqual(jd._parse_plan('{"ops":[{"why":"new ask","do":"mint","text":"Rebuild the parser"}]}', 3),
                          [{"do": "mint", "why": "new ask", "text": "Rebuild the parser"}])
         ops = jd._parse_plan('{"ops":[{"why":"step","do":"sub","under":2,"text":"added a test"},'
                              '{"why":"owed a call","do":"block","ref":1}]}', 3)
         self.assertEqual([o["do"] for o in ops], ["sub", "block"])
         self.assertEqual((ops[0]["under"], ops[1]["ref"]), (2, 1))
-        self.assertEqual(jd._parse_plan('{"ops":[{"why":"redef","do":"amend","goal":1,"text":"new goal"}]}', 3)[0]["do"],
-                         "amend")
+        # amend was cut (the user 2026-06-17): a lone amend op now parses to nothing
+        self.assertIsNone(jd._parse_plan('{"ops":[{"why":"redef","do":"amend","goal":1,"text":"x"}]}', 3),
+                          "amend is no longer a planner op")
 
     def test_out_of_range_sub_falls_back_to_mint(self):
         ops = jd._parse_plan('{"ops":[{"why":"x","do":"sub","under":9,"text":"orphan step"}]}', 3)  # only 3 open
@@ -692,6 +693,54 @@ class Grouper(unittest.TestCase):
                        "AGGRESSIVE about grouping", "look-alike wording"):
             self.assertIn(phrase, jd.GROUP_SYS, phrase)
         self.assertNotIn("genuine", jd.GROUP_SYS.lower(), "the grouper prompt avoids 'genuine' too")
+
+    def test_prompt_allows_doing_nothing(self):
+        # the user 2026-06-17: the grouper may do nothing on its turn if nothing fits — make it explicit.
+        self.assertIn("DOING NOTHING IS A VALID", jd.GROUP_SYS)
+        self.assertIn('{"ops": []}', jd.GROUP_SYS, "the empty-ops escape hatch is spelled out")
+        # and an empty op list is honored end-to-end: no relinks, nothing minted
+        s, a, b = self._two_tops()
+        tops = jd._group_tops(s)
+        before = {nid: nd.get("parentId") for nid, nd in s["nodes"].items()}
+        n = jd.apply_group(s, tops, jd._parse_group('{"ops":[]}', len(tops)), T0 + 20)
+        self.assertEqual(n, 0, "empty ops → zero relinks")
+        self.assertEqual({nid: nd.get("parentId") for nid, nd in s["nodes"].items()}, before, "tree unchanged")
+
+    def test_planner_groups_inline_after_each_placement(self):
+        # the user 2026-06-17: the grouper runs after EVERY planner step, so run_plan alone (no separate
+        # run_group pass) nests the 2nd minted top under the 1st.
+        records = [uline(T0, "one", "u1", ps="typed"),
+                   aline(T0 + 10, "", "a1", "u1", tools=("Bash",), stop="end_turn"),
+                   uline(T0 + 100, "two", "u2", "a1", ps="typed"),
+                   aline(T0 + 110, "", "a2", "u2", tools=("Bash",), stop="end_turn")]
+        td = Path(tempfile.mkdtemp())
+        cdir = td / "launchdir"; cdir.mkdir()
+        proj = td / "projects"
+        pdir = proj / jd.re.sub(r"[/.]", "-", os.path.realpath(str(cdir)))
+        pdir.mkdir(parents=True)
+        (pdir / (SID + ".jsonl")).write_text("\n".join(json.dumps(r) for r in records) + "\n")
+        names = td / "names"; names.mkdir()
+        (names / SID).write_text("testsess\t%s\t#abcdef\n" % str(cdir))
+        saved = (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.plan_llm, jd.group_llm)
+        jd.NAMES, jd.PROJECTS, jd.GOALDIR = names, proj, td / "goals"
+        jd._PARSE_CACHE.clear()
+        gcalls = []
+        try:
+            jd.plan_llm = (lambda text, menu, human=False:
+                           '{"ops":[{"why":"x","do":"mint","text":"%s"}]}' % ("A" if "one" in text else "B"))
+
+            def fake_group(menu):
+                gcalls.append(menu)
+                return '{"ops":[{"why":"both serve X","do":"group","goal":2,"under":1}]}'   # B under A
+            jd.group_llm = fake_group
+            jd.run_plan(now=T0 + 5000)
+            st = jd.load_goals(SID)
+            tops = [nd for nd in st["nodes"].values() if nd["parentId"] is None]
+            self.assertEqual(len(tops), 1, "2nd top grouped under the 1st INLINE — no separate run_group needed")
+            self.assertGreaterEqual(len(gcalls), 1, "the planner invoked the grouper after a placement")
+        finally:
+            (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.plan_llm, jd.group_llm) = saved
+            jd._PARSE_CACHE.clear()
 
 
 class PlanRollup(unittest.TestCase):
@@ -1275,7 +1324,7 @@ class SweepSession(unittest.TestCase):
     settled gate and per-turn idempotency compose unchanged."""
 
     def setUp(self):
-        self._saved = (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.plan_llm, jd.closer_llm)
+        self._saved = (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.plan_llm, jd.closer_llm, jd.group_llm)
         self._td = tempfile.TemporaryDirectory()
         td = Path(self._td.name)
         cdir = td / "launchdir"; cdir.mkdir()
@@ -1292,10 +1341,11 @@ class SweepSession(unittest.TestCase):
         jd.NAMES, jd.PROJECTS, jd.GOALDIR = names, proj, td / "goals"
         # positive-only: always MINT a top, never DONE -> every top is left 'working'
         jd.plan_llm = lambda text, menu, human=False: '{"ops":[{"why":"x","do":"mint","text":"Goal"}]}'
+        jd.group_llm = lambda menu: '{"ops":[]}'   # planner now groups inline; keep the sweep's tops un-nested
         self.now = T0 + 5000
 
     def tearDown(self):
-        (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.plan_llm, jd.closer_llm) = self._saved
+        (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.plan_llm, jd.closer_llm, jd.group_llm) = self._saved
         self._td.cleanup()
 
     def test_completes_silently_finished_top_and_settled_still_gates(self):
@@ -1510,14 +1560,14 @@ class PendingJudgment(unittest.TestCase):
         path.write_text("\n".join(json.dumps(r) for r in records) + "\n")
         names = td / "names"; names.mkdir()
         (names / SID).write_text("testsess\t%s\t#abcdef\n" % str(cdir))
-        self._saved = (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.STATESDIR, jd.plan_llm, jd.closer_llm)
+        self._saved = (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.STATESDIR, jd.plan_llm, jd.closer_llm, jd.group_llm)
         jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.STATESDIR = names, proj, td / "goals", td / "states"
         jd._PARSE_CACHE.clear()
         return str(path)
 
     def tearDown(self):
         if hasattr(self, "_saved"):
-            (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.STATESDIR, jd.plan_llm, jd.closer_llm) = self._saved
+            (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.STATESDIR, jd.plan_llm, jd.closer_llm, jd.group_llm) = self._saved
             jd._PARSE_CACHE.clear()
 
     def test_true_until_planner_and_closer_catch_up(self):
@@ -1533,7 +1583,7 @@ class PendingJudgment(unittest.TestCase):
         jd.run_close(now=now)
         self.assertFalse(jd.pending_judgment(SID, path, now), "planner + closer caught up, one top → not pending")
 
-    def test_grouper_pending_when_two_tops_ungrouped(self):
+    def test_grouper_pending_when_top_set_outpaces_groupedsig(self):
         records = [uline(T0, "one", "u1", ps="typed"),
                    aline(T0 + 10, "", "a1", "u1", tools=("Bash",), stop="end_turn"),
                    uline(T0 + 100, "two", "u2", "a1", ps="typed"),
@@ -1542,14 +1592,15 @@ class PendingJudgment(unittest.TestCase):
         now = T0 + 5000
         jd.plan_llm = (lambda text, menu, human=False:
                        '{"ops":[{"why":"x","do":"mint","text":"%s"}]}' % ("A" if "one" in text else "B"))
+        jd.group_llm = lambda menu: '{"ops":[]}'          # planner groups INLINE but leaves the 2 tops as-is
         jd.run_plan(now=now)
         jd.closer_llm = lambda turn, menu: '{"done":[]}'
         jd.run_close(now=now)
-        self.assertTrue(jd.pending_judgment(SID, path, now), "two ungrouped tops → grouper-pending")
-        st = jd.load_goals(SID)
-        st["groupedSig"] = sorted(nd["id"] for nd in jd._group_tops(st))   # grouper has now run
-        jd.save_goals(SID, st)
-        self.assertFalse(jd.pending_judgment(SID, path, now), "groupedSig matches the top-set → not pending")
+        self.assertFalse(jd.pending_judgment(SID, path, now),
+                         "planner grouped inline (groupedSig caught up) + closer swept → not pending")
+        # a top appears WITHOUT a grouping pass (e.g. courier-planted) → groupedSig goes stale → pending
+        st = jd.load_goals(SID); st["groupedSig"] = []; jd.save_goals(SID, st)
+        self.assertTrue(jd.pending_judgment(SID, path, now), "≥2 tops but groupedSig stale → grouper-pending")
 
 
 if __name__ == "__main__":

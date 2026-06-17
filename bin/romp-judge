@@ -460,7 +460,7 @@ def write_archive(fsid, rec):
 
 # ───────────────────────── the planner (triage tier; per segment) ─────────────────────────
 # Places EVERY segment in the session's goal tree: mint a top-level goal (a new request),
-# add a sub-goal/step under an existing node, amend a node, and/or complete a node. Plus a soft
+# add a sub-goal/step under an existing node, and/or complete a node. Plus a soft
 # `blocked` verdict (needs the user). The rolled-up goal status (working/blocked/completed) is
 # derived HERE (judge.md) — rollup gated by the "settled" heuristic. The HARD block floor (a live
 # permission prompt) is the read side's merge, not here.
@@ -494,8 +494,6 @@ PLAN_SYS = (
     "the latest step. mint only when NO open goal matches. (\"ref\":<k> files under a node you minted "
     "earlier in THIS reply instead of \"under\" — e.g. a fresh umbrella goal.) "
     f"Keep the tree shallow — do not nest more than {MAX_DEPTH} levels deep under a top goal.\n"
-    '- {\"why\",\"do\":\"amend\",\"goal\":<n>,\"text\":\"<updated goal text>\"} — the DEFINITION of open '
-    "goal #n itself changed.\n"
     '- {\"why\",\"do\":\"done\",\"goal\":<n>} — open goal/step #n is now FINISHED. Mark done EAGERLY: the '
     "moment a segment delivers a goal's outcome (committed, shipped, tested, or answered), done it in "
     "THIS reply — do not leave finished work open for a later pass to notice. If the segment discharges "
@@ -533,10 +531,10 @@ PLAN_SYS = (
 
 def _parse_plan(raw, menu_len):
     """Parse the planner's JSON reply into an ORDERED list of normalized ops, or None if nothing is
-    usable. Expected: {"ops": [ {"why", "do": mint|sub|amend|done|block|skip, ...}, ... ]}. Tolerant:
+    usable. Expected: {"ops": [ {"why", "do": mint|sub|done|block|skip, ...}, ... ]}. Tolerant:
     isolates the outermost {...} (ignoring code fences / surrounding prose), drops malformed ops but
     keeps the good ones, and a bad menu ref on a sub falls back to a mint (never orphan real work) while
-    a bad ref on amend/done/block drops that op. Returns [] never — None when there is no usable JSON,
+    a bad ref on done/block drops that op. Returns [] never — None when there is no usable JSON,
     else a non-empty list (a single {"do":"skip"} signals a no-work segment)."""
     obj = _json_obj(raw)                                # outermost {...}; tolerates ``` fences + prose
     if obj is None:
@@ -576,10 +574,6 @@ def _parse_plan(raw, menu_len):
                 ops.append({"do": "sub", "why": why, "ref": r, "text": text})   # under a node minted earlier this reply
             else:
                 ops.append({"do": "mint", "why": why, "text": text})   # no valid parent → place it, never orphan
-        elif do == "amend":
-            n = _int(o, "goal")
-            if n and 1 <= n <= menu_len and _has_alpha(text):
-                ops.append({"do": "amend", "why": why, "goal": n, "text": text})
         elif do in ("done", "block"):
             g, r = _int(o, "goal"), _int(o, "ref")
             if g and 1 <= g <= menu_len:
@@ -606,7 +600,7 @@ def save_goals(fsid, store):
 def open_menu(store, cap=20):
     """The session's open nodes, numbered oldest-first, capped — the planner's candidate menu. A node is
     open only if NEITHER it NOR any ancestor is complete/cleared: a completed (or cleared) subtree is
-    SEALED (the user 2026-06-16), so the planner can't sub/amend into it via an open child — new related
+    SEALED (the user 2026-06-16), so the planner can't sub into it via an open child — new related
     work mints a NEW top instead of reopening a done branch. Cap 20 covers every real session (max ~18
     open goals) while bounding the prompt on a pathological one, so topic-matching can scan the WHOLE list."""
     nodes = store["nodes"]
@@ -667,7 +661,7 @@ def apply_plan(store, seg_id, seg_t, ops, menu):
         nid = "%s:g%d" % (store["rompUuid"], store["seq"])
         nodes[nid] = {"id": nid, "text": text, "parentId": parent, "nodeComplete": False,
                       "blocked": False, "cleared": False, "trail": [seg_id],
-                      "t": seg_t, "mt": seg_t, "why": why}   # mt = last-modified (create/amend/done/block); t stays create
+                      "t": seg_t, "mt": seg_t, "why": why}   # mt = last-modified (create/done/block); t stays create
         created.append(nid)
         return nid
 
@@ -723,16 +717,6 @@ def apply_plan(store, seg_id, seg_t, ops, menu):
                 while _depth(nodes, parent) >= MAX_DEPTH:  # never chain past MAX_DEPTH; re-parent up
                     parent = nodes[parent]["parentId"]
                 nid = new_node(o["text"] or "(step)", parent, o["why"])
-            _unblock_branch(nid); focus = touched = nid
-        elif do == "amend":
-            nid = menu[o["goal"] - 1]["id"]
-            if o.get("text"):
-                nodes[nid]["text"] = o["text"]
-            if o.get("why"):
-                nodes[nid]["why"] = o["why"]
-            if seg_id not in nodes[nid]["trail"]:
-                nodes[nid]["trail"].append(seg_id)
-            nodes[nid]["t"] = seg_t; nodes[nid]["mt"] = seg_t
             _unblock_branch(nid); focus = touched = nid
         elif do == "done":
             t = _target(o)
@@ -810,7 +794,7 @@ def plan_llm(segment_text, menu_text, model=None, effort=None, human=False):
     user = "<segment>\n%s\n</segment>\n<open-goals>\n%s\n</open-goals>" % (segment_text, menu_text)
     if human:
         user += ("\n<note>This segment contains a real user message, so it MUST be placed "
-                 "(mint/sub/amend/done/block) — do NOT return a skip.</note>")
+                 "(mint/sub/done/block) — do NOT return a skip.</note>")
     return _judge_run(model or TRIAGE_MODEL, PLAN_SYS, user, effort=effort).strip()[:2000]
 
 
@@ -1023,8 +1007,10 @@ def _coerce_place(menu, text):
 
 
 def _plan_session(fsid, path, now):
-    """Advance ONE session's goal tree: place its un-placed segments oldest-first (each sees the
-    prior tree's open menu), then roll up status gated by settled. Returns placements made."""
+    """Advance ONE session's goal tree: place its un-placed segments oldest-first (each sees the prior
+    tree's open menu) and GROUP after every placement (the user 2026-06-17: planner + grouper are both
+    segment-level; the closer is turn-level), then roll up status gated by settled. Returns placements
+    made."""
     session = parsed_session(fsid, [path], now)
     store = load_goals(fsid)
     undone = [s for s in plan_segments(session) if s[0] not in store["placements"]][:PLAN_FAIRNESS]
@@ -1043,7 +1029,8 @@ def _plan_session(fsid, path, now):
             ops = _coerce_place(menu, text)           # HARD GUARD: a user message never silently vanishes
         apply_plan(store, seg_id, seg_t, ops, menu)
         placed += 1
-        save_goals(fsid, store)                       # crash-safe: persist each placement
+        _group_store(store, fsid, now)                # regroup the forest after this placement (event-gated, no-op if tops unchanged)
+        save_goals(fsid, store)                       # crash-safe: persist plan + group together
     rollup_status(store, _session_closed(session))
     save_goals(fsid, store)
     return placed
@@ -1094,8 +1081,9 @@ GROUP_SYS = (
     "levels deep.\n"
     "Be AGGRESSIVE about grouping a real shared purpose — a few real trees beat a flat list of every "
     "request — but NEVER group on look-alike wording alone, and leave a standalone goal as its own top. "
-    "Reuse an existing umbrella rather than minting a duplicate. If nothing should change, return "
-    '{\"ops\": []}.\n'
+    "Reuse an existing umbrella rather than minting a duplicate. DOING NOTHING IS A VALID, COMMON "
+    "OUTCOME: if no clear cluster stands out — the tops are already well-organized, or they are simply "
+    'unrelated — return {\"ops\": []} and change nothing. Never invent a grouping just to act.\n'
     "Write each \"why\" plainly: the real reason first, concrete verbs, the words a person actually says; "
     "cut filler (\"in order to\", \"it is worth noting\", \"notably\"); no em dashes; say it once. Output "
     "ONLY the JSON object.")
@@ -1235,28 +1223,40 @@ def apply_group(store, tops, ops, t):
     return relinks
 
 
-def _group_session(fsid, path, now):
-    """Reorganize ONE session's forest of open top goals into coherent trees. EVENT-GATED: it runs the
-    model only when the SET of open top goals changed since the last grouping (store["groupedSig"] — the
-    planner minting a new top or the closer completing one), so a stable board is never re-grouped and the
-    pass can't thrash. Returns the number of relinks applied."""
-    store = load_goals(fsid)
+def _group_store(store, fsid, now):
+    """Reorganize the open-top forest IN PLACE; return relinks applied (the CALLER persists the store).
+    EVENT-GATED by store["groupedSig"] (the open-top id set): it calls the grouper model only when that
+    set CHANGED since the last grouping, so a stable board is never re-grouped and the pass can't thrash.
+    Toggleable via GROUPER_ON. The planner calls this after EVERY placement (the user 2026-06-17: planner
+    + grouper are segment-level); run_group calls it once more at the pass level to catch courier-planted
+    tops the planner never saw."""
+    if not GROUPER_ON:
+        return 0
     tops = _group_tops(store)
     sig = sorted(nd["id"] for nd in tops)
     if len(tops) < 2 or sig == store.get("groupedSig"):
-        if store.get("groupedSig") != sig:             # <2 tops (nothing to group) → record the set so we don't re-check
-            store["groupedSig"] = sig
-            save_goals(fsid, store)
+        store["groupedSig"] = sig                      # <2 tops / unchanged → record the set so we don't re-ask
         return 0
     ops = _parse_group(group_llm(_group_menu_text(store, tops)), len(tops))
     if ops is None:
         _log_judge_error("grouper", fsid, "parse")
-        return 0                                       # leave groupedSig stale → retry next pass
+        return 0                                       # leave groupedSig stale → retry next call
     relinks = apply_group(store, tops, ops, now)
     store["groupedSig"] = sorted(nd["id"] for nd in _group_tops(store))   # snapshot the NEW open-top set
-    if relinks:                                        # only a structural change needs a status re-roll
-        rollup_status(store, _session_closed(parsed_session(fsid, [path], now)))
-    save_goals(fsid, store)
+    return relinks
+
+
+def _group_session(fsid, path, now):
+    """Pass-level grouper for ONE session, run after the planner/courier passes: reorganizes the open-top
+    forest — mainly to catch tops the COURIER planted (the planner already groups inline after each of its
+    own placements). Event-gated via _group_store; a status re-roll follows a structural change."""
+    store = load_goals(fsid)
+    before = store.get("groupedSig")
+    relinks = _group_store(store, fsid, now)
+    if relinks or store.get("groupedSig") != before:   # persist only on a real change (relink or a new sig)
+        if relinks:                                    # a structural change needs a status re-roll
+            rollup_status(store, _session_closed(parsed_session(fsid, [path], now)))
+        save_goals(fsid, store)
     return relinks
 
 
