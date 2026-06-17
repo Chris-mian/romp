@@ -372,13 +372,16 @@ test("token grid: per-window sessions/pipeline split in/out, plus the active tab
     windows: { fiveHour: 18000, week: 604800 },
   } });
   assert.equal(panel._tokensWrap.style.display, "flex");
-  assert.equal(panel._tokRows.sessions.five.textContent, "800k/200k", "sessions, last 5h: in/out");
-  assert.equal(panel._tokRows.sessions.week.textContent, "6.0M/900k", "sessions, last week: in/out");
-  assert.equal(panel._tokRows.pipeline.five.textContent, "60k/40k", "pipeline, last 5h: in/out");
-  assert.equal(panel._tokRows.pipeline.week.textContent, "300k/200k", "pipeline, last week: in/out");
-  assert.match(panel._tokActive.textContent, /alpha/, "active-tab line names the focused session");
-  assert.match(panel._tokActive.textContent, /840k/, "active-tab lifetime in");
-  assert.match(panel._tokActive.textContent, /120k/, "active-tab lifetime out");
+  // each cell now leads with the TOTAL, then the in/out split in parens, in/out colour-tinted
+  const cell = (r: string, w: string) => panel._tokRows[r][w].innerHTML;
+  assert.match(cell("sessions", "five"), /1\.0M[\s\S]*800k in[\s\S]*200k out/, "sessions 5h: total then in/out");
+  assert.match(cell("sessions", "week"), /6\.9M[\s\S]*6\.0M in[\s\S]*900k out/, "sessions week");
+  assert.match(cell("pipeline", "five"), /100k[\s\S]*60k in[\s\S]*40k out/, "pipeline 5h");
+  assert.match(cell("pipeline", "week"), /500k[\s\S]*300k in[\s\S]*200k out/, "pipeline week");
+  assert.ok(cell("sessions", "five").includes("#5fb3c4") && cell("sessions", "five").includes("#8ccf6b"), "in/out are colour-tinted");
+  assert.match(panel._tokActive.innerHTML, /alpha/, "active-tab line names the focused session");
+  assert.match(panel._tokActive.innerHTML, /840k in/, "active-tab lifetime in");
+  assert.match(panel._tokActive.innerHTML, /120k out/, "active-tab lifetime out");
 });
 test("active-tab token line follows a tab switch without a fresh band (_select)", () => {
   const panel = new TimelinePanel(makeNode("div"));
@@ -388,9 +391,9 @@ test("active-tab token line follows a tab switch without a fresh band (_select)"
     week: { sessions: { in: 1, out: 1, cache_r: 0 }, pipeline: { total: { calls: 0, in: 0, out: 0 }, byJudge: {}, byTier: {} } },
     windows: { fiveHour: 18000, week: 604800 },
   } });
-  assert.match(panel._tokActive.textContent, /alpha/);
+  assert.match(panel._tokActive.innerHTML, /alpha/);
   panel._select("S2");   // switch tabs — the line must repoint immediately, before the next poll
-  assert.match(panel._tokActive.textContent, /beta/, "the line now reflects the newly-selected lane");
+  assert.match(panel._tokActive.innerHTML, /beta/, "the line now reflects the newly-selected lane");
 });
 test("token grid is hidden when there's no token data and no active-tab usage", () => {
   const panel = new TimelinePanel(makeNode("div"));

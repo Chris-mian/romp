@@ -67,6 +67,18 @@ function esc(s) { return (s || '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<'
 function clock(t) { const d = new Date(t * 1000); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); }
 function fmtWin(s) { return s < 3600 ? Math.round(s / 60) + 'm' : (s / 3600 < 10 ? (s / 3600).toFixed(1) : Math.round(s / 3600)) + 'h'; }
 function fmtTokens(n) { n = Math.round(n || 0); return n >= 1e6 ? (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + 'M' : n >= 1e3 ? Math.round(n / 1e3) + 'k' : String(n); }
+// token in/out colours (footer): the TOTAL leads (bright), then the in/out breakdown in parens, each tinted
+// so the eye can glance the sum AND the split. in = teal, out = green — distinct from the lane labels.
+const TOK_IN = '#5fb3c4', TOK_OUT = '#8ccf6b';
+function ioHTML(d) {
+  if (!d || (!(d.in || 0) && !(d.out || 0))) return '–';
+  const i = d.in || 0, o = d.out || 0;
+  return fmtTokens(i + o) + ' <span style="opacity:.5">(</span>'
+    + '<span style="color:' + TOK_IN + '">' + fmtTokens(i) + ' in</span>'
+    + '<span style="opacity:.4"> / </span>'
+    + '<span style="color:' + TOK_OUT + '">' + fmtTokens(o) + ' out</span>'
+    + '<span style="opacity:.5">)</span>';
+}
 function fmtDur(ms) { ms = Math.round(ms || 0); return ms < 1000 ? ms + 'ms' : ms < 60000 ? (ms / 1000).toFixed(1) + 's' : Math.round(ms / 60000) + 'm'; }
 // Pure (exported for tests): a long idle gap's SPAN as a concise day/week/month label ("2 days", "1 week",
 // "3 weeks", "2 months") so a multi-day broken-axis break isn't ambiguous between its two HH:MM boundary
@@ -351,7 +363,7 @@ class TimelinePanel {
     const tgrid = this._tokensWrap.createDiv();
     tgrid.setAttribute('style', 'display:grid;grid-template-columns:auto auto auto;gap:1px 12px;align-items:center;');
     const tHead = (txt, num) => { const c = tgrid.createSpan({ text: txt }); c.setAttribute('style', 'opacity:0.6;' + (num ? 'text-align:right;' : '')); };
-    tHead('tokens · in/out'); tHead('5h', true); tHead('week', true);
+    tHead('tokens · total (in/out)'); tHead('5h', true); tHead('week', true);
     const tRow = (lbl, color) => {
       tgrid.createSpan({ text: lbl }).setAttribute('style', 'color:' + color + ';opacity:0.9;');
       const five = tgrid.createSpan({ text: '–' }); five.setAttribute('style', 'text-align:right;font-variant-numeric:tabular-nums;opacity:0.9;');
@@ -821,15 +833,14 @@ class TimelinePanel {
     if (!this._tokRows) return;
     const w5 = tokens && tokens.fiveHour, ww = tokens && tokens.week;
     const sP = (w) => w && w.sessions, pP = (w) => w && w.pipeline && w.pipeline.total;
-    const io = (d) => d ? (fmtTokens(d.in || 0) + '/' + fmtTokens(d.out || 0)) : '–';
     const has = (d) => d && ((d.in || 0) + (d.out || 0)) > 0;
     const anyWin = has(sP(w5)) || has(pP(w5)) || has(sP(ww)) || has(pP(ww));
     if (!anyWin && !this._activeTabHasTokens()) { this._tokensWrap.style.display = 'none'; return; }
     this._tokensWrap.style.display = 'flex';
-    this._tokRows.sessions.five.textContent = io(sP(w5));
-    this._tokRows.sessions.week.textContent = io(sP(ww));
-    this._tokRows.pipeline.five.textContent = io(pP(w5));
-    this._tokRows.pipeline.week.textContent = io(pP(ww));
+    this._tokRows.sessions.five.innerHTML = ioHTML(sP(w5));   // total (in / out), in/out colour-tinted
+    this._tokRows.sessions.week.innerHTML = ioHTML(sP(ww));
+    this._tokRows.pipeline.five.innerHTML = ioHTML(pP(w5));
+    this._tokRows.pipeline.week.innerHTML = ioHTML(pP(ww));
     // hovers: cache-read on the sessions cells; calls/cost + per-judge breakdown on the pipeline cells.
     const sessTitle = (w, lbl) => 'coding sessions · last ' + lbl + ' — in ' + fmtTokens((sP(w) || {}).in || 0)
       + ' / out ' + fmtTokens((sP(w) || {}).out || 0) + '; ' + fmtTokens((sP(w) || {}).cache_r || 0) + ' cache-read';
@@ -866,8 +877,8 @@ class TimelinePanel {
     const s = this._activeTabSession(), t = s && s.tokensAll;
     if (!s) { this._tokActive.textContent = ''; this._tokActive.removeAttribute('title'); return; }
     const name = s.name || s.id;
-    if (!t || !((t.in || 0) + (t.out || 0))) { this._tokActive.textContent = 'this tab · ' + name + ': –'; return; }
-    this._tokActive.textContent = 'this tab · ' + name + ': in ' + fmtTokens(t.in) + ' / out ' + fmtTokens(t.out);
+    if (!t || !((t.in || 0) + (t.out || 0))) { this._tokActive.innerHTML = 'this tab · ' + esc(name) + ': –'; return; }
+    this._tokActive.innerHTML = 'this tab · ' + esc(name) + ': ' + ioHTML(t);
     this._tokActive.setAttribute('title', 'lifetime usage of the focused chat (' + name + ') — in '
       + fmtTokens(t.in) + ' / out ' + fmtTokens(t.out) + '; ' + fmtTokens(t.cache_r || 0) + ' cache-read');
   }
