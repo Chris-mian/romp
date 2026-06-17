@@ -373,31 +373,37 @@ class ArchiveParse(unittest.TestCase):
 
 class PlanParse(unittest.TestCase):
     def test_mint_sub_amend(self):
-        self.assertEqual(jd._parse_goal_edit("MINT :: Rebuild the parser :: DONE none :: BLOCK no", 3)["op"], "MINT")
-        e = jd._parse_goal_edit("SUB 2 :: added a test :: DONE 2 :: BLOCK yes", 3)
-        self.assertEqual((e["op"], e["n"], e["done"], e["block"]), ("SUB", 2, 2, True))
-        self.assertEqual(jd._parse_goal_edit("AMEND 1 :: new goal text :: DONE none :: BLOCK no", 3)["op"], "AMEND")
+        self.assertEqual(jd._parse_plan('{"ops":[{"why":"new ask","do":"mint","text":"Rebuild the parser"}]}', 3),
+                         [{"do": "mint", "why": "new ask", "text": "Rebuild the parser"}])
+        ops = jd._parse_plan('{"ops":[{"why":"step","do":"sub","under":2,"text":"added a test"},'
+                             '{"why":"owed a call","do":"block","ref":1}]}', 3)
+        self.assertEqual([o["do"] for o in ops], ["sub", "block"])
+        self.assertEqual((ops[0]["under"], ops[1]["ref"]), (2, 1))
+        self.assertEqual(jd._parse_plan('{"ops":[{"why":"redef","do":"amend","goal":1,"text":"new goal"}]}', 3)[0]["do"],
+                         "amend")
 
-    def test_out_of_range_ref_falls_back_to_mint(self):
-        e = jd._parse_goal_edit("SUB 9 :: orphan step :: DONE none :: BLOCK no", 3)  # only 3 open
-        self.assertEqual(e["op"], "MINT", "an invalid ref must still place the segment, never orphan")
+    def test_out_of_range_sub_falls_back_to_mint(self):
+        ops = jd._parse_plan('{"ops":[{"why":"x","do":"sub","under":9,"text":"orphan step"}]}', 3)  # only 3 open
+        self.assertEqual(ops[0]["do"], "mint", "an invalid sub ref still places the work, never orphan")
 
-    def test_bad_done_dropped_and_garbage_none(self):
-        self.assertIsNone(jd._parse_goal_edit("SUB 1 :: step :: DONE 9 :: BLOCK no", 3)["done"])
-        self.assertIsNone(jd._parse_goal_edit("i cannot help with that", 3))
+    def test_bad_refs_dropped_and_garbage_none(self):
+        self.assertIsNone(jd._parse_plan('{"ops":[{"why":"x","do":"done","goal":9}]}', 3),
+                          "a done with only an out-of-range goal -> dropped -> no usable op")
+        self.assertIsNone(jd._parse_plan("i cannot help with that", 3), "non-JSON -> None")
+        self.assertIsNone(jd._parse_plan('{"ops":[]}', 3), "empty ops -> None")
+
+    def test_multi_op_finish_one_start_another(self):
+        ops = jd._parse_plan('{"ops":[{"why":"finished it","do":"done","goal":1},'
+                             '{"why":"new ask","do":"mint","text":"start Y"}]}', 2)
+        self.assertEqual([o["do"] for o in ops], ["done", "mint"], "a segment can finish one goal AND start another")
 
     def test_skip_verdict(self):
-        self.assertEqual(jd._parse_goal_edit("SKIP", 3)["op"], "SKIP")
-        self.assertEqual(jd._parse_goal_edit("skip", 3)["op"], "SKIP", "case-insensitive")
-        self.assertEqual(jd._parse_goal_edit("SKIP — nothing happened", 3)["op"], "SKIP", "leading SKIP wins")
-        self.assertEqual(jd._parse_goal_edit("MINT :: skip the cache :: DONE none :: BLOCK no", 3)["op"], "MINT",
-                         "a placement whose TEXT contains 'skip' is not mistaken for SKIP")
+        self.assertEqual(jd._parse_plan('{"ops":[{"why":"just an ack","do":"skip"}]}', 3),
+                         [{"do": "skip", "why": "just an ack"}])
 
-    def test_done_self_parsed(self):
-        e = jd._parse_goal_edit("MINT :: a small task :: DONE self :: BLOCK no", 3)
-        self.assertTrue(e["done_self"]); self.assertIsNone(e["done"], "self is distinct from a numeric done index")
-        e2 = jd._parse_goal_edit("SUB 1 :: step :: DONE 1 :: BLOCK no", 2)
-        self.assertFalse(e2["done_self"]); self.assertEqual(e2["done"], 1, "numeric DONE n still parses")
+    def test_tolerates_fences_and_prose(self):
+        raw = 'Sure:\n```json\n{"ops":[{"why":"x","do":"mint","text":"a goal"}]}\n```'
+        self.assertEqual(jd._parse_plan(raw, 3)[0]["do"], "mint", "strips ``` fences + surrounding prose")
 
 
 def _store():
@@ -417,82 +423,88 @@ def _mknode(s, text, parent=None, t=T0, complete=False):
 class PlanApply(unittest.TestCase):
     def test_mint_then_sub_under_it(self):
         s = _store()
-        jd.apply_goal_edit(s, "seg1", T0, {"op": "MINT", "n": None, "text": "Goal A", "done": None, "block": False}, [])
-        jd.apply_goal_edit(s, "seg2", T0 + 10, {"op": "SUB", "n": 1, "text": "step 1", "done": None, "block": False},
-                           jd.open_menu(s))
+        jd.apply_plan(s, "seg1", T0, [{"do": "mint", "why": "x", "text": "Goal A"}], [])
+        jd.apply_plan(s, "seg2", T0 + 10, [{"do": "sub", "why": "x", "under": 1, "text": "step 1"}], jd.open_menu(s))
         sub = [n for n in s["nodes"].values() if n["parentId"] is not None]
         self.assertEqual(len(sub), 1)
         self.assertEqual(s["placements"]["seg2"], sub[0]["id"])
         self.assertEqual(s["nodes"][sub[0]["parentId"]]["text"], "Goal A", "sub files under the minted goal")
 
-    def test_done_marks_complete_and_clears_block(self):
+    def test_done_and_block_persist_their_reasons(self):
         s = _store()
-        jd.apply_goal_edit(s, "seg1", T0, {"op": "MINT", "n": None, "text": "G", "done": None, "block": True}, [])
+        jd.apply_plan(s, "seg1", T0, [{"do": "mint", "why": "new ask", "text": "G"},
+                                      {"do": "block", "why": "needs the user's go-ahead", "ref": 1}], [])
         nid = s["placements"]["seg1"]
         self.assertTrue(s["nodes"][nid]["blocked"])
-        jd.apply_goal_edit(s, "seg2", T0 + 10, {"op": "AMEND", "n": 1, "text": "G", "done": 1, "block": False},
-                           jd.open_menu(s))
+        self.assertEqual(s["nodes"][nid]["blockWhy"], "needs the user's go-ahead", "block reason persisted")
+        self.assertEqual(s["nodes"][nid]["why"], "new ask", "creation rationale persisted (for the modal tooltip)")
+        jd.apply_plan(s, "seg2", T0 + 10, [{"do": "done", "why": "shipped it", "goal": 1}], jd.open_menu(s))
         self.assertTrue(s["nodes"][nid]["nodeComplete"])
         self.assertFalse(s["nodes"][nid]["blocked"], "completing a node clears its soft block")
+        self.assertEqual(s["nodes"][nid]["doneWhy"], "shipped it", "done reason persisted")
 
-
-class DoneSelf(unittest.TestCase):
-    """simplify's DONE-self: atomic mint-and-complete — complete the node placed in THIS reply,
-    clearing its subtree blocks, composing with numeric DONE n."""
-
-    def test_mint_born_complete(self):
+    def test_done_only_segment_is_marked_processed(self):
         s = _store()
-        jd.apply_goal_edit(s, "s1", T0, {"op": "MINT", "n": None, "text": "small task",
-                                         "done": None, "block": False, "done_self": True}, [])
+        jd.apply_plan(s, "seg1", T0, [{"do": "mint", "why": "x", "text": "G"}], [])
+        jd.apply_plan(s, "seg2", T0 + 10, [{"do": "done", "why": "finished", "goal": 1}], jd.open_menu(s))
+        self.assertIn("seg2", s["placements"], "a done-only segment still records a placements key (idempotent)")
+
+
+class PlanRef(unittest.TestCase):
+    """A done/block op targets a node CREATED earlier in the SAME reply via "ref" (1-based among this
+    reply's mints/subs) — the multi-op replacement for the old DONE-self, composing with goal-indexed ops."""
+
+    def test_mint_born_complete_via_ref(self):
+        s = _store()
+        jd.apply_plan(s, "s1", T0, [{"do": "mint", "why": "x", "text": "small task"},
+                                    {"do": "done", "why": "done in one go", "ref": 1}], [])
         self.assertTrue(s["nodes"][s["placements"]["s1"]]["nodeComplete"],
-                        "MINT + DONE self → the new top is born complete")
+                        "mint + done ref → the new top is born complete")
 
-    def test_sub_step_self_completes_only_the_step(self):
+    def test_sub_step_ref_completes_only_the_step(self):
         s = _store()
-        jd.apply_goal_edit(s, "s1", T0, {"op": "MINT", "n": None, "text": "G",
-                                         "done": None, "block": False, "done_self": False}, [])
-        jd.apply_goal_edit(s, "s2", T0 + 10, {"op": "SUB", "n": 1, "text": "step",
-                                              "done": None, "block": False, "done_self": True}, jd.open_menu(s))
+        jd.apply_plan(s, "s1", T0, [{"do": "mint", "why": "x", "text": "G"}], [])
+        jd.apply_plan(s, "s2", T0 + 10, [{"do": "sub", "why": "x", "under": 1, "text": "step"},
+                                         {"do": "done", "why": "x", "ref": 1}], jd.open_menu(s))
         step = next(nd for nd in s["nodes"].values() if nd["parentId"] is not None)
-        self.assertTrue(step["nodeComplete"], "SUB + DONE self → the step is complete")
+        self.assertTrue(step["nodeComplete"], "sub + done ref → the step is complete")
         self.assertFalse(s["nodes"][s["placements"]["s1"]]["nodeComplete"], "the parent goal is NOT completed")
 
-    def test_self_clears_new_node_subtree_blocks(self):
+    def test_done_goal_clears_subtree_blocks(self):
         s = _store()
-        jd.apply_goal_edit(s, "s1", T0, {"op": "MINT", "n": None, "text": "G",
-                                         "done": None, "block": False, "done_self": False}, [])
-        jd.apply_goal_edit(s, "s2", T0 + 10, {"op": "SUB", "n": 1, "text": "sub",
-                                              "done": None, "block": True, "done_self": False}, jd.open_menu(s))
+        jd.apply_plan(s, "s1", T0, [{"do": "mint", "why": "x", "text": "G"}], [])
+        jd.apply_plan(s, "s2", T0 + 10, [{"do": "sub", "why": "x", "under": 1, "text": "sub"},
+                                         {"do": "block", "why": "owed", "ref": 1}], jd.open_menu(s))
         sub = next(nd for nd in s["nodes"].values() if nd["parentId"] is not None)
         self.assertTrue(sub["blocked"])
         menu = jd.open_menu(s)
         gn = next(i for i, nd in enumerate(menu, 1) if nd["text"] == "G")
-        jd.apply_goal_edit(s, "s3", T0 + 20, {"op": "AMEND", "n": gn, "text": "G",
-                                              "done": None, "block": False, "done_self": True}, menu)
-        self.assertTrue(s["nodes"][s["placements"]["s1"]]["nodeComplete"], "AMEND G + DONE self → G complete")
-        self.assertFalse(sub["blocked"], "DONE self clears the completed node's subtree blocks")
+        jd.apply_plan(s, "s3", T0 + 20, [{"do": "done", "why": "x", "goal": gn}], menu)
+        self.assertTrue(s["nodes"][s["placements"]["s1"]]["nodeComplete"], "done G → G complete")
+        self.assertFalse(sub["blocked"], "completing G clears its subtree blocks")
 
-    def test_self_composes_with_numeric_done(self):
+    def test_ref_and_goal_compose_in_one_reply(self):
         s = _store()
-        jd.apply_goal_edit(s, "s1", T0, {"op": "MINT", "n": None, "text": "G1",
-                                         "done": None, "block": False, "done_self": False}, [])
+        jd.apply_plan(s, "s1", T0, [{"do": "mint", "why": "x", "text": "G1"}], [])
         menu = jd.open_menu(s)                                   # [G1]
-        jd.apply_goal_edit(s, "s2", T0 + 10, {"op": "MINT", "n": None, "text": "G2",
-                                              "done": 1, "block": False, "done_self": True}, menu)
-        self.assertTrue(s["nodes"][s["placements"]["s1"]]["nodeComplete"], "numeric DONE 1 completes G1")
-        self.assertTrue(s["nodes"][s["placements"]["s2"]]["nodeComplete"], "DONE self completes the new G2")
+        jd.apply_plan(s, "s2", T0 + 10, [{"do": "mint", "why": "x", "text": "G2"},
+                                         {"do": "done", "why": "x", "goal": 1},
+                                         {"do": "done", "why": "x", "ref": 1}], menu)
+        self.assertTrue(s["nodes"][s["placements"]["s1"]]["nodeComplete"], "done goal 1 completes G1")
+        self.assertTrue(s["nodes"][s["placements"]["s2"]]["nodeComplete"], "done ref 1 completes the new G2")
 
 
 class PlanRollup(unittest.TestCase):
-    def _mint(self, s, seg, t, text, done=None, block=False):
-        jd.apply_goal_edit(s, seg, t, {"op": "MINT", "n": None, "text": text, "done": done, "block": block},
-                           jd.open_menu(s))
+    def _mint(self, s, seg, t, text):
+        jd.apply_plan(s, seg, t, [{"do": "mint", "why": "x", "text": text}], jd.open_menu(s))
+
+    def _done(self, s, seg, t, n):
+        jd.apply_plan(s, seg, t, [{"do": "done", "why": "x", "goal": n}], jd.open_menu(s))
 
     def test_nonfocus_complete_goal_completes_focus_held_open(self):
         s = _store()
         self._mint(s, "s1", T0, "G1")
-        jd.apply_goal_edit(s, "s2", T0 + 10, {"op": "AMEND", "n": 1, "text": "G1", "done": 1, "block": False},
-                           jd.open_menu(s))                       # complete G1
+        self._done(s, "s2", T0 + 10, 1)                          # complete G1 (done-only, focus unchanged)
         self._mint(s, "s3", T0 + 20, "G2")                       # G2 is now the active focus
         g1, g2 = s["placements"]["s1"], s["placements"]["s3"]
         jd.rollup_status(s, session_closed=False)
@@ -502,8 +514,7 @@ class PlanRollup(unittest.TestCase):
     def test_focus_complete_goal_held_until_session_closed(self):
         s = _store()
         self._mint(s, "s1", T0, "G")
-        jd.apply_goal_edit(s, "s2", T0 + 10, {"op": "AMEND", "n": 1, "text": "G", "done": 1, "block": False},
-                           jd.open_menu(s))                       # G complete, still the only/active focus
+        self._done(s, "s2", T0 + 10, 1)                          # G complete, still the only/active focus
         gid = s["placements"]["s1"]
         jd.rollup_status(s, session_closed=False)
         self.assertEqual(s["status"][gid], "working", "complete but still the active focus -> held open (no flicker)")
@@ -513,23 +524,21 @@ class PlanRollup(unittest.TestCase):
     def test_blocked_beats_completed(self):
         s = _store()
         self._mint(s, "s1", T0, "G")
-        jd.apply_goal_edit(s, "s2", T0 + 10, {"op": "SUB", "n": 1, "text": "needs a decision", "done": None,
-                                              "block": True}, jd.open_menu(s))   # blocked sub-node under G
+        jd.apply_plan(s, "s2", T0 + 10, [{"do": "sub", "why": "x", "under": 1, "text": "needs a decision"},
+                                         {"do": "block", "why": "owed a decision", "ref": 1}], jd.open_menu(s))
         gid = s["placements"]["s1"]
         jd.rollup_status(s, session_closed=True)
         self.assertEqual(s["status"][gid], "blocked", "a blocked descendant beats completion")
 
     def test_top_done_with_open_step_completes_when_settled(self):
-        """The real-fleet pattern (17/27 top-goals): the planner DONE's the TOP goal (the segment
-        discharged the whole ask) but a trailing step was never DONE'd. The old whole-subtree rule
-        held this working forever (0/27 ever reached all-leaves-complete); the top-done rule
-        completes it once settled."""
+        """The real-fleet pattern: the planner DONEs the TOP goal (the segment discharged the whole ask)
+        but a trailing step was never DONE'd. The old whole-subtree rule held this working forever; the
+        top-done rule completes it once settled."""
         s = _store()
         self._mint(s, "s1", T0, "G1")                                            # top goal
-        jd.apply_goal_edit(s, "s2", T0 + 10, {"op": "SUB", "n": 1, "text": "a step", "done": None,
-                                              "block": False}, jd.open_menu(s))   # step under G1, never DONE'd
-        jd.apply_goal_edit(s, "s3", T0 + 20, {"op": "AMEND", "n": 1, "text": "G1", "done": 1,
-                                              "block": False}, jd.open_menu(s))   # DONE the TOP goal #1
+        jd.apply_plan(s, "s2", T0 + 10, [{"do": "sub", "why": "x", "under": 1, "text": "a step"}],
+                      jd.open_menu(s))                                            # step under G1, never DONE'd
+        self._done(s, "s3", T0 + 20, 1)                                          # DONE the TOP goal #1
         self._mint(s, "s4", T0 + 30, "G2")                                       # G2 now the focus → G1 settled
         g1, step = s["placements"]["s1"], s["placements"]["s2"]
         self.assertTrue(s["nodes"][g1]["nodeComplete"])
@@ -599,8 +608,9 @@ class PlanPass(unittest.TestCase):
             (names / SID).write_text("testsess\t%s\t#abcdef\n" % str(cdir))
             saved = (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.plan_llm)
             jd.NAMES, jd.PROJECTS, jd.GOALDIR = names, proj, td / "goals"
-            jd.plan_llm = lambda text, menu: ("MINT :: Goal one :: DONE none :: BLOCK no"
-                                              if "no open goals" in menu else "SUB 1 :: a step :: DONE none :: BLOCK no")
+            jd.plan_llm = lambda text, menu: ('{"ops":[{"why":"x","do":"mint","text":"Goal one"}]}'
+                                              if "no open goals" in menu
+                                              else '{"ops":[{"why":"x","do":"sub","under":1,"text":"a step"}]}')
             try:
                 now = T0 + 5000
                 n1 = jd.run_plan(now=now)
@@ -640,7 +650,8 @@ class PlanSkip(unittest.TestCase):
 
             def fake_plan(text, menu):
                 calls.append(text)
-                return "MINT :: did tool work :: DONE none :: BLOCK no" if "TOOLS USED" in text else "SKIP"
+                return ('{"ops":[{"why":"x","do":"mint","text":"did tool work"}]}' if "TOOLS USED" in text
+                        else '{"ops":[{"why":"just an ack","do":"skip"}]}')
             jd.plan_llm = fake_plan
             try:
                 now = T0 + 5000
@@ -670,50 +681,47 @@ class PlanTuning(unittest.TestCase):
     def test_steps_do_not_chain_past_max_depth(self):
         s = _store()
         # mint G, then keep SUB-ing under the most-recently-created node (the old chaining bug)
-        jd.apply_goal_edit(s, "s0", T0, {"op": "MINT", "n": None, "text": "G", "done": None, "block": False}, [])
+        jd.apply_plan(s, "s0", T0, [{"do": "mint", "why": "x", "text": "G"}], [])
         for i in range(1, 6):
             menu = jd.open_menu(s)
             last = max(s["nodes"].values(), key=lambda nd: nd["t"])           # newest node
             n = next(j for j, nd in enumerate(menu, 1) if nd["id"] == last["id"])
-            jd.apply_goal_edit(s, "s%d" % i, T0 + i, {"op": "SUB", "n": n, "text": "step %d" % i,
-                                                      "done": None, "block": False}, menu)
+            jd.apply_plan(s, "s%d" % i, T0 + i, [{"do": "sub", "why": "x", "under": n, "text": "step %d" % i}], menu)
         depths = [self._depth_of(s, nid) for nid in s["nodes"]]
         self.assertLessEqual(max(depths), jd.MAX_DEPTH, "the tree stays shallow; steps don't chain")
 
     def test_unblock_newest_wins(self):
         s = _store()
-        jd.apply_goal_edit(s, "s1", T0, {"op": "MINT", "n": None, "text": "G", "done": None, "block": False}, [])
-        jd.apply_goal_edit(s, "s2", T0 + 10, {"op": "SUB", "n": 1, "text": "needs a decision",
-                                              "done": None, "block": True}, jd.open_menu(s))
-        self.assertTrue(any(nd["blocked"] for nd in s["nodes"].values()), "blocked after the BLOCK segment")
+        jd.apply_plan(s, "s1", T0, [{"do": "mint", "why": "x", "text": "G"}], [])
+        jd.apply_plan(s, "s2", T0 + 10, [{"do": "sub", "why": "x", "under": 1, "text": "needs a decision"},
+                                         {"do": "block", "why": "owed", "ref": 1}], jd.open_menu(s))
+        self.assertTrue(any(nd["blocked"] for nd in s["nodes"].values()), "blocked after the block op")
         # later non-block work ON THAT BRANCH (under the blocked node) clears the stale block — the user
         # answered and work resumed there (surgical newest-wins; a sibling branch is left alone, below).
         menu = jd.open_menu(s)
         nb = next(i for i, nd in enumerate(menu, 1) if nd["text"] == "needs a decision")
-        jd.apply_goal_edit(s, "s3", T0 + 20, {"op": "SUB", "n": nb, "text": "did the next thing",
-                                              "done": None, "block": False}, menu)
+        jd.apply_plan(s, "s3", T0 + 20, [{"do": "sub", "why": "x", "under": nb, "text": "did the next thing"}], menu)
         self.assertFalse(any(nd["blocked"] for nd in s["nodes"].values()), "newer work on the branch un-blocks it")
 
     def test_topic_placement_prompt_and_menu_cap(self):
         # the recency-bias fix: the prompt tells the model to scan the WHOLE list + file by topic, and the
         # menu cap is wide enough that an old topic-matching goal doesn't scroll off.
-        self.assertIn("SCAN", jd.PLAN_SYS); self.assertIn("NEVER default to the most recent goal", jd.PLAN_SYS)
-        self.assertIn("MINT only when NO open goal matches", jd.PLAN_SYS)
+        self.assertIn("SCAN THE WHOLE", jd.PLAN_SYS)
+        self.assertIn("never default to the most recent", jd.PLAN_SYS)
+        self.assertIn("mint only when NO open goal matches", jd.PLAN_SYS)
         self.assertGreaterEqual(jd.open_menu.__defaults__[0], 20, "menu cap covers old goals (≥20)")
 
     def test_sub_files_under_the_old_topic_goal_not_the_newest(self):
         # mechanics: a SUB targeting an OLD goal lands there, not the newer one — the planner can reach
         # any menu index, so the topic clause's older-goal choice is honored end-to-end.
         s = _store()
-        jd.apply_goal_edit(s, "old", T0, {"op": "MINT", "n": None, "text": "the OLD topic",
-                                          "done": None, "block": False}, [])
-        jd.apply_goal_edit(s, "new", T0 + 1000, {"op": "MINT", "n": None, "text": "a NEWER topic",
-                                                 "done": None, "block": False}, jd.open_menu(s))
+        jd.apply_plan(s, "old", T0, [{"do": "mint", "why": "x", "text": "the OLD topic"}], [])
+        jd.apply_plan(s, "new", T0 + 1000, [{"do": "mint", "why": "x", "text": "a NEWER topic"}], jd.open_menu(s))
         menu = jd.open_menu(s)                                    # oldest-first: [OLD, NEWER]
         self.assertEqual([nd["text"] for nd in menu], ["the OLD topic", "a NEWER topic"])
         old_idx = next(i for i, nd in enumerate(menu, 1) if nd["text"] == "the OLD topic")
-        jd.apply_goal_edit(s, "seg", T0 + 2000, {"op": "SUB", "n": old_idx, "text": "on the old topic",
-                                                 "done": None, "block": False}, menu)
+        jd.apply_plan(s, "seg", T0 + 2000, [{"do": "sub", "why": "x", "under": old_idx, "text": "on the old topic"}],
+                      menu)
         step = next(nd for nd in s["nodes"].values() if nd["parentId"] is not None)
         self.assertEqual(s["nodes"][step["parentId"]]["text"], "the OLD topic", "filed under the OLD goal")
 
@@ -723,18 +731,20 @@ class BlockCompletionCorrectness(unittest.TestCase):
     rule, surgical (branch-only) un-block, completion clearing descendant blocks, bottom-up rollup."""
 
     def _mint(self, s, seg, t, text):
-        jd.apply_goal_edit(s, seg, t, {"op": "MINT", "n": None, "text": text, "done": None, "block": False},
-                           jd.open_menu(s))
+        jd.apply_plan(s, seg, t, [{"do": "mint", "why": "x", "text": text}], jd.open_menu(s))
 
     def _sub(self, s, seg, t, parent_text, text, block=False):
         menu = jd.open_menu(s)
         n = next(i for i, nd in enumerate(menu, 1) if nd["text"] == parent_text)
-        jd.apply_goal_edit(s, seg, t, {"op": "SUB", "n": n, "text": text, "done": None, "block": block}, menu)
+        ops = [{"do": "sub", "why": "x", "under": n, "text": text}]
+        if block:
+            ops.append({"do": "block", "why": "owed", "ref": 1})
+        jd.apply_plan(s, seg, t, ops, menu)
 
     def test_block_prompt_uses_the_weighing_rule(self):
         # #1: source-level guard that the validated weighing rule is in the planner prompt (the
         # behavioural A/B is simplify's; this locks the prompt against an accidental revert).
-        for phrase in ("WAITING ON THE USER", "answering or reporting is not", "WEIGHING",
+        for phrase in ("WAITING ON THE USER", "is NOT blocking", "WEIGHING",
                        "the owed decision WINS"):
             self.assertIn(phrase, jd.PLAN_SYS, phrase)
 
@@ -760,7 +770,7 @@ class BlockCompletionCorrectness(unittest.TestCase):
         self.assertTrue(sub["blocked"])
         menu = jd.open_menu(s)
         n = next(i for i, nd in enumerate(menu, 1) if nd["text"] == "G")
-        jd.apply_goal_edit(s, "s3", T0 + 2, {"op": "AMEND", "n": n, "text": "G", "done": n, "block": False}, menu)
+        jd.apply_plan(s, "s3", T0 + 2, [{"do": "done", "why": "x", "goal": n}], menu)
         self.assertFalse(sub["blocked"], "completing the parent clears the descendant's block")
 
     def test_bottom_up_completion_when_all_children_done(self):
@@ -928,7 +938,7 @@ class SweepSession(unittest.TestCase):
         (names / SID).write_text("testsess\t%s\t#abcdef\n" % str(cdir))
         jd.NAMES, jd.PROJECTS, jd.GOALDIR = names, proj, td / "goals"
         # positive-only: always MINT a top, never DONE -> every top is left 'working'
-        jd.plan_llm = lambda text, menu: "MINT :: Goal :: DONE none :: BLOCK no"
+        jd.plan_llm = lambda text, menu: '{"ops":[{"why":"x","do":"mint","text":"Goal"}]}'
         self.now = T0 + 5000
 
     def tearDown(self):
