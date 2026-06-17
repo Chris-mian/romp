@@ -1010,15 +1010,16 @@ class ViewBuilder(unittest.TestCase):
     def test_permission_mode_cycle_presses(self):
         # shift+tab press count from current → target in the cycle (the user 2026-06-16): there's no
         # slash command for permission mode, so the picker cycles like the terminal UI.
-        self.assertEqual(km._MODE_CYCLE, ["default", "acceptEdits", "plan"])
+        self.assertEqual(km._MODE_CYCLE, ["auto", "default", "acceptEdits", "plan"])
         self.assertEqual(km._mode_presses("default", "acceptEdits"), 1)
         self.assertEqual(km._mode_presses("default", "plan"), 2)
-        self.assertEqual(km._mode_presses("plan", "default"), 1)             # wraps forward
         self.assertEqual(km._mode_presses("acceptEdits", "plan"), 1)
-        self.assertEqual(km._mode_presses("plan", "plan"), 0)               # already there → no presses
-        self.assertEqual(km._mode_presses("auto", "plan"), 2)               # flag-only current → step from default
-        self.assertIsNone(km._mode_presses("default", "bypassPermissions"))  # not a cycle target
-        self.assertIn("@claude-permission-mode", km.TMUX_FMT)               # kernel reads the mode var
+        self.assertEqual(km._mode_presses("plan", "auto"), 1)               # wraps forward to the top of the cycle
+        self.assertEqual(km._mode_presses("plan", "default"), 2)            # plan(3) → auto(0) → default(1)
+        self.assertEqual(km._mode_presses("auto", "plan"), 3)              # auto(0) → … → plan(3)
+        self.assertEqual(km._mode_presses("plan", "plan"), 0)              # already there → no presses
+        self.assertIsNone(km._mode_presses("default", "bypassPermissions"))  # flag-only, not a cycle target
+        self.assertIn("@claude-permission-mode", km.TMUX_FMT)              # kernel reads the mode var
 
     def test_name_of_resolves_sid(self):
         # a postal atom's peer is the sender's SID; resolve it to a name (+ color via _name_color)

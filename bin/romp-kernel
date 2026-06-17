@@ -516,7 +516,10 @@ def _tmux_send(name, text, model_cmd=False, _async=True):
 # The permission mode has NO slash command — it's the shift+tab cycle (mirrored from the terminal UI,
 # the user 2026-06-16). Set an absolute mode by sending shift+tab (BTab) the right number of times,
 # stepping forward from the session's CURRENT mode (the live @claude-permission-mode var) to the target.
-_MODE_CYCLE = ["default", "acceptEdits", "plan"]
+# The shift+tab cycle, in order (the user 2026-06-16): auto, default (a.k.a. normal), acceptEdits, plan
+# — adjacency gives the usual default→acceptEdits→plan with `auto` as the fourth. dontAsk/bypass are
+# flag-only (not cycled). The cycle is circular, so only the relative order matters for the press count.
+_MODE_CYCLE = ["auto", "default", "acceptEdits", "plan"]
 
 
 def _mode_presses(cur, target):

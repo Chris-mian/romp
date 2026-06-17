@@ -2728,14 +2728,16 @@ const EFFORT_CHOICES: { label: string; value: string }[] =
 // the host sets them by sending shift+tab the right number of times (the user 2026-06-16).
 const MODE_CHOICES: { label: string; value: string }[] = [
   { label: "Normal", value: "default" },
-  { label: "Auto", value: "acceptEdits" },
+  { label: "Accept edits", value: "acceptEdits" },
+  { label: "Auto", value: "auto" },
   { label: "Plan", value: "plan" },
 ];
 // the @claude-permission-mode var → a short readable badge label
 function prettyMode(m: string | undefined): string {
   switch ((m || "").toLowerCase()) {
     case "plan": return "Plan";
-    case "acceptedits": case "auto": return "Auto";
+    case "acceptedits": return "Accept edits";
+    case "auto": return "Auto";
     case "dontask": return "Don’t ask";
     case "bypasspermissions": return "Bypass";
     default: return "Normal";   // default / normal / unknown
@@ -2756,8 +2758,7 @@ function isCurrentMeta(kind: MetaKind, st: Status, value: string): boolean {
   if (kind === "mode") {
     const m = (st.mode || "").toLowerCase();
     if (value === "default") return m === "" || m === "default" || m === "normal";
-    if (value === "acceptEdits") return m === "acceptedits" || m === "auto";   // "auto" = the var's name for accept-edits
-    return m === value.toLowerCase();                                          // plan
+    return m === value.toLowerCase();                                          // auto / acceptEdits / plan match exactly
   }
   return (st.model || "").toLowerCase().startsWith(value);
 }
