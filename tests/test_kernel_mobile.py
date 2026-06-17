@@ -81,6 +81,17 @@ class LandingShell(unittest.TestCase):
         self.assertIn("user-scalable=no", html)
         self.assertIn("maximum-scale=1", html)
 
+    def test_landing_avoids_viewport_fit_cover(self):
+        # regression (the user 2026-06-17): viewport-fit=cover made Android Chrome report a non-zero
+        # env(safe-area-inset-bottom) even though the viewport already sits above the nav bar, so #mtabs's
+        # safe-area padding-bottom rendered as a dead slab below the Chat/Feed/Timeline labels (and cover
+        # clipped the top under the status bar). The default viewport auto-insets clear of system UI and
+        # zeroes env(), so it must NOT request cover — while keeping the pinch-zoom + dvh behavior above.
+        html = km._landing()
+        self.assertNotIn("viewport-fit=cover", html)
+        self.assertIn("100dvh", html)            # still address-bar-aware
+        self.assertIn("user-scalable=no", html)  # pinch-zoom governance preserved alongside the change
+
 
 class TimelineTouchSurface(unittest.TestCase):
     def test_timeline_fits_svg_and_drops_overflow_scroller_on_touch(self):
