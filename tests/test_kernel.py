@@ -405,6 +405,25 @@ class ViewBuilder(unittest.TestCase):
         self.assertTrue(byid["dismissed step"]["done"], "cleared counts as done (faded ✓)")
         self.assertFalse(byid["dismissed step"]["derived"], "cleared is its own flag, not derived")
 
+    def test_ledger_tree_rolls_down_derived_done(self):
+        # done rolls DOWN as well as up (the user 2026-06-16): a child under a done parent is derived-done
+        # (a dimmed ✓), not ○ — matching the feed's ask-tree flatten() so the two views agree.
+        top, child, gc = (SID + ":top", SID + ":child", SID + ":gc")
+        def gn(nid, text, parent, done=False):
+            return {"id": nid, "text": text, "parentId": parent, "nodeComplete": done,
+                    "blocked": False, "cleared": False, "trail": [], "t": T0}
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+            "rompUuid": SID, "seq": 3, "lastNode": None,
+            "nodes": {top: gn(top, "done top", None, done=True),
+                      child: gn(child, "open child", top),               # itself not complete
+                      gc: gn(gc, "open grandchild", child)},             # nor is its child
+            "placements": {}, "status": {}}))
+        byid = {n["text"]: n for n in km.build_session(SID, NOW)["ledger"]["tree"]}
+        self.assertTrue(byid["done top"]["done"] and not byid["done top"]["derived"], "explicit done top")
+        self.assertTrue(byid["open child"]["done"], "a child under a done top is done (roll-down)")
+        self.assertTrue(byid["open child"]["derived"], "and it's DERIVED (dimmed ✓), not explicit")
+        self.assertTrue(byid["open grandchild"]["derived"], "roll-down reaches the whole subtree")
+
     def test_followup_body_quotes_context(self):
         # A feed follow-up quotes the ask it answers ('> <ask>') so the recipient session has context;
         # an explicit group title wins over the node lookup; unknown/none → bare text (the user 2026-06-16).
@@ -780,11 +799,22 @@ class ViewBuilder(unittest.TestCase):
         comp = next(a for a in km.build_feed(NOW)["asks"] if a["column"] == "completed")
         self.assertIsNone(comp["blocked"], "no live permission (idle) → no hard block floor")
 
+    def _sender_goal(self, sender, gid, **kw):
+        """Write a sender's goal store with one linked goal (open by default) — the cross-agent end of a
+        courier handoff that build_feed checks to decide whether the '↪ from <peer>' badge is still live."""
+        nd = {"id": gid, "text": "the sender's linked goal", "parentId": None, "nodeComplete": False,
+              "blocked": False, "cleared": False, "trail": [], "t": NOW - 60}
+        nd.update(kw)
+        (jd.GOALDIR / (sender + ".json")).write_text(json.dumps({
+            "rompUuid": sender, "seq": 1, "lastNode": None, "nodes": {gid: nd},
+            "placements": {}, "status": {}}))
+
     def test_feed_courier_handoff_resolves_origin_sender(self):
-        """A goal planted by the courier carries origin:{peer:<senderSid>,...}; build_feed resolves
-        the sender's rompUuid to a display name + color for the '↪ from <sender>' marker."""
+        """A goal planted by the courier carries origin:{peer:<senderSid>,goalId,...}; while the sender's
+        linked goal is OPEN, build_feed resolves the sender's rompUuid to a name + color for the badge."""
         sender = "99999999-8888-7777-6666-555555555555"
         (jd.NAMES / sender).write_text("sendersess\t/elsewhere\t#ff8800\n")
+        self._sender_goal(sender, sender + ":g1")                 # sender's linked goal is OPEN → live handoff
         g = "%s:g7" % SID
         (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
             "rompUuid": SID, "seq": 7, "lastNode": g,
@@ -800,16 +830,41 @@ class ViewBuilder(unittest.TestCase):
     def test_feed_handoff_origin_falls_back_to_short_sid_when_unnamed(self):
         """If the sender isn't in the names registry, fall back to a short sid (never crash / show blank)."""
         sender = "abcdef00-0000-0000-0000-000000000000"
+        self._sender_goal(sender, sender + ":g1")                 # OPEN linked goal → badge shows
         g = "%s:g8" % SID
         (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
             "rompUuid": SID, "seq": 8, "lastNode": g,
-            "nodes": {g: {"id": g, "text": "Orphaned handoff", "parentId": None,
+            "nodes": {g: {"id": g, "text": "Handoff from an unnamed peer", "parentId": None,
                           "nodeComplete": False, "blocked": False, "cleared": False, "trail": [], "t": NOW - 50,
-                          "origin": {"peer": sender, "goalId": None, "msgId": "m-x.1"}}},
+                          "origin": {"peer": sender, "goalId": sender + ":g1", "msgId": "m-x.1"}}},
             "placements": {}, "status": {g: "working"}}))
         card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
         self.assertEqual(card["origin"]["peer"], sender[:8])
         self.assertIsNone(card["origin"]["color"])
+
+    def test_feed_handoff_origin_hidden_when_fully_absorbed(self):
+        """Once the sender's linked goal is done/cleared/gone (or there was no link), the handoff is fully
+        absorbed → origin=None, so the badge hides and the card reads as the recipient's native goal."""
+        sender = "11112222-3333-4444-5555-666677778888"
+        (jd.NAMES / sender).write_text("sendersess\t/elsewhere\t#ff8800\n")
+        self._sender_goal(sender, sender + ":g1", nodeComplete=True)   # sender finished its piece
+        g = "%s:g9" % SID
+        def write_origin(origin, mid):
+            (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+                "rompUuid": SID, "seq": 9, "lastNode": g,
+                "nodes": {g: {"id": g, "text": "Absorbed handoff", "parentId": None, "nodeComplete": False,
+                              "blocked": False, "cleared": False, "trail": [], "t": NOW - 50,
+                              "origin": {"peer": sender, "goalId": origin, "msgId": mid}}},
+                "placements": {}, "status": {g: "working"}}))
+        write_origin(sender + ":g1", "m-y.2")
+        card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
+        self.assertIsNone(card["origin"], "sender's linked goal is done → fully absorbed → no badge")
+        write_origin(None, "m-y.3")                              # no link at all
+        card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
+        self.assertIsNone(card["origin"], "no link (goalId null) → absorbed → no badge")
+        write_origin(sender + ":gGONE", "m-y.4")                 # link to a goal that no longer exists
+        card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
+        self.assertIsNone(card["origin"], "link to a missing goal → absorbed → no badge")
 
     def test_feed_clear_and_undo(self):
         g1 = "%s:g1" % SID

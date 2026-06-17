@@ -448,7 +448,8 @@ def _rename_session(sid, name):
 
 
 TMUX_FMT = ("#{@romp}|#{@romp-session-id}|#{@claude-state}|#{@claude-state-since}|"
-            "#{@claude-model}|#{@claude-effort}|#{@claude-context}|#{@claude-compact-pct}|#{@identity-bg}")
+            "#{@claude-model}|#{@claude-effort}|#{@claude-context}|#{@claude-compact-pct}|#{@identity-bg}|"
+            "#{@claude-permission-mode}")
 
 
 def _num(x):
@@ -478,7 +479,8 @@ def _tmux_sessions():
             continue
         out[p[1]] = {"state": p[2].strip(), "since": _num(p[3]), "model": p[4].strip(),
                      "effort": p[5].strip(), "context": _num(p[6]), "compactPct": _num(p[7]),
-                     "color": p[8].strip() if p[8].startswith("#") else None}
+                     "color": p[8].strip() if p[8].startswith("#") else None,
+                     "mode": p[9].strip() if len(p) > 9 else ""}   # @claude-permission-mode (shift+tab cycle)
     return out
 
 
@@ -509,6 +511,32 @@ def _tmux_send(name, text, model_cmd=False, _async=True):
             time.sleep(0.85)
             run(["send-keys", "-t", name, "Enter"])                 # accept the hookless /model confirm
     threading.Thread(target=go, daemon=True).start() if _async else go()
+
+
+# The permission mode has NO slash command — it's the shift+tab cycle (mirrored from the terminal UI,
+# the user 2026-06-16). Set an absolute mode by sending shift+tab (BTab) the right number of times,
+# stepping forward from the session's CURRENT mode (the live @claude-permission-mode var) to the target.
+_MODE_CYCLE = ["default", "acceptEdits", "plan"]
+
+
+def _cycle_mode(name, sid, target):
+    if not name or target not in _MODE_CYCLE:
+        return
+    cur = (_tmux_sessions().get(sid) or {}).get("mode") or "default"
+    if cur not in _MODE_CYCLE:
+        cur = "default"                                             # a flag-only mode (auto/bypass…) → step from default
+    presses = (_MODE_CYCLE.index(target) - _MODE_CYCLE.index(cur)) % len(_MODE_CYCLE)
+    if presses == 0:
+        return
+
+    def go():
+        for _ in range(presses):
+            try:
+                subprocess.run(["tmux", "send-keys", "-t", name, "BTab"], timeout=3)
+            except Exception:
+                return
+            time.sleep(0.18)                                        # let each cycle land before the next
+    threading.Thread(target=go, daemon=True).start()
 
 
 # ───────────────── live AskUserQuestion picker: tmux pane → webview → keystrokes ─────────────────
@@ -1334,13 +1362,17 @@ def build_session(sid, now, tmux=None):
     # level (the user 2026-06-16): completed / cleared nodes fold by default, the recent path + open work
     # expand. Pruning moved to the render; the kernel just supplies the structure + done / derived /
     # cleared / recent / onpath flags. Cleared nodes are INCLUDED now (shown faded), not skipped.
-    def _twalk(nid, depth):
+    def _twalk(nid, depth, ancestor_done=False):
         nd = gnodes.get(nid)
         if not nd:
             return
         clr = _cleared(nid)
         explicit = bool(nd.get("nodeComplete"))
-        derived = (not explicit) and (not clr) and _subtree_done(nid)
+        # done rolls BOTH ways, like the ask-tree flatten() (the user 2026-06-16): a node under a done
+        # parent is derived-done too (roll-DOWN via ancestor_done), not just when its own subtree is done
+        # (roll-UP via _subtree_done). So a completed subtree reads as all-dimmed-✓ and the two tree views
+        # agree, instead of a child showing ○ under a done top.
+        derived = (not explicit) and (not clr) and (_subtree_done(nid) or ancestor_done)
         kids = sorted(gkids.get(nid, []), key=_submax, reverse=True)
         tree.append({"id": nid, "text": nd["text"], "depth": depth,
                      "done": explicit or derived or clr, "derived": derived, "cleared": clr,
@@ -1352,7 +1384,7 @@ def build_session(sid, now, tmux=None):
                      "recent": nid == recent, "onpath": nid in onpath,
                      "children": [c for c in kids if c in gnodes]})
         for c in kids:
-            _twalk(c, depth + 1)
+            _twalk(c, depth + 1, ancestor_done=explicit or derived)
     for _rid in sorted(gkids.get(None, []), key=_submax, reverse=True):
         _twalk(_rid, 0)
     # bullets kept as a fallback for goal-less sessions (render shows the tree when it's non-empty).
@@ -1380,7 +1412,7 @@ def build_session(sid, now, tmux=None):
                 else "working" if open_now else "ready")
         faded = chip == "ready" and sub is None and bool(tm["since"]) and now - tm["since"] > 3600
         status = {"state": chip, "sinceEpoch": since_ms, "faded": faded, "subagent": sub,
-                  "model": tm["model"], "effort": tm["effort"],
+                  "model": tm["model"], "effort": tm["effort"], "mode": tm.get("mode", ""),
                   "ctx": str(tm["context"]) if tm["context"] is not None else ""}
     elif tmux or _has_tmux():                          # tmux usable but this session isn't running → closed
         status = {"state": "closed", "sinceEpoch": since_ms, "faded": True, "subagent": None}
@@ -1549,8 +1581,13 @@ def build_feed(now, tmux=None):
             o = nodes[nid].get("origin")             # courier delegation provenance: planted by a peer
             origin = None
             if isinstance(o, dict) and o.get("peer"):
-                psid = o["peer"]                     # the sender's rompUuid → resolve to name + color
-                origin = {"peer": _name_of(psid) or psid[:8], "peerSid": psid, "color": _name_color(psid)}
+                # Show the "↪ from <peer>" badge only while the handoff is LIVE — the sender still has an
+                # OPEN linked goal. Once the sender's piece is done/cleared/gone (or there was no link),
+                # the work is fully absorbed → render as the recipient's native goal. (the user 2026-06-16.)
+                psid, gid = o["peer"], o.get("goalId")
+                sgoal = jd.load_goals(psid).get("nodes", {}).get(gid) if gid else None
+                if sgoal and not sgoal.get("nodeComplete") and not sgoal.get("cleared") and gid not in cleared:
+                    origin = {"peer": _name_of(psid) or psid[:8], "peerSid": psid, "color": _name_color(psid)}
             block_why = None
             if col == "blocked":                     # SOFT-block reason: the latest still-blocked node's why
                 blkd = [nodes[x] for x in _subtree(nid)
@@ -3111,6 +3148,13 @@ class Handler(BaseHTTPRequestHandler):
                         if fp:
                             _reply(c, {"type": "droppedPath", "path": fp})
                     threading.Thread(target=_pf, daemon=True).start()
+                # ---- statusline model / effort / permission-mode pickers (the host injects the change) ----
+                elif msg and msg.get("type") == "setModel" and msg.get("id") and msg.get("value"):
+                    _tmux_send(_name_of(msg["id"]) or msg["id"], "/model " + str(msg["value"]), model_cmd=True)
+                elif msg and msg.get("type") == "setEffort" and msg.get("id") and msg.get("value"):
+                    _tmux_send(_name_of(msg["id"]) or msg["id"], "/effort " + str(msg["value"]))
+                elif msg and msg.get("type") == "setMode" and msg.get("id") and msg.get("value"):
+                    _cycle_mode(_name_of(msg["id"]) or msg["id"], str(msg["id"]), str(msg["value"]))
         except (BrokenPipeError, ConnectionResetError, OSError):
             pass
         finally:
