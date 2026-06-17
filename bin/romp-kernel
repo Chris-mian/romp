@@ -1768,6 +1768,7 @@ def build_feed(now, tmux=None):
                 "blockWhy": block_why,               # one-sentence "why blocked" on the card (soft planner block)
                 "doneWhy": done_why,                 # one-sentence "why done" on a completed card (the done page)
                 "followupPending": nodes[nid].get("followupPending"),   # optimistic reopen → "Followed up" chip until the judge catches up
+                "summary": nodes[nid].get("summary"),    # the distiller's key takeaway for a completed goal (modal) — the user 2026-06-17
                 "blocked": ({"state": "apiError", "since": (tm.get("since") if tm else None),
                              "status": aerr.get("status"), "category": aerr.get("category"),
                              "text": aerr.get("text"),
