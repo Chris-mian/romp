@@ -928,7 +928,7 @@ def _archive_call(fsid, caps):
     return archive_llm("\n".join("- " + c for c in caps))
 
 
-def run_once(now=None, budget=BUDGET, fairness=FAIRNESS, concurrency=CONCURRENCY, verbose=False):
+def run_index(now=None, budget=BUDGET, fairness=FAIRNESS, concurrency=CONCURRENCY, verbose=False):
     """One INDEX-TIER pass over the fleet: caption ready units, then refresh per-session
     archives whose turn set grew. Returns {"captions": n, "archives": m}."""
     if now is None:
@@ -1872,7 +1872,7 @@ def run_distill(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, v
 
 def run_triage(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, verbose=False):
     """The TRIAGE-tier sequence as ONE unit, so the kernel can run it in PARALLEL with the always-on INDEX
-    tier (run_once) — they share no store and triage never reads the captioner's output, so the only cost
+    tier (run_index) — they share no store and triage never reads the captioner's output, so the only cost
     of overlap is each tier parsing a transcript instead of sharing one parse. Order matters: the planner
     places + groups inline, the closer completes/blocks at turn-end, the courier files peer delegations,
     the grouper sweeps any courier-planted tops, then the distiller summarizes newly-completed goals.
@@ -2113,7 +2113,7 @@ def _dump_goals():
 def main():
     args = sys.argv[1:]
     if args and args[0] == "--once":
-        r = run_once(verbose=True)
+        r = run_index(verbose=True)
         sys.stderr.write("romp-judge: wrote %d captions, %d archives\n" % (r["captions"], r["archives"]))
     elif args and args[0] == "--plan":
         n = run_plan(verbose=True)

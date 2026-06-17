@@ -297,7 +297,7 @@ class EnginePass(unittest.TestCase):
             try:
                 # recent activity: set now near the transcript's time so the WINDOW includes it
                 now = T0 + 120
-                r1 = jd.run_once(now=now)
+                r1 = jd.run_index(now=now)
                 recs = [json.loads(l) for l in (jd.CAPDIR / (SID + ".jsonl")).read_text().splitlines()]
                 grains = sorted(r["grain"] for r in recs)
                 self.assertEqual(grains, ["segment", "turn"], "single-segment turn writes both grains from one call")
@@ -309,7 +309,7 @@ class EnginePass(unittest.TestCase):
                 self.assertEqual(arch["headline"], "stub headline")
                 self.assertEqual(arch["turns"], 1, "archive records the turn-caption count it was built from")
                 # second pass: captions deduped AND the archive is unchanged (turn count same) -> no rework
-                r2 = jd.run_once(now=now)
+                r2 = jd.run_index(now=now)
                 self.assertEqual(r2["captions"], 0, "idempotent: a captioned unit is never re-captioned")
                 self.assertEqual(r2["archives"], 0, "archive not rebuilt when the turn-caption count is unchanged")
             finally:
@@ -330,7 +330,7 @@ class EnginePass(unittest.TestCase):
             restore = self._fleet(td, records)
             try:
                 now = T0 + 5 * 200 + 120
-                jd.run_once(now=now, fairness=2, budget=100)
+                jd.run_index(now=now, fairness=2, budget=100)
                 recs = [json.loads(l) for l in (jd.CAPDIR / (SID + ".jsonl")).read_text().splitlines()]
                 # fairness caps CALLS at 2; each single-segment turn call writes 2 records
                 calls = len({r["caption"] and r["id"].rsplit(":", 1)[0] for r in recs})  # distinct segment t's
@@ -346,7 +346,7 @@ class EnginePass(unittest.TestCase):
                                        aline(T0 + 30, "first reply", "a1", "u1", stop="end_turn")])
             try:
                 now = T0 + 5000
-                jd.run_once(now=now)
+                jd.run_index(now=now)
                 self.assertEqual(json.loads((jd.ARCHDIR / (SID + ".json")).read_text())["turns"], 1)
                 # the session gains a second ended turn (rewrite the transcript; mtime/size change
                 # invalidates the units cache, so the new turn is captioned, then re-archived)
@@ -355,7 +355,7 @@ class EnginePass(unittest.TestCase):
                     aline(T0 + 30, "first reply", "a1", "u1", stop="end_turn"),
                     uline(T0 + 100, "second ask", "u2", "a1", ps="typed"),
                     aline(T0 + 130, "second reply", "a2", "u2", stop="end_turn")]) + "\n")
-                jd.run_once(now=now)
+                jd.run_index(now=now)
                 self.assertEqual(json.loads((jd.ARCHDIR / (SID + ".json")).read_text())["turns"], 2,
                                  "archive refreshes when the session gains a turn")
             finally:

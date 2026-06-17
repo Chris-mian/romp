@@ -2544,7 +2544,7 @@ def _producer_sig(browser):
 
 
 def _run_tier(fn):
-    """Run one judge tier (run_once / run_triage) in its own thread, logging a crash instead of letting
+    """Run one judge tier (run_index / run_triage) in its own thread, logging a crash instead of letting
     the thread die silently (the per-session futures inside already swallow + log their own errors)."""
     try:
         fn()
@@ -2567,7 +2567,7 @@ def _producer():
             # looking, so it's gated on a real change (new turn / postal msg / browser-just-connected).
             tiers = []
             if _tmux_sessions():
-                tiers.append(threading.Thread(target=_run_tier, args=(jd.run_once,), name="index"))
+                tiers.append(threading.Thread(target=_run_tier, args=(jd.run_index,), name="index"))
             sig = _producer_sig(browser)
             if browser and sig != _last_producer_sig[0]:
                 _last_producer_sig[0] = sig
