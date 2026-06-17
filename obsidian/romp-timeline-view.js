@@ -1955,9 +1955,10 @@ class TimelinePanel {
       const hd = el('text', { x: PADL, y: sepY - 4, fill: 'var(--text-faint)', 'font-size': 9, 'font-weight': 700, 'letter-spacing': '.06em' }); hd.textContent = 'JUDGING'; svg.appendChild(hd);
       JUDGES.forEach((J, ji) => {
         const y = jY(ji);
-        // baseline rail through the row, matching the session lanes above (marks sit centered on it)
-        svg.appendChild(el('line', { x1: M.left, y1: y, x2: x(t1), y2: y, stroke: '#ffffff14', 'stroke-width': 2, 'stroke-linecap': 'round', 'pointer-events': 'none' }));
-        const lbl = el('text', { x: PADL, y: y + 3, fill: J.color, 'font-size': 10, 'font-weight': 600 }); lbl.textContent = J.key; svg.appendChild(lbl);
+        // baseline rail through the row, faintly tinted in the judge's colour so each row is identifiable
+        svg.appendChild(el('line', { x1: M.left, y1: y, x2: x(t1), y2: y, stroke: J.color, 'stroke-opacity': 0.28, 'stroke-width': 2, 'stroke-linecap': 'round', 'pointer-events': 'none' }));
+        // judge name right-justified so it sits right beside the start of its rail
+        const lbl = el('text', { x: M.left - 6, y: y + 3, 'text-anchor': 'end', fill: J.color, 'font-size': 10, 'font-weight': 600 }); lbl.textContent = J.key; svg.appendChild(lbl);
         // merge this judge's in-window marks into same-session blocks (a stretch of attention)
         const evs = data.judging.filter((e) => e.judge === J.key && inWin(e.t)).sort((a, b) => a.t - b.t);
         const blocks = [];
