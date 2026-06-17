@@ -314,9 +314,14 @@ function findAll(node: any, pred: (n: any) => boolean, acc: any[] = []): any[] {
   for (const c of node.children || []) findAll(c, pred, acc);
   return acc;
 }
-test("judging band: when opted in, data.judging renders a compact, labelled row per judge", () => {
+// The band is gated on the GLOBAL Debug setting (romp:settings.debug, toggled in the feed gear). Drive
+// it through the same localStorage key the view reads.
+function setDebug(on: boolean) {
+  g.localStorage.getItem = (k: string) => (k === "romp:settings" && on ? JSON.stringify({ debug: true }) : null);
+}
+test("judging band: with Debug mode on, data.judging renders a compact, labelled row per judge", () => {
+  setDebug(true);
   const panel = new TimelinePanel(makeNode("div"));
-  panel._showJudging = true;                                  // the 'judges' setting is on
   const base: any = synthData();
   const now = base.now;
   panel.data = { ...base, judging: [
@@ -332,25 +337,22 @@ test("judging band: when opted in, data.judging renders a compact, labelled row 
   assert.ok(findText(panel.svg, "JUDGING"), "the band carries a gutter heading");
   const cap = findAll(panel.svg, (n) => n.getAttribute && n.getAttribute("data-judge") === "captioner");
   assert.equal(cap.length, 1, "two adjacent same-session captions merge into ONE attention mark");
-  assert.equal(cap[0].getAttribute("fill"), "#7aa2f7", "a judge mark is coloured by the session it judged");
+  assert.equal(cap[0].getAttribute("fill"), "#7aa2f7", "a mark is FILLED with the session it judged");
+  assert.equal(cap[0].getAttribute("stroke"), "#1EA1EB", "a mark is OUTLINED in the judge's own colour");
   assert.equal(findAll(panel.svg, (n) => n.getAttribute && n.getAttribute("data-judge") === "courier").length, 1);
 });
-test("judging band is OFF by default — present data is not drawn until the setting is on, which grows the SVG", () => {
+test("judging band is gated on Debug mode: OFF by default hides it; Debug on draws it and grows the SVG", () => {
+  setDebug(false);
   const panel = new TimelinePanel(makeNode("div"));
   const base: any = synthData();
   panel.data = { ...base, judging: [{ judge: "planner", sid: "S1", t: base.now - 50, kind: "mint", text: "g" }] };
-  panel.draw();                                               // _showJudging defaults false
-  assert.ok(!findText(panel.svg, "JUDGING"), "no band heading while the setting is off");
+  panel.draw();                                               // Debug off (default)
+  assert.ok(!findText(panel.svg, "JUDGING"), "no band heading while Debug is off");
   assert.equal(findAll(panel.svg, (n) => n.getAttribute && n.getAttribute("data-judge")).length, 0, "no judge marks drawn while off");
   const hOff = Number(panel.svg.getAttribute("height"));
-  panel._showJudging = true;
-  panel.draw();
-  assert.ok(Number(panel.svg.getAttribute("height")) > hOff, "opting in adds the band's height below the lanes");
-});
-test("judging setting is remembered: a saved '1' restores _showJudging on construct; default is OFF", () => {
-  const orig = g.localStorage.getItem;
-  g.localStorage.getItem = (k: string) => (k === "romp-tl-judging" ? "1" : null);
-  try { assert.equal(new TimelinePanel(makeNode("div"))._showJudging, true, "a saved '1' opts the band in on next load"); }
-  finally { g.localStorage.getItem = orig; }
-  assert.equal(new TimelinePanel(makeNode("div"))._showJudging, false, "with nothing saved, the band stays OFF");
+  setDebug(true);
+  panel.draw();                                               // a storage event from the gear would trigger this in the browser
+  assert.ok(findText(panel.svg, "JUDGING"), "Debug on reveals the band");
+  assert.ok(Number(panel.svg.getAttribute("height")) > hOff, "the band adds height below the lanes");
+  g.localStorage.getItem = () => null;                        // reset the shared mock
 });

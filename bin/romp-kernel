@@ -2698,17 +2698,23 @@ _GEAR_HTML = ("<button id=rrefresh title='Restart the romp kernel' aria-label=Re
               "<option value=magma>Magma</option><option value=inferno>Inferno</option>"
               "<option value=plasma>Plasma</option><option value=cividis>Cividis</option>"
               "</select></span></div>"
+              "<label class='rs-row rs-sep'><input type=checkbox id=rs-debug>"
+              "<span><b>Debug mode</b>"
+              "<span class=rs-sub>Reveal the kernel-restart (↻) button and the judging timeline — the summarizer judges' actions, on a band under the lanes.</span>"
+              "</span></label>"
               "<div class='rs-h rs-sep'>romp · version</div>"
               "<div id=rsver>…</div></div>")
 _GEAR_JS = r"""(function(){var g=document.getElementById('rgear'),p=document.getElementById('rsettings'),
 b=document.getElementById('rsver'),cc=document.getElementById('rs-compact'),cm=document.getElementById('rs-colormap'),
-ex=document.getElementById('rs-explanations'),sg=document.getElementById('rs-subgoals');
-function load(){try{return Object.assign({compact:false,colormap:'hawaii',explanations:true,subgoals:true},JSON.parse(localStorage.getItem('romp:settings')||'null'));}catch(e){return {compact:false,colormap:'hawaii',explanations:true,subgoals:true};}}
+ex=document.getElementById('rs-explanations'),sg=document.getElementById('rs-subgoals'),db=document.getElementById('rs-debug');
+function load(){try{return Object.assign({compact:false,colormap:'hawaii',explanations:true,subgoals:true,debug:false},JSON.parse(localStorage.getItem('romp:settings')||'null'));}catch(e){return {compact:false,colormap:'hawaii',explanations:true,subgoals:true,debug:false};}}
 function save(s){try{localStorage.setItem('romp:settings',JSON.stringify(s));}catch(e){}}
 function emit(){try{window.dispatchEvent(new Event('romp:settings'));}catch(e){}}   // same-doc signal → the feed re-gates its cards
 cc.addEventListener('change',function(){var s=load();s.compact=cc.checked;save(s);});
 ex.addEventListener('change',function(){var s=load();s.explanations=ex.checked;save(s);emit();});
 sg.addEventListener('change',function(){var s=load();s.subgoals=sg.checked;save(s);emit();});
+function applyDebug(s){if(rf)rf.style.display=(s&&s.debug)?'':'none';}
+db.addEventListener('change',function(){var s=load();s.debug=db.checked;save(s);emit();applyDebug(s);});
 cm.addEventListener('change',function(){var s=load();s.colormap=cm.value;save(s);
 try{window.acquireVsCodeApi&&window.acquireVsCodeApi().postMessage({type:'setColormap',name:cm.value});}catch(e){}});
 function lv(){var t=document.querySelector('script[src*="feed.js"]');
@@ -2717,11 +2723,11 @@ function fill(){fetch('/version',{cache:'no-store'}).then(function(r){return r.j
 var x=lv();b.innerHTML='kernel '+(v.kernel_sha||'?')+'\nserving v'+
 v.dist_ver+'\nthis tab v'+(x||'?');
 }).catch(function(){b.textContent='(version unavailable)';});}
-g.onclick=function(e){e.stopPropagation();if(p.hidden){p.hidden=false;var s=load();cc.checked=!!s.compact;ex.checked=s.explanations!==false;sg.checked=s.subgoals!==false;cm.value=s.colormap||'hawaii';fill();}else p.hidden=true;};
+g.onclick=function(e){e.stopPropagation();if(p.hidden){p.hidden=false;var s=load();cc.checked=!!s.compact;ex.checked=s.explanations!==false;sg.checked=s.subgoals!==false;db.checked=!!s.debug;cm.value=s.colormap||'hawaii';fill();}else p.hidden=true;};
 document.addEventListener('click',function(e){if(!p.hidden&&e.target!==g&&!p.contains(e.target))p.hidden=true;});
 var rf=document.getElementById('rrefresh');   // ↻ moved up from the timeline (the user 2026-06-17): POST /restart, poll /healthz, reload
 if(rf)rf.onclick=function(){rf.disabled=true;try{fetch('/restart',{method:'POST'}).catch(function(){});}catch(e){}
-var n=0;(function again(){setTimeout(function(){n++;fetch('/healthz',{cache:'no-store'}).then(function(r){if(r&&r.ok)location.reload();else if(n<40)again();}).catch(function(){if(n<40)again();});},500);})();};})();"""
+var n=0;(function again(){setTimeout(function(){n++;fetch('/healthz',{cache:'no-store'}).then(function(r){if(r&&r.ok)location.reload();else if(n<40)again();}).catch(function(){if(n<40)again();});},500);})();};applyDebug(load());})();"""
 
 
 def _feed_page():

@@ -48,15 +48,15 @@ const BADGE = { working: { bg: '#E0B020', fg: '#332600' }, ready: { bg: '#2B7FB8
                 subagent: { bg: '#E67E22', fg: '#ffffff' } };   // orange: quiet session, but a subagent is running
 const FONT = '-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif';
 // Judging band: a compact second timeline UNDER the session lanes, on the SAME axis — one row per
-// summarizer judge (design/judge.md), each mark coloured by the SESSION it acted on. Fed by
-// data.judging = [{judge, sid, t, kind, text}]. Index-tier (always-on) judges above the triage tier.
+// summarizer judge (design/judge.md). Each mark is FILLED with the colour of the SESSION it acted on and
+// OUTLINED in the judge's OWN colour (so a bar reads as "judge X on session Y"). Fed by
+// data.judging = [{judge, sid, t, kind, text}]. Each judge's colour is a distinct hue from the romp palette.
 const JUDGES = [
-  { key: 'captioner', tier: 'index' }, { key: 'archiver', tier: 'index' },
-  { key: 'planner', tier: 'triage' }, { key: 'grouper', tier: 'triage' },
-  { key: 'closer', tier: 'triage' }, { key: 'courier', tier: 'triage' },
+  { key: 'captioner', color: '#1EA1EB' }, { key: 'archiver', color: '#54B204' },
+  { key: 'planner', color: '#E0B020' }, { key: 'grouper', color: '#4EA8A9' },
+  { key: 'closer', color: '#C0392B' }, { key: 'courier', color: '#9088F0' },
 ];
-const JROW = 13, JBAR_H = 7, JB_TOPGAP = 17, JB_BOTGAP = 5, JMARK_MINW = 5, JMERGE_GAP = 110;
-const TIER_COL = { index: '#3B82F6', triage: '#9C6ADE' };   // gutter tier dot
+const JROW = 14, JBAR_H = 9, JB_TOPGAP = 17, JB_BOTGAP = 5, JMARK_MINW = 6, JMERGE_GAP = 110;
 const JUDGE_KIND = { segment: 'caption', turn: 'turn caption', index: 'archived', mint: 'new goal',
   sub: 'filed a step', done: 'completed', block: 'needs you', group: 'regrouped', plant: 'handoff in' };
 
@@ -258,7 +258,6 @@ class TimelinePanel {
     this.OSTORE = 'romp-tl-offsec';
     this.CSTORE = 'romp-tl-collapse';
     this.LSTORE = 'romp-tl-locknow';
-    this.JSTORE = 'romp-tl-judging';
     this._winSec = null; this._offSec = 0; this._drawRAF = null;
     // broken-axis: collapse long idle gaps (no work on any lane — e.g. overnight) into a thin squiggle
     // break, so the active periods get the width. ON by default; the checkbox below the axis toggles it.
@@ -267,13 +266,9 @@ class TimelinePanel {
     // leave it, and a focus that's off-screen ZOOMS OUT (window widens leftward, right edge stays at
     // now, target lands ~mid-window) instead of panning away. OFF by default; checkbox far right.
     this._lockNow = false;
-    // Judging band: a second timeline of the summarizer judges under the lanes. OFF by default — the
-    // user opts in via the 'judges' checkbox; the choice persists (JSTORE) so it's remembered once set.
-    this._showJudging = false;
     this._compactClicked = {};   // sid → click ts: show the compacting cue OPTIMISTICALLY until the real state catches up
     try { if (localStorage.getItem(this.CSTORE) === '0') this._collapseGaps = false; } catch (e) {}
     try { if (localStorage.getItem(this.LSTORE) === '1') this._lockNow = true; } catch (e) {}
-    try { if (localStorage.getItem(this.JSTORE) === '1') this._showJudging = true; } catch (e) {}
     try { const v = localStorage.getItem(this.WSTORE); if (v != null && /^\d+(\.\d+)?$/.test(v)) { this._winSec = +v; this.fitted = true; } } catch (e) {}
     try { const v = localStorage.getItem(this.OSTORE); if (v != null && /^\d+(\.\d+)?$/.test(v)) this._offSec = +v; } catch (e) {}
     if (this._lockNow) this._offSec = 0;   // a restored mid-pan offset never overrides the lock
@@ -358,21 +353,6 @@ class TimelinePanel {
       this.draw();
     });
 
-    // 'judges' toggle: show the judging band (the summarizer judges, under the lanes). OFF by default;
-    // the choice persists, so once turned on it stays on across reloads.
-    const jbWrap = this.controls.createEl('label');
-    jbWrap.setAttribute('style', 'display:inline-flex;align-items:center;gap:5px;cursor:pointer;');
-    jbWrap.title = 'show a second timeline of the summarizer judges (captioner / planner / …) under the lanes';
-    this._judgeBox = jbWrap.createEl('input');
-    this._judgeBox.type = 'checkbox';
-    this._judgeBox.checked = this._showJudging;
-    jbWrap.createSpan({ text: 'judges' });
-    this._judgeBox.addEventListener('change', () => {
-      this._showJudging = this._judgeBox.checked;
-      try { localStorage.setItem(this.JSTORE, this._showJudging ? '1' : '0'); } catch (e) {}
-      this.draw();
-    });
-
     // Lock-to-now, far right: while checked the live edge can't be left — pans snap back,
     // and an off-screen focus ZOOMS OUT (right edge stays at now) instead of panning away.
     // The icon is an inline SVG padlock (not the emoji): locked = shackle seated on the body;
@@ -402,6 +382,10 @@ class TimelinePanel {
 
     this.tip = document.body.createDiv({ cls: 'romp-tl-tip' });
     this._tipOwner = null;   // the hit element that opened the current tip (see _onTipSweep)
+    // The judging band is gated on the global Debug setting (romp:settings.debug), which the feed-gear ⛭
+    // toggles in another same-origin iframe. React to that toggle via the storage event so the band
+    // appears/disappears live (no reload). draw() reads the flag fresh, so we just repaint.
+    try { window.addEventListener('storage', (e) => { if (e && e.key === 'romp:settings') this.draw(); }); } catch (e) {}
 
     // model/effort drop-down pickers: the open menu element + per-lane optimistic "pending" cues
     // ('sid:kind' → {was, until}) that dim a word until the tmux var actually flips (or 20s elapses).
@@ -1536,7 +1520,9 @@ class TimelinePanel {
     // judging band height: a compact judge row per JUDGES entry, shown only when there's judging
     // activity inside the current window. Folded into H so the shared axis (axisY = H - M.bottom)
     // and its gridlines span BOTH bands, with the time labels at the very bottom.
-    const jShow = !!(this._showJudging && data.judging && data.judging.length && data.judging.some((e) => inWin(e.t)));
+    // the global Debug setting (romp:settings.debug, set in the feed gear) gates the whole band; read fresh
+    let debugOn = false; try { debugOn = !!JSON.parse(localStorage.getItem('romp:settings') || '{}').debug; } catch (e) {}
+    const jShow = !!(debugOn && data.judging && data.judging.length && data.judging.some((e) => inWin(e.t)));
     const bandH = jShow ? (JB_TOPGAP + JUDGES.length * JROW + JB_BOTGAP) : 0;
     const W = Math.max(640, this.wrap.clientWidth || 900);
     const plotW = W - M.left - M.right, H = M.top + Math.max(1, vis.length) * LANE_GAP + bandH + M.bottom;
@@ -1971,8 +1957,7 @@ class TimelinePanel {
         const y = jY(ji);
         // baseline rail through the row, matching the session lanes above (marks sit centered on it)
         svg.appendChild(el('line', { x1: M.left, y1: y, x2: x(t1), y2: y, stroke: '#ffffff14', 'stroke-width': 2, 'stroke-linecap': 'round', 'pointer-events': 'none' }));
-        svg.appendChild(el('circle', { cx: PADL + 3, cy: y, r: 2.5, fill: TIER_COL[J.tier], opacity: 0.9 }));
-        const lbl = el('text', { x: PADL + 10, y: y + 3, fill: 'var(--text-muted)', 'font-size': 10 }); lbl.textContent = J.key; svg.appendChild(lbl);
+        const lbl = el('text', { x: PADL, y: y + 3, fill: J.color, 'font-size': 10, 'font-weight': 600 }); lbl.textContent = J.key; svg.appendChild(lbl);
         // merge this judge's in-window marks into same-session blocks (a stretch of attention)
         const evs = data.judging.filter((e) => e.judge === J.key && inWin(e.t)).sort((a, b) => a.t - b.t);
         const blocks = [];
@@ -1983,13 +1968,15 @@ class TimelinePanel {
           let x1 = x(b.start), x2 = x(b.end);
           if (x2 - x1 < JMARK_MINW) { const c = (x1 + x2) / 2; x1 = c - JMARK_MINW / 2; x2 = c + JMARK_MINW / 2; }
           const col = colorOf(b.sid), active = (nowS - b.end) >= 0 && (nowS - b.end) < 8;
-          const r = el('rect', { x: x1, y: y - JBAR_H / 2, width: x2 - x1, height: JBAR_H, rx: 2.5, fill: col, opacity: 0.9, 'data-judge': J.key });
-          if (active) { r.setAttribute('stroke', '#fff'); r.setAttribute('stroke-width', '1'); r.setAttribute('opacity', '1'); }
+          // fill = the SESSION being judged; outline = THIS judge's own colour
+          const r = el('rect', { x: x1, y: y - JBAR_H / 2, width: x2 - x1, height: JBAR_H, rx: 2.5,
+            fill: col, 'fill-opacity': 0.92, stroke: J.color, 'stroke-width': 1.25, 'data-judge': J.key });
+          if (active) { r.setAttribute('fill-opacity', '1'); r.setAttribute('stroke-width', '1.9'); }   // running now → solid + bolder outline
           svg.appendChild(r);
           const html = () => {
             const span = b.start === b.end ? clock(b.start) : clock(b.start) + '–' + clock(b.end);
             const rows = b.members.slice(-5).map((m) => '<div class="b" style="opacity:.85"><span class="k">' + esc(JUDGE_KIND[m.kind] || m.kind) + '</span> ' + esc((m.text || '').slice(0, 90)) + '</div>').join('');
-            return '<div class="r"><span class="chip" style="background:' + col + '"></span><span class="who" style="color:' + col + '">' + esc(J.key) + '</span><span class="ar">▸</span><span>' + esc(nameOf(b.sid)) + '</span><span class="t">' + span + (b.members.length > 1 ? ' · ' + b.members.length : '') + '</span></div>' + rows;
+            return '<div class="r"><span class="chip" style="background:' + J.color + '"></span><span class="who" style="color:' + J.color + '">' + esc(J.key) + '</span><span class="ar">▸</span><span style="color:' + col + '">' + esc(nameOf(b.sid)) + '</span><span class="t">' + span + (b.members.length > 1 ? ' · ' + b.members.length : '') + '</span></div>' + rows;
           };
           const hit = el('rect', { x: x1 - 2, y: y - JROW / 2, width: (x2 - x1) + 4, height: JROW, fill: 'transparent' }); hit.style.cursor = 'default';
           hit.addEventListener('mouseenter', (e) => this.showTip(html(), e));
