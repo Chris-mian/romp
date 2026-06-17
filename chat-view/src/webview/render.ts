@@ -137,7 +137,10 @@ interface LedgerBullet { text: string; t?: number; id?: string; sid?: string; tl
 // A node of the goal-graph overview tree: open paths are expanded, done nodes are pruned to leaves.
 // `current` = the focus node being worked on (gets a pointer + the live elapsed); a `done` node shows
 // its completion time, recency-coloured, on the right (the user 2026-06-16).
-interface LedgerTreeNode { id: string; text: string; depth: number; done: boolean; blocked: boolean; t?: number; current: boolean; }
+// `derived` = this node is done only because all its children are (the kernel propagates completion up
+// the tree), as opposed to an explicitly-asserted done. Rendered as the blue ✓ disc dimmed (the user
+// 2026-06-16). Empty/false → explicit done (full disc).
+interface LedgerTreeNode { id: string; text: string; depth: number; done: boolean; blocked: boolean; t?: number; current: boolean; derived?: boolean; }
 // tree = the goal overview (preferred view); bullets = captioned-turn fallback for goal-less sessions.
 interface Ledger { summary: string; tree?: LedgerTreeNode[]; bullets: LedgerBullet[]; current?: LedgerBullet | null; }
 const ledgers = new Map<string, Ledger | null>();
@@ -1192,10 +1195,14 @@ function renderTabs() {
     tab.appendChild(label);
     const close = el("span", "tab-close");
     close.textContent = "×";
-    close.title = "Close tab (or end the session)";
+    // A dead (closed) session has nothing to end, so its ✕ just removes the read-only tab — no
+    // "End session?" confirm (the user 2026-06-16). A live session still routes through the host's
+    // Close-tab / End-session confirm (closeSession → confirmClose).
+    const dead = st === "closed";
+    close.title = dead ? "Close tab" : "Close tab (or end the session)";
     close.addEventListener("click", (e) => {
       e.stopPropagation();
-      if (vscodeApi) vscodeApi.postMessage({ type: "closeSession", id });
+      if (vscodeApi) vscodeApi.postMessage({ type: dead ? "closeTab" : "closeSession", id });
     });
     tab.appendChild(close);
     tab.addEventListener("click", () => setActive(id));
@@ -2160,7 +2167,7 @@ function renderLedger() {
   // (raw n.t/b.t in the sig, NOT the elapsed — wall-clock ticking is refreshLedgerAges's job.)
   const sig = (ledgerCollapsed ? "C" : "O") + "§" + (activeId || "") + "§" + titleText
     + "‖cur:" + (cur ? `${cur.id || ""}:${cur.t ?? ""}:${cur.text}` : "")
-    + "‖tree:" + tree.map((n) => `${n.id}:${n.depth}:${n.done ? "d" : ""}${n.current ? "c" : ""}${n.blocked ? "b" : ""}:${n.t ?? ""}:${n.text}`).join("|")
+    + "‖tree:" + tree.map((n) => `${n.id}:${n.depth}:${n.done ? "d" : ""}${n.derived ? "v" : ""}${n.current ? "c" : ""}${n.blocked ? "b" : ""}:${n.t ?? ""}:${n.text}`).join("|")
     + "‖b:" + (tree.length ? "" : bullets.slice(0, LEDGER_BULLET_CAP).map((b) => `${b.id || ""}:${b.t ?? ""}:${b.text}`).join("|"));
   if ((host as any)._sig === sig) { refreshLedgerAges(host, l, now); return; }
   (host as any)._sig = sig;
@@ -2186,14 +2193,17 @@ function renderLedger() {
     //     pruned leaves with a recency-coloured time on the right; the ▸ row IS what's being worked on.
     const wrap = el("div", "ledger-tree");
     for (const n of tree) {
-      const row = el("div", "ledger-tnode" + (n.current ? " current" : "") + (n.done ? " done" : ""));
+      const row = el("div", "ledger-tnode" + (n.current ? " current" : "") + (n.done ? " done" : "") + (n.done && n.derived ? " derived" : ""));
       row.style.paddingLeft = (4 + n.depth * 15) + "px";        // indent by graph depth (a line of descent)
       const mark = el("span", "ledger-tmark");
-      mark.textContent = n.current ? "▸" : n.done ? "✓" : n.blocked ? "⏸" : "◦";
+      // done = the blue ✓ disc (styled in CSS, matching the chat to-do / feed); not-yet-done = a hollow
+      // circle ○ (the user 2026-06-16); ▸ = being worked on, ⏸ = blocked.
+      mark.textContent = n.current ? "▸" : n.done ? "✓" : n.blocked ? "⏸" : "○";
       const txt = el("span", "ledger-ttext");
       txt.textContent = n.text;
       const time = el("span", "ledger-ttime");
       setTnodeTime(time, n, cur, now);                          // "(Xm)" live for current, "(Xm ago)" for done
+      if (n.done && n.t) txt.style.color = ageColorReadable(now - n.t);   // a done item's text matches its time colour
       row.append(mark, txt, time);
       wrap.appendChild(row);
     }
@@ -2255,6 +2265,9 @@ function refreshLedgerAges(host: HTMLElement, l: Ledger, now: number) {
   host.querySelectorAll(".ledger-tnode").forEach((row, i) => {
     const n = tree[i]; const time = row.querySelector(".ledger-ttime") as HTMLElement | null;
     if (n && time) setTnodeTime(time, n, l.current || null, now);
+    // keep a done item's text colour in step with its (recency-tinted) time as the clock ticks
+    const txt = row.querySelector(".ledger-ttext") as HTMLElement | null;
+    if (n && txt && n.done && n.t) txt.style.color = ageColorReadable(now - n.t);
   });
   // fallback bullets (goal-less sessions)
   const bs = bullets.slice(0, LEDGER_BULLET_CAP);
@@ -2938,7 +2951,10 @@ window.addEventListener("message", (e: MessageEvent) => {
       [{ label: "Close tab", value: "close" }, { label: "End session", value: "end", danger: true }, { label: "Cancel", value: "" }],
       (v) => {
         if (v === "close") vscodeApi?.postMessage({ type: "closeTab", id: m.id });
-        else if (v === "end") vscodeApi?.postMessage({ type: "endSession", id: m.id });
+        // End session = shut it down AND remove the tab (the user 2026-06-16: an explicitly-ended session
+        // shouldn't linger as a struck-through read-only tab — that's only for sessions that die on their
+        // own). closeTab must durably dismiss it so the death event doesn't re-add the struck tab.
+        else if (v === "end") { vscodeApi?.postMessage({ type: "endSession", id: m.id }); vscodeApi?.postMessage({ type: "closeTab", id: m.id }); }
       });
   }
   else if (m.type === "confirmRevive" && m.id) {

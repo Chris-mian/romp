@@ -488,8 +488,14 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   const og = a._origin as HTMLElement;
   if (it.origin && it.origin.peer) {
     og.style.display = "";
-    og.textContent = "↪ from " + it.origin.peer;
-    og.style.color = it.origin.color ? it.origin.color.bg : "";
+    // "↪ from" in dim gray (the Clear-button gray), the peer name in the bold session-name style next to
+    // it — its own identity colour, like every other session name in this row (the user 2026-06-16).
+    og.replaceChildren();
+    og.style.color = "";
+    const pre = el("span", "fask-origin-pre"); pre.textContent = "↪ from ";
+    const peer = el("span", "fask-origin-peer"); peer.textContent = it.origin.peer;
+    if (it.origin.color) peer.style.color = it.origin.color.bg;
+    og.append(pre, peer);
     og.onclick = (ev: Event) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "openSession", id: it.origin!.peerSid }); };
   } else {
     og.style.display = "none";
@@ -558,7 +564,9 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   for (const s of subs.slice(0, 8)) {
     const row = el("div", "fcheck " + nodeStatusClass(s));
     const mark = el("span", "fcheck-mark");
-    mark.textContent = s.status === "done" ? "✓" : s.status === "question" ? "?" : "▢";
+    // ✓ blue disc (done) / ? (question) / hollow ○ (not done) — the same notation as the ledger
+    // checklist and the modal tree (the user 2026-06-16); ▢ was the odd one out.
+    mark.textContent = s.status === "done" ? "✓" : s.status === "question" ? "?" : "○";
     const txt = el("span", "fcheck-text"); txt.textContent = s.text;
     row.append(mark, txt);
     cl.appendChild(row);
@@ -831,7 +839,7 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
   const repeat = seen.has(node.id);
   const nodeKey = it.itemId + ":" + node.id;
   const expandable = !repeat && (node.rows.length > 0 || (node.children || []).length > 0);
-  const line = el("div", "ftree-node st-" + nodeStatusClass(node) + (repeat ? " repeat" : ""));
+  const line = el("div", "ftree-node st-" + nodeStatusClass(node) + (repeat ? " repeat" : "") + (depth === 0 ? " ftree-root" : ""));
   // the event this line stands for (handoff → its postal msg id; root → the typed
   // turn) — lets a chat rail-dot hover ring this line back (applyExtHover)
   line.dataset.eid = node.kind === "handoff" ? node.id : it.turnId;
@@ -857,7 +865,7 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
     line.appendChild(who);
   }
   const meta = el("span", "ftree-meta");
-  meta.textContent = node.status === "question" ? "needs you" : relAge(hostNow - node.last);
+  meta.textContent = node.status === "question" ? "needs you" : "(" + relAge(hostNow - node.last) + ")";
   if (node.status !== "question" && node.trgb) meta.style.color = "rgb(" + node.trgb.join(",") + ")";   // Hawaii recency tint
   line.appendChild(meta);
   // Whole-line click NAVIGATES to THIS node's own creation point in the chat — showOnTimeline is
@@ -960,21 +968,23 @@ function renderModal() {
     const head = el("div", "feed-modal-head");
     const ttl = el("div", "feed-modal-title"); ttl.id = "feed-modal-title";
     const agent = el("a", "fname feed-modal-agent"); agent.id = "feed-modal-agent";
+    const close = el("button", "feed-modal-close"); close.textContent = "✕"; close.title = "close (Esc)";
+    close.onclick = () => { fullscreenAskId = null; renderModal(); };
+    head.append(ttl, agent, close);   // TOP bar: session name (+ a title for group/standalone) at the left, ✕ at the right
+    // BOTTOM bar (the user 2026-06-16): the checklist sits at the top; age + Follow up + Clear live below it
+    // in one row, and the Follow-up composer drops in under that row when the button is toggled.
     const age = el("span", "ftime feed-modal-age"); age.id = "feed-modal-age";
     const fup = el("button", "fdismiss ffollow feed-modal-follow"); fup.id = "feed-modal-follow"; fup.textContent = "Follow up"; fup.title = "send a follow-up to this session — the card returns to ASKS"; fup.style.display = "none";
     const clr = el("button", "fdismiss feed-modal-clear"); clr.id = "feed-modal-clear"; clr.textContent = "Clear";
-    const close = el("button", "feed-modal-close"); close.textContent = "✕"; close.title = "close (Esc)";
-    close.onclick = () => { fullscreenAskId = null; renderModal(); };
-    head.append(ttl, agent, age, fup, clr, close);
-    // Follow-up composer (single completed ask only): toggled by the Follow up
-    // button; Enter/Send delivers `Follow-up on "<title>": …` and reopens the card.
+    const footRow = el("div", "feed-modal-foot-row"); footRow.append(age, fup, clr);
     const fubox = el("div", "ffollow-box feed-modal-follow-box"); fubox.id = "feed-modal-follow-box"; fubox.style.display = "none";
     const fuin = el("textarea", "fq-input feed-modal-follow-input") as HTMLTextAreaElement; fuin.id = "feed-modal-follow-input"; fuin.placeholder = "follow up on this…"; fuin.rows = 1;
     fuin.addEventListener("input", () => growFollowUp(fuin));
     const fusend = el("button", "fq-send feed-modal-follow-send"); fusend.id = "feed-modal-follow-send"; fusend.textContent = "Send";
     fubox.append(fuin, fusend);
+    const foot = el("div", "feed-modal-foot"); foot.id = "feed-modal-foot"; foot.append(footRow, fubox);
     const body = el("div", "feed-modal-body"); body.id = "feed-modal-body";
-    inner.append(head, fubox, body);
+    inner.append(head, body, foot);
     m.appendChild(inner);
     m.onclick = (ev) => { if (ev.target === m) { fullscreenAskId = null; renderModal(); } };  // backdrop closes
     document.body.appendChild(m);
@@ -1040,6 +1050,8 @@ function renderModal() {
   // 2026-06-10: every title should jump to the thing in the text/timeline)
   ttlEl.classList.add("nav");
   ttlEl.title = "locate this in the text";
+  ttlEl.style.display = "";    // default shown (group / standalone); the single-ask branch hides it — its
+                               // top-level goal IS the first line of the tree, not a separate header title
   clrEl.style.display = "";   // re-shown here because the blocked branch below hides it
   let titleHoverId: string | null = null;   // the originating typed turn → chat/timeline hover highlight
   if (grp) {
@@ -1049,6 +1061,7 @@ function renderModal() {
     agent.textContent = grp.name; if (grp.color) agent.style.color = grp.color.bg; setWorkDot(agent, workingSet.has(grp.name)); agent.classList.toggle("dead", !grp.live);
     agent.onclick = () => vscodeApi?.postMessage({ type: "openSession", id: grp.sid });
     ageEl.textContent = relAge(hostNow - grp.t);
+    ageEl.style.color = "rgb(" + grp.trgb.join(",") + ")";   // tint the age by recency (the time colour scheme)
     clrEl.onclick = () => { for (const mem of grp.members) vscodeApi?.postMessage({ type: "askClear", itemId: mem.itemId }); fullscreenAskId = null; renderModal(); };
     // follow-up on a group goes to the session that took the typed prompt — one
     // message prefixed with the GROUP title, filed under the first member's ask
@@ -1056,24 +1069,29 @@ function renderModal() {
       vscodeApi?.postMessage({ type: "askFollowUp", itemId: grp.members[0].itemId, title: grp.title, text: txt }));
     renderGroupModalBody(body, grp.members);
   } else if (it) {
-    ttlEl.textContent = it.text;
+    // The top-level goal IS the modal: render it as the ROOT of the tree list (not a separate header
+    // title), so a goal with no sub-work is just one list line carrying its own done/blocked state, and
+    // any sub-goals render beneath it as the rest of the list (the user 2026-06-16). The header above the
+    // tree is only the session name + a recency-tinted age; Follow up moved to the footer below the tree.
+    ttlEl.style.display = "none";
     titleHoverId = it.turnId;
-    ttlEl.onclick = () => vscodeApi?.postMessage({ type: "showOnTimeline", itemId: it.itemId, sid: it.sid, t: it.t, anchor: "prompt" });
     agent.textContent = it.name; if (it.color) agent.style.color = it.color.bg; setWorkDot(agent, workingSet.has(it.name)); agent.classList.toggle("dead", !it.live);
     agent.onclick = () => vscodeApi?.postMessage({ type: "openSession", id: it.sid });
     ageEl.textContent = relAge(hostNow - it.t);
+    ageEl.style.color = "rgb(" + it.trgb.join(",") + ")";   // tint the age by recency (the time colour scheme)
     clrEl.onclick = () => { vscodeApi?.postMessage({ type: "askClear", itemId: it.itemId }); fullscreenAskId = null; renderModal(); };
     // follow-up works in ANY state (the user 2026-06-10) — asks, awaiting, or completed;
     // toggling the button reveals the composer.
     wireFollowUp(fupEl, fuboxEl, fuinEl, fusendEl, (txt) =>
       vscodeApi?.postMessage({ type: "askFollowUp", itemId: it.itemId, text: txt }));
-    renderTreeBody(body, it, true);   // single-ask modal: header shows the root, so skip its body line
+    renderTreeBody(body, it, false);   // root goal IS the first list line; sub-goals render beneath it
   } else if (fitem) {
     ttlEl.textContent = fitem.did;
     ttlEl.onclick = () => vscodeApi?.postMessage({ type: "showOnTimeline", itemId: fitem.itemId, sid: fitem.sid, t: fitem.t, anchor: "prompt" });
     agent.textContent = fitem.name; if (fitem.color) agent.style.color = fitem.color.bg; setWorkDot(agent, workingSet.has(fitem.name)); agent.classList.toggle("dead", !fitem.live);
     agent.onclick = () => vscodeApi?.postMessage({ type: "openSession", id: fitem.sid });
     ageEl.textContent = relAge(hostNow - fitem.t);
+    ageEl.style.color = "rgb(" + fitem.trgb.join(",") + ")";   // tint the age by recency (the time colour scheme)
     clrEl.onclick = () => { vscodeApi?.postMessage({ type: "askClear", itemId: fitem.itemId }); fullscreenAskId = null; renderModal(); };
     fupEl.style.display = "none"; fuboxEl.style.display = "none";   // standalone deliverable: no follow-up
     // fetch the detail once (same machinery the old inline [+] used)
@@ -1085,6 +1103,8 @@ function renderModal() {
     }
     renderStandaloneTreeInto(body, fitem);
   }
+  // The bottom bar always shows (every modal has an age + Clear); the Follow-up button inside it hides
+  // itself for standalone deliverables (no follow-up), and the composer stays collapsed until toggled.
   // modal title hover → light the originating message in the chat (+ its timeline
   // glyph), the same join the title CLICK locates to (the user 2026-06-12). Asks
   // and groups carry the typed-turn id; deliverable/blocked modals have no chat

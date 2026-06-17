@@ -39,8 +39,12 @@ test("courier handoff: the '↪ from <sender>' origin marker is wired and styled
   // a chip beside the session name, hidden until the card carries a courier origin
   assert.match(FEED, /const origin = el\("a", "fask-origin"\); origin\.style\.display = "none"/);
   assert.match(FEED, /idwrap\.append\(name, origin\)/, "the origin marker sits beside the session name");
-  // populated from it.origin in the update path: "↪ from <peer>", click opens the sender
-  assert.match(FEED, /og\.textContent = "↪ from " \+ it\.origin\.peer/);
+  // populated from it.origin in the update path: a dim gray "↪ from" + the peer in the bold session-name
+  // style (its own identity colour); click opens the sender (the user 2026-06-16)
+  assert.match(FEED, /pre\.textContent = "↪ from "/);
+  assert.match(FEED, /peer\.textContent = it\.origin\.peer/);
+  assert.match(FEED, /if \(it\.origin\.color\) peer\.style\.color = it\.origin\.color\.bg/);
   assert.match(FEED, /type: "openSession", id: it\.origin!\.peerSid/, "clicking the marker opens the sender");
-  assert.match(CSS, /\.fask-origin \{[^}]*cursor: pointer/);
+  assert.match(CSS, /\.fask-origin-pre \{[^}]*var\(--dim\)/);     // "↪ from" dim gray
+  assert.match(CSS, /\.fask-origin-peer \{[^}]*font-weight: 600/); // peer bold like other session names
 });

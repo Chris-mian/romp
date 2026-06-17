@@ -214,10 +214,12 @@ body { display: flex; flex-direction: column; }
 .fask-paths { display: flex; flex-direction: column; gap: 2px; margin-top: 6px; }
 .fpath { font-size: 0.82em; color: var(--dim); opacity: 0.85; }
 
-/* "↪ from <sender>" — courier handoff provenance beside the owning session */
-.fask-origin { flex: 0 1 auto; min-width: 0; font-size: 0.8em; opacity: 0.85; cursor: pointer;
-  overflow-wrap: anywhere; }
-.fask-origin:hover { text-decoration: underline; text-underline-offset: 2px; opacity: 1; }
+/* "↪ from <sender>" — courier handoff provenance beside the owning session: the "↪ from" reads as dim
+   gray chrome, the peer name as a bold, identity-coloured session link (the user 2026-06-16). */
+.fask-origin { flex: 0 1 auto; min-width: 0; font-size: 0.8em; cursor: pointer; overflow-wrap: anywhere; }
+.fask-origin-pre { color: var(--dim); }
+.fask-origin-peer { font-weight: 600; }
+.fask-origin:hover { text-decoration: underline; text-underline-offset: 2px; }
 
 /* "reopened" badge — a cleared ask resurrected by a new question */
 .fask-reopened { flex: 0 0 auto; font-size: 0.64em; font-weight: 700; letter-spacing: 0.04em;
@@ -229,9 +231,13 @@ body { display: flex; flex-direction: column; }
 .ftree-fs { position: absolute; top: 4px; right: 2px; z-index: 1; font: inherit; line-height: 1; cursor: pointer;
   color: var(--dim); background: transparent; border: 1px solid var(--card-border); border-radius: 5px; padding: 2px 7px; }
 .ftree-fs:hover { color: var(--fg); border-color: var(--fg); }
-.ftree { margin-top: 8px; font-size: 0.9em; line-height: 1.5; }
+/* width:fit-content hugs the widest row so the right-aligned "(Xm ago)" node times sit just past the
+   longest item instead of way out at the modal's right edge (the user 2026-06-16). */
+.ftree { margin-top: 8px; font-size: 0.9em; line-height: 1.5; width: fit-content; max-width: 100%; }
 /* hierarchy via indentation only (paddingLeft set inline per depth) */
 .ftree-node, .frow { display: flex; align-items: baseline; gap: 6px; border-radius: 5px; padding: 1px 4px; }
+/* the root goal (depth 0) reads as the heading — a notch larger than its sub-items (the user 2026-06-16) */
+.ftree-node.ftree-root .ftree-text { font-size: 1.08em; font-weight: 600; }
 .ftree-node.nav, .frow.nav { cursor: pointer; }
 .ftree-node.nav:hover, .frow.nav:hover { background: rgba(255, 255, 255, 0.06); }
 /* disclosure triangle (▶/▼) before the mark; .empty = blank spacer, keeps alignment.
@@ -321,7 +327,9 @@ body { display: flex; flex-direction: column; }
 .feed-modal-agent:hover { text-decoration: underline; }
 .feed-modal-age { flex: 0 0 auto; color: var(--dim); font-size: 0.85em; }
 .feed-modal-clear { flex: 0 0 auto; }
-.feed-modal-close { flex: 0 0 auto; font: inherit; font-size: 1.1em; cursor: pointer; color: var(--dim); background: transparent; border: none; align-self: center; }
+/* the ✕ pins to the far right of the top bar — margin-left:auto pushes it past the session name (and
+   the title, when shown for group/standalone modals). */
+.feed-modal-close { flex: 0 0 auto; margin-left: auto; font: inherit; font-size: 1.1em; cursor: pointer; color: var(--dim); background: transparent; border: none; align-self: center; }
 .feed-modal-close:hover { color: var(--fg); }
 .feed-modal-body { flex: 1 1 auto; overflow: auto; padding: 14px 18px; }
 
@@ -471,7 +479,7 @@ body { display: flex; flex-direction: column; }
    ✓ on --check-bg (the user 2026-06-16). The sub-goal text dims to recede but is NOT struck through. */
 .fcheck.done .fcheck-mark {
   background: var(--check-bg); color: #fff; border-radius: 50%;
-  width: 13px; height: 13px; min-width: 13px; font-size: 9px;
+  width: 13px; height: 13px; min-width: 13px; font-size: 9px; font-weight: 700;   /* match the chat to-do ✓ weight */
   display: inline-flex; align-items: center; justify-content: center; align-self: center; line-height: 1;
 }
 .fcheck.done .fcheck-text { color: var(--dim); }
@@ -483,12 +491,15 @@ body { display: flex; flex-direction: column; }
 .fstandalone-par { margin-top: 10px; opacity: 0.75; }
 /* follow-up composer under a completed card's rows */
 .ffollow-box { display: flex; gap: 5px; margin-top: 6px; align-items: flex-end; }
-/* in the modal the composer is a header sub-bar (the user 2026-06-10: follow-up
-   moved off the card into the modal); align its padding with the head row */
-.feed-modal-follow-box { margin: 0; padding: 8px 16px; border-bottom: 1px solid var(--card-border); }
+/* BOTTOM bar (the user 2026-06-16): the checklist sits at the top of the modal; this footer holds the
+   age + Follow up + Clear in one row, with the Follow-up composer dropping in full-width beneath. */
+.feed-modal-foot { flex: 0 0 auto; display: flex; flex-direction: column; gap: 6px; padding: 10px 16px; border-top: 1px solid var(--card-border); }
+.feed-modal-foot-row { display: flex; align-items: baseline; gap: 10px; }
+.feed-modal-foot-row .feed-modal-age { margin-right: auto; }   /* age left, Follow up + Clear pushed right */
+.feed-modal-follow-box { margin: 0; padding: 0; border: none; }
 /* the follow-up box is a textarea sized like the main composer: auto-grows with
    input (capped in growFollowUp), Shift+Enter for newlines */
-.feed-modal-follow-input { resize: none; box-sizing: border-box; line-height: 1.4; padding: 8px 10px; }
+.feed-modal-follow-input { flex: 1 1 auto; resize: none; box-sizing: border-box; line-height: 1.4; padding: 8px 10px; }
 
 /* expanded view — Ask on top, Response below */
 .fexpand-slot { /* show/hide toggled inline by the script */ }
