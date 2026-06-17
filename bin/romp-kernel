@@ -1552,7 +1552,7 @@ def build_feed(now, tmux=None):
             st = "done" if done else ("question" if nd.get("blocked") else "open")
             out.append({"id": nid, "kind": "ask", "text": nd["text"], "who": name, "whoSid": fsid,
                         "whoColor": color, "whoWorking": who_working, "status": st, "derived": derived,
-                        "t": nd["t"], "last": nd["t"], "trgb": list(cm.age_rgb(now - nd["t"])),
+                        "t": nd["t"], "last": nd["t"], "trgb": list(cm.age_rgb(now - nd["t"], _colormap())),
                         # mt = last-modified (the segment the planner applied done / block) → a blocked or
                         # done node deep-links to WHERE IT RESOLVED, not where it was minted. Falls back to
                         # t for never-modified nodes (open work, derived done). (the user 2026-06-16.)
@@ -1609,7 +1609,7 @@ def build_feed(now, tmux=None):
             asks.append({
                 "itemId": nid, "sid": fsid, "name": name, "color": color, "text": nodes[nid]["text"],
                 "t": nodes[nid]["t"], "created": nodes[nid]["t"], "live": live,
-                "trgb": list(cm.age_rgb(now - nodes[nid]["t"])),
+                "trgb": list(cm.age_rgb(now - nodes[nid]["t"], _colormap())),
                 "done": 0, "needsYou": 0, "linked": [], "turnId": nid, "turnIds": [nid], "origin": origin,
                 "blockWhy": block_why,               # one-sentence "why blocked" on the card (soft planner block)
                 "blocked": ({"state": "apiError", "since": (tm.get("since") if tm else None),
@@ -2106,6 +2106,37 @@ def _send_client(c, key, msg):
         c["alive"] = False
 
 
+# The active recency colormap (the user 2026-06-16 wanted a chooser): persisted in STATE/colormap, read
+# by the feed/terminal builders. Cached by mtime so the per-node age_rgb in build_feed doesn't re-stat.
+_cmap_cache = {"name": cm.DEFAULT, "mt": None}
+
+
+def _colormap():
+    f = jd.STATE / "colormap"
+    try:
+        mt = f.stat().st_mtime
+    except OSError:
+        return cm.DEFAULT
+    if _cmap_cache["mt"] != mt:
+        try:
+            n = f.read_text().strip()
+        except OSError:
+            n = cm.DEFAULT
+        _cmap_cache["name"] = n if n in cm.COLORMAPS else cm.DEFAULT
+        _cmap_cache["mt"] = mt
+    return _cmap_cache["name"]
+
+
+def _set_colormap(name):
+    """Persist the chosen colormap name (ignored if unknown); the next push recolours the feed."""
+    if name in cm.COLORMAPS:
+        try:
+            jd.STATE.mkdir(parents=True, exist_ok=True)
+            (jd.STATE / "colormap").write_text(name)
+        except OSError:
+            pass
+
+
 def _reply(c, msg):
     """Send a one-shot reply to ONE client (no per-key dedup; for request/response like imgData)."""
     try:
@@ -2444,19 +2475,30 @@ _GEAR_HTML = ("<button id=rgear title=Settings aria-label=Settings>⛭</button>"
               "<span><b>Compact transcript</b>"
               "<span class=rs-sub>Collapse each run of tool uses into one line and hide thinking blocks in the chat.</span>"
               "</span></label>"
+              "<div class=rs-row style='cursor:default'><span style='flex:1 1 auto'><b>Feed colormap</b>"
+              "<span class=rs-sub>Recency tint for feed cards — newest is bright.</span>"
+              "<select id=rs-colormap style='margin-top:5px;width:100%;background:#1e1e1e;color:#ccc;"
+              "border:1px solid #3a3a3a;border-radius:5px;padding:3px 4px;cursor:pointer'>"
+              "<option value=hawaii>Hawaii</option><option value=viridis>Viridis</option>"
+              "<option value=magma>Magma</option><option value=inferno>Inferno</option>"
+              "<option value=plasma>Plasma</option><option value=cividis>Cividis</option>"
+              "</select></span></div>"
               "<div class='rs-h rs-sep'>romp · version</div>"
               "<div id=rsver>…</div></div>")
 _GEAR_JS = r"""(function(){var g=document.getElementById('rgear'),p=document.getElementById('rsettings'),
-b=document.getElementById('rsver'),cc=document.getElementById('rs-compact');
-function load(){try{return Object.assign({compact:false},JSON.parse(localStorage.getItem('romp:settings')||'null'));}catch(e){return {compact:false};}}
-cc.addEventListener('change',function(){var s=load();s.compact=cc.checked;try{localStorage.setItem('romp:settings',JSON.stringify(s));}catch(e){}});
+b=document.getElementById('rsver'),cc=document.getElementById('rs-compact'),cm=document.getElementById('rs-colormap');
+function load(){try{return Object.assign({compact:false,colormap:'hawaii'},JSON.parse(localStorage.getItem('romp:settings')||'null'));}catch(e){return {compact:false,colormap:'hawaii'};}}
+function save(s){try{localStorage.setItem('romp:settings',JSON.stringify(s));}catch(e){}}
+cc.addEventListener('change',function(){var s=load();s.compact=cc.checked;save(s);});
+cm.addEventListener('change',function(){var s=load();s.colormap=cm.value;save(s);
+try{window.acquireVsCodeApi&&window.acquireVsCodeApi().postMessage({type:'setColormap',name:cm.value});}catch(e){}});
 function lv(){var t=document.querySelector('script[src*="feed.js"]');
 var m=t&&t.getAttribute('src').match(/[?&]v=(\d+)/);return m?+m[1]:0;}
 function fill(){fetch('/version',{cache:'no-store'}).then(function(r){return r.json();}).then(function(v){
 var x=lv();b.innerHTML='kernel '+(v.kernel_sha||'?')+'\nserving v'+
 v.dist_ver+'\nthis tab v'+(x||'?');
 }).catch(function(){b.textContent='(version unavailable)';});}
-g.onclick=function(e){e.stopPropagation();if(p.hidden){p.hidden=false;cc.checked=!!load().compact;fill();}else p.hidden=true;};
+g.onclick=function(e){e.stopPropagation();if(p.hidden){p.hidden=false;var s=load();cc.checked=!!s.compact;cm.value=s.colormap||'hawaii';fill();}else p.hidden=true;};
 document.addEventListener('click',function(e){if(!p.hidden&&e.target!==g&&!p.contains(e.target))p.hidden=true;});})();"""
 
 
@@ -3167,6 +3209,8 @@ class Handler(BaseHTTPRequestHandler):
                     _tmux_send(_name_of(msg["id"]) or msg["id"], "/effort " + str(msg["value"]))
                 elif msg and msg.get("type") == "setMode" and msg.get("id") and msg.get("value"):
                     _cycle_mode(_name_of(msg["id"]) or msg["id"], str(msg["id"]), str(msg["value"]))
+                elif msg and msg.get("type") == "setColormap" and msg.get("name"):
+                    _set_colormap(str(msg["name"]))    # recency colormap chooser → recolours the feed on next push
         except (BrokenPipeError, ConnectionResetError, OSError):
             pass
         finally:

@@ -5,8 +5,9 @@
 
 export interface RompSettings {
   compact: boolean;   // chat transcript: collapse consecutive tool uses, hide thinking
+  colormap: string;   // feed recency tint colormap (the user 2026-06-16): hawaii | viridis | magma | inferno | plasma | cividis
 }
-export const DEFAULT_SETTINGS: RompSettings = { compact: false };
+export const DEFAULT_SETTINGS: RompSettings = { compact: false, colormap: "hawaii" };
 const KEY = "romp:settings";
 
 export function loadSettings(): RompSettings {

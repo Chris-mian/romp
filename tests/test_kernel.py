@@ -1021,6 +1021,21 @@ class ViewBuilder(unittest.TestCase):
         self.assertIsNone(km._mode_presses("default", "bypassPermissions"))  # flag-only, not a cycle target
         self.assertIn("@claude-permission-mode", km.TMUX_FMT)              # kernel reads the mode var
 
+    def test_recency_colormap_chooser(self):
+        # the colormap chooser (the user 2026-06-16): several perceptually-uniform maps + a persisted pick.
+        for name in ("hawaii", "viridis", "magma", "inferno", "plasma", "cividis"):
+            self.assertIn(name, km.cm.COLORMAPS)
+        age = 3600
+        self.assertNotEqual(km.cm.age_rgb(age, "viridis"), km.cm.age_rgb(age, "hawaii"))  # name changes the colour
+        self.assertEqual(km.cm.age_rgb(age, "nope"), km.cm.age_rgb(age, "hawaii"))        # unknown → default
+        # kernel selection: default hawaii, set persists + round-trips, an unknown name is ignored
+        self.assertEqual(km._colormap(), "hawaii")
+        km._set_colormap("magma"); self.assertEqual(km._colormap(), "magma")
+        km._set_colormap("bogus"); self.assertEqual(km._colormap(), "magma")             # unknown ignored
+        # the gear exposes the chooser and posts setColormap to the kernel
+        self.assertIn("rs-colormap", km._GEAR_HTML)
+        self.assertIn("setColormap", km._GEAR_JS)
+
     def test_name_of_resolves_sid(self):
         # a postal atom's peer is the sender's SID; resolve it to a name (+ color via _name_color)
         self.assertEqual(km._name_of(SID), "testsess")
