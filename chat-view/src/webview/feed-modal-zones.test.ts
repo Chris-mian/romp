@@ -34,20 +34,26 @@ test("modal node: mark + time are LINKED on hover; text lights alone; styled per
   assert.match(CSS, /\.ftree-text\.lz-hl[^{]*\{[^}]*background/);             // text = rounded fill
 });
 
-test("modal node shows the planner's rationale INLINE under it, not just as a tooltip (the user 2026-06-17)", () => {
+test("modal node shows the planner's rationale INLINE, clickable to where it was authored (the user 2026-06-17)", () => {
   // done → why-done, blocked → why-blocked, else creation why; a dim italic .ftree-why line under the node
   assert.match(FEED, /const whyText = node\.status === "done" \? node\.doneWhy : node\.status === "question" \? node\.blockWhy : node\.why/);
-  assert.match(FEED, /el\("div", "ftree-why"\)/);
+  assert.match(FEED, /el\("div", "ftree-why lz-nav"\)/);
   assert.match(FEED, /\(node\.status === "done" \? "✓ " : node\.status === "question" \? "⏸ " : ""\) \+ whyText/);
+  // clickable → goWork (where the planner authored the why = the node's resolution/minting segment)
+  assert.match(FEED, /w\.onclick = goWork/);
   assert.match(CSS, /\.ftree-why \{/);
+  assert.match(CSS, /\.ftree-why\.lz-nav \{[^}]*cursor: pointer/);
 });
 
-test("modal BLOCKED node: red 'BLOCKED' label + red '?' in a red ring the size of the ✓ disc (the user 2026-06-17)", () => {
+test("modal BLOCKED node: white-on-red 'BLOCKED' chip + red '?' in a red ring; tooltip says 'marked blocked' (the user 2026-06-17)", () => {
   assert.match(FEED, /meta\.textContent = node\.status === "question" \? "BLOCKED"/);
   assert.doesNotMatch(FEED, /"needs you" :/);                                  // the old amber label is gone
-  // the ? mark is a RED ring, 13px (same as the done ✓ disc), with the ? visible in red
+  // the BLOCKED label is a white-on-red chip (same red as the feed's Blocked column header)
+  assert.match(CSS, /\.st-question \.ftree-meta \{[^}]*background: #c0392b;[^}]*color: #ffffff/);
+  // the ? mark is a RED ring, 13px (same as the done ✓ disc), with the ? visible in red — always rendered
   assert.match(CSS, /\.st-question \.ftree-mark \{[^}]*width: 13px/);
   assert.match(CSS, /\.st-question \.ftree-mark \{[^}]*border: 1\.5px solid var\(--err\)/);
   assert.match(CSS, /\.st-question \.ftree-mark \{[^}]*color: var\(--err\)/);
-  assert.match(CSS, /\.st-question \.ftree-meta \{[^}]*color: var\(--err\)/);
+  // the mark/time tooltip on a blocked node says "marked blocked", not "checked off"
+  assert.match(FEED, /node\.status === "question" \? "jump to where this got marked blocked"/);
 });

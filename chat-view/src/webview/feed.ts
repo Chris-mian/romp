@@ -943,20 +943,25 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
   // actually got blocked or finished — so the click lands on THAT assistant action, not where the node
   // was first minted. An open node sends node.t (its own start). navSid is the node's session
   // (a handoff node lives in the recipient's transcript).
+  // Nav targets for this node — used by the three zones AND the inline rationale below (the user 2026-06-17).
+  // goMsg → the MESSAGE that minted it (anchor "prompt"). goWork → where it got CHECKED OFF / marked BLOCKED
+  // (anchor "work" → the assistant turn, by id via anchorUuid when resolved, at the mt segment); this is also
+  // where the planner authored the why, so the rationale links here too.
+  const navId = node.kind === "handoff" ? node.id : it.turnId;
+  const navSid = node.whoSid || (node.kind === "handoff" ? node.id.split(":")[0] : it.sid);
+  const resolved = node.status === "done" || node.status === "question";   // done / blocked → has a resolution
+  const resolveT = (resolved && node.mt) ? node.mt : node.t;
+  const goMsg = (ev: Event) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: navId, sid: navSid, t: node.t, anchor: "prompt", anchorUuid: null }); };
+  const goWork = (ev: Event) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: navId, sid: navSid, t: resolveT, anchor: "work", anchorUuid: node.anchorUuid ?? null }); };
+  // tooltip names the destination by status: a blocked node was "marked blocked", a done node "checked off"
+  const workTitle = node.status === "question" ? "jump to where this got marked blocked"
+                  : resolved ? "jump to where this got checked off" : "jump to this work";
   if (!repeat) {
-    const navId = node.kind === "handoff" ? node.id : it.turnId;
-    const navSid = node.whoSid || (node.kind === "handoff" ? node.id.split(":")[0] : it.sid);
-    const resolved = node.status === "done" || node.status === "question";   // done / blocked → has a resolution
-    const resolveT = (resolved && node.mt) ? node.mt : node.t;
-    // THREE zones, matching the ledger (the user 2026-06-17): the TEXT jumps to the MESSAGE that minted this
-    // (anchor "prompt" → the user turn, by start time); the MARK + the META time jump to where it got
-    // CHECKED OFF / blocked (anchor "work" → the assistant turn, by id via anchorUuid when resolved, the mt
-    // segment). Hovering the mark or the time lights BOTH (shared target); the text lights on its own.
-    const goMsg = (ev: Event) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: navId, sid: navSid, t: node.t, anchor: "prompt", anchorUuid: null }); };
-    const goWork = (ev: Event) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: navId, sid: navSid, t: resolveT, anchor: "work", anchorUuid: node.anchorUuid ?? null }); };
+    // THREE zones: TEXT → the minting message (goMsg); MARK + META time → where it resolved (goWork).
+    // Hovering the mark or the time lights BOTH (shared target); the text lights on its own.
     txt.classList.add("lz-nav"); txt.title = "jump to the message that asked for this"; txt.onclick = goMsg;
-    mark.classList.add("lz-nav"); mark.title = resolved ? "jump to where this got checked off" : "jump to this work"; mark.onclick = goWork;
-    meta.classList.add("lz-nav"); meta.title = mark.title; meta.onclick = goWork;
+    mark.classList.add("lz-nav"); mark.title = workTitle; mark.onclick = goWork;
+    meta.classList.add("lz-nav"); meta.title = workTitle; meta.onclick = goWork;
     const linkHover = (group: HTMLElement[]) => {
       const on = () => group.forEach((g) => g.classList.add("lz-hl"));
       const off = () => group.forEach((g) => g.classList.remove("lz-hl"));
@@ -982,9 +987,13 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
   // blocked/question → why-blocked, else the creation why. Indented to sit under the node's text.
   const whyText = node.status === "done" ? node.doneWhy : node.status === "question" ? node.blockWhy : node.why;
   if (whyText) {
-    const w = el("div", "ftree-why");
+    const w = el("div", "ftree-why lz-nav");
     w.textContent = (node.status === "done" ? "✓ " : node.status === "question" ? "⏸ " : "") + whyText;
     w.style.paddingLeft = (depth * TREE_INDENT_EM + 1.6) + "em";   // align under the node text (past the tri + mark)
+    // clickable → where this rationale was CREATED: the planner authored it at the node's anchor segment
+    // (done/blocked → the resolution turn, open → the minting turn), which is exactly goWork (the user 2026-06-17).
+    w.title = "jump to where this was noted";
+    w.onclick = goWork;
     box.appendChild(w);
   }
   // (the in-feed decision sub-card was removed — a blocked node shows its red BLOCKED marker and

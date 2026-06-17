@@ -274,6 +274,9 @@ body { display: flex; flex-direction: column; }
 /* the planner's rationale, shown INLINE under a node in the modal tree (the user 2026-06-17) — the same
    "why" the card surfaces, no longer tooltip-only. Dim italic so it reads as annotation, not a sub-goal. */
 .ftree-why { font-size: 0.82em; line-height: 1.3; opacity: 0.72; font-style: italic; color: var(--dim); margin: 0 0 3px; overflow-wrap: anywhere; }
+/* the rationale is clickable → jumps to where the planner authored it (the user 2026-06-17) */
+.ftree-why.lz-nav { cursor: pointer; }
+.ftree-why.lz-nav:hover { opacity: 1; text-decoration: underline; text-underline-offset: 2px; }
 .st-done .ftree-mark { color: var(--rel-done); }
 /* a BLOCKED (needs-you) node: the "?" is RED inside a RED ring the SAME 13px size as the ✓ checkbox disc,
    and its label reads "BLOCKED" in red (the user 2026-06-17) — a stronger, unmistakable block signal than
@@ -284,7 +287,10 @@ body { display: flex; flex-direction: column; }
   border-radius: 50%; border: 1.5px solid var(--err); background: transparent;
   color: var(--err); font-size: 9px; font-weight: 700; line-height: 1;
 }
-.st-question .ftree-meta { color: var(--err); font-weight: 700; }
+/* a BLOCKED node's label is a white-on-red CHIP — the same red as the feed's "Blocked" column header
+   (.fcol-chip-blocked), so a blocked step in the modal reads with the same weight as the column (the user
+   2026-06-17). */
+.st-question .ftree-meta { background: #c0392b; color: #ffffff; padding: 1px 7px; border-radius: 10px; font-weight: 700; letter-spacing: 0.05em; }
 /* not-yet-done = a hollow ring the SAME 13px size as the ✓ disc it'll become (the user 2026-06-16) —
    an empty checkbox, not a tiny ○ glyph. The "○" text is hidden; the border IS the circle. */
 .st-open .ftree-mark {
