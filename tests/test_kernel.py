@@ -261,6 +261,32 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(it["summary"], "Fixing the feed")
         self.assertEqual(it["color"], {"bg": "#abcdef", "fg": "#ffffff"})
 
+    def test_alive_filter_empty_tmux_with_tmux_present_shows_nothing(self):
+        # The user 2026-06-16: after killing every session and reloading, the surfaces wrongly
+        # reopened tabs for the dead ones. Cause: an EMPTY tmux result fell back to file-derived
+        # sessions. With a tmux binary present (the host case), an empty result is a GENUINE zero —
+        # show nothing, not the dead session in the discover() window.
+        saved = km._has_tmux
+        km._has_tmux = lambda: True
+        try:
+            self.assertEqual(km._alive_sessions(NOW, {}), [], "tmux present + empty → no sessions")
+            feed = km.build_feed(NOW, tmux={})
+            self.assertEqual(feed.get("cards", []), [], "feed shows no card for a dead session")
+            self.assertEqual(km._ordered_alive(NOW, {}), [], "no chat tabs / timeline lanes either")
+        finally:
+            km._has_tmux = saved
+
+    def test_alive_filter_headless_no_tmux_falls_back_to_discover(self):
+        # The ONLY case that still falls back: a genuinely headless run with no tmux binary at all
+        # (a test box / CI), so a review-only surface isn't blank. Keyed on tmux PRESENCE, not a count.
+        saved = km._has_tmux
+        km._has_tmux = lambda: False
+        try:
+            sids = [s["sid"] for s in km._alive_sessions(NOW, {})]
+            self.assertIn(SID, sids, "no tmux at all → fall back to the discovered session")
+        finally:
+            km._has_tmux = saved
+
     def test_rel_ago_buckets(self):
         self.assertEqual(km._rel_ago(1000, 1000), "just now")
         self.assertEqual(km._rel_ago(1000, 1000 - 120), "2m ago")

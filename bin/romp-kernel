@@ -14,7 +14,7 @@ old). Port status (KEEP/ADAPT/DROP) tracked in design/ui-parity.md + backlog.md.
 
 Run:  python3 ~/GitRepos/romp-event-model/bin/romp-kernel   → opens http://127.0.0.1:7433
 """
-import json, os, re, sys, time, threading, traceback, base64, hashlib, hmac, struct, subprocess, http.client
+import json, os, re, sys, time, threading, traceback, base64, hashlib, hmac, struct, subprocess, shutil, http.client
 from pathlib import Path
 from datetime import datetime
 from importlib.machinery import SourceFileLoader
@@ -196,15 +196,34 @@ def _sessions(now):
     return out
 
 
+def _has_tmux():
+    """True iff a tmux binary exists at all. The kernel runs on the HOST where the
+    sessions + Claude live, so tmux is normally present; a 'headless' run (a test box
+    / CI with no tmux) is the only case it's absent. This is what lets _alive_sessions
+    tell 'the user has zero live sessions' (tmux present, query returned nothing →
+    show nothing) apart from 'there is no tmux here at all' (fall back to file-derived
+    sessions). Only consulted when the tmux query came back empty, so it's off the hot
+    path. Keyed on tmux's PRESENCE, not on a count or a timeout (no heuristics)."""
+    return shutil.which("tmux") is not None
+
+
 def _alive_sessions(now, tmux):
     """The sessions shown on EVERY surface (feed / timeline / chat tabs): only those alive in tmux
     right now. The hard liveness filter (the user 2026-06-15) — ignore everything that isn't a living
     session: a dead session's transcript stays in discover()'s window but is dropped from all
     surfaces. A living session is shown FULLY — the event model re-parses its whole transcript with
-    the new core each build, so old-system sessions are reprocessed. Empty tmux (rare headless run) →
-    fall back to discover so the surfaces aren't blank on a transient tmux miss."""
+    the new core each build, so old-system sessions are reprocessed.
+
+    An EMPTY tmux result is ambiguous: it means either the user has zero live sessions, OR there is
+    no tmux here (headless). Only the latter should fall back to file-derived sessions; the former
+    must show NOTHING (the user 2026-06-16: after killing every session and reloading, the surfaces
+    wrongly reopened tabs for all the dead ones — that was this fallback firing on a genuine zero).
+    So: tmux reachable (sessions present, or a tmux binary exists) → trust the empty result and show
+    only living sessions; no tmux at all → fall back so a headless box isn't blank."""
     alive = [s for s in _sessions(now) if s["sid"] in tmux]
-    return alive if tmux else _sessions(now)
+    if tmux or _has_tmux():
+        return alive
+    return _sessions(now)
 
 
 def _session_order():
