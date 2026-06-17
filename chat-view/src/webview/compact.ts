@@ -8,15 +8,24 @@ export type DisplayItem =
   | { kind: "event"; index: number }            // a pass-through event, by its index in the source array
   | { kind: "toolgroup"; indices: number[] };   // a collapsed run of consecutive tool uses (≥1)
 
-// Given the per-event `kind` strings, produce the compacted display list.
-export function compactDisplay(kinds: readonly string[]): DisplayItem[] {
+// Tools that are an EXCEPTION to collapsing: they render FIRST-CLASS even in compact mode, never swept
+// into a toolgroup (the user 2026-06-17). AskUserQuestion is the "↳ You answered Claude's question" box —
+// a reply to a popup, not bookkeeping — so it must stay visible, not buried under a collapsed tool run.
+export const STANDALONE_TOOLS = new Set<string>(["AskUserQuestion"]);
+
+// Given the per-event `kind` strings (and, for tool events, the tool `names` so the standalone-tool
+// exception can be applied), produce the compacted display list. `names[i]` is the tool name for a
+// "tool" event, undefined otherwise.
+export function compactDisplay(kinds: readonly string[], names?: readonly (string | undefined)[]): DisplayItem[] {
   const out: DisplayItem[] = [];
   let run: number[] | null = null;
   const flush = () => { if (run) { out.push({ kind: "toolgroup", indices: run }); run = null; } };
   for (let i = 0; i < kinds.length; i++) {
     const k = kinds[i];
     if (k === "thinking") continue;                 // hidden — and does NOT break a tool run
-    if (k === "tool") { (run ||= []).push(i); continue; }
+    // A standalone tool (AskUserQuestion) is NOT collapsed: it breaks the run and passes through as its
+    // own event, so renderTool → renderAsk draws the first-class box instead of "+1" inside a group.
+    if (k === "tool" && !STANDALONE_TOOLS.has(names?.[i] ?? "")) { (run ||= []).push(i); continue; }
     flush();
     out.push({ kind: "event", index: i });
   }

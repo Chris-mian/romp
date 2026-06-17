@@ -87,8 +87,16 @@ test("a FLAT ledger (no expandable node anywhere) drops the disclosure column so
 test("ledger spacing: gap before the times; roomy rows + separated top goals (the user 2026-06-16)", () => {
   assert.match(CSS, /\.ledger-ttime \{[^}]*margin-left: 1\.75em/);          // whitespace before the times
   assert.match(CSS, /\.ledger-tnode \{[^}]*line-height: 1\.45/);            // roomy rows so the discs don't kiss
-  assert.match(CSS, /\.ledger-tree \{[^}]*row-gap: 2px/);
+  assert.match(CSS, /\.ledger-tree \{[^}]*row-gap: 4px/);                   // a little more vertical space between rows (the user 2026-06-17)
   assert.match(CSS, /\.ledger-tnode\.ledger-top \{[^}]*margin-top: 9px/);   // extra space between top-level goals
+});
+
+test("ledger has a left gutter so the → recent arrow isn't clipped at the edge (the user 2026-06-17)", () => {
+  // the arrow hangs at margin-left:-19px (net-zero width); the tree must reserve a matching left gutter,
+  // else overflow-x:hidden clips it on the freshest row — and it shifts every row a touch right so nested
+  // rows don't crowd the edge.
+  assert.match(CSS, /\.ledger-tree \{[^}]*padding-left: 20px/);
+  assert.match(CSS, /\.ledger-recent \{[^}]*margin-left: -19px/);   // arrow still net-zero, now with a gutter to hang in
 });
 
 test("ledger sorts unfinished goals on top, finished at the bottom (recency within each — the user 2026-06-16)", () => {
@@ -101,12 +109,38 @@ test("ledger sorts unfinished goals on top, finished at the bottom (recency with
   assert.match(RENDER, /const dt = \(n\.mt \?\? n\.t\)!;/);
 });
 
-test("ledger rows click → jump to chat: done/blocked by mt, open by t (the user 2026-06-16)", () => {
+test("ledger row = 3 zones: text→message (user turn @t), mark+time→checked-off (@mt) (the user 2026-06-17)", () => {
   assert.match(RENDER, /mt\?: number/);                                     // node carries the resolution time
-  assert.match(RENDER, /const navT = \(n\.done \|\| n\.blocked\) \? \(n\.mt \?\? n\.t\) : n\.t/);
-  assert.match(RENDER, /row\.addEventListener\("click", \(\) => \{ scrollToNearestT\(navT, "assistant"\); \}\)/);
-  assert.match(RENDER, /row\.classList\.add\("nav"\)/);
-  assert.match(CSS, /\.ledger-tnode\.nav \{[^}]*cursor: pointer/);
+  // two distinct anchors: where it was STATED (t → the user message) vs where it got CHECKED OFF (mt)
+  assert.match(RENDER, /const startT = n\.t;/);
+  assert.match(RENDER, /const resolveT = n\.mt \?\? n\.t;/);
+  // the text zone jumps to the nearest USER turn (the message); the mark + time to the resolution turn
+  assert.match(RENDER, /wireZone\(txt, startT, "user",/);
+  assert.match(RENDER, /wireZone\(mark, resolveT, "assistant",/);
+  assert.match(RENDER, /wireZone\(time, resolveT, "assistant",/);
+  assert.match(RENDER, /z\.addEventListener\("click", \(ev\) => \{ ev\.stopPropagation\(\); scrollToNearestT\(t, kind\); \}\)/);
+  // the whole-row jump is gone — no row-level click or .nav class anymore
+  assert.doesNotMatch(RENDER, /row\.classList\.add\("nav"\)/);
+  // the hover highlight is per-ZONE (.lz-hl, JS-toggled): a halo on the mark disc, a fill on text/time
+  assert.match(RENDER, /z\.classList\.add\("lz-nav"\)/);
+  assert.match(CSS, /\.ledger-tnode \.lz-nav \{[^}]*cursor: pointer/);
+  assert.match(CSS, /\.ledger-tmark\.lz-hl \{[^}]*box-shadow/);       // mark = halo ring (fill untouched)
+  assert.match(CSS, /\.ledger-ttext\.lz-hl[^{]*\{[^}]*background/);   // text = rounded fill
+});
+
+test("ledger checkbox + time are LINKED — hovering either lights both; text lights alone (the user 2026-06-17)", () => {
+  // a class-driven group (not :hover) so one zone can light its partner across the text between them
+  assert.match(RENDER, /const linkHover = \(group: HTMLElement\[\]\) =>/);
+  assert.match(RENDER, /group\.forEach\(\(g\) => g\.classList\.add\("lz-hl"\)\)/);
+  assert.match(RENDER, /linkHover\(\[txt\]\);/);                                   // text on its own
+  assert.match(RENDER, /linkHover\(time\.textContent \? \[mark, time\] : \[mark\]\)/);  // mark + time together
+});
+
+test("scrollToNearestT: 'assistant' PREFERS the assistant turn (fallback any); 'user' stays strict", () => {
+  // this is what makes the text zone (user turn) and the checkbox/time zones (assistant turn) land on
+  // DIFFERENT turns within one prompt→response exchange (the user 2026-06-17)
+  assert.match(RENDER, /kind === "user" \? pick\("turn-user"\) : kind === "assistant" \? pick\("turn-assistant"\) : pick\(null\)/);
+  assert.match(RENDER, /if \(kind === "assistant" && \(!hit\.el \|\| hit\.d > 6 \* 3600\)\) hit = pick\(null\)/);
 });
 
 test("expanding preserves scroll; the → arrow doesn't shift the recent row (the user 2026-06-17)", () => {

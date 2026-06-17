@@ -181,14 +181,24 @@ body { display: flex; flex-direction: column; }
 /* width:fit-content hugs the widest row so the right-aligned "(Xm ago)" times sit just past the longest
    checklist item instead of way out at the box's right edge (the user 2026-06-16); max-width keeps a long
    line wrapping inside the box. */
-.ledger-tree { display: flex; flex-direction: column; row-gap: 2px; margin-top: 2px; max-height: 19em; overflow-y: auto; overflow-x: hidden; width: fit-content; max-width: 100%; }
+/* padding-left = the LEFT GUTTER the → "recent" arrow hangs into (it sits at margin-left:-19px, net-zero
+   width — see .ledger-recent). Without it the arrow on the freshest row hangs into negative space and is
+   clipped by overflow-x:hidden ("the left side getting cut off"); the gutter also shifts every row a touch
+   right so nested rows aren't crowded against the edge (the user 2026-06-17). */
+.ledger-tree { display: flex; flex-direction: column; row-gap: 4px; margin-top: 2px; padding-left: 20px; max-height: 19em; overflow-y: auto; overflow-x: hidden; width: fit-content; max-width: 100%; }
 /* align-items:center so the 13px discs, text and times share a centre line. Roomy line-height + a
    little row padding/gap so the discs never kiss and an expanded child doesn't crowd its parent
    (the user 2026-06-16 walked back the earlier over-compaction). */
 .ledger-tnode { display: flex; align-items: center; column-gap: 7px; line-height: 1.45; border-radius: 4px; padding: 2px 5px; margin: 0 -5px; }
-/* a row is clickable → jumps to its chat turn (the user 2026-06-16) */
-.ledger-tnode.nav { cursor: pointer; }
-.ledger-tnode.nav:hover { background: rgba(255, 255, 255, 0.08); }
+/* a row splits into THREE independently clickable zones (the user 2026-06-17): the text jumps to the
+   MESSAGE that asked for it, the mark + the right-side time jump to where it got CHECKED OFF. The hover
+   highlight is per-ZONE (.lz-nav), not whole-row, so the lit area shows which target a click will hit.
+   text/time get a small rounded fill (box-shadow pads it out without shifting layout); the mark disc gets
+   a halo ring instead, so its state fill (✓ blue / current / hollow) is never clobbered. */
+.ledger-tnode .lz-nav { cursor: pointer; }
+/* .lz-hl is toggled in JS (not :hover) so the checkbox + time can light TOGETHER when either is hovered */
+.ledger-ttext.lz-hl, .ledger-ttime.lz-hl { background: rgba(255, 255, 255, 0.14); border-radius: 3px; box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.14); }
+.ledger-tmark.lz-hl { box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.16); }
 /* disclosure triangle at EVERY level (▶ folded / ▼ open); .empty = a blank spacer that keeps leaves
    aligned under their expandable siblings. A FLAT ledger (no expandable node anywhere) drops the whole
    column via .ledger-tree.flat so bullets sit flush instead of dead-indented (the user 2026-06-16).
@@ -746,14 +756,14 @@ body { display: flex; flex-direction: column; }
 .postal-badge { font-size: 0.74em; font-weight: 700; letter-spacing: 0.03em; padding: 2px 8px; border-radius: 9px; }
 .postal-badge.parked { background: var(--st-awaiting-bg); color: var(--st-awaiting-fg); }
 .postal-badge.delivered { color: var(--check-bg); }
-/* interaction-type chip on a postal card (the user 2026-06-16): delegation / coordination / ask /
-   question / FYI — a small outlined pill in a per-type colour, scannable in compact + expanded views. */
+/* interaction-type chip on a postal card — THREE top-level categories (the user 2026-06-17): delegation /
+   coordination / question. A small outlined pill in a per-type colour, scannable in compact + expanded
+   views. (FYI folds into coordination now — it is no longer its own chip.) */
 .postal-intent { font-size: 0.7em; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
   padding: 1px 7px; border-radius: 9px; border: 1px solid currentColor; opacity: 0.95; }
-.postal-intent-delegate { color: #b08cff; }       /* delegation — a peer handed off work */
-.postal-intent-coordinate { color: #14b8a6; }      /* coordination — teal */
-.postal-intent-ask { color: var(--st-working-bg); }/* ask / question — amber, needs a response */
-.postal-intent-fyi { color: var(--dim); }          /* FYI — quiet grey, no reply needed */
+.postal-intent-delegate { color: #b08cff; }            /* delegation — a peer handed off work */
+.postal-intent-coordinate { color: #14b8a6; }          /* coordination — teal (heads-up, optional reply) */
+.postal-intent-question { color: var(--st-working-bg); }  /* question — amber, needs an answer */
 .postal-body { color: var(--fg); }
 .postal-body.md > :first-child { margin-top: 0; }
 .postal-body.md > :last-child { margin-bottom: 0; }

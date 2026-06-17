@@ -972,16 +972,20 @@ function postalSummary(ev: Extract<ChatEvent, { kind: "postal" }>): string {
 }
 const collapseWs = (s: string) => s.replace(/\s+/g, " ").trim();
 
-// The interaction TYPE of a postal message, parsed from its leading intent token (the postal norms:
-// DELEGATE / COORDINATE / ASK / Q / FYI / HANDOFF) → a small chip on the card head, shown in both the
-// compact and expanded views (the user 2026-06-16). An unknown/absent token → no chip.
+// The interaction TYPE of a postal message, parsed from its leading intent token → a small chip on the
+// card head, shown in both the compact and expanded views (the user 2026-06-16). There are THREE
+// top-level categories now (the user 2026-06-17): delegation / coordination / question. FYI is NOT its
+// own class anymore — it folds into coordination (a heads-up with no work or answer owed), matching the
+// courier's delegating-vs-coordinating split (romp-judge). Legacy lead-words fold in: HANDOFF + ASK
+// ("do this" = work) → delegation, FYI → coordination, Q → question. Unknown/absent token → no chip.
 const POSTAL_INTENTS: Record<string, { label: string; cls: string }> = {
   DELEGATE: { label: "delegation", cls: "delegate" },
-  HANDOFF: { label: "delegation", cls: "delegate" },     // legacy term → delegation
+  HANDOFF: { label: "delegation", cls: "delegate" },        // legacy term → delegation
+  ASK: { label: "delegation", cls: "delegate" },            // legacy "do this" (a work request) → delegation
   COORDINATE: { label: "coordination", cls: "coordinate" },
-  ASK: { label: "ask", cls: "ask" },
-  Q: { label: "question", cls: "ask" },
-  FYI: { label: "FYI", cls: "fyi" },
+  FYI: { label: "coordination", cls: "coordinate" },        // legacy heads-up → coordination (no longer its own chip)
+  QUESTION: { label: "question", cls: "question" },
+  Q: { label: "question", cls: "question" },                // legacy → question
 };
 function postalIntent(body: string | undefined): { label: string; cls: string } | null {
   const m = /^\s*\*{0,2}([A-Za-z]{1,12})\*{0,2}\s*:/.exec(body || "");
@@ -1764,17 +1768,23 @@ function landOn(target: HTMLElement) {
 function scrollToNearestT(t: number, kind?: string): boolean {
   const v = activeId ? views.get(activeId) : null;
   if (!v) return false;
-  const pick = (userOnly: boolean): { el: HTMLElement | null; d: number } => {
+  const pick = (cls: string | null): { el: HTMLElement | null; d: number } => {
     let best: HTMLElement | null = null, bestd = Infinity;
     for (const elx of Array.from(v.el.querySelectorAll(".turn[data-t]")) as HTMLElement[]) {
       if (elx.classList.contains("turn-thinking")) continue;
-      if (userOnly && !elx.classList.contains("turn-user")) continue;
+      if (cls && !elx.classList.contains(cls)) continue;
       const d = Math.abs(Number(elx.dataset.t) - t);
       if (d < bestd) { bestd = d; best = elx; }
     }
     return { el: best, d: bestd };
   };
-  const hit = pick(kind === "user");
+  // "user" is STRICT — a prompt-intent landing never degrades to a non-user turn (the comment below).
+  // "assistant" PREFERS the assistant turn (where the work / the done-mark happened) but falls back to the
+  // nearest turn of any kind, so it still lands honestly. This is what makes the ledger's text zone (→ the
+  // user message that minted it) and its checkbox/time zones (→ the assistant action that resolved it)
+  // land on DIFFERENT turns even inside one prompt→response exchange (the user 2026-06-17).
+  let hit = kind === "user" ? pick("turn-user") : kind === "assistant" ? pick("turn-assistant") : pick(null);
+  if (kind === "assistant" && (!hit.el || hit.d > 6 * 3600)) hit = pick(null);   // no assistant turn near → nearest any
   // Prompt intent NEVER degrades to a non-user turn: every card is minted from
   // a typed turn, so the nearest user turn IS the instruction (or a neighbor
   // of it) — whereas "the adjacent assistant turn" is exactly the wrong-kind
@@ -1854,7 +1864,8 @@ function syncView(id: string): View {
 // compaction — the user's requirement). prevEpoch is the previous TIMED display item's epoch.
 function rebuildCompact(v: View, s: Session, working: boolean): void {
   while (v.el.firstChild) v.el.removeChild(v.el.firstChild);
-  const disp = compactDisplay(s.events.map((e) => e.kind));
+  // pass tool names too, so a standalone tool (AskUserQuestion) renders first-class instead of collapsing
+  const disp = compactDisplay(s.events.map((e) => e.kind), s.events.map((e) => e.kind === "tool" ? e.name : undefined));
   let prevEpoch: number | null = null;
   const advance = (i: number) => { const ep = eventEpoch(s.events[i]); if (ep != null) prevEpoch = ep; };
   for (const item of disp) {
@@ -2297,15 +2308,33 @@ function renderLedger() {
       const lead: HTMLElement[] = [];
       if (n.recent) { const arr = el("span", "ledger-recent"); arr.textContent = "→"; arr.title = "most recent change"; lead.push(arr); }
       if (anyExpandable) lead.push(tri);                         // no caret column in a flat ledger (see anyExpandable)
-      // click a row to jump to its chat turn — done/blocked land on the assistant turn that resolved it
-      // (its mt), open goals on where they began (t). The caret's own onclick stops propagation, so
-      // clicking it only folds (the user 2026-06-16). scrollToNearestT lands on the nearest turn.
-      const navT = (n.done || n.blocked) ? (n.mt ?? n.t) : n.t;
-      if (navT) {
-        row.classList.add("nav");
-        row.title = "jump to this in the chat";
-        row.addEventListener("click", () => { scrollToNearestT(navT, "assistant"); });
-      }
+      // Three INDEPENDENT click/hover zones (the user 2026-06-17), instead of one whole-row jump: the TEXT
+      // jumps to the MESSAGE that asked for this (the nearest USER turn at its creation t); the CHECKBOX
+      // (mark) and the right-side TIME both jump to HOW/WHEN it got checked off (the nearest turn at its
+      // resolution mt — the assistant action that resolved it, a different place in the script than the
+      // message). Each zone lights its OWN hover highlight (.lz-nav), so the lit area tells you where a
+      // click will land. The caret's own onclick stops propagation, so clicking it only folds.
+      const startT = n.t;                          // where the task was STATED → the user message
+      const resolveT = n.mt ?? n.t;                // where/when it got CHECKED OFF (falls back to t while still open)
+      const wireZone = (z: HTMLElement, t: number | undefined, kind: string, title: string) => {
+        if (!t) return;
+        z.classList.add("lz-nav");
+        z.title = title;
+        z.addEventListener("click", (ev) => { ev.stopPropagation(); scrollToNearestT(t, kind); });
+      };
+      wireZone(txt, startT, "user", "jump to the message that asked for this");
+      wireZone(mark, resolveT, "assistant", "jump to where this got checked off");
+      wireZone(time, resolveT, "assistant", "jump to where this got checked off");
+      // The checkbox + time are LINKED — hovering either lights BOTH (they jump to the same place, where it
+      // got checked off); the text lights on its own (the user 2026-06-17). Class-driven so one zone can
+      // light its partner, which :hover alone can't do across non-adjacent siblings.
+      const linkHover = (group: HTMLElement[]) => {
+        const on = () => group.forEach((g) => g.classList.add("lz-hl"));
+        const off = () => group.forEach((g) => g.classList.remove("lz-hl"));
+        group.forEach((g) => { g.addEventListener("mouseenter", on); g.addEventListener("mouseleave", off); });
+      };
+      linkHover([txt]);
+      linkHover(time.textContent ? [mark, time] : [mark]);   // time only joins the pair when it's shown (done/current)
       row.append(...lead, mark, txt, time);
       wrap.appendChild(row);
       if (expandable && !folded) for (const cid of n.children!) { const c = byId.get(cid); if (c) renderNode(c, depth + 1); }
@@ -3257,8 +3286,30 @@ function setupComposer() {
   // workbench drop overlay to fight) and the picked path comes back as
   // droppedPath → insertComposerText. Mousedown (not click) so the textarea
   // keeps focus and the path lands at the existing cursor.
+  //
+  // TOUCH devices (phone/tablet on the web dashboard) can't use the host dialog:
+  // it pops on the DESKTOP running the kernel, not the phone. So 📎 instead opens
+  // the phone's own photo picker (a hidden <input type=file accept=image/*>), and
+  // the chosen image's bytes ship to the host (shipFileToHost → dropFile), which
+  // saves them under ~/.local/state/romp/drops/ and posts the saved path back
+  // (droppedPath) for insertion — a screenshot reaches the session with no
+  // AirDrop/path gymnastics (the user 2026-06-17).
   const attach = document.getElementById("composer-attach") as HTMLButtonElement | null;
+  const isTouch = () => window.matchMedia("(pointer:coarse)").matches;
+  const filePicker = document.createElement("input");
+  filePicker.type = "file";
+  filePicker.accept = "image/*";
+  filePicker.style.display = "none";
+  filePicker.addEventListener("change", () => {
+    Array.from(filePicker.files || []).forEach((f) => shipFileToHost(f));
+    filePicker.value = ""; // let the same file be picked again
+  });
+  document.body.appendChild(filePicker);
+  // touch: open the phone's photo picker — must fire from a real click gesture (iOS)
+  attach?.addEventListener("click", (e) => { if (isTouch()) { e.preventDefault(); filePicker.click(); } });
+  // desktop: native host dialog; mousedown keeps the textarea focused for cursor-position insert
   attach?.addEventListener("mousedown", (e) => {
+    if (isTouch()) return;
     e.preventDefault();
     vscodeApi?.postMessage({ type: "pickFile" });
   });
