@@ -1219,7 +1219,7 @@ type Entry =
 function makeUndoClearBtn(): HTMLElement {
   const b = el("button", "fdismiss ffollow");   // restorative → blue hover (.ffollow), not Clear's red
   b.id = "feed-undoclear";
-  b.textContent = "UndoClear";
+  b.textContent = "Undo clear";
   b.title = "restore the most recently cleared card";
   b.onclick = (ev) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "undoClear" }); };
   return b;

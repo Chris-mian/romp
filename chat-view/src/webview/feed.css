@@ -464,11 +464,14 @@ body { display: flex; flex-direction: column; }
 .fdismiss.ffollow:hover { color: #fff; border-color: #2b7fb8; background: #2b7fb8; }
 /* UndoClear — restorative, so it hovers BLUE like Follow up, not Clear's red. Pinned to the
    TOP-RIGHT of the feed pane (the user 2026-06-14), fixed so it stays put while the list scrolls. */
-/* Clear-all + UndoClear live in #feed-foot — a footer bar in normal flow BELOW the scrolling card
-   list, so they can never overlap a card (the user 2026-06-15). UndoClear is far-right (restorative,
-   blue hover via .ffollow); Clear all sits to its left (destructive, red via .fdismiss). */
-#feed-foot { flex: 0 0 auto; display: flex; justify-content: flex-end; align-items: center; gap: 8px;
-  padding: 6px 12px; border-top: 1px solid var(--card-border); }
+/* Clear-all + Undo-clear live in #feed-foot — in normal flow BELOW the scrolling card list, so they
+   can never overlap a card (the user 2026-06-15). A small bordered sub-pane hugging the buttons in the
+   BOTTOM-RIGHT, not a full-width bar (the user 2026-06-16). Undo-clear is right (restorative, blue
+   hover via .ffollow); Clear all sits to its left (destructive, red via .fdismiss). */
+#feed-foot { flex: 0 0 auto; align-self: flex-end; width: fit-content;
+  display: inline-flex; align-items: center; gap: 8px;
+  margin: 6px 12px; padding: 4px 8px;
+  border: 1px solid var(--card-border); border-radius: 7px; background: rgba(255, 255, 255, 0.04); }
 #feed-foot .fdismiss { font-size: 10.5px; padding: 1px 9px; opacity: 0.95; }
 /* downstream sessions an ask is waiting on (drop points) — experiment
    2026-06-10; live working dot + age per session, newest first */
