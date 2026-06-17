@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 
 # romp-serve maps the manager's spawn contract (--port / ROMP_SERVE_PORT) onto the
-# Python kernel's env and execs it; `romp serve` persists the tailnet opt-in.
+# Python kernel's env and execs it; `romp --serve` persists the tailnet opt-in.
 
 BIN="$(cd "$(dirname "$BATS_TEST_FILENAME")/../bin" && pwd)"
 ROMP_SERVE="$BIN/romp-serve"
@@ -56,19 +56,19 @@ teardown() { rm -rf "$TEST_DIR"; }
     [[ "$output" == *"MGRPID=4242"* ]]
 }
 
-@test "romp serve: on writes the opt-in, status reports it, off clears it" {
-    run "$ROMP_SCRIPT" serve status
+@test "romp --serve: on writes the opt-in, status reports it, off clears it" {
+    run "$ROMP_SCRIPT" --serve status
     [ "$status" -eq 0 ]
     [[ "$output" == *"127.0.0.1"* ]]
 
-    run "$ROMP_SCRIPT" serve on
+    run "$ROMP_SCRIPT" --serve on
     [ "$status" -eq 0 ]
     [ "$(cat "$XDG_STATE_HOME/romp/serve-host")" = "0.0.0.0" ]
 
-    run "$ROMP_SCRIPT" serve status
+    run "$ROMP_SCRIPT" --serve status
     [[ "$output" == *"tailnet"* ]]
 
-    run "$ROMP_SCRIPT" serve off
+    run "$ROMP_SCRIPT" --serve off
     [ "$status" -eq 0 ]
     [ ! -f "$XDG_STATE_HOME/romp/serve-host" ]
 }

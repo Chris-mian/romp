@@ -361,9 +361,9 @@ MOCK
     grep -q 'tmux new-session -d -s dashboard' "$MOCK_LOG"
 }
 
-# ─── `romp on` — the kernel manager ──────────────────────────────────
+# ─── kernel-manager control FLAGS (--on / --refresh / --status) ──────
 
-@test "manager verbs (on/refresh/status) dispatch to romp-manager with the right sub-command" {
+@test "manager flags (--on/--refresh/--status) dispatch to romp-manager with the right sub-command" {
     cat > "$MOCK_DIR/romp-manager" << 'MOCK'
 #!/usr/bin/env bash
 echo "romp-manager called: $*" >> "$MOCK_LOG"
@@ -371,68 +371,49 @@ MOCK
     chmod +x "$MOCK_DIR/romp-manager"
     export ROMP_MANAGER_BIN="$MOCK_DIR/romp-manager"
 
-    run run_romp on            # `romp on` is PURELY start-the-manager
+    run run_romp --on            # `romp --on` is PURELY start-the-manager
     [ "$status" -eq 0 ]
     grep -q 'romp-manager called: up' "$MOCK_LOG"
 
     : > "$MOCK_LOG"
-    run run_romp refresh       # restart ALL kernels
+    run run_romp --refresh       # restart ALL kernels
     [ "$status" -eq 0 ]
     grep -q 'romp-manager called: restart-all' "$MOCK_LOG"
 
     : > "$MOCK_LOG"
-    run run_romp status
+    run run_romp --status
     [ "$status" -eq 0 ]
     grep -q 'romp-manager called: status' "$MOCK_LOG"
 }
 
-@test "romp on no longer forwards a restart sub-verb (romp refresh replaces it)" {
+@test "romp --on no longer forwards a restart sub-verb (romp --refresh replaces it)" {
     cat > "$MOCK_DIR/romp-manager" << 'MOCK'
 #!/usr/bin/env bash
 echo "romp-manager called: $*" >> "$MOCK_LOG"
 MOCK
     chmod +x "$MOCK_DIR/romp-manager"
     export ROMP_MANAGER_BIN="$MOCK_DIR/romp-manager"
-    run run_romp on restart main
+    run run_romp --on restart main
     [ "$status" -eq 0 ]
     grep -q 'romp-manager called: up' "$MOCK_LOG"   # starts the manager; trailing words are NOT forwarded
     ! grep -q 'restart' "$MOCK_LOG"
 }
 
-@test "refresh/status are reserved manager verbs, NOT session names" {
-    cat > "$MOCK_DIR/romp-manager" << 'MOCK'
-#!/usr/bin/env bash
-echo "romp-manager called: $*" >> "$MOCK_LOG"
-MOCK
-    chmod +x "$MOCK_DIR/romp-manager"
-    export ROMP_MANAGER_BIN="$MOCK_DIR/romp-manager"
-    for verb in refresh status; do
+@test "bare on/refresh/status/serve/version are session names now, NOT commands (the verbs moved to flags)" {
+    # Dash-ification (the user 2026-06-16): every non-session word is a flag now, so these former bare
+    # verbs are free to name a session and must reach the launch path, not the manager/serve/version one.
+    for word in on refresh status serve version; do
         : > "$MOCK_LOG"
-        run run_romp "$verb"
+        run run_romp "$word"
         [ "$status" -eq 0 ]
-        grep -q 'romp-manager called' "$MOCK_LOG"
-        ! grep -q "tmux new-session -d -s ${verb}" "$MOCK_LOG"
+        grep -q "tmux new-session -d -s ${word}" "$MOCK_LOG"
     done
 }
 
-@test "'down' is a normal session name again (no romp down verb — Ctrl+C the foreground romp on)" {
+@test "'down' is a normal session name (no romp --down flag — Ctrl+C the foreground romp --on)" {
     run run_romp down
     [ "$status" -eq 0 ]
     grep -q 'tmux new-session -d -s down' "$MOCK_LOG"
-}
-
-@test "on is the manager command, NOT a session name" {
-    cat > "$MOCK_DIR/romp-manager" << 'MOCK'
-#!/usr/bin/env bash
-echo "romp-manager called" >> "$MOCK_LOG"
-MOCK
-    chmod +x "$MOCK_DIR/romp-manager"
-    export ROMP_MANAGER_BIN="$MOCK_DIR/romp-manager"
-    run run_romp on
-    [ "$status" -eq 0 ]
-    grep -q 'romp-manager called' "$MOCK_LOG"
-    # must NOT create a tmux session named "on"
-    ! grep -q 'tmux new-session -d -s on' "$MOCK_LOG"
 }
 
 @test "romp-manager: control verbs error cleanly when no manager is running" {
@@ -646,11 +627,11 @@ _resume_rows_fn() {   # writes the extracted function to $1
     local b; for b in romp-manager romp-version; do printf '#!/bin/sh\nexit 0\n' > "$td/$b"; chmod +x "$td/$b"; done
     run env PATH="$td:/usr/bin:/bin:/opt/homebrew/bin" bash "$td/romp" -h
     [ "$status" -eq 0 ]
-    # built-ins (no backing binary) always shown — incl. `serve`, which the old static help omitted
-    [[ "$output" == *"romp serve"* ]]
+    # built-ins (no backing binary) always shown — incl. `--serve`, which the old static help omitted
+    [[ "$output" == *"romp --serve"* ]]
     [[ "$output" == *"romp --detach"* ]]
     # present backing → shown
-    [[ "$output" == *"romp on"* ]]
+    [[ "$output" == *"romp --on"* ]]
     [[ "$output" == *"romp --version"* ]]
     # absent backing → hidden
     [[ "$output" != *"romp -d"* ]]

@@ -19,7 +19,7 @@ activity feed, goal inbox, and timeline.
   + archiver always on, a planner + courier while a client is watching) that
   write the durable records, and serves the chat / feed / timeline UI over
   HTTP + WebSocket. Its lifecycle is owned by **`bin/romp-manager`** (start with
-  `romp on`; `bin/romp-service` auto-starts it at login). Open
+  `romp --on`; `bin/romp-service` auto-starts it at login). Open
   `http://127.0.0.1:7433/` in any browser — no VS Code required.
   Design: `design/read-side.md`.
 - **UI** — the three panes (chat, feed, timeline). The chat + feed render

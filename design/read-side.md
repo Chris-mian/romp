@@ -30,14 +30,14 @@ completed); the feed just paints columns. (Reflected back into `design/judge.md`
   Code) ATTACH to the kernel; they never spawn it. (CORRECTION 2026-06-15: an earlier
   draft said the kernel "auto-starts with the first session like the Romp Postal Service" —
   wrong; the real, pre-existing design is the manager supervisor. `romp-serve` was
-  repointed at the new Python kernel so `romp on` supervises it; runs on the manager's
+  repointed at the new Python kernel so `romp --on` supervises it; runs on the manager's
   port (7433) so the existing front-ends + tailscale serve attach unchanged.)
 - **The UI is served by the kernel.** The front-end (the three panes) is `ui/`
   (renamed from `chat-view/`). A browser hits the kernel's port and gets it.
-- **`romp on` starts the supervisor.** It runs `romp-manager` (foreground, like
-  `jupyter lab`); `romp refresh` restarts the kernel(s), `romp status` reports them.
+- **`romp --on` starts the supervisor.** It runs `romp-manager` (foreground, like
+  `jupyter lab`); `romp --refresh` restarts the kernel(s), `romp --status` reports them.
   (The old standalone `romp --on` node UI server is superseded by the manager.)
-  `romp serve on|off` is the persisted tailnet opt-in the manager honors via
+  `romp --serve on|off` is the persisted tailnet opt-in the manager honors via
   `romp-serve` (binds 0.0.0.0 for direct tailnet/phone reach). The UI itself is just
   a URL the kernel serves.
 - **Clean break, no backwards compatibility.** The old record stores (`summaries/`,

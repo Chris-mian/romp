@@ -578,10 +578,10 @@ EOF
     _romp_cmd "romp -d"                    romp-dashboard "Live session monitor (dashboard)"
     _romp_cmd "romp -f"                    romp-feed    "Feed — terminal Working/Blocked/Completed board (mirrors the web feed)"
     _romp_cmd "romp -j"                    romp-judge-monitor "Judges health monitor — are they keeping up, any exceptions"
-    _romp_cmd "romp serve [on|off|status]" -            "Expose the kernel to the tailnet/phone (token-gated), or revert to local-only"
-    _romp_cmd "romp on"                    romp-manager "Start the kernel manager (foreground — Ctrl+C stops it and its kernels)"
-    _romp_cmd "romp refresh"               romp-manager "Restart all romp kernels (picks up new code — run after an update)"
-    _romp_cmd "romp status"                romp-manager "Show manager + kernel status"
+    _romp_cmd "romp --serve [on|off|status]" -          "Expose the kernel to the tailnet/phone (token-gated), or revert to local-only"
+    _romp_cmd "romp --on"                  romp-manager "Start the kernel manager (foreground — Ctrl+C stops it and its kernels)"
+    _romp_cmd "romp --refresh"             romp-manager "Restart all romp kernels (picks up new code — run after an update)"
+    _romp_cmd "romp --status"              romp-manager "Show manager + kernel status"
     _romp_cmd "romp --version"             romp-version "Versions across the parts (tree, kernel, served vs built bundles)"
     _romp_cmd "romp -h"                    -            "Show this help"
     cat <<'EOF'
@@ -645,26 +645,26 @@ fi
 
 # `romp --version` — what's running across the moving parts (working tree, kernel /version, bundles
 # served vs on disk). Delegates to romp-version (python); quick, non-watch, so no test seam needed.
-if [[ "${1:-}" == "--version" || "${1:-}" == "version" ]]; then
+if [[ "${1:-}" == "--version" ]]; then
     exec romp-version
 fi
 
-# `romp serve on|off|status` — persist the kernel's serve-host so the supervisor
-# (romp on → romp-manager → romp-serve → romp-kernel) binds the tailnet WITHOUT a
+# `romp --serve on|off|status` — persist the kernel's serve-host so the supervisor
+# (romp --on → romp-manager → romp-serve → romp-kernel) binds the tailnet WITHOUT a
 # per-launch flag. `on` exposes to the tailnet/phone (token-gated; the token is
 # already baked in ~/.local/state/romp/serve-token); `off` reverts to local-only.
-# Set it once; apply to a running kernel with `romp refresh`.
-if [[ "${1:-}" == "serve" ]]; then
+# Set it once; apply to a running kernel with `romp --refresh`.
+if [[ "${1:-}" == "--serve" ]]; then
     shift
     _serve_conf="${XDG_STATE_HOME:-$HOME/.local/state}/romp/serve-host"
     case "${1:-status}" in
         on|tailnet)
             mkdir -p "$(dirname "$_serve_conf")"
             printf '0.0.0.0\n' > "$_serve_conf"
-            echo "[romp] serve-host → 0.0.0.0 (tailnet/phone, token-gated). Apply now: romp refresh" ;;
+            echo "[romp] serve-host → 0.0.0.0 (tailnet/phone, token-gated). Apply now: romp --refresh" ;;
         off|local)
             rm -f "$_serve_conf"
-            echo "[romp] serve-host → 127.0.0.1 (local only). Apply now: romp refresh" ;;
+            echo "[romp] serve-host → 127.0.0.1 (local only). Apply now: romp --refresh" ;;
         status)
             if [[ -r "$_serve_conf" ]]; then
                 echo "serve-host: $(tr -d '[:space:]' < "$_serve_conf") (tailnet)"
@@ -672,26 +672,26 @@ if [[ "${1:-}" == "serve" ]]; then
                 echo "serve-host: 127.0.0.1 (local only)"
             fi ;;
         *)
-            echo "usage: romp serve [on|off|status]" >&2; exit 2 ;;
+            echo "usage: romp --serve [on|off|status]" >&2; exit 2 ;;
     esac
     exit 0
 fi
 
-# Kernel-MANAGER control verbs. The manager (bin/romp-manager) is the thin, durable supervisor you
+# Kernel-MANAGER control flags. The manager (bin/romp-manager) is the thin, durable supervisor you
 # launch yourself, à la `jupyter lab`: it owns + supervises the romp kernel(s); front ends (VS Code,
-# the web dashboard, Obsidian) ATTACH rather than spawn. `romp on` is PURELY "start the manager" — the
-# actions are their OWN top-level verbs, none hidden under `romp on` (the user 2026-06-13):
-#   romp on        run the manager in the foreground (Ctrl+C stops it AND its kernels)
-#   romp refresh   restart EVERY kernel the manager owns (picks up new code — run after an update)
-#   romp status    manager + kernel status
-# No `romp down`: `romp on` is foreground, so Ctrl+C stops it (the user 2026-06-13). The manager still
-# honors SIGINT/SIGTERM + a direct /stop for that path — there's just no romp verb for it.
-# Bare words (not flags), reserved as commands — like `on` before them (the user's request).
-# ROMP_MANAGER_BIN is the test seam (same pattern as ROMP_DASHBOARD_BIN / ROMP_POSTAL_BIN above).
+# the web dashboard, Obsidian) ATTACH rather than spawn. `romp --on` is PURELY "start the manager" — the
+# actions are their OWN flags, none hidden under `romp --on` (the user 2026-06-13):
+#   romp --on        run the manager in the foreground (Ctrl+C stops it AND its kernels)
+#   romp --refresh   restart EVERY kernel the manager owns (picks up new code — run after an update)
+#   romp --status    manager + kernel status
+# No `romp --down`: `romp --on` is foreground, so Ctrl+C stops it (the user 2026-06-13). The manager still
+# honors SIGINT/SIGTERM + a direct /stop for that path — there's just no romp flag for it.
+# GNU-style long flags, NOT bare words, so every bare argument stays free to name a session (the user
+# 2026-06-16). ROMP_MANAGER_BIN is the test seam (same pattern as ROMP_DASHBOARD_BIN / ROMP_POSTAL_BIN).
 case "${1:-}" in
-    on)      exec "${ROMP_MANAGER_BIN:-romp-manager}" up ;;
-    refresh) exec "${ROMP_MANAGER_BIN:-romp-manager}" restart-all ;;
-    status)  exec "${ROMP_MANAGER_BIN:-romp-manager}" status ;;
+    --on)      exec "${ROMP_MANAGER_BIN:-romp-manager}" up ;;
+    --refresh) exec "${ROMP_MANAGER_BIN:-romp-manager}" restart-all ;;
+    --status)  exec "${ROMP_MANAGER_BIN:-romp-manager}" status ;;
 esac
 
 # NB: there's no `romp rename` / `romp a` command. Rename from inside tmux

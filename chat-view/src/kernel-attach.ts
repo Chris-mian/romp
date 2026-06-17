@@ -2,7 +2,7 @@
 // tested headlessly (extension.ts can't be imported in a node test — it pulls in `vscode`).
 //
 // The rule (the user's 2026-06-13 ruling): a front end NEVER spawns the kernel itself. It attaches to
-// a manager-owned kernel on its configured port; if none is there, it asks the `romp on` manager to
+// a manager-owned kernel on its configured port; if none is there, it asks the `romp --on` manager to
 // ENSURE one (the manager spawns + owns it), then waits for it to come up and attaches. This keeps a
 // single owner (no invisible orphans, no two front ends fighting over the port) while still giving the
 // "point a front end at a port and a kernel appears" UX.

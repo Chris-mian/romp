@@ -87,7 +87,7 @@ export function activate(context: vscode.ExtensionContext) {
 }
 
 export function deactivate() {
-  // Attach-only: VS Code does NOT own the kernel (the `romp on` manager does), so there's nothing to
+  // Attach-only: VS Code does NOT own the kernel (the `romp --on` manager does), so there's nothing to
   // reap here — closing/reloading VS Code just drops our attach; the kernel keeps running.
   chatPipe?.dispose();
   feedPipe?.dispose();
@@ -103,7 +103,7 @@ function toWebview(msg: any) {
 
 // ---- the kernel: ENSURE-THEN-ATTACH (the manager owns it; we never spawn) ----
 // VS Code does NOT spawn the kernel. It attaches to a manager-owned kernel on romp.kernelPort; if none
-// is there, it asks the `romp on` manager to ENSURE one (the manager spawns + owns it), waits for it,
+// is there, it asks the `romp --on` manager to ENSURE one (the manager spawns + owns it), waits for it,
 // and attaches. A second front-end spawner would fight the manager for the port and re-create the
 // invisible-orphan problem — so the only spawner is ever the manager (the user's 2026-06-13 ruling).
 // The decision sequence lives in ./kernel-attach (headless-testable); ensureKernel just supplies the
@@ -141,8 +141,8 @@ function ensureKernel(): Promise<boolean> {
       const port = kernelPort();
       vscode.window.showErrorMessage(
         res.reason === "no-manager"
-          ? `romp: no kernel on port ${port} and no manager on :${managerPort()} — start it with \`romp on\` in a terminal.`
-          : `romp: the manager couldn't bring up a kernel on port ${port} — is that port already in use? Check \`romp on status\`.`,
+          ? `romp: no kernel on port ${port} and no manager on :${managerPort()} — start it with \`romp --on\` in a terminal.`
+          : `romp: the manager couldn't bring up a kernel on port ${port} — is that port already in use? Check \`romp --status\`.`,
       );
     }
     return false;

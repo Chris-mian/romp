@@ -89,7 +89,7 @@ if [[ -x "$ROMP_DIR/chat-view/install.sh" ]]; then
 fi
 
 # Auto-start: install the login service so the kernel supervisor (romp-manager) is
-# always up — you never run `romp on`; open the browser and you can even start
+# always up — you never run `romp --on`; open the browser and you can even start
 # sessions FROM it. launchd on macOS, systemd --user on Linux. Opt out with
 # ROMP_NO_SERVICE=1; remove later with `romp-service uninstall`.
 if [[ -z "${ROMP_NO_SERVICE:-}" && -x "$ROMP_DIR/bin/romp-service" ]]; then
