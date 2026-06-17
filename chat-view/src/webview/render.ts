@@ -2081,16 +2081,26 @@ function agehms(secs: number): string {
   return `${Math.floor(secs / 86400)}d`;
 }
 
-// The "(age)" label is colored by recency on the SHARED romp colormap (crameri
-// "hawaii": dark-magenta → orange → olive → green → teal → pale-cyan), log age
-// scale — these STOPS + age_rgb are kept identical to scripts/romp_colormap.py so
-// the ledger matches the terminal `romp -f` feed. The bullet TEXT stays at default
-// brightness; only the age label is colored.
-const STOPS: Array<[number, number, number]> = [
-  [140, 2, 115], [146, 46, 85], [151, 78, 62], [155, 111, 40], [156, 150, 28],
-  [137, 189, 74], [107, 212, 142], [103, 233, 213], [179, 242, 253],
-];
+// The "(age)" label is colored by recency on the SHARED romp colormap, log age scale, so the ledger
+// matches the feed and the terminal `romp -f`. The bullet TEXT stays at default brightness; only the
+// age label is colored.
+// The recency colormaps — KEEP IN SYNC with bin/romp_colormap.py (the kernel computes the feed's trgb
+// from the same stops). ONE global time colormap, picked in settings (the user 2026-06-17): the ledger
+// reads the chosen map here so it matches the feed (which gets the map via the kernel's trgb). Each is
+// dark→light (recent → the last/bright stop).
+const COLORMAPS: Record<string, Array<[number, number, number]>> = {
+  hawaii: [[140, 2, 115], [146, 46, 85], [151, 78, 62], [155, 111, 40], [156, 150, 28], [137, 189, 74], [107, 212, 142], [103, 233, 213], [179, 242, 253]],
+  viridis: [[68, 1, 84], [72, 40, 120], [62, 74, 137], [49, 104, 142], [38, 130, 142], [31, 158, 137], [53, 183, 121], [110, 206, 88], [181, 222, 43], [253, 231, 37]],
+  magma: [[0, 0, 4], [28, 16, 68], [79, 18, 123], [129, 37, 129], [181, 54, 122], [229, 80, 100], [251, 135, 97], [254, 194, 135], [252, 253, 191]],
+  inferno: [[0, 0, 4], [40, 11, 84], [101, 21, 110], [159, 42, 99], [212, 72, 66], [245, 125, 21], [250, 193, 39], [252, 255, 164]],
+  plasma: [[13, 8, 135], [75, 3, 161], [125, 3, 168], [168, 34, 150], [203, 70, 121], [229, 107, 93], [248, 148, 65], [253, 195, 40], [240, 249, 33]],
+  cividis: [[0, 32, 76], [0, 42, 102], [45, 63, 112], [87, 85, 109], [124, 109, 107], [165, 135, 99], [208, 164, 80], [255, 234, 70]],
+};
+function selectedStops(): Array<[number, number, number]> {
+  return COLORMAPS[(settings.colormap || "").toLowerCase()] || COLORMAPS.hawaii;   // settings updated + rerenderAll on change
+}
 function ramp(v: number): [number, number, number] {
+  const STOPS = selectedStops();
   v = Math.max(0, Math.min(1, v));
   const x = v * (STOPS.length - 1), i = Math.floor(x), fr = x - i;
   if (i >= STOPS.length - 1) return STOPS[STOPS.length - 1];

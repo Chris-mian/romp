@@ -117,6 +117,15 @@ test("expanding preserves scroll; the → arrow doesn't shift the recent row (th
   assert.match(CSS, /\.ledger-recent \{[^}]*margin-left: -19px/);
 });
 
+test("the ledger recency colour uses the globally-selected colormap (the user 2026-06-17)", () => {
+  assert.match(RENDER, /const COLORMAPS: Record<string, Array<\[number, number, number\]>>/);
+  assert.match(RENDER, /viridis:/);
+  assert.match(RENDER, /cividis:/);
+  // ramp reads the chosen map from settings (kept current + rerenderAll on change), default hawaii
+  assert.match(RENDER, /COLORMAPS\[\(settings\.colormap \|\| ""\)\.toLowerCase\(\)\] \|\| COLORMAPS\.hawaii/);
+  assert.match(RENDER, /const STOPS = selectedStops\(\);/);
+});
+
 test("leaf-row tri spacers don't inherit the placeholder's 40px padding (no giant ledger gaps)", () => {
   // REGRESSION (the user 2026-06-16): a leaf row's disclosure-triangle slot is a zero-content
   // `el("span", "ledger-tri" + " empty")` spacer. The transcript "No session open" placeholder was

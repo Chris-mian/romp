@@ -1037,6 +1037,20 @@ class ViewBuilder(unittest.TestCase):
         self.assertIn("rs-colormap", km._GEAR_HTML)
         self.assertIn("setColormap", km._GEAR_JS)
 
+    def test_webview_colormaps_match_the_kernel(self):
+        # the ledger (render.ts) colours recency itself, while the feed/modals get colour from the
+        # kernel's trgb — so for ONE global colormap to actually match across views (the user 2026-06-17)
+        # the two stop tables must be IDENTICAL. Guard against drift.
+        import re
+        here = os.path.dirname(os.path.realpath(__file__))
+        render = open(os.path.join(here, "..", "chat-view", "src", "webview", "render.ts")).read()
+        for name, stops in km.cm.COLORMAPS.items():
+            m = re.search(r"\b" + name + r":\s*(\[\[.*?\]\])", render)
+            self.assertIsNotNone(m, "render.ts COLORMAPS is missing '%s'" % name)
+            nums = [int(x) for x in re.findall(r"-?\d+", m.group(1))]
+            flat = [c for stop in stops for c in stop]
+            self.assertEqual(nums, flat, "render.ts '%s' stops drifted from romp_colormap.py" % name)
+
     def test_name_of_resolves_sid(self):
         # a postal atom's peer is the sender's SID; resolve it to a name (+ color via _name_color)
         self.assertEqual(km._name_of(SID), "testsess")
