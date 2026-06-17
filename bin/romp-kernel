@@ -3450,7 +3450,7 @@ class Handler(BaseHTTPRequestHandler):
                     _push_all()                        # reflect the clear on every feed client now
                 elif msg and msg.get("type") == "nodeOverride" and msg.get("sid") and msg.get("nodeId"):
                     # modal surgical override: cross a node off (op:resolve → nodeComplete). Other ops can
-                    # extend this later; resolve is the one Henry asked for (the user 2026-06-17).
+                    # extend this later; resolve is the one the user asked for (2026-06-17).
                     if msg.get("op") == "resolve" and _resolve_node(str(msg["sid"]), str(msg["nodeId"])):
                         _push_all()
                 elif msg and msg.get("type") == "clearAll":
