@@ -190,16 +190,18 @@ def _mk(kind, header, question, opts, preview=None, chosen=None, pairs=None):
 
 
 def extract_preview(lines, bcol):
-    """Everything from the box's left border (bcol) rightward, blank rows
-    trimmed, kept VERBATIM. The inverse of the clip at parse_ask_pane."""
-    col = [ln[bcol:].rstrip() if len(ln) > bcol else "" for ln in lines]
-    a = 0
-    b = len(col)
-    while a < b and col[a].strip() == "":
-        a += 1
-    while b > a and col[b - 1].strip() == "":
-        b -= 1
-    return "\n".join(col[a:b]) if b > a else None
+    """The preview BOX only — the rows spanning its top border to its bottom border, sliced at the
+    left-border column (bcol) and kept VERBATIM. The inverse of the clip at parse_ask_pane.
+
+    Slicing EVERY line at bcol (the old behaviour) bled the left-clipped TAILS of unrelated on-screen
+    lines — the wrapped question above the box, the footer below it, the chat behind — into the
+    preview, which the user saw as garbled clipped text (the user 2026-06-16). The box's own rows are
+    exactly those carrying a box-edge glyph at bcol; restrict to the span between the first and last."""
+    box = [i for i, ln in enumerate(lines) if len(ln) > bcol and BOX_EDGE_RE.match(ln[bcol])]
+    if not box:
+        return None
+    col = [lines[i][bcol:].rstrip() if len(lines[i]) > bcol else "" for i in range(box[0], box[-1] + 1)]
+    return "\n".join(col) if col else None
 
 
 def parse_ask_pane(pane, cols=None):

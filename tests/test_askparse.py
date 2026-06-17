@@ -319,6 +319,40 @@ class TestAskParse(unittest.TestCase):
         self.assertNotIn("Blue-green", ask["preview"])
         self.assertNotIn("Rolling", ask["preview"])
 
+    def test_preview_is_the_box_only_no_clipped_tails_of_other_lines(self):
+        # REGRESSION (the user 2026-06-16): the preview box is drawn to the RIGHT of the options, but
+        # the WRAPPED QUESTION above it and the FOOTER below it also extend past the box's left-border
+        # column. The old extractor sliced EVERY pane line at that column, bleeding those lines'
+        # left-clipped TAILS into ask.preview — the user saw garbled half-lines. The preview must be
+        # the BOX'S OWN ROWS only. Invented content — no real session data.
+        W = 30
+
+        def row(left, box):
+            return left.ljust(W) + box
+
+        pane = "\n".join([
+            "☐ Strategy",
+            "A long question that wraps and bleeds well past the preview box border column over here",
+            row("❯ 1. Alpha", "╭─ preview ────────────────╮"),
+            row("     first",  "│ a code line in the box   │"),
+            row("  2. Beta",   "│ another box content line │"),
+            row("     second", "╰──────────────────────────╯"),
+            "",
+            "Enter to select · ↑/↓ to navigate · Esc to cancel",
+        ])
+        ask = parse(pane)
+        self.assertIsNotNone(ask)
+        pv = ask["preview"]
+        self.assertTrue(pv, "the box must still be captured")
+        self.assertRegex(pv, r"╭─ preview ─+╮")
+        self.assertRegex(pv, r"│ a code line in the box +│")
+        self.assertRegex(pv, r"╰─+╯")
+        # NO bled tails from the wrapped question or the footer
+        for leak in ["bleeds", "border column", "over here", "navigate", "Esc to cancel", "select"]:
+            self.assertNotIn(leak, pv, 'preview leaked an unrelated line: "%s"' % leak)
+        # exactly the box's 4 rows
+        self.assertEqual(len(pv.splitlines()), 4)
+
     def test_preview_captured_per_focused_option_rekeys_sig(self):
         # Moving the cursor swaps which option's box the TUI draws; a re-capture
         # must surface the new box AND change sig. Synthetic boxes.
