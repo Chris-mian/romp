@@ -471,6 +471,19 @@ class PlanApply(unittest.TestCase):
         self.assertEqual(s["nodes"][nid]["mt"], T0 + 90, "a done bumps mt")
         self.assertEqual(s["nodes"][nid]["t"], T0, "t stays the create time — feed/ledger reading t are unaffected")
 
+    def test_open_menu_seals_completed_subtrees(self):
+        # A completed subtree is SEALED (the user 2026-06-16): an OPEN child of a done top is NOT in the
+        # menu, so the planner can't sub/amend into it — new related work mints a new top instead.
+        s = _store()
+        jd.apply_plan(s, "s1", T0, [{"do": "mint", "why": "x", "text": "done top"}], [])
+        jd.apply_plan(s, "s2", T0 + 10, [{"do": "sub", "why": "x", "under": 1, "text": "open child"}], jd.open_menu(s))
+        self.assertEqual({nd["text"] for nd in jd.open_menu(s)}, {"done top", "open child"}, "both open before completion")
+        menu = jd.open_menu(s)
+        top_i = next(i for i, nd in enumerate(menu, 1) if nd["text"] == "done top")
+        jd.apply_plan(s, "s3", T0 + 20, [{"do": "done", "why": "shipped", "goal": top_i}], menu)
+        self.assertFalse(s["nodes"][s["placements"]["s2"]]["nodeComplete"], "the child is still open in the store")
+        self.assertEqual(jd.open_menu(s), [], "the completed top AND its still-open child are sealed out of the menu")
+
 
 class PlanRef(unittest.TestCase):
     """A done/block op targets a node CREATED earlier in the SAME reply via "ref" (1-based among this

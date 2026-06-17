@@ -575,11 +575,26 @@ def save_goals(fsid, store):
 
 
 def open_menu(store, cap=20):
-    """The session's open nodes (not complete, not cleared), numbered oldest-first, capped — the
-    planner's candidate menu. Cap 20 covers every real session (max ~18 open goals) while bounding the
-    prompt on a pathological one, so topic-matching can scan the WHOLE list (no old goal scrolls off)."""
-    opens = [nd for nd in store["nodes"].values()
-             if not nd.get("nodeComplete") and not nd.get("cleared")]
+    """The session's open nodes, numbered oldest-first, capped — the planner's candidate menu. A node is
+    open only if NEITHER it NOR any ancestor is complete/cleared: a completed (or cleared) subtree is
+    SEALED (the user 2026-06-16), so the planner can't sub/amend into it via an open child — new related
+    work mints a NEW top instead of reopening a done branch. Cap 20 covers every real session (max ~18
+    open goals) while bounding the prompt on a pathological one, so topic-matching can scan the WHOLE list."""
+    nodes = store["nodes"]
+
+    def _sealed(nid):                                  # self or any ancestor complete/cleared → inside a done subtree
+        seen = set()
+        while nid and nid not in seen:
+            seen.add(nid)
+            nd = nodes.get(nid)
+            if not nd:
+                return False
+            if nd.get("nodeComplete") or nd.get("cleared"):
+                return True
+            nid = nd.get("parentId")
+        return False
+
+    opens = [nd for nid, nd in nodes.items() if not _sealed(nid)]
     opens.sort(key=lambda nd: nd.get("t", 0))
     return opens[-cap:]
 
