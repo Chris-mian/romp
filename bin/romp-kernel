@@ -1603,9 +1603,24 @@ def build_feed(now, tmux=None):
             _cdone[nid] = res
             return res
 
+        # Order children MOST-RECENT-FIRST by subtree-max mt — the SAME recency key the ledger tree uses
+        # (build_session _submax), so every goal-tree view reads newest-first: the card's inline sub-goal
+        # checklist, the modal tree, and the ledger TOC all agree (the user 2026-06-17). mt (last-touched)
+        # falls back to t for never-modified nodes.
+        _fsmemo = {}
+        def _fsubmax(cid):
+            if cid in _fsmemo:
+                return _fsmemo[cid]
+            cn = nodes.get(cid) or {}
+            m = cn.get("mt", cn.get("t", 0))
+            for k in children.get(cid, []):
+                m = max(m, _fsubmax(k))
+            _fsmemo[cid] = m
+            return m
+
         def flatten(nid, out, ancestor_done=False):  # AskTreeNode flat list, root first; nest via children ids
             nd = nodes[nid]
-            kids = sorted(children.get(nid, []), key=lambda c: nodes[c]["t"])
+            kids = sorted(children.get(nid, []), key=_fsubmax, reverse=True)   # most-recent-first (matches the ledger)
             explicit = bool(nd.get("nodeComplete"))
             done = explicit or _closure_done(nid) or ancestor_done
             derived = done and not explicit            # roll-up / roll-down → DIMMED ✓ disc, not the full one

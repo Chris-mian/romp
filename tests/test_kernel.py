@@ -335,6 +335,33 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(nodes["a blocked step"]["blockWhy"], "waiting on the user's choice")
         self.assertEqual(nodes["a finished step"]["doneWhy"], "shipped the fix")
 
+    def test_feed_card_tree_orders_children_most_recent_first(self):
+        # Every goal-tree view reads NEWEST-FIRST (the user 2026-06-17): the feed card's modal tree (and its
+        # inline sub-goal checklist, which follows the same children order) must sort children by subtree-max
+        # mt descending — the SAME recency key the ledger TOC uses — instead of the old oldest-first by t.
+        top, s_old, s_new, gc = (SID + ":top", SID + ":sold", SID + ":snew", SID + ":gc")
+        def gn(nid, text, parent, **kw):
+            d = {"id": nid, "text": text, "parentId": parent, "nodeComplete": False,
+                 "blocked": False, "cleared": False, "trail": [], "t": T0, "mt": T0}
+            d.update(kw); return d
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+            "rompUuid": SID, "seq": 4, "lastNode": None,
+            "nodes": {
+                top:   gn(top, "the goal", None, mt=T0 + 5),
+                s_old: gn(s_old, "older step", top, mt=T0 + 10),                 # created/touched earlier
+                s_new: gn(s_new, "newer step", top, mt=T0 + 20),                 # its own mt is newer…
+                gc:    gn(gc, "fresh grandchild", s_old, mt=T0 + 99),            # …but old-step's subtree is freshest
+            },
+            "placements": {}, "status": {}}))
+        card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == top)
+        order = [n["text"] for n in card["tree"]]
+        # subtree-max wins: "older step" floats above "newer step" because its grandchild is the freshest
+        self.assertLess(order.index("older step"), order.index("newer step"),
+                        "children sort by subtree-max mt, descending (matches the ledger)")
+        root = next(n for n in card["tree"] if n["id"] == top)
+        self.assertEqual([next(n for n in card["tree"] if n["id"] == c)["text"] for c in root["children"]],
+                         ["older step", "newer step"], "the children array itself is newest-first")
+
     def test_feed_completed_card_surfaces_done_why(self):
         # The done page mirror of blockWhy (the user 2026-06-17): a COMPLETED card carries the
         # most-recently-completed node's doneWhy, so the planner's "why done" shows inline under the
