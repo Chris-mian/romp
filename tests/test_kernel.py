@@ -918,6 +918,22 @@ class ViewBuilder(unittest.TestCase):
         self.assertIn("real ask", p3); self.assertIn("mid", p3); self.assertIn("end", p3)
         self.assertEqual(r3, ["x", "y"])
 
+    def test_img_hydration_and_dropped_file_host_handlers(self):
+        # ported host handlers (the user 2026-06-16): a path-image hydrates to a data: URL, and a
+        # dropped file's bytes are saved under the state dir's drops/ for the prompt to reference.
+        import base64
+        png = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII=")
+        p = os.path.join(self.td.name, "shot.png")
+        with open(p, "wb") as f:
+            f.write(png)
+        self.assertTrue((km._img_data_url(p) or "").startswith("data:image/png;base64,"))
+        self.assertIsNone(km._img_data_url("relative/x.png"), "non-absolute path → None")
+        self.assertIsNone(km._img_data_url("/tmp/not-an-image.txt"), "non-image extension → None")
+        fp = km._save_dropped_file("My Shot!.png", base64.b64encode(b"hello").decode())
+        self.assertTrue(os.path.isfile(fp))
+        self.assertEqual(open(fp, "rb").read(), b"hello")
+        self.assertIn("drops", fp)
+
     def test_name_of_resolves_sid(self):
         # a postal atom's peer is the sender's SID; resolve it to a name (+ color via _name_color)
         self.assertEqual(km._name_of(SID), "testsess")

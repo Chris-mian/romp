@@ -2057,6 +2057,83 @@ def _send_client(c, key, msg):
         c["alive"] = False
 
 
+def _reply(c, msg):
+    """Send a one-shot reply to ONE client (no per-key dedup; for request/response like imgData)."""
+    try:
+        c["send"](json.dumps(msg))
+    except Exception:
+        c["alive"] = False
+
+
+# ---- pasted-image hydration + dropped-file handling (ported from the old TS kernel chat-view/src/
+#      kernel/server.ts; the Python port had dropped these host handlers, so path-images never
+#      hydrated and OS drops did nothing — the user 2026-06-16) ----
+_IMG_MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+             ".gif": "image/gif", ".webp": "image/webp", ".bmp": "image/bmp", ".svg": "image/svg+xml"}
+_IMG_MAX_BYTES = 8_000_000
+_img_cache = {}                                  # "path:mtime:size" → dataURL | None
+
+
+def _img_data_url(p0):
+    """A `path:<abs>` image → a data: URL the webview can <img src>. ~ expanded; absolute + known image
+    extension only; cached by (path, mtime, size); 8 MB cap. None when not a readable image (the webview
+    then keeps its '🖼 filename' chip)."""
+    try:
+        p = os.path.expanduser(p0) if p0.startswith("~/") else p0
+        if not os.path.isabs(p):
+            return None
+        mime = _IMG_MIME.get(os.path.splitext(p)[1].lower())
+        if not mime or not os.path.isfile(p):
+            return None
+        st = os.stat(p)
+        key = "%s:%s:%s" % (p, st.st_mtime, st.st_size)
+        if key in _img_cache:
+            return _img_cache[key]
+        if st.st_size > _IMG_MAX_BYTES:
+            _img_cache[key] = None
+            return None
+        with open(p, "rb") as f:
+            url = "data:%s;base64,%s" % (mime, base64.b64encode(f.read()).decode())
+        _img_cache[key] = url
+        return url
+    except OSError:
+        return None
+
+
+def _save_dropped_file(name, b64):
+    """A file dropped/pasted on the composer arrives as BYTES (a sandboxed webview exposes no path). Save
+    under the state dir's drops/ and return the saved path for the prompt to reference. None on failure."""
+    try:
+        drops = jd.STATE / "drops"
+        drops.mkdir(parents=True, exist_ok=True)
+        safe = re.sub(r"[^\w.-]+", "_", name)[-80:] or "drop"
+        f = drops / ("%d-%s" % (int(time.time() * 1000), safe))
+        f.write_bytes(base64.b64decode(b64))
+        return str(f)
+    except (OSError, ValueError):
+        return None
+
+
+def _open_file(p):
+    """Open a path in the user's default app/editor (macOS `open`); best-effort, never raises."""
+    try:
+        subprocess.Popen(["open", str(p)], stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError:
+        pass
+
+
+def _pick_file():
+    """Native file picker (macOS osascript) → the chosen POSIX path, or None if cancelled. Blocks, so
+    callers run it off the message loop."""
+    try:
+        out = subprocess.run(["osascript", "-e", 'POSIX path of (choose file with prompt "Attach a file")'],
+                             capture_output=True, text=True, timeout=180)
+        return out.stdout.strip() or None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
 def _push(targets):
     """Build the payloads once (cached parses) and send each target only the pieces that CHANGED for it.
     Drives both the periodic pusher (all clients) and a fresh connect (one client): a new/reconnecting
@@ -3018,6 +3095,22 @@ class Handler(BaseHTTPRequestHandler):
                     # the "Retry" button on an API-error card → paste "retry" into that session's pane to
                     # resume the stalled turn (the user 2026-06-16)
                     _tmux_send(_name_of(msg["id"]) or msg["id"], "retry")
+                # ---- pasted-image hydration + dropped-file handling (ported from the old TS kernel) ----
+                elif msg and msg.get("type") == "imgRequest" and msg.get("path"):
+                    p = str(msg["path"])                                  # path:<abs> image → a data: URL the <img> can show
+                    _reply(client, {"type": "imgData", "path": p, "url": _img_data_url(p)})
+                elif msg and msg.get("type") == "dropFile" and msg.get("name") and msg.get("b64"):
+                    fp = _save_dropped_file(str(msg["name"]), str(msg["b64"]))   # bytes → saved file → insert its path
+                    if fp:
+                        _reply(client, {"type": "droppedPath", "path": fp})
+                elif msg and msg.get("type") == "openFile" and msg.get("path"):
+                    _open_file(str(msg["path"]))                          # caption / linkified path click → open it
+                elif msg and msg.get("type") == "pickFile":
+                    def _pf(c=client):                                    # 📎 → native dialog (blocks) → insert the picked path
+                        fp = _pick_file()
+                        if fp:
+                            _reply(c, {"type": "droppedPath", "path": fp})
+                    threading.Thread(target=_pf, daemon=True).start()
         except (BrokenPipeError, ConnectionResetError, OSError):
             pass
         finally:
