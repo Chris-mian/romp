@@ -44,8 +44,7 @@ const PADL = 8, COLGAP = 10;                        // gutter: name col | chip c
 const BADGE_FS = 9;
 const NICE = [60, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400, 172800];
 const BADGE = { working: { bg: '#E0B020', fg: '#332600' }, ready: { bg: '#2B7FB8', fg: '#ffffff' },
-                attention: { bg: '#C0392B', fg: '#ffffff' }, compacting: { bg: '#11808f', fg: '#ffffff' },
-                subagent: { bg: '#E67E22', fg: '#ffffff' } };   // orange: quiet session, but a subagent is running
+                attention: { bg: '#C0392B', fg: '#ffffff' }, compacting: { bg: '#11808f', fg: '#ffffff' } };
 const FONT = '-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif';
 // Judging band: a compact second timeline UNDER the session lanes, on the SAME axis — one row per
 // summarizer judge (design/judge.md). Each mark is FILLED with the colour of the SESSION it acted on and
@@ -186,9 +185,8 @@ function idleGaps(merged, gapCT, now) {
 function badgeFor(s) {
   if (!s || !s.live) return null;
   let m = null;
-  if (s.state === 'working') m = { label: 'WORKING', kind: 'working' };   // busy → WORKING hides the subagent
+  if (s.state === 'working') m = { label: 'WORKING', kind: 'working' };
   else if (s.state === 'permission' || s.state === 'awaiting') m = { label: 'BLOCKED', kind: 'attention' };
-  else if (s.subagent != null) m = { label: 'SUBAGENT', kind: 'subagent' };   // quiet, but a background subagent runs
   else if (s.state === 'waiting' || s.state === 'idle') m = { label: 'READY', kind: 'ready' };
   if (!m) return null;
   return { label: m.label, bg: BADGE[m.kind].bg, fg: BADGE[m.kind].fg };
