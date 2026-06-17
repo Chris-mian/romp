@@ -814,10 +814,12 @@ class BlockCompletionCorrectness(unittest.TestCase):
             self.assertIn(phrase, jd.PLAN_SYS, phrase)
 
     def test_block_prompt_excludes_non_user_deferrals(self):
-        # the user 2026-06-16: work DEFERRED because a peer is handling it / to avoid a conflict is NOT a
-        # user-owed decision, so it must NOT be labeled blocked. Guard the exclusion against a revert.
-        for phrase in ("DEFERRED for a reason", "OTHER than a user decision is NOT blocking",
-                       "another session is handling it", "avoid a conflict"):
+        # the user 2026-06-16: work waiting on a PEER (handling it, or a reply to a message you sent) or
+        # any non-user thing is NOT a user-owed decision, so it must NOT be labeled blocked. The block
+        # trigger is qualified "from the user" so a peer's reply doesn't read as the blocking 'answer'.
+        for phrase in ("answer FROM THE USER", "Waiting on anyone or anything OTHER than the user",
+                       "another session is handling it", "PEER's reply to a message you sent",
+                       "avoid a conflict", "only the human blocks"):
             self.assertIn(phrase, jd.PLAN_SYS, phrase)
 
     def test_surgical_unblock_leaves_sibling_block(self):

@@ -486,13 +486,14 @@ PLAN_SYS = (
     'THIS reply, use \"ref\":<k> (k = the 1-based position of that mint/sub among the ops in this reply) '
     'instead of \"goal\".\n'
     '- {\"why\",\"do\":\"block\",\"goal\":<n>} — goal/step #n is now WAITING ON THE USER: its next step '
-    "needs a decision, approval, or answer before it can proceed. The \"why\" is the one-sentence reason "
-    "it is blocked. ANSWERING / EXPLAINING / REPORTING work is NOT blocking. Work DEFERRED for a reason "
-    "OTHER than a user decision is NOT blocking either — a peer or another session is handling it, "
-    "deferring to avoid a conflict, or waiting on a build/CI/external event keeps the goal OPEN, not "
-    "blocked (only a decision, approval, or answer owed BY THE USER blocks). WEIGHING: if the segment "
-    "both reports work AND leaves a decision owed by the user, the owed decision WINS → block. (Use "
-    '\"ref\":<k> to block a node created in this reply.)\n'
+    "needs a decision, approval, or answer FROM THE USER (the human) before it can proceed. The \"why\" "
+    "is the one-sentence reason it is blocked. ANSWERING / EXPLAINING / REPORTING work is NOT blocking. "
+    "Waiting on anyone or anything OTHER than the user is NOT blocking — a peer or another session is "
+    "handling it, waiting on a PEER's reply to a message you sent, deferring to avoid a conflict, or "
+    "waiting on a build/CI/external event keeps the goal OPEN, not blocked. An 'answer' or 'reply' from "
+    "a PEER session is NOT a user answer; only the human blocks. WEIGHING: if the segment both reports "
+    "work AND leaves a decision owed by the user, the owed decision WINS → block. (Use \"ref\":<k> to "
+    "block a node created in this reply.)\n"
     '- {\"why\",\"do\":\"skip\"} — the segment did NO real work (an interruption, an empty/aborted turn, '
     "a bare acknowledgement, a system notification). A segment that RAN TOOLS is real work — never skip "
     "it. If you skip, \"ops\" is exactly one skip op.\n"
