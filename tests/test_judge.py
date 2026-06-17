@@ -762,19 +762,26 @@ class PlanTuning(unittest.TestCase):
     def test_why_messages_get_concise_writing_guidance(self):
         # The user's planner "why" is shown on the feed cards (why / blockWhy / doneWhy), so the prompt
         # carries distilled concise-writing rules (the user 2026-06-16, from the JLD method): real reason
-        # first, concrete verbs, no filler, no stock AI words, no em dashes, confidence calibration.
+        # first, concrete verbs, cut filler, no em dashes, confidence calibration.
         for phrase in ("Write each \"why\" plainly", "the real reason first", "concrete verbs",
-                       "no em dashes", "say it once"):
+                       "Cut filler", "no em dashes", "say it once"):
             self.assertIn(phrase, jd.PLAN_SYS, phrase)
-        # at least one stock-AI word must be named as a thing to cut
-        self.assertTrue(any(w in jd.PLAN_SYS for w in ("delve", "leverage", "crucial")),
-                        "the prompt names stock AI words to avoid")
+        # the planner no longer polices stock AI words (the user 2026-06-16: that anti-AI-tell steer
+        # isn't useful here); the general plain-writing advice above stays
+        self.assertNotIn("delve", jd.PLAN_SYS)
+        self.assertNotIn("stock AI words", jd.PLAN_SYS)
         # the courier's handoff label gets the same plain-words steer
         self.assertIn("plain concrete words", jd.COURIER_SYS)
         # the closer now writes a doneWhy per completed goal (JSON done list), with the same writing guidance
         self.assertIn('"done"', jd.CLOSER_SYS, "the closer emits a JSON done list with a reason per goal")
         for phrase in ("Write each \"why\" plainly", "no em dashes", "say it once"):
             self.assertIn(phrase, jd.CLOSER_SYS, phrase)
+
+    def test_planner_prompt_suggests_grouping_under_an_umbrella(self):
+        # the user 2026-06-16: the planner may infer a higher-level goal and group related work under one
+        # top card instead of scattering separate tops. Guard the suggestion against a revert.
+        for phrase in ("GROUPING", "higher-level goal", "single top goal", "genuine shared purpose"):
+            self.assertIn(phrase, jd.PLAN_SYS, phrase)
 
     def test_sub_files_under_the_old_topic_goal_not_the_newest(self):
         # mechanics: a SUB targeting an OLD goal lands there, not the newer one — the planner can reach

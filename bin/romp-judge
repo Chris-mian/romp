@@ -466,8 +466,7 @@ PLAN_SYS = (
     "\"ops\" is a list of ONE OR MORE operations, applied in order. EVERY op starts with \"why\": ONE "
     "plain sentence giving the real reason for THAT action (it is shown to the user — a genuine reason, "
     "not a restatement of the text). Write each \"why\" plainly: the real reason first, concrete verbs, "
-    "the words a person actually says. Cut filler (\"in order to\", \"it is worth noting\", \"notably\") "
-    "and stock AI words (\"delve\", \"leverage\", \"crucial\", \"pivotal\", \"robust\", \"underscores\"); "
+    "the words a person actually says. Cut filler (\"in order to\", \"it is worth noting\", \"notably\"); "
     "no em dashes; state facts plainly and hedge only genuine guesses; say it once. Most segments do ONE "
     "thing, but emit MORE ops when the segment genuinely did more (e.g. finished one goal AND started "
     "another). Op kinds:\n"
@@ -497,6 +496,10 @@ PLAN_SYS = (
     '- {\"why\",\"do\":\"skip\"} — the segment did NO real work (an interruption, an empty/aborted turn, '
     "a bare acknowledgement, a system notification). A segment that RAN TOOLS is real work — never skip "
     "it. If you skip, \"ops\" is exactly one skip op.\n"
+    "GROUPING: when several things the user wants serve ONE larger outcome, you may infer that "
+    "higher-level goal and mint it as a single top goal so the related work collects under one card "
+    "instead of scattering as separate tops; its parts then file under it as steps. Group only a "
+    "genuine shared purpose, not look-alike wording.\n"
     "Output ONLY the JSON object. When unsure between mint and sub, prefer sub; when unsure whether to "
     "skip, place it.")
 
