@@ -307,6 +307,20 @@ def _chat_tab_sessions(now, tmux):
                   key=lambda s: idx.get(s["sid"], len(idx)))
 
 
+def _timeline_sessions(now, tmux):
+    """Sessions shown as TIMELINE LANES (the user 2026-06-16): living sessions in the shared order PLUS
+    every DEAD session whose transcript is still in the discover window — so scrolling back surfaces the
+    sessions that were active then, struck through. Independent of chat tabs: a dead session is a lane
+    without needing a tab. The timeline's own `active` filter shows a dead lane ONLY while the window
+    covers its activity, and ×-hidden tabs are dropped from the timeline too (X in the chat → gone here)."""
+    hidden = _hidden_tabs()
+    live = _ordered_alive(now, tmux)
+    live_sids = {s["sid"] for s in live}
+    dead = sorted((s for s in _sessions(now) if s["sid"] not in live_sids and s["sid"] not in hidden),
+                  key=lambda s: s.get("mtime", 0), reverse=True)
+    return live + dead
+
+
 # ─── new-session / picker / close lifecycle (the + button and × tab control) ───────────────────
 # The TS kernel (chat-view/src/kernel/server.ts) handled createSession / requestSessions / pickResult /
 # closeTab / endSession; the Python rewrite dropped them, so the webview's + picker stayed blank and
@@ -1888,7 +1902,7 @@ def build_timeline(now, tmux=None):
     empty/null so the render's conditional paths hide them."""
     if tmux is None:
         tmux = _tmux_sessions()
-    alive = _ordered_alive(now, tmux)                # living sessions only, in the shared lane/tab order
+    alive = _timeline_sessions(now, tmux)            # living + window-dead lanes; per-session `live` below marks the dead ones (struck), the timeline's active-filter reveals them on scrollback (the user 2026-06-16)
     id2name = {s["sid"]: s["name"] for s in alive}
     sessions, turns = [], {}
     for s in alive:

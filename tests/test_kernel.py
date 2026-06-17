@@ -1327,6 +1327,15 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(lane["effort"], "xhigh")
         self.assertEqual(lane["context"], 43)
 
+    def test_timeline_includes_dead_sessions_for_scrollback(self):
+        # the user 2026-06-16: dead sessions appear as struck lanes so scrolling back surfaces them. The
+        # regression was build_timeline feeding only LIVING sessions; it now includes window-dead ones
+        # too (the render's active-filter only shows a dead lane when the window covers its activity).
+        # SID has a transcript but is passed NO tmux → it must still be a lane, marked dead.
+        s = {x["id"]: x for x in km.build_timeline(NOW, tmux={})["sessions"]}
+        self.assertIn(SID, s, "a window-dead session is still a timeline lane")
+        self.assertFalse(s[SID]["live"], "no tmux → a dead lane (the render strikes it)")
+
     def test_chat_chip_maps_tmux_state(self):
         # the chat chip maps tmux state: permission -> awaiting, plus model/effort/ctx for the statusline
         km._tmux_sessions = lambda: {SID: {"state": "permission", "since": NOW - 5, "model": "Opus 4.8",
