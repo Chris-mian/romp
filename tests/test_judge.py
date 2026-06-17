@@ -1267,6 +1267,7 @@ class SweepApply(unittest.TestCase):
         self.assertTrue(g2["blocked"], "the blocked goal is marked needs-you")
         self.assertEqual(g2["blockWhy"], "Approve the rename?", "the question rides in blockWhy")
         self.assertFalse(g2["nodeComplete"], "a blocked goal is not completed")
+        self.assertTrue(g2["negBlock"], "a closer-set block is tagged negBlock (vs a planner block) for attribution")
 
     def test_empty_completes_and_blocks_nothing(self):
         s = _store()

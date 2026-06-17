@@ -1438,8 +1438,9 @@ def apply_close(store, menu, verdicts, t=None):
     """Apply the closer's turn-end verdicts over the touched open tops: COMPLETE each in verdicts["done"]
     (recording doneWhy, clearing any soft block) and BLOCK each in verdicts["block"] (recording blockWhy =
     the question owed to the user). Both map a 1-based menu index → reason; omitted goals stay open.
-    negComplete tags completion provenance (for the A/B sample); t (the turn time) bumps mt so the node
-    deep-links to where it resolved. Returns the node ids newly COMPLETED by this sweep."""
+    negComplete / negBlock tag the provenance (closer-set done / closer-set block — vs a planner done /
+    block — for the A/B sample and the timeline's judging-band attribution); t (the turn time) bumps mt so
+    the node deep-links to where it resolved. Returns the node ids newly COMPLETED by this sweep."""
     done, block = verdicts.get("done", {}), verdicts.get("block", {})
     newly = []
     for i, nd in enumerate(menu, 1):
@@ -1456,6 +1457,7 @@ def apply_close(store, menu, verdicts, t=None):
             newly.append(nd["id"])
         elif i in block:
             nd["blocked"] = True
+            nd["negBlock"] = True                      # closer-set block (turn-end), mirrors negComplete — for timeline attribution
             if block[i]:
                 nd["blockWhy"] = block[i]
             if t is not None:
