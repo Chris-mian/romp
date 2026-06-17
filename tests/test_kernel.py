@@ -296,6 +296,31 @@ class ViewBuilder(unittest.TestCase):
         self.assertTrue(nodes["rollup top"]["derived"], "all children done → derived done")
         self.assertFalse(nodes["kid one"]["derived"])
 
+    def test_feed_surfaces_planner_rationales(self):
+        # The planner's one-sentence rationales reach the feed (the user 2026-06-16): a blocked CARD
+        # carries the latest still-blocked node's blockWhy, and every tree node carries why / blockWhy /
+        # doneWhy so the modal can reveal them.
+        top, blk, dn = (SID + ":top", SID + ":blk", SID + ":dn")
+        def gn(nid, text, parent, **kw):
+            d = {"id": nid, "text": text, "parentId": parent, "nodeComplete": False,
+                 "blocked": False, "cleared": False, "trail": [], "t": T0, "mt": T0}
+            d.update(kw); return d
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+            "rompUuid": SID, "seq": 3, "lastNode": None,
+            "nodes": {
+                top: gn(top, "the goal", None, why="user asked for the goal"),
+                blk: gn(blk, "a blocked step", top, blocked=True, blockWhy="waiting on the user's choice", mt=T0 + 9),
+                dn:  gn(dn, "a finished step", top, nodeComplete=True, doneWhy="shipped the fix"),
+            },
+            "placements": {}, "status": {top: "blocked"}}))
+        card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == top)
+        self.assertEqual(card["blockWhy"], "waiting on the user's choice",
+                         "the card surfaces the latest still-blocked node's blockWhy")
+        nodes = {n["text"]: n for n in card["tree"]}
+        self.assertEqual(nodes["the goal"]["why"], "user asked for the goal")
+        self.assertEqual(nodes["a blocked step"]["blockWhy"], "waiting on the user's choice")
+        self.assertEqual(nodes["a finished step"]["doneWhy"], "shipped the fix")
+
     def test_ledger_tree_orders_by_recency_and_expands_to_freshest(self):
         # The ledger TOC mirrors the feed (the user 2026-06-16): top goals sort by most-recently-modified
         # (mt) first, the single freshest node is flagged `recent`, and that node + its ancestors carry

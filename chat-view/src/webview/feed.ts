@@ -50,6 +50,7 @@ interface AskTreeNode {
   whoSid: string; whoColor: { bg: string; fg: string } | null;   // agent → colored session link
   whoWorking?: boolean;                                          // that agent is currently WORKING → yellow dot before its name
   status: "done" | "question" | "open"; t: number; last: number;
+  why?: string; blockWhy?: string; doneWhy?: string;             // planner's one-sentence rationales — revealed on hover in the modal
   derived?: boolean;                                             // done by roll-up/roll-down (kernel), not explicit → DIMMED ✓ disc
   trgb?: [number, number, number];                               // last-activity recency tint (timestamp)
   children: string[]; rows: AskLinked[];
@@ -70,6 +71,7 @@ interface AskItem {
   // the owning session is live-blocked (permission/picker, or stopped on an API error) ON this card's
   // work → the card itself files under BLOCKED (the user's ruling 2026-06-11; apiError 2026-06-16).
   blocked?: { state: string; since: number; what: string; status?: number; category?: string; text?: string };
+  blockWhy?: string;                               // planner's one-sentence "why blocked" → shown under a blocked card
   origin?: { peer: string; peerSid: string; color: { bg: string; fg: string } | null } | null;  // courier handoff: planted by a peer's message → "↪ from <peer>"
   groupTitle?: string;                             // host: this ask shares a typed turn with siblings → the group's title
   groupN?: number;                                 // host: sibling count for that turn (>1 ⇒ fold into one group card)
@@ -406,7 +408,11 @@ function makeAskCard(it: AskItem): HTMLElement {
   // the list therefore always means active, so the dot is always on.
   const checklist = el("div", "fask-checklist");   // inline sub-goal list (top 2 levels); filled in updateAskCard
   const handoffs = el("div", "fask-handoffs");
-  main.append(row1, row2, row3, checklist, handoffs);   // no expand button — body click opens the modal
+  // soft-block reason (the planner's one-sentence "why blocked"), shown under the title on a blocked
+  // card. Inline-styled, no styles.css rule (ui owns that file). Filled/toggled in updateAskCard.
+  const blockReason = el("div", "fask-blockwhy");
+  blockReason.style.cssText = "display:none;font-size:11px;line-height:1.3;opacity:.75;font-style:italic;margin:1px 0 3px";
+  main.append(row1, blockReason, row2, row3, checklist, handoffs);   // no expand button — body click opens the modal
   card.append(main);
   // Follow-up lives in the modal now (the user 2026-06-10), not on the card.
 
@@ -471,6 +477,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   a._apiBadge = apiBadge; a._apiRetry = apiRetry;
   a._handoffs = handoffs;
   a._checklist = checklist;
+  a._blockwhy = blockReason;
   a._origin = origin;
   return card;
 }
@@ -513,6 +520,10 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
     a._blocked.title = it.blocked.what + " — click to open the session";
     a._blocked.onclick = (ev: Event) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "openSession", id: it.sid }); };
   }
+  // soft-block reason: the planner's one-sentence "why blocked", shown under the title on a needs-input
+  // card (distinct from the live permission/api badges above — those are live events, this is the verdict).
+  a._blockwhy.textContent = it.blockWhy || "";
+  a._blockwhy.style.display = it.blockWhy ? "" : "none";
   // API error → a red "API error" badge + a Retry button that pastes "retry" into the session to resume
   // the stalled turn (the user 2026-06-16). The card already files under BLOCKED (askColumn → needsInput).
   a._apiBadge.style.display = isApiErr ? "" : "none";
@@ -854,6 +865,12 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
   line.appendChild(tri);
   const mark = el("span", "ftree-mark"); mark.textContent = nodeMark(node); line.appendChild(mark);
   const txt = el("span", "ftree-text"); txt.textContent = node.text || "(node)"; line.appendChild(txt);
+  // hover tooltip = the planner's rationale for THIS node (native title → no styles.css edit). The
+  // block/done reason wins over the creation "why". (the user 2026-06-16.)
+  const tip = (node.status === "question" && node.blockWhy) ? "⏸ " + node.blockWhy
+            : (node.status === "done" && node.doneWhy) ? "✓ " + node.doneWhy
+            : (node.why || "");
+  if (tip) txt.title = tip;
   if (node.who && node.who !== parentWho) {
     const who = el("a", "ftree-who"); who.title = node.whoWorking ? "open this session (working now)" : "open this session";
     who.appendChild(document.createTextNode("→ "));

@@ -1463,6 +1463,12 @@ def build_feed(now, tmux=None):
         for nid, nd in nodes.items():
             children.setdefault(nd.get("parentId"), []).append(nid)
 
+        def _subtree(root):                          # all node ids at/under root (pre-order)
+            stack, acc = [root], []
+            while stack:
+                x = stack.pop(); acc.append(x); stack.extend(children.get(x, []))
+            return acc
+
         # Completion propagates BOTH ways for a transparent checklist (the user 2026-06-16): a node is
         # "done" if it's explicitly nodeComplete, if ALL its children are done (roll-UP), OR if a done
         # ancestor checks it off (roll-DOWN). Explicit done → render shows a FULL ✓ disc; either derived
@@ -1494,6 +1500,9 @@ def build_feed(now, tmux=None):
             out.append({"id": nid, "kind": "ask", "text": nd["text"], "who": name, "whoSid": fsid,
                         "whoColor": color, "whoWorking": who_working, "status": st, "derived": derived,
                         "t": nd["t"], "last": nd["t"], "trgb": list(cm.age_rgb(now - nd["t"])),
+                        # the planner's one-sentence rationales — the modal reveals these (why a node
+                        # exists / was blocked / was completed). (the user 2026-06-16.)
+                        "why": nd.get("why"), "blockWhy": nd.get("blockWhy"), "doneWhy": nd.get("doneWhy"),
                         "children": kids, "rows": []})
             for c in kids:
                 flatten(c, out, ancestor_done=done)
@@ -1529,11 +1538,18 @@ def build_feed(now, tmux=None):
             if isinstance(o, dict) and o.get("peer"):
                 psid = o["peer"]                     # the sender's rompUuid → resolve to name + color
                 origin = {"peer": _name_of(psid) or psid[:8], "peerSid": psid, "color": _name_color(psid)}
+            block_why = None
+            if col == "blocked":                     # SOFT-block reason: the latest still-blocked node's why
+                blkd = [nodes[x] for x in _subtree(nid)
+                        if nodes[x].get("blocked") and not _closure_done(x) and nodes[x].get("blockWhy")]
+                if blkd:
+                    block_why = max(blkd, key=lambda d: d.get("mt", d.get("t", 0)))["blockWhy"]
             asks.append({
                 "itemId": nid, "sid": fsid, "name": name, "color": color, "text": nodes[nid]["text"],
                 "t": nodes[nid]["t"], "created": nodes[nid]["t"], "live": live,
                 "trgb": list(cm.age_rgb(now - nodes[nid]["t"])),
                 "done": 0, "needsYou": 0, "linked": [], "turnId": nid, "turnIds": [nid], "origin": origin,
+                "blockWhy": block_why,               # one-sentence "why blocked" on the card (soft planner block)
                 "blocked": ({"state": "apiError", "since": (tm.get("since") if tm else None),
                              "status": aerr.get("status"), "category": aerr.get("category"),
                              "text": aerr.get("text"),
