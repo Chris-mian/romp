@@ -1452,9 +1452,13 @@ def apply_close(store, menu, verdicts, t=None):
 
 
 def _close_turn(store, turn, samples=None):
-    """Sweep ONE turn: complete the open top-goals it touched that the model now calls fully DONE, each
-    with a one-line doneWhy. Returns node ids newly completed, or None if the LLM/parse failed (caller
-    retries). When `samples` is given, append a {turn, completed, kept} record for A/B eyeballing."""
+    """Sweep ONE turn: complete (or block) the open top-goals it touched, each with a one-line why.
+    Returns node ids newly completed, or None if the LLM/parse failed (caller retries). When `samples` is
+    given, append a {turn, completed, kept} record for A/B eyeballing.
+
+    DONE-ANCHOR (the user 2026-06-17): a top resolved at turn-end deep-links to the turn's FINAL segment
+    (the rich recap), not an intermediate tool-narration step — so we append that segment to each resolved
+    node's trail (the read side anchors a done/blocked card to trail[-1]). The latest close wins."""
     menu = _turn_menu(turn, store)
     if not menu:
         return []
@@ -1463,6 +1467,12 @@ def _close_turn(store, turn, samples=None):
         _log_judge_error("closer", store.get("rompUuid"), "parse")
         return None
     newly = apply_close(store, menu, out, t=turn.get("t"))
+    segs = em.segments(turn)
+    if segs:                                           # anchor each resolved (done/blocked) top to the recap
+        recap, resolved = segs[-1]["id"], set(out["done"]) | set(out["block"])
+        for i, nd in enumerate(menu, 1):
+            if i in resolved and recap not in nd.setdefault("trail", []):
+                nd["trail"].append(recap)
     if samples is not None and newly:
         samples.append({"turn": _unit_text(turn["atoms"])[:160],
                         "completed": [m["text"] for i, m in enumerate(menu, 1) if i in out["done"]],

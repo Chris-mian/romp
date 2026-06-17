@@ -1278,6 +1278,28 @@ class SweepApply(unittest.TestCase):
         g1 = _mknode(s, "G1", complete=True)
         self.assertEqual(jd.apply_close(s, [g1], {"done": {1: "x"}, "block": {}}), [], "an already-complete node isn't re-completed")
 
+    def test_closer_anchors_resolved_top_to_the_turns_recap(self):
+        # the user 2026-06-17: a top the closer resolves at turn-end deep-links to the turn's FINAL segment
+        # (the recap), not whatever intermediate segment its trail pointed at. trail[-1] = the recap.
+        records = [uline(T0, "do the thing", "u1", ps="typed"),
+                   aline(T0 + 20, "all done — summary here", "a1", "u1", stop="end_turn")]
+        session = build_session(records)
+        turn = session["turns"][0]
+        recap = em.segments(turn)[-1]["id"]
+        s = _store()
+        g = _mknode(s, "The thing", t=T0)
+        g["trail"] = ["older-intermediate-seg"]              # the pre-close (intermediate) anchor
+        s["placements"] = {em.segments(turn)[0]["id"]: g["id"]}   # so _turn_menu sees the turn touched g
+        saved = jd.closer_llm
+        try:
+            jd.closer_llm = lambda tt, mt: '{"done": [{"goal": 1, "why": "done"}], "block": []}'
+            newly = jd._close_turn(s, turn)
+        finally:
+            jd.closer_llm = saved
+        self.assertEqual(newly, [g["id"]], "the top was completed")
+        self.assertEqual(s["nodes"][g["id"]]["trail"][-1], recap, "the done card now anchors to the turn's recap")
+        self.assertNotEqual(s["nodes"][g["id"]]["trail"][-1], "older-intermediate-seg", "moved off the intermediate seg")
+
 
 class SweepMenu(unittest.TestCase):
     def _two_seg_turn(self):
