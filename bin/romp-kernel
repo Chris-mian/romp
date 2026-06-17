@@ -2039,6 +2039,70 @@ def _derive_judging(sid, caps, goals, t0, out):
         pass
 
 
+_session_tok_cache = {}   # path -> (mtime, totals): per-session transcript token sums, recomputed on change
+
+
+def _session_tokens(path):
+    """Sum a session's token usage across its transcript's assistant messages (each carries a `usage`
+    block — input/output/cache tokens). mtime-cached. Returns {in,out,cache_w,cache_r} (zeros on error).
+    This is the SESSIONS half of the usage split; the judge PIPELINE half is _judge_usage."""
+    z = {"in": 0, "out": 0, "cache_w": 0, "cache_r": 0}
+    try:
+        mt = os.path.getmtime(path)
+    except OSError:
+        return dict(z)
+    hit = _session_tok_cache.get(path)
+    if hit and hit[0] == mt:
+        return hit[1]
+    acc = dict(z)
+    try:
+        with open(path, errors="replace") as f:
+            for line in f:
+                try:
+                    o = json.loads(line)
+                except Exception:
+                    continue
+                if o.get("type") != "assistant":
+                    continue
+                u = (o.get("message") or {}).get("usage") or {}
+                acc["in"] += int(u.get("input_tokens") or 0)
+                acc["out"] += int(u.get("output_tokens") or 0)
+                acc["cache_w"] += int(u.get("cache_creation_input_tokens") or 0)
+                acc["cache_r"] += int(u.get("cache_read_input_tokens") or 0)
+    except OSError:
+        return dict(z)
+    _session_tok_cache[path] = (mt, acc)
+    return acc
+
+
+def _judge_usage(t0):
+    """Roll up the judge PIPELINE's token usage from judge-usage.jsonl (one line per judge call, written
+    by romp-judge) within [t0, now]: a grand total plus per-judge and per-tier {calls,in,out,cost,ms}.
+    Empty/zeros until the log exists. Fully defensive — a missing or garbled log never breaks the build."""
+    def blank():
+        return {"calls": 0, "in": 0, "out": 0, "cost": 0.0, "ms": 0}
+    total, by_judge, by_tier = blank(), {}, {}
+    try:
+        lines = (jd.STATE / "judge-usage.jsonl").read_text(errors="replace").splitlines()
+    except OSError:
+        return {"total": total, "byJudge": by_judge, "byTier": by_tier}
+    for ln in lines:
+        try:
+            o = json.loads(ln)
+        except Exception:
+            continue
+        if not isinstance(o, dict) or (o.get("t") or 0) < t0:
+            continue
+        for b in (total, by_judge.setdefault(o.get("judge") or "?", blank()),
+                  by_tier.setdefault(o.get("tier") or "?", blank())):
+            b["calls"] += 1
+            b["in"] += int(o.get("in") or 0)
+            b["out"] += int(o.get("out") or 0)
+            b["cost"] += float(o.get("cost") or 0.0)
+            b["ms"] += int(o.get("ms") or 0)
+    return {"total": total, "byJudge": by_judge, "byTier": by_tier}
+
+
 def build_timeline(now, tmux=None):
     """A {type:"timeline"} message the ported timeline bundle consumes (ui-parity.md: timeline =
     ADAPT). Lanes per session; work bars are SEGMENTS [t,end] from the event model (not the deleted
@@ -2113,11 +2177,16 @@ def build_timeline(now, tmux=None):
             "awaiting": _state_intervals(sid, "permission", now),
             "compacting": _state_intervals(sid, "compacting", now),
             "compactions": compactions, "pendingMail": _pending_mail(sid),
+            "tokens": _session_tokens(s["path"]),
             "stale": faded, "faded": faded})
     messages = _postal_messages(now, set(id2name), id2name)
     _bind_message_execs(messages, turns)                 # connector exec → the recipient's process-start (real transit)
+    # token-usage split: SESSIONS = summed transcript usage of the alive lanes; PIPELINE = the judges'
+    # per-call log (empty until romp-judge writes judge-usage.jsonl). Same horizon as the rest of the band.
+    sess_tok = {k: sum(se["tokens"][k] for se in sessions) for k in ("in", "out", "cache_w", "cache_r")}
     return {"type": "timeline", "now": now, "sessions": sessions, "turns": turns,
             "messages": messages, "judging": judging,
+            "tokens": {"sessions": sess_tok, "pipeline": _judge_usage(now - TL_HORIZON)},
             "activeChat": None, "focus": None, "hover": None, "usage": _usage()}
 
 
