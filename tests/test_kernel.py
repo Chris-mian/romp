@@ -1414,6 +1414,20 @@ class CrossPane(unittest.TestCase):
         self.assertIsNone(km._focus_kind("work"))
         self.assertIsNone(km._focus_kind(None))
 
+    def test_showontimeline_forwards_anchoruuid_as_id_deeplink_with_time_fallback(self):
+        # a feed click that knows the exact turn (anchorUuid, kernel 996ebd7) → the chat focus message's
+        # `anchor` (uuid), tried FIRST; t + kind stay the FALLBACK. Kills the nearest-time mismatch
+        # (delegation/card clicks landing on unrelated user messages). (the user 2026-06-17, via rompinfra.)
+        f = km._show_on_timeline_focus({"sid": "S1", "t": 1700, "anchor": "work",
+                                        "anchorUuid": "11111111-2222-3333-4444-555555555555"})
+        self.assertEqual(f["type"], "focus"); self.assertEqual(f["id"], "S1")
+        self.assertEqual(f["anchor"], "11111111-2222-3333-4444-555555555555", "uuid → id-based deep-link")
+        self.assertEqual(f["anchorT"], 1700); self.assertIsNone(f["anchorKind"], "'work' → no kind gate")
+        # a "prompt"-intent title click keeps the user-kind time fallback alongside the uuid
+        f2 = km._show_on_timeline_focus({"sid": "S2", "t": 1800, "anchor": "prompt", "anchorUuid": None})
+        self.assertIsNone(f2["anchor"], "null uuid → fall straight through to the time path")
+        self.assertEqual(f2["anchorKind"], "user", "'prompt' → land on the user's message by time")
+
 
 class TestApiError(unittest.TestCase):
     """km._api_error — is the session BLOCKED on an API error right now? Event-based on the transcript's

@@ -51,6 +51,7 @@ interface AskTreeNode {
   whoWorking?: boolean;                                          // that agent is currently WORKING → yellow dot before its name
   status: "done" | "question" | "open"; t: number; last: number;
   mt?: number;                                                   // last-modified (done/block segment) → blocked/done nodes deep-link to where they RESOLVED, not where they were minted
+  anchorUuid?: string | null;                                    // EXACT turn uuid for this node's deep-link target (kernel 996ebd7) — id-based jump, not nearest-time; null when unresolvable → time fallback
   why?: string; blockWhy?: string; doneWhy?: string;             // planner's one-sentence rationales — revealed on hover in the modal
   derived?: boolean;                                             // done by roll-up/roll-down (kernel), not explicit → DIMMED ✓ disc
   trgb?: [number, number, number];                               // last-activity recency tint (timestamp)
@@ -424,7 +425,13 @@ function makeAskCard(it: AskItem): HTMLElement {
   // delegation was processed, mirroring the modal tree-node nav (rompinfra, the user 2026-06-16).
   // agent → open session; Clear → inbox-zero. stopPropagation so the card-body handlers don't also fire.
   const titleAnchor = it.origin ? "work" : "prompt";
-  title.onclick = (ev) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: it.itemId, sid: it.sid, t: it.t, anchor: titleAnchor }); };
+  // PREFERRED: the card's root node carries the EXACT turn uuid (kernel 996ebd7) → id-based deep-link,
+  // killing the nearest-time miss (delegation cards land on where the work happened, not an unrelated
+  // user message). The card's root node is the one whose id IS the card's itemId. Null → time fallback.
+  // (The chat's kind guard still refuses a non-user uuid for "prompt"-intent, so a normal card with only
+  // a reply uuid falls back to time as before — no regression; delegation "work" cards deep-link.)
+  const cardAnchorUuid = it.tree?.find((n) => n.id === it.itemId)?.anchorUuid ?? null;
+  title.onclick = (ev) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: it.itemId, sid: it.sid, t: it.t, anchor: titleAnchor, anchorUuid: cardAnchorUuid }); };
   name.onclick = (ev) => { ev.stopPropagation(); openOrReviveSession(it.sid, it.live, it.name); };
   clr.onclick = (ev) => {
     ev.stopPropagation();
@@ -890,8 +897,9 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
   meta.textContent = node.status === "question" ? "needs you" : "(" + relAge(hostNow - node.last) + ")";
   if (node.status !== "question" && node.trgb) meta.style.color = "rgb(" + node.trgb.join(",") + ")";   // Hawaii recency tint
   line.appendChild(meta);
-  // Whole-line click NAVIGATES into the chat — showOnTimeline is time-based (scrolls to the nearest
-  // turn to the given time), so each node sends ITS OWN time, not the card's top turn. anchor:"work"
+  // Whole-line click NAVIGATES into the chat. PREFERRED: node.anchorUuid (kernel 996ebd7) deep-links to
+  // the EXACT turn by id — where the node resolved (done/blocked) or was minted (open) — killing the
+  // nearest-time mismatch. FALLBACK (anchorUuid null/off-path): the time path below. anchor:"work"
   // lands on the ASSISTANT turn, never the user prompt (the user 2026-06-16: "for blocked and
   // completed things jump to places in the chat that are NOT the user's message"). A blocked/done
   // node sends node.mt — the segment where the planner applied the block/done op, i.e. where the work
@@ -904,7 +912,7 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
     const navSid = node.whoSid || (node.kind === "handoff" ? node.id.split(":")[0] : it.sid);
     const resolved = node.status === "done" || node.status === "question";   // done / blocked → jump to where it RESOLVED
     const navT = (resolved && node.mt) ? node.mt : node.t;
-    line.onclick = (ev) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: navId, sid: navSid, t: navT, anchor: "work" }); };
+    line.onclick = (ev) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: navId, sid: navSid, t: navT, anchor: "work", anchorUuid: node.anchorUuid ?? null }); };
   }
   // Hovering a node lights ITS OWN work-bars on the timeline — the union of this node's segment trail
   // and everything under it — via the SAME showAskPath the card uses, just scoped to this node (the

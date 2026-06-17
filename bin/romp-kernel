@@ -2068,6 +2068,15 @@ def _focus_kind(anchor):
     return "user" if anchor == "prompt" else None
 
 
+def _show_on_timeline_focus(msg):
+    """A feed showOnTimeline tap → the chat `focus` message. anchorUuid (kernel 996ebd7) is the EXACT
+    turn uuid the chat tries FIRST (scrollToAnchor) — id-based deep-link, no nearest-time miss. t + the
+    "prompt"/"work" anchor stay as the kind-restricted time FALLBACK for when the uuid is null (feed
+    couldn't resolve) or off the active path. (the user 2026-06-17, via rompinfra.)"""
+    return {"type": "focus", "id": msg["sid"], "anchor": msg.get("anchorUuid"),
+            "anchorT": msg.get("t"), "anchorKind": _focus_kind(msg.get("anchor"))}
+
+
 def _request_feed_detail(item_id, generate):
     """Card-detail expand. The old expand-paragraph writer (romp-feed-detail + the feed-detail/ store)
     is retired with the clean-break rebuild: a goal card's modal shows its caption trail directly
@@ -3151,11 +3160,7 @@ class Handler(BaseHTTPRequestHandler):
                     _reveal_or_confirm(msg["session"], {"type": "focus", "id": msg["session"], "anchor": msg.get("anchor"),
                                   "anchorT": msg.get("anchorT"), "anchorKind": msg.get("anchorKind")})
                 elif msg and msg.get("type") == "showOnTimeline" and msg.get("sid"):
-                    # anchor:"prompt" → land on the user's MESSAGE turn (kind "user"); "work"/absent →
-                    # the nearest turn to the work time (the assistant response that did it). The string
-                    # anchor isn't a transcript uuid, so the chat uses the kind-restricted time fallback.
-                    _reveal_or_confirm(msg["sid"], {"type": "focus", "id": msg["sid"], "anchorT": msg.get("t"),
-                                  "anchorKind": _focus_kind(msg.get("anchor"))})
+                    _reveal_or_confirm(msg["sid"], _show_on_timeline_focus(msg))
                 elif msg and msg.get("type") == "expand" and msg.get("itemId"):
                     _request_feed_detail(str(msg["itemId"]), bool(msg.get("generate")))
                 elif msg and msg.get("type") == "hoverHighlight":

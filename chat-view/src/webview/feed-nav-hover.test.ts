@@ -41,6 +41,22 @@ test("clicking the CARD title locates the originating user message (anchor:promp
   assert.doesNotMatch(FEED, /title\.onclick = .*showAskPath", itemId: it\.itemId/, "the card title no longer just lights the timeline");
 });
 
+test("a tree-line click deep-links BY ID — forwards node.anchorUuid alongside the time fallback", () => {
+  // the user 2026-06-17 (via rompinfra, kernel 996ebd7): the chat tries the exact turn uuid first
+  // (scrollToAnchor), falling back to t only when the uuid is null/off-path — killing the nearest-time
+  // miss where a click landed on an unrelated user message.
+  assert.match(FEED, /anchorUuid\?: string \| null/, "AskTreeNode carries the per-node anchor uuid");
+  assert.match(FEED, /line\.onclick = .*showOnTimeline".*anchor: "work", anchorUuid: node\.anchorUuid \?\? null/);
+});
+
+test("the card title deep-links by id too — anchorUuid from the card's ROOT tree node", () => {
+  // the card's root node is the one whose id IS the card's itemId; null when the kernel can't resolve →
+  // time fallback (and for a "prompt"-intent normal card the chat's kind guard refuses a reply uuid, so
+  // it falls back to time as before — no regression; "work" delegation cards deep-link by id).
+  assert.match(FEED, /const cardAnchorUuid = it\.tree\?\.find\(\(n\) => n\.id === it\.itemId\)\?\.anchorUuid \?\? null/);
+  assert.match(FEED, /title\.onclick = .*showOnTimeline".*anchor: titleAnchor, anchorUuid: cardAnchorUuid/);
+});
+
 test("a blocked card has NO follow-up button — the follow-up is modal-only", () => {
   assert.doesNotMatch(FEED, /a\._fup/, "no card-level follow-up button wiring");
   assert.doesNotMatch(FEED, /actions\.append\([^)]*\bfup\b/, "fup is not appended to the card actions row");
