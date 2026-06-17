@@ -333,9 +333,12 @@ body { display: flex; flex-direction: column; }
 .st-done .ftree-mark::before, .frow:not(.st-question) .frow-mark::before, .fgroup-member.st-done .fgroup-dot::before, .flinked.st-done .flinked-mark::before {
   content: "✓"; font-size: 9px; font-weight: 900; line-height: 1; color: #fff;
 }
-/* derived done — completion rolled UP (all children done) or DOWN (a done ancestor checks it off), not
-   explicitly asserted: the same blue ✓ disc, DIMMED, so the propagation is visible (the user 2026-06-16). */
-.ftree-node.st-done.derived .ftree-mark { opacity: 0.5; }
+/* DERIVED done — completion rolled UP (all children done) or DOWN (a done ancestor checks it off), not
+   explicitly asserted: the SAME one inferred-check style as the ledger — an OUTLINED ✓ (a blue ring + a
+   blue ✓ on transparent), not an opacity dim, so "inferred" reads identically everywhere (the user
+   2026-06-17). */
+.ftree-node.st-done.derived .ftree-mark { background: transparent; border: 1.5px solid var(--check-bg); }
+.ftree-node.st-done.derived .ftree-mark::before { color: var(--check-bg); }
 .fgroup-member.st-question .fgroup-mtext { color: #e0b020; }   /* the actionable sub-ask stands out */
 .fgroup-mtext { color: var(--fg); flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
 /* group modal: each member's tree stacked, separated by a faint rule */

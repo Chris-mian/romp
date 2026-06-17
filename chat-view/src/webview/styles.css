@@ -224,13 +224,13 @@ body { display: flex; flex-direction: column; }
   display: inline-flex; align-items: center; justify-content: center; align-self: center;
 }
 .ledger-tnode.done .ledger-tmark { background: var(--check-bg); border-color: transparent; color: #fff; }
-/* EXPLICIT done = the strong solid ✓ disc above. DERIVED (inherited via roll-up/roll-down) done = an
-   OUTLINED ✓ — a blue ring + blue ✓ on transparent — clearly WEAKER and never confusable with the strong
-   solid check (the user's invariant, via bugs 2026-06-17). Was opacity:0.55 only, too subtle to read. */
-.ledger-tnode.done.derived .ledger-tmark { background: transparent; border-color: var(--check-bg); color: var(--check-bg); opacity: 1; }
-/* CLEARED (user-dismissed) keeps its own FADED treatment — a muted, see-through disc — distinct from a
-   derived done (it was actively dismissed, not merely inherited). (the user 2026-06-17.) */
-.ledger-tnode.cleared .ledger-tmark { opacity: 0.4; }
+/* EXPLICIT done = the strong solid ✓ disc above. Every OTHER kind of "done" — DERIVED (inherited via
+   roll-up/roll-down) AND CLEARED (user-dismissed) — shares ONE secondary style: an OUTLINED ✓ (a blue ring
+   + a blue ✓ on transparent), clearly weaker than the solid check and never confusable with it. One
+   mechanism, not two — the opacity-fade for cleared was a second, redundant way of saying "secondary", so
+   it's gone; both inferred/dismissed dones read the same (the user 2026-06-17). */
+.ledger-tnode.done.derived .ledger-tmark,
+.ledger-tnode.done.cleared .ledger-tmark { background: transparent; border-color: var(--check-bg); color: var(--check-bg); opacity: 1; }
 /* blocked = a red ⏸ ring (only when not current/done; render gates the .blocked class the same way). */
 .ledger-tnode.blocked .ledger-tmark { border-color: var(--err); color: var(--err); }
 .ledger-ttext { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }

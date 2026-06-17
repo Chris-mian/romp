@@ -66,17 +66,16 @@ test("the ledger tree is a COLLAPSIBLE checklist — toggle arrows at every leve
   assert.match(CSS, /\.ledger-tri \{/);
 });
 
-test("explicit done = strong solid ✓; derived = OUTLINED ✓; cleared = faded — distinct classes (bugs 2026-06-17)", () => {
-  // the per-node derived/cleared flags now map to SEPARATE classes (not a shared `.derived`), so each
-  // gets its own treatment — a strong solid check must never be confusable with a weak/inherited one.
+test("explicit done = solid ✓; derived AND cleared share ONE outlined ✓ (no separate opacity-fade) (the user 2026-06-17)", () => {
+  // both flags still get their own class, but the CSS gives both the SAME outlined treatment — one
+  // "secondary/inferred" check style, not two mechanisms (was an outline for derived + an opacity-fade for
+  // cleared). A strong solid check must never be confusable with the weaker outlined one.
   assert.match(RENDER, /\(n\.derived \? " derived" : ""\) \+ \(n\.cleared \? " cleared" : ""\)/);
   assert.match(RENDER, /cleared\?: boolean/);
-  // explicit = solid blue ✓ disc (filled). derived = OUTLINED ✓ (transparent fill + blue ring + blue ✓),
-  // clearly weaker. cleared = faded disc, its own treatment.
-  assert.match(CSS, /\.ledger-tnode\.done \.ledger-tmark \{[^}]*background: var\(--check-bg\)/);   // explicit = filled
-  assert.match(CSS, /\.ledger-tnode\.done\.derived \.ledger-tmark \{[^}]*background: transparent;[^}]*border-color: var\(--check-bg\);[^}]*color: var\(--check-bg\)/);  // derived = outlined
-  assert.doesNotMatch(CSS, /\.ledger-tnode\.done\.derived \.ledger-tmark \{[^}]*opacity: 0\.55/);   // no longer opacity-only
-  assert.match(CSS, /\.ledger-tnode\.cleared \.ledger-tmark \{[^}]*opacity: 0\.4/);                  // cleared = its own faded
+  assert.match(CSS, /\.ledger-tnode\.done \.ledger-tmark \{[^}]*background: var\(--check-bg\)/);   // explicit = solid
+  // derived AND cleared in ONE rule → the single outlined style (blue ring + blue ✓ on transparent)
+  assert.match(CSS, /\.ledger-tnode\.done\.derived \.ledger-tmark,\s*\.ledger-tnode\.done\.cleared \.ledger-tmark \{[^}]*background: transparent;[^}]*border-color: var\(--check-bg\);[^}]*color: var\(--check-bg\)/);
+  assert.doesNotMatch(CSS, /\.ledger-tnode\.cleared \.ledger-tmark \{[^}]*opacity/);   // the opacity-fade mechanism is gone
 });
 
 test("top-level goals are separated by a thin rule", () => {
