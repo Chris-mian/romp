@@ -371,6 +371,60 @@ def _revive_session(sid):
     _reveal_chat({"type": "focus", "id": sid})
 
 
+def _tmux_name_of(sid):
+    """The LIVE tmux session NAME for a romp sid (keyed by @romp-session-id), or None when the session
+    isn't running. Needed to target `tmux rename-session`, since tmux is keyed by name, not by sid."""
+    try:
+        r = subprocess.run(["tmux", "list-sessions", "-F", "#{@romp-session-id}\t#{session_name}"],
+                           capture_output=True, text=True, timeout=2.5)
+        if r.returncode == 0:
+            for line in r.stdout.splitlines():
+                p = line.split("\t")
+                if len(p) == 2 and p[0] == sid:
+                    return p[1]
+    except Exception:
+        pass
+    return None
+
+
+def _set_name(sid, name):
+    """Rewrite a session's names-registry DISPLAY name (1st tab field), preserving its dir + identity
+    color. Used for a DEAD (read-only) tab, which has no tmux session for the rename hook to sync."""
+    try:
+        parts = (NAMES / sid).read_text().rstrip("\n").split("\t")
+    except Exception:
+        return
+    parts += [""] * (4 - len(parts))
+    parts[0] = name
+    p = NAMES / sid
+    tmp = p.with_name(sid + ".tmp.%d" % os.getpid())
+    tmp.write_text("\t".join(parts[:4]) + "\n")
+    tmp.rename(p)                                      # atomic publish
+
+
+def _rename_session(sid, name):
+    """Apply a renameSession from the chat tab strip (the browser's host is THIS kernel — VS Code's host
+    is the extension, so this path only existed there before; the browser's rename silently no-op'd).
+    A LIVE session is renamed in tmux — the after-rename-session hook resyncs the names file + Claude's
+    pill; a DEAD (read-only) tab has no tmux session, so rewrite the names file directly. The names-file
+    change is what _producer_sig watches, so the new name re-pushes to every surface. Returns the
+    accepted name, or None if rejected (bad chars). Split out so it's unit-testable. (the user 2026-06-16)"""
+    name = (name or "").strip()
+    if not NAME_RE.match(name):
+        return None
+    live = _tmux_name_of(sid)
+    if live:
+        if live != name:
+            try:
+                subprocess.run(["tmux", "rename-session", "-t", live, name], timeout=5,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception:
+                sys.stderr.write("rename '%s': %s\n" % (sid, traceback.format_exc()))
+    else:
+        _set_name(sid, name)                           # dead tab → names file directly
+    return name
+
+
 TMUX_FMT = ("#{@romp}|#{@romp-session-id}|#{@claude-state}|#{@claude-state-since}|"
             "#{@claude-model}|#{@claude-effort}|#{@claude-context}|#{@claude-compact-pct}|#{@identity-bg}")
 
@@ -1890,15 +1944,20 @@ _last_producer_sig = [None]
 
 
 def _producer_sig(browser):
-    """A cheap fingerprint that changes iff the TRIAGE judges have new work: each discovered transcript's
-    mtime, the postal log's mtime, and whether a browser is connected (False→True must run triage to
-    build the inbox for the new client). Lets the producer skip the (uncached) planner/courier parses
-    when nothing changed — event-driven in effect, no blind re-run on a timer."""
+    """A cheap fingerprint that changes iff there's new work to push: each discovered transcript's mtime,
+    each session's names-file mtime (so a RENAME — which touches no transcript — still re-pushes the new
+    name; the user 2026-06-16), the postal log's mtime, and whether a browser is connected (False→True
+    must run triage to build the inbox for the new client). Lets the producer skip the (uncached)
+    planner/courier parses when nothing changed — event-driven in effect, no blind re-run on a timer."""
     sig = {"__browser__": browser}
     try:
         for fsid, path, anchor, name in jd.discover(int(time.time())):
             try:
                 sig[str(path)] = os.stat(path).st_mtime
+            except OSError:
+                pass
+            try:
+                sig["n:" + fsid] = os.stat(NAMES / fsid).st_mtime   # rename → re-push the new name
             except OSError:
                 pass
     except Exception:
@@ -2655,6 +2714,14 @@ class Handler(BaseHTTPRequestHandler):
                             _reveal_chat({"type": "focus", "id": live[nm]})
                         else:
                             threading.Thread(target=_spawn_session, args=(nm,), daemon=True).start()
+                elif msg and msg.get("type") == "renameSession" and msg.get("id") and msg.get("name"):
+                    new = _rename_session(str(msg["id"]), str(msg["name"]))
+                    if new:
+                        # echo so the webview commits its inline label now; the names-file change
+                        # re-pushes the new name to every surface via _producer_sig.
+                        client["send"](json.dumps({"type": "renamed", "id": str(msg["id"]), "name": new}))
+                    else:
+                        client["send"](json.dumps({"type": "warn", "text": "session names use letters, digits, . _ - only."}))
                 elif msg and msg.get("type") == "requestSessions":
                     client["send"](json.dumps({"type": "sessionList",
                                                "items": _session_list(int(time.time()), _tmux_sessions())}))

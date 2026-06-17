@@ -287,6 +287,51 @@ class ViewBuilder(unittest.TestCase):
         finally:
             km._has_tmux = saved
 
+    def test_producer_sig_tracks_renames(self):
+        # The user 2026-06-16: tmux/tab renames didn't propagate to the chat. A rename touches only the
+        # names file (no transcript), so the push fingerprint must include it or the producer never
+        # re-pushes the new name.
+        s1 = km._producer_sig(browser=True)
+        self.assertIn("n:" + SID, s1, "the session's names-file mtime is part of the signature")
+        t = os.stat(km.NAMES / SID).st_mtime
+        os.utime(km.NAMES / SID, (t + 10, t + 10))     # a rename rewrites the file → newer mtime
+        s2 = km._producer_sig(browser=True)
+        self.assertNotEqual(s1, s2, "a names-file change must change the producer signature")
+
+    def test_rename_session_live_renames_tmux(self):
+        # A LIVE session renames via tmux; the after-rename-session hook then syncs the names file + pill.
+        saved_name, saved_run = km._tmux_name_of, km.subprocess.run
+        calls = []
+
+        class _R:
+            returncode = 0; stdout = ""; stderr = ""
+
+        km._tmux_name_of = lambda s: "testsess"
+        km.subprocess.run = lambda cmd, *a, **k: (calls.append(cmd), _R())[1]
+        try:
+            out = km._rename_session(SID, "newname")
+            self.assertEqual(out, "newname")
+            self.assertTrue(any(c[:2] == ["tmux", "rename-session"] and "newname" in c for c in calls),
+                            "live rename must call `tmux rename-session ... newname`")
+        finally:
+            km._tmux_name_of, km.subprocess.run = saved_name, saved_run
+
+    def test_rename_session_dead_writes_names_file_preserving_color(self):
+        # A DEAD (read-only) tab has no tmux session, so the rename writes the names file directly,
+        # keeping the recorded dir + identity color.
+        saved_name = km._tmux_name_of
+        km._tmux_name_of = lambda s: None
+        try:
+            out = km._rename_session(SID, "archived_name")
+            self.assertEqual(out, "archived_name")
+            self.assertEqual(km._name_of(SID), "archived_name", "dead-tab rename writes the names file")
+            self.assertEqual(km._name_color(SID), {"bg": "#abcdef", "fg": "#ffffff"}, "color preserved")
+        finally:
+            km._tmux_name_of = saved_name
+
+    def test_rename_session_rejects_invalid_name(self):
+        self.assertIsNone(km._rename_session(SID, "has spaces!"), "invalid chars → rejected, no rename")
+
     def test_rel_ago_buckets(self):
         self.assertEqual(km._rel_ago(1000, 1000), "just now")
         self.assertEqual(km._rel_ago(1000, 1000 - 120), "2m ago")
