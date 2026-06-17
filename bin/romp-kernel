@@ -179,7 +179,12 @@ def _followup_body(iid, title, text):
         except Exception:
             ctx = ""
     body = str(text)
-    return ("> " + ctx.replace("\n", "\n> ") + "\n\n" + body) if ctx else body
+    msg = ("> " + ctx.replace("\n", "\n> ") + "\n\n" + body) if ctx else body
+    # Hidden goal marker for the follow-up judge (coordinated w/ the `judges` session, 2026-06-17): it
+    # parses `romp-goal-id:\s*([^\s>]+)`, REOPENS that top-goal node (even if completed/blocked), and
+    # force-files this follow-up as a step under it. iid IS the card's top-goal node id (what the feed
+    # renders + posts). The HTML comment is inert in the recipient's prompt.
+    return msg + "\n\n<!-- romp-goal-id: " + str(iid) + " -->"
 
 
 def _rgb(color):

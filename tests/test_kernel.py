@@ -6,6 +6,7 @@ UUIDs; no real session data.
 """
 import json
 import os
+import re
 import tempfile
 import unittest
 from datetime import datetime, timezone
@@ -509,12 +510,24 @@ class ViewBuilder(unittest.TestCase):
     def test_followup_body_quotes_context(self):
         # A feed follow-up quotes the ask it answers ('> <ask>') so the recipient session has context;
         # an explicit group title wins over the node lookup; unknown/none → bare text (the user 2026-06-16).
+        # Every follow-up ALSO ends with the hidden goal marker (see the dedicated test below); fold it in.
         iid = SID + ":g2"                                   # fixture g2 = "Awaiting a decision"
+        def mk(s, i=iid): return s + "\n\n<!-- romp-goal-id: " + i + " -->"
         self.assertEqual(km._followup_body(iid, None, "go with option A"),
-                         "> Awaiting a decision\n\ngo with option A")
+                         mk("> Awaiting a decision\n\ngo with option A"))
         self.assertEqual(km._followup_body(iid, "Pick a database", "postgres"),
-                         "> Pick a database\n\npostgres")
-        self.assertEqual(km._followup_body(SID + ":nope", None, "hi"), "hi", "no context → no empty quote")
+                         mk("> Pick a database\n\npostgres"))
+        self.assertEqual(km._followup_body(SID + ":nope", None, "hi"),
+                         mk("hi", SID + ":nope"), "no context → no empty quote (marker still appended)")
+
+    def test_followup_body_appends_goal_marker(self):
+        # The follow-up judge reopens the tagged goal: every injected follow-up ends with a hidden
+        # `<!-- romp-goal-id: <itemId> -->` marker (itemId = the card's top-goal node id), matched by the
+        # judge's `romp-goal-id:\s*([^\s>]+)` (coordinated w/ the `judges` session, 2026-06-17).
+        iid = SID + ":g2"
+        out = km._followup_body(iid, "ctx", "do the thing")
+        self.assertTrue(out.endswith("\n\n<!-- romp-goal-id: " + iid + " -->"))   # exact, well-formed, last
+        self.assertEqual(re.search(r"romp-goal-id:\s*([^\s>]+)", out).group(1), iid)   # the judge's parser
 
     def test_session_list_for_picker(self):
         # the + picker's payload (requestSessions → sessionList). Was always empty: bin/romp-kernel had
