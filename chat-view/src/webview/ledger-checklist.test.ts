@@ -25,11 +25,11 @@ test("ledger marks: every state is the SAME 13px disc — ○ hollow, ● workin
   assert.match(CSS, /\.ledger-tnode\.blocked \.ledger-tmark \{[^}]*var\(--err\)/);    // blocked = red ring
 });
 
-test("ledger: a done item's text takes its time's recency colour (ticks with the clock)", () => {
-  // set on first render and again in refreshLedgerAges as the wall clock advances
-  const hits = RENDER.match(/if \(n\.done && n\.t\) txt\.style\.color = ageColorReadable\(now - n\.t\)/g) || [];
+test("ledger: a done item's text takes its (resolution-time) recency colour (ticks with the clock)", () => {
+  // set on first render and again in refreshLedgerAges; keyed on mt (resolution) with a t fallback
+  const hits = RENDER.match(/if \(n\.done && \(n\.mt \?\? n\.t\)\) txt\.style\.color = ageColorReadable\(now - \(n\.mt \?\? n\.t\)!\)/g) || [];
   assert.equal(hits.length, 1, "render-loop tint");
-  assert.match(RENDER, /if \(n && txt && n\.done && n\.t\) txt\.style\.color = ageColorReadable\(now - n\.t\)/);
+  assert.match(RENDER, /if \(n && txt && n\.done && \(n\.mt \?\? n\.t\)\) txt\.style\.color = ageColorReadable\(now - \(n\.mt \?\? n\.t\)!\)/);
 });
 
 test("ledger times hug the content (tree is fit-content) yet stay right-aligned", () => {
@@ -92,11 +92,13 @@ test("ledger spacing: gap before the times; roomy rows + separated top goals (th
 });
 
 test("ledger sorts unfinished goals on top, finished at the bottom (recency within each — the user 2026-06-16)", () => {
-  // within each group, most recent first by the node's own timestamp (matches the shown "(Xm ago)")
-  assert.match(RENDER, /const byRecency = \(a: LedgerTreeNode, b: LedgerTreeNode\) => \(b\.t \|\| 0\) - \(a\.t \|\| 0\)/);
+  // within each group, most recent first by mt (resolution/last-touched), falling back to t (creation)
+  assert.match(RENDER, /const byRecency = \(a: LedgerTreeNode, b: LedgerTreeNode\) => \(\(b\.mt \?\? b\.t\) \|\| 0\) - \(\(a\.mt \?\? a\.t\) \|\| 0\)/);
   assert.match(RENDER, /roots\.filter\(\(r\) => !r\.done\)\.sort\(byRecency\)/);
   assert.match(RENDER, /roots\.filter\(\(r\) => r\.done\)\.sort\(byRecency\)/);
   assert.match(RENDER, /for \(const r of orderedRoots\) renderNode\(r, 0\)/);
+  // a finished task's "(Xm ago)" label is time since it RESOLVED/cleared (mt), not since it began
+  assert.match(RENDER, /const dt = \(n\.mt \?\? n\.t\)!;/);
 });
 
 test("ledger rows click → jump to chat: done/blocked by mt, open by t (the user 2026-06-16)", () => {

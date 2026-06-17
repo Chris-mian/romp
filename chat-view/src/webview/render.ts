@@ -2216,7 +2216,10 @@ function renderLedger() {
     // Unfinished goals on top, finished (done/cleared) at the bottom; WITHIN each group, most recent
     // first — sorted by the node's own timestamp (the same value the "(Xm ago)" the row shows), so the
     // displayed times read monotonically instead of in the kernel's subtree-max order (the user 2026-06-16).
-    const byRecency = (a: LedgerTreeNode, b: LedgerTreeNode) => (b.t || 0) - (a.t || 0);
+    // recency = the node's LAST-modified time (mt: when it was resolved/cleared/last touched), falling
+    // back to t (creation) — so finished tasks order by when they completed, not when they began (the
+    // user 2026-06-16). mt is emitted by build_session; the webview falls back to t until a kernel refresh.
+    const byRecency = (a: LedgerTreeNode, b: LedgerTreeNode) => ((b.mt ?? b.t) || 0) - ((a.mt ?? a.t) || 0);
     const orderedRoots = [
       ...roots.filter((r) => !r.done).sort(byRecency),
       ...roots.filter((r) => r.done).sort(byRecency),
@@ -2250,7 +2253,7 @@ function renderLedger() {
       txt.textContent = n.text;
       const time = el("span", "ledger-ttime");
       setTnodeTime(time, n, cur, now);                          // "(Xm)" live for current, "(Xm ago)" for done
-      if (n.done && n.t) txt.style.color = ageColorReadable(now - n.t);   // a done item's text matches its time colour
+      if (n.done && (n.mt ?? n.t)) txt.style.color = ageColorReadable(now - (n.mt ?? n.t)!);   // a done item's text matches its (resolution-time) colour
       // a → "most recent change" arrow to the LEFT of the freshest node; the kernel flags it + its path
       // (onpath) so it stays auto-expanded even inside an otherwise-folded done branch.
       const lead: HTMLElement[] = [];
@@ -2307,8 +2310,10 @@ function renderLedger() {
 function setTnodeTime(time: HTMLElement, n: LedgerTreeNode, cur: LedgerBullet | null, now: number) {
   if (n.current && cur && cur.t) {
     time.textContent = `(${agehms(now - cur.t)})`; time.style.color = ageColorReadable(now - cur.t);
-  } else if (n.done && n.t) {
-    time.textContent = `(${agehms(now - n.t)} ago)`; time.style.color = ageColorReadable(now - n.t);
+  } else if (n.done && (n.mt ?? n.t)) {
+    // a finished task's "(Xm ago)" is time since it RESOLVED/cleared (its mt), not since it began (the user 2026-06-16)
+    const dt = (n.mt ?? n.t)!;
+    time.textContent = `(${agehms(now - dt)} ago)`; time.style.color = ageColorReadable(now - dt);
   } else {
     time.textContent = "";
   }
@@ -2330,7 +2335,7 @@ function refreshLedgerAges(host: HTMLElement, l: Ledger, now: number) {
     if (n && time) setTnodeTime(time, n, l.current || null, now);
     // keep a done item's text colour in step with its (recency-tinted) time as the clock ticks
     const txt = row.querySelector(".ledger-ttext") as HTMLElement | null;
-    if (n && txt && n.done && n.t) txt.style.color = ageColorReadable(now - n.t);
+    if (n && txt && n.done && (n.mt ?? n.t)) txt.style.color = ageColorReadable(now - (n.mt ?? n.t)!);
   });
   // fallback bullets (goal-less sessions)
   const bs = bullets.slice(0, LEDGER_BULLET_CAP);
