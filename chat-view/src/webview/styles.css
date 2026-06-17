@@ -215,8 +215,10 @@ body { display: flex; flex-direction: column; }
    top goal gets none. */
 .ledger-tnode.ledger-top { border-top: 1px solid var(--box-border); margin-top: 9px; padding-top: 6px; }
 .ledger-tree > .ledger-tnode.ledger-top:first-child { border-top: 0; margin-top: 0; padding-top: 0; }
-/* every mark is the SAME 13px disc (the user 2026-06-16): not-done = hollow ring, current = filled dot,
-   done = blue ✓ disc, blocked = red ⏸ ring. ✓/⏸ are the mark's own text; ring/dot are pure CSS. */
+/* every mark is the SAME 13px disc (the user 2026-06-16): not-done = hollow ring, done = blue ✓ disc,
+   blocked = red ⏸ ring. ✓/⏸ are the mark's own text; the ring is pure CSS. The CURRENT/active node gets
+   NO special mark — its checkbox is IDENTICAL to every other item; only the ROW is highlighted (the user
+   2026-06-17). */
 .ledger-tmark {
   flex: 0 0 auto; box-sizing: border-box; width: 13px; height: 13px; min-width: 13px;
   font-size: 9px; font-weight: 700; line-height: 1;
@@ -231,7 +233,8 @@ body { display: flex; flex-direction: column; }
    it's gone; both inferred/dismissed dones read the same (the user 2026-06-17). */
 .ledger-tnode.done.derived .ledger-tmark,
 .ledger-tnode.done.cleared .ledger-tmark { background: transparent; border-color: var(--check-bg); color: var(--check-bg); opacity: 1; }
-/* blocked = a red ⏸ ring (only when not current/done; render gates the .blocked class the same way). */
+/* blocked = a red ⏸ ring (only when not done; render gates the .blocked class the same way). The current
+   node is NO LONGER excluded — its checkbox matches every other blocked item (the user 2026-06-17). */
 .ledger-tnode.blocked .ledger-tmark { border-color: var(--err); color: var(--err); }
 .ledger-ttext { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
 /* extra whitespace before the right-aligned times so they don't crowd the text (the user 2026-06-16). */
@@ -239,12 +242,11 @@ body { display: flex; flex-direction: column; }
 /* a done item's text is tinted to its recency colour inline (renderLedger); this is the fallback for a
    done node with no timestamp. */
 .ledger-tnode.done .ledger-ttext { color: var(--dim); }
-/* the line pointing at what's being worked on: a left accent bar + bright row */
+/* the line pointing at what's being worked on: ONLY a row highlight (a faint background + a bright left
+   accent bar) plus the live "(Xm)" parenthesised time. The current node's CHECKBOX and TEXT stay IDENTICAL
+   to every other item — no filled dot overwriting the mark, no bold/recolour. The highlight is the ROW,
+   never the glyph or the text (the user 2026-06-17). */
 .ledger-tnode.current { background: rgba(255, 255, 255, 0.06); box-shadow: inset 2px 0 0 var(--fg); }
-/* working = a filled dot (NOT the old ▸ triangle, which read as a clickable disclosure caret that
-   wouldn't expand — the user 2026-06-16). */
-.ledger-tnode.current .ledger-tmark { background: var(--fg); border-color: transparent; color: var(--fg); }
-.ledger-tnode.current .ledger-ttext { color: var(--fg); font-weight: 600; }
 /* working on — the live in-progress turn (italic), shown in the goal-less fallback view */
 .ledger-current { font-style: italic; line-height: 1.45; overflow-wrap: anywhere; border-radius: 4px; padding: 1px 5px; margin: 0 -5px; }
 .ledger-current.nav { cursor: pointer; }

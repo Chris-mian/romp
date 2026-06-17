@@ -2319,7 +2319,7 @@ function renderLedger() {
       const folded = isFolded(n);
       const row = el("div", "ledger-tnode" + (depth === 0 ? " ledger-top" : "")
         + (n.current ? " current" : "") + (n.done ? " done" : "")
-        + (n.blocked && !n.current && !n.done ? " blocked" : "")
+        + (n.blocked && !n.done ? " blocked" : "")            // current no longer suppresses the blocked ring — the checkbox matches every blocked item (the user 2026-06-17)
         + (n.derived ? " derived" : "") + (n.cleared ? " cleared" : ""));
       row.style.paddingLeft = (4 + depth * 15) + "px";          // indent by graph depth (a line of descent)
       // disclosure triangle at every level (▶ folded / ▼ open); a blank spacer keeps leaves aligned
@@ -2332,10 +2332,11 @@ function renderLedger() {
         renderLedger();
       };
       const mark = el("span", "ledger-tmark");
-      // ✓ done, ⏸ blocked; not-done (○) and current are CSS-drawn discs (no glyph) so every mark is the
-      // SAME 13px size (the user 2026-06-16). Current is a filled dot, NOT a ▸ triangle — the triangle
-      // read as a clickable disclosure caret that didn't expand (the user 2026-06-16).
-      mark.textContent = n.done ? "✓" : (n.blocked && !n.current) ? "⏸" : "";
+      // ✓ done, ⏸ blocked; not-done = a hollow CSS ring (no glyph) so every mark is the SAME 13px size
+      // (the user 2026-06-16). The CURRENT/active node gets NO special mark — its checkbox stays IDENTICAL
+      // to every other item; the highlight is the row background + the "(Xm)" time, NOT the glyph (the user
+      // 2026-06-17). So `current` no longer gates the ✓/⏸/ring here.
+      mark.textContent = n.done ? "✓" : n.blocked ? "⏸" : "";
       const txt = el("span", "ledger-ttext");
       txt.textContent = n.text;
       const time = el("span", "ledger-ttime");

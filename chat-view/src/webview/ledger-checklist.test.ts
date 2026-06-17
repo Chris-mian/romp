@@ -12,17 +12,28 @@ import * as path from "node:path";
 const RENDER = fs.readFileSync(path.resolve(process.cwd(), "src", "webview", "render.ts"), "utf8");
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "src", "webview", "styles.css"), "utf8");
 
-test("ledger marks: every state is the SAME 13px disc — ○ hollow, ● working, ✓ done, ⏸ blocked", () => {
-  // ✓/⏸ are the mark's own text; not-done (○) and current (●) are CSS-drawn discs (no glyph) so the
-  // working mark is a filled dot, NOT a ▸ triangle that read as a clickable caret (the user 2026-06-16).
-  assert.match(RENDER, /mark\.textContent = n\.done \? "✓" : \(n\.blocked && !n\.current\) \? "⏸" : "";/);
+test("ledger marks: every state is the SAME 13px disc — ○ hollow, ✓ done, ⏸ blocked", () => {
+  // ✓/⏸ are the mark's own text; not-done = a CSS-drawn hollow ring (no glyph). The CURRENT/active node
+  // gets NO special mark — its checkbox is identical to every other item (the user 2026-06-17).
+  assert.match(RENDER, /mark\.textContent = n\.done \? "✓" : n\.blocked \? "⏸" : "";/);
   assert.doesNotMatch(RENDER, /n\.current \? "▸"/);                          // the old triangle is gone
   // base mark = a 13px round disc shared by every state (sizes normalized — the user 2026-06-16)
   assert.match(CSS, /\.ledger-tmark \{[^}]*width: 13px;[^}]*border-radius: 50%/);
   assert.match(CSS, /\.ledger-tmark \{[^}]*border: 1\.5px solid var\(--dim\)/);   // not-done = hollow ring
   assert.match(CSS, /\.ledger-tnode\.done \.ledger-tmark \{[^}]*var\(--check-bg\)/);   // done = blue disc
-  assert.match(CSS, /\.ledger-tnode\.current \.ledger-tmark \{[^}]*background: var\(--fg\)/);  // working = filled dot
   assert.match(CSS, /\.ledger-tnode\.blocked \.ledger-tmark \{[^}]*var\(--err\)/);    // blocked = red ring
+});
+
+test("the CURRENT node highlights the ROW only — never mutates its checkbox or text (the user 2026-06-17)", () => {
+  // the active line gets a row highlight (faint background + a bright left accent bar) and the live "(Xm)"
+  // parenthesised time — that's the whole signal. The earlier filled-dot-on-the-mark + bold/recoloured text
+  // are GONE, so the checkbox + text read exactly like every other item.
+  assert.match(CSS, /\.ledger-tnode\.current \{[^}]*background:[^}]*box-shadow: inset 2px 0 0 var\(--fg\)/);  // row highlight kept
+  assert.doesNotMatch(CSS, /\.ledger-tnode\.current \.ledger-tmark/);   // NO checkbox override (the white dot is gone)
+  assert.doesNotMatch(CSS, /\.ledger-tnode\.current \.ledger-ttext/);   // NO text recolour/bold
+  // a current+blocked node now shows its normal red ⏸ ring: `current` no longer suppresses .blocked
+  assert.match(RENDER, /\(n\.blocked && !n\.done \? " blocked" : ""\)/);
+  assert.doesNotMatch(RENDER, /n\.blocked && !n\.current && !n\.done/);
 });
 
 test("ledger: a done item's text takes its (resolution-time) recency colour (ticks with the clock)", () => {
