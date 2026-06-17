@@ -2005,6 +2005,10 @@ function touchMru(id: string) {
   mru.unshift(id);
 }
 
+// rAF handle for a DEFERRED heavy transcript build (a first-visit / changed-compact view). Switching away
+// before it fires cancels it, so rapid tab-cycling never waits on a transcript it's leaving. (the user 2026-06-17.)
+let pendingBuildRaf: number | null = null;
+
 function showActive() {
   const content = document.getElementById("content");
   if (!content) return;
@@ -2040,9 +2044,35 @@ function showActive() {
   if (s.color && s.color.bg) document.body.style.setProperty("--active-accent", s.color.bg);
   else document.body.style.removeProperty("--active-accent");
   touchMru(activeId!); // record activation order so close returns to the previous tab
-  const v = syncView(activeId!);
+  const v = ensureView(activeId!);
   for (const [vid, vv] of views) vv.el.style.display = vid === activeId ? "" : "none";
   updateStatusline();
+  // The transcript BUILD is the only expensive part of a switch. A view already built for the current
+  // events renders instantly (cache / incremental); an UNBUILT one (first visit), or a compact view whose
+  // events changed, is an O(events) rebuild — so DEFER it to the next frame and SKIP it if we switch away
+  // first. Rapid tab-cycling then stays snappy: only the tab you LAND on actually builds. (the user 2026-06-17.)
+  const heavy = v.el.childNodes.length === 0 || (settings.compact && (v.rendered !== s.events.length || v.stale));
+  if (!heavy) { syncView(activeId!); landActive(content, v); return; }
+  if (v.el.childNodes.length === 0) {   // truly empty → a light loading hint (a stale view keeps its old content visible)
+    const ld = el("div", "tx-loading"); ld.textContent = "Loading transcript…"; v.el.appendChild(ld);
+  }
+  if (pendingBuildRaf != null) cancelAnimationFrame(pendingBuildRaf);
+  const target = activeId!;
+  pendingBuildRaf = requestAnimationFrame(() => {
+    pendingBuildRaf = null;
+    if (activeId !== target) return;    // switched away before the build ran → don't build the tab we left
+    const vv = views.get(target);
+    if (!vv || !sessions.has(target)) return;
+    syncView(target);                   // the heavy build now (clears the loading hint)
+    landActive(document.getElementById("content"), vv);
+  });
+}
+
+// Scroll/anchor landing + deep-link diagnostics + restamp, AFTER the active view's DOM is up to date —
+// run synchronously for an already-built view, or deferred (next frame) after a heavy build. Factored so
+// both paths land identically (the user 2026-06-17).
+function landActive(content: HTMLElement | null, v: View): void {
+  if (!content) return;
   const att = { anchor: pendingAnchor, t: pendingAnchorT, kind: pendingAnchorKind };   // this pass's landing attempt, for diagnostics
   if (att.anchor || att.t != null) landTrail = [];
   let scrolled = pendingAnchor ? scrollToAnchor(pendingAnchor) : false;
