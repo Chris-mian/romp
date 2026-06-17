@@ -1863,6 +1863,12 @@ function syncView(id: string): View {
 // the resulting display stream computing prevEpoch over IT (same rail-timestamp rules, applied after
 // compaction — the user's requirement). prevEpoch is the previous TIMED display item's epoch.
 function rebuildCompact(v: View, s: Session, working: boolean): void {
+  // A tab switch (or any repaint with no event change) must NOT re-tear-down the whole transcript — that
+  // full O(events) rebuild on every showActive() was the compact-mode arrow-key lag (the user 2026-06-17).
+  // Reuse the cached compact DOM when this view is already built for the current event set; only a REAL
+  // change rebuilds — an append/rewind (len ≠ rendered), an updated-while-hidden `stale`, or a tool-group
+  // toggle (which sets `stale` before repainting). Mirrors the normal path's incremental skip.
+  if (v.rendered === s.events.length && !v.stale && v.el.childNodes.length > 0) return;
   while (v.el.firstChild) v.el.removeChild(v.el.firstChild);
   // pass tool names too, so a standalone tool (AskUserQuestion) renders first-class instead of collapsing
   const disp = compactDisplay(s.events.map((e) => e.kind), s.events.map((e) => e.kind === "tool" ? e.name : undefined));
@@ -1893,6 +1899,7 @@ function rebuildCompact(v: View, s: Session, working: boolean): void {
     }
   }
   v.rendered = s.events.length;
+  v.stale = false;   // freshly built for this event set → a later tab switch reuses it (see the guard above)
 }
 
 // Stable identity for a collapsed tool run (survives rebuilds) = the first tool's uuid (else its epoch).
@@ -1934,7 +1941,9 @@ function toggleToolGroup(key: string): void {
   if (expandedGroups.has(key)) expandedGroups.delete(key); else expandedGroups.add(key);
   const content = document.getElementById("content");
   const top = content ? content.scrollTop : 0;
-  if (activeId) syncView(activeId);
+  // the expand/collapse changes the DOM without changing the event set, so mark the view stale to force
+  // the compact rebuild past the cache guard (a plain tab switch leaves stale false → reuses the cache).
+  if (activeId) { const v = views.get(activeId); if (v) v.stale = true; syncView(activeId); }
   if (content) content.scrollTop = top;
   scheduleRestamp();
 }
