@@ -35,12 +35,13 @@ test("modal RESOLVED node: mark + time LINKED on hover; text lights alone; style
   assert.match(CSS, /\.ftree-text\.lz-hl[^{]*\{[^}]*background/);             // text = rounded fill
 });
 
-test("modal UNRESOLVED node: checkbox + text are ONE merged block → the message (the user 2026-06-17)", () => {
-  // not yet checked off / blocked → the mark points at the SAME message as the text, lit as one block
+test("modal UNRESOLVED node: checkbox + text light together, checkbox STAYS a circle (the user 2026-06-17)", () => {
+  // not yet checked off / blocked → the mark points at the SAME message as the text and they light together,
+  // but each keeps its own shape: the checkbox is its CIRCULAR halo, never a square (no .lz-merge fill).
   assert.match(FEED, /mark\.classList\.add\("lz-nav"\); mark\.title = "jump to the message that asked for this"; mark\.onclick = goMsg/);
-  assert.match(FEED, /linkHover\(\[mark, txt\], true\)/);
-  assert.match(CSS, /\.ftree-mark\.lz-merge\.lz-hl \{/);
-  assert.match(CSS, /\.ftree-text\.lz-merge\.lz-hl \{/);
+  assert.match(FEED, /linkHover\(\[mark, txt\]\)/);
+  assert.match(CSS, /\.ftree-mark\.lz-hl \{[^}]*box-shadow/);   // checkbox highlight = circular halo
+  assert.doesNotMatch(CSS, /lz-merge/);                          // no square/bridged merge fill
 });
 
 test("modal node shows the planner's rationale INLINE, clickable to where it was authored (the user 2026-06-17)", () => {

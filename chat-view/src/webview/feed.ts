@@ -958,8 +958,7 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
                   : resolved ? "jump to where this got checked off" : "jump to this work";
   if (!repeat) {
     txt.classList.add("lz-nav"); txt.title = "jump to the message that asked for this"; txt.onclick = goMsg;
-    const linkHover = (group: HTMLElement[], merge = false) => {
-      if (merge) group.forEach((g) => g.classList.add("lz-merge"));
+    const linkHover = (group: HTMLElement[]) => {
       const on = () => group.forEach((g) => g.classList.add("lz-hl"));
       const off = () => group.forEach((g) => g.classList.remove("lz-hl"));
       group.forEach((g) => { g.addEventListener("mouseenter", on); g.addEventListener("mouseleave", off); });
@@ -977,7 +976,7 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
       // stays its own zone → the node's latest work. (the user 2026-06-17.)
       mark.classList.add("lz-nav"); mark.title = "jump to the message that asked for this"; mark.onclick = goMsg;
       meta.classList.add("lz-nav"); meta.title = "jump to the latest work here"; meta.onclick = goWork;
-      linkHover([mark, txt], true);
+      linkHover([mark, txt]);   // checkbox + text light together, each keeping its own shape
       linkHover([meta]);
     }
   }

@@ -2322,10 +2322,10 @@ function renderLedger() {
         z.title = title;
         z.addEventListener("click", (ev) => { ev.stopPropagation(); scrollToNearestT(t, kind); });
       };
-      // .lz-hl is toggled in JS so a group lights together; pass merge=true for the unresolved checkbox+text
-      // block so they read as ONE continuous highlight (a bridged fill) rather than separate ring + fill.
-      const linkHover = (group: HTMLElement[], merge = false) => {
-        if (merge) group.forEach((g) => g.classList.add("lz-merge"));
+      // .lz-hl is toggled in JS so a group lights together; each element keeps its own shape (the checkbox
+      // stays a circle — its halo ring; the text its fill), so a merged checkbox+text reads as one unit
+      // without turning the round checkbox into a square (the user 2026-06-17).
+      const linkHover = (group: HTMLElement[]) => {
         const on = () => group.forEach((g) => g.classList.add("lz-hl"));
         const off = () => group.forEach((g) => g.classList.remove("lz-hl"));
         group.forEach((g) => { g.addEventListener("mouseenter", on); g.addEventListener("mouseleave", off); });
@@ -2340,7 +2340,7 @@ function renderLedger() {
       } else {
         // not yet checked off / blocked → checkbox + text are ONE block, both → the goal's message
         wireZone(mark, startT, "user", "jump to the message that asked for this");
-        linkHover([mark, txt], true);
+        linkHover([mark, txt]);   // checkbox + text light together, each keeping its own shape
         if (time.textContent) { wireZone(time, resolveT, "assistant", "jump to the latest work here"); linkHover([time]); }
       }
       row.append(...lead, mark, txt, time);
