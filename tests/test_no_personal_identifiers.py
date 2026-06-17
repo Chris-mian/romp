@@ -52,6 +52,15 @@ class NoPersonalIdentifiers(unittest.TestCase):
         hits = []
         for rel in repo_files():
             path = REPO / rel
+            # A committed symlink stores its TARGET as content; read_text()
+            # would FOLLOW the link (the target's bytes, or IsADirectoryError /
+            # a loop error), so the target STRING — which may embed a home path
+            # or username — is never scanned. Check the link target explicitly.
+            if path.is_symlink():
+                target = os.readlink(path).lower()
+                hits += ["%s: symlink target contains %r" % (rel, b)
+                         for b in banned if b in target]
+                continue
             try:
                 text = path.read_text(encoding="utf-8").lower()
             except (UnicodeDecodeError, FileNotFoundError, IsADirectoryError,
