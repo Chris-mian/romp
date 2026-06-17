@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# romp-wake.sh — event-driven judge trigger (design: event-based over time heuristics).
+#
+# Fires on the Claude Code events that create NEW work for the judges — a turn
+# ended (Stop) or a prompt landed (UserPromptSubmit) — and pokes the kernel's
+# POST /tick so the producer runs a judge pass NOW instead of waiting out the
+# 20s backstop. Without this the feed can lag up to ~20s behind a completed turn.
+#
+# Fire-and-forget: it MUST never block or fail a turn. The curl is detached into
+# a subshell with a short timeout and every output/error is swallowed. If no
+# kernel is listening (none running, or a headless/non-romp session) the poke
+# fails silently — the producer's 20s backstop still covers it.
+set -uo pipefail
+
+# Drain stdin (Claude Code sends the hook event as JSON) so we never SIGPIPE the
+# caller. We don't need the payload: any registered event means "new work may
+# exist", and a wake is cheap + idempotent on the kernel side.
+cat >/dev/null 2>&1 || true
+
+port="${ROMP_SERVE_PORT:-7433}"
+( curl -sf -m 0.5 -X POST "http://127.0.0.1:${port}/tick" -o /dev/null >/dev/null 2>&1 & ) >/dev/null 2>&1
+exit 0

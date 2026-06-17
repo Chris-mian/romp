@@ -13,7 +13,7 @@ ROMP_DIR="$(cd "$(dirname "$0")" && pwd)"
 mkdir -p "$HOME/.claude/hooks" "$HOME/.claude/skills"
 
 for h in romp-summarize.sh romp-postal-drain.sh romp-postal-ensure.sh \
-         romp-postal-revive.sh tmux-status.sh; do
+         romp-postal-revive.sh romp-wake.sh tmux-status.sh; do
     ln -sf "$ROMP_DIR/hooks/$h" "$HOME/.claude/hooks/$h"
 done
 echo "  Symlinked romp hooks into ~/.claude/hooks/"
@@ -30,11 +30,14 @@ WANT = {  # event -> [(hook script, timeout secs, async)]
                          ("romp-postal-ensure.sh", 5, True),
                          ("romp-postal-revive.sh", 8, False)],
     "UserPromptSubmit": [("tmux-status.sh", 5, False),
-                         ("romp-summarize.sh", 10, True)],
+                         ("romp-summarize.sh", 10, True),
+                         ("romp-wake.sh", 5, True)],     # poke the kernel → judges run NOW, not on the 20s tick
     "PostToolUse":      [("tmux-status.sh", 5, False)],
     "Stop":             [("tmux-status.sh", 5, False),
                          ("romp-summarize.sh", 10, True),
-                         ("romp-postal-drain.sh", 10, False)],
+                         ("romp-postal-drain.sh", 10, False),
+                         ("romp-wake.sh", 5, True)],     # turn ended → wake the producer immediately
+
     "Notification":     [("tmux-status.sh", 5, False)],
     "PreCompact":       [("tmux-status.sh", 5, False)],
     "PostCompact":      [("tmux-status.sh", 5, False)],

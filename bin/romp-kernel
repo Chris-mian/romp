@@ -2043,6 +2043,9 @@ def _push_all():
 
 # ───────────────────────── producer + push threads ─────────────────────────
 _last_producer_sig = [None]
+# Event-driven wake: POST /tick (poked by the Stop / UserPromptSubmit hooks the instant a turn ends or a
+# prompt lands) sets this so the producer runs a judge pass NOW instead of waiting out the 20s backstop.
+_producer_wake = threading.Event()
 
 
 def _producer_sig(browser):
@@ -2073,6 +2076,7 @@ def _producer_sig(browser):
 
 def _producer():
     while True:
+        _producer_wake.clear()   # consume; a /tick arriving DURING this pass re-sets it → we run again (no lost wake)
         try:
             with _clients_lock:
                 browser = bool(_clients)
@@ -2093,7 +2097,11 @@ def _producer():
                 jd.run_courier()
         except Exception:
             sys.stderr.write("producer: %s\n" % traceback.format_exc())
-        time.sleep(20)
+        # Event-driven: wake the instant a hook pokes /tick (turn ended / prompt landed / postal msg)
+        # instead of waiting out a blind 20s tick. The 20s is now only a BACKSTOP — for changes we don't
+        # get poked for (e.g. a segment closing mid-turn) and as a safety net if a poke is ever missed. A
+        # pass is cheap when nothing changed (jd.PCACHE no-ops unit selection), so an extra wake is harmless.
+        _producer_wake.wait(20)
 
 
 def _pusher():
@@ -2743,6 +2751,14 @@ class Handler(BaseHTTPRequestHandler):
                     except Exception:
                         pass                                   # no manager reachable → nothing to restart
                 return
+            if u.path == "/tick":
+                # Event-driven producer wake: the Stop / UserPromptSubmit hooks (and the postal drain)
+                # poke this the instant a turn ends / a prompt lands / a message arrives, so the judges
+                # run NOW instead of on the next 20s backstop tick. Cheap + idempotent — it just sets the
+                # event the producer waits on; the loopback Host gate in _authorize already lets local
+                # hooks through (a tailnet client would need the serve token, same as every other route).
+                _producer_wake.set()
+                return self._send(200, json.dumps({"ok": True, "woke": True}), "application/json")
             return self._send(404, "not found", "text/plain")
         except (BrokenPipeError, ConnectionResetError):
             pass

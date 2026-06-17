@@ -1352,6 +1352,20 @@ class ServeSecurity(unittest.TestCase):
             if saved is not None:
                 os.environ["ROMP_MANAGER_PORT"] = saved
 
+    def test_tick_endpoint_wakes_producer(self):
+        """POST /tick is the event-driven judge trigger: the Stop / UserPromptSubmit hooks poke it the
+        instant a turn ends / a prompt lands, and it must wake the producer (set _producer_wake) so the
+        judges run NOW instead of on the next 20s backstop tick. Local request → no token needed."""
+        import urllib.request, json as _json
+        km._producer_wake.clear()
+        self.assertFalse(km._producer_wake.is_set())
+        req = urllib.request.Request("http://127.0.0.1:%d/tick" % self.port, method="POST", data=b"")
+        with urllib.request.urlopen(req, timeout=5) as r:
+            self.assertEqual(r.status, 200)
+            self.assertEqual(_json.loads(r.read().decode()), {"ok": True, "woke": True})
+        self.assertTrue(km._producer_wake.is_set())
+        km._producer_wake.clear()
+
     def test_unknown_post_path_is_404(self):
         import urllib.request, urllib.error
         req = urllib.request.Request("http://127.0.0.1:%d/nope" % self.port, method="POST", data=b"")
