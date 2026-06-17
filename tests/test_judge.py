@@ -981,15 +981,17 @@ class CloserKeyMigration(unittest.TestCase):
 
 
 class JudgeSystemPrompt(unittest.TestCase):
-    """Every judge call REPLACES Claude Code's own system prompt (and drops its dynamic env/git/CLAUDE.md
-    blocks) so the model sees only the judge's prompt — not appends onto the CC base prompt."""
+    """Every judge call is ISOLATED to its own prompt: --system-prompt REPLACES Claude Code's base
+    prompt, --exclude-dynamic-system-prompt-sections drops the per-machine blocks, and --safe-mode
+    drops auto-discovered CLAUDE.md/memory. (Measured: 8334 -> ~165 input tokens.)"""
 
     def test_replaces_not_appends_cc_prompt(self):
         cmd = jd._judge_cmd("some-model", "SYSTEM_PROMPT_BODY")
         self.assertIn("--system-prompt", cmd, "the judge REPLACES Claude Code's prompt")
         self.assertNotIn("--append-system-prompt", cmd, "no longer appended onto the CC base prompt")
         self.assertIn("--exclude-dynamic-system-prompt-sections", cmd,
-                      "env / git / today's date / CLAUDE.md blocks are dropped")
+                      "per-machine env / git / date blocks are dropped")
+        self.assertIn("--safe-mode", cmd, "auto-discovered CLAUDE.md / memory / hooks are dropped")
         self.assertEqual(cmd[cmd.index("--system-prompt") + 1], "SYSTEM_PROMPT_BODY",
                          "the judge's prompt follows the --system-prompt flag")
 
