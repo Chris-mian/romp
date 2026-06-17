@@ -1113,7 +1113,7 @@ class BlockCompletionCorrectness(unittest.TestCase):
     def test_block_prompt_uses_the_weighing_rule(self):
         # #1: source-level guard that the validated weighing rule is in the planner prompt (the
         # behavioural A/B is simplify's; this locks the prompt against an accidental revert).
-        for phrase in ("WAITING ON THE USER", "is NOT blocking", "WEIGHING",
+        for phrase in ("NEEDS THE USER", "is NOT blocking", "WEIGHING",
                        "the owed decision WINS"):
             self.assertIn(phrase, jd.PLAN_SYS, phrase)
 
@@ -1126,25 +1126,28 @@ class BlockCompletionCorrectness(unittest.TestCase):
                        "avoid a conflict", "only the human blocks"):
             self.assertIn(phrase, jd.PLAN_SYS, phrase)
 
-    def test_block_prompt_surfaces_user_question_answers(self):
-        # the user 2026-06-17: a goal whose deliverable is the ANSWER to the user's question is surfaced
-        # as a needs-you (block) card with the answer as the reason, instead of a silent done — reusing
-        # mint+block+blockWhy + the inline-reason render. Source-level guard against a revert.
-        for phrase in ("ANSWERED THE USER", "INSTEAD of doing it", "concise summary of the answer"):
-            self.assertIn(phrase, jd.PLAN_SYS, phrase)
-        self.assertIn("if the ask was a QUESTION", jd.PLAN_SYS, "the done op points at the block exception")
+    def test_answers_are_done_not_blocked(self):
+        # the user 2026-06-17 (reversed the earlier block-the-answer rule): a fully-given explanation /
+        # answer to a user question is DONE with the answer as its doneWhy — the feed tagline shows the
+        # answer, so it no longer needs to sit in the needs-you/block column. Guard against a revert.
+        self.assertIn("EXPLANATION or ANSWER", jd.PLAN_SYS)
+        self.assertIn("the goal is DONE", jd.PLAN_SYS, "an answered question completes")
+        self.assertIn("concise summary of the answer", jd.PLAN_SYS, "the answer rides in the done why")
+        # the old block-the-answer mechanism is gone
+        self.assertNotIn("ANSWERED THE USER", jd.PLAN_SYS, "answers are no longer routed to block")
+        self.assertNotIn("if the ask was a QUESTION", jd.PLAN_SYS, "the done op no longer exempts questions")
 
-    def test_block_answer_goal_carries_the_answer_as_blockwhy(self):
-        # mechanics: mint an answer-goal + block it via ref → it lands blocked with the answer as blockWhy
-        # (the inline reason the feed shows), exactly like done would carry a doneWhy. No new op needed.
+    def test_answer_goal_completes_with_the_answer_as_donewhy(self):
+        # mechanics: mint an answer-goal + done it via ref → it lands complete with the answer as doneWhy
+        # (the inline reason the feed shows on the done card). No block needed.
         s = _store()
         jd.apply_plan(s, "qa", T0, [{"do": "mint", "why": "user asked how streaming works", "text": "Explained streaming tiers"},
-                                    {"do": "block", "why": "Tier-1 delivers instantly; tier-2 batches every 20s", "ref": 1}], [])
+                                    {"do": "done", "why": "Tier-1 delivers instantly; tier-2 batches every 20s", "ref": 1}], [])
         nid = s["placements"]["qa"]
-        self.assertTrue(s["nodes"][nid]["blocked"], "the answer-goal is blocked (needs-you), not done")
-        self.assertFalse(s["nodes"][nid].get("nodeComplete"), "and NOT silently completed")
-        self.assertEqual(s["nodes"][nid]["blockWhy"], "Tier-1 delivers instantly; tier-2 batches every 20s",
-                         "the concise answer rides in blockWhy → shown inline on the needs-you card")
+        self.assertTrue(s["nodes"][nid]["nodeComplete"], "the answer-goal is DONE, not left open or blocked")
+        self.assertFalse(s["nodes"][nid].get("blocked"), "and NOT parked in needs-you")
+        self.assertEqual(s["nodes"][nid]["doneWhy"], "Tier-1 delivers instantly; tier-2 batches every 20s",
+                         "the concise answer rides in doneWhy → shown on the done card's tagline")
 
     def test_surgical_unblock_leaves_sibling_block(self):
         # #2: two blocked sibling sub-goals; non-block work on ONE branch clears only that branch.
