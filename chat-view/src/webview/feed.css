@@ -526,6 +526,11 @@ body { display: flex; flex-direction: column; }
 }
 .fcheck.done .fcheck-text { color: var(--dim); }
 .fcheck.question .fcheck-mark { color: #d8a657; }
+/* a card sub-goal is clickable just like the modal tree node (the user 2026-06-17): the checkbox + text are
+   separate links. Per-ZONE hover highlight (.lz-hl, JS-toggled) — a halo on the mark, a fill on the text. */
+.fcheck .lz-nav { cursor: pointer; }
+.fcheck-text.lz-hl { background: rgba(255, 255, 255, 0.12); border-radius: 3px; box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.12); }
+.fcheck-mark.lz-hl { box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.16); }
 /* standalone-completion modal: same tree vocabulary as ask cards; pending
    next-steps render as dim hollow rows, the paragraph as secondary detail */
 .frow.st-open { opacity: 0.8; }

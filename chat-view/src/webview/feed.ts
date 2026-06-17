@@ -614,6 +614,10 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
     mark.textContent = s.status === "done" ? "✓" : s.status === "question" ? "?" : "○";
     const txt = el("span", "fcheck-text"); txt.textContent = s.text;
     row.append(mark, txt);
+    // a card sub-goal clicks EXACTLY like the modal tree node (the user 2026-06-17): text → the message,
+    // checkbox → where it got checked off — separate links — via the SAME wireNodeZones. No time cell here.
+    // (stopPropagation in the handlers keeps a sub-goal click from also opening the card's modal.)
+    wireNodeZones(it, s, mark, txt, null, true);
     cl.appendChild(row);
   }
   cl.style.display = cl.children.length ? "" : "none";
@@ -880,6 +884,48 @@ function renderTreeBody(host: HTMLElement, it: AskItem, skipRoot = false) {
 // de-clutter ruling 2026-06-10).
 const TREE_INDENT_EM = 1.4;
 
+// Wire a goal node's mark / text / (optional time) into click+hover ZONES — shared by the modal tree AND
+// the card's inline sub-goal checklist so they navigate IDENTICALLY (the user 2026-06-17): the TEXT jumps
+// to the MESSAGE that minted it (anchor "prompt"); the CHECKBOX (+ the time, when there is one) to where it
+// got CHECKED OFF / marked BLOCKED (anchor "work", by id via anchorUuid when resolved). A not-yet-resolved
+// node's checkbox + text light together as one unit. `meta` is null on the card (no time cell). `wire`
+// false (a dim repeat node) skips the wiring but still returns goWork — the modal's rationale links to it.
+function wireNodeZones(it: AskItem, node: AskTreeNode, mark: HTMLElement, txt: HTMLElement, meta: HTMLElement | null, wire: boolean): (ev: Event) => void {
+  const navId = node.kind === "handoff" ? node.id : it.turnId;
+  const navSid = node.whoSid || (node.kind === "handoff" ? node.id.split(":")[0] : it.sid);
+  const resolved = node.status === "done" || node.status === "question";   // done / blocked → has a resolution
+  const resolveT = (resolved && node.mt) ? node.mt : node.t;
+  const goMsg = (ev: Event) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: navId, sid: navSid, t: node.t, anchor: "prompt", anchorUuid: null }); };
+  const goWork = (ev: Event) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: navId, sid: navSid, t: resolveT, anchor: "work", anchorUuid: node.anchorUuid ?? null }); };
+  if (!wire) return goWork;
+  // tooltip names the destination by status: a blocked node was "marked blocked", a done node "checked off"
+  const workTitle = node.status === "question" ? "jump to where this got marked blocked"
+                  : resolved ? "jump to where this got checked off" : "jump to this work";
+  txt.classList.add("lz-nav"); txt.title = "jump to the message that asked for this"; txt.onclick = goMsg;
+  const linkHover = (group: HTMLElement[]) => {
+    const on = () => group.forEach((g) => g.classList.add("lz-hl"));
+    const off = () => group.forEach((g) => g.classList.remove("lz-hl"));
+    group.forEach((g) => { g.addEventListener("mouseenter", on); g.addEventListener("mouseleave", off); });
+  };
+  if (resolved) {
+    // RESOLVED (checked off / blocked): MARK + META jump to where it resolved (goWork), as one pair; TEXT
+    // → the minting message, on its own. Hovering the mark or the time lights BOTH (shared target).
+    mark.classList.add("lz-nav"); mark.title = workTitle; mark.onclick = goWork;
+    if (meta) { meta.classList.add("lz-nav"); meta.title = workTitle; meta.onclick = goWork; }
+    linkHover([txt]);
+    linkHover(meta ? [mark, meta] : [mark]);
+  } else {
+    // NOT yet checked off / blocked → no completion: the checkbox + text are ONE block (both the goal
+    // itself), navigating to the message together and lighting together. The meta time (when present) stays
+    // its own zone → the node's latest work. (the user 2026-06-17.)
+    mark.classList.add("lz-nav"); mark.title = "jump to the message that asked for this"; mark.onclick = goMsg;
+    if (meta) { meta.classList.add("lz-nav"); meta.title = "jump to the latest work here"; meta.onclick = goWork; }
+    linkHover([mark, txt]);   // checkbox + text light together, each keeping its own shape
+    if (meta) linkHover([meta]);
+  }
+  return goWork;
+}
+
 function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: Map<string, AskTreeNode>, briefs: Map<string, AskQuestion>, seen: Set<string>, depth: number, parentWho: string) {
   const repeat = seen.has(node.id);
   const nodeKey = it.itemId + ":" + node.id;
@@ -930,43 +976,9 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
   // actually got blocked or finished — so the click lands on THAT assistant action, not where the node
   // was first minted. An open node sends node.t (its own start). navSid is the node's session
   // (a handoff node lives in the recipient's transcript).
-  // Nav targets for this node — used by the three zones AND the inline rationale below (the user 2026-06-17).
-  // goMsg → the MESSAGE that minted it (anchor "prompt"). goWork → where it got CHECKED OFF / marked BLOCKED
-  // (anchor "work" → the assistant turn, by id via anchorUuid when resolved, at the mt segment); this is also
-  // where the planner authored the why, so the rationale links here too.
-  const navId = node.kind === "handoff" ? node.id : it.turnId;
-  const navSid = node.whoSid || (node.kind === "handoff" ? node.id.split(":")[0] : it.sid);
-  const resolved = node.status === "done" || node.status === "question";   // done / blocked → has a resolution
-  const resolveT = (resolved && node.mt) ? node.mt : node.t;
-  const goMsg = (ev: Event) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: navId, sid: navSid, t: node.t, anchor: "prompt", anchorUuid: null }); };
-  const goWork = (ev: Event) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: navId, sid: navSid, t: resolveT, anchor: "work", anchorUuid: node.anchorUuid ?? null }); };
-  // tooltip names the destination by status: a blocked node was "marked blocked", a done node "checked off"
-  const workTitle = node.status === "question" ? "jump to where this got marked blocked"
-                  : resolved ? "jump to where this got checked off" : "jump to this work";
-  if (!repeat) {
-    txt.classList.add("lz-nav"); txt.title = "jump to the message that asked for this"; txt.onclick = goMsg;
-    const linkHover = (group: HTMLElement[]) => {
-      const on = () => group.forEach((g) => g.classList.add("lz-hl"));
-      const off = () => group.forEach((g) => g.classList.remove("lz-hl"));
-      group.forEach((g) => { g.addEventListener("mouseenter", on); g.addEventListener("mouseleave", off); });
-    };
-    if (resolved) {
-      // RESOLVED (checked off / blocked): MARK + META jump to where it resolved (goWork), as one pair; TEXT
-      // → the minting message, on its own. Hovering the mark or the time lights BOTH (shared target).
-      mark.classList.add("lz-nav"); mark.title = workTitle; mark.onclick = goWork;
-      meta.classList.add("lz-nav"); meta.title = workTitle; meta.onclick = goWork;
-      linkHover([txt]);
-      linkHover([mark, meta]);
-    } else {
-      // NOT yet checked off / blocked → no completion: the checkbox + text are ONE block (both the goal
-      // itself), navigating to the message together and lighting as one continuous highlight. The meta time
-      // stays its own zone → the node's latest work. (the user 2026-06-17.)
-      mark.classList.add("lz-nav"); mark.title = "jump to the message that asked for this"; mark.onclick = goMsg;
-      meta.classList.add("lz-nav"); meta.title = "jump to the latest work here"; meta.onclick = goWork;
-      linkHover([mark, txt]);   // checkbox + text light together, each keeping its own shape
-      linkHover([meta]);
-    }
-  }
+  // Click/hover zones for this node, via the SHARED wireNodeZones (so the card's sub-goal checklist clicks
+  // identically). Returns goWork; the inline rationale below links to the same place. (the user 2026-06-17.)
+  const goWork = wireNodeZones(it, node, mark, txt, meta, !repeat);
   // Hovering a node lights ITS OWN work-bars on the timeline — the union of this node's segment trail
   // and everything under it — via the SAME showAskPath the card uses, just scoped to this node (the
   // host resolves the node's subtree segments). Leaving restores the card's full path. (Before: it

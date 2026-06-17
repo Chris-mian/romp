@@ -26,13 +26,25 @@ test("modal node: mark + time → where it got CHECKED OFF (anchor 'work' @ reso
   assert.doesNotMatch(FEED, /line\.onclick = \(ev\) => \{ ev\.stopPropagation\(\); vscodeApi\?\.postMessage\(\{ type: "showOnTimeline"/);
 });
 
-test("modal RESOLVED node: mark + time LINKED on hover; text lights alone; styled per zone", () => {
+test("RESOLVED node (shared wireNodeZones): mark + time LINKED on hover; text lights alone; styled per zone", () => {
+  // the zone logic is factored into wireNodeZones, shared by the modal AND the card sub-goal checklist
+  assert.match(FEED, /function wireNodeZones\(it: AskItem, node: AskTreeNode, mark: HTMLElement, txt: HTMLElement, meta: HTMLElement \| null, wire: boolean\)/);
   assert.match(FEED, /if \(resolved\) \{/);                                   // the 3-way split is gated on resolved
   assert.match(FEED, /linkHover\(\[txt\]\);/);
-  assert.match(FEED, /linkHover\(\[mark, meta\]\);/);
+  assert.match(FEED, /linkHover\(meta \? \[mark, meta\] : \[mark\]\);/);       // mark + time pair (time only when present)
   assert.match(CSS, /\.ftree-node \.lz-nav \{[^}]*cursor: pointer/);
   assert.match(CSS, /\.ftree-mark\.lz-hl \{[^}]*box-shadow/);                 // mark = halo ring
   assert.match(CSS, /\.ftree-text\.lz-hl[^{]*\{[^}]*background/);             // text = rounded fill
+});
+
+test("card sub-goals click EXACTLY like the modal — same wireNodeZones, separate links (the user 2026-06-17)", () => {
+  // the modal tree node and the card's inline sub-goal checklist BOTH call wireNodeZones, so they navigate
+  // identically; the card has no time cell so it passes null for meta.
+  assert.match(FEED, /const goWork = wireNodeZones\(it, node, mark, txt, meta, !repeat\);/);   // modal
+  assert.match(FEED, /wireNodeZones\(it, s, mark, txt, null, true\);/);                        // card sub-goal row
+  assert.match(CSS, /\.fcheck \.lz-nav \{[^}]*cursor: pointer/);
+  assert.match(CSS, /\.fcheck-mark\.lz-hl \{[^}]*box-shadow/);                                 // checkbox = halo
+  assert.match(CSS, /\.fcheck-text\.lz-hl \{[^}]*background/);                                  // text = fill
 });
 
 test("modal UNRESOLVED node: checkbox + text light together, checkbox STAYS a circle (the user 2026-06-17)", () => {
