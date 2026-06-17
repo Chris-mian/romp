@@ -790,30 +790,30 @@ class BlockCompletionCorrectness(unittest.TestCase):
 # ───────────────────────── the negative turn-end sweep (HYBRID completion) ─────────────────────────
 class SweepParse(unittest.TestCase):
     def test_outstanding_numbers(self):
-        self.assertEqual(jd._parse_sweep("1, 3", 4), {1, 3})
-        self.assertEqual(jd._parse_sweep("2", 4), {2})
-        self.assertEqual(jd._parse_sweep("Goals 2 and 4 are still outstanding", 4), {2, 4},
+        self.assertEqual(jd._parse_close("1, 3", 4), {1, 3})
+        self.assertEqual(jd._parse_close("2", 4), {2})
+        self.assertEqual(jd._parse_close("Goals 2 and 4 are still outstanding", 4), {2, 4},
                          "digits are extracted even with surrounding prose")
 
     def test_none_completes_all(self):
-        self.assertEqual(jd._parse_sweep("none", 3), set(),
+        self.assertEqual(jd._parse_close("none", 3), set(),
                          "explicit 'none outstanding' -> empty set (complete every candidate)")
 
     def test_garbage_skips(self):
-        self.assertIsNone(jd._parse_sweep("", 3), "empty output -> skip the turn")
-        self.assertIsNone(jd._parse_sweep("i can't help with that", 3),
+        self.assertIsNone(jd._parse_close("", 3), "empty output -> skip the turn")
+        self.assertIsNone(jd._parse_close("i can't help with that", 3),
                           "no numbers and no 'none' -> skip (complete nothing, the safe default)")
 
     def test_out_of_range_dropped(self):
-        self.assertEqual(jd._parse_sweep("1, 9", 3), {1}, "out-of-range index is dropped")
-        self.assertIsNone(jd._parse_sweep("9", 3), "only an out-of-range index -> nothing usable -> skip")
+        self.assertEqual(jd._parse_close("1, 9", 3), {1}, "out-of-range index is dropped")
+        self.assertIsNone(jd._parse_close("9", 3), "only an out-of-range index -> nothing usable -> skip")
 
 
 class SweepApply(unittest.TestCase):
     def test_completes_complement_and_tags_provenance(self):
         s = _store()
         g1, g2, g3 = _mknode(s, "G1"), _mknode(s, "G2"), _mknode(s, "G3")
-        newly = jd.apply_sweep(s, [g1, g2, g3], {2})              # only #2 still outstanding
+        newly = jd.apply_close(s, [g1, g2, g3], {2})              # only #2 still outstanding
         self.assertEqual(set(newly), {g1["id"], g3["id"]}, "the complement (1, 3) is completed")
         self.assertTrue(g1["nodeComplete"] and g3["nodeComplete"])
         self.assertFalse(g2["nodeComplete"], "the outstanding goal stays open")
@@ -822,12 +822,12 @@ class SweepApply(unittest.TestCase):
     def test_none_outstanding_completes_all(self):
         s = _store()
         g1, g2 = _mknode(s, "G1"), _mknode(s, "G2")
-        self.assertEqual(set(jd.apply_sweep(s, [g1, g2], set())), {g1["id"], g2["id"]})
+        self.assertEqual(set(jd.apply_close(s, [g1, g2], set())), {g1["id"], g2["id"]})
 
     def test_already_complete_not_recounted(self):
         s = _store()
         g1 = _mknode(s, "G1", complete=True)
-        self.assertEqual(jd.apply_sweep(s, [g1], set()), [], "an already-complete node isn't re-completed")
+        self.assertEqual(jd.apply_close(s, [g1], set()), [], "an already-complete node isn't re-completed")
 
 
 class SweepMenu(unittest.TestCase):
@@ -878,32 +878,32 @@ class SweepMenu(unittest.TestCase):
 
 class SweepTurn(unittest.TestCase):
     def setUp(self):
-        self._llm = jd.sweep_llm
+        self._llm = jd.closer_llm
         self.s = build_session([uline(T0, "do X", "u1", ps="typed"),
                                 aline(T0 + 20, "did X", "a1", "u1", stop="end_turn")])
         self.turn = self.s["turns"][0]
         self.seg = em.segments(self.turn)[0]
 
     def tearDown(self):
-        jd.sweep_llm = self._llm
+        jd.closer_llm = self._llm
 
     def test_completes_the_touched_top(self):
         store = _store(); g1 = _mknode(store, "Do X")
         store["placements"][self.seg["id"]] = g1["id"]
-        jd.sweep_llm = lambda tt, mt: "none"
-        self.assertEqual(jd._sweep_turn(store, self.turn), [g1["id"]])
+        jd.closer_llm = lambda tt, mt: "none"
+        self.assertEqual(jd._close_turn(store, self.turn), [g1["id"]])
         self.assertTrue(store["nodes"][g1["id"]]["nodeComplete"])
 
     def test_llm_failure_completes_nothing(self):
         store = _store(); g1 = _mknode(store, "Do X")
         store["placements"][self.seg["id"]] = g1["id"]
-        jd.sweep_llm = lambda tt, mt: ""                          # -> _parse_sweep None -> retry, complete nothing
-        self.assertIsNone(jd._sweep_turn(store, self.turn))
+        jd.closer_llm = lambda tt, mt: ""                          # -> _parse_close None -> retry, complete nothing
+        self.assertIsNone(jd._close_turn(store, self.turn))
         self.assertFalse(store["nodes"][g1["id"]]["nodeComplete"], "an LLM failure must not complete a goal")
 
     def test_no_touched_goal_is_a_noop_without_calling_the_llm(self):
-        jd.sweep_llm = lambda tt, mt: (_ for _ in ()).throw(AssertionError("LLM must not run on an empty menu"))
-        self.assertEqual(jd._sweep_turn(_store(), self.turn), [], "a turn that placed nothing -> no-op")
+        jd.closer_llm = lambda tt, mt: (_ for _ in ()).throw(AssertionError("LLM must not run on an empty menu"))
+        self.assertEqual(jd._close_turn(_store(), self.turn), [], "a turn that placed nothing -> no-op")
 
 
 class SweepSession(unittest.TestCase):
@@ -912,7 +912,7 @@ class SweepSession(unittest.TestCase):
     settled gate and per-turn idempotency compose unchanged."""
 
     def setUp(self):
-        self._saved = (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.plan_llm, jd.sweep_llm)
+        self._saved = (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.plan_llm, jd.closer_llm)
         self._td = tempfile.TemporaryDirectory()
         td = Path(self._td.name)
         cdir = td / "launchdir"; cdir.mkdir()
@@ -932,7 +932,7 @@ class SweepSession(unittest.TestCase):
         self.now = T0 + 5000
 
     def tearDown(self):
-        (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.plan_llm, jd.sweep_llm) = self._saved
+        (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.plan_llm, jd.closer_llm) = self._saved
         self._td.cleanup()
 
     def test_completes_silently_finished_top_and_settled_still_gates(self):
@@ -942,8 +942,8 @@ class SweepSession(unittest.TestCase):
         self.assertEqual(len(tops), 2)
         self.assertTrue(all(not nd["nodeComplete"] for nd in tops), "positive-only DONE'd nothing")
         self.assertTrue(all(store["status"][nd["id"]] == "working" for nd in tops), "both working before the sweep")
-        jd.sweep_llm = lambda tt, mt: "none"                     # nothing outstanding -> complete each touched top
-        n = jd.run_sweep(now=self.now)
+        jd.closer_llm = lambda tt, mt: "none"                     # nothing outstanding -> complete each touched top
+        n = jd.run_close(now=self.now)
         store = jd.load_goals(SID)
         g1, g2 = tops[0]["id"], tops[1]["id"]
         self.assertTrue(store["nodes"][g1]["nodeComplete"] and store["nodes"][g2]["nodeComplete"],
@@ -958,18 +958,45 @@ class SweepSession(unittest.TestCase):
         g0 = _mknode(seed, "Dormant goal from another topic", t=T0 - 1000)
         jd.save_goals(SID, seed)
         jd.run_plan(now=self.now)
-        jd.sweep_llm = lambda tt, mt: "none"
-        jd.run_sweep(now=self.now)
+        jd.closer_llm = lambda tt, mt: "none"
+        jd.run_close(now=self.now)
         store = jd.load_goals(SID)
         self.assertFalse(store["nodes"][g0["id"]]["nodeComplete"],
                          "a goal no turn touched is never completed by the sweep (the false-positive guard)")
-        jd.sweep_llm = lambda tt, mt: (_ for _ in ()).throw(AssertionError("an idempotent pass must not call the LLM"))
-        self.assertEqual(jd.run_sweep(now=self.now), 0, "every turn already swept -> re-running completes nothing")
+        jd.closer_llm = lambda tt, mt: (_ for _ in ()).throw(AssertionError("an idempotent pass must not call the LLM"))
+        self.assertEqual(jd.run_close(now=self.now), 0, "every turn already swept -> re-running completes nothing")
+
+
+class CloserKeyMigration(unittest.TestCase):
+    """The closer's per-session 'already processed' set survives the sweep->close rename: it reads the
+    new `closedTurns` key but falls back to the pre-rename `sweptTurns` so live stores don't re-run."""
+
+    def test_reads_pre_rename_sweptturns(self):
+        self.assertEqual(jd._closed_turns({"closedTurns": ["t2"]}), {"t2"})
+        self.assertEqual(jd._closed_turns({"sweptTurns": ["t1"]}), {"t1"},
+                         "the pre-rename sweptTurns key is still honored")
+        self.assertEqual(jd._closed_turns({"closedTurns": ["t2"], "sweptTurns": ["t1"]}), {"t2"},
+                         "the new key wins when both are present")
+        self.assertEqual(jd._closed_turns({}), set())
+
+
+class JudgeSystemPrompt(unittest.TestCase):
+    """Every judge call REPLACES Claude Code's own system prompt (and drops its dynamic env/git/CLAUDE.md
+    blocks) so the model sees only the judge's prompt — not appends onto the CC base prompt."""
+
+    def test_replaces_not_appends_cc_prompt(self):
+        cmd = jd._judge_cmd("some-model", "SYSTEM_PROMPT_BODY")
+        self.assertIn("--system-prompt", cmd, "the judge REPLACES Claude Code's prompt")
+        self.assertNotIn("--append-system-prompt", cmd, "no longer appended onto the CC base prompt")
+        self.assertIn("--exclude-dynamic-system-prompt-sections", cmd,
+                      "env / git / today's date / CLAUDE.md blocks are dropped")
+        self.assertEqual(cmd[cmd.index("--system-prompt") + 1], "SYSTEM_PROMPT_BODY",
+                         "the judge's prompt follows the --system-prompt flag")
 
 
 class ModelTiers(unittest.TestCase):
     """The Haiku cost lever (judge.md §Two run tiers): captioner + archiver run on the cheap INDEX
-    model (Haiku); planner + courier + negative-sweep on the TRIAGE model (Sonnet)."""
+    model (Haiku); planner + courier + closer on the TRIAGE model (Sonnet)."""
 
     def test_index_vs_triage_split(self):
         self.assertIn("haiku", jd.INDEX_MODEL, "index tier is Haiku")
@@ -979,7 +1006,7 @@ class ModelTiers(unittest.TestCase):
         jd._judge_run = lambda model, sysp, user, effort=None: (calls.append((model, sysp)) or "")
         try:
             jd.caption_llm("x"); jd.archive_llm("x"); jd.plan_llm("x", "y")
-            jd.courier_llm("x", "y"); jd.sweep_llm("x", "y")
+            jd.courier_llm("x", "y"); jd.closer_llm("x", "y")
         finally:
             jd._judge_run = saved
         by_sys = {sysp: m for (m, sysp) in calls}
@@ -987,7 +1014,7 @@ class ModelTiers(unittest.TestCase):
         self.assertEqual(by_sys[jd.ARCHIVE_SYS], jd.INDEX_MODEL, "archiver → index (Haiku)")
         self.assertEqual(by_sys[jd.PLAN_SYS], jd.TRIAGE_MODEL, "planner → triage (Sonnet)")
         self.assertEqual(by_sys[jd.COURIER_SYS], jd.TRIAGE_MODEL, "courier → triage (Sonnet)")
-        self.assertEqual(by_sys[jd.SWEEP_SYS], jd.TRIAGE_MODEL, "negative sweep → triage (Sonnet)")
+        self.assertEqual(by_sys[jd.CLOSER_SYS], jd.TRIAGE_MODEL, "closer → triage (Sonnet)")
 
     def test_plan_llm_model_and_effort_override(self):
         """plan_llm takes model + effort overrides (for the classification A/B); default is triage, no effort."""

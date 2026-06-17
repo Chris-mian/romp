@@ -44,23 +44,24 @@ MESSAGES = STATE / "timeline" / "messages.jsonl"
 # Two model tiers (the Haiku cost lever, judge.md §Two run tiers; shipped 2026-06-15): cheap always-on
 # INDEXING on Haiku, judgment-heavy TRIAGE on Sonnet.
 INDEX_MODEL  = "claude-haiku-4-5-20251001"   # captioner + archiver (index tier — high volume, low stakes)
-TRIAGE_MODEL = "claude-sonnet-4-6"           # planner + courier + negative-sweep (triage tier — judgment)
+TRIAGE_MODEL = "claude-sonnet-4-6"           # planner + courier + closer (triage tier — judgment)
 WINDOW      = 48 * 3600                  # only caption transcripts touched in the last N hours (matches the parse horizon)
 BUDGET      = 60                         # max captions written per pass
 FAIRNESS    = 10                         # max captions per session per pass (so one busy session can't starve the rest)
 ARCH_BUDGET = 30                         # max session archives (re)built per pass
-PLAN_SESSIONS = 40                       # max sessions the planner/sweep advance per pass — raised now
+PLAN_SESSIONS = 40                       # max sessions the planner/closer advance per pass — raised now
                                          # that parsed_session caches the parse (an unchanged session
                                          # costs ~0), so a live session is never starved past the cap
                                          # (the goal-less-ledger bug: a working session sat at index 12)
 PLAN_FAIRNESS = 8                        # max segments planned per session per pass
-SWEEP_FAIRNESS = 8                       # max turn-end completion sweeps per session per pass (backfill spread)
+CLOSE_FAIRNESS = 8                       # max turn-end completion sweeps per session per pass (backfill spread)
 CONCURRENCY = 6                          # concurrent claude -p calls
-# The negative turn-end completion sweep (judge.md HYBRID). SHIPPED as the default 2026-06-15 after
-# the fleet A/B (25→30 completed top-goals, zero false-positives — `romp-judge --ab-sweep` re-measures).
-# Kept toggleable for a cheap revert: set ROMP_NEG_SWEEP=0 to disable. The kernel runs the LIVE sweep
-# (run_sweep) whenever this is on.
-NEG_SWEEP = os.environ.get("ROMP_NEG_SWEEP", "1") != "0"
+# The CLOSER: the turn-end completion backstop (judge.md HYBRID; named the "closer" 2026-06-16 — it
+# closes out goals whose outcome is delivered). SHIPPED as the default 2026-06-15 after the fleet A/B
+# (25→30 completed top-goals, zero false-positives — `romp-judge --ab-close` re-measures). Kept
+# toggleable for a cheap revert: set ROMP_CLOSER=0 to disable (the old ROMP_NEG_SWEEP still works). The
+# kernel runs the LIVE closer (run_close) whenever this is on.
+CLOSER_ON = os.environ.get("ROMP_CLOSER", os.environ.get("ROMP_NEG_SWEEP", "1")) != "0"
 TEST_UNITS  = 12                         # --test: caption at most this many recent units
 
 # The captioner prompt — decomposed from the old REPLY_SYS's "phrase" part ONLY (no TAG / LINK /
@@ -108,6 +109,20 @@ def _clean_caption(out):
     return out
 
 
+def _judge_cmd(model, sys_prompt, effort=None):
+    """The `claude -p` argv for ONE judge call. Uses --system-prompt (REPLACE the default) plus
+    --exclude-dynamic-system-prompt-sections, so the judge model sees ONLY its own prompt — not Claude
+    Code's base prompt, env block, git status, today's date, or the user's CLAUDE.md. Those are wasted
+    tokens and a behavioral nudge for a zero-tool classifier. Stays on `claude -p`, so subscription
+    billing is unchanged. (was --append-system-prompt; the user, 2026-06-16.)"""
+    cmd = ["perl", "-e", "alarm 45; exec @ARGV", "claude", "-p", "--model", model,
+           "--tools", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
+           "--system-prompt", sys_prompt, "--exclude-dynamic-system-prompt-sections"]
+    if effort:
+        cmd += ["--effort", effort]
+    return cmd
+
+
 def _judge_run(model, sys_prompt, user, effort=None):
     """Run ONE judge model call (claude -p, zero tools, MCP off, portable 45s alarm cap — macOS has no
     `timeout`). Returns raw stdout, '' on any failure. `model` selects the tier (INDEX_MODEL=Haiku,
@@ -117,13 +132,9 @@ def _judge_run(model, sys_prompt, user, effort=None):
     for k in ("TMUX", "TMUX_PANE"):
         env.pop(k, None)
     env["ROMP_SUMMARIZING"] = "1"                     # trips the Stop-hook recursion guard
-    cmd = ["perl", "-e", "alarm 45; exec @ARGV", "claude", "-p", "--model", model,
-           "--tools", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
-           "--append-system-prompt", sys_prompt]
-    if effort:
-        cmd += ["--effort", effort]
     try:
-        p = subprocess.run(cmd, input=user, capture_output=True, text=True, cwd="/tmp", env=env, timeout=50)
+        p = subprocess.run(_judge_cmd(model, sys_prompt, effort), input=user,
+                           capture_output=True, text=True, cwd="/tmp", env=env, timeout=50)
     except Exception:
         return ""
     return p.stdout or ""
@@ -606,7 +617,7 @@ def rollup_status(store, session_closed):
 
     def any_blocked(nid):
         # A completed (sub)tree has no outstanding work, so it can't be blocked: the planner's
-        # top-done verdict (or the sweep) discharges the ask even when a trailing step was left
+        # top-done verdict (or the closer) discharges the ask even when a trailing step was left
         # open+blocked, and that block's answer is now moot. Without this short-circuit one stale
         # leftover block keeps a finished goal stuck on "blocked" (precedence puts blocked above
         # complete). Heals existing stuck stores on the next rollup. (the user, 2026-06-15.)
@@ -615,7 +626,7 @@ def rollup_status(store, session_closed):
         return nodes[nid].get("blocked") or any(any_blocked(c) for c in children.get(nid, []))
 
     def is_complete(nid):
-        # Complete if explicitly nodeComplete (TOP-DOWN — the sweep / a DONE marks the top, the common
+        # Complete if explicitly nodeComplete (TOP-DOWN — the closer / a DONE marks the top, the common
         # driver) OR it has children and they are ALL recursively complete (BOTTOM-UP backstop for when
         # every leaf does get DONE'd). A childless node needs its own nodeComplete.
         kids = children.get(nid, [])
@@ -867,7 +878,7 @@ def run_plan(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, verb
     return placed
 
 
-# ───────────────────────── the negative turn-end sweep (triage tier; HYBRID completion) ─────────────────────────
+# ───────────────────────── the closer (triage tier; HYBRID completion — turn-end backstop) ─────────────────────────
 # Positive per-segment DONE (in PLAN_SYS / apply_goal_edit) left almost everything in `working` —
 # agents rarely narrate "done". The negative backstop: at every turn-end, ask the model which of the
 # OPEN top-goals THIS TURN TOUCHED are still OUTSTANDING and complete the complement. High recall on
@@ -876,8 +887,8 @@ def run_plan(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, verb
 # topic stays open. "Turn ended" is structural (the end-known gate, same as the captioner); the model
 # only does the outstanding-check. settled + blocked compose unchanged in rollup_status; a false
 # negative-complete self-corrects (new work re-opens the goal via the settled gate). Idempotent per
-# turn id (store["sweptTurns"]). Toggleable (NEG_SWEEP) so it can be A/B'd before becoming default.
-SWEEP_SYS = (
+# turn id (store["closedTurns"]). Toggleable (CLOSER_ON) so it can be A/B'd before becoming default.
+CLOSER_SYS = (
     "You are a non-interactive completion auditor in a logging pipeline. The user message contains "
     "<turn> — what an assistant just did in one finished turn of a coding session — and <open-goals>, "
     "a numbered list of that session's open top-level goals that this turn worked on. It is NOT a "
@@ -892,8 +903,8 @@ SWEEP_SYS = (
     "or the single word 'none' if EVERY listed goal's outcome is now fully achieved. No other words.")
 
 
-def _parse_sweep(line, menu_len):
-    """Parse the sweep reply into the set of 1-based indices STILL OUTSTANDING. 'none' → empty set
+def _parse_close(line, menu_len):
+    """Parse the closer reply into the set of 1-based indices STILL OUTSTANDING. 'none' → empty set
     (every candidate is done → complete them all). None on unparseable output (skip the turn — complete
     nothing, the safe default). Out-of-range numbers are dropped."""
     s = (line or "").strip().lower()
@@ -908,17 +919,17 @@ def _parse_sweep(line, menu_len):
     return None                                        # no usable numbers and no 'none' → skip (complete nothing)
 
 
-def sweep_llm(turn_text, menu_text):
+def closer_llm(turn_text, menu_text):
     """One outstanding-goals line from the TRIAGE-tier model (Sonnet) over a turn + the touched
     open-goals menu. '' on failure."""
     user = "<turn>\n%s\n</turn>\n<open-goals>\n%s\n</open-goals>" % (turn_text, menu_text)
-    return _judge_run(TRIAGE_MODEL, SWEEP_SYS, user).strip()[:120]
+    return _judge_run(TRIAGE_MODEL, CLOSER_SYS, user).strip()[:120]
 
 
 def _turn_menu(turn, store):
     """The OPEN top-level goals this turn worked on: the distinct top-ancestors of the nodes its
     segments were placed under (via store placements), oldest-first. The sweep's candidate set — the
-    false-positive guard is that a goal NOT here is never touched by the sweep."""
+    false-positive guard is that a goal NOT here is never touched by the closer."""
     nodes, placements = store["nodes"], store["placements"]
 
     def top(nid):
@@ -941,7 +952,7 @@ def _turn_menu(turn, store):
     return tops
 
 
-def apply_sweep(store, menu, outstanding):
+def apply_close(store, menu, outstanding):
     """Complete the COMPLEMENT: every candidate top-goal NOT named outstanding gets its top node marked
     complete (clearing any soft block). negComplete tags the provenance (for the A/B sample). Returns
     the node ids newly completed by this sweep."""
@@ -956,17 +967,17 @@ def apply_sweep(store, menu, outstanding):
     return newly
 
 
-def _sweep_turn(store, turn, samples=None):
+def _close_turn(store, turn, samples=None):
     """Sweep ONE turn: complete the open top-goals it touched that the model no longer calls
     OUTSTANDING. Returns node ids newly completed, or None if the LLM/parse failed (caller retries).
     When `samples` is given, append a {turn, completed, kept} record for A/B eyeballing."""
     menu = _turn_menu(turn, store)
     if not menu:
         return []
-    out = _parse_sweep(sweep_llm(_unit_text(turn["atoms"]), _menu_text(store, menu)), len(menu))
+    out = _parse_close(closer_llm(_unit_text(turn["atoms"]), _menu_text(store, menu)), len(menu))
     if out is None:
         return None
-    newly = apply_sweep(store, menu, out)
+    newly = apply_close(store, menu, out)
     if samples is not None and newly:
         samples.append({"turn": _unit_text(turn["atoms"])[:160],
                         "completed": [m["text"] for i, m in enumerate(menu, 1) if i not in out],
@@ -976,18 +987,24 @@ def _sweep_turn(store, turn, samples=None):
 
 def _turn_open(turn, turns):
     """A turn whose end is NOT yet known (the in-progress final turn): the last turn, not `ended`, with
-    no idle terminator. Same gate the captioner/planner use — the sweep only runs on ended turns."""
+    no idle terminator. Same gate the captioner/planner use — the closer only runs on ended turns."""
     return (turn is turns[-1] and not turn["ended"]
             and not any(a["type"] == "idle" for a in turn["atoms"]))
 
 
-def _sweep_session(fsid, path, now, cap=SWEEP_FAIRNESS):
-    """Negative turn-end backstop for ONE session: for each end-known, not-yet-swept turn (oldest
-    first, capped per pass), complete the open top-goals it touched that are no longer outstanding.
+def _closed_turns(store):
+    """Turn ids the closer has already processed. Reads `closedTurns`, falling back to the pre-rename
+    `sweptTurns` key so existing stores don't re-run the whole backlog after the rename."""
+    return set(store.get("closedTurns") or store.get("sweptTurns", []))
+
+
+def _close_session(fsid, path, now, cap=CLOSE_FAIRNESS):
+    """Turn-end backstop for ONE session: for each end-known, not-yet-closed turn (oldest first,
+    capped per pass), complete the open top-goals it touched that are no longer outstanding.
     Idempotent per turn id. Returns the node ids newly completed."""
     session = parsed_session(fsid, [path], now)
     store = load_goals(fsid)
-    swept = set(store.get("sweptTurns", []))
+    swept = _closed_turns(store)
     turns = session["turns"]
     newly, did = [], 0
     for turn in turns:
@@ -995,26 +1012,26 @@ def _sweep_session(fsid, path, now, cap=SWEEP_FAIRNESS):
             continue
         if did >= cap:
             break                                      # spread a long backfill across passes
-        res = _sweep_turn(store, turn)
+        res = _close_turn(store, turn)
         if res is None:
             continue                                   # LLM/parse failed → leave unswept, retry next pass
         newly += res
         swept.add(turn["id"]); did += 1
-    store["sweptTurns"] = sorted(swept)
+    store["closedTurns"] = sorted(swept)
     rollup_status(store, _session_closed(session))
     save_goals(fsid, store)
     return newly
 
 
-def run_sweep(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, verbose=False):
-    """One NEGATIVE-SWEEP pass (the turn-end completion backstop), triage tier, run after run_plan.
+def run_close(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, verbose=False):
+    """One CLOSER pass (the turn-end completion backstop), triage tier, run after run_plan.
     Per-session sequential (the tree accretes), sessions concurrent. Returns nodes completed."""
     if now is None:
         now = int(time.time())
     fleet = discover(now)[:sessions_cap]
     n = 0
     with ThreadPoolExecutor(max_workers=concurrency) as ex:
-        futs = {ex.submit(_sweep_session, fsid, str(path), now): fsid
+        futs = {ex.submit(_close_session, fsid, str(path), now): fsid
                 for fsid, path, anchor, name in fleet}
         for fut in as_completed(futs):
             try:
@@ -1022,12 +1039,12 @@ def run_sweep(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, ver
             except Exception:
                 pass
     if verbose:
-        sys.stderr.write("romp-judge: negative sweep completed %d nodes\n" % n)
+        sys.stderr.write("romp-judge: closer completed %d nodes\n" % n)
     return n
 
 
-def _ab_sweep_session(fsid, path, now):
-    """Measure positive-only (a) vs positive+negative-sweep (b) completed-top-goal counts for ONE
+def _ab_close_session(fsid, path, now):
+    """Measure positive-only (a) vs positive+closer (b) completed-top-goal counts for ONE
     session WITHOUT mutating live state (sweeps a deep copy). Sweeps EVERY end-known turn (no cap, so a
     late completion isn't missed), OLDEST-FIRST and sequential — like the live forward sweep, so each
     goal is credited to the earliest turn that finished it (clean sample attribution; a completed top
@@ -1045,15 +1062,15 @@ def _ab_sweep_session(fsid, path, now):
     for turn in turns:
         if _turn_open(turn, turns):
             continue
-        _sweep_turn(work, turn, samples=samples)       # oldest-first → the earliest done-turn gets the credit
+        _close_turn(work, turn, samples=samples)       # oldest-first → the earliest done-turn gets the credit
     rollup_status(work, closed)
     b = completed_tops(work)
     new_texts = [work["nodes"][nid]["text"] for nid in (b - a) if nid in work["nodes"]]
     return (len(a), len(b), new_texts, samples)
 
 
-def _ab_sweep(sessions_cap=PLAN_SESSIONS):
-    """A/B the negative sweep on the live fleet WITHOUT mutating state: print positive-only vs
+def _ab_close(sessions_cap=PLAN_SESSIONS):
+    """A/B the closer on the live fleet WITHOUT mutating state: print positive-only vs
     positive+negative completed-top-goal counts, the goals (b) newly completes, and a sample of the
     turn-end sweeps so the false-completion rate can be eyeballed before flipping the default."""
     now = int(time.time())
@@ -1062,7 +1079,7 @@ def _ab_sweep(sessions_cap=PLAN_SESSIONS):
     all_new, all_samples = [], []
     # Parallel ACROSS sessions (each session sweeps its own turns sequentially for clean attribution).
     with ThreadPoolExecutor(max_workers=min(len(fleet) or 1, 2 * CONCURRENCY)) as ex:
-        futs = {ex.submit(_ab_sweep_session, fsid, str(path), now): (name or fsid[:8])
+        futs = {ex.submit(_ab_close_session, fsid, str(path), now): (name or fsid[:8])
                 for fsid, path, anchor, name in fleet}
         for fut in as_completed(futs):
             label = futs[fut]
@@ -1075,8 +1092,8 @@ def _ab_sweep(sessions_cap=PLAN_SESSIONS):
             if new_texts:
                 all_new.append((label, new_texts))
             all_samples += [(label, s) for s in samples]
-    print("\n=== A/B: planner completion — positive-only vs positive+negative-sweep ===")
-    print("sessions: %d   completed top-goals  (a) positive-only: %d   (b) +negative-sweep: %d   delta: +%d\n"
+    print("\n=== A/B: planner completion — positive-only vs positive+closer ===")
+    print("sessions: %d   completed top-goals  (a) positive-only: %d   (b) +closer: %d   delta: +%d\n"
           % (len(fleet), tot_a, tot_b, tot_b - tot_a))
     print("--- goals (b) completes that (a) left open ---")
     for label, texts in all_new:
@@ -1379,11 +1396,11 @@ def main():
     elif args and args[0] == "--plan":
         n = run_plan(verbose=True)
         sys.stderr.write("romp-judge: planner placed %d segments\n" % n)
-    elif args and args[0] == "--sweep":
-        n = run_sweep(verbose=True)
-        sys.stderr.write("romp-judge: negative sweep completed %d nodes\n" % n)
-    elif args and args[0] == "--ab-sweep":
-        _ab_sweep()
+    elif args and args[0] in ("--close", "--sweep"):     # --sweep: pre-rename alias
+        n = run_close(verbose=True)
+        sys.stderr.write("romp-judge: closer completed %d nodes\n" % n)
+    elif args and args[0] in ("--ab-close", "--ab-sweep"):   # --ab-sweep: pre-rename alias
+        _ab_close()
     elif args and args[0] == "--ab-classify":
         _ab_classify()
     elif len(args) >= 2 and args[0] == "--test":
@@ -1393,7 +1410,7 @@ def main():
     elif args and args[0] == "--goals":
         _dump_goals()
     else:
-        sys.stderr.write("usage: romp-judge [--once | --plan | --sweep | --ab-sweep | --ab-classify | --test <transcript> | --archives | --goals]\n")
+        sys.stderr.write("usage: romp-judge [--once | --plan | --close | --ab-close | --ab-classify | --test <transcript> | --archives | --goals]\n")
         sys.exit(2)
 
 

@@ -2030,7 +2030,7 @@ def _producer():
             # INDEX tier (captioner + archiver) is ALWAYS-ON for any active session — keeps the
             # TOC/search index current even with no browser. It's already cheap when idle (jd.PCACHE
             # makes unit-selection a no-parse no-op) AND must keep running to retry a failed capture, so
-            # it stays ungated. TRIAGE tier (planner/sweep/courier) parses UNCACHED and only matters
+            # it stays ungated. TRIAGE tier (planner/closer/courier) parses UNCACHED and only matters
             # while a browser's looking, so it's gated on a real change (new turn / postal msg / a
             # browser just connected) — no re-parse+re-run on a blind 20s tick.
             if _tmux_sessions():
@@ -2039,8 +2039,8 @@ def _producer():
             if browser and sig != _last_producer_sig[0]:
                 _last_producer_sig[0] = sig
                 jd.run_plan()
-                if jd.NEG_SWEEP:                       # HYBRID completion: the negative turn-end backstop
-                    jd.run_sweep()                     # (toggleable for A/B — see judge.md; --ab-sweep to measure)
+                if jd.CLOSER_ON:                       # HYBRID completion: the turn-end closer backstop
+                    jd.run_close()                     # (toggleable for A/B — see judge.md; --ab-close to measure)
                 jd.run_courier()
         except Exception:
             sys.stderr.write("producer: %s\n" % traceback.format_exc())
