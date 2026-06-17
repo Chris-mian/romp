@@ -85,5 +85,49 @@ class JudgeUsageRollup(unittest.TestCase):
         self.assertEqual(r["byJudge"]["closer"]["out"], 2)
 
 
+class MonitorJudgeUsage(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.mon = SourceFileLoader("romp_judge_monitor", os.path.join(BIN, "romp-judge-monitor")).load_module()
+
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory()
+        self.state = pathlib.Path(self.td.name)
+
+    def tearDown(self):
+        self.td.cleanup()
+
+    def test_rollup_windows_and_buckets(self):
+        (self.state / "judge-usage.jsonl").write_text("\n".join(json.dumps(r) for r in [
+            {"t": NOW - 100, "judge": "captioner", "tier": "index", "in": 10, "out": 5, "cost": 0.01, "ms": 800},
+            {"t": NOW - 50, "judge": "planner", "tier": "triage", "in": 100, "out": 40, "cost": 0.3, "ms": 2500},
+            {"t": NOW - 999999, "judge": "planner", "tier": "triage", "in": 9, "out": 9, "cost": 9.9, "ms": 1},
+        ]) + "\n")
+        u = self.mon.judge_usage(self.state, NOW)
+        self.assertEqual(u["total"]["calls"], 2, "the >24h row is windowed out")
+        self.assertAlmostEqual(u["total"]["cost"], 0.31)
+        self.assertEqual(u["by_tier"]["triage"]["in"], 100)
+        self.assertEqual(u["by_judge"]["captioner"]["calls"], 1)
+
+    def test_render_shows_pipeline_section_sorted_by_cost(self):
+        model = {"t": NOW, "verdict": "ok",
+                 "kernel": {"alive": True, "uptime_s": 100, "sha": "abc", "pid": 1},
+                 "exceptions": {"producer_crashes": 0, "kernel_crashes": 0, "kernel_restarts": 0, "last_crash": None},
+                 "judge_errors": {"count_1h": 0, "count_15m": 0, "last": None},
+                 "backlog": {"total_pending": 0, "oldest_pending_age_s": None, "last_caption_age_s": None, "active_sessions": 0},
+                 "sessions": [],
+                 "usage": {"total": {"calls": 5, "in": 1000, "out": 500, "cost": 0.5, "ms": 4000},
+                           "by_tier": {"index": {"calls": 3, "in": 300, "out": 100, "cost": 0.1, "ms": 1000},
+                                       "triage": {"calls": 2, "in": 700, "out": 400, "cost": 0.4, "ms": 3000}},
+                           "by_judge": {"planner": {"calls": 2, "in": 700, "out": 400, "cost": 0.4, "ms": 3000},
+                                        "captioner": {"calls": 3, "in": 300, "out": 100, "cost": 0.1, "ms": 1000}},
+                           "window_s": 86400}}
+        self.mon._USE_COLOR = False
+        txt = self.mon.render(model)
+        self.assertIn("pipeline cost", txt)
+        self.assertIn("$0.50", txt)
+        self.assertLess(txt.index("planner"), txt.index("captioner"), "judges sorted by cost (planner first)")
+
+
 if __name__ == "__main__":
     unittest.main()

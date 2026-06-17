@@ -180,6 +180,38 @@ def judge_call_errors(state, now, window_long=3600, window_recent=900):
     return {"count_1h": long_n, "count_15m": recent_n, "last": last}
 
 
+USAGE_WINDOW_SECS = 24 * 3600
+
+
+def judge_usage(state, now, window=USAGE_WINDOW_SECS):
+    """Token/cost rollup from judge-usage.jsonl (one line per judge call) over the last `window` seconds:
+    a grand total + per-judge + per-tier {calls,in,out,cost,ms}. This is the PIPELINE half of the
+    sessions-vs-pipeline split the timeline footer shows. Empty/zeros when the log is absent."""
+    def blank():
+        return {"calls": 0, "in": 0, "out": 0, "cost": 0.0, "ms": 0}
+    total, by_judge, by_tier = blank(), {}, {}
+    try:
+        lines = (state / "judge-usage.jsonl").read_text().splitlines()
+    except OSError:
+        return {"total": total, "by_judge": by_judge, "by_tier": by_tier, "window_s": window}
+    for line in lines:
+        try:
+            o = json.loads(line)
+        except Exception:
+            continue
+        t = o.get("t")
+        if not isinstance(t, (int, float)) or now - t > window:
+            continue
+        for b in (total, by_judge.setdefault(o.get("judge") or "?", blank()),
+                  by_tier.setdefault(o.get("tier") or "?", blank())):
+            b["calls"] += 1
+            b["in"] += int(o.get("in") or 0)
+            b["out"] += int(o.get("out") or 0)
+            b["cost"] += float(o.get("cost") or 0.0)
+            b["ms"] += int(o.get("ms") or 0)
+    return {"total": total, "by_judge": by_judge, "by_tier": by_tier, "window_s": window}
+
+
 # ───────────────────────── health model ─────────────────────────
 
 def build_model(state, now):
@@ -251,7 +283,7 @@ def build_model(state, now):
         "t": now, "verdict": verdict, "kernel": kernel, "exceptions": exc, "judge_errors": je,
         "backlog": {"total_pending": total_pending, "oldest_pending_age_s": oldest_pending_age,
                     "last_caption_age_s": last_caption_age, "active_sessions": len(sessions)},
-        "sessions": sessions,
+        "sessions": sessions, "usage": judge_usage(state, now),
     }
 
 
@@ -277,6 +309,11 @@ def fmt_age(s):
     if s < 3600:
         return "%dm%02ds" % (s // 60, s % 60)
     return "%dh%02dm" % (s // 3600, (s % 3600) // 60)
+
+
+def _fmt_tok(n):
+    n = int(n or 0)
+    return "%.1fM" % (n / 1e6) if n >= 1e6 else ("%dk" % round(n / 1e3) if n >= 1e3 else str(n))
 
 
 def _agecol(s):
@@ -359,6 +396,24 @@ def render(m):
             c("%7d" % s["pending"], _countcol(s["pending"])),
             c("%-10s" % fmt_age(s["last_caption_age_s"]), _agecol(s["last_caption_age_s"])),
             c("%-10s" % fmt_age(s["oldest_pending_age_s"]), _agecol(s["oldest_pending_age_s"]))))
+
+    u = m.get("usage") or {}
+    ut = u.get("total") or {}
+    if ut.get("calls"):
+        out.append("")
+        out.append(c("  pipeline cost (last %s) — the judges' token spend" % fmt_age(u.get("window_s")), "dim"))
+        out.append("    total      %s tok · %s calls · %s" % (
+            c(_fmt_tok(ut["in"] + ut["out"]), "cyan", "bold"), ut["calls"], c("$%.2f" % ut["cost"], "cyan", "bold")))
+        bt = u.get("by_tier") or {}
+        tier_str = "   ".join("%s %s tok / $%.2f" % (k, _fmt_tok(bt[k]["in"] + bt[k]["out"]), bt[k]["cost"])
+                              for k in ("index", "triage") if k in bt)
+        if tier_str:
+            out.append("    by tier    %s" % c(tier_str, "dim"))
+        bj = u.get("by_judge") or {}
+        for k in sorted(bj, key=lambda j: -bj[j]["cost"]):
+            j = bj[k]
+            out.append("    %-10s %s tok · %d calls · %s" % (
+                k, _fmt_tok(j["in"] + j["out"]), j["calls"], c("$%.2f" % j["cost"], "dim")))
 
     out.append("")
     out.append(c("  note: judge-call failures (parse / timeout / exception) are now recorded; a captioner", "dim"))
