@@ -1680,6 +1680,7 @@ def build_feed(now, tmux=None):
                         # the planner's one-sentence rationales — the modal reveals these (why a node
                         # exists / was blocked / was completed). (the user 2026-06-16.)
                         "why": nd.get("why"), "blockWhy": nd.get("blockWhy"), "doneWhy": nd.get("doneWhy"),
+                        "followupPending": nd.get("followupPending"),   # per-node "Followed up" chip in the modal tree (business 2026-06-17)
                         "children": kids, "rows": []})
             for c in kids:
                 flatten(c, out, ancestor_done=done)
@@ -1763,6 +1764,7 @@ def build_feed(now, tmux=None):
 
 # ───────────────────────── view-builder: segments → timeline (parity: timeline = ADAPT) ─────────────────────────
 TL_HORIZON = 48 * 3600                        # how far back stripes/connectors are read (slider max)
+TOKEN_WINDOW_SECS = 24 * 3600                 # token-usage split (footer): BOTH halves over the same last-24h window (matches romp -j)
 MSG_INFLIGHT_MAX = 1800                        # a message older than this isn't "in flight" (30 min)
 
 
@@ -2063,39 +2065,55 @@ def _derive_judging(sid, caps, goals, t0, out):
         pass
 
 
-_session_tok_cache = {}   # path -> (mtime, totals): per-session transcript token sums, recomputed on change
+_session_tok_cache = {}   # path -> (mtime, [(t, in, out, cache_w, cache_r), ...]): per-message token rows
 
 
-def _session_tokens(path):
-    """Sum a session's token usage across its transcript's assistant messages (each carries a `usage`
-    block — input/output/cache tokens). mtime-cached. Returns {in,out,cache_w,cache_r} (zeros on error).
-    This is the SESSIONS half of the usage split; the judge PIPELINE half is _judge_usage."""
+def _msg_epoch(o):
+    """Epoch seconds of a transcript record's ISO `timestamp` ('…Z'), or None if absent/unparseable."""
+    ts = o.get("timestamp")
+    if not isinstance(ts, str):
+        return None
+    try:
+        return datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return None
+
+
+def _session_tokens(path, t0):
+    """Sum a session's token usage over assistant messages timestamped >= t0 — the SESSIONS half of the
+    token split, windowed to match the PIPELINE half (_judge_usage) so the footer compares like-for-like.
+    Each assistant record carries a `usage` block. The per-message rows are mtime-cached (now-independent);
+    the windowed sum is computed per call. Undated rows are counted (defensive). Zeros on error."""
     z = {"in": 0, "out": 0, "cache_w": 0, "cache_r": 0}
     try:
         mt = os.path.getmtime(path)
     except OSError:
         return dict(z)
     hit = _session_tok_cache.get(path)
-    if hit and hit[0] == mt:
-        return hit[1]
+    if not hit or hit[0] != mt:
+        rows = []
+        try:
+            with open(path, errors="replace") as f:
+                for line in f:
+                    try:
+                        o = json.loads(line)
+                    except Exception:
+                        continue
+                    if o.get("type") != "assistant":
+                        continue
+                    u = (o.get("message") or {}).get("usage") or {}
+                    rows.append((_msg_epoch(o),
+                                 int(u.get("input_tokens") or 0), int(u.get("output_tokens") or 0),
+                                 int(u.get("cache_creation_input_tokens") or 0),
+                                 int(u.get("cache_read_input_tokens") or 0)))
+        except OSError:
+            return dict(z)
+        _session_tok_cache[path] = (mt, rows)
+        hit = _session_tok_cache[path]
     acc = dict(z)
-    try:
-        with open(path, errors="replace") as f:
-            for line in f:
-                try:
-                    o = json.loads(line)
-                except Exception:
-                    continue
-                if o.get("type") != "assistant":
-                    continue
-                u = (o.get("message") or {}).get("usage") or {}
-                acc["in"] += int(u.get("input_tokens") or 0)
-                acc["out"] += int(u.get("output_tokens") or 0)
-                acc["cache_w"] += int(u.get("cache_creation_input_tokens") or 0)
-                acc["cache_r"] += int(u.get("cache_read_input_tokens") or 0)
-    except OSError:
-        return dict(z)
-    _session_tok_cache[path] = (mt, acc)
+    for (t, i, o, cw, cr) in hit[1]:
+        if t is None or t >= t0:
+            acc["in"] += i; acc["out"] += o; acc["cache_w"] += cw; acc["cache_r"] += cr
     return acc
 
 
@@ -2245,7 +2263,7 @@ def build_timeline(now, tmux=None):
             "awaiting": _state_intervals(sid, "permission", now),
             "compacting": _state_intervals(sid, "compacting", now),
             "compactions": compactions, "pendingMail": _pending_mail(sid),
-            "tokens": _session_tokens(s["path"]),
+            "tokens": _session_tokens(s["path"], now - TOKEN_WINDOW_SECS),
             "stale": faded, "faded": faded})
     messages = _postal_messages(now, set(id2name), id2name)
     _bind_message_execs(messages, turns)                 # connector exec → the recipient's process-start (real transit)
@@ -2255,7 +2273,8 @@ def build_timeline(now, tmux=None):
     _attach_run_usage(judging, now - TL_HORIZON, set(id2name))   # per-mark ms/in/out for the band tooltips
     return {"type": "timeline", "now": now, "sessions": sessions, "turns": turns,
             "messages": messages, "judging": judging,
-            "tokens": {"sessions": sess_tok, "pipeline": _judge_usage(now - TL_HORIZON)},
+            "tokens": {"sessions": sess_tok, "pipeline": _judge_usage(now - TOKEN_WINDOW_SECS),
+                       "windowS": TOKEN_WINDOW_SECS},
             "activeChat": None, "focus": None, "hover": None, "usage": _usage()}
 
 
