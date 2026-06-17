@@ -722,27 +722,8 @@ class TimelinePanel {
   }
   _stopLiveTick() { if (this._liveRAF != null) { cancelAnimationFrame(this._liveRAF); this._liveRAF = null; } }
 
-  // Restart-button handler (the controls-row ↻): POST the kernel's SAME-ORIGIN /restart (it relays to the
-  // `romp on` manager's /restart-all), then poll /healthz and reload onto the fresh bundle. Browser-only
-  // (fetch/location); guarded so a double-click can't fire twice.
-  _restartKernel(btn) {
-    if (this._restarting) return;
-    this._restarting = true;
-    if (btn) { btn.textContent = '…'; btn.style.color = '#e0b020'; btn.style.cursor = 'default'; }
-    const t0 = (typeof Date !== 'undefined' && Date.now) ? Date.now() : 0;
-    const reload = () => { try { location.reload(); } catch (e) {} };
-    const poll = () => {
-      try {
-        fetch('/healthz', { cache: 'no-store' }).then((r) => { if (r && r.ok) reload(); else again(); }).catch(again);
-      } catch (e) { again(); }
-    };
-    const again = () => {
-      const now = (typeof Date !== 'undefined' && Date.now) ? Date.now() : 0;
-      if (now - t0 < 30000) setTimeout(poll, 600); else reload();
-    };
-    try { fetch('/restart', { method: 'POST' }).catch(() => {}); } catch (e) {}
-    setTimeout(poll, 1500);   // let the old kernel go down first, then poll for the fresh one
-  }
+  // (The restart ↻ handler moved to the feed's top-right gear (the kernel's _GEAR_JS) along with the
+  // button — the user 2026-06-17. It POSTs the same /restart, polls /healthz, and reloads, as before.)
 
   // (The settings gear + its modal moved to the feed's top-right ⛭ — the user 2026-06-16. The timeline
   // no longer hosts settings; chat-view/src/webview/settings.ts still owns the 'romp:settings' contract
