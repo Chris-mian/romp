@@ -1760,6 +1760,26 @@ class FollowUp(unittest.TestCase):
         tops = [nd for nd in jd.load_goals(SID)["nodes"].values() if nd["parentId"] is None]
         self.assertEqual(len(tops), 1, "a stale follow-up id falls back to normal placement (minted a top)")
 
+    def test_optimistic_followup_reopens_immediately_with_pending_flag(self):
+        # the kernel calls this on Enter so the card shows WORKING + a chip before the judge pass runs.
+        gid = SID + ":g1"
+        td = Path(tempfile.mkdtemp()); saved = jd.GOALDIR; jd.GOALDIR = td / "goals"
+        try:
+            jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "status": {gid: "completed"}, "placements": {},
+                                "nodes": {gid: {"id": gid, "text": "Ship it", "parentId": None,
+                                                "nodeComplete": True, "blocked": False, "cleared": False,
+                                                "trail": ["s0"], "t": T0, "mt": T0, "doneWhy": "shipped"}}})
+            self.assertTrue(jd.optimistic_followup(SID, gid), "reopened the card")
+            st = jd.load_goals(SID)
+            self.assertTrue(st["nodes"][gid]["followupPending"], "followupPending set (drives the chip)")
+            self.assertFalse(st["nodes"][gid]["nodeComplete"], "reopened — nodeComplete cleared")
+            self.assertEqual(st["status"][gid], "working", "rollup shows WORKING immediately, not completed")
+            jd._reopen(st, gid)                         # the judge's OFFICIAL reopen supersedes the optimistic one
+            self.assertNotIn("followupPending", st["nodes"][gid], "_reopen drops the optimistic flag")
+            self.assertFalse(jd.optimistic_followup(SID, SID + ":g99"), "unknown goal → no-op (False)")
+        finally:
+            jd.GOALDIR = saved
+
 
 class Distiller(unittest.TestCase):
     """The distiller (the user 2026-06-17): when a TOP completes, summarize the goal's full WORK history —

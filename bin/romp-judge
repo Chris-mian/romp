@@ -821,12 +821,14 @@ def rollup_status(store, session_closed):
 
     focus = top_ancestor(store["lastNode"]) if store.get("lastNode") in nodes else None
     status = {}
-    for nid in children.get(None, []):                # precedence (unchanged): cleared > blocked > complete+settled > working
+    for nid in children.get(None, []):                # precedence: cleared > blocked > followup-pending > complete+settled > working
         settled = (nid != focus) or session_closed
         if nodes[nid].get("cleared"):
             status[nid] = "cleared"
         elif any_blocked(nid):
             status[nid] = "blocked"
+        elif nodes[nid].get("followupPending"):       # optimistic reopen: show WORKING until the judge processes the follow-up
+            status[nid] = "working"
         elif is_complete(nid) and settled:
             status[nid] = "completed"
         else:
@@ -1075,17 +1077,36 @@ def _coerce_place(menu, text):
 def _reopen(store, gid):
     """Reopen a completed/blocked goal so a tagged FOLLOW-UP can accrue more work under it: clear
     nodeComplete + cleared on the node (unsealing its subtree from open_menu) and unblock it and its
-    ancestors. The settled gate re-completes it once the follow-up work is done. This is the ONLY
-    exception to the sealed-completed-subtree rule (the user 2026-06-17)."""
+    ancestors. Clears followupPending — the OFFICIAL reopen supersedes the kernel's optimistic one. The
+    settled gate re-completes it once the follow-up work is done. This is the ONLY exception to the
+    sealed-completed-subtree rule (the user 2026-06-17)."""
     nodes = store["nodes"]
     if gid not in nodes:
         return
     nodes[gid]["nodeComplete"] = False
     nodes[gid]["cleared"] = False
+    nodes[gid].pop("followupPending", None)            # official reopen → drop the optimistic chip flag
     x = gid                                            # unblock the node + its ancestor chain
     while x is not None:
         nodes[x]["blocked"] = False
         x = nodes.get(x, {}).get("parentId")
+
+
+def optimistic_followup(fsid, gid):
+    """OPTIMISTIC reopen for a feed follow-up (the user 2026-06-17): the instant the user submits a
+    follow-up on a card, reopen its goal and flag it followupPending so the board shows it back at WORKING
+    with a 'Followed up' chip IMMEDIATELY — before the next judge pass officially processes the tagged
+    segment (which then re-files the work and clears followupPending via _reopen). The kernel's follow-up
+    handler calls this; the judge confirms it. Returns True if a node was reopened, else False."""
+    gid = str(gid)
+    store = load_goals(fsid)
+    if gid not in store.get("nodes", {}):
+        return False
+    _reopen(store, gid)                                # unseal + unblock (also clears any stale followupPending)
+    store["nodes"][gid]["followupPending"] = True      # → rollup shows working + the feed shows the chip
+    rollup_status(store, False)                        # the user just acted → not idle/closed → working
+    save_goals(fsid, store)
+    return True
 
 
 def _plan_session(fsid, path, now):

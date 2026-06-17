@@ -1719,6 +1719,7 @@ def build_feed(now, tmux=None):
                 "done": 0, "needsYou": 0, "linked": [], "turnId": nid, "turnIds": [nid], "origin": origin,
                 "blockWhy": block_why,               # one-sentence "why blocked" on the card (soft planner block)
                 "doneWhy": done_why,                 # one-sentence "why done" on a completed card (the done page)
+                "followupPending": nodes[nid].get("followupPending"),   # optimistic reopen → "Followed up" chip until the judge catches up
                 "blocked": ({"state": "apiError", "since": (tm.get("since") if tm else None),
                              "status": aerr.get("status"), "category": aerr.get("category"),
                              "text": aerr.get("text"),
@@ -3465,6 +3466,11 @@ class Handler(BaseHTTPRequestHandler):
                     iid = str(msg["itemId"])                     # goal node id → session → inject the follow-up
                     sid = iid.rsplit(":", 1)[0]
                     _tmux_send(_name_of(sid) or sid, _followup_body(iid, msg.get("title"), msg["text"]))
+                    try:                                         # optimistic: reopen the card NOW, before the judge pass
+                        if jd.optimistic_followup(sid, iid):     # → board shows it back at WORKING + a "Followed up" chip
+                            _push_all()
+                    except Exception:
+                        sys.stderr.write("followup reopen: %s\n" % traceback.format_exc())
                 # live AskUserQuestion picker: a webview click → keystrokes into the session's pane (AskDriver)
                 elif msg and msg.get("type") == "answerAsk" and msg.get("id") and msg.get("target") is not None:
                     _ask_thread(_ask_answer, _name_of(msg["id"]) or msg["id"], msg["target"])
