@@ -2282,7 +2282,7 @@ function renderLedger() {
       const row = el("div", "ledger-tnode" + (depth === 0 ? " ledger-top" : "")
         + (n.current ? " current" : "") + (n.done ? " done" : "")
         + (n.blocked && !n.current && !n.done ? " blocked" : "")
-        + ((n.derived || n.cleared) ? " derived" : "") + (n.recent ? " recent" : ""));
+        + (n.derived ? " derived" : "") + (n.cleared ? " cleared" : "") + (n.recent ? " recent" : ""));
       row.style.paddingLeft = (4 + depth * 15) + "px";          // indent by graph depth (a line of descent)
       // disclosure triangle at every level (▶ folded / ▼ open); a blank spacer keeps leaves aligned
       const tri = el("span", "ledger-tri" + (expandable ? " nav" : " empty"));

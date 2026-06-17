@@ -65,10 +65,20 @@ test("the ledger tree is a COLLAPSIBLE checklist — toggle arrows at every leve
   assert.match(CSS, /\.ledger-tri \{/);
 });
 
-test("a cleared node renders as a FADED ✓; top-level goals are separated by a thin rule", () => {
-  // cleared reuses the dimmed-disc treatment (the .derived rule); the kernel flags `cleared`
-  assert.match(RENDER, /\(n\.derived \|\| n\.cleared\) \? " derived" : ""/);
+test("explicit done = strong solid ✓; derived = OUTLINED ✓; cleared = faded — distinct classes (bugs 2026-06-17)", () => {
+  // the per-node derived/cleared flags now map to SEPARATE classes (not a shared `.derived`), so each
+  // gets its own treatment — a strong solid check must never be confusable with a weak/inherited one.
+  assert.match(RENDER, /\(n\.derived \? " derived" : ""\) \+ \(n\.cleared \? " cleared" : ""\)/);
   assert.match(RENDER, /cleared\?: boolean/);
+  // explicit = solid blue ✓ disc (filled). derived = OUTLINED ✓ (transparent fill + blue ring + blue ✓),
+  // clearly weaker. cleared = faded disc, its own treatment.
+  assert.match(CSS, /\.ledger-tnode\.done \.ledger-tmark \{[^}]*background: var\(--check-bg\)/);   // explicit = filled
+  assert.match(CSS, /\.ledger-tnode\.done\.derived \.ledger-tmark \{[^}]*background: transparent;[^}]*border-color: var\(--check-bg\);[^}]*color: var\(--check-bg\)/);  // derived = outlined
+  assert.doesNotMatch(CSS, /\.ledger-tnode\.done\.derived \.ledger-tmark \{[^}]*opacity: 0\.55/);   // no longer opacity-only
+  assert.match(CSS, /\.ledger-tnode\.cleared \.ledger-tmark \{[^}]*opacity: 0\.4/);                  // cleared = its own faded
+});
+
+test("top-level goals are separated by a thin rule", () => {
   // a thin separator above every top-level goal so distinct goals read apart (the user 2026-06-16);
   // the first top goal gets none.
   assert.match(RENDER, /depth === 0 \? " ledger-top" : ""/);
