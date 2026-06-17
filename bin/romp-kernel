@@ -1303,6 +1303,34 @@ def build_session(sid, now, tmux=None):
         _dmemo[nid] = res
         return res
 
+    # mt = node last-modified (the judge writes it on create / amend / done / block); fall back to t for
+    # pre-rename nodes. Recency drives BOTH the order (top goals freshest-first) and the auto-expand down
+    # to the single most-recently-CHANGED node — revealed even inside a done branch that would prune
+    # (the user 2026-06-16). _submax = the freshest mt anywhere in a subtree (memoised).
+    def _mt(cid):
+        cn = gnodes.get(cid) or {}
+        return cn.get("mt", cn.get("t", 0))
+    _smemo = {}
+    def _submax(cid):
+        if cid in _smemo:
+            return _smemo[cid]
+        m = _mt(cid)
+        for c in gkids.get(cid, []):
+            if _gvisible(c):
+                m = max(m, _submax(c))
+        _smemo[cid] = m
+        return m
+    _vis = [nid for nid in gnodes if _gvisible(nid)]
+    # Only single out a freshest node (→ mark + auto-expand) when mt actually tells us which is newest;
+    # without it (pre-rename nodes / all-equal) we can't, so fall back to the plain prune-done behaviour.
+    _has_mt = any("mt" in (gnodes.get(nid) or {}) for nid in _vis)
+    recent = max(_vis, key=_mt) if (_vis and _has_mt) else None
+    onpath = set()                                         # recent + its ancestors: expand past pruning
+    _p = recent
+    while _p:
+        onpath.add(_p)
+        _p = gnodes.get(_p, {}).get("parentId")
+
     def _twalk(nid, depth):
         nd = gnodes.get(nid)
         if not nd or nd.get("cleared") or nid in gcleared or gstatus.get(nid) == "cleared":
@@ -1311,11 +1339,14 @@ def build_session(sid, now, tmux=None):
         derived = (not explicit) and _subtree_done(nid)   # done only because all its children are
         done = explicit or derived
         tree.append({"id": nid, "text": nd["text"], "depth": depth, "done": done, "derived": derived,
-                     "blocked": bool(nd.get("blocked")), "t": nd["t"], "current": nid == focus})
-        if not done:                                   # prune: a done node (incl. derived) hides its subtree
-            for c in sorted(gkids.get(nid, []), key=lambda c: gnodes[c]["t"]):
+                     "blocked": bool(nd.get("blocked")), "t": nd["t"], "current": nid == focus,
+                     "recent": nid == recent})
+        # an OPEN node expands as before; a DONE node expands ONLY along the path to the freshest change,
+        # so that change shows instead of being pruned. Children freshest-first (mirrors the feed).
+        if not done or nid in onpath:
+            for c in sorted(gkids.get(nid, []), key=_submax, reverse=True):
                 _twalk(c, depth + 1)
-    for _rid in sorted(gkids.get(None, []), key=lambda c: gnodes[c]["t"]):
+    for _rid in sorted(gkids.get(None, []), key=_submax, reverse=True):
         _twalk(_rid, 0)
     # bullets kept as a fallback for goal-less sessions (render shows the tree when it's non-empty).
     ledger = {"summary": arch.get("headline", ""), "tree": tree[:40],

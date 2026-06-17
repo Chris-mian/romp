@@ -294,6 +294,30 @@ class ViewBuilder(unittest.TestCase):
         self.assertTrue(nodes["rollup top"]["derived"], "all children done → derived done")
         self.assertFalse(nodes["kid one"]["derived"])
 
+    def test_ledger_tree_orders_by_recency_and_expands_to_freshest(self):
+        # The ledger TOC mirrors the feed (the user 2026-06-16): top goals sort by most-recently-modified
+        # (mt) first, and the freshest goal auto-expands DOWN to its most-recently-CHANGED node — flagged
+        # `recent` and revealed even inside a done branch that would otherwise prune. A done branch NOT on
+        # that path still prunes (the expand is selective).
+        told, tnew, cnew = (SID + ":told", SID + ":tnew", SID + ":cnew")
+        tpr, cpr = (SID + ":tpr", SID + ":cpr")
+        def gn(nid, text, parent, done, mt):
+            return {"id": nid, "text": text, "parentId": parent, "nodeComplete": done,
+                    "blocked": False, "cleared": False, "trail": [], "t": T0, "mt": mt}
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+            "rompUuid": SID, "seq": 5, "lastNode": None,
+            "nodes": {told: gn(told, "older top", None, False, 100),
+                      tnew: gn(tnew, "fresher top", None, True, 200),
+                      cnew: gn(cnew, "freshly done leaf", tnew, True, 300),   # the single freshest node
+                      tpr: gn(tpr, "pruned top", None, True, 50), cpr: gn(cpr, "pruned child", tpr, True, 60)},
+            "placements": {}, "status": {}}))
+        tree = km.build_session(SID, NOW)["ledger"]["tree"]
+        texts = [n["text"] for n in tree]
+        self.assertLess(texts.index("fresher top"), texts.index("older top"), "freshest top goal sorts first")
+        self.assertIn("freshly done leaf", texts, "the freshest node is revealed through a done branch")
+        self.assertEqual(next(n for n in tree if n.get("recent"))["text"], "freshly done leaf")
+        self.assertNotIn("pruned child", texts, "a done branch NOT on the recent path still prunes")
+
     def test_followup_body_quotes_context(self):
         # A feed follow-up quotes the ask it answers ('> <ask>') so the recipient session has context;
         # an explicit group title wins over the node lookup; unknown/none → bare text (the user 2026-06-16).
