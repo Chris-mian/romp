@@ -449,7 +449,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   title.onclick = (ev) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: it.itemId, sid: it.sid, t: it.t, anchor: titleAnchor, anchorUuid: cardAnchorUuid }); };
   // The why-tagline (block/done reason) deep-links like the title — to where the planner NOTED it: the
   // card's anchorUuid (which, for a DONE card, lands where it got checked off) + the "work" assistant-turn
-  // intent. Henry's ask, relayed by the judges session (2026-06-17). (The inline sub-goal checkmarks are
+  // intent. The user's ask, relayed by the judges session (2026-06-17). (The inline sub-goal checkmarks are
   // already clickable via wireNodeZones.)
   const goNoted = (ev: Event) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: it.itemId, sid: it.sid, t: it.t, anchor: "work", anchorUuid: cardAnchorUuid }); };
   blockReason.onclick = goNoted; blockReason.title = "jump to where this was noted";
