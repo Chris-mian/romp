@@ -10,21 +10,20 @@ import * as path from "node:path";
 
 const FEED = fs.readFileSync(path.resolve(process.cwd(), "src", "webview", "feed.ts"), "utf8");
 
-test("a tree-node click navigates to the NODE's own time, not the card's top turn", () => {
-  // the tree-node onclick must send a per-node time (navT), and must NOT fall back to it.t
-  assert.match(FEED, /showOnTimeline".*sid: navSid, t: navT/);
+test("a tree-node work-zone click navigates to the NODE's own resolution time, not the card's top turn", () => {
+  // the mark/time zones send a per-node time (resolveT), and must NOT fall back to it.t
+  assert.match(FEED, /goWork = .*showOnTimeline".*sid: navSid, t: resolveT/);
   assert.doesNotMatch(FEED, /const navT = node\.kind === "handoff" \? node\.t : it\.t/, "the old it.t nav fallback must be gone");
 });
 
-test("a blocked/done node deep-links to where it RESOLVED (node.mt), landing on the assistant action", () => {
-  // the user 2026-06-16: "for blocked and completed things jump to places in the chat that are NOT
-  // the user's message." A resolved (done/blocked) node sends node.mt (the block/done segment); an
-  // open node sends node.t (its own start); the click sends anchor:"work" so the chat lands on the
-  // ASSISTANT turn, never anchor:"prompt" (which would land on the user's message).
+test("a blocked/done node's mark+time deep-link to where it RESOLVED (node.mt), the assistant action", () => {
+  // the user 2026-06-16: "for blocked and completed things jump to places in the chat that are NOT the
+  // user's message." The mark + the time zones send node.mt (the block/done segment) with anchor:"work",
+  // so the chat lands on the ASSISTANT turn. (Only the TEXT zone, goMsg, lands on the user's message.)
   assert.match(FEED, /const resolved = node\.status === "done" \|\| node\.status === "question"/);
-  assert.match(FEED, /const navT = \(resolved && node\.mt\) \? node\.mt : node\.t/);
-  assert.match(FEED, /line\.onclick = .*showOnTimeline".*t: navT, anchor: "work"/, "the tree-line click lands on the assistant action");
-  assert.doesNotMatch(FEED, /line\.onclick = .*showOnTimeline".*anchor: "prompt"/, "a tree-line click must NOT land on the user's message");
+  assert.match(FEED, /const resolveT = \(resolved && node\.mt\) \? node\.mt : node\.t/);
+  assert.match(FEED, /goWork = .*showOnTimeline".*t: resolveT, anchor: "work"/, "the mark/time zones land on the assistant action");
+  assert.doesNotMatch(FEED, /goWork = .*anchor: "prompt"/, "the work zones must NOT land on the user's message");
 });
 
 test("a tree-node hover lights the NODE's own segments via showAskPath(node.id)", () => {
@@ -41,12 +40,12 @@ test("clicking the CARD title locates the originating user message (anchor:promp
   assert.doesNotMatch(FEED, /title\.onclick = .*showAskPath", itemId: it\.itemId/, "the card title no longer just lights the timeline");
 });
 
-test("a tree-line click deep-links BY ID — forwards node.anchorUuid alongside the time fallback", () => {
+test("the work zones deep-link BY ID — forward node.anchorUuid alongside the time fallback", () => {
   // the user 2026-06-17 (via rompinfra, kernel 996ebd7): the chat tries the exact turn uuid first
   // (scrollToAnchor), falling back to t only when the uuid is null/off-path — killing the nearest-time
   // miss where a click landed on an unrelated user message.
   assert.match(FEED, /anchorUuid\?: string \| null/, "AskTreeNode carries the per-node anchor uuid");
-  assert.match(FEED, /line\.onclick = .*showOnTimeline".*anchor: "work", anchorUuid: node\.anchorUuid \?\? null/);
+  assert.match(FEED, /goWork = .*showOnTimeline".*anchor: "work", anchorUuid: node\.anchorUuid \?\? null/);
 });
 
 test("the card title deep-links by id too — anchorUuid from the card's ROOT tree node", () => {

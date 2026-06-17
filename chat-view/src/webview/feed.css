@@ -244,6 +244,12 @@ body { display: flex; flex-direction: column; }
 .ftree-node.ftree-root .ftree-text { font-size: 1.08em; font-weight: 600; }
 .ftree-node.nav, .frow.nav { cursor: pointer; }
 .ftree-node.nav:hover, .frow.nav:hover { background: rgba(255, 255, 255, 0.06); }
+/* the modal tree node splits into the SAME three click/hover zones as the ledger (the user 2026-06-17):
+   text → the message that minted it, mark + meta time → where it got checked off / blocked. .lz-hl is
+   JS-toggled (not :hover) so the mark + the time light TOGETHER when either is hovered. */
+.ftree-node .lz-nav { cursor: pointer; }
+.ftree-text.lz-hl, .ftree-meta.lz-hl { background: rgba(255, 255, 255, 0.12); border-radius: 3px; box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.12); }
+.ftree-mark.lz-hl { box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.16); }
 /* disclosure triangle (▶/▼) before the mark; .empty = blank spacer, keeps alignment.
    .nav = expandable: the triangle is the ONLY toggle (the line itself navigates). */
 .ftree-tri { flex: 0 0 auto; width: 1em; text-align: center; color: var(--dim); font-size: 0.74em; }
@@ -265,8 +271,20 @@ body { display: flex; flex-direction: column; }
    snug against the name (~3px), not floating ~11px away (the user 2026-06-10) */
 .fwork-dot { display: inline-block; flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: #e0b020; vertical-align: middle; margin-right: -3px; }
 .ftree-meta { flex: 0 0 auto; margin-left: 6px; color: var(--dim); font-size: 0.82em; white-space: nowrap; }
+/* the planner's rationale, shown INLINE under a node in the modal tree (the user 2026-06-17) — the same
+   "why" the card surfaces, no longer tooltip-only. Dim italic so it reads as annotation, not a sub-goal. */
+.ftree-why { font-size: 0.82em; line-height: 1.3; opacity: 0.72; font-style: italic; color: var(--dim); margin: 0 0 3px; overflow-wrap: anywhere; }
 .st-done .ftree-mark { color: var(--rel-done); }
-.st-question .ftree-mark, .st-question .ftree-meta { color: #e0b020; }
+/* a BLOCKED (needs-you) node: the "?" is RED inside a RED ring the SAME 13px size as the ✓ checkbox disc,
+   and its label reads "BLOCKED" in red (the user 2026-06-17) — a stronger, unmistakable block signal than
+   the old amber "needs you". The ring mirrors the st-open hollow ring, recoloured red, with the ? visible. */
+.st-question .ftree-mark {
+  width: 13px; height: 13px; min-width: 13px; box-sizing: border-box; align-self: center;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 50%; border: 1.5px solid var(--err); background: transparent;
+  color: var(--err); font-size: 9px; font-weight: 700; line-height: 1;
+}
+.st-question .ftree-meta { color: var(--err); font-weight: 700; }
 /* not-yet-done = a hollow ring the SAME 13px size as the ✓ disc it'll become (the user 2026-06-16) —
    an empty checkbox, not a tiny ○ glyph. The "○" text is hidden; the border IS the circle. */
 .st-open .ftree-mark {

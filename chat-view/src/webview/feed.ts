@@ -74,6 +74,7 @@ interface AskItem {
   // work → the card itself files under BLOCKED (the user's ruling 2026-06-11; apiError 2026-06-16).
   blocked?: { state: string; since: number; what: string; status?: number; category?: string; text?: string };
   blockWhy?: string;                               // planner's one-sentence "why blocked" → shown under a blocked card
+  doneWhy?: string;                                // planner's one-sentence "why done" → shown under a completed card (the done page)
   origin?: { peer: string; peerSid: string; color: { bg: string; fg: string } | null } | null;  // courier handoff: planted by a peer's message → "↪ from <peer>"
   groupTitle?: string;                             // host: this ask shares a typed turn with siblings → the group's title
   groupN?: number;                                 // host: sibling count for that turn (>1 ⇒ fold into one group card)
@@ -142,6 +143,28 @@ function setWorkDot(nameEl: HTMLElement | null, on: boolean) {
   const has = !!prev && prev.classList.contains("fwork-dot");
   if (on && !has) nameEl.parentElement?.insertBefore(el("span", "fwork-dot"), nameEl);
   else if (!on && has) prev!.remove();
+}
+// names of QUIET sessions the triage judges still have ended turns to file → a blue "judging" pill
+// right of the card's age. Pushed in each feed message (parallel to `working`). A working session is
+// never in this set (the kernel gates it), so the pill answers "this done-looking ask — is it filed?".
+let judgingSet = new Set<string>();
+// Ensure a `.fjudging` pill sits immediately AFTER `timeEl` (just right of the "Xm ago" age) iff `on`
+// (idempotent on re-render). Mirrors setWorkDot. Inline-styled — `ui` owns styles.css, so feed-only
+// elements carry their own style here (same pattern as blockReason/doneReason). (the user 2026-06-17.)
+function setJudgingPill(timeEl: HTMLElement | null, on: boolean) {
+  if (!timeEl) return;
+  const next = timeEl.nextElementSibling;
+  const has = !!next && next.classList.contains("fjudging");
+  if (on && !has) {
+    const pill = el("span", "fjudging");
+    pill.textContent = "judging";
+    pill.title = "the judges are still filing this session's ended turns into the goal tree";
+    pill.style.cssText = "margin-left:6px;padding:0 6px;border:1px solid #5aa2ff;border-radius:999px;"
+      + "color:#5aa2ff;font-size:10px;line-height:15px;display:inline-block;vertical-align:middle;letter-spacing:.02em";
+    timeEl.parentElement?.insertBefore(pill, timeEl.nextSibling);
+  } else if (!on && has) {
+    next!.remove();
+  }
 }
 let hostNow = Math.floor(Date.now() / 1000);
 let showDismissed = false;
@@ -301,6 +324,7 @@ function updateCard(card: HTMLElement, it: FeedItem) {
   if (it.color) a._name.style.color = it.color.bg;
   setWorkDot(a._name, workingSet.has(it.name));   // working dot before the session name
   a._time.textContent = relAge(hostNow - it.t);
+  setJudgingPill(a._time, judgingSet.has(it.name));   // blue "judging" pill right of the age
 }
 
 // ---- expand → detail ----
@@ -414,7 +438,11 @@ function makeAskCard(it: AskItem): HTMLElement {
   // card. Inline-styled, no styles.css rule (ui owns that file). Filled/toggled in updateAskCard.
   const blockReason = el("div", "fask-blockwhy");
   blockReason.style.cssText = "display:none;font-size:11px;line-height:1.3;opacity:.75;font-style:italic;margin:1px 0 3px";
-  main.append(row1, blockReason, row2, row3, checklist, delegations);   // no expand button — body click opens the modal
+  // DONE rationale (the planner's one-sentence "why done"), shown under the title on a COMPLETED card —
+  // the mirror of blockReason on the done page (the user 2026-06-17). Same inline style, no styles.css rule.
+  const doneReason = el("div", "fask-donewhy");
+  doneReason.style.cssText = "display:none;font-size:11px;line-height:1.3;opacity:.75;font-style:italic;margin:1px 0 3px";
+  main.append(row1, blockReason, doneReason, row2, row3, checklist, delegations);   // no expand button — body click opens the modal
   card.append(main);
   // Follow-up lives in the modal now (the user 2026-06-10), not on the card.
 
@@ -489,6 +517,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   a._delegations = delegations;
   a._checklist = checklist;
   a._blockwhy = blockReason;
+  a._donewhy = doneReason;
   a._origin = origin;
   return card;
 }
@@ -520,6 +549,7 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
     og.style.display = "none";
   }
   a._time.textContent = relAge(hostNow - it.t);
+  setJudgingPill(a._time, judgingSet.has(it.name));   // blue "judging" pill right of the age
   a._reopened.style.display = it.reopened ? "" : "none";
   a._wait.style.display = it.waiting ? "" : "none";   // ⏳ paused on an external event
   // ⏸ live block badge: the session is stopped mid-turn on a permission prompt /
@@ -535,6 +565,10 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   // card (distinct from the live permission/api badges above — those are live events, this is the verdict).
   a._blockwhy.textContent = it.blockWhy || "";
   a._blockwhy.style.display = it.blockWhy ? "" : "none";
+  // DONE rationale: the planner's one-sentence "why done", shown under the title on a COMPLETED card
+  // (the experiment — mirror of blockWhy on the done page; the user 2026-06-17).
+  a._donewhy.textContent = it.doneWhy || "";
+  a._donewhy.style.display = it.doneWhy ? "" : "none";
   // API error → a red "API error" badge + a Retry button that pastes "retry" into the session to resume
   // the stalled turn (the user 2026-06-16). The card already files under BLOCKED (askColumn → needsInput).
   a._apiBadge.style.display = isApiErr ? "" : "none";
@@ -759,6 +793,7 @@ function updateGroupCard(card: HTMLElement, g: AskGroup) {
   if (g.color) a._name.style.color = g.color.bg;
   setWorkDot(a._name, workingSet.has(g.name));   // working dot before the session name
   a._time.textContent = relAge(hostNow - g.t);
+  setJudgingPill(a._time, judgingSet.has(g.name));   // blue "judging" pill right of the age
   // member lines — rebuilt only when the member set or any member's status changes
   const memSig = g.members.map((m) => m.itemId + ":" + memberStatus(m)).join("|");
   if (a._memSig !== memSig) {
@@ -894,7 +929,9 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
     line.appendChild(who);
   }
   const meta = el("span", "ftree-meta");
-  meta.textContent = node.status === "question" ? "needs you" : "(" + relAge(hostNow - node.last) + ")";
+  // a node needing the user reads as "BLOCKED" (red, all-caps) — the marker + this label are the block
+  // signal, distinct from a recency-tinted age (the user 2026-06-17). Other states show "(Xm ago)".
+  meta.textContent = node.status === "question" ? "BLOCKED" : "(" + relAge(hostNow - node.last) + ")";
   if (node.status !== "question" && node.trgb) meta.style.color = "rgb(" + node.trgb.join(",") + ")";   // Hawaii recency tint
   line.appendChild(meta);
   // Whole-line click NAVIGATES into the chat. PREFERRED: node.anchorUuid (kernel 996ebd7) deep-links to
@@ -907,12 +944,26 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
   // was first minted. An open node sends node.t (its own start). navSid is the node's session
   // (a handoff node lives in the recipient's transcript).
   if (!repeat) {
-    line.classList.add("nav");
     const navId = node.kind === "handoff" ? node.id : it.turnId;
     const navSid = node.whoSid || (node.kind === "handoff" ? node.id.split(":")[0] : it.sid);
-    const resolved = node.status === "done" || node.status === "question";   // done / blocked → jump to where it RESOLVED
-    const navT = (resolved && node.mt) ? node.mt : node.t;
-    line.onclick = (ev) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: navId, sid: navSid, t: navT, anchor: "work", anchorUuid: node.anchorUuid ?? null }); };
+    const resolved = node.status === "done" || node.status === "question";   // done / blocked → has a resolution
+    const resolveT = (resolved && node.mt) ? node.mt : node.t;
+    // THREE zones, matching the ledger (the user 2026-06-17): the TEXT jumps to the MESSAGE that minted this
+    // (anchor "prompt" → the user turn, by start time); the MARK + the META time jump to where it got
+    // CHECKED OFF / blocked (anchor "work" → the assistant turn, by id via anchorUuid when resolved, the mt
+    // segment). Hovering the mark or the time lights BOTH (shared target); the text lights on its own.
+    const goMsg = (ev: Event) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: navId, sid: navSid, t: node.t, anchor: "prompt", anchorUuid: null }); };
+    const goWork = (ev: Event) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: navId, sid: navSid, t: resolveT, anchor: "work", anchorUuid: node.anchorUuid ?? null }); };
+    txt.classList.add("lz-nav"); txt.title = "jump to the message that asked for this"; txt.onclick = goMsg;
+    mark.classList.add("lz-nav"); mark.title = resolved ? "jump to where this got checked off" : "jump to this work"; mark.onclick = goWork;
+    meta.classList.add("lz-nav"); meta.title = mark.title; meta.onclick = goWork;
+    const linkHover = (group: HTMLElement[]) => {
+      const on = () => group.forEach((g) => g.classList.add("lz-hl"));
+      const off = () => group.forEach((g) => g.classList.remove("lz-hl"));
+      group.forEach((g) => { g.addEventListener("mouseenter", on); g.addEventListener("mouseleave", off); });
+    };
+    linkHover([txt]);
+    linkHover([mark, meta]);
   }
   // Hovering a node lights ITS OWN work-bars on the timeline — the union of this node's segment trail
   // and everything under it — via the SAME showAskPath the card uses, just scoped to this node (the
@@ -926,7 +977,17 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
   box.appendChild(line);
   if (repeat) return;                                   // dim repeat: line only, no descent
   seen.add(node.id);
-  // (the in-feed decision sub-card was removed — a blocked node shows its "needs you" marker and
+  // The planner's rationale shown INLINE under the node (the user 2026-06-17), not only as the hover
+  // tooltip above — the same "why" the card surfaces, now in the modal's relevant section. done → why-done,
+  // blocked/question → why-blocked, else the creation why. Indented to sit under the node's text.
+  const whyText = node.status === "done" ? node.doneWhy : node.status === "question" ? node.blockWhy : node.why;
+  if (whyText) {
+    const w = el("div", "ftree-why");
+    w.textContent = (node.status === "done" ? "✓ " : node.status === "question" ? "⏸ " : "") + whyText;
+    w.style.paddingLeft = (depth * TREE_INDENT_EM + 1.6) + "em";   // align under the node text (past the tri + mark)
+    box.appendChild(w);
+  }
+  // (the in-feed decision sub-card was removed — a blocked node shows its red BLOCKED marker and
   // links to the session; answering happens in the session, not in the feed. the user 2026-06-15.)
   // node history (rows) — progressive, only when this node was clicked open.
   // the user's ruling: every report that arrived IS a completed sub-thing — it
@@ -1437,6 +1498,7 @@ window.addEventListener("message", (e: MessageEvent) => {
     items = Array.isArray(m.items) ? m.items : [];
     asks = Array.isArray(m.asks) ? m.asks : [];
     workingSet = new Set(Array.isArray(m.working) ? m.working : []);
+    judgingSet = new Set(Array.isArray(m.judging) ? m.judging : []);
     hostNow = typeof m.now === "number" ? m.now : Math.floor(Date.now() / 1000);
     if (typeof m.dismissedCount === "number") dismissedCount = m.dismissedCount;
     if (typeof m.showDismissed === "boolean") showDismissed = m.showDismissed;
