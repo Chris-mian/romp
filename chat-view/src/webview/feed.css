@@ -254,20 +254,12 @@ body { display: flex; flex-direction: column; }
 /* agent label in the tree = bold colored session link (color set inline) */
 .ftree-who { flex: 0 0 auto; font-size: 0.92em; font-weight: 600; color: var(--dim); cursor: pointer; text-decoration: none; }
 .ftree-who:hover { text-decoration: underline; text-underline-offset: 2px; }
-/* WORKING dots breathe yellow→teal on a 1.5s sine clock, matching the chat's working chip + tab dots
-   (the user 2026-06-16). Same period everywhere → the whole "working" UI pulses to teal together. */
-@keyframes fwork-dot {
-  0%, 100% { background: #e0b020; }   /* yellow */
-  50%      { background: #0d9488; }   /* teal */
-}
-/* working dot before a delegated agent's name (it's live-working on this) */
-.ftree-who-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: #e0b020; vertical-align: middle; margin: 0 4px 1px 1px;
-  animation: fwork-dot 1.5s cubic-bezier(0.37, 0, 0.63, 1) infinite; }
+/* working dot before a delegated agent's name (it's live-working on this); SOLID — dot oscillation was distracting (the user 2026-06-16) */
+.ftree-who-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: #e0b020; vertical-align: middle; margin: 0 4px 1px 1px; }
 /* working dot before any session name on a card / modal title (live-working) */
 /* margin-right is negative to offset the .fask-id flex gap (6px) → the dot sits
    snug against the name (~3px), not floating ~11px away (the user 2026-06-10) */
-.fwork-dot { display: inline-block; flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: #e0b020; vertical-align: middle; margin-right: -3px;
-  animation: fwork-dot 1.5s cubic-bezier(0.37, 0, 0.63, 1) infinite; }
+.fwork-dot { display: inline-block; flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: #e0b020; vertical-align: middle; margin-right: -3px; }
 .ftree-meta { flex: 0 0 auto; margin-left: 6px; color: var(--dim); font-size: 0.82em; white-space: nowrap; }
 .st-done .ftree-mark { color: var(--rel-done); }
 .st-question .ftree-mark, .st-question .ftree-meta { color: #e0b020; }

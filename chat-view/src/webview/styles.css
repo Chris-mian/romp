@@ -97,8 +97,7 @@ body { display: flex; flex-direction: column; }
    border — say the word if 2px dashes aren't long enough.) */
 .tab.tab-awaiting, .tab.tab-blocked { outline: 2px dashed var(--state); outline-offset: -2px; }
 /* WORKING: a small yellow dot left of the name (replaces the old yellow outline). */
-.tab-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--st-working-bg);
-  animation: work-dot 1.5s cubic-bezier(0.37, 0, 0.63, 1) infinite; }
+.tab-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--st-working-bg); }   /* solid — dot oscillation was distracting (the user 2026-06-16) */
 /* compacting → a small 🗜 clamp before the name (this state gets no tab outline, so the icon is the cue) */
 .tab-compacting-icon { flex: 0 0 auto; font-size: 0.9em; line-height: 1; margin-right: 3px; }
 /* CLOSED (dead session kept as a read-only tab): strike the title + dim, so a tab that's still
@@ -298,7 +297,7 @@ body { display: flex; flex-direction: column; }
 .chip-working { background: var(--st-working-bg); color: var(--st-working-fg); }
 .chip-subagent { background: var(--st-subagent-bg); color: var(--st-subagent-fg); }
 /* subagent: the name-dot turns orange (quiet but working); the bottom card explains what it's delegated. */
-.tab.tab-subagent .tab-dot { background: var(--st-subagent-bg); animation: none; }   /* subagent = static orange, no yellow→teal breathe */
+.tab.tab-subagent .tab-dot { background: var(--st-subagent-bg); }
 .turn-subagent { padding: 5px 0 9px; }
 .subagent-head { font-size: 0.8em; color: var(--st-subagent-bg); letter-spacing: 0.02em; font-weight: 600; }
 /* blocked = API error: red chip; the TAB itself goes dashed-red (above), no dot — it isn't working. */
@@ -324,8 +323,8 @@ body { display: flex; flex-direction: column; }
 .status-timer { color: var(--dim); font-variant-numeric: tabular-nums; font-size: 0.92em; }
 /* WORKING chip: the letters are ONE solid color that breathes between two tones on a sine ease (no
    moving rainbow). Both tones contrast the yellow pill (--st-working-bg). cubic-bezier(0.37,0,0.63,1)
-   = ease-in-out-sine. 1.5s period — 2× the old 3s (the user 2026-06-16); SAME period as the working
-   dots (work-dot) so the whole "working" UI pulses to teal together (one shared clock at page load). */
+   = ease-in-out-sine. 1.5s period — 2× the old 3s (the user 2026-06-16). The working DOTS stay SOLID
+   (their oscillation was distracting — the user 2026-06-16). */
 .chip-pulse {
   color: #1a1a1a;
   animation: chip-pulse 1.5s cubic-bezier(0.37, 0, 0.63, 1) infinite;
@@ -333,11 +332,6 @@ body { display: flex; flex-direction: column; }
 @keyframes chip-pulse {
   0%, 100% { color: #1a1a1a; }   /* near-black */
   50%      { color: #0d9488; }   /* teal */
-}
-/* WORKING dots breathe yellow→teal on the SAME 1.5s sine clock as the chip (the user 2026-06-16). */
-@keyframes work-dot {
-  0%, 100% { background: var(--st-working-bg); }   /* yellow */
-  50%      { background: #0d9488; }                /* teal */
 }
 .spinner-meta {
   margin-left: auto; /* right-justified: model + effort (the context % is the bar) */
