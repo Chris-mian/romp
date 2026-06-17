@@ -250,44 +250,76 @@ def fmt_age(s):
     return "%dh%02dm" % (s // 3600, (s % 3600) // 60)
 
 
+def _agecol(s):
+    """Colour an age by staleness: fresh green, getting old yellow, stale red, unknown dim."""
+    if s is None:
+        return "dim"
+    return "green" if s < 60 else ("yellow" if s < 300 else "red")
+
+
+def _countcol(n):
+    """Colour a backlog count: 0 green, a few yellow, a pile red."""
+    return "green" if n == 0 else ("yellow" if n < 5 else "red")
+
+
+def _name_in_identity_color(cell, hexstr):
+    """Render a (pre-padded) session-name cell in its romp identity colour — the SAME #hex the tmux tab
+    and dashboard use — via an ANSI truecolour escape, so the monitor's rows match the rest of romp at a
+    glance. Pad BEFORE colouring so the zero-width escapes don't break column alignment. Plain fallback
+    when colour is off or the hex is missing/malformed."""
+    if not _USE_COLOR or not (hexstr or "").startswith("#") or len(hexstr) != 7:
+        return cell
+    try:
+        r, g, b = (int(hexstr[i:i + 2], 16) for i in (1, 3, 5))
+    except ValueError:
+        return cell
+    return "\x1b[1;38;2;%d;%d;%dm%s%s" % (r, g, b, cell, C["reset"])
+
+
 def render(m):
     out = []
     v = m["verdict"]
+    vcol = {"ok": "green", "warn": "yellow", "down": "red"}[v]
     badge = {"ok": c(" OK ", "green", "bold"), "warn": c(" WARN ", "yellow", "bold"),
              "down": c(" DOWN ", "red", "bold")}[v]
-    out.append("%s  romp judges %s" % (c("●", {"ok": "green", "warn": "yellow", "down": "red"}[v]), badge))
+    out.append("%s  romp judges %s" % (c("●", vcol), badge))
 
     k = m["kernel"]
     if k.get("alive"):
-        out.append("  kernel     %s up %s  sha=%s pid=%s" % (
-            c("●", "green"), fmt_age(k.get("uptime_s")), k.get("sha") or "?", k.get("pid")))
+        out.append("  kernel     %s up %s  %s pid=%s" % (
+            c("●", "green"), c(fmt_age(k.get("uptime_s")), "green"),
+            c("sha=" + (k.get("sha") or "?"), "dim"), k.get("pid")))
     else:
-        out.append("  kernel     %s unreachable — is the manager up? (`romp --version` / `romp status`)"
-                   % c("●", "red"))
+        out.append("  kernel     %s %s — is the manager up? (`romp --version` / `romp --status`)"
+                   % (c("●", "red"), c("unreachable", "red", "bold")))
 
     e = m["exceptions"]
     pc, kc = e["producer_crashes"], e["kernel_crashes"]
-    estr = "producer-crashes:%s  kernel-crashes:%s  (restarts:%s)" % (pc, kc, e["kernel_restarts"])
+    estr = "producer-crashes:%s  kernel-crashes:%s  %s" % (
+        c(str(pc), _countcol(pc)), c(str(kc), _countcol(kc)),
+        c("(restarts:%s)" % e["kernel_restarts"], "dim"))
     out.append("  exceptions %s %s" % (c("●", "green" if pc == 0 and kc == 0 else "red"), estr))
     if e["last_crash"]:
         out.append("             %s" % c("last crash: " + e["last_crash"][:96], "red", "dim"))
 
     b = m["backlog"]
-    keeping = "pending:%d across %d session(s) · oldest %s · last caption %s ago" % (
-        b["total_pending"], b["active_sessions"], fmt_age(b["oldest_pending_age_s"]),
-        fmt_age(b["last_caption_age_s"]))
-    kcol = "green" if b["total_pending"] == 0 else ("yellow" if v != "down" else "red")
-    out.append("  keeping up %s %s" % (c("●", kcol), keeping))
+    keeping = "pending:%s across %d session(s) · oldest %s · last caption %s ago" % (
+        c(str(b["total_pending"]), _countcol(b["total_pending"])), b["active_sessions"],
+        c(fmt_age(b["oldest_pending_age_s"]), _agecol(b["oldest_pending_age_s"])),
+        c(fmt_age(b["last_caption_age_s"]), _agecol(b["last_caption_age_s"])))
+    out.append("  keeping up %s %s" % (c("●", "green" if b["total_pending"] == 0 else vcol), keeping))
 
     out.append("")
-    out.append(c("  %-22s %7s  %-10s  %-10s" % ("SESSION", "PENDING", "LAST-CAP", "OLDEST"), "dim"))
+    out.append(c("    %-20s %7s  %-10s  %-10s" % ("SESSION", "PENDING", "LAST-CAP", "OLDEST"), "dim"))
     if not m["sessions"]:
-        out.append(c("  (no active sessions)", "dim"))
+        out.append(c("    (no active sessions)", "dim"))
     for s in m["sessions"]:
-        dotcol = "green" if s["pending"] == 0 else "yellow"
-        out.append("  %s %-20s %7d  %-10s  %-10s" % (
-            c("●", dotcol), s["name"][:20], s["pending"],
-            fmt_age(s["last_caption_age_s"]), fmt_age(s["oldest_pending_age_s"])))
+        out.append("  %s %s %s  %s  %s" % (
+            c("●", _countcol(s["pending"])),
+            _name_in_identity_color("%-20s" % s["name"][:20], s.get("color")),
+            c("%7d" % s["pending"], _countcol(s["pending"])),
+            c("%-10s" % fmt_age(s["last_caption_age_s"]), _agecol(s["last_caption_age_s"])),
+            c("%-10s" % fmt_age(s["oldest_pending_age_s"]), _agecol(s["oldest_pending_age_s"]))))
 
     out.append("")
     out.append(c("  note: individual judge-CALL failures are swallowed upstream and not yet recorded —", "dim"))

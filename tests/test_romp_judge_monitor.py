@@ -87,6 +87,25 @@ class JudgeMonitor(unittest.TestCase):
         m = mon.build_model(self.state, NOW)
         self.assertEqual(m["verdict"], "down")
 
+    def test_render_colors_backlog_and_identity_names(self):
+        # Informative colour: a big backlog (>=5 pending) goes red, and each session name renders in its
+        # romp identity #hex via an ANSI truecolour escape.
+        mon._USE_COLOR = True
+        try:
+            self._cache([NOW - 600, NOW - 500, NOW - 400, NOW - 300, NOW - 200, NOW - 100])  # 6 pending
+            self._captions([])
+            out = mon.render(mon.build_model(self.state, NOW))
+            self.assertIn("\x1b[31m", out)                # red — a pile of pending (>=5)
+            self.assertIn("\x1b[1;38;2;30;161;235m", out)  # identity-colour name (#1EA1EB → 30;161;235)
+        finally:
+            mon._USE_COLOR = False
+
+    def test_render_plain_when_color_off(self):
+        mon._USE_COLOR = False
+        self._cache([NOW - 100]); self._captions([])
+        out = mon.render(mon.build_model(self.state, NOW))
+        self.assertNotIn("\x1b[", out)                    # no ANSI escapes at all
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
