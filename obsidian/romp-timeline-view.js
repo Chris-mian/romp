@@ -66,6 +66,7 @@ function el(t, a) { const n = document.createElementNS(SVGNS, t); for (const k i
 function esc(s) { return (s || '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c])); }
 function clock(t) { const d = new Date(t * 1000); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); }
 function fmtWin(s) { return s < 3600 ? Math.round(s / 60) + 'm' : (s / 3600 < 10 ? (s / 3600).toFixed(1) : Math.round(s / 3600)) + 'h'; }
+function fmtTokens(n) { n = Math.round(n || 0); return n >= 1e6 ? (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + 'M' : n >= 1e3 ? Math.round(n / 1e3) + 'k' : String(n); }
 // Pure (exported for tests): a long idle gap's SPAN as a concise day/week/month label ("2 days", "1 week",
 // "3 weeks", "2 months") so a multi-day broken-axis break isn't ambiguous between its two HH:MM boundary
 // clocks ("23:40 → 08:50" could be 9h or 2 days). Day-scale only — callers gate on span ≥ 1 day (the user
@@ -338,6 +339,20 @@ class TimelinePanel {
     };
     mkUsageBar('fiveHour', 'session', 5 * 3600);
     mkUsageBar('sevenDay', 'week', 7 * 86400);
+
+    // Token-usage split (the user 2026-06-17): the coding SESSIONS vs the judge PIPELINE, from
+    // data.tokens. Compact, right of the rate-limit bars. Hidden until data.tokens arrives.
+    this._tokensWrap = this.controls.createDiv();
+    this._tokensWrap.setAttribute('style', 'display:none;align-items:center;gap:6px;');
+    this._tokensWrap.createSpan({ text: 'tokens' }).setAttribute('style', 'opacity:0.85;');
+    const tcol = this._tokensWrap.createDiv(); tcol.setAttribute('style', 'display:flex;flex-direction:column;gap:3px;');
+    const tRow = (lbl, color) => {
+      const row = tcol.createDiv(); row.setAttribute('style', 'display:inline-flex;align-items:center;gap:6px;');
+      row.createSpan({ text: lbl }).setAttribute('style', 'min-width:46px;color:' + color + ';opacity:0.9;');
+      const val = row.createSpan({ text: '–' }); val.setAttribute('style', 'font-variant-numeric:tabular-nums;opacity:0.9;');
+      return { row, val };
+    };
+    this._tokRows = { sessions: tRow('sessions', '#8fb3ff'), pipeline: tRow('pipeline', '#c79be0') };
 
     // spacer: everything after it sits flush right
     const ctlSpacer = this.controls.createDiv();
@@ -790,6 +805,28 @@ class TimelinePanel {
     return (d ? d + 'd ' : '') + (h || d ? h + 'h ' : '') + m + 'm';
   }
 
+  // Fill the token-usage split (data.tokens): coding SESSIONS vs the judge PIPELINE. Compares
+  // prompt+completion tokens (in+out, excluding cache so cache-reads don't dominate); the pipeline row
+  // also shows its share of the total + a per-judge / cost hover. Hidden until there's data.
+  _updateTokens(tokens) {
+    if (!this._tokRows) return;
+    const s = tokens && tokens.sessions, pt = tokens && tokens.pipeline && tokens.pipeline.total;
+    const sTot = s ? (s.in + s.out) : 0, pTot = pt ? (pt.in + pt.out) : 0;
+    if (!sTot && !pTot) { this._tokensWrap.style.display = 'none'; return; }
+    this._tokensWrap.style.display = 'flex';
+    this._tokRows.sessions.val.textContent = fmtTokens(sTot);
+    const share = (sTot + pTot) ? Math.round(pTot / (sTot + pTot) * 100) : 0;
+    this._tokRows.pipeline.val.textContent = fmtTokens(pTot) + (pTot ? '  ' + share + '%' : '');
+    this._tokRows.sessions.row.setAttribute('title', 'coding sessions — ' + fmtTokens(sTot)
+      + ' prompt+completion tokens (excl. cache); ' + fmtTokens(s ? s.cache_r : 0) + ' cache-read');
+    const byJ = (tokens && tokens.pipeline && tokens.pipeline.byJudge) || {};
+    const judgeLines = Object.keys(byJ).sort((a, b) => (byJ[b].in + byJ[b].out) - (byJ[a].in + byJ[a].out))
+      .map((k) => '  ' + k + ': ' + fmtTokens(byJ[k].in + byJ[k].out) + ' · ' + byJ[k].calls + ' calls').join('\n');
+    const cost = pt && pt.cost ? ' · $' + pt.cost.toFixed(2) : '';
+    this._tokRows.pipeline.row.setAttribute('title', 'judge pipeline — ' + fmtTokens(pTot) + ' tokens · '
+      + (pt ? pt.calls : 0) + ' calls' + cost + (judgeLines ? '\n' + judgeLines : ''));
+  }
+
   fitWindow() {
     let e = this.data.now;
     this.data.messages.forEach((m) => { if (m.sent) e = Math.min(e, m.sent); });
@@ -827,6 +864,7 @@ class TimelinePanel {
     // the double-clicked card is un-highlighted). The nonce-gated focusEvent below only does the JUMP.
     this._dag = this._dagFromFocus(data.focus);
     this._updateUsage(data.usage);   // Claude /usage rate-limit bars in the controls row (HTML, outside the SVG)
+    this._updateTokens(data.tokens);   // sessions-vs-pipeline token split, right of the usage bars
     // STILL SNAPSHOT while a tooltip is up (the user 2026-06-13): the data + derived state above are
     // buffered, but DON'T re-lay-out the SVG — a fresh layout (new events, recompressed idle gaps) shifts
     // every x-position = the jump the user saw under the held edge. Keep the last frame; hideTip repaints

@@ -356,3 +356,22 @@ test("judging band is gated on Debug mode: OFF by default hides it; Debug on dra
   assert.ok(Number(panel.svg.getAttribute("height")) > hOff, "the band adds height below the lanes");
   g.localStorage.getItem = () => null;                        // reset the shared mock
 });
+
+// ── token-usage footer (2026-06-17): data.tokens = {sessions, pipeline} → a sessions-vs-pipeline split
+// in the controls row, right of the rate-limit bars.
+test("token-usage footer: data.tokens fills the sessions vs pipeline split with the pipeline share", () => {
+  const panel = new TimelinePanel(makeNode("div"));
+  panel.update({ ...synthData(), tokens: {
+    sessions: { in: 800000, out: 200000, cache_w: 0, cache_r: 5000000 },
+    pipeline: { total: { calls: 12, in: 60000, out: 40000, cost: 0.42, ms: 9000 },
+                byJudge: { captioner: { calls: 8, in: 30000, out: 20000, cost: 0.1, ms: 4000 } }, byTier: {} },
+  } });
+  assert.equal(panel._tokensWrap.style.display, "flex");
+  assert.equal(panel._tokRows.sessions.val.textContent, "1.0M", "sessions in+out = 1.0M");
+  assert.match(panel._tokRows.pipeline.val.textContent, /100k\s+9%/, "pipeline 100k, ~9% of the combined total");
+});
+test("token-usage footer is hidden when there's no token data", () => {
+  const panel = new TimelinePanel(makeNode("div"));
+  panel.update(synthData());
+  assert.equal(panel._tokensWrap.style.display, "none");
+});
