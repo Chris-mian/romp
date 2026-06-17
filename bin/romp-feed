@@ -281,7 +281,7 @@ def render(rows, style, header=None):
 # ───────────────────────── cli ─────────────────────────
 
 def _parse_args(argv):
-    a = {"all": False, "session": None, "color": None, "help": False}
+    a = {"all": False, "session": None, "color": None, "help": False, "watch": False}
     it = iter(argv)
     for tok in it:
         if tok in ("--all", "-a"):
@@ -290,6 +290,8 @@ def _parse_args(argv):
             a["color"] = False
         elif tok in ("--session", "-s"):
             a["session"] = next(it, None)
+        elif tok in ("--watch", "-w"):
+            a["watch"] = True
         elif tok in ("--help", "-h"):
             a["help"] = True
     return a
@@ -298,10 +300,12 @@ def _parse_args(argv):
 HELP = """romp-feed — live terminal mirror of the dashboard feed (independent of the kernel render path)
 
 Working / blocked / completed for non-cleared goals, every node showing its raw complete/blocked
-flags + id. Redraws every second in a terminal (^C to stop); prints once when piped. For build/kernel
-versions use `romp --version`.
+flags + id. Prints a SINGLE scrollable snapshot by default (so you can scroll back through it); pass
+--watch for a live board that refreshes every second in the alternate screen (^C to stop). For
+build/kernel versions use `romp --version`.
 
-  romp-feed                      alive sessions
+  romp-feed                      alive sessions (one scrollable snapshot)
+  romp-feed --watch              live board, refreshes every second (^C to stop)
   romp-feed --all                include dead sessions too
   romp-feed --session web_view   only that session (name, sid, or sid prefix)
   romp-feed --no-color           plain text
@@ -321,17 +325,24 @@ def main(argv):
         rows = build_board(state, include_dead=a["all"], session_filter=a["session"])
         return render(rows, style, header="romp-feed · %s  (romp --version for builds)" % time.strftime("%H:%M:%S"))
 
-    if not tty:                                  # piped/redirected → single snapshot, no watch loop
-        sys.stdout.write(once())
-        return 0
+    if not (tty and a["watch"]):                 # default (and piped): ONE scrollable snapshot.
+        sys.stdout.write(once())                 # The old per-second `\033[2J\033[H` redraw fought the
+        return 0                                 # terminal's own scrollback — every tick snapped the view
+                                                 # back to the top. A plain print scrolls like any output.
+    # --watch: live board in the ALTERNATE screen, so it owns the screen while running and restores your
+    # scrollback intact on exit (like top/htop and `romp -d`/`romp -j`) instead of clobbering the buffer.
+    sys.stdout.write("\033[?1049h\033[?25l")
     try:
-        while True:                              # interactive → live board, redraw every second
+        while True:
             sys.stdout.write("\033[2J\033[H")
             sys.stdout.write(once())
             sys.stdout.flush()
             time.sleep(1.0)
     except KeyboardInterrupt:
         return 0
+    finally:
+        sys.stdout.write("\033[?25h\033[?1049l")
+        sys.stdout.flush()
 
 
 if __name__ == "__main__":

@@ -124,5 +124,20 @@ class BuildBoardTest(unittest.TestCase):
             self.assertIn("[c=", out)                 # raw flags are always on now
 
 
+class FeedArgsTest(unittest.TestCase):
+    # romp -f defaults to a single scrollable snapshot; the live auto-refresh (which used to fight the
+    # terminal's scrollback — snapping to the top every second) is now opt-in via --watch.
+    def test_watch_flag_defaults_off_and_parses(self):
+        self.assertFalse(board._parse_args([])["watch"])
+        self.assertTrue(board._parse_args(["--watch"])["watch"])
+        self.assertTrue(board._parse_args(["-w"])["watch"])
+
+    def test_watch_composes_with_other_flags(self):
+        a = board._parse_args(["--all", "-w", "--session", "x"])
+        self.assertTrue(a["all"])
+        self.assertTrue(a["watch"])
+        self.assertEqual(a["session"], "x")
+
+
 if __name__ == "__main__":
     unittest.main()
