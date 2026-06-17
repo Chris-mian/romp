@@ -1278,15 +1278,13 @@ def build_session(sid, now, tmux=None):
     focus = gstore.get("lastNode")
     tree = []
 
-    def _gvisible(cid):
+    def _cleared(cid):
         cn = gnodes.get(cid)
-        return bool(cn) and not cn.get("cleared") and cid not in gcleared and gstatus.get(cid) != "cleared"
+        return bool(cn) and (cn.get("cleared") or cid in gcleared or gstatus.get(cid) == "cleared")
 
-    # "Derived done" (the user 2026-06-16): a node that ISN'T explicitly nodeComplete but ALL of its
-    # (non-cleared) children are done — completion propagates UP the goal tree. It renders as a DIMMED ✓
-    # disc (vs the full disc for an explicit done) and, like any done node, prunes its subtree to a leaf.
-    # A blocked node (a live "needs you") never counts as derived-done. Memoised; the goal graph is a
-    # parentId tree, so no cycle guard is needed.
+    # Completion rolls UP (the user 2026-06-16): a node counts as done if it's explicitly nodeComplete, if
+    # it's been CLEARED (dismissed → shown FADED), or if ALL its children are done. The derived/cleared
+    # cases render as a DIMMED ✓ disc. Memoised; the goal graph is a parentId tree (no cycle guard needed).
     _dmemo = {}
     def _subtree_done(nid):
         if nid in _dmemo:
@@ -1295,18 +1293,17 @@ def build_session(sid, now, tmux=None):
         if not nd:
             _dmemo[nid] = False
             return False
-        if nd.get("nodeComplete"):
+        if nd.get("nodeComplete") or _cleared(nid):
             _dmemo[nid] = True
             return True
-        kids = [c for c in gkids.get(nid, []) if _gvisible(c)]
+        kids = list(gkids.get(nid, []))
         res = bool(kids) and not nd.get("blocked") and all(_subtree_done(c) for c in kids)
         _dmemo[nid] = res
         return res
 
     # mt = node last-modified (the judge writes it on create / amend / done / block); fall back to t for
-    # pre-rename nodes. Recency drives BOTH the order (top goals freshest-first) and the auto-expand down
-    # to the single most-recently-CHANGED node — revealed even inside a done branch that would prune
-    # (the user 2026-06-16). _submax = the freshest mt anywhere in a subtree (memoised).
+    # pre-rename nodes. Recency orders the tree (top goals + children freshest-first) and picks the single
+    # most-recently-CHANGED node; the render marks it → and auto-expands the path (onpath) down to it.
     def _mt(cid):
         cn = gnodes.get(cid) or {}
         return cn.get("mt", cn.get("t", 0))
@@ -1316,40 +1313,41 @@ def build_session(sid, now, tmux=None):
             return _smemo[cid]
         m = _mt(cid)
         for c in gkids.get(cid, []):
-            if _gvisible(c):
-                m = max(m, _submax(c))
+            m = max(m, _submax(c))
         _smemo[cid] = m
         return m
-    _vis = [nid for nid in gnodes if _gvisible(nid)]
-    # Only single out a freshest node (→ mark + auto-expand) when mt actually tells us which is newest;
-    # without it (pre-rename nodes / all-equal) we can't, so fall back to the plain prune-done behaviour.
-    _has_mt = any("mt" in (gnodes.get(nid) or {}) for nid in _vis)
-    recent = max(_vis, key=_mt) if (_vis and _has_mt) else None
-    onpath = set()                                         # recent + its ancestors: expand past pruning
+    _all = list(gnodes)
+    _has_mt = any("mt" in (gnodes.get(nid) or {}) for nid in _all)
+    recent = max(_all, key=_mt) if (_all and _has_mt) else None
+    onpath = set()                                         # recent + its ancestors → the render auto-expands
     _p = recent
     while _p:
         onpath.add(_p)
         _p = gnodes.get(_p, {}).get("parentId")
 
+    # Emit the FULL goal tree — every node, with its child ids — so the RENDER can fold / expand at ANY
+    # level (the user 2026-06-16): completed / cleared nodes fold by default, the recent path + open work
+    # expand. Pruning moved to the render; the kernel just supplies the structure + done / derived /
+    # cleared / recent / onpath flags. Cleared nodes are INCLUDED now (shown faded), not skipped.
     def _twalk(nid, depth):
         nd = gnodes.get(nid)
-        if not nd or nd.get("cleared") or nid in gcleared or gstatus.get(nid) == "cleared":
+        if not nd:
             return
+        clr = _cleared(nid)
         explicit = bool(nd.get("nodeComplete"))
-        derived = (not explicit) and _subtree_done(nid)   # done only because all its children are
-        done = explicit or derived
-        tree.append({"id": nid, "text": nd["text"], "depth": depth, "done": done, "derived": derived,
+        derived = (not explicit) and (not clr) and _subtree_done(nid)
+        kids = sorted(gkids.get(nid, []), key=_submax, reverse=True)
+        tree.append({"id": nid, "text": nd["text"], "depth": depth,
+                     "done": explicit or derived or clr, "derived": derived, "cleared": clr,
                      "blocked": bool(nd.get("blocked")), "t": nd["t"], "current": nid == focus,
-                     "recent": nid == recent})
-        # an OPEN node expands as before; a DONE node expands ONLY along the path to the freshest change,
-        # so that change shows instead of being pruned. Children freshest-first (mirrors the feed).
-        if not done or nid in onpath:
-            for c in sorted(gkids.get(nid, []), key=_submax, reverse=True):
-                _twalk(c, depth + 1)
+                     "recent": nid == recent, "onpath": nid in onpath,
+                     "children": [c for c in kids if c in gnodes]})
+        for c in kids:
+            _twalk(c, depth + 1)
     for _rid in sorted(gkids.get(None, []), key=_submax, reverse=True):
         _twalk(_rid, 0)
     # bullets kept as a fallback for goal-less sessions (render shows the tree when it's non-empty).
-    ledger = {"summary": arch.get("headline", ""), "tree": tree[:40],
+    ledger = {"summary": arch.get("headline", ""), "tree": tree[:80],
               "current": current, "bullets": bullets}
     # work-timer base, in MILLISECONDS (render's elapsedMs does Date.now()ms - sinceEpoch; a seconds
     # value showed ~494,000h — the user's "400,000 hours" bug): the current open turn's start while

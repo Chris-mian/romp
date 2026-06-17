@@ -217,32 +217,33 @@ class ViewBuilder(unittest.TestCase):
         self.assertIsNotNone(cur, "an open (unfinished) turn → a working-on line")
         self.assertEqual(cur["text"], "wire the ledger overview strip")
 
-    def test_ledger_tree_prunes_done_subtree(self):
-        # A done intermediate hides its descendants even when they're open; an open intermediate expands
-        # them, and the graph's lastNode is flagged `current` (the pointer target) (the user 2026-06-16).
+    def test_ledger_tree_emits_full_tree_for_the_render_to_fold(self):
+        # The ledger emits the FULL goal tree now — every node with its child ids + flags — and the RENDER
+        # folds completed branches (the user 2026-06-16). So a done parent's child IS present (no kernel
+        # prune), the graph's lastNode is flagged `current`, and `children` wires the collapsible render.
         pd, pdk, po, pok = (SID + ":pd", SID + ":pdk", SID + ":po", SID + ":pok")
         def gn(nid, text, parent, done):
             return {"id": nid, "text": text, "parentId": parent, "nodeComplete": done,
                     "blocked": False, "cleared": False, "trail": [], "t": T0}
         (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
             "rompUuid": SID, "seq": 4, "lastNode": pok,
-            "nodes": {pd: gn(pd, "done parent", None, True), pdk: gn(pdk, "hidden child", pd, False),
+            "nodes": {pd: gn(pd, "done parent", None, True), pdk: gn(pdk, "done-parent child", pd, False),
                       po: gn(po, "open parent", None, False), pok: gn(pok, "shown child", po, False)},
             "placements": {}, "status": {}}))
         tree = km.build_session(SID, NOW)["ledger"]["tree"]
-        texts = [n["text"] for n in tree]
-        self.assertIn("done parent", texts)
-        self.assertNotIn("hidden child", texts, "a done parent's descendants are pruned")
-        self.assertIn("shown child", texts, "an open parent's children are shown")
-        shown = next(n for n in tree if n["text"] == "shown child")
-        self.assertTrue(shown["current"], "lastNode is flagged current (the pointer target)")
-        self.assertEqual(shown["depth"], 1, "child sits at depth 1 under its top-level parent")
+        byid = {n["text"]: n for n in tree}
+        self.assertIn("done parent", byid)
+        self.assertIn("done-parent child", byid, "the full tree is emitted; the render (not the kernel) folds done branches")
+        self.assertIn("shown child", byid)
+        self.assertEqual(byid["done parent"]["children"], [pdk], "a node carries its child ids for the collapsible render")
+        self.assertTrue(byid["shown child"]["current"], "lastNode is flagged current (the pointer target)")
+        self.assertEqual(byid["shown child"]["depth"], 1, "child sits at depth 1 under its top-level parent")
 
     def test_ledger_tree_derives_done_when_all_children_complete(self):
         # Completion propagates UP (the user 2026-06-16): a parent that ISN'T explicitly nodeComplete but
         # whose children are ALL done is "derived done" — done=True + derived=True (render dims its ✓
-        # disc), and like any done node it prunes its subtree. A parent with an open child is NOT derived;
-        # a blocked parent is never auto-completed.
+        # disc). The full tree is emitted (the render folds, the kernel doesn't prune). A parent with an
+        # open child is NOT derived; a blocked parent is never auto-completed.
         dp, dc1, dc2 = (SID + ":dp", SID + ":dc1", SID + ":dc2")   # derived parent, both children done
         mp, mc1, mc2 = (SID + ":mp", SID + ":mc1", SID + ":mc2")   # mixed parent, one child still open
         bp, bc = (SID + ":bp", SID + ":bc")                        # blocked parent, child done
@@ -257,10 +258,11 @@ class ViewBuilder(unittest.TestCase):
             "placements": {}, "status": {}}))
         tree = km.build_session(SID, NOW)["ledger"]["tree"]
         byid = {n["text"]: n for n in tree}
-        # derived parent: done by virtue of its children, flagged derived, and its (done) subtree pruned
+        # derived parent: done by virtue of its children, flagged derived; its children are still emitted
         self.assertTrue(byid["derived parent"]["done"])
         self.assertTrue(byid["derived parent"]["derived"], "all children done → derived done")
-        self.assertNotIn("dc one", byid, "a derived-done parent prunes its done subtree")
+        self.assertIn("dc one", byid, "the full tree is emitted (the render folds, the kernel doesn't prune)")
+        self.assertFalse(byid["dc one"]["derived"], "an explicitly-done child stays a full disc")
         # mixed parent: one child still open → not done, not derived, children shown
         self.assertFalse(byid["mixed parent"]["done"])
         self.assertFalse(byid["mixed parent"]["derived"])
@@ -296,9 +298,8 @@ class ViewBuilder(unittest.TestCase):
 
     def test_ledger_tree_orders_by_recency_and_expands_to_freshest(self):
         # The ledger TOC mirrors the feed (the user 2026-06-16): top goals sort by most-recently-modified
-        # (mt) first, and the freshest goal auto-expands DOWN to its most-recently-CHANGED node — flagged
-        # `recent` and revealed even inside a done branch that would otherwise prune. A done branch NOT on
-        # that path still prunes (the expand is selective).
+        # (mt) first, the single freshest node is flagged `recent`, and that node + its ancestors carry
+        # `onpath` so the render keeps them expanded (an unrelated done branch is off-path → render folds).
         told, tnew, cnew = (SID + ":told", SID + ":tnew", SID + ":cnew")
         tpr, cpr = (SID + ":tpr", SID + ":cpr")
         def gn(nid, text, parent, done, mt):
@@ -314,9 +315,31 @@ class ViewBuilder(unittest.TestCase):
         tree = km.build_session(SID, NOW)["ledger"]["tree"]
         texts = [n["text"] for n in tree]
         self.assertLess(texts.index("fresher top"), texts.index("older top"), "freshest top goal sorts first")
-        self.assertIn("freshly done leaf", texts, "the freshest node is revealed through a done branch")
         self.assertEqual(next(n for n in tree if n.get("recent"))["text"], "freshly done leaf")
-        self.assertNotIn("pruned child", texts, "a done branch NOT on the recent path still prunes")
+        byid = {n["text"]: n for n in tree}
+        # the recent node + its ancestors carry onpath (render keeps them expanded); an unrelated done
+        # branch is off-path (render folds it) but is still EMITTED in the full tree.
+        self.assertTrue(byid["freshly done leaf"]["onpath"])
+        self.assertTrue(byid["fresher top"]["onpath"], "the recent node's ancestor is on the expand path")
+        self.assertIn("pruned child", byid, "the full tree is emitted (the render folds off-path done branches)")
+        self.assertFalse(byid["pruned top"]["onpath"], "an unrelated done branch is off the recent path")
+
+    def test_ledger_tree_shows_cleared_nodes_faded(self):
+        # A cleared (dismissed) node is no longer hidden — it's emitted, counted DONE, and flagged `cleared`
+        # so the render shows it as a FADED ✓ (the user 2026-06-16).
+        top, clr = (SID + ":top", SID + ":clr")
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+            "rompUuid": SID, "seq": 2, "lastNode": None,
+            "nodes": {top: {"id": top, "text": "live top", "parentId": None, "nodeComplete": False,
+                            "blocked": False, "cleared": False, "trail": [], "t": T0},
+                      clr: {"id": clr, "text": "dismissed step", "parentId": top, "nodeComplete": False,
+                            "blocked": False, "cleared": True, "trail": [], "t": T0}},
+            "placements": {}, "status": {}}))
+        byid = {n["text"]: n for n in km.build_session(SID, NOW)["ledger"]["tree"]}
+        self.assertIn("dismissed step", byid, "a cleared node is shown now (not hidden)")
+        self.assertTrue(byid["dismissed step"]["cleared"])
+        self.assertTrue(byid["dismissed step"]["done"], "cleared counts as done (faded ✓)")
+        self.assertFalse(byid["dismissed step"]["derived"], "cleared is its own flag, not derived")
 
     def test_followup_body_quotes_context(self):
         # A feed follow-up quotes the ask it answers ('> <ask>') so the recipient session has context;
