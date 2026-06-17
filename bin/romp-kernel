@@ -1423,10 +1423,14 @@ def build_session(sid, now, tmux=None):
             m = max(m, _submax(c))
         _smemo[cid] = m
         return m
-    _all = list(gnodes)
-    _has_mt = any("mt" in (gnodes.get(nid) or {}) for nid in _all)
-    recent = max(_all, key=_mt) if (_all and _has_mt) else None
-    onpath = set()                                         # recent + its ancestors → the render auto-expands
+    # ONE "here" marker (the user 2026-06-17): the highlight (current) and the → arrow (recent) mark the SAME
+    # node now — the working cursor, lastNode/focus. They used to be computed DIFFERENTLY — the highlight from
+    # the stored lastNode pointer, the arrow from the node with the freshest mt — so nothing forced them onto
+    # the same node, and they read as two competing "current" claims when a re-touched older node out-stamped
+    # the cursor. Keying the arrow + the auto-expand path to focus collapses them to one. (_submax above is the
+    # tree-ORDERING key — still mt-based, unchanged.)
+    recent = focus
+    onpath = set()                                         # the marked node + its ancestors → the render auto-expands
     _p = recent
     while _p:
         onpath.add(_p)

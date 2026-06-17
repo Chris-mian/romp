@@ -425,33 +425,36 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(nodes["a finished step"]["mt"], T0 + 60, "done node deep-links to its done segment")
         self.assertEqual(nodes["an open step"]["mt"], T0, "a never-modified node falls back to t")
 
-    def test_ledger_tree_orders_by_recency_and_expands_to_freshest(self):
-        # The ledger TOC mirrors the feed (the user 2026-06-16): top goals sort by most-recently-modified
-        # (mt) first, the single freshest node is flagged `recent`, and that node + its ancestors carry
-        # `onpath` so the render keeps them expanded (an unrelated done branch is off-path → render folds).
+    def test_ledger_highlight_and_arrow_mark_the_same_node_the_cursor(self):
+        # ONE "here" marker (the user 2026-06-17): the highlight (current) and the → arrow (recent) now mark
+        # the SAME node — the working cursor (lastNode) — NOT a separately-computed freshest-mt node. The two
+        # used to diverge (highlight = the lastNode pointer; arrow = max mt). The tree ORDERING is still by mt
+        # (freshest branch first); only the marker is unified onto the cursor.
         told, tnew, cnew = (SID + ":told", SID + ":tnew", SID + ":cnew")
         tpr, cpr = (SID + ":tpr", SID + ":cpr")
         def gn(nid, text, parent, done, mt):
             return {"id": nid, "text": text, "parentId": parent, "nodeComplete": done,
                     "blocked": False, "cleared": False, "trail": [], "t": T0, "mt": mt}
         (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
-            "rompUuid": SID, "seq": 5, "lastNode": None,
+            # the cursor sits on the OLDER top, NOT the freshest-mt leaf — so the two would diverge if unfixed
+            "rompUuid": SID, "seq": 5, "lastNode": told,
             "nodes": {told: gn(told, "older top", None, False, 100),
                       tnew: gn(tnew, "fresher top", None, True, 200),
-                      cnew: gn(cnew, "freshly done leaf", tnew, True, 300),   # the single freshest node
+                      cnew: gn(cnew, "freshly done leaf", tnew, True, 300),   # the freshest-mt node
                       tpr: gn(tpr, "pruned top", None, True, 50), cpr: gn(cpr, "pruned child", tpr, True, 60)},
             "placements": {}, "status": {}}))
         tree = km.build_session(SID, NOW)["ledger"]["tree"]
         texts = [n["text"] for n in tree]
-        self.assertLess(texts.index("fresher top"), texts.index("older top"), "freshest top goal sorts first")
-        self.assertEqual(next(n for n in tree if n.get("recent"))["text"], "freshly done leaf")
+        self.assertLess(texts.index("fresher top"), texts.index("older top"), "freshest top goal still sorts first (ordering unchanged)")
         byid = {n["text"]: n for n in tree}
-        # the recent node + its ancestors carry onpath (render keeps them expanded); an unrelated done
-        # branch is off-path (render folds it) but is still EMITTED in the full tree.
-        self.assertTrue(byid["freshly done leaf"]["onpath"])
-        self.assertTrue(byid["fresher top"]["onpath"], "the recent node's ancestor is on the expand path")
-        self.assertIn("pruned child", byid, "the full tree is emitted (the render folds off-path done branches)")
-        self.assertFalse(byid["pruned top"]["onpath"], "an unrelated done branch is off the recent path")
+        # the highlight (current) and the → arrow (recent) are the SAME node — the cursor (told), NOT the max-mt leaf
+        self.assertTrue(byid["older top"]["current"] and byid["older top"]["recent"], "cursor carries BOTH the highlight and the arrow")
+        self.assertFalse(byid["freshly done leaf"].get("recent"), "the arrow no longer follows the freshest-mt node")
+        self.assertEqual(next(n for n in tree if n.get("recent"))["text"], "older top", "exactly one arrow, on the cursor")
+        # onpath follows the cursor; an off-cursor branch is off-path (render folds it) but still EMITTED
+        self.assertTrue(byid["older top"]["onpath"])
+        self.assertFalse(byid["freshly done leaf"]["onpath"], "the freshest leaf is off the cursor's expand path now")
+        self.assertIn("pruned child", byid, "the full tree is still emitted")
 
     def test_ledger_tree_shows_cleared_nodes_faded(self):
         # A cleared (dismissed) node is no longer hidden — it's emitted, counted DONE, and flagged `cleared`
