@@ -462,7 +462,10 @@ PLAN_SYS = (
     'instead of \"goal\".\n'
     '- {\"why\",\"do\":\"block\",\"goal\":<n>} — goal/step #n is now WAITING ON THE USER: its next step '
     "needs a decision, approval, or answer before it can proceed. The \"why\" is the one-sentence reason "
-    "it is blocked. ANSWERING / EXPLAINING / REPORTING work is NOT blocking. WEIGHING: if the segment "
+    "it is blocked. ANSWERING / EXPLAINING / REPORTING work is NOT blocking. Work DEFERRED for a reason "
+    "OTHER than a user decision is NOT blocking either — a peer or another session is handling it, "
+    "deferring to avoid a conflict, or waiting on a build/CI/external event keeps the goal OPEN, not "
+    "blocked (only a decision, approval, or answer owed BY THE USER blocks). WEIGHING: if the segment "
     "both reports work AND leaves a decision owed by the user, the owed decision WINS → block. (Use "
     '\"ref\":<k> to block a node created in this reply.)\n'
     '- {\"why\",\"do\":\"skip\"} — the segment did NO real work (an interruption, an empty/aborted turn, '

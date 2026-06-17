@@ -799,6 +799,13 @@ class BlockCompletionCorrectness(unittest.TestCase):
                        "the owed decision WINS"):
             self.assertIn(phrase, jd.PLAN_SYS, phrase)
 
+    def test_block_prompt_excludes_non_user_deferrals(self):
+        # the user 2026-06-16: work DEFERRED because a peer is handling it / to avoid a conflict is NOT a
+        # user-owed decision, so it must NOT be labeled blocked. Guard the exclusion against a revert.
+        for phrase in ("DEFERRED for a reason", "OTHER than a user decision is NOT blocking",
+                       "another session is handling it", "avoid a conflict"):
+            self.assertIn(phrase, jd.PLAN_SYS, phrase)
+
     def test_surgical_unblock_leaves_sibling_block(self):
         # #2: two blocked sibling sub-goals; non-block work on ONE branch clears only that branch.
         s = _store()
