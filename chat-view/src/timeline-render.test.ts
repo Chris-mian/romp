@@ -357,42 +357,5 @@ test("judging band is gated on Debug mode: OFF by default hides it; Debug on dra
   g.localStorage.getItem = () => null;                        // reset the shared mock
 });
 
-// ── token-usage footer: data.tokens = {fiveHour, week} → a per-window grid (sessions / pipeline rows ×
-// 5h / week cols). Each cell = total then the in/out split in parens, COLOUR-keyed to the header legend —
-// the "in"/"out" words live ONCE in the header, never repeated in the cells; no active-tab line (the user
-// 2026-06-18).
-test("token grid: per-window sessions/pipeline, total + colour-keyed in/out (no repeated labels)", () => {
-  const panel = new TimelinePanel(makeNode("div"));
-  panel.update({ ...synthData(), tokens: {
-    fiveHour: { sessions: { in: 800000, out: 200000, cache_r: 5000000 },
-                pipeline: { total: { calls: 12, in: 60000, out: 40000, cost: 0.42, ms: 9000 },
-                            byJudge: { captioner: { calls: 8, in: 30000, out: 20000 } }, byTier: {} } },
-    week:     { sessions: { in: 6000000, out: 900000, cache_r: 40000000 },
-                pipeline: { total: { calls: 50, in: 300000, out: 200000, cost: 2.1, ms: 40000 }, byJudge: {}, byTier: {} } },
-    windows: { fiveHour: 18000, week: 604800 },
-  } });
-  assert.equal(panel._tokensWrap.style.display, "flex");
-  // row labels: the coding sessions vs the background judge system (labelled "judges", not "pipeline")
-  assert.equal(panel._tokRows.sessions.label.textContent, "sessions");
-  assert.equal(panel._tokRows.pipeline.label.textContent, "judges", "the pipeline row is labelled 'judges'");
-  const cell = (r: string, w: string) => panel._tokRows[r][w].innerHTML;
-  assert.match(cell("sessions", "five"), /1\.0M[\s\S]*800k[\s\S]*200k/, "sessions 5h: total then in/out numbers");
-  assert.match(cell("sessions", "week"), /6\.9M[\s\S]*6\.0M[\s\S]*900k/, "sessions week");
-  assert.match(cell("pipeline", "five"), /100k[\s\S]*60k[\s\S]*40k/, "pipeline 5h");
-  assert.match(cell("pipeline", "week"), /500k[\s\S]*300k[\s\S]*200k/, "pipeline week");
-  // colour-keyed, and the words "in"/"out" are NOT repeated next to the cell numbers
-  assert.ok(cell("sessions", "five").includes("#5fb3c4") && cell("sessions", "five").includes("#8ccf6b"), "in/out colour-tinted");
-  assert.doesNotMatch(cell("sessions", "five"), /800k\s*in/, "no repeated 'in' label in the cell");
-  assert.doesNotMatch(cell("sessions", "five"), /200k\s*out/, "no repeated 'out' label in the cell");
-});
-test("the in/out legend is coloured ONCE in the header (the words live there, not in every cell)", () => {
-  const panel = new TimelinePanel(makeNode("div"));
-  const h = panel._tokHead.innerHTML;
-  assert.match(h, /#5fb3c4[^>]*>in</, "'in' is TOK_IN-coloured in the header legend");
-  assert.match(h, /#8ccf6b[^>]*>out</, "'out' is TOK_OUT-coloured in the header legend");
-});
-test("token grid is hidden when there's no token data", () => {
-  const panel = new TimelinePanel(makeNode("div"));
-  panel.update(synthData());   // no .tokens
-  assert.equal(panel._tokensWrap.style.display, "none");
-});
+// (The per-window token grid was removed from the timeline controls at the user's request 2026-06-18;
+// only the /usage rate-limit bars remain. Its render tests went with it.)

@@ -66,20 +66,6 @@ function esc(s) { return (s || '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<'
 function clock(t) { const d = new Date(t * 1000); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); }
 function fmtWin(s) { return s < 3600 ? Math.round(s / 60) + 'm' : (s / 3600 < 10 ? (s / 3600).toFixed(1) : Math.round(s / 3600)) + 'h'; }
 function fmtTokens(n) { n = Math.round(n || 0); return n >= 1e6 ? (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + 'M' : n >= 1e3 ? Math.round(n / 1e3) + 'k' : String(n); }
-// token in/out colours (footer): the TOTAL leads (bright), then the in/out breakdown in parens, each tinted
-// so the eye can glance the sum AND the split. in = teal, out = green — distinct from the lane labels.
-// in = TOK_IN, out = TOK_OUT — the words live ONCE in the header legend; here the COLOUR alone tells them
-// apart, so the per-cell numbers carry no repeated "in"/"out" labels (the user 2026-06-18).
-const TOK_IN = '#5fb3c4', TOK_OUT = '#8ccf6b';
-function ioHTML(d) {
-  if (!d || (!(d.in || 0) && !(d.out || 0))) return '–';
-  const i = d.in || 0, o = d.out || 0;
-  return fmtTokens(i + o) + ' <span style="opacity:.5">(</span>'
-    + '<span style="color:' + TOK_IN + '">' + fmtTokens(i) + '</span>'
-    + '<span style="opacity:.4"> / </span>'
-    + '<span style="color:' + TOK_OUT + '">' + fmtTokens(o) + '</span>'
-    + '<span style="opacity:.5">)</span>';
-}
 function fmtDur(ms) { ms = Math.round(ms || 0); return ms < 1000 ? ms + 'ms' : ms < 60000 ? (ms / 1000).toFixed(1) + 's' : Math.round(ms / 60000) + 'm'; }
 // Pure (exported for tests): a long idle gap's SPAN as a concise day/week/month label ("2 days", "1 week",
 // "3 weeks", "2 months") so a multi-day broken-axis break isn't ambiguous between its two HH:MM boundary
@@ -353,31 +339,8 @@ class TimelinePanel {
     mkUsageBar('fiveHour', 'session', 5 * 3600);
     mkUsageBar('sevenDay', 'week', 7 * 86400);
 
-    // Token usage by rate-limit WINDOW (the user 2026-06-17): how many tokens the coding SESSIONS + the
-    // judge PIPELINE drew in the current 5h and 7d windows — the same quota the /usage bars meter — each
-    // cell = total then the in/out split in parens. The in/out LEGEND is colour-keyed ONCE in the header;
-    // the cells reuse those colours, no repeated labels (the user 2026-06-18). Compact grid, right of the
-    // rate-limit bars. Hidden until data.tokens arrives. NOTE: on a Max subscription these are NOT a dollar
-    // bill — both halves draw the shared quota; the count just lines up with the % the bars show.
-    this._tokensWrap = this.controls.createDiv();
-    this._tokensWrap.setAttribute('style', 'display:none;flex-direction:column;gap:2px;');
-    const tgrid = this._tokensWrap.createDiv();
-    tgrid.setAttribute('style', 'display:grid;grid-template-columns:auto auto auto;gap:1px 12px;align-items:center;');
-    const tHead = (txt, num) => { const c = tgrid.createSpan({ text: txt }); c.setAttribute('style', 'opacity:0.6;' + (num ? 'text-align:right;' : '')); };
-    this._tokHead = tgrid.createSpan();   // the in/out legend — coloured here so the cells don't repeat the words
-    this._tokHead.innerHTML = '<span style="opacity:.6">tokens · total </span><span style="opacity:.5">(</span>'
-      + '<span style="color:' + TOK_IN + '">in</span><span style="opacity:.4"> / </span>'
-      + '<span style="color:' + TOK_OUT + '">out</span><span style="opacity:.5">)</span>';
-    tHead('5h', true); tHead('week', true);
-    const tRow = (lbl, color) => {
-      const label = tgrid.createSpan({ text: lbl }); label.setAttribute('style', 'color:' + color + ';opacity:0.9;');
-      const five = tgrid.createSpan({ text: '–' }); five.setAttribute('style', 'text-align:right;font-variant-numeric:tabular-nums;opacity:0.9;');
-      const week = tgrid.createSpan({ text: '–' }); week.setAttribute('style', 'text-align:right;font-variant-numeric:tabular-nums;opacity:0.9;');
-      return { label, five, week };
-    };
-    // the PIPELINE row is the background judge system (captioner / planner / closer / distiller) — labelled
-    // "judges" so it's clear whose tokens these are, not an opaque "pipeline" (the user 2026-06-18).
-    this._tokRows = { sessions: tRow('sessions', '#8fb3ff'), pipeline: tRow('judges', '#c79be0') };
+    // (The per-window token grid that used to sit here was removed at the user's request 2026-06-18 — only
+    // the /usage rate-limit bars above remain. The kernel still ships data.tokens; nothing reads it now.)
 
     // spacer: everything after it sits flush right
     const ctlSpacer = this.controls.createDiv();
@@ -830,37 +793,6 @@ class TimelinePanel {
     return (d ? d + 'd ' : '') + (h || d ? h + 'h ' : '') + m + 'm';
   }
 
-  // Fill the per-window token grid (data.tokens.fiveHour / .week): the coding SESSIONS + the judge
-  // PIPELINE, each cell = total then in/out (cache excluded so cache-reads don't dominate; carried in the
-  // hover). Hidden until there's data.
-  _updateTokens(tokens) {
-    if (!this._tokRows) return;
-    const w5 = tokens && tokens.fiveHour, ww = tokens && tokens.week;
-    const sP = (w) => w && w.sessions, pP = (w) => w && w.pipeline && w.pipeline.total;
-    const has = (d) => d && ((d.in || 0) + (d.out || 0)) > 0;
-    const anyWin = has(sP(w5)) || has(pP(w5)) || has(sP(ww)) || has(pP(ww));
-    if (!anyWin) { this._tokensWrap.style.display = 'none'; return; }
-    this._tokensWrap.style.display = 'flex';
-    this._tokRows.sessions.five.innerHTML = ioHTML(sP(w5));   // total (in / out), in/out colour-tinted
-    this._tokRows.sessions.week.innerHTML = ioHTML(sP(ww));
-    this._tokRows.pipeline.five.innerHTML = ioHTML(pP(w5));
-    this._tokRows.pipeline.week.innerHTML = ioHTML(pP(ww));
-    // hovers: cache-read on the sessions cells; calls/cost + per-judge breakdown on the pipeline cells.
-    const sessTitle = (w, lbl) => 'coding sessions · last ' + lbl + ' — in ' + fmtTokens((sP(w) || {}).in || 0)
-      + ' / out ' + fmtTokens((sP(w) || {}).out || 0) + '; ' + fmtTokens((sP(w) || {}).cache_r || 0) + ' cache-read';
-    this._tokRows.sessions.five.setAttribute('title', sessTitle(w5, '5h'));
-    this._tokRows.sessions.week.setAttribute('title', sessTitle(ww, 'week'));
-    const pipeTitle = (w, lbl) => {
-      const pt = pP(w), byJ = (w && w.pipeline && w.pipeline.byJudge) || {};
-      const lines = Object.keys(byJ).sort((a, b) => (byJ[b].in + byJ[b].out) - (byJ[a].in + byJ[a].out))
-        .map((k) => '  ' + k + ': ' + fmtTokens(byJ[k].in + byJ[k].out) + ' · ' + byJ[k].calls + ' calls').join('\n');
-      const cost = pt && pt.cost ? ' · $' + pt.cost.toFixed(2) + ' API-equiv' : '';
-      return 'judge pipeline · last ' + lbl + ' — in ' + fmtTokens((pt || {}).in || 0) + ' / out '
-        + fmtTokens((pt || {}).out || 0) + ' · ' + ((pt || {}).calls || 0) + ' calls' + cost + (lines ? '\n' + lines : '');
-    };
-    this._tokRows.pipeline.five.setAttribute('title', pipeTitle(w5, '5h'));
-    this._tokRows.pipeline.week.setAttribute('title', pipeTitle(ww, 'week'));
-  }
 
   fitWindow() {
     let e = this.data.now;
@@ -899,7 +831,6 @@ class TimelinePanel {
     // the double-clicked card is un-highlighted). The nonce-gated focusEvent below only does the JUMP.
     this._dag = this._dagFromFocus(data.focus);
     this._updateUsage(data.usage);   // Claude /usage rate-limit bars in the controls row (HTML, outside the SVG)
-    this._updateTokens(data.tokens);   // sessions-vs-pipeline token split, right of the usage bars
     // STILL SNAPSHOT while a tooltip is up (the user 2026-06-13): the data + derived state above are
     // buffered, but DON'T re-lay-out the SVG — a fresh layout (new events, recompressed idle gaps) shifts
     // every x-position = the jump the user saw under the held edge. Keep the last frame; hideTip repaints
