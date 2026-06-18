@@ -426,8 +426,11 @@ function makeAskCard(it: AskItem): HTMLElement {
   const clr = el("button", "fdismiss"); clr.textContent = "Clear"; clr.title = "clear this ask (inbox-zero; the one human-asserted fact)";
   // No "Follow up" button on the card — open the card's modal (body click) to follow up there
   // (the user 2026-06-16). The modal composer is the single follow-up surface.
-  actions.append(waitBadge, apiBadge, blkBadge, reBadge, fupBadge, apiRetry, clr);
-  row2.append(idwrap);
+  actions.append(waitBadge, apiBadge, blkBadge, reBadge, apiRetry, clr);
+  // "↻ Followed up" rides the SESSION-NAME row (right-justified), NOT the bottom action row — otherwise it
+  // crowded the bottom row and pushed Clear past the card's right edge (the user 2026-06-18). idwrap is
+  // flex:1 so the chip sits flush right of the name.
+  row2.append(idwrap, fupBadge);
   // ROW 3 — timestamp bottom-left · status badges + Clear bottom-right
   const row3 = el("div", "fask-row3"); row3.append(time, actions);
   // the user's handoff spec (2026-06-10): below the main session, list the OTHER

@@ -55,7 +55,10 @@ test("courier handoff: the '↪ from <sender>' origin marker is wired and styled
 test("a 'Followed up' chip shows while the kernel optimistically reopened a followed-up card (judges, 2026-06-17)", () => {
   assert.match(FEED, /followupPending\?: boolean/);
   assert.match(FEED, /el\("span", "fask-followedup"\); fupBadge\.textContent = "↻ Followed up"/);
-  assert.match(FEED, /actions\.append\(waitBadge, apiBadge, blkBadge, reBadge, fupBadge, apiRetry, clr\)/);
+  // the chip rides the SESSION-NAME row (right-justified), NOT the bottom action row, so it stops crowding
+  // Clear off the card's right edge (the user 2026-06-18)
+  assert.match(FEED, /actions\.append\(waitBadge, apiBadge, blkBadge, reBadge, apiRetry, clr\)/);
+  assert.match(FEED, /row2\.append\(idwrap, fupBadge\)/);
   assert.match(FEED, /a\._followedup\.style\.display = it\.followupPending \? "" : "none"/);
   assert.match(CSS, /\.fask-followedup \{/);
 });
