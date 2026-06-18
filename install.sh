@@ -79,6 +79,9 @@ PYEOF
 ln -sf "$ROMP_DIR/claude/romp-postal.mcp.json" "$HOME/.claude/romp-postal.mcp.json"
 echo "  Symlinked romp-postal.mcp.json (Romp Postal Service MCP config)"
 
+ln -sf "$ROMP_DIR/claude/romp-session-prompt.md" "$HOME/.claude/romp-session-prompt.md"
+echo "  Symlinked romp-session-prompt.md (working-style append-system-prompt)"
+
 ln -sf "$ROMP_DIR/claude/skills/romp" "$HOME/.claude/skills/romp"
 ln -sf "$ROMP_DIR/claude/skills/romp-postal" "$HOME/.claude/skills/romp-postal"
 echo "  Symlinked romp + romp-postal skills"

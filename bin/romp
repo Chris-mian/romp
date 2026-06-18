@@ -849,6 +849,18 @@ fi
 [[ -f "$HOME/.claude/romp-postal.mcp.json" ]] && \
     claude_cmd="$claude_cmd --mcp-config $HOME/.claude/romp-postal.mcp.json"
 
+# Append a short, generic working-style prompt to every romp session, when
+# installed. It nudges the agent to state its deliverables / completion / blocks
+# in plain language — which makes transcripts easier for the judge to read,
+# without the agent knowing anything about romp. --append-system-prompt (not
+# --system-prompt) so it adds to the base prompt, and it survives compaction
+# (unlike SessionStart additionalContext). The deferred command-substitution
+# "$(cat ...)" keeps the multi-line content OUT of the typed exec line — only a
+# fixed cat of a trusted, fixed path is sent to the pane (no user input), so the
+# pane shell expands it at exec time.
+[[ -f "$HOME/.claude/romp-session-prompt.md" ]] && \
+    claude_cmd="$claude_cmd --append-system-prompt \"\$(cat $HOME/.claude/romp-session-prompt.md)\""
+
 # --- Launch or attach ---
 if tmux has-session -t "=$name" 2>/dev/null; then
     # Session exists (Claude is running there) — attach/switch, or report.

@@ -101,6 +101,33 @@ run_romp() {
     grep -q 'tmux attach-session -t myproject' "$MOCK_LOG"
 }
 
+@test "append-system-prompt: omitted when no working-style prompt is installed" {
+    # Default hermetic HOME has no romp-session-prompt.md, so the -f guard skips it.
+    run run_romp
+    [ "$status" -eq 0 ]
+    ! grep -q -- '--append-system-prompt' "$MOCK_LOG"
+}
+
+@test "append-system-prompt: appended (deferred \$(cat ...)) when the prompt is installed" {
+    mkdir -p "$HOME/.claude"
+    printf 'Working style: be explicit.\n' > "$HOME/.claude/romp-session-prompt.md"
+    run run_romp
+    [ "$status" -eq 0 ]
+    # The flag carries a deferred cat of the fixed path — the multi-line content
+    # stays OUT of the typed exec line, so the pane shell expands it at exec time.
+    grep -F -- "--append-system-prompt \"\$(cat $HOME/.claude/romp-session-prompt.md)\"" "$MOCK_LOG"
+    # Still the same single exec line, terminated by Enter.
+    grep -qE 'tmux send-keys -t myproject exec claude --name "myproject" --session-id [0-9a-f-]{36} --append-system-prompt .* Enter' "$MOCK_LOG"
+}
+
+@test "append-system-prompt: also appended on the resume path" {
+    mkdir -p "$HOME/.claude"
+    printf 'Working style: be explicit.\n' > "$HOME/.claude/romp-session-prompt.md"
+    run run_romp --resume abc123-uuid
+    [ "$status" -eq 0 ]
+    grep -F -- "--append-system-prompt \"\$(cat $HOME/.claude/romp-session-prompt.md)\"" "$MOCK_LOG"
+}
+
 @test "provisioning pins status-format[0] alongside the session-scoped peers row" {
     # tmux gotcha (2026-06-12): a session-scoped status-format[1] shadows the
     # whole inherited array — without [0] pinned to the global composition the
