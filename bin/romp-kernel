@@ -1609,12 +1609,18 @@ def build_feed(now, tmux=None):
         # timeline/ledger already use — so a card click deep-links to the precise turn BY ID instead of the
         # old time-nearest heuristic. _parse is cache-backed (cheap); reply uuid preferred (the readable
         # assistant text). A missing entry → anchorUuid None → feed falls back to time. (the user 2026-06-17.)
-        seg_uuid = {}
+        # seg_uuid → the WORK anchor (reply/work assistant atom, for the mark/time zones); seg_trig → the
+        # PROMPT anchor (the segment's TRIGGER atom = the user's message that opened it, for the TITLE). A
+        # title is prompt-intent and must land on the USER turn — passing the trigger uuid (which the chat
+        # tags + the kind guard accepts as turn-user) lets it resolve BY ID instead of a kind-restricted
+        # nearest-time landing (the user 2026-06-17). (Both are emitted .turn[data-uuid]s in the chat.)
+        seg_uuid, seg_trig = {}, {}
         try:
             for turn in _parse(s["path"], fsid, now)["turns"]:
                 for seg in em.segments(turn):
                     w, r = _seg_anchors(seg["atoms"])
                     seg_uuid[seg["id"]] = r or w
+                    seg_trig[seg["id"]] = seg.get("trigger")
         except Exception:
             pass
         children = {}
@@ -1681,8 +1687,12 @@ def build_feed(now, tmux=None):
                         # done node deep-links to WHERE IT RESOLVED, not where it was minted. Falls back to
                         # t for never-modified nodes (open work, derived done). (the user 2026-06-16.)
                         "mt": nd.get("mt", nd["t"]),
-                        # anchorUuid = the EXACT turn uuid for that segment → id-based deep-link (not time).
+                        # anchorUuid = the WORK anchor (reply assistant atom of the resolve/mint segment) →
+                        # the mark/time zones deep-link here. promptAnchorUuid = the PROMPT anchor (the
+                        # MINTING segment's trigger = the user's message) → the TITLE deep-links here, by id,
+                        # landing on the user turn (no kind-restricted nearest-time needed). (2026-06-17.)
                         "anchorUuid": seg_uuid.get(_anchor_seg),
+                        "promptAnchorUuid": seg_trig.get(_trail[0] if _trail else None),
                         # the planner's one-sentence rationales — the modal reveals these (why a node
                         # exists / was blocked / was completed). (the user 2026-06-16.)
                         "why": nd.get("why"), "blockWhy": nd.get("blockWhy"), "doneWhy": nd.get("doneWhy"),

@@ -564,6 +564,25 @@ class ViewBuilder(unittest.TestCase):
         self.assertIn("> Need you to choose major vs minor.", out)   # the planner's why = the real question
         self.assertTrue(out.endswith("<!-- romp-goal-id: " + sub + " -->"))
 
+    def test_feed_node_carries_prompt_anchor_uuid(self):
+        # the user 2026-06-17: a card TITLE deep-links to the user's MINTING message BY ID — the minting
+        # segment's trigger uuid (a user turn the chat tags), so prompt-intent resolves by id with no
+        # kind-restricted nearest-time landing. promptAnchorUuid = trigger of the node's FIRST trail seg.
+        session = em.parse_session(str(self.tpath), rompuuid=SID, candidate_files=[str(self.tpath)], now=NOW)
+        seg = em.segments(session["turns"][0])[0]
+        nid = SID + ":g9"
+        store = {"rompUuid": SID, "seq": 9, "nodes": {
+            nid: {"id": nid, "text": "Awaiting a call", "parentId": None, "nodeComplete": False,
+                  "blocked": True, "trail": [seg["id"]], "t": NOW}}, "placements": {}, "status": {}}
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps(store))
+        asks = {a["itemId"]: a for a in km.build_feed(NOW)["asks"]}
+        self.assertIn(nid, asks, "the blocked top node is an ask card")
+        # feed.ts reads the anchors off the card's `tree` node (it.tree.find(n => n.id === itemId)), so the
+        # prompt anchor rides there alongside anchorUuid — not on the top-level ask dict.
+        tnode = next(n for n in asks[nid]["tree"] if n["id"] == nid)
+        self.assertEqual(tnode["promptAnchorUuid"], seg.get("trigger"),
+                         "title prompt anchor = the minting segment's trigger (the user's message) uuid")
+
     def test_followup_body_appends_goal_marker(self):
         # The follow-up judge reopens the tagged goal: every injected follow-up ends with a hidden
         # `<!-- romp-goal-id: <itemId> -->` marker (itemId = the card's top-goal node id), matched by the
