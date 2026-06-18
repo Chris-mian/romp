@@ -235,3 +235,11 @@ test("collapsed ledger shows the CURRENT top-level goal; expanded shows the titl
   // the early return still bails after the head in collapsed mode (no tree)
   assert.match(RENDER, /if \(ledgerCollapsed\) return;/);
 });
+
+test("expanding PINS the current top goal to the top of the tree + marks it, so it doesn't jump down (the user 2026-06-18)", () => {
+  // expanding used to drop curTop into its sorted position (further down) — disorienting. Pin it first.
+  assert.match(RENDER, /const orderedRoots = curTop \? \[curTop, \.\.\.sorted\.filter\(\(r\) => r\.id !== curTop\.id\)\] : sorted;/);
+  // and the pinned row carries a marker class so the collapsed line visibly maps onto it
+  assert.match(RENDER, /depth === 0 && curTop && n\.id === curTop\.id \? " ledger-curtop" : ""/);
+  assert.match(CSS, /\.ledger-tnode\.ledger-curtop \{[^}]*box-shadow: inset 2px 0 0 #8fb3ff/);
+});

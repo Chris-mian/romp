@@ -249,6 +249,10 @@ body { display: flex; flex-direction: column; }
    to every other item — no filled dot overwriting the mark, no bold/recolour. The highlight is the ROW,
    never the glyph or the text (the user 2026-06-17). */
 .ledger-tnode.current { background: rgba(255, 255, 255, 0.06); box-shadow: inset 2px 0 0 var(--fg); }
+/* the CURRENT top goal — pinned to the top of the expanded tree and given a calm blue left-accent + tint,
+   so the collapsed ledger line maps right onto it the instant you expand (the user 2026-06-18). Distinct
+   from the white .current accent above, which marks the exact active sub-node deeper in the tree. */
+.ledger-tnode.ledger-curtop { background: rgba(143, 179, 255, 0.08); box-shadow: inset 2px 0 0 #8fb3ff; }
 /* working on — the live in-progress turn (italic), shown in the goal-less fallback view */
 .ledger-current { font-style: italic; line-height: 1.45; overflow-wrap: anywhere; border-radius: 4px; padding: 1px 5px; margin: 0 -5px; }
 .ledger-current.nav { cursor: pointer; }

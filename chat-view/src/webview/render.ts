@@ -2299,10 +2299,14 @@ function renderLedger() {
     // back to t (creation) — so finished tasks order by when they completed, not when they began (the
     // user 2026-06-16). mt is emitted by build_session; the webview falls back to t until a kernel refresh.
     const byRecency = (a: LedgerTreeNode, b: LedgerTreeNode) => ((b.mt ?? b.t) || 0) - ((a.mt ?? a.t) || 0);
-    const orderedRoots = [
+    const sorted = [
       ...roots.filter((r) => !r.done).sort(byRecency),
       ...roots.filter((r) => r.done).sort(byRecency),
     ];
+    // Pin the CURRENT top goal first (the user 2026-06-18): expanding the ledger then opens it IN PLACE —
+    // right under the title, where the collapsed line just sat — instead of dropping it further down the
+    // sorted list, which read as disorienting. The rest keep their unfinished-then-done recency order.
+    const orderedRoots = curTop ? [curTop, ...sorted.filter((r) => r.id !== curTop.id)] : sorted;
     const defaultFold = (n: LedgerTreeNode) => !!n.done && !n.onpath;   // a "previous" task folds unless it's the recent path
     const isFolded = (n: LedgerTreeNode) => !!(n.children && n.children.length) &&
       (ledgerFolded.has(n.id) || (defaultFold(n) && !ledgerExpanded.has(n.id)));
@@ -2310,6 +2314,7 @@ function renderLedger() {
       const expandable = !!(n.children && n.children.length);
       const folded = isFolded(n);
       const row = el("div", "ledger-tnode" + (depth === 0 ? " ledger-top" : "")
+        + (depth === 0 && curTop && n.id === curTop.id ? " ledger-curtop" : "")   // the pinned current top goal — marks where the collapsed line maps to (the user 2026-06-18)
         + (n.current ? " current" : "") + (n.done ? " done" : "")
         + (n.blocked && !n.done ? " blocked" : "")            // current no longer suppresses the blocked ring — the checkbox matches every blocked item (the user 2026-06-17)
         + (n.derived ? " derived" : "") + (n.cleared ? " cleared" : ""));
