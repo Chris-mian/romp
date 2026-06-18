@@ -1936,9 +1936,13 @@ class Distiller(unittest.TestCase):
         self.assertEqual(jd.run_distill(now=now), 1, "mt advanced (re-completed) -> re-distill")
         self.assertEqual(jd.load_goals(SID)["nodes"][gid]["summary"], "fresh")
 
-    def test_prompt_asks_for_artifact_or_summary(self):
-        for phrase in ("concrete ARTIFACT", "copy", "discontinuous"):
+    def test_prompt_asks_for_high_level_takeaway(self):
+        # the user 2026-06-18: the distiller targets high-level understanding (takeaways + logic),
+        # NOT low-level specifics like commit hashes or code detail.
+        for phrase in ("HIGH-LEVEL", "OMIT", "commit hashes", "discontinuous"):
             self.assertIn(phrase, jd.DISTILL_SYS, phrase)
+        for gone in ("concrete ARTIFACT", "verbatim and nothing else"):
+            self.assertNotIn(gone, jd.DISTILL_SYS, gone)
 
     def test_briefs_a_blocked_top_with_the_owed_question(self):
         # the user 2026-06-18 (via business): a BLOCKED top gets a DECISION BRIEF in node["blockSummary"]
