@@ -237,15 +237,16 @@ class CleanCaption(unittest.TestCase):
         # but a real caption that merely contains a normal word is kept
         self.assertEqual(jd._clean_caption("Summarized the release notes"), "Summarized the release notes")
 
-    def test_parse_caption_reads_json_field(self):
-        # the captioner now emits {"caption": "..."}; _parse_caption extracts + cleans the field
-        self.assertEqual(jd._parse_caption('{"caption": "Fixed the feed flicker"}'), "Fixed the feed flicker")
-        self.assertEqual(jd._parse_caption('noise {"caption": "Tinted cards by recency"} more'),
-                         "Tinted cards by recency", "the JSON object is isolated from surrounding prose")
-        self.assertEqual(jd._parse_caption('{"caption": ""}'), "", "empty field (no finished work) -> no caption")
-        self.assertEqual(jd._parse_caption("not json at all"), "", "a non-JSON reply -> no caption")
-        self.assertEqual(jd._parse_caption('{"caption": "How can I help?"}'), "",
-                         "the anti-chat guard still applies to the field value")
+    def test_clean_caption_handles_bare_phrase_and_fences(self):
+        # the captioner emits the BARE phrase now (no JSON wrapper); _clean_caption strips a stray fence/quotes
+        self.assertEqual(jd._clean_caption("Fixed the feed flicker"), "Fixed the feed flicker")
+        self.assertEqual(jd._clean_caption("```\nTinted cards by recency\n```"), "Tinted cards by recency",
+                         "a wrapping code fence is stripped")
+        self.assertEqual(jd._clean_caption("```text\nAdded a parser test\n```"), "Added a parser test")
+        self.assertEqual(jd._clean_caption('"Quoted the phrase"'), "Quoted the phrase",
+                         "surrounding quotes are stripped")
+        self.assertEqual(jd._clean_caption(""), "", "empty reply (no finished work) -> no caption")
+        self.assertEqual(jd._clean_caption("How can I help?"), "", "the anti-chat guard still applies")
 
 
 # ───────────────────────── caption store ─────────────────────────
@@ -364,21 +365,26 @@ class EnginePass(unittest.TestCase):
 
 class ArchiveParse(unittest.TestCase):
     def test_parses_headline_and_abstract(self):
-        out = '{"headline": "Rebuilding the romp event model", "abstract": "Built the parser and its tests. Validated it against the corpus."}'
+        out = "HEADLINE: Rebuilding the romp event model\nABSTRACT: Built the parser and its tests. Validated it against the corpus."
         rec = jd._parse_archive(out)
         self.assertEqual(rec["headline"], "Rebuilding the romp event model")
         self.assertTrue(rec["abstract"].startswith("Built the parser"))
         self.assertIn("corpus", rec["abstract"])
 
-    def test_tolerates_surrounding_prose(self):
-        out = 'Here is the summary:\n{"headline": "Tuning the captioner", "abstract": "Pulled the word target down. Killed the comma-splice tail."}'
+    def test_tolerates_fence_around_the_two_lines(self):
+        out = "```\nHEADLINE: Tuning the captioner\nABSTRACT: Pulled the word target down. Killed the comma-splice tail.\n```"
         rec = jd._parse_archive(out)
         self.assertEqual(rec["headline"], "Tuning the captioner")
         self.assertIn("Pulled the word target down. Killed the comma-splice tail.", rec["abstract"])
 
+    def test_multiline_abstract_is_joined(self):
+        out = "HEADLINE: A wrapped abstract\nABSTRACT: First sentence.\nSecond sentence still part of the abstract."
+        rec = jd._parse_archive(out)
+        self.assertIn("First sentence. Second sentence", rec["abstract"], "the abstract runs to the end")
+
     def test_missing_field_is_failed_capture(self):
-        self.assertIsNone(jd._parse_archive('{"headline": "only a headline, no abstract"}'))
-        self.assertIsNone(jd._parse_archive("just some prose with no JSON"))
+        self.assertIsNone(jd._parse_archive("HEADLINE: only a headline, no abstract line"))
+        self.assertIsNone(jd._parse_archive("just some prose with no labels"))
         self.assertIsNone(jd._parse_archive(""))
 
 
@@ -1191,8 +1197,7 @@ class PlanTuning(unittest.TestCase):
         # (judge_ui's raw_decode fix), but the prompts should also cut it at the source. Every JSON-emitting
         # judge must explicitly forbid text AFTER the closing brace — the exact failure mode ({...} + a note
         # containing a brace broke the greedy matcher). Guard against the instruction drifting away.
-        for name, sysprompt in (("captioner", jd.CAPTION_SYS), ("archiver", jd.ARCHIVE_SYS),
-                                ("planner", jd.PLAN_SYS), ("grouper", jd.GROUP_SYS), ("closer", jd.CLOSER_SYS)):
+        for name, sysprompt in (("planner", jd.PLAN_SYS), ("grouper", jd.GROUP_SYS), ("closer", jd.CLOSER_SYS)):
             self.assertIn("nothing after the closing brace", sysprompt,
                           "%s must forbid trailing prose after the JSON object" % name)
 
@@ -1583,13 +1588,18 @@ class JudgeSystemPrompt(unittest.TestCase):
 
 
 class JudgeOutputFormat(unittest.TestCase):
-    """All five judges speak ONE output shape: a single JSON object, parsed by the shared _json_obj
-    (the user 2026-06-16). Guards the consistency against any judge drifting back to a bespoke format."""
+    """The TRIAGE judges speak ONE output shape: a single JSON object, parsed by the shared _json_obj
+    (the user 2026-06-16). The INDEX judges (captioner/archiver) emit plain text — bare phrase / two
+    labeled lines — to skip the JSON-wrapper tokens (the user 2026-06-18)."""
 
-    def test_every_judge_prompt_requests_a_json_object(self):
-        for name, sysp in [("captioner", jd.CAPTION_SYS), ("archiver", jd.ARCHIVE_SYS),
-                           ("planner", jd.PLAN_SYS), ("closer", jd.CLOSER_SYS), ("courier", jd.COURIER_SYS)]:
+    def test_triage_judge_prompts_request_a_json_object(self):
+        for name, sysp in [("planner", jd.PLAN_SYS), ("closer", jd.CLOSER_SYS), ("courier", jd.COURIER_SYS)]:
             self.assertIn("JSON object", sysp, "%s must request a single JSON object" % name)
+
+    def test_index_judge_prompts_are_plain_text_not_json(self):
+        self.assertIn("the phrase", jd.CAPTION_SYS); self.assertNotIn("JSON object", jd.CAPTION_SYS)
+        self.assertIn("HEADLINE:", jd.ARCHIVE_SYS); self.assertIn("ABSTRACT:", jd.ARCHIVE_SYS)
+        self.assertNotIn("JSON object", jd.ARCHIVE_SYS, "archiver emits two labeled lines, not JSON")
 
     def test_json_obj_isolates_the_outermost_object(self):
         self.assertEqual(jd._json_obj('```json\n{"a": 1}\n```'), {"a": 1}, "code fences are tolerated")
