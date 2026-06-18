@@ -1064,6 +1064,24 @@ class ViewBuilder(unittest.TestCase):
         comp = next(a for a in km.build_feed(NOW)["asks"] if a["column"] == "completed")
         self.assertIsNone(comp["blocked"], "a completed focus card is not floored by a live prompt")
 
+    def test_feed_live_permission_floors_a_nodecomplete_but_working_focus(self):
+        """A focus goal that is nodeComplete but the settled gate still holds at "working" (the session kept
+        working under it, then live-blocked) MUST floor to BLOCKED — the floor gates on the ROLLED-UP status,
+        not the raw nodeComplete flag (the user 2026-06-18: system_prompt was red-tabbed but absent from the
+        BLOCKED column because its nodeComplete focus rolled up to "working", not "completed")."""
+        g = "%s:g7" % SID
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+            "rompUuid": SID, "seq": 7, "lastNode": g,
+            "nodes": {g: {"id": g, "text": "Read the system prompt", "parentId": None,
+                          "nodeComplete": True, "blocked": False, "cleared": False, "trail": [], "t": NOW - 50}},
+            "placements": {}, "status": {g: "working"}}))
+        km._tmux_sessions = lambda: {SID: {"state": "permission", "since": NOW - 30, "model": "",
+                                           "effort": "", "context": None, "compactPct": None, "color": None}}
+        card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
+        self.assertEqual(card["blocked"]["state"], "permission",
+                         "a nodeComplete-but-WORKING focus IS floored by a live permission prompt")
+        self.assertEqual(card["column"], "working", "its column stays working; the client routes by it.blocked")
+
     def test_feed_no_permission_no_hard_block(self):
         comp = next(a for a in km.build_feed(NOW)["asks"] if a["column"] == "completed")
         self.assertIsNone(comp["blocked"], "no live permission (idle) → no hard block floor")

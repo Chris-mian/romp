@@ -1781,13 +1781,17 @@ def build_feed(now, tmux=None):
         # HARD blocked floor: a session stopped RIGHT NOW on a live permission prompt (tmux state)
         # floors its ACTIVE-FOCUS card under BLOCKED — the strongest signal, beats the goal's planner
         # status. (The planner's SOFT block, nd["blocked"], is the model's "needs user" verdict; this is
-        # the live event.) Floors only the focus top-goal, and only while it is still open.
+        # the live event.) Gated on the ROLLED-UP status, NOT the raw nodeComplete flag: a focus that is
+        # nodeComplete but the settled gate still holds at "working" (the session marked it done, then kept
+        # working under it and live-blocked) IS floored — so a live block always surfaces; only a genuinely
+        # settled "completed" (or user-"cleared") card is left alone, its block being for new, not-yet-placed
+        # work. (the user 2026-06-18: a live-blocked nodeComplete-but-working focus wasn't reaching BLOCKED.)
         perm_top = None
         if tm and tm.get("state") == "permission":
             f = store.get("lastNode")
             while f and nodes.get(f, {}).get("parentId") is not None:
                 f = nodes[f]["parentId"]
-            if f in nodes and not nodes[f].get("nodeComplete") and not nodes[f].get("cleared"):
+            if f in nodes and status.get(f) not in ("completed", "cleared"):
                 perm_top = f
         # API-error floor: a session stopped on an API error (transcript isApiErrorMessage, event-based)
         # floors its focus top-goal under BLOCKED with an apiError reason → the feed card shows a red
@@ -1798,7 +1802,7 @@ def build_feed(now, tmux=None):
             f = store.get("lastNode")
             while f and nodes.get(f, {}).get("parentId") is not None:
                 f = nodes[f]["parentId"]
-            if f in nodes and not nodes[f].get("nodeComplete") and not nodes[f].get("cleared"):
+            if f in nodes and status.get(f) not in ("completed", "cleared"):   # rollup status, not raw nodeComplete (see perm floor)
                 api_top = f
         for nid in children.get(None, []):
             col = status.get(nid, "working")
