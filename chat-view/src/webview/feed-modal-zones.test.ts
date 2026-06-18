@@ -11,8 +11,10 @@ import * as path from "node:path";
 const FEED = fs.readFileSync(path.resolve(process.cwd(), "src", "webview", "feed.ts"), "utf8");
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "src", "webview", "feed.css"), "utf8");
 
-test("modal node: text → the minting MESSAGE (anchor 'prompt' @ node.t)", () => {
-  assert.match(FEED, /const goMsg = \(ev: Event\) => \{[^}]*anchor: "prompt", anchorUuid: null \}/);
+test("modal node: text → the minting MESSAGE (anchor 'prompt', resolves by promptAnchorUuid)", () => {
+  // the prompt jump now carries the node's promptAnchorUuid (the user's minting turn) → resolves BY ID, not
+  // the old anchorUuid:null + time-landing (kernel 92e23ff + bugs' contract).
+  assert.match(FEED, /const goMsg = \(ev: Event\) => \{[^}]*anchor: "prompt", anchorUuid: node\.promptAnchorUuid \?\? null \}/);
   assert.match(FEED, /t: node\.t, anchor: "prompt"/);
   assert.match(FEED, /txt\.classList\.add\("lz-nav"\); txt\.title = "jump to the message that asked for this"; txt\.onclick = goMsg/);
 });

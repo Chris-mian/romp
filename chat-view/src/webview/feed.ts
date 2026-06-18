@@ -51,7 +51,8 @@ interface AskTreeNode {
   whoWorking?: boolean;                                          // that agent is currently WORKING → yellow dot before its name
   status: "done" | "question" | "open"; t: number; last: number;
   mt?: number;                                                   // last-modified (done/block segment) → blocked/done nodes deep-link to where they RESOLVED, not where they were minted
-  anchorUuid?: string | null;                                    // EXACT turn uuid for this node's deep-link target (kernel 996ebd7) — id-based jump, not nearest-time; null when unresolvable → time fallback
+  anchorUuid?: string | null;                                    // EXACT turn uuid for this node's WORK target (where it resolved — an assistant turn); mark/time zones jump here. null when unresolvable
+  promptAnchorUuid?: string | null;                              // EXACT turn uuid for this node's PROMPT target = the user's minting message (a user turn) → prompt-intent jumps (title, text) resolve BY ID (kernel 92e23ff)
   why?: string; blockWhy?: string; doneWhy?: string;             // planner's one-sentence rationales — revealed on hover in the modal
   derived?: boolean;                                             // done by roll-up/roll-down (kernel), not explicit → DIMMED ✓ disc
   followupPending?: boolean;                                     // this sub was optimistically reopened by a per-sub follow-up → "↻ Followed up" chip (kernel flatten, judges 047264f)
@@ -456,8 +457,14 @@ function makeAskCard(it: AskItem): HTMLElement {
   // user message). The card's root node is the one whose id IS the card's itemId. Null → time fallback.
   // (The chat's kind guard still refuses a non-user uuid for "prompt"-intent, so a normal card with only
   // a reply uuid falls back to time as before — no regression; delegation "work" cards deep-link.)
-  const cardAnchorUuid = it.tree?.find((n) => n.id === it.itemId)?.anchorUuid ?? null;
-  title.onclick = (ev) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: it.itemId, sid: it.sid, t: it.t, anchor: titleAnchor, anchorUuid: cardAnchorUuid }); };
+  // The root node carries TWO uuids (bugs 92e23ff): anchorUuid = the WORK turn (where it resolved), and
+  // promptAnchorUuid = the user's MINTING message (a user turn). A "prompt"-intent title jumps by the prompt
+  // uuid (resolves by id on the user turn — no kind-guard refusal, no time-landing heuristic); a "work"
+  // (origin) title keeps the work uuid. cardAnchorUuid stays the WORK uuid — goNoted (the why-line) reuses it.
+  const rootNode = it.tree?.find((n) => n.id === it.itemId);
+  const cardAnchorUuid = rootNode?.anchorUuid ?? null;
+  const titleUuid = titleAnchor === "prompt" ? (rootNode?.promptAnchorUuid ?? null) : cardAnchorUuid;
+  title.onclick = (ev) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: it.itemId, sid: it.sid, t: it.t, anchor: titleAnchor, anchorUuid: titleUuid }); };
   // The why-tagline (block/done reason) deep-links like the title — to where the planner NOTED it: the
   // card's anchorUuid (which, for a DONE card, lands where it got checked off) + the "work" assistant-turn
   // intent. The user's ask, relayed by the judges session (2026-06-17). (The inline sub-goal checkmarks are
@@ -916,7 +923,7 @@ function wireNodeZones(it: AskItem, node: AskTreeNode, mark: HTMLElement, txt: H
   const navSid = node.whoSid || (node.kind === "handoff" ? node.id.split(":")[0] : it.sid);
   const resolved = node.status === "done" || node.status === "question";   // done / blocked → has a resolution
   const resolveT = (resolved && node.mt) ? node.mt : node.t;
-  const goMsg = (ev: Event) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: navId, sid: navSid, t: node.t, anchor: "prompt", anchorUuid: null }); };
+  const goMsg = (ev: Event) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: navId, sid: navSid, t: node.t, anchor: "prompt", anchorUuid: node.promptAnchorUuid ?? null }); };
   const goWork = (ev: Event) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: navId, sid: navSid, t: resolveT, anchor: "work", anchorUuid: node.anchorUuid ?? null }); };
   if (!wire) return goWork;
   // tooltip names the destination by status: a blocked node was "marked blocked", a done node "checked off"
@@ -1256,7 +1263,9 @@ function renderModal() {
   if (grp) {
     ttlEl.textContent = grp.title;
     titleHoverId = grp.turnId;
-    ttlEl.onclick = () => vscodeApi?.postMessage({ type: "showOnTimeline", itemId: grp.members[0].itemId, sid: grp.sid, t: grp.t, anchor: "prompt" });
+    const gm0 = grp.members[0];   // prompt-intent title → the first member's MINTING message (resolves by id, kernel 92e23ff)
+    const gm0Prompt = gm0.tree?.find((n) => n.id === gm0.itemId)?.promptAnchorUuid ?? null;
+    ttlEl.onclick = () => vscodeApi?.postMessage({ type: "showOnTimeline", itemId: gm0.itemId, sid: grp.sid, t: grp.t, anchor: "prompt", anchorUuid: gm0Prompt });
     agent.textContent = grp.name; if (grp.color) agent.style.color = grp.color.bg; setWorkDot(agent, workingSet.has(grp.name)); agent.classList.toggle("dead", !grp.live);
     agent.onclick = () => vscodeApi?.postMessage({ type: "openSession", id: grp.sid });
     ageEl.textContent = relAge(hostNow - grp.t);

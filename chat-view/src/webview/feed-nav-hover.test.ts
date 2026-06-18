@@ -48,12 +48,14 @@ test("the work zones deep-link BY ID — forward node.anchorUuid alongside the t
   assert.match(FEED, /goWork = .*showOnTimeline".*anchor: "work", anchorUuid: node\.anchorUuid \?\? null/);
 });
 
-test("the card title deep-links by id too — anchorUuid from the card's ROOT tree node", () => {
-  // the card's root node is the one whose id IS the card's itemId; null when the kernel can't resolve →
-  // time fallback (and for a "prompt"-intent normal card the chat's kind guard refuses a reply uuid, so
-  // it falls back to time as before — no regression; "work" delegation cards deep-link by id).
-  assert.match(FEED, /const cardAnchorUuid = it\.tree\?\.find\(\(n\) => n\.id === it\.itemId\)\?\.anchorUuid \?\? null/);
-  assert.match(FEED, /title\.onclick = .*showOnTimeline".*anchor: titleAnchor, anchorUuid: cardAnchorUuid/);
+test("the card title deep-links by id — promptAnchorUuid for a 'prompt' title, anchorUuid for a 'work' one", () => {
+  // the card's root node carries BOTH uuids (kernel 92e23ff). A prompt-intent title resolves by the user's
+  // MINTING turn (promptAnchorUuid — a user turn the kind guard accepts, no time-landing); a "work"/origin
+  // title keeps the work uuid. cardAnchorUuid stays the work uuid (goNoted / the why-line reuses it).
+  assert.match(FEED, /const rootNode = it\.tree\?\.find\(\(n\) => n\.id === it\.itemId\)/);
+  assert.match(FEED, /const cardAnchorUuid = rootNode\?\.anchorUuid \?\? null/);
+  assert.match(FEED, /const titleUuid = titleAnchor === "prompt" \? \(rootNode\?\.promptAnchorUuid \?\? null\) : cardAnchorUuid/);
+  assert.match(FEED, /title\.onclick = .*showOnTimeline".*anchor: titleAnchor, anchorUuid: titleUuid/);
 });
 
 test("a blocked card has NO follow-up button — the follow-up is modal-only", () => {

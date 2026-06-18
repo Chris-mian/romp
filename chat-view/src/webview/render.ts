@@ -2053,16 +2053,15 @@ function landActive(content: HTMLElement | null, v: View): void {
   if (!content) return;
   const att = { anchor: pendingAnchor, t: pendingAnchorT, kind: pendingAnchorKind };   // this pass's landing attempt, for diagnostics
   if (att.anchor || att.t != null) landTrail = [];
-  let scrolled = pendingAnchor ? scrollToAnchor(pendingAnchor) : false;
-  // HONEST-FAIL (the user 2026-06-17, via bugs): the uuid anchor is the primary landing signal, and there is
-  // NO time-based heuristic fallback for WORK/REPLY intent — when a work anchor can't resolve, say so plainly
-  // rather than jumping to an unrelated nearby assistant turn ("I'd rather get a message it couldn't find than
-  // be taken to some unrelated thing by a heuristic"). ONE legitimate exception: a PROMPT-intent click (a card
-  // TITLE, kind "user") carries the node's REPLY uuid, which the kind-guard correctly refuses — so land on the
-  // nearest USER turn at the card's time. That is the INTENDED target (every card is minted from a typed turn,
-  // so the nearest user turn IS its minting message), not a heuristic guess, so it must NOT honest-fail. (The
-  // deeper fix — a real PROMPT anchor uuid per node so even this resolves by id — is bugs' next contract.)
-  if (!scrolled && pendingAnchorKind === "user" && pendingAnchorT != null) scrolled = scrollToNearestT(pendingAnchorT, "user");
+  const scrolled = pendingAnchor ? scrollToAnchor(pendingAnchor) : false;
+  // HONEST-FAIL (the user 2026-06-17, via bugs): the uuid anchor is the ONLY landing signal — there is NO
+  // time-based heuristic fallback, for ANY intent. Both intents now carry a resolvable uuid: WORK/REPLY jumps
+  // send the node's anchorUuid, and PROMPT jumps (card title / node text) send promptAnchorUuid — the user's
+  // minting-message turn, a user turn the kind-guard accepts (kernel 92e23ff + feed wiring). When the anchor
+  // can't resolve (a genuinely-missing/null promptAnchorUuid, a peer node whose trigger isn't a user turn, or
+  // a turn off the active path), say so plainly rather than jumping to an unrelated nearby moment ("I'd rather
+  // get a message it couldn't find than be taken to some unrelated thing by a heuristic"). This retires the
+  // e14e27c prompt-intent nearest-USER-turn stopgap — the prompt now resolves by id, no heuristic needed.
   pendingAnchor = null; pendingAnchorIntent = null; pendingAnchorT = null; pendingAnchorKind = null;
   // Diagnostics: log every landing attempt; a deep-link that couldn't resolve announces itself loudly
   // instead of impersonating a successful jump.
