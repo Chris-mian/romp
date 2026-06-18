@@ -1978,9 +1978,11 @@ class TimelinePanel {
           if (x2 - x1 < JMARK_MINW) { const c = (x1 + x2) / 2; x1 = c - JMARK_MINW / 2; x2 = c + JMARK_MINW / 2; }
           const col = colorOf(b.sid), active = (nowS - b.end) >= 0 && (nowS - b.end) < 8;
           // fill = the SESSION being judged; outline = THIS judge's own colour
+          // SOLID session colour, NO border (the user 2026-06-18): the judge's own colour already lives on
+          // the row's horizontal rail, so a per-bar outline just repeated it. "Running now" reads as a fully
+          // opaque bar; a settled one is slightly dimmed — that's the only cue, no stroke.
           const r = el('rect', { x: x1, y: y - JBAR_H / 2, width: x2 - x1, height: JBAR_H, rx: 2.5,
-            fill: col, 'fill-opacity': 0.92, stroke: J.color, 'stroke-width': 1.25, 'data-judge': J.key });
-          if (active) { r.setAttribute('fill-opacity', '1'); r.setAttribute('stroke-width', '1.9'); }   // running now → solid + bolder outline
+            fill: col, 'fill-opacity': active ? 1 : 0.82, 'data-judge': J.key });
           svg.appendChild(r);
           const html = () => {
             const span = b.start === b.end ? clock(b.start) : clock(b.start) + '–' + clock(b.end);

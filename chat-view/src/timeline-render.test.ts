@@ -338,7 +338,8 @@ test("judging band: with Debug mode on, data.judging renders a compact, labelled
   const cap = findAll(panel.svg, (n) => n.getAttribute && n.getAttribute("data-judge") === "captioner");
   assert.equal(cap.length, 1, "two adjacent same-session captions merge into ONE attention mark");
   assert.equal(cap[0].getAttribute("fill"), "#7aa2f7", "a mark is FILLED with the session it judged");
-  assert.equal(cap[0].getAttribute("stroke"), "#1EA1EB", "a mark is OUTLINED in the judge's own colour");
+  // no per-bar outline (the user 2026-06-18) — the judge's colour lives on the row rail, not a redundant stroke
+  assert.equal(cap[0].getAttribute("stroke"), undefined, "a mark has NO stroke (solid session-colour fill only)");
   assert.equal(findAll(panel.svg, (n) => n.getAttribute && n.getAttribute("data-judge") === "courier").length, 1);
 });
 test("judging band is gated on Debug mode: OFF by default hides it; Debug on draws it and grows the SVG", () => {
