@@ -22,8 +22,11 @@ def iso(epoch):
     return datetime.fromtimestamp(epoch, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
 
-def _asst(usage, ts=None):
-    o = {"type": "assistant", "message": {"role": "assistant", "content": [], "usage": usage}}
+def _asst(usage, ts=None, model=None):
+    msg = {"role": "assistant", "content": [], "usage": usage}
+    if model is not None:
+        msg["model"] = model
+    o = {"type": "assistant", "message": msg}
     if ts is not None:
         o["timestamp"] = ts
     return json.dumps(o)
@@ -220,10 +223,14 @@ class TokenAnalytics(unittest.TestCase):
     def setUp(self):
         self.td = tempfile.TemporaryDirectory()
         self.saved_state, self.saved_discover = jd.STATE, jd.discover
+        self.saved_cfg, self.saved_refresh = km.PRICE_CONFIG, km._refresh_remote_prices
         jd.STATE = pathlib.Path(self.td.name)
+        km.PRICE_CONFIG = pathlib.Path(self.td.name) / "no-prices.json"   # nonexistent → defaults only
+        km._refresh_remote_prices = lambda now: None                     # no network in tests
 
     def tearDown(self):
         jd.STATE, jd.discover = self.saved_state, self.saved_discover
+        km.PRICE_CONFIG, km._refresh_remote_prices = self.saved_cfg, self.saved_refresh
         self.td.cleanup()
 
     def test_window_splits_sessions_vs_per_judge_and_tier(self):
@@ -241,7 +248,7 @@ class TokenAnalytics(unittest.TestCase):
         ]) + "\n")
         a = km._token_analytics(NOW, 3600)
         self.assertEqual(a["window"], 3600)
-        self.assertEqual(a["sessions"], {"in": 130, "out": 28}, "both sessions summed, windowed")
+        self.assertEqual((a["sessions"]["in"], a["sessions"]["out"]), (130, 28), "both sessions summed, windowed")
         self.assertEqual(a["judges"]["total"]["in"], 86, "10+6+70; the >1h planner call dropped")
         self.assertEqual(set(a["judges"]["byJudge"]), {"captioner", "archiver", "planner"})
         self.assertEqual(a["judges"]["byJudge"]["planner"]["out"], 30)
@@ -251,9 +258,73 @@ class TokenAnalytics(unittest.TestCase):
     def test_empty_fleet_and_no_log_is_zero_but_shaped(self):
         jd.discover = lambda now: []
         a = km._token_analytics(NOW, 86400)
-        self.assertEqual(a["sessions"], {"in": 0, "out": 0})
+        self.assertEqual((a["sessions"]["in"], a["sessions"]["out"], a["sessions"]["cost"]), (0, 0, 0.0))
         self.assertEqual(a["judges"]["total"]["calls"], 0)
         self.assertEqual(a["judges"]["byJudge"], {})
+
+
+class CostWeighting(unittest.TestCase):
+    """The cost-weighted analytics: SESSIONS priced tokens × _model_prices (defaults < remote feed <
+    ~/.config override); JUDGES use claude's exact logged cost. The remote feed is monkeypatched off so
+    these never touch the network."""
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory()
+        self.saved_cfg, self.saved_refresh = km.PRICE_CONFIG, km._refresh_remote_prices
+        self.saved_remote = dict(km._price_cache.get("remote", {}))
+        self.saved_state, self.saved_discover = jd.STATE, jd.discover
+        km.PRICE_CONFIG = pathlib.Path(self.td.name) / "model-prices.json"
+        km._refresh_remote_prices = lambda now: None      # no network in tests → defaults/config only
+        km._price_cache["remote"] = {}
+        jd.STATE = pathlib.Path(self.td.name)
+
+    def tearDown(self):
+        km.PRICE_CONFIG, km._refresh_remote_prices = self.saved_cfg, self.saved_refresh
+        km._price_cache["remote"] = self.saved_remote
+        jd.STATE, jd.discover = self.saved_state, self.saved_discover
+        self.td.cleanup()
+
+    def test_price_for_exact_then_family_then_none(self):
+        prices = {"claude-opus-4-8": {"in": 1, "out": 2, "cache_w": 3, "cache_r": 4}}
+        self.assertEqual(km._price_for("claude-opus-4-8", prices)["out"], 2, "exact id")
+        self.assertEqual(km._price_for("claude-opus-4-8-20990101", prices)["out"], 2, "same-family fallback")
+        self.assertIsNone(km._price_for("some-other-model", prices), "unknown family → uncounted")
+
+    def test_config_overrides_default_price(self):
+        km.PRICE_CONFIG.write_text(json.dumps(
+            {"claude-opus-4-8": {"in": 9e-6, "out": 40e-6, "cache_w": 1e-6, "cache_r": 1e-7}}))
+        pr = km._model_prices(NOW)
+        self.assertEqual(pr["claude-opus-4-8"]["in"], 9e-6, "config overrides the baked-in default")
+        self.assertEqual(pr["claude-sonnet-4-6"]["out"], 15e-6, "an unconfigured model keeps its default")
+
+    def test_session_cost_prices_per_message_model_and_all_token_classes(self):
+        with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False, dir=self.td.name) as f:
+            f.write(_asst({"input_tokens": 1000, "output_tokens": 500,
+                           "cache_creation_input_tokens": 2000, "cache_read_input_tokens": 40000},
+                          iso(NOW - 100), model="claude-opus-4-8") + "\n")
+            f.write(_asst({"input_tokens": 9, "output_tokens": 9}, iso(NOW - 99999),
+                          model="claude-opus-4-8") + "\n")     # outside the window → not priced
+            path = f.name
+        prices = {"claude-opus-4-8": {"in": 5e-6, "out": 25e-6, "cache_w": 6.25e-6, "cache_r": 0.5e-6}}
+        cost = km._session_cost(path, NOW - 3600, prices)
+        expected = 1000 * 5e-6 + 500 * 25e-6 + 2000 * 6.25e-6 + 40000 * 0.5e-6   # cache reads count too
+        self.assertAlmostEqual(cost, expected, places=9)
+
+    def test_analytics_carries_cost_both_sides(self):
+        p1 = pathlib.Path(self.td.name) / "s1.jsonl"
+        p1.write_text(_asst({"input_tokens": 1000, "output_tokens": 200, "cache_read_input_tokens": 100000},
+                            iso(NOW - 600), model="claude-opus-4-8") + "\n")
+        jd.discover = lambda now: [("fs1", p1, "a", "s1")]
+        (jd.STATE / "judge-usage.jsonl").write_text(json.dumps(
+            {"t": NOW - 500, "judge": "captioner", "tier": "index", "in": 10, "out": 4,
+             "cost": 0.0123, "ms": 50}) + "\n")
+        a = km._token_analytics(NOW, 3600)
+        # sessions: priced from defaults (opus $5/$25/Mtok + $0.5/Mtok cache read)
+        exp_sess = 1000 * 5e-6 + 200 * 25e-6 + 100000 * 0.5e-6
+        self.assertAlmostEqual(a["sessions"]["cost"], exp_sess, places=9)
+        self.assertEqual(a["sessions"]["in"], 1000)
+        # judges: the exact logged cost, not a token estimate
+        self.assertAlmostEqual(a["judges"]["total"]["cost"], 0.0123, places=9)
+        self.assertAlmostEqual(a["judges"]["byJudge"]["captioner"]["cost"], 0.0123, places=9)
 
 
 if __name__ == "__main__":

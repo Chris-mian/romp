@@ -2090,7 +2090,7 @@ def _derive_judging(sid, caps, goals, t0, out):
         pass
 
 
-_session_tok_cache = {}   # path -> (mtime, [(t, in, out, cache_w, cache_r), ...]): per-message token rows
+_session_tok_cache = {}   # path -> (mtime, [(t, in, out, cache_w, cache_r, model), ...]): per-message token rows
 
 
 def _msg_epoch(o):
@@ -2126,17 +2126,19 @@ def _session_tokens(path, t0):
                         continue
                     if o.get("type") != "assistant":
                         continue
-                    u = (o.get("message") or {}).get("usage") or {}
+                    m = o.get("message") or {}
+                    u = m.get("usage") or {}
                     rows.append((_msg_epoch(o),
                                  int(u.get("input_tokens") or 0), int(u.get("output_tokens") or 0),
                                  int(u.get("cache_creation_input_tokens") or 0),
-                                 int(u.get("cache_read_input_tokens") or 0)))
+                                 int(u.get("cache_read_input_tokens") or 0),
+                                 m.get("model") or ""))   # for cost weighting (price is per-model)
         except OSError:
             return dict(z)
         _session_tok_cache[path] = (mt, rows)
         hit = _session_tok_cache[path]
     acc = dict(z)
-    for (t, i, o, cw, cr) in hit[1]:
+    for (t, i, o, cw, cr, _m) in hit[1]:
         if t is None or t >= t0:
             acc["in"] += i; acc["out"] += o; acc["cache_w"] += cw; acc["cache_r"] += cr
     return acc
@@ -2186,17 +2188,133 @@ def _token_windows(paths, now):
             "windows": {"fiveHour": WIN_5H, "week": WIN_WEEK}}
 
 
+# ── per-model $ prices for the cost-weighted analytics view ──────────────────────────────────────
+# The cost view weights tokens by real $. JUDGES carry claude -p's exact total_cost_usd (logged per call
+# in judge-usage.jsonl), so their cost needs NO price table. SESSIONS (the transcript) carry tokens but no
+# cost, so we price them tokens × rate. Anthropic publishes no pricing API, so rates come from, lowest →
+# highest precedence: a baked-in DEFAULT table (so the view always works offline), a best-effort refresh
+# of the community LiteLLM price feed (cached, stale-while-revalidate, never fatal), and the user's
+# ~/.config/romp/model-prices.json override. Values are $ per token, keyed by our internal model ids.
+PRICE_CONFIG = Path(os.path.expanduser("~/.config/romp/model-prices.json"))
+PRICE_FEED_URL = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
+PRICE_TTL = 6 * 3600
+DEFAULT_MODEL_PRICES = {   # $/token: input, output, cache write (5m), cache read. Starting points only —
+                           # the LiteLLM refresh overwrites these with the live feed (which carries the
+                           # exact ids), so they just need to be sane when offline / before the first fetch.
+    "claude-opus-4-8":           {"in": 5e-6, "out": 25e-6, "cache_w": 6.25e-6, "cache_r": 0.5e-6},
+    "claude-sonnet-4-6":         {"in": 3e-6, "out": 15e-6, "cache_w": 3.75e-6, "cache_r": 0.3e-6},
+    "claude-haiku-4-5-20251001": {"in": 1e-6, "out": 5e-6,  "cache_w": 1.25e-6, "cache_r": 0.1e-6},
+}
+_price_cache = {"t": 0, "remote": {}}   # remote feed prices, refreshed on a TTL in the background
+
+
+def _price_sig(name):
+    """(family, major, minor) of an Anthropic model id, or None — opus/sonnet/haiku + the first X-Y
+    version pair (so 'claude-opus-4-8' → ('opus','4','8'), the feed's 'claude-opus-4-1' → (...,'1'))."""
+    m = re.search(r"(opus|sonnet|haiku)\D*(\d+)[.\-](\d+)", (name or "").lower())
+    return (m.group(1), m.group(2), m.group(3)) if m else None
+
+
+def _refresh_remote_prices(now):
+    """Best-effort, stale-while-revalidate: if the cached feed is older than PRICE_TTL, kick a background
+    fetch and return immediately (the caller uses defaults/config + whatever's cached). The match is
+    CONSERVATIVE — by exact (family, major, minor) — so a near-miss (our opus-4-8 vs a feed opus-4-1) is
+    never silently mispriced; an unmatched model just keeps its baked-in default. Never raises."""
+    if now - _price_cache["t"] < PRICE_TTL:
+        return
+    _price_cache["t"] = now                          # stamp first so a slow/failing fetch isn't hammered
+    want = {_price_sig(k): k for k in DEFAULT_MODEL_PRICES if _price_sig(k)}
+
+    def work():
+        try:
+            import urllib.request
+            with urllib.request.urlopen(PRICE_FEED_URL, timeout=4) as r:
+                feed = json.loads(r.read().decode("utf-8", "replace"))
+        except Exception:
+            return
+        out = {}
+        for k, v in (feed.items() if isinstance(feed, dict) else []):
+            if not str(k).lower().startswith("claude") or not isinstance(v, dict):
+                continue
+            sig = _price_sig(k)
+            if sig not in want or want[sig] in out:
+                continue
+            try:
+                inp = float(v["input_cost_per_token"])
+                out[want[sig]] = {"in": inp, "out": float(v["output_cost_per_token"]),
+                                  "cache_w": float(v.get("cache_creation_input_token_cost") or inp),
+                                  "cache_r": float(v.get("cache_read_input_token_cost") or inp)}
+            except Exception:
+                continue
+        _price_cache["remote"] = out
+
+    threading.Thread(target=work, name="price-refresh", daemon=True).start()
+
+
+def _model_prices(now=None):
+    """The merged $/token price map: baked-in DEFAULT < best-effort remote feed < user config override."""
+    if now is None:
+        now = int(time.time())
+    _refresh_remote_prices(now)
+    prices = {k: dict(v) for k, v in DEFAULT_MODEL_PRICES.items()}
+    prices.update({k: dict(v) for k, v in _price_cache["remote"].items()})
+    try:
+        cfg = json.loads(PRICE_CONFIG.read_text())
+        for k, v in (cfg.items() if isinstance(cfg, dict) else []):
+            if isinstance(v, dict):
+                base = prices.get(k, {})
+                prices[k] = {kk: float(v.get(kk, base.get(kk, 0)) or 0) for kk in ("in", "out", "cache_w", "cache_r")}
+    except Exception:
+        pass
+    return prices
+
+
+def _price_for(model, prices):
+    """The price row for a model: exact id, else any priced model of the same family (opus/sonnet/haiku)
+    so a differently-dated id still gets a sane rate, else None (uncounted — defensive)."""
+    if model in prices:
+        return prices[model]
+    m = (model or "").lower()
+    for fam in ("opus", "sonnet", "haiku"):
+        if fam in m:
+            for k, v in prices.items():
+                if fam in k.lower():
+                    return v
+    return None
+
+
+def _session_cost(path, t0, prices):
+    """$ cost of a session's token usage over [t0, now], priced per-message by its model — sessions carry
+    no logged cost (unlike judges). Reuses _session_tokens' per-message row cache (which now carries the
+    model). Cache reads are cheap per token but huge in volume, so all four token classes are priced."""
+    _session_tokens(path, t0)                        # populate/refresh the row cache
+    hit = _session_tok_cache.get(path)
+    if not hit:
+        return 0.0
+    c = 0.0
+    for (t, i, o, cw, cr, model) in hit[1]:
+        if t is not None and t < t0:
+            continue
+        pr = _price_for(model, prices)
+        if pr:
+            c += i * pr["in"] + o * pr["out"] + cw * pr["cache_w"] + cr * pr["cache_r"]
+    return c
+
+
 def _token_analytics(now, window):
     """Token usage over the trailing `window` seconds for the analytics modal (the /analytics endpoint):
     the coding SESSIONS total (summed transcript usage of the discovered fleet) vs the judge PIPELINE
     broken out per judge AND per tier (_judge_usage). One ARBITRARY window — the modal's period picker —
-    where the footer's _token_windows only does the two fixed Claude meters (5h/7d). Cheap: _session_tokens
-    caches per-path rows, so this just re-sums the cache for the chosen t0."""
+    where the footer's _token_windows only does the two fixed Claude meters (5h/7d). Each side also carries
+    $ cost so the modal can toggle tokens↔cost without a refetch: judges = exact logged cost, sessions =
+    tokens × _model_prices. Cheap: _session_tokens caches per-path rows, so this re-sums the cache."""
     t0 = now - window
-    s = {"in": 0, "out": 0}
+    prices = _model_prices(now)
+    s = {"in": 0, "out": 0, "cost": 0.0}
     for fsid, path, anchor, name in jd.discover(now):
         d = _session_tokens(str(path), t0)
         s["in"] += d["in"]; s["out"] += d["out"]
+        s["cost"] += _session_cost(str(path), t0, prices)
     return {"window": window, "now": now, "sessions": s, "judges": _judge_usage(t0)}
 
 
@@ -2891,11 +3009,11 @@ _GEAR_CSS = ("#rgear{position:fixed;top:6px;right:8px;z-index:60;background:#2a2
              "#ranalytics .ra-title{font-weight:600;font-size:14px;color:#e8eaed}"
              "#ra-close{background:none;border:none;color:#9aa0a6;font-size:16px;cursor:pointer;line-height:1}"
              "#ra-close:hover{color:#fff}"
-             ".ra-periods,.ra-group{display:flex;gap:4px;margin-bottom:8px;flex-wrap:wrap}"
-             ".ra-periods button,.ra-group button{background:#2a2a2b;border:1px solid #3a3a3a;border-radius:5px;"
-             "color:#9aa0a6;font:12px/1 -apple-system,sans-serif;padding:5px 9px;cursor:pointer}"
-             ".ra-periods button:hover,.ra-group button:hover{background:#333;color:#ddd}"
-             ".ra-periods button.on,.ra-group button.on{background:#0e639c;border-color:#1177bb;color:#fff}"
+             ".ra-periods,.ra-group,.ra-metric{display:flex;gap:4px;margin-bottom:8px;flex-wrap:wrap}"
+             ".ra-periods button,.ra-group button,.ra-metric button{background:#2a2a2b;border:1px solid #3a3a3a;"
+             "border-radius:5px;color:#9aa0a6;font:12px/1 -apple-system,sans-serif;padding:5px 9px;cursor:pointer}"
+             ".ra-periods button:hover,.ra-group button:hover,.ra-metric button:hover{background:#333;color:#ddd}"
+             ".ra-periods button.on,.ra-group button.on,.ra-metric button.on{background:#0e639c;border-color:#1177bb;color:#fff}"
              ".ra-chart{margin:6px 0 10px;min-height:120px}"
              ".ra-empty{color:#9aa0a6;text-align:center;padding:40px 0}"
              ".ra-legend{display:flex;flex-wrap:wrap;gap:6px 12px;margin-bottom:8px}"
@@ -2946,6 +3064,9 @@ _GEAR_HTML = ("<button id=rrefresh title='Restart the romp kernel' aria-label=Re
               "<div class=ra-group>"
               "<button data-g=judge class=on>By judge</button>"
               "<button data-g=tier>Index vs triage</button></div>"
+              "<div class=ra-metric>"
+              "<button data-m=tokens class=on>Tokens</button>"
+              "<button data-m=cost>Cost ($)</button></div>"
               "<div id=ra-chart class=ra-chart></div>"
               "<div id=ra-legend class=ra-legend></div>"
               "<div id=ra-note class=ra-note></div>"
@@ -2981,38 +3102,42 @@ raLegend=document.getElementById('ra-legend'),raNote=document.getElementById('ra
 var JCOL={captioner:'#1EA1EB',archiver:'#54B204',planner:'#E0B020',grouper:'#4EA8A9',closer:'#C0392B',distiller:'#D26EA8',courier:'#9088F0'};
 var JORDER=['captioner','archiver','planner','grouper','closer','distiller','courier'];
 var TIERCOL={index:'#3FA7C4',triage:'#E0973A'};
-var raState={window:86400,periodLabel:'24h',group:'judge',data:null,loading:false};
+var raState={window:86400,periodLabel:'24h',group:'judge',metric:'tokens',data:null,loading:false};
 function fmtTok(n){n=n||0;if(n>=1e6)return (n/1e6).toFixed(n>=1e7?0:1)+'M';if(n>=1e3)return Math.round(n/1e3)+'k';return ''+n;}
+function fmtUsd(v){v=v||0;return v>=100?'$'+v.toFixed(0):(v>=1?'$'+v.toFixed(2):'$'+v.toFixed(3));}
+function raCost(){return raState.metric==='cost';}
+function raVal(o){return raCost()?(o.cost||0):((o.in||0)+(o.out||0));}
+function raFmt(v){return raCost()?fmtUsd(v):fmtTok(v);}
 function raEsc(s){return (s==null?'':''+s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
 function raSegments(){var j=(raState.data&&raState.data.judges)||{byJudge:{},byTier:{}};var segs=[];
 if(raState.group==='tier'){['index','triage'].forEach(function(k){var b=(j.byTier||{})[k]||{};
-segs.push({label:k==='index'?'index (captioner+archiver)':'triage (planner/grouper/closer/distiller/courier)',color:TIERCOL[k],in:b.in||0,out:b.out||0,calls:b.calls||0});});}
-else{JORDER.forEach(function(k){var b=(j.byJudge||{})[k];if(b)segs.push({label:k,color:JCOL[k]||'#888',in:b.in||0,out:b.out||0,calls:b.calls||0});});
-Object.keys(j.byJudge||{}).forEach(function(k){if(JORDER.indexOf(k)<0&&k!=='?'){var b=j.byJudge[k];segs.push({label:k,color:'#888',in:b.in||0,out:b.out||0,calls:b.calls||0});}});}
+segs.push({label:k==='index'?'index (captioner+archiver)':'triage (planner/grouper/closer/distiller/courier)',color:TIERCOL[k],in:b.in||0,out:b.out||0,calls:b.calls||0,cost:b.cost||0});});}
+else{JORDER.forEach(function(k){var b=(j.byJudge||{})[k];if(b)segs.push({label:k,color:JCOL[k]||'#888',in:b.in||0,out:b.out||0,calls:b.calls||0,cost:b.cost||0});});
+Object.keys(j.byJudge||{}).forEach(function(k){if(JORDER.indexOf(k)<0&&k!=='?'){var b=j.byJudge[k];segs.push({label:k,color:'#888',in:b.in||0,out:b.out||0,calls:b.calls||0,cost:b.cost||0});}});}
 return segs.filter(function(s){return (s.in+s.out)>0;});}
 function raRender(){
 if(raState.loading){raChart.innerHTML='<div class=ra-empty>loading…</div>';raLegend.innerHTML='';raNote.textContent='';return;}
 var d=raState.data;if(!d){raChart.innerHTML='<div class=ra-empty>no data</div>';return;}
-var sess=d.sessions||{in:0,out:0},sessTot=(sess.in||0)+(sess.out||0);
-var segs=raSegments(),judgeTot=segs.reduce(function(a,s){return a+s.in+s.out;},0);
+var sess=d.sessions||{in:0,out:0,cost:0},sessTot=raVal(sess);
+var segs=raSegments(),judgeTot=segs.reduce(function(a,s){return a+raVal(s);},0);
 var maxV=Math.max(sessTot,judgeTot,1);
 var W=480,H=250,top=24,bot=30,chartH=H-top-bot,baseY=top+chartH,barW=92,cx1=W*0.30,cx2=W*0.70;
 function rect(x,y,w,h,fill,title){return '<rect x="'+x+'" y="'+y+'" width="'+w+'" height="'+Math.max(h,0)+'" fill="'+fill+'" rx="2"><title>'+raEsc(title)+'</title></rect>';}
 var svg='<svg viewBox="0 0 '+W+' '+H+'" width="100%" preserveAspectRatio="xMidYMid meet">';
 svg+='<line x1="6" y1="'+baseY+'" x2="'+(W-6)+'" y2="'+baseY+'" stroke="#3a3a3a"/>';
 var sh=sessTot/maxV*chartH;
-svg+=rect(cx1-barW/2,baseY-sh,barW,sh,'#7d8590','sessions · '+fmtTok(sess.in)+' in / '+fmtTok(sess.out||0)+' out');
-svg+='<text x="'+cx1+'" y="'+(baseY-sh-6)+'" text-anchor="middle" fill="#ddd" font-size="12">'+fmtTok(sessTot)+'</text>';
+svg+=rect(cx1-barW/2,baseY-sh,barW,sh,'#7d8590','sessions · '+fmtTok(sess.in)+' in / '+fmtTok(sess.out||0)+' out · '+fmtUsd(sess.cost||0));
+svg+='<text x="'+cx1+'" y="'+(baseY-sh-6)+'" text-anchor="middle" fill="#ddd" font-size="12">'+raFmt(sessTot)+'</text>';
 svg+='<text x="'+cx1+'" y="'+(baseY+18)+'" text-anchor="middle" fill="#9aa0a6" font-size="12">Sessions</text>';
-var cum=0;segs.forEach(function(s){var st=s.in+s.out,h=st/maxV*chartH,y=baseY-cum-h;cum+=h;
-svg+=rect(cx2-barW/2,y,barW,h,s.color,s.label+' · '+fmtTok(s.in)+' in / '+fmtTok(s.out)+' out · '+s.calls+' calls');});
-svg+='<text x="'+cx2+'" y="'+(baseY-cum-6)+'" text-anchor="middle" fill="#ddd" font-size="12">'+fmtTok(judgeTot)+'</text>';
+var cum=0;segs.forEach(function(s){var st=raVal(s),h=st/maxV*chartH,y=baseY-cum-h;cum+=h;
+svg+=rect(cx2-barW/2,y,barW,h,s.color,s.label+' · '+fmtTok(s.in)+' in / '+fmtTok(s.out)+' out · '+s.calls+' calls · '+fmtUsd(s.cost||0));});
+svg+='<text x="'+cx2+'" y="'+(baseY-cum-6)+'" text-anchor="middle" fill="#ddd" font-size="12">'+raFmt(judgeTot)+'</text>';
 svg+='<text x="'+cx2+'" y="'+(baseY+18)+'" text-anchor="middle" fill="#9aa0a6" font-size="12">Judges</text>';
 svg+='</svg>';raChart.innerHTML=svg;
-var lg=segs.map(function(s){return '<span class=ra-li><span class=ra-sw style="background:'+s.color+'"></span>'+raEsc(s.label)+' <b>'+fmtTok(s.in+s.out)+'</b></span>';}).join('');
-raLegend.innerHTML='<span class=ra-li><span class="ra-sw" style="background:#7d8590"></span>sessions <b>'+fmtTok(sessTot)+'</b></span>'+lg;
+var lg=segs.map(function(s){return '<span class=ra-li><span class=ra-sw style="background:'+s.color+'"></span>'+raEsc(s.label)+' <b>'+raFmt(raVal(s))+'</b></span>';}).join('');
+raLegend.innerHTML='<span class=ra-li><span class="ra-sw" style="background:#7d8590"></span>sessions <b>'+raFmt(sessTot)+'</b></span>'+lg;
 var ratio=sessTot?(judgeTot/sessTot*100):0;
-raNote.textContent='last '+raState.periodLabel+' · judges = '+(sessTot?ratio.toFixed(1):'0')+'% of session tokens · combined '+fmtTok(sessTot+judgeTot);}
+raNote.textContent='last '+raState.periodLabel+' · judges = '+(sessTot?ratio.toFixed(1):'0')+'% of session '+(raCost()?'cost':'tokens')+' · combined '+raFmt(sessTot+judgeTot);}
 function raFetch(){raState.loading=true;raRender();
 fetch('/analytics?window='+raState.window,{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){raState.loading=false;raState.data=d;raRender();}).catch(function(){raState.loading=false;raChart.innerHTML='<div class=ra-empty>analytics unavailable</div>';raLegend.innerHTML='';raNote.textContent='';});}
 if(raOpen)raOpen.onclick=function(e){e.stopPropagation();raBack.hidden=false;p.hidden=true;raFetch();};
@@ -3022,6 +3147,8 @@ Array.prototype.forEach.call(document.querySelectorAll('.ra-periods button'),fun
 Array.prototype.forEach.call(document.querySelectorAll('.ra-periods button'),function(b){b.className=(b===btn)?'on':'';});raFetch();};});
 Array.prototype.forEach.call(document.querySelectorAll('.ra-group button'),function(btn){btn.onclick=function(){raState.group=btn.getAttribute('data-g');
 Array.prototype.forEach.call(document.querySelectorAll('.ra-group button'),function(b){b.className=(b===btn)?'on':'';});raRender();};});
+Array.prototype.forEach.call(document.querySelectorAll('.ra-metric button'),function(btn){btn.onclick=function(){raState.metric=btn.getAttribute('data-m');
+Array.prototype.forEach.call(document.querySelectorAll('.ra-metric button'),function(b){b.className=(b===btn)?'on':'';});raRender();};});
 document.addEventListener('keydown',function(e){if(e.key==='Escape'&&raBack&&!raBack.hidden)raBack.hidden=true;});
 applyDebug(load());})();"""
 
