@@ -74,6 +74,9 @@ def apierr_line(t, uuid, parent, text="API Error: 500 Internal server error.", s
 
 class ViewBuilder(unittest.TestCase):
     def setUp(self):
+        km._downtime[:] = []          # isolate from the real persisted kernel-downtime.jsonl (loaded at import);
+                                      # sleep-specific tests seed it explicitly. Without this, a real recorded
+                                      # sleep dated after the synthetic NOW spuriously clips open turns.
         self.td = tempfile.TemporaryDirectory()
         td = Path(self.td.name)
         cdir = td / "launchdir"; cdir.mkdir()
