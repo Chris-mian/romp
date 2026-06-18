@@ -2368,7 +2368,15 @@ function renderLedger() {
           : "done — inferred: a parent goal was checked off";
       };
       const reason = markReason();
-      if (n.done || n.blocked) {
+      if (n.cleared) {
+        // DISMISSED: a cleared node was never checked off, so there is NO resolution point to jump to (the
+        // user 2026-06-18). It carries done=true and would otherwise fall into the resolved branch and link
+        // to a nonexistent checkoff. Route the mark + text + time to where it was CREATED (the minting
+        // message) instead, and say so in the tooltip — not "checked off".
+        wireZone(mark, startT, "user", reason + " · jump to where it was created");
+        linkHover([mark, txt]);
+        if (time.textContent) { wireZone(time, startT, "user", "jump to where it was created"); linkHover([time]); }
+      } else if (n.done || n.blocked) {
         const resTitle = n.done ? "jump to where this got checked off" : "jump to where this got marked blocked";
         wireZone(mark, resolveT, "assistant", reason + " · " + resTitle);
         wireZone(time, resolveT, "assistant", resTitle);

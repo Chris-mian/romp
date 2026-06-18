@@ -39,6 +39,16 @@ test("ledger checkbox tooltip LEADS with why the mark reads as it does — expli
   assert.match(RENDER, /wireZone\(mark, startT, "user", reason \+ " · jump to the message/);
 });
 
+test("a CLEARED node links to where it was CREATED, not 'checked off' — it was never resolved (the user 2026-06-18)", () => {
+  // cleared carries done=true and would otherwise fall into the resolved branch and link to a nonexistent
+  // checkoff point. A dedicated cleared branch (checked FIRST) routes the mark to startT (creation) instead.
+  assert.match(RENDER, /if \(n\.cleared\) \{[\s\S]*?wireZone\(mark, startT, "user", reason \+ " · jump to where it was created"\)/);
+  assert.match(RENDER, /wireZone\(time, startT, "user", "jump to where it was created"\)/);
+  // the cleared branch precedes the done/blocked branch, so a cleared node never reaches the "checked off" hint
+  assert.ok(RENDER.indexOf("if (n.cleared) {") < RENDER.indexOf('n.done ? "jump to where this got checked off"'),
+    "cleared is handled before the resolved branch");
+});
+
 test("the CURRENT node highlights the ROW only — never mutates its checkbox or text (the user 2026-06-17)", () => {
   // the active line gets a row highlight (faint background + a bright left accent bar) and the live "(Xm)"
   // parenthesised time — that's the whole signal. The earlier filled-dot-on-the-mark + bold/recoloured text
