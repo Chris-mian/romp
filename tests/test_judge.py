@@ -1875,14 +1875,14 @@ class Distiller(unittest.TestCase):
         path.write_text("\n".join(json.dumps(r) for r in records) + "\n")
         names = td / "names"; names.mkdir()
         (names / SID).write_text("testsess\t%s\t#abcdef\n" % str(cdir))
-        self._saved = (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.STATESDIR, jd.distill_llm)
+        self._saved = (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.STATESDIR, jd.distill_llm, jd.brief_llm)
         jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.STATESDIR = names, proj, td / "goals", td / "states"
         jd._PARSE_CACHE.clear()
         return str(path)
 
     def tearDown(self):
         if hasattr(self, "_saved"):
-            (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.STATESDIR, jd.distill_llm) = self._saved
+            (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.STATESDIR, jd.distill_llm, jd.brief_llm) = self._saved
             jd._PARSE_CACHE.clear()
 
     def test_distills_completed_top_from_its_discontinuous_trail(self):
@@ -1939,6 +1939,64 @@ class Distiller(unittest.TestCase):
     def test_prompt_asks_for_artifact_or_summary(self):
         for phrase in ("concrete ARTIFACT", "copy", "discontinuous"):
             self.assertIn(phrase, jd.DISTILL_SYS, phrase)
+
+    def test_briefs_a_blocked_top_with_the_owed_question(self):
+        # the user 2026-06-18 (via business): a BLOCKED top gets a DECISION BRIEF in node["blockSummary"]
+        # from the same work history PLUS the owed question (the latest still-blocked node's blockWhy).
+        records = [uline(T0, "design the auth flow", "u1", ps="typed"),
+                   aline(T0 + 10, "drafted two options", "a1", "u1", stop="end_turn")]
+        path = self._setup(records)
+        now = T0 + 5000
+        s1 = em.segments(jd.parsed_session(SID, [path], now)["turns"][0])[0]["id"]
+        gid, sub = SID + ":g1", SID + ":g2"
+        jd.save_goals(SID, {"rompUuid": SID, "seq": 2, "status": {gid: "blocked"}, "placements": {},
+                            "nodes": {gid: {"id": gid, "text": "Ship auth", "parentId": None,
+                                            "nodeComplete": False, "blocked": True, "cleared": False,
+                                            "trail": [s1], "t": T0, "mt": T0 + 20},
+                                      sub: {"id": sub, "text": "pick a token store", "parentId": gid,
+                                            "nodeComplete": False, "blocked": True, "cleared": False,
+                                            "trail": [], "t": T0 + 15, "mt": T0 + 20,
+                                            "blockWhy": "Redis or Postgres for sessions?"}}})
+        captured = {}
+
+        def fake_brief(goal_text, work_text, owed):
+            captured["goal"], captured["work"], captured["owed"] = goal_text, work_text, owed
+            return "Decide: Redis or Postgres for the session store."
+        jd.brief_llm = fake_brief
+        jd.distill_llm = lambda g, w: "should-not-run"
+        self.assertEqual(jd.run_distill(now=now), 1, "the blocked top is briefed")
+        nd = jd.load_goals(SID)["nodes"][gid]
+        self.assertEqual(nd["blockSummary"], "Decide: Redis or Postgres for the session store.")
+        self.assertEqual(nd["briefedMt"], T0 + 20, "briefedMt records the block it briefed")
+        self.assertNotIn("summary", nd, "a blocked goal gets blockSummary, never the done-distiller's summary")
+        self.assertEqual(captured["owed"], "Redis or Postgres for sessions?", "the owed question is fed in")
+        self.assertIn("two options", captured["work"], "the goal's work history is fed in")
+        calls = []                                          # event-gated: re-running briefs nothing
+        jd.brief_llm = lambda g, w, o: (calls.append(1), "x")[1]
+        self.assertEqual(jd.run_distill(now=now), 0)
+        self.assertEqual(calls, [], "a block already briefed at this mt is not re-briefed")
+
+    def test_block_brief_has_no_fallback_on_failure(self):
+        # the human's ruling: NO server-side fallback. A failed brief leaves blockSummary absent (null) and
+        # does NOT stamp briefedMt, so it retries — the UI shows "(generating…)", never a placeholder.
+        records = [uline(T0, "x", "u1", ps="typed"), aline(T0 + 10, "did x", "a1", "u1", stop="end_turn")]
+        path = self._setup(records)
+        now = T0 + 5000
+        s1 = em.segments(jd.parsed_session(SID, [path], now)["turns"][0])[0]["id"]
+        gid = SID + ":g1"
+        jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "status": {gid: "blocked"}, "placements": {},
+                            "nodes": {gid: {"id": gid, "text": "G", "parentId": None, "nodeComplete": False,
+                                            "blocked": True, "cleared": False, "trail": [s1], "t": T0,
+                                            "mt": T0 + 10, "blockWhy": "which way?"}}})
+        jd.brief_llm = lambda g, w, o: ""              # permanent failure
+        self.assertEqual(jd.run_distill(now=now), 0, "a failed brief produced nothing")
+        nd = jd.load_goals(SID)["nodes"][gid]
+        self.assertNotIn("blockSummary", nd, "NO fallback — blockSummary stays null")
+        self.assertNotIn("briefedMt", nd, "not stamped → retries next pass (never a hidden permanent give-up)")
+
+    def test_block_brief_prompt_is_a_decision_brief(self):
+        for phrase in ("DECISION BRIEF", "decide", "owed"):
+            self.assertIn(phrase, jd.BLOCK_BRIEF_SYS, phrase)
 
 
 class RunTriage(unittest.TestCase):

@@ -444,6 +444,30 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(node["summary"], "Reworked the parser to stream tokens, cutting latency in half.",
                          "the distiller takeaway rides the modal tree node so the modal can show it")
 
+    def test_feed_block_brief_rides_card_and_modal_node(self):
+        # The block-distiller's DECISION BRIEF (the user 2026-06-18) rides BOTH the blocked card and its
+        # modal tree node, alongside the existing blockWhy (which stays as a tooltip). Null until produced.
+        top, s1 = (SID + ":top", SID + ":s1")
+        def gn(nid, text, parent, **kw):
+            d = {"id": nid, "text": text, "parentId": parent, "nodeComplete": False,
+                 "blocked": False, "cleared": False, "trail": [], "t": T0, "mt": T0}
+            d.update(kw); return d
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+            "rompUuid": SID, "seq": 2, "lastNode": None,
+            "nodes": {
+                top: gn(top, "the goal", None, blocked=True, blockWhy="which store?",
+                        blockSummary="Decide: Redis or Postgres for the session store.", mt=T0 + 5),
+                s1:  gn(s1, "a step", top, blocked=True, blockWhy="which store?", mt=T0 + 20),
+            },
+            "placements": {}, "status": {top: "blocked"}}))
+        card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == top)
+        self.assertEqual(card["blockSummary"], "Decide: Redis or Postgres for the session store.",
+                         "the blocked card carries the decision brief")
+        self.assertEqual(card["blockWhy"], "which store?", "blockWhy stays emitted (becomes the tooltip)")
+        node = next(n for n in card["tree"] if n["id"] == top)
+        self.assertEqual(node["blockSummary"], "Decide: Redis or Postgres for the session store.",
+                         "the modal tree node carries the decision brief too")
+
     def test_feed_tree_node_carries_anchor_uuid_for_id_deeplink(self):
         # anchorUuid = the EXACT turn uuid for a node's anchor segment (where it resolved / was minted),
         # so a card click deep-links BY ID, not by nearest-time-heuristic. (the user 2026-06-17.)
