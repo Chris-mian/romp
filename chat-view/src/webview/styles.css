@@ -82,7 +82,7 @@ body { display: flex; flex-direction: column; }
 /* BLOCKED (API error): the SAME dashed ring as awaiting but in the alarm-red blocked color, PLUS a faint
    red fill so a stopped session is highlighted (not just outlined). It isn't working, so it has NO dot
    (the user 2026-06-16). */
-.tab.tab-blocked { --state: var(--st-blocked-bg); background: rgba(229, 72, 77, 0.13); }
+.tab.tab-blocked { --state: var(--st-blocked-bg); background: rgba(229, 72, 77, 0.25); }   /* 0.25 alpha red fill so a hard-blocked tab reads at a glance, atop the dashed ring (the user 2026-06-18) */
 /* STATE ring on all four sides, no layout jitter. WORKING shows a yellow dot
    (.tab-dot) instead; COMPACTING intentionally gets NO outline (the user: it's
    transient plumbing, not something to flag — the statusline's scan bar is the
