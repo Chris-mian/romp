@@ -1272,6 +1272,32 @@ class ViewBuilder(unittest.TestCase):
         self.assertIsNone(km._mode_presses("default", "bypassPermissions"))  # flag-only, not a cycle target
         self.assertIn("@claude-permission-mode", km.TMUX_FMT)              # kernel reads the mode var
 
+    def test_cycle_mode_records_the_new_mode(self):
+        # The user's bug (2026-06-18): a chat mode switch flipped the terminal but the chat LABEL stayed
+        # stale. Claude Code never exposes the permission mode in its statusLine JSON, so @claude-permission-
+        # mode has no event source to self-heal from — _cycle_mode must record the mode it just cycled to,
+        # or the var stays frozen (and the next press count is computed from a stale `cur`).
+        calls, saved_run, saved_sleep = [], km.subprocess.run, km.time.sleep
+        saved_tmux, saved_thread, saved_push = km._tmux_sessions, km.threading.Thread, km._push_all
+        class _SyncThread:                                  # run go() inline so the test sees the result
+            def __init__(self, target=None, daemon=None): self._t = target
+            def start(self): self._t()
+        km.subprocess.run = lambda args, **k: calls.append(list(args)) or type("R", (), {"stdout": ""})()
+        km.time.sleep = lambda *_a, **_k: None
+        km._tmux_sessions = lambda: {SID: {"mode": "auto"}}   # current mode is auto
+        km.threading.Thread = _SyncThread
+        km._push_all = lambda: calls.append(["__push_all__"])
+        try:
+            km._cycle_mode("mysess", SID, "plan")
+        finally:
+            km.subprocess.run, km.time.sleep = saved_run, saved_sleep
+            km._tmux_sessions, km.threading.Thread, km._push_all = saved_tmux, saved_thread, saved_push
+        btab = [c for c in calls if c[:2] == ["tmux", "send-keys"] and "BTab" in c]
+        self.assertEqual(len(btab), 3, "auto → plan is 3 shift+tab presses")
+        self.assertIn(["tmux", "set", "-t", "mysess", "@claude-permission-mode", "plan"], calls,
+                      "after cycling, the kernel records the new mode so the chat label updates")
+        self.assertIn(["__push_all__"], calls, "and re-renders so the label flips immediately")
+
     def test_recency_colormap_chooser(self):
         # the colormap chooser (the user 2026-06-16): several perceptually-uniform maps + a persisted pick.
         for name in ("hawaii", "viridis", "magma", "inferno", "plasma", "cividis"):

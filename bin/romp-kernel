@@ -675,6 +675,17 @@ def _cycle_mode(name, sid, target):
             except Exception:
                 return
             time.sleep(0.18)                                        # let each cycle land before the next
+        # Record the mode we just cycled to. Unlike model/effort/context, the permission mode is NOT in
+        # Claude Code's statusLine JSON, so @claude-permission-mode has NO event source to self-heal from
+        # (statusline.sh can't republish what CC never exposes). Without this, the var stayed frozen at its
+        # launch value: the chat label never updated AND the next _cycle_mode computed its press count from
+        # a stale `cur`. We caused the change, so we know the new mode is `target` — write it. (A switch made
+        # directly in the terminal TUI still can't be observed; that's a CC-exposure gap, not ours.) (2026-06-18.)
+        try:
+            subprocess.run(["tmux", "set", "-t", name, "@claude-permission-mode", target], timeout=3)
+        except Exception:
+            pass
+        _push_all()                                                 # re-render so the chat mode label flips now
     threading.Thread(target=go, daemon=True).start()
 
 
@@ -3109,14 +3120,8 @@ _GEAR_HTML = ("<button id=rrefresh title='Restart the romp kernel' aria-label=Re
               "<span><b>Compact transcript</b>"
               "<span class=rs-sub>Collapse each run of tool uses into one line and hide thinking blocks in the chat.</span>"
               "</span></label>"
-              "<label class=rs-row><input type=checkbox id=rs-explanations>"
-              "<span><b>Explanations</b>"
-              "<span class=rs-sub>Show the planner's one-line why under a card's title. The modal always shows it.</span>"
-              "</span></label>"
-              "<label class=rs-row><input type=checkbox id=rs-subgoals>"
-              "<span><b>Sub-goals</b>"
-              "<span class=rs-sub>Show a card's inline sub-goal checklist. The modal always shows the full tree.</span>"
-              "</span></label>"
+              # (Explanations toggle removed 2026-06-18 — cards show the distiller summary, not the planner's
+              #  why. The Sub-goals toggle moved to the feed FOOTER, beside Clear all / Undo clear.)
               "<div class=rs-row style='cursor:default'><span style='flex:1 1 auto'><b>Feed colormap</b>"
               "<span class=rs-sub>Recency tint for feed cards — newest is bright.</span>"
               "<select id=rs-colormap style='margin-top:5px;width:100%;background:#1e1e1e;color:#ccc;"
@@ -3153,13 +3158,12 @@ _GEAR_HTML = ("<button id=rrefresh title='Restart the romp kernel' aria-label=Re
               "</div></div>")
 _GEAR_JS = r"""(function(){var g=document.getElementById('rgear'),p=document.getElementById('rsettings'),
 b=document.getElementById('rsver'),cc=document.getElementById('rs-compact'),cm=document.getElementById('rs-colormap'),
-ex=document.getElementById('rs-explanations'),sg=document.getElementById('rs-subgoals'),db=document.getElementById('rs-debug');
-function load(){try{return Object.assign({compact:false,colormap:'hawaii',explanations:true,subgoals:true,debug:false},JSON.parse(localStorage.getItem('romp:settings')||'null'));}catch(e){return {compact:false,colormap:'hawaii',explanations:true,subgoals:true,debug:false};}}
+db=document.getElementById('rs-debug');
+function load(){try{return Object.assign({compact:false,colormap:'hawaii',subgoals:true,debug:false},JSON.parse(localStorage.getItem('romp:settings')||'null'));}catch(e){return {compact:false,colormap:'hawaii',subgoals:true,debug:false};}}
 function save(s){try{localStorage.setItem('romp:settings',JSON.stringify(s));}catch(e){}}
 function emit(){try{window.dispatchEvent(new Event('romp:settings'));}catch(e){}}   // same-doc signal → the feed re-gates its cards
 cc.addEventListener('change',function(){var s=load();s.compact=cc.checked;save(s);});
-ex.addEventListener('change',function(){var s=load();s.explanations=ex.checked;save(s);emit();});
-sg.addEventListener('change',function(){var s=load();s.subgoals=sg.checked;save(s);emit();});
+// (Explanations + Sub-goals toggles removed from the gear 2026-06-18 — Sub-goals lives in the feed footer now.)
 function applyDebug(s){if(rf)rf.style.display=(s&&s.debug)?'':'none';}
 db.addEventListener('change',function(){var s=load();s.debug=db.checked;save(s);emit();applyDebug(s);});
 cm.addEventListener('change',function(){var s=load();s.colormap=cm.value;save(s);
@@ -3170,7 +3174,7 @@ function fill(){fetch('/version',{cache:'no-store'}).then(function(r){return r.j
 var x=lv();b.innerHTML='kernel '+(v.kernel_sha||'?')+'\nserving v'+
 v.dist_ver+'\nthis tab v'+(x||'?');
 }).catch(function(){b.textContent='(version unavailable)';});}
-g.onclick=function(e){e.stopPropagation();if(p.hidden){p.hidden=false;var s=load();cc.checked=!!s.compact;ex.checked=s.explanations!==false;sg.checked=s.subgoals!==false;db.checked=!!s.debug;cm.value=s.colormap||'hawaii';fill();}else p.hidden=true;};
+g.onclick=function(e){e.stopPropagation();if(p.hidden){p.hidden=false;var s=load();cc.checked=!!s.compact;db.checked=!!s.debug;cm.value=s.colormap||'hawaii';fill();}else p.hidden=true;};
 document.addEventListener('click',function(e){if(!p.hidden&&e.target!==g&&!p.contains(e.target))p.hidden=true;});
 var rf=document.getElementById('rrefresh');   // ↻ moved up from the timeline (the user 2026-06-17): POST /restart, poll /healthz, reload
 if(rf)rf.onclick=function(){rf.disabled=true;try{fetch('/restart',{method:'POST'}).catch(function(){});}catch(e){}
