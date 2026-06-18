@@ -1160,8 +1160,12 @@ function renderModal() {
     // in one row, and the Follow-up composer drops in under that row when the button is toggled.
     const age = el("span", "ftime feed-modal-age"); age.id = "feed-modal-age";
     const fup = el("button", "fdismiss ffollow feed-modal-follow"); fup.id = "feed-modal-follow"; fup.textContent = "Follow up"; fup.title = "send a follow-up to this session — the card returns to ASKS"; fup.style.display = "none";
+    // "Check status" (the user 2026-06-18): a one-click follow-up for a WORKING card — sends a canned
+    // "What is the status of the above goal?" down the SAME path as Follow up (postFollowUp → askFollowUp),
+    // so the goal is quoted as context. Sits between Follow up and Clear; shown only for working cards.
+    const chk = el("button", "fdismiss ffollow feed-modal-checkstatus"); chk.id = "feed-modal-checkstatus"; chk.textContent = "Check status"; chk.title = "ask this session for the status of this goal"; chk.style.display = "none";
     const clr = el("button", "fdismiss feed-modal-clear"); clr.id = "feed-modal-clear"; clr.textContent = "Clear";
-    const footRow = el("div", "feed-modal-foot-row"); footRow.append(age, fup, clr);
+    const footRow = el("div", "feed-modal-foot-row"); footRow.append(age, fup, chk, clr);
     const fubox = el("div", "ffollow-box feed-modal-follow-box"); fubox.id = "feed-modal-follow-box"; fubox.style.display = "none";
     const fuin = el("textarea", "fq-input feed-modal-follow-input") as HTMLTextAreaElement; fuin.id = "feed-modal-follow-input"; fuin.placeholder = "follow up on this…"; fuin.rows = 1;
     fuin.addEventListener("input", () => growFollowUp(fuin));
@@ -1231,6 +1235,15 @@ function renderModal() {
   const ageEl = document.getElementById("feed-modal-age") as HTMLElement;
   const clrEl = document.getElementById("feed-modal-clear") as HTMLElement;
   const fupEl = document.getElementById("feed-modal-follow") as HTMLButtonElement;
+  const chkEl = document.getElementById("feed-modal-checkstatus") as HTMLButtonElement | null;
+  if (chkEl) { chkEl.style.display = "none"; chkEl.onclick = null; }   // hidden by default; the working branches below show + wire it
+  // "Check status": show only for a WORKING card; one click sends the canned status question down the
+  // follow-up path (the goal is quoted as context). Reuses postFollowUp so it's the SAME mechanism.
+  const wireCheckStatus = (show: boolean, fbId: string, fbTitle?: string) => {
+    if (!chkEl) return;
+    chkEl.style.display = show ? "" : "none";
+    chkEl.onclick = show ? (() => postFollowUp("What is the status of the above goal?", fbId, fbTitle)) : null;
+  };
   const fuboxEl = document.getElementById("feed-modal-follow-box") as HTMLElement;
   const fuinEl = document.getElementById("feed-modal-follow-input") as HTMLTextAreaElement;
   const fusendEl = document.getElementById("feed-modal-follow-send") as HTMLButtonElement;
@@ -1274,6 +1287,7 @@ function renderModal() {
     // follow-up on a group goes to the session that took the typed prompt — one
     // message prefixed with the GROUP title, filed under the first member's ask
     wireFollowUp(fupEl, fuboxEl, fuinEl, fusendEl, (txt) => postFollowUp(txt, grp.members[0].itemId, grp.title));
+    wireCheckStatus(grp.members.some((m) => m.column === "asks"), grp.members[0].itemId, grp.title);   // a working group
     renderGroupModalBody(body, grp.members);
   } else if (it) {
     // The top-level goal IS the modal: render it as the ROOT of the tree list (not a separate header
@@ -1290,6 +1304,7 @@ function renderModal() {
     // follow-up works in ANY state (the user 2026-06-10) — asks, awaiting, or completed;
     // toggling the button reveals the composer.
     wireFollowUp(fupEl, fuboxEl, fuinEl, fusendEl, (txt) => postFollowUp(txt, it.itemId));
+    wireCheckStatus(it.column === "asks", it.itemId);   // "Check status" only for a WORKING card
     renderTreeBody(body, it, false);   // root goal IS the first list line; sub-goals render beneath it
   } else if (fitem) {
     ttlEl.textContent = fitem.did;
