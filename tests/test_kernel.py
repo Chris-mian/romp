@@ -218,6 +218,23 @@ class ViewBuilder(unittest.TestCase):
         self.assertIsNotNone(cur, "an open (unfinished) turn → a working-on line")
         self.assertEqual(cur["text"], "wire the ledger overview strip")
 
+    def test_host_sleep_closes_a_turn_left_open(self):
+        # A turn still open when the laptop slept must NOT keep reading as "working": the kernel records the
+        # suspend interval and the ledger closes the turn at last activity — no working-on line, no multi-hour
+        # work-bar to "now" (the user 2026-06-18).
+        with self.tpath.open("a") as f:
+            f.write(json.dumps(uline(NOW, "wire the overview strip", "uOpen", parent="a2")) + "\n")
+        km._parse_cache.clear()
+        self.assertIsNotNone(km.build_session(SID, NOW)["ledger"]["current"],
+                             "sanity: an open turn shows a working-on line")
+        saved = list(km._downtime)
+        km._downtime.append((NOW + 10, NOW + 7210))      # a ~2h host sleep beginning after the open prompt
+        try:
+            self.assertIsNone(km.build_session(SID, NOW + 7300)["ledger"]["current"],
+                              "a turn open across a host sleep is closed → no working-on line")
+        finally:
+            km._downtime[:] = saved
+
     def test_ledger_tree_emits_full_tree_for_the_render_to_fold(self):
         # The ledger emits the FULL goal tree now — every node with its child ids + flags — and the RENDER
         # folds completed branches (the user 2026-06-16). So a done parent's child IS present (no kernel
@@ -1882,6 +1899,37 @@ class ServeSecurity(unittest.TestCase):
         h = {"Host": "100.64.1.2:%d" % self.port}
         self.assertEqual(self._code("/feed", h), 403)
         self.assertEqual(self._code("/feed?token=testtok", h), 200)
+
+
+class HostSuspend(unittest.TestCase):
+    """Laptop-sleep awareness: time.monotonic() freezes during sleep but time.time() doesn't, so a
+    wall-vs-monotonic gap over one producer tick IS the suspension — an exact resume event, not an age
+    threshold. The timeline then closes turns left open across it (the user 2026-06-18)."""
+
+    def test_detect_suspend_ignores_a_normal_tick(self):
+        # wall and monotonic advance together (~20s) → no suspension detected
+        self.assertIsNone(km._detect_suspend(1000.0, 5000.0, 1020.0, 5020.0))
+
+    def test_detect_suspend_flags_a_sleep_and_returns_the_interval(self):
+        # slept ~2h: monotonic moved ~1s (real loop time) while wall jumped 7201s
+        iv = km._detect_suspend(1000.0, 5000.0, 8201.0, 5001.0)
+        self.assertIsNotNone(iv)
+        start, end = iv
+        self.assertAlmostEqual(start, 1001.0, msg="start ≈ prev_wall + monotonic delta (sleep onset)")
+        self.assertAlmostEqual(end, 8201.0, msg="end = resume (now)")
+        self.assertGreater(end - start, 7000, "interval ≈ the 2h sleep")
+
+    def test_detect_suspend_none_on_first_tick(self):
+        self.assertIsNone(km._detect_suspend(None, None, 1000.0, 5000.0))
+
+    def test_suspended_after_brackets_the_sleep(self):
+        saved = list(km._downtime)
+        km._downtime[:] = [(2000.0, 9200.0)]             # a sleep from t=2000 to t=9200
+        try:
+            self.assertTrue(km._suspended_after(1500), "activity before the sleep → suspended after it")
+            self.assertFalse(km._suspended_after(9500), "activity after the sleep → not suspended since")
+        finally:
+            km._downtime[:] = saved
 
 
 if __name__ == "__main__":

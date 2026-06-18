@@ -37,6 +37,59 @@ BIND = os.environ.get("ROMP_SERVE_HOST", "127.0.0.1")   # set 0.0.0.0 to reach t
 
 
 _STARTED = time.time()                       # this kernel process's start (for /version uptime)
+
+
+# ── host-suspend (laptop sleep) awareness ─────────────────────────────────────────────────────────
+# When the lid closes this kernel process is FROZEN: time.monotonic() stops, but time.time() keeps real
+# time — so on resume the producer loop sees wall-clock jump far past the monotonic delta. That divergence
+# IS the sleep interval (an exact resume event, not an age threshold). We record those intervals so the
+# timeline can tell that a turn left open ACROSS a sleep wasn't "working" the whole time — the machine was
+# off — and close it at its last activity instead of drawing a multi-hour work-bar to now (the user 2026-06-18).
+_SUSPEND_MIN = 90.0                          # wall-vs-monotonic gap over one producer tick (≤20s) ⇒ slept
+_downtime = []                               # [(start_wall, end_wall)] host suspensions, oldest first
+
+
+def _detect_suspend(prev_wall, prev_mono, now_wall, now_mono, threshold=_SUSPEND_MIN):
+    """The (start, end) wall interval of a host suspension across one producer tick, else None. macOS
+    freezes time.monotonic() during sleep but not time.time(); wall advancing far past monotonic is the
+    sleep. start ≈ when monotonic stopped (sleep onset), end = now (resume). Pure — unit-tested."""
+    if prev_wall is None or prev_mono is None:
+        return None
+    dm = now_mono - prev_mono
+    if (now_wall - prev_wall) - dm > threshold:
+        return (prev_wall + max(0.0, dm), now_wall)
+    return None
+
+
+def _suspended_after(t):
+    """True if the host was asleep at any point after wall-time t — so an open turn whose last activity is
+    t cannot have been working since (the kernel was frozen). Drives closing the stale turn at last activity."""
+    return any(start > (t or 0) for (start, _e) in _downtime)
+
+
+def _record_suspend(iv):
+    """Append a detected suspension to the in-memory log + a small jsonl, so it survives a kernel restart
+    (the timeline reads _downtime, loaded from the file at startup). Best-effort, never raises."""
+    _downtime.append(iv)
+    try:
+        with open(jd.STATE / "kernel-downtime.jsonl", "a") as f:
+            f.write(json.dumps({"start": iv[0], "end": iv[1]}) + "\n")
+    except OSError:
+        pass
+
+
+def _load_downtime():
+    try:
+        for line in (jd.STATE / "kernel-downtime.jsonl").read_text().splitlines():
+            try:
+                o = json.loads(line); _downtime.append((o["start"], o["end"]))
+            except Exception:
+                pass
+    except OSError:
+        pass
+
+
+_load_downtime()
 _SHA = None                                  # lazily-resolved git short-sha of the code this kernel runs
 
 
@@ -1362,6 +1415,8 @@ def build_session(sid, now, tmux=None):
     last_turn = session["turns"][-1] if session["turns"] else None
     open_now = bool(last_turn and not last_turn["ended"]
                     and not any(x["type"] == "idle" for x in last_turn["atoms"]))
+    if open_now and _suspended_after(last_turn["t"]):  # turn left open across a host sleep → not "working":
+        open_now = False                               # close it at last activity (the user 2026-06-18)
     # "working on" — what the session is doing RIGHT NOW: the in-progress turn's caption if it has one
     # yet, else its prompt (≤140 chars), matching the timeline work-bar's `working on:` hover. Only while
     # actually working; idle/ready → no current line (the user 2026-06-16).
@@ -1946,10 +2001,14 @@ def _pending_mail(sid):
 def _seg_anchors(atoms):
     """(workUuid, replyUuid) deep-link anchors for a segment: workUuid = the FIRST assistant atom
     (the bar → response, often a thinking block); replyUuid = the LAST assistant atom carrying
-    text (the readable reply, preferred work anchor) — parallel to the obsidian timeline."""
+    text (the readable reply, preferred work anchor) — parallel to the obsidian timeline.
+    API-error atoms are SKIPPED: Claude Code records a failed turn as an assistant text block
+    (isApiErrorMessage, tagged isApiError by em), so it carries text and would otherwise WIN the
+    reply anchor — deep-linking a done/blocked goal to an 'API Error: …' line instead of its real
+    reply. An error is a failure, not a reply, and is never a jump target (the user 2026-06-18)."""
     work = reply = None
     for a in atoms:
-        if a.get("type") != "assistant":
+        if a.get("type") != "assistant" or a.get("isApiError"):
             continue
         if work is None:
             work = a.get("uuid")
@@ -2390,6 +2449,8 @@ def build_timeline(now, tmux=None):
         last_turn = st_turns[-1] if st_turns else None
         open_now = bool(last_turn and not last_turn["ended"]
                         and not any(x["type"] == "idle" for x in last_turn["atoms"]))
+        if open_now and _suspended_after(last_turn["t"]):   # open across a host sleep → not working
+            open_now = False
         if tm:                            # live: tmux state drives the lane badge (working/waiting/idle/permission/compacting)
             state = tm["state"] or "idle"
             if state != "compacting" and _compacting_optimistic(sid, session, now):
@@ -2400,7 +2461,8 @@ def build_timeline(now, tmux=None):
         bars, last_t = [], None
         for ti, turn in enumerate(st_turns):
             turn_open = (ti == len(st_turns) - 1 and not turn["ended"]
-                         and not any(x["type"] == "idle" for x in turn["atoms"]))
+                         and not any(x["type"] == "idle" for x in turn["atoms"])
+                         and not _suspended_after(turn["t"]))   # not still working if a host sleep followed
             segs = em.segments(turn)
             for si, seg in enumerate(segs):
                 cap = caps.get(seg["id"], {}).get("caption", "")
@@ -2808,7 +2870,13 @@ def _run_tier(fn):
 
 
 def _producer():
+    _prev_wall = _prev_mono = None
     while True:
+        _nw, _nm = time.time(), time.monotonic()        # detect a host suspension (laptop slept) since the
+        _iv = _detect_suspend(_prev_wall, _prev_mono, _nw, _nm)   # last tick: wall jumped past monotonic
+        if _iv:
+            _record_suspend(_iv)                        # → the timeline closes turns left open across it
+        _prev_wall, _prev_mono = _nw, _nm
         _producer_wake.clear()   # consume; a /tick arriving DURING this pass re-sets it → we run again (no lost wake)
         try:
             with _clients_lock:
