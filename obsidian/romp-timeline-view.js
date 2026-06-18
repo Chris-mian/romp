@@ -2004,18 +2004,20 @@ class TimelinePanel {
     if (!this._pinned) this._drawNowButton(svg);
   }
 
-  // hover bodies: prompt dot = request phrase; activity bar = reply phrase
-  req(t) { return t.summary ? esc(t.summary) : (t.prompt ? esc(t.prompt.slice(0, 120)) : ''); }
-  // activity-bar hover = what the agent DID, once the turn is done. While it's
-  // still in progress, show "working on… <the prompt>" — clearly marked as not-yet-
-  // a-result — and it auto-swaps to the real reply summary when the turn finishes.
+  // hover bodies: the prompt DOT = the request (what the user asked); the activity BAR = the work
+  // (what the agent DID). They must show DIFFERENT things — the bar was showing its own work caption
+  // mislabeled "request:", so the dot and bar read as a duplicate (the user 2026-06-18).
+  req(t) { return t.prompt ? esc(t.prompt.slice(0, 120)) : (t.summary ? esc(t.summary) : ''); }
+  // activity-bar hover = what the agent DID: the work period's own caption (t.summary), or a readable
+  // reply line (t.reply) if the kernel supplied one. Only when there's NO work caption yet do we fall
+  // back to the request (the prompt) — "working on… <prompt>" in progress, else "request: <prompt>"
+  // muted — so we never invent a result the summarizer hasn't produced.
   barBody(t, ongoing) {
-    if (t.reply) return '<div class="b">' + esc(t.reply) + '</div>';
-    const req = t.summary ? esc(t.summary) : (t.prompt ? esc(t.prompt.slice(0, 120)) : '');
-    if (ongoing) return '<div class="b"><span style="opacity:.55;font-style:italic">working on: </span>' + (req || 'awaiting summary') + '</div>';
-    // finished turn, no reply summary (e.g. summarizer hasn't processed this session's
-    // forked transcript): show the request itself, muted — never a false "working on…".
-    return '<div class="b"><span style="opacity:.55;font-style:italic">request: </span>' + (req || '(no summary)') + '</div>';
+    const work = t.reply ? esc(t.reply) : (t.summary ? esc(t.summary) : '');
+    if (work) return '<div class="b">' + work + '</div>';
+    const reqp = t.prompt ? esc(t.prompt.slice(0, 120)) : '';
+    if (ongoing) return '<div class="b"><span style="opacity:.55;font-style:italic">working on: </span>' + (reqp || 'awaiting summary') + '</div>';
+    return '<div class="b"><span style="opacity:.55;font-style:italic">request: </span>' + (reqp || '(no summary)') + '</div>';
   }
   body(s) { return s ? '<div class="b">' + s + '</div>' : ''; }
 }

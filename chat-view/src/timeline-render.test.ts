@@ -359,3 +359,24 @@ test("judging band is gated on Debug mode: OFF by default hides it; Debug on dra
 
 // (The per-window token grid was removed from the timeline controls at the user's request 2026-06-18;
 // only the /usage rate-limit bars remain. Its render tests went with it.)
+
+// Hover bodies: the prompt DOT shows the REQUEST (prompt); the activity BAR shows the WORK (the
+// segment's own caption). They must differ — the bar used to show its own work caption mislabeled
+// "request:", reading as a duplicate of the dot (the user 2026-06-18).
+test("work-bar hover shows the work caption (summary), not mislabeled 'request:'", () => {
+  const panel: any = new TimelinePanel(makeNode("div"));
+  const done = panel.barBody({ summary: "Fixed the off-by-one", prompt: "fix the bug", reply: "" }, false);
+  assert.match(done, /Fixed the off-by-one/, "the bar shows its own work caption");
+  assert.doesNotMatch(done, /request:/, "a work period WITH a caption is not labeled 'request:'");
+  const noCap = panel.barBody({ summary: "", prompt: "fix the bug", reply: "" }, false);
+  assert.match(noCap, /request: /);                           // no caption yet, finished → the request, muted
+  assert.match(noCap, /fix the bug/);
+  const live = panel.barBody({ summary: "", prompt: "fix the bug", reply: "" }, true);
+  assert.match(live, /working on: /, "ongoing with no caption → 'working on: <prompt>'");
+});
+
+test("prompt-dot hover shows the request (prompt), distinct from the bar's work caption", () => {
+  const panel: any = new TimelinePanel(makeNode("div"));
+  assert.equal(panel.req({ prompt: "fix the pagination bug", summary: "Fixed pagination" }),
+               "fix the pagination bug", "the dot shows the request, not the work caption");
+});
