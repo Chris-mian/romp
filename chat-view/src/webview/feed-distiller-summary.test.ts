@@ -18,10 +18,11 @@ test("the modal tree renders node.summary (the distiller takeaway) as a prominen
   assert.match(CSS, /\.ftree-summary \{[^}]*white-space: pre-wrap/);
 });
 
-test("the summary is copy-pasteable (the distiller's artifact case) via the clipboard", () => {
-  assert.match(FEED, /el\("span", "ftree-summary-copy"\)/);
-  assert.match(FEED, /navigator\.clipboard\?\.writeText\(summaryText\)/);
-  assert.match(CSS, /\.ftree-summary-copy \{/);
+test("the summary is plain selectable text — no copy button (the user 2026-06-18)", () => {
+  // the ⧉ copy affordance was removed; the takeaway is just selectable text now.
+  assert.doesNotMatch(FEED, /ftree-summary-copy/);
+  assert.doesNotMatch(FEED, /navigator\.clipboard\?\.writeText\(summaryText\)/);
+  assert.doesNotMatch(CSS, /\.ftree-summary-copy/);
 });
 
 test("the distiller summary SUPERSEDES the one-line doneWhy in the modal (no redundant rationale)", () => {

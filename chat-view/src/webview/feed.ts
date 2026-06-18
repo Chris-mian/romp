@@ -1049,16 +1049,12 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
   // The DISTILLER's key takeaway for a completed goal (the user 2026-06-17): the ONE most-useful thing — a
   // copy-pasteable artifact (command / path / URL / answer / snippet) verbatim, else a 1-3 sentence outcome.
   // Shown in the MODAL only (the card keeps the closer's one-line doneWhy). Rendered prominently (brighter
-  // than the dim why-line, pre-wrap so a copied artifact stays intact) with a ⧉ copy affordance — the
-  // distiller's whole point is a thing you'd want to copy. It supersedes the doneWhy rationale below.
+  // than the dim why-line, pre-wrap so an artifact stays intact); it supersedes the doneWhy rationale below.
   const summaryText = node.summary;
   if (summaryText) {
     const sum = el("div", "ftree-summary");
     sum.style.paddingLeft = (depth * TREE_INDENT_EM + 1.6) + "em";   // align under the node text (past the tri + mark)
     const stext = el("span", "ftree-summary-text"); stext.textContent = summaryText; sum.appendChild(stext);
-    const copy = el("span", "ftree-summary-copy"); copy.textContent = "⧉"; copy.title = "copy this takeaway";
-    copy.onclick = (ev) => { ev.stopPropagation(); navigator.clipboard?.writeText(summaryText).then(() => { copy.textContent = "✓"; setTimeout(() => { copy.textContent = "⧉"; }, 900); }); };
-    sum.appendChild(copy);
     box.appendChild(sum);
   }
   // The planner's rationale shown INLINE under the node (the user 2026-06-17), not only as the hover
