@@ -125,7 +125,7 @@ test("top-level goals are separated by a thin rule", () => {
 test("a FLAT ledger (no expandable node anywhere) drops the disclosure column so bullets sit flush", () => {
   // the user 2026-06-16: a caret-less list shouldn't reserve a caret column on every leaf
   assert.match(RENDER, /const anyExpandable = tree\.some\(\(n\) => !!\(n\.children && n\.children\.length\)\)/);
-  assert.match(RENDER, /el\("div", "ledger-tree" \+ \(anyExpandable \? "" : " flat"\) \+ \(ledgerAnimateExpand \? " revealing" : ""\)\)/);
+  assert.match(RENDER, /el\("div", "ledger-tree" \+ \(anyExpandable \? "" : " flat"\)\)/);
   assert.match(RENDER, /if \(anyExpandable\) lead\.push\(tri\)/);          // tri appended only when something can expand
   assert.match(CSS, /\.ledger-tree\.flat \.ledger-tri \{[^}]*display: none/);
 });
@@ -244,15 +244,21 @@ test("expanding PINS the current top goal to the top of the tree + marks it, so 
   assert.match(CSS, /\.ledger-tnode\.ledger-curtop \{[^}]*box-shadow: inset 2px 0 0 #8fb3ff/);
 });
 
-test("expanding ANIMATES the tree reveal once (clip-path unfold), not on routine data updates (the user 2026-06-18)", () => {
-  // a one-shot flag set only by the expand toggle; the tree wrap reads it then clears it
-  assert.match(RENDER, /let ledgerAnimateExpand = false;/);
-  assert.match(RENDER, /ledgerAnimateExpand = !ledgerCollapsed;/);   // true only when expanding
-  assert.match(RENDER, /\(ledgerAnimateExpand \? " revealing" : ""\)/);
-  assert.match(RENDER, /ledgerAnimateExpand = false;\s*\/\/ one-shot/);
-  // a STAGGERED row cascade (each row delayed after the one above) + reduced-motion opt-out
-  assert.match(CSS, /@keyframes ledger-row-in \{[\s\S]*translateY\(0\)/);
-  assert.match(CSS, /\.ledger-tree\.revealing > \.ledger-tnode \{ animation: ledger-row-in 0\.5s/);
-  assert.match(CSS, /\.ledger-tree\.revealing > \.ledger-tnode:nth-child\(2\) \{ animation-delay: 0\.08s/);
-  assert.match(CSS, /prefers-reduced-motion: reduce[^}]*\.ledger-tree\.revealing > \.ledger-tnode \{ animation: none/);
+test("expanding MORPHS the collapsed goal text into its pinned row (FLIP), then fades the rest in (the user 2026-06-18)", () => {
+  // on expand, capture the collapsed .ledger-summary position as the FLIP source — one-shot
+  assert.match(RENDER, /let ledgerMorphFrom: \{ left: number; top: number \} \| null = null;/);
+  assert.match(RENDER, /const expanding = ledgerCollapsed;/);
+  assert.match(RENDER, /ledgerMorphFrom = \{ left: r\.left, top: r\.top \};/);
+  // after the tree renders, FLIP the curTop row's text from that position, then clear the one-shot
+  assert.match(RENDER, /if \(ledgerMorphFrom && curTop\) morphLedgerExpand\(host, wrap, ledgerMorphFrom\);/);
+  assert.match(RENDER, /ledgerMorphFrom = null;\s*\/\/ one-shot/);
+  // the FLIP: invert (translate text to the old spot), commit a reflow, then transition transform → 0,
+  // and fade the rest in AFTER the morph (0.5s delay = the morph duration); bails on reduced-motion
+  assert.match(RENDER, /function morphLedgerExpand\(host: HTMLElement, wrap: HTMLElement, from:/);
+  assert.match(RENDER, /const curText = curRow\?\.querySelector\(".ledger-ttext"\)/);
+  assert.match(RENDER, /curText\.style\.transform = `translate\(\$\{dx\}px, \$\{dy\}px\)`;/);
+  assert.match(RENDER, /void curText\.offsetWidth;/);
+  assert.match(RENDER, /curText\.style\.transform = "translate\(0px, 0px\)";/);
+  assert.match(RENDER, /e\.style\.transition = "opacity 0\.4s ease 0\.5s";/);   // fade in AFTER the move
+  assert.match(RENDER, /prefers-reduced-motion: reduce/);
 });

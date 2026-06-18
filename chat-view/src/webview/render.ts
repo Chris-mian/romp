@@ -2206,15 +2206,55 @@ try { ledgerCollapsed = !!((vscodeApi && vscodeApi.getState && vscodeApi.getStat
 // (ids are session-scoped, so the sets are safe to keep global across session switches).
 const ledgerFolded = new Set<string>();    // explicitly folded by the user (overrides a default-open)
 const ledgerExpanded = new Set<string>();  // explicitly expanded by the user (overrides a default-fold)
-// One-shot: set only by a user EXPAND toggle, consumed by the next renderLedger to animate the tree
-// reveal — so a routine data-update rebuild doesn't re-animate (the user 2026-06-18).
-let ledgerAnimateExpand = false;
+// One-shot FLIP source (the user 2026-06-18): on EXPAND, capture the collapsed goal-text's on-screen
+// position so the next renderLedger can MORPH it into its pinned row, then fade the rest in around it.
+// Consumed (cleared) by that render; a routine data-update leaves it null, so it never re-animates.
+let ledgerMorphFrom: { left: number; top: number } | null = null;
 function toggleLedgerCollapsed() {
+  const expanding = ledgerCollapsed;   // currently collapsed → this click EXPANDS
+  ledgerMorphFrom = null;
+  if (expanding) {
+    const s = document.getElementById("ledger")?.querySelector(".ledger-summary") as HTMLElement | null;
+    if (s && s.getBoundingClientRect) { const r = s.getBoundingClientRect(); ledgerMorphFrom = { left: r.left, top: r.top }; }
+  }
   ledgerCollapsed = !ledgerCollapsed;
-  ledgerAnimateExpand = !ledgerCollapsed;   // expanding (now not collapsed) → reveal-animate the tree
   try { if (vscodeApi && vscodeApi.setState) vscodeApi.setState({ ...(vscodeApi.getState() || {}), ledgerCollapsed }); } catch { /* ignore */ }
   renderLedger();
   renderTabs(); // refresh the ▾/▸ glyph
+}
+
+// FLIP the collapsed goal text into its pinned row, then fade the title + the other rows in AROUND it
+// (the user 2026-06-18) — so the compact line visibly settles where it belongs. Fully guarded: any missing
+// piece, no movement, or prefers-reduced-motion → it just shows, no animation.
+function morphLedgerExpand(host: HTMLElement, wrap: HTMLElement, from: { left: number; top: number }) {
+  if (typeof requestAnimationFrame !== "function") return;
+  try { if (typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches) return; } catch { /* ignore */ }
+  const curRow = wrap.querySelector(".ledger-tnode.ledger-curtop") as HTMLElement | null;
+  const curText = curRow?.querySelector(".ledger-ttext") as HTMLElement | null;
+  if (!curText || !curText.getBoundingClientRect) return;
+  const to = curText.getBoundingClientRect();
+  const dx = from.left - to.left, dy = from.top - to.top;
+  if (!dx && !dy) return;
+  // hide everything EXCEPT the curTop row (whose text glides in); they fade in only AFTER the morph lands
+  const fade: HTMLElement[] = [];
+  const sumEl = host.querySelector(".ledger-summary") as HTMLElement | null;
+  if (sumEl) fade.push(sumEl);
+  wrap.querySelectorAll(".ledger-tnode").forEach((r) => { if (r !== curRow) fade.push(r as HTMLElement); });
+  fade.forEach((e) => { e.style.opacity = "0"; });
+  // INVERT: drop the text back onto the collapsed line's position
+  curText.style.transition = "none";
+  curText.style.transformOrigin = "left top";
+  curText.style.transform = `translate(${dx}px, ${dy}px)`;
+  curText.style.position = "relative"; curText.style.zIndex = "3";
+  void curText.offsetWidth;   // commit the FROM transform before transitioning
+  // PLAY: glide to its real slot; the rest fades in once it's home (0.5s delay = the morph duration)
+  curText.style.transition = "transform 0.5s cubic-bezier(0.22, 0.61, 0.36, 1)";
+  curText.style.transform = "translate(0px, 0px)";
+  fade.forEach((e) => { e.style.transition = "opacity 0.4s ease 0.5s"; e.style.opacity = ""; });
+  setTimeout(() => {
+    for (const p of ["transition", "transform", "transformOrigin", "position", "zIndex"]) (curText.style as any)[p] = "";
+    fade.forEach((e) => { e.style.transition = ""; e.style.opacity = ""; });
+  }, 1000);
 }
 
 // (Relevance categorization — colored labels + filter checkboxes — was removed
@@ -2293,8 +2333,7 @@ function renderLedger() {
     // column entirely — otherwise every leaf reserves an empty spacer and the whole list reads as dead-
     // indented (the user 2026-06-16). Keep the column when ANY node is expandable, for alignment.
     const anyExpandable = tree.some((n) => !!(n.children && n.children.length));
-    const wrap = el("div", "ledger-tree" + (anyExpandable ? "" : " flat") + (ledgerAnimateExpand ? " revealing" : ""));
-    ledgerAnimateExpand = false;   // one-shot: only this expand toggle animates, not the next data update
+    const wrap = el("div", "ledger-tree" + (anyExpandable ? "" : " flat"));
     const byId = new Map(tree.map((n) => [n.id, n] as const));
     const roots = tree.filter((n) => n.depth === 0);
     // Unfinished goals on top, finished (done/cleared) at the bottom; WITHIN each group, most recent
@@ -2413,6 +2452,9 @@ function renderLedger() {
     for (const r of orderedRoots) renderNode(r, 0);
     host.appendChild(wrap);
     if (prevTreeScroll) wrap.scrollTop = prevTreeScroll;   // keep the scroll-pane where it was (no jump-to-top on expand)
+    // a pending EXPAND → FLIP the collapsed goal text into its pinned row, then fade the rest in around it
+    if (ledgerMorphFrom && curTop) morphLedgerExpand(host, wrap, ledgerMorphFrom);
+    ledgerMorphFrom = null;   // one-shot: consume it whether or not a morph ran
   } else {
     // --- fallback for goal-less sessions: the live "working on" line + the captioned "done" bullets ---
     if (cur && cur.text) {
