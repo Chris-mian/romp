@@ -183,6 +183,24 @@ def _log_judge_usage(judge, tier, model, fsid, wrap):
         pass
 
 
+def _judge_env(tier):
+    """The subprocess env for ONE judge call. Drops the TMUX vars (so the child isn't taken for a live
+    pane) and trips the Stop-hook recursion guard. For the INDEX tier it also disables extended thinking
+    (MAX_THINKING_TOKENS=0): the captioner + archiver do mechanical one-shot summarization, where Haiku's
+    default thinking is pure waste — a probe showed a ~385-token thinking block emitted before a ~15-token
+    caption (722 -> 24 output tokens, 7.1s -> 0.9s per call, ~92% cheaper, identical caption). TRIAGE keeps
+    thinking: the planner / closer / grouper / distiller make real placement + closure judgments. Output is
+    the expensive half (Haiku $5/Mtok out) AND the latency driver (~58 tok/s, serial), so this is the
+    captioner's biggest single lever — and it's what makes any future batching latency-safe."""
+    env = dict(os.environ)
+    for k in ("TMUX", "TMUX_PANE"):
+        env.pop(k, None)
+    env["ROMP_SUMMARIZING"] = "1"                     # trips the Stop-hook recursion guard
+    if tier == "index":
+        env["MAX_THINKING_TOKENS"] = "0"              # no thinking for mechanical summarization (the cost lever)
+    return env
+
+
 def _judge_run(model, sys_prompt, user, effort=None, judge=None):
     """Run ONE judge model call (claude -p, zero tools, MCP off, portable 45s alarm cap — macOS has no
     `timeout`). Returns the model's TEXT, '' on any failure. `model` selects the tier (INDEX_MODEL=Haiku,
@@ -191,10 +209,7 @@ def _judge_run(model, sys_prompt, user, effort=None, judge=None):
     stdout as {"result", "usage", ...}; we unwrap to .result and log usage to USAGE. Fully defensive: an
     unparseable/missing wrapper falls back to returning raw stdout (today's plain-text path), never raising."""
     tier = "index" if model == INDEX_MODEL else "triage"
-    env = dict(os.environ)
-    for k in ("TMUX", "TMUX_PANE"):
-        env.pop(k, None)
-    env["ROMP_SUMMARIZING"] = "1"                     # trips the Stop-hook recursion guard
+    env = _judge_env(tier)
     try:
         p = subprocess.run(_judge_cmd(model, sys_prompt, effort), input=user,
                            capture_output=True, text=True, cwd="/tmp", env=env, timeout=50)

@@ -1995,5 +1995,32 @@ class JudgeUsageLog(unittest.TestCase):
         self.assertFalse((td / "judge-usage.jsonl").exists(), "nothing logged when there's no usage envelope")
 
 
+class JudgeEnv(unittest.TestCase):
+    """The INDEX tier (captioner + archiver) disables extended thinking; TRIAGE keeps it.
+    Haiku otherwise emits a long thinking block before the trivial caption — pure output waste."""
+
+    def test_index_tier_disables_thinking(self):
+        self.assertEqual(jd._judge_env("index").get("MAX_THINKING_TOKENS"), "0",
+                         "captioner/archiver run with thinking off")
+
+    def test_triage_tier_does_not_force_thinking_off(self):
+        had = os.environ.pop("MAX_THINKING_TOKENS", None)   # isolate from an inherited cap
+        try:
+            self.assertNotIn("MAX_THINKING_TOKENS", jd._judge_env("triage"),
+                             "planner/closer/grouper/distiller keep thinking (real judgments)")
+        finally:
+            if had is not None:
+                os.environ["MAX_THINKING_TOKENS"] = had
+
+    def test_env_keeps_the_recursion_guard_and_drops_tmux(self):
+        os.environ["TMUX"] = "/tmp/fake"                    # a judge child must not look like a live pane
+        try:
+            env = jd._judge_env("index")
+        finally:
+            os.environ.pop("TMUX", None)
+        self.assertEqual(env.get("ROMP_SUMMARIZING"), "1")
+        self.assertNotIn("TMUX", env)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
