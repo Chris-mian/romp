@@ -28,21 +28,24 @@ test("appendActive snaps only when the user is already near the bottom", () => {
     "tail-append follows the live edge only if the reader was already at the bottom");
 });
 
-// Deep-link HONEST-FAIL (the user 2026-06-17, via bugs): the uuid anchor is the ONLY landing signal — when
-// it can't resolve, say so plainly instead of jumping to an unrelated nearby moment via a time heuristic.
-// "I'd rather get a message it couldn't find than be taken to some unrelated thing by a heuristic."
-test("NO time-based fallback for ANY intent — every anchor miss honest-fails (no nearby-moment jump)", () => {
-  // both intents now carry a resolvable uuid (work → anchorUuid, prompt → promptAnchorUuid), so the time
-  // landing is fully retired: neither the old blunt (any-kind) fallback NOR the e14e27c prompt-intent stopgap.
+// Two-tier PROMPT landing + honest-fail (the user 2026-06-17). Prompt-intent jumps resolve by id
+// (promptAnchorUuid) when they can, else fall back to the nearest USER turn — which for a title IS the
+// originating message, not a wrong jump. WORK intent has no fallback: a missing work anchor honest-fails.
+test("WORK intent has NO time fallback (the blunt any-kind fallback is gone)", () => {
   assert.doesNotMatch(RENDER, /if \(!scrolled && pendingAnchorT != null\) \{ scrolled = scrollToNearestT/,
-    "the old blunt (any-kind) fallback is gone");
-  assert.doesNotMatch(RENDER, /pendingAnchorKind === "user" && pendingAnchorT != null\) scrolled = scrollToNearestT/,
-    "the e14e27c prompt-intent nearest-USER-turn stopgap is retired (prompt resolves by promptAnchorUuid now)");
+    "the old blunt (any-kind) fallback is gone — a work-anchor miss honest-fails");
   assert.doesNotMatch(RENDER, /showing the latest instead \(logged\)/, "the old heuristic toasts are gone");
   assert.doesNotMatch(RENDER, /landed nearby \(logged\)/);
 });
 
-test("an unresolved deep-link announces itself with a plain 'couldn't locate' message", () => {
+test("PROMPT intent keeps a nearest-USER-turn fallback after the by-id attempt (covers the ~29% promptAnchorUuid can't resolve)", () => {
+  // promptAnchorUuid gives an EXACT landing when it resolves (~71% of cards); the rest mint from a peer
+  // opener / autonomous segment / a pruned-or-compacted turn, so tier-2 lands on the nearest USER turn rather
+  // than honest-failing. (8a24c16 retired this too eagerly; a fleet measurement showed tier 1 covers ~71%.)
+  assert.match(RENDER, /if \(!scrolled && pendingAnchorKind === "user" && pendingAnchorT != null\) scrolled = scrollToNearestT\(pendingAnchorT, "user"\);/);
+});
+
+test("honest-fail still fires when even the nearest-user-turn finds nothing (the turn is genuinely gone)", () => {
   assert.match(RENDER, /if \(!scrolled\) landToast\("couldn't locate this in the transcript"\)/);
 });
 
