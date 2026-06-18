@@ -235,6 +235,25 @@ class ViewBuilder(unittest.TestCase):
         finally:
             km._downtime[:] = saved
 
+    def test_host_sleep_clips_a_work_bar_that_straddles_it(self):
+        # The real case: the lid closed mid-segment, so a CLOSED bar's own [start,end] enclose the sleep.
+        # The bar must clip to the suspension start, not render as one long span (the user 2026-06-18).
+        def first_bar():
+            return km.build_timeline(NOW)["turns"][SID][0]
+        saved = list(km._downtime)
+        km._downtime[:] = []
+        try:
+            b0 = first_bar()
+            start, end = b0["start"], b0["end"]
+            self.assertGreater(end, start, "fixture has a real work bar")
+            mid = (start + end) // 2
+            km._downtime[:] = [(mid, end + 3600)]        # host slept mid-bar, woke after it
+            clipped = first_bar()
+            self.assertEqual(clipped["end"], mid, "the bar ends at the suspension start, not spanning the sleep")
+            self.assertFalse(clipped["open"], "a bar clipped at a sleep is not 'open'")
+        finally:
+            km._downtime[:] = saved
+
     def test_ledger_tree_emits_full_tree_for_the_render_to_fold(self):
         # The ledger emits the FULL goal tree now — every node with its child ids + flags — and the RENDER
         # folds completed branches (the user 2026-06-16). So a done parent's child IS present (no kernel
@@ -1959,6 +1978,16 @@ class HostSuspend(unittest.TestCase):
         try:
             self.assertTrue(km._suspended_after(1500), "activity before the sleep → suspended after it")
             self.assertFalse(km._suspended_after(9500), "activity after the sleep → not suspended since")
+        finally:
+            km._downtime[:] = saved
+
+    def test_clip_to_suspend_clips_a_bar_that_straddles_a_sleep(self):
+        saved = list(km._downtime)
+        km._downtime[:] = [(1500.0, 9000.0)]             # a sleep from t=1500 to t=9000
+        try:
+            self.assertEqual(km._clip_to_suspend(1000, 9999), 1500, "a bar straddling the sleep ends at onset")
+            self.assertEqual(km._clip_to_suspend(2000, 9999), 9999, "a bar starting after onset is unchanged")
+            self.assertEqual(km._clip_to_suspend(1000, 1400), 1400, "a bar ending before the sleep is unchanged")
         finally:
             km._downtime[:] = saved
 

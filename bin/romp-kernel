@@ -67,6 +67,15 @@ def _suspended_after(t):
     return any(start > (t or 0) for (start, _e) in _downtime)
 
 
+def _clip_to_suspend(start, end):
+    """A work bar must not span a host sleep. If a recorded suspension begins strictly inside [start, end],
+    return the earliest such start as the clipped bar end (the last activity before the machine went down);
+    no suspension inside → end unchanged. Catches a segment whose own start/end straddle a sleep — a CLOSED
+    bar the open-turn clip can't reach (the lid closed mid-response; the user 2026-06-18)."""
+    inside = [s for (s, _e) in _downtime if start < s < end]
+    return min(inside) if inside else end
+
+
 def _record_suspend(iv):
     """Append a detected suspension to the in-memory log + a small jsonl, so it survives a kernel restart
     (the timeline reads _downtime, loaded from the file at startup). Best-effort, never raises."""
@@ -1752,6 +1761,7 @@ def build_feed(now, tmux=None):
                         # exists / was blocked / was completed). (the user 2026-06-16.)
                         "why": nd.get("why"), "blockWhy": nd.get("blockWhy"), "doneWhy": nd.get("doneWhy"),
                         "summary": nd.get("summary"),                   # distiller's key takeaway — shown in the MODAL only (card keeps doneWhy) — the user 2026-06-17
+                        "blockSummary": nd.get("blockSummary"),         # block-distiller's DECISION BRIEF (MODAL); null until produced — the user 2026-06-18
                         "followupPending": nd.get("followupPending"),   # per-node "Followed up" chip in the modal tree (business 2026-06-17)
                         "children": kids, "rows": []})
             for c in kids:
@@ -1814,6 +1824,7 @@ def build_feed(now, tmux=None):
                 "doneWhy": done_why,                 # one-sentence "why done" on a completed card (the done page)
                 "followupPending": nodes[nid].get("followupPending"),   # optimistic reopen → "Followed up" chip until the judge catches up
                 "summary": nodes[nid].get("summary"),    # the distiller's key takeaway for a completed goal (modal) — the user 2026-06-17
+                "blockSummary": nodes[nid].get("blockSummary"),    # the block-distiller's decision brief for a blocked goal (modal); null until produced — the user 2026-06-18
                 "blocked": ({"state": "apiError", "since": (tm.get("since") if tm else None),
                              "status": aerr.get("status"), "category": aerr.get("category"),
                              "text": aerr.get("text"),
@@ -2470,13 +2481,14 @@ def build_timeline(now, tmux=None):
                 trig = next((x for x in seg["atoms"] if x.get("uuid") == seg.get("trigger")), None)
                 author = (trig or {}).get("author")
                 src = "queued" if isinstance(author, dict) else "typed"
-                last_t = max(last_t or 0, seg["end"])
+                seg_end = _clip_to_suspend(seg["t"], seg["end"])   # a bar must not span a host sleep: end it
+                last_t = max(last_t or 0, seg_end)                 # at the suspension (last activity before sleep)
                 bars.append({
                     # promptId = the prompt atom (the DOT), workId = the first work atom (the BAR) — so a
                     # chat message-hover lights only the dot and a work-hover only the bar (dotLit/barLit
                     # in the view). Restores the old romp-events split lost in the kernel rewrite.
                     "id": seg["id"], "promptId": seg.get("trigger"), "workId": work_uuid,
-                    "start": seg["t"], "end": seg["end"], "open": turn_open and si == len(segs) - 1,
+                    "start": seg["t"], "end": seg_end, "open": turn_open and si == len(segs) - 1 and seg_end == seg["end"],
                     "prompt": _seg_prompt(seg), "summary": cap, "reply": "",
                     "src": src, "mids": _seg_mids(seg), "pending": False,
                     "tid": sid, "uuid": seg.get("trigger"),
