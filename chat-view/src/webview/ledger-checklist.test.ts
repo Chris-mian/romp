@@ -226,3 +226,12 @@ test("leaf-row tri spacers don't inherit the placeholder's 40px padding (no gian
   assert.match(CSS, /\.empty-state \{[^}]*padding:\s*40px/);
   assert.match(RENDER, /el\("div", "empty-state"\); empty\.id = "empty-state"/);
 });
+
+test("collapsed ledger shows the CURRENT top-level goal; expanded shows the title + full tree (the user 2026-06-18)", () => {
+  // the current top goal = the depth-0 root on the active path (current/onpath), else the freshest unfinished root
+  assert.match(RENDER, /const curTop = roots0\.find\(\(r\) => r\.current \|\| r\.onpath\)/);
+  // collapsed line = that goal's text; expanded keeps the archiver title (with the tree below)
+  assert.match(RENDER, /sum\.textContent = \(ledgerCollapsed && curTop\) \? curTop\.text : titleText;/);
+  // the early return still bails after the head in collapsed mode (no tree)
+  assert.match(RENDER, /if \(ledgerCollapsed\) return;/);
+});

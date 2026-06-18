@@ -2262,15 +2262,23 @@ function renderLedger() {
   const caret = el("span", "ledger-caret");
   caret.textContent = ledgerCollapsed ? "▸" : "▾";
   const sum = el("div", "ledger-summary");
-  sum.textContent = titleText;
-  // Title hue tracks the freshest activity across the whole overview.
+  // COLLAPSED → just the TOP-LEVEL goal currently being worked on; EXPANDED → the archiver title (with the
+  // full sorted tree below). The current top goal = the depth-0 root on the active path (its subtree holds
+  // the `current` node), else the freshest unfinished root (the user 2026-06-18).
+  const roots0 = tree.filter((n) => n.depth === 0);
+  const curTop = roots0.find((r) => r.current || r.onpath)
+    || roots0.filter((r) => !r.done).sort((a, b) => ((b.mt ?? b.t) || 0) - ((a.mt ?? a.t) || 0))[0]
+    || roots0[0] || null;
+  sum.textContent = (ledgerCollapsed && curTop) ? curTop.text : titleText;
+  // hue: collapsed tints by the shown goal's recency; expanded by the freshest activity across the overview.
   const newestT = Math.max(cur && cur.t ? cur.t : 0, ...tree.map((n) => n.t || 0), ...bullets.map((b) => b.t || 0));
-  if (newestT) sum.style.color = ageColorReadable(now - newestT);
+  const tintT = (ledgerCollapsed && curTop) ? ((curTop.mt ?? curTop.t) || 0) : newestT;
+  if (tintT) sum.style.color = ageColorReadable(now - tintT);
   head.append(caret, sum);
-  head.title = ledgerCollapsed ? "Show session overview" : "Hide session overview";
+  head.title = ledgerCollapsed ? "Show the full goal tree" : "Collapse to the current goal";
   head.addEventListener("click", toggleLedgerCollapsed);
   host.appendChild(head);
-  if (ledgerCollapsed) return;   // collapsed → just the title strip
+  if (ledgerCollapsed) return;   // collapsed → just the current top-level goal line (above)
 
   if (tree.length) {
     // --- the goal-graph overview tree: a COLLAPSIBLE checklist (the user 2026-06-16). Toggle arrows at
