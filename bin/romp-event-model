@@ -329,9 +329,14 @@ class FileAdapter:
             fsid = self.fsid_of.get(u)
             seq = self.seq_of.get(u, 0)
             if t == "assistant":
-                out.append({"type": "assistant", "uuid": u, "session_id": rompuuid,
-                            "t": ts, "fsid": fsid, "parentUuid": r.get("parentUuid"),
-                            "message": _norm_message(r.get("message")), "_seq": seq})
+                a = {"type": "assistant", "uuid": u, "session_id": rompuuid,
+                     "t": ts, "fsid": fsid, "parentUuid": r.get("parentUuid"),
+                     "message": _norm_message(r.get("message")), "_seq": seq}
+                if r.get("isApiErrorMessage"):
+                    a["isApiError"] = True   # a FAILURE record — Claude Code writes the error as an
+                                             # assistant text block, so it carries text but is NOT a
+                                             # reply; deep-link anchors must skip it (kernel _seg_anchors)
+                out.append(a)
             elif t == "user":
                 if r.get("isMeta") is True:
                     continue   # `<command-…>` echoes, local-command-stdout — harness noise, not a message

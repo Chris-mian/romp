@@ -537,6 +537,31 @@ def _text(atom):
                     if isinstance(b, dict) and b.get("type") == "text").strip()
 
 
+class ApiErrorAtom(unittest.TestCase):
+    """Claude Code writes a failed turn as an assistant record with top-level isApiErrorMessage:true
+    and a text block. em must TAG that atom isApiError so deep-link anchoring (_seg_anchors) can skip
+    it — the error carries text but is a FAILURE, not a reply. (the user 2026-06-18.)"""
+
+    def _atoms(self, records):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / (SID + ".jsonl")
+            path.write_text("\n".join(json.dumps(r) for r in records) + "\n")
+            out = em.parse_session(str(path), rompuuid=SID, dir="/TESTDIR",
+                                   candidate_files=[str(path)], now=NOW)
+        return [a for t in out["turns"] for a in t["atoms"]]
+
+    def test_api_error_assistant_atom_is_tagged(self):
+        err = aline(T0 + 20, "API Error: 500 server_error", "a1", "u1", stop="stop_sequence")
+        err["isApiErrorMessage"] = True
+        a1 = next(a for a in self._atoms([uline(T0, "do it", "u1"), err]) if a.get("uuid") == "a1")
+        self.assertIs(a1.get("isApiError"), True, "API-error assistant atom must be tagged isApiError")
+
+    def test_normal_assistant_atom_is_not_tagged(self):
+        a1 = next(a for a in self._atoms([uline(T0, "do it", "u1"), aline(T0 + 20, "done", "a1", "u1")])
+                  if a.get("uuid") == "a1")
+        self.assertNotIn("isApiError", a1, "a real reply is never tagged isApiError")
+
+
 class Idle(unittest.TestCase):
     def test_idle_atom_from_state_log(self):
         out = run_scenario("idle_atom")

@@ -440,6 +440,37 @@ class ViewBuilder(unittest.TestCase):
         node = next(n for a in km.build_feed(NOW)["asks"] for n in a["tree"] if n["id"] == nid)
         self.assertEqual(node["anchorUuid"], want, "node deep-links to the exact segment uuid, not a timestamp")
 
+    def test_seg_anchors_skips_api_error_reply(self):
+        # The user's bug (2026-06-18): a done goal's deep-link jumped to an 'API Error: …' line.
+        # Claude Code records a failed turn as an assistant TEXT block (isApiErrorMessage → em tags
+        # isApiError), so it carries text and WOULD win the reply anchor over the real reply.
+        # _seg_anchors must skip it. End-to-end: transcript → em.segments → _seg_anchors.
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / (SID + ".jsonl")
+            p.write_text("\n".join(json.dumps(r) for r in [
+                uline(T0, "do the thing", "u1", ps="typed"),
+                aline(T0 + 20, "here is the real reply", "a1", "u1", stop="end_turn"),
+                apierr_line(T0 + 40, "aerr", "a1"),               # trailing API error = last text-carrying atom
+            ]) + "\n")
+            session = em.parse_session(str(p), rompuuid=SID, candidate_files=[str(p)], now=NOW)
+        seg = next(s for t in session["turns"] for s in em.segments(t))
+        work, reply = km._seg_anchors(seg["atoms"])
+        self.assertEqual(reply, "a1", "reply anchor is the real reply, NOT the trailing API-error line")
+        self.assertEqual(work, "a1", "work anchor skips the error too → the real first assistant atom")
+
+    def test_seg_anchors_none_when_turn_is_only_an_api_error(self):
+        # A turn that produced ONLY an API error has no reply to jump to → (None, None); the feed/
+        # timeline then fall back honestly rather than deep-linking to the error line. (2026-06-18.)
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / (SID + ".jsonl")
+            p.write_text("\n".join(json.dumps(r) for r in [
+                uline(T0, "do the thing", "u1", ps="typed"),
+                apierr_line(T0 + 20, "aerr", "u1"),
+            ]) + "\n")
+            session = em.parse_session(str(p), rompuuid=SID, candidate_files=[str(p)], now=NOW)
+        seg = next(s for t in session["turns"] for s in em.segments(t))
+        self.assertEqual(km._seg_anchors(seg["atoms"]), (None, None))
+
     def test_feed_tree_node_carries_mt_for_deeplink(self):
         # Every tree node carries mt = last-modified (the user 2026-06-16): a blocked/done node
         # deep-links to WHERE IT RESOLVED (the segment the planner applied the block/done op), not
