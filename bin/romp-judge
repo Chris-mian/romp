@@ -733,6 +733,7 @@ def apply_plan(store, seg_id, seg_t, ops, menu):
         """Mark a node complete (record the reason) and clear `blocked` across its WHOLE subtree (a
         checked-off goal's child-blocks are moot)."""
         nodes[node_id]["nodeComplete"] = True
+        nodes[node_id]["everDone"] = True              # durable: a once-done node is FOREVER grouper-exempt (never unset)
         nodes[node_id]["doneWhy"] = why
         nodes[node_id]["mt"] = seg_t                   # a done bumps last-modified (for recency ordering)
         kids = {}
@@ -1099,6 +1100,8 @@ def _reopen(store, gid):
     nodes = store["nodes"]
     if gid not in nodes:
         return
+    if nodes[gid].get("nodeComplete"):                 # reopening a DONE node: stamp the durable everDone marker
+        nodes[gid]["everDone"] = True                  # BEFORE clearing nodeComplete, so the grouper never relinks it
     nodes[gid]["nodeComplete"] = False
     nodes[gid]["cleared"] = False
     nodes[gid].pop("followupPending", None)            # official reopen → drop the optimistic chip flag
@@ -1321,6 +1324,9 @@ def apply_group(store, tops, ops, t):
     began. Returns the number of relinks applied."""
     nodes = store["nodes"]
     created = []
+    for nd in nodes.values():                          # backfill: any currently-done node is everDone (covers legacy nodes)
+        if nd.get("nodeComplete"):
+            nd["everDone"] = True
 
     def new_umbrella(text, why):
         store["seq"] = store.get("seq", 0) + 1
@@ -1346,6 +1352,8 @@ def apply_group(store, tops, ops, t):
             continue
         # group: relink top #goal under #under (a menu top) or a same-reply umbrella (ref)
         child = tops[o["goal"] - 1]["id"]
+        if nodes[child].get("everDone"):               # a once-done node keeps its standalone identity: never MOVED
+            continue                                   # (it may still be an umbrella PARENT; just not a relink SOURCE)
         if "under" in o:
             parent = tops[o["under"] - 1]["id"]
         else:
@@ -1556,6 +1564,7 @@ def apply_close(store, menu, verdicts, t=None):
             continue
         if i in done:
             nd["nodeComplete"] = True
+            nd["everDone"] = True                      # durable once-done marker → forever grouper-exempt (never unset)
             nd["blocked"] = False
             nd["negComplete"] = True
             if done[i]:

@@ -691,6 +691,39 @@ class Grouper(unittest.TestCase):
         jd.apply_group(s, tops, [{"do": "group", "why": "x", "goal": 2, "under": 1}], T0 + 60)
         self.assertLessEqual(jd._depth(s["nodes"], b), jd.MAX_DEPTH, "B's relink is clamped to MAX_DEPTH")
 
+    def test_once_done_node_is_forever_grouper_exempt(self):
+        # the user 2026-06-18 (via bugs): a node that EVER reached done keeps its standalone card identity —
+        # the grouper must never relink it as a SOURCE, even after a follow-up reopens it (nodeComplete False,
+        # everDone True). Repro: a done goal was reopened by a follow-up, then the next grouper pass nested it
+        # under a broad umbrella and its card vanished from the feed.
+        s, a, b = self._two_tops()
+        di = next(i for i, nd in enumerate(jd.open_menu(s), 1) if nd["id"] == b)
+        jd.apply_plan(s, "sd", T0 + 15, [{"do": "done", "why": "shipped", "goal": di}], jd.open_menu(s))
+        self.assertTrue(s["nodes"][b].get("everDone"), "completing B stamps the durable everDone marker")
+        jd._reopen(s, b)                                          # a follow-up reopens B
+        self.assertFalse(s["nodes"][b]["nodeComplete"], "the follow-up reopened B")
+        self.assertTrue(s["nodes"][b].get("everDone"), "everDone persists through the reopen (never unset)")
+        tops = jd._group_tops(s)                                  # B is an open top again
+        ai = next(i for i, nd in enumerate(tops, 1) if nd["id"] == a)
+        bi = next(i for i, nd in enumerate(tops, 1) if nd["id"] == b)
+        n = jd.apply_group(s, tops, [{"do": "group", "why": "both serve X", "goal": bi, "under": ai}], T0 + 30)
+        self.assertEqual(n, 0, "a once-done node is never relinked as a group source")
+        self.assertIsNone(s["nodes"][b]["parentId"], "B keeps its standalone identity, not nested under A")
+
+    def test_once_done_node_can_still_be_an_umbrella_parent(self):
+        # the exemption blocks MOVING a once-done node, not nesting OTHERS under it: A (never done) groups
+        # under B (once done, reopened) fine — B is a valid relink TARGET, just never a source.
+        s, a, b = self._two_tops()
+        di = next(i for i, nd in enumerate(jd.open_menu(s), 1) if nd["id"] == b)
+        jd.apply_plan(s, "sd", T0 + 15, [{"do": "done", "why": "shipped", "goal": di}], jd.open_menu(s))
+        jd._reopen(s, b)
+        tops = jd._group_tops(s)
+        ai = next(i for i, nd in enumerate(tops, 1) if nd["id"] == a)
+        bi = next(i for i, nd in enumerate(tops, 1) if nd["id"] == b)
+        n = jd.apply_group(s, tops, [{"do": "group", "why": "x", "goal": ai, "under": bi}], T0 + 30)
+        self.assertEqual(n, 1, "A (never done) is relinked under B")
+        self.assertEqual(s["nodes"][a]["parentId"], b, "the once-done node serves as the parent")
+
     # ── the session pass: event-gated by the open-top set ──
     def _setup(self, store, records):
         td = Path(tempfile.mkdtemp())
