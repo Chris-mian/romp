@@ -77,8 +77,10 @@ interface AskItem {
   // the owning session is live-blocked (permission/picker, or stopped on an API error) ON this card's
   // work → the card itself files under BLOCKED (the user's ruling 2026-06-11; apiError 2026-06-16).
   blocked?: { state: string; since: number; what: string; status?: number; category?: string; text?: string };
-  blockWhy?: string;                               // planner's one-sentence "why blocked" → shown under a blocked card
-  doneWhy?: string;                                // planner's one-sentence "why done" → shown under a completed card (the done page)
+  blockWhy?: string;                               // planner's one-sentence "why blocked" → now the HOVER tooltip on the blocked card's auto-line (the user 2026-06-18)
+  doneWhy?: string;                                // planner's one-sentence "why done" → now the HOVER tooltip on the completed card's auto-line (the user 2026-06-18)
+  summary?: string | null;                         // distiller's key takeaway for a COMPLETED goal → the done card's one auto-written line (kernel asks.append); null until produced
+  blockSummary?: string | null;                    // block-distiller's decision brief for a BLOCKED goal → the blocked card's one auto-written line (kernel 466393c); null until produced
   origin?: { peer: string; peerSid: string; color: { bg: string; fg: string } | null } | null;  // courier handoff: planted by a peer's message → "↪ from <peer>"
   groupTitle?: string;                             // host: this ask shares a typed turn with siblings → the group's title
   groupN?: number;                                 // host: sibling count for that turn (>1 ⇒ fold into one group card)
@@ -146,11 +148,11 @@ let items: FeedItem[] = [];
 // Card-display prefs read straight from the shared 'romp:settings' (the kernel's ⛭ gear writes it; same
 // document as this feed bundle). Default ON. These gate the CARDS only — the modal always shows everything
 // (the user 2026-06-17). `!== false` so a missing key defaults to shown.
-function feedPrefs(): { explanations: boolean; subgoals: boolean } {
+function feedPrefs(): { subgoals: boolean } {
   try {
     const s = JSON.parse(localStorage.getItem("romp:settings") || "{}");
-    return { explanations: s.explanations !== false, subgoals: s.subgoals !== false };
-  } catch { return { explanations: true, subgoals: true }; }
+    return { subgoals: s.subgoals !== false };
+  } catch { return { subgoals: true }; }
 }
 // names of sessions currently WORKING → a working dot before that name everywhere
 // it renders (card titles, modal title, group name). Pushed in each feed message.
@@ -433,14 +435,15 @@ function makeAskCard(it: AskItem): HTMLElement {
   // the list therefore always means active, so the dot is always on.
   const checklist = el("div", "fask-checklist");   // inline sub-goal list (top 2 levels); filled in updateAskCard
   const delegations = el("div", "fask-delegations");
-  // soft-block reason (the planner's one-sentence "why blocked"), shown under the title on a blocked
-  // card. Inline-styled, no styles.css rule (ui owns that file). Filled/toggled in updateAskCard.
+  // The card's ONE auto-written line (the human's redesign, 2026-06-18): the DISTILLER's summary — the
+  // blocked card shows blockSummary, the completed card shows summary — else the literal "(generating…)"
+  // until the distiller produces (it can stay that way indefinitely). It NEVER falls back to the planner's
+  // hand-written why; that demotes to this line's hover tooltip. PLAIN TEXT, not a link (a synthesized
+  // summary has no single chat location). Inline-styled (ui owns styles.css); content/style set in updateAskCard.
   const blockReason = el("div", "fask-blockwhy");
-  blockReason.style.cssText = "display:none;font-size:11px;line-height:1.3;opacity:.75;font-style:italic;margin:1px 0 3px;cursor:pointer";
-  // DONE rationale (the planner's one-sentence "why done"), shown under the title on a COMPLETED card —
-  // the mirror of blockReason on the done page (the user 2026-06-17). Same inline style, no styles.css rule.
+  blockReason.style.cssText = "display:none;font-size:11px;line-height:1.3;margin:1px 0 3px";
   const doneReason = el("div", "fask-donewhy");
-  doneReason.style.cssText = "display:none;font-size:11px;line-height:1.3;opacity:.75;font-style:italic;margin:1px 0 3px;cursor:pointer";
+  doneReason.style.cssText = "display:none;font-size:11px;line-height:1.3;margin:1px 0 3px";
   main.append(row1, blockReason, doneReason, row2, row3, checklist, delegations);   // no expand button — body click opens the modal
   card.append(main);
   // Follow-up lives in the modal now (the user 2026-06-10), not on the card.
@@ -465,13 +468,8 @@ function makeAskCard(it: AskItem): HTMLElement {
   const cardAnchorUuid = rootNode?.anchorUuid ?? null;
   const titleUuid = titleAnchor === "prompt" ? (rootNode?.promptAnchorUuid ?? null) : cardAnchorUuid;
   title.onclick = (ev) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: it.itemId, sid: it.sid, t: it.t, anchor: titleAnchor, anchorUuid: titleUuid }); };
-  // The why-tagline (block/done reason) deep-links like the title — to where the planner NOTED it: the
-  // card's anchorUuid (which, for a DONE card, lands where it got checked off) + the "work" assistant-turn
-  // intent. The user's ask, relayed by the judges session (2026-06-17). (The inline sub-goal checkmarks are
-  // already clickable via wireNodeZones.)
-  const goNoted = (ev: Event) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: it.itemId, sid: it.sid, t: it.t, anchor: "work", anchorUuid: cardAnchorUuid }); };
-  blockReason.onclick = goNoted; blockReason.title = "jump to where this was noted";
-  doneReason.onclick = goNoted; doneReason.title = "jump to where this was noted";
+  // (The auto-line is plain text now — no deep-link — so no onclick here; its hover tooltip = the planner's
+  // why, set in updateAskCard. The inline sub-goal checkmarks remain clickable via wireNodeZones.)
   name.onclick = (ev) => { ev.stopPropagation(); openOrReviveSession(it.sid, it.live, it.name); };
   clr.onclick = (ev) => {
     ev.stopPropagation();
@@ -575,15 +573,21 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
     a._blocked.title = it.blocked.what + " — click to open the session";
     a._blocked.onclick = (ev: Event) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "openSession", id: it.sid }); };
   }
-  // soft-block reason: the planner's one-sentence "why blocked", shown under the title on a needs-input
-  // card (distinct from the live permission/api badges above — those are live events, this is the verdict).
-  const showWhy = feedPrefs().explanations;   // the "Explanations" toggle gates the why line on CARDS (modal unaffected)
-  a._blockwhy.textContent = it.blockWhy || "";
-  a._blockwhy.style.display = (it.blockWhy && showWhy) ? "" : "none";
-  // DONE rationale: the planner's one-sentence "why done", shown under the title on a COMPLETED card
-  // (the experiment — mirror of blockWhy on the done page; the user 2026-06-17).
-  a._donewhy.textContent = it.doneWhy || "";
-  a._donewhy.style.display = (it.doneWhy && showWhy) ? "" : "none";
+  // The card's ONE auto-written line (the human's redesign 2026-06-18): the distiller's summary, or
+  // "(generating…)" until it lands. NEVER the planner's why — that demotes to the line's hover tooltip.
+  // Blocked card → blockSummary (title = blockWhy); completed card → summary (title = doneWhy). Plain text.
+  const setAutoLine = (el: HTMLElement, sum: string | null | undefined, why: string | undefined, show: boolean) => {
+    if (!show) { el.style.display = "none"; el.removeAttribute("title"); return; }
+    el.style.display = "";
+    const generating = !(sum && sum.trim());
+    el.textContent = generating ? "(generating…)" : sum!.trim();
+    el.style.fontStyle = generating ? "italic" : "normal";   // the placeholder is dim italic; a real summary reads plainly
+    el.style.opacity = generating ? ".5" : ".82";
+    if (why && why.trim()) el.title = why.trim(); else el.removeAttribute("title");
+  };
+  // blocked: only when there's a planner block context (a pure API-error/permission block has no summary/why)
+  setAutoLine(a._blockwhy, it.blockSummary, it.blockWhy, it.column === "needs_input" && !!(it.blockSummary || it.blockWhy));
+  setAutoLine(a._donewhy, it.summary, it.doneWhy, it.column === "completed");
   // API error → a red "API error" badge + a Retry button that pastes "retry" into the session to resume
   // the stalled turn (the user 2026-06-16). The card already files under BLOCKED (askColumn → needsInput).
   a._apiBadge.style.display = isApiErr ? "" : "none";
@@ -1429,6 +1433,36 @@ function ensureClearAll(): HTMLElement {
   return b;
 }
 
+// Sub-goals toggle (the user 2026-06-18): moved OUT of the ⛭ gear and INTO the feed footer, beside Clear
+// all / Undo clear. Gates each card's inline sub-goal checklist. Writes the SHARED romp:settings.subgoals
+// and fires the same 'romp:settings' event the gear does, so flipping it re-gates the cards live (and
+// live-syncs to any open gear via the storage event). Sits far-left in the footer pane (prepended).
+function makeSubgoalsToggle(): HTMLElement {
+  const lab = el("label", "feed-subtoggle");
+  lab.style.cssText = "display:inline-flex;align-items:center;gap:4px;cursor:pointer;font-size:10.5px;opacity:.85;user-select:none";
+  lab.title = "show each card's inline sub-goal checklist (the modal always shows the full tree)";
+  const cb = el("input") as HTMLInputElement; cb.type = "checkbox"; cb.id = "feed-subgoals-cb"; cb.checked = feedPrefs().subgoals;
+  const span = el("span"); span.textContent = "Sub-goals";
+  cb.addEventListener("change", (ev) => {
+    ev.stopPropagation();
+    try {
+      const s = JSON.parse(localStorage.getItem("romp:settings") || "{}");
+      s.subgoals = cb.checked;
+      localStorage.setItem("romp:settings", JSON.stringify(s));
+      window.dispatchEvent(new Event("romp:settings"));   // same-doc signal → re-gate cards now
+    } catch { /* ignore */ }
+  });
+  lab.append(cb, span);
+  return lab;
+}
+function ensureSubgoalsToggle(): HTMLElement {
+  let l = document.getElementById("feed-subgoals");
+  if (!l) { l = makeSubgoalsToggle(); l.id = "feed-subgoals"; (document.getElementById("feed-foot") || document.body).prepend(l); }
+  const cb = document.getElementById("feed-subgoals-cb") as HTMLInputElement | null;
+  if (cb) cb.checked = feedPrefs().subgoals;   // re-sync (the gear or another tab may have changed it)
+  return l;
+}
+
 // Build the three columns (Asks | Awaiting | Completed) inside #feed-list once;
 // rebuild if torn down (empty state). "Awaiting" (the user's ruling 2026-06-10):
 // matches the session-chip vocabulary — anything here awaits HIM (a question,
@@ -1510,11 +1544,13 @@ function render() {
   const list = document.getElementById("feed-list")!;
   const prevScroll = list.scrollTop;
   const standalone = standaloneItems();
-  // footer buttons (below the cards, no overlap): Clear all first (left), UndoClear far right
+  // footer pane (below the cards, no overlap): Sub-goals toggle (left) · Clear all · UndoClear (right)
   const showCA = !!(asks.length || standalone.length);
+  ensureSubgoalsToggle();   // the toggle lives in the footer now; visible whenever the footer is
   ensureClearAll().style.display = showCA ? "" : "none";
   ensureUndoClear().style.display = canUndoClear ? "" : "none";
   const foot = document.getElementById("feed-foot");
+  // show the footer whenever there are cards (so the Sub-goals toggle is reachable) or an undo is available
   if (foot) foot.style.display = (showCA || canUndoClear) ? "" : "none";
 
   if (!asks.length && !standalone.length) {

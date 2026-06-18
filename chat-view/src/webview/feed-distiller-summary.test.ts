@@ -30,8 +30,10 @@ test("the distiller summary SUPERSEDES the one-line doneWhy in the modal (no red
   assert.match(FEED, /node\.status === "done" \? \(summaryText \? undefined : node\.doneWhy\)/);
 });
 
-test("the distiller summary is MODAL-ONLY — no card-side it.summary render remains", () => {
-  // judges: shown in the MODAL, not on the card. The card render used it.summary / .fask-summary (removed).
-  assert.doesNotMatch(FEED, /it\.summary/);
+test("the card ALSO uses the distiller summary now — as its one auto-line (the human reversed this 2026-06-18)", () => {
+  // the card's auto-line shows it.summary (done) / it.blockSummary (blocked), else "(generating…)";
+  // the modal block above is unchanged. (The earlier ✦ .fask-summary sub-line is NOT how it's done — the
+  // existing fask-donewhy/fask-blockwhy elements are repurposed as the auto-line.)
+  assert.match(FEED, /setAutoLine\(a\._donewhy, it\.summary, it\.doneWhy/);
   assert.doesNotMatch(CSS, /\.fask-summary/);
 });

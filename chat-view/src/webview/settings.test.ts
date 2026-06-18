@@ -15,9 +15,9 @@ test("loadSettings returns defaults when nothing is stored", () => {
   assert.deepEqual(loadSettings(), DEFAULT_SETTINGS);
 });
 
-test("the card-display prefs (explanations / sub-goals) default ON (the user 2026-06-17)", () => {
-  assert.equal(DEFAULT_SETTINGS.explanations, true);
+test("the Sub-goals card pref defaults ON; the old Explanations pref is gone (the user 2026-06-18)", () => {
   assert.equal(DEFAULT_SETTINGS.subgoals, true);
+  assert.equal((DEFAULT_SETTINGS as any).explanations, undefined);
 });
 
 test("Debug mode defaults OFF (the user 2026-06-17): refresh button + judging band stay hidden", () => {

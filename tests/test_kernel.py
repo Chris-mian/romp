@@ -981,13 +981,13 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(len(km._user_images([], many, True)), 4)
 
     def test_gear_has_card_display_toggles_and_button_chrome(self):
-        # the ⛭ settings gear (web dashboard) carries Explanations + Sub-goals toggles that default ON and,
-        # on change, signal the same-doc feed to re-gate its cards; the gear reads as a rounded-rect BUTTON
-        # (the user 2026-06-17).
-        self.assertIn("id=rs-explanations", km._GEAR_HTML)
-        self.assertIn("id=rs-subgoals", km._GEAR_HTML)
-        self.assertIn("explanations:true,subgoals:true", km._GEAR_JS)               # defaults ON
-        self.assertIn("dispatchEvent(new Event('romp:settings'))", km._GEAR_JS)     # same-doc re-render signal
+        # the ⛭ settings gear (web dashboard) reads as a rounded-rect BUTTON (the user 2026-06-17). The old
+        # Explanations + Sub-goals toggles are GONE from the gear (the user 2026-06-18): cards show the
+        # distiller summary (no Explanations), and Sub-goals moved to the feed FOOTER.
+        self.assertNotIn("id=rs-explanations", km._GEAR_HTML)
+        self.assertNotIn("id=rs-subgoals", km._GEAR_HTML)
+        self.assertNotIn("explanations", km._GEAR_JS)                               # every trace of the pref is gone
+        self.assertIn("dispatchEvent(new Event('romp:settings'))", km._GEAR_JS)     # same-doc re-render signal (compact toggle etc.)
         self.assertIn("border-radius:6px", km._GEAR_CSS)                            # gear = a rounded-rect button
         self.assertRegex(km._GEAR_CSS, r"#rgear\{[^}]*border:1px solid")
         # the kernel-restart ↻ button moved UP next to the gear (the user 2026-06-17): top-right, POST /restart

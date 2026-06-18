@@ -64,14 +64,12 @@ test("a blocked card has NO follow-up button — the follow-up is modal-only", (
   assert.match(FEED, /id = "feed-modal-follow"/, "the modal keeps its follow-up button");
 });
 
-test("the card's why-tagline (block/done reason) deep-links like the title (judges delegation, 2026-06-17)", () => {
-  // text the same showOnTimeline as the title, reusing the card's anchorUuid; anchor "work" → where the
-  // planner NOTED it (for a DONE card, where it got checked off).
-  assert.match(FEED, /const goNoted = \(ev: Event\) => \{ ev\.stopPropagation\(\); vscodeApi\?\.postMessage\(\{ type: "showOnTimeline", itemId: it\.itemId, sid: it\.sid, t: it\.t, anchor: "work", anchorUuid: cardAnchorUuid \}\); \};/);
-  assert.match(FEED, /blockReason\.onclick = goNoted;/);
-  assert.match(FEED, /doneReason\.onclick = goNoted;/);
-  // they read as clickable (cursor) + a hover affordance
-  assert.match(FEED, /cursor:pointer/);
+test("the card's auto-line is PLAIN TEXT, not a deep-link (the human's redesign 2026-06-18)", () => {
+  // it used to deep-link via goNoted; the line is a synthesized distiller summary with no single chat
+  // location now, so it's just text — the planner's why is its hover tooltip (set in updateAskCard).
+  assert.doesNotMatch(FEED, /const goNoted =/);
+  assert.doesNotMatch(FEED, /blockReason\.onclick = goNoted;/);
+  assert.doesNotMatch(FEED, /doneReason\.onclick = goNoted;/);
   const FEED_CSS = fs.readFileSync(path.resolve(process.cwd(), "src", "webview", "feed.css"), "utf8");
-  assert.match(FEED_CSS, /\.fask-blockwhy:hover, \.fask-donewhy:hover \{[^}]*text-decoration: underline/);
+  assert.doesNotMatch(FEED_CSS, /\.fask-blockwhy:hover, \.fask-donewhy:hover/);   // no link-hover affordance
 });

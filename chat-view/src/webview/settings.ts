@@ -6,11 +6,12 @@
 export interface RompSettings {
   compact: boolean;   // chat transcript: collapse consecutive tool uses, hide thinking
   colormap: string;   // feed recency tint colormap (the user 2026-06-16): hawaii | viridis | magma | inferno | plasma | cividis
-  explanations: boolean;  // feed CARDS: show the planner's "why" line under the title (the user 2026-06-17); the MODAL is unaffected
-  subgoals: boolean;      // feed CARDS: show the inline sub-goal checklist (the user 2026-06-17); the MODAL is unaffected
+  subgoals: boolean;      // feed CARDS: show the inline sub-goal checklist (the user 2026-06-17); toggled from the feed FOOTER (the user 2026-06-18); the MODAL is unaffected
   debug: boolean;     // global Debug mode (the user 2026-06-17): reveals the kernel-restart (↻) button AND the timeline's judging band (the judges' actions). OFF by default.
 }
-export const DEFAULT_SETTINGS: RompSettings = { compact: false, colormap: "hawaii", explanations: true, subgoals: true, debug: false };
+// NOTE: the old `explanations` pref is GONE (the user 2026-06-18) — cards no longer show the planner's
+// hand-written "why" as their line; they show the distiller's summary instead (the why demotes to a hover).
+export const DEFAULT_SETTINGS: RompSettings = { compact: false, colormap: "hawaii", subgoals: true, debug: false };
 const KEY = "romp:settings";
 
 export function loadSettings(): RompSettings {

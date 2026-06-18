@@ -15,13 +15,11 @@ test("AskTreeNode carries promptAnchorUuid (the user's minting-turn uuid) alongs
 });
 
 test("the card title resolves prompt-intent by promptAnchorUuid; the work/origin title keeps anchorUuid", () => {
-  // cardAnchorUuid stays the WORK uuid (goNoted / the why-line reuses it — ui's caveat: don't reassign it
-  // globally); a separate titleUuid picks the prompt uuid only for the "prompt" title.
+  // cardAnchorUuid stays the WORK uuid; a separate titleUuid picks the prompt uuid only for the "prompt"
+  // title. (The why-line that used to reuse cardAnchorUuid is gone — the card auto-line is plain text now.)
   assert.match(FEED, /const cardAnchorUuid = rootNode\?\.anchorUuid \?\? null;/);
   assert.match(FEED, /const titleUuid = titleAnchor === "prompt" \? \(rootNode\?\.promptAnchorUuid \?\? null\) : cardAnchorUuid;/);
   assert.match(FEED, /anchor: titleAnchor, anchorUuid: titleUuid/);
-  // the why-line (goNoted) still jumps by the WORK uuid — unchanged
-  assert.match(FEED, /const goNoted = [^\n]*anchor: "work", anchorUuid: cardAnchorUuid/);
 });
 
 test("the group modal title resolves by the first member's promptAnchorUuid", () => {

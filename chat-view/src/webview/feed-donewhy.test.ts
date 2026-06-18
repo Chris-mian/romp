@@ -1,7 +1,7 @@
-// The done page (the user 2026-06-17): a COMPLETED card surfaces the planner's one-sentence "why done"
-// INLINE under the title — the mirror of blockWhy on a blocked card — instead of only revealing it on
-// hover in the modal. The kernel computes the card-level doneWhy; the card renders it like blockReason.
-// No jsdom harness for the feed, so — like the other feed-*.test.ts — pin it at the source level.
+// The card's ONE auto-written line (the human's redesign, 2026-06-18): a COMPLETED card shows the
+// distiller's `summary`, a BLOCKED card shows `blockSummary`, else the literal "(generating…)". It is
+// PLAIN TEXT (no deep-link) and never the planner's hand-written why — that demotes to the line's hover
+// tooltip. The fask-donewhy / fask-blockwhy elements are repurposed as those auto-lines. Source-level pin.
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
@@ -9,21 +9,28 @@ import * as path from "node:path";
 
 const FEED = fs.readFileSync(path.resolve(process.cwd(), "src", "webview", "feed.ts"), "utf8");
 
-test("AskItem carries a doneWhy field", () => {
-  assert.match(FEED, /doneWhy\?: string;\s+\/\/ planner's one-sentence "why done"/);
+test("AskItem carries the distiller summary + blockSummary (the card's auto-line source)", () => {
+  assert.match(FEED, /summary\?: string \| null;\s+\/\/ distiller's key takeaway for a COMPLETED goal/);
+  assert.match(FEED, /blockSummary\?: string \| null;\s+\/\/ block-distiller's decision brief for a BLOCKED goal/);
 });
 
-test("the card builds a fask-donewhy element next to fask-blockwhy, styled the same", () => {
+test("the card builds the auto-line elements as PLAIN TEXT (no cursor:pointer, no italic baked in)", () => {
+  assert.match(FEED, /const blockReason = el\("div", "fask-blockwhy"\)/);
   assert.match(FEED, /const doneReason = el\("div", "fask-donewhy"\)/);
-  // same inline style as blockReason (no styles.css rule — ui owns that file): dim italic, hidden by default
-  assert.match(FEED, /doneReason\.style\.cssText = "display:none;[^"]*font-style:italic/);
-  // it sits right after blockReason, between the title (row1) and the session name (row2)
+  // plain inline style — no link affordance and no fixed font-style (set dynamically in updateAskCard)
+  assert.match(FEED, /doneReason\.style\.cssText = "display:none;font-size:11px;line-height:1\.3;margin:1px 0 3px";/);
+  assert.doesNotMatch(FEED, /doneReason\.style\.cssText = "[^"]*cursor:pointer/);
   assert.match(FEED, /main\.append\(row1, blockReason, doneReason, row2/);
   assert.match(FEED, /a\._donewhy = doneReason;/);
 });
 
-test("updateAskCard fills + toggles the doneWhy from it.doneWhy (gated by the Explanations pref)", () => {
-  assert.match(FEED, /a\._donewhy\.textContent = it\.doneWhy \|\| "";/);
-  // shown only when there's a doneWhy AND the "Explanations" card pref is on (the user 2026-06-17)
-  assert.match(FEED, /a\._donewhy\.style\.display = \(it\.doneWhy && showWhy\) \? "" : "none";/);
+test("the auto-line is NOT a deep-link — goNoted and its onclick are gone", () => {
+  assert.doesNotMatch(FEED, /const goNoted =/);
+  assert.doesNotMatch(FEED, /doneReason\.onclick = goNoted/);
+  assert.doesNotMatch(FEED, /blockReason\.onclick = goNoted/);
+});
+
+test("updateAskCard fills the auto-line with summary-or-(generating…), why as the hover title", () => {
+  assert.match(FEED, /el\.textContent = generating \? "\(generating…\)" : sum!\.trim\(\);/);
+  assert.match(FEED, /if \(why && why\.trim\(\)\) el\.title = why\.trim\(\);/);
 });
