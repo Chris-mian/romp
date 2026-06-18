@@ -34,4 +34,7 @@ test("a hard-blocked (API-error) tab carries a 0.25-alpha red fill atop its dash
   // the dashed outline alone read too faint; a translucent red fill makes a stopped session legible at a glance
   assert.match(CSS, /\.tab\.tab-blocked \{[^}]*background: rgba\(229, 72, 77, 0\.25\)/);
   assert.match(CSS, /\.tab\.tab-awaiting, \.tab\.tab-blocked \{[^}]*outline: 2px dashed/);   // the dashed ring stays
+  // the red must beat .tab.active (white, equal specificity but later in source) + :hover, else a FOCUSED
+  // blocked tab showed white instead of red (the user 2026-06-18)
+  assert.match(CSS, /\.tab\.tab-blocked\.active, \.tab\.tab-blocked:hover \{[^}]*background: rgba\(229, 72, 77, 0\.25\)/);
 });
