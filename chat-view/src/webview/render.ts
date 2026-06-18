@@ -2206,8 +2206,12 @@ try { ledgerCollapsed = !!((vscodeApi && vscodeApi.getState && vscodeApi.getStat
 // (ids are session-scoped, so the sets are safe to keep global across session switches).
 const ledgerFolded = new Set<string>();    // explicitly folded by the user (overrides a default-open)
 const ledgerExpanded = new Set<string>();  // explicitly expanded by the user (overrides a default-fold)
+// One-shot: set only by a user EXPAND toggle, consumed by the next renderLedger to animate the tree
+// reveal — so a routine data-update rebuild doesn't re-animate (the user 2026-06-18).
+let ledgerAnimateExpand = false;
 function toggleLedgerCollapsed() {
   ledgerCollapsed = !ledgerCollapsed;
+  ledgerAnimateExpand = !ledgerCollapsed;   // expanding (now not collapsed) → reveal-animate the tree
   try { if (vscodeApi && vscodeApi.setState) vscodeApi.setState({ ...(vscodeApi.getState() || {}), ledgerCollapsed }); } catch { /* ignore */ }
   renderLedger();
   renderTabs(); // refresh the ▾/▸ glyph
@@ -2289,7 +2293,8 @@ function renderLedger() {
     // column entirely — otherwise every leaf reserves an empty spacer and the whole list reads as dead-
     // indented (the user 2026-06-16). Keep the column when ANY node is expandable, for alignment.
     const anyExpandable = tree.some((n) => !!(n.children && n.children.length));
-    const wrap = el("div", "ledger-tree" + (anyExpandable ? "" : " flat"));
+    const wrap = el("div", "ledger-tree" + (anyExpandable ? "" : " flat") + (ledgerAnimateExpand ? " revealing" : ""));
+    ledgerAnimateExpand = false;   // one-shot: only this expand toggle animates, not the next data update
     const byId = new Map(tree.map((n) => [n.id, n] as const));
     const roots = tree.filter((n) => n.depth === 0);
     // Unfinished goals on top, finished (done/cleared) at the bottom; WITHIN each group, most recent

@@ -125,7 +125,7 @@ test("top-level goals are separated by a thin rule", () => {
 test("a FLAT ledger (no expandable node anywhere) drops the disclosure column so bullets sit flush", () => {
   // the user 2026-06-16: a caret-less list shouldn't reserve a caret column on every leaf
   assert.match(RENDER, /const anyExpandable = tree\.some\(\(n\) => !!\(n\.children && n\.children\.length\)\)/);
-  assert.match(RENDER, /el\("div", "ledger-tree" \+ \(anyExpandable \? "" : " flat"\)\)/);
+  assert.match(RENDER, /el\("div", "ledger-tree" \+ \(anyExpandable \? "" : " flat"\) \+ \(ledgerAnimateExpand \? " revealing" : ""\)\)/);
   assert.match(RENDER, /if \(anyExpandable\) lead\.push\(tri\)/);          // tri appended only when something can expand
   assert.match(CSS, /\.ledger-tree\.flat \.ledger-tri \{[^}]*display: none/);
 });
@@ -242,4 +242,16 @@ test("expanding PINS the current top goal to the top of the tree + marks it, so 
   // and the pinned row carries a marker class so the collapsed line visibly maps onto it
   assert.match(RENDER, /depth === 0 && curTop && n\.id === curTop\.id \? " ledger-curtop" : ""/);
   assert.match(CSS, /\.ledger-tnode\.ledger-curtop \{[^}]*box-shadow: inset 2px 0 0 #8fb3ff/);
+});
+
+test("expanding ANIMATES the tree reveal once (clip-path unfold), not on routine data updates (the user 2026-06-18)", () => {
+  // a one-shot flag set only by the expand toggle; the tree wrap reads it then clears it
+  assert.match(RENDER, /let ledgerAnimateExpand = false;/);
+  assert.match(RENDER, /ledgerAnimateExpand = !ledgerCollapsed;/);   // true only when expanding
+  assert.match(RENDER, /\(ledgerAnimateExpand \? " revealing" : ""\)/);
+  assert.match(RENDER, /ledgerAnimateExpand = false;\s*\/\/ one-shot/);
+  // the unfold keyframes + reduced-motion opt-out
+  assert.match(CSS, /@keyframes ledger-reveal \{[\s\S]*clip-path: inset\(0 0 0 0\)/);
+  assert.match(CSS, /\.ledger-tree\.revealing \{ animation: ledger-reveal/);
+  assert.match(CSS, /prefers-reduced-motion: reduce[^}]*\.ledger-tree\.revealing \{ animation: none/);
 });
