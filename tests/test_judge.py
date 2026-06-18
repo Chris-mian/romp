@@ -417,6 +417,65 @@ class PlanParse(unittest.TestCase):
         raw = 'Sure:\n```json\n{"ops":[{"why":"x","do":"mint","text":"a goal"}]}\n```'
         self.assertEqual(jd._parse_plan(raw, 3)[0]["do"], "mint", "strips ``` fences + surrounding prose")
 
+    def test_trailing_prose_with_braces_still_parses(self):
+        # The planner/closer parse-storm (the user 2026-06-18): a valid reply followed by a trailing aside
+        # that itself contains a brace (a path, a goal ref, a code snippet). The old greedy first-brace→
+        # last-brace match swallowed the aside and failed json.loads → None → unbounded retry storm.
+        raw = '{"ops":[{"why":"new ask","do":"mint","text":"Rebuild it"}]} note: filed under {the parser goal}'
+        self.assertEqual(jd._parse_plan(raw, 3),
+                         [{"do": "mint", "why": "new ask", "text": "Rebuild it"}],
+                         "trailing prose with a brace no longer breaks the parse")
+        # the same hazard inside a fenced reply with a trailing path
+        raw2 = '```json\n{"ops":[{"why":"x","do":"skip"}]}\n```\nsee ~/.local/state/romp/{goals}'
+        self.assertEqual(jd._parse_plan(raw2, 3), [{"do": "skip", "why": "x"}],
+                         "fence + trailing brace-bearing path still parses")
+
+    def test_first_valid_object_wins_over_later_junk(self):
+        # raw_decode stops at the first complete object; a malformed brace-blob after it is ignored.
+        raw = '{"ops":[{"why":"y","do":"mint","text":"A"}]}{not json {at all}}'
+        self.assertEqual(jd._parse_plan(raw, 3)[0]["text"], "A")
+
+
+class PlanParseStorm(unittest.TestCase):
+    """A planner reply that never parses must not retry forever (the user 2026-06-18). After
+    PLAN_PARSE_RETRIES fails on ONE segment the planner stops retrying it — a human message is
+    hard-placed (never lost), a non-user segment dropped — so one un-parseable reply can't storm the
+    error log or burn a Sonnet call every pass forever."""
+
+    def _run(self, records, llm):
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            tpath = td / (SID + ".jsonl")
+            tpath.write_text("\n".join(json.dumps(r) for r in records) + "\n")
+            saved = (jd.GOALDIR, jd.PCACHE, jd.plan_llm, jd._group_store)
+            jd.GOALDIR, jd.PCACHE = td / "goals", td / "pcache"
+            jd.plan_llm = llm
+            jd._group_store = lambda *a, **k: None     # don't fire the real grouper model after a placement
+            try:
+                placed = [jd._plan_session(SID, str(tpath), NOW) for _ in range(jd.PLAN_PARSE_RETRIES)]
+                store = jd.load_goals(SID)
+            finally:
+                (jd.GOALDIR, jd.PCACHE, jd.plan_llm, jd._group_store) = saved
+            return placed, store
+
+    def test_human_message_lands_after_retries(self):
+        records = [uline(T0, "please fix the flaky test", "u1", ps="typed"),
+                   aline(T0 + 30, "On it.", "a1", "u1", stop="end_turn")]
+        placed, store = self._run(records, lambda *a, **k: "i cannot help with that")   # never parses
+        self.assertEqual(placed, [0] * (jd.PLAN_PARSE_RETRIES - 1) + [1],
+                         "no placement until retries are exhausted, then ONE hard placement")
+        tops = [nd for nd in store["nodes"].values() if nd["parentId"] is None]
+        self.assertEqual(len(tops), 1, "the user message is hard-placed as a goal, never lost to a parse failure")
+        self.assertEqual(store.get("parseFails", {}), {}, "the per-segment fail counter is cleared once resolved")
+
+    def test_parsing_reply_places_normally_without_storm(self):
+        # control: a reply that parses on the first try places immediately and records no parse-fails
+        records = [uline(T0, "add a setting", "u1", ps="typed"),
+                   aline(T0 + 30, "Added.", "a1", "u1", stop="end_turn")]
+        placed, store = self._run(records, lambda *a, **k: '{"ops":[{"why":"new ask","do":"mint","text":"Add a setting"}]}')
+        self.assertEqual(placed[0], 1, "a parseable reply places on the first pass")
+        self.assertEqual(store.get("parseFails", {}), {}, "no parse-fail bookkeeping on the happy path")
+
 
 def _store():
     return {"rompUuid": SID, "seq": 0, "nodes": {}, "placements": {}, "status": {}}
