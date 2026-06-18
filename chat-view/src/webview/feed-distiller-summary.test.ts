@@ -12,8 +12,9 @@ const CSS = fs.readFileSync(path.resolve(process.cwd(), "src", "webview", "feed.
 
 test("the modal tree renders node.summary (the distiller takeaway) as a prominent per-node block", () => {
   assert.match(FEED, /summary\?: string \| null;/);          // consumed off AskTreeNode (emitted by the kernel flatten)
-  assert.match(FEED, /const summaryText = node\.summary;/);
-  assert.match(FEED, /el\("div", "ftree-summary"\)/);
+  assert.match(FEED, /blockSummary\?: string \| null;/);   // AskTreeNode carries it (kernel emits per node)
+  assert.match(FEED, /const distillText = node\.status === "done" \? node\.summary : node\.status === "question" \? node\.blockSummary/);
+  assert.match(FEED, /el\("div", "ftree-summary" \+ \(distillText \? "" : " generating"\)\)/);
   // brighter than the dim italic why-line, pre-wrap so a copied artifact stays intact
   assert.match(CSS, /\.ftree-summary \{[^}]*white-space: pre-wrap/);
 });
@@ -21,13 +22,19 @@ test("the modal tree renders node.summary (the distiller takeaway) as a prominen
 test("the summary is plain selectable text — no copy button (the user 2026-06-18)", () => {
   // the ⧉ copy affordance was removed; the takeaway is just selectable text now.
   assert.doesNotMatch(FEED, /ftree-summary-copy/);
-  assert.doesNotMatch(FEED, /navigator\.clipboard\?\.writeText\(summaryText\)/);
+  assert.doesNotMatch(FEED, /navigator\.clipboard/);
   assert.doesNotMatch(CSS, /\.ftree-summary-copy/);
 });
 
-test("the distiller summary SUPERSEDES the one-line doneWhy in the modal (no redundant rationale)", () => {
-  // when a summary is present, the done node's why-line (doneWhy) is skipped — the richer takeaway stands in
-  assert.match(FEED, /node\.status === "done" \? \(summaryText \? undefined : node\.doneWhy\)/);
+test("done/blocked nodes use the distiller line (summary/blockSummary/'(generating…)'); reason → tooltip; why-line is OPEN-only", () => {
+  // the modal auto-line for a done/blocked node is the distiller text else "(generating…)" — NEVER a
+  // doneWhy/blockWhy fallback (the user 2026-06-18); the planner's reason demotes to the line's hover title;
+  // the visible "why" line now renders for OPEN nodes only.
+  assert.match(FEED, /if \(node\.status === "done" \|\| node\.status === "question"\) \{/);
+  assert.match(FEED, /stext\.textContent = distillText \|\| "\(generating…\)"/);
+  assert.match(FEED, /if \(reasonTip\) sum\.title = reasonTip/);
+  assert.match(FEED, /if \(node\.status === "open" && node\.why\) \{/);
+  assert.match(CSS, /\.ftree-summary\.generating \{/);
 });
 
 test("the card ALSO uses the distiller summary now — as its one auto-line (the human reversed this 2026-06-18)", () => {

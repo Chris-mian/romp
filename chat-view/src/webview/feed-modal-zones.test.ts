@@ -58,13 +58,12 @@ test("modal UNRESOLVED node: checkbox + text light together, checkbox STAYS a ci
   assert.doesNotMatch(CSS, /lz-merge/);                          // no square/bridged merge fill
 });
 
-test("modal node shows the planner's rationale INLINE, clickable to where it was authored (the user 2026-06-17)", () => {
-  // done → why-done (unless the distiller summary above supersedes it), blocked → why-blocked, else creation
-  // why; a dim italic .ftree-why line under the node.
-  assert.match(FEED, /const whyText = node\.status === "done" \? \(summaryText \? undefined : node\.doneWhy\) : node\.status === "question" \? node\.blockWhy : node\.why/);
+test("an OPEN node shows the planner's creation 'why' INLINE, clickable to where it was authored", () => {
+  // done/blocked nodes use the distiller line (summary/blockSummary) now; only an OPEN node shows its
+  // planner creation rationale as a clickable .ftree-why line → goWork (its minting segment). (2026-06-18.)
+  assert.match(FEED, /if \(node\.status === "open" && node\.why\) \{/);
   assert.match(FEED, /el\("div", "ftree-why lz-nav"\)/);
-  assert.match(FEED, /\(node\.status === "done" \? "✓ " : node\.status === "question" \? "⏸ " : ""\) \+ whyText/);
-  // clickable → goWork (where the planner authored the why = the node's resolution/minting segment)
+  assert.match(FEED, /w\.textContent = node\.why/);
   assert.match(FEED, /w\.onclick = goWork/);
   assert.match(CSS, /\.ftree-why \{/);
   assert.match(CSS, /\.ftree-why\.lz-nav \{[^}]*cursor: pointer/);

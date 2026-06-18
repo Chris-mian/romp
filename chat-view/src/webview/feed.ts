@@ -56,7 +56,8 @@ interface AskTreeNode {
   why?: string; blockWhy?: string; doneWhy?: string;             // planner's one-sentence rationales — revealed on hover in the modal
   derived?: boolean;                                             // done by roll-up/roll-down (kernel), not explicit → DIMMED ✓ disc
   followupPending?: boolean;                                     // this sub was optimistically reopened by a per-sub follow-up → "↻ Followed up" chip (kernel flatten, judges 047264f)
-  summary?: string | null;                                       // the DISTILLER's key takeaway for a completed goal (artifact or 1-3 sentences) → shown in the MODAL only (kernel flatten 78fc97b; the card keeps doneWhy)
+  summary?: string | null;                                       // the DISTILLER's key takeaway for a completed goal (artifact or 1-3 sentences) → the modal's auto-line for a DONE node (kernel flatten 78fc97b)
+  blockSummary?: string | null;                                  // the BLOCK-distiller's decision brief for a blocked goal → the modal's auto-line for a BLOCKED node (kernel 466393c); null until produced
   trgb?: [number, number, number];                               // last-activity recency tint (timestamp)
   children: string[]; rows: AskLinked[];
 }
@@ -1050,28 +1051,27 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
   box.appendChild(line);
   if (repeat) return;                                   // dim repeat: line only, no descent
   seen.add(node.id);
-  // The DISTILLER's key takeaway for a completed goal (the user 2026-06-17): the ONE most-useful thing — a
-  // copy-pasteable artifact (command / path / URL / answer / snippet) verbatim, else a 1-3 sentence outcome.
-  // Shown in the MODAL only (the card keeps the closer's one-line doneWhy). Rendered prominently (brighter
-  // than the dim why-line, pre-wrap so an artifact stays intact); it supersedes the doneWhy rationale below.
-  const summaryText = node.summary;
-  if (summaryText) {
-    const sum = el("div", "ftree-summary");
+  // The DISTILLER's output is the modal's one auto-written line for a DONE or BLOCKED node (the user
+  // 2026-06-18): node.summary (the completed-goal takeaway — an artifact or 1-3 sentences) / node.blockSummary
+  // (the block-distiller's decision brief — what you must decide + options + only the needed context), else
+  // the literal "(generating…)" until it's produced — NEVER a fall back to doneWhy/blockWhy. The planner's
+  // one-line reason (doneWhy/blockWhy) demotes to the hover tooltip; the line is PLAIN TEXT (a synthesized
+  // summary has no single chat location). pre-wrap keeps an artifact intact across lines.
+  const distillText = node.status === "done" ? node.summary : node.status === "question" ? node.blockSummary : undefined;
+  const reasonTip = node.status === "done" ? node.doneWhy : node.status === "question" ? node.blockWhy : undefined;
+  if (node.status === "done" || node.status === "question") {
+    const sum = el("div", "ftree-summary" + (distillText ? "" : " generating"));
     sum.style.paddingLeft = (depth * TREE_INDENT_EM + 1.6) + "em";   // align under the node text (past the tri + mark)
-    const stext = el("span", "ftree-summary-text"); stext.textContent = summaryText; sum.appendChild(stext);
+    const stext = el("span", "ftree-summary-text"); stext.textContent = distillText || "(generating…)"; sum.appendChild(stext);
+    if (reasonTip) sum.title = reasonTip;   // the planner's one-line reason → hover (like the card auto-line + the ledger)
     box.appendChild(sum);
   }
-  // The planner's rationale shown INLINE under the node (the user 2026-06-17), not only as the hover
-  // tooltip above — the same "why" the card surfaces, now in the modal's relevant section. done → why-done,
-  // blocked/question → why-blocked, else the creation why. Indented to sit under the node's text. For a
-  // completed node the distiller summary above supersedes the one-line doneWhy, so skip it when present.
-  const whyText = node.status === "done" ? (summaryText ? undefined : node.doneWhy) : node.status === "question" ? node.blockWhy : node.why;
-  if (whyText) {
+  // An OPEN node has no distiller text — it keeps the planner's CREATION rationale ("why" this goal exists),
+  // clickable to where the planner authored it (its minting turn = goWork). (the user 2026-06-17.)
+  if (node.status === "open" && node.why) {
     const w = el("div", "ftree-why lz-nav");
-    w.textContent = (node.status === "done" ? "✓ " : node.status === "question" ? "⏸ " : "") + whyText;
+    w.textContent = node.why;
     w.style.paddingLeft = (depth * TREE_INDENT_EM + 1.6) + "em";   // align under the node text (past the tri + mark)
-    // clickable → where this rationale was CREATED: the planner authored it at the node's anchor segment
-    // (done/blocked → the resolution turn, open → the minting turn), which is exactly goWork (the user 2026-06-17).
     w.title = "jump to where this was noted";
     w.onclick = goWork;
     box.appendChild(w);

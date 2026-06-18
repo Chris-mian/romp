@@ -289,6 +289,9 @@ body { display: flex; flex-direction: column; }
    brighter than the dim italic why-line (it's content, not annotation). pre-wrap keeps an artifact
    (command / path / snippet) intact across lines; selectable text, no copy button (the user 2026-06-18). */
 .ftree-summary { font-size: 0.86em; line-height: 1.45; margin: 2px 0 6px; color: var(--fg); white-space: pre-wrap; overflow-wrap: anywhere; }
+/* the distiller hasn't produced yet → a dim italic "(generating…)" placeholder (NEVER a doneWhy/blockWhy
+   fallback; it stays until the field lands, the user 2026-06-18) */
+.ftree-summary.generating { opacity: 0.6; font-style: italic; }
 .st-done .ftree-mark { color: var(--rel-done); }
 /* a BLOCKED (needs-you) node: the "?" is RED inside a RED ring the SAME 13px size as the ✓ checkbox disc,
    and its label reads "BLOCKED" in red (the user 2026-06-17) — a stronger, unmistakable block signal than
