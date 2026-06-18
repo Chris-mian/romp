@@ -1153,6 +1153,16 @@ class PlanTuning(unittest.TestCase):
         step = next(nd for nd in s["nodes"].values() if nd["parentId"] is not None)
         self.assertEqual(s["nodes"][step["parentId"]]["text"], "the OLD topic", "filed under the OLD goal")
 
+    def test_json_judges_forbid_trailing_prose_after_the_brace(self):
+        # Defense-in-depth for the parse-storm (the user 2026-06-18): _json_obj now tolerates trailing prose
+        # (judge_ui's raw_decode fix), but the prompts should also cut it at the source. Every JSON-emitting
+        # judge must explicitly forbid text AFTER the closing brace — the exact failure mode ({...} + a note
+        # containing a brace broke the greedy matcher). Guard against the instruction drifting away.
+        for name, sysprompt in (("captioner", jd.CAPTION_SYS), ("archiver", jd.ARCHIVE_SYS),
+                                ("planner", jd.PLAN_SYS), ("grouper", jd.GROUP_SYS), ("closer", jd.CLOSER_SYS)):
+            self.assertIn("nothing after the closing brace", sysprompt,
+                          "%s must forbid trailing prose after the JSON object" % name)
+
 
 class BlockCompletionCorrectness(unittest.TestCase):
     """simplify's block/completion-correctness handoff (2026-06-15, human-designed): the weighing BLOCK

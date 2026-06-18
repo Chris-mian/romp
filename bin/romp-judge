@@ -106,7 +106,8 @@ CAPTION_SYS = (
     "module'; 'Explained the edit and offered to revert' → 'Explained the edit'.\n"
     "Never describe the USER's state or question — 'User asked about batch-marking' is wrong; say "
     "what the reply delivered. If the unit shows no finished assistant work, use an empty string: "
-    '{\"caption\": \"\"}. Output ONLY the JSON object.')
+    '{\"caption\": \"\"}. Output ONLY the JSON object: nothing before it, and nothing after the '
+    "closing brace. No notes, no markdown fences.")
 
 
 # ───────────────────────── the captioner (one model call) ─────────────────────────
@@ -465,7 +466,7 @@ ARCHIVE_SYS = (
     "headline = a sub-sentence label of what this session is FOR — a noun phrase or short clause for a "
     "table of contents, no wasted words, no trailing punctuation, e.g. 'Rebuilding the romp event "
     "model'. abstract = 2-3 plain sentences on what the session did and where it stands. Output ONLY "
-    "the JSON object.")
+    "the JSON object: nothing before it, and nothing after the closing brace. No notes, no markdown fences.")
 
 
 def _parse_archive(out):
@@ -588,8 +589,8 @@ PLAN_SYS = (
     "You place each segment's work; you do NOT reorganize the board (a separate grouper judge nests "
     "related top goals afterward). Keep filing under the matching open goal and minting only a real new "
     "top.\n"
-    "Output ONLY the JSON object. When unsure between mint and sub, prefer sub; when unsure whether to "
-    "skip, place it.")
+    "When unsure between mint and sub, prefer sub; when unsure whether to skip, place it. Output ONLY "
+    "the JSON object: nothing before it, and nothing after the closing brace. No notes, no markdown fences.")
 
 
 def _parse_plan(raw, menu_len):
@@ -1233,7 +1234,7 @@ GROUP_SYS = (
     'unrelated — return {\"ops\": []} and change nothing. Never invent a grouping just to act.\n'
     "Write each \"why\" plainly: the real reason first, concrete verbs, the words a person actually says; "
     "cut filler (\"in order to\", \"it is worth noting\", \"notably\"); no em dashes; say it once. Output "
-    "ONLY the JSON object.")
+    "ONLY the JSON object: nothing before it, and nothing after the closing brace. No notes, no markdown fences.")
 
 
 def _group_tops(store, cap=20):
@@ -1468,7 +1469,8 @@ CLOSER_SYS = (
     "drop self-narration (\"The assistant…\", \"The segment…\"); the real reason first, concrete verbs, the "
     "words a person actually says; cut filler (\"in order to\", \"it is worth noting\", \"notably\") and "
     "stock AI words (\"delve\", \"leverage\", \"crucial\", \"pivotal\", \"robust\", \"underscores\"); no em "
-    "dashes; state facts plainly; say it once. Output ONLY the JSON object.")
+    "dashes; state facts plainly; say it once. Output ONLY the JSON object: nothing before it, and "
+    "nothing after the closing brace. No notes, no markdown fences.")
 
 
 def _parse_close(raw, menu_len):
