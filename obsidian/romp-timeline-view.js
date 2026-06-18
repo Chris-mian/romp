@@ -370,12 +370,14 @@ class TimelinePanel {
       + '<span style="color:' + TOK_OUT + '">out</span><span style="opacity:.5">)</span>';
     tHead('5h', true); tHead('week', true);
     const tRow = (lbl, color) => {
-      tgrid.createSpan({ text: lbl }).setAttribute('style', 'color:' + color + ';opacity:0.9;');
+      const label = tgrid.createSpan({ text: lbl }); label.setAttribute('style', 'color:' + color + ';opacity:0.9;');
       const five = tgrid.createSpan({ text: '–' }); five.setAttribute('style', 'text-align:right;font-variant-numeric:tabular-nums;opacity:0.9;');
       const week = tgrid.createSpan({ text: '–' }); week.setAttribute('style', 'text-align:right;font-variant-numeric:tabular-nums;opacity:0.9;');
-      return { five, week };
+      return { label, five, week };
     };
-    this._tokRows = { sessions: tRow('sessions', '#8fb3ff'), pipeline: tRow('pipeline', '#c79be0') };
+    // the PIPELINE row is the background judge system (captioner / planner / closer / distiller) — labelled
+    // "judges" so it's clear whose tokens these are, not an opaque "pipeline" (the user 2026-06-18).
+    this._tokRows = { sessions: tRow('sessions', '#8fb3ff'), pipeline: tRow('judges', '#c79be0') };
 
     // spacer: everything after it sits flush right
     const ctlSpacer = this.controls.createDiv();

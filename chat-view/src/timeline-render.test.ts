@@ -372,6 +372,9 @@ test("token grid: per-window sessions/pipeline, total + colour-keyed in/out (no 
     windows: { fiveHour: 18000, week: 604800 },
   } });
   assert.equal(panel._tokensWrap.style.display, "flex");
+  // row labels: the coding sessions vs the background judge system (labelled "judges", not "pipeline")
+  assert.equal(panel._tokRows.sessions.label.textContent, "sessions");
+  assert.equal(panel._tokRows.pipeline.label.textContent, "judges", "the pipeline row is labelled 'judges'");
   const cell = (r: string, w: string) => panel._tokRows[r][w].innerHTML;
   assert.match(cell("sessions", "five"), /1\.0M[\s\S]*800k[\s\S]*200k/, "sessions 5h: total then in/out numbers");
   assert.match(cell("sessions", "week"), /6\.9M[\s\S]*6\.0M[\s\S]*900k/, "sessions week");
