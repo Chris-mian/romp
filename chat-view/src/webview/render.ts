@@ -2053,13 +2053,16 @@ function landActive(content: HTMLElement | null, v: View): void {
   if (!content) return;
   const att = { anchor: pendingAnchor, t: pendingAnchorT, kind: pendingAnchorKind };   // this pass's landing attempt, for diagnostics
   if (att.anchor || att.t != null) landTrail = [];
-  const scrolled = pendingAnchor ? scrollToAnchor(pendingAnchor) : false;
-  // HONEST-FAIL (the user 2026-06-17, via bugs): the uuid anchor is the ONLY landing signal — there is NO
-  // time-based heuristic fallback. When the anchor can't resolve (the turn isn't on this conversation's
-  // active path, or the card carried no precise anchor), say so plainly rather than jumping to an unrelated
-  // nearby moment ("I'd rather get a message it couldn't find than be taken to some unrelated thing by a
-  // heuristic"). The deeper fix — segment-precise anchoring so these links actually resolve, not just fail
-  // honestly — is the kernel+chat data-uuid contract bugs is driving next.
+  let scrolled = pendingAnchor ? scrollToAnchor(pendingAnchor) : false;
+  // HONEST-FAIL (the user 2026-06-17, via bugs): the uuid anchor is the primary landing signal, and there is
+  // NO time-based heuristic fallback for WORK/REPLY intent — when a work anchor can't resolve, say so plainly
+  // rather than jumping to an unrelated nearby assistant turn ("I'd rather get a message it couldn't find than
+  // be taken to some unrelated thing by a heuristic"). ONE legitimate exception: a PROMPT-intent click (a card
+  // TITLE, kind "user") carries the node's REPLY uuid, which the kind-guard correctly refuses — so land on the
+  // nearest USER turn at the card's time. That is the INTENDED target (every card is minted from a typed turn,
+  // so the nearest user turn IS its minting message), not a heuristic guess, so it must NOT honest-fail. (The
+  // deeper fix — a real PROMPT anchor uuid per node so even this resolves by id — is bugs' next contract.)
+  if (!scrolled && pendingAnchorKind === "user" && pendingAnchorT != null) scrolled = scrollToNearestT(pendingAnchorT, "user");
   pendingAnchor = null; pendingAnchorIntent = null; pendingAnchorT = null; pendingAnchorKind = null;
   // Diagnostics: log every landing attempt; a deep-link that couldn't resolve announces itself loudly
   // instead of impersonating a successful jump.

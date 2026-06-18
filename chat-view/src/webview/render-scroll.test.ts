@@ -31,18 +31,25 @@ test("appendActive snaps only when the user is already near the bottom", () => {
 // Deep-link HONEST-FAIL (the user 2026-06-17, via bugs): the uuid anchor is the ONLY landing signal — when
 // it can't resolve, say so plainly instead of jumping to an unrelated nearby moment via a time heuristic.
 // "I'd rather get a message it couldn't find than be taken to some unrelated thing by a heuristic."
-test("landActive has NO time-based fallback after a failed anchor", () => {
+test("no UNCONDITIONAL time fallback — a WORK/REPLY anchor miss honest-fails (no nearby-moment jump)", () => {
   assert.doesNotMatch(RENDER, /if \(!scrolled && pendingAnchorT != null\) \{ scrolled = scrollToNearestT/,
-    "the scrollToNearestT fallback after a failed scrollToAnchor is gone");
+    "the old blunt (any-kind) fallback after a failed scrollToAnchor is gone");
   assert.doesNotMatch(RENDER, /showing the latest instead \(logged\)/, "the old heuristic toasts are gone");
   assert.doesNotMatch(RENDER, /landed nearby \(logged\)/);
+});
+
+test("PROMPT-intent (a card title) keeps its legitimate nearest-USER-turn landing — NOT honest-fail", () => {
+  // a title carries the node's REPLY uuid (refused by the kind guard); the nearest USER turn at the card's
+  // time IS the minting message — the intended target — so it's restored ONLY for kind "user" (bugs regression
+  // fix 2026-06-17). Work/reply intent still honest-fails.
+  assert.match(RENDER, /if \(!scrolled && pendingAnchorKind === "user" && pendingAnchorT != null\) scrolled = scrollToNearestT\(pendingAnchorT, "user"\);/);
 });
 
 test("an unresolved deep-link announces itself with a plain 'couldn't locate' message", () => {
   assert.match(RENDER, /if \(!scrolled\) landToast\("couldn't locate this in the transcript"\)/);
 });
 
-test("scrollToNearestT stays for the ledger's intentional by-time navigation (only the anchor fallback is killed)", () => {
+test("scrollToNearestT stays for the ledger's intentional by-time navigation (only the blunt anchor fallback was killed)", () => {
   assert.match(RENDER, /function scrollToNearestT\(/, "the helper still exists");
   assert.match(RENDER, /ev\.stopPropagation\(\); scrollToNearestT\(t, kind\); \}\)/,
     "the ledger zones still navigate by time directly (a primary action, not an anchor fallback)");
