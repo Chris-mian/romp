@@ -259,6 +259,10 @@ test("expanding MORPHS the collapsed goal text into its pinned row (FLIP), then 
   assert.match(RENDER, /curText\.style\.transform = `translate\(\$\{dx\}px, \$\{dy\}px\)`;/);
   assert.match(RENDER, /void curText\.offsetWidth;/);
   assert.match(RENDER, /curText\.style\.transform = "translate\(0px, 0px\)";/);
-  assert.match(RENDER, /e\.style\.transition = "opacity 0\.4s ease 0\.5s";/);   // fade in AFTER the move
+  // the text glides above the tree, so the tree must overflow:visible during the morph (else it's clipped)
+  assert.match(RENDER, /wrap\.style\.overflow = "visible";/);
+  assert.match(RENDER, /wrap\.style\.overflow = prevOverflow;/);
+  // the rest fades in the INSTANT the text lands — delay (0.45s) == the glide duration, no extra pause
+  assert.match(RENDER, /e\.style\.transition = "opacity 0\.2s ease 0\.45s";/);
   assert.match(RENDER, /prefers-reduced-motion: reduce/);
 });

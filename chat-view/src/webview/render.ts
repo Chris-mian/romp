@@ -2241,20 +2241,27 @@ function morphLedgerExpand(host: HTMLElement, wrap: HTMLElement, from: { left: n
   if (sumEl) fade.push(sumEl);
   wrap.querySelectorAll(".ledger-tnode").forEach((r) => { if (r !== curRow) fade.push(r as HTMLElement); });
   fade.forEach((e) => { e.style.opacity = "0"; });
+  // The text glides UP to the collapsed line (which sits ABOVE the tree), so the tree's own scroll-clip
+  // would hide it mid-flight — that was the "it disappears right after you click" bug. Let it overflow
+  // while the morph runs, then restore (the user 2026-06-18).
+  const prevOverflow = wrap.style.overflow;
+  wrap.style.overflow = "visible";
   // INVERT: drop the text back onto the collapsed line's position
   curText.style.transition = "none";
   curText.style.transformOrigin = "left top";
   curText.style.transform = `translate(${dx}px, ${dy}px)`;
   curText.style.position = "relative"; curText.style.zIndex = "3";
   void curText.offsetWidth;   // commit the FROM transform before transitioning
-  // PLAY: glide to its real slot; the rest fades in once it's home (0.5s delay = the morph duration)
-  curText.style.transition = "transform 0.5s cubic-bezier(0.22, 0.61, 0.36, 1)";
+  // PLAY: glide to its real slot; the rest fades in the INSTANT it lands — no extra pause (the user
+  // 2026-06-18): the fade's delay equals the glide duration, so it starts exactly as the text arrives.
+  curText.style.transition = "transform 0.45s cubic-bezier(0.22, 0.61, 0.36, 1)";
   curText.style.transform = "translate(0px, 0px)";
-  fade.forEach((e) => { e.style.transition = "opacity 0.4s ease 0.5s"; e.style.opacity = ""; });
+  fade.forEach((e) => { e.style.transition = "opacity 0.2s ease 0.45s"; e.style.opacity = ""; });
   setTimeout(() => {
+    wrap.style.overflow = prevOverflow;
     for (const p of ["transition", "transform", "transformOrigin", "position", "zIndex"]) (curText.style as any)[p] = "";
     fade.forEach((e) => { e.style.transition = ""; e.style.opacity = ""; });
-  }, 1000);
+  }, 800);
 }
 
 // (Relevance categorization — colored labels + filter checkboxes — was removed
