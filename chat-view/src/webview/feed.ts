@@ -55,6 +55,7 @@ interface AskTreeNode {
   why?: string; blockWhy?: string; doneWhy?: string;             // planner's one-sentence rationales — revealed on hover in the modal
   derived?: boolean;                                             // done by roll-up/roll-down (kernel), not explicit → DIMMED ✓ disc
   followupPending?: boolean;                                     // this sub was optimistically reopened by a per-sub follow-up → "↻ Followed up" chip (kernel flatten, judges 047264f)
+  summary?: string | null;                                       // the DISTILLER's key takeaway for a completed goal (artifact or 1-3 sentences) → shown in the MODAL only (kernel flatten 78fc97b; the card keeps doneWhy)
   trgb?: [number, number, number];                               // last-activity recency tint (timestamp)
   children: string[]; rows: AskLinked[];
 }
@@ -1038,10 +1039,26 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
   box.appendChild(line);
   if (repeat) return;                                   // dim repeat: line only, no descent
   seen.add(node.id);
+  // The DISTILLER's key takeaway for a completed goal (the user 2026-06-17): the ONE most-useful thing — a
+  // copy-pasteable artifact (command / path / URL / answer / snippet) verbatim, else a 1-3 sentence outcome.
+  // Shown in the MODAL only (the card keeps the closer's one-line doneWhy). Rendered prominently (brighter
+  // than the dim why-line, pre-wrap so a copied artifact stays intact) with a ⧉ copy affordance — the
+  // distiller's whole point is a thing you'd want to copy. It supersedes the doneWhy rationale below.
+  const summaryText = node.summary;
+  if (summaryText) {
+    const sum = el("div", "ftree-summary");
+    sum.style.paddingLeft = (depth * TREE_INDENT_EM + 1.6) + "em";   // align under the node text (past the tri + mark)
+    const stext = el("span", "ftree-summary-text"); stext.textContent = summaryText; sum.appendChild(stext);
+    const copy = el("span", "ftree-summary-copy"); copy.textContent = "⧉"; copy.title = "copy this takeaway";
+    copy.onclick = (ev) => { ev.stopPropagation(); navigator.clipboard?.writeText(summaryText).then(() => { copy.textContent = "✓"; setTimeout(() => { copy.textContent = "⧉"; }, 900); }); };
+    sum.appendChild(copy);
+    box.appendChild(sum);
+  }
   // The planner's rationale shown INLINE under the node (the user 2026-06-17), not only as the hover
   // tooltip above — the same "why" the card surfaces, now in the modal's relevant section. done → why-done,
-  // blocked/question → why-blocked, else the creation why. Indented to sit under the node's text.
-  const whyText = node.status === "done" ? node.doneWhy : node.status === "question" ? node.blockWhy : node.why;
+  // blocked/question → why-blocked, else the creation why. Indented to sit under the node's text. For a
+  // completed node the distiller summary above supersedes the one-line doneWhy, so skip it when present.
+  const whyText = node.status === "done" ? (summaryText ? undefined : node.doneWhy) : node.status === "question" ? node.blockWhy : node.why;
   if (whyText) {
     const w = el("div", "ftree-why lz-nav");
     w.textContent = (node.status === "done" ? "✓ " : node.status === "question" ? "⏸ " : "") + whyText;

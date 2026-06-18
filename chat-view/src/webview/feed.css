@@ -285,6 +285,12 @@ body { display: flex; flex-direction: column; }
 /* the rationale is clickable → jumps to where the planner authored it (the user 2026-06-17) */
 .ftree-why.lz-nav { cursor: pointer; }
 .ftree-why.lz-nav:hover { opacity: 1; text-decoration: underline; text-underline-offset: 2px; }
+/* the DISTILLER's key takeaway for a completed goal (the user 2026-06-17): the MODAL's deliverable line —
+   brighter than the dim italic why-line (it's content, not annotation). pre-wrap keeps a copied artifact
+   (command / path / snippet) intact across lines; the ⧉ copies it (the distiller's whole point). */
+.ftree-summary { font-size: 0.86em; line-height: 1.45; margin: 2px 0 6px; color: var(--fg); white-space: pre-wrap; overflow-wrap: anywhere; }
+.ftree-summary-copy { margin-left: 6px; color: var(--dim); cursor: pointer; font-size: 0.92em; user-select: none; }
+.ftree-summary-copy:hover { color: var(--check-bg); }
 .st-done .ftree-mark { color: var(--rel-done); }
 /* a BLOCKED (needs-you) node: the "?" is RED inside a RED ring the SAME 13px size as the ✓ checkbox disc,
    and its label reads "BLOCKED" in red (the user 2026-06-17) — a stronger, unmistakable block signal than

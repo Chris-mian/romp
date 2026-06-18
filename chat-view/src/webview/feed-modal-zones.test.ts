@@ -57,8 +57,9 @@ test("modal UNRESOLVED node: checkbox + text light together, checkbox STAYS a ci
 });
 
 test("modal node shows the planner's rationale INLINE, clickable to where it was authored (the user 2026-06-17)", () => {
-  // done → why-done, blocked → why-blocked, else creation why; a dim italic .ftree-why line under the node
-  assert.match(FEED, /const whyText = node\.status === "done" \? node\.doneWhy : node\.status === "question" \? node\.blockWhy : node\.why/);
+  // done → why-done (unless the distiller summary above supersedes it), blocked → why-blocked, else creation
+  // why; a dim italic .ftree-why line under the node.
+  assert.match(FEED, /const whyText = node\.status === "done" \? \(summaryText \? undefined : node\.doneWhy\) : node\.status === "question" \? node\.blockWhy : node\.why/);
   assert.match(FEED, /el\("div", "ftree-why lz-nav"\)/);
   assert.match(FEED, /\(node\.status === "done" \? "✓ " : node\.status === "question" \? "⏸ " : ""\) \+ whyText/);
   // clickable → goWork (where the planner authored the why = the node's resolution/minting segment)
