@@ -190,15 +190,19 @@ body { display: flex; flex-direction: column; }
    wider 20px gutter to clear the → "recent" arrow's -19px hang; the arrow is gone now, so tightened — the
    user 2026-06-17.) */
 .ledger-tree { display: flex; flex-direction: column; row-gap: 4px; margin-top: 2px; padding-left: 8px; max-height: 19em; overflow-y: auto; overflow-x: hidden; width: fit-content; max-width: 100%; }
-/* expand reveal (the user 2026-06-18): when the user EXPANDS the collapsed ledger, the tree wipes open
-   from the top (clip-path) + fades + slides — so it visibly UNFOLDS from the collapsed goal line rather
-   than snapping in. One-shot: only a real expand toggle adds .revealing, not a routine data refresh. */
-@keyframes ledger-reveal {
-  from { opacity: 0; transform: translateY(-4px); clip-path: inset(0 0 92% 0); }
-  to   { opacity: 1; transform: translateY(0);    clip-path: inset(0 0 0 0); }
-}
-.ledger-tree.revealing { animation: ledger-reveal 0.24s cubic-bezier(0.22, 0.61, 0.36, 1); }
-@media (prefers-reduced-motion: reduce) { .ledger-tree.revealing { animation: none; } }
+/* expand reveal (the user 2026-06-18): when the user EXPANDS the collapsed ledger, the rows CASCADE in
+   from the top — each drops + fades in a touch after the one above it — so the unfold is unmistakable and
+   slow enough to read (an earlier subtle/fast clip-path wipe was imperceptible). One-shot: only a real
+   expand toggle adds .revealing, not a routine data refresh. */
+@keyframes ledger-row-in { from { opacity: 0; transform: translateY(-12px); } to { opacity: 1; transform: translateY(0); } }
+.ledger-tree.revealing > .ledger-tnode { animation: ledger-row-in 0.5s both cubic-bezier(0.22, 0.61, 0.36, 1); }
+.ledger-tree.revealing > .ledger-tnode:nth-child(2) { animation-delay: 0.08s; }
+.ledger-tree.revealing > .ledger-tnode:nth-child(3) { animation-delay: 0.16s; }
+.ledger-tree.revealing > .ledger-tnode:nth-child(4) { animation-delay: 0.24s; }
+.ledger-tree.revealing > .ledger-tnode:nth-child(5) { animation-delay: 0.32s; }
+.ledger-tree.revealing > .ledger-tnode:nth-child(6) { animation-delay: 0.40s; }
+.ledger-tree.revealing > .ledger-tnode:nth-child(n+7) { animation-delay: 0.48s; }
+@media (prefers-reduced-motion: reduce) { .ledger-tree.revealing > .ledger-tnode { animation: none; } }
 /* align-items:center so the 13px discs, text and times share a centre line. Roomy line-height + a
    little row padding/gap so the discs never kiss and an expanded child doesn't crowd its parent
    (the user 2026-06-16 walked back the earlier over-compaction). */

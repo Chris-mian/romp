@@ -250,8 +250,9 @@ test("expanding ANIMATES the tree reveal once (clip-path unfold), not on routine
   assert.match(RENDER, /ledgerAnimateExpand = !ledgerCollapsed;/);   // true only when expanding
   assert.match(RENDER, /\(ledgerAnimateExpand \? " revealing" : ""\)/);
   assert.match(RENDER, /ledgerAnimateExpand = false;\s*\/\/ one-shot/);
-  // the unfold keyframes + reduced-motion opt-out
-  assert.match(CSS, /@keyframes ledger-reveal \{[\s\S]*clip-path: inset\(0 0 0 0\)/);
-  assert.match(CSS, /\.ledger-tree\.revealing \{ animation: ledger-reveal/);
-  assert.match(CSS, /prefers-reduced-motion: reduce[^}]*\.ledger-tree\.revealing \{ animation: none/);
+  // a STAGGERED row cascade (each row delayed after the one above) + reduced-motion opt-out
+  assert.match(CSS, /@keyframes ledger-row-in \{[\s\S]*translateY\(0\)/);
+  assert.match(CSS, /\.ledger-tree\.revealing > \.ledger-tnode \{ animation: ledger-row-in 0\.5s/);
+  assert.match(CSS, /\.ledger-tree\.revealing > \.ledger-tnode:nth-child\(2\) \{ animation-delay: 0\.08s/);
+  assert.match(CSS, /prefers-reduced-motion: reduce[^}]*\.ledger-tree\.revealing > \.ledger-tnode \{ animation: none/);
 });
