@@ -1165,6 +1165,22 @@ class ViewBuilder(unittest.TestCase):
         self.assertTrue(any(a["itemId"] == g1 for a in d2["asks"]), "undo restores it")
         self.assertFalse(d2["canUndoClear"])
 
+    def test_clear_sets_durable_node_flag_and_undo_unsets_it(self):
+        # The reappearance fix (the user 2026-06-18): a Clear is no longer only a view-level hide — it
+        # stamps the DURABLE node-level `cleared` flag (rolled-up status → "cleared"), so the grouper
+        # (which keys on nd['cleared']) can't re-wrap the top under a fresh umbrella id, and the settled
+        # gate can't bounce it back to working/completed. Undo un-stamps it and the node rejoins its
+        # real status.
+        g1 = "%s:g1" % SID
+        km._clear_ask(g1)
+        store = jd.load_goals(SID)
+        self.assertTrue(store["nodes"][g1]["cleared"], "Clear sets the durable node flag")
+        self.assertEqual(store["status"][g1], "cleared", "rolled-up status is 'cleared'")
+        km._undo_clear()
+        store2 = jd.load_goals(SID)
+        self.assertFalse(store2["nodes"][g1]["cleared"], "Undo un-sets the durable flag")
+        self.assertNotEqual(store2["status"][g1], "cleared", "the node rejoins its real status")
+
     def test_feed_clear_all_then_undo_restores_the_batch(self):
         d0 = km.build_feed(NOW)
         ids = [a["itemId"] for a in d0["asks"]] + [c["itemId"] for c in d0["items"]]

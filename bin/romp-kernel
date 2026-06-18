@@ -1601,6 +1601,39 @@ def _cleared_ids():
     return cur
 
 
+def _mark_nodes_cleared(item_ids, value):
+    """Set the DURABLE node-level `cleared` flag on each cleared/restored top goal node, so a Clear is
+    immune to status recompute AND the grouper. The view-level cleared.jsonl only hid the CARD; the
+    node stayed 'open', so two paths resurfaced it (the user 2026-06-18): (1) the grouper's _group_tops
+    re-wraps an open top under a FRESH umbrella whose new id is NOT in cleared.jsonl → the umbrella card
+    reappears; (2) rollup_status keeps flipping a nodeComplete focus top working↔completed, so the card
+    bounces between columns. Both keys read nd['cleared'] — set it and rollup gives 'cleared' (which the
+    grouper skips and the feed filter hides), durably. Re-rolls each touched session's status."""
+    by_sid = {}
+    for iid in item_ids:
+        sid = iid.rsplit(":", 1)[0]
+        by_sid.setdefault(sid, []).append(iid)
+    now = int(time.time())
+    for sid, ids in by_sid.items():
+        store = jd.load_goals(sid)
+        nodes = store.get("nodes", {})
+        touched = False
+        for iid in ids:
+            nd = nodes.get(iid)
+            if nd is not None and bool(nd.get("cleared")) != value:
+                nd["cleared"] = value
+                touched = True
+        if not touched:
+            continue
+        try:                                          # session_closed for the rollup, same as _resolve_node
+            path = next((s["path"] for s in _sessions(now) if s["sid"] == sid), None)
+            closed = jd._session_closed(_parse(path, sid, now)) if path else False
+        except Exception:
+            closed = False
+        jd.rollup_status(store, closed)
+        jd.save_goals(sid, store)
+
+
 def _clear_ask(item_id):
     """Clear one feed card (inbox-zero) — a batch of one (see _clear_all)."""
     _clear_all([item_id])
@@ -1619,6 +1652,7 @@ def _clear_all(item_ids):
     with p.open("a") as f:
         for iid in item_ids:
             f.write(json.dumps({"id": iid, "t": t, "op": "clear"}) + "\n")
+    _mark_nodes_cleared(item_ids, True)               # durable node flag → no grouper re-wrap, no column bounce
 
 
 def _undo_clear():
@@ -1628,9 +1662,11 @@ def _undo_clear():
     if not cur:
         return
     newest = max(cur.values())
+    restored = [i for i, ct in cur.items() if ct == newest]
     with (jd.STATE / "cleared.jsonl").open("a") as f:
-        for iid in [i for i, ct in cur.items() if ct == newest]:
+        for iid in restored:
             f.write(json.dumps({"id": iid, "t": time.time(), "op": "undo"}) + "\n")
+    _mark_nodes_cleared(restored, False)              # un-set the durable flag → the node rejoins its real status
 
 
 def _resolve_node(sid, node_id):

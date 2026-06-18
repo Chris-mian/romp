@@ -8,6 +8,7 @@ All fixtures are SYNTHETIC (invented text, placeholder UUIDs, hostname TESTHOST)
 """
 import json
 import os
+import shutil
 import tempfile
 import unittest
 from datetime import datetime, timezone
@@ -625,6 +626,13 @@ class Grouper(unittest.TestCase):
     higher-level umbrella and nesting tops under it. Event-gated per session (groupedSig) so a stable
     board is never re-grouped."""
 
+    def setUp(self):
+        # _group_tops now consults STATE/cleared.jsonl (the view-cleared set) — sandbox STATE to a fresh
+        # empty dir so every grouper test is hermetic (no real cleared.jsonl bleeds in).
+        self._saved_state = jd.STATE
+        self._state_td = tempfile.mkdtemp()
+        jd.STATE = Path(self._state_td)
+
     def _two_tops(self):
         s = _store()
         jd.apply_plan(s, "s1", T0, [{"do": "mint", "why": "x", "text": "Goal A"}], [])
@@ -746,8 +754,25 @@ class Grouper(unittest.TestCase):
         return str(pdir / (SID + ".jsonl"))
 
     def tearDown(self):
+        jd.STATE = self._saved_state
+        shutil.rmtree(self._state_td, ignore_errors=True)
         if hasattr(self, "_saved"):
             (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.group_llm) = self._saved
+
+    def test_view_cleared_top_is_excluded_from_grouping(self):
+        # The reappearance bug (the user 2026-06-18): the user CLEARS a top from the feed (a row in
+        # cleared.jsonl), but the grouper still saw it as an open top and could relink it under a FRESH
+        # umbrella whose new id is NOT in cleared.jsonl → the card reappeared. _group_tops now skips a
+        # view-cleared top, so it is never re-organized and the clear stays effective.
+        s, a, b = self._two_tops()
+        self.assertEqual({nd["id"] for nd in jd._group_tops(s)}, {a, b}, "both tops are candidates pre-clear")
+        (jd.STATE / "cleared.jsonl").write_text(json.dumps({"id": a, "t": T0 + 5, "op": "clear"}) + "\n")
+        self.assertEqual({nd["id"] for nd in jd._group_tops(s)}, {b},
+                         "a view-cleared top drops out of the grouper's candidate forest")
+        # and an 'undo' row restores it as a candidate (newest-wins)
+        with (jd.STATE / "cleared.jsonl").open("a") as f:
+            f.write(json.dumps({"id": a, "t": T0 + 6, "op": "undo"}) + "\n")
+        self.assertEqual({nd["id"] for nd in jd._group_tops(s)}, {a, b}, "undo re-admits the top")
 
     def test_session_runs_once_then_gates_until_top_set_changes(self):
         store, a, b = self._two_tops()
@@ -867,6 +892,39 @@ class PlanRollup(unittest.TestCase):
         self.assertEqual(s["status"][gid], "working", "complete but still the active focus -> held open (no flicker)")
         jd.rollup_status(s, session_closed=True)
         self.assertEqual(s["status"][gid], "completed", "session closed -> the focus goal may complete")
+
+    def test_sticky_completion_no_flicker_when_a_settled_focus_top_is_re_poked(self):
+        # The flicker (the user 2026-06-18): a completed top that is the active focus would bounce
+        # working↔completed every turn (session_closed flaps idle→completed, working→working). Once it has
+        # settled-completed ONCE, a later turn that re-focuses it (a status QUESTION, an unrelated poke)
+        # must keep it completed — the card stops jumping between the Working and Completed columns.
+        s = _store()
+        self._mint(s, "s1", T0, "G")
+        self._done(s, "s2", T0 + 10, 1)                          # G complete, still the only/active focus
+        gid = s["placements"]["s1"]
+        jd.rollup_status(s, session_closed=False)
+        self.assertEqual(s["status"][gid], "working", "pre-settle: held working (no premature completion)")
+        jd.rollup_status(s, session_closed=True)                 # session goes idle → FIRST settle
+        self.assertEqual(s["status"][gid], "completed")
+        self.assertTrue(s["nodes"][gid].get("settledDone"), "the settle event stamps the durable marker")
+        jd.rollup_status(s, session_closed=False)                # a new turn re-focuses it (still nodeComplete)
+        self.assertEqual(s["status"][gid], "completed",
+                         "sticky: a re-poked already-settled top stays completed (no working↔done flicker)")
+
+    def test_reopen_clears_sticky_completion_so_followup_work_shows_working(self):
+        # A GENUINE follow-up reopens the goal (clears nodeComplete) → it must drop the sticky marker and
+        # roll back to working, else the stale settledDone would re-complete it instantly.
+        s = _store()
+        self._mint(s, "s1", T0, "G")
+        self._done(s, "s2", T0 + 10, 1)
+        gid = s["placements"]["s1"]
+        jd.rollup_status(s, session_closed=True)                 # settle → sticky
+        self.assertEqual(s["status"][gid], "completed")
+        jd._reopen(s, gid)                                       # the tagged follow-up reopens it
+        self.assertFalse(s["nodes"][gid].get("settledDone"), "reopen un-sticks completion")
+        self.assertFalse(s["nodes"][gid].get("nodeComplete"))
+        jd.rollup_status(s, session_closed=False)
+        self.assertEqual(s["status"][gid], "working", "the reopened goal is back to working for the follow-up")
 
     def test_blocked_beats_completed(self):
         s = _store()
