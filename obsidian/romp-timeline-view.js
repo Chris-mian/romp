@@ -68,14 +68,16 @@ function fmtWin(s) { return s < 3600 ? Math.round(s / 60) + 'm' : (s / 3600 < 10
 function fmtTokens(n) { n = Math.round(n || 0); return n >= 1e6 ? (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + 'M' : n >= 1e3 ? Math.round(n / 1e3) + 'k' : String(n); }
 // token in/out colours (footer): the TOTAL leads (bright), then the in/out breakdown in parens, each tinted
 // so the eye can glance the sum AND the split. in = teal, out = green — distinct from the lane labels.
+// in = TOK_IN, out = TOK_OUT — the words live ONCE in the header legend; here the COLOUR alone tells them
+// apart, so the per-cell numbers carry no repeated "in"/"out" labels (the user 2026-06-18).
 const TOK_IN = '#5fb3c4', TOK_OUT = '#8ccf6b';
 function ioHTML(d) {
   if (!d || (!(d.in || 0) && !(d.out || 0))) return '–';
   const i = d.in || 0, o = d.out || 0;
   return fmtTokens(i + o) + ' <span style="opacity:.5">(</span>'
-    + '<span style="color:' + TOK_IN + '">' + fmtTokens(i) + ' in</span>'
+    + '<span style="color:' + TOK_IN + '">' + fmtTokens(i) + '</span>'
     + '<span style="opacity:.4"> / </span>'
-    + '<span style="color:' + TOK_OUT + '">' + fmtTokens(o) + ' out</span>'
+    + '<span style="color:' + TOK_OUT + '">' + fmtTokens(o) + '</span>'
     + '<span style="opacity:.5">)</span>';
 }
 function fmtDur(ms) { ms = Math.round(ms || 0); return ms < 1000 ? ms + 'ms' : ms < 60000 ? (ms / 1000).toFixed(1) + 's' : Math.round(ms / 60000) + 'm'; }
@@ -353,15 +355,20 @@ class TimelinePanel {
 
     // Token usage by rate-limit WINDOW (the user 2026-06-17): how many tokens the coding SESSIONS + the
     // judge PIPELINE drew in the current 5h and 7d windows — the same quota the /usage bars meter — each
-    // cell split in/out, plus the ACTIVE chat tab's lifetime. Compact grid, right of the rate-limit bars.
-    // Hidden until data.tokens arrives. NOTE: on a Max subscription these are NOT a dollar bill — both
-    // halves draw the shared quota; the count just lines up with the % the bars show.
+    // cell = total then the in/out split in parens. The in/out LEGEND is colour-keyed ONCE in the header;
+    // the cells reuse those colours, no repeated labels (the user 2026-06-18). Compact grid, right of the
+    // rate-limit bars. Hidden until data.tokens arrives. NOTE: on a Max subscription these are NOT a dollar
+    // bill — both halves draw the shared quota; the count just lines up with the % the bars show.
     this._tokensWrap = this.controls.createDiv();
     this._tokensWrap.setAttribute('style', 'display:none;flex-direction:column;gap:2px;');
     const tgrid = this._tokensWrap.createDiv();
     tgrid.setAttribute('style', 'display:grid;grid-template-columns:auto auto auto;gap:1px 12px;align-items:center;');
     const tHead = (txt, num) => { const c = tgrid.createSpan({ text: txt }); c.setAttribute('style', 'opacity:0.6;' + (num ? 'text-align:right;' : '')); };
-    tHead('tokens · total (in/out)'); tHead('5h', true); tHead('week', true);
+    this._tokHead = tgrid.createSpan();   // the in/out legend — coloured here so the cells don't repeat the words
+    this._tokHead.innerHTML = '<span style="opacity:.6">tokens · total </span><span style="opacity:.5">(</span>'
+      + '<span style="color:' + TOK_IN + '">in</span><span style="opacity:.4"> / </span>'
+      + '<span style="color:' + TOK_OUT + '">out</span><span style="opacity:.5">)</span>';
+    tHead('5h', true); tHead('week', true);
     const tRow = (lbl, color) => {
       tgrid.createSpan({ text: lbl }).setAttribute('style', 'color:' + color + ';opacity:0.9;');
       const five = tgrid.createSpan({ text: '–' }); five.setAttribute('style', 'text-align:right;font-variant-numeric:tabular-nums;opacity:0.9;');
@@ -369,9 +376,6 @@ class TimelinePanel {
       return { five, week };
     };
     this._tokRows = { sessions: tRow('sessions', '#8fb3ff'), pipeline: tRow('pipeline', '#c79be0') };
-    // active chat tab's lifetime (the selected lane) — spans the row, dim; refreshed on tab switch.
-    this._tokActive = this._tokensWrap.createSpan({ text: '' });
-    this._tokActive.setAttribute('style', 'opacity:0.7;font-variant-numeric:tabular-nums;');
 
     // spacer: everything after it sits flush right
     const ctlSpacer = this.controls.createDiv();
@@ -825,15 +829,15 @@ class TimelinePanel {
   }
 
   // Fill the per-window token grid (data.tokens.fiveHour / .week): the coding SESSIONS + the judge
-  // PIPELINE, each cell = in/out (cache excluded so cache-reads don't dominate; carried in the hover).
-  // Plus the active-tab lifetime line. Hidden until there's data.
+  // PIPELINE, each cell = total then in/out (cache excluded so cache-reads don't dominate; carried in the
+  // hover). Hidden until there's data.
   _updateTokens(tokens) {
     if (!this._tokRows) return;
     const w5 = tokens && tokens.fiveHour, ww = tokens && tokens.week;
     const sP = (w) => w && w.sessions, pP = (w) => w && w.pipeline && w.pipeline.total;
     const has = (d) => d && ((d.in || 0) + (d.out || 0)) > 0;
     const anyWin = has(sP(w5)) || has(pP(w5)) || has(sP(ww)) || has(pP(ww));
-    if (!anyWin && !this._activeTabHasTokens()) { this._tokensWrap.style.display = 'none'; return; }
+    if (!anyWin) { this._tokensWrap.style.display = 'none'; return; }
     this._tokensWrap.style.display = 'flex';
     this._tokRows.sessions.five.innerHTML = ioHTML(sP(w5));   // total (in / out), in/out colour-tinted
     this._tokRows.sessions.week.innerHTML = ioHTML(sP(ww));
@@ -854,31 +858,6 @@ class TimelinePanel {
     };
     this._tokRows.pipeline.five.setAttribute('title', pipeTitle(w5, '5h'));
     this._tokRows.pipeline.week.setAttribute('title', pipeTitle(ww, 'week'));
-    this._updateActiveTabTokens();
-  }
-
-  // The selected lane's session record (the active chat tab), if any.
-  _activeTabSession() {
-    const sid = this.selectedSid, sess = (this.data && this.data.sessions) || [];
-    return sid ? sess.find((x) => x.id === sid) : null;
-  }
-
-  _activeTabHasTokens() {
-    const s = this._activeTabSession(), t = s && s.tokensAll;
-    return !!(t && ((t.in || 0) + (t.out || 0)) > 0);
-  }
-
-  // The active chat tab's LIFETIME usage (in/out) — refreshed both on a new band and on a tab switch
-  // (_select / setActiveChat), so the line follows the focused lane without waiting for the next poll.
-  _updateActiveTabTokens() {
-    if (!this._tokActive) return;
-    const s = this._activeTabSession(), t = s && s.tokensAll;
-    if (!s) { this._tokActive.textContent = ''; this._tokActive.removeAttribute('title'); return; }
-    const name = s.name || s.id;
-    if (!t || !((t.in || 0) + (t.out || 0))) { this._tokActive.innerHTML = 'this tab · ' + esc(name) + ': –'; return; }
-    this._tokActive.innerHTML = 'this tab · ' + esc(name) + ': ' + ioHTML(t);
-    this._tokActive.setAttribute('title', 'lifetime usage of the focused chat (' + name + ') — in '
-      + fmtTokens(t.in) + ' / out ' + fmtTokens(t.out) + '; ' + fmtTokens(t.cache_r || 0) + ' cache-read');
   }
 
   fitWindow() {
@@ -963,7 +942,7 @@ class TimelinePanel {
   }
 
   // set the single selection highlight + redraw only on a real change.
-  _select(sid) { if (sid && this.selectedSid !== sid) { this.selectedSid = sid; this._updateActiveTabTokens(); this.draw(); } }
+  _select(sid) { if (sid && this.selectedSid !== sid) { this.selectedSid = sid; this.draw(); } }
 
   // Reverse hover: a glyph hover tells the host to light the matching feed card + glow the chat turns
   // in [t0,t1] (the host has the receivers; web kernel only — no-op in Obsidian). sid null → clear.
@@ -978,7 +957,6 @@ class TimelinePanel {
     this.data.activeChat = ac || null;
     const sid = this._sidForActiveChat(ac);
     if (sid) this.selectedSid = sid;
-    this._updateActiveTabTokens();
     this.draw();
   }
 

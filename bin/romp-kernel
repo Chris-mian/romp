@@ -2303,14 +2303,12 @@ def build_timeline(now, tmux=None):
             "awaiting": _state_intervals(sid, "permission", now),
             "compacting": _state_intervals(sid, "compacting", now),
             "compactions": compactions, "pendingMail": _pending_mail(sid),
-            "tokensAll": _session_tokens(s["path"], 0),    # lifetime in/out for the active-tab token readout
             "stale": faded, "faded": faded})
     messages = _postal_messages(now, set(id2name), id2name)
     _bind_message_execs(messages, turns)                 # connector exec → the recipient's process-start (real transit)
     # token usage by rate-limit WINDOW (the user 2026-06-17): the coding SESSIONS + the judge PIPELINE,
     # summed over the SAME windows /usage meters (5h "session", 7d "week"), in/out split — so the count
-    # lines up with the % the bars show. Per-session `tokensAll` (lifetime) rides each lane for the
-    # active-tab readout. Both halves draw the same subscription quota.
+    # lines up with the % the bars show. Both halves draw the same subscription quota.
     _attach_run_usage(judging, now - TL_HORIZON, set(id2name))   # per-mark ms/in/out for the band tooltips
     return {"type": "timeline", "now": now, "sessions": sessions, "turns": turns,
             "messages": messages, "judging": judging,

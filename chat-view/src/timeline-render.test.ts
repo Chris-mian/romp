@@ -78,7 +78,6 @@ function synthData() {
   const sess = (id: string, name: string) => ({
     id, name, color: "#7aa2f7", state: "working", live: true, model: "Opus 4.8", effort: "xhigh",
     context: 40, since: now - 60, awaiting: [], compacting: [], pendingMail: 0, compactions: [], faded: false, stale: false,
-    tokensAll: { in: 840000, out: 120000, cache_r: 9000000 },
   });
   return {
     now,
@@ -358,11 +357,12 @@ test("judging band is gated on Debug mode: OFF by default hides it; Debug on dra
   g.localStorage.getItem = () => null;                        // reset the shared mock
 });
 
-// ── token-usage footer (2026-06-17): data.tokens = {fiveHour, week} → a per-window grid (sessions /
-// pipeline rows × 5h / week cols, each cell in/out) + the active chat tab's lifetime line.
-test("token grid: per-window sessions/pipeline split in/out, plus the active tab's lifetime", () => {
+// ── token-usage footer: data.tokens = {fiveHour, week} → a per-window grid (sessions / pipeline rows ×
+// 5h / week cols). Each cell = total then the in/out split in parens, COLOUR-keyed to the header legend —
+// the "in"/"out" words live ONCE in the header, never repeated in the cells; no active-tab line (the user
+// 2026-06-18).
+test("token grid: per-window sessions/pipeline, total + colour-keyed in/out (no repeated labels)", () => {
   const panel = new TimelinePanel(makeNode("div"));
-  panel.selectedSid = "S1";   // the active chat tab → its lifetime line follows the selected lane
   panel.update({ ...synthData(), tokens: {
     fiveHour: { sessions: { in: 800000, out: 200000, cache_r: 5000000 },
                 pipeline: { total: { calls: 12, in: 60000, out: 40000, cost: 0.42, ms: 9000 },
@@ -372,31 +372,24 @@ test("token grid: per-window sessions/pipeline split in/out, plus the active tab
     windows: { fiveHour: 18000, week: 604800 },
   } });
   assert.equal(panel._tokensWrap.style.display, "flex");
-  // each cell now leads with the TOTAL, then the in/out split in parens, in/out colour-tinted
   const cell = (r: string, w: string) => panel._tokRows[r][w].innerHTML;
-  assert.match(cell("sessions", "five"), /1\.0M[\s\S]*800k in[\s\S]*200k out/, "sessions 5h: total then in/out");
-  assert.match(cell("sessions", "week"), /6\.9M[\s\S]*6\.0M in[\s\S]*900k out/, "sessions week");
-  assert.match(cell("pipeline", "five"), /100k[\s\S]*60k in[\s\S]*40k out/, "pipeline 5h");
-  assert.match(cell("pipeline", "week"), /500k[\s\S]*300k in[\s\S]*200k out/, "pipeline week");
-  assert.ok(cell("sessions", "five").includes("#5fb3c4") && cell("sessions", "five").includes("#8ccf6b"), "in/out are colour-tinted");
-  assert.match(panel._tokActive.innerHTML, /alpha/, "active-tab line names the focused session");
-  assert.match(panel._tokActive.innerHTML, /840k in/, "active-tab lifetime in");
-  assert.match(panel._tokActive.innerHTML, /120k out/, "active-tab lifetime out");
+  assert.match(cell("sessions", "five"), /1\.0M[\s\S]*800k[\s\S]*200k/, "sessions 5h: total then in/out numbers");
+  assert.match(cell("sessions", "week"), /6\.9M[\s\S]*6\.0M[\s\S]*900k/, "sessions week");
+  assert.match(cell("pipeline", "five"), /100k[\s\S]*60k[\s\S]*40k/, "pipeline 5h");
+  assert.match(cell("pipeline", "week"), /500k[\s\S]*300k[\s\S]*200k/, "pipeline week");
+  // colour-keyed, and the words "in"/"out" are NOT repeated next to the cell numbers
+  assert.ok(cell("sessions", "five").includes("#5fb3c4") && cell("sessions", "five").includes("#8ccf6b"), "in/out colour-tinted");
+  assert.doesNotMatch(cell("sessions", "five"), /800k\s*in/, "no repeated 'in' label in the cell");
+  assert.doesNotMatch(cell("sessions", "five"), /200k\s*out/, "no repeated 'out' label in the cell");
 });
-test("active-tab token line follows a tab switch without a fresh band (_select)", () => {
+test("the in/out legend is coloured ONCE in the header (the words live there, not in every cell)", () => {
   const panel = new TimelinePanel(makeNode("div"));
-  panel.selectedSid = "S1";
-  panel.update({ ...synthData(), tokens: {
-    fiveHour: { sessions: { in: 1, out: 1, cache_r: 0 }, pipeline: { total: { calls: 0, in: 0, out: 0 }, byJudge: {}, byTier: {} } },
-    week: { sessions: { in: 1, out: 1, cache_r: 0 }, pipeline: { total: { calls: 0, in: 0, out: 0 }, byJudge: {}, byTier: {} } },
-    windows: { fiveHour: 18000, week: 604800 },
-  } });
-  assert.match(panel._tokActive.innerHTML, /alpha/);
-  panel._select("S2");   // switch tabs — the line must repoint immediately, before the next poll
-  assert.match(panel._tokActive.innerHTML, /beta/, "the line now reflects the newly-selected lane");
+  const h = panel._tokHead.innerHTML;
+  assert.match(h, /#5fb3c4[^>]*>in</, "'in' is TOK_IN-coloured in the header legend");
+  assert.match(h, /#8ccf6b[^>]*>out</, "'out' is TOK_OUT-coloured in the header legend");
 });
-test("token grid is hidden when there's no token data and no active-tab usage", () => {
+test("token grid is hidden when there's no token data", () => {
   const panel = new TimelinePanel(makeNode("div"));
-  panel.update(synthData());   // no .tokens, no selection
+  panel.update(synthData());   // no .tokens
   assert.equal(panel._tokensWrap.style.display, "none");
 });
