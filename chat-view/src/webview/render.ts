@@ -2354,15 +2354,29 @@ function renderLedger() {
         group.forEach((g) => { g.addEventListener("mouseenter", on); g.addEventListener("mouseleave", off); });
       };
       wireZone(txt, startT, "user", "jump to the message that asked for this");
+      // The checkbox tooltip LEADS with WHY the mark reads the way it does (the user 2026-06-18): explicit
+      // vs inferred (roll-UP = every sub-step done, roll-DOWN = a resolved parent) vs dismissed vs blocked
+      // vs open — so an outlined ✓ no longer needs decoding — then the jump hint. Roll-up/down is worked out
+      // from the children the render already has, no kernel round-trip.
+      const markReason = (): string => {
+        if (!n.done) return n.blocked ? "blocked — needs you" : "not yet done";
+        if (n.cleared) return "dismissed — cleared, not judged done";
+        if (!n.derived) return "done — explicitly checked off";
+        const kids = (n.children || []).map((id) => byId.get(id)).filter(Boolean) as LedgerTreeNode[];
+        return (kids.length > 0 && kids.every((k) => k.done))
+          ? "done — inferred: every sub-step is complete"
+          : "done — inferred: a parent goal was checked off";
+      };
+      const reason = markReason();
       if (n.done || n.blocked) {
         const resTitle = n.done ? "jump to where this got checked off" : "jump to where this got marked blocked";
-        wireZone(mark, resolveT, "assistant", resTitle);
+        wireZone(mark, resolveT, "assistant", reason + " · " + resTitle);
         wireZone(time, resolveT, "assistant", resTitle);
         linkHover([txt]);
         linkHover(time.textContent ? [mark, time] : [mark]);   // time joins the pair only when shown
       } else {
         // not yet checked off / blocked → checkbox + text are ONE block, both → the goal's message
-        wireZone(mark, startT, "user", "jump to the message that asked for this");
+        wireZone(mark, startT, "user", reason + " · jump to the message that asked for this");
         linkHover([mark, txt]);   // checkbox + text light together, each keeping its own shape
         if (time.textContent) { wireZone(time, resolveT, "assistant", "jump to the latest work here"); linkHover([time]); }
       }

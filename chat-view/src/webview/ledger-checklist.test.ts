@@ -24,6 +24,21 @@ test("ledger marks: every state is the SAME 13px disc — ○ hollow, ✓ done, 
   assert.match(CSS, /\.ledger-tnode\.blocked \.ledger-tmark \{[^}]*var\(--err\)/);    // blocked = red ring
 });
 
+test("ledger checkbox tooltip LEADS with why the mark reads as it does — explicit vs inferred (roll-up/down) (the user 2026-06-18)", () => {
+  // a markReason() classifies the node and the reason is PREPENDED to the existing jump hint, so hovering
+  // an outlined ✓ explains itself instead of needing the rule reverse-engineered.
+  assert.match(RENDER, /const markReason = \(\): string =>/);
+  assert.match(RENDER, /"done — explicitly checked off"/);                 // explicit (solid ✓)
+  assert.match(RENDER, /"done — inferred: every sub-step is complete"/);   // derived via roll-UP
+  assert.match(RENDER, /"done — inferred: a parent goal was checked off"/);// derived via roll-DOWN
+  assert.match(RENDER, /"dismissed — cleared, not judged done"/);          // cleared
+  // roll-up vs roll-down is decided from the node's own children (no kernel round-trip)
+  assert.match(RENDER, /kids\.length > 0 && kids\.every\(\(k\) => k\.done\)/);
+  // the reason is prepended to the jump hint on the CHECKBOX in both the resolved and open branches
+  assert.match(RENDER, /wireZone\(mark, resolveT, "assistant", reason \+ " · " \+ resTitle\)/);
+  assert.match(RENDER, /wireZone\(mark, startT, "user", reason \+ " · jump to the message/);
+});
+
 test("the CURRENT node highlights the ROW only — never mutates its checkbox or text (the user 2026-06-17)", () => {
   // the active line gets a row highlight (faint background + a bright left accent bar) and the live "(Xm)"
   // parenthesised time — that's the whole signal. The earlier filled-dot-on-the-mark + bold/recoloured text
@@ -159,7 +174,7 @@ test("ledger UNRESOLVED node: checkbox + text light together, checkbox STAYS a c
   // not yet checked off / blocked → the mark points at the SAME message as the text and they light together,
   // but each keeps its own shape: the checkbox is its CIRCULAR halo, never a square (no .lz-merge fill).
   assert.match(RENDER, /if \(n\.done \|\| n\.blocked\) \{/);                       // the split is gated on resolved
-  assert.match(RENDER, /wireZone\(mark, startT, "user", "jump to the message that asked for this"\)/);
+  assert.match(RENDER, /wireZone\(mark, startT, "user", reason \+ " · jump to the message that asked for this"\)/);
   assert.match(RENDER, /linkHover\(\[mark, txt\]\)/);                              // light together, normal shapes
   assert.match(CSS, /\.ledger-tmark\.lz-hl \{[^}]*box-shadow/);                    // checkbox highlight = circular halo
   assert.doesNotMatch(CSS, /lz-merge/);                                            // no square/bridged merge fill
