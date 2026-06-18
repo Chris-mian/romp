@@ -2186,6 +2186,20 @@ def _token_windows(paths, now):
             "windows": {"fiveHour": WIN_5H, "week": WIN_WEEK}}
 
 
+def _token_analytics(now, window):
+    """Token usage over the trailing `window` seconds for the analytics modal (the /analytics endpoint):
+    the coding SESSIONS total (summed transcript usage of the discovered fleet) vs the judge PIPELINE
+    broken out per judge AND per tier (_judge_usage). One ARBITRARY window — the modal's period picker —
+    where the footer's _token_windows only does the two fixed Claude meters (5h/7d). Cheap: _session_tokens
+    caches per-path rows, so this just re-sums the cache for the chosen t0."""
+    t0 = now - window
+    s = {"in": 0, "out": 0}
+    for fsid, path, anchor, name in jd.discover(now):
+        d = _session_tokens(str(path), t0)
+        s["in"] += d["in"]; s["out"] += d["out"]
+    return {"window": window, "now": now, "sessions": s, "judges": _judge_usage(t0)}
+
+
 def _attach_run_usage(judging, t0, alive_sids):
     """Attach each judging mark's real run cost (ms / in / out tokens) by greedy nearest-time matching it
     to the judge's actual calls in judge-usage.jsonl (same fsid + judge). Marks with no matching call keep
@@ -2860,7 +2874,35 @@ _GEAR_CSS = ("#rgear{position:fixed;top:6px;right:8px;z-index:60;background:#2a2
              "#rsettings .rs-row{display:flex;align-items:flex-start;gap:8px;padding:2px 0 6px;cursor:pointer}"
              "#rsettings .rs-row input{margin:3px 0 0;flex:0 0 auto;cursor:pointer}"
              "#rsettings .rs-sub{display:block;color:#9aa0a6;font-size:.9em;margin-top:1px;line-height:1.35}"
-             "#rsettings .rs-sep{border-top:1px solid #3a3a3a;margin-top:6px;padding-top:8px}")
+             "#rsettings .rs-sep{border-top:1px solid #3a3a3a;margin-top:6px;padding-top:8px}"
+             # token-usage analytics: a button in the gear panel opens a centered modal with the chart.
+             ".ra-openbtn{margin-top:8px;width:100%;background:#2d2d2f;border:1px solid #3a3a3a;border-radius:6px;"
+             "color:#cdd3da;font:600 12px/1.4 -apple-system,sans-serif;padding:7px;cursor:pointer}"
+             ".ra-openbtn:hover{background:#343436;color:#fff}"
+             "#ranalytics-back{position:fixed;inset:0;z-index:70;background:#000000bb;display:flex;"
+             "align-items:center;justify-content:center}"
+             # an explicit display rule beats the UA [hidden]{display:none}; restore hiding at higher
+             # specificity so ✕ / backdrop-click / Esc (which set .hidden) actually dismiss the modal
+             "#ranalytics-back[hidden]{display:none}"
+             "#ranalytics{width:min(520px,94vw);max-height:90vh;overflow:auto;background:#252526;"
+             "border:1px solid #3a3a3a;border-radius:10px;padding:14px 16px;box-shadow:0 12px 40px #000000aa;"
+             "font:12px/1.5 -apple-system,sans-serif;color:#ccc}"
+             "#ranalytics .ra-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}"
+             "#ranalytics .ra-title{font-weight:600;font-size:14px;color:#e8eaed}"
+             "#ra-close{background:none;border:none;color:#9aa0a6;font-size:16px;cursor:pointer;line-height:1}"
+             "#ra-close:hover{color:#fff}"
+             ".ra-periods,.ra-group{display:flex;gap:4px;margin-bottom:8px;flex-wrap:wrap}"
+             ".ra-periods button,.ra-group button{background:#2a2a2b;border:1px solid #3a3a3a;border-radius:5px;"
+             "color:#9aa0a6;font:12px/1 -apple-system,sans-serif;padding:5px 9px;cursor:pointer}"
+             ".ra-periods button:hover,.ra-group button:hover{background:#333;color:#ddd}"
+             ".ra-periods button.on,.ra-group button.on{background:#0e639c;border-color:#1177bb;color:#fff}"
+             ".ra-chart{margin:6px 0 10px;min-height:120px}"
+             ".ra-empty{color:#9aa0a6;text-align:center;padding:40px 0}"
+             ".ra-legend{display:flex;flex-wrap:wrap;gap:6px 12px;margin-bottom:8px}"
+             ".ra-li{display:inline-flex;align-items:center;gap:5px;color:#bcc1c7;font-size:11.5px}"
+             ".ra-li b{color:#e8eaed;font-weight:600}"
+             ".ra-sw{width:10px;height:10px;border-radius:2px;display:inline-block;flex:0 0 auto}"
+             ".ra-note{color:#9aa0a6;font-size:11.5px;border-top:1px solid #3a3a3a;padding-top:7px}")
 _GEAR_HTML = ("<button id=rrefresh title='Restart the romp kernel' aria-label=Refresh>↻</button>"
               "<button id=rgear title=Settings aria-label=Settings>⛭</button>"
               "<div id=rsettings hidden>"
@@ -2889,8 +2931,25 @@ _GEAR_HTML = ("<button id=rrefresh title='Restart the romp kernel' aria-label=Re
               "<span><b>Debug mode</b>"
               "<span class=rs-sub>Reveal the kernel-restart (↻) button and the judging timeline — the summarizer judges' actions, on a band under the lanes.</span>"
               "</span></label>"
+              "<div class=rs-sep style='padding-top:8px'>"
+              "<button id=ra-open class=ra-openbtn>\U0001F4CA Token usage analytics</button></div>"
               "<div class='rs-h rs-sep'>romp · version</div>"
-              "<div id=rsver>…</div></div>")
+              "<div id=rsver>…</div></div>"
+              # the analytics modal (sibling of #rsettings) — a centered overlay with the sessions-vs-judges chart
+              "<div id=ranalytics-back hidden><div id=ranalytics>"
+              "<div class=ra-top><div class=ra-title>Token usage</div>"
+              "<button id=ra-close aria-label=Close>✕</button></div>"
+              "<div class=ra-periods>"
+              "<button data-w=3600>1h</button><button data-w=21600>6h</button>"
+              "<button data-w=86400 class=on>24h</button><button data-w=604800>7d</button>"
+              "<button data-w=2592000>30d</button></div>"
+              "<div class=ra-group>"
+              "<button data-g=judge class=on>By judge</button>"
+              "<button data-g=tier>Index vs triage</button></div>"
+              "<div id=ra-chart class=ra-chart></div>"
+              "<div id=ra-legend class=ra-legend></div>"
+              "<div id=ra-note class=ra-note></div>"
+              "</div></div>")
 _GEAR_JS = r"""(function(){var g=document.getElementById('rgear'),p=document.getElementById('rsettings'),
 b=document.getElementById('rsver'),cc=document.getElementById('rs-compact'),cm=document.getElementById('rs-colormap'),
 ex=document.getElementById('rs-explanations'),sg=document.getElementById('rs-subgoals'),db=document.getElementById('rs-debug');
@@ -2914,7 +2973,57 @@ g.onclick=function(e){e.stopPropagation();if(p.hidden){p.hidden=false;var s=load
 document.addEventListener('click',function(e){if(!p.hidden&&e.target!==g&&!p.contains(e.target))p.hidden=true;});
 var rf=document.getElementById('rrefresh');   // ↻ moved up from the timeline (the user 2026-06-17): POST /restart, poll /healthz, reload
 if(rf)rf.onclick=function(){rf.disabled=true;try{fetch('/restart',{method:'POST'}).catch(function(){});}catch(e){}
-var n=0;(function again(){setTimeout(function(){n++;fetch('/healthz',{cache:'no-store'}).then(function(r){if(r&&r.ok)location.reload();else if(n<40)again();}).catch(function(){if(n<40)again();});},500);})();};applyDebug(load());})();"""
+var n=0;(function again(){setTimeout(function(){n++;fetch('/healthz',{cache:'no-store'}).then(function(r){if(r&&r.ok)location.reload();else if(n<40)again();}).catch(function(){if(n<40)again();});},500);})();};
+// ── token-usage analytics modal: a sessions-vs-judges bar chart over a selectable window ──
+var raBack=document.getElementById('ranalytics-back'),raOpen=document.getElementById('ra-open'),
+raClose=document.getElementById('ra-close'),raChart=document.getElementById('ra-chart'),
+raLegend=document.getElementById('ra-legend'),raNote=document.getElementById('ra-note');
+var JCOL={captioner:'#1EA1EB',archiver:'#54B204',planner:'#E0B020',grouper:'#4EA8A9',closer:'#C0392B',distiller:'#D26EA8',courier:'#9088F0'};
+var JORDER=['captioner','archiver','planner','grouper','closer','distiller','courier'];
+var TIERCOL={index:'#3FA7C4',triage:'#E0973A'};
+var raState={window:86400,periodLabel:'24h',group:'judge',data:null,loading:false};
+function fmtTok(n){n=n||0;if(n>=1e6)return (n/1e6).toFixed(n>=1e7?0:1)+'M';if(n>=1e3)return Math.round(n/1e3)+'k';return ''+n;}
+function raEsc(s){return (s==null?'':''+s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
+function raSegments(){var j=(raState.data&&raState.data.judges)||{byJudge:{},byTier:{}};var segs=[];
+if(raState.group==='tier'){['index','triage'].forEach(function(k){var b=(j.byTier||{})[k]||{};
+segs.push({label:k==='index'?'index (captioner+archiver)':'triage (planner/grouper/closer/distiller/courier)',color:TIERCOL[k],in:b.in||0,out:b.out||0,calls:b.calls||0});});}
+else{JORDER.forEach(function(k){var b=(j.byJudge||{})[k];if(b)segs.push({label:k,color:JCOL[k]||'#888',in:b.in||0,out:b.out||0,calls:b.calls||0});});
+Object.keys(j.byJudge||{}).forEach(function(k){if(JORDER.indexOf(k)<0&&k!=='?'){var b=j.byJudge[k];segs.push({label:k,color:'#888',in:b.in||0,out:b.out||0,calls:b.calls||0});}});}
+return segs.filter(function(s){return (s.in+s.out)>0;});}
+function raRender(){
+if(raState.loading){raChart.innerHTML='<div class=ra-empty>loading…</div>';raLegend.innerHTML='';raNote.textContent='';return;}
+var d=raState.data;if(!d){raChart.innerHTML='<div class=ra-empty>no data</div>';return;}
+var sess=d.sessions||{in:0,out:0},sessTot=(sess.in||0)+(sess.out||0);
+var segs=raSegments(),judgeTot=segs.reduce(function(a,s){return a+s.in+s.out;},0);
+var maxV=Math.max(sessTot,judgeTot,1);
+var W=480,H=250,top=24,bot=30,chartH=H-top-bot,baseY=top+chartH,barW=92,cx1=W*0.30,cx2=W*0.70;
+function rect(x,y,w,h,fill,title){return '<rect x="'+x+'" y="'+y+'" width="'+w+'" height="'+Math.max(h,0)+'" fill="'+fill+'" rx="2"><title>'+raEsc(title)+'</title></rect>';}
+var svg='<svg viewBox="0 0 '+W+' '+H+'" width="100%" preserveAspectRatio="xMidYMid meet">';
+svg+='<line x1="6" y1="'+baseY+'" x2="'+(W-6)+'" y2="'+baseY+'" stroke="#3a3a3a"/>';
+var sh=sessTot/maxV*chartH;
+svg+=rect(cx1-barW/2,baseY-sh,barW,sh,'#7d8590','sessions · '+fmtTok(sess.in)+' in / '+fmtTok(sess.out||0)+' out');
+svg+='<text x="'+cx1+'" y="'+(baseY-sh-6)+'" text-anchor="middle" fill="#ddd" font-size="12">'+fmtTok(sessTot)+'</text>';
+svg+='<text x="'+cx1+'" y="'+(baseY+18)+'" text-anchor="middle" fill="#9aa0a6" font-size="12">Sessions</text>';
+var cum=0;segs.forEach(function(s){var st=s.in+s.out,h=st/maxV*chartH,y=baseY-cum-h;cum+=h;
+svg+=rect(cx2-barW/2,y,barW,h,s.color,s.label+' · '+fmtTok(s.in)+' in / '+fmtTok(s.out)+' out · '+s.calls+' calls');});
+svg+='<text x="'+cx2+'" y="'+(baseY-cum-6)+'" text-anchor="middle" fill="#ddd" font-size="12">'+fmtTok(judgeTot)+'</text>';
+svg+='<text x="'+cx2+'" y="'+(baseY+18)+'" text-anchor="middle" fill="#9aa0a6" font-size="12">Judges</text>';
+svg+='</svg>';raChart.innerHTML=svg;
+var lg=segs.map(function(s){return '<span class=ra-li><span class=ra-sw style="background:'+s.color+'"></span>'+raEsc(s.label)+' <b>'+fmtTok(s.in+s.out)+'</b></span>';}).join('');
+raLegend.innerHTML='<span class=ra-li><span class="ra-sw" style="background:#7d8590"></span>sessions <b>'+fmtTok(sessTot)+'</b></span>'+lg;
+var ratio=sessTot?(judgeTot/sessTot*100):0;
+raNote.textContent='last '+raState.periodLabel+' · judges = '+(sessTot?ratio.toFixed(1):'0')+'% of session tokens · combined '+fmtTok(sessTot+judgeTot);}
+function raFetch(){raState.loading=true;raRender();
+fetch('/analytics?window='+raState.window,{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){raState.loading=false;raState.data=d;raRender();}).catch(function(){raState.loading=false;raChart.innerHTML='<div class=ra-empty>analytics unavailable</div>';raLegend.innerHTML='';raNote.textContent='';});}
+if(raOpen)raOpen.onclick=function(e){e.stopPropagation();raBack.hidden=false;p.hidden=true;raFetch();};
+if(raClose)raClose.onclick=function(){raBack.hidden=true;};
+if(raBack)raBack.addEventListener('click',function(e){if(e.target===raBack)raBack.hidden=true;});
+Array.prototype.forEach.call(document.querySelectorAll('.ra-periods button'),function(btn){btn.onclick=function(){raState.window=+btn.getAttribute('data-w');raState.periodLabel=btn.textContent;
+Array.prototype.forEach.call(document.querySelectorAll('.ra-periods button'),function(b){b.className=(b===btn)?'on':'';});raFetch();};});
+Array.prototype.forEach.call(document.querySelectorAll('.ra-group button'),function(btn){btn.onclick=function(){raState.group=btn.getAttribute('data-g');
+Array.prototype.forEach.call(document.querySelectorAll('.ra-group button'),function(b){b.className=(b===btn)?'on':'';});raRender();};});
+document.addEventListener('keydown',function(e){if(e.key==='Escape'&&raBack&&!raBack.hidden)raBack.hidden=true;});
+applyDebug(load());})();"""
 
 
 def _feed_page():
@@ -3335,6 +3444,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(403, "forbidden: " + why, "text/plain")
             if p == "/ws":
                 return self._ws()
+            if p == "/analytics":                             # token-usage analytics (the settings modal's chart)
+                try:
+                    w = int((q.get("window") or ["86400"])[0])
+                except (ValueError, TypeError):
+                    w = 86400
+                w = max(300, min(w, 30 * 86400))              # clamp 5min .. 30d
+                return self._send(200, json.dumps(_token_analytics(int(time.time()), w)),
+                                  "application/json", cache="no-cache")
             # HTML pages are served no-cache so a reload always gets the freshest markup — which carries
             # the latest ?v= bundle url, so even a cached old bundle is bypassed (stale-client fix).
             if p in ("/", ""):

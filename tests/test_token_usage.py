@@ -213,5 +213,48 @@ class AttachRunUsage(unittest.TestCase):
         self.assertEqual((judging[0]["ms"], judging[0]["in"], judging[0]["out"]), (0, 0, 0))
 
 
+class TokenAnalytics(unittest.TestCase):
+    """_token_analytics: ONE arbitrary window (the analytics modal's period picker) → the coding
+    SESSIONS total vs the judge pipeline broken out per judge AND per tier. discover() supplies the
+    session fleet; jd.STATE points at a temp judge-usage.jsonl."""
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory()
+        self.saved_state, self.saved_discover = jd.STATE, jd.discover
+        jd.STATE = pathlib.Path(self.td.name)
+
+    def tearDown(self):
+        jd.STATE, jd.discover = self.saved_state, self.saved_discover
+        self.td.cleanup()
+
+    def test_window_splits_sessions_vs_per_judge_and_tier(self):
+        p1 = pathlib.Path(self.td.name) / "s1.jsonl"
+        p1.write_text(_asst({"input_tokens": 100, "output_tokens": 20}, iso(NOW - 1800)) + "\n" +     # in window
+                      _asst({"input_tokens": 999, "output_tokens": 999}, iso(NOW - 99999)) + "\n")     # outside → dropped
+        p2 = pathlib.Path(self.td.name) / "s2.jsonl"
+        p2.write_text(_asst({"input_tokens": 30, "output_tokens": 8}, iso(NOW - 600)) + "\n")
+        jd.discover = lambda now: [("fs1", p1, "a1", "s1"), ("fs2", p2, "a2", "s2")]
+        (jd.STATE / "judge-usage.jsonl").write_text("\n".join(json.dumps(r) for r in [
+            {"t": NOW - 900, "judge": "captioner", "tier": "index", "in": 10, "out": 4, "cost": 0.01, "ms": 50},
+            {"t": NOW - 800, "judge": "archiver", "tier": "index", "in": 6, "out": 2, "cost": 0.01, "ms": 40},
+            {"t": NOW - 700, "judge": "planner", "tier": "triage", "in": 70, "out": 30, "cost": 0.2, "ms": 300},
+            {"t": NOW - 50000, "judge": "planner", "tier": "triage", "in": 999, "out": 999, "cost": 9, "ms": 9},  # >1h → dropped
+        ]) + "\n")
+        a = km._token_analytics(NOW, 3600)
+        self.assertEqual(a["window"], 3600)
+        self.assertEqual(a["sessions"], {"in": 130, "out": 28}, "both sessions summed, windowed")
+        self.assertEqual(a["judges"]["total"]["in"], 86, "10+6+70; the >1h planner call dropped")
+        self.assertEqual(set(a["judges"]["byJudge"]), {"captioner", "archiver", "planner"})
+        self.assertEqual(a["judges"]["byJudge"]["planner"]["out"], 30)
+        self.assertEqual(a["judges"]["byTier"]["index"]["in"], 16, "captioner+archiver share the index tier")
+        self.assertEqual(a["judges"]["byTier"]["triage"]["in"], 70)
+
+    def test_empty_fleet_and_no_log_is_zero_but_shaped(self):
+        jd.discover = lambda now: []
+        a = km._token_analytics(NOW, 86400)
+        self.assertEqual(a["sessions"], {"in": 0, "out": 0})
+        self.assertEqual(a["judges"]["total"]["calls"], 0)
+        self.assertEqual(a["judges"]["byJudge"], {})
+
+
 if __name__ == "__main__":
     unittest.main()
