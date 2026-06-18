@@ -66,7 +66,7 @@ interface AskItem {
   text: string; t: number; created: number; live: boolean;
   done: number; needsYou: number; linked: AskLinked[]; turnId: string;
   trgb: [number, number, number];
-  column: "asks" | "needs_input" | "completed";   // host-decided (DAG path accounting), not newest-link
+  column: "working" | "needs_input" | "completed";   // RAW kernel value (build_feed): working/needs_input/completed. askColumn() maps it to the local Column. NOT "asks" — that was a stale lie that silently broke `it.column === "asks"` checks.
   openQuestions: AskQuestion[];                    // live unanswered DECISIONs → decision sub-cards
   openPaths: AskPath[];                            // open leaves → "waiting on X" drop-point lines
   reopened?: boolean;                              // resurrected: a question arrived AFTER the user cleared it
@@ -1290,7 +1290,7 @@ function renderModal() {
     // follow-up on a group goes to the session that took the typed prompt — one
     // message prefixed with the GROUP title, filed under the first member's ask
     wireFollowUp(fupEl, fuboxEl, fuinEl, fusendEl, (txt) => postFollowUp(txt, grp.members[0].itemId, grp.title));
-    wireCheckStatus(grp.members.some((m) => m.column === "asks"), grp.members[0].itemId, grp.title);   // a working group
+    wireCheckStatus(grp.members.some((m) => m.column === "working"), grp.members[0].itemId, grp.title);   // a working group
     renderGroupModalBody(body, grp.members);
   } else if (it) {
     // The top-level goal IS the modal: render it as the ROOT of the tree list (not a separate header
@@ -1307,7 +1307,7 @@ function renderModal() {
     // follow-up works in ANY state (the user 2026-06-10) — asks, awaiting, or completed;
     // toggling the button reveals the composer.
     wireFollowUp(fupEl, fuboxEl, fuinEl, fusendEl, (txt) => postFollowUp(txt, it.itemId));
-    wireCheckStatus(it.column === "asks", it.itemId);   // "Check status" only for a WORKING card
+    wireCheckStatus(it.column === "working", it.itemId);   // "Check status" only for a WORKING card
     renderTreeBody(body, it, false);   // root goal IS the first list line; sub-goals render beneath it
   } else if (fitem) {
     ttlEl.textContent = fitem.did;

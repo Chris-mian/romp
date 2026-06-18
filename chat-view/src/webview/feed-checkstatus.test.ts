@@ -20,8 +20,9 @@ test("Check status reuses the follow-up path with the canned status question", (
 });
 
 test("Check status shows ONLY for a working card (it.column === 'asks') / a working group", () => {
-  assert.match(FEED, /wireCheckStatus\(it\.column === "asks", it\.itemId\)/);
-  assert.match(FEED, /wireCheckStatus\(grp\.members\.some\(\(m\) => m\.column === "asks"\), grp\.members\[0\]\.itemId, grp\.title\)/);
+  // gated on the RAW kernel column value "working" (NOT "asks" — that mismatch silently hid the button)
+  assert.match(FEED, /wireCheckStatus\(it\.column === "working", it\.itemId\)/);
+  assert.match(FEED, /wireCheckStatus\(grp\.members\.some\(\(m\) => m\.column === "working"\), grp\.members\[0\]\.itemId, grp\.title\)/);
   // hidden + unwired by default each render, so a non-working modal never shows a stale button
   assert.match(FEED, /if \(chkEl\) \{ chkEl\.style\.display = "none"; chkEl\.onclick = null; \}/);
 });
