@@ -2072,7 +2072,13 @@ def _derive_judging(sid, caps, goals, t0, out):
         elif n.get("blocked") and n.get("blockWhy") and mt >= t0:
             out.append({"judge": "planner", "sid": sid, "t": mt, "kind": "block",
                         "text": n.get("blockWhy") or text})
-        if n.get("distilledMt") and n["distilledMt"] >= t0:   # distiller — key takeaway on a completed top goal
+        # distiller — key takeaway on a completed top goal. Like EVERY mark here, t is the underlying
+        # WORK's time (distilledMt == the goal's completion mt), NOT when the judge ran. So introducing a
+        # judge back-dates its first sweep over the already-completed backlog to those goals' completion
+        # days — distiller activity can appear on days before the distiller existed (a one-time artifact,
+        # the user 2026-06-17; expected, not a bug — the band shows judge OUTPUT aligned to the work, not a
+        # process log). Going forward a goal distills within seconds, so distilledMt ≈ now.
+        if n.get("distilledMt") and n["distilledMt"] >= t0:
             out.append({"judge": "distiller", "sid": sid, "t": n["distilledMt"], "kind": "distill",
                         "text": n.get("summary") or text})
     try:                                                      # archiver — the headline/abstract refresh
