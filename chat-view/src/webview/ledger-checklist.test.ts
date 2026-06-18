@@ -232,8 +232,8 @@ test("collapsed ledger shows the CURRENT top-level goal; expanded shows the titl
   assert.match(RENDER, /const curTop = roots0\.find\(\(r\) => r\.current \|\| r\.onpath\)/);
   // collapsed line = that goal's text; expanded keeps the archiver title (with the tree below)
   assert.match(RENDER, /sum\.textContent = \(ledgerCollapsed && curTop\) \? curTop\.text : titleText;/);
-  // the early return still bails after the head in collapsed mode (no tree)
-  assert.match(RENDER, /if \(ledgerCollapsed\) return;/);
+  // collapsed mode still bails after the head (no tree) — now a block that also fires the reverse morph
+  assert.match(RENDER, /if \(ledgerCollapsed\) \{[\s\S]*?return;   \/\/ collapsed/);
 });
 
 test("expanding PINS the current top goal to the top of the tree + marks it, so it doesn't jump down (the user 2026-06-18)", () => {
@@ -265,4 +265,16 @@ test("expanding MORPHS the collapsed goal text into its pinned row (FLIP), then 
   // the rest fades in the INSTANT the text lands — delay (0.45s) == the glide duration, no extra pause
   assert.match(RENDER, /e\.style\.transition = "opacity 0\.2s ease 0\.45s";/);
   assert.match(RENDER, /prefers-reduced-motion: reduce/);
+});
+
+test("the morph hides the curTop row's OWN checkbox/time too (only the text moves), + reverses on collapse (the user 2026-06-18)", () => {
+  // #1: the curTop row's non-text children (mark / time / caret) are hidden with the rest, so nothing but
+  // the text moves until it lands
+  assert.match(RENDER, /Array\.from\(row\.children\)\.forEach\(\(c\) => \{ if \(c !== curText\) fade\.push\(c as HTMLElement\); \}\);/);
+  // #2: a reverse morph on collapse — the toggle captures FROM both ways; the collapsed branch glides the
+  // compact summary up from the row's old spot
+  assert.match(RENDER, /\? document\.getElementById\("ledger"\)\?\.querySelector\(".ledger-summary"\)/);
+  assert.match(RENDER, /: document\.getElementById\("ledger"\)\?\.querySelector\(".ledger-tnode.ledger-curtop .ledger-ttext"\)/);
+  assert.match(RENDER, /function morphLedgerCollapse\(sumEl: HTMLElement, from:/);
+  assert.match(RENDER, /if \(ledgerMorphFrom && curTop\) morphLedgerCollapse\(sum, ledgerMorphFrom\);/);
 });

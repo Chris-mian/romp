@@ -2206,17 +2206,19 @@ try { ledgerCollapsed = !!((vscodeApi && vscodeApi.getState && vscodeApi.getStat
 // (ids are session-scoped, so the sets are safe to keep global across session switches).
 const ledgerFolded = new Set<string>();    // explicitly folded by the user (overrides a default-open)
 const ledgerExpanded = new Set<string>();  // explicitly expanded by the user (overrides a default-fold)
-// One-shot FLIP source (the user 2026-06-18): on EXPAND, capture the collapsed goal-text's on-screen
-// position so the next renderLedger can MORPH it into its pinned row, then fade the rest in around it.
+// One-shot FLIP source (the user 2026-06-18): capture WHERE the goal text sits now, so the next render can
+// MORPH the destination element from this spot — BOTH ways: expanding glides the collapsed line into its
+// pinned row (then the rest fades in); collapsing glides the row text back up into the compact line.
 // Consumed (cleared) by that render; a routine data-update leaves it null, so it never re-animates.
 let ledgerMorphFrom: { left: number; top: number } | null = null;
 function toggleLedgerCollapsed() {
   const expanding = ledgerCollapsed;   // currently collapsed → this click EXPANDS
   ledgerMorphFrom = null;
-  if (expanding) {
-    const s = document.getElementById("ledger")?.querySelector(".ledger-summary") as HTMLElement | null;
-    if (s && s.getBoundingClientRect) { const r = s.getBoundingClientRect(); ledgerMorphFrom = { left: r.left, top: r.top }; }
-  }
+  // FROM = wherever the goal text lives RIGHT NOW: collapsed → the summary line; expanded → the curTop row's text.
+  const fromEl = (expanding
+    ? document.getElementById("ledger")?.querySelector(".ledger-summary")
+    : document.getElementById("ledger")?.querySelector(".ledger-tnode.ledger-curtop .ledger-ttext")) as HTMLElement | null;
+  if (fromEl && fromEl.getBoundingClientRect) { const r = fromEl.getBoundingClientRect(); ledgerMorphFrom = { left: r.left, top: r.top }; }
   ledgerCollapsed = !ledgerCollapsed;
   try { if (vscodeApi && vscodeApi.setState) vscodeApi.setState({ ...(vscodeApi.getState() || {}), ledgerCollapsed }); } catch { /* ignore */ }
   renderLedger();
@@ -2235,11 +2237,16 @@ function morphLedgerExpand(host: HTMLElement, wrap: HTMLElement, from: { left: n
   const to = curText.getBoundingClientRect();
   const dx = from.left - to.left, dy = from.top - to.top;
   if (!dx && !dy) return;
-  // hide everything EXCEPT the curTop row (whose text glides in); they fade in only AFTER the morph lands
+  // hide EVERYTHING except the gliding text — including the curTop row's OWN checkbox / time / caret, so
+  // nothing but the text moves until it's home; it ALL fades in only after the morph lands (the user 2026-06-18).
   const fade: HTMLElement[] = [];
   const sumEl = host.querySelector(".ledger-summary") as HTMLElement | null;
   if (sumEl) fade.push(sumEl);
-  wrap.querySelectorAll(".ledger-tnode").forEach((r) => { if (r !== curRow) fade.push(r as HTMLElement); });
+  wrap.querySelectorAll(".ledger-tnode").forEach((r) => {
+    const row = r as HTMLElement;
+    if (row !== curRow) { fade.push(row); return; }
+    Array.from(row.children).forEach((c) => { if (c !== curText) fade.push(c as HTMLElement); });   // curRow's mark/time/caret
+  });
   fade.forEach((e) => { e.style.opacity = "0"; });
   // The text glides UP to the collapsed line (which sits ABOVE the tree), so the tree's own scroll-clip
   // would hide it mid-flight — that was the "it disappears right after you click" bug. Let it overflow
@@ -2262,6 +2269,25 @@ function morphLedgerExpand(host: HTMLElement, wrap: HTMLElement, from: { left: n
     for (const p of ["transition", "transform", "transformOrigin", "position", "zIndex"]) (curText.style as any)[p] = "";
     fade.forEach((e) => { e.style.transition = ""; e.style.opacity = ""; });
   }, 800);
+}
+
+// Reverse of the above (the user 2026-06-18): on COLLAPSE the tree is gone, so just GLIDE the now-compact
+// summary line UP from where the curTop row's text sat in the expanded tree — the goal text "collects back"
+// into the collapsed line. The summary lives in the head (not the scroll-clipped tree), so no overflow tweak.
+function morphLedgerCollapse(sumEl: HTMLElement, from: { left: number; top: number }) {
+  if (typeof requestAnimationFrame !== "function") return;
+  try { if (typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches) return; } catch { /* ignore */ }
+  if (!sumEl.getBoundingClientRect) return;
+  const to = sumEl.getBoundingClientRect();
+  const dx = from.left - to.left, dy = from.top - to.top;
+  if (!dx && !dy) return;
+  sumEl.style.transition = "none";
+  sumEl.style.transformOrigin = "left top";
+  sumEl.style.transform = `translate(${dx}px, ${dy}px)`;
+  void sumEl.offsetWidth;
+  sumEl.style.transition = "transform 0.42s cubic-bezier(0.22, 0.61, 0.36, 1)";
+  sumEl.style.transform = "translate(0px, 0px)";
+  setTimeout(() => { for (const p of ["transition", "transform", "transformOrigin"]) (sumEl.style as any)[p] = ""; }, 600);
 }
 
 // (Relevance categorization — colored labels + filter checkboxes — was removed
@@ -2329,7 +2355,12 @@ function renderLedger() {
   head.title = ledgerCollapsed ? "Show the full goal tree" : "Collapse to the current goal";
   head.addEventListener("click", toggleLedgerCollapsed);
   host.appendChild(head);
-  if (ledgerCollapsed) return;   // collapsed → just the current top-level goal line (above)
+  if (ledgerCollapsed) {
+    // reverse morph: glide the compact line up from where the curTop row sat (a pending COLLAPSE toggle)
+    if (ledgerMorphFrom && curTop) morphLedgerCollapse(sum, ledgerMorphFrom);
+    ledgerMorphFrom = null;
+    return;   // collapsed → just the current top-level goal line (above)
+  }
 
   if (tree.length) {
     // --- the goal-graph overview tree: a COLLAPSIBLE checklist (the user 2026-06-16). Toggle arrows at
