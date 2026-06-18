@@ -2248,27 +2248,29 @@ function morphLedgerExpand(host: HTMLElement, wrap: HTMLElement, from: { left: n
     Array.from(row.children).forEach((c) => { if (c !== curText) fade.push(c as HTMLElement); });   // curRow's mark/time/caret
   });
   fade.forEach((e) => { e.style.opacity = "0"; });
-  // The text glides UP to the collapsed line (which sits ABOVE the tree), so the tree's own scroll-clip
-  // would hide it mid-flight — that was the "it disappears right after you click" bug. Let it overflow
-  // while the morph runs, then restore (the user 2026-06-18).
-  const prevOverflow = wrap.style.overflow;
-  wrap.style.overflow = "visible";
-  // INVERT: drop the text back onto the collapsed line's position
-  curText.style.transition = "none";
-  curText.style.transformOrigin = "left top";
-  curText.style.transform = `translate(${dx}px, ${dy}px)`;
-  curText.style.position = "relative"; curText.style.zIndex = "3";
-  void curText.offsetWidth;   // commit the FROM transform before transitioning
-  // PLAY: glide to its real slot; the rest fades in the INSTANT it lands — no extra pause (the user
-  // 2026-06-18): the fade's delay equals the glide duration, so it starts exactly as the text arrives.
-  curText.style.transition = "transform 0.45s cubic-bezier(0.22, 0.61, 0.36, 1)";
-  curText.style.transform = "translate(0px, 0px)";
+  // The collapsed line sits ABOVE the scroll-clipped tree, so animating the real text would either get
+  // clipped mid-flight OR (if we un-clip the tree) flash the whole uncropped list — the bug the user hit.
+  // Instead glide a CLONE in a non-clipped fixed layer; the real text stays hidden in its (still-cropped)
+  // row and is revealed the instant the clone lands (the user 2026-06-18).
+  const clone = curText.cloneNode(true) as HTMLElement;
+  let cs: CSSStyleDeclaration | null = null;
+  try { cs = (typeof getComputedStyle === "function") ? getComputedStyle(curText) : null; } catch { /* ignore */ }
+  clone.style.cssText = "";
+  clone.style.position = "fixed"; clone.style.left = to.left + "px"; clone.style.top = to.top + "px";
+  clone.style.width = to.width + "px"; clone.style.margin = "0"; clone.style.zIndex = "9999"; clone.style.pointerEvents = "none";
+  if (cs) { clone.style.font = cs.font; clone.style.color = cs.color; clone.style.fontWeight = cs.fontWeight; clone.style.letterSpacing = cs.letterSpacing; }
+  clone.style.transformOrigin = "left top";
+  clone.style.transition = "none";
+  clone.style.transform = `translate(${dx}px, ${dy}px)`;   // INVERT: start at the collapsed line's spot
+  document.body.appendChild(clone);   // body = never scroll-clipped
+  curText.style.opacity = "0";        // hide the real text while the clone flies
+  void clone.offsetWidth;             // commit the FROM transform
+  // PLAY: glide to the real slot; the rest fades in the INSTANT it lands (delay == glide duration, no pause)
+  clone.style.transition = "transform 0.45s cubic-bezier(0.22, 0.61, 0.36, 1)";
+  clone.style.transform = "translate(0px, 0px)";
   fade.forEach((e) => { e.style.transition = "opacity 0.2s ease 0.45s"; e.style.opacity = ""; });
-  setTimeout(() => {
-    wrap.style.overflow = prevOverflow;
-    for (const p of ["transition", "transform", "transformOrigin", "position", "zIndex"]) (curText.style as any)[p] = "";
-    fade.forEach((e) => { e.style.transition = ""; e.style.opacity = ""; });
-  }, 800);
+  setTimeout(() => { clone.remove(); curText.style.opacity = ""; }, 470);   // swap clone → real text when it lands
+  setTimeout(() => { fade.forEach((e) => { e.style.transition = ""; e.style.opacity = ""; }); }, 720);
 }
 
 // Reverse of the above (the user 2026-06-18): on COLLAPSE the tree is gone, so just GLIDE the now-compact

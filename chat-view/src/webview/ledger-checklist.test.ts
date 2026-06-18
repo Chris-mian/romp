@@ -256,12 +256,15 @@ test("expanding MORPHS the collapsed goal text into its pinned row (FLIP), then 
   // and fade the rest in AFTER the morph (0.5s delay = the morph duration); bails on reduced-motion
   assert.match(RENDER, /function morphLedgerExpand\(host: HTMLElement, wrap: HTMLElement, from:/);
   assert.match(RENDER, /const curText = curRow\?\.querySelector\(".ledger-ttext"\)/);
-  assert.match(RENDER, /curText\.style\.transform = `translate\(\$\{dx\}px, \$\{dy\}px\)`;/);
-  assert.match(RENDER, /void curText\.offsetWidth;/);
-  assert.match(RENDER, /curText\.style\.transform = "translate\(0px, 0px\)";/);
-  // the text glides above the tree, so the tree must overflow:visible during the morph (else it's clipped)
-  assert.match(RENDER, /wrap\.style\.overflow = "visible";/);
-  assert.match(RENDER, /wrap\.style\.overflow = prevOverflow;/);
+  // a CLONE glides in a non-clipped fixed layer (so the scroll-clipped tree is never flashed uncropped);
+  // the real text is hidden, then revealed when the clone lands
+  assert.match(RENDER, /const clone = curText\.cloneNode\(true\) as HTMLElement;/);
+  assert.match(RENDER, /clone\.style\.position = "fixed";/);
+  assert.match(RENDER, /document\.body\.appendChild\(clone\);/);
+  assert.match(RENDER, /clone\.style\.transform = `translate\(\$\{dx\}px, \$\{dy\}px\)`;/);
+  assert.match(RENDER, /void clone\.offsetWidth;/);
+  assert.match(RENDER, /clone\.style\.transform = "translate\(0px, 0px\)";/);
+  assert.match(RENDER, /clone\.remove\(\); curText\.style\.opacity = "";/);   // swap clone → real text on land
   // the rest fades in the INSTANT the text lands — delay (0.45s) == the glide duration, no extra pause
   assert.match(RENDER, /e\.style\.transition = "opacity 0\.2s ease 0\.45s";/);
   assert.match(RENDER, /prefers-reduced-motion: reduce/);
