@@ -2151,7 +2151,7 @@ def _bind_message_execs(messages, turns):
 JUDGE_CAP_LIMIT = 80   # most-recent caption marks kept per session (the view merges adjacent marks anyway)
 
 
-def _derive_judging(sid, caps, goals, t0, out):
+def _derive_judging(sid, caps, goals, t0, out, seg_ends=None):
     """Append this session's JUDGE-activity marks to `out` — the second-timeline (data.judging) feed,
     read from the real artifacts the summarizer judges write (design/judge.md):
       captioner ← captions/<sid>.jsonl   (one mark per segment/turn unit)
@@ -2161,7 +2161,15 @@ def _derive_judging(sid, caps, goals, t0, out):
     Each mark = {judge, sid, t, kind, text}; the view colours it by the SESSION (sid) being judged.
     A judge runs within seconds of the unit/node, so the unit time is its run time to within the push
     interval. This is the goal tree's FINAL state, not a per-call log, so the planner lane shows its
-    tree edits (not every refiled segment); an exact per-run event log is a later increment."""
+    tree edits (not every refiled segment); an exact per-run event log is a later increment.
+
+    A goal's mt is the COMPLETING segment's START (its prompt/trigger time), so a completion-flavoured
+    mark (done/close/block/distill/brief) plotted at mt lands on the prompt, with the turn's work bar
+    trailing AFTER it — reading as if the judge ran before the work (the user 2026-06-19). `seg_ends`
+    maps each segment's start t → its work-END t; a completion mark resolves through it to land just
+    after the bar, where the work actually finished. CREATION marks (mint/sub) + captions stay at the
+    start — a goal IS born when asked. Absent seg_ends (e.g. unit tests) → the old mt placement."""
+    endt = (lambda tt: seg_ends.get(tt, tt)) if seg_ends else (lambda tt: tt)   # completion → its segment's work-END
     caps_in = sorted((c for c in caps.values() if c.get("t") and c["t"] >= t0), key=lambda c: c["t"])
     for c in caps_in[-JUDGE_CAP_LIMIT:]:
         out.append({"judge": "captioner", "sid": sid, "t": c["t"],
@@ -2182,33 +2190,32 @@ def _derive_judging(sid, caps, goals, t0, out):
             out.append({"judge": "planner", "sid": sid, "t": t,
                         "kind": ("mint" if not n.get("parentId") else "sub"), "text": text})
         if n.get("negComplete") and mt >= t0:                 # closer completed this top at turn-end
-            out.append({"judge": "closer", "sid": sid, "t": mt, "kind": "close",
+            out.append({"judge": "closer", "sid": sid, "t": endt(mt), "kind": "close",
                         "text": n.get("doneWhy") or text})
         elif n.get("negBlock") and mt >= t0:                  # closer BLOCKED this top at turn-end (mirrors negComplete)
-            out.append({"judge": "closer", "sid": sid, "t": mt, "kind": "block",
+            out.append({"judge": "closer", "sid": sid, "t": endt(mt), "kind": "block",
                         "text": n.get("blockWhy") or text})
         elif n.get("nodeComplete") and n.get("doneWhy") and mt >= t0 and not n.get("origin"):
-            out.append({"judge": "planner", "sid": sid, "t": mt, "kind": "done",
+            out.append({"judge": "planner", "sid": sid, "t": endt(mt), "kind": "done",
                         "text": n.get("doneWhy") or text})
         elif n.get("blocked") and n.get("blockWhy") and mt >= t0:
-            out.append({"judge": "planner", "sid": sid, "t": mt, "kind": "block",
+            out.append({"judge": "planner", "sid": sid, "t": endt(mt), "kind": "block",
                         "text": n.get("blockWhy") or text})
-        # distiller — key takeaway on a completed top goal. Like EVERY mark here, t is the underlying
-        # WORK's time (distilledMt == the goal's completion mt), NOT when the judge ran. So introducing a
-        # judge back-dates its first sweep over the already-completed backlog to those goals' completion
-        # days — distiller activity can appear on days before the distiller existed (a one-time artifact,
-        # the user 2026-06-17; expected, not a bug — the band shows judge OUTPUT aligned to the work, not a
-        # process log). Going forward a goal distills within seconds, so distilledMt ≈ now.
+        # distiller — key takeaway on a completed top goal. distilledMt == the goal's completion mt (the
+        # completing segment's START); endt() lands the mark at that segment's work-END, just after the bar.
+        # (The distiller LLM runs a pass later; the mark shows the work it summarizes, aligned to that work's
+        # finish, not the judge's wall-clock run. A first sweep over the backlog still back-dates to old
+        # completions, expected — the user 2026-06-17.)
         if n.get("distilledMt") and n["distilledMt"] >= t0:
-            out.append({"judge": "distiller", "sid": sid, "t": n["distilledMt"], "kind": "distill",
+            out.append({"judge": "distiller", "sid": sid, "t": endt(n["distilledMt"]), "kind": "distill",
                         "text": n.get("summary") or text})
         # block-distiller — the DECISION BRIEF on a BLOCKED top (briefedMt), the done-distiller's twin run
         # in the same pass. Same distiller row, a distinct kind ("brief"). Without this the brief popped up
         # on the card but left NO mark on the timeline, so the distiller row read as dead whenever the
-        # recent work was blocks rather than completions (the user 2026-06-18). Same back-dating note as
-        # above: t is the brief's underlying mt (the block), not when the judge ran.
+        # recent work was blocks rather than completions (the user 2026-06-18). Lands at the block segment's
+        # work-END via endt(), like the other completion marks.
         if n.get("briefedMt") and n["briefedMt"] >= t0:
-            out.append({"judge": "distiller", "sid": sid, "t": n["briefedMt"], "kind": "brief",
+            out.append({"judge": "distiller", "sid": sid, "t": endt(n["briefedMt"]), "kind": "brief",
                         "text": n.get("blockSummary") or text})
     try:                                                      # archiver — the headline/abstract refresh
         arch = json.loads((jd.STATE / "archive" / (sid + ".json")).read_text(errors="replace"))
@@ -2528,7 +2535,7 @@ def build_timeline(now, tmux=None):
         else:                             # dead lane: coarse file-derived (badgeFor hides the badge when !live anyway)
             blocked = "blocked" in goals.get("status", {}).values()
             state = "awaiting" if blocked else ("working" if open_now else "idle")
-        bars, last_t = [], None
+        bars, last_t, seg_ends = [], None, {}            # seg_ends: seg-start t → work-END t (for completion marks)
         for ti, turn in enumerate(st_turns):
             turn_open = (ti == len(st_turns) - 1 and not turn["ended"]
                          and not any(x["type"] == "idle" for x in turn["atoms"])
@@ -2542,6 +2549,7 @@ def build_timeline(now, tmux=None):
                 src = "queued" if isinstance(author, dict) else "typed"
                 seg_end = _clip_to_suspend(seg["t"], seg["end"])   # a bar must not span a host sleep: end it
                 last_t = max(last_t or 0, seg_end)                 # at the suspension (last activity before sleep)
+                seg_ends[seg["t"]] = seg_end                       # a completion mark lands at its segment's END (after the work)
                 bars.append({
                     # promptId = the prompt atom (the DOT), workId = the first work atom (the BAR) — so a
                     # chat message-hover lights only the dot and a work-hover only the bar (dotLit/barLit
@@ -2553,7 +2561,7 @@ def build_timeline(now, tmux=None):
                     "tid": sid, "uuid": seg.get("trigger"),
                     "workUuid": work_uuid, "replyUuid": reply_uuid})
         turns[sid] = bars
-        _derive_judging(sid, caps, goals, now - TL_HORIZON, judging)
+        _derive_judging(sid, caps, goals, now - TL_HORIZON, judging, seg_ends)
         compactions = [{"t": a["t"]} for turn in st_turns for a in turn["atoms"]
                        if a.get("type") == "system" and a.get("subtype") == "compact_boundary" and a.get("t")]
         active = bool(tm and tm["state"] in ("working", "permission", "compacting", "waiting"))

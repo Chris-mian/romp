@@ -98,6 +98,33 @@ class DeriveJudging(unittest.TestCase):
         self.assertEqual(dj[0]["t"], NOW - 70)
         self.assertEqual(dj[0]["text"], "The key takeaway.", "the distiller mark carries the goal's summary")
 
+    def test_completion_marks_land_at_the_work_END_not_the_prompt(self):
+        # A goal's mt is the completing SEGMENT'S START (its prompt/trigger time). A completion-flavoured
+        # mark (done/close/block/distill/brief) must plot at that segment's work-END — passed via seg_ends —
+        # so it sits AFTER the work bar, not on the prompt with the work trailing (the user 2026-06-19).
+        nodes = {"g1": {"id": "g1", "parentId": None, "t": NOW - 300, "text": "Top", "nodeComplete": True,
+                        "doneWhy": "shipped", "mt": NOW - 200, "distilledMt": NOW - 200, "summary": "key"}}
+        seg_ends = {NOW - 200: NOW - 140}                 # completing segment: started at mt, finished 60s later
+        out = []
+        km._derive_judging(SID, {}, {"nodes": nodes}, T0, out, seg_ends)
+        self.assertEqual(next(m for m in out if m["kind"] == "done")["t"], NOW - 140, "done → work-END")
+        self.assertEqual(next(m for m in out if m["kind"] == "distill")["t"], NOW - 140, "distill → work-END")
+
+    def test_creation_marks_and_captions_stay_at_the_prompt(self):
+        # A mint/sub is plotted at the prompt — a goal IS born when asked. Only completion marks move.
+        nodes = {"g1": {"id": "g1", "parentId": None, "t": NOW - 200, "text": "Top"}}
+        caps = {"u1": {"id": "u1", "grain": "segment", "t": NOW - 200, "caption": "cap"}}
+        out = []
+        km._derive_judging(SID, caps, {"nodes": nodes}, T0, out, {NOW - 200: NOW - 140})
+        self.assertEqual(next(m for m in out if m["kind"] == "mint")["t"], NOW - 200, "a mint stays at the prompt")
+        self.assertEqual(next(m for m in out if m["judge"] == "captioner")["t"], NOW - 200, "a caption stays at its segment")
+
+    def test_seg_ends_absent_falls_back_to_mt(self):
+        # No seg_ends (the bare unit-test call) → completion marks keep the old mt placement.
+        nodes = {"g1": {"id": "g1", "parentId": None, "t": NOW - 300, "text": "Top", "nodeComplete": True,
+                        "doneWhy": "x", "mt": NOW - 80}}
+        self.assertEqual(next(m for m in marks({}, nodes) if m["kind"] == "done")["t"], NOW - 80)
+
     def test_block_distiller_keyed_off_briefedMt_with_the_decision_brief(self):
         # The block-distiller's DECISION BRIEF (briefedMt/blockSummary) is the done-distiller's twin for a
         # BLOCKED top — it must ALSO emit a distiller mark (kind 'brief'), else the brief pops up on the
