@@ -1994,9 +1994,17 @@ def _distill_session(fsid, path, now):
     _judge_ctx.fsid = fsid                            # usage logging: attribute this session's judge calls
     store = load_goals(fsid)
     status, nodes = store.get("status", {}), store.get("nodes", {})
+    # Event-gated: (re)distill when the goal (re)completed (distilledMt != mt). ALSO re-enter a completed goal
+    # whose summary is still null even at the current mt — that is the no-work give-up below having stamped
+    # distilledMt without a summary, leaving the card stuck on "(generating…)" forever; reprocessing settles it
+    # to the "" sentinel (or a real summary if work has since appeared). The "" sentinel is NON-null, so a
+    # settled goal never re-enters — this self-heals existing stuck cards without a migration. Same for
+    # blocked/blockSummary.
     todo = [nid for nid, st in status.items() if nodes.get(nid) and (
-            (st == "completed" and nodes[nid].get("distilledMt") != nodes[nid].get("mt")) or
-            (st == "blocked" and nodes[nid].get("briefedMt") != nodes[nid].get("mt")))]
+            (st == "completed" and (nodes[nid].get("distilledMt") != nodes[nid].get("mt")
+                                    or nodes[nid].get("summary") is None)) or
+            (st == "blocked" and (nodes[nid].get("briefedMt") != nodes[nid].get("mt")
+                                  or nodes[nid].get("blockSummary") is None)))]
     if not todo:
         return 0
     session = parsed_session(fsid, [path], now)
@@ -2020,7 +2028,11 @@ def _distill_session(fsid, path, now):
         if blocked:
             blkd = [nodes[x] for x in sub if nodes[x].get("blocked") and nodes[x].get("blockWhy")]
             owed = max(blkd, key=lambda d: d.get("mt", d.get("t", 0)))["blockWhy"] if blkd else ""
-            if not work and not owed:                  # nothing to brief → stamp so we don't retry forever
+            if not work and not owed:                  # nothing to brief → settle: the "" sentinel means
+                # "distilled, no brief" so the card drops its auto-line instead of showing "(generating…)"
+                # forever. Stamp briefedMt so we don't retry; don't clobber a real brief from an earlier block.
+                if nodes[top].get("blockSummary") is None:
+                    nodes[top]["blockSummary"] = ""
                 nodes[top]["briefedMt"] = nodes[top].get("mt"); changed = True
                 continue
             out = brief_llm(nodes[top].get("text", ""), work, owed)
@@ -2031,7 +2043,12 @@ def _distill_session(fsid, path, now):
             nodes[top]["briefedMt"] = nodes[top].get("mt")
             n += 1; changed = True
             continue
-        if not work:                                   # completed but no resolvable work → don't retry forever
+        if not work:                                   # completed but no resolvable work (e.g. an umbrella /
+            # verify top whose work lives on sibling goals) → settle: the "" sentinel means "distilled, no
+            # takeaway" so the card drops its auto-line instead of showing "(generating…)" forever. Stamp
+            # distilledMt so we don't retry; don't clobber a real summary from an earlier completion.
+            if nodes[top].get("summary") is None:
+                nodes[top]["summary"] = ""
             nodes[top]["distilledMt"] = nodes[top].get("mt"); changed = True
             continue
         out = distill_llm(nodes[top].get("text", ""), work)

@@ -31,6 +31,13 @@ test("the auto-line is NOT a deep-link — goNoted and its onclick are gone", ()
 });
 
 test("updateAskCard fills the auto-line with summary-or-(generating…), why as the hover title", () => {
-  assert.match(FEED, /el\.textContent = generating \? "\(generating…\)" : sum!\.trim\(\);/);
+  assert.match(FEED, /el\.textContent = generating \? "\(generating…\)" : text;/);
   assert.match(FEED, /if \(why && why\.trim\(\)\) el\.title = why\.trim\(\);/);
+});
+
+test("the auto-line distinguishes null (generating) from \"\" (distiller settled, no takeaway → hide the line)", () => {
+  // null/undefined summary = the distiller is still running → "(generating…)"; "" = it settled with nothing to
+  // say (an umbrella/verify goal with no work of its own) → no line, never a permanently-stuck placeholder.
+  assert.match(FEED, /if \(sum != null && !text\) \{ el\.style\.display = "none"; el\.removeAttribute\("title"\); return; \}/);
+  assert.match(FEED, /const generating = !text;/);
 });

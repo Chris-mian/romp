@@ -30,11 +30,17 @@ test("done/blocked nodes use the distiller line (summary/blockSummary/'(generati
   // the modal auto-line for a done/blocked node is the distiller text else "(generating…)" — NEVER a
   // doneWhy/blockWhy fallback (the user 2026-06-18); the planner's reason demotes to the line's hover title;
   // the visible "why" line now renders for OPEN nodes only.
-  assert.match(FEED, /if \(node\.status === "done" \|\| node\.status === "question"\) \{/);
+  assert.match(FEED, /if \(\(node\.status === "done" \|\| node\.status === "question"\) && distillText !== ""\) \{/);
   assert.match(FEED, /stext\.textContent = distillText \|\| "\(generating…\)"/);
   assert.match(FEED, /if \(reasonTip\) sum\.title = reasonTip/);
   assert.match(FEED, /if \(node\.status === "open" && node\.why\) \{/);
   assert.match(CSS, /\.ftree-summary\.generating \{/);
+});
+
+test("a settled-empty distiller field (\"\") suppresses the modal summary line — not a stuck \"(generating…)\"", () => {
+  // "" = the distiller ran and had no takeaway (an umbrella/verify goal with no work of its own); the modal
+  // shows NO summary line for it, only null/undefined keeps the "(generating…)" placeholder.
+  assert.match(FEED, /&& distillText !== ""\) \{/);
 });
 
 test("the card ALSO uses the distiller summary now — as its one auto-line (the human reversed this 2026-06-18)", () => {

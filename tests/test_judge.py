@@ -2017,6 +2017,46 @@ class Distiller(unittest.TestCase):
         self.assertEqual(jd.run_distill(now=now), 1, "mt advanced (re-completed) -> re-distill")
         self.assertEqual(jd.load_goals(SID)["nodes"][gid]["summary"], "fresh")
 
+    def test_completed_top_with_no_work_settles_to_empty_sentinel_not_stuck_generating(self):
+        # An umbrella/verify top whose work lives on SIBLING goals has an empty trail (and no children with
+        # trails) → no resolvable work to distill. The distiller must SETTLE it: stamp distilledMt AND write the
+        # "" sentinel ("distilled, no takeaway"), so the card drops its auto-line instead of showing
+        # "(generating…)" forever. A null summary is NEVER left behind on a settled goal.
+        records = [uline(T0, "x", "u1", ps="typed"), aline(T0 + 10, "did x", "a1", "u1", stop="end_turn")]
+        path = self._setup(records)
+        now = T0 + 5000
+        gid = SID + ":g1"
+        jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "status": {gid: "completed"}, "placements": {},
+                            "nodes": {gid: {"id": gid, "text": "Build and verify the feature", "parentId": None,
+                                            "nodeComplete": True, "blocked": False, "cleared": False,
+                                            "trail": [], "t": T0, "mt": T0 + 10}}})   # empty trail → no work
+        jd.distill_llm = lambda g, w: (_ for _ in ()).throw(AssertionError("no work → distill_llm must not run"))
+        jd.run_distill(now=now)
+        nd = jd.load_goals(SID)["nodes"][gid]
+        self.assertEqual(nd["summary"], "", "no-work top settles to the \"\" sentinel, not a null/'(generating…)'")
+        self.assertEqual(nd["distilledMt"], T0 + 10, "stamped so it doesn't retry forever")
+
+    def test_already_stuck_null_summary_self_heals_on_the_next_pass(self):
+        # A goal stamped distilledMt == mt but with summary STILL None is the pre-fix stuck state (the no-work
+        # give-up used to leave summary null). The gate re-enters such a goal so it self-heals to the "" sentinel
+        # WITHOUT a migration; once settled ("" is non-null) it is never reprocessed again.
+        records = [uline(T0, "x", "u1", ps="typed"), aline(T0 + 10, "did x", "a1", "u1", stop="end_turn")]
+        path = self._setup(records)
+        now = T0 + 5000
+        gid = SID + ":g1"
+        jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "status": {gid: "completed"}, "placements": {},
+                            "nodes": {gid: {"id": gid, "text": "Umbrella goal", "parentId": None,
+                                            "nodeComplete": True, "blocked": False, "cleared": False,
+                                            "trail": [], "t": T0, "mt": T0 + 10,
+                                            "distilledMt": T0 + 10, "summary": None}}})   # stamped but null
+        jd.distill_llm = lambda g, w: "should-not-run"
+        jd.run_distill(now=now)
+        self.assertEqual(jd.load_goals(SID)["nodes"][gid]["summary"], "", "stuck null summary heals to \"\"")
+        calls = []
+        jd.distill_llm = lambda g, w: (calls.append(1), "x")[1]
+        jd.run_distill(now=now)
+        self.assertEqual(calls, [], "once settled to \"\" (non-null), the goal is not reprocessed")
+
     def test_prompt_asks_for_a_brief_high_level_takeaway(self):
         # the user 2026-06-19 (JLD rework): the distiller targets high-level understanding written for a
         # human and kept short — it drops low-level specifics, the old all-caps shouting, and the fixed

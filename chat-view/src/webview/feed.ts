@@ -614,9 +614,14 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   // Blocked card → blockSummary (title = blockWhy); completed card → summary (title = doneWhy). Plain text.
   const setAutoLine = (el: HTMLElement, sum: string | null | undefined, why: string | undefined, show: boolean) => {
     if (!show) { el.style.display = "none"; el.removeAttribute("title"); return; }
+    const text = (sum ?? "").trim();
+    // Three states, keyed on the distiller's field: null/undefined = still generating → the dim placeholder;
+    // "" = the distiller SETTLED with no takeaway (e.g. an umbrella/verify goal with no work of its own) →
+    // no line at all, never a stuck "(generating…)"; a real string = the takeaway. (kernel/distiller "" sentinel.)
+    if (sum != null && !text) { el.style.display = "none"; el.removeAttribute("title"); return; }
     el.style.display = "";
-    const generating = !(sum && sum.trim());
-    el.textContent = generating ? "(generating…)" : sum!.trim();
+    const generating = !text;
+    el.textContent = generating ? "(generating…)" : text;
     el.style.fontStyle = generating ? "italic" : "normal";   // the placeholder is dim italic; a real summary reads plainly
     el.style.opacity = generating ? ".5" : ".82";
     if (why && why.trim()) el.title = why.trim(); else el.removeAttribute("title");
@@ -1094,7 +1099,9 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
   // summary has no single chat location). pre-wrap keeps an artifact intact across lines.
   const distillText = node.status === "done" ? node.summary : node.status === "question" ? node.blockSummary : undefined;
   const reasonTip = node.status === "done" ? node.doneWhy : node.status === "question" ? node.blockWhy : undefined;
-  if (node.status === "done" || node.status === "question") {
+  // null/undefined = the distiller is still running → the "(generating…)" placeholder; "" = it SETTLED with no
+  // takeaway (an umbrella/verify goal with no work of its own) → no summary line at all, never a stuck placeholder.
+  if ((node.status === "done" || node.status === "question") && distillText !== "") {
     const sum = el("div", "ftree-summary" + (distillText ? "" : " generating"));
     sum.style.paddingLeft = (depth * TREE_INDENT_EM + 1.6) + "em";   // align under the node text (past the tri + mark)
     const stext = el("span", "ftree-summary-text"); stext.textContent = distillText || "(generating…)"; sum.appendChild(stext);
