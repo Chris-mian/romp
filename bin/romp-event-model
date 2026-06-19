@@ -43,6 +43,11 @@ END_STOPS = ("end_turn", "stop_sequence")
 # hook produces that). The sender rompUuid is resolved from timeline/messages.jsonl
 # by joining this id (the on-disk marker carries the id but not the sender).
 POSTAL_RE = re.compile(r"romp-msg-id:\s*(\S+)")
+# romp's marker on a message IT injected straight into a pane (a feed nudge / follow-up — NOT a peer
+# message). It means "render this as a romp-injected system message" (the gray bubble), distinct from a
+# human prompt or a peer's postal message. romp-goal-id rides every feed follow-up; romp-injected is the
+# generic form for any future romp injection (the user 2026-06-19).
+ROMP_INJECT_RE = re.compile(r"romp-(?:injected|goal-id)\b")
 # Claude Code's slash-command transcript wrappers (`/model`, `/effort`, …). They are
 # user lines with NO promptSource and isMeta unset, so the absent->human default would
 # otherwise mint a spurious human turn for every slash command. They are harness echoes,
@@ -129,7 +134,7 @@ def _norm_message(message):
 # typed/queued/absorbed/decision/postal enum encoded is derived from position
 # (opener vs mid-turn) and content, not stored here.
 def author_of(blocks, prompt_source, postal_index):
-    """human | sdk | system | {"peer": <rompUuid|None>} | None.
+    """human | romp | sdk | system | {"peer": <rompUuid|None>} | None.
 
     Order matters: the postal marker wins over promptSource (a delivered message can
     arrive with any promptSource). A tool_result-only user atom has no author."""
@@ -143,6 +148,8 @@ def author_of(blocks, prompt_source, postal_index):
                 if peer:
                     break
             return {"peer": peer}
+        if ROMP_INJECT_RE.search(text):           # romp pasted this into the pane (a feed nudge) → system, not human
+            return "romp"
     if prompt_source == "sdk":
         return "sdk"
     if prompt_source == "system":

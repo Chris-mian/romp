@@ -2180,5 +2180,34 @@ class JudgeEnv(unittest.TestCase):
         self.assertNotIn("TMUX", env)
 
 
+class GistLlm(unittest.TestCase):
+    """gist_llm: the captioner's present-focused sibling for an in-progress prompt (the feed's
+    'Analyzing: …' placeholder). The model call is stubbed; this pins the prompt/model + cleanup."""
+
+    def setUp(self):
+        self.saved = jd._judge_run
+
+    def tearDown(self):
+        jd._judge_run = self.saved
+
+    def test_uses_index_model_and_gist_sys_and_cleans_the_phrase(self):
+        seen = {}
+
+        def fake(model, sys_prompt, user, effort=None, judge=None):
+            seen.update(model=model, sys=sys_prompt, user=user, judge=judge)
+            return "  a dark-mode toggle for settings.  "       # stray padding + trailing dot
+        jd._judge_run = fake
+        out = jd.gist_llm("please add a dark mode toggle to the settings page")
+        self.assertEqual(out, "a dark-mode toggle for settings", "normalized: trimmed, trailing dot dropped")
+        self.assertEqual(seen["model"], jd.INDEX_MODEL, "the cheap INDEX tier (Haiku)")
+        self.assertIs(seen["sys"], jd.GIST_SYS)
+        self.assertEqual(seen["judge"], "gist")
+        self.assertIn("please add a dark mode toggle", seen["user"], "the prompt rides in the <prompt> tags")
+
+    def test_empty_model_reply_is_empty_string(self):
+        jd._judge_run = lambda *a, **k: ""
+        self.assertEqual(jd.gist_llm("whatever"), "")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -8,6 +8,7 @@ import json
 import os
 import re
 import tempfile
+import time
 import unittest
 from datetime import datetime, timezone
 from importlib.machinery import SourceFileLoader
@@ -79,7 +80,7 @@ class ViewBuilder(unittest.TestCase):
                                       # sleep dated after the synthetic NOW spuriously clips open turns.
         self.td = tempfile.TemporaryDirectory()
         td = Path(self.td.name)
-        cdir = td / "launchdir"; cdir.mkdir()
+        cdir = td / "launchdir"; cdir.mkdir(); self.cdir = cdir
         proj = td / "projects"
         pdir = proj / jd.re.sub(r"[/.]", "-", os.path.realpath(str(cdir)))
         pdir.mkdir(parents=True)
@@ -92,7 +93,17 @@ class ViewBuilder(unittest.TestCase):
         names = td / "names"; names.mkdir()
         (names / SID).write_text("testsess\t%s\t#abcdef\n" % str(cdir))
         self.saved = (jd.NAMES, jd.PROJECTS, jd.CAPDIR, jd.ARCHDIR, jd.GOALDIR, jd.STATE,
-                      km.NAMES, km._tmux_sessions)
+                      km.NAMES, km._tmux_sessions, km._GLOBAL_CLAUDE_MD, jd.gist_llm)
+        # the provisional card fetches a Haiku gist; stub it so NO test fires a real LLM subprocess. Default
+        # returns "" (→ the card falls back to the raw prompt); the gist-specific tests override it.
+        jd.gist_llm = lambda p: ""
+        km._gist_cache.clear(); km._gist_inflight.clear()
+        km._autonudge_cache.clear()
+        # sandbox the system-card's global CLAUDE.md to a nonexistent temp path so a real ~/.claude/CLAUDE.md
+        # on the dev machine can't leak a "system context" card into these fixtures (the synthetic transcript
+        # carries no cwd/model/branch either, so no card is emitted — system-card behavior is tested in
+        # test_kernel_sysmeta.py against explicit synthetic records).
+        km._GLOBAL_CLAUDE_MD = td / "no-global-claude.md"
         jd.NAMES, jd.PROJECTS = names, proj
         jd.CAPDIR, jd.ARCHDIR, jd.GOALDIR = td / "captions", td / "archive", td / "goals"
         jd.STATE = td                                  # sandbox the timeline helpers (usage/states/mail)
@@ -120,9 +131,19 @@ class ViewBuilder(unittest.TestCase):
             "placements": {}, "status": {g1: "completed", g2: "blocked"}}))
 
     def tearDown(self):
+        self._drain_gist()   # let any in-flight gist worker finish on the STUB before we restore the real gist_llm
         (jd.NAMES, jd.PROJECTS, jd.CAPDIR, jd.ARCHDIR, jd.GOALDIR, jd.STATE,
-         km.NAMES, km._tmux_sessions) = self.saved
+         km.NAMES, km._tmux_sessions, km._GLOBAL_CLAUDE_MD, jd.gist_llm) = self.saved
         self.td.cleanup()
+
+    def _drain_gist(self, timeout=3.0):
+        # wait for the background gist worker(s) to finish so the cache is settled before re-building
+        end = time.time() + timeout
+        while time.time() < end:
+            with km._gist_lock:
+                if not km._gist_inflight:
+                    return
+            time.sleep(0.01)
 
     def test_parse_cache_hits_until_the_file_changes(self):
         """The build hot path parses via _parse, cached by the transcript's (mtime,size): an unchanged
@@ -169,6 +190,22 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(u["md"], "fix the feed flicker")
         self.assertTrue(u["human"])
 
+    def test_romp_injected_nudge_is_flagged_romp_not_human(self):
+        # A feed nudge romp pastes into the pane carries the romp marker → build_session flags it ev.romp
+        # (and NOT human), so the chat draws the gray romp bubble, not the blue user bubble (the user 2026-06-19).
+        nudge = ("> the goal\n\nWhat is the status of the above goal?\n\n"
+                 "<!-- romp-injected --><!-- romp-goal-id: %s:g1 -->" % SID)
+        recs = [uline(T0, "real prompt", "u1", ps="typed"),
+                aline(T0 + 10, "ok", "a1", "u1", stop="end_turn"),
+                uline(T0 + 100, nudge, "u2", "a1", ps="typed")]
+        self.tpath.write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+        km._parse_cache.clear()
+        users = [e for e in km.build_session(SID, NOW)["events"] if e["kind"] == "user"]
+        self.assertTrue(users[0]["human"], "the real typed prompt stays human (blue)")
+        self.assertFalse(users[0].get("romp"))
+        self.assertTrue(users[-1].get("romp"), "the injected nudge is flagged romp (gray)")
+        self.assertFalse(users[-1].get("human"), "a romp injection is not a human prompt")
+
     def test_tool_event_pairs_output_and_diff(self):
         m = km.build_session(SID, NOW)
         tool = next(e for e in m["events"] if e["kind"] == "tool")
@@ -176,6 +213,63 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(tool["output"], "edited", "the matching tool_result fills the tool event's output")
         self.assertIn("- a", tool["diff"]); self.assertIn("+ b", tool["diff"])
         self.assertEqual(tool["file"], "/x/y.py")
+
+    def test_system_context_card_is_prepended_with_meta_and_claudemd(self):
+        """build_session pins ONE collapsed "system context" event at index 0: the session's
+        model/cwd/branch/permission-mode/version (scraped from raw transcript records) + the CLAUDE.md
+        files in effect (global, then the project chain). The conversational events follow it in order."""
+        (self.cdir / ".git").mkdir()                               # cwd is its own git root → chain = [cwd]
+        (self.cdir / "CLAUDE.md").write_text("# project rules for the test\n")
+        glob = Path(self.td.name) / "global-claude.md"; glob.write_text("# global rules\n")
+        km._GLOBAL_CLAUDE_MD = glob
+        cwd = str(self.cdir)
+        recs = [
+            {"type": "user", "cwd": cwd, "gitBranch": "main", "version": "9.9.9", "permissionMode": "acceptEdits",
+             "timestamp": iso(T0), "uuid": "u1", "parentUuid": None, "promptSource": "typed",
+             "message": {"role": "user", "content": "do the thing"}},
+            {"type": "assistant", "cwd": cwd, "gitBranch": "main", "version": "9.9.9",
+             "timestamp": iso(T0 + 10), "uuid": "a1", "parentUuid": "u1",
+             "message": {"role": "assistant", "content": [{"type": "text", "text": "done"}],
+                         "model": "claude-test-1", "stop_reason": "end_turn"}},
+        ]
+        self.tpath.write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+        km._parse_cache.clear(); km._session_meta_cache.clear()
+        events = km.build_session(SID, NOW)["events"]
+        self.assertEqual(events[0]["kind"], "system", "the system-context card is pinned at index 0")
+        s = events[0]
+        self.assertEqual((s["model"], s["mode"], s["gitBranch"], s["version"]),
+                         ("claude-test-1", "acceptEdits", "main", "9.9.9"))
+        self.assertTrue(s["cwd"], "the working directory is shown")
+        self.assertEqual([d["scope"] for d in s["claudemd"]], ["global", "project"],
+                         "global ~/.claude/CLAUDE.md first, then the project chain")
+        self.assertEqual([e["kind"] for e in events[1:]], ["user", "assistant"],
+                         "the real conversation follows the pinned card, untouched")
+
+    def test_hide_from_feed_flag_drops_a_sessions_cards(self):
+        """The timeline lane gear's "hide from feed" flag (the user 2026-06-19): a flagged session mints NO
+        feed cards (it stays on the timeline). A reversible view filter — toggling it off restores them."""
+        km._flags_cache.clear()
+        top = SID + ":top"
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+            "rompUuid": SID, "seq": 1, "lastNode": None,
+            "nodes": {top: {"id": top, "text": "a goal", "parentId": None, "nodeComplete": False,
+                            "blocked": False, "cleared": False, "trail": [], "t": T0, "mt": T0}},
+            "placements": {}, "status": {top: "working"}}))
+        has_card = lambda: any(a["sid"] == SID for a in km.build_feed(NOW)["asks"])
+        self.assertTrue(has_card(), "the session has a feed card by default")
+        km._set_session_flag(SID, "hideFromFeed", True)
+        self.assertFalse(has_card(), "flagged → the session mints no feed cards")
+        km._set_session_flag(SID, "hideFromFeed", False)
+        self.assertTrue(has_card(), "unflagged → the cards come back (reversible)")
+
+    def test_timeline_lane_reports_hide_from_feed_for_the_gear(self):
+        """The timeline lane carries hideFromFeed so the gear can render its on/off state."""
+        km._flags_cache.clear()
+        lane = lambda: next(s for s in km.build_timeline(NOW)["sessions"] if s["id"] == SID)
+        self.assertFalse(lane()["hideFromFeed"], "off by default")
+        km._set_session_flag(SID, "hideFromFeed", True)
+        self.assertTrue(lane()["hideFromFeed"], "the lane reflects the persisted flag")
+        km._set_session_flag(SID, "hideFromFeed", False)
 
     def test_ledger_is_toc_from_archive_and_captions(self):
         m = km.build_session(SID, NOW)
@@ -507,9 +601,133 @@ class ViewBuilder(unittest.TestCase):
         p = prov[0]
         self.assertEqual(p["itemId"], "provisional:" + SID)
         self.assertEqual(p["column"], "working")
-        self.assertIn("empty space", p["text"], "the card text is the live prompt gist")
+        self.assertEqual(p["text"], "Analyzing…", "until the gist lands, an 'Analyzing…' placeholder (NOT the raw prompt)")
         self.assertEqual(p["tree"], [], "a placeholder carries no goal node")
         self.assertTrue(any(a["itemId"] == g1 for a in asks), "the real completed card is untouched")
+
+    def test_provisional_card_upgrades_to_analyzing_gist(self):
+        # The user 2026-06-19: once the captioner-style gist lands (within a couple seconds), the card reads
+        # "Analyzing: <gist>" — the topic of the ask, not the verbose prompt text.
+        self._open_turn_transcript(ended=False)
+        g1 = SID + ":g1"
+        self._goal_store({g1: {"id": g1, "text": "first ask", "parentId": None, "nodeComplete": True,
+                               "blocked": False, "cleared": False, "trail": [], "t": T0}},
+                         {g1: "completed"}, last=g1)
+        self._working_tmux()
+        km._gist_cache.clear(); km._gist_inflight.clear()
+        jd.gist_llm = lambda p: "trimming the empty space below the cards"
+        first = next(a for a in km.build_feed(NOW)["asks"] if a.get("provisional"))
+        self.assertEqual(first["text"], "Analyzing…", "the first build, gist still in flight")
+        self._drain_gist()
+        p = next(a for a in km.build_feed(NOW)["asks"] if a.get("provisional"))
+        self.assertEqual(p["text"], "Analyzing: trimming the empty space below the cards")
+
+    def test_provisional_card_falls_back_to_raw_prompt_when_gist_empty(self):
+        # If the gist comes back empty (vague prompt / model hiccup), the card is never blank — it falls
+        # back to the raw prompt gist (the prior behavior).
+        self._open_turn_transcript(ended=False)
+        g1 = SID + ":g1"
+        self._goal_store({g1: {"id": g1, "text": "first ask", "parentId": None, "nodeComplete": True,
+                               "blocked": False, "cleared": False, "trail": [], "t": T0}},
+                         {g1: "completed"}, last=g1)
+        self._working_tmux()
+        km._gist_cache.clear(); km._gist_inflight.clear()
+        jd.gist_llm = lambda p: ""                        # no usable gist
+        km.build_feed(NOW)                                # kicks off the (empty) gist
+        self._drain_gist()
+        p = next(a for a in km.build_feed(NOW)["asks"] if a.get("provisional"))
+        self.assertIn("empty space", p["text"], "empty gist → the raw prompt, never blank")
+        self.assertNotIn("Analyzing", p["text"])
+
+    # ── Auto Nudge (the user 2026-06-19): follow up ONCE on an orphaned working goal ──
+    def _stub_nudge(self):
+        # capture nudges instead of pasting into tmux; returns (sent_list, restore_fn)
+        sent = []
+        saved_send, saved_fu = km._tmux_send, jd.optimistic_followup
+        km._tmux_send = lambda name, body, **kw: sent.append((name, body))
+        jd.optimistic_followup = lambda sid, gid: True
+
+        def restore():
+            km._tmux_send, jd.optimistic_followup = saved_send, saved_fu
+        return sent, restore
+
+    def test_working_top_goal_picks_only_a_working_top(self):
+        g1, g2, g3, sub = SID + ":g1", SID + ":g2", SID + ":g3", SID + ":s1"
+        def n(nid, parent, done, blocked, cleared):
+            return {"id": nid, "text": nid, "parentId": parent, "nodeComplete": done,
+                    "blocked": blocked, "cleared": cleared, "trail": [], "t": T0}
+        self._goal_store({g1: n(g1, None, True, False, False), g2: n(g2, None, False, True, False),
+                          g3: n(g3, None, False, False, False), sub: n(sub, g3, False, False, False)},
+                         {g1: "completed", g2: "blocked", g3: "working"})
+        self.assertEqual(km._working_top_goal(SID), g3, "only a working TOP goal (not done/blocked/sub) qualifies")
+
+    def test_working_top_goal_none_when_cleared(self):
+        g = SID + ":g1"
+        self._goal_store({g: {"id": g, "text": "x", "parentId": None, "nodeComplete": False,
+                              "blocked": False, "cleared": True, "trail": [], "t": T0}}, {g: "working"})
+        self.assertIsNone(km._working_top_goal(SID), "a cleared goal is not nudge-worthy")
+
+    def _orphaned_goal(self, idle=True):
+        # an idle (or still-open) session whose top goal still shows "working"
+        self._open_turn_transcript(ended=idle); km._parse_cache.clear()
+        g = SID + ":gw"
+        self._goal_store({g: {"id": g, "text": "wire up the thing", "parentId": None, "nodeComplete": False,
+                              "blocked": False, "cleared": False, "trail": [], "t": T0}}, {g: "working"}, last=g)
+        return g
+
+    def test_auto_nudge_fires_once_for_an_idle_session_with_a_working_goal(self):
+        g = self._orphaned_goal(idle=True)
+        km._set_auto_nudge(True)
+        sent, restore = self._stub_nudge()
+        try:
+            km._auto_nudge_tick(NOW, km._tmux_sessions())
+            self.assertEqual(len(sent), 1, "the orphaned working goal is nudged once")
+            self.assertIn("romp-goal-id: " + g, sent[0][1], "the follow-up targets that goal")
+            self.assertIn("What is the status", sent[0][1])
+            km._auto_nudge_tick(NOW, km._tmux_sessions())          # once-guard: no re-nudge
+            self.assertEqual(len(sent), 1, "Auto Nudge fires only ONCE per goal")
+        finally:
+            restore()
+
+    def test_auto_nudge_is_a_noop_when_off(self):
+        self._orphaned_goal(idle=True)
+        sent, restore = self._stub_nudge()
+        try:
+            km._auto_nudge_tick(NOW, km._tmux_sessions())          # never enabled
+            self.assertEqual(sent, [], "off by default → no nudges")
+        finally:
+            restore()
+
+    def test_auto_nudge_skips_a_session_still_working(self):
+        self._orphaned_goal(idle=False)                           # turn still OPEN → actively working
+        km._set_auto_nudge(True)
+        sent, restore = self._stub_nudge()
+        try:
+            km._auto_nudge_tick(NOW, km._tmux_sessions())
+            self.assertEqual(sent, [], "an actively-working session isn't orphaned")
+        finally:
+            restore()
+
+    def test_auto_nudge_skips_an_awaiting_session(self):
+        self._orphaned_goal(idle=True)
+        km._set_auto_nudge(True)
+        km._tmux_sessions = lambda: {SID: {"state": "permission", "since": NOW - 10, "model": "",
+                                           "effort": "", "context": None, "compactPct": None, "color": None}}
+        sent, restore = self._stub_nudge()
+        try:
+            km._auto_nudge_tick(NOW, km._tmux_sessions())
+            self.assertEqual(sent, [], "a session awaiting your approval is not orphaned")
+        finally:
+            restore()
+
+    def test_auto_nudge_storage_round_trip(self):
+        self.assertFalse(km._auto_nudge_on(), "off by default")
+        km._set_auto_nudge(True); self.assertTrue(km._auto_nudge_on())
+        km._mark_auto_nudged(SID + ":g1")
+        self.assertIn(SID + ":g1", km._auto_nudge_data()["done"])
+        km._set_auto_nudge(False)
+        self.assertFalse(km._auto_nudge_on())
+        self.assertIn(SID + ":g1", km._auto_nudge_data()["done"], "toggling off keeps the done-set (still once-only)")
 
     def test_no_provisional_card_once_the_turn_ends(self):
         # The placeholder is for IN-PROGRESS work only — once the turn ends, the planner will place the
@@ -702,7 +920,8 @@ class ViewBuilder(unittest.TestCase):
         # an explicit group title wins over the node lookup; unknown/none → bare text (the user 2026-06-16).
         # Every follow-up ALSO ends with the hidden goal marker (see the dedicated test below); fold it in.
         iid = SID + ":g2"                                   # fixture g2 = "Awaiting a decision", blocked, a top
-        def mk(s, i=iid): return s + "\n\n<!-- romp-goal-id: " + i + " -->"
+        # every follow-up ends with the romp-injected marker (→ gray romp bubble) then the goal-id (→ reopen)
+        def mk(s, i=iid): return s + "\n\n<!-- romp-injected --><!-- romp-goal-id: " + i + " -->"
         # no title → node path: the node text + its status (g2 is blocked; it's a top so no "under")
         self.assertEqual(km._followup_body(iid, None, "go with option A"),
                          mk("> Awaiting a decision (blocked)\n\ngo with option A"))
@@ -726,6 +945,7 @@ class ViewBuilder(unittest.TestCase):
         out = km._followup_body(sub, None, "go minor")
         self.assertIn('> Decide the version bump (under "Ship the release", blocked)', out)
         self.assertIn("> Need you to choose major vs minor.", out)   # the planner's why = the real question
+        self.assertIn("<!-- romp-injected -->", out, "the romp-injected marker → the gray romp bubble")
         self.assertTrue(out.endswith("<!-- romp-goal-id: " + sub + " -->"))
 
     def test_feed_node_carries_prompt_anchor_uuid(self):
@@ -753,7 +973,8 @@ class ViewBuilder(unittest.TestCase):
         # judge's `romp-goal-id:\s*([^\s>]+)` (coordinated w/ the `judges` session, 2026-06-17).
         iid = SID + ":g2"
         out = km._followup_body(iid, "ctx", "do the thing")
-        self.assertTrue(out.endswith("\n\n<!-- romp-goal-id: " + iid + " -->"))   # exact, well-formed, last
+        # ends with the romp-injected marker (→ gray bubble) immediately followed by the goal-id (→ reopen)
+        self.assertTrue(out.endswith("\n\n<!-- romp-injected --><!-- romp-goal-id: " + iid + " -->"))
         self.assertEqual(re.search(r"romp-goal-id:\s*([^\s>]+)", out).group(1), iid)   # the judge's parser
 
     def test_session_list_for_picker(self):

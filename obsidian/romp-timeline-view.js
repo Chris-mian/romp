@@ -208,6 +208,13 @@ function modelLabel(s) {
 // dims the word in the gap. Values mirror chat-view's allowlist (extension.ts META_VALUES) verbatim.
 const META_HOVER_FG = '#e6edf3';   // brighten the word + reveal its caret on hover
 const META_CARET = ' ▾';           // appended (hair-spaced) after each clickable word
+// Per-lane settings gear (the user 2026-06-19): sits between the name and the model, opens a menu of
+// per-session view flags. Brightens to GEAR_ON_FG when any flag is active so a muted lane is visible.
+const GEAR_GLYPH = '⚙︎';  // ⚙ forced to text (monochrome), not emoji presentation
+const GEAR_ON_FG = '#d9a441';       // amber — a flag is active on this lane (e.g. hidden from feed)
+const SESSION_FLAGS = [
+  { key: 'hideFromFeed', label: 'Hide from feed', hint: 'Prompts won’t make feed cards (still on the timeline)' },
+];
 const MODEL_CHOICES = [
   { label: 'Fable', value: 'fable' },
   { label: 'Opus', value: 'opus' },
@@ -1406,6 +1413,64 @@ class TimelinePanel {
     this._metaMenu = menu;
   }
 
+  // The per-session settings drop-down (the lane gear). A list of toggle flags — currently just
+  // hideFromFeed: when on, this session's prompts stop minting feed cards (it stays on the timeline).
+  // Each item shows a ✓ when active; clicking toggles it (optimistic local update + persisted via
+  // _setSessionFlag, confirmed on the next push). Re-clicking the gear closes it; outside-click/Esc too.
+  _openFlagMenu(s, anchorEl) {
+    const reopen = this._metaMenu && this._metaMenu._kind === 'flags' && this._metaMenu._sid === s.id;
+    this._closeMetaMenu();
+    if (reopen) return;
+    const menu = document.body.createDiv();
+    menu.setAttribute('style', 'position:fixed;z-index:1001;min-width:200px;max-width:260px;padding:4px;background:#1c2430;border:1px solid #ffffff1f;border-radius:8px;box-shadow:0 8px 24px #00000066;font-size:12px;color:#e6edf3;user-select:none;');
+    menu._kind = 'flags'; menu._sid = s.id;
+    for (const f of SESSION_FLAGS) {
+      const on = !!s[f.key];
+      const item = menu.createDiv();
+      item.setAttribute('style', 'padding:5px 10px 6px 24px;border-radius:5px;cursor:pointer;position:relative;');
+      const ck = item.createSpan({ text: on ? '✓' : '' });
+      ck.setAttribute('style', 'position:absolute;left:8px;top:5px;color:#54B204;');
+      const lab = item.createDiv({ text: f.label });
+      if (on) lab.setAttribute('style', 'color:#54B204;');
+      if (f.hint) { const h = item.createDiv({ text: f.hint }); h.setAttribute('style', 'color:#9aa0a6;font-size:11px;margin-top:1px;white-space:normal;line-height:1.3;'); }
+      item.addEventListener('mouseenter', () => { item.style.background = '#ffffff14'; });
+      item.addEventListener('mouseleave', () => { item.style.background = 'transparent'; });
+      item.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const next = !on;
+        s[f.key] = next;                              // optimistic — the kernel confirms on the next push
+        this._setSessionFlag(s, f.key, next);
+        this._closeMetaMenu();
+        this.draw();
+      });
+    }
+    const r = anchorEl.getBoundingClientRect();
+    const left = Math.min(Math.round(r.left), (window.innerWidth || 9999) - 210);
+    menu.style.left = Math.max(6, left) + 'px';
+    menu.style.top = Math.round(r.bottom + 4) + 'px';
+    this._metaMenu = menu;
+  }
+
+  // Persist a per-session flag. Web dashboard: the host WS hook (→ kernel setSessionFlag → rebuild feed).
+  // Obsidian/headless fallback: write the same session-flags.json the kernel's build_feed reads.
+  _setSessionFlag(s, flag, value) {
+    try {
+      if (typeof window !== 'undefined' && typeof window.__rompTimelineSetFlag === 'function') {
+        window.__rompTimelineSetFlag(s.id, flag, value); return;
+      }
+      const fs = require('fs'), os = require('os'), path = require('path');
+      const dir = path.join(os.homedir(), '.local', 'state', 'romp');
+      const fp = path.join(dir, 'session-flags.json');
+      let cur = {};
+      try { cur = JSON.parse(fs.readFileSync(fp, 'utf8')) || {}; } catch (e) {}
+      const f = (cur[s.id] && typeof cur[s.id] === 'object') ? cur[s.id] : {};
+      if (value) f[flag] = true; else delete f[flag];
+      if (Object.keys(f).length) cur[s.id] = f; else delete cur[s.id];
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(fp, JSON.stringify(cur));
+    } catch (e) { /* no host hook + no Node fs → can't persist */ }
+  }
+
   _tmuxPath() {
     if (this._tmux) return this._tmux;
     this._tmux = 'tmux';
@@ -1518,7 +1583,12 @@ class TimelinePanel {
     const maxModel = Math.max(0, ...vis.map(metaWidth));
     const maxChip = Math.max(0, ...visB.map((b) => (b ? this.badgeWidth(b.label) + 12 : 0)));
     const maxCtx = (visC.some((c) => c) || vis.some((s) => compactingNow(s))) ? BAT_W : 0;   // ctx column = battery bar
-    const modelColX = PADL + Math.ceil(maxName) + COLGAP;                            // [name] [model+effort] [chip] [ctx]
+    // gear column: a per-session settings gear between the name and the model, on LIVE lanes (the user
+    // 2026-06-19). Reserve its width only when there IS a live lane, so an all-historical view keeps the
+    // tight [name][model] layout.
+    const GEAR_W = 13, GEAR_GAP = 6, anyLive = vis.some((s) => s.live);
+    const gearColX = PADL + Math.ceil(maxName) + COLGAP;                             // [name] [⚙] [model+effort] [chip] [ctx]
+    const modelColX = gearColX + (anyLive ? GEAR_W + GEAR_GAP : 0);
     const chipColX = modelColX + (maxModel > 0 ? Math.ceil(maxModel) + COLGAP : 0);
     const ctxColX = chipColX + (maxChip > 0 ? Math.ceil(maxChip) + COLGAP : 0);
     M.left = ctxColX + (maxCtx > 0 ? Math.ceil(maxCtx) + COLGAP : 4);
@@ -1740,6 +1810,23 @@ class TimelinePanel {
       if (!s.live) lblA['text-decoration'] = 'line-through';   // dead lane → strike the name (mirrors the feed)
       const lbl = el('text', lblA); lbl.textContent = s.name; svg.appendChild(lbl);
       if (s.faded) fadedEls.push({ el: lbl, full: s.color, faded: F(s.color) });
+      // per-session settings gear (live lanes only): opens the flag menu (hide-from-feed today). It
+      // brightens to amber when a flag is active so a muted lane stands out; subtle/dim otherwise.
+      if (s.live) {
+        const fon = !!s.hideFromFeed;
+        // The glyph is PURELY VISUAL (pointer-events:none): a bare SVG <text> only catches clicks on its
+        // painted strokes, so a thin gear was nearly unhittable — you had to land on a stroke (the user
+        // 2026-06-19). A generous transparent <rect> over it is the real hit target (same trick the work
+        // bars use), so a click anywhere on/around the gear opens the menu.
+        const g = el('text', { x: gearColX, y: y + 4, 'text-anchor': 'start', 'font-size': 12.5, fill: fon ? GEAR_ON_FG : MODEL_FG, opacity: fon ? '1' : '0.55', 'pointer-events': 'none' });
+        g.textContent = GEAR_GLYPH; svg.appendChild(g);
+        const hit = el('rect', { x: gearColX - 4, y: y - 9, width: GEAR_W + 8, height: 18, fill: 'transparent', 'pointer-events': 'all' });
+        hit.style.cursor = 'pointer'; hit.setAttribute('aria-label', 'session settings'); svg.appendChild(hit);
+        const restore = () => { g.setAttribute('fill', fon ? GEAR_ON_FG : MODEL_FG); g.setAttribute('opacity', fon ? '1' : '0.55'); };
+        hit.addEventListener('mouseenter', () => { g.setAttribute('fill', META_HOVER_FG); g.setAttribute('opacity', '1'); });
+        hit.addEventListener('mouseleave', restore);
+        hit.addEventListener('click', (e) => { e.stopPropagation(); this._openFlagMenu(s, hit); });
+      }
       // model + effort, muted, between the name and the state chip (left-aligned in its column). On a
       // LIVE lane each word is a drop-down picker — hover reveals a ▾ caret, click opens a menu whose
       // pick injects /model or /effort into that pane. Dead/historical lanes render it as static text.

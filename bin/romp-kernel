@@ -137,7 +137,8 @@ def _version_info():
     except OSError:
         pass
     return {"kernel_sha": _kernel_sha(), "pid": os.getpid(), "started": int(_STARTED),
-            "uptime_s": int(time.time() - _STARTED), "dist_ver": _dist_ver(), "bundles": bundles}
+            "uptime_s": int(time.time() - _STARTED), "dist_ver": _dist_ver(), "bundles": bundles,
+            "autoNudge": _auto_nudge_on()}   # server-side toggle state → the gear checkbox reflects the kernel
 
 
 def _dist_ver():
@@ -267,7 +268,9 @@ def _followup_body(iid, title, text):
     # parses `romp-goal-id:\s*([^\s>]+)`, REOPENS that top-goal node (even if completed/blocked), and
     # force-files this follow-up as a step under it. iid IS the card's top-goal node id (what the feed
     # renders + posts). The HTML comment is inert in the recipient's prompt.
-    return msg + "\n\n<!-- romp-goal-id: " + str(iid) + " -->"
+    # romp-injected marker → the chat renders this as a GRAY romp bubble (not a blue human prompt): it's
+    # clear romp, not the user, sent it (the user 2026-06-19). romp-goal-id (below) drives the reopen.
+    return msg + "\n\n<!-- romp-injected --><!-- romp-goal-id: " + str(iid) + " -->"
 
 
 def _rgb(color):
@@ -379,6 +382,173 @@ def _set_hidden_tab(sid, hidden):
     tmp = p.with_name("hidden-tabs.json.tmp.%d" % os.getpid())
     tmp.write_text(json.dumps(sorted(cur)))
     tmp.rename(p)
+
+
+# ── per-session view flags (the user 2026-06-19) ──────────────────────────────────────────────────
+# A persisted {sid: {flag: true}} dict under STATE. The only flag today is hideFromFeed: a session whose
+# prompts should NOT mint feed cards — it's a per-session "mute from the feed", set from the timeline's
+# lane gear. The session still shows on the timeline; build_feed just skips it. mtime-cached since
+# build_feed/build_timeline read it on every push.
+_flags_cache = {}   # str(path) -> ((mtime,size), dict)
+
+
+def _session_flags():
+    p = jd.STATE / "session-flags.json"
+    try:
+        st = p.stat(); key = (st.st_mtime_ns, st.st_size)   # ns + size → no stale hit on rapid toggles
+    except OSError:
+        return {}
+    hit = _flags_cache.get(str(p))
+    if hit is not None and hit[0] == key:
+        return hit[1]
+    try:
+        d = json.loads(p.read_text())
+        if not isinstance(d, dict):
+            d = {}
+    except Exception:
+        d = {}
+    _flags_cache[str(p)] = (key, d)
+    return d
+
+
+def _session_flag(sid, flag):
+    f = _session_flags().get(sid)
+    return bool(f.get(flag)) if isinstance(f, dict) else False
+
+
+def _set_session_flag(sid, flag, value):
+    cur = dict(_session_flags())                     # copy: never mutate the cached dict in place
+    f = dict(cur.get(sid)) if isinstance(cur.get(sid), dict) else {}
+    if value:
+        f[flag] = True
+    else:
+        f.pop(flag, None)
+    if f:
+        cur[sid] = f
+    else:
+        cur.pop(sid, None)
+    p = jd.STATE / "session-flags.json"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_name("session-flags.json.tmp.%d" % os.getpid())
+    tmp.write_text(json.dumps(cur, sort_keys=True))
+    tmp.rename(p)
+
+
+# ── Auto Nudge (the user 2026-06-19) ──────────────────────────────────────────────────────────────
+# When ON, a background pass follows up on an ORPHANED goal: a session that is ALIVE but went IDLE (its
+# turn ended) while its top goal still shows "working" — not blocked, not completed, not awaiting your
+# approval, and not delegated to anyone. It sends the SAME follow-up the manual Nudge button does, ONCE
+# per goal. Off by default. State lives in auto-nudge.json: {"enabled": bool, "done": [goalId,...]}.
+AUTO_NUDGE_TEXT = "What is the status of the above goal?"   # mirrors the feed Nudge button
+_autonudge_cache = {}   # str(path) -> ((mtime_ns,size), dict)
+
+
+def _auto_nudge_data():
+    p = jd.STATE / "auto-nudge.json"
+    try:
+        st = p.stat(); key = (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return {"enabled": False, "done": []}
+    hit = _autonudge_cache.get(str(p))
+    if hit is not None and hit[0] == key:
+        return hit[1]
+    try:
+        d = json.loads(p.read_text())
+        if not isinstance(d, dict):
+            d = {}
+    except Exception:
+        d = {}
+    d.setdefault("enabled", False)
+    d.setdefault("done", [])
+    _autonudge_cache[str(p)] = (key, d)
+    return d
+
+
+def _auto_nudge_on():
+    return bool(_auto_nudge_data().get("enabled"))
+
+
+def _write_auto_nudge(d):
+    p = jd.STATE / "auto-nudge.json"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_name("auto-nudge.json.tmp.%d" % os.getpid())
+    tmp.write_text(json.dumps(d))
+    tmp.rename(p)
+
+
+def _set_auto_nudge(enabled):
+    d = dict(_auto_nudge_data())
+    d["enabled"] = bool(enabled)
+    _write_auto_nudge(d)
+
+
+def _mark_auto_nudged(gid):
+    d = dict(_auto_nudge_data())
+    done = [g for g in d.get("done", []) if g != gid]
+    done.append(gid)
+    d["done"] = done[-3000:]            # bounded; goal ids are unique + tiny
+    _write_auto_nudge(d)
+
+
+def _working_top_goal(sid):
+    """A TOP-level goal of `sid` whose rolled-up status is 'working' (not blocked/completed/cleared), or
+    None — the 'orphaned' goal Auto Nudge follows up on."""
+    try:
+        store = jd.load_goals(sid)
+    except Exception:
+        return None
+    nodes = store.get("nodes", {}); status = store.get("status", {})
+    cleared = _cleared_ids()
+    for nid, nd in nodes.items():
+        if nd.get("parentId"):                           # top-level only
+            continue
+        if nd.get("cleared") or nid in cleared:
+            continue
+        if status.get(nid, "working") == "working":
+            return nid
+    return None
+
+
+def _auto_nudge_tick(now, tmux):
+    """One Auto-Nudge pass (from the periodic pusher). For each ALIVE, IDLE session (its turn ended) that
+    isn't awaiting/compacting/blocked and has an orphaned 'working' top goal not yet nudged, inject the
+    follow-up ONCE. A no-op unless the user turned it on."""
+    if not _auto_nudge_on():
+        return
+    done = set(_auto_nudge_data().get("done", []))
+    fired = False
+    for s in _alive_sessions(now, tmux):
+        sid = s["sid"]
+        st = (tmux.get(sid) or {}).get("state", "")
+        if st in ("permission", "compacting"):           # awaiting approval / compacting → not orphaned
+            continue
+        if _api_error(s["path"]):                        # stopped on an API error → not orphaned
+            continue
+        try:
+            turns = _parse(s["path"], sid, now)["turns"]
+        except Exception:
+            continue
+        if not turns:
+            continue
+        lt = turns[-1]
+        open_now = (not lt.get("ended")) and not any(a.get("type") == "idle" for a in lt["atoms"])
+        if open_now and _suspended_after(lt["t"]):
+            open_now = False
+        if open_now:                                     # still actively working → not orphaned
+            continue
+        gid = _working_top_goal(sid)
+        if not gid or gid in done:
+            continue
+        _tmux_send(_name_of(sid) or sid, _followup_body(gid, None, AUTO_NUDGE_TEXT))
+        try:
+            jd.optimistic_followup(sid, gid)             # reopen the card now (Followed-up chip), like a manual nudge
+        except Exception:
+            pass
+        _mark_auto_nudged(gid)
+        done.add(gid)
+        fired = True
+    if fired:
+        _push_all()
 
 
 def _chat_tab_sessions(now, tmux):
@@ -1341,6 +1511,99 @@ def _compacting_optimistic(sid, session, now):
     return True
 
 
+# ── the chat's pinned "system context" card (the user 2026-06-19) ──────────────────────────────────
+# A collapsed card at the very top of the transcript showing the CLAUDE.md instructions in effect plus
+# the session's model / cwd / branch / permission-mode / Claude Code version. It is NOT the verbatim
+# Claude Code harness prompt — that text is never written to the transcript, so it can't be shown (the
+# card says so). Everything here is read from ordinary transcript records: Claude Code stamps cwd /
+# gitBranch / version on every user+assistant record and permissionMode on user records, and the model
+# rides each assistant message — it writes no system:init atom, so the event model never carries them.
+_GLOBAL_CLAUDE_MD = Path(os.path.expanduser("~/.claude/CLAUDE.md"))   # overridable in tests
+_session_meta_cache = {}   # path -> ((mtime,size), {...})
+
+
+def _tilde(p):
+    """Abbreviate a leading $HOME to ~ for display, so personal absolute paths stay out of the UI."""
+    home = os.path.expanduser("~")
+    if p == home:
+        return "~"
+    if p and p.startswith(home + os.sep):
+        return "~" + p[len(home):]
+    return p
+
+
+def _session_meta(path):
+    """Latest cwd / gitBranch / Claude Code version / permission mode for a session, read straight from the
+    raw transcript (the event model drops these). Cached by (mtime,size) like _parse/_api_error, since
+    build_session runs per push."""
+    try:
+        sti = os.stat(path)
+        key = (sti.st_mtime, sti.st_size)
+    except OSError:
+        key = None
+    hit = _session_meta_cache.get(path)
+    if hit is not None and key is not None and hit[0] == key:
+        return hit[1]
+    meta = {"cwd": "", "gitBranch": "", "version": "", "permissionMode": ""}
+    try:
+        with open(path, errors="replace") as f:
+            for line in f:
+                if '"cwd"' not in line and '"version"' not in line and '"permissionMode"' not in line:
+                    continue
+                try:
+                    o = json.loads(line)
+                except Exception:
+                    continue
+                if o.get("cwd"):
+                    meta["cwd"] = o["cwd"]
+                if o.get("gitBranch"):
+                    meta["gitBranch"] = o["gitBranch"]
+                if o.get("version"):
+                    meta["version"] = o["version"]
+                if o.get("type") == "user" and o.get("permissionMode"):
+                    meta["permissionMode"] = o["permissionMode"]
+    except OSError:
+        pass
+    if key is not None:
+        if len(_session_meta_cache) > 256:                   # bounded by fleet size; never unbounded
+            _session_meta_cache.clear()
+        _session_meta_cache[path] = (key, meta)
+    return meta
+
+
+def _claudemd_docs(cwd):
+    """The CLAUDE.md instruction files in effect for a session: the global ~/.claude/CLAUDE.md, then each
+    project CLAUDE.md from the git root down to cwd (Claude Code's load order). Returns [{path,scope,text}]
+    with the home dir abbreviated to ~ and each file's text capped. Reference-only — the harness's own base
+    prompt isn't recorded anywhere, so it isn't (and can't be) included."""
+    out = []
+
+    def add(p, scope):
+        try:
+            with open(p, errors="replace") as f:
+                txt = f.read()
+        except OSError:
+            return
+        if txt.strip():
+            out.append({"path": _tilde(p), "scope": scope, "text": txt[:20000]})
+
+    add(str(_GLOBAL_CLAUDE_MD), "global")
+    home = os.path.expanduser("~")
+    chain = []
+    d = os.path.abspath(os.path.expanduser(cwd)) if cwd else None
+    while d:
+        chain.append(d)
+        if os.path.isdir(os.path.join(d, ".git")):
+            break                                            # git root reached — include it, then stop
+        parent = os.path.dirname(d)
+        if parent == d or d == home:
+            break
+        d = parent
+    for dd in reversed(chain):                               # outermost (git root) first → load order
+        add(os.path.join(dd, "CLAUDE.md"), "project")
+    return out
+
+
 def build_session(sid, now, tmux=None):
     """A {type:"session"} message the render.js bundle consumes: the event tree reshaped to
     ChatEvent[], plus the TOC ledger (archiver headline + turn captions) and a status chip."""
@@ -1360,11 +1623,14 @@ def build_session(sid, now, tmux=None):
                 if at.get("uuid"):
                     uuid2seg[at["uuid"]] = seg["id"]
     last_t = None
+    last_model = ""                           # the model on the most recent assistant message (system-card meta)
     for turn in session["turns"]:
         for a in turn["atoms"]:
             t = a.get("t"); ts = iso(t) if t else None
             last_t = t or last_t
             msg = a.get("message") or {}
+            if a["type"] == "assistant" and msg.get("model"):
+                last_model = msg["model"]
             blocks = msg.get("content", []) if isinstance(msg.get("content"), list) else []
             if a["type"] == "user":
                 author = a.get("author")
@@ -1388,6 +1654,8 @@ def build_session(sid, now, tmux=None):
                         if prompt or reminders or imgs:
                             ev = {"kind": "user", "md": prompt, "uuid": a.get("uuid"), "ts": ts,
                                   "human": author == "human" or bool(imgs), "reminders": reminders}
+                            if author == "romp":         # a feed nudge/follow-up romp injected → gray romp bubble
+                                ev["romp"] = True
                             if imgs:
                                 ev["images"] = imgs
                             events.append(ev)
@@ -1609,6 +1877,16 @@ def build_session(sid, now, tmux=None):
     else:                                              # no tmux at all (rare headless) → event-model fallback
         status = {"state": "working" if open_now else "idle", "sinceEpoch": since_ms,
                   "faded": not open_now}
+    # Pinned, collapsed "system context" card at the very top of the chat: the CLAUDE.md instructions in
+    # effect + this session's model / cwd / branch / permission-mode / version (NOT the harness prompt —
+    # see _claudemd_docs). Only when there's a real transcript to describe AND something to show.
+    meta = _session_meta(sess["path"])
+    docs = _claudemd_docs(meta.get("cwd"))
+    sysinfo = {"kind": "system", "model": last_model, "cwd": _tilde(meta.get("cwd") or ""),
+               "gitBranch": meta.get("gitBranch") or "", "version": meta.get("version") or "",
+               "mode": meta.get("permissionMode") or "", "claudemd": docs}
+    if events and (docs or any(sysinfo[k] for k in ("model", "cwd", "gitBranch", "version", "mode"))):
+        events.insert(0, sysinfo)
     return {"type": "session", "id": sid, "name": sess["name"], "color": _name_color(sid),
             "events": events, "status": status, "ledger": ledger, "firstSeen": session["turns"][0]["t"]
             if session["turns"] else now}
@@ -1733,6 +2011,48 @@ def _resolve_node(sid, node_id):
     return True
 
 
+# ── async prompt gist for the provisional card's "Analyzing: …" label (the user 2026-06-19) ────────
+# The provisional card shows the captioner-style GIST of the in-progress prompt instead of the raw text.
+# The gist is one Haiku call (jd.gist_llm, ~1-2s), so it can't run inline in a push — we fetch it in a
+# daemon thread, cache by prompt hash, and force a refresh when it lands. Tri-state so the card degrades
+# gracefully: None = still computing ("Analyzing…"), "" = tried-and-empty (fall back to the raw prompt),
+# a phrase = "Analyzing: <phrase>". Keyed by prompt text so the same ask reuses one call.
+_gist_cache = {}            # key -> gist str ('' = tried, no usable gist)
+_gist_inflight = set()      # keys whose Haiku call is in flight
+_gist_lock = threading.Lock()
+
+
+def _prompt_gist(fsid, prompt):
+    """The cached gist for an in-progress prompt, or None while one Haiku call computes it in the
+    background. Spawns at most one call per distinct prompt; never blocks the push."""
+    key = fsid + ":" + hashlib.sha1(prompt.encode("utf-8", "replace")).hexdigest()[:16]
+    with _gist_lock:
+        if key in _gist_cache:
+            return _gist_cache[key]                      # '' (no gist) or the phrase
+        if key in _gist_inflight:
+            return None                                  # already computing
+        _gist_inflight.add(key)
+
+    def _work():
+        g = ""
+        try:
+            g = jd.gist_llm(prompt) or ""
+        except Exception:
+            g = ""
+        with _gist_lock:
+            _gist_cache[key] = g
+            _gist_inflight.discard(key)
+            if len(_gist_cache) > 512:                    # bounded; the provisional card is transient
+                _gist_cache.clear()
+        try:
+            _push_all()                                   # the gist landed → refresh the card now (per-client send is locked)
+        except Exception:
+            pass
+
+    threading.Thread(target=_work, daemon=True).start()
+    return None
+
+
 def _provisional_card(s, name, color, fsid, live, now):
     """A lightweight WORKING placeholder for a session actively in an in-progress turn whose held human
     prompt the planner hasn't classified yet (the user 2026-06-18). The planner withholds the final segment
@@ -1763,11 +2083,21 @@ def _provisional_card(s, name, color, fsid, live, now):
     held = segs[-1]                                  # the final segment of the open turn — what the planner withholds
     if not jd._seg_human(held):                      # only a real user prompt warrants a placeholder (peer/sdk don't)
         return None
-    gist = _split_reminders(_seg_prompt(held))[0][:140].strip()
-    if not gist:
+    prompt = _split_reminders(_seg_prompt(held))[0].strip()
+    if not prompt:
         return None
+    # "Analyzing: <gist>" — a captioner-style topic instead of the raw prompt (the user 2026-06-19). The
+    # gist is fetched async; until it lands show "Analyzing…", and if it comes back empty fall back to the
+    # raw prompt so the card is never blank.
+    g = _prompt_gist(fsid, prompt[:2000])
+    if g:
+        text = "Analyzing: " + g
+    elif g == "":                                        # tried, no usable gist → the raw prompt (graceful fallback)
+        text = prompt[:140].strip()
+    else:                                                # None → still computing
+        text = "Analyzing…"
     t = held.get("t", lt["t"])
-    return {"itemId": "provisional:" + fsid, "sid": fsid, "name": name, "color": color, "text": gist,
+    return {"itemId": "provisional:" + fsid, "sid": fsid, "name": name, "color": color, "text": text,
             "t": t, "created": t, "live": live, "trgb": list(cm.age_rgb(now - t, _colormap())),
             "done": 0, "needsYou": 0, "linked": [], "turnId": None, "turnIds": [], "origin": None,
             "blockWhy": None, "doneWhy": None, "followupPending": None, "summary": None, "blockSummary": None,
@@ -1788,6 +2118,8 @@ def build_feed(now, tmux=None):
     asks, working = [], []
     for s in _alive_sessions(now, tmux):             # hard filter: living sessions only
         fsid, name = s["sid"], s["name"]
+        if _session_flag(fsid, "hideFromFeed"):      # muted from the feed (the user 2026-06-19) → timeline-only
+            continue
         color = _name_color(fsid)
         tm = tmux.get(fsid); live = tm is not None
         who_working = bool(tm and tm["state"] == "working")
@@ -2684,7 +3016,8 @@ def build_timeline(now, tmux=None):
             "awaiting": _state_intervals(sid, "permission", now),
             "compacting": _state_intervals(sid, "compacting", now),
             "compactions": compactions, "pendingMail": _pending_mail(sid),
-            "stale": faded, "faded": faded})
+            "stale": faded, "faded": faded,
+            "hideFromFeed": _session_flag(sid, "hideFromFeed")})   # lane gear → mute from feed (timeline-only)
     messages = _postal_messages(now, set(id2name), id2name)
     _bind_message_execs(messages, turns)                 # connector exec → the recipient's process-start (real transit)
     # token usage by rate-limit WINDOW (the user 2026-06-17): the coding SESSIONS + the judge PIPELINE,
@@ -3100,6 +3433,10 @@ def _pusher():
             any_client = bool(_clients)
         if any_client:
             _push_all()
+        try:                                  # Auto Nudge runs server-side even with no browser open (cheap when off)
+            _auto_nudge_tick(int(time.time()), _tmux_sessions())
+        except Exception:
+            sys.stderr.write("auto-nudge: %s\n" % traceback.format_exc())
         time.sleep(4)
 
 
@@ -3293,7 +3630,11 @@ _GEAR_HTML = ("<button id=rrefresh title='Restart the romp kernel' aria-label=Re
               "<option value=magma>Magma</option><option value=inferno>Inferno</option>"
               "<option value=plasma>Plasma</option><option value=cividis>Cividis</option>"
               "</select></span></div>"
-              "<label class='rs-row rs-sep'><input type=checkbox id=rs-debug>"
+              "<label class='rs-row rs-sep'><input type=checkbox id=rs-autonudge>"
+              "<span><b>Auto Nudge</b>"
+              "<span class=rs-sub>When a session goes idle but its goal still shows working (not blocked, not awaiting you), automatically nudge it once for a status update.</span>"
+              "</span></label>"
+              "<label class=rs-row><input type=checkbox id=rs-debug>"
               "<span><b>Debug mode</b>"
               "<span class=rs-sub>Reveal the kernel-restart (↻) button and the judging timeline — the summarizer judges' actions, on a band under the lanes.</span>"
               "</span></label>"
@@ -3321,7 +3662,7 @@ _GEAR_HTML = ("<button id=rrefresh title='Restart the romp kernel' aria-label=Re
               "</div></div>")
 _GEAR_JS = r"""(function(){var g=document.getElementById('rgear'),p=document.getElementById('rsettings'),
 b=document.getElementById('rsver'),cc=document.getElementById('rs-compact'),cm=document.getElementById('rs-colormap'),
-db=document.getElementById('rs-debug');
+db=document.getElementById('rs-debug'),an=document.getElementById('rs-autonudge');
 function load(){try{return Object.assign({compact:false,colormap:'hawaii',subgoals:true,debug:false},JSON.parse(localStorage.getItem('romp:settings')||'null'));}catch(e){return {compact:false,colormap:'hawaii',subgoals:true,debug:false};}}
 function save(s){try{localStorage.setItem('romp:settings',JSON.stringify(s));}catch(e){}}
 function emit(){try{window.dispatchEvent(new Event('romp:settings'));}catch(e){}}   // same-doc signal → the feed re-gates its cards
@@ -3329,11 +3670,15 @@ cc.addEventListener('change',function(){var s=load();s.compact=cc.checked;save(s
 // (Explanations + Sub-goals toggles removed from the gear 2026-06-18 — Sub-goals lives in the feed footer now.)
 function applyDebug(s){if(rf)rf.style.display=(s&&s.debug)?'':'none';}
 db.addEventListener('change',function(){var s=load();s.debug=db.checked;save(s);emit();applyDebug(s);});
+// Auto Nudge is a SERVER-SIDE behavior (the kernel runs it), so the kernel is the source of truth: toggling
+// posts to the kernel; the checkbox is (re)initialized from /version on every gear open (see fill()).
+if(an)an.addEventListener('change',function(){try{window.acquireVsCodeApi&&window.acquireVsCodeApi().postMessage({type:'setAutoNudge',enabled:an.checked});}catch(e){}});
 cm.addEventListener('change',function(){var s=load();s.colormap=cm.value;save(s);
 try{window.acquireVsCodeApi&&window.acquireVsCodeApi().postMessage({type:'setColormap',name:cm.value});}catch(e){}});
 function lv(){var t=document.querySelector('script[src*="feed.js"]');
 var m=t&&t.getAttribute('src').match(/[?&]v=(\d+)/);return m?+m[1]:0;}
 function fill(){fetch('/version',{cache:'no-store'}).then(function(r){return r.json();}).then(function(v){
+if(an)an.checked=!!v.autoNudge;
 var x=lv();b.innerHTML='kernel '+(v.kernel_sha||'?')+'\nserving v'+
 v.dist_ver+'\nthis tab v'+(x||'?');
 }).catch(function(){b.textContent='(version unavailable)';});}
@@ -3467,6 +3812,7 @@ if(window.parent!==window)window.parent.postMessage({romp:"reveal",pane:"chat"},
 window.__rompTimelineWriteOrder=function(order){send({type:"writeOrder",order:order});};
 window.__rompTimelineCompact=function(name){send({type:"compact",name:name});};
 window.__rompTimelineSendCommand=function(name,cmd){send({type:"sendCommand",name:name,cmd:cmd});};
+window.__rompTimelineSetFlag=function(id,flag,value){send({type:"setSessionFlag",id:id,flag:flag,value:!!value});};
 window.__rompTimelineHover=function(sid,segIds,t0,t1){send(sid?{type:"timelineHover",sid:sid,segIds:segIds||[],t0:t0,t1:t1}:{type:"timelineHover",off:true});};
 window.__rompConnectTimeline=function(p){panel=p;connect();send({type:"ready"});};})();
 """
@@ -3974,6 +4320,14 @@ class Handler(BaseHTTPRequestHandler):
                         client["send"](json.dumps({"type": "tabOrder", "order": _o}))
                     except Exception:
                         pass
+                elif msg and msg.get("type") == "setSessionFlag" and msg.get("id") and msg.get("flag"):
+                    # timeline lane gear → toggle a per-session view flag (e.g. hideFromFeed). Persisted +
+                    # re-broadcast so the feed drops/restores that session's cards immediately.
+                    _set_session_flag(str(msg["id"]), str(msg["flag"]), bool(msg.get("value")))
+                    _push_all()
+                elif msg and msg.get("type") == "setAutoNudge" and msg.get("enabled") is not None:
+                    _set_auto_nudge(bool(msg["enabled"]))   # feed gear → server-side Auto Nudge on/off
+                    _auto_nudge_tick(int(time.time()), _tmux_sessions())   # act immediately on turn-on (don't wait 4s)
                 elif msg and msg.get("type") == "askClear" and msg.get("itemId"):
                     _clear_ask(msg["itemId"])
                     _push_all()                        # reflect the clear on every feed client now

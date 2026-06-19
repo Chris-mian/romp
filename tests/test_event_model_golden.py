@@ -395,6 +395,33 @@ class Authorship(unittest.TestCase):
         self.assertEqual(_trigger_author(out["turns"][0]), {"peer": None})
 
 
+class RompInjectedAuthor(unittest.TestCase):
+    """author_of('romp') for a message romp injected into a pane (a feed nudge / follow-up). The hidden
+    marker makes a pasted nudge a SYSTEM message, not a 'human' typed prompt — so the chat can render it
+    as the gray romp bubble instead of the blue user bubble (the user 2026-06-19)."""
+
+    @staticmethod
+    def _blocks(text):
+        return [{"type": "text", "text": text}]
+
+    def test_romp_goal_id_marker_authors_romp(self):
+        b = self._blocks("> the goal\n\nWhat is the status?\n\n<!-- romp-goal-id: sid:g1 -->")
+        self.assertEqual(em.author_of(b, "typed", {}), "romp",
+                         "the romp marker wins over promptSource=typed (the nudge is pasted, not typed by you)")
+
+    def test_explicit_romp_injected_marker_authors_romp(self):
+        b = self._blocks("Picking this back up.\n\n<!-- romp-injected -->")
+        self.assertEqual(em.author_of(b, None, {}), "romp")
+
+    def test_plain_typed_prompt_is_still_human(self):
+        self.assertEqual(em.author_of(self._blocks("just a normal message"), "typed", {}), "human")
+
+    def test_postal_marker_still_wins_for_a_peer_message(self):
+        b = self._blocks("DELEGATE: do a thing\n\n<!-- romp-msg-id: m1 -->")
+        self.assertEqual(em.author_of(b, "typed", {"m1": PEER}), {"peer": PEER},
+                         "a real peer message stays a peer card, not a romp injection")
+
+
 class TurnBoundaries(unittest.TestCase):
     def test_absorbed_prompt_stays_in_turn(self):
         out = run_scenario("multi_input_absorbed")

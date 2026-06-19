@@ -234,6 +234,9 @@ body { display: flex; flex-direction: column; }
   border: 1.5px solid var(--dim); border-radius: 50%; color: var(--dim);
   display: inline-flex; align-items: center; justify-content: center; align-self: center;
 }
+/* COMPLETED items read as "settled": the whole row sits at a slight alpha so the live / not-yet-done
+   items (full opacity) stand out (the user 2026-06-19). Only .done is faded — uncompleted rows stay at 1. */
+.ledger-tnode.done { opacity: 0.75; }
 .ledger-tnode.done .ledger-tmark { background: var(--check-bg); border-color: transparent; color: #fff; }
 /* EXPLICIT done = the strong solid ✓ disc above. Every OTHER kind of "done" — DERIVED (inherited via
    roll-up/roll-down) AND CLEARED (user-dismissed) — shares ONE secondary style: an OUTLINED ✓ (a blue ring
@@ -351,6 +354,21 @@ body { display: flex; flex-direction: column; }
 .chip-idle { background: rgba(255, 255, 255, 0.08); color: var(--dim); }
 .chip-closed { background: rgba(255, 255, 255, 0.07); color: var(--dim); }
 .status-timer { color: var(--dim); font-variant-numeric: tabular-nums; font-size: 0.92em; }
+/* stop/interrupt button beside the state badge (the user 2026-06-19): sends the SAME interrupt as the
+   composer's Ctrl+C. It renders ONLY while the session is busy (updateStatusline omits it when idle), so
+   it's always the live control — a crisp white square, and ONLY on hover does it reveal the pale-red
+   "stop" danger tint. The icon is a CSS-drawn filled square. */
+.stop-btn {
+  flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; padding: 0; border-radius: 50%;
+  background: transparent; cursor: pointer;
+  border: 1px solid rgba(255, 255, 255, 0.18); color: var(--fg);
+  transition: color 0.12s ease, background 0.12s ease, border-color 0.12s ease, transform 0.08s ease;
+}
+.stop-btn:hover { color: var(--st-blocked-bg); background: rgba(229, 72, 77, 0.12); border-color: rgba(229, 72, 77, 0.45); }
+.stop-btn:active { transform: scale(0.88); }
+.stop-btn.stop-flash { color: var(--st-blocked-bg); background: rgba(229, 72, 77, 0.22); border-color: rgba(229, 72, 77, 0.4); }
+.stop-icon { width: 8px; height: 8px; border-radius: 1.5px; background: currentColor; }
 /* WORKING chip: the letters are ONE solid color that breathes between two tones on a sine ease (no
    moving rainbow). Both tones contrast the yellow pill (--st-working-bg). cubic-bezier(0.37,0,0.63,1)
    = ease-in-out-sine. 1.5s period — 2× the old 3s (the user 2026-06-16). The working DOTS stay SOLID
@@ -517,6 +535,8 @@ body { display: flex; flex-direction: column; }
 /* your prompt — the SAME royal/indigo blue as your message bubble (#2b6cef), so the dot matches your
    chat box (the user 2026-06-15). Distinct from the cyan ✓ success disc (--check-bg #1EA1EB). */
 .dot.user { background: #2b6cef; border: none; }
+/* a romp-injected message (feed nudge) — a muted gray dot to match its gray bubble (the user 2026-06-19) */
+.dot.romp { background: var(--dim); border: none; }
 /* user turns pad 14px on top (vs 9px for assistant), so nudge their dot + rail marker
    down to sit on the bubble's first line */
 .turn-user .dot, .turn-user .time-marker { top: 20px; }
@@ -544,6 +564,25 @@ body { display: flex; flex-direction: column; }
 /* white-on-blue legibility for inner markdown */
 .user-bubble a { color: #fff; text-decoration: underline; text-underline-offset: 2px; }
 .user-bubble :not(pre) > code { background: rgba(255, 255, 255, 0.2); color: #fff; }
+/* ---------- romp-injected message (a feed nudge / follow-up) ----------
+   A GRAY bubble in the SAME right-aligned spot as the blue user bubble (so it sits where "an outgoing
+   message" goes), but clearly NOT you — gray, with a small "↯ romp" tag above it (the user 2026-06-19).
+   Right-align is inherited from .turn-user:not(.injected) since a romp turn carries no .injected class. */
+.romp-tag {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 0.66em; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--dim); margin-bottom: 3px; margin-right: 2px;
+}
+.romp-tag-logo { width: 14px; height: 14px; display: block; flex: 0 0 auto; }
+.romp-bubble {
+  max-width: 72%;
+  background: rgba(255, 255, 255, 0.08); border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 14px; padding: 9px 14px; color: var(--fg);
+  display: flow-root;
+}
+.romp-bubble a { color: var(--fg); text-decoration: underline; text-underline-offset: 2px; }
+.romp-bubble blockquote { margin: 0 0 6px; padding-left: 9px; border-left: 2px solid var(--box-border); color: var(--dim); }
+.romp-bubble :not(pre) > code { background: rgba(255, 255, 255, 0.12); }
 /* QUEUED: the user's messages submitted while the session is still working — pending,
    not yet a turn. Right-aligned like his sent bubbles, but faint + dashed to read
    as "waiting", with a header count. (Mirrors the queue Claude Code shows.) */
@@ -850,6 +889,42 @@ body { display: flex; flex-direction: column; }
 }
 .reminder-body .fold-pre + .fold-pre { margin-top: 6px; }
 .reminder-fold .fold-head { font-style: italic; }
+
+/* the pinned "system context" card (the user 2026-06-19): a proper bordered BOX at the very top of the
+   transcript that looks complete even when collapsed (a ⚙ header + one-line summary + caret), expanding
+   to the config grid + CLAUDE.md sub-boxes. It is meta, not a conversational turn, so it sits OFF the
+   rail — no dot, and its left gutter + vertical rail line are suppressed (the next turn starts the rail). */
+.turn-system { padding-left: 0; padding-top: 10px; padding-bottom: 8px; }
+.turn-system::before { display: none; }
+.sys-card { border: 1px solid var(--box-border); border-radius: 9px; background: var(--box-bg); overflow: hidden; }
+.sys-card-head {
+  display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none;
+  padding: 8px 12px; font-size: 0.88em;
+}
+.sys-card-head:hover { background: var(--hover-bg, rgba(127, 127, 127, 0.08)); }
+.sys-gear { flex: 0 0 auto; opacity: 0.85; }
+.sys-title { font-weight: 600; color: var(--fg); }
+.sys-sub { color: var(--dim); font-size: 0.92em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sys-caret { flex: 0 0 auto; margin-left: auto; color: var(--dim); font-size: 0.8em; transition: transform 0.12s ease; }
+.sys-card.open .sys-caret { transform: rotate(90deg); }
+.sys-card-body { display: none; padding: 2px 12px 12px; }
+.sys-card.open .sys-card-body { display: block; }
+.sys-meta {
+  display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px;
+  font-size: 0.85em; margin: 4px 0 10px; align-items: baseline;
+}
+.sys-key { color: var(--dim); }
+.sys-val { color: var(--fg); font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace); word-break: break-all; }
+.sys-doc + .sys-doc { margin-top: 10px; }
+.sys-doc-head { display: flex; align-items: baseline; gap: 7px; font-size: 0.82em; margin-bottom: 1px; }
+.sys-doc-scope {
+  flex: 0 0 auto; text-transform: uppercase; letter-spacing: 0.04em; font-size: 0.82em;
+  font-weight: 700; padding: 1px 6px; border-radius: 4px; color: var(--bg);
+}
+.sys-doc-scope.global { background: var(--dim); }
+.sys-doc-scope.project { background: var(--active-accent, #2b6cef); }
+.sys-doc-path { color: var(--dim); font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace); word-break: break-all; }
+.sys-note { margin-top: 11px; color: var(--dim); font-size: 0.8em; font-style: italic; line-height: 1.45; }
 
 /* folded tool IN/OUT (Bash/Grep/…): bounded scroll box, like the Read fold */
 .tool-io-fold {

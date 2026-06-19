@@ -57,10 +57,18 @@ test("a 'Followed up' chip shows while the kernel optimistically reopened a foll
   assert.match(FEED, /el\("span", "fask-followedup"\); fupBadge\.textContent = "↻ Followed up"/);
   // the chip rides the SESSION-NAME row (right-justified), NOT the bottom action row, so it stops crowding
   // Clear off the card's right edge (the user 2026-06-18)
-  assert.match(FEED, /actions\.append\(waitBadge, apiBadge, blkBadge, reBadge, apiRetry, nudge, clr\)/);   // + Nudge before Clear (the user 2026-06-18)
-  assert.match(FEED, /row2\.append\(idwrap, fupBadge\)/);
+  assert.match(FEED, /row2\.append\(idwrap, reBadge, fupBadge\)/);
   assert.match(FEED, /a\._followedup\.style\.display = it\.followupPending \? "" : "none"/);
   assert.match(CSS, /\.fask-followedup \{/);
+});
+
+test("session-STATE badges (⏸ approval / ⚠ API error / ⏳ waiting) ride the name row; the footer is buttons only (the user 2026-06-19)", () => {
+  // the bug: ⏸ approval + Nudge + Clear in the SAME footer row shoved Nudge/Clear off a narrow card.
+  // Fix: the state badges move up beside the session name; the action row holds only the buttons.
+  assert.match(FEED, /idwrap\.append\(waitBadge, apiBadge, blkBadge\)/, "state badges sit beside the name");
+  assert.match(FEED, /actions\.append\(apiRetry, nudge, clr\)/, "footer = buttons only (Retry/Nudge/Clear)");
+  // the badges keep their refs so updateAskCard still toggles them by display
+  assert.match(FEED, /a\._blocked = blkBadge; a\._wait = waitBadge;/);
 });
 
 test("a cleared card CONTRACTS in on itself (scale + collapse), not a slide to one side (the user 2026-06-18)", () => {

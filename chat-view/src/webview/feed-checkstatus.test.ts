@@ -10,7 +10,8 @@ const FEED = fs.readFileSync(path.resolve(process.cwd(), "src", "webview", "feed
 
 test("the card builds a Nudge button in its actions row, beside Clear", () => {
   assert.match(FEED, /const nudge = el\("button", "fdismiss ffollow fask-nudge"\); nudge\.textContent = "Nudge"/);
-  assert.match(FEED, /actions\.append\(waitBadge, apiBadge, blkBadge, reBadge, apiRetry, nudge, clr\)/);
+  // the action row is buttons only now (the state badges moved up to the name row, 2026-06-19)
+  assert.match(FEED, /actions\.append\(apiRetry, nudge, clr\)/);
   assert.match(FEED, /a\._nudge = nudge;/);
 });
 

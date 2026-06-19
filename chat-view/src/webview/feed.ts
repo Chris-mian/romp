@@ -431,12 +431,16 @@ function makeAskCard(it: AskItem): HTMLElement {
   const nudge = el("button", "fdismiss ffollow fask-nudge"); nudge.textContent = "Nudge"; nudge.title = "nudge this session for a status update on this goal"; nudge.style.display = "none";
   // No "Follow up" button on the card — open the card's modal (body click) to follow up there
   // (the user 2026-06-16). The modal composer is the single follow-up surface.
-  actions.append(waitBadge, apiBadge, blkBadge, reBadge, apiRetry, nudge, clr);
-  // "↻ Followed up" rides the SESSION-NAME row (right-justified), NOT the bottom action row — otherwise it
-  // crowded the bottom row and pushed Clear past the card's right edge (the user 2026-06-18). idwrap is
-  // flex:1 so the chip sits flush right of the name.
-  row2.append(idwrap, fupBadge);
-  // ROW 3 — timestamp bottom-left · status badges + Clear bottom-right
+  // Session-STATE badges (⏸ approval / ⚠ API error / ⏳ waiting) ride the SESSION-NAME row, right after the
+  // name — they describe the session's live state, and keeping them OFF the action row stops them shoving
+  // Nudge/Clear past the card's right edge on a narrow card (the user 2026-06-19; mirrors the ↻ Followed-up
+  // chip moved up 2026-06-18). idwrap is flex:1 so the name ellipsizes before the badge is ever clipped.
+  idwrap.append(waitBadge, apiBadge, blkBadge);
+  // The action row holds ONLY buttons now (Retry / Nudge / Clear).
+  actions.append(apiRetry, nudge, clr);
+  // "reopened" + "↻ Followed up" chips ride the name row too (right-justified, flush right of the name).
+  row2.append(idwrap, reBadge, fupBadge);
+  // ROW 3 — timestamp bottom-left · action buttons bottom-right
   const row3 = el("div", "fask-row3"); row3.append(time, actions);
   // the user's handoff spec (2026-06-10): below the main session, list the OTHER
   // sessions this ask was handed to — but only while they are LIVE-WORKING on
@@ -556,7 +560,18 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   a._title.style.fontStyle = it.provisional ? "italic" : "";
   const [r, g, b] = it.trgb;
   card.style.background = `rgba(${r}, ${g}, ${b}, ${TINT_ALPHA})`;
-  card.style.borderColor = `rgba(${r}, ${g}, ${b}, ${Math.min(TINT_ALPHA + 0.2, 0.9)})`;
+  // GHOST prompt: a provisional placeholder gets a dashed outline so it reads as not-yet-real (the user
+  // 2026-06-19), distinct from the solid recency-tinted border of a real card. Reset to solid when the
+  // planner replaces it with the classified card.
+  if (it.provisional) {
+    card.style.borderStyle = "dashed";
+    card.style.borderWidth = "1.5px";
+    card.style.borderColor = "rgba(255, 255, 255, 0.45)";
+  } else {
+    card.style.borderStyle = "";
+    card.style.borderWidth = "";
+    card.style.borderColor = `rgba(${r}, ${g}, ${b}, ${Math.min(TINT_ALPHA + 0.2, 0.9)})`;
+  }
   a._title.textContent = it.text;
   a._name.textContent = it.name;
   if (it.color) a._name.style.color = it.color.bg;

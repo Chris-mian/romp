@@ -283,3 +283,9 @@ test("the morph hides the curTop row's OWN checkbox/time too (only the text move
   assert.match(RENDER, /function morphLedgerCollapse\(sumEl: HTMLElement, from:/);
   assert.match(RENDER, /if \(ledgerMorphFrom && curTop\) morphLedgerCollapse\(sum, ledgerMorphFrom\);/);
 });
+
+test("completed ledger rows sit at a slight alpha (0.75); uncompleted rows stay at full opacity (the user 2026-06-19)", () => {
+  assert.match(CSS, /\.ledger-tnode\.done \{ opacity: 0\.75; \}/);
+  // the fade is scoped to .done — there's no blanket .ledger-tnode opacity that would dim everything
+  assert.doesNotMatch(CSS, /\.ledger-tnode \{[^}]*opacity:/, "uncompleted rows are NOT alpha'd");
+});

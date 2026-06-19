@@ -33,7 +33,7 @@ marked.setOptions({ gfm: true, breaks: false });
 type AskAnswerBlock = { question: string; header?: string; options: { label: string; description?: string }[]; chosen: string[] };
 
 type ChatEvent = (
-  | { kind: "user"; md: string; uuid?: string; ts?: string; reminders?: string[]; human?: boolean; images?: { src: string; path?: string }[] }
+  | { kind: "user"; md: string; uuid?: string; ts?: string; reminders?: string[]; human?: boolean; romp?: boolean; images?: { src: string; path?: string }[] }
   | { kind: "assistant"; md: string; uuid?: string; ts?: string }
   | { kind: "thinking"; text: string; encrypted: boolean; uuid?: string; ts?: string }
   | {
@@ -74,6 +74,11 @@ type ChatEvent = (
   // until retried — a red-dot card at the bottom with a Retry button (the user 2026-06-16).
   | { kind: "apiError"; text: string; status?: number; category?: string; ts?: string; uuid?: string }
   | { kind: "compact"; ts?: string; uuid?: string }
+  // Pinned, collapsed "system context" card at the top of the transcript (the user 2026-06-19): the
+  // CLAUDE.md instructions in effect + session config. NOT the verbatim harness prompt — it's never
+  // recorded, so it can't be shown (renderSystem says so). No ts/uuid → off the rail (no dot/hover).
+  | { kind: "system"; model?: string; cwd?: string; gitBranch?: string; version?: string; mode?: string;
+      claudemd?: { path: string; scope: string; text: string }[]; uuid?: string; ts?: string }
 ) & { tlId?: string };   // tlId: the timeline atom this event's hover lights — a prompt → the DOT, work → the BAR
 
 interface TodoTask { id: string; subject: string; activeForm?: string; status: string }
@@ -93,6 +98,7 @@ const sessions = new Map<string, Session>();
 const order: string[] = [];           // positional tab order (for cycling)
 const mru: string[] = [];             // recency stack, front = most-recently-active (close → return to previous)
 let activeId: string | null = null;
+let renderingSid: string | null = null;   // the session id syncView is currently building (for per-session fold keys)
 // restore the last-active tab on refresh (persisted via setState); one-shot, applied when its session arrives
 let wantActive: string | null = (() => { try { return ((vscodeApi?.getState?.() || {}) as any).activeId || null; } catch { return null; } })();
 let pendingAnchor: string | null = null; // deep-link target waiting to be scrolled to
@@ -190,7 +196,7 @@ function wrapCodeLines(code: HTMLElement) {
   }).join("");
 }
 
-function dot(kind: "green" | "ring" | "user" | "red"): HTMLElement { return el("span", "dot " + kind); }
+function dot(kind: "green" | "ring" | "user" | "red" | "romp"): HTMLElement { return el("span", "dot " + kind); }
 
 function ioRow(label: "IN" | "OUT", text: string, isError: boolean): HTMLElement {
   const row = el("div", "io-row" + (label === "OUT" ? " io-out" : "") + (isError ? " io-error" : ""));
@@ -255,13 +261,14 @@ function fileLink(path: string): HTMLElement {
 }
 
 // Visible-but-bounded IN/OUT block (clamped ~300px, click to expand fully).
-function ioClamp(input: string, output: string, isError: boolean): HTMLElement {
+function ioClamp(input: string, output: string, isError: boolean, key?: string): HTMLElement {
   const clamp = el("div", "io-clamp");
   const io = el("div", "tool-io");
   if (input) io.appendChild(ioRow("IN", input, false));
   if (output) io.appendChild(ioRow("OUT", output, isError));
   clamp.appendChild(io);
-  clamp.addEventListener("click", () => clamp.classList.toggle("expanded"));
+  applyFold(clamp, "expanded", key);
+  clamp.addEventListener("click", () => rememberFold(clamp, "expanded", key));
   return clamp;
 }
 
@@ -269,25 +276,44 @@ function ioClamp(input: string, output: string, isError: boolean): HTMLElement {
 // on the RIGHT of the tool's HEAD line; the expandable content hangs below the
 // head, hidden until clicked — so each tool stays ONE row by default (the user:
 // vertical-compact). `head` must already be appended to `turn`.
-function inlineFold(head: HTMLElement, turn: HTMLElement, label: string, content: HTMLElement) {
+function inlineFold(head: HTMLElement, turn: HTMLElement, label: string, content: HTMLElement, key?: string) {
   const toggle = el("span", "tool-fold-toggle");
   toggle.textContent = label;   // just the clickable summary ("+14 −0" / "12 lines") — no caret/bullet
   toggle.title = "click to expand";
-  toggle.addEventListener("click", (e) => { e.stopPropagation(); turn.classList.toggle("fold-open"); });
+  applyFold(turn, "fold-open", key);
+  toggle.addEventListener("click", (e) => { e.stopPropagation(); rememberFold(turn, "fold-open", key); });
   content.classList.add("tool-fold-body");
   head.appendChild(toggle);
   turn.appendChild(content);
 }
 
-// Hidden-until-clicked disclosure (caret + label) — for noise-by-default
-// content like Read dumps and folded system reminders.
-function foldable(label: string, content: HTMLElement): HTMLElement {
+// Expand/collapse state must SURVIVE the incremental re-render that every send/turn triggers (the user
+// 2026-06-19): a short transcript rebuilds from index 0, a long one re-renders the trailing TAIL_RECHECK
+// turns — either way a DOM-only `.open` silently resets whatever the user had opened (e.g. they expand
+// the system-context card, type a message, hit ⏎, and it snaps shut). So we persist open-state in a Set
+// keyed by a stable id (the turn uuid, or the session id for the pinned system card) and reapply it on
+// rebuild — the same trick `expandedGroups` uses for collapsed tool runs. A keyless fold (no stable id)
+// is just transient, exactly as before. Same-uuid sibling folds share a key → they expand together on
+// rebuild; benign (shows more, never less) and rare.
+const openFolds = new Set<string>();
+function applyFold(target: HTMLElement, cls: string, key?: string): void {
+  if (key && openFolds.has(key)) target.classList.add(cls);
+}
+function rememberFold(target: HTMLElement, cls: string, key?: string): void {
+  const open = target.classList.toggle(cls);
+  if (key) { if (open) openFolds.add(key); else openFolds.delete(key); }
+}
+
+// Hidden-until-clicked disclosure (caret + label) — for noise-by-default content like Read dumps and
+// folded system reminders. Pass a stable `key` to make the open/closed state survive re-renders.
+function foldable(label: string, content: HTMLElement, key?: string): HTMLElement {
   const wrap = el("div", "fold");
   const head = el("div", "fold-head");
   const caret = el("span", "fold-caret"); caret.textContent = "▸";
   const lab = el("span", "fold-label"); lab.textContent = label;
   head.appendChild(caret); head.appendChild(lab);
-  head.addEventListener("click", () => wrap.classList.toggle("open"));
+  applyFold(wrap, "open", key);
+  head.addEventListener("click", () => rememberFold(wrap, "open", key));
   wrap.appendChild(head);
   wrap.appendChild(content);
   return wrap;
@@ -581,20 +607,33 @@ function scheduleRestamp(): void {
 }
 
 function renderEventInner(ev: ChatEvent): HTMLElement {
+  if (ev.kind === "system") return renderSystem(ev);
   if (ev.kind === "user") {
-    // Only GENUINE typed/queued prompts get the blue "your message" bubble. Harness-
-    // injected user-role lines (compact summary, /command stdout, system reminders,
-    // postal pushes — all promptSource≠typed/queued) fall back to a neutral note box.
-    const injected = !ev.human;
-    const turn = el("div", "turn turn-user" + (injected ? " injected" : ""));
-    // Prompts ride the rail like every other turn: their own dot + a left-gutter HH:MM
-    // marker (added in renderEvent), instead of a timestamp printed inside the bubble
-    // (the human via debugger, 2026-06-12). Genuine prompts get a solid blue dot to match
-    // the bubble; injected user-role notes get the hollow ring used by assistant turns.
-    turn.appendChild(dot(injected ? "ring" : "user"));
+    // Three flavors of a "user-role" turn: a GENUINE typed prompt → the blue right-aligned bubble; a
+    // message romp INJECTED (a feed nudge / follow-up — ev.romp) → a GRAY right-aligned bubble with a
+    // "romp" tag, so it's clear romp (not you) sent it (the user 2026-06-19); everything else harness-
+    // injected (compact summary, /command stdout, system reminders) → a neutral left note box.
+    const romp = !!ev.romp;
+    const injected = !ev.human && !romp;
+    const turn = el("div", "turn turn-user" + (romp ? " romp" : injected ? " injected" : ""));
+    // Prompts ride the rail like every other turn: their own dot + a left-gutter HH:MM marker (added in
+    // renderEvent). Genuine prompts get the solid blue dot; a romp injection a gray dot; harness notes the
+    // hollow ring used by assistant turns.
+    turn.appendChild(dot(romp ? "romp" : injected ? "ring" : "user"));
     const hasImgs = !!(ev.images && ev.images.length);
     if (ev.md || hasImgs) {
-      const bubble = el("div", (injected ? "user-note" : "user-bubble") + " md");
+      if (romp) {
+        // the romp swirl-glyph logo + "romp" (the user 2026-06-19: use the real logo, not the ↯ symbol).
+        // Served at /media on the web dashboard; in a sandbox without it the img self-removes (alt stays
+        // empty), leaving just "romp".
+        const tag = el("div", "romp-tag");
+        const logo = el("img", "romp-tag-logo") as HTMLImageElement;
+        logo.src = "/media/romp-swirl-glyph.svg"; logo.alt = ""; logo.onerror = () => logo.remove();
+        tag.appendChild(logo);
+        tag.appendChild(document.createTextNode("romp"));
+        turn.appendChild(tag);
+      }
+      const bubble = el("div", (romp ? "romp-bubble" : injected ? "user-note" : "user-bubble") + " md");
       if (ev.md) bubble.innerHTML = md(ev.md);
       // images, IN the bubble (part of his message): thumbnail + open/copy caption;
       // a literal path in the typed text becomes the same open-link inline.
@@ -608,7 +647,7 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
       const body = el("div", "reminder-body");
       for (const r of ev.reminders) body.appendChild(preEl(r));
       const n = ev.reminders.length;
-      const f = foldable(`ⓘ ${n} system reminder${n > 1 ? "s" : ""}`, body);
+      const f = foldable(`ⓘ ${n} system reminder${n > 1 ? "s" : ""}`, body, ev.uuid ? "rem:" + ev.uuid : undefined);
       f.classList.add("reminder-fold");
       turn.appendChild(f);
     }
@@ -634,7 +673,9 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
     const clamp = el("div", "think-clamp");
     clamp.appendChild(t);
     clamp.title = "click to expand";
-    clamp.addEventListener("click", () => clamp.classList.toggle("expanded"));
+    const tkey = ev.uuid ? "think:" + ev.uuid : undefined;
+    applyFold(clamp, "expanded", tkey);
+    clamp.addEventListener("click", () => rememberFold(clamp, "expanded", tkey));
     turn.appendChild(clamp);
     return turn;
   }
@@ -644,6 +685,78 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
   if (ev.kind === "apiError") return renderApiError(ev);
   if (ev.kind === "compact") return renderCompact(ev);
   return renderTool(ev);
+}
+
+// Prettify a model id for the collapsed summary line: "claude-opus-4-8" → "Opus 4.8". Unknown ids pass
+// through unchanged so nothing is ever hidden behind a bad guess.
+function prettyModel(id: string): string {
+  const m = /(?:claude-)?(opus|sonnet|haiku|fable)(?:-(\d+))?(?:-(\d+))?/i.exec(id);
+  if (!m) return id;
+  const fam = m[1][0].toUpperCase() + m[1].slice(1).toLowerCase();
+  const ver = [m[2], m[3]].filter(Boolean).join(".");
+  return ver ? `${fam} ${ver}` : fam;
+}
+
+// The pinned "system context" card at the very top of the transcript (the user 2026-06-19): a proper
+// bordered BOX that looks complete even when collapsed — a ⚙ header with a one-line summary (model ·
+// N CLAUDE.md) and a caret. Expanding reveals the session's model / permission-mode / cwd / branch /
+// Claude Code version, then the CLAUDE.md instruction files that were in effect, each as its own raw,
+// scrollable SUB-box. It is explicitly NOT the verbatim Claude Code harness prompt — that text is never
+// written to the transcript, so it can't be shown; the closing note says so. Carries no dot/timestamp
+// (no ts/uuid) → renderEvent leaves it off the conversational rail. Its open/closed state is persisted
+// per session (keyed by renderingSid) so a send/turn re-render never snaps it shut.
+function renderSystem(ev: Extract<ChatEvent, { kind: "system" }>): HTMLElement {
+  const turn = el("div", "turn turn-system");
+  const key = renderingSid ? "sysctx:" + renderingSid : undefined;
+  const card = el("div", "sys-card");
+  applyFold(card, "open", key);
+
+  const head = el("div", "sys-card-head");
+  const gear = el("span", "sys-gear"); gear.textContent = "⚙"; head.appendChild(gear);
+  const title = el("span", "sys-title"); title.textContent = "System context"; head.appendChild(title);
+  const n = (ev.claudemd || []).length;
+  const bits: string[] = [];
+  if (ev.model) bits.push(prettyModel(ev.model));
+  if (n) bits.push(`${n} CLAUDE.md`);
+  const sub = el("span", "sys-sub"); sub.textContent = bits.join(" · "); head.appendChild(sub);
+  const caret = el("span", "sys-caret"); caret.textContent = "▸"; head.appendChild(caret);
+  head.title = "the CLAUDE.md instructions + config this session is running under";
+  head.addEventListener("click", () => rememberFold(card, "open", key));
+  card.appendChild(head);
+
+  const body = el("div", "sys-card-body");
+  const rows: [string, string][] = [];
+  if (ev.model) rows.push(["Model", ev.model]);
+  if (ev.mode) rows.push(["Permission mode", ev.mode]);
+  if (ev.cwd) rows.push(["Directory", ev.cwd]);
+  if (ev.gitBranch) rows.push(["Git branch", ev.gitBranch]);
+  if (ev.version) rows.push(["Claude Code", ev.version]);
+  if (rows.length) {
+    const grid = el("div", "sys-meta");
+    for (const [k, val] of rows) {
+      const ke = el("span", "sys-key"); ke.textContent = k; grid.appendChild(ke);
+      const ve = el("span", "sys-val"); ve.textContent = val; grid.appendChild(ve);
+    }
+    body.appendChild(grid);
+  }
+  for (const doc of ev.claudemd || []) {
+    const sec = el("div", "sys-doc");
+    const dh = el("div", "sys-doc-head");
+    const scope = el("span", "sys-doc-scope " + (doc.scope === "global" ? "global" : "project"));
+    scope.textContent = doc.scope === "global" ? "global" : "project";
+    const pth = el("span", "sys-doc-path"); pth.textContent = doc.path;
+    dh.appendChild(scope); dh.appendChild(pth);
+    sec.appendChild(dh);
+    sec.appendChild(preEl(doc.text));   // raw text in a bordered, scrollable sub-box (.fold-pre)
+    body.appendChild(sec);
+  }
+  const note = el("div", "sys-note");
+  note.textContent = "Claude Code’s base harness prompt isn’t recorded in the transcript, so it isn’t shown here — this is the CLAUDE.md instructions and session config that were in effect.";
+  body.appendChild(note);
+  card.appendChild(body);
+
+  turn.appendChild(card);
+  return turn;
 }
 
 // AskUserQuestion — render the posed question(s) + options. While the question is still pending it's a
@@ -867,30 +980,33 @@ function renderTool(ev: Extract<ChatEvent, { kind: "tool" }>): HTMLElement {
   const ack = ACK_TOOLS.has(ev.name);
   turn.appendChild(head);
 
+  const fkey = ev.uuid ? "tool:" + ev.uuid : undefined;   // persist this tool's fold across re-renders
   if (ev.isError) {
-    if (ev.input || ev.output) turn.appendChild(ioClamp(ev.input, ev.output, true)); // errors: always show
+    if (ev.input || ev.output) turn.appendChild(ioClamp(ev.input, ev.output, true, fkey)); // errors: always show
   } else if (ev.diff) {
     // Edit/MultiEdit: "+add −del" on the head line; the red/green diff hangs below, hidden.
     let add = 0, del = 0;
     for (const l of ev.diff.split("\n")) { if (l[0] === "+") add++; else if (l[0] === "-") del++; }
     const pre = el("pre", "io-pre fold-pre diff-fold");
     const code = el("code", "language-diff"); code.textContent = ev.diff; pre.appendChild(code);
-    inlineFold(head, turn, `+${add} −${del}`, pre);
+    inlineFold(head, turn, `+${add} −${del}`, pre, fkey);
     highlight(pre, false);   // diffs carry +/− markers + already wrap (io-pre); no line-number gutter
   } else if (ev.name === "Read") {
-    if (ev.output) inlineFold(head, turn, `${countLines(ev.output)} lines`, preEl(ev.output));
+    if (ev.output) inlineFold(head, turn, `${countLines(ev.output)} lines`, preEl(ev.output), fkey);
   } else if (!ack && (ev.input || ev.output)) {
     const signal = ev.name === "Task" || ev.name === "Agent";
     if (signal) {
       // Subagent (Task/Agent) = a delegated mini-conversation. Its PROMPT is context, not the signal,
       // so it folds onto the head line ("prompt"); the agent's REPORT renders as a faded, green-edged
       // sub-transcript block — clamped, click to expand. (the user 2026-06-14: not a big text box.)
-      if (ev.input) inlineFold(head, turn, "prompt", preEl(ev.input));
+      if (ev.input) inlineFold(head, turn, "prompt", preEl(ev.input), fkey ? fkey + ":prompt" : undefined);
       if (ev.output) {
         const clamp = el("div", "io-clamp agent-clamp");
         const report = el("div", "agent-report md"); report.innerHTML = md(ev.output); highlight(report);
         clamp.appendChild(report);
-        clamp.addEventListener("click", () => clamp.classList.toggle("expanded"));
+        const rkey = fkey ? fkey + ":report" : undefined;
+        applyFold(clamp, "expanded", rkey);
+        clamp.addEventListener("click", () => rememberFold(clamp, "expanded", rkey));
         turn.appendChild(clamp);
       }
     } else if (!ev.output) {
@@ -902,7 +1018,7 @@ function renderTool(ev: Extract<ChatEvent, { kind: "tool" }>): HTMLElement {
       if (ev.input) io.appendChild(ioRow("IN", ev.input, false));
       io.appendChild(ioRow("OUT", ev.output, false));
       const n = countLines(ev.output);
-      inlineFold(head, turn, `${n} line${n === 1 ? "" : "s"}`, io);
+      inlineFold(head, turn, `${n} line${n === 1 ? "" : "s"}`, io, fkey);
     }
   }
   // No right-side status glyph: the LEFT rail dot already carries the outcome — a green ✓
@@ -1811,6 +1927,7 @@ function ensureView(id: string): View {
 // and re-render a bounded trailing window (cheap), or rebuild fully on a shrink
 // (rewind). Does NOT touch scroll. No-op cost when nothing changed is ~O(TAIL).
 function syncView(id: string): View {
+  renderingSid = id;          // so renderSystem can key the pinned card's persisted open-state by session
   const v = ensureView(id);
   const s = sessions.get(id);
   if (!s) return v;
@@ -3112,6 +3229,27 @@ const CHIP_LABEL: Record<ChipState, string> = {
   idle: "IDLE", closed: "CLOSED", compacting: "COMPACTING", blocked: "API ERROR",
 };
 
+// A stop/interrupt button that lives beside the state badge in the statusline (the user 2026-06-19):
+// it sends the SAME interrupt the composer's Ctrl+C does (host → Esc into the pane) — a less fiddly way
+// to halt a run than Ctrl+C in this surface. It ONLY renders while the session is busy (working/
+// compacting) — there's nothing to interrupt otherwise, so it's not drawn at all (the user 2026-06-19);
+// updateStatusline omits it in every idle state. A neutral white square; hovering reveals the red stop tint.
+function stopButton(): HTMLElement {
+  const btn = el("button", "stop-btn");
+  (btn as HTMLButtonElement).type = "button";
+  btn.title = "Stop — interrupt this session (same as Ctrl+C)";
+  btn.setAttribute("aria-label", "Interrupt session");
+  btn.appendChild(el("span", "stop-icon"));   // a filled square (CSS), the universal stop glyph
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (!activeId || !vscodeApi) return;
+    vscodeApi.postMessage({ type: "interrupt", id: activeId });
+    btn.classList.add("stop-flash");
+    window.setTimeout(() => btn.classList.remove("stop-flash"), 400);
+  });
+  return btn;
+}
+
 function updateStatusline() {
   const sl = document.getElementById("statusline");
   const s = activeId ? sessions.get(activeId) : null;
@@ -3140,6 +3278,9 @@ function updateStatusline() {
     chip.textContent = CHIP_LABEL[s.status.state] ?? s.status.state.toUpperCase();
     sl.appendChild(chip);
   }
+  // stop/interrupt button, right beside the state badge — ONLY while busy (working/compacting); omitted
+  // entirely in idle states (there's nothing to interrupt) — the user 2026-06-19.
+  if (s.status.state === "working" || s.status.state === "compacting") sl.appendChild(stopButton());
   const meta = el("span", "spinner-meta");
   meta.id = "spinner-meta";
   syncMetaControls(meta, s.status);

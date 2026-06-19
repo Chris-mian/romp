@@ -11,7 +11,7 @@ const CSS = fs.readFileSync(path.resolve(process.cwd(), "src", "webview", "style
 
 test("a Task/Agent call folds its prompt and renders the report as an agent-report block", () => {
   // the prompt is folded onto the head, not shown as a big IN box (no more ioClamp for the signal path)
-  assert.match(RENDER, /inlineFold\(head, turn, "prompt", preEl\(ev\.input\)\)/);
+  assert.match(RENDER, /inlineFold\(head, turn, "prompt", preEl\(ev\.input\), fkey \? fkey \+ ":prompt" : undefined\)/);
   assert.match(RENDER, /el\("div", "agent-report md"\)/);
   assert.match(RENDER, /el\("div", "io-clamp agent-clamp"\)/);
   // styled green + faded
