@@ -10,7 +10,9 @@ import * as path from "node:path";
 const RENDER = fs.readFileSync(path.resolve(process.cwd(), "src", "webview", "render.ts"), "utf8");
 
 test("showActive renders a built view synchronously, defers an unbuilt/changed one", () => {
-  assert.match(RENDER, /const heavy = v\.el\.childNodes\.length === 0 \|\| \(settings\.compact && \(v\.rendered !== s\.events\.length \|\| v\.stale\)\);/);
+  // the heavy gate is also fronted by `s.events.length > 0` so a zero-event session never defers / never
+  // shows the "Loading transcript…" hint — it renders the empty placeholder synchronously (the user 2026-06-19)
+  assert.match(RENDER, /const heavy = s\.events\.length > 0 && \(v\.el\.childNodes\.length === 0 \|\| \(settings\.compact && \(v\.rendered !== s\.events\.length \|\| v\.stale\)\)\);/);
   assert.match(RENDER, /if \(!heavy\) \{ syncView\(activeId!\); landActive\(content, v\); return; \}/);   // cached/incremental → instant
 });
 

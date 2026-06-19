@@ -168,6 +168,9 @@ body { display: flex; flex-direction: column; }
 /* brief hint while a first-visited tab's transcript builds on the next frame (the deferred build keeps the
    switch itself instant — the user 2026-06-17); the build replaces it. */
 .tx-loading { color: var(--dim); text-align: center; padding: 28px; font-size: 0.9em; }
+/* a genuinely empty transcript (a session with no turns yet) — shown instead of "Loading transcript…",
+   which would be a lie since the full events payload already arrived (the user 2026-06-19). */
+.tx-empty { color: var(--dim); text-align: center; padding: 28px; font-size: 0.9em; }
 
 /* ---------- ledger: rolling per-session digest, just below the tabs ---------- */
 #ledger {

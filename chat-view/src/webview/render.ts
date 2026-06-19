@@ -1814,6 +1814,19 @@ function syncView(id: string): View {
   const v = ensureView(id);
   const s = sessions.get(id);
   if (!s) return v;
+  // An empty transcript has nothing to build → a "No messages yet." placeholder, NEVER the deferred
+  // "Loading transcript…" hint. The kernel re-sends the FULL events payload on every push, so a zero-event
+  // session is genuinely empty — nothing is streaming in to wait for, so a perpetual "Loading…" was a lie
+  // (the user 2026-06-19). Idempotent: leaves an existing placeholder in place; the first real event clears it.
+  if (s.events.length === 0) {
+    const only = v.el.childNodes.length === 1 ? (v.el.firstChild as HTMLElement) : null;
+    if (!only || !only.classList?.contains("tx-empty")) {
+      while (v.el.firstChild) v.el.removeChild(v.el.firstChild);
+      const ph = el("div", "tx-empty"); ph.textContent = "No messages yet."; v.el.appendChild(ph);
+    }
+    v.rendered = 0; v.stale = false;
+    return v;
+  }
   const working = s.status.state === "working" || s.status.state === "compacting";
   // Compact mode: hide thinking, collapse consecutive tool runs, then run the SAME rail-timestamp
   // chain over the resulting display stream. It's a global transform (runs can span the trailing
@@ -2029,7 +2042,10 @@ function showActive() {
   // events renders instantly (cache / incremental); an UNBUILT one (first visit), or a compact view whose
   // events changed, is an O(events) rebuild — so DEFER it to the next frame and SKIP it if we switch away
   // first. Rapid tab-cycling then stays snappy: only the tab you LAND on actually builds. (the user 2026-06-17.)
-  const heavy = v.el.childNodes.length === 0 || (settings.compact && (v.rendered !== s.events.length || v.stale));
+  // An empty transcript is NEVER heavy: building zero events is instant and must show a placeholder, not
+  // the "Loading transcript…" hint — so it renders synchronously below via syncView, never deferred. The
+  // `length > 0` guard is what stops a zero-event session from flashing (or sticking on) "Loading…".
+  const heavy = s.events.length > 0 && (v.el.childNodes.length === 0 || (settings.compact && (v.rendered !== s.events.length || v.stale)));
   if (!heavy) { syncView(activeId!); landActive(content, v); return; }
   if (v.el.childNodes.length === 0) {   // truly empty → a light loading hint (a stale view keeps its old content visible)
     const ld = el("div", "tx-loading"); ld.textContent = "Loading transcript…"; v.el.appendChild(ld);
