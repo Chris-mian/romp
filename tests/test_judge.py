@@ -926,6 +926,29 @@ class PlanRollup(unittest.TestCase):
         jd.rollup_status(s, session_closed=False)
         self.assertEqual(s["status"][gid], "working", "the reopened goal is back to working for the follow-up")
 
+    def test_bottom_up_completed_top_is_sealed_so_new_work_mints_a_card(self):
+        # The bug (the user 2026-06-18): a top that rolled up to "completed" via the BOTTOM-UP path — its
+        # only child got DONE'd so is_complete holds, but the top's OWN nodeComplete was never set — stayed
+        # in open_menu, because the seal predicate only checked nodeComplete/cleared. So the planner kept
+        # burying new, unrelated asks UNDER the already-done goal instead of minting a fresh card (no goal
+        # surfaced). open_menu must seal it on the settledDone marker the rollup stamps for "completed".
+        s = _store()
+        self._mint(s, "s1", T0, "G1")                                        # the top
+        jd.apply_plan(s, "s2", T0 + 10, [{"do": "sub", "why": "x", "under": 1, "text": "the only step"}],
+                      jd.open_menu(s))
+        ci = next(i for i, nd in enumerate(jd.open_menu(s), 1) if nd["text"] == "the only step")
+        self._done(s, "s3", T0 + 20, ci)                                     # DONE the child -> G1 completes BOTTOM-UP
+        self._mint(s, "s4", T0 + 30, "G2")                                   # focus moves to G2 -> G1 settles
+        g1 = s["placements"]["s1"]
+        jd.rollup_status(s, session_closed=False)
+        self.assertFalse(s["nodes"][g1].get("nodeComplete"), "G1 completed bottom-up: its OWN nodeComplete is never set")
+        self.assertTrue(s["nodes"][g1].get("settledDone"), "settled-completed -> the durable marker is stamped")
+        self.assertEqual(s["status"][g1], "completed")
+        menu_ids = {nd["id"] for nd in jd.open_menu(s)}
+        self.assertNotIn(g1, menu_ids,
+                         "a settled-completed top is sealed out of the menu -> a new ask mints a fresh card, not a sub")
+        self.assertIn(s["placements"]["s4"], menu_ids, "the still-open focus goal G2 stays in the menu (seal isn't over-broad)")
+
     def test_blocked_beats_completed(self):
         s = _store()
         self._mint(s, "s1", T0, "G")

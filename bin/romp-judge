@@ -697,20 +697,25 @@ def save_goals(fsid, store):
 
 def open_menu(store, cap=20):
     """The session's open nodes, numbered oldest-first, capped — the planner's candidate menu. A node is
-    open only if NEITHER it NOR any ancestor is complete/cleared: a completed (or cleared) subtree is
-    SEALED (the user 2026-06-16), so the planner can't sub into it via an open child — new related
-    work mints a NEW top instead of reopening a done branch. Cap 20 covers every real session (max ~18
+    open only if NEITHER it NOR any ancestor is complete/cleared/settled-done: a completed (or cleared)
+    subtree is SEALED (the user 2026-06-16), so the planner can't sub into it via an open child — new
+    related work mints a NEW top instead of reopening a done branch. The settledDone check (the user
+    2026-06-18) closes a gap: a top that rolled up to "completed" via the BOTTOM-UP path (all children
+    nodeComplete, but the top's OWN nodeComplete never set) is shown done on the board yet was NOT sealed
+    here, so the planner kept burying new asks under it instead of minting a fresh card. settledDone is the
+    same durable marker rollup_status stamps for "completed" and _reopen clears for a genuine follow-up, so
+    sealing on it matches exactly what the board shows as done. Cap 20 covers every real session (max ~18
     open goals) while bounding the prompt on a pathological one, so topic-matching can scan the WHOLE list."""
     nodes = store["nodes"]
 
-    def _sealed(nid):                                  # self or any ancestor complete/cleared → inside a done subtree
+    def _sealed(nid):                                  # self or any ancestor complete/cleared/settled-done → inside a done subtree
         seen = set()
         while nid and nid not in seen:
             seen.add(nid)
             nd = nodes.get(nid)
             if not nd:
                 return False
-            if nd.get("nodeComplete") or nd.get("cleared"):
+            if nd.get("nodeComplete") or nd.get("cleared") or nd.get("settledDone"):
                 return True
             nid = nd.get("parentId")
         return False
