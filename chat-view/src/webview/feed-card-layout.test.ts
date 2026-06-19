@@ -62,3 +62,11 @@ test("a 'Followed up' chip shows while the kernel optimistically reopened a foll
   assert.match(FEED, /a\._followedup\.style\.display = it\.followupPending \? "" : "none"/);
   assert.match(CSS, /\.fask-followedup \{/);
 });
+
+test("a cleared card CONTRACTS in on itself (scale + collapse), not a slide to one side (the user 2026-06-18)", () => {
+  // no translateX exit; the card scales down + fades while its height collapses so neighbours close the gap
+  assert.doesNotMatch(CSS, /\.fitem\.dismissing \{[^}]*translateX/);
+  assert.match(CSS, /\.fitem\.dismissing \{[^}]*animation: fask-dismiss/);
+  assert.match(CSS, /@keyframes fask-dismiss \{[\s\S]*transform: scale\(0\.78\)[\s\S]*max-height: 0/);
+  assert.match(CSS, /prefers-reduced-motion: reduce[\s\S]*\.fitem\.dismissing \{ animation: none/);
+});
