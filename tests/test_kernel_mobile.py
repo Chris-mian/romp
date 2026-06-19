@@ -43,10 +43,14 @@ class LandingShell(unittest.TestCase):
         self.assertIn("100dvh", html)                          # explicit, address-bar-aware viewport height
         self.assertNotIn("height:auto;display:none", html)     # the collapsing iframe rule is gone
 
-    def test_shell_uses_flex_column_so_bar_cannot_cover_the_pane(self):
-        # regression: the fixed-position bar overlapped the chat composer. A flex column tiles the pane
-        # and the bar so they can't overlap; one pane shows at a time, keyed off body[data-tab].
+    def test_shell_reserves_the_bar_height_so_it_cannot_cover_the_pane(self):
+        # regression: a position:fixed bar overlapped the chat composer (which is why flex briefly replaced
+        # it). The bar is fixed again — glued to the viewport bottom so no dead space can sit below it — but
+        # now .col RESERVES the bar's measured height (--mtabs-h) as padding-bottom, so the iframes tile
+        # ABOVE the bar and it can't cover the composer. One pane shows at a time, keyed off body[data-tab].
         html = km._landing()
+        self.assertIn("padding-bottom:var(--mtabs-h", html)    # .col reserves the bar's height
+        self.assertIn("--mtabs-h", km._LANDING_MOBILE_JS)      # ...measured from the live bar (offsetHeight)
         self.assertIn("body[data-tab=timeline] .row{display:none}", html)
         self.assertIn("data-tab", km._LANDING_MOBILE_JS)       # show() marks the active pane on <body>
 
@@ -72,7 +76,21 @@ class LandingShell(unittest.TestCase):
         html = km._landing()
         self.assertNotIn("class=ic", html)                       # no icon spans — text labels only
         self.assertIn(">Chat</button>", html)                    # plain text label, no icon child
-        self.assertIn("#mtabs{display:flex;flex:0 0 auto", html)  # sized to its text, not a tall fixed bar
+        self.assertIn("#mtabs{display:flex;position:fixed", html)  # glued to the viewport bottom; height still = its text + padding (no fixed height)
+
+    def test_bottom_bar_is_fixed_to_viewport_so_no_dead_space_below_it(self):
+        # The recurring bug (the user, through 2026-06-19): the bar was flex-placed at the bottom of a body
+        # whose height is only a viewport ESTIMATE (100dvh, then --app-h); when the estimate under-shot the
+        # painted area on Android Chrome, a dead slab appeared BELOW the Chat/Feed/Timeline labels. Gluing
+        # the bar to the visible viewport bottom (position:fixed;bottom:0) makes "below the bar" impossible
+        # by construction, whatever the height math does. .col reserves --mtabs-h so it can't cover content.
+        html = km._landing()
+        self.assertIn("#mtabs{display:flex;position:fixed;left:0;right:0;bottom:0", html)
+        self.assertIn("padding-bottom:var(--mtabs-h", html)
+        self.assertNotIn("flex:0 0 auto", html)                  # the flex-child placement is gone
+        # the reservation is measured from the live bar, so it tracks the gesture-area inset exactly
+        self.assertIn("setProperty('--mtabs-h'", km._LANDING_MOBILE_JS)
+        self.assertIn("offsetHeight", km._LANDING_MOBILE_JS)
 
     def test_landing_disables_browser_pinch_zoom(self):
         # the top document governs pinch-zoom for the whole visual viewport (incl. the timeline iframe), so
