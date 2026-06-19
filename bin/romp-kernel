@@ -3501,8 +3501,8 @@ fit();window.addEventListener('resize',fit);window.addEventListener('orientation
 if(window.visualViewport){window.visualViewport.addEventListener('resize',fit);}
 var bar=document.getElementById('mtabs');if(!bar)return;
 // The bar is position:fixed (glued to the viewport bottom), so it's out of flow — reserve its real
-// rendered height (text + padding + safe-area inset) on .col as --mtabs-h so the iframes tile above it
-// and the fixed bar never covers the chat composer. Re-measure on resize/orientation (the inset can change).
+// rendered height (button text + padding) on .col as --mtabs-h so the iframes tile above it and the
+// fixed bar never covers the chat composer. Re-measure on resize/orientation (font metrics can shift).
 function barfit(){try{document.documentElement.style.setProperty('--mtabs-h',(bar.offsetHeight||0)+'px');}catch(e){}}
 barfit();window.addEventListener('resize',barfit);window.addEventListener('orientationchange',barfit);
 if(window.visualViewport){window.visualViewport.addEventListener('resize',barfit);}
@@ -3670,10 +3670,14 @@ def _landing():
             "#f-chat.m-on,#f-feed.m-on{display:block}"
             "#f-timeline{flex:1 1 auto;min-height:0}#f-timeline.m-on{display:block}"
             "body[data-tab=timeline] .row{display:none}"    # timeline active → collapse the chat/feed row
-            # compact text-only switcher, FIXED to the visible viewport bottom so nothing can sit below it
-            # (its height = button text + padding + the gesture-area inset is mirrored onto .col via --mtabs-h)
+            # compact text-only switcher, FIXED to the visible viewport bottom so nothing can sit below it.
+            # NO safe-area padding-bottom: without viewport-fit=cover the viewport already sits ABOVE the
+            # system nav bar, so the inset is redundant — and Firefox Android (unlike Chrome) does NOT zero
+            # env(safe-area-inset-bottom) without cover, so it reported the PORTRAIT nav-bar height (the nav
+            # is at the bottom in portrait, on the side in landscape → inset only non-zero in portrait) and
+            # padded a dead slab below the labels in portrait only (the user 2026-06-19, Firefox/Android).
             "#mtabs{display:flex;position:fixed;left:0;right:0;bottom:0;z-index:20;"
-            "padding-bottom:env(safe-area-inset-bottom,0px);background:#181818;border-top:1px solid #303031}"
+            "background:#181818;border-top:1px solid #303031}"
             "#mtabs button{flex:1;border:0;background:none;cursor:pointer;-webkit-tap-highlight-color:transparent;"
             "color:#9aa0a6;font:600 12px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;"
             "padding:6px 0;display:flex;align-items:center;justify-content:center}"

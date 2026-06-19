@@ -104,11 +104,23 @@ class LandingShell(unittest.TestCase):
         # env(safe-area-inset-bottom) even though the viewport already sits above the nav bar, so #mtabs's
         # safe-area padding-bottom rendered as a dead slab below the Chat/Feed/Timeline labels (and cover
         # clipped the top under the status bar). The default viewport auto-insets clear of system UI and
-        # zeroes env(), so it must NOT request cover — while keeping the pinch-zoom + dvh behavior above.
+        # zeroes env() on Chrome, so it must NOT request cover. (The bar's safe-area padding is now gone
+        # entirely too — see test_bottom_bar_has_no_safe_area_padding — since Firefox doesn't zero it.)
         html = km._landing()
         self.assertNotIn("viewport-fit=cover", html)
         self.assertIn("100dvh", html)            # still address-bar-aware
         self.assertIn("user-scalable=no", html)  # pinch-zoom governance preserved alongside the change
+
+    def test_bottom_bar_has_no_safe_area_padding(self):
+        # The user 2026-06-19 (Firefox/Android): the bar showed a dead slab below the labels in PORTRAIT
+        # only. The Android nav bar is at the BOTTOM in portrait (env(safe-area-inset-bottom) > 0) and on
+        # the SIDE in landscape (inset = 0), and Firefox — unlike Chrome — does NOT zero that inset without
+        # viewport-fit=cover, so #mtabs's padding-bottom:env(safe-area-inset-bottom) rendered as a
+        # portrait-only slab. Without cover the viewport already clears the nav bar, so the padding is
+        # redundant and removed; the fixed bar simply sits at the visible bottom. No env() inset on the bar.
+        html = km._landing()
+        self.assertNotIn("env(safe-area-inset", html)
+        self.assertIn("#mtabs{display:flex;position:fixed;left:0;right:0;bottom:0", html)
 
 
 class TimelineTouchSurface(unittest.TestCase):
