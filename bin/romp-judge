@@ -181,15 +181,20 @@ def _log_judge_error(tier, fsid, err):
 _judge_ctx = threading.local()                       # per-thread: the fsid being judged (set by the session fns)
 
 
-def _log_judge_usage(judge, tier, model, fsid, wrap):
+def _log_judge_usage(judge, tier, model, fsid, wrap, sent=None, recv=None):
     """Append ONE per-call usage line to USAGE for the kernel/UI cost rollup (judge_ui 2026-06-17).
-    `wrap` is the claude -p JSON envelope. Best-effort, NEVER raises (mirrors _log_judge_error) — a logging
-    failure must not break a judge call."""
+    `wrap` is the claude -p JSON envelope. `sent`/`recv` are the LITERAL wall-clock floats bracketing the
+    actual API call — when the judge's prompt went out and when its response came back (the user
+    2026-06-19), so the timeline can show each judge's real run interval, not a work-time-aligned mark.
+    `ms` (the envelope's duration_ms) is claude's own inner API timing; recv-sent is romp's outer bracket
+    (includes subprocess spawn). Best-effort, NEVER raises (mirrors _log_judge_error) — a logging failure
+    must not break a judge call."""
     try:
         u = wrap.get("usage") or {}
         with open(USAGE, "a") as f:
             f.write(json.dumps({"t": int(time.time()), "judge": judge, "tier": tier, "model": model,
                                 "fsid": fsid or None, "ms": wrap.get("duration_ms"),
+                                "sent": sent, "recv": recv,      # literal API send/response wall-clock (floats)
                                 "in": u.get("input_tokens"), "out": u.get("output_tokens"),
                                 "cache_w": u.get("cache_creation_input_tokens"),
                                 "cache_r": u.get("cache_read_input_tokens"),
@@ -225,17 +230,19 @@ def _judge_run(model, sys_prompt, user, effort=None, judge=None):
     unparseable/missing wrapper falls back to returning raw stdout (today's plain-text path), never raising."""
     tier = "index" if model == INDEX_MODEL else "triage"
     env = _judge_env(tier)
+    sent = time.time()                                # literal wall-clock: the prompt goes to the API now
     try:
         p = subprocess.run(_judge_cmd(model, sys_prompt, effort), input=user,
                            capture_output=True, text=True, cwd="/tmp", env=env, timeout=50)
     except Exception:
         _log_judge_error(tier, None, "call")
         return ""
+    recv = time.time()                                # literal wall-clock: the response is back
     out = p.stdout or ""
     try:
         wrap = json.loads(out)
         if isinstance(wrap, dict) and isinstance(wrap.get("result"), str):
-            _log_judge_usage(judge or tier, tier, model, getattr(_judge_ctx, "fsid", None), wrap)
+            _log_judge_usage(judge or tier, tier, model, getattr(_judge_ctx, "fsid", None), wrap, sent, recv)
             return wrap["result"]
     except Exception:
         pass

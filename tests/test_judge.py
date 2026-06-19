@@ -2108,6 +2108,9 @@ class JudgeUsageLog(unittest.TestCase):
         self.assertEqual((rec["judge"], rec["tier"], rec["fsid"]), ("planner", "triage", "FSID-X"))
         self.assertEqual((rec["in"], rec["out"], rec["cache_w"], rec["cache_r"]), (100, 20, 5, 50))
         self.assertEqual((rec["ms"], rec["cost"]), (1234, 0.0009))
+        # the LITERAL API call wall-clock (the user 2026-06-19): floats bracketing the subprocess, sent<=recv
+        self.assertIsInstance(rec["sent"], float); self.assertIsInstance(rec["recv"], float)
+        self.assertLessEqual(rec["sent"], rec["recv"], "sent (prompt out) precedes recv (response back)")
 
     def test_unparseable_envelope_falls_back_to_raw_and_logs_nothing(self):
         import unittest.mock as mock

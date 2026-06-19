@@ -214,6 +214,24 @@ class AttachRunUsage(unittest.TestCase):
         judging = [{"judge": "captioner", "sid": "S1", "t": NOW, "kind": "segment", "text": "x"}]
         km._attach_run_usage(judging, NOW - 3600, {"S1"})
         self.assertEqual((judging[0]["ms"], judging[0]["in"], judging[0]["out"]), (0, 0, 0))
+        self.assertEqual((judging[0]["sent"], judging[0]["recv"]), (None, None), "no log → no API times")
+
+    def test_attaches_literal_api_sent_recv_to_the_matched_mark(self):
+        # The literal API call window (the user 2026-06-19): each judge-usage row carries `sent`/`recv`
+        # floats (when the prompt went out / the response came back). _attach_run_usage copies them onto the
+        # matched mark so the band's hover can show the judge's REAL run interval, distinct from the
+        # work-time the mark sits at. An unmatched mark keeps None.
+        (jd.STATE / "judge-usage.jsonl").write_text("\n".join(json.dumps(r) for r in [
+            {"t": NOW - 44, "judge": "distiller", "fsid": "S1", "ms": 4200, "in": 50, "out": 12,
+             "sent": NOW - 48.6, "recv": NOW - 44.4},
+        ]) + "\n")
+        judging = [{"judge": "distiller", "sid": "S1", "t": NOW - 46, "kind": "distill", "text": "k"},
+                   {"judge": "distiller", "sid": "S1", "t": NOW - 900, "kind": "distill", "text": "old"}]
+        km._attach_run_usage(judging, NOW - 3600, {"S1"})
+        self.assertEqual((judging[0]["sent"], judging[0]["recv"]), (NOW - 48.6, NOW - 44.4),
+                         "the matched mark carries the literal API send/response wall-clock")
+        self.assertEqual(judging[0]["ms"], 4200)
+        self.assertEqual((judging[1]["sent"], judging[1]["recv"]), (None, None), "far-off mark unmatched → None")
 
 
 class TokenAnalytics(unittest.TestCase):

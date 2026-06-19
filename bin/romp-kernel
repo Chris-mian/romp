@@ -2455,13 +2455,15 @@ def _token_analytics(now, window):
 
 
 def _attach_run_usage(judging, t0, alive_sids):
-    """Attach each judging mark's real run cost (ms / in / out tokens) by greedy nearest-time matching it
-    to the judge's actual calls in judge-usage.jsonl (same fsid + judge). Marks with no matching call keep
-    zeros. Lets a merged block's hover tooltip sum its members' real compute time + tokens. No-op (zeros)
-    until the log exists; fully defensive."""
+    """Attach each judging mark's REAL API call to it by greedy nearest-time matching it to the judge's
+    actual calls in judge-usage.jsonl (same fsid + judge): cost (ms / in / out tokens) AND the literal
+    wall-clock the prompt went out / the response came back (`sent`/`recv`, the user 2026-06-19) — so a
+    mark's hover shows when that judge ACTUALLY ran the API call, distinct from the work-time the mark is
+    positioned at. Marks with no matching call keep zeros/None. No-op until the log exists; fully defensive."""
     for mk in judging:
         mk["ms"] = mk["in"] = mk["out"] = 0
-    runs = {}                                            # (sid, judge) -> [{t,ms,in,out}] sorted by t
+        mk["sent"] = mk["recv"] = None
+    runs = {}                                            # (sid, judge) -> [{t,ms,in,out,sent,recv}] sorted by t
     try:
         lines = (jd.STATE / "judge-usage.jsonl").read_text(errors="replace").splitlines()
     except OSError:
@@ -2475,7 +2477,8 @@ def _attach_run_usage(judging, t0, alive_sids):
         if not isinstance(t, (int, float)) or t < t0 or sid not in alive_sids:
             continue
         runs.setdefault((sid, o.get("judge")), []).append(
-            {"t": t, "ms": int(o.get("ms") or 0), "in": int(o.get("in") or 0), "out": int(o.get("out") or 0)})
+            {"t": t, "ms": int(o.get("ms") or 0), "in": int(o.get("in") or 0), "out": int(o.get("out") or 0),
+             "sent": o.get("sent"), "recv": o.get("recv")})
     for v in runs.values():
         v.sort(key=lambda r: r["t"])
     marks_by = {}
@@ -2496,6 +2499,7 @@ def _attach_run_usage(judging, t0, alive_sids):
                 used[best_i] = True
                 r = pool[best_i]
                 mk["ms"], mk["in"], mk["out"] = r["ms"], r["in"], r["out"]
+                mk["sent"], mk["recv"] = r.get("sent"), r.get("recv")
 
 
 def build_timeline(now, tmux=None):

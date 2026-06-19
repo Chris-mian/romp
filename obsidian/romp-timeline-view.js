@@ -64,6 +64,7 @@ const JUDGE_KIND = { segment: 'caption', turn: 'turn caption', index: 'archived'
 function el(t, a) { const n = document.createElementNS(SVGNS, t); for (const k in a) n.setAttribute(k, a[k]); return n; }
 function esc(s) { return (s || '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c])); }
 function clock(t) { const d = new Date(t * 1000); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); }
+function clockS(t) { const d = new Date(t * 1000); return clock(t) + ':' + String(d.getSeconds()).padStart(2, '0'); }   // seconds precision for API call times
 function fmtWin(s) { return s < 3600 ? Math.round(s / 60) + 'm' : (s / 3600 < 10 ? (s / 3600).toFixed(1) : Math.round(s / 3600)) + 'h'; }
 function fmtTokens(n) { n = Math.round(n || 0); return n >= 1e6 ? (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + 'M' : n >= 1e3 ? Math.round(n / 1e3) + 'k' : String(n); }
 function fmtDur(ms) { ms = Math.round(ms || 0); return ms < 1000 ? ms + 'ms' : ms < 60000 ? (ms / 1000).toFixed(1) + 's' : Math.round(ms / 60000) + 'm'; }
@@ -1990,8 +1991,12 @@ class TimelinePanel {
             const ms = b.members.reduce((a, m) => a + (m.ms || 0), 0);
             const tin = b.members.reduce((a, m) => a + (m['in'] || 0), 0), tout = b.members.reduce((a, m) => a + (m['out'] || 0), 0);
             const usage = (ms || tin || tout) ? '<div style="opacity:.7;margin-top:3px">⏱ ' + fmtDur(ms) + ' · ' + fmtTokens(tin + tout) + ' tok</div>' : '';
+            // the LITERAL API call window: when the prompt went out → when the response came back (seconds
+            // precision; judge calls are seconds-scale), the earliest send and latest recv across this block.
+            const sents = b.members.map((m) => m.sent).filter((x) => x != null), recvs = b.members.map((m) => m.recv).filter((x) => x != null);
+            const api = (sents.length && recvs.length) ? '<div style="opacity:.7;margin-top:2px">API ' + clockS(Math.min.apply(null, sents)) + ' → ' + clockS(Math.max.apply(null, recvs)) + '</div>' : '';
             const rows = b.members.slice(-5).map((m) => '<div class="b" style="opacity:.85"><span class="k">' + esc(JUDGE_KIND[m.kind] || m.kind) + '</span> ' + esc((m.text || '').slice(0, 90)) + '</div>').join('');
-            return '<div class="r"><span class="who" style="color:' + J.color + '">' + esc(J.key) + '</span><span class="ar">▸</span><span style="color:' + col + '">' + esc(nameOf(b.sid)) + '</span><span class="t">' + span + (b.members.length > 1 ? ' · ' + b.members.length : '') + '</span></div>' + usage + rows;
+            return '<div class="r"><span class="who" style="color:' + J.color + '">' + esc(J.key) + '</span><span class="ar">▸</span><span style="color:' + col + '">' + esc(nameOf(b.sid)) + '</span><span class="t">' + span + (b.members.length > 1 ? ' · ' + b.members.length : '') + '</span></div>' + usage + api + rows;
           };
           const hit = el('rect', { x: x1 - 2, y: y - JROW / 2, width: (x2 - x1) + 4, height: JROW, fill: 'transparent' }); hit.style.cursor = 'default';
           hit.addEventListener('mouseenter', (e) => this.showTip(html(), e));
