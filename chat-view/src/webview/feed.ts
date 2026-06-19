@@ -424,9 +424,13 @@ function makeAskCard(it: AskItem): HTMLElement {
   const waitBadge = el("span", "fask-wait"); waitBadge.textContent = "⏳ waiting"; waitBadge.style.display = "none";
   waitBadge.title = "paused on an EXTERNAL event (CI, build, a peer's reply) — not on you; stays in Working, exempt from auto-filing; lifts when new work lands";
   const clr = el("button", "fdismiss"); clr.textContent = "Clear"; clr.title = "clear this ask (inbox-zero; the one human-asserted fact)";
+  // "Nudge" on the card itself (the user 2026-06-18): a one-click status follow-up for a WORKING card,
+  // beside Clear, so you don't have to open the modal. Sends the canned status question down the SAME
+  // follow-up path (askFollowUp → the kernel quotes the goal as context). Shown only for working cards.
+  const nudge = el("button", "fdismiss ffollow fask-nudge"); nudge.textContent = "Nudge"; nudge.title = "nudge this session for a status update on this goal"; nudge.style.display = "none";
   // No "Follow up" button on the card — open the card's modal (body click) to follow up there
   // (the user 2026-06-16). The modal composer is the single follow-up surface.
-  actions.append(waitBadge, apiBadge, blkBadge, reBadge, apiRetry, clr);
+  actions.append(waitBadge, apiBadge, blkBadge, reBadge, apiRetry, nudge, clr);
   // "↻ Followed up" rides the SESSION-NAME row (right-justified), NOT the bottom action row — otherwise it
   // crowded the bottom row and pushed Clear past the card's right edge (the user 2026-06-18). idwrap is
   // flex:1 so the chip sits flush right of the name.
@@ -481,6 +485,7 @@ function makeAskCard(it: AskItem): HTMLElement {
     vscodeApi?.postMessage({ type: "askClear", itemId: it.itemId });
     setTimeout(() => { if (askEls.get(it.itemId) === card && card.classList.contains("dismissing")) { card.remove(); askEls.delete(it.itemId); } }, 180);
   };
+  nudge.onclick = (ev) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "askFollowUp", itemId: it.itemId, text: "What is the status of the above goal?" }); };
   // HOVER (120ms intent debounce so sweeps don't spam) → white border + preview
   // this card's timeline journey. LEAVE → restore the pinned card's journey, or
   // clear if none pinned.
@@ -527,7 +532,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   const a = card as any;
   a._title = title; a._name = name; a._time = time; a._reopened = reBadge; a._followedup = fupBadge;
   a._blocked = blkBadge; a._wait = waitBadge;
-  a._apiBadge = apiBadge; a._apiRetry = apiRetry;
+  a._apiBadge = apiBadge; a._apiRetry = apiRetry; a._nudge = nudge;
   a._delegations = delegations;
   a._checklist = checklist;
   a._blockwhy = blockReason;
@@ -567,6 +572,7 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   // "↻ Followed up" while the kernel has optimistically reopened a settled card you followed up on, before
   // the judge re-files it (it.followupPending self-clears on the next pass). (judges delegation, 2026-06-17.)
   a._followedup.style.display = it.followupPending ? "" : "none";
+  a._nudge.style.display = it.column === "working" ? "" : "none";   // Nudge only on a working card (the user 2026-06-18)
   a._wait.style.display = it.waiting ? "" : "none";   // ⏳ paused on an external event
   // ⏸ live block badge: the session is stopped mid-turn on a permission prompt /
   // picker FOR THIS CARD's work — the card files under BLOCKED while it lasts
@@ -1163,12 +1169,9 @@ function renderModal() {
     // in one row, and the Follow-up composer drops in under that row when the button is toggled.
     const age = el("span", "ftime feed-modal-age"); age.id = "feed-modal-age";
     const fup = el("button", "fdismiss ffollow feed-modal-follow"); fup.id = "feed-modal-follow"; fup.textContent = "Follow up"; fup.title = "send a follow-up to this session — the card returns to ASKS"; fup.style.display = "none";
-    // "Check status" (the user 2026-06-18): a one-click follow-up for a WORKING card — sends a canned
-    // "What is the status of the above goal?" down the SAME path as Follow up (postFollowUp → askFollowUp),
-    // so the goal is quoted as context. Sits between Follow up and Clear; shown only for working cards.
-    const chk = el("button", "fdismiss ffollow feed-modal-checkstatus"); chk.id = "feed-modal-checkstatus"; chk.textContent = "Nudge"; chk.title = "nudge this session for a status update on this goal"; chk.style.display = "none";
+    // (Nudge moved OUT of the modal footer onto the working CARD itself — the user 2026-06-18.)
     const clr = el("button", "fdismiss feed-modal-clear"); clr.id = "feed-modal-clear"; clr.textContent = "Clear";
-    const footRow = el("div", "feed-modal-foot-row"); footRow.append(age, fup, chk, clr);
+    const footRow = el("div", "feed-modal-foot-row"); footRow.append(age, fup, clr);
     const fubox = el("div", "ffollow-box feed-modal-follow-box"); fubox.id = "feed-modal-follow-box"; fubox.style.display = "none";
     const fuin = el("textarea", "fq-input feed-modal-follow-input") as HTMLTextAreaElement; fuin.id = "feed-modal-follow-input"; fuin.placeholder = "follow up on this…"; fuin.rows = 1;
     fuin.addEventListener("input", () => growFollowUp(fuin));
@@ -1238,15 +1241,6 @@ function renderModal() {
   const ageEl = document.getElementById("feed-modal-age") as HTMLElement;
   const clrEl = document.getElementById("feed-modal-clear") as HTMLElement;
   const fupEl = document.getElementById("feed-modal-follow") as HTMLButtonElement;
-  const chkEl = document.getElementById("feed-modal-checkstatus") as HTMLButtonElement | null;
-  if (chkEl) { chkEl.style.display = "none"; chkEl.onclick = null; }   // hidden by default; the working branches below show + wire it
-  // "Check status": show only for a WORKING card; one click sends the canned status question down the
-  // follow-up path (the goal is quoted as context). Reuses postFollowUp so it's the SAME mechanism.
-  const wireCheckStatus = (show: boolean, fbId: string, fbTitle?: string) => {
-    if (!chkEl) return;
-    chkEl.style.display = show ? "" : "none";
-    chkEl.onclick = show ? (() => postFollowUp("What is the status of the above goal?", fbId, fbTitle)) : null;
-  };
   const fuboxEl = document.getElementById("feed-modal-follow-box") as HTMLElement;
   const fuinEl = document.getElementById("feed-modal-follow-input") as HTMLTextAreaElement;
   const fusendEl = document.getElementById("feed-modal-follow-send") as HTMLButtonElement;
@@ -1290,7 +1284,6 @@ function renderModal() {
     // follow-up on a group goes to the session that took the typed prompt — one
     // message prefixed with the GROUP title, filed under the first member's ask
     wireFollowUp(fupEl, fuboxEl, fuinEl, fusendEl, (txt) => postFollowUp(txt, grp.members[0].itemId, grp.title));
-    wireCheckStatus(grp.members.some((m) => m.column === "working"), grp.members[0].itemId, grp.title);   // a working group
     renderGroupModalBody(body, grp.members);
   } else if (it) {
     // The top-level goal IS the modal: render it as the ROOT of the tree list (not a separate header
@@ -1307,7 +1300,6 @@ function renderModal() {
     // follow-up works in ANY state (the user 2026-06-10) — asks, awaiting, or completed;
     // toggling the button reveals the composer.
     wireFollowUp(fupEl, fuboxEl, fuinEl, fusendEl, (txt) => postFollowUp(txt, it.itemId));
-    wireCheckStatus(it.column === "working", it.itemId);   // "Check status" only for a WORKING card
     renderTreeBody(body, it, false);   // root goal IS the first list line; sub-goals render beneath it
   } else if (fitem) {
     ttlEl.textContent = fitem.did;

@@ -27,7 +27,7 @@ test("TOP bar = session name (left) + ✕ (right); age is no longer in the heade
 });
 
 test("BOTTOM bar = age + Follow up + Clear in one row, the checklist sitting above it", () => {
-  assert.match(FEED, /footRow\.append\(age, fup, chk, clr\)/);   // + Check status between Follow up and Clear (the user 2026-06-18)
+  assert.match(FEED, /footRow\.append\(age, fup, clr\)/);   // Nudge moved off the footer onto the card (the user 2026-06-18)
   // the per-sub follow-up target label sits between the button row and the composer box
   assert.match(FEED, /foot\.append\(footRow, futgt, fubox\)/);
   assert.match(FEED, /inner\.append\(head, body, foot\)/);            // head, then tree, then footer

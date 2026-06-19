@@ -57,7 +57,7 @@ test("a 'Followed up' chip shows while the kernel optimistically reopened a foll
   assert.match(FEED, /el\("span", "fask-followedup"\); fupBadge\.textContent = "↻ Followed up"/);
   // the chip rides the SESSION-NAME row (right-justified), NOT the bottom action row, so it stops crowding
   // Clear off the card's right edge (the user 2026-06-18)
-  assert.match(FEED, /actions\.append\(waitBadge, apiBadge, blkBadge, reBadge, apiRetry, clr\)/);
+  assert.match(FEED, /actions\.append\(waitBadge, apiBadge, blkBadge, reBadge, apiRetry, nudge, clr\)/);   // + Nudge before Clear (the user 2026-06-18)
   assert.match(FEED, /row2\.append\(idwrap, fupBadge\)/);
   assert.match(FEED, /a\._followedup\.style\.display = it\.followupPending \? "" : "none"/);
   assert.match(CSS, /\.fask-followedup \{/);
