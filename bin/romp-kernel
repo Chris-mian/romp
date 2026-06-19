@@ -599,12 +599,47 @@ def _tmux_sessions():
     return out
 
 
+def _clear_pane_input(name):
+    """Select-all + delete the pane's input box. The romp composer and the tmux pane must agree on the
+    input: when a turn is INTERRUPTED (Esc), Claude Code RESTORES the in-progress prompt into the input —
+    invisible to the web composer — and our inject pastes by APPENDING, so Stop → type-and-send in the
+    composer concatenated the recalled prompt and the new message into ONE submission (the user
+    2026-06-19). Clearing first makes a paste REPLACE, never append. Ctrl+A selects the whole (possibly
+    multi-line) input in Claude Code >=2.1.18, Backspace deletes the selection — and BOTH are NO-OPS on an
+    already-empty input, so this is safe to send unconditionally before every paste (no regression to the
+    normal empty-input send)."""
+    if not name:
+        return
+    try:
+        subprocess.run(["tmux", "send-keys", "-t", name, "C-a", "BSpace"], timeout=3)
+    except Exception:
+        pass
+
+
+def _interrupt(name, _async=True):
+    """Stop the current turn (Esc) AND wipe the prompt Claude Code restores into the input on interrupt, so
+    the pane matches the (empty) romp composer instead of silently holding recalled text — which the next
+    injected message would otherwise concatenate, and a stray Enter could resubmit (the user 2026-06-19).
+    Threaded so the brief restore-then-clear beat doesn't block the WS recv loop."""
+    if not name:
+        return
+
+    def go():
+        try:
+            subprocess.run(["tmux", "send-keys", "-t", name, "Escape"], timeout=3)
+        except Exception:
+            return
+        time.sleep(0.15)                              # let Claude Code restore the recalled prompt before we wipe it
+        _clear_pane_input(name)
+    threading.Thread(target=go, daemon=True).start() if _async else go()
+
+
 def _tmux_send(name, text, model_cmd=False, _async=True):
-    """Inject text into a session's tmux pane — set-buffer + bracketed paste-buffer + Enter, the old
-    TmuxBackend.send sequence (a 250ms gap lets the bracketed paste land before Enter submits). name =
-    the tmux session name. Drives the chat composer, /compact, and the model/effort pickers. Runs in a
-    daemon thread so the WS recv loop isn't blocked by the gaps. model_cmd: /model opens a confirm that
-    needs a second Enter."""
+    """Inject text into a session's tmux pane — clear the input, then set-buffer + bracketed paste-buffer +
+    Enter, the old TmuxBackend.send sequence (a 250ms gap lets the bracketed paste land before Enter
+    submits). name = the tmux session name. Drives the chat composer, /compact, and the model/effort
+    pickers. Runs in a daemon thread so the WS recv loop isn't blocked by the gaps. model_cmd: /model opens
+    a confirm that needs a second Enter."""
     if not name or not text:
         return
 
@@ -618,6 +653,8 @@ def _tmux_send(name, text, model_cmd=False, _async=True):
         r = run(["display-message", "-p", "-t", name, "#{pane_in_mode}"], 2)
         if r and r.stdout.strip() == "1":
             run(["send-keys", "-t", name, "-X", "cancel"], 2)        # exit copy-mode so paste+Enter land
+        _clear_pane_input(name)                                     # wipe any leftover (e.g. an interrupt-restored prompt) so the paste REPLACES, never appends
+        time.sleep(0.05)                                            # let the clear land before the paste
         run(["set-buffer", "-b", "rompkernel", text])
         run(["paste-buffer", "-b", "rompkernel", "-d", "-p", "-t", name])   # -p bracketed, -d delete buf
         paths = _injected_img_paths(text)
@@ -4054,11 +4091,7 @@ class Handler(BaseHTTPRequestHandler):
                 elif msg and msg.get("type") == "sendMessage" and msg.get("id") and msg.get("text"):
                     _tmux_send(_name_of(msg["id"]) or msg["id"], str(msg["text"]))   # composer → session
                 elif msg and msg.get("type") == "interrupt" and msg.get("id"):
-                    nm = _name_of(msg["id"]) or msg["id"]
-                    try:
-                        subprocess.run(["tmux", "send-keys", "-t", nm, "Escape"], timeout=3)
-                    except Exception:
-                        pass
+                    _interrupt(_name_of(msg["id"]) or msg["id"])   # Esc to stop + clear the restored prompt (composer↔pane consistency)
                 elif msg and msg.get("type") == "compact" and msg.get("name"):
                     _tmux_send(str(msg["name"]), "/compact")
                     _mark_compacting(_live_names(_tmux_sessions()).get(str(msg["name"])))   # instant cue
