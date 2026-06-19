@@ -1909,13 +1909,28 @@ def build_feed(now, tmux=None):
                        if _closure_done(x) and nodes[x].get("doneWhy")]
                 if dnz:
                     done_why = max(dnz, key=lambda d: d.get("mt", d.get("t", 0)))["doneWhy"]
+            # The card's TIME reflects its CURRENT STATE, not when the goal was minted: a COMPLETED card
+            # shows when it was completed, a BLOCKED card when it was blocked — the mt of the most-recent
+            # such node in its subtree — else (working) when it was minted. Keying the time badge to the mint
+            # `t` made a goal OPENED hours ago but FINISHED moments ago read as "done hours ago" (the user
+            # 2026-06-19). `created` keeps the true mint time for the record.
+            disp_t = nodes[nid]["t"]
+            if col == "completed":
+                dts = [nodes[x].get("mt", nodes[x]["t"]) for x in _subtree(nid) if _closure_done(x)]
+                if dts:
+                    disp_t = max(dts)
+            elif col == "blocked":
+                bts = [nodes[x].get("mt", nodes[x]["t"]) for x in _subtree(nid)
+                       if nodes[x].get("blocked") and not _closure_done(x)]
+                if bts:
+                    disp_t = max(bts)
             column = ("needs_input" if (nid == api_top or col == "blocked")
                       else "completed" if col == "completed" else "working")
             had_working = had_working or column == "working"
             asks.append({
                 "itemId": nid, "sid": fsid, "name": name, "color": color, "text": nodes[nid]["text"],
-                "t": nodes[nid]["t"], "created": nodes[nid]["t"], "live": live,
-                "trgb": list(cm.age_rgb(now - nodes[nid]["t"], _colormap())),
+                "t": disp_t, "created": nodes[nid]["t"], "live": live,
+                "trgb": list(cm.age_rgb(now - disp_t, _colormap())),
                 "done": 0, "needsYou": 0, "linked": [], "turnId": nid, "turnIds": [nid], "origin": origin,
                 "blockWhy": block_why,               # one-sentence "why blocked" on the card (soft planner block)
                 "doneWhy": done_why,                 # one-sentence "why done" on a completed card (the done page)
