@@ -93,9 +93,9 @@ test("the ledger tree is a COLLAPSIBLE checklist — toggle arrows at every leve
   assert.match(RENDER, /const ledgerExpanded = new Set<string>\(\)/);
   assert.match(RENDER, /const renderNode = \(n: LedgerTreeNode, depth: number\)/);
   // a "previous" (done) task folds by default unless it's the recent path; the user can override
-  assert.match(RENDER, /const defaultFold = \(n: LedgerTreeNode\) => !!n\.done && !n\.onpath && !freshPath\.has\(n\.id\)/);
-  // a completed top whose sub-level holds the freshest activity opens by default (the user 2026-06-18)
-  assert.match(RENDER, /for \(let p: string \| undefined = freshest\?\.id; p; p = parentOf\.get\(p\)\) freshPath\.add\(p\)/);
+  // a COMPLETED TOP-LEVEL goal ALWAYS folds (depth 0), even with recent sub-activity; deeper done nodes
+  // still fold unless on the recent path (the user 2026-06-18)
+  assert.match(RENDER, /const defaultFold = \(n: LedgerTreeNode\) => !!n\.done && \(n\.depth === 0 \|\| !n\.onpath\)/);
   // a disclosure triangle (▶/▼) at every level; clicking toggles fold state + re-renders
   assert.match(RENDER, /el\("span", "ledger-tri"/);
   assert.match(RENDER, /folded \? "▶" : "▼"/);

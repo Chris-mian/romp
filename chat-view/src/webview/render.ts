@@ -2391,17 +2391,10 @@ function renderLedger() {
     // right under the title, where the collapsed line just sat — instead of dropping it further down the
     // sorted list, which read as disorienting. The rest keep their unfinished-then-done recency order.
     const orderedRoots = curTop ? [curTop, ...sorted.filter((r) => r.id !== curTop.id)] : sorted;
-    // The kernel's `onpath` opens the branch holding the lastNode CURSOR — but the cursor can move OFF a
-    // completed top even while that top's subtree still holds the most-recently-touched node. So also keep
-    // open the ancestor chain of the FRESHEST node by mt: a completed top whose sub-level has the latest
-    // activity initializes EXPANDED, not folded (the user 2026-06-18).
-    const parentOf = new Map<string, string>();
-    for (const n of tree) for (const c of (n.children || [])) parentOf.set(c, n.id);
-    let freshest: LedgerTreeNode | null = null;
-    for (const n of tree) if (!freshest || ((n.mt ?? n.t) || 0) > ((freshest.mt ?? freshest.t) || 0)) freshest = n;
-    const freshPath = new Set<string>();
-    for (let p: string | undefined = freshest?.id; p; p = parentOf.get(p)) freshPath.add(p);
-    const defaultFold = (n: LedgerTreeNode) => !!n.done && !n.onpath && !freshPath.has(n.id);   // "previous" tasks fold unless on the recent OR freshest path
+    // A "previous" (done) task folds by default. A COMPLETED TOP-LEVEL goal ALWAYS folds — even if the most
+    // recent activity is in one of its sub-goals (the user 2026-06-18): a finished top shouldn't re-open its
+    // whole subtree; expand it by hand to look inside. Deeper done nodes still fold unless on the recent path.
+    const defaultFold = (n: LedgerTreeNode) => !!n.done && (n.depth === 0 || !n.onpath);
     const isFolded = (n: LedgerTreeNode) => !!(n.children && n.children.length) &&
       (ledgerFolded.has(n.id) || (defaultFold(n) && !ledgerExpanded.has(n.id)));
     const renderNode = (n: LedgerTreeNode, depth: number) => {
