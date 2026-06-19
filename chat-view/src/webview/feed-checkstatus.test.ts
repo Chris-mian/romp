@@ -18,8 +18,8 @@ test("Nudge sends the canned status question via the askFollowUp path (goal quot
   assert.match(FEED, /nudge\.onclick = \(ev\) => \{ ev\.stopPropagation\(\); vscodeApi\?\.postMessage\(\{ type: "askFollowUp", itemId: it\.itemId, text: "What is the status of the above goal\?" \}\); \};/);
 });
 
-test("Nudge shows ONLY on a working card (it.column === 'working')", () => {
-  assert.match(FEED, /a\._nudge\.style\.display = it\.column === "working" \? "" : "none";/);
+test("Nudge shows ONLY on a real working card (it.column === 'working', not a provisional placeholder)", () => {
+  assert.match(FEED, /a\._nudge\.style\.display = \(it\.column === "working" && !it\.provisional\) \? "" : "none";/);
 });
 
 test("Nudge is NO LONGER in the modal footer (it moved to the card)", () => {

@@ -85,6 +85,7 @@ interface AskItem {
   origin?: { peer: string; peerSid: string; color: { bg: string; fg: string } | null } | null;  // courier handoff: planted by a peer's message → "↪ from <peer>"
   groupTitle?: string;                             // host: this ask shares a typed turn with siblings → the group's title
   groupN?: number;                                 // host: sibling count for that turn (>1 ⇒ fold into one group card)
+  provisional?: boolean;                           // a LIVE-PROMPT placeholder (kernel _provisional_card): the session is working an in-progress turn the planner hasn't classified yet. No goal node (empty tree) — dim, non-interactive, no clear/nudge/modal; replaced by the real card once the planner places the segment.
   tree: AskTreeNode[];                             // the ask's DAG, rendered as a tree in the expanded body
 }
 // A GROUP = N sibling asks minted by ONE typed turn (shared turnId), folded into a
@@ -475,7 +476,9 @@ function makeAskCard(it: AskItem): HTMLElement {
   const rootNode = it.tree?.find((n) => n.id === it.itemId);
   const cardAnchorUuid = rootNode?.anchorUuid ?? null;
   const titleUuid = titleAnchor === "prompt" ? (rootNode?.promptAnchorUuid ?? null) : cardAnchorUuid;
-  title.onclick = (ev) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: it.itemId, sid: it.sid, t: it.t, anchor: titleAnchor, anchorUuid: titleUuid }); };
+  // A PROVISIONAL placeholder has no goal node / timeline anchor — clicking anywhere just opens the live
+  // session (go see what it's working on); the modal, timeline deep-link, and path-hover are all skipped.
+  title.onclick = (ev) => { ev.stopPropagation(); if (it.provisional) { openOrReviveSession(it.sid, it.live, it.name); return; } vscodeApi?.postMessage({ type: "showOnTimeline", itemId: it.itemId, sid: it.sid, t: it.t, anchor: titleAnchor, anchorUuid: titleUuid }); };
   // (The auto-line is plain text now — no deep-link — so no onclick here; its hover tooltip = the planner's
   // why, set in updateAskCard. The inline sub-goal checkmarks remain clickable via wireNodeZones.)
   name.onclick = (ev) => { ev.stopPropagation(); openOrReviveSession(it.sid, it.live, it.name); };
@@ -491,6 +494,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   // clear if none pinned.
   let hoverTimer: number | undefined;
   card.addEventListener("mouseenter", () => {
+    if (it.provisional) return;                        // no timeline path for a placeholder
     hoverTimer = window.setTimeout(() => {
       hoverTimer = undefined;
       hoverAskId = it.itemId; applyFocus();
@@ -511,6 +515,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   // Debounced ~220ms so a double never opens the modal first.
   let pending: number | undefined;
   card.addEventListener("click", () => {
+    if (it.provisional) { openOrReviveSession(it.sid, it.live, it.name); return; }   // placeholder → open the session
     if (pending) { clearTimeout(pending); pending = undefined; return; }   // 2nd click — let dblclick handle it
     pending = window.setTimeout(() => {
       pending = undefined;
@@ -520,6 +525,7 @@ function makeAskCard(it: AskItem): HTMLElement {
     }, 220);
   });
   card.addEventListener("dblclick", () => {
+    if (it.provisional) return;                        // a placeholder can't be pinned (no timeline path)
     if (pending) { clearTimeout(pending); pending = undefined; }
     pinnedAskId = pinnedAskId === it.itemId ? null : it.itemId;
     applyFocus();
@@ -532,7 +538,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   const a = card as any;
   a._title = title; a._name = name; a._time = time; a._reopened = reBadge; a._followedup = fupBadge;
   a._blocked = blkBadge; a._wait = waitBadge;
-  a._apiBadge = apiBadge; a._apiRetry = apiRetry; a._nudge = nudge;
+  a._apiBadge = apiBadge; a._apiRetry = apiRetry; a._nudge = nudge; a._clr = clr;
   a._delegations = delegations;
   a._checklist = checklist;
   a._blockwhy = blockReason;
@@ -543,7 +549,11 @@ function makeAskCard(it: AskItem): HTMLElement {
 
 function updateAskCard(card: HTMLElement, it: AskItem) {
   const a = card as any;
-  card.className = "fitem ask" + (it.live ? " live" : " dead") + (it.itemId === (hoverAskId ?? pinnedAskId) ? " focused" : "") + (it.itemId === pinnedAskId ? " pinned" : "");
+  card.className = "fitem ask" + (it.live ? " live" : " dead") + (it.itemId === (hoverAskId ?? pinnedAskId) ? " focused" : "") + (it.itemId === pinnedAskId ? " pinned" : "") + (it.provisional ? " provisional" : "");
+  // PROVISIONAL placeholder: a dim, italic, non-interactive card from the live prompt while the planner
+  // hasn't classified the in-progress turn yet. No Clear/Nudge (nothing to curate), no auto-line, no tree.
+  card.style.opacity = it.provisional ? ".62" : "";
+  a._title.style.fontStyle = it.provisional ? "italic" : "";
   const [r, g, b] = it.trgb;
   card.style.background = `rgba(${r}, ${g}, ${b}, ${TINT_ALPHA})`;
   card.style.borderColor = `rgba(${r}, ${g}, ${b}, ${Math.min(TINT_ALPHA + 0.2, 0.9)})`;
@@ -572,7 +582,8 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   // "↻ Followed up" while the kernel has optimistically reopened a settled card you followed up on, before
   // the judge re-files it (it.followupPending self-clears on the next pass). (judges delegation, 2026-06-17.)
   a._followedup.style.display = it.followupPending ? "" : "none";
-  a._nudge.style.display = it.column === "working" ? "" : "none";   // Nudge only on a working card (the user 2026-06-18)
+  a._nudge.style.display = (it.column === "working" && !it.provisional) ? "" : "none";   // Nudge only on a real working card (the user 2026-06-18)
+  a._clr.style.display = it.provisional ? "none" : "";   // a placeholder has nothing to curate — no Clear
   a._wait.style.display = it.waiting ? "" : "none";   // ⏳ paused on an external event
   // ⏸ live block badge: the session is stopped mid-turn on a permission prompt /
   // picker FOR THIS CARD's work — the card files under BLOCKED while it lasts

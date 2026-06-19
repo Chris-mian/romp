@@ -471,6 +471,76 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(node["blockSummary"], "Decide: Redis or Postgres for the session store.",
                          "the modal tree node carries the decision brief too")
 
+    def _open_turn_transcript(self, ended=False):
+        # A CLOSED first turn (completed goal) + an in-progress second turn opened by a brand-new human
+        # prompt. With ended=False the planner withholds that final segment (it's still in progress).
+        recs = [uline(T0, "first ask", "u1", ps="typed"),
+                aline(T0 + 20, "Done with the first ask.", "a1", "u1", stop="end_turn"),
+                uline(T0 + 100, "make the empty space below the cards smaller", "u2", "a1", ps="typed")]
+        if ended:
+            recs.append(aline(T0 + 120, "Trimmed the empty space.", "a2", "u2", stop="end_turn"))
+        self.tpath.write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+
+    def _goal_store(self, nodes, status, last=None):
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+            "rompUuid": SID, "seq": len(nodes), "lastNode": last,
+            "nodes": nodes, "placements": {}, "status": status}))
+
+    def _working_tmux(self):
+        km._tmux_sessions = lambda: {SID: {"state": "working", "since": NOW - 10, "model": "",
+                                           "effort": "", "context": None, "compactPct": None, "color": None}}
+
+    def test_provisional_card_surfaces_for_an_in_progress_prompt_with_no_card(self):
+        # The user 2026-06-18: a session actively working a brand-new ask shows NO card, because the planner
+        # withholds the final segment of an OPEN turn until it ends. Surface a live-prompt placeholder so the
+        # working session isn't invisible — a working card, gist from the prompt, no goal node (empty tree).
+        self._open_turn_transcript(ended=False)
+        g1 = SID + ":g1"
+        self._goal_store(
+            {g1: {"id": g1, "text": "first ask", "parentId": None, "nodeComplete": True,
+                  "blocked": False, "cleared": False, "trail": [], "t": T0}},
+            {g1: "completed"}, last=g1)
+        self._working_tmux()
+        asks = km.build_feed(NOW)["asks"]
+        prov = [a for a in asks if a.get("provisional")]
+        self.assertEqual(len(prov), 1, "the in-progress prompt surfaces exactly one provisional card")
+        p = prov[0]
+        self.assertEqual(p["itemId"], "provisional:" + SID)
+        self.assertEqual(p["column"], "working")
+        self.assertIn("empty space", p["text"], "the card text is the live prompt gist")
+        self.assertEqual(p["tree"], [], "a placeholder carries no goal node")
+        self.assertTrue(any(a["itemId"] == g1 for a in asks), "the real completed card is untouched")
+
+    def test_no_provisional_card_once_the_turn_ends(self):
+        # The placeholder is for IN-PROGRESS work only — once the turn ends, the planner will place the
+        # segment on its next pass, so a placeholder would only race the real card. Keyed on the open turn.
+        self._open_turn_transcript(ended=True)
+        g1 = SID + ":g1"
+        self._goal_store(
+            {g1: {"id": g1, "text": "first ask", "parentId": None, "nodeComplete": True,
+                  "blocked": False, "cleared": False, "trail": [], "t": T0}},
+            {g1: "completed"}, last=g1)
+        self._working_tmux()
+        asks = km.build_feed(NOW)["asks"]
+        self.assertFalse([a for a in asks if a.get("provisional")], "a closed turn gets no placeholder")
+
+    def test_no_provisional_card_when_a_working_card_already_covers_the_session(self):
+        # The placeholder fills the gap only when NOTHING already shows the session working. An open top
+        # goal (status working) means a real working card exists → no duplicate placeholder.
+        self._open_turn_transcript(ended=False)
+        g1, g2 = SID + ":g1", SID + ":g2"
+        self._goal_store(
+            {g1: {"id": g1, "text": "first ask", "parentId": None, "nodeComplete": True,
+                  "blocked": False, "cleared": False, "trail": [], "t": T0},
+             g2: {"id": g2, "text": "ongoing work", "parentId": None, "nodeComplete": False,
+                  "blocked": False, "cleared": False, "trail": [], "t": T0 + 50}},
+            {g1: "completed", g2: "working"}, last=g2)
+        self._working_tmux()
+        asks = km.build_feed(NOW)["asks"]
+        self.assertFalse([a for a in asks if a.get("provisional")],
+                         "an existing working card suppresses the placeholder")
+        self.assertTrue(any(a["itemId"] == g2 and a["column"] == "working" for a in asks))
+
     def test_feed_tree_node_carries_anchor_uuid_for_id_deeplink(self):
         # anchorUuid = the EXACT turn uuid for a node's anchor segment (where it resolved / was minted),
         # so a card click deep-links BY ID, not by nearest-time-heuristic. (the user 2026-06-17.)
@@ -2011,6 +2081,17 @@ class ServeSecurity(unittest.TestCase):
             body = r.read().decode("utf-8", "replace")
         for pane in ("src=/chat", "src=/feed", "src=/timeline"):
             self.assertIn(pane, body)
+
+    def test_landing_pins_height_to_visual_viewport(self):
+        # Regression (the user 2026-06-19): on real Android Chrome, body{height:100dvh} left a dead slab
+        # below the mobile Chat/Feed/Timeline bar — dvh didn't match the painted viewport. The shell now
+        # pins the height to window.visualViewport.height via --app-h, keeping 100dvh only as a fallback.
+        import urllib.request
+        with urllib.request.urlopen("http://127.0.0.1:%d/" % self.port, timeout=5) as r:
+            body = r.read().decode("utf-8", "replace")
+        self.assertIn("visualViewport", body)               # the live-visible-height source
+        self.assertIn("--app-h", body)                      # the custom prop the JS drives
+        self.assertIn("height:var(--app-h,100dvh)", body)   # body height reads it, dvh only as fallback
 
     def test_cross_site_origin_rejected(self):
         self.assertEqual(self._code("/feed", {"Origin": "http://evil.example"}), 403)
