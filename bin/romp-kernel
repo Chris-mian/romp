@@ -2202,6 +2202,14 @@ def _derive_judging(sid, caps, goals, t0, out):
         if n.get("distilledMt") and n["distilledMt"] >= t0:
             out.append({"judge": "distiller", "sid": sid, "t": n["distilledMt"], "kind": "distill",
                         "text": n.get("summary") or text})
+        # block-distiller — the DECISION BRIEF on a BLOCKED top (briefedMt), the done-distiller's twin run
+        # in the same pass. Same distiller row, a distinct kind ("brief"). Without this the brief popped up
+        # on the card but left NO mark on the timeline, so the distiller row read as dead whenever the
+        # recent work was blocks rather than completions (the user 2026-06-18). Same back-dating note as
+        # above: t is the brief's underlying mt (the block), not when the judge ran.
+        if n.get("briefedMt") and n["briefedMt"] >= t0:
+            out.append({"judge": "distiller", "sid": sid, "t": n["briefedMt"], "kind": "brief",
+                        "text": n.get("blockSummary") or text})
     try:                                                      # archiver — the headline/abstract refresh
         arch = json.loads((jd.STATE / "archive" / (sid + ".json")).read_text(errors="replace"))
         if arch.get("t") and arch["t"] >= t0:

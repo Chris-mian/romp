@@ -98,6 +98,29 @@ class DeriveJudging(unittest.TestCase):
         self.assertEqual(dj[0]["t"], NOW - 70)
         self.assertEqual(dj[0]["text"], "The key takeaway.", "the distiller mark carries the goal's summary")
 
+    def test_block_distiller_keyed_off_briefedMt_with_the_decision_brief(self):
+        # The block-distiller's DECISION BRIEF (briefedMt/blockSummary) is the done-distiller's twin for a
+        # BLOCKED top — it must ALSO emit a distiller mark (kind 'brief'), else the brief pops up on the
+        # card but the distiller row reads as dead whenever the recent work was blocks, not completions
+        # (the user 2026-06-18).
+        nodes = {"g1": {"id": "g1", "parentId": None, "t": NOW - 300, "text": "Blocked top",
+                        "blocked": True, "blockWhy": "owed a decision", "mt": NOW - 80,
+                        "briefedMt": NOW - 60, "blockSummary": "Decide A or B; here is the context."}}
+        dj = [m for m in marks({}, nodes) if m["judge"] == "distiller"]
+        self.assertEqual(len(dj), 1, "a briefed blocked top emits one distiller mark")
+        self.assertEqual(dj[0]["kind"], "brief")
+        self.assertEqual(dj[0]["t"], NOW - 60, "the mark is keyed off briefedMt")
+        self.assertEqual(dj[0]["text"], "Decide A or B; here is the context.",
+                         "the block-distiller mark carries the goal's decision brief")
+
+    def test_block_distiller_and_done_distiller_both_mark_a_block_then_done_goal(self):
+        # A goal that went block->done carries briefedMt AND distilledMt independently → TWO distiller marks.
+        nodes = {"g1": {"id": "g1", "parentId": None, "t": NOW - 300, "text": "Top", "nodeComplete": True,
+                        "doneWhy": "done", "mt": NOW - 50, "distilledMt": NOW - 40, "summary": "Shipped.",
+                        "briefedMt": NOW - 120, "blockSummary": "Earlier: decide A or B."}}
+        kinds = sorted(m["kind"] for m in marks({}, nodes) if m["judge"] == "distiller")
+        self.assertEqual(kinds, ["brief", "distill"], "both the brief and the takeaway mark the timeline")
+
     def test_closer_block_via_negBlock_attributed_to_closer(self):
         nodes = {"b": {"id": "b", "parentId": "x", "t": NOW - 300, "text": "blocked top",
                        "blocked": True, "blockWhy": "needs a key", "negBlock": True, "mt": NOW - 70}}

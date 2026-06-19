@@ -59,7 +59,7 @@ const JUDGES = [
 const JROW = 14, JBAR_H = 9, JB_TOPGAP = 17, JB_BOTGAP = 5, JMARK_MINW = 6, JMERGE_GAP = 110;
 const JUDGE_KIND = { segment: 'caption', turn: 'turn caption', index: 'archived', mint: 'new goal',
   sub: 'filed a step', done: 'completed', block: 'needs you', group: 'regrouped', plant: 'handoff in',
-  distill: 'key takeaway' };
+  distill: 'key takeaway', brief: 'decision brief' };
 
 function el(t, a) { const n = document.createElementNS(SVGNS, t); for (const k in a) n.setAttribute(k, a[k]); return n; }
 function esc(s) { return (s || '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c])); }
