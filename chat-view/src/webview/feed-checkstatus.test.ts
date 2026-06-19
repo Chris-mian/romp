@@ -11,7 +11,7 @@ const FEED = fs.readFileSync(path.resolve(process.cwd(), "src", "webview", "feed
 
 test("the modal footer builds a 'Check status' button between Follow up and Clear", () => {
   assert.match(FEED, /el\("button", "fdismiss ffollow feed-modal-checkstatus"\)/);
-  assert.match(FEED, /chk\.textContent = "Check status"/);
+  assert.match(FEED, /chk\.textContent = "Nudge"/);
   assert.match(FEED, /footRow\.append\(age, fup, chk, clr\)/);   // next to Follow up
 });
 

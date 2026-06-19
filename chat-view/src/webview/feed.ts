@@ -1166,7 +1166,7 @@ function renderModal() {
     // "Check status" (the user 2026-06-18): a one-click follow-up for a WORKING card — sends a canned
     // "What is the status of the above goal?" down the SAME path as Follow up (postFollowUp → askFollowUp),
     // so the goal is quoted as context. Sits between Follow up and Clear; shown only for working cards.
-    const chk = el("button", "fdismiss ffollow feed-modal-checkstatus"); chk.id = "feed-modal-checkstatus"; chk.textContent = "Check status"; chk.title = "ask this session for the status of this goal"; chk.style.display = "none";
+    const chk = el("button", "fdismiss ffollow feed-modal-checkstatus"); chk.id = "feed-modal-checkstatus"; chk.textContent = "Nudge"; chk.title = "nudge this session for a status update on this goal"; chk.style.display = "none";
     const clr = el("button", "fdismiss feed-modal-clear"); clr.id = "feed-modal-clear"; clr.textContent = "Clear";
     const footRow = el("div", "feed-modal-foot-row"); footRow.append(age, fup, chk, clr);
     const fubox = el("div", "ffollow-box feed-modal-follow-box"); fubox.id = "feed-modal-follow-box"; fubox.style.display = "none";
