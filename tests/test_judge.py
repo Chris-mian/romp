@@ -812,14 +812,14 @@ class Grouper(unittest.TestCase):
         self.assertIsNotNone(jd.load_goals(SID).get("groupedSig"), "the (single-top) set is still recorded")
 
     def test_prompt_carries_the_grouping_steer(self):
-        for phrase in ('"do":"group"', '"do":"mint"', "RELINK open top", "umbrella",
-                       "AGGRESSIVE about grouping", "look-alike wording"):
+        for phrase in ('"do":"group"', '"do":"mint"', "relink open top", "umbrella",
+                       "aggressive about grouping", "look-alike wording"):
             self.assertIn(phrase, jd.GROUP_SYS, phrase)
         self.assertNotIn("genuine", jd.GROUP_SYS.lower(), "the grouper prompt avoids 'genuine' too")
 
     def test_prompt_allows_doing_nothing(self):
         # the user 2026-06-17: the grouper may do nothing on its turn if nothing fits — make it explicit.
-        self.assertIn("DOING NOTHING IS A VALID", jd.GROUP_SYS)
+        self.assertIn("Doing nothing is a valid", jd.GROUP_SYS)
         self.assertIn('{"ops": []}', jd.GROUP_SYS, "the empty-ops escape hatch is spelled out")
         # and an empty op list is honored end-to-end: no relinks, nothing minted
         s, a, b = self._two_tops()
@@ -1195,16 +1195,16 @@ class PlanTuning(unittest.TestCase):
     def test_topic_placement_prompt_and_menu_cap(self):
         # the recency-bias fix: the prompt tells the model to scan the WHOLE list + file by topic, and the
         # menu cap is wide enough that an old topic-matching goal doesn't scroll off.
-        self.assertIn("SCAN THE WHOLE", jd.PLAN_SYS)
+        self.assertIn("Scan the whole", jd.PLAN_SYS)
         self.assertIn("never default to the most recent", jd.PLAN_SYS)
-        self.assertIn("mint only when NO open goal matches", jd.PLAN_SYS)
+        self.assertIn("mint only when no open goal matches", jd.PLAN_SYS)
         self.assertGreaterEqual(jd.open_menu.__defaults__[0], 20, "menu cap covers old goals (≥20)")
 
     def test_user_message_must_be_placed_never_skipped(self):
         # a segment carrying a real user message can't be skipped: the prompt forbids it and plan_llm
         # flags the segment with a <note> when human.
-        self.assertIn("NEVER skip", jd.PLAN_SYS)
-        self.assertIn("REAL USER MESSAGE", jd.PLAN_SYS)
+        self.assertIn("never skip", jd.PLAN_SYS)
+        self.assertIn("real user message", jd.PLAN_SYS)
         # human=True appends the note; human=False (the default) does not
         import unittest.mock as mock
         with mock.patch.object(jd, "_judge_run", return_value="{}") as m:
@@ -1239,10 +1239,10 @@ class PlanTuning(unittest.TestCase):
     def test_whys_are_user_vantage_and_blocks_read_as_questions(self):
         # the user 2026-06-17: whys speak to the user (no self-narration), and a block reads as the
         # question/ask itself rather than "Assistant asked …".
-        self.assertIn("from the USER's vantage", jd.PLAN_SYS)
+        self.assertIn("from the user's vantage", jd.PLAN_SYS)
         self.assertIn("Drop self-narration", jd.PLAN_SYS)
-        self.assertIn("PHRASE the \"why\" as the QUESTION OR ASK", jd.PLAN_SYS)
-        self.assertIn("from the USER's vantage", jd.CLOSER_SYS, "the closer's doneWhy gets the same steer")
+        self.assertIn("Phrase the \"why\" as the question or ask", jd.PLAN_SYS)
+        self.assertIn("from the user's vantage", jd.CLOSER_SYS, "the closer's doneWhy gets the same steer")
 
     def test_why_cap_raised_to_300(self):
         long = "word " * 100                                   # ~500 chars after normalization
@@ -1254,10 +1254,10 @@ class PlanTuning(unittest.TestCase):
     def test_planner_eager_done_and_no_grouping(self):
         # the user 2026-06-17: the planner biases toward marking goals done EAGERLY, and (split out the
         # same day) NO LONGER groups — grouping moved to the grouper judge. Guard against a revert.
-        self.assertIn("Mark done EAGERLY", jd.PLAN_SYS)
+        self.assertIn("Mark done eagerly", jd.PLAN_SYS)
         for gone in ('"do":"group"', "RELINK", "GROUPING (be aggressive)", "regroup tops"):
             self.assertNotIn(gone, jd.PLAN_SYS, "%s should have moved to the grouper" % gone)
-        self.assertIn("do NOT reorganize the board", jd.PLAN_SYS, "the planner is told the grouper handles nesting")
+        self.assertIn("do not reorganize the board", jd.PLAN_SYS, "the planner is told the grouper handles nesting")
 
     def test_sub_files_under_the_old_topic_goal_not_the_newest(self):
         # mechanics: a SUB targeting an OLD goal lands there, not the newer one — the planner can reach
@@ -1301,16 +1301,16 @@ class BlockCompletionCorrectness(unittest.TestCase):
     def test_block_prompt_uses_the_weighing_rule(self):
         # #1: source-level guard that the validated weighing rule is in the planner prompt (the
         # behavioural A/B is simplify's; this locks the prompt against an accidental revert).
-        for phrase in ("NEEDS THE USER", "is NOT blocking", "WEIGHING",
-                       "the owed decision WINS"):
+        for phrase in ("needs the user", "is not blocking", "Weighing",
+                       "the owed decision wins"):
             self.assertIn(phrase, jd.PLAN_SYS, phrase)
 
     def test_block_prompt_excludes_non_user_deferrals(self):
         # the user 2026-06-16: work waiting on a PEER (handling it, or a reply to a message you sent) or
         # any non-user thing is NOT a user-owed decision, so it must NOT be labeled blocked. The block
         # trigger is qualified "from the user" so a peer's reply doesn't read as the blocking 'answer'.
-        for phrase in ("answer FROM THE USER", "Waiting on anyone or anything OTHER than the user",
-                       "another session is handling it", "PEER's reply to a message you sent",
+        for phrase in ("answer from the user", "Waiting on anyone or anything other than the user",
+                       "another session is handling it", "peer's reply to a message you sent",
                        "avoid a conflict", "only the human blocks"):
             self.assertIn(phrase, jd.PLAN_SYS, phrase)
 
@@ -1318,8 +1318,8 @@ class BlockCompletionCorrectness(unittest.TestCase):
         # the user 2026-06-17 (reversed the earlier block-the-answer rule): a fully-given explanation /
         # answer to a user question is DONE with the answer as its doneWhy — the feed tagline shows the
         # answer, so it no longer needs to sit in the needs-you/block column. Guard against a revert.
-        self.assertIn("EXPLANATION or ANSWER", jd.PLAN_SYS)
-        self.assertIn("the goal is DONE", jd.PLAN_SYS, "an answered question completes")
+        self.assertIn("explanation or answer", jd.PLAN_SYS)
+        self.assertIn("the goal is done", jd.PLAN_SYS, "an answered question completes")
         self.assertIn("concise summary of the answer", jd.PLAN_SYS, "the answer rides in the done why")
         # the old block-the-answer mechanism is gone
         self.assertNotIn("ANSWERED THE USER", jd.PLAN_SYS, "answers are no longer routed to block")
@@ -1430,12 +1430,12 @@ class SweepParse(unittest.TestCase):
                          {"done": {2: "ok"}, "block": {}}, "malformed entries are skipped")
 
     def test_closer_prompt_offers_block(self):
-        for phrase in ('"block"', "BLOCKED", "owed BY the user", "NEEDS THE USER"):
+        for phrase in ('"block"', "blocked", "owed by the user", "needs the user"):
             self.assertIn(phrase, jd.CLOSER_SYS, phrase)
 
     def test_closer_prompt_prioritizes_top_level(self):
         # the user 2026-06-17: the closer is level-agnostic but prompted to prioritize top-level goals.
-        self.assertIn("TOP-LEVEL goals are the most important", jd.CLOSER_SYS)
+        self.assertIn("top-level goals are the most important", jd.CLOSER_SYS)
         self.assertIn("sub-goal", jd.CLOSER_SYS, "it also resolves finished sub-goals")
 
 
@@ -2017,12 +2017,14 @@ class Distiller(unittest.TestCase):
         self.assertEqual(jd.run_distill(now=now), 1, "mt advanced (re-completed) -> re-distill")
         self.assertEqual(jd.load_goals(SID)["nodes"][gid]["summary"], "fresh")
 
-    def test_prompt_asks_for_high_level_takeaway(self):
-        # the user 2026-06-18: the distiller targets high-level understanding (takeaways + logic),
-        # NOT low-level specifics like commit hashes or code detail.
-        for phrase in ("HIGH-LEVEL", "OMIT", "commit hashes", "discontinuous"):
+    def test_prompt_asks_for_a_brief_high_level_takeaway(self):
+        # the user 2026-06-19 (JLD rework): the distiller targets high-level understanding written for a
+        # human and kept short — it drops low-level specifics, the old all-caps shouting, and the fixed
+        # 1-3 sentence floor (shorter is fine; the user can click through for detail).
+        for phrase in ("the point, not the process", "Skip the mechanics", "commit hashes",
+                       "separate stretches", "as brief as", "click through"):
             self.assertIn(phrase, jd.DISTILL_SYS, phrase)
-        for gone in ("concrete ARTIFACT", "verbatim and nothing else"):
+        for gone in ("HIGH-LEVEL", "OMIT", "1-3", "concrete ARTIFACT", "verbatim and nothing else"):
             self.assertNotIn(gone, jd.DISTILL_SYS, gone)
 
     def test_briefs_a_blocked_top_with_the_owed_question(self):
@@ -2080,7 +2082,7 @@ class Distiller(unittest.TestCase):
         self.assertNotIn("briefedMt", nd, "not stamped → retries next pass (never a hidden permanent give-up)")
 
     def test_block_brief_prompt_is_a_decision_brief(self):
-        for phrase in ("DECISION BRIEF", "decide", "owed"):
+        for phrase in ("decision brief", "decide", "owed"):
             self.assertIn(phrase, jd.BLOCK_BRIEF_SYS, phrase)
 
 
