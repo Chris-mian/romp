@@ -791,9 +791,9 @@ if [[ -n "$session_arg" ]]; then
 else
     display="$(basename "$work_dir")"
 fi
-# Sanitize the session name to a shell- and tmux-safe charset. This name is
-# typed into the launch pane's shell (`exec claude --name "<name>"`, below) and
-# interpolated into tmux run-shell hooks, so any char outside [A-Za-z0-9_-]
+# Sanitize the session name to a shell- and tmux-safe charset. This name lands
+# in the launch shell command (`exec claude --name "<name>"`, run via respawn-pane
+# below) and is interpolated into tmux run-shell hooks, so any char outside [A-Za-z0-9_-]
 # (spaces, quotes, $, ;, backticks — and the tmux-illegal '.'/':') could inject
 # a command. Fold every such char to '-'. (Previously only '.'/':' were
 # replaced, which left command injection via the name wide open.)
@@ -830,10 +830,10 @@ if $resume; then
     # the picker above (which exits if cancelled). Pass --name so the pill matches
     # the tmux session — otherwise Claude restores its (possibly stale) stored name.
     sid="$resume_id"
-    # resume_id is a conversation UUID and gets typed into the launch shell
+    # resume_id is a conversation UUID and lands in the launch shell command
     # (`claude --resume <id>`), so reject anything that isn't hex+hyphens. This
     # stops a crafted id (e.g. arriving via the postal `revive` path) from
-    # injecting a command at the `exec` send-keys below.
+    # injecting a command at the `exec` respawn-pane below.
     if [[ ! "$resume_id" =~ ^[0-9a-zA-Z][0-9a-zA-Z-]*$ ]]; then
         echo "[romp] refusing to resume: invalid session id" >&2
         exit 1
@@ -855,9 +855,9 @@ fi
 # without the agent knowing anything about romp. --append-system-prompt (not
 # --system-prompt) so it adds to the base prompt, and it survives compaction
 # (unlike SessionStart additionalContext). The deferred command-substitution
-# "$(cat ...)" keeps the multi-line content OUT of the typed exec line — only a
-# fixed cat of a trusted, fixed path is sent to the pane (no user input), so the
-# pane shell expands it at exec time.
+# "$(cat ...)" keeps the multi-line content OUT of the launch command line — only
+# a fixed cat of a trusted, fixed path is handed to the pane (no user input), so
+# the launch shell expands it at exec time (see respawn-pane below).
 [[ -f "$HOME/.claude/romp-session-prompt.md" ]] && \
     claude_cmd="$claude_cmd --append-system-prompt \"\$(cat $HOME/.claude/romp-session-prompt.md)\""
 
@@ -955,8 +955,17 @@ else
         _romp_record "$sid" "$display" "$work_dir" "$bg" "$fg"
     fi
 
-    # Launch claude via exec so quitting it ends the session.
-    tmux send-keys -t "$name" "exec $claude_cmd" Enter
+    # Launch claude via exec so quitting it ends the session. We hand the command
+    # to the pane with respawn-pane, NOT send-keys: a fresh shell flushes its tty
+    # input while starting up, so keys typed in that window are dropped — the bug
+    # was a launch that started `ec claude …` (the "ex" eaten). respawn-pane -k
+    # replaces the just-spawned shell with `$SHELL -c "exec $claude_cmd"`, an
+    # atomic handoff with no typing race. The shell is non-interactive, which is
+    # fine here: PATH comes from ~/.zshenv (claude resolves), and the `claude`
+    # shell-function wrapper is a no-op inside tmux anyway (it just runs `command
+    # claude "$@"`), so the raw binary is identical. The non-interactive shell
+    # also can't stall on an interactive startup prompt (e.g. oh-my-zsh update).
+    tmux respawn-pane -k -t "$name" "exec $claude_cmd"
 
     # On a RESUME, a large/compacted session may sit on Claude's "resume as-is /
     # from summary" PICKER before the session starts — no Claude hook fires while

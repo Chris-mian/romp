@@ -96,9 +96,21 @@ run_romp() {
     grep -q 'tmux new-session -d -s myproject' "$MOCK_LOG"
     grep -q 'tmux set -t myproject @romp 1' "$MOCK_LOG"
     # The pill carries the session name, and a self-assigned --session-id lets
-    # romp record name<->id up front (names map → resume picker).
-    grep -qE 'tmux send-keys -t myproject exec claude --name "myproject" --session-id [0-9a-f-]{36} Enter' "$MOCK_LOG"
+    # romp record name<->id up front (names map → resume picker). The command is
+    # handed to the pane with respawn-pane (atomic), not typed with send-keys.
+    grep -qE 'tmux respawn-pane -k -t myproject exec claude --name "myproject" --session-id [0-9a-f-]{36}' "$MOCK_LOG"
     grep -q 'tmux attach-session -t myproject' "$MOCK_LOG"
+}
+
+@test "launch hands the exec line to respawn-pane, never typed via send-keys (dropped-char bug)" {
+    # Regression: a fresh shell flushes its tty input on startup, so send-keys'd
+    # keys are dropped — the launch once started `ec claude …` (the "ex" eaten).
+    # The exec command must reach the pane atomically (respawn-pane), so the exec
+    # line must NEVER appear on a send-keys call.
+    run run_romp
+    [ "$status" -eq 0 ]
+    grep -q 'tmux respawn-pane -k -t myproject exec claude' "$MOCK_LOG"
+    ! grep -q 'send-keys.*exec claude' "$MOCK_LOG"
 }
 
 @test "append-system-prompt: omitted when no working-style prompt is installed" {
@@ -114,10 +126,10 @@ run_romp() {
     run run_romp
     [ "$status" -eq 0 ]
     # The flag carries a deferred cat of the fixed path — the multi-line content
-    # stays OUT of the typed exec line, so the pane shell expands it at exec time.
+    # stays OUT of the exec line, so the launch shell expands it at exec time.
     grep -F -- "--append-system-prompt \"\$(cat $HOME/.claude/romp-session-prompt.md)\"" "$MOCK_LOG"
-    # Still the same single exec line, terminated by Enter.
-    grep -qE 'tmux send-keys -t myproject exec claude --name "myproject" --session-id [0-9a-f-]{36} --append-system-prompt .* Enter' "$MOCK_LOG"
+    # Still the same single exec line, handed to the pane via respawn-pane.
+    grep -qE 'tmux respawn-pane -k -t myproject exec claude --name "myproject" --session-id [0-9a-f-]{36} --append-system-prompt .*' "$MOCK_LOG"
 }
 
 @test "append-system-prompt: also appended on the resume path" {
@@ -154,12 +166,12 @@ run_romp() {
 
 @test "session name sanitization: shell metacharacters folded to dashes (no command injection)" {
     # A name/dir carrying $(), ;, or quotes must NOT survive into the launch
-    # command that gets typed into the pane's shell — every unsafe char becomes
-    # '-'. Regression for the command-injection-via-session-name hole.
+    # command the pane shell runs — every unsafe char becomes '-'. Regression for
+    # the command-injection-via-session-name hole.
     run run_romp 'pwn$(touch INJECTED);x"y'
     [ "$status" -eq 0 ]
     local line
-    line="$(grep -F 'send-keys' "$MOCK_LOG" | grep -F 'exec claude')"
+    line="$(grep -F 'respawn-pane' "$MOCK_LOG" | grep -F 'exec claude')"
     [ -n "$line" ]
     # no shell metacharacters survive in the exec line
     ! grep -qE '[$();]' <<<"$line"
@@ -248,7 +260,7 @@ run_romp() {
 @test "resume: explicit session id (--resume <id>) resumes that conversation" {
     run run_romp --resume abc123-uuid
     [ "$status" -eq 0 ]
-    grep -q 'tmux send-keys -t myproject exec claude --resume abc123-uuid --name "myproject" Enter' "$MOCK_LOG"
+    grep -q 'tmux respawn-pane -k -t myproject exec claude --resume abc123-uuid --name "myproject"' "$MOCK_LOG"
 }
 
 @test "resume: name collision uniquifies instead of hijacking the session" {
@@ -258,7 +270,7 @@ run_romp() {
     [ "$status" -eq 0 ]
     ! grep -qE 'tmux attach-session -t myproject$' "$MOCK_LOG"
     grep -q 'tmux new-session -d -s myproject-2' "$MOCK_LOG"
-    grep -q 'tmux send-keys -t myproject-2 exec claude --resume abc123-uuid --name "myproject-2" Enter' "$MOCK_LOG"
+    grep -q 'tmux respawn-pane -k -t myproject-2 exec claude --resume abc123-uuid --name "myproject-2"' "$MOCK_LOG"
 }
 
 # ─── Detach tests ────────────────────────────────────────────────────
@@ -267,7 +279,7 @@ run_romp() {
     run run_romp --detach
     [ "$status" -eq 0 ]
     grep -q 'tmux new-session -d -s myproject' "$MOCK_LOG"
-    grep -qE 'tmux send-keys -t myproject exec claude --name "myproject" --session-id [0-9a-f-]{36} Enter' "$MOCK_LOG"
+    grep -qE 'tmux respawn-pane -k -t myproject exec claude --name "myproject" --session-id [0-9a-f-]{36}' "$MOCK_LOG"
     ! grep -q 'tmux attach-session' "$MOCK_LOG"
     [[ "$output" == *"attach with: tmux attach -t myproject"* ]]
 }
@@ -276,7 +288,7 @@ run_romp() {
     run run_romp --resume sess-xyz --detach
     [ "$status" -eq 0 ]
     grep -q 'tmux new-session -d -s myproject' "$MOCK_LOG"
-    grep -q 'tmux send-keys -t myproject exec claude --resume sess-xyz --name "myproject" Enter' "$MOCK_LOG"
+    grep -q 'tmux respawn-pane -k -t myproject exec claude --resume sess-xyz --name "myproject"' "$MOCK_LOG"
     ! grep -q 'tmux attach-session' "$MOCK_LOG"
     [[ "$output" == *"(detached)"* ]]
 }
