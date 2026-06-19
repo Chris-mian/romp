@@ -3029,21 +3029,19 @@ def _producer():
         _prev_wall, _prev_mono = _nw, _nm
         _producer_wake.clear()   # consume; a /tick arriving DURING this pass re-sets it → we run again (no lost wake)
         try:
-            with _clients_lock:
-                browser = bool(_clients)
             # Two tiers, run in PARALLEL (the user 2026-06-17) — they share no store and triage never
             # reads the captioner's output, so the only cost of overlap is each tier parsing a transcript
-            # instead of sharing one parse. INDEX tier (captioner + archiver) is ALWAYS-ON for any active
-            # session (keeps the TOC/search index current even with no browser; cheap when idle via
-            # jd.PCACHE, and must keep retrying a failed capture). TRIAGE tier (planner → closer → courier
-            # → grouper → distiller, jd.run_triage) parses UNCACHED and only matters while a browser's
-            # looking, so it's gated on a real change (new turn / postal msg / browser-just-connected).
+            # instead of sharing one parse. BOTH are ALWAYS-ON for any live session (the user 2026-06-19,
+            # dropping the old browser-connected gate on triage): the INDEX tier (captioner + archiver) keeps
+            # the TOC/search index current; the TRIAGE tier (planner → closer → courier → grouper →
+            # distiller, jd.run_triage) keeps the GOAL TREE current even with no browser, so the feed/timeline
+            # are up to date the instant one connects. A pass is cheap when nothing changed: parses are cache
+            # hits (jd PCACHE) and each judge only makes an LLM call when it has real new work (an unplaced
+            # segment, an uncaptioned unit, a fresh completion) — so an idle pass costs filesystem stats, not
+            # model calls. (_producer_sig stays available but no longer gates triage.)
             tiers = []
             if _tmux_sessions():
                 tiers.append(threading.Thread(target=_run_tier, args=(jd.run_index,), name="index"))
-            sig = _producer_sig(browser)
-            if browser and sig != _last_producer_sig[0]:
-                _last_producer_sig[0] = sig
                 tiers.append(threading.Thread(target=_run_tier, args=(jd.run_triage,), name="triage"))
             for t in tiers:
                 t.start()
@@ -3052,10 +3050,11 @@ def _producer():
         except Exception:
             sys.stderr.write("producer: %s\n" % traceback.format_exc())
         # Event-driven: wake the instant a hook pokes /tick (turn ended / prompt landed / postal msg)
-        # instead of waiting out a blind 20s tick. The 20s is now only a BACKSTOP — for changes we don't
-        # get poked for (e.g. a segment closing mid-turn) and as a safety net if a poke is ever missed. A
-        # pass is cheap when nothing changed (jd.PCACHE no-ops unit selection), so an extra wake is harmless.
-        _producer_wake.wait(20)
+        # instead of waiting out the backstop. The 3s is only a BACKSTOP — for changes we don't get poked
+        # for (e.g. a segment closing mid-turn) and a safety net if a poke is ever missed. A pass is cheap
+        # when nothing changed (cached parses, no LLM calls), so a short backstop is harmless and keeps the
+        # timeline/feed snappy. (the user 2026-06-19: 20s → 3s.)
+        _producer_wake.wait(3)
 
 
 def _pusher():
