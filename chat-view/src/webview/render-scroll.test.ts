@@ -49,8 +49,11 @@ test("honest-fail still fires when even the nearest-user-turn finds nothing (the
   assert.match(RENDER, /if \(!scrolled\) landToast\("couldn't locate this in the transcript"\)/);
 });
 
-test("scrollToNearestT stays for the ledger's intentional by-time navigation (only the blunt anchor fallback was killed)", () => {
-  assert.match(RENDER, /function scrollToNearestT\(/, "the helper still exists");
-  assert.match(RENDER, /ev\.stopPropagation\(\); scrollToNearestT\(t, kind\); \}\)/,
-    "the ledger zones still navigate by time directly (a primary action, not an anchor fallback)");
+test("the ledger zones deep-link BY UUID first, nearest-time only as a fallback (the user 2026-06-19)", () => {
+  // previously the ledger navigated by time directly; now the kernel plumbs promptAnchorUuid/anchorUuid to
+  // each ledger node (the SAME anchors build_feed gives its cards), so the ledger and the feed for one node
+  // land on the SAME chat turn. scrollToNearestT stays as the fallback (and the focus path's prompt tier).
+  assert.match(RENDER, /function scrollToNearestT\(/, "the helper still exists (the fallback + the prompt-tier path)");
+  assert.match(RENDER, /if \(uuid && scrollToAnchor\(uuid\)\) return;/, "a ledger zone lands on the exact chat turn by uuid first");
+  assert.match(RENDER, /if \(t != null && scrollToNearestT\(t, kind\)\) return;/, "nearest-time is now only the fallback");
 });

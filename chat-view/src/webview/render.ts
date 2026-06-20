@@ -140,7 +140,7 @@ interface LedgerBullet { text: string; t?: number; id?: string; sid?: string; tl
 // `derived` = this node is done only because all its children are (the kernel propagates completion up
 // the tree), as opposed to an explicitly-asserted done. Rendered as the blue ✓ disc dimmed (the user
 // 2026-06-16). Empty/false → explicit done (full disc).
-interface LedgerTreeNode { id: string; text: string; depth: number; done: boolean; blocked: boolean; t?: number; mt?: number; current: boolean; derived?: boolean; recent?: boolean; cleared?: boolean; onpath?: boolean; children?: string[]; }
+interface LedgerTreeNode { id: string; text: string; depth: number; done: boolean; blocked: boolean; t?: number; mt?: number; current: boolean; derived?: boolean; recent?: boolean; cleared?: boolean; onpath?: boolean; promptAnchorUuid?: string | null; anchorUuid?: string | null; children?: string[]; }
 // tree = the goal overview (preferred view); bullets = captioned-turn fallback for goal-less sessions.
 interface Ledger { summary: string; tree?: LedgerTreeNode[]; bullets: LedgerBullet[]; current?: LedgerBullet | null; }
 const ledgers = new Map<string, Ledger | null>();
@@ -2566,17 +2566,27 @@ function renderLedger() {
       if (anyExpandable) lead.push(tri);                         // no caret column in a flat ledger (see anyExpandable)
       // Click/hover zones (the user 2026-06-17). A RESOLVED node (checked off = done, or marked blocked)
       // has a SEPARATE resolution point, so it splits in three: the TEXT jumps to the MESSAGE that minted
-      // it (nearest USER turn at t); the CHECKBOX + the TIME jump to where it RESOLVED (nearest assistant
-      // turn at mt). But a node NOT yet checked off / blocked has NO completion — its checkbox + text are
-      // ONE block (both ARE the goal itself), so they navigate to the message together and light as one
-      // continuous highlight. The caret's own onclick stops propagation, so clicking it only folds.
+      // it (the user turn, by promptAnchorUuid); the CHECKBOX + the TIME jump to where it RESOLVED (the
+      // assistant turn, by anchorUuid). But a node NOT yet checked off / blocked has NO completion — its
+      // checkbox + text are ONE block (both ARE the goal itself), so they navigate together and light as
+      // one continuous highlight. The caret's own onclick stops propagation, so clicking it only folds.
+      // Each zone deep-links BY UUID — the kernel resolves it, the SAME anchor build_feed gives its cards,
+      // so the ledger and the feed for one node land on the SAME turn — and falls back to nearest-time
+      // only when the kernel had no uuid (orphaned by a rewind/compaction) (the user 2026-06-19).
       const startT = n.t;                          // where the task was STATED → the user message
       const resolveT = n.mt ?? n.t;                // where/when it got CHECKED OFF / blocked
-      const wireZone = (z: HTMLElement, t: number | undefined, kind: string, title: string) => {
-        if (!t) return;
+      const wireZone = (z: HTMLElement, uuid: string | null | undefined, t: number | undefined,
+                        kind: string, title: string) => {
+        if (!uuid && t == null) return;            // nothing resolvable → not a nav zone
         z.classList.add("lz-nav");
         z.title = title;
-        z.addEventListener("click", (ev) => { ev.stopPropagation(); scrollToNearestT(t, kind); });
+        z.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          pendingAnchorIntent = kind === "user" ? "user" : null;   // the kind guard scrollToAnchor reads
+          if (uuid && scrollToAnchor(uuid)) return;                // TIER 1: the EXACT chat turn, by uuid
+          if (t != null && scrollToNearestT(t, kind)) return;      // TIER 2: legacy nearest-time fallback
+          landToast("couldn't locate this in the transcript");
+        });
       };
       // .lz-hl is toggled in JS so a group lights together; each element keeps its own shape (the checkbox
       // stays a circle — its halo ring; the text its fill), so a merged checkbox+text reads as one unit
@@ -2586,7 +2596,7 @@ function renderLedger() {
         const off = () => group.forEach((g) => g.classList.remove("lz-hl"));
         group.forEach((g) => { g.addEventListener("mouseenter", on); g.addEventListener("mouseleave", off); });
       };
-      wireZone(txt, startT, "user", "jump to the message that asked for this");
+      wireZone(txt, n.promptAnchorUuid, startT, "user", "jump to the message that asked for this");
       // The checkbox tooltip LEADS with WHY the mark reads the way it does (the user 2026-06-18): explicit
       // vs inferred (roll-UP = every sub-step done, roll-DOWN = a resolved parent) vs dismissed vs blocked
       // vs open — so an outlined ✓ no longer needs decoding — then the jump hint. Roll-up/down is worked out
@@ -2606,20 +2616,20 @@ function renderLedger() {
         // user 2026-06-18). It carries done=true and would otherwise fall into the resolved branch and link
         // to a nonexistent checkoff. Route the mark + text + time to where it was CREATED (the minting
         // message) instead, and say so in the tooltip — not "checked off".
-        wireZone(mark, startT, "user", reason + " · jump to where it was created");
+        wireZone(mark, n.promptAnchorUuid, startT, "user", reason + " · jump to where it was created");
         linkHover([mark, txt]);
-        if (time.textContent) { wireZone(time, startT, "user", "jump to where it was created"); linkHover([time]); }
+        if (time.textContent) { wireZone(time, n.promptAnchorUuid, startT, "user", "jump to where it was created"); linkHover([time]); }
       } else if (n.done || n.blocked) {
         const resTitle = n.done ? "jump to where this got checked off" : "jump to where this got marked blocked";
-        wireZone(mark, resolveT, "assistant", reason + " · " + resTitle);
-        wireZone(time, resolveT, "assistant", resTitle);
+        wireZone(mark, n.anchorUuid, resolveT, "assistant", reason + " · " + resTitle);
+        wireZone(time, n.anchorUuid, resolveT, "assistant", resTitle);
         linkHover([txt]);
         linkHover(time.textContent ? [mark, time] : [mark]);   // time joins the pair only when shown
       } else {
         // not yet checked off / blocked → checkbox + text are ONE block, both → the goal's message
-        wireZone(mark, startT, "user", reason + " · jump to the message that asked for this");
+        wireZone(mark, n.promptAnchorUuid, startT, "user", reason + " · jump to the message that asked for this");
         linkHover([mark, txt]);   // checkbox + text light together, each keeping its own shape
-        if (time.textContent) { wireZone(time, resolveT, "assistant", "jump to the latest work here"); linkHover([time]); }
+        if (time.textContent) { wireZone(time, n.anchorUuid, resolveT, "assistant", "jump to the latest work here"); linkHover([time]); }
       }
       row.append(...lead, mark, txt, time);
       wrap.appendChild(row);

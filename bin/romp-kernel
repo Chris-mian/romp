@@ -1616,9 +1616,13 @@ def build_session(sid, now, tmux=None):
     caps = _captions(sid)
     events, by_tool = [], {}                  # by_tool: tool_use_id → its tool event (fill output later)
     uuid2seg, seg_anchors = {}, {}            # atom uuid → seg id; seg id → (promptId, workId) for the dot/bar split
-    for turn in session["turns"]:
+    seg_trig, seg_work = {}, {}               # goal-node DEEP-LINK anchors: prompt = the segment's trigger
+    for turn in session["turns"]:             #   (user msg), work = its reply (preferred) — matches build_feed
         for seg in em.segments(turn):
-            seg_anchors[seg["id"]] = (seg.get("trigger"), _seg_anchors(seg["atoms"])[0])
+            w, r = _seg_anchors(seg["atoms"])
+            seg_anchors[seg["id"]] = (seg.get("trigger"), w)   # timeline DOT/BAR hover ids (workId = first assistant)
+            seg_trig[seg["id"]] = seg.get("trigger")
+            seg_work[seg["id"]] = r or w                        # readable reply preferred, matches build_feed's seg_uuid
             for at in seg["atoms"]:
                 if at.get("uuid"):
                     uuid2seg[at["uuid"]] = seg["id"]
@@ -1835,6 +1839,12 @@ def build_session(sid, now, tmux=None):
         # open children fade with it rather than sitting as ○ under a faded-✓ parent (the user 2026-06-16).
         derived = (not explicit) and (not clr) and (_subtree_done(nid) or ancestor_done)
         kids = sorted(gkids.get(nid, []), key=_submax, reverse=True)
+        # EXACT deep-link anchors (the user 2026-06-19): a ledger TOC click lands on the precise chat turn
+        # BY UUID — the SAME anchors build_feed gives its cards — so the ledger and the feed for one node
+        # land identically, replacing the ledger's old nearest-time landing. promptAnchorUuid → the minting
+        # user message (text zone); anchorUuid → where it resolved / is being worked (mark + time zones).
+        _pa, _wa = _node_anchor_uuids(nd, seg_trig, seg_work,
+                                      explicit or derived or clr or bool(nd.get("blocked")))
         tree.append({"id": nid, "text": nd["text"], "depth": depth,
                      "done": explicit or derived or clr, "derived": derived, "cleared": clr,
                      "blocked": bool(nd.get("blocked")), "t": nd["t"],
@@ -1843,6 +1853,7 @@ def build_session(sid, now, tmux=None):
                      # them), open goals on t (where they began). Matches build_feed (the user 2026-06-16).
                      "mt": nd.get("mt", nd["t"]), "current": nid == focus,
                      "recent": nid == recent, "onpath": nid in onpath,
+                     "promptAnchorUuid": _pa, "anchorUuid": _wa,
                      "children": [c for c in kids if c in gnodes]})
         for c in kids:
             _twalk(c, depth + 1, ancestor_done=explicit or derived or clr)
@@ -2200,8 +2211,7 @@ def build_feed(now, tmux=None):
             st = "done" if done else ("question" if nd.get("blocked") else "open")
             # The node's deep-link target SEGMENT: where it RESOLVED (done/blocked → its last trail seg,
             # matching the mt convention below) else where it was MINTED (open → its first trail seg).
-            _trail = nd.get("trail") or []
-            _anchor_seg = (_trail[-1] if st in ("done", "question") else _trail[0]) if _trail else None
+            _pa, _wa = _node_anchor_uuids(nd, seg_trig, seg_uuid, st in ("done", "question"))
             out.append({"id": nid, "kind": "ask", "text": nd["text"], "who": name, "whoSid": fsid,
                         "whoColor": color, "whoWorking": who_working, "status": st, "derived": derived,
                         "t": nd["t"], "last": nd["t"], "trgb": list(cm.age_rgb(now - nd["t"], _colormap())),
@@ -2213,8 +2223,8 @@ def build_feed(now, tmux=None):
                         # the mark/time zones deep-link here. promptAnchorUuid = the PROMPT anchor (the
                         # MINTING segment's trigger = the user's message) → the TITLE deep-links here, by id,
                         # landing on the user turn (no kind-restricted nearest-time needed). (2026-06-17.)
-                        "anchorUuid": seg_uuid.get(_anchor_seg),
-                        "promptAnchorUuid": seg_trig.get(_trail[0] if _trail else None),
+                        "anchorUuid": _wa,
+                        "promptAnchorUuid": _pa,
                         # the planner's one-sentence rationales — the modal reveals these (why a node
                         # exists / was blocked / was completed). (the user 2026-06-16.)
                         "why": nd.get("why"), "blockWhy": nd.get("blockWhy"), "doneWhy": nd.get("doneWhy"),
@@ -2516,6 +2526,18 @@ def _seg_anchors(atoms):
                 for b in blocks):
             reply = a.get("uuid")
     return work, reply
+
+
+def _node_anchor_uuids(nd, seg_trig, seg_work, resolved):
+    """(promptAnchorUuid, anchorUuid) — the EXACT chat .turn[data-uuid]s a goal node's ledger/feed zones
+    deep-link to. promptAnchorUuid = the MINTING segment's trigger (the user message → the text/title
+    zones, landing on the user turn). anchorUuid = the WORK anchor (reply preferred) of where the node
+    RESOLVED (done/blocked → its LAST trail segment) or was MINTED (open → its FIRST). Shared by
+    build_feed + build_session so a feed card and the ledger TOC for the SAME node land on the SAME turn —
+    replacing the ledger's old nearest-time heuristic (the user 2026-06-19)."""
+    trail = nd.get("trail") or []
+    anchor_seg = (trail[-1] if resolved else trail[0]) if trail else None
+    return (seg_trig.get(trail[0] if trail else None), seg_work.get(anchor_seg))
 
 
 def _seg_prompt(seg):

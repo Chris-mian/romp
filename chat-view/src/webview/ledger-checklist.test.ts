@@ -35,15 +35,15 @@ test("ledger checkbox tooltip LEADS with why the mark reads as it does — expli
   // roll-up vs roll-down is decided from the node's own children (no kernel round-trip)
   assert.match(RENDER, /kids\.length > 0 && kids\.every\(\(k\) => k\.done\)/);
   // the reason is prepended to the jump hint on the CHECKBOX in both the resolved and open branches
-  assert.match(RENDER, /wireZone\(mark, resolveT, "assistant", reason \+ " · " \+ resTitle\)/);
-  assert.match(RENDER, /wireZone\(mark, startT, "user", reason \+ " · jump to the message/);
+  assert.match(RENDER, /wireZone\(mark, n\.anchorUuid, resolveT, "assistant", reason \+ " · " \+ resTitle\)/);
+  assert.match(RENDER, /wireZone\(mark, n\.promptAnchorUuid, startT, "user", reason \+ " · jump to the message/);
 });
 
 test("a CLEARED node links to where it was CREATED, not 'checked off' — it was never resolved (the user 2026-06-18)", () => {
   // cleared carries done=true and would otherwise fall into the resolved branch and link to a nonexistent
   // checkoff point. A dedicated cleared branch (checked FIRST) routes the mark to startT (creation) instead.
-  assert.match(RENDER, /if \(n\.cleared\) \{[\s\S]*?wireZone\(mark, startT, "user", reason \+ " · jump to where it was created"\)/);
-  assert.match(RENDER, /wireZone\(time, startT, "user", "jump to where it was created"\)/);
+  assert.match(RENDER, /if \(n\.cleared\) \{[\s\S]*?wireZone\(mark, n\.promptAnchorUuid, startT, "user", reason \+ " · jump to where it was created"\)/);
+  assert.match(RENDER, /wireZone\(time, n\.promptAnchorUuid, startT, "user", "jump to where it was created"\)/);
   // the cleared branch precedes the done/blocked branch, so a cleared node never reaches the "checked off" hint
   assert.ok(RENDER.indexOf("if (n.cleared) {") < RENDER.indexOf('n.done ? "jump to where this got checked off"'),
     "cleared is handled before the resolved branch");
@@ -155,16 +155,20 @@ test("ledger sorts unfinished goals on top, finished at the bottom (recency with
   assert.match(RENDER, /const dt = \(n\.mt \?\? n\.t\)!;/);
 });
 
-test("ledger row = 3 zones: text→message (user turn @t), mark+time→checked-off (@mt) (the user 2026-06-17)", () => {
+test("ledger row = 3 zones: text→message (user turn, by uuid), mark+time→checked-off (by uuid) (the user 2026-06-19)", () => {
   assert.match(RENDER, /mt\?: number/);                                     // node carries the resolution time
-  // two distinct anchors: where it was STATED (t → the user message) vs where it got CHECKED OFF (mt)
+  // two distinct anchors: where it was STATED (promptAnchorUuid → the user message) vs where it got
+  // CHECKED OFF (anchorUuid → the resolution turn); times kept only as the nearest-time fallback
   assert.match(RENDER, /const startT = n\.t;/);
   assert.match(RENDER, /const resolveT = n\.mt \?\? n\.t;/);
-  // the text zone jumps to the nearest USER turn (the message); the mark + time to the resolution turn
-  assert.match(RENDER, /wireZone\(txt, startT, "user",/);
-  assert.match(RENDER, /wireZone\(mark, resolveT, "assistant",/);
-  assert.match(RENDER, /wireZone\(time, resolveT, "assistant",/);
-  assert.match(RENDER, /z\.addEventListener\("click", \(ev\) => \{ ev\.stopPropagation\(\); scrollToNearestT\(t, kind\); \}\)/);
+  // the text zone deep-links to the user turn (promptAnchorUuid); the mark + time to the resolution turn
+  // (anchorUuid) — BY UUID, the SAME anchors the feed uses (the user 2026-06-19)
+  assert.match(RENDER, /wireZone\(txt, n\.promptAnchorUuid, startT, "user",/);
+  assert.match(RENDER, /wireZone\(mark, n\.anchorUuid, resolveT, "assistant",/);
+  assert.match(RENDER, /wireZone\(time, n\.anchorUuid, resolveT, "assistant",/);
+  // each zone lands BY UUID first (scrollToAnchor), nearest-time only as a fallback
+  assert.match(RENDER, /if \(uuid && scrollToAnchor\(uuid\)\) return;/);
+  assert.match(RENDER, /if \(t != null && scrollToNearestT\(t, kind\)\) return;/);
   // the whole-row jump is gone — no row-level click or .nav class anymore
   assert.doesNotMatch(RENDER, /row\.classList\.add\("nav"\)/);
   // the hover highlight is per-ZONE (.lz-hl, JS-toggled): a halo on the mark disc, a fill on text/time
@@ -186,7 +190,7 @@ test("ledger UNRESOLVED node: checkbox + text light together, checkbox STAYS a c
   // not yet checked off / blocked → the mark points at the SAME message as the text and they light together,
   // but each keeps its own shape: the checkbox is its CIRCULAR halo, never a square (no .lz-merge fill).
   assert.match(RENDER, /if \(n\.done \|\| n\.blocked\) \{/);                       // the split is gated on resolved
-  assert.match(RENDER, /wireZone\(mark, startT, "user", reason \+ " · jump to the message that asked for this"\)/);
+  assert.match(RENDER, /wireZone\(mark, n\.promptAnchorUuid, startT, "user", reason \+ " · jump to the message that asked for this"\)/);
   assert.match(RENDER, /linkHover\(\[mark, txt\]\)/);                              // light together, normal shapes
   assert.match(CSS, /\.ledger-tmark\.lz-hl \{[^}]*box-shadow/);                    // checkbox highlight = circular halo
   assert.doesNotMatch(CSS, /lz-merge/);                                            // no square/bridged merge fill
