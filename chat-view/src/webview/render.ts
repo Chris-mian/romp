@@ -504,12 +504,13 @@ function wireTurnHover(turn: HTMLElement, dot: HTMLElement | null, uuid: string 
   }
 }
 
-// Transient cross-highlight FROM the feed modal (host fans its row-hover here as
-// glowTurns): white-ring the rail dot of every chat turn inside a hovered event's
-// [start, end] span (per session), and any postal card carrying a hovered message
-// id. Empty groups+mids = clear. Glow is hover-transient, so a re-render that
-// drops it mid-hover self-heals on the next 40ms hover tick.
-function applyGlow(groups: Array<{ sid: string; ranges: Array<[number, number]> }>, mids: string[]) {
+// Transient cross-highlight FROM the timeline (host fans a bar hover here as
+// glowTurns): white-ring the rail dot of every chat turn the hovered segments
+// contain — matched BY UUID (the kernel sends each segment's atom uuids), not a
+// time window — plus any postal card carrying a hovered message id. Empty
+// groups+mids = clear. Glow is hover-transient, so a re-render that drops it
+// mid-hover self-heals on the next hover tick (the user 2026-06-19).
+function applyGlow(groups: Array<{ sid: string; uuids: string[] }>, mids: string[]) {
   document.querySelectorAll(".ext-glow").forEach((n) => n.classList.remove("ext-glow"));
   const midSet = new Set(mids);
   if (midSet.size) {
@@ -520,9 +521,10 @@ function applyGlow(groups: Array<{ sid: string; ranges: Array<[number, number]> 
   for (const g of groups) {
     const v = views.get(g.sid);
     if (!v) continue;
-    v.el.querySelectorAll<HTMLElement>(".turn[data-t]").forEach((n) => {
-      const t = parseInt(n.dataset.t || "", 10);
-      if (t && (g.ranges || []).some(([s, e]) => t >= s - 2 && t <= e + 2)) n.classList.add("ext-glow");
+    const uset = new Set(g.uuids || []);
+    if (!uset.size) continue;
+    v.el.querySelectorAll<HTMLElement>(".turn[data-uuid]").forEach((n) => {
+      if (uset.has(n.dataset.uuid || "")) n.classList.add("ext-glow");   // every row of a matched atom lights
     });
   }
 }
@@ -1807,7 +1809,12 @@ function cssEscape(s: string): string {
 function scrollToAnchor(uuid: string): boolean {
   if (!uuid) return false;
   const v = activeId ? views.get(activeId) : null;
-  const target = v?.el.querySelector(`.turn[data-uuid="${cssEscape(uuid)}"]`) as HTMLElement | null;
+  // Resolve BY ID against the rendered turns: the atom uuid (every turn) OR the postal message id (postal
+  // cards also carry data-mid). A postal deep-link — the timeline connector / feed delegation — passes the
+  // message id; matching it to the card's data-mid lands on the EXACT message, not a nearest-time guess that
+  // can drift onto an unrelated turn that happens to be near in time (the user 2026-06-20).
+  const target = (v?.el.querySelector(`.turn[data-uuid="${cssEscape(uuid)}"]`)
+                  || v?.el.querySelector(`.turn[data-mid="${cssEscape(uuid)}"]`)) as HTMLElement | null;
   if (!target) { pendingAnchor = uuid; landTrail.push("pointer-not-rendered"); return false; }
   // KIND GUARD — the robust half of "title clicks always land on the user's
   // instructions". Upstream producers substitute a reply uuid when the prompt
@@ -2566,26 +2573,22 @@ function renderLedger() {
       if (anyExpandable) lead.push(tri);                         // no caret column in a flat ledger (see anyExpandable)
       // Click/hover zones (the user 2026-06-17). A RESOLVED node (checked off = done, or marked blocked)
       // has a SEPARATE resolution point, so it splits in three: the TEXT jumps to the MESSAGE that minted
-      // it (the user turn, by promptAnchorUuid); the CHECKBOX + the TIME jump to where it RESOLVED (the
-      // assistant turn, by anchorUuid). But a node NOT yet checked off / blocked has NO completion — its
-      // checkbox + text are ONE block (both ARE the goal itself), so they navigate together and light as
-      // one continuous highlight. The caret's own onclick stops propagation, so clicking it only folds.
-      // Each zone deep-links BY UUID — the kernel resolves it, the SAME anchor build_feed gives its cards,
-      // so the ledger and the feed for one node land on the SAME turn — and falls back to nearest-time
-      // only when the kernel had no uuid (orphaned by a rewind/compaction) (the user 2026-06-19).
-      const startT = n.t;                          // where the task was STATED → the user message
-      const resolveT = n.mt ?? n.t;                // where/when it got CHECKED OFF / blocked
-      const wireZone = (z: HTMLElement, uuid: string | null | undefined, t: number | undefined,
-                        kind: string, title: string) => {
-        if (!uuid && t == null) return;            // nothing resolvable → not a nav zone
+      // it (the user turn, by promptAnchorUuid); the CHECKBOX + the TIME-label jump to where it RESOLVED
+      // (the assistant turn, by anchorUuid). But a node NOT yet checked off / blocked has NO completion —
+      // its checkbox + text are ONE block (both ARE the goal itself), so they navigate together and light
+      // as one continuous highlight. The caret's own onclick stops propagation, so clicking it only folds.
+      // Each zone deep-links BY UUID ONLY — the kernel resolves it (the SAME anchor build_feed gives its
+      // cards, so the ledger and the feed for one node land on the SAME turn). NO time-based fallback: a
+      // zone the kernel couldn't anchor isn't a link, and an unrenderable uuid honest-fails with a toast
+      // rather than guessing by clock-nearest (the user 2026-06-19).
+      const wireZone = (z: HTMLElement, uuid: string | null | undefined, kind: string, title: string) => {
+        if (!uuid) return;                         // no exact anchor → not a nav zone (never guess by time)
         z.classList.add("lz-nav");
         z.title = title;
         z.addEventListener("click", (ev) => {
           ev.stopPropagation();
           pendingAnchorIntent = kind === "user" ? "user" : null;   // the kind guard scrollToAnchor reads
-          if (uuid && scrollToAnchor(uuid)) return;                // TIER 1: the EXACT chat turn, by uuid
-          if (t != null && scrollToNearestT(t, kind)) return;      // TIER 2: legacy nearest-time fallback
-          landToast("couldn't locate this in the transcript");
+          if (!scrollToAnchor(uuid)) landToast("couldn't locate this in the transcript");
         });
       };
       // .lz-hl is toggled in JS so a group lights together; each element keeps its own shape (the checkbox
@@ -2596,7 +2599,7 @@ function renderLedger() {
         const off = () => group.forEach((g) => g.classList.remove("lz-hl"));
         group.forEach((g) => { g.addEventListener("mouseenter", on); g.addEventListener("mouseleave", off); });
       };
-      wireZone(txt, n.promptAnchorUuid, startT, "user", "jump to the message that asked for this");
+      wireZone(txt, n.promptAnchorUuid, "user", "jump to the message that asked for this");
       // The checkbox tooltip LEADS with WHY the mark reads the way it does (the user 2026-06-18): explicit
       // vs inferred (roll-UP = every sub-step done, roll-DOWN = a resolved parent) vs dismissed vs blocked
       // vs open — so an outlined ✓ no longer needs decoding — then the jump hint. Roll-up/down is worked out
@@ -2616,20 +2619,20 @@ function renderLedger() {
         // user 2026-06-18). It carries done=true and would otherwise fall into the resolved branch and link
         // to a nonexistent checkoff. Route the mark + text + time to where it was CREATED (the minting
         // message) instead, and say so in the tooltip — not "checked off".
-        wireZone(mark, n.promptAnchorUuid, startT, "user", reason + " · jump to where it was created");
+        wireZone(mark, n.promptAnchorUuid, "user", reason + " · jump to where it was created");
         linkHover([mark, txt]);
-        if (time.textContent) { wireZone(time, n.promptAnchorUuid, startT, "user", "jump to where it was created"); linkHover([time]); }
+        if (time.textContent) { wireZone(time, n.promptAnchorUuid, "user", "jump to where it was created"); linkHover([time]); }
       } else if (n.done || n.blocked) {
         const resTitle = n.done ? "jump to where this got checked off" : "jump to where this got marked blocked";
-        wireZone(mark, n.anchorUuid, resolveT, "assistant", reason + " · " + resTitle);
-        wireZone(time, n.anchorUuid, resolveT, "assistant", resTitle);
+        wireZone(mark, n.anchorUuid, "assistant", reason + " · " + resTitle);
+        wireZone(time, n.anchorUuid, "assistant", resTitle);
         linkHover([txt]);
         linkHover(time.textContent ? [mark, time] : [mark]);   // time joins the pair only when shown
       } else {
         // not yet checked off / blocked → checkbox + text are ONE block, both → the goal's message
-        wireZone(mark, n.promptAnchorUuid, startT, "user", reason + " · jump to the message that asked for this");
+        wireZone(mark, n.promptAnchorUuid, "user", reason + " · jump to the message that asked for this");
         linkHover([mark, txt]);   // checkbox + text light together, each keeping its own shape
-        if (time.textContent) { wireZone(time, n.anchorUuid, resolveT, "assistant", "jump to the latest work here"); linkHover([time]); }
+        if (time.textContent) { wireZone(time, n.anchorUuid, "assistant", "jump to the latest work here"); linkHover([time]); }
       }
       row.append(...lead, mark, txt, time);
       wrap.appendChild(row);
@@ -2716,13 +2719,15 @@ function refreshLedgerAges(host: HTMLElement, l: Ledger, now: number) {
   });
 }
 
-// Wire a ledger bullet exactly like a feed row: hover (120ms intent debounce) →
-// transient timeline highlight of the bullet's event; leave → clear; click →
-// locate (the host pans the timeline + opens the chat at that turn). The host
-// resolves b.id (the reply's romp-events id) → turn.
+// Wire a ledger bullet exactly like a goal-tree zone: hover (120ms intent debounce)
+// → transient timeline highlight of the bullet's event; leave → clear; click →
+// land on the bullet's turn IN THE CHAT by uuid. b.id is the turn's atom uuid
+// (build_session), a real .turn[data-uuid] — so scroll to it directly, no host
+// round-trip. (The old `ledgerLocate` host message was never handled — a dead
+// click — and would have been time-based anyway; the user 2026-06-19.)
 function wireBulletNav(row: HTMLElement, b: LedgerBullet) {
   let timer: ReturnType<typeof setTimeout> | undefined;
-  row.title = "jump to this on the timeline";
+  row.title = b.id ? "jump to this message" : "jump to this on the timeline";
   row.addEventListener("mouseenter", () => {
     timer = setTimeout(() => { timer = undefined; vscodeApi?.postMessage({ type: "ledgerHover", id: b.id, tlId: b.tlId }); }, 120);
   });
@@ -2731,7 +2736,9 @@ function wireBulletNav(row: HTMLElement, b: LedgerBullet) {
     vscodeApi?.postMessage({ type: "ledgerHover", id: null });
   });
   row.addEventListener("click", () => {
-    vscodeApi?.postMessage({ type: "ledgerLocate", id: b.id, sid: b.sid, t: b.t });
+    if (!b.id) return;
+    pendingAnchorIntent = null;                 // a bullet has no kind intent (captioned turn, user or assistant)
+    if (!scrollToAnchor(b.id)) landToast("couldn't locate this in the transcript");
   });
 }
 

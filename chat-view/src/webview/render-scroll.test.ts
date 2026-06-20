@@ -49,11 +49,35 @@ test("honest-fail still fires when even the nearest-user-turn finds nothing (the
   assert.match(RENDER, /if \(!scrolled\) landToast\("couldn't locate this in the transcript"\)/);
 });
 
-test("the ledger zones deep-link BY UUID first, nearest-time only as a fallback (the user 2026-06-19)", () => {
-  // previously the ledger navigated by time directly; now the kernel plumbs promptAnchorUuid/anchorUuid to
-  // each ledger node (the SAME anchors build_feed gives its cards), so the ledger and the feed for one node
-  // land on the SAME chat turn. scrollToNearestT stays as the fallback (and the focus path's prompt tier).
-  assert.match(RENDER, /function scrollToNearestT\(/, "the helper still exists (the fallback + the prompt-tier path)");
-  assert.match(RENDER, /if \(uuid && scrollToAnchor\(uuid\)\) return;/, "a ledger zone lands on the exact chat turn by uuid first");
-  assert.match(RENDER, /if \(t != null && scrollToNearestT\(t, kind\)\) return;/, "nearest-time is now only the fallback");
+test("the ledger zones deep-link BY UUID ONLY — no time-based fallback (the user 2026-06-19)", () => {
+  // the kernel plumbs promptAnchorUuid/anchorUuid to each ledger node (the SAME anchors build_feed gives its
+  // cards), so the ledger and the feed for one node land on the SAME chat turn. A zone that can't resolve its
+  // uuid honest-fails with a toast — no clock-nearest guessing. scrollToNearestT survives ONLY as the FEED
+  // prompt-tier fallback in landActive (asserted above), never in the ledger.
+  assert.match(RENDER, /if \(!scrollToAnchor\(uuid\)\) landToast\("couldn't locate this in the transcript"\)/,
+    "a ledger zone lands by uuid and honest-fails if it can't");
+  assert.doesNotMatch(RENDER, /scrollToNearestT\(t, kind\)/, "the ledger's by-time fallback is gone");
+});
+
+test("timeline→chat glow matches turns BY UUID, not a ±2s time window (the user 2026-06-19)", () => {
+  // applyGlow lights .turn[data-uuid] against the segment's atom uuids the kernel sends (kernel
+  // _segment_atom_uuids); the old data-t range match was a flaky time heuristic and is gone.
+  assert.match(RENDER, /function applyGlow\(groups: Array<\{ sid: string; uuids: string\[\] \}>/);
+  assert.match(RENDER, /uset\.has\(n\.dataset\.uuid \|\| ""\)/, "glow matches by uuid set");
+  assert.doesNotMatch(RENDER, /t >= s - 2 && t <= e \+ 2/, "the old ±2s data-t window match is gone");
+});
+
+test("ledger bullet click lands by uuid locally — the dead ledgerLocate host message is gone (the user 2026-06-19)", () => {
+  // b.id is the turn's atom uuid (build_session); scroll to it directly. The old `ledgerLocate` host
+  // message was never handled (a dead click) and would have been time-based.
+  assert.doesNotMatch(RENDER, /type: "ledgerLocate"/, "the never-handled host message is removed");
+  assert.match(RENDER, /if \(!scrollToAnchor\(b\.id\)\) landToast/, "the bullet lands by uuid, honest-fail");
+});
+
+test("a postal deep-link resolves to the message's card BY data-mid, not just data-uuid (the user 2026-06-20)", () => {
+  // the timeline connector / feed delegation passes the postal message id as the anchor; postal cards carry
+  // data-mid, so scrollToAnchor matches it to the EXACT card instead of falling through to a nearest-time
+  // guess that drifts onto whatever turn was closest in time (e.g. a 'retry' the user typed nearby).
+  assert.match(RENDER, /querySelector\(`\.turn\[data-mid="\$\{cssEscape\(uuid\)\}"\]`\)/,
+    "scrollToAnchor resolves a postal anchor by data-mid");
 });

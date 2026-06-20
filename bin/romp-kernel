@@ -3196,6 +3196,29 @@ def _cards_for_segments(sid, seg_ids):
     return tops
 
 
+def _segment_atom_uuids(sid, seg_ids, now):
+    """The chat .turn[data-uuid]s inside the given segments — for the timeline->chat glow, so a bar hover
+    lights EXACTLY that segment's chat rows BY ID instead of a +/-2s time window (the user 2026-06-19). Each
+    atom's uuid is a rendered .turn anchor; a multi-block atom paints several rows that all share it, so
+    returning the segment's atom uuids lights every one of its rows. Empty when the session/segments are
+    unknown. _parse is cache-backed (cheap)."""
+    want = set(seg_ids or [])
+    if not want:
+        return []
+    sess = next((s for s in _sessions(now) if s["sid"] == sid), None)
+    if not sess:
+        return []
+    out = []
+    try:
+        for turn in _parse(sess["path"], sid, now)["turns"]:
+            for seg in em.segments(turn):
+                if seg["id"] in want:
+                    out.extend(at["uuid"] for at in seg["atoms"] if at.get("uuid"))
+    except Exception:
+        pass
+    return out
+
+
 def _send_client(c, key, msg):
     """Send a payload to ONE client only if it differs from what that client last received (per-client
     dedup, key = the slot e.g. ("chat", sid)) — so the periodic push re-sends nothing when unchanged."""
@@ -4452,17 +4475,19 @@ class Handler(BaseHTTPRequestHandler):
                                               "nonce": _next_nonce()})
                 elif msg and msg.get("type") == "timelineHover":
                     # the REVERSE of the feed/chat→timeline hovers: a timeline bar hover lights the feed
-                    # card that owns that work (hoverCards, resolved by segment) AND glows the chat turns in
-                    # the bar's time window (glowTurns — render.ts already has both receivers). off → clear.
+                    # card that owns that work (hoverCards, resolved by segment) AND glows the chat turns of
+                    # those segments (glowTurns). Both halves resolve BY SEGMENT ID now — the chat glow lights
+                    # the segments' exact atom uuids, not a +/-2s time window (the user 2026-06-19). off → clear.
                     if msg.get("off"):
                         _send_to_app("feed", {"type": "hoverCards", "keys": [], "eid": None})
                         _send_to_app("chat", {"type": "glowTurns", "groups": [], "mids": []})
                     else:
                         hsid = str(msg.get("sid") or "")
+                        seg_ids = msg.get("segIds") or []
                         _send_to_app("feed", {"type": "hoverCards",
-                                              "keys": _cards_for_segments(hsid, msg.get("segIds") or []), "eid": None})
-                        t0, t1 = msg.get("t0"), msg.get("t1")
-                        groups = [{"sid": hsid, "ranges": [[t0, t1]]}] if (t0 is not None and t1 is not None) else []
+                                              "keys": _cards_for_segments(hsid, seg_ids), "eid": None})
+                        uuids = _segment_atom_uuids(hsid, seg_ids, time.time())
+                        groups = [{"sid": hsid, "uuids": uuids}] if uuids else []
                         _send_to_app("chat", {"type": "glowTurns", "groups": groups, "mids": []})
                 elif msg and msg.get("type") == "sendMessage" and msg.get("id") and msg.get("text"):
                     _tmux_send(_name_of(msg["id"]) or msg["id"], str(msg["text"]))   # composer → session

@@ -64,5 +64,22 @@ class SharedHelperAntiDrift(unittest.TestCase):
         self.assertIn("_node_anchor_uuids(", body("build_feed"), "the feed resolves anchors via the helper")
 
 
+class GlowByIdRouting(unittest.TestCase):
+    """The timeline->chat glow lights a hovered bar's segments BY ID (their atom uuids), not a +/-2s time
+    window — the time heuristic the user banned (2026-06-19/20). Pin the kernel side. (The functional
+    _segment_atom_uuids test lives with the session fixture in test_kernel.py's owner's suite; here we pin
+    the helper's presence + the handler wiring without that fixture.)"""
+
+    def test_segment_atom_uuids_helper_exists(self):
+        self.assertTrue(hasattr(km, "_segment_atom_uuids"), "the seg->atom-uuid resolver exists")
+
+    def test_timeline_hover_glows_by_uuid_not_time_range(self):
+        src = open(os.path.join(BIN, "romp-kernel")).read()
+        self.assertIn("_segment_atom_uuids(hsid, seg_ids", src)         # the handler resolves segs -> atom uuids
+        self.assertIn('"glowTurns", "groups": groups, "mids": []', src)
+        self.assertIn('"uuids": uuids', src)                            # sent as uuids...
+        self.assertNotIn('"ranges": [[t0, t1]]', src)                  # ...not the old +/-2s time window
+
+
 if __name__ == "__main__":
     unittest.main()
