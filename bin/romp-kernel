@@ -2024,10 +2024,11 @@ def _resolve_node(sid, node_id):
 
 # ── async prompt gist for the provisional card's "Analyzing: …" label (the user 2026-06-19) ────────
 # The provisional card shows the captioner-style GIST of the in-progress prompt instead of the raw text.
-# The gist is one Haiku call (jd.gist_llm, ~1-2s), so it can't run inline in a push — we fetch it in a
-# daemon thread, cache by prompt hash, and force a refresh when it lands. Tri-state so the card degrades
-# gracefully: None = still computing ("Analyzing…"), "" = tried-and-empty (fall back to the raw prompt),
-# a phrase = "Analyzing: <phrase>". Keyed by prompt text so the same ask reuses one call.
+# It's one Haiku call (jd.gist_llm), so it can't run inline in a push — we fetch it in a daemon thread,
+# cache by prompt hash, and force a refresh when it lands. Tri-state so the card degrades gracefully: None
+# = still computing ("Analyzing…"), "" = tried-and-empty (fall back to the raw prompt), a phrase =
+# "Analyzing: <phrase>". The call is logged as the CAPTIONER (not a separate 'gist' judge): it's the same
+# captioner-tier gloss the persisted message caption uses, so there's no hidden 'gist' judge (2026-06-19).
 _gist_cache = {}            # key -> gist str ('' = tried, no usable gist)
 _gist_inflight = set()      # keys whose Haiku call is in flight
 _gist_lock = threading.Lock()
@@ -2047,7 +2048,7 @@ def _prompt_gist(fsid, prompt):
     def _work():
         g = ""
         try:
-            g = jd.gist_llm(prompt) or ""
+            g = jd.gist_llm(prompt) or ""                 # gist_llm now defaults to judge='captioner' → never a hidden 'gist' judge
         except Exception:
             g = ""
         with _gist_lock:

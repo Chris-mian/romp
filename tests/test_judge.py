@@ -2404,12 +2404,28 @@ class GistLlm(unittest.TestCase):
         self.assertEqual(out, "a dark-mode toggle for settings", "normalized: trimmed, trailing dot dropped")
         self.assertEqual(seen["model"], jd.INDEX_MODEL, "the cheap INDEX tier (Haiku)")
         self.assertIs(seen["sys"], jd.GIST_SYS)
-        self.assertEqual(seen["judge"], "gist")
+        self.assertEqual(seen["judge"], "captioner",
+                         "the prompt gist is the CAPTIONER's message caption, not a separate hidden 'gist' judge (the user 2026-06-19)")
         self.assertIn("please add a dark mode toggle", seen["user"], "the prompt rides in the <prompt> tags")
 
     def test_empty_model_reply_is_empty_string(self):
         jd._judge_run = lambda *a, **k: ""
         self.assertEqual(jd.gist_llm("whatever"), "")
+
+
+class BlockBriefJudgeLabel(unittest.TestCase):
+    """No hidden judges (the user 2026-06-19): the block-distiller's decision brief is the distiller's
+    block-side run, so it logs as judge='distiller' (its timeline mark is already on the distiller row) —
+    a 'brief' label orphaned the run from its mark, hiding its API time/tokens."""
+
+    def test_brief_llm_logs_as_the_distiller(self):
+        seen, saved = {}, jd._judge_run
+        jd._judge_run = lambda model, sysp, user, effort=None, judge=None: (seen.update(judge=judge) or "a brief")
+        try:
+            jd.brief_llm("the goal", "the work", "owed a decision")
+        finally:
+            jd._judge_run = saved
+        self.assertEqual(seen["judge"], "distiller", "the brief rides the distiller row, so its run logs as the distiller")
 
 
 if __name__ == "__main__":

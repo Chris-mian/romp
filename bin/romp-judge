@@ -307,13 +307,12 @@ GIST_SYS = (
     "the phrase.")
 
 
-def gist_llm(prompt_text, judge="gist"):
+def gist_llm(prompt_text, judge="captioner"):
     """One short TOPIC phrase for a user request (INDEX tier, Haiku, thinking off) — what the ask is ABOUT,
-    present-focused (vs caption_llm's past-tense 'what got done'). Drives the feed's provisional
-    'Analyzing: …' placeholder (judge='gist') AND the captioner's per-segment MESSAGE caption on the
-    timeline dot (judge='captioner', the user 2026-06-19) — same prompt, attributed to whichever surface
-    asked. Same BARE-phrase contract as the captioner, so _clean_caption normalizes + guards it. '' on
-    failure."""
+    present-focused (vs caption_llm's past-tense 'what got done'). The captioner's per-segment MESSAGE
+    caption (the timeline dot + the provisional card's 'Analyzing: …', which reads the same persisted
+    caption). Attributed to the CAPTIONER, never a separate 'gist' judge (the user 2026-06-19). Same
+    BARE-phrase contract as the captioner, so _clean_caption normalizes + guards it. '' on failure."""
     return _clean_caption(_judge_run(INDEX_MODEL, GIST_SYS, "<prompt>\n%s\n</prompt>" % prompt_text, judge=judge))
 
 
@@ -2116,9 +2115,11 @@ BLOCK_BRIEF_SYS = (
 
 def brief_llm(goal_text, work_text, block_why):
     """The block-distiller's decision brief for one blocked goal from the TRIAGE-tier model (Sonnet). ''
-    on failure."""
+    on failure. Logged as judge='distiller' (NOT 'brief'): it IS the distiller's block-side run, and its
+    timeline mark is emitted on the distiller row (kind 'brief') — a 'brief' usage label orphaned the run
+    from its mark, so its API time/tokens never showed in the hover (the user 2026-06-19)."""
     user = "<goal>\n%s\n</goal>\n<work>\n%s\n</work>\n<owed>\n%s\n</owed>" % (goal_text, work_text, block_why)
-    return _judge_run(TRIAGE_MODEL, BLOCK_BRIEF_SYS, user, judge="brief").strip()[:600]
+    return _judge_run(TRIAGE_MODEL, BLOCK_BRIEF_SYS, user, judge="distiller").strip()[:600]
 
 
 def _distill_session(fsid, path, now):
