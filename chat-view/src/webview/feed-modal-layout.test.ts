@@ -60,3 +60,12 @@ test("modal marks: not-yet-done is a hollow RING the size of the ✓ disc; deriv
   assert.match(CSS, /\.ftree-node\.st-done\.derived \.ftree-mark::before \{[^}]*color: var\(--check-bg\)/);
   assert.doesNotMatch(CSS, /\.ftree-node\.st-done\.derived \.ftree-mark \{[^}]*opacity: 0\.5/);
 });
+
+test("sending a follow-up (Send or ⏎) auto-closes the modal back to the feed (the user 2026-06-19)", () => {
+  // the shared submit() — used by both the Send button and the Enter key, for single-ask AND group modals —
+  // posts the follow-up, clears the composer, then closes the modal (fullscreenAskId = null; renderModal()).
+  assert.match(FEED, /const submit = \(\) => \{ const txt = fuinEl\.value\.trim\(\); if \(!txt\) return; send\(txt\);[\s\S]*?fullscreenAskId = null; renderModal\(\); \};/);
+  // both triggers route through submit
+  assert.match(FEED, /fusendEl\.onclick = submit;/);
+  assert.match(FEED, /if \(ev\.key === "Enter" && !ev\.shiftKey\) \{ ev\.preventDefault\(\); ev\.stopPropagation\(\); submit\(\); \}/);
+});

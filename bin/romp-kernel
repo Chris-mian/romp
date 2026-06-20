@@ -804,6 +804,23 @@ def _interrupt(name, _async=True):
     threading.Thread(target=go, daemon=True).start() if _async else go()
 
 
+def _record_idle(sid, now):
+    """Append a state:"idle" transition to states/<sid>.jsonl so the session reads as DONE on the next build.
+    The chat status chip is driven by the event-model open-turn signal (open turn + no idle atom): a normal
+    turn flips it via the transcript's end_turn, but an Esc INTERRUPT writes no end_turn and the Stop hook
+    doesn't fire — so without this the chip stays 'working' after Stop (the user 2026-06-20). Backdated 1s so
+    synthesize_idle's [start,end] span is non-empty on the very next build (end=now > start=now-1)."""
+    if not sid:
+        return
+    try:
+        sdir = jd.STATE / "states"
+        sdir.mkdir(parents=True, exist_ok=True)
+        with open(sdir / (sid + ".jsonl"), "a") as f:
+            f.write(json.dumps({"t": int(now) - 1, "state": "idle"}) + "\n")
+    except Exception:
+        pass
+
+
 def _tmux_send(name, text, model_cmd=False, _async=True):
     """Inject text into a session's tmux pane — clear the input, then set-buffer + bracketed paste-buffer +
     Enter, the old TmuxBackend.send sequence (a 250ms gap lets the bracketed paste land before Enter
@@ -4493,6 +4510,8 @@ class Handler(BaseHTTPRequestHandler):
                     _tmux_send(_name_of(msg["id"]) or msg["id"], str(msg["text"]))   # composer → session
                 elif msg and msg.get("type") == "interrupt" and msg.get("id"):
                     _interrupt(_name_of(msg["id"]) or msg["id"])   # Esc to stop + clear the restored prompt (composer↔pane consistency)
+                    _record_idle(str(msg["id"]), int(time.time()))   # Esc-stop writes no end_turn → record idle so the chip flips to 'ready'
+                    _push_all()                                      # surface the ready chip now
                 elif msg and msg.get("type") == "compact" and msg.get("name"):
                     _tmux_send(str(msg["name"]), "/compact")
                     _mark_compacting(_live_names(_tmux_sessions()).get(str(msg["name"])))   # instant cue

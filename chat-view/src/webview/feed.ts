@@ -123,6 +123,12 @@ function applyFocus() {
   for (const [tid, card] of groupEls) card.classList.toggle("focused", "g:" + tid === eff);
 }
 const askEls = new Map<string, HTMLElement>();
+// Optimistically-cleared item ids: Clear animates a card out + posts askClear, but a feed push that
+// arrives BEFORE the kernel processes the clear still lists the card — re-rendering it strips the
+// `.dismissing` class (updateAskCard resets className) so it pops back, then a later push drops it. We
+// suppress those ids from incoming payloads until the kernel's payload confirms the clear (no longer
+// lists them), so a stale push can't resurrect a card mid-dismiss (the user 2026-06-19).
+const pendingCleared = new Set<string>();
 // Group cards keyed by turnId, stored under "g:"+turnId. The focus state
 // (hoverAskId/pinnedAskId) holds EITHER a raw ask itemId OR a group key
 // "g:"+turnId; applyFocus + focusAnchorId understand both.
@@ -306,6 +312,7 @@ function makeCard(it: FeedItem): HTMLElement {
   name.onclick = (ev) => { ev.stopPropagation(); openOrReviveSession(it.sid, it.live, it.name); };
   clr.onclick = (ev) => {
     ev.stopPropagation();
+    pendingCleared.add(it.itemId);   // suppress until the kernel confirms — no mid-dismiss pop-back
     card.classList.add("dismissing");
     vscodeApi?.postMessage({ type: "askClear", itemId: it.itemId });   // reply ids share cleared.jsonl
     setTimeout(() => { if (cardEls.get(it.itemId) === card && card.classList.contains("dismissing")) { card.remove(); cardEls.delete(it.itemId); } }, 180);
@@ -488,6 +495,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   name.onclick = (ev) => { ev.stopPropagation(); openOrReviveSession(it.sid, it.live, it.name); };
   clr.onclick = (ev) => {
     ev.stopPropagation();
+    pendingCleared.add(it.itemId);   // suppress from incoming pushes until the kernel confirms the clear
     card.classList.add("dismissing");
     vscodeApi?.postMessage({ type: "askClear", itemId: it.itemId });
     setTimeout(() => { if (askEls.get(it.itemId) === card && card.classList.contains("dismissing")) { card.remove(); askEls.delete(it.itemId); } }, 180);
@@ -793,7 +801,7 @@ function makeGroupCard(g: AskGroup): HTMLElement {
     ev.stopPropagation();
     const cur = (card as any)._g as AskGroup;
     card.classList.add("dismissing");
-    for (const m of cur.members) vscodeApi?.postMessage({ type: "askClear", itemId: m.itemId });   // clear every member
+    for (const m of cur.members) { pendingCleared.add(m.itemId); vscodeApi?.postMessage({ type: "askClear", itemId: m.itemId }); }   // clear every member
     // only finalize if a render in the 180ms window didn't revive (re-render clears
     // .dismissing) or replace this card — else a stale timeout yanks the wrong one
     setTimeout(() => { if (groupEls.get(cur.turnId) === card && card.classList.contains("dismissing")) { card.remove(); groupEls.delete(cur.turnId); } }, 180);
@@ -1227,7 +1235,10 @@ function renderModal() {
   // select-all) propagates so VS Code's webview clipboard handler can run.
   function wireFollowUp(fupEl: HTMLButtonElement, fuboxEl: HTMLElement, fuinEl: HTMLTextAreaElement, fusendEl: HTMLButtonElement, send: (txt: string) => void) {
     fupEl.style.display = "";
-    const submit = () => { const txt = fuinEl.value.trim(); if (!txt) return; send(txt); fuinEl.value = ""; fuinEl.style.height = ""; fuboxEl.style.display = "none"; };
+    // Send/⏎ posts the follow-up and CLOSES the modal — once it's gone through there's nothing left to do
+    // here, so drop back to the feed (the user 2026-06-19). (The kernel optimistically reopens the card with
+    // a "Followed up" chip, which you then see in the list.)
+    const submit = () => { const txt = fuinEl.value.trim(); if (!txt) return; send(txt); fuinEl.value = ""; fuinEl.style.height = ""; fuboxEl.style.display = "none"; fullscreenAskId = null; renderModal(); };
     fupEl.onclick = () => { const show = fuboxEl.style.display === "none"; fuboxEl.style.display = show ? "" : "none"; if (show) fuinEl.focus(); };
     fusendEl.onclick = submit;
     fuinEl.onkeydown = (ev) => {
@@ -1446,7 +1457,7 @@ function makeUndoClearBtn(): HTMLElement {
   b.id = "feed-undoclear";
   b.textContent = "Undo clear";
   b.title = "restore the most recently cleared card";
-  b.onclick = (ev) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "undoClear" }); };
+  b.onclick = (ev) => { ev.stopPropagation(); pendingCleared.clear(); vscodeApi?.postMessage({ type: "undoClear" }); };   // undo un-suppresses, so a restored card re-appears even mid-window
   return b;
 }
 
@@ -1636,9 +1647,12 @@ function render() {
   cols.needsInputCount.textContent = String(buckets.needsInput.length);
   cols.completedCount.textContent = String(buckets.completed.length);
 
-  for (const id of Array.from(askEls.keys())) if (!desired.has("a:" + id)) { askEls.get(id)?.remove(); askEls.delete(id); }
-  for (const tid of Array.from(groupEls.keys())) if (!desired.has("g:" + tid)) { groupEls.get(tid)?.remove(); groupEls.delete(tid); }
-  for (const id of Array.from(cardEls.keys())) if (!desired.has("i:" + id)) { cardEls.get(id)?.remove(); cardEls.delete(id); }
+  // Remove cards no longer in the payload — EXCEPT one mid-dismiss (.dismissing): let its own 180ms timer
+  // finish the collapse animation instead of yanking it instantly on a push (the user 2026-06-19).
+  const undismissed = (el?: HTMLElement) => !!el && !el.classList.contains("dismissing");
+  for (const id of Array.from(askEls.keys())) if (!desired.has("a:" + id) && undismissed(askEls.get(id))) { askEls.get(id)?.remove(); askEls.delete(id); }
+  for (const tid of Array.from(groupEls.keys())) if (!desired.has("g:" + tid) && undismissed(groupEls.get(tid))) { groupEls.get(tid)?.remove(); groupEls.delete(tid); }
+  for (const id of Array.from(cardEls.keys())) if (!desired.has("i:" + id) && undismissed(cardEls.get(id))) { cardEls.get(id)?.remove(); cardEls.delete(id); }
 
   list.scrollTop = prevScroll;
   renderModal();   // keep the ⛶ full-screen tree (if open) in sync with this push
@@ -1687,7 +1701,11 @@ window.addEventListener("message", (e: MessageEvent) => {
   if (!m) return;
   if (m.type === "feed") {
     items = Array.isArray(m.items) ? m.items : [];
-    asks = Array.isArray(m.asks) ? m.asks : [];
+    const incomingAsks: AskItem[] = Array.isArray(m.asks) ? m.asks : [];
+    // A clear is CONFIRMED once the kernel's payload no longer lists it → stop suppressing it. Then drop
+    // any still-pending (kernel hasn't caught up) from this payload so a stale push can't resurrect them.
+    for (const id of Array.from(pendingCleared)) if (!incomingAsks.some((a) => a.itemId === id)) pendingCleared.delete(id);
+    asks = pendingCleared.size ? incomingAsks.filter((a) => !pendingCleared.has(a.itemId)) : incomingAsks;
     workingSet = new Set(Array.isArray(m.working) ? m.working : []);
     hostNow = typeof m.now === "number" ? m.now : Math.floor(Date.now() / 1000);
     if (typeof m.dismissedCount === "number") dismissedCount = m.dismissedCount;
