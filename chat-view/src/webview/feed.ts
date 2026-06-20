@@ -1152,7 +1152,7 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
         if (r.trgb) ra.style.color = "rgb(" + r.trgb.join(",") + ")";   // Hawaii recency tint
         row.appendChild(ra);
         row.title = "jump to this on the timeline";
-        row.onclick = (ev) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: r.reply_id, sid: r.sid || r.reply_id.split(":")[0], t: r.t }); };
+        row.onclick = (ev) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: r.reply_id, sid: r.sid || r.reply_id.split(":")[0], t: r.t, anchorUuid: r.reply_id, anchor: "work" }); };   // reply_id IS the assistant reply turn's data-uuid → land BY ID (chat nav is id-only now; without anchorUuid the row honest-failed)
         row.addEventListener("mouseenter", () => hoverEmit(r.reply_id)); row.addEventListener("mouseleave", () => hoverEmit(null));   // transient timeline highlight
         box.appendChild(row);
       } });

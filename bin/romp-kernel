@@ -3133,18 +3133,20 @@ def _reveal_chat(focus_msg):
 
 
 def _focus_kind(anchor):
-    """showOnTimeline's `anchor` → the chat focus land-on intent. "prompt" means the user's typed
-    MESSAGE, so land on the nearest USER turn; "work"/absent means the work that was done, so land on
-    the nearest turn (the assistant response). The anchor string is NOT a transcript uuid, so the chat
-    resolves it via the kind-restricted time fallback (scrollToNearestT)."""
+    """showOnTimeline's `anchor` → the chat focus land-on intent: "prompt" = the user's typed MESSAGE
+    (a user turn), "work"/absent = the work that was done (the assistant reply turn). Used only to pick the
+    turn KIND when resolving anchorUuid by id (scrollToAnchor); the time-based fallback (scrollToNearestT)
+    is gone (link_audit, 3d0a80d), so a click with no resolvable uuid honest-fails rather than landing on a
+    nearest-time turn."""
     return "user" if anchor == "prompt" else None
 
 
 def _show_on_timeline_focus(msg):
-    """A feed showOnTimeline tap → the chat `focus` message. anchorUuid (kernel 996ebd7) is the EXACT
-    turn uuid the chat tries FIRST (scrollToAnchor) — id-based deep-link, no nearest-time miss. t + the
-    "prompt"/"work" anchor stay as the kind-restricted time FALLBACK for when the uuid is null (feed
-    couldn't resolve) or off the active path. (the user 2026-06-17, via rompinfra.)"""
+    """A feed showOnTimeline tap → the chat `focus` message. anchorUuid (kernel 996ebd7) is the EXACT turn
+    uuid the chat lands on (scrollToAnchor) — fully id-based deep-link, no nearest-time miss. There is no
+    time fallback anymore (scrollToNearestT deleted, link_audit 3d0a80d): t + the "prompt"/"work" anchor are
+    kept only to pick the turn KIND for resolution; if the uuid can't resolve the chat honest-fails rather
+    than landing on an unrelated nearest-time turn. (the user 2026-06-17, via rompinfra.)"""
     return {"type": "focus", "id": msg["sid"], "anchor": msg.get("anchorUuid"),
             "anchorT": msg.get("t"), "anchorKind": _focus_kind(msg.get("anchor"))}
 
