@@ -645,7 +645,10 @@ PLAN_SYS = (
     "it, waiting on a peer's reply to a message you sent, deferring to avoid a conflict, or waiting on "
     "a build/CI/external event keeps the goal open, not blocked. A peer's answer or reply is not a user "
     "answer; only the human blocks. Weighing: if the segment both reports work and leaves a decision "
-    "owed by the user, the owed decision wins, so block. (Use \"ref\":<k> to block a node created in "
+    "owed by the user, the owed decision wins, so block. A finished phase or a status report that then "
+    "waits for your go-ahead, your approval to start the next step, or your pick between options is a "
+    "block: the reported progress does not keep it working, and asking 'shall I proceed?' blocks even "
+    "alongside a status recap. (Use \"ref\":<k> to block a node created in "
     "this reply.)\n"
     '- {\"why\",\"do\":\"skip\"}: only a segment with no real user message that also did no real work, '
     "a system notification, an SDK/automated turn, an interruption or empty/aborted turn. A segment "

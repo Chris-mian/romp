@@ -492,7 +492,7 @@ function makeAskCard(it: AskItem): HTMLElement {
     vscodeApi?.postMessage({ type: "askClear", itemId: it.itemId });
     setTimeout(() => { if (askEls.get(it.itemId) === card && card.classList.contains("dismissing")) { card.remove(); askEls.delete(it.itemId); } }, 180);
   };
-  nudge.onclick = (ev) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "askFollowUp", itemId: it.itemId, text: "What is the status of the above goal?" }); };
+  nudge.onclick = (ev) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "askFollowUp", itemId: it.itemId, text: "Status on the goal above: what's done, what's left, and is anything blocked waiting on a decision from me?" }); };   // keep in sync with AUTO_NUDGE_TEXT (bin/romp-kernel)
   // HOVER (120ms intent debounce so sweeps don't spam) → white border + preview
   // this card's timeline journey. LEAVE → restore the pinned card's journey, or
   // clear if none pinned.

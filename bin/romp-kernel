@@ -439,7 +439,7 @@ def _set_session_flag(sid, flag, value):
 # turn ended) while its top goal still shows "working" — not blocked, not completed, not awaiting your
 # approval, and not delegated to anyone. It sends the SAME follow-up the manual Nudge button does, ONCE
 # per goal. Off by default. State lives in auto-nudge.json: {"enabled": bool, "done": [goalId,...]}.
-AUTO_NUDGE_TEXT = "What is the status of the above goal?"   # mirrors the feed Nudge button
+AUTO_NUDGE_TEXT = "Status on the goal above: what's done, what's left, and is anything blocked waiting on a decision from me?"   # mirrors the feed Nudge button (chat-view/src/webview/feed.ts)
 _autonudge_cache = {}   # str(path) -> ((mtime_ns,size), dict)
 
 
