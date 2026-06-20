@@ -866,6 +866,157 @@ class Grouper(unittest.TestCase):
             jd._PARSE_CACHE.clear()
 
 
+class Consolidator(unittest.TestCase):
+    """The consolidator judge (the user 2026-06-19): the grouper's twin for the COMPLETED column. It groups
+    related ALL-COMPLETED sibling tops under a completed umbrella (so the completed column is less cluttered)
+    and clears empty umbrellas. Safe by construction — every child is done, so the umbrella rolls up to
+    completed and nothing reverts to working; a genuine reopen of a child DOES revert the whole group."""
+
+    def setUp(self):
+        self._saved_state = jd.STATE
+        self._state_td = tempfile.mkdtemp()
+        jd.STATE = Path(self._state_td)
+
+    def tearDown(self):
+        jd.STATE = self._saved_state
+        shutil.rmtree(self._state_td, ignore_errors=True)
+        if hasattr(self, "_saved"):
+            (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.group_llm) = self._saved
+
+    def _completed_store(self, specs):
+        # specs: [(gid_suffix, text, [trail segs])] → a store of completed top goals (rolled up to "completed")
+        s = _store()
+        s["seq"] = len(specs)                          # so a minted umbrella gets a FRESH id, never reusing g1/g2
+        for i, (suf, text, trail) in enumerate(specs):
+            gid = SID + ":" + suf
+            s["nodes"][gid] = {"id": gid, "text": text, "parentId": None, "nodeComplete": True,
+                               "blocked": False, "cleared": False, "everDone": True, "settledDone": True,
+                               "trail": trail, "t": T0 + i, "mt": T0 + 10 + i}
+        jd.rollup_status(s, True)
+        return s
+
+    def _setup(self, store, records):
+        td = Path(tempfile.mkdtemp())
+        cdir = td / "launchdir"; cdir.mkdir()
+        proj = td / "projects"
+        pdir = proj / jd.re.sub(r"[/.]", "-", os.path.realpath(str(cdir)))
+        pdir.mkdir(parents=True)
+        (pdir / (SID + ".jsonl")).write_text("\n".join(json.dumps(r) for r in records) + "\n")
+        names = td / "names"; names.mkdir()
+        (names / SID).write_text("testsess\t%s\t#abcdef\n" % str(cdir))
+        self._saved = (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.group_llm)
+        jd.NAMES, jd.PROJECTS, jd.GOALDIR = names, proj, td / "goals"
+        jd.save_goals(SID, store)
+        return str(pdir / (SID + ".jsonl"))
+
+    _RECORDS = [uline(T0, "task", "u1", ps="typed"), aline(T0 + 10, "did", "a1", "u1", stop="end_turn")]
+
+    # ── candidate set ──
+    def test_candidates_are_completed_non_umbrella_tops_only(self):
+        s = self._completed_store([("g1", "A", ["sA"]), ("g2", "B", ["sB"])])
+        # add an OPEN top and an existing umbrella — neither is a consolidation candidate
+        s["nodes"][SID + ":g3"] = {"id": SID + ":g3", "text": "Open one", "parentId": None,
+                                   "nodeComplete": False, "blocked": False, "cleared": False, "trail": ["sC"],
+                                   "t": T0 + 5, "mt": T0 + 5}
+        s["nodes"][SID + ":g4"] = {"id": SID + ":g4", "text": "Umb", "parentId": None, "nodeComplete": True,
+                                   "blocked": False, "cleared": False, "everDone": True, "settledDone": True,
+                                   "umbrella": True, "trail": [], "t": T0 + 6, "mt": T0 + 6}
+        jd.rollup_status(s, True)
+        ids = {nd["id"] for nd in jd._consolidate_tops(s)}
+        self.assertEqual(ids, {SID + ":g1", SID + ":g2"},
+                         "only completed, non-umbrella tops are candidates (open + umbrella excluded)")
+
+    def test_view_cleared_completed_top_is_excluded(self):
+        s = self._completed_store([("g1", "A", ["sA"]), ("g2", "B", ["sB"])])
+        (jd.STATE / "cleared.jsonl").write_text(json.dumps({"id": SID + ":g1", "t": T0, "op": "clear"}) + "\n")
+        ids = {nd["id"] for nd in jd._consolidate_tops(s)}
+        self.assertEqual(ids, {SID + ":g2"}, "a top the user crossed off the feed is never re-grouped")
+
+    # ── apply-level: the allow_done lift ──
+    def test_apply_group_allow_done_moves_an_everdone_node(self):
+        s = self._completed_store([("g1", "A", ["sA"]), ("g2", "B", ["sB"])])
+        tops = jd._consolidate_tops(s)
+        ops = [{"do": "group", "why": "both done parts of X", "goal": 2, "under": 1}]
+        self.assertEqual(jd.apply_group(s, tops, ops, T0 + 20, allow_done=False), 0,
+                         "without allow_done the once-done node is NOT moved (working-grouper guard)")
+        self.assertEqual(jd.apply_group(s, tops, ops, T0 + 20, allow_done=True), 1,
+                         "allow_done lifts the guard so the consolidator can group a completed node")
+        self.assertEqual(s["nodes"][SID + ":g2"]["parentId"], SID + ":g1")
+
+    # ── the session pass ──
+    def test_groups_completed_siblings_under_a_completed_umbrella(self):
+        s = self._completed_store([("g1", "A", ["sA"]), ("g2", "B", ["sB"])])
+        self._setup(s, self._RECORDS)
+        jd.group_llm = lambda menu: ('{"ops":[{"why":"both finish X","do":"mint","text":"Umbrella X"},'
+                                     '{"why":"x","do":"group","goal":1,"ref":1},'
+                                     '{"why":"x","do":"group","goal":2,"ref":1}]}')
+        jd.run_consolidate(now=T0 + 5000)
+        st = jd.load_goals(SID)
+        um = next((nd for nd in st["nodes"].values() if nd.get("umbrella")), None)
+        self.assertIsNotNone(um, "a completed umbrella was minted")
+        self.assertEqual(st["nodes"][SID + ":g1"]["parentId"], um["id"], "A nested under the umbrella")
+        self.assertEqual(st["nodes"][SID + ":g2"]["parentId"], um["id"], "B nested under the umbrella")
+        self.assertEqual(st["status"].get(um["id"]), "completed",
+                         "the umbrella rolls up to completed (all children done) — nothing reverts to working")
+        self.assertNotIn(SID + ":g1", st["status"], "the grouped children drop off the top-level status map")
+        self.assertNotIn(SID + ":g2", st["status"])
+        self.assertEqual(um["trail"], ["sA"], "the umbrella inherits its earliest child's anchor (deep-links to the work)")
+
+    def test_reopened_child_reverts_the_whole_umbrella_to_working(self):
+        # the user's choice 2026-06-19: re-poking a child of a completed group reverts the umbrella to working,
+        # together — driven entirely by rollup_status (an umbrella is complete only while ALL kids are).
+        s = self._completed_store([("g1", "A", ["sA"]), ("g2", "B", ["sB"])])
+        tops = jd._consolidate_tops(s)
+        jd.apply_group(s, tops, [{"do": "mint", "why": "x", "text": "Umb"},
+                                 {"do": "group", "why": "x", "goal": 1, "ref": 1},
+                                 {"do": "group", "why": "x", "goal": 2, "ref": 1}], T0 + 20, allow_done=True)
+        jd.rollup_status(s, True)
+        um = next(nd for nd in s["nodes"].values() if nd.get("umbrella"))
+        self.assertEqual(s["status"][um["id"]], "completed", "all children done → umbrella completed")
+        s["nodes"][SID + ":g1"]["nodeComplete"] = False           # a follow-up reopens child A
+        s["nodes"][SID + ":g1"]["settledDone"] = False
+        jd.rollup_status(s, True)
+        self.assertEqual(s["status"][um["id"]], "working",
+                         "one reopened child reverts the whole umbrella to working")
+
+    # ── empty-umbrella cleanup ──
+    def test_empty_umbrella_is_cleared_but_a_populated_one_is_not(self):
+        s = _store()
+        s["nodes"][SID + ":g1"] = {"id": SID + ":g1", "text": "Empty header", "parentId": None,
+                                   "nodeComplete": True, "blocked": False, "cleared": False, "everDone": True,
+                                   "umbrella": True, "trail": [], "t": T0, "mt": T0}        # adopts nothing
+        s["nodes"][SID + ":g2"] = {"id": SID + ":g2", "text": "Real header", "parentId": None,
+                                   "nodeComplete": True, "blocked": False, "cleared": False, "everDone": True,
+                                   "umbrella": True, "trail": [], "t": T0, "mt": T0}
+        s["nodes"][SID + ":g3"] = {"id": SID + ":g3", "text": "child", "parentId": SID + ":g2",
+                                   "nodeComplete": True, "blocked": False, "cleared": False, "trail": ["s"],
+                                   "t": T0, "mt": T0}
+        self.assertTrue(jd._clear_empty_umbrellas(s), "an empty umbrella is cleared")
+        self.assertTrue(s["nodes"][SID + ":g1"]["cleared"], "the childless umbrella is crossed off")
+        self.assertFalse(s["nodes"][SID + ":g2"]["cleared"], "the umbrella with a live child is left alone")
+        self.assertFalse(jd._clear_empty_umbrellas(s), "idempotent: a second pass clears nothing new")
+
+    # ── event gating ──
+    def test_stable_completed_set_does_not_re_call_the_model(self):
+        s = self._completed_store([("g1", "A", ["sA"]), ("g2", "B", ["sB"])])
+        self._setup(s, self._RECORDS)
+        calls = []
+        jd.group_llm = lambda menu: calls.append(menu) or '{"ops":[]}'      # model declines to group
+        jd.run_consolidate(now=T0 + 5000)
+        self.assertEqual(len(calls), 1, "the consolidator called the model once for the new completed set")
+        jd.run_consolidate(now=T0 + 5000)
+        self.assertEqual(len(calls), 1, "unchanged completed set → event-gated, model NOT called again")
+
+    def test_single_completed_top_records_sig_without_calling_model(self):
+        s = self._completed_store([("g1", "Solo", ["sA"])])
+        self._setup(s, self._RECORDS)
+        calls = []
+        jd.group_llm = lambda menu: calls.append(menu) or '{"ops":[]}'
+        jd.run_consolidate(now=T0 + 5000)
+        self.assertEqual(len(calls), 0, "fewer than two completed tops → nothing to consolidate, model not called")
+        self.assertIsNotNone(jd.load_goals(SID).get("consolidatedSig"), "the (single-top) set is still recorded")
+
+
 class PlanRollup(unittest.TestCase):
     def _mint(self, s, seg, t, text):
         jd.apply_plan(s, seg, t, [{"do": "mint", "why": "x", "text": text}], jd.open_menu(s))

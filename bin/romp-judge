@@ -83,6 +83,14 @@ GROUPER_ON = os.environ.get("ROMP_GROUPER", "1") != "0"
 # stored as node["summary"] for the card modal (the user 2026-06-17). Event-gated per goal (distilledMt
 # vs mt): it re-distills only when the goal (re-)completes. Toggleable: set ROMP_DISTILLER=0 to disable.
 DISTILLER_ON = os.environ.get("ROMP_DISTILLER", "1") != "0"
+# The CONSOLIDATOR (the user 2026-06-19): the grouper's twin for the COMPLETED column. The working grouper
+# only ever sees OPEN tops and never MOVES an everDone node, so related goals that finish before they get
+# grouped land as separate cards (and an umbrella minted over already-done tops adopts nothing — an empty
+# header stuck on "(generating…)"). The consolidator groups related ALL-COMPLETED sibling tops under a
+# completed umbrella (safe: every child is done, so the umbrella rolls up to completed — nothing reverts to
+# working), and clears any umbrella that ended up empty. A later reopen of a grouped child reverts the whole
+# umbrella to working via rollup_status (the user's choice). Toggle: ROMP_CONSOLIDATE=0 to disable.
+CONSOLIDATE_ON = os.environ.get("ROMP_CONSOLIDATE", "1") != "0"
 TEST_UNITS  = 12                         # --test: caption at most this many recent units
 
 # The captioner prompt — decomposed from the old REPLY_SYS's "phrase" part ONLY (no TAG / LINK /
@@ -1414,12 +1422,14 @@ def group_llm(menu_text):
     return _judge_run(TRIAGE_MODEL, GROUP_SYS, user, judge="grouper").strip()[:2000]
 
 
-def apply_group(store, tops, ops, t):
+def apply_group(store, tops, ops, t, allow_done=False):
     """Apply the grouper's ORDERED ops over the session's open top goals (the pre-snapshot `tops` list, so
     indices are stable across the reply): mint umbrella tops and RELINK a top (its whole subtree comes
     with it) under another top or a same-reply umbrella ("ref"). Cycle- and depth-guarded. A minted
     umbrella inherits its earliest grouped child's anchor (trail/t) so it deep-links to where that work
-    began. Returns the number of relinks applied."""
+    began. Returns the number of relinks applied. `allow_done` lifts the never-move-an-everDone-node guard:
+    the working grouper keeps it (a once-done card stays standalone), but the COMPLETED-column consolidator
+    sets it, because every node it moves is done by construction and the umbrella stays completed."""
     nodes = store["nodes"]
     created = []
     for nd in nodes.values():                          # backfill: any currently-done node is everDone (covers legacy nodes)
@@ -1450,8 +1460,9 @@ def apply_group(store, tops, ops, t):
             continue
         # group: relink top #goal under #under (a menu top) or a same-reply umbrella (ref)
         child = tops[o["goal"] - 1]["id"]
-        if nodes[child].get("everDone"):               # a once-done node keeps its standalone identity: never MOVED
-            continue                                   # (it may still be an umbrella PARENT; just not a relink SOURCE)
+        if nodes[child].get("everDone") and not allow_done:   # working grouper: a once-done node keeps its
+            continue                                          # standalone identity, never MOVED (the consolidator
+            #                                                   passes allow_done — it groups done nodes on purpose)
         if "under" in o:
             parent = tops[o["under"] - 1]["id"]
         else:
@@ -1533,6 +1544,107 @@ def run_group(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, ver
                 pass
     if verbose:
         sys.stderr.write("romp-judge: grouper relinked %d top goals\n" % n)
+    return n
+
+
+# ───────────────────────── the consolidator (triage tier; COMPLETED-column grouping) ─────────────────────────
+# The grouper's twin for goals that already finished. It groups related ALL-COMPLETED sibling tops under a
+# completed umbrella so the completed column carries one card instead of several, and clears any umbrella
+# left empty. SAFE by construction: every candidate is completed, so the umbrella rolls up to completed
+# (rollup_status: a node with children, all complete, is complete) — no completed card ever reverts to
+# working. A genuine later reopen of a grouped child DOES revert the umbrella to working, together (the
+# user's choice 2026-06-19). Event-gated per session by the completed-top set (consolidatedSig).
+def _consolidate_tops(store, cap=20):
+    """The session's COMPLETED top-level goals, oldest-first, capped — the consolidator's candidate forest.
+    A candidate is a top (parentId None) that is currently `completed` in the rolled-up status, is NOT itself
+    an umbrella (don't re-group already-grouped trees into umbrella-of-umbrellas), and is neither node-cleared
+    nor view-cleared (the user crossed it off — never resurrect it under a fresh umbrella)."""
+    nodes = store["nodes"]
+    status = store.get("status", {})
+    vc = _view_cleared()
+    tops = [nd for nd in nodes.values()
+            if nd.get("parentId") is None and not nd.get("umbrella")
+            and not nd.get("cleared") and nd["id"] not in vc
+            and status.get(nd["id"]) == "completed"]
+    tops.sort(key=lambda nd: nd.get("t", 0))
+    return tops[-cap:] if len(tops) > cap else tops
+
+
+def _clear_empty_umbrellas(store):
+    """Mark cleared any umbrella goal that has no live (non-cleared, non-view-cleared) children — an umbrella
+    groups nothing once empty, so it is pure clutter. Heals an umbrella minted over tops it could not adopt
+    (e.g. all everDone at mint time → an empty header stuck on "(generating…)") and one whose children were
+    all cleared. Returns True if it cleared any."""
+    nodes = store["nodes"]
+    vc = _view_cleared()
+    live = {}
+    for nd in nodes.values():
+        p = nd.get("parentId")
+        if p is not None and not nd.get("cleared") and nd["id"] not in vc:
+            live[p] = live.get(p, 0) + 1
+    changed = False
+    for nd in nodes.values():
+        if nd.get("umbrella") and not nd.get("cleared") and live.get(nd["id"], 0) == 0:
+            nd["cleared"] = True
+            changed = True
+    return changed
+
+
+def _consolidate_store(store, fsid, now):
+    """Group the session's COMPLETED tops in place + clear empty umbrellas; return True on any change (caller
+    persists + re-rolls status). EVENT-GATED by store["consolidatedSig"] (the completed-top id set) so a
+    stable completed column never re-asks the model. Reuses the grouper model/menu/parse + apply_group with
+    allow_done=True (every candidate is done by construction)."""
+    if not CONSOLIDATE_ON:
+        return False
+    changed = _clear_empty_umbrellas(store)            # heal empties every pass, gated or not (no model call)
+    comp = _consolidate_tops(store)
+    sig = sorted(nd["id"] for nd in comp)
+    if len(comp) < 2 or sig == store.get("consolidatedSig"):
+        store["consolidatedSig"] = sig                 # <2 / unchanged → record the set so we don't re-ask
+        return changed
+    ops = _parse_group(group_llm(_group_menu_text(store, comp)), len(comp))
+    if ops is None:
+        _log_judge_error("consolidator", fsid, "parse")
+        return changed                                 # leave consolidatedSig stale → retry next pass
+    relinks = apply_group(store, comp, ops, now, allow_done=True)
+    store["consolidatedSig"] = sorted(nd["id"] for nd in _consolidate_tops(store))   # snapshot the NEW set
+    return changed or relinks > 0
+
+
+def _consolidate_session(fsid, path, now):
+    """Consolidate ONE session's completed column. Event-gated via _consolidate_store; a status re-roll
+    follows a structural change so a freshly minted umbrella settles to `completed` and the moved children
+    drop off the top-level status map (they become its sub-nodes)."""
+    _judge_ctx.fsid = fsid
+    store = load_goals(fsid)
+    before = store.get("consolidatedSig")
+    changed = _consolidate_store(store, fsid, now)
+    if changed or store.get("consolidatedSig") != before:
+        if changed:
+            rollup_status(store, _session_closed(parsed_session(fsid, [path], now)))
+        save_goals(fsid, store)
+    return 1 if changed else 0
+
+
+def run_consolidate(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, verbose=False):
+    """One CONSOLIDATOR pass (triage tier), run after run_group / before run_distill so a newly minted
+    completed umbrella gets a distilled summary this same cycle. Event-gated per session. Returns the number
+    of sessions whose completed column changed."""
+    if now is None:
+        now = int(time.time())
+    fleet = discover(now)[:sessions_cap]
+    n = 0
+    with ThreadPoolExecutor(max_workers=concurrency) as ex:
+        futs = {ex.submit(_consolidate_session, fsid, str(path), now): fsid
+                for fsid, path, anchor, name in fleet}
+        for fut in as_completed(futs):
+            try:
+                n += fut.result()
+            except Exception:
+                pass
+    if verbose:
+        sys.stderr.write("romp-judge: consolidator reorganized %d completed columns\n" % n)
     return n
 
 
@@ -2087,8 +2199,8 @@ def run_triage(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, ve
     tier (run_index) — they share no store and triage never reads the captioner's output, so the only cost
     of overlap is each tier parsing a transcript instead of sharing one parse. Order matters: the planner
     places + groups inline, the closer completes/blocks at turn-end, the courier files peer delegations,
-    the grouper sweeps any courier-planted tops, then the distiller summarizes newly-completed goals.
-    Returns segments placed by the planner."""
+    the grouper sweeps any courier-planted tops, the consolidator groups the completed column, then the
+    distiller summarizes newly-completed goals. Returns segments placed by the planner."""
     if now is None:
         now = int(time.time())
     placed = run_plan(now=now, sessions_cap=sessions_cap, concurrency=concurrency, verbose=verbose)
@@ -2097,6 +2209,8 @@ def run_triage(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, ve
     run_courier(now=now, sessions_cap=sessions_cap, concurrency=concurrency, verbose=verbose)
     if GROUPER_ON:
         run_group(now=now, sessions_cap=sessions_cap, concurrency=concurrency, verbose=verbose)
+    if CONSOLIDATE_ON:
+        run_consolidate(now=now, sessions_cap=sessions_cap, concurrency=concurrency, verbose=verbose)
     if DISTILLER_ON:
         run_distill(now=now, sessions_cap=sessions_cap, concurrency=concurrency, verbose=verbose)
     return placed
