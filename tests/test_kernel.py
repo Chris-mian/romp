@@ -683,7 +683,7 @@ class ViewBuilder(unittest.TestCase):
             km._auto_nudge_tick(NOW, km._tmux_sessions())
             self.assertEqual(len(sent), 1, "the orphaned working goal is nudged once")
             self.assertIn("romp-goal-id: " + g, sent[0][1], "the follow-up targets that goal")
-            self.assertIn("What is the status", sent[0][1])
+            self.assertIn(km.AUTO_NUDGE_TEXT, sent[0][1])         # carries the nudge prompt verbatim
             km._auto_nudge_tick(NOW, km._tmux_sessions())          # once-guard: no re-nudge
             self.assertEqual(len(sent), 1, "Auto Nudge fires only ONCE per goal")
         finally:
