@@ -169,7 +169,9 @@ body { display: flex; flex-direction: column; }
 .fask-row1 .fcard-title { flex: 0 1 auto; min-width: 0; }
 /* row 2 — the session name on its own row below the title; sized to its text so blank space
    to its right stays card-body (opens the modal), and wrapping so a long name can't overflow. */
-.fask-row2 { display: flex; align-items: center; gap: 8px; margin-top: 3px; }
+/* wraps: when the name + "↪ from <peer>" provenance + the reopened/Followed-up chips can't all fit on
+   one line, the trailing items drop to a second line instead of overlapping (the user 2026-06-20). */
+.fask-row2 { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; row-gap: 4px; margin-top: 3px; }
 /* the name row fills its width so the "↪ from <peer>" provenance can sit at the RIGHT edge instead of
    crowding the name into a mid-word wrap (the user 2026-06-16). */
 .fask-id { flex: 1 1 auto; min-width: 0; display: flex; align-items: baseline; gap: 6px; }
@@ -218,9 +220,11 @@ body { display: flex; flex-direction: column; }
 
 /* "↪ from <sender>" — courier handoff provenance beside the owning session: the "↪ from" reads as dim
    gray chrome, the peer name as a bold, identity-coloured session link (the user 2026-06-16). */
-/* pushed to the RIGHT of the name row (margin-left:auto), one line — uses the free space instead of
-   squeezing the session name (the user 2026-06-16). */
-.fask-origin { flex: 0 0 auto; margin-left: auto; padding-left: 8px; font-size: 0.8em; cursor: pointer; white-space: nowrap; }
+/* a direct child of the WRAPPING name row, kept on one line — .fask-id's flex-grow pushes it to the
+   right of the name when it fits; when the name + provenance + chips can't all fit, row2 wraps it to
+   the next line instead of overflowing on top of the chips (the user 2026-06-20, was margin-left:auto
+   + nested in .fask-id, which spilled the provenance over the chips on a narrow card). */
+.fask-origin { flex: 0 0 auto; font-size: 0.8em; cursor: pointer; white-space: nowrap; }
 .fask-origin-pre { color: var(--dim); }
 .fask-origin-peer { font-weight: 600; }
 /* (the .fask-blockwhy/.fask-donewhy elements are the card's PLAIN-TEXT auto-line now — the distiller

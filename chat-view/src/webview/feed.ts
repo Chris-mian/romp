@@ -420,9 +420,13 @@ function makeAskCard(it: AskItem): HTMLElement {
   const name = el("a", "fname"); name.title = "open this session";
   // ↪ courier handoff provenance: this goal was planted by a peer's message — shows
   // "↪ from <sender>" beside the owning session, click opens the sender. Hidden unless origin.
+  // It's a DIRECT child of row2 (not nested in idwrap) so that when the name + provenance + the
+  // reopened/Followed-up chips can't all fit, row2 WRAPS it to a new line instead of the provenance
+  // overflowing on top of the chips (the user 2026-06-20). idwrap's flex-grow still right-aligns it
+  // against the chips whenever it does fit on the one line.
   const origin = el("a", "fask-origin"); origin.style.display = "none";
   origin.title = "this work was delegated from another session — click to open it";
-  idwrap.append(name, origin);
+  idwrap.append(name);
   const actions = el("div", "fask-actions");
   const reBadge = el("span", "fask-reopened"); reBadge.textContent = "reopened"; reBadge.title = "a question arrived after you cleared this"; reBadge.style.display = "none";
   const fupBadge = el("span", "fask-followedup"); fupBadge.textContent = "↻ Followed up"; fupBadge.title = "you followed up — reopened to Working; the planner will re-file it on the next pass"; fupBadge.style.display = "none";
@@ -445,8 +449,10 @@ function makeAskCard(it: AskItem): HTMLElement {
   idwrap.append(waitBadge, apiBadge, blkBadge);
   // The action row holds ONLY buttons now (Retry / Nudge / Clear).
   actions.append(apiRetry, nudge, clr);
-  // "reopened" + "↻ Followed up" chips ride the name row too (right-justified, flush right of the name).
-  row2.append(idwrap, reBadge, fupBadge);
+  // "↪ from <peer>" provenance + the "reopened"/"↻ Followed up" chips ride the name row's right side;
+  // row2 wraps them onto a new line when there isn't room, so the provenance never overlaps a chip
+  // (the user 2026-06-20). origin sits left of the chips, matching the "from … · Followed up" reading order.
+  row2.append(idwrap, origin, reBadge, fupBadge);
   // ROW 3 — timestamp bottom-left · action buttons bottom-right
   const row3 = el("div", "fask-row3"); row3.append(time, actions);
   // the user's handoff spec (2026-06-10): below the main session, list the OTHER

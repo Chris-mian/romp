@@ -41,7 +41,10 @@ test("the ⏸ blocked (permission/picker) badge is a rounded-rect pill outlined 
 test("courier handoff: the '↪ from <sender>' origin marker is wired and styled", () => {
   // a chip beside the session name, hidden until the card carries a courier origin
   assert.match(FEED, /const origin = el\("a", "fask-origin"\); origin\.style\.display = "none"/);
-  assert.match(FEED, /idwrap\.append\(name, origin\)/, "the origin marker sits beside the session name");
+  // it's a direct child of the wrapping row2 (NOT nested in idwrap) so a narrow card wraps it under the
+  // name instead of overlapping the chips (the user 2026-06-20)
+  assert.match(FEED, /row2\.append\(idwrap, origin, reBadge, fupBadge\)/, "the origin marker rides the name row beside the chips");
+  assert.doesNotMatch(FEED, /idwrap\.append\(name, origin\)/, "origin is no longer nested inside idwrap");
   // populated from it.origin in the update path: a dim gray "↪ from" + the peer in the bold session-name
   // style (its own identity colour); click opens the sender (the user 2026-06-16)
   assert.match(FEED, /pre\.textContent = "↪ from "/);
@@ -56,8 +59,8 @@ test("a 'Followed up' chip shows while the kernel optimistically reopened a foll
   assert.match(FEED, /followupPending\?: boolean/);
   assert.match(FEED, /el\("span", "fask-followedup"\); fupBadge\.textContent = "↻ Followed up"/);
   // the chip rides the SESSION-NAME row (right-justified), NOT the bottom action row, so it stops crowding
-  // Clear off the card's right edge (the user 2026-06-18)
-  assert.match(FEED, /row2\.append\(idwrap, reBadge, fupBadge\)/);
+  // Clear off the card's right edge (the user 2026-06-18); origin sits left of it on the same wrapping row
+  assert.match(FEED, /row2\.append\(idwrap, origin, reBadge, fupBadge\)/);
   assert.match(FEED, /a\._followedup\.style\.display = it\.followupPending \? "" : "none"/);
   assert.match(CSS, /\.fask-followedup \{/);
 });
