@@ -194,13 +194,6 @@ test("ledger UNRESOLVED node: checkbox + text light together, checkbox STAYS a c
   assert.doesNotMatch(CSS, /lz-merge/);                                            // no square/bridged merge fill
 });
 
-test("scrollToNearestT: 'assistant' PREFERS the assistant turn (fallback any); 'user' stays strict", () => {
-  // this is what makes the text zone (user turn) and the checkbox/time zones (assistant turn) land on
-  // DIFFERENT turns within one prompt→response exchange (the user 2026-06-17)
-  assert.match(RENDER, /kind === "user" \? pick\("turn-user"\) : kind === "assistant" \? pick\("turn-assistant"\) : pick\(null\)/);
-  assert.match(RENDER, /if \(kind === "assistant" && \(!hit\.el \|\| hit\.d > 6 \* 3600\)\) hit = pick\(null\)/);
-});
-
 test("expanding the ledger preserves the scroll position (no jump to top) (the user 2026-06-17)", () => {
   // fold/expand re-render restores the tree scroll-pane
   assert.match(RENDER, /const prevTreeScroll = \(host\.querySelector\(".ledger-tree"\) as HTMLElement \| null\)\?\.scrollTop \?\? 0/);

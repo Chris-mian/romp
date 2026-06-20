@@ -28,32 +28,36 @@ test("appendActive snaps only when the user is already near the bottom", () => {
     "tail-append follows the live edge only if the reader was already at the bottom");
 });
 
-// Two-tier PROMPT landing + honest-fail (the user 2026-06-17). Prompt-intent jumps resolve by id
-// (promptAnchorUuid) when they can, else fall back to the nearest USER turn — which for a title IS the
-// originating message, not a wrong jump. WORK intent has no fallback: a missing work anchor honest-fails.
-test("WORK intent has NO time fallback (the blunt any-kind fallback is gone)", () => {
-  assert.doesNotMatch(RENDER, /if \(!scrolled && pendingAnchorT != null\) \{ scrolled = scrollToNearestT/,
-    "the old blunt (any-kind) fallback is gone — a work-anchor miss honest-fails");
-  assert.doesNotMatch(RENDER, /showing the latest instead \(logged\)/, "the old heuristic toasts are gone");
-  assert.doesNotMatch(RENDER, /landed nearby \(logged\)/);
+// BY-ID landing only — NO time-based fallback anywhere (the user 2026-06-20: "shrink the 29%, then remove
+// the time fallback"). Prompt-intent jumps resolve by id (promptAnchorUuid → a user turn OR a peer's postal
+// card, see the kind-guard test below); the genuinely-unanchorable (autonomous / pruned-or-compacted) honest-
+// fail with a toast. The whole time-nearest mechanism (scrollToNearestT) is deleted.
+test("scrollToNearestT is GONE — no time-based navigation remains in the chat", () => {
+  assert.doesNotMatch(RENDER, /function scrollToNearestT/, "the time-nearest helper is deleted");
+  assert.doesNotMatch(RENDER, /scrollToNearestT\(/, "nothing calls it");
 });
 
-test("PROMPT intent keeps a nearest-USER-turn fallback after the by-id attempt (covers the ~29% promptAnchorUuid can't resolve)", () => {
-  // promptAnchorUuid gives an EXACT landing when it resolves (~71% of cards); the rest mint from a peer
-  // opener / autonomous segment / a pruned-or-compacted turn, so tier-2 lands on the nearest USER turn rather
-  // than honest-failing. (8a24c16 retired this too eagerly; a fleet measurement showed tier 1 covers ~71%.)
-  assert.match(RENDER, /if \(!scrolled && pendingAnchorKind === "user" && pendingAnchorT != null\) scrolled = scrollToNearestT\(pendingAnchorT, "user"\);/);
+test("the PROMPT-tier time fallback is removed — an unresolvable prompt anchor honest-fails (no clock-nearest)", () => {
+  assert.doesNotMatch(RENDER, /pendingAnchorKind === "user" && pendingAnchorT != null/,
+    "the nearest-USER-turn time fallback (8a24c16) is gone");
 });
 
-test("honest-fail still fires when even the nearest-user-turn finds nothing (the turn is genuinely gone)", () => {
+test("the kind guard accepts a peer's postal card as a valid PROMPT target (recovers peer openers by id)", () => {
+  // a peer-opened node's promptAnchorUuid is the postal atom's uuid; the card is .turn-postal, not
+  // .turn-user. The guard used to refuse it (→ the time fallback); now it accepts user OR postal, so the
+  // click lands on the originating message BY ID — shrinking the ~29% before the fallback was removed (the user 2026-06-20).
+  assert.match(RENDER, /pendingAnchorIntent === "user"\s+&& !target\.classList\.contains\("turn-user"\) && !target\.classList\.contains\("turn-postal"\)/);
+});
+
+test("honest-fail fires whenever the deep-link can't resolve by id (the turn is genuinely gone)", () => {
   assert.match(RENDER, /if \(!scrolled\) landToast\("couldn't locate this in the transcript"\)/);
 });
 
 test("the ledger zones deep-link BY UUID ONLY — no time-based fallback (the user 2026-06-19)", () => {
   // the kernel plumbs promptAnchorUuid/anchorUuid to each ledger node (the SAME anchors build_feed gives its
   // cards), so the ledger and the feed for one node land on the SAME chat turn. A zone that can't resolve its
-  // uuid honest-fails with a toast — no clock-nearest guessing. scrollToNearestT survives ONLY as the FEED
-  // prompt-tier fallback in landActive (asserted above), never in the ledger.
+  // uuid honest-fails with a toast — no clock-nearest guessing anywhere. scrollToNearestT is now deleted
+  // entirely (the ledger never used it; the prompt-tier fallback that did is gone too).
   assert.match(RENDER, /if \(!scrollToAnchor\(uuid\)\) landToast\("couldn't locate this in the transcript"\)/,
     "a ledger zone lands by uuid and honest-fails if it can't");
   assert.doesNotMatch(RENDER, /scrollToNearestT\(t, kind\)/, "the ledger's by-time fallback is gone");

@@ -1816,15 +1816,17 @@ function scrollToAnchor(uuid: string): boolean {
   const target = (v?.el.querySelector(`.turn[data-uuid="${cssEscape(uuid)}"]`)
                   || v?.el.querySelector(`.turn[data-mid="${cssEscape(uuid)}"]`)) as HTMLElement | null;
   if (!target) { pendingAnchor = uuid; landTrail.push("pointer-not-rendered"); return false; }
-  // KIND GUARD — the robust half of "title clicks always land on the user's
-  // instructions". Upstream producers substitute a reply uuid when the prompt
-  // line is off the active path (compaction orphans it), so a prompt-intent
-  // anchor can arrive pointing at an assistant turn. The uuid is checked
-  // against the rendered DOM here, the one place that can't be fooled: if the
-  // intent says "user" and the match isn't a user turn, refuse the uuid and
-  // let the time fallback (which is kind-restricted) take over. A landing may
-  // lose PRECISION, never KIND — regardless of which upstream hop lied.
-  if (pendingAnchorIntent === "user" && !target.classList.contains("turn-user")) {
+  // KIND GUARD — the robust half of "title clicks always land on the originating
+  // message". Upstream producers substitute a reply uuid when the prompt line is
+  // off the active path (compaction orphans it), so a prompt-intent anchor can
+  // arrive pointing at an ASSISTANT turn. Checked against the rendered DOM here,
+  // the one place that can't be fooled: a prompt-intent ("user") anchor must land
+  // on the originating MESSAGE — a user turn OR a peer's postal card (a peer-opened
+  // node's prompt IS the incoming message) — never an assistant turn. A peer opener
+  // used to be refused here (.turn-postal isn't .turn-user) and fall through to the
+  // time fallback; accepting postal lets it resolve BY ID instead (the user 2026-06-20).
+  if (pendingAnchorIntent === "user"
+      && !target.classList.contains("turn-user") && !target.classList.contains("turn-postal")) {
     pendingAnchor = null; pendingAnchorIntent = null; landTrail.push("pointer-wrong-kind"); return false;
   }
   pendingAnchor = null; pendingAnchorIntent = null;
@@ -1860,45 +1862,6 @@ function landOn(target: HTMLElement) {
   setTimeout(() => { if (ro) realign(); stop(); }, 1200);
 }
 
-// Time-based anchor FALLBACK: when the uuid anchor can't resolve (orphaned by a
-// rewind, an id from another era, a bookkeeping line the chat doesn't render),
-// land on the turn nearest the moment instead of silently dumping to the bottom.
-// Skips thinking blocks, and PRESERVES INTENT: a prompt-intent click (kind
-// "user") restricts to the user's own turns first — a fallback may degrade the
-// PRECISION of a landing, never its KIND (the assistant-answer landing bug).
-function scrollToNearestT(t: number, kind?: string): boolean {
-  const v = activeId ? views.get(activeId) : null;
-  if (!v) return false;
-  const pick = (cls: string | null): { el: HTMLElement | null; d: number } => {
-    let best: HTMLElement | null = null, bestd = Infinity;
-    for (const elx of Array.from(v.el.querySelectorAll(".turn[data-t]")) as HTMLElement[]) {
-      if (elx.classList.contains("turn-thinking")) continue;
-      if (cls && !elx.classList.contains(cls)) continue;
-      const d = Math.abs(Number(elx.dataset.t) - t);
-      if (d < bestd) { bestd = d; best = elx; }
-    }
-    return { el: best, d: bestd };
-  };
-  // "user" is STRICT — a prompt-intent landing never degrades to a non-user turn (the comment below).
-  // "assistant" PREFERS the assistant turn (where the work / the done-mark happened) but falls back to the
-  // nearest turn of any kind, so it still lands honestly. This is what makes the ledger's text zone (→ the
-  // user message that minted it) and its checkbox/time zones (→ the assistant action that resolved it)
-  // land on DIFFERENT turns even inside one prompt→response exchange (the user 2026-06-17).
-  let hit = kind === "user" ? pick("turn-user") : kind === "assistant" ? pick("turn-assistant") : pick(null);
-  if (kind === "assistant" && (!hit.el || hit.d > 6 * 3600)) hit = pick(null);   // no assistant turn near → nearest any
-  // Prompt intent NEVER degrades to a non-user turn: every card is minted from
-  // a typed turn, so the nearest user turn IS the instruction (or a neighbor
-  // of it) — whereas "the adjacent assistant turn" is exactly the wrong-kind
-  // landing the guard upstream just refused. No user turn within the cap →
-  // honest default scroll beats a confident wrong landing.
-  if (!hit.el || hit.d > 6 * 3600) {               // nothing within 6h → not a real match
-    landTrail.push(!hit.el ? (kind === "user" ? "no-user-turns" : "no-turns") : `nearest-too-far-${Math.round(hit.d)}s`);
-    return false;
-  }
-  landTrail.push(`time-near-${Math.round(hit.d)}s`);
-  landOn(hit.el);
-  return true;
-}
 
 // Transient bottom-center notice for DEGRADED deep-link landings only (see
 // the diagnostics block in showActive) — a bad jump announces itself instead
@@ -2194,18 +2157,14 @@ function landActive(content: HTMLElement | null, v: View): void {
   const att = { anchor: pendingAnchor, t: pendingAnchorT, kind: pendingAnchorKind };   // this pass's landing attempt, for diagnostics
   if (att.anchor || att.t != null) landTrail = [];
   let scrolled = pendingAnchor ? scrollToAnchor(pendingAnchor) : false;
-  // TWO-TIER prompt landing (the user 2026-06-17). TIER 1 — by id: a card TITLE / node text sends
-  // promptAnchorUuid (the user's minting-message turn), so when it resolves the landing is EXACT (kernel
-  // 92e23ff + feed wiring). But that only covers ~71% of cards — a fleet measurement showed the rest mint
-  // from a PEER opener, an autonomous/continuation segment (no opener), or a segment pruned/compacted out of
-  // the active path, so promptAnchorUuid is null/non-user/unrenderable and scrollToAnchor fails. TIER 2 —
-  // nearest USER turn at the card's time: for PROMPT intent (kind "user") that is the INTENDED target, NOT a
-  // wrong jump (every card is minted near a typed turn), so it must NOT honest-fail (8a24c16 retired this too
-  // eagerly on the assumption tier 1 covered everything — it doesn't). WORK/REPLY intent has no tier 2: a
-  // missing work anchor honest-fails ("I'd rather get a message it couldn't find than be taken to some
-  // unrelated thing by a heuristic" — that objection was about the assistant/work landing). Honest-fail fires
-  // only when even the nearest-user-turn finds nothing within the cap (the turn is genuinely gone).
-  if (!scrolled && pendingAnchorKind === "user" && pendingAnchorT != null) scrolled = scrollToNearestT(pendingAnchorT, "user");
+  // BY-ID landing ONLY (the user 2026-06-20 — "shrink the 29%, then remove the time fallback"). TIER 1, by id:
+  // a card TITLE / node text sends promptAnchorUuid, which lands the originating MESSAGE — a user turn OR a
+  // peer's postal card (scrollToAnchor's kind guard now accepts both). That covers the ~71% of cards that
+  // resolve PLUS the peer-opener slice the guard used to refuse into the time fallback. The rest mint from an
+  // autonomous/continuation segment (no opener) or a turn pruned/compacted off the active path — genuinely
+  // unanchorable — so they honest-fail with a toast rather than a clock-nearest guess (which often landed on
+  // an unrelated turn anyway — the 'retry'-message bug). The old time tier-2 (scrollToNearestT) is GONE: the
+  // last time-based navigation removed, per "no time heuristics". WORK/REPLY intent never had a tier-2 either.
   pendingAnchor = null; pendingAnchorIntent = null; pendingAnchorT = null; pendingAnchorKind = null;
   // Diagnostics: log every landing attempt; a deep-link that couldn't resolve announces itself loudly
   // instead of impersonating a successful jump.
