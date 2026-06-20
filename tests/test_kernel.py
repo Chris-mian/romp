@@ -204,6 +204,20 @@ class ViewBuilder(unittest.TestCase):
         self.assertTrue(users[-1].get("romp"), "the injected nudge is flagged romp (gray)")
         self.assertFalse(users[-1].get("human"), "a romp injection is not a human prompt")
 
+    def test_typed_followup_with_goal_id_only_stays_human_not_romp(self):
+        # A follow-up the USER types carries the goal-id marker (for the reopen) but NOT romp-injected, so
+        # build_session keeps it human (blue) — only romp's own nudges go gray (the user 2026-06-20).
+        typed = ("> the goal\n\nWhat did you change and why?\n\n"
+                 "<!-- romp-goal-id: %s:g1 -->" % SID)   # goal-id only — no romp-injected
+        recs = [uline(T0, "real prompt", "u1", ps="typed"),
+                aline(T0 + 10, "ok", "a1", "u1", stop="end_turn"),
+                uline(T0 + 100, typed, "u2", "a1", ps="typed")]
+        self.tpath.write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+        km._parse_cache.clear()
+        users = [e for e in km.build_session(SID, NOW)["events"] if e["kind"] == "user"]
+        self.assertTrue(users[-1].get("human"), "a follow-up the user typed is human (blue), not romp")
+        self.assertFalse(users[-1].get("romp"), "goal-id alone must NOT flag romp")
+
     def test_tool_event_pairs_output_and_diff(self):
         m = km.build_session(SID, NOW)
         tool = next(e for e in m["events"] if e["kind"] == "tool")
@@ -901,8 +915,9 @@ class ViewBuilder(unittest.TestCase):
         # an explicit group title wins over the node lookup; unknown/none → bare text (the user 2026-06-16).
         # Every follow-up ALSO ends with the hidden goal marker (see the dedicated test below); fold it in.
         iid = SID + ":g2"                                   # fixture g2 = "Awaiting a decision", blocked, a top
-        # every follow-up ends with the romp-injected marker (→ gray romp bubble) then the goal-id (→ reopen)
-        def mk(s, i=iid): return s + "\n\n<!-- romp-injected --><!-- romp-goal-id: " + i + " -->"
+        # default (the user TYPED this follow-up) ends with the goal-id only (→ reopen); NO romp-injected,
+        # because it's the user's words → blue bubble. The romp-injected split is the dedicated test below.
+        def mk(s, i=iid): return s + "\n\n<!-- romp-goal-id: " + i + " -->"
         # no title → node path: the node text + its status (g2 is blocked; it's a top so no "under")
         self.assertEqual(km._followup_body(iid, None, "go with option A"),
                          mk("> Awaiting a decision (blocked)\n\ngo with option A"))
@@ -923,10 +938,10 @@ class ViewBuilder(unittest.TestCase):
                   "blocked": True, "blockWhy": "Need you to choose major vs minor.", "t": T0}},
             "placements": {}, "status": {}}
         (jd.GOALDIR / (SID + ".json")).write_text(json.dumps(store))
-        out = km._followup_body(sub, None, "go minor")
+        out = km._followup_body(sub, None, "go minor")   # default: the user typed this follow-up
         self.assertIn('> Decide the version bump (under "Ship the release", blocked)', out)
         self.assertIn("> Need you to choose major vs minor.", out)   # the planner's why = the real question
-        self.assertIn("<!-- romp-injected -->", out, "the romp-injected marker → the gray romp bubble")
+        self.assertNotIn("<!-- romp-injected -->", out, "a TYPED follow-up is the user's → no romp-injected (blue bubble)")
         self.assertTrue(out.endswith("<!-- romp-goal-id: " + sub + " -->"))
 
     def test_feed_node_carries_prompt_anchor_uuid(self):
@@ -949,14 +964,20 @@ class ViewBuilder(unittest.TestCase):
                          "title prompt anchor = the minting segment's trigger (the user's message) uuid")
 
     def test_followup_body_appends_goal_marker(self):
-        # The follow-up judge reopens the tagged goal: every injected follow-up ends with a hidden
+        # The follow-up judge reopens the tagged goal: every follow-up ends with a hidden
         # `<!-- romp-goal-id: <itemId> -->` marker (itemId = the card's top-goal node id), matched by the
-        # judge's `romp-goal-id:\s*([^\s>]+)` (coordinated w/ the `judges` session, 2026-06-17).
+        # judge's `romp-goal-id:\s*([^\s>]+)` (coordinated w/ the `judges` session, 2026-06-17). The
+        # romp-injected author marker (→ gray bubble) rides ONLY a nudge (injected=True), NOT a follow-up
+        # the user types — that's the user's words → blue bubble (the user 2026-06-20).
         iid = SID + ":g2"
-        out = km._followup_body(iid, "ctx", "do the thing")
-        # ends with the romp-injected marker (→ gray bubble) immediately followed by the goal-id (→ reopen)
-        self.assertTrue(out.endswith("\n\n<!-- romp-injected --><!-- romp-goal-id: " + iid + " -->"))
-        self.assertEqual(re.search(r"romp-goal-id:\s*([^\s>]+)", out).group(1), iid)   # the judge's parser
+        typed = km._followup_body(iid, "ctx", "do the thing")                  # default: the user typed it
+        self.assertTrue(typed.endswith("\n\n<!-- romp-goal-id: " + iid + " -->"),
+                        "a typed follow-up ends with the goal-id alone — no romp-injected (blue bubble)")
+        self.assertNotIn("<!-- romp-injected -->", typed)
+        self.assertEqual(re.search(r"romp-goal-id:\s*([^\s>]+)", typed).group(1), iid)   # the judge's parser
+        nudge = km._followup_body(iid, "ctx", "do the thing", injected=True)   # romp's OWN nudge
+        self.assertTrue(nudge.endswith("\n\n<!-- romp-injected --><!-- romp-goal-id: " + iid + " -->"),
+                        "a nudge adds romp-injected (gray bubble) ahead of the goal-id")
 
     def test_session_list_for_picker(self):
         # the + picker's payload (requestSessions → sessionList). Was always empty: bin/romp-kernel had

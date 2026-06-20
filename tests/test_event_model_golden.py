@@ -396,22 +396,32 @@ class Authorship(unittest.TestCase):
 
 
 class RompInjectedAuthor(unittest.TestCase):
-    """author_of('romp') for a message romp injected into a pane (a feed nudge / follow-up). The hidden
-    marker makes a pasted nudge a SYSTEM message, not a 'human' typed prompt — so the chat can render it
-    as the gray romp bubble instead of the blue user bubble (the user 2026-06-19)."""
+    """author_of('romp') ONLY for a message romp itself injected into a pane (a feed NUDGE / auto-nudge /
+    Retry) — the romp-injected marker makes it a SYSTEM message so the chat renders the gray romp bubble
+    instead of the blue user bubble. A follow-up the user TYPES carries only romp-goal-id ("which goal",
+    for the reopen) and stays 'human' — it's the user's words, not romp's (the user 2026-06-20)."""
 
     @staticmethod
     def _blocks(text):
         return [{"type": "text", "text": text}]
 
-    def test_romp_goal_id_marker_authors_romp(self):
-        b = self._blocks("> the goal\n\nWhat is the status?\n\n<!-- romp-goal-id: sid:g1 -->")
-        self.assertEqual(em.author_of(b, "typed", {}), "romp",
-                         "the romp marker wins over promptSource=typed (the nudge is pasted, not typed by you)")
+    def test_goal_id_alone_is_human_a_typed_follow_up(self):
+        # a follow-up the USER types: the kernel tags it with romp-goal-id (for the reopen) but NOT
+        # romp-injected — it's the user's message, so it must render as the blue human bubble, not romp.
+        b = self._blocks("> the goal\n\nWhat did you change?\n\n<!-- romp-goal-id: sid:g1 -->")
+        self.assertEqual(em.author_of(b, "typed", {}), "human",
+                         "romp-goal-id is 'which goal' metadata, not authorship — a typed follow-up stays human")
 
     def test_explicit_romp_injected_marker_authors_romp(self):
         b = self._blocks("Picking this back up.\n\n<!-- romp-injected -->")
         self.assertEqual(em.author_of(b, None, {}), "romp")
+
+    def test_nudge_has_both_markers_and_authors_romp(self):
+        # a Nudge button / auto-nudge: the kernel adds BOTH romp-injected (gray bubble) and romp-goal-id
+        # (reopen). romp-injected wins over promptSource=typed — the nudge is pasted, not typed by you.
+        b = self._blocks("> the goal\n\nStatus on the goal above?\n\n<!-- romp-injected --><!-- romp-goal-id: sid:g1 -->")
+        self.assertEqual(em.author_of(b, "typed", {}), "romp",
+                         "romp-injected authors romp even though promptSource=typed")
 
     def test_plain_typed_prompt_is_still_human(self):
         self.assertEqual(em.author_of(self._blocks("just a normal message"), "typed", {}), "human")

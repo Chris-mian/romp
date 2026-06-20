@@ -228,12 +228,15 @@ def _name_of(sid):
         return None
 
 
-def _followup_body(iid, title, text):
+def _followup_body(iid, title, text, injected=False):
     """Pane message for a feed follow-up: QUOTE the ask being followed up ('> <ask>') above the user's
     text, so the recipient session knows what the reply answers. An explicit `title` (the group modal) is
     used verbatim; otherwise the quote is built from the goal NODE — its text, the TOP goal it sits under,
     its status, and the planner's one-line why — so the recipient understands WHAT is being followed up on
     instead of a bare ≤10-word line (the user 2026-06-17). None of these → the text alone (no empty quote).
+    `injected` is True only for romp's OWN nudges (the Nudge button / auto-nudge) — it adds the romp-injected
+    marker so the chat renders the gray romp bubble; a follow-up the user TYPES leaves it False (blue human
+    bubble). Either way romp-goal-id rides along for the reopen (the user 2026-06-20).
     Split out from the WS handler so it's unit-testable."""
     sid = str(iid).rsplit(":", 1)[0]
     nodes = {}
@@ -268,9 +271,12 @@ def _followup_body(iid, title, text):
     # parses `romp-goal-id:\s*([^\s>]+)`, REOPENS that top-goal node (even if completed/blocked), and
     # force-files this follow-up as a step under it. iid IS the card's top-goal node id (what the feed
     # renders + posts). The HTML comment is inert in the recipient's prompt.
-    # romp-injected marker → the chat renders this as a GRAY romp bubble (not a blue human prompt): it's
-    # clear romp, not the user, sent it (the user 2026-06-19). romp-goal-id (below) drives the reopen.
-    return msg + "\n\n<!-- romp-injected --><!-- romp-goal-id: " + str(iid) + " -->"
+    # romp-goal-id (ALWAYS): the follow-up judge parses it to REOPEN + file this under the top goal — true
+    # whether YOU typed the follow-up or romp nudged, since either reopens the goal. romp-injected (NUDGES
+    # ONLY, injected=True): authors the message to romp so the chat renders the GRAY romp bubble. A follow-up
+    # you TYPE is yours → blue human bubble, so it gets NO romp-injected marker (the user 2026-06-20).
+    tail = ("<!-- romp-injected -->" if injected else "") + "<!-- romp-goal-id: " + str(iid) + " -->"
+    return msg + "\n\n" + tail
 
 
 def _rgb(color):
@@ -539,7 +545,7 @@ def _auto_nudge_tick(now, tmux):
         gid = _working_top_goal(sid)
         if not gid or gid in done:
             continue
-        _tmux_send(_name_of(sid) or sid, _followup_body(gid, None, AUTO_NUDGE_TEXT))
+        _tmux_send(_name_of(sid) or sid, _followup_body(gid, None, AUTO_NUDGE_TEXT, injected=True))   # romp's own nudge → gray bubble
         try:
             jd.optimistic_followup(sid, gid)             # reopen the card now (Followed-up chip), like a manual nudge
         except Exception:
@@ -4529,7 +4535,9 @@ class Handler(BaseHTTPRequestHandler):
                 elif msg and msg.get("type") == "askFollowUp" and msg.get("itemId") and msg.get("text"):
                     iid = str(msg["itemId"])                     # goal node id → session → inject the follow-up
                     sid = iid.rsplit(":", 1)[0]
-                    _tmux_send(_name_of(sid) or sid, _followup_body(iid, msg.get("title"), msg["text"]))
+                    # nudge:true (the canned Nudge button) → romp authored it → gray bubble; a follow-up the
+                    # user TYPED in the modal carries no nudge flag → blue human bubble (the user 2026-06-20).
+                    _tmux_send(_name_of(sid) or sid, _followup_body(iid, msg.get("title"), msg["text"], injected=bool(msg.get("nudge"))))
                     try:                                         # optimistic: reopen the card NOW, before the judge pass
                         if jd.optimistic_followup(sid, iid):     # → board shows it back at WORKING + a "Followed up" chip
                             _push_all()

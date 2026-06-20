@@ -43,11 +43,13 @@ END_STOPS = ("end_turn", "stop_sequence")
 # hook produces that). The sender rompUuid is resolved from timeline/messages.jsonl
 # by joining this id (the on-disk marker carries the id but not the sender).
 POSTAL_RE = re.compile(r"romp-msg-id:\s*(\S+)")
-# romp's marker on a message IT injected straight into a pane (a feed nudge / follow-up — NOT a peer
-# message). It means "render this as a romp-injected system message" (the gray bubble), distinct from a
-# human prompt or a peer's postal message. romp-goal-id rides every feed follow-up; romp-injected is the
-# generic form for any future romp injection (the user 2026-06-19).
-ROMP_INJECT_RE = re.compile(r"romp-(?:injected|goal-id)\b")
+# romp's marker on a message IT injected straight into a pane (a feed NUDGE / auto-nudge / Retry — NOT a
+# peer message, and NOT a follow-up YOU typed). It means "render this as a romp-injected system message"
+# (the gray bubble), distinct from a human prompt or a peer's postal message. ONLY romp-injected authors
+# romp: romp-goal-id is orthogonal "which goal" metadata that rides EVERY feed follow-up, INCLUDING ones
+# you type yourself — those are yours (blue human bubble), so a goal-id alone must NOT author romp; the
+# kernel adds romp-injected for nudges only (the user 2026-06-20).
+ROMP_INJECT_RE = re.compile(r"romp-injected\b")
 # Claude Code's slash-command transcript wrappers (`/model`, `/effort`, …). They are
 # user lines with NO promptSource and isMeta unset, so the absent->human default would
 # otherwise mint a spurious human turn for every slash command. They are harness echoes,
