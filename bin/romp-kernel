@@ -2022,49 +2022,6 @@ def _resolve_node(sid, node_id):
     return True
 
 
-# ── async prompt gist for the provisional card's "Analyzing: …" label (the user 2026-06-19) ────────
-# The provisional card shows the captioner-style GIST of the in-progress prompt instead of the raw text.
-# It's one Haiku call (jd.gist_llm), so it can't run inline in a push — we fetch it in a daemon thread,
-# cache by prompt hash, and force a refresh when it lands. Tri-state so the card degrades gracefully: None
-# = still computing ("Analyzing…"), "" = tried-and-empty (fall back to the raw prompt), a phrase =
-# "Analyzing: <phrase>". The call is logged as the CAPTIONER (not a separate 'gist' judge): it's the same
-# captioner-tier gloss the persisted message caption uses, so there's no hidden 'gist' judge (2026-06-19).
-_gist_cache = {}            # key -> gist str ('' = tried, no usable gist)
-_gist_inflight = set()      # keys whose Haiku call is in flight
-_gist_lock = threading.Lock()
-
-
-def _prompt_gist(fsid, prompt):
-    """The cached gist for an in-progress prompt, or None while one Haiku call computes it in the
-    background. Spawns at most one call per distinct prompt; never blocks the push."""
-    key = fsid + ":" + hashlib.sha1(prompt.encode("utf-8", "replace")).hexdigest()[:16]
-    with _gist_lock:
-        if key in _gist_cache:
-            return _gist_cache[key]                      # '' (no gist) or the phrase
-        if key in _gist_inflight:
-            return None                                  # already computing
-        _gist_inflight.add(key)
-
-    def _work():
-        g = ""
-        try:
-            g = jd.gist_llm(prompt) or ""                 # gist_llm now defaults to judge='captioner' → never a hidden 'gist' judge
-        except Exception:
-            g = ""
-        with _gist_lock:
-            _gist_cache[key] = g
-            _gist_inflight.discard(key)
-            if len(_gist_cache) > 512:                    # bounded; the provisional card is transient
-                _gist_cache.clear()
-        try:
-            _push_all()                                   # the gist landed → refresh the card now (per-client send is locked)
-        except Exception:
-            pass
-
-    threading.Thread(target=_work, daemon=True).start()
-    return None
-
-
 def _provisional_card(s, name, color, fsid, live, now):
     """A lightweight WORKING placeholder for a session actively in an in-progress turn whose held human
     prompt the planner hasn't classified yet (the user 2026-06-18). The planner withholds the final segment
@@ -2098,16 +2055,12 @@ def _provisional_card(s, name, color, fsid, live, now):
     prompt = _split_reminders(_seg_prompt(held))[0].strip()
     if not prompt:
         return None
-    # "Analyzing: <gist>" — a captioner-style topic instead of the raw prompt (the user 2026-06-19). The
-    # gist is fetched async; until it lands show "Analyzing…", and if it comes back empty fall back to the
-    # raw prompt so the card is never blank.
-    g = _prompt_gist(fsid, prompt[:2000])
-    if g:
-        text = "Analyzing: " + g
-    elif g == "":                                        # tried, no usable gist → the raw prompt (graceful fallback)
-        text = prompt[:140].strip()
-    else:                                                # None → still computing
-        text = "Analyzing…"
+    # "Analyzing: <gist>" — the captioner's MESSAGE caption for this held segment (the same gist the timeline
+    # dot reads), produced the moment the message lands. Until it lands, the raw prompt so the card is never
+    # blank. (the user 2026-06-19: reuses the captioner's message caption rather than a SEPARATE 'gist' judge
+    # call — the captioner already glosses every message, so there's no redundant call and no hidden judge.)
+    g = _captions(fsid).get(held["id"] + "#p", {}).get("caption")
+    text = "Analyzing: " + g if g else prompt[:140].strip()
     t = held.get("t", lt["t"])
     return {"itemId": "provisional:" + fsid, "sid": fsid, "name": name, "color": color, "text": text,
             "t": t, "created": t, "live": live, "trgb": list(cm.age_rgb(now - t, _colormap())),

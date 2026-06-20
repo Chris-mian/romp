@@ -94,10 +94,10 @@ class ViewBuilder(unittest.TestCase):
         (names / SID).write_text("testsess\t%s\t#abcdef\n" % str(cdir))
         self.saved = (jd.NAMES, jd.PROJECTS, jd.CAPDIR, jd.ARCHDIR, jd.GOALDIR, jd.STATE,
                       km.NAMES, km._tmux_sessions, km._GLOBAL_CLAUDE_MD, jd.gist_llm)
-        # the provisional card fetches a Haiku gist; stub it so NO test fires a real LLM subprocess. Default
-        # returns "" (→ the card falls back to the raw prompt); the gist-specific tests override it.
+        # the captioner's MESSAGE caption (jd.gist_llm) — stub it so NO test fires a real LLM subprocess.
+        # The provisional card reads the PERSISTED message caption ('<segid>#p'), not this directly; the
+        # gist-specific tests write that caption to drive the card's "Analyzing: …" text.
         jd.gist_llm = lambda p: ""
-        km._gist_cache.clear(); km._gist_inflight.clear()
         km._autonudge_cache.clear()
         # sandbox the system-card's global CLAUDE.md to a nonexistent temp path so a real ~/.claude/CLAUDE.md
         # on the dev machine can't leak a "system context" card into these fixtures (the synthetic transcript
@@ -131,19 +131,17 @@ class ViewBuilder(unittest.TestCase):
             "placements": {}, "status": {g1: "completed", g2: "blocked"}}))
 
     def tearDown(self):
-        self._drain_gist()   # let any in-flight gist worker finish on the STUB before we restore the real gist_llm
         (jd.NAMES, jd.PROJECTS, jd.CAPDIR, jd.ARCHDIR, jd.GOALDIR, jd.STATE,
          km.NAMES, km._tmux_sessions, km._GLOBAL_CLAUDE_MD, jd.gist_llm) = self.saved
         self.td.cleanup()
 
-    def _drain_gist(self, timeout=3.0):
-        # wait for the background gist worker(s) to finish so the cache is settled before re-building
-        end = time.time() + timeout
-        while time.time() < end:
-            with km._gist_lock:
-                if not km._gist_inflight:
-                    return
-            time.sleep(0.01)
+    def _write_msg_caption(self, caption):
+        """The captioner's MESSAGE caption for the in-progress turn's held segment ('<segid>#p') — what the
+        provisional card reads for its 'Analyzing: …' text (the user 2026-06-19)."""
+        session = em.parse_session(str(self.tpath), rompuuid=SID, candidate_files=[str(self.tpath)], now=NOW)
+        held = em.segments(session["turns"][-1])[-1]
+        with open(jd.CAPDIR / (SID + ".jsonl"), "a") as f:
+            f.write(json.dumps({"id": held["id"] + "#p", "grain": "prompt", "t": held["t"], "caption": caption}) + "\n")
 
     def test_parse_cache_hits_until_the_file_changes(self):
         """The build hot path parses via _parse, cached by the transcript's (mtime,size): an unchanged
@@ -601,43 +599,26 @@ class ViewBuilder(unittest.TestCase):
         p = prov[0]
         self.assertEqual(p["itemId"], "provisional:" + SID)
         self.assertEqual(p["column"], "working")
-        self.assertEqual(p["text"], "Analyzing…", "until the gist lands, an 'Analyzing…' placeholder (NOT the raw prompt)")
+        self.assertIn("empty space", p["text"], "before the message caption lands, the card shows the raw prompt (never blank)")
         self.assertEqual(p["tree"], [], "a placeholder carries no goal node")
         self.assertTrue(any(a["itemId"] == g1 for a in asks), "the real completed card is untouched")
 
-    def test_provisional_card_upgrades_to_analyzing_gist(self):
-        # The user 2026-06-19: once the captioner-style gist lands (within a couple seconds), the card reads
-        # "Analyzing: <gist>" — the topic of the ask, not the verbose prompt text.
+    def test_provisional_card_shows_the_message_caption_once_it_lands(self):
+        # The user 2026-06-19: the card reads the captioner's persisted MESSAGE caption ('<segid>#p') — the
+        # SAME gist the timeline dot uses, no separate 'gist' judge call. Until it lands, the raw prompt;
+        # once the captioner writes it, "Analyzing: <caption>".
         self._open_turn_transcript(ended=False)
         g1 = SID + ":g1"
         self._goal_store({g1: {"id": g1, "text": "first ask", "parentId": None, "nodeComplete": True,
                                "blocked": False, "cleared": False, "trail": [], "t": T0}},
                          {g1: "completed"}, last=g1)
         self._working_tmux()
-        km._gist_cache.clear(); km._gist_inflight.clear()
-        jd.gist_llm = lambda p: "trimming the empty space below the cards"
         first = next(a for a in km.build_feed(NOW)["asks"] if a.get("provisional"))
-        self.assertEqual(first["text"], "Analyzing…", "the first build, gist still in flight")
-        self._drain_gist()
+        self.assertIn("empty space", first["text"], "no message caption yet → the raw prompt")
+        self.assertNotIn("Analyzing", first["text"], "no stuck 'Analyzing…' placeholder — just the raw prompt")
+        self._write_msg_caption("trimming the empty space below the cards")
         p = next(a for a in km.build_feed(NOW)["asks"] if a.get("provisional"))
         self.assertEqual(p["text"], "Analyzing: trimming the empty space below the cards")
-
-    def test_provisional_card_falls_back_to_raw_prompt_when_gist_empty(self):
-        # If the gist comes back empty (vague prompt / model hiccup), the card is never blank — it falls
-        # back to the raw prompt gist (the prior behavior).
-        self._open_turn_transcript(ended=False)
-        g1 = SID + ":g1"
-        self._goal_store({g1: {"id": g1, "text": "first ask", "parentId": None, "nodeComplete": True,
-                               "blocked": False, "cleared": False, "trail": [], "t": T0}},
-                         {g1: "completed"}, last=g1)
-        self._working_tmux()
-        km._gist_cache.clear(); km._gist_inflight.clear()
-        jd.gist_llm = lambda p: ""                        # no usable gist
-        km.build_feed(NOW)                                # kicks off the (empty) gist
-        self._drain_gist()
-        p = next(a for a in km.build_feed(NOW)["asks"] if a.get("provisional"))
-        self.assertIn("empty space", p["text"], "empty gist → the raw prompt, never blank")
-        self.assertNotIn("Analyzing", p["text"])
 
     # ── Auto Nudge (the user 2026-06-19): follow up ONCE on an orphaned working goal ──
     def _stub_nudge(self):
@@ -2098,8 +2079,8 @@ class ApiRetryAndTabOrderRoutes(unittest.TestCase):
     def test_routes_present(self):
         src = Path(BIN, "romp-kernel").read_text()
         self.assertIn('msg.get("type") == "apiRetry"', src, "Retry button → apiRetry handler")
-        self.assertIn('_tmux_send(_name_of(msg["id"]) or msg["id"], "retry")', src,
-                      "apiRetry pastes 'retry' into the session's pane")
+        self.assertIn(r'_tmux_send(_name_of(msg["id"]) or msg["id"], "retry\n\n<!-- romp-injected -->")', src,
+                      "apiRetry pastes 'retry' tagged romp-injected (→ a gray romp bubble, not a user prompt)")
         self.assertIn('"type": "tabOrder"', src,
                       "kernel pushes the saved tab order on connect so the UI stops reordering (#11)")
 
