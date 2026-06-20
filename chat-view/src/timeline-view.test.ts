@@ -186,3 +186,11 @@ test("dragAxis: horizontal-dominant → pan", () => {
 test("dragAxis: vertical-dominant → row reorder", () => {
   assert.equal(dragAxis(5, 20, 4), "row");
 });
+
+test("a postal connector click jumps to the message's OWN card BY ID (mm.id → data-mid), not nearest-time (the user 2026-06-20)", () => {
+  const src = fs.readFileSync(viewPath, "utf8");
+  // msgNav passes the postal message id as the chat anchor; the chat (scrollToAnchor) matches it to the
+  // card's data-mid. nearestTurnAnchor stays only to resolve the tab (tid) + as a uuid fallback — the old
+  // time-nearest anchor (which landed on whatever turn was closest to the exec time) is gone.
+  assert.match(src, /this\.openChat\(\(an && an\.tid\) \|\| mm\.toId, mm\.id \|\| \(an && \(an\.uuid \|\| an\.replyUuid\)\)/);
+});
