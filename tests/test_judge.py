@@ -1089,6 +1089,33 @@ class PlanRollup(unittest.TestCase):
         jd.rollup_status(s, session_closed=False)
         self.assertEqual(s["status"][gid], "working", "the reopened goal is back to working for the follow-up")
 
+    def test_stale_followup_pending_does_not_deadlock_a_re_completed_settled_goal(self):
+        # The user 2026-06-20 (g70): a status Nudge set followupPending optimistically; the judge then
+        # answered + RE-DONED the top. The stale flag must not keep a nodeComplete + settled goal stuck
+        # Working — followupPending forcing 'working' would block the very branch that clears it (deadlock).
+        s = _store()
+        self._mint(s, "s1", T0, "G")
+        self._done(s, "s2", T0 + 10, 1)                          # G re-completed (nodeComplete)
+        self._mint(s, "s3", T0 + 20, "G2")                       # G2 is the focus → G is settled
+        g = s["placements"]["s1"]
+        s["nodes"][g]["followupPending"] = True                  # stale optimistic flag from a status Nudge
+        jd.rollup_status(s, session_closed=False)
+        self.assertEqual(s["status"][g], "completed",
+                         "a re-completed + settled goal completes despite a stale followupPending — no deadlock")
+        self.assertNotIn("followupPending", s["nodes"][g], "the stale optimistic flag is cleared")
+
+    def test_followup_pending_still_shows_working_for_a_genuinely_reopened_goal(self):
+        # The optimistic chip is intact: a goal genuinely reopened (nodeComplete cleared) for follow-up work
+        # still reads Working until the judge re-files — only a RE-COMPLETED goal escapes the chip.
+        s = _store()
+        self._mint(s, "s1", T0, "G")
+        self._done(s, "s2", T0 + 10, 1)
+        g = s["placements"]["s1"]
+        jd._reopen(s, g)                                         # genuine reopen → nodeComplete cleared
+        s["nodes"][g]["followupPending"] = True
+        jd.rollup_status(s, session_closed=False)
+        self.assertEqual(s["status"][g], "working", "a reopened (incomplete) goal stays Working with the chip")
+
     def test_bottom_up_completed_top_is_sealed_so_new_work_mints_a_card(self):
         # The bug (the user 2026-06-18): a top that rolled up to "completed" via the BOTTOM-UP path — its
         # only child got DONE'd so is_complete holds, but the top's OWN nodeComplete was never set — stayed

@@ -939,7 +939,17 @@ def rollup_status(store, session_closed):
         elif any_blocked(nid):
             status[nid] = "blocked"
         elif nodes[nid].get("followupPending"):       # optimistic reopen: show WORKING until the judge processes the follow-up
-            status[nid] = "working"
+            # ...UNLESS the judge has genuinely RE-COMPLETED it (nodeComplete + settled). A status Nudge sets
+            # followupPending optimistically; once the judge answers and re-dones the top, that flag is stale.
+            # Without this it DEADLOCKS: followupPending forces 'working', which blocks the completed branch
+            # below — the only place that would clear followupPending — so a done goal sticks in Working
+            # forever (the user 2026-06-20: g70 was nodeComplete+settled yet stuck Working with the chip).
+            if is_complete(nid) and (settled or nodes[nid].get("settledDone")):
+                nodes[nid]["settledDone"] = True
+                nodes[nid].pop("followupPending", None)   # resolved → drop the stale optimistic chip
+                status[nid] = "completed"
+            else:
+                status[nid] = "working"
         # STICKY completion (the user 2026-06-18): once a top has settled-completed, it STAYS completed
         # even when the session starts another turn that re-focuses it (a status QUESTION, an unrelated
         # poke), so the card no longer flickers working↔done every turn. `session_closed` flaps per turn;
