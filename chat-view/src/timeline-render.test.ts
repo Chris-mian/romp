@@ -376,8 +376,13 @@ test("work-bar hover shows the work caption (summary), not mislabeled 'request:'
   assert.match(live, /working on: /, "ongoing with no caption → 'working on: <prompt>'");
 });
 
-test("prompt-dot hover shows the request (prompt), distinct from the bar's work caption", () => {
+test("prompt-dot hover shows the MESSAGE caption once ready, falling back to the raw prompt (the user 2026-06-19)", () => {
   const panel: any = new TimelinePanel(makeNode("div"));
-  assert.equal(panel.req({ prompt: "fix the pagination bug", summary: "Fixed pagination" }),
-               "fix the pagination bug", "the dot shows the request, not the work caption");
+  // message caption available → show it (a gist of the ask), NOT the verbose prompt and NOT the work summary
+  assert.equal(panel.req({ prompt: "please fix the pagination bug across the whole table view", msgCaption: "the pagination bug", summary: "Fixed pagination" }),
+               "the pagination bug", "the dot shows the MESSAGE caption, distinct from the bar's work summary");
+  // intermediate (no message caption yet) → the raw prompt is the fallback; the work summary is the BAR's, not the dot's
+  assert.equal(panel.req({ prompt: "fix the pagination bug", summary: "Fixed pagination" }), "fix the pagination bug",
+               "until the message caption lands, fall back to the raw prompt — never the work summary");
+  assert.equal(panel.req({}), "", "neither → empty");
 });

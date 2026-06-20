@@ -71,9 +71,12 @@ class TaskSelection(unittest.TestCase):
             aline(T0 + 30, "Fixed the flicker.", "a1", "u1", stop="end_turn"),
         ])
         tasks = jd._ready_tasks(s)
-        self.assertEqual(len(tasks), 1, "single-segment turn = one caption call")
-        grains = sorted(w["grain"] for w in tasks[0]["writes"])
-        self.assertEqual(grains, ["segment", "turn"], "the one call writes both grains")
+        work = [t for t in tasks if t.get("kind") == "work"]
+        self.assertEqual(len(work), 1, "single-segment turn = one WORK caption call")
+        grains = sorted(w["grain"] for w in work[0]["writes"])
+        self.assertEqual(grains, ["segment", "turn"], "the one work call writes both grains")
+        self.assertEqual(sum(1 for t in tasks if t.get("kind") == "prompt"), 1,
+                         "the human message also gets its own MESSAGE caption, ready immediately (the user 2026-06-19)")
 
     def test_multi_segment_turn_gets_its_own_call(self):
         """An absorbed multi-input turn: one call per segment PLUS a distinct turn call."""
@@ -100,9 +103,14 @@ class TaskSelection(unittest.TestCase):
             aline(T0 + 120, "calling a tool", "a2", "u2", tools=("Bash",), stop="tool_use"),
         ])
         tasks = jd._ready_tasks(s)
-        # turn 1 (ended, single segment) -> 1 task; turn 2 (open) -> withheld entirely
-        self.assertEqual(len(tasks), 1)
-        self.assertTrue(any(w["grain"] == "turn" for w in tasks[0]["writes"]))
+        work = [t for t in tasks if t.get("kind") == "work"]
+        prompt = [t for t in tasks if t.get("kind") == "prompt"]
+        # turn 1 (ended, single segment) -> 1 WORK task; turn 2 (open) -> its WORK caption withheld
+        self.assertEqual(len(work), 1)
+        self.assertTrue(any(w["grain"] == "turn" for w in work[0]["writes"]))
+        # but BOTH human messages get a MESSAGE caption right away — including the in-progress turn's,
+        # so the dot is glossed without waiting for the work to finish (the user 2026-06-19)
+        self.assertEqual(len(prompt), 2, "the open turn's MESSAGE caption is NOT withheld")
 
     def test_idle_terminated_final_turn_is_ready(self):
         """An idle atom terminates the final turn, so its unit becomes ready."""
@@ -281,14 +289,17 @@ class EnginePass(unittest.TestCase):
         names = td / "names"
         names.mkdir()
         (names / SID).write_text("testsess\t%s\t#abcdef\n" % str(cdir))
-        saved = (jd.NAMES, jd.PROJECTS, jd.CAPDIR, jd.ARCHDIR, jd.PCACHE, jd.caption_llm, jd.archive_llm)
+        saved = (jd.NAMES, jd.PROJECTS, jd.CAPDIR, jd.ARCHDIR, jd.PCACHE,
+                 jd.caption_llm, jd.archive_llm, jd.gist_llm)
         jd.NAMES, jd.PROJECTS = names, proj
         jd.CAPDIR, jd.ARCHDIR, jd.PCACHE = td / "captions", td / "archive", td / "pcache"
         jd.caption_llm = lambda text: "stub caption"
+        jd.gist_llm = lambda text, judge="gist": "stub caption"          # the MESSAGE caption (prompt grain)
         jd.archive_llm = lambda log: {"headline": "stub headline", "abstract": "stub abstract"}
 
         def restore():
-            (jd.NAMES, jd.PROJECTS, jd.CAPDIR, jd.ARCHDIR, jd.PCACHE, jd.caption_llm, jd.archive_llm) = saved
+            (jd.NAMES, jd.PROJECTS, jd.CAPDIR, jd.ARCHDIR, jd.PCACHE,
+             jd.caption_llm, jd.archive_llm, jd.gist_llm) = saved
         return restore
 
     def test_pass_writes_both_grains_then_dedups(self):
@@ -302,9 +313,10 @@ class EnginePass(unittest.TestCase):
                 r1 = jd.run_index(now=now)
                 recs = [json.loads(l) for l in (jd.CAPDIR / (SID + ".jsonl")).read_text().splitlines()]
                 grains = sorted(r["grain"] for r in recs)
-                self.assertEqual(grains, ["segment", "turn"], "single-segment turn writes both grains from one call")
+                self.assertEqual(grains, ["prompt", "segment", "turn"],
+                                 "the MESSAGE caption (prompt grain) + the WORK caption (segment+turn from one call)")
                 self.assertTrue(all(r["caption"] == "stub caption" for r in recs))
-                self.assertEqual(r1["captions"], 2, "two records from one model call")
+                self.assertEqual(r1["captions"], 3, "one message record + two work records")
                 # the archiver ran after captioning and wrote one session archive from the turn caption
                 self.assertEqual(r1["archives"], 1)
                 arch = json.loads((jd.ARCHDIR / (SID + ".json")).read_text())

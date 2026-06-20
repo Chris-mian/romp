@@ -2098,10 +2098,11 @@ class TimelinePanel {
     if (!this._pinned) this._drawNowButton(svg);
   }
 
-  // hover bodies: the prompt DOT = the request (what the user asked); the activity BAR = the work
-  // (what the agent DID). They must show DIFFERENT things — the bar was showing its own work caption
-  // mislabeled "request:", so the dot and bar read as a duplicate (the user 2026-06-18).
-  req(t) { return t.prompt ? esc(t.prompt.slice(0, 120)) : (t.summary ? esc(t.summary) : ''); }
+  // hover bodies: the prompt DOT shows the MESSAGE caption — a gist of what the user ASKED — once the
+  // captioner produces it (ready early, the moment the message lands), and falls back to the raw prompt
+  // only in the intermediate before that caption exists (the user 2026-06-19). The activity BAR is the
+  // WORK (t.summary — what the agent DID); the two are now separate captions, dot vs line.
+  req(t) { return t.msgCaption ? esc(t.msgCaption) : (t.prompt ? esc(t.prompt.slice(0, 120)) : ''); }
   // activity-bar hover = what the agent DID: the work period's own caption (t.summary), or a readable
   // reply line (t.reply) if the kernel supplied one. Only when there's NO work caption yet do we fall
   // back to the request (the prompt) — "working on… <prompt>" in progress, else "request: <prompt>"

@@ -307,12 +307,14 @@ GIST_SYS = (
     "the phrase.")
 
 
-def gist_llm(prompt_text):
-    """One short TOPIC phrase for an IN-PROGRESS user request (INDEX tier, Haiku, thinking off) — what the
-    ask is ABOUT, present-focused (vs caption_llm's past-tense 'what got done'). Drives the feed's
-    provisional 'Analyzing: …' placeholder. Same BARE-phrase contract as the captioner, so _clean_caption
-    normalizes + guards it. '' on failure."""
-    return _clean_caption(_judge_run(INDEX_MODEL, GIST_SYS, "<prompt>\n%s\n</prompt>" % prompt_text, judge="gist"))
+def gist_llm(prompt_text, judge="gist"):
+    """One short TOPIC phrase for a user request (INDEX tier, Haiku, thinking off) — what the ask is ABOUT,
+    present-focused (vs caption_llm's past-tense 'what got done'). Drives the feed's provisional
+    'Analyzing: …' placeholder (judge='gist') AND the captioner's per-segment MESSAGE caption on the
+    timeline dot (judge='captioner', the user 2026-06-19) — same prompt, attributed to whichever surface
+    asked. Same BARE-phrase contract as the captioner, so _clean_caption normalizes + guards it. '' on
+    failure."""
+    return _clean_caption(_judge_run(INDEX_MODEL, GIST_SYS, "<prompt>\n%s\n</prompt>" % prompt_text, judge=judge))
 
 
 # ───────────────────────── unit text (caption input) ─────────────────────────
@@ -396,12 +398,23 @@ def _unit_text(atoms):
 # its segment (identical input), so it reuses the segment's caption — no second call — and
 # writes BOTH a segment-grain and a turn-grain record from the one call. A multi-segment
 # turn gets its own call (it summarizes across segments). Each task: {atoms, writes:[{id,grain,t}]}.
+def _prompt_text(atoms):
+    """The raw user-prompt text from a segment's human trigger atom — the MESSAGE caption's input (a gist of
+    the ASK), without the captioner's USER ASKED/ASSISTANT framing. '' if no human message."""
+    for a in atoms:
+        if a.get("type") == "user" and a.get("author") == "human":
+            return _FOLLOWUP_MARKER_RE.sub("", _atom_text(a)).strip()
+    return ""
+
+
 def _ready_tasks(session):
-    """Caption tasks whose END IS KNOWN:
-      - a non-terminal segment is ready (its end = the next input, which exists);
-      - the terminal segment / the turn are ready once the turn is `ended` OR an idle atom
-        terminates it OR a later turn exists (anything after it pins its end).
-    Only the last segment + turn of an OPEN final turn are withheld (still in progress)."""
+    """Caption tasks. Two kinds (the user 2026-06-19):
+      - kind 'prompt' = the MESSAGE caption, a gist of the user's ask. READY THE MOMENT THE MESSAGE LANDS
+        (even the open final segment), so the timeline dot gets a gloss without waiting for the work. Keyed
+        '<segid>#p' so it never collides with the work caption. Only a real human prompt gets one.
+      - kind 'work' = WHAT GOT DONE, whose END must be known: a non-terminal segment is ready (its end =
+        the next input); the terminal segment / turn are ready once the turn is `ended` / an idle atom
+        terminates it / a later turn exists. Only the last segment + turn of an OPEN final turn are withheld."""
     turns = session["turns"]
     tasks = []
     for ti, turn in enumerate(turns):
@@ -411,14 +424,18 @@ def _ready_tasks(session):
         segs = em.segments(turn)
         single = len(segs) == 1
         for si, seg in enumerate(segs):
+            trig = next((a for a in seg["atoms"] if a.get("uuid") == seg.get("trigger")), None) or (seg["atoms"][0] if seg["atoms"] else None)
+            if trig and trig.get("author") == "human":   # MESSAGE caption — ready now, even mid-work
+                tasks.append({"kind": "prompt", "atoms": [trig],
+                              "writes": [{"id": seg["id"] + "#p", "grain": "prompt", "t": seg["t"]}]})
             if turn_open and si == len(segs) - 1:
-                continue                               # last segment of the open final turn
+                continue                               # WORK caption withheld for the open final segment
             writes = [{"id": seg["id"], "grain": "segment", "t": seg["t"]}]
             if single and not turn_open:               # the turn IS this segment → mirror, no 2nd call
                 writes.append({"id": turn["id"], "grain": "turn", "t": turn["t"]})
-            tasks.append({"atoms": seg["atoms"], "writes": writes})
-        if not turn_open and not single:               # multi-segment turn → its own caption
-            tasks.append({"atoms": turn["atoms"],
+            tasks.append({"kind": "work", "atoms": seg["atoms"], "writes": writes})
+        if not turn_open and not single:               # multi-segment turn → its own work caption
+            tasks.append({"kind": "work", "atoms": turn["atoms"],
                           "writes": [{"id": turn["id"], "grain": "turn", "t": turn["t"]}]})
     return tasks
 
@@ -475,17 +492,20 @@ def tasks_for(fsid, leaf, files, now):
     cf = PCACHE / (fsid + ".json")
     try:
         o = json.loads(cf.read_text())
-        if o.get("key") == key:
+        if o.get("key") == key and o.get("v") == 2:    # v2 = the prompt/work split (the user 2026-06-19); old caches regenerate
             return o["tasks"]
     except Exception:
         pass
     session = parsed_session(fsid, files, now)
-    tasks = [{"text": _unit_text(t["atoms"]), "writes": t["writes"]}
-             for t in _ready_tasks(session)]
+    tasks = []
+    for t in _ready_tasks(session):
+        kind = t.get("kind", "work")
+        text = _prompt_text(t["atoms"]) if kind == "prompt" else _unit_text(t["atoms"])
+        tasks.append({"kind": kind, "text": text, "writes": t["writes"]})
     try:
         PCACHE.mkdir(parents=True, exist_ok=True)
         tmp = cf.with_suffix(".tmp.%d" % os.getpid())
-        tmp.write_text(json.dumps({"key": key, "tasks": tasks}))
+        tmp.write_text(json.dumps({"key": key, "v": 2, "tasks": tasks}))
         tmp.rename(cf)
     except Exception:
         pass
@@ -1018,8 +1038,12 @@ def discover(now):
 
 # ───────────────────────── the pass ─────────────────────────
 def _caption_call(task):
-    """Caption one unit in a worker thread, tagging its session for usage logging."""
+    """Caption one unit in a worker thread, tagging its session for usage logging. A 'prompt' task is the
+    MESSAGE caption — a present-focused gist of the ask (gist_llm, logged as the captioner); a 'work' task
+    is the past-tense 'what got done' (caption_llm)."""
     _judge_ctx.fsid = task.get("fsid")
+    if task.get("kind") == "prompt":
+        return gist_llm(task["text"], judge="captioner")
     return caption_llm(task["text"])
 
 
@@ -1042,8 +1066,8 @@ def run_index(now=None, budget=BUDGET, fairness=FAIRNESS, concurrency=CONCURRENC
         for task in tasks_for(fsid, str(path), [str(path)], now):
             undone = [w for w in task["writes"] if w["id"] not in done]
             if undone and task["text"]:
-                pending.append({"fsid": fsid, "anchor": anchor, "text": task["text"],
-                                "writes": undone, "t": max(w["t"] for w in undone)})
+                pending.append({"fsid": fsid, "anchor": anchor, "kind": task.get("kind", "work"),
+                                "text": task["text"], "writes": undone, "t": max(w["t"] for w in undone)})
     pending.sort(key=lambda x: x["t"], reverse=True)      # most recent activity first
     per_session, selected = {}, []
     for task in pending:                                  # budget caps CALLS, fairness caps per session

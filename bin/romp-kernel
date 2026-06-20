@@ -3004,7 +3004,8 @@ def build_timeline(now, tmux=None):
                          and not _suspended_after(turn["t"]))   # not still working if a host sleep followed
             segs = em.segments(turn)
             for si, seg in enumerate(segs):
-                cap = caps.get(seg["id"], {}).get("caption", "")
+                cap = caps.get(seg["id"], {}).get("caption", "")               # WORK caption (the bar)
+                msg_cap = caps.get(seg["id"] + "#p", {}).get("caption", "")    # MESSAGE caption (the dot) — gist of the ask, ready early
                 work_uuid, reply_uuid = _seg_anchors(seg["atoms"])
                 trig = next((x for x in seg["atoms"] if x.get("uuid") == seg.get("trigger")), None)
                 author = (trig or {}).get("author")
@@ -3018,7 +3019,7 @@ def build_timeline(now, tmux=None):
                     # in the view). Restores the old romp-events split lost in the kernel rewrite.
                     "id": seg["id"], "promptId": seg.get("trigger"), "workId": work_uuid,
                     "start": seg["t"], "end": seg_end, "open": turn_open and si == len(segs) - 1 and seg_end == seg["end"],
-                    "prompt": _seg_prompt(seg), "summary": cap, "reply": "",
+                    "prompt": _seg_prompt(seg), "summary": cap, "msgCaption": msg_cap, "reply": "",
                     "src": src, "mids": _seg_mids(seg), "pending": False,
                     "tid": sid, "uuid": seg.get("trigger"),
                     "workUuid": work_uuid, "replyUuid": reply_uuid})
