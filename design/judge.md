@@ -16,26 +16,26 @@ alone), run it on the real fleet, and add each further judge one at a time, keep
 it only when it proves useful. No correction tier, no measurement scaffolding, no
 tmux, until something concrete demands it.
 
-## Two run tiers
+## Two judge tiers (a cost/value grouping — BOTH run continuously)
 
-The judges run at two cost/value tiers, gated differently by the kernel (see
-`design/read-side.md`):
+The judges split into two cost/value tiers. The tiers are a GROUPING, not a runtime
+gate: the kernel runs BOTH continuously for any live session, in parallel on a short
+event-driven backstop, whether or not a browser is attached (the user 2026-06-19,
+dropping the old "triage only while a client is connected" gate — so the goal tree /
+feed / timeline are already current the instant a client connects). A pass is cheap
+when nothing changed — cached parses, and each judge makes an LLM call only on real
+new work — so always-on costs filesystem stats, not model calls, when idle.
 
-- **Index tier (always on, every session, full history):** the **captioner** +
-  the **archiver**. They build the durable index, the table of contents and the
-  per-session summaries, which is what makes any later orientation or search
-  possible. Cheap and idempotent per-unit, so worth running on everything even with
-  no UI ever attached. Haiku candidate.
-- **Triage tier (on-demand, only while a client is connected):** the **planner** +
-  the **courier**. They build the live inbox (goal tree + handoffs), which is only
-  valuable while you are triaging, and is stateful/accreting so backfilling a stale
-  backlog is low-value. The kernel runs these forward on live/recent sessions while
-  a browser/extension is connected; an old session's goals backfill on demand when
-  opened. A per-machine setting can keep this tier warm when disconnected. Sonnet.
+- **Index tier:** the **captioner** + the **archiver**. They build the durable index
+  — the table of contents and per-session summaries — which is what makes any later
+  orientation or search possible. Cheap and idempotent per-unit. Haiku candidate.
+- **Triage tier (`run_triage`):** the **planner** → **closer** → **courier** →
+  **grouper** → **consolidator** → **distiller**, run as one ordered unit. They build
+  and maintain the live inbox (goal tree + handoffs). Stateful/accreting. Sonnet.
 
 The captioner accepts that delivery and indexing never wait on triage; the courier
-sitting in the triage tier costs nothing because the Romp Postal Service delivers and logs
-messages regardless, and the courier catches up from the durable log.
+costs nothing extra because the Romp Postal Service delivers and logs messages
+regardless, and the courier catches up from the durable log.
 
 ## Decisions locked
 

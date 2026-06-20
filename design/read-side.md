@@ -58,14 +58,16 @@ completed); the feed just paints columns. (Reflected back into `design/judge.md`
   render the **same served UI** over the **same protocol**, so the two front ends
   stay consistent by construction. Keeping the WS protocol stable is the
   compatibility contract.
-- **A connected browser is the presence signal that gates the triage tier.** While
-  at least one client (browser or extension) is connected, the kernel runs the
-  triage judges (planner + courier) and the Layer 3 projections; on last
-  disconnect, triage idles and only the index tier (captioner + archiver) keeps
-  running. (See the tiering in `design/judge.md`.) Single process means single
-  writer for free, no matter how many tabs are open.
-- **A setting can keep triage warm when disconnected** (per-machine), for users who
-  want the inbox always current. Default: triage only when watched.
+- **Both judge tiers run continuously for any live session — no connection gate**
+  (the user 2026-06-19, dropping the old browser-connected gate on triage). The
+  kernel runs the index tier (captioner + archiver) AND the triage tier (planner →
+  closer → courier → grouper → consolidator → distiller) in parallel, on a short
+  event-driven backstop, whether or not a browser is attached — so the goal tree,
+  feed, and timeline are already current the instant a client connects. A pass is
+  cheap when nothing changed (cached parses; each judge makes an LLM call only on
+  real new work), so always-on costs filesystem stats, not model calls, when idle.
+  The tiers are a cost/value GROUPING (see `design/judge.md`), not a runtime gate.
+  Single process means single writer for free, no matter how many tabs are open.
 - **Views are URL-hash tag selections.** `localhost:PORT/#work,personal` is one
   view; `#work` is another. Each browser tab is an independent view over the same
   kernel, ephemeral, zero-config, many at once. A saved default can live behind the
@@ -102,8 +104,8 @@ completed); the feed just paints columns. (Reflected back into `design/judge.md`
 ```
 THE KERNEL  (one always-on process, single writer)
   Layer 1   parse transcripts → event tree
-  Layer 2   index tier  (captioner + archiver)     ALWAYS
-            triage tier (planner + courier)         while a client is connected
+  Layer 2   index tier  (captioner + archiver)                      ALWAYS
+            triage tier (planner/closer/courier/grouper/distiller)  ALWAYS (no connection gate)
   HTTP/WS   serve the UI + push pane payloads
   writes →  ~/.local/state/romp/   (the interface)
 
@@ -256,8 +258,9 @@ adjustable.
 
 ## The UI progress surface
 
-When triage wakes (a client connects after a backlog, or a session is opened that
-needs goals), the kernel is catching up: judging segments it hasn't judged yet. The
+When the kernel is catching up on a backlog (an old session opened that needs its
+goals judged, or a burst of new activity), it is judging segments it hasn't judged
+yet. The
 UI shows a **progress indicator** ("re-judging…", N pending) so the inbox filling
 in is legible rather than mysterious. The kernel exposes the pending-judgment count;
 the UI renders it.

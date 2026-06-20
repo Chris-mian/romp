@@ -19,7 +19,7 @@ Index tier (always on):
 - [x] Captioner (segment + turn captions). Accepted on the fleet.
 - [x] Archiver (per-session headline + abstract from captions). Accepted.
 
-Triage tier (on-demand):
+Triage tier (now always-on too — the browser-connection gate was dropped, the user 2026-06-19):
 - [x] Planner (goal-tree placement + per-node completion + soft-block + settled
   rollup). Built + completion tuning landed (db5d3d5 + rollup top-done rule):
   - [x] Flatten: file steps as SIBLINGS under the goal / a real sub-goal, not chained
