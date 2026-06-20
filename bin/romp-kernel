@@ -4506,8 +4506,10 @@ class Handler(BaseHTTPRequestHandler):
                     _ask_thread(_ask_send_text, _name_of(msg["id"]) or msg["id"], str(msg["text"]))
                 elif msg and msg.get("type") == "apiRetry" and msg.get("id"):
                     # the "Retry" button on an API-error card → paste "retry" into that session's pane to
-                    # resume the stalled turn (the user 2026-06-16)
-                    _tmux_send(_name_of(msg["id"]) or msg["id"], "retry")
+                    # resume the stalled turn (the user 2026-06-16). Tag it with the romp-injected marker so
+                    # the chat renders it as a GRAY romp bubble, not a blue human "retry" prompt — romp sent
+                    # it, not the user (the user 2026-06-19). author_of keys on the marker (ROMP_INJECT_RE).
+                    _tmux_send(_name_of(msg["id"]) or msg["id"], "retry\n\n<!-- romp-injected -->")
                 # ---- pasted-image hydration + dropped-file handling (ported from the old TS kernel) ----
                 elif msg and msg.get("type") == "imgRequest" and msg.get("path"):
                     p = str(msg["path"])                                  # path:<abs> image → a data: URL the <img> can show
