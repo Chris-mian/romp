@@ -1,0 +1,80 @@
+#!/usr/bin/env python3
+"""The judging band is built from the per-call LOG as RUN SPANS (the user 2026-06-19, g70): each judge
+call plotted at its real wall-clock [sent, recv], glossed from the nearest artifact mark — so a judge that
+RAN shows up WHEN it ran (distiller lag, coordinating-courier classifications) instead of back-placed onto
+the work it summarizes. Self-contained: drives _run_judging with a synthetic judge-usage.jsonl.
+"""
+import json
+import os
+import tempfile
+import unittest
+from importlib.machinery import SourceFileLoader
+from pathlib import Path
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+BIN = os.path.join(os.path.dirname(HERE), "bin")
+os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
+km = SourceFileLoader("romp_kernel_rs", os.path.join(BIN, "romp-kernel")).load_module()
+jd = km.jd
+
+SID = "11111111-2222-3333-4444-555555555555"
+
+
+class RunJudging(unittest.TestCase):
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory()
+        self.saved = jd.STATE
+        jd.STATE = Path(self.td.name)
+
+    def tearDown(self):
+        jd.STATE = self.saved
+        self.td.cleanup()
+
+    def _usage(self, rows):
+        with open(jd.STATE / "judge-usage.jsonl", "w") as f:
+            for r in rows:
+                f.write(json.dumps(r) + "\n")
+
+    def test_one_span_per_call_at_sent_recv_with_borrowed_gloss(self):
+        # a distiller that RAN at [195,205] on a goal that completed back at t=100 — the span is the RUN
+        # interval, not the back-placed completion; the text is borrowed from the artifact mark
+        self._usage([{"judge": "distiller", "fsid": SID, "t": 205, "sent": 195, "recv": 205,
+                      "ms": 10000, "in": 50, "out": 20}])
+        semantic = [{"judge": "distiller", "sid": SID, "t": 100, "kind": "distill", "text": "the key takeaway"}]
+        marks = km._run_judging(0, {SID}, semantic)
+        self.assertEqual(len(marks), 1)
+        m = marks[0]
+        self.assertEqual((m["t"], m["t1"]), (195, 205), "the mark is the real [sent, recv] RUN span")
+        self.assertEqual(m["text"], "the key takeaway", "gloss borrowed from the nearest artifact mark")
+        self.assertEqual(m["kind"], "distill")
+        self.assertEqual((m["sent"], m["recv"], m["ms"]), (195, 205, 10000))
+
+    def test_a_coordinating_courier_call_shows_even_with_no_artifact_mark(self):
+        # a courier classification of a COORDINATING message plants no node → no artifact mark, but its RUN
+        # must still surface (this is exactly what the old artifact-derived band missed)
+        self._usage([{"judge": "courier", "fsid": SID, "t": 301, "sent": 299, "recv": 301}])
+        marks = km._run_judging(0, {SID}, [])
+        self.assertEqual(len(marks), 1, "the courier run is visible even though no goal was planted")
+        self.assertEqual(marks[0]["text"], "", "no artifact → empty gloss, but the run shows")
+        self.assertEqual((marks[0]["t"], marks[0]["t1"]), (299, 301))
+
+    def test_drops_dead_sessions_and_calls_before_the_window(self):
+        self._usage([
+            {"judge": "planner", "fsid": SID, "t": 51, "sent": 49, "recv": 51},      # alive + in window
+            {"judge": "planner", "fsid": "deadbeef", "t": 51, "sent": 49, "recv": 51},  # dead session → dropped
+            {"judge": "planner", "fsid": SID, "t": 6, "sent": 4, "recv": 6},         # recv < t0 → dropped
+        ])
+        marks = km._run_judging(10, {SID}, [])
+        self.assertEqual(len(marks), 1, "only the alive, in-window call")
+        self.assertEqual(marks[0]["sent"], 49)
+
+    def test_missing_sent_recv_falls_back_to_a_point_at_t(self):
+        # a pre-recording row (no sent/recv) → a point at the logged time, never dropped
+        self._usage([{"judge": "captioner", "fsid": SID, "t": 100, "ms": 800}])
+        marks = km._run_judging(0, {SID}, [])
+        self.assertEqual(len(marks), 1)
+        self.assertEqual((marks[0]["t"], marks[0]["t1"]), (100, 100), "no span → a point at t")
+
+
+if __name__ == "__main__":
+    unittest.main()

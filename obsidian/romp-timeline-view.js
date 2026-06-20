@@ -2056,11 +2056,13 @@ class TimelinePanel {
         // judge name right-justified so it sits right beside the start of its rail
         const lbl = el('text', { x: M.left - 6, y: y + 3, 'text-anchor': 'end', fill: J.color, 'font-size': 10, 'font-weight': 600 }); lbl.textContent = J.key; svg.appendChild(lbl);
         // merge this judge's in-window marks into same-session blocks (a stretch of attention)
+        // each mark is a RUN SPAN [t, t1] = [sent, recv] (g70): the real wall-clock the judge call ran, not
+        // a point back-placed onto the work. Merge adjacent same-session spans into a stretch of attention.
         const evs = data.judging.filter((e) => e.judge === J.key && inWin(e.t)).sort((a, b) => a.t - b.t);
         const blocks = [];
-        for (const e of evs) { const last = blocks[blocks.length - 1];
-          if (last && last.sid === e.sid && e.t - last.end <= JMERGE_GAP) { last.end = e.t; last.members.push(e); }
-          else blocks.push({ sid: e.sid, start: e.t, end: e.t, members: [e] }); }
+        for (const e of evs) { const es = e.t, ee = (e.t1 != null ? e.t1 : e.t); const last = blocks[blocks.length - 1];
+          if (last && last.sid === e.sid && es - last.end <= JMERGE_GAP) { last.end = Math.max(last.end, ee); last.members.push(e); }
+          else blocks.push({ sid: e.sid, start: es, end: ee, members: [e] }); }
         for (const b of blocks) {
           let x1 = x(b.start), x2 = x(b.end);
           if (x2 - x1 < JMARK_MINW) { const c = (x1 + x2) / 2; x1 = c - JMARK_MINW / 2; x2 = c + JMARK_MINW / 2; }

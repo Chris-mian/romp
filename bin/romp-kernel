@@ -2914,6 +2914,48 @@ def _attach_run_usage(judging, t0, alive_sids):
                 mk["sent"], mk["recv"] = r.get("sent"), r.get("recv")
 
 
+def _run_judging(t0, alive_sids, semantic):
+    """The judging band built from the per-call LOG (judge-usage.jsonl) instead of back-placed onto the
+    work: ONE span per API call, plotted at its real wall-clock [sent, recv] — so the band shows WHEN each
+    judge actually RAN (the user 2026-06-19, g70), not the work it summarizes. This surfaces runs the
+    artifact-derived marks miss: a distiller that runs minutes after a goal completed (its back-placed mark
+    sits at the old completion, off the live edge), and a COORDINATING courier classification (which plants
+    no node, so it had no mark at all). Each call borrows its gloss text/kind best-effort from the nearest
+    `semantic` artifact mark of the same (sid, judge) — the usage log records timing + tokens but not the
+    unit. Rows missing sent/recv (pre-recording) fall back to a point at the logged time t."""
+    by = {}
+    for mk in semantic:
+        by.setdefault((mk["sid"], mk["judge"]), []).append(mk)
+    for v in by.values():
+        v.sort(key=lambda m: m["t"])
+    out = []
+    try:
+        lines = (jd.STATE / "judge-usage.jsonl").read_text(errors="replace").splitlines()
+    except OSError:
+        return out
+    for ln in lines:
+        try:
+            o = json.loads(ln)
+        except Exception:
+            continue
+        sid, judge = o.get("fsid"), o.get("judge")
+        if sid not in alive_sids:
+            continue
+        sent, recv, lt = o.get("sent"), o.get("recv"), o.get("t")
+        start = sent if isinstance(sent, (int, float)) else lt
+        end = recv if isinstance(recv, (int, float)) else start
+        if not isinstance(start, (int, float)) or not isinstance(end, (int, float)) or end < t0:
+            continue
+        # gloss = the most recent same-judge artifact mark that finished by this call's run time
+        cands = [m for m in by.get((sid, judge), []) if m["t"] <= end + 1]
+        src = cands[-1] if cands else None
+        out.append({"judge": judge, "sid": sid, "t": start, "t1": end,
+                    "kind": (src or {}).get("kind", "run"), "text": (src or {}).get("text", ""),
+                    "ms": int(o.get("ms") or 0), "in": int(o.get("in") or 0), "out": int(o.get("out") or 0),
+                    "sent": sent, "recv": recv})
+    return out
+
+
 def build_timeline(now, tmux=None):
     """A {type:"timeline"} message the ported timeline bundle consumes (ui-parity.md: timeline =
     ADAPT). Lanes per session; work bars are SEGMENTS [t,end] from the event model (not the deleted
@@ -2926,7 +2968,7 @@ def build_timeline(now, tmux=None):
         tmux = _tmux_sessions()
     alive = _timeline_sessions(now, tmux)            # living + window-dead lanes; per-session `live` below marks the dead ones (struck), the timeline's active-filter reveals them on scrollback (the user 2026-06-16)
     id2name = {s["sid"]: s["name"] for s in alive}
-    sessions, turns, judging = [], {}, []
+    sessions, turns, semantic = [], {}, []   # `semantic`: artifact-derived marks (for gloss text); the band's marks are RUN spans, below
     for s in alive:
         sid, name = s["sid"], s["name"]
         tm = tmux.get(sid)
@@ -2978,7 +3020,7 @@ def build_timeline(now, tmux=None):
                     "tid": sid, "uuid": seg.get("trigger"),
                     "workUuid": work_uuid, "replyUuid": reply_uuid})
         turns[sid] = bars
-        _derive_judging(sid, caps, goals, now - TL_HORIZON, judging, seg_ends)
+        _derive_judging(sid, caps, goals, now - TL_HORIZON, semantic, seg_ends)
         compactions = [{"t": a["t"]} for turn in st_turns for a in turn["atoms"]
                        if a.get("type") == "system" and a.get("subtype") == "compact_boundary" and a.get("t")]
         active = bool(tm and tm["state"] in ("working", "permission", "compacting", "waiting"))
@@ -3000,7 +3042,10 @@ def build_timeline(now, tmux=None):
     # token usage by rate-limit WINDOW (the user 2026-06-17): the coding SESSIONS + the judge PIPELINE,
     # summed over the SAME windows /usage meters (5h "session", 7d "week"), in/out split — so the count
     # lines up with the % the bars show. Both halves draw the same subscription quota.
-    _attach_run_usage(judging, now - TL_HORIZON, set(id2name))   # per-mark ms/in/out for the band tooltips
+    # The band's marks are the per-call RUN SPANS (g70): each judge call plotted at its real [sent, recv],
+    # glossed by the nearest artifact mark — so a judge that ran shows up WHEN it ran (incl. distiller lag +
+    # coordinating-courier classifications the artifact marks miss), not back-placed onto the work.
+    judging = _run_judging(now - TL_HORIZON, set(id2name), semantic)
     return {"type": "timeline", "now": now, "sessions": sessions, "turns": turns,
             "messages": messages, "judging": judging,
             "tokens": _token_windows([s["path"] for s in alive], now),
