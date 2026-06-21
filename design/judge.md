@@ -97,7 +97,14 @@ regardless, and the courier catches up from the durable log.
 - **Global time-order processing.** Process a pass's segments oldest-first across
   ALL sessions, so every judge sees the goal graph as it stood at that moment
   (including another session's goals for the courier). This one rule subsumes the
-  old two-wave and the courier's need for the sender's goals as-of-send.
+  old two-wave and the courier's need for the sender's goals as-of-send. (The
+  PLANNER since re-introduces a deliberate two-RUN per segment — a PROMPT-run that
+  places the ask the instant it lands while the turn is still open, then the
+  WORK-run at segment end — keyed `(segment-id, phase)`; the human chose early
+  placement over single-pass simplicity, 2026-06-21. That is a different thing
+  from the discovery two-wave this rule retired: earliness only exists while a
+  segment is open, so the prompt-run fires only on the in-progress segment, and an
+  ended segment is still placed by its work-run alone.)
 - **captioner ∥ planner** run in parallel (independent over the same segment).
 - **No auditor, no decision log, no corrections / teaching loop, no `--rejudge`.**
 - **No heuristic patches** (regex tag override, structural link injection,

@@ -496,6 +496,108 @@ class PlanParseStorm(unittest.TestCase):
         self.assertEqual(store.get("parseFails", {}), {}, "no parse-fail bookkeeping on the happy path")
 
 
+class TwoRunPlanner(unittest.TestCase):
+    """The two-run planner (the user 2026-06-21, via link_audit): a segment's opening prompt is placed
+    IMMEDIATELY by a PROMPT-run while the turn is still OPEN (mint-or-amend), then refined by the WORK-run
+    once it ends — the two phases dedup independently via (segment-id, phase). Earliness only exists while
+    a segment is open, so the prompt-run fires only on the in-progress segment, never retroactively."""
+
+    def _plan(self, records, prompt, work):
+        return self._plan_two(records, None, prompt, work)
+
+    def _plan_two(self, recs1, recs2, prompt, work):
+        """Run _plan_session over recs1 (then, if given, rewrite the path with recs2 and run again) with the
+        PROMPT-run and WORK-run LLMs mocked; return the goal store."""
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            tpath = td / (SID + ".jsonl")
+            saved = (jd.GOALDIR, jd.PCACHE, jd.plan_llm, jd.plan_prompt_llm, jd._group_store)
+            jd.GOALDIR, jd.PCACHE = td / "goals", td / "pcache"
+            jd.plan_llm, jd.plan_prompt_llm = work, prompt
+            jd._group_store = lambda *a, **k: None         # don't fire the real grouper model after a placement
+            try:
+                tpath.write_text("\n".join(json.dumps(r) for r in recs1) + "\n")
+                jd._PARSE_CACHE.clear()
+                jd._plan_session(SID, str(tpath), NOW)
+                if recs2 is not None:
+                    tpath.write_text("\n".join(json.dumps(r) for r in recs2) + "\n")
+                    jd._PARSE_CACHE.clear()
+                    jd._plan_session(SID, str(tpath), NOW + 100)
+                store = jd.load_goals(SID)
+            finally:
+                (jd.GOALDIR, jd.PCACHE, jd.plan_llm, jd.plan_prompt_llm, jd._group_store) = saved
+            return store
+
+    def test_plan_units_ended_work_precedes_open_prompt(self):
+        # an earlier ENDED segment yields a 'work' unit; the OPEN final segment yields a 'prompt' unit — and
+        # the work-unit comes FIRST (close-before-open ordering, no time sort).
+        recs = [uline(T0, "add a dark mode toggle", "u1", ps="typed"),
+                aline(T0 + 10, "Shipped it.", "a1", "u1", stop="end_turn"),
+                uline(T0 + 20, "now persist the choice across reloads", "u2", "a1", ps="typed"),
+                aline(T0 + 30, "Working on it…", "a2", "u2", stop=None)]   # later turn still OPEN
+        units = jd.plan_units(build_session(recs))
+        self.assertEqual([u[1] for u in units], ["work", "prompt"],
+                         "ended work-run precedes open prompt-run")
+        self.assertIn("persist", units[1][3], "the prompt unit carries the raw prompt gist, not framed unit text")
+
+    def test_open_final_segment_is_prompt_only(self):
+        recs = [uline(T0, "ship feature X", "u1", ps="typed"),
+                aline(T0 + 10, "starting…", "a1", "u1", stop=None)]        # OPEN
+        units = jd.plan_units(build_session(recs))
+        self.assertEqual([u[1] for u in units], ["prompt"], "an open final segment yields only a prompt unit")
+
+    def test_ended_only_session_has_no_prompt_run(self):
+        recs = [uline(T0, "ship feature X", "u1", ps="typed"),
+                aline(T0 + 10, "Shipped it.", "a1", "u1", stop="end_turn")]   # ENDED → work-run only
+        units = jd.plan_units(build_session(recs))
+        self.assertEqual([u[1] for u in units], ["work"], "an ended segment is placed by its work-run alone")
+
+    def test_prompt_run_places_the_ask_immediately(self):
+        # the PROMPT-run mints the goal while the turn is still OPEN (keyed seg#p); the work-run has NOT run.
+        recs = [uline(T0, "build the export feature", "u1", ps="typed"),
+                aline(T0 + 10, "on it…", "a1", "u1", stop=None)]           # OPEN
+        store = self._plan(recs,
+                           prompt=lambda *a, **k: '{"ops":[{"why":"new ask","do":"mint","text":"Export feature"}]}',
+                           work=lambda *a, **k: "")
+        tops = [nd for nd in store["nodes"].values() if nd["parentId"] is None]
+        self.assertEqual(len(tops), 1, "the prompt-run mints the goal immediately, before the work")
+        self.assertEqual(tops[0]["text"], "Export feature")
+        keys = list(store["placements"].keys())
+        self.assertTrue(keys and all(k.endswith("#p") for k in keys),
+                        "only the prompt phase placed (seg#p); the work key (seg) is still free")
+
+    def test_prompt_then_work_no_double_top(self):
+        # PROMPT-run mints while open; the turn then ENDS and the WORK-run files UNDER the same goal.
+        open_recs = [uline(T0, "build the export feature", "u1", ps="typed"),
+                     aline(T0 + 10, "on it…", "a1", "u1", stop=None)]
+        ended_recs = [uline(T0, "build the export feature", "u1", ps="typed"),
+                      aline(T0 + 10, "Shipped the export feature.", "a1", "u1", stop="end_turn")]
+        store = self._plan_two(open_recs, ended_recs,
+                               prompt=lambda *a, **k: '{"ops":[{"why":"new ask","do":"mint","text":"Export feature"}]}',
+                               work=lambda *a, **k: '{"ops":[{"why":"shipped","do":"sub","under":1,"text":"shipped export"}]}')
+        tops = [nd for nd in store["nodes"].values() if nd["parentId"] is None]
+        self.assertEqual(len(tops), 1, "the work-run files under the prompt-run's goal — no duplicate top")
+        keys = set(store["placements"].keys())
+        self.assertTrue(any(k.endswith("#p") for k in keys) and any(not k.endswith("#p") for k in keys),
+                        "both phases placed, keyed independently (seg#p + seg)")
+
+    def test_prompt_run_must_place_even_on_skip(self):
+        # the prompt-run forbids skip/done/block; a stray one is dropped and the ask is hard-placed.
+        recs = [uline(T0, "investigate the crash", "u1", ps="typed"),
+                aline(T0 + 10, "looking…", "a1", "u1", stop=None)]         # OPEN
+        store = self._plan(recs,
+                           prompt=lambda *a, **k: '{"ops":[{"why":"x","do":"skip"}]}',
+                           work=lambda *a, **k: "")
+        tops = [nd for nd in store["nodes"].values() if nd["parentId"] is None]
+        self.assertEqual(len(tops), 1, "a prompted ask is never left unplaced — a skip is coerced to a placement")
+
+    def test_apply_plan_place_key_keys_placements_by_phase(self):
+        s = _store()
+        jd.apply_plan(s, "seg1", T0, [{"do": "mint", "why": "x", "text": "G"}], [], place_key="seg1#p")
+        self.assertIn("seg1#p", s["placements"])
+        self.assertNotIn("seg1", s["placements"], "the prompt-run dedups under seg#p, leaving the work key (seg) free")
+
+
 def _store():
     return {"rompUuid": SID, "seq": 0, "nodes": {}, "placements": {}, "status": {}}
 

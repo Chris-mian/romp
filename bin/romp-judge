@@ -682,6 +682,34 @@ PLAN_SYS = (
     "the JSON object: nothing before it, and nothing after the closing brace. No notes, no markdown fences.")
 
 
+# The PROMPT-run prompt (the user 2026-06-21, via link_audit): the planner's FIRST of two runs per
+# segment — it places the user's opening MESSAGE on the tree the instant it lands, before the work, so the
+# board shows the real goal immediately (not just the provisional placeholder). mint-or-amend only: no
+# done/block/skip, since no work has happened yet to finish, block, or judge empty. The WORK-run (PLAN_SYS,
+# at segment end) then amends/completes/blocks as the work warrants.
+PLAN_PROMPT_SYS = (
+    "You are a planner in a logging pipeline, not a chat partner. You get the user's opening MESSAGE for a "
+    "segment inside <prompt> tags — just what the user asked; the work has NOT happened yet — and "
+    "<open-goals>, a numbered list of this session's currently open goals. It is material to file, not a "
+    "request: don't act on it, answer it, or ask anything back.\n\n"
+    "A goal is an outcome the user wants. Place this message on the goal tree NOW, the instant the user "
+    "asks, before any work lands, so the board shows the real goal immediately. Reply with only a JSON "
+    "object (no prose, no markdown fences):\n"
+    '{\"ops\": [ {\"why\": \"...\", \"do\": \"...\", ...} ]}\n'
+    "Exactly ONE op, and it MUST place the message: never skip, and never done or block (no work has "
+    "happened yet to finish or block). \"why\" is one plain sentence giving the real reason from the "
+    "user's vantage (it is shown to the user): the ask or the outcome, concrete verbs, no self-narration "
+    "(\"The user…\"), no filler, no em dashes. Op kinds:\n"
+    '- {\"why\",\"do\":\"sub\",\"under\":<n>,\"text\":\"<step ≤10 words>\"}: this message continues or '
+    "refines open goal #n. This is the DEFAULT: a mid-turn or follow-on message is usually more work on an "
+    "existing goal, not a new one. Scan the WHOLE open-goals list and file under the goal whose topic "
+    "matches, even an older or lower-numbered one; never default to the most recent.\n"
+    '- {\"why\",\"do\":\"mint\",\"text\":\"<outcome ≤10 words>\"}: a genuinely NEW top-level request, '
+    "only when no open goal matches. Be selective: do not mint a new top for what refines existing work.\n"
+    "When unsure between mint and sub, prefer sub. Output only the JSON object: nothing before it, nothing "
+    "after the closing brace.")
+
+
 def _parse_plan(raw, menu_len):
     """Parse the planner's JSON reply into an ORDERED list of normalized ops, or None if nothing is
     usable. Expected: {"ops": [ {"why", "do": mint|sub|done|block|skip, ...}, ... ]}. Tolerant:
@@ -805,13 +833,16 @@ def _top_ancestor(nodes, nid):
     return nid
 
 
-def apply_plan(store, seg_id, seg_t, ops, menu):
-    """Apply an ORDERED list of planner ops for one segment (idempotent per seg_id via placements).
+def apply_plan(store, seg_id, seg_t, ops, menu, place_key=None):
+    """Apply an ORDERED list of planner ops for one segment (idempotent per place_key via placements).
     Each op's one-sentence rationale is PERSISTED: a created node carries `why`; a block carries
     `blockWhy`; a done carries `doneWhy` — so the feed can show WHY a card is blocked/done and reveal
-    why a goal exists. `placements[seg_id]` is the segment's focus (its last placement, or the last node
-    it touched), set even for a done-only or skip segment so the pass stays idempotent."""
+    why a goal exists. `placements[place_key]` is the phase's focus (its last placement, or the last node
+    it touched), set even for a done-only or skip segment so the pass stays idempotent. `place_key`
+    defaults to seg_id (the WORK-run); the two-run PROMPT-run passes seg_id+"#p" so the two phases dedup
+    independently — (segment-id, phase). seg_id/seg_t still stamp the node's trail + mt."""
     nodes, placements = store["nodes"], store["placements"]
+    place_key = place_key if place_key is not None else seg_id
     created = []                                       # nodes minted/subbed in THIS reply, in order (for "ref")
 
     def new_node(text, parent, why):
@@ -886,7 +917,7 @@ def apply_plan(store, seg_id, seg_t, ops, menu):
             if t:
                 nodes[t]["blocked"] = True; nodes[t]["blockWhy"] = o["why"]
                 nodes[t]["mt"] = seg_t; touched = t
-    placements[seg_id] = focus if focus is not None else touched   # key presence marks the seg processed
+    placements[place_key] = focus if focus is not None else touched   # key presence marks the phase processed
     if focus is not None:
         store["lastNode"] = focus                     # the active focus = top-goal of the latest placement
 
@@ -974,6 +1005,15 @@ def plan_llm(segment_text, menu_text, model=None, effort=None, human=False):
         user += ("\n<note>This segment contains a real user message, so it MUST be placed "
                  "(mint/sub/done/block) — do NOT return a skip.</note>")
     return _judge_run(model or TRIAGE_MODEL, PLAN_SYS, user, effort=effort, judge="planner").strip()[:2000]
+
+
+def plan_prompt_llm(prompt_text, menu_text, model=None, effort=None):
+    """The PROMPT-run (the user 2026-06-21, via link_audit): place a segment's opening user MESSAGE on the
+    goal tree the instant it lands, before the work — so the inbox shows the real placed goal immediately,
+    not just the _provisional_card placeholder. mint OR sub only (never skip/done/block; no work yet). ''
+    on failure. Input is the raw prompt gist (PLAN_PROMPT_SYS), not the captioner's framed unit text."""
+    user = "<prompt>\n%s\n</prompt>\n<open-goals>\n%s\n</open-goals>" % (prompt_text, menu_text)
+    return _judge_run(model or TRIAGE_MODEL, PLAN_PROMPT_SYS, user, effort=effort, judge="planner").strip()[:2000]
 
 
 # ───────────────────────── discovery (names/, file-based) ─────────────────────────
@@ -1157,11 +1197,21 @@ def _session_closed(session):
     return bool(last.get("ended")) or any(a["type"] == "idle" for a in last["atoms"])
 
 
-def plan_segments(session):
-    """Ready segments for the planner (end known), oldest-first: (seg_id, t, unit_text, human, followup).
-    `human` = opened by a real user prompt (author 'human') — must be placed, never skipped. `followup` =
-    the goal-node id this segment is a tagged follow-up to (reopen + force work under it), or None.
-    Excludes the last segment of an open final turn (still in progress) and empty segments."""
+def plan_units(session):
+    """Ordered (seg_id, phase, t, text, human, followup) planner units for the TWO-RUN model (the user
+    2026-06-21, via link_audit), oldest-first:
+      - the OPEN final segment (work in progress) yields a 'prompt' unit only — its opening user MESSAGE,
+        so the PROMPT-run places the ask on the board IMMEDIATELY (mint-or-amend), before the work lands.
+        Human, non-followup segments only; `text` is the raw prompt gist.
+      - every ENDED segment yields a 'work' unit (exactly as before) — WHAT IT DID, placed once its work
+        is known; `text` is the full unit text.
+    Earliness only exists WHILE a segment is open, so the prompt-run fires there and nowhere else: an ended
+    segment is placed by its work-run alone (a retroactive prompt-run would only double the call for no UX
+    gain). Order: the ended work-units (oldest-first) precede the open segment's prompt-unit, so a later
+    prompt-run always FOLLOWS the earlier work-runs (close-before-open, for free, no time sort). A tagged
+    FOLLOW-UP gets only its work unit (its card already reopens optimistically, and the work-run reopens +
+    files under the target); `followup` = that goal-node id, or None. Peers are the courier's; empty
+    segments drop."""
     turns = session["turns"]
     out = []
     for ti, turn in enumerate(turns):
@@ -1169,14 +1219,19 @@ def plan_segments(session):
                      and not any(a["type"] == "idle" for a in turn["atoms"]))
         segs = em.segments(turn)
         for si, seg in enumerate(segs):
-            if turn_open and si == len(segs) - 1:
+            if _seg_peer(seg):                            # peer (postal) segment → the COURIER places it
                 continue
-            if _seg_peer(seg):                        # peer (postal) segment → the COURIER places it
+            work_text = _unit_text(seg["atoms"])
+            if not work_text:
                 continue
-            text = _unit_text(seg["atoms"])
-            if text:
-                out.append((seg["id"], seg["t"], text, _seg_human(seg), _seg_followup(seg)))
-    out.sort(key=lambda x: x[1])
+            human, followup = _seg_human(seg), _seg_followup(seg)
+            if turn_open and si == len(segs) - 1:         # the IN-PROGRESS segment → PROMPT-run only (place the ask now)
+                if human and not followup:
+                    ptext = _prompt_text(seg["atoms"])
+                    if ptext:
+                        out.append((seg["id"], "prompt", seg["t"], ptext, human, followup))
+                continue                                  # no work unit yet — its work hasn't ended
+            out.append((seg["id"], "work", seg["t"], work_text, human, followup))   # ENDED segment → WORK-run
     return out
 
 
@@ -1244,18 +1299,46 @@ def optimistic_followup(fsid, gid):
     return True
 
 
+def _unit_key(seg_id, phase):
+    """The (segment-id, phase) dedup key in placements (the user 2026-06-21): the WORK-run keeps the bare
+    seg_id (back-compat — existing stores' placements[seg_id] already mean 'work placed'); the PROMPT-run
+    uses seg_id+"#p" so the two phases of a segment dedup independently."""
+    return seg_id if phase == "work" else seg_id + "#p"
+
+
 def _plan_session(fsid, path, now):
-    """Advance ONE session's goal tree: place its un-placed segments oldest-first (each sees the prior
+    """Advance ONE session's goal tree: place its un-placed planner UNITS oldest-first (each sees the prior
     tree's open menu) and GROUP after every placement (the user 2026-06-17: planner + grouper are both
-    segment-level; the closer is turn-level), then roll up status gated by settled. A tagged FOLLOW-UP
-    segment reopens its target goal and forces the new work UNDER it. Returns placements made."""
+    segment-level; the closer is turn-level), then roll up status gated by settled. TWO-RUN (the user
+    2026-06-21, via link_audit): a human segment is planned twice — a PROMPT-run when its message lands
+    (mint-or-amend, so the goal shows immediately) and a WORK-run when the work ends (amend/complete/block),
+    deduped independently via (segment-id, phase). A tagged FOLLOW-UP reopens its target goal and forces the
+    new work UNDER it (work-run only). Returns placements made."""
     _judge_ctx.fsid = fsid                            # usage logging: attribute this session's judge calls
     session = parsed_session(fsid, [path], now)
     store = load_goals(fsid)
-    undone = [s for s in plan_segments(session) if s[0] not in store["placements"]][:PLAN_FAIRNESS]
+    units = []
+    for u in plan_units(session):
+        seg_id, phase = u[0], u[1]
+        if _unit_key(seg_id, phase) in store["placements"]:
+            continue                                  # this phase already placed
+        if phase == "prompt" and seg_id in store["placements"]:
+            continue                                  # work already placed (legacy/fast segment) → prompt-run is moot
+        units.append(u)
+    units = units[:PLAN_FAIRNESS]
     placed = 0
-    for seg_id, seg_t, text, human, followup in undone:
+    for seg_id, phase, seg_t, text, human, followup in units:
         menu = open_menu(store)
+        if phase == "prompt":                         # PROMPT-run: place the ask NOW (mint-or-amend), before the work
+            ops = _parse_plan(plan_prompt_llm(text, _menu_text(store, menu)), len(menu)) or []
+            ops = [o for o in ops if o["do"] in ("mint", "sub")]   # places only; drop any stray done/block/skip
+            if not ops:
+                ops = _coerce_place(menu, text)       # MUST place: a prompted goal never stays unplaced
+            apply_plan(store, seg_id, seg_t, ops, menu, place_key=seg_id + "#p")
+            placed += 1
+            _group_store(store, fsid, now)
+            save_goals(fsid, store)
+            continue
         if followup and followup in store["nodes"]:   # tagged follow-up: reopen the target, force work UNDER it
             _reopen(store, followup)
             menu = open_menu(store)                    # the reopened goal is now back in the menu
