@@ -451,6 +451,26 @@ class TurnBoundaries(unittest.TestCase):
         self.assertEqual(len(out["turns"]), 2)
         self.assertEqual([t["trigger"]["uuid"] for t in out["turns"]], ["u1", "u2"])
 
+    def test_romp_nudge_opens_its_own_turn_so_the_judges_process_it(self):
+        # the user 2026-06-21: a romp NUDGE / auto-nudge (author 'romp', carrying romp-injected + romp-goal-id)
+        # is a fresh prompt to the agent and MUST open its own turn. Before this, it folded into the prior
+        # (already-completed) turn — the planner never read the romp-goal-id off a trigger, so the goal never
+        # reopened and NO judge ran on the follow-up. Now it opens a turn with the nudge atom as the trigger.
+        with tempfile.TemporaryDirectory() as td:
+            recs = [uline(T0, "do the thing", "u1", ps="typed"),
+                    aline(T0 + 10, "did it, done", "a1", "u1", stop="end_turn"),
+                    uline(T0 + 100, "Status on the goal above?\n\n<!-- romp-injected --><!-- romp-goal-id: %s:g1 -->" % SID,
+                          "u2", "a1", ps="typed"),
+                    aline(T0 + 110, "everything is done", "a2", "u2", stop="end_turn")]
+            p = Path(td) / (SID + ".jsonl")
+            p.write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+            out = em.parse_session(str(p), rompuuid=SID, dir="/TESTDIR", candidate_files=[str(p)],
+                                   postal_log=[], now=NOW)
+        self.assertEqual(len(out["turns"]), 2, "the nudge opens a SECOND turn, not folded into the completed one")
+        self.assertEqual(_trigger_author(out["turns"][1]), "romp", "the second turn is opened by the romp nudge")
+        self.assertEqual(out["turns"][1]["trigger"]["uuid"], "u2",
+                         "the nudge atom is the trigger — so _seg_followup reads its romp-goal-id and reopens the goal")
+
 
 class TurnVsSegment(unittest.TestCase):
     """A turn is end_turn-bounded (may hold several inputs); a segment is the per-input

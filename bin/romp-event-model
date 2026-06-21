@@ -409,12 +409,17 @@ def synthesize_idle(states, atoms, now):
 
 # ═════════════════════════ SUBSTRATE-NEUTRAL: turns over atoms ═════════════════════════
 def _is_opener(atom):
-    """A genuine new prompt opens a turn: author human / sdk / peer. `system`
-    (`<task-notification>`) and tool_result-only atoms fold in, never open."""
+    """A genuine new prompt opens a turn: author human / sdk / peer / romp. `system`
+    (`<task-notification>`) and tool_result-only atoms fold in, never open. A romp follow-up
+    (a feed NUDGE / auto-nudge carrying the romp-injected marker, author 'romp') IS a fresh
+    prompt to the agent — it MUST open its own turn so the planner reads the romp-goal-id off
+    the trigger, reopens that goal, and files the reply under it. Without this it folds into the
+    prior (often already-completed) turn, so the judges never see the follow-up and the goal
+    never reopens (the user 2026-06-21)."""
     if atom["type"] != "user":
         return False
     a = atom.get("author")
-    return a in ("human", "sdk") or isinstance(a, dict)
+    return a in ("human", "sdk", "romp") or isinstance(a, dict)
 
 
 def _turn_id(rompuuid, turn):
