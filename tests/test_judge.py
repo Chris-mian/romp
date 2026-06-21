@@ -94,8 +94,9 @@ class TaskSelection(unittest.TestCase):
         self.assertEqual(grains.count(("turn",)), 1, "one distinct turn call (>=2 segments)")
         self.assertNotIn(("segment", "turn"), grains, "no mirror when the turn has >1 segment")
 
-    def test_open_final_turn_is_withheld(self):
-        """The last segment+turn of an OPEN final turn (not ended, no idle) are not ready."""
+    def test_open_final_segment_gets_a_live_work_caption(self):
+        """The open final segment now gets a LIVE in-progress work caption (the user 2026-06-21, g16); only
+        the open TURN-grain caption is still withheld. Both human messages still get a MESSAGE caption."""
         s = build_session([
             uline(T0, "first ask", "u1", ps="typed"),
             aline(T0 + 20, "first reply", "a1", "u1", stop="end_turn"),
@@ -105,11 +106,16 @@ class TaskSelection(unittest.TestCase):
         tasks = jd._ready_tasks(s)
         work = [t for t in tasks if t.get("kind") == "work"]
         prompt = [t for t in tasks if t.get("kind") == "prompt"]
-        # turn 1 (ended, single segment) -> 1 WORK task; turn 2 (open) -> its WORK caption withheld
-        self.assertEqual(len(work), 1)
-        self.assertTrue(any(w["grain"] == "turn" for w in work[0]["writes"]))
-        # but BOTH human messages get a MESSAGE caption right away — including the in-progress turn's,
-        # so the dot is glossed without waiting for the work to finish (the user 2026-06-19)
+        # turn 1 (ended, single segment) -> 1 WORK task WITH a turn-grain mirror
+        ended = [t for t in work if not t.get("live")]
+        self.assertEqual(len(ended), 1)
+        self.assertTrue(any(w["grain"] == "turn" for w in ended[0]["writes"]))
+        # turn 2 (open) -> a LIVE work caption: segment-grain only (no turn-grain while open), natoms set
+        live = [t for t in work if t.get("live")]
+        self.assertEqual(len(live), 1, "the open final segment gets a live work caption (no longer withheld)")
+        self.assertEqual([w["grain"] for w in live[0]["writes"]], ["segment"], "no turn-grain while open")
+        self.assertIsInstance(live[0]["natoms"], int)
+        # both human messages still get a MESSAGE caption right away
         self.assertEqual(len(prompt), 2, "the open turn's MESSAGE caption is NOT withheld")
 
     def test_idle_terminated_final_turn_is_ready(self):
@@ -273,10 +279,13 @@ class CaptionStore(unittest.TestCase):
 
 
 # ───────────────────────── the engine pass (fake fleet, stubbed model) ─────────────────────────
-class EnginePass(unittest.TestCase):
+class _FleetHarness:
+    """Lay out a synthetic fleet + mock the index-tier LLMs, judge globals pointed at a temp dir. Shared by
+    the index-pass test classes (EnginePass, LiveWorkCaption) — a mixin, so neither inherits the other's tests."""
+
     def _fleet(self, td, records):
-        """Lay out a synthetic fleet: names/<sid> -> cdir, and the transcript under the munged
-        project dir. Returns (state_dir, restore_fn) with judge globals pointed at it."""
+        """names/<sid> -> cdir, and the transcript under the munged project dir. Returns a restore_fn with
+        judge globals pointed at the temp dir."""
         td = Path(td)
         cdir = td / "launchdir"
         cdir.mkdir()
@@ -302,6 +311,8 @@ class EnginePass(unittest.TestCase):
              jd.caption_llm, jd.archive_llm, jd.gist_llm) = saved
         return restore
 
+
+class EnginePass(_FleetHarness, unittest.TestCase):
     def test_pass_writes_both_grains_then_dedups(self):
         records = [uline(T0, "fix the flicker", "u1", ps="typed"),
                    aline(T0 + 30, "Fixed the flicker.", "a1", "u1", stop="end_turn")]
@@ -372,6 +383,64 @@ class EnginePass(unittest.TestCase):
                 jd.run_index(now=now)
                 self.assertEqual(json.loads((jd.ARCHDIR / (SID + ".json")).read_text())["turns"], 2,
                                  "archive refreshes when the session gains a turn")
+            finally:
+                restore()
+
+
+class LiveWorkCaption(_FleetHarness, unittest.TestCase):
+    """The open final segment's LIVE in-progress work caption (the user 2026-06-21 via link_audit, g16):
+    captioned WHILE open under the bare seg id (so build_timeline's caps.get(seg_id) drives the active bar),
+    re-run only when its atoms GROW, and superseded by the final non-live caption on close."""
+
+    def test_captioned_ids_skips_live_records(self):
+        with tempfile.TemporaryDirectory() as td:
+            saved = jd.CAPDIR
+            jd.CAPDIR = Path(td) / "captions"
+            try:
+                jd.append_caption(SID, "seg1", "segment", T0, "live one", live=True, natoms=5)
+                self.assertEqual(jd.captioned_ids(SID), set(), "a live record is not 'done' (re-runnable)")
+                self.assertEqual(jd._live_natoms(SID), {"seg1": 5}, "but _live_natoms tracks its size")
+                jd.append_caption(SID, "seg1", "segment", T0, "final one")          # close → non-live
+                self.assertIn("seg1", jd.captioned_ids(SID), "the final non-live record IS done (supersedes)")
+            finally:
+                jd.CAPDIR = saved
+
+    def test_open_segment_live_then_regrows_then_final_on_close(self):
+        open1 = [uline(T0, "investigate the crash", "u1", ps="typed"),
+                 aline(T0 + 30, "reproducing…", "a1", "u1", tools=("Bash",), stop="tool_use")]
+        with tempfile.TemporaryDirectory() as td:
+            restore = self._fleet(td, open1)
+            try:
+                def live_recs():
+                    return [json.loads(l) for l in (jd.CAPDIR / (SID + ".jsonl")).read_text().splitlines() if l.strip()]
+                now = T0 + 120
+                # pass 1: the OPEN segment gets a LIVE work caption (segment grain only, no turn grain)
+                jd.run_index(now=now)
+                live = [r for r in live_recs() if r.get("live")]
+                self.assertEqual(len(live), 1, "one live work caption for the open segment")
+                self.assertEqual(live[0]["grain"], "segment", "no turn-grain while open")
+                n1 = live[0]["natoms"]
+                # pass 2: nothing changed → the live caption is NOT re-run (cadence gate on atom growth)
+                jd.run_index(now=now)
+                self.assertEqual(len([r for r in live_recs() if r.get("live")]), 1, "no re-caption without new content")
+                # GROW the open segment (another assistant atom, still open) → re-caption
+                jd._PARSE_CACHE.clear()
+                self._tpath.write_text("\n".join(json.dumps(r) for r in open1 + [
+                    aline(T0 + 60, "found the off-by-one", "a1b", "a1", tools=("Edit",), stop="tool_use")]) + "\n")
+                jd.run_index(now=now + 60)
+                lives = [r for r in live_recs() if r.get("live")]
+                self.assertEqual(len(lives), 2, "re-captioned once the open segment's atoms grow")
+                self.assertGreater(lives[-1]["natoms"], n1, "the new live caption covers more atoms")
+                # CLOSE the turn → a FINAL non-live segment caption, and the seg id becomes deduped
+                jd._PARSE_CACHE.clear()
+                self._tpath.write_text("\n".join(json.dumps(r) for r in [
+                    uline(T0, "investigate the crash", "u1", ps="typed"),
+                    aline(T0 + 30, "Fixed the off-by-one crash.", "a1", "u1", tools=("Bash", "Edit"), stop="end_turn")]) + "\n")
+                jd.run_index(now=now + 120)
+                segrecs = [r for r in live_recs() if r["grain"] == "segment"]
+                final = [r for r in segrecs if not r.get("live")]
+                self.assertTrue(final, "a FINAL non-live segment caption is written on close")
+                self.assertIn(final[0]["id"], jd.captioned_ids(SID), "the closed segment is now deduped")
             finally:
                 restore()
 

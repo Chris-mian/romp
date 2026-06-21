@@ -413,7 +413,10 @@ def _ready_tasks(session):
         '<segid>#p' so it never collides with the work caption. Only a real human prompt gets one.
       - kind 'work' = WHAT GOT DONE, whose END must be known: a non-terminal segment is ready (its end =
         the next input); the terminal segment / turn are ready once the turn is `ended` / an idle atom
-        terminates it / a later turn exists. Only the last segment + turn of an OPEN final turn are withheld."""
+        terminates it / a later turn exists. The OPEN final segment ALSO gets a LIVE work caption (the user
+        2026-06-21 via link_audit, g16): `live` + `natoms`, re-captioned while open and superseded by the
+        final non-live record on close, so the active-work-period hover shows real progress, not just the
+        request. Only the open final TURN-grain caption is still withheld (no turn caption until it ends)."""
     turns = session["turns"]
     tasks = []
     for ti, turn in enumerate(turns):
@@ -427,8 +430,11 @@ def _ready_tasks(session):
             if trig and trig.get("author") == "human":   # MESSAGE caption — ready now, even mid-work
                 tasks.append({"kind": "prompt", "atoms": [trig],
                               "writes": [{"id": seg["id"] + "#p", "grain": "prompt", "t": seg["t"]}]})
-            if turn_open and si == len(segs) - 1:
-                continue                               # WORK caption withheld for the open final segment
+            if turn_open and si == len(segs) - 1:      # the OPEN final segment → a LIVE in-progress work caption
+                tasks.append({"kind": "work", "live": True, "natoms": len(seg["atoms"]),
+                              "atoms": seg["atoms"],
+                              "writes": [{"id": seg["id"], "grain": "segment", "t": seg["t"]}]})
+                continue                               # no turn-grain while open; the final caption supersedes on close
             writes = [{"id": seg["id"], "grain": "segment", "t": seg["t"]}]
             if single and not turn_open:               # the turn IS this segment → mirror, no 2nd call
                 writes.append({"id": turn["id"], "grain": "turn", "t": turn["t"]})
@@ -491,7 +497,7 @@ def tasks_for(fsid, leaf, files, now):
     cf = PCACHE / (fsid + ".json")
     try:
         o = json.loads(cf.read_text())
-        if o.get("key") == key and o.get("v") == 2:    # v2 = the prompt/work split (the user 2026-06-19); old caches regenerate
+        if o.get("key") == key and o.get("v") == 3:    # v3 = the open-segment live work caption (the user 2026-06-21); older caches regenerate
             return o["tasks"]
     except Exception:
         pass
@@ -500,11 +506,14 @@ def tasks_for(fsid, leaf, files, now):
     for t in _ready_tasks(session):
         kind = t.get("kind", "work")
         text = _prompt_text(t["atoms"]) if kind == "prompt" else _unit_text(t["atoms"])
-        tasks.append({"kind": kind, "text": text, "writes": t["writes"]})
+        task = {"kind": kind, "text": text, "writes": t["writes"]}
+        if t.get("live"):                              # the open segment's live work caption — re-run-gate fields
+            task["live"], task["natoms"] = True, t.get("natoms")
+        tasks.append(task)
     try:
         PCACHE.mkdir(parents=True, exist_ok=True)
         tmp = cf.with_suffix(".tmp.%d" % os.getpid())
-        tmp.write_text(json.dumps({"key": key, "v": 2, "tasks": tasks}))
+        tmp.write_text(json.dumps({"key": key, "v": 3, "tasks": tasks}))
         tmp.rename(cf)
     except Exception:
         pass
@@ -513,7 +522,10 @@ def tasks_for(fsid, leaf, files, now):
 
 # ───────────────────────── the caption store ─────────────────────────
 def captioned_ids(fsid):
-    """The set of unit ids already captioned for this transcript (id-keyed dedup, no window)."""
+    """The set of unit ids already captioned for this transcript (id-keyed dedup, no window). LIVE
+    in-progress captions (the open segment's provisional work caption, the user 2026-06-21 via link_audit)
+    are SKIPPED: they're not 'done', so run_index keeps re-captioning the open segment until it closes and
+    writes the final non-live record — which then dedups normally and supersedes (the reader is last-wins)."""
     done = set()
     try:
         for line in (CAPDIR / (fsid + ".jsonl")).read_text(errors="replace").splitlines():
@@ -521,15 +533,37 @@ def captioned_ids(fsid):
                 o = json.loads(line)
             except Exception:
                 continue
-            if o.get("id"):
+            if o.get("id") and not o.get("live"):
                 done.add(o["id"])
     except OSError:
         pass
     return done
 
 
-def append_caption(fsid, uid, grain, t, caption):
+def _live_natoms(fsid):
+    """{id: natoms} for the LIVE in-progress captions — the atom count each was built from. run_index
+    re-captions an open segment only once its atoms GROW past this (event-based cadence: new content is the
+    trigger, no timer). The producer pass already bounds it to <=1 re-caption per pass per active session."""
+    out = {}
+    try:
+        for line in (CAPDIR / (fsid + ".jsonl")).read_text(errors="replace").splitlines():
+            try:
+                o = json.loads(line)
+            except Exception:
+                continue
+            if o.get("live") and o.get("id"):
+                out[o["id"]] = o.get("natoms", 0)         # last-wins: the latest live caption's size
+    except OSError:
+        pass
+    return out
+
+
+def append_caption(fsid, uid, grain, t, caption, live=False, natoms=None):
     rec = {"id": uid, "grain": grain, "t": int(t), "caption": caption}
+    if live:                                              # provisional, re-run-able, superseded by the final on close
+        rec["live"] = True
+        if natoms is not None:
+            rec["natoms"] = natoms
     CAPDIR.mkdir(parents=True, exist_ok=True)
     with open(CAPDIR / (fsid + ".jsonl"), "a") as f:
         f.write(json.dumps(rec) + "\n")
@@ -1112,11 +1146,15 @@ def run_index(now=None, budget=BUDGET, fairness=FAIRNESS, concurrency=CONCURRENC
     pending = []
     for fsid, path, anchor, name in fleet:
         done = captioned_ids(fsid)
+        live_n = _live_natoms(fsid)                       # the open segment's last live-caption sizes (cadence gate)
         for task in tasks_for(fsid, str(path), [str(path)], now):
             undone = [w for w in task["writes"] if w["id"] not in done]
+            if task.get("live"):                          # re-caption the OPEN segment only once its atoms GREW
+                undone = [w for w in undone if (task.get("natoms") or 0) > live_n.get(w["id"], -1)]
             if undone and task["text"]:
                 pending.append({"fsid": fsid, "anchor": anchor, "kind": task.get("kind", "work"),
-                                "text": task["text"], "writes": undone, "t": max(w["t"] for w in undone)})
+                                "text": task["text"], "writes": undone, "t": max(w["t"] for w in undone),
+                                "live": task.get("live", False), "natoms": task.get("natoms")})
     pending.sort(key=lambda x: x["t"], reverse=True)      # most recent activity first
     per_session, selected = {}, []
     for task in pending:                                  # budget caps CALLS, fairness caps per session
@@ -1140,7 +1178,8 @@ def run_index(now=None, budget=BUDGET, fairness=FAIRNESS, concurrency=CONCURRENC
             if not cap:
                 continue                                  # empty = failed capture; skip, retry next pass
             for w in task["writes"]:                      # one call → all the task's records (id-deduped)
-                append_caption(task["fsid"], w["id"], w["grain"], w["t"], cap)
+                append_caption(task["fsid"], w["id"], w["grain"], w["t"], cap,
+                               live=task.get("live", False), natoms=task.get("natoms"))
                 captions += 1
                 if verbose:
                     sys.stderr.write("  [%s] %s\n" % (w["grain"], cap))
