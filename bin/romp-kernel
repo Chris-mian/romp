@@ -517,8 +517,10 @@ def _working_top_goal(sid):
 
 def _auto_nudge_tick(now, tmux):
     """One Auto-Nudge pass (from the periodic pusher). For each ALIVE, IDLE session (its turn ended) that
-    isn't awaiting/compacting/blocked and has an orphaned 'working' top goal not yet nudged, inject the
-    follow-up ONCE. A no-op unless the user turned it on."""
+    isn't awaiting/compacting/blocked, has an orphaned 'working' top goal not yet nudged, AND whose latest
+    turn the closer has already classified (so 'working' is its considered verdict, not the pre-closer
+    default — a turn that ended by asking YOU a question is never nudged), inject the follow-up ONCE. A no-op
+    unless the user turned it on."""
     if not _auto_nudge_on():
         return
     done = set(_auto_nudge_data().get("done", []))
@@ -544,6 +546,13 @@ def _auto_nudge_tick(now, tmux):
             continue
         gid = _working_top_goal(sid)
         if not gid or gid in done:
+            continue
+        # Don't nudge until the CLOSER has classified this turn. A turn that ENDS by asking you a question is
+        # "working" only in the window before the closer marks its goal blocked; nudging the AGENT there is
+        # pointless (it's waiting on YOU, not stalled) and churns. Gate on the closer having processed the
+        # latest turn (its id in closedTurns) so "working" is the considered verdict, not a pre-classification
+        # default. Skip the gate when the closer is off — it would otherwise suppress every nudge. (2026-06-21)
+        if jd.CLOSER_ON and lt.get("id") not in jd._closed_turns(jd.load_goals(sid)):
             continue
         _tmux_send(_name_of(sid) or sid, _followup_body(gid, None, AUTO_NUDGE_TEXT, injected=True))   # romp's own nudge → gray bubble
         try:

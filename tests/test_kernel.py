@@ -587,9 +587,9 @@ class ViewBuilder(unittest.TestCase):
             recs.append(aline(T0 + 120, "Trimmed the empty space.", "a2", "u2", stop="end_turn"))
         self.tpath.write_text("\n".join(json.dumps(r) for r in recs) + "\n")
 
-    def _goal_store(self, nodes, status, last=None):
+    def _goal_store(self, nodes, status, last=None, closed=None):
         (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
-            "rompUuid": SID, "seq": len(nodes), "lastNode": last,
+            "rompUuid": SID, "seq": len(nodes), "lastNode": last, "closedTurns": closed or [],
             "nodes": nodes, "placements": {}, "status": status}))
 
     def _working_tmux(self):
@@ -662,12 +662,21 @@ class ViewBuilder(unittest.TestCase):
                               "blocked": False, "cleared": True, "trail": [], "t": T0}}, {g: "working"})
         self.assertIsNone(km._working_top_goal(SID), "a cleared goal is not nudge-worthy")
 
-    def _orphaned_goal(self, idle=True):
-        # an idle (or still-open) session whose top goal still shows "working"
+    def _orphaned_goal(self, idle=True, closer_done=True):
+        # an idle (or still-open) session whose top goal still shows "working". closer_done puts the latest
+        # turn's id in closedTurns, so the closer-verdict gate lets the nudge through (the realistic case: the
+        # closer ran and left the goal working). closer_done=False = the closer hasn't classified it yet.
         self._open_turn_transcript(ended=idle); km._parse_cache.clear()
         g = SID + ":gw"
+        closed = []
+        if closer_done:
+            try:
+                closed = [km._parse(str(self.tpath), SID, NOW)["turns"][-1]["id"]]
+            except Exception:
+                closed = []
         self._goal_store({g: {"id": g, "text": "wire up the thing", "parentId": None, "nodeComplete": False,
-                              "blocked": False, "cleared": False, "trail": [], "t": T0}}, {g: "working"}, last=g)
+                              "blocked": False, "cleared": False, "trail": [], "t": T0}}, {g: "working"},
+                         last=g, closed=closed)
         return g
 
     def test_auto_nudge_fires_once_for_an_idle_session_with_a_working_goal(self):
@@ -700,6 +709,20 @@ class ViewBuilder(unittest.TestCase):
         try:
             km._auto_nudge_tick(NOW, km._tmux_sessions())
             self.assertEqual(sent, [], "an actively-working session isn't orphaned")
+        finally:
+            restore()
+
+    def test_auto_nudge_waits_for_the_closer_verdict(self):
+        # the user 2026-06-21: don't nudge until the CLOSER has classified the latest turn. A turn that ENDED
+        # by asking you a question is momentarily "working" before the closer marks its goal blocked; nudging
+        # the agent there is pointless (it's waiting on YOU). closer_done=False → the latest turn is NOT in
+        # closedTurns → the gate holds the nudge until the closer has had its say.
+        self._orphaned_goal(idle=True, closer_done=False)
+        km._set_auto_nudge(True)
+        sent, restore = self._stub_nudge()
+        try:
+            km._auto_nudge_tick(NOW, km._tmux_sessions())
+            self.assertEqual(sent, [], "no nudge until the closer has processed the latest turn")
         finally:
             restore()
 
