@@ -25,12 +25,18 @@ const extension = {
 
 /** @type {import('esbuild').BuildOptions} */
 const webview = {
+  // The browser UI sources live in the top-level ui/ dir (consolidated out of
+  // chat-view/src/webview/). This extension package still owns the build + dist,
+  // so we reach up into ../ui/webview and add chat-view/node_modules to the
+  // resolver (nodePaths) — ui/ is outside this package, so marked/dompurify/
+  // highlight.js wouldn't resolve by the normal upward walk otherwise.
   entryPoints: [
-    "src/webview/render.ts",
-    "src/webview/styles.css",
-    "src/webview/feed.ts",
-    "src/webview/feed.css",
+    "../ui/webview/render.ts",
+    "../ui/webview/styles.css",
+    "../ui/webview/feed.ts",
+    "../ui/webview/feed.css",
   ],
+  nodePaths: [path.join(__dirname, "node_modules")],
   bundle: true,
   format: "iife",
   platform: "browser",
@@ -48,7 +54,11 @@ const webview = {
 // Unit tests for the pure modules (src/*.test.ts): bundled to out-tests/ and
 // run with the built-in `node --test` runner — no extra test framework.
 function testBuild() {
-  const entries = ["src", "src/webview"].flatMap((dir) =>
+  // Tests live beside their sources: host tests in src/, the UI tests under
+  // ../ui (timeline + quote) and ../ui/webview (feed/render/etc.). out-tests/
+  // keeps each tree's structure (esbuild's outbase = the common ancestor), and
+  // `node --test 'out-tests/**/*.test.js'` finds them recursively.
+  const entries = ["src", "../ui", "../ui/webview"].flatMap((dir) =>
     fs
       .readdirSync(path.join(__dirname, dir))
       .filter((f) => f.endsWith(".test.ts"))
@@ -57,6 +67,7 @@ function testBuild() {
   /** @type {import('esbuild').BuildOptions} */
   return {
     entryPoints: entries,
+    nodePaths: [path.join(__dirname, "node_modules")],
     bundle: true,
     format: "cjs",
     platform: "node",

@@ -4,8 +4,8 @@ Internal design doc (not user-facing). An audit of every cross-surface link in
 romp: the object types that can be pointed at, the identifiers links carry, the
 granularity they resolve to, where it's wrong, and a target design + test plan.
 Built 2026-06-19 from a read of `bin/romp-kernel`, `bin/romp-event-model`,
-`chat-view/src/webview/render.ts`, `chat-view/src/webview/feed.ts`, and
-`obsidian/romp-timeline-view.js`. Verified line refs throughout.
+`ui/webview/render.ts`, `ui/webview/feed.ts`, and
+`ui/romp-timeline-view.js`. Verified line refs throughout.
 
 ## TL;DR — the five findings
 
@@ -41,7 +41,7 @@ Built 2026-06-19 from a read of `bin/romp-kernel`, `bin/romp-event-model`,
    `render.ts:520-527`).
 
 5. **The timeline never moved into `ui/`** as `read-side.md:195-199` planned. It
-   is a 147 KB module in `obsidian/romp-timeline-view.js` served verbatim by the
+   is a 147 KB module in `ui/romp-timeline-view.js` served verbatim by the
    kernel (`romp-kernel:3546-3554`), with its own id expectations
    (`t.id`/`t.promptId`/`t.workId`/`t.replyUuid`) and its tests in a different
    tree (`chat-view/src/timeline-*.test.ts` test a module that lives in
@@ -282,7 +282,7 @@ dedup keys only; all navigation uses atom uuids.
 ## 7. Test plan — what to verify once the design settles
 
 Grouped by concern. Each is a unit/integration test in the existing homes
-(`chat-view/src/webview/*.test.ts` for the renderer, `tests/test_*.py` for the
+(`ui/webview/*.test.ts` for the renderer, `tests/test_*.py` for the
 kernel projections).
 
 ### A. Exact-uuid landing (the core contract)

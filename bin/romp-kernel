@@ -28,9 +28,9 @@ jd = SourceFileLoader("romp_judge", str(HERE / "romp-judge")).load_module()
 cm = SourceFileLoader("romp_colormap", str(HERE / "romp_colormap.py")).load_module()  # age → recency tint
 ap = SourceFileLoader("romp_askparse", str(HERE / "romp-askparse")).load_module()  # tmux-pane → live AskUserQuestion picker
 CHAT_VIEW = ROOT / "chat-view"               # the tuned UI, current in this worktree via `git merge main`
-DIST = CHAT_VIEW / "dist"                    # bundles built from CHAT_VIEW/src (the human's tuned render layer)
+DIST = CHAT_VIEW / "dist"                    # bundles built from ui/webview sources (the human's tuned render layer)
 MEDIA = CHAT_VIEW / "media"
-OBSIDIAN = ROOT / "obsidian"
+UI = ROOT / "ui"                             # the browser UI: timeline view + webview sources (served/built from here)
 NAMES = jd.STATE / "names"
 PORT = int(os.environ.get("ROMP_KERNEL_PORT", "7433"))   # 7433 = the manager/extension default (the user 2026-06-16); env still overrides
 BIND = os.environ.get("ROMP_SERVE_HOST", "127.0.0.1")   # set 0.0.0.0 to reach the kernel over the tailnet / a phone
@@ -445,7 +445,7 @@ def _set_session_flag(sid, flag, value):
 # turn ended) while its top goal still shows "working" — not blocked, not completed, not awaiting your
 # approval, and not delegated to anyone. It sends the SAME follow-up the manual Nudge button does, ONCE
 # per goal. Off by default. State lives in auto-nudge.json: {"enabled": bool, "done": [goalId,...]}.
-AUTO_NUDGE_TEXT = "Status on the goal above: what's done, what's left, and is anything blocked waiting on a decision from me?"   # mirrors the feed Nudge button (chat-view/src/webview/feed.ts)
+AUTO_NUDGE_TEXT = "Status on the goal above: what's done, what's left, and is anything blocked waiting on a decision from me?"   # mirrors the feed Nudge button (ui/webview/feed.ts)
 _autonudge_cache = {}   # str(path) -> ((mtime_ns,size), dict)
 
 
@@ -3889,14 +3889,14 @@ window.__rompConnectTimeline=function(p){panel=p;connect();send({type:"ready"});
 
 
 def _timeline_page():
-    """The timeline pane: the shared obsidian TimelinePanel (romp-timeline-view.js) injected verbatim
-    and driven by build_timeline over the kernel WS (app=timeline) — the same view the VS Code/Obsidian
-    surfaces use. The view JS is read live from OBSIDIAN/ so an edit goes live on a browser reload."""
+    """The timeline pane: the shared TimelinePanel (ui/romp-timeline-view.js) injected verbatim
+    and driven by build_timeline over the kernel WS (app=timeline) — the same view the VS Code/web
+    surfaces use. The view JS is read live from UI/ so an edit goes live on a browser reload."""
     try:
-        view_js = (OBSIDIAN / "romp-timeline-view.js").read_text()
+        view_js = (UI / "romp-timeline-view.js").read_text()
     except OSError:
         return ("<!DOCTYPE html><html><body style='font-family:-apple-system,sans-serif;color:#999;"
-                "background:#1e1e1e;padding:12px'>romp timeline needs the obsidian/ modules "
+                "background:#1e1e1e;padding:12px'>romp timeline needs the ui/ modules "
                 "(romp-timeline-view.js).</body></html>")
     return ("<!DOCTYPE html><html lang=en><head><meta charset=UTF-8>"
             "<meta name=viewport content='width=device-width,initial-scale=1'>"

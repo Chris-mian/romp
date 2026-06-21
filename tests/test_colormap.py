@@ -9,7 +9,7 @@ cm = importlib.util.module_from_spec(spec); spec.loader.exec_module(cm)
 
 
 def _webview_colormaps():
-    src = open(os.path.join(ROOT, "chat-view", "src", "webview", "render.ts")).read()
+    src = open(os.path.join(ROOT, "ui", "webview", "render.ts")).read()
     block = re.search(r"const COLORMAPS[^{]*\{(.*?)\n\};", src, re.S).group(1)
     out = {}
     for name, arr in re.findall(r"(\w+):\s*(\[\[.*?\]\]),", block):

@@ -4,12 +4,14 @@
     "target": "ES2021",
     "lib": ["ES2021", "DOM", "DOM.Iterable"],
     "outDir": "dist",
-    "rootDir": "src",
+    "rootDir": "..",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "moduleResolution": "node",
-    "sourceMap": true
+    "sourceMap": true,
+    "baseUrl": ".",
+    "paths": { "*": ["node_modules/*"] }
   },
-  "include": ["src"]
+  "include": ["src", "../ui"]
 }

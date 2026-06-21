@@ -16,7 +16,7 @@ kernel and render the same UI.
   (`bin/romp-event-model`) and pushes pane payloads over WebSocket.
 - `src/extension.ts` (extension host) spawn-or-attaches a kernel and hosts the
   webviews, piping `postMessage` both ways — it does not parse transcripts.
-- `src/webview/render.ts` + `feed.ts` + `styles.css` (webview) render the
+- `../ui/webview/render.ts` + `feed.ts` + `styles.css` (webview) render the
   pushed events. Base colors/fonts come from VS Code theme variables; the
   accents (green rail dot, warm code tones) match the shipped Claude Code CSS.
 

@@ -1646,7 +1646,7 @@ class ViewBuilder(unittest.TestCase):
         # the two stop tables must be IDENTICAL. Guard against drift.
         import re
         here = os.path.dirname(os.path.realpath(__file__))
-        render = open(os.path.join(here, "..", "chat-view", "src", "webview", "render.ts")).read()
+        render = open(os.path.join(here, "..", "ui", "webview", "render.ts")).read()
         for name, stops in km.cm.COLORMAPS.items():
             m = re.search(r"\b" + name + r":\s*(\[\[.*?\]\])", render)
             self.assertIsNotNone(m, "render.ts COLORMAPS is missing '%s'" % name)

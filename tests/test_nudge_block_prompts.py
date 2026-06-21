@@ -24,7 +24,7 @@ SourceFileLoader("romp_event_model", os.path.join(BIN, "romp-event-model")).load
 jd = SourceFileLoader("romp_judge", os.path.join(BIN, "romp-judge")).load_module()
 km = SourceFileLoader("romp_kernel_nudge", os.path.join(BIN, "romp-kernel")).load_module()
 
-FEED_TS = os.path.join(ROOT, "chat-view", "src", "webview", "feed.ts")
+FEED_TS = os.path.join(ROOT, "ui", "webview", "feed.ts")
 OLD_BARE_STATUS = "What is the status of the above goal?"
 
 

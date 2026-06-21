@@ -23,8 +23,8 @@ activity feed, goal inbox, and timeline.
   `http://127.0.0.1:7433/` in any browser — no VS Code required.
   Design: `design/read-side.md`.
 - **UI** — the three panes (chat, feed, timeline). The chat + feed render
-  bundles are built from `chat-view/src/webview/` and served by the kernel; the
-  timeline is `obsidian/romp-timeline-view.js`, served verbatim at `/timeline`.
+  bundles are built from `ui/webview/` and served by the kernel; the
+  timeline is `ui/romp-timeline-view.js`, served verbatim at `/timeline`.
 - **chat-view/** — the VS Code/Cursor extension: a thin WebSocket client of the
   same kernel. The editor panel and a browser tab share one kernel — same tabs,
   per-client focus.

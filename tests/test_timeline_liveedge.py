@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Live-edge advance of the timeline view (obsidian/romp-timeline-view.js).
+"""Live-edge advance of the timeline view (ui/romp-timeline-view.js).
 
 The timeline glides its right edge between data polls via interpNow(), then re-anchors the time
 baseline onto each poll's data.now. Re-anchoring on EVERY poll snapped the edge by the poll-to-poll
@@ -18,7 +18,7 @@ import subprocess
 import unittest
 
 HERE = os.path.dirname(os.path.realpath(__file__))
-VIEW_JS = os.path.join(os.path.dirname(HERE), "obsidian", "romp-timeline-view.js")
+VIEW_JS = os.path.join(os.path.dirname(HERE), "ui", "romp-timeline-view.js")
 NODE = shutil.which("node")
 
 # Pure-JS harness: require the real module, run the cases, print {name: [got, want]} as JSON.

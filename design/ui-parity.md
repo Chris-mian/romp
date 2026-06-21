@@ -15,9 +15,9 @@ Each item is tagged against the NEW data model (`event-model.md`, `judge.md`,
   vs the old columns).
 - **DROP** — wired to a concept we deleted; do not port.
 
-Source render files to port from: `chat-view/src/webview/render.ts`,
-`chat-view/src/webview/feed.ts`, `styles.css`, `feed.css`,
-`obsidian/romp-timeline-view.js`, `chat-view/src/page-skeleton.ts`. Do NOT port
+Source render files to port from: `ui/webview/render.ts`,
+`ui/webview/feed.ts`, `styles.css`, `feed.css`,
+`ui/romp-timeline-view.js`, `chat-view/src/page-skeleton.ts`. Do NOT port
 `chat-view/src/kernel/*` (the old reducers; superseded by the one Python view-builder).
 
 ## Chat pane

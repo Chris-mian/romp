@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Touchscreen pan/zoom on the timeline view (obsidian/romp-timeline-view.js).
+"""Touchscreen pan/zoom on the timeline view (ui/romp-timeline-view.js).
 
 Phones have no wheel events, so onTouchStart/Move/End drive the same continuous _winSec/_offSec state the
 trackpad wheel + sliders write. The rules (the user, mobile webview): ONE finger horizontal → PAN (content
@@ -17,7 +17,7 @@ import subprocess
 import unittest
 
 HERE = os.path.dirname(os.path.realpath(__file__))
-VIEW_JS = os.path.join(os.path.dirname(HERE), "obsidian", "romp-timeline-view.js")
+VIEW_JS = os.path.join(os.path.dirname(HERE), "ui", "romp-timeline-view.js")
 NODE = shutil.which("node")
 
 # A 1000-unit-wide plot mapped 1:1 to client px (rect.width == g.W), no left margin, identity time-compress,
