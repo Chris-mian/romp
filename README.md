@@ -4,10 +4,15 @@
 
 # romp
 
-A multi-agent session manager for Claude Code on tmux. romp turns a fleet of
-terminal Claude sessions into a coordinated, observable system: named, colored,
-persistent sessions; inter-session mail; automatic per-turn captions; a live
-activity feed, goal inbox, and timeline.
+The bottleneck in AI coding is human attention. You can run many agents in
+parallel, but each one you add competes for the same limited attention. romp lets
+you direct a whole fleet by putting your attention where it counts and surfacing
+only what is worth acting on.
+
+You get a fleet of named, persistent Claude sessions on tmux; a live dashboard and
+goal inbox showing what each one is doing and what needs you; per-turn captions and
+a timeline of the work; and inter-session mail so agents hand off to each other
+directly.
 
 ## Components
 
