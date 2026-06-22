@@ -5,6 +5,7 @@ chat composer's WS sendMessage uses), so the plugin never touches tmux itself.
 """
 import os
 import unittest
+from unittest import mock
 from importlib.machinery import SourceFileLoader
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -31,6 +32,30 @@ class ParseSendBody(unittest.TestCase):
         self.assertIsNone(km._parse_send_body(b'[1,2,3]'))
         self.assertIsNone(km._parse_send_body(b''))
         self.assertIsNone(km._parse_send_body(b'{"id":"a","text":123}'))
+
+
+class SessionList(unittest.TestCase):
+    """GET /sessions parsing — the romp session list the Obsidian plugin reads instead of
+    shelling to tmux for the Cmd+M picker + diff chip colors/state."""
+
+    def test_parses_romp_sessions_and_skips_the_rest(self):
+        out = (
+            "1|alpha|working|/work/a|#112233|#ffffff\n"
+            "1|beta|idle|/work/b|blue|white\n"
+            "0|not-romp|idle|/x|#000|#fff\n"   # @romp != 1 → skipped
+            "|||||\n"                           # junk → skipped
+        )
+        with mock.patch.object(km.subprocess, "run", return_value=mock.Mock(returncode=0, stdout=out)):
+            sessions = km._session_list()
+        self.assertEqual([s["name"] for s in sessions], ["alpha", "beta"])
+        self.assertEqual(sessions[0],
+                         {"name": "alpha", "state": "working", "dir": "/work/a", "bg": "#112233", "fg": "#ffffff"})
+
+    def test_empty_on_tmux_failure_or_absence(self):
+        with mock.patch.object(km.subprocess, "run", return_value=mock.Mock(returncode=1, stdout="")):
+            self.assertEqual(km._session_list(), [])
+        with mock.patch.object(km.subprocess, "run", side_effect=Exception("no tmux")):
+            self.assertEqual(km._session_list(), [])
 
 
 if __name__ == "__main__":

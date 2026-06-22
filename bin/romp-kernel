@@ -786,6 +786,31 @@ def _tmux_sessions():
     return out
 
 
+SESSIONS_FMT = "#{@romp}|#{session_name}|#{@claude-state}|#{@claude-dir}|#{@identity-bg}|#{@identity-fg}"
+
+
+def _session_list():
+    """Romp sessions with the fields an external tool needs (the Obsidian Cmd+M picker + diff chips):
+    name, claude-state, working dir, identity bg/fg. The kernel runs the tmux query (it's on the host)
+    and serves it at GET /sessions, so the plugin reads sessions WITHOUT shelling to tmux — a future
+    romp-off-tmux changes only here. Best-effort [] when tmux is absent."""
+    try:
+        r = subprocess.run(["tmux", "list-sessions", "-F", SESSIONS_FMT],
+                           capture_output=True, text=True, timeout=2.5)
+    except Exception:
+        return []
+    if r.returncode != 0:
+        return []
+    out = []
+    for line in r.stdout.splitlines():
+        p = line.split("|")
+        if len(p) < 6 or p[0] != "1" or not p[1]:           # p[0]=@romp tag (1 = a romp session)
+            continue
+        out.append({"name": p[1], "state": p[2].strip(), "dir": p[3].strip(),
+                    "bg": p[4].strip(), "fg": p[5].strip()})
+    return out
+
+
 def _clear_pane_input(name):
     """Select-all + delete the pane's input box. The romp composer and the tmux pane must agree on the
     input: when a turn is INTERRUPTED (Esc), Claude Code RESTORES the in-progress prompt into the input —
@@ -4325,6 +4350,8 @@ class Handler(BaseHTTPRequestHandler):
                 w = max(300, min(w, 30 * 86400))              # clamp 5min .. 30d
                 return self._send(200, json.dumps(_token_analytics(int(time.time()), w)),
                                   "application/json", cache="no-cache")
+            if p == "/sessions":                              # romp session list for external tools (the Obsidian plugin)
+                return self._send(200, json.dumps(_session_list()), "application/json", cache="no-cache")
             # HTML pages are served no-cache so a reload always gets the freshest markup — which carries
             # the latest ?v= bundle url, so even a cached old bundle is bypassed (stale-client fix).
             if p in ("/", ""):
