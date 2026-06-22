@@ -344,6 +344,28 @@ class ViewBuilder(unittest.TestCase):
         finally:
             km._downtime[:] = saved
 
+    def test_open_turn_that_resumed_after_a_sleep_still_reads_working(self):
+        # A long turn that BEGAN before a host sleep but kept working AFTER the machine woke must still read
+        # "working" — the laptop sleeps constantly, so a multi-hour turn straddles many sleeps. The suspend
+        # guard keys on the turn's LAST ACTIVITY (end), not its start (t): before the fix it keyed on the
+        # start, so any sleep since the turn opened flipped the chip to "ready" while the agent was actively
+        # working (the user 2026-06-22, "bugz is working but it says ready").
+        with self.tpath.open("a") as f:
+            f.write(json.dumps(uline(NOW, "wire the overview strip", "uOpen", parent="a2")) + "\n")
+            f.write(json.dumps(aline(NOW + 7300, "Editing render.ts.", "aWork", "uOpen",
+                                     tools=("Edit",), stop="tool_use")) + "\n")   # post-wake activity, turn stays open
+        km._parse_cache.clear()
+        saved = list(km._downtime)
+        km._downtime.append((NOW + 10, NOW + 7210))      # a sleep AFTER the turn opened but BEFORE its last activity
+        try:
+            m = km.build_session(SID, NOW + 7400)
+            self.assertEqual(m["status"]["state"], "working",
+                             "activity after the sleep → genuinely working, not 'ready'")
+            self.assertIsNotNone(m["ledger"]["current"],
+                                 "post-wake activity → a working-on line, not a closed turn")
+        finally:
+            km._downtime[:] = saved
+
     def test_host_sleep_clips_a_work_bar_that_straddles_it(self):
         # The real case: the lid closed mid-segment, so a CLOSED bar's own [start,end] enclose the sleep.
         # The bar must clip to the suspension start, not render as one long span (the user 2026-06-18).
