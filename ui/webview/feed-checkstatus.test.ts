@@ -12,7 +12,7 @@ const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", 
 test("the card builds a Nudge button in its actions row, beside Clear", () => {
   assert.match(FEED, /const nudge = el\("button", "fdismiss ffollow fask-nudge"\); nudge\.textContent = "Nudge"/);
   // the action row is buttons only now (the state badges moved up to the name row, 2026-06-19)
-  assert.match(FEED, /actions\.append\(apiRetry, nudge, clr\)/);
+  assert.match(FEED, /actions\.append\(apiRetry, nudge, cardFup, clr\)/);
   assert.match(FEED, /a\._nudge = nudge;/);
 });
 
@@ -28,4 +28,19 @@ test("Nudge is NO LONGER in the modal footer (it moved to the card)", () => {
   assert.doesNotMatch(FEED, /feed-modal-checkstatus/);
   assert.doesNotMatch(FEED, /wireCheckStatus/);
   assert.match(FEED, /footRow\.append\(age, fup, clr\)/);   // footer back to age · Follow up · Clear
+});
+
+test("a card 'Follow up' button on blocked/completed cards jumps straight into the modal composer (the user 2026-06-22)", () => {
+  // the button sits in the action row beside Nudge/Clear
+  assert.match(FEED, /const cardFup = el\("button", "fdismiss ffollow fask-fup"\); cardFup\.textContent = "Follow up"/);
+  assert.match(FEED, /actions\.append\(apiRetry, nudge, cardFup, clr\)/);
+  // shown ONLY on blocked (needs_input) or completed cards — mutually exclusive with Nudge (working only)
+  assert.match(FEED, /a\._cardFup\.style\.display = \(\(it\.column === "needs_input" \|\| it\.column === "completed"\) && !it\.provisional\) \? "" : "none"/);
+  assert.match(FEED, /a\._nudge\.style\.display = \(it\.column === "working" && !it\.provisional\)/);
+  // click → open THIS goal's modal AND request the composer pop open on the next render
+  assert.match(FEED, /cardFup\.onclick = \(ev\) => \{ ev\.stopPropagation\(\); fullscreenAskId = it\.itemId; openFollowUpOnRender = true; renderModal\(\); \}/);
+  // renderModal consumes the flag: pops the box open + focuses, but only when the modal's Follow up is visible
+  // (so it no-ops for a standalone deliverable, whose Follow up is hidden) — the modal's own Follow up stays.
+  assert.match(FEED, /if \(openFollowUpOnRender\) \{\s*openFollowUpOnRender = false;\s*if \(fupEl && fupEl\.style\.display !== "none" && fuboxEl && fuinEl\) \{\s*fuboxEl\.style\.display = ""; growFollowUp\(fuinEl\); fuinEl\.focus\(\);/);
+  assert.match(FEED, /wireFollowUp\(fupEl, fuboxEl, fuinEl, fusendEl/, "the modal's own Follow up composer is still wired");
 });
