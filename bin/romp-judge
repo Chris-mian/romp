@@ -900,6 +900,28 @@ def _top_ancestor(nodes, nid):
     return nid
 
 
+def _mark_node_done(store, nid, why, t):
+    """Mark a node complete (record `why`, bump `mt`, stamp the durable everDone marker) and clear
+    `blocked` across its WHOLE subtree (a checked-off goal's child-blocks are moot). The planner's done op
+    (apply_plan) AND the deterministic cross-session delegation link-back (run_propagate) both route through
+    here — one definition of 'done'. No-op if the node is gone."""
+    nodes = store["nodes"]
+    if nid not in nodes:
+        return
+    nodes[nid]["nodeComplete"] = True
+    nodes[nid]["everDone"] = True                      # durable: a once-done node is FOREVER grouper-exempt
+    nodes[nid]["doneWhy"] = why
+    nodes[nid]["mt"] = t                               # a done bumps last-modified (for recency ordering)
+    kids = {}
+    for x, nd in nodes.items():
+        kids.setdefault(nd.get("parentId"), []).append(x)
+    stack = [nid]
+    while stack:
+        x = stack.pop()
+        nodes[x]["blocked"] = False
+        stack.extend(kids.get(x, []))
+
+
 def apply_plan(store, seg_id, seg_t, ops, menu, place_key=None):
     """Apply an ORDERED list of planner ops for one segment (idempotent per place_key via placements).
     Each op's one-sentence rationale is PERSISTED: a created node carries `why`; a block carries
@@ -922,20 +944,9 @@ def apply_plan(store, seg_id, seg_t, ops, menu, place_key=None):
         return nid
 
     def _complete(node_id, why):
-        """Mark a node complete (record the reason) and clear `blocked` across its WHOLE subtree (a
-        checked-off goal's child-blocks are moot)."""
-        nodes[node_id]["nodeComplete"] = True
-        nodes[node_id]["everDone"] = True              # durable: a once-done node is FOREVER grouper-exempt (never unset)
-        nodes[node_id]["doneWhy"] = why
-        nodes[node_id]["mt"] = seg_t                   # a done bumps last-modified (for recency ordering)
-        kids = {}
-        for x, nd in nodes.items():
-            kids.setdefault(nd.get("parentId"), []).append(x)
-        stack = [node_id]
-        while stack:
-            x = stack.pop()
-            nodes[x]["blocked"] = False
-            stack.extend(kids.get(x, []))
+        """Mark a node complete + clear `blocked` across its subtree — one definition of 'done', shared
+        with the cross-session delegation link-back via the module-level _mark_node_done."""
+        _mark_node_done(store, node_id, why, seg_t)
 
     def _unblock_branch(nid):
         # UN-BLOCK (newest-wins, SURGICAL): a placement clears stale blocks only on its OWN BRANCH —
@@ -2515,6 +2526,7 @@ def run_triage(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, ve
     if CLOSER_ON:
         run_close(now=now, sessions_cap=sessions_cap, concurrency=concurrency, verbose=verbose)
     run_courier(now=now, sessions_cap=sessions_cap, concurrency=concurrency, verbose=verbose)
+    run_propagate(now=now, sessions_cap=sessions_cap, concurrency=concurrency, verbose=verbose)   # delegated goal done on B → check off the sender's tracking node
     if GROUPER_ON:
         run_group(now=now, sessions_cap=sessions_cap, concurrency=concurrency, verbose=verbose)
     if CONSOLIDATE_ON:
@@ -2644,6 +2656,57 @@ def apply_courier(store, seg_id, seg_t, text, origin):
     return nid
 
 
+def _plant_handoff_track(store, parent_id, text, peer_sid, peer_name, t, mid):
+    """Mint a precise '↪ delegated to <peer>' TRACKING node in the SENDER's own tree (the user 2026-06-22):
+    the exact item B's completion checks off, so a PARTIAL handoff doesn't over-complete the sender's broader
+    goal. Filed under the courier's linked goal (parent_id) if any, else top-level. Carries handoff:{peer,
+    msgId} both as the run_propagate target and so the feed can badge it. Idempotent by msgId. Returns its id."""
+    nodes = store["nodes"]
+    for nid, nd in nodes.items():
+        h = nd.get("handoff")
+        if isinstance(h, dict) and h.get("msgId") == mid:
+            return nid                                  # already planted for this message → idempotent
+    if parent_id is not None and parent_id not in nodes:
+        parent_id = None                                # linked goal vanished → file as a top, never orphan
+    store["seq"] = store.get("seq", 0) + 1
+    nid = "%s:g%d" % (store["rompUuid"], store["seq"])
+    label = "↪ delegated to %s: %s" % (peer_name or peer_sid[:8], text or "(work)")
+    nodes[nid] = {"id": nid, "text": label[:120], "parentId": parent_id,
+                  "nodeComplete": False, "blocked": False, "cleared": False,
+                  "trail": [], "t": t, "mt": t, "handoff": {"peer": peer_sid, "msgId": mid}}
+    return nid
+
+
+def run_propagate(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, verbose=False):
+    """DETERMINISTIC delegation completion link-back (the user 2026-06-22). When a courier-planted goal G
+    (origin.peer + origin.goalId) is COMPLETE on the recipient B's tree, mark the SENDER's tracking node
+    origin.goalId DONE too — so a '↪ delegated to B' item checks off the instant B finishes and reports. NO
+    LLM: the closer already judged G done on B; this just follows the origin pointer (origin.goalId points at
+    the sender's precise tracking node, planted by _plant_handoff_track). Forward-only + idempotent: it never
+    reopens the sender's node, and a node already done (or gone) is a no-op. Returns completions propagated."""
+    if now is None:
+        now = int(time.time())
+    n = 0
+    for fsid, path, anchor, name in discover(now)[:sessions_cap]:
+        store = load_goals(fsid)
+        for nid, nd in list(store.get("nodes", {}).items()):
+            o = nd.get("origin")
+            if not (isinstance(o, dict) and o.get("peer") and o.get("goalId") and nd.get("nodeComplete")):
+                continue                                # not a delegated goal, or B hasn't finished it yet
+            a_sid, a_gid = o["peer"], o["goalId"]
+            a_store = load_goals(a_sid)
+            a_node = a_store.get("nodes", {}).get(a_gid)
+            if not a_node or a_node.get("nodeComplete"):
+                continue                                # sender's tracking node gone or already done → idempotent
+            _mark_node_done(a_store, a_gid, "completed by %s (delegated)" % (name or fsid[:8]), now)
+            rollup_status(a_store, False)               # sender just had work close → recompute its columns
+            save_goals(a_sid, a_store)
+            n += 1
+    if verbose:
+        sys.stderr.write("romp-judge: propagated %d delegation completions\n" % n)
+    return n
+
+
 def run_courier(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, verbose=False):
     """One TRIAGE-TIER courier pass: place peer-message (postal) segments as delegations, GLOBAL
     oldest-first across sessions. Idempotent (msgId + seg_id). COORDINATING segments are marked processed
@@ -2651,6 +2714,7 @@ def run_courier(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, v
     if now is None:
         now = int(time.time())
     fleet = discover(now)[:sessions_cap]
+    id2name = {f: nm for f, p, a, nm in fleet}          # recipient id → name, for the sender's tracking-node label
     pending, closed = [], {}                           # pending: (seg_t, fsid, seg_id, text, mid, sender)
     for fsid, path, anchor, name in fleet:
         try:
@@ -2681,9 +2745,15 @@ def run_courier(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, v
             _log_judge_error("courier", fsid, "parse")
             continue                                  # failed parse → retry next pass (never orphan)
         if edit["delegating"]:
-            goal_id = menu[edit["n"] - 1]["id"] if edit["n"] else None
+            link_id = menu[edit["n"] - 1]["id"] if edit["n"] else None   # sender's related open goal (or None)
+            # Mint the sender's precise '↪ delegated to <recipient>' tracking node (the user 2026-06-22) and
+            # point B's goal at IT — so run_propagate checks off only the handed-off piece, never the sender's
+            # broader linked goal. Saved to the sender's tree before planting G on the recipient's.
+            track_id = _plant_handoff_track(sender_store, link_id, edit["text"], fsid, id2name.get(fsid), seg_t, mid)
+            rollup_status(sender_store, False)
+            save_goals(sender, sender_store)
             apply_courier(store, seg_id, seg_t, edit["text"],
-                          {"peer": sender, "goalId": goal_id, "msgId": mid})
+                          {"peer": sender, "goalId": track_id, "msgId": mid})
         else:
             store["placements"][seg_id] = "fyi"        # coordinating: no goal, but mark processed
         rollup_status(store, closed.get(fsid, False))

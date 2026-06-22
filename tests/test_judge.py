@@ -1765,6 +1765,96 @@ class NudgeMustResolve(unittest.TestCase):
                          "the typed follow-up's work is a sub under the goal")
 
 
+class DelegationPropagation(unittest.TestCase):
+    """DETERMINISTIC delegation completion link-back (the user 2026-06-22): the courier mints a precise
+    '↪ delegated to <peer>' TRACKING node in the SENDER's tree and points the recipient's goal G at it
+    (origin.goalId); when B finishes G, run_propagate checks off ONLY that tracking node — so a PARTIAL
+    handoff never over-completes the sender's broader goal. No LLM in the link-back: the closer judged G
+    done on B, this just follows the pointer."""
+
+    A = "aaaaaaaa-1111-1111-1111-111111111111"
+    B = "bbbbbbbb-2222-2222-2222-222222222222"
+
+    def _node(self, nid, text, parent=None, complete=False, **extra):
+        nd = {"id": nid, "text": text, "parentId": parent, "nodeComplete": complete,
+              "blocked": False, "cleared": False, "trail": [], "t": T0, "mt": T0}
+        nd.update(extra)
+        return nd
+
+    def _store(self, sid, nodes, seq):
+        return {"rompUuid": sid, "seq": seq, "nodes": {n["id"]: n for n in nodes},
+                "placements": {}, "status": {}}
+
+    def _run_propagate(self, a_store, b_store):
+        """Save both stores, mock discover→[B] (only the recipient need be discovered; the sender is loaded
+        by id), run the deterministic propagation, return A reloaded."""
+        with tempfile.TemporaryDirectory() as td:
+            saved = (jd.GOALDIR, jd.discover)
+            jd.GOALDIR = Path(td) / "goals"
+            jd.GOALDIR.mkdir(parents=True)
+            jd.discover = lambda now: [(self.B, "p", "a", "bee")]
+            try:
+                jd.save_goals(self.A, a_store)
+                jd.save_goals(self.B, b_store)
+                jd.run_propagate(now=NOW)
+                return jd.load_goals(self.A)
+            finally:
+                (jd.GOALDIR, jd.discover) = saved
+
+    def test_partial_handoff_completes_only_the_delegated_piece(self):
+        X, p1, p2 = self.A + ":g1", self.A + ":g2", self.A + ":g3"
+        a_store = self._store(self.A, [self._node(X, "Ship feature"),
+                                       self._node(p1, "wire up UI", X),
+                                       self._node(p2, "export module", X)], seq=3)
+        track = jd._plant_handoff_track(a_store, X, "do the export module", self.B, "bee", T0, "m1")
+        G = self.B + ":g1"
+        b_store = self._store(self.B, [self._node(G, "export module", complete=True,
+                              origin={"peer": self.A, "goalId": track, "msgId": "m1"})], seq=1)
+        a = self._run_propagate(a_store, b_store)
+        self.assertTrue(a["nodes"][track]["nodeComplete"], "the '↪ delegated to B' tracking node checks off")
+        self.assertFalse(a["nodes"][X]["nodeComplete"], "A's broader goal stays OPEN — only the piece completed")
+        self.assertFalse(a["nodes"][p1]["nodeComplete"], "the un-delegated sibling is untouched")
+        self.assertEqual(a["nodes"][track]["parentId"], X, "the tracking node lives UNDER the linked goal")
+
+    def test_noop_until_recipient_finishes(self):
+        X = self.A + ":g1"
+        a_store = self._store(self.A, [self._node(X, "Ship feature")], seq=1)
+        track = jd._plant_handoff_track(a_store, X, "do the export", self.B, "bee", T0, "m1")
+        G = self.B + ":g1"
+        b_store = self._store(self.B, [self._node(G, "export", complete=False,
+                              origin={"peer": self.A, "goalId": track, "msgId": "m1"})], seq=1)
+        a = self._run_propagate(a_store, b_store)
+        self.assertFalse(a["nodes"][track]["nodeComplete"], "B hasn't finished G → the tracking node stays open")
+
+    def test_idempotent_and_forward_only(self):
+        X = self.A + ":g1"
+        a_store = self._store(self.A, [self._node(X, "Ship feature")], seq=1)
+        track = jd._plant_handoff_track(a_store, X, "do the export", self.B, "bee", T0, "m1")
+        G = self.B + ":g1"
+        b_store = self._store(self.B, [self._node(G, "export", complete=True,
+                              origin={"peer": self.A, "goalId": track, "msgId": "m1"})], seq=1)
+        a = self._run_propagate(a_store, b_store)
+        self.assertTrue(a["nodes"][track]["nodeComplete"])
+        b_store["nodes"][G]["nodeComplete"] = False        # B reopened G → forward-only: A's node stays done
+        a2 = self._run_propagate(a, b_store)
+        self.assertTrue(a2["nodes"][track]["nodeComplete"], "forward-only: a reopened G does NOT reopen A's node")
+
+    def test_plant_handoff_track_idempotent_by_msgid(self):
+        X = self.A + ":g1"
+        store = self._store(self.A, [self._node(X, "Ship feature")], seq=1)
+        t1 = jd._plant_handoff_track(store, X, "do the export", self.B, "bee", T0, "m1")
+        n1 = len(store["nodes"])
+        t2 = jd._plant_handoff_track(store, X, "do the export AGAIN", self.B, "bee", T0, "m1")
+        self.assertEqual(t1, t2, "same msgId → same node, not a duplicate")
+        self.assertEqual(len(store["nodes"]), n1, "no second tracking node minted")
+        self.assertIn("↪ delegated to bee:", store["nodes"][t1]["text"], "the label names the recipient")
+
+    def test_plant_handoff_track_tops_when_link_missing(self):
+        store = self._store(self.A, [], seq=0)
+        t = jd._plant_handoff_track(store, "nonexistent:g9", "do it", self.B, "bee", T0, "m1")
+        self.assertIsNone(store["nodes"][t]["parentId"], "a vanished link goal → the tracking node is top-level")
+
+
 class PlanPass(unittest.TestCase):
     def test_pass_accretes_menu_then_dedups(self):
         """Per-session sequential: segment 2's menu contains segment 1's minted goal (accretion);
