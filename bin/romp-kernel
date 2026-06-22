@@ -3259,6 +3259,8 @@ def build_timeline(now, tmux=None):
                     "prompt": _seg_prompt(seg), "summary": cap, "msgCaption": msg_cap, "reply": "",
                     "src": src, "mids": _seg_mids(seg), "pending": False,
                     "tid": sid, "uuid": seg.get("trigger"),
+                    "nudge": author == "romp",            # a romp INJECTION (auto-nudge / Nudge / retry) — the view
+                    #                                       draws ⚡ inside its prompt dot + a 'romp · nudge' tooltip
                     "workUuid": work_uuid, "replyUuid": reply_uuid})
         turns[sid] = bars
         _derive_judging(sid, caps, goals, now - TL_HORIZON, semantic, seg_ends)

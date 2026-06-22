@@ -2025,8 +2025,17 @@ class TimelinePanel {
       turnsOf(s.id).forEach((t) => {
         if (!inWin(startAt(t))) return;
         if (data.messages.some((mm) => mm.toId === s.id && !mm.pending && Math.abs(execAt(mm) - startAt(t)) <= 1)) return;
-        if (dotLit(t, dagOrHover)) svg.appendChild(el('circle', { cx: x(startAt(t)), cy: y, r: DOT_R + DAG_W / 2, fill: 'none', stroke: DAG_HL, 'stroke-width': DAG_W, 'pointer-events': 'none' }));   // white focus ring: DAG journey node, a coarse card hover (whole-turn id), OR a prompt-atom hover (promptId) — never a work-only (workId) hover
-        dot(x(startAt(t)), y, s.color, () => '<div class="r"><span class="chip" style="background:' + s.color + '"></span><span class="who" style="color:' + s.color + '">' + esc(s.name) + '</span><span class="t">' + clock(startAt(t)) + '</span>' + (t.src === 'enqueue' ? (t.pending ? '<span class="k">queued</span>' : '') : '') + '</div>' + this.body(this.req(t)), () => { this._select(s.id); this.openChat(t.tid || s.id, t.uuid, false, false, startAt(t), 'user'); });   // prompt dot = prompt-intent → time fallback restricted to user turns
+        const dx = x(startAt(t));
+        if (dotLit(t, dagOrHover)) svg.appendChild(el('circle', { cx: dx, cy: y, r: DOT_R + DAG_W / 2, fill: 'none', stroke: DAG_HL, 'stroke-width': DAG_W, 'pointer-events': 'none' }));   // white focus ring: DAG journey node, a coarse card hover (whole-turn id), OR a prompt-atom hover (promptId) — never a work-only (workId) hover
+        // a romp NUDGE prompt (auto-nudge / Nudge / retry — author 'romp', the user 2026-06-22): caption it
+        // 'romp · nudge' with the swirl logo, not the session name, and stamp a ⚡ INSIDE its dot below.
+        const tip = t.nudge
+          ? () => '<div class="r"><img src="/media/romp-swirl-glyph.svg" width="13" height="13" style="vertical-align:-2px;margin-right:5px;border-radius:2px"><span class="who" style="color:' + s.color + '">romp · nudge</span><span class="t">' + clock(startAt(t)) + '</span></div>' + this.body(this.req(t))
+          : () => '<div class="r"><span class="chip" style="background:' + s.color + '"></span><span class="who" style="color:' + s.color + '">' + esc(s.name) + '</span><span class="t">' + clock(startAt(t)) + '</span>' + (t.src === 'enqueue' ? (t.pending ? '<span class="k">queued</span>' : '') : '') + '</div>' + this.body(this.req(t));
+        dot(dx, y, s.color, tip, () => { this._select(s.id); this.openChat(t.tid || s.id, t.uuid, false, false, startAt(t), 'user'); });   // prompt dot = prompt-intent → time fallback restricted to user turns
+        if (t.nudge) {                                   // ⚡ inside the circle: a white bolt path so it reads on any lane colour (pointer-events:none → the dot keeps its hover/click)
+          svg.appendChild(el('path', { d: 'M' + (dx + 1) + ' ' + (y - 3.2) + 'L' + (dx - 2.2) + ' ' + (y + 0.5) + 'L' + (dx - 0.2) + ' ' + (y + 0.5) + 'L' + (dx - 1) + ' ' + (y + 3.2) + 'L' + (dx + 2.2) + ' ' + (y - 0.6) + 'L' + (dx + 0.2) + ' ' + (y - 0.6) + 'Z', fill: '#ffffff', 'pointer-events': 'none' }));
+        }
       });
     });
 

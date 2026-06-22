@@ -137,6 +137,31 @@ test("draw() also survives with an active hover set (atom-id highlight path)", (
   assert.equal(panel._vis.length, 2);
 });
 
+// A romp NUDGE prompt (bar.nudge from the kernel) stamps a ⚡ INSIDE its dot — a white bolt path so it
+// reads on any lane colour (the user 2026-06-22). Differential: marking one prompt nudge adds exactly one
+// white path vs the same data without it, so it can't be confused with any other render element.
+function whiteBoltPaths(panel: any): number {
+  let n = 0;
+  const walk = (node: any) => {
+    if (node.tag === "path" && node.getAttribute("fill") === "#ffffff") n++;
+    for (const c of node.children || []) walk(c);
+  };
+  walk(panel.svg);
+  return n;
+}
+test("a romp-nudge prompt stamps a ⚡ (white bolt path) inside its dot; a normal prompt does not", () => {
+  const base = new TimelinePanel(makeNode("div"));
+  base.data = synthData();
+  base.draw();
+  const before = whiteBoltPaths(base);
+  const panel = new TimelinePanel(makeNode("div"));
+  const data: any = synthData();
+  data.turns.S1[0].nudge = true;                       // mark exactly one prompt as a romp nudge
+  panel.data = data;
+  assert.doesNotThrow(() => panel.draw());
+  assert.equal(whiteBoltPaths(panel), before + 1, "exactly one ⚡ bolt is added for the single nudge prompt");
+});
+
 // Direct hover push (setHover) + nonce gate — the fast path that skips the file→watch→rebuild.
 test("setHover applies by atom ids and gates on nonce (stale push ignored, clear works)", () => {
   const panel = new TimelinePanel(makeNode("div"));
