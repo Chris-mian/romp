@@ -9,10 +9,14 @@ parallel, but each one you add competes for the same limited attention. romp let
 you direct a whole fleet by putting your attention where it counts and surfacing
 only what is worth acting on.
 
-You get a fleet of named, persistent Claude sessions on tmux; a live dashboard and
-goal inbox showing what each one is doing and what needs you; per-turn captions and
-a timeline of the work; and inter-session mail so agents hand off to each other
-directly.
+You direct the fleet through three complementary views. The chat view is the
+conversation you already know from any AI tool, rendered so it is clear at a glance
+what each agent is doing. The timeline shows the work over time and how sessions
+interact with each other. The feed, the one that matters most, breaks each
+session's transcript into discrete tasks, sorts them into what needs you, what is
+working, and what is done, and distills each into a high-level summary you can act
+on. The three are a progressive disclosure of complexity: drill from the feed's
+actionable summary down to the raw conversation whenever you need the detail.
 
 ## Components
 
