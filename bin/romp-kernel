@@ -1886,6 +1886,9 @@ def build_session(sid, now, tmux=None):
                      "mt": nd.get("mt", nd["t"]), "current": nid == focus,
                      "recent": nid == recent, "onpath": nid in onpath,
                      "promptAnchorUuid": _pa, "anchorUuid": _wa,
+                     # the distiller's takeaway (done) / the block-distiller's decision brief (blocked),
+                     # null until produced — the ledger row's ⊕ expander reveals it inline (the user 2026-06-21)
+                     "summary": nd.get("summary"), "blockSummary": nd.get("blockSummary"),
                      "children": [c for c in kids if c in gnodes]})
         for c in kids:
             _twalk(c, depth + 1, ancestor_done=explicit or derived or clr)

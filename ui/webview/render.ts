@@ -140,7 +140,7 @@ interface LedgerBullet { text: string; t?: number; id?: string; sid?: string; tl
 // `derived` = this node is done only because all its children are (the kernel propagates completion up
 // the tree), as opposed to an explicitly-asserted done. Rendered as the blue ✓ disc dimmed (the user
 // 2026-06-16). Empty/false → explicit done (full disc).
-interface LedgerTreeNode { id: string; text: string; depth: number; done: boolean; blocked: boolean; t?: number; mt?: number; current: boolean; derived?: boolean; recent?: boolean; cleared?: boolean; onpath?: boolean; promptAnchorUuid?: string | null; anchorUuid?: string | null; children?: string[]; }
+interface LedgerTreeNode { id: string; text: string; depth: number; done: boolean; blocked: boolean; t?: number; mt?: number; current: boolean; derived?: boolean; recent?: boolean; cleared?: boolean; onpath?: boolean; promptAnchorUuid?: string | null; anchorUuid?: string | null; children?: string[]; summary?: string | null; blockSummary?: string | null; }   // summary/blockSummary = the distiller's takeaway / decision brief, revealed by the row's ⊕ expander
 // tree = the goal overview (preferred view); bullets = captioned-turn fallback for goal-less sessions.
 interface Ledger { summary: string; tree?: LedgerTreeNode[]; bullets: LedgerBullet[]; current?: LedgerBullet | null; }
 const ledgers = new Map<string, Ledger | null>();
@@ -2305,6 +2305,7 @@ try { ledgerCollapsed = !!((vscodeApi && vscodeApi.getState && vscodeApi.getStat
 // (ids are session-scoped, so the sets are safe to keep global across session switches).
 const ledgerFolded = new Set<string>();    // explicitly folded by the user (overrides a default-open)
 const ledgerExpanded = new Set<string>();  // explicitly expanded by the user (overrides a default-fold)
+const ledgerSummaryOpen = new Set<string>();  // node ids whose ⊕ distiller-summary panel is expanded (the user 2026-06-21)
 // One-shot FLIP source (the user 2026-06-18): capture WHERE the goal text sits now, so the next render can
 // MORPH the destination element from this spot — BOTH ways: expanding glides the collapsed line into its
 // pinned row (then the rest fades in); collapsing glides the row text back up into the compact line.
@@ -2425,8 +2426,9 @@ function renderLedger() {
   // (raw n.t/b.t in the sig, NOT the elapsed — wall-clock ticking is refreshLedgerAges's job.)
   const sig = (ledgerCollapsed ? "C" : "O") + "§" + (activeId || "") + "§" + titleText
     + "‖cur:" + (cur ? `${cur.id || ""}:${cur.t ?? ""}:${cur.text}` : "")
-    + "‖tree:" + tree.map((n) => `${n.id}:${n.depth}:${n.done ? "d" : ""}${n.derived ? "v" : ""}${n.cleared ? "x" : ""}${n.current ? "c" : ""}${n.blocked ? "b" : ""}${n.recent ? "r" : ""}${n.onpath ? "p" : ""}:${n.t ?? ""}:${n.text}`).join("|")
+    + "‖tree:" + tree.map((n) => `${n.id}:${n.depth}:${n.done ? "d" : ""}${n.derived ? "v" : ""}${n.cleared ? "x" : ""}${n.current ? "c" : ""}${n.blocked ? "b" : ""}${n.recent ? "r" : ""}${n.onpath ? "p" : ""}${(n.summary || n.blockSummary) ? "s" : ""}:${n.t ?? ""}:${n.text}`).join("|")
     + "‖fold:" + [...ledgerFolded].sort().join(",") + "/" + [...ledgerExpanded].sort().join(",")
+    + "‖sum:" + [...ledgerSummaryOpen].sort().join(",")   // a ⊕ toggle forces a rebuild (like fold state)
     + "‖b:" + (tree.length ? "" : bullets.slice(0, LEDGER_BULLET_CAP).map((b) => `${b.id || ""}:${b.t ?? ""}:${b.text}`).join("|"));
   if ((host as any)._sig === sig) { refreshLedgerAges(host, l, now); return; }
   (host as any)._sig = sig;
@@ -2522,6 +2524,22 @@ function renderLedger() {
       mark.textContent = n.done ? "✓" : n.blocked ? "⏸" : "";
       const txt = el("span", "ledger-ttext");
       txt.textContent = n.text;
+      // ⊕ distiller-summary expander, right of the task name (the user 2026-06-21): the distiller's takeaway
+      // (done) / decision brief (blocked). Only rendered when the distiller has produced one; click toggles
+      // a detail line under the row (state in ledgerSummaryOpen, in the sig so the toggle forces a rebuild).
+      const sumText = (n.summary || n.blockSummary || "").trim();
+      const sumOpen = ledgerSummaryOpen.has(n.id);
+      let sumToggle: HTMLElement | null = null;
+      if (sumText) {
+        sumToggle = el("span", "ledger-tsum-toggle nav");
+        sumToggle.textContent = sumOpen ? "⊖" : "⊕";
+        sumToggle.title = sumOpen ? "hide the distiller's summary" : "show the distiller's summary";
+        sumToggle.onclick = (ev) => {
+          ev.stopPropagation();
+          if (ledgerSummaryOpen.has(n.id)) ledgerSummaryOpen.delete(n.id); else ledgerSummaryOpen.add(n.id);
+          renderLedger();
+        };
+      }
       const time = el("span", "ledger-ttime");
       setTnodeTime(time, n, cur, now);                          // "(Xm)" live for current, "(Xm ago)" for done
       if (n.done && (n.mt ?? n.t)) txt.style.color = ageColorReadable(now - (n.mt ?? n.t)!);   // a done item's text matches its (resolution-time) colour
@@ -2593,8 +2611,15 @@ function renderLedger() {
         linkHover([mark, txt]);   // checkbox + text light together, each keeping its own shape
         if (time.textContent) { wireZone(time, n.anchorUuid, "assistant", "jump to the latest work here"); linkHover([time]); }
       }
-      row.append(...lead, mark, txt, time);
+      row.append(...lead, mark, txt, ...(sumToggle ? [sumToggle] : []), time);
       wrap.appendChild(row);
+      // the ⊕'s expanded panel: the distiller summary on its own line, indented under the task text
+      if (sumText && sumOpen) {
+        const det = el("div", "ledger-tsum");
+        det.textContent = sumText;
+        det.style.paddingLeft = (4 + depth * 15 + 22) + "px";   // align under the text (past the mark column)
+        wrap.appendChild(det);
+      }
       if (expandable && !folded) for (const cid of n.children!) { const c = byId.get(cid); if (c) renderNode(c, depth + 1); }
     };
     for (const r of orderedRoots) renderNode(r, 0);

@@ -399,6 +399,26 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(n["t"], T0)
         self.assertEqual(n["mt"], T0 + 500, "mt = the resolution segment, distinct from t (creation)")
 
+    def test_ledger_tree_carries_distiller_summary_for_the_expander(self):
+        # Each tree node carries the distiller's takeaway (done, `summary`) + the block-distiller's decision
+        # brief (blocked, `blockSummary`) so the ledger row's ⊕ expander can reveal it inline (the user
+        # 2026-06-21). Mirrors the fields build_feed already puts on its modal tree.
+        done, blk = (SID + ":sd", SID + ":sb")
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+            "rompUuid": SID, "seq": 2, "lastNode": blk,
+            "nodes": {done: {"id": done, "text": "ship it", "parentId": None, "nodeComplete": True,
+                             "blocked": False, "cleared": False, "trail": [], "t": T0,
+                             "summary": "Cut the release and tagged v2."},
+                      blk: {"id": blk, "text": "pick a db", "parentId": None, "nodeComplete": False,
+                            "blocked": True, "cleared": False, "trail": [], "t": T0,
+                            "blockSummary": "Postgres vs SQLite — needs your call on scale."}},
+            "placements": {}, "status": {}}))
+        byid = {x["text"]: x for x in km.build_session(SID, NOW)["ledger"]["tree"]}
+        self.assertEqual(byid["ship it"]["summary"], "Cut the release and tagged v2.",
+                         "a done node carries the distiller's takeaway")
+        self.assertEqual(byid["pick a db"]["blockSummary"], "Postgres vs SQLite — needs your call on scale.",
+                         "a blocked node carries the block-distiller's decision brief")
+
     def test_ledger_tree_derives_done_when_all_children_complete(self):
         # Completion propagates UP (the user 2026-06-16): a parent that ISN'T explicitly nodeComplete but
         # whose children are ALL done is "derived done" — done=True + derived=True (render dims its ✓

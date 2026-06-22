@@ -284,3 +284,26 @@ test("completed ledger rows sit at a slight alpha (0.75); uncompleted rows stay 
   // the fade is scoped to .done — there's no blanket .ledger-tnode opacity that would dim everything
   assert.doesNotMatch(CSS, /\.ledger-tnode \{[^}]*opacity:/, "uncompleted rows are NOT alpha'd");
 });
+
+test("a ⊕ distiller-summary expander sits right of the task name, revealing the summary inline (the user 2026-06-21)", () => {
+  // the node carries the distiller's takeaway (summary) / decision brief (blockSummary) from the kernel
+  assert.match(RENDER, /summary\?: string \| null; blockSummary\?: string \| null;/);
+  // ⊕ is rendered ONLY when a distiller summary exists; ⊖ when expanded; click toggles + re-renders
+  assert.match(RENDER, /const sumText = \(n\.summary \|\| n\.blockSummary \|\| ""\)\.trim\(\);/);
+  assert.match(RENDER, /if \(sumText\) \{[\s\S]*?el\("span", "ledger-tsum-toggle nav"\)/);
+  assert.match(RENDER, /sumToggle\.textContent = sumOpen \? "⊖" : "⊕";/);
+  assert.match(RENDER, /if \(ledgerSummaryOpen\.has\(n\.id\)\) ledgerSummaryOpen\.delete\(n\.id\); else ledgerSummaryOpen\.add\(n\.id\);/);
+  // the toggle rides the row to the RIGHT of the task name (after txt), before the time
+  assert.match(RENDER, /row\.append\(\.\.\.lead, mark, txt, \.\.\.\(sumToggle \? \[sumToggle\] : \[\]\), time\);/);
+  // expanded → a detail line under the row, indented under the task text
+  assert.match(RENDER, /if \(sumText && sumOpen\) \{[\s\S]*?el\("div", "ledger-tsum"\)/);
+  // open-state survives a re-render (in the sig so a toggle forces a rebuild) and per-node
+  assert.match(RENDER, /const ledgerSummaryOpen = new Set<string>\(\)/);
+  assert.match(RENDER, /"‖sum:" \+ \[\.\.\.ledgerSummaryOpen\]\.sort\(\)\.join\(","\)/);
+  // a node that gains a summary later must re-render to show ⊕ → the sig keys on summary presence
+  assert.match(RENDER, /\$\{\(n\.summary \|\| n\.blockSummary\) \? "s" : ""\}/);
+  // styled: the ⊕ is a dim, hover-bright clickable; the detail wraps and reads dim
+  assert.match(CSS, /\.ledger-tsum-toggle \{[^}]*cursor: pointer/);
+  assert.match(CSS, /\.ledger-tsum-toggle:hover \{[^}]*var\(--fg\)/);
+  assert.match(CSS, /\.ledger-tsum \{[^}]*white-space: pre-wrap/);
+});
