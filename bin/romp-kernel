@@ -83,6 +83,18 @@ def _session_working(turns):
     return not _suspended_after(lt.get("end", lt.get("t")))
 
 
+def _turn_romp_injected(turn):
+    """True if a turn was opened by a romp INJECTION (a nudge / auto-nudge / retry — trigger author 'romp'),
+    not a genuine human/sdk/peer prompt. Auto-nudge re-arms only on GENUINE turns, never on its own
+    nudge-response turn — re-firing on the response would be redundant/a tight loop (the user via business
+    2026-06-22; the paired planner change resolves the goal off 'working' on a nudge-response anyway)."""
+    atoms = turn.get("atoms") or []
+    trig = turn.get("trigger") or {}
+    tuid = trig.get("uuid") if isinstance(trig, dict) else trig
+    a = next((x for x in atoms if x.get("uuid") == tuid), None) or (atoms[0] if atoms else None)
+    return bool(a and a.get("author") == "romp")
+
+
 def _clip_to_suspend(start, end):
     """A work bar must not span a host sleep. If a recorded suspension begins strictly inside [start, end],
     return the earliest such start as the clipped bar end (the last activity before the machine went down);
@@ -459,8 +471,11 @@ def _set_session_flag(sid, flag, value):
 # ── Auto Nudge (the user 2026-06-19) ──────────────────────────────────────────────────────────────
 # When ON, a background pass follows up on an ORPHANED goal: a session that is ALIVE but went IDLE (its
 # turn ended) while its top goal still shows "working" — not blocked, not completed, not awaiting your
-# approval, and not delegated to anyone. It sends the SAME follow-up the manual Nudge button does, ONCE
-# per goal. Off by default. State lives in auto-nudge.json: {"enabled": bool, "done": [goalId,...]}.
+# approval, and not delegated to anyone. It sends the SAME follow-up the manual Nudge button does, RE-ARMING
+# per stall episode: nudged again once a NEW ended turn leaves the goal working, count climbing each fire (so
+# a goal that won't resolve escalates rather than going silent after one nudge — the user 2026-06-22). Off by
+# default. State: auto-nudge.json {"enabled": bool, "nudged": {goalId: {count, lastTurnId}}}; each fire also
+# appends {sid,gid,t,count} to nudge-events.jsonl for the timeline's ⚡ marker.
 AUTO_NUDGE_TEXT = "Status on the goal above: what's done, what's left, and is anything blocked waiting on a decision from me?"   # mirrors the feed Nudge button (ui/webview/feed.ts)
 _autonudge_cache = {}   # str(path) -> ((mtime_ns,size), dict)
 
@@ -470,7 +485,7 @@ def _auto_nudge_data():
     try:
         st = p.stat(); key = (st.st_mtime_ns, st.st_size)
     except OSError:
-        return {"enabled": False, "done": []}
+        return {"enabled": False, "nudged": {}}
     hit = _autonudge_cache.get(str(p))
     if hit is not None and hit[0] == key:
         return hit[1]
@@ -481,7 +496,7 @@ def _auto_nudge_data():
     except Exception:
         d = {}
     d.setdefault("enabled", False)
-    d.setdefault("done", [])
+    d.setdefault("nudged", {})         # {gid: {count, lastTurnId}} — re-arm per stall episode (replaces the one-shot "done" list)
     _autonudge_cache[str(p)] = (key, d)
     return d
 
@@ -504,12 +519,30 @@ def _set_auto_nudge(enabled):
     _write_auto_nudge(d)
 
 
-def _mark_auto_nudged(gid):
+def _mark_auto_nudged(gid, turn_id, count):
+    """Record that `gid` was nudged on its CURRENT stall turn: {count, lastTurnId}. The tick re-arms (nudges
+    again) only once a NEW ended turn leaves the goal working (lastTurnId differs) — one nudge per stall
+    episode, not one ever. Bounded to the most-recently-nudged goals."""
     d = dict(_auto_nudge_data())
-    done = [g for g in d.get("done", []) if g != gid]
-    done.append(gid)
-    d["done"] = done[-3000:]            # bounded; goal ids are unique + tiny
+    nudged = dict(d.get("nudged", {}))
+    nudged.pop(gid, None)
+    nudged[gid] = {"count": count, "lastTurnId": turn_id}   # reinsert at the end → most-recently-nudged
+    if len(nudged) > 3000:                                  # bounded; drop the oldest
+        nudged = dict(list(nudged.items())[-3000:])
+    d["nudged"] = nudged
     _write_auto_nudge(d)
+
+
+def _log_nudge_event(sid, gid, t, count):
+    """Append one auto-nudge fire to STATE/nudge-events.jsonl — {sid, gid, t, count} — for the timeline's
+    DEBUG judging band to render a per-nudge ⚡ marker and escalate at high counts (the view is business's)."""
+    try:
+        p = jd.STATE / "nudge-events.jsonl"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with p.open("a") as f:
+            f.write(json.dumps({"sid": sid, "gid": gid, "t": int(t), "count": count}) + "\n")
+    except Exception:
+        pass
 
 
 def _working_top_goal(sid):
@@ -533,13 +566,15 @@ def _working_top_goal(sid):
 
 def _auto_nudge_tick(now, tmux):
     """One Auto-Nudge pass (from the periodic pusher). For each ALIVE, IDLE session (its turn ended) that
-    isn't awaiting/compacting/blocked, has an orphaned 'working' top goal not yet nudged, AND whose latest
-    turn the closer has already classified (so 'working' is its considered verdict, not the pre-closer
-    default — a turn that ended by asking YOU a question is never nudged), inject the follow-up ONCE. A no-op
-    unless the user turned it on."""
+    isn't awaiting/compacting/api-error, has an orphaned 'working' top goal, AND whose latest turn the closer
+    has already classified (so 'working' is its considered verdict — a turn that ended by asking YOU a question
+    is never nudged), inject the follow-up. RE-ARMS per stall episode, not once-ever: a goal is nudged again
+    once a NEW GENUINE (work/user, not the agent's own nudge-response) ended turn leaves it still working, with
+    a count that climbs each fire (surfaced on the timeline; no cap — the warning is the alert). A no-op unless
+    the user turned it on."""
     if not _auto_nudge_on():
         return
-    done = set(_auto_nudge_data().get("done", []))
+    nudged = dict(_auto_nudge_data().get("nudged", {}))   # {gid: {count, lastTurnId}}
     fired = False
     for s in _alive_sessions(now, tmux):
         sid = s["sid"]
@@ -558,22 +593,30 @@ def _auto_nudge_tick(now, tmux):
         if _session_working(turns):                      # still actively working (event model) → not orphaned
             continue
         gid = _working_top_goal(sid)
-        if not gid or gid in done:
+        if not gid:
             continue
+        lt_id = lt.get("id")
+        rec = nudged.get(gid) or {}
+        if rec.get("lastTurnId") == lt_id:               # already nudged on THIS stall turn → re-arm needs a NEW turn
+            continue
+        if _turn_romp_injected(lt):                      # latest turn IS a romp nudge/inject (our own nudge-response) →
+            continue                                     # re-arm only on a GENUINE work/user turn (the user via business)
         # Don't nudge until the CLOSER has classified this turn. A turn that ENDS by asking you a question is
         # "working" only in the window before the closer marks its goal blocked; nudging the AGENT there is
         # pointless (it's waiting on YOU, not stalled) and churns. Gate on the closer having processed the
         # latest turn (its id in closedTurns) so "working" is the considered verdict, not a pre-classification
         # default. Skip the gate when the closer is off — it would otherwise suppress every nudge. (2026-06-21)
-        if jd.CLOSER_ON and lt.get("id") not in jd._closed_turns(jd.load_goals(sid)):
+        if jd.CLOSER_ON and lt_id not in jd._closed_turns(jd.load_goals(sid)):
             continue
+        count = rec.get("count", 0) + 1
         _tmux_send(_name_of(sid) or sid, _followup_body(gid, None, AUTO_NUDGE_TEXT, injected=True))   # romp's own nudge → gray bubble
         try:
             jd.optimistic_followup(sid, gid)             # reopen the card now (Followed-up chip), like a manual nudge
         except Exception:
             pass
-        _mark_auto_nudged(gid)
-        done.add(gid)
+        _mark_auto_nudged(gid, lt_id, count)             # {count, lastTurnId} → re-arm on the next ended-working turn
+        _log_nudge_event(sid, gid, now, count)           # timeline ⚡ marker (business's view)
+        nudged[gid] = {"count": count, "lastTurnId": lt_id}   # mirror in-memory for the rest of this tick
         fired = True
     if fired:
         _push_all()

@@ -756,8 +756,75 @@ class ViewBuilder(unittest.TestCase):
             self.assertEqual(len(sent), 1, "the orphaned working goal is nudged once")
             self.assertIn("romp-goal-id: " + g, sent[0][1], "the follow-up targets that goal")
             self.assertIn(km.AUTO_NUDGE_TEXT, sent[0][1])         # carries the nudge prompt verbatim
-            km._auto_nudge_tick(NOW, km._tmux_sessions())          # once-guard: no re-nudge
-            self.assertEqual(len(sent), 1, "Auto Nudge fires only ONCE per goal")
+            km._auto_nudge_tick(NOW, km._tmux_sessions())          # SAME stall turn → no re-nudge
+            self.assertEqual(len(sent), 1, "no re-nudge on the same stall turn")
+        finally:
+            restore()
+
+    def _stall_transcript(self, recs):
+        # write a transcript, clear the parse cache, and (re)create the working goal with ALL its turn ids
+        # marked closer-classified (so the closer-gate always passes for the latest). Returns the goal id.
+        self.tpath.write_text("\n".join(json.dumps(r) for r in recs) + "\n"); km._parse_cache.clear()
+        ids = [t["id"] for t in km._parse(str(self.tpath), SID, NOW)["turns"]]
+        g = SID + ":gw"
+        self._goal_store({g: {"id": g, "text": "wire up the thing", "parentId": None, "nodeComplete": False,
+                              "blocked": False, "cleared": False, "trail": [], "t": T0}},
+                         {g: "working"}, last=g, closed=ids)
+        return g
+
+    def test_auto_nudge_re_arms_on_a_new_genuine_stall_turn(self):
+        # the user 2026-06-22: ONE nudge per STALL EPISODE, not once ever. The same turn never re-fires; a NEW
+        # genuine (human) ended turn that leaves the goal working re-arms it, count climbing.
+        base = [uline(T0, "a1", "u1", ps="typed"), aline(T0 + 10, "d1", "a1", "u1", stop="end_turn"),
+                uline(T0 + 100, "a2", "u2", "a1", ps="typed"), aline(T0 + 110, "d2", "a2", "u2", stop="end_turn")]
+        g = self._stall_transcript(base)
+        km._set_auto_nudge(True)
+        sent, restore = self._stub_nudge()
+        try:
+            km._auto_nudge_tick(NOW, km._tmux_sessions())
+            self.assertEqual(len(sent), 1, "first stall → nudged")
+            self.assertEqual(km._auto_nudge_data()["nudged"][g]["count"], 1)
+            km._auto_nudge_tick(NOW, km._tmux_sessions())                 # same turn → no re-fire
+            self.assertEqual(len(sent), 1, "same stall turn does not re-arm")
+            self._stall_transcript(base + [uline(T0 + 200, "a3", "u3", "a2", ps="typed"),
+                                           aline(T0 + 210, "d3", "a3", "u3", stop="end_turn")])   # NEW genuine turn
+            km._auto_nudge_tick(NOW, km._tmux_sessions())
+            self.assertEqual(len(sent), 2, "a new genuine stall turn re-arms the nudge")
+            self.assertEqual(km._auto_nudge_data()["nudged"][g]["count"], 2, "count climbs each fire")
+        finally:
+            restore()
+
+    def test_auto_nudge_does_not_re_arm_on_its_own_nudge_response(self):
+        # re-fire only on GENUINE turns: a romp-injected (nudge-response) latest turn must NOT re-arm, else a
+        # nudge→response→nudge tight loop (the user via business 2026-06-22).
+        base = [uline(T0, "a1", "u1", ps="typed"), aline(T0 + 10, "d1", "a1", "u1", stop="end_turn")]
+        g = self._stall_transcript(base)
+        km._set_auto_nudge(True)
+        sent, restore = self._stub_nudge()
+        try:
+            km._auto_nudge_tick(NOW, km._tmux_sessions())
+            self.assertEqual(len(sent), 1, "the genuine stall is nudged")
+            nudge = "Status?\n\n<!-- romp-injected --><!-- romp-goal-id: %s -->" % g   # romp-authored turn
+            self._stall_transcript(base + [uline(T0 + 100, nudge, "u2", "a1", ps="typed"),
+                                           aline(T0 + 110, "still working", "a2", "u2", stop="end_turn")])
+            km._auto_nudge_tick(NOW, km._tmux_sessions())
+            self.assertEqual(len(sent), 1, "no re-nudge on the agent's own nudge-response (romp-injected) turn")
+        finally:
+            restore()
+
+    def test_auto_nudge_logs_an_event_for_the_timeline(self):
+        # each fire appends {sid,gid,t,count} to STATE/nudge-events.jsonl for business's ⚡ timeline marker.
+        g = self._orphaned_goal(idle=True)
+        km._set_auto_nudge(True)
+        sent, restore = self._stub_nudge()
+        try:
+            km._auto_nudge_tick(NOW, km._tmux_sessions())
+            ev = [json.loads(l) for l in (jd.STATE / "nudge-events.jsonl").read_text().splitlines()]
+            self.assertEqual(len(ev), 1)
+            self.assertEqual(ev[0]["gid"], g)
+            self.assertEqual(ev[0]["count"], 1)
+            self.assertEqual(ev[0]["sid"], SID)
+            self.assertIn("t", ev[0])
         finally:
             restore()
 
@@ -809,11 +876,14 @@ class ViewBuilder(unittest.TestCase):
     def test_auto_nudge_storage_round_trip(self):
         self.assertFalse(km._auto_nudge_on(), "off by default")
         km._set_auto_nudge(True); self.assertTrue(km._auto_nudge_on())
-        km._mark_auto_nudged(SID + ":g1")
-        self.assertIn(SID + ":g1", km._auto_nudge_data()["done"])
+        km._mark_auto_nudged(SID + ":g1", "turn-A", 1)
+        self.assertEqual(km._auto_nudge_data()["nudged"][SID + ":g1"], {"count": 1, "lastTurnId": "turn-A"})
         km._set_auto_nudge(False)
         self.assertFalse(km._auto_nudge_on())
-        self.assertIn(SID + ":g1", km._auto_nudge_data()["done"], "toggling off keeps the done-set (still once-only)")
+        self.assertEqual(km._auto_nudge_data()["nudged"][SID + ":g1"]["lastTurnId"], "turn-A",
+                         "toggling off keeps the per-goal re-arm record")
+        km._mark_auto_nudged(SID + ":g1", "turn-B", 2)   # re-nudge on a NEW turn → count climbs, turn advances
+        self.assertEqual(km._auto_nudge_data()["nudged"][SID + ":g1"], {"count": 2, "lastTurnId": "turn-B"})
 
     def test_no_provisional_card_once_the_turn_ends(self):
         # The placeholder is for IN-PROGRESS work only — once the turn ends, the planner will place the
