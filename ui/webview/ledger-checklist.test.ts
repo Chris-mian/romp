@@ -62,11 +62,12 @@ test("the CURRENT node highlights the ROW only — never mutates its checkbox or
   assert.doesNotMatch(RENDER, /n\.blocked && !n\.current && !n\.done/);
 });
 
-test("ledger: a done item's text takes its (resolution-time) recency colour (ticks with the clock)", () => {
-  // set on first render and again in refreshLedgerAges; keyed on mt (resolution) with a t fallback
-  const hits = RENDER.match(/if \(n\.done && \(n\.mt \?\? n\.t\)\) txt\.style\.color = ageColorReadable\(now - \(n\.mt \?\? n\.t\)!\)/g) || [];
+test("ledger: a done item's text takes its (rolled-up recency) colour (ticks with the clock)", () => {
+  // set on first render and again in refreshLedgerAges; keyed on the rolled-up subtree recency (nodeRecency)
+  // so a done parent's tint matches its freshest descendant, not just its own mt (the user 2026-06-22)
+  const hits = RENDER.match(/if \(n\.done && nodeRecency\(n\)\) txt\.style\.color = ageColorReadable\(now - nodeRecency\(n\)\)/g) || [];
   assert.equal(hits.length, 1, "render-loop tint");
-  assert.match(RENDER, /if \(n && txt && n\.done && \(n\.mt \?\? n\.t\)\) txt\.style\.color = ageColorReadable\(now - \(n\.mt \?\? n\.t\)!\)/);
+  assert.match(RENDER, /if \(n && txt && n\.done && nodeRecency\(n\)\) txt\.style\.color = ageColorReadable\(now - nodeRecency\(n\)\)/);
 });
 
 test("ledger times hug the content (tree is fit-content) yet stay right-aligned", () => {
@@ -147,13 +148,14 @@ test("ledger keeps a small left indent so the marks aren't clipped at the edge (
 });
 
 test("ledger sorts unfinished goals on top, finished at the bottom (recency within each — the user 2026-06-16)", () => {
-  // within each group, most recent first by mt (resolution/last-touched), falling back to t (creation)
-  assert.match(RENDER, /const byRecency = \(a: LedgerTreeNode, b: LedgerTreeNode\) => \(\(b\.mt \?\? b\.t\) \|\| 0\) - \(\(a\.mt \?\? a\.t\) \|\| 0\)/);
+  // within each group, most recent first by the rolled-up subtree recency (nodeRecency), so a parent whose
+  // deep child is fresh sorts by that, not just its own mt (the user 2026-06-22)
+  assert.match(RENDER, /const byRecency = \(a: LedgerTreeNode, b: LedgerTreeNode\) => nodeRecency\(b\) - nodeRecency\(a\)/);
   assert.match(RENDER, /roots\.filter\(\(r\) => !r\.done\)\.sort\(byRecency\)/);
   assert.match(RENDER, /roots\.filter\(\(r\) => r\.done\)\.sort\(byRecency\)/);
   assert.match(RENDER, /for \(const r of orderedRoots\) renderNode\(r, 0\)/);
-  // a finished task's "(Xm ago)" label is time since it RESOLVED/cleared (mt), not since it began
-  assert.match(RENDER, /const dt = \(n\.mt \?\? n\.t\)!;/);
+  // a finished task's "(Xm ago)" label is time since the freshest activity in its subtree (rolled-up recency)
+  assert.match(RENDER, /const dt = nodeRecency\(n\);/);
 });
 
 test("ledger row = 3 zones: text→message (user turn, by uuid), mark+time→checked-off (by uuid) (the user 2026-06-19)", () => {
@@ -235,6 +237,27 @@ test("collapsed ledger shows the CURRENT top-level goal; expanded shows the titl
   assert.match(RENDER, /\} else \{\s*sum\.textContent = titleText;/);
   // collapsed mode still bails after the head (no tree) — now a block that also fires the reverse morph
   assert.match(RENDER, /if \(ledgerCollapsed\) \{[\s\S]*?return;   \/\/ collapsed/);
+});
+
+test("a parent's time rolls up the freshest activity in its SUBTREE — not just its own mt (the user 2026-06-22)", () => {
+  // the bug: a top goal whose deep child was active 12m ago showed "(2d ago)" because the label used the
+  // node's OWN mt while the ordering already used subtree-max — so the freshest row sorted to the top yet
+  // read stale. Fix: stamp each node's _rec = max(own mt/t, every descendant's, and cur.t for the live
+  // current node), and read recency through nodeRecency everywhere the ledger shows/sorts/colours by time.
+  assert.match(RENDER, /function nodeRecency\(n: LedgerTreeNode\): number \{ return \(n\._rec \?\? n\.mt \?\? n\.t\) \|\| 0; \}/);
+  assert.match(RENDER, /function stampSubtreeRecency\(tree: LedgerTreeNode\[\], cur: LedgerBullet \| null\): void/);
+  // the rollup: own/descendant max, and the live current node folds in the working timer cur.t
+  assert.match(RENDER, /const eff = \(n: LedgerTreeNode\) => \(n\.current && cur && cur\.t\) \? Math\.max\(cur\.t, \(n\.mt \?\? n\.t\) \|\| 0\) : \(\(n\.mt \?\? n\.t\) \|\| 0\);/);
+  assert.match(RENDER, /for \(const cid of n\.children \|\| \[\]\) \{ const c = byId\.get\(cid\); if \(c\) r = Math\.max\(r, calc\(c\)\); \}/);
+  // stamped on the full-render path BEFORE curTop / sort / labels read it
+  assert.match(RENDER, /stampSubtreeRecency\(tree, cur\);/);
+  // every recency read goes through nodeRecency: the done-row "(Xm ago)" label, the root sort, both text tints, the collapsed tint
+  assert.match(RENDER, /\} else if \(n\.done && nodeRecency\(n\)\) \{[\s\S]*?const dt = nodeRecency\(n\);/);
+  assert.match(RENDER, /const byRecency = \(a: LedgerTreeNode, b: LedgerTreeNode\) => nodeRecency\(b\) - nodeRecency\(a\);/);
+  assert.match(RENDER, /if \(n\.done && nodeRecency\(n\)\) txt\.style\.color = ageColorReadable\(now - nodeRecency\(n\)\);/);
+  assert.match(RENDER, /const tintT = \(ledgerCollapsed && curTop\) \? nodeRecency\(curTop\) : newestT;/);
+  // and mt is in the render sig, so a node resolving (mt change, no flag change) re-stamps the rollup
+  assert.match(RENDER, /\$\{n\.t \?\? ""\}:\$\{n\.mt \?\? ""\}:\$\{n\.text\}/);
 });
 
 test("the collapsed line keeps the goal's '(Xm)' time (in parens), ticking live, and the morph carries it (the user 2026-06-21)", () => {

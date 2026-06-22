@@ -140,7 +140,7 @@ interface LedgerBullet { text: string; t?: number; id?: string; sid?: string; tl
 // `derived` = this node is done only because all its children are (the kernel propagates completion up
 // the tree), as opposed to an explicitly-asserted done. Rendered as the blue ✓ disc dimmed (the user
 // 2026-06-16). Empty/false → explicit done (full disc).
-interface LedgerTreeNode { id: string; text: string; depth: number; done: boolean; blocked: boolean; t?: number; mt?: number; current: boolean; derived?: boolean; recent?: boolean; cleared?: boolean; onpath?: boolean; promptAnchorUuid?: string | null; anchorUuid?: string | null; children?: string[]; summary?: string | null; blockSummary?: string | null; }   // summary/blockSummary = the distiller's takeaway / decision brief, revealed by the row's ⊕ expander
+interface LedgerTreeNode { id: string; text: string; depth: number; done: boolean; blocked: boolean; t?: number; mt?: number; current: boolean; derived?: boolean; recent?: boolean; cleared?: boolean; onpath?: boolean; promptAnchorUuid?: string | null; anchorUuid?: string | null; children?: string[]; summary?: string | null; blockSummary?: string | null; _rec?: number; }   // summary/blockSummary = the distiller's takeaway / decision brief, revealed by the row's ⊕ expander; _rec = render-stamped subtree-rolled-up recency
 // tree = the goal overview (preferred view); bullets = captioned-turn fallback for goal-less sessions.
 interface Ledger { summary: string; tree?: LedgerTreeNode[]; bullets: LedgerBullet[]; current?: LedgerBullet | null; }
 const ledgers = new Map<string, Ledger | null>();
@@ -2412,6 +2412,33 @@ function currentTopGoal(tree: LedgerTreeNode[]): LedgerTreeNode | null {
     || roots0[0] || null;
 }
 
+// The recency a node DISPLAYS / sorts by: its subtree-rolled-up freshness (_rec, stamped below), falling
+// back to its own mt/t before the stamp exists. So a parent reflects the most recent activity ANYWHERE in
+// its subtree, not just its own last-touch (the user 2026-06-22).
+function nodeRecency(n: LedgerTreeNode): number { return (n._rec ?? n.mt ?? n.t) || 0; }
+
+// Roll the freshest activity up to every node: _rec = max(own mt/t, every descendant's, and — for the live
+// CURRENT node — the working timer cur.t). The bug it fixes: a top goal whose deep child was active 12m ago
+// read "(2d ago)" because the label used the node's OWN mt while the ordering already used subtree-max — so
+// the freshest row sorted to the top yet showed a stale time (the user 2026-06-22). All timestamps, so it's
+// clock-invariant: stamped once per full render, reused by refreshLedgerAges's same-content ticks.
+function stampSubtreeRecency(tree: LedgerTreeNode[], cur: LedgerBullet | null): void {
+  const byId = new Map(tree.map((n) => [n.id, n] as const));
+  const eff = (n: LedgerTreeNode) => (n.current && cur && cur.t) ? Math.max(cur.t, (n.mt ?? n.t) || 0) : ((n.mt ?? n.t) || 0);
+  const inflight = new Set<string>();
+  const calc = (n: LedgerTreeNode): number => {
+    if (n._rec != null) return n._rec;
+    if (inflight.has(n.id)) return eff(n);   // cycle guard (a malformed graph can't hang the render)
+    inflight.add(n.id);
+    let r = eff(n);
+    for (const cid of n.children || []) { const c = byId.get(cid); if (c) r = Math.max(r, calc(c)); }
+    n._rec = r;
+    return r;
+  };
+  for (const n of tree) n._rec = undefined;   // fresh stamp each full render (a new payload reuses no objects, but be safe)
+  for (const n of tree) calc(n);
+}
+
 function renderLedger() {
   const host = document.getElementById("ledger");
   if (!host) return;
@@ -2436,12 +2463,13 @@ function renderLedger() {
   // (raw n.t/b.t in the sig, NOT the elapsed — wall-clock ticking is refreshLedgerAges's job.)
   const sig = (ledgerCollapsed ? "C" : "O") + "§" + (activeId || "") + "§" + titleText
     + "‖cur:" + (cur ? `${cur.id || ""}:${cur.t ?? ""}:${cur.text}` : "")
-    + "‖tree:" + tree.map((n) => `${n.id}:${n.depth}:${n.done ? "d" : ""}${n.derived ? "v" : ""}${n.cleared ? "x" : ""}${n.current ? "c" : ""}${n.blocked ? "b" : ""}${n.recent ? "r" : ""}${n.onpath ? "p" : ""}${(n.summary || n.blockSummary) ? "s" : ""}:${n.t ?? ""}:${n.text}`).join("|")
+    + "‖tree:" + tree.map((n) => `${n.id}:${n.depth}:${n.done ? "d" : ""}${n.derived ? "v" : ""}${n.cleared ? "x" : ""}${n.current ? "c" : ""}${n.blocked ? "b" : ""}${n.recent ? "r" : ""}${n.onpath ? "p" : ""}${(n.summary || n.blockSummary) ? "s" : ""}:${n.t ?? ""}:${n.mt ?? ""}:${n.text}`).join("|")
     + "‖fold:" + [...ledgerFolded].sort().join(",") + "/" + [...ledgerExpanded].sort().join(",")
     + "‖sum:" + [...ledgerSummaryOpen].sort().join(",")   // a ⊕ toggle forces a rebuild (like fold state)
     + "‖b:" + (tree.length ? "" : bullets.slice(0, LEDGER_BULLET_CAP).map((b) => `${b.id || ""}:${b.t ?? ""}:${b.text}`).join("|"));
   if ((host as any)._sig === sig) { refreshLedgerAges(host, l, now); return; }
   (host as any)._sig = sig;
+  stampSubtreeRecency(tree, cur);   // roll subtree freshness up to each node BEFORE curTop/sort/labels read it
   // preserve the tree's scroll position across a fold/expand re-render so clicking a caret doesn't
   // jump the scroll-pane back to the top (the user 2026-06-17). Restored after the new tree is built.
   const prevTreeScroll = (host.querySelector(".ledger-tree") as HTMLElement | null)?.scrollTop ?? 0;
@@ -2471,7 +2499,7 @@ function renderLedger() {
   }
   // hue: collapsed tints by the shown goal's recency; expanded by the freshest activity across the overview.
   const newestT = Math.max(cur && cur.t ? cur.t : 0, ...tree.map((n) => n.t || 0), ...bullets.map((b) => b.t || 0));
-  const tintT = (ledgerCollapsed && curTop) ? ((curTop.mt ?? curTop.t) || 0) : newestT;
+  const tintT = (ledgerCollapsed && curTop) ? nodeRecency(curTop) : newestT;
   if (tintT) sum.style.color = ageColorReadable(now - tintT);
   head.append(caret, sum);
   head.title = ledgerCollapsed ? "Show the full goal tree" : "Collapse to the current goal";
@@ -2502,7 +2530,7 @@ function renderLedger() {
     // recency = the node's LAST-modified time (mt: when it was resolved/cleared/last touched), falling
     // back to t (creation) — so finished tasks order by when they completed, not when they began (the
     // user 2026-06-16). mt is emitted by build_session; the webview falls back to t until a kernel refresh.
-    const byRecency = (a: LedgerTreeNode, b: LedgerTreeNode) => ((b.mt ?? b.t) || 0) - ((a.mt ?? a.t) || 0);
+    const byRecency = (a: LedgerTreeNode, b: LedgerTreeNode) => nodeRecency(b) - nodeRecency(a);
     const sorted = [
       ...roots.filter((r) => !r.done).sort(byRecency),
       ...roots.filter((r) => r.done).sort(byRecency),
@@ -2560,8 +2588,8 @@ function renderLedger() {
         };
       }
       const time = el("span", "ledger-ttime");
-      setTnodeTime(time, n, cur, now);                          // "(Xm)" live for current, "(Xm ago)" for done
-      if (n.done && (n.mt ?? n.t)) txt.style.color = ageColorReadable(now - (n.mt ?? n.t)!);   // a done item's text matches its (resolution-time) colour
+      setTnodeTime(time, n, cur, now);                          // "(Xm)" live for current, "(Xm ago)" for done (rolled-up recency)
+      if (n.done && nodeRecency(n)) txt.style.color = ageColorReadable(now - nodeRecency(n));   // done text matches its (rolled-up recency) colour
       // The → "most recent change" arrow was dropped (the user 2026-06-17): the highlight alone marks the
       // node (arrow + highlight were unified onto the same node, so the arrow was redundant). The kernel's
       // `recent`/`onpath` flags still drive the auto-expand of that node's branch.
@@ -2683,9 +2711,10 @@ function renderLedger() {
 function setTnodeTime(time: HTMLElement, n: LedgerTreeNode, cur: LedgerBullet | null, now: number) {
   if (n.current && cur && cur.t) {
     time.textContent = `(${agehms(now - cur.t)})`; time.style.color = ageColorReadable(now - cur.t);
-  } else if (n.done && (n.mt ?? n.t)) {
-    // a finished task's "(Xm ago)" is time since it RESOLVED/cleared (its mt), not since it began (the user 2026-06-16)
-    const dt = (n.mt ?? n.t)!;
+  } else if (n.done && nodeRecency(n)) {
+    // a finished task's "(Xm ago)" is time since the freshest activity in ITS SUBTREE (rolled-up recency,
+    // the user 2026-06-22) — so a done parent reflects deep child work, not just its own resolution mt.
+    const dt = nodeRecency(n);
     time.textContent = `(${agehms(now - dt)} ago)`; time.style.color = ageColorReadable(now - dt);
   } else {
     time.textContent = "";
@@ -2711,7 +2740,7 @@ function refreshLedgerAges(host: HTMLElement, l: Ledger, now: number) {
     if (n && time) setTnodeTime(time, n, l.current || null, now);
     // keep a done item's text colour in step with its (recency-tinted) time as the clock ticks
     const txt = row.querySelector(".ledger-ttext") as HTMLElement | null;
-    if (n && txt && n.done && (n.mt ?? n.t)) txt.style.color = ageColorReadable(now - (n.mt ?? n.t)!);
+    if (n && txt && n.done && nodeRecency(n)) txt.style.color = ageColorReadable(now - nodeRecency(n));
   });
   // fallback bullets (goal-less sessions)
   const bs = bullets.slice(0, LEDGER_BULLET_CAP);
