@@ -1425,14 +1425,30 @@ def _plan_session(fsid, path, now):
     _judge_ctx.fsid = fsid                            # usage logging: attribute this session's judge calls
     session = parsed_session(fsid, [path], now)
     store = load_goals(fsid)
-    units = []
+    units, retired = [], False
     for u in plan_units(session):
         seg_id, phase = u[0], u[1]
-        if _unit_key(seg_id, phase) in store["placements"]:
+        key = _unit_key(seg_id, phase)
+        if key in store["placements"]:
             continue                                  # this phase already placed
         if phase == "prompt" and seg_id in store["placements"]:
             continue                                  # work already placed (legacy/fast segment) → prompt-run is moot
+        if phase == "delegation":
+            tgt = store["placements"].get(seg_id)     # the COURIER's verdict for this peer segment
+            if seg_id in store["placements"] and not (isinstance(tgt, str) and tgt in store["nodes"]):
+                # The courier RESOLVED this peer segment as COORDINATION ("fyi") — a FINAL verdict, never
+                # work to file under a goal. RETIRE the #d phase here (mark it processed, the user 2026-06-22
+                # via link_audit) so it stops eating a PLAN_FAIRNESS slot EVERY pass: a session with ≥8 such
+                # coordination messages would otherwise have its whole oldest-first window clogged by no-op
+                # skips, starving every newer goal/nudge behind them forever. Retiring in the COLLECTION loop
+                # (before the cap) drains them all in ONE pass without consuming a slot. A genuinely UNSET seg
+                # (courier not run yet) keeps seg_id ABSENT → stays re-examinable, handled in the branch.
+                store["placements"][key] = None
+                retired = True
+                continue
         units.append(u)
+    if retired:
+        save_goals(fsid, store)                       # persist the retirements so they dedup out next pass
     units = units[:PLAN_FAIRNESS]
     placed = 0
     for seg_id, phase, seg_t, text, human, followup in units:
@@ -1450,13 +1466,19 @@ def _plan_session(fsid, path, now):
         if phase == "delegation":                     # POSTAL delegation → file the recipient's work UNDER the courier's goal G
             target = store["placements"].get(seg_id)
             if not (isinstance(target, str) and target in store["nodes"]):
-                continue                              # courier hasn't planted a real goal (unset / "fyi") → skip, stay re-examinable
+                continue                              # courier hasn't run yet (UNSET) → stay re-examinable ('fyi' was
+                #                                       already retired in the collection loop, so it never reaches here)
             _reopen(store, target)                     # unseal if the closer already flat-completed G (refused if view-cleared)
             sub = [nd for nd in open_menu(store)       # SCOPED menu: G + its open descendants, G first (menu #1)
                    if nd["id"] == target or _top_ancestor(store["nodes"], nd["id"]) == target]
             sub.sort(key=lambda nd: (nd["id"] != target, nd.get("t", 0)))
             if not sub or sub[0]["id"] != target:
-                continue                              # G not open (e.g. view-cleared) → don't plan; leave re-examinable
+                # G is view-cleared (the user crossed it off the feed) — _reopen refused to unseal it, so it's
+                # PERMANENTLY out of the menu. That's final, never plantable → RETIRE the #d unit (the user
+                # 2026-06-22, via link_audit) instead of a bare skip, else it eats a fairness slot every pass.
+                store["placements"][seg_id + "#d"] = None
+                save_goals(fsid, store)
+                continue
             ops = _parse_plan(plan_llm(text, _menu_text(store, sub), human=False), len(sub)) or []
             # Full expressivity, ROOTED under G: a delegation gets the same sub/done/block a human-minted top
             # does (over G's subtree), and a top-level MINT is re-rooted as a sub under G (#1) so a handoff is

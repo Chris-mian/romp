@@ -1532,15 +1532,16 @@ class PostalDelegation(unittest.TestCase):
         return {"type": "user", "timestamp": iso(t), "uuid": uuid, "parentUuid": parent,
                 "message": {"role": "user", "content": "%s\nromp-msg-id: %s" % (text, mid)}}
 
-    def _run(self, recs, courier, work, passes=1, complete_g=False):
+    def _run(self, recs, courier, work, passes=1, complete_g=False, view_cleared=False):
         """Write recs, find the peer seg, pre-seed the recipient store with `courier` (a goal label →
         courier-planted delegation; 'fyi' → coordination; None → not yet couriered), then run _plan_session
-        `passes` times with the planner LLMs mocked. Returns (store, seg_id, gid)."""
+        `passes` times with the planner LLMs mocked. `view_cleared` monkeypatches _view_cleared to mark G
+        crossed-off (so _reopen refuses to unseal it). Returns (store, seg_id, gid)."""
         with tempfile.TemporaryDirectory() as td:
             td = Path(td)
             tpath = td / (SID + ".jsonl")
             tpath.write_text("\n".join(json.dumps(r) for r in recs) + "\n")
-            saved = (jd.GOALDIR, jd.PCACHE, jd.MESSAGES, jd.plan_llm, jd.plan_prompt_llm, jd._group_store)
+            saved = (jd.GOALDIR, jd.PCACHE, jd.MESSAGES, jd.plan_llm, jd.plan_prompt_llm, jd._group_store, jd._view_cleared)
             jd.GOALDIR, jd.PCACHE = td / "goals", td / "pcache"
             jd.MESSAGES = td / "messages.jsonl"           # hermetic: empty postal index (no live data, peer=None)
             jd.plan_llm, jd.plan_prompt_llm = work, (lambda *a, **k: "")
@@ -1560,12 +1561,14 @@ class PostalDelegation(unittest.TestCase):
                         store["nodes"][gid]["nodeComplete"] = True
                         store["nodes"][gid]["everDone"] = True
                 jd.save_goals(SID, store)
+                if view_cleared and gid:
+                    jd._view_cleared = lambda g=gid: {g}   # the user crossed G off the feed → _reopen won't unseal it
                 jd._PARSE_CACHE.clear()
                 for _ in range(passes):
                     jd._plan_session(SID, str(tpath), NOW)
                 return jd.load_goals(SID), seg_id, gid
             finally:
-                (jd.GOALDIR, jd.PCACHE, jd.MESSAGES, jd.plan_llm, jd.plan_prompt_llm, jd._group_store) = saved
+                (jd.GOALDIR, jd.PCACHE, jd.MESSAGES, jd.plan_llm, jd.plan_prompt_llm, jd._group_store, jd._view_cleared) = saved
 
     def test_delegation_files_work_under_G_with_full_expressivity(self):
         recs = [self._peer_msg(T0, "DELEGATE: build the export feature", "p1", "m1.1"),
@@ -1582,12 +1585,75 @@ class PostalDelegation(unittest.TestCase):
         self.assertTrue(all(nd["parentId"] for nd in under_g), "nothing the delegation placed is a top-level goal")
         self.assertIn(seg_id + "#d", store["placements"], "the delegation work-run dedups under seg#d")
 
-    def test_coordination_fyi_stays_unplanned(self):
+    def test_coordination_fyi_is_retired_not_left_reexaminable(self):
         recs = [self._peer_msg(T0, "COORDINATE: heads-up, I'm on the kernel", "p1", "m2.1"),
                 aline(T0 + 30, "Noted.", "a1", "p1", stop="end_turn")]
         store, seg_id, gid = self._run(recs, "fyi", lambda *a, **k: '{"ops":[{"why":"x","do":"mint","text":"X"}]}')
         self.assertEqual(store["nodes"], {}, "a coordination ('fyi') segment plants nothing")
-        self.assertNotIn(seg_id + "#d", store["placements"], "and isn't marked → stays re-examinable")
+        # coordination is a FINAL courier verdict (never work to file), so its #d unit is RETIRED — NOT left
+        # re-examinable. Otherwise it eats a PLAN_FAIRNESS slot every pass and starves newer units (the
+        # user 2026-06-22, via link_audit; this changed from the old stays-re-examinable behaviour).
+        self.assertIn(seg_id + "#d", store["placements"], "the fyi #d unit is RETIRED (marked processed)")
+        self.assertIsNone(store["placements"][seg_id + "#d"], "retired = marked processed with no node")
+
+    def test_view_cleared_delegation_goal_is_retired(self):
+        # G was planted then COMPLETED, and the user CLEARED it from the feed. _reopen refuses to unseal a
+        # view-cleared goal, so it's permanently out of the menu → the delegation can never file under it.
+        # RETIRE the #d unit (the user 2026-06-22, via link_audit) instead of skipping it forever, else it
+        # eats a fairness slot every pass — the same permanent-skip clog as 'fyi', a node-target this time.
+        recs = [self._peer_msg(T0, "DELEGATE: tweak the thing", "p1", "m6.1"),
+                aline(T0 + 30, "Tweaked.", "a1", "p1", stop="end_turn")]
+        work = lambda *a, **k: '{"ops":[{"why":"x","do":"sub","under":1,"text":"y"}]}'
+        store, seg_id, gid = self._run(recs, "tweak the thing", work, complete_g=True, view_cleared=True)
+        under_g = [nd for nd in store["nodes"].values() if nd.get("parentId") == gid]
+        self.assertEqual(under_g, [], "nothing filed under a view-cleared (sealed) goal")
+        self.assertIn(seg_id + "#d", store["placements"], "the #d unit is RETIRED, not left re-clogging")
+        self.assertIsNone(store["placements"][seg_id + "#d"])
+
+    def test_fyi_delegations_dont_starve_newer_units(self):
+        """THE starvation regression (the user 2026-06-22, via link_audit): a session with MORE than
+        PLAN_FAIRNESS coordination ('fyi') peer segments must still advance its newer units in ONE pass.
+        Before the fix each 'fyi' delegation hit a bare skip (continue WITHOUT marking) every pass, so the
+        oldest-first PLAN_FAIRNESS window stayed permanently clogged with no-op skips and every newer goal was
+        starved forever (g54's live nudge loop). Now 'fyi' #d units are RETIRED in the collection loop, before
+        the cap, freeing the whole window in one pass."""
+        N = jd.PLAN_FAIRNESS + 3                           # strictly more fyi segments than the per-pass cap
+        recs, parent = [], None
+        for i in range(N):
+            u, a = "p%d" % i, "pa%d" % i
+            recs.append(self._peer_msg(T0 + i * 10, "COORDINATE: heads-up #%d" % i, u, "mco.%d" % i, parent))
+            recs.append(aline(T0 + i * 10 + 5, "Noted.", a, u, stop="end_turn"))
+            parent = a
+        recs.append(uline(T0 + 10000, "ship the real feature", "uh", parent, ps="typed"))   # NEWEST: a real goal
+        recs.append(aline(T0 + 10005, "Shipped the real feature.", "ah", "uh", stop="end_turn"))
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            tpath = td / (SID + ".jsonl")
+            tpath.write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+            saved = (jd.GOALDIR, jd.PCACHE, jd.MESSAGES, jd.plan_llm, jd.plan_prompt_llm, jd._group_store)
+            jd.GOALDIR, jd.PCACHE = td / "goals", td / "pcache"
+            jd.MESSAGES = td / "messages.jsonl"
+            jd.plan_llm = lambda *a, **k: '{"ops":[{"why":"the feature","do":"mint","text":"ship the real feature"}]}'
+            jd.plan_prompt_llm = lambda *a, **k: ""
+            jd._group_store = lambda *a, **k: None
+            try:
+                session = jd.parsed_session(SID, [str(tpath)], NOW)
+                peers = [s for turn in session["turns"] for s in em.segments(turn) if jd._seg_peer(s)]
+                self.assertGreater(len(peers), jd.PLAN_FAIRNESS, "more fyi segments than the cap (the starvation setup)")
+                store = {"rompUuid": SID, "seq": 0, "nodes": {}, "placements": {}, "status": {}}
+                for s in peers:                            # the courier marked every one coordination
+                    store["placements"][s["id"]] = "fyi"
+                jd.save_goals(SID, store)
+                jd._PARSE_CACHE.clear()
+                jd._plan_session(SID, str(tpath), NOW)     # ONE pass
+                store = jd.load_goals(SID)
+                tops = [nd for nd in store["nodes"].values() if nd["parentId"] is None]
+                self.assertEqual(len(tops), 1, "the newer human goal is minted in ONE pass — not starved by the fyi backlog")
+                self.assertEqual(tops[0]["text"], "ship the real feature")
+                for s in peers:                            # every fyi #d unit retired (won't re-clog)
+                    self.assertIsNone(store["placements"].get(s["id"] + "#d"), "each fyi #d retired")
+            finally:
+                (jd.GOALDIR, jd.PCACHE, jd.MESSAGES, jd.plan_llm, jd.plan_prompt_llm, jd._group_store) = saved
 
     def test_delegation_skipped_until_courier_plants(self):
         recs = [self._peer_msg(T0, "DELEGATE: future task", "p1", "m3.1"),
