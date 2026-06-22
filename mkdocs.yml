@@ -1,0 +1,70 @@
+site_name: romp
+site_description: A multi-agent session manager for Claude Code on tmux.
+
+# Set these when you go public (a project site is served at
+# https://<your-user>.github.io/romp/, or point a custom domain at it):
+# site_url: https://OWNER.github.io/romp/
+# repo_url: https://github.com/OWNER/romp
+# repo_name: OWNER/romp
+
+# The published docs live under docs/. The internal codebase map is kept in the
+# repo (and renders on GitHub) but stays OUT of the published site.
+exclude_docs: |
+  simplification-inventory.md
+
+theme:
+  name: material
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.instant
+    - navigation.footer
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.tabs.link
+  palette:
+    # Brand colour is a placeholder — swap to match the romp wordmark.
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: deep purple
+      accent: deep purple
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: deep purple
+      accent: deep purple
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.inlinehilite
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+
+plugins:
+  - search
+
+nav:
+  - Home: index.md
+  - Getting started: getting-started.md
+  - Guide:
+      - The postal service: guide/postal-service.md
+  - Architecture: architecture.md
