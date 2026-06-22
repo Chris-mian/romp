@@ -3089,6 +3089,25 @@ def _run_judging(t0, alive_sids, semantic):
     return out
 
 
+def _nudge_marks(t0, alive_sids):
+    """Auto-nudge fires in the horizon, for alive sessions — {sid, gid, t, count} per fire — read from
+    STATE/nudge-events.jsonl (bugz's _log_nudge_event). The timeline's DEBUG band renders each as a ⚡ at its
+    fire time, coloured by the nudged session, escalating to a warning at count>=4 (the user 2026-06-22).
+    Best-effort []."""
+    out = []
+    try:
+        for line in (jd.STATE / "nudge-events.jsonl").read_text(errors="replace").splitlines():
+            try:
+                o = json.loads(line)
+            except Exception:
+                continue
+            if o.get("t", 0) >= t0 and o.get("sid") in alive_sids:
+                out.append({"sid": o["sid"], "gid": o.get("gid"), "t": int(o["t"]), "count": int(o.get("count", 1))})
+    except OSError:
+        pass
+    return out
+
+
 def build_timeline(now, tmux=None):
     """A {type:"timeline"} message the ported timeline bundle consumes (ui-parity.md: timeline =
     ADAPT). Lanes per session; work bars are SEGMENTS [t,end] from the event model (not the deleted
@@ -3177,7 +3196,7 @@ def build_timeline(now, tmux=None):
     # coordinating-courier classifications the artifact marks miss), not back-placed onto the work.
     judging = _run_judging(now - TL_HORIZON, set(id2name), semantic)
     return {"type": "timeline", "now": now, "sessions": sessions, "turns": turns,
-            "messages": messages, "judging": judging,
+            "messages": messages, "judging": judging, "nudges": _nudge_marks(now - TL_HORIZON, set(id2name)),
             "tokens": _token_windows([s["path"] for s in alive], now),
             "activeChat": None, "focus": None, "hover": None, "usage": _usage()}
 
