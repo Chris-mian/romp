@@ -497,6 +497,8 @@ def _auto_nudge_data():
         d = {}
     d.setdefault("enabled", False)
     d.setdefault("nudged", {})         # {gid: {count, lastTurnId}} — re-arm per stall episode (replaces the one-shot "done" list)
+    d.pop("done", None)                # drop the vestigial one-shot list (old code wrote it; nothing reads it now) →
+    #                                    cleaned from the file on the next write (the user via business 2026-06-22)
     _autonudge_cache[str(p)] = (key, d)
     return d
 

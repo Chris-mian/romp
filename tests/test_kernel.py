@@ -903,6 +903,19 @@ class ViewBuilder(unittest.TestCase):
         km._mark_auto_nudged(SID + ":g1", "turn-B", 2)   # re-nudge on a NEW turn → count climbs, turn advances
         self.assertEqual(km._auto_nudge_data()["nudged"][SID + ":g1"], {"count": 2, "lastTurnId": "turn-B"})
 
+    def test_auto_nudge_data_drops_the_vestigial_done_list(self):
+        # the old one-shot 'done' list (pre-re-arm) is no longer read or written; drop it on load so it's
+        # cleaned from the file on the next write — no stale divergence from goal state (via business 2026-06-22).
+        (jd.STATE / "auto-nudge.json").write_text(json.dumps(
+            {"enabled": True, "done": [SID + ":gOld"],
+             "nudged": {SID + ":g1": {"count": 1, "lastTurnId": "t"}}}))
+        km._autonudge_cache.clear()
+        self.assertNotIn("done", km._auto_nudge_data(), "the vestigial done list is dropped on load")
+        self.assertIn(SID + ":g1", km._auto_nudge_data()["nudged"], "the nudged dict is preserved")
+        km._mark_auto_nudged(SID + ":g2", "t2", 1)                    # any write
+        on_disk = json.loads((jd.STATE / "auto-nudge.json").read_text())
+        self.assertNotIn("done", on_disk, "the next write cleans 'done' from the file")
+
     def test_no_provisional_card_once_the_turn_ends(self):
         # The placeholder is for IN-PROGRESS work only — once the turn ends, the planner will place the
         # segment on its next pass, so a placeholder would only race the real card. Keyed on the open turn.
