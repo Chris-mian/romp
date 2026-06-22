@@ -2096,11 +2096,16 @@ function lastTurnStart(events: ChatEvent[]): number {
 }
 
 // If event i is the LAST reply of a COMPLETED prompt-turn, return the seconds the
-// session worked on it (the turn's genuine prompt timestamp → this reply); else
-// null. A turn is "completed" when a new GENUINE prompt follows it (injected
-// user-role lines — postal pushes, /command stdout — are skipped, NOT treated as the
-// next prompt), or it's the final turn and the session is no longer working (the
-// live spinner owns the in-progress turn). Drives the "worked …" rail footer.
+// session worked on it (the IMMEDIATE trigger → this reply); else null. A turn is
+// "completed" when a new GENUINE prompt follows it (injected user-role lines — postal
+// pushes, /command stdout — are skipped, NOT treated as the next prompt), or it's the
+// final turn and the session is no longer working (the live spinner owns it).
+// The elapsed is measured from the most recent user-role line of ANY author — the
+// thing that ACTUALLY triggered this reply — NOT the older human prompt: a nudge or
+// postal push that prompted the work is the start, so a nudge-triggered reply doesn't
+// inherit the original prompt's elapsed (the user 2026-06-22: "worked 23m" for a
+// 2-min-old nudge — the clock had run from a much older human prompt). Drives the
+// "worked …" rail footer.
 function turnWorkedSecs(events: ChatEvent[], i: number, working: boolean): number | null {
   const ev = events[i];
   if (ev.kind === "user") return null;                 // a prompt, not a reply
@@ -2114,8 +2119,8 @@ function turnWorkedSecs(events: ChatEvent[], i: number, working: boolean): numbe
   if (!completed && working) return null;              // final turn still in progress → spinner owns it
   const end = eventEpoch(ev);
   if (end == null) return null;
-  let start: number | null = null;
-  for (let j = i; j >= 0; j--) { const e = events[j]; if (e.kind === "user" && e.human) { start = eventEpoch(e); break; } }
+  let start: number | null = null;                     // the IMMEDIATE trigger: the most recent user line, ANY
+  for (let j = i; j >= 0; j--) { const e = events[j]; if (e.kind === "user") { start = eventEpoch(e); break; } }   // author (human / nudge / postal) — not the older human prompt
   if (start == null) return null;
   const secs = end - start;
   return secs > 0 ? secs : null;

@@ -21,13 +21,20 @@ test("compactDisplay: thinking between tools does NOT break the run (it's droppe
   assert.deepEqual(d, [{ kind: "toolgroup", indices: [0, 2] }]);
 });
 
-test("compactDisplay: visible content between tools DOES split the run", () => {
+test("compactDisplay: visible content between tools DOES split the run; each lone tool stays inline", () => {
   const d = compactDisplay(["tool", "assistant", "tool"]);
   assert.deepEqual(d, [
-    { kind: "toolgroup", indices: [0] },
+    { kind: "event", index: 0 },   // a lone tool renders inline, not a 1-element toolgroup (the user 2026-06-22)
     { kind: "event", index: 1 },
-    { kind: "toolgroup", indices: [2] },
+    { kind: "event", index: 2 },
   ]);
+});
+
+test("compactDisplay: a LONE tool renders inline; only a run of ≥2 collapses (the user 2026-06-22)", () => {
+  assert.deepEqual(compactDisplay(["assistant", "tool", "assistant"]),
+    [{ kind: "event", index: 0 }, { kind: "event", index: 1 }, { kind: "event", index: 2 }]);
+  assert.deepEqual(compactDisplay(["tool", "tool"]), [{ kind: "toolgroup", indices: [0, 1] }]);
+  assert.deepEqual(compactDisplay(["tool"]), [{ kind: "event", index: 0 }]);
 });
 
 test("compactDisplay: a trailing tool run is flushed", () => {

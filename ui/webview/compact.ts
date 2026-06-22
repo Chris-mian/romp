@@ -1,12 +1,14 @@
 // Pure transcript-compaction logic (no DOM), so it can be unit-tested. Compact mode (the user
-// 2026-06-14): hide "thinking" blocks entirely, and collapse each maximal run of CONSECUTIVE tool
-// uses into ONE summary line. Thinking is dropped FIRST, so tools separated only by thinking still
-// count as consecutive; tools separated by visible content (an assistant reply, a prompt, …) do not.
-// The rail timestamp logic runs over the RESULT of this, so the stamps reflect the compacted stream.
+// 2026-06-14): hide "thinking" blocks entirely, and collapse each maximal run of TWO OR MORE consecutive
+// tool uses into ONE summary line. A LONE tool stays inline — it renders first-class (its own tool line +
+// expandable fold), since there's nothing to collapse and "Bash(…)" reads cleaner than "1 Bash" (the user
+// 2026-06-22). Thinking is dropped FIRST, so tools separated only by thinking still count as consecutive;
+// tools separated by visible content (an assistant reply, a prompt, …) do not. The rail timestamp logic
+// runs over the RESULT of this, so the stamps reflect the compacted stream.
 
 export type DisplayItem =
   | { kind: "event"; index: number }            // a pass-through event, by its index in the source array
-  | { kind: "toolgroup"; indices: number[] };   // a collapsed run of consecutive tool uses (≥1)
+  | { kind: "toolgroup"; indices: number[] };   // a collapsed run of ≥2 consecutive tool uses (a lone tool is an "event")
 
 // Tools that are an EXCEPTION to collapsing: they render FIRST-CLASS even in compact mode, never swept
 // into a toolgroup (the user 2026-06-17). AskUserQuestion is the "↳ You answered Claude's question" box —
@@ -19,7 +21,13 @@ export const STANDALONE_TOOLS = new Set<string>(["AskUserQuestion"]);
 export function compactDisplay(kinds: readonly string[], names?: readonly (string | undefined)[]): DisplayItem[] {
   const out: DisplayItem[] = [];
   let run: number[] | null = null;
-  const flush = () => { if (run) { out.push({ kind: "toolgroup", indices: run }); run = null; } };
+  // a LONE tool passes through as a normal event (its first-class inline tool line + fold); only a run of
+  // TWO OR MORE collapses into a summary toolgroup (the user 2026-06-22)
+  const flush = () => {
+    if (!run) return;
+    out.push(run.length === 1 ? { kind: "event", index: run[0] } : { kind: "toolgroup", indices: run });
+    run = null;
+  };
   for (let i = 0; i < kinds.length; i++) {
     const k = kinds[i];
     if (k === "thinking") continue;                 // hidden — and does NOT break a tool run
