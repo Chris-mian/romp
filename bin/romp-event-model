@@ -328,6 +328,23 @@ class FileAdapter:
         synthesized absorbed atoms. (Idle atoms are added separately from the state log.)"""
         active = self.active_path()
         kept = self.kept_uuids(active)
+        # Post-compaction REPLAY dedup (the user 2026-06-22): a compact_boundary restores the recent message
+        # tail VERBATIM with NEW uuids/timestamps. A replayed user prompt is the same text as an EARLIER one,
+        # after a boundary — NOT new work; left in, it gets a fresh seg-id and the judges re-mint an
+        # already-done (even CLEARED) goal. Identify replays in CHRONOLOGICAL order (the main emit loop below
+        # is leaf-first) so we keep the ORIGINAL and drop the later replay — then placements dedup still holds.
+        replay_uuids, _seen_text, _compacted = set(), set(), False
+        for u in sorted(kept, key=lambda x: (parse_z((self.by_uuid.get(x) or {}).get("timestamp")) or 0,
+                                             self.seq_of.get(x, 0))):
+            r = self.by_uuid.get(u)
+            if not r:
+                continue
+            if r.get("type") == "system" and r.get("subtype") == "compact_boundary":
+                _compacted = True
+            elif r.get("type") == "user" and not r.get("isMeta") and not r.get("isCompactSummary"):
+                txt = _text_of(_content(r.get("message")))
+                if txt:
+                    replay_uuids.add(u) if (_compacted and txt in _seen_text) else _seen_text.add(txt)
         out = []
         for u in kept:
             r = self.by_uuid.get(u)
@@ -352,6 +369,9 @@ class FileAdapter:
                 if r.get("isCompactSummary") is True:
                     continue   # the compaction SUMMARY payload — kept in the graph (above) but not an atom;
                                # the compaction itself is the system:compact_boundary atom below
+                if u in replay_uuids:
+                    continue   # a post-compaction REPLAY of restored context (see the pre-pass above) — not new
+                               # work; dropping it keeps the planner's seg-id dedup intact, so no goal re-mints
                 blocks = _content(r.get("message"))
                 if not blocks:
                     continue

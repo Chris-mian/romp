@@ -519,6 +519,33 @@ class Compaction(unittest.TestCase):
         uuids = [a.get("uuid") for t in out["turns"] for a in t["atoms"]]
         self.assertNotIn("cs1", uuids, "the isCompactSummary payload is not an atom")
 
+    def test_post_compaction_replay_is_deduped(self):
+        # the user 2026-06-22: compaction RESTORES the recent message tail verbatim (new uuids + timestamps).
+        # Those replayed user prompts are NOT new work — without dedup the judges re-process them and re-mint
+        # already-done (even CLEARED) goals with fresh ids that escape the clear. A post-compaction user
+        # message whose text matches an earlier one is dropped; genuinely-new post-compaction work is kept.
+        with tempfile.TemporaryDirectory() as td:
+            recs = [uline(T0, "do task X", "u1", ps="typed"),
+                    aline(T0 + 30, "did X", "a1", "u1", stop="end_turn"),
+                    compact_line(T0 + 500, "c1", logical_parent="a1"),
+                    compact_summary_line(T0 + 505, "cs1", parent="c1"),
+                    uline(T0 + 520, "do task X", "u2", "cs1", ps="sdk"),     # REPLAY of u1 (restored tail)
+                    aline(T0 + 530, "redid X", "a2", "u2", stop="end_turn"),
+                    uline(T0 + 600, "do task Z", "u3", "a2", ps="typed"),    # GENUINE new work
+                    aline(T0 + 610, "did Z", "a3", "u3", stop="end_turn")]
+            p = Path(td) / (SID + ".jsonl")
+            p.write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+            out = em.parse_session(str(p), rompuuid=SID, dir="/TESTDIR", candidate_files=[str(p)],
+                                   postal_log=[], now=NOW)
+        utexts = [em._text_of(em._content(a.get("message"))) for t in out["turns"] for a in t["atoms"]
+                  if a["type"] == "user"]
+        self.assertEqual(utexts.count("do task X"), 1, "the replayed prompt is deduped — only the original remains")
+        self.assertEqual(utexts.count("do task Z"), 1, "genuinely-new post-compaction work is kept")
+        uuids = [a.get("uuid") for t in out["turns"] for a in t["atoms"]]
+        self.assertNotIn("u2", uuids, "the replay atom (u2) is dropped, so the planner can't re-mint its goal")
+        self.assertIn("u1", uuids, "the pre-compaction original survives")
+        self.assertIn("u3", uuids, "genuine new work survives")
+
     def test_pre_compaction_turn_survives_via_logical_parent(self):
         out = run_scenario("compaction_atom")
         uuids = [a.get("uuid") for t in out["turns"] for a in t["atoms"]]
