@@ -659,6 +659,32 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(p["tree"], [], "a placeholder carries no goal node")
         self.assertTrue(any(a["itemId"] == g1 for a in asks), "the real completed card is untouched")
 
+    def test_session_working_reads_the_event_model_not_tmux(self):
+        # the user 2026-06-22: WORKING is derived from the TRANSCRIPT (an open, un-ended final turn), never the
+        # tmux pane state — tmux is one backend, so the signal must be backend-agnostic.
+        saved = km._downtime; km._downtime = []          # no host-sleep windows interfering
+        try:
+            self.assertTrue(km._session_working([{"ended": False, "atoms": [{"type": "user"}], "t": NOW, "end": NOW}]),
+                            "an open final turn = working")
+            self.assertFalse(km._session_working([{"ended": True, "atoms": [{"type": "assistant"}], "t": NOW, "end": NOW}]),
+                             "an ended turn = not working")
+            self.assertFalse(km._session_working([{"ended": False, "atoms": [{"type": "idle"}], "t": NOW, "end": NOW}]),
+                             "an idle-terminated turn = not working")
+            self.assertFalse(km._session_working([]), "no turns = not working")
+        finally:
+            km._downtime = saved
+
+    def test_feed_working_list_follows_the_open_turn_not_tmux(self):
+        # The working DOT (feed["working"], read by every surface) must follow the event model, NOT tmux: an
+        # open turn is working even when tmux reads idle, and an ended turn is NOT working even when tmux reads
+        # working (the user 2026-06-22 — moving off the tmux backend).
+        name = km._name_of(SID)
+        self._open_turn_transcript(ended=False); km._parse_cache.clear()   # OPEN turn; setUp's tmux says "idle"
+        self.assertIn(name, km.build_feed(NOW)["working"], "open turn → working even though tmux reads idle")
+        self._open_turn_transcript(ended=True); km._parse_cache.clear()    # ENDED turn
+        self._working_tmux()                                               # tmux now reads "working"
+        self.assertNotIn(name, km.build_feed(NOW)["working"], "ended turn → NOT working even though tmux reads working")
+
     def test_provisional_card_shows_the_message_caption_once_it_lands(self):
         # The user 2026-06-19: the card reads the captioner's persisted MESSAGE caption ('<segid>#p') — the
         # SAME gist the timeline dot uses, no separate 'gist' judge call. Until it lands, the raw prompt;

@@ -69,6 +69,20 @@ def _suspended_after(t):
     return any(start > (t or 0) for (start, _e) in _downtime)
 
 
+def _session_working(turns):
+    """Whether a session is ACTIVELY WORKING — the single source of truth for the working signal (the yellow
+    dot on every surface, the auto-nudge orphan check). Derived from the EVENT MODEL: its last turn is OPEN
+    (not ended, not idle-terminated) and its last activity isn't stranded before a host sleep (frozen, not
+    working). NOT the tmux pane state — tmux is just one possible backend, so the working signal must not
+    depend on it; the transcript is backend-agnostic (the user 2026-06-22)."""
+    if not turns:
+        return False
+    lt = turns[-1]
+    if lt.get("ended") or any(a.get("type") == "idle" for a in lt["atoms"]):
+        return False
+    return not _suspended_after(lt.get("end", lt.get("t")))
+
+
 def _clip_to_suspend(start, end):
     """A work bar must not span a host sleep. If a recorded suspension begins strictly inside [start, end],
     return the earliest such start as the clipped bar end (the last activity before the machine went down);
@@ -541,10 +555,7 @@ def _auto_nudge_tick(now, tmux):
         if not turns:
             continue
         lt = turns[-1]
-        open_now = (not lt.get("ended")) and not any(a.get("type") == "idle" for a in lt["atoms"])
-        if open_now and _suspended_after(lt["end"]):     # last activity precedes a host sleep → frozen, not working
-            open_now = False
-        if open_now:                                     # still actively working → not orphaned
+        if _session_working(turns):                      # still actively working (event model) → not orphaned
             continue
         gid = _working_top_goal(sid)
         if not gid or gid in done:
@@ -1821,14 +1832,7 @@ def build_session(sid, now, tmux=None):
     # hue) — turns iterate oldest→newest, so reverse. Matches state.ts recentReplyBullets' "newest first".
     bullets.sort(key=lambda b: b["t"], reverse=True)
     last_turn = session["turns"][-1] if session["turns"] else None
-    open_now = bool(last_turn and not last_turn["ended"]
-                    and not any(x["type"] == "idle" for x in last_turn["atoms"]))
-    # An open turn whose LAST ACTIVITY precedes a host sleep is stale (the kernel was frozen, not working) →
-    # close it. Key on end (last activity), NOT t (start): the laptop sleeps constantly, so a long turn that
-    # began before a sleep but kept working after waking has end past the sleep and stays "working" — keying
-    # on the start wrongly read it as "ready" mid-work (the user 2026-06-18, 2026-06-22).
-    if open_now and _suspended_after(last_turn["end"]):
-        open_now = False
+    open_now = _session_working(session["turns"])      # WORKING from the event model — the one shared signal
     # "working on" — what the session is doing RIGHT NOW: the in-progress turn's caption if it has one
     # yet, else its prompt (≤140 chars), matching the timeline work-bar's `working on:` hover. Only while
     # actually working; idle/ready → no current line (the user 2026-06-16).
@@ -2127,10 +2131,7 @@ def _provisional_card(s, name, color, fsid, live, now):
     if not turns:
         return None
     lt = turns[-1]
-    open_now = (not lt.get("ended")) and not any(a.get("type") == "idle" for a in lt["atoms"])
-    if open_now and _suspended_after(lt["end"]):     # last activity precedes a host sleep → frozen, not working
-        open_now = False
-    if not open_now:
+    if not _session_working(turns):                  # not actively working (event model) → no provisional card
         return None
     segs = em.segments(lt)
     if not segs:
@@ -2173,7 +2174,10 @@ def build_feed(now, tmux=None):
             continue
         color = _name_color(fsid)
         tm = tmux.get(fsid); live = tm is not None
-        who_working = bool(tm and tm["state"] == "working")
+        try:                                             # WORKING from the EVENT MODEL (open turn), not tmux state —
+            who_working = _session_working(_parse(s["path"], fsid, now)["turns"])   # one backend-agnostic dot signal
+        except Exception:
+            who_working = False
         if who_working:
             working.append(name)
         store = jd.load_goals(fsid)
@@ -3068,10 +3072,7 @@ def build_timeline(now, tmux=None):
         goals = jd.load_goals(sid)
         st_turns = session["turns"]
         last_turn = st_turns[-1] if st_turns else None
-        open_now = bool(last_turn and not last_turn["ended"]
-                        and not any(x["type"] == "idle" for x in last_turn["atoms"]))
-        if open_now and _suspended_after(last_turn["end"]):   # last activity precedes a host sleep → frozen, not working
-            open_now = False
+        open_now = _session_working(st_turns)             # WORKING from the event model — the one shared signal
         if tm:                            # live: tmux state drives the lane badge (working/waiting/idle/permission/compacting)
             state = tm["state"] or "idle"
             if state != "compacting" and _compacting_optimistic(sid, session, now):
