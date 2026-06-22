@@ -2206,14 +2206,21 @@ def _provisional_card(s, name, color, fsid, live, now):
             "provisional": True, "tree": []}
 
 
+# A postal message that REQUIRES a reply (QUESTION/ASK/Q) — vs a COORDINATE/FYI heads-up that doesn't. Only
+# these create a "waiting on" edge, so an actively-coordinating session isn't falsely shown waiting for every
+# FYI it sent (the user 2026-06-22).
+_WAIT_Q_RE = re.compile(r"^\s*(?:QUESTION|ASK|Q)\b", re.I)
+
+
 def _wait_for_graph(now, alive_sids):
     """The fleet's WAIT-FOR graph from the postal log (the user 2026-06-22): a session X 'waits on' peer Y
-    when X's latest message to Y has no reply back since (a reply = a Y→X record with a later t) AND Y is
-    ALIVE (a dead peer won't reply, so it isn't a wait). Each X points to its single most-recent such Y (a
-    functional graph), so following the edges detects CYCLES (X→Y→…→X = a mutual-wait deadlock). Returns
-    {sid: {peerSid, name, color, inCycle}} for every waiting session — the goal card's 'waiting on <thread>'
-    chip + the auto-nudge gate both read it. Best-effort {}."""
-    last = {}                                            # latest message time per directed (from_id, to_id)
+    when X's latest REPLY-REQUIRED message to Y (a postal QUESTION/ASK — NOT a COORDINATE/FYI heads-up, which
+    expects no reply) has no answer back since (any later Y→X record answers it) AND Y is ALIVE (a dead peer
+    won't reply). Each X points to its single most-recent such Y (a functional graph), so following the edges
+    detects CYCLES (X→Y→…→X = a mutual-wait deadlock). Only QUESTIONs count — an actively-coordinating session
+    isn't falsely shown 'waiting' for every FYI it sent. Returns {sid: {peerSid, name, color, inCycle}} for
+    every waiting session — the goal card's chip + the auto-nudge gate read it. Best-effort {}."""
+    last_any, last_q = {}, {}                            # (from,to) -> latest t of: ANY msg / a QUESTION-intent msg
     try:
         for line in jd.MESSAGES.read_text(errors="replace").splitlines():
             try:
@@ -2221,17 +2228,21 @@ def _wait_for_graph(now, alive_sids):
             except Exception:
                 continue
             f, t_, ts = o.get("from_id"), o.get("to_id"), o.get("t")
-            if f and t_ and ts:
-                last[(f, t_)] = max(last.get((f, t_), 0), int(ts))
+            if not (f and t_ and ts):
+                continue
+            ts = int(ts)
+            last_any[(f, t_)] = max(last_any.get((f, t_), 0), ts)
+            if _WAIT_Q_RE.match(o.get("body") or ""):    # a reply-REQUIRED ask creates the wait edge
+                last_q[(f, t_)] = max(last_q.get((f, t_), 0), ts)
     except OSError:
         pass
-    edge = {}                                            # X → Y: X's most-recent UNANSWERED outbound to a LIVE peer
-    for (f, t_), ts in last.items():
+    edge = {}                                            # X → Y: X's most-recent UNANSWERED question to a LIVE peer
+    for (f, t_), ts in last_q.items():
         if t_ not in alive_sids:                         # dead peer won't reply → not a wait
             continue
-        if last.get((t_, f), 0) >= ts:                   # Y already replied (a later Y→X record) → answered
+        if last_any.get((t_, f), 0) >= ts:               # Y replied with ANYTHING after → answered
             continue
-        if f not in edge or ts > last[(f, edge[f])]:
+        if f not in edge or ts > last_q[(f, edge[f])]:
             edge[f] = t_
     in_cycle = set()                                     # follow the functional graph; a revisit = a cycle
     for start in edge:

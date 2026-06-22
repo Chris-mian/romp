@@ -35,15 +35,33 @@ class WaitFor(unittest.TestCase):
         self.td.cleanup()
 
     def _msgs(self, rows):
-        jd.MESSAGES.write_text("\n".join(
-            json.dumps({"from_id": f, "to_id": t, "t": ts, "id": "m%d" % i}) for i, (f, t, ts) in enumerate(rows)) + "\n")
+        # rows are (from, to, t) or (from, to, t, body); default body is a reply-required QUESTION so the
+        # base wait-edge tests fire (only QUESTION/ASK messages create a wait — the user 2026-06-22)
+        def rec(i, r):
+            body = r[3] if len(r) > 3 else "QUESTION: status?"
+            return json.dumps({"from_id": r[0], "to_id": r[1], "t": r[2], "id": "m%d" % i, "body": body})
+        jd.MESSAGES.write_text("\n".join(rec(i, r) for i, r in enumerate(rows)) + "\n")
 
     def test_unanswered_outbound_to_live_peer_is_a_wait(self):
-        self._msgs([(X, Y, 100)])                         # X → Y, no reply back
+        self._msgs([(X, Y, 100)])                         # X → Y QUESTION, no reply back
         g = km._wait_for_graph(0, {X, Y})
         self.assertEqual(g.get(X, {}).get("peerSid"), Y, "X waits on Y")
         self.assertFalse(g[X]["inCycle"])
         self.assertNotIn(Y, g, "Y isn't waiting on anyone")
+
+    def test_only_reply_required_messages_create_a_wait(self):
+        self._msgs([(X, Y, 100, "COORDINATE: heads-up, I landed the thing")])   # FYI, no reply expected
+        self.assertEqual(km._wait_for_graph(0, {X, Y}), {}, "a COORDINATE/FYI is not a wait")
+        self._msgs([(X, Y, 100, "QUESTION: can you confirm the schema?")])      # reply REQUIRED
+        self.assertEqual(km._wait_for_graph(0, {X, Y}).get(X, {}).get("peerSid"), Y, "a QUESTION is a wait")
+
+    def test_a_reply_of_any_kind_answers_the_question(self):
+        # X asks; Y replies with a COORDINATE — any reply clears X's wait, and Y's non-question reply doesn't
+        # make Y wait on X (so an actively-coordinating session doesn't show a spurious chip)
+        self._msgs([(X, Y, 100, "QUESTION: status?"), (Y, X, 200, "COORDINATE: here you go, done")])
+        g = km._wait_for_graph(0, {X, Y})
+        self.assertNotIn(X, g, "any reply answers X's question")
+        self.assertNotIn(Y, g, "Y's reply was a COORDINATE, not a question → Y isn't waiting")
 
     def test_a_reply_flips_the_wait_to_the_replier(self):
         # Y replies to X → X's outbound is answered (X no longer waits), but Y's reply is now the unanswered
