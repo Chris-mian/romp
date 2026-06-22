@@ -306,4 +306,8 @@ test("a ⊕ distiller-summary expander sits right of the task name, revealing th
   assert.match(CSS, /\.ledger-tsum-toggle \{[^}]*cursor: pointer/);
   assert.match(CSS, /\.ledger-tsum-toggle:hover \{[^}]*var\(--fg\)/);
   assert.match(CSS, /\.ledger-tsum \{[^}]*white-space: pre-wrap/);
+  // the detail must NOT widen the fit-content tree (else the right-aligned time labels shift on expand):
+  // width:0 + min-width:100% (border-box) spans the EXISTING tree width and wraps within it, leaving the
+  // times put (the user 2026-06-21; verified headless Δ=0). Guard the constraint so a refactor can't drop it.
+  assert.match(CSS, /\.ledger-tsum \{[^}]*box-sizing: border-box;[^}]*width: 0;[^}]*min-width: 100%/);
 });
