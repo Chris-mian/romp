@@ -1615,6 +1615,73 @@ class PostalDelegation(unittest.TestCase):
         self.assertFalse(store["nodes"][gid].get("nodeComplete"), "G is reopened (the closer re-completes it later)")
 
 
+class NudgeMustResolve(unittest.TestCase):
+    """A romp NUDGE segment (the romp-injected marker) must RESOLVE its goal — done or block — instead of
+    filing a plain step, so an auto-nudged 'working' goal drains to done/blocked (the user 2026-06-22, via
+    track_change). A follow-up the user TYPES (goal-id only, no romp-injected) still files a step."""
+
+    def _line(self, t, text, uuid, gid, parent=None, injected=True):
+        marker = ("<!-- romp-injected -->" if injected else "") + ("<!-- romp-goal-id: %s -->" % gid)
+        return {"type": "user", "timestamp": iso(t), "uuid": uuid, "parentUuid": parent,
+                "message": {"role": "user", "content": "%s %s" % (text, marker)}}
+
+    def _run(self, recs, work):
+        gid = "%s:g1" % SID
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            tpath = td / (SID + ".jsonl")
+            tpath.write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+            saved = (jd.GOALDIR, jd.PCACHE, jd.plan_llm, jd.plan_prompt_llm, jd._group_store)
+            jd.GOALDIR, jd.PCACHE = td / "goals", td / "pcache"
+            jd.plan_llm, jd.plan_prompt_llm = work, (lambda *a, **k: "")
+            jd._group_store = lambda *a, **k: None
+            try:
+                store = {"rompUuid": SID, "seq": 1, "placements": {}, "status": {},
+                         "nodes": {gid: {"id": gid, "text": "Ship the feature", "parentId": None,
+                                         "nodeComplete": False, "blocked": False, "cleared": False,
+                                         "trail": ["seed"], "t": T0, "mt": T0}}}
+                jd.save_goals(SID, store)
+                jd._PARSE_CACHE.clear()
+                jd._plan_session(SID, str(tpath), NOW)
+                return jd.load_goals(SID), gid
+            finally:
+                (jd.GOALDIR, jd.PCACHE, jd.plan_llm, jd.plan_prompt_llm, jd._group_store) = saved
+
+    def test_seg_nudge_detects_marker_and_target(self):
+        gid = "%s:g1" % SID
+        s = build_session([self._line(T0, "Status?", "u1", gid),
+                           aline(T0 + 10, "done", "a1", "u1", stop="end_turn")])
+        seg = em.segments(s["turns"][0])[0]
+        self.assertTrue(jd._seg_nudge(seg), "the romp-injected marker is detected as a nudge")
+        self.assertEqual(jd._seg_followup(seg), gid, "and it still carries the goal-id target")
+
+    def test_nudge_resolves_goal_to_done(self):
+        gid = "%s:g1" % SID
+        recs = [self._line(T0 + 100, "Status on the goal above?", "u2", gid),
+                aline(T0 + 120, "Shipped it; nothing left.", "a2", "u2", stop="end_turn")]
+        work = lambda *a, **k: '{"ops":[{"why":"shipped, nothing left","do":"done","goal":1}]}'
+        store, gid = self._run(recs, work)
+        self.assertTrue(store["nodes"][gid]["nodeComplete"], "a nudge resolves the goal to DONE")
+
+    def test_nudge_resolves_goal_to_blocked(self):
+        gid = "%s:g1" % SID
+        recs = [self._line(T0 + 100, "Status?", "u2", gid),
+                aline(T0 + 120, "Need your approval to land it.", "a2", "u2", stop="end_turn")]
+        work = lambda *a, **k: '{"ops":[{"why":"approve landing it?","do":"block","goal":1}]}'
+        store, gid = self._run(recs, work)
+        self.assertTrue(store["nodes"][gid]["blocked"], "a nudge can resolve the goal to BLOCKED (needs the user)")
+
+    def test_typed_followup_still_files_a_step(self):
+        gid = "%s:g1" % SID                               # NO romp-injected marker → a TYPED follow-up → force-sub
+        recs = [self._line(T0 + 100, "also add tests", "u2", gid, injected=False),
+                aline(T0 + 120, "Added tests.", "a2", "u2", stop="end_turn")]
+        work = lambda *a, **k: '{"ops":[{"why":"added tests","do":"sub","under":1,"text":"added tests"}]}'
+        store, gid = self._run(recs, work)
+        self.assertFalse(store["nodes"][gid]["nodeComplete"], "a typed follow-up files a step, doesn't force done")
+        self.assertEqual(len([nd for nd in store["nodes"].values() if nd.get("parentId") == gid]), 1,
+                         "the typed follow-up's work is a sub under the goal")
+
+
 class PlanPass(unittest.TestCase):
     def test_pass_accretes_menu_then_dedups(self):
         """Per-session sequential: segment 2's menu contains segment 1's minted goal (accretion);

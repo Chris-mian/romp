@@ -332,7 +332,8 @@ def _atom_text(atom):
 # A "follow up on this card" UI action composes the chat prompt with a hidden marker carrying the goal's
 # node id, so the planner reopens that exact goal and files the new work UNDER it (the user 2026-06-17).
 FOLLOWUP_RE = re.compile(r"romp-goal-id:\s*([^\s>]+)")              # the tagged target goal-node id
-_FOLLOWUP_MARKER_RE = re.compile(r"<!--\s*romp-goal-id:[^>]*-->")  # the whole marker, stripped from model-facing text
+NUDGE_MARKER_RE = re.compile(r"<!--\s*romp-injected\s*-->")        # a romp NUDGE (auto-nudge / Nudge button), the user 2026-06-22
+_FOLLOWUP_MARKER_RE = re.compile(r"<!--\s*romp-(?:goal-id:[^>]*|injected)\s*-->")  # BOTH romp markers (goal-id + injected), stripped from model-facing text
 
 
 def _shape(s, head, tail):
@@ -1061,13 +1062,22 @@ def rollup_status(store, session_closed):
     store["status"] = status
 
 
-def plan_llm(segment_text, menu_text, model=None, effort=None, human=False):
+def plan_llm(segment_text, menu_text, model=None, effort=None, human=False, nudge=False):
     """One JSON goal-plan from the TRIAGE-tier model (Sonnet) over a segment + the open-goals menu.
-    '' on failure. model/effort override the tier + enable thinking (the classification A/B). When
-    `human` (the segment carries a real user message), a <note> forbids skip — a user message must
-    always land on the board. Cap is generous — a multi-op JSON reply is longer than the old single line."""
+    '' on failure. model/effort override the tier + enable thinking (the classification A/B). When `human`
+    (a real user message) a <note> forbids skip. When `nudge` (a romp status-check on a 'working' goal, not
+    a real ask) a <note> pushes a RESOLUTION (done/block) over a plain step — but EXEMPTS a goal waiting on a
+    PEER/another session (only the user blocks; the gate that skips those nudges is the kernel's, 2026-06-22).
+    Cap is generous — a multi-op JSON reply is longer than the old single line."""
     user = "<segment>\n%s\n</segment>\n<open-goals>\n%s\n</open-goals>" % (segment_text, menu_text)
-    if human:
+    if nudge:
+        user += ("\n<note>This segment is a romp NUDGE — an automated status check on a goal still showing "
+                 "'working', NOT a real user request. RESOLVE the goal: mark it DONE if its outcome is "
+                 "delivered with nothing left for the user, or BLOCK it if it needs a decision or answer from "
+                 "the USER (the why = that ask). Do NOT file a plain step. EXCEPTION: if the goal is waiting "
+                 "on a PEER or another session (not the user), or the agent has genuinely resumed real work on "
+                 "it, keep it working — never force a false done/block.</note>")
+    elif human:
         user += ("\n<note>This segment contains a real user message, so it MUST be placed "
                  "(mint/sub/done/block) — do NOT return a skip.</note>")
     return _judge_run(model or TRIAGE_MODEL, PLAN_SYS, user, effort=effort, judge="planner").strip()[:2000]
@@ -1285,7 +1295,9 @@ def plan_units(session):
     files under the target); `followup` = that goal-node id, or None.
     A PEER/postal segment yields a 'delegation' work unit (the user 2026-06-22, via link_audit): its work
     is filed UNDER the goal the COURIER planted for it, so a handed-off goal gets the same sub/done/block
-    expressivity as a human-minted top. Empty segments drop."""
+    expressivity as a human-minted top. A romp NUDGE segment (auto-nudge / Nudge button, on a goal) yields a
+    'nudge' unit instead of a plain work unit: the planner must RESOLVE the goal to done/block, not file a
+    step (the user 2026-06-22, via track_change). Empty segments drop."""
     turns = session["turns"]
     out = []
     for ti, turn in enumerate(turns):
@@ -1308,7 +1320,10 @@ def plan_units(session):
                     if ptext:
                         out.append((seg["id"], "prompt", seg["t"], ptext, human, followup))
                 continue                                  # no work unit yet — its work hasn't ended
-            out.append((seg["id"], "work", seg["t"], work_text, human, followup))   # ENDED segment → WORK-run
+            if _seg_nudge(seg) and followup:              # a romp NUDGE on a goal → RESOLVE it (done/block), not a plain step
+                out.append((seg["id"], "nudge", seg["t"], work_text, False, followup))
+            else:
+                out.append((seg["id"], "work", seg["t"], work_text, human, followup))   # ENDED segment → WORK-run
     return out
 
 
@@ -1385,7 +1400,7 @@ def _unit_key(seg_id, phase):
     seg_id (back-compat — existing stores' placements[seg_id] already mean 'work placed'); the PROMPT-run
     uses seg_id+"#p"; the postal-DELEGATION work-run uses seg_id+"#d" (distinct from the COURIER's own
     seg_id placement for the same segment, the user 2026-06-22), so the phases dedup independently."""
-    if phase == "work":
+    if phase in ("work", "nudge"):                  # a nudge IS the segment's one work-run, deduped by seg_id
         return seg_id
     if phase == "delegation":
         return seg_id + "#d"
@@ -1447,6 +1462,29 @@ def _plan_session(fsid, path, now):
             if not ops:
                 ops = [{"do": "sub", "under": 1, "text": _seg_label(text), "why": "work handed off from a peer"}]
             apply_plan(store, seg_id, seg_t, ops, sub, place_key=seg_id + "#d")
+            placed += 1
+            _group_store(store, fsid, now)
+            save_goals(fsid, store)
+            continue
+        if phase == "nudge":                          # romp NUDGE → RESOLVE the goal (done/block over a plain step)
+            target = followup
+            if not (target and target in store["nodes"]):
+                continue                              # no resolvable target → skip (re-examinable)
+            _reopen(store, target)                     # unseal if the closer already completed it (refused if view-cleared)
+            sub = [nd for nd in open_menu(store)       # SCOPED menu: the goal + its open descendants, goal first (#1)
+                   if nd["id"] == target or _top_ancestor(store["nodes"], nd["id"]) == target]
+            sub.sort(key=lambda nd: (nd["id"] != target, nd.get("t", 0)))
+            if not sub or sub[0]["id"] != target:
+                continue                              # goal not open (e.g. view-cleared) → don't plan
+            ops = _parse_plan(plan_llm(text, _menu_text(store, sub), nudge=True), len(sub)) or []
+            # the must-resolve note pushes DONE/BLOCK on the goal; a MINT is re-rooted as a sub under it, and a
+            # genuine-progress SUB files under it too. Skips drop; an empty reply falls back to one sub (never
+            # force a false resolution — the note already exempts a peer-wait / a genuine resume).
+            ops = [{"do": "sub", "under": 1, "text": o.get("text"), "why": o.get("why")}
+                   if o["do"] == "mint" else o for o in ops if o["do"] != "skip"]
+            if not ops:
+                ops = [{"do": "sub", "under": 1, "text": _seg_label(text), "why": "followed up on this goal"}]
+            apply_plan(store, seg_id, seg_t, ops, sub)
             placed += 1
             _group_store(store, fsid, now)
             save_goals(fsid, store)
@@ -2518,6 +2556,16 @@ def _seg_followup(seg):
         return None
     m = FOLLOWUP_RE.search(_atom_text(trig))
     return m.group(1) if m else None
+
+
+def _seg_nudge(seg):
+    """True if this segment's trigger is a romp NUDGE — the auto-nudge / Nudge-button injection (the
+    romp-injected marker), as opposed to a follow-up the user TYPED (which carries only romp-goal-id). A
+    nudge is an automated status check on a 'working' goal, so the planner RESOLVES it to done/block rather
+    than filing a plain step (the user 2026-06-22, via track_change). Mirrors _seg_followup's lookup."""
+    atoms = seg.get("atoms") or []
+    trig = next((a for a in atoms if a.get("uuid") == seg.get("trigger")), None) or (atoms[0] if atoms else None)
+    return bool(trig and NUDGE_MARKER_RE.search(_atom_text(trig)))
 
 
 def _parse_courier(raw, menu_len):
