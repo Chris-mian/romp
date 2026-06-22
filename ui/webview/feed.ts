@@ -84,6 +84,7 @@ interface AskItem {
   blockSummary?: string | null;                    // block-distiller's decision brief for a BLOCKED goal → the blocked card's one auto-written line (kernel 466393c); null until produced
   summaryAnchorUuid?: string | null;               // click the summary line → the biggest contiguous assistant-text block in the work span (kernel _seg_best_text; the user 2026-06-22)
   origin?: { peer: string; peerSid: string; color: { bg: string; fg: string } | null } | null;  // courier handoff: planted by a peer's message → "↪ from <peer>"
+  waitingOn?: { peerSid: string; name: string; color: { bg: string; fg: string } | null; inCycle: boolean } | null;  // unanswered msg out to a live peer → "⏳ waiting on <peer>" chip (kernel _wait_for_graph; the user 2026-06-22)
   groupTitle?: string;                             // host: this ask shares a typed turn with siblings → the group's title
   groupN?: number;                                 // host: sibling count for that turn (>1 ⇒ fold into one group card)
   provisional?: boolean;                           // a LIVE-PROMPT placeholder (kernel _provisional_card): the session is working an in-progress turn the planner hasn't classified yet. No goal node (empty tree) — dim, non-interactive, no clear/nudge/modal; replaced by the real card once the planner places the segment.
@@ -432,6 +433,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   const actions = el("div", "fask-actions");
   const reBadge = el("span", "fask-reopened"); reBadge.textContent = "reopened"; reBadge.title = "a question arrived after you cleared this"; reBadge.style.display = "none";
   const fupBadge = el("span", "fask-followedup"); fupBadge.textContent = "↻ Followed up"; fupBadge.title = "you followed up — reopened to Working; the planner will re-file it on the next pass"; fupBadge.style.display = "none";
+  const waitOnBadge = el("span", "fask-waiton"); waitOnBadge.style.display = "none";   // "⏳ waiting on <peer>" / "⟲ deadlock" (the user 2026-06-22)
   const blkBadge = el("a", "fask-blocked"); blkBadge.style.display = "none";   // ⏸ live permission/picker block → click opens the session
   const apiBadge = el("span", "fask-apierror"); apiBadge.textContent = "⚠ API error"; apiBadge.style.display = "none";   // red: session stopped on an API error
   const apiRetry = el("button", "fdismiss fretry"); apiRetry.textContent = "Retry"; apiRetry.title = "send “retry” into this session to resume"; apiRetry.style.display = "none";
@@ -458,7 +460,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   // "↪ from <peer>" provenance + the "reopened"/"↻ Followed up" chips ride the name row's right side;
   // row2 wraps them onto a new line when there isn't room, so the provenance never overlaps a chip
   // (the user 2026-06-20). origin sits left of the chips, matching the "from … · Followed up" reading order.
-  row2.append(idwrap, origin, reBadge, fupBadge);
+  row2.append(idwrap, origin, reBadge, fupBadge, waitOnBadge);
   // ROW 3 — timestamp bottom-left · action buttons bottom-right
   const row3 = el("div", "fask-row3"); row3.append(time, actions);
   // the user's handoff spec (2026-06-10): below the main session, list the OTHER
@@ -561,6 +563,7 @@ function makeAskCard(it: AskItem): HTMLElement {
 
   const a = card as any;
   a._title = title; a._name = name; a._time = time; a._reopened = reBadge; a._followedup = fupBadge;
+  a._waitOn = waitOnBadge;
   a._blocked = blkBadge; a._wait = waitBadge;
   a._apiBadge = apiBadge; a._apiRetry = apiRetry; a._nudge = nudge; a._cardFup = cardFup; a._clr = clr;
   a._delegations = delegations;
@@ -617,6 +620,19 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   // "↻ Followed up" while the kernel has optimistically reopened a settled card you followed up on, before
   // the judge re-files it (it.followupPending self-clears on the next pass). (judges delegation, 2026-06-17.)
   a._followedup.style.display = it.followupPending ? "" : "none";
+  // "waiting on <peer>" — this session has an unanswered message out to a live peer (kernel _wait_for_graph):
+  // held in Working, not stalled, so auto-nudge skips it. A mutual-wait CYCLE shows as a red "deadlock" chip.
+  const wo = it.waitingOn;
+  if (wo) {
+    a._waitOn.textContent = (wo.inCycle ? "⟲ deadlock: " : "⏳ waiting on ") + wo.name;
+    a._waitOn.title = wo.inCycle
+      ? "MUTUAL WAIT — this session and " + wo.name + " are each waiting on the other (a deadlock); auto-nudge surfaces it instead of nudging"
+      : "this session has an unanswered message out to " + wo.name + " — waiting on its reply, not stalled, so auto-nudge skips it";
+    a._waitOn.className = "fask-waiton" + (wo.inCycle ? " fask-waiton-cycle" : "");
+    a._waitOn.style.display = "";
+  } else {
+    a._waitOn.style.display = "none";
+  }
   a._nudge.style.display = (it.column === "working" && !it.provisional) ? "" : "none";   // Nudge only on a real working card (the user 2026-06-18)
   a._cardFup.style.display = ((it.column === "needs_input" || it.column === "completed") && !it.provisional) ? "" : "none";   // Follow up on blocked/completed cards (the user 2026-06-22)
   a._clr.style.display = it.provisional ? "none" : "";   // a placeholder has nothing to curate — no Clear

@@ -22,7 +22,7 @@ test("the card's ONE auto-line = distiller summary (else '(generating…)'), why
   assert.match(FEED, /"\(generating…\)"/);
   // blocked → blockSummary (title blockWhy); completed → summary (title doneWhy)
   assert.match(FEED, /setAutoLine\(a\._blockwhy, it\.blockSummary, it\.blockWhy, it\.column === "needs_input"/);
-  assert.match(FEED, /setAutoLine\(a\._donewhy, it\.summary, it\.doneWhy, it\.column === "completed"\)/);
+  assert.match(FEED, /setAutoLine\(a\._donewhy, it\.summary, it\.doneWhy, it\.column === "completed", it\.summaryAnchorUuid\)/);
   // the why is the TOOLTIP, never the visible line; the old explanations gate is gone
   assert.doesNotMatch(FEED, /showWhy/);
 });
