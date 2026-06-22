@@ -735,6 +735,67 @@ class PlanApply(unittest.TestCase):
         self.assertEqual(jd.open_menu(s), [], "the completed top AND its still-open child are sealed out of the menu")
 
 
+class ClearedSeal(unittest.TestCase):
+    """A goal you CROSSED OFF the feed (view-cleared, in STATE/cleared.jsonl) stays sealed: the planner won't
+    sub/amend/mint under it (open_menu seals it), and a follow-up to it does NOT revive it (_reopen refuses a
+    view-cleared target) — so new work lands on a FRESH goal, never the cleared one (the user 2026-06-22).
+    Sandboxes STATE so the real cleared.jsonl never bleeds in."""
+
+    def setUp(self):
+        self._saved_state = jd.STATE
+        self._td = tempfile.mkdtemp()
+        jd.STATE = Path(self._td)
+
+    def tearDown(self):
+        jd.STATE = self._saved_state
+        shutil.rmtree(self._td, ignore_errors=True)
+
+    def _view_clear(self, *ids):
+        with (jd.STATE / "cleared.jsonl").open("a") as f:
+            for i in ids:
+                f.write(json.dumps({"id": i, "t": T0, "op": "clear"}) + "\n")
+
+    def test_open_menu_seals_a_view_cleared_top(self):
+        # The g8 case: a view-cleared top is sealed even when its NODE `cleared` flag is False (a follow-up
+        # earlier un-set it) — so the planner can never add new work to a goal you crossed off.
+        s = _store()
+        jd.apply_plan(s, "s1", T0, [{"do": "mint", "why": "x", "text": "kept top"}], [])
+        jd.apply_plan(s, "s2", T0 + 10, [{"do": "mint", "why": "x", "text": "cleared top"}], jd.open_menu(s))
+        cleared = s["placements"]["s2"]
+        self.assertEqual({nd["text"] for nd in jd.open_menu(s)}, {"kept top", "cleared top"}, "both open pre-clear")
+        self._view_clear(cleared)
+        self.assertFalse(s["nodes"][cleared].get("cleared"), "node flag is NOT set — only the view-clear")
+        self.assertEqual({nd["text"] for nd in jd.open_menu(s)}, {"kept top"},
+                         "the view-cleared top drops out of the planner's menu")
+
+    def test_view_cleared_seal_covers_the_subtree(self):
+        s = _store()
+        jd.apply_plan(s, "s1", T0, [{"do": "mint", "why": "x", "text": "cleared top"}], [])
+        jd.apply_plan(s, "s2", T0 + 10, [{"do": "sub", "why": "x", "under": 1, "text": "open child"}], jd.open_menu(s))
+        self._view_clear(s["placements"]["s1"])
+        self.assertEqual(jd.open_menu(s), [], "a view-cleared top seals its still-open child out of the menu too")
+
+    def test_reopen_refuses_a_view_cleared_goal(self):
+        # A follow-up to a goal you crossed off must NOT drag it back — even in the g8 state (node flag False).
+        s = _store()
+        jd.apply_plan(s, "s1", T0, [{"do": "mint", "why": "x", "text": "G"}], [])
+        gid = s["placements"]["s1"]
+        s["nodes"][gid]["nodeComplete"] = True                   # completed, node-cleared flag left False (the g8 state)
+        self._view_clear(gid)
+        jd._reopen(s, gid)
+        self.assertTrue(s["nodes"][gid]["nodeComplete"], "a view-cleared goal is NOT reopened by a follow-up")
+
+    def test_reopen_still_revives_a_normal_completed_goal(self):
+        # the guard is narrow: a completed goal you did NOT cross off still reopens for a follow-up.
+        s = _store()
+        jd.apply_plan(s, "s1", T0, [{"do": "mint", "why": "x", "text": "G"}], [])
+        gid = s["placements"]["s1"]
+        s["nodes"][gid]["nodeComplete"] = True
+        jd._reopen(s, gid)
+        self.assertFalse(s["nodes"][gid]["nodeComplete"], "a normal completed goal still reopens (no view-clear)")
+        self.assertTrue(s["nodes"][gid].get("everDone"), "and the durable everDone marker is stamped")
+
+
 class PlanRef(unittest.TestCase):
     """A done/block op targets a node CREATED earlier in the SAME reply via "ref" (1-based among this
     reply's mints/subs) — the multi-op replacement for the old DONE-self, composing with goal-indexed ops."""

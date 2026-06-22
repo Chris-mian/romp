@@ -824,15 +824,18 @@ def open_menu(store, cap=20):
     sealing on it matches exactly what the board shows as done. Cap 20 covers every real session (max ~18
     open goals) while bounding the prompt on a pathological one, so topic-matching can scan the WHOLE list."""
     nodes = store["nodes"]
+    vc = _view_cleared()                               # ids the user crossed off the feed (cleared.jsonl) — SEALED too:
+    #                                                    a goal you cleared must never get new sub/amend work, even if a
+    #                                                    follow-up earlier un-set its node `cleared` flag (the user 2026-06-22).
 
-    def _sealed(nid):                                  # self or any ancestor complete/cleared/settled-done → inside a done subtree
+    def _sealed(nid):                                  # self or any ancestor complete/cleared/view-cleared/settled-done → sealed
         seen = set()
         while nid and nid not in seen:
             seen.add(nid)
             nd = nodes.get(nid)
             if not nd:
                 return False
-            if nd.get("nodeComplete") or nd.get("cleared") or nd.get("settledDone"):
+            if nd.get("nodeComplete") or nd.get("cleared") or nd.get("settledDone") or nid in vc:
                 return True
             nid = nd.get("parentId")
         return False
@@ -1305,9 +1308,13 @@ def _reopen(store, gid):
     nodeComplete + cleared on the node (unsealing its subtree from open_menu) and unblock it and its
     ancestors. Clears followupPending — the OFFICIAL reopen supersedes the kernel's optimistic one. The
     settled gate re-completes it once the follow-up work is done. This is the ONLY exception to the
-    sealed-completed-subtree rule (the user 2026-06-17)."""
+    sealed-completed-subtree rule (the user 2026-06-17) — EXCEPT a goal the user crossed off the feed
+    (view-cleared): that stays sealed, a follow-up to it must NOT revive it, so the caller places the work
+    as a fresh goal instead (the user 2026-06-22)."""
     nodes = store["nodes"]
     if gid not in nodes:
+        return
+    if gid in _view_cleared():                         # crossed off the feed → stays sealed; don't un-seal it
         return
     if nodes[gid].get("nodeComplete"):                 # reopening a DONE node: stamp the durable everDone marker
         nodes[gid]["everDone"] = True                  # BEFORE clearing nodeComplete, so the grouper never relinks it
