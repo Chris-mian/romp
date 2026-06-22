@@ -81,5 +81,72 @@ class GlowByIdRouting(unittest.TestCase):
         self.assertNotIn('"ranges": [[t0, t1]]', src)                  # ...not the old +/-2s time window
 
 
+class SegmentOfUuid(unittest.TestCase):
+    """The inverse resolver behind the chat-dot hover: one hovered atom uuid -> (its segment id, ALL of that
+    segment's atom uuids). Pins #2 (which feed card owns it) + #3 (which sibling rows light) to EXACT segment
+    membership, never a time window. _sessions/_parse/em.segments are stubbed so no on-disk fixture is needed."""
+
+    SEGS = [
+        {"id": "s1", "atoms": [{"uuid": "u1"}, {"uuid": "a1"}]},
+        {"id": "s2", "atoms": [{"uuid": "u2"}, {"uuid": "a2"}, {"uuid": "a3"}]},
+    ]
+
+    def setUp(self):
+        self._orig = (km._sessions, km._parse, km.em.segments)
+        km._sessions = lambda now: [{"sid": "S", "path": "P"}]
+        km._parse = lambda path, sid, now: {"turns": [{"segs": self.SEGS}]}
+        km.em.segments = lambda turn: turn["segs"]
+
+    def tearDown(self):
+        km._sessions, km._parse, km.em.segments = self._orig
+
+    def test_any_atom_resolves_to_its_segment_and_ALL_its_uuids(self):
+        # hovering the middle atom of s2 lights the whole segment (all 3 rows) and names s2 as the card owner
+        self.assertEqual(km._segment_of_uuid("S", "a2", 0), ("s2", ["u2", "a2", "a3"]))
+
+    def test_the_trigger_atom_resolves_the_same_as_any_other(self):
+        self.assertEqual(km._segment_of_uuid("S", "u1", 0), ("s1", ["u1", "a1"]))
+
+    def test_unknown_uuid_is_None_not_a_throw(self):
+        self.assertEqual(km._segment_of_uuid("S", "nope", 0), (None, []))
+
+    def test_empty_uuid_short_circuits(self):
+        # the chat 'leave' event carries no uuid -> resolve to nothing -> the handler then clears both surfaces
+        self.assertEqual(km._segment_of_uuid("S", "", 0), (None, []))
+
+    def test_unknown_session_is_None(self):
+        self.assertEqual(km._segment_of_uuid("MISSING", "a2", 0), (None, []))
+
+
+class ChatAndFeedHoverRouting(unittest.TestCase):
+    """The hover graph is now bidirectional and BY ID: a feed-card hover glows its chat rows (#1 feed->chat),
+    and a chat-dot hover lights the owning feed card (#2) + every sibling row in its segment (#3). Pin the
+    kernel wiring (the functional resolvers are pinned above + in the owner's fixture suite)."""
+
+    SRC = open(os.path.join(BIN, "romp-kernel")).read()
+
+    def test_inverse_resolver_exists(self):
+        self.assertTrue(hasattr(km, "_segment_of_uuid"), "the uuid->segment resolver exists")
+
+    def test_feed_card_hover_glows_chat_by_uuid(self):
+        # #1: showAskPath resolves the goal's segments -> their atom uuids -> a chat glow (distinct var gsid)
+        self.assertIn("_segment_atom_uuids(gsid, seg_ids", self.SRC)
+        self.assertIn('_send_to_app("chat", {"type": "glowTurns"', self.SRC)
+
+    def test_chat_dot_hover_lights_owning_feed_card(self):
+        # #2: the dotHover branch maps the hovered atom's segment -> its top feed card(s)
+        self.assertIn("_segment_of_uuid(hsid, huuid", self.SRC)
+        self.assertIn("_cards_for_segments(hsid, [seg_id])", self.SRC)
+        self.assertIn('_send_to_app("feed", {"type": "hoverCards"', self.SRC)
+
+    def test_chat_dot_hover_glows_its_whole_segment(self):
+        # #3: the same branch glows EVERY atom uuid in the hovered segment (the sibling dots), by id
+        self.assertIn('"sid": hsid, "uuids": seg_uuids', self.SRC)
+
+    def test_ledger_bullet_hover_stays_timeline_only(self):
+        # the feed/chat extension is gated to dotHover; a ledgerHover (TOC bullet) must not stomp the glow
+        self.assertIn('if msg.get("type") == "dotHover":', self.SRC)
+
+
 if __name__ == "__main__":
     unittest.main()

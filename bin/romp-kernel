@@ -3256,6 +3256,27 @@ def _segment_atom_uuids(sid, seg_ids, now):
     return out
 
 
+def _segment_of_uuid(sid, uuid, now):
+    """Inverse entry of _segment_atom_uuids: given ONE chat atom uuid, return its segment as
+    (seg_id, [every atom uuid in that segment]) — or (None, []). Lets a chat-dot hover light the whole
+    segment's rows (#3) and resolve to the owning feed card (#2) by EXACT id, never a time window.
+    _parse is cache-backed (cheap)."""
+    if not uuid:
+        return (None, [])
+    sess = next((s for s in _sessions(now) if s["sid"] == sid), None)
+    if not sess:
+        return (None, [])
+    try:
+        for turn in _parse(sess["path"], sid, now)["turns"]:
+            for seg in em.segments(turn):
+                us = [at["uuid"] for at in seg["atoms"] if at.get("uuid")]
+                if uuid in us:
+                    return (seg["id"], us)
+    except Exception:
+        pass
+    return (None, [])
+
+
 def _send_client(c, key, msg):
     """Send a payload to ONE client only if it differs from what that client last received (per-client
     dedup, key = the slot e.g. ("chat", sid)) — so the periodic push re-sends nothing when unchanged."""
@@ -4500,16 +4521,33 @@ class Handler(BaseHTTPRequestHandler):
                     ids = msg["ids"] if isinstance(msg.get("ids"), list) else ([msg["id"]] if msg.get("id") else [])
                     _send_to_app("timeline", {"type": "hover", "ids": ids, "nonce": _next_nonce()})
                 elif msg and msg.get("type") == "showAskPath":
-                    # feed card hover/click/leave → light that goal's work-bars on the timeline (reverse
-                    # of the timeline→chat jump). `off` clears; otherwise resolve the goal's subtree segments.
-                    ids = [] if msg.get("off") else _goal_segments(msg.get("itemId") or "")
-                    _send_to_app("timeline", {"type": "hover", "ids": ids, "nonce": _next_nonce()})
+                    # feed card hover/click/leave → light that goal's work-bars on the timeline AND glow its
+                    # chat rows (#1 feed→chat). `off` clears both; otherwise resolve the goal's subtree
+                    # segments by EXACT id and light their atom uuids (no time window).
+                    item_id = msg.get("itemId") or ""
+                    seg_ids = [] if msg.get("off") else _goal_segments(item_id)
+                    _send_to_app("timeline", {"type": "hover", "ids": seg_ids, "nonce": _next_nonce()})
+                    gsid = item_id.rsplit(":", 1)[0] if (item_id and not msg.get("off")) else ""
+                    uuids = _segment_atom_uuids(gsid, seg_ids, time.time()) if gsid else []
+                    groups = [{"sid": gsid, "uuids": uuids}] if uuids else []
+                    _send_to_app("chat", {"type": "glowTurns", "groups": groups, "mids": []})
                 elif msg and msg.get("type") in ("dotHover", "ledgerHover"):
                     # chat message / TOC-bullet hover → light the matching timeline glyph. The event/bullet
                     # carries tlId (build_session): a prompt → the DOT, work → the BAR. Absent → clear.
                     tl = msg.get("tlId")
                     _send_to_app("timeline", {"type": "hover", "ids": ([tl] if tl else []),
                                               "nonce": _next_nonce()})
+                    if msg.get("type") == "dotHover":
+                        # a chat-dot hover ALSO lights the owning feed card (#2) and every other row in the
+                        # same segment (#3), resolved by EXACT segment from the hovered atom uuid. The leave
+                        # event (no sid/uuid) resolves to nothing → clears both.
+                        hsid, huuid = str(msg.get("sid") or ""), str(msg.get("uuid") or "")
+                        seg_id, seg_uuids = _segment_of_uuid(hsid, huuid, time.time()) if (hsid and huuid) else (None, [])
+                        _send_to_app("feed", {"type": "hoverCards",
+                                              "keys": _cards_for_segments(hsid, [seg_id]) if seg_id else [],
+                                              "eid": None})
+                        groups = [{"sid": hsid, "uuids": seg_uuids}] if seg_uuids else []
+                        _send_to_app("chat", {"type": "glowTurns", "groups": groups, "mids": []})
                 elif msg and msg.get("type") == "timelineHover":
                     # the REVERSE of the feed/chat→timeline hovers: a timeline bar hover lights the feed
                     # card that owns that work (hoverCards, resolved by segment) AND glows the chat turns of
