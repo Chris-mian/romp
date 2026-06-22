@@ -176,9 +176,15 @@ body { display: flex; flex-direction: column; }
    crowding the name into a mid-word wrap (the user 2026-06-16). */
 .fask-id { flex: 1 1 auto; min-width: 0; display: flex; align-items: baseline; gap: 6px; }
 .fask-id .fname { flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }   /* one line; ellipsis only if truly too long — never mid-word */
-.fask-actions { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; margin-left: auto; }
-/* row 3 — age bottom-left, status badges + Clear bottom-right */
-.fask-row3 { display: flex; align-items: baseline; gap: 8px; margin-top: 6px; }
+/* ROBUST button wrapping (the user 2026-06-22): the action row TAKES the width left after the age and
+   right-aligns its buttons (justify-content:flex-end replaces margin-left:auto), WRAPPING them onto extra
+   lines when they don't fit — so Retry/Nudge/Follow up/Clear can never run off the card's edge. Flexbox
+   detects the per-line overflow and adds lines on its own; no per-button width math, no card-specific tuning.
+   min-width:0 lets it shrink to the card so the wrap actually triggers instead of overflowing. */
+.fask-actions { flex: 1 1 auto; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; }
+/* row 3 — age bottom-left, buttons bottom-right. Also wraps (backstop): if the action row can't even sit
+   beside the age, it drops to its own line below it rather than overflowing. */
+.fask-row3 { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; row-gap: 6px; margin-top: 6px; }
 .fask-row3 .ftime { flex: 0 0 auto; }
 /* card body is clickable (single → modal, double → pin). Hover lights a white
    ring + the timeline journey; pin persists it. Order matters: .focused after
@@ -242,6 +248,12 @@ body { display: flex; flex-direction: column; }
 .fask-followedup { flex: 0 0 auto; font-size: 0.64em; font-weight: 700; letter-spacing: 0.04em;
   padding: 1px 6px; border-radius: 999px; line-height: 1.4;
   color: #5aa2ff; border: 1px solid rgba(90, 162, 255, 0.6); }
+/* "waiting on <peer>" — an unanswered message out to a live peer; held in Working, not stalled (the user
+   2026-06-22); teal pill, red for a mutual-wait deadlock cycle */
+.fask-waiton { flex: 0 0 auto; font-size: 0.64em; font-weight: 700; letter-spacing: 0.04em;
+  padding: 1px 6px; border-radius: 999px; line-height: 1.4;
+  color: #4ec9b0; border: 1px solid rgba(78, 201, 176, 0.6); }
+.fask-waiton-cycle { color: #ff6a6a; border-color: rgba(255, 106, 106, 0.7); }
 
 /* ---- ask DAG tree (expanded body) — nodes only; click a node for its history ---- */
 .fexpand-slot { position: relative; }

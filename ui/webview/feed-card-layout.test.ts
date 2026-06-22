@@ -81,3 +81,14 @@ test("a cleared card CONTRACTS in on itself (scale + collapse), not a slide to o
   assert.match(CSS, /@keyframes fask-dismiss \{[\s\S]*transform: scale\(0\.78\)[\s\S]*max-height: 0/);
   assert.match(CSS, /prefers-reduced-motion: reduce[\s\S]*\.fitem\.dismissing \{ animation: none/);
 });
+
+test("the footer action row WRAPS its buttons so they can NEVER run off the card edge (the user 2026-06-22)", () => {
+  // ROBUST, GENERAL mechanism (not per-button width tuning, which kept regressing): .fask-actions takes the
+  // width left after the age, right-aligns, and flex-WRAPS its buttons onto extra lines when they don't fit;
+  // .fask-row3 wraps as a backstop. min-width:0 lets it shrink to the card so the wrap actually triggers.
+  // Verified headless: 4 footer buttons on a 230px card wrap to 2 lines with ZERO overflow.
+  assert.match(CSS, /\.fask-actions \{[^}]*flex: 1 1 auto;[^}]*min-width: 0;[^}]*flex-wrap: wrap;[^}]*justify-content: flex-end/);
+  assert.match(CSS, /\.fask-row3 \{[^}]*flex-wrap: wrap/);
+  // margin-left:auto is GONE — justify-content:flex-end right-aligns the (now wrapping) buttons instead
+  assert.doesNotMatch(CSS, /\.fask-actions \{[^}]*margin-left: auto/);
+});
