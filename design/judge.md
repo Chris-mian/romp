@@ -220,9 +220,17 @@ core. Each prompt is decomposed from the corresponding part of the old fused
   - Prompt sketch: "Here is a segment and the session's open goals. Place it: a new
     top-level request → mint; a step or refinement of goal #N → sub-goal/amend under
     it. Did the work finish a goal (complete #N)? Does it now need the user?"
-- **courier** (next; spec locked 2026-06-15) — the placer for `author:{peer}` (postal)
-  segments. The planner SKIPS those (the courier owns them, else double-placement);
-  the planner only files the recipient's subsequent WORK segments under the planted goal.
+- **courier** (shipped) — the placer for `author:{peer}` (postal) segments. The planner
+  skips PLACING them (the courier owns the plant, else double-placement), but its WORK-run
+  then files the recipient's work UNDER the planted goal with the SAME expressivity a
+  human-minted top gets (the human 2026-06-22, g54 — a handoff must not be second-class): it
+  reopens G (refused only if the user view-cleared it), scopes the planner menu to G + its open
+  descendants, and re-roots any top-level mint as a sub of G — so a delegated goal grows real
+  sub/done/block structure, never a competing top. Keyed `(segment-id, "#d")` so it never
+  collides with the courier's bare-`seg_id` placement; work-run only (peer segs aren't human,
+  so no prompt-run); SKIPS WITHOUT MARKING when the courier hasn't planted yet
+  (`placements[seg_id]` unset) or planted `"fyi"` (coordination), staying re-examinable so
+  courier-after-planner ordering resolves on the next pass.
   - In: the peer-message segment + the **sender's** open goals (numbered), resolved
     **as-of-send** (requires global cross-session time-order — process peer segments
     oldest-first across sessions so the sender's tree is its send-time state).
