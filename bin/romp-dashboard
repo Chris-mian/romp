@@ -121,8 +121,15 @@ row_is_stale() {
 }
 
 shorten_dir() {
+    # Replace a leading $HOME with ~. Done with an explicit case (not
+    # ${dir/#$HOME/~}) because some bash builds tilde-expand the replacement
+    # back to $HOME, which broke the prefix-shortening on Linux.
     local dir="$1"
-    echo "${dir/#$HOME/~}"
+    case "$dir" in
+        "$HOME"/*) echo "~/${dir#"$HOME"/}" ;;
+        "$HOME")   echo "~" ;;
+        *)         echo "$dir" ;;
+    esac
 }
 
 # Truncate a (plain, escape-free) string to at most <max> display chars,

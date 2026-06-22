@@ -201,7 +201,9 @@ run_romp() {
     run run_romp myproject
     [ "$status" -eq 0 ]
     local perms
-    perms="$(stat -f '%Lp' "$XDG_STATE_HOME/romp" 2>/dev/null || stat -c '%a' "$XDG_STATE_HOME/romp")"
+    # GNU stat (-c) first, BSD/macOS stat (-f) as fallback. The reverse order
+    # breaks on Linux, where `stat -f` means --file-system and mangles output.
+    perms="$(stat -c '%a' "$XDG_STATE_HOME/romp" 2>/dev/null || stat -f '%Lp' "$XDG_STATE_HOME/romp")"
     [ "$perms" = "700" ]
 }
 
