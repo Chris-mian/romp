@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="prototypes/romp-icon/romp-wordmark.png" alt="romp" width="440">
+</p>
+
 # romp
 
 A multi-agent session manager for Claude Code on tmux. romp turns a fleet of
