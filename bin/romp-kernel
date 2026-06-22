@@ -882,6 +882,22 @@ def _tmux_send(name, text, model_cmd=False, _async=True):
     threading.Thread(target=go, daemon=True).start() if _async else go()
 
 
+def _parse_send_body(raw):
+    """Parse a POST /send body into {"who","text"}, or None if invalid. who = id or
+    name; text must be a non-empty string. Pure (no I/O) so the route is unit-testable."""
+    try:
+        body = json.loads(raw or b"{}")
+    except Exception:
+        return None
+    if not isinstance(body, dict):
+        return None
+    who = str(body.get("id") or body.get("name") or "")
+    text = body.get("text")
+    if not who or not isinstance(text, str) or not text:
+        return None
+    return {"who": who, "text": text}
+
+
 # The permission mode has NO slash command — it's the shift+tab cycle (mirrored from the terminal UI,
 # the user 2026-06-16). Set an absolute mode by sending shift+tab (BTab) the right number of times,
 # stepping forward from the session's CURRENT mode (the live @claude-permission-mode var) to the target.
@@ -4347,10 +4363,11 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         q = parse_qs(u.query)
         self._set_cookie = None
+        raw_body = b""
         try:
-            n = int(self.headers.get("Content-Length") or 0)   # drain any body (keep-alive safety)
+            n = int(self.headers.get("Content-Length") or 0)   # read the body (keep-alive safety + POST payloads)
             if n:
-                self.rfile.read(n)
+                raw_body = self.rfile.read(n)
         except Exception:
             pass
         try:
@@ -4380,6 +4397,18 @@ class Handler(BaseHTTPRequestHandler):
                 # hooks through (a tailnet client would need the serve token, same as every other route).
                 _producer_wake.set()
                 return self._send(200, json.dumps({"ok": True, "woke": True}), "application/json")
+            if u.path == "/send":
+                # Human→agent input channel — the SAME delivery the chat composer's WS
+                # sendMessage uses (_tmux_send), exposed as a one-shot POST so an external
+                # local tool (the Obsidian track-changes plugin) can hand a session input
+                # WITHOUT touching tmux itself: the kernel owns the transport. Body:
+                # {"id"|"name": <session>, "text": <body>}. The loopback Host gate in
+                # _authorize already lets local clients through (tailnet needs the token).
+                body = _parse_send_body(raw_body)
+                if not body:
+                    return self._send(400, json.dumps({"ok": False, "error": "id and text required"}), "application/json")
+                _tmux_send(_name_of(body["who"]) or body["who"], body["text"])
+                return self._send(200, json.dumps({"ok": True}), "application/json")
             return self._send(404, "not found", "text/plain")
         except (BrokenPipeError, ConnectionResetError):
             pass
