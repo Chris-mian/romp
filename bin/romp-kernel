@@ -789,11 +789,15 @@ def _tmux_sessions():
 SESSIONS_FMT = "#{@romp}|#{session_name}|#{@claude-state}|#{@claude-dir}|#{@identity-bg}|#{@identity-fg}"
 
 
-def _session_list():
+def _tmux_session_list():
     """Romp sessions with the fields an external tool needs (the Obsidian Cmd+M picker + diff chips):
     name, claude-state, working dir, identity bg/fg. The kernel runs the tmux query (it's on the host)
     and serves it at GET /sessions, so the plugin reads sessions WITHOUT shelling to tmux — a future
-    romp-off-tmux changes only here. Best-effort [] when tmux is absent."""
+    romp-off-tmux changes only here. Best-effort [] when tmux is absent.
+    NB: distinct name from the picker's _session_list(now, tmux) — they used to collide (both `_session_list`),
+    and since this 0-arg def came later it SHADOWED the picker's, so the webview's requestSessions handler
+    called it with 2 args → TypeError → the WS thread died → reconnect blanked the chat + the picker showed no
+    existing sessions (the user 2026-06-22). Keep the names distinct."""
     try:
         r = subprocess.run(["tmux", "list-sessions", "-F", SESSIONS_FMT],
                            capture_output=True, text=True, timeout=2.5)
@@ -4351,7 +4355,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, json.dumps(_token_analytics(int(time.time()), w)),
                                   "application/json", cache="no-cache")
             if p == "/sessions":                              # romp session list for external tools (the Obsidian plugin)
-                return self._send(200, json.dumps(_session_list()), "application/json", cache="no-cache")
+                return self._send(200, json.dumps(_tmux_session_list()), "application/json", cache="no-cache")
             # HTML pages are served no-cache so a reload always gets the freshest markup — which carries
             # the latest ?v= bundle url, so even a cached old bundle is bypassed (stale-client fix).
             if p in ("/", ""):

@@ -2448,5 +2448,31 @@ class HostSuspend(unittest.TestCase):
             km._downtime[:] = saved
 
 
+class SessionListNameCollision(unittest.TestCase):
+    """Regression (the user 2026-06-22): two functions were both named _session_list — the picker payload
+    builder _session_list(now, tmux) and a 0-arg tmux query for GET /sessions (commit 7b89bd9). The 0-arg
+    def came LATER, so it SHADOWED the picker's. The webview's `requestSessions` handler calls it with two
+    args → TypeError → the WS handler thread died → the socket dropped → the client reconnected and BLANKED
+    the chat (wiping the half-typed new-session name), and the picker dropdown showed NO existing sessions.
+    Fix: the tmux query is renamed _tmux_session_list. Guard the two from re-colliding."""
+
+    def test_picker_session_list_keeps_its_now_tmux_signature(self):
+        import inspect
+        self.assertEqual(list(inspect.signature(km._session_list).parameters), ["now", "tmux"],
+                         "the picker payload builder must stay _session_list(now, tmux) — requestSessions calls it that way")
+
+    def test_tmux_session_list_is_a_distinct_zero_arg_function(self):
+        import inspect
+        self.assertTrue(hasattr(km, "_tmux_session_list"), "the GET /sessions tmux query has its OWN name now")
+        self.assertEqual(list(inspect.signature(km._tmux_session_list).parameters), [],
+                         "_tmux_session_list is the 0-arg query GET /sessions serves")
+
+    def test_requestSessions_call_shape_does_not_raise_typeerror(self):
+        # exactly how the WS handler invokes it (now, tmux) — must NOT TypeError (the shadowing bug), and the
+        # result is the list shape renderPicker consumes. Empty fixture dir → [] is fine; we only guard the call.
+        items = km._session_list(int(time.time()), {})
+        self.assertIsInstance(items, list, "the picker payload is a list of session rows")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
