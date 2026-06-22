@@ -227,8 +227,11 @@ body { display: flex; flex-direction: column; }
 .fask-origin { flex: 0 0 auto; font-size: 0.8em; cursor: pointer; white-space: nowrap; }
 .fask-origin-pre { color: var(--dim); }
 .fask-origin-peer { font-weight: 600; }
-/* (the .fask-blockwhy/.fask-donewhy elements are the card's PLAIN-TEXT auto-line now — the distiller
-   summary, no deep-link — so no hover affordance; the user 2026-06-18.) */
+/* the .fask-blockwhy/.fask-donewhy auto-line (the distiller summary) DEEP-LINKS when the kernel resolved a
+   summaryAnchorUuid → .nav gives it a clickable hover that jumps to the most substantive message in the
+   work span; without an anchor it stays plain text (was plain-only before — the user 2026-06-22). */
+.fask-blockwhy.nav, .fask-donewhy.nav { cursor: pointer; border-radius: 4px; transition: background 0.1s ease; }
+.fask-blockwhy.nav:hover, .fask-donewhy.nav:hover { background: rgba(255, 255, 255, 0.07); text-decoration: underline; text-underline-offset: 2px; }
 .fask-origin:hover { text-decoration: underline; text-underline-offset: 2px; }
 
 /* "reopened" badge — a cleared ask resurrected by a new question */

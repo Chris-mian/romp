@@ -82,6 +82,7 @@ interface AskItem {
   doneWhy?: string;                                // planner's one-sentence "why done" → now the HOVER tooltip on the completed card's auto-line (the user 2026-06-18)
   summary?: string | null;                         // distiller's key takeaway for a COMPLETED goal → the done card's one auto-written line (kernel asks.append); null until produced
   blockSummary?: string | null;                    // block-distiller's decision brief for a BLOCKED goal → the blocked card's one auto-written line (kernel 466393c); null until produced
+  summaryAnchorUuid?: string | null;               // click the summary line → the biggest contiguous assistant-text block in the work span (kernel _seg_best_text; the user 2026-06-22)
   origin?: { peer: string; peerSid: string; color: { bg: string; fg: string } | null } | null;  // courier handoff: planted by a peer's message → "↪ from <peer>"
   groupTitle?: string;                             // host: this ask shares a typed turn with siblings → the group's title
   groupN?: number;                                 // host: sibling count for that turn (>1 ⇒ fold into one group card)
@@ -632,7 +633,8 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   // The card's ONE auto-written line (the human's redesign 2026-06-18): the distiller's summary, or
   // "(generating…)" until it lands. NEVER the planner's why — that demotes to the line's hover tooltip.
   // Blocked card → blockSummary (title = blockWhy); completed card → summary (title = doneWhy). Plain text.
-  const setAutoLine = (el: HTMLElement, sum: string | null | undefined, why: string | undefined, show: boolean) => {
+  const setAutoLine = (el: HTMLElement, sum: string | null | undefined, why: string | undefined, show: boolean, anchor?: string | null) => {
+    el.onclick = null; el.classList.remove("nav"); el.style.cursor = "";   // reset — cards are reused across pushes
     if (!show) { el.style.display = "none"; el.removeAttribute("title"); return; }
     const text = (sum ?? "").trim();
     // Three states, keyed on the distiller's field: null/undefined = still generating → the dim placeholder;
@@ -645,10 +647,18 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
     el.style.fontStyle = generating ? "italic" : "normal";   // the placeholder is dim italic; a real summary reads plainly
     el.style.opacity = generating ? ".5" : ".82";
     if (why && why.trim()) el.title = why.trim(); else el.removeAttribute("title");
+    // A real summary DEEP-LINKS to the most substantive message about it (the user 2026-06-22): the kernel's
+    // summaryAnchorUuid = the biggest contiguous block of assistant text between the goal's mint and its
+    // resolution. stopPropagation so the click jumps to the chat instead of opening the card's modal.
+    if (anchor && !generating) {
+      el.classList.add("nav"); el.style.cursor = "pointer";
+      el.title = (el.title ? el.title + " · " : "") + "jump to the most substantive message about this";
+      el.onclick = (ev) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: it.itemId, sid: it.sid, t: it.t, anchor: "work", anchorUuid: anchor }); };
+    }
   };
   // blocked: only when there's a planner block context (a pure API-error/permission block has no summary/why)
-  setAutoLine(a._blockwhy, it.blockSummary, it.blockWhy, it.column === "needs_input" && !!(it.blockSummary || it.blockWhy));
-  setAutoLine(a._donewhy, it.summary, it.doneWhy, it.column === "completed");
+  setAutoLine(a._blockwhy, it.blockSummary, it.blockWhy, it.column === "needs_input" && !!(it.blockSummary || it.blockWhy), it.summaryAnchorUuid);
+  setAutoLine(a._donewhy, it.summary, it.doneWhy, it.column === "completed", it.summaryAnchorUuid);
   // API error → a red "API error" badge + a Retry button that pastes "retry" into the session to resume
   // the stalled turn (the user 2026-06-16). The card already files under BLOCKED (askColumn → needsInput).
   a._apiBadge.style.display = isApiErr ? "" : "none";

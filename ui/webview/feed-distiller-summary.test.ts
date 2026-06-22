@@ -50,3 +50,18 @@ test("the card ALSO uses the distiller summary now — as its one auto-line (the
   assert.match(FEED, /setAutoLine\(a\._donewhy, it\.summary, it\.doneWhy/);
   assert.doesNotMatch(CSS, /\.fask-summary/);
 });
+
+test("the card's distiller summary LINE deep-links to the biggest text block in the work span (the user 2026-06-22)", () => {
+  // setAutoLine takes the kernel's summaryAnchorUuid; a real (non-generating) summary becomes a .nav link
+  // that jumps to that assistant turn via showOnTimeline anchor:"work" — the most substantive message about it
+  assert.match(FEED, /summaryAnchorUuid\?: string \| null;/);   // AskItem carries the kernel anchor
+  assert.match(FEED, /const setAutoLine = \(el: HTMLElement, sum: string \| null \| undefined, why: string \| undefined, show: boolean, anchor\?: string \| null\)/);
+  assert.match(FEED, /if \(anchor && !generating\) \{[\s\S]*?el\.classList\.add\("nav"\); el\.style\.cursor = "pointer";/);
+  assert.match(FEED, /el\.onclick = \(ev\) => \{ ev\.stopPropagation\(\); vscodeApi\?\.postMessage\(\{ type: "showOnTimeline", itemId: it\.itemId, sid: it\.sid, t: it\.t, anchor: "work", anchorUuid: anchor \}\); \};/);
+  // both auto-lines (blocked + done) pass the anchor through
+  assert.match(FEED, /setAutoLine\(a\._blockwhy, it\.blockSummary, it\.blockWhy, [^,]+, it\.summaryAnchorUuid\)/);
+  assert.match(FEED, /setAutoLine\(a\._donewhy, it\.summary, it\.doneWhy, it\.column === "completed", it\.summaryAnchorUuid\)/);
+  // a hover affordance for the now-clickable line (was plain-only before)
+  assert.match(CSS, /\.fask-blockwhy\.nav, \.fask-donewhy\.nav \{[^}]*cursor: pointer/);
+  assert.match(CSS, /\.fask-donewhy\.nav:hover \{[^}]*background/);
+});

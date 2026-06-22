@@ -1124,6 +1124,22 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(tnode["promptAnchorUuid"], seg.get("trigger"),
                          "title prompt anchor = the minting segment's trigger (the user's message) uuid")
 
+    def test_card_carries_summary_anchor_for_the_summary_deep_link(self):
+        # the distilled summary LINE deep-links to the biggest contiguous assistant-text block in the goal's
+        # work span (the user 2026-06-22): the card's summaryAnchorUuid = _seg_best_text over the node's trail.
+        session = em.parse_session(str(self.tpath), rompuuid=SID, candidate_files=[str(self.tpath)], now=NOW)
+        seg = em.segments(session["turns"][0])[0]
+        expect, n = km._seg_best_text(seg["atoms"])
+        self.assertTrue(expect and n > 0, "the fixture segment has assistant prose to anchor on")
+        nid = SID + ":g42"
+        store = {"rompUuid": SID, "seq": 42, "nodes": {
+            nid: {"id": nid, "text": "Ship it", "parentId": None, "nodeComplete": True,
+                  "blocked": False, "trail": [seg["id"]], "t": NOW}}, "placements": {}, "status": {}}
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps(store))
+        card = {a["itemId"]: a for a in km.build_feed(NOW)["asks"]}[nid]
+        self.assertEqual(card["summaryAnchorUuid"], expect,
+                         "the card links its summary to the segment's biggest assistant-text block")
+
     def test_followup_body_appends_goal_marker(self):
         # The follow-up judge reopens the tagged goal: every follow-up ends with a hidden
         # `<!-- romp-goal-id: <itemId> -->` marker (itemId = the card's top-goal node id), matched by the
@@ -2568,6 +2584,39 @@ class SessionListNameCollision(unittest.TestCase):
         # result is the list shape renderPicker consumes. Empty fixture dir → [] is fine; we only guard the call.
         items = km._session_list(int(time.time()), {})
         self.assertIsInstance(items, list, "the picker payload is a list of session rows")
+
+
+class SegBestText(unittest.TestCase):
+    """_seg_best_text: the biggest contiguous block of assistant TEXT in a segment → a distilled summary's
+    deep-link target (the user 2026-06-22). Skips API-error atoms (a failed turn carries text but is never a
+    jump target, like _seg_anchors)."""
+
+    @staticmethod
+    def _a(uuid, text, api=False):
+        a = {"type": "assistant", "uuid": uuid, "message": {"content": [{"type": "text", "text": text}]}}
+        if api:
+            a["isApiError"] = True
+        return a
+
+    def test_picks_the_assistant_atom_with_the_most_text(self):
+        big = "a much longer reply with a lot more words than the others here"
+        atoms = [self._a("u1", "short"), self._a("u2", big), self._a("u3", "mid length reply")]
+        u, n = km._seg_best_text(atoms)
+        self.assertEqual(u, "u2")
+        self.assertEqual(n, len(big))
+
+    def test_skips_api_error_atoms_even_when_they_are_the_longest(self):
+        atoms = [self._a("u1", "the real reply"),
+                 self._a("uErr", "API Error: overloaded — " + "x" * 200, api=True)]
+        u, _ = km._seg_best_text(atoms)
+        self.assertEqual(u, "u1", "a long API-error line is never the jump target")
+
+    def test_no_assistant_prose_returns_none(self):
+        atoms = [{"type": "user", "uuid": "u1", "message": {"content": "hi"}},
+                 {"type": "assistant", "uuid": "u2", "message": {"content": [{"type": "tool_use", "name": "Read"}]}}]
+        u, n = km._seg_best_text(atoms)
+        self.assertIsNone(u)
+        self.assertEqual(n, 0)
 
 
 class WsLoopResilience(unittest.TestCase):

@@ -2234,13 +2234,14 @@ def build_feed(now, tmux=None):
         # title is prompt-intent and must land on the USER turn — passing the trigger uuid (which the chat
         # tags + the kind guard accepts as turn-user) lets it resolve BY ID instead of a kind-restricted
         # nearest-time landing (the user 2026-06-17). (Both are emitted .turn[data-uuid]s in the chat.)
-        seg_uuid, seg_trig = {}, {}
+        seg_uuid, seg_trig, seg_best = {}, {}, {}
         try:
             for turn in _parse(s["path"], fsid, now)["turns"]:
                 for seg in em.segments(turn):
                     w, r = _seg_anchors(seg["atoms"])
                     seg_uuid[seg["id"]] = r or w
                     seg_trig[seg["id"]] = seg.get("trigger")
+                    seg_best[seg["id"]] = _seg_best_text(seg["atoms"])   # biggest text block → summary deep-link
         except Exception:
             pass
         children = {}
@@ -2393,6 +2394,16 @@ def build_feed(now, tmux=None):
             column = ("needs_input" if (nid == api_top or col == "blocked")
                       else "completed" if col == "completed" else "working")
             had_working = had_working or column == "working"
+            # summaryAnchorUuid: the biggest contiguous block of assistant text ANYWHERE in this goal's work
+            # span — its whole subtree's trail segments (mint→resolution). A click on the distilled summary
+            # line jumps to the most substantive thing the agent said about it (the user 2026-06-22). Subtree,
+            # not just the top node, so a goal that delegated still links where the real prose was written.
+            _sa_u, _sa_n = None, 0
+            for _x in _subtree(nid):
+                for _sid in (nodes[_x].get("trail") or []):
+                    _u, _n = seg_best.get(_sid, (None, 0))
+                    if _u and _n > _sa_n:
+                        _sa_u, _sa_n = _u, _n
             asks.append({
                 "itemId": nid, "sid": fsid, "name": name, "color": color, "text": nodes[nid]["text"],
                 "t": disp_t, "created": nodes[nid]["t"], "live": live,
@@ -2403,6 +2414,7 @@ def build_feed(now, tmux=None):
                 "followupPending": nodes[nid].get("followupPending"),   # optimistic reopen → "Followed up" chip until the judge catches up
                 "summary": nodes[nid].get("summary"),    # the distiller's key takeaway for a completed goal (modal) — the user 2026-06-17
                 "blockSummary": nodes[nid].get("blockSummary"),    # the block-distiller's decision brief for a blocked goal (modal); null until produced — the user 2026-06-18
+                "summaryAnchorUuid": _sa_u,    # click the summary line → the biggest text block in the work span (the user 2026-06-22)
                 "blocked": ({"state": "apiError", "since": (tm.get("since") if tm else None),
                              "status": aerr.get("status"), "category": aerr.get("category"),
                              "text": aerr.get("text"),
@@ -2613,6 +2625,25 @@ def _seg_anchors(atoms):
                 for b in blocks):
             reply = a.get("uuid")
     return work, reply
+
+
+def _seg_best_text(atoms):
+    """(uuid, char_count) of the assistant atom carrying the MOST text in a segment — the 'biggest contiguous
+    block of text' heuristic for deep-linking a distilled summary to the most substantive thing the agent
+    said in the work span (the user 2026-06-22). API-error atoms are skipped (like _seg_anchors: a failed
+    turn carries text but is never a jump target). (None, 0) when the segment has no assistant prose."""
+    best_u, best_n = None, 0
+    for a in atoms:
+        if a.get("type") != "assistant" or a.get("isApiError"):
+            continue
+        blocks = (a.get("message") or {}).get("content", [])
+        if not isinstance(blocks, list):
+            continue
+        n = sum(len(b.get("text", "")) for b in blocks
+                if isinstance(b, dict) and b.get("type") == "text")
+        if n > best_n and a.get("uuid"):
+            best_u, best_n = a.get("uuid"), n
+    return best_u, best_n
 
 
 def _node_anchor_uuids(nd, seg_trig, seg_work, resolved):
