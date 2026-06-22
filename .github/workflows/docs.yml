@@ -1,8 +1,13 @@
 name: Docs
 
-# Build the MkDocs site and publish it to GitHub Pages. Dormant until you enable
-# Pages for the repo: Settings -> Pages -> Source -> "GitHub Actions". Free Pages
-# requires the repo to be public.
+# Build the MkDocs site and publish it to GitHub Pages.
+#
+# The build job runs on every docs push (validates `mkdocs build --strict`).
+# The deploy job is GATED so it cleanly skips — rather than fails — until Pages
+# is set up. To publish (free Pages requires a PUBLIC repo):
+#   1. Settings -> Pages -> Source -> "GitHub Actions"
+#   2. Settings -> Secrets and variables -> Actions -> Variables:
+#        add repository variable  PAGES_ENABLED = true
 
 on:
   push:
@@ -41,6 +46,8 @@ jobs:
 
   deploy:
     needs: build
+    # Skip (not fail) until Pages is enabled and PAGES_ENABLED=true is set.
+    if: vars.PAGES_ENABLED == 'true'
     runs-on: ubuntu-latest
     environment:
       name: github-pages
