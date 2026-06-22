@@ -1,6 +1,7 @@
-// The "waiting on <peer>" chip (the user 2026-06-22): when it.waitingOn is set (the kernel's _wait_for_graph
-// found this session has an unanswered message out to a LIVE peer), the card shows a teal pill "⏳ waiting on
-// <peer>" on the wrapping chip row; a mutual-wait CYCLE renders a red "⟲ deadlock: <peer>" instead. Source pin.
+// The "Awaiting <peer>" chip (the user 2026-06-22): when it.waitingOn is set (the kernel's _wait_for_graph
+// found this session has an unanswered message out to a LIVE peer), the card shows a teal pill "Awaiting
+// <peer>" on the wrapping chip row — the peer NAME in its native identity colour, NO emoji; a mutual-wait
+// CYCLE keeps the red variant with a "Deadlock" label instead of "Awaiting". Source pin.
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
@@ -15,9 +16,14 @@ test("a waiting-on chip is built and rides the wrapping chip row (its own line w
   assert.match(FEED, /a\._waitOn = waitOnBadge;/);
 });
 
-test("it.waitingOn drives the chip text + the cycle/deadlock variant", () => {
-  assert.match(FEED, /wo\.inCycle \? "⟲ deadlock: " : "⏳ waiting on "/);
-  assert.match(FEED, /"fask-waiton" \+ \(wo\.inCycle \? " fask-waiton-cycle" : ""\)/);
+test("it.waitingOn drives the chip: 'Awaiting <peer>' (native-colour name, NO emoji) / 'Deadlock' for a cycle", () => {
+  // the label is "Awaiting " / "Deadlock " — no ⏳/⟲ emoji (the user 2026-06-22)
+  assert.match(FEED, /woPre\.textContent = wo\.inCycle \? "Deadlock " : "Awaiting "/);
+  assert.doesNotMatch(FEED, /⏳ waiting on|⟲ deadlock/, "no emoji prefix anymore");
+  // the peer NAME is a separate span in its OWN identity colour (like the ↪ from provenance)
+  assert.match(FEED, /woName\.textContent = wo\.name/);
+  assert.match(FEED, /if \(wo\.color && wo\.color\.bg\) woName\.style\.color = wo\.color\.bg/);
+  assert.match(FEED, /"fask-waiton" \+ \(wo\.inCycle \? " fask-waiton-cycle" : ""\)/);   // teal pill / red cycle kept
   assert.match(FEED, /a\._waitOn\.style\.display = "";/, "shown when waitingOn is set");
   assert.match(FEED, /a\._waitOn\.style\.display = "none";/, "hidden when it isn't");
 });

@@ -84,7 +84,7 @@ interface AskItem {
   blockSummary?: string | null;                    // block-distiller's decision brief for a BLOCKED goal → the blocked card's one auto-written line (kernel 466393c); null until produced
   summaryAnchorUuid?: string | null;               // click the summary line → the biggest contiguous assistant-text block in the work span (kernel _seg_best_text; the user 2026-06-22)
   origin?: { peer: string; peerSid: string; color: { bg: string; fg: string } | null } | null;  // courier handoff: planted by a peer's message → "↪ from <peer>"
-  waitingOn?: { peerSid: string; name: string; color: { bg: string; fg: string } | null; inCycle: boolean } | null;  // unanswered msg out to a live peer → "⏳ waiting on <peer>" chip (kernel _wait_for_graph; the user 2026-06-22)
+  waitingOn?: { peerSid: string; name: string; color: { bg: string; fg: string } | null; inCycle: boolean } | null;  // unanswered msg out to a live peer → "Awaiting <peer>" chip (peer name in native colour, no emoji; kernel _wait_for_graph; the user 2026-06-22)
   groupTitle?: string;                             // host: this ask shares a typed turn with siblings → the group's title
   groupN?: number;                                 // host: sibling count for that turn (>1 ⇒ fold into one group card)
   provisional?: boolean;                           // a LIVE-PROMPT placeholder (kernel _provisional_card): the session is working an in-progress turn the planner hasn't classified yet. No goal node (empty tree) — dim, non-interactive, no clear/nudge/modal; replaced by the real card once the planner places the segment.
@@ -433,7 +433,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   const actions = el("div", "fask-actions");
   const reBadge = el("span", "fask-reopened"); reBadge.textContent = "reopened"; reBadge.title = "a question arrived after you cleared this"; reBadge.style.display = "none";
   const fupBadge = el("span", "fask-followedup"); fupBadge.textContent = "↻ Followed up"; fupBadge.title = "you followed up — reopened to Working; the planner will re-file it on the next pass"; fupBadge.style.display = "none";
-  const waitOnBadge = el("span", "fask-waiton"); waitOnBadge.style.display = "none";   // "⏳ waiting on <peer>" / "⟲ deadlock" (the user 2026-06-22)
+  const waitOnBadge = el("span", "fask-waiton"); waitOnBadge.style.display = "none";   // "Awaiting <peer>" / "Deadlock <peer>", peer name in native colour (the user 2026-06-22)
   const blkBadge = el("a", "fask-blocked"); blkBadge.style.display = "none";   // ⏸ live permission/picker block → click opens the session
   const apiBadge = el("span", "fask-apierror"); apiBadge.textContent = "⚠ API error"; apiBadge.style.display = "none";   // red: session stopped on an API error
   const apiRetry = el("button", "fdismiss fretry"); apiRetry.textContent = "Retry"; apiRetry.title = "send “retry” into this session to resume"; apiRetry.style.display = "none";
@@ -620,17 +620,24 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   // "↻ Followed up" while the kernel has optimistically reopened a settled card you followed up on, before
   // the judge re-files it (it.followupPending self-clears on the next pass). (judges delegation, 2026-06-17.)
   a._followedup.style.display = it.followupPending ? "" : "none";
-  // "waiting on <peer>" — this session has an unanswered message out to a live peer (kernel _wait_for_graph):
-  // held in Working, not stalled, so auto-nudge skips it. A mutual-wait CYCLE shows as a red "deadlock" chip.
+  // "Awaiting <peer>" — this session has an unanswered message out to a live peer (kernel _wait_for_graph):
+  // held in Working, not stalled, so auto-nudge skips it. The peer NAME renders in its NATIVE identity colour
+  // (like the "↪ from" provenance), no emoji prefix (the user 2026-06-22). A mutual-wait CYCLE keeps the red
+  // styling + a "Deadlock" label instead of "Awaiting".
   const wo = it.waitingOn;
   if (wo) {
-    a._waitOn.textContent = (wo.inCycle ? "⟲ deadlock: " : "⏳ waiting on ") + wo.name;
+    a._waitOn.replaceChildren();
+    const woPre = el("span", "fask-waiton-pre"); woPre.textContent = wo.inCycle ? "Deadlock " : "Awaiting ";
+    const woName = el("span", "fask-waiton-name"); woName.textContent = wo.name;
+    if (wo.color && wo.color.bg) woName.style.color = wo.color.bg;   // the peer's own identity colour
+    a._waitOn.append(woPre, woName);
     a._waitOn.title = wo.inCycle
       ? "MUTUAL WAIT — this session and " + wo.name + " are each waiting on the other (a deadlock); auto-nudge surfaces it instead of nudging"
       : "this session has an unanswered message out to " + wo.name + " — waiting on its reply, not stalled, so auto-nudge skips it";
     a._waitOn.className = "fask-waiton" + (wo.inCycle ? " fask-waiton-cycle" : "");
     a._waitOn.style.display = "";
   } else {
+    a._waitOn.replaceChildren();
     a._waitOn.style.display = "none";
   }
   a._nudge.style.display = (it.column === "working" && !it.provisional) ? "" : "none";   // Nudge only on a real working card (the user 2026-06-18)
