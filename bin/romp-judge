@@ -540,10 +540,15 @@ def captioned_ids(fsid):
     return done
 
 
+LIVE_CAPTION_ATOM_CHUNK = 8   # re-caption an OPEN segment's live work caption only every ~8 NEW atoms (a
+                              # meaningful CHUNK of work), not on every atom — bounds fleet cost (the user
+                              # 2026-06-22; the original per-atom cadence ran the captioner far too often)
+
+
 def _live_natoms(fsid):
     """{id: natoms} for the LIVE in-progress captions — the atom count each was built from. run_index
-    re-captions an open segment only once its atoms GROW past this (event-based cadence: new content is the
-    trigger, no timer). The producer pass already bounds it to <=1 re-caption per pass per active session."""
+    re-captions an open segment only once its atoms grow by a full LIVE_CAPTION_ATOM_CHUNK past this (event-
+    based cadence, no timer), so a busy segment re-captions once per chunk of work, not per atom."""
     out = {}
     try:
         for line in (CAPDIR / (fsid + ".jsonl")).read_text(errors="replace").splitlines():
@@ -1152,8 +1157,9 @@ def run_index(now=None, budget=BUDGET, fairness=FAIRNESS, concurrency=CONCURRENC
         live_n = _live_natoms(fsid)                       # the open segment's last live-caption sizes (cadence gate)
         for task in tasks_for(fsid, str(path), [str(path)], now):
             undone = [w for w in task["writes"] if w["id"] not in done]
-            if task.get("live"):                          # re-caption the OPEN segment only once its atoms GREW
-                undone = [w for w in undone if (task.get("natoms") or 0) > live_n.get(w["id"], -1)]
+            if task.get("live"):                          # re-caption the OPEN segment only every CHUNK new atoms
+                undone = [w for w in undone
+                          if (task.get("natoms") or 0) >= live_n.get(w["id"], 0) + LIVE_CAPTION_ATOM_CHUNK]
             if undone and task["text"]:
                 pending.append({"fsid": fsid, "anchor": anchor, "kind": task.get("kind", "work"),
                                 "text": task["text"], "writes": undone, "t": max(w["t"] for w in undone),

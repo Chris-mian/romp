@@ -405,39 +405,45 @@ class LiveWorkCaption(_FleetHarness, unittest.TestCase):
             finally:
                 jd.CAPDIR = saved
 
-    def test_open_segment_live_then_regrows_then_final_on_close(self):
-        open1 = [uline(T0, "investigate the crash", "u1", ps="typed"),
-                 aline(T0 + 30, "reproducing…", "a1", "u1", tools=("Bash",), stop="tool_use")]
+    def _opened(self, n_alines, last_stop="tool_use"):
+        """An OPEN segment: a user trigger + n chained assistant atoms (turn not ended → natoms = n+1)."""
+        recs, prev = [uline(T0, "investigate the crash", "u1", ps="typed")], "u1"
+        for i in range(n_alines):
+            stop = last_stop if i == n_alines - 1 else "tool_use"
+            recs.append(aline(T0 + 10 + i, "did step %d" % i, "a%d" % i, prev, tools=("Bash",), stop=stop))
+            prev = "a%d" % i
+        return recs
+
+    def test_open_segment_live_throttled_to_chunks_then_final_on_close(self):
+        CHUNK = jd.LIVE_CAPTION_ATOM_CHUNK
         with tempfile.TemporaryDirectory() as td:
-            restore = self._fleet(td, open1)
+            restore = self._fleet(td, self._opened(CHUNK + 1))     # natoms = CHUNK + 2 ≥ CHUNK → first live fires
             try:
-                def live_recs():
-                    return [json.loads(l) for l in (jd.CAPDIR / (SID + ".jsonl")).read_text().splitlines() if l.strip()]
-                now = T0 + 120
-                # pass 1: the OPEN segment gets a LIVE work caption (segment grain only, no turn grain)
+                def lives():
+                    recs = [json.loads(l) for l in (jd.CAPDIR / (SID + ".jsonl")).read_text().splitlines() if l.strip()]
+                    return [r for r in recs if r.get("live")]
+                now = T0 + 300
                 jd.run_index(now=now)
-                live = [r for r in live_recs() if r.get("live")]
-                self.assertEqual(len(live), 1, "one live work caption for the open segment")
-                self.assertEqual(live[0]["grain"], "segment", "no turn-grain while open")
-                n1 = live[0]["natoms"]
-                # pass 2: nothing changed → the live caption is NOT re-run (cadence gate on atom growth)
-                jd.run_index(now=now)
-                self.assertEqual(len([r for r in live_recs() if r.get("live")]), 1, "no re-caption without new content")
-                # GROW the open segment (another assistant atom, still open) → re-caption
+                self.assertEqual(len(lives()), 1, "the first live caption fires once a CHUNK of work has accrued")
+                self.assertEqual(lives()[0]["grain"], "segment", "no turn-grain while open")
+                # grow by ONE atom (< CHUNK) → throttled, NO re-caption
                 jd._PARSE_CACHE.clear()
-                self._tpath.write_text("\n".join(json.dumps(r) for r in open1 + [
-                    aline(T0 + 60, "found the off-by-one", "a1b", "a1", tools=("Edit",), stop="tool_use")]) + "\n")
-                jd.run_index(now=now + 60)
-                lives = [r for r in live_recs() if r.get("live")]
-                self.assertEqual(len(lives), 2, "re-captioned once the open segment's atoms grow")
-                self.assertGreater(lives[-1]["natoms"], n1, "the new live caption covers more atoms")
+                self._tpath.write_text("\n".join(json.dumps(r) for r in self._opened(CHUNK + 2)) + "\n")
+                jd.run_index(now=now + 10)
+                self.assertEqual(len(lives()), 1, "a sub-chunk growth does NOT re-caption (throttled)")
+                # grow by a full CHUNK more → re-caption
+                jd._PARSE_CACHE.clear()
+                self._tpath.write_text("\n".join(json.dumps(r) for r in self._opened(2 * CHUNK + 2)) + "\n")
+                jd.run_index(now=now + 20)
+                self.assertEqual(len(lives()), 2, "re-captioned once a full new chunk of atoms accrues")
                 # CLOSE the turn → a FINAL non-live segment caption, and the seg id becomes deduped
                 jd._PARSE_CACHE.clear()
                 self._tpath.write_text("\n".join(json.dumps(r) for r in [
                     uline(T0, "investigate the crash", "u1", ps="typed"),
                     aline(T0 + 30, "Fixed the off-by-one crash.", "a1", "u1", tools=("Bash", "Edit"), stop="end_turn")]) + "\n")
-                jd.run_index(now=now + 120)
-                segrecs = [r for r in live_recs() if r["grain"] == "segment"]
+                jd.run_index(now=now + 30)
+                segrecs = [json.loads(l) for l in (jd.CAPDIR / (SID + ".jsonl")).read_text().splitlines()
+                           if l.strip() and json.loads(l)["grain"] == "segment"]
                 final = [r for r in segrecs if not r.get("live")]
                 self.assertTrue(final, "a FINAL non-live segment caption is written on close")
                 self.assertIn(final[0]["id"], jd.captioned_ids(SID), "the closed segment is now deduped")
