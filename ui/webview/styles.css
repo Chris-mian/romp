@@ -100,8 +100,9 @@ body { display: flex; flex-direction: column; }
 .tab.tab-awaiting, .tab.tab-blocked { outline: 2px dashed var(--state); outline-offset: -2px; }
 /* WORKING: a small yellow dot left of the name (replaces the old yellow outline). */
 .tab-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--st-working-bg); }   /* solid — dot oscillation was distracting (the user 2026-06-16) */
-/* compacting → a small 🗜 clamp before the name (this state gets no tab outline, so the icon is the cue) */
-.tab-compacting-icon { flex: 0 0 auto; font-size: 0.9em; line-height: 1; margin-right: 3px; }
+/* compacting → a small monochrome ⇲ compress glyph before the name (this state gets no tab outline, so the
+   glyph is the cue); a touch dim so it reads as transient process, not a status colour (the user 2026-06-22) */
+.tab-compacting-icon { flex: 0 0 auto; font-size: 0.9em; line-height: 1; margin-right: 3px; opacity: 0.75; }
 /* CLOSED (dead session kept as a read-only tab): strike the title + dim, so a tab that's still
    present but no longer live reads as past tense (the user 2026-06-16). */
 .tab.tab-closed .tab-label { text-decoration: line-through; }
