@@ -46,16 +46,16 @@ class SessionList(unittest.TestCase):
             "|||||\n"                           # junk → skipped
         )
         with mock.patch.object(km.subprocess, "run", return_value=mock.Mock(returncode=0, stdout=out)):
-            sessions = km._session_list()
+            sessions = km._tmux_session_list()
         self.assertEqual([s["name"] for s in sessions], ["alpha", "beta"])
         self.assertEqual(sessions[0],
                          {"name": "alpha", "state": "working", "dir": "/work/a", "bg": "#112233", "fg": "#ffffff"})
 
     def test_empty_on_tmux_failure_or_absence(self):
         with mock.patch.object(km.subprocess, "run", return_value=mock.Mock(returncode=1, stdout="")):
-            self.assertEqual(km._session_list(), [])
+            self.assertEqual(km._tmux_session_list(), [])
         with mock.patch.object(km.subprocess, "run", side_effect=Exception("no tmux")):
-            self.assertEqual(km._session_list(), [])
+            self.assertEqual(km._tmux_session_list(), [])
 
 
 if __name__ == "__main__":
