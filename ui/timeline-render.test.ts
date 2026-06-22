@@ -311,6 +311,22 @@ test("onWheel: pinch-zoom HONORS 🔒 lock (right edge stays at now)", () => {
   assert.equal(panel.offSec(), 0, "locked zoom keeps offset 0 — edge pinned at now");
 });
 
+test("onWheel: a HORIZONTAL wheel ZOOMS when 🔒locked to now (nowhere to pan) (the user 2026-06-22)", () => {
+  const panel = new TimelinePanel(makeNode("div"));
+  panel.update(synthData());
+  panel._setLock(true);
+  const w0 = panel.winSec();
+  // leftward (toward the past) → zoom OUT (window widens), right edge stays pinned at now
+  panel.onWheel(wheelEv({ deltaX: -40, deltaY: 0 }));
+  assert.ok(panel.winSec() > w0, "locked horizontal wheel (toward past) widens the window — it zoomed, not panned");
+  assert.equal(panel.offSec(), 0, "the lock keeps the right edge at now — no pan");
+  // rightward (toward now) → zoom IN (window narrows again)
+  const w1 = panel.winSec();
+  panel.onWheel(wheelEv({ deltaX: 40, deltaY: 0 }));
+  assert.ok(panel.winSec() < w1, "locked horizontal wheel (toward now) narrows the window — zoom in");
+  assert.equal(panel.offSec(), 0, "still pinned at now");
+});
+
 test("click-drag pan BREAKS 🔒 lock and unpins", () => {
   const panel = new TimelinePanel(makeNode("div"));
   panel.update(synthData());

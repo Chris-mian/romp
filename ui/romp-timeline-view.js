@@ -564,8 +564,10 @@ class TimelinePanel {
     const horiz = Math.abs(e.deltaX) > Math.abs(e.deltaY);
     // wheel model (the user 2026-06-22): a plain VERTICAL wheel SCROLLS the panel up/down NATIVELY — we no
     // longer hijack it to zoom (that "expanded" the timeline, which the user didn't want). So zoom is now
-    // PINCH only (ctrl+wheel — trackpad pinch, or ctrl+wheel on a mouse), and a HORIZONTAL wheel (two-finger
-    // / shift-wheel) PANS the time axis. Click-drag also pans — and BREAKS the lock; the wheel keeps it.
+    // PINCH (ctrl+wheel — trackpad pinch, or ctrl+wheel on a mouse), and a HORIZONTAL wheel (two-finger /
+    // shift-wheel) PANS the time axis — EXCEPT when 🔒locked to now, where there's nowhere to pan, so the
+    // horizontal wheel ZOOMS with the right edge pinned at now instead (the user 2026-06-22; mirrors the
+    // locked touch-drag). Click-drag also pans — and BREAKS the lock; the wheel keeps it.
     if (!pinch && !horiz) return;                             // plain vertical → don't preventDefault, let it scroll
     e.preventDefault();
     const rect = this.svg.getBoundingClientRect();
@@ -583,6 +585,11 @@ class TimelinePanel {
       const cc = cT0 + frac * curWin;                         // compressed time under the cursor — pin it
       this._winSec = newWin;
       this._offSec = Math.max(0, Math.min(MAX_OFFSET, cNow - (cc + (1 - frac) * newWin)));
+    } else if (this._lockNow) {
+      // 🔒 horizontal wheel → ZOOM (no pan possible — the right edge is pinned at now). Rightward (toward
+      // now) zooms IN, leftward (toward the past) zooms OUT — same direction as the locked touch-drag.
+      const factor = Math.exp(-e.deltaX * 0.01);               // deltaX<0 (toward past) → wider window (zoom out)
+      this._winSec = Math.max(MIN_W, Math.min(MAX_W, curWin * factor));
     } else {
       const dt = e.deltaX * scaleX * (curWin / g.plotW);       // compressed-sec per px (CONSTANT → smooth pan)
       this._offSec = Math.max(0, Math.min(MAX_OFFSET, curOff - dt));
