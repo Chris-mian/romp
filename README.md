@@ -9,14 +9,14 @@ parallel, but each one you add competes for the same limited attention. romp let
 you direct a whole fleet by putting your attention where it counts and surfacing
 only what is worth acting on.
 
-You direct the fleet through three complementary views. The chat view is the
-conversation you already know from any AI tool, rendered so it is clear at a glance
-what each agent is doing. The timeline shows the work over time and how sessions
-interact with each other. The feed, the one that matters most, breaks each
-session's transcript into discrete tasks, sorts them into what needs you, what is
-working, and what is done, and distills each into a high-level summary you can act
-on. The three are a progressive disclosure of complexity: drill from the feed's
-actionable summary down to the raw conversation whenever you need the detail.
+You watch and direct the fleet through three views. The chat view is the
+conversation you already know from any AI tool, just laid out so you can tell at a
+glance what each agent is doing. The timeline shows the work over time and how the
+agents interact. The feed matters most: it splits each agent's transcript into
+separate tasks, flags which ones need you, which are working, and which are done,
+and distills each to a short summary you can act on. Together they let you work at
+whatever level of detail you need, from the feed's summary down to the raw
+conversation.
 
 ## Components
 
