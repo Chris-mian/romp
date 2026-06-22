@@ -183,6 +183,9 @@ body { display: flex; flex-direction: column; }
 .ledger-head:hover { background: rgba(255, 255, 255, 0.04); }
 .ledger-caret { flex: 0 0 auto; color: var(--fg); font-size: 1.3em; line-height: 1; opacity: 0.8; }
 .ledger-summary { flex: 1 1 auto; min-width: 0; color: var(--fg); font-weight: 600; overflow-wrap: anywhere; }
+/* the "(Xm)" time on the collapsed line — lighter than the bold goal text; its colour is the recency tint
+   set inline by setTnodeTime, matching the tree rows (the user 2026-06-21). */
+.ledger-summary-time { font-weight: 400; margin-left: 0.45em; font-size: 0.85em; font-variant-numeric: tabular-nums; white-space: nowrap; }
 /* dim section header inside the overview (used by the goal-less fallback: working on / done) */
 .ledger-label { color: var(--dim); font-size: 0.78em; text-transform: uppercase; letter-spacing: 0.04em; margin: 7px 0 2px; }
 /* ---- goal-graph overview tree: open paths expanded, done nodes pruned to timed leaves ---- */

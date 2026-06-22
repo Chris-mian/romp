@@ -2402,6 +2402,16 @@ function ledgerLabel(text: string): HTMLElement {
   return lab;
 }
 
+// The ONE goal the collapsed ledger shows: the depth-0 root on the active path (its subtree holds the
+// `current` node), else the freshest unfinished root, else the first root. Shared by renderLedger (the
+// collapsed line + the pinned-on-expand row) and refreshLedgerAges (ticking the collapsed line's time).
+function currentTopGoal(tree: LedgerTreeNode[]): LedgerTreeNode | null {
+  const roots0 = tree.filter((n) => n.depth === 0);
+  return roots0.find((r) => r.current || r.onpath)
+    || roots0.filter((r) => !r.done).sort((a, b) => ((b.mt ?? b.t) || 0) - ((a.mt ?? a.t) || 0))[0]
+    || roots0[0] || null;
+}
+
 function renderLedger() {
   const host = document.getElementById("ledger");
   if (!host) return;
@@ -2445,11 +2455,20 @@ function renderLedger() {
   // COLLAPSED → just the TOP-LEVEL goal currently being worked on; EXPANDED → the archiver title (with the
   // full sorted tree below). The current top goal = the depth-0 root on the active path (its subtree holds
   // the `current` node), else the freshest unfinished root (the user 2026-06-18).
-  const roots0 = tree.filter((n) => n.depth === 0);
-  const curTop = roots0.find((r) => r.current || r.onpath)
-    || roots0.filter((r) => !r.done).sort((a, b) => ((b.mt ?? b.t) || 0) - ((a.mt ?? a.t) || 0))[0]
-    || roots0[0] || null;
-  sum.textContent = (ledgerCollapsed && curTop) ? curTop.text : titleText;
+  const curTop = currentTopGoal(tree);
+  if (ledgerCollapsed && curTop) {
+    // the collapsed line shows the current top goal's TEXT plus its "(Xm)"/"(Xm ago)" time in parens — the
+    // SAME time setTnodeTime gives that goal's row when expanded, so the morph reads as one element gaining/
+    // shedding its surroundings, not a time popping in/out (the user 2026-06-21). The time rides INSIDE
+    // .ledger-summary, so morphLedgerCollapse glides it up with the text and morphLedgerExpand fades it out
+    // (while the expanded row's own time fades in) — no extra morph wiring needed.
+    sum.textContent = curTop.text;
+    const ctime = el("span", "ledger-summary-time");
+    setTnodeTime(ctime, curTop, cur, now);
+    if (ctime.textContent) sum.appendChild(ctime);
+  } else {
+    sum.textContent = titleText;
+  }
   // hue: collapsed tints by the shown goal's recency; expanded by the freshest activity across the overview.
   const newestT = Math.max(cur && cur.t ? cur.t : 0, ...tree.map((n) => n.t || 0), ...bullets.map((b) => b.t || 0));
   const tintT = (ledgerCollapsed && curTop) ? ((curTop.mt ?? curTop.t) || 0) : newestT;
@@ -2683,6 +2702,9 @@ function refreshLedgerAges(host: HTMLElement, l: Ledger, now: number) {
     ...tree.map((n) => n.t || 0), ...bullets.map((b) => b.t || 0));
   const sum = host.querySelector(".ledger-summary") as HTMLElement | null;
   if (sum && newestT) sum.style.color = ageColorReadable(now - newestT);
+  // the collapsed line's "(Xm)" time ticks with the clock too (present only while collapsed)
+  const ctime = sum ? (sum.querySelector(".ledger-summary-time") as HTMLElement | null) : null;
+  if (ctime) { const ct = currentTopGoal(tree); if (ct) setTnodeTime(ctime, ct, l.current || null, now); }
   // tree node times ("(Xm)" live current + "(Xm ago)" done) tick with the wall clock
   host.querySelectorAll(".ledger-tnode").forEach((row, i) => {
     const n = tree[i]; const time = row.querySelector(".ledger-ttime") as HTMLElement | null;

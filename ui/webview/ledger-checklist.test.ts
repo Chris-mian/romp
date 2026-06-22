@@ -225,12 +225,30 @@ test("leaf-row tri spacers don't inherit the placeholder's 40px padding (no gian
 });
 
 test("collapsed ledger shows the CURRENT top-level goal; expanded shows the title + full tree (the user 2026-06-18)", () => {
-  // the current top goal = the depth-0 root on the active path (current/onpath), else the freshest unfinished root
-  assert.match(RENDER, /const curTop = roots0\.find\(\(r\) => r\.current \|\| r\.onpath\)/);
+  // the current top goal = the depth-0 root on the active path (current/onpath), else the freshest unfinished
+  // root — now factored into currentTopGoal(), shared with the age-refresh tick
+  assert.match(RENDER, /function currentTopGoal\(tree: LedgerTreeNode\[\]\): LedgerTreeNode \| null/);
+  assert.match(RENDER, /roots0\.find\(\(r\) => r\.current \|\| r\.onpath\)/);
+  assert.match(RENDER, /const curTop = currentTopGoal\(tree\);/);
   // collapsed line = that goal's text; expanded keeps the archiver title (with the tree below)
-  assert.match(RENDER, /sum\.textContent = \(ledgerCollapsed && curTop\) \? curTop\.text : titleText;/);
+  assert.match(RENDER, /if \(ledgerCollapsed && curTop\) \{[\s\S]*?sum\.textContent = curTop\.text;/);
+  assert.match(RENDER, /\} else \{\s*sum\.textContent = titleText;/);
   // collapsed mode still bails after the head (no tree) — now a block that also fires the reverse morph
   assert.match(RENDER, /if \(ledgerCollapsed\) \{[\s\S]*?return;   \/\/ collapsed/);
+});
+
+test("the collapsed line keeps the goal's '(Xm)' time (in parens), ticking live, and the morph carries it (the user 2026-06-21)", () => {
+  // the collapsed line gets the SAME setTnodeTime the goal's expanded row would show, in a .ledger-summary-time
+  // span appended INSIDE .ledger-summary — so it shows "(Xm)"/"(Xm ago)" and the open/close morph needs no
+  // extra wiring (collapse glides .ledger-summary with the time inside it; expand fades it as the row's time fades in).
+  assert.match(RENDER, /const ctime = el\("span", "ledger-summary-time"\);\s*setTnodeTime\(ctime, curTop, cur, now\);\s*if \(ctime\.textContent\) sum\.appendChild\(ctime\);/);
+  // it ticks with the wall clock on a same-content refresh (recomputing curTop via the shared helper)
+  assert.match(RENDER, /sum\.querySelector\("\.ledger-summary-time"\)[\s\S]*?const ct = currentTopGoal\(tree\); if \(ct\) setTnodeTime\(ctime, ct, l\.current \|\| null, now\);/);
+  // the morph still keys on .ledger-summary as ONE unit (the time rides inside it, no separate morph target)
+  assert.match(RENDER, /function morphLedgerCollapse\(sumEl: HTMLElement,/);
+  assert.match(RENDER, /const sumEl = host\.querySelector\("\.ledger-summary"\) as HTMLElement \| null;\s*if \(sumEl\) fade\.push\(sumEl\);/);
+  // styled lighter than the bold goal text; recency colour comes from setTnodeTime inline
+  assert.match(CSS, /\.ledger-summary-time \{[^}]*font-weight: 400/);
 });
 
 test("expanding PINS the current top goal to the top of the tree + marks it, so it doesn't jump down (the user 2026-06-18)", () => {
