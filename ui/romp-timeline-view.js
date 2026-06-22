@@ -562,6 +562,11 @@ class TimelinePanel {
     const g = this._geom; if (!g || !this.data || !this.data.sessions) return;
     const pinch = e.ctrlKey;                                   // Chromium maps trackpad pinch → ctrl+wheel
     const horiz = Math.abs(e.deltaX) > Math.abs(e.deltaY);
+    // wheel model (the user 2026-06-22): a plain VERTICAL wheel SCROLLS the panel up/down NATIVELY — we no
+    // longer hijack it to zoom (that "expanded" the timeline, which the user didn't want). So zoom is now
+    // PINCH only (ctrl+wheel — trackpad pinch, or ctrl+wheel on a mouse), and a HORIZONTAL wheel (two-finger
+    // / shift-wheel) PANS the time axis. Click-drag also pans — and BREAKS the lock; the wheel keeps it.
+    if (!pinch && !horiz) return;                             // plain vertical → don't preventDefault, let it scroll
     e.preventDefault();
     const rect = this.svg.getBoundingClientRect();
     const scaleX = rect.width ? g.W / rect.width : 1;          // svg user-units per client px
@@ -570,11 +575,8 @@ class TimelinePanel {
     // compressed seconds. Pan = translate at a CONSTANT compressed-sec-per-px scale → smooth, no rescale.
     const compress = g.compress || ((t) => t);
     const cNow = compress(this.data.now), cT1 = cNow - curOff, cT0 = cT1 - curWin;
-    // wheel model (the user 2026-06-13): ZOOM on pinch OR vertical scroll (cursor-anchored); PAN on
-    // horizontal scroll. Click-drag also pans — and BREAKS the lock; the wheel keeps HONORING it.
-    if (pinch || !horiz) {
-      const dy = pinch ? e.deltaY : Math.max(-25, Math.min(25, e.deltaY));   // clamp a mouse wheel's big notch; pinch stays smooth
-      const factor = Math.exp(dy * 0.01);                      // dy>0 → wider window (zoom out)
+    if (pinch) {
+      const factor = Math.exp(e.deltaY * 0.01);                // deltaY>0 → wider window (zoom out); pinch is smooth
       const newWin = Math.max(MIN_W, Math.min(MAX_W, curWin * factor));
       const svgX = (e.clientX - rect.left) * scaleX;
       const frac = Math.max(0, Math.min(1, (svgX - g.ml) / g.plotW));   // cursor position across the plot
@@ -585,7 +587,7 @@ class TimelinePanel {
       const dt = e.deltaX * scaleX * (curWin / g.plotW);       // compressed-sec per px (CONSTANT → smooth pan)
       this._offSec = Math.max(0, Math.min(MAX_OFFSET, curOff - dt));
     }
-    if (this._lockNow) this._offSec = 0;   // 🔒 the wheel HONORS the lock: zoom/scroll keep the right edge at now (a DRAG breaks it)
+    if (this._lockNow) this._offSec = 0;   // 🔒 the wheel HONORS the lock: zoom keeps the right edge at now (a DRAG breaks it)
     this._markOffsetGesture();   // honor this _offSec verbatim next frame; re-pin if it lands at the now-edge
     try { localStorage.setItem(this.WSTORE, String(this.winSec())); } catch (e2) {}
     try { localStorage.setItem(this.OSTORE, String(Math.round(this._offSec))); } catch (e2) {}

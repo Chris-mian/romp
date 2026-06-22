@@ -259,27 +259,30 @@ test("update() keeps a still snapshot while a tooltip is up; hideTip paints the 
   assert.equal(panel._dirtyWhileTip, false);
 });
 
-// Mouse model (the user 2026-06-13): wheel=zoom (honors 🔒lock), click-drag=pan (breaks 🔒lock),
+// Mouse model (the user 2026-06-22): a plain VERTICAL wheel scrolls the panel natively (NOT zoom), PINCH
+// (ctrl+wheel) zooms (honors 🔒lock), a HORIZONTAL wheel pans (honors lock), click-drag=pan (breaks 🔒lock),
 // vertical drag=reorder. These drive the real handlers through the DOM shim and assert the state moves.
 function wheelEv(over: any) { return { deltaX: 0, deltaY: 0, ctrlKey: false, clientX: 700, clientY: 200, preventDefault() {}, ...over }; }
 function mouseEv(over: any) { return { button: 0, clientX: 500, clientY: 200, preventDefault() {}, ...over }; }
 
-test("onWheel: vertical scroll zooms; horizontal scroll pans", () => {
+test("onWheel: plain vertical does NOT zoom (scrolls natively); pinch zooms; horizontal pans (the user 2026-06-22)", () => {
   const panel = new TimelinePanel(makeNode("div"));
   panel.update(synthData());
   const w0 = panel.winSec();
-  panel.onWheel(wheelEv({ deltaY: 20 }));                 // vertical → zoom (window widens, deltaY>0)
-  assert.notEqual(panel.winSec(), w0, "vertical wheel changes the zoom window");
+  panel.onWheel(wheelEv({ deltaY: 20 }));                 // plain vertical → NOT hijacked → no zoom (panel scrolls natively)
+  assert.equal(panel.winSec(), w0, "plain vertical wheel leaves the zoom window alone");
+  panel.onWheel(wheelEv({ deltaY: 20, ctrlKey: true }));  // pinch (ctrl+wheel) → zoom (window widens)
+  assert.notEqual(panel.winSec(), w0, "pinch zooms the window");
   const off0 = panel.offSec();
   panel.onWheel(wheelEv({ deltaX: -40, deltaY: 0 }));     // horizontal → pan into history (offset grows)
   assert.ok(panel.offSec() > off0, "horizontal wheel pans (offset moves off now)");
 });
 
-test("onWheel: zoom HONORS 🔒 lock (right edge stays at now)", () => {
+test("onWheel: pinch-zoom HONORS 🔒 lock (right edge stays at now)", () => {
   const panel = new TimelinePanel(makeNode("div"));
   panel.update(synthData());
   panel._setLock(true);
-  panel.onWheel(wheelEv({ deltaY: 20 }));
+  panel.onWheel(wheelEv({ deltaY: 20, ctrlKey: true }));   // pinch → zoom; the lock keeps the offset at 0
   assert.equal(panel.offSec(), 0, "locked zoom keeps offset 0 — edge pinned at now");
 });
 
