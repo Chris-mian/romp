@@ -1258,8 +1258,10 @@ def plan_units(session):
     gain). Order: the ended work-units (oldest-first) precede the open segment's prompt-unit, so a later
     prompt-run always FOLLOWS the earlier work-runs (close-before-open, for free, no time sort). A tagged
     FOLLOW-UP gets only its work unit (its card already reopens optimistically, and the work-run reopens +
-    files under the target); `followup` = that goal-node id, or None. Peers are the courier's; empty
-    segments drop."""
+    files under the target); `followup` = that goal-node id, or None.
+    A PEER/postal segment yields a 'delegation' work unit (the user 2026-06-22, via link_audit): its work
+    is filed UNDER the goal the COURIER planted for it, so a handed-off goal gets the same sub/done/block
+    expressivity as a human-minted top. Empty segments drop."""
     turns = session["turns"]
     out = []
     for ti, turn in enumerate(turns):
@@ -1267,13 +1269,16 @@ def plan_units(session):
                      and not any(a["type"] == "idle" for a in turn["atoms"]))
         segs = em.segments(turn)
         for si, seg in enumerate(segs):
-            if _seg_peer(seg):                            # peer (postal) segment → the COURIER places it
-                continue
             work_text = _unit_text(seg["atoms"])
             if not work_text:
                 continue
+            is_open_final = turn_open and si == len(segs) - 1
+            if _seg_peer(seg):                            # POSTAL segment → DELEGATION work-run (files under the courier's goal)
+                if not is_open_final:                     # ended → the recipient's work is known; place it under G
+                    out.append((seg["id"], "delegation", seg["t"], work_text, False, None))
+                continue                                  # peer segs never get a prompt-run or a normal work-run
             human, followup = _seg_human(seg), _seg_followup(seg)
-            if turn_open and si == len(segs) - 1:         # the IN-PROGRESS segment → PROMPT-run only (place the ask now)
+            if is_open_final:                             # the IN-PROGRESS segment → PROMPT-run only (place the ask now)
                 if human and not followup:
                     ptext = _prompt_text(seg["atoms"])
                     if ptext:
@@ -1354,8 +1359,13 @@ def optimistic_followup(fsid, gid):
 def _unit_key(seg_id, phase):
     """The (segment-id, phase) dedup key in placements (the user 2026-06-21): the WORK-run keeps the bare
     seg_id (back-compat — existing stores' placements[seg_id] already mean 'work placed'); the PROMPT-run
-    uses seg_id+"#p" so the two phases of a segment dedup independently."""
-    return seg_id if phase == "work" else seg_id + "#p"
+    uses seg_id+"#p"; the postal-DELEGATION work-run uses seg_id+"#d" (distinct from the COURIER's own
+    seg_id placement for the same segment, the user 2026-06-22), so the phases dedup independently."""
+    if phase == "work":
+        return seg_id
+    if phase == "delegation":
+        return seg_id + "#d"
+    return seg_id + "#p"
 
 
 def _plan_session(fsid, path, now):
@@ -1365,7 +1375,10 @@ def _plan_session(fsid, path, now):
     2026-06-21, via link_audit): a human segment is planned twice — a PROMPT-run when its message lands
     (mint-or-amend, so the goal shows immediately) and a WORK-run when the work ends (amend/complete/block),
     deduped independently via (segment-id, phase). A tagged FOLLOW-UP reopens its target goal and forces the
-    new work UNDER it (work-run only). Returns placements made."""
+    new work UNDER it (work-run only). A POSTAL DELEGATION files its work UNDER the COURIER's planted goal G
+    with the SAME sub/done/block expressivity a human-minted top gets, only re-rooted under G (work-run only,
+    keyed seg#d; skipped — and left re-examinable — until the courier plants a real goal). Returns placements
+    made."""
     _judge_ctx.fsid = fsid                            # usage logging: attribute this session's judge calls
     session = parsed_session(fsid, [path], now)
     store = load_goals(fsid)
@@ -1387,6 +1400,29 @@ def _plan_session(fsid, path, now):
             if not ops:
                 ops = _coerce_place(menu, text)       # MUST place: a prompted goal never stays unplaced
             apply_plan(store, seg_id, seg_t, ops, menu, place_key=seg_id + "#p")
+            placed += 1
+            _group_store(store, fsid, now)
+            save_goals(fsid, store)
+            continue
+        if phase == "delegation":                     # POSTAL delegation → file the recipient's work UNDER the courier's goal G
+            target = store["placements"].get(seg_id)
+            if not (isinstance(target, str) and target in store["nodes"]):
+                continue                              # courier hasn't planted a real goal (unset / "fyi") → skip, stay re-examinable
+            _reopen(store, target)                     # unseal if the closer already flat-completed G (refused if view-cleared)
+            sub = [nd for nd in open_menu(store)       # SCOPED menu: G + its open descendants, G first (menu #1)
+                   if nd["id"] == target or _top_ancestor(store["nodes"], nd["id"]) == target]
+            sub.sort(key=lambda nd: (nd["id"] != target, nd.get("t", 0)))
+            if not sub or sub[0]["id"] != target:
+                continue                              # G not open (e.g. view-cleared) → don't plan; leave re-examinable
+            ops = _parse_plan(plan_llm(text, _menu_text(store, sub), human=False), len(sub)) or []
+            # Full expressivity, ROOTED under G: a delegation gets the same sub/done/block a human-minted top
+            # does (over G's subtree), and a top-level MINT is re-rooted as a sub under G (#1) so a handoff is
+            # never a competing top. Skips drop; an empty/skip-only reply falls back to one sub under G.
+            ops = [{"do": "sub", "under": 1, "text": o.get("text"), "why": o.get("why")}
+                   if o["do"] == "mint" else o for o in ops if o["do"] != "skip"]
+            if not ops:
+                ops = [{"do": "sub", "under": 1, "text": _seg_label(text), "why": "work handed off from a peer"}]
+            apply_plan(store, seg_id, seg_t, ops, sub, place_key=seg_id + "#d")
             placed += 1
             _group_store(store, fsid, now)
             save_goals(fsid, store)

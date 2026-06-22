@@ -1475,6 +1475,101 @@ class Courier(unittest.TestCase):
         self.assertEqual(sum(1 for nd in s["nodes"].values() if nd.get("origin")), 1, "no duplicate handoff")
 
 
+class PostalDelegation(unittest.TestCase):
+    """A POSTAL DELEGATION segment files the recipient's work UNDER the courier's planted goal G, with the
+    SAME sub/done/block expressivity a human-minted top gets (re-rooted under G) — the user 2026-06-22, via
+    link_audit. Keyed seg#d (distinct from the courier's seg_id placement); skipped + left re-examinable
+    until the courier plants a real goal; idempotent across passes."""
+
+    def _peer_msg(self, t, text, uuid, mid, parent=None):
+        """A delivered POSTAL message line (the peer-segment trigger): the body carries the romp-msg-id
+        marker, so the event model authors it {"peer": ...} and _seg_peer flags it."""
+        return {"type": "user", "timestamp": iso(t), "uuid": uuid, "parentUuid": parent,
+                "message": {"role": "user", "content": "%s\nromp-msg-id: %s" % (text, mid)}}
+
+    def _run(self, recs, courier, work, passes=1, complete_g=False):
+        """Write recs, find the peer seg, pre-seed the recipient store with `courier` (a goal label →
+        courier-planted delegation; 'fyi' → coordination; None → not yet couriered), then run _plan_session
+        `passes` times with the planner LLMs mocked. Returns (store, seg_id, gid)."""
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            tpath = td / (SID + ".jsonl")
+            tpath.write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+            saved = (jd.GOALDIR, jd.PCACHE, jd.MESSAGES, jd.plan_llm, jd.plan_prompt_llm, jd._group_store)
+            jd.GOALDIR, jd.PCACHE = td / "goals", td / "pcache"
+            jd.MESSAGES = td / "messages.jsonl"           # hermetic: empty postal index (no live data, peer=None)
+            jd.plan_llm, jd.plan_prompt_llm = work, (lambda *a, **k: "")
+            jd._group_store = lambda *a, **k: None
+            try:
+                session = jd.parsed_session(SID, [str(tpath)], NOW)
+                peer = next(s for turn in session["turns"] for s in em.segments(turn) if jd._seg_peer(s))
+                seg_id = peer["id"]
+                store = {"rompUuid": SID, "seq": 0, "nodes": {}, "placements": {}, "status": {}}
+                gid = None
+                if courier == "fyi":
+                    store["placements"][seg_id] = "fyi"
+                elif courier:                              # a delegation: plant G exactly as the courier does
+                    gid = jd.apply_courier(store, seg_id, peer["t"], courier,
+                                           {"peer": "SENDER", "goalId": None, "msgId": "m-courier"})
+                    if complete_g:                         # the closer flat-completed it before the planner runs
+                        store["nodes"][gid]["nodeComplete"] = True
+                        store["nodes"][gid]["everDone"] = True
+                jd.save_goals(SID, store)
+                jd._PARSE_CACHE.clear()
+                for _ in range(passes):
+                    jd._plan_session(SID, str(tpath), NOW)
+                return jd.load_goals(SID), seg_id, gid
+            finally:
+                (jd.GOALDIR, jd.PCACHE, jd.MESSAGES, jd.plan_llm, jd.plan_prompt_llm, jd._group_store) = saved
+
+    def test_delegation_files_work_under_G_with_full_expressivity(self):
+        recs = [self._peer_msg(T0, "DELEGATE: build the export feature", "p1", "m1.1"),
+                aline(T0 + 30, "Built it; added tests.", "a1", "p1", tools=("Edit",), stop="end_turn")]
+        # the planner emits a MINT + a SUB — both must land UNDER G (the top-level mint re-rooted as a sub)
+        work = lambda *a, **k: ('{"ops":[{"why":"add export module","do":"mint","text":"export module"},'
+                                '{"why":"wrote tests","do":"sub","under":1,"text":"export tests"}]}')
+        store, seg_id, gid = self._run(recs, "ship export feature", work)
+        tops = [nd for nd in store["nodes"].values() if nd["parentId"] is None]
+        self.assertEqual([t["id"] for t in tops], [gid], "no competing top — only the courier's goal G")
+        under_g = [nd for nd in store["nodes"].values()
+                   if nd["id"] != gid and jd._top_ancestor(store["nodes"], nd["id"]) == gid]
+        self.assertEqual(len(under_g), 2, "BOTH the re-rooted mint and the sub live under G")
+        self.assertTrue(all(nd["parentId"] for nd in under_g), "nothing the delegation placed is a top-level goal")
+        self.assertIn(seg_id + "#d", store["placements"], "the delegation work-run dedups under seg#d")
+
+    def test_coordination_fyi_stays_unplanned(self):
+        recs = [self._peer_msg(T0, "COORDINATE: heads-up, I'm on the kernel", "p1", "m2.1"),
+                aline(T0 + 30, "Noted.", "a1", "p1", stop="end_turn")]
+        store, seg_id, gid = self._run(recs, "fyi", lambda *a, **k: '{"ops":[{"why":"x","do":"mint","text":"X"}]}')
+        self.assertEqual(store["nodes"], {}, "a coordination ('fyi') segment plants nothing")
+        self.assertNotIn(seg_id + "#d", store["placements"], "and isn't marked → stays re-examinable")
+
+    def test_delegation_skipped_until_courier_plants(self):
+        recs = [self._peer_msg(T0, "DELEGATE: future task", "p1", "m3.1"),
+                aline(T0 + 30, "On it.", "a1", "p1", stop="end_turn")]
+        store, seg_id, gid = self._run(recs, None, lambda *a, **k: '{"ops":[{"why":"x","do":"sub","under":1,"text":"y"}]}')
+        self.assertEqual(store["nodes"], {}, "courier hasn't planted a goal yet → nothing filed")
+        self.assertNotIn(seg_id + "#d", store["placements"], "not marked → re-examinable next pass (courier-first ordering)")
+
+    def test_delegation_is_idempotent_across_passes(self):
+        recs = [self._peer_msg(T0, "DELEGATE: do the thing", "p1", "m4.1"),
+                aline(T0 + 30, "Did it.", "a1", "p1", stop="end_turn")]
+        work = lambda *a, **k: '{"ops":[{"why":"work","do":"sub","under":1,"text":"did it"}]}'
+        store, seg_id, gid = self._run(recs, "do the thing", work, passes=3)
+        under_g = [nd for nd in store["nodes"].values() if nd.get("parentId") == gid]
+        self.assertEqual(len(under_g), 1, "filed exactly once across 3 passes (idempotent on seg#d)")
+
+    def test_completed_delegation_goal_reopened_to_file_substructure(self):
+        # the closer flat-completed G; a delegation work-run must REOPEN it and file the work under it.
+        recs = [self._peer_msg(T0, "DELEGATE: fix the bug", "p1", "m5.1"),
+                aline(T0 + 30, "Fixed.", "a1", "p1", stop="end_turn")]
+        work = lambda *a, **k: '{"ops":[{"why":"the fix","do":"sub","under":1,"text":"patched the off-by-one"}]}'
+        store, seg_id, gid = self._run(recs, "fix the bug", work, complete_g=True)
+        under_g = [nd for nd in store["nodes"].values() if nd.get("parentId") == gid]
+        self.assertEqual(len(under_g), 1, "a flat-completed delegation goal is reopened so work files under it")
+        self.assertFalse(store["nodes"][gid].get("nodeComplete"), "G is reopened (the closer re-completes it later)")
+
+
 class PlanPass(unittest.TestCase):
     def test_pass_accretes_menu_then_dedups(self):
         """Per-session sequential: segment 2's menu contains segment 1's minted goal (accretion);
