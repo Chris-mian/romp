@@ -1066,17 +1066,16 @@ def plan_llm(segment_text, menu_text, model=None, effort=None, human=False, nudg
     """One JSON goal-plan from the TRIAGE-tier model (Sonnet) over a segment + the open-goals menu.
     '' on failure. model/effort override the tier + enable thinking (the classification A/B). When `human`
     (a real user message) a <note> forbids skip. When `nudge` (a romp status-check on a 'working' goal, not
-    a real ask) a <note> pushes a RESOLUTION (done/block) over a plain step — but EXEMPTS a goal waiting on a
-    PEER/another session (only the user blocks; the gate that skips those nudges is the kernel's, 2026-06-22).
-    Cap is generous — a multi-op JSON reply is longer than the old single line."""
+    a real ask) a <note> pushes a RESOLUTION (done/block) over a plain step. Peer-waiting goals never reach
+    here — the kernel's auto-nudge gate already SKIPS nudging a session waiting on a live peer (2026-06-22),
+    so anything that gets a nudge segment is genuinely stalled. Cap is generous (a multi-op reply is long)."""
     user = "<segment>\n%s\n</segment>\n<open-goals>\n%s\n</open-goals>" % (segment_text, menu_text)
     if nudge:
         user += ("\n<note>This segment is a romp NUDGE — an automated status check on a goal still showing "
                  "'working', NOT a real user request. RESOLVE the goal: mark it DONE if its outcome is "
                  "delivered with nothing left for the user, or BLOCK it if it needs a decision or answer from "
-                 "the USER (the why = that ask). Do NOT file a plain step. EXCEPTION: if the goal is waiting "
-                 "on a PEER or another session (not the user), or the agent has genuinely resumed real work on "
-                 "it, keep it working — never force a false done/block.</note>")
+                 "the USER (the why = that ask). Do NOT file a plain step. EXCEPTION: if the agent has "
+                 "genuinely resumed real work on the goal, keep it working — never force a false done/block.</note>")
     elif human:
         user += ("\n<note>This segment contains a real user message, so it MUST be placed "
                  "(mint/sub/done/block) — do NOT return a skip.</note>")
@@ -1479,7 +1478,8 @@ def _plan_session(fsid, path, now):
             ops = _parse_plan(plan_llm(text, _menu_text(store, sub), nudge=True), len(sub)) or []
             # the must-resolve note pushes DONE/BLOCK on the goal; a MINT is re-rooted as a sub under it, and a
             # genuine-progress SUB files under it too. Skips drop; an empty reply falls back to one sub (never
-            # force a false resolution — the note already exempts a peer-wait / a genuine resume).
+            # force a false resolution — the note still exempts a genuine resume; peer-waits were already
+            # filtered out by the kernel's auto-nudge gate before this segment was ever injected).
             ops = [{"do": "sub", "under": 1, "text": o.get("text"), "why": o.get("why")}
                    if o["do"] == "mint" else o for o in ops if o["do"] != "skip"]
             if not ops:
