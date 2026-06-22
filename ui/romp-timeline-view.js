@@ -208,13 +208,21 @@ function modelLabel(s) {
 // dims the word in the gap. Values mirror chat-view's allowlist (extension.ts META_VALUES) verbatim.
 const META_HOVER_FG = '#e6edf3';   // brighten the word + reveal its caret on hover
 const META_CARET = ' ▾';           // appended (hair-spaced) after each clickable word
-// Per-lane settings gear (the user 2026-06-19): sits between the name and the model, opens a menu of
-// per-session view flags. Brightens to GEAR_ON_FG when any flag is active so a muted lane is visible.
-const GEAR_GLYPH = '⚙︎';  // ⚙ forced to text (monochrome), not emoji presentation
-const GEAR_ON_FG = '#d9a441';       // amber — a flag is active on this lane (e.g. hidden from feed)
-const SESSION_FLAGS = [
-  { key: 'hideFromFeed', label: 'Hide from feed', hint: 'Prompts won’t make feed cards (still on the timeline)' },
-];
+// Per-lane feed show/hide EYE (the user 2026-06-22, replacing the old settings gear + flag menu): sits
+// between the name and the model. ON the feed (default) = a normal gray eye, its prompts mint feed cards;
+// OFF the feed = the SAME gray eye struck through + DIMMER (de-emphasised — NOT a highlight colour; we don't
+// spotlight the disabled state, the user 2026-06-22), its prompts won't make cards though the lane stays on
+// the timeline (re-opening only affects NEW prompts; it doesn't resurface past ones to clear). One click
+// toggles it directly — no menu.
+// Drawn (not an emoji) so it stays crisp + monochrome everywhere: an almond outline + pupil; `off`=true adds
+// a strike-through slash so the muted state is obvious. One gray throughout — the caller dims the off state.
+function eyeIcon(off, cx, cy, color) {
+  const g = el('g', { 'pointer-events': 'none' });
+  g.appendChild(el('path', { d: 'M' + (cx - 6) + ' ' + cy + ' C' + (cx - 3) + ' ' + (cy - 3.6) + ' ' + (cx + 3) + ' ' + (cy - 3.6) + ' ' + (cx + 6) + ' ' + cy + ' C' + (cx + 3) + ' ' + (cy + 3.6) + ' ' + (cx - 3) + ' ' + (cy + 3.6) + ' ' + (cx - 6) + ' ' + cy + ' Z', fill: 'none', stroke: color, 'stroke-width': 1.2 }));
+  g.appendChild(el('circle', { cx: cx, cy: cy, r: 1.5, fill: color }));
+  if (off) g.appendChild(el('line', { x1: cx - 6.5, y1: cy + 4.5, x2: cx + 6.5, y2: cy - 4.5, stroke: color, 'stroke-width': 1.4, 'stroke-linecap': 'round' }));
+  return g;
+}
 const MODEL_CHOICES = [
   { label: 'Fable', value: 'fable' },
   { label: 'Opus', value: 'opus' },
@@ -1413,43 +1421,9 @@ class TimelinePanel {
     this._metaMenu = menu;
   }
 
-  // The per-session settings drop-down (the lane gear). A list of toggle flags — currently just
-  // hideFromFeed: when on, this session's prompts stop minting feed cards (it stays on the timeline).
-  // Each item shows a ✓ when active; clicking toggles it (optimistic local update + persisted via
-  // _setSessionFlag, confirmed on the next push). Re-clicking the gear closes it; outside-click/Esc too.
-  _openFlagMenu(s, anchorEl) {
-    const reopen = this._metaMenu && this._metaMenu._kind === 'flags' && this._metaMenu._sid === s.id;
-    this._closeMetaMenu();
-    if (reopen) return;
-    const menu = document.body.createDiv();
-    menu.setAttribute('style', 'position:fixed;z-index:1001;min-width:200px;max-width:260px;padding:4px;background:#1c2430;border:1px solid #ffffff1f;border-radius:8px;box-shadow:0 8px 24px #00000066;font-size:12px;color:#e6edf3;user-select:none;');
-    menu._kind = 'flags'; menu._sid = s.id;
-    for (const f of SESSION_FLAGS) {
-      const on = !!s[f.key];
-      const item = menu.createDiv();
-      item.setAttribute('style', 'padding:5px 10px 6px 24px;border-radius:5px;cursor:pointer;position:relative;');
-      const ck = item.createSpan({ text: on ? '✓' : '' });
-      ck.setAttribute('style', 'position:absolute;left:8px;top:5px;color:#54B204;');
-      const lab = item.createDiv({ text: f.label });
-      if (on) lab.setAttribute('style', 'color:#54B204;');
-      if (f.hint) { const h = item.createDiv({ text: f.hint }); h.setAttribute('style', 'color:#9aa0a6;font-size:11px;margin-top:1px;white-space:normal;line-height:1.3;'); }
-      item.addEventListener('mouseenter', () => { item.style.background = '#ffffff14'; });
-      item.addEventListener('mouseleave', () => { item.style.background = 'transparent'; });
-      item.addEventListener('click', (e) => {
-        e.stopPropagation();
-        const next = !on;
-        s[f.key] = next;                              // optimistic — the kernel confirms on the next push
-        this._setSessionFlag(s, f.key, next);
-        this._closeMetaMenu();
-        this.draw();
-      });
-    }
-    const r = anchorEl.getBoundingClientRect();
-    const left = Math.min(Math.round(r.left), (window.innerWidth || 9999) - 210);
-    menu.style.left = Math.max(6, left) + 'px';
-    menu.style.top = Math.round(r.bottom + 4) + 'px';
-    this._metaMenu = menu;
-  }
+  // (The old per-lane settings drop-down + its flag list were removed (the user 2026-06-22): with a single
+  // flag, the lane EYE toggles hideFromFeed DIRECTLY on click — no menu. See the render below; the flag is
+  // still persisted by _setSessionFlag.)
 
   // Persist a per-session flag. Web dashboard: the host WS hook (→ kernel setSessionFlag → rebuild feed).
   // Obsidian/headless fallback: write the same session-flags.json the kernel's build_feed reads.
@@ -1586,9 +1560,9 @@ class TimelinePanel {
     // gear column: a per-session settings gear between the name and the model, on LIVE lanes (the user
     // 2026-06-19). Reserve its width only when there IS a live lane, so an all-historical view keeps the
     // tight [name][model] layout.
-    const GEAR_W = 13, GEAR_GAP = 6, anyLive = vis.some((s) => s.live);
-    const gearColX = PADL + Math.ceil(maxName) + COLGAP;                             // [name] [⚙] [model+effort] [chip] [ctx]
-    const modelColX = gearColX + (anyLive ? GEAR_W + GEAR_GAP : 0);
+    const EYE_W = 13, EYE_GAP = 6, anyLive = vis.some((s) => s.live);
+    const eyeColX = PADL + Math.ceil(maxName) + COLGAP;                              // [name] [👁] [model+effort] [chip] [ctx]
+    const modelColX = eyeColX + (anyLive ? EYE_W + EYE_GAP : 0);
     const chipColX = modelColX + (maxModel > 0 ? Math.ceil(maxModel) + COLGAP : 0);
     const ctxColX = chipColX + (maxChip > 0 ? Math.ceil(maxChip) + COLGAP : 0);
     M.left = ctxColX + (maxCtx > 0 ? Math.ceil(maxCtx) + COLGAP : 4);
@@ -1810,22 +1784,37 @@ class TimelinePanel {
       if (!s.live) lblA['text-decoration'] = 'line-through';   // dead lane → strike the name (mirrors the feed)
       const lbl = el('text', lblA); lbl.textContent = s.name; svg.appendChild(lbl);
       if (s.faded) fadedEls.push({ el: lbl, full: s.color, faded: F(s.color) });
-      // per-session settings gear (live lanes only): opens the flag menu (hide-from-feed today). It
-      // brightens to amber when a flag is active so a muted lane stands out; subtle/dim otherwise.
+      // per-session feed show/hide EYE (live lanes only): one click toggles hideFromFeed directly — eye =
+      // on the feed (default), struck-through + dimmer = off it. Always GRAY; the OFF state is de-emphasised
+      // (dimmer), never highlighted (the user 2026-06-22). No menu.
       if (s.live) {
-        const fon = !!s.hideFromFeed;
-        // The glyph is PURELY VISUAL (pointer-events:none): a bare SVG <text> only catches clicks on its
-        // painted strokes, so a thin gear was nearly unhittable — you had to land on a stroke (the user
-        // 2026-06-19). A generous transparent <rect> over it is the real hit target (same trick the work
-        // bars use), so a click anywhere on/around the gear opens the menu.
-        const g = el('text', { x: gearColX, y: y + 4, 'text-anchor': 'start', 'font-size': 12.5, fill: fon ? GEAR_ON_FG : MODEL_FG, opacity: fon ? '1' : '0.55', 'pointer-events': 'none' });
-        g.textContent = GEAR_GLYPH; svg.appendChild(g);
-        const hit = el('rect', { x: gearColX - 4, y: y - 9, width: GEAR_W + 8, height: 18, fill: 'transparent', 'pointer-events': 'all' });
-        hit.style.cursor = 'pointer'; hit.setAttribute('aria-label', 'session settings'); svg.appendChild(hit);
-        const restore = () => { g.setAttribute('fill', fon ? GEAR_ON_FG : MODEL_FG); g.setAttribute('opacity', fon ? '1' : '0.55'); };
-        hit.addEventListener('mouseenter', () => { g.setAttribute('fill', META_HOVER_FG); g.setAttribute('opacity', '1'); });
-        hit.addEventListener('mouseleave', restore);
-        hit.addEventListener('click', (e) => { e.stopPropagation(); this._openFlagMenu(s, hit); });
+        const off = !!s.hideFromFeed;
+        const cx = eyeColX + 5, cy = y + 0.5;
+        // The drawn eye is PURELY VISUAL (pointer-events:none): thin strokes are nearly unhittable, so a
+        // generous transparent <rect> over it is the real hit target (same trick the work bars use). The
+        // tooltip uses the shared showTip/hideTip (a native SVG <title> never shows — a redraw kills the
+        // hover before it appears; showTip freezes live-follow so it stays — the user 2026-06-22).
+        const dim = off ? '0.4' : '0.62';              // off = darker/dimmer; on = the normal gray
+        const eye = eyeIcon(off, cx, cy, MODEL_FG);
+        eye.setAttribute('opacity', dim);
+        svg.appendChild(eye);
+        const hit = el('rect', { x: eyeColX - 4, y: y - 9, width: EYE_W + 8, height: 18, fill: 'transparent', 'pointer-events': 'all' });
+        hit.style.cursor = 'pointer';
+        hit.setAttribute('aria-label', off ? 'session off the feed' : 'session on the feed'); svg.appendChild(hit);
+        const tip = off
+          ? "Off the feed — click to put it back on<div style='opacity:.65;margin-top:2px'>only new prompts make cards; past ones won’t reappear</div>"
+          : "On the feed — click to take it off<div style='opacity:.65;margin-top:2px'>its prompts stop making cards; it stays on the timeline</div>";
+        hit.addEventListener('mouseenter', (e) => { eye.setAttribute('opacity', '1'); this.showTip(tip, e); });
+        hit.addEventListener('mousemove', (e) => this.moveTip(e));
+        hit.addEventListener('mouseleave', () => { eye.setAttribute('opacity', dim); this.hideTip(); });
+        hit.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const next = !s.hideFromFeed;
+          s.hideFromFeed = next;                       // optimistic — the kernel confirms on the next push
+          this._setSessionFlag(s, 'hideFromFeed', next);
+          this.hideTip();
+          this.draw();
+        });
       }
       // model + effort, muted, between the name and the state chip (left-aligned in its column). On a
       // LIVE lane each word is a drop-down picker — hover reveals a ▾ caret, click opens a menu whose

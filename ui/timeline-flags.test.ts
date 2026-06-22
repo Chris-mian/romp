@@ -1,7 +1,8 @@
-// Per-session settings gear on the timeline lane (the user 2026-06-19): a ⚙ between the session name and
-// the model that opens a flag menu — currently "hide from feed" (the session's prompts stop minting feed
-// cards but it stays on the timeline). The timeline view has no headless render harness for the lane
-// header, so — like timeline-view.test.ts — pin the wiring at the source level against the shared
+// Per-session feed show/hide EYE on the timeline lane (the user 2026-06-22, replacing the old gear + flag
+// menu): a small gray eye between the session name and the model. ON the feed (default) = a plain eye; OFF
+// the feed = the SAME eye struck through + DIMMER (de-emphasised, never a highlight colour). ONE click
+// toggles hideFromFeed directly — no popup menu. The timeline view has no headless render harness for the
+// lane header, so — like timeline-view.test.ts — pin the wiring at the source level against the shared
 // ui/romp-timeline-view.js (the same file the web dashboard serves verbatim).
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
@@ -10,46 +11,50 @@ import * as path from "node:path";
 
 const SRC = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "romp-timeline-view.js"), "utf8");
 
-test("a per-session gear column sits BETWEEN the name and the model (live lanes only)", () => {
-  // a reserved gear column, after the name, before the model — width added only when a live lane exists
-  assert.match(SRC, /const gearColX = PADL \+ Math\.ceil\(maxName\) \+ COLGAP;/);
-  assert.match(SRC, /const modelColX = gearColX \+ \(anyLive \? GEAR_W \+ GEAR_GAP : 0\);/);
-  // the gear glyph is drawn only on live lanes
-  assert.match(SRC, /if \(s\.live\) \{[\s\S]*?GEAR_GLYPH/);
+test("a per-session EYE column sits BETWEEN the name and the model (live lanes only)", () => {
+  assert.match(SRC, /const eyeColX = PADL \+ Math\.ceil\(maxName\) \+ COLGAP;/);
+  assert.match(SRC, /const modelColX = eyeColX \+ \(anyLive \? EYE_W \+ EYE_GAP : 0\);/);
+  assert.match(SRC, /if \(s\.live\) \{[\s\S]*?eyeIcon\(off, cx, cy, MODEL_FG\)/);
 });
 
-test("the gear has a generous transparent hit RECT (not the painted glyph) so it's easy to click", () => {
-  // the bug: a bare <text> glyph only catches clicks on its painted strokes (the user 2026-06-19) —
-  // so the glyph is pointer-events:none and a transparent rect with pointer-events:all is the hit target
-  assert.match(SRC, /GEAR_GLYPH; svg\.appendChild\(g\)/);
-  assert.match(SRC, /'pointer-events': 'none'[\s\S]*?GEAR_GLYPH/, "the glyph itself takes no pointer events");
+test("the eye is DRAWN (almond outline + pupil); the OFF state adds a strike-through slash", () => {
+  // not an emoji glyph — an SVG path almond + a pupil circle, so it stays crisp + monochrome
+  assert.match(SRC, /function eyeIcon\(off, cx, cy, color\)/);
+  assert.match(SRC, /el\('path', \{ d: 'M' \+ \(cx - 6\)[\s\S]*?fill: 'none', stroke: color/);
+  assert.match(SRC, /el\('circle', \{ cx: cx, cy: cy, r: 1\.5, fill: color \}\)/);
+  // off → a diagonal slash line through the eye (the "hidden" affordance the user asked for)
+  assert.match(SRC, /if \(off\) g\.appendChild\(el\('line', \{ x1: cx - 6\.5[\s\S]*?stroke: color/);
+});
+
+test("the eye is always GRAY; the OFF state is DIMMER (de-emphasised), never highlighted (the user 2026-06-22)", () => {
+  // one colour (MODEL_FG) for both states — the off lane is dimmed, NOT painted a spotlight amber
+  assert.match(SRC, /const dim = off \? '0\.4' : '0\.62';/);
+  assert.match(SRC, /const eye = eyeIcon\(off, cx, cy, MODEL_FG\);/);
+  assert.doesNotMatch(SRC, /FEED_OFF_FG/, "no amber highlight colour for the off state");
+  assert.doesNotMatch(SRC, /GEAR_ON_FG/, "the old amber gear-active colour is gone");
+});
+
+test("the eye has a generous transparent hit RECT, and ONE click toggles hideFromFeed directly (no menu)", () => {
   assert.match(SRC, /const hit = el\('rect', \{[^}]*fill: 'transparent', 'pointer-events': 'all'/);
-  assert.match(SRC, /hit\.addEventListener\('click', \(e\) => \{ e\.stopPropagation\(\); this\._openFlagMenu\(s, hit\)/);
+  // direct toggle on click: optimistic local flip + persist via _setSessionFlag — no _openFlagMenu
+  assert.match(SRC, /hit\.addEventListener\('click', \(e\) => \{[\s\S]*?s\.hideFromFeed = next;[\s\S]*?this\._setSessionFlag\(s, 'hideFromFeed', next\)/);
+  assert.doesNotMatch(SRC, /_openFlagMenu/, "the popup flag menu is removed");
+  assert.doesNotMatch(SRC, /const SESSION_FLAGS = \[/, "the flag list is removed (single flag, direct toggle)");
 });
 
-test("the gear brightens when a flag is active so a muted lane stands out", () => {
-  assert.match(SRC, /const fon = !!s\.hideFromFeed;/);
-  assert.match(SRC, /fill: fon \? GEAR_ON_FG : MODEL_FG/);
-  assert.match(SRC, /const GEAR_ON_FG = /);
+test("the tooltip uses the shared showTip/hideTip (a native SVG <title> never shows — a redraw kills it)", () => {
+  // the bug the user hit: no tooltip appeared. showTip freezes live-follow so the tip survives the timeline's
+  // frequent redraws; a native <title> needs ~1s of stable hover that a redraw interrupts.
+  assert.match(SRC, /mouseenter', \(e\) => \{ eye\.setAttribute\('opacity', '1'\); this\.showTip\(tip, e\)/);
+  assert.match(SRC, /mousemove', \(e\) => this\.moveTip\(e\)/);
+  assert.match(SRC, /mouseleave', \(\) => \{ eye\.setAttribute\('opacity', dim\); this\.hideTip\(\)/);
+  assert.match(SRC, /Off the feed — click to put it back on/);
+  assert.match(SRC, /On the feed — click to take it off/);
 });
 
-test("the flag menu lists the session flags with a ✓ + hint, toggling optimistically", () => {
-  assert.match(SRC, /_openFlagMenu\(s, anchorEl\)/);
-  assert.match(SRC, /const SESSION_FLAGS = \[/);
-  assert.match(SRC, /key: 'hideFromFeed'/);
-  assert.match(SRC, /for \(const f of SESSION_FLAGS\)/);
-  assert.match(SRC, /s\[f\.key\] = next;/, "optimistic local update before the round-trip");
-  assert.match(SRC, /this\._setSessionFlag\(s, f\.key, next\)/);
-});
-
-test("setSessionFlag posts via the web host hook, with a Node-fs fallback for Obsidian", () => {
+test("setSessionFlag still posts via the web host hook, with a Node-fs fallback for Obsidian", () => {
   assert.match(SRC, /_setSessionFlag\(s, flag, value\)/);
   assert.match(SRC, /window\.__rompTimelineSetFlag === 'function'/);
   assert.match(SRC, /window\.__rompTimelineSetFlag\(s\.id, flag, value\)/);
   assert.match(SRC, /session-flags\.json/, "Obsidian/headless writes the same file the kernel reads");
-});
-
-test("the flag menu reuses the shared _metaMenu (outside-click / Esc close) under a 'flags' kind", () => {
-  assert.match(SRC, /this\._metaMenu\._kind === 'flags'/);
-  assert.match(SRC, /menu\._kind = 'flags'; menu\._sid = s\.id;/);
 });
