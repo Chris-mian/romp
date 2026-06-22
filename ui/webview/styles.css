@@ -1132,7 +1132,11 @@ pre code .ct { flex: 1 1 auto; min-width: 0; white-space: pre-wrap; overflow-wra
 /* overview ruler (link_audit's #4, the user 2026-06-22): a fixed strip over the #content scrollbar gutter
    that bands the full-transcript location of the currently .ext-glow'd turns, so a cross-surface hover shows
    where the hovered thing sits even when scrolled off-screen. pointer-events:none → the native scrollbar
-   still works underneath; white bands mirror the .ext-glow highlight. position/height set inline (JS). */
+   still works underneath. position/height set inline (JS). */
 .glow-ruler { position: fixed; width: 10px; z-index: 5; pointer-events: none; }
+/* bands take the ACTIVE session's identity colour at ~0.5 alpha — the same --active-accent the chat's left
+   rail line uses (.turn::before), so the overview reads as "this agent's" (the user 2026-06-22). Falls back
+   to white when no session colour is set; color-mix is already relied on elsewhere (peer wash, focus ring). */
 .glow-ruler-band { position: absolute; left: 1px; right: 1px; border-radius: 3px;
-  background: rgba(255, 255, 255, 0.62); box-shadow: 0 0 3px rgba(255, 255, 255, 0.5); }
+  background: color-mix(in srgb, var(--active-accent, #fff) 50%, transparent);
+  box-shadow: 0 0 3px color-mix(in srgb, var(--active-accent, #fff) 40%, transparent); }

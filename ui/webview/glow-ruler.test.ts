@@ -65,6 +65,13 @@ test("the ruler repaints on glow change + window resize + #content relayout, NOT
 test("the ruler is a pure indicator — fixed over the gutter, pointer-events:none so the scrollbar still works", () => {
   assert.match(CSS, /\.glow-ruler \{[^}]*position: fixed;[^}]*width: 10px;[^}]*pointer-events: none/);
   assert.match(CSS, /\.glow-ruler-band \{[^}]*position: absolute;[^}]*border-radius: 3px/);
-  // white bands mirror the .ext-glow highlight language
-  assert.match(CSS, /\.glow-ruler-band \{[^}]*background: rgba\(255, 255, 255, 0\.62\)/);
+});
+
+test("bands take the active agent's identity colour at ~0.5 alpha, matching the chat's left rail line (the user 2026-06-22)", () => {
+  // the left rail line is .turn::before { background: var(--active-accent, var(--rail)) }; the bands use the
+  // SAME --active-accent (the active session's color.bg, set on <body> by showActive) at 50% via color-mix,
+  // so the overview reads as "this agent's" colour. White fallback when no session colour is set.
+  assert.match(CSS, /\.glow-ruler-band \{[^}]*background: color-mix\(in srgb, var\(--active-accent, #fff\) 50%, transparent\)/);
+  // and the chat's left rail line it's matching, so the link between the two is pinned
+  assert.match(CSS, /\.turn::before \{[^}]*background: var\(--active-accent, var\(--rail\)\)/);
 });
