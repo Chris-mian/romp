@@ -4449,6 +4449,237 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 pass
 
+    def _dispatch_ws(self, msg, client):
+        """Handle ONE parsed webview->kernel message. Split out of _ws() + called inside a per-message
+        try/except (see _ws) so a bug in one handler logs and the NEXT message still processes, instead of
+        the exception escaping the recv loop and tearing the socket down — which made a reconnect blank the
+        chat (the _session_list TypeError, the user 2026-06-22). A genuine socket error still propagates."""
+        if msg and msg.get("type") == "ready":
+            self._push_one(client)
+            # Push the SHARED, STABLE tab order so the UI honors it on connect/reload. Without this
+            # the webview only learns the order from a live drag, loses it on every reload, and falls
+            # back to ordering tabs by session STATE — so they drift on their own (worse now that the
+            # heartbeat auto-reloads). _ordered_alive is the same order chat tabs + timeline lanes use.
+            try:
+                _o = [s["sid"] for s in _ordered_alive(int(time.time()), _tmux_sessions())]
+                client["send"](json.dumps({"type": "tabOrder", "order": _o}))
+            except Exception:
+                pass
+        elif msg and msg.get("type") == "setSessionFlag" and msg.get("id") and msg.get("flag"):
+            # timeline lane gear → toggle a per-session view flag (e.g. hideFromFeed). Persisted +
+            # re-broadcast so the feed drops/restores that session's cards immediately.
+            _set_session_flag(str(msg["id"]), str(msg["flag"]), bool(msg.get("value")))
+            _push_all()
+        elif msg and msg.get("type") == "setAutoNudge" and msg.get("enabled") is not None:
+            _set_auto_nudge(bool(msg["enabled"]))   # feed gear → server-side Auto Nudge on/off
+            _auto_nudge_tick(int(time.time()), _tmux_sessions())   # act immediately on turn-on (don't wait 4s)
+        elif msg and msg.get("type") == "askClear" and msg.get("itemId"):
+            _clear_ask(msg["itemId"])
+            _push_all()                        # reflect the clear on every feed client now
+        elif msg and msg.get("type") == "nodeOverride" and msg.get("sid") and msg.get("nodeId"):
+            # modal surgical override: cross a node off (op:resolve → nodeComplete). Other ops can
+            # extend this later; resolve is the one the user asked for (2026-06-17).
+            if msg.get("op") == "resolve" and _resolve_node(str(msg["sid"]), str(msg["nodeId"])):
+                _push_all()
+        elif msg and msg.get("type") == "clearAll":
+            d = build_feed(int(time.time()))
+            _clear_all([a["itemId"] for a in d["asks"]] + [c["itemId"] for c in d["items"]])
+            _push_all()
+        elif msg and msg.get("type") == "undoClear":
+            _undo_clear()
+            _push_all()
+        elif msg and msg.get("type") in ("reorderTabs", "writeOrder") and isinstance(msg.get("order"), list):
+            _write_session_order(msg["order"])   # tab-drag or lane-drag → reorder BOTH surfaces
+            _push_all()
+        elif msg and msg.get("type") == "createSession" and msg.get("name"):
+            nm = str(msg["name"]).strip()
+            if not NAME_RE.match(nm):
+                client["send"](json.dumps({"type": "warn", "text": "session names use letters, digits, . _ - only."}))
+            else:
+                live = _live_names(_tmux_sessions())
+                if nm in live:                   # already running → just (re)open it, don't re-spawn
+                    _set_hidden_tab(live[nm], False); _push_all()
+                    _reveal_chat({"type": "focus", "id": live[nm]})
+                else:
+                    threading.Thread(target=_spawn_session, args=(nm,), daemon=True).start()
+        elif msg and msg.get("type") == "renameSession" and msg.get("id") and msg.get("name"):
+            new = _rename_session(str(msg["id"]), str(msg["name"]))
+            if new:
+                # echo so the webview commits its inline label now; the names-file change
+                # re-pushes the new name to every surface via _producer_sig.
+                client["send"](json.dumps({"type": "renamed", "id": str(msg["id"]), "name": new}))
+            else:
+                client["send"](json.dumps({"type": "warn", "text": "session names use letters, digits, . _ - only."}))
+        elif msg and msg.get("type") == "requestSessions":
+            client["send"](json.dumps({"type": "sessionList",
+                                       "items": _session_list(int(time.time()), _tmux_sessions())}))
+        elif msg and msg.get("type") in ("pickResult", "openByName") and (msg.get("id") or msg.get("name")):
+            sid = msg.get("id") or _live_names(_tmux_sessions()).get(str(msg.get("name")))
+            if sid:
+                _set_hidden_tab(sid, False); _push_all()
+                _reveal_chat({"type": "focus", "id": sid})
+        elif msg and msg.get("type") == "openAll":
+            for s in _alive_sessions(int(time.time()), _tmux_sessions()):
+                _set_hidden_tab(s["sid"], False)
+            _push_all()
+        elif msg and msg.get("type") == "closeSession" and msg.get("id"):
+            # × → ask (Close tab vs End session) instead of hiding straightaway (the user 2026-06-15)
+            client["send"](json.dumps({"type": "confirmClose", "id": msg["id"],
+                                       "name": _name_of(msg["id"]) or msg["id"]}))
+        elif msg and msg.get("type") == "closeTab" and msg.get("id"):
+            _set_hidden_tab(msg["id"], True)     # hide the tab; session keeps running
+            _kept_open.discard(msg["id"])        # ×-closing a read-only dead tab forgets it (timeline-only again)
+            _send_to_app("chat", {"type": "closed", "id": msg["id"]})   # prune it in the live view now
+            _push_all()
+        elif msg and msg.get("type") == "endSession" and msg.get("id"):
+            nm = _name_of(msg["id"])
+            if nm:
+                try:
+                    subprocess.run(["tmux", "kill-session", "-t", nm], timeout=4)
+                except Exception:
+                    pass
+            _send_to_app("chat", {"type": "closed", "id": msg["id"]})
+            _push_all()
+        elif msg and msg.get("type") == "openSession" and msg.get("id"):
+            # live → reopen the hidden tab + focus; dead → the chat's confirmRevive modal
+            _open_or_revive(msg["id"])
+        elif msg and msg.get("type") == "reviveSession" and msg.get("id"):
+            # confirmRevive → "Revive": resume the dead session in the background (the kernel had
+            # no handler, so the modal's Revive silently did nothing — the user 2026-06-16)
+            threading.Thread(target=_revive_session, args=(msg["id"],), daemon=True).start()
+        elif msg and msg.get("type") == "viewReadOnly" and msg.get("id"):
+            _kept_open.add(msg["id"])            # confirmRevive → "View read-only": this dead session
+            _set_hidden_tab(msg["id"], False)    # gets a (struck) read-only tab now, without resuming it
+            _push_all()
+            _reveal_chat({"type": "focus", "id": msg["id"]})
+        elif msg and msg.get("type") == "deepLink" and msg.get("session"):
+            _reveal_or_confirm(msg["session"], {"type": "focus", "id": msg["session"], "anchor": msg.get("anchor"),
+                          "anchorT": msg.get("anchorT"), "anchorKind": msg.get("anchorKind")})
+        elif msg and msg.get("type") == "showOnTimeline" and msg.get("sid"):
+            _reveal_or_confirm(msg["sid"], _show_on_timeline_focus(msg))
+        elif msg and msg.get("type") == "expand" and msg.get("itemId"):
+            _request_feed_detail(str(msg["itemId"]), bool(msg.get("generate")))
+        elif msg and msg.get("type") == "hoverHighlight":
+            ids = msg["ids"] if isinstance(msg.get("ids"), list) else ([msg["id"]] if msg.get("id") else [])
+            _send_to_app("timeline", {"type": "hover", "ids": ids, "nonce": _next_nonce()})
+        elif msg and msg.get("type") == "showAskPath":
+            # feed card hover/click/leave → light that goal's work-bars on the timeline AND glow its
+            # chat rows (#1 feed→chat). `off` clears both; otherwise resolve the goal's subtree
+            # segments by EXACT id and light their atom uuids (no time window).
+            item_id = msg.get("itemId") or ""
+            seg_ids = [] if msg.get("off") else _goal_segments(item_id)
+            _send_to_app("timeline", {"type": "hover", "ids": seg_ids, "nonce": _next_nonce()})
+            gsid = item_id.rsplit(":", 1)[0] if (item_id and not msg.get("off")) else ""
+            uuids = _segment_atom_uuids(gsid, seg_ids, time.time()) if gsid else []
+            groups = [{"sid": gsid, "uuids": uuids}] if uuids else []
+            _send_to_app("chat", {"type": "glowTurns", "groups": groups, "mids": []})
+        elif msg and msg.get("type") in ("dotHover", "ledgerHover"):
+            # chat message / TOC-bullet hover → light the matching timeline glyph. The event/bullet
+            # carries tlId (build_session): a prompt → the DOT, work → the BAR. Absent → clear.
+            tl = msg.get("tlId")
+            _send_to_app("timeline", {"type": "hover", "ids": ([tl] if tl else []),
+                                      "nonce": _next_nonce()})
+            if msg.get("type") == "dotHover":
+                # a chat-dot hover ALSO lights the owning feed card (#2) and every other row in the
+                # same segment (#3), resolved by EXACT segment from the hovered atom uuid. The leave
+                # event (no sid/uuid) resolves to nothing → clears both.
+                hsid, huuid = str(msg.get("sid") or ""), str(msg.get("uuid") or "")
+                seg_id, seg_uuids = _segment_of_uuid(hsid, huuid, time.time()) if (hsid and huuid) else (None, [])
+                _send_to_app("feed", {"type": "hoverCards",
+                                      "keys": _cards_for_segments(hsid, [seg_id]) if seg_id else [],
+                                      "eid": None})
+                groups = [{"sid": hsid, "uuids": seg_uuids}] if seg_uuids else []
+                _send_to_app("chat", {"type": "glowTurns", "groups": groups, "mids": []})
+        elif msg and msg.get("type") == "timelineHover":
+            # the REVERSE of the feed/chat→timeline hovers: a timeline bar hover lights the feed
+            # card that owns that work (hoverCards, resolved by segment) AND glows the chat turns of
+            # those segments (glowTurns). Both halves resolve BY SEGMENT ID now — the chat glow lights
+            # the segments' exact atom uuids, not a +/-2s time window (the user 2026-06-19). off → clear.
+            if msg.get("off"):
+                _send_to_app("feed", {"type": "hoverCards", "keys": [], "eid": None})
+                _send_to_app("chat", {"type": "glowTurns", "groups": [], "mids": []})
+            else:
+                hsid = str(msg.get("sid") or "")
+                seg_ids = msg.get("segIds") or []
+                _send_to_app("feed", {"type": "hoverCards",
+                                      "keys": _cards_for_segments(hsid, seg_ids), "eid": None})
+                uuids = _segment_atom_uuids(hsid, seg_ids, time.time())
+                groups = [{"sid": hsid, "uuids": uuids}] if uuids else []
+                _send_to_app("chat", {"type": "glowTurns", "groups": groups, "mids": []})
+        elif msg and msg.get("type") == "sendMessage" and msg.get("id") and msg.get("text"):
+            _tmux_send(_name_of(msg["id"]) or msg["id"], str(msg["text"]))   # composer → session
+        elif msg and msg.get("type") == "interrupt" and msg.get("id"):
+            _interrupt(_name_of(msg["id"]) or msg["id"])   # Esc to stop + clear the restored prompt (composer↔pane consistency)
+            _record_idle(str(msg["id"]), int(time.time()))   # Esc-stop writes no end_turn → record idle so the chip flips to 'ready'
+            _push_all()                                      # surface the ready chip now
+        elif msg and msg.get("type") == "compact" and msg.get("name"):
+            _tmux_send(str(msg["name"]), "/compact")
+            _mark_compacting(_live_names(_tmux_sessions()).get(str(msg["name"])))   # instant cue
+        elif msg and msg.get("type") == "compactSession" and msg.get("id"):
+            # chat context-battery click → same /compact path as the timeline's `compact` (the chat
+            # button posted compactSession by id but the kernel had no handler, so it silently did
+            # nothing — the user 2026-06-16). The webview already guards awaiting/compacting/closed.
+            _tmux_send(_name_of(msg["id"]) or msg["id"], "/compact")
+            _mark_compacting(msg["id"])          # show 'compacting' at once, don't wait for the hook poll
+        elif msg and msg.get("type") == "sendCommand" and msg.get("name") and msg.get("cmd"):
+            cmd = str(msg["cmd"])
+            _tmux_send(str(msg["name"]), cmd, model_cmd=cmd.strip().startswith("/model"))
+        elif msg and msg.get("type") == "askFollowUp" and msg.get("itemId") and msg.get("text"):
+            iid = str(msg["itemId"])                     # goal node id → session → inject the follow-up
+            sid = iid.rsplit(":", 1)[0]
+            # nudge:true (the canned Nudge button) → romp authored it → gray bubble; a follow-up the
+            # user TYPED in the modal carries no nudge flag → blue human bubble (the user 2026-06-20).
+            _tmux_send(_name_of(sid) or sid, _followup_body(iid, msg.get("title"), msg["text"], injected=bool(msg.get("nudge"))))
+            try:                                         # optimistic: reopen the card NOW, before the judge pass
+                if jd.optimistic_followup(sid, iid):     # → board shows it back at WORKING + a "Followed up" chip
+                    _push_all()
+            except Exception:
+                sys.stderr.write("followup reopen: %s\n" % traceback.format_exc())
+        # live AskUserQuestion picker: a webview click → keystrokes into the session's pane (AskDriver)
+        elif msg and msg.get("type") == "answerAsk" and msg.get("id") and msg.get("target") is not None:
+            _ask_thread(_ask_answer, _name_of(msg["id"]) or msg["id"], msg["target"])
+        elif msg and msg.get("type") == "toggleAsk" and msg.get("id") and msg.get("target") is not None:
+            _ask_thread(_ask_toggle, _name_of(msg["id"]) or msg["id"], msg["target"])
+        elif msg and msg.get("type") == "submitAsk" and msg.get("id"):
+            _ask_thread(_ask_submit, _name_of(msg["id"]) or msg["id"])
+        elif msg and msg.get("type") == "addCustomAsk" and msg.get("id") and msg.get("text"):
+            _ask_thread(_ask_add_custom, _name_of(msg["id"]) or msg["id"], str(msg["text"]))
+        elif msg and msg.get("type") == "cancelAsk" and msg.get("id"):
+            _ask_thread(_ask_cancel, _name_of(msg["id"]) or msg["id"])
+        elif msg and msg.get("type") == "askText" and msg.get("id") and msg.get("text"):
+            _ask_thread(_ask_send_text, _name_of(msg["id"]) or msg["id"], str(msg["text"]))
+        elif msg and msg.get("type") == "apiRetry" and msg.get("id"):
+            # the "Retry" button on an API-error card → paste "retry" into that session's pane to
+            # resume the stalled turn (the user 2026-06-16). Tag it with the romp-injected marker so
+            # the chat renders it as a GRAY romp bubble, not a blue human "retry" prompt — romp sent
+            # it, not the user (the user 2026-06-19). author_of keys on the marker (ROMP_INJECT_RE).
+            _tmux_send(_name_of(msg["id"]) or msg["id"], "retry\n\n<!-- romp-injected -->")
+        # ---- pasted-image hydration + dropped-file handling (ported from the old TS kernel) ----
+        elif msg and msg.get("type") == "imgRequest" and msg.get("path"):
+            p = str(msg["path"])                                  # path:<abs> image → a data: URL the <img> can show
+            _reply(client, {"type": "imgData", "path": p, "url": _img_data_url(p)})
+        elif msg and msg.get("type") == "dropFile" and msg.get("name") and msg.get("b64"):
+            fp = _save_dropped_file(str(msg["name"]), str(msg["b64"]))   # bytes → saved file → insert its path
+            if fp:
+                _reply(client, {"type": "droppedPath", "path": fp})
+        elif msg and msg.get("type") == "openFile" and msg.get("path"):
+            _open_file(str(msg["path"]))                          # caption / linkified path click → open it
+        elif msg and msg.get("type") == "pickFile":
+            def _pf(c=client):                                    # 📎 → native dialog (blocks) → insert the picked path
+                fp = _pick_file()
+                if fp:
+                    _reply(c, {"type": "droppedPath", "path": fp})
+            threading.Thread(target=_pf, daemon=True).start()
+        # ---- statusline model / effort / permission-mode pickers (the host injects the change) ----
+        elif msg and msg.get("type") == "setModel" and msg.get("id") and msg.get("value"):
+            _tmux_send(_name_of(msg["id"]) or msg["id"], "/model " + str(msg["value"]), model_cmd=True)
+        elif msg and msg.get("type") == "setEffort" and msg.get("id") and msg.get("value"):
+            _tmux_send(_name_of(msg["id"]) or msg["id"], "/effort " + str(msg["value"]))
+        elif msg and msg.get("type") == "setMode" and msg.get("id") and msg.get("value"):
+            _cycle_mode(_name_of(msg["id"]) or msg["id"], str(msg["id"]), str(msg["value"]))
+        elif msg and msg.get("type") == "setColormap" and msg.get("name"):
+            _set_colormap(str(msg["name"]))    # recency colormap chooser → recolours the feed on next push
+
     def _ws(self):
         key = self.headers.get("Sec-WebSocket-Key")
         if not key:
@@ -4478,231 +4709,12 @@ class Handler(BaseHTTPRequestHandler):
                     msg = json.loads(payload.decode("utf-8", "replace"))
                 except Exception:
                     msg = None
-                if msg and msg.get("type") == "ready":
-                    self._push_one(client)
-                    # Push the SHARED, STABLE tab order so the UI honors it on connect/reload. Without this
-                    # the webview only learns the order from a live drag, loses it on every reload, and falls
-                    # back to ordering tabs by session STATE — so they drift on their own (worse now that the
-                    # heartbeat auto-reloads). _ordered_alive is the same order chat tabs + timeline lanes use.
-                    try:
-                        _o = [s["sid"] for s in _ordered_alive(int(time.time()), _tmux_sessions())]
-                        client["send"](json.dumps({"type": "tabOrder", "order": _o}))
-                    except Exception:
-                        pass
-                elif msg and msg.get("type") == "setSessionFlag" and msg.get("id") and msg.get("flag"):
-                    # timeline lane gear → toggle a per-session view flag (e.g. hideFromFeed). Persisted +
-                    # re-broadcast so the feed drops/restores that session's cards immediately.
-                    _set_session_flag(str(msg["id"]), str(msg["flag"]), bool(msg.get("value")))
-                    _push_all()
-                elif msg and msg.get("type") == "setAutoNudge" and msg.get("enabled") is not None:
-                    _set_auto_nudge(bool(msg["enabled"]))   # feed gear → server-side Auto Nudge on/off
-                    _auto_nudge_tick(int(time.time()), _tmux_sessions())   # act immediately on turn-on (don't wait 4s)
-                elif msg and msg.get("type") == "askClear" and msg.get("itemId"):
-                    _clear_ask(msg["itemId"])
-                    _push_all()                        # reflect the clear on every feed client now
-                elif msg and msg.get("type") == "nodeOverride" and msg.get("sid") and msg.get("nodeId"):
-                    # modal surgical override: cross a node off (op:resolve → nodeComplete). Other ops can
-                    # extend this later; resolve is the one the user asked for (2026-06-17).
-                    if msg.get("op") == "resolve" and _resolve_node(str(msg["sid"]), str(msg["nodeId"])):
-                        _push_all()
-                elif msg and msg.get("type") == "clearAll":
-                    d = build_feed(int(time.time()))
-                    _clear_all([a["itemId"] for a in d["asks"]] + [c["itemId"] for c in d["items"]])
-                    _push_all()
-                elif msg and msg.get("type") == "undoClear":
-                    _undo_clear()
-                    _push_all()
-                elif msg and msg.get("type") in ("reorderTabs", "writeOrder") and isinstance(msg.get("order"), list):
-                    _write_session_order(msg["order"])   # tab-drag or lane-drag → reorder BOTH surfaces
-                    _push_all()
-                elif msg and msg.get("type") == "createSession" and msg.get("name"):
-                    nm = str(msg["name"]).strip()
-                    if not NAME_RE.match(nm):
-                        client["send"](json.dumps({"type": "warn", "text": "session names use letters, digits, . _ - only."}))
-                    else:
-                        live = _live_names(_tmux_sessions())
-                        if nm in live:                   # already running → just (re)open it, don't re-spawn
-                            _set_hidden_tab(live[nm], False); _push_all()
-                            _reveal_chat({"type": "focus", "id": live[nm]})
-                        else:
-                            threading.Thread(target=_spawn_session, args=(nm,), daemon=True).start()
-                elif msg and msg.get("type") == "renameSession" and msg.get("id") and msg.get("name"):
-                    new = _rename_session(str(msg["id"]), str(msg["name"]))
-                    if new:
-                        # echo so the webview commits its inline label now; the names-file change
-                        # re-pushes the new name to every surface via _producer_sig.
-                        client["send"](json.dumps({"type": "renamed", "id": str(msg["id"]), "name": new}))
-                    else:
-                        client["send"](json.dumps({"type": "warn", "text": "session names use letters, digits, . _ - only."}))
-                elif msg and msg.get("type") == "requestSessions":
-                    client["send"](json.dumps({"type": "sessionList",
-                                               "items": _session_list(int(time.time()), _tmux_sessions())}))
-                elif msg and msg.get("type") in ("pickResult", "openByName") and (msg.get("id") or msg.get("name")):
-                    sid = msg.get("id") or _live_names(_tmux_sessions()).get(str(msg.get("name")))
-                    if sid:
-                        _set_hidden_tab(sid, False); _push_all()
-                        _reveal_chat({"type": "focus", "id": sid})
-                elif msg and msg.get("type") == "openAll":
-                    for s in _alive_sessions(int(time.time()), _tmux_sessions()):
-                        _set_hidden_tab(s["sid"], False)
-                    _push_all()
-                elif msg and msg.get("type") == "closeSession" and msg.get("id"):
-                    # × → ask (Close tab vs End session) instead of hiding straightaway (the user 2026-06-15)
-                    client["send"](json.dumps({"type": "confirmClose", "id": msg["id"],
-                                               "name": _name_of(msg["id"]) or msg["id"]}))
-                elif msg and msg.get("type") == "closeTab" and msg.get("id"):
-                    _set_hidden_tab(msg["id"], True)     # hide the tab; session keeps running
-                    _kept_open.discard(msg["id"])        # ×-closing a read-only dead tab forgets it (timeline-only again)
-                    _send_to_app("chat", {"type": "closed", "id": msg["id"]})   # prune it in the live view now
-                    _push_all()
-                elif msg and msg.get("type") == "endSession" and msg.get("id"):
-                    nm = _name_of(msg["id"])
-                    if nm:
-                        try:
-                            subprocess.run(["tmux", "kill-session", "-t", nm], timeout=4)
-                        except Exception:
-                            pass
-                    _send_to_app("chat", {"type": "closed", "id": msg["id"]})
-                    _push_all()
-                elif msg and msg.get("type") == "openSession" and msg.get("id"):
-                    # live → reopen the hidden tab + focus; dead → the chat's confirmRevive modal
-                    _open_or_revive(msg["id"])
-                elif msg and msg.get("type") == "reviveSession" and msg.get("id"):
-                    # confirmRevive → "Revive": resume the dead session in the background (the kernel had
-                    # no handler, so the modal's Revive silently did nothing — the user 2026-06-16)
-                    threading.Thread(target=_revive_session, args=(msg["id"],), daemon=True).start()
-                elif msg and msg.get("type") == "viewReadOnly" and msg.get("id"):
-                    _kept_open.add(msg["id"])            # confirmRevive → "View read-only": this dead session
-                    _set_hidden_tab(msg["id"], False)    # gets a (struck) read-only tab now, without resuming it
-                    _push_all()
-                    _reveal_chat({"type": "focus", "id": msg["id"]})
-                elif msg and msg.get("type") == "deepLink" and msg.get("session"):
-                    _reveal_or_confirm(msg["session"], {"type": "focus", "id": msg["session"], "anchor": msg.get("anchor"),
-                                  "anchorT": msg.get("anchorT"), "anchorKind": msg.get("anchorKind")})
-                elif msg and msg.get("type") == "showOnTimeline" and msg.get("sid"):
-                    _reveal_or_confirm(msg["sid"], _show_on_timeline_focus(msg))
-                elif msg and msg.get("type") == "expand" and msg.get("itemId"):
-                    _request_feed_detail(str(msg["itemId"]), bool(msg.get("generate")))
-                elif msg and msg.get("type") == "hoverHighlight":
-                    ids = msg["ids"] if isinstance(msg.get("ids"), list) else ([msg["id"]] if msg.get("id") else [])
-                    _send_to_app("timeline", {"type": "hover", "ids": ids, "nonce": _next_nonce()})
-                elif msg and msg.get("type") == "showAskPath":
-                    # feed card hover/click/leave → light that goal's work-bars on the timeline AND glow its
-                    # chat rows (#1 feed→chat). `off` clears both; otherwise resolve the goal's subtree
-                    # segments by EXACT id and light their atom uuids (no time window).
-                    item_id = msg.get("itemId") or ""
-                    seg_ids = [] if msg.get("off") else _goal_segments(item_id)
-                    _send_to_app("timeline", {"type": "hover", "ids": seg_ids, "nonce": _next_nonce()})
-                    gsid = item_id.rsplit(":", 1)[0] if (item_id and not msg.get("off")) else ""
-                    uuids = _segment_atom_uuids(gsid, seg_ids, time.time()) if gsid else []
-                    groups = [{"sid": gsid, "uuids": uuids}] if uuids else []
-                    _send_to_app("chat", {"type": "glowTurns", "groups": groups, "mids": []})
-                elif msg and msg.get("type") in ("dotHover", "ledgerHover"):
-                    # chat message / TOC-bullet hover → light the matching timeline glyph. The event/bullet
-                    # carries tlId (build_session): a prompt → the DOT, work → the BAR. Absent → clear.
-                    tl = msg.get("tlId")
-                    _send_to_app("timeline", {"type": "hover", "ids": ([tl] if tl else []),
-                                              "nonce": _next_nonce()})
-                    if msg.get("type") == "dotHover":
-                        # a chat-dot hover ALSO lights the owning feed card (#2) and every other row in the
-                        # same segment (#3), resolved by EXACT segment from the hovered atom uuid. The leave
-                        # event (no sid/uuid) resolves to nothing → clears both.
-                        hsid, huuid = str(msg.get("sid") or ""), str(msg.get("uuid") or "")
-                        seg_id, seg_uuids = _segment_of_uuid(hsid, huuid, time.time()) if (hsid and huuid) else (None, [])
-                        _send_to_app("feed", {"type": "hoverCards",
-                                              "keys": _cards_for_segments(hsid, [seg_id]) if seg_id else [],
-                                              "eid": None})
-                        groups = [{"sid": hsid, "uuids": seg_uuids}] if seg_uuids else []
-                        _send_to_app("chat", {"type": "glowTurns", "groups": groups, "mids": []})
-                elif msg and msg.get("type") == "timelineHover":
-                    # the REVERSE of the feed/chat→timeline hovers: a timeline bar hover lights the feed
-                    # card that owns that work (hoverCards, resolved by segment) AND glows the chat turns of
-                    # those segments (glowTurns). Both halves resolve BY SEGMENT ID now — the chat glow lights
-                    # the segments' exact atom uuids, not a +/-2s time window (the user 2026-06-19). off → clear.
-                    if msg.get("off"):
-                        _send_to_app("feed", {"type": "hoverCards", "keys": [], "eid": None})
-                        _send_to_app("chat", {"type": "glowTurns", "groups": [], "mids": []})
-                    else:
-                        hsid = str(msg.get("sid") or "")
-                        seg_ids = msg.get("segIds") or []
-                        _send_to_app("feed", {"type": "hoverCards",
-                                              "keys": _cards_for_segments(hsid, seg_ids), "eid": None})
-                        uuids = _segment_atom_uuids(hsid, seg_ids, time.time())
-                        groups = [{"sid": hsid, "uuids": uuids}] if uuids else []
-                        _send_to_app("chat", {"type": "glowTurns", "groups": groups, "mids": []})
-                elif msg and msg.get("type") == "sendMessage" and msg.get("id") and msg.get("text"):
-                    _tmux_send(_name_of(msg["id"]) or msg["id"], str(msg["text"]))   # composer → session
-                elif msg and msg.get("type") == "interrupt" and msg.get("id"):
-                    _interrupt(_name_of(msg["id"]) or msg["id"])   # Esc to stop + clear the restored prompt (composer↔pane consistency)
-                    _record_idle(str(msg["id"]), int(time.time()))   # Esc-stop writes no end_turn → record idle so the chip flips to 'ready'
-                    _push_all()                                      # surface the ready chip now
-                elif msg and msg.get("type") == "compact" and msg.get("name"):
-                    _tmux_send(str(msg["name"]), "/compact")
-                    _mark_compacting(_live_names(_tmux_sessions()).get(str(msg["name"])))   # instant cue
-                elif msg and msg.get("type") == "compactSession" and msg.get("id"):
-                    # chat context-battery click → same /compact path as the timeline's `compact` (the chat
-                    # button posted compactSession by id but the kernel had no handler, so it silently did
-                    # nothing — the user 2026-06-16). The webview already guards awaiting/compacting/closed.
-                    _tmux_send(_name_of(msg["id"]) or msg["id"], "/compact")
-                    _mark_compacting(msg["id"])          # show 'compacting' at once, don't wait for the hook poll
-                elif msg and msg.get("type") == "sendCommand" and msg.get("name") and msg.get("cmd"):
-                    cmd = str(msg["cmd"])
-                    _tmux_send(str(msg["name"]), cmd, model_cmd=cmd.strip().startswith("/model"))
-                elif msg and msg.get("type") == "askFollowUp" and msg.get("itemId") and msg.get("text"):
-                    iid = str(msg["itemId"])                     # goal node id → session → inject the follow-up
-                    sid = iid.rsplit(":", 1)[0]
-                    # nudge:true (the canned Nudge button) → romp authored it → gray bubble; a follow-up the
-                    # user TYPED in the modal carries no nudge flag → blue human bubble (the user 2026-06-20).
-                    _tmux_send(_name_of(sid) or sid, _followup_body(iid, msg.get("title"), msg["text"], injected=bool(msg.get("nudge"))))
-                    try:                                         # optimistic: reopen the card NOW, before the judge pass
-                        if jd.optimistic_followup(sid, iid):     # → board shows it back at WORKING + a "Followed up" chip
-                            _push_all()
-                    except Exception:
-                        sys.stderr.write("followup reopen: %s\n" % traceback.format_exc())
-                # live AskUserQuestion picker: a webview click → keystrokes into the session's pane (AskDriver)
-                elif msg and msg.get("type") == "answerAsk" and msg.get("id") and msg.get("target") is not None:
-                    _ask_thread(_ask_answer, _name_of(msg["id"]) or msg["id"], msg["target"])
-                elif msg and msg.get("type") == "toggleAsk" and msg.get("id") and msg.get("target") is not None:
-                    _ask_thread(_ask_toggle, _name_of(msg["id"]) or msg["id"], msg["target"])
-                elif msg and msg.get("type") == "submitAsk" and msg.get("id"):
-                    _ask_thread(_ask_submit, _name_of(msg["id"]) or msg["id"])
-                elif msg and msg.get("type") == "addCustomAsk" and msg.get("id") and msg.get("text"):
-                    _ask_thread(_ask_add_custom, _name_of(msg["id"]) or msg["id"], str(msg["text"]))
-                elif msg and msg.get("type") == "cancelAsk" and msg.get("id"):
-                    _ask_thread(_ask_cancel, _name_of(msg["id"]) or msg["id"])
-                elif msg and msg.get("type") == "askText" and msg.get("id") and msg.get("text"):
-                    _ask_thread(_ask_send_text, _name_of(msg["id"]) or msg["id"], str(msg["text"]))
-                elif msg and msg.get("type") == "apiRetry" and msg.get("id"):
-                    # the "Retry" button on an API-error card → paste "retry" into that session's pane to
-                    # resume the stalled turn (the user 2026-06-16). Tag it with the romp-injected marker so
-                    # the chat renders it as a GRAY romp bubble, not a blue human "retry" prompt — romp sent
-                    # it, not the user (the user 2026-06-19). author_of keys on the marker (ROMP_INJECT_RE).
-                    _tmux_send(_name_of(msg["id"]) or msg["id"], "retry\n\n<!-- romp-injected -->")
-                # ---- pasted-image hydration + dropped-file handling (ported from the old TS kernel) ----
-                elif msg and msg.get("type") == "imgRequest" and msg.get("path"):
-                    p = str(msg["path"])                                  # path:<abs> image → a data: URL the <img> can show
-                    _reply(client, {"type": "imgData", "path": p, "url": _img_data_url(p)})
-                elif msg and msg.get("type") == "dropFile" and msg.get("name") and msg.get("b64"):
-                    fp = _save_dropped_file(str(msg["name"]), str(msg["b64"]))   # bytes → saved file → insert its path
-                    if fp:
-                        _reply(client, {"type": "droppedPath", "path": fp})
-                elif msg and msg.get("type") == "openFile" and msg.get("path"):
-                    _open_file(str(msg["path"]))                          # caption / linkified path click → open it
-                elif msg and msg.get("type") == "pickFile":
-                    def _pf(c=client):                                    # 📎 → native dialog (blocks) → insert the picked path
-                        fp = _pick_file()
-                        if fp:
-                            _reply(c, {"type": "droppedPath", "path": fp})
-                    threading.Thread(target=_pf, daemon=True).start()
-                # ---- statusline model / effort / permission-mode pickers (the host injects the change) ----
-                elif msg and msg.get("type") == "setModel" and msg.get("id") and msg.get("value"):
-                    _tmux_send(_name_of(msg["id"]) or msg["id"], "/model " + str(msg["value"]), model_cmd=True)
-                elif msg and msg.get("type") == "setEffort" and msg.get("id") and msg.get("value"):
-                    _tmux_send(_name_of(msg["id"]) or msg["id"], "/effort " + str(msg["value"]))
-                elif msg and msg.get("type") == "setMode" and msg.get("id") and msg.get("value"):
-                    _cycle_mode(_name_of(msg["id"]) or msg["id"], str(msg["id"]), str(msg["value"]))
-                elif msg and msg.get("type") == "setColormap" and msg.get("name"):
-                    _set_colormap(str(msg["name"]))    # recency colormap chooser → recolours the feed on next push
+                try:
+                    self._dispatch_ws(msg, client)
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    raise   # a genuine socket failure → let the outer handler tear the connection down
+                except Exception:
+                    sys.stderr.write("ws handler [%s]: %s\n" % ((msg or {}).get("type"), traceback.format_exc()))
         except (BrokenPipeError, ConnectionResetError, OSError):
             pass
         finally:

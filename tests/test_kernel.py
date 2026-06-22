@@ -2474,5 +2474,54 @@ class SessionListNameCollision(unittest.TestCase):
         self.assertIsInstance(items, list, "the picker payload is a list of session rows")
 
 
+class WsLoopResilience(unittest.TestCase):
+    """A bug in ONE webview->kernel message handler must not tear the socket down (the user 2026-06-22): _ws
+    calls _dispatch_ws inside a per-message try/except, so a generic handler exception is logged and the loop
+    keeps going (the NEXT message still processes), while a real socket error still propagates to disconnect.
+    Before this, an unexpected exception (e.g. the _session_list TypeError) escaped the loop, dropped the
+    socket, and the reconnect blanked the chat."""
+
+    def _run_loop(self, frames, dispatch):
+        import io, contextlib
+        seen = {"types": [], "n": 0}
+
+        class FakeSelf:
+            headers = {"Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ=="}
+            path = "/ws?app=chat"
+            rfile = io.BytesIO()
+            wfile = io.BytesIO()
+            close_connection = False
+            def send_response(self, *a): pass
+            def send_header(self, *a): pass
+            def end_headers(self): pass
+            def _dispatch_ws(self, msg, client):
+                seen["n"] += 1
+                seen["types"].append((msg or {}).get("type"))
+                dispatch(msg)
+
+        seq = list(frames)
+        saved = km._ws_recv
+        km._ws_recv = lambda rfile: seq.pop(0) if seq else (0x8, b"")   # script the frames; (0x8)=close
+        try:
+            with contextlib.redirect_stderr(io.StringIO()):             # swallow the logged traceback
+                km.Handler._ws(FakeSelf())                              # returns normally on close / socket error
+        finally:
+            km._ws_recv = saved
+        return seen
+
+    def test_a_throwing_handler_does_not_end_the_loop(self):
+        TEXT = 0x1
+        frames = [(TEXT, b'{"type":"a"}'), (TEXT, b'{"type":"b"}'), (0x8, b"")]   # a raises, b must still run
+        seen = self._run_loop(frames, lambda msg: (_ for _ in ()).throw(RuntimeError("boom"))
+                              if msg.get("type") == "a" else None)
+        self.assertEqual(seen["types"], ["a", "b"], "'b' still processed after 'a' raised — the socket survived")
+
+    def test_a_socket_error_propagates_and_stops_the_loop(self):
+        TEXT = 0x1
+        frames = [(TEXT, b'{"type":"a"}'), (TEXT, b'{"type":"b"}'), (0x8, b"")]
+        seen = self._run_loop(frames, lambda msg: (_ for _ in ()).throw(BrokenPipeError("gone")))
+        self.assertEqual(seen["types"], ["a"], "a real socket error ends the loop — 'b' never runs (genuine disconnect)")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
