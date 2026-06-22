@@ -149,6 +149,15 @@ run_hook() {
     grep -q '@romp-emoji 🔴' "$MOCK_LOG"
 }
 
+@test "compacting sets the monochrome compress glyph, NOT a coloured dot (the user 2026-06-22)" {
+    # compacting is a transient PROCESS, so it reads as ⇲ (a monochrome compress glyph) instead of
+    # another colour dot — distinct from 🟡/🔴/🔵 at a glance.
+    run run_hook '{"hook_event_name":"PreCompact","cwd":"/tmp"}'
+    [ "$status" -eq 0 ]
+    grep -q '@romp-emoji ⇲' "$MOCK_LOG"
+    ! grep -q '@romp-emoji 🟠' "$MOCK_LOG"
+}
+
 @test "idle state sets the blue tab dot" {
     run run_hook '{"hook_event_name":"Notification","notification_type":"idle_prompt","cwd":"/tmp"}'
     [ "$status" -eq 0 ]

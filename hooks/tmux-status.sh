@@ -58,10 +58,13 @@ esac
 # so the dot tracks Claude's live status. (A fourth dot, ⚪ inactive, is set
 # NOT here but by scripts/romp-idle-dots once a ready session sits idle > 1h —
 # the tab analog of the dashboard/timeline fade; the next event resets it here.)
+# Compacting is the ODD ONE OUT on purpose: a monochrome compress glyph (⇲, NOT
+# a coloured dot) so a transient context-compaction reads as a PROCESS, not as
+# another live-status colour (the user 2026-06-22).
 case "$state" in
     working)      emoji="🟡" ;;
     permission)   emoji="🔴" ;;
-    compacting)   emoji="🟠" ;;   # 🟠 context compacting
+    compacting)   emoji="⇲" ;;    # ⇲ context compacting (monochrome — not a status colour)
     *)            emoji="🔵" ;;   # waiting / idle
 esac
 
@@ -87,7 +90,7 @@ fi
 # user). With this guard prev==state==compacting, so no spurious transition is logged and the span
 # stays continuous. A missed PostCompact can't strand it: romp-idle-dots heals a stuck 'compacting'.
 if [[ "$prev" == "compacting" && "$EVENT" != "PostCompact" ]]; then
-    state="compacting"; emoji="🟠"
+    state="compacting"; emoji="⇲"
 fi
 if [[ -n "$sid" && "$prev" != "$state" ]]; then
     sdir="${XDG_STATE_HOME:-$HOME/.local/state}/romp/states"
