@@ -1671,6 +1671,23 @@ class NudgeMustResolve(unittest.TestCase):
         store, gid = self._run(recs, work)
         self.assertTrue(store["nodes"][gid]["blocked"], "a nudge can resolve the goal to BLOCKED (needs the user)")
 
+    def test_unresolved_nudge_files_nothing(self):
+        # THE regression (the user 2026-06-22): a nudge reply that yields NO actionable op (the model
+        # returns skip/empty — e.g. it read the reply as discussion) must apply NOTHING. The old empty-reply
+        # fallback appended a spurious "followed up" sub that never resolved the goal, so status stayed
+        # 'working' and auto-nudge re-armed forever. Now the phase is marked processed (no re-plan) but the
+        # goal is left OPEN for a later real done/block — no sub piles up.
+        gid = "%s:g1" % SID
+        recs = [self._line(T0 + 100, "Status?", "u2", gid),
+                aline(T0 + 120, "It's already deployed and done.", "a2", "u2", stop="end_turn")]
+        work = lambda *a, **k: '{"ops":[{"why":"discussion, no op","do":"skip"}]}'
+        store, gid = self._run(recs, work)
+        self.assertFalse(store["nodes"][gid]["nodeComplete"], "an unresolved nudge leaves the goal open")
+        self.assertEqual([nd for nd in store["nodes"].values() if nd.get("parentId") == gid], [],
+                         "NO spurious sub is filed — applies nothing, so a later pass can still resolve it")
+        self.assertEqual(len(store["nodes"]), 1, "only the original goal node exists — nothing added")
+        self.assertIn(None, store["placements"].values(), "the nudge phase is still marked processed (no re-plan loop)")
+
     def test_typed_followup_still_files_a_step(self):
         gid = "%s:g1" % SID                               # NO romp-injected marker → a TYPED follow-up → force-sub
         recs = [self._line(T0 + 100, "also add tests", "u2", gid, injected=False),
