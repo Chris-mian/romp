@@ -1,5 +1,23 @@
 # romp — repo instructions
 
+## Philosophy
+The bottleneck in AI coding is human attention. romp lets one person direct a
+whole fleet of agents by spending that attention where it counts and surfacing
+only what is worth acting on, so they keep the focus and flow that good work needs
+while running many agents at once. Every feature should serve that aim:
+- **Spend attention, don't drain it.** A feature should take load off the user's
+  working memory, not add to it. Glanceable by default; mechanics one click away.
+- **Make re-engagement cheap.** Speak in the user's terms, the outcome and the
+  why, never the agent's play-by-play, so picking a thread back up costs a glance.
+- **Interrupt only when the human is the bottleneck.** "Needs you" means a
+  decision only they can make. Waiting on a peer, a build, or another session is
+  not that. Every false interrupt is a broken flow state.
+- **Scale to parallelism.** Features should hold up across many concurrent
+  sessions and let agents coordinate among themselves, handling the details the
+  user never needs to see.
+- **Never lose the thread.** Context persists, dead sessions revive with their
+  history, nothing important silently drops, so stepping away is safe.
+
 ## Privacy — no real session data or personal identifiers in this repo
 This repo may go public; assume every commit is permanent and world-readable.
 - **Never copy real recorded data into the repo** — no real prompts,
