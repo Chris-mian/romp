@@ -144,14 +144,20 @@ def _clean_caption(out):
     out = out.strip().rstrip(".,")
     if len(re.sub(r"[^A-Za-z]", "", out)) < 3:        # degenerate junk
         return ""
+    # A caption is ONE short phrase. A long line or one that runs to multiple sentences is narration or a
+    # meta-refusal ("I cannot provide a caption for this unit because…no assistant work is shown"), never a
+    # caption — reject it so it can't land in the store + show on the timeline (the user 2026-06-22).
+    if len(out.split()) > 12 or re.search(r"[.!?]\s+[A-Z]", out):
+        return ""
     if out.endswith("?"):
         return ""
     low = out.lower()
     if any(s in low for s in ("do you want", "would you like", "how can i", "let me know", "i can help")):
         return ""
     # meta-refusals (model narrating that it can't caption) — treat as a failed capture, not a caption
-    if low.startswith("nothing ") or any(s in low for s in ("to summarize", "insufficient context",
-                                                             "cannot determine", "unable to summarize")):
+    if low.startswith(("nothing ", "i cannot", "i can't", "the unit", "there is no", "there's no")) or \
+       any(s in low for s in ("to summarize", "insufficient context", "cannot determine",
+                              "unable to summarize", "cannot provide", "no assistant", "no record of")):
         return ""
     return out
 
@@ -406,6 +412,21 @@ def _prompt_text(atoms):
     return ""
 
 
+def _has_asst_work(atoms):
+    """True if a unit has any ASSISTANT output — its own text or a tool_use. The captioner has nothing to
+    gloss without it (it refuses or returns empty), so a work-less unit (a bare user message, an
+    aborted/API-errored 'retry' turn) gets NO work caption — only its #p message caption (the user
+    2026-06-22). Prevents the captioner refusing on an empty unit and re-asking it forever."""
+    for a in atoms:
+        if a.get("type") == "assistant":
+            if _atom_text(a):
+                return True
+            for b in (a.get("message") or {}).get("content", []):
+                if isinstance(b, dict) and b.get("type") == "tool_use":
+                    return True
+    return False
+
+
 def _ready_tasks(session):
     """Caption tasks. Two kinds (the user 2026-06-19):
       - kind 'prompt' = the MESSAGE caption, a gist of the user's ask. READY THE MOMENT THE MESSAGE LANDS
@@ -431,15 +452,18 @@ def _ready_tasks(session):
                 tasks.append({"kind": "prompt", "atoms": [trig],
                               "writes": [{"id": seg["id"] + "#p", "grain": "prompt", "t": seg["t"]}]})
             if turn_open and si == len(segs) - 1:      # the OPEN final segment → a LIVE in-progress work caption
-                tasks.append({"kind": "work", "live": True, "natoms": len(seg["atoms"]),
-                              "atoms": seg["atoms"],
-                              "writes": [{"id": seg["id"], "grain": "segment", "t": seg["t"]}]})
+                if _has_asst_work(seg["atoms"]):       # ...only once it has real assistant work to gloss
+                    tasks.append({"kind": "work", "live": True, "natoms": len(seg["atoms"]),
+                                  "atoms": seg["atoms"],
+                                  "writes": [{"id": seg["id"], "grain": "segment", "t": seg["t"]}]})
                 continue                               # no turn-grain while open; the final caption supersedes on close
+            if not _has_asst_work(seg["atoms"]):       # a work-less segment (bare prompt / aborted) → no WORK caption
+                continue                               # (its #p message caption still glosses the ask)
             writes = [{"id": seg["id"], "grain": "segment", "t": seg["t"]}]
             if single and not turn_open:               # the turn IS this segment → mirror, no 2nd call
                 writes.append({"id": turn["id"], "grain": "turn", "t": turn["t"]})
             tasks.append({"kind": "work", "atoms": seg["atoms"], "writes": writes})
-        if not turn_open and not single:               # multi-segment turn → its own work caption
+        if not turn_open and not single and _has_asst_work(turn["atoms"]):   # multi-segment turn → its own work caption
             tasks.append({"kind": "work", "atoms": turn["atoms"],
                           "writes": [{"id": turn["id"], "grain": "turn", "t": turn["t"]}]})
     return tasks
@@ -497,7 +521,7 @@ def tasks_for(fsid, leaf, files, now):
     cf = PCACHE / (fsid + ".json")
     try:
         o = json.loads(cf.read_text())
-        if o.get("key") == key and o.get("v") == 3:    # v3 = the open-segment live work caption (the user 2026-06-21); older caches regenerate
+        if o.get("key") == key and o.get("v") == 4:    # v4 = no work caption for work-less units (the user 2026-06-22); older caches regenerate
             return o["tasks"]
     except Exception:
         pass
@@ -513,7 +537,7 @@ def tasks_for(fsid, leaf, files, now):
     try:
         PCACHE.mkdir(parents=True, exist_ok=True)
         tmp = cf.with_suffix(".tmp.%d" % os.getpid())
-        tmp.write_text(json.dumps({"key": key, "v": 3, "tasks": tasks}))
+        tmp.write_text(json.dumps({"key": key, "v": 4, "tasks": tasks}))
         tmp.rename(cf)
     except Exception:
         pass

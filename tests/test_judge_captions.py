@@ -55,12 +55,10 @@ class SplitCaptions(unittest.TestCase):
         work_ids = {w["id"] for t in tasks if t.get("kind") == "work" for w in t["writes"]}
         # the OPEN turn's message gets a caption task right away (the dot doesn't wait for the work)...
         self.assertIn(self.open_seg["id"] + "#p", prompt_ids)
-        # ...and its WORK caption is now a LIVE in-progress one (g16, the user 2026-06-21) — present, not
-        # withheld — so the active-work-period bar shows real progress instead of just the request
-        self.assertIn(self.open_seg["id"], work_ids)
-        live = [t for t in tasks if t.get("kind") == "work" and t.get("live")]
-        self.assertTrue(any(self.open_seg["id"] in {w["id"] for w in t["writes"]} for t in live),
-                        "the open segment's work caption is flagged live (re-run while open, final supersedes on close)")
+        # ...but the open segment is a bare prompt with NO assistant work yet, so it gets NO work caption —
+        # work-less units are skipped (g16's live caption fires only once real work appears; the user
+        # 2026-06-22), which is what stops the captioner refusing ("no assistant work is shown") on an empty unit
+        self.assertNotIn(self.open_seg["id"], work_ids)
 
     def test_prompt_grain_is_keyed_p_and_never_collides_with_work(self):
         tasks = jd._ready_tasks(self.session)

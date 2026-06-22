@@ -249,8 +249,23 @@ class CleanCaption(unittest.TestCase):
         self.assertEqual(jd._clean_caption("Nothing to summarize"), "")
         self.assertEqual(jd._clean_caption("Insufficient context to determine what happened"), "")
         self.assertEqual(jd._clean_caption("Unable to summarize the segment"), "")
+        # the multi-sentence refusal that slipped through and SHOWED on the timeline (the user 2026-06-22)
+        self.assertEqual(jd._clean_caption(
+            "I cannot provide a caption for this unit because the user only asked a question. "
+            "The unit contains no record of the assistant work."), "")
+        self.assertEqual(jd._clean_caption("There is no assistant work to summarize"), "")
         # but a real caption that merely contains a normal word is kept
         self.assertEqual(jd._clean_caption("Summarized the release notes"), "Summarized the release notes")
+
+    def test_rejects_long_or_multi_sentence(self):
+        # a caption is ONE short phrase; narration (long or multi-sentence) is rejected (the user 2026-06-22)
+        self.assertEqual(jd._clean_caption("Did the first thing. Then did the second thing."), "")
+        self.assertEqual(jd._clean_caption(
+            "Refactored the parser and then updated all of the imports across the entire repository tree"), "",
+            "an over-long line (>12 words) is narration, not a caption")
+        # a normal short caption with no internal sentence break is kept
+        self.assertEqual(jd._clean_caption("Reworked the parser's compaction handling"),
+                         "Reworked the parser's compaction handling")
 
     def test_clean_caption_handles_bare_phrase_and_fences(self):
         # the captioner emits the BARE phrase now (no JSON wrapper); _clean_caption strips a stray fence/quotes
@@ -262,6 +277,36 @@ class CleanCaption(unittest.TestCase):
                          "surrounding quotes are stripped")
         self.assertEqual(jd._clean_caption(""), "", "empty reply (no finished work) -> no caption")
         self.assertEqual(jd._clean_caption("How can I help?"), "", "the anti-chat guard still applies")
+
+
+class WorkLessUnits(unittest.TestCase):
+    """A unit with NO assistant work (a bare prompt / an aborted 'retry' turn) gets NO work caption — only
+    its #p message caption — so the captioner is never called on an empty unit and can't refuse / loop
+    re-asking it (the user 2026-06-22; the timeline showed the refusal as a work caption)."""
+
+    def test_has_asst_work(self):
+        bare = [{"type": "user", "author": "human", "message": {"content": "retry"}}]
+        self.assertFalse(jd._has_asst_work(bare), "a bare user message has no assistant work")
+        with_text = bare + [{"type": "assistant", "message": {"content": [{"type": "text", "text": "On it."}]}}]
+        self.assertTrue(jd._has_asst_work(with_text), "an assistant text atom is work")
+        with_tool = bare + [{"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Bash", "input": {}}]}}]
+        self.assertTrue(jd._has_asst_work(with_tool), "an assistant tool_use is work")
+
+    def test_workless_ended_segment_gets_no_work_caption_only_prompt(self):
+        # an ENDED turn that is JUST a user message whose assistant produced nothing (an API-errored 'retry')
+        recs = [uline(T0, "real work here", "u1", ps="typed"),
+                aline(T0 + 20, "Did the work.", "a1", "u1", stop="end_turn"),
+                uline(T0 + 100, "retry", "u2", "a1", ps="typed"),
+                aline(T0 + 120, "", "a2", "u2", stop="end_turn")]          # assistant produced NOTHING
+        session = build_session(recs)
+        tasks = jd._ready_tasks(session)
+        work_ids = {w["id"] for t in tasks if t.get("kind") == "work" for w in t["writes"]}
+        prompt_ids = {w["id"] for t in tasks if t.get("kind") == "prompt" for w in t["writes"]}
+        seg2 = em.segments(session["turns"][1])[0]
+        self.assertNotIn(seg2["id"], work_ids, "a work-less ended segment gets NO work caption")
+        self.assertIn(seg2["id"] + "#p", prompt_ids, "but its #p message caption still glosses the ask")
+        seg1 = em.segments(session["turns"][0])[0]
+        self.assertIn(seg1["id"], work_ids, "a segment with real assistant work IS still captioned")
 
 
 # ───────────────────────── caption store ─────────────────────────
