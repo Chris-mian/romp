@@ -903,6 +903,27 @@ class ViewBuilder(unittest.TestCase):
         km._mark_auto_nudged(SID + ":g1", "turn-B", 2)   # re-nudge on a NEW turn → count climbs, turn advances
         self.assertEqual(km._auto_nudge_data()["nudged"][SID + ":g1"], {"count": 2, "lastTurnId": "turn-B"})
 
+    def test_auto_nudge_turn_id_comes_from_the_closer_states_aware_parse(self):
+        # the user 2026-06-22 (obsidian): the closer parses WITH states (idle atoms) and writes THAT turn id to
+        # closedTurns. A states-LESS parse gives an idle-LED turn a different id (a synthesized leading idle
+        # opens it, vs the human prompt), so the tick's closer-gate never matched and the nudge was blocked
+        # forever. The tick must take its turn id from jd.parsed_session — the SAME (states-aware) source.
+        g = self._orphaned_goal(idle=True)
+        real = jd.parsed_session
+        jd.parsed_session = lambda fsid, files, now: {"turns": [
+            {"id": "CLOSER-STATES-AWARE-ID", "ended": True, "trigger": None, "t": T0, "end": T0,
+             "atoms": [{"type": "user", "author": "human"}]}]}
+        self._goal_store({g: {"id": g, "text": "x", "parentId": None, "nodeComplete": False, "blocked": False,
+                              "cleared": False, "trail": [], "t": T0}}, {g: "working"}, last=g,
+                         closed=["CLOSER-STATES-AWARE-ID"])   # what the closer wrote (states-aware id)
+        km._set_auto_nudge(True)
+        sent, restore = self._stub_nudge()
+        try:
+            km._auto_nudge_tick(NOW, km._tmux_sessions())
+            self.assertEqual(len(sent), 1, "the tick takes its turn id from the closer's parse → matches closedTurns → fires")
+        finally:
+            restore(); jd.parsed_session = real
+
     def test_auto_nudge_data_drops_the_vestigial_done_list(self):
         # the old one-shot 'done' list (pre-re-arm) is no longer read or written; drop it on load so it's
         # cleaned from the file on the next write — no stale divergence from goal state (via business 2026-06-22).

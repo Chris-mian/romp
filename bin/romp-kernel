@@ -589,7 +589,11 @@ def _auto_nudge_tick(now, tmux):
         if _api_error(s["path"]):                        # stopped on an API error → not orphaned
             continue
         try:
-            turns = _parse(s["path"], sid, now)["turns"]
+            # Parse WITH states (idle atoms), exactly as the closer does — so this turn's id MATCHES what the
+            # closer wrote to closedTurns. A states-less parse (_parse) gives an idle-LED turn a different id
+            # (a synthesized leading idle opens it, vs the human prompt), so the closer-gate below would never
+            # match and the nudge was blocked forever (the user 2026-06-22, obsidian).
+            turns = jd.parsed_session(sid, [s["path"]], now)["turns"]
         except Exception:
             continue
         if not turns:
