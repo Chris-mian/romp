@@ -527,6 +527,61 @@ function applyGlow(groups: Array<{ sid: string; uuids: string[] }>, mids: string
       if (uset.has(n.dataset.uuid || "")) n.classList.add("ext-glow");   // every row of a matched atom lights
     });
   }
+  paintGlowRuler();   // mirror the glow as bands on the overview ruler (link_audit's #4)
+}
+
+// ---- overview ruler (link_audit's #4, the user 2026-06-22) ----
+// A thin strip over the #content scrollbar gutter that bands the FULL-transcript location of whatever turns
+// currently carry .ext-glow — so a cross-surface hover (timeline / feed card / chat dot) shows WHERE in the
+// scroll the hovered thing sits, even when it's scrolled off-screen. Hover-only: empty glow → hidden. Bands
+// map CONTENT space → ruler space, so a plain scroll never moves them (they mark absolute transcript
+// position); only a glow change or a #content relayout repaints. v1 is a pure indicator (pointer-events:none
+// so the native scrollbar still works underneath) — the optional click-a-band-to-scroll is intentionally
+// skipped so it can't swallow scrollbar clicks.
+const RULER_W = 10;   // == the webkit scrollbar width (styles.css ::-webkit-scrollbar) so bands sit in its gutter
+let glowRuler: HTMLElement | null = null;
+function ensureGlowRuler(): HTMLElement {
+  if (glowRuler && glowRuler.isConnected) return glowRuler;
+  glowRuler = el("div", "glow-ruler");
+  glowRuler.style.display = "none";
+  document.body.appendChild(glowRuler);
+  return glowRuler;
+}
+function paintGlowRuler(): void {
+  const ruler = ensureGlowRuler();
+  const content = document.getElementById("content");
+  const v = activeId ? views.get(activeId) : null;
+  // only the ACTIVE view's glows map onto its #content scroll (other views are display:none → zero rects)
+  const glows = (content && v) ? Array.from(v.el.querySelectorAll<HTMLElement>(".turn.ext-glow")) : [];
+  if (!content || !glows.length) { ruler.style.display = "none"; ruler.replaceChildren(); return; }
+  const rect = content.getBoundingClientRect();
+  const scrollH = content.scrollHeight || 1;
+  const rulerH = content.clientHeight;          // the strip spans #content's VISIBLE height
+  // each glowing turn → a [top, bot] span in CONTENT space (scroll-independent: + scrollTop, − content top)
+  const segs = glows.map((turn) => {
+    const top = turn.getBoundingClientRect().top - rect.top + content.scrollTop;
+    return { top, bot: top + turn.offsetHeight };
+  }).sort((a, b) => a.top - b.top);
+  // coalesce contiguous / overlapping turns into ONE band; a multi-segment goal hover → a few disjoint bands
+  const bands: Array<{ top: number; bot: number }> = [];
+  for (const s of segs) {
+    const last = bands[bands.length - 1];
+    if (last && s.top <= last.bot + 3) last.bot = Math.max(last.bot, s.bot);
+    else bands.push({ top: s.top, bot: s.bot });
+  }
+  // pin the strip over the scrollbar gutter at #content's right edge (getBoundingClientRect → robust to a
+  // window-accent body border); height = the visible scroll height the bands map into
+  ruler.style.top = rect.top + "px";
+  ruler.style.height = rulerH + "px";
+  ruler.style.left = (rect.right - RULER_W) + "px";
+  ruler.replaceChildren();
+  for (const b of bands) {
+    const band = el("div", "glow-ruler-band");
+    band.style.top = (b.top / scrollH * rulerH) + "px";
+    band.style.height = Math.max(3, (b.bot - b.top) / scrollH * rulerH) + "px";   // min 3px so a short turn still reads
+    ruler.appendChild(band);
+  }
+  ruler.style.display = "";
 }
 
 function eventEpoch(ev: ChatEvent): number | null {
@@ -2197,6 +2252,15 @@ function appendActive() {
 // Row heights change when the pane is resized (text re-wraps), so the spacing-based
 // stamps must be recomputed against the new layout.
 window.addEventListener("resize", scheduleRestamp);
+// Reposition/repaint the overview ruler whenever the window OR the #content box changes (the ledger or
+// live-ask strip showing, the composer growing, a resize) — the ruler maps content-space → ruler-space, so
+// a plain scroll needs no repaint, but its viewport box and scrollHeight can move under it (link_audit's #4).
+window.addEventListener("resize", paintGlowRuler);
+if (typeof ResizeObserver === "function") {
+  const ro = new ResizeObserver(() => paintGlowRuler());
+  const c = document.getElementById("content");
+  if (c) ro.observe(c);
+}
 
 // ---- ledger box (rolling per-session digest, just below the tabs) ----
 

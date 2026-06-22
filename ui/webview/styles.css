@@ -1129,3 +1129,10 @@ pre code .ct { flex: 1 1 auto; min-width: 0; white-space: pre-wrap; overflow-wra
 .turn.ext-glow .dot { box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.85); }
 .turn.ext-glow .postal-card { outline: 1.5px solid rgba(255, 255, 255, 0.75); outline-offset: 1px; }
 .turn.ext-glow:not(:has(.dot)) { outline: 1.5px solid rgba(255, 255, 255, 0.55); outline-offset: -1px; border-radius: 9px; }
+/* overview ruler (link_audit's #4, the user 2026-06-22): a fixed strip over the #content scrollbar gutter
+   that bands the full-transcript location of the currently .ext-glow'd turns, so a cross-surface hover shows
+   where the hovered thing sits even when scrolled off-screen. pointer-events:none → the native scrollbar
+   still works underneath; white bands mirror the .ext-glow highlight. position/height set inline (JS). */
+.glow-ruler { position: fixed; width: 10px; z-index: 5; pointer-events: none; }
+.glow-ruler-band { position: absolute; left: 1px; right: 1px; border-radius: 3px;
+  background: rgba(255, 255, 255, 0.62); box-shadow: 0 0 3px rgba(255, 255, 255, 0.5); }
