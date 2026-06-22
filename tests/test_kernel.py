@@ -812,6 +812,24 @@ class ViewBuilder(unittest.TestCase):
         finally:
             restore()
 
+    def test_auto_nudge_skips_a_session_waiting_on_a_live_peer(self):
+        # the human's philosophy (2026-06-22): waiting on a live peer isn't a stall → don't nudge. The gate
+        # reads _wait_for_graph; any entry for the sid (peer-wait or deadlock cycle) suppresses the nudge.
+        self._orphaned_goal(idle=True)
+        km._set_auto_nudge(True)
+        saved = km._wait_for_graph
+        km._wait_for_graph = lambda now, alive: {SID: {"peerSid": "peerY", "name": "peerY",
+                                                       "color": None, "inCycle": False}}
+        sent, restore = self._stub_nudge()
+        try:
+            km._auto_nudge_tick(NOW, km._tmux_sessions())
+            self.assertEqual(sent, [], "a session waiting on a live peer is held, not nudged")
+            km._wait_for_graph = lambda now, alive: {}            # no longer waiting → the genuine stall is nudged
+            km._auto_nudge_tick(NOW, km._tmux_sessions())
+            self.assertEqual(len(sent), 1, "once the wait clears, the genuine stall is nudged")
+        finally:
+            restore(); km._wait_for_graph = saved
+
     def test_auto_nudge_logs_an_event_for_the_timeline(self):
         # each fire appends {sid,gid,t,count} to STATE/nudge-events.jsonl for business's ⚡ timeline marker.
         g = self._orphaned_goal(idle=True)
