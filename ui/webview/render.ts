@@ -2667,7 +2667,11 @@ function renderLedger() {
         + (depth === 0 && curTop && n.id === curTop.id ? " ledger-curtop" : "")   // the pinned current top goal — marks where the collapsed line maps to (the user 2026-06-18)
         + (n.current ? " current" : "") + (n.done ? " done" : "")
         + (n.blocked && !n.done ? " blocked" : "")            // current no longer suppresses the blocked ring — the checkbox matches every blocked item (the user 2026-06-17)
-        + (n.derived ? " derived" : "") + (n.cleared ? " cleared" : ""));
+        + (n.derived ? " derived" : "") + (n.cleared ? " cleared" : "")
+        // a goal that COMPLETED then got dismissed (cleared WITH a done-summary — the distiller only writes
+        // one when it resolved) keeps the SOLID blue ✓: the real completion supersedes the dismissal style,
+        // so it no longer reads as the weaker outlined "cleared" check (the user 2026-06-22)
+        + (n.cleared && n.summary && n.summary.trim() ? " cleared-done" : ""));
       row.style.paddingLeft = (4 + depth * 15) + "px";          // indent by graph depth (a line of descent)
       // disclosure triangle at every level (▶ folded / ▼ open); a blank spacer keeps leaves aligned
       const tri = el("span", "ledger-tri" + (expandable ? " nav" : " empty"));

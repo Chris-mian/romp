@@ -249,6 +249,9 @@ body { display: flex; flex-direction: column; }
    it's gone; both inferred/dismissed dones read the same (the user 2026-06-17). */
 .ledger-tnode.done.derived .ledger-tmark,
 .ledger-tnode.done.cleared .ledger-tmark { background: transparent; border-color: var(--check-bg); color: var(--check-bg); opacity: 1; }
+/* …EXCEPT a goal that was COMPLETED and then dismissed (cleared-done): it really WAS judged done, so the
+   solid blue ✓ supersedes the outlined cleared style above (more specific → wins) (the user 2026-06-22). */
+.ledger-tnode.done.cleared.cleared-done .ledger-tmark { background: var(--check-bg); border-color: transparent; color: #fff; }
 /* blocked = a red ⏸ ring (only when not done; render gates the .blocked class the same way). The current
    node is NO LONGER excluded — its checkbox matches every other blocked item (the user 2026-06-17). */
 .ledger-tnode.blocked .ledger-tmark { border-color: var(--err); color: var(--err); }

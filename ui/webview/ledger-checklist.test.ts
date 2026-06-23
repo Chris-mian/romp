@@ -128,6 +128,15 @@ test("explicit done = solid ✓; derived AND cleared share ONE outlined ✓ (no 
   assert.doesNotMatch(CSS, /\.ledger-tnode\.cleared \.ledger-tmark \{[^}]*opacity/);   // the opacity-fade mechanism is gone
 });
 
+test("a COMPLETED-then-dismissed node keeps the SOLID blue ✓ — completion supersedes the cleared style (the user 2026-06-22)", () => {
+  // cleared + a done-summary (the distiller only writes one when it resolved) = it really WAS completed, so
+  // it gets a `cleared-done` class and the solid blue check, NOT the outlined "cleared" one. Keys on the
+  // SAME signal as the "completed, then dismissed" tooltip, so the mark and the words agree.
+  assert.match(RENDER, /n\.cleared && n\.summary && n\.summary\.trim\(\) \? " cleared-done" : ""/);
+  // the override is MORE specific than the outlined .done.cleared rule → it wins, restoring solid blue
+  assert.match(CSS, /\.ledger-tnode\.done\.cleared\.cleared-done \.ledger-tmark \{[^}]*background: var\(--check-bg\);[^}]*border-color: transparent;[^}]*color: #fff/);
+});
+
 test("top-level goals are separated by a thin rule", () => {
   // a thin separator above every top-level goal so distinct goals read apart (the user 2026-06-16);
   // the first top goal gets none.
