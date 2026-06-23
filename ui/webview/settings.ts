@@ -10,10 +10,11 @@ export interface RompSettings {
   debug: boolean;     // global Debug mode (the user 2026-06-17): reveals the kernel-restart (↻) button AND the timeline's judging band (the judges' actions). OFF by default.
   backend: "tmux" | "sdk";   // which backend a NEWLY-created session uses (the user 2026-06-22): "tmux" (terminal) or "sdk" (headless Agent SDK). Both coexist; this is only the default for the + button. Read at createSession time (render.ts). Default tmux.
   defaultDir: string;        // default working directory PREFILLED in the new-session field (the user 2026-06-22). A session's dir is fixed at creation. Empty → the kernel's serve dir. ~ / $VAR expanded server-side.
+  showBranch: boolean;       // chat bottom-bar: show the session's git branch (if any) beside the dir (the user 2026-06-23). ON by default.
 }
 // NOTE: the old `explanations` pref is GONE (the user 2026-06-18) — cards no longer show the planner's
 // hand-written "why" as their line; they show the distiller's summary instead (the why demotes to a hover).
-export const DEFAULT_SETTINGS: RompSettings = { compact: false, colormap: "hawaii", subgoals: true, debug: false, backend: "tmux", defaultDir: "" };
+export const DEFAULT_SETTINGS: RompSettings = { compact: false, colormap: "hawaii", subgoals: true, debug: false, backend: "tmux", defaultDir: "", showBranch: true };
 const KEY = "romp:settings";
 
 export function loadSettings(): RompSettings {

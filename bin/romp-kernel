@@ -4531,6 +4531,10 @@ _GEAR_HTML = ("<button id=rrefresh title='Restart the romp kernel' aria-label=Re
               "<span><b>Compact transcript</b>"
               "<span class=rs-sub>Collapse each run of tool uses into one line and hide thinking blocks in the chat.</span>"
               "</span></label>"
+              "<label class=rs-row><input type=checkbox id=rs-branch>"
+              "<span><b>Show git branch</b>"
+              "<span class=rs-sub>Show the session's git branch (when it's in a repo) in the chat bottom bar, beside the directory.</span>"
+              "</span></label>"
               "<label class=rs-row><input type=checkbox id=rs-oldest>"
               "<span><b>Oldest first</b>"
               "<span class=rs-sub>Order feed cards oldest-at-top instead of the default newest-at-top.</span>"
@@ -4590,11 +4594,12 @@ _GEAR_HTML = ("<button id=rrefresh title='Restart the romp kernel' aria-label=Re
               "</div></div>")
 _GEAR_JS = r"""(function(){var g=document.getElementById('rgear'),p=document.getElementById('rsettings'),
 b=document.getElementById('rsver'),cc=document.getElementById('rs-compact'),cm=document.getElementById('rs-colormap'),
-db=document.getElementById('rs-debug'),an=document.getElementById('rs-autonudge'),bk=document.getElementById('rs-backend'),dd=document.getElementById('rs-defaultdir'),of=document.getElementById('rs-oldest');
-function load(){try{return Object.assign({compact:false,colormap:'hawaii',subgoals:true,debug:false,backend:'tmux',defaultDir:'',oldestFirst:true},JSON.parse(localStorage.getItem('romp:settings')||'null'));}catch(e){return {compact:false,colormap:'hawaii',subgoals:true,debug:false,backend:'tmux',defaultDir:'',oldestFirst:true};}}
+db=document.getElementById('rs-debug'),an=document.getElementById('rs-autonudge'),bk=document.getElementById('rs-backend'),dd=document.getElementById('rs-defaultdir'),of=document.getElementById('rs-oldest'),gb=document.getElementById('rs-branch');
+function load(){try{return Object.assign({compact:false,colormap:'hawaii',subgoals:true,debug:false,backend:'tmux',defaultDir:'',oldestFirst:true,showBranch:true},JSON.parse(localStorage.getItem('romp:settings')||'null'));}catch(e){return {compact:false,colormap:'hawaii',subgoals:true,debug:false,backend:'tmux',defaultDir:'',oldestFirst:true,showBranch:true};}}
 function save(s){try{localStorage.setItem('romp:settings',JSON.stringify(s));}catch(e){}}
 function emit(){try{window.dispatchEvent(new Event('romp:settings'));}catch(e){}}   // same-doc signal → the feed re-gates its cards
 cc.addEventListener('change',function(){var s=load();s.compact=cc.checked;save(s);});
+if(gb)gb.addEventListener('change',function(){var s=load();s.showBranch=gb.checked;save(s);emit();});   // chat statusline re-reads loadSettings() on the next render; emit nudges open tabs
 if(of)of.addEventListener('change',function(){var s=load();s.oldestFirst=of.checked;save(s);emit();});   // feed re-sorts its cards live on the 'romp:settings' event
 // (Explanations + Sub-goals toggles removed from the gear 2026-06-18 — Sub-goals lives in the feed footer now.)
 function applyDebug(s){if(rf)rf.style.display=(s&&s.debug)?'':'none';}
@@ -4626,7 +4631,7 @@ if(dd&&typeof v.defaultDir==='string')dd.value=v.defaultDir;   // the kernel's p
 var x=lv();b.innerHTML='kernel '+(v.kernel_sha||'?')+'\nserving v'+
 v.dist_ver+'\nthis tab v'+(x||'?');
 }).catch(function(){b.textContent='(version unavailable)';});}
-g.onclick=function(e){e.stopPropagation();if(p.hidden){p.hidden=false;var s=load();cc.checked=!!s.compact;db.checked=!!s.debug;if(of)of.checked=!!s.oldestFirst;cm.value=s.colormap||'hawaii';renderCmapBar();if(bk)bk.value=s.backend||'tmux';if(dd)dd.value=s.defaultDir||'';fill();}else p.hidden=true;};
+g.onclick=function(e){e.stopPropagation();if(p.hidden){p.hidden=false;var s=load();cc.checked=!!s.compact;db.checked=!!s.debug;if(of)of.checked=!!s.oldestFirst;if(gb)gb.checked=s.showBranch!==false;cm.value=s.colormap||'hawaii';renderCmapBar();if(bk)bk.value=s.backend||'tmux';if(dd)dd.value=s.defaultDir||'';fill();}else p.hidden=true;};
 document.addEventListener('click',function(e){if(!p.hidden&&e.target!==g&&!p.contains(e.target))p.hidden=true;});
 var rf=document.getElementById('rrefresh');   // ↻ moved up from the timeline (the user 2026-06-17): POST /restart, poll /healthz, reload
 if(rf)rf.onclick=function(){rf.disabled=true;try{fetch('/restart',{method:'POST'}).catch(function(){});}catch(e){}

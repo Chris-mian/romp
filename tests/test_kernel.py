@@ -1691,6 +1691,16 @@ class ViewBuilder(unittest.TestCase):
         self.assertNotIn("\U0001F4CA", km._GEAR_HTML)                                 # the 📊 emoji is gone
         self.assertIn("Token usage analytics", km._GEAR_HTML)                          # the label itself stays
 
+    def test_gear_has_show_git_branch_toggle(self):
+        # the user 2026-06-23: a "Show git branch" checkbox controls whether the chat bottom-bar shows the
+        # session's git branch beside the dir. ON by default (showBranch !== false). It mirrors render.ts'
+        # loadSettings().showBranch read, persisted in romp:settings.
+        self.assertIn("id=rs-branch", km._GEAR_HTML)
+        self.assertIn("Show git branch", km._GEAR_HTML)
+        self.assertIn("s.showBranch=gb.checked", km._GEAR_JS)        # change → persist
+        self.assertIn("gb.checked=s.showBranch!==false", km._GEAR_JS)  # open → reflect (default ON)
+        self.assertIn("showBranch:true", km._GEAR_JS)                # load() default ON, both branches
+
     def test_chat_body_has_an_explicit_send_button(self):
         # The web-dashboard composer (kernel _chat_body, a SECOND copy of chat-view page-skeleton.chatBody)
         # carries an explicit send button beside 📎, so ⏎ isn't the only way to send (the user 2026-06-17).

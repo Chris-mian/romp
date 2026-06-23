@@ -3698,6 +3698,17 @@ function updateStatusline() {
     dir.title = s.cwd;
   }
   sl.appendChild(dir);
+  // The session's git branch, just right of the dir — only when known and only if the user hasn't hidden it
+  // (Settings → "Show git branch", on by default — the user 2026-06-23). Pulled from the system-context event.
+  if (loadSettings().showBranch !== false) {
+    const sys = s.events.find((e) => e.kind === "system") as Extract<ChatEvent, { kind: "system" }> | undefined;
+    if (sys?.gitBranch) {
+      const br = el("span", "status-branch");
+      br.textContent = "⎇ " + sys.gitBranch;
+      br.title = "git branch: " + sys.gitBranch;
+      sl.appendChild(br);
+    }
+  }
   const meta = el("span", "spinner-meta");
   meta.id = "spinner-meta";
   syncMetaControls(meta, s.status);

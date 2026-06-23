@@ -427,6 +427,12 @@ body { display: flex; flex-direction: column; }
   color: var(--dim); font-family: var(--mono); font-size: 0.92em;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+/* git branch, just right of the dir (the user 2026-06-23). Same dim mono; shrinks/ellipsises before the dir does. */
+.status-branch {
+  margin-left: 10px; flex: 0 2 auto; min-width: 0; max-width: 160px;
+  color: var(--dim); font-family: var(--mono); font-size: 0.92em;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 .spinner-meta {
   margin-left: 12px; /* sits just right of the directory; the cluster is right-justified by .status-dir */
   color: var(--dim);
