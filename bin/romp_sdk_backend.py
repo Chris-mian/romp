@@ -316,11 +316,24 @@ class SdkSession:
         opts = self.backend._options(self, ClaudeAgentOptions)
         async with ClaudeSDKClient(options=opts) as client:
             self.client = client
-            await client.query(inputs())
-            async for msg in client.receive_messages():
-                if self.ended:
-                    break
-                self._on_message(msg, AssistantMessage, ResultMessage, SystemMessage)
+            # Feed turns and receive messages CONCURRENTLY: query() with a streaming
+            # input iterable BLOCKS until the iterable ends (it writes each turn to
+            # stdin), and our input generator never ends (long-lived) — so awaiting it
+            # before receiving would starve the receive loop forever. The SDK's control
+            # channel (can_use_tool) runs in its own reader task regardless; the message
+            # stream does not, so it must be drained here, alongside the feeder.
+            feeder = asyncio.ensure_future(client.query(inputs()))
+            try:
+                async for msg in client.receive_messages():
+                    if self.ended:
+                        break
+                    self._on_message(msg, AssistantMessage, ResultMessage, SystemMessage)
+            finally:
+                feeder.cancel()
+                try:
+                    await feeder
+                except BaseException:
+                    pass
 
     def _on_message(self, msg, AssistantMessage, ResultMessage, SystemMessage):
         if isinstance(msg, SystemMessage) and msg.subtype == "init":

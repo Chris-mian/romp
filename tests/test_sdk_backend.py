@@ -122,14 +122,21 @@ class AskRoundTrip(unittest.TestCase):
         class _Ctx:
             title = display_name = decision_reason = None
 
+        import asyncio as _aio
+
         class FakeClient:
+            """Models the real split: query(iterable) WRITES each turn (blocking until the
+            iterable ends), receive_messages() yields outputs independently. So this only
+            works if the backend runs feeder + receiver CONCURRENTLY — if it awaited query()
+            first (the bug the live smoke caught), the never-ending input generator would
+            starve the receive loop and this test would hang."""
             instances = []
 
             def __init__(self, options=None, transport=None):
                 self.options = options
-                self.prompt = None
                 self.captured = None
                 self.interrupted = False
+                self._turnq = _aio.Queue()
                 FakeClient.instances.append(self)
 
             async def __aenter__(self):
@@ -139,7 +146,8 @@ class AskRoundTrip(unittest.TestCase):
                 return False
 
             async def query(self, prompt, session_id="default"):
-                self.prompt = prompt
+                async for turn in prompt:                # writes each turn (blocks like the real one)
+                    await self._turnq.put(turn)
 
             async def interrupt(self):
                 self.interrupted = True
@@ -148,7 +156,8 @@ class AskRoundTrip(unittest.TestCase):
                 yield _sdk.SystemMessage("init", {
                     "model": "claude-x", "permissionMode": "acceptEdits",
                     "session_id": (self.options.session_id or "fsid")})
-                async for _turn in self.prompt:          # one enqueued user turn
+                while True:
+                    await self._turnq.get()              # next enqueued user turn
                     allow = await self.options.can_use_tool("AskUserQuestion", QUESTION, _Ctx())
                     self.captured = allow
                     yield _sdk.AssistantMessage(content=[_sdk.TextBlock("ok")], model="claude-x")
