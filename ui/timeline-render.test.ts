@@ -126,6 +126,25 @@ test("a compacting lane's badge shows the live compaction % (the user 2026-06-15
   assert.ok(findText(panel.svg, "COMPACTING 74%"), "the COMPACTING badge includes the %");
 });
 
+test("an optimistic eye-toggle (hideFromFeed) survives a STALE push and clears once confirmed (the user 2026-06-22)", () => {
+  const panel: any = new TimelinePanel(makeNode("div"));
+  panel.update(synthData());
+  const sid = panel.data.sessions[0].id;
+  // user clicked the eye: optimistic flip + a sticky pending entry (what the click handler does)
+  panel.data.sessions[0].hideFromFeed = true;
+  panel._pendingFlags[sid] = { hideFromFeed: true };
+  // a routine push lands carrying the OLD value (kernel hasn't processed the flag yet) → must NOT revert
+  panel.update(synthData());
+  assert.equal(panel.data.sessions[0].hideFromFeed, true, "the hidden state holds through a stale push (no flicker-back)");
+  assert.ok(panel._pendingFlags[sid], "still pending — the kernel hasn't confirmed yet");
+  // the kernel's confirming rebuild arrives with the new value → the override is dropped
+  const confirmed: any = synthData();
+  confirmed.sessions[0].hideFromFeed = true;
+  panel.update(confirmed);
+  assert.equal(panel.data.sessions[0].hideFromFeed, true, "confirmed value holds");
+  assert.ok(!panel._pendingFlags[sid], "pending cleared once the kernel agrees (so a later external change isn't blocked)");
+});
+
 test("draw() also survives with an active hover set (atom-id highlight path)", () => {
   const host = makeNode("div");
   const panel = new TimelinePanel(host);

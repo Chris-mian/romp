@@ -285,6 +285,7 @@ class TimelinePanel {
     // now, target lands ~mid-window) instead of panning away. OFF by default; checkbox far right.
     this._lockNow = false;
     this._compactClicked = {};   // sid → click ts: show the compacting cue OPTIMISTICALLY until the real state catches up
+    this._pendingFlags = {};     // sid → {flag: value}: an optimistic eye-toggle held STICKY across pushes until the kernel's data confirms it (no flicker-back)
     try { if (localStorage.getItem(this.CSTORE) === '0') this._collapseGaps = false; } catch (e) {}
     try { if (localStorage.getItem(this.LSTORE) === '1') this._lockNow = true; } catch (e) {}
     try { const v = localStorage.getItem(this.WSTORE); if (v != null && /^\d+(\.\d+)?$/.test(v)) { this._winSec = +v; this.fitted = true; } } catch (e) {}
@@ -829,6 +830,7 @@ class TimelinePanel {
   update(data) {
     if (!data || data.unavailable || !data.sessions) { this.data = data; this.drawMessage(data && data.unavailable ? 'Timeline needs a desktop Obsidian with tmux.' : 'No romp activity.'); return; }
     this.data = data;
+    this._reconcilePendingFlags();   // hold an optimistic eye-toggle sticky until THIS push (or a later one) confirms it
     // Live-edge baseline: free-run off a FIXED anchor and re-snap only on a genuine step, so the few-ms
     // poll-arrival jitter no longer hiccups the gliding edge ~1-2px (the user 2026-06-15). See shouldReanchorEdge.
     const _live = this._liveFollowing(), _tMs = perfNow();
@@ -1434,6 +1436,24 @@ class TimelinePanel {
   // flag, the lane EYE toggles hideFromFeed DIRECTLY on click — no menu. See the render below; the flag is
   // still persisted by _setSessionFlag.)
 
+  // Optimistic per-session view flags (the eye → hideFromFeed). A click flips the flag locally AND fires
+  // _setSessionFlag, but the kernel's confirming rebuild takes ~1s and ANY routine push that lands in that
+  // window carries the OLD value — wholesale-replacing this.data would REVERT the eye (a visible flicker, the
+  // session "un-hiding" for a beat before settling — the user 2026-06-22). So hold each clicked value in
+  // _pendingFlags and re-apply it onto every incoming push until the kernel's value MATCHES (confirmed → drop
+  // it). Net: click → it changes → it stays, never bounces. Called from update() right after this.data = data.
+  _reconcilePendingFlags() {
+    const pend = this._pendingFlags; if (!pend) return;
+    for (const s of (this.data && this.data.sessions) || []) {
+      const p = pend[s.id]; if (!p) continue;
+      for (const flag of Object.keys(p)) {
+        if (s[flag] === p[flag]) delete p[flag];   // the kernel now agrees → stop overriding this flag
+        else s[flag] = p[flag];                    // not yet confirmed → keep the optimistic value sticky
+      }
+      if (!Object.keys(p).length) delete pend[s.id];
+    }
+  }
+
   // Persist a per-session flag. Web dashboard: the host WS hook (→ kernel setSessionFlag → rebuild feed).
   // Obsidian/headless fallback: write the same session-flags.json the kernel's build_feed reads.
   _setSessionFlag(s, flag, value) {
@@ -1821,7 +1841,8 @@ class TimelinePanel {
         hit.addEventListener('click', (e) => {
           e.stopPropagation();
           const next = !s.hideFromFeed;
-          s.hideFromFeed = next;                       // optimistic — the kernel confirms on the next push
+          s.hideFromFeed = next;                       // optimistic …
+          (this._pendingFlags[s.id] = this._pendingFlags[s.id] || {}).hideFromFeed = next;   // … and held STICKY across pushes until the kernel confirms (no flicker-back)
           this._setSessionFlag(s, 'hideFromFeed', next);
           this.hideTip();
           this.draw();

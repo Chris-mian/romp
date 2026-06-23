@@ -58,3 +58,14 @@ test("setSessionFlag still posts via the web host hook, with a Node-fs fallback 
   assert.match(SRC, /window\.__rompTimelineSetFlag\(s\.id, flag, value\)/);
   assert.match(SRC, /session-flags\.json/, "Obsidian/headless writes the same file the kernel reads");
 });
+
+test("the eye toggle is OPTIMISTIC + STICKY: held across pushes until the kernel confirms (no flicker-back) (the user 2026-06-22)", () => {
+  // the bug: click → eye flips → a routine push with the OLD flag reverts it for ~1s before the kernel's
+  // rebuild lands. Fix: record the clicked value in _pendingFlags and re-apply it on every update() until the
+  // incoming data matches it (then drop). So the click sticks instantly and never bounces.
+  assert.match(SRC, /this\._pendingFlags = \{\};/);
+  assert.match(SRC, /\(this\._pendingFlags\[s\.id\] = this\._pendingFlags\[s\.id\] \|\| \{\}\)\.hideFromFeed = next;/);
+  // update() reconciles right after adopting the new data, BEFORE the early-returns/draw
+  assert.match(SRC, /this\.data = data;\s*\n\s*this\._reconcilePendingFlags\(\);/);
+  assert.match(SRC, /_reconcilePendingFlags\(\) \{[\s\S]*?if \(s\[flag\] === p\[flag\]\) delete p\[flag\];[\s\S]*?else s\[flag\] = p\[flag\];/);
+});
