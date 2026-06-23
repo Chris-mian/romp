@@ -239,6 +239,9 @@ body { display: flex; flex-direction: column; }
 /* the .fask-blockwhy/.fask-donewhy auto-line (the distiller summary) DEEP-LINKS when the kernel resolved a
    summaryAnchorUuid → .nav gives it a clickable hover that jumps to the most substantive message in the
    work span; without an anchor it stays plain text (was plain-only before — the user 2026-06-22). */
+/* the summary text wraps a long no-space token (a file/function/type name) instead of overflowing the card
+   edge (the user 2026-06-23) — no base rule existed, so a token like SdkBackend.pending_queued(sid:str) spilled */
+.fask-blockwhy, .fask-donewhy { overflow-wrap: anywhere; }
 .fask-blockwhy.nav, .fask-donewhy.nav { cursor: pointer; border-radius: 4px; transition: background 0.1s ease; }
 .fask-blockwhy.nav:hover, .fask-donewhy.nav:hover { background: rgba(255, 255, 255, 0.07); text-decoration: underline; text-underline-offset: 2px; }
 .fask-origin:hover { text-decoration: underline; text-underline-offset: 2px; }
@@ -506,7 +509,7 @@ body { display: flex; flex-direction: column; }
    two rows (head + controls) regardless of title length. */
 .fcard-head { display: flex; align-items: baseline; gap: 12px; }
 /* TITLE — the deliverable headline */
-.fcard-title { flex: 1 1 auto; min-width: 0; font-weight: 600; line-height: 1.4; overflow-wrap: break-word; }
+.fcard-title { flex: 1 1 auto; min-width: 0; font-weight: 600; line-height: 1.4; overflow-wrap: anywhere; }   /* anywhere (not break-word): a long no-space token (e.g. a file/func name) breaks to fit instead of overflowing the card (the user 2026-06-23) */
 /* clickable ask title → locate the typed turn (same affordance as the agent name) */
 .fcard-title.nav { cursor: pointer; }
 .fcard-title.nav:hover { text-decoration: underline; text-underline-offset: 2px; }

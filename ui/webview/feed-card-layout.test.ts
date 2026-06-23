@@ -92,3 +92,10 @@ test("the footer action row WRAPS its buttons so they can NEVER run off the card
   // margin-left:auto is GONE — justify-content:flex-end right-aligns the (now wrapping) buttons instead
   assert.doesNotMatch(CSS, /\.fask-actions \{[^}]*margin-left: auto/);
 });
+
+test("a long no-space token (file/func/type name) WRAPS instead of overflowing the card (the user 2026-06-23)", () => {
+  // overflow-wrap: anywhere (not break-word) so a token like SdkBackend.pending_queued(sid:str) breaks to
+  // fit — the title used break-word (kept the longest word as min-width) and the summary had NO wrap at all.
+  assert.match(CSS, /\.fcard-title \{[^}]*overflow-wrap: anywhere/);
+  assert.match(CSS, /\.fask-blockwhy, \.fask-donewhy \{[^}]*overflow-wrap: anywhere/);
+});
