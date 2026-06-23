@@ -2744,7 +2744,16 @@ function renderLedger() {
       // from the children the render already has, no kernel round-trip.
       const markReason = (): string => {
         if (!n.done) return n.blocked ? "blocked — needs you" : "not yet done";
-        if (n.cleared) return "dismissed — cleared, not judged done";
+        if (n.cleared) {
+          // A cleared node is DISMISSED, but it may have been judged FIRST: a distiller summary only exists
+          // when the goal actually resolved (n.summary = completed, n.blockSummary = blocked). So a cleared
+          // node WITH a summary was judged — don't claim "not judged". Only a cleared node with NO summary
+          // was dismissed without ever being judged (the user 2026-06-22: a "not judged" tooltip on a card
+          // that also showed a distilled summary — the summary proves it WAS judged).
+          if (n.summary && n.summary.trim()) return "completed, then dismissed (cleared)";
+          if (n.blockSummary && n.blockSummary.trim()) return "blocked, then dismissed (cleared)";
+          return "dismissed — cleared, never judged done";
+        }
         if (!n.derived) return "done — explicitly checked off";
         const kids = (n.children || []).map((id) => byId.get(id)).filter(Boolean) as LedgerTreeNode[];
         return (kids.length > 0 && kids.every((k) => k.done))
@@ -2753,13 +2762,22 @@ function renderLedger() {
       };
       const reason = markReason();
       if (n.cleared) {
-        // DISMISSED: a cleared node was never checked off, so there is NO resolution point to jump to (the
-        // user 2026-06-18). It carries done=true and would otherwise fall into the resolved branch and link
-        // to a nonexistent checkoff. Route the mark + text + time to where it was CREATED (the minting
-        // message) instead, and say so in the tooltip — not "checked off".
-        wireZone(mark, n.promptAnchorUuid, "user", reason + " · jump to where it was created");
-        linkHover([mark, txt]);
-        if (time.textContent) { wireZone(time, n.promptAnchorUuid, "user", "jump to where it was created"); linkHover([time]); }
+        // DISMISSED. A cleared node MIGHT have resolved before you cleared it: a distiller summary (sumText
+        // = summary/blockSummary) only exists when it did, so a cleared-WITH-summary node HAS a resolution
+        // point (anchorUuid) — route there like any resolved node (the user 2026-06-22, fixing a "not judged"
+        // tooltip that contradicted the node's own distilled summary). A cleared node with NO summary was
+        // never judged, so it has no resolution: route the mark + text + time to where it was CREATED (the
+        // minting message) instead, and say so — not "checked off".
+        if (sumText && n.anchorUuid) {
+          wireZone(mark, n.anchorUuid, "assistant", reason + " · jump to where it resolved");
+          wireZone(time, n.anchorUuid, "assistant", "jump to where it resolved");
+          linkHover([txt]);
+          linkHover(time.textContent ? [mark, time] : [mark]);
+        } else {
+          wireZone(mark, n.promptAnchorUuid, "user", reason + " · jump to where it was created");
+          linkHover([mark, txt]);
+          if (time.textContent) { wireZone(time, n.promptAnchorUuid, "user", "jump to where it was created"); linkHover([time]); }
+        }
       } else if (n.done || n.blocked) {
         const resTitle = n.done ? "jump to where this got checked off" : "jump to where this got marked blocked";
         wireZone(mark, n.anchorUuid, "assistant", reason + " · " + resTitle);

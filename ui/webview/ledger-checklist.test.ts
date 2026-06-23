@@ -31,7 +31,12 @@ test("ledger checkbox tooltip LEADS with why the mark reads as it does — expli
   assert.match(RENDER, /"done — explicitly checked off"/);                 // explicit (solid ✓)
   assert.match(RENDER, /"done — inferred: every sub-step is complete"/);   // derived via roll-UP
   assert.match(RENDER, /"done — inferred: a parent goal was checked off"/);// derived via roll-DOWN
-  assert.match(RENDER, /"dismissed — cleared, not judged done"/);          // cleared
+  // cleared: a dismissal that was JUDGED first (a distiller summary proves it) reads as "completed/blocked,
+  // then dismissed" — NOT "not judged"; only a never-judged dismissal says so (the user 2026-06-22)
+  assert.match(RENDER, /"completed, then dismissed \(cleared\)"/);          // cleared but had a done-summary
+  assert.match(RENDER, /"blocked, then dismissed \(cleared\)"/);            // cleared but had a block-summary
+  assert.match(RENDER, /"dismissed — cleared, never judged done"/);        // cleared with NO summary
+  assert.doesNotMatch(RENDER, /"dismissed — cleared, not judged done"/, "the old blanket 'not judged' lie is gone");
   // roll-up vs roll-down is decided from the node's own children (no kernel round-trip)
   assert.match(RENDER, /kids\.length > 0 && kids\.every\(\(k\) => k\.done\)/);
   // the reason is prepended to the jump hint on the CHECKBOX in both the resolved and open branches
@@ -39,11 +44,16 @@ test("ledger checkbox tooltip LEADS with why the mark reads as it does — expli
   assert.match(RENDER, /wireZone\(mark, n\.promptAnchorUuid, "user", reason \+ " · jump to the message/);
 });
 
-test("a CLEARED node links to where it was CREATED, not 'checked off' — it was never resolved (the user 2026-06-18)", () => {
-  // cleared carries done=true and would otherwise fall into the resolved branch and link to a nonexistent
-  // checkoff point. A dedicated cleared branch (checked FIRST) routes the mark to the minting message
-  // (promptAnchorUuid) instead.
-  assert.match(RENDER, /if \(n\.cleared\) \{[\s\S]*?wireZone\(mark, n\.promptAnchorUuid, "user", reason \+ " · jump to where it was created"\)/);
+test("a CLEARED node's nav depends on whether it was judged: resolved→resolution, unjudged→creation (the user 2026-06-22)", () => {
+  // cleared carries done=true. A dedicated cleared branch (checked FIRST) splits on sumText (the distiller
+  // summary): a cleared node that WAS judged has a real resolution point → route the mark/time to anchorUuid
+  // (where it resolved), like any resolved node; a never-judged dismissal has none → route to the minting
+  // message (promptAnchorUuid). This keeps the nav consistent with the tooltip (no "completed" hint that
+  // then jumps to creation).
+  assert.match(RENDER, /if \(n\.cleared\) \{[\s\S]*?if \(sumText && n\.anchorUuid\) \{[\s\S]*?wireZone\(mark, n\.anchorUuid, "assistant", reason \+ " · jump to where it resolved"\)/);
+  assert.match(RENDER, /wireZone\(time, n\.anchorUuid, "assistant", "jump to where it resolved"\)/);
+  // the unjudged fallback still links to where it was created
+  assert.match(RENDER, /\} else \{[\s\S]*?wireZone\(mark, n\.promptAnchorUuid, "user", reason \+ " · jump to where it was created"\)/);
   assert.match(RENDER, /wireZone\(time, n\.promptAnchorUuid, "user", "jump to where it was created"\)/);
   // the cleared branch precedes the done/blocked branch, so a cleared node never reaches the "checked off" hint
   assert.ok(RENDER.indexOf("if (n.cleared) {") < RENDER.indexOf('n.done ? "jump to where this got checked off"'),
