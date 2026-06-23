@@ -987,6 +987,20 @@ pre code .cl::before {
   color: var(--dim); opacity: 0.32; user-select: none; font-size: 0.9em;
 }
 pre code .ct { flex: 1 1 auto; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+/* automatic per-block Copy button (the user 2026-06-22): parked top-right, faint until the block is
+   hovered, flips to a green "Copied" on success; position:relative on the pre anchors it. */
+pre.has-copy { position: relative; }
+.code-copy {
+  position: absolute; top: 6px; right: 6px; z-index: 1;
+  font-family: var(--sans); font-size: 11px; line-height: 1; padding: 3px 7px; border-radius: 4px;
+  border: 1px solid var(--box-border); background: var(--code-bg); color: var(--dim);
+  cursor: pointer; opacity: 0; user-select: none;
+  transition: opacity 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+pre.has-copy:hover .code-copy, .code-copy:focus-visible { opacity: 0.9; }
+.code-copy:hover { color: var(--fg); border-color: var(--dim); }
+.code-copy.copied { color: var(--green); border-color: var(--green); opacity: 1; }
+@media (hover: none) { .code-copy { opacity: 0.8; } }   /* touch: no hover state, so keep it visible */
 .md table { border-collapse: collapse; margin: 0.6em 0; }
 .md th, .md td { border: 1px solid var(--box-border); padding: 4px 10px; text-align: left; }
 .md th { background: rgba(255, 255, 255, 0.03); }

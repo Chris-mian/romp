@@ -168,15 +168,57 @@ function md(src: string): string {
 function highlight(container: HTMLElement, lineNos = true) {
   container.querySelectorAll("pre code").forEach((node) => {
     const code = node as HTMLElement;
+    const raw = code.textContent || "";   // capture BEFORE we rewrite innerHTML: line-wrapping drops the \n joins, so the on-screen markup's textContent is NOT copy-safe
     const lang = (code.className.match(/language-([\w-]+)/) || [])[1];
     try {
       code.innerHTML = lang && hljs.getLanguage(lang)
-        ? hljs.highlight(code.textContent || "", { language: lang }).value
-        : hljs.highlightAuto(code.textContent || "").value;
+        ? hljs.highlight(raw, { language: lang }).value
+        : hljs.highlightAuto(raw).value;
       code.classList.add("hljs");
       if (lineNos) wrapCodeLines(code);   // per-line gutter so a soft-wrap reads distinctly from a real newline
     } catch { /* leave as-is */ }
+    const pre = code.parentElement;
+    if (pre && pre.tagName === "PRE") addCopyBtn(pre as HTMLElement, raw);   // an automatic "Copy" button per block
   });
+}
+
+// Copy text to the clipboard, falling back to a hidden-textarea execCommand when the async Clipboard API
+// is unavailable (it needs a secure context — localhost counts, but stay safe). Returns whether it copied.
+function copyText(text: string): Promise<boolean> {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    return navigator.clipboard.writeText(text).then(() => true, () => fallbackCopy(text));
+  }
+  return Promise.resolve(fallbackCopy(text));
+}
+function fallbackCopy(text: string): boolean {
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text; ta.style.position = "fixed"; ta.style.top = "-9999px"; ta.style.opacity = "0";
+    document.body.appendChild(ta); ta.focus(); ta.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(ta);
+    return ok;
+  } catch { return false; }
+}
+
+// An automatic "Copy" button parked top-right of every rendered code block (the user 2026-06-22). The RAW
+// source is captured at highlight time and closed over — the on-screen markup adds a line-number gutter and
+// drops the newline joins, so copying its textContent would be wrong. Faint until the block is hovered;
+// flips to a green "Copied" for ~1.2s on success. Idempotent (highlight can re-run on a re-render).
+function addCopyBtn(pre: HTMLElement, raw: string) {
+  if (pre.querySelector(":scope > .code-copy")) return;
+  pre.classList.add("has-copy");
+  const btn = el("button", "code-copy") as HTMLButtonElement;
+  btn.type = "button"; btn.textContent = "Copy"; btn.title = "copy this code block";
+  btn.addEventListener("click", (ev) => {
+    ev.preventDefault(); ev.stopPropagation();
+    copyText(raw).then((ok) => {
+      btn.textContent = ok ? "Copied" : "Copy failed";
+      btn.classList.toggle("copied", ok);
+      window.setTimeout(() => { btn.textContent = "Copy"; btn.classList.remove("copied"); }, 1200);
+    });
+  });
+  pre.appendChild(btn);
 }
 
 // Wrap each logical line of (hljs-highlighted) code in <span class=cl><span class=ct>…</span></span>,
