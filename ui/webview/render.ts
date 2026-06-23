@@ -84,7 +84,7 @@ type ChatEvent = (
 interface TodoTask { id: string; subject: string; activeForm?: string; status: string }
 
 type ChipState = "working" | "ready" | "awaiting" | "idle" | "closed" | "compacting" | "blocked";
-interface Status { state: ChipState; sinceEpoch: number | null; effort?: string; model?: string; mode?: string; ctx?: string; faded?: boolean; }
+interface Status { state: ChipState; sinceEpoch: number | null; effort?: string; model?: string; mode?: string; ctx?: string; faded?: boolean; backend?: string; }   // backend = "tmux" | "sdk" (the kernel's _session_backend) → shown in the tab-title hover tooltip
 interface Color { bg: string; fg: string; }
 interface Session { id: string; name: string; color: Color | null; events: ChatEvent[]; status: Status; firstSeen?: number; cwd?: string; }
 
@@ -1429,6 +1429,10 @@ function renderTabs() {
       tab.addEventListener("mouseleave", () => { label.style.color = fadedColor(full); });
     }
     tab.appendChild(label);
+    // hover tooltip: which BACKEND this session runs on (tmux | SDK), plus its model — so the backend is
+    // legible at a glance without a separate badge (the user 2026-06-23).
+    const beLabel = s.status.backend === "sdk" ? "SDK" : s.status.backend === "tmux" ? "tmux" : "";
+    if (beLabel) tab.title = s.name + " · " + beLabel + " backend" + (s.status.model ? " · " + s.status.model : "");
     const close = el("span", "tab-close");
     close.textContent = "×";
     // A dead (closed) session has nothing to end, so its ✕ just removes the read-only tab — no
