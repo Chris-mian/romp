@@ -1669,6 +1669,18 @@ class ViewBuilder(unittest.TestCase):
         self.assertRegex(km._GEAR_CSS, r"#rrefresh\{[^}]*position:fixed;top:6px")
         self.assertIn("fetch('/restart',{method:'POST'})", km._GEAR_JS)
 
+    def test_gear_polish_tooltips_colormap_bar_no_emoji(self):
+        # the user 2026-06-23: descriptions become HOVER tooltips (decluttered), the colormap picker shows a
+        # gradient preview bar, and the analytics button drops its 📊 emoji.
+        self.assertIn("#rsettings .rs-sub{display:none}", km._GEAR_CSS)               # descriptions hidden by default
+        self.assertRegex(km._GEAR_CSS, r"#rsettings \.rs-row:hover \.rs-sub\{display:block;position:absolute")  # float on hover
+        self.assertIn("id=rs-cmapbar", km._GEAR_HTML)                                 # the colormap preview bar element
+        self.assertIn("#rs-cmapbar{height:10px", km._GEAR_CSS)
+        self.assertIn("function renderCmapBar()", km._GEAR_JS)                         # builds the gradient from the map stops
+        self.assertIn("linear-gradient(to right,", km._GEAR_JS)
+        self.assertNotIn("\U0001F4CA", km._GEAR_HTML)                                 # the 📊 emoji is gone
+        self.assertIn("Token usage analytics", km._GEAR_HTML)                          # the label itself stays
+
     def test_chat_body_has_an_explicit_send_button(self):
         # The web-dashboard composer (kernel _chat_body, a SECOND copy of chat-view page-skeleton.chatBody)
         # carries an explicit send button beside 📎, so ⏎ isn't the only way to send (the user 2026-06-17).
