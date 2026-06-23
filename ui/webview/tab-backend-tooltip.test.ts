@@ -1,7 +1,7 @@
-// The chat tab's hover tooltip — a CUSTOM DOM tooltip (a native `title` can't colour/bold its text)
-// showing the backend BOLD in its own colour (sdk=blue, tmux=green), the full directory path, and
-// mode / model / effort / context each on its own line (the user 2026-06-23). Source-pin over render.ts +
-// styles.css. (Supersedes the v1 native-title tooltip.)
+// The chat tab's hover tooltip — a CUSTOM DOM tooltip (a native `title` can't colour/bold). v2 (the user
+// 2026-06-23): backend BOLD in the session's OWN romp identity colour (no fixed per-backend colour, no
+// session name), the full directory path, the git branch, mode/model/effort, the context BATTERY (not a
+// text %), and the ledger's latest line recency-coloured with "(Xm ago)". Source-pin over render.ts + css.
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
@@ -18,21 +18,28 @@ test("the tab tooltip is a custom DOM tooltip shown on hover, not a native title
   assert.match(RENDER, /function showTabTip\(tab: HTMLElement, s: Session\)/);
   assert.match(RENDER, /tab\.addEventListener\("mouseenter", \(\) => showTabTip\(tab, s\)\)/);
   assert.match(RENDER, /tab\.addEventListener\("mouseleave", hideTabTip\)/);
-  assert.doesNotMatch(RENDER, /tab\.title = s\.name \+ " · " \+ beLabel/);   // v1 native title gone
+  assert.doesNotMatch(RENDER, /tab\.title = s\.name \+ " · " \+ beLabel/);
 });
 
-test("the tooltip shows the backend BOLD in its own colour (sdk=blue, tmux=green)", () => {
-  assert.match(RENDER, /el\("div", "tab-tip-be " \+ \(be === "sdk" \? "be-sdk" : "be-tmux"\)\)/);
+test("backend is bold in the session's OWN identity colour; name + fixed per-backend colours dropped (v2)", () => {
+  assert.match(RENDER, /if \(s\.color\?\.bg\) b\.style\.color = s\.color\.bg;/);
   assert.match(CSS, /\.tab-tip-be \{[\s\S]*?font-weight: 700/);
-  assert.match(CSS, /\.tab-tip-be\.be-sdk \{ color: var\(--check-bg\)/);     // romp blue
-  assert.match(CSS, /\.tab-tip-be\.be-tmux \{ color: var\(--green\)/);        // romp green
+  assert.doesNotMatch(RENDER, /tab-tip-name/);             // session name dropped
+  assert.doesNotMatch(CSS, /\.be-sdk|\.be-tmux/);          // fixed per-backend colours gone
 });
 
-test("the tooltip shows the full path + mode/model/effort/context, each on its own line", () => {
+test("v2 adds git branch, the context battery, and the ledger's latest line (recency 'Xm ago')", () => {
+  assert.match(RENDER, /rows\.push\(\["Branch", sys\.gitBranch\]\)/);                 // git branch from the system event
+  assert.match(RENDER, /const bar = ctxBar\(\); setCtxBar\(bar, s\.status\.ctx/);     // the battery widget, not "X%"
+  assert.match(RENDER, /const lg = ledgers\.get\(s\.id\)/);                            // ledger latest line
+  assert.match(RENDER, /agehms\(now - cur\.t\)/);
+  assert.match(RENDER, /ago\.style\.color = ageColorReadable\(now - cur\.t\)/);        // recency-coloured
+  assert.match(CSS, /\.tab-tip-latest \{/);
+});
+
+test("the tooltip still shows the full path + mode/model/effort", () => {
   assert.match(RENDER, /el\("div", "tab-tip-path"\); d\.textContent = s\.cwd/);
   assert.match(RENDER, /rows\.push\(\["Mode", prettyMode\(s\.status\.mode\)\]\)/);
   assert.match(RENDER, /rows\.push\(\["Model", s\.status\.model\]\)/);
   assert.match(RENDER, /rows\.push\(\["Effort", s\.status\.effort\]\)/);
-  assert.match(RENDER, /rows\.push\(\["Context", s\.status\.ctx \+ "%"\]\)/);
-  assert.match(CSS, /\.tab-tip-row \{ display: flex/);
 });

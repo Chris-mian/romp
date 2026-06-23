@@ -1359,35 +1359,61 @@ function reorderTo(dragId: string, targetId: string, after: boolean) {
   renderTabs();
 }
 
-// Rich tab hover tooltip (the user 2026-06-23): a CUSTOM DOM tooltip — a native `title` can't colour or
-// bold its text. Shows the session name, the backend BOLD in its own colour (sdk=blue, tmux=green), the
-// full directory path, then mode / model / effort / context, each on its own line. One shared element,
-// repositioned under the hovered tab and clamped on-screen.
+// Rich tab hover tooltip (the user 2026-06-23): a CUSTOM DOM tooltip (a native `title` can't colour/bold).
+// Shows the backend BOLD in the session's own romp identity colour, the full directory path, the git
+// branch, mode / model / effort, the context battery, and the ledger's latest line (recency-coloured
+// "(Xm ago)"). One shared element, repositioned under the hovered tab and clamped on-screen.
 let tabTipEl: HTMLElement | null = null;
 function hideTabTip(): void { if (tabTipEl) tabTipEl.style.display = "none"; }
 function showTabTip(tab: HTMLElement, s: Session): void {
   if (!tabTipEl) { tabTipEl = el("div", "tab-tip"); document.body.appendChild(tabTipEl); }
   const tip = tabTipEl;
   tip.replaceChildren();
-  const nm = el("div", "tab-tip-name"); nm.textContent = s.name; tip.appendChild(nm);
+  const now = Date.now() / 1000;
+  // backend, BOLD, in the SESSION'S OWN romp identity colour (the user 2026-06-23 v2: identity colour, no name)
   const be = s.status.backend;
   if (be === "sdk" || be === "tmux") {
-    const b = el("div", "tab-tip-be " + (be === "sdk" ? "be-sdk" : "be-tmux"));
+    const b = el("div", "tab-tip-be");
     b.textContent = (be === "sdk" ? "SDK" : "tmux") + " backend";
+    if (s.color?.bg) b.style.color = s.color.bg;
     tip.appendChild(b);
   }
   if (s.cwd) { const d = el("div", "tab-tip-path"); d.textContent = s.cwd; tip.appendChild(d); }
+  // labelled rows: git branch (from the system-context event) + mode / model / effort
+  const sys = s.events.find((e) => e.kind === "system") as Extract<ChatEvent, { kind: "system" }> | undefined;
   const rows: Array<[string, string]> = [];
+  if (sys?.gitBranch) rows.push(["Branch", sys.gitBranch]);
   if (s.status.mode) rows.push(["Mode", prettyMode(s.status.mode)]);
   if (s.status.model) rows.push(["Model", s.status.model]);
   if (s.status.effort) rows.push(["Effort", s.status.effort]);
-  if (s.status.ctx) rows.push(["Context", s.status.ctx + "%"]);
   for (const [k, v] of rows) {
     const r = el("div", "tab-tip-row");
     const ke = el("span", "tab-tip-k"); ke.textContent = k;
     const ve = el("span", "tab-tip-v"); ve.textContent = v;
     r.appendChild(ke); r.appendChild(ve); tip.appendChild(r);
   }
+  // context BATTERY (the same widget as the bottom bar), not a text %
+  if (s.status.ctx) {
+    const cr = el("div", "tab-tip-row");
+    const ck = el("span", "tab-tip-k"); ck.textContent = "Context"; cr.appendChild(ck);
+    const bar = ctxBar(); setCtxBar(bar, s.status.ctx, s.status.state === "compacting");
+    cr.appendChild(bar); tip.appendChild(cr);
+  }
+  // the ledger's latest line, recency-coloured with "(Xm ago)"
+  const lg = ledgers.get(s.id);
+  const cur = lg && lg.current;
+  if (cur && cur.text) {
+    const lt = el("div", "tab-tip-latest"); lt.textContent = cur.text;
+    if (cur.t) {
+      const ago = el("span", "tab-tip-ago"); ago.textContent = " (" + agehms(now - cur.t) + " ago)";
+      ago.style.color = ageColorReadable(now - cur.t);
+      lt.appendChild(ago);
+    }
+    tip.appendChild(lt);
+  } else if (lg?.summary) {
+    const lt = el("div", "tab-tip-latest"); lt.textContent = lg.summary; tip.appendChild(lt);
+  }
+  if (!tip.childElementCount) { tip.style.display = "none"; return; }
   tip.style.display = "block";
   tip.style.left = "0px"; tip.style.top = "-9999px";          // measure off-screen, then clamp on-screen
   const r = tab.getBoundingClientRect();
