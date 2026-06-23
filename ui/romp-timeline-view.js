@@ -2030,6 +2030,7 @@ class TimelinePanel {
     vis.forEach((s, i) => {
       const y = laneY(i);
       turnsOf(s.id).forEach((t) => {
+        if (t.cont) return;                  // a post-sleep continuation piece of one segment: its prompt dot belongs to the FIRST piece, not here
         if (!inWin(startAt(t))) return;
         if (data.messages.some((mm) => mm.toId === s.id && !mm.pending && Math.abs(execAt(mm) - startAt(t)) <= 1)) return;
         const dx = x(startAt(t));

@@ -95,13 +95,27 @@ def _turn_romp_injected(turn):
     return bool(a and a.get("author") == "romp")
 
 
-def _clip_to_suspend(start, end):
-    """A work bar must not span a host sleep. If a recorded suspension begins strictly inside [start, end],
-    return the earliest such start as the clipped bar end (the last activity before the machine went down);
-    no suspension inside → end unchanged. Catches a segment whose own start/end straddle a sleep — a CLOSED
-    bar the open-turn clip can't reach (the lid closed mid-response; the user 2026-06-18)."""
-    inside = [s for (s, _e) in _downtime if start < s < end]
-    return min(inside) if inside else end
+def _awake_spans(start, end):
+    """Split a work span [start, end] into the sub-spans the host was AWAKE for, EXCISING every recorded
+    suspension that overlaps it. A segment that kept working after the lid reopened thus renders as one bar
+    PER awake stretch (the frozen gaps drop out), so work done AFTER waking is not erased.
+
+    This replaces the older clip-at-first-sleep: that truncated a segment straddling SEVERAL sleeps at its
+    first nap and dropped every later awake stretch, so hours of real post-wake work vanished from the lane
+    while the captioner kept captioning the still-open segment (the user 2026-06-22). No overlapping
+    suspension → [[start, end]] (the common case). A sleep covering the whole span still yields the leading
+    point so the segment never drops entirely. Pure over _downtime; unit-tested."""
+    if end <= start:
+        return [[start, end]]
+    naps = sorted((max(start, s), min(end, e)) for (s, e) in _downtime if s < end and e > start)
+    spans, cur = [], start
+    for s, e in naps:
+        if s > cur:
+            spans.append([cur, s])
+        cur = max(cur, e)
+    if cur < end:
+        spans.append([cur, end])
+    return spans or [[start, end]]
 
 
 def _record_suspend(iv):
@@ -3363,21 +3377,27 @@ def build_timeline(now, tmux=None):
                 trig = next((x for x in seg["atoms"] if x.get("uuid") == seg.get("trigger")), None)
                 author = (trig or {}).get("author")
                 src = "queued" if isinstance(author, dict) else "typed"
-                seg_end = _clip_to_suspend(seg["t"], seg["end"])   # a bar must not span a host sleep: end it
-                last_t = max(last_t or 0, seg_end)                 # at the suspension (last activity before sleep)
-                seg_ends[seg["t"]] = seg_end                       # a completion mark lands at its segment's END (after the work)
-                bars.append({
-                    # promptId = the prompt atom (the DOT), workId = the first work atom (the BAR) — so a
-                    # chat message-hover lights only the dot and a work-hover only the bar (dotLit/barLit
-                    # in the view). Restores the old romp-events split lost in the kernel rewrite.
-                    "id": seg["id"], "promptId": seg.get("trigger"), "workId": work_uuid,
-                    "start": seg["t"], "end": seg_end, "open": turn_open and si == len(segs) - 1 and seg_end == seg["end"],
-                    "prompt": _seg_prompt(seg), "summary": cap, "msgCaption": msg_cap, "reply": "",
-                    "src": src, "mids": _seg_mids(seg), "pending": False,
-                    "tid": sid, "uuid": seg.get("trigger"),
-                    "nudge": author == "romp",            # a romp INJECTION (auto-nudge / Nudge / retry) — the view
-                    #                                       draws ⚡ inside its prompt dot + a 'romp · nudge' tooltip
-                    "workUuid": work_uuid, "replyUuid": reply_uuid})
+                # A bar must not span a host sleep. EXCISE every suspension inside the segment → one bar per
+                # awake stretch, so work done AFTER the lid reopened isn't erased (the user 2026-06-22). The
+                # asleep gaps between pieces read as idle (and collapse under 'collapse gaps').
+                spans = _awake_spans(seg["t"], seg["end"])
+                last_t = max(last_t or 0, spans[-1][1])            # the true work END (last awake activity)
+                seg_ends[seg["t"]] = spans[-1][1]                  # a completion mark lands at its segment's END (after the work)
+                for sj, (bstart, bend) in enumerate(spans):
+                    bars.append({
+                        # promptId = the prompt atom (the DOT), workId = the first work atom (the BAR) — so a
+                        # chat message-hover lights only the dot and a work-hover only the bar (dotLit/barLit
+                        # in the view). Restores the old romp-events split lost in the kernel rewrite.
+                        "id": seg["id"], "promptId": seg.get("trigger"), "workId": work_uuid,
+                        "start": bstart, "end": bend,
+                        "open": turn_open and si == len(segs) - 1 and sj == len(spans) - 1 and bend == seg["end"],
+                        "cont": sj > 0,                   # a post-sleep continuation piece: NO new prompt dot (the one prompt was at the first piece)
+                        "prompt": _seg_prompt(seg), "summary": cap, "msgCaption": msg_cap, "reply": "",
+                        "src": src, "mids": _seg_mids(seg), "pending": False,
+                        "tid": sid, "uuid": seg.get("trigger"),
+                        "nudge": author == "romp",            # a romp INJECTION (auto-nudge / Nudge / retry) — the view
+                        #                                       draws ⚡ inside its prompt dot + a 'romp · nudge' tooltip
+                        "workUuid": work_uuid, "replyUuid": reply_uuid})
         turns[sid] = bars
         _derive_judging(sid, caps, goals, now - TL_HORIZON, semantic, seg_ends)
         compactions = [{"t": a["t"]} for turn in st_turns for a in turn["atoms"]

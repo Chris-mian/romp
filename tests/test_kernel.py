@@ -385,6 +385,37 @@ class ViewBuilder(unittest.TestCase):
         finally:
             km._downtime[:] = saved
 
+    def test_host_sleep_does_not_erase_work_done_after_waking(self):
+        # The bugz case (the user 2026-06-22): one autonomous segment did work, the host SLEPT mid-segment,
+        # then RESUMED working after the lid reopened. The old clip-at-first-sleep truncated the bar at the
+        # nap and dropped the post-wake stretch — the lane went blank for hours while the captioner kept
+        # captioning the still-open segment. Excision must keep BOTH stretches as separate bars.
+        with self.tpath.open("a") as f:
+            f.write(json.dumps(uline(NOW, "long autonomous task", "uLong", parent="a2", ps="typed")) + "\n")
+            f.write(json.dumps(aline(NOW + 10, "Working before sleep.", "aPre", "uLong",
+                                     tools=("Edit",), stop="tool_use")) + "\n")
+            f.write(json.dumps(trline(NOW + 15, "tu_aPre_0", "rPre", "aPre", content="done")) + "\n")
+            f.write(json.dumps(aline(NOW + 8000, "Working after waking.", "aPost", "rPre",
+                                     tools=("Edit",), stop="tool_use")) + "\n")
+            f.write(json.dumps(trline(NOW + 8005, "tu_aPost_0", "rPost", "aPost", content="done")) + "\n")
+            f.write(json.dumps(aline(NOW + 8020, "All finished.", "aDone", "rPost", stop="end_turn")) + "\n")
+        km._parse_cache.clear()
+        saved = list(km._downtime)
+        km._downtime[:] = [(NOW + 100, NOW + 7900)]      # a ~2h sleep AFTER the pre-sleep work, BEFORE the post-wake work
+        try:
+            bars = km.build_timeline(NOW + 8100)["turns"][SID]
+            post = [b for b in bars if b["start"] >= NOW]          # the long segment's pieces (start at/after its prompt)
+            self.assertEqual(len(post), 2, "the segment straddling a sleep renders as TWO bars, not one truncated one")
+            pre_bar, post_bar = sorted(post, key=lambda b: b["start"])
+            self.assertEqual(pre_bar["end"], NOW + 100, "the first piece ends at the sleep onset (last activity before sleep)")
+            self.assertEqual(post_bar["start"], NOW + 7900, "the second piece starts at wake — post-sleep work is NOT erased")
+            self.assertEqual(post_bar["end"], NOW + 8020, "the second piece runs to the segment's true end")
+            self.assertEqual(pre_bar["id"], post_bar["id"], "both pieces share the ONE segment id (same work period)")
+            self.assertFalse(pre_bar["cont"], "the leading piece carries the prompt dot (not a continuation)")
+            self.assertTrue(post_bar["cont"], "the post-sleep piece is a continuation → the view draws no second prompt dot")
+        finally:
+            km._downtime[:] = saved
+
     def test_ledger_tree_emits_full_tree_for_the_render_to_fold(self):
         # The ledger emits the FULL goal tree now — every node with its child ids + flags — and the RENDER
         # folds completed branches (the user 2026-06-16). So a done parent's child IS present (no kernel
@@ -2667,13 +2698,27 @@ class HostSuspend(unittest.TestCase):
         finally:
             km._downtime[:] = saved
 
-    def test_clip_to_suspend_clips_a_bar_that_straddles_a_sleep(self):
+    def test_awake_spans_excises_a_sleep_that_straddles_the_bar(self):
         saved = list(km._downtime)
         km._downtime[:] = [(1500.0, 9000.0)]             # a sleep from t=1500 to t=9000
         try:
-            self.assertEqual(km._clip_to_suspend(1000, 9999), 1500, "a bar straddling the sleep ends at onset")
-            self.assertEqual(km._clip_to_suspend(2000, 9999), 9999, "a bar starting after onset is unchanged")
-            self.assertEqual(km._clip_to_suspend(1000, 1400), 1400, "a bar ending before the sleep is unchanged")
+            # a sleep covering the rest of the bar → the leading awake stretch only (old clip-at-onset case)
+            self.assertEqual(km._awake_spans(1000, 9999), [[1000, 1500], [9000, 9999]],
+                             "a bar straddling the sleep keeps work BEFORE and AFTER it, the sleep excised")
+            self.assertEqual(km._awake_spans(2000, 9999), [[9000, 9999]], "a bar opened during the sleep starts at wake")
+            self.assertEqual(km._awake_spans(1000, 1400), [[1000, 1400]], "a bar ending before the sleep is one span")
+        finally:
+            km._downtime[:] = saved
+
+    def test_awake_spans_excises_every_sleep_keeping_post_wake_work(self):
+        # The bugz case (the user 2026-06-22): one long autonomous segment straddles SEVERAL sleeps. The old
+        # clip-at-first-sleep dropped every later awake stretch — hours of real work vanished from the lane
+        # while the captioner kept captioning the still-open segment. Excision keeps each awake stretch.
+        saved = list(km._downtime)
+        km._downtime[:] = [(200.0, 300.0), (500.0, 900.0)]   # two naps inside one [100, 1000] segment
+        try:
+            self.assertEqual(km._awake_spans(100, 1000), [[100, 200], [300, 500], [900, 1000]],
+                             "a segment across two sleeps → three awake bars, no post-wake work erased")
         finally:
             km._downtime[:] = saved
 
