@@ -122,6 +122,7 @@ body { display: flex; flex-direction: column; }
   background-repeat: no-repeat;
   background-position: center center;
   background-size: min(420px, 66%) auto;   /* a centered logo, not an edge-to-edge banner */
+  opacity: 0.7;   /* faded — it's a calm at-rest mark, not something to read (the user 2026-06-22) */
   user-select: none;
 }
 

@@ -17,6 +17,7 @@ test("the inbox-zero state shows the romp tri-color wordmark, centered (no otter
   assert.match(CSS, /\.feed-empty \{[^}]*background-image: url\(\.\.\/media\/romp-wordmark\.png\)/);
   assert.match(CSS, /\.feed-empty \{[^}]*background-position: center center/);
   assert.match(CSS, /\.feed-empty \{[^}]*background-size: min\(420px, 66%\) auto/);
+  assert.match(CSS, /\.feed-empty \{[^}]*opacity: 0\.7/, "the at-rest wordmark is faded to 70% (the user 2026-06-22)");
   assert.doesNotMatch(CSS, /romp-otter/, "the otter image is gone");
   assert.doesNotMatch(FEED, /feed-empty"\); e\.textContent = "/, "the empty state must not set emoji/text on the logo");
   assert.match(FEED, /el\("div", "feed-empty"\)/);
