@@ -414,14 +414,37 @@ def _session_order():
         return []
 
 
+_atomic_lock = threading.Lock()
+_atomic_seq = [0]
+
+
+def _atomic_write(path, text):
+    """Atomically publish `text` to `path` via a UNIQUELY-named temp + os.replace. The temp name is unique
+    per (pid, thread, call): two kernel THREADS writing the SAME state file — the pusher, producer, and WS
+    handlers all do — must not share a temp path. With the old pid-only name they did, so the loser renamed
+    a temp the winner had already moved and crashed the push with FileNotFoundError (the user 2026-06-23).
+    os.replace overwrites atomically + portably; the temp is removed if the write fails."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with _atomic_lock:
+        _atomic_seq[0] += 1
+        n = _atomic_seq[0]
+    tmp = path.with_name("%s.tmp.%d.%d.%d" % (path.name, os.getpid(), threading.get_ident(), n))
+    try:
+        tmp.write_text(text)
+        os.replace(tmp, path)                            # atomic publish (overwrites; cross-platform)
+    except Exception:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+
+
 def _write_session_order(order):
     if not isinstance(order, list):
         return
-    p = jd.STATE / "session-order.json"
-    p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_name("session-order.json.tmp.%d" % os.getpid())
-    tmp.write_text(json.dumps([x for x in order if isinstance(x, str)]))
-    tmp.rename(p)                                     # atomic publish
+    _atomic_write(jd.STATE / "session-order.json", json.dumps([x for x in order if isinstance(x, str)]))
 
 
 def _ordered_alive(now, tmux):
@@ -455,11 +478,7 @@ def _hidden_tabs():
 def _set_hidden_tab(sid, hidden):
     cur = _hidden_tabs()
     cur.add(sid) if hidden else cur.discard(sid)
-    p = jd.STATE / "hidden-tabs.json"
-    p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_name("hidden-tabs.json.tmp.%d" % os.getpid())
-    tmp.write_text(json.dumps(sorted(cur)))
-    tmp.rename(p)
+    _atomic_write(jd.STATE / "hidden-tabs.json", json.dumps(sorted(cur)))
 
 
 # ── per-session view flags (the user 2026-06-19) ──────────────────────────────────────────────────
@@ -505,11 +524,7 @@ def _set_session_flag(sid, flag, value):
         cur[sid] = f
     else:
         cur.pop(sid, None)
-    p = jd.STATE / "session-flags.json"
-    p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_name("session-flags.json.tmp.%d" % os.getpid())
-    tmp.write_text(json.dumps(cur, sort_keys=True))
-    tmp.rename(p)
+    _atomic_write(jd.STATE / "session-flags.json", json.dumps(cur, sort_keys=True))
 
 
 # ── Auto Nudge (the user 2026-06-19) ──────────────────────────────────────────────────────────────
@@ -552,11 +567,7 @@ def _auto_nudge_on():
 
 
 def _write_auto_nudge(d):
-    p = jd.STATE / "auto-nudge.json"
-    p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_name("auto-nudge.json.tmp.%d" % os.getpid())
-    tmp.write_text(json.dumps(d))
-    tmp.rename(p)
+    _atomic_write(jd.STATE / "auto-nudge.json", json.dumps(d))
 
 
 def _set_auto_nudge(enabled):
@@ -997,10 +1008,7 @@ def _set_name(sid, name):
         return
     parts += [""] * (4 - len(parts))
     parts[0] = name
-    p = NAMES / sid
-    tmp = p.with_name(sid + ".tmp.%d" % os.getpid())
-    tmp.write_text("\t".join(parts[:4]) + "\n")
-    tmp.rename(p)                                      # atomic publish
+    _atomic_write(NAMES / sid, "\t".join(parts[:4]) + "\n")   # atomic publish
 
 
 def _rename_session(sid, name):
