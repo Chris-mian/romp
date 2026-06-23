@@ -69,3 +69,9 @@ test("the eye toggle is OPTIMISTIC + STICKY: held across pushes until the kernel
   assert.match(SRC, /this\.data = data;\s*\n\s*this\._reconcilePendingFlags\(\);/);
   assert.match(SRC, /_reconcilePendingFlags\(\) \{[\s\S]*?if \(s\[flag\] === p\[flag\]\) delete p\[flag\];[\s\S]*?else s\[flag\] = p\[flag\];/);
 });
+
+test("every timeline dot's white border is thin (0.75px) — romp + user dots alike (the user 2026-06-23)", () => {
+  // the shared dot() helper strokes #e8eef5 at 0.75 (was 1.5) for EVERY dot — prompt dots, the romp swirl dot, etc.
+  assert.match(SRC, /el\('circle', \{ cx, cy, r: DOT_R, fill: color, stroke: '#e8eef5', 'stroke-width': 0\.75 \}\)/);
+  assert.doesNotMatch(SRC, /stroke: '#e8eef5', 'stroke-width': 1\.5/, "the old 1.5px dot border is gone");
+});

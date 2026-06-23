@@ -2027,7 +2027,7 @@ class TimelinePanel {
 
     // dot helper: optional onClick (deep-link) + optional linkedHl (co-light a connector on hover).
     const dot = (cx, cy, color, html, onClick, linkedHl) => {
-      const c = el('circle', { cx, cy, r: DOT_R, fill: color, stroke: '#e8eef5', 'stroke-width': 1.5 }); c.style.cursor = onClick ? 'pointer' : 'default';
+      const c = el('circle', { cx, cy, r: DOT_R, fill: color, stroke: '#e8eef5', 'stroke-width': 0.75 }); c.style.cursor = onClick ? 'pointer' : 'default';   // thinner white border on EVERY dot — romp + user (the user 2026-06-23)
       c.addEventListener('mouseenter', (e) => { c.setAttribute('r', DOT_R + 2); if (linkedHl) linkedHl.setAttribute('opacity', '0.95'); this.showTip(html(), e); });
       c.addEventListener('mousemove', (e) => this.moveTip(e));
       c.addEventListener('mouseleave', () => { c.setAttribute('r', DOT_R); if (linkedHl) linkedHl.setAttribute('opacity', '0'); this.hideTip(); });
