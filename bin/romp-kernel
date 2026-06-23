@@ -281,6 +281,16 @@ def _cwd_of(sid):
         return ""
 
 
+def _session_backend(sid, tm):
+    """Per-session backend label ('sdk' | 'tmux') for the UI (tab tooltip / timeline lane): the live
+    metadata's field if present, else SDK-registry ownership (so a DEAD lane still reports which kind it
+    was). A non-SDK session is tmux by construction. (the user 2026-06-22, via the ui peer)"""
+    if tm and tm.get("backend"):
+        return tm["backend"]
+    be = _sdk()
+    return "sdk" if (be and be.owns(sid)) else "tmux"
+
+
 def _followup_body(iid, title, text, injected=False):
     """Pane message for a feed follow-up: QUOTE the ask being followed up ('> <ask>') above the user's
     text, so the recipient session knows what the reply answers. An explicit `title` (the group modal) is
@@ -1048,7 +1058,7 @@ def _tmux_sessions_raw():
             continue
         out[p[1]] = {"state": p[2].strip(), "since": _num(p[3]), "model": p[4].strip(),
                      "effort": p[5].strip(), "context": _num(p[6]), "compactPct": _num(p[7]),
-                     "color": p[8].strip() if p[8].startswith("#") else None,
+                     "color": p[8].strip() if p[8].startswith("#") else None, "backend": "tmux",
                      "mode": p[9].strip() if len(p) > 9 else ""}   # @claude-permission-mode (shift+tab cycle)
     return out
 
@@ -1067,7 +1077,7 @@ def _tmux_sessions():
                 out[sid] = {"state": st.get("state", ""), "since": _num(str(st.get("since") or "")),
                             "model": st.get("model", ""), "effort": st.get("effort", ""),
                             "context": None, "compactPct": None,
-                            "color": (st.get("color") or None), "mode": st.get("mode", "")}
+                            "color": (st.get("color") or None), "mode": st.get("mode", ""), "backend": "sdk"}
         except Exception:
             sys.stderr.write("sdk live_sessions merge: %s\n" % traceback.format_exc())
     return out
@@ -2419,6 +2429,7 @@ def build_session(sid, now, tmux=None):
                 else "working" if open_now else "ready")
         faded = chip == "ready" and bool(tm["since"]) and now - tm["since"] > 3600
         status = {"state": chip, "sinceEpoch": since_ms, "faded": faded,
+                  "backend": _session_backend(sid, tm),
                   "model": tm["model"], "effort": tm["effort"], "mode": tm.get("mode", ""),
                   "ctx": str(tm["context"]) if tm["context"] is not None else ""}
     elif tmux or _has_tmux():                          # tmux usable but this session isn't running → closed
@@ -3630,6 +3641,7 @@ def _run_judging(t0, alive_sids, semantic):
         lines = (jd.STATE / "judge-usage.jsonl").read_text(errors="replace").splitlines()
     except OSError:
         return out
+    done = set()                                      # (sid, judge, sent) of completed runs — to dedup live ones
     for ln in lines:
         try:
             o = json.loads(ln)
@@ -3643,6 +3655,8 @@ def _run_judging(t0, alive_sids, semantic):
         end = recv if isinstance(recv, (int, float)) else start
         if not isinstance(start, (int, float)) or not isinstance(end, (int, float)) or end < t0:
             continue
+        if isinstance(sent, (int, float)):
+            done.add((sid, judge, sent))
         # gloss = the most recent same-judge artifact mark that finished by this call's run time
         cands = [m for m in by.get((sid, judge), []) if m["t"] <= end + 1]
         src = cands[-1] if cands else None
@@ -3650,6 +3664,22 @@ def _run_judging(t0, alive_sids, semantic):
                     "kind": (src or {}).get("kind", "run"), "text": (src or {}).get("text", ""),
                     "ms": int(o.get("ms") or 0), "in": int(o.get("in") or 0), "out": int(o.get("out") or 0),
                     "sent": sent, "recv": recv})
+    # LIVE in-flight runs: a call still running has no usage line yet (that's written on completion), so its
+    # bar would only appear — back-dated — once it ends. Draw it NOW as a span growing to the live edge
+    # (open:True → the view extends it to nowS) so a judge bar appears WHEN it starts (the user 2026-06-23).
+    # Dedup by (sid, judge, sent) against `done` so the brief log-then-deregister window can't double-draw.
+    now = time.time()
+    for run in jd.active_runs():
+        sid, judge, sent = run.get("fsid"), run.get("judge"), run.get("sent")
+        if sid not in alive_sids or not isinstance(sent, (int, float)):
+            continue
+        if sent < t0 or (sid, judge, sent) in done:
+            continue
+        cands = [m for m in by.get((sid, judge), []) if m["t"] <= now + 1]
+        src = cands[-1] if cands else None
+        out.append({"judge": judge, "sid": sid, "t": sent, "t1": now,
+                    "kind": (src or {}).get("kind", "run"), "text": (src or {}).get("text", ""),
+                    "ms": 0, "in": 0, "out": 0, "sent": sent, "recv": None, "open": True})
     return out
 
 
@@ -3753,6 +3783,7 @@ def build_timeline(now, tmux=None):
             "since": (tm["since"] if tm and tm["since"] else last_t),
             "color": hexcol,
             "model": (tm["model"] if tm else ""), "effort": (tm["effort"] if tm else ""),
+            "backend": _session_backend(sid, tm),
             "context": (tm["context"] if tm else None),
             "compactPct": (tm["compactPct"] if tm else None),
             "awaiting": _state_intervals(sid, "permission", now),
@@ -5167,6 +5198,7 @@ class Handler(BaseHTTPRequestHandler):
                     _reveal_chat({"type": "focus", "id": live[nm]})
                 elif msg.get("backend") == "sdk" and _sdk():   # non-tmux: drive via the Agent SDK
                     sid = _sdk().spawn(nm, cwd)
+                    _sdk().connect(sid)        # eager-connect so the model lists immediately, not only after the 1st message
                     _set_hidden_tab(sid, False); _push_all()
                     _reveal_chat({"type": "focus", "id": sid})
                 else:

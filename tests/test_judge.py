@@ -3076,5 +3076,64 @@ class BlockBriefJudgeLabel(unittest.TestCase):
         self.assertEqual(seen["judge"], "distiller", "the brief rides the distiller row, so its run logs as the distiller")
 
 
+class OrphanRollup(unittest.TestCase):
+    """When a TOP rolls up completed/cleared, its still-open sub-steps roll to the SAME state (+ a rolledUp
+    marker) so they stop sitting 'working' forever under a resolved parent (the user 2026-06-23). A reopen
+    un-rolls exactly those auto-rolled steps, never a genuinely-DONE leaf — so no instant re-completion."""
+
+    def setUp(self):
+        self._saved_state = jd.STATE
+        self._td = tempfile.mkdtemp()
+        jd.STATE = Path(self._td)                        # hermetic: _reopen's _view_cleared reads STATE
+
+    def tearDown(self):
+        jd.STATE = self._saved_state
+        shutil.rmtree(self._td, ignore_errors=True)
+
+    def test_completed_top_rolls_its_open_children_done(self):
+        s = _store()
+        top = _mknode(s, "done top", complete=True)
+        child = _mknode(s, "trailing step", parent=top["id"])     # left open under the done top
+        jd.rollup_status(s, True)                                 # session closed → settled → top completes
+        self.assertEqual(s["status"][top["id"]], "completed")
+        self.assertTrue(s["nodes"][child["id"]]["nodeComplete"], "the orphaned open step rolled to done")
+        self.assertTrue(s["nodes"][child["id"]]["rolledUp"], "and is marked rolledUp for a clean reopen")
+
+    def test_cleared_top_rolls_its_whole_open_subtree_cleared(self):
+        s = _store()
+        top = _mknode(s, "dismissed top"); top["cleared"] = True
+        mid = _mknode(s, "open mid", parent=top["id"])
+        leaf = _mknode(s, "open leaf", parent=mid["id"])
+        jd.rollup_status(s, False)
+        self.assertEqual(s["status"][top["id"]], "cleared")
+        self.assertTrue(s["nodes"][mid["id"]]["cleared"] and s["nodes"][mid["id"]]["rolledUp"])
+        self.assertTrue(s["nodes"][leaf["id"]]["cleared"] and s["nodes"][leaf["id"]]["rolledUp"],
+                        "rolls down the WHOLE subtree, not just direct children")
+
+    def test_working_top_leaves_its_children_alone(self):
+        s = _store()
+        top = _mknode(s, "in-progress top")                      # not complete → working
+        child = _mknode(s, "open step", parent=top["id"])
+        jd.rollup_status(s, True)
+        self.assertEqual(s["status"][top["id"]], "working")
+        self.assertFalse(s["nodes"][child["id"]]["nodeComplete"], "a working top doesn't resolve its steps")
+        self.assertNotIn("rolledUp", s["nodes"][child["id"]])
+
+    def test_reopen_unrolls_auto_rolled_steps_but_keeps_a_genuine_done_leaf(self):
+        s = _store()
+        top = _mknode(s, "done top", complete=True)
+        genuine = _mknode(s, "genuinely finished step", parent=top["id"], complete=True)  # real DONE, no rolledUp
+        trailing = _mknode(s, "trailing open step", parent=top["id"])                     # open → will roll up
+        jd.rollup_status(s, True)
+        self.assertTrue(s["nodes"][trailing["id"]].get("rolledUp"), "the open step auto-rolled")
+        self.assertNotIn("rolledUp", s["nodes"][genuine["id"]], "the genuine DONE leaf was never touched")
+        jd._reopen(s, top["id"])                                  # follow-up reopens the goal
+        self.assertFalse(s["nodes"][trailing["id"]]["nodeComplete"], "the auto-rolled step re-opens with the goal")
+        self.assertNotIn("rolledUp", s["nodes"][trailing["id"]])
+        self.assertTrue(s["nodes"][genuine["id"]]["nodeComplete"], "the genuinely-DONE leaf stays done")
+        jd.rollup_status(s, False)
+        self.assertEqual(s["status"][top["id"]], "working", "no instant re-completion: the reopened top is working")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

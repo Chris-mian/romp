@@ -2092,8 +2092,8 @@ class TimelinePanel {
         const evs = data.judging.filter((e) => e.judge === J.key && inWin(e.t)).sort((a, b) => a.t - b.t);
         const blocks = [];
         for (const e of evs) { const es = e.t, ee = (e.t1 != null ? e.t1 : e.t); const last = blocks[blocks.length - 1];
-          if (last && last.sid === e.sid && es - last.end <= JMERGE_GAP) { last.end = Math.max(last.end, ee); last.members.push(e); }
-          else blocks.push({ sid: e.sid, start: es, end: ee, members: [e] }); }
+          if (last && last.sid === e.sid && es - last.end <= JMERGE_GAP) { last.end = Math.max(last.end, ee); last.open = last.open || !!e.open; last.members.push(e); }
+          else blocks.push({ sid: e.sid, start: es, end: ee, open: !!e.open, members: [e] }); }
         // Stack time-OVERLAPPING blocks into sub-lanes within this judge's row, so concurrent judging of
         // DIFFERENT sessions on the same judge each stays visible and independently hoverable instead of
         // drawing on top of each other (the user 2026-06-23). Same-session concurrent calls already merged
@@ -2101,7 +2101,9 @@ class TimelinePanel {
         // (blocks are start-sorted): each block takes the first sub-lane whose previous bar already ended.
         const laneEnds = [];                                  // right-edge px of the last bar placed in each sub-lane
         for (const b of blocks) {
-          let bx1 = x(b.start), bx2 = x(b.end);
+          // an OPEN run (still in flight) has no recv yet — grow its bar to the live edge so it appears WHEN
+          // it starts and advances with the axis, instead of popping in (back-dated) only once it ends.
+          let bx1 = x(b.start), bx2 = x(b.open ? Math.max(b.end, nowS) : b.end);
           if (bx2 - bx1 < JMARK_MINW) { const c = (bx1 + bx2) / 2; bx1 = c - JMARK_MINW / 2; bx2 = c + JMARK_MINW / 2; }
           b._x1 = bx1; b._x2 = bx2;
           let lane = laneEnds.findIndex((endX) => bx1 >= endX);
@@ -2114,7 +2116,7 @@ class TimelinePanel {
         for (const b of blocks) {
           const x1 = b._x1, x2 = b._x2;
           const by = slotTop + laneH * (b._lane + 0.5);       // vertical centre of this block's sub-lane
-          const col = colorOf(b.sid), active = (nowS - b.end) >= 0 && (nowS - b.end) < 8;
+          const col = colorOf(b.sid), active = b.open || ((nowS - b.end) >= 0 && (nowS - b.end) < 8);
           // fill = the SESSION being judged; outline = THIS judge's own colour
           // SOLID session colour, NO border (the user 2026-06-18): the judge's own colour already lives on
           // the row's horizontal rail, so a per-bar outline just repeated it. "Running now" reads as a fully
@@ -2123,7 +2125,7 @@ class TimelinePanel {
             fill: col, 'fill-opacity': active ? 1 : 0.82, 'data-judge': J.key });
           svg.appendChild(r);
           const html = () => {
-            const span = b.start === b.end ? clock(b.start) : clock(b.start) + '–' + clock(b.end);
+            const span = b.open ? clock(b.start) + '– running…' : (b.start === b.end ? clock(b.start) : clock(b.start) + '–' + clock(b.end));
             // elapsed (total judge compute) + tokens for this stretch, summed from each mark's matched run
             const ms = b.members.reduce((a, m) => a + (m.ms || 0), 0);
             const tin = b.members.reduce((a, m) => a + (m['in'] || 0), 0), tout = b.members.reduce((a, m) => a + (m['out'] || 0), 0);

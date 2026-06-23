@@ -28,6 +28,7 @@ class RunJudging(unittest.TestCase):
 
     def tearDown(self):
         jd.STATE = self.saved
+        jd._active.clear()                               # the in-flight registry is module-level — reset it
         self.td.cleanup()
 
     def _usage(self, rows):
@@ -74,6 +75,41 @@ class RunJudging(unittest.TestCase):
         marks = km._run_judging(0, {SID}, [])
         self.assertEqual(len(marks), 1)
         self.assertEqual((marks[0]["t"], marks[0]["t1"]), (100, 100), "no span → a point at t")
+
+    def test_an_in_flight_run_shows_as_an_open_span_growing_to_now(self):
+        # a judge call STILL running has no usage line yet — it must surface NOW as an open span (open:True,
+        # recv:None, t1≈now) so the bar appears WHEN it starts, not back-dated once it ends (the user 2026-06-23)
+        self._usage([])
+        rid = jd._active_begin("grouper", SID, 500)
+        try:
+            marks = km._run_judging(0, {SID}, [])
+        finally:
+            jd._active_end(rid)
+        self.assertEqual(len(marks), 1, "the in-flight run is drawn live")
+        m = marks[0]
+        self.assertEqual((m["judge"], m["t"], m["open"], m["recv"]), ("grouper", 500, True, None))
+        self.assertGreaterEqual(m["t1"], 500, "the open span grows to now (t1 >= sent)")
+
+    def test_a_completed_run_is_not_also_double_drawn_as_open(self):
+        # the brief log-then-deregister window: the SAME run is both in the usage log AND still registered.
+        # Dedup by (sid, judge, sent) → it draws ONCE (the completed span), never two overlapping bars.
+        self._usage([{"judge": "closer", "fsid": SID, "t": 610, "sent": 600, "recv": 610}])
+        rid = jd._active_begin("closer", SID, 600)       # same (sid, judge, sent) as the completed line
+        try:
+            marks = km._run_judging(0, {SID}, [])
+        finally:
+            jd._active_end(rid)
+        self.assertEqual(len(marks), 1, "deduped — the completed span only, not a second open one")
+        self.assertEqual((marks[0]["t"], marks[0]["recv"]), (600, 610), "the completed span wins")
+
+    def test_an_in_flight_run_for_a_dead_session_is_dropped(self):
+        self._usage([])
+        rid = jd._active_begin("planner", "deadbeef", 500)
+        try:
+            marks = km._run_judging(0, {SID}, [])
+        finally:
+            jd._active_end(rid)
+        self.assertEqual(marks, [], "an in-flight run on a non-alive session is not drawn")
 
 
 if __name__ == "__main__":

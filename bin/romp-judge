@@ -194,6 +194,35 @@ def _log_judge_error(tier, fsid, err):
 
 _judge_ctx = threading.local()                       # per-thread: the fsid being judged (set by the session fns)
 
+# In-flight judge calls, so the live timeline can draw a run-span GROWING to now the moment a call STARTS,
+# instead of the bar only appearing (back-dated to its real start) once the call returns and its usage line
+# is written (the user 2026-06-23). In-process registry: the kernel runs the judge in its own threads
+# (SourceFileLoader), so it reads `active_runs()` directly — no file, no cross-process race. Self-cleaning:
+# every call deregisters in a `finally`, so a timeout/parse-fail/exception can't leak a forever-growing bar.
+_active = {}                                          # run_id -> {"judge", "fsid", "sent"}
+_active_lock = threading.Lock()
+_active_seq = [0]
+
+
+def _active_begin(judge, fsid, sent):
+    """Mark a judge call as running; returns a run id to pass to _active_end on completion."""
+    with _active_lock:
+        _active_seq[0] += 1
+        rid = _active_seq[0]
+        _active[rid] = {"judge": judge, "fsid": fsid, "sent": sent}
+        return rid
+
+
+def _active_end(rid):
+    with _active_lock:
+        _active.pop(rid, None)
+
+
+def active_runs():
+    """Snapshot of the judge calls in flight RIGHT NOW (the kernel's _run_judging reads this for live bars)."""
+    with _active_lock:
+        return [dict(v) for v in _active.values()]
+
 
 def _log_judge_usage(judge, tier, model, fsid, wrap, sent=None, recv=None):
     """Append ONE per-call usage line to USAGE for the kernel/UI cost rollup (judge_ui 2026-06-17).
@@ -244,23 +273,28 @@ def _judge_run(model, sys_prompt, user, effort=None, judge=None):
     unparseable/missing wrapper falls back to returning raw stdout (today's plain-text path), never raising."""
     tier = "index" if model == INDEX_MODEL else "triage"
     env = _judge_env(tier)
+    fsid = getattr(_judge_ctx, "fsid", None)
     sent = time.time()                                # literal wall-clock: the prompt goes to the API now
+    rid = _active_begin(judge or tier, fsid, sent)    # live bar starts NOW (deregistered in finally below)
     try:
-        p = subprocess.run(_judge_cmd(model, sys_prompt, effort), input=user,
-                           capture_output=True, text=True, cwd="/tmp", env=env, timeout=50)
-    except Exception:
-        _log_judge_error(tier, None, "call")
-        return ""
-    recv = time.time()                                # literal wall-clock: the response is back
-    out = p.stdout or ""
-    try:
-        wrap = json.loads(out)
-        if isinstance(wrap, dict) and isinstance(wrap.get("result"), str):
-            _log_judge_usage(judge or tier, tier, model, getattr(_judge_ctx, "fsid", None), wrap, sent, recv)
-            return wrap["result"]
-    except Exception:
-        pass
-    return out                                        # wrapper absent/unparseable → raw stdout (defensive)
+        try:
+            p = subprocess.run(_judge_cmd(model, sys_prompt, effort), input=user,
+                               capture_output=True, text=True, cwd="/tmp", env=env, timeout=50)
+        except Exception:
+            _log_judge_error(tier, None, "call")
+            return ""
+        recv = time.time()                            # literal wall-clock: the response is back
+        out = p.stdout or ""
+        try:
+            wrap = json.loads(out)
+            if isinstance(wrap, dict) and isinstance(wrap.get("result"), str):
+                _log_judge_usage(judge or tier, tier, model, fsid, wrap, sent, recv)
+                return wrap["result"]
+        except Exception:
+            pass
+        return out                                    # wrapper absent/unparseable → raw stdout (defensive)
+    finally:
+        _active_end(rid)                              # call done (success/timeout/parse-fail) → drop the live bar
 
 
 def _json_obj(raw):
@@ -1071,6 +1105,26 @@ def rollup_status(store, session_closed):
             status[nid] = "completed"
         else:
             status[nid] = "working"
+
+    # Heal ORPHANED open descendants: when a TOP rolls up to completed/cleared, its sub-steps are discharged
+    # (done) or dismissed (cleared) WITH it — the planner's top-done verdict discharges the whole ask even with
+    # trailing open steps (same reasoning as the any_blocked moot-block heal above), and a cleared card takes
+    # its subtree with it. Without this they sit "working" FOREVER under a resolved parent, cluttering the
+    # board as phantom open work (the user 2026-06-23). Stamp the node booleans (so the UI renders them
+    # resolved with no extra plumbing) plus a `rolledUp` marker so _reopen can cleanly un-resolve exactly these
+    # auto-rolled steps (not a genuinely-DONE leaf) if the goal is reopened. Only RESOLVED tops propagate.
+    def _roll_down(nid, field):
+        for c in children.get(nid, []):
+            nd = nodes[c]
+            if not nd.get("cleared") and not nd.get("nodeComplete"):
+                nd[field] = True
+                nd["rolledUp"] = True
+            _roll_down(c, field)
+    for nid in children.get(None, []):
+        if status[nid] == "cleared":
+            _roll_down(nid, "cleared")
+        elif status[nid] == "completed":
+            _roll_down(nid, "nodeComplete")
     store["status"] = status
 
 
@@ -1392,6 +1446,21 @@ def _reopen(store, gid):
         nodes[x]["blocked"] = False
         nodes[x].pop("settledDone", None)              # genuine reopen clears the sticky-completed marker → back to working
         x = nodes.get(x, {}).get("parentId")
+    # Un-resolve the steps rollup_status auto-rolled under this goal (rolledUp) — else they'd stay
+    # complete/cleared and bottom-up is_complete would immediately RE-complete the reopened top. Only the
+    # auto-rolled ones: a genuinely-DONE leaf (no rolledUp marker) keeps its state across the reopen.
+    kids = {}
+    for k, v in nodes.items():
+        kids.setdefault(v.get("parentId"), []).append(k)
+    stack = list(kids.get(gid, []))
+    while stack:
+        c = stack.pop()
+        nd = nodes.get(c)
+        if nd and nd.pop("rolledUp", None):
+            nd["nodeComplete"] = False
+            nd["cleared"] = False
+            nd["blocked"] = False
+        stack.extend(kids.get(c, []))
 
 
 def optimistic_followup(fsid, gid):
