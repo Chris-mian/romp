@@ -771,11 +771,29 @@ def _claude_bin():
     return shutil.which("claude") or os.path.expanduser("~/.local/bin/claude")
 
 
+def _ensure_sdk_on_path():
+    """Make claude_agent_sdk importable by the kernel's interpreter. Prefer an already-installed
+    copy; otherwise add the dedicated venv's site-packages (built by bin/romp-sdk-setup with the
+    SAME python, so the ABI matches) — the SDK dependency lives under ~/.local/state/romp/sdkvenv and
+    never touches system python. Returns True when importable."""
+    import importlib.util
+    import glob
+    if importlib.util.find_spec("claude_agent_sdk"):
+        return True
+    for sp in sorted(glob.glob(str(jd.STATE / "sdkvenv" / "lib" / "python3.*" / "site-packages"))):
+        if sp not in sys.path:
+            sys.path.insert(0, sp)
+    return importlib.util.find_spec("claude_agent_sdk") is not None
+
+
 def _sdk():
     """The SdkBackend singleton, or None when the module/dependency is unavailable."""
     global _sdk_backend
     if _sdk_backend is None:
         try:
+            if not _ensure_sdk_on_path():
+                sys.stderr.write("sdk-backend: claude_agent_sdk not found — run bin/romp-sdk-setup to "
+                                 "enable the non-tmux backend (tmux sessions are unaffected)\n")
             sbmod = SourceFileLoader("romp_sdk_backend", str(HERE / "romp_sdk_backend.py")).load_module()
             _sdk_backend = sbmod.SdkBackend(
                 jd.STATE, _claude_bin(), _send_to_app,

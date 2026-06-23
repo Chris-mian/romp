@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# romp-sdk-setup — provision the Claude Agent SDK for romp's non-tmux backend.
+#
+# The kernel runs on the system python3; rather than install the SDK there (PEP 668 /
+# externally-managed envs), we keep it in a DEDICATED venv under romp's state dir and the
+# kernel adds that venv's site-packages to sys.path (see _ensure_sdk_on_path in bin/romp-kernel).
+# The venv is built with the SAME python3 the kernel uses, so the ABI matches. Idempotent;
+# the tmux backend is unaffected whether or not this is run. Re-run to upgrade the SDK.
+set -euo pipefail
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/romp"
+VENV="$STATE/sdkvenv"
+PY="$(command -v python3)"
+mkdir -p "$STATE"
+if [ ! -x "$VENV/bin/python" ]; then
+  echo "romp-sdk-setup: creating venv at $VENV (python: $PY)"
+  "$PY" -m venv "$VENV"
+fi
+"$VENV/bin/pip" install -q --upgrade pip >/dev/null
+"$VENV/bin/pip" install -q --upgrade claude-agent-sdk
+"$VENV/bin/python" - <<'PY'
+import claude_agent_sdk as m, sys
+print("romp-sdk-setup: claude-agent-sdk %s ready (python %s)" % (m.__version__, ".".join(map(str, sys.version_info[:3]))))
+PY
+echo "romp-sdk-setup: done — the kernel will pick this up automatically (no restart-side config)."
