@@ -696,6 +696,8 @@ def _auto_nudge_tick(now, tmux):
     fired = False
     for s in alive:
         sid = s["sid"]
+        if _session_flag(sid, "hideFromFeed"):           # muted from the feed → no auto-nudges either; a nudge IS a
+            continue                                     # feed feature, so opting out of the feed opts out of nudges (the user)
         st = (tmux.get(sid) or {}).get("state", "")
         if st in ("permission", "compacting"):           # awaiting approval / compacting → not orphaned
             continue

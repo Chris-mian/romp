@@ -970,6 +970,22 @@ class ViewBuilder(unittest.TestCase):
         finally:
             restore(); km._wait_for_graph = saved
 
+    def test_auto_nudge_skips_a_session_muted_from_the_feed(self):
+        # the user: hideFromFeed (the lane feed checkbox OFF) means "I don't want this agent's feed features" —
+        # and a nudge IS a feed feature, so a feed-muted session must not be auto-nudged.
+        self._orphaned_goal(idle=True)
+        km._set_auto_nudge(True)
+        sent, restore = self._stub_nudge()
+        try:
+            km._set_session_flag(SID, "hideFromFeed", True); km._flags_cache.clear()
+            km._auto_nudge_tick(NOW, km._tmux_sessions())
+            self.assertEqual(sent, [], "a session muted from the feed is not auto-nudged")
+            km._set_session_flag(SID, "hideFromFeed", False); km._flags_cache.clear()   # back in the feed → genuine stall nudges
+            km._auto_nudge_tick(NOW, km._tmux_sessions())
+            self.assertEqual(len(sent), 1, "un-muting restores nudges → it was nudgeable, the flag is what suppressed it")
+        finally:
+            restore()
+
     def test_auto_nudge_skips_a_session_awaiting_dispatched_work(self):
         # the user 2026-06-22: a session paused on work it dispatched/delegated is in flight, not stalled →
         # don't nudge. The gate reads _session_awaiting (the SDK states overlay / transcript bg-tool stopgap).
