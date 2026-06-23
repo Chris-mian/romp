@@ -48,13 +48,15 @@ test("landOn top-aligns the target (block:'start'), never centers", () => {
   assert.doesNotMatch(body, /block: "center"/, "must not center the landing");
 });
 
-// Ask preview — the live picker card reproduces the focused option's side-by-side
-// TUI box (the user 2026-06-13). Rendered as a monospace <pre> via textContent
-// (NEVER innerHTML: the pane text is untrusted terminal output).
-test("the live ask card renders ask.preview as a monospace pre via textContent", () => {
-  assert.match(RENDER, /if \(ask\?\.preview\) appendPreview\(host, ask\.preview\)/);
-  const fn = RENDER.slice(RENDER.indexOf("function appendPreview("));
+// Ask preview — the live picker card reproduces the FOCUSED option's side-by-side TUI box (the user
+// 2026-06-13), now FOCUS-AWARE so ↑/↓ swaps it (the user 2026-06-22): the focused option's OWN preview
+// (SDK per-option) or ParsedAsk.preview (the single tmux scrape). Rendered as a monospace <pre> via
+// textContent (NEVER innerHTML: the pane text is untrusted terminal output), and REPLACED not appended.
+test("the live ask card renders the focused option's preview as a monospace pre via textContent", () => {
+  assert.match(RENDER, /renderAskPreview\(\);/);
+  const fn = RENDER.slice(RENDER.indexOf("function renderAskPreview("));
   const body = fn.slice(0, fn.indexOf("\n}\n"));
+  assert.match(body, /preview = \(o && o\.preview\) \|\| ask\.preview/, "focused option's own preview, else the scraped one");
   assert.match(body, /el\("pre", "ask-preview"\)/);
   assert.match(body, /pre\.textContent = preview/);
   assert.doesNotMatch(body, /innerHTML/, "untrusted pane text must never go through innerHTML");

@@ -8,6 +8,9 @@ export interface AskOption {
   desc?: string;
   selected: boolean;    // the ❯ cursor is currently on this row
   checked?: boolean;    // multi-select checkbox state ([✔]/[ ]); undefined for non-checkbox rows
+  preview?: string;     // THIS option's own preview box (SDK backend carries one per option, so the webview
+                        // can swap previews on ↑/↓ locally — no terminal round-trip). undefined on the tmux
+                        // path, which only scrapes ONE preview (the focused option) into ParsedAsk.preview.
 }
 
 export type AskKind = "single" | "multi" | "submit";

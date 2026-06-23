@@ -2998,20 +2998,33 @@ function renderLiveAsk() {
   else if (ask.kind === "multi") renderMultiCard(ask);
   else if (ask.kind === "submit") renderSubmitCard(ask);
   else renderSingleCard(ask);
-  if (ask?.preview) appendPreview(host, ask.preview);
+  renderAskPreview();   // focus-aware: the FOCUSED option's own preview (SDK) or the single scraped one (tmux)
 }
 
-// The focused option's side-by-side preview box, reproduced VERBATIM in a monospace
-// block (the user 2026-06-13). The TUI draws it to the RIGHT of the options; the
-// chat rail is narrow, so it sits BELOW the card and scrolls sideways if wider than
-// the rail. Re-rendered on every re-post, so it tracks the cursor exactly — moving
-// between options swaps the picture, mirroring the terminal. textContent, never
-// innerHTML: the pane text is untrusted terminal output.
-function appendPreview(host: HTMLElement, preview: string) {
-  const card = (host.querySelector(".ask-card") as HTMLElement | null) ?? host;
-  const pre = el("pre", "ask-preview");
+// The focused option's side-by-side preview box, reproduced VERBATIM in a monospace block (the user
+// 2026-06-13). The TUI draws it to the RIGHT of the options; the chat rail is narrow, so it sits BELOW the
+// card and scrolls sideways if wider than the rail. FOCUS-AWARE (the user 2026-06-22): on a single-select
+// card it shows the CURRENTLY-FOCUSED option's preview, so ↑/↓ swaps the picture like the terminal —
+// instantly when the option carries its OWN preview (the SDK backend sends one per option), else from
+// ParsedAsk.preview (the one the tmux scrape captured for the focused row, which paintLiveAskFocus keeps
+// current by nudging the terminal cursor). REPLACES rather than appends, so stepping never stacks
+// duplicates. textContent, never innerHTML: the pane text is untrusted terminal output.
+function renderAskPreview() {
+  const host = document.getElementById("live-ask"); if (!host) return;
+  const card = host.querySelector(".ask-card") as HTMLElement | null; if (!card) return;
+  const ask = activeId ? liveAsks.get(activeId) : null;
+  let preview: string | undefined;
+  if (ask && ask.kind === "single") {
+    const opts = singleOptions(ask);
+    const o = opts[Math.max(0, Math.min(liveAskFocus, opts.length - 1))];
+    preview = (o && o.preview) || ask.preview || undefined;
+  } else {
+    preview = ask?.preview || undefined;
+  }
+  let pre = card.querySelector(".ask-preview") as HTMLElement | null;
+  if (!preview) { if (pre) pre.remove(); return; }
+  if (!pre) { pre = el("pre", "ask-preview"); card.appendChild(pre); }
   pre.textContent = preview;
-  card.appendChild(pre);
 }
 
 function askCard(extraClass = ""): HTMLElement {
@@ -3077,21 +3090,34 @@ function isMetaOption(label: string): boolean { return /^\s*(type something|chat
 
 // MULTI-select: a real checkbox per real option, an inline "add your own" field
 // (drives the TUI's Type-something slot), and Submit / Cancel buttons.
+// the checkable options of a multi card (skip meta rows like Type-something / Submit) — the rows the
+// arrow keys step through and Space toggles.
+function multiOptions(ask: ParsedAsk) {
+  return ask.options.filter((o) => o.checked !== undefined && !isMetaOption(o.label));
+}
 function renderMultiCard(ask: ParsedAsk) {
   const card = askCard("ask-live-multi");
   qline(card, ask.question || ask.header);
   // A custom answer that's already been typed shows up as a normal checked option
   // (its label is the text, no longer "Type something"), so it renders as a checkbox.
-  for (const o of ask.options) {
-    if (o.checked === undefined || isMetaOption(o.label)) continue;
-    const row = el("label", "ask-check");
+  const checkOpts = multiOptions(ask);
+  // keyboard focus (the user 2026-06-22): ↑/↓ move a highlight across the checkboxes, Space toggles the
+  // focused one, Enter submits — so multi-select is fully keyboard-drivable, not just click. Reset the
+  // highlight only when the screen actually changes (same keying as the single card), so a re-mirror of the
+  // same prompt keeps your place.
+  const key = (activeId || "") + "§multi§" + checkOpts.map((o) => `${o.n}:${o.label}`).join("|");
+  if (key !== liveAskFocusKey) { liveAskFocusKey = key; const sel = checkOpts.findIndex((o) => o.selected); liveAskFocus = sel >= 0 ? sel : 0; }
+  liveAskFocus = Math.max(0, Math.min(liveAskFocus, Math.max(0, checkOpts.length - 1)));
+  checkOpts.forEach((o, i) => {
+    const row = el("label", "ask-check" + (i === liveAskFocus ? " focus" : ""));
     const box = document.createElement("input"); box.type = "checkbox"; box.checked = !!o.checked;
     box.addEventListener("change", () => toggleLiveAsk(o.n));
     row.appendChild(box);
     const lab = el("span", "ask-optlabel"); lab.textContent = o.label; row.appendChild(lab);
     if (o.desc && o.desc.toLowerCase() !== "submit") { const d = el("span", "ask-optdesc"); d.textContent = o.desc; row.appendChild(d); }
+    row.addEventListener("mousemove", () => { if (liveAskFocus !== i) { liveAskFocus = i; paintMultiFocus(); } });
     card.appendChild(row);
-  }
+  });
   // Inline custom-answer field — only while the TUI still offers a Type-something slot.
   if (ask.options.some((o) => isTypeSomething(o.label))) {
     const row = el("div", "ask-custom");
@@ -3100,7 +3126,8 @@ function renderMultiCard(ask: ParsedAsk) {
     inp.type = "text"; inp.className = "ask-custom-input"; inp.placeholder = "add your own answer…";
     inp.value = liveTextValue;
     inp.addEventListener("input", () => { liveTextValue = inp.value; });
-    inp.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); const v = inp.value.trim(); if (v) addCustomLiveAsk(v); } });
+    // stop card-level arrow/Space/Enter nav from firing while typing a custom answer
+    inp.addEventListener("keydown", (e) => { e.stopPropagation(); if (e.key === "Enter") { e.preventDefault(); const v = inp.value.trim(); if (v) addCustomLiveAsk(v); } });
     wirePasteFallback(inp);
     row.appendChild(inp);
     card.appendChild(row);
@@ -3109,6 +3136,26 @@ function renderMultiCard(ask: ParsedAsk) {
   const submit = el("button", "ask-btn ask-btn-primary"); submit.textContent = "Submit"; submit.addEventListener("click", () => submitLiveAsk()); actions.appendChild(submit);
   const cancel = el("button", "ask-btn"); cancel.textContent = "Cancel"; cancel.addEventListener("click", () => cancelLiveAsk()); actions.appendChild(cancel);
   card.appendChild(actions);
+  card.tabIndex = 0;
+  card.addEventListener("keydown", onMultiKey);
+  card.focus({ preventScroll: true });
+}
+// MULTI-select keyboard: ↑/↓ move the highlight, Space toggles the focused checkbox, Enter submits, a digit
+// jumps to + toggles its row. The actual toggle is still the optimistic toggleLiveAsk (host re-mirrors).
+function paintMultiFocus() {
+  const rows = document.querySelectorAll("#live-ask .ask-live-multi .ask-check");
+  rows.forEach((r, i) => r.classList.toggle("focus", i === liveAskFocus));
+}
+function onMultiKey(e: KeyboardEvent) {
+  const ask = activeId ? liveAsks.get(activeId) : null;
+  if (!ask || ask.kind !== "multi") return;
+  const opts = multiOptions(ask);
+  const n = opts.length; if (!n) return;
+  if (e.key === "ArrowDown") { e.preventDefault(); liveAskFocus = (liveAskFocus + 1) % n; paintMultiFocus(); }
+  else if (e.key === "ArrowUp") { e.preventDefault(); liveAskFocus = (liveAskFocus - 1 + n) % n; paintMultiFocus(); }
+  else if (e.key === " " || e.key === "Spacebar") { e.preventDefault(); toggleLiveAsk(opts[liveAskFocus].n); }
+  else if (e.key === "Enter") { e.preventDefault(); submitLiveAsk(); }
+  else if (/^[1-9]$/.test(e.key)) { const idx = opts.findIndex((o) => o.n === parseInt(e.key, 10)); if (idx >= 0) { liveAskFocus = idx; paintMultiFocus(); toggleLiveAsk(opts[idx].n); } }
 }
 
 // Review screen: show chosen answers + the Submit answers / Cancel options as
@@ -3203,9 +3250,30 @@ function renderUnknownCard() {
 function paintLiveAskFocus() {
   const rows = document.querySelectorAll("#live-ask .ask-live-opt");
   rows.forEach((r, i) => r.classList.toggle("focus", i === liveAskFocus));
+  renderAskPreview();   // step the preview to the newly-focused option (instant for per-option SDK previews)
+  // tmux scrape path: the focused option has no preview of its own, but the ask carries the one scraped for
+  // the cursor row — so nudge the TERMINAL cursor onto this option, and the next scrape captures ITS preview.
+  // That's the only way to "see the other ones" without selecting (the user 2026-06-22). Debounced in
+  // navLiveAsk so a fast ↑↑↑ only drives the final option. SDK options carry their own preview → no nudge.
+  const ask = activeId ? liveAsks.get(activeId) : null;
+  if (ask && ask.kind === "single") {
+    const opts = singleOptions(ask);
+    const o = opts[Math.max(0, Math.min(liveAskFocus, opts.length - 1))];
+    if (o && !o.preview && ask.preview) navLiveAsk(o.n);
+  }
 }
 
-// Single-select keyboard: ↑/↓ highlight, Enter confirms, number jumps to + confirms.
+// Move the TUI cursor to `target` WITHOUT selecting, so the tmux-scraped preview follows ↑/↓. Debounced so
+// a fast keyboard sweep drives only the final option; NOT sendingGuard'd (it's navigation, not a commit).
+let navTimer: ReturnType<typeof setTimeout> | undefined;
+function navLiveAsk(target: number) {
+  if (!activeId || !vscodeApi) return;
+  const id = activeId;
+  if (navTimer) clearTimeout(navTimer);
+  navTimer = setTimeout(() => { navTimer = undefined; vscodeApi?.postMessage({ type: "navAsk", id, target }); }, 110);
+}
+
+// Single-select keyboard: ↑/↓ highlight (preview follows), Enter confirms, number jumps to + confirms.
 function onSingleKey(e: KeyboardEvent) {
   const ask = activeId ? liveAsks.get(activeId) : null;
   if (!ask || ask.kind !== "single") return;

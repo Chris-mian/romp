@@ -765,6 +765,9 @@ body { display: flex; flex-direction: column; }
 }
 .ask-check { display: flex; gap: 9px; align-items: baseline; padding: 4px 9px; border-radius: 5px; cursor: pointer; }
 .ask-check:hover { background: rgba(255, 255, 255, 0.06); }
+/* keyboard focus highlight — same treatment as the single card's .ask-live-opt.focus (the user 2026-06-22) */
+.ask-check.focus { background: rgba(255, 255, 255, 0.10); box-shadow: inset 2px 0 0 var(--st-awaiting-bg); }
+.ask-live-multi:focus, .ask-live:focus { outline: none; }
 .ask-check input { margin: 0; flex: 0 0 auto; cursor: pointer; accent-color: var(--check-bg); }
 .ask-check .ask-optlabel { flex: 0 0 auto; font-weight: 600; }
 /* submit-review chosen line + action buttons (multi submit / cancel) */
