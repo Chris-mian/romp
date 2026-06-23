@@ -36,7 +36,7 @@ test("the other collapsibles pass stable keys (reminders, tool folds, thinking)"
   assert.match(RENDER, /"rem:" \+ ev\.uuid/, "system reminders key on the user turn uuid");
   assert.match(RENDER, /const fkey = ev\.uuid \? "tool:" \+ ev\.uuid : undefined;/, "tool folds key on the tool uuid");
   assert.match(RENDER, /"think:" \+ ev\.uuid/, "thinking clamp keys on the thinking uuid");
-  // the agent prompt vs report get distinct sub-keys so they don't toggle each other
-  assert.match(RENDER, /fkey \+ ":prompt"/);
-  assert.match(RENDER, /fkey \+ ":report"/);
+  // the whole agent dispatch (prompt + report) collapses under ONE fold with one stable key, so a single
+  // click expands both halves together (the user 2026-06-22)
+  assert.match(RENDER, /fkey \+ ":agent"/);
 });
