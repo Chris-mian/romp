@@ -317,8 +317,12 @@ class SdkSession:
         self._reconnect_when_idle = False        # a reconnect was requested mid-turn → apply at turn end
         self.ended = False
         # input + ask bridging
-        self._pre = []                       # turns enqueued before the loop is ready
-        self._inq: asyncio.Queue | None = None
+        # Queued user turns are held in a VISIBLE list (not flushed into the SDK) until the
+        # in-flight turn ends, so the kernel can render them as the chat's "queued" indicator
+        # (pending_queued). One turn in flight at a time; the not-yet-started turns persist here
+        # across a reconnect. _input_wake is set whenever a turn may have become releasable.
+        self._pending: list[str] = []
+        self._input_wake: asyncio.Event | None = None
         self._cur_ask_fut: asyncio.Future | None = None
         self._lock = threading.Lock()
         self._ready = threading.Event()
@@ -330,13 +334,20 @@ class SdkSession:
         self.thread.start()
 
     def enqueue(self, text: str):
-        """Deliver a user turn (called from the kernel thread)."""
+        """Deliver a user turn (called from the kernel thread). Held in self._pending —
+        VISIBLE to pending_queued — until the input generator releases it at turn end. Works
+        before the loop is ready too (the generator drains _pending on its first pass)."""
         with self._lock:
-            if self.loop is None or self._inq is None:
-                self._pre.append(text)
-                return
-            loop, q = self.loop, self._inq
-        loop.call_soon_threadsafe(q.put_nowait, text)
+            self._pending.append(text)
+            loop, wake = self.loop, self._input_wake
+        if loop is not None and wake is not None:
+            loop.call_soon_threadsafe(wake.set)
+
+    def pending(self) -> list[str]:
+        """The queued user turns not yet started (oldest first); thread-safe. The kernel
+        renders these as the chat's 'queued' indicator for this SDK session."""
+        with self._lock:
+            return list(self._pending)
 
     def interrupt(self):
         if self.loop and self.client:
@@ -388,7 +399,7 @@ class SdkSession:
         self.loop.call_soon_threadsafe(self._do_request_reconnect)
 
     def _do_request_reconnect(self):
-        if self.inflight == 0 and self._inq is not None and self._inq.empty():
+        if self.inflight == 0 and not self._pending:
             self._reconnect = True
             self._wake_set()
         else:
@@ -408,6 +419,8 @@ class SdkSession:
             self.inflight = 0
             append_state(self.backend.state_dir, self.sid, "waiting")
             self.backend._poke()
+            if self._input_wake is not None:   # turn settled → let the next queued turn (if any) start
+                self._input_wake.set()
 
     async def _do_set_model(self, model):
         try:
@@ -444,21 +457,27 @@ class SdkSession:
             AssistantMessage, ResultMessage, SystemMessage,
         )
         self.loop = asyncio.get_running_loop()
-        self._inq = asyncio.Queue()
         self._wake = asyncio.Event()
         with self._lock:
-            for t in self._pre:
-                self._inq.put_nowait(t)
-            self._pre = []
+            self._input_wake = asyncio.Event()
             self._ready.set()
+        # Turns enqueued before the loop was ready are already in self._pending; the input
+        # generator below picks them up on its first pass (no separate pre-buffer needed).
 
         async def inputs():
-            while True:
-                item = await self._inq.get()
+            # Release queued turns ONE AT A TIME: a turn leaves self._pending and is fed to the SDK
+            # only once the previous turn has finished (inflight == 0). Until then it stays in
+            # self._pending — VISIBLE to pending_queued — so the kernel renders the "queued" indicator.
+            # Recreated per reconnect (see the while-loop below); self._pending carries the not-yet-
+            # started turns across the reconnect.
+            while not self.ended:
+                self._input_wake.clear()
+                with self._lock:
+                    item = self._pending.pop(0) if (self.inflight == 0 and self._pending) else None
                 if item is None:
-                    return
-                if self.inflight == 0:
-                    self.since = int(time.time())
+                    await self._input_wake.wait()   # idle, or a turn still in flight → wait for a change
+                    continue
+                self.since = int(time.time())        # inflight was 0 → a new turn starts now
                 self.inflight += 1
                 append_state(self.backend.state_dir, self.sid, "working")
                 self.backend._poke()
@@ -477,7 +496,7 @@ class SdkSession:
 
         # Reconnect loop: one persistent client per iteration. A connect-time option change (effort, a CLI
         # flag with no runtime control) reconnects with fresh options — resume_sid continues the conversation
-        # and _inq carries any queued turns. The receive loop is RACED against a wake Event so it stops
+        # and self._pending carries any not-yet-started turns. The receive loop is RACED against a wake Event so it stops
         # cleanly for BOTH shutdown and reconnect even when idle (a bare async-for would block forever with no
         # incoming message, leaking the client + its claude subprocess).
         while not self.ended:
@@ -531,6 +550,8 @@ class SdkSession:
             if self.inflight == 0:
                 append_state(self.backend.state_dir, self.sid, "waiting")
                 self.backend._poke()
+                if self._input_wake is not None:   # turn done → release the next queued turn, if any
+                    self._input_wake.set()
                 if self._reconnect_when_idle and not self.ended:   # an effort change waited for this turn to end
                     self._reconnect_when_idle = False
                     self._reconnect = True
@@ -755,6 +776,15 @@ class SdkBackend:
         from the init message right away — like a tmux session shows them on launch — instead of only after
         the first message (the user 2026-06-23). Idempotent; a no-op if already running."""
         return self._ensure(sid) is not None
+
+    def pending_queued(self, sid: str) -> list[str]:
+        """Queued-but-not-yet-started user turns for an SDK session (oldest first), or [] if the
+        session isn't SDK-backed / not running. The kernel calls this to build the chat's
+        kind:"queued" event for SDK sessions — the SDK keeps its queue in memory, so there are no
+        transcript queue-operation records for _pending_queued to read."""
+        with self._lock:
+            s = self.sessions.get(sid)
+        return s.pending() if s else []
 
     def send(self, sid: str, text: str) -> bool:
         s = self._ensure(sid)

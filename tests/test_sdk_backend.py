@@ -11,6 +11,7 @@ Two layers:
     PermissionResultAllow(updated_input={questions, answers}) goes back.
 """
 import os
+import threading
 import time
 import tempfile
 import unittest
@@ -516,6 +517,119 @@ class InterruptSettlesStall(unittest.TestCase):
                         "client.interrupt() was sent")
         self.assertTrue(self._wait(lambda: self.backend.live_sessions().get(sid, {}).get("state") != "working"),
                         "after interrupt the session is no longer 'working' even with no ResultMessage")
+
+
+class PendingQueue(unittest.TestCase):
+    """The visible pending queue (no SDK / no loop needed) — enqueue holds turns in a list that
+    pending_queued exposes, so the kernel can render the 'queued' indicator for SDK sessions."""
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.be = sb.SdkBackend(self.d, "/bin/true", lambda *a, **k: None)
+
+    def _sess(self, sid="q1"):
+        s = sb.SdkSession(self.be, {"sid": sid, "name": "n", "cwd": self.d, "mode": "acceptEdits"})
+        self.be.sessions[sid] = s          # register WITHOUT starting the thread (no loop)
+        return s
+
+    def test_enqueue_holds_in_pending_oldest_first(self):
+        s = self._sess()
+        s.enqueue("first"); s.enqueue("second")
+        self.assertEqual(s.pending(), ["first", "second"])              # both held, in order
+        self.assertEqual(self.be.pending_queued("q1"), ["first", "second"])
+
+    def test_pending_returns_a_copy(self):
+        s = self._sess()
+        s.enqueue("a")
+        snap = s.pending(); snap.append("mutated")
+        self.assertEqual(s.pending(), ["a"])                            # internal list untouched
+
+    def test_pending_queued_empty_for_unknown_or_idle(self):
+        self.assertEqual(self.be.pending_queued("no-such-sid"), [])     # not an SDK session
+        self._sess("q2")
+        self.assertEqual(self.be.pending_queued("q2"), [])             # session exists, nothing queued
+
+
+@unittest.skipUnless(_HAVE_SDK, "claude_agent_sdk not installed")
+class PendingQueueLoop(unittest.TestCase):
+    """End-to-end gate: a turn enqueued while another is IN FLIGHT stays in pending_queued and is
+    NOT fed to the SDK until the in-flight turn ends, then is released in order. This is the fix —
+    before it, queued turns were flushed straight into the SDK and were invisible to the chat."""
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self._orig_client = _sdk.ClaudeSDKClient
+        import asyncio as _aio
+
+        class GatedClient:
+            instances = []
+            received = []                  # turn texts actually fed to the SDK, in order
+            release = threading.Event()    # test sets this to let the in-flight turn complete
+
+            def __init__(self, options=None, transport=None):
+                self.options = options
+                self._turnq = _aio.Queue()
+                GatedClient.instances.append(self)
+
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
+
+            async def query(self, prompt, session_id="default"):
+                async for turn in prompt:                 # the feeder writes each released turn here
+                    await self._turnq.put(turn)
+
+            async def interrupt(self): pass
+            async def set_model(self, model=None): pass
+            async def set_permission_mode(self, mode): pass
+
+            async def receive_messages(self):
+                yield _sdk.SystemMessage("init", {
+                    "model": "claude-x", "permissionMode": "acceptEdits",
+                    "session_id": (self.options.session_id or "fsid")})
+                while True:
+                    turn = await self._turnq.get()
+                    GatedClient.received.append(turn["message"]["content"][0]["text"])
+                    while not GatedClient.release.is_set():
+                        await _aio.sleep(0.01)            # hold the turn 'in flight' until released
+                    GatedClient.release.clear()
+                    yield _sdk.ResultMessage("success", 1, 1, False, 1, "fsid")
+
+        _sdk.ClaudeSDKClient = GatedClient
+        self.Gated = GatedClient
+        GatedClient.instances = []
+        GatedClient.received = []
+        GatedClient.release = threading.Event()
+        self.backend = sb.SdkBackend(self.d, "/bin/true", lambda *a, **k: None)
+
+    def tearDown(self):
+        self.Gated.release.set()                          # unblock any in-flight turn so the thread can exit
+        _sdk.ClaudeSDKClient = self._orig_client
+
+    def _wait(self, pred, timeout=6.0):
+        end = time.time() + timeout
+        while time.time() < end:
+            if pred():
+                return True
+            time.sleep(0.01)
+        return False
+
+    def test_second_turn_held_until_first_completes(self):
+        sid = self.backend.spawn("q", self.d)
+        self.assertTrue(self.backend.send(sid, "A"))
+        self.assertTrue(self._wait(lambda: self.Gated.received == ["A"]), "A never reached the SDK")
+
+        # B is enqueued while A is in flight: VISIBLE as queued, and NOT fed to the SDK.
+        self.assertTrue(self.backend.send(sid, "B"))
+        self.assertTrue(self._wait(lambda: self.backend.pending_queued(sid) == ["B"]),
+                        "B should show as queued while A is in flight")
+        self.assertEqual(self.Gated.received, ["A"], "B must NOT be fed to the SDK until A finishes")
+
+        # Let A finish: B is released in order and drains from the pending list.
+        self.Gated.release.set()
+        self.assertTrue(self._wait(lambda: self.Gated.received == ["A", "B"]),
+                        "B should be released to the SDK once A completes")
+        self.assertTrue(self._wait(lambda: self.backend.pending_queued(sid) == []),
+                        "pending clears the instant B starts processing")
 
 
 if __name__ == "__main__":
