@@ -145,6 +145,24 @@ body { display: flex; flex-direction: column; }
 
 .tab-close { opacity: 0; font-size: 1.1em; line-height: 1; padding: 0 2px; border-radius: 3px; color: var(--dim); }
 .tab:hover .tab-close { opacity: 0.7; }
+/* Rich tab hover tooltip (the user 2026-06-23): backend BOLD in its own colour (sdk=blue, tmux=green), the
+   full directory path, then mode / model / effort / context, each on its own line. Custom DOM (a native
+   title can't colour/bold). */
+.tab-tip {
+  position: fixed; z-index: 70; display: none; pointer-events: none;
+  background: var(--vscode-editorWidget-background, #252526);
+  border: 1px solid var(--box-border); border-radius: 6px;
+  padding: 7px 10px; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+  font-family: var(--mono); font-size: 0.82em; line-height: 1.55; max-width: 440px;
+}
+.tab-tip-name { font-weight: 600; color: var(--fg); margin-bottom: 1px; }
+.tab-tip-be { font-weight: 700; margin-bottom: 4px; }
+.tab-tip-be.be-sdk { color: var(--check-bg); }   /* romp blue */
+.tab-tip-be.be-tmux { color: var(--green); }      /* romp green */
+.tab-tip-path { color: var(--dim); word-break: break-all; margin-bottom: 4px; }
+.tab-tip-row { display: flex; gap: 8px; }
+.tab-tip-k { color: var(--dim); flex: 0 0 auto; min-width: 58px; }
+.tab-tip-v { color: var(--fg); }
 .tab-close:hover { opacity: 1; background: rgba(255, 255, 255, 0.12); }
 .tab-add { color: var(--dim); font-size: 1.1em; padding: 6px 10px; border-radius: 6px; }
 .tab-add:hover { color: var(--fg); background: rgba(255, 255, 255, 0.04); }

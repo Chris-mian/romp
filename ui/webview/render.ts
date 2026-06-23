@@ -1359,6 +1359,43 @@ function reorderTo(dragId: string, targetId: string, after: boolean) {
   renderTabs();
 }
 
+// Rich tab hover tooltip (the user 2026-06-23): a CUSTOM DOM tooltip — a native `title` can't colour or
+// bold its text. Shows the session name, the backend BOLD in its own colour (sdk=blue, tmux=green), the
+// full directory path, then mode / model / effort / context, each on its own line. One shared element,
+// repositioned under the hovered tab and clamped on-screen.
+let tabTipEl: HTMLElement | null = null;
+function hideTabTip(): void { if (tabTipEl) tabTipEl.style.display = "none"; }
+function showTabTip(tab: HTMLElement, s: Session): void {
+  if (!tabTipEl) { tabTipEl = el("div", "tab-tip"); document.body.appendChild(tabTipEl); }
+  const tip = tabTipEl;
+  tip.replaceChildren();
+  const nm = el("div", "tab-tip-name"); nm.textContent = s.name; tip.appendChild(nm);
+  const be = s.status.backend;
+  if (be === "sdk" || be === "tmux") {
+    const b = el("div", "tab-tip-be " + (be === "sdk" ? "be-sdk" : "be-tmux"));
+    b.textContent = (be === "sdk" ? "SDK" : "tmux") + " backend";
+    tip.appendChild(b);
+  }
+  if (s.cwd) { const d = el("div", "tab-tip-path"); d.textContent = s.cwd; tip.appendChild(d); }
+  const rows: Array<[string, string]> = [];
+  if (s.status.mode) rows.push(["Mode", prettyMode(s.status.mode)]);
+  if (s.status.model) rows.push(["Model", s.status.model]);
+  if (s.status.effort) rows.push(["Effort", s.status.effort]);
+  if (s.status.ctx) rows.push(["Context", s.status.ctx + "%"]);
+  for (const [k, v] of rows) {
+    const r = el("div", "tab-tip-row");
+    const ke = el("span", "tab-tip-k"); ke.textContent = k;
+    const ve = el("span", "tab-tip-v"); ve.textContent = v;
+    r.appendChild(ke); r.appendChild(ve); tip.appendChild(r);
+  }
+  tip.style.display = "block";
+  tip.style.left = "0px"; tip.style.top = "-9999px";          // measure off-screen, then clamp on-screen
+  const r = tab.getBoundingClientRect();
+  const tw = tip.getBoundingClientRect().width;
+  tip.style.left = Math.round(Math.min(Math.max(4, r.left), window.innerWidth - tw - 6)) + "px";
+  tip.style.top = Math.round(r.bottom + 4) + "px";
+}
+
 // While a tab name is being edited in place, defer re-renders (a tick's status
 // refresh would otherwise replace the tab bar and destroy the input mid-edit).
 let renameActive = false;
@@ -1430,10 +1467,10 @@ function renderTabs() {
       tab.addEventListener("mouseleave", () => { label.style.color = fadedColor(full); });
     }
     tab.appendChild(label);
-    // hover tooltip: which BACKEND this session runs on (tmux | SDK), plus its model — so the backend is
-    // legible at a glance without a separate badge (the user 2026-06-23).
-    const beLabel = s.status.backend === "sdk" ? "SDK" : s.status.backend === "tmux" ? "tmux" : "";
-    if (beLabel) tab.title = s.name + " · " + beLabel + " backend" + (s.status.model ? " · " + s.status.model : "");
+    // Rich hover tooltip (custom DOM — a native title can't colour/bold): backend in its own colour, the
+    // full dir path, and mode/model/effort/context each on a line (the user 2026-06-23). See showTabTip.
+    tab.addEventListener("mouseenter", () => showTabTip(tab, s));
+    tab.addEventListener("mouseleave", hideTabTip);
     const close = el("span", "tab-close");
     close.textContent = "×";
     // A dead (closed) session has nothing to end, so its ✕ just removes the read-only tab — no
