@@ -566,6 +566,36 @@ def _working_top_goal(sid):
     return None
 
 
+def _all_outstanding_delegated(nodes, top_id):
+    """True if EVERY open leaf in top_id's subtree is a delegated handoff-tracking node (a `handoff` marker,
+    planted by the courier) — i.e., the only outstanding work is handed to PEERS, so this session has nothing
+    to do itself and must NOT be auto-nudged (the user 2026-06-22). False the moment an open leaf is the
+    session's OWN work: it can still be nudged on that. An open leaf = an open node with no open children, so
+    the umbrella tops don't count as work — only the actual pending leaves do."""
+    children = {}
+    for nid, nd in nodes.items():
+        children.setdefault(nd.get("parentId"), []).append(nid)
+
+    def _open(nid):
+        nd = nodes.get(nid, {})
+        return bool(nd) and not nd.get("nodeComplete") and not nd.get("cleared")
+
+    leaves, stack, seen = [], [top_id], set()
+    while stack:
+        x = stack.pop()
+        if x in seen or not _open(x):
+            continue
+        seen.add(x)
+        okids = [k for k in children.get(x, []) if _open(k)]
+        if okids:
+            stack.extend(okids)
+        else:
+            leaves.append(x)                              # an OPEN node with no OPEN children = an outstanding leaf
+    if not leaves:
+        return False
+    return all(isinstance(nodes.get(nid, {}).get("handoff"), dict) for nid in leaves)
+
+
 def _auto_nudge_tick(now, tmux):
     """One Auto-Nudge pass (from the periodic pusher). For each ALIVE, IDLE session (its turn ended) that
     isn't awaiting/compacting/api-error, isn't WAITING ON A LIVE PEER (a wait isn't a stall — the human's
@@ -604,6 +634,10 @@ def _auto_nudge_tick(now, tmux):
         gid = _working_top_goal(sid)
         if not gid:
             continue
+        store = jd.load_goals(sid)
+        if _all_outstanding_delegated(store.get("nodes", {}), gid):   # the goal's only OPEN work is delegated to
+            continue                                                  # peers → nothing for THIS session to do (the
+            #                                                           user 2026-06-22). Parts it handles itself stay nudgeable.
         if sid in waitfor:                               # WAITING ON A LIVE PEER (or a mutual-wait deadlock) → not
             continue                                     # stalled: "waiting on a peer isn't needs-you" (the human's
             #                                              philosophy). A cycle is surfaced by the ⟲ deadlock chip.
@@ -618,7 +652,7 @@ def _auto_nudge_tick(now, tmux):
         # pointless (it's waiting on YOU, not stalled) and churns. Gate on the closer having processed the
         # latest turn (its id in closedTurns) so "working" is the considered verdict, not a pre-classification
         # default. Skip the gate when the closer is off — it would otherwise suppress every nudge. (2026-06-21)
-        if jd.CLOSER_ON and lt_id not in jd._closed_turns(jd.load_goals(sid)):
+        if jd.CLOSER_ON and lt_id not in jd._closed_turns(store):
             continue
         count = rec.get("count", 0) + 1
         _tmux_send(_name_of(sid) or sid, _followup_body(gid, None, AUTO_NUDGE_TEXT, injected=True))   # romp's own nudge → gray bubble
