@@ -2350,6 +2350,14 @@ class ViewBuilder(unittest.TestCase):
         finally:
             km._sdk = saved
 
+    def test_retrying_state_maps_to_retrying_chip(self):
+        """An SDK session stalled in an api_retry storm publishes state 'retrying'; the chat chip surfaces
+        it distinctly (not 'working'), so the user sees it's an API issue, not a hang (the user 2026-06-23)."""
+        km._tmux_sessions = lambda: {SID: {"state": "retrying", "since": NOW - 5, "model": "Opus 4.8",
+                                           "effort": "high", "context": None, "compactPct": None,
+                                           "color": None, "backend": "sdk"}}
+        self.assertEqual(km.build_session(SID, NOW)["status"]["state"], "retrying")
+
     def test_timeline_state_and_metadata_from_tmux(self):
         # live lanes take state + model/effort/context from tmux @claude-* vars (the READY badge =
         # state "waiting"); badgeFor hides the badge unless live, so live must be true here

@@ -306,6 +306,7 @@ class SdkSession:
         self.inflight = 0
         self.since = 0
         self.model = ""
+        self.retrying = False                        # an api_retry storm (API rate-limit/overload) is stalling the turn → 'retrying', not 'working'
         self.chosen_model = reg.get("model") or ""   # the alias the user picked (opus/sonnet/…); self.model is the display name
         self.effort = reg.get("effort") or DEFAULT_EFFORT   # connect-time --effort; tracked since the init msg doesn't echo it
         self.perm_mode = self.mode
@@ -513,10 +514,19 @@ class SdkSession:
             if fsid and fsid != self.resume_sid:
                 self.resume_sid = fsid
                 self.backend._update_reg(self.sid, lastSid=fsid)
+        elif isinstance(msg, SystemMessage) and msg.subtype == "api_retry":
+            # the API returned a retryable error (rate-limit / overload); the CLI is backing off + retrying.
+            # Surface a distinct 'retrying' state so a stall reads as an API issue, not a silent hang (the
+            # user 2026-06-23). Cleared the moment real output flows again (assistant text / result).
+            self.retrying = True
+            append_state(self.backend.state_dir, self.sid, "retrying")
+            self.backend._poke()
         elif isinstance(msg, AssistantMessage):
+            self.retrying = False                      # real output is flowing → the API recovered
             if getattr(msg, "model", None):
                 self.model = pretty_model(msg.model)
         elif isinstance(msg, ResultMessage):
+            self.retrying = False
             self.inflight = max(0, self.inflight - 1)
             if self.inflight == 0:
                 append_state(self.backend.state_dir, self.sid, "waiting")
@@ -626,7 +636,7 @@ class SdkSession:
 
     def snapshot(self) -> dict:
         if self.inflight > 0:
-            state, since = "working", self.since
+            state, since = ("retrying" if self.retrying else "working"), self.since
         else:
             ls = last_state(self.backend.state_dir, self.sid)
             state, since = ls.get("state") or "waiting", ls.get("t") or 0

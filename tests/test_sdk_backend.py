@@ -432,6 +432,26 @@ class AskRoundTrip(unittest.TestCase):
 
 
 @unittest.skipUnless(_HAVE_SDK, "claude_agent_sdk not installed")
+class ApiRetryState(unittest.TestCase):
+    """An api_retry storm (API rate-limit/overload) must surface as a distinct 'retrying' state, not a
+    silent 'working', so a stall reads as an API issue (the user 2026-06-23). Cleared on real output."""
+
+    def test_api_retry_shows_retrying_then_clears(self):
+        d = tempfile.mkdtemp()
+        be = sb.SdkBackend(d, "/bin/true", lambda *a, **k: None)
+        sess = sb.SdkSession(be, {"sid": "r1", "name": "n", "cwd": d, "mode": "acceptEdits"})
+        sess.inflight = 1                                        # a turn is in flight
+        self.assertEqual(sess.snapshot()["state"], "working")
+        sess._on_message(_sdk.SystemMessage("api_retry", {}), _sdk.AssistantMessage, _sdk.ResultMessage, _sdk.SystemMessage)
+        self.assertTrue(sess.retrying)
+        self.assertEqual(sess.snapshot()["state"], "retrying", "api_retry stall reads as 'retrying'")
+        sess._on_message(_sdk.AssistantMessage(content=[_sdk.TextBlock("hi")], model="m"),
+                         _sdk.AssistantMessage, _sdk.ResultMessage, _sdk.SystemMessage)
+        self.assertFalse(sess.retrying)
+        self.assertEqual(sess.snapshot()["state"], "working", "real output clears 'retrying'")
+
+
+@unittest.skipUnless(_HAVE_SDK, "claude_agent_sdk not installed")
 class InterruptSettlesStall(unittest.TestCase):
     """Interrupt must drop a session out of 'working' even if the turn never produces a ResultMessage
     (e.g. it's stuck in an API-retry backoff) — the snapshot reads 'working' purely from inflight>0, so a

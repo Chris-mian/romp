@@ -2426,7 +2426,7 @@ def build_session(sid, now, tmux=None):
         # tmux states (the session can't simultaneously be compacting or at a permission prompt).
         compacting = st == "compacting" or _compacting_optimistic(sid, session, now)
         chip = ("blocked" if aerr else "awaiting" if st == "permission" else "compacting" if compacting
-                else "working" if open_now else "ready")
+                else "retrying" if st == "retrying" else "working" if open_now else "ready")   # api_retry stall (SDK)
         faded = chip == "ready" and bool(tm["since"]) and now - tm["since"] > 3600
         status = {"state": chip, "sinceEpoch": since_ms, "faded": faded,
                   "backend": _session_backend(sid, tm),
