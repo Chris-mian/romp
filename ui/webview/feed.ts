@@ -160,11 +160,11 @@ let items: FeedItem[] = [];
 // Card-display prefs read straight from the shared 'romp:settings' (the kernel's ⛭ gear writes it; same
 // document as this feed bundle). Default ON. These gate the CARDS only — the modal always shows everything
 // (the user 2026-06-17). `!== false` so a missing key defaults to shown.
-function feedPrefs(): { subgoals: boolean } {
+function feedPrefs(): { subgoals: boolean; oldestFirst: boolean } {
   try {
     const s = JSON.parse(localStorage.getItem("romp:settings") || "{}");
-    return { subgoals: s.subgoals !== false };
-  } catch { return { subgoals: true }; }
+    return { subgoals: s.subgoals !== false, oldestFirst: !!s.oldestFirst };
+  } catch { return { subgoals: true, oldestFirst: false }; }
 }
 // names of sessions currently WORKING → a working dot before that name everywhere
 // it renders (card titles, modal title, group name). Pushed in each feed message.
@@ -1715,7 +1715,9 @@ function render() {
   }
   for (const a of asks) { if (grouped.has(a.itemId)) continue; buckets[askColumn(a)].push({ kind: "ask", t: a.t, ask: a }); }
   for (const it of standalone) buckets[it.relevance === "DONE" ? "completed" : "needsInput"].push({ kind: "item", t: it.t, item: it });
-  for (const k of Object.keys(buckets) as Column[]) buckets[k].sort((x, y) => y.t - x.t);   // newest first
+  // newest-first by default; the ⛭ gear's "Oldest first" flips every column to oldest-at-top (the user 2026-06-23)
+  const oldestFirst = feedPrefs().oldestFirst;
+  for (const k of Object.keys(buckets) as Column[]) buckets[k].sort((x, y) => oldestFirst ? x.t - y.t : y.t - x.t);
 
   const desired = new Set<string>();
   reconcileCol(cols.asks, buckets.asks, desired);
