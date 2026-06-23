@@ -2066,6 +2066,7 @@ function rebuildCompact(v: View, s: Session, working: boolean): void {
         for (let i = start; i <= end; i++) {
           const child = renderEvent(s.events[i], prevEpoch, turnWorkedSecs(s.events, i, working));
           child.classList.add("tg-child");   // indented under the open arrow → clearly part of the group
+          if (i === end) child.classList.add("tg-last");   // the bottom rail-elbow hangs off the last child
           v.el.appendChild(child);
           advance(i);
         }

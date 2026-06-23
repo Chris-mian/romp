@@ -503,6 +503,20 @@ body { display: flex; flex-direction: column; }
 .toolgroup-tool { font-weight: 700; color: var(--vscode-foreground, #fff); }   /* matches .tool-name */
 /* expanded children indented under the group's open arrow so they read as part of it */
 .tg-child { margin-left: 24px; }
+/* …the indented children sit on their OWN rail (their .turn::before, 24px right of the main session rail).
+   Bracket the two rails together with a top + bottom horizontal connector in the SAME rail colour, so the
+   line reads as ONE continuous path that detours through the children instead of two disjoint verticals
+   (the user 2026-06-22). Top arm hangs off the expanded summary line's bottom; bottom arm off the last
+   child; the children's ::before is the connecting vertical. Both arms span the main rail (x≈10.5) → the
+   child rail (x≈34.5). */
+.turn-toolgroup.expanded::after {
+  content: ""; position: absolute; left: 10.5px; bottom: 0; width: 26px; height: 2px;
+  background: var(--active-accent, var(--rail)); opacity: 0.7; pointer-events: none;
+}
+.tg-child.tg-last::after {
+  content: ""; position: absolute; left: -13.5px; bottom: 0; width: 26px; height: 2px;
+  background: var(--active-accent, var(--rail)); opacity: 0.7; pointer-events: none;
+}
 /* …and their dots drop the same 5px so the label still centers on its dot */
 .turn-tool .dot, .turn-thinking .dot { top: 10px; }
 /* the vertical conversation rail: 2px in the SESSION's identity color at 70% opacity (the user
