@@ -96,6 +96,38 @@ class StateAndRegistryFiles(unittest.TestCase):
         self.assertEqual(set(regs), {"sid3", "sid4"})
         self.assertTrue(regs["sid3"]["alive"])
 
+    def _last_awaiting(self, sid):
+        import json as _j
+        rec = None
+        with open(os.path.join(self.d, "states", sid + ".jsonl")) as f:
+            for line in f:
+                o = _j.loads(line)
+                if "awaiting" in o:
+                    rec = o
+        return rec
+
+    def test_awaiting_overlay_shape(self):
+        # bugz's reader scans for the latest line with an "awaiting" key (interleaved with state records)
+        sb.append_state(self.d, "a1", "working")
+        sb.append_awaiting(self.d, "a1", True, "2 background task(s) running")
+        rec = self._last_awaiting("a1")
+        self.assertEqual(rec["awaiting"], True)
+        self.assertEqual(rec["why"], "2 background task(s) running")
+        sb.append_awaiting(self.d, "a1", False)
+        rec = self._last_awaiting("a1")
+        self.assertEqual(rec["awaiting"], False)
+        self.assertNotIn("why", rec)               # false clears, no why
+
+    def test_stop_hook_emits_from_background_tasks(self):
+        import asyncio
+        be = sb.SdkBackend(self.d, "/bin/true", lambda *a, **k: None)
+        sess = sb.SdkSession(be, {"sid": "h1", "name": "n", "cwd": self.d, "mode": "acceptEdits"})
+        asyncio.run(sess._stop_hook({"background_tasks": [{"id": "t1"}, {"id": "t2"}]}, None, None))
+        self.assertEqual(self._last_awaiting("h1"), {"t": self._last_awaiting("h1")["t"],
+                                                     "awaiting": True, "why": "2 background task(s) running"})
+        asyncio.run(sess._stop_hook({"background_tasks": []}, None, None))   # tasks finished
+        self.assertEqual(self._last_awaiting("h1")["awaiting"], False)
+
 
 # --- Runner + can_use_tool bridge (needs the SDK message classes) ---
 try:

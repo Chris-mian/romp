@@ -128,6 +128,21 @@ def append_state(state_dir: Path, sid: str, state: str, t: int | None = None) ->
         f.write(json.dumps(rec) + "\n")
 
 
+def append_awaiting(state_dir: Path, sid: str, awaiting: bool, why: str = "") -> None:
+    """Append an "awaiting" OVERLAY record to states/<sid>.jsonl (interleaved with the state
+    records; the kernel reader scans for the latest line carrying an "awaiting" key). "Awaiting" =
+    the session is idle but waiting on dispatched/background work — a flavour of working, exempt from
+    auto-nudge (bugz's event-model awaiting, contract confirmed 2026-06-22). awaiting:true carries a
+    "why"; awaiting:false clears it."""
+    p = Path(state_dir) / "states" / (sid + ".jsonl")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    rec = {"t": int(time.time()), "awaiting": bool(awaiting)}
+    if awaiting and why:
+        rec["why"] = why
+    with open(p, "a") as f:
+        f.write(json.dumps(rec) + "\n")
+
+
 def last_state(state_dir: Path, sid: str) -> dict:
     p = Path(state_dir) / "states" / (sid + ".jsonl")
     try:
@@ -431,6 +446,24 @@ class SdkSession:
             # single-select that received a toggle, or vice versa: re-emit.
             self.backend._emit_ask(self, ask_question_to_live(question, qi, total, selected))
 
+    # ---- the awaiting producer (bugz's event-model overlay) ----
+
+    async def _stop_hook(self, inp, tool_use_id, context):
+        """At turn-end, emit the awaiting overlay: awaiting:true while background work is still
+        outstanding (run_in_background tasks survive the turn), awaiting:false otherwise. The Stop
+        hook fires again on the follow-up turn a task-completion notification triggers, so this
+        self-corrects to awaiting:false when the work finishes. The kernel reader only honours
+        awaiting while the session is IDLE, so mid-turn (working) it's ignored — Stop is the right
+        and sufficient hook."""
+        bg = inp.get("background_tasks") if isinstance(inp, dict) else None
+        n = len(bg) if isinstance(bg, (list, tuple)) else (1 if bg else 0)
+        if n:
+            append_awaiting(self.backend.state_dir, self.sid, True, "%d background task(s) running" % n)
+        else:
+            append_awaiting(self.backend.state_dir, self.sid, False)
+        self.backend._poke()
+        return {}
+
     # ---- snapshot for live_sessions() ----
 
     def snapshot(self) -> dict:
@@ -480,6 +513,7 @@ class SdkBackend:
 
     # ---- SDK option assembly (mirrors the tmux launch flags) ----
     def _options(self, sess: SdkSession, ClaudeAgentOptions):
+        from claude_agent_sdk import HookMatcher
         extra = {}
         if self.append_prompt_path and os.path.exists(self.append_prompt_path):
             try:
@@ -490,6 +524,7 @@ class SdkBackend:
             cli_path=self.claude_bin,
             cwd=sess.cwd,
             can_use_tool=sess._can_use_tool,
+            hooks={"Stop": [HookMatcher(matcher=None, hooks=[sess._stop_hook])]},   # awaiting overlay producer
             permission_mode=sess.mode,
             include_partial_messages=False,
         )
