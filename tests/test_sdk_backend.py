@@ -75,6 +75,61 @@ class PureTranslation(unittest.TestCase):
         self.assertEqual(sb.pick_identity_color("11111111-2222-3333-4444-555555555555"), (bg, fg))  # stable per sid
 
 
+# --- live tail (in-memory stream → atoms, ahead of disk). Pure: fakes match by type-name, no SDK. ---
+class _TextBlock:
+    def __init__(self, text): self.text = text
+class _ToolUseBlock:
+    def __init__(self, id, name, inp): self.id, self.name, self.input = id, name, inp
+class _AssistantMessage:
+    def __init__(self, content, model="claude-x", uuid="a1", stop_reason="end_turn"):
+        self.content, self.model, self.uuid, self.stop_reason = content, model, uuid, stop_reason
+class _UserMessage:
+    def __init__(self, content, uuid="u1"): self.content, self.uuid = content, uuid
+class _ResultMessage:
+    uuid = "r1"
+# rename so type(...).__name__ matches what msg_to_atom checks
+_TextBlock.__name__ = "TextBlock"; _ToolUseBlock.__name__ = "ToolUseBlock"
+_AssistantMessage.__name__ = "AssistantMessage"; _UserMessage.__name__ = "UserMessage"
+_ResultMessage.__name__ = "ResultMessage"
+
+
+class LiveTail(unittest.TestCase):
+    def test_msg_to_atom_assistant(self):
+        m = _AssistantMessage([_TextBlock("hi"), _ToolUseBlock("t1", "Bash", {"command": "ls"})])
+        a = sb.msg_to_atom(m, "sid9", "fsidA", 100)
+        self.assertEqual(a["type"], "assistant")
+        self.assertEqual(a["uuid"], "a1")
+        self.assertEqual(a["session_id"], "sid9")
+        self.assertEqual(a["t"], 100)
+        self.assertEqual(a["fsid"], "fsidA")
+        self.assertEqual(a["message"]["content"],
+                         [{"type": "text", "text": "hi"},
+                          {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "ls"}}])
+
+    def test_msg_to_atom_user_and_nonrenderable(self):
+        a = sb.msg_to_atom(_UserMessage([_TextBlock("hello")]), "s", "f", 5)
+        self.assertEqual(a["type"], "user")
+        self.assertEqual(a["message"]["content"], [{"type": "text", "text": "hello"}])
+        self.assertIsNone(sb.msg_to_atom(_ResultMessage(), "s", "f", 5))   # result has no renderable content
+        self.assertIsNone(sb.msg_to_atom(_AssistantMessage([]), "s", "f", 5))  # empty content → None
+
+    def test_live_store_and_prune(self):
+        be = sb.SdkBackend(tempfile.mkdtemp(), "/bin/true", lambda *a, **k: None)
+        be._live["s"] = {"a1": {"uuid": "a1", "t": 2}, "echo:x": {"uuid": "echo:x", "t": 1, "_echo_text": "hi"}}
+        self.assertEqual([a["uuid"] for a in be.live_atoms("s")], ["echo:x", "a1"])   # sorted by t
+        be.prune_live("s", {"a1"}, {"hi"})     # a1 now on disk; echo text "hi" now on disk
+        self.assertEqual(be.live_atoms("s"), [])
+
+    def test_send_adds_optimistic_echo(self):
+        be = sb.SdkBackend(tempfile.mkdtemp(), "/bin/true", lambda *a, **k: None)
+        be._ensure = lambda sid: type("S", (), {"enqueue": lambda self, t: None})()   # no real session thread
+        self.assertTrue(be.send("s", "type this"))
+        echoes = [a for a in be.live_atoms("s") if a.get("_echo_text") == "type this"]
+        self.assertEqual(len(echoes), 1)
+        self.assertEqual(echoes[0]["type"], "user")
+        self.assertEqual(echoes[0]["message"]["content"], [{"type": "text", "text": "type this"}])
+
+
 class StateAndRegistryFiles(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp()

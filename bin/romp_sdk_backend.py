@@ -45,6 +45,46 @@ def pick_identity_color(sid: str) -> tuple[str, str]:
     return _PALETTE[i], _FG[i]
 
 
+def _block_to_dict(b):
+    """One SDK content block → the transcript/event-model block dict (by type name, so no SDK import)."""
+    n = type(b).__name__
+    if n == "TextBlock":
+        return {"type": "text", "text": getattr(b, "text", "")}
+    if n == "ThinkingBlock":
+        return {"type": "thinking", "thinking": getattr(b, "thinking", ""), "signature": getattr(b, "signature", None)}
+    if n == "ToolUseBlock":
+        return {"type": "tool_use", "id": getattr(b, "id", ""), "name": getattr(b, "name", ""), "input": getattr(b, "input", {})}
+    if n == "ToolResultBlock":
+        return {"type": "tool_result", "tool_use_id": getattr(b, "tool_use_id", ""),
+                "content": getattr(b, "content", ""), "is_error": bool(getattr(b, "is_error", False))}
+    return None
+
+
+def msg_to_atom(msg, sid, fsid, t):
+    """An SDK stream message → an event-model atom (the SAME shape the file adapter emits from a
+    transcript line), so the chat renders a LIVE atom identically and it dedups against the transcript
+    by uuid (verified: the SDK message uuid == the transcript atom uuid). Returns None for messages
+    with no renderable content (init/result/etc.)."""
+    n = type(msg).__name__
+    u = getattr(msg, "uuid", None)
+    if n == "AssistantMessage":
+        content = [d for b in (getattr(msg, "content", []) or []) if (d := _block_to_dict(b))]
+        if not content:
+            return None
+        return {"type": "assistant", "uuid": u, "session_id": sid, "t": t, "fsid": fsid, "parentUuid": None,
+                "message": {"role": "assistant", "model": getattr(msg, "model", "") or "",
+                            "content": content, "stop_reason": getattr(msg, "stop_reason", None)}}
+    if n == "UserMessage":
+        c = getattr(msg, "content", None)
+        content = [d for b in c if (d := _block_to_dict(b))] if isinstance(c, list) else (
+            [{"type": "text", "text": str(c)}] if c else [])
+        if not content:
+            return None
+        return {"type": "user", "uuid": u, "session_id": sid, "t": t, "fsid": fsid, "parentUuid": None,
+                "message": {"role": "user", "content": content}}
+    return None
+
+
 def ask_question_to_live(question: dict, qi: int, total: int, selected=None) -> dict:
     """Translate ONE AskUserQuestion question into the askLive `ask` shape the
     existing picker UI already renders (the same shape bin/romp-askparse emits),
@@ -501,19 +541,21 @@ class SdkBackend:
     """Manages SDK-backed sessions. Constructed by the kernel with callbacks for
     pushing to clients and a few launch parameters that mirror the tmux launch."""
 
-    def __init__(self, state_dir, claude_bin: str, notify, poke=None,
+    def __init__(self, state_dir, claude_bin: str, notify, poke=None, push=None,
                  mcp_config: str | None = None, append_prompt_path: str | None = None,
                  log=None):
         self.state_dir = Path(state_dir)
         self.claude_bin = claude_bin
         self._notify = notify              # notify(app, msg) -> push to clients (kernel._send_to_app)
-        self._poke_cb = poke               # wake the kernel's pusher/producer (optional)
+        self._poke_cb = poke               # wake the kernel's producer/judges (optional)
+        self._push_cb = push               # wake the kernel's PUSHER → immediate chat push (live tail)
         self.mcp_config = mcp_config
         self.append_prompt_path = append_prompt_path
         self._log_cb = log
         self.sessions: dict[str, SdkSession] = {}
         self._lock = threading.Lock()
         self._pending_ask: dict[str, bool] = {}   # sid -> has an ask awaiting answer
+        self._live: dict[str, dict] = {}          # sid -> {key -> atom}: the in-memory LIVE TAIL (ahead of disk)
 
     # ---- logging / wakeups ----
     def _log(self, m):
@@ -596,6 +638,14 @@ class SdkBackend:
         if not s:
             return False
         s.enqueue(text)
+        # optimistic input echo: show the user's own message INSTANTLY (neither the transcript nor the
+        # stream has it yet at send time — only we know the text). Synthetic uuid; pruned by text once the
+        # transcript writes the real user atom.
+        key = "echo:" + uuid.uuid4().hex
+        self._live.setdefault(sid, {})[key] = {
+            "type": "user", "uuid": key, "session_id": sid, "t": int(time.time()), "parentUuid": None,
+            "_echo_text": text, "message": {"role": "user", "content": [{"type": "text", "text": text}]}}
+        self._wake_push()
         return True
 
     def interrupt(self, sid: str) -> bool:
@@ -689,9 +739,42 @@ class SdkBackend:
         self._notify("chat", {"type": "askLiveClear", "id": sess.sid})
 
     def _forward(self, sess: SdkSession, msg):
-        # The durable record is the transcript (read by the judges/event model);
-        # nothing to persist here. A live-stream hook can be added later.
-        pass
+        # LIVE TAIL: translate the streamed message to an atom and stash it in memory, AHEAD of the
+        # transcript on disk (the SDK stream leads the disk write), then wake the kernel's pusher for an
+        # immediate chat push. build_session merges these and the transcript supersedes them by uuid.
+        atom = msg_to_atom(msg, sess.sid, sess.resume_sid, int(time.time()))
+        if not (atom and atom.get("uuid")):
+            return
+        d = self._live.setdefault(sess.sid, {})
+        d[atom["uuid"]] = atom
+        while len(d) > 100:                      # safety cap if no client ever drains/prunes
+            del d[next(iter(d))]
+        self._wake_push()
+
+    def _wake_push(self):
+        if self._push_cb:
+            try:
+                self._push_cb()
+            except Exception:
+                pass
+
+    def live_atoms(self, sid: str) -> list:
+        """The session's in-memory live-tail atoms (newest last), for build_session to merge ahead of disk."""
+        d = self._live.get(sid)
+        return sorted(d.values(), key=lambda a: a.get("t", 0)) if d else []
+
+    def prune_live(self, sid: str, tx_uuids, tx_user_texts=()) -> None:
+        """Drop live atoms the transcript has now caught up on — by uuid (assistant/tool/user from the
+        stream) or by text (the optimistic input echo, which has a synthetic uuid)."""
+        d = self._live.get(sid)
+        if not d:
+            return
+        for k in list(d.keys()):
+            a = d[k]
+            if a.get("uuid") in tx_uuids or (a.get("_echo_text") and a["_echo_text"] in tx_user_texts):
+                del d[k]
+        if not d:
+            self._live.pop(sid, None)
 
     def _update_reg(self, sid: str, **fields):
         reg = read_reg(self.state_dir, sid) or {"sid": sid}

@@ -45,6 +45,12 @@ class FakeBackend:
         return {"sid-sdk": {"state": "working", "since": "100", "model": "m",
                             "effort": "", "mode": "acceptEdits"}}
 
+    def live_atoms(self, sid):
+        return getattr(self, "_live", {}).get(sid, [])
+
+    def prune_live(self, sid, tx_uuids, tx_texts=()):
+        self.calls.append(("prune_live", sid))
+
 
 class KernelWiring(unittest.TestCase):
     def setUp(self):
@@ -140,6 +146,46 @@ class KernelWiring(unittest.TestCase):
         self.assertEqual(row["model"], "m")
         self.assertIsNone(row["context"])              # SDK rows have no pane-OCR context%
         self.assertIsNone(row["compactPct"])
+
+
+class LiveTailAndOpen(unittest.TestCase):
+    """The live-tail merge + the transcript-less open fix (a just-created SDK session has no transcript,
+    so discover() can't see it — without these it never opened: the user 2026-06-22)."""
+
+    def setUp(self):
+        self.be = FakeBackend()
+        self.saved = (km._sdk, km._sessions, km._push_all, km._send_to_app)
+        km._sdk = lambda: self.be
+        km._push_all = lambda *a, **k: None
+        km._send_to_app = lambda *a, **k: None
+
+    def tearDown(self):
+        km._sdk, km._sessions, km._push_all, km._send_to_app = self.saved
+
+    def test_merge_appends_fresh_live_atom_non_mutating(self):
+        self.be._live = {"sid-sdk": [{"type": "assistant", "uuid": "new1", "t": 50,
+                                      "message": {"role": "assistant", "content": [{"type": "text", "text": "hi"}]}}]}
+        session = {"turns": [{"id": "t", "atoms": [{"uuid": "old", "t": 10}], "ended": True}]}
+        out = km._merge_live_atoms(session, "sid-sdk")
+        self.assertEqual([a.get("uuid") for a in out["turns"][-1]["atoms"]], ["old", "new1"])  # sorted by t
+        self.assertIsNot(out, session)                                   # copy, not mutation
+        self.assertEqual(session["turns"][-1]["atoms"], [{"uuid": "old", "t": 10}])  # original untouched
+
+    def test_merge_dedups_by_uuid(self):
+        self.be._live = {"sid-sdk": [{"type": "assistant", "uuid": "dup", "t": 50,
+                                      "message": {"role": "assistant", "content": [{"type": "text", "text": "x"}]}}]}
+        session = {"turns": [{"id": "t", "atoms": [{"uuid": "dup", "t": 10}], "ended": True}]}
+        out = km._merge_live_atoms(session, "sid-sdk")
+        self.assertEqual(len(out["turns"][-1]["atoms"]), 1)              # transcript already has it → not re-added
+
+    def test_merge_skips_non_sdk(self):
+        session = {"turns": []}
+        self.assertIs(km._merge_live_atoms(session, "sid-tmux"), session)   # not SDK-backed → unchanged
+
+    def test_alive_sessions_includes_transcriptless_sdk(self):
+        km._sessions = lambda now: []                                   # discover sees nothing (no transcript yet)
+        alive = km._alive_sessions(1000, {"sid-sdk": {"state": "waiting"}})
+        self.assertIn("sid-sdk", [s["sid"] for s in alive])             # still opens
 
 
 if __name__ == "__main__":
