@@ -302,17 +302,6 @@ function fileLink(path: string): HTMLElement {
   return a;
 }
 
-// Visible-but-bounded IN/OUT block (clamped ~300px, click to expand fully).
-function ioClamp(input: string, output: string, isError: boolean, key?: string): HTMLElement {
-  const clamp = el("div", "io-clamp");
-  const io = el("div", "tool-io");
-  if (input) io.appendChild(ioRow("IN", input, false));
-  if (output) io.appendChild(ioRow("OUT", output, isError));
-  clamp.appendChild(io);
-  applyFold(clamp, "expanded", key);
-  clamp.addEventListener("click", () => rememberFold(clamp, "expanded", key));
-  return clamp;
-}
 
 // Compact fold: the AFFORDANCE (caret + a summary like "12 lines" / "+5 −2") sits
 // on the RIGHT of the tool's HEAD line; the expandable content hangs below the
@@ -1082,7 +1071,16 @@ function renderTool(ev: Extract<ChatEvent, { kind: "tool" }>): HTMLElement {
 
   const fkey = ev.uuid ? "tool:" + ev.uuid : undefined;   // persist this tool's fold across re-renders
   if (ev.isError) {
-    if (ev.input || ev.output) turn.appendChild(ioClamp(ev.input, ev.output, true, fkey)); // errors: always show
+    // FAILED tool → collapse to ONE line like the successful ones, kept RED; click to expand the error (the
+    // user 2026-06-22). Was an always-shown ~300px io-clamp block; now it folds onto the head behind a red
+    // "error" toggle, the IN/OUT hanging below. The red ✗ rail dot + red tool name (.tool-err) keep it loud.
+    if (ev.input || ev.output) {
+      const io = el("div", "tool-io tool-io-fold");
+      if (ev.input) io.appendChild(ioRow("IN", ev.input, true));
+      if (ev.output) io.appendChild(ioRow("OUT", ev.output, true));
+      const n = ev.output ? countLines(ev.output) : 0;
+      inlineFold(head, turn, n ? `error · ${n} line${n === 1 ? "" : "s"}` : "error", io, fkey);
+    }
   } else if (ev.diff) {
     // Edit/MultiEdit: "+add −del" on the head line; the red/green diff hangs below, hidden.
     let add = 0, del = 0;
@@ -1431,14 +1429,6 @@ function renderTabs() {
       tab.addEventListener("mouseleave", () => { label.style.color = fadedColor(full); });
     }
     tab.appendChild(label);
-    // The session's working directory (fixed at creation): dimmed basename inline, full path on hover.
-    const base = s.cwd ? (s.cwd.replace(/\/+$/, "").split("/").pop() || s.cwd) : "";
-    if (base && base !== s.name) {
-      const dd = el("span", "tab-dir");
-      dd.textContent = base;
-      tab.appendChild(dd);
-    }
-    if (s.cwd) tab.title = s.name + " — " + s.cwd;
     const close = el("span", "tab-close");
     close.textContent = "×";
     // A dead (closed) session has nothing to end, so its ✕ just removes the read-only tab — no
@@ -3580,6 +3570,15 @@ function updateStatusline() {
   // stop/interrupt button, right beside the state badge — ONLY while busy (working/compacting); omitted
   // entirely in idle states (there's nothing to interrupt) — the user 2026-06-19.
   if (s.status.state === "working" || s.status.state === "compacting") sl.appendChild(stopButton());
+  // The session's working directory (fixed at creation), leading the right-side cluster — just left of the
+  // mode/model/effort controls (the user 2026-06-23). Basename only; full path on hover. It carries the
+  // right-justify margin so it anchors the cluster; empty (rare, no cwd) it's a zero-width spacer.
+  const dir = el("span", "status-dir");
+  if (s.cwd) {
+    dir.textContent = "📁 " + (s.cwd.replace(/\/+$/, "").split("/").pop() || s.cwd);
+    dir.title = s.cwd;
+  }
+  sl.appendChild(dir);
   const meta = el("span", "spinner-meta");
   meta.id = "spinner-meta";
   syncMetaControls(meta, s.status);

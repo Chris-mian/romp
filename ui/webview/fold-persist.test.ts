@@ -26,10 +26,10 @@ test("the system-context card persists per session (keyed by renderingSid)", () 
   assert.match(RENDER, /rememberFold\(card, "open", key\)/);
 });
 
-test("foldable/inlineFold/ioClamp take a stable key and route through the persisted helpers", () => {
+test("foldable/inlineFold take a stable key and route through the persisted helpers", () => {
   assert.match(RENDER, /function foldable\(label: string, content: HTMLElement, key\?: string\)/);
   assert.match(RENDER, /function inlineFold\(head: HTMLElement, turn: HTMLElement, label: string, content: HTMLElement, key\?: string\)/);
-  assert.match(RENDER, /function ioClamp\(input: string, output: string, isError: boolean, key\?: string\)/);
+  assert.doesNotMatch(RENDER, /function ioClamp\(/, "ioClamp is gone — errors now fold onto the head like every other tool");
 });
 
 test("the other collapsibles pass stable keys (reminders, tool folds, thinking)", () => {
