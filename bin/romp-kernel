@@ -758,6 +758,90 @@ def _spawn_session(name):
     _push_all()   # surface the new tab promptly (the periodic pusher would catch it within 4s anyway)
 
 
+# --- optional SDK (non-tmux) session backend (design/sdk-backend.md) --------------------
+# A second SessionBackend that drives Claude via the Agent SDK instead of a tmux TUI,
+# selectable per session. Built lazily so the tmux-only path never imports the SDK and the
+# kernel runs unchanged when the SDK (or its dependency) is absent.
+_SDK_MCP = Path(os.path.expanduser("~/.claude/romp-postal.mcp.json"))
+_SDK_PROMPT = Path(os.path.expanduser("~/.claude/romp-session-prompt.md"))
+_sdk_backend = None   # None = not built yet, False = unavailable, else the SdkBackend
+
+
+def _claude_bin():
+    return shutil.which("claude") or os.path.expanduser("~/.local/bin/claude")
+
+
+def _sdk():
+    """The SdkBackend singleton, or None when the module/dependency is unavailable."""
+    global _sdk_backend
+    if _sdk_backend is None:
+        try:
+            sbmod = SourceFileLoader("romp_sdk_backend", str(HERE / "romp_sdk_backend.py")).load_module()
+            _sdk_backend = sbmod.SdkBackend(
+                jd.STATE, _claude_bin(), _send_to_app,
+                poke=_producer_wake.set,
+                mcp_config=(str(_SDK_MCP) if _SDK_MCP.exists() else None),
+                append_prompt_path=(str(_SDK_PROMPT) if _SDK_PROMPT.exists() else None),
+                log=lambda m: sys.stderr.write("sdk-backend: %s\n" % m))
+        except Exception:
+            sys.stderr.write("sdk-backend unavailable: %s\n" % traceback.format_exc())
+            _sdk_backend = False
+    return _sdk_backend or None
+
+
+def _sdk_route(msg, client):
+    """Intercept DRIVE ops (send/interrupt/kill/ask/mode/...) for SDK-backed sids and handle them via
+    the SDK backend, returning True. UI/navigation ops (tab hide, reveal, hovers) return False and fall
+    through to the normal dispatch — they are backend-agnostic. The entire tmux path is untouched."""
+    be = _sdk()
+    if not be or not isinstance(msg, dict):
+        return False
+    t = msg.get("type")
+    sid = msg.get("id")
+    if t == "askFollowUp" and msg.get("itemId"):
+        sid = str(msg["itemId"]).rsplit(":", 1)[0]
+    if not sid or not be.owns(str(sid)):
+        return False
+    sid = str(sid)
+    if t == "sendMessage" and msg.get("text"):
+        be.send(sid, str(msg["text"]))
+    elif t == "interrupt":
+        be.interrupt(sid); _push_all()
+    elif t == "endSession":
+        be.kill(sid); _send_to_app("chat", {"type": "closed", "id": sid}); _push_all()
+    elif t == "answerAsk" and msg.get("target") is not None:
+        be.on_ask(sid, "answer", msg["target"])
+    elif t == "toggleAsk" and msg.get("target") is not None:
+        be.on_ask(sid, "toggle", msg["target"])
+    elif t == "submitAsk":
+        be.on_ask(sid, "submit")
+    elif t == "addCustomAsk" and msg.get("text"):
+        be.on_ask(sid, "custom", str(msg["text"]))
+    elif t == "cancelAsk":
+        be.on_ask(sid, "cancel")
+    elif t == "askText" and msg.get("text"):
+        be.on_ask(sid, "text", str(msg["text"]))
+    elif t == "setMode" and msg.get("value"):
+        be.set_mode(sid, str(msg["value"])); _push_all()
+    elif t in ("setModel", "setEffort") and msg.get("value"):
+        be.send(sid, "/%s %s" % ("model" if t == "setModel" else "effort", str(msg["value"])))
+    elif t == "compactSession":
+        be.send(sid, "/compact")
+    elif t == "renameSession" and msg.get("name"):
+        new = str(msg["name"]).strip()
+        if not NAME_RE.match(new):
+            client["send"](json.dumps({"type": "warn", "text": "session names use letters, digits, . _ - only."}))
+        elif be.rename(sid, new):
+            client["send"](json.dumps({"type": "renamed", "id": sid, "name": new}))
+    elif t == "apiRetry":
+        be.send(sid, "retry")
+    elif t == "askFollowUp" and msg.get("text"):
+        be.send(sid, str(msg["text"]))
+    else:
+        return False   # not an SDK drive op (e.g. closeTab / openSession) → normal dispatch
+    return True
+
+
 def _reveal_or_confirm(sid, focus_msg):
     """Bring the chat to `sid`. LIVE → the focus message. DEAD → never silently reveal; pop the chat's
     confirmRevive modal (Revive / View read-only), bringing the chat forward (the user 2026-06-17: dead
@@ -859,7 +943,7 @@ def _num(x):
     return int(x) if x.lstrip("-").isdigit() else None
 
 
-def _tmux_sessions():
+def _tmux_sessions_raw():
     """Live lane metadata from tmux @claude-* vars (state / model / effort / context% / compaction% /
     state-since / identity color), keyed by romp-session-id. This is the ONE source that isn't a file
     — everything else the kernel reads is file-derived. The kernel runs on the HOST (where the tmux
@@ -886,7 +970,27 @@ def _tmux_sessions():
     return out
 
 
-SESSIONS_FMT = "#{@romp}|#{session_name}|#{@claude-state}|#{@claude-dir}|#{@identity-bg}|#{@identity-fg}"
+def _tmux_sessions():
+    """Live lane metadata, MERGING tmux sessions with the SDK backend's live sessions so SDK-backed
+    (non-tmux) sessions appear alongside tmux ones everywhere the kernel reads liveness/state. tmux stays
+    authoritative for tmux sessions; the SDK backend reports its own (state/model/effort/mode, event-based).
+    A headless box with no tmux still surfaces SDK sessions — the tmux probe returns {} and we fall through.
+    SDK rows have no context%/compaction% (those were pane-OCR'd) → None."""
+    out = _tmux_sessions_raw()
+    be = _sdk()
+    if be:
+        try:
+            for sid, st in be.live_sessions().items():
+                out[sid] = {"state": st.get("state", ""), "since": _num(str(st.get("since") or "")),
+                            "model": st.get("model", ""), "effort": st.get("effort", ""),
+                            "context": None, "compactPct": None,
+                            "color": (st.get("color") or None), "mode": st.get("mode", "")}
+        except Exception:
+            sys.stderr.write("sdk live_sessions merge: %s\n" % traceback.format_exc())
+    return out
+
+
+SESSIONS_FMT ="#{@romp}|#{session_name}|#{@claude-state}|#{@claude-dir}|#{@identity-bg}|#{@identity-fg}"
 
 
 def _tmux_session_list():
@@ -4727,6 +4831,8 @@ class Handler(BaseHTTPRequestHandler):
         try/except (see _ws) so a bug in one handler logs and the NEXT message still processes, instead of
         the exception escaping the recv loop and tearing the socket down — which made a reconnect blank the
         chat (the _session_list TypeError, the user 2026-06-22). A genuine socket error still propagates."""
+        if _sdk_route(msg, client):   # SDK-backed sids: drive ops go to the SDK backend, not tmux
+            return
         if msg and msg.get("type") == "ready":
             self._push_one(client)
             # Push the SHARED, STABLE tab order so the UI honors it on connect/reload. Without this
@@ -4773,6 +4879,11 @@ class Handler(BaseHTTPRequestHandler):
                 if nm in live:                   # already running → just (re)open it, don't re-spawn
                     _set_hidden_tab(live[nm], False); _push_all()
                     _reveal_chat({"type": "focus", "id": live[nm]})
+                elif msg.get("backend") == "sdk" and _sdk():   # non-tmux: drive via the Agent SDK
+                    cwd = os.environ.get("ROMP_SERVE_CWD") or os.path.expanduser("~")
+                    sid = _sdk().spawn(nm, cwd)
+                    _set_hidden_tab(sid, False); _push_all()
+                    _reveal_chat({"type": "focus", "id": sid})
                 else:
                     threading.Thread(target=_spawn_session, args=(nm,), daemon=True).start()
         elif msg and msg.get("type") == "renameSession" and msg.get("id") and msg.get("name"):
