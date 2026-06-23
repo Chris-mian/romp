@@ -8,6 +8,10 @@ then forge a STRONG variant of it (faint halos + soft glows stripped, the three
 arms thickened, nodes + center core punched up) so it stays bold and legible at
 letter size rather than dissolving into the word.
 
+The three letters R/m/p each wear one of the swirl's three arm colors
+(make_icon.COLORS, in order: blue/green/teal) so the word carries the mark's
+palette instead of being flat white.
+
 Layout is done in HTML/CSS and rasterized with headless Chrome, because getting
 real font metrics (x-height, side bearings) and sub-pixel placement right is
 exactly what a browser does for free. The swirl's vertical placement was tuned
@@ -19,7 +23,11 @@ Deps: Google Chrome / Chromium (set $CHROME to override the binary), and
 optionally Pillow (used only to auto-trim the banner to its content).
 
 Run:  python make_wordmark.py
-Outputs romp-wordmark.png into this directory.
+Outputs two PNGs:
+  - romp-wordmark.png (here) — the dark-banner README hero.
+  - ../../chat-view/media/romp-wordmark.png — a TRANSPARENT-background copy for
+    the dashboard's inbox-zero empty state (served at /media; the pane is dark so
+    it floats on the pane's own background instead of carrying a banner of its own).
 """
 import base64
 import os
@@ -34,7 +42,9 @@ import make_icon  # sibling module — canonical swirl geometry + palette
 
 HERE = Path(__file__).resolve().parent
 FONT = HERE / "Anta-Regular.ttf"          # vendored (OFL, see OFL-Anta.txt)
-OUT = HERE / "romp-wordmark.png"
+OUT = HERE / "romp-wordmark.png"          # dark-banner README hero
+# transparent copy served by the kernel at /media for the inbox-zero empty state
+MEDIA_OUT = HERE.parent.parent / "chat-view" / "media" / "romp-wordmark.png"
 
 # --- design constants -------------------------------------------------------
 FONT_PX = 300
@@ -44,7 +54,10 @@ SWIRL_EM = 0.65            # the swirl, sized to read as a true lowercase "o"
 # mark lands low. Empirically -0.20em puts the measured swirl centroid exactly
 # on the o-slot center (verified offset 0px); re-tune if SWIRL_EM/CROP change.
 DY_EM = -0.20
-TEXT = "#e8eef5"          # off-white — matches the swirl's own core/ring color
+TEXT = "#e8eef5"          # off-white fallback — matches the swirl's core/ring color
+# each letter wears one of the swirl's three arm colors (make_icon.COLORS order:
+# blue, green, teal) so the word carries the mark's palette: R=blue, m=green, p=teal.
+R_COL, M_COL, P_COL = make_icon.COLORS
 CROP = "102 102 820 820"  # tight box around the glyph, centered on (512,512);
                           # roomy enough that the top node isn't clipped
 CANVAS_W, CANVAS_H = 1400, 460
@@ -72,21 +85,23 @@ def strong_swirl() -> str:
     return s
 
 
-def build_html() -> str:
+def build_html(transparent: bool = False) -> str:
     font_b64 = base64.b64encode(FONT.read_bytes()).decode()
+    bg = ("transparent" if transparent
+          else "radial-gradient(120% 120% at 50% 40%, #1b212b 0%, #0e1116 100%)")
     return f"""<!doctype html><html><head><meta charset="utf-8"><style>
   @font-face {{ font-family:'Anta'; src:url(data:font/ttf;base64,{font_b64}) format('truetype'); }}
   html,body {{ margin:0; padding:0; }}
   body {{ width:{CANVAS_W}px; height:{CANVAS_H}px; display:flex;
     align-items:center; justify-content:center;
-    background: radial-gradient(120% 120% at 50% 40%, #1b212b 0%, #0e1116 100%);
+    background: {bg};
     overflow:hidden; }}
   .mark {{ font-family:'Anta',sans-serif; font-size:{FONT_PX}px; line-height:1;
     color:{TEXT}; white-space:nowrap; letter-spacing:0.01em; }}
   .mark .sw {{ height:{SWIRL_EM}em; width:{SWIRL_EM}em; display:inline-block;
     vertical-align:middle; position:relative; top:{DY_EM}em; margin:0 -0.05em; }}
 </style></head><body>
-  <div class="mark"><span>R</span><span class="sw">{strong_swirl()}</span><span>mp</span></div>
+  <div class="mark"><span style="color:{R_COL}">R</span><span class="sw">{strong_swirl()}</span><span style="color:{M_COL}">m</span><span style="color:{P_COL}">p</span></div>
 </body></html>"""
 
 
@@ -106,15 +121,24 @@ def find_chrome() -> str:
     sys.exit("Chrome/Chromium not found — install it or set $CHROME to the binary path")
 
 
-def autotrim(path: Path) -> None:
-    """Crop the dark banner down to its content + even padding (no-op if no Pillow)."""
+def autotrim(path: Path, transparent: bool = False) -> None:
+    """Crop the banner down to its content + even padding (no-op if no Pillow).
+
+    For the dark banner we threshold on luminance (content vs dark bg); for the
+    transparent copy we threshold on the alpha channel instead, so the crop keeps
+    the mark's own light pixels and trims only the empty (alpha 0) surround.
+    """
     try:
         from PIL import Image
     except ImportError:
         print("  (Pillow not installed — skipping auto-trim)")
         return
-    im = Image.open(path).convert("RGB")
-    mask = im.convert("L").point(lambda v: 255 if v > 70 else 0)  # content vs dark bg
+    if transparent:
+        im = Image.open(path).convert("RGBA")
+        mask = im.getchannel("A").point(lambda v: 255 if v > 16 else 0)  # opaque vs empty
+    else:
+        im = Image.open(path).convert("RGB")
+        mask = im.convert("L").point(lambda v: 255 if v > 70 else 0)     # content vs dark bg
     bbox = mask.getbbox()
     if not bbox:
         return
@@ -124,18 +148,26 @@ def autotrim(path: Path) -> None:
              min(im.width, x1 + pad), min(im.height, y1 + pad))).save(path)
 
 
-def main() -> None:
-    chrome = find_chrome()
+def render(chrome: str, out: Path, transparent: bool = False) -> None:
+    """Rasterize the wordmark to `out` with headless Chrome, then auto-trim it."""
+    cmd = [chrome, "--headless", "--disable-gpu", "--hide-scrollbars",
+           "--force-device-scale-factor=2", f"--window-size={CANVAS_W},{CANVAS_H}"]
+    if transparent:
+        cmd.append("--default-background-color=00000000")  # keep page alpha in the screenshot
     with tempfile.TemporaryDirectory() as td:
         html = Path(td) / "wordmark.html"
-        html.write_text(build_html())
-        subprocess.run(
-            [chrome, "--headless", "--disable-gpu", "--hide-scrollbars",
-             "--force-device-scale-factor=2", f"--window-size={CANVAS_W},{CANVAS_H}",
-             f"--screenshot={OUT}", html.as_uri()],
-            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    autotrim(OUT)
-    print("wrote", OUT.relative_to(HERE.parent.parent))
+        html.write_text(build_html(transparent))
+        subprocess.run(cmd + [f"--screenshot={out}", html.as_uri()],
+                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    autotrim(out, transparent)
+    print("wrote", out.relative_to(HERE.parent.parent))
+
+
+def main() -> None:
+    chrome = find_chrome()
+    render(chrome, OUT)                                    # README hero (dark banner)
+    MEDIA_OUT.parent.mkdir(parents=True, exist_ok=True)
+    render(chrome, MEDIA_OUT, transparent=True)            # dashboard empty-state asset
 
 
 if __name__ == "__main__":

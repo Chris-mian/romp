@@ -111,15 +111,17 @@ body { display: flex; flex-direction: column; }
   padding: 12px 12px 28px;
   container-type: inline-size;   /* so the columns can stack responsively (see @container below) */
 }
-/* inbox zero → the romp swirl logo (no otters), stretched to fill the whole feed list (the user
-   2026-06-15). The logo's square bg matches the pane, so it sits seamlessly. Relative url() resolves
-   against dist/feed.css → /media in both hosts (browser kernel serves /media; VS Code localResourceRoot). */
+/* inbox zero → the romp tri-color WORDMARK, centered (the user 2026-06-22; was the plain swirl
+   square). This is the one unobtrusive home for the wordmark: it shows ONLY when there is nothing
+   to act on, so it costs no attention during real work. The PNG has a transparent bg, so it floats
+   on the pane's own background. Relative url() resolves against dist/feed.css → /media in both hosts
+   (browser kernel serves /media; VS Code localResourceRoot). */
 .feed-empty {
   flex: 1 1 auto; align-self: stretch; min-height: 320px; padding: 16px;
-  background-image: url(../media/romp-swirl-square.svg);
+  background-image: url(../media/romp-wordmark.png);
   background-repeat: no-repeat;
   background-position: center center;
-  background-size: contain;   /* as large as fits the list area, centered */
+  background-size: min(420px, 66%) auto;   /* a centered logo, not an edge-to-edge banner */
   user-select: none;
 }
 
