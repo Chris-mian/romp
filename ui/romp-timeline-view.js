@@ -2094,15 +2094,32 @@ class TimelinePanel {
         for (const e of evs) { const es = e.t, ee = (e.t1 != null ? e.t1 : e.t); const last = blocks[blocks.length - 1];
           if (last && last.sid === e.sid && es - last.end <= JMERGE_GAP) { last.end = Math.max(last.end, ee); last.members.push(e); }
           else blocks.push({ sid: e.sid, start: es, end: ee, members: [e] }); }
+        // Stack time-OVERLAPPING blocks into sub-lanes within this judge's row, so concurrent judging of
+        // DIFFERENT sessions on the same judge each stays visible and independently hoverable instead of
+        // drawing on top of each other (the user 2026-06-23). Same-session concurrent calls already merged
+        // above, so any overlap remaining here is cross-session. Greedy interval-partition over pixel extents
+        // (blocks are start-sorted): each block takes the first sub-lane whose previous bar already ended.
+        const laneEnds = [];                                  // right-edge px of the last bar placed in each sub-lane
         for (const b of blocks) {
-          let x1 = x(b.start), x2 = x(b.end);
-          if (x2 - x1 < JMARK_MINW) { const c = (x1 + x2) / 2; x1 = c - JMARK_MINW / 2; x2 = c + JMARK_MINW / 2; }
+          let bx1 = x(b.start), bx2 = x(b.end);
+          if (bx2 - bx1 < JMARK_MINW) { const c = (bx1 + bx2) / 2; bx1 = c - JMARK_MINW / 2; bx2 = c + JMARK_MINW / 2; }
+          b._x1 = bx1; b._x2 = bx2;
+          let lane = laneEnds.findIndex((endX) => bx1 >= endX);
+          if (lane === -1) { lane = laneEnds.length; laneEnds.push(bx2); } else laneEnds[lane] = bx2;
+          b._lane = lane;
+        }
+        const depth = Math.max(1, laneEnds.length);           // how many bars stack at the busiest instant
+        const slotTop = y - JROW / 2, laneH = JROW / depth;   // split the fixed row into `depth` sub-lanes
+        const barH = Math.max(2, Math.min(JBAR_H, laneH - 1));// shrink bars to fit; full 9px when depth === 1
+        for (const b of blocks) {
+          const x1 = b._x1, x2 = b._x2;
+          const by = slotTop + laneH * (b._lane + 0.5);       // vertical centre of this block's sub-lane
           const col = colorOf(b.sid), active = (nowS - b.end) >= 0 && (nowS - b.end) < 8;
           // fill = the SESSION being judged; outline = THIS judge's own colour
           // SOLID session colour, NO border (the user 2026-06-18): the judge's own colour already lives on
           // the row's horizontal rail, so a per-bar outline just repeated it. "Running now" reads as a fully
           // opaque bar; a settled one is slightly dimmed — that's the only cue, no stroke.
-          const r = el('rect', { x: x1, y: y - JBAR_H / 2, width: x2 - x1, height: JBAR_H, rx: 2.5,
+          const r = el('rect', { x: x1, y: by - barH / 2, width: x2 - x1, height: barH, rx: Math.min(2.5, barH / 2),
             fill: col, 'fill-opacity': active ? 1 : 0.82, 'data-judge': J.key });
           svg.appendChild(r);
           const html = () => {
@@ -2118,7 +2135,7 @@ class TimelinePanel {
             const rows = b.members.slice(-5).map((m) => '<div class="b" style="opacity:.85"><span class="k">' + esc(JUDGE_KIND[m.kind] || m.kind) + '</span> ' + esc((m.text || '').slice(0, 90)) + '</div>').join('');
             return '<div class="r"><span class="who" style="color:' + J.color + '">' + esc(J.key) + '</span><span class="ar">▸</span><span style="color:' + col + '">' + esc(nameOf(b.sid)) + '</span><span class="t">' + span + (b.members.length > 1 ? ' · ' + b.members.length : '') + '</span></div>' + usage + api + rows;
           };
-          const hit = el('rect', { x: x1 - 2, y: y - JROW / 2, width: (x2 - x1) + 4, height: JROW, fill: 'transparent' }); hit.style.cursor = 'default';
+          const hit = el('rect', { x: x1 - 2, y: by - laneH / 2, width: (x2 - x1) + 4, height: laneH, fill: 'transparent' }); hit.style.cursor = 'default';
           hit.addEventListener('mouseenter', (e) => this.showTip(html(), e));
           hit.addEventListener('mousemove', (e) => this.moveTip(e));
           hit.addEventListener('mouseleave', () => this.hideTip());
