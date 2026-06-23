@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import threading
 import time
 import uuid
@@ -43,6 +44,20 @@ def pick_identity_color(sid: str) -> tuple[str, str]:
     import zlib
     i = zlib.crc32(sid.encode()) % len(_PALETTE)
     return _PALETTE[i], _FG[i]
+
+
+def pretty_model(raw: str) -> str:
+    """A raw SDK model id → the short badge the tmux statusline shows, so SDK and tmux sessions read the
+    same and the model picker's 'current' highlight (which matches on the leading word) lights up.
+    'claude-opus-4-8' → 'Opus 4.8', 'claude-haiku-4-5-20251001' → 'Haiku 4.5', 'claude-fable-5' → 'Fable 5'.
+    Unrecognised ids pass through verbatim."""
+    if not raw:
+        return ""
+    m = re.match(r"claude-([a-z]+)-(\d+)(?:[-.](\d+))?", raw)
+    if not m:
+        return raw
+    fam, maj, minor = m.groups()
+    return f"{fam.capitalize()} {maj}" + (f".{minor}" if minor else "")
 
 
 def _block_to_dict(b):
@@ -284,6 +299,7 @@ class SdkSession:
         self.inflight = 0
         self.since = 0
         self.model = ""
+        self.chosen_model = reg.get("model") or ""   # the alias the user picked (opus/sonnet/…); self.model is the display name
         self.effort = ""
         self.perm_mode = self.mode
         self.ended = False
@@ -314,6 +330,19 @@ class SdkSession:
             self.loop.call_soon_threadsafe(
                 lambda: asyncio.ensure_future(self._do_interrupt()))
 
+    def set_model_live(self, model):
+        """Change the model on a CONNECTED session via the SDK control channel. No-op if not yet
+        connected — _options applies chosen_model on connect instead."""
+        if self.loop and self.client:
+            self.loop.call_soon_threadsafe(
+                lambda: asyncio.ensure_future(self._do_set_model(model)))
+
+    def set_mode_live(self, mode):
+        """Change the permission mode on a CONNECTED session via the SDK control channel."""
+        if self.loop and self.client:
+            self.loop.call_soon_threadsafe(
+                lambda: asyncio.ensure_future(self._do_set_mode(mode)))
+
     def resolve_ask(self, kind: str, payload=None):
         """Deliver a picker/permission UI action (answer/toggle/submit/custom/
         cancel/text) into the waiting can_use_tool coroutine."""
@@ -338,6 +367,18 @@ class SdkSession:
     async def _do_interrupt(self):
         try:
             await self.client.interrupt()
+        except Exception:
+            pass
+
+    async def _do_set_model(self, model):
+        try:
+            await self.client.set_model(model)
+        except Exception:
+            pass
+
+    async def _do_set_mode(self, mode):
+        try:
+            await self.client.set_permission_mode(mode)
         except Exception:
             pass
 
@@ -409,7 +450,7 @@ class SdkSession:
     def _on_message(self, msg, AssistantMessage, ResultMessage, SystemMessage):
         if isinstance(msg, SystemMessage) and msg.subtype == "init":
             d = msg.data if isinstance(msg.data, dict) else {}
-            self.model = d.get("model") or self.model
+            self.model = pretty_model(d.get("model")) or self.model
             self.perm_mode = d.get("permissionMode") or self.perm_mode
             fsid = d.get("session_id")
             if fsid and fsid != self.resume_sid:
@@ -417,7 +458,7 @@ class SdkSession:
                 self.backend._update_reg(self.sid, lastSid=fsid)
         elif isinstance(msg, AssistantMessage):
             if getattr(msg, "model", None):
-                self.model = msg.model
+                self.model = pretty_model(msg.model)
         elif isinstance(msg, ResultMessage):
             self.inflight = max(0, self.inflight - 1)
             if self.inflight == 0:
@@ -586,6 +627,8 @@ class SdkBackend:
             permission_mode=sess.mode,
             include_partial_messages=False,
         )
+        if sess.chosen_model and sess.chosen_model != "default":
+            kw["model"] = sess.chosen_model    # keep the picked model across a reconnect (runtime set_model is per-connection)
         if sess.resume_sid:
             kw["resume"] = sess.resume_sid
         else:
@@ -687,7 +730,25 @@ class SdkBackend:
             s.name = new_name
         return True
 
+    def set_model(self, sid: str, value: str) -> bool:
+        """Change the session's model. Persisted in the registry (so a reconnect keeps it) and applied
+        LIVE on a connected session via the SDK control channel — NOT a /model slash injection, which the
+        SDK input stream does not interpret. 'default' resets to the CLI default (set_model(None))."""
+        reg = read_reg(self.state_dir, sid)
+        if not reg:
+            return False
+        reg["model"] = value
+        write_reg(self.state_dir, sid, reg)
+        s = self.sessions.get(sid)
+        if s:
+            s.chosen_model = value
+            s.model = value.capitalize()   # immediate label feedback ("Opus"); next assistant turn republishes "Opus 4.8"
+            s.set_model_live(None if value in ("", "default") else value)
+        return True
+
     def set_mode(self, sid: str, mode: str) -> bool:
+        """Change the permission mode. Persisted in the registry and applied LIVE via the SDK control
+        channel (set_permission_mode) — not merely stored for the next reconnect."""
         reg = read_reg(self.state_dir, sid)
         if not reg:
             return False
@@ -695,7 +756,9 @@ class SdkBackend:
         write_reg(self.state_dir, sid, reg)
         s = self.sessions.get(sid)
         if s:
-            s.mode = mode           # applied on next (re)connect
+            s.mode = mode
+            s.perm_mode = mode      # snapshot reflects it immediately (clears the picker's meta-pending)
+            s.set_mode_live(mode)
         return True
 
     def owns(self, sid: str) -> bool:

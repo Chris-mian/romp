@@ -68,6 +68,14 @@ class PureTranslation(unittest.TestCase):
         self.assertEqual([o["label"] for o in ask["options"]], ["Allow", "Deny"])
         self.assertIn("rm -rf", ask["question"])
 
+    def test_pretty_model(self):
+        self.assertEqual(sb.pretty_model("claude-opus-4-8"), "Opus 4.8")
+        self.assertEqual(sb.pretty_model("claude-sonnet-4-6"), "Sonnet 4.6")
+        self.assertEqual(sb.pretty_model("claude-haiku-4-5-20251001"), "Haiku 4.5")  # trailing date dropped
+        self.assertEqual(sb.pretty_model("claude-fable-5"), "Fable 5")               # no minor version
+        self.assertEqual(sb.pretty_model(""), "")
+        self.assertEqual(sb.pretty_model("some-custom-id"), "some-custom-id")        # unrecognised → verbatim
+
     def test_identity_color_stable_and_in_palette(self):
         bg, fg = sb.pick_identity_color("11111111-2222-3333-4444-555555555555")
         self.assertIn(bg, sb._PALETTE)
@@ -197,6 +205,31 @@ class StateAndRegistryFiles(unittest.TestCase):
         self.assertEqual(self._last_awaiting("h1")["awaiting"], False)
 
 
+class SetModelModePure(unittest.TestCase):
+    """set_model / set_mode persist to the registry even with no live session thread (CI-safe,
+    no SDK). The live control-channel apply is covered by AskRoundTrip.test_set_model_and_mode_apply_live."""
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.be = sb.SdkBackend(self.d, "/bin/true", lambda *a, **k: None)
+
+    def test_set_model_persists_to_registry(self):
+        sid = self.be.spawn("m", self.d)                  # writes reg; no session thread until send()
+        self.assertTrue(self.be.set_model(sid, "opus"))
+        self.assertEqual(sb.read_reg(self.d, sid)["model"], "opus")
+        self.assertFalse(self.be.set_model("no-such-sid", "opus"))
+
+    def test_set_mode_persists_to_registry(self):
+        sid = self.be.spawn("m", self.d)
+        self.assertTrue(self.be.set_mode(sid, "plan"))
+        self.assertEqual(sb.read_reg(self.d, sid)["mode"], "plan")
+
+    def test_chosen_model_read_from_reg_on_construct(self):
+        sess = sb.SdkSession(self.be, {"sid": "x", "name": "n", "cwd": self.d, "model": "sonnet"})
+        self.assertEqual(sess.chosen_model, "sonnet")
+        plain = sb.SdkSession(self.be, {"sid": "y", "name": "n", "cwd": self.d})
+        self.assertEqual(plain.chosen_model, "")          # default: no model flag → CLI default
+
+
 # --- Runner + can_use_tool bridge (needs the SDK message classes) ---
 try:
     import claude_agent_sdk as _sdk
@@ -236,6 +269,8 @@ class AskRoundTrip(unittest.TestCase):
                 self.options = options
                 self.captured = None
                 self.interrupted = False
+                self.model_calls = []        # records set_model() over the control channel
+                self.mode_calls = []         # records set_permission_mode()
                 self._turnq = _aio.Queue()
                 FakeClient.instances.append(self)
 
@@ -251,6 +286,12 @@ class AskRoundTrip(unittest.TestCase):
 
             async def interrupt(self):
                 self.interrupted = True
+
+            async def set_model(self, model=None):
+                self.model_calls.append(model)
+
+            async def set_permission_mode(self, mode):
+                self.mode_calls.append(mode)
 
             async def receive_messages(self):
                 yield _sdk.SystemMessage("init", {
@@ -321,6 +362,31 @@ class AskRoundTrip(unittest.TestCase):
         self.assertTrue(self.backend.kill(sid))
         self.assertFalse(sb.read_reg(self.d, sid)["alive"])
         self.assertNotIn(sid, self.backend.live_sessions())
+
+    def test_set_model_and_mode_apply_live(self):
+        """The model/mode pickers go over the SDK CONTROL channel (set_model / set_permission_mode),
+        not a /model or /effort slash injection into the prompt stream (which the SDK ignores)."""
+        sid = self.backend.spawn("ctrl", self.d)
+        self.assertTrue(self.backend.send(sid, "hi"))
+        self.assertTrue(self._wait(lambda: self.Fake.instances and self.Fake.instances[0].captured),
+                        "session never connected")
+        c = self.Fake.instances[0]
+        self.backend.set_model(sid, "opus")
+        self.assertTrue(self._wait(lambda: "opus" in c.model_calls),
+                        "model alias not sent via set_model control request")
+        self.backend.set_model(sid, "default")
+        self.assertTrue(self._wait(lambda: None in c.model_calls),
+                        "'default' must reset via set_model(None)")
+        self.backend.set_mode(sid, "plan")
+        self.assertTrue(self._wait(lambda: "plan" in c.mode_calls),
+                        "mode not sent via set_permission_mode control request")
+        # persisted so a reconnect keeps the choice; _options carries chosen_model
+        self.assertEqual(sb.read_reg(self.d, sid)["model"], "default")
+        self.assertEqual(sb.read_reg(self.d, sid)["mode"], "plan")
+        sess = self.backend.sessions[sid]
+        sess.chosen_model = "sonnet"
+        opts = self.backend._options(sess, _sdk.ClaudeAgentOptions)
+        self.assertEqual(opts.model, "sonnet")
 
 
 if __name__ == "__main__":

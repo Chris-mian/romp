@@ -866,8 +866,10 @@ def _sdk_route(msg, client):
         be.on_ask(sid, "text", str(msg["text"]))
     elif t == "setMode" and msg.get("value"):
         be.set_mode(sid, str(msg["value"])); _push_all()
-    elif t in ("setModel", "setEffort") and msg.get("value"):
-        be.send(sid, "/%s %s" % ("model" if t == "setModel" else "effort", str(msg["value"])))
+    elif t == "setModel" and msg.get("value"):
+        be.set_model(sid, str(msg["value"])); _push_all()
+    elif t == "setEffort" and msg.get("value"):
+        be.send(sid, "/effort %s" % str(msg["value"]))   # effort has no SDK runtime control — reconnect path lands in a follow-up
     elif t == "compactSession":
         be.send(sid, "/compact")
     elif t == "renameSession" and msg.get("name"):
