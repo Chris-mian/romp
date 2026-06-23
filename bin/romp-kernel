@@ -180,7 +180,8 @@ def _version_info():
         pass
     return {"kernel_sha": _kernel_sha(), "pid": os.getpid(), "started": int(_STARTED),
             "uptime_s": int(time.time() - _STARTED), "dist_ver": _dist_ver(), "bundles": bundles,
-            "autoNudge": _auto_nudge_on()}   # server-side toggle state → the gear checkbox reflects the kernel
+            "autoNudge": _auto_nudge_on(),   # server-side toggle state → the gear checkbox reflects the kernel
+            "defaultDir": _tilde(_default_create_dir())}   # the resolved default new-session dir → the gear "Default directory" field
 
 
 def _dist_ver():
@@ -810,9 +811,47 @@ def _session_list(now, tmux):
     return items
 
 
+_DEFAULT_DIR_FILE = Path(os.path.expanduser("~/.config/romp/default-dir"))
+
+
+def _read_default_dir_file():
+    """The user-set default new-session dir (gear dialog or `romp --default-dir`), or "" — persisted in a
+    FILE because a web dialog can't set an env var. ~ / $VARs expanded; only returned if it still exists."""
+    try:
+        v = _DEFAULT_DIR_FILE.read_text().strip()
+    except OSError:
+        return ""
+    p = os.path.expanduser(os.path.expandvars(v)) if v else ""
+    return p if (p and os.path.isdir(p)) else ""
+
+
 def _default_create_dir():
-    """The fallback working directory for a new session when the UI doesn't specify one."""
-    return os.environ.get("ROMP_SERVE_CWD") or os.path.expanduser("~")
+    """The default working directory for a new session: the user-set persisted file FIRST (settable from
+    the gear dialog or `romp --default-dir` — a web dialog can't set env vars, hence a file), else the
+    launch/serve dir (ROMP_SERVE_CWD, else the install ROMPHOME), else ~. The file OVERRIDES the env/install
+    default; the env/install default is the base it picks up when nothing is set (the user 2026-06-23)."""
+    return (_read_default_dir_file() or os.environ.get("ROMP_SERVE_CWD")
+            or os.environ.get("ROMPHOME") or os.path.expanduser("~"))
+
+
+def _set_default_dir(raw):
+    """Persist (or clear) the user-set default new-session dir → (resolved_path_or_'', error). Validated
+    like a real create dir (must exist); empty/blank CLEARS the file (revert to the env/install default)."""
+    if not raw or not str(raw).strip():
+        try:
+            _DEFAULT_DIR_FILE.unlink()
+        except OSError:
+            pass
+        return "", None
+    path, err = _resolve_create_dir(raw)
+    if err:
+        return None, err
+    try:
+        _DEFAULT_DIR_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _DEFAULT_DIR_FILE.write_text(path + "\n")
+    except OSError as e:
+        return None, "could not save default dir: %s" % e
+    return path, None
 
 
 def _resolve_create_dir(raw):
@@ -4503,9 +4542,12 @@ _GEAR_HTML = ("<button id=rrefresh title='Restart the romp kernel' aria-label=Re
               "<option value=tmux>tmux (terminal)</option><option value=sdk>SDK (headless)</option>"
               "</select></span></div>"
               "<div class='rs-row rs-sep' style='cursor:default'><span style='flex:1 1 auto'><b>Default directory</b>"
-              "<span class=rs-sub>Prefills the directory for a NEW session (still editable per session). A session's directory is fixed once it starts. Blank → the kernel's serve directory. ~ and $VARs are expanded.</span>"
-              "<input id=rs-defaultdir type=text spellcheck=false placeholder='~/path/to/project' style='margin-top:5px;width:100%;box-sizing:border-box;background:#1e1e1e;color:#ccc;"
-              "border:1px solid #3a3a3a;border-radius:5px;padding:3px 6px'></span></div>"
+              "<span class=rs-sub>The default directory for NEW sessions (still editable per session). Persisted kernel-side — also settable with <code>romp --default-dir</code>. Falls back to the install/serve default (ROMPHOME) until you set one; blank reverts to it. ~ and $VARs expand.</span>"
+              "<div style='display:flex;gap:6px;margin-top:5px'>"
+              "<input id=rs-defaultdir type=text spellcheck=false placeholder='install/serve default' style='flex:1 1 auto;min-width:0;box-sizing:border-box;background:#1e1e1e;color:#ccc;"
+              "border:1px solid #3a3a3a;border-radius:5px;padding:3px 6px'>"
+              "<button id=rs-defaultdir-browse type=button style='flex:0 0 auto;cursor:pointer;background:#2a2a2a;color:#ccc;border:1px solid #3a3a3a;border-radius:5px;padding:3px 8px'>Browse…</button>"
+              "</div></span></div>"
               "<label class='rs-row rs-sep'><input type=checkbox id=rs-autonudge>"
               "<span><b>Auto Nudge</b>"
               "<span class=rs-sub>When a session goes idle but its goal still shows working (not blocked, not awaiting you), automatically nudge it once for a status update.</span>"
@@ -4553,11 +4595,15 @@ if(an)an.addEventListener('change',function(){try{window.acquireVsCodeApi&&windo
 cm.addEventListener('change',function(){var s=load();s.colormap=cm.value;save(s);
 try{window.acquireVsCodeApi&&window.acquireVsCodeApi().postMessage({type:'setColormap',name:cm.value});}catch(e){}});
 if(bk)bk.addEventListener('change',function(){var s=load();s.backend=bk.value;save(s);emit();});   // webview-local pref read at createSession time (render.ts); no kernel round-trip
-if(dd)dd.addEventListener('change',function(){var s=load();s.defaultDir=dd.value.trim();save(s);emit();});   // prefilled into the new-session field (render.ts); validated server-side at createSession
+if(dd)dd.addEventListener('change',function(){var v=dd.value.trim();var s=load();s.defaultDir=v;save(s);   // same-tab cache for the picker prefill
+try{window.acquireVsCodeApi&&window.acquireVsCodeApi().postMessage({type:'setDefaultDir',value:v});}catch(e){}});   // persist kernel-side: _default_create_dir reads this file FIRST
+var ddb=document.getElementById('rs-defaultdir-browse');
+if(ddb)ddb.addEventListener('click',function(){try{window.acquireVsCodeApi&&window.acquireVsCodeApi().postMessage({type:'browseDir',target:'gear'});}catch(e){}});   // native folder dialog → render.ts fills #rs-defaultdir + fires change
 function lv(){var t=document.querySelector('script[src*="feed.js"]');
 var m=t&&t.getAttribute('src').match(/[?&]v=(\d+)/);return m?+m[1]:0;}
 function fill(){fetch('/version',{cache:'no-store'}).then(function(r){return r.json();}).then(function(v){
 if(an)an.checked=!!v.autoNudge;
+if(dd&&typeof v.defaultDir==='string')dd.value=v.defaultDir;   // the kernel's persisted default (file → env/install) is authoritative
 var x=lv();b.innerHTML='kernel '+(v.kernel_sha||'?')+'\nserving v'+
 v.dist_ver+'\nthis tab v'+(x||'?');
 }).catch(function(){b.textContent='(version unavailable)';});}
@@ -5411,11 +5457,18 @@ class Handler(BaseHTTPRequestHandler):
                     _reply(c, {"type": "droppedPath", "path": fp})
             threading.Thread(target=_pf, daemon=True).start()
         elif msg and msg.get("type") == "browseDir":
-            def _bd(c=client):                                    # Browse → native FOLDER dialog (blocks) → fill the dir field
+            tgt = str(msg.get("target") or "picker")          # which dir field to fill: the new-session picker or the gear
+            def _bd(c=client, t=tgt):                          # Browse → native FOLDER dialog (blocks) → fill that field
                 fp = _pick_folder()
                 if fp:
-                    _reply(c, {"type": "browseResult", "path": _tilde(fp)})
+                    _reply(c, {"type": "browseResult", "path": _tilde(fp), "target": t})
             threading.Thread(target=_bd, daemon=True).start()
+        elif msg and msg.get("type") == "setDefaultDir":      # gear/CLI persist the default new-session dir (a file)
+            path, err = _set_default_dir(msg.get("value"))
+            if err:
+                client["send"](json.dumps({"type": "warn", "text": err}))
+            else:
+                client["send"](json.dumps({"type": "defaultDirSaved", "value": _tilde(_default_create_dir())}))
         # ---- statusline model / effort / permission-mode pickers (the host injects the change) ----
         elif msg and msg.get("type") == "setModel" and msg.get("id") and msg.get("value"):
             _tmux_send(_name_of(msg["id"]) or msg["id"], "/model " + str(msg["value"]), model_cmd=True)

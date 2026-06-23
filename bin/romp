@@ -649,6 +649,28 @@ if [[ "${1:-}" == "--version" ]]; then
     exec romp-version
 fi
 
+# `romp --default-dir [PATH]` — the default working directory for NEW sessions (what the picker prefills).
+# Persisted to ~/.config/romp/default-dir, read FIRST by the kernel's _default_create_dir() (before the
+# install/serve default), so the gear dialog and this CLI share one source of truth. No arg prints the
+# current value; an empty arg ("") clears it (revert to the install/serve default). Read live — no restart.
+if [[ "${1:-}" == "--default-dir" ]]; then
+    _dd_file="$HOME/.config/romp/default-dir"
+    if [[ $# -lt 2 ]]; then
+        if [[ -s "$_dd_file" ]]; then cat "$_dd_file"; else echo "(unset — using the install/serve default)"; fi
+        exit 0
+    fi
+    if [[ -z "$2" ]]; then
+        rm -f "$_dd_file"; echo "default new-session dir cleared (revert to the install/serve default)."
+        exit 0
+    fi
+    _dd="${2/#\~/$HOME}"
+    _dd="$(cd "$_dd" 2>/dev/null && pwd -P)" || { echo "romp --default-dir: not a directory: $2" >&2; exit 1; }
+    mkdir -p "$(dirname "$_dd_file")"
+    printf '%s\n' "$_dd" > "$_dd_file"
+    echo "default new-session dir set to: $_dd"
+    exit 0
+fi
+
 # `romp --serve on|off|status` — persist the kernel's serve-host so the supervisor
 # (romp --on → romp-manager → romp-serve → romp-kernel) binds the tailnet WITHOUT a
 # per-launch flag. `on` exposes to the tailnet/phone (token-gated; the token is

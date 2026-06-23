@@ -2966,13 +2966,45 @@ class CreateDirResolution(unittest.TestCase):
         self._saved_names = km.NAMES
         km.NAMES = self.names
         self._saved_env = os.environ.get("ROMP_SERVE_CWD")
+        self._saved_home = os.environ.get("ROMPHOME")
+        os.environ.pop("ROMPHOME", None)
+        self._saved_ddfile = km._DEFAULT_DIR_FILE
+        km._DEFAULT_DIR_FILE = Path(tempfile.mkdtemp()) / "default-dir"   # isolate from a real ~/.config/romp/default-dir
 
     def tearDown(self):
         km.NAMES = self._saved_names
-        if self._saved_env is None:
-            os.environ.pop("ROMP_SERVE_CWD", None)
-        else:
-            os.environ["ROMP_SERVE_CWD"] = self._saved_env
+        km._DEFAULT_DIR_FILE = self._saved_ddfile
+        for var, val in (("ROMP_SERVE_CWD", self._saved_env), ("ROMPHOME", self._saved_home)):
+            if val is None:
+                os.environ.pop(var, None)
+            else:
+                os.environ[var] = val
+
+    def test_default_dir_file_overrides_env_and_set_clear_validate(self):
+        """The persisted file (gear/CLI) OVERRIDES the env/install default; _set_default_dir writes/clears/
+        validates; a file pointing at a now-missing dir is ignored (the user 2026-06-23)."""
+        os.environ["ROMP_SERVE_CWD"] = "/tmp"
+        self.assertEqual(km._default_create_dir(), "/tmp")               # no file → env/install default
+        d = tempfile.mkdtemp()
+        path, err = km._set_default_dir(d)
+        self.assertIsNone(err)
+        self.assertEqual(path, os.path.realpath(d))
+        self.assertEqual(km._default_create_dir(), os.path.realpath(d))  # file OVERRIDES the env
+        _, err2 = km._set_default_dir("/no/such/xyz123")
+        self.assertIn("not found", err2)                                 # a bad path is rejected
+        self.assertEqual(km._default_create_dir(), os.path.realpath(d))  # ...and the file is unchanged
+        km._set_default_dir("")                                          # clear
+        self.assertEqual(km._default_create_dir(), "/tmp")               # revert to the env default
+        km._DEFAULT_DIR_FILE.write_text("/gone/missing\n")               # file points at a now-missing dir
+        self.assertEqual(km._default_create_dir(), "/tmp")               # → ignored, falls through
+
+    def test_version_info_includes_default_dir(self):
+        self.assertIn("defaultDir", km._version_info())                  # the gear loads its field from here
+
+    def test_gear_persists_default_dir_with_browse(self):
+        self.assertIn("rs-defaultdir-browse", km._GEAR_HTML)             # the gear's Browse button
+        self.assertIn("setDefaultDir", km._GEAR_JS)                      # change → kernel-side persist (the file)
+        self.assertIn("target:'gear'", km._GEAR_JS)                      # Browse posts browseDir target=gear
 
     def test_blank_dir_falls_back_to_default_no_error(self):
         os.environ["ROMP_SERVE_CWD"] = "/tmp"

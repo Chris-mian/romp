@@ -1819,7 +1819,7 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
   const dirWrap = overlay.querySelector(".picker-dir") as HTMLElement | null;
   if (dirWrap) dirWrap.style.display = pick ? "none" : "";   // dir only matters when creating, not picking
   const di = document.getElementById("picker-dir") as HTMLInputElement | null;
-  if (di) di.value = loadSettings().defaultDir || kernelDefaultDir || "";   // gear default, else the kernel's real default path
+  if (di) di.value = kernelDefaultDir || loadSettings().defaultDir || "";   // the kernel's persisted default (file→env) wins; localStorage is a same-tab cache
   const s = document.getElementById("picker-search") as HTMLInputElement | null;
   if (s) { s.value = ""; s.placeholder = prompt || "Search sessions, or type a new session's name…"; s.focus(); }
   filterPicker(""); // reset row visibility and disarm the New-session button from a prior open
@@ -1980,7 +1980,7 @@ function renderPicker(items: any[]) {
   // Prefill the dir field with the kernel's real default path once it arrives (only if untouched + no gear
   // default) — so the actual default is written in there as an editable starting point (the user 2026-06-23).
   const di = document.getElementById("picker-dir") as HTMLInputElement | null;
-  if (di && !di.value) di.value = loadSettings().defaultDir || kernelDefaultDir || "";
+  if (di && !di.value) di.value = kernelDefaultDir || loadSettings().defaultDir || "";
   // Re-apply the current filter (the list may refresh while the user is mid-
   // type) — it also sets the active row / arms the New-session button.
   const s = document.getElementById("picker-search") as HTMLInputElement | null;
@@ -3796,8 +3796,13 @@ window.addEventListener("message", (e: MessageEvent) => {
   else if (m.type === "prevTab") cycleTab(-1);
   else if (m.type === "sessionList") { if (typeof m.defaultDir === "string") kernelDefaultDir = m.defaultDir; renderPicker(m.items || []); }
   else if (m.type === "browseResult" && typeof m.path === "string") {   // native Browse dialog returned a folder
-    const di = document.getElementById("picker-dir") as HTMLInputElement | null;
-    if (di) { di.value = m.path; di.focus(); }
+    if (m.target === "gear") {                                          // the gear's "Default directory" Browse
+      const gd = document.getElementById("rs-defaultdir") as HTMLInputElement | null;
+      if (gd) { gd.value = m.path; gd.dispatchEvent(new Event("change")); }   // fire the gear's change → persist kernel-side
+    } else {
+      const di = document.getElementById("picker-dir") as HTMLInputElement | null;
+      if (di) { di.value = m.path; di.focus(); }
+    }
   }
   else if (m.type === "openPicker") openPicker(!!m.pick, m.prompt, !!m.allowNew);
   // The host asks US to confirm (in-page, no native dialogs): ending a live
