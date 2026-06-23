@@ -632,5 +632,86 @@ class PendingQueueLoop(unittest.TestCase):
                         "pending clears the instant B starts processing")
 
 
+@unittest.skipUnless(_HAVE_SDK, "claude_agent_sdk not installed")
+class InterruptWithQueue(unittest.TestCase):
+    """Interrupt must NOT settle inflight or release the next queued turn itself — that's the
+    double-count api caught (the forced interrupt-settle AND the aborted turn's ResultMessage both
+    decrement, so the next turn is released early while the prior is still counted). Modeled
+    deterministically with a STALLED interrupt (no ResultMessage, like InterruptSettlesStall) so
+    there is no result-ordering race: the interrupted turn stays in flight, so its queued follower
+    must WAIT (honest queue-pause; the CLI is stuck) rather than be force-fed into a wedged CLI.
+      fix : B stays queued, session reads 'waiting' (inflight held, display only).
+      bug : the forced settle frees inflight → B is popped + fed into the stuck CLI."""
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self._orig = _sdk.ClaudeSDKClient
+        import asyncio as _aio
+
+        class StallClient:
+            instances = []
+            received = []                  # turn texts actually fed to the SDK, in order
+
+            def __init__(self, options=None, transport=None):
+                self.options = options
+                self.interrupted = False
+                self._turnq = _aio.Queue()
+                StallClient.instances.append(self)
+
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
+
+            async def query(self, prompt, session_id="default"):
+                async for turn in prompt:
+                    await self._turnq.put(turn)
+
+            async def interrupt(self):
+                self.interrupted = True    # interrupt sent, but the wedged turn never produces a result
+
+            async def receive_messages(self):
+                yield _sdk.SystemMessage("init", {"session_id": self.options.session_id or "fsid"})
+                while True:
+                    turn = await self._turnq.get()
+                    StallClient.received.append(turn["message"]["content"][0]["text"])
+                    await _aio.sleep(3600)           # stall this turn forever (never a ResultMessage)
+
+        _sdk.ClaudeSDKClient = StallClient
+        self.Fake = StallClient
+        StallClient.instances = []
+        StallClient.received = []
+        self.backend = sb.SdkBackend(self.d, "/bin/true", lambda *a, **k: None)
+
+    def tearDown(self):
+        _sdk.ClaudeSDKClient = self._orig
+
+    def _wait(self, pred, timeout=6.0):
+        end = time.time() + timeout
+        while time.time() < end:
+            if pred():
+                return True
+            time.sleep(0.01)
+        return False
+
+    def test_interrupt_does_not_release_or_double_count_the_queue(self):
+        sid = self.backend.spawn("x", self.d)
+        self.backend.send(sid, "A")
+        self.assertTrue(self._wait(lambda: self.Fake.received == ["A"]), "A is in flight")
+        self.backend.send(sid, "B")
+        self.assertTrue(self._wait(lambda: self.backend.pending_queued(sid) == ["B"]))
+
+        # Interrupt the (wedged) A. Interrupt must only FLAG it — not drop inflight or release B.
+        self.assertTrue(self.backend.interrupt(sid))
+        self.assertTrue(self._wait(lambda: self.Fake.instances[0].interrupted), "client.interrupt() sent")
+
+        # Settle window: a forced-settle-on-interrupt (the bug) would free inflight and pop B into the
+        # stuck CLI here. The fix holds inflight, so B is never released no matter how long we wait.
+        time.sleep(0.3)
+        self.assertEqual(self.backend.pending_queued(sid), ["B"],
+                         "B stays queued behind the still-in-flight interrupted turn — not force-released")
+        self.assertEqual(self.Fake.received, ["A"], "B was NOT fed to the SDK by the interrupt")
+        self.assertEqual(self.backend.live_sessions().get(sid, {}).get("state"), "waiting",
+                         "the interrupted turn reads 'waiting' (display) while inflight is held — not 'working'")
+
+
 if __name__ == "__main__":
     unittest.main()

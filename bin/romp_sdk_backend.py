@@ -307,6 +307,7 @@ class SdkSession:
         self.since = 0
         self.model = ""
         self.retrying = False                        # an api_retry storm (API rate-limit/overload) is stalling the turn → 'retrying', not 'working'
+        self._interrupted = False                    # user interrupted the in-flight turn → snapshot reads 'waiting' (display only; inflight stays event-driven)
         self.chosen_model = reg.get("model") or ""   # the alias the user picked (opus/sonnet/…); self.model is the display name
         self.effort = reg.get("effort") or DEFAULT_EFFORT   # connect-time --effort; tracked since the init msg doesn't echo it
         self.perm_mode = self.mode
@@ -412,15 +413,15 @@ class SdkSession:
             await self.client.interrupt()
         except Exception:
             pass
-        # Settle the turn even if the CLI is slow to abort (e.g. stuck in an API-retry backoff): the snapshot
-        # reads 'working' purely from inflight>0, so a user interrupt must drop it here — otherwise the session
-        # reads 'working' forever after an interrupt that never produced a ResultMessage (the user 2026-06-23).
-        if self.inflight:
-            self.inflight = 0
-            append_state(self.backend.state_dir, self.sid, "waiting")
-            self.backend._poke()
-            if self._input_wake is not None:   # turn settled → let the next queued turn (if any) start
-                self._input_wake.set()
+        # Don't touch inflight or release the next queued turn here. A normal interrupt aborts the turn
+        # and the SDK emits its ResultMessage, which does the SINGLE decrement + the natural release in
+        # _on_message; forcing inflight=0 here too would double-count and corrupt the next turn's release.
+        # Instead flag the interrupt: the snapshot reads 'waiting' while inflight>0 so the user sees it
+        # stopped (this is what kills the 2026-06-23 zombie-working), without a second decrement. A truly-
+        # wedged turn that never results keeps inflight>0 and PAUSES the queue — honest (the CLI is stuck;
+        # kill recovers) rather than feeding the next turn into a stuck CLI.
+        self._interrupted = True
+        self.backend._poke()
 
     async def _do_set_model(self, model):
         try:
@@ -479,6 +480,7 @@ class SdkSession:
                     continue
                 self.since = int(time.time())        # inflight was 0 → a new turn starts now
                 self.inflight += 1
+                self._interrupted = False            # a fresh turn → clear any stale interrupt flag
                 append_state(self.backend.state_dir, self.sid, "working")
                 self.backend._poke()
                 yield {"type": "user",
@@ -546,6 +548,7 @@ class SdkSession:
                 self.model = pretty_model(msg.model)
         elif isinstance(msg, ResultMessage):
             self.retrying = False
+            self._interrupted = False              # this turn's result settled it (whether it finished or was interrupted)
             self.inflight = max(0, self.inflight - 1)
             if self.inflight == 0:
                 append_state(self.backend.state_dir, self.sid, "waiting")
@@ -657,7 +660,10 @@ class SdkSession:
 
     def snapshot(self) -> dict:
         if self.inflight > 0:
-            state, since = ("retrying" if self.retrying else "working"), self.since
+            # a user interrupt shows 'waiting' (stopped) even though inflight stays 1 until the
+            # aborted turn's ResultMessage settles it — see _do_interrupt.
+            state = "waiting" if self._interrupted else ("retrying" if self.retrying else "working")
+            since = self.since
         else:
             ls = last_state(self.backend.state_dir, self.sid)
             state, since = ls.get("state") or "waiting", ls.get("t") or 0
