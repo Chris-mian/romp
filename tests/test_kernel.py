@@ -1351,9 +1351,14 @@ class ViewBuilder(unittest.TestCase):
                         "a typed follow-up ends with the goal-id alone — no romp-injected (blue bubble)")
         self.assertNotIn("<!-- romp-injected -->", typed)
         self.assertEqual(re.search(r"romp-goal-id:\s*([^\s>]+)", typed).group(1), iid)   # the judge's parser
-        nudge = km._followup_body(iid, "ctx", "do the thing", injected=True)   # romp's OWN nudge
+        nudge = km._followup_body(iid, "ctx", "do the thing", injected=True)   # romp's OWN nudge (the BUTTON)
         self.assertTrue(nudge.endswith("\n\n<!-- romp-injected --><!-- romp-goal-id: " + iid + " -->"),
                         "a nudge adds romp-injected (gray bubble) ahead of the goal-id")
+        self.assertNotIn("<!-- romp-auto -->", nudge, "a Nudge BUTTON click is NOT auto → no romp-auto marker")
+        # an AUTO-nudge (the kernel's background _auto_nudge_tick) ALSO carries romp-auto → the romp-logo marker
+        auto = km._followup_body(iid, "ctx", "status?", injected=True, auto=True)
+        self.assertTrue(auto.endswith("\n\n<!-- romp-injected --><!-- romp-auto --><!-- romp-goal-id: " + iid + " -->"),
+                        "an auto-nudge carries BOTH romp-injected and romp-auto, then the goal-id")
 
     def test_session_list_for_picker(self):
         # the + picker's payload (requestSessions → sessionList). Was always empty: bin/romp-kernel had

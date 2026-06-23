@@ -50,6 +50,11 @@ POSTAL_RE = re.compile(r"romp-msg-id:\s*(\S+)")
 # you type yourself — those are yours (blue human bubble), so a goal-id alone must NOT author romp; the
 # kernel adds romp-injected for nudges only (the user 2026-06-20).
 ROMP_INJECT_RE = re.compile(r"romp-injected\b")
+# romp-AUTO: an AUTO-nudge (the kernel's background _auto_nudge_tick), distinct from a Nudge BUTTON click or a
+# typed follow-up — both of which are romp-injected too. Only auto-nudges (+ postal) are "from romp" for the
+# romp-logo marker; the user's own button/follow-ups are not (the user 2026-06-23). Rides alongside
+# romp-injected; an atom carrying it gets atom["rompAuto"]=True for the timeline/chat to mark.
+ROMP_AUTO_RE = re.compile(r"romp-auto\b")
 # Claude Code's slash-command transcript wrappers (`/model`, `/effort`, …). They are
 # user lines with NO promptSource and isMeta unset, so the absent->human default would
 # otherwise mint a spurious human turn for every slash command. They are harness echoes,
@@ -392,6 +397,8 @@ class FileAdapter:
                 author = author_of(blocks, ps, postal_index, getattr(self, "sdk_human", False))
                 if author is not None:
                     atom["author"] = author
+                if ROMP_AUTO_RE.search(_text_of(blocks)):   # an AUTO-nudge → flag it (vs a button/typed follow-up)
+                    atom["rompAuto"] = True
                 out.append(atom)
             elif t == "system" and r.get("subtype") == "compact_boundary":
                 cm = r.get("compactMetadata") or r.get("compact_metadata") or {}

@@ -177,18 +177,27 @@ function whiteBoltPaths(panel: any): number {
   walk(panel.svg);
   return n;
 }
-test("a romp-nudge prompt draws the romp swirl inside its dot (not a ⚡ bolt); a normal prompt does not", () => {
+test("an AUTO-nudge prompt draws the romp swirl in its dot; a button-nudge or normal prompt does not", () => {
   const base = new TimelinePanel(makeNode("div"));
   base.data = synthData();
   base.draw();
   const before = swirlImages(base);
+  // an AUTO-nudge (t.nudgeAuto) → the swirl
   const panel = new TimelinePanel(makeNode("div"));
   const data: any = synthData();
-  data.turns.S1[0].nudge = true;                       // mark exactly one prompt as a romp nudge
+  data.turns.S1[0].nudgeAuto = true;
   panel.data = data;
   assert.doesNotThrow(() => panel.draw());
-  assert.equal(swirlImages(panel), before + 1, "exactly one romp swirl image is added for the single nudge prompt");
+  assert.equal(swirlImages(panel), before + 1, "exactly one romp swirl is added for the single AUTO-nudge");
   assert.equal(whiteBoltPaths(panel), 0, "the old white ⚡ bolt path is gone");
+  // a Nudge-BUTTON / retry nudge (romp-injected but NOT auto) → NO swirl, just a normal dot (the user 2026-06-23)
+  const btn = new TimelinePanel(makeNode("div"));
+  const d2: any = synthData();
+  d2.turns.S1[0].nudge = true;          // romp-injected…
+  d2.turns.S1[0].nudgeAuto = false;     // …but user-triggered
+  btn.data = d2;
+  assert.doesNotThrow(() => btn.draw());
+  assert.equal(swirlImages(btn), before, "a button/retry nudge draws NO swirl");
 });
 
 // A segment that straddled a host sleep renders as several bars (kernel _awake_spans); only the FIRST

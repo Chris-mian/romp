@@ -371,6 +371,27 @@ class Authorship(unittest.TestCase):
         self.assertEqual([_trigger_author(t) for t in out["turns"]],
                          ["human", "sdk", {"peer": PEER}])
 
+    def test_romp_auto_marker_flags_rompAuto_but_a_button_nudge_does_not(self):
+        # An AUTO-nudge (kernel _auto_nudge_tick) carries romp-injected AND romp-auto → its trigger atom is
+        # flagged rompAuto; a Nudge BUTTON (romp-injected only) is NOT (the user 2026-06-23). The timeline/chat
+        # key the romp-logo on rompAuto, so only auto-nudges (+ postal) are marked, never the user's clicks.
+        recs = [
+            uline(T0, "Status?\n\n<!-- romp-injected --><!-- romp-auto --><!-- romp-goal-id: g1 -->", "u1"),
+            aline(T0 + 10, "ok", "a1", "u1"),
+            uline(T0 + 100, "Nudge\n\n<!-- romp-injected --><!-- romp-goal-id: g1 -->", "u2", "a1"),
+            aline(T0 + 110, "ok2", "a2", "u2"),
+        ]
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / (SID + ".jsonl")
+            path.write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+            out = em.parse_session(str(path), rompuuid=SID, name="impl", dir="/TESTDIR",
+                                   candidate_files=[str(path)], states=None, postal_log=[], now=NOW)
+        def trig_atom(turn):
+            trig = turn.get("trigger") or {}
+            return next((x for x in turn["atoms"] if x.get("uuid") == trig.get("uuid")), None)
+        autos = [bool((trig_atom(t) or {}).get("rompAuto")) for t in out["turns"] if t.get("trigger")]
+        self.assertEqual(autos, [True, False], "auto-nudge trigger is rompAuto; the button-nudge trigger is not")
+
     def test_system_task_notification_folds_in(self):
         out = run_scenario("author_kinds")
         self.assertEqual(len(out["turns"]), 3, "system atom must NOT open a turn")

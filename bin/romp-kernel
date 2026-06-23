@@ -291,7 +291,7 @@ def _session_backend(sid, tm):
     return "sdk" if (be and be.owns(sid)) else "tmux"
 
 
-def _followup_body(iid, title, text, injected=False):
+def _followup_body(iid, title, text, injected=False, auto=False):
     """Pane message for a feed follow-up: QUOTE the ask being followed up ('> <ask>') above the user's
     text, so the recipient session knows what the reply answers. An explicit `title` (the group modal) is
     used verbatim; otherwise the quote is built from the goal NODE — its text, the TOP goal it sits under,
@@ -338,7 +338,10 @@ def _followup_body(iid, title, text, injected=False):
     # whether YOU typed the follow-up or romp nudged, since either reopens the goal. romp-injected (NUDGES
     # ONLY, injected=True): authors the message to romp so the chat renders the GRAY romp bubble. A follow-up
     # you TYPE is yours → blue human bubble, so it gets NO romp-injected marker (the user 2026-06-20).
-    tail = ("<!-- romp-injected -->" if injected else "") + "<!-- romp-goal-id: " + str(iid) + " -->"
+    # romp-auto (AUTO-nudges only): distinguishes the kernel's background nudge from a Nudge BUTTON click (both
+    # are romp-injected) so only auto-nudges get the romp-logo marker on the timeline/chat (the user 2026-06-23).
+    tail = (("<!-- romp-injected -->" if injected else "") + ("<!-- romp-auto -->" if auto else "")
+            + "<!-- romp-goal-id: " + str(iid) + " -->")
     return msg + "\n\n" + tail
 
 
@@ -712,7 +715,7 @@ def _auto_nudge_tick(now, tmux):
         if jd.CLOSER_ON and lt_id not in jd._closed_turns(store):
             continue
         count = rec.get("count", 0) + 1
-        _tmux_send(_name_of(sid) or sid, _followup_body(gid, None, AUTO_NUDGE_TEXT, injected=True))   # romp's own nudge → gray bubble
+        _tmux_send(_name_of(sid) or sid, _followup_body(gid, None, AUTO_NUDGE_TEXT, injected=True, auto=True))   # romp's own AUTO-nudge → gray bubble + romp-logo marker
         try:
             jd.optimistic_followup(sid, gid)             # reopen the card now (Followed-up chip), like a manual nudge
         except Exception:
@@ -3777,8 +3780,9 @@ def build_timeline(now, tmux=None):
                         "prompt": _seg_prompt(seg), "summary": cap, "msgCaption": msg_cap, "reply": "",
                         "src": src, "mids": _seg_mids(seg), "pending": False,
                         "tid": sid, "uuid": seg.get("trigger"),
-                        "nudge": author == "romp",            # a romp INJECTION (auto-nudge / Nudge / retry) — the view
-                        #                                       draws ⚡ inside its prompt dot + a 'romp · nudge' tooltip
+                        "nudge": author == "romp",            # a romp INJECTION (auto-nudge / Nudge / retry)
+                        "nudgeAuto": bool((trig or {}).get("rompAuto")),   # ONLY an AUTO-nudge (not the Nudge button / retry) →
+                        #                                       the view marks it as a romp message (swirl on a black dot)
                         "workUuid": work_uuid, "replyUuid": reply_uuid})
         turns[sid] = bars
         _derive_judging(sid, caps, goals, now - TL_HORIZON, semantic, seg_ends)
