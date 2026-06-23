@@ -35,3 +35,8 @@ test("the chat has NO gear of its own — it only consumes the shared setting (g
   assert.doesNotMatch(RENDER, /chat-settings-gear/, "the gear was moved to the timeline");
   assert.match(RENDER, /onExternalSettingsChange\(\(s\) => \{ settings = s; rerenderAll\(\); \}\)/);
 });
+
+test("the + New session button sends the gear's Default backend with createSession (the user 2026-06-22)", () => {
+  // read FRESH (loadSettings()), not the cached `settings`, so a same-tab gear change applies immediately
+  assert.match(RENDER, /type: "createSession", name, backend: loadSettings\(\)\.backend/);
+});

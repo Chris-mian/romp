@@ -1701,7 +1701,8 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
       const name = search.value.trim();
       if (!name) { pickerError("Type the new session's name in the box above first."); search.focus(); return; }
       if (!/^[A-Za-z0-9._-]+$/.test(name)) { pickerError("Session names: letters, digits, . _ - only."); search.focus(); return; }
-      if (vscodeApi) vscodeApi.postMessage({ type: "createSession", name });
+      // backend: the gear's "Default backend" setting (tmux | sdk), read FRESH so a same-tab change applies
+      if (vscodeApi) vscodeApi.postMessage({ type: "createSession", name, backend: loadSettings().backend });
       closePicker();
       showOpeningModal(name);   // "Opening…" cue until the new tab arrives (see upsert)
     });

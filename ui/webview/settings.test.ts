@@ -24,6 +24,16 @@ test("Debug mode defaults OFF (the user 2026-06-17): refresh button + judging ba
   assert.equal(DEFAULT_SETTINGS.debug, false);
 });
 
+test("Default backend defaults to tmux (the user 2026-06-22): the + button preserves today's behavior; both backends coexist", () => {
+  assert.equal(DEFAULT_SETTINGS.backend, "tmux");
+});
+
+test("the backend pref roundtrips through storage (the gear writes it; createSession reads it fresh)", () => {
+  delete store["romp:settings"];
+  saveSettings({ backend: "sdk" });
+  assert.equal(loadSettings().backend, "sdk");
+});
+
 test("saveSettings persists a patch and merges over defaults", () => {
   delete store["romp:settings"];
   const next = saveSettings({ compact: true });
