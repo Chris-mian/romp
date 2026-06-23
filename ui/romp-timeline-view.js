@@ -1602,9 +1602,9 @@ class TimelinePanel {
     // and its gridlines span BOTH bands, with the time labels at the very bottom.
     // the global Debug setting (romp:settings.debug, set in the feed gear) gates the whole band; read fresh
     let debugOn = false; try { debugOn = !!JSON.parse(localStorage.getItem('romp:settings') || '{}').debug; } catch (e) {}
-    // the band shows when there are judge run-spans OR auto-nudge ⚡ marks in window (the user 2026-06-22)
-    const jShow = !!(debugOn && ((data.judging && data.judging.some((e) => inWin(e.t)))
-                                 || (data.nudges && data.nudges.some((e) => inWin(e.t)))));
+    // the band shows when there are judge run-spans in window (auto-nudge ⚡ marks were removed from the band
+    // entirely — the user 2026-06-23; an auto-nudge still shows as a romp-logo dot on its lane)
+    const jShow = !!(debugOn && data.judging && data.judging.some((e) => inWin(e.t)));
     const bandH = jShow ? (JB_TOPGAP + JUDGES.length * JROW + JB_BOTGAP) : 0;
     const W = Math.max(640, this.wrap.clientWidth || 900);
     const plotW = W - M.left - M.right, H = M.top + Math.max(1, vis.length) * LANE_GAP + bandH + M.bottom;
@@ -2125,23 +2125,8 @@ class TimelinePanel {
           svg.appendChild(hit);
         }
       });
-      // ⚡ auto-nudge fires (the user 2026-06-22): one lightning bolt per fire at its time, on the band's
-      // top separator, coloured by the nudged session; at count>=4 it escalates to a red warning bolt.
-      for (const n of (data.nudges || []).filter((e) => inWin(e.t))) {
-        const warn = (n.count || 1) >= 4, ncol = warn ? '#ff5a5a' : colorOf(n.sid);
-        const g = el('text', { x: x(n.t), y: sepY + 5, 'text-anchor': 'middle', 'font-size': warn ? 15 : 12,
-          fill: ncol, 'pointer-events': 'none' }); g.textContent = '⚡'; svg.appendChild(g);
-        const hit = el('rect', { x: x(n.t) - 9, y: sepY - 9, width: 18, height: 18, fill: 'transparent' });
-        hit.style.cursor = 'default';
-        const body = '<div class="r"><span class="who" style="color:' + ncol + '">⚡ auto-nudge' + (warn ? ' ⚠' : '')
-          + '</span><span class="ar">▸</span><span style="color:' + colorOf(n.sid) + '">' + esc(nameOf(n.sid))
-          + '</span><span class="t">' + clock(n.t) + ' · #' + (n.count || 1) + '</span></div>'
-          + (warn ? '<div class="b" style="color:#ff8a8a">nudged ' + n.count + '× — check this goal isn\'t looping</div>' : '');
-        hit.addEventListener('mouseenter', (e) => this.showTip(body, e));
-        hit.addEventListener('mousemove', (e) => this.moveTip(e));
-        hit.addEventListener('mouseleave', () => this.hideTip());
-        svg.appendChild(hit);
-      }
+      // (auto-nudge ⚡ marks were removed from the judge band entirely — the user 2026-06-23. An auto-nudge
+      // still surfaces as a romp-logo dot on its own lane; the band is now judge run-spans only.)
     }
 
     // far-right ⟩⟩ jump-to-now button — only when held back off the live edge (unpinned)
