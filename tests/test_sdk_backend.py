@@ -229,6 +229,21 @@ class SetModelModePure(unittest.TestCase):
         plain = sb.SdkSession(self.be, {"sid": "y", "name": "n", "cwd": self.d})
         self.assertEqual(plain.chosen_model, "")          # default: no model flag → CLI default
 
+    def test_spawn_sets_default_effort_and_set_effort_validates(self):
+        sid = self.be.spawn("e", self.d)
+        self.assertEqual(sb.read_reg(self.d, sid)["effort"], sb.DEFAULT_EFFORT)   # explicit default so the picker shows a true value
+        self.assertTrue(self.be.set_effort(sid, "low"))
+        self.assertEqual(sb.read_reg(self.d, sid)["effort"], "low")
+        self.assertFalse(self.be.set_effort(sid, "ultra"))   # not a real level → rejected
+        self.assertEqual(sb.read_reg(self.d, sid)["effort"], "low")   # reg unchanged after a bad value
+        self.assertFalse(self.be.set_effort("no-such-sid", "low"))
+
+    def test_effort_read_from_reg_on_construct(self):
+        s1 = sb.SdkSession(self.be, {"sid": "a", "name": "n", "cwd": self.d, "effort": "max"})
+        self.assertEqual(s1.effort, "max")
+        s2 = sb.SdkSession(self.be, {"sid": "b", "name": "n", "cwd": self.d})
+        self.assertEqual(s2.effort, sb.DEFAULT_EFFORT)   # no reg effort → default (so the picker is never empty)
+
 
 # --- Runner + can_use_tool bridge (needs the SDK message classes) ---
 try:
@@ -387,6 +402,23 @@ class AskRoundTrip(unittest.TestCase):
         sess.chosen_model = "sonnet"
         opts = self.backend._options(sess, _sdk.ClaudeAgentOptions)
         self.assertEqual(opts.model, "sonnet")
+
+    def test_effort_change_reconnects_with_new_flag(self):
+        """effort is a connect-time CLI flag, so changing it RECONNECTS the client (a 2nd ClaudeSDKClient)
+        with the new --effort, resuming the same conversation — not a /effort slash the SDK ignores."""
+        sid = self.backend.spawn("eff", self.d)
+        self.assertTrue(self.backend.send(sid, "hi"))
+        self.assertTrue(self._wait(lambda: self.Fake.instances and self.Fake.instances[0].captured),
+                        "first connection never completed a turn")
+        self.assertEqual(self.Fake.instances[0].options.effort, sb.DEFAULT_EFFORT)   # spawned at the default
+        self.assertTrue(self.backend.set_effort(sid, "low"))
+        self.assertTrue(self._wait(lambda: len(self.Fake.instances) >= 2),
+                        "effort change did not reconnect the client")
+        c2 = self.Fake.instances[1]
+        self.assertEqual(c2.options.effort, "low")          # reconnected with the new flag
+        self.assertEqual(c2.options.resume, sid)             # resume continues the SAME conversation, not a fresh session
+        self.assertEqual(sb.read_reg(self.d, sid)["effort"], "low")
+        self.backend.kill(sid)
 
 
 if __name__ == "__main__":

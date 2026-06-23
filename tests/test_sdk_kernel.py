@@ -41,6 +41,9 @@ class FakeBackend:
     def set_model(self, sid, v):
         self.calls.append(("set_model", sid, v)); return True
 
+    def set_effort(self, sid, v):
+        self.calls.append(("set_effort", sid, v)); return True
+
     def rename(self, sid, n):
         self.calls.append(("rename", sid, n)); return True
 
@@ -111,13 +114,13 @@ class KernelWiring(unittest.TestCase):
         self.assertIn(("set_model", "sid-sdk", "opus"), self.be.calls)
         self.assertFalse(any(c == ("send", "sid-sdk", "/model opus") for c in self.be.calls))
 
-    def test_effort_and_compact_still_slash_for_now(self):
-        # effort has no SDK runtime control (Task #4 reconnects); compact has none either → still slash sends
+    def test_seteffort_goes_to_backend_compact_still_slash(self):
+        # effort routes to set_effort (the backend reconnects with --effort); compact has no control → slash
         self._route({"type": "setEffort", "id": "sid-sdk", "value": "high"})
         self._route({"type": "compactSession", "id": "sid-sdk"})
-        sends = [c for c in self.be.calls if c[0] == "send"]
-        self.assertIn(("send", "sid-sdk", "/effort high"), sends)
-        self.assertIn(("send", "sid-sdk", "/compact"), sends)
+        self.assertIn(("set_effort", "sid-sdk", "high"), self.be.calls)
+        self.assertFalse(any(c == ("send", "sid-sdk", "/effort high") for c in self.be.calls))
+        self.assertIn(("send", "sid-sdk", "/compact"), [c for c in self.be.calls if c[0] == "send"])
 
     def test_setmode_and_rename(self):
         self._route({"type": "setMode", "id": "sid-sdk", "value": "plan"})

@@ -46,6 +46,13 @@ def pick_identity_color(sid: str) -> tuple[str, str]:
     return _PALETTE[i], _FG[i]
 
 
+# Reasoning effort for SDK sessions. effort is a CONNECT-TIME CLI flag (--effort) with no runtime control,
+# and the init message does NOT echo it back, so romp sets it explicitly and tracks it (otherwise the picker
+# can't show a true value). "high" suits agentic coding; the user changes it per session via the picker.
+DEFAULT_EFFORT = "high"
+EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+
+
 def pretty_model(raw: str) -> str:
     """A raw SDK model id → the short badge the tmux statusline shows, so SDK and tmux sessions read the
     same and the model picker's 'current' highlight (which matches on the leading word) lights up.
@@ -300,8 +307,13 @@ class SdkSession:
         self.since = 0
         self.model = ""
         self.chosen_model = reg.get("model") or ""   # the alias the user picked (opus/sonnet/…); self.model is the display name
-        self.effort = ""
+        self.effort = reg.get("effort") or DEFAULT_EFFORT   # connect-time --effort; tracked since the init msg doesn't echo it
         self.perm_mode = self.mode
+        # reconnect machinery: effort changes (a connect-time flag) reconnect the client; _wake breaks the
+        # receive loop cleanly for shutdown OR reconnect even when idle (a bare async-for would block forever).
+        self._wake: asyncio.Event | None = None
+        self._reconnect = False                 # the current break is a reconnect (not a shutdown)
+        self._reconnect_when_idle = False        # a reconnect was requested mid-turn → apply at turn end
         self.ended = False
         # input + ask bridging
         self._pre = []                       # turns enqueued before the loop is ready
@@ -356,11 +368,30 @@ class SdkSession:
 
     def shutdown(self):
         self.ended = True
-        if self.loop and self._inq is not None:
-            self.loop.call_soon_threadsafe(self._inq.put_nowait, None)
+        if self.loop:
+            self.loop.call_soon_threadsafe(self._wake_set)   # break the receive loop even if idle (no msg coming)
         if self.loop and self.client:
             self.loop.call_soon_threadsafe(
-                lambda: asyncio.ensure_future(self._do_interrupt()))
+                lambda: asyncio.ensure_future(self._do_interrupt()))   # stop an in-flight turn promptly
+
+    def _wake_set(self):
+        if self._wake is not None:
+            self._wake.set()
+
+    def request_reconnect(self):
+        """Apply a connect-time option change (effort) by reconnecting the client — resume continues the same
+        conversation. Reconnect NOW when idle; defer to the end of the current turn when busy. No-op if the
+        session is shutting down or not yet connected (the new value is in the registry → it applies on connect)."""
+        if self.loop is None or self.ended:
+            return
+        self.loop.call_soon_threadsafe(self._do_request_reconnect)
+
+    def _do_request_reconnect(self):
+        if self.inflight == 0 and self._inq is not None and self._inq.empty():
+            self._reconnect = True
+            self._wake_set()
+        else:
+            self._reconnect_when_idle = True   # the ResultMessage handler fires it when the turn ends
 
     # ---- async internals (run inside the quarantined loop) ----
 
@@ -406,6 +437,7 @@ class SdkSession:
         )
         self.loop = asyncio.get_running_loop()
         self._inq = asyncio.Queue()
+        self._wake = asyncio.Event()
         with self._lock:
             for t in self._pre:
                 self._inq.put_nowait(t)
@@ -425,27 +457,45 @@ class SdkSession:
                 yield {"type": "user",
                        "message": {"role": "user", "content": [{"type": "text", "text": item}]}}
 
-        opts = self.backend._options(self, ClaudeAgentOptions)
-        async with ClaudeSDKClient(options=opts) as client:
-            self.client = client
-            # Feed turns and receive messages CONCURRENTLY: query() with a streaming
-            # input iterable BLOCKS until the iterable ends (it writes each turn to
-            # stdin), and our input generator never ends (long-lived) — so awaiting it
-            # before receiving would starve the receive loop forever. The SDK's control
-            # channel (can_use_tool) runs in its own reader task regardless; the message
-            # stream does not, so it must be drained here, alongside the feeder.
-            feeder = asyncio.ensure_future(client.query(inputs()))
-            try:
-                async for msg in client.receive_messages():
-                    if self.ended:
-                        break
-                    self._on_message(msg, AssistantMessage, ResultMessage, SystemMessage)
-            finally:
-                feeder.cancel()
+        async def drain(client):
+            # Feed turns and receive messages CONCURRENTLY: query() with a streaming input iterable BLOCKS
+            # until the iterable ends (it writes each turn to stdin), and our input generator never ends —
+            # so awaiting it before receiving would starve the receive loop. The control channel
+            # (can_use_tool) has its own reader; the message stream does not, so it's drained here.
+            async for msg in client.receive_messages():
+                if self.ended:
+                    break
+                self._on_message(msg, AssistantMessage, ResultMessage, SystemMessage)
+
+        # Reconnect loop: one persistent client per iteration. A connect-time option change (effort, a CLI
+        # flag with no runtime control) reconnects with fresh options — resume_sid continues the conversation
+        # and _inq carries any queued turns. The receive loop is RACED against a wake Event so it stops
+        # cleanly for BOTH shutdown and reconnect even when idle (a bare async-for would block forever with no
+        # incoming message, leaking the client + its claude subprocess).
+        while not self.ended:
+            self._wake.clear()
+            self._reconnect = False
+            opts = self.backend._options(self, ClaudeAgentOptions)
+            async with ClaudeSDKClient(options=opts) as client:
+                self.client = client
+                feeder = asyncio.ensure_future(client.query(inputs()))
+                recv = asyncio.ensure_future(drain(client))
+                waker = asyncio.ensure_future(self._wake.wait())
                 try:
-                    await feeder
-                except BaseException:
-                    pass
+                    await asyncio.wait({recv, waker}, return_when=asyncio.FIRST_COMPLETED)
+                finally:
+                    for tk in (feeder, recv, waker):
+                        tk.cancel()
+                    for tk in (feeder, recv, waker):
+                        try:
+                            await tk
+                        except asyncio.CancelledError:
+                            pass
+                        except Exception as e:                 # a genuine stream/transport error — surface it
+                            self.backend._log(f"sdk session {self.name}: {type(e).__name__}: {e}")
+                    self.client = None
+            if self.ended or not self._reconnect:
+                break        # drain ended on its own (process exit) or we're shutting down → done
 
     def _on_message(self, msg, AssistantMessage, ResultMessage, SystemMessage):
         if isinstance(msg, SystemMessage) and msg.subtype == "init":
@@ -464,6 +514,10 @@ class SdkSession:
             if self.inflight == 0:
                 append_state(self.backend.state_dir, self.sid, "waiting")
                 self.backend._poke()
+                if self._reconnect_when_idle and not self.ended:   # an effort change waited for this turn to end
+                    self._reconnect_when_idle = False
+                    self._reconnect = True
+                    self._wake_set()
         # Forward the raw message to the kernel for live chat/event use.
         self.backend._forward(self, msg)
 
@@ -626,6 +680,7 @@ class SdkBackend:
             hooks={"Stop": [HookMatcher(matcher=None, hooks=[sess._stop_hook])]},   # awaiting overlay producer
             permission_mode=sess.mode,
             include_partial_messages=False,
+            effort=sess.effort or DEFAULT_EFFORT,   # connect-time --effort (no runtime control); a change reconnects
         )
         if sess.chosen_model and sess.chosen_model != "default":
             kw["model"] = sess.chosen_model    # keep the picked model across a reconnect (runtime set_model is per-connection)
@@ -647,7 +702,8 @@ class SdkBackend:
             bg, fg = pick_identity_color(sid)
         write_name(self.state_dir, sid, name, cwd, bg, fg)
         write_reg(self.state_dir, sid, {"sid": sid, "name": name, "cwd": cwd,
-                                        "mode": "acceptEdits", "lastSid": "", "alive": True})
+                                        "mode": "acceptEdits", "effort": DEFAULT_EFFORT,
+                                        "lastSid": "", "alive": True})
         append_state(self.state_dir, sid, "waiting")
         self._poke()
         return sid
@@ -657,6 +713,7 @@ class SdkBackend:
         cwd = cwd or reg.get("cwd") or os.path.expanduser("~")
         write_reg(self.state_dir, sid, {"sid": sid, "name": name, "cwd": cwd,
                                         "mode": reg.get("mode", "acceptEdits"),
+                                        "effort": reg.get("effort", DEFAULT_EFFORT),
                                         "lastSid": sid, "alive": True})
         append_state(self.state_dir, sid, "waiting")
         self._poke()
@@ -761,6 +818,23 @@ class SdkBackend:
             s.set_mode_live(mode)
         return True
 
+    def set_effort(self, sid: str, value: str) -> bool:
+        """Change the reasoning effort. effort is a connect-time CLI flag (--effort) with no SDK runtime
+        control, so this persists it and RECONNECTS to apply (resume continues the conversation): immediately
+        if the session is idle, at the end of the current turn if it's busy. The label updates at once."""
+        if value not in EFFORT_LEVELS:
+            return False
+        reg = read_reg(self.state_dir, sid)
+        if not reg:
+            return False
+        reg["effort"] = value
+        write_reg(self.state_dir, sid, reg)
+        s = self.sessions.get(sid)
+        if s:
+            s.effort = value        # picker label reflects it now; the reconnect makes it real
+            s.request_reconnect()
+        return True
+
     def owns(self, sid: str) -> bool:
         return read_reg(self.state_dir, sid) is not None
 
@@ -778,7 +852,8 @@ class SdkBackend:
             else:
                 ls = last_state(self.state_dir, sid)
                 out[sid] = {"state": ls.get("state") or "waiting",
-                            "since": str(ls.get("t") or ""), "model": "", "effort": "",
+                            "since": str(ls.get("t") or ""), "model": "",
+                            "effort": reg.get("effort", ""),
                             "mode": reg.get("mode", ""), "ctx": "", "summary": ""}
         return out
 
@@ -789,6 +864,9 @@ class SdkBackend:
         s = self.sessions.get(sid)
         if not s:
             return False
+        if kind == "focus":
+            return True   # ↑/↓ preview-step: SDK options carry their OWN preview, so the webview swaps it
+                          # locally — there's no TUI cursor to drive, and it must NOT resolve the ask.
         s.resolve_ask(kind, payload)
         return True
 
