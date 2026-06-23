@@ -644,7 +644,8 @@ class SdkBackend:
         key = "echo:" + uuid.uuid4().hex
         self._live.setdefault(sid, {})[key] = {
             "type": "user", "uuid": key, "session_id": sid, "t": int(time.time()), "parentUuid": None,
-            "_echo_text": text, "message": {"role": "user", "content": [{"type": "text", "text": text}]}}
+            "author": "human", "_echo_text": text,            # the human typed it → blue bubble (matches the transcript atom)
+            "message": {"role": "user", "content": [{"type": "text", "text": text}]}}
         self._wake_push()
         return True
 

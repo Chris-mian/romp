@@ -135,11 +135,17 @@ def _norm_message(message):
 # message from a human prompt (both are `user` messages). Everything else the old
 # typed/queued/absorbed/decision/postal enum encoded is derived from position
 # (opener vs mid-turn) and content, not stored here.
-def author_of(blocks, prompt_source, postal_index):
+def author_of(blocks, prompt_source, postal_index, sdk_human=False):
     """human | romp | sdk | system | {"peer": <rompUuid|None>} | None.
 
     Order matters: the postal marker wins over promptSource (a delivered message can
-    arrive with any promptSource). A tool_result-only user atom has no author."""
+    arrive with any promptSource). A tool_result-only user atom has no author.
+
+    sdk_human: this session is SDK-backed, so its HUMAN input arrives over the programmatic
+    stream-json channel as promptSource "sdk" (the human typed it in the composer). romp's own
+    injections still carry the romp-injected marker and peers the postal marker (both handled
+    above), so an UNMARKED "sdk" prompt here is the human → render it as the blue human bubble.
+    Off (the default) elsewhere, where "sdk" means a genuine programmatic/autonomous injection."""
     text = _text_of(blocks)
     if text:
         mids = POSTAL_RE.findall(text)
@@ -153,7 +159,7 @@ def author_of(blocks, prompt_source, postal_index):
         if ROMP_INJECT_RE.search(text):           # romp pasted this into the pane (a feed nudge) → system, not human
             return "romp"
     if prompt_source == "sdk":
-        return "sdk"
+        return "human" if sdk_human else "sdk"
     if prompt_source == "system":
         return "system"
     if prompt_source in ("typed", "queued"):
@@ -318,7 +324,7 @@ class FileAdapter:
                 "t": e["proc"], "fsid": self.fsid_of.get(auid),
                 "parentUuid": (self.by_uuid.get(auid) or {}).get("parentUuid"),
                 "message": {"role": "user", "content": blocks},
-                "author": author_of(blocks, None, postal_index),
+                "author": author_of(blocks, None, postal_index, getattr(self, "sdk_human", False)),
                 "_seq": e["seq"],
             })
         return atoms
@@ -383,7 +389,7 @@ class FileAdapter:
                         "message": _norm_message(r.get("message")), "_seq": seq}
                 if ps:
                     atom["promptSource"] = ps
-                author = author_of(blocks, ps, postal_index)
+                author = author_of(blocks, ps, postal_index, getattr(self, "sdk_human", False))
                 if author is not None:
                     atom["author"] = author
                 out.append(atom)
@@ -580,7 +586,7 @@ def _load_states(states):
 
 
 def parse_session(leaf_path, rompuuid=None, name=None, color="#888888", dir=None,
-                  candidate_files=None, states=None, postal_log=None, now=None):
+                  candidate_files=None, states=None, postal_log=None, now=None, sdk_human=False):
     """Build one session's Session -> Turn -> Atom tree from the on-disk transcript graph.
 
     leaf_path        the newest (leaf) transcript file; the walk's start pointer.
@@ -604,6 +610,7 @@ def parse_session(leaf_path, rompuuid=None, name=None, color="#888888", dir=None
         candidate_files = [str(leaf_path)]
     postal_index = _load_postal_index(postal_log)
     adapter = FileAdapter(candidate_files, leaf_path)
+    adapter.sdk_human = sdk_human            # SDK-backed session → unmarked promptSource "sdk" is the human
     atoms = adapter.atoms(rompuuid, postal_index)
     atoms += synthesize_idle(_load_states(states), atoms, now)
     turns = segment_turns(atoms, rompuuid)

@@ -1875,8 +1875,10 @@ def _parse(path, sid, now):
     hit = _parse_cache.get(path)
     if hit is not None and key is not None and hit[0] == key:
         return hit[1]
+    _be = _sdk()
     session = em.parse_session(path, rompuuid=sid, candidate_files=[path],
-                               postal_log=str(jd.MESSAGES), now=now)
+                               postal_log=str(jd.MESSAGES), now=now,
+                               sdk_human=bool(_be and _be.owns(sid)))   # SDK session: composer input is promptSource "sdk"
     if key is not None:
         if len(_parse_cache) > 256:              # backstop: bounded by fleet size, but never unbounded
             _parse_cache.clear()
