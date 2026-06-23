@@ -1361,8 +1361,9 @@ function reorderTo(dragId: string, targetId: string, after: boolean) {
 
 // Rich tab hover tooltip (the user 2026-06-23): a CUSTOM DOM tooltip (a native `title` can't colour/bold).
 // Shows the backend BOLD in the session's own romp identity colour, the full directory path, the git
-// branch, mode / model / effort, the context battery, and the ledger's latest line (recency-coloured
-// "(Xm ago)"). One shared element, repositioned under the hovered tab and clamped on-screen.
+// branch, mode / model / effort, the context battery, a labelled "Summary" row, and a labelled "Latest"
+// row = the collapsed ledger's current-top-goal recency-coloured "(Xm ago)". One shared element,
+// repositioned under the hovered tab and clamped on-screen.
 let tabTipEl: HTMLElement | null = null;
 function hideTabTip(): void { if (tabTipEl) tabTipEl.style.display = "none"; }
 function showTabTip(tab: HTMLElement, s: Session): void {
@@ -1399,19 +1400,31 @@ function showTabTip(tab: HTMLElement, s: Session): void {
     const bar = ctxBar(); setCtxBar(bar, s.status.ctx, s.status.state === "compacting");
     cr.appendChild(bar); tip.appendChild(cr);
   }
-  // the ledger's latest line, recency-coloured with "(Xm ago)"
+  // ledger rows, LABELLED + aligned with the rows above (the user 2026-06-23 v3): the summary, then the
+  // collapsed ledger's current-top-goal with its recency-coloured "(Xm ago)" — the same line the ledger
+  // shows when collapsed (currentTopGoal + nodeRecency, via the same stamp the active ledger uses).
   const lg = ledgers.get(s.id);
-  const cur = lg && lg.current;
-  if (cur && cur.text) {
-    const lt = el("div", "tab-tip-latest"); lt.textContent = cur.text;
-    if (cur.t) {
-      const ago = el("span", "tab-tip-ago"); ago.textContent = " (" + agehms(now - cur.t) + " ago)";
-      ago.style.color = ageColorReadable(now - cur.t);
-      lt.appendChild(ago);
+  if (lg?.summary) {
+    const r = el("div", "tab-tip-row");
+    const k = el("span", "tab-tip-k"); k.textContent = "Summary";
+    const v = el("span", "tab-tip-v"); v.textContent = lg.summary;
+    r.appendChild(k); r.appendChild(v); tip.appendChild(r);
+  }
+  if (lg?.tree && lg.tree.length) {
+    stampSubtreeRecency(lg.tree, lg.current || null);          // roll up _rec like the collapsed ledger does
+    const top = currentTopGoal(lg.tree);
+    if (top && top.text) {
+      const r = el("div", "tab-tip-row");
+      const k = el("span", "tab-tip-k"); k.textContent = "Latest";
+      const v = el("span", "tab-tip-v"); v.textContent = top.text;
+      const rec = nodeRecency(top);
+      if (rec) {
+        const ago = el("span", "tab-tip-ago"); ago.textContent = " (" + agehms(now - rec) + " ago)";
+        ago.style.color = ageColorReadable(now - rec);         // recency colour, matching the collapsed ledger
+        v.appendChild(ago);
+      }
+      r.appendChild(k); r.appendChild(v); tip.appendChild(r);
     }
-    tip.appendChild(lt);
-  } else if (lg?.summary) {
-    const lt = el("div", "tab-tip-latest"); lt.textContent = lg.summary; tip.appendChild(lt);
   }
   if (!tip.childElementCount) { tip.style.display = "none"; return; }
   tip.style.display = "block";

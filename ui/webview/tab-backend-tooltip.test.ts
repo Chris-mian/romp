@@ -28,13 +28,18 @@ test("backend is bold in the session's OWN identity colour; name + fixed per-bac
   assert.doesNotMatch(CSS, /\.be-sdk|\.be-tmux/);          // fixed per-backend colours gone
 });
 
-test("v2 adds git branch, the context battery, and the ledger's latest line (recency 'Xm ago')", () => {
+test("v3: git branch + context battery + a labelled Summary row + a recency-coloured Latest top-goal row", () => {
   assert.match(RENDER, /rows\.push\(\["Branch", sys\.gitBranch\]\)/);                 // git branch from the system event
   assert.match(RENDER, /const bar = ctxBar\(\); setCtxBar\(bar, s\.status\.ctx/);     // the battery widget, not "X%"
-  assert.match(RENDER, /const lg = ledgers\.get\(s\.id\)/);                            // ledger latest line
-  assert.match(RENDER, /agehms\(now - cur\.t\)/);
-  assert.match(RENDER, /ago\.style\.color = ageColorReadable\(now - cur\.t\)/);        // recency-coloured
-  assert.match(CSS, /\.tab-tip-latest \{/);
+  assert.match(RENDER, /const lg = ledgers\.get\(s\.id\)/);
+  assert.match(RENDER, /k\.textContent = "Summary"[\s\S]*?v\.textContent = lg\.summary/);   // labelled Summary row
+  // Latest row = the collapsed ledger's current-top-goal, recency-coloured via nodeRecency
+  assert.match(RENDER, /stampSubtreeRecency\(lg\.tree, lg\.current/);
+  assert.match(RENDER, /const top = currentTopGoal\(lg\.tree\)/);
+  assert.match(RENDER, /k\.textContent = "Latest"/);
+  assert.match(RENDER, /const rec = nodeRecency\(top\)/);
+  assert.match(RENDER, /ago\.style\.color = ageColorReadable\(now - rec\)/);          // recency colour
+  assert.doesNotMatch(CSS, /\.tab-tip-latest/);                                       // bare-paragraph latest line gone
 });
 
 test("the tooltip still shows the full path + mode/model/effort", () => {

@@ -157,11 +157,9 @@ body { display: flex; flex-direction: column; }
 }
 .tab-tip-be { font-weight: 700; margin-bottom: 4px; }   /* colour set inline = the session's romp identity colour */
 .tab-tip-path { color: var(--dim); word-break: break-all; margin-bottom: 4px; }
-.tab-tip-row { display: flex; gap: 8px; align-items: center; }
+.tab-tip-row { display: flex; gap: 8px; align-items: baseline; }   /* baseline so a wrapping Summary/Latest value aligns to its label */
 .tab-tip-k { color: var(--dim); flex: 0 0 auto; min-width: 58px; }
-.tab-tip-v { color: var(--fg); }
-.tab-tip-latest { margin-top: 5px; padding-top: 4px; border-top: 1px solid var(--box-border);
-  color: var(--fg); white-space: normal; max-width: 100%; }
+.tab-tip-v { color: var(--fg); min-width: 0; }   /* min-width:0 lets a long value wrap inside the flex row */
 .tab-tip-ago { font-variant-numeric: tabular-nums; }
 .tab-close:hover { opacity: 1; background: rgba(255, 255, 255, 0.12); }
 .tab-add { color: var(--dim); font-size: 1.1em; padding: 6px 10px; border-radius: 6px; }
