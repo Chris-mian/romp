@@ -34,20 +34,23 @@ test("renderPicker populates the datalist from items' dirs (unique, non-empty)",
   assert.match(RENDER, /seen\.has\(d\)/);
 });
 
-test("a session carries cwd, shown as a dimmed basename on the tab (full path on hover)", () => {
+test("a session carries cwd, shown on the statusline just left of the mode/model/effort controls", () => {
   assert.match(RENDER, /interface Session \{[^}]*cwd\?: string/);
   assert.match(RENDER, /cwd: msg\.cwd \?\? \(prev \? prev\.cwd : ""\)/);
-  // basename inline (skipped when it equals the session name), full path as the tab title
-  assert.match(RENDER, /el\("span", "tab-dir"\)/);
-  assert.match(RENDER, /tab\.title = s\.name \+ " — " \+ s\.cwd/);
+  // a status-dir element (basename + full path on hover), appended BEFORE #spinner-meta (the controls cluster)
+  assert.match(RENDER, /el\("span", "status-dir"\)/);
+  assert.match(RENDER, /dir\.title = s\.cwd/);
+  assert.match(RENDER, /sl\.appendChild\(dir\);[\s\S]*?const meta = el\("span", "spinner-meta"\)/);
+  // and NOT on the tab anymore (the user 2026-06-23)
+  assert.doesNotMatch(RENDER, /tab-dir/);
 });
 
 test("the system-context card shows the dir basename in its collapsed summary", () => {
   assert.match(RENDER, /bits\.push\("📁 " \+ \(ev\.cwd/);
 });
 
-test("the tab-dir and picker-dir-input styles exist", () => {
-  assert.match(CSS, /\.tab-dir \{/);
+test("the status-dir and picker-dir-input styles exist", () => {
+  assert.match(CSS, /\.status-dir \{/);
   assert.match(CSS, /\.picker-dir-input \{/);
 });
 
