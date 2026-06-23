@@ -12,7 +12,7 @@ const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", 
 test("the card builds a Nudge button in its actions row, beside Clear", () => {
   assert.match(FEED, /const nudge = el\("button", "fdismiss ffollow fask-nudge"\); nudge\.textContent = "Nudge"/);
   // the action row is buttons only now (the state badges moved up to the name row, 2026-06-19)
-  assert.match(FEED, /actions\.append\(apiRetry, nudge, cardFup, clr\)/);
+  assert.match(FEED, /actions\.append\(apiRetry, revive, nudge, cardFup, clr\)/);
   assert.match(FEED, /a\._nudge = nudge;/);
 });
 
@@ -33,7 +33,7 @@ test("Nudge is NO LONGER in the modal footer (it moved to the card)", () => {
 test("a card 'Follow up' button on blocked/completed cards jumps straight into the modal composer (the user 2026-06-22)", () => {
   // the button sits in the action row beside Nudge/Clear
   assert.match(FEED, /const cardFup = el\("button", "fdismiss ffollow fask-fup"\); cardFup\.textContent = "Follow up"/);
-  assert.match(FEED, /actions\.append\(apiRetry, nudge, cardFup, clr\)/);
+  assert.match(FEED, /actions\.append\(apiRetry, revive, nudge, cardFup, clr\)/);
   // shown ONLY on blocked (needs_input) or completed cards — mutually exclusive with Nudge (working only)
   assert.match(FEED, /a\._cardFup\.style\.display = \(\(it\.column === "needs_input" \|\| it\.column === "completed"\) && !it\.provisional\) \? "" : "none"/);
   assert.match(FEED, /a\._nudge\.style\.display = \(it\.column === "working" && !it\.provisional\)/);

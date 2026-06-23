@@ -77,7 +77,8 @@ interface AskItem {
   turnIds?: string[];                              // typed turns that minted/amended this card
   // the owning session is live-blocked (permission/picker, or stopped on an API error) ON this card's
   // work → the card itself files under BLOCKED (the user's ruling 2026-06-11; apiError 2026-06-16).
-  blocked?: { state: string; since: number; what: string; status?: number; category?: string; text?: string };
+  blocked?: { state: string; since?: number; what: string; status?: number; category?: string; text?: string;
+              toName?: string; toSid?: string; fromName?: string; msgId?: string; body?: string };   // parkedHandoff adds to*/from*
   blockWhy?: string;                               // planner's one-sentence "why blocked" → now the HOVER tooltip on the blocked card's auto-line (the user 2026-06-18)
   doneWhy?: string;                                // planner's one-sentence "why done" → now the HOVER tooltip on the completed card's auto-line (the user 2026-06-18)
   summary?: string | null;                         // distiller's key takeaway for a COMPLETED goal → the done card's one auto-written line (kernel asks.append); null until produced
@@ -437,6 +438,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   const blkBadge = el("a", "fask-blocked"); blkBadge.style.display = "none";   // ⏸ live permission/picker block → click opens the session
   const apiBadge = el("span", "fask-apierror"); apiBadge.textContent = "⚠ API error"; apiBadge.style.display = "none";   // red: session stopped on an API error
   const apiRetry = el("button", "fdismiss fretry"); apiRetry.textContent = "Retry"; apiRetry.title = "send “retry” into this session to resume"; apiRetry.style.display = "none";
+  const revive = el("button", "fdismiss frevive"); revive.textContent = "Revive"; revive.title = "bring this offline session back so the parked hand-off is delivered"; revive.style.display = "none";
   const waitBadge = el("span", "fask-wait"); waitBadge.textContent = "⏳ waiting"; waitBadge.style.display = "none";
   waitBadge.title = "paused on an EXTERNAL event (CI, build, a peer's reply) — not on you; stays in Working, exempt from auto-filing; lifts when new work lands";
   const clr = el("button", "fdismiss"); clr.textContent = "Clear"; clr.title = "clear this ask (inbox-zero; the one human-asserted fact)";
@@ -456,7 +458,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   // chip moved up 2026-06-18). idwrap is flex:1 so the name ellipsizes before the badge is ever clipped.
   idwrap.append(waitBadge, apiBadge, blkBadge);
   // The action row holds ONLY buttons now (Retry / Nudge / Follow up / Clear).
-  actions.append(apiRetry, nudge, cardFup, clr);
+  actions.append(apiRetry, revive, nudge, cardFup, clr);
   // "↪ from <peer>" provenance + the "reopened"/"↻ Followed up" chips ride the name row's right side;
   // row2 wraps them onto a new line when there isn't room, so the provenance never overlaps a chip
   // (the user 2026-06-20). origin sits left of the chips, matching the "from … · Followed up" reading order.
@@ -565,7 +567,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   a._title = title; a._name = name; a._time = time; a._reopened = reBadge; a._followedup = fupBadge;
   a._waitOn = waitOnBadge;
   a._blocked = blkBadge; a._wait = waitBadge;
-  a._apiBadge = apiBadge; a._apiRetry = apiRetry; a._nudge = nudge; a._cardFup = cardFup; a._clr = clr;
+  a._apiBadge = apiBadge; a._apiRetry = apiRetry; a._revive = revive; a._nudge = nudge; a._cardFup = cardFup; a._clr = clr;
   a._delegations = delegations;
   a._checklist = checklist;
   a._blockwhy = blockReason;
@@ -694,6 +696,19 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
       ev.stopPropagation();
       vscodeApi?.postMessage({ type: "apiRetry", id: it.sid });
       a._apiRetry.disabled = true; a._apiRetry.textContent = "Retrying…";
+    };
+  }
+  // PARKED HANDOFF → a "Revive" button that brings the offline recipient back so the parked message is
+  // delivered; the existing Clear button dismisses it (rides cleared.jsonl). (the user 2026-06-22.)
+  const isParked = it.blocked?.state === "parkedHandoff";
+  a._revive.style.display = isParked ? "" : "none";
+  if (isParked && it.blocked) {
+    const toSid = it.blocked.toSid || it.sid;
+    a._revive.disabled = false; a._revive.textContent = `Revive ${it.blocked.toName || it.name}`;
+    a._revive.onclick = (ev: Event) => {
+      ev.stopPropagation();
+      vscodeApi?.postMessage({ type: "reviveSession", id: toSid });
+      a._revive.disabled = true; a._revive.textContent = "Reviving…";
     };
   }
   // (Follow-up is modal-only now — no card button; the body click opens the modal. the user 2026-06-16.)

@@ -2502,6 +2502,29 @@ def build_feed(now, tmux=None):
     # finished deliverables into the columns, which both this spec and the original FEED-ASKS-SPEC.md
     # ("details turns never appear at all") forbid. Captions live in the card's trail, the ledger, and
     # the timeline — not here. (the user 2026-06-16; reverts commit 05505fa "show stream cards".)
+    # PARKED HANDOFFS (the user 2026-06-22): a send to a DEAD session parks until revival — surface each as a
+    # needs-you card so you can revive the recipient (deliver it) or dismiss it, instead of parking silently.
+    # Not tied to a goal node; the itemId "parked:<msgId>" rides the same cleared.jsonl, so Clear dismisses it.
+    for ph in _parked_handoffs(now, {s["sid"] for s in alive}):
+        item_id = "parked:" + ph["msgId"]
+        if item_id in cleared:
+            continue
+        asks.append({
+            "itemId": item_id, "sid": ph["toId"], "name": ph["toName"], "color": _name_color(ph["toId"]),
+            "text": "Hand-off parked for %s (offline)" % ph["toName"],
+            "t": ph["t"], "created": ph["t"], "live": False,
+            "trgb": list(cm.age_rgb(now - ph["t"], _colormap())),
+            "done": 0, "needsYou": 1, "linked": [], "turnId": item_id, "turnIds": [item_id], "origin": None,
+            "blockWhy": "%s tried to hand off to %s, which is offline — revive it to deliver, or dismiss."
+                        % (ph["fromName"], ph["toName"]),
+            "doneWhy": None, "followupPending": None, "waitingOn": None,
+            "summary": None, "blockSummary": None, "summaryAnchorUuid": None,
+            "blocked": {"state": "parkedHandoff", "fromName": ph["fromName"], "toSid": ph["toId"],
+                        "toName": ph["toName"], "msgId": ph["msgId"], "body": ph["body"],
+                        "what": "a handoff from %s is parked — revive %s to deliver it"
+                                % (ph["fromName"], ph["toName"])},
+            "column": "needs_input",
+            "openQuestions": [], "openPaths": [], "tree": []})
     return {"type": "feed", "asks": asks, "items": [], "blocked": [], "now": now,
             "working": working, "dismissedCount": len(cleared), "showDismissed": False,
             "canUndoClear": len(cleared) > 0}
@@ -2655,6 +2678,42 @@ def _postal_messages(now, alive_sids, id2name):
                     "text": (e.get("body", "") or "").strip()[:240], "summary": msgsum.get(mid), "parked": False,
                     "toGoal": planted(t, mid)})           # courier delegation: the goal this message planted
     out.sort(key=lambda m: m["sent"])
+    return out
+
+
+def _parked_handoffs(now, alive_sids):
+    """Parked-to-dead HANDOFFS still awaiting your decision (the user 2026-06-22): a send to a session that
+    is DEAD parks in its maildir until that session is revived. Each is a decision only the human can make —
+    revive the recipient to deliver it, or dismiss — so the feed surfaces it as a needs-you card instead of
+    parking silently. DETERMINISTIC, no judging: a parked 'sent' row in the postal log (park:true) whose
+    maildir file is STILL in the recipient's new/ (unconsumed — the authoritative 'still parked' signal, so a
+    later revive+consume or a recall clears it) AND whose recipient is still dead. Returns oldest-first
+    [{msgId, fromId, fromName, toId, toName, body, t}]. Best-effort []."""
+    base = jd.STATE / "postal"
+    out = []
+    try:
+        lines = jd.MESSAGES.read_text(errors="replace").splitlines()
+    except OSError:
+        return out
+    for line in lines:
+        try:
+            o = json.loads(line)
+        except Exception:
+            continue
+        mid, to_id, from_id = o.get("id"), o.get("to_id"), o.get("from_id")
+        if not (o.get("park") and mid and to_id and from_id):
+            continue
+        if to_id in alive_sids:                          # recipient revived → the parked mail already delivered
+            continue
+        try:
+            if not (base / "mail" / to_id / "new" / mid).exists():   # consumed / recalled / gone → resolved
+                continue
+        except OSError:
+            continue
+        out.append({"msgId": mid, "fromId": from_id, "fromName": _name_of(from_id) or from_id[:8],
+                    "toId": to_id, "toName": _name_of(to_id) or to_id[:8],
+                    "body": (o.get("body") or "")[:240], "t": int(o.get("t") or now)})
+    out.sort(key=lambda h: h["t"])
     return out
 
 
