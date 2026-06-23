@@ -38,6 +38,9 @@ class FakeBackend:
     def set_mode(self, sid, m):
         self.calls.append(("set_mode", sid, m)); return True
 
+    def set_model(self, sid, v):
+        self.calls.append(("set_model", sid, v)); return True
+
     def rename(self, sid, n):
         self.calls.append(("rename", sid, n)); return True
 
@@ -102,12 +105,17 @@ class KernelWiring(unittest.TestCase):
         self.assertIn(("interrupt", "sid-sdk"), self.be.calls)
         self.assertIn(("kill", "sid-sdk"), self.be.calls)
 
-    def test_model_effort_compact_map_to_slash_sends(self):
+    def test_setmodel_goes_live_not_slash(self):
+        # model is a runtime control request (set_model), NOT a /model slash injection the SDK ignores
         self._route({"type": "setModel", "id": "sid-sdk", "value": "opus"})
+        self.assertIn(("set_model", "sid-sdk", "opus"), self.be.calls)
+        self.assertFalse(any(c == ("send", "sid-sdk", "/model opus") for c in self.be.calls))
+
+    def test_effort_and_compact_still_slash_for_now(self):
+        # effort has no SDK runtime control (Task #4 reconnects); compact has none either → still slash sends
         self._route({"type": "setEffort", "id": "sid-sdk", "value": "high"})
         self._route({"type": "compactSession", "id": "sid-sdk"})
         sends = [c for c in self.be.calls if c[0] == "send"]
-        self.assertIn(("send", "sid-sdk", "/model opus"), sends)
         self.assertIn(("send", "sid-sdk", "/effort high"), sends)
         self.assertIn(("send", "sid-sdk", "/compact"), sends)
 
