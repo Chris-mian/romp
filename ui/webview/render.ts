@@ -86,7 +86,7 @@ interface TodoTask { id: string; subject: string; activeForm?: string; status: s
 type ChipState = "working" | "ready" | "awaiting" | "idle" | "closed" | "compacting" | "blocked";
 interface Status { state: ChipState; sinceEpoch: number | null; effort?: string; model?: string; mode?: string; ctx?: string; faded?: boolean; }
 interface Color { bg: string; fg: string; }
-interface Session { id: string; name: string; color: Color | null; events: ChatEvent[]; status: Status; firstSeen?: number; }
+interface Session { id: string; name: string; color: Color | null; events: ChatEvent[]; status: Status; firstSeen?: number; cwd?: string; }
 
 const vscodeApi =
   typeof (window as any).acquireVsCodeApi === "function" ? (window as any).acquireVsCodeApi() : undefined;
@@ -816,6 +816,7 @@ function renderSystem(ev: Extract<ChatEvent, { kind: "system" }>): HTMLElement {
   const n = (ev.claudemd || []).length;
   const bits: string[] = [];
   if (ev.model) bits.push(prettyModel(ev.model));
+  if (ev.cwd) bits.push("📁 " + (ev.cwd.replace(/\/+$/, "").split("/").pop() || ev.cwd));   // dir basename, glanceable; full path in the row below
   if (n) bits.push(`${n} CLAUDE.md`);
   const sub = el("span", "sys-sub"); sub.textContent = bits.join(" · "); head.appendChild(sub);
   const caret = el("span", "sys-caret"); caret.textContent = "▸"; head.appendChild(caret);
@@ -1095,19 +1096,25 @@ function renderTool(ev: Extract<ChatEvent, { kind: "tool" }>): HTMLElement {
   } else if (!ack && (ev.input || ev.output)) {
     const signal = ev.name === "Task" || ev.name === "Agent";
     if (signal) {
-      // Subagent (Task/Agent) = a delegated mini-conversation. Its PROMPT is context, not the signal,
-      // so it folds onto the head line ("prompt"); the agent's REPORT renders as a faded, green-edged
-      // sub-transcript block — clamped, click to expand. (the user 2026-06-14: not a big text box.)
-      if (ev.input) inlineFold(head, turn, "prompt", preEl(ev.input), fkey ? fkey + ":prompt" : undefined);
-      if (ev.output) {
-        const clamp = el("div", "io-clamp agent-clamp");
-        const report = el("div", "agent-report md"); report.innerHTML = md(ev.output); highlight(report);
-        clamp.appendChild(report);
-        const rkey = fkey ? fkey + ":report" : undefined;
-        applyFold(clamp, "expanded", rkey);
-        clamp.addEventListener("click", () => rememberFold(clamp, "expanded", rkey));
-        turn.appendChild(clamp);
+      // Subagent (Task/Agent) = a delegated mini-conversation. Collapse the WHOLE dispatch to ONE line, like
+      // Bash/Read (the user 2026-06-22): the PROMPT and the agent's REPORT both tuck below the head behind a
+      // single toggle, hidden until clicked. The report is the meatier half, so the head summary is its line
+      // count once it's back (else just "prompt"). The report still renders as a faded, green-edged
+      // sub-transcript when expanded (the user 2026-06-14: not a big text box — and now not a big block).
+      const body = el("div", "agent-fold");
+      if (ev.input) {
+        let promptText = ev.input;   // ev.input is the tool's full JSON; show just the prompt the agent was given
+        try { const o = JSON.parse(ev.input); if (o && typeof o.prompt === "string") promptText = o.prompt; } catch { /* truncated JSON → show raw */ }
+        const lab = el("div", "agent-fold-label"); lab.textContent = "prompt";
+        body.appendChild(lab); body.appendChild(preEl(promptText));
       }
+      if (ev.output) {
+        const lab = el("div", "agent-fold-label"); lab.textContent = "report";
+        const report = el("div", "agent-report md"); report.innerHTML = md(ev.output); highlight(report);
+        body.appendChild(lab); body.appendChild(report);
+      }
+      const summary = ev.output ? `report · ${countLines(ev.output)} lines` : "prompt";
+      inlineFold(head, turn, summary, body, fkey ? fkey + ":agent" : undefined);
     } else if (!ev.output) {
       const io = el("div", "tool-io"); if (ev.input) io.appendChild(ioRow("IN", ev.input, false)); turn.appendChild(io);
     } else {
@@ -1424,6 +1431,14 @@ function renderTabs() {
       tab.addEventListener("mouseleave", () => { label.style.color = fadedColor(full); });
     }
     tab.appendChild(label);
+    // The session's working directory (fixed at creation): dimmed basename inline, full path on hover.
+    const base = s.cwd ? (s.cwd.replace(/\/+$/, "").split("/").pop() || s.cwd) : "";
+    if (base && base !== s.name) {
+      const dd = el("span", "tab-dir");
+      dd.textContent = base;
+      tab.appendChild(dd);
+    }
+    if (s.cwd) tab.title = s.name + " — " + s.cwd;
     const close = el("span", "tab-close");
     close.textContent = "×";
     // A dead (closed) session has nothing to end, so its ✕ just removes the read-only tab — no
@@ -1691,6 +1706,18 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
       const row = (e.target as HTMLElement).closest(".picker-row");
       if (row) setActiveRow(row as HTMLElement);
     });
+    // Directory for a NEW session — fixed once the session starts, so it's chosen here. Prefilled with the
+    // gear's "Default directory" on open; recent dirs autocomplete from the datalist; the kernel expands
+    // ~ / $VARs and validates it exists. Hidden in pick-mode (choosing an existing session).
+    const dirWrap = el("div", "picker-dir");
+    const dirInput = el("input", "picker-dir-input") as HTMLInputElement;
+    dirInput.id = "picker-dir";
+    dirInput.spellcheck = false;
+    dirInput.placeholder = "New-session directory (blank = default)";
+    dirInput.title = "Working directory for a NEW session — fixed once it starts. Blank uses the kernel's default. ~ and $VARs expand; recent dirs autocomplete.";
+    dirInput.setAttribute("list", "picker-dir-list");
+    const dirList = document.createElement("datalist"); dirList.id = "picker-dir-list";
+    dirWrap.appendChild(dirInput); dirWrap.appendChild(dirList);
     const actions = el("div", "picker-actions");
     const newSess = el("button", "picker-action");
     newSess.id = "picker-new-btn";
@@ -1702,7 +1729,7 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
       if (!name) { pickerError("Type the new session's name in the box above first."); search.focus(); return; }
       if (!/^[A-Za-z0-9._-]+$/.test(name)) { pickerError("Session names: letters, digits, . _ - only."); search.focus(); return; }
       // backend: the gear's "Default backend" setting (tmux | sdk), read FRESH so a same-tab change applies
-      if (vscodeApi) vscodeApi.postMessage({ type: "createSession", name, backend: loadSettings().backend });
+      if (vscodeApi) vscodeApi.postMessage({ type: "createSession", name, backend: loadSettings().backend, dir: dirInput.value.trim() });
       closePicker();
       showOpeningModal(name);   // "Opening…" cue until the new tab arrives (see upsert)
     });
@@ -1717,6 +1744,7 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
     box.appendChild(search);
     box.appendChild(errLine);
     box.appendChild(list);
+    box.appendChild(dirWrap);
     box.appendChild(actions);
     overlay.appendChild(box);
     overlay.addEventListener("click", (e) => { if (e.target === overlay) closePicker(); });
@@ -1726,6 +1754,10 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
   overlay.style.display = "flex";
   const actions = overlay.querySelector(".picker-actions") as HTMLElement | null;
   if (actions) actions.style.display = pick ? "none" : "";
+  const dirWrap = overlay.querySelector(".picker-dir") as HTMLElement | null;
+  if (dirWrap) dirWrap.style.display = pick ? "none" : "";   // dir only matters when creating, not picking
+  const di = document.getElementById("picker-dir") as HTMLInputElement | null;
+  if (di) di.value = loadSettings().defaultDir || "";        // prefill the gear default each open
   const s = document.getElementById("picker-search") as HTMLInputElement | null;
   if (s) { s.value = ""; s.placeholder = prompt || "Search sessions, or type a new session's name…"; s.focus(); }
   filterPicker(""); // reset row visibility and disarm the New-session button from a prior open
@@ -1869,6 +1901,16 @@ function renderPicker(items: any[]) {
       closePicker();
     });
     list.appendChild(row);
+  }
+  // Recent dirs → the new-session field's autocomplete (unique, non-empty, in list order).
+  const dl = document.getElementById("picker-dir-list");
+  if (dl) {
+    dl.replaceChildren();
+    const seen = new Set<string>();
+    for (const it of items) {
+      const d = (it.dir || "").trim();
+      if (d && !seen.has(d)) { seen.add(d); const o = document.createElement("option"); o.value = d; dl.appendChild(o); }
+    }
   }
   // Re-apply the current filter (the list may refresh while the user is mid-
   // type) — it also sets the active row / arms the New-session button.
@@ -3538,6 +3580,7 @@ function upsert(msg: any) {
     events: msg.events || (prev ? prev.events : []),
     status: msg.status || (prev ? prev.status : { state: "idle", sinceEpoch: null }),
     firstSeen: msg.firstSeen ?? (prev ? prev.firstSeen : undefined),
+    cwd: msg.cwd ?? (prev ? prev.cwd : ""),
   };
   sessions.set(msg.id, s);
   // The kernel re-sends the FULL "session" payload on every push. Distinguish an APPEND (more turns

@@ -2881,5 +2881,55 @@ class WsLoopResilience(unittest.TestCase):
         self.assertEqual(seen["types"], ["a"], "a real socket error ends the loop — 'b' never runs (genuine disconnect)")
 
 
+class CreateDirResolution(unittest.TestCase):
+    """A session's working directory is fixed at creation, so the kernel validates the UI-supplied dir up
+    front (_resolve_create_dir) and reads it back for the lane/recent-dirs (_cwd_of). (the user 2026-06-22)"""
+
+    def setUp(self):
+        self.names = Path(tempfile.mkdtemp()) / "names"
+        self.names.mkdir(parents=True)
+        self._saved_names = km.NAMES
+        km.NAMES = self.names
+        self._saved_env = os.environ.get("ROMP_SERVE_CWD")
+
+    def tearDown(self):
+        km.NAMES = self._saved_names
+        if self._saved_env is None:
+            os.environ.pop("ROMP_SERVE_CWD", None)
+        else:
+            os.environ["ROMP_SERVE_CWD"] = self._saved_env
+
+    def test_blank_dir_falls_back_to_default_no_error(self):
+        os.environ["ROMP_SERVE_CWD"] = "/tmp"
+        for raw in ("", "   ", None):
+            path, err = km._resolve_create_dir(raw)
+            self.assertIsNone(err)
+            self.assertEqual(path, "/tmp")               # default is NOT realpath'd, just the serve dir
+
+    def test_missing_dir_is_rejected(self):
+        path, err = km._resolve_create_dir("/no/such/dir/xyz123")
+        self.assertIsNone(path)
+        self.assertIn("not found", err)
+
+    def test_valid_dir_resolved_to_realpath(self):
+        d = tempfile.mkdtemp()
+        path, err = km._resolve_create_dir("  " + d + "  ")   # surrounding whitespace trimmed
+        self.assertIsNone(err)
+        self.assertEqual(path, os.path.realpath(d))
+
+    def test_tilde_and_env_expanded(self):
+        path, err = km._resolve_create_dir("~")
+        self.assertIsNone(err)
+        self.assertEqual(path, os.path.realpath(os.path.expanduser("~")))
+
+    def test_cwd_of_reads_names_second_field(self):
+        sid = "11111111-2222-3333-4444-555555555555"
+        (self.names / sid).write_text("mysess\t/work/proj\t#1EA1EB\twhite\n")
+        self.assertEqual(km._cwd_of(sid), "/work/proj")
+        self.assertEqual(km._cwd_of("no-such-sid"), "")    # missing names entry → ""
+        (self.names / "noctab").write_text("justaname\n")  # no cwd field
+        self.assertEqual(km._cwd_of("noctab"), "")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

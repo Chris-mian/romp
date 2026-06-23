@@ -270,6 +270,17 @@ def _name_of(sid):
         return None
 
 
+def _cwd_of(sid):
+    """The session's working directory from the names registry (2nd tab field: name\\tcwd\\tbg\\tfg), or "".
+    Written at launch for BOTH backends (tmux romp launcher + SDK write_name), so it's available before any
+    transcript exists. The directory is fixed at creation — there's no SDK call to relocate a session."""
+    try:
+        parts = (NAMES / sid).read_text().rstrip("\n").split("\t")
+        return parts[1] if len(parts) > 1 else ""
+    except Exception:
+        return ""
+
+
 def _followup_body(iid, title, text, injected=False):
     """Pane message for a feed follow-up: QUOTE the ask being followed up ('> <ask>') above the user's
     text, so the recipient session knows what the reply answers. An explicit `title` (the group modal) is
@@ -761,19 +772,37 @@ def _session_list(now, tmux):
         sid = s["sid"]
         arch = jd.load_archive(sid) or {}
         items.append({"id": sid, "name": s["name"], "color": _name_color(sid),
-                      "running": sid in live,
+                      "running": sid in live, "dir": _tilde(_cwd_of(sid)),   # recent-dirs source for the new-session field
                       "time": "running" if sid in live else _rel_ago(now, s["mtime"]),
                       "summary": arch.get("headline", "")})
     items.sort(key=lambda it: 0 if it["running"] else 1)   # stable: running first, recency within
     return items
 
 
-def _spawn_session(name):
+def _default_create_dir():
+    """The fallback working directory for a new session when the UI doesn't specify one."""
+    return os.environ.get("ROMP_SERVE_CWD") or os.path.expanduser("~")
+
+
+def _resolve_create_dir(raw):
+    """Resolve a UI-supplied new-session directory → (path, error). ~ and $VAR are expanded; the path must
+    be an existing directory (the session's cwd is fixed at creation, so a bad path can't be fixed later —
+    reject it up front). Empty/None → the kernel default, no error."""
+    if not raw or not str(raw).strip():
+        return _default_create_dir(), None
+    p = os.path.expanduser(os.path.expandvars(str(raw).strip()))
+    if not os.path.isdir(p):
+        return None, "directory not found: %s" % str(raw).strip()
+    return os.path.realpath(p), None
+
+
+def _spawn_session(name, cwd=None):
     """Create a detached romp session named `name` — the same launch the old TS backend ran
     (`romp --detach <name>`, tmux-backend.ts). Threaded so the ~seconds-long launch never blocks the WS
     recv loop; the 4s pusher then delivers the new tab and closes the webview's 'Opening…' modal. Scrub
-    TMUX* so the child launcher never thinks it is already inside a tmux client."""
-    cwd = os.environ.get("ROMP_SERVE_CWD") or os.path.expanduser("~")
+    TMUX* so the child launcher never thinks it is already inside a tmux client. `cwd` is the session's
+    working directory (validated by _resolve_create_dir); None falls back to the kernel default."""
+    cwd = cwd or _default_create_dir()
     env = {k: v for k, v in os.environ.items() if k not in ("TMUX", "TMUX_PANE")}
     try:
         subprocess.run([str(HERE / "romp"), "--detach", name], cwd=cwd, env=env, timeout=25,
@@ -2389,6 +2418,7 @@ def build_session(sid, now, tmux=None):
     if events and (docs or any(sysinfo[k] for k in ("model", "cwd", "gitBranch", "version", "mode"))):
         events.insert(0, sysinfo)
     return {"type": "session", "id": sid, "name": sess["name"], "color": _name_color(sid),
+            "cwd": _tilde(_cwd_of(sid) or meta.get("cwd") or ""),   # fixed-at-creation dir; lane tab shows it (the user 2026-06-22)
             "events": events, "status": status, "ledger": ledger, "firstSeen": session["turns"][0]["t"]
             if session["turns"] else now}
 
@@ -4385,6 +4415,10 @@ _GEAR_HTML = ("<button id=rrefresh title='Restart the romp kernel' aria-label=Re
               "border:1px solid #3a3a3a;border-radius:5px;padding:3px 4px;cursor:pointer'>"
               "<option value=tmux>tmux (terminal)</option><option value=sdk>SDK (headless)</option>"
               "</select></span></div>"
+              "<div class='rs-row rs-sep' style='cursor:default'><span style='flex:1 1 auto'><b>Default directory</b>"
+              "<span class=rs-sub>Prefills the directory for a NEW session (still editable per session). A session's directory is fixed once it starts. Blank → the kernel's serve directory. ~ and $VARs are expanded.</span>"
+              "<input id=rs-defaultdir type=text spellcheck=false placeholder='~/path/to/project' style='margin-top:5px;width:100%;box-sizing:border-box;background:#1e1e1e;color:#ccc;"
+              "border:1px solid #3a3a3a;border-radius:5px;padding:3px 6px'></span></div>"
               "<label class='rs-row rs-sep'><input type=checkbox id=rs-autonudge>"
               "<span><b>Auto Nudge</b>"
               "<span class=rs-sub>When a session goes idle but its goal still shows working (not blocked, not awaiting you), automatically nudge it once for a status update.</span>"
@@ -4417,8 +4451,8 @@ _GEAR_HTML = ("<button id=rrefresh title='Restart the romp kernel' aria-label=Re
               "</div></div>")
 _GEAR_JS = r"""(function(){var g=document.getElementById('rgear'),p=document.getElementById('rsettings'),
 b=document.getElementById('rsver'),cc=document.getElementById('rs-compact'),cm=document.getElementById('rs-colormap'),
-db=document.getElementById('rs-debug'),an=document.getElementById('rs-autonudge'),bk=document.getElementById('rs-backend');
-function load(){try{return Object.assign({compact:false,colormap:'hawaii',subgoals:true,debug:false,backend:'tmux'},JSON.parse(localStorage.getItem('romp:settings')||'null'));}catch(e){return {compact:false,colormap:'hawaii',subgoals:true,debug:false,backend:'tmux'};}}
+db=document.getElementById('rs-debug'),an=document.getElementById('rs-autonudge'),bk=document.getElementById('rs-backend'),dd=document.getElementById('rs-defaultdir');
+function load(){try{return Object.assign({compact:false,colormap:'hawaii',subgoals:true,debug:false,backend:'tmux',defaultDir:''},JSON.parse(localStorage.getItem('romp:settings')||'null'));}catch(e){return {compact:false,colormap:'hawaii',subgoals:true,debug:false,backend:'tmux',defaultDir:''};}}
 function save(s){try{localStorage.setItem('romp:settings',JSON.stringify(s));}catch(e){}}
 function emit(){try{window.dispatchEvent(new Event('romp:settings'));}catch(e){}}   // same-doc signal → the feed re-gates its cards
 cc.addEventListener('change',function(){var s=load();s.compact=cc.checked;save(s);});
@@ -4431,6 +4465,7 @@ if(an)an.addEventListener('change',function(){try{window.acquireVsCodeApi&&windo
 cm.addEventListener('change',function(){var s=load();s.colormap=cm.value;save(s);
 try{window.acquireVsCodeApi&&window.acquireVsCodeApi().postMessage({type:'setColormap',name:cm.value});}catch(e){}});
 if(bk)bk.addEventListener('change',function(){var s=load();s.backend=bk.value;save(s);emit();});   // webview-local pref read at createSession time (render.ts); no kernel round-trip
+if(dd)dd.addEventListener('change',function(){var s=load();s.defaultDir=dd.value.trim();save(s);emit();});   // prefilled into the new-session field (render.ts); validated server-side at createSession
 function lv(){var t=document.querySelector('script[src*="feed.js"]');
 var m=t&&t.getAttribute('src').match(/[?&]v=(\d+)/);return m?+m[1]:0;}
 function fill(){fetch('/version',{cache:'no-store'}).then(function(r){return r.json();}).then(function(v){
@@ -4438,7 +4473,7 @@ if(an)an.checked=!!v.autoNudge;
 var x=lv();b.innerHTML='kernel '+(v.kernel_sha||'?')+'\nserving v'+
 v.dist_ver+'\nthis tab v'+(x||'?');
 }).catch(function(){b.textContent='(version unavailable)';});}
-g.onclick=function(e){e.stopPropagation();if(p.hidden){p.hidden=false;var s=load();cc.checked=!!s.compact;db.checked=!!s.debug;cm.value=s.colormap||'hawaii';if(bk)bk.value=s.backend||'tmux';fill();}else p.hidden=true;};
+g.onclick=function(e){e.stopPropagation();if(p.hidden){p.hidden=false;var s=load();cc.checked=!!s.compact;db.checked=!!s.debug;cm.value=s.colormap||'hawaii';if(bk)bk.value=s.backend||'tmux';if(dd)dd.value=s.defaultDir||'';fill();}else p.hidden=true;};
 document.addEventListener('click',function(e){if(!p.hidden&&e.target!==g&&!p.contains(e.target))p.hidden=true;});
 var rf=document.getElementById('rrefresh');   // ↻ moved up from the timeline (the user 2026-06-17): POST /restart, poll /healthz, reload
 if(rf)rf.onclick=function(){rf.disabled=true;try{fetch('/restart',{method:'POST'}).catch(function(){});}catch(e){}
@@ -5102,17 +5137,19 @@ class Handler(BaseHTTPRequestHandler):
             if not NAME_RE.match(nm):
                 client["send"](json.dumps({"type": "warn", "text": "session names use letters, digits, . _ - only."}))
             else:
+                cwd, derr = _resolve_create_dir(msg.get("dir"))   # the session dir is fixed at creation — validate now
                 live = _live_names(_tmux_sessions())
-                if nm in live:                   # already running → just (re)open it, don't re-spawn
+                if derr:
+                    client["send"](json.dumps({"type": "warn", "text": derr}))
+                elif nm in live:                 # already running → just (re)open it, don't re-spawn
                     _set_hidden_tab(live[nm], False); _push_all()
                     _reveal_chat({"type": "focus", "id": live[nm]})
                 elif msg.get("backend") == "sdk" and _sdk():   # non-tmux: drive via the Agent SDK
-                    cwd = os.environ.get("ROMP_SERVE_CWD") or os.path.expanduser("~")
                     sid = _sdk().spawn(nm, cwd)
                     _set_hidden_tab(sid, False); _push_all()
                     _reveal_chat({"type": "focus", "id": sid})
                 else:
-                    threading.Thread(target=_spawn_session, args=(nm,), daemon=True).start()
+                    threading.Thread(target=_spawn_session, args=(nm, cwd), daemon=True).start()
         elif msg and msg.get("type") == "renameSession" and msg.get("id") and msg.get("name"):
             new = _rename_session(str(msg["id"]), str(msg["name"]))
             if new:

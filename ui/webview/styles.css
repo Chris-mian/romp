@@ -103,6 +103,11 @@ body { display: flex; flex-direction: column; }
 /* compacting → a small monochrome ⇲ compress glyph before the name (this state gets no tab outline, so the
    glyph is the cue); a touch dim so it reads as transient process, not a status colour (the user 2026-06-22) */
 .tab-compacting-icon { flex: 0 0 auto; font-size: 0.9em; line-height: 1; margin-right: 3px; opacity: 0.75; }
+/* working directory (fixed at creation): dimmed basename after the name, truncated; full path on tab hover */
+.tab-dir { flex: 0 1 auto; min-width: 0; margin-left: 5px; color: var(--dim); opacity: 0.7;
+  font-family: var(--mono, monospace); font-size: 0.78em; max-width: 92px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tab-dir::before { content: "·"; margin-right: 4px; opacity: 0.6; }
 /* CLOSED (dead session kept as a read-only tab): strike the title + dim, so a tab that's still
    present but no longer live reads as past tense (the user 2026-06-16). */
 .tab.tab-closed .tab-label { text-decoration: line-through; }
@@ -665,10 +670,12 @@ body { display: flex; flex-direction: column; }
   content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 56px;
   background: linear-gradient(transparent, var(--bg)); pointer-events: none;
 }
-/* Subagent (Task/Agent) report — a faded, green-edged sub-transcript instead of a big IO box
-   (the user 2026-06-14). Reuses .io-clamp's clamp+expand, but recolored green and borderless-but-left. */
-.io-clamp.agent-clamp { border: none; border-left: 2px solid rgba(87, 181, 15, 0.5); border-radius: 0 6px 6px 0; background: rgba(87, 181, 15, 0.06); }
-.agent-report { padding: 6px 11px; color: var(--dim); font-size: 0.95em; }
+/* Subagent (Task/Agent) dispatch — collapses to ONE line; the prompt + report tuck inside .agent-fold
+   (a .tool-fold-body), hidden until the head toggle is clicked (the user 2026-06-22). Each section gets a
+   small dim label; the report keeps its faded, green-edged sub-transcript look (the user 2026-06-14). */
+.agent-fold-label { color: var(--dim); font-size: 0.78em; text-transform: uppercase; letter-spacing: 0.04em; opacity: 0.65; margin: 6px 0 2px; }
+.agent-fold-label:first-child { margin-top: 0; }
+.agent-report { padding: 6px 11px; color: var(--dim); font-size: 0.95em; border-left: 2px solid rgba(87, 181, 15, 0.5); background: rgba(87, 181, 15, 0.06); border-radius: 0 6px 6px 0; }
 .agent-report > :first-child { margin-top: 0; }
 .agent-report > :last-child { margin-bottom: 0; }
 .io-row { display: flex; gap: 12px; padding: 10px 13px; }
@@ -1087,6 +1094,17 @@ pre.has-copy:hover .code-copy, .code-copy:focus-visible { opacity: 0.9; }
   border-bottom: 1px solid var(--box-border);
 }
 .picker-error.show { display: block; }
+.picker-dir { display: flex; align-items: center; gap: 6px; padding: 8px 14px; border-top: 1px solid var(--box-border); }
+.picker-dir::before { content: "📁"; opacity: 0.55; font-size: 0.9em; flex: 0 0 auto; }
+.picker-dir-input {
+  flex: 1 1 auto; min-width: 0;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--box-border); border-radius: 5px;
+  color: var(--fg); font-family: var(--mono, monospace); font-size: 0.82em;
+  padding: 5px 8px; outline: none;
+}
+.picker-dir-input:focus { border-color: var(--vscode-focusBorder, #4daafc); }
+.picker-dir-input::placeholder { color: var(--dim); }
 .picker-list { overflow-y: auto; }
 .picker-row {
   padding: 9px 14px; cursor: pointer;
