@@ -370,6 +370,16 @@ class AskRoundTrip(unittest.TestCase):
         self.assertTrue(self._wait(
             lambda: sb.last_state(self.d, sid).get("state") == "waiting"))
 
+    def test_connect_publishes_model_without_a_turn(self):
+        """Eager-connect (used at createSession) brings up the session WITHOUT a user turn, so the model
+        publishes from the init message right away — like a tmux session shows it on launch."""
+        sid = self.backend.spawn("eager", self.d)
+        self.assertEqual(self.backend.live_sessions()[sid]["model"], "", "no model before connect")
+        self.assertTrue(self.backend.connect(sid))
+        self.assertTrue(self._wait(lambda: self.backend.live_sessions().get(sid, {}).get("model")),
+                        "eager-connect publishes the model from init, with no user turn sent")
+        self.assertFalse(self.backend.connect("no-such-sid"))
+
     def test_kill_marks_dead(self):
         sid = self.backend.spawn("beta", self.d)
         self.backend.send(sid, "hi")

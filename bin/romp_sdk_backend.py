@@ -733,6 +733,12 @@ class SdkBackend:
             s.start()
             return s
 
+    def connect(self, sid: str) -> bool:
+        """Eagerly start (connect) a session WITHOUT sending a turn, so its model + permission-mode publish
+        from the init message right away — like a tmux session shows them on launch — instead of only after
+        the first message (the user 2026-06-23). Idempotent; a no-op if already running."""
+        return self._ensure(sid) is not None
+
     def send(self, sid: str, text: str) -> bool:
         s = self._ensure(sid)
         if not s:

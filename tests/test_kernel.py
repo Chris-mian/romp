@@ -2332,6 +2332,24 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(lane["state"], "idle", "a dead lane with an unfinished turn is idle, NOT working")
         self.assertFalse(m["turns"][SID][-1]["open"], "a dead lane's last bar is not an open (growing-to-now) bar")
 
+    def test_lane_and_helper_report_backend(self):
+        """Each session carries a backend label ('sdk'|'tmux') so the ui peer can show it (tab tooltip +
+        timeline lane). Live metadata's field wins; else SDK-registry ownership; a non-SDK session is tmux
+        (the user 2026-06-22, via the ui peer)."""
+        saved = km._sdk
+        km._sdk = lambda: None                               # deterministic: no SDK backend unless overridden
+        try:
+            self.assertEqual(km._session_backend("x", {"backend": "sdk"}), "sdk")    # live field wins
+            self.assertEqual(km._session_backend("x", {"state": "idle"}), "tmux")    # no field, no SDK reg → tmux
+            km._sdk = lambda: type("B", (), {"owns": lambda self, s: True})()
+            self.assertEqual(km._session_backend("x", None), "sdk")                  # dead SDK lane → sdk via ownership
+            km._sdk = lambda: None
+            lane = next(s for s in km.build_timeline(NOW)["sessions"] if s["id"] == SID)
+            self.assertEqual(lane["backend"], "tmux", "the fixture session is tmux (no SDK registry)")
+            self.assertEqual(km.build_session(SID, NOW)["status"]["backend"], "tmux")
+        finally:
+            km._sdk = saved
+
     def test_timeline_state_and_metadata_from_tmux(self):
         # live lanes take state + model/effort/context from tmux @claude-* vars (the READY badge =
         # state "waiting"); badgeFor hides the badge unless live, so live must be true here
