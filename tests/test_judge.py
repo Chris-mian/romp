@@ -786,6 +786,118 @@ class PlanApply(unittest.TestCase):
         self.assertEqual(jd.open_menu(s), [], "the completed top AND its still-open child are sealed out of the menu")
 
 
+class AwaitingState(unittest.TestCase):
+    """AWAITING = a flavor of WORKING (the user 2026-06-22): a goal paused on work it dispatched or
+    delegated (background agents, a subagent, a peer it messaged, a build/CI) is NOT blocked (needs-you)
+    and NOT done — it stays in the working column with an awaiting badge, and is exempt from auto-nudge.
+    Both judges learn it: the planner's `await` op and the closer's `await` verdict."""
+
+    def test_planner_prompt_offers_await(self):
+        for phrase in ('"await"', "dispatched", "flavor of WORKING", "neither blocked nor done"):
+            self.assertIn(phrase, jd.PLAN_SYS, phrase)
+
+    def test_await_op_sets_awaiting_and_clears_a_prior_block(self):
+        s = _store()
+        jd.apply_plan(s, "s1", T0, [{"do": "mint", "why": "x", "text": "research task"}], [])
+        nid = s["placements"]["s1"]
+        jd.apply_plan(s, "s2", T0 + 10, [{"do": "block", "why": "owed", "goal": 1}], jd.open_menu(s))
+        self.assertTrue(s["nodes"][nid]["blocked"])
+        jd.apply_plan(s, "s3", T0 + 20, [{"do": "await", "why": "Waiting on the agents it dispatched.", "goal": 1}], jd.open_menu(s))
+        self.assertTrue(s["nodes"][nid]["awaiting"], "await sets the awaiting flag")
+        self.assertFalse(s["nodes"][nid]["blocked"], "await supersedes a prior block (a working flavor)")
+        self.assertEqual(s["nodes"][nid]["awaitWhy"], "Waiting on the agents it dispatched.")
+        self.assertEqual(s["nodes"][nid]["mt"], T0 + 20, "await bumps mt")
+
+    def test_block_op_supersedes_a_prior_await(self):
+        # a genuine user-block always wins back over an await (needs-you is not a working flavor).
+        s = _store()
+        jd.apply_plan(s, "s1", T0, [{"do": "mint", "why": "x", "text": "G"},
+                                    {"do": "await", "why": "Waiting on CI.", "ref": 1}], [])
+        nid = s["placements"]["s1"]
+        self.assertTrue(s["nodes"][nid]["awaiting"])
+        jd.apply_plan(s, "s2", T0 + 10, [{"do": "block", "why": "Approve the deploy?", "goal": 1}], jd.open_menu(s))
+        self.assertTrue(s["nodes"][nid]["blocked"], "a real user-block wins back")
+        self.assertFalse(s["nodes"][nid]["awaiting"], "and clears the await")
+
+    def test_resumed_work_on_a_branch_lifts_a_stale_await(self):
+        s = _store()
+        jd.apply_plan(s, "s1", T0, [{"do": "mint", "why": "x", "text": "G"},
+                                    {"do": "await", "why": "Waiting on agents.", "ref": 1}], [])
+        nid = s["placements"]["s1"]
+        self.assertTrue(s["nodes"][nid]["awaiting"])
+        jd.apply_plan(s, "s2", T0 + 10, [{"do": "sub", "why": "x", "under": 1, "text": "results in, continuing"}], jd.open_menu(s))
+        self.assertFalse(s["nodes"][nid]["awaiting"], "a new placement on the branch lifts the stale await")
+
+    def test_done_clears_await_across_the_subtree(self):
+        s = _store()
+        jd.apply_plan(s, "s1", T0, [{"do": "mint", "why": "x", "text": "G"}], [])
+        nid = s["placements"]["s1"]
+        jd.apply_plan(s, "s2", T0 + 10, [{"do": "sub", "why": "x", "under": 1, "text": "child"}], jd.open_menu(s))
+        child = s["placements"]["s2"]
+        menu = jd.open_menu(s)
+        child_i = next(i for i, nd in enumerate(menu, 1) if nd["id"] == child)
+        jd.apply_plan(s, "s3", T0 + 20, [{"do": "await", "why": "Waiting.", "goal": child_i}], menu)
+        self.assertTrue(s["nodes"][child]["awaiting"])
+        menu = jd.open_menu(s)
+        top_i = next(i for i, nd in enumerate(menu, 1) if nd["id"] == nid)
+        jd.apply_plan(s, "s4", T0 + 30, [{"do": "done", "why": "shipped", "goal": top_i}], menu)
+        self.assertFalse(s["nodes"][child]["awaiting"], "completing the top clears await across its subtree")
+
+    def test_rollup_awaiting_status(self):
+        s = _store()
+        jd.apply_plan(s, "s1", T0, [{"do": "mint", "why": "x", "text": "G"},
+                                    {"do": "await", "why": "Waiting on agents.", "ref": 1}], [])
+        nid = s["placements"]["s1"]
+        jd.rollup_status(s, session_closed=False)
+        self.assertEqual(s["status"][nid], "awaiting", "an awaiting top rolls up as awaiting (a working flavor)")
+
+    def test_blocked_outranks_awaiting_in_rollup(self):
+        # an awaiting leaf and a blocked leaf under one top → the top is BLOCKED (needs-you wins).
+        s = _store()
+        jd.apply_plan(s, "s1", T0, [{"do": "mint", "why": "x", "text": "G"}], [])
+        top = s["placements"]["s1"]
+        jd.apply_plan(s, "s2", T0 + 5, [{"do": "sub", "why": "x", "under": 1, "text": "c1"}], jd.open_menu(s))
+        c1 = s["placements"]["s2"]
+        jd.apply_plan(s, "s3", T0 + 6, [{"do": "sub", "why": "x", "under": 1, "text": "c2"}], jd.open_menu(s))
+        c2 = s["placements"]["s3"]
+        menu = jd.open_menu(s)
+        ci1 = next(i for i, nd in enumerate(menu, 1) if nd["id"] == c1)
+        jd.apply_plan(s, "s4", T0 + 7, [{"do": "await", "why": "waiting", "goal": ci1}], menu)
+        menu = jd.open_menu(s)
+        ci2 = next(i for i, nd in enumerate(menu, 1) if nd["id"] == c2)
+        jd.apply_plan(s, "s5", T0 + 8, [{"do": "block", "why": "decide", "goal": ci2}], menu)
+        jd.rollup_status(s, session_closed=False)
+        self.assertEqual(s["status"][top], "blocked", "a real block outranks an awaiting sibling")
+
+    def test_completed_top_ignores_a_stale_awaiting_flag(self):
+        s = _store()
+        g = _mknode(s, "G", complete=True)
+        g["awaiting"] = True                                    # a stale await left on a now-complete node
+        s["lastNode"] = g["id"]
+        jd.rollup_status(s, session_closed=True)
+        self.assertEqual(s["status"][g["id"]], "completed", "a completed top can't be awaiting (short-circuit)")
+
+    def test_closer_awaits_listed_goals_and_clears_a_stale_block(self):
+        s = _store()
+        g1, g2 = _mknode(s, "G1"), _mknode(s, "G2")
+        g2["blocked"] = True                                   # the closer reclassifies a stale block as awaiting
+        newly = jd.apply_close(s, [g1, g2], {"done": {}, "block": {}, "await": {2: "Waiting on its agents."}}, t=T0 + 50)
+        self.assertEqual(newly, [], "await is not a completion")
+        self.assertTrue(g2["awaiting"], "the awaited goal is marked")
+        self.assertFalse(g2["blocked"], "await clears the stale block (a working flavor)")
+        self.assertEqual(g2["awaitWhy"], "Waiting on its agents.")
+        self.assertTrue(g2["negAwait"], "a closer-set await is tagged negAwait for attribution")
+        self.assertFalse(g2["nodeComplete"])
+
+    def test_closer_done_clears_a_prior_await(self):
+        s = _store()
+        g1 = _mknode(s, "G1")
+        g1["awaiting"] = True; g1["awaitWhy"] = "waiting"
+        jd.apply_close(s, [g1], {"done": {1: "agents came back, shipped"}, "block": {}, "await": {}}, t=T0 + 10)
+        self.assertTrue(g1["nodeComplete"])
+        self.assertFalse(g1["awaiting"], "a done clears awaiting")
+
+
 class ClearedSeal(unittest.TestCase):
     """A goal you CROSSED OFF the feed (view-cleared, in STATE/cleared.jsonl) stays sealed: the planner won't
     sub/amend/mint under it (open_menu seals it), and a follow-up to it does NOT revive it (_reopen refuses a
@@ -2198,25 +2310,37 @@ class BlockCompletionCorrectness(unittest.TestCase):
 class SweepParse(unittest.TestCase):
     def test_done_list_with_reasons(self):
         self.assertEqual(jd._parse_close('{"done": [{"goal": 2, "why": "shipped it"}]}', 4),
-                         {"done": {2: "shipped it"}, "block": {}})
+                         {"done": {2: "shipped it"}, "block": {}, "await": {}})
         self.assertEqual(jd._parse_close(
             '{"done": [{"goal": 1, "why": "fixed the parser"}, {"goal": 3, "why": "wired the CLI flags"}]}', 4),
-            {"done": {1: "fixed the parser", 3: "wired the CLI flags"}, "block": {}})
+            {"done": {1: "fixed the parser", 3: "wired the CLI flags"}, "block": {}, "await": {}})
         self.assertEqual(jd._parse_close('noise {"done": [{"goal": 2, "why": "done"}]} more', 4),
-                         {"done": {2: "done"}, "block": {}}, "the outermost JSON object is isolated from prose")
+                         {"done": {2: "done"}, "block": {}, "await": {}}, "the outermost JSON object is isolated from prose")
 
     def test_block_list_parsed_and_done_wins(self):
         # the user 2026-06-17: the closer can now BLOCK a touched top (needs the user), not just complete it
         self.assertEqual(jd._parse_close('{"done": [], "block": [{"goal": 2, "why": "Approve the migration?"}]}', 3),
-                         {"done": {}, "block": {2: "Approve the migration?"}})
+                         {"done": {}, "block": {2: "Approve the migration?"}, "await": {}})
         self.assertEqual(jd._parse_close('{"done": [{"goal": 1, "why": "shipped"}], "block": [{"goal": 1, "why": "?"}]}', 3),
-                         {"done": {1: "shipped"}, "block": {}}, "a goal in both -> done wins, dropped from block")
+                         {"done": {1: "shipped"}, "block": {}, "await": {}}, "a goal in both -> done wins, dropped from block")
         self.assertEqual(jd._parse_close('{"done": [{"goal": 1, "why": "x"}]}', 3),
-                         {"done": {1: "x"}, "block": {}}, "an absent block key is tolerated")
+                         {"done": {1: "x"}, "block": {}, "await": {}}, "an absent block key is tolerated")
+
+    def test_await_list_parsed_and_done_block_win(self):
+        # the user 2026-06-22: the closer can mark a touched top AWAITING (waiting on dispatched/external
+        # work) — a working flavor, never blocked. Precedence for one goal in several lists: done > block > await.
+        self.assertEqual(jd._parse_close('{"done": [], "block": [], "await": [{"goal": 2, "why": "Waiting on its agents."}]}', 3),
+                         {"done": {}, "block": {}, "await": {2: "Waiting on its agents."}})
+        self.assertEqual(jd._parse_close(
+            '{"done": [{"goal": 1, "why": "shipped"}], "block": [{"goal": 2, "why": "?"}], "await": [{"goal": 1, "why": "x"}, {"goal": 2, "why": "y"}]}', 3),
+            {"done": {1: "shipped"}, "block": {2: "?"}, "await": {}},
+            "a goal already in done or block is dropped from await")
+        self.assertEqual(jd._parse_close('{"done": [{"goal": 1, "why": "x"}]}', 3),
+                         {"done": {1: "x"}, "block": {}, "await": {}}, "an absent await key is tolerated")
 
     def test_empty_done_completes_nothing(self):
-        self.assertEqual(jd._parse_close('{"done": []}', 3), {"done": {}, "block": {}},
-                         "empty done list -> empty maps (complete/block nothing)")
+        self.assertEqual(jd._parse_close('{"done": []}', 3), {"done": {}, "block": {}, "await": {}},
+                         "empty done list -> empty maps (complete/block/await nothing)")
 
     def test_garbage_skips(self):
         self.assertIsNone(jd._parse_close("", 3), "empty output -> skip the turn")
@@ -2229,16 +2353,21 @@ class SweepParse(unittest.TestCase):
 
     def test_out_of_range_and_dupes_dropped(self):
         self.assertEqual(jd._parse_close('{"done": [{"goal": 1, "why": "a"}, {"goal": 9, "why": "b"}]}', 3),
-                         {"done": {1: "a"}, "block": {}}, "out-of-range index is dropped")
-        self.assertEqual(jd._parse_close('{"done": [{"goal": 9, "why": "b"}]}', 3), {"done": {}, "block": {}},
+                         {"done": {1: "a"}, "block": {}, "await": {}}, "out-of-range index is dropped")
+        self.assertEqual(jd._parse_close('{"done": [{"goal": 9, "why": "b"}]}', 3), {"done": {}, "block": {}, "await": {}},
                          "only out-of-range -> empty (nothing in-range done)")
         self.assertEqual(jd._parse_close('{"done": [{"goal": 2, "why": "first"}, {"goal": 2, "why": "second"}]}', 3),
-                         {"done": {2: "first"}, "block": {}}, "first reason wins for a duplicate index")
+                         {"done": {2: "first"}, "block": {}, "await": {}}, "first reason wins for a duplicate index")
         self.assertEqual(jd._parse_close('{"done": ["junk", {"why": "no goal"}, {"goal": 2, "why": "ok"}]}', 3),
-                         {"done": {2: "ok"}, "block": {}}, "malformed entries are skipped")
+                         {"done": {2: "ok"}, "block": {}, "await": {}}, "malformed entries are skipped")
 
     def test_closer_prompt_offers_block(self):
         for phrase in ('"block"', "blocked", "owed by the user", "needs the user"):
+            self.assertIn(phrase, jd.CLOSER_SYS, phrase)
+
+    def test_closer_prompt_offers_await(self):
+        # the user 2026-06-22: the closer learns the awaiting state (waiting on dispatched/delegated work).
+        for phrase in ('"await"', "awaiting", "dispatched", "flavor of working"):
             self.assertIn(phrase, jd.CLOSER_SYS, phrase)
 
     def test_closer_prompt_prioritizes_top_level(self):

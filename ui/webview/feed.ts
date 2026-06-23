@@ -73,7 +73,6 @@ interface AskItem {
   followupPending?: boolean;                       // you followed up on a settled card → optimistically reopened, awaiting the judge's re-file (kernel)
   autoFiled?: boolean;                             // settled → moved to COMPLETED by the auto-filing rule (keeps the green ring)
   explicitDone?: boolean;                          // every path explicitly DONE-stamped → blue ring (blue+green when settled agrees)
-  waiting?: boolean;                               // paused on an EXTERNAL event → held in Working, ⏳ chip, no ring
   turnIds?: string[];                              // typed turns that minted/amended this card
   // the owning session is live-blocked (permission/picker, or stopped on an API error) ON this card's
   // work → the card itself files under BLOCKED (the user's ruling 2026-06-11; apiError 2026-06-16).
@@ -86,6 +85,7 @@ interface AskItem {
   summaryAnchorUuid?: string | null;               // click the summary line → the biggest contiguous assistant-text block in the work span (kernel _seg_best_text; the user 2026-06-22)
   origin?: { peer: string; peerSid: string; color: { bg: string; fg: string } | null } | null;  // courier handoff: planted by a peer's message → "↪ from <peer>"
   waitingOn?: { peerSid: string; name: string; color: { bg: string; fg: string } | null; inCycle: boolean } | null;  // unanswered msg out to a live peer → "Awaiting <peer>" chip (peer name in native colour, no emoji; kernel _wait_for_graph; the user 2026-06-22)
+  awaiting?: { why?: string | null } | null;       // AWAITING flavor: held in Working, ⏳ awaiting badge — waiting on dispatched/delegated work (agents/subagents/a build), NOT on you (kernel build_feed; the user 2026-06-22). The peer case rides waitingOn; this carries the generic "why".
   groupTitle?: string;                             // host: this ask shares a typed turn with siblings → the group's title
   groupN?: number;                                 // host: sibling count for that turn (>1 ⇒ fold into one group card)
   provisional?: boolean;                           // a LIVE-PROMPT placeholder (kernel _provisional_card): the session is working an in-progress turn the planner hasn't classified yet. No goal node (empty tree) — dim, non-interactive, no clear/nudge/modal; replaced by the real card once the planner places the segment.
@@ -439,8 +439,8 @@ function makeAskCard(it: AskItem): HTMLElement {
   const apiBadge = el("span", "fask-apierror"); apiBadge.textContent = "⚠ API error"; apiBadge.style.display = "none";   // red: session stopped on an API error
   const apiRetry = el("button", "fdismiss fretry"); apiRetry.textContent = "Retry"; apiRetry.title = "send “retry” into this session to resume"; apiRetry.style.display = "none";
   const revive = el("button", "fdismiss frevive"); revive.textContent = "Revive"; revive.title = "bring this offline session back so the parked hand-off is delivered"; revive.style.display = "none";
-  const waitBadge = el("span", "fask-wait"); waitBadge.textContent = "⏳ waiting"; waitBadge.style.display = "none";
-  waitBadge.title = "paused on an EXTERNAL event (CI, build, a peer's reply) — not on you; stays in Working, exempt from auto-filing; lifts when new work lands";
+  const waitBadge = el("span", "fask-wait"); waitBadge.textContent = "⏳ awaiting"; waitBadge.style.display = "none";
+  waitBadge.title = "waiting on work it dispatched or delegated (agents, a subagent, a build/CI) — not on you; stays in Working, exempt from auto-nudge; lifts when the result lands";
   const clr = el("button", "fdismiss"); clr.textContent = "Clear"; clr.title = "clear this ask (inbox-zero; the one human-asserted fact)";
   // "Nudge" on the card itself (the user 2026-06-18): a one-click status follow-up for a WORKING card,
   // beside Clear, so you don't have to open the modal. Sends the canned status question down the SAME
@@ -645,7 +645,15 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   a._nudge.style.display = (it.column === "working" && !it.provisional) ? "" : "none";   // Nudge only on a real working card (the user 2026-06-18)
   a._cardFup.style.display = ((it.column === "needs_input" || it.column === "completed") && !it.provisional) ? "" : "none";   // Follow up on blocked/completed cards (the user 2026-06-22)
   a._clr.style.display = it.provisional ? "none" : "";   // a placeholder has nothing to curate — no Clear
-  a._wait.style.display = it.waiting ? "" : "none";   // ⏳ paused on an external event
+  // ⏳ awaiting: held in Working, waiting on work it dispatched/delegated (agents, a subagent, a build).
+  // The peer case already shows the "Awaiting <peer>" chip (waitingOn), so suppress the generic badge then.
+  const aw = it.awaiting;
+  if (aw && !it.waitingOn) {
+    a._wait.style.display = "";
+    a._wait.title = aw.why || "waiting on work it dispatched or delegated (agents, a subagent, a build/CI) — not on you; stays in Working, exempt from auto-nudge; lifts when the result lands";
+  } else {
+    a._wait.style.display = "none";
+  }
   // ⏸ live block badge: the session is stopped mid-turn on a permission prompt /
   // picker FOR THIS CARD's work — the card files under BLOCKED while it lasts
   const isApiErr = it.blocked?.state === "apiError";

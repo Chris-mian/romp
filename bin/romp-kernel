@@ -2452,6 +2452,12 @@ def build_feed(now, tmux=None):
             col = status.get(nid, "working")
             if col == "cleared" or nid in cleared:
                 continue
+            # Postal AWAIT floor (event-based, the user 2026-06-22): a session with an unanswered outbound
+            # to a LIVE peer is awaiting a delegation, not stalled — so a STALE soft block (planner/closer
+            # mislabelled the peer-wait as needs-you) yields to that hard postal signal → awaiting, a
+            # working flavor. The live permission / API-error floors still win (they're the present event).
+            if col == "blocked" and nid != api_top and nid != perm_top and fsid in wmap:
+                col = "awaiting"
             o = nodes[nid].get("origin")             # courier delegation provenance: planted by a peer
             origin = None
             if isinstance(o, dict) and o.get("peer"):
@@ -2474,6 +2480,12 @@ def build_feed(now, tmux=None):
                        if _closure_done(x) and nodes[x].get("doneWhy")]
                 if dnz:
                     done_why = max(dnz, key=lambda d: d.get("mt", d.get("t", 0)))["doneWhy"]
+            await_why = None
+            if col == "awaiting":                    # AWAITING reason: the latest still-awaiting node's "waiting on …"
+                awz = [nodes[x] for x in _subtree(nid)
+                       if nodes[x].get("awaiting") and not _closure_done(x) and nodes[x].get("awaitWhy")]
+                if awz:
+                    await_why = max(awz, key=lambda d: d.get("mt", d.get("t", 0)))["awaitWhy"]
             # The card's TIME reflects its CURRENT STATE, not when the goal was minted: a COMPLETED card
             # shows when it was completed, a BLOCKED card when it was blocked — the mt of the most-recent
             # such node in its subtree — else (working) when it was minted. Keying the time badge to the mint
@@ -2489,6 +2501,12 @@ def build_feed(now, tmux=None):
                        if nodes[x].get("blocked") and not _closure_done(x)]
                 if bts:
                     disp_t = max(bts)
+            elif col == "awaiting":                  # AWAITING card shows when it started waiting
+                ats = [nodes[x].get("mt", nodes[x]["t"]) for x in _subtree(nid)
+                       if nodes[x].get("awaiting") and not _closure_done(x)]
+                if ats:
+                    disp_t = max(ats)
+            # awaiting is a flavor of WORKING → the working column (never needs-input); the awaiting badge carries the why
             column = ("needs_input" if (nid == api_top or col == "blocked")
                       else "completed" if col == "completed" else "working")
             had_working = had_working or column == "working"
@@ -2511,6 +2529,7 @@ def build_feed(now, tmux=None):
                 "doneWhy": done_why,                 # one-sentence "why done" on a completed card (the done page)
                 "followupPending": nodes[nid].get("followupPending"),   # optimistic reopen → "Followed up" chip until the judge catches up
                 "waitingOn": (wmap.get(fsid) if column == "working" else None),   # 'waiting on <peer>' chip: this session has an unanswered outbound to a live peer (the user 2026-06-22)
+                "awaiting": ({"why": await_why} if col == "awaiting" else None),   # awaiting flavor: held in Working with a ⏳ awaiting badge (waiting on dispatched/delegated work) — the user 2026-06-22
                 "summary": nodes[nid].get("summary"),    # the distiller's key takeaway for a completed goal (modal) — the user 2026-06-17
                 "blockSummary": nodes[nid].get("blockSummary"),    # the block-distiller's decision brief for a blocked goal (modal); null until produced — the user 2026-06-18
                 "summaryAnchorUuid": _sa_u,    # click the summary line → the biggest text block in the work span (the user 2026-06-22)

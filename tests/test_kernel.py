@@ -523,6 +523,72 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(nodes["a blocked step"]["blockWhy"], "waiting on the user's choice")
         self.assertEqual(nodes["a finished step"]["doneWhy"], "shipped the fix")
 
+    def test_feed_awaiting_top_is_held_in_working_with_a_badge(self):
+        # AWAITING = a flavor of WORKING (the user 2026-06-22): a goal waiting on work it dispatched or
+        # delegated (agents, a subagent, a build) stays in the working column (never needs-input) and
+        # carries an `awaiting` badge with the why. NOT a live block.
+        top, st = (SID + ":top", SID + ":st")
+        def gn(nid, text, parent, **kw):
+            d = {"id": nid, "text": text, "parentId": parent, "nodeComplete": False,
+                 "blocked": False, "awaiting": False, "cleared": False, "trail": [], "t": T0, "mt": T0}
+            d.update(kw); return d
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+            "rompUuid": SID, "seq": 2, "lastNode": top,
+            "nodes": {
+                top: gn(top, "research the API", None, why="user asked for the research"),
+                st:  gn(st, "dispatched 3 research agents", top, awaiting=True,
+                        awaitWhy="Waiting on the 3 research agents it dispatched.", mt=T0 + 9),
+            },
+            "placements": {}, "status": {top: "awaiting"}}))
+        card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == top)
+        self.assertEqual(card["column"], "working", "an awaiting goal is held in the working column, NOT needs-input")
+        self.assertIsNotNone(card["awaiting"], "it carries an awaiting badge")
+        self.assertEqual(card["awaiting"]["why"], "Waiting on the 3 research agents it dispatched.")
+        self.assertIsNone(card["blocked"], "an awaiting goal is not a live block")
+
+    def test_feed_postal_floor_overrides_a_stale_block(self):
+        # A session with an unanswered outbound to a LIVE peer is awaiting a delegation, not stalled — so a
+        # STALE soft block on its top yields to that hard postal signal → awaiting (working column), and the
+        # "Awaiting <peer>" chip (waitingOn), suppressed while the card read 'blocked', is restored.
+        top, blk = (SID + ":top", SID + ":blk")
+        def gn(nid, text, parent, **kw):
+            d = {"id": nid, "text": text, "parentId": parent, "nodeComplete": False,
+                 "blocked": False, "awaiting": False, "cleared": False, "trail": [], "t": T0, "mt": T0}
+            d.update(kw); return d
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+            "rompUuid": SID, "seq": 2, "lastNode": top,
+            "nodes": {
+                top: gn(top, "ship the migration", None),
+                blk: gn(blk, "waiting on the peer's confirm", top, blocked=True,
+                        blockWhy="proceed once the peer confirms?", mt=T0 + 9),
+            },
+            "placements": {}, "status": {top: "blocked"}}))
+        saved = km._wait_for_graph
+        km._wait_for_graph = lambda now, alive: {SID: {"peerSid": "peerY", "name": "peerY",
+                                                       "color": None, "inCycle": False}}
+        try:
+            card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == top)
+        finally:
+            km._wait_for_graph = saved
+        self.assertEqual(card["column"], "working", "the stale block yields to the live peer-wait → working")
+        self.assertIsNotNone(card["awaiting"], "shown as awaiting (a working flavor)")
+        self.assertIsNotNone(card["waitingOn"], "the 'Awaiting <peer>' chip is restored (no longer suppressed by the block)")
+        self.assertEqual(card["waitingOn"]["peerSid"], "peerY")
+
+    def test_awaiting_top_is_exempt_from_auto_nudge(self):
+        # auto-nudge follows a 'working' orphan; an awaiting top (waiting on delegated work, not stalled) is
+        # excluded because its rolled-up status is 'awaiting', not 'working'.
+        top = SID + ":top"
+        def gn(nid, text, parent, **kw):
+            d = {"id": nid, "text": text, "parentId": parent, "nodeComplete": False,
+                 "blocked": False, "awaiting": False, "cleared": False, "trail": [], "t": T0, "mt": T0}
+            d.update(kw); return d
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+            "rompUuid": SID, "seq": 1, "lastNode": top,
+            "nodes": {top: gn(top, "research", None, awaiting=True, awaitWhy="waiting on agents")},
+            "placements": {}, "status": {top: "awaiting"}}))
+        self.assertIsNone(km._working_top_goal(SID), "an awaiting top is not a 'working' orphan → no auto-nudge")
+
     def test_feed_card_tree_orders_children_most_recent_first(self):
         # Every goal-tree view reads NEWEST-FIRST (the user 2026-06-17): the feed card's modal tree (and its
         # inline sub-goal checklist, which follows the same children order) must sort children by subtree-max
