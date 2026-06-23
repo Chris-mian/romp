@@ -33,7 +33,7 @@ marked.setOptions({ gfm: true, breaks: false });
 type AskAnswerBlock = { question: string; header?: string; options: { label: string; description?: string }[]; chosen: string[] };
 
 type ChatEvent = (
-  | { kind: "user"; md: string; uuid?: string; ts?: string; reminders?: string[]; human?: boolean; romp?: boolean; images?: { src: string; path?: string }[] }
+  | { kind: "user"; md: string; uuid?: string; ts?: string; reminders?: string[]; human?: boolean; romp?: boolean; rompAuto?: boolean; images?: { src: string; path?: string }[] }
   | { kind: "assistant"; md: string; uuid?: string; ts?: string }
   | { kind: "thinking"; text: string; encrypted: boolean; uuid?: string; ts?: string }
   | {
@@ -711,13 +711,15 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
     const hasImgs = !!(ev.images && ev.images.length);
     if (ev.md || hasImgs) {
       if (romp) {
-        // the romp swirl-glyph logo + "romp" (the user 2026-06-19: use the real logo, not the ↯ symbol).
-        // Served at /media on the web dashboard; in a sandbox without it the img self-removes (alt stays
-        // empty), leaving just "romp".
+        // every romp bubble carries the "romp" tag; the swirl LOGO is drawn ONLY on an AUTO-nudge (ev.rompAuto)
+        // — NOT a Nudge-button click / typed follow-up, which are your actions (the user 2026-06-23). Served at
+        // /media on the web dashboard; in a sandbox without it the img self-removes (alt stays empty).
         const tag = el("div", "romp-tag");
-        const logo = el("img", "romp-tag-logo") as HTMLImageElement;
-        logo.src = "/media/romp-swirl-glyph.svg"; logo.alt = ""; logo.onerror = () => logo.remove();
-        tag.appendChild(logo);
+        if (ev.rompAuto) {
+          const logo = el("img", "romp-tag-logo") as HTMLImageElement;
+          logo.src = "/media/romp-swirl-glyph.svg"; logo.alt = ""; logo.onerror = () => logo.remove();
+          tag.appendChild(logo);
+        }
         tag.appendChild(document.createTextNode("romp"));
         turn.appendChild(tag);
       }
@@ -1217,6 +1219,10 @@ function renderPostal(ev: Extract<ChatEvent, { kind: "postal" }>): HTMLElement {
   const peer = el("span", "postal-peer");
   peer.textContent = ev.peer;
   makeSessionChip(peer, ev.peer); // click the sender/recipient name → go to that session's tab
+  // the romp swirl marks this as a romp-postal message (the user 2026-06-23: postal is "from romp" too)
+  const rlogo = el("img", "postal-romp-logo") as HTMLImageElement;
+  rlogo.src = "/media/romp-swirl-glyph.svg"; rlogo.alt = ""; rlogo.title = "romp postal message"; rlogo.onerror = () => rlogo.remove();
+  head.appendChild(rlogo);
   head.appendChild(arrow);
   head.appendChild(verb);
   head.appendChild(peer);

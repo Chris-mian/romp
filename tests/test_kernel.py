@@ -203,6 +203,16 @@ class ViewBuilder(unittest.TestCase):
         self.assertFalse(users[0].get("romp"))
         self.assertTrue(users[-1].get("romp"), "the injected nudge is flagged romp (gray)")
         self.assertFalse(users[-1].get("human"), "a romp injection is not a human prompt")
+        self.assertFalse(users[-1].get("rompAuto"), "a Nudge BUTTON nudge (romp-injected, NO romp-auto) is not rompAuto → no chat swirl")
+        # an AUTO-nudge ALSO carries romp-auto → build_session flags ev.rompAuto so the chat draws the swirl (the user 2026-06-23)
+        auto = ("> the goal\n\nStatus?\n\n<!-- romp-injected --><!-- romp-auto --><!-- romp-goal-id: %s:g1 -->" % SID)
+        self.tpath.write_text("\n".join(json.dumps(r) for r in
+                              [uline(T0, "real prompt", "u1", ps="typed"),
+                               aline(T0 + 10, "ok", "a1", "u1", stop="end_turn"),
+                               uline(T0 + 100, auto, "u2", "a1", ps="typed")]) + "\n")
+        km._parse_cache.clear()
+        au = [e for e in km.build_session(SID, NOW)["events"] if e["kind"] == "user"]
+        self.assertTrue(au[-1].get("rompAuto"), "an auto-nudge (romp-auto) IS flagged rompAuto → chat swirl")
 
     def test_typed_followup_with_goal_id_only_stays_human_not_romp(self):
         # A follow-up the USER types carries the goal-id marker (for the reopen) but NOT romp-injected, so

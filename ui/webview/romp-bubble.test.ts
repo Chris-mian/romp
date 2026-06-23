@@ -28,6 +28,18 @@ test("a romp event renders the gray romp-bubble + a romp tag, NOT the blue or th
   assert.match(RENDER, /"green" \| "ring" \| "user" \| "red" \| "romp"/, "the dot helper knows the romp variant");
 });
 
+test("the swirl LOGO is gated on rompAuto (auto-nudge); the 'romp' tag stays on every romp bubble (the user 2026-06-23)", () => {
+  assert.match(RENDER, /kind: "user";[^}]*rompAuto\?: boolean/);
+  // the <img> logo appends ONLY inside the rompAuto branch; the "romp" textnode is OUTSIDE it (always shown)
+  assert.match(RENDER, /if \(ev\.rompAuto\) \{[\s\S]*?el\("img", "romp-tag-logo"\)[\s\S]*?tag\.appendChild\(logo\);\s*\}\s*tag\.appendChild\(document\.createTextNode\("romp"\)\)/);
+});
+
+test("a postal card carries the romp swirl (postal is 'from romp' too — the user 2026-06-23)", () => {
+  assert.match(RENDER, /el\("img", "postal-romp-logo"\)/);
+  assert.match(RENDER, /rlogo\.src = "\/media\/romp-swirl-glyph\.svg"/);
+  assert.match(CSS, /\.postal-romp-logo \{/);
+});
+
 test("the romp bubble is a gray, right-aligned bubble (inherits the non-injected right-align)", () => {
   // the turn carries 'romp' (no 'injected'), so .turn-user:not(.injected) right-aligns it
   assert.match(RENDER, /"turn turn-user" \+ \(romp \? " romp" : injected \? " injected" : ""\)/);

@@ -856,6 +856,7 @@ body { display: flex; flex-direction: column; }
   display: flex; align-items: center; gap: 7px; flex-wrap: wrap;
   margin-bottom: 6px; font-size: 0.9em;
 }
+.postal-romp-logo { width: 13px; height: 13px; flex: 0 0 auto; border-radius: 2px; }   /* romp-postal identity mark (the user 2026-06-23) */
 .postal-arrow { color: var(--peer-bg, var(--dim)); font-weight: 700; }
 .postal-dir { color: var(--dim); font-size: 0.86em; }
 .postal-peer {

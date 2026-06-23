@@ -2258,6 +2258,8 @@ def build_session(sid, now, tmux=None):
                                   "human": author == "human" or bool(imgs), "reminders": reminders}
                             if author == "romp":         # a feed nudge/follow-up romp injected → gray romp bubble
                                 ev["romp"] = True
+                                if a.get("rompAuto"):    # an AUTO-nudge (not the Nudge button) → the chat draws the romp swirl
+                                    ev["rompAuto"] = True
                             if imgs:
                                 ev["images"] = imgs
                             events.append(ev)
