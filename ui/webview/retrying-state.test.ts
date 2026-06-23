@@ -1,0 +1,27 @@
+// The 'retrying' chip state (api 2026-06-23): a live SDK session stalled on an API rate-limit/overload
+// auto-retry publishes status.state='retrying'. It renders as a SOFT 'blocked on the API' — amber/orange,
+// distinct from working-yellow and blocked-red — on BOTH the chat (chip + tab) and the timeline lane badge.
+import { test } from "node:test";
+import * as assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as path from "node:path";
+
+const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
+const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
+const TL = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "romp-timeline-view.js"), "utf8");
+
+test("chat: 'retrying' is a ChipState with an 'API retrying…' label, an amber chip, and a tab ring", () => {
+  assert.match(RENDER, /type ChipState =[^;]*\| "retrying"/);
+  assert.match(RENDER, /retrying: "API retrying…"/);
+  assert.match(RENDER, /else if \(st === "retrying"\) tab\.classList\.add\("tab-retrying"\)/);
+  // amber chip, distinct from working-yellow / blocked-red
+  assert.match(CSS, /\.chip-retrying \{ background: #e67e22/);
+  // amber dashed tab ring (same dashed treatment as awaiting, but amber, no fill)
+  assert.match(CSS, /\.tab\.tab-retrying \{ --state: #e67e22; \}/);
+  assert.match(CSS, /\.tab\.tab-awaiting, \.tab\.tab-blocked, \.tab\.tab-retrying \{ outline: 2px dashed/);
+});
+
+test("timeline: a retrying lane shows an amber RETRYING badge (its own BADGE kind, not red attention)", () => {
+  assert.match(TL, /else if \(s\.state === 'retrying'\) m = \{ label: 'RETRYING', kind: 'retrying' \}/);
+  assert.match(TL, /retrying: \{ bg: '#e67e22', fg: '#2a1500' \}/);
+});

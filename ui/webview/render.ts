@@ -83,7 +83,7 @@ type ChatEvent = (
 
 interface TodoTask { id: string; subject: string; activeForm?: string; status: string }
 
-type ChipState = "working" | "ready" | "awaiting" | "idle" | "closed" | "compacting" | "blocked";
+type ChipState = "working" | "ready" | "awaiting" | "idle" | "closed" | "compacting" | "blocked" | "retrying";
 interface Status { state: ChipState; sinceEpoch: number | null; effort?: string; model?: string; mode?: string; ctx?: string; faded?: boolean; backend?: string; }   // backend = "tmux" | "sdk" (the kernel's _session_backend) → shown in the tab-title hover tooltip
 interface Color { bg: string; fg: string; }
 interface Session { id: string; name: string; color: Color | null; events: ChatEvent[]; status: Status; firstSeen?: number; cwd?: string; }
@@ -1404,6 +1404,7 @@ function renderTabs() {
     if (st === "working") tab.classList.add("tab-working");
     else if (st === "blocked") tab.classList.add("tab-blocked");     // red: stopped on an API error
     else if (st === "awaiting") tab.classList.add("tab-awaiting");
+    else if (st === "retrying") tab.classList.add("tab-retrying");       // amber: soft-blocked on an API auto-retry
     else if (st === "compacting") tab.classList.add("tab-compacting");
     else if (st === "closed") tab.classList.add("tab-closed");       // dead session: read-only, struck-through label
     if (s.status.faded) tab.classList.add("at-rest");
@@ -3520,6 +3521,7 @@ function setCtxBar(bar: HTMLElement, ctxStr: string | undefined, compacting = fa
 const CHIP_LABEL: Record<ChipState, string> = {
   working: "WORKING", ready: "READY", awaiting: "BLOCKED",
   idle: "IDLE", closed: "CLOSED", compacting: "COMPACTING", blocked: "API ERROR",
+  retrying: "API retrying…",   // a live session stalled on an API rate-limit/overload auto-retry (api 2026-06-23)
 };
 
 // A stop/interrupt button that lives beside the state badge in the statusline (the user 2026-06-19):
