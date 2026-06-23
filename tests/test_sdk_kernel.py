@@ -188,5 +188,17 @@ class LiveTailAndOpen(unittest.TestCase):
         self.assertIn("sid-sdk", [s["sid"] for s in alive])             # still opens
 
 
+class Responsiveness(unittest.TestCase):
+    """The chat pusher is event-driven + short-poll so BOTH backends feel snappy (the user 2026-06-22):
+    the SDK live-tail and /tick wake it instantly; a 0.5s backstop covers tmux mid-turn streaming."""
+
+    def test_tick_wakes_the_pusher_and_short_backstop(self):
+        with open(os.path.join(BIN, "romp-kernel")) as f:
+            src = f.read()
+        self.assertIn("_pusher_wake.wait(0.5)", src)                  # short backstop poll
+        tick = src.split('u.path == "/tick"', 1)[1].split("return self._send", 1)[0]
+        self.assertIn("_pusher_wake.set()", tick)                     # /tick wakes the pusher (tmux turn-end shows now)
+
+
 if __name__ == "__main__":
     unittest.main()

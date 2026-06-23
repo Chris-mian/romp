@@ -4177,7 +4177,11 @@ def _pusher():
             _auto_nudge_tick(int(time.time()), _tmux_sessions())
         except Exception:
             sys.stderr.write("auto-nudge: %s\n" % traceback.format_exc())
-        _pusher_wake.wait(4)                   # event-driven: woken by the SDK live-tail; 4s is the backstop
+        # Event-driven (woken by the SDK live-tail and by /tick on hook events) with a SHORT 0.5s backstop
+        # poll, so tmux sessions — which have no per-message event for mid-turn streaming — still refresh
+        # responsively as the model generates, instead of waiting out a multi-second tick (the user 2026-06-22).
+        # Cheap when nothing changed: _parse is cached and _send_client dedups, so a no-change poll sends nothing.
+        _pusher_wake.wait(0.5)
         _pusher_wake.clear()
 
 
@@ -5015,12 +5019,14 @@ class Handler(BaseHTTPRequestHandler):
                         pass                                   # no manager reachable → nothing to restart
                 return
             if u.path == "/tick":
-                # Event-driven producer wake: the Stop / UserPromptSubmit hooks (and the postal drain)
-                # poke this the instant a turn ends / a prompt lands / a message arrives, so the judges
-                # run NOW instead of on the next 20s backstop tick. Cheap + idempotent — it just sets the
-                # event the producer waits on; the loopback Host gate in _authorize already lets local
-                # hooks through (a tailnet client would need the serve token, same as every other route).
+                # Event-driven wake: the Stop / UserPromptSubmit hooks (and the postal drain) poke this the
+                # instant a turn ends / a prompt lands / a message arrives, so the judges run NOW instead of
+                # on the next backstop tick. It ALSO wakes the chat PUSHER, so a tmux turn completing/landing
+                # appears in the chat immediately (the common 'why hasn't it shown up yet' moment) rather than
+                # waiting out the poll — tmux's per-message event-driven path, the SDK live-tail's analogue.
+                # Cheap + idempotent; the loopback Host gate in _authorize already lets local hooks through.
                 _producer_wake.set()
+                _pusher_wake.set()
                 return self._send(200, json.dumps({"ok": True, "woke": True}), "application/json")
             if u.path == "/send":
                 # Human→agent input channel — the SAME delivery the chat composer's WS
