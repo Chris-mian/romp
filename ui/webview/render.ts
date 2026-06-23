@@ -1395,7 +1395,7 @@ function showTabTip(tab: HTMLElement, s: Session): void {
   }
   // context BATTERY (the same widget as the bottom bar), not a text %
   if (s.status.ctx) {
-    const cr = el("div", "tab-tip-row");
+    const cr = el("div", "tab-tip-row tab-tip-ctx");          // extra vertical room — the battery bar is tall
     const ck = el("span", "tab-tip-k"); ck.textContent = "Context"; cr.appendChild(ck);
     const bar = ctxBar(); setCtxBar(bar, s.status.ctx, s.status.state === "compacting");
     cr.appendChild(bar); tip.appendChild(cr);
@@ -1419,9 +1419,9 @@ function showTabTip(tab: HTMLElement, s: Session): void {
       const v = el("span", "tab-tip-v"); v.textContent = top.text;
       const rec = nodeRecency(top);
       if (rec) {
+        v.style.color = ageColorReadable(now - rec);           // the WHOLE recent item in the recency colour (text + time), not just the time
         const ago = el("span", "tab-tip-ago"); ago.textContent = " (" + agehms(now - rec) + " ago)";
-        ago.style.color = ageColorReadable(now - rec);         // recency colour, matching the collapsed ledger
-        v.appendChild(ago);
+        v.appendChild(ago);                                    // inherits the recency colour from v
       }
       r.appendChild(k); r.appendChild(v); tip.appendChild(r);
     }

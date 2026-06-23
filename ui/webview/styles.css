@@ -158,6 +158,7 @@ body { display: flex; flex-direction: column; }
 .tab-tip-be { font-weight: 700; margin-bottom: 4px; }   /* colour set inline = the session's romp identity colour */
 .tab-tip-path { color: var(--dim); word-break: break-all; margin-bottom: 4px; }
 .tab-tip-row { display: flex; gap: 8px; align-items: baseline; }   /* baseline so a wrapping Summary/Latest value aligns to its label */
+.tab-tip-ctx { margin: 4px 0; align-items: center; }   /* the context battery is tall → give it vertical breathing room */
 .tab-tip-k { color: var(--dim); flex: 0 0 auto; min-width: 58px; }
 .tab-tip-v { color: var(--fg); min-width: 0; }   /* min-width:0 lets a long value wrap inside the flex row */
 .tab-tip-ago { font-variant-numeric: tabular-nums; }

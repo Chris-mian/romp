@@ -38,8 +38,13 @@ test("v3: git branch + context battery + a labelled Summary row + a recency-colo
   assert.match(RENDER, /const top = currentTopGoal\(lg\.tree\)/);
   assert.match(RENDER, /k\.textContent = "Latest"/);
   assert.match(RENDER, /const rec = nodeRecency\(top\)/);
-  assert.match(RENDER, /ago\.style\.color = ageColorReadable\(now - rec\)/);          // recency colour
+  assert.match(RENDER, /v\.style\.color = ageColorReadable\(now - rec\)/);            // the WHOLE recent item recency-coloured (text + time), not just the time
   assert.doesNotMatch(CSS, /\.tab-tip-latest/);                                       // bare-paragraph latest line gone
+});
+
+test("the tall context battery gets vertical breathing room", () => {
+  assert.match(RENDER, /el\("div", "tab-tip-row tab-tip-ctx"\)/);
+  assert.match(CSS, /\.tab-tip-ctx \{ margin: 4px 0/);
 });
 
 test("the tooltip still shows the full path + mode/model/effort", () => {
