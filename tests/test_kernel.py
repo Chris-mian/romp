@@ -2308,6 +2308,30 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(bar["replyUuid"], "a2", "last assistant-with-text = reply anchor")
         self.assertFalse(bar["open"], "the turn ended -> bar not open")
 
+    def test_dead_lane_with_open_turn_is_not_working(self):
+        """A session that DIED mid-turn — e.g. an SDK turn that stalled on API retries, never returned a
+        result, then was ended — must NOT read as 'working' on the timeline: a dead lane is never active
+        (the user 2026-06-23). build_timeline's dead branch used 'working if open_now', leaving a zombie
+        WORKING badge + an open (growing-to-now) bar after death."""
+        g1 = "%s:g1" % SID                               # no blocked goal (blocked would short-circuit to 'awaiting', masking it)
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+            "rompUuid": SID, "seq": 1, "lastNode": g1,
+            "nodes": {g1: {"id": g1, "text": "x", "parentId": None, "nodeComplete": True,
+                           "blocked": False, "cleared": False, "trail": [], "t": T0}},
+            "placements": {}, "status": {g1: "completed"}}))
+        with self.tpath.open("a") as f:                  # an OPEN turn: assistant emitted a tool_use, no result → mid-work
+            f.write(json.dumps(uline(NOW - 60, "do a thing", "uOpen", parent="a2", ps="typed")) + "\n")
+            f.write(json.dumps(aline(NOW - 50, "On it.", "aOpen", parent="uOpen", tools=("Bash",), stop="tool_use")) + "\n")
+        km._parse_cache.clear()
+        self.assertTrue(km._session_working(em.parse_session(str(self.tpath), rompuuid=SID,
+                        candidate_files=[str(self.tpath)], now=NOW)["turns"]), "fixture IS working by the event model")
+        km._tmux_sessions = lambda: {}                   # DEAD: not in the live map
+        m = km.build_timeline(NOW)
+        lane = next(s for s in m["sessions"] if s["id"] == SID)
+        self.assertFalse(lane["live"], "session is dead (not in tmux)")
+        self.assertEqual(lane["state"], "idle", "a dead lane with an unfinished turn is idle, NOT working")
+        self.assertFalse(m["turns"][SID][-1]["open"], "a dead lane's last bar is not an open (growing-to-now) bar")
+
     def test_timeline_state_and_metadata_from_tmux(self):
         # live lanes take state + model/effort/context from tmux @claude-* vars (the READY badge =
         # state "waiting"); badgeFor hides the badge unless live, so live must be true here

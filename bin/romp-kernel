@@ -3703,14 +3703,16 @@ def build_timeline(now, tmux=None):
             state = tm["state"] or "idle"
             if state != "compacting" and _compacting_optimistic(sid, session, now):
                 state = "compacting"      # optimistic cue the moment we sent /compact (matches the chat chip)
-        else:                             # dead lane: coarse file-derived (badgeFor hides the badge when !live anyway)
+        else:                             # dead lane: NEVER "working" — a turn left open at death (e.g. a stalled API
+                                          # turn that never returned a ResultMessage, then ended) must not read as
+                                          # active (the user 2026-06-23); badgeFor dims a dead lane anyway.
             blocked = "blocked" in goals.get("status", {}).values()
-            state = "awaiting" if blocked else ("working" if open_now else "idle")
+            state = "awaiting" if blocked else "idle"
         bars, last_t, seg_ends = [], None, {}            # seg_ends: seg-start t → work-END t (for completion marks)
         for ti, turn in enumerate(st_turns):
-            turn_open = (ti == len(st_turns) - 1 and not turn["ended"]
+            turn_open = (live and ti == len(st_turns) - 1 and not turn["ended"]
                          and not any(x["type"] == "idle" for x in turn["atoms"])
-                         and not _suspended_after(turn["end"]))   # last activity precedes a sleep → frozen, not working
+                         and not _suspended_after(turn["end"]))   # dead lane (live False) or pre-sleep freeze → not an open bar
             segs = em.segments(turn)
             for si, seg in enumerate(segs):
                 cap = caps.get(seg["id"], {}).get("caption", "")               # WORK caption (the bar)
