@@ -554,24 +554,26 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(nodes["a blocked step"]["blockWhy"], "waiting on the user's choice")
         self.assertEqual(nodes["a finished step"]["doneWhy"], "shipped the fix")
 
-    def test_feed_awaiting_top_is_held_in_working_with_a_badge(self):
-        # AWAITING = a flavor of WORKING (the user 2026-06-22): a goal waiting on work it dispatched or
-        # delegated (agents, a subagent, a build) stays in the working column (never needs-input) and
-        # carries an `awaiting` badge with the why. NOT a live block.
-        top, st = (SID + ":top", SID + ":st")
+    def test_feed_awaiting_via_session_signal_is_held_in_working_with_a_badge(self):
+        # AWAITING = a flavor of WORKING (the user 2026-06-22): when the EVENT-MODEL signal says the session
+        # is paused on dispatched/delegated work, its working top stays in the working column (never
+        # needs-input) and carries an `awaiting` badge with the why. The signal is _session_awaiting (the SDK
+        # states overlay, else the transcript bg-tool stopgap) — NOT a judge verdict.
+        top = SID + ":top"
         def gn(nid, text, parent, **kw):
             d = {"id": nid, "text": text, "parentId": parent, "nodeComplete": False,
-                 "blocked": False, "awaiting": False, "cleared": False, "trail": [], "t": T0, "mt": T0}
+                 "blocked": False, "cleared": False, "trail": [], "t": T0, "mt": T0}
             d.update(kw); return d
         (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
-            "rompUuid": SID, "seq": 2, "lastNode": top,
-            "nodes": {
-                top: gn(top, "research the API", None, why="user asked for the research"),
-                st:  gn(st, "dispatched 3 research agents", top, awaiting=True,
-                        awaitWhy="Waiting on the 3 research agents it dispatched.", mt=T0 + 9),
-            },
-            "placements": {}, "status": {top: "awaiting"}}))
-        card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == top)
+            "rompUuid": SID, "seq": 1, "lastNode": top,
+            "nodes": {top: gn(top, "research the API", None, why="user asked for the research")},
+            "placements": {}, "status": {top: "working"}}))
+        saved = km._session_awaiting
+        km._session_awaiting = lambda sid, path, idle: "Waiting on the 3 research agents it dispatched."
+        try:
+            card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == top)
+        finally:
+            km._session_awaiting = saved
         self.assertEqual(card["column"], "working", "an awaiting goal is held in the working column, NOT needs-input")
         self.assertIsNotNone(card["awaiting"], "it carries an awaiting badge")
         self.assertEqual(card["awaiting"]["why"], "Waiting on the 3 research agents it dispatched.")
@@ -579,12 +581,12 @@ class ViewBuilder(unittest.TestCase):
 
     def test_feed_postal_floor_overrides_a_stale_block(self):
         # A session with an unanswered outbound to a LIVE peer is awaiting a delegation, not stalled — so a
-        # STALE soft block on its top yields to that hard postal signal → awaiting (working column), and the
-        # "Awaiting <peer>" chip (waitingOn), suppressed while the card read 'blocked', is restored.
+        # STALE soft block on its top yields to that postal wait-for signal → awaiting (working column), and
+        # the "Awaiting <peer>" chip (waitingOn), suppressed while the card read 'blocked', is restored.
         top, blk = (SID + ":top", SID + ":blk")
         def gn(nid, text, parent, **kw):
             d = {"id": nid, "text": text, "parentId": parent, "nodeComplete": False,
-                 "blocked": False, "awaiting": False, "cleared": False, "trail": [], "t": T0, "mt": T0}
+                 "blocked": False, "cleared": False, "trail": [], "t": T0, "mt": T0}
             d.update(kw); return d
         (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
             "rompUuid": SID, "seq": 2, "lastNode": top,
@@ -594,31 +596,62 @@ class ViewBuilder(unittest.TestCase):
                         blockWhy="proceed once the peer confirms?", mt=T0 + 9),
             },
             "placements": {}, "status": {top: "blocked"}}))
-        saved = km._wait_for_graph
+        saved_w, saved_a = km._wait_for_graph, km._session_awaiting
         km._wait_for_graph = lambda now, alive: {SID: {"peerSid": "peerY", "name": "peerY",
                                                        "color": None, "inCycle": False}}
+        km._session_awaiting = lambda sid, path, idle: None      # isolate the POSTAL path
         try:
             card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == top)
         finally:
-            km._wait_for_graph = saved
+            km._wait_for_graph, km._session_awaiting = saved_w, saved_a
         self.assertEqual(card["column"], "working", "the stale block yields to the live peer-wait → working")
         self.assertIsNotNone(card["awaiting"], "shown as awaiting (a working flavor)")
         self.assertIsNotNone(card["waitingOn"], "the 'Awaiting <peer>' chip is restored (no longer suppressed by the block)")
         self.assertEqual(card["waitingOn"]["peerSid"], "peerY")
 
-    def test_awaiting_top_is_exempt_from_auto_nudge(self):
-        # auto-nudge follows a 'working' orphan; an awaiting top (waiting on delegated work, not stalled) is
-        # excluded because its rolled-up status is 'awaiting', not 'working'.
-        top = SID + ":top"
-        def gn(nid, text, parent, **kw):
-            d = {"id": nid, "text": text, "parentId": parent, "nodeComplete": False,
-                 "blocked": False, "awaiting": False, "cleared": False, "trail": [], "t": T0, "mt": T0}
-            d.update(kw); return d
-        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
-            "rompUuid": SID, "seq": 1, "lastNode": top,
-            "nodes": {top: gn(top, "research", None, awaiting=True, awaitWhy="waiting on agents")},
-            "placements": {}, "status": {top: "awaiting"}}))
-        self.assertIsNone(km._working_top_goal(SID), "an awaiting top is not a 'working' orphan → no auto-nudge")
+    def test_inflight_bg_tool_detects_an_unresolved_background_launch(self):
+        # the transcript stopgap (the user 2026-06-22): a run_in_background tool with no tool_result is in
+        # flight; its result resolves it; a genuine new prompt means the session moved on.
+        def recs(resolved=False, later_prompt=False):
+            out = [{"type": "user", "uuid": "u1", "timestamp": iso(T0),
+                    "message": {"role": "user", "content": [{"type": "text", "text": "kick off a long job"}]}},
+                   {"type": "assistant", "uuid": "a1", "parentUuid": "u1", "timestamp": iso(T0 + 5),
+                    "message": {"role": "assistant", "stop_reason": "end_turn", "content": [
+                        {"type": "tool_use", "id": "tu_bg", "name": "Bash",
+                         "input": {"command": "sleep 999", "run_in_background": True}}]}}]
+            if resolved:
+                out.append({"type": "user", "uuid": "r1", "parentUuid": "a1", "timestamp": iso(T0 + 9),
+                            "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tu_bg", "content": "ok"}]}})
+            if later_prompt:
+                out.append({"type": "user", "uuid": "u2", "parentUuid": "a1", "timestamp": iso(T0 + 50),
+                            "message": {"role": "user", "content": [{"type": "text", "text": "never mind, do this instead"}]}})
+            return out
+        p = Path(self.td.name) / "bg.jsonl"
+        p.write_text("\n".join(json.dumps(r) for r in recs()) + "\n"); km._bgtool_cache.clear()
+        self.assertIsNotNone(km._inflight_bg_tool(str(p)), "an unresolved run_in_background launch → in flight")
+        p.write_text("\n".join(json.dumps(r) for r in recs(resolved=True)) + "\n"); km._bgtool_cache.clear()
+        self.assertIsNone(km._inflight_bg_tool(str(p)), "its tool_result resolves it → not awaiting")
+        p.write_text("\n".join(json.dumps(r) for r in recs(later_prompt=True)) + "\n"); km._bgtool_cache.clear()
+        self.assertIsNone(km._inflight_bg_tool(str(p)), "a genuine new prompt → the session moved on, not awaiting")
+
+    def test_session_awaiting_reads_the_states_overlay(self):
+        # the SDK channel (api 2026-06-22): the kernel reads an {"awaiting":bool,"why":…} overlay from
+        # states/<sid>.jsonl, tolerant of state records interleaved, latest overlay wins; idle-only.
+        sdir = jd.STATE / "states"; sdir.mkdir(parents=True, exist_ok=True)
+        sp = sdir / (SID + ".jsonl")
+        sp.write_text("\n".join(json.dumps(r) for r in [
+            {"t": T0, "state": "working"},
+            {"t": T0 + 1, "awaiting": True, "why": "3 agents in flight"},
+            {"t": T0 + 2, "state": "idle"},
+        ]) + "\n")
+        self.assertEqual(km._session_awaiting(SID, "/nonexistent", True), "3 agents in flight",
+                         "the latest awaiting overlay (interleaved with state records) drives the badge")
+        self.assertIsNone(km._session_awaiting(SID, "/nonexistent", False),
+                          "a WORKING session is not 'awaiting' (idle=False short-circuits)")
+        with sp.open("a") as f:
+            f.write(json.dumps({"t": T0 + 3, "awaiting": False}) + "\n")
+        self.assertIsNone(km._session_awaiting(SID, "/nonexistent", True),
+                          "a later awaiting:false overlay clears it (authoritative over the transcript)")
 
     def test_feed_card_tree_orders_children_most_recent_first(self):
         # Every goal-tree view reads NEWEST-FIRST (the user 2026-06-17): the feed card's modal tree (and its
@@ -926,6 +959,23 @@ class ViewBuilder(unittest.TestCase):
             self.assertEqual(len(sent), 1, "once the wait clears, the genuine stall is nudged")
         finally:
             restore(); km._wait_for_graph = saved
+
+    def test_auto_nudge_skips_a_session_awaiting_dispatched_work(self):
+        # the user 2026-06-22: a session paused on work it dispatched/delegated is in flight, not stalled →
+        # don't nudge. The gate reads _session_awaiting (the SDK states overlay / transcript bg-tool stopgap).
+        self._orphaned_goal(idle=True)
+        km._set_auto_nudge(True)
+        saved = km._session_awaiting
+        km._session_awaiting = lambda sid, path, idle: "Waiting on its background agents."
+        sent, restore = self._stub_nudge()
+        try:
+            km._auto_nudge_tick(NOW, km._tmux_sessions())
+            self.assertEqual(sent, [], "an awaiting session is held, not nudged")
+            km._session_awaiting = lambda sid, path, idle: None   # no longer awaiting → the genuine stall is nudged
+            km._auto_nudge_tick(NOW, km._tmux_sessions())
+            self.assertEqual(len(sent), 1, "once the wait clears, the genuine stall is nudged")
+        finally:
+            restore(); km._session_awaiting = saved
 
     def test_auto_nudge_logs_an_event_for_the_timeline(self):
         # each fire appends {sid,gid,t,count} to STATE/nudge-events.jsonl for business's ⚡ timeline marker.

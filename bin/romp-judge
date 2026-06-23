@@ -725,24 +725,15 @@ PLAN_SYS = (
     "goal #4 or clear it; it tracks a dropped approach.\" An explanation or answer you have already "
     "fully given is not a block; that goal is done (see done), with the answer as its \"why\". Waiting "
     "on anyone or anything other than the user is not blocking: a peer or another session is handling "
-    "it, waiting on a peer's reply to a message you sent, deferring to avoid a conflict, or waiting on "
-    "a build/CI/external event is an AWAIT (do:\"await\", a flavor of working, see below), not a block. A "
-    "peer's answer or reply is not a user answer; only the human blocks. Weighing: if the segment both "
-    "reports work and leaves a decision owed by the user, the owed decision wins, so block. A finished "
-    "phase or a status report that then waits for YOUR go-ahead, YOUR approval to start the next step, or "
-    "YOUR pick between options is a block: the reported progress does not keep it working, and asking "
-    "'shall I proceed?' blocks when the go-ahead is owed by the user. But when the turn ends '…before I "
-    "proceed' and the thing it waits on is DELEGATED or "
-    "EXTERNAL work it set in motion (agents it dispatched, a peer it messaged, a build/CI run), that is an "
-    "await, not a block. (Use \"ref\":<k> to block a node created in this reply.)\n"
-    '- {\"why\",\"do\":\"await\",\"goal\":<n>}: goal/step #n is now WAITING on work it handed off or '
-    "kicked off, NOT on the user — background agents or a subagent it dispatched, a peer it messaged "
-    "(awaiting the reply), a build/CI/test run, or another external job it expects back. This is a flavor "
-    "of WORKING: the goal is in flight, just paused on something other than the user, so it is neither "
-    "blocked nor done. Phrase the \"why\" as what it is waiting on, e.g. \"Waiting on the research agents "
-    "it dispatched.\" or \"Waiting on CI to finish.\" Prefer await over block whenever a turn ends waiting "
-    "on delegated or external work rather than on a decision from the user. (Use \"ref\":<k> to await a "
-    "node created in this reply.)\n"
+    "it, waiting on a peer's reply to a message you sent, deferring to avoid a conflict, waiting on "
+    "agents or a subagent it dispatched, or waiting on a build/CI/external event keeps the goal open and "
+    "WORKING, not blocked. A peer's answer or reply is not a user answer; only the human blocks. "
+    "Weighing: if the segment both reports work and leaves a decision owed by the user, the owed decision "
+    "wins, so block. A finished phase or a status report that then waits for YOUR go-ahead, YOUR approval "
+    "to start the next step, or YOUR pick between options is a block: the reported progress does not keep "
+    "it working, and asking 'shall I proceed?' blocks when the go-ahead is owed by the user — but if it "
+    "is waiting on work it dispatched or delegated in order to proceed (agents, a peer, a build), that is "
+    "not a block, it stays working. (Use \"ref\":<k> to block a node created in this reply.)\n"
     '- {\"why\",\"do\":\"skip\"}: only a segment with no real user message that also did no real work, '
     "a system notification, an SDK/automated turn, an interruption or empty/aborted turn. A segment "
     "that carries a real user message is flagged with a <note> after the open-goals; never skip that "
@@ -929,7 +920,6 @@ def _mark_node_done(store, nid, why, t):
     while stack:
         x = stack.pop()
         nodes[x]["blocked"] = False
-        nodes[x]["awaiting"] = False                    # a done goal isn't awaiting anything either
         stack.extend(kids.get(x, []))
 
 
@@ -949,8 +939,8 @@ def apply_plan(store, seg_id, seg_t, ops, menu, place_key=None):
         store["seq"] = store.get("seq", 0) + 1
         nid = "%s:g%d" % (store["rompUuid"], store["seq"])
         nodes[nid] = {"id": nid, "text": text, "parentId": parent, "nodeComplete": False,
-                      "blocked": False, "awaiting": False, "cleared": False, "trail": [seg_id],
-                      "t": seg_t, "mt": seg_t, "why": why}   # mt = last-modified (create/done/block/await); t stays create
+                      "blocked": False, "cleared": False, "trail": [seg_id],
+                      "t": seg_t, "mt": seg_t, "why": why}   # mt = last-modified (create/done/block); t stays create
         created.append(nid)
         return nid
 
@@ -960,14 +950,12 @@ def apply_plan(store, seg_id, seg_t, ops, menu, place_key=None):
         _mark_node_done(store, node_id, why, seg_t)
 
     def _unblock_branch(nid):
-        # UN-BLOCK (newest-wins, SURGICAL): a placement clears stale blocks/awaits only on its OWN
-        # BRANCH — the node + its ancestor chain — so a still-owed block on an unrelated SIBLING survives.
-        # A later block/await op in the SAME reply re-sets it (ops apply in order, the resolution usually
-        # comes after). Clearing `awaiting` here means resumed real work on a branch lifts a stale wait.
+        # UN-BLOCK (newest-wins, SURGICAL): a placement clears stale blocks only on its OWN BRANCH —
+        # the node + its ancestor chain — so a still-owed block on an unrelated SIBLING survives. A
+        # later block op in the SAME reply re-blocks (ops apply in order, block usually comes after).
         x = nid
         while x is not None:
             nodes[x]["blocked"] = False
-            nodes[x]["awaiting"] = False
             x = nodes.get(x, {}).get("parentId")
 
     def _target(o):                                   # a done/block target: a menu node or a same-reply mint
@@ -1007,13 +995,6 @@ def apply_plan(store, seg_id, seg_t, ops, menu, place_key=None):
             t = _target(o)
             if t:
                 nodes[t]["blocked"] = True; nodes[t]["blockWhy"] = o["why"]
-                nodes[t]["awaiting"] = False               # a real user-block supersedes any await
-                nodes[t]["mt"] = seg_t; touched = t
-        elif do == "await":
-            t = _target(o)
-            if t:
-                nodes[t]["awaiting"] = True; nodes[t]["awaitWhy"] = o["why"]
-                nodes[t]["blocked"] = False                # awaiting is a flavor of WORKING, never blocked
                 nodes[t]["mt"] = seg_t; touched = t
     placements[place_key] = focus if focus is not None else touched   # key presence marks the phase processed
     if focus is not None:
@@ -1052,15 +1033,6 @@ def rollup_status(store, session_closed):
             return False
         return nodes[nid].get("blocked") or any(any_blocked(c) for c in children.get(nid, []))
 
-    def any_awaiting(nid):
-        # AWAITING = a flavor of WORKING (the user 2026-06-22): the goal is in flight but paused on
-        # something OTHER than the user — agents/subagents it dispatched, a peer it messaged, a build/CI
-        # run. A completed subtree can't be awaiting (same short-circuit as any_blocked). Surfaced in the
-        # working column with an awaiting badge, NOT in needs-input, and exempt from auto-nudge.
-        if is_complete(nid):
-            return False
-        return nodes[nid].get("awaiting") or any(any_awaiting(c) for c in children.get(nid, []))
-
     def is_complete(nid):
         # Complete if explicitly nodeComplete (TOP-DOWN — the closer / a DONE marks the top, the common
         # driver) OR it has children and they are ALL recursively complete (BOTTOM-UP backstop for when
@@ -1070,14 +1042,12 @@ def rollup_status(store, session_closed):
 
     focus = top_ancestor(store["lastNode"]) if store.get("lastNode") in nodes else None
     status = {}
-    for nid in children.get(None, []):                # precedence: cleared > blocked > awaiting > followup-pending > complete+settled > working
+    for nid in children.get(None, []):                # precedence: cleared > blocked > followup-pending > complete+settled > working
         settled = (nid != focus) or session_closed
         if nodes[nid].get("cleared"):
             status[nid] = "cleared"
         elif any_blocked(nid):
             status[nid] = "blocked"
-        elif any_awaiting(nid):                       # waiting on dispatched/delegated work → a WORKING flavor (working column + awaiting badge)
-            status[nid] = "awaiting"
         elif nodes[nid].get("followupPending"):       # optimistic reopen: show WORKING until the judge processes the follow-up
             # ...UNLESS the judge has genuinely RE-COMPLETED it (nodeComplete + settled). A status Nudge sets
             # followupPending optimistically; once the judge answers and re-dones the top, that flag is stale.
@@ -2015,22 +1985,16 @@ CLOSER_SYS = (
     "goal (an umbrella with ongoing sub-work, or a standing 'keep doing X') is not done. An explanation "
     "or answer fully given to the user is done.\n"
     "- blocked: it now needs the user, a decision, approval, or answer owed by the user (the human) "
-    "before it can proceed. Waiting on a peer, CI, build, or other external thing is NOT blocked; that is "
-    "awaiting (see below).\n"
-    "- awaiting: it is now waiting on work it handed off or kicked off — agents or a subagent it "
-    "dispatched, a peer it messaged, a build/CI/test run, or another external job — not on the user. This "
-    "is a flavor of working (in flight, paused on something other than you), so it is neither done nor "
-    "blocked. Use it whenever the turn ends waiting on delegated or external work rather than on you.\n"
+    "before it can proceed. Waiting on a peer, CI, build, agents it dispatched, or other external thing "
+    "is not blocked; that stays open and working.\n"
     "- otherwise omit it, and it stays working. When in doubt, omit.\n"
     "Reply with only a JSON object (no prose, no markdown fences):\n"
-    '{\"done\": [ {\"goal\": <n>, \"why\": \"...\"} ], \"block\": [ {\"goal\": <n>, \"why\": \"...\"} ], '
-    '\"await\": [ {\"goal\": <n>, \"why\": \"...\"} ]}\n'
+    '{\"done\": [ {\"goal\": <n>, \"why\": \"...\"} ], \"block\": [ {\"goal\": <n>, \"why\": \"...\"} ]}\n'
     "Each goal appears in at most one list; omit the goals still working. goal is the goal's number. "
     "For done, why is one sentence on what got it done. For block, why is the question or ask itself, "
     "addressed to the user (the decision you need plus only the context to make it), not a narration, "
-    "e.g. \"Approve the staged commit? Nothing is committed yet.\" For await, why is what it is waiting "
-    "on, e.g. \"Waiting on the research agents it dispatched.\" All lists may be empty: "
-    "{\"done\": [], \"block\": [], \"await\": []}.\n"
+    "e.g. \"Approve the staged commit? Nothing is committed yet.\" Both lists may be empty: "
+    "{\"done\": [], \"block\": []}.\n"
     "Write each \"why\" plainly, from the user's vantage: only what they need to know, not a "
     "play-by-play. Drop self-narration (\"The assistant…\", \"The segment…\"). Lead with the real "
     "reason, use concrete verbs and the words a person actually says, cut filler (\"in order to\", "
@@ -2041,13 +2005,12 @@ CLOSER_SYS = (
 
 
 def _parse_close(raw, menu_len):
-    """Parse the closer's {"done":[{goal,why}], "block":[{goal,why}], "await":[{goal,why}]} reply into
-    {"done": {1-based idx: doneWhy}, "block": {1-based idx: blockWhy}, "await": {1-based idx: awaitWhy}} —
-    the touched open tops now fully DONE / now BLOCKED (needs the user) / now AWAITING (waiting on
-    dispatched or external work, a working flavor); omitted goals stay open (the conservative default).
-    Empty lists → empty maps. None on unparseable output or a missing/non-list "done" key (skip the turn).
-    A goal in more than one list → done > block > await. Out-of-range and duplicate indices dropped (first
-    wins). Tolerant of an absent "block"/"await" key (older replies)."""
+    """Parse the closer's {"done":[{goal,why}], "block":[{goal,why}]} reply into
+    {"done": {1-based idx: doneWhy}, "block": {1-based idx: blockWhy}} — the touched open tops now fully
+    DONE / now BLOCKED (needs the user); omitted goals stay open (the conservative default). Empty lists →
+    empty maps (complete/block nothing). None on unparseable output or a missing/non-list "done" key (skip
+    the turn). A goal in both lists → done wins. Out-of-range and duplicate indices dropped (first wins).
+    Tolerant of an absent "block" key (older single-list replies)."""
     obj = _json_obj(raw)
     if obj is None:
         return None
@@ -2068,9 +2031,7 @@ def _parse_close(raw, menu_len):
         return out
 
     done = _collect(obj.get("done"))
-    block = _collect(obj.get("block"), skip=done)                  # done wins for the same goal
-    return {"done": done, "block": block,
-            "await": _collect(obj.get("await"), skip=set(done) | set(block))}   # then block, then await
+    return {"done": done, "block": _collect(obj.get("block"), skip=done)}   # done wins for the same goal
 
 
 def closer_llm(turn_text, menu_text):
@@ -2114,13 +2075,12 @@ def _turn_menu(turn, store):
 
 def apply_close(store, menu, verdicts, t=None):
     """Apply the closer's turn-end verdicts over the touched open tops: COMPLETE each in verdicts["done"]
-    (recording doneWhy, clearing any soft block/await), BLOCK each in verdicts["block"] (recording blockWhy
-    = the question owed to the user), and AWAIT each in verdicts["await"] (recording awaitWhy = what it is
-    waiting on — a working flavor, never blocked). Each maps a 1-based menu index → reason; omitted goals
-    stay open. negComplete / negBlock / negAwait tag the provenance (closer-set vs a planner verdict — for
-    the A/B sample and the timeline's judging-band attribution); t (the turn time) bumps mt so the node
-    deep-links to where it resolved. Returns the node ids newly COMPLETED by this sweep."""
-    done, block, awaiting = verdicts.get("done", {}), verdicts.get("block", {}), verdicts.get("await", {})
+    (recording doneWhy, clearing any soft block) and BLOCK each in verdicts["block"] (recording blockWhy =
+    the question owed to the user). Both map a 1-based menu index → reason; omitted goals stay open.
+    negComplete / negBlock tag the provenance (closer-set done / closer-set block — vs a planner done /
+    block — for the A/B sample and the timeline's judging-band attribution); t (the turn time) bumps mt so
+    the node deep-links to where it resolved. Returns the node ids newly COMPLETED by this sweep."""
+    done, block = verdicts.get("done", {}), verdicts.get("block", {})
     newly = []
     for i, nd in enumerate(menu, 1):
         if nd.get("nodeComplete"):
@@ -2129,7 +2089,6 @@ def apply_close(store, menu, verdicts, t=None):
             nd["nodeComplete"] = True
             nd["everDone"] = True                      # durable once-done marker → forever grouper-exempt (never unset)
             nd["blocked"] = False
-            nd["awaiting"] = False                     # a done goal isn't awaiting anything
             nd["negComplete"] = True
             if done[i]:
                 nd["doneWhy"] = done[i]
@@ -2138,18 +2097,9 @@ def apply_close(store, menu, verdicts, t=None):
             newly.append(nd["id"])
         elif i in block:
             nd["blocked"] = True
-            nd["awaiting"] = False                     # a real user-block supersedes any await
             nd["negBlock"] = True                      # closer-set block (turn-end), mirrors negComplete — for timeline attribution
             if block[i]:
                 nd["blockWhy"] = block[i]
-            if t is not None:
-                nd["mt"] = t
-        elif i in awaiting:
-            nd["awaiting"] = True                      # waiting on dispatched/external work → a WORKING flavor (never blocked)
-            nd["blocked"] = False
-            nd["negAwait"] = True                      # closer-set await (turn-end), mirrors negBlock — for attribution
-            if awaiting[i]:
-                nd["awaitWhy"] = awaiting[i]
             if t is not None:
                 nd["mt"] = t
     return newly

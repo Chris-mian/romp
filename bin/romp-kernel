@@ -655,6 +655,8 @@ def _auto_nudge_tick(now, tmux):
         if sid in waitfor:                               # WAITING ON A LIVE PEER (or a mutual-wait deadlock) → not
             continue                                     # stalled: "waiting on a peer isn't needs-you" (the human's
             #                                              philosophy). A cycle is surfaced by the ⟲ deadlock chip.
+        if _session_awaiting(sid, s["path"], True):      # AWAITING dispatched/delegated work (SDK overlay / bg-tool) →
+            continue                                     # in flight, not stalled (the user 2026-06-22); idle is True here
         lt_id = lt.get("id")
         rec = nudged.get(gid) or {}
         if rec.get("lastTurnId") == lt_id:               # already nudged on THIS stall turn → re-arm needs a NEW turn
@@ -1291,6 +1293,101 @@ def _pending_queued(path):
 
 
 _api_err_cache = {}           # path -> ((mtime, size), err|None)
+_bgtool_cache = {}            # path -> ((mtime, size), why|None) — _inflight_bg_tool
+
+
+def _session_awaiting(sid, path, idle):
+    """A session AWAITING dispatched/delegated work (a WORKING flavor, the user 2026-06-22) → a one-line
+    'why' for the ⏳ awaiting badge, else None. Only when IDLE — an actively producing turn is just
+    'working'. Two EVENT-BASED sources, in order:
+      1. the states/<sid>.jsonl AWAITING OVERLAY — {"awaiting":bool,"why":…} records the SDK backend's
+         producer writes off REAL SubagentStart/Stop + background-task-completion events (api, branch
+         headless-sdk-backend). Authoritative when present (awaiting:false = explicitly NOT awaiting).
+      2. the TRANSCRIPT STOPGAP (main, until that producer merges): a run_in_background tool the session
+         launched that is still in flight. Postal peer-waits are handled separately in build_feed."""
+    if not idle:
+        return None
+    ov = _states_awaiting_overlay(sid)
+    if ov is not None:                                # the SDK producer is writing overlay records → trust it
+        return (ov.get("why") or "waiting on dispatched work") if ov.get("awaiting") else None
+    return _inflight_bg_tool(path)
+
+
+def _states_awaiting_overlay(sid):
+    """The LAST awaiting-overlay record in states/<sid>.jsonl, or None if there are none. The SDK producer
+    interleaves {"t":…,"awaiting":bool,"why":…} overlay records among its state records, so we scan for the
+    most-recent line carrying an 'awaiting' key and ignore the rest (api 2026-06-22)."""
+    p = jd.STATE / "states" / ("%s.jsonl" % sid)
+    last = None
+    try:
+        with open(p, errors="replace") as f:
+            for line in f:
+                if '"awaiting"' not in line:
+                    continue
+                try:
+                    o = json.loads(line)
+                except Exception:
+                    continue
+                if isinstance(o, dict) and "awaiting" in o:
+                    last = o
+    except OSError:
+        return None
+    return last
+
+
+def _inflight_bg_tool(path):
+    """A run_in_background tool the session launched that is STILL in flight → a one-line 'why', else None.
+    The transcript stopgap for 'awaiting' until the SDK producer lands. A backgrounded tool's result
+    arrives AFTER the turn ends, so an unmatched one is genuinely running; foreground Task/Agent subagents
+    resolve within the turn (matched → ignored). A genuine new prompt means the session moved on (cleared).
+    Event-based; cached by (mtime,size) like _api_error, since build_feed calls it per push."""
+    try:
+        st = os.stat(path)
+        key = (st.st_mtime, st.st_size)
+    except OSError:
+        key = None
+    hit = _bgtool_cache.get(path)
+    if hit is not None and key is not None and hit[0] == key:
+        return hit[1]
+    open_bg = {}                                          # tool_use_id -> tool name, launched run_in_background, no result yet
+    try:
+        with open(path, errors="replace") as f:
+            for line in f:
+                if '"type"' not in line:
+                    continue
+                try:
+                    o = json.loads(line)
+                except Exception:
+                    continue
+                t = o.get("type")
+                c = (o.get("message") or {}).get("content")
+                if t == "assistant" and isinstance(c, list):
+                    for b in c:
+                        if isinstance(b, dict) and b.get("type") == "tool_use" \
+                                and (b.get("input") or {}).get("run_in_background"):
+                            open_bg[b.get("id")] = b.get("name") or "a background job"
+                elif t == "user":
+                    if isinstance(c, list):
+                        for b in c:
+                            if isinstance(b, dict) and b.get("type") == "tool_result":
+                                open_bg.pop(b.get("tool_use_id"), None)   # its result came back → resolved
+                        if not any(isinstance(b, dict) and b.get("type") == "tool_result" for b in c) \
+                                and any(isinstance(b, dict) and b.get("type") == "text"
+                                        and b.get("text", "").strip() for b in c):
+                            open_bg.clear()               # a genuine new prompt → the session moved on
+                    elif isinstance(c, str) and c.strip():
+                        open_bg.clear()
+    except OSError:
+        return None
+    why = None
+    if open_bg:
+        n = len(open_bg)
+        why = "Waiting on %d background job%s it launched." % (n, "" if n == 1 else "s")
+    if key is not None:
+        if len(_bgtool_cache) > 256:
+            _bgtool_cache.clear()
+        _bgtool_cache[path] = (key, why)
+    return why
 
 
 def _api_error(path):
@@ -2461,16 +2558,22 @@ def build_feed(now, tmux=None):
                 f = nodes[f]["parentId"]
             if f in nodes and status.get(f) not in ("completed", "cleared"):   # rollup status, not raw nodeComplete (see perm floor)
                 api_top = f
+        # AWAITING signal (event-model, the user 2026-06-22): the session is paused on work it dispatched or
+        # delegated — a WORKING flavor, never needs-input. Sourced from the SDK producer's states overlay
+        # (api, branch headless-sdk-backend) or the transcript bg-tool stopgap; None when actively working.
+        sess_awaiting_why = _session_awaiting(fsid, s["path"], not who_working)
         had_working = False                          # does this session show ANY working card? → drives the provisional placeholder
         for nid in children.get(None, []):
             col = status.get(nid, "working")
             if col == "cleared" or nid in cleared:
                 continue
-            # Postal AWAIT floor (event-based, the user 2026-06-22): a session with an unanswered outbound
-            # to a LIVE peer is awaiting a delegation, not stalled — so a STALE soft block (planner/closer
-            # mislabelled the peer-wait as needs-you) yields to that hard postal signal → awaiting, a
-            # working flavor. The live permission / API-error floors still win (they're the present event).
-            if col == "blocked" and nid != api_top and nid != perm_top and fsid in wmap:
+            # AWAITING floor (event-based, the user 2026-06-22): a session paused on dispatched/delegated
+            # work is a WORKING flavor, never needs-input. Floor a working OR stale-blocked top to awaiting
+            # from (a) the session-level awaiting signal (SDK states overlay / transcript bg-tool stopgap),
+            # or (b) an unanswered outbound to a LIVE peer (postal wait-for — a stale block on a peer-waiting
+            # session yields to it). The live permission / API-error floors still win (the present event).
+            if nid != api_top and nid != perm_top and col in ("working", "blocked") and (
+                    sess_awaiting_why or (col == "blocked" and fsid in wmap)):
                 col = "awaiting"
             o = nodes[nid].get("origin")             # courier delegation provenance: planted by a peer
             origin = None
@@ -2494,12 +2597,7 @@ def build_feed(now, tmux=None):
                        if _closure_done(x) and nodes[x].get("doneWhy")]
                 if dnz:
                     done_why = max(dnz, key=lambda d: d.get("mt", d.get("t", 0)))["doneWhy"]
-            await_why = None
-            if col == "awaiting":                    # AWAITING reason: the latest still-awaiting node's "waiting on …"
-                awz = [nodes[x] for x in _subtree(nid)
-                       if nodes[x].get("awaiting") and not _closure_done(x) and nodes[x].get("awaitWhy")]
-                if awz:
-                    await_why = max(awz, key=lambda d: d.get("mt", d.get("t", 0)))["awaitWhy"]
+            await_why = sess_awaiting_why if col == "awaiting" else None   # the ⏳ awaiting badge's "why" (None for the postal-only case → the waitingOn chip names the peer)
             # The card's TIME reflects its CURRENT STATE, not when the goal was minted: a COMPLETED card
             # shows when it was completed, a BLOCKED card when it was blocked — the mt of the most-recent
             # such node in its subtree — else (working) when it was minted. Keying the time badge to the mint
@@ -2515,12 +2613,7 @@ def build_feed(now, tmux=None):
                        if nodes[x].get("blocked") and not _closure_done(x)]
                 if bts:
                     disp_t = max(bts)
-            elif col == "awaiting":                  # AWAITING card shows when it started waiting
-                ats = [nodes[x].get("mt", nodes[x]["t"]) for x in _subtree(nid)
-                       if nodes[x].get("awaiting") and not _closure_done(x)]
-                if ats:
-                    disp_t = max(ats)
-            # awaiting is a flavor of WORKING → the working column (never needs-input); the awaiting badge carries the why
+            # awaiting is a flavor of WORKING → the working column (never needs-input), card time = mint t; the awaiting badge carries the why
             column = ("needs_input" if (nid == api_top or col == "blocked")
                       else "completed" if col == "completed" else "working")
             had_working = had_working or column == "working"
