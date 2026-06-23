@@ -211,5 +211,19 @@ class Responsiveness(unittest.TestCase):
         self.assertIn("_pusher_wake.set()", tick)                     # /tick wakes the pusher (tmux turn-end shows now)
 
 
+class SdkQueuedIndicator(unittest.TestCase):
+    """An SDK session keeps its message queue in MEMORY (no transcript queue-op records), so the chat's
+    'queued' indicator must read the backend's pending_queued, not _pending_queued (business 2026-06-23)."""
+
+    def test_queued_event_reads_sdk_pending_queue(self):
+        with open(os.path.join(BIN, "romp-kernel")) as f:
+            src = f.read()
+        # for an SDK session the queued texts come from be.pending_queued(sid); hasattr-guarded; tmux still
+        # uses the transcript reader
+        self.assertIn("_be.owns(sid) and hasattr(_be, \"pending_queued\")", src)
+        self.assertIn("queued = _be.pending_queued(sid)", src)
+        self.assertIn('queued = _pending_queued(sess["path"])', src)   # tmux/fallback path kept
+
+
 if __name__ == "__main__":
     unittest.main()

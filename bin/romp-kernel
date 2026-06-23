@@ -2276,7 +2276,14 @@ def build_session(sid, now, tmux=None):
     # transcript's queue-operation records (_pending_queued), so any number show in submission order.
     # Append last (at the bottom, by the composer, like the old TS kernel) so they're visible instead of
     # vanishing (the user 2026-06-15; pane-scrape dropped a 2nd queued message → both vanished, 2026-06-16).
-    queued = _pending_queued(sess["path"])
+    # The TUI/tmux path reads the transcript's queue-operation records; an SDK session keeps its queue in
+    # MEMORY (no such record), so ask the backend directly via pending_queued (business 2026-06-23). hasattr-
+    # guarded so it degrades cleanly to [] if the running SDK backend predates the method.
+    _be = _sdk()
+    if _be and _be.owns(sid) and hasattr(_be, "pending_queued"):
+        queued = _be.pending_queued(sid)
+    else:
+        queued = _pending_queued(sess["path"])
     if queued:
         events.append({"kind": "queued", "texts": queued})
     # API error → the session is BLOCKED until retried: a bottom card (renderApiError, a RED dot) AND the
