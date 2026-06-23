@@ -2063,7 +2063,7 @@ class TimelinePanel {
         // mark its dot as a ROMP MESSAGE — a BLACK-filled dot with the romp favicon swirl inside (the user
         // 2026-06-23, replacing the old white ⚡ bolt). A button/retry nudge renders as a normal prompt dot.
         const tip = t.nudgeAuto
-          ? () => '<div class="r"><img src="/media/romp-swirl-glyph.svg" width="13" height="13" style="vertical-align:-2px;margin-right:5px;border-radius:2px"><span class="who" style="color:' + s.color + '">romp · nudge</span><span class="t">' + clock(startAt(t)) + '</span></div>' + this.body(this.req(t))
+          ? () => '<div class="r"><img src="/media/romp-swirl-glyph.svg" width="13" height="13" style="vertical-align:-2px;margin-right:5px;border-radius:2px"><span class="who" style="color:#fff">romp · nudge</span><span class="t">' + clock(startAt(t)) + '</span></div>' + this.body('romp nudged ' + esc(s.name))
           : () => '<div class="r"><span class="chip" style="background:' + s.color + '"></span><span class="who" style="color:' + s.color + '">' + esc(s.name) + '</span><span class="t">' + clock(startAt(t)) + '</span>' + (t.src === 'enqueue' ? (t.pending ? '<span class="k">queued</span>' : '') : '') + '</div>' + this.body(this.req(t));
         dot(dx, y, t.nudgeAuto ? '#000' : s.color, tip, () => { this._select(s.id); this.openChat(t.tid || s.id, t.uuid, false, false, startAt(t), 'user'); });   // auto-nudge → a black dot (the swirl reads on it); prompt-intent → time fallback restricted to user turns
         if (t.nudgeAuto) {                               // the romp favicon swirl INSIDE the black dot; pointer-events:none → the dot keeps its hover/click
