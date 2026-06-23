@@ -68,6 +68,12 @@ class PureTranslation(unittest.TestCase):
         self.assertEqual([o["label"] for o in ask["options"]], ["Allow", "Deny"])
         self.assertIn("rm -rf", ask["question"])
 
+    def test_identity_color_stable_and_in_palette(self):
+        bg, fg = sb.pick_identity_color("11111111-2222-3333-4444-555555555555")
+        self.assertIn(bg, sb._PALETTE)
+        self.assertIn(fg, sb._FG)
+        self.assertEqual(sb.pick_identity_color("11111111-2222-3333-4444-555555555555"), (bg, fg))  # stable per sid
+
 
 class StateAndRegistryFiles(unittest.TestCase):
     def setUp(self):
@@ -95,6 +101,13 @@ class StateAndRegistryFiles(unittest.TestCase):
         regs = {r["sid"]: r for r in sb.list_regs(self.d)}
         self.assertEqual(set(regs), {"sid3", "sid4"})
         self.assertTrue(regs["sid3"]["alive"])
+
+    def test_spawn_assigns_identity_color(self):
+        be = sb.SdkBackend(self.d, "/bin/true", lambda *a, **k: None)
+        sid = be.spawn("c", self.d)
+        with open(os.path.join(self.d, "names", sid)) as f:
+            parts = f.read().rstrip("\n").split("\t")
+        self.assertTrue(parts[2].startswith("#"), "SDK session gets an identity colour like tmux ones")
 
     def _last_awaiting(self, sid):
         import json as _j

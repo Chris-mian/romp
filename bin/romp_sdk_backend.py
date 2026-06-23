@@ -29,6 +29,22 @@ from pathlib import Path
 # Pure translation logic (no SDK import — unit-tested in CI without the dep).
 # ---------------------------------------------------------------------------
 
+# Identity palette — mirrors bin/romp's `_palette`/`_fg` (the same hex SET the vault dashboard
+# uses). The tmux launcher picks the first unused colour; for an SDK session we pick deterministically
+# by a stable hash of the sid (the launcher's own fallback when all are taken), so the session gets a
+# consistent colour without cross-backend "used" bookkeeping. Keep the SET in sync with bin/romp.
+_PALETTE = ["#1EA1EB", "#54B204", "#4EA8A9", "#DD42FF", "#E87221",
+            "#98998A", "#F85B5A", "#F9D849", "#9088F0"]
+_FG = ["white", "black", "white", "white", "black", "black", "white", "black", "black"]
+
+
+def pick_identity_color(sid: str) -> tuple[str, str]:
+    """A stable (bg, fg) for a session, hashed from its sid into the romp palette."""
+    import zlib
+    i = zlib.crc32(sid.encode()) % len(_PALETTE)
+    return _PALETTE[i], _FG[i]
+
+
 def ask_question_to_live(question: dict, qi: int, total: int, selected=None) -> dict:
     """Translate ONE AskUserQuestion question into the askLive `ask` shape the
     existing picker UI already renders (the same shape bin/romp-askparse emits),
@@ -542,6 +558,8 @@ class SdkBackend:
     def spawn(self, name: str, cwd: str, bg: str = "", fg: str = "", sid: str | None = None) -> str:
         sid = sid or str(uuid.uuid4())
         cwd = os.path.realpath(cwd) if os.path.exists(cwd) else cwd
+        if not bg:                                   # give the session a stable identity colour like tmux sessions get
+            bg, fg = pick_identity_color(sid)
         write_name(self.state_dir, sid, name, cwd, bg, fg)
         write_reg(self.state_dir, sid, {"sid": sid, "name": name, "cwd": cwd,
                                         "mode": "acceptEdits", "lastSid": "", "alive": True})
