@@ -123,6 +123,21 @@ class BuildBoardTest(unittest.TestCase):
             self.assertNotIn("Cleared goal", out)     # cleared card filtered out of the render
             self.assertIn("[c=", out)                 # raw flags are always on now
 
+    def test_pure_delegation_top_is_suppressed(self):
+        # a top-level node whose whole subtree is just a courier handoff (work delegated to a peer) is pure
+        # coordination → never a feed card (the user 2026-06-23); a real own-work goal beside it still shows.
+        import tempfile
+        s = store({
+            "real":  ("Ship the thing", None, False, False, False),
+            "deleg": ("↪ delegated to business: merge X", None, False, False, False),
+        }, last="other")
+        s["nodes"]["deleg"]["handoff"] = {"peer": "5f44ce41-deadbeef", "msgId": "m1"}
+        with tempfile.TemporaryDirectory() as d:
+            st = self._state(d, {SID: s})
+            out = board.render(board.build_board(st), board.Style(False))
+            self.assertIn("Ship the thing", out, "a real own-work goal still shows")
+            self.assertNotIn("delegated to business", out, "a pure-handoff top is suppressed")
+
 
 class FeedArgsTest(unittest.TestCase):
     # romp -f defaults to a single scrollable snapshot; the live auto-refresh (which used to fight the

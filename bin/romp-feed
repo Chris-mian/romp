@@ -230,6 +230,25 @@ def _flatten(store, top, marks_only=False):
     return out
 
 
+def pure_delegation_top(nodes, top_id):
+    """True if EVERY leaf in top_id's subtree is a courier handoff-tracking node — the whole top is just work
+    handed to PEERS, nothing this session does itself. Pure peer-coordination → NOT a feed card (the user
+    2026-06-23). Mirrors romp-kernel._pure_delegation_top so the terminal feed matches the dashboard."""
+    children = _children_map(nodes)
+    leaves, stack, seen = [], [top_id], set()
+    while stack:
+        x = stack.pop()
+        if x in seen or x not in nodes:
+            continue
+        seen.add(x)
+        kids = children.get(x, [])
+        if kids:
+            stack.extend(kids)
+        else:
+            leaves.append(x)
+    return bool(leaves) and all(isinstance(nodes.get(nid, {}).get("handoff"), dict) for nid in leaves)
+
+
 def render(rows, style, header=None):
     """The board: three columns, every node line carrying its raw flags + short id (so a divergence
     from the browser is debuggable at a glance — there's no terse mode, this IS the mode)."""
@@ -242,6 +261,8 @@ def render(rows, style, header=None):
     for r in rows:
         for top, col in r["status"].items():
             if col == "cleared" or top in r["cleared"]:
+                continue
+            if pure_delegation_top(r["store"]["nodes"], top):   # whole top is just peer handoffs → not a card
                 continue
             buckets[col].append((r, top))
 

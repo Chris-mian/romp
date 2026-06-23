@@ -655,6 +655,30 @@ def _all_outstanding_delegated(nodes, top_id):
     return all(isinstance(nodes.get(nid, {}).get("handoff"), dict) for nid in leaves)
 
 
+def _pure_delegation_top(nodes, top_id):
+    """True if EVERY leaf in top_id's subtree is a courier handoff-tracking node — the whole top is just work
+    handed to PEERS, nothing this session does itself. Such a top is pure peer-coordination and is NOT an
+    inbox card (the user 2026-06-23): consistent with _all_outstanding_delegated already treating
+    delegated-only work as not-needs-you. Unlike that (which weighs only OPEN leaves for the nudge gate), this
+    weighs ALL leaves — a delegation stays coordination even after it completes — so the card is suppressed in
+    every column. A top with ANY own-work leaf still shows."""
+    children = {}
+    for nid, nd in nodes.items():
+        children.setdefault(nd.get("parentId"), []).append(nid)
+    leaves, stack, seen = [], [top_id], set()
+    while stack:
+        x = stack.pop()
+        if x in seen or x not in nodes:
+            continue
+        seen.add(x)
+        kids = children.get(x, [])
+        if kids:
+            stack.extend(kids)
+        else:
+            leaves.append(x)
+    return bool(leaves) and all(isinstance(nodes.get(nid, {}).get("handoff"), dict) for nid in leaves)
+
+
 def _auto_nudge_tick(now, tmux):
     """One Auto-Nudge pass (from the periodic pusher). For each ALIVE, IDLE session (its turn ended) that
     isn't awaiting/compacting/api-error, isn't WAITING ON A LIVE PEER (a wait isn't a stall — the human's
@@ -2892,6 +2916,8 @@ def build_feed(now, tmux=None):
         for nid in children.get(None, []):
             col = status.get(nid, "working")
             if col == "cleared" or nid in cleared:
+                continue
+            if _pure_delegation_top(nodes, nid):         # whole top is just peer handoffs → coordination, not an inbox card
                 continue
             # AWAITING floor (event-based, the user 2026-06-22): a session paused on dispatched/delegated
             # work is a WORKING flavor, never needs-input. Floor a working OR stale-blocked top to awaiting

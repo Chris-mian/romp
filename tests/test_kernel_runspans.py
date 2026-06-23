@@ -112,5 +112,30 @@ class RunJudging(unittest.TestCase):
         self.assertEqual(marks, [], "an in-flight run on a non-alive session is not drawn")
 
 
+class PureDelegationTop(unittest.TestCase):
+    """A top-level node whose whole subtree is just courier handoff-tracking (work delegated to peers) is pure
+    coordination — _pure_delegation_top flags it so the feed never shows it as an inbox card (the user
+    2026-06-23). A top with any own-work leaf still shows."""
+
+    def test_childless_handoff_top_is_pure(self):     # the g53 case: '↪ delegated to <peer>' with no own work
+        nodes = {"t": {"id": "t", "parentId": None, "handoff": {"peer": "p", "msgId": "m"}}}
+        self.assertTrue(km._pure_delegation_top(nodes, "t"))
+
+    def test_umbrella_of_only_handoffs_is_pure(self):
+        nodes = {"t": {"id": "t", "parentId": None},                 # umbrella carries no handoff itself
+                 "a": {"id": "a", "parentId": "t", "handoff": {"peer": "p", "msgId": "1"}},
+                 "b": {"id": "b", "parentId": "t", "handoff": {"peer": "q", "msgId": "2"}}}
+        self.assertTrue(km._pure_delegation_top(nodes, "t"))
+
+    def test_top_with_an_own_work_leaf_is_not_pure(self):
+        nodes = {"t": {"id": "t", "parentId": None},
+                 "h": {"id": "h", "parentId": "t", "handoff": {"peer": "p", "msgId": "m"}},
+                 "w": {"id": "w", "parentId": "t"}}                  # own-work leaf, no handoff → still a card
+        self.assertFalse(km._pure_delegation_top(nodes, "t"))
+
+    def test_plain_top_is_not_pure(self):
+        self.assertFalse(km._pure_delegation_top({"t": {"id": "t", "parentId": None}}, "t"))
+
+
 if __name__ == "__main__":
     unittest.main()
