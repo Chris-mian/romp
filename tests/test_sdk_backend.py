@@ -431,5 +431,72 @@ class AskRoundTrip(unittest.TestCase):
         self.backend.kill(sid)
 
 
+@unittest.skipUnless(_HAVE_SDK, "claude_agent_sdk not installed")
+class InterruptSettlesStall(unittest.TestCase):
+    """Interrupt must drop a session out of 'working' even if the turn never produces a ResultMessage
+    (e.g. it's stuck in an API-retry backoff) — the snapshot reads 'working' purely from inflight>0, so a
+    user interrupt that the CLI is slow to honour would otherwise leave it 'working' forever."""
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self._orig = _sdk.ClaudeSDKClient
+        import asyncio as _aio
+
+        class StallClient:
+            instances = []
+
+            def __init__(self, options=None, transport=None):
+                self.options = options
+                self.interrupted = False
+                self._turnq = _aio.Queue()
+                StallClient.instances.append(self)
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def query(self, prompt, session_id="default"):
+                async for turn in prompt:
+                    await self._turnq.put(turn)
+
+            async def interrupt(self):
+                self.interrupted = True
+
+            async def receive_messages(self):
+                yield _sdk.SystemMessage("init", {"session_id": self.options.session_id or "fsid"})
+                await self._turnq.get()              # consume the turn → inflight goes to 1...
+                while True:
+                    await _aio.sleep(3600)            # ...then STALL forever (never a ResultMessage)
+
+        _sdk.ClaudeSDKClient = StallClient
+        self.Fake = StallClient
+        StallClient.instances = []
+        self.backend = sb.SdkBackend(self.d, "/bin/true", lambda *a, **k: None)
+
+    def tearDown(self):
+        _sdk.ClaudeSDKClient = self._orig
+
+    def _wait(self, pred, timeout=6.0):
+        end = time.time() + timeout
+        while time.time() < end:
+            if pred():
+                return True
+            time.sleep(0.02)
+        return False
+
+    def test_interrupt_settles_a_stalled_turn(self):
+        sid = self.backend.spawn("stall", self.d)
+        self.backend.send(sid, "go")
+        self.assertTrue(self._wait(lambda: self.backend.live_sessions().get(sid, {}).get("state") == "working"),
+                        "a stalled in-flight turn reads as working")
+        self.assertTrue(self.backend.interrupt(sid))
+        self.assertTrue(self._wait(lambda: self.Fake.instances and self.Fake.instances[0].interrupted),
+                        "client.interrupt() was sent")
+        self.assertTrue(self._wait(lambda: self.backend.live_sessions().get(sid, {}).get("state") != "working"),
+                        "after interrupt the session is no longer 'working' even with no ResultMessage")
+
+
 if __name__ == "__main__":
     unittest.main()

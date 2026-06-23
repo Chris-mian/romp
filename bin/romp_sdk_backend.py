@@ -400,6 +400,13 @@ class SdkSession:
             await self.client.interrupt()
         except Exception:
             pass
+        # Settle the turn even if the CLI is slow to abort (e.g. stuck in an API-retry backoff): the snapshot
+        # reads 'working' purely from inflight>0, so a user interrupt must drop it here — otherwise the session
+        # reads 'working' forever after an interrupt that never produced a ResultMessage (the user 2026-06-23).
+        if self.inflight:
+            self.inflight = 0
+            append_state(self.backend.state_dir, self.sid, "waiting")
+            self.backend._poke()
 
     async def _do_set_model(self, model):
         try:
