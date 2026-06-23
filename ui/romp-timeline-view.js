@@ -210,18 +210,19 @@ function modelLabel(s) {
 // dims the word in the gap. Values mirror chat-view's allowlist (extension.ts META_VALUES) verbatim.
 const META_HOVER_FG = '#e6edf3';   // brighten the word + reveal its caret on hover
 const META_CARET = ' ▾';           // appended (hair-spaced) after each clickable word
-// Per-lane feed show/hide EYE (the user 2026-06-22, replacing the old settings gear + flag menu): sits
-// between the name and the model. ON the feed (default) = a normal gray eye, its prompts mint feed cards;
-// OFF the feed = the SAME gray eye struck through + DIMMER (de-emphasised — NOT a highlight colour; we don't
-// spotlight the disabled state, the user 2026-06-22), its prompts won't make cards though the lane stays on
-// the timeline (re-opening only affects NEW prompts; it doesn't resurface past ones to clear). One click
-// toggles it directly — no menu.
-// Drawn (not an emoji) so it stays crisp + monochrome everywhere: an almond outline + pupil; `off`=true adds
-// a strike-through slash so the muted state is obvious. One gray throughout — the caller dims the off state.
-function eyeIcon(off, cx, cy, color) {
+// Per-lane feed show/hide TOGGLE (the user 2026-06-22; a circular CHECKBOX since 2026-06-23, was an eye):
+// sits between the name and the model. ON the feed (default) = a gray ring with a check inside, its prompts
+// mint feed cards; OFF the feed = the SAME checkbox struck through + MORE faded (de-emphasised — NOT a
+// highlight colour; we don't spotlight the disabled state), its prompts won't make cards though the lane
+// stays on the timeline (re-opening only affects NEW prompts; it doesn't resurface past ones to clear). One
+// click toggles it directly — no menu.
+// Drawn (not an emoji) so it stays crisp + monochrome everywhere: a thin circular box + a checkmark, same
+// gray line weight as the old eye; `off`=true adds the same strike-through slash so the muted state is
+// obvious. One gray throughout — the caller fades the off state (now a touch more than the on state).
+function feedCheckIcon(off, cx, cy, color) {
   const g = el('g', { 'pointer-events': 'none' });
-  g.appendChild(el('path', { d: 'M' + (cx - 6) + ' ' + cy + ' C' + (cx - 3) + ' ' + (cy - 3.6) + ' ' + (cx + 3) + ' ' + (cy - 3.6) + ' ' + (cx + 6) + ' ' + cy + ' C' + (cx + 3) + ' ' + (cy + 3.6) + ' ' + (cx - 3) + ' ' + (cy + 3.6) + ' ' + (cx - 6) + ' ' + cy + ' Z', fill: 'none', stroke: color, 'stroke-width': 1.2 }));
-  g.appendChild(el('circle', { cx: cx, cy: cy, r: 1.5, fill: color }));
+  g.appendChild(el('circle', { cx: cx, cy: cy, r: 6, fill: 'none', stroke: color, 'stroke-width': 1.2 }));
+  g.appendChild(el('path', { d: 'M' + (cx - 3) + ' ' + (cy + 0.3) + ' L' + (cx - 0.8) + ' ' + (cy + 2.7) + ' L' + (cx + 3.4) + ' ' + (cy - 2.7), fill: 'none', stroke: color, 'stroke-width': 1.3, 'stroke-linecap': 'round', 'stroke-linejoin': 'round' }));
   if (off) g.appendChild(el('line', { x1: cx - 6.5, y1: cy + 4.5, x2: cx + 6.5, y2: cy - 4.5, stroke: color, 'stroke-width': 1.4, 'stroke-linecap': 'round' }));
   return g;
 }
@@ -1438,9 +1439,9 @@ class TimelinePanel {
   // flag, the lane EYE toggles hideFromFeed DIRECTLY on click — no menu. See the render below; the flag is
   // still persisted by _setSessionFlag.)
 
-  // Optimistic per-session view flags (the eye → hideFromFeed). A click flips the flag locally AND fires
-  // _setSessionFlag, but the kernel's confirming rebuild takes ~1s and ANY routine push that lands in that
-  // window carries the OLD value — wholesale-replacing this.data would REVERT the eye (a visible flicker, the
+  // Optimistic per-session view flags (the feed checkbox → hideFromFeed). A click flips the flag locally AND
+  // fires _setSessionFlag, but the kernel's confirming rebuild takes ~1s and ANY routine push that lands in
+  // that window carries the OLD value — wholesale-replacing this.data would REVERT the checkbox (a flicker, the
   // session "un-hiding" for a beat before settling — the user 2026-06-22). So hold each clicked value in
   // _pendingFlags and re-apply it onto every incoming push until the kernel's value MATCHES (confirmed → drop
   // it). Net: click → it changes → it stays, never bounces. Called from update() right after this.data = data.
@@ -1817,29 +1818,29 @@ class TimelinePanel {
       if (!s.live) lblA['text-decoration'] = 'line-through';   // dead lane → strike the name (mirrors the feed)
       const lbl = el('text', lblA); lbl.textContent = s.name; svg.appendChild(lbl);
       if (s.faded) fadedEls.push({ el: lbl, full: s.color, faded: F(s.color) });
-      // per-session feed show/hide EYE (live lanes only): one click toggles hideFromFeed directly — eye =
-      // on the feed (default), struck-through + dimmer = off it. Always GRAY; the OFF state is de-emphasised
-      // (dimmer), never highlighted (the user 2026-06-22). No menu.
+      // per-session feed show/hide CHECKBOX (live lanes only): one click toggles hideFromFeed directly —
+      // checked = on the feed (default), struck-through + more faded = off it. Always GRAY; the OFF state is
+      // de-emphasised (more faded), never highlighted (the user 2026-06-22). No menu.
       if (s.live) {
         const off = !!s.hideFromFeed;
         const cx = eyeColX + 5, cy = y + 0.5;
-        // The drawn eye is PURELY VISUAL (pointer-events:none): thin strokes are nearly unhittable, so a
+        // The drawn checkbox is PURELY VISUAL (pointer-events:none): thin strokes are nearly unhittable, so a
         // generous transparent <rect> over it is the real hit target (same trick the work bars use). The
         // tooltip uses the shared showTip/hideTip (a native SVG <title> never shows — a redraw kills the
         // hover before it appears; showTip freezes live-follow so it stays — the user 2026-06-22).
-        const dim = off ? '0.4' : '0.62';              // off = darker/dimmer; on = the normal gray
-        const eye = eyeIcon(off, cx, cy, MODEL_FG);
-        eye.setAttribute('opacity', dim);
-        svg.appendChild(eye);
+        const dim = off ? '0.3' : '0.62';              // off = more faded (the user 2026-06-23); on = the normal gray
+        const box = feedCheckIcon(off, cx, cy, MODEL_FG);
+        box.setAttribute('opacity', dim);
+        svg.appendChild(box);
         const hit = el('rect', { x: eyeColX - 4, y: y - 9, width: EYE_W + 8, height: 18, fill: 'transparent', 'pointer-events': 'all' });
         hit.style.cursor = 'pointer';
         hit.setAttribute('aria-label', off ? 'session off the feed' : 'session on the feed'); svg.appendChild(hit);
         const tip = off
           ? "Off the feed — click to put it back on<div style='opacity:.65;margin-top:2px'>only new prompts make cards; past ones won’t reappear</div>"
           : "On the feed — click to take it off<div style='opacity:.65;margin-top:2px'>its prompts stop making cards; it stays on the timeline</div>";
-        hit.addEventListener('mouseenter', (e) => { eye.setAttribute('opacity', '1'); this.showTip(tip, e); });
+        hit.addEventListener('mouseenter', (e) => { box.setAttribute('opacity', '1'); this.showTip(tip, e); });
         hit.addEventListener('mousemove', (e) => this.moveTip(e));
-        hit.addEventListener('mouseleave', () => { eye.setAttribute('opacity', dim); this.hideTip(); });
+        hit.addEventListener('mouseleave', () => { box.setAttribute('opacity', dim); this.hideTip(); });
         hit.addEventListener('click', (e) => {
           e.stopPropagation();
           const next = !s.hideFromFeed;
