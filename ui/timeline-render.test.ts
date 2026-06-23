@@ -162,6 +162,46 @@ test("a romp-nudge prompt stamps a ⚡ (white bolt path) inside its dot; a norma
   assert.equal(whiteBoltPaths(panel), before + 1, "exactly one ⚡ bolt is added for the single nudge prompt");
 });
 
+// A segment that straddled a host sleep renders as several bars (kernel _awake_spans); only the FIRST
+// carries the prompt — the post-sleep continuation pieces are flagged `cont` and must draw NO second
+// prompt dot (the user 2026-06-22). Prompt dots are the only #e8eef5-stroked circles in this
+// message-less fixture, so counting them is an exact differential.
+function promptDots(panel: any): number {
+  let n = 0;
+  const walk = (node: any) => {
+    if (node.tag === "circle" && node.getAttribute("stroke") === "#e8eef5") n++;
+    for (const c of node.children || []) walk(c);
+  };
+  walk(panel.svg);
+  return n;
+}
+test("a `cont` continuation bar (post-sleep piece) draws NO prompt dot; a non-cont one does", () => {
+  const base = new TimelinePanel(makeNode("div"));
+  base.data = synthData();
+  base.draw();
+  const before = promptDots(base);
+  const now = (synthData() as any).now;
+  const piece = (cont: boolean) => ({
+    id: "S1:1:aa", promptId: "S1:1:aa#p", workId: "S1:1:aa#w", start: now - 100, end: now - 80,
+    prompt: "do the thing", src: "typed", mids: [], pending: false, summary: "more work", reply: "",
+    tid: "fork-S1:1:aa", uuid: "u-S1:1:aa", workUuid: "w-S1:1:aa", replyUuid: "r-S1:1:aa", cont,
+  });
+  // a CONTINUATION piece adds a bar but no dot
+  const pCont = new TimelinePanel(makeNode("div"));
+  const dCont: any = synthData();
+  dCont.turns.S1.push(piece(true));
+  pCont.data = dCont;
+  assert.doesNotThrow(() => pCont.draw());
+  assert.equal(promptDots(pCont), before, "a post-sleep continuation piece draws no extra prompt dot");
+  // the SAME piece without the flag DOES add a dot — proves the test is meaningful, not vacuous
+  const pReal = new TimelinePanel(makeNode("div"));
+  const dReal: any = synthData();
+  dReal.turns.S1.push(piece(false));
+  pReal.data = dReal;
+  assert.doesNotThrow(() => pReal.draw());
+  assert.equal(promptDots(pReal), before + 1, "a non-cont bar (a real prompt) adds exactly one prompt dot");
+});
+
 // Direct hover push (setHover) + nonce gate — the fast path that skips the file→watch→rebuild.
 test("setHover applies by atom ids and gates on nonce (stale push ignored, clear works)", () => {
   const panel = new TimelinePanel(makeNode("div"));
