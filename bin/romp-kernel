@@ -4862,6 +4862,25 @@ window.addEventListener('resize',autosize);})();
 """
 
 
+# Active-pane FOCUS cue (the user 2026-06-23): mark the section the user last interacted with so the faint
+# lightening film (.pane-focused, CSS above) shows which pane their keystrokes/actions target. The three iframes
+# are SAME-ORIGIN (the splitter above already reads tf.contentDocument), so the shell wires each child's
+# document directly — pointerdown / focusin / window-focus, all EVENT-based (no polling). Re-wires on every
+# iframe (re)load; chat is the default focus on open. Inert on mobile (one pane at a time; .pane is display:contents).
+_LANDING_FOCUS_JS = """
+(function(){var PANE={'f-chat':'chat-pane','f-feed':'feed-pane','f-timeline':'tl-pane'};
+function setFocus(id){var pid=PANE[id];if(!pid)return;
+for(var k in PANE){var el=document.getElementById(PANE[k]);if(el)el.classList.toggle('pane-focused',PANE[k]===pid);}}
+function wire(f){try{var d=f.contentDocument;if(!d||d.readyState==='loading')return;   // not ready → its 'load' re-wires
+var emit=function(){setFocus(f.id);};
+d.addEventListener('pointerdown',emit,true);d.addEventListener('focusin',emit,true);
+f.contentWindow.addEventListener('focus',emit);}catch(e){}}
+Object.keys(PANE).forEach(function(id){var f=document.getElementById(id);if(!f)return;
+f.addEventListener('load',function(){wire(f);});wire(f);});   // wire now (already-loaded) + on every (re)load
+setFocus('f-chat');})();   // default: the chat section is lit on open
+"""
+
+
 # Mobile shell behavior, layered on top of the desktop splitter above. The bottom tab bar (#mtabs,
 # shown only by the media query below) swaps which single iframe is full-screen by toggling `m-on`.
 # A cross-pane "reveal" auto-switches the visible tab: the kernel pushes {type:"reveal",pane} over an
@@ -5003,6 +5022,12 @@ def _landing():
             # edge — chat→right, feed→left, timeline→top — folds it to a 26px strip (body.cc-* overrides
             # the grid-template; coexists with the splitter's --chat/--tl). Sizes/positions from the old shell.
             ".pane{position:relative;min-width:0;min-height:0;overflow:hidden}"
+            # FOCUS cue (the user 2026-06-23): the section you last interacted with gets a faint lightening
+            # film so it's clear which pane your keystrokes/actions target. A translucent-white ::after over
+            # the (opaque) iframe lifts the dark background more than the light text — reads as "this panel is
+            # lit". pointer-events:none so it never blocks; z below the collapse handle (z-30) + splitters.
+            ".pane.pane-focused::after{content:'';position:absolute;inset:0;background:rgba(255,255,255,0.05);"
+            "pointer-events:none;z-index:6}"
             ".collapse-btn{position:absolute;z-index:30;display:flex;align-items:center;justify-content:center;"
             "background:#2a2a2a;color:#999;border:1px solid #3a3a3a;cursor:pointer;user-select:none;opacity:.3;transition:opacity .1s}"
             ".collapse-btn:hover{opacity:1;color:#fff}"
@@ -5086,6 +5111,7 @@ def _landing():
             # the mobile tab bar. (The splitter used to query a stale id=t for the timeline iframe and
             # throw on every load — fixed above by giving that iframe id=f-timeline.)
             "<script>" + _LANDING_JS + "</script>"
+            "<script>" + _LANDING_FOCUS_JS + "</script>"
             "<script>" + _LANDING_MOBILE_JS + "</script>"
             "<script>" + _LANDING_COLLAPSE_JS + "</script>"
             + _stale_block(v) +

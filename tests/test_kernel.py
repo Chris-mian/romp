@@ -2788,6 +2788,25 @@ class ServeSecurity(unittest.TestCase):
         for pane in ("src=/chat", "src=/feed", "src=/timeline"):
             self.assertIn(pane, body)
 
+    def test_landing_has_a_focused_pane_cue(self):
+        # the user 2026-06-23: the section you last interacted with is LIT — a faint white film over its
+        # (opaque) iframe — so it's clear which pane your keystrokes/actions target. Shell-only: the
+        # same-origin iframes are wired by the shell (pointerdown/focusin/window-focus, event-based, no
+        # polling); chat is the default; it re-wires on iframe (re)load.
+        html = km._landing()
+        # the lightening film: a translucent-white ::after over the focused pane, click-through, under the chrome
+        self.assertIn(".pane.pane-focused::after{content:'';position:absolute;inset:0;", html)
+        self.assertIn("background:rgba(255,255,255,0.05)", html)
+        self.assertIn("pointer-events:none;z-index:6}", html)
+        # the wiring: maps each iframe id → its pane, toggles pane-focused exclusively, defaults to chat
+        self.assertIn("var PANE={'f-chat':'chat-pane','f-feed':'feed-pane','f-timeline':'tl-pane'}", html)
+        self.assertIn("classList.toggle('pane-focused'", html)
+        self.assertIn("d.addEventListener('pointerdown',emit,true)", html)
+        self.assertIn("d.addEventListener('focusin',emit,true)", html)
+        self.assertIn("f.contentWindow.addEventListener('focus',emit)", html)
+        self.assertIn("f.addEventListener('load',function(){wire(f);});wire(f);", html)   # re-wire on (re)load
+        self.assertIn("setFocus('f-chat')", html)                                          # chat lit by default
+
     def test_landing_pins_height_to_visual_viewport(self):
         # Regression (the user 2026-06-19): on real Android Chrome, body{height:100dvh} left a dead slab
         # below the mobile Chat/Feed/Timeline bar — dvh didn't match the painted viewport. The shell now
