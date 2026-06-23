@@ -2724,6 +2724,29 @@ class FollowUp(unittest.TestCase):
         finally:
             jd.GOALDIR = saved
 
+    def test_optimistic_followup_reopens_a_bottom_up_completed_goal_to_working(self):
+        # the user 2026-06-23: a goal that completed BOTTOM-UP (its OWN nodeComplete was never set — it rolled
+        # up only because its single child got DONE'd) must STILL jump to WORKING the instant you follow up.
+        # _reopen clears the top's nodeComplete (already False here) but RIGHTLY leaves the genuinely-done child,
+        # so bottom-up is_complete(top) would re-complete it INSTANTLY and defeat the optimistic reopen — the
+        # rollup's stale-flag drop now keys on the top's EXPLICIT nodeComplete, so the fresh reopen wins.
+        top, kid = SID + ":g1", SID + ":g2"
+        td = Path(tempfile.mkdtemp()); saved = jd.GOALDIR; jd.GOALDIR = td / "goals"
+        try:
+            jd.save_goals(SID, {"rompUuid": SID, "seq": 2, "status": {top: "completed"}, "placements": {},
+                "nodes": {
+                    top: {"id": top, "text": "Ship the thing", "parentId": None, "nodeComplete": False,
+                          "blocked": False, "cleared": False, "settledDone": True, "trail": ["s0"], "t": T0, "mt": T0},
+                    kid: {"id": kid, "text": "the one step", "parentId": top, "nodeComplete": True,
+                          "blocked": False, "cleared": False, "trail": ["s1"], "t": T0, "mt": T0}}})
+            self.assertTrue(jd.optimistic_followup(SID, top), "reopened the bottom-up-completed top")
+            st = jd.load_goals(SID)
+            self.assertTrue(st["nodes"][top]["followupPending"], "followupPending held (drives the chip)")
+            self.assertEqual(st["status"][top], "working",
+                             "a bottom-up-completed goal still jumps to WORKING on follow-up (was stuck completed)")
+        finally:
+            jd.GOALDIR = saved
+
     def test_optimistic_followup_on_a_blocked_sub_unblocks_its_top(self):
         # the per-sub follow-up (the user 2026-06-17): the feed posts the EXISTING askFollowUp with a SUB's
         # node id, so optimistic_followup reopens just that sub and unblocks its ANCESTOR chain → the TOP card

@@ -1088,7 +1088,13 @@ def rollup_status(store, session_closed):
             # Without this it DEADLOCKS: followupPending forces 'working', which blocks the completed branch
             # below — the only place that would clear followupPending — so a done goal sticks in Working
             # forever (the user 2026-06-20: g70 was nodeComplete+settled yet stuck Working with the chip).
-            if is_complete(nid) and (settled or nodes[nid].get("settledDone")):
+            # The re-completion test is the TOP's EXPLICIT nodeComplete, NOT bottom-up is_complete (the user
+            # 2026-06-23): a fresh follow-up to a goal whose leaves are all genuinely DONE must still jump to
+            # WORKING — _reopen cleared the top's nodeComplete but (rightly) left the done leaves, so bottom-up
+            # is_complete would re-complete it INSTANTLY and defeat the optimistic reopen. The g70 stale case
+            # the judge clears by re-asserting the TOP's nodeComplete (top-down done verdict), so this still
+            # drops the stale flag there.
+            if nodes[nid].get("nodeComplete") and (settled or nodes[nid].get("settledDone")):
                 nodes[nid]["settledDone"] = True
                 nodes[nid].pop("followupPending", None)   # resolved → drop the stale optimistic chip
                 status[nid] = "completed"

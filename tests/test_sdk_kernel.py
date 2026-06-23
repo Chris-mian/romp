@@ -61,13 +61,18 @@ class FakeBackend:
 class KernelWiring(unittest.TestCase):
     def setUp(self):
         self.be = FakeBackend()
-        self.saved = (km._sdk, km._push_all, km._send_to_app)
+        self.saved = (km._sdk, km._push_all, km._send_to_app, km.jd.optimistic_followup)
         km._sdk = lambda: self.be
-        km._push_all = lambda *a, **k: None
+        self.pushes = []
+        km._push_all = lambda *a, **k: self.pushes.append(1)
         km._send_to_app = lambda *a, **k: None
+        # insulate the real goal store: record the optimistic-reopen call, no disk I/O. Tests that need a
+        # "reopened" return flip this to True.
+        self.fu_calls = []
+        km.jd.optimistic_followup = lambda sid, gid: (self.fu_calls.append((sid, gid)), False)[1]
 
     def tearDown(self):
-        km._sdk, km._push_all, km._send_to_app = self.saved
+        km._sdk, km._push_all, km._send_to_app, km.jd.optimistic_followup = self.saved
 
     def _route(self, msg):
         return km._sdk_route(msg, {"send": lambda s: None})
@@ -147,6 +152,24 @@ class KernelWiring(unittest.TestCase):
     def test_askfollowup_resolves_sid_from_itemid(self):
         self.assertTrue(self._route({"type": "askFollowUp", "itemId": "sid-sdk:g1", "text": "more"}))
         self.assertIn(("send", "sid-sdk", "more"), self.be.calls)
+
+    def test_askfollowup_optimistically_reopens_the_card(self):
+        # SDK parity with the tmux path (the user 2026-06-23): a follow-up on an SDK card reopens its goal NOW
+        # (optimistic_followup → board jumps to WORKING + a "Followed up" chip), not just sends the text. A
+        # reopen (True) triggers a push so the board updates immediately.
+        km.jd.optimistic_followup = lambda sid, gid: (self.fu_calls.append((sid, gid)), True)[1]
+        self.pushes.clear()
+        self.assertTrue(self._route({"type": "askFollowUp", "itemId": "sid-sdk:g1", "nudge": True, "text": "status?"}))
+        self.assertIn(("send", "sid-sdk", "status?"), self.be.calls)
+        self.assertIn(("sid-sdk", "sid-sdk:g1"), self.fu_calls, "the SDK follow-up reopens the goal optimistically")
+        self.assertTrue(self.pushes, "a reopen pushes the refreshed board at once")
+
+    def test_askfollowup_without_itemid_just_sends(self):
+        # a raw follow-up with no goal id (e.g. a typed message routed as askFollowUp) sends only — no reopen.
+        self.fu_calls.clear()
+        self.assertTrue(self._route({"type": "askFollowUp", "id": "sid-sdk", "text": "hi"}))
+        self.assertIn(("send", "sid-sdk", "hi"), self.be.calls)
+        self.assertEqual(self.fu_calls, [], "no itemId → nothing to reopen")
 
     def test_tmux_sessions_merges_sdk_rows(self):
         sess = km._tmux_sessions()                     # merges tmux (real/empty) + the fake SDK row

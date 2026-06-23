@@ -983,6 +983,13 @@ def _sdk_route(msg, client):
         be.send(sid, "retry")
     elif t == "askFollowUp" and msg.get("text"):
         be.send(sid, str(msg["text"]))
+        iid = msg.get("itemId")                       # SDK parity with the tmux path (5441): reopen the card NOW
+        if iid:                                       # → board shows it back at WORKING + a "Followed up" chip
+            try:
+                if jd.optimistic_followup(sid, str(iid)):
+                    _push_all()
+            except Exception:
+                sys.stderr.write("followup reopen (sdk): %s\n" % traceback.format_exc())
     else:
         return False   # not an SDK drive op (e.g. closeTab / openSession) → normal dispatch
     return True
