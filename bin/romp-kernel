@@ -715,8 +715,10 @@ def _chat_tab_sessions(now, tmux):
     dead_kept = [s for s in _sessions(now) if s["sid"] in _kept_open and s["sid"] not in live_sids]
     order = _session_order()
     idx = {sid: i for i, sid in enumerate(order)}
+    # same stable key as _timeline_sessions: persisted slot first, fixed-mtime tiebreak for never-ordered
+    # lanes — a dying tab keeps its slot, no activity reshuffle (the user 2026-06-23).
     return sorted((s for s in live + dead_kept if s["sid"] not in hidden),
-                  key=lambda s: idx.get(s["sid"], len(idx)))
+                  key=lambda s: (idx.get(s["sid"], len(idx)), -s.get("mtime", 0)))
 
 
 def _timeline_sessions(now, tmux):
@@ -734,9 +736,14 @@ def _timeline_sessions(now, tmux):
     chat tab strip in _chat_tab_sessions)."""
     live = _ordered_alive(now, tmux)
     live_sids = {s["sid"] for s in live}
-    dead = sorted((s for s in _sessions(now) if s["sid"] not in live_sids),
-                  key=lambda s: s.get("mtime", 0), reverse=True)
-    return live + dead
+    order = _session_order()
+    idx = {sid: i for i, sid in enumerate(order)}
+    dead = [s for s in _sessions(now) if s["sid"] not in live_sids]
+    # ONE stable order for live + dead — NO auto-reorder by activity, even for dead/idle lanes (the user
+    # 2026-06-23). A session that DIES keeps its PERSISTED slot instead of jumping into an activity-sorted
+    # dead block at the bottom; only a drag reorders. live is already index-ordered; dead lanes slot in by
+    # the SAME index, falling back to their (now-fixed) mtime ONLY for a lane that was never in the order.
+    return sorted(live + dead, key=lambda s: (idx.get(s["sid"], len(idx)), -s.get("mtime", 0)))
 
 
 # ─── new-session / picker / close lifecycle (the + button and × tab control) ───────────────────

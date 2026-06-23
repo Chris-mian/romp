@@ -2931,5 +2931,39 @@ class CreateDirResolution(unittest.TestCase):
         self.assertEqual(km._cwd_of("noctab"), "")
 
 
+class SessionOrderStable(unittest.TestCase):
+    """Tabs + timeline lanes must NOT auto-reorder by activity — even when a session goes dead/idle: it
+    keeps its persisted slot, only a drag reorders (the user 2026-06-23). Before the fix, dead lanes were
+    pulled into a separate mtime-sorted block, so a session jumped slots the moment it died."""
+    def setUp(self):
+        self._saved = (km._ordered_alive, km._sessions, km._session_order, set(km._kept_open), km._hidden_tabs)
+
+    def tearDown(self):
+        km._ordered_alive, km._sessions, km._session_order, kept, km._hidden_tabs = self._saved
+        km._kept_open.clear(); km._kept_open.update(kept)
+
+    def _fleet(self):
+        # B is the MOST recently active (mtime 999) — it would sort FIRST under the old mtime ordering.
+        A = {"sid": "A", "name": "a", "path": "/a", "mtime": 100}
+        B = {"sid": "B", "name": "b", "path": "/b", "mtime": 999}
+        C = {"sid": "C", "name": "c", "path": "/c", "mtime": 50}
+        km._session_order = lambda: ["A", "B", "C"]      # the persisted (drag) order
+        km._sessions = lambda now: [B, A, C]             # _sessions is mtime-DESC → B first
+        km._ordered_alive = lambda now, tmux: [A, C]     # B has DIED → only A, C live, in persisted order
+        return A, B, C
+
+    def test_dead_timeline_lane_keeps_its_slot(self):
+        self._fleet()
+        got = [s["sid"] for s in km._timeline_sessions(NOW, {})]
+        self.assertEqual(got, ["A", "B", "C"], "dead B stays at its slot (idx 1), not mtime-first nor shoved to the end")
+
+    def test_dead_chat_tab_keeps_its_slot(self):
+        self._fleet()
+        km._kept_open.clear(); km._kept_open.add("B")    # B's tab kept open (read-only) after death
+        km._hidden_tabs = lambda: set()
+        got = [s["sid"] for s in km._chat_tab_sessions(NOW, {})]
+        self.assertEqual(got, ["A", "B", "C"], "kept-open dead tab keeps its slot, same stable key as the timeline")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
