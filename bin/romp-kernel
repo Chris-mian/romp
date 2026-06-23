@@ -883,6 +883,8 @@ def _sdk_route(msg, client):
         be.kill(sid); _send_to_app("chat", {"type": "closed", "id": sid}); _push_all()
     elif t == "answerAsk" and msg.get("target") is not None:
         be.on_ask(sid, "answer", msg["target"])
+    elif t == "navAsk" and msg.get("target") is not None:
+        be.on_ask(sid, "focus", msg["target"])   # move the picker cursor WITHOUT selecting, so ↑/↓ steps the preview
     elif t == "toggleAsk" and msg.get("target") is not None:
         be.on_ask(sid, "toggle", msg["target"])
     elif t == "submitAsk":
@@ -1325,6 +1327,16 @@ def _ask_answer(name, target):
         return
     _ask_step_nav_to(name, target, lambda q: bool(q) and q.get("kind") != "multi",
                      lambda: _send_keys(name, ["Enter"]))
+
+
+def _ask_focus(name, target):
+    """Move the picker cursor to `target` WITHOUT selecting — so the chat's ↑/↓ steps the focused option's
+    scraped preview, mirroring the terminal (the user 2026-06-22). Single-select only (multi has no preview);
+    the act() is a no-op (position only), and the next pane scrape pushes target's preview."""
+    p = _ask_parse(name)
+    if not p or p.get("kind") == "multi" or not p.get("cursorFound"):
+        return
+    _ask_step_nav_to(name, target, lambda q: bool(q) and q.get("kind") != "multi", lambda: None)
 
 
 def _ask_toggle(name, target):
@@ -5286,6 +5298,8 @@ class Handler(BaseHTTPRequestHandler):
         # live AskUserQuestion picker: a webview click → keystrokes into the session's pane (AskDriver)
         elif msg and msg.get("type") == "answerAsk" and msg.get("id") and msg.get("target") is not None:
             _ask_thread(_ask_answer, _name_of(msg["id"]) or msg["id"], msg["target"])
+        elif msg and msg.get("type") == "navAsk" and msg.get("id") and msg.get("target") is not None:
+            _ask_thread(_ask_focus, _name_of(msg["id"]) or msg["id"], msg["target"])   # move cursor, no select → ↑/↓ steps the preview
         elif msg and msg.get("type") == "toggleAsk" and msg.get("id") and msg.get("target") is not None:
             _ask_thread(_ask_toggle, _name_of(msg["id"]) or msg["id"], msg["target"])
         elif msg and msg.get("type") == "submitAsk" and msg.get("id"):

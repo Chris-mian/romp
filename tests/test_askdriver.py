@@ -75,6 +75,29 @@ class AskDriver(unittest.TestCase):
         km._ask_answer("s", 2)
         self.assertEqual(self.keys, [["Down"], ["Enter"]], "one Down to row 2, then Enter")
 
+    def test_focus_navigates_WITHOUT_selecting(self):
+        # ↑/↓ preview-step: move the picker cursor to the target row but send NO Enter — so the chat can
+        # step the focused option's scraped preview without committing the answer (the user 2026-06-22).
+        state = {"cur": 1}
+
+        def sk(n, k):
+            self.keys.append(list(k))
+            if k == ["Down"]:
+                state["cur"] += 1
+            elif k == ["Up"]:
+                state["cur"] -= 1
+
+        km._send_keys = sk
+        km._ask_parse = lambda n: {"kind": "single", "cursor": state["cur"], "cursorFound": True}
+        km._ask_focus("s", 3)
+        self.assertEqual(state["cur"], 3, "cursor moved to row 3")
+        self.assertEqual(self.keys, [["Down"], ["Down"]], "two Downs, and NO Enter — nothing is selected")
+
+    def test_focus_noops_on_multi(self):
+        km._ask_parse = lambda n: {"kind": "multi", "cursor": 1, "cursorFound": True}
+        km._ask_focus("s", 2)
+        self.assertEqual(self.keys, [], "focus is single-select only (multi has no preview)")
+
 
 if __name__ == "__main__":
     unittest.main()
