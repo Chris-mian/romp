@@ -1133,6 +1133,15 @@ pre.has-copy:hover .code-copy, .code-copy:focus-visible { opacity: 0.9; }
   border: 1px solid var(--box-border); border-radius: 5px; padding: 5px 9px; font-size: 0.82em;
 }
 .picker-browse:hover { background: rgba(255, 255, 255, 0.12); }
+/* per-session backend toggle in the + dialog (the user 2026-06-23): a tmux | SDK segmented control */
+.picker-backend { display: flex; align-items: center; gap: 6px; padding: 6px 14px 8px; }
+.picker-backend-label { flex: 0 0 auto; color: var(--dim); font-size: 0.82em; margin-right: 2px; }
+.picker-be-opt {
+  flex: 0 0 auto; cursor: pointer; background: rgba(255, 255, 255, 0.06); color: var(--dim);
+  border: 1px solid var(--box-border); border-radius: 5px; padding: 4px 12px; font-size: 0.82em; font-weight: 600;
+}
+.picker-be-opt:hover { background: rgba(255, 255, 255, 0.12); color: var(--fg); }
+.picker-be-opt.sel { background: var(--st-working-bg); color: var(--st-working-fg); border-color: transparent; }
 .picker-list { overflow-y: auto; }
 .picker-row {
   padding: 9px 14px; cursor: pointer;

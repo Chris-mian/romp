@@ -20,7 +20,8 @@ test("the picker has a directory field with a recent-dirs datalist", () => {
 });
 
 test("createSession carries the chosen dir, alongside name + backend", () => {
-  assert.match(RENDER, /type: "createSession", name, backend: loadSettings\(\)\.backend, dir: dirInput\.value\.trim\(\)/);
+  // backend now comes from the + dialog's per-session toggle, falling back to the gear default (the user 2026-06-23)
+  assert.match(RENDER, /type: "createSession", name, backend: beSel\?\.dataset\.be \|\| loadSettings\(\)\.backend, dir: dirInput\.value\.trim\(\)/);
 });
 
 test("the dir field is prefilled with the gear default and hidden in pick-mode", () => {

@@ -1793,6 +1793,18 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
     browseBtn.title = "Pick a folder with the native macOS dialog (opens on the kernel's machine — host-local)";
     browseBtn.addEventListener("click", () => { if (vscodeApi) vscodeApi.postMessage({ type: "browseDir" }); });
     dirWrap.appendChild(dirInput); dirWrap.appendChild(dirList); dirWrap.appendChild(browseBtn);
+    // per-session BACKEND picker (the user 2026-06-23): a tmux | SDK segmented toggle, defaulting to the
+    // gear's Default backend but overridable for THIS new session. Hidden in pick-mode (like dirWrap).
+    const beWrap = el("div", "picker-backend");
+    const beLabel = el("span", "picker-backend-label"); beLabel.textContent = "Backend";
+    const mkBe = (val: string, txt: string, tip: string) => {
+      const b = el("button", "picker-be-opt") as HTMLButtonElement;
+      b.type = "button"; b.textContent = txt; b.title = tip; b.dataset.be = val;
+      b.addEventListener("click", () => beWrap.querySelectorAll(".picker-be-opt").forEach((x) => x.classList.toggle("sel", x === b)));
+      return b;
+    };
+    beWrap.append(beLabel, mkBe("tmux", "tmux", "Drives a real terminal pane (tmux)."),
+                  mkBe("sdk", "SDK", "Runs headless via the Claude Agent SDK."));
     const actions = el("div", "picker-actions");
     const newSess = el("button", "picker-action");
     newSess.id = "picker-new-btn";
@@ -1803,8 +1815,9 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
       const name = search.value.trim();
       if (!name) { pickerError("Type the new session's name in the box above first."); search.focus(); return; }
       if (!/^[A-Za-z0-9._-]+$/.test(name)) { pickerError("Session names: letters, digits, . _ - only."); search.focus(); return; }
-      // backend: the gear's "Default backend" setting (tmux | sdk), read FRESH so a same-tab change applies
-      if (vscodeApi) vscodeApi.postMessage({ type: "createSession", name, backend: loadSettings().backend, dir: dirInput.value.trim() });
+      // backend: this picker's toggle (defaults to the gear's "Default backend", overridable per session)
+      const beSel = beWrap.querySelector(".picker-be-opt.sel") as HTMLElement | null;
+      if (vscodeApi) vscodeApi.postMessage({ type: "createSession", name, backend: beSel?.dataset.be || loadSettings().backend, dir: dirInput.value.trim() });
       closePicker();
       showOpeningModal(name);   // "Opening…" cue until the new tab arrives (see upsert)
     });
@@ -1820,6 +1833,7 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
     box.appendChild(errLine);
     box.appendChild(list);
     box.appendChild(dirWrap);
+    box.appendChild(beWrap);
     box.appendChild(actions);
     overlay.appendChild(box);
     overlay.addEventListener("click", (e) => { if (e.target === overlay) closePicker(); });
@@ -1831,6 +1845,12 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
   if (actions) actions.style.display = pick ? "none" : "";
   const dirWrap = overlay.querySelector(".picker-dir") as HTMLElement | null;
   if (dirWrap) dirWrap.style.display = pick ? "none" : "";   // dir only matters when creating, not picking
+  const beWrapEl = overlay.querySelector(".picker-backend") as HTMLElement | null;
+  if (beWrapEl) {   // reset the backend toggle to the gear default each open (overridable for this session)
+    beWrapEl.style.display = pick ? "none" : "";
+    const def = loadSettings().backend || "tmux";
+    beWrapEl.querySelectorAll(".picker-be-opt").forEach((x) => x.classList.toggle("sel", (x as HTMLElement).dataset.be === def));
+  }
   const di = document.getElementById("picker-dir") as HTMLInputElement | null;
   if (di) di.value = kernelDefaultDir || loadSettings().defaultDir || "";   // the kernel's persisted default (file→env) wins; localStorage is a same-tab cache
   const s = document.getElementById("picker-search") as HTMLInputElement | null;
