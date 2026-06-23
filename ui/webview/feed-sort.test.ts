@@ -9,17 +9,18 @@ import * as path from "node:path";
 const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
 const KERNEL = fs.readFileSync(path.resolve(process.cwd(), "..", "bin", "romp-kernel"), "utf8");
 
-test("feedPrefs reads oldestFirst, and the column sort flips on it (default newest-first)", () => {
-  assert.match(FEED, /oldestFirst: !!s\.oldestFirst/);
+test("feedPrefs reads oldestFirst (DEFAULT ON), and the column sort flips on it", () => {
+  assert.match(FEED, /oldestFirst: s\.oldestFirst !== false/);   // oldest-at-top is the default now (the user 2026-06-23)
   assert.match(FEED, /const oldestFirst = feedPrefs\(\)\.oldestFirst;/);
   assert.match(FEED, /buckets\[k\]\.sort\(\(x, y\) => oldestFirst \? x\.t - y\.t : y\.t - x\.t\)/);
 });
 
-test("the ⛭ gear has an 'Oldest first' checkbox wired to the romp:settings.oldestFirst pref", () => {
+test("the ⛭ gear has an 'Oldest first' checkbox wired to romp:settings.oldestFirst, checked by default", () => {
   assert.match(KERNEL, /<input type=checkbox id=rs-oldest>/);
   assert.match(KERNEL, /<b>Oldest first<\/b>/);
   assert.match(KERNEL, /of=document\.getElementById\('rs-oldest'\)/);
-  assert.match(KERNEL, /oldestFirst:false/);   // a load() default so the key always exists
+  assert.match(KERNEL, /oldestFirst:true/);   // a load() default ON, so the box reads checked by default
+  assert.doesNotMatch(KERNEL, /oldestFirst:false/);
   assert.match(KERNEL, /s\.oldestFirst=of\.checked;save\(s\);emit\(\)/);   // writes + fires the live re-sort event
   assert.match(KERNEL, /if\(of\)of\.checked=!!s\.oldestFirst;/);            // gear-open initialises the box
 });

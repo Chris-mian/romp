@@ -4516,7 +4516,7 @@ _GEAR_HTML = ("<button id=rrefresh title='Restart the romp kernel' aria-label=Re
 _GEAR_JS = r"""(function(){var g=document.getElementById('rgear'),p=document.getElementById('rsettings'),
 b=document.getElementById('rsver'),cc=document.getElementById('rs-compact'),cm=document.getElementById('rs-colormap'),
 db=document.getElementById('rs-debug'),an=document.getElementById('rs-autonudge'),bk=document.getElementById('rs-backend'),dd=document.getElementById('rs-defaultdir'),of=document.getElementById('rs-oldest');
-function load(){try{return Object.assign({compact:false,colormap:'hawaii',subgoals:true,debug:false,backend:'tmux',defaultDir:'',oldestFirst:false},JSON.parse(localStorage.getItem('romp:settings')||'null'));}catch(e){return {compact:false,colormap:'hawaii',subgoals:true,debug:false,backend:'tmux',defaultDir:'',oldestFirst:false};}}
+function load(){try{return Object.assign({compact:false,colormap:'hawaii',subgoals:true,debug:false,backend:'tmux',defaultDir:'',oldestFirst:true},JSON.parse(localStorage.getItem('romp:settings')||'null'));}catch(e){return {compact:false,colormap:'hawaii',subgoals:true,debug:false,backend:'tmux',defaultDir:'',oldestFirst:true};}}
 function save(s){try{localStorage.setItem('romp:settings',JSON.stringify(s));}catch(e){}}
 function emit(){try{window.dispatchEvent(new Event('romp:settings'));}catch(e){}}   // same-doc signal → the feed re-gates its cards
 cc.addEventListener('change',function(){var s=load();s.compact=cc.checked;save(s);});

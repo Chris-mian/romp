@@ -163,8 +163,8 @@ let items: FeedItem[] = [];
 function feedPrefs(): { subgoals: boolean; oldestFirst: boolean } {
   try {
     const s = JSON.parse(localStorage.getItem("romp:settings") || "{}");
-    return { subgoals: s.subgoals !== false, oldestFirst: !!s.oldestFirst };
-  } catch { return { subgoals: true, oldestFirst: false }; }
+    return { subgoals: s.subgoals !== false, oldestFirst: s.oldestFirst !== false };   // oldest-at-top is the DEFAULT (the user 2026-06-23)
+  } catch { return { subgoals: true, oldestFirst: true }; }
 }
 // names of sessions currently WORKING → a working dot before that name everywhere
 // it renders (card titles, modal title, group name). Pushed in each feed message.
