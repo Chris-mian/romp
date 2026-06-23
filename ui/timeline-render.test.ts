@@ -156,9 +156,18 @@ test("draw() also survives with an active hover set (atom-id highlight path)", (
   assert.equal(panel._vis.length, 2);
 });
 
-// A romp NUDGE prompt (bar.nudge from the kernel) stamps a ⚡ INSIDE its dot — a white bolt path so it
-// reads on any lane colour (the user 2026-06-22). Differential: marking one prompt nudge adds exactly one
-// white path vs the same data without it, so it can't be confused with any other render element.
+// A romp NUDGE prompt marks its dot as a ROMP MESSAGE: a BLACK-filled dot with the romp favicon swirl
+// INSIDE it (the user 2026-06-23, replacing the old white ⚡ bolt). Differential: marking one prompt adds
+// exactly one swirl <image>, and the old white bolt path is gone.
+function swirlImages(panel: any): number {
+  let n = 0;
+  const walk = (node: any) => {
+    if (node.tag === "image" && String(node.getAttribute("href") || "").indexOf("romp-swirl-glyph") >= 0) n++;
+    for (const c of node.children || []) walk(c);
+  };
+  walk(panel.svg);
+  return n;
+}
 function whiteBoltPaths(panel: any): number {
   let n = 0;
   const walk = (node: any) => {
@@ -168,17 +177,18 @@ function whiteBoltPaths(panel: any): number {
   walk(panel.svg);
   return n;
 }
-test("a romp-nudge prompt stamps a ⚡ (white bolt path) inside its dot; a normal prompt does not", () => {
+test("a romp-nudge prompt draws the romp swirl inside its dot (not a ⚡ bolt); a normal prompt does not", () => {
   const base = new TimelinePanel(makeNode("div"));
   base.data = synthData();
   base.draw();
-  const before = whiteBoltPaths(base);
+  const before = swirlImages(base);
   const panel = new TimelinePanel(makeNode("div"));
   const data: any = synthData();
   data.turns.S1[0].nudge = true;                       // mark exactly one prompt as a romp nudge
   panel.data = data;
   assert.doesNotThrow(() => panel.draw());
-  assert.equal(whiteBoltPaths(panel), before + 1, "exactly one ⚡ bolt is added for the single nudge prompt");
+  assert.equal(swirlImages(panel), before + 1, "exactly one romp swirl image is added for the single nudge prompt");
+  assert.equal(whiteBoltPaths(panel), 0, "the old white ⚡ bolt path is gone");
 });
 
 // A segment that straddled a host sleep renders as several bars (kernel _awake_spans); only the FIRST
