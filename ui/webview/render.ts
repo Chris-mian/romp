@@ -1775,7 +1775,11 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
     dirInput.title = "Working directory for a NEW session — fixed once it starts. Blank uses the kernel's default. ~ and $VARs expand; recent dirs autocomplete.";
     dirInput.setAttribute("list", "picker-dir-list");
     const dirList = document.createElement("datalist"); dirList.id = "picker-dir-list";
-    dirWrap.appendChild(dirInput); dirWrap.appendChild(dirList);
+    const browseBtn = el("button", "picker-browse") as HTMLButtonElement;
+    browseBtn.type = "button"; browseBtn.textContent = "Browse…";
+    browseBtn.title = "Pick a folder with the native macOS dialog (opens on the kernel's machine — host-local)";
+    browseBtn.addEventListener("click", () => { if (vscodeApi) vscodeApi.postMessage({ type: "browseDir" }); });
+    dirWrap.appendChild(dirInput); dirWrap.appendChild(dirList); dirWrap.appendChild(browseBtn);
     const actions = el("div", "picker-actions");
     const newSess = el("button", "picker-action");
     newSess.id = "picker-new-btn";
@@ -1815,7 +1819,7 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
   const dirWrap = overlay.querySelector(".picker-dir") as HTMLElement | null;
   if (dirWrap) dirWrap.style.display = pick ? "none" : "";   // dir only matters when creating, not picking
   const di = document.getElementById("picker-dir") as HTMLInputElement | null;
-  if (di) di.value = loadSettings().defaultDir || "";        // prefill the gear default each open
+  if (di) di.value = loadSettings().defaultDir || kernelDefaultDir || "";   // gear default, else the kernel's real default path
   const s = document.getElementById("picker-search") as HTMLInputElement | null;
   if (s) { s.value = ""; s.placeholder = prompt || "Search sessions, or type a new session's name…"; s.focus(); }
   filterPicker(""); // reset row visibility and disarm the New-session button from a prior open
@@ -1914,6 +1918,9 @@ function pickerKey(e: KeyboardEvent) {
   }
 }
 
+// The kernel's real default new-session directory (its serve cwd, ~-ified), from the sessionList payload —
+// prefilled into the dir field when there's no gear default, so "the default path is written in there".
+let kernelDefaultDir = "";
 function renderPicker(items: any[]) {
   const list = document.getElementById("picker-list");
   if (!list) return;
@@ -1970,6 +1977,10 @@ function renderPicker(items: any[]) {
       if (d && !seen.has(d)) { seen.add(d); const o = document.createElement("option"); o.value = d; dl.appendChild(o); }
     }
   }
+  // Prefill the dir field with the kernel's real default path once it arrives (only if untouched + no gear
+  // default) — so the actual default is written in there as an editable starting point (the user 2026-06-23).
+  const di = document.getElementById("picker-dir") as HTMLInputElement | null;
+  if (di && !di.value) di.value = loadSettings().defaultDir || kernelDefaultDir || "";
   // Re-apply the current filter (the list may refresh while the user is mid-
   // type) — it also sets the active row / arms the New-session button.
   const s = document.getElementById("picker-search") as HTMLInputElement | null;
@@ -3783,7 +3794,11 @@ window.addEventListener("message", (e: MessageEvent) => {
   else if (m.type === "focus") setActive(m.id, m.anchor, typeof m.anchorT === "number" ? m.anchorT : undefined, typeof m.anchorKind === "string" ? m.anchorKind : undefined);
   else if (m.type === "nextTab") cycleTab(1);
   else if (m.type === "prevTab") cycleTab(-1);
-  else if (m.type === "sessionList") renderPicker(m.items || []);
+  else if (m.type === "sessionList") { if (typeof m.defaultDir === "string") kernelDefaultDir = m.defaultDir; renderPicker(m.items || []); }
+  else if (m.type === "browseResult" && typeof m.path === "string") {   // native Browse dialog returned a folder
+    const di = document.getElementById("picker-dir") as HTMLInputElement | null;
+    if (di) { di.value = m.path; di.focus(); }
+  }
   else if (m.type === "openPicker") openPicker(!!m.pick, m.prompt, !!m.allowNew);
   // The host asks US to confirm (in-page, no native dialogs): ending a live
   // session on tab-close, and reviving a dead one on open.

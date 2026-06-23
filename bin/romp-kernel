@@ -4125,6 +4125,18 @@ def _pick_file():
         return None
 
 
+def _pick_folder():
+    """Native FOLDER picker (macOS osascript) → the chosen POSIX path, or None if cancelled. The dialog opens
+    on the KERNEL's machine (where the dirs live), so this is host-local. Blocks → run off the message loop."""
+    try:
+        out = subprocess.run(
+            ["osascript", "-e", 'POSIX path of (choose folder with prompt "Pick a directory for the new session")'],
+            capture_output=True, text=True, timeout=180)
+        return out.stdout.strip() or None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
 def _push(targets):
     """Build the payloads once (cached parses) and send each target only the pieces that CHANGED for it.
     Drives both the periodic pusher (all clients) and a fresh connect (one client): a new/reconnecting
@@ -5226,7 +5238,8 @@ class Handler(BaseHTTPRequestHandler):
                 client["send"](json.dumps({"type": "warn", "text": "session names use letters, digits, . _ - only."}))
         elif msg and msg.get("type") == "requestSessions":
             client["send"](json.dumps({"type": "sessionList",
-                                       "items": _session_list(int(time.time()), _tmux_sessions())}))
+                                       "items": _session_list(int(time.time()), _tmux_sessions()),
+                                       "defaultDir": _tilde(_default_create_dir())}))   # prefill the new-session dir field
         elif msg and msg.get("type") in ("pickResult", "openByName") and (msg.get("id") or msg.get("name")):
             sid = msg.get("id") or _live_names(_tmux_sessions()).get(str(msg.get("name")))
             if sid:
@@ -5386,6 +5399,12 @@ class Handler(BaseHTTPRequestHandler):
                 if fp:
                     _reply(c, {"type": "droppedPath", "path": fp})
             threading.Thread(target=_pf, daemon=True).start()
+        elif msg and msg.get("type") == "browseDir":
+            def _bd(c=client):                                    # Browse → native FOLDER dialog (blocks) → fill the dir field
+                fp = _pick_folder()
+                if fp:
+                    _reply(c, {"type": "browseResult", "path": _tilde(fp)})
+            threading.Thread(target=_bd, daemon=True).start()
         # ---- statusline model / effort / permission-mode pickers (the host injects the change) ----
         elif msg and msg.get("type") == "setModel" and msg.get("id") and msg.get("value"):
             _tmux_send(_name_of(msg["id"]) or msg["id"], "/model " + str(msg["value"]), model_cmd=True)

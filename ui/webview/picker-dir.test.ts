@@ -24,7 +24,7 @@ test("createSession carries the chosen dir, alongside name + backend", () => {
 });
 
 test("the dir field is prefilled with the gear default and hidden in pick-mode", () => {
-  assert.match(RENDER, /di\.value = loadSettings\(\)\.defaultDir \|\| ""/);
+  assert.match(RENDER, /di\.value = loadSettings\(\)\.defaultDir \|\| kernelDefaultDir \|\| ""/);
   assert.match(RENDER, /dirWrap\.style\.display = pick \? "none" : ""/);
 });
 
@@ -52,6 +52,18 @@ test("the system-context card shows the dir basename in its collapsed summary", 
 test("the status-dir and picker-dir-input styles exist", () => {
   assert.match(CSS, /\.status-dir \{/);
   assert.match(CSS, /\.picker-dir-input \{/);
+});
+
+test("a Browse button opens the host-native folder dialog (browseDir → browseResult fills the field)", () => {
+  assert.match(RENDER, /el\("button", "picker-browse"\)/);
+  assert.match(RENDER, /postMessage\(\{ type: "browseDir" \}\)/);
+  assert.match(RENDER, /m\.type === "browseResult"[\s\S]*?di\.value = m\.path/);
+  assert.match(CSS, /\.picker-browse \{/);
+});
+
+test("the dir field prefills with the kernel's real default path (not blank), still editable", () => {
+  assert.match(RENDER, /if \(typeof m\.defaultDir === "string"\) kernelDefaultDir = m\.defaultDir/);
+  assert.match(RENDER, /di\.value = loadSettings\(\)\.defaultDir \|\| kernelDefaultDir \|\| ""/);
 });
 
 test("defaultDir is a persisted setting with an empty default", () => {

@@ -1128,6 +1128,12 @@ pre.has-copy:hover .code-copy, .code-copy:focus-visible { opacity: 0.9; }
 }
 .picker-dir-input:focus { border-color: var(--vscode-focusBorder, #4daafc); }
 .picker-dir-input::placeholder { color: var(--dim); }
+.picker-browse {
+  flex: 0 0 auto; cursor: pointer; white-space: nowrap;
+  background: rgba(255, 255, 255, 0.06); color: var(--fg);
+  border: 1px solid var(--box-border); border-radius: 5px; padding: 5px 9px; font-size: 0.82em;
+}
+.picker-browse:hover { background: rgba(255, 255, 255, 0.12); }
 .picker-list { overflow-y: auto; }
 .picker-row {
   padding: 9px 14px; cursor: pointer;

@@ -2358,6 +2358,26 @@ class ViewBuilder(unittest.TestCase):
                                            "color": None, "backend": "sdk"}}
         self.assertEqual(km.build_session(SID, NOW)["status"]["state"], "retrying")
 
+    def test_requestSessions_payload_carries_default_dir(self):
+        """The new-session picker prefills the dir field with the kernel's real default path, sent in the
+        sessionList payload (the user 2026-06-23)."""
+        saved_sdk, saved_env = km._sdk, os.environ.get("ROMP_SERVE_CWD")
+        km._sdk = lambda: None                               # don't construct the real SDK backend
+        os.environ["ROMP_SERVE_CWD"] = "/tmp/wd-fixture"
+        sent = []
+        client = {"send": lambda s: sent.append(json.loads(s)), "app": "chat"}
+        try:
+            km.Handler._dispatch_ws(None, {"type": "requestSessions"}, client)
+        finally:
+            km._sdk = saved_sdk
+            if saved_env is None:
+                os.environ.pop("ROMP_SERVE_CWD", None)
+            else:
+                os.environ["ROMP_SERVE_CWD"] = saved_env
+        sl = next((m for m in sent if m.get("type") == "sessionList"), None)
+        self.assertIsNotNone(sl, "requestSessions returns a sessionList")
+        self.assertEqual(sl.get("defaultDir"), "/tmp/wd-fixture", "the dir field prefills the kernel's default path")
+
     def test_timeline_state_and_metadata_from_tmux(self):
         # live lanes take state + model/effort/context from tmux @claude-* vars (the READY badge =
         # state "waiting"); badgeFor hides the badge unless live, so live must be true here
@@ -2971,6 +2991,9 @@ class CreateDirResolution(unittest.TestCase):
         path, err = km._resolve_create_dir("~")
         self.assertIsNone(err)
         self.assertEqual(path, os.path.realpath(os.path.expanduser("~")))
+
+    def test_pick_folder_exists_for_browse(self):
+        self.assertTrue(callable(km._pick_folder), "a native folder picker backs the Browse button")
 
     def test_cwd_of_reads_names_second_field(self):
         sid = "11111111-2222-3333-4444-555555555555"
