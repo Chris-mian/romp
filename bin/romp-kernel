@@ -4874,13 +4874,13 @@ window.addEventListener('resize',autosize);})();
 _LANDING_FOCUS_JS = """
 (function(){var PANE={'f-chat':'chat-pane','f-feed':'feed-pane','f-timeline':'tl-pane'};
 // SAME-ORIGIN, so we can read which element in the focused pane holds the caret: a text field (composer /
-// input / contentEditable) means the keystrokes go to the FIELD, not the pane's nav controls — so we mark
-// that pane 'pane-typing' and the CSS drops the film (it must never imply ←/→ tab-switching is live there).
+// input / contentEditable) means the keystrokes go to the FIELD, not the pane's nav controls — while that's
+// true there's no "active pane" to spotlight, so we set body.nav-typing and the CSS lifts the dimming.
 function typingIn(f){try{var a=f&&f.contentDocument&&f.contentDocument.activeElement;
 return !!a&&(a.tagName==='TEXTAREA'||a.tagName==='INPUT'||a.isContentEditable===true);}catch(e){return false;}}
-function setFocus(id,typing){var pid=PANE[id];if(!pid)return;
-for(var k in PANE){var el=document.getElementById(PANE[k]);if(!el)continue;var on=PANE[k]===pid;
-el.classList.toggle('pane-focused',on);el.classList.toggle('pane-typing',on&&!!typing);}}
+function setFocus(id,typing){var pid=PANE[id];if(!pid)return;   // pid = the focused pane → it stays bright, the others dim
+for(var k in PANE){var el=document.getElementById(PANE[k]);if(el)el.classList.toggle('pane-focused',PANE[k]===pid);}
+document.body.classList.toggle('nav-typing',!!typing);}
 function wire(f){try{var d=f.contentDocument;if(!d||d.readyState==='loading')return;   // not ready → its 'load' re-wires
 var emit=function(){setFocus(f.id,typingIn(f));};
 d.addEventListener('pointerdown',emit,true);d.addEventListener('focusin',emit,true);d.addEventListener('focusout',emit,true);
@@ -5032,17 +5032,18 @@ def _landing():
             # edge — chat→right, feed→left, timeline→top — folds it to a 26px strip (body.cc-* overrides
             # the grid-template; coexists with the splitter's --chat/--tl). Sizes/positions from the old shell.
             ".pane{position:relative;min-width:0;min-height:0;overflow:hidden}"
-            # FOCUS cue (the user 2026-06-23): the section you last interacted with is DARKENED (recessed) so
-            # it's clear which pane your keystrokes/actions target. A translucent-black ::after over the (opaque)
-            # iframe deepens it toward black, roughly halfway from the base background (the user wanted darker,
-            # not the original lift). pointer-events:none so it never blocks; z below the collapse handle (z-30).
-            ".pane.pane-focused::after{content:'';position:absolute;inset:0;background:rgba(0,0,0,0.4);"
+            # FOCUS cue (the user 2026-06-23): SPOTLIGHT the active section by DIMMING the OTHERS — the focused
+            # pane stays at its normal brightness (it is NOT darkened — the user was explicit), while every other
+            # pane gets a translucent-black veil (~halfway to black) so the one you're in stands out. The veil is
+            # pointer-events:none so a dimmed pane stays clickable (clicking it moves the spotlight); z below the
+            # collapse handle (z-30) + splitters.
+            ".pane:not(.pane-focused)::after{content:'';position:absolute;inset:0;background:rgba(0,0,0,0.5);"
             "pointer-events:none;z-index:6}"
-            # …but when a TEXT FIELD inside the focused pane holds the caret (the composer / any input), the
-            # pane-level nav controls (←/→ to switch chat tabs, ↑/↓ to scroll) DON'T fire — the keystrokes go
-            # to the field. So drop the film there: it must never over-promise that those controls are live.
-            # The field's own caret is the cue that input is going into the box (the user 2026-06-23).
-            ".pane.pane-typing::after{opacity:0}"
+            # …but while a TEXT FIELD in the focused pane holds the caret (the composer / any input), the
+            # pane-level nav controls (←/→ to switch chat tabs, ↑/↓ to scroll) DON'T fire — the keystrokes go to
+            # the field, so there's no "active pane" to spotlight. Lift the dimming entirely then; the field's
+            # own caret is the cue that input is going into the box (the user 2026-06-23).
+            "body.nav-typing .pane:not(.pane-focused)::after{opacity:0}"
             ".collapse-btn{position:absolute;z-index:30;display:flex;align-items:center;justify-content:center;"
             "background:#2a2a2a;color:#999;border:1px solid #3a3a3a;cursor:pointer;user-select:none;opacity:.3;transition:opacity .1s}"
             ".collapse-btn:hover{opacity:1;color:#fff}"
