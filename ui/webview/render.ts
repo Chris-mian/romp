@@ -16,6 +16,7 @@ import { quoteReply } from "../quote";
 import { markerLabel, chooseStamps } from "./time-marker";
 import { compactDisplay, toolCounts } from "./compact";
 import { loadSettings, onExternalSettingsChange, type RompSettings } from "./settings";
+import { delegate } from "./actions";
 
 for (const [name, lang] of Object.entries({
   bash, sh: bash, shell: bash, python, py: python, javascript, js: javascript,
@@ -1457,6 +1458,7 @@ function renderTabs() {
     const tab = el("div", "tab" + (id === activeId ? " active" : ""));
     tab.tabIndex = 0;            // focusable for keyboard nav
     tab.dataset.id = id;
+    tab.dataset.act = "select";  // click → setActive, via the stable #tabs delegate (./actions), not a per-node handler
     tab.addEventListener("keydown", onTabKey);
     // drag-to-reorder (synced with the timeline via the shared session-order file)
     tab.draggable = true;
@@ -1524,12 +1526,13 @@ function renderTabs() {
     // Close-tab / End-session confirm (closeSession → confirmClose).
     const dead = st === "closed";
     close.title = dead ? "Close tab" : "Close tab (or end the session)";
-    close.addEventListener("click", (e) => {
-      e.stopPropagation();
-      if (vscodeApi) vscodeApi.postMessage({ type: dead ? "closeTab" : "closeSession", id });
-    });
+    // Click-safe (see ./actions): renderTabs() does `#tabs`.replaceChildren() on every kernel push, so a
+    // handler hung on this ✕ is destroyed mid-click and the click is dropped (the "had to click End session
+    // several times" bug). The action lives on the stable #tabs delegate instead; this node just declares it.
+    close.dataset.act = "close";
+    close.dataset.id = id;
+    if (dead) close.dataset.dead = "1";
     tab.appendChild(close);
-    tab.addEventListener("click", () => setActive(id));
     // double-click a tab to show/hide the ledger overview — same as the strip's caret
     tab.addEventListener("dblclick", (e) => { e.preventDefault(); toggleLedgerCollapsed(); });
     // right-click → context menu; "Rename" edits the title in place
@@ -4113,6 +4116,20 @@ function setupSettings(): void {
 
 setupComposer();
 setupSettings();
+// Tab-bar clicks are DELEGATED to the stable #tabs container (installed once), not hung on the per-tab nodes
+// that renderTabs() rebuilds on every push — so selecting a tab or clicking its ✕ (Close/End session) always
+// lands, even mid-rebuild. Each tab/✕ carries its data-act + data-id (see renderTabs, ./actions).
+(() => {
+  const tabs = document.getElementById("tabs");
+  if (!tabs) return;
+  delegate(tabs, {
+    select: (el) => { const id = el.dataset.id; if (id) setActive(id); },
+    close: (el) => {
+      const id = el.dataset.id;
+      if (id && vscodeApi) vscodeApi.postMessage({ type: el.dataset.dead === "1" ? "closeTab" : "closeSession", id });
+    },
+  });
+})();
 // right-click a selection in the transcript → Reply (quote it) / Copy
 document.getElementById("content")?.addEventListener("contextmenu", showSelectionMenu);
 if (vscodeApi) vscodeApi.postMessage({ type: "ready" });

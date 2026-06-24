@@ -336,6 +336,26 @@ class TimelinePanel {
     this.svg = document.createElementNS(SVGNS, 'svg');
     this.svg.setAttribute('xmlns', SVGNS); this.wrap.appendChild(this.svg);
 
+    // Click-safe redraws (the user 2026-06-24): the EXTERNAL redraw paths — the poll update() and the live-edge
+    // _tickLive() (which rebuilds the SVG every animation frame while following now) — wipe and recreate every
+    // SVG child (lane rows, bars, dots, hit-targets). A native `click` needs mousedown AND mouseup on the same
+    // node; an external redraw between them destroys the pressed element and the click is dropped — the "had to
+    // click it several times" bug. So while a pointer is pressed on the SVG we HOLD those external redraws
+    // (exactly like the existing freeze-on-hover: buffer via _dirtyWhileTip, repaint the catch-up on release) —
+    // and repaint AFTER the click has fired (setTimeout 0; click dispatches after pointerup). USER gestures
+    // (pan / zoom / lane-reorder / touch) drive draw()/_scheduleDraw directly, NOT through update()/_tickLive,
+    // so they are never held — panning stays live. Event-based (pointerdown/up), no time heuristic. CLAUDE.md.
+    this._pointerHeld = false;
+    this.svg.addEventListener('pointerdown', () => { this._pointerHeld = true; });
+    const _release = () => {
+      if (!this._pointerHeld) return;
+      this._pointerHeld = false;
+      const tipUp = this.tip && this.tip.classList && this.tip.classList.contains('show');
+      if (this._dirtyWhileTip && !tipUp) { this._dirtyWhileTip = false; setTimeout(() => { if (this.data) this.draw(); }, 0); }
+    };
+    window.addEventListener('pointerup', _release);
+    window.addEventListener('pointercancel', _release);
+
     // controls row BELOW the time axis. Layout (the user 2026-06-11): usage bars LEFT-justified,
     // then a flexible spacer, then RIGHT-justified "collapse idle gaps" with the 🔒 lock-to-now
     // toggle at the far right, under the lanes.
@@ -770,6 +790,9 @@ class TimelinePanel {
   _tickLive() {
     this._liveRAF = null;
     if (!this._liveFollowing() || !this._isVisible() || !this.data) return;   // gate closed → stop the loop
+    // Click-safe: don't rebuild the SVG under a pressed pointer (a click in progress) — skip this frame's draw
+    // but keep the loop alive so the edge resumes gliding the moment the pointer releases. See the constructor.
+    if (this._pointerHeld) { this._liveRAF = requestAnimationFrame(() => this._tickLive()); return; }
     const g = this._geom;
     // Only repaint when the edge would actually move ≥ LIVE_MIN_PX since the last live draw — a wide
     // (zoomed-out) window where the edge barely creeps costs ~nothing, a zoomed-in one repaints every
@@ -886,7 +909,10 @@ class TimelinePanel {
     // buffered, but DON'T re-lay-out the SVG — a fresh layout (new events, recompressed idle gaps) shifts
     // every x-position = the jump the user saw under the held edge. Keep the last frame; hideTip repaints
     // the buffered data as ONE catch-up. (Also skips the focus-jump + live-tick below — both move the view.)
-    if (this.tip && this.tip.classList && this.tip.classList.contains('show')) { this._dirtyWhileTip = true; return; }
+    // Hold the SVG layout while it's deliberately frozen: a tooltip is up (freeze-on-hover) OR a pointer is
+    // pressed (a click in progress — click-safe, see the constructor). Buffer the data; repaint the catch-up
+    // when the hold ends (hideTip / pointer release). Skips the focus-jump + live-tick below — both move the view.
+    if ((this.tip && this.tip.classList && this.tip.classList.contains('show')) || this._pointerHeld) { this._dirtyWhileTip = true; return; }
     this.draw();
     // feed→timeline locate: a NEW focus nonce (update_feed wrote timeline-focus.json on a card click)
     // → pan/scroll/pulse to that event. Adopt the nonce silently on first load (don't jump to a stale

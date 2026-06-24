@@ -44,3 +44,36 @@ live in `tests/fixtures/`.
 Prefer exact event-based mechanisms over time-based heuristics (grace periods,
 debounces, age thresholds). If a time window seems needed, find the event it is
 approximating and key on that event instead.
+
+### Buttons must stay click-safe across re-renders, and always acknowledge
+The dashboard re-renders on every kernel push (a 0.5–3s backstop, plus an
+immediate push per SDK stream event and per hook `/tick`). A control whose action
+is hung on a DOM node that a re-render rebuilds gets destroyed mid-click — a
+native `click` needs mousedown AND mouseup on the same element, so a rebuild
+between them silently drops the click. That is the "had to click it several
+times" bug. Every interactive control MUST therefore:
+
+1. **Be click-safe across re-renders.** Never attach the action to a node you
+   rebuild. Either:
+   - **Delegate** to a STABLE ancestor — the container fetched by id survives
+     `replaceChildren()`; only its children are swapped — and key the action off a
+     `data-act` attribute. Use the shared helper `ui/webview/actions.ts`
+     (`delegate(root, handlers)`), installed ONCE per root, never in a render
+     loop. This is the default for HTML lists (chat tab bar `#tabs`, Fleet
+     `#fleet-list`). A click whose original target was swapped mid-press still
+     bubbles to the stable ancestor, so it always lands.
+   - For full-canvas redraw surfaces (the SVG timeline) where threading every
+     action param through data-attrs is impractical, **defer the rebuild while a
+     pointer is pressed** over the surface and flush on `pointerup`/`pointercancel`
+     (event-based, not a time heuristic), so the pressed element survives the
+     click. See `ui/romp-timeline-view.js` `draw()`'s `_pointerHeld` guard.
+2. **Always acknowledge the click immediately**, before any kernel round-trip —
+   so the user never re-clicks because "nothing happened." `actions.ts`'s
+   `flash()` adds a layout-safe `.romp-acted` press pulse on every delegated
+   activation; a button that posts-and-waits (e.g. feed Nudge) must also disable +
+   change its own label on click and self-restore. The error / dialog / result
+   follows the acknowledgement; it does not replace it.
+
+Reuse `ui/webview/actions.ts` for any new dashboard control. (`.romp-acted` is
+defined in both `styles.css` and `feed.css` since the feed page loads only the
+latter.)

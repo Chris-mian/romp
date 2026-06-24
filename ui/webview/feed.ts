@@ -516,7 +516,16 @@ function makeAskCard(it: AskItem): HTMLElement {
     vscodeApi?.postMessage({ type: "askClear", itemId: it.itemId });
     setTimeout(() => { if (askEls.get(it.itemId) === card && card.classList.contains("dismissing")) { card.remove(); askEls.delete(it.itemId); } }, 180);
   };
-  nudge.onclick = (ev) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "askFollowUp", itemId: it.itemId, nudge: true, text: "Status on the goal above: what's done, what's left, and is anything blocked waiting on a decision from me?" }); };   // nudge:true → romp authored it → gray bubble. text mirrors AUTO_NUDGE_TEXT (bin/romp-kernel)
+  nudge.onclick = (ev) => {
+    ev.stopPropagation();
+    if (nudge.disabled) return;        // guard the double-fire: a nudge with no visible change invites a re-click
+    nudge.disabled = true;             // immediate feedback (the user 2026-06-24): the click ALWAYS shows it took,
+    nudge.textContent = "Nudged";      // before the kernel round-trip — then it self-restores. See ./actions / CLAUDE.md.
+    nudge.classList.add("romp-acted");
+    setTimeout(() => nudge.classList.remove("romp-acted"), 280);
+    vscodeApi?.postMessage({ type: "askFollowUp", itemId: it.itemId, nudge: true, text: "Status on the goal above: what's done, what's left, and is anything blocked waiting on a decision from me?" });   // nudge:true → romp authored it → gray bubble. text mirrors AUTO_NUDGE_TEXT (bin/romp-kernel)
+    setTimeout(() => { if (nudge.isConnected) { nudge.disabled = false; nudge.textContent = "Nudge"; } }, 1500);
+  };
   // HOVER (120ms intent debounce so sweeps don't spam) → white border + preview
   // this card's timeline journey. LEAVE → restore the pinned card's journey, or
   // clear if none pinned.

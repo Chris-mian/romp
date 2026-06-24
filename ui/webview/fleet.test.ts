@@ -42,8 +42,13 @@ test("a node/header click opens that session AND flips back to chat (the user 20
   // openSession() posts openSession to the kernel AND asks the shell to leave the Fleet view (the tab bar —
   // which holds the Fleet toggle — is hidden while Fleet is shown, so picking a session must return there).
   assert.match(SRC, /function openSession\(sid: string\) \{ vscodeApi\?\.postMessage\(\{ type: "openSession", id: sid \}\); backToChat\(\); \}/);
-  assert.match(SRC, /onclick = \(\) => openSession\(s\.sid\)/);
-  // the "← Chat" foot button + the row helper both leave Fleet via {romp:"toggleFleet", to:"chat"}
+  // click-safe (the user 2026-06-24): the open action is DELEGATED to the stable #fleet-list (render() rebuilds
+  // its children every push, so a per-node onclick gets dropped mid-click) — see click-safe.test.ts. The
+  // header + each row declare data-act="open" + data-sid; the delegate routes them to openSession.
+  assert.match(SRC, /open: \(el\) => \{ const sid = el\.dataset\.sid; if \(sid\) openSession\(sid\); \}/);
+  assert.match(SRC, /head\.dataset\.act = "open"; head\.dataset\.sid = s\.sid;/);
+  assert.match(SRC, /row\.dataset\.act = "open"; row\.dataset\.sid = s\.sid;/);
+  // the "← Chat" foot button + the open helper both leave Fleet via {romp:"toggleFleet", to:"chat"}
   assert.match(SRC, /window\.parent\.postMessage\(\{ romp: "toggleFleet", to: "chat" \}/);
 });
 

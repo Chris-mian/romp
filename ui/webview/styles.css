@@ -493,6 +493,12 @@ body { display: flex; flex-direction: column; }
 /* just-clicked cue: pulse until the session's real compacting state takes over */
 .ctx-bar.ctx-clicked { animation: ctx-clicked-pulse 1s ease-in-out infinite; }
 @keyframes ctx-clicked-pulse { 50% { opacity: 0.45; } }
+
+/* Universal press acknowledgement — every delegated action (./actions flash()) briefly pulses so the user
+   always sees the click registered, BEFORE any kernel round-trip / dialog / error. Layout-safe (animates
+   filter + opacity only, never size) so it works on tabs, the ✕, fleet rows/carets — anything. */
+@keyframes romp-acted-pulse { 0% { filter: brightness(1.7); opacity: 0.55; } 100% { filter: none; opacity: 1; } }
+.romp-acted { animation: romp-acted-pulse 0.28s ease-out; }
 /* COMPACTING: fill/% hidden; a solid teal rectangle fills the battery and its RIGHT
    edge slides left (scaleX from a left origin) — a "compression" cue — fading in at
    full width and out when compressed so the loop never snaps. Replaces the old

@@ -17,7 +17,15 @@ test("the card builds a Nudge button in its actions row, beside Clear", () => {
 });
 
 test("Nudge sends the canned status question via the askFollowUp path (goal quoted as context)", () => {
-  assert.match(FEED, /nudge\.onclick = \(ev\) => \{ ev\.stopPropagation\(\); vscodeApi\?\.postMessage\(\{ type: "askFollowUp", itemId: it\.itemId, nudge: true, text: "Status on the goal above: what's done, what's left, and is anything blocked waiting on a decision from me\?" \}\); \};/);
+  assert.match(FEED, /vscodeApi\?\.postMessage\(\{ type: "askFollowUp", itemId: it\.itemId, nudge: true, text: "Status on the goal above: what's done, what's left, and is anything blocked waiting on a decision from me\?" \}\);/);
+});
+
+test("Nudge acknowledges the click immediately (the user 2026-06-24): guards re-fire, relabels, self-restores", () => {
+  // a nudge with no visible change invites a re-click → double-nudge; disable + relabel on click, then restore.
+  assert.match(FEED, /if \(nudge\.disabled\) return;/);
+  assert.match(FEED, /nudge\.disabled = true;/);
+  assert.match(FEED, /nudge\.textContent = "Nudged";/);
+  assert.match(FEED, /if \(nudge\.isConnected\) \{ nudge\.disabled = false; nudge\.textContent = "Nudge"; \} \}, 1500\)/);
 });
 
 test("Nudge shows ONLY on a real working card (it.column === 'working', not a provisional placeholder)", () => {
