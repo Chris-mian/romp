@@ -215,6 +215,18 @@ class StateAndRegistryFiles(unittest.TestCase):
             self.assertEqual(ls[sid]["state"], "waiting",
                              "a dormant session must read 'waiting', not the stale '%s'" % stale)
 
+    def test_dormant_session_shows_persisted_live_model(self):
+        """A default-model SDK session has no chosen 'model' in its reg, so a dormant/post-restart read showed
+        a BLANK model badge — and the timeline hides effort too when model is empty (the user 2026-06-24).
+        _learn_model persists the observed model as reg['liveModel']; live_sessions' registry path uses it so
+        the badge survives dormancy."""
+        be = sb.SdkBackend(self.d, "/bin/true", lambda *a, **k: None)
+        sid = be.spawn("def_model", self.d)               # reg has effort/mode but NO chosen 'model'
+        self.assertEqual(be.live_sessions()[sid]["model"], "", "no model known yet → blank")
+        sb.write_reg(self.d, sid, {**sb.read_reg(self.d, sid), "liveModel": "Opus 4.8"})   # as _learn_model persists
+        self.assertEqual(be.live_sessions()[sid]["model"], "Opus 4.8",
+                         "a dormant session shows the persisted live model, not a blank badge")
+
     def _last_awaiting(self, sid):
         import json as _j
         rec = None

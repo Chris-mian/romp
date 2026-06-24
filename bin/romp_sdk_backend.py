@@ -540,10 +540,26 @@ class SdkSession:
             if self.ended or not self._reconnect:
                 break        # drain ended on its own (process exit) or we're shutting down → done
 
+    def _learn_model(self, pm):
+        """Record a freshly-observed display model (from the init message or an assistant turn). Updates the
+        live value AND persists it to the registry as `liveModel`, so a DORMANT / post-restart session still
+        shows its model via live_sessions' registry path — the registry's `model` field is the user's CHOSEN
+        alias, which is absent for a default-model session, so without this the badge (and, on the timeline,
+        the effort too) goes blank whenever the session isn't actively running (the user 2026-06-24). Pokes a
+        push so the badge updates promptly. No-op when unchanged, so it doesn't rewrite the reg every turn."""
+        if not pm or pm == self.model:
+            return
+        self.model = pm
+        try:
+            self.backend._update_reg(self.sid, liveModel=pm)
+        except Exception:
+            pass
+        self.backend._poke()
+
     def _on_message(self, msg, AssistantMessage, ResultMessage, SystemMessage):
         if isinstance(msg, SystemMessage) and msg.subtype == "init":
             d = msg.data if isinstance(msg.data, dict) else {}
-            self.model = pretty_model(d.get("model")) or self.model
+            self._learn_model(pretty_model(d.get("model")))
             self.perm_mode = d.get("permissionMode") or self.perm_mode
             fsid = d.get("session_id")
             if fsid and fsid != self.resume_sid:
@@ -564,11 +580,10 @@ class SdkSession:
             m = getattr(msg, "model", None)
             # Only adopt a REAL model id. Injected / synthetic assistant turns carry model="<synthetic>" (and
             # the CLI writes it to the transcript too); pretty_model passes unrecognised ids through verbatim,
-            # so an unguarded assign CORRUPTED the statusline + timeline model badge to "<synthetic>" — the
-            # model then "doesn't show" / shows garbage even mid-conversation (the user 2026-06-24). A real id
-            # always contains "claude" (claude-opus-4-8, us.anthropic.claude-…); keep the last good one otherwise.
+            # so an unguarded assign would CORRUPT the model badge to "<synthetic>". A real id always contains
+            # "claude" (claude-opus-4-8, us.anthropic.claude-…); keep the last good one otherwise.
             if m and "claude" in m.lower():
-                self.model = pretty_model(m)
+                self._learn_model(pretty_model(m))
         elif isinstance(msg, ResultMessage):
             self.retrying = False
             self._interrupted = False              # this turn's result settled it (whether it finished or was interrupted)
@@ -946,7 +961,9 @@ class SdkBackend:
                     st = "waiting"
                 out[sid] = {"state": st,
                             "since": str(ls.get("t") or ""),
-                            "model": model_label("", reg.get("model") or ""),   # not running (e.g. post-restart): show the chosen model
+                            # not running (e.g. post-restart): prefer the last LIVE model we persisted
+                            # (liveModel), else the chosen alias — so the badge isn't blank while dormant.
+                            "model": model_label(reg.get("liveModel") or "", reg.get("model") or ""),
                             "effort": reg.get("effort", ""),
                             "mode": reg.get("mode", ""), "ctx": "", "summary": ""}
         return out
