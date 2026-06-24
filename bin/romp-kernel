@@ -4584,7 +4584,15 @@ _GEAR_CSS = ("#rgear{position:fixed;top:6px;right:8px;z-index:60;background:#2a2
              "border-radius:6px;padding:6px 9px;box-shadow:0 4px 14px #000000aa;pointer-events:none}"
              "#rsettings .rs-sub code{background:#0d0d0d;border-radius:3px;padding:0 3px}"
              # a horizontal gradient bar previewing the SELECTED feed colormap (the user 2026-06-23)
-             "#rs-cmapbar{height:10px;border-radius:4px;margin-top:6px;border:1px solid #3a3a3a}"
+             # feed-colormap dropdown: the button shows the picked map's bar; the list is one bar per map.
+             "#rs-cmap{position:relative;margin-top:5px}"
+             "#rs-cmap-btn{width:100%;height:20px;border-radius:5px;border:1px solid #3a3a3a;cursor:pointer;padding:0;display:block}"
+             "#rs-cmap-list{position:absolute;left:0;right:0;top:100%;margin-top:4px;z-index:20;background:#1e1e1e;"
+             "border:1px solid #3a3a3a;border-radius:6px;padding:5px;box-shadow:0 8px 24px #000000aa}"
+             "#rs-cmap-list[hidden]{display:none}"
+             ".rs-cmap-opt{height:18px;border-radius:4px;border:1px solid #3a3a3a;cursor:pointer;margin:4px 0}"
+             ".rs-cmap-opt:first-child{margin-top:0}.rs-cmap-opt:last-child{margin-bottom:0}"
+             ".rs-cmap-opt.sel{outline:2px solid #9cd2ff;outline-offset:1px;border-color:transparent}"
              "#rsettings .rs-sep{border-top:1px solid #3a3a3a;margin-top:6px;padding-top:8px}"
              # token-usage analytics: a button in the gear panel opens a centered modal with the chart.
              ".ra-openbtn{margin-top:8px;width:100%;background:#2d2d2f;border:1px solid #3a3a3a;border-radius:6px;"
@@ -4632,14 +4640,13 @@ _GEAR_HTML = ("<button id=rrefresh title='Restart the romp kernel' aria-label=Re
               "</span></label>"
               # (Explanations toggle removed 2026-06-18 — cards show the distiller summary, not the planner's
               #  why. The Sub-goals toggle moved to the feed FOOTER, beside Clear all / Undo clear.)
+              # Feed colormap: the dropdown OPTIONS are the gradient BARS themselves — no map names (the user
+              # 2026-06-23). A custom widget (a native <select> can't render gradient options): the button shows
+              # the selected map's bar, the list shows one bar per map; click a bar to pick it.
               "<div class=rs-row style='cursor:default'><span style='flex:1 1 auto'><b>Feed colormap</b>"
               "<span class=rs-sub>Recency tint for feed cards — newest is bright.</span>"
-              "<select id=rs-colormap style='margin-top:5px;width:100%;background:#1e1e1e;color:#ccc;"
-              "border:1px solid #3a3a3a;border-radius:5px;padding:3px 4px;cursor:pointer'>"
-              "<option value=hawaii>Hawaii</option><option value=viridis>Viridis</option>"
-              "<option value=magma>Magma</option><option value=inferno>Inferno</option>"
-              "<option value=plasma>Plasma</option><option value=cividis>Cividis</option>"
-              "</select><div id=rs-cmapbar></div></span></div>"
+              "<div id=rs-cmap><button id=rs-cmap-btn type=button title='Pick the feed recency colormap'></button>"
+              "<div id=rs-cmap-list hidden></div></div></span></div>"
               "<div class='rs-row rs-sep' style='cursor:default'><span style='flex:1 1 auto'><b>Default backend</b>"
               "<span class=rs-sub>What the + button uses for a NEW session — tmux drives a terminal pane; SDK runs headless via the Agent SDK. Both kinds run side by side; this only sets the default.</span>"
               "<select id=rs-backend style='margin-top:5px;width:100%;background:#1e1e1e;color:#ccc;"
@@ -4684,7 +4691,7 @@ _GEAR_HTML = ("<button id=rrefresh title='Restart the romp kernel' aria-label=Re
               "<div id=ra-note class=ra-note></div>"
               "</div></div>")
 _GEAR_JS = r"""(function(){var g=document.getElementById('rgear'),p=document.getElementById('rsettings'),
-b=document.getElementById('rsver'),cc=document.getElementById('rs-compact'),cm=document.getElementById('rs-colormap'),
+b=document.getElementById('rsver'),cc=document.getElementById('rs-compact'),
 db=document.getElementById('rs-debug'),an=document.getElementById('rs-autonudge'),bk=document.getElementById('rs-backend'),dd=document.getElementById('rs-defaultdir'),of=document.getElementById('rs-oldest'),gb=document.getElementById('rs-branch');
 function load(){try{return Object.assign({compact:false,colormap:'hawaii',subgoals:true,debug:false,backend:'tmux',defaultDir:'',oldestFirst:true,showBranch:true},JSON.parse(localStorage.getItem('romp:settings')||'null'));}catch(e){return {compact:false,colormap:'hawaii',subgoals:true,debug:false,backend:'tmux',defaultDir:'',oldestFirst:true,showBranch:true};}}
 function save(s){try{localStorage.setItem('romp:settings',JSON.stringify(s));}catch(e){}}
@@ -4705,10 +4712,20 @@ magma:[[0,0,4],[28,16,68],[79,18,123],[129,37,129],[181,54,122],[229,80,100],[25
 inferno:[[0,0,4],[40,11,84],[101,21,110],[159,42,99],[212,72,66],[245,125,21],[250,193,39],[252,255,164]],
 plasma:[[13,8,135],[75,3,161],[125,3,168],[168,34,150],[203,70,121],[229,107,93],[248,148,65],[253,195,40],[240,249,33]],
 cividis:[[0,34,78],[33,59,110],[76,85,108],[108,110,114],[142,137,120],[177,165,112],[217,197,92],[254,232,56]]};
-function renderCmapBar(){var bar=document.getElementById('rs-cmapbar');if(!bar||!cm)return;var st=CMAPS[(cm.value||'').toLowerCase()]||CMAPS.hawaii;
-bar.style.background='linear-gradient(to right,'+st.map(function(c){return 'rgb('+c[0]+','+c[1]+','+c[2]+')';}).join(',')+')';}
-cm.addEventListener('change',function(){var s=load();s.colormap=cm.value;save(s);renderCmapBar();
-try{window.acquireVsCodeApi&&window.acquireVsCodeApi().postMessage({type:'setColormap',name:cm.value});}catch(e){}});
+// Custom colormap dropdown: the OPTIONS are gradient bars, not names (the user 2026-06-23).
+var cmBtn=document.getElementById('rs-cmap-btn'),cmList=document.getElementById('rs-cmap-list');
+function cmGrad(name){var st=CMAPS[(name||'').toLowerCase()]||CMAPS.hawaii;
+return 'linear-gradient(to right,'+st.map(function(c){return 'rgb('+c[0]+','+c[1]+','+c[2]+')';}).join(',')+')';}
+function cmPaint(name){if(cmBtn)cmBtn.style.background=cmGrad(name);   // the button = the SELECTED map's bar
+if(cmList)Array.prototype.forEach.call(cmList.children,function(o){o.classList.toggle('sel',o.getAttribute('data-cmap')===name);});}
+function cmBuild(){if(!cmList||cmList.children.length)return;Object.keys(CMAPS).forEach(function(name){
+var o=document.createElement('div');o.className='rs-cmap-opt';o.setAttribute('data-cmap',name);o.title=name;
+o.style.background=cmGrad(name);o.addEventListener('click',function(e){e.stopPropagation();cmPick(name);});cmList.appendChild(o);});}
+function cmPick(name){var s=load();s.colormap=name;save(s);cmPaint(name);if(cmList)cmList.hidden=true;
+try{window.acquireVsCodeApi&&window.acquireVsCodeApi().postMessage({type:'setColormap',name:name});}catch(e){}}
+if(cmBtn)cmBtn.addEventListener('click',function(e){e.stopPropagation();cmBuild();if(cmList)cmList.hidden=!cmList.hidden;});
+document.addEventListener('click',function(e){var w=document.getElementById('rs-cmap');
+if(cmList&&!cmList.hidden&&w&&!w.contains(e.target))cmList.hidden=true;});   // click outside → close the list
 if(bk)bk.addEventListener('change',function(){var s=load();s.backend=bk.value;save(s);emit();});   // webview-local pref read at createSession time (render.ts); no kernel round-trip
 if(dd)dd.addEventListener('change',function(){var v=dd.value.trim();var s=load();s.defaultDir=v;save(s);   // same-tab cache for the picker prefill
 try{window.acquireVsCodeApi&&window.acquireVsCodeApi().postMessage({type:'setDefaultDir',value:v});}catch(e){}});   // persist kernel-side: _default_create_dir reads this file FIRST
@@ -4726,7 +4743,7 @@ v.dist_ver+'\nthis tab v'+(x||'?');
 // feed iframe to the whole screen while the modal is open (it restores on close). No-op outside the shell.
 function feedFull(on){try{if(window.parent!==window)window.parent.postMessage({romp:'settings',on:!!on},'*');}catch(e){}}
 function closeSettings(){p.hidden=true;feedFull(false);}
-g.onclick=function(e){e.stopPropagation();if(p.hidden){p.hidden=false;feedFull(true);var s=load();cc.checked=!!s.compact;db.checked=!!s.debug;if(of)of.checked=!!s.oldestFirst;if(gb)gb.checked=s.showBranch!==false;cm.value=s.colormap||'hawaii';renderCmapBar();if(bk)bk.value=s.backend||'tmux';if(dd)dd.value=s.defaultDir||'';fill();}else closeSettings();};
+g.onclick=function(e){e.stopPropagation();if(p.hidden){p.hidden=false;feedFull(true);var s=load();cc.checked=!!s.compact;db.checked=!!s.debug;if(of)of.checked=!!s.oldestFirst;if(gb)gb.checked=s.showBranch!==false;cmBuild();cmPaint(s.colormap||'hawaii');if(bk)bk.value=s.backend||'tmux';if(dd)dd.value=s.defaultDir||'';fill();}else closeSettings();};
 p.addEventListener('click',function(e){if(e.target===p)closeSettings();});   // click the dimmed backdrop (not the card) → close
 document.addEventListener('click',function(e){if(!p.hidden&&e.target!==g&&!p.contains(e.target))closeSettings();});
 var rf=document.getElementById('rrefresh');   // ↻ moved up from the timeline (the user 2026-06-17): POST /restart, poll /healthz, reload

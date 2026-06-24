@@ -1696,16 +1696,26 @@ class ViewBuilder(unittest.TestCase):
         self.assertIn("fetch('/restart',{method:'POST'})", km._GEAR_JS)
 
     def test_gear_polish_tooltips_colormap_bar_no_emoji(self):
-        # the user 2026-06-23: descriptions become HOVER tooltips (decluttered), the colormap picker shows a
-        # gradient preview bar, and the analytics button drops its 📊 emoji.
+        # the user 2026-06-23: descriptions become HOVER tooltips (decluttered), and the analytics button drops
+        # its 📊 emoji.
         self.assertIn("#rsettings .rs-sub{display:none}", km._GEAR_CSS)               # descriptions hidden by default
         self.assertRegex(km._GEAR_CSS, r"#rsettings \.rs-row:hover \.rs-sub\{display:block;position:absolute")  # float on hover
-        self.assertIn("id=rs-cmapbar", km._GEAR_HTML)                                 # the colormap preview bar element
-        self.assertIn("#rs-cmapbar{height:10px", km._GEAR_CSS)
-        self.assertIn("function renderCmapBar()", km._GEAR_JS)                         # builds the gradient from the map stops
-        self.assertIn("linear-gradient(to right,", km._GEAR_JS)
         self.assertNotIn("\U0001F4CA", km._GEAR_HTML)                                 # the 📊 emoji is gone
         self.assertIn("Token usage analytics", km._GEAR_HTML)                          # the label itself stays
+
+    def test_gear_colormap_dropdown_options_are_bars_not_names(self):
+        # the user 2026-06-23: the feed-colormap selector's OPTIONS are the gradient bars themselves — no map
+        # NAMES. A custom widget (native <select> can't render gradient options): a button shows the picked
+        # map's bar, and the list is one bar per map; clicking a bar selects it + posts setColormap.
+        self.assertNotIn("<select id=rs-colormap", km._GEAR_HTML)                      # the native name-list select is gone
+        self.assertNotIn(">Hawaii<", km._GEAR_HTML)                                    # no map names listed
+        self.assertIn("id=rs-cmap-btn", km._GEAR_HTML)                                 # the button shows the picked bar
+        self.assertIn("id=rs-cmap-list", km._GEAR_HTML)                                # the bar list
+        self.assertIn(".rs-cmap-opt{", km._GEAR_CSS)                                   # each option is a styled bar
+        self.assertIn("function cmGrad(name)", km._GEAR_JS)                            # builds a bar gradient per map
+        self.assertIn("linear-gradient(to right,", km._GEAR_JS)
+        self.assertIn("type:'setColormap',name:name", km._GEAR_JS)                     # picking a bar persists + posts
+        self.assertNotIn("renderCmapBar", km._GEAR_JS)                                 # the old preview-bar fn is gone
 
     def test_gear_has_show_git_branch_toggle(self):
         # the user 2026-06-23: a "Show git branch" checkbox controls whether the chat bottom-bar shows the
@@ -2065,8 +2075,9 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(km._colormap(), "hawaii")
         km._set_colormap("magma"); self.assertEqual(km._colormap(), "magma")
         km._set_colormap("bogus"); self.assertEqual(km._colormap(), "magma")             # unknown ignored
-        # the gear exposes the chooser and posts setColormap to the kernel
-        self.assertIn("rs-colormap", km._GEAR_HTML)
+        # the gear exposes the chooser (now a bar-options dropdown — see test_gear_colormap_dropdown_options_*)
+        # and posts setColormap to the kernel
+        self.assertIn("id=rs-cmap-btn", km._GEAR_HTML)
         self.assertIn("setColormap", km._GEAR_JS)
 
     def test_webview_colormaps_match_the_kernel(self):
