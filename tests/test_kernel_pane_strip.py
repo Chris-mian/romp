@@ -58,6 +58,10 @@ class PaneStripTest(unittest.TestCase):
         # clicking a toggle on a collapsed rail expands the pane first (clicks the collapse button), then shows the view
         self.assertIn("if(document.body.classList.contains('cc-chat')){var cb=document.getElementById('chat-collapse');if(cb)cb.click();}", self.html)
 
+    def test_a_collapsed_pane_drops_the_blue_focus_ring(self):
+        # collapsed = not open → no blue focus ring; it reads gray/minimised even if it held focus (the user 2026-06-24)
+        self.assertIn("body.cc-chat #chat-pane.pane-focused::after,body.cc-feed #feed-pane.pane-focused::after,body.cc-tl #tl-pane.pane-focused::after{display:none}", self.html)
+
     def test_strip_is_hidden_on_mobile_and_the_iframe_inset_is_reset(self):
         # mobile shows one pane at a time (no strip); the desktop iframe inset must be undone there too
         self.assertIn(".pane{display:contents}.collapse-btn,.pane-label,.pane-strip{display:none}", self.html)

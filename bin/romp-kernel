@@ -5305,6 +5305,9 @@ def _landing():
             # is pointer-events:none (never blocks) and z below the collapse handle (z-30) / fleet toggle (z-31).
             ".pane.pane-focused::after{content:'';position:absolute;inset:0;pointer-events:none;z-index:6;"
             "box-shadow:inset 0 0 0 2px rgba(120,170,225,0.55)}"
+            # a COLLAPSED pane is no longer 'open', so it drops the blue focus ring → reads as gray/minimised
+            # (the user 2026-06-24), even if it held focus when you collapsed it.
+            "body.cc-chat #chat-pane.pane-focused::after,body.cc-feed #feed-pane.pane-focused::after,body.cc-tl #tl-pane.pane-focused::after{display:none}"
             # the timeline keeps a horizontal edge bar (the chat/feed minimize buttons moved into the strip below)
             ".collapse-btn{position:absolute;z-index:30;display:flex;align-items:center;justify-content:center;"
             "background:#2a2a2a;color:#999;border:1px solid #3a3a3a;cursor:pointer;user-select:none;opacity:.3;transition:opacity .1s}"
