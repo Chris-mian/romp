@@ -1369,6 +1369,73 @@ class ViewBuilder(unittest.TestCase):
         self.assertNotIn("<!-- romp-injected -->", out, "a TYPED follow-up is the user's → no romp-injected (blue bubble)")
         self.assertTrue(out.endswith("<!-- romp-goal-id: " + sub + " -->"))
 
+    def _hier_goal_store(self):
+        # a HIERARCHICAL top goal: two open own-work leaves (one blocked w/ a why), one DONE leaf, and one
+        # DELEGATED leaf (a peer handoff). Used by the nudge-enumeration tests below.
+        top = SID + ":g1"
+        a, b, done, deleg = SID + ":a", SID + ":b", SID + ":d", SID + ":x"
+        def n(nid, text, parent, **kw):
+            return {"id": nid, "text": text, "parentId": parent, "nodeComplete": kw.get("done", False),
+                    "blocked": kw.get("blocked", False), "blockWhy": kw.get("why", ""),
+                    "handoff": kw.get("handoff"), "t": T0}
+        store = {"rompUuid": SID, "seq": 1, "nodes": {
+            top: n(top, "Ship the auth refactor", None),
+            a: n(a, "Migrate the session store to Redis", top),
+            b: n(b, "Add CSRF tokens", top, blocked=True, why="Need you to pick the token TTL."),
+            done: n(done, "Update the login tests", top, done=True),
+            deleg: n(deleg, "Peer is porting the client", top, handoff={"to": "peer"})},
+            "placements": {}, "status": {}}
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps(store))
+        return top
+
+    def test_nudge_enumerates_unfinished_subgoals(self):
+        # the user 2026-06-24: a NUDGE on a hierarchical top goal must list its UNFINISHED lower-level nodes
+        # (with the top as context) and ask for a status PER PIECE — so the session reports on each sub-goal,
+        # not just the umbrella. Both the Nudge button and the auto-nudge land here with iid = the top goal.
+        top = self._hier_goal_store()
+        out = km._followup_body(top, None, km.AUTO_NUDGE_TEXT, injected=True)   # the Nudge button
+        self.assertIn("> Ship the auth refactor", out, "the high-level goal is the heading/context")
+        self.assertIn("Unfinished pieces under this goal", out)
+        self.assertIn("• Migrate the session store to Redis", out, "an open own-work leaf is listed")
+        self.assertIn("• Add CSRF tokens (blocked) — Need you to pick the token TTL.", out,
+                      "a blocked leaf carries its tag + the planner's why")
+        self.assertNotIn("Update the login tests", out, "a DONE leaf is not an unfinished piece")
+        self.assertNotIn("Peer is porting the client", out, "a DELEGATED leaf is peer work, not this session's")
+        self.assertIn("report per piece", out, "the body asks for a status on each piece, not the whole goal")
+        self.assertNotIn(km.AUTO_NUDGE_TEXT, out, "the single-line 'status on the goal above' body is replaced")
+        # still a proper nudge: gray-bubble marker + the reopen goal-id, targeting the TOP goal
+        self.assertTrue(out.endswith("<!-- romp-injected --><!-- romp-goal-id: " + top + " -->"))
+
+    def test_auto_nudge_gets_the_same_hierarchical_enumeration(self):
+        # the auto-nudge (injected + auto) refines IDENTICALLY to the manual button (the user 2026-06-24).
+        top = self._hier_goal_store()
+        auto = km._followup_body(top, None, km.AUTO_NUDGE_TEXT, injected=True, auto=True)
+        self.assertIn("Unfinished pieces under this goal", auto)
+        self.assertIn("• Migrate the session store to Redis", auto)
+        self.assertTrue(auto.endswith("<!-- romp-injected --><!-- romp-auto --><!-- romp-goal-id: " + top + " -->"))
+
+    def test_nudge_on_a_flat_goal_keeps_the_single_line_form(self):
+        # a FLAT top (no sub-nodes) has no lower-level pieces to enumerate → the nudge keeps its existing
+        # single-line "status on the goal above?" body verbatim (the auto-nudge tick relies on this).
+        top = SID + ":g1"
+        store = {"rompUuid": SID, "seq": 1, "nodes": {
+            top: {"id": top, "text": "Wire up the thing", "parentId": None, "nodeComplete": False,
+                  "blocked": False, "t": T0}}, "placements": {}, "status": {}}
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps(store))
+        out = km._followup_body(top, None, km.AUTO_NUDGE_TEXT, injected=True)
+        self.assertIn("> Wire up the thing", out)
+        self.assertNotIn("Unfinished pieces under this goal", out, "nothing to enumerate on a flat goal")
+        self.assertIn(km.AUTO_NUDGE_TEXT, out, "the single-line nudge body is preserved verbatim")
+
+    def test_typed_followup_on_a_hierarchical_top_is_not_enumerated(self):
+        # the enumeration is a NUDGE refinement (injected) only — a follow-up the USER TYPES on the top card
+        # keeps the existing single-node quote, so we don't expand their reply into a per-sub status request.
+        top = self._hier_goal_store()
+        out = km._followup_body(top, None, "use Redis, TTL 1h")   # injected defaults False (the user typed it)
+        self.assertNotIn("Unfinished pieces under this goal", out)
+        self.assertIn("> Ship the auth refactor", out)
+        self.assertIn("use Redis, TTL 1h", out)
+
     def test_feed_node_carries_prompt_anchor_uuid(self):
         # the user 2026-06-17: a card TITLE deep-links to the user's MINTING message BY ID — the minting
         # segment's trigger uuid (a user turn the chat tags), so prompt-intent resolves by id with no
