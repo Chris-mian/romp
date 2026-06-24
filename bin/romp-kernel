@@ -4494,30 +4494,44 @@ def _push(targets):
     want_chat = any(c["app"] == "chat" for c in targets)
     want_feed = any(c["app"] in ("feed", "chat") for c in targets)   # chat needs feed["working"]
     want_tl = any(c["app"] == "timeline" for c in targets)
+    chat_clients = [c for c in targets if c["app"] == "chat"]
     try:
         chat_list = _chat_tab_sessions(now, tmux)   # living + recently-died-while-shown, minus ×-hidden
-        # build_session yields each session's ledger; the chat needs the full payloads. The FEED carries a
-        # per-session ledger slice for the Fleet view, but ONLY rides along when the CHAT client already built
-        # chat_sessions (want_chat — always true while the dashboard is open). We do NOT build all sessions just
-        # for a feed/fleet push (that made feed/timeline depend on every build_session succeeding, and did the
-        # heavy work on every poll — the user 2026-06-24, slow-load + empty-panes regression).
-        chat_sessions = [m for m in (build_session(s["sid"], now, tmux) for s in chat_list) if m] if want_chat else []
         tab_order = [s["sid"] for s in chat_list]
+        # ACTIVE-TAB-FIRST STREAMING (the user 2026-06-24): a fresh connect used to wait for EVERY tab's
+        # build_session (a full transcript reshape each) before the client saw ANY chat — the "slow to load"
+        # lag. Now we push the tab strip immediately, then build + FLUSH the tab each client is LOOKING AT
+        # first (its active sid, from the ?active= connect hint / the activeTab message), then stream the rest.
+        # First paint = the active transcript; the other tabs fill in behind it. Sessions upsert in any arrival
+        # order client-side (render.ts), so the streaming order is free to differ from tab order.
+        # The FEED's per-session Fleet ledger slice still rides along, attached AFTER the builds (want_chat —
+        # we do NOT build all sessions just for a feed/fleet push: the user 2026-06-24 slow-load regression).
+        chat_sessions = []
+        if want_chat:
+            for c in chat_clients:                       # tab strip first → the shell paints before any build
+                _send_client(c, ("taborder",), {"type": "tabOrder", "order": tab_order})
+            active = {c.get("active") for c in chat_clients if c.get("active")}
+            build_order = sorted(chat_list, key=lambda s: 0 if s["sid"] in active else 1)   # stable: active first
+            for s in build_order:
+                m = build_session(s["sid"], now, tmux)
+                if not m:
+                    continue
+                chat_sessions.append(m)
+                for c in chat_clients:
+                    _send_client(c, ("chat", m["id"]), m)   # flush as built → the active tab lands first
         feed = build_feed(now, tmux) if want_feed else None
         if feed is not None and chat_sessions:
             feed["ledgers"] = [{"sid": m["id"], "name": m["name"], "color": m.get("color"),
                                 "status": m.get("status"), "ledger": m.get("ledger")} for m in chat_sessions]
+        if feed is not None:
+            for c in chat_clients:                       # the working-dot list (chat reads feed["working"])
+                _send_client(c, ("working",), {"type": "working", "names": feed["working"]})
         timeline = build_timeline(now, tmux) if want_tl else None
     except Exception:
         sys.stderr.write("push build: %s\n" % traceback.format_exc())
         return
     for c in targets:
-        if c["app"] == "chat":
-            for m in chat_sessions:
-                _send_client(c, ("chat", m["id"]), m)
-            _send_client(c, ("taborder",), {"type": "tabOrder", "order": tab_order})   # sync tab order ↔ timeline
-            _send_client(c, ("working",), {"type": "working", "names": feed["working"]})
-        elif c["app"] == "feed":   # the feed pane AND the Fleet view both connect app=feed (Fleet reads feed.ledgers)
+        if c["app"] == "feed":   # the feed pane AND the Fleet view both connect app=feed (Fleet reads feed.ledgers)
             _send_client(c, ("feed",), feed)
         elif c["app"] == "timeline" and timeline is not None:
             _send_client(c, ("timeline",), {"type": "data", "data": timeline})
@@ -4665,7 +4679,8 @@ def _shim(app):
     return """
 (function(){var queue=[],ws=null;var wid=new URLSearchParams(location.search).get("wid")||"";
 function connect(){var proto=location.protocol==="https:"?"wss://":"ws://";
-ws=new WebSocket(proto+location.host+"/ws?app=%s"+(wid?"&wid="+encodeURIComponent(wid):""));
+var active="";try{var st0=JSON.parse(localStorage.getItem(SK)||"null");active=(st0&&st0.activeId)||"";}catch(e){}
+ws=new WebSocket(proto+location.host+"/ws?app=%s"+(wid?"&wid="+encodeURIComponent(wid):"")+(active?"&active="+encodeURIComponent(active):""));
 ws.onopen=function(){for(var i=0;i<queue.length;i++)ws.send(queue[i]);queue=[];};
 ws.onmessage=function(ev){var msg;try{msg=JSON.parse(ev.data);}catch(e){return;}
 window.dispatchEvent(new MessageEvent("message",{data:msg}));};
@@ -5768,6 +5783,9 @@ class Handler(BaseHTTPRequestHandler):
         chat (the _session_list TypeError, the user 2026-06-22). A genuine socket error still propagates."""
         if _sdk_route(msg, client):   # SDK-backed sids: drive ops go to the SDK backend, not tmux
             return
+        if msg and msg.get("type") == "activeTab":
+            client["active"] = msg.get("id")   # tab switch → next push builds the now-active tab first
+            return
         if msg and msg.get("type") == "ready":
             self._push_one(client)
             # Push the SHARED, STABLE tab order so the UI honors it on connect/reload. Without this
@@ -6026,6 +6044,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(400, "expected websocket", "text/plain")
         q = parse_qs(urlparse(self.path).query)
         app = (q.get("app") or ["chat"])[0]
+        active = (q.get("active") or [""])[0]   # the tab this client is looking at → _push builds it FIRST
         self.send_response(101)
         self.send_header("Upgrade", "websocket")
         self.send_header("Connection", "Upgrade")
@@ -6035,6 +6054,8 @@ class Handler(BaseHTTPRequestHandler):
         _client_seen[0] = time.time()
         lock = threading.Lock()
         client = {"app": app, "send": lambda s: _ws_send(self.wfile, lock, s), "alive": True}
+        if active:
+            client["active"] = active                  # active-tab-first streaming (the user 2026-06-24)
         with _clients_lock:
             _clients.append(client)
         try:

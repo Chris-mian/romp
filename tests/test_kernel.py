@@ -972,6 +972,54 @@ class ViewBuilder(unittest.TestCase):
         finally:
             restore()
 
+    def test_push_streams_the_active_tab_first(self):
+        # the user 2026-06-24 (chat slow-load): _push builds + FLUSHES the tab the client is looking at FIRST
+        # (its client["active"], from the ?active= connect hint), then streams the rest — so first paint is the
+        # active transcript, not a wait on every tab building. The tab strip is sent before any heavy build.
+        sent = []   # (key, msg) in SEND order
+        saved = (km._tmux_sessions, km._chat_tab_sessions, km.build_session, km.build_feed,
+                 km.build_timeline, km._send_client)
+        km._tmux_sessions = lambda: {}
+        km._chat_tab_sessions = lambda now, tmux: [{"sid": "A"}, {"sid": "B"}, {"sid": "C"}]
+        km.build_session = lambda sid, now, tmux: {"id": sid, "name": sid, "color": None,
+                                                   "status": None, "ledger": None}
+        km.build_feed = lambda now, tmux: {"working": [], "asks": []}
+        km.build_timeline = lambda now, tmux: None
+        km._send_client = lambda c, key, msg: sent.append((key, msg))
+        client = {"app": "chat", "active": "B", "alive": True}
+        try:
+            km._push([client])
+        finally:
+            (km._tmux_sessions, km._chat_tab_sessions, km.build_session, km.build_feed,
+             km.build_timeline, km._send_client) = saved
+        chat_order = [key[1] for (key, _) in sent if key[0] == "chat"]
+        self.assertEqual(chat_order[0], "B", "the ACTIVE tab is built + streamed first")
+        self.assertEqual(set(chat_order), {"A", "B", "C"}, "every tab still streams")
+        first_chat = next(i for i, (k, _) in enumerate(sent) if k[0] == "chat")
+        taborder = next(i for i, (k, _) in enumerate(sent) if k[0] == "taborder")
+        self.assertLess(taborder, first_chat, "the tab strip paints before the first heavy build")
+
+    def test_push_no_active_hint_streams_in_tab_order(self):
+        # no client["active"] (e.g. nothing persisted yet) → graceful fallback: stream in tab order, still
+        # incrementally (no regression, just no prioritization).
+        sent = []
+        saved = (km._tmux_sessions, km._chat_tab_sessions, km.build_session, km.build_feed,
+                 km.build_timeline, km._send_client)
+        km._tmux_sessions = lambda: {}
+        km._chat_tab_sessions = lambda now, tmux: [{"sid": "A"}, {"sid": "B"}, {"sid": "C"}]
+        km.build_session = lambda sid, now, tmux: {"id": sid, "name": sid, "color": None,
+                                                   "status": None, "ledger": None}
+        km.build_feed = lambda now, tmux: {"working": [], "asks": []}
+        km.build_timeline = lambda now, tmux: None
+        km._send_client = lambda c, key, msg: sent.append((key, msg))
+        try:
+            km._push([{"app": "chat", "alive": True}])
+        finally:
+            (km._tmux_sessions, km._chat_tab_sessions, km.build_session, km.build_feed,
+             km.build_timeline, km._send_client) = saved
+        self.assertEqual([key[1] for (key, _) in sent if key[0] == "chat"], ["A", "B", "C"],
+                         "no active hint → tab order, all tabs still delivered")
+
     def _orphaned_goal(self, idle=True, closer_done=True):
         # an idle (or still-open) session whose top goal still shows "working". closer_done puts the latest
         # turn's id in closedTurns, so the closer-verdict gate lets the nudge through (the realistic case: the
