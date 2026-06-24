@@ -13,7 +13,10 @@ const SRC = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "romp-timeli
 
 test("a per-session feed-checkbox column sits BETWEEN the name and the model (live lanes only)", () => {
   assert.match(SRC, /const eyeColX = PADL \+ Math\.ceil\(maxName\) \+ COLGAP;/);
-  assert.match(SRC, /const modelColX = eyeColX \+ \(anyLive \? EYE_W \+ EYE_GAP : 0\);/);
+  // business inserted a postal-isolation mailColX between the feed checkbox and the model (main 56ae453),
+  // so the model column now hangs off mailColX, not eyeColX directly.
+  assert.match(SRC, /const mailColX = eyeColX \+ \(anyLive \? EYE_W \+ EYE_GAP : 0\);/);
+  assert.match(SRC, /const modelColX = mailColX \+ \(anyLive \? EYE_W \+ EYE_GAP : 0\);/);
   assert.match(SRC, /if \(s\.live\) \{[\s\S]*?feedCheckIcon\(off, cx, cy, MODEL_FG\)/);
 });
 
