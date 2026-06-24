@@ -949,13 +949,23 @@ class SdkBackend:
 
     # ---- callbacks used by sessions ----
     def _emit_ask(self, sess: SdkSession, ask: dict):
-        self._pending_ask[sess.sid] = True
+        # STORE the ask (not just a bool): the kernel's _ask_poll replays it to chat clients each tick, so a
+        # blocked SDK session still shows its prompt to a client that connects/refocuses/reloads AFTER the ask
+        # was raised — the durable replay tmux gets from pane-scraping. The immediate push below is just for
+        # snappiness (no 1.2s wait); the poll is the source of truth. (the user 2026-06-24: blocked-no-prompt.)
+        self._pending_ask[sess.sid] = ask
         self._notify("chat", {"type": "askLive", "id": sess.sid, "ask": ask})
         self._poke()
 
     def _clear_ask(self, sess: SdkSession):
         self._pending_ask.pop(sess.sid, None)
         self._notify("chat", {"type": "askLiveClear", "id": sess.sid})
+
+    def current_ask(self, sid: str):
+        """The live ask a blocked SDK session is waiting on (the dict _emit_ask stored), or None. The kernel's
+        _ask_poll calls this for SDK-backed sids instead of scraping a tmux pane (there is none), so the prompt
+        replays durably to chat clients — and so the poll never clobbers it with an askLiveClear."""
+        return self._pending_ask.get(sid)
 
     def _forward(self, sess: SdkSession, msg):
         # LIVE TAIL: translate the streamed message to an atom and stash it in memory, AHEAD of the

@@ -298,6 +298,10 @@ def _followup_body(iid, title, text, injected=False, auto=False):
     used verbatim; otherwise the quote is built from the goal NODE — its text, the TOP goal it sits under,
     its status, and the planner's one-line why — so the recipient understands WHAT is being followed up on
     instead of a bare ≤10-word line (the user 2026-06-17). None of these → the text alone (no empty quote).
+    When a NUDGE (`injected` — the Nudge button OR the background auto-nudge, which both land here with iid =
+    the TOP goal) targets a HIERARCHICAL goal, the quote ENUMERATES its unfinished lower-level nodes and the
+    body asks for a status on each, with the top goal as context — so the session reports on the specific
+    sub-goals, not just the umbrella (the user 2026-06-24). A flat top falls back to the single-line form.
     `injected` is True only for romp's OWN nudges (the Nudge button / auto-nudge) — it adds the romp-injected
     marker so the chat renders the gray romp bubble; a follow-up the user TYPES leaves it False (blue human
     bubble). Either way romp-goal-id rides along for the reopen (the user 2026-06-20).
@@ -310,12 +314,33 @@ def _followup_body(iid, title, text, injected=False, auto=False):
         pass
     title = (title or "").strip()
     quote = []
+    body = str(text)
     if title:                                          # explicit group-modal title → verbatim, no node lookup
         quote.append(title)
     else:
         nd = nodes.get(str(iid)) or {}
         head = str(nd.get("text", "")).strip()
-        if head:
+        # A NUDGE (injected) on a HIERARCHICAL top goal: enumerate the UNFINISHED lower-level nodes so the
+        # session reports per sub-goal, with the top as context — not one "status on the whole goal?" (the
+        # user 2026-06-24). Only when iid is a top with open OWN-WORK leaves; a flat top (or all-delegated)
+        # → [] → the single-line form in the elif. Same path for the Nudge button + the auto-nudge.
+        subs = (_open_leaves_for_nudge(nodes, str(iid))
+                if (injected and head and not nd.get("parentId")) else [])
+        if subs:
+            quote.append(head)
+            quote.append("Unfinished pieces under this goal — give me a status on each:")
+            CAP = 12
+            for lid in subs[:CAP]:
+                ld = nodes.get(lid, {})
+                lt = str(ld.get("text", "")).strip() or "(unnamed)"
+                why = (ld.get("blockWhy") if ld.get("blocked") else ld.get("why")) or ""
+                why = (" — " + why.strip()) if why.strip() else ""
+                quote.append("  • " + lt + (" (blocked)" if ld.get("blocked") else "") + why)
+            if len(subs) > CAP:
+                quote.append("  • …and %d more" % (len(subs) - CAP))
+            body = ("For each unfinished piece above: what's done, what's left, and is anything blocked "
+                    "waiting on a decision from me? Keep the overall goal in mind, but report per piece.")
+        elif head:
             tags, top, seen = [], str(iid), set()      # walk to the TOP goal this node sits under
             while nodes.get(top, {}).get("parentId") and top not in seen:
                 seen.add(top); top = nodes[top]["parentId"]
@@ -329,7 +354,6 @@ def _followup_body(iid, title, text, injected=False, auto=False):
                    else nd.get("doneWhy") if nd.get("nodeComplete") else nd.get("why")) or ""
             if why.strip():                            # the planner's rationale = the real "what/why"
                 quote.append(why.strip())
-    body = str(text)
     msg = ("> " + "\n".join(quote).replace("\n", "\n> ") + "\n\n" + body) if quote else body
     # Hidden goal marker for the follow-up judge (coordinated w/ the `judges` session, 2026-06-17): it
     # parses `romp-goal-id:\s*([^\s>]+)`, REOPENS that top-goal node (even if completed/blocked), and
@@ -647,12 +671,11 @@ def _working_top_goal(sid):
     return None
 
 
-def _all_outstanding_delegated(nodes, top_id):
-    """True if EVERY open leaf in top_id's subtree is a delegated handoff-tracking node (a `handoff` marker,
-    planted by the courier) — i.e., the only outstanding work is handed to PEERS, so this session has nothing
-    to do itself and must NOT be auto-nudged (the user 2026-06-22). False the moment an open leaf is the
-    session's OWN work: it can still be nudged on that. An open leaf = an open node with no open children, so
-    the umbrella tops don't count as work — only the actual pending leaves do."""
+def _open_leaves(nodes, top_id):
+    """The OUTSTANDING leaves under top_id, in tree (document) order: each an OPEN node (not done, not
+    cleared) with no OPEN children — so the umbrella tops don't count as work, only the actual pending
+    leaves. A flat top with no open children is its own single leaf. Shared by the auto-nudge gate
+    (_all_outstanding_delegated) and the nudge prompt's sub-goal enumeration (_open_leaves_for_nudge)."""
     children = {}
     for nid, nd in nodes.items():
         children.setdefault(nd.get("parentId"), []).append(nid)
@@ -661,20 +684,41 @@ def _all_outstanding_delegated(nodes, top_id):
         nd = nodes.get(nid, {})
         return bool(nd) and not nd.get("nodeComplete") and not nd.get("cleared")
 
-    leaves, stack, seen = [], [top_id], set()
-    while stack:
-        x = stack.pop()
+    leaves, seen = [], set()
+
+    def _walk(x):
         if x in seen or not _open(x):
-            continue
+            return
         seen.add(x)
         okids = [k for k in children.get(x, []) if _open(k)]
         if okids:
-            stack.extend(okids)
+            for k in okids:                               # recurse in document order (deterministic, readable)
+                _walk(k)
         else:
             leaves.append(x)                              # an OPEN node with no OPEN children = an outstanding leaf
+
+    _walk(top_id)
+    return leaves
+
+
+def _all_outstanding_delegated(nodes, top_id):
+    """True if EVERY open leaf in top_id's subtree is a delegated handoff-tracking node (a `handoff` marker,
+    planted by the courier) — i.e., the only outstanding work is handed to PEERS, so this session has nothing
+    to do itself and must NOT be auto-nudged (the user 2026-06-22). False the moment an open leaf is the
+    session's OWN work: it can still be nudged on that."""
+    leaves = _open_leaves(nodes, top_id)
     if not leaves:
         return False
     return all(isinstance(nodes.get(nid, {}).get("handoff"), dict) for nid in leaves)
+
+
+def _open_leaves_for_nudge(nodes, top_id):
+    """The unfinished SUB-goals to enumerate in a nudge on a hierarchical top goal: top_id's open leaves
+    MINUS delegated handoffs (peer work — "waiting on a peer isn't needs-you") and MINUS the top itself.
+    Empty when top_id is FLAT (its only open leaf is itself) or all its open work is delegated — the nudge
+    then keeps its single-line "status on the goal above?" form (the user 2026-06-24)."""
+    return [nid for nid in _open_leaves(nodes, top_id)
+            if nid != top_id and not isinstance(nodes.get(nid, {}).get("handoff"), dict)]
 
 
 def _pure_delegation_top(nodes, top_id):
@@ -1754,24 +1798,30 @@ def _api_error(path):
 
 
 def _ask_poll():
-    """Scrape each live session's pane for an in-flight AskUserQuestion picker and push it to chat. ONE
-    capture per session per ~1.2s tick. Per-client dedup (_send_client) means an unchanged picker isn't
-    re-sent and a fresh client gets the current one; the webview renders the active tab. (Queued messages
-    are no longer scraped here — they're read event-based from the transcript by _pending_queued.)"""
+    """Surface each live session's in-flight AskUserQuestion/permission prompt to chat. ONE check per session
+    per ~1.2s tick. tmux sessions are pane-SCRAPED; SDK sessions have no pane, so we read the ask the SDK
+    backend stored in _emit_ask (be.current_ask) instead — WITHOUT this, the scrape returned nothing and we
+    pushed askLiveClear, clobbering a blocked SDK session's prompt every tick (the user 2026-06-24). Per-client
+    dedup (_send_client) means an unchanged picker isn't re-sent and a fresh client gets the current one; the
+    webview renders the active tab. (Queued messages are read event-based from the transcript by _pending_queued.)"""
     while True:
         try:
             with _clients_lock:
                 chat_clients = [c for c in _clients if c["app"] == "chat"]
             if chat_clients:
-                for sid in list(_tmux_sessions()):
-                    name = _name_of(sid)
-                    if not name:
-                        continue
-                    pane = _capture_pane(name)
-                    try:
-                        ask = ap.parse_ask_pane(pane)
-                    except Exception:
-                        ask = None
+                be = _sdk()
+                for sid, meta in list(_tmux_sessions().items()):
+                    if meta.get("backend") == "sdk":      # no pane to scrape — read the SDK backend's stored ask
+                        ask = be.current_ask(sid) if be else None
+                    else:
+                        name = _name_of(sid)
+                        if not name:
+                            continue
+                        pane = _capture_pane(name)
+                        try:
+                            ask = ap.parse_ask_pane(pane)
+                        except Exception:
+                            ask = None
                     payload = ({"type": "askLive", "id": sid, "ask": ask} if ask
                                else {"type": "askLiveClear", "id": sid})
                     for c in chat_clients:

@@ -259,6 +259,30 @@ class SetModelModePure(unittest.TestCase):
         self.assertEqual(s2.effort, sb.DEFAULT_EFFORT)   # no reg effort → default (so the picker is never empty)
 
 
+class LiveAskReplay(unittest.TestCase):
+    """A blocked SDK session's prompt must REPLAY, not vanish (the user 2026-06-24: blocked-no-prompt). _emit_ask
+    STORES the ask (not just a bool) so the kernel's _ask_poll can re-push it to any chat client that connects /
+    refocuses / reloads after the ask was raised; _clear_ask removes it on answer/cancel. Before this, the ask
+    was a one-shot push and _ask_poll pane-scraped the (pane-less) SDK session, found nothing, and cleared the
+    prompt every 1.2s tick."""
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.backend = sb.SdkBackend(self.d, "/bin/true", lambda app, msg: None)
+
+    def test_emit_stores_ask_for_replay_and_clear_removes(self):
+        class _Sess:
+            sid = "11111111-2222-3333-4444-555555555555"
+        sess = _Sess()
+        ask = {"kind": "single", "header": "Pet",
+               "options": [{"n": 1, "label": "cats"}, {"n": 2, "label": "dogs"}]}
+        self.assertIsNone(self.backend.current_ask(sess.sid))       # nothing pending yet
+        self.backend._emit_ask(sess, ask)
+        self.assertEqual(self.backend.current_ask(sess.sid), ask)   # stored verbatim → _ask_poll replays it
+        self.backend._clear_ask(sess)
+        self.assertIsNone(self.backend.current_ask(sess.sid))       # answered/cancelled → gone
+
+
 # --- Runner + can_use_tool bridge (needs the SDK message classes) ---
 try:
     import claude_agent_sdk as _sdk
