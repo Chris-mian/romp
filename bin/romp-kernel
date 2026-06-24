@@ -4302,9 +4302,14 @@ def _push(targets):
     want_tl = any(c["app"] == "timeline" for c in targets)
     try:
         chat_list = _chat_tab_sessions(now, tmux)   # living + recently-died-while-shown, minus ×-hidden
-        chat_sessions = [m for m in (build_session(s["sid"], now, tmux) for s in chat_list) if m] if want_chat else []
+        # build_session yields each session's ledger; the chat needs the full payloads, and the FEED carries a
+        # light per-session ledger slice for the Fleet view (it rides the proven feed channel — the user 2026-06-23).
+        chat_sessions = [m for m in (build_session(s["sid"], now, tmux) for s in chat_list) if m] if (want_chat or want_feed) else []
         tab_order = [s["sid"] for s in chat_list]
         feed = build_feed(now, tmux) if want_feed else None
+        if feed is not None:
+            feed["ledgers"] = [{"sid": m["id"], "name": m["name"], "color": m.get("color"),
+                                "status": m.get("status"), "ledger": m.get("ledger")} for m in chat_sessions]
         timeline = build_timeline(now, tmux) if want_tl else None
     except Exception:
         sys.stderr.write("push build: %s\n" % traceback.format_exc())
@@ -4315,7 +4320,7 @@ def _push(targets):
                 _send_client(c, ("chat", m["id"]), m)
             _send_client(c, ("taborder",), {"type": "tabOrder", "order": tab_order})   # sync tab order ↔ timeline
             _send_client(c, ("working",), {"type": "working", "names": feed["working"]})
-        elif c["app"] == "feed":
+        elif c["app"] == "feed":   # the feed pane AND the Fleet view both connect app=feed (Fleet reads feed.ledgers)
             _send_client(c, ("feed",), feed)
         elif c["app"] == "timeline" and timeline is not None:
             _send_client(c, ("timeline",), {"type": "data", "data": timeline})
@@ -4840,28 +4845,24 @@ def _feed_page():
                _shim("feed"), v, _GEAR_JS))
 
 
-# Fleet — a BY-SESSION view of open work (the user 2026-06-23): the same cross-session goal data the feed
-# carries (the app=feed payload's `asks`), grouped per session instead of per status column. Lives in the chat
-# pane behind a toggle. Reuses the feed WS stream verbatim; ui/webview/fleet.ts renders it. Completed work is
-# hidden behind a bottom "Show completed" checkbox (default off).
+# Fleet — a BY-SESSION view that MIRRORS the ledger box (the user 2026-06-23): each session, then its goal
+# TREE beneath it — the same collapsible checkmark nodes + recency-coloured times the chat's ledger box draws.
+# Fed by app=fleet (each session's build_session ledger). ui/webview/fleet.ts renders it; it loads the chat's
+# styles.css for the .ledger-* tree styling. Completed top goals hide behind a "Show completed" checkbox (off).
 _FLEET_CSS = (
     "html,body{margin:0;height:100%;background:var(--vscode-editor-background,#1e1e1e);"
     "color:var(--vscode-foreground,#cccccc);font-family:var(--vscode-font-family,system-ui,-apple-system,'Segoe UI',sans-serif);"
     "font-size:13px;display:flex;flex-direction:column;overflow:hidden}"
     "#fleet-list{flex:1 1 auto;min-height:0;overflow-y:auto;padding:6px 0}"
     ".fl-empty{opacity:.6;text-align:center;padding:26px 14px;line-height:1.5}"
-    ".fl-session{padding:3px 0 6px}"
-    ".fl-head{display:flex;align-items:center;gap:7px;padding:5px 14px 3px;cursor:pointer;font-weight:650}"
+    ".fl-session{padding:4px 0 10px}"
+    ".fl-head{display:flex;align-items:center;gap:7px;padding:5px 14px 4px;cursor:pointer;font-weight:650}"
     ".fl-head:hover{background:rgba(255,255,255,0.05)}"
     ".fl-workdot{width:7px;height:7px;border-radius:50%;background:#e0b020;flex:0 0 auto}"
     ".fl-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}"
-    ".fl-goal{display:flex;align-items:flex-start;gap:9px;padding:3px 14px 3px 26px;cursor:pointer;line-height:1.45}"
-    ".fl-goal:hover{background:rgba(255,255,255,0.05)}"
-    ".fl-goal.done{opacity:.5}"
-    ".fl-text{overflow-wrap:anywhere}"
-    ".fl-dot{width:8px;height:8px;border-radius:50%;flex:0 0 auto;margin-top:6px}"
-    ".fl-dot.work{background:#e0b020}.fl-dot.block{background:#e5484d}"
-    ".fl-dot.await{background:#14b8a6}.fl-dot.done{background:#1EA1EB}"
+    # the goal tree per session: drop the ledger box's scroll cap + fit-content so each session shows in full,
+    # indented under its name. The .ledger-* node styling itself comes from the linked styles.css.
+    ".fl-session .ledger-tree{max-height:none;width:auto;margin:0;padding:0 14px 0 18px}"
     "#fleet-foot{flex:0 0 auto;border-top:1px solid var(--vscode-editorHoverWidget-border,rgba(255,255,255,0.12));"
     "padding:8px 14px}"
     ".fl-toggle{display:inline-flex;align-items:center;gap:7px;cursor:pointer;"
@@ -4874,10 +4875,13 @@ def _fleet_page():
     return ("<!DOCTYPE html><html lang=en><head><meta charset=UTF-8>"
             "<meta name=viewport content='width=device-width,initial-scale=1'>"
             "<link rel=icon type=image/svg+xml href=/media/romp-swirl-glyph.svg><title>Romp · fleet</title>"
+            # the chat's stylesheet provides the .ledger-* tree styling; _FLEET_CSS (in the <style> AFTER it)
+            # overrides the body/layout bits so the chat rules don't fight the fleet page.
+            "<link href=/dist/styles.css?v=%d rel=stylesheet>"
             "<style>%s\n%s</style></head><body>"
             "<div id=fleet-list></div><div id=fleet-foot></div>"
             "<script>%s</script><script src=/dist/fleet.js?v=%d></script></body></html>"
-            % (THEME_CSS, _FLEET_CSS, _shim("feed"), v))
+            % (v, THEME_CSS, _FLEET_CSS, _shim("feed"), v))
 
 
 # The romp-tl-* styles, verbatim from the obsidian/VS-Code timeline wrapper.
