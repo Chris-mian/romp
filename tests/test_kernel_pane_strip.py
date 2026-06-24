@@ -49,6 +49,15 @@ class PaneStripTest(unittest.TestCase):
         self.assertIn("window.postMessage({romp:'toggleFleet',to:b.getAttribute('data-fleet')}", self.html)
         self.assertIn("b.classList.toggle('on',(b.getAttribute('data-fleet')==='fleet')===on)", self.html)
 
+    def test_collapsed_chat_rail_keeps_the_fleet_chat_toggles_and_clicking_expands(self):
+        # the Fleet/Chat toggles are NOT hidden when the chat collapses (the user 2026-06-24) — so Fleet stays
+        # reachable from the rail; the redundant lowercase 'chat' label is dropped for the chat pane.
+        self.assertNotIn("body.cc-chat #chat-strip .strip-toggle", self.html)        # toggles no longer hidden
+        self.assertNotIn("body.cc-chat #chat-pane .pane-label", self.html)           # chat label dropped (toggles are it)
+        self.assertIn("body.cc-feed #feed-pane .pane-label{display:block", self.html)  # feed still labels its rail
+        # clicking a toggle on a collapsed rail expands the pane first (clicks the collapse button), then shows the view
+        self.assertIn("if(document.body.classList.contains('cc-chat')){var cb=document.getElementById('chat-collapse');if(cb)cb.click();}", self.html)
+
     def test_strip_is_hidden_on_mobile_and_the_iframe_inset_is_reset(self):
         # mobile shows one pane at a time (no strip); the desktop iframe inset must be undone there too
         self.assertIn(".pane{display:contents}.collapse-btn,.pane-label,.pane-strip{display:none}", self.html)

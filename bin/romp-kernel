@@ -5129,7 +5129,11 @@ var on=m.to==='chat'?(p.classList.remove('show-fleet'),false)
 syncToggles();
 var f=document.getElementById(on?'f-fleet':'f-chat');try{f&&f.contentWindow&&f.contentWindow.focus();}catch(err){}});
 Array.prototype.forEach.call(document.querySelectorAll('.strip-toggle[data-fleet]'),function(b){
-  b.addEventListener('click',function(){window.postMessage({romp:'toggleFleet',to:b.getAttribute('data-fleet')},'*');});});
+  b.addEventListener('click',function(){
+    // both toggles stay visible on the COLLAPSED chat rail (the user 2026-06-24): clicking one EXPANDS the
+    // pane (via the collapse button) then shows that view, so Fleet is reachable straight from the rail.
+    if(document.body.classList.contains('cc-chat')){var cb=document.getElementById('chat-collapse');if(cb)cb.click();}
+    window.postMessage({romp:'toggleFleet',to:b.getAttribute('data-fleet')},'*');});});
 syncToggles();})();
 """
 
@@ -5340,14 +5344,16 @@ def _landing():
             "body.cc-tl .col{grid-template-rows:1fr 5px 26px}"
             "body.cc-chat #chat-pane>iframe,body.cc-feed #feed-pane>iframe,body.cc-tl #tl-pane>iframe{display:none}"
             "body.cc-tl #tl-pane{background:#181818;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;flex-direction:row}"
-            # collapsed chat/feed: the strip fills the 26px rail (centred), its Fleet/Chat toggles hidden, label shown
+            # collapsed chat/feed: the strip fills the 26px rail; the chat rail keeps its Fleet/Chat toggles, the feed rail shows its label
             "body.cc-chat #chat-pane,body.cc-feed #feed-pane{background:#181818;cursor:pointer}"
             # collapsed: the strip fills the rail, but the minimize button STAYS at the top (where it is when
             # expanded) — no re-centering (the user 2026-06-24). flex-start is the strip's default, so just drop bg/border.
             "body.cc-chat #chat-pane>.pane-strip,body.cc-feed #feed-pane>.pane-strip{width:100%;border:0;background:transparent}"
-            "body.cc-chat #chat-strip .strip-toggle,body.cc-feed #feed-strip .strip-toggle{display:none}"
+            # the Fleet/Chat toggles STAY visible on the collapsed chat rail (the user 2026-06-24): clicking one
+            # expands the pane to that view (see _LANDING_FLEET_JS), so Fleet is reachable from the rail. The
+            # redundant lowercase 'chat' label is therefore NOT shown for the chat pane (the toggles are its label).
             "body.cc-tl #tl-collapse{position:static;transform:none;opacity:.8;width:22px;height:22px;border-radius:5px;border:1px solid #3a3a3a}"
-            "body.cc-chat #chat-pane .pane-label,body.cc-feed #feed-pane .pane-label{display:block;writing-mode:vertical-rl}"
+            "body.cc-feed #feed-pane .pane-label{display:block;writing-mode:vertical-rl}"
             "body.cc-tl #tl-pane .pane-label{display:block}"
             "body.cc-chat #gv,body.cc-feed #gv{visibility:hidden}body.cc-tl #gh{visibility:hidden}"
             "#mtabs{display:none}"
