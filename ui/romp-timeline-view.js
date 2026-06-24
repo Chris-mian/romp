@@ -1863,7 +1863,10 @@ class TimelinePanel {
         hit.addEventListener('mouseenter', (e) => { box.setAttribute('opacity', '1'); this.showTip(tip, e); });
         hit.addEventListener('mousemove', (e) => this.moveTip(e));
         hit.addEventListener('mouseleave', () => { box.setAttribute('opacity', dim); this.hideTip(); });
-        hit.addEventListener('click', (e) => {
+        // Toggle on POINTERDOWN, not click (the user 2026-06-23): the lane redraws on every poll, and a
+        // redraw landing between mousedown and mouseup replaces this hit-rect so the 'click' never fires —
+        // the toggle felt "sometimes unresponsive". pointerdown fires on press, before any redraw can interrupt.
+        hit.addEventListener('pointerdown', (e) => {
           e.stopPropagation();
           const next = !s.hideFromFeed;
           s.hideFromFeed = next;                       // optimistic …
@@ -1893,8 +1896,8 @@ class TimelinePanel {
         mhit.addEventListener('mouseenter', (e) => { mbox.setAttribute('opacity', '1'); this.showTip(mtip, e); });
         mhit.addEventListener('mousemove', (e) => this.moveTip(e));
         mhit.addEventListener('mouseleave', () => { mbox.setAttribute('opacity', mdim); this.hideTip(); });
-        mhit.addEventListener('click', (e) => {
-          e.stopPropagation();
+        mhit.addEventListener('pointerdown', (e) => {   // pointerdown, not click: a redraw between mousedown
+          e.stopPropagation();                          // and mouseup ate the click → "sometimes unresponsive"
           const next = !s.postalOff;
           s.postalOff = next;                            // optimistic …
           (this._pendingFlags[s.id] = this._pendingFlags[s.id] || {}).postalOff = next;   // … held sticky until the kernel confirms

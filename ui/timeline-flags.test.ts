@@ -39,10 +39,11 @@ test("the checkbox is always GRAY; the OFF state is MORE faded (de-emphasised), 
   assert.doesNotMatch(SRC, /GEAR_ON_FG/, "the old amber gear-active colour is gone");
 });
 
-test("the eye has a generous transparent hit RECT, and ONE click toggles hideFromFeed directly (no menu)", () => {
+test("the checkbox has a generous hit RECT and toggles hideFromFeed on POINTERDOWN (redraw-proof, no menu)", () => {
   assert.match(SRC, /const hit = el\('rect', \{[^}]*fill: 'transparent', 'pointer-events': 'all'/);
-  // direct toggle on click: optimistic local flip + persist via _setSessionFlag — no _openFlagMenu
-  assert.match(SRC, /hit\.addEventListener\('click', \(e\) => \{[\s\S]*?s\.hideFromFeed = next;[\s\S]*?this\._setSessionFlag\(s, 'hideFromFeed', next\)/);
+  // toggle on POINTERDOWN, not click (the user 2026-06-23): a lane redraw between mousedown and mouseup
+  // replaced the hit-rect so the 'click' never fired — pointerdown fires on press, before any redraw.
+  assert.match(SRC, /hit\.addEventListener\('pointerdown', \(e\) => \{[\s\S]*?s\.hideFromFeed = next;[\s\S]*?this\._setSessionFlag\(s, 'hideFromFeed', next\)/);
   assert.doesNotMatch(SRC, /_openFlagMenu/, "the popup flag menu is removed");
   assert.doesNotMatch(SRC, /const SESSION_FLAGS = \[/, "the flag list is removed (single flag, direct toggle)");
 });
