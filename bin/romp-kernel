@@ -5112,14 +5112,21 @@ setFocus('f-chat');})();   // default: the chat section is ringed on open
 # shown via .show-fleet, and move focus to the now-visible one so the spotlight + keyboard follow.
 _LANDING_FLEET_JS = """
 (function(){var p=document.getElementById('chat-pane');if(!p)return;
-// The toggle now lives IN the chat tab bar (a 'Fleet' pill right of +, render.ts) and IN the Fleet view's
-// foot ('Chat'), both posting {romp:'toggleFleet'} to the shell (the user 2026-06-24). to:'chat'/'fleet'
-// force a direction; no `to` just flips. Focus follows to the now-visible iframe.
+// The Fleet/Chat toggles live in the chat pane's vertical STRIP (rotated buttons, the user 2026-06-24); they
+// post {romp:'toggleFleet',to:...} to the shell, the same message the chat tab bar's old pill sent. to:'chat'/
+// 'fleet' force a direction; no `to` just flips. Focus follows the now-visible iframe; .on tracks the live view.
+function syncToggles(){var on=p.classList.contains('show-fleet');
+  Array.prototype.forEach.call(document.querySelectorAll('.strip-toggle[data-fleet]'),function(b){
+    b.classList.toggle('on',(b.getAttribute('data-fleet')==='fleet')===on);});}
 window.addEventListener('message',function(e){var m=e.data;if(!m||m.romp!=='toggleFleet')return;
 var on=m.to==='chat'?(p.classList.remove('show-fleet'),false)
        :m.to==='fleet'?(p.classList.add('show-fleet'),true)
        :p.classList.toggle('show-fleet');
-var f=document.getElementById(on?'f-fleet':'f-chat');try{f&&f.contentWindow&&f.contentWindow.focus();}catch(err){}});})();
+syncToggles();
+var f=document.getElementById(on?'f-fleet':'f-chat');try{f&&f.contentWindow&&f.contentWindow.focus();}catch(err){}});
+Array.prototype.forEach.call(document.querySelectorAll('.strip-toggle[data-fleet]'),function(b){
+  b.addEventListener('click',function(){window.postMessage({romp:'toggleFleet',to:b.getAttribute('data-fleet')},'*');});});
+syncToggles();})();
 """
 
 
@@ -5290,23 +5297,43 @@ def _landing():
             # is pointer-events:none (never blocks) and z below the collapse handle (z-30) / fleet toggle (z-31).
             ".pane.pane-focused::after{content:'';position:absolute;inset:0;pointer-events:none;z-index:6;"
             "box-shadow:inset 0 0 0 2px rgba(120,170,225,0.55)}"
+            # the timeline keeps a horizontal edge bar (the chat/feed minimize buttons moved into the strip below)
             ".collapse-btn{position:absolute;z-index:30;display:flex;align-items:center;justify-content:center;"
             "background:#2a2a2a;color:#999;border:1px solid #3a3a3a;cursor:pointer;user-select:none;opacity:.3;transition:opacity .1s}"
             ".collapse-btn:hover{opacity:1;color:#fff}"
-            ".collapse-btn .bar-v{width:3px;height:12px;border-radius:2px;background:currentColor;display:block}"
             ".collapse-btn .bar-h{width:12px;height:3px;border-radius:2px;background:currentColor;display:block}"
-            "#chat-collapse{top:50%;right:0;transform:translateY(-50%);width:13px;height:46px;border-radius:5px 0 0 5px;border-right:0}"
-            "#feed-collapse{top:50%;left:0;transform:translateY(-50%);width:13px;height:46px;border-radius:0 5px 5px 0;border-left:0}"
             "#tl-collapse{left:50%;top:0;transform:translateX(-50%);width:46px;height:13px;border-radius:0 0 5px 5px;border-top:0}"
+            # ── per-pane vertical button STRIP (the user 2026-06-24): a thin rail on the chat (right) + feed
+            # (left) inner edges that HOLDS the minimize button + (chat) the rotated Fleet/Chat toggles, with
+            # room for more. The iframe is inset by --strip so the rail reserves its own space rather than
+            # overlaying content. As thin as the rotated labels + minimize tab allow.
+            ".pane-strip{position:absolute;top:0;bottom:0;width:var(--strip,20px);z-index:30;box-sizing:border-box;"
+            "display:flex;flex-direction:column;align-items:center;gap:4px;padding:6px 0;background:#202021}"
+            "#chat-pane>.pane-strip{right:0;border-left:1px solid #2c2c2d}"
+            "#feed-pane>.pane-strip{left:0;border-right:1px solid #2c2c2d}"
+            "#chat-pane>iframe,#feed-pane>iframe{position:absolute;top:0;bottom:0;width:auto;height:auto}"
+            "#chat-pane>iframe{left:0;right:var(--strip,20px)}"
+            "#feed-pane>iframe{left:var(--strip,20px);right:0}"
+            ".strip-btn{flex:0 0 auto;display:flex;align-items:center;justify-content:center;width:18px;height:26px;"
+            "color:#8a8a8a;border-radius:4px;cursor:pointer;user-select:none;opacity:.6;transition:opacity .1s,color .1s,background .1s}"
+            ".strip-btn:hover{opacity:1;color:#fff;background:rgba(255,255,255,0.06)}"
+            ".strip-btn .bar-v{width:3px;height:14px;border-radius:2px;background:currentColor;display:block}"
+            # rotated Fleet/Chat toggles (chat strip only): reading top-to-bottom; .on = the live view, in romp blue
+            ".strip-toggle{flex:0 0 auto;writing-mode:vertical-rl;text-orientation:mixed;letter-spacing:.04em;cursor:pointer;user-select:none;"
+            "font:600 11px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#8a8a8a;padding:7px 1px;border-radius:4px;transition:color .1s,background .1s}"
+            ".strip-toggle:hover{color:#cfe6ff;background:rgba(255,255,255,0.06)}"
+            ".strip-toggle.on{color:#9cd2ff}"
             ".pane-label{display:none;color:#8a8a8a;font:11px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;letter-spacing:.06em;user-select:none;cursor:pointer}"
             "body.cc-chat .row{grid-template-columns:26px 5px 1fr}"
             "body.cc-feed .row{grid-template-columns:1fr 5px 26px}"
             "body.cc-tl .col{grid-template-rows:1fr 5px 26px}"
             "body.cc-chat #chat-pane>iframe,body.cc-feed #feed-pane>iframe,body.cc-tl #tl-pane>iframe{display:none}"
-            "body.cc-chat #chat-pane,body.cc-feed #feed-pane,body.cc-tl #tl-pane{background:#181818;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px}"
-            "body.cc-chat #chat-pane,body.cc-feed #feed-pane{flex-direction:column}"
-            "body.cc-tl #tl-pane{flex-direction:row}"
-            "body.cc-chat #chat-collapse,body.cc-feed #feed-collapse,body.cc-tl #tl-collapse{position:static;transform:none;opacity:.8;width:22px;height:22px;border-radius:5px;border:1px solid #3a3a3a}"
+            "body.cc-tl #tl-pane{background:#181818;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;flex-direction:row}"
+            # collapsed chat/feed: the strip fills the 26px rail (centred), its Fleet/Chat toggles hidden, label shown
+            "body.cc-chat #chat-pane,body.cc-feed #feed-pane{background:#181818;cursor:pointer}"
+            "body.cc-chat #chat-pane>.pane-strip,body.cc-feed #feed-pane>.pane-strip{width:100%;border:0;background:transparent;justify-content:center}"
+            "body.cc-chat #chat-strip .strip-toggle,body.cc-feed #feed-strip .strip-toggle{display:none}"
+            "body.cc-tl #tl-collapse{position:static;transform:none;opacity:.8;width:22px;height:22px;border-radius:5px;border:1px solid #3a3a3a}"
             "body.cc-chat #chat-pane .pane-label,body.cc-feed #feed-pane .pane-label{display:block;writing-mode:vertical-rl}"
             "body.cc-tl #tl-pane .pane-label{display:block}"
             "body.cc-chat #gv,body.cc-feed #gv{visibility:hidden}body.cc-tl #gh{visibility:hidden}"
@@ -5331,7 +5358,9 @@ def _landing():
             ".gv,.gh{display:none}"
             # mobile uses the bottom tab switcher, not collapse: dissolve the .pane wrappers (so the
             # iframes act as direct flex children again, as the mobile rules below expect) + hide the handles
-            ".pane{display:contents}.collapse-btn,.pane-label{display:none}"
+            ".pane{display:contents}.collapse-btn,.pane-label,.pane-strip{display:none}"
+            # reset the desktop strip's iframe inset (#chat/#feed>iframe out-specifies the bare `iframe` reset below)
+            "#chat-pane>iframe,#feed-pane>iframe{position:static;inset:auto;width:100%;height:100%}"
             "#f-fleet{display:none!important}"   # Fleet is desktop-only for now (mobile shows one pane at a time)
             "iframe{position:static;display:none;width:100%;height:100%;border:0}"
             "#f-chat.m-on,#f-feed.m-on{display:block}"
@@ -5354,12 +5383,16 @@ def _landing():
             "<div class=row>"
             "<div class=pane id=chat-pane><iframe id=f-chat class=m-on src=/chat></iframe>"
             "<iframe id=f-fleet src=/fleet></iframe>"
-            "<div class=collapse-btn id=chat-collapse title='collapse the chat'><span class=bar-v></span></div>"
-            "<span class=pane-label>chat</span></div>"
+            "<div class=pane-strip id=chat-strip>"
+            "<div class=strip-btn id=chat-collapse title='collapse the chat'><span class=bar-v></span></div>"
+            "<div class=strip-toggle data-fleet=chat title='Session chat'>Chat</div>"
+            "<div class=strip-toggle data-fleet=fleet title=\"Fleet — every session's open work\">Fleet</div>"
+            "<span class=pane-label>chat</span></div></div>"
             "<div class=gv id=gv></div>"
             "<div class=pane id=feed-pane><iframe id=f-feed src=/feed></iframe>"
-            "<div class=collapse-btn id=feed-collapse title='collapse the feed'><span class=bar-v></span></div>"
-            "<span class=pane-label>feed</span></div>"
+            "<div class=pane-strip id=feed-strip>"
+            "<div class=strip-btn id=feed-collapse title='collapse the feed'><span class=bar-v></span></div>"
+            "<span class=pane-label>feed</span></div></div>"
             "</div>"
             "<div class=gh id=gh></div>"
             "<div class=pane id=tl-pane><iframe id=f-timeline src=/timeline></iframe>"
