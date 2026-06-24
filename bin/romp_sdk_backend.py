@@ -927,7 +927,18 @@ class SdkBackend:
                 out[sid] = s.snapshot()
             else:
                 ls = last_state(self.state_dir, sid)
-                out[sid] = {"state": ls.get("state") or "waiting",
+                st = ls.get("state") or "waiting"
+                # A NOT-running (dormant, resumable) SDK session can't actually be mid-turn: after a kernel
+                # restart its thread is gone, but the state log still reads its last in-flight state
+                # ("working"/"permission"/"picker"/…). Reporting that verbatim makes a dormant session look
+                # FALSELY blocked/working with NO live ask to resolve it — the prompt died with the thread (the
+                # user 2026-06-24: reorder_bug showed "blocked, needs approval" with no prompt after a refresh).
+                # Map any in-flight state → "waiting", the true state of a dormant session (it resumes on the
+                # next drive). A GENUINELY-blocked session is RUNNING → snapshot() above (with a real
+                # current_ask), so it's unaffected. Keyed on thread-not-running, not a time heuristic.
+                if st in ("working", "permission", "picker", "compacting", "retrying"):
+                    st = "waiting"
+                out[sid] = {"state": st,
                             "since": str(ls.get("t") or ""),
                             "model": model_label("", reg.get("model") or ""),   # not running (e.g. post-restart): show the chosen model
                             "effort": reg.get("effort", ""),

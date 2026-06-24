@@ -186,6 +186,19 @@ class StateAndRegistryFiles(unittest.TestCase):
             parts = f.read().rstrip("\n").split("\t")
         self.assertTrue(parts[2].startswith("#"), "SDK session gets an identity colour like tmux ones")
 
+    def test_dormant_session_reports_waiting_not_stale_inflight(self):
+        """False blocked/approval state (the user 2026-06-24): after a kernel restart an alive SDK session's
+        thread is gone, but its state log still reads its last in-flight state. A NOT-running session can't be
+        mid-turn, so live_sessions must report 'waiting' — else the UI shows it blocked/needs-approval with no
+        prompt to resolve (the prompt died with the thread). A running session is unaffected (snapshot path)."""
+        be = sb.SdkBackend(self.d, "/bin/true", lambda *a, **k: None)
+        sid = be.spawn("reorder_like", self.d)            # reg(alive) + a 'waiting' state; NOT started (no thread)
+        for stale in ("working", "permission", "picker", "compacting", "retrying"):
+            sb.append_state(self.d, sid, stale)           # ...it went mid-turn, then the kernel restarted
+            ls = be.live_sessions()                        # registry-only path (session not running here)
+            self.assertEqual(ls[sid]["state"], "waiting",
+                             "a dormant session must read 'waiting', not the stale '%s'" % stale)
+
     def _last_awaiting(self, sid):
         import json as _j
         rec = None
