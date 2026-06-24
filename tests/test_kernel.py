@@ -2805,14 +2805,14 @@ class ServeSecurity(unittest.TestCase):
             self.assertIn(pane, body)
 
     def test_landing_has_a_focused_pane_cue(self):
-        # the user 2026-06-23: the section you last interacted with is LIT — a faint white film over its
-        # (opaque) iframe — so it's clear which pane your keystrokes/actions target. Shell-only: the
-        # same-origin iframes are wired by the shell (pointerdown/focusin/focusout/window-focus, event-based,
-        # no polling); chat is the default; it re-wires on iframe (re)load.
+        # the user 2026-06-23: the section you last interacted with is DARKENED (recessed) — a translucent-black
+        # film over its (opaque) iframe — so it's clear which pane your keystrokes/actions target. Shell-only:
+        # the same-origin iframes are wired by the shell (pointerdown/focusin/focusout/window-focus,
+        # event-based, no polling); chat is the default; it re-wires on iframe (re)load.
         html = km._landing()
-        # the lightening film: a translucent-white ::after over the focused pane, click-through, under the chrome
+        # the darkening film: a translucent-black ::after over the focused pane, click-through, under the chrome
         self.assertIn(".pane.pane-focused::after{content:'';position:absolute;inset:0;", html)
-        self.assertIn("background:rgba(255,255,255,0.025)", html)   # subtle (halved from the first pass)
+        self.assertIn("background:rgba(0,0,0,0.4)", html)           # darkened toward black (the user wanted darker)
         self.assertIn("pointer-events:none;z-index:6}", html)
         # the wiring: maps each iframe id → its pane, toggles pane-focused exclusively, defaults to chat
         self.assertIn("var PANE={'f-chat':'chat-pane','f-feed':'feed-pane','f-timeline':'tl-pane'}", html)

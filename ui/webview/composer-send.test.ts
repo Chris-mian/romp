@@ -34,3 +34,10 @@ test("the send button is styled to the right of 📎 and the textarea reserves r
   assert.match(CSS, /#composer-attach \{ right: 58px/);
   assert.match(CSS, /#composer-input \{[\s\S]*padding: 8px 64px 8px 10px/);
 });
+
+test("the composer sits tight to the bottom — no wasted gap below it (the user 2026-06-23)", () => {
+  // the bottom padding was trimmed 12px → 6px so the box hugs the pane's bottom; the 📎/send buttons drop
+  // 18px → 12px in step so they stay vertically centred on the one-line textarea.
+  assert.match(CSS, /#composer \{[^}]*padding: 8px 24px 6px;/);
+  assert.match(CSS, /#composer-attach, #composer-send \{[\s\S]*bottom: 12px;/);
+});

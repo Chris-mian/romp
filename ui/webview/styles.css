@@ -328,9 +328,9 @@ body { display: flex; flex-direction: column; }
   max-width: var(--chat-col); margin: 0 auto; padding: 7px 24px 0 54px;
   display: flex; align-items: center; gap: 10px;
 }
-#composer { position: relative; max-width: var(--chat-col); margin: 0 auto; padding: 8px 24px 12px; }
+#composer { position: relative; max-width: var(--chat-col); margin: 0 auto; padding: 8px 24px 6px; }
 #composer-attach, #composer-send {
-  position: absolute; bottom: 18px;
+  position: absolute; bottom: 12px;
   width: 26px; height: 26px; padding: 0; line-height: 1;
   display: flex; align-items: center; justify-content: center;
   background: transparent; border: none; border-radius: 5px;

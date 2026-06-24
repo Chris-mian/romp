@@ -5030,11 +5030,11 @@ def _landing():
             # edge — chat→right, feed→left, timeline→top — folds it to a 26px strip (body.cc-* overrides
             # the grid-template; coexists with the splitter's --chat/--tl). Sizes/positions from the old shell.
             ".pane{position:relative;min-width:0;min-height:0;overflow:hidden}"
-            # FOCUS cue (the user 2026-06-23): the section you last interacted with gets a faint lightening
-            # film so it's clear which pane your keystrokes/actions target. A translucent-white ::after over
-            # the (opaque) iframe lifts the dark background more than the light text — reads as "this panel is
-            # lit". pointer-events:none so it never blocks; z below the collapse handle (z-30) + splitters.
-            ".pane.pane-focused::after{content:'';position:absolute;inset:0;background:rgba(255,255,255,0.025);"
+            # FOCUS cue (the user 2026-06-23): the section you last interacted with is DARKENED (recessed) so
+            # it's clear which pane your keystrokes/actions target. A translucent-black ::after over the (opaque)
+            # iframe deepens it toward black, roughly halfway from the base background (the user wanted darker,
+            # not the original lift). pointer-events:none so it never blocks; z below the collapse handle (z-30).
+            ".pane.pane-focused::after{content:'';position:absolute;inset:0;background:rgba(0,0,0,0.4);"
             "pointer-events:none;z-index:6}"
             # …but when a TEXT FIELD inside the focused pane holds the caret (the composer / any input), the
             # pane-level nav controls (←/→ to switch chat tabs, ↑/↓ to scroll) DON'T fire — the keystrokes go
