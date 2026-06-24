@@ -2825,6 +2825,21 @@ class ServeSecurity(unittest.TestCase):
         self.assertIn("f.addEventListener('load',function(){wire(f);});wire(f);", html)   # re-wire on (re)load
         self.assertIn("setFocus('f-chat')", html)                                          # chat ringed by default
 
+    def test_settings_is_a_fullscreen_modal(self):
+        # the user 2026-06-23: the gear's settings is a full-WINDOW modal (was a cramped 240px corner panel).
+        # #rsettings is the backdrop + .rs-card the centered card; the gear lives in the feed iframe, so it
+        # asks the shell (postMessage) to lift the feed iframe over the whole window while it's open.
+        self.assertIn("#rsettings{position:fixed;inset:0;z-index:60;background:#000000bb", km._GEAR_CSS)
+        self.assertIn(".rs-card{", km._GEAR_CSS)
+        self.assertIn("<div id=rsettings hidden><div class=rs-card>", km._GEAR_HTML)
+        self.assertIn("feedFull(true)", km._GEAR_JS)              # open → ask the shell to go full-window
+        self.assertIn("if(e.target===p)closeSettings()", km._GEAR_JS)   # backdrop click closes
+        # shell side: the feed iframe lifts to cover the whole window
+        html = km._landing()
+        self.assertIn("body.settings-open #f-feed{position:fixed;inset:0;z-index:200", html)
+        self.assertIn("m.romp==='settings'", html)
+        self.assertIn("document.body.classList.toggle('settings-open',!!m.on)", html)
+
     def test_fleet_page_served(self):
         # Fleet (the user 2026-06-23): /fleet serves the by-session open-work view, fed by the SAME app=feed
         # stream and rendered by dist/fleet.js.

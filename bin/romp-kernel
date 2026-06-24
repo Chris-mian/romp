@@ -4566,10 +4566,14 @@ _GEAR_CSS = ("#rgear{position:fixed;top:6px;right:8px;z-index:60;background:#2a2
              "#rrefresh{position:fixed;top:6px;right:42px;z-index:60;background:#2a2a2b;border:1px solid #3a3a3a;"
              "border-radius:6px;color:#9aa0a6;font-size:14px;cursor:pointer;opacity:.7;line-height:1;padding:3px 6px}"
              "#rrefresh:hover{opacity:1;background:#333;color:#fff}#rrefresh:disabled{opacity:.4;cursor:default}"
-             "#rsettings{position:fixed;top:30px;right:8px;z-index:60;min-width:240px;max-width:300px;background:#252526;"
-             "border:1px solid #3a3a3a;border-radius:8px;padding:10px 12px;font:12px/1.5 -apple-system,sans-serif;"
-             "color:#ccc;box-shadow:0 8px 24px #00000066}#rsettings .rs-h{font-weight:600;margin-bottom:6px;"
-             "color:#9aa0a6}#rsver{white-space:pre-line}"
+             # The settings panel is a full-screen MODAL now (the user 2026-06-23): #rsettings is the backdrop
+             # (the shell expands the feed iframe to the whole window first — see _LANDING_SETTINGS_JS), and
+             # .rs-card is the roomy centered card. The old cramped 240px corner panel is gone.
+             "#rsettings{position:fixed;inset:0;z-index:60;background:#000000bb;display:flex;align-items:flex-start;"
+             "justify-content:center;overflow:auto;padding:6vh 16px;box-sizing:border-box}#rsettings[hidden]{display:none}"
+             ".rs-card{width:min(560px,94%);max-height:88vh;overflow:auto;background:#252526;border:1px solid #3a3a3a;"
+             "border-radius:10px;padding:16px 20px;font:13px/1.6 -apple-system,sans-serif;color:#ccc;box-shadow:0 12px 36px #000000aa}"
+             "#rsettings .rs-h{font-weight:600;margin-bottom:6px;color:#9aa0a6}#rsver{white-space:pre-line}"
              "#rsettings .rs-row{display:flex;align-items:flex-start;gap:8px;padding:2px 0 6px;cursor:pointer;position:relative}"
              "#rsettings .rs-row input{margin:3px 0 0;flex:0 0 auto;cursor:pointer}"
              # the per-setting description is a HOVER tooltip now, not always-on clutter (the user 2026-06-23):
@@ -4612,7 +4616,7 @@ _GEAR_CSS = ("#rgear{position:fixed;top:6px;right:8px;z-index:60;background:#2a2
              ".ra-note{color:#9aa0a6;font-size:11.5px;border-top:1px solid #3a3a3a;padding-top:7px}")
 _GEAR_HTML = ("<button id=rrefresh title='Restart the romp kernel' aria-label=Refresh>↻</button>"
               "<button id=rgear title=Settings aria-label=Settings>⛭</button>"
-              "<div id=rsettings hidden>"
+              "<div id=rsettings hidden><div class=rs-card>"
               "<div class=rs-h>Settings</div>"
               "<label class=rs-row><input type=checkbox id=rs-compact>"
               "<span><b>Compact transcript</b>"
@@ -4660,7 +4664,7 @@ _GEAR_HTML = ("<button id=rrefresh title='Restart the romp kernel' aria-label=Re
               "<div class=rs-sep style='padding-top:8px'>"
               "<button id=ra-open class=ra-openbtn>Token usage analytics</button></div>"
               "<div class='rs-h rs-sep'>romp · version</div>"
-              "<div id=rsver>…</div></div>"
+              "<div id=rsver>…</div></div></div>"
               # the analytics modal (sibling of #rsettings) — a centered overlay with the sessions-vs-judges chart
               "<div id=ranalytics-back hidden><div id=ranalytics>"
               "<div class=ra-top><div class=ra-title>Token usage</div>"
@@ -4718,8 +4722,13 @@ if(dd&&typeof v.defaultDir==='string')dd.value=v.defaultDir;   // the kernel's p
 var x=lv();b.innerHTML='kernel '+(v.kernel_sha||'?')+'\nserving v'+
 v.dist_ver+'\nthis tab v'+(x||'?');
 }).catch(function(){b.textContent='(version unavailable)';});}
-g.onclick=function(e){e.stopPropagation();if(p.hidden){p.hidden=false;var s=load();cc.checked=!!s.compact;db.checked=!!s.debug;if(of)of.checked=!!s.oldestFirst;if(gb)gb.checked=s.showBranch!==false;cm.value=s.colormap||'hawaii';renderCmapBar();if(bk)bk.value=s.backend||'tmux';if(dd)dd.value=s.defaultDir||'';fill();}else p.hidden=true;};
-document.addEventListener('click',function(e){if(!p.hidden&&e.target!==g&&!p.contains(e.target))p.hidden=true;});
+// The settings modal is full-WINDOW, but the gear lives in the feed iframe — so ask the shell to expand the
+// feed iframe to the whole screen while the modal is open (it restores on close). No-op outside the shell.
+function feedFull(on){try{if(window.parent!==window)window.parent.postMessage({romp:'settings',on:!!on},'*');}catch(e){}}
+function closeSettings(){p.hidden=true;feedFull(false);}
+g.onclick=function(e){e.stopPropagation();if(p.hidden){p.hidden=false;feedFull(true);var s=load();cc.checked=!!s.compact;db.checked=!!s.debug;if(of)of.checked=!!s.oldestFirst;if(gb)gb.checked=s.showBranch!==false;cm.value=s.colormap||'hawaii';renderCmapBar();if(bk)bk.value=s.backend||'tmux';if(dd)dd.value=s.defaultDir||'';fill();}else closeSettings();};
+p.addEventListener('click',function(e){if(e.target===p)closeSettings();});   // click the dimmed backdrop (not the card) → close
+document.addEventListener('click',function(e){if(!p.hidden&&e.target!==g&&!p.contains(e.target))closeSettings();});
 var rf=document.getElementById('rrefresh');   // ↻ moved up from the timeline (the user 2026-06-17): POST /restart, poll /healthz, reload
 if(rf)rf.onclick=function(){rf.disabled=true;try{fetch('/restart',{method:'POST'}).catch(function(){});}catch(e){}
 var n=0;(function again(){setTimeout(function(){n++;fetch('/healthz',{cache:'no-store'}).then(function(r){if(r&&r.ok)location.reload();else if(n<40)again();}).catch(function(){if(n<40)again();});},500);})();};
@@ -4989,6 +4998,15 @@ var f=document.getElementById(on?'f-fleet':'f-chat');try{f&&f.contentWindow&&f.c
 """
 
 
+# Settings full-screen bridge (the user 2026-06-23): the feed iframe's gear posts {romp:'settings',on} when
+# its modal opens/closes; the shell lifts the feed iframe over the whole window (body.settings-open) so the
+# modal's backdrop covers the full screen, and restores it on close.
+_LANDING_SETTINGS_JS = """
+(function(){window.addEventListener('message',function(e){var m=e.data;
+if(m&&m.romp==='settings')document.body.classList.toggle('settings-open',!!m.on);});})();
+"""
+
+
 # Mobile shell behavior, layered on top of the desktop splitter above. The bottom tab bar (#mtabs,
 # shown only by the media query below) swaps which single iframe is full-screen by toggling `m-on`.
 # A cross-pane "reveal" auto-switches the visible tab: the kernel pushes {type:"reveal",pane} over an
@@ -5124,6 +5142,10 @@ def _landing():
             # Fleet toggle (the user 2026-06-23): the chat pane holds a SECOND iframe (/fleet, the by-session
             # open-work view); a top-right button flips the pane between the session chat and the Fleet. f-fleet
             # loads hidden so the swap is instant. The toggle floats above the iframe + the focus veil (z 6).
+            # Settings modal (the user 2026-06-23): the gear lives in the feed iframe, so when it opens its
+            # full-window modal it asks the shell (postMessage) to lift the feed iframe over the whole window;
+            # the modal's backdrop + card then cover the full screen. Restored on close.
+            "body.settings-open #f-feed{position:fixed;inset:0;z-index:200;width:100vw;height:100vh}"
             "#chat-pane>#f-fleet{display:none}"
             "#chat-pane.show-fleet>#f-chat{display:none}#chat-pane.show-fleet>#f-fleet{display:block}"
             "#chat-fleet-toggle{position:absolute;top:6px;right:8px;z-index:31;cursor:pointer;"
@@ -5234,6 +5256,7 @@ def _landing():
             "<script>" + _LANDING_JS + "</script>"
             "<script>" + _LANDING_FOCUS_JS + "</script>"
             "<script>" + _LANDING_FLEET_JS + "</script>"
+            "<script>" + _LANDING_SETTINGS_JS + "</script>"
             "<script>" + _LANDING_MOBILE_JS + "</script>"
             "<script>" + _LANDING_COLLAPSE_JS + "</script>"
             + _stale_block(v) +
