@@ -767,9 +767,9 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   for (const s of subs.slice(0, 8)) {
     const row = el("div", "fcheck " + nodeStatusClass(s));
     const mark = el("span", "fcheck-mark");
-    // ✓ blue disc (done) / ? (question) / hollow ○ (not done) — the same notation as the ledger
-    // checklist and the modal tree (the user 2026-06-16); ▢ was the odd one out.
-    mark.textContent = s.status === "done" ? "✓" : s.status === "question" ? "?" : "○";
+    // ✓ blue disc (done) / ⏸ red pause (question = blocked) / hollow ○ (not done) — the SAME notation as the
+    // ledger checklist + Fleet (the user 2026-06-24: the red ⏸ replaces the amber ? everywhere, for consistency).
+    mark.textContent = s.status === "done" ? "✓" : s.status === "question" ? "⏸" : "○";
     const txt = el("span", "fcheck-text"); txt.textContent = s.text;
     row.append(mark, txt);
     // a card sub-goal clicks EXACTLY like the modal tree node (the user 2026-06-17): text → the message,
@@ -825,7 +825,7 @@ function memberStatus(m: AskItem): "done" | "question" | "open" {
 }
 function memberMark(m: AskItem): string {
   const s = memberStatus(m);
-  return s === "done" ? "●" : s === "question" ? "?" : "○";
+  return s === "done" ? "●" : s === "question" ? "⏸" : "○";
 }
 
 // Fold N sibling asks (shared turnId) into one AskGroup. Column = WORST member
@@ -974,7 +974,7 @@ function hoverEmit(ids: string | string[] | null) {
 // disclosure triangle is the only arrow — no glyph shares its shape.
 function nodeMark(n: AskTreeNode): string {
   if (n.status === "done") return "●";
-  if (n.status === "question") return "?";
+  if (n.status === "question") return "⏸";   // blocked → the red pause (was an amber ?), consistent w/ the ledger
   return "○";
 }
 function nodeStatusClass(n: AskTreeNode): string {
@@ -1223,7 +1223,7 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
         row.dataset.eid = r.reply_id;   // chat rail-dot hover rings this row back
         row.style.paddingLeft = ((depth + 1) * TREE_INDENT_EM + 1) + "em";
         // ↩ = the user's recorded ANSWER (an explicit child event, not agent work)
-        const rm = el("span", "frow-mark"); rm.textContent = r.answer ? "↩" : r.status === "question" ? "?" : "●"; row.appendChild(rm);
+        const rm = el("span", "frow-mark"); rm.textContent = r.answer ? "↩" : r.status === "question" ? "⏸" : "●"; row.appendChild(rm);
         const rt = el("span", "flinked-did"); rt.textContent = r.did; row.appendChild(rt);
         const ra = el("span", "ftime"); ra.textContent = relAge(hostNow - r.t);
         if (r.trgb) ra.style.color = "rgb(" + r.trgb.join(",") + ")";   // Hawaii recency tint

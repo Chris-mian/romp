@@ -99,7 +99,7 @@ body { display: flex; flex-direction: column; }
    linked work says what's finished vs what needs the user at a glance */
 .flinked-mark { flex: 0 0 auto; width: 1.1em; text-align: center; font-weight: 700; }
 .flinked.st-done .flinked-mark { color: var(--rel-done); }
-.flinked.st-question .flinked-mark { color: #e0b020; }
+.flinked.st-question .flinked-mark { color: var(--err); }   /* red ⏸ block mark (was an amber ?) */
 .flinked.st-question .flinked-did { color: #e0b020; }     /* the actionable one stands out */
 .flinked.st-update { opacity: 0.62; }
 .flinked.st-update .flinked-mark { color: var(--dim); }
@@ -292,7 +292,8 @@ body { display: flex; flex-direction: column; }
 /* every report that arrived is a completed sub-thing → filled green dot;
    the report that IS the open question keeps its ? */
 .frow .frow-mark { color: var(--rel-done); }
-.frow.st-question .frow-mark, .frow.st-question .flinked-did { color: #e0b020; }
+.frow.st-question .frow-mark { color: var(--err); }   /* red ⏸ block mark (was an amber ?) — the user 2026-06-24 */
+.frow.st-question .flinked-did { color: #e0b020; }
 .ftree-text, .flinked-did { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
 /* agent label in the tree = bold colored session link (color set inline) */
 .ftree-who { flex: 0 0 auto; font-size: 0.92em; font-weight: 600; color: var(--dim); cursor: pointer; text-decoration: none; }
@@ -360,7 +361,7 @@ body { display: flex; flex-direction: column; }
 .fgroup-member { display: flex; align-items: baseline; gap: 7px; font-size: 0.92em; line-height: 1.35; }
 .fgroup-dot { flex: 0 0 auto; width: 1.1em; text-align: center; font-weight: 700; }
 .fgroup-member.st-done .fgroup-dot { color: var(--rel-done); }
-.fgroup-member.st-question .fgroup-dot { color: #e0b020; }
+.fgroup-member.st-question .fgroup-dot { color: var(--err); }   /* red ⏸ block mark (was an amber ?) */
 .fgroup-member.st-open .fgroup-dot { color: var(--dim); }
 /* completed marker = a filled disc with a white ✓ (the user: distinct from a plain
    dot, which other states + recency tints also use). One badge for EVERY "done" mark
@@ -590,7 +591,7 @@ body { display: flex; flex-direction: column; }
   display: inline-flex; align-items: center; justify-content: center; align-self: center; line-height: 1;
 }
 .fcheck.done .fcheck-text { color: var(--dim); }
-.fcheck.question .fcheck-mark { color: #d8a657; }
+.fcheck.question .fcheck-mark { color: var(--err); }   /* red ⏸ block mark (was an amber ?) */
 /* a card sub-goal is clickable just like the modal tree node (the user 2026-06-17): the checkbox + text are
    separate links. Per-ZONE hover highlight (.lz-hl, JS-toggled) — a halo on the mark, a fill on the text. */
 .fcheck .lz-nav { cursor: pointer; }
