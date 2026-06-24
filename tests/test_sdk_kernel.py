@@ -248,5 +248,31 @@ class SdkQueuedIndicator(unittest.TestCase):
         self.assertIn('queued = _pending_queued(sess["path"])', src)   # tmux/fallback path kept
 
 
+class SdkMetadataParity(unittest.TestCase):
+    """SDK sessions should surface the same statusline metadata as tmux (the user 2026-06-24): model/mode on
+    OPEN (eager-connect), the git branch derived straight from the FOLDER, and a context-fill bar."""
+
+    def test_git_branch_derived_from_folder(self):
+        import subprocess, tempfile
+        repo = os.path.dirname(BIN)   # the romp repo itself
+        expected = subprocess.run(["git", "-C", repo, "rev-parse", "--abbrev-ref", "HEAD"],
+                                  capture_output=True, text=True).stdout.strip()
+        self.assertEqual(km._git_branch(repo), expected, "branch comes straight from the folder, no transcript")
+        self.assertEqual(km._git_branch(tempfile.mkdtemp()), "", "not a repo → ''")
+        self.assertEqual(km._git_branch(""), "", "no dir → ''")
+
+    def test_open_eager_connects_sdk_branch_fallback_and_ctx_passthrough(self):
+        with open(os.path.join(BIN, "romp-kernel")) as f:
+            src = f.read()
+        # opening a session eager-connects the SDK backend → model/mode publish before the first message
+        oor = src.split("def _open_or_revive", 1)[1].split("\ndef ", 1)[0]
+        self.assertIn("be.connect(sid)", oor)
+        # sysinfo branch falls back to the folder when the transcript lacks it
+        self.assertIn('meta.get("gitBranch") or _git_branch(scwd)', src)
+        # the SDK merge passes the backend's context-fill % through (was hardcoded None)
+        self.assertIn('ctx = st.get("ctx")', src)
+        self.assertIn("ctx if isinstance(ctx, (int, float)) else None", src)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -151,6 +151,22 @@ class LiveTail(unittest.TestCase):
         self.assertEqual(echoes[0]["type"], "user")
         self.assertEqual(echoes[0]["message"]["content"], [{"type": "text", "text": "type this"}])
 
+    def test_context_pct_from_usage_infers_window(self):
+        """SDK context bar (the user 2026-06-24): compute context-fill % from a turn's usage (prompt =
+        input + cache-read + cache-creation). The window isn't reported, so it's inferred from the session's
+        peak prompt — a prompt over 200k means a 1M-context session. None until a turn with usage lands."""
+        class _M:
+            def __init__(self, ir, cr, cc): self.usage = {"input_tokens": ir, "cache_read_input_tokens": cr, "cache_creation_input_tokens": cc}
+        be = sb.SdkBackend(tempfile.mkdtemp(), "/bin/true", lambda *a, **k: None)
+        s = sb.SdkSession(be, {"sid": "11111111-2222-3333-4444-555555555555", "name": "n", "cwd": "/tmp"})
+        self.assertIsNone(s._ctx_pct(), "no usage yet → no context bar")
+        s._note_usage(_M(2, 100000, 0))                  # 100002 / 200k window
+        self.assertEqual(s._ctx_pct(), 50)
+        s._note_usage(_M(0, 500000, 8000))               # 508000 prompt → peak>200k → 1M window
+        self.assertEqual(s._ctx_pct(), 51)               # 508000 / 1_000_000 → 50.8 → 51
+        s._note_usage(_M(0, 0, 0))                        # a usage-less / zero turn doesn't reset the fill
+        self.assertEqual(s._ctx_pct(), 51)
+
     def test_assistant_model_sets_badge_but_synthetic_does_not_corrupt_it(self):
         """The model 'doesn't show' mid-conversation (the user 2026-06-24): injected/synthetic assistant turns
         carry model='<synthetic>', which an unguarded assign wrote straight onto the statusline + timeline

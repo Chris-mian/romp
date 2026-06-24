@@ -1220,6 +1220,12 @@ def _open_or_revive(sid):
     confirmRevive modal (no silent reopen, no auto read-only tab — the user 2026-06-17)."""
     if sid in _tmux_sessions():
         _set_hidden_tab(sid, False)
+        be = _sdk()
+        if be:
+            be.connect(sid)   # SDK: eager-connect on OPEN (idempotent; no-op for tmux/unknown sids) so the
+                              # model / permission-mode publish from the init message right away AND the model
+                              # is changeable BEFORE the first message — not only after one (the user 2026-06-24:
+                              # opening an SDK session showed no model/effort until a message was sent).
         _push_all()
     _reveal_or_confirm(sid, {"type": "focus", "id": sid})
 
@@ -1340,9 +1346,10 @@ def _tmux_sessions():
     if be:
         try:
             for sid, st in be.live_sessions().items():
+                ctx = st.get("ctx")   # SDK context-fill % from usage (None until a turn lands / while dormant)
                 out[sid] = {"state": st.get("state", ""), "since": _num(str(st.get("since") or "")),
                             "model": st.get("model", ""), "effort": st.get("effort", ""),
-                            "context": None, "compactPct": None,
+                            "context": ctx if isinstance(ctx, (int, float)) else None, "compactPct": None,
                             "color": (st.get("color") or None), "mode": st.get("mode", ""), "backend": "sdk"}
         except Exception:
             sys.stderr.write("sdk live_sessions merge: %s\n" % traceback.format_exc())
@@ -2287,6 +2294,40 @@ def _tilde(p):
     return p
 
 
+_branch_cache = {}   # cwd -> (branch, head_mtime) — git branch derived straight from the FOLDER
+
+
+def _git_branch(cwd):
+    """The git branch for a directory, derived DIRECTLY from the folder — so it shows the instant a session
+    is opened, before any turn writes gitBranch into the transcript (the user 2026-06-24: branch should be a
+    property of the dir, known in advance). Cached per cwd, refreshed when .git/HEAD changes. '' when not a
+    repo / detached / unavailable. Applies to BOTH backends (a never-run tmux session shows it now too)."""
+    if not cwd:
+        return ""
+    cwd = os.path.expanduser(cwd)
+    mt = None
+    try:
+        mt = os.path.getmtime(os.path.join(cwd, ".git", "HEAD"))   # plain repo; worktrees use a .git FILE → mt stays None (uncached)
+    except OSError:
+        pass
+    hit = _branch_cache.get(cwd)
+    if hit is not None and mt is not None and hit[1] == mt:
+        return hit[0]
+    br = ""
+    try:
+        r = subprocess.run(["git", "-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"],
+                           capture_output=True, text=True, timeout=2)
+        if r.returncode == 0:
+            br = r.stdout.strip()
+            if br == "HEAD":          # detached HEAD → no branch name
+                br = ""
+    except Exception:
+        br = ""
+    if mt is not None:
+        _branch_cache[cwd] = (br, mt)
+    return br
+
+
 def _session_meta(path):
     """Latest cwd / gitBranch / Claude Code version / permission mode for a session, read straight from the
     raw transcript (the event model drops these). Cached by (mtime,size) like _parse/_api_error, since
@@ -2735,9 +2776,12 @@ def build_session(sid, now, tmux=None):
     # effect + this session's model / cwd / branch / permission-mode / version (NOT the harness prompt —
     # see _claudemd_docs). Only when there's a real transcript to describe AND something to show.
     meta = _session_meta(sess["path"])
-    docs = _claudemd_docs(meta.get("cwd"))
-    sysinfo = {"kind": "system", "model": last_model, "cwd": _tilde(meta.get("cwd") or ""),
-               "gitBranch": meta.get("gitBranch") or "", "version": meta.get("version") or "",
+    scwd = _cwd_of(sid) or meta.get("cwd") or ""    # the session's fixed dir — known even before the first turn
+    docs = _claudemd_docs(meta.get("cwd") or scwd)
+    sysinfo = {"kind": "system", "model": last_model, "cwd": _tilde(meta.get("cwd") or scwd),
+               # branch from the transcript if present, else derived straight from the folder so it shows on
+               # open (the user 2026-06-24) — works for a never-run session of EITHER backend.
+               "gitBranch": meta.get("gitBranch") or _git_branch(scwd), "version": meta.get("version") or "",
                "mode": meta.get("permissionMode") or "", "claudemd": docs}
     if events and (docs or any(sysinfo[k] for k in ("model", "cwd", "gitBranch", "version", "mode"))):
         events.insert(0, sysinfo)

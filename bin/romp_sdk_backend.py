@@ -320,6 +320,8 @@ class SdkSession:
         self.inflight = 0
         self.since = 0
         self.model = ""
+        self._ctx_tokens = 0   # last turn's PROMPT size (input + cache read + cache creation) = current context fill
+        self._ctx_peak = 0     # max prompt seen this session → infers the window (>200k ⇒ a 1M-context session)
         self.retrying = False                        # an api_retry storm (API rate-limit/overload) is stalling the turn → 'retrying', not 'working'
         self._interrupted = False                    # user interrupted the in-flight turn → snapshot reads 'waiting' (display only; inflight stays event-driven)
         self.chosen_model = reg.get("model") or ""   # the alias the user picked (opus/sonnet/…); self.model is the display name
@@ -556,7 +558,31 @@ class SdkSession:
             pass
         self.backend._poke()
 
+    def _ctx_pct(self):
+        """Context-window fill %, like the tmux statusline's bar — APPROXIMATE for SDK sessions. The SDK's
+        usage doesn't report the window size, which varies (200k standard vs 1M), so we infer it from the
+        session's PEAK prompt (a prompt that ever exceeded 200k means a 1M-context session). None until a turn
+        with usage is seen (the user 2026-06-24: SDK had no context bar). Capped at 100."""
+        if not self._ctx_tokens:
+            return None
+        window = 1_000_000 if self._ctx_peak > 200_000 else 200_000
+        return min(100, round(self._ctx_tokens / window * 100))
+
+    def _note_usage(self, msg):
+        """Track the last turn's PROMPT size from any message carrying usage (assistant / result). The prompt
+        is input + cache-read + cache-creation tokens — i.e. everything sent to the model = the current
+        context fill. Drives _ctx_pct."""
+        u = getattr(msg, "usage", None)
+        if not isinstance(u, dict):
+            return
+        prompt = (u.get("input_tokens") or 0) + (u.get("cache_read_input_tokens") or 0) \
+            + (u.get("cache_creation_input_tokens") or 0)
+        if prompt > 0:
+            self._ctx_tokens = prompt
+            self._ctx_peak = max(self._ctx_peak, prompt)
+
     def _on_message(self, msg, AssistantMessage, ResultMessage, SystemMessage):
+        self._note_usage(msg)   # context-fill tracking (any message that carries a usage block)
         if isinstance(msg, SystemMessage) and msg.subtype == "init":
             d = msg.data if isinstance(msg.data, dict) else {}
             self._learn_model(pretty_model(d.get("model")))
@@ -707,7 +733,7 @@ class SdkSession:
             state, since = ls.get("state") or "waiting", ls.get("t") or 0
         return {"state": state, "since": str(since) if since else "",
                 "model": model_label(self.model, self.chosen_model), "effort": self.effort,
-                "mode": self.perm_mode, "ctx": "", "summary": ""}
+                "mode": self.perm_mode, "ctx": self._ctx_pct(), "summary": ""}
 
 
 # ---------------------------------------------------------------------------
