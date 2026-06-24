@@ -110,6 +110,31 @@ class SessionOrder(unittest.TestCase):
         km._write_session_order([A, B])
         self.assertEqual(km._merge_session_order([B, A, A, 7, None]), [B, A])
 
+    # ── _gc_session_order: self-clean GONE sids, keep everything still around ───────────────────────
+    def test_gc_prunes_gone_sids_keeps_survivors_in_order(self):
+        km._write_session_order([A, B, C, D])
+        km._gc_session_order({A, C})                       # B, D are gone (not alive, no transcript)
+        self.assertEqual(self.order_file(), [A, C])        # gone sids dropped; survivors keep their order
+
+    def test_gc_is_a_noop_when_nothing_is_gone(self):
+        km._write_session_order([A, B, C])
+        km._gc_session_order({A, B, C, D})                 # all present (D just isn't in the order yet)
+        self.assertEqual(self.order_file(), [A, B, C])     # unchanged
+
+    def test_chat_push_prunes_a_truly_gone_session_from_the_file(self):
+        km._write_session_order([A, B, C])
+        km._alive_sessions = lambda now, tmux: [sess(A, 100), sess(C, 300)]    # B not alive
+        km._sessions = lambda now: [sess(A, 100), sess(C, 300)]               # B's transcript gone → GONE
+        km._chat_tab_sessions(0, {})
+        self.assertEqual(self.order_file(), [A, C])        # B pruned on a chat push (self-cleaning)
+
+    def test_chat_push_keeps_a_dead_but_in_window_session(self):
+        km._write_session_order([A, B, C])
+        km._alive_sessions = lambda now, tmux: [sess(A, 100), sess(C, 300)]    # B not alive...
+        km._sessions = lambda now: [sess(A, 100), sess(B, 200), sess(C, 300)]  # ...but B is still in-window
+        km._chat_tab_sessions(0, {})
+        self.assertEqual(self.order_file(), [A, B, C])     # dead-but-in-window B keeps its slot
+
 
 if __name__ == "__main__":
     unittest.main()

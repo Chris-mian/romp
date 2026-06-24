@@ -475,6 +475,19 @@ def _write_session_order(order):
     _atomic_write(jd.STATE / "session-order.json", json.dumps([x for x in order if isinstance(x, str)]))
 
 
+def _gc_session_order(known):
+    """Self-clean the persisted order: drop session-order.json entries for sids that are GONE — neither
+    alive nor with a transcript still in the discover window. Keeps the file bounded and robust across
+    restarts (the user 2026-06-24: persist the order across a kernel restart / ROMP close, but auto-clean
+    it so a closed / aged-out session falls out on its own). Everything still around keeps its EXACT slot —
+    only truly-absent sids are removed, and since the discover window only slides FORWARD a pruned sid never
+    flickers back to reclaim a slot. Writes only when something actually changed (no churn on the hot path)."""
+    order = _session_order()
+    kept = [sid for sid in order if sid in known]
+    if kept != order:
+        _write_session_order(kept)
+
+
 def _merge_session_order(incoming):
     """Splice a drag's order into the persisted one WITHOUT disturbing lanes the drag didn't touch. A drag
     publishes the order of the sids on ONE surface (chat tabs, or timeline lanes) — usually a SUBSET of all
@@ -866,7 +879,13 @@ def _chat_tab_sessions(now, tmux):
     hidden = _hidden_tabs()
     live = _alive_sessions(now, tmux)
     live_sids = {s["sid"] for s in live}
-    dead_kept = [s for s in _sessions(now) if s["sid"] in _kept_open and s["sid"] not in live_sids]
+    all_sessions = _sessions(now)
+    dead_kept = [s for s in all_sessions if s["sid"] in _kept_open and s["sid"] not in live_sids]
+    # Self-clean the persisted order here, where it runs on every push (the chat is always built): prune sids
+    # that are GONE — not alive AND no transcript left in the discover window — so session-order.json stays
+    # bounded and a closed / aged-out session drops out on its own (the user 2026-06-24). A session that is
+    # merely dead-but-in-window (or explicitly kept-open) stays in the known set and keeps its slot.
+    _gc_session_order(live_sids | {s["sid"] for s in all_sessions} | set(_kept_open))
     # Order is purely the persisted session-order.json (see _ordered) — no activity reshuffle; a dying tab
     # keeps its slot. live + dead_kept resolve through the SAME index map _timeline_sessions uses, so chat
     # tabs and timeline lanes stay in lockstep.
