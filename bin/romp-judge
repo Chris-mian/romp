@@ -1651,13 +1651,26 @@ def _plan_session(fsid, path, now):
     return placed
 
 
+def _hidden_from_feed(fsid):
+    """True if the session is muted from the feed (session-flags.json, set from the timeline checkbox). The
+    judge honours it by NOT tracking the session's goals — the planner + closer skip it — so muting takes a
+    session OUT of task tracking, with no goal backlog accumulating while it's muted. The SEARCH index (the
+    captioner/archiver, run_index) is deliberately NOT gated: a muted session stays findable via
+    find_sessions. Best-effort; any read error → not hidden (fail open)."""
+    try:
+        f = json.loads((STATE / "session-flags.json").read_text()).get(fsid)
+        return bool(isinstance(f, dict) and f.get("hideFromFeed"))
+    except Exception:
+        return False
+
+
 def run_plan(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, verbose=False):
     """One TRIAGE-TIER planner pass: advance each session's goal tree. Per-session sequential
     (the tree accretes); sessions concurrent. Returns total placements made. (Global cross-session
     time-order is the courier's need; the planner's tree is per-session.)"""
     if now is None:
         now = int(time.time())
-    fleet = discover(now)[:sessions_cap]
+    fleet = [s for s in discover(now) if not _hidden_from_feed(s[0])][:sessions_cap]   # muted sessions are out of task tracking
     placed = 0
     with ThreadPoolExecutor(max_workers=concurrency) as ex:
         futs = {ex.submit(_plan_session, fsid, str(path), now): fsid for fsid, path, anchor, name in fleet}
@@ -2253,7 +2266,7 @@ def run_close(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, ver
     Per-session sequential (the tree accretes), sessions concurrent. Returns nodes completed."""
     if now is None:
         now = int(time.time())
-    fleet = discover(now)[:sessions_cap]
+    fleet = [s for s in discover(now) if not _hidden_from_feed(s[0])][:sessions_cap]   # muted sessions are out of task tracking
     n = 0
     with ThreadPoolExecutor(max_workers=concurrency) as ex:
         futs = {ex.submit(_close_session, fsid, str(path), now): fsid

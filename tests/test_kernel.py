@@ -284,6 +284,23 @@ class ViewBuilder(unittest.TestCase):
         km._set_session_flag(SID, "hideFromFeed", False)
         self.assertTrue(has_card(), "unflagged → the cards come back (reversible)")
 
+    def test_muted_session_is_out_of_the_ledger(self):
+        # crossing the feed checkbox off takes a session OUT of task tracking — its ledger shows no goal tree
+        # (the judge also stops planning for it; see tests/test_judge_hidefeed.py). Reversible.
+        nid = SID + ":n1"
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+            "rompUuid": SID, "seq": 1, "lastNode": nid,
+            "nodes": {nid: {"id": nid, "text": "wire it up", "parentId": None, "nodeComplete": False,
+                            "blocked": False, "cleared": False, "trail": [], "t": T0, "mt": T0}},
+            "placements": {}, "status": {nid: "working"}}))
+        self.assertTrue(km.build_session(SID, NOW)["ledger"]["tree"], "tracked → the goal shows in the ledger")
+        km._set_session_flag(SID, "hideFromFeed", True); km._flags_cache.clear()
+        led = km.build_session(SID, NOW)["ledger"]
+        self.assertEqual(led["tree"], [], "a muted session's ledger carries no goal tree")
+        self.assertIsNone(led["current"], "...and no current task")
+        km._set_session_flag(SID, "hideFromFeed", False); km._flags_cache.clear()
+        self.assertTrue(km.build_session(SID, NOW)["ledger"]["tree"], "un-muting restores the ledger")
+
     def test_timeline_lane_reports_hide_from_feed_for_the_gear(self):
         """The timeline lane carries hideFromFeed so the gear can render its on/off state."""
         km._flags_cache.clear()

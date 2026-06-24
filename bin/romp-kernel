@@ -2512,6 +2512,8 @@ def build_session(sid, now, tmux=None):
     for _rid in sorted(gkids.get(None, []), key=_submax, reverse=True):
         _twalk(_rid, 0)
     # bullets kept as a fallback for goal-less sessions (render shows the tree when it's non-empty).
+    if _session_flag(sid, "hideFromFeed"):       # muted → out of task tracking: the ledger shows no goal tree / current task
+        tree, current = [], None
     ledger = {"summary": arch.get("headline", ""), "tree": tree[:80],
               "current": current, "bullets": bullets}
     # work-timer base, in MILLISECONDS (render's elapsedMs does Date.now()ms - sinceEpoch; a seconds
@@ -3892,8 +3894,8 @@ def build_timeline(now, tmux=None):
         else:                             # dead lane: NEVER "working" — a turn left open at death (e.g. a stalled API
                                           # turn that never returned a ResultMessage, then ended) must not read as
                                           # active (the user 2026-06-23); badgeFor dims a dead lane anyway.
-            blocked = "blocked" in goals.get("status", {}).values()
-            state = "awaiting" if blocked else "idle"
+            blocked = "blocked" in goals.get("status", {}).values() and not _session_flag(sid, "hideFromFeed")
+            state = "awaiting" if blocked else "idle"   # muted → no 'awaiting'/background-task badge on the lane
         bars, last_t, seg_ends = [], None, {}            # seg_ends: seg-start t → work-END t (for completion marks)
         for ti, turn in enumerate(st_turns):
             turn_open = (live and ti == len(st_turns) - 1 and not turn["ended"]
