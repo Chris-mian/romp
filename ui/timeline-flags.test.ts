@@ -17,7 +17,7 @@ test("a per-session feed-checkbox column sits BETWEEN the name and the model (li
   // so the model column now hangs off mailColX, not eyeColX directly.
   assert.match(SRC, /const mailColX = eyeColX \+ \(anyLive \? EYE_W \+ EYE_GAP : 0\);/);
   assert.match(SRC, /const modelColX = mailColX \+ \(anyLive \? EYE_W \+ EYE_GAP : 0\);/);
-  assert.match(SRC, /if \(s\.live\) \{[\s\S]*?feedCheckIcon\(off, cx, cy, MODEL_FG\)/);
+  assert.match(SRC, /if \(s\.live\) \{[\s\S]*?feedCheckIcon\(off, cx, cy, off \? MODEL_FG : ROMP_BLUE\)/);
 });
 
 test("the checkbox is DRAWN (a gray ring + a checkmark); the OFF state adds the same strike-through slash", () => {
@@ -31,12 +31,14 @@ test("the checkbox is DRAWN (a gray ring + a checkmark); the OFF state adds the 
   assert.match(SRC, /if \(off\) g\.appendChild\(el\('line', \{ x1: cx - 6\.5[\s\S]*?stroke: color/);
 });
 
-test("the checkbox is always GRAY; the OFF state is MORE faded (de-emphasised), never highlighted (the user 2026-06-23)", () => {
-  // one colour (MODEL_FG) for both states — the off lane is faded a touch more (0.3, was 0.4), NOT spotlit
-  assert.match(SRC, /const dim = off \? '0\.3' : '0\.62';/);
-  assert.match(SRC, /const box = feedCheckIcon\(off, cx, cy, MODEL_FG\);/);
-  assert.doesNotMatch(SRC, /FEED_OFF_FG/, "no amber highlight colour for the off state");
-  assert.doesNotMatch(SRC, /GEAR_ON_FG/, "the old amber gear-active colour is gone");
+test("ON = the romp-blue accent; OFF = a faded, struck-out gray (the user 2026-06-24, supersedes the all-gray rule)", () => {
+  // The user's earlier "always gray, never highlighted" (2026-06-23) is reversed: an ENABLED toggle now reads
+  // as the romp accent blue, a disabled one as the muted gray (MODEL_FG) + more faded + the strike slash.
+  assert.match(SRC, /const ROMP_BLUE = '#9cd2ff';/);
+  assert.match(SRC, /const dim = off \? '0\.3' : '0\.9';/);                          // off recedes; on is confident
+  assert.match(SRC, /const box = feedCheckIcon\(off, cx, cy, off \? MODEL_FG : ROMP_BLUE\);/);
+  assert.match(SRC, /const mbox = mailboxIcon\(moff, mcx, mcy, moff \? MODEL_FG : ROMP_BLUE\);/);   // mailbox matches
+  assert.match(SRC, /const mdim = moff \? '0\.3' : '0\.9';/);
 });
 
 test("the checkbox has a generous hit RECT and toggles hideFromFeed on POINTERDOWN (redraw-proof, no menu)", () => {
@@ -46,6 +48,16 @@ test("the checkbox has a generous hit RECT and toggles hideFromFeed on POINTERDO
   assert.match(SRC, /hit\.addEventListener\('pointerdown', \(e\) => \{[\s\S]*?s\.hideFromFeed = next;[\s\S]*?this\._setSessionFlag\(s, 'hideFromFeed', next\)/);
   assert.doesNotMatch(SRC, /_openFlagMenu/, "the popup flag menu is removed");
   assert.doesNotMatch(SRC, /const SESSION_FLAGS = \[/, "the flag list is removed (single flag, direct toggle)");
+});
+
+test("the toggle RECONCILES the optimistic flip onto the live objects before drawing (the stale-`s` race fix, 2026-06-24)", () => {
+  // The real "changed it but it failed / sometimes unresponsive" cause: a poll swaps this.data for fresh
+  // session objects (update() line `this.data = data`) between the last render and the press, so the captured
+  // `s` is stale — draw() reads the NEW object's OLD value and the toggle looks dead. Both handlers now call
+  // _reconcilePendingFlags() (which re-applies _pendingFlags onto the CURRENT this.data.sessions, keyed by id)
+  // immediately before draw(), so the flip always shows AND the kernel still receives it.
+  assert.match(SRC, /'hideFromFeed', next\);[\s\S]*?this\._reconcilePendingFlags\(\);[^\n]*\n\s*this\.draw\(\);/);
+  assert.match(SRC, /'postalOff', next\);[\s\S]*?this\._reconcilePendingFlags\(\);[^\n]*\n\s*this\.draw\(\);/);
 });
 
 test("the tooltip uses the shared showTip/hideTip (a native SVG <title> never shows — a redraw kills it)", () => {

@@ -198,6 +198,10 @@ function ctxInfo(s) {
 // session. Rendered as muted secondary text between the name and the state chip. '' when unknown
 // (historical/dead lanes never reported it, and some models carry no effort level).
 const MODEL_FG = '#9aa0a6';
+// The romp accent blue (same as the Fleet pill / focus accent). The lane toggles (feed checkbox, mailbox)
+// draw in this when ON, and fall back to the muted gray MODEL_FG + strike-through when OFF (the user
+// 2026-06-24): an ENABLED toggle reads as romp-blue, a disabled one as a faded, struck-out gray.
+const ROMP_BLUE = '#9cd2ff';
 function modelLabel(s) {
   if (!s || !s.model) return '';
   return s.effort ? s.model + ' ' + s.effort : s.model;
@@ -1876,8 +1880,8 @@ class TimelinePanel {
         // generous transparent <rect> over it is the real hit target (same trick the work bars use). The
         // tooltip uses the shared showTip/hideTip (a native SVG <title> never shows — a redraw kills the
         // hover before it appears; showTip freezes live-follow so it stays — the user 2026-06-22).
-        const dim = off ? '0.3' : '0.62';              // off = more faded (the user 2026-06-23); on = the normal gray
-        const box = feedCheckIcon(off, cx, cy, MODEL_FG);
+        const dim = off ? '0.3' : '0.9';               // off = faded; on = a confident romp-blue (the user 2026-06-24)
+        const box = feedCheckIcon(off, cx, cy, off ? MODEL_FG : ROMP_BLUE);   // ON = romp blue, OFF = struck-out gray
         box.setAttribute('opacity', dim);
         svg.appendChild(box);
         const hit = el('rect', { x: eyeColX - 4, y: y - 9, width: EYE_W + 8, height: 18, fill: 'transparent', 'pointer-events': 'all' });
@@ -1899,6 +1903,12 @@ class TimelinePanel {
           (this._pendingFlags[s.id] = this._pendingFlags[s.id] || {}).hideFromFeed = next;   // … and held STICKY across pushes until the kernel confirms (no flicker-back)
           this._setSessionFlag(s, 'hideFromFeed', next);
           this.hideTip();
+          // Apply the optimistic flip onto the CURRENT this.data.sessions before drawing (the user 2026-06-24):
+          // a poll can swap this.data for fresh objects between the last render and this press, leaving the
+          // captured `s` stale — draw() then reads the NEW object's OLD value and the toggle looks dead ("changed
+          // it, but it failed"). Reconcile re-applies _pendingFlags onto the live objects draw() reads, so the
+          // flip always shows AND the kernel still gets it. Keyed by id, so object identity no longer matters.
+          this._reconcilePendingFlags();
           this.draw();
         });
       }
@@ -1909,8 +1919,8 @@ class TimelinePanel {
       if (s.live) {
         const moff = !!s.postalOff;
         const mcx = mailColX + 5, mcy = y + 0.5;
-        const mdim = moff ? '0.3' : '0.62';
-        const mbox = mailboxIcon(moff, mcx, mcy, MODEL_FG);
+        const mdim = moff ? '0.3' : '0.9';             // off = faded; on = a confident romp-blue (the user 2026-06-24)
+        const mbox = mailboxIcon(moff, mcx, mcy, moff ? MODEL_FG : ROMP_BLUE);   // ON = romp blue, OFF = struck-out gray
         mbox.setAttribute('opacity', mdim);
         svg.appendChild(mbox);
         const mhit = el('rect', { x: mailColX - 4, y: y - 9, width: EYE_W + 8, height: 18, fill: 'transparent', 'pointer-events': 'all' });
@@ -1929,7 +1939,8 @@ class TimelinePanel {
           (this._pendingFlags[s.id] = this._pendingFlags[s.id] || {}).postalOff = next;   // … held sticky until the kernel confirms
           this._setSessionFlag(s, 'postalOff', next);
           this.hideTip();
-          this.draw();
+          this._reconcilePendingFlags();   // apply onto the CURRENT objects draw() reads — a poll may have swapped
+          this.draw();                     // this.data mid-press, leaving `s` stale (see the feed checkbox above)
         });
       }
       // model + effort, muted, between the name and the state chip (left-aligned in its column). On a
