@@ -1377,12 +1377,13 @@ function showTabTip(tab: HTMLElement, s: Session): void {
   const tip = tabTipEl;
   tip.replaceChildren();
   const now = Date.now() / 1000;
-  // backend, BOLD, in the SESSION'S OWN romp identity colour (the user 2026-06-23 v2: identity colour, no name)
+  // backend, BOLD, coloured BY BACKEND — tmux → green, SDK → blue, the canonical romp _palette shades
+  // (the user 2026-06-23: thematic consistency over the session's identity colour, which v2 had used)
   const be = s.status.backend;
   if (be === "sdk" || be === "tmux") {
     const b = el("div", "tab-tip-be");
     b.textContent = (be === "sdk" ? "SDK" : "tmux") + " backend";
-    if (s.color?.bg) b.style.color = s.color.bg;
+    b.style.color = be === "tmux" ? "#54B204" : "#1EA1EB";
     tip.appendChild(b);
   }
   if (s.cwd) { const d = el("div", "tab-tip-path"); d.textContent = s.cwd; tip.appendChild(d); }
