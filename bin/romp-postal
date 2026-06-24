@@ -269,7 +269,16 @@ def format_agents(agents, me):
     for a in agents:
         tag = " (you)" if a["name"] == me else (" [remote]" if a.get("remote") else "")
         br = ("  [%s]" % a["branch"]) if a.get("branch") else ""
-        wk = ("  — %s" % a["working"]) if a.get("working") else ""
+        wk = ""
+        if a.get("working"):
+            # The working-note is an ownership CLAIM, and it's only LIVE while the session is actively
+            # WORKING. An idle/waiting session's note is a claim from a finished turn — flag it so a peer
+            # discounts a stale claim by READING instead of waking the session to ask "still yours?" (the
+            # user 2026-06-24). state "working" = live; anything else (idle/waiting/permission) = may be
+            # stale. Remote agents carry no state → no flag.
+            st = a.get("state", "")
+            stale = "  (idle now — claim may be stale)" if st and st != "working" else ""
+            wk = "  — %s%s" % (a["working"], stale)
         lines.append("  %s%s%s%s" % (a["name"], tag, br, wk))
     return "\n".join(lines)
 
@@ -299,14 +308,15 @@ _lock = threading.Lock()
 
 def local_agents():
     out = tmux("list-sessions", "-F",
-               "#{@romp}|#{session_name}|#{@romp-session-id}|#{@romp-working}|#{@claude-dir}")
+               "#{@romp}|#{session_name}|#{@romp-session-id}|#{@romp-working}|#{@claude-dir}|#{@claude-state}")
     res = []
     for line in out.splitlines():
         p = line.split("|")
         if len(p) >= 3 and p[0] == "1" and p[2]:
             res.append({"name": p[1], "id": p[2], "remote": False,
                         "working": p[3] if len(p) > 3 else "",
-                        "dir": p[4] if len(p) > 4 else ""})
+                        "dir": p[4] if len(p) > 4 else "",
+                        "state": p[5] if len(p) > 5 else ""})   # @claude-state: working/idle/waiting/... → working-note freshness
     return res
 
 def all_agents():
@@ -1378,7 +1388,7 @@ WRITE SO THE RECIPIENT CAN ACT FROM YOUR FIRST LINE.
 - End with the response you need, or that none is.
 - Cut words, not information: one point per message; routine coordination is 1-3 lines, a delegation can be long. When brevity and clarity conflict, clarity wins.
 
-COORDINATE BEFORE PARALLEL EDITS. Before editing a shared repo, run list_agents to see peers' working-notes and branches (file overlap only collides on the SAME branch), and publish your own with set_working. When handing off or working alongside a peer, declare ownership in your first line ("I own files A/B — stay off them"). Use check_sent to see if a message was read instead of asking "did you get it?". Confirm substantive coordination (a delegation plan, an ownership boundary) — never just to acknowledge.
+COORDINATE BEFORE PARALLEL EDITS — BY READING STATE, NOT BY WAKING PEERS. Before editing a shared repo, run list_agents to see peers' working-notes and branches (file overlap only collides on the SAME branch), and publish your own with set_working. Resolve ownership by READING that state — never message a peer to ask "do you still own this?". Discount a stale claim: a note flagged "(idle now — claim may be stale)" is from a session that finished its turn, and a peer with NO note isn't actively holding files (romp auto-clears the note when a session's work is done). Treat a file as owned only when the peer is on your branch AND actively working it now; never wake an idle session just to disambiguate ownership (a false interrupt). When handing off or working alongside a peer, declare ownership in your first line ("I own files A/B — stay off them"). Use check_sent to see if a message was read instead of asking "did you get it?". Confirm substantive coordination (a delegation plan, an ownership boundary) — never just to acknowledge.
 
 If you message a session that has been killed, it is parked as a handoff: delivered if that session is ever revived, ignored otherwise — and its responsibility is yours now. If YOU are a revived session, mail flagged "parked" may be stale: reconcile before assuming your old task still stands.
 """
@@ -1394,10 +1404,10 @@ MCP_TOOLS = [
      "description": "Read and clear any messages other romp sessions have sent you. Messages are also delivered automatically at the end of each turn, so you rarely need to call this.",
      "inputSchema": {"type": "object", "properties": {}}},
     {"name": "list_agents",
-     "description": "List the live romp sessions you can message (yours is marked), with each one's git branch and what it's currently working on — check this before editing shared files to avoid collisions.",
+     "description": "List the live romp sessions you can message (yours is marked), with each one's git branch and what it's currently working on — check this before editing shared files to avoid collisions. A working-note flagged '(idle now — claim may be stale)' is from a session that finished its turn: discount it rather than coordinating against it, and never wake an idle peer just to ask if it still owns a file.",
      "inputSchema": {"type": "object", "properties": {}}},
     {"name": "set_working",
-     "description": "Publish what you're currently working on (files / surface) so peers see it in list_agents and steer clear. Your git branch is shown automatically. Pass empty text to clear when done.",
+     "description": "Publish what you're currently working on (files / surface) so peers see it in list_agents and steer clear. Your git branch is shown automatically. Pass empty text to clear when done — romp also auto-clears it once your work is done and the session goes idle, so a finished session stops advertising a stale claim.",
      "inputSchema": {"type": "object",
                      "properties": {"text": {"type": "string", "description": "short note, e.g. 'editing scripts/romp-postal + tmux.conf'"}}}},
     {"name": "check_sent",
