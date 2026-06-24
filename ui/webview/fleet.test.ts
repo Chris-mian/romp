@@ -17,11 +17,31 @@ test("fleet rides the FEED payload, reading its per-session `ledgers`", () => {
 test("each session renders the real LEDGER TREE — .ledger-* nodes, marks, collapse, recency time", () => {
   assert.match(SRC, /el\("div", "ledger-tree"\)/);
   assert.match(SRC, /"ledger-tnode"/);
-  assert.match(SRC, /el\("span", "ledger-tmark"\)/);
+  assert.match(SRC, /el\("span", "ledger-tmark lz-nav"\)/);
   assert.match(SRC, /n\.done \? "✓" : n\.blocked \? "⏸" : ""/);   // the ledger box's marks
   assert.match(SRC, /el\("span", "ledger-tri"/);                   // the collapse triangle
-  assert.match(SRC, /el\("span", "ledger-ttext"\)/);
+  assert.match(SRC, /el\("span", "ledger-ttext lz-nav"\)/);
   assert.match(SRC, /el\("span", "ledger-ttime"\)/);
+});
+
+test("FULL ledger parity (the user 2026-06-24): pointer-cursor zones, grouped hover highlight, ⊕ summary expander", () => {
+  // .lz-nav → the pointer cursor (styles.css) on the checkbox / text / time, so each reads as clickable
+  assert.match(SRC, /"ledger-tmark lz-nav"/);
+  assert.match(SRC, /"ledger-ttext lz-nav"/);
+  assert.match(SRC, /if \(time\.textContent\) time\.classList\.add\("lz-nav"\)/);
+  // grouped hover (.lz-hl toggled together) — the ledger box's linkHover, ported verbatim
+  assert.match(SRC, /function linkHover\(group: HTMLElement\[\]\)/);
+  assert.match(SRC, /g\.classList\.add\("lz-hl"\)/);
+  assert.match(SRC, /linkHover\(\[mark, txt\]\)/);                  // open node: checkbox + text are one block
+  assert.match(SRC, /linkHover\(time\.textContent \? \[mark, time\] : \[mark\]\)/);   // resolved: checkbox + time
+  // the ⊕/⊖ distiller-summary expander + its on-its-own-line panel
+  assert.match(SRC, /el\("span", "ledger-tsum-toggle nav"\)/);
+  assert.match(SRC, /sumToggle\.textContent = isSumOpen \? "⊖" : "⊕"/);
+  assert.match(SRC, /sumToggle\.dataset\.act = "sum"/);            // delegated like fold (innermost data-act)
+  assert.match(SRC, /el\("div", "ledger-tsum"\)/);                 // the expanded summary panel
+  // the delegate toggles the per-node summary panel
+  assert.match(SRC, /sum: \(el\) => \{/);
+  assert.match(SRC, /if \(sumOpen\.has\(k\)\) sumOpen\.delete\(k\); else sumOpen\.add\(k\);/);
 });
 
 test("recency colour is copied VERBATIM from render.ts (identical to the ledger box)", () => {
@@ -32,10 +52,14 @@ test("recency colour is copied VERBATIM from render.ts (identical to the ledger 
   assert.match(SRC, /time\.style\.color = ageColorReadable\(dt\)/); // …in the shared colour
 });
 
-test("completed top goals hide by default; a 'Show completed' checkbox reveals them", () => {
+test("completed top goals hide by default; a 'Show completed' chip sits top-right (the user 2026-06-24)", () => {
   assert.match(SRC, /localStorage\.getItem\(DONE_KEY\) === "1"/);  // default OFF
   assert.match(SRC, /roots\.filter\(\(n\) => !n\.done && !n\.cleared\)/);
   assert.match(SRC, /createTextNode\("Show completed"\)/);
+  // it's a FLOATING top-right chip now (like the feed's gear), not a footer bar; the old #fleet-foot is hidden
+  assert.match(SRC, /function mountTopChip\(\)/);
+  assert.match(SRC, /position:fixed;top:7px;right:10px/);
+  assert.match(SRC, /foot\.style\.display = "none"/);
 });
 
 test("a node/header click opens that session AND flips back to chat (the user 2026-06-24)", () => {
@@ -48,7 +72,7 @@ test("a node/header click opens that session AND flips back to chat (the user 20
   assert.match(SRC, /open: \(el\) => \{ const sid = el\.dataset\.sid; if \(sid\) openSession\(sid\); \}/);
   assert.match(SRC, /head\.dataset\.act = "open"; head\.dataset\.sid = s\.sid;/);
   assert.match(SRC, /row\.dataset\.act = "open"; row\.dataset\.sid = s\.sid;/);
-  // the "← Chat" foot button + the open helper both leave Fleet via {romp:"toggleFleet", to:"chat"}
+  // leaving Fleet is now the shell strip's "Chat" toggle; openSession still returns via {romp:"toggleFleet", to:"chat"}
   assert.match(SRC, /window\.parent\.postMessage\(\{ romp: "toggleFleet", to: "chat" \}/);
 });
 
