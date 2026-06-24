@@ -2706,6 +2706,12 @@ def _resolve_node(sid, node_id):
         closed = False
     jd.rollup_status(store, closed)
     jd.save_goals(sid, store)
+    for lid in _delegation_linked_ids([node_id]):     # crossing off propagates across a delegation link: resolve the
+        _resolve_node(lid.rsplit(":", 1)[0], lid)     # peer copy too, so a handed-off piece is checked off ONCE, not
+        #                                               twice (the user 2026-06-23). Bounded recursion: a node already
+        #                                               nodeComplete is a no-op (the guard at the top). Complements
+        #                                               run_propagate (recipient→sender on judge passes) with an
+        #                                               IMMEDIATE, both-directions sync for manual cross-offs.
     return True
 
 

@@ -42,11 +42,11 @@ class ClearPropagation(unittest.TestCase):
             "%s:g1" % SENDER: _node(SENDER, 1, "Color the tooltip labels"),
             "%s:g2" % SENDER: _node(SENDER, 2, "find hex values", parent="%s:g1" % SENDER, complete=True),
             "%s:g3" % SENDER: _node(SENDER, 3, "↪ delegated to recip: update render.ts",
-                                    parent="%s:g1" % SENDER, complete=True,
+                                    parent="%s:g1" % SENDER,                  # in-flight delegation (not yet done)
                                     handoff={"peer": RECIP, "msgId": MID})}}
         # RECIP: g1 = the delegated work (origin → SENDER:g3), top-level, done
         r = {"rompUuid": RECIP, "seq": 1, "placements": {}, "status": {}, "nodes": {
-            "%s:g1" % RECIP: _node(RECIP, 1, "update render.ts", complete=True,
+            "%s:g1" % RECIP: _node(RECIP, 1, "update render.ts",
                                    origin={"peer": SENDER, "goalId": "%s:g3" % SENDER, "msgId": MID})}}
         jd.save_goals(SENDER, s)
         jd.save_goals(RECIP, r)
@@ -88,6 +88,33 @@ class ClearPropagation(unittest.TestCase):
     def test_a_non_delegation_clear_touches_only_itself(self):
         km._clear_all(["%s:g2" % SENDER])             # a plain own-work node, no handoff/origin
         self.assertEqual(self._cleared(), {"%s:g2" % SENDER}, "no spurious cross-session clears")
+
+    # --- completion ("check off") propagates BOTH directions, so a delegated piece is resolved ONCE ---
+    def test_resolving_recipient_checks_off_sender_tracking_node(self):
+        self.assertTrue(km._resolve_node(RECIP, "%s:g1" % RECIP))
+        self.assertTrue(jd.load_goals(SENDER)["nodes"]["%s:g3" % SENDER]["nodeComplete"],
+                        "crossing off the recipient checks off the sender's '↪ delegated to' node")
+
+    def test_resolving_sender_delegation_checks_off_recipient(self):
+        self.assertTrue(km._resolve_node(SENDER, "%s:g3" % SENDER))
+        self.assertTrue(jd.load_goals(RECIP)["nodes"]["%s:g1" % RECIP]["nodeComplete"],
+                        "crossing off the sender's delegation checks off the recipient copy (immediate, no judge pass)")
+
+    def test_resolving_a_plain_node_does_not_touch_the_peer(self):
+        km._resolve_node(SENDER, "%s:g2" % SENDER)    # ui's own step, not a delegation
+        self.assertFalse(jd.load_goals(RECIP)["nodes"]["%s:g1" % RECIP]["nodeComplete"],
+                         "a non-delegation cross-off never reaches across sessions")
+
+    # --- a blocked delegated piece surfaces needs-you on the RECIPIENT only, never twice ---
+    def test_block_surfaces_only_on_the_recipient_not_the_sender(self):
+        r = jd.load_goals(RECIP)
+        r["nodes"]["%s:g1" % RECIP]["blocked"] = True
+        jd.rollup_status(r, False)
+        self.assertEqual(r["status"]["%s:g1" % RECIP], "blocked", "the recipient shows needs-you")
+        s = jd.load_goals(SENDER)
+        jd.rollup_status(s, False)
+        self.assertNotEqual(s["status"]["%s:g1" % SENDER], "blocked",
+                            "the sender's umbrella does NOT inherit the block — no double needs-you")
 
 
 if __name__ == "__main__":
