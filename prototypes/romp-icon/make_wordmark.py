@@ -5,8 +5,8 @@ The wordmark sets "Romp" in the Anta typeface and drops the romp swirl in as
 the lowercase "o". The swirl geometry is the SAME mark make_icon.py draws — we
 import `variant_swirl_glyph()` so there is one source of truth for the spiral —
 then forge a STRONG variant of it (faint halos + soft glows stripped, the three
-arms thickened, nodes + center core punched up) so it stays bold and legible at
-letter size rather than dissolving into the word.
+arms thickened, nodes punched up, center left open) so it stays bold and legible
+at letter size rather than dissolving into the word.
 
 The three letters R/m/p each wear one of the swirl's three arm colors
 (make_icon.COLORS, in order: blue/green/teal) so the word carries the mark's
@@ -58,6 +58,12 @@ TEXT = "#e8eef5"          # off-white fallback — matches the swirl's core/ring
 # each letter wears one of the swirl's three arm colors (make_icon.COLORS order:
 # blue, green, teal) so the word carries the mark's palette: R=blue, m=green, p=teal.
 R_COL, M_COL, P_COL = make_icon.COLORS
+# Horizontal placement: the swirl box (SWIRL_EM wide) gets negative side margins so it
+# occupies EXACTLY the lowercase-o slot — its center lands on the o-glyph center and its
+# advance equals Anta's 'o' advance, so m/p sit where a real "o" would put them.
+# margin = -(SWIRL_EM - advance('o'))/2; Anta advance('o') = 0.583em (from its hmtx).
+O_ADVANCE_EM = 0.583
+SW_MARGIN_X = -(SWIRL_EM - O_ADVANCE_EM) / 2   # = -0.0335em for SWIRL_EM=0.65
 CROP = "102 102 820 820"  # tight box around the glyph, centered on (512,512);
                           # roomy enough that the top node isn't clipped
 CANVAS_W, CANVAS_H = 1400, 460
@@ -67,26 +73,30 @@ def strong_swirl() -> str:
     """make_icon's swirl glyph, restyled bold/crisp for use at letter size."""
     s = make_icon.variant_swirl_glyph()
     subs = [
-        (r'<path[^>]*?opacity="0\.42"[^>]*?/>', '', re.S),          # drop faint halo trails
-        (r'<circle[^>]*?fill="url\(#glow-[^)]*\)"[^>]*?/>', '', re.S),  # drop soft glows
+        (r'<path[^>]*?opacity="0\.5"[^>]*?/>', '', re.S),           # drop faint halo trails
+        (r'<circle[^>]*?fill="url\(#glow-[^)]*\)"[^>]*?/>', '', re.S),  # drop soft dot glows
     ]
     for pat, repl, flags in subs:
         s = re.sub(pat, repl, s, flags=flags)
     s = s.replace('stroke-width="40"', 'stroke-width="70"')         # thicken the 3 arms
     s = s.replace('r="35"', 'r="46"').replace('stroke-width="6"', 'stroke-width="10"')  # punch up nodes
-    core_before = '<circle cx="512.0" cy="512.0" r="11" fill="#e8eef5" fill-opacity="0.45"/>'
-    s = s.replace(core_before, '<circle cx="512.0" cy="512.0" r="30" fill="#e8eef5"/>')  # bright solid core
+    # the center is left fully open: make_icon draws no center dot or glow at all
+    # (the user 2026-06-23), so the thickened arms just dissolve toward the middle.
     s = re.sub(r'width="\d+"\s+height="\d+"', '', s, count=1)       # CSS drives the size
     s = s.replace('viewBox="0 0 1024 1024"', f'viewBox="{CROP}"')
     # fail loudly if make_icon's output format drifts out from under the transform
-    for leftover in ('stroke-width="40"', 'opacity="0.42"', 'url(#glow-'):
+    for leftover in ('stroke-width="40"', 'opacity="0.5"', 'url(#glow-'):
         assert leftover not in s, f"swirl format changed; update make_wordmark transform ({leftover})"
-    assert 'r="30" fill="#e8eef5"' in s, "swirl center-dot string changed; update transform"
+    assert 'cx="512.0" cy="512.0" r="11"' not in s, "make_icon re-added a center dot; update transform"
     return s
 
 
 def build_html(transparent: bool = False) -> str:
     font_b64 = base64.b64encode(FONT.read_bytes()).decode()
+    # The "o" is the FINALIZED swirl (the user's Illustrator gradient-along-stroke on
+    # all three arms), rasterized to a transparent master (swirl-master.png) — SVG can't
+    # express the mesh gradient, so we embed the high-res raster and let it scale down.
+    o_b64 = base64.b64encode((HERE / "swirl-master.png").read_bytes()).decode()
     bg = ("transparent" if transparent
           else "radial-gradient(120% 120% at 50% 40%, #1b212b 0%, #0e1116 100%)")
     return f"""<!doctype html><html><head><meta charset="utf-8"><style>
@@ -99,9 +109,10 @@ def build_html(transparent: bool = False) -> str:
   .mark {{ font-family:'Anta',sans-serif; font-size:{FONT_PX}px; line-height:1;
     color:{TEXT}; white-space:nowrap; letter-spacing:0.01em; }}
   .mark .sw {{ height:{SWIRL_EM}em; width:{SWIRL_EM}em; display:inline-block;
-    vertical-align:middle; position:relative; top:{DY_EM}em; margin:0 -0.05em; }}
+    vertical-align:middle; position:relative; top:{DY_EM}em; margin:0 {SW_MARGIN_X:.4f}em; }}
+  .mark .sw img {{ width:100%; height:100%; display:block; }}
 </style></head><body>
-  <div class="mark"><span style="color:{R_COL}">R</span><span class="sw">{strong_swirl()}</span><span style="color:{M_COL}">m</span><span style="color:{P_COL}">p</span></div>
+  <div class="mark"><span style="color:{R_COL}">R</span><span class="sw"><img src="data:image/png;base64,{o_b64}"></span><span style="color:{M_COL}">m</span><span style="color:{P_COL}">p</span></div>
 </body></html>"""
 
 

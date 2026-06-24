@@ -60,27 +60,40 @@ def hex_no_hash(h): return h.lstrip("#")
 
 
 # --- shared SVG fragments ---------------------------------------------------
-def defs_for_colors(stroke_r0, stroke_r1):
-    """One radial stroke-fade gradient + one dot-glow gradient per color.
+# Comet fade: each arm's alpha ramps smoothly from 0 at its inner tip to full by
+# FADE_T of the way out, then holds. Because the arm's radius grows monotonically
+# along its length (r = r0 + (r1-r0)*t**FADE_EXPO), keying the fade to RADIUS is
+# the same as keying it to position ALONG the arm — but it's a single radial
+# gradient, so the fade stays perfectly smooth at any zoom (no segmentation).
+# FADE_EXPO MUST match the exponent used to lay out the arm points (variant_swirl).
+FADE_T = 0.42
+FADE_EXPO = 0.92
+FADE_NSTOPS = 16
 
-    The stroke gradient is centered on the canvas: transparent inside r0,
-    ramping to full by r1, so each line dissolves into the dark near the
-    center and burns brightest at its dot (the 'comet trail' read).
+
+def defs_for_colors(stroke_r0, stroke_r1):
+    """One comet-trail stroke-fade gradient + one dot-glow gradient per color.
+
+    The stroke gradient dissolves each line ALONG its length into the dark center
+    and burns full at its dot (the 'comet trail' read), via a smoothstep opacity
+    ramp sampled into gradient stops keyed to radius (see the FADE_* note above).
     """
     g = []
     for col in COLORS:
         cid = hex_no_hash(col)
-        inner = stroke_r0 / stroke_r1
-        # Only the inner tail dissolves; the outer ~60% of each arm is FULL color
-        # so the mark stays saturated and legible when shrunk to a tab icon.
-        fade_end = inner + (1 - inner) * 0.18
+        stops = [(0.0, 0.0), (stroke_r0 / stroke_r1, 0.0)]   # transparent inner tip
+        for j in range(1, FADE_NSTOPS + 1):
+            t = FADE_T * j / FADE_NSTOPS
+            r = stroke_r0 + (stroke_r1 - stroke_r0) * (t ** FADE_EXPO)
+            s = t / FADE_T
+            stops.append((r / stroke_r1, s * s * (3 - 2 * s)))   # smoothstep -> full
+        stops.append((1.0, 1.0))
+        trail = "".join(
+            f'\n      <stop offset="{o:.4f}" stop-color="{col}" stop-opacity="{op:.4f}"/>'
+            for o, op in stops)
         g.append(f'''
     <radialGradient id="trail-{cid}" gradientUnits="userSpaceOnUse"
-        cx="{C}" cy="{C}" r="{stroke_r1:.1f}">
-      <stop offset="0" stop-color="{col}" stop-opacity="0"/>
-      <stop offset="{inner:.3f}" stop-color="{col}" stop-opacity="0.12"/>
-      <stop offset="{fade_end:.3f}" stop-color="{col}" stop-opacity="1"/>
-      <stop offset="1" stop-color="{col}" stop-opacity="1"/>
+        cx="{C}" cy="{C}" r="{stroke_r1:.1f}">{trail}
     </radialGradient>
     <radialGradient id="glow-{cid}">
       <stop offset="0" stop-color="{col}" stop-opacity="0.55"/>
@@ -114,9 +127,9 @@ def dot(x, y, col, r=35, glow_r=92, ring=6):
 
 
 def center_node():
-    return f'''
-  <circle cx="{C}" cy="{C}" r="60" fill="url(#glow-{hex_no_hash(DOTBORDER)})"/>
-  <circle cx="{C}" cy="{C}" r="11" fill="{DOTBORDER}" fill-opacity="0.45"/>'''
+    # No center mark: the sharp white dot AND the soft white center glow were both
+    # removed (the user 2026-06-23), so the arms dissolve into a fully open center.
+    return ""
 
 
 def center_glow_def():
@@ -133,7 +146,7 @@ def line(d, col, w_main, w_glow):
     cid = hex_no_hash(col)
     return f'''
   <path d="{d}" fill="none" stroke="url(#trail-{cid})" stroke-width="{w_glow}"
-        stroke-linecap="round" stroke-linejoin="round" opacity="0.42"/>
+        stroke-linecap="round" stroke-linejoin="round" opacity="0.5"/>
   <path d="{d}" fill="none" stroke="url(#trail-{cid})" stroke-width="{w_main}"
         stroke-linecap="round" stroke-linejoin="round"/>'''
 
@@ -143,7 +156,7 @@ def line(d, col, w_main, w_glow):
 # background): the favicon / VS Code activity-bar GLYPH, which sits on the host's
 # own surface. With background → the full app-icon tile.
 def variant_swirl(with_bg=True):
-    r0, r1 = 96, 352
+    r0, r1 = 70, 352          # r0 pulled inward so the arms dissolve nearer the center
     sweep = 252
     rot0 = -100
     N = 90
@@ -160,13 +173,13 @@ def variant_swirl(with_bg=True):
             x, y = pt(C, C, r, ang)
             pts.append((x, y))
             last = (x, y)
-        arms.append(line(path_d(pts), col, 40, 82))
+        arms.append(line(path_d(pts), col, 40, 96))
         dots.append(dot(last[0], last[1], col))
     body = (f'<svg xmlns="http://www.w3.org/2000/svg" width="{SIZE}" height="{SIZE}" '
             f'viewBox="0 0 {SIZE} {SIZE}">'
             + (background() if with_bg else "")
-            + f'<defs>{defs_for_colors(r0, r1)}{center_glow_def()}</defs>'
-            + "".join(arms) + center_node() + "".join(dots)
+            + f'<defs>{defs_for_colors(r0, r1)}</defs>'
+            + "".join(arms) + "".join(dots)
             + "</svg>")
     return body
 
