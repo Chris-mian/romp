@@ -49,11 +49,11 @@ MEDIA_OUT = HERE.parent.parent / "chat-view" / "media" / "romp-wordmark.png"
 # --- design constants -------------------------------------------------------
 FONT_PX = 300
 SWIRL_EM = 0.65            # the swirl, sized to read as a true lowercase "o"
-# vertical-align:middle aligns the element's box center to the o-slot center,
-# but the swirl's *content* centroid sits ~0.14em below its box center, so the
-# mark lands low. Empirically -0.20em puts the measured swirl centroid exactly
-# on the o-slot center (verified offset 0px); re-tune if SWIRL_EM/CROP change.
-DY_EM = -0.20
+# vertical-align:middle puts the swirl box center on the o-slot center. The mesh
+# "o" raster is framed (102..922 crop) so its vortex/geometric center sits at the
+# box center, so DY_EM=0 lands the vortex on the o center. (The old -0.20 was for a
+# swirl whose content centroid sat low; it shoved this mesh "o" far too high.)
+DY_EM = 0.0
 TEXT = "#e8eef5"          # off-white fallback — matches the swirl's core/ring color
 # each letter wears one of the swirl's three arm colors (make_icon.COLORS order:
 # blue, green, teal) so the word carries the mark's palette: R=blue, m=green, p=teal.
@@ -64,6 +64,13 @@ R_COL, M_COL, P_COL = make_icon.COLORS
 # margin = -(SWIRL_EM - advance('o'))/2; Anta advance('o') = 0.583em (from its hmtx).
 O_ADVANCE_EM = 0.583
 SW_MARGIN_X = -(SWIRL_EM - O_ADVANCE_EM) / 2   # = -0.0335em for SWIRL_EM=0.65
+# Letters are thinned to the swirl's LINE weight so the strokes match (the user's
+# pick): erode each glyph edge with a background-colored text-stroke. The swirl line
+# reads ~0.0555em at this size; Anta's stem is ~0.1030em, so erode the difference.
+SWIRL_LINE_EM = 0.0555
+ANTA_STEM_EM = 0.1030
+THIN_PX = round((ANTA_STEM_EM - SWIRL_LINE_EM) * FONT_PX, 1)   # = 14.2px at FONT_PX=300
+BG_FLAT = "#0e1116"
 CROP = "102 102 820 820"  # tight box around the glyph, centered on (512,512);
                           # roomy enough that the top node isn't clipped
 CANVAS_W, CANVAS_H = 1400, 460
@@ -93,26 +100,26 @@ def strong_swirl() -> str:
 
 def build_html(transparent: bool = False) -> str:
     font_b64 = base64.b64encode(FONT.read_bytes()).decode()
-    # The "o" is the FINALIZED swirl (the user's Illustrator gradient-along-stroke on
-    # all three arms), rasterized to a transparent master (swirl-master.png) — SVG can't
-    # express the mesh gradient, so we embed the high-res raster and let it scale down.
-    o_b64 = base64.b64encode((HERE / "swirl-master.png").read_bytes()).decode()
-    bg = ("transparent" if transparent
-          else "radial-gradient(120% 120% at 50% 40%, #1b212b 0%, #0e1116 100%)")
+    # The "o" is the FINALIZED swirl at the MATCHED weight (W=70 mesh, 102..922 crop),
+    # rasterized to a transparent master (swirl-o-wordmark.png). Letters are eroded to
+    # the same line weight via a bg-colored text-stroke (needs the flat BG_FLAT bg).
+    o_b64 = base64.b64encode((HERE / "swirl-o-wordmark.png").read_bytes()).decode()
+    thin = f"-webkit-text-stroke:{THIN_PX}px {BG_FLAT};"
     return f"""<!doctype html><html><head><meta charset="utf-8"><style>
   @font-face {{ font-family:'Anta'; src:url(data:font/ttf;base64,{font_b64}) format('truetype'); }}
   html,body {{ margin:0; padding:0; }}
   body {{ width:{CANVAS_W}px; height:{CANVAS_H}px; display:flex;
     align-items:center; justify-content:center;
-    background: {bg};
+    background: {BG_FLAT};
     overflow:hidden; }}
   .mark {{ font-family:'Anta',sans-serif; font-size:{FONT_PX}px; line-height:1;
     color:{TEXT}; white-space:nowrap; letter-spacing:0.01em; }}
   .mark .sw {{ height:{SWIRL_EM}em; width:{SWIRL_EM}em; display:inline-block;
-    vertical-align:middle; position:relative; top:{DY_EM}em; margin:0 {SW_MARGIN_X:.4f}em; }}
+    vertical-align:middle; position:relative; top:{DY_EM}em; margin:0 {SW_MARGIN_X:.4f}em;
+    -webkit-text-stroke:0; }}
   .mark .sw img {{ width:100%; height:100%; display:block; }}
 </style></head><body>
-  <div class="mark"><span style="color:{R_COL}">R</span><span class="sw"><img src="data:image/png;base64,{o_b64}"></span><span style="color:{M_COL}">m</span><span style="color:{P_COL}">p</span></div>
+  <div class="mark"><span style="color:{R_COL};{thin}">R</span><span class="sw"><img src="data:image/png;base64,{o_b64}"></span><span style="color:{M_COL};{thin}">m</span><span style="color:{P_COL};{thin}">p</span></div>
 </body></html>"""
 
 
@@ -176,9 +183,10 @@ def render(chrome: str, out: Path, transparent: bool = False) -> None:
 
 def main() -> None:
     chrome = find_chrome()
-    render(chrome, OUT)                                    # README hero (dark banner)
+    render(chrome, OUT)                                    # README hero (flat #0e1116)
     MEDIA_OUT.parent.mkdir(parents=True, exist_ok=True)
-    render(chrome, MEDIA_OUT, transparent=True)            # dashboard empty-state asset
+    shutil.copyfile(OUT, MEDIA_OUT)                        # dashboard uses the same wordmark
+    print("copied", MEDIA_OUT.relative_to(HERE.parent.parent))
 
 
 if __name__ == "__main__":
