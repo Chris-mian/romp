@@ -27,10 +27,10 @@ class HiddenFromFeed(unittest.TestCase):
     def setUp(self):
         self._saved_state = jd.STATE
         self._td = tempfile.mkdtemp()
-        jd.STATE = Path(self._td)
+        jd._rebind_state(Path(self._td))   # rebind STATE *and* its derived dirs, not just STATE (avoid live-state leak)
 
     def tearDown(self):
-        jd.STATE = self._saved_state
+        jd._rebind_state(self._saved_state)
         shutil.rmtree(self._td, ignore_errors=True)
 
     def _mute(self, sid, flag="hideFromFeed"):

@@ -33,8 +33,8 @@ class ClearPropagation(unittest.TestCase):
     def setUp(self):
         self.td = tempfile.TemporaryDirectory()
         self.saved_state = jd.STATE
-        jd.STATE = Path(self.td.name)
-        (jd.STATE / "goals").mkdir(parents=True)
+        jd._rebind_state(Path(self.td.name))   # rebind STATE *and* GOALDIR/ERRORS/etc. — assigning jd.STATE
+        jd.GOALDIR.mkdir(parents=True)          # alone left save_goals writing into LIVE ~/.local/state/romp/goals/
         self.saved_sessions = km._sessions
         km._sessions = lambda now: []                # no transcripts in the sandbox → session_closed=False
         # SENDER: umbrella g1 = own step g2 (done) + delegation g3 (handoff → RECIP, done)
@@ -53,7 +53,7 @@ class ClearPropagation(unittest.TestCase):
 
     def tearDown(self):
         km._sessions = self.saved_sessions
-        jd.STATE = self.saved_state
+        jd._rebind_state(self.saved_state)
         self.td.cleanup()
 
     def _cleared(self):

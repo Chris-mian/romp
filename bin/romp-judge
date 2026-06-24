@@ -44,6 +44,19 @@ MESSAGES = STATE / "timeline" / "messages.jsonl"
 ERRORS   = STATE / "judge-errors.jsonl"  # swallowed judge-call failures (parse-fails, call timeouts/exceptions) — surfaced by `romp -j`
 USAGE    = STATE / "judge-usage.jsonl"   # one line per successful judge call: tokens/cost/ms — the kernel/UI roll up pipeline cost
 
+
+def _rebind_state(path):
+    """Repoint STATE and EVERY dir derived from it at `path`. Tests patch jd.STATE to a tempdir; without
+    this the import-time GOALDIR / ERRORS / etc. stayed aimed at the LIVE ~/.local/state/romp — so
+    save_goals wrote synthetic fixtures into the live goals/ and the triage pass then stormed
+    judge-errors.jsonl over those orphans every pass forever (the user 2026-06-24). A test must call this
+    instead of assigning jd.STATE alone. Not used in production (STATE is bound once at import)."""
+    global STATE, NAMES, CAPDIR, ARCHDIR, GOALDIR, STATESDIR, PCACHE, MESSAGES, ERRORS, USAGE
+    STATE = path
+    NAMES, CAPDIR, ARCHDIR, GOALDIR = STATE / "names", STATE / "captions", STATE / "archive", STATE / "goals"
+    STATESDIR, PCACHE = STATE / "states", STATE / "judge-units-cache"
+    MESSAGES, ERRORS, USAGE = STATE / "timeline" / "messages.jsonl", STATE / "judge-errors.jsonl", STATE / "judge-usage.jsonl"
+
 # Two model tiers (the Haiku cost lever, judge.md §Two run tiers; shipped 2026-06-15): cheap always-on
 # INDEXING on Haiku, judgment-heavy TRIAGE on Sonnet.
 INDEX_MODEL  = "claude-haiku-4-5-20251001"   # captioner + archiver (index tier — high volume, low stakes)
@@ -61,6 +74,18 @@ PLAN_PARSE_RETRIES = 3                    # parse-fails on ONE segment before we
                                          # that never parses can't storm the error log / burn Sonnet calls
                                          # forever — a human message is then hard-placed, a non-user
                                          # segment dropped (the user 2026-06-18)
+JUDGE_JSON_CAP = 20000                    # cap a planner/closer reply BEFORE parsing. Was 2000 — far too
+                                         # small: a legit multi-op reply (mint+sub+done+block, each with a
+                                         # `why`) easily exceeds it, so the slice severed the JSON mid-object
+                                         # and _json_obj failed → "parse" forever (the user 2026-06-24). The
+                                         # cap is just a runaway guard now; 20k is well past any real reply.
+DISTILL_FAIL_CAP = 3                      # consecutive distill/brief CALL fails on ONE goal before we give up
+                                         # and settle its card to the "" sentinel — so a persistently-failing
+                                         # LLM call self-heals instead of looping "(generating…)" every pass
+                                         # forever (the user 2026-06-24). Mirrors PLAN_PARSE_RETRIES.
+DISTILL_WORK_CHARS = 24000               # cap the work history fed to a distill/brief call (keep the most
+                                         # recent tail): an unbounded subtree could time out the Sonnet call
+                                         # (logged "call"); the recent work is what the brief needs anyway.
 CLOSE_FAIRNESS = 8                       # max turn-end completion sweeps per session per pass (backfill spread)
 CONCURRENCY = 6                          # concurrent claude -p calls
 # The CLOSER: the turn-end completion backstop (judge.md HYBRID; named the "closer" 2026-06-16 — it
@@ -1166,7 +1191,7 @@ def plan_llm(segment_text, menu_text, model=None, effort=None, human=False, nudg
     elif human:
         user += ("\n<note>This segment contains a real user message, so it MUST be placed "
                  "(mint/sub/done/block) — do NOT return a skip.</note>")
-    return _judge_run(model or TRIAGE_MODEL, PLAN_SYS, user, effort=effort, judge="planner").strip()[:2000]
+    return _judge_run(model or TRIAGE_MODEL, PLAN_SYS, user, effort=effort, judge="planner").strip()[:JUDGE_JSON_CAP]
 
 
 def plan_prompt_llm(prompt_text, menu_text, model=None, effort=None):
@@ -1175,7 +1200,7 @@ def plan_prompt_llm(prompt_text, menu_text, model=None, effort=None):
     not just the _provisional_card placeholder. mint OR sub only (never skip/done/block; no work yet). ''
     on failure. Input is the raw prompt gist (PLAN_PROMPT_SYS), not the captioner's framed unit text."""
     user = "<prompt>\n%s\n</prompt>\n<open-goals>\n%s\n</open-goals>" % (prompt_text, menu_text)
-    return _judge_run(model or TRIAGE_MODEL, PLAN_PROMPT_SYS, user, effort=effort, judge="planner").strip()[:2000]
+    return _judge_run(model or TRIAGE_MODEL, PLAN_PROMPT_SYS, user, effort=effort, judge="planner").strip()[:JUDGE_JSON_CAP]
 
 
 # ───────────────────────── discovery (names/, file-based) ─────────────────────────
@@ -1826,7 +1851,7 @@ def group_llm(menu_text):
     """The grouper's {"ops":[...]} reply from the TRIAGE-tier model (Sonnet) over a session's open top
     goals. '' on failure."""
     user = "<open-goals>\n%s\n</open-goals>" % menu_text
-    return _judge_run(TRIAGE_MODEL, GROUP_SYS, user, judge="grouper").strip()[:2000]
+    return _judge_run(TRIAGE_MODEL, GROUP_SYS, user, judge="grouper").strip()[:JUDGE_JSON_CAP]
 
 
 def apply_group(store, tops, ops, t, allow_done=False):
@@ -2136,7 +2161,7 @@ def closer_llm(turn_text, menu_text):
     """The closer's {"done":[...], "block":[...]} verdict from the TRIAGE-tier model (Sonnet) over a turn
     + the touched open-goals menu. '' on failure."""
     user = "<turn>\n%s\n</turn>\n<open-goals>\n%s\n</open-goals>" % (turn_text, menu_text)
-    return _judge_run(TRIAGE_MODEL, CLOSER_SYS, user, judge="closer").strip()[:2000]
+    return _judge_run(TRIAGE_MODEL, CLOSER_SYS, user, judge="closer").strip()[:JUDGE_JSON_CAP]
 
 
 def _turn_menu(turn, store):
@@ -2555,6 +2580,8 @@ def _distill_session(fsid, path, now):
                     seen.add(sid); seg_ids.append(sid)
         segs = sorted((seg_by_id[s] for s in seg_ids if s in seg_by_id), key=lambda sg: sg.get("t", 0))
         work = "\n\n".join(_unit_text(sg["atoms"]) for sg in segs).strip()
+        if len(work) > DISTILL_WORK_CHARS:             # bound the call input (keep the most recent work) so an
+            work = "…\n\n" + work[-DISTILL_WORK_CHARS:]  # unbounded subtree can't time out the distill/brief call
         if blocked:
             blkd = [nodes[x] for x in sub if nodes[x].get("blocked") and nodes[x].get("blockWhy")]
             owed = max(blkd, key=lambda d: d.get("mt", d.get("t", 0)))["blockWhy"] if blkd else ""
@@ -2568,9 +2595,19 @@ def _distill_session(fsid, path, now):
             out = brief_llm(nodes[top].get("text", ""), work, owed)
             if not out:
                 _log_judge_error("brief", fsid, "call")
-                continue                               # NO fallback — leave blockSummary null, retry next pass
+                fails = nodes[top].get("briefFails", 0) + 1
+                if fails >= DISTILL_FAIL_CAP:          # gave up after K tries → SELF-HEAL: settle to the ""
+                    if nodes[top].get("blockSummary") is None:   # sentinel so the card stops showing
+                        nodes[top]["blockSummary"] = ""          # "(generating…)" forever (the user 2026-06-24)
+                    nodes[top]["briefedMt"] = nodes[top].get("mt"); nodes[top]["briefFails"] = 0
+                    _log_judge_error("brief", fsid, "give-up")   # distinct from the retryable "call"
+                else:
+                    nodes[top]["briefFails"] = fails    # keep counting; retry next pass (leave blockSummary null)
+                changed = True                          # persist the counter / the settle
+                continue
             nodes[top]["blockSummary"] = out
             nodes[top]["briefedMt"] = nodes[top].get("mt")
+            nodes[top]["briefFails"] = 0                # success → reset the counter (for a future re-open)
             n += 1; changed = True
             continue
         if not work:                                   # completed but no resolvable work (e.g. an umbrella /
@@ -2584,9 +2621,19 @@ def _distill_session(fsid, path, now):
         out = distill_llm(nodes[top].get("text", ""), work, nodes[top].get("doneWhy") or "")
         if not out:
             _log_judge_error("distiller", fsid, "call")
-            continue                                   # leave un-distilled → retry next pass
+            fails = nodes[top].get("distillFails", 0) + 1
+            if fails >= DISTILL_FAIL_CAP:              # gave up after K tries → SELF-HEAL to the "" sentinel
+                if nodes[top].get("summary") is None:  # so the card stops showing "(generating…)" forever
+                    nodes[top]["summary"] = ""
+                nodes[top]["distilledMt"] = nodes[top].get("mt"); nodes[top]["distillFails"] = 0
+                _log_judge_error("distiller", fsid, "give-up")
+            else:
+                nodes[top]["distillFails"] = fails     # keep counting; retry next pass (leave summary null)
+            changed = True
+            continue
         nodes[top]["summary"] = out
         nodes[top]["distilledMt"] = nodes[top].get("mt")
+        nodes[top]["distillFails"] = 0                 # success → reset the counter
         n += 1; changed = True
     if changed:
         save_goals(fsid, store)

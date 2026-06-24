@@ -2853,6 +2853,62 @@ class Distiller(unittest.TestCase):
         self.assertEqual(jd.run_distill(now=now), 0)
         self.assertEqual(calls, [], "a goal already distilled at this mt is not re-distilled")
 
+    def test_distill_self_heals_after_repeated_call_failures(self):
+        # the user 2026-06-24: a distill call that PERSISTENTLY fails must NOT loop "(generating…)" forever.
+        # After DISTILL_FAIL_CAP consecutive fails the card settles to the "" sentinel (distilled, no takeaway).
+        records = [uline(T0, "do the thing", "u1", ps="typed"),
+                   aline(T0 + 10, "did the thing", "a1", "u1", stop="end_turn")]
+        path = self._setup(records)
+        now = T0 + 5000
+        s1 = em.segments(jd.parsed_session(SID, [path], now)["turns"][0])[0]["id"]
+        gid = SID + ":g1"
+        jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "status": {gid: "completed"}, "placements": {},
+                            "nodes": {gid: {"id": gid, "text": "Build the thing", "parentId": None,
+                                            "nodeComplete": True, "blocked": False, "cleared": False,
+                                            "trail": [s1], "t": T0, "mt": T0 + 10}}})
+        jd.distill_llm = lambda g, w, dw="": ""             # the call always fails (empty)
+        for i in range(1, jd.DISTILL_FAIL_CAP):             # the pre-cap passes: keep retrying, count climbs
+            jd.run_distill(now=now)
+            nd = jd.load_goals(SID)["nodes"][gid]
+            self.assertIsNone(nd.get("summary"), "still retrying — not settled before the cap")
+            self.assertEqual(nd.get("distillFails"), i, "the consecutive-fail counter climbs")
+            self.assertIsNone(nd.get("distilledMt"), "not stamped → re-enters next pass")
+        jd.run_distill(now=now)                             # the cap-th pass: self-heal
+        nd = jd.load_goals(SID)["nodes"][gid]
+        self.assertEqual(nd.get("summary"), "", "after the cap the card settles to the empty sentinel")
+        self.assertEqual(nd.get("distilledMt"), T0 + 10, "distilledMt stamped → never re-enters")
+        self.assertEqual(nd.get("distillFails"), 0, "counter reset for a future re-open")
+        ran = []                                            # the sentinel is non-null → no more distills
+        jd.distill_llm = lambda g, w, dw="": (ran.append(1), "late")[1]
+        jd.run_distill(now=now)
+        self.assertEqual(ran, [], "a settled card is not re-distilled — the loop is broken")
+
+    def test_brief_self_heals_after_repeated_call_failures(self):
+        # the blocked-card path (the dominant stuck case): a brief call that persistently fails settles
+        # blockSummary to "" after the cap, so a blocked card stops showing "(generating…)" forever.
+        records = [uline(T0, "ship it", "u1", ps="typed"),
+                   aline(T0 + 10, "need your call on the approach", "a1", "u1", stop="end_turn")]
+        path = self._setup(records)
+        now = T0 + 5000
+        s1 = em.segments(jd.parsed_session(SID, [path], now)["turns"][0])[0]["id"]
+        gid = SID + ":g1"
+        jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "status": {gid: "blocked"}, "placements": {},
+                            "nodes": {gid: {"id": gid, "text": "Ship the feature", "parentId": None,
+                                            "nodeComplete": False, "blocked": True, "cleared": False,
+                                            "blockWhy": "Which approach — A or B?", "trail": [s1],
+                                            "t": T0, "mt": T0 + 10}}})
+        jd.brief_llm = lambda g, w, ow="": ""               # the brief call always fails
+        for i in range(1, jd.DISTILL_FAIL_CAP):
+            jd.run_distill(now=now)
+            nd = jd.load_goals(SID)["nodes"][gid]
+            self.assertIsNone(nd.get("blockSummary"), "still retrying — not settled before the cap")
+            self.assertEqual(nd.get("briefFails"), i)
+        jd.run_distill(now=now)
+        nd = jd.load_goals(SID)["nodes"][gid]
+        self.assertEqual(nd.get("blockSummary"), "", "after the cap the blocked card settles to the sentinel")
+        self.assertEqual(nd.get("briefedMt"), T0 + 10)
+        self.assertEqual(nd.get("briefFails"), 0)
+
     def test_redistills_only_after_mt_advances(self):
         records = [uline(T0, "x", "u1", ps="typed"), aline(T0 + 10, "done", "a1", "u1", stop="end_turn")]
         path = self._setup(records)
