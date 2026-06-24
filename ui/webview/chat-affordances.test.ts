@@ -16,9 +16,11 @@ test("the fold toggle and file links have a persistent dotted-underline link aff
   assert.match(CSS, /\.tool-file \{[^}]*text-decoration: underline dotted/);
 });
 
-test("session identity is on the rail (2px, 70%), not the window border", () => {
-  assert.match(CSS, /#winframe \{[^}]*border: 2px solid var\(--box-border\)/);
-  assert.doesNotMatch(CSS, /#winframe \{[^}]*--active-accent/);
+test("session identity is on the rail (2px, 70%); the chat's own window frame is gone", () => {
+  // the user 2026-06-23: #winframe (the chat's extra 2px frame around the whole pane) is removed so the pane
+  // fills the full space — only the splitters + the focus ring draw lines. Identity stays on the turn rail.
+  assert.match(CSS, /#winframe \{ display: none; \}/);
+  assert.doesNotMatch(CSS, /#winframe \{[^}]*border: 2px solid/);
   assert.match(CSS, /\.turn::before \{[^}]*width: 2px[^}]*background: var\(--active-accent[^}]*opacity: 0\.7/);
 });
 

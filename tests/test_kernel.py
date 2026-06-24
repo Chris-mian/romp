@@ -2805,16 +2805,17 @@ class ServeSecurity(unittest.TestCase):
             self.assertIn(pane, body)
 
     def test_landing_has_a_focused_pane_cue(self):
-        # the user 2026-06-23: the active section is SPOTLIT by DIMMING the OTHERS — the focused pane keeps its
-        # normal brightness (NOT darkened), every other pane gets a translucent-black veil (~halfway to black).
-        # Shell-only: the same-origin iframes are wired by the shell (pointerdown/focusin/focusout/window-focus,
+        # the user 2026-06-23: NO dimming — the active section is shown by a RING (an inset border) around it.
+        # The focused pane gets the ring, the others get nothing (only the splitters + the ring are visible).
+        # Shell-only: the same-origin iframes are wired by the shell (pointerdown/focusin/window-focus,
         # event-based, no polling); chat is the default focus; it re-wires on iframe (re)load.
         html = km._landing()
-        # the dimming veil sits on the NON-focused panes (focused pane has none → stays bright), click-through
-        self.assertIn(".pane:not(.pane-focused)::after{content:'';position:absolute;inset:0;", html)
-        self.assertIn("background:rgba(0,0,0,0.5)", html)           # ~halfway to black on the others
-        self.assertIn("pointer-events:none;z-index:6}", html)
-        self.assertNotIn(".pane.pane-focused::after", html)         # the focused pane is NOT given a film
+        # the ring: an inset box-shadow ON the focused pane (NOT a fill, NOT on the others), click-through
+        self.assertIn(".pane.pane-focused::after{content:'';position:absolute;inset:0;pointer-events:none;z-index:6;", html)
+        self.assertIn("box-shadow:inset 0 0 0 2px rgba(120,170,225,0.55)}", html)
+        self.assertNotIn("background:rgba(0,0,0,0.5)", html)            # the dimming veil is gone
+        self.assertNotIn(".pane:not(.pane-focused)::after", html)       # the OTHERS are NOT touched
+        self.assertNotIn("nav-typing", html)                           # the typing/dimming logic is gone
         # the wiring: maps each iframe id → its pane, toggles pane-focused exclusively, defaults to chat
         self.assertIn("var PANE={'f-chat':'chat-pane','f-fleet':'chat-pane','f-feed':'feed-pane','f-timeline':'tl-pane'}", html)
         self.assertIn("classList.toggle('pane-focused'", html)
@@ -2822,18 +2823,7 @@ class ServeSecurity(unittest.TestCase):
         self.assertIn("d.addEventListener('focusin',emit,true)", html)
         self.assertIn("f.contentWindow.addEventListener('focus',emit)", html)
         self.assertIn("f.addEventListener('load',function(){wire(f);});wire(f);", html)   # re-wire on (re)load
-        self.assertIn("setFocus('f-chat',false)", html)                                    # chat spotlit by default
-
-    def test_landing_lifts_the_spotlight_while_typing_in_a_field(self):
-        # sub-section focus (the user 2026-06-23): the pane-level nav controls (←/→ to switch chat tabs) DON'T
-        # fire while the caret is in the composer/any input — there's no "active pane" to spotlight, so the
-        # dimming is LIFTED (all panes normal; the field's caret is the in-the-box cue). The shell reads the
-        # focused pane's same-origin activeElement; a TEXTAREA/INPUT/contentEditable sets body.nav-typing.
-        html = km._landing()
-        self.assertIn("body.nav-typing .pane:not(.pane-focused)::after{opacity:0}", html)   # typing → lift the dim
-        self.assertIn("a.tagName==='TEXTAREA'||a.tagName==='INPUT'||a.isContentEditable===true", html)
-        self.assertIn("document.body.classList.toggle('nav-typing',!!typing)", html)
-        self.assertIn("d.addEventListener('focusout',emit,true)", html)            # leaving the field restores the spotlight
+        self.assertIn("setFocus('f-chat')", html)                                          # chat ringed by default
 
     def test_fleet_page_served(self):
         # Fleet (the user 2026-06-23): /fleet serves the by-session open-work view, fed by the SAME app=feed

@@ -46,7 +46,10 @@ body { display: flex; flex-direction: column; }
 /* a 2px NEUTRAL frame around the WHOLE pane — drawn as a fixed overlay ON TOP so the tab bar /
    composer backgrounds can't paint over it. pointer-events:none so it never blocks clicks. The
    session's identity color now lives on the conversation RAIL instead (the user 2026-06-15). */
-#winframe { position: fixed; inset: 0; border: 2px solid var(--box-border); pointer-events: none; z-index: 50; }
+/* The chat used to draw its OWN 2px frame around the whole pane (#winframe) — an extra border the other
+   panes don't have. Removed (the user 2026-06-23): the pane fills the full space, the only lines are the
+   splitters between panes, and focus is shown by a ring (shell, .pane-focused), not a decorative frame. */
+#winframe { display: none; }
 
 /* ---------- tab bar ---------- */
 #tabbar {

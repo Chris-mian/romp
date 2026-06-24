@@ -4957,21 +4957,17 @@ window.addEventListener('resize',autosize);})();
 # iframe (re)load; chat is the default focus on open. Inert on mobile (one pane at a time; .pane is display:contents).
 _LANDING_FOCUS_JS = """
 (function(){var PANE={'f-chat':'chat-pane','f-fleet':'chat-pane','f-feed':'feed-pane','f-timeline':'tl-pane'};   // f-fleet shares the chat pane
-// SAME-ORIGIN, so we can read which element in the focused pane holds the caret: a text field (composer /
-// input / contentEditable) means the keystrokes go to the FIELD, not the pane's nav controls — while that's
-// true there's no "active pane" to spotlight, so we set body.nav-typing and the CSS lifts the dimming.
-function typingIn(f){try{var a=f&&f.contentDocument&&f.contentDocument.activeElement;
-return !!a&&(a.tagName==='TEXTAREA'||a.tagName==='INPUT'||a.isContentEditable===true);}catch(e){return false;}}
-function setFocus(id,typing){var pid=PANE[id];if(!pid)return;   // pid = the focused pane → it stays bright, the others dim
-for(var k in PANE){var el=document.getElementById(PANE[k]);if(el)el.classList.toggle('pane-focused',PANE[k]===pid);}
-document.body.classList.toggle('nav-typing',!!typing);}
+// The active pane gets a focus RING (.pane-focused). Same-origin iframes, so the shell sets it directly on
+// pointerdown / focusin / window-focus — event-based, no polling. Exactly one pane is ringed at a time.
+function setFocus(id){var pid=PANE[id];if(!pid)return;
+for(var k in PANE){var el=document.getElementById(PANE[k]);if(el)el.classList.toggle('pane-focused',PANE[k]===pid);}}
 function wire(f){try{var d=f.contentDocument;if(!d||d.readyState==='loading')return;   // not ready → its 'load' re-wires
-var emit=function(){setFocus(f.id,typingIn(f));};
-d.addEventListener('pointerdown',emit,true);d.addEventListener('focusin',emit,true);d.addEventListener('focusout',emit,true);
+var emit=function(){setFocus(f.id);};
+d.addEventListener('pointerdown',emit,true);d.addEventListener('focusin',emit,true);
 f.contentWindow.addEventListener('focus',emit);}catch(e){}}
 Object.keys(PANE).forEach(function(id){var f=document.getElementById(id);if(!f)return;
 f.addEventListener('load',function(){wire(f);});wire(f);});   // wire now (already-loaded) + on every (re)load
-setFocus('f-chat',false);})();   // default: the chat section is lit on open
+setFocus('f-chat');})();   // default: the chat section is ringed on open
 """
 
 
@@ -5138,18 +5134,12 @@ def _landing():
             # edge — chat→right, feed→left, timeline→top — folds it to a 26px strip (body.cc-* overrides
             # the grid-template; coexists with the splitter's --chat/--tl). Sizes/positions from the old shell.
             ".pane{position:relative;min-width:0;min-height:0;overflow:hidden}"
-            # FOCUS cue (the user 2026-06-23): SPOTLIGHT the active section by DIMMING the OTHERS — the focused
-            # pane stays at its normal brightness (it is NOT darkened — the user was explicit), while every other
-            # pane gets a translucent-black veil (~halfway to black) so the one you're in stands out. The veil is
-            # pointer-events:none so a dimmed pane stays clickable (clicking it moves the spotlight); z below the
-            # collapse handle (z-30) + splitters.
-            ".pane:not(.pane-focused)::after{content:'';position:absolute;inset:0;background:rgba(0,0,0,0.5);"
-            "pointer-events:none;z-index:6}"
-            # …but while a TEXT FIELD in the focused pane holds the caret (the composer / any input), the
-            # pane-level nav controls (←/→ to switch chat tabs, ↑/↓ to scroll) DON'T fire — the keystrokes go to
-            # the field, so there's no "active pane" to spotlight. Lift the dimming entirely then; the field's
-            # own caret is the cue that input is going into the box (the user 2026-06-23).
-            "body.nav-typing .pane:not(.pane-focused)::after{opacity:0}"
+            # FOCUS cue (the user 2026-06-23): NO dimming — the active section is shown by a RING around it.
+            # The focused pane gets a thin inset border (drawn as an inset box-shadow over the iframe edges);
+            # the others get nothing, so the only lines on screen are the splitters + this focus ring. The ring
+            # is pointer-events:none (never blocks) and z below the collapse handle (z-30) / fleet toggle (z-31).
+            ".pane.pane-focused::after{content:'';position:absolute;inset:0;pointer-events:none;z-index:6;"
+            "box-shadow:inset 0 0 0 2px rgba(120,170,225,0.55)}"
             ".collapse-btn{position:absolute;z-index:30;display:flex;align-items:center;justify-content:center;"
             "background:#2a2a2a;color:#999;border:1px solid #3a3a3a;cursor:pointer;user-select:none;opacity:.3;transition:opacity .1s}"
             ".collapse-btn:hover{opacity:1;color:#fff}"
