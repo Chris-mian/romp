@@ -5322,8 +5322,10 @@ def _landing():
             "#chat-pane>iframe,#feed-pane>iframe{position:absolute;top:0;height:100%;width:calc(100% - var(--strip,20px))}"
             "#chat-pane>iframe{left:0}"
             "#feed-pane>iframe{right:0}"
-            "#feed-pane{--strip:14px}"
-            ".strip-btn{flex:0 0 auto;display:flex;align-items:center;justify-content:center;width:100%;height:26px;"
+            "#chat-pane{--strip:18px}#feed-pane{--strip:12px}"
+            # fixed compact size (NOT strip-width-relative) so the minimize bar is IDENTICAL on the chat + feed
+            # strips regardless of their differing widths (the user 2026-06-24)
+            ".strip-btn{flex:0 0 auto;display:flex;align-items:center;justify-content:center;width:auto;padding:0 4px;height:26px;"
             "color:#8a8a8a;border-radius:4px;cursor:pointer;user-select:none;opacity:.6;transition:opacity .1s,color .1s,background .1s}"
             ".strip-btn:hover{opacity:1;color:#fff;background:rgba(255,255,255,0.06)}"
             ".strip-btn .bar-v{width:3px;height:14px;border-radius:2px;background:currentColor;display:block}"
@@ -5340,7 +5342,9 @@ def _landing():
             "body.cc-tl #tl-pane{background:#181818;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;flex-direction:row}"
             # collapsed chat/feed: the strip fills the 26px rail (centred), its Fleet/Chat toggles hidden, label shown
             "body.cc-chat #chat-pane,body.cc-feed #feed-pane{background:#181818;cursor:pointer}"
-            "body.cc-chat #chat-pane>.pane-strip,body.cc-feed #feed-pane>.pane-strip{width:100%;border:0;background:transparent;justify-content:center}"
+            # collapsed: the strip fills the rail, but the minimize button STAYS at the top (where it is when
+            # expanded) — no re-centering (the user 2026-06-24). flex-start is the strip's default, so just drop bg/border.
+            "body.cc-chat #chat-pane>.pane-strip,body.cc-feed #feed-pane>.pane-strip{width:100%;border:0;background:transparent}"
             "body.cc-chat #chat-strip .strip-toggle,body.cc-feed #feed-strip .strip-toggle{display:none}"
             "body.cc-tl #tl-collapse{position:static;transform:none;opacity:.8;width:22px;height:22px;border-radius:5px;border:1px solid #3a3a3a}"
             "body.cc-chat #chat-pane .pane-label,body.cc-feed #feed-pane .pane-label{display:block;writing-mode:vertical-rl}"

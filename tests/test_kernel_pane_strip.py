@@ -37,7 +37,7 @@ class PaneStripTest(unittest.TestCase):
         self.assertIn("#chat-pane>iframe,#feed-pane>iframe{position:absolute;top:0;height:100%;width:calc(100% - var(--strip,20px))}", self.html)
         self.assertIn("#chat-pane>iframe{left:0}", self.html)
         self.assertIn("#feed-pane>iframe{right:0}", self.html)
-        self.assertIn("#feed-pane{--strip:14px}", self.html)             # narrower feed rail
+        self.assertIn("#chat-pane{--strip:18px}#feed-pane{--strip:12px}", self.html)   # feed rail narrower than chat's
 
     def test_chat_strip_has_rotated_fleet_and_chat_toggles_lit_in_romp_blue(self):
         self.assertIn("<div class=strip-toggle data-fleet=chat", self.html)
