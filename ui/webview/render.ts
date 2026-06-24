@@ -1419,19 +1419,29 @@ function showTabTip(tab: HTMLElement, s: Session): void {
     r.appendChild(k); r.appendChild(v); tip.appendChild(r);
   }
   if (lg?.tree && lg.tree.length) {
-    stampSubtreeRecency(lg.tree, lg.current || null);          // roll up _rec like the collapsed ledger does
-    const top = currentTopGoal(lg.tree);
-    if (top && top.text) {
-      const r = el("div", "tab-tip-row");
-      const k = el("span", "tab-tip-k"); k.textContent = "Latest";
-      const v = el("span", "tab-tip-v"); v.textContent = top.text;
-      const rec = nodeRecency(top);
-      if (rec) {
-        v.style.color = ageColorReadable(now - rec);           // the WHOLE recent item in the recency colour (text + time), not just the time
-        const ago = el("span", "tab-tip-ago"); ago.textContent = " (" + agehms(now - rec) + " ago)";
-        v.appendChild(ago);                                    // inherits the recency colour from v
+    // The last few things this session worked on (the user 2026-06-24): the up-to-5 most-recently-touched
+    // ledger nodes, each in its own recency colour with a "(Xm ago)" time — replaces the single "Latest"
+    // line. Sorted by each node's OWN recency (mt ?? t), so it's the actual recent work items, not umbrella
+    // tops floated up by a rolled-up subtree recency.
+    const recent = lg.tree
+      .filter((n) => (n.text || "").trim() && !n.cleared)
+      .map((n) => ({ n, t: (n.mt ?? n.t) || 0 }))
+      .filter((x) => x.t > 0)
+      .sort((a, b) => b.t - a.t)
+      .slice(0, 5);
+    if (recent.length) {
+      const r = el("div", "tab-tip-row tab-tip-recent");
+      const k = el("span", "tab-tip-k"); k.textContent = "Recent";
+      const list = el("div", "tab-tip-recent-list");
+      for (const { n, t } of recent) {
+        const item = el("div", "tab-tip-recent-item");
+        const txt = el("span"); txt.textContent = n.text;
+        const ago = el("span", "tab-tip-ago"); ago.textContent = " (" + agehms(now - t) + " ago)";
+        item.appendChild(txt); item.appendChild(ago);
+        item.style.color = ageColorReadable(now - t);          // text + time both in the node's recency colour
+        list.appendChild(item);
       }
-      r.appendChild(k); r.appendChild(v); tip.appendChild(r);
+      r.appendChild(k); r.appendChild(list); tip.appendChild(r);
     }
   }
   if (!tip.childElementCount) { tip.style.display = "none"; return; }

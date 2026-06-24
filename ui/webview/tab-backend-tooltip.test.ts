@@ -31,18 +31,20 @@ test("backend is bold and coloured BY BACKEND — tmux green / SDK blue, the can
   assert.doesNotMatch(CSS, /\.be-sdk|\.be-tmux/);          // inline hex, not per-backend CSS classes
 });
 
-test("v3: git branch + context battery + a labelled Summary row + a recency-coloured Latest top-goal row", () => {
+test("v4: git branch + context battery + Summary row + the last 5 worked-on items, recency-coloured (the user 2026-06-24)", () => {
   assert.match(RENDER, /rows\.push\(\["Branch", sys\.gitBranch\]\)/);                 // git branch from the system event
   assert.match(RENDER, /const bar = ctxBar\(\); setCtxBar\(bar, s\.status\.ctx/);     // the battery widget, not "X%"
   assert.match(RENDER, /const lg = ledgers\.get\(s\.id\)/);
   assert.match(RENDER, /k\.textContent = "Summary"[\s\S]*?v\.textContent = lg\.summary/);   // labelled Summary row
-  // Latest row = the collapsed ledger's current-top-goal, recency-coloured via nodeRecency
-  assert.match(RENDER, /stampSubtreeRecency\(lg\.tree, lg\.current/);
-  assert.match(RENDER, /const top = currentTopGoal\(lg\.tree\)/);
-  assert.match(RENDER, /k\.textContent = "Latest"/);
-  assert.match(RENDER, /const rec = nodeRecency\(top\)/);
-  assert.match(RENDER, /v\.style\.color = ageColorReadable\(now - rec\)/);            // the WHOLE recent item recency-coloured (text + time), not just the time
-  assert.doesNotMatch(CSS, /\.tab-tip-latest/);                                       // bare-paragraph latest line gone
+  // "Recent" = up to FIVE most-recently-touched ledger nodes (by each node's OWN recency mt??t), each
+  // text+time in its recency colour — replaces the single "Latest" top-goal line.
+  assert.match(RENDER, /k\.textContent = "Recent"/);
+  assert.doesNotMatch(RENDER, /k\.textContent = "Latest"/, "the single Latest line is gone");
+  assert.match(RENDER, /\.map\(\(n\) => \(\{ n, t: \(n\.mt \?\? n\.t\) \|\| 0 \}\)\)/);
+  assert.match(RENDER, /\.sort\(\(a, b\) => b\.t - a\.t\)\s*\n\s*\.slice\(0, 5\)/);   // newest-first, capped at 5
+  assert.match(RENDER, /item\.style\.color = ageColorReadable\(now - t\)/);           // each item in its recency colour
+  assert.match(CSS, /\.tab-tip-recent-list \{/);                                      // the list + per-item rules exist
+  assert.match(CSS, /\.tab-tip-recent-item \{/);
 });
 
 test("the tall context battery gets vertical breathing room", () => {

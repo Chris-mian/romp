@@ -181,6 +181,10 @@ body { display: flex; flex-direction: column; }
 .tab-tip-k { color: var(--dim); flex: 0 0 auto; min-width: 58px; }
 .tab-tip-v { color: var(--fg); min-width: 0; }   /* min-width:0 lets a long value wrap inside the flex row */
 .tab-tip-ago { font-variant-numeric: tabular-nums; }
+/* Recent: the up-to-5 most-recently-worked-on items, each in its own recency colour (set inline) with a
+   "(Xm ago)" time — the per-item colour comes from ageColorReadable, so no colour here. */
+.tab-tip-recent-list { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.tab-tip-recent-item { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tab-close:hover { opacity: 1; background: rgba(255, 255, 255, 0.12); }
 .tab-add { color: var(--dim); font-size: 1.1em; padding: 6px 10px; border-radius: 6px; }
 .tab-add:hover { color: var(--fg); background: rgba(255, 255, 255, 0.04); }
