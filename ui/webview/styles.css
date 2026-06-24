@@ -400,6 +400,9 @@ body { display: flex; flex-direction: column; }
    and a "Retry now" button. */
 .turn-apierror { padding: 6px 0 10px; }
 .dot.red { background: var(--st-blocked-bg); border: none; }
+/* a still-running subagent: solid amber working dot (NOT pulsing — oscillation was distracting, the user
+   2026-06-16), distinct from the green ✓ a finished tool gets, so a dispatched agent reads as "still going". */
+.dot.working { background: var(--st-working-bg); border: none; }
 .apierror-card { border: 1px solid var(--st-blocked-bg); border-radius: 7px; padding: 7px 9px; background: rgba(229, 72, 77, 0.07); }
 .apierror-head { display: flex; align-items: center; gap: 8px; }
 .apierror-countdown { flex: 0 0 auto; font-size: 0.8em; color: var(--st-blocked-bg); font-variant-numeric: tabular-nums; opacity: 0.9; }

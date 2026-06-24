@@ -239,7 +239,7 @@ function wrapCodeLines(code: HTMLElement) {
   }).join("");
 }
 
-function dot(kind: "green" | "ring" | "user" | "red" | "romp"): HTMLElement { return el("span", "dot " + kind); }
+function dot(kind: "green" | "ring" | "user" | "red" | "romp" | "working"): HTMLElement { return el("span", "dot " + kind); }
 
 function ioRow(label: "IN" | "OUT", text: string, isError: boolean): HTMLElement {
   const row = el("div", "io-row" + (label === "OUT" ? " io-out" : "") + (isError ? " io-error" : ""));
@@ -1059,7 +1059,11 @@ setInterval(apiRetryTick, 1000);
 function renderTool(ev: Extract<ChatEvent, { kind: "tool" }>): HTMLElement {
   if (ev.name === "AskUserQuestion") { const a = renderAsk(ev); if (a) return a; }
   const turn = el("div", "turn turn-tool" + (ev.isError ? " tool-err" : ""));
-  const d = dot(ev.isError ? "ring" : "green");
+  // A still-RUNNING subagent (Task/Agent dispatched, no report back yet) gets a solid amber WORKING dot instead
+  // of the green ✓ — so a dispatched-but-unfinished agent reads as "still going", not done (the user 2026-06-24,
+  // mirroring the TUI's clearer running/done split). Other in-flight tools resolve too fast to bother.
+  const agentRunning = (ev.name === "Task" || ev.name === "Agent") && !ev.output && !ev.isError;
+  const d = dot(ev.isError ? "ring" : agentRunning ? "working" : "green");
   if (ev.isError) d.classList.add("err");
   turn.appendChild(d);
 
@@ -1114,7 +1118,8 @@ function renderTool(ev: Extract<ChatEvent, { kind: "tool" }>): HTMLElement {
         const report = el("div", "agent-report md"); report.innerHTML = md(ev.output); highlight(report);
         body.appendChild(lab); body.appendChild(report);
       }
-      const summary = ev.output ? `report · ${countLines(ev.output)} lines` : "prompt";
+      // running (no report yet) reads as "running…", a clear in-progress state; once it reports → its line count
+      const summary = ev.output ? `report · ${countLines(ev.output)} lines` : "running…";
       inlineFold(head, turn, summary, body, fkey ? fkey + ":agent" : undefined);
     } else if (!ev.output) {
       const io = el("div", "tool-io"); if (ev.input) io.appendChild(ioRow("IN", ev.input, false)); turn.appendChild(io);

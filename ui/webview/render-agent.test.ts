@@ -16,8 +16,8 @@ test("a Task/Agent dispatch collapses to ONE line: prompt + report behind a sing
   // collapsed; click the head toggle to reveal both halves.
   assert.match(RENDER, /const body = el\("div", "agent-fold"\);/);
   assert.match(RENDER, /inlineFold\(head, turn, summary, body, fkey \? fkey \+ ":agent" : undefined\)/);
-  // head summary = the report's line count once it's back, else "prompt" (in-flight) — like Bash's "N lines"
-  assert.match(RENDER, /const summary = ev\.output \? `report · \$\{countLines\(ev\.output\)\} lines` : "prompt";/);
+  // head summary = the report's line count once it's back, else "running…" (in-flight) — clearer than "prompt"
+  assert.match(RENDER, /const summary = ev\.output \? `report · \$\{countLines\(ev\.output\)\} lines` : "running…";/);
   // the prompt shown is the actual prompt field (not the raw tool JSON), each half gets a small label
   assert.match(RENDER, /try \{ const o = JSON\.parse\(ev\.input\); if \(o && typeof o\.prompt === "string"\) promptText = o\.prompt; \}/);
   assert.match(RENDER, /el\("div", "agent-fold-label"\)/);
@@ -25,6 +25,14 @@ test("a Task/Agent dispatch collapses to ONE line: prompt + report behind a sing
   assert.match(RENDER, /el\("div", "agent-report md"\)/);
   // the big 300px preview block is GONE — no more io-clamp agent-clamp on the signal path
   assert.doesNotMatch(RENDER, /el\("div", "io-clamp agent-clamp"\)/, "the 300px report clamp block is removed");
+});
+
+test("a still-running agent (dispatched, no report yet) reads as RUNNING — amber working dot, not green ✓ (the user 2026-06-24)", () => {
+  // mirrors the TUI's clearer running/done split: an Agent/Task with no output yet is still going, so it gets
+  // a solid amber working dot instead of the green success dot, and its summary says "running…".
+  assert.match(RENDER, /const agentRunning = \(ev\.name === "Task" \|\| ev\.name === "Agent"\) && !ev\.output && !ev\.isError;/);
+  assert.match(RENDER, /dot\(ev\.isError \? "ring" : agentRunning \? "working" : "green"\)/);
+  assert.match(CSS, /\.dot\.working \{ background: var\(--st-working-bg\)/);
 });
 
 test("the agent report keeps its faded green-edged styling, now inside the fold", () => {
