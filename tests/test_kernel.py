@@ -2791,12 +2791,12 @@ class ServeSecurity(unittest.TestCase):
     def test_landing_has_a_focused_pane_cue(self):
         # the user 2026-06-23: the section you last interacted with is LIT — a faint white film over its
         # (opaque) iframe — so it's clear which pane your keystrokes/actions target. Shell-only: the
-        # same-origin iframes are wired by the shell (pointerdown/focusin/window-focus, event-based, no
-        # polling); chat is the default; it re-wires on iframe (re)load.
+        # same-origin iframes are wired by the shell (pointerdown/focusin/focusout/window-focus, event-based,
+        # no polling); chat is the default; it re-wires on iframe (re)load.
         html = km._landing()
         # the lightening film: a translucent-white ::after over the focused pane, click-through, under the chrome
         self.assertIn(".pane.pane-focused::after{content:'';position:absolute;inset:0;", html)
-        self.assertIn("background:rgba(255,255,255,0.05)", html)
+        self.assertIn("background:rgba(255,255,255,0.025)", html)   # subtle (halved from the first pass)
         self.assertIn("pointer-events:none;z-index:6}", html)
         # the wiring: maps each iframe id → its pane, toggles pane-focused exclusively, defaults to chat
         self.assertIn("var PANE={'f-chat':'chat-pane','f-feed':'feed-pane','f-timeline':'tl-pane'}", html)
@@ -2805,7 +2805,18 @@ class ServeSecurity(unittest.TestCase):
         self.assertIn("d.addEventListener('focusin',emit,true)", html)
         self.assertIn("f.contentWindow.addEventListener('focus',emit)", html)
         self.assertIn("f.addEventListener('load',function(){wire(f);});wire(f);", html)   # re-wire on (re)load
-        self.assertIn("setFocus('f-chat')", html)                                          # chat lit by default
+        self.assertIn("setFocus('f-chat',false)", html)                                    # chat lit by default
+
+    def test_landing_focus_drops_the_film_while_typing_in_a_field(self):
+        # sub-section focus (the user 2026-06-23): the pane-level nav controls (←/→ to switch chat tabs) DON'T
+        # fire while the caret is in the composer/any input, so the film must NOT imply they're live there. The
+        # shell reads the focused pane's same-origin activeElement; a TEXTAREA/INPUT/contentEditable marks the
+        # pane 'pane-typing' and the CSS zeroes the film (the field's own caret is the in-the-box cue).
+        html = km._landing()
+        self.assertIn(".pane.pane-typing::after{opacity:0}", html)                 # typing → no film
+        self.assertIn("a.tagName==='TEXTAREA'||a.tagName==='INPUT'||a.isContentEditable===true", html)
+        self.assertIn("el.classList.toggle('pane-typing',on&&!!typing)", html)     # only the focused pane, only when typing
+        self.assertIn("d.addEventListener('focusout',emit,true)", html)            # leaving the field restores the film
 
     def test_landing_pins_height_to_visual_viewport(self):
         # Regression (the user 2026-06-19): on real Android Chrome, body{height:100dvh} left a dead slab
