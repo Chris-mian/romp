@@ -52,7 +52,7 @@ class PaneStripTest(unittest.TestCase):
     def test_collapsed_chat_rail_keeps_the_fleet_chat_toggles_and_clicking_expands(self):
         # the Fleet/Chat toggles are NOT hidden when the chat collapses (the user 2026-06-24) — so Fleet stays
         # reachable from the rail; the redundant lowercase 'chat' label is dropped for the chat pane.
-        self.assertNotIn("body.cc-chat #chat-strip .strip-toggle", self.html)        # toggles no longer hidden
+        self.assertNotIn("#chat-strip .strip-toggle,body.cc-feed #feed-strip .strip-toggle{display:none}", self.html)  # the toggle-HIDE rule is gone
         self.assertNotIn("body.cc-chat #chat-pane .pane-label", self.html)           # chat label dropped (toggles are it)
         self.assertIn("body.cc-feed #feed-pane .pane-label{display:block", self.html)  # feed still labels its rail
         # clicking a toggle on a collapsed rail expands the pane first (clicks the collapse button), then shows the view
@@ -61,6 +61,8 @@ class PaneStripTest(unittest.TestCase):
     def test_a_collapsed_pane_drops_the_blue_focus_ring(self):
         # collapsed = not open → no blue focus ring; it reads gray/minimised even if it held focus (the user 2026-06-24)
         self.assertIn("body.cc-chat #chat-pane.pane-focused::after,body.cc-feed #feed-pane.pane-focused::after,body.cc-tl #tl-pane.pane-focused::after{display:none}", self.html)
+        # and the collapsed chat's Chat/Fleet toggles drop the lit blue → gray too (nothing reads as active)
+        self.assertIn("body.cc-chat #chat-strip .strip-toggle.on{color:#8a8a8a}", self.html)
 
     def test_strip_is_hidden_on_mobile_and_the_iframe_inset_is_reset(self):
         # mobile shows one pane at a time (no strip); the desktop iframe inset must be undone there too
