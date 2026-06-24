@@ -561,8 +561,14 @@ class SdkSession:
             self.backend._poke()
         elif isinstance(msg, AssistantMessage):
             self.retrying = False                      # real output is flowing → the API recovered
-            if getattr(msg, "model", None):
-                self.model = pretty_model(msg.model)
+            m = getattr(msg, "model", None)
+            # Only adopt a REAL model id. Injected / synthetic assistant turns carry model="<synthetic>" (and
+            # the CLI writes it to the transcript too); pretty_model passes unrecognised ids through verbatim,
+            # so an unguarded assign CORRUPTED the statusline + timeline model badge to "<synthetic>" — the
+            # model then "doesn't show" / shows garbage even mid-conversation (the user 2026-06-24). A real id
+            # always contains "claude" (claude-opus-4-8, us.anthropic.claude-…); keep the last good one otherwise.
+            if m and "claude" in m.lower():
+                self.model = pretty_model(m)
         elif isinstance(msg, ResultMessage):
             self.retrying = False
             self._interrupted = False              # this turn's result settled it (whether it finished or was interrupted)

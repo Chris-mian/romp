@@ -151,6 +151,22 @@ class LiveTail(unittest.TestCase):
         self.assertEqual(echoes[0]["type"], "user")
         self.assertEqual(echoes[0]["message"]["content"], [{"type": "text", "text": "type this"}])
 
+    def test_assistant_model_sets_badge_but_synthetic_does_not_corrupt_it(self):
+        """The model 'doesn't show' mid-conversation (the user 2026-06-24): injected/synthetic assistant turns
+        carry model='<synthetic>', which an unguarded assign wrote straight onto the statusline + timeline
+        badge (both read self.model via the snapshot). A real model id sets the badge; '<synthetic>' must be
+        ignored so the last real model sticks."""
+        class _Sys:                                              # a stand-in for SystemMessage (isinstance arg only)
+            pass
+        be = sb.SdkBackend(tempfile.mkdtemp(), "/bin/true", lambda *a, **k: None)
+        s = sb.SdkSession(be, {"sid": "11111111-2222-3333-4444-555555555555", "name": "n", "cwd": "/tmp"})
+        s._on_message(_AssistantMessage([_TextBlock("hi")], model="claude-opus-4-8"),
+                      _AssistantMessage, _ResultMessage, _Sys)
+        self.assertEqual(s.model, "Opus 4.8", "a real model id sets the badge")
+        s._on_message(_AssistantMessage([_TextBlock("x")], model="<synthetic>"),
+                      _AssistantMessage, _ResultMessage, _Sys)
+        self.assertEqual(s.model, "Opus 4.8", "a synthetic turn must NOT overwrite the real model")
+
 
 class StateAndRegistryFiles(unittest.TestCase):
     def setUp(self):
