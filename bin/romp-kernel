@@ -871,6 +871,61 @@ def _auto_nudge_tick(now, tmux):
         _push_all()
 
 
+def _working_notes():
+    """{sid: note} for live tmux sessions with a NON-EMPTY @romp-working note (one tmux read). The note is
+    the set_working ownership claim the postal bus shows in list_agents. Empty/absent → omitted."""
+    try:
+        r = subprocess.run(["tmux", "list-sessions", "-F", "#{@romp}|#{@romp-session-id}|#{@romp-working}"],
+                           capture_output=True, text=True, timeout=2.5)
+    except Exception:
+        return {}
+    out = {}
+    if r.returncode == 0:
+        for line in r.stdout.splitlines():
+            p = line.split("|", 2)
+            if len(p) == 3 and p[0] == "1" and p[1] and p[2].strip():
+                out[p[1]] = p[2]
+    return out
+
+
+def _set_working_note(sid, text):
+    """Set (or clear, text='') a session's @romp-working note — what the postal bus reads for list_agents."""
+    try:
+        subprocess.run(["tmux", "set", "-t", _name_of(sid) or sid, "@romp-working", text], timeout=3)
+    except Exception:
+        pass
+
+
+def _clear_done_working_notes(now, tmux):
+    """Event-based expiry of the set_working ownership note (the user 2026-06-24): once a session is IDLE
+    with NO working top goal left — its work is done (only done / blocked-on-you / cleared remains) — its
+    @romp-working claim is moot, so clear it. Peers reading list_agents then stop coordinating against a
+    finished session instead of waking it to ask "do you still own this?". Keyed on the completion EVENT
+    (idle + no working top goal), NOT a time heuristic. A session still WORKING — or idle with a goal still
+    WORKING (orphaned/stalled, the auto-nudge case) — keeps its note; it still owns that in-flight work.
+    (A session parked blocked-on-YOU also has its note lifted: it isn't actively editing, and it re-publishes
+    on resume — consistent with Part 1 flagging idle notes stale.) Runs every pusher tick, independent of the
+    auto-nudge toggle; a no-op (one tmux read) unless some session has published a note."""
+    notes = _working_notes()
+    if not notes:
+        return
+    for s in _alive_sessions(now, tmux):
+        sid = s["sid"]
+        if sid not in notes:
+            continue
+        if (tmux.get(sid) or {}).get("state", "") in ("working", "compacting", "permission", "retrying"):
+            continue                                     # actively progressing per tmux → keep (cheap pre-gate, no parse)
+        try:
+            turns = jd.parsed_session(sid, [s["path"]], now)["turns"]
+        except Exception:
+            continue
+        if not turns or _session_working(turns):         # still working per the event model → keep its claim
+            continue
+        if _working_top_goal(sid):                        # an OPEN working top goal remains → still its work
+            continue
+        _set_working_note(sid, "")                        # idle + nothing working → lift the stale claim
+
+
 def _chat_tab_sessions(now, tmux):
     """The sessions shown as CHAT TABS, in the shared session order: living sessions PLUS only the dead
     sessions the user explicitly opened READ-ONLY (_kept_open). A dead session is otherwise TIMELINE-ONLY
@@ -4580,6 +4635,10 @@ def _pusher():
             _auto_nudge_tick(int(time.time()), _tmux_sessions())
         except Exception:
             sys.stderr.write("auto-nudge: %s\n" % traceback.format_exc())
+        try:                                  # expire stale set_working notes once a session goes idle + done (cheap when no notes)
+            _clear_done_working_notes(int(time.time()), _tmux_sessions())
+        except Exception:
+            sys.stderr.write("clear-working-notes: %s\n" % traceback.format_exc())
         # Event-driven (woken by the SDK live-tail and by /tick on hook events) with a SHORT 0.5s backstop
         # poll, so tmux sessions — which have no per-message event for mid-turn streaming — still refresh
         # responsively as the model generates, instead of waiting out a multi-second tick (the user 2026-06-22).

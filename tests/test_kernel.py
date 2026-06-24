@@ -909,6 +909,69 @@ class ViewBuilder(unittest.TestCase):
                               "blocked": False, "cleared": True, "trail": [], "t": T0}}, {g: "working"})
         self.assertIsNone(km._working_top_goal(SID), "a cleared goal is not nudge-worthy")
 
+    # ── working-note auto-expire (the user 2026-06-24): lift a stale set_working claim once a session goes
+    #    idle with no working top goal, so peers stop coordinating against a finished session ──
+    def _stub_expire(self, notes, working, top_goal):
+        # stub the deps of _clear_done_working_notes; returns (cleared_calls, restore_fn). cleared_calls
+        # records every _set_working_note(sid, text) the pass makes.
+        cleared = []
+        saved = (km._working_notes, km._alive_sessions, km._set_working_note,
+                 km._session_working, km._working_top_goal, jd.parsed_session)
+        km._working_notes = lambda: dict(notes)
+        km._alive_sessions = lambda now, tmux: [{"sid": SID, "path": str(self.tpath)}]
+        km._set_working_note = lambda sid, text: cleared.append((sid, text))
+        km._session_working = lambda turns: working
+        km._working_top_goal = lambda sid: top_goal
+        jd.parsed_session = lambda sid, paths, now: {"turns": [{"atoms": [], "ended": True}]}
+
+        def restore():
+            (km._working_notes, km._alive_sessions, km._set_working_note,
+             km._session_working, km._working_top_goal, jd.parsed_session) = saved
+        return cleared, restore
+
+    def test_working_note_cleared_when_idle_and_done(self):
+        cleared, restore = self._stub_expire({SID: "feed.ts"}, working=False, top_goal=None)
+        try:
+            km._clear_done_working_notes(NOW, {SID: {"state": "idle"}})
+            self.assertEqual(cleared, [(SID, "")], "idle + no working top goal → the stale claim is lifted")
+        finally:
+            restore()
+
+    def test_working_note_kept_while_still_working(self):
+        cleared, restore = self._stub_expire({SID: "feed.ts"}, working=True, top_goal=None)
+        try:
+            km._clear_done_working_notes(NOW, {SID: {"state": "working"}})
+            self.assertEqual(cleared, [], "a session still working (event model) keeps its claim")
+        finally:
+            restore()
+
+    def test_working_note_kept_when_a_working_top_goal_remains(self):
+        cleared, restore = self._stub_expire({SID: "feed.ts"}, working=False, top_goal=SID + ":gw")
+        try:
+            km._clear_done_working_notes(NOW, {SID: {"state": "idle"}})
+            self.assertEqual(cleared, [], "idle but a working top goal remains (orphaned/stalled) → still its work")
+        finally:
+            restore()
+
+    def test_working_note_tmux_working_short_circuits_before_parse(self):
+        cleared, restore = self._stub_expire({SID: "feed.ts"}, working=False, top_goal=None)
+        parsed = []
+        jd.parsed_session = lambda *a, **k: (parsed.append(1), {"turns": []})[1]
+        try:
+            km._clear_done_working_notes(NOW, {SID: {"state": "working"}})   # tmux says working
+            self.assertEqual(cleared, [], "tmux 'working' → keep the claim")
+            self.assertEqual(parsed, [], "and short-circuit BEFORE parsing (cheap pre-gate)")
+        finally:
+            restore()
+
+    def test_working_note_noop_when_none_published(self):
+        cleared, restore = self._stub_expire({}, working=False, top_goal=None)
+        try:
+            km._clear_done_working_notes(NOW, {SID: {"state": "idle"}})
+            self.assertEqual(cleared, [], "no published notes → nothing to do")
+        finally:
+            restore()
+
     def _orphaned_goal(self, idle=True, closer_done=True):
         # an idle (or still-open) session whose top goal still shows "working". closer_done puts the latest
         # turn's id in closedTurns, so the closer-verdict gate lets the nudge through (the realistic case: the
