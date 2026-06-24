@@ -1496,12 +1496,14 @@ function renderTabs() {
     // WORKING shows a yellow dot; BLOCKED (API error) gets NO dot — the dashed red tab highlight instead
     // (the user 2026-06-16).
     if (st === "working") tab.appendChild(el("span", "tab-dot"));
-    // compacting → a ⇲ compress glyph before the name (the tab gets no outline for this state, so the
-    // glyph IS the cue — the user 2026-06-16). Monochrome (NOT the old colour 🗜 emoji) so it reads as a
-    // transient PROCESS, not a coloured status — same glyph the ghostty tab dot uses (the user 2026-06-22).
-    // Compacting can't coincide with working, so no dot clash.
+    // compacting → a tiny animated compaction bar before the name (the tab gets no outline for this state,
+    // so the bar IS the cue). A teal fill whose right edge slides left and loops — the same "compression"
+    // motion as the statusline ctx-scan bar (.ctx-compress), miniaturised. Replaces the static ⇲ glyph the
+    // user disliked (2026-06-24): motion reads as a transient PROCESS, not a status colour. Compacting can't
+    // coincide with working, so no dot clash.
     if (st === "compacting") {
-      const ci = el("span", "tab-compacting-icon"); ci.textContent = "⇲";
+      const ci = el("span", "tab-compacting-bar");
+      ci.appendChild(el("span", "tab-compacting-fill"));
       ci.title = "compacting — compressing the conversation to free up context";
       tab.appendChild(ci);
     }

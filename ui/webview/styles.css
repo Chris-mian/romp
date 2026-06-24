@@ -106,9 +106,25 @@ body { display: flex; flex-direction: column; }
 .tab.tab-awaiting, .tab.tab-blocked, .tab.tab-retrying { outline: 2px dashed var(--state); outline-offset: -2px; }
 /* WORKING: a small yellow dot left of the name (replaces the old yellow outline). */
 .tab-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--st-working-bg); }   /* solid — dot oscillation was distracting (the user 2026-06-16) */
-/* compacting → a small monochrome ⇲ compress glyph before the name (this state gets no tab outline, so the
-   glyph is the cue); a touch dim so it reads as transient process, not a status colour (the user 2026-06-22) */
-.tab-compacting-icon { flex: 0 0 auto; font-size: 0.9em; line-height: 1; margin-right: 3px; opacity: 0.75; }
+/* compacting → a tiny animated compaction bar before the name (this state gets no tab outline, so the bar
+   is the cue). A teal fill whose right edge slides left and loops — the same compression motion as the
+   statusline ctx-scan bar, miniaturised — so it reads as a transient process, not a status colour (the user
+   2026-06-24, replacing the static ⇲ glyph). */
+.tab-compacting-bar {
+  flex: 0 0 auto; position: relative; width: 16px; height: 6px; margin-right: 4px;
+  border-radius: 2px; overflow: hidden; background: rgba(20, 184, 166, 0.18);
+}
+.tab-compacting-fill {
+  position: absolute; left: 0; top: 0; bottom: 0; width: 100%; border-radius: 2px;
+  background: var(--st-compacting-bg); transform-origin: left center;
+  animation: tab-compact 1.6s linear infinite;
+}
+@keyframes tab-compact {
+  0%   { transform: scaleX(1);    opacity: 0; }   /* appear at full width */
+  12%  { transform: scaleX(1);    opacity: 1; }
+  88%  { transform: scaleX(0.12); opacity: 1; }   /* right edge has slid left */
+  100% { transform: scaleX(0.12); opacity: 0; }   /* fade out, then restart full */
+}
 /* CLOSED (dead session kept as a read-only tab): strike the title + dim, so a tab that's still
    present but no longer live reads as past tense (the user 2026-06-16). */
 .tab.tab-closed .tab-label { text-decoration: line-through; }
