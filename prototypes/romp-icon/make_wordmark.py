@@ -23,11 +23,11 @@ Deps: Google Chrome / Chromium (set $CHROME to override the binary), and
 optionally Pillow (used only to auto-trim the banner to its content).
 
 Run:  python make_wordmark.py
-Outputs two PNGs:
-  - romp-wordmark.png (here) — the dark-banner README hero.
-  - ../../chat-view/media/romp-wordmark.png — a TRANSPARENT-background copy for
-    the dashboard's inbox-zero empty state (served at /media; the pane is dark so
-    it floats on the pane's own background instead of carrying a banner of its own).
+Outputs two identical PNGs (flat #0e1116 background — needed so the letters can be
+thinned to the swirl's line weight via a background-colored text-stroke):
+  - romp-wordmark.png (here) — the README hero.
+  - ../../chat-view/media/romp-wordmark.png — a copy served at /media for the
+    dashboard's inbox-zero empty state.
 """
 import base64
 import os
