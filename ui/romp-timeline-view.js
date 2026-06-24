@@ -2032,19 +2032,8 @@ class TimelinePanel {
           svg.appendChild(hit);
         }
       }
-      // 📬 unread/parked mail flag — esp. meaningful on a DEAD lane (the mail delivers on its revival).
-      // Full-opacity attention glyph at the lane's right (now) edge; hover shows the count.
-      if (s.pendingMail > 0) {
-        const mx = x(t1) - 12, n = s.pendingMail;
-        const mb = el('text', { x: mx, y: y + 4, 'font-size': 12, 'text-anchor': 'middle' }); mb.textContent = '📬'; svg.appendChild(mb);
-        const mhit = el('rect', { x: mx - 10, y: y - 8, width: 20, height: 16, fill: 'transparent' }); mhit.style.cursor = 'pointer';
-        const mhtml = () => '<div class="r"><span class="chip" style="background:' + s.color + '"></span><span class="who" style="color:' + s.color + '">' + esc(s.name) + '</span><span class="k">mail</span></div><div class="b">' + n + ' unread message' + (n === 1 ? '' : 's') + ' waiting' + (s.live ? '' : ' (delivers on revival)') + '</div>';
-        mhit.addEventListener('mouseenter', (e) => this.showTip(mhtml(), e));
-        mhit.addEventListener('mousemove', (e) => this.moveTip(e));
-        mhit.addEventListener('mouseleave', () => this.hideTip());
-        mhit.addEventListener('click', () => { this._select(s.id); this.openChat(this._laneTid(s), null, true); });
-        svg.appendChild(mhit);
-      }
+      // (The 📬 unread/parked-mail glyph was removed 2026-06-24: the DOTTED message-flow connector already
+      // signals an undelivered/waiting message between sessions, so the emoji was redundant.)
     });
 
     // obstacles for routing — at each event's process-start (a pending event rides `now` via execAt/startAt)

@@ -16,7 +16,7 @@ test("feedPrefs reads oldestFirst (DEFAULT ON), and the column sort flips on it"
 });
 
 test("the ⛭ gear has an 'Oldest first' checkbox wired to romp:settings.oldestFirst, checked by default", () => {
-  assert.match(KERNEL, /<input type=checkbox id=rs-oldest>/);
+  assert.match(KERNEL, /<input type=checkbox id=rs-oldest checked>/);   // checked attr → visually on by default
   assert.match(KERNEL, /<b>Oldest first<\/b>/);
   assert.match(KERNEL, /of=document\.getElementById\('rs-oldest'\)/);
   assert.match(KERNEL, /oldestFirst:true/);   // a load() default ON, so the box reads checked by default

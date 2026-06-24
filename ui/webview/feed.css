@@ -6,6 +6,8 @@
   --fg: var(--vscode-foreground, #cccccc);
   --dim: var(--vscode-descriptionForeground, #9a9a9a);
   --green: #74c991;
+  --err: #c74e39;   /* the block-red — mirrors styles.css; feed.css has its OWN :root, so the ⏸ block marks
+                       (and the modal's red ⏸-ring) need it defined HERE or var(--err) falls back to gray */
 
   /* Card background + border are set inline per card (the hawaii recency tint).
      These neutral tokens are for the chrome that frames them (header, detail box,
