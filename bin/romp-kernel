@@ -853,12 +853,23 @@ def _read_default_dir_file():
 
 
 def _default_create_dir():
-    """The default working directory for a new session: the user-set persisted file FIRST (settable from
-    the gear dialog or `romp --default-dir` — a web dialog can't set env vars, hence a file), else the
-    launch/serve dir (ROMP_SERVE_CWD, else the install ROMPHOME), else ~. The file OVERRIDES the env/install
-    default; the env/install default is the base it picks up when nothing is set (the user 2026-06-23)."""
-    return (_read_default_dir_file() or os.environ.get("ROMP_SERVE_CWD")
-            or os.environ.get("ROMPHOME") or os.path.expanduser("~"))
+    """The default working directory for a NEW session, in priority order (the user 2026-06-23):
+      1. the user's persisted choice — ~/.config/romp/default-dir, set from the gear dialog or
+         `romp --default-dir`. A web/launchd kernel can't read a shell env var, so the override is a FILE.
+      2. else the romp install dir (ROMP_DIR — the repo root): romp-serve exports it and romp-service bakes
+         it into the launchd plist, so it is reliably present however the kernel was started. A new session
+         starts where romp lives, matching the CLI's own default (`romp`'s ROMPHOME also defaults there).
+      3. else ~ (only if ROMP_DIR is somehow unset — e.g. a bare test run).
+    Always editable per-session in the picker. Simplified from the old file→ROMP_SERVE_CWD→ROMPHOME→~ chain:
+    ROMP_SERVE_CWD was never set by anything (dead), and ROMPHOME — a shell env var — never reaches the
+    launchd-rooted kernel. ROMP_DIR is the one base that's always there."""
+    f = _read_default_dir_file()
+    if f:
+        return f
+    rd = os.environ.get("ROMP_DIR")
+    if rd and os.path.isdir(rd):
+        return rd
+    return os.path.expanduser("~")
 
 
 def _set_default_dir(raw):
@@ -4658,7 +4669,7 @@ _GEAR_HTML = ("<button id=rrefresh title='Restart the romp kernel' aria-label=Re
               "<option value=tmux>tmux (terminal)</option><option value=sdk>SDK (headless)</option>"
               "</select></span></div>"
               "<div class='rs-row rs-sep' style='cursor:default'><span style='flex:1 1 auto'><b>Default directory</b>"
-              "<span class=rs-sub>The default directory for NEW sessions (still editable per session). Persisted kernel-side — also settable with <code>romp --default-dir</code>. Falls back to the install/serve default (ROMPHOME) until you set one; blank reverts to it. ~ and $VARs expand.</span>"
+              "<span class=rs-sub>The default directory for NEW sessions (still editable per session). Persisted kernel-side — also settable with <code>romp --default-dir</code>. Falls back to the romp install dir until you set one; blank reverts to it. ~ and $VARs expand.</span>"
               "<div style='display:flex;gap:6px;margin-top:5px'>"
               "<input id=rs-defaultdir type=text spellcheck=false placeholder='install/serve default' style='flex:1 1 auto;min-width:0;box-sizing:border-box;background:#1e1e1e;color:#ccc;"
               "border:1px solid #3a3a3a;border-radius:5px;padding:3px 6px'>"

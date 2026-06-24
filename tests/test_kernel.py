@@ -2423,24 +2423,27 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(km.build_session(SID, NOW)["status"]["state"], "retrying")
 
     def test_requestSessions_payload_carries_default_dir(self):
-        """The new-session picker prefills the dir field with the kernel's real default path, sent in the
-        sessionList payload (the user 2026-06-23)."""
-        saved_sdk, saved_env = km._sdk, os.environ.get("ROMP_SERVE_CWD")
+        """The new-session picker prefills the dir field with the kernel's real default path (ROMP_DIR — the
+        romp install dir — when no override file is set), sent in the sessionList payload (the user 2026-06-23)."""
+        wd = tempfile.mkdtemp()
+        saved_sdk, saved_dir, saved_ddfile = km._sdk, os.environ.get("ROMP_DIR"), km._DEFAULT_DIR_FILE
         km._sdk = lambda: None                               # don't construct the real SDK backend
-        os.environ["ROMP_SERVE_CWD"] = "/tmp/wd-fixture"
+        os.environ["ROMP_DIR"] = wd
+        km._DEFAULT_DIR_FILE = Path(tempfile.mkdtemp()) / "default-dir"   # no user override → ROMP_DIR wins
         sent = []
         client = {"send": lambda s: sent.append(json.loads(s)), "app": "chat"}
         try:
             km.Handler._dispatch_ws(None, {"type": "requestSessions"}, client)
         finally:
             km._sdk = saved_sdk
-            if saved_env is None:
-                os.environ.pop("ROMP_SERVE_CWD", None)
+            km._DEFAULT_DIR_FILE = saved_ddfile
+            if saved_dir is None:
+                os.environ.pop("ROMP_DIR", None)
             else:
-                os.environ["ROMP_SERVE_CWD"] = saved_env
+                os.environ["ROMP_DIR"] = saved_dir
         sl = next((m for m in sent if m.get("type") == "sessionList"), None)
         self.assertIsNotNone(sl, "requestSessions returns a sessionList")
-        self.assertEqual(sl.get("defaultDir"), "/tmp/wd-fixture", "the dir field prefills the kernel's default path")
+        self.assertEqual(sl.get("defaultDir"), km._tilde(wd), "the dir field prefills the kernel's default path")
 
     def test_timeline_state_and_metadata_from_tmux(self):
         # live lanes take state + model/effort/context from tmux @claude-* vars (the READY badge =
@@ -3090,38 +3093,42 @@ class CreateDirResolution(unittest.TestCase):
         self.names.mkdir(parents=True)
         self._saved_names = km.NAMES
         km.NAMES = self.names
-        self._saved_env = os.environ.get("ROMP_SERVE_CWD")
-        self._saved_home = os.environ.get("ROMPHOME")
-        os.environ.pop("ROMPHOME", None)
+        self._saved_romp_dir = os.environ.get("ROMP_DIR")
+        os.environ.pop("ROMP_DIR", None)                                 # control the default base (ROMP_DIR) per-test
         self._saved_ddfile = km._DEFAULT_DIR_FILE
         km._DEFAULT_DIR_FILE = Path(tempfile.mkdtemp()) / "default-dir"   # isolate from a real ~/.config/romp/default-dir
 
     def tearDown(self):
         km.NAMES = self._saved_names
         km._DEFAULT_DIR_FILE = self._saved_ddfile
-        for var, val in (("ROMP_SERVE_CWD", self._saved_env), ("ROMPHOME", self._saved_home)):
-            if val is None:
-                os.environ.pop(var, None)
-            else:
-                os.environ[var] = val
+        if self._saved_romp_dir is None:
+            os.environ.pop("ROMP_DIR", None)
+        else:
+            os.environ["ROMP_DIR"] = self._saved_romp_dir
 
-    def test_default_dir_file_overrides_env_and_set_clear_validate(self):
-        """The persisted file (gear/CLI) OVERRIDES the env/install default; _set_default_dir writes/clears/
-        validates; a file pointing at a now-missing dir is ignored (the user 2026-06-23)."""
-        os.environ["ROMP_SERVE_CWD"] = "/tmp"
-        self.assertEqual(km._default_create_dir(), "/tmp")               # no file → env/install default
+    def test_default_dir_file_overrides_install_dir_and_set_clear_validate(self):
+        """The persisted file (gear/CLI) OVERRIDES the ROMP_DIR install-dir default; _set_default_dir writes/
+        clears/validates; a file pointing at a now-missing dir is ignored (the user 2026-06-23)."""
+        os.environ["ROMP_DIR"] = "/tmp"
+        self.assertEqual(km._default_create_dir(), "/tmp")               # no file → the romp install dir (ROMP_DIR)
         d = tempfile.mkdtemp()
         path, err = km._set_default_dir(d)
         self.assertIsNone(err)
         self.assertEqual(path, os.path.realpath(d))
-        self.assertEqual(km._default_create_dir(), os.path.realpath(d))  # file OVERRIDES the env
+        self.assertEqual(km._default_create_dir(), os.path.realpath(d))  # file OVERRIDES ROMP_DIR
         _, err2 = km._set_default_dir("/no/such/xyz123")
         self.assertIn("not found", err2)                                 # a bad path is rejected
         self.assertEqual(km._default_create_dir(), os.path.realpath(d))  # ...and the file is unchanged
         km._set_default_dir("")                                          # clear
-        self.assertEqual(km._default_create_dir(), "/tmp")               # revert to the env default
+        self.assertEqual(km._default_create_dir(), "/tmp")               # revert to ROMP_DIR
         km._DEFAULT_DIR_FILE.write_text("/gone/missing\n")               # file points at a now-missing dir
-        self.assertEqual(km._default_create_dir(), "/tmp")               # → ignored, falls through
+        self.assertEqual(km._default_create_dir(), "/tmp")               # → ignored, falls through to ROMP_DIR
+
+    def test_falls_back_to_home_when_romp_dir_unset_or_bogus(self):
+        os.environ.pop("ROMP_DIR", None)                                 # no install dir in env → ~
+        self.assertEqual(km._default_create_dir(), os.path.expanduser("~"))
+        os.environ["ROMP_DIR"] = "/no/such/install/xyz123"               # set, but not a real directory → ignored
+        self.assertEqual(km._default_create_dir(), os.path.expanduser("~"), "a bogus ROMP_DIR falls through to ~")
 
     def test_version_info_includes_default_dir(self):
         self.assertIn("defaultDir", km._version_info())                  # the gear loads its field from here
@@ -3132,11 +3139,11 @@ class CreateDirResolution(unittest.TestCase):
         self.assertIn("target:'gear'", km._GEAR_JS)                      # Browse posts browseDir target=gear
 
     def test_blank_dir_falls_back_to_default_no_error(self):
-        os.environ["ROMP_SERVE_CWD"] = "/tmp"
+        os.environ["ROMP_DIR"] = "/tmp"
         for raw in ("", "   ", None):
             path, err = km._resolve_create_dir(raw)
             self.assertIsNone(err)
-            self.assertEqual(path, "/tmp")               # default is NOT realpath'd, just the serve dir
+            self.assertEqual(path, "/tmp")               # default is NOT realpath'd, just ROMP_DIR
 
     def test_missing_dir_is_rejected(self):
         path, err = km._resolve_create_dir("/no/such/dir/xyz123")
