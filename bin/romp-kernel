@@ -4325,12 +4325,15 @@ def _push(targets):
     want_tl = any(c["app"] == "timeline" for c in targets)
     try:
         chat_list = _chat_tab_sessions(now, tmux)   # living + recently-died-while-shown, minus ×-hidden
-        # build_session yields each session's ledger; the chat needs the full payloads, and the FEED carries a
-        # light per-session ledger slice for the Fleet view (it rides the proven feed channel — the user 2026-06-23).
-        chat_sessions = [m for m in (build_session(s["sid"], now, tmux) for s in chat_list) if m] if (want_chat or want_feed) else []
+        # build_session yields each session's ledger; the chat needs the full payloads. The FEED carries a
+        # per-session ledger slice for the Fleet view, but ONLY rides along when the CHAT client already built
+        # chat_sessions (want_chat — always true while the dashboard is open). We do NOT build all sessions just
+        # for a feed/fleet push (that made feed/timeline depend on every build_session succeeding, and did the
+        # heavy work on every poll — the user 2026-06-24, slow-load + empty-panes regression).
+        chat_sessions = [m for m in (build_session(s["sid"], now, tmux) for s in chat_list) if m] if want_chat else []
         tab_order = [s["sid"] for s in chat_list]
         feed = build_feed(now, tmux) if want_feed else None
-        if feed is not None:
+        if feed is not None and chat_sessions:
             feed["ledgers"] = [{"sid": m["id"], "name": m["name"], "color": m.get("color"),
                                 "status": m.get("status"), "ledger": m.get("ledger")} for m in chat_sessions]
         timeline = build_timeline(now, tmux) if want_tl else None
