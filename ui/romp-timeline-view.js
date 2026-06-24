@@ -226,6 +226,20 @@ function feedCheckIcon(off, cx, cy, color) {
   if (off) g.appendChild(el('line', { x1: cx - 6.5, y1: cy + 4.5, x2: cx + 6.5, y2: cy - 4.5, stroke: color, 'stroke-width': 1.4, 'stroke-linecap': 'round' }));
   return g;
 }
+// Per-lane POSTAL ISOLATION toggle (the user 2026-06-23): a monochrome mailbox — a domed box with a raised
+// flag — sitting just right of the feed checkbox. Drawn (not an emoji) so it stays crisp + monochrome
+// everywhere, same gray line weight as the checkbox; `off`=true (isolated) adds the SAME strike-through slash
+// so the disabled state reads identically. The flag is enforced in bin/romp-postal (hidden from peers, no
+// messages in or out).
+function mailboxIcon(off, cx, cy, color) {
+  const g = el('g', { 'pointer-events': 'none' });
+  // domed mailbox body (a half-round top on a short box), nudged left to leave room for the flag
+  g.appendChild(el('path', { d: 'M' + (cx - 5) + ' ' + (cy + 3) + 'L' + (cx - 5) + ' ' + cy + 'A 3.5 3.5 0 0 1 ' + (cx + 2) + ' ' + cy + 'L' + (cx + 2) + ' ' + (cy + 3) + 'Z', fill: 'none', stroke: color, 'stroke-width': 1.2, 'stroke-linejoin': 'round' }));
+  // the raised flag on the right side
+  g.appendChild(el('path', { d: 'M' + (cx + 2) + ' ' + cy + 'L' + (cx + 2) + ' ' + (cy - 3) + 'L' + (cx + 4.7) + ' ' + (cy - 3) + 'L' + (cx + 4.7) + ' ' + (cy - 1.3) + 'L' + (cx + 2) + ' ' + (cy - 1.3), fill: 'none', stroke: color, 'stroke-width': 1.2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }));
+  if (off) g.appendChild(el('line', { x1: cx - 6.5, y1: cy + 4.5, x2: cx + 6.5, y2: cy - 4.5, stroke: color, 'stroke-width': 1.4, 'stroke-linecap': 'round' }));
+  return g;
+}
 const MODEL_CHOICES = [
   { label: 'Fable', value: 'fable' },
   { label: 'Opus', value: 'opus' },
@@ -1593,8 +1607,9 @@ class TimelinePanel {
     // 2026-06-19). Reserve its width only when there IS a live lane, so an all-historical view keeps the
     // tight [name][model] layout.
     const EYE_W = 13, EYE_GAP = 6, anyLive = vis.some((s) => s.live);
-    const eyeColX = PADL + Math.ceil(maxName) + COLGAP;                              // [name] [👁] [model+effort] [chip] [ctx]
-    const modelColX = eyeColX + (anyLive ? EYE_W + EYE_GAP : 0);
+    const eyeColX = PADL + Math.ceil(maxName) + COLGAP;                              // [name] [✓feed] [📫postal] [model+effort] [chip] [ctx]
+    const mailColX = eyeColX + (anyLive ? EYE_W + EYE_GAP : 0);                      // postal-isolation mailbox, just right of the feed checkbox
+    const modelColX = mailColX + (anyLive ? EYE_W + EYE_GAP : 0);
     const chipColX = modelColX + (maxModel > 0 ? Math.ceil(maxModel) + COLGAP : 0);
     const ctxColX = chipColX + (maxChip > 0 ? Math.ceil(maxChip) + COLGAP : 0);
     M.left = ctxColX + (maxCtx > 0 ? Math.ceil(maxCtx) + COLGAP : 4);
@@ -1847,6 +1862,36 @@ class TimelinePanel {
           s.hideFromFeed = next;                       // optimistic …
           (this._pendingFlags[s.id] = this._pendingFlags[s.id] || {}).hideFromFeed = next;   // … and held STICKY across pushes until the kernel confirms (no flicker-back)
           this._setSessionFlag(s, 'hideFromFeed', next);
+          this.hideTip();
+          this.draw();
+        });
+      }
+      // per-session POSTAL ISOLATION toggle (live lanes only): a mailbox icon just right of the feed
+      // checkbox; one click toggles postalOff. Un-slashed = on the postal service (default: visible to peers,
+      // can send + receive); slashed + more faded = isolated (hidden from list_agents, no messages in or out
+      // — for working privately). Same draw/hit/tooltip pattern as the feed checkbox; enforced in bin/romp-postal.
+      if (s.live) {
+        const moff = !!s.postalOff;
+        const mcx = mailColX + 5, mcy = y + 0.5;
+        const mdim = moff ? '0.3' : '0.62';
+        const mbox = mailboxIcon(moff, mcx, mcy, MODEL_FG);
+        mbox.setAttribute('opacity', mdim);
+        svg.appendChild(mbox);
+        const mhit = el('rect', { x: mailColX - 4, y: y - 9, width: EYE_W + 8, height: 18, fill: 'transparent', 'pointer-events': 'all' });
+        mhit.style.cursor = 'pointer';
+        mhit.setAttribute('aria-label', moff ? 'session isolated from the postal service' : 'session on the postal service'); svg.appendChild(mhit);
+        const mtip = moff
+          ? "Isolated from the postal service — click to reconnect<div style='opacity:.65;margin-top:2px'>hidden from peers; can’t send or receive messages</div>"
+          : "On the postal service — click to isolate<div style='opacity:.65;margin-top:2px'>work privately: hidden from peers, no messages in or out</div>";
+        mhit.addEventListener('mouseenter', (e) => { mbox.setAttribute('opacity', '1'); this.showTip(mtip, e); });
+        mhit.addEventListener('mousemove', (e) => this.moveTip(e));
+        mhit.addEventListener('mouseleave', () => { mbox.setAttribute('opacity', mdim); this.hideTip(); });
+        mhit.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const next = !s.postalOff;
+          s.postalOff = next;                            // optimistic …
+          (this._pendingFlags[s.id] = this._pendingFlags[s.id] || {}).postalOff = next;   // … held sticky until the kernel confirms
+          this._setSessionFlag(s, 'postalOff', next);
           this.hideTip();
           this.draw();
         });

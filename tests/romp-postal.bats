@@ -45,6 +45,8 @@ teardown() {
 
 mb() { echo "$XDG_STATE_HOME/romp/postal/mail/$1"; }
 cnt() { ls -1 "$1" 2>/dev/null | wc -l | tr -d ' '; }
+# toggle POSTAL ISOLATION on for a session uuid (writes the kernel's session-flags.json that the bus reads)
+iso() { mkdir -p "$XDG_STATE_HOME/romp"; printf '{"%s":{"postalOff":true}}' "$1" > "$XDG_STATE_HOME/romp/session-flags.json"; }
 
 @test "agents lists live sessions and marks you" {
     run "$POSTAL" agents
@@ -66,6 +68,41 @@ cnt() { ls -1 "$1" 2>/dev/null | wc -l | tr -d ' '; }
     run "$POSTAL" send ghost "x"
     [ "$status" -ne 0 ]
     [[ "$output" == *"no live romp session named 'ghost'"* ]]
+}
+
+@test "an isolated session (mailbox off) is invisible in agents" {
+    iso uuid-b                                   # beta toggles postal isolation on
+    run "$POSTAL" agents
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"alpha"* ]]
+    [[ "$output" != *"beta"* ]]                  # isolated → hidden from peers
+}
+
+@test "sending TO an isolated session is refused, not parked" {
+    iso uuid-b
+    run "$POSTAL" send beta "secret"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"isolation"* ]]
+    [ "$(cnt "$(mb uuid-b)/new")" = "0" ]        # nothing delivered or parked
+}
+
+@test "an isolated session cannot send" {
+    iso uuid-a                                   # alpha (the current session) is isolated
+    run "$POSTAL" send beta "hi"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"isolation"* ]]
+    [ "$(cnt "$(mb uuid-b)/new")" = "0" ]
+}
+
+@test "an isolated session holds its inbox until it reconnects" {
+    run "$POSTAL" send beta "for beta"           # delivered while beta is on the postal service
+    [ "$(cnt "$(mb uuid-b)/new")" = "1" ]
+    iso uuid-b                                    # beta now isolates
+    export MOCK_CURRENT=beta
+    run "$POSTAL" inbox
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"for beta"* ]]              # held — not delivered while isolated
+    [ "$(cnt "$(mb uuid-b)/new")" = "1" ]        # still waiting in new/
 }
 
 @test "send to a dead-but-known session parks a handoff" {

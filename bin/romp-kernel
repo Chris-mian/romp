@@ -486,9 +486,10 @@ def _set_hidden_tab(sid, hidden):
 
 
 # ── per-session view flags (the user 2026-06-19) ──────────────────────────────────────────────────
-# A persisted {sid: {flag: true}} dict under STATE. The only flag today is hideFromFeed: a session whose
-# prompts should NOT mint feed cards — it's a per-session "mute from the feed", set from the timeline's
-# lane gear. The session still shows on the timeline; build_feed just skips it. mtime-cached since
+# A persisted {sid: {flag: true}} dict under STATE. Flags today: hideFromFeed (a session whose prompts
+# should NOT mint feed cards — a per-session "mute from the feed") and postalOff (isolate the session from
+# the postal service — enforced in bin/romp-postal: invisible to list_agents, can't send/receive). Both are
+# set from the timeline's lane controls; the session stays on the timeline. mtime-cached since
 # build_feed/build_timeline read it on every push.
 _flags_cache = {}   # str(path) -> ((mtime,size), dict)
 
@@ -3885,7 +3886,8 @@ def build_timeline(now, tmux=None):
             "compacting": _state_intervals(sid, "compacting", now),
             "compactions": compactions, "pendingMail": _pending_mail(sid),
             "stale": faded, "faded": faded,
-            "hideFromFeed": _session_flag(sid, "hideFromFeed")})   # lane gear → mute from feed (timeline-only)
+            "hideFromFeed": _session_flag(sid, "hideFromFeed"),    # lane checkbox → mute from feed (timeline-only)
+            "postalOff": _session_flag(sid, "postalOff")})         # lane mailbox → isolate from the postal service (bin/romp-postal)
     messages = _postal_messages(now, set(id2name), id2name)
     _bind_message_execs(messages, turns)                 # connector exec → the recipient's process-start (real transit)
     # token usage by rate-limit WINDOW (the user 2026-06-17): the coding SESSIONS + the judge PIPELINE,

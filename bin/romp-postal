@@ -68,6 +68,7 @@ TLDIR = STATE.parent / "timeline"     # append-only logs for the timeline view (
 ARCHIVE_DIR = STATE.parent / "archive"        # per-session {headline, abstract} (the archiver — the search index)
 CAPTIONS_DIR = STATE.parent / "captions"      # per-transcript turn/segment captions (the activity log)
 STATESDIR = STATE.parent / "states"          # per-session state-transition log (tmux-status.sh schema)
+SESSION_FLAGS = STATE.parent / "session-flags.json"   # the kernel's per-session view flags {sid:{flag:true}}; we honour postalOff
 
 # The romp launcher (same dir as this script); used to REVIVE a dead session via
 # `romp <name> --resume <uuid> --detach`. Overridable for tests.
@@ -210,6 +211,8 @@ def deliver(to_id, from_name, from_id, body, park=False):
 def read_box(sid, consume):
     if not _safe_id(sid):            # reject traversal in the id from /inbox, /drain
         return []
+    if _postal_off(sid):             # isolated: hold mail — don't deliver while the mailbox is off (it waits in new/)
+        return []
     mb = MAILROOT / sid
     newd = mb / "new"
     if not newd.is_dir():
@@ -317,6 +320,18 @@ def all_agents():
 
 def present_count():
     return len(all_agents())
+
+def _postal_off(sid):
+    """True if the session toggled POSTAL ISOLATION on (the timeline lane's mailbox icon → postalOff): it's
+    invisible to list_agents, can't send, and can't receive — for working privately. Reads the kernel's
+    shared session-flags.json. Best-effort: any error → not isolated (fail OPEN, never wedge messaging)."""
+    if not sid:
+        return False
+    try:
+        f = json.loads(SESSION_FLAGS.read_text()).get(sid)
+        return bool(isinstance(f, dict) and f.get("postalOff"))
+    except Exception:
+        return False
 
 def _git_branch(d):
     """Current git branch of a dir (for the agent list — same-branch is what makes
@@ -1084,7 +1099,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send({"ok": True})
         if u.path == "/agents":
             me = (q.get("me") or [""])[0]
-            agents = all_agents()
+            agents = [a for a in all_agents() if not _postal_off(a["id"])]   # isolated sessions are invisible to peers
             for a in agents:                       # enrich with branch for display only
                 a["branch"] = _git_branch(a.get("dir", ""))
             return self._send({"agents": agents, "me": me})
@@ -1116,15 +1131,21 @@ class Handler(BaseHTTPRequestHandler):
             to = data.get("to", "")
             frm, frm_id = data.get("from", "unknown"), data.get("from_id", "")
             body = data.get("body", "")
-            match = [a for a in all_agents() if a["name"] == to]
+            if _postal_off(frm_id):                # the sender is in isolation → sending is disabled
+                return self._send({"error": "isolation: your session is in postal isolation (mailbox off in the "
+                                   "timeline); sending is disabled until you toggle it back on."}, 403)
+            match = [a for a in all_agents() if a["name"] == to and not _postal_off(a["id"])]
             if not match:
                 # No live peer by that name. If a PAST session used it, park a
                 # handoff that delivers whenever it's revived (ignored if it never
                 # returns). A name no session ever had is a typo -> 404.
                 dead = _dead_id_for_name(to)
-                if dead:
+                if dead and not _postal_off(dead):
                     deliver(dead, frm, frm_id, body, park=True)
                     return self._send({"ok": True, "to": to, "parked": True})
+                if any(a["name"] == to for a in all_agents()):   # live, but isolated → say so (don't 404 or park)
+                    return self._send({"error": "isolation: '%s' is in postal isolation right now (its mailbox is "
+                                       "off) — it can't receive messages until it reconnects." % to}, 403)
                 return self._send({"error": "no live romp session named '%s'" % to}, 404)
             a0 = match[0]
             mid = deliver(a0["id"], frm, frm_id, body)
