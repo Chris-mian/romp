@@ -27,6 +27,7 @@ const folded = new Set<string>(), expanded = new Set<string>();   // fold state,
 const fkey = (sid: string, id: string) => sid + "\0" + id;
 
 const sumOpen = new Set<string>();   // ⊕ distiller-summary panels currently expanded, keyed fkey(sid,nodeId)
+const sessFolded = new Set<string>();   // sessions whose WHOLE task tree is collapsed, keyed by sid (the user 2026-06-24)
 
 function el(tag: string, cls?: string): HTMLElement { const e = document.createElement(tag); if (cls) e.className = cls; return e; }
 
@@ -153,6 +154,17 @@ function render() {
 
     const sec = el("div", "fl-session");
     const head = el("div", "fl-head");
+    // session-level collapse caret (the user 2026-06-24): folds this session's WHOLE task tree. Its OWN
+    // data-act="sessfold" (the innermost data-act in the head) so clicking it folds WITHOUT opening the
+    // session — only a click on the name/rest of the head (data-act="open") jumps in.
+    const sfolded = sessFolded.has(s.sid);
+    const caret = el("span", "fl-caret");
+    caret.textContent = sfolded ? "▶" : "▼";
+    caret.title = sfolded ? "expand this session's tasks" : "collapse this session's tasks";
+    caret.dataset.act = "sessfold"; caret.dataset.sid = s.sid;
+    caret.style.cssText = "flex:0 0 auto;cursor:pointer;color:var(--vscode-descriptionForeground,#9a9a9a);"
+      + "font-size:9px;width:13px;text-align:center;user-select:none";
+    head.appendChild(caret);
     if (s.status?.state === "working") head.appendChild(el("span", "fl-workdot"));
     const nm = el("span", "fl-name");
     nm.textContent = s.name;
@@ -223,8 +235,7 @@ function render() {
       }
       if (expandable && !isFolded) for (const cid of n.children!) { const c = byId.get(cid); if (c) renderNode(c, depth + 1); }
     };
-    for (const r of visibleRoots) renderNode(r, 0);
-    sec.appendChild(treeBox);
+    if (!sfolded) { for (const r of visibleRoots) renderNode(r, 0); sec.appendChild(treeBox); }   // folded → head only
     list.appendChild(sec);
   }
 
@@ -274,6 +285,12 @@ window.addEventListener("storage", (e: StorageEvent) => { if (e.key === "romp:se
   if (!list) return;
   delegate(list, {
     open: (el) => { const sid = el.dataset.sid; if (sid) openSession(sid); },
+    sessfold: (el) => {                                  // ▶/▼ on the session head → collapse/expand its whole tree
+      const sid = el.dataset.sid;
+      if (!sid) return;
+      if (sessFolded.has(sid)) sessFolded.delete(sid); else sessFolded.add(sid);
+      render();
+    },
     sum: (el) => {                                       // ⊕/⊖ → toggle this node's distiller-summary panel
       const sid = el.dataset.sid, nid = el.dataset.nid;
       if (!sid || !nid) return;

@@ -44,6 +44,19 @@ test("FULL ledger parity (the user 2026-06-24): pointer-cursor zones, grouped ho
   assert.match(SRC, /if \(sumOpen\.has\(k\)\) sumOpen\.delete\(k\); else sumOpen\.add\(k\);/);
 });
 
+test("a session-level collapse caret folds the whole session's tree WITHOUT opening it (the user 2026-06-24)", () => {
+  // the caret is in the .fl-head but carries its OWN data-act="sessfold" (innermost), so a click on it folds
+  // while a click on the name (data-act="open") still jumps into the session.
+  assert.match(SRC, /const sessFolded = new Set<string>\(\)/);
+  assert.match(SRC, /caret\.dataset\.act = "sessfold"; caret\.dataset\.sid = s\.sid;/);
+  assert.match(SRC, /head\.appendChild\(caret\)/);
+  // folded → render the head only, skip the tree
+  assert.match(SRC, /if \(!sfolded\) \{ for \(const r of visibleRoots\) renderNode\(r, 0\); sec\.appendChild\(treeBox\); \}/);
+  // the delegate toggles per-session fold, separate from the row "open" action
+  assert.match(SRC, /sessfold: \(el\) => \{/);
+  assert.match(SRC, /if \(sessFolded\.has\(sid\)\) sessFolded\.delete\(sid\); else sessFolded\.add\(sid\);/);
+});
+
 test("recency colour is copied VERBATIM from render.ts (identical to the ledger box)", () => {
   assert.match(SRC, /function ageColorReadable\(ageSecs: number\)/);
   assert.match(SRC, /const LO = 120, HI = 345600/);               // the same recency curve
