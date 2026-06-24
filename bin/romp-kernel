@@ -5311,10 +5311,15 @@ def _landing():
             "display:flex;flex-direction:column;align-items:center;gap:4px;padding:6px 0;background:#202021}"
             "#chat-pane>.pane-strip{right:0;border-left:1px solid #2c2c2d}"
             "#feed-pane>.pane-strip{left:0;border-right:1px solid #2c2c2d}"
-            "#chat-pane>iframe,#feed-pane>iframe{position:absolute;top:0;bottom:0;width:auto;height:auto}"
-            "#chat-pane>iframe{left:0;right:var(--strip,20px)}"
-            "#feed-pane>iframe{left:var(--strip,20px);right:0}"
-            ".strip-btn{flex:0 0 auto;display:flex;align-items:center;justify-content:center;width:18px;height:26px;"
+            # iframes are REPLACED elements: top+bottom with height:auto collapses them to the intrinsic ~150px
+            # (a tiny box in a sea of black — the user 2026-06-24). Size them EXPLICITLY: full height, width =
+            # pane minus the strip, pinned to the non-strip side. The feed strip is narrower (--strip:14px) since
+            # it only holds the minimize button; the chat's is wider to fit the rotated Chat/Fleet labels.
+            "#chat-pane>iframe,#feed-pane>iframe{position:absolute;top:0;height:100%;width:calc(100% - var(--strip,20px))}"
+            "#chat-pane>iframe{left:0}"
+            "#feed-pane>iframe{right:0}"
+            "#feed-pane{--strip:14px}"
+            ".strip-btn{flex:0 0 auto;display:flex;align-items:center;justify-content:center;width:100%;height:26px;"
             "color:#8a8a8a;border-radius:4px;cursor:pointer;user-select:none;opacity:.6;transition:opacity .1s,color .1s,background .1s}"
             ".strip-btn:hover{opacity:1;color:#fff;background:rgba(255,255,255,0.06)}"
             ".strip-btn .bar-v{width:3px;height:14px;border-radius:2px;background:currentColor;display:block}"

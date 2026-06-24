@@ -29,11 +29,15 @@ class PaneStripTest(unittest.TestCase):
         # the timeline keeps its own horizontal edge bar (NOT a strip)
         self.assertIn("<div class=collapse-btn id=tl-collapse", self.html)
 
-    def test_the_strip_reserves_space_by_insetting_the_iframe(self):
-        # the rail is a dedicated column, not an overlay: the chat/feed iframes are inset by --strip
+    def test_the_strip_reserves_space_by_sizing_the_iframe_explicitly(self):
+        # the rail is a dedicated column, not an overlay. iframes are REPLACED elements, so top+bottom with
+        # height:auto would collapse them to ~150px — size them EXPLICITLY (full height, width = pane minus the
+        # strip) instead. The feed strip is narrower (only a minimize button) than the chat's (Chat/Fleet labels).
         self.assertIn(".pane-strip{position:absolute;top:0;bottom:0;width:var(--strip,20px)", self.html)
-        self.assertIn("#chat-pane>iframe{left:0;right:var(--strip,20px)}", self.html)
-        self.assertIn("#feed-pane>iframe{left:var(--strip,20px);right:0}", self.html)
+        self.assertIn("#chat-pane>iframe,#feed-pane>iframe{position:absolute;top:0;height:100%;width:calc(100% - var(--strip,20px))}", self.html)
+        self.assertIn("#chat-pane>iframe{left:0}", self.html)
+        self.assertIn("#feed-pane>iframe{right:0}", self.html)
+        self.assertIn("#feed-pane{--strip:14px}", self.html)             # narrower feed rail
 
     def test_chat_strip_has_rotated_fleet_and_chat_toggles_lit_in_romp_blue(self):
         self.assertIn("<div class=strip-toggle data-fleet=chat", self.html)
