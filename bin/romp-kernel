@@ -2667,6 +2667,10 @@ def _mark_nodes_cleared(item_ids, value):
         sid = iid.rsplit(":", 1)[0]
         by_sid.setdefault(sid, []).append(iid)
     now = int(time.time())
+    # ONE session discovery for the whole batch (the user 2026-06-24): this used to call _sessions(now) —
+    # a full jd.discover() filesystem enumeration — INSIDE the loop, so a Clear-all → Undo-clear across N
+    # sessions did N back-to-back discoveries, blocking the single-threaded kernel (the "really slow" undo).
+    sess_paths = {s["sid"]: s["path"] for s in _sessions(now)}
     for sid, ids in by_sid.items():
         store = jd.load_goals(sid)
         nodes = store.get("nodes", {})
@@ -2679,7 +2683,7 @@ def _mark_nodes_cleared(item_ids, value):
         if not touched:
             continue
         try:                                          # session_closed for the rollup, same as _resolve_node
-            path = next((s["path"] for s in _sessions(now) if s["sid"] == sid), None)
+            path = sess_paths.get(sid)
             closed = jd._session_closed(_parse(path, sid, now)) if path else False
         except Exception:
             closed = False
