@@ -67,6 +67,20 @@ def pretty_model(raw: str) -> str:
     return f"{fam.capitalize()} {maj}" + (f".{minor}" if minor else "")
 
 
+def model_label(live: str, chosen: str) -> str:
+    """The model badge to show for an SDK session. Prefer the LIVE name once the init / assistant message has
+    echoed it; otherwise fall back to a best-effort label from the CHOSEN alias so a freshly-created session
+    shows its model RIGHT AWAY (the user 2026-06-24) — like a tmux session does on launch — instead of a blank
+    until the first turn. A raw id → pretty_model ('claude-opus-4-8' → 'Opus 4.8'); a CLI alias (opus/sonnet/…)
+    → capitalised (matches set_model's live-change label); 'default'/unset → '' (the real default name fills in
+    from the init message, which eager-connect now pokes through immediately)."""
+    if live:
+        return live
+    if not chosen or chosen == "default":
+        return ""
+    return pretty_model(chosen) if chosen.startswith("claude-") else chosen.capitalize()
+
+
 def _block_to_dict(b):
     """One SDK content block → the transcript/event-model block dict (by type name, so no SDK import)."""
     n = type(b).__name__
@@ -535,6 +549,9 @@ class SdkSession:
             if fsid and fsid != self.resume_sid:
                 self.resume_sid = fsid
                 self.backend._update_reg(self.sid, lastSid=fsid)
+            self.backend._poke()   # publish the model + permission-mode from init RIGHT AWAY (the eager-connect
+                                   # whole point): the snapshot reads self.model, but with no poke the new model
+                                   # would wait out the 3s producer backstop instead of showing on connect.
         elif isinstance(msg, SystemMessage) and msg.subtype == "api_retry":
             # the API returned a retryable error (rate-limit / overload); the CLI is backing off + retrying.
             # Surface a distinct 'retrying' state so a stall reads as an API issue, not a silent hang (the
@@ -668,7 +685,7 @@ class SdkSession:
             ls = last_state(self.backend.state_dir, self.sid)
             state, since = ls.get("state") or "waiting", ls.get("t") or 0
         return {"state": state, "since": str(since) if since else "",
-                "model": self.model, "effort": self.effort,
+                "model": model_label(self.model, self.chosen_model), "effort": self.effort,
                 "mode": self.perm_mode, "ctx": "", "summary": ""}
 
 
@@ -911,7 +928,8 @@ class SdkBackend:
             else:
                 ls = last_state(self.state_dir, sid)
                 out[sid] = {"state": ls.get("state") or "waiting",
-                            "since": str(ls.get("t") or ""), "model": "",
+                            "since": str(ls.get("t") or ""),
+                            "model": model_label("", reg.get("model") or ""),   # not running (e.g. post-restart): show the chosen model
                             "effort": reg.get("effort", ""),
                             "mode": reg.get("mode", ""), "ctx": "", "summary": ""}
         return out

@@ -77,6 +77,19 @@ class PureTranslation(unittest.TestCase):
         self.assertEqual(sb.pretty_model(""), "")
         self.assertEqual(sb.pretty_model("some-custom-id"), "some-custom-id")        # unrecognised → verbatim
 
+    def test_model_label(self):
+        # the live (init/assistant-echoed) name always wins once known
+        self.assertEqual(sb.model_label("Opus 4.8", "opus"), "Opus 4.8")
+        self.assertEqual(sb.model_label("Opus 4.8", ""), "Opus 4.8")
+        # before the live name arrives, show a best-effort label from the CHOSEN model so the badge isn't
+        # blank on a freshly-created SDK session (the user 2026-06-24)
+        self.assertEqual(sb.model_label("", "opus"), "Opus")                 # CLI alias → capitalised
+        self.assertEqual(sb.model_label("", "sonnet"), "Sonnet")
+        self.assertEqual(sb.model_label("", "claude-opus-4-8"), "Opus 4.8")  # raw id → pretty_model
+        # 'default'/unset → blank: the REAL default name fills in from the init message (eager-connect pokes it)
+        self.assertEqual(sb.model_label("", "default"), "")
+        self.assertEqual(sb.model_label("", ""), "")
+
     def test_identity_color_stable_and_in_palette(self):
         bg, fg = sb.pick_identity_color("11111111-2222-3333-4444-555555555555")
         self.assertIn(bg, sb._PALETTE)
