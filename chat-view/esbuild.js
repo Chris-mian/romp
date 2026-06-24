@@ -35,6 +35,7 @@ const webview = {
     "../ui/webview/styles.css",
     "../ui/webview/feed.ts",
     "../ui/webview/feed.css",
+    "../ui/webview/fleet.ts",
   ],
   nodePaths: [path.join(__dirname, "node_modules")],
   bundle: true,

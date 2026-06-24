@@ -2816,7 +2816,7 @@ class ServeSecurity(unittest.TestCase):
         self.assertIn("pointer-events:none;z-index:6}", html)
         self.assertNotIn(".pane.pane-focused::after", html)         # the focused pane is NOT given a film
         # the wiring: maps each iframe id → its pane, toggles pane-focused exclusively, defaults to chat
-        self.assertIn("var PANE={'f-chat':'chat-pane','f-feed':'feed-pane','f-timeline':'tl-pane'}", html)
+        self.assertIn("var PANE={'f-chat':'chat-pane','f-fleet':'chat-pane','f-feed':'feed-pane','f-timeline':'tl-pane'}", html)
         self.assertIn("classList.toggle('pane-focused'", html)
         self.assertIn("d.addEventListener('pointerdown',emit,true)", html)
         self.assertIn("d.addEventListener('focusin',emit,true)", html)
@@ -2834,6 +2834,31 @@ class ServeSecurity(unittest.TestCase):
         self.assertIn("a.tagName==='TEXTAREA'||a.tagName==='INPUT'||a.isContentEditable===true", html)
         self.assertIn("document.body.classList.toggle('nav-typing',!!typing)", html)
         self.assertIn("d.addEventListener('focusout',emit,true)", html)            # leaving the field restores the spotlight
+
+    def test_fleet_page_served(self):
+        # Fleet (the user 2026-06-23): /fleet serves the by-session open-work view, fed by the SAME app=feed
+        # stream and rendered by dist/fleet.js.
+        import urllib.request
+        with urllib.request.urlopen("http://127.0.0.1:%d/fleet" % self.port, timeout=5) as r:
+            self.assertEqual(r.status, 200)
+            body = r.read().decode("utf-8", "replace")
+        self.assertIn("id=fleet-list", body)
+        self.assertIn("id=fleet-foot", body)
+        self.assertIn("/dist/fleet.js", body)
+        self.assertIn('app=feed', body)              # reuses the feed payload, no new kernel data
+
+    def test_landing_chat_pane_has_a_fleet_toggle(self):
+        # the chat pane holds a SECOND iframe (/fleet) and a top-right button flips between them (the user
+        # 2026-06-23). Both load up front; .show-fleet swaps which is visible; focus follows to the live one.
+        html = km._landing()
+        self.assertIn("<iframe id=f-fleet src=/fleet>", html)
+        self.assertIn("id=chat-fleet-toggle", html)
+        self.assertIn("#chat-pane.show-fleet>#f-chat{display:none}#chat-pane.show-fleet>#f-fleet{display:block}", html)
+        self.assertIn("p.classList.toggle('show-fleet')", html)
+        # f-fleet shares the chat pane in the focus map (so interacting with it spotlights the chat pane)
+        self.assertIn("'f-fleet':'chat-pane'", html)
+        # desktop-only for now: hidden on the mobile one-pane layout
+        self.assertIn("#f-fleet{display:none!important}", html)
 
     def test_landing_pins_height_to_visual_viewport(self):
         # Regression (the user 2026-06-19): on real Android Chrome, body{height:100dvh} left a dead slab

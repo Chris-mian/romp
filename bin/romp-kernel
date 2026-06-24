@@ -4788,6 +4788,46 @@ def _feed_page():
                _shim("feed"), v, _GEAR_JS))
 
 
+# Fleet — a BY-SESSION view of open work (the user 2026-06-23): the same cross-session goal data the feed
+# carries (the app=feed payload's `asks`), grouped per session instead of per status column. Lives in the chat
+# pane behind a toggle. Reuses the feed WS stream verbatim; ui/webview/fleet.ts renders it. Completed work is
+# hidden behind a bottom "Show completed" checkbox (default off).
+_FLEET_CSS = (
+    "html,body{margin:0;height:100%;background:var(--vscode-editor-background,#1e1e1e);"
+    "color:var(--vscode-foreground,#cccccc);font-family:var(--vscode-font-family,system-ui,-apple-system,'Segoe UI',sans-serif);"
+    "font-size:13px;display:flex;flex-direction:column;overflow:hidden}"
+    "#fleet-list{flex:1 1 auto;min-height:0;overflow-y:auto;padding:6px 0}"
+    ".fl-empty{opacity:.6;text-align:center;padding:26px 14px;line-height:1.5}"
+    ".fl-session{padding:3px 0 6px}"
+    ".fl-head{display:flex;align-items:center;gap:7px;padding:5px 14px 3px;cursor:pointer;font-weight:650}"
+    ".fl-head:hover{background:rgba(255,255,255,0.05)}"
+    ".fl-workdot{width:7px;height:7px;border-radius:50%;background:#e0b020;flex:0 0 auto}"
+    ".fl-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}"
+    ".fl-goal{display:flex;align-items:flex-start;gap:9px;padding:3px 14px 3px 26px;cursor:pointer;line-height:1.45}"
+    ".fl-goal:hover{background:rgba(255,255,255,0.05)}"
+    ".fl-goal.done{opacity:.5}"
+    ".fl-text{overflow-wrap:anywhere}"
+    ".fl-dot{width:8px;height:8px;border-radius:50%;flex:0 0 auto;margin-top:6px}"
+    ".fl-dot.work{background:#e0b020}.fl-dot.block{background:#e5484d}"
+    ".fl-dot.await{background:#14b8a6}.fl-dot.done{background:#1EA1EB}"
+    "#fleet-foot{flex:0 0 auto;border-top:1px solid var(--vscode-editorHoverWidget-border,rgba(255,255,255,0.12));"
+    "padding:8px 14px}"
+    ".fl-toggle{display:inline-flex;align-items:center;gap:7px;cursor:pointer;"
+    "color:var(--vscode-descriptionForeground,#9a9a9a);font-size:12px;user-select:none}"
+)
+
+
+def _fleet_page():
+    v = _dist_ver()
+    return ("<!DOCTYPE html><html lang=en><head><meta charset=UTF-8>"
+            "<meta name=viewport content='width=device-width,initial-scale=1'>"
+            "<link rel=icon type=image/svg+xml href=/media/romp-swirl-glyph.svg><title>Romp · fleet</title>"
+            "<style>%s\n%s</style></head><body>"
+            "<div id=fleet-list></div><div id=fleet-foot></div>"
+            "<script>%s</script><script src=/dist/fleet.js?v=%d></script></body></html>"
+            % (THEME_CSS, _FLEET_CSS, _shim("feed"), v))
+
+
 # The romp-tl-* styles, verbatim from the obsidian/VS-Code timeline wrapper.
 TIMELINE_CSS = """:root{--text-muted:#9aa0a6;--text-faint:#6e7681;}#host{width:100%;}
 .romp-tl-top{display:flex;align-items:center;gap:12px;padding:2px 0 8px;flex:0 0 auto;}
@@ -4916,7 +4956,7 @@ window.addEventListener('resize',autosize);})();
 # document directly — pointerdown / focusin / window-focus, all EVENT-based (no polling). Re-wires on every
 # iframe (re)load; chat is the default focus on open. Inert on mobile (one pane at a time; .pane is display:contents).
 _LANDING_FOCUS_JS = """
-(function(){var PANE={'f-chat':'chat-pane','f-feed':'feed-pane','f-timeline':'tl-pane'};
+(function(){var PANE={'f-chat':'chat-pane','f-fleet':'chat-pane','f-feed':'feed-pane','f-timeline':'tl-pane'};   // f-fleet shares the chat pane
 // SAME-ORIGIN, so we can read which element in the focused pane holds the caret: a text field (composer /
 // input / contentEditable) means the keystrokes go to the FIELD, not the pane's nav controls — while that's
 // true there's no "active pane" to spotlight, so we set body.nav-typing and the CSS lifts the dimming.
@@ -4932,6 +4972,18 @@ f.contentWindow.addEventListener('focus',emit);}catch(e){}}
 Object.keys(PANE).forEach(function(id){var f=document.getElementById(id);if(!f)return;
 f.addEventListener('load',function(){wire(f);});wire(f);});   // wire now (already-loaded) + on every (re)load
 setFocus('f-chat',false);})();   // default: the chat section is lit on open
+"""
+
+
+# Fleet toggle (the user 2026-06-23): the top-right button flips the chat pane between the session chat
+# (f-chat) and the Fleet by-session view (f-fleet). Both iframes are always loaded; we just swap which is
+# shown via .show-fleet, and move focus to the now-visible one so the spotlight + keyboard follow.
+_LANDING_FLEET_JS = """
+(function(){var b=document.getElementById('chat-fleet-toggle'),p=document.getElementById('chat-pane');
+if(!b||!p)return;
+b.addEventListener('click',function(e){e.stopPropagation();var on=p.classList.toggle('show-fleet');
+b.textContent=on?'Chat':'Fleet';b.title=on?'Back to the session chat':'Show the Fleet (every session\\'s open work)';
+var f=document.getElementById(on?'f-fleet':'f-chat');try{f&&f.contentWindow&&f.contentWindow.focus();}catch(err){}});})();
 """
 
 
@@ -5067,6 +5119,16 @@ def _landing():
             ".col{display:grid;grid-template-rows:1fr 5px var(--tl,160px);height:100vh}"
             ".row{display:grid;grid-template-columns:var(--chat,60%) 5px 1fr;min-height:0}"
             "iframe{border:0;width:100%;height:100%}"
+            # Fleet toggle (the user 2026-06-23): the chat pane holds a SECOND iframe (/fleet, the by-session
+            # open-work view); a top-right button flips the pane between the session chat and the Fleet. f-fleet
+            # loads hidden so the swap is instant. The toggle floats above the iframe + the focus veil (z 6).
+            "#chat-pane>#f-fleet{display:none}"
+            "#chat-pane.show-fleet>#f-chat{display:none}#chat-pane.show-fleet>#f-fleet{display:block}"
+            "#chat-fleet-toggle{position:absolute;top:6px;right:8px;z-index:31;cursor:pointer;"
+            "background:#2a2a2a;color:#bbb;border:1px solid #3a3a3a;border-radius:5px;"
+            "font:600 11px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;padding:3px 9px;opacity:.55;transition:opacity .1s}"
+            "#chat-pane:hover #chat-fleet-toggle,#chat-fleet-toggle:hover{opacity:1;color:#fff}"
+            "#chat-pane.show-fleet #chat-fleet-toggle{background:#1d3a52;color:#9cd2ff;border-color:#2b6088;opacity:.95}"
             ".gv{cursor:col-resize;background:linear-gradient(90deg,transparent 2px,#333 2px,#333 3px,transparent 3px)}"
             ".gh{cursor:row-resize;background:linear-gradient(180deg,transparent 2px,#333 2px,#333 3px,transparent 3px)}"
             ".gv:hover{background:linear-gradient(90deg,transparent 2px,#007fd4 2px,#007fd4 3px,transparent 3px)}"
@@ -5129,7 +5191,8 @@ def _landing():
             ".gv,.gh{display:none}"
             # mobile uses the bottom tab switcher, not collapse: dissolve the .pane wrappers (so the
             # iframes act as direct flex children again, as the mobile rules below expect) + hide the handles
-            ".pane{display:contents}.collapse-btn,.pane-label{display:none}"
+            ".pane{display:contents}.collapse-btn,.pane-label,#chat-fleet-toggle{display:none}"
+            "#f-fleet{display:none!important}"   # Fleet is desktop-only for now (mobile shows one pane at a time)
             "iframe{position:static;display:none;width:100%;height:100%;border:0}"
             "#f-chat.m-on,#f-feed.m-on{display:block}"
             "#f-timeline{flex:1 1 auto;min-height:0}#f-timeline.m-on{display:block}"
@@ -5150,6 +5213,8 @@ def _landing():
             "</style></head><body><div class=col>"
             "<div class=row>"
             "<div class=pane id=chat-pane><iframe id=f-chat class=m-on src=/chat></iframe>"
+            "<iframe id=f-fleet src=/fleet></iframe>"
+            "<button id=chat-fleet-toggle title='Switch this pane between the session chat and the Fleet (every session\\'s open work)'>Fleet</button>"
             "<div class=collapse-btn id=chat-collapse title='collapse the chat'><span class=bar-v></span></div>"
             "<span class=pane-label>chat</span></div>"
             "<div class=gv id=gv></div>"
@@ -5172,6 +5237,7 @@ def _landing():
             # throw on every load — fixed above by giving that iframe id=f-timeline.)
             "<script>" + _LANDING_JS + "</script>"
             "<script>" + _LANDING_FOCUS_JS + "</script>"
+            "<script>" + _LANDING_FLEET_JS + "</script>"
             "<script>" + _LANDING_MOBILE_JS + "</script>"
             "<script>" + _LANDING_COLLAPSE_JS + "</script>"
             + _stale_block(v) +
@@ -5285,6 +5351,9 @@ class Handler(BaseHTTPRequestHandler):
             if p == "/timeline":
                 _client_seen[0] = time.time()
                 return self._send(200, _timeline_page(), "text/html; charset=utf-8", cache="no-cache")
+            if p == "/fleet":
+                _client_seen[0] = time.time()
+                return self._send(200, _fleet_page(), "text/html; charset=utf-8", cache="no-cache")
             if p.startswith("/dist/") or p.startswith("/media/"):
                 base = DIST if p.startswith("/dist/") else MEDIA
                 fp = (base / p.split("/", 2)[2]).resolve()

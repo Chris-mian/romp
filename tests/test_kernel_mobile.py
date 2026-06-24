@@ -67,10 +67,11 @@ class LandingShell(unittest.TestCase):
         self.assertNotIn("getElementById('t')", km._LANDING_JS)   # the stale id is gone
 
     def test_mobile_switcher_is_isolated_in_its_own_script(self):
-        # the switcher runs in a separate <script> so a splitter throw can't disable the tab bar
-        # (splitter + mobile switcher + per-pane collapse handles + the build-staleness banner = 4)
+        # the switcher runs in a separate <script> so a splitter throw can't disable the tab bar. Each shell
+        # behaviour gets its own isolated <script>: splitter + focus-spotlight + fleet-toggle + mobile switcher
+        # + per-pane collapse handles + the build-staleness banner = 6 (the user 2026-06-23).
         html = km._landing()
-        self.assertEqual(html.count("<script>"), 4)
+        self.assertEqual(html.count("<script>"), 6)
 
     def test_bottom_bar_is_text_only_and_compact(self):
         html = km._landing()
