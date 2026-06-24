@@ -4887,7 +4887,10 @@ _FLEET_CSS = (
     # indented under its name. The .ledger-* node styling itself comes from the linked styles.css.
     ".fl-session .ledger-tree{max-height:none;width:auto;margin:0;padding:0 14px 0 18px}"
     "#fleet-foot{flex:0 0 auto;border-top:1px solid var(--vscode-editorHoverWidget-border,rgba(255,255,255,0.12));"
-    "padding:8px 14px}"
+    "padding:8px 14px;display:flex;align-items:center;gap:16px}"
+    ".fl-back{background:#1d3a52;color:#9cd2ff;border:1px solid #2b6088;border-radius:6px;cursor:pointer;"
+    "font:600 12px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;padding:4px 11px}"
+    ".fl-back:hover{background:#234a6a;color:#fff}"
     ".fl-toggle{display:inline-flex;align-items:center;gap:7px;cursor:pointer;"
     "color:var(--vscode-descriptionForeground,#9a9a9a);font-size:12px;user-select:none}"
 )
@@ -5054,10 +5057,14 @@ setFocus('f-chat');})();   // default: the chat section is ringed on open
 # (f-chat) and the Fleet by-session view (f-fleet). Both iframes are always loaded; we just swap which is
 # shown via .show-fleet, and move focus to the now-visible one so the spotlight + keyboard follow.
 _LANDING_FLEET_JS = """
-(function(){var b=document.getElementById('chat-fleet-toggle'),p=document.getElementById('chat-pane');
-if(!b||!p)return;
-b.addEventListener('click',function(e){e.stopPropagation();var on=p.classList.toggle('show-fleet');
-b.textContent=on?'Chat':'Fleet';b.title=on?'Back to the session chat':'Show the Fleet (every session\\'s open work)';
+(function(){var p=document.getElementById('chat-pane');if(!p)return;
+// The toggle now lives IN the chat tab bar (a 'Fleet' pill right of +, render.ts) and IN the Fleet view's
+// foot ('Chat'), both posting {romp:'toggleFleet'} to the shell (the user 2026-06-24). to:'chat'/'fleet'
+// force a direction; no `to` just flips. Focus follows to the now-visible iframe.
+window.addEventListener('message',function(e){var m=e.data;if(!m||m.romp!=='toggleFleet')return;
+var on=m.to==='chat'?(p.classList.remove('show-fleet'),false)
+       :m.to==='fleet'?(p.classList.add('show-fleet'),true)
+       :p.classList.toggle('show-fleet');
 var f=document.getElementById(on?'f-fleet':'f-chat');try{f&&f.contentWindow&&f.contentWindow.focus();}catch(err){}});})();
 """
 
@@ -5210,13 +5217,10 @@ def _landing():
             # full-window modal it asks the shell (postMessage) to lift the feed iframe over the whole window;
             # the modal's backdrop + card then cover the full screen. Restored on close.
             "body.settings-open #f-feed{position:fixed;inset:0;z-index:200;width:100vw;height:100vh}"
+            # the Fleet toggle moved INTO the chat tab bar (render.ts) + the Fleet view's foot; both post
+            # {romp:'toggleFleet'} to the shell (the user 2026-06-24). f-fleet loads hidden so the swap is instant.
             "#chat-pane>#f-fleet{display:none}"
             "#chat-pane.show-fleet>#f-chat{display:none}#chat-pane.show-fleet>#f-fleet{display:block}"
-            "#chat-fleet-toggle{position:absolute;top:6px;right:8px;z-index:31;cursor:pointer;"
-            "background:#2a2a2a;color:#bbb;border:1px solid #3a3a3a;border-radius:5px;"
-            "font:600 11px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;padding:3px 9px;opacity:.55;transition:opacity .1s}"
-            "#chat-pane:hover #chat-fleet-toggle,#chat-fleet-toggle:hover{opacity:1;color:#fff}"
-            "#chat-pane.show-fleet #chat-fleet-toggle{background:#1d3a52;color:#9cd2ff;border-color:#2b6088;opacity:.95}"
             ".gv{cursor:col-resize;background:linear-gradient(90deg,transparent 2px,#333 2px,#333 3px,transparent 3px)}"
             ".gh{cursor:row-resize;background:linear-gradient(180deg,transparent 2px,#333 2px,#333 3px,transparent 3px)}"
             ".gv:hover{background:linear-gradient(90deg,transparent 2px,#007fd4 2px,#007fd4 3px,transparent 3px)}"
@@ -5273,7 +5277,7 @@ def _landing():
             ".gv,.gh{display:none}"
             # mobile uses the bottom tab switcher, not collapse: dissolve the .pane wrappers (so the
             # iframes act as direct flex children again, as the mobile rules below expect) + hide the handles
-            ".pane{display:contents}.collapse-btn,.pane-label,#chat-fleet-toggle{display:none}"
+            ".pane{display:contents}.collapse-btn,.pane-label{display:none}"
             "#f-fleet{display:none!important}"   # Fleet is desktop-only for now (mobile shows one pane at a time)
             "iframe{position:static;display:none;width:100%;height:100%;border:0}"
             "#f-chat.m-on,#f-feed.m-on{display:block}"
@@ -5296,7 +5300,6 @@ def _landing():
             "<div class=row>"
             "<div class=pane id=chat-pane><iframe id=f-chat class=m-on src=/chat></iframe>"
             "<iframe id=f-fleet src=/fleet></iframe>"
-            "<button id=chat-fleet-toggle title='Switch this pane between the session chat and the Fleet (every session\\'s open work)'>Fleet</button>"
             "<div class=collapse-btn id=chat-collapse title='collapse the chat'><span class=bar-v></span></div>"
             "<span class=pane-label>chat</span></div>"
             "<div class=gv id=gv></div>"

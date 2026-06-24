@@ -1541,6 +1541,15 @@ function renderTabs() {
   add.title = "Open a session";
   add.addEventListener("click", () => openPicker());
   bar.appendChild(add);
+  // Fleet toggle, right of + (the user 2026-06-24): a tab-bar pill (so it wraps with the tabs), visually
+  // distinct from the session-name tabs. Clicking it asks the SHELL to flip the pane to the Fleet view.
+  const fleetBtn = el("div", "tab tab-fleet");
+  fleetBtn.textContent = "Fleet";
+  fleetBtn.title = "Show the Fleet — every session's open work";
+  fleetBtn.addEventListener("click", () => {
+    try { if (window.parent !== window) window.parent.postMessage({ romp: "toggleFleet" }, "*"); } catch { /* not in the shell */ }
+  });
+  bar.appendChild(fleetBtn);
   // (The collapse caret moved OFF the tab bar into the #ledger strip's title row — the strip now always
   // shows the session title + caret, expanding to goals / working-on / done. See renderLedger. 2026-06-16)
 }

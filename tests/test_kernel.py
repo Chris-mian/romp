@@ -2911,13 +2911,16 @@ class ServeSecurity(unittest.TestCase):
         self.assertIn('app=feed', body)              # reuses the feed payload, no new kernel data
 
     def test_landing_chat_pane_has_a_fleet_toggle(self):
-        # the chat pane holds a SECOND iframe (/fleet) and a top-right button flips between them (the user
-        # 2026-06-23). Both load up front; .show-fleet swaps which is visible; focus follows to the live one.
+        # the chat pane holds a SECOND iframe (/fleet); .show-fleet swaps which is visible (the user 2026-06-23).
+        # The toggle moved INTO the chat tab bar (render.ts) + the Fleet foot (the user 2026-06-24): both post
+        # {romp:'toggleFleet'} to the shell, which flips show-fleet and focuses the live iframe. The old floating
+        # #chat-fleet-toggle button is gone.
         html = km._landing()
         self.assertIn("<iframe id=f-fleet src=/fleet>", html)
-        self.assertIn("id=chat-fleet-toggle", html)
+        self.assertNotIn("chat-fleet-toggle", html)               # the floating shell button is removed
         self.assertIn("#chat-pane.show-fleet>#f-chat{display:none}#chat-pane.show-fleet>#f-fleet{display:block}", html)
-        self.assertIn("p.classList.toggle('show-fleet')", html)
+        self.assertIn("m.romp!=='toggleFleet'", html)             # the shell listens for the tab-bar/foot toggle
+        self.assertIn("p.classList.toggle('show-fleet')", html)   # no `to` → flip; to:'chat'/'fleet' force a side
         # f-fleet shares the chat pane in the focus map (so interacting with it spotlights the chat pane)
         self.assertIn("'f-fleet':'chat-pane'", html)
         # desktop-only for now: hidden on the mobile one-pane layout

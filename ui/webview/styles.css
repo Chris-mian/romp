@@ -168,6 +168,14 @@ body { display: flex; flex-direction: column; }
 .tab-close:hover { opacity: 1; background: rgba(255, 255, 255, 0.12); }
 .tab-add { color: var(--dim); font-size: 1.1em; padding: 6px 10px; border-radius: 6px; }
 .tab-add:hover { color: var(--fg); background: rgba(255, 255, 255, 0.04); }
+/* Fleet toggle pill (the user 2026-06-24): a tab-bar item so it wraps with the tabs, but visually distinct
+   from the session-name tabs — a romp-blue accent + outline, no identity colour. */
+.tab-fleet {
+  color: #9cd2ff; background: #1d3a52; border: 1px solid #2b6088; border-radius: 6px;
+  font-size: 0.86em; font-weight: 600; letter-spacing: 0.02em; padding: 5px 11px;
+}
+.tab-fleet:hover { color: #fff; background: #234a6a; }
+.tab-fleet.tab-fleet-on { background: #2b6088; color: #fff; }   /* lit while the pane is showing the Fleet view */
 .tab:focus-visible { outline: 1.5px solid var(--fg); outline-offset: 1px; } /* keyboard focus ring for arrow-nav */
 
 /* ---------- content ---------- */

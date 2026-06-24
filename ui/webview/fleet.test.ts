@@ -38,8 +38,13 @@ test("completed top goals hide by default; a 'Show completed' checkbox reveals t
   assert.match(SRC, /createTextNode\("Show completed"\)/);
 });
 
-test("a node/header click opens that session (the navigation loop back to its chat)", () => {
-  assert.match(SRC, /vscodeApi\?\.postMessage\(\{ type: "openSession", id: s\.sid \}\)/);
+test("a node/header click opens that session AND flips back to chat (the user 2026-06-24)", () => {
+  // openSession() posts openSession to the kernel AND asks the shell to leave the Fleet view (the tab bar —
+  // which holds the Fleet toggle — is hidden while Fleet is shown, so picking a session must return there).
+  assert.match(SRC, /function openSession\(sid: string\) \{ vscodeApi\?\.postMessage\(\{ type: "openSession", id: sid \}\); backToChat\(\); \}/);
+  assert.match(SRC, /onclick = \(\) => openSession\(s\.sid\)/);
+  // the "← Chat" foot button + the row helper both leave Fleet via {romp:"toggleFleet", to:"chat"}
+  assert.match(SRC, /window\.parent\.postMessage\(\{ romp: "toggleFleet", to: "chat" \}/);
 });
 
 test("it's a MODULE (own scope) so it doesn't collide with feed.ts's globals", () => {
