@@ -226,17 +226,24 @@ function feedCheckIcon(off, cx, cy, color) {
   if (off) g.appendChild(el('line', { x1: cx - 6.5, y1: cy + 4.5, x2: cx + 6.5, y2: cy - 4.5, stroke: color, 'stroke-width': 1.4, 'stroke-linecap': 'round' }));
   return g;
 }
-// Per-lane POSTAL ISOLATION toggle (the user 2026-06-23): a monochrome mailbox — a domed box with a raised
-// flag — sitting just right of the feed checkbox. Drawn (not an emoji) so it stays crisp + monochrome
-// everywhere, same gray line weight as the checkbox; `off`=true (isolated) adds the SAME strike-through slash
-// so the disabled state reads identically. The flag is enforced in bin/romp-postal (hidden from peers, no
-// messages in or out).
+// Per-lane POSTAL ISOLATION toggle (the user 2026-06-23): a monochrome ROADSIDE MAILBOX — a side-view tube
+// body on a post, with a raised flag — sitting just right of the feed checkbox. Drawn (not an emoji) so it
+// stays crisp + monochrome everywhere, same gray line weight as the checkbox; `off`=true (isolated) adds the
+// SAME strike-through slash so the disabled state reads identically. Enforced in bin/romp-postal (hidden from
+// peers, no messages in or out).
 function mailboxIcon(off, cx, cy, color) {
   const g = el('g', { 'pointer-events': 'none' });
-  // domed mailbox body (a half-round top on a short box), nudged left to leave room for the flag
-  g.appendChild(el('path', { d: 'M' + (cx - 5) + ' ' + (cy + 3) + 'L' + (cx - 5) + ' ' + cy + 'A 3.5 3.5 0 0 1 ' + (cx + 2) + ' ' + cy + 'L' + (cx + 2) + ' ' + (cy + 3) + 'Z', fill: 'none', stroke: color, 'stroke-width': 1.2, 'stroke-linejoin': 'round' }));
-  // the raised flag on the right side
-  g.appendChild(el('path', { d: 'M' + (cx + 2) + ' ' + cy + 'L' + (cx + 2) + ' ' + (cy - 3) + 'L' + (cx + 4.7) + ' ' + (cy - 3) + 'L' + (cx + 4.7) + ' ' + (cy - 1.3) + 'L' + (cx + 2) + ' ' + (cy - 1.3), fill: 'none', stroke: color, 'stroke-width': 1.2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }));
+  const st = { fill: 'none', stroke: color, 'stroke-width': 1.2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' };
+  // tube body (rounded top, flat bottom) — a roadside mailbox seen from the side
+  g.appendChild(el('path', Object.assign({ d: 'M' + (cx - 5) + ' ' + (cy + 1) + 'L' + (cx - 5) + ' ' + (cy - 1) + 'Q' + (cx - 5) + ' ' + (cy - 3) + ' ' + (cx - 2.8) + ' ' + (cy - 3) + 'L' + (cx + 1) + ' ' + (cy - 3) + 'Q' + (cx + 3) + ' ' + (cy - 3) + ' ' + (cx + 3) + ' ' + (cy - 1) + 'L' + (cx + 3) + ' ' + (cy + 1) + 'Z' }, st)));
+  // the door (front face) + a small knob
+  g.appendChild(el('path', Object.assign({ d: 'M' + (cx + 1.3) + ' ' + (cy + 1) + 'L' + (cx + 1.3) + ' ' + (cy - 2.3) }, st)));
+  g.appendChild(el('circle', { cx: cx + 2.15, cy: cy - 0.5, r: 0.55, fill: color, stroke: 'none' }));
+  // the raised flag on the right
+  g.appendChild(el('path', Object.assign({ d: 'M' + (cx + 3) + ' ' + (cy - 1) + 'L' + (cx + 3) + ' ' + (cy - 5) + 'L' + (cx + 5.2) + ' ' + (cy - 5) + 'L' + (cx + 5.2) + ' ' + (cy - 3.3) + 'L' + (cx + 3) + ' ' + (cy - 3.3) }, st)));
+  // the post + base (a mailbox on a stand)
+  g.appendChild(el('path', Object.assign({ d: 'M' + (cx - 1) + ' ' + (cy + 1) + 'L' + (cx - 1) + ' ' + (cy + 3.8) }, st)));
+  g.appendChild(el('path', Object.assign({ d: 'M' + (cx - 2.6) + ' ' + (cy + 3.8) + 'L' + (cx + 0.6) + ' ' + (cy + 3.8) }, st)));
   if (off) g.appendChild(el('line', { x1: cx - 6.5, y1: cy + 4.5, x2: cx + 6.5, y2: cy - 4.5, stroke: color, 'stroke-width': 1.4, 'stroke-linecap': 'round' }));
   return g;
 }
