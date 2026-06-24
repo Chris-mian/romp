@@ -53,15 +53,8 @@ test("honest-fail fires whenever the deep-link can't resolve by id (the turn is 
   assert.match(RENDER, /if \(!scrolled\) landToast\("couldn't locate this in the transcript"\)/);
 });
 
-test("the ledger zones deep-link BY UUID ONLY — no time-based fallback (the user 2026-06-19)", () => {
-  // the kernel plumbs promptAnchorUuid/anchorUuid to each ledger node (the SAME anchors build_feed gives its
-  // cards), so the ledger and the feed for one node land on the SAME chat turn. A zone that can't resolve its
-  // uuid honest-fails with a toast — no clock-nearest guessing anywhere. scrollToNearestT is now deleted
-  // entirely (the ledger never used it; the prompt-tier fallback that did is gone too).
-  assert.match(RENDER, /if \(!scrollToAnchor\(uuid\)\) landToast\("couldn't locate this in the transcript"\)/,
-    "a ledger zone lands by uuid and honest-fails if it can't");
-  assert.doesNotMatch(RENDER, /scrollToNearestT\(t, kind\)/, "the ledger's by-time fallback is gone");
-});
+// (The two ledger-zone deep-link tests were removed 2026-06-24 with the in-chat ledger box itself —
+//  the per-session digest now lives in the tab tooltip + Fleet. scrollToNearestT stays deleted.)
 
 test("timeline→chat glow matches turns BY UUID, not a ±2s time window (the user 2026-06-19)", () => {
   // applyGlow lights .turn[data-uuid] against the segment's atom uuids the kernel sends (kernel
@@ -71,12 +64,6 @@ test("timeline→chat glow matches turns BY UUID, not a ±2s time window (the us
   assert.doesNotMatch(RENDER, /t >= s - 2 && t <= e \+ 2/, "the old ±2s data-t window match is gone");
 });
 
-test("ledger bullet click lands by uuid locally — the dead ledgerLocate host message is gone (the user 2026-06-19)", () => {
-  // b.id is the turn's atom uuid (build_session); scroll to it directly. The old `ledgerLocate` host
-  // message was never handled (a dead click) and would have been time-based.
-  assert.doesNotMatch(RENDER, /type: "ledgerLocate"/, "the never-handled host message is removed");
-  assert.match(RENDER, /if \(!scrollToAnchor\(b\.id\)\) landToast/, "the bullet lands by uuid, honest-fail");
-});
 
 test("a postal deep-link resolves to the message's card BY data-mid, not just data-uuid (the user 2026-06-20)", () => {
   // the timeline connector / feed delegation passes the postal message id as the anchor; postal cards carry
