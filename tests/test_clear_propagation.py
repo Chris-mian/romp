@@ -1,0 +1,94 @@
+#!/usr/bin/env python3
+"""Clearing one side of a delegation propagates across the handoff↔origin link, so a handed-off piece is
+curated ONCE (the user 2026-06-23): clearing the sender's umbrella takes the recipient's copy with it, and
+clearing the recipient's card takes the sender's tracking node with it. One UndoClear restores both (they
+ride the same batch). Drives _clear_all / _delegation_linked_ids against synthetic two-session stores.
+"""
+import json
+import os
+import tempfile
+import unittest
+from importlib.machinery import SourceFileLoader
+from pathlib import Path
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+BIN = os.path.join(os.path.dirname(HERE), "bin")
+os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
+km = SourceFileLoader("romp_kernel_cp", os.path.join(BIN, "romp-kernel")).load_module()
+jd = km.jd
+
+SENDER = "11111111-2222-3333-4444-555555555555"
+RECIP = "66666666-7777-8888-9999-000000000000"
+MID = "1782000000.1_2.TESTHOST"               # synthetic postal message id linking the two sides
+
+
+def _node(sid, n, text, parent=None, complete=False, **extra):
+    nd = {"id": "%s:g%d" % (sid, n), "text": text, "parentId": parent,
+          "nodeComplete": complete, "blocked": False, "cleared": False, "t": 1, "mt": 1}
+    nd.update(extra)
+    return nd
+
+
+class ClearPropagation(unittest.TestCase):
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory()
+        self.saved_state = jd.STATE
+        jd.STATE = Path(self.td.name)
+        (jd.STATE / "goals").mkdir(parents=True)
+        self.saved_sessions = km._sessions
+        km._sessions = lambda now: []                # no transcripts in the sandbox → session_closed=False
+        # SENDER: umbrella g1 = own step g2 (done) + delegation g3 (handoff → RECIP, done)
+        s = {"rompUuid": SENDER, "seq": 3, "placements": {}, "status": {}, "nodes": {
+            "%s:g1" % SENDER: _node(SENDER, 1, "Color the tooltip labels"),
+            "%s:g2" % SENDER: _node(SENDER, 2, "find hex values", parent="%s:g1" % SENDER, complete=True),
+            "%s:g3" % SENDER: _node(SENDER, 3, "↪ delegated to recip: update render.ts",
+                                    parent="%s:g1" % SENDER, complete=True,
+                                    handoff={"peer": RECIP, "msgId": MID})}}
+        # RECIP: g1 = the delegated work (origin → SENDER:g3), top-level, done
+        r = {"rompUuid": RECIP, "seq": 1, "placements": {}, "status": {}, "nodes": {
+            "%s:g1" % RECIP: _node(RECIP, 1, "update render.ts", complete=True,
+                                   origin={"peer": SENDER, "goalId": "%s:g3" % SENDER, "msgId": MID})}}
+        jd.save_goals(SENDER, s)
+        jd.save_goals(RECIP, r)
+
+    def tearDown(self):
+        km._sessions = self.saved_sessions
+        jd.STATE = self.saved_state
+        self.td.cleanup()
+
+    def _cleared(self):
+        return set(km._cleared_ids().keys())
+
+    def test_linked_ids_resolves_both_directions(self):
+        self.assertEqual(km._delegation_linked_ids(["%s:g1" % SENDER]), {"%s:g1" % RECIP},
+                         "sender umbrella subtree's handoff → the recipient node (matched by msgId)")
+        self.assertEqual(km._delegation_linked_ids(["%s:g1" % RECIP]), {"%s:g3" % SENDER},
+                         "recipient origin → the sender's tracking node (origin.goalId)")
+
+    def test_clearing_sender_umbrella_clears_recipient_copy(self):
+        km._clear_all(["%s:g1" % SENDER])
+        c = self._cleared()
+        self.assertIn("%s:g1" % SENDER, c, "the umbrella is cleared")
+        self.assertIn("%s:g1" % RECIP, c, "the recipient's copy is cleared via the delegation link")
+        self.assertTrue(jd.load_goals(RECIP)["nodes"]["%s:g1" % RECIP]["cleared"],
+                        "and the durable node flag is set on the peer too")
+
+    def test_clearing_recipient_card_clears_sender_tracking_node(self):
+        km._clear_all(["%s:g1" % RECIP])
+        c = self._cleared()
+        self.assertIn("%s:g1" % RECIP, c)
+        self.assertIn("%s:g3" % SENDER, c, "the sender's '↪ delegated to' tracking node clears too")
+
+    def test_one_undo_restores_both_sides(self):
+        km._clear_all(["%s:g1" % SENDER])
+        self.assertTrue(self._cleared())
+        km._undo_clear()                              # the linked id shares the batch timestamp → restored together
+        self.assertEqual(self._cleared(), set(), "one UndoClear restores the umbrella AND the recipient copy")
+
+    def test_a_non_delegation_clear_touches_only_itself(self):
+        km._clear_all(["%s:g2" % SENDER])             # a plain own-work node, no handoff/origin
+        self.assertEqual(self._cleared(), {"%s:g2" % SENDER}, "no spurious cross-session clears")
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -2608,13 +2608,57 @@ def _clear_ask(item_id):
     _clear_all([item_id])
 
 
+def _delegation_linked_ids(item_ids):
+    """The peer node ids on the OTHER side of any delegation in the cleared tops' subtrees, so a Clear
+    propagates across the handoff↔origin link and a handed-off piece is curated ONCE (the user 2026-06-23):
+    clearing the sender's umbrella takes the recipient's copy with it, and vice versa, instead of leaving an
+    independent card on the peer. A `handoff` (sender) node links to the recipient node sharing its msgId; an
+    `origin` (recipient) node links to its sender node (origin.goalId). ONE hop, deduped — clearing the linked
+    top carries its own subtree via the normal path. Best-effort: a missing peer store is just skipped."""
+    cache = {}
+    def _nodes(sid):
+        if sid not in cache:
+            try:
+                cache[sid] = jd.load_goals(sid).get("nodes", {})
+            except Exception:
+                cache[sid] = {}
+        return cache[sid]
+    out = set()
+    for iid in item_ids:
+        nodes = _nodes(iid.rsplit(":", 1)[0])
+        kids = {}
+        for nid, nd in nodes.items():
+            kids.setdefault(nd.get("parentId"), []).append(nid)
+        stack, seen = [iid], set()
+        while stack:
+            x = stack.pop()
+            if x in seen or x not in nodes:
+                continue
+            seen.add(x)
+            stack.extend(kids.get(x, []))
+            h = nodes[x].get("handoff")
+            if isinstance(h, dict) and h.get("peer") and h.get("msgId"):     # sender → recipient (match msgId)
+                for pnid, pnd in _nodes(h["peer"]).items():
+                    o = pnd.get("origin")
+                    if isinstance(o, dict) and o.get("msgId") == h["msgId"]:
+                        out.add(pnid)
+            o = nodes[x].get("origin")
+            if isinstance(o, dict) and o.get("peer") and o.get("goalId") in _nodes(o.get("peer")):
+                out.add(o["goalId"])                                          # recipient → sender (the tracking node)
+    return out
+
+
 def _clear_all(item_ids):
     """Clear every given card in ONE batch (shared float timestamp = the batch key) so a single
     UndoClear restores the whole batch. Append-only + single-writer (the kernel) → crash-safe; an
-    undo just appends 'undo' rows. Used by the feed's Clear-all and by single-card clears."""
+    undo just appends 'undo' rows. Used by the feed's Clear-all and by single-card clears. A delegation's
+    LINKED peer node rides the SAME batch (_delegation_linked_ids), so a handed-off piece clears on both
+    sides at once and one UndoClear restores it on both (the user 2026-06-23)."""
     item_ids = [i for i in item_ids if i]
     if not item_ids:
         return
+    seen = set(item_ids)
+    item_ids = item_ids + [i for i in _delegation_linked_ids(item_ids) if i not in seen]   # + the delegation's peer copy
     p = jd.STATE / "cleared.jsonl"
     p.parent.mkdir(parents=True, exist_ok=True)
     t = time.time()
