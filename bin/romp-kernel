@@ -4796,8 +4796,9 @@ cc.addEventListener('change',function(){var s=load();s.compact=cc.checked;save(s
 if(gb)gb.addEventListener('change',function(){var s=load();s.showBranch=gb.checked;save(s);emit();});   // chat statusline re-reads loadSettings() on the next render; emit nudges open tabs
 if(of)of.addEventListener('change',function(){var s=load();s.oldestFirst=of.checked;save(s);emit();});   // feed re-sorts its cards live on the 'romp:settings' event
 // (Explanations + Sub-goals toggles removed from the gear 2026-06-18 — Sub-goals lives in the feed footer now.)
-function applyDebug(s){if(rf)rf.style.display=(s&&s.debug)?'':'none';}
-db.addEventListener('change',function(){var s=load();s.debug=db.checked;save(s);emit();applyDebug(s);});
+// The ↻ kernel-restart button is ALWAYS visible now (the user 2026-06-24): decoupled from Debug mode, which
+// used to hide it. Debug still gates the timeline's judging band (read from romp:settings.debug over there).
+db.addEventListener('change',function(){var s=load();s.debug=db.checked;save(s);emit();});
 // Auto Nudge is a SERVER-SIDE behavior (the kernel runs it), so the kernel is the source of truth: toggling
 // posts to the kernel; the checkbox is (re)initialized from /version on every gear open (see fill()).
 if(an)an.addEventListener('change',function(){try{window.acquireVsCodeApi&&window.acquireVsCodeApi().postMessage({type:'setAutoNudge',enabled:an.checked});}catch(e){}});
@@ -4905,7 +4906,7 @@ Array.prototype.forEach.call(document.querySelectorAll('.ra-group button'),funct
 Array.prototype.forEach.call(document.querySelectorAll('.ra-metric button'),function(btn){btn.onclick=function(){raState.metric=btn.getAttribute('data-m');
 Array.prototype.forEach.call(document.querySelectorAll('.ra-metric button'),function(b){b.className=(b===btn)?'on':'';});raRender();};});
 document.addEventListener('keydown',function(e){if(e.key==='Escape'&&raBack&&!raBack.hidden)raBack.hidden=true;});
-applyDebug(load());})();"""
+})();"""
 
 
 def _feed_page():
