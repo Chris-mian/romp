@@ -269,7 +269,8 @@ class ViewBuilder(unittest.TestCase):
 
     def test_hide_from_feed_flag_drops_a_sessions_cards(self):
         """The timeline lane gear's "hide from feed" flag (the user 2026-06-19): a flagged session mints NO
-        feed cards (it stays on the timeline). A reversible view filter — toggling it off restores them."""
+        feed cards (it stays on the timeline). Muting also VIEW-CLEARS its current goals (the user 2026-06-23),
+        so un-muting does NOT resurface the old cards — they stay sealed; only NEW work cards again."""
         km._flags_cache.clear()
         top = SID + ":top"
         (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
@@ -280,9 +281,9 @@ class ViewBuilder(unittest.TestCase):
         has_card = lambda: any(a["sid"] == SID for a in km.build_feed(NOW)["asks"])
         self.assertTrue(has_card(), "the session has a feed card by default")
         km._set_session_flag(SID, "hideFromFeed", True)
-        self.assertFalse(has_card(), "flagged → the session mints no feed cards")
+        self.assertFalse(has_card(), "flagged → the session mints no feed cards (and its goals are view-cleared)")
         km._set_session_flag(SID, "hideFromFeed", False)
-        self.assertTrue(has_card(), "unflagged → the cards come back (reversible)")
+        self.assertFalse(has_card(), "un-flagged: the view-cleared goal stays sealed — old cards do NOT resurface")
 
     def test_muted_session_is_out_of_the_ledger(self):
         # crossing the feed checkbox off takes a session OUT of task tracking — its ledger shows no goal tree
@@ -299,7 +300,28 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(led["tree"], [], "a muted session's ledger carries no goal tree")
         self.assertIsNone(led["current"], "...and no current task")
         km._set_session_flag(SID, "hideFromFeed", False); km._flags_cache.clear()
-        self.assertTrue(km.build_session(SID, NOW)["ledger"]["tree"], "un-muting restores the ledger")
+        tree = km.build_session(SID, NOW)["ledger"]["tree"]
+        self.assertTrue(tree and all(n.get("cleared") for n in tree),
+                        "un-muting: the goal reappears in the ledger but VIEW-CLEARED (faded), not as active work")
+
+    def test_muting_view_clears_goals_not_deletes_them(self):
+        # the user 2026-06-23: muting VIEW-CLEARS the session's existing goals — seals them like crossing each
+        # card off the feed (NOT delete) — so they don't resurface in the feed on un-mute, but stay on disk.
+        top = SID + ":g1"
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+            "rompUuid": SID, "seq": 1, "lastNode": top,
+            "nodes": {top: {"id": top, "text": "ship it", "parentId": None, "nodeComplete": False,
+                            "blocked": False, "cleared": False, "trail": [], "t": T0, "mt": T0}},
+            "placements": {}, "status": {top: "working"}}))
+        self.assertTrue(any(a["sid"] == SID for a in km.build_feed(NOW)["asks"]), "the goal has a feed card")
+        km._set_session_flag(SID, "hideFromFeed", True); km._flags_cache.clear()
+        self.assertTrue(jd.load_goals(SID)["nodes"][top]["cleared"], "muting sets the durable cleared flag (view-clear)")
+        cleared_ids = [json.loads(l)["id"] for l in (jd.STATE / "cleared.jsonl").read_text().splitlines()]
+        self.assertIn(top, cleared_ids, "...and records it in cleared.jsonl (a view-clear, like crossing it off)")
+        self.assertIn(top, jd.load_goals(SID)["nodes"], "the goal is sealed, NOT deleted (still in the store)")
+        km._set_session_flag(SID, "hideFromFeed", False); km._flags_cache.clear()
+        self.assertFalse(any(a["sid"] == SID for a in km.build_feed(NOW)["asks"]),
+                         "un-muting does NOT resurface the view-cleared goal — it stays sealed")
 
     def test_timeline_lane_reports_hide_from_feed_for_the_gear(self):
         """The timeline lane carries hideFromFeed so the gear can render its on/off state."""
@@ -997,9 +1019,9 @@ class ViewBuilder(unittest.TestCase):
             km._set_session_flag(SID, "hideFromFeed", True); km._flags_cache.clear()
             km._auto_nudge_tick(NOW, km._tmux_sessions())
             self.assertEqual(sent, [], "a session muted from the feed is not auto-nudged")
-            km._set_session_flag(SID, "hideFromFeed", False); km._flags_cache.clear()   # back in the feed → genuine stall nudges
+            km._set_session_flag(SID, "hideFromFeed", False); km._flags_cache.clear()
             km._auto_nudge_tick(NOW, km._tmux_sessions())
-            self.assertEqual(len(sent), 1, "un-muting restores nudges → it was nudgeable, the flag is what suppressed it")
+            self.assertEqual(sent, [], "un-mute does NOT re-nudge: muting VIEW-CLEARED the goal, so it stays sealed")
         finally:
             restore()
 

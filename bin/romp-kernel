@@ -530,6 +530,27 @@ def _set_session_flag(sid, flag, value):
     else:
         cur.pop(sid, None)
     _atomic_write(jd.STATE / "session-flags.json", json.dumps(cur, sort_keys=True))
+    if flag == "hideFromFeed" and value:
+        # Muting takes the session OUT of task tracking → VIEW-CLEAR its current goals: seal them exactly like
+        # crossing each card off the feed (cleared.jsonl + the durable node flag), NOT delete — they stay on
+        # disk, just sealed/faded. So toggling the checkbox back on shows a clean feed/ledger (the cleared goals
+        # don't resurface, and the planner — already gated off for muted sessions — doesn't re-accumulate). No
+        # delegation cascade (unlike _clear_all): muting X must NOT clear a peer's copy of a goal X delegated.
+        try:
+            store = jd.load_goals(sid)
+            nodes, status = store.get("nodes", {}), store.get("status", {})
+            tops = [nid for nid, nd in nodes.items()
+                    if nd.get("parentId") is None and not nd.get("cleared") and status.get(nid) != "cleared"]
+            if tops:
+                p = jd.STATE / "cleared.jsonl"
+                p.parent.mkdir(parents=True, exist_ok=True)
+                t = time.time()
+                with p.open("a") as fh:
+                    for nid in tops:
+                        fh.write(json.dumps({"id": nid, "t": t, "op": "clear"}) + "\n")
+                _mark_nodes_cleared(tops, True)               # durable node flag → sealed across judge passes
+        except Exception:
+            pass
 
 
 # ── Auto Nudge (the user 2026-06-19) ──────────────────────────────────────────────────────────────
