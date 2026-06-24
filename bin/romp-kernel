@@ -4569,8 +4569,12 @@ _GEAR_CSS = ("#rgear{position:fixed;top:6px;right:8px;z-index:60;background:#2a2
              # The settings panel is a full-screen MODAL now (the user 2026-06-23): #rsettings is the backdrop
              # (the shell expands the feed iframe to the whole window first — see _LANDING_SETTINGS_JS), and
              # .rs-card is the roomy centered card. The old cramped 240px corner panel is gone.
-             "#rsettings{position:fixed;inset:0;z-index:60;background:#000000bb;display:flex;align-items:flex-start;"
+             "#rsettings{position:fixed;inset:0;z-index:60;background:#0000009c;display:flex;align-items:flex-start;"
              "justify-content:center;overflow:auto;padding:6vh 16px;box-sizing:border-box}#rsettings[hidden]{display:none}"
+             # while open: the feed iframe goes transparent + hides its own content, so the full-window iframe
+             # shows the dashboard's three panes through it (dimmed by the backdrop) — not the feed cards.
+             ".rs-modal-open{background:transparent}"
+             "body.rs-modal-open #feed-head,body.rs-modal-open #feed-list,body.rs-modal-open #feed-foot{visibility:hidden}"
              ".rs-card{width:min(560px,94%);max-height:88vh;overflow:auto;background:#252526;border:1px solid #3a3a3a;"
              "border-radius:10px;padding:16px 20px;font:13px/1.6 -apple-system,sans-serif;color:#ccc;box-shadow:0 12px 36px #000000aa}"
              "#rsettings .rs-h{font-weight:600;margin-bottom:6px;color:#9aa0a6}#rsver{white-space:pre-line}"
@@ -4742,8 +4746,13 @@ v.dist_ver+'\nthis tab v'+(x||'?');
 // The settings modal is full-WINDOW, but the gear lives in the feed iframe — so ask the shell to expand the
 // feed iframe to the whole screen while the modal is open (it restores on close). No-op outside the shell.
 function feedFull(on){try{if(window.parent!==window)window.parent.postMessage({romp:'settings',on:!!on},'*');}catch(e){}}
-function closeSettings(){p.hidden=true;feedFull(false);}
-g.onclick=function(e){e.stopPropagation();if(p.hidden){p.hidden=false;feedFull(true);var s=load();cc.checked=!!s.compact;db.checked=!!s.debug;if(of)of.checked=!!s.oldestFirst;if(gb)gb.checked=s.showBranch!==false;cmBuild();cmPaint(s.colormap||'hawaii');if(bk)bk.value=s.backend||'tmux';if(dd)dd.value=s.defaultDir||'';fill();}else closeSettings();};
+// While the modal is open: hide the feed's OWN content + go transparent (rs-modal-open) so the expanded
+// (full-window) feed iframe shows the dashboard's three panes THROUGH it — the modal floats over the whole
+// layout, dimmed, instead of blowing the feed cards up full-screen (the user 2026-06-23).
+function setModalCls(on){var de=document.documentElement,m='rs-modal-open';
+if(on){de.classList.add(m);document.body.classList.add(m);}else{de.classList.remove(m);document.body.classList.remove(m);}}
+function closeSettings(){p.hidden=true;setModalCls(false);feedFull(false);}
+g.onclick=function(e){e.stopPropagation();if(p.hidden){p.hidden=false;setModalCls(true);feedFull(true);var s=load();cc.checked=!!s.compact;db.checked=!!s.debug;if(of)of.checked=!!s.oldestFirst;if(gb)gb.checked=s.showBranch!==false;cmBuild();cmPaint(s.colormap||'hawaii');if(bk)bk.value=s.backend||'tmux';if(dd)dd.value=s.defaultDir||'';fill();}else closeSettings();};
 p.addEventListener('click',function(e){if(e.target===p)closeSettings();});   // click the dimmed backdrop (not the card) → close
 document.addEventListener('click',function(e){if(!p.hidden&&e.target!==g&&!p.contains(e.target))closeSettings();});
 var rf=document.getElementById('rrefresh');   // ↻ moved up from the timeline (the user 2026-06-17): POST /restart, poll /healthz, reload

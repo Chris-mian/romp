@@ -2838,14 +2838,19 @@ class ServeSecurity(unittest.TestCase):
 
     def test_settings_is_a_fullscreen_modal(self):
         # the user 2026-06-23: the gear's settings is a full-WINDOW modal (was a cramped 240px corner panel).
-        # #rsettings is the backdrop + .rs-card the centered card; the gear lives in the feed iframe, so it
-        # asks the shell (postMessage) to lift the feed iframe over the whole window while it's open.
-        self.assertIn("#rsettings{position:fixed;inset:0;z-index:60;background:#000000bb", km._GEAR_CSS)
+        # #rsettings is the backdrop + .rs-card the centered card. The gear lives in the feed iframe, so it
+        # asks the shell to lift the feed iframe over the whole window; the feed then goes TRANSPARENT and
+        # hides its own content (rs-modal-open), so the dimmed three-pane DASHBOARD shows through behind the
+        # card — not the feed cards blown up full-screen.
+        self.assertIn("#rsettings{position:fixed;inset:0;z-index:60;background:#0000009c", km._GEAR_CSS)
         self.assertIn(".rs-card{", km._GEAR_CSS)
+        self.assertIn(".rs-modal-open{background:transparent}", km._GEAR_CSS)            # feed iframe transparent while open
+        self.assertIn("body.rs-modal-open #feed-list", km._GEAR_CSS)                     # feed cards hidden while open
         self.assertIn("<div id=rsettings hidden><div class=rs-card>", km._GEAR_HTML)
         self.assertIn("feedFull(true)", km._GEAR_JS)              # open → ask the shell to go full-window
+        self.assertIn("setModalCls(true)", km._GEAR_JS)          # open → feed goes transparent + hides content
         self.assertIn("if(e.target===p)closeSettings()", km._GEAR_JS)   # backdrop click closes
-        # shell side: the feed iframe lifts to cover the whole window
+        # shell side: the feed iframe lifts to cover the whole window (the panes show THROUGH the transparent feed)
         html = km._landing()
         self.assertIn("body.settings-open #f-feed{position:fixed;inset:0;z-index:200", html)
         self.assertIn("m.romp==='settings'", html)
