@@ -475,21 +475,58 @@ def _write_session_order(order):
     _atomic_write(jd.STATE / "session-order.json", json.dumps([x for x in order if isinstance(x, str)]))
 
 
-def _ordered_alive(now, tmux):
-    """Living sessions in the SHARED, STABLE order: session-order.json decides it; a session NEW to the
-    order is appended ONCE (newest-active first) and persisted, so it keeps a fixed slot and never
-    re-sorts by activity afterward (the user 2026-06-15: tabs/lanes must NOT auto-shuffle as sessions
-    work — only a drag reorders). Chat tabs AND timeline lanes both use this, staying in lockstep."""
-    alive = _alive_sessions(now, tmux)
+def _merge_session_order(incoming):
+    """Splice a drag's order into the persisted one WITHOUT disturbing lanes the drag didn't touch. A drag
+    publishes the order of the sids on ONE surface (chat tabs, or timeline lanes) — usually a SUBSET of all
+    known sids. We keep every other sid in its current slot and only re-sequence the dragged sids among the
+    slots they already occupy; brand-new sids land at the end. So dragging chat tabs never reorders
+    timeline-only dead lanes (and vice versa) — the ONLY thing that moves is what the user dragged. (Before
+    this, a chat-tab drag OVERWROTE session-order.json with just the chat tabs, dropping every timeline-only
+    sid's slot, so those lanes jumped — a drag that auto-reordered untouched lanes.) Returns the merged full
+    SID order (deduped, strings only)."""
+    incoming = [x for x in incoming if isinstance(x, str)]
+    existing = _session_order()
+    inset = set(incoming)
+    queue = list(incoming)
+    merged = []
+    for sid in existing:
+        if sid in inset:
+            if queue:
+                merged.append(queue.pop(0))   # a dragged slot → fill from incoming, in the new order
+            # queue exhausted (existing held a dup of a dragged sid) → drop this slot; the de-dup below covers it
+        else:
+            merged.append(sid)                # a lane the drag didn't touch → keep its slot
+    merged.extend(queue)                      # any brand-new dragged sids → append at the end
+    seen = set()
+    return [s for s in merged if not (s in seen or seen.add(s))]
+
+
+def _ordered(sessions):
+    """Order session dicts STRICTLY by the shared, persisted session order (session-order.json) — and by
+    NOTHING else. A session already in the order keeps its saved slot; a session NEW to the order is
+    appended ONCE at the END (in the order given) and persisted, so it keeps that fixed slot forever.
+    There is NO activity / mtime / status / idle / tier input: tabs and lanes never auto-shuffle as
+    sessions work — the ONLY thing that reorders them is a drag, which rewrites session-order.json (the
+    user 2026-06-24: "the only thing that should reorder them is the user clicking and dragging").
+
+    NOTE — the order is keyed by fsid, so a session that forks a NEW fsid (/clear, relaunch, revive) is a
+    newcomer and lands at the END (its old, now-dead incarnation keeps the original slot as a dead lane).
+    Making a session keep ONE slot across forks needs identity-keying (group fsids by their transcript
+    customTitle); that's a deliberate, separate change, left out here so this stays a pure positional sort."""
     order = _session_order()
     known = set(order)
-    fresh = sorted((s for s in alive if s["sid"] not in known), key=lambda s: -s["mtime"])
-    if fresh:
-        order = order + [s["sid"] for s in fresh]    # freeze the new slots; activity never re-sorts them
+    new = [s["sid"] for s in sessions if s["sid"] not in known]
+    if new:
+        order = order + new                              # freeze the new slots at the END; activity never moves them
         _write_session_order(order)
     idx = {sid: i for i, sid in enumerate(order)}
-    alive.sort(key=lambda s: idx.get(s["sid"], len(idx)))   # stable index only — no activity tiebreaker
-    return alive
+    return sorted(sessions, key=lambda s: idx.get(s["sid"], len(idx)))   # stable sort: ties keep input order
+
+
+def _ordered_alive(now, tmux):
+    """Living sessions in the shared, persisted order (see _ordered). Kept as the source for the tab-order
+    push on connect; chat tabs AND timeline lanes resolve the SAME order through _ordered, in lockstep."""
+    return _ordered(_alive_sessions(now, tmux))
 
 
 def _hidden_tabs():
@@ -827,15 +864,13 @@ def _chat_tab_sessions(now, tmux):
     — it does NOT auto-keep a tab when it dies (the user 2026-06-17 reversed the old 'keep a tab when it
     dies'); reopen it from the timeline instead. ×-hidden tabs are excluded."""
     hidden = _hidden_tabs()
-    live = _ordered_alive(now, tmux)
+    live = _alive_sessions(now, tmux)
     live_sids = {s["sid"] for s in live}
     dead_kept = [s for s in _sessions(now) if s["sid"] in _kept_open and s["sid"] not in live_sids]
-    order = _session_order()
-    idx = {sid: i for i, sid in enumerate(order)}
-    # same stable key as _timeline_sessions: persisted slot first, fixed-mtime tiebreak for never-ordered
-    # lanes — a dying tab keeps its slot, no activity reshuffle (the user 2026-06-23).
-    return sorted((s for s in live + dead_kept if s["sid"] not in hidden),
-                  key=lambda s: (idx.get(s["sid"], len(idx)), -s.get("mtime", 0)))
+    # Order is purely the persisted session-order.json (see _ordered) — no activity reshuffle; a dying tab
+    # keeps its slot. live + dead_kept resolve through the SAME index map _timeline_sessions uses, so chat
+    # tabs and timeline lanes stay in lockstep.
+    return _ordered([s for s in live + dead_kept if s["sid"] not in hidden])
 
 
 def _timeline_sessions(now, tmux):
@@ -851,16 +886,13 @@ def _timeline_sessions(now, tmux):
     was active during the visible span appears on scrollback regardless of tab/hidden state — the active
     filter alone gates it. So `_hidden_tabs()` is deliberately NOT consulted here (it still gates the
     chat tab strip in _chat_tab_sessions)."""
-    live = _ordered_alive(now, tmux)
+    live = _alive_sessions(now, tmux)
     live_sids = {s["sid"] for s in live}
-    order = _session_order()
-    idx = {sid: i for i, sid in enumerate(order)}
     dead = [s for s in _sessions(now) if s["sid"] not in live_sids]
-    # ONE stable order for live + dead — NO auto-reorder by activity, even for dead/idle lanes (the user
-    # 2026-06-23). A session that DIES keeps its PERSISTED slot instead of jumping into an activity-sorted
-    # dead block at the bottom; only a drag reorders. live is already index-ordered; dead lanes slot in by
-    # the SAME index, falling back to their (now-fixed) mtime ONLY for a lane that was never in the order.
-    return sorted(live + dead, key=lambda s: (idx.get(s["sid"], len(idx)), -s.get("mtime", 0)))
+    # ONE stable order for live + dead, purely the persisted session-order.json (see _ordered) — NO
+    # auto-reorder by activity, ever, even for dead/idle lanes. A session that DIES keeps its PERSISTED
+    # slot instead of jumping into an activity-sorted dead block; only a drag reorders.
+    return _ordered(live + dead)
 
 
 # ─── new-session / picker / close lifecycle (the + button and × tab control) ───────────────────
@@ -2443,10 +2475,22 @@ def build_session(sid, now, tmux=None):
         queued = _pending_queued(sess["path"])
     if queued:
         events.append({"kind": "queued", "texts": queued})
-    # API error → the session is BLOCKED until retried: a bottom card (renderApiError, a RED dot) AND the
-    # chip flips to "blocked" below. Detected event-based from the transcript (isApiErrorMessage), so the
-    # exact text (500 / timeout / model-not-found) doesn't matter (the user 2026-06-16).
-    aerr = _api_error(sess["path"])
+    # WORKING from the event model (open turn, no idle atom) — the one shared signal. Computed up here so the
+    # API-error gate just below can use it (it's also read later for the chip + work-timer base).
+    open_now = _session_working(session["turns"])
+    # AWAITING dispatched/delegated work (background agents) — a WORKING flavor, "in flight, not stalled" (the
+    # user 2026-06-22), the SAME signal _nudge + build_feed use. Only meaningful when the main turn is idle
+    # (_session_awaiting returns None while open_now).
+    awaiting_why = _session_awaiting(sid, sess["path"], not open_now)
+    # API error → the session is BLOCKED until retried: a bottom card (renderApiError, a RED dot) AND the chip
+    # flips to "blocked" below. Detected event-based from the transcript (isApiErrorMessage), so the exact
+    # text (500 / timeout / model-not-found) doesn't matter (the user 2026-06-16). GATED on the session NOT
+    # actively progressing — neither WORKING (open turn) NOR AWAITING background work: a lingering API-error
+    # atom from an EARLIER turn must NOT flip a still-busy session's chip to "blocked". That flagged "blocked"
+    # in the chip while the blocked COLUMN didn't list it, on a session running background agents (the user
+    # 2026-06-24). Mirrors the feed, which gates the same _api_error on `not who_working` and treats awaiting
+    # as a working flavor (build_feed).
+    aerr = _api_error(sess["path"]) if not (open_now or awaiting_why) else None
     if aerr:
         events.append({"kind": "apiError", "text": aerr["text"], "status": aerr["status"],
                        "category": aerr["category"]})
@@ -2465,7 +2509,6 @@ def build_session(sid, now, tmux=None):
     # hue) — turns iterate oldest→newest, so reverse. Matches state.ts recentReplyBullets' "newest first".
     bullets.sort(key=lambda b: b["t"], reverse=True)
     last_turn = session["turns"][-1] if session["turns"] else None
-    open_now = _session_working(session["turns"])      # WORKING from the event model — the one shared signal
     # "working on" — what the session is doing RIGHT NOW: the in-progress turn's caption if it has one
     # yet, else its prompt (≤140 chars), matching the timeline work-bar's `working on:` hover. Only while
     # actually working; idle/ready → no current line (the user 2026-06-16).
@@ -2603,7 +2646,7 @@ def build_session(sid, now, tmux=None):
         # tmux states (the session can't simultaneously be compacting or at a permission prompt).
         compacting = st == "compacting" or _compacting_optimistic(sid, session, now)
         chip = ("blocked" if aerr else "awaiting" if st == "permission" else "compacting" if compacting
-                else "retrying" if st == "retrying" else "working" if open_now else "ready")   # api_retry stall (SDK)
+                else "retrying" if st == "retrying" else "working" if (open_now or awaiting_why) else "ready")   # api_retry stall (SDK); working = open turn OR awaiting bg work (the user 2026-06-24)
         faded = chip == "ready" and bool(tm["since"]) and now - tm["since"] > 3600
         status = {"state": chip, "sinceEpoch": since_ms, "faded": faded,
                   "backend": _session_backend(sid, tm),
@@ -5671,7 +5714,9 @@ class Handler(BaseHTTPRequestHandler):
             _undo_clear()
             _push_all()
         elif msg and msg.get("type") in ("reorderTabs", "writeOrder") and isinstance(msg.get("order"), list):
-            _write_session_order(msg["order"])   # tab-drag or lane-drag → reorder BOTH surfaces
+            # tab-drag or lane-drag → reorder BOTH surfaces. MERGE the dragged surface's order into the
+            # persisted one (don't overwrite): a chat-tab drag must not drop/reshuffle timeline-only lanes.
+            _write_session_order(_merge_session_order(msg["order"]))
             _push_all()
         elif msg and msg.get("type") == "createSession" and msg.get("name"):
             nm = str(msg["name"]).strip()
