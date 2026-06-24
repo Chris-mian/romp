@@ -1131,6 +1131,16 @@ def rollup_status(store, session_closed):
             _roll_down(nid, "cleared")
         elif status[nid] == "completed":
             _roll_down(nid, "nodeComplete")
+    # Clear STALE blocks on completed work (the user 2026-06-24): a COMPLETE (sub)tree has no outstanding
+    # work, so it can't be blocked — its block's answer is moot. `any_blocked` already enforces this for the
+    # computed STATUS, but it never cleared the raw nd["blocked"] flag; the ledger + build_session render that
+    # RAW flag, so a finished goal still showed ⏸ sitting over ✓ children. Clear the raw flag (+ blockWhy) on
+    # every complete node so the STORE self-heals — existing stuck stores too, on the next rollup. Runs AFTER
+    # _roll_down so nodes just rolled up to nodeComplete are covered.
+    for nid in nodes:
+        if nodes[nid].get("blocked") and is_complete(nid):
+            nodes[nid]["blocked"] = False
+            nodes[nid].pop("blockWhy", None)
     store["status"] = status
 
 

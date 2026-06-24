@@ -1462,6 +1462,24 @@ class PlanRollup(unittest.TestCase):
         self.assertEqual(s["status"][g["id"]], "completed",
                          "top-done goal completes despite a trailing open+blocked step")
 
+    def test_completed_node_clears_its_raw_blocked_flag(self):
+        """The ⏸-on-done bug (the user, 2026-06-24): a top goal whose work is ALL done kept a stale
+        blocked=True in the STORE. any_blocked only heals the computed STATUS — the ledger + build_session
+        render the RAW nd["blocked"] flag, so the finished goal showed ⏸ sitting over ✓ children. rollup_status
+        must CLEAR the raw flag on every complete node so the store self-heals."""
+        s = _store()
+        g = _mknode(s, "G")                                  # top: NOT explicitly nodeComplete...
+        g["blocked"] = True; g["blockWhy"] = "owed a decision"   # ...but carrying a stale block
+        c1 = _mknode(s, "c1", parent=g["id"], complete=True)    # all children DONE → top complete bottom-up
+        c2 = _mknode(s, "c2", parent=g["id"], complete=True)
+        c2["blocked"] = True                                    # a DONE child also carrying a stale block
+        s["lastNode"] = g["id"]
+        jd.rollup_status(s, session_closed=True)
+        self.assertFalse(s["nodes"][g["id"]]["blocked"], "a complete top must not keep a stale block (no ⏸ on done)")
+        self.assertNotIn("blockWhy", s["nodes"][g["id"]], "the stale block reason is dropped too")
+        self.assertFalse(s["nodes"][c2["id"]]["blocked"], "a done child's stale block is cleared too")
+        self.assertEqual(s["status"][g["id"]], "completed", "and it rolls up to completed, not blocked")
+
 
 class Courier(unittest.TestCase):
     def test_seg_peer_extracts_sender_and_msgid(self):
