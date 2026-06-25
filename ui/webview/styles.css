@@ -584,6 +584,14 @@ body { display: flex; flex-direction: column; }
    keeps the rendered tail's heights REAL, so only the far-up head — which the viewport never anchors on — is
    estimated.) */
 .tx-spacer { width: 100%; pointer-events: none; }
+/* "Loading earlier messages…" cue while a window expand/jump renders un-rendered history (render.ts). Pinned
+   top-center of the chat pane, above the transcript, non-interactive. */
+.tx-loading-pill {
+  position: fixed; top: 10px; left: 50%; transform: translateX(-50%); z-index: 50;
+  background: rgba(20, 24, 33, 0.92); color: var(--accent, #9cd2ff); font-size: 12px; font-weight: 600;
+  padding: 4px 12px; border-radius: 999px; pointer-events: none;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.4); border: 1px solid rgba(156, 210, 255, 0.25);
+}
 /* tool + thinking rows pack tighter than prose turns (the user: ~half the spacing) */
 .turn-tool, .turn-thinking, .turn-toolgroup, .turn-compact { padding-top: 4px; padding-bottom: 4px; }
 /* context-compaction marker — one clean teal line on the rail (replaces the raw /compact stdout) */

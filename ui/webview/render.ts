@@ -2740,28 +2740,59 @@ function maybeExpandWindow(): void {
   const v = views.get(activeId);
   if (!v || v.winStart <= 0) return;
   const content = document.getElementById("content");
-  if (!content || content.scrollTop > EXPAND_TRIGGER_PX) return;
+  if (!content) return;
+  // Trigger off proximity to the TOP OF THE RENDERED TURNS, not absolute scrollTop. The head folds into a
+  // tall top spacer, so once you've scrolled up at all, scrollTop is huge and an `scrollTop < buffer` test
+  // never fired — that's why scroll-back stopped auto-loading (the user 2026-06-25). The rendered turns
+  // start at y = topSpacerHeight; `gap` is how far the viewport top sits BELOW that. Load the next older
+  // chunk when the viewport is approaching the rendered top from inside the rendered region (0 ≤ gap ≤
+  // buffer). gap < 0 means the viewport JUMPED up into the blank spacer (random access) — handled in Ship 2.
+  const sp = v.el.firstChild as HTMLElement | null;
+  const topH = sp && sp.classList?.contains("tx-spacer") ? sp.offsetHeight : 0;
+  const gap = content.scrollTop - topH;
+  if (gap < 0 || gap > EXPAND_TRIGGER_PX) return;
   const s = sessions.get(activeId);
   if (!s) return;
   expandingWindow = true;
-  const before = content.scrollHeight;
-  const working = s.status.state === "working" || s.status.state === "compacting";
-  const newStart = Math.max(0, v.winStart - EXPAND_CHUNK);
-  if (settings.compact) {
-    // compact has no incremental prepend (the display stream is folded) — lower the floor and rebuild the
-    // (still-bounded) compact window. stale bypasses rebuildCompact's no-op cache guard.
-    v.winStart = newStart; v.stale = true; rebuildCompact(v, s, working);
-  } else {
-    expandWindow(v, s, newStart, working);
-  }
-  content.scrollTop += content.scrollHeight - before;   // anchor the viewport across the prepend/rebuild
-  expandingWindow = false;
-  scheduleRestamp();
+  showLoadingPill();   // brief "loading earlier…" cue at the top of the pane (mostly a flash here; the longer
+  // random-access jumps in Ship 2 are where it really earns its keep)
+  // Defer the actual render one frame so the pill paints first, then anchor the viewport across the prepend.
+  requestAnimationFrame(() => {
+    const before = content.scrollHeight;
+    const working = s.status.state === "working" || s.status.state === "compacting";
+    const newStart = Math.max(0, v.winStart - EXPAND_CHUNK);
+    if (settings.compact) {
+      // compact has no incremental prepend (the display stream is folded) — lower the floor and rebuild the
+      // (still-bounded) compact window. stale bypasses rebuildCompact's no-op cache guard.
+      v.winStart = newStart; v.stale = true; rebuildCompact(v, s, working);
+    } else {
+      expandWindow(v, s, newStart, working);
+    }
+    content.scrollTop += content.scrollHeight - before;   // anchor the viewport across the prepend/rebuild
+    hideLoadingPill();
+    expandingWindow = false;
+    scheduleRestamp();
+  });
 }
 {
   const c = document.getElementById("content");
   if (c) c.addEventListener("scroll", maybeExpandWindow, { passive: true });
 }
+
+// A small "Loading earlier messages…" pill at the top-center of the chat pane, shown while a window
+// expand/jump is rendering so a scroll into un-rendered history reads as loading-in-progress, not frozen
+// (the user 2026-06-25). Lives in the chat iframe's body; idempotent.
+let loadingPillEl: HTMLElement | null = null;
+function showLoadingPill(): void {
+  if (!loadingPillEl) {
+    loadingPillEl = document.createElement("div");
+    loadingPillEl.className = "tx-loading-pill";
+    loadingPillEl.textContent = "Loading earlier messages…";
+    document.body.appendChild(loadingPillEl);
+  }
+  loadingPillEl.style.display = "";
+}
+function hideLoadingPill(): void { if (loadingPillEl) loadingPillEl.style.display = "none"; }
 
 // ---- ledger box (rolling per-session digest, just below the tabs) ----
 

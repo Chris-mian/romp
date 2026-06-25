@@ -85,15 +85,25 @@ test("expandWindow PREPENDS the revealed older turns (existing turns + their mar
   assert.match(RENDER, /if \(newStart <= 0\) \{ if \(spacer\) v\.el\.removeChild\(spacer\); \}/);
 });
 
-test("scrolling near the top lazily expands and counter-scrolls to anchor the viewport", () => {
+test("scroll-back auto-loads by proximity to the RENDERED TOP, not absolute scrollTop", () => {
   assert.match(RENDER, /function maybeExpandWindow\(\): void/);
-  // only the active view, only while the head is still collapsed, only near the top
   assert.match(RENDER, /if \(!v \|\| v\.winStart <= 0\) return;/);
-  assert.match(RENDER, /if \(!content \|\| content\.scrollTop > EXPAND_TRIGGER_PX\) return;/);
-  // counter-scroll by the scrollHeight delta keeps the viewport visually pinned across the prepend
-  assert.match(RENDER, /const before = content\.scrollHeight;/);
+  // the head folds into a tall spacer, so an `scrollTop < buffer` test never fired once scrolled up — that
+  // was the broken scroll-back. Trigger off `gap` = viewport-top distance below the rendered top instead.
+  assert.match(RENDER, /const topH = sp && sp\.classList\?\.contains\("tx-spacer"\) \? sp\.offsetHeight : 0;/);
+  assert.match(RENDER, /const gap = content\.scrollTop - topH;/);
+  assert.match(RENDER, /if \(gap < 0 \|\| gap > EXPAND_TRIGGER_PX\) return;/);
+  // a "loading earlier…" cue paints, then the render is deferred one frame; the viewport is re-anchored after
+  assert.match(RENDER, /showLoadingPill\(\);/);
   assert.match(RENDER, /content\.scrollTop \+= content\.scrollHeight - before;/);
+  assert.match(RENDER, /hideLoadingPill\(\);/);
   assert.match(RENDER, /c\.addEventListener\("scroll", maybeExpandWindow, \{ passive: true \}\);/);
+});
+
+test("a loading pill shows while history renders, and the CSS pins it top-center of the chat pane", () => {
+  assert.match(RENDER, /function showLoadingPill\(\): void/);
+  assert.match(RENDER, /loadingPillEl\.textContent = "Loading earlier messages…";/);
+  assert.match(CSS, /\.tx-loading-pill \{[\s\S]*position: fixed[\s\S]*\}/);
 });
 
 test("a deep-link into the spacered head expands the window to reveal the target, then lands", () => {
