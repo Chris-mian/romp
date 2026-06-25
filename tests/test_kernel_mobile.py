@@ -88,7 +88,7 @@ class LandingShell(unittest.TestCase):
         html = km._landing()
         self.assertIn("#mtabs{display:flex;position:fixed;left:0;right:0;bottom:0", html)
         self.assertIn("padding-bottom:var(--mtabs-h", html)
-        self.assertNotIn("flex:0 0 auto", html)                  # the flex-child placement is gone
+        self.assertNotIn("#mtabs{flex:", html)                   # the bar is NOT itself a flex child anymore
         # the reservation is measured from the live bar, so it tracks the gesture-area inset exactly
         self.assertIn("setProperty('--mtabs-h'", km._LANDING_MOBILE_JS)
         self.assertIn("offsetHeight", km._LANDING_MOBILE_JS)

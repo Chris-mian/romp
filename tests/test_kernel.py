@@ -3073,8 +3073,9 @@ class ServeSecurity(unittest.TestCase):
         self.assertNotIn("background:rgba(0,0,0,0.5)", html)            # the dimming veil is gone
         self.assertNotIn(".pane:not(.pane-focused)::after", html)       # the OTHERS are NOT touched
         self.assertNotIn("nav-typing", html)                           # the typing/dimming logic is gone
-        # the wiring: maps each iframe id → its pane, toggles pane-focused exclusively, defaults to chat
-        self.assertIn("var PANE={'f-chat':'chat-pane','f-fleet':'chat-pane','f-feed':'feed-pane','f-timeline':'tl-pane'}", html)
+        # the wiring: maps each iframe id → its pane, toggles pane-focused exclusively, defaults to chat.
+        # Fleet is its OWN pane now (the user 2026-06-24), so f-fleet maps to fleet-pane, not the chat pane.
+        self.assertIn("var PANE={'f-chat':'chat-pane','f-fleet':'fleet-pane','f-feed':'feed-pane','f-timeline':'tl-pane'}", html)
         self.assertIn("classList.toggle('pane-focused'", html)
         self.assertIn("d.addEventListener('pointerdown',emit,true)", html)
         self.assertIn("d.addEventListener('focusin',emit,true)", html)
@@ -3114,21 +3115,24 @@ class ServeSecurity(unittest.TestCase):
         self.assertIn("/dist/fleet.js", body)
         self.assertIn('app=feed', body)              # reuses the feed payload, no new kernel data
 
-    def test_landing_chat_pane_has_a_fleet_toggle(self):
-        # the chat pane holds a SECOND iframe (/fleet); .show-fleet swaps which is visible (the user 2026-06-23).
-        # The toggle moved INTO the chat tab bar (render.ts) + the Fleet foot (the user 2026-06-24): both post
-        # {romp:'toggleFleet'} to the shell, which flips show-fleet and focuses the live iframe. The old floating
-        # #chat-fleet-toggle button is gone.
+    def test_landing_fleet_is_its_own_pane_toggled_from_the_rail(self):
+        # Fleet is its OWN pane now (the user 2026-06-24): the old .show-fleet SWAP (Fleet living inside the
+        # chat pane) is gone. Fleet is the middle pane, toggled by the far-left rail's Fleet button (po-fleet).
+        # For back-compat the chat tab bar / Fleet foot still post {romp:'toggleFleet'}; the shell routes that
+        # to the same pane toggle (window.__rompPaneToggle('fleet',to?)). The old floating button stays gone.
         html = km._landing()
         self.assertIn("<iframe id=f-fleet src=/fleet>", html)
+        self.assertIn("<div class=pane id=fleet-pane>", html)      # Fleet is a real pane, not an overlay
         self.assertNotIn("chat-fleet-toggle", html)               # the floating shell button is removed
-        self.assertIn("#chat-pane.show-fleet>#f-chat{display:none}#chat-pane.show-fleet>#f-fleet{display:block}", html)
-        self.assertIn("m.romp!=='toggleFleet'", html)             # the shell listens for the tab-bar/foot toggle
-        self.assertIn("p.classList.toggle('show-fleet')", html)   # no `to` → flip; to:'chat'/'fleet' force a side
-        # f-fleet shares the chat pane in the focus map (so interacting with it spotlights the chat pane)
-        self.assertIn("'f-fleet':'chat-pane'", html)
+        self.assertNotIn("show-fleet", html)                      # the swap mechanism is gone entirely
+        self.assertIn("body:not(.po-fleet) #fleet-pane{display:none}", html)   # rail's po-fleet shows/hides it
+        self.assertIn("m.romp!=='toggleFleet'", html)             # the shell still listens for the legacy toggle
+        self.assertIn("if(m.to==='chat')window.__rompPaneToggle('chat',true)", html)   # open-from-Fleet reveals chat
+        self.assertIn("else window.__rompPaneToggle('fleet')", html)                    # no `to` → toggle Fleet
+        # f-fleet maps to its OWN pane in the focus map (interacting with it spotlights the fleet pane)
+        self.assertIn("'f-fleet':'fleet-pane'", html)
         # desktop-only for now: hidden on the mobile one-pane layout
-        self.assertIn("#f-fleet{display:none!important}", html)
+        self.assertIn("#fleet-pane{display:none!important}", html)
 
     def test_landing_pins_height_to_visual_viewport(self):
         # Regression (the user 2026-06-19): on real Android Chrome, body{height:100dvh} left a dead slab
