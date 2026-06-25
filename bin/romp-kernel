@@ -387,7 +387,7 @@ def _sessions(now):
             mtime = os.stat(path).st_mtime
         except OSError:
             mtime = 0
-        out.append({"sid": fsid, "name": name or fsid[:8], "path": str(path), "mtime": mtime})
+        out.append({"sid": fsid, "name": name or fsid[:8], "anchor": anchor, "path": str(path), "mtime": mtime})
     out.sort(key=lambda s: s["mtime"], reverse=True)
     return out
 
@@ -522,15 +522,25 @@ def _ordered(sessions):
     sessions work — the ONLY thing that reorders them is a drag, which rewrites session-order.json (the
     user 2026-06-24: "the only thing that should reorder them is the user clicking and dragging").
 
-    NOTE — the order is keyed by fsid, so a session that forks a NEW fsid (/clear, relaunch, revive) is a
-    newcomer and lands at the END (its old, now-dead incarnation keeps the original slot as a dead lane).
-    Making a session keep ONE slot across forks needs identity-keying (group fsids by their transcript
-    customTitle); that's a deliberate, separate change, left out here so this stays a pure positional sort."""
+    A session that FORKS a new fsid (/clear, relaunch, revive) inherits its session's PLACE rather than
+    jumping to the END: forks of one logical session share an anchor (jd.discover's anchor_sid — same
+    project dir + same transcript customTitle), so a newcomer fork slots right after its last same-anchor
+    sibling already in the order. A genuinely-new session still appends at the end. Keyed off the anchor the
+    sessions carry (default: the sid itself), so session-order.json + the client stay fsid-based — no
+    migration (the user 2026-06-24: keep ONE slot across /clear / revive)."""
     order = _session_order()
     known = set(order)
+    # forks of ONE logical session share an anchor; default to the sid for sessions not (yet) in discover.
+    anchor = {s["sid"]: (s.get("anchor") or s["sid"]) for s in sessions}
     new = [s["sid"] for s in sessions if s["sid"] not in known]
     if new:
-        order = order + new                              # freeze the new slots at the END; activity never moves them
+        for sid in new:
+            a = anchor.get(sid, sid)
+            sib = [i for i, o in enumerate(order) if anchor.get(o, o) == a]   # same-session entries already placed
+            if sib:
+                order.insert(sib[-1] + 1, sid)           # a fork inherits its session's slot, not the END
+            else:
+                order.append(sid)                        # a genuinely new session appends, then is frozen
         _write_session_order(order)
     idx = {sid: i for i, sid in enumerate(order)}
     return sorted(sessions, key=lambda s: idx.get(s["sid"], len(idx)))   # stable sort: ties keep input order
@@ -1195,7 +1205,8 @@ def _sdk_route(msg, client):
         iid = msg.get("itemId")                       # SDK parity with the tmux path (5441): reopen the card NOW
         if iid:                                       # → board shows it back at WORKING + a "Followed up" chip
             try:
-                if jd.optimistic_followup(sid, str(iid)):
+                if jd.optimistic_followup(sid, str(iid), text=str(msg["text"]), now=int(time.time()),
+                                          stub=not bool(msg.get("nudge"))):
                     _push_all()
             except Exception:
                 sys.stderr.write("followup reopen (sdk): %s\n" % traceback.format_exc())
@@ -6018,8 +6029,9 @@ class Handler(BaseHTTPRequestHandler):
             # user TYPED in the modal carries no nudge flag → blue human bubble (the user 2026-06-20).
             _tmux_send(_name_of(sid) or sid, _followup_body(iid, msg.get("title"), msg["text"], injected=bool(msg.get("nudge"))))
             try:                                         # optimistic: reopen the card NOW, before the judge pass
-                if jd.optimistic_followup(sid, iid):     # → board shows it back at WORKING + a "Followed up" chip
-                    _push_all()
+                if jd.optimistic_followup(sid, iid, text=str(msg["text"]), now=int(time.time()),
+                                          stub=not bool(msg.get("nudge"))):   # typed follow-up plants an open stub;
+                    _push_all()                          # a nudge resolves the goal (no stub). "Followed up" chip
             except Exception:
                 sys.stderr.write("followup reopen: %s\n" % traceback.format_exc())
         # live AskUserQuestion picker: a webview click → keystrokes into the session's pane (AskDriver)

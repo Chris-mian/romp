@@ -135,6 +135,24 @@ class SessionOrder(unittest.TestCase):
         km._chat_tab_sessions(0, {})
         self.assertEqual(self.order_file(), [A, B, C])     # dead-but-in-window B keeps its slot
 
+    # ── fork identity: a /clear/revive (new fsid, SAME anchor) keeps its slot, never jumps to the END ──────
+    def test_a_fork_slots_after_its_anchor_not_at_the_end(self):
+        km._write_session_order([A, B, C])
+        A2 = "aaaaaaaa-0000-0000-0000-0000000000a2"        # A forks → new fsid, same anchor A
+        def f(sid, anchor):
+            return {"sid": sid, "name": sid[:8], "anchor": anchor, "path": "/x/%s.jsonl" % sid, "mtime": 1}
+        out = self.sids(km._ordered([f(A, A), f(B, B), f(C, C), f(A2, A)]))
+        self.assertEqual(self.order_file(), [A, A2, B, C])  # A2 inherits A's place, not the END
+        self.assertEqual(out, [A, A2, B, C])
+
+    def test_a_genuinely_new_session_still_appends_at_the_end(self):
+        km._write_session_order([A, B])
+        def f(sid, anchor):
+            return {"sid": sid, "name": sid[:8], "anchor": anchor, "path": "/x/%s.jsonl" % sid, "mtime": 1}
+        D2 = "dddddddd-0000-0000-0000-0000000000d2"
+        self.sids(km._ordered([f(A, A), f(B, B), f(D2, D2)]))   # D2 is its own anchor → no sibling
+        self.assertEqual(self.order_file(), [A, B, D2])
+
 
 if __name__ == "__main__":
     unittest.main()
