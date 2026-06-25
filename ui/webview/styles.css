@@ -176,7 +176,10 @@ body { display: flex; flex-direction: column; }
   background: var(--vscode-editorWidget-background, #252526);
   border: 1px solid var(--box-border); border-radius: 6px;
   padding: 7px 10px; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
-  font-family: var(--mono); font-size: 0.82em; line-height: 1.55; max-width: 440px;
+  font-family: var(--mono); font-size: 0.82em; line-height: 1.55;
+  /* span the full chat pane width (the user 2026-06-25) so the recent-activity names don't get clipped — the
+     positioner (render.ts) clamps it to a small left margin once it's this wide; short tips stay content-sized. */
+  max-width: calc(100vw - 12px);
 }
 .tab-tip-be { font-weight: 700; margin-bottom: 4px; }   /* colour set inline = the session's romp identity colour */
 .tab-tip-path { color: var(--dim); word-break: break-all; margin-bottom: 4px; }

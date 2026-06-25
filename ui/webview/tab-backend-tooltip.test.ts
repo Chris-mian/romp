@@ -45,6 +45,10 @@ test("v4: git branch + context battery + Summary row + the last 5 worked-on item
   assert.match(RENDER, /item\.style\.color = ageColorReadable\(now - t\)/);           // each item in its recency colour
   assert.match(CSS, /\.tab-tip-recent-list \{/);                                      // the list + per-item rules exist
   assert.match(CSS, /\.tab-tip-recent-item \{/);
+  // the tip spans the full chat-pane width (the user 2026-06-25) so the recent names aren't clipped at a
+  // narrow fixed box; the positioner clamps it to a small left margin once it's this wide.
+  assert.match(CSS, /\.tab-tip \{[\s\S]*?max-width: calc\(100vw - 12px\)/);
+  assert.doesNotMatch(CSS, /\.tab-tip \{[\s\S]*?max-width: 440px/);
 });
 
 test("the tall context battery gets vertical breathing room", () => {
