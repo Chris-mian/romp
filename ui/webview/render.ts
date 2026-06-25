@@ -17,6 +17,7 @@ import { markerLabel, chooseStamps } from "./time-marker";
 import { compactDisplay, toolCounts } from "./compact";
 import { loadSettings, onExternalSettingsChange, type RompSettings } from "./settings";
 import { delegate } from "./actions";
+import { prebuildPlan, type ViewState } from "./prebuild";
 
 for (const [name, lang] of Object.entries({
   bash, sh: bash, shell: bash, python, py: python, javascript, js: javascript,
@@ -2324,8 +2325,10 @@ function toggleToolGroup(key: string): void {
 // Re-render every view from scratch (used when a setting like compact flips): reset each view so the
 // next syncView rebuilds it via the right path, then repaint the active one.
 function rerenderAll(): void {
+  cancelPrebuild(); // the queued plan is now stale (every view reset below) — re-warm after showActive
   for (const v of views.values()) { while (v.el.firstChild) v.el.removeChild(v.el.firstChild); v.rendered = 0; v.stale = false; }
   showActive();
+  schedulePrebuild(); // rebuild every off-screen view in idle under the new setting, so switches stay instant
 }
 
 // Index of the last human-prompt event = start of the current turn, where any
@@ -2386,6 +2389,69 @@ function touchMru(id: string) {
 // rAF handle for a DEFERRED heavy transcript build (a first-visit / changed-compact view). Switching away
 // before it fires cancels it, so rapid tab-cycling never waits on a transcript it's leaving. (the user 2026-06-17.)
 let pendingBuildRaf: number | null = null;
+
+// ---- background pre-build of off-screen tabs (the user 2026-06-25) ----
+// Switching to a tab used to pay its WHOLE O(events) DOM build on first visit (showActive's heavy gate), so a
+// big transcript opened with a visible lag and, on startup, tabs seemed to "open one at a time".
+// content-visibility:auto already skips an OFF-screen turn's layout/paint, but the nodes still have to be
+// CREATED once — that's the cost. So build every off-screen tab's DOM AHEAD of time during browser IDLE
+// (lowest priority, chunked to the idle deadline): by the time you switch, the view is already built and the
+// switch takes showActive's instant (non-heavy) path. Pre-built views stay display:none — pure node creation
+// moved off the critical path ("loading stuff in the background"). The POLICY (which tabs, what order) lives
+// in prebuild.ts so a test pins it; here we just walk the plan. schedulePrebuild() is fired from the lifecycle
+// hooks (a session arriving/updating, a tab switch) and coalesces — a queued pass rescans everything.
+type IdleDeadline = { timeRemaining(): number; didTimeout?: boolean };
+const _ric = (typeof window !== "undefined" ? (window as any).requestIdleCallback : undefined) as
+  | ((cb: (d: IdleDeadline) => void, o?: { timeout: number }) => number)
+  | undefined;
+const _cic = (typeof window !== "undefined" ? (window as any).cancelIdleCallback : undefined) as
+  | ((h: number) => void)
+  | undefined;
+// requestIdleCallback when available; else a short setTimeout with a small synthetic frame budget, so the
+// behaviour degrades gracefully where it's absent.
+const requestIdle = (cb: (d: IdleDeadline) => void): number =>
+  _ric ? _ric(cb, { timeout: 1500 }) : (window.setTimeout(() => cb({ timeRemaining: () => 12 }), 16) as unknown as number);
+const cancelIdle = (h: number): void => { if (_cic) _cic(h); else clearTimeout(h); };
+
+let prebuildHandle: number | null = null;
+
+// Schedule one idle pass (idempotent — a queued pass rescans ALL tabs when it runs, so coalescing the repeat
+// calls fired during a startup burst is both correct and cheap).
+function schedulePrebuild(): void {
+  if (prebuildHandle != null) return;
+  prebuildHandle = requestIdle(runPrebuild);
+}
+
+// Cancel any queued pass (e.g. a setting flip that rebuilds everything wholesale, so the stale plan is moot).
+function cancelPrebuild(): void {
+  if (prebuildHandle != null) { cancelIdle(prebuildHandle); prebuildHandle = null; }
+}
+
+function runPrebuild(deadline: IdleDeadline): void {
+  prebuildHandle = null;
+  if (pendingBuildRaf != null) { schedulePrebuild(); return; } // active tab mid-build → yield, retry next idle
+  const viewState = (id: string): ViewState | null => {
+    const s = sessions.get(id);
+    if (!s) return null;
+    const v = views.get(id);
+    return {
+      events: s.events.length,
+      hasDom: !!v && v.el.childNodes.length > 0,
+      stale: !!v && v.stale,
+      rendered: v ? v.rendered : 0,
+    };
+  };
+  const savedRenderingSid = renderingSid; // syncView sets this; restore it so nothing keys off a pre-built tab
+  for (const id of prebuildPlan(activeId, mru, order, viewState)) {
+    if (!sessions.has(id)) continue;
+    try {
+      ensureView(id);
+      syncView(id); // build the hidden view now, off the critical path
+    } catch { /* one malformed tab must not break idle pre-building of the rest */ }
+    if (deadline.timeRemaining() < 3) { schedulePrebuild(); break; } // out of idle budget → resume next idle
+  }
+  renderingSid = savedRenderingSid;
+}
 
 function showActive() {
   const content = document.getElementById("content");
@@ -3514,6 +3580,7 @@ function setActive(id: string, anchor?: string, anchorT?: number, anchorKind?: s
   sortTabs(); // re-sort on switch — applies any tier change deferred while a tab was active
   renderTabs();
   showActive();
+  schedulePrebuild(); // warm the OTHER tabs in idle (MRU-first) so the next switch is instant
 }
 
 function cycleTab(dir: number) {
@@ -3572,6 +3639,7 @@ function upsert(msg: any) {
     hideOpeningModal();
     setActive(msg.id);
   }
+  schedulePrebuild(); // startup + new content: build the off-screen tabs in idle so they open instantly
 }
 
 function update(msg: any) {
@@ -3587,6 +3655,7 @@ function update(msg: any) {
   } else {
     const v = views.get(msg.id);
     if (v) v.stale = true; // re-render its current turn when it's next shown
+    schedulePrebuild(); // rebuild the now-stale off-screen view in idle, before the user switches to it
   }
 }
 
@@ -3615,6 +3684,7 @@ function chatTail(msg: any) {
   } else {
     const v = views.get(msg.id);
     if (v) v.stale = true;
+    schedulePrebuild(); // rebuild the now-stale off-screen view in idle, before the user switches to it
   }
 }
 
