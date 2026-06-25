@@ -577,11 +577,13 @@ body { display: flex; flex-direction: column; }
    block:"start") — a few px of breathing room so it isn't glued to the edge and the
    anchor-flash border isn't clipped. */
 .turn { position: relative; padding-left: 30px; padding-top: 9px; padding-bottom: 9px; scroll-margin-top: 10px; }
-/* NOTE: content-visibility:auto was tried here to speed up focusing the heavy chat iframe (the user 2026-06-25)
-   but REVERTED — it makes content.scrollHeight an ESTIMATE (off-screen turns get guessed heights), and
-   appendActive()/nearBottom()/the ruler all rely on a real scrollHeight, so a new message snapped the view to
-   the estimated bottom then corrected. The right fix for the focus lag is true virtualisation (explicit spacer
-   + managed heights), not content-visibility. */
+/* Tail-windowing spacer (render.ts): stands in for the older head [0, winStart) that isn't rendered as real
+   .turn nodes, sized to its estimated height so the scrollbar is honest. Invisible, non-interactive — it's
+   pure vertical space. (content-visibility:auto was tried here first but REVERTED: it made content.scrollHeight
+   an ESTIMATE for ALL off-screen turns, so appendActive/nearBottom snapped to a guessed bottom. The spacer
+   keeps the rendered tail's heights REAL, so only the far-up head — which the viewport never anchors on — is
+   estimated.) */
+.tx-spacer { width: 100%; pointer-events: none; }
 /* tool + thinking rows pack tighter than prose turns (the user: ~half the spacing) */
 .turn-tool, .turn-thinking, .turn-toolgroup, .turn-compact { padding-top: 4px; padding-bottom: 4px; }
 /* context-compaction marker — one clean teal line on the rail (replaces the raw /compact stdout) */

@@ -21,9 +21,9 @@ test("syncView shows a 'No messages yet.' placeholder for a zero-event transcrip
 });
 
 test("the empty branch resets render bookkeeping so the first real event clears the placeholder", () => {
-  // v.rendered = 0 + v.stale = false → the next syncView with events does a from-0 rebuild that removes
-  // the placeholder node and builds the turns.
-  assert.match(RENDER, /v\.rendered = 0; v\.stale = false;\s*\n\s*return v;/);
+  // v.rendered = 0 + v.stale = false + v.winStart = 0 → the next syncView with events does a fresh tail-window
+  // build (firstBuild) that removes the placeholder node and builds the turns.
+  assert.match(RENDER, /v\.rendered = 0; v\.stale = false; v\.winStart = 0;\s*\n\s*return v;/);
 });
 
 test("a zero-event session never shows the 'Loading transcript…' hint", () => {
