@@ -296,6 +296,34 @@ def list_regs(state_dir: Path) -> list[dict]:
     return out
 
 
+# Models observed to have a LARGE (1M) context window — the SDK never reports the window size, so we learn
+# it: a model whose prompt ever exceeds the 200k standard window must be a 1M-context model (account/beta).
+# Account-wide + persisted (NOT under sdk/, so list_regs doesn't read it), so the context % matches what
+# Claude Code's statusline shows (the user 2026-06-24: SDK read 14% where tmux read 3% — wrong window).
+def _bigwin_path(state_dir: Path) -> Path:
+    return Path(state_dir) / "sdk-bigwindow.json"
+
+
+def read_big_models(state_dir: Path) -> set:
+    try:
+        return set(json.loads(_bigwin_path(state_dir).read_text()))
+    except (OSError, ValueError):
+        return set()
+
+
+def add_big_model(state_dir: Path, model: str) -> set:
+    cur = read_big_models(state_dir)
+    if not model or model in cur:
+        return cur
+    cur.add(model)
+    p = _bigwin_path(state_dir)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(".tmp")
+    tmp.write_text(json.dumps(sorted(cur)))
+    os.replace(tmp, p)
+    return cur
+
+
 # ---------------------------------------------------------------------------
 # The live session (one quarantined asyncio thread).
 # ---------------------------------------------------------------------------
@@ -319,9 +347,9 @@ class SdkSession:
         self.client = None
         self.inflight = 0
         self.since = 0
-        self.model = ""
+        self.model = reg.get("liveModel") or ""   # seed from the last-known model so the badge/picker show on
+        #                                           OPEN (even once eager-connected, before init/a turn reports)
         self._ctx_tokens = 0   # last turn's PROMPT size (input + cache read + cache creation) = current context fill
-        self._ctx_peak = 0     # max prompt seen this session → infers the window (>200k ⇒ a 1M-context session)
         self.retrying = False                        # an api_retry storm (API rate-limit/overload) is stalling the turn → 'retrying', not 'working'
         self._interrupted = False                    # user interrupted the in-flight turn → snapshot reads 'waiting' (display only; inflight stays event-driven)
         self.chosen_model = reg.get("model") or ""   # the alias the user picked (opus/sonnet/…); self.model is the display name
@@ -559,19 +587,20 @@ class SdkSession:
         self.backend._poke()
 
     def _ctx_pct(self):
-        """Context-window fill %, like the tmux statusline's bar — APPROXIMATE for SDK sessions. The SDK's
-        usage doesn't report the window size, which varies (200k standard vs 1M), so we infer it from the
-        session's PEAK prompt (a prompt that ever exceeded 200k means a 1M-context session). None until a turn
-        with usage is seen (the user 2026-06-24: SDK had no context bar). Capped at 100."""
+        """Context-window fill %, matching the tmux statusline's bar. The SDK never reports the window size, so
+        we divide the prompt tokens by the model's LEARNED window: 1M for any model observed to exceed the 200k
+        standard window (account-wide, persisted), else 200k. This is what made SDK read 14% where tmux read 3%
+        on a 1M-context model (the user 2026-06-24). None until a turn with usage is seen. Capped at 100."""
         if not self._ctx_tokens:
             return None
-        window = 1_000_000 if self._ctx_peak > 200_000 else 200_000
+        window = 1_000_000 if self.model in self.backend._big_models else 200_000
         return min(100, round(self._ctx_tokens / window * 100))
 
     def _note_usage(self, msg):
         """Track the last turn's PROMPT size from any message carrying usage (assistant / result). The prompt
-        is input + cache-read + cache-creation tokens — i.e. everything sent to the model = the current
-        context fill. Drives _ctx_pct."""
+        is input + cache-read + cache-creation tokens — i.e. everything sent to the model = the current context
+        fill. Drives _ctx_pct. A prompt over the 200k standard window proves this model is a 1M-context one —
+        remember that (account-wide, persisted) so the % uses the right window."""
         u = getattr(msg, "usage", None)
         if not isinstance(u, dict):
             return
@@ -579,7 +608,11 @@ class SdkSession:
             + (u.get("cache_creation_input_tokens") or 0)
         if prompt > 0:
             self._ctx_tokens = prompt
-            self._ctx_peak = max(self._ctx_peak, prompt)
+            if prompt > 200_000 and self.model and self.model not in self.backend._big_models:
+                try:
+                    self.backend._big_models = add_big_model(self.backend.state_dir, self.model)
+                except Exception:
+                    pass
 
     def _on_message(self, msg, AssistantMessage, ResultMessage, SystemMessage):
         self._note_usage(msg)   # context-fill tracking (any message that carries a usage block)
@@ -762,6 +795,7 @@ class SdkBackend:
         self.append_prompt_path = append_prompt_path
         self._log_cb = log
         self.sessions: dict[str, SdkSession] = {}
+        self._big_models = read_big_models(self.state_dir)   # models with a 1M context window (learned, for ctx %)
         self._lock = threading.Lock()
         self._pending_ask: dict[str, bool] = {}   # sid -> has an ask awaiting answer
         self._live: dict[str, dict] = {}          # sid -> {key -> atom}: the in-memory LIVE TAIL (ahead of disk)
