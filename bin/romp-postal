@@ -112,14 +112,37 @@ def tmux(*args):
     except Exception:
         return ""
 
-def my_name():
-    return tmux("display-message", "-p", "#S").strip() or None
-
-def my_id():
-    name = my_name()
+def _self_id():
+    """THIS session's fsid. Prefer CLAUDE_CODE_SESSION_ID — the harness sets it for EVERY session (SDK and
+    tmux alike), so it's the reliable identity. Fall back to the tmux @romp-session-id var only when it's
+    absent. The tmux var is WRONG for an SDK (non-tmux) session: its MCP is parented under whatever leftover
+    tmux pane it spawned in, so it returns a DIFFERENT session's id — an SDK session sitting in a stale 'FRO'
+    pane resolved to the FRO session and sent mail AS it (and was wrongly blocked as isolated, since FRO was
+    isolated) while the timeline icon, keyed on the real fsid, correctly showed it un-isolated (the user
+    2026-06-24)."""
+    env_id = (os.environ.get("CLAUDE_CODE_SESSION_ID") or "").strip()
+    if env_id:
+        return env_id
+    name = tmux("display-message", "-p", "#S").strip()
     if not name:
         return None
     return tmux("show", "-t", name, "-v", "@romp-session-id").strip() or None
+
+def my_id():
+    return _self_id()
+
+def my_name():
+    # Resolve the NAME from our real id (names registry) so name + id never disagree — same reason as
+    # _self_id. Fall back to the tmux session name only when we have no id / no registry entry.
+    sid = _self_id()
+    if sid:
+        try:
+            n = (NAMES_DIR / sid).read_text().split("\t")[0].strip()
+            if n:
+                return n
+        except Exception:
+            pass
+    return tmux("display-message", "-p", "#S").strip() or None
 
 # ───────────────────────── maildir store ─────────────────────────
 
