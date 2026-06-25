@@ -2284,6 +2284,27 @@ def _compacting_optimistic(sid, session, now):
     return True
 
 
+def _compacting(sid, st, session, now, since):
+    """Whether the session is REALLY compacting — corroborating the tmux @claude-state / the optimistic flag
+    against the EVENT MODEL. The compacting state is STICKY in the hook (PreCompact latches it; ONLY
+    PostCompact ends it), so a MISSED PostCompact — a kernel restart-storm, an interrupted or auto
+    compaction — pins @claude-state='compacting' forever even as the session resumes working, desyncing the
+    chip (compacting) from the feed/transcript (working). So compaction is OVER the instant the transcript
+    shows an OPEN working turn OR a compact_boundary atom at/after the compaction start (@claude-state-since);
+    only then do we trust the live 'compacting' signal (the user 2026-06-24)."""
+    if not (st == "compacting" or _compacting_optimistic(sid, session, now)):
+        return False
+    turns = session.get("turns", [])
+    if _session_working(turns):                          # producing output now → not a blocking compaction
+        return False
+    for turn in turns:                                   # a compact_boundary since the start → compaction done
+        for a in turn["atoms"]:
+            if (a.get("type") == "system" and a.get("subtype") == "compact_boundary"
+                    and (a.get("t") or 0) >= (since or 0)):
+                return False
+    return True
+
+
 # ── the chat's pinned "system context" card (the user 2026-06-19) ──────────────────────────────────
 # A collapsed card at the very top of the transcript showing the CLAUDE.md instructions in effect plus
 # the session's model / cwd / branch / permission-mode / Claude Code version. It is NOT the verbatim
@@ -2770,8 +2791,8 @@ def build_session(sid, now, tmux=None):
         st = tm["state"]
         # blocked (API error) is the strongest signal — the turn ended in an error, so it beats the live
         # tmux states (the session can't simultaneously be compacting or at a permission prompt).
-        compacting = st == "compacting" or _compacting_optimistic(sid, session, now)
-        chip = ("blocked" if aerr else "awaiting" if st == "permission" else "compacting" if compacting
+        compacting = _compacting(sid, st, session, now, tm["since"])   # event-corroborated: a stuck @claude-state
+        chip = ("blocked" if aerr else "awaiting" if st == "permission" else "compacting" if compacting   # can't pin it
                 else "retrying" if st == "retrying" else "working" if (open_now or awaiting_why) else "ready")   # api_retry stall (SDK); working = open turn OR awaiting bg work (the user 2026-06-24)
         faded = chip == "ready" and bool(tm["since"]) and now - tm["since"] > 3600
         status = {"state": chip, "sinceEpoch": since_ms, "faded": faded,
@@ -4136,8 +4157,10 @@ def build_timeline(now, tmux=None):
         open_now = _session_working(st_turns)             # WORKING from the event model — the one shared signal
         if tm:                            # live: tmux state drives the lane badge (working/waiting/idle/permission/compacting)
             state = tm["state"] or "idle"
-            if state != "compacting" and _compacting_optimistic(sid, session, now):
-                state = "compacting"      # optimistic cue the moment we sent /compact (matches the chat chip)
+            if _compacting(sid, state, session, now, tm.get("since")):
+                state = "compacting"      # event-corroborated (incl. the optimistic /compact cue) — matches the chip
+            elif state == "compacting":   # a STUCK tmux 'compacting' the event model contradicts → show the real state
+                state = "working" if open_now else "waiting"
         else:                             # dead lane: NEVER "working" — a turn left open at death (e.g. a stalled API
                                           # turn that never returned a ResultMessage, then ended) must not read as
                                           # active (the user 2026-06-23); badgeFor dims a dead lane anyway.

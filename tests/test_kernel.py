@@ -853,6 +853,30 @@ class ViewBuilder(unittest.TestCase):
         finally:
             km._downtime = saved
 
+    def test_compacting_corroborated_against_the_event_model(self):
+        # a STUCK tmux @claude-state=compacting (a missed PostCompact — restart-storm / interrupted compaction)
+        # must NOT read as compacting once the event model shows the session moved on: an OPEN working turn OR
+        # a compact_boundary atom since the compaction start (the user 2026-06-24). A genuine compaction still
+        # reads compacting. This is the chip/feed desync the user saw (compacting badge over a working session).
+        km._compact_clicked.clear()
+        saved = km._downtime; km._downtime = []
+        SINCE = NOW - 100
+        try:
+            working = {"turns": [{"ended": False, "atoms": [{"type": "user"}], "t": NOW, "end": NOW}]}
+            self.assertFalse(km._compacting(SID, "compacting", working, NOW, SINCE),
+                             "stuck compacting + an OPEN working turn → not compacting (the desync bug)")
+            settled = {"turns": [{"ended": True, "atoms": [
+                {"type": "system", "subtype": "compact_boundary", "t": SINCE + 10}], "t": NOW, "end": NOW}]}
+            self.assertFalse(km._compacting(SID, "compacting", settled, NOW, SINCE),
+                             "stuck compacting + a compact_boundary since the start → compaction is done")
+            genuine = {"turns": [{"ended": True, "atoms": [{"type": "assistant"}], "t": NOW, "end": NOW}]}
+            self.assertTrue(km._compacting(SID, "compacting", genuine, NOW, SINCE),
+                            "compacting + no open turn + no boundary-since → genuinely compacting")
+            self.assertFalse(km._compacting(SID, "working", genuine, NOW, SINCE),
+                             "tmux not compacting + no optimistic flag → not compacting")
+        finally:
+            km._downtime = saved
+
     def test_feed_working_list_follows_the_open_turn_not_tmux(self):
         # The working DOT (feed["working"], read by every surface) must follow the event model, NOT tmux: an
         # open turn is working even when tmux reads idle, and an ended turn is NOT working even when tmux reads
