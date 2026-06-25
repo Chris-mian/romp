@@ -25,6 +25,13 @@ test("⏎ and the send button share ONE sendComposer() path", () => {
   assert.match(RENDER, /sendBtn\?\.addEventListener\("mousedown", \(e\) => \{ e\.preventDefault\(\); sendComposer\(\); ta\.focus\(\); \}\)/);
 });
 
+test("⏎ jumps focus to the tab bar after sending so ←/→ switch sessions (the user 2026-06-25)", () => {
+  // after the Enter-send, focusActiveTab() moves focus off the composer onto the active tab, so the next
+  // ←/→ hits onTabKey (tab switch) instead of the textarea caret. The send BUTTON keeps composer focus.
+  assert.match(RENDER, /sendComposer\(\);\s*focusActiveTab\(\);/);
+  assert.match(RENDER, /function focusActiveTab\(\)/);
+});
+
 test("the send button is disabled on a closed (read-only) session", () => {
   assert.match(RENDER, /if \(sendBtn\) sendBtn\.disabled = closed/);
 });

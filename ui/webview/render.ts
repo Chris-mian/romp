@@ -3850,6 +3850,9 @@ function setupComposer() {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       sendComposer();
+      focusActiveTab();   // jump focus to the tab bar after sending (the user 2026-06-25) so ←/→ switch
+                          // sessions right away — the composer (a textarea) would otherwise keep the arrows
+                          // for its caret. (The explicit send BUTTON keeps composer focus for continued typing.)
     }
   });
   ta.addEventListener("input", () => growComposer(ta));
