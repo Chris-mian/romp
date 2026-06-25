@@ -185,8 +185,15 @@ def main() -> None:
     chrome = find_chrome()
     render(chrome, OUT)                                    # README hero (flat #0e1116)
     MEDIA_OUT.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(OUT, MEDIA_OUT)                        # dashboard uses the same wordmark
-    print("copied", MEDIA_OUT.relative_to(HERE.parent.parent))
+    shutil.copyfile(OUT, MEDIA_OUT)
+    # The dashboard's inbox-zero state recolors the flat #0e1116 bg (AND the bg-coloured erosion strokes that
+    # thin the letters — same colour, so they recolour together) to the feed pane's gray #1e1e1e, so the mark
+    # blends into the pane instead of sitting on a black rectangle (the user 2026-06-25). True transparency
+    # can't work here: the letters are thinned by a BG-coloured text-stroke, so a transparent bg would expose
+    # dark outlines. Needs ImageMagick (`magick`) on PATH, like the README's Chrome dependency above.
+    subprocess.run(["magick", str(MEDIA_OUT), "-fuzz", "15%", "-fill", "#1e1e1e",
+                    "-opaque", "#0e1116", str(MEDIA_OUT)], check=True)
+    print("recoloured", MEDIA_OUT.relative_to(HERE.parent.parent), "bg #0e1116 → pane gray #1e1e1e")
 
 
 if __name__ == "__main__":

@@ -16,8 +16,8 @@ const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "
 test("the inbox-zero state shows the romp tri-color wordmark, centered (no otters, no emoji)", () => {
   assert.match(CSS, /\.feed-empty \{[^}]*background-image: url\(\.\.\/media\/romp-wordmark\.png\)/);
   assert.match(CSS, /\.feed-empty \{[^}]*background-position: center center/);
-  assert.match(CSS, /\.feed-empty \{[^}]*background-size: min\(420px, 66%\) auto/);
-  assert.match(CSS, /\.feed-empty \{[^}]*opacity: 0\.7/, "the at-rest wordmark is faded to 70% (the user 2026-06-22)");
+  assert.match(CSS, /\.feed-empty \{[^}]*background-size: 100% auto/, "stretched to the full pane width (the user 2026-06-25)");
+  assert.match(CSS, /\.feed-empty \{[^}]*opacity: 0\.75/, "the at-rest wordmark is faded to 75% (the user 2026-06-25)");
   assert.doesNotMatch(CSS, /romp-otter/, "the otter image is gone");
   assert.doesNotMatch(FEED, /feed-empty"\); e\.textContent = "/, "the empty state must not set emoji/text on the logo");
   assert.match(FEED, /el\("div", "feed-empty"\)/);

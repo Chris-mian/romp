@@ -123,8 +123,10 @@ body { display: flex; flex-direction: column; }
   background-image: url(../media/romp-wordmark.png);
   background-repeat: no-repeat;
   background-position: center center;
-  background-size: min(420px, 66%) auto;   /* a centered logo, not an edge-to-edge banner */
-  opacity: 0.7;   /* faded — it's a calm at-rest mark, not something to read (the user 2026-06-22) */
+  /* stretched to the full pane width (the user 2026-06-25); the mark's bg is now the pane gray (#1e1e1e,
+     baked into the PNG by make_wordmark.py) so it blends in — no black band even edge-to-edge. */
+  background-size: 100% auto;
+  opacity: 0.75;   /* faded — a calm at-rest mark, not something to read (the user 2026-06-22 / -25) */
   user-select: none;
 }
 
