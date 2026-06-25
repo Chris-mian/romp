@@ -45,6 +45,14 @@ Prefer exact event-based mechanisms over time-based heuristics (grace periods,
 debounces, age thresholds). If a time window seems needed, find the event it is
 approximating and key on that event instead.
 
+### The accent color is light blue `#9cd2ff` — use `var(--accent)`
+The romp accent is light blue `#9cd2ff` (`--accent` in `ui/webview/styles.css`, with
+`--accent-fg: #0c1a2e` for text on it). Use it for accent/highlight chrome — selected
+toggles, in-progress loading dots, the Fleet pill, focus cues — anywhere you want "the
+romp blue." Do NOT use it for STATUS colors, which keep their own meaning: working =
+`--st-working-bg` (yellow), blocked/API-error = red, ready = `--st-ready-bg`, compacting =
+teal. New accent chrome should reference `var(--accent)`, never re-hardcode the hex.
+
 ### Buttons must stay click-safe across re-renders, and always acknowledge
 The dashboard re-renders on every kernel push (a 0.5–3s backstop, plus an
 immediate push per SDK stream event and per hook `/tick`). A control whose action

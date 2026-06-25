@@ -23,6 +23,7 @@ test("createSession uses the picked backend, falling back to the gear default", 
   assert.match(RENDER, /backend: beSel\?\.dataset\.be \|\| loadSettings\(\)\.backend/);
 });
 
-test("the toggle's selected option is styled like the working chip", () => {
-  assert.match(CSS, /\.picker-be-opt\.sel \{[^}]*background: var\(--st-working-bg\)/);
+test("the toggle's selected option is the romp ACCENT (the user 2026-06-24), not the working-yellow", () => {
+  assert.match(CSS, /\.picker-be-opt\.sel \{[^}]*background: var\(--accent\)/);
+  assert.doesNotMatch(CSS, /\.picker-be-opt\.sel \{[^}]*background: var\(--st-working-bg\)/);
 });
