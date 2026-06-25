@@ -65,14 +65,25 @@ test("recency colour is copied VERBATIM from render.ts (identical to the ledger 
   assert.match(SRC, /time\.style\.color = ageColorReadable\(dt\)/); // …in the shared colour
 });
 
-test("completed top goals hide by default; a 'Show completed' chip sits top-right (the user 2026-06-24)", () => {
+test("completed top goals hide by default; a 'Show completed' chip sits bottom-right (the user 2026-06-24)", () => {
   assert.match(SRC, /localStorage\.getItem\(DONE_KEY\) === "1"/);  // default OFF
   assert.match(SRC, /roots\.filter\(\(n\) => !n\.done && !n\.cleared\)/);
   assert.match(SRC, /createTextNode\("Show completed"\)/);
-  // it's a FLOATING top-right chip now (like the feed's gear), not a footer bar; the old #fleet-foot is hidden
-  assert.match(SRC, /function mountTopChip\(\)/);
-  assert.match(SRC, /position:fixed;top:7px;right:10px/);
+  // it's a FLOATING BOTTOM-right chip now, matching the feed's bottom-right controls; the old #fleet-foot is hidden
+  assert.match(SRC, /function mountChip\(\)/);
+  assert.match(SRC, /position:fixed;bottom:8px;right:10px/);
   assert.match(SRC, /foot\.style\.display = "none"/);
+});
+
+test("Fleet restores the ledger box's per-node mark TOOLTIP (the user 2026-06-24)", () => {
+  // the checkbox explains WHY it reads the way it does — explicit / inferred (roll-up vs roll-down) / dismissed
+  // / blocked / open — plus the full goal text on the row's text zone (it can clip in the narrow Fleet pane).
+  assert.match(SRC, /const markReason = \(\): string =>/);
+  assert.match(SRC, /"done — inferred: every sub-step is complete"/);
+  assert.match(SRC, /"done — inferred: a parent goal was checked off"/);
+  assert.match(SRC, /"completed, then dismissed \(cleared\)"/);
+  assert.match(SRC, /mark\.title = markReason\(\);/);
+  assert.match(SRC, /txt\.title = n\.text;/);
 });
 
 test("a node/header click opens that session AND flips back to chat (the user 2026-06-24)", () => {

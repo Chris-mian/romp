@@ -195,8 +195,26 @@ function render() {
       // session (row data-act=open); these zones carry no data-act, so a click on them bubbles up to it.
       const mark = el("span", "ledger-tmark lz-nav");
       mark.textContent = n.done ? "✓" : n.blocked ? "⏸" : "";   // open = a hollow CSS ring (no glyph)
+      // restore the ledger box's mark TOOLTIP (the user 2026-06-24): the checkbox leads with WHY it reads the
+      // way it does — explicit vs inferred (roll-up = every sub-step done, roll-down = a resolved parent) vs
+      // dismissed vs blocked vs open — worked out from the children the render already has (no kernel round-trip).
+      const markReason = (): string => {
+        if (!n.done) return n.blocked ? "blocked — needs you" : "not yet done";
+        if (n.cleared) {
+          if (n.summary && n.summary.trim()) return "completed, then dismissed (cleared)";
+          if (n.blockSummary && n.blockSummary.trim()) return "blocked, then dismissed (cleared)";
+          return "dismissed — cleared, never judged done";
+        }
+        if (!n.derived) return "done — explicitly checked off";
+        const kids = (n.children || []).map((id) => byId.get(id)).filter(Boolean) as LedgerNode[];
+        return (kids.length > 0 && kids.every((k) => k.done))
+          ? "done — inferred: every sub-step is complete"
+          : "done — inferred: a parent goal was checked off";
+      };
+      mark.title = markReason();
       const txt = el("span", "ledger-ttext lz-nav");
       txt.textContent = n.text;
+      txt.title = n.text;            // the full goal text on hover (it can wrap/clip in the narrow Fleet pane)
       // ⊕ distiller-summary expander (parity with the ledger box): the takeaway (done) / decision brief
       // (blocked) on its own line. data-act=sum so the #fleet-list delegate toggles it instead of opening the
       // session; state in sumOpen, keyed per session+node so each row remembers independently.
@@ -246,16 +264,16 @@ function render() {
   }
 }
 
-// "Show completed" sits as a small FLOATING chip at the top-right of the Fleet view, the way the feed's
-// gear has its own little control (the user 2026-06-24) — not a footer bar. (The way BACK to chat is the
-// strip's "Chat" toggle in the shell, visible beside the Fleet iframe, so no footer "← Chat" is needed.)
-function mountTopChip() {
+// "Show completed" sits as a small FLOATING chip at the BOTTOM-right of the Fleet view (the user 2026-06-24),
+// matching the feed's own bottom-right controls so the two panes are consistent — not a footer bar. (The way
+// BACK to chat is the rail's "Chat" toggle in the shell, so no footer "← Chat" is needed.)
+function mountChip() {
   const foot = document.getElementById("fleet-foot");
   if (foot) foot.style.display = "none";                 // the old footer bar is gone
   if (document.getElementById("fl-showdone")) return;    // mount once
   const lbl = el("label", "fl-showdone") as HTMLLabelElement;
   lbl.id = "fl-showdone";
-  lbl.style.cssText = "position:fixed;top:7px;right:10px;z-index:20;display:inline-flex;align-items:center;gap:6px;"
+  lbl.style.cssText = "position:fixed;bottom:8px;right:10px;z-index:20;display:inline-flex;align-items:center;gap:6px;"
     + "cursor:pointer;user-select:none;font-size:11.5px;color:var(--vscode-descriptionForeground,#9a9a9a);"
     + "background:rgba(40,40,42,0.92);border:1px solid rgba(255,255,255,0.12);border-radius:6px;padding:3px 9px";
   const cb = document.createElement("input");
@@ -308,7 +326,7 @@ window.addEventListener("storage", (e: StorageEvent) => { if (e.key === "romp:se
   });
 })();
 
-mountTopChip();
+mountChip();
 render();
 vscodeApi?.postMessage({ type: "ready" });   // ask the kernel to push the initial fleet state (like feed/timeline)
 

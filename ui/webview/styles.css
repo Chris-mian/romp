@@ -277,6 +277,10 @@ body { display: flex; flex-direction: column; }
    top goal gets none. */
 .ledger-tnode.ledger-top { border-top: 1px solid var(--box-border); margin-top: 9px; padding-top: 6px; }
 .ledger-tree > .ledger-tnode.ledger-top:first-child { border-top: 0; margin-top: 0; padding-top: 0; }
+/* The Fleet view drops the separator LINE between goals (the user 2026-06-24) — it read as a stray border
+   from the highlight machinery; keep a small gap so goals still read apart. Scoped to #fleet-list so the
+   chat tab-hover tooltip (also .ledger-*) keeps its separators. */
+#fleet-list .ledger-tnode.ledger-top { border-top: 0; padding-top: 0; margin-top: 8px; }
 /* every mark is the SAME 13px disc (the user 2026-06-16): not-done = hollow ring, done = blue ✓ disc,
    blocked = red ⏸ ring. ✓/⏸ are the mark's own text; the ring is pure CSS. The CURRENT/active node gets
    NO special mark — its checkbox is IDENTICAL to every other item; only the ROW is highlighted (the user
