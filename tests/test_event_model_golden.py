@@ -737,6 +737,24 @@ class SafeDefault(unittest.TestCase):
         self.assertIn("sibling parent ask", texts, "explicit candidate_files enables cross-file resume")
 
 
+class WaitingStopClosesTheTurn(unittest.TestCase):
+    """The tmux Stop hook writes state:"waiting" when the agent hands the floor back; it must terminate the
+    turn the SAME as the later idle-prompt's state:"idle". Keying only on "idle" left a finished session
+    whose last assistant message wasn't a clean end_turn (e.g. it ended on a tool_use) stuck reading
+    "working" from Stop until the idle-prompt eventually landed (the user 2026-06-25, "reverting working")."""
+    ATOMS = [{"t": 100, "session_id": "s"}, {"t": 200, "end": 200, "session_id": "s"}]
+
+    def test_a_waiting_state_synthesizes_an_idle_atom_like_idle(self):
+        out = em.synthesize_idle([{"t": 210, "state": "waiting"}], self.ATOMS, now=300)
+        self.assertEqual([(a["type"], a["t"], a["end"]) for a in out], [("idle", 210, 300)])
+        # ...exactly as a real idle-prompt "idle" record does
+        self.assertEqual(em.synthesize_idle([{"t": 210, "state": "idle"}], self.ATOMS, now=300)[0]["type"], "idle")
+
+    def test_working_never_synthesizes_an_idle_atom(self):
+        self.assertEqual(em.synthesize_idle([{"t": 210, "state": "working"}], self.ATOMS, now=300), [])
+        self.assertEqual(em._IDLE_STATES, ("idle", "waiting"))
+
+
 def regen():
     GOLDEN.mkdir(parents=True, exist_ok=True)
     for name in ALL_SCENARIOS:

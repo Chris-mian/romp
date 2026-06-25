@@ -414,10 +414,18 @@ class FileAdapter:
         return out
 
 
+# A session is NOT working once it has STOPPED: the tmux hook writes state:"waiting" on the Stop event (the
+# agent handed the floor back) and state:"idle" on the idle-prompt later. Both terminate the turn — keying
+# only on "idle" left a finished session whose last assistant message wasn't a clean end_turn (e.g. it ended
+# on a tool_use) stuck reading "working" from Stop until the idle-prompt eventually landed (the user 2026-06-25,
+# "reverting working when stuff isn't working"). Event-based, not a grace timer.
+_IDLE_STATES = ("idle", "waiting")
+
+
 def synthesize_idle(states, atoms, now):
-    """Idle atoms from real idle transitions in states/<sid>.jsonl — NOT a 15-minute
-    silence heuristic. An idle span runs from a `state:"idle"` record to the next
-    state record (or to `now` if it is the last). Only spans overlapping the session's
+    """Idle atoms from real idle/stopped transitions in states/<sid>.jsonl — NOT a 15-minute silence
+    heuristic. An idle span runs from an `state` in _IDLE_STATES (the Stop "waiting" or the idle-prompt
+    "idle") to the next state record (or to `now` if it is the last). Only spans overlapping the session's
     atom timespan are kept, so unrelated history doesn't leak in."""
     rows = sorted([r for r in states if isinstance(r, dict) and r.get("t") is not None],
                   key=lambda r: r["t"])
@@ -427,7 +435,7 @@ def synthesize_idle(states, atoms, now):
     hi = max(a.get("end", a["t"]) for a in atoms)
     out = []
     for i, r in enumerate(rows):
-        if r.get("state") != "idle":
+        if r.get("state") not in _IDLE_STATES:
             continue
         start = r["t"]
         end = rows[i + 1]["t"] if i + 1 < len(rows) else (now if now is not None else hi)
