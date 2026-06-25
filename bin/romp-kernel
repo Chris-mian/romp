@@ -2573,13 +2573,21 @@ def _tmux_echo_prune(sid, tx_uuids, tx_texts):
         _tmux_echo.pop(sid, None)
 
 
-def _merge_live_atoms(session, sid):
+def _merge_live_atoms(session, sid, shown_texts=()):
     """Merge in-memory LIVE-TAIL atoms into the parsed session, AHEAD of the transcript on disk, so messages
     appear instantly (the stream / a composer send leads the disk write). NON-MUTATING — `session` is the
     _parse cache, so this returns a shallow copy with the last turn's atoms extended. Two sources: the SDK
     backend's _live (stream + its own input echo) for SDK sids, and the kernel-side tmux input echo
     (_tmux_echo) for tmux sids. Dedup: drop any live atom the transcript already has, by uuid (stream
-    messages: SDK uuid == transcript uuid) or by text (an optimistic input echo carries a synthetic uuid)."""
+    messages: SDK uuid == transcript uuid) or by text (an optimistic input echo carries a synthetic uuid).
+
+    `shown_texts` are messages ALREADY surfaced by another path this build — the kind:"queued" indicator
+    (_pending_queued / the SDK queue), which shows a send that's queued behind a busy turn. An input echo
+    whose text is queued is SUPPRESSED from display so it doesn't double-show alongside the queued bubble;
+    the event-based queued indicator owns that case. The echo is only HIDDEN, not pruned — once the message
+    leaves the queue and its real user atom lands, the normal text-prune retires the echo. So the echo only
+    ever shows a NON-queued send: the brief gap before an idle send's real atom lands, and a DROPPED send
+    that never reached the queue or the transcript (the visibility win — the user 2026-06-25)."""
     be = _sdk()
     sdk_owns = bool(be and be.owns(sid))
     live = be.live_atoms(sid) if sdk_owns else _tmux_echo_atoms(sid)
@@ -2591,8 +2599,9 @@ def _merge_live_atoms(session, sid):
         be.prune_live(sid, tx_uuids, tx_texts)
     else:
         _tmux_echo_prune(sid, tx_uuids, tx_texts)
+    hide = tx_texts | {t.strip() for t in shown_texts if t}    # transcript dups + already-shown queued msgs
     fresh = [a for a in live if a.get("uuid") not in tx_uuids
-             and not (a.get("_echo_text") and a["_echo_text"] in tx_texts)]
+             and not (a.get("_echo_text") and a["_echo_text"].strip() in hide)]
     if not fresh:
         return session
     turns = [dict(t) for t in session["turns"]]
@@ -2639,7 +2648,17 @@ def build_session(sid, now, tmux=None):
             sess = _sdk_sess(sid, now)
     if not sess:
         return None
-    session = _merge_live_atoms(_parse(sess["path"], sid, now), sid)
+    # Messages QUEUED in the TUI (submitted while busy/compacting) — folded EVENT-BASED from the
+    # transcript's queue-operation records (tmux) or the SDK's in-memory queue (pending_queued). Computed
+    # HERE, before the live-atom merge, so the optimistic input echo can SUPPRESS any text already shown as
+    # queued — the event-based queued indicator owns that case, so no double-show. The kind:"queued" event
+    # itself is appended at the bottom later. hasattr-guarded so it degrades to [] on an older SDK backend.
+    _be = _sdk()
+    if _be and _be.owns(sid) and hasattr(_be, "pending_queued"):
+        queued = _be.pending_queued(sid)
+    else:
+        queued = _pending_queued(sess["path"])
+    session = _merge_live_atoms(_parse(sess["path"], sid, now), sid, shown_texts=queued)
     caps = _captions(sid)
     events, by_tool = [], {}                  # by_tool: tool_use_id → its tool event (fill output later)
     uuid2seg, seg_anchors = {}, {}            # atom uuid → seg id; seg id → (promptId, workId) for the dot/bar split
@@ -2742,18 +2761,10 @@ def build_session(sid, now, tmux=None):
     todo = _fold_tasks(session)
     if todo and any(t["status"] not in ("completed", "cancelled") for t in todo):
         events.append({"kind": "todo", "tasks": todo})
-    # Messages QUEUED in the TUI (submitted while busy/compacting) — folded EVENT-BASED from the
-    # transcript's queue-operation records (_pending_queued), so any number show in submission order.
-    # Append last (at the bottom, by the composer, like the old TS kernel) so they're visible instead of
-    # vanishing (the user 2026-06-15; pane-scrape dropped a 2nd queued message → both vanished, 2026-06-16).
-    # The TUI/tmux path reads the transcript's queue-operation records; an SDK session keeps its queue in
-    # MEMORY (no such record), so ask the backend directly via pending_queued (business 2026-06-23). hasattr-
-    # guarded so it degrades cleanly to [] if the running SDK backend predates the method.
-    _be = _sdk()
-    if _be and _be.owns(sid) and hasattr(_be, "pending_queued"):
-        queued = _be.pending_queued(sid)
-    else:
-        queued = _pending_queued(sess["path"])
+    # The queued indicator (computed above, before the live merge) appends LAST — at the bottom by the
+    # composer, like the old TS kernel — so it's visible instead of vanishing (the user 2026-06-15;
+    # pane-scrape dropped a 2nd queued message → both vanished, 2026-06-16). The matching input echo (if any)
+    # was suppressed at merge time, so a queued message shows exactly once, here.
     if queued:
         events.append({"kind": "queued", "texts": queued})
     # WORKING from the event model (open turn, no idle atom) — the one shared signal. Computed up here so the

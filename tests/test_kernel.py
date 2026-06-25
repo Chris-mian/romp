@@ -3589,6 +3589,23 @@ class TmuxInputEcho(unittest.TestCase):
         sess = self._session([self._real_user("hello")])
         self.assertIs(km._merge_live_atoms(sess, SID), sess, "no live echo → session returned unchanged")
 
+    def test_echo_suppressed_when_its_text_is_already_shown_as_queued(self):
+        # No double-show: a send that's QUEUED behind a busy turn is surfaced by the event-based
+        # kind:"queued" indicator. The echo for that same text must be hidden so it doesn't render twice.
+        text = "do the thing while you're busy"
+        km._tmux_echo_add(SID, text)
+        merged = km._merge_live_atoms(self._session([]), SID, shown_texts=[text])
+        texts = [km._atom_user_text(a) for a in merged["turns"][-1]["atoms"]]
+        self.assertNotIn(text, texts, "a queued message is owned by the queued indicator, not double-shown by the echo")
+        self.assertIn(SID, km._tmux_echo, "the echo is only HIDDEN while queued, not pruned — it retires when the real atom lands")
+
+    def test_queued_suppression_strips_whitespace(self):
+        # _pending_queued .strip()s its texts; the echo stores the raw composer text. Match on stripped text.
+        km._tmux_echo_add(SID, "padded message\n")
+        merged = km._merge_live_atoms(self._session([]), SID, shown_texts=["padded message"])
+        texts = [km._atom_user_text(a) for a in merged["turns"][-1]["atoms"]]
+        self.assertNotIn("padded message", texts, "stripped-text match suppresses the echo against the queued bubble")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
