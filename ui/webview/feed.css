@@ -128,7 +128,12 @@ body { display: flex; flex-direction: column; }
   background-size: 100% auto;
   opacity: 0.75;   /* faded — a calm at-rest mark, not something to read (the user 2026-06-22 / -25) */
   user-select: none;
+  /* fade the mark in from the (black) empty pane over 1s when the feed goes to inbox-zero (the user
+     2026-06-25). feed.ts mints .feed-empty ONCE on the cards→empty transition, so this plays once, not on
+     every push. */
+  animation: feed-empty-in 1s ease both;
 }
+@keyframes feed-empty-in { from { opacity: 0; } to { opacity: 0.75; } }
 
 /* ---------- two columns: Done (left) | In progress (right) ---------- */
 .feed-cols { display: flex; align-items: flex-start; gap: 12px; }

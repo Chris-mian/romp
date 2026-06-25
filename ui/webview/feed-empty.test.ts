@@ -33,6 +33,14 @@ test("the wordmark ships in the served + packaged media dir; the otter is gone",
   assert.ok(!fs.existsSync(path.resolve(process.cwd(), "media", "romp-otter.png")), "the otter image was deleted (the user 2026-06-15)");
 });
 
+test("the wordmark fades in over 1s on the cards→empty transition, and only ONCE (the user 2026-06-25)", () => {
+  // a 1s opacity fade from the (black) empty pane to the at-rest 0.75
+  assert.match(CSS, /@keyframes feed-empty-in \{ from \{ opacity: 0; \} to \{ opacity: 0\.75; \} \}/);
+  assert.match(CSS, /\.feed-empty \{[\s\S]*?animation: feed-empty-in 1s/);
+  // minted ONCE (idempotent) so it doesn't re-fade on the 0.5s push cadence while the feed stays empty
+  assert.match(FEED, /if \(!list\.querySelector\(".feed-empty"\)\) \{/);
+});
+
 test("an EMPTY column shows nothing — no '—' placeholder, and the count chip is blank not '0' (the user 2026-06-25)", () => {
   // the per-column "—" empty placeholder is gone entirely (reconcileCol no longer appends it)
   assert.doesNotMatch(FEED, /feed-col-empty.*textContent = "—"/);

@@ -1696,13 +1696,17 @@ function render() {
   if (foot) foot.style.display = (showCA || canUndoClear) ? "" : "none";
 
   if (!asks.length && !standalone.length) {
-    list.innerHTML = ""; askEls.clear(); groupEls.clear(); cardEls.clear();
-    // inbox zero → the romp otters (media/romp-otter.png, a CSS background) instead of
-    // words (the user 2026-06-13). role/aria-label + title keep the meaning for hover /
-    // screen readers, since a background image carries no accessible text of its own.
-    const e = el("div", "feed-empty"); e.title = "All tasks complete";
-    e.setAttribute("role", "img"); e.setAttribute("aria-label", "All tasks complete");
-    list.appendChild(e);
+    askEls.clear(); groupEls.clear(); cardEls.clear();
+    // inbox zero → the romp wordmark (a CSS background). role/aria-label + title keep the meaning for hover /
+    // screen readers, since a background image carries no accessible text. Created ONCE (idempotent): on the
+    // transition from cards→empty we mint it (its CSS fade-in plays once, the user 2026-06-25), and every
+    // subsequent empty push leaves it in place so the logo doesn't re-fade on the 0.5s cadence.
+    if (!list.querySelector(".feed-empty")) {
+      list.innerHTML = "";
+      const e = el("div", "feed-empty"); e.title = "All tasks complete";
+      e.setAttribute("role", "img"); e.setAttribute("aria-label", "All tasks complete");
+      list.appendChild(e);
+    }
     return;
   }
 
