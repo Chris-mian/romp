@@ -1103,17 +1103,22 @@ class ViewBuilder(unittest.TestCase):
                          last=g, closed=closed)
         return g
 
-    def test_auto_nudge_fires_once_for_an_idle_session_with_a_working_goal(self):
+    def test_auto_nudge_fires_at_most_twice_per_turn(self):
+        # the user 2026-06-25: keep nudging until blocked/completed, but at most TWO nudges per turn — a single
+        # stall turn fires once, then a second time, then never again (the cap that bounds a same-turn loop).
         g = self._orphaned_goal(idle=True)
         km._set_auto_nudge(True)
         sent, restore = self._stub_nudge()
         try:
             km._auto_nudge_tick(NOW, km._tmux_sessions())
-            self.assertEqual(len(sent), 1, "the orphaned working goal is nudged once")
+            self.assertEqual(len(sent), 1, "first nudge on the stall turn")
             self.assertIn("romp-goal-id: " + g, sent[0][1], "the follow-up targets that goal")
             self.assertIn(km.AUTO_NUDGE_TEXT, sent[0][1])         # carries the nudge prompt verbatim
-            km._auto_nudge_tick(NOW, km._tmux_sessions())          # SAME stall turn → no re-nudge
-            self.assertEqual(len(sent), 1, "no re-nudge on the same stall turn")
+            km._auto_nudge_tick(NOW, km._tmux_sessions())          # SAME turn → a SECOND nudge is allowed
+            self.assertEqual(len(sent), 2, "a second nudge on the same turn (two per turn)")
+            self.assertEqual(km._auto_nudge_data()["nudged"][g]["turnCount"], 2)
+            km._auto_nudge_tick(NOW, km._tmux_sessions())          # SAME turn again → capped
+            self.assertEqual(len(sent), 2, "no third nudge on the same turn — two per turn max")
         finally:
             restore()
 
@@ -1129,8 +1134,8 @@ class ViewBuilder(unittest.TestCase):
         return g
 
     def test_auto_nudge_re_arms_on_a_new_genuine_stall_turn(self):
-        # the user 2026-06-22: ONE nudge per STALL EPISODE, not once ever. The same turn never re-fires; a NEW
-        # genuine (human) ended turn that leaves the goal working re-arms it, count climbing.
+        # a NEW genuine ended turn that leaves the goal working re-arms the nudge (turnCount resets to 1), the
+        # total count climbing each fire (the user 2026-06-22, 2026-06-25).
         base = [uline(T0, "a1", "u1", ps="typed"), aline(T0 + 10, "d1", "a1", "u1", stop="end_turn"),
                 uline(T0 + 100, "a2", "u2", "a1", ps="typed"), aline(T0 + 110, "d2", "a2", "u2", stop="end_turn")]
         g = self._stall_transcript(base)
@@ -1140,13 +1145,13 @@ class ViewBuilder(unittest.TestCase):
             km._auto_nudge_tick(NOW, km._tmux_sessions())
             self.assertEqual(len(sent), 1, "first stall → nudged")
             self.assertEqual(km._auto_nudge_data()["nudged"][g]["count"], 1)
-            km._auto_nudge_tick(NOW, km._tmux_sessions())                 # same turn → no re-fire
-            self.assertEqual(len(sent), 1, "same stall turn does not re-arm")
+            self.assertEqual(km._auto_nudge_data()["nudged"][g]["turnCount"], 1)
             self._stall_transcript(base + [uline(T0 + 200, "a3", "u3", "a2", ps="typed"),
                                            aline(T0 + 210, "d3", "a3", "u3", stop="end_turn")])   # NEW genuine turn
             km._auto_nudge_tick(NOW, km._tmux_sessions())
             self.assertEqual(len(sent), 2, "a new genuine stall turn re-arms the nudge")
-            self.assertEqual(km._auto_nudge_data()["nudged"][g]["count"], 2, "count climbs each fire")
+            self.assertEqual(km._auto_nudge_data()["nudged"][g]["count"], 2, "total count climbs each fire")
+            self.assertEqual(km._auto_nudge_data()["nudged"][g]["turnCount"], 1, "turnCount resets on the new turn")
         finally:
             restore()
 
@@ -1174,9 +1179,10 @@ class ViewBuilder(unittest.TestCase):
             except OSError:
                 pass
 
-    def test_auto_nudge_does_not_re_arm_on_its_own_nudge_response(self):
-        # re-fire only on GENUINE turns: a romp-injected (nudge-response) latest turn must NOT re-arm, else a
-        # nudge→response→nudge tight loop (the user via business 2026-06-22).
+    def test_auto_nudge_re_arms_on_a_nudge_response_that_stays_working(self):
+        # the user 2026-06-25: keep nudging UNTIL blocked/completed — so the agent's OWN nudge-response turn,
+        # if it ends still-working, re-arms too (it's a new turn id). This replaces the prior "don't re-arm on
+        # a nudge-response" rule; the two-per-turn cap (tested above) is what now bounds the loop.
         base = [uline(T0, "a1", "u1", ps="typed"), aline(T0 + 10, "d1", "a1", "u1", stop="end_turn")]
         g = self._stall_transcript(base)
         km._set_auto_nudge(True)
@@ -1188,7 +1194,7 @@ class ViewBuilder(unittest.TestCase):
             self._stall_transcript(base + [uline(T0 + 100, nudge, "u2", "a1", ps="typed"),
                                            aline(T0 + 110, "still working", "a2", "u2", stop="end_turn")])
             km._auto_nudge_tick(NOW, km._tmux_sessions())
-            self.assertEqual(len(sent), 1, "no re-nudge on the agent's own nudge-response (romp-injected) turn")
+            self.assertEqual(len(sent), 2, "a nudge-response that stays working re-arms — keep nudging til resolved")
         finally:
             restore()
 
@@ -1308,13 +1314,18 @@ class ViewBuilder(unittest.TestCase):
         self.assertFalse(km._auto_nudge_on(), "off by default")
         km._set_auto_nudge(True); self.assertTrue(km._auto_nudge_on())
         km._mark_auto_nudged(SID + ":g1", "turn-A", 1)
-        self.assertEqual(km._auto_nudge_data()["nudged"][SID + ":g1"], {"count": 1, "lastTurnId": "turn-A"})
+        self.assertEqual(km._auto_nudge_data()["nudged"][SID + ":g1"],
+                         {"count": 1, "lastTurnId": "turn-A", "turnCount": 1})
+        km._mark_auto_nudged(SID + ":g1", "turn-A", 2)   # SAME turn → turnCount climbs (toward the 2-per-turn cap)
+        self.assertEqual(km._auto_nudge_data()["nudged"][SID + ":g1"],
+                         {"count": 2, "lastTurnId": "turn-A", "turnCount": 2})
         km._set_auto_nudge(False)
         self.assertFalse(km._auto_nudge_on())
         self.assertEqual(km._auto_nudge_data()["nudged"][SID + ":g1"]["lastTurnId"], "turn-A",
                          "toggling off keeps the per-goal re-arm record")
-        km._mark_auto_nudged(SID + ":g1", "turn-B", 2)   # re-nudge on a NEW turn → count climbs, turn advances
-        self.assertEqual(km._auto_nudge_data()["nudged"][SID + ":g1"], {"count": 2, "lastTurnId": "turn-B"})
+        km._mark_auto_nudged(SID + ":g1", "turn-B", 3)   # NEW turn → count climbs, turn advances, turnCount resets
+        self.assertEqual(km._auto_nudge_data()["nudged"][SID + ":g1"],
+                         {"count": 3, "lastTurnId": "turn-B", "turnCount": 1})
 
     def test_auto_nudge_turn_id_comes_from_the_closer_states_aware_parse(self):
         # the user 2026-06-22 (obsidian): the closer parses WITH states (idle atoms) and writes THAT turn id to

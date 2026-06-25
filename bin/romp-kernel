@@ -641,10 +641,12 @@ def _set_session_flag(sid, flag, value):
 # When ON, a background pass follows up on an ORPHANED goal: a session that is ALIVE but went IDLE (its
 # turn ended) while its top goal still shows "working" — not blocked, not completed, not awaiting your
 # approval, and not delegated to anyone. It sends the SAME follow-up the manual Nudge button does, RE-ARMING
-# per stall episode: nudged again once a NEW ended turn leaves the goal working, count climbing each fire (so
-# a goal that won't resolve escalates rather than going silent after one nudge — the user 2026-06-22). Off by
-# default. State: auto-nudge.json {"enabled": bool, "nudged": {goalId: {count, lastTurnId}}}; each fire also
-# appends {sid,gid,t,count} to nudge-events.jsonl for the timeline's ⚡ marker.
+# until the goal is blocked/completed, capped at TWO nudges per turn (the user 2026-06-25): a NEW ended turn
+# (including the agent's own nudge-response that ends still-working) re-arms, and any single turn is nudged at
+# most twice — so a goal that won't resolve keeps escalating across turns (count climbing) rather than going
+# silent after one nudge, without an unbounded same-turn loop. Off by default. State: auto-nudge.json
+# {"enabled": bool, "nudged": {goalId: {count, lastTurnId, turnCount}}}; each fire also appends
+# {sid,gid,t,count} to nudge-events.jsonl for the timeline's ⚡ marker.
 AUTO_NUDGE_TEXT = "Status on the goal above: what's done, what's left, and is anything blocked waiting on a decision from me?"   # mirrors the feed Nudge button (ui/webview/feed.ts)
 _autonudge_cache = {}   # str(path) -> ((mtime_ns,size), dict)
 
@@ -687,13 +689,16 @@ def _set_auto_nudge(enabled):
 
 
 def _mark_auto_nudged(gid, turn_id, count):
-    """Record that `gid` was nudged on its CURRENT stall turn: {count, lastTurnId}. The tick re-arms (nudges
-    again) only once a NEW ended turn leaves the goal working (lastTurnId differs) — one nudge per stall
-    episode, not one ever. Bounded to the most-recently-nudged goals."""
+    """Record an auto-nudge of `gid`: {count, lastTurnId, turnCount}. `count` is the TOTAL fired (the climbing
+    escalation alert); `turnCount` is how many have fired on THIS turn id. The tick caps it at TWO per turn
+    (the user 2026-06-25) and resets turnCount to 1 on any new turn — so a goal keeps getting nudged across
+    turns until it's blocked/completed, but a single turn is nudged at most twice. Bounded to recent goals."""
     d = dict(_auto_nudge_data())
     nudged = dict(d.get("nudged", {}))
+    prev = nudged.get(gid) or {}
+    turn_count = (prev.get("turnCount", 0) + 1) if prev.get("lastTurnId") == turn_id else 1
     nudged.pop(gid, None)
-    nudged[gid] = {"count": count, "lastTurnId": turn_id}   # reinsert at the end → most-recently-nudged
+    nudged[gid] = {"count": count, "lastTurnId": turn_id, "turnCount": turn_count}   # reinsert → most-recent
     if len(nudged) > 3000:                                  # bounded; drop the oldest
         nudged = dict(list(nudged.items())[-3000:])
     d["nudged"] = nudged
@@ -893,10 +898,12 @@ def _auto_nudge_tick(now, tmux):
             continue                                     # in flight, not stalled (the user 2026-06-22); idle is True here
         lt_id = lt.get("id")
         rec = nudged.get(gid) or {}
-        if rec.get("lastTurnId") == lt_id:               # already nudged on THIS stall turn → re-arm needs a NEW turn
-            continue
-        if _turn_romp_injected(lt):                      # latest turn IS a romp nudge/inject (our own nudge-response) →
-            continue                                     # re-arm only on a GENUINE work/user turn (the user via business)
+        if rec.get("lastTurnId") == lt_id and rec.get("turnCount", 0) >= 2:
+            continue                                     # TWO nudges per turn MAX (the user 2026-06-25): a single
+            #   stall turn is nudged at most twice; a NEW turn re-arms (turnCount resets). The agent's OWN
+            #   nudge-response is a new turn, so if it ends still-working it re-arms too — that's what makes a
+            #   goal keep getting nudged across turns UNTIL it's blocked/completed (replacing the prior
+            #   one-per-turn + skip-nudge-responses rule), without an unbounded same-turn loop.
         # Don't nudge until the CLOSER has classified this turn. A turn that ENDS by asking you a question is
         # "working" only in the window before the closer marks its goal blocked; nudging the AGENT there is
         # pointless (it's waiting on YOU, not stalled) and churns. Gate on the closer having processed the
