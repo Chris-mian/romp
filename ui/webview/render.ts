@@ -129,7 +129,7 @@ let landTrail: string[] = [];
 // ⇒ no spacer, whole transcript rendered (short sessions, compact mode).
 // Invariant: turn children === (len − winStart); view.rendered === len (events
 // accounted), so DOM childNodes === (winStart>0 ? 1 : 0) + (len − winStart).
-interface View { el: HTMLElement; rendered: number; scrollTop: number; stick: boolean; shown: boolean; stale: boolean; winStart: number; avgTurnH?: number; }
+interface View { el: HTMLElement; rendered: number; scrollTop: number; stick: boolean; shown: boolean; stale: boolean; winStart: number; avgTurnH?: number; spacerCount?: number; }
 const views = new Map<string, View>();
 
 // Pending pickers (AskUserQuestion / tool-permission) keyed by session id. These
@@ -2314,6 +2314,7 @@ function renderWindow(v: View, s: Session, winStart: number, working: boolean): 
     v.el.appendChild(renderEvent(s.events[i], prevTimedEpoch(s.events, i), turnWorkedSecs(s.events, i, working)));
   }
   v.rendered = len;
+  v.spacerCount = winStart;   // normal path: one hidden turn per hidden event
   sizeSpacer(v);
 }
 
@@ -2330,14 +2331,17 @@ function expandWindow(v: View, s: Session, newStart: number, working: boolean): 
   const spacer = first && first.classList?.contains("tx-spacer") ? first : null;
   v.el.insertBefore(frag, spacer ? spacer.nextSibling : v.el.firstChild);
   v.winStart = newStart;
+  v.spacerCount = newStart;
   if (newStart <= 0) { if (spacer) v.el.removeChild(spacer); }
   else { if (!spacer) v.el.insertBefore(el("div", "tx-spacer"), v.el.firstChild); sizeSpacer(v); }
 }
 
-// Size the leading spacer to winStart × the average rendered turn height, so the scrollbar reflects the
-// whole (mostly un-rendered) transcript. avgTurnH is measured once off the tail and cached — the spacer
-// sits ABOVE the viewport during normal reading, so a per-turn estimate is invisible (expansion keeps the
-// viewport pinned via a scrollHeight-delta compensation), and caching keeps expansion O(chunk), not O(n²).
+// Size the leading spacer to (hidden-unit count) × the average rendered row height, so the scrollbar
+// reflects the whole (mostly un-rendered) transcript. The hidden-unit count is v.spacerCount: the number of
+// HIDDEN rendered rows the spacer stands for — winStart events in the normal path, or the folded display-
+// item count in compact (which differ, so it can't just be winStart). avgTurnH is measured once off the tail
+// and cached — the spacer sits ABOVE the viewport during normal reading, so a per-row estimate is invisible
+// (expansion keeps the viewport pinned via a scrollHeight-delta compensation), and caching keeps O(1).
 function sizeSpacer(v: View): void {
   const spacer = v.el.firstChild as HTMLElement | null;
   if (!spacer || !spacer.classList?.contains("tx-spacer")) return;
@@ -2350,7 +2354,7 @@ function sizeSpacer(v: View): void {
     for (let k = 1; k < v.el.children.length; k++) h += (v.el.children[k] as HTMLElement).offsetHeight;
     if (h > 0 && turns > 0) v.avgTurnH = h / turns;
   }
-  spacer.style.height = Math.max(0, Math.round(v.winStart * (v.avgTurnH ?? 60))) + "px";
+  spacer.style.height = Math.max(0, Math.round((v.spacerCount ?? v.winStart) * (v.avgTurnH ?? 60))) + "px";
 }
 
 // Compact-mode full rebuild: drop thinking, fold consecutive tool runs to a summary line, then walk
@@ -2364,11 +2368,25 @@ function rebuildCompact(v: View, s: Session, working: boolean): void {
   // toggle (which sets `stale` before repainting). Mirrors the normal path's incremental skip.
   if (v.rendered === s.events.length && !v.stale && v.el.childNodes.length > 0) return;
   while (v.el.firstChild) v.el.removeChild(v.el.firstChild);
+  const len = s.events.length;
+  // Tail-window the COMPACT stream too (the user 2026-06-25: a 7128-event session in compact mode rendered
+  // 4144 folded turns / 43k nodes, so every switch was slow). winStart is an EVENT index, same as the normal
+  // path, so the re-collapse-on-switch and the scroll-up expansion share it. A fresh build / rewind shows the
+  // tail; otherwise keep the user's scroll-up expansion.
+  const firstBuild = v.rendered === 0 || v.el.childNodes.length === 0;
+  const winStart = (firstBuild || len < v.rendered) ? Math.max(0, len - WINDOW_TAIL) : Math.max(0, Math.min(v.winStart, len - 1));
+  v.winStart = winStart;
   // pass tool names too, so a standalone tool (AskUserQuestion) renders first-class instead of collapsing
   const disp = compactDisplay(s.events.map((e) => e.kind), s.events.map((e) => e.kind === "tool" ? e.name : undefined));
-  let prevEpoch: number | null = null;
+  // Render only the display items that reach into [winStart, len) — a toolgroup is kept whole if its LAST
+  // event is in range. The hidden head folds into the leading spacer; prevEpoch seeds from the event before.
+  const lastIdx = (it: typeof disp[number]): number => it.kind === "toolgroup" ? it.indices[it.indices.length - 1] : it.index;
+  const firstShown = winStart > 0 ? disp.findIndex((it) => lastIdx(it) >= winStart) : 0;
+  const shown = firstShown <= 0 ? disp : disp.slice(firstShown);
+  if (firstShown > 0) v.el.appendChild(el("div", "tx-spacer"));
+  let prevEpoch: number | null = firstShown > 0 ? prevTimedEpoch(s.events, winStart) : null;
   const advance = (i: number) => { const ep = eventEpoch(s.events[i]); if (ep != null) prevEpoch = ep; };
-  for (const item of disp) {
+  for (const item of shown) {
     if (item.kind === "toolgroup") {
       const first = s.events[item.indices[0]];
       const key = toolGroupKey(first);
@@ -2394,8 +2412,9 @@ function rebuildCompact(v: View, s: Session, working: boolean): void {
     }
   }
   v.rendered = s.events.length;
-  v.winStart = 0;    // compact renders the whole stream (no tail-window / spacer)
+  v.spacerCount = firstShown > 0 ? firstShown : 0;   // hidden DISPLAY items the leading spacer stands for
   v.stale = false;   // freshly built for this event set → a later tab switch reuses it (see the guard above)
+  sizeSpacer(v);
 }
 
 // Stable identity for a collapsed tool run (survives rebuilds) = the first tool's uuid (else its epoch).
@@ -2448,7 +2467,7 @@ function toggleToolGroup(key: string): void {
 // next syncView rebuilds it via the right path, then repaint the active one.
 function rerenderAll(): void {
   cancelPrebuild(); // the queued plan is now stale (every view reset below) — re-warm after showActive
-  for (const v of views.values()) { while (v.el.firstChild) v.el.removeChild(v.el.firstChild); v.rendered = 0; v.stale = false; v.winStart = 0; v.avgTurnH = undefined; }
+  for (const v of views.values()) { while (v.el.firstChild) v.el.removeChild(v.el.firstChild); v.rendered = 0; v.stale = false; v.winStart = 0; v.avgTurnH = undefined; v.spacerCount = undefined; }
   showActive();
   schedulePrebuild(); // rebuild every off-screen view in idle under the new setting, so switches stay instant
 }
@@ -2613,15 +2632,16 @@ function showActive() {
   touchMru(activeId!); // record activation order so close returns to the previous tab
   const v = ensureView(activeId!);
   // Bound the switch. A view the user scrolled to the top of has had its window expanded to the WHOLE
-  // transcript (winStart crept to 0 via lazy-expand) — revealing thousands of nodes is the big-session
-  // switch lag (the user 2026-06-25: 4126 turns / 43k DOM nodes on a 7128-event session). Switching TO it
-  // with no deep-link pending, re-collapse to the tail window and land at the bottom (the usual intent on
-  // switch-back); scrolling up lazily reloads. Skip when a deep-link is pending (its target may be in the
-  // collapsed head) and in compact mode (rendered whole — capped in rebuildCompact instead). A small view
-  // (≤ cap) is left untouched → the no-op fast path reveals it instantly.
-  if (!pendingAnchor && pendingAnchorT == null && !settings.compact
+  // transcript (winStart crept to 0 via lazy-expand), and compact mode renders the whole folded stream —
+  // either way, revealing thousands of nodes is the big-session switch lag (the user 2026-06-25: 4144 turns
+  // / 43k DOM nodes on a 7157-event session in compact mode). Switching TO such a view with no deep-link
+  // pending, re-collapse to the tail window and land at the bottom (the usual intent on switch-back);
+  // scrolling up lazily reloads. Both render paths honour winStart, so this works in either mode. Skip when
+  // a deep-link is pending (its target may be in the collapsed head). A small view (≤ cap) is left untouched
+  // → the no-op fast path reveals it instantly.
+  if (!pendingAnchor && pendingAnchorT == null
       && v.el.querySelectorAll(".turn").length > WINDOW_CAP) {
-    v.rendered = 0; v.winStart = 0; v.avgTurnH = undefined; v.stick = true;   // → syncView firstBuild rebuilds the tail, lands at bottom
+    v.rendered = 0; v.winStart = 0; v.avgTurnH = undefined; v.stick = true;   // → firstBuild rebuilds the tail, lands at bottom
   }
   for (const [vid, vv] of views) vv.el.style.display = vid === activeId ? "" : "none";
   updateStatusline();
@@ -2726,8 +2746,15 @@ function maybeExpandWindow(): void {
   expandingWindow = true;
   const before = content.scrollHeight;
   const working = s.status.state === "working" || s.status.state === "compacting";
-  expandWindow(v, s, Math.max(0, v.winStart - EXPAND_CHUNK), working);
-  content.scrollTop += content.scrollHeight - before;   // anchor the viewport across the prepend
+  const newStart = Math.max(0, v.winStart - EXPAND_CHUNK);
+  if (settings.compact) {
+    // compact has no incremental prepend (the display stream is folded) — lower the floor and rebuild the
+    // (still-bounded) compact window. stale bypasses rebuildCompact's no-op cache guard.
+    v.winStart = newStart; v.stale = true; rebuildCompact(v, s, working);
+  } else {
+    expandWindow(v, s, newStart, working);
+  }
+  content.scrollTop += content.scrollHeight - before;   // anchor the viewport across the prepend/rebuild
   expandingWindow = false;
   scheduleRestamp();
 }

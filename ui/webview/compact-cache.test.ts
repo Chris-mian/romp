@@ -15,8 +15,8 @@ test("rebuildCompact early-returns when the view is already built for the curren
 });
 
 test("rebuildCompact clears stale after a real rebuild, so the next switch reuses the cache", () => {
-  // (winStart reset to 0 between them: compact renders the whole stream, no tail-window/spacer)
-  assert.match(RENDER, /v\.rendered = s\.events\.length;\s*\n\s*v\.winStart = 0;[^\n]*\n\s*v\.stale = false;/);
+  // (spacerCount set between them: compact is tail-windowed, the spacer stands for the hidden display items)
+  assert.match(RENDER, /v\.rendered = s\.events\.length;\s*\n\s*v\.spacerCount = firstShown > 0 \? firstShown : 0;[^\n]*\n\s*v\.stale = false;/);
 });
 
 test("toggling a tool group forces a rebuild past the cache (sets stale) — an expand still repaints", () => {

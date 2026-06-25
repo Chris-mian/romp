@@ -31,8 +31,8 @@ test("an oversized view (scrolled to the top → window grew to full) re-collaps
   const cap = Number(/const WINDOW_CAP = (\d+);/.exec(RENDER)?.[1]);
   const tail = Number(/const WINDOW_TAIL = (\d+);/.exec(RENDER)?.[1]);
   assert.ok(cap > tail, `WINDOW_CAP (${cap}) must exceed WINDOW_TAIL (${tail})`);
-  // skip when deep-linking (target may be in the collapsed head) or in compact mode (rendered whole)
-  assert.match(RENDER, /if \(!pendingAnchor && pendingAnchorT == null && !settings\.compact\s*\n?\s*&& v\.el\.querySelectorAll\("\.turn"\)\.length > WINDOW_CAP\) \{/);
+  // skip only when deep-linking (target may be in the collapsed head); applies in BOTH modes (compact windows too)
+  assert.match(RENDER, /if \(!pendingAnchor && pendingAnchorT == null\s*\n?\s*&& v\.el\.querySelectorAll\("\.turn"\)\.length > WINDOW_CAP\) \{/);
   assert.match(RENDER, /v\.rendered = 0; v\.winStart = 0; v\.avgTurnH = undefined; v\.stick = true;/);
 });
 
@@ -65,7 +65,7 @@ test("renderWindow prepends a measured spacer only when the head is collapsed", 
 
 test("sizeSpacer makes the spacer winStart × the average rendered turn height (honest scrollHeight)", () => {
   assert.match(RENDER, /function sizeSpacer\(v: View\): void/);
-  assert.match(RENDER, /spacer\.style\.height = Math\.max\(0, Math\.round\(v\.winStart \* \(v\.avgTurnH \?\? 60\)\)\) \+ "px";/);
+  assert.match(RENDER, /spacer\.style\.height = Math\.max\(0, Math\.round\(\(v\.spacerCount \?\? v\.winStart\) \* \(v\.avgTurnH \?\? 60\)\)\) \+ "px";/);
   // avgTurnH is measured once (off the tail) and cached, so expansion stays O(chunk), not O(n²)
   assert.match(RENDER, /if \(v\.avgTurnH == null\)/);
 });
@@ -102,8 +102,16 @@ test("a deep-link into the spacered head expands the window to reveal the target
   assert.match(RENDER, /if \(idx >= 0 && idx < v\.winStart\) \{\s*\n\s*expandWindow\(v, s, idx,/);
 });
 
-test("compact mode renders the whole stream — no tail-window/spacer", () => {
-  assert.match(RENDER, /v\.winStart = 0;\s+\/\/ compact renders the whole stream/);
+test("compact mode is tail-windowed too — render only the display items reaching into [winStart, len)", () => {
+  // a 7000-event session in compact rendered 4000+ folded turns / 43k nodes → slow switch (the user
+  // 2026-06-25). rebuildCompact now keys off the SAME event-index winStart as the normal path, renders only
+  // the tail display items, and folds the hidden head into a spacer (spacerCount = hidden display items).
+  assert.match(RENDER, /const winStart = \(firstBuild \|\| len < v\.rendered\) \? Math\.max\(0, len - WINDOW_TAIL\)/);
+  assert.match(RENDER, /const firstShown = winStart > 0 \? disp\.findIndex\(\(it\) => lastIdx\(it\) >= winStart\) : 0;/);
+  assert.match(RENDER, /const shown = firstShown <= 0 \? disp : disp\.slice\(firstShown\);/);
+  assert.match(RENDER, /v\.spacerCount = firstShown > 0 \? firstShown : 0;/);
+  // scroll-up in compact rebuilds a larger window (no incremental prepend over a folded stream)
+  assert.match(RENDER, /if \(settings\.compact\) \{[\s\S]*?v\.winStart = newStart; v\.stale = true; rebuildCompact\(v, s, working\);/);
 });
 
 test("the spacer is invisible, non-interactive vertical space", () => {
