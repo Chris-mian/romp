@@ -29,4 +29,8 @@ test("the sub-goal checklist is styled (done = blue ✓ disc, dimmed but NOT str
   // question(blocked) mark = the red ⏸ (var(--err)), not the old amber #d8a657 (the user 2026-06-24)
   assert.match(CSS, /\.fcheck\.question \.fcheck-mark \{[^}]*var\(--err\)/);
   assert.doesNotMatch(CSS, /\.fcheck\.question \.fcheck-mark \{[^}]*#d8a657/);
+  // ...AND a RED RING around it (the user 2026-06-25): the same 13px hollow circle as the done ✓ disc and
+  // the modal's .st-question ⏸-ring, so the card's blocked mark isn't a bare glyph missing its ring.
+  assert.match(CSS, /\.fcheck\.question \.fcheck-mark \{[^}]*border: 1\.5px solid var\(--err\)/);
+  assert.match(CSS, /\.fcheck\.question \.fcheck-mark \{[^}]*border-radius: 50%/);
 });

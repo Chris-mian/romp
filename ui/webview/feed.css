@@ -600,7 +600,16 @@ body { display: flex; flex-direction: column; }
   display: inline-flex; align-items: center; justify-content: center; align-self: center; line-height: 1;
 }
 .fcheck.done .fcheck-text { color: var(--dim); }
-.fcheck.question .fcheck-mark { color: var(--err); }   /* red ⏸ block mark (was an amber ?) */
+/* blocked = a RED ⏸ inside a RED ring — the SAME 13px circle as the done ✓ disc above and the modal tree's
+   .st-question ⏸-ring, so a blocked sub-goal on a CARD reads with the same weight as everywhere else (the
+   user 2026-06-25: the card mark was getting only the red glyph, missing the ring). Hollow (transparent bg),
+   recoloured-red mirror of the not-done hollow ring. */
+.fcheck.question .fcheck-mark {
+  width: 13px; height: 13px; min-width: 13px; box-sizing: border-box;
+  border-radius: 50%; border: 1.5px solid var(--err); background: transparent;
+  color: var(--err); font-size: 9px; font-weight: 700; line-height: 1;
+  display: inline-flex; align-items: center; justify-content: center; align-self: center;
+}
 /* a card sub-goal is clickable just like the modal tree node (the user 2026-06-17): the checkbox + text are
    separate links. Per-ZONE hover highlight (.lz-hl, JS-toggled) — a halo on the mark, a fill on the text. */
 .fcheck .lz-nav { cursor: pointer; }
