@@ -247,6 +247,30 @@ def last_state(state_dir: Path, sid: str) -> dict:
         return {}
 
 
+def last_awaiting(state_dir: Path, sid: str) -> bool | None:
+    """The latest awaiting-OVERLAY value in states/<sid>.jsonl — the most recent line carrying an
+    "awaiting" key (state records interleave with overlays, so the very last line isn't necessarily one).
+    None if the session has no awaiting overlay. Used to heal a stale awaiting:true that lost its clearing
+    writer (the Stop hook) to a kernel restart / thread death."""
+    p = Path(state_dir) / "states" / (sid + ".jsonl")
+    val = None
+    try:
+        with open(p) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(rec, dict) and "awaiting" in rec:
+                    val = bool(rec["awaiting"])
+    except OSError:
+        return None
+    return val
+
+
 def write_name(state_dir: Path, sid: str, name: str, cwd: str, bg: str = "", fg: str = "") -> None:
     """Write the shared identity/discovery file `names/<sid>` in the kernel's
     tab-delimited format (name\\tcwd\\tbg\\tfg), so discover() finds the
@@ -296,34 +320,6 @@ def list_regs(state_dir: Path) -> list[dict]:
     return out
 
 
-# Models observed to have a LARGE (1M) context window — the SDK never reports the window size, so we learn
-# it: a model whose prompt ever exceeds the 200k standard window must be a 1M-context model (account/beta).
-# Account-wide + persisted (NOT under sdk/, so list_regs doesn't read it), so the context % matches what
-# Claude Code's statusline shows (the user 2026-06-24: SDK read 14% where tmux read 3% — wrong window).
-def _bigwin_path(state_dir: Path) -> Path:
-    return Path(state_dir) / "sdk-bigwindow.json"
-
-
-def read_big_models(state_dir: Path) -> set:
-    try:
-        return set(json.loads(_bigwin_path(state_dir).read_text()))
-    except (OSError, ValueError):
-        return set()
-
-
-def add_big_model(state_dir: Path, model: str) -> set:
-    cur = read_big_models(state_dir)
-    if not model or model in cur:
-        return cur
-    cur.add(model)
-    p = _bigwin_path(state_dir)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(".tmp")
-    tmp.write_text(json.dumps(sorted(cur)))
-    os.replace(tmp, p)
-    return cur
-
-
 # ---------------------------------------------------------------------------
 # The live session (one quarantined asyncio thread).
 # ---------------------------------------------------------------------------
@@ -349,7 +345,10 @@ class SdkSession:
         self.since = 0
         self.model = reg.get("liveModel") or ""   # seed from the last-known model so the badge/picker show on
         #                                           OPEN (even once eager-connected, before init/a turn reports)
-        self._ctx_tokens = 0   # last turn's PROMPT size (input + cache read + cache creation) = current context fill
+        _lc0 = reg.get("liveCtx")                 # context-window fill %, as the SDK reports it (see _ctx_pct).
+        self._ctx: int | None = _lc0 if isinstance(_lc0, (int, float)) else None  # seeded from the last persisted
+        #   value so the bar survives idle/restart; refreshed live from get_context_usage() on connect + each turn.
+        self._ctx_refreshing = False             # one get_context_usage control request in flight at a time
         self.retrying = False                        # an api_retry storm (API rate-limit/overload) is stalling the turn → 'retrying', not 'working'
         self._interrupted = False                    # user interrupted the in-flight turn → snapshot reads 'waiting' (display only; inflight stays event-driven)
         self.chosen_model = reg.get("model") or ""   # the alias the user picked (opus/sonnet/…); self.model is the display name
@@ -479,6 +478,46 @@ class SdkSession:
         except Exception:
             pass
 
+    async def _do_refresh_context(self):
+        """Pull authoritative context-window usage from the SDK — the DESIGNED source. `get_context_usage()` is
+        the SDK's native control request behind the CLI's `/context`: it returns a `percentage` already computed
+        against the real window AND the autocompact buffer, plus the live model id. This replaces inferring the
+        window from peak prompt sizes (the user 2026-06-24: the SDK read 14% where tmux read 3% on a 1M-context
+        model — a wrong-window guess). Updates the live % + model and persists both (so a dormant / restarted
+        session keeps showing them). Cheap; guarded so only one is in flight."""
+        if not self.client or self._ctx_refreshing:
+            return
+        self._ctx_refreshing = True
+        try:
+            cu = await self.client.get_context_usage()
+        except Exception:
+            cu = None
+        finally:
+            self._ctx_refreshing = False
+        if not isinstance(cu, dict):
+            return
+        changed = False
+        pct = cu.get("percentage")
+        if isinstance(pct, (int, float)):
+            v = max(0, min(100, round(pct)))
+            if v != self._ctx:
+                self._ctx, changed = v, True
+        pm = pretty_model(cu.get("model"))
+        if pm and pm != self.model:
+            self.model, changed = pm, True
+        upd = {}
+        if self.model:
+            upd["liveModel"] = self.model
+        if self._ctx is not None:
+            upd["liveCtx"] = self._ctx
+        if upd:
+            try:
+                self.backend._update_reg(self.sid, **upd)
+            except Exception:
+                pass
+        if changed:
+            self.backend._poke()
+
     async def _next_ask_action(self):
         fut = asyncio.get_running_loop().create_future()
         self._cur_ask_fut = fut
@@ -587,35 +626,13 @@ class SdkSession:
         self.backend._poke()
 
     def _ctx_pct(self):
-        """Context-window fill %, matching the tmux statusline's bar. The SDK never reports the window size, so
-        we divide the prompt tokens by the model's LEARNED window: 1M for any model observed to exceed the 200k
-        standard window (account-wide, persisted), else 200k. This is what made SDK read 14% where tmux read 3%
-        on a 1M-context model (the user 2026-06-24). None until a turn with usage is seen. Capped at 100."""
-        if not self._ctx_tokens:
-            return None
-        window = 1_000_000 if self.model in self.backend._big_models else 200_000
-        return min(100, round(self._ctx_tokens / window * 100))
-
-    def _note_usage(self, msg):
-        """Track the last turn's PROMPT size from any message carrying usage (assistant / result). The prompt
-        is input + cache-read + cache-creation tokens — i.e. everything sent to the model = the current context
-        fill. Drives _ctx_pct. A prompt over the 200k standard window proves this model is a 1M-context one —
-        remember that (account-wide, persisted) so the % uses the right window."""
-        u = getattr(msg, "usage", None)
-        if not isinstance(u, dict):
-            return
-        prompt = (u.get("input_tokens") or 0) + (u.get("cache_read_input_tokens") or 0) \
-            + (u.get("cache_creation_input_tokens") or 0)
-        if prompt > 0:
-            self._ctx_tokens = prompt
-            if prompt > 200_000 and self.model and self.model not in self.backend._big_models:
-                try:
-                    self.backend._big_models = add_big_model(self.backend.state_dir, self.model)
-                except Exception:
-                    pass
+        """Current context-window fill %, as the SDK reports it via get_context_usage() — the same number the
+        CLI's `/context` shows (it already divides by the real window and accounts for the autocompact buffer;
+        we no longer guess the window). Refreshed on connect/init and after every turn by _do_refresh_context.
+        None until the first refresh lands."""
+        return self._ctx
 
     def _on_message(self, msg, AssistantMessage, ResultMessage, SystemMessage):
-        self._note_usage(msg)   # context-fill tracking (any message that carries a usage block)
         if isinstance(msg, SystemMessage) and msg.subtype == "init":
             d = msg.data if isinstance(msg.data, dict) else {}
             self._learn_model(pretty_model(d.get("model")))
@@ -627,6 +644,8 @@ class SdkSession:
             self.backend._poke()   # publish the model + permission-mode from init RIGHT AWAY (the eager-connect
                                    # whole point): the snapshot reads self.model, but with no poke the new model
                                    # would wait out the 3s producer backstop instead of showing on connect.
+            asyncio.ensure_future(self._do_refresh_context())   # pull the real context % + model from the SDK
+                                   # the moment we connect, so BOTH show on OPEN — before the first turn.
         elif isinstance(msg, SystemMessage) and msg.subtype == "api_retry":
             # the API returned a retryable error (rate-limit / overload); the CLI is backing off + retrying.
             # Surface a distinct 'retrying' state so a stall reads as an API issue, not a silent hang (the
@@ -649,12 +668,8 @@ class SdkSession:
             self.inflight = max(0, self.inflight - 1)
             if self.inflight == 0:
                 append_state(self.backend.state_dir, self.sid, "waiting")
-                pct = self._ctx_pct()   # persist the turn's context fill so the bar survives idle/restart (like liveModel)
-                if pct is not None:
-                    try:
-                        self.backend._update_reg(self.sid, liveCtx=pct)
-                    except Exception:
-                        pass
+                asyncio.ensure_future(self._do_refresh_context())   # refresh ctx % + model from the SDK and
+                #   persist them, so the bar reflects the turn that just landed and survives idle/restart.
                 self.backend._poke()
                 if self._input_wake is not None:   # turn done → release the next queued turn, if any
                     self._input_wake.set()
@@ -795,10 +810,26 @@ class SdkBackend:
         self.append_prompt_path = append_prompt_path
         self._log_cb = log
         self.sessions: dict[str, SdkSession] = {}
-        self._big_models = read_big_models(self.state_dir)   # models with a 1M context window (learned, for ctx %)
         self._lock = threading.Lock()
         self._pending_ask: dict[str, bool] = {}   # sid -> has an ask awaiting answer
         self._live: dict[str, dict] = {}          # sid -> {key -> atom}: the in-memory LIVE TAIL (ahead of disk)
+        # Kernel-restart heal: nothing is running yet, so any alive session still reading awaiting:true is stale
+        # — its background tasks (and the Stop hook that clears the overlay) died with the previous kernel. Left
+        # uncleared it reads working/awaiting forever, climbing a ghost work-timer (reorder_bug 2026-06-24).
+        for reg in list_regs(self.state_dir):
+            if reg.get("alive"):
+                self._heal_stale_awaiting(reg["sid"])
+
+    def _heal_stale_awaiting(self, sid: str) -> None:
+        """Clear a stale awaiting:true overlay for a NOT-running session. A dormant SDK session can't have live
+        background tasks — its claude subprocess (and the Stop hook that would write awaiting:false) is gone — so
+        a lingering awaiting:true is stale. Idempotent: writes only when the overlay is currently true, so it
+        never spams the log. The exact event-based analogue of live_sessions' dormant in-flight→waiting heal."""
+        try:
+            if last_awaiting(self.state_dir, sid) is True:
+                append_awaiting(self.state_dir, sid, False)
+        except Exception:
+            pass
 
     # ---- logging / wakeups ----
     def _log(self, m):
@@ -849,33 +880,15 @@ class SdkBackend:
         if not bg:                                   # give the session a stable identity colour like tmux sessions get
             bg, fg = pick_identity_color(sid)
         write_name(self.state_dir, sid, name, cwd, bg, fg)
+        # No model is recorded here: a brand-new SDK session's real model is unknown until it connects. The
+        # lane falls back to model_label('', chosen) meanwhile, and eager-connect-on-open resolves the real
+        # model + context % from get_context_usage() within a moment — no fleet-wide guess (the user 2026-06-24).
         reg = {"sid": sid, "name": name, "cwd": cwd, "mode": "acceptEdits",
                "effort": DEFAULT_EFFORT, "lastSid": "", "alive": True}
-        seed = self._fleet_model()   # show the model on OPEN, before the first turn (the user 2026-06-24): seed
-        if seed:                     # the badge from the fleet's known model; the session's own init/turn corrects it
-            reg["liveModel"] = seed
         write_reg(self.state_dir, sid, reg)
         append_state(self.state_dir, sid, "waiting")
         self._poke()
         return sid
-
-    def _fleet_model(self) -> str:
-        """The fleet's most-recently-known SDK display model (any reg's liveModel) — a sensible default for a
-        BRAND-NEW session so its model badge shows immediately, before its first turn reports its own. Default
-        sessions all run the same model, so this is right in the common case; the session's real init/turn
-        overwrites it. '' if no SDK session has reported a model yet."""
-        best, best_t = "", -1.0
-        for reg in list_regs(self.state_dir):
-            lm = reg.get("liveModel")
-            if not lm:
-                continue
-            try:
-                mt = _reg_path(self.state_dir, reg["sid"]).stat().st_mtime
-            except OSError:
-                mt = 0
-            if mt > best_t:
-                best, best_t = lm, mt
-        return best
 
     def resume(self, name: str, sid: str, cwd: str | None = None) -> bool:
         reg = read_reg(self.state_dir, sid) or {}
@@ -1140,4 +1153,7 @@ class SdkBackend:
         if not sess.ended:
             # process exited on its own (crash / EOF) — settle state; next send resumes
             append_state(self.state_dir, sess.sid, "waiting")
+        # the thread (and its claude subprocess) is gone, so any background work is too — clear a stale
+        # awaiting overlay so the session doesn't read working/awaiting forever (reorder_bug 2026-06-24).
+        self._heal_stale_awaiting(sess.sid)
         self._poke()

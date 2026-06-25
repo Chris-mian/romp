@@ -151,23 +151,32 @@ class LiveTail(unittest.TestCase):
         self.assertEqual(echoes[0]["type"], "user")
         self.assertEqual(echoes[0]["message"]["content"], [{"type": "text", "text": "type this"}])
 
-    def test_context_pct_uses_learned_window(self):
-        """SDK context bar matches tmux (the user 2026-06-24: SDK read 14% where tmux read 3%). The window
-        isn't reported, so a prompt over the 200k standard window teaches us the model is 1M-context
-        (account-wide), and the % then divides by 1M. None until a turn with usage lands."""
-        class _M:
-            def __init__(self, ir, cr, cc): self.usage = {"input_tokens": ir, "cache_read_input_tokens": cr, "cache_creation_input_tokens": cc}
-        be = sb.SdkBackend(tempfile.mkdtemp(), "/bin/true", lambda *a, **k: None)
-        s = sb.SdkSession(be, {"sid": "11111111-2222-3333-4444-555555555555", "name": "n", "cwd": "/tmp"})
-        s.model = "Opus 4.8"
-        self.assertIsNone(s._ctx_pct(), "no usage yet → no context bar")
-        s._note_usage(_M(2, 100000, 0))                  # 100002, model not yet known-big → 200k window
-        self.assertEqual(s._ctx_pct(), 50)
-        s._note_usage(_M(0, 500000, 8000))               # 508000 > 200k → LEARNS Opus 4.8 is a 1M model
-        self.assertIn("Opus 4.8", be._big_models, "a >200k prompt is remembered as a 1M-context model")
-        self.assertEqual(s._ctx_pct(), 51)               # 508000 / 1_000_000 → 51
-        s._note_usage(_M(2, 28000, 0))                   # a later SHORT turn now uses the learned 1M window…
-        self.assertEqual(s._ctx_pct(), 3)                # …28002 / 1_000_000 → 3 (was 14% off the wrong 200k)
+    def test_context_pct_from_sdk_get_context_usage(self):
+        """The context bar reads the SDK's OWN number, not a window guess (the user 2026-06-24: SDK read 14%
+        where tmux read 3% on a 1M-context model — a wrong-window inference). _do_refresh_context calls
+        get_context_usage() — the control request behind the CLI's /context, which already divides by the real
+        window and accounts for the autocompact buffer — and stores its `percentage` (rounded) + live `model`,
+        persisting both so they survive idle/restart. None until the first refresh lands."""
+        import asyncio
+        d = tempfile.mkdtemp()
+        be = sb.SdkBackend(d, "/bin/true", lambda *a, **k: None)
+        sid = "11111111-2222-3333-4444-555555555555"
+        s = sb.SdkSession(be, {"sid": sid, "name": "n", "cwd": "/tmp"})
+        self.assertIsNone(s._ctx_pct(), "no refresh yet → no context bar")
+
+        class _Client:
+            def __init__(self, payload): self._p = payload
+            async def get_context_usage(self): return self._p
+        s.client = _Client({"percentage": 2.7, "model": "claude-opus-4-8"})
+        asyncio.run(s._do_refresh_context())
+        self.assertEqual(s._ctx_pct(), 3, "stores the SDK's rounded percentage — no window inference")
+        self.assertEqual(s.model, "Opus 4.8", "adopts the SDK-reported model id")
+        self.assertEqual(sb.read_reg(d, sid).get("liveCtx"), 3, "persists ctx so the bar survives idle/restart")
+        self.assertEqual(sb.read_reg(d, sid).get("liveModel"), "Opus 4.8", "persists the live model too")
+
+        s.client = _Client({"percentage": 88, "model": "claude-opus-4-8"})
+        asyncio.run(s._do_refresh_context())
+        self.assertEqual(s._ctx_pct(), 88, "tracks the live value across turns")
 
     def test_assistant_model_sets_badge_but_synthetic_does_not_corrupt_it(self):
         """The model 'doesn't show' mid-conversation (the user 2026-06-24): injected/synthetic assistant turns
@@ -255,17 +264,44 @@ class StateAndRegistryFiles(unittest.TestCase):
         sb.write_reg(self.d, sid, {**sb.read_reg(self.d, sid), "liveCtx": 42})   # as a turn persists
         self.assertEqual(be.live_sessions()[sid]["ctx"], 42, "dormant shows the persisted context fill")
 
-    def test_new_session_seeds_model_from_fleet(self):
-        """A brand-new SDK session shows NO model until its first turn reports one — so it's seeded from the
-        fleet's known model on spawn, so the badge shows on OPEN (the user 2026-06-24). The session's own
-        init/turn overwrites it."""
+    def test_kernel_restart_heals_stale_awaiting(self):
+        """A background task's completion is lost on kernel restart: the awaiting:true overlay never gets its
+        awaiting:false, because the Stop hook that writes it died with the thread — so the session reads
+        working/awaiting forever and climbs a ghost work-timer (reorder_bug 2026-06-24, verified). On
+        (re)construction the backend heals every alive, not-running session: a stale awaiting:true →
+        awaiting:false. Idempotent — no write when already cleared/absent."""
+        sb.write_reg(self.d, "sid_aw", {"sid": "sid_aw", "name": "n", "cwd": "/tmp", "alive": True})
+        sb.append_awaiting(self.d, "sid_aw", True, "1 background task(s) running")
+        self.assertIs(sb.last_awaiting(self.d, "sid_aw"), True)
+        sb.SdkBackend(self.d, "/bin/true", lambda *a, **k: None)        # kernel restart re-constructs the backend
+        self.assertIs(sb.last_awaiting(self.d, "sid_aw"), False,
+                      "a dormant session's stale awaiting is cleared on kernel start")
+        path = os.path.join(self.d, "states", "sid_aw.jsonl")
+        before = len(open(path).read().splitlines())
+        sb.SdkBackend(self.d, "/bin/true", lambda *a, **k: None)        # already false → no redundant write
+        self.assertEqual(len(open(path).read().splitlines()), before, "idempotent: no spam when already cleared")
+
+    def test_heal_does_not_touch_a_session_with_no_awaiting(self):
+        """The heal writes nothing for a session that never set an awaiting overlay (last_awaiting → None)."""
+        sb.write_reg(self.d, "sid_plain", {"sid": "sid_plain", "name": "n", "cwd": "/tmp", "alive": True})
+        sb.append_state(self.d, "sid_plain", "waiting")
+        before = len(open(os.path.join(self.d, "states", "sid_plain.jsonl")).read().splitlines())
+        sb.SdkBackend(self.d, "/bin/true", lambda *a, **k: None)
+        after = len(open(os.path.join(self.d, "states", "sid_plain.jsonl")).read().splitlines())
+        self.assertEqual(before, after, "no awaiting overlay → nothing to heal")
+        self.assertIsNone(sb.last_awaiting(self.d, "sid_plain"))
+
+    def test_new_session_does_not_guess_a_model(self):
+        """A brand-new SDK session's model is UNKNOWN until it connects — we DON'T guess it from the fleet (the
+        user 2026-06-24: implement the designed way, not heuristics). spawn writes no liveModel; the lane shows
+        blank until eager-connect-on-open pulls the real model from get_context_usage()/the init message. A
+        peer already knowing its own model must NOT bleed onto the new session's badge."""
         be = sb.SdkBackend(self.d, "/bin/true", lambda *a, **k: None)
         s1 = be.spawn("first", self.d)
-        self.assertEqual(be.live_sessions()[s1]["model"], "", "first session, nothing to seed from → blank")
-        sb.write_reg(self.d, s1, {**sb.read_reg(self.d, s1), "liveModel": "Opus 4.8"})   # s1 learned its model
+        sb.write_reg(self.d, s1, {**sb.read_reg(self.d, s1), "liveModel": "Opus 4.8"})   # s1 learned its own model
         s2 = be.spawn("second", self.d)
-        self.assertEqual(sb.read_reg(self.d, s2).get("liveModel"), "Opus 4.8", "new session seeded from the fleet")
-        self.assertEqual(be.live_sessions()[s2]["model"], "Opus 4.8", "so its model shows on open")
+        self.assertIsNone(sb.read_reg(self.d, s2).get("liveModel"), "no fleet-wide model guess on spawn")
+        self.assertEqual(be.live_sessions()[s2]["model"], "", "blank until it connects and reports its own")
 
     def _last_awaiting(self, sid):
         import json as _j
