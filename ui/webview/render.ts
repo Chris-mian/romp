@@ -2252,6 +2252,14 @@ function syncView(id: string): View {
   // window), so the compact path always does a full rebuild rather than the incremental append.
   // (Compaction already shrinks the node count, so it renders whole — no tail-window: winStart 0.)
   if (settings.compact) { rebuildCompact(v, s, working); return v; }
+  // No-op fast path — a tab SWITCH / repaint with no event change: the view is already current, so just
+  // reveal the cached DOM. Mirrors the compact path's cache guard above. WITHOUT this, every showActive()
+  // re-rendered the trailing TAIL_RECHECK turns (re-parsing markdown + re-running highlight.js on them) —
+  // cheap on a small session, but ~½s on a big working agent whose tail is dense with tool diffs/output/code
+  // (the user 2026-06-25: "still slow switching to the big ones"). A REAL change always lowers v.rendered
+  // (delta-send's chatTail sets it to the change index; an append grows len past it) or sets v.stale — so
+  // this never skips an actual update; it only skips the redundant re-render on a pure switch.
+  if (v.rendered === s.events.length && !v.stale && v.el.childNodes.length > 0) return v;
   const len = s.events.length;
   const firstBuild = v.rendered === 0 || v.el.childNodes.length === 0;
   const rewind = len < v.rendered;

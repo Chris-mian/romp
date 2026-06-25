@@ -24,6 +24,13 @@ test("the window-tail constant exceeds the trailing re-check window so the re-ch
   assert.ok(tail > recheck, `WINDOW_TAIL (${tail}) must exceed TAIL_RECHECK (${recheck})`);
 });
 
+test("a pure tab switch is a NO-OP render — the cached DOM is revealed, not re-built", () => {
+  // the normal path mirrors the compact path's cache guard: rendered===len && !stale && hasDOM ⇒ return.
+  // without it, every showActive() re-rendered the trailing TAIL_RECHECK turns (markdown + highlight.js),
+  // which is what kept switching to a big, tool-heavy session slow (the user 2026-06-25).
+  assert.match(RENDER, /if \(v\.rendered === s\.events\.length && !v\.stale && v\.el\.childNodes\.length > 0\) return v;/);
+});
+
 test("a fresh build or a rewind renders only the tail; the floor is len − WINDOW_TAIL", () => {
   assert.match(RENDER, /const firstBuild = v\.rendered === 0 \|\| v\.el\.childNodes\.length === 0;/);
   assert.match(RENDER, /const rewind = len < v\.rendered;/);
