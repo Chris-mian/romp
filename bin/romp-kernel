@@ -805,6 +805,35 @@ def _pure_delegation_top(nodes, top_id):
     return bool(leaves) and all(isinstance(nodes.get(nid, {}).get("handoff"), dict) for nid in leaves)
 
 
+def _last_state_value(sid):
+    """The most-recent STATE transition in states/<sid>.jsonl ('working'/'waiting'/'idle'/…), ignoring the
+    interleaved awaiting overlays; '' when there's no state file yet. The Stop hook (tmux) and the SDK backend
+    (on ResultMessage) BOTH write a stopped state ('waiting'/'idle') here on a GENUINE turn-end, so this is the
+    authoritative "properly stopped" signal — used to gate auto-nudge so a mid-turn lull (where the event-model
+    working heuristic can momentarily read not-working) never fires a premature nudge (the user 2026-06-25)."""
+    p = jd.STATE / "states" / ("%s.jsonl" % sid)
+    val = ""
+    try:
+        with open(p, errors="replace") as f:
+            for line in f:
+                if '"state"' not in line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(rec, dict) and isinstance(rec.get("state"), str):
+                    val = rec["state"]
+    except OSError:
+        return ""
+    return val
+
+
+# Session states the authoritative log reports while a session is ACTIVELY PROGRESSING (not genuinely stopped).
+# Auto-nudge must never fire while the log shows one of these — see the gate in _auto_nudge_tick.
+_PROGRESSING_STATES = ("working", "compacting", "retrying", "permission", "picker")
+
+
 def _auto_nudge_tick(now, tmux):
     """One Auto-Nudge pass (from the periodic pusher). For each ALIVE, IDLE session (its turn ended) that
     isn't awaiting/compacting/api-error, isn't WAITING ON A LIVE PEER (a wait isn't a stall — the human's
@@ -841,6 +870,14 @@ def _auto_nudge_tick(now, tmux):
             continue
         lt = turns[-1]
         if _session_working(turns):                      # still actively working (event model) → not orphaned
+            continue
+        if _last_state_value(sid) in _PROGRESSING_STATES:
+            # GENUINE-STOP GATE (the user 2026-06-25, obsidian): the AUTHORITATIVE state log (Stop hook / SDK
+            # ResultMessage) says the session is actively progressing, so the event-model "not working" read
+            # above is a transient mid-turn lull, NOT a real stop. Nudging here fires MID-TURN, and that fire
+            # poisons the once-per-turn re-arm so the genuine post-stop stall never gets nudged (repro: obsidian
+            # read state-log 'working' continuously 17:51:36→17:54:14, yet a nudge fired at 17:52:10). Only nudge
+            # once the log shows a genuine stop ('waiting'/'idle'). Keyed on the stop EVENT, not a time window.
             continue
         gid = _working_top_goal(sid)
         if not gid:

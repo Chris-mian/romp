@@ -1150,6 +1150,30 @@ class ViewBuilder(unittest.TestCase):
         finally:
             restore()
 
+    def test_auto_nudge_skips_a_mid_turn_lull_per_the_state_log(self):
+        # the user 2026-06-25 (obsidian): during a long tool lull the event model can momentarily read "not
+        # working" while the AUTHORITATIVE state log still says 'working'. A nudge fired then is MID-TURN and
+        # poisons the once-per-turn re-arm so the real post-stop stall never gets nudged. Gate on the state log:
+        # never nudge while it reports an actively-progressing state; fire only once it shows a GENUINE stop.
+        g = self._orphaned_goal(idle=True)                       # transcript ENDED → _session_working() False
+        km._set_auto_nudge(True)
+        sp = jd.STATE / "states" / (SID + ".jsonl")
+        sp.parent.mkdir(parents=True, exist_ok=True)
+        sp.write_text(json.dumps({"t": T0 + 5, "state": "working"}) + "\n")   # log says: still actively working
+        sent, restore = self._stub_nudge()
+        try:
+            km._auto_nudge_tick(NOW, km._tmux_sessions())
+            self.assertEqual(len(sent), 0, "no nudge while the state log reports the session still 'working'")
+            sp.write_text(json.dumps({"t": T0 + 6, "state": "waiting"}) + "\n")   # genuine stop now
+            km._auto_nudge_tick(NOW, km._tmux_sessions())
+            self.assertEqual(len(sent), 1, "once genuinely stopped (state log 'waiting'), the nudge fires")
+        finally:
+            restore()
+            try:
+                sp.unlink()
+            except OSError:
+                pass
+
     def test_auto_nudge_does_not_re_arm_on_its_own_nudge_response(self):
         # re-fire only on GENUINE turns: a romp-injected (nudge-response) latest turn must NOT re-arm, else a
         # nudge→response→nudge tight loop (the user via business 2026-06-22).
