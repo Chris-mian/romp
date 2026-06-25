@@ -846,12 +846,6 @@ class SdkBackend:
     # ---- SDK option assembly (mirrors the tmux launch flags) ----
     def _options(self, sess: SdkSession, ClaudeAgentOptions):
         from claude_agent_sdk import HookMatcher
-        extra = {}
-        if self.append_prompt_path and os.path.exists(self.append_prompt_path):
-            try:
-                extra["append-system-prompt"] = Path(self.append_prompt_path).read_text()
-            except OSError:
-                pass
         kw = dict(
             cli_path=self.claude_bin,
             cwd=sess.cwd,
@@ -861,6 +855,17 @@ class SdkBackend:
             include_partial_messages=False,
             effort=sess.effort or DEFAULT_EFFORT,   # connect-time --effort (no runtime control); a change reconnects
         )
+        # romp's harness prompt is APPENDED via the SDK's DESIGNED system_prompt field — the Claude Code preset
+        # plus an `append` (types.py SystemPromptPreset) — NOT extra_args={"append-system-prompt"}. Same effect
+        # (append to the default Claude Code system prompt) but it's the typed, documented option; extra_args is
+        # the SDK's last-resort passthrough for CLI flags that have NO field, which this one does (the user
+        # 2026-06-24: implement things the way the SDK designed them, not via raw-flag escape hatches).
+        if self.append_prompt_path and os.path.exists(self.append_prompt_path):
+            try:
+                kw["system_prompt"] = {"type": "preset", "preset": "claude_code",
+                                       "append": Path(self.append_prompt_path).read_text()}
+            except OSError:
+                pass
         if sess.chosen_model and sess.chosen_model != "default":
             kw["model"] = sess.chosen_model    # keep the picked model across a reconnect (runtime set_model is per-connection)
         if sess.resume_sid:
@@ -869,8 +874,6 @@ class SdkBackend:
             kw["session_id"] = sess.sid
         if self.mcp_config:
             kw["mcp_servers"] = self.mcp_config
-        if extra:
-            kw["extra_args"] = extra
         return ClaudeAgentOptions(**kw)
 
     # ---- lifecycle (kernel-thread API) ----

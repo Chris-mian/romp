@@ -587,6 +587,38 @@ class AskRoundTrip(unittest.TestCase):
 
 
 @unittest.skipUnless(_HAVE_SDK, "claude_agent_sdk not installed")
+class OptionsAssembly(unittest.TestCase):
+    """_options must use the SDK's DESIGNED option fields, not the extra_args CLI-flag escape hatch (the user
+    2026-06-24: implement things the way the SDK designed them). The romp harness prompt is appended via
+    system_prompt={"type":"preset","preset":"claude_code","append":...} (types.py SystemPromptPreset) — the
+    documented field — NOT extra_args={"append-system-prompt"}, the passthrough reserved for flags with no field."""
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+
+    def _sess(self, be):
+        return sb.SdkSession(be, {"sid": "11111111-2222-3333-4444-555555555555",
+                                  "name": "n", "cwd": self.d, "mode": "acceptEdits"})
+
+    def test_append_prompt_uses_designed_system_prompt_not_extra_args(self):
+        p = os.path.join(self.d, "append.txt")
+        with open(p, "w") as f:
+            f.write("ROMP HARNESS PROMPT")
+        be = sb.SdkBackend(self.d, "/bin/true", lambda *a, **k: None, append_prompt_path=p)
+        opts = be._options(self._sess(be), _sdk.ClaudeAgentOptions)
+        self.assertEqual(opts.system_prompt,
+                         {"type": "preset", "preset": "claude_code", "append": "ROMP HARNESS PROMPT"},
+                         "harness prompt appended via the designed system_prompt preset field")
+        self.assertNotIn("append-system-prompt", opts.extra_args or {},
+                         "must NOT route the append through the extra_args CLI-flag escape hatch")
+
+    def test_no_append_prompt_leaves_the_default_system_prompt(self):
+        be = sb.SdkBackend(self.d, "/bin/true", lambda *a, **k: None)   # no append_prompt_path
+        opts = be._options(self._sess(be), _sdk.ClaudeAgentOptions)
+        self.assertIsNone(opts.system_prompt, "no harness prompt → leave the CLI's default system prompt")
+
+
+@unittest.skipUnless(_HAVE_SDK, "claude_agent_sdk not installed")
 class ApiRetryState(unittest.TestCase):
     """An api_retry storm (API rate-limit/overload) must surface as a distinct 'retrying' state, not a
     silent 'working', so a stall reads as an API issue (the user 2026-06-23). Cleared on real output."""
