@@ -46,7 +46,11 @@ test("chat tab bar: select + ✕ (Close / End session) are DELEGATED to the stab
   // delegation is installed ONCE on the stable #tabs container, with both actions
   assert.match(RENDER, /const tabs = document\.getElementById\("tabs"\);/);
   assert.match(RENDER, /delegate\(tabs, \{/);
-  assert.match(RENDER, /close: \(el\) => \{[\s\S]*type: el\.dataset\.dead === "1" \? "closeTab" : "closeSession"/);
+  // close: a DEAD tab just drops; a LIVE one shows the End/Close confirm IMMEDIATELY (client-side, no
+  // closeSession→confirmClose kernel round-trip that made the ✕ feel unresponsive — the user 2026-06-24)
+  assert.match(RENDER, /close: \(el\) => \{[\s\S]*el\.dataset\.dead === "1"[\s\S]*type: "closeTab"/);
+  assert.match(RENDER, /close: \(el\) => \{[\s\S]*showConfirm\(`End/);
+  assert.doesNotMatch(RENDER, /type: el\.dataset\.dead === "1" \? "closeTab" : "closeSession"/, "the round-trip close is gone");
 });
 
 test("Fleet: header / row open + caret fold are DELEGATED to the stable #fleet-list, not per-node", () => {

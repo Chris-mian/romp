@@ -3856,7 +3856,19 @@ setupSettings();
     select: (el) => { const id = el.dataset.id; if (id) setActive(id); },
     close: (el) => {
       const id = el.dataset.id;
-      if (id && vscodeApi) vscodeApi.postMessage({ type: el.dataset.dead === "1" ? "closeTab" : "closeSession", id });
+      if (!id || !vscodeApi) return;
+      if (el.dataset.dead === "1") { vscodeApi.postMessage({ type: "closeTab", id }); return; }   // dead → just drop the read-only tab
+      // LIVE session: show the End/Close confirm IMMEDIATELY, client-side — NOT via a closeSession→confirmClose
+      // kernel round-trip, which made the ✕ feel unresponsive (and sometimes never opened the modal when the
+      // kernel was busy). The dialog is static; the kernel doesn't need to decide it (the user 2026-06-24).
+      const nm = sessions.get(id)?.name || "";
+      showConfirm(`End “${nm}”?`,
+        "“Close tab” just removes it from this panel and leaves the session running. “End session” shuts it down (the transcript stays on disk).",
+        [{ label: "Close tab", value: "close" }, { label: "End session", value: "end", danger: true }, { label: "Cancel", value: "" }],
+        (v) => {
+          if (v === "close") vscodeApi?.postMessage({ type: "closeTab", id });
+          else if (v === "end") { vscodeApi?.postMessage({ type: "endSession", id }); vscodeApi?.postMessage({ type: "closeTab", id }); }
+        });
     },
   });
 })();
