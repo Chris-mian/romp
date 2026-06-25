@@ -25,7 +25,7 @@ test("the inbox-zero state shows the romp tri-color wordmark, centered (no otter
 
 test("the empty state stays accessible (role + aria-label, since a background image has no alt)", () => {
   assert.match(FEED, /e\.setAttribute\("role", "img"\)/);
-  assert.match(FEED, /e\.setAttribute\("aria-label", "inbox zero/);
+  assert.match(FEED, /e\.setAttribute\("aria-label", "All tasks complete"\)/);   // the user 2026-06-25
 });
 
 test("the wordmark ships in the served + packaged media dir; the otter is gone", () => {

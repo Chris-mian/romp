@@ -1700,8 +1700,8 @@ function render() {
     // inbox zero → the romp otters (media/romp-otter.png, a CSS background) instead of
     // words (the user 2026-06-13). role/aria-label + title keep the meaning for hover /
     // screen readers, since a background image carries no accessible text of its own.
-    const e = el("div", "feed-empty"); e.title = "inbox zero — nothing open";
-    e.setAttribute("role", "img"); e.setAttribute("aria-label", "inbox zero — nothing open");
+    const e = el("div", "feed-empty"); e.title = "All tasks complete";
+    e.setAttribute("role", "img"); e.setAttribute("aria-label", "All tasks complete");
     list.appendChild(e);
     return;
   }
