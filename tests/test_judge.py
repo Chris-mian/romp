@@ -785,6 +785,17 @@ class PlanApply(unittest.TestCase):
         self.assertFalse(s["nodes"][s["placements"]["s2"]]["nodeComplete"], "the child is still open in the store")
         self.assertEqual(jd.open_menu(s), [], "the completed top AND its still-open child are sealed out of the menu")
 
+    def test_open_menu_excludes_provisional_stubs(self):
+        # a provisional follow-up STUB is a UI-only placeholder — hidden from the planner's menu so it never
+        # becomes a planner target (the user 2026-06-24).
+        s = _store()
+        top = _mknode(s, "top")
+        stub = _mknode(s, "Following up: also handle X", parent=top["id"]); stub["provisional"] = True
+        s["status"][stub["id"]] = "working"
+        labels = {nd["text"] for nd in jd.open_menu(s)}
+        self.assertIn("top", labels)
+        self.assertNotIn("Following up: also handle X", labels, "the provisional stub is hidden from the planner")
+
 
 class ClearedSeal(unittest.TestCase):
     """A goal you CROSSED OFF the feed (view-cleared, in STATE/cleared.jsonl) stays sealed: the planner won't
@@ -1781,6 +1792,84 @@ class NudgeMustResolve(unittest.TestCase):
         self.assertFalse(store["nodes"][gid]["nodeComplete"], "a typed follow-up files a step, doesn't force done")
         self.assertEqual(len([nd for nd in store["nodes"].values() if nd.get("parentId") == gid]), 1,
                          "the typed follow-up's work is a sub under the goal")
+
+    def test_typed_followup_drops_provisional_stub_then_files_real_sub(self):
+        # the user 2026-06-24: optimistic_followup plants a provisional open stub so the tree shows open work
+        # at once; when the planner processes the typed follow-up it DROPS that stub and files its OWN sub in
+        # its place — no duplicate, no lingering placeholder. (End-to-end: optimistic plant → planner replace.)
+        gid = "%s:g1" % SID
+        recs = [self._line(T0 + 100, "also add tests", "u2", gid, injected=False),
+                aline(T0 + 120, "Added tests.", "a2", "u2", stop="end_turn")]
+        work = lambda *a, **k: '{"ops":[{"why":"added tests","do":"sub","under":1,"text":"added tests"}]}'
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            tpath = td / (SID + ".jsonl"); tpath.write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+            saved = (jd.GOALDIR, jd.PCACHE, jd.plan_llm, jd.plan_prompt_llm, jd._group_store)
+            jd.GOALDIR, jd.PCACHE = td / "goals", td / "pcache"
+            jd.plan_llm, jd.plan_prompt_llm = work, (lambda *a, **k: "")
+            jd._group_store = lambda *a, **k: None
+            try:
+                jd.GOALDIR.mkdir(parents=True)
+                jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "placements": {}, "status": {gid: "completed"},
+                                    "nodes": {gid: {"id": gid, "text": "Ship the feature", "parentId": None,
+                                                    "nodeComplete": True, "blocked": False, "cleared": False,
+                                                    "trail": ["seed"], "t": T0, "mt": T0}}})
+                jd.optimistic_followup(SID, gid, text="also add tests", now=T0 + 90, stub=True)
+                self.assertEqual(len([n for n in jd.load_goals(SID)["nodes"].values() if n.get("provisional")]),
+                                 1, "the optimistic stub is planted")
+                jd._PARSE_CACHE.clear()
+                jd._plan_session(SID, str(tpath), NOW)
+                store = jd.load_goals(SID)
+                self.assertEqual([n for n in store["nodes"].values() if n.get("provisional")], [],
+                                 "the provisional stub is DROPPED once the planner files real work")
+                subs = [n for n in store["nodes"].values() if n.get("parentId") == gid]
+                self.assertEqual(len(subs), 1, "exactly one real sub — the planner's, not a duplicate")
+                self.assertEqual(subs[0]["text"], "added tests", "and it's the planner's sub, not the stub")
+            finally:
+                (jd.GOALDIR, jd.PCACHE, jd.plan_llm, jd.plan_prompt_llm, jd._group_store) = saved
+
+
+class OptimisticFollowupStub(unittest.TestCase):
+    """optimistic_followup(stub=True) — a typed follow-up on a COMPLETED goal must show OPEN work in the tree
+    at once, not a 'working' card over an all-✓ tree (the user 2026-06-24). It plants a provisional open sub
+    (hidden from the planner); a NUDGE plants none (the planner resolves it). Sandboxes GOALDIR (no leak)."""
+    def setUp(self):
+        self._saved = (jd.GOALDIR, jd.STATESDIR)
+        self._td = Path(tempfile.mkdtemp())
+        jd.GOALDIR, jd.STATESDIR = self._td / "goals", self._td / "states"
+        jd.GOALDIR.mkdir(parents=True)
+
+    def tearDown(self):
+        (jd.GOALDIR, jd.STATESDIR) = self._saved
+        shutil.rmtree(str(self._td), ignore_errors=True)
+
+    def _completed_top(self):
+        gid = SID + ":g1"
+        jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "placements": {}, "status": {gid: "completed"},
+                            "nodes": {gid: {"id": gid, "text": "Build the thing", "parentId": None,
+                                            "nodeComplete": True, "blocked": False, "cleared": False,
+                                            "trail": [], "t": T0, "mt": T0 + 10}}})
+        return gid
+
+    def test_typed_followup_plants_a_provisional_open_sub(self):
+        gid = self._completed_top()
+        self.assertTrue(jd.optimistic_followup(SID, gid, text="also handle the empty case",
+                                               now=T0 + 100, stub=True))
+        st = jd.load_goals(SID)
+        self.assertFalse(st["nodes"][gid]["nodeComplete"], "the top is reopened")
+        subs = [n for n in st["nodes"].values() if n.get("parentId") == gid]
+        self.assertEqual(len(subs), 1, "exactly one provisional stub planted")
+        self.assertTrue(subs[0]["provisional"] and not subs[0]["nodeComplete"], "an OPEN provisional sub")
+        self.assertIn("empty case", subs[0]["text"], "labeled from the follow-up text")
+        self.assertEqual(st["status"][gid], "working", "the open child rolls the top up to working")
+        self.assertNotIn(subs[0]["id"], {nd["id"] for nd in jd.open_menu(st)}, "stub hidden from the planner")
+
+    def test_nudge_plants_no_stub(self):
+        gid = self._completed_top()
+        jd.optimistic_followup(SID, gid, text="status?", now=T0 + 100, stub=False)
+        st = jd.load_goals(SID)
+        self.assertEqual([n for n in st["nodes"].values() if n.get("parentId") == gid], [],
+                         "a nudge reopens but plants NO stub (the planner resolves it instead)")
 
 
 class DelegationPropagation(unittest.TestCase):

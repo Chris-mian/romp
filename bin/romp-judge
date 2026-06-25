@@ -930,9 +930,9 @@ def open_menu(store, cap=20):
             nid = nd.get("parentId")
         return False
 
-    opens = [nd for nid, nd in nodes.items() if not _sealed(nid)]
-    opens.sort(key=lambda nd: nd.get("t", 0))
-    return opens[-cap:]
+    opens = [nd for nid, nd in nodes.items() if not _sealed(nid) and not nd.get("provisional")]
+    opens.sort(key=lambda nd: nd.get("t", 0))           # provisional = a kernel follow-up STUB (UI-only): never a
+    return opens[-cap:]                                 # planner target — it drops the stub + files its own sub
 
 
 def _menu_text(store, menu):
@@ -1504,18 +1504,34 @@ def _reopen(store, gid):
         stack.extend(kids.get(c, []))
 
 
-def optimistic_followup(fsid, gid):
+def optimistic_followup(fsid, gid, text="", now=None, stub=False):
     """OPTIMISTIC reopen for a feed follow-up (the user 2026-06-17): the instant the user submits a
     follow-up on a card, reopen its goal and flag it followupPending so the board shows it back at WORKING
     with a 'Followed up' chip IMMEDIATELY — before the next judge pass officially processes the tagged
     segment (which then re-files the work and clears followupPending via _reopen). The kernel's follow-up
-    handler calls this; the judge confirms it. Returns True if a node was reopened, else False."""
+    handler calls this; the judge confirms it. Returns True if a node was reopened, else False.
+
+    When `stub` (a TYPED follow-up, which the planner will file as new work UNDER the goal — NOT a nudge,
+    which the planner RESOLVES), also plant a PROVISIONAL open sub-goal so the goal TREE shows real open
+    work AT ONCE (the user 2026-06-24): without it the card flips to WORKING but the tree still rolls the
+    top up to done from its still-done children — a "working" card over an all-✓ tree. The open stub makes
+    the top genuinely open through the normal rollup (no special-casing). It's hidden from open_menu and the
+    planner's follow-up pass DROPS it and files its own sub in its place, so it never duplicates or confuses
+    planning — it just fills the optimistic window until the planner catches up."""
     gid = str(gid)
     store = load_goals(fsid)
     if gid not in store.get("nodes", {}):
         return False
     _reopen(store, gid)                                # unseal + unblock (also clears any stale followupPending)
     store["nodes"][gid]["followupPending"] = True      # → rollup shows working + the feed shows the chip
+    if stub:
+        seq = store.get("seq", 0) + 1; store["seq"] = seq
+        sid = "%s:fu%d" % (fsid, seq)                  # the provisional follow-up stub (planner replaces it)
+        t = now if now is not None else (store["nodes"][gid].get("mt") or store["nodes"][gid].get("t", 0))
+        store["nodes"][sid] = {"id": sid, "text": _seg_label(text) if text else "Following up",
+                               "parentId": gid, "nodeComplete": False, "blocked": False, "cleared": False,
+                               "provisional": True, "trail": [], "t": t}
+        store.setdefault("status", {})[sid] = "working"
     rollup_status(store, False)                        # the user just acted → not idle/closed → working
     save_goals(fsid, store)
     return True
@@ -1641,6 +1657,9 @@ def _plan_session(fsid, path, now):
             continue
         if followup and followup in store["nodes"]:   # tagged follow-up: reopen the target, force work UNDER it
             _reopen(store, followup)
+            for k in [k for k, v in list(store["nodes"].items())   # drop the kernel's provisional follow-up STUB:
+                      if v.get("provisional") and v.get("parentId") == followup]:   # the real sub below supersedes it
+                store["nodes"].pop(k, None); store.get("status", {}).pop(k, None)
             menu = open_menu(store)                    # the reopened goal is now back in the menu
             gi = next((i for i, nd in enumerate(menu, 1) if nd["id"] == followup), None)
             if gi:
