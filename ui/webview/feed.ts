@@ -1676,7 +1676,8 @@ function reconcileCol(listEl: HTMLElement, entries: Entry[], globalDesired: Set<
     if (cur === node) { cur = cur.nextSibling; continue; }
     listEl.insertBefore(node, cur);
   }
-  if (!entries.length) { const e = el("div", "feed-col-empty"); e.textContent = "—"; listEl.appendChild(e); }
+  // an empty column shows NOTHING (the user 2026-06-25) — no "—" placeholder. (Any stray non-keyed child,
+  // including an old placeholder, is already removed at the top of this reconcile.)
 }
 
 // THE view: one screen, three columns merging open asks with standalone
@@ -1732,9 +1733,12 @@ function render() {
   reconcileCol(cols.asks, buckets.asks, desired);
   reconcileCol(cols.needsInput, buckets.needsInput, desired);
   reconcileCol(cols.completed, buckets.completed, desired);
-  cols.asksCount.textContent = String(buckets.asks.length);
-  cols.needsInputCount.textContent = String(buckets.needsInput.length);
-  cols.completedCount.textContent = String(buckets.completed.length);
+  // the count chip shows the number only when there ARE cards; an empty column shows nothing — not "0"
+  // (the user 2026-06-25). Empty string collapses the chip (it has no padding/background of its own).
+  const setCount = (elc: HTMLElement, n: number) => { elc.textContent = n ? String(n) : ""; elc.style.display = n ? "" : "none"; };
+  setCount(cols.asksCount, buckets.asks.length);
+  setCount(cols.needsInputCount, buckets.needsInput.length);
+  setCount(cols.completedCount, buckets.completed.length);
 
   // Remove cards no longer in the payload — EXCEPT one mid-dismiss (.dismissing): let its own 180ms timer
   // finish the collapse animation instead of yanking it instantly on a push (the user 2026-06-19).

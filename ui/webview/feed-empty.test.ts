@@ -32,3 +32,14 @@ test("the wordmark ships in the served + packaged media dir; the otter is gone",
   assert.ok(fs.existsSync(path.resolve(process.cwd(), "media", "romp-wordmark.png")), "media/romp-wordmark.png must exist (kernel serves /media; .vscodeignore keeps media/)");
   assert.ok(!fs.existsSync(path.resolve(process.cwd(), "media", "romp-otter.png")), "the otter image was deleted (the user 2026-06-15)");
 });
+
+test("an EMPTY column shows nothing — no '—' placeholder, and the count chip is blank not '0' (the user 2026-06-25)", () => {
+  // the per-column "—" empty placeholder is gone entirely (reconcileCol no longer appends it)
+  assert.doesNotMatch(FEED, /feed-col-empty.*textContent = "—"/);
+  assert.doesNotMatch(FEED, /e\.textContent = "—"/, "no dash placeholder for an empty column");
+  // the count chip shows the number only when > 0; an empty column's chip is blank AND collapsed (display:none)
+  assert.match(FEED, /elc\.textContent = n \? String\(n\) : "";/);
+  assert.match(FEED, /elc\.style\.display = n \? "" : "none";/);
+  assert.match(FEED, /setCount\(cols\.asksCount, buckets\.asks\.length\)/);
+  assert.doesNotMatch(FEED, /asksCount\.textContent = String\(/, "the unconditional String(count) is gone");
+});
