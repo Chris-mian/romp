@@ -24,6 +24,18 @@ test("the window-tail constant exceeds the trailing re-check window so the re-ch
   assert.ok(tail > recheck, `WINDOW_TAIL (${tail}) must exceed TAIL_RECHECK (${recheck})`);
 });
 
+test("an oversized view (scrolled to the top → window grew to full) re-collapses to the tail on switch", () => {
+  // WINDOW_CAP guards it; above WINDOW_TAIL so a normally-grown tab isn't churned. Switching TO a view with
+  // more than WINDOW_CAP rendered turns resets it (rendered/winStart 0, stick) so syncView rebuilds the tail
+  // window and lands at the bottom — bounding the reveal to ~WINDOW_TAIL nodes instead of thousands.
+  const cap = Number(/const WINDOW_CAP = (\d+);/.exec(RENDER)?.[1]);
+  const tail = Number(/const WINDOW_TAIL = (\d+);/.exec(RENDER)?.[1]);
+  assert.ok(cap > tail, `WINDOW_CAP (${cap}) must exceed WINDOW_TAIL (${tail})`);
+  // skip when deep-linking (target may be in the collapsed head) or in compact mode (rendered whole)
+  assert.match(RENDER, /if \(!pendingAnchor && pendingAnchorT == null && !settings\.compact\s*\n?\s*&& v\.el\.querySelectorAll\("\.turn"\)\.length > WINDOW_CAP\) \{/);
+  assert.match(RENDER, /v\.rendered = 0; v\.winStart = 0; v\.avgTurnH = undefined; v\.stick = true;/);
+});
+
 test("a pure tab switch is a NO-OP render — the cached DOM is revealed, not re-built", () => {
   // the normal path mirrors the compact path's cache guard: rendered===len && !stale && hasDOM ⇒ return.
   // without it, every showActive() re-rendered the trailing TAIL_RECHECK turns (markdown + highlight.js),

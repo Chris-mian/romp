@@ -2210,6 +2210,10 @@ const TAIL_RECHECK = 25;
 const WINDOW_TAIL = 80;
 const EXPAND_CHUNK = 80;
 const EXPAND_TRIGGER_PX = 600;
+// A view whose window grew past this (scrolled to the top → lazy-expand crept winStart to 0, or a long
+// session watched as it appended) is re-collapsed to the tail window when you switch BACK to it, so a
+// switch never has to reveal thousands of nodes. Above WINDOW_TAIL so a normally-grown tab isn't churned.
+const WINDOW_CAP = 300;
 
 function ensureView(id: string): View {
   let v = views.get(id);
@@ -2608,6 +2612,17 @@ function showActive() {
   else document.body.style.removeProperty("--active-accent");
   touchMru(activeId!); // record activation order so close returns to the previous tab
   const v = ensureView(activeId!);
+  // Bound the switch. A view the user scrolled to the top of has had its window expanded to the WHOLE
+  // transcript (winStart crept to 0 via lazy-expand) — revealing thousands of nodes is the big-session
+  // switch lag (the user 2026-06-25: 4126 turns / 43k DOM nodes on a 7128-event session). Switching TO it
+  // with no deep-link pending, re-collapse to the tail window and land at the bottom (the usual intent on
+  // switch-back); scrolling up lazily reloads. Skip when a deep-link is pending (its target may be in the
+  // collapsed head) and in compact mode (rendered whole — capped in rebuildCompact instead). A small view
+  // (≤ cap) is left untouched → the no-op fast path reveals it instantly.
+  if (!pendingAnchor && pendingAnchorT == null && !settings.compact
+      && v.el.querySelectorAll(".turn").length > WINDOW_CAP) {
+    v.rendered = 0; v.winStart = 0; v.avgTurnH = undefined; v.stick = true;   // → syncView firstBuild rebuilds the tail, lands at bottom
+  }
   for (const [vid, vv] of views) vv.el.style.display = vid === activeId ? "" : "none";
   updateStatusline();
   // The transcript BUILD is the only expensive part of a switch. A view already built for the current
@@ -2631,7 +2646,7 @@ function showActive() {
     if (!vv || !sessions.has(target)) return;
     syncView(target);                   // the heavy build now (clears the loading hint)
     landActive(document.getElementById("content"), vv);
-    { const st = _activeStats(); _perfHud(`switch DEFERRED ${Math.round(performance.now() - _swT0)}ms  events ${st.events}  turns ${st.turns}  win ${st.win}  domNodes ${st.nodes}`); }
+    { const st = _activeStats(); _perfHud(`switch DEFERRED ${Math.round(performance.now() - _swT0)}ms  events ${st.events}  turns ${st.turns}  win ${st.win}  nodes ${st.nodes}  compact ${settings.compact}`); }
   });
 }
 
@@ -3778,7 +3793,7 @@ function setActive(id: string, anchor?: string, anchorT?: number, anchorKind?: s
   renderTabs();
   showActive();
   schedulePrebuild(); // warm the OTHER tabs in idle (MRU-first) so the next switch is instant
-  { const st = _activeStats(); _perfHud(`switch SYNC ${Math.round(performance.now() - _swT0)}ms  events ${st.events}  turns ${st.turns}  win ${st.win}  domNodes ${st.nodes}`); }
+  { const st = _activeStats(); _perfHud(`switch SYNC ${Math.round(performance.now() - _swT0)}ms  events ${st.events}  turns ${st.turns}  win ${st.win}  nodes ${st.nodes}  compact ${settings.compact}`); }
 }
 
 function cycleTab(dir: number) {
