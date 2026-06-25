@@ -5512,7 +5512,10 @@ def _landing():
             "background:#2a2a2a;color:#999;border:1px solid #3a3a3a;cursor:pointer;user-select:none;opacity:.3;transition:opacity .1s}"
             ".collapse-btn:hover{opacity:1;color:#fff}"
             ".collapse-btn .bar-h{width:12px;height:3px;border-radius:2px;background:currentColor;display:block}"
-            "#tl-collapse{right:8px;top:6px;width:24px;height:16px;border-radius:5px}"   # top-RIGHT of the timeline (the user 2026-06-24), was top-centre
+            # the timeline minimize is a DEDICATED, OPAQUE top-right cut-out (the user 2026-06-24): flush in the
+            # corner, full-opacity with an opaque bg so it BLOCKS the iframe behind it (not a floating translucent
+            # bubble), and vertically compact so it hugs the top edge.
+            "#tl-collapse{top:0;right:0;width:34px;height:18px;border-radius:0 0 0 6px;opacity:1;background:#252526;border:1px solid #3a3a3a;border-top:0;border-right:0}"
             # ── per-pane vertical button STRIP (the user 2026-06-24): a thin rail on the chat (right) + feed
             # (left) inner edges that HOLDS the minimize button + (chat) the rotated Fleet/Chat toggles, with
             # room for more. The iframe is inset by --strip so the rail reserves its own space rather than
