@@ -1645,7 +1645,7 @@ function quoteSelectionIntoComposer(text: string) {
   ta.selectionStart = ta.selectionEnd = caret;
   growComposer(ta);
   ta.focus();
-  if (activeId) drafts.set(activeId, ta.value);
+  if (activeId) { drafts.set(activeId, ta.value); persistDrafts(); }
 }
 
 function copyToClipboard(text: string) {
@@ -2583,6 +2583,7 @@ function showActive() {
     return;
   }
   if (empty) empty.style.display = "none";
+  restoreActiveDraftOnce();   // after a reload, drop the active tab's persisted draft back into the box (once)
   // A closed (dead) session is READ-ONLY: disable the composer so a message can't be black-holed into
   // a session that no longer exists (the user 2026-06-16). Re-runs each push, so a session that dies
   // while you're viewing it disables the box live; switching back to a live tab re-enables it.
@@ -3691,6 +3692,26 @@ function updateStatusline() {
 // switching back restores it.
 const drafts = new Map<string, string>();
 
+// Persist drafts across a full RELOAD (the user 2026-06-25: a half-typed message must survive a refresh, not
+// only a tab switch). The Map is in-memory, so mirror it into the webview's persisted state — the same store
+// that remembers the active tab — and reload it at startup. restoreActiveDraftOnce() drops the active tab's
+// draft back into the box ONE time after load, and only when the box is empty, so it never clobbers live typing.
+function persistDrafts(): void {
+  try { vscodeApi?.setState?.({ ...(vscodeApi.getState?.() || {}), drafts: Object.fromEntries(drafts) }); } catch { /* ignore */ }
+}
+try {
+  const saved = ((vscodeApi?.getState?.() || {}) as any).drafts;
+  if (saved && typeof saved === "object") for (const [k, v] of Object.entries(saved)) if (typeof v === "string") drafts.set(k, v);
+} catch { /* ignore */ }
+let draftsRestored = false;
+function restoreActiveDraftOnce(): void {
+  if (draftsRestored) return;
+  const ta = document.getElementById("composer-input") as HTMLTextAreaElement | null;
+  if (!ta || !activeId) return;            // wait until the active tab is established after load
+  draftsRestored = true;
+  if (!ta.value) { const d = drafts.get(activeId); if (d) { ta.value = d; growComposer(ta); } }
+}
+
 function setActive(id: string, anchor?: string, anchorT?: number, anchorKind?: string) {
   if (activeId === id && anchor == null && anchorT == null) return; // already active, nothing to do
   closeMetaMenu(); // an open model/effort menu targets the tab we're leaving
@@ -3710,6 +3731,7 @@ function setActive(id: string, anchor?: string, anchorT?: number, anchorKind?: s
     }
     ta.value = drafts.get(id) ?? "";
     growComposer(ta);
+    persistDrafts();   // the leaving tab's draft was just stashed → keep the persisted copy in sync
   }
   pendingAnchor = anchor ?? null;
   pendingAnchorIntent = anchor ? (anchorKind ?? null) : null;
@@ -3842,7 +3864,7 @@ function dismissSession(id: string): void {
   sessions.delete(id);
   liveAsks.delete(id);
   ledgers.delete(id);
-  drafts.delete(id);
+  drafts.delete(id); persistDrafts();
   const v = views.get(id);
   if (v) { v.el.remove(); views.delete(id); }
   const oi = order.indexOf(id); if (oi >= 0) order.splice(oi, 1);
@@ -3962,7 +3984,7 @@ function setupComposer() {
     if (!text || !activeId) return;
     lastSent.set(activeId, text);   // remembered for a possible Ctrl+C restore
     if (vscodeApi) vscodeApi.postMessage({ type: "sendMessage", id: activeId, text });
-    drafts.delete(activeId);        // sent — no draft to restore on a later switch-back
+    drafts.delete(activeId); persistDrafts();   // sent — no draft to restore on a later switch-back
     ta.value = "";
     ta.style.height = "";
   };
@@ -4000,7 +4022,11 @@ function setupComposer() {
                           // for its caret. (The explicit send BUTTON keeps composer focus for continued typing.)
     }
   });
-  ta.addEventListener("input", () => growComposer(ta));
+  ta.addEventListener("input", () => {
+    growComposer(ta);
+    // keep the per-tab draft (and its persisted copy) current as you type, so a reload restores it
+    if (activeId) { if (ta.value) drafts.set(activeId, ta.value); else drafts.delete(activeId); persistDrafts(); }
+  });
 
   // Drag a file onto the box → insert its PATH at the cursor. NOTE: VS Code's
   // workbench drop overlay captures plain external file drags over any editor
