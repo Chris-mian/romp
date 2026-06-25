@@ -1,0 +1,113 @@
+"""Diff-based delta-send for the chat (the user 2026-06-25, "stop re-sending what didn't change").
+
+The chat pusher used to send the FULL events array on every change (~8MB for a big transcript). Now the
+whole transcript stays resident in the browser (instant scrollback), but a caught-up client receives only
+the CHANGED SUFFIX as {type:"chatTail", from, events}. The suffix is found by DIFFING the freshly-built
+events against the previous build — robust to _hydrate_postal turning one event into several cards mid-array,
+which a fixed window would mishandle. A fresh connect / fork / behind-the-change client still gets the full
+{type:"session"} so it always renders from a correct base. Source-level + behavioural pins.
+"""
+import json
+import os
+import unittest
+from importlib.machinery import SourceFileLoader
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+BIN = os.path.join(os.path.dirname(HERE), "bin")
+os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
+os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
+km = SourceFileLoader("romp_kernel", os.path.join(BIN, "romp-kernel")).load_module()
+
+
+def _client():
+    sent = []
+    return {"send": sent.append, "sent": {}}, sent
+
+
+def _last(sent):
+    return json.loads(sent[-1])
+
+
+class ChatDiffTest(unittest.TestCase):
+    def test_diff_finds_the_exact_changed_suffix(self):
+        a = [{"uuid": "1", "x": 1}, {"uuid": "2", "x": 2}]
+        self.assertEqual(km._chat_diff([], a), 0, "no prior build → full (from 0)")
+        self.assertEqual(km._chat_diff(a, a + [{"uuid": "3"}]), 2, "append → from = old length")
+        # a tool output filling an EARLIER card changes that card in place → from = its index
+        filled = [{"uuid": "1", "x": 1}, {"uuid": "2", "x": 2, "output": "done"}, {"uuid": "3"}]
+        self.assertEqual(km._chat_diff(a + [{"uuid": "3"}], filled), 1, "in-place fill → from = that index")
+        self.assertEqual(km._chat_diff(a, list(a)), len(a), "no change → from = length (empty suffix)")
+
+
+class SendChatTest(unittest.TestCase):
+    def _m(self, sid, events):
+        return {"type": "session", "id": sid, "name": sid, "events": events,
+                "status": {"state": "working"}, "ledger": None, "color": None}
+
+    def test_new_client_gets_the_full_session_then_appends_arrive_as_a_tail(self):
+        a = [{"uuid": "1"}, {"uuid": "2"}]
+        c, sent = _client()
+        km._send_chat(c, self._m("S", a), None, 0, False)             # first send → full
+        self.assertEqual(_last(sent)["type"], "session")
+        b = a + [{"uuid": "3"}]
+        km._send_chat(c, self._m("S", b), None, 2, False)             # caught up, appended → tail from 2
+        tail = _last(sent)
+        self.assertEqual(tail["type"], "chatTail")
+        self.assertEqual(tail["from"], 2)
+        self.assertEqual([e["uuid"] for e in tail["events"]], ["3"])
+        self.assertEqual(tail["total"], 3)
+        self.assertIn("status", tail)                          # the chip rides along on the delta
+
+    def test_a_tool_fill_re_sends_from_that_cards_index(self):
+        b = [{"uuid": "1"}, {"uuid": "2"}, {"uuid": "3"}]
+        c, sent = _client()
+        km._send_chat(c, self._m("S", b), None, 0, False)             # full
+        filled = [{"uuid": "1"}, {"uuid": "2", "output": "done"}, {"uuid": "3"}]
+        km._send_chat(c, self._m("S", filled), None, 1, False)        # card #2 filled → tail FROM 1
+        tail = _last(sent)
+        self.assertEqual(tail["type"], "chatTail")
+        self.assertEqual(tail["from"], 1)
+        self.assertEqual([e.get("output") for e in tail["events"]], ["done", None])
+
+    def test_a_fork_new_head_uuid_forces_a_full_resend(self):
+        c, sent = _client()
+        km._send_chat(c, self._m("S", [{"uuid": "1"}, {"uuid": "2"}]), None, 0, False)   # full
+        # the tab re-pointed onto a NEW transcript (a /clear-style fork) → first event uuid changes
+        km._send_chat(c, self._m("S", [{"uuid": "9"}, {"uuid": "10"}]), None, 0, False)
+        self.assertEqual(_last(sent)["type"], "session", "a fork must full-resend, never a tail onto a wrong base")
+
+    def test_a_client_behind_the_change_point_gets_the_full_not_a_tail(self):
+        # a client that only holds 1 event but the change starts at index 3 can't apply a tail (it lacks the
+        # unchanged prefix) → full. (Simulated by hand-setting its echat count below change_from.)
+        c, sent = _client()
+        c["echat"] = {"S": ("1", 1)}                           # claims head '1', count 1
+        evs = [{"uuid": "1"}, {"uuid": "2"}, {"uuid": "3"}, {"uuid": "4"}]
+        km._send_chat(c, self._m("S", evs), None, 3, False)           # change_from 3 > its count 1 → full
+        self.assertEqual(_last(sent)["type"], "session")
+
+    def test_the_ledger_rides_the_tail_only_when_it_changed(self):
+        # the ledger (goal tree, tens of KB) only changes on a judge pass, so it must NOT ride every 0.5s delta
+        a = [{"uuid": "1"}, {"uuid": "2"}]
+        c, sent = _client()
+        km._send_chat(c, self._m("S", a), None, 0, False)                  # full → carries the ledger
+        km._send_chat(c, self._m("S", a + [{"uuid": "3"}]), None, 2, False)   # only an event appended
+        self.assertEqual(_last(sent)["type"], "chatTail")
+        self.assertNotIn("ledger", _last(sent), "an unchanged ledger does NOT ride every delta")
+        km._send_chat(c, self._m("S", a + [{"uuid": "3"}, {"uuid": "4"}]), None, 3, True)   # judge pass
+        self.assertIn("ledger", _last(sent), "a changed ledger DOES ride the delta")
+
+
+class RenderHandlesTheTail(unittest.TestCase):
+    def test_render_truncates_to_from_appends_and_repaints_from_the_changed_point(self):
+        import pathlib
+        src = pathlib.Path(BIN).parent / "ui" / "webview" / "render.ts"
+        r = src.read_text()
+        self.assertIn('else if (m.type === "chatTail") chatTail(m);', r)       # dispatched
+        self.assertIn("s.events.length = from;", r)                            # truncate the superseded tail
+        self.assertIn("for (const e of (msg.events || [])) s.events.push(e);", r)  # append the suffix
+        self.assertIn("v.rendered = Math.min(v.rendered, from);", r)           # repaint from the exact change
+        self.assertIn("if (from > s.events.length) return;", r)                # gap guard → wait for a full
+
+
+if __name__ == "__main__":
+    unittest.main()

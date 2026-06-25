@@ -3590,6 +3590,34 @@ function update(msg: any) {
   }
 }
 
+// DELTA-send (the user 2026-06-25): the kernel keeps the whole transcript resident in the browser but, once
+// a tab is caught up, sends only the changed SUFFIX as {type:"chatTail", from, events}. The prefix [0, from)
+// is unchanged (an append → from = old length; a tool output filling an earlier card → from = that card's
+// index), so we truncate s.events to `from` and append the suffix, then re-render from exactly `from` (set
+// v.rendered = from) so a deep fill repaints without rebuilding the whole transcript. A new connect / fork /
+// behind-the-change client gets a full {type:"session"} instead (kernel decides), so we always have a base.
+function chatTail(msg: any) {
+  const s = sessions.get(msg.id);
+  if (!s) return;                                  // no base yet → ignore; a full session must arrive first
+  const from = Math.max(0, msg.from | 0);
+  if (from > s.events.length) return;              // a gap (a push was missed) → wait for the next full; never corrupt
+  s.events.length = from;                          // drop the (now superseded) tail...
+  for (const e of (msg.events || [])) s.events.push(e);   // ...and append the freshly-changed suffix
+  if (msg.status) s.status = msg.status;
+  if ("ledger" in msg) ledgers.set(msg.id, msg.ledger ?? null);
+  if (msg.id !== activeId) sortTabs();
+  renderTabs();
+  if (msg.id === activeId) {
+    const v = views.get(msg.id);
+    if (v) v.rendered = Math.min(v.rendered, from);   // repaint from the exact changed point (catches a tool fill)
+    appendActive();
+    renderLedger();
+  } else {
+    const v = views.get(msg.id);
+    if (v) v.stale = true;
+  }
+}
+
 function statusOnly(msg: any) {
   const s = sessions.get(msg.id);
   if (!s) return;
@@ -3625,6 +3653,7 @@ window.addEventListener("message", (e: MessageEvent) => {
   const m = e.data;
   if (!m) return;
   if (m.type === "session") upsert(m);
+  else if (m.type === "chatTail") chatTail(m);
   else if (m.type === "update") update(m);
   else if (m.type === "status") statusOnly(m);
   else if (m.type === "focus") setActive(m.id, m.anchor, typeof m.anchorT === "number" ? m.anchorT : undefined, typeof m.anchorKind === "string" ? m.anchorKind : undefined);

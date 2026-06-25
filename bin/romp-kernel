@@ -2221,6 +2221,28 @@ _built_chat = {}                                 # sid → (sig, payload_dict, s
 _judge_gen = [0]                                 # bumped each producer pass → busts the cache when the judge
                                                  # may have changed goal/caption state without a transcript write
 
+# Delta-send (the user 2026-06-25, "stop re-sending what didn't change"): the chat pusher used to send the
+# FULL events array (~8MB for a 34MB transcript) on every change, even when one event was appended. Keep the
+# whole transcript resident in the browser (instant scrollback) but send only the CHANGED SUFFIX. _prev_chat_
+# events holds the last-built events per session; _chat_diff finds the first index that differs from it — the
+# exact point content changed (a new event OR a tool output that just filled an earlier card). Diffing by
+# CONTENT (not a fixed window) is robust to _hydrate_postal turning one event into several cards mid-array.
+_prev_chat_events = {}                           # sid → the events list from the previous build (to diff against)
+_prev_chat_ledger = {}                           # sid → the previous build's ledger (so a delta carries it only when changed)
+
+
+def _chat_diff(prev, cur):
+    """First index where the freshly-built events `cur` differ from the previously-sent `prev` — i.e. the
+    suffix to re-send. Append-only growth returns len(prev) (just the new tail); a tool output filling an
+    earlier card returns that card's index. 0 when there's no prior build (→ a full send)."""
+    if not prev:
+        return 0
+    n = min(len(prev), len(cur))
+    i = 0
+    while i < n and prev[i] == cur[i]:
+        i += 1
+    return i
+
 
 def _chat_build_sig(sess):
     """A cheap (transcript mtime,size, states mtime,size) signature for the chat-build cache — busts on any
@@ -4476,6 +4498,31 @@ def _send_client(c, key, msg, pre=None):
         c["alive"] = False
 
 
+def _send_chat(c, m, ms, change_from, led_changed):
+    """Send session `m`'s chat to client `c` as a DELTA when the client is already caught up, else the full
+    session. `change_from` is the first index that changed since the previous build (one diff per push, shared
+    by all clients). A client gets a {type:chatTail, from, events:[suffix]} iff it already holds events
+    0..from-1 with the same head uuid (no fork); otherwise — a fresh connect, a fork, or a client behind the
+    change point — it gets the full {type:session} so it can never render from a wrong base. echat tracks
+    (head_uuid, count) per session per client. The browser truncates to `from` and appends the suffix. The
+    LEDGER (goal tree, tens of KB) only changes on a judge pass, so it rides the tail ONLY when it changed —
+    otherwise the tail is just the handful of changed events + the small status chip."""
+    sid = m["id"]
+    evs = m.get("events") or []
+    head = evs[0].get("uuid") if (evs and isinstance(evs[0], dict)) else None
+    st = c.setdefault("echat", {})
+    pc = st.get(sid)                                  # (head_uuid, count) the client currently holds
+    if pc is None or pc[0] != head or change_from <= 0 or pc[1] < change_from:
+        _send_client(c, ("chat", sid), m, pre=ms)     # full — new client / fork / behind the change point
+    else:
+        tail = {"type": "chatTail", "id": sid, "from": change_from,
+                "events": evs[change_from:], "total": len(evs), "status": m.get("status")}
+        if led_changed:                               # the TOC only changed on a judge pass → usually omitted
+            tail["ledger"] = m.get("ledger")
+        _send_client(c, ("chat", sid), tail)
+    st[sid] = (head, len(evs))
+
+
 # The active recency colormap (the user 2026-06-16 wanted a chooser): persisted in STATE/colormap, read
 # by the feed/terminal builders. Cached by mtime so the per-node age_rgb in build_feed doesn't re-stat.
 _cmap_cache = {"name": cm.DEFAULT, "mt": None}
@@ -4643,11 +4690,22 @@ def _push(targets):
                 if not m:
                     continue
                 chat_sessions.append(m)
+                # delta-send: diff this build's events against the previous one ONCE, then each client gets
+                # only the changed suffix (chatTail) if it's caught up, else the full session. Keeps the whole
+                # transcript resident in the browser (instant scrollback) while the per-change wire payload
+                # drops from the whole events array to just what changed.
+                change_from = _chat_diff(_prev_chat_events.get(m["id"]), m.get("events") or [])
+                led_changed = m.get("ledger") != _prev_chat_ledger.get(m["id"])
+                _prev_chat_events[m["id"]] = m.get("events") or []
+                _prev_chat_ledger[m["id"]] = m.get("ledger")
                 for c in chat_clients:
-                    _send_client(c, ("chat", m["id"]), m, pre=ms)   # flush as built → the active tab lands first
+                    _send_chat(c, m, ms, change_from, led_changed)   # flush as built → the active tab lands first
+            shown_sids = {s["sid"] for s in chat_list}
             for sid in list(_built_chat):                # drop cache for tabs no longer shown (closed/×-hidden)
-                if sid not in {s["sid"] for s in chat_list}:
+                if sid not in shown_sids:
                     _built_chat.pop(sid, None)
+                    _prev_chat_events.pop(sid, None)
+                    _prev_chat_ledger.pop(sid, None)
         feed = build_feed(now, tmux) if want_feed else None
         if feed is not None and chat_sessions:
             feed["ledgers"] = [{"sid": m["id"], "name": m["name"], "color": m.get("color"),
