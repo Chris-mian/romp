@@ -576,14 +576,12 @@ body { display: flex; flex-direction: column; }
 /* scroll-margin-top: a jump lands the turn at the TOP of the viewport (landOn uses
    block:"start") — a few px of breathing room so it isn't glued to the edge and the
    anchor-flash border isn't clipped. */
-.turn { position: relative; padding-left: 30px; padding-top: 9px; padding-bottom: 9px; scroll-margin-top: 10px;
-  /* A long chat renders thousands of .turn nodes; the browser doing layout/hit-testing over ALL of them made
-     focusing the (heavy) chat iframe laggy — clicking into/out of the chat stalled ~½s even with nothing
-     changing (the user 2026-06-25). content-visibility:auto lets the browser SKIP layout+paint for off-screen
-     turns (on-screen ones render normally); contain-intrinsic-size (auto = remember each turn's real height
-     once it's been seen, with a 90px first guess) keeps the scrollbar roughly stable. The scrollbar ruler
-     only measures GLOWING turns, which are the recent/on-screen ones, so it's unaffected. */
-  content-visibility: auto; contain-intrinsic-size: auto 90px; }
+.turn { position: relative; padding-left: 30px; padding-top: 9px; padding-bottom: 9px; scroll-margin-top: 10px; }
+/* NOTE: content-visibility:auto was tried here to speed up focusing the heavy chat iframe (the user 2026-06-25)
+   but REVERTED — it makes content.scrollHeight an ESTIMATE (off-screen turns get guessed heights), and
+   appendActive()/nearBottom()/the ruler all rely on a real scrollHeight, so a new message snapped the view to
+   the estimated bottom then corrected. The right fix for the focus lag is true virtualisation (explicit spacer
+   + managed heights), not content-visibility. */
 /* tool + thinking rows pack tighter than prose turns (the user: ~half the spacing) */
 .turn-tool, .turn-thinking, .turn-toolgroup, .turn-compact { padding-top: 4px; padding-bottom: 4px; }
 /* context-compaction marker — one clean teal line on the rail (replaces the raw /compact stdout) */
