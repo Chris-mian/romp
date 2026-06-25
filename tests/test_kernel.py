@@ -3565,10 +3565,10 @@ class TmuxInputEcho(unittest.TestCase):
 
     def test_echo_shows_instantly_before_the_transcript_has_it(self):
         km._tmux_echo_add(SID, "restart Obsidian and I'll check")
-        merged = km._merge_live_atoms(self._session([]), SID)
+        merged = km._merge_live_atoms(self._session([self._real_user("earlier")]), SID)
         texts = [km._atom_user_text(a) for a in merged["turns"][-1]["atoms"]]
         self.assertIn("restart Obsidian and I'll check", texts, "the tmux send echoes instantly, ahead of disk")
-        self.assertFalse(merged["turns"][-1]["ended"], "merging a live echo reopens the turn")
+        self.assertTrue(merged["turns"][-1]["ended"], "but an echo must NOT reopen the turn (it's a user msg, not work)")
 
     def test_successful_send_echo_prunes_when_the_real_user_atom_lands(self):
         text = "edit the files and I'll restart"
@@ -3598,6 +3598,35 @@ class TmuxInputEcho(unittest.TestCase):
         texts = [km._atom_user_text(a) for a in merged["turns"][-1]["atoms"]]
         self.assertNotIn(text, texts, "a queued message is owned by the queued indicator, not double-shown by the echo")
         self.assertIn(SID, km._tmux_echo, "the echo is only HIDDEN while queued, not pruned — it retires when the real atom lands")
+
+    def test_echo_only_merge_does_not_make_the_session_look_working(self):
+        # THE chat↔timeline split (the user 2026-06-25): the chat is the only surface that merges live
+        # atoms, and it forced the last turn open for ANY fresh atom — so a lingering input echo (a dropped
+        # send persists forever) made the chat show 'working' + a counting timer while the timeline/feed (no
+        # merge) correctly showed idle. An echo is a pending USER message, not the assistant working.
+        ended_turn = self._session([self._real_user("earlier prompt")])  # last turn is ended=True
+        km._tmux_echo_add(SID, "this send dropped — its echo lingers")
+        merged = km._merge_live_atoms(ended_turn, SID)
+        self.assertTrue(merged["turns"][-1]["ended"], "an echo-only merge keeps the turn ENDED (not reopened)")
+        self.assertFalse(km._session_working(merged["turns"]), "a lone echo must NOT read as working")
+        texts = [km._atom_user_text(a) for a in merged["turns"][-1]["atoms"]]
+        self.assertIn("this send dropped — its echo lingers", texts, "the echo still renders (stays visible)")
+
+    def test_live_assistant_work_still_reopens_the_turn(self):
+        # The flip side: a genuine live ASSISTANT atom (an SDK stream reply leading the disk write) DOES
+        # reopen the turn → working. Only the lone-echo case is suppressed.
+        saved = km._sdk
+        live = [{"type": "assistant", "uuid": "live-a", "t": NOW,
+                 "message": {"role": "assistant", "content": [{"type": "text", "text": "on it"}]}}]
+        km._sdk = lambda: type("B", (), {"owns": lambda self, s: True,
+                                         "live_atoms": lambda self, s: live,
+                                         "prune_live": lambda self, s, u, t: None})()
+        try:
+            merged = km._merge_live_atoms(self._session([self._real_user("go")]), SID)
+        finally:
+            km._sdk = saved
+        self.assertFalse(merged["turns"][-1]["ended"], "live assistant work reopens the turn")
+        self.assertTrue(km._session_working(merged["turns"]), "streaming assistant work reads as working")
 
     def test_queued_suppression_strips_whitespace(self):
         # _pending_queued .strip()s its texts; the echo stores the raw composer text. Match on stripped text.

@@ -2604,12 +2604,21 @@ def _merge_live_atoms(session, sid, shown_texts=()):
              and not (a.get("_echo_text") and a["_echo_text"].strip() in hide)]
     if not fresh:
         return session
+    # Reopen the turn ONLY for genuine live ASSISTANT work (a streaming reply), never for a lone input echo.
+    # An echo is a pending/dropped USER message, not the assistant working — and _session_working keys on the
+    # last turn being open. The chat is the only surface that merges live atoms, so forcing the turn open for
+    # an echo made the chat show a false "working" + counting timer (a dropped send's echo persists forever)
+    # while the timeline/feed (no merge) correctly showed idle — the exact chat↔timeline split the user saw
+    # (the user 2026-06-25). So an echo-only merge keeps the turn's real ended state.
+    live_work = any(not a.get("_echo_text") for a in fresh)
     turns = [dict(t) for t in session["turns"]]
     if not turns:
-        turns = [{"id": "live", "trigger": None, "t": fresh[0]["t"], "end": fresh[-1]["t"], "ended": False, "atoms": []}]
+        turns = [{"id": "live", "trigger": None, "t": fresh[0]["t"], "end": fresh[-1]["t"],
+                  "ended": not live_work, "atoms": []}]
     turns[-1] = dict(turns[-1])
     turns[-1]["atoms"] = sorted(list(turns[-1]["atoms"]) + fresh, key=lambda a: (a.get("t", 0), a.get("_seq", 0)))
-    turns[-1]["ended"] = False
+    if live_work:
+        turns[-1]["ended"] = False
     return {**session, "turns": turns}
 
 
