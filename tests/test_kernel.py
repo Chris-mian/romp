@@ -3540,5 +3540,55 @@ class SessionOrderStable(unittest.TestCase):
         self.assertEqual(got, ["A", "B", "C"], "kept-open dead tab keeps its slot, same stable key as the timeline")
 
 
+class TmuxInputEcho(unittest.TestCase):
+    """Optimistic input echo for tmux sends (the user via bugs 2026-06-25): the SDK backend echoes a
+    composer message instantly, but tmux had none — a send whose Enter dropped at the pane prompt was
+    INVISIBLE in the web chat, so the user thought they'd replied. _merge_live_atoms now also merges a
+    kernel-side _tmux_echo for tmux sids: a successful send's echo prunes when the real user turn writes;
+    a DROPPED send's echo PERSISTS so the lost message stays visible. Synthetic only."""
+
+    def setUp(self):
+        self._saved_sdk = km._sdk
+        km._sdk = lambda: None                 # tmux path: no SDK backend owns the sid
+        km._tmux_echo.clear()
+
+    def tearDown(self):
+        km._sdk = self._saved_sdk
+        km._tmux_echo.clear()
+
+    def _session(self, atoms):
+        return {"turns": [{"id": "t", "trigger": None, "t": T0, "end": T0, "ended": True, "atoms": atoms}]}
+
+    def _real_user(self, text, uid="real-1"):
+        return {"type": "user", "uuid": uid,
+                "message": {"role": "user", "content": [{"type": "text", "text": text}]}}
+
+    def test_echo_shows_instantly_before_the_transcript_has_it(self):
+        km._tmux_echo_add(SID, "restart Obsidian and I'll check")
+        merged = km._merge_live_atoms(self._session([]), SID)
+        texts = [km._atom_user_text(a) for a in merged["turns"][-1]["atoms"]]
+        self.assertIn("restart Obsidian and I'll check", texts, "the tmux send echoes instantly, ahead of disk")
+        self.assertFalse(merged["turns"][-1]["ended"], "merging a live echo reopens the turn")
+
+    def test_successful_send_echo_prunes_when_the_real_user_atom_lands(self):
+        text = "edit the files and I'll restart"
+        km._tmux_echo_add(SID, text)
+        merged = km._merge_live_atoms(self._session([self._real_user(text)]), SID)
+        texts = [km._atom_user_text(a) for a in merged["turns"][-1]["atoms"]]
+        self.assertEqual(texts.count(text), 1, "no duplicate bubble: the echo dedups against the real atom")
+        self.assertNotIn(SID, km._tmux_echo, "the echo is pruned once the real user turn writes")
+
+    def test_dropped_send_echo_persists_so_the_lost_message_stays_visible(self):
+        km._tmux_echo_add(SID, "this Enter dropped at the prompt")
+        merged = km._merge_live_atoms(self._session([]), SID)   # transcript never gets it — the send dropped
+        texts = [km._atom_user_text(a) for a in merged["turns"][-1]["atoms"]]
+        self.assertIn("this Enter dropped at the prompt", texts, "a dropped send stays visible, not silent")
+        self.assertIn(SID, km._tmux_echo, "the echo persists until the real turn lands")
+
+    def test_no_echo_is_a_noop(self):
+        sess = self._session([self._real_user("hello")])
+        self.assertIs(km._merge_live_atoms(sess, SID), sess, "no live echo → session returned unchanged")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

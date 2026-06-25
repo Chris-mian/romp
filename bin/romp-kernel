@@ -14,7 +14,7 @@ old). Port status (KEEP/ADAPT/DROP) tracked in design/ui-parity.md + backlog.md.
 
 Run:  python3 ~/GitRepos/romp-event-model/bin/romp-kernel   → opens http://127.0.0.1:7433
 """
-import json, os, re, sys, time, threading, traceback, base64, hashlib, hmac, struct, subprocess, shutil, http.client
+import json, os, re, sys, time, threading, traceback, base64, hashlib, hmac, struct, subprocess, shutil, http.client, uuid
 from pathlib import Path
 from datetime import datetime
 from importlib.machinery import SourceFileLoader
@@ -2543,21 +2543,54 @@ def _atom_user_text(a):
     return (c.strip() if isinstance(c, str) else None) or None
 
 
+# Optimistic input echo for TMUX sends. The SDK backend echoes a composer message instantly via its own
+# _live store; tmux sends had NO echo, so a tmux send whose Enter dropped at the pane prompt was INVISIBLE
+# in the web chat — the user thought they'd replied (the user via bugs 2026-06-25). Mirror the SDK shape
+# kernel-side: a synthetic human user atom, merged ahead of disk and pruned by text once the real user
+# turn lands. A SUCCESSFUL send's echo prunes when the turn writes; a DROPPED send's echo PERSISTS, so the
+# lost message stays visible (no response) instead of vanishing silently.
+_tmux_echo = {}                                       # sid -> {key -> synthetic user atom}
+
+def _tmux_echo_add(sid, text):
+    key = "echo:" + uuid.uuid4().hex
+    _tmux_echo.setdefault(sid, {})[key] = {
+        "type": "user", "uuid": key, "session_id": sid, "t": int(time.time()), "parentUuid": None,
+        "author": "human", "_echo_text": text,        # human typed it → blue bubble (matches the transcript atom)
+        "message": {"role": "user", "content": [{"type": "text", "text": text}]}}
+
+def _tmux_echo_atoms(sid):
+    return list(_tmux_echo.get(sid, {}).values())
+
+def _tmux_echo_prune(sid, tx_uuids, tx_texts):
+    """Drop an echo once the transcript has its real user atom (by uuid or text); pop the sid when empty."""
+    d = _tmux_echo.get(sid)
+    if not d:
+        return
+    for k in [k for k, a in d.items()
+              if a.get("uuid") in tx_uuids or (a.get("_echo_text") and a["_echo_text"] in tx_texts)]:
+        d.pop(k, None)
+    if not d:
+        _tmux_echo.pop(sid, None)
+
+
 def _merge_live_atoms(session, sid):
-    """Merge the SDK backend's in-memory LIVE-TAIL atoms into the parsed session, AHEAD of the transcript
-    on disk, so messages appear instantly (the SDK stream leads the disk write). NON-MUTATING — `session`
-    is the _parse cache, so this returns a shallow copy with the last turn's atoms extended. Dedup: drop
-    any live atom the transcript already has, by uuid (stream messages: SDK uuid == transcript uuid) or by
-    text (the optimistic input echo, which carries a synthetic uuid)."""
+    """Merge in-memory LIVE-TAIL atoms into the parsed session, AHEAD of the transcript on disk, so messages
+    appear instantly (the stream / a composer send leads the disk write). NON-MUTATING — `session` is the
+    _parse cache, so this returns a shallow copy with the last turn's atoms extended. Two sources: the SDK
+    backend's _live (stream + its own input echo) for SDK sids, and the kernel-side tmux input echo
+    (_tmux_echo) for tmux sids. Dedup: drop any live atom the transcript already has, by uuid (stream
+    messages: SDK uuid == transcript uuid) or by text (an optimistic input echo carries a synthetic uuid)."""
     be = _sdk()
-    if not (be and be.owns(sid)):
-        return session
-    live = be.live_atoms(sid)
+    sdk_owns = bool(be and be.owns(sid))
+    live = be.live_atoms(sid) if sdk_owns else _tmux_echo_atoms(sid)
     if not live:
         return session
     tx_uuids = {a.get("uuid") for turn in session["turns"] for a in turn["atoms"] if a.get("uuid")}
     tx_texts = {t for turn in session["turns"] for a in turn["atoms"] if (t := _atom_user_text(a))}
-    be.prune_live(sid, tx_uuids, tx_texts)
+    if sdk_owns:
+        be.prune_live(sid, tx_uuids, tx_texts)
+    else:
+        _tmux_echo_prune(sid, tx_uuids, tx_texts)
     fresh = [a for a in live if a.get("uuid") not in tx_uuids
              and not (a.get("_echo_text") and a["_echo_text"] in tx_texts)]
     if not fresh:
@@ -6205,7 +6238,10 @@ class Handler(BaseHTTPRequestHandler):
                 groups = [{"sid": hsid, "uuids": uuids}] if uuids else []
                 _send_to_app("chat", {"type": "glowTurns", "groups": groups, "mids": []})
         elif msg and msg.get("type") == "sendMessage" and msg.get("id") and msg.get("text"):
-            _tmux_send(_name_of(msg["id"]) or msg["id"], str(msg["text"]))   # composer → session
+            sid, text = str(msg["id"]), str(msg["text"])
+            _tmux_send(_name_of(sid) or sid, text)   # composer → session
+            _tmux_echo_add(sid, text)                # optimistic echo: show it instantly; persists if the send dropped
+            _push_all()                              # surface the echo now (don't wait for the next hook tick)
         elif msg and msg.get("type") == "interrupt" and msg.get("id"):
             _interrupt(_name_of(msg["id"]) or msg["id"])   # Esc to stop + clear the restored prompt (composer↔pane consistency)
             _record_idle(str(msg["id"]), int(time.time()))   # Esc-stop writes no end_turn → record idle so the chip flips to 'ready'
