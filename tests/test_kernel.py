@@ -180,7 +180,9 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(m["id"], SID)
         self.assertEqual(m["color"], {"bg": "#abcdef", "fg": "#ffffff"})
         kinds = [e["kind"] for e in m["events"]]
-        self.assertEqual(kinds, ["user", "assistant", "tool", "assistant"], "atoms reshape to ChatEvent[]")
+        # events[0] is the pinned system-context card (model/cwd/branch/CLAUDE.md), prepended by build_session
+        # and rendered by render.ts renderSystem; the transcript atoms reshape to ChatEvent[] after it.
+        self.assertEqual(kinds, ["system", "user", "assistant", "tool", "assistant"], "system card + atoms reshape to ChatEvent[]")
 
     def test_user_event_and_human_flag(self):
         m = km.build_session(SID, NOW)
