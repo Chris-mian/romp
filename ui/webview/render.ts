@@ -286,11 +286,16 @@ function preEl(text: string): HTMLElement {
   return pre;
 }
 
-// Markdown links: the webview sandbox only auto-opens http(s) — a vscode://
-// link (e.g. a romp chat deep link pasted into a conversation) silently dies
-// on click. Route every absolute-scheme anchor through the host instead: it
-// openExternal()s normal URLs and feeds vscode://romp.romp-chat-view deep
-// links straight into the extension's own URI handler.
+// Links in the chat (markdown [x](url) and GFM-autolinked bare URLs alike, all rendered as <a href>
+// by md()) must actually follow on click. Two hosts, two paths:
+//   • Web dashboard (http(s): origin): open it in the user's OWN browser, on the device they're viewing
+//     from — a normal window.open in the click gesture (not popup-blocked). This is the common case and
+//     it used to silently die: the old code only ever postMessage'd the host, and the kernel has no
+//     openLink handler, so a link click did nothing on the web dashboard (the user 2026-06-25).
+//   • VS Code webview (vscode-webview: origin): the sandbox blocks window.open, so route the anchor to
+//     the host extension, which openExternal()s normal URLs and feeds vscode://romp.romp-chat-view deep
+//     links into its own URI handler.
+// DOMPurify already stripped dangerous schemes (javascript:, etc.) in md(), so a surviving href is safe.
 document.addEventListener("click", (e) => {
   const a = (e.target as HTMLElement)?.closest?.("a[href]") as HTMLAnchorElement | null;
   if (!a) return;
@@ -298,7 +303,11 @@ document.addEventListener("click", (e) => {
   if (!/^[a-z][a-z0-9+.-]*:/i.test(href)) return; // fragment/relative — leave alone
   e.preventDefault();
   e.stopPropagation();
-  if (vscodeApi) vscodeApi.postMessage({ type: "openLink", href });
+  if (location.protocol === "http:" || location.protocol === "https:") {
+    window.open(href, "_blank", "noopener,noreferrer"); // web dashboard → open in the viewer's browser
+  } else if (vscodeApi) {
+    vscodeApi.postMessage({ type: "openLink", href });  // VS Code webview → host openExternal
+  }
 }, true);
 
 // A clickable file name that opens the real file in the editor (shared
