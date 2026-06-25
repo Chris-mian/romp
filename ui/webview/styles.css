@@ -415,6 +415,10 @@ body { display: flex; flex-direction: column; }
 .apierror-retry { margin-left: auto; font-size: 11px; padding: 2px 11px; border-radius: 5px; cursor: pointer;
   color: var(--st-blocked-bg); background: transparent; border: 1px solid var(--st-blocked-bg); }
 .apierror-retry:hover:not(:disabled) { color: #fff; background: var(--st-blocked-bg); }
+/* "Stop retrying" — a neutral/dim action (it calms the loop, it's not an alarm), distinct from the red Retry */
+.apierror-stop { font-size: 11px; padding: 2px 11px; border-radius: 5px; cursor: pointer;
+  color: var(--dim); background: transparent; border: 1px solid var(--rail); }
+.apierror-stop:hover { color: var(--fg); border-color: var(--dim); background: rgba(255, 255, 255, 0.06); }
 .apierror-retry:disabled { opacity: 0.55; cursor: default; }
 .apierror-body { margin-top: 5px; font-size: 0.86em; color: var(--dim); line-height: 1.35; }
 .chip-ready { background: var(--st-ready-bg); color: var(--st-ready-fg); }

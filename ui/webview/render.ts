@@ -1020,6 +1020,20 @@ function renderApiError(ev: Extract<ChatEvent, { kind: "apiError" }>): HTMLEleme
     if (activeId) apiRetryNext.set(activeId, Date.now() + API_RETRY_MS);   // restart the countdown
   });
   head.appendChild(retry);
+  // "Stop retrying" pauses THIS error's auto-retry loop (the user 2026-06-24) — otherwise it retries forever
+  // with no off-switch. Per-instance: re-arms automatically once the session recovers. You can still Retry now.
+  const paused = activeId ? retryPaused.has(activeId) : false;
+  if (paused) countdown.textContent = "auto-retry off";
+  const stop = el("button", "apierror-stop") as HTMLButtonElement;
+  stop.textContent = paused ? "Resume" : "Stop retrying";
+  stop.title = paused ? "resume auto-retrying this session"
+    : "stop the auto-retry loop for this error — Retry now still works; it re-arms when the session recovers";
+  stop.addEventListener("click", () => {
+    const id = activeId; if (!id) return;
+    if (retryPaused.has(id)) { retryPaused.delete(id); apiRetryNext.set(id, Date.now() + API_RETRY_MS); stop.textContent = "Stop retrying"; countdown.textContent = "retrying soon…"; }
+    else { retryPaused.add(id); stop.textContent = "Resume"; countdown.textContent = "auto-retry off"; }
+  });
+  head.appendChild(stop);
   card.appendChild(head);
   const body = el("div", "apierror-body");
   body.textContent = ev.text || "The session stopped on an API error.";
@@ -1035,12 +1049,18 @@ function renderApiError(ev: Extract<ChatEvent, { kind: "apiError" }>): HTMLEleme
 // countdown. The API may be down, so this deliberately doesn't depend on the summary/caption pipeline.
 const API_RETRY_MS = 10_000;
 const apiRetryNext = new Map<string, number>();   // sid -> epoch ms of its next auto-retry
+// Sessions whose auto-retry the user PAUSED via "Stop retrying" (the user 2026-06-24). Per-instance: it's
+// cleared the moment the session recovers (no longer blocked → a message got through), so the NEXT API error
+// auto-retries again. While paused the session stays blocked; "Retry now" + sending a message still work.
+const retryPaused = new Set<string>();
 function apiRetryTick(): void {
   const now = Date.now();
   const blocked = new Set<string>();
   sessions.forEach((s, id) => { if (s.status.state === "blocked") blocked.add(id); });
   apiRetryNext.forEach((_, id) => { if (!blocked.has(id)) apiRetryNext.delete(id); });   // recovered → stop
+  retryPaused.forEach((id) => { if (!blocked.has(id)) retryPaused.delete(id); });        // recovered → re-arm auto-retry
   blocked.forEach((id) => {
+    if (retryPaused.has(id)) return;                                                     // user stopped retrying this one
     if (!apiRetryNext.has(id)) apiRetryNext.set(id, now + API_RETRY_MS);
     if (now >= (apiRetryNext.get(id) as number)) {
       if (vscodeApi) vscodeApi.postMessage({ type: "apiRetry", id });
@@ -1050,8 +1070,9 @@ function apiRetryTick(): void {
   // live "retrying in Ns" on the active session's card, if it's the blocked one being viewed
   const cd = document.querySelector(".apierror-countdown") as HTMLElement | null;
   if (cd) {
-    const at = activeId ? apiRetryNext.get(activeId) : undefined;
-    cd.textContent = at ? `retrying in ${Math.max(0, Math.ceil((at - now) / 1000))}s` : "retrying soon…";
+    if (activeId && retryPaused.has(activeId)) cd.textContent = "auto-retry off";
+    else { const at = activeId ? apiRetryNext.get(activeId) : undefined;
+           cd.textContent = at ? `retrying in ${Math.max(0, Math.ceil((at - now) / 1000))}s` : "retrying soon…"; }
   }
 }
 setInterval(apiRetryTick, 1000);
