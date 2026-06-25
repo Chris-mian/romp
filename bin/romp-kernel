@@ -5501,7 +5501,7 @@ def _landing():
             "background:#2a2a2a;color:#999;border:1px solid #3a3a3a;cursor:pointer;user-select:none;opacity:.3;transition:opacity .1s}"
             ".collapse-btn:hover{opacity:1;color:#fff}"
             ".collapse-btn .bar-h{width:12px;height:3px;border-radius:2px;background:currentColor;display:block}"
-            "#tl-collapse{left:50%;top:0;transform:translateX(-50%);width:46px;height:13px;border-radius:0 0 5px 5px;border-top:0}"
+            "#tl-collapse{right:8px;top:6px;width:24px;height:16px;border-radius:5px}"   # top-RIGHT of the timeline (the user 2026-06-24), was top-centre
             # ── per-pane vertical button STRIP (the user 2026-06-24): a thin rail on the chat (right) + feed
             # (left) inner edges that HOLDS the minimize button + (chat) the rotated Fleet/Chat toggles, with
             # room for more. The iframe is inset by --strip so the rail reserves its own space rather than
