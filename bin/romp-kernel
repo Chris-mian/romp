@@ -5347,25 +5347,35 @@ def _chat_body():
 # persisted in localStorage. Iframes get pointer-events:none mid-drag so the gutter keeps the mouse
 # (an iframe otherwise swallows mousemove the instant the cursor crosses it).
 _LANDING_JS = """
-(function(){var row=document.querySelector('.row');
-// ── pane gutters (the user 2026-06-24): up to FOUR independently-toggled panes (chat|fleet|feed|timeline,
-// fixed order) sized by flex-grow. Each gutter resizes ONLY the two VISIBLE panes it sits between. gv-a is
-// always chat|fleet; gv-b's left neighbour is fleet when shown else chat (so it's the chat|feed gutter when
-// fleet is off); gv-c's left is the rightmost-shown of feed/fleet/chat (so it's the gutter before timeline
-// whatever precedes it). On grab we normalise every visible pane's grow to its px width so the drag shifts
-// only that pair and leaves the rest untouched; grows persist so the layout survives reload.
-var PANES=['chat-pane','fleet-pane','feed-pane','tl-pane'];
-var GK='romp-pane-grow',grow={chat:60,fleet:34,feed:40,timeline:40};
+(function(){var col=document.querySelector('.col'),row=document.querySelector('.row'),
+tf=document.getElementById('f-timeline');
+// ── timeline BOTTOM BAND (the user 2026-06-25): the rail's Timeline toggle (body.po-timeline) shows/hides a
+// full-width band below the pane row. It AUTO-FITS its content height (--tl, capped 70vh); the gh gutter
+// resizes it. Both band + gutter are hidden by CSS unless po-timeline.
+function tlContentH(){try{return tf?tf.contentDocument.body.scrollHeight:0;}catch(e){return 0;}}
+function cap(){return Math.round(window.innerHeight*0.7);}
+function autosize(){if(!document.body.classList.contains('po-timeline'))return;var h=tlContentH();if(!h)return;col.style.setProperty('--tl',Math.min(h+2,cap())+'px');}
+var ghh=document.getElementById('gh');
+if(ghh)ghh.addEventListener('mousedown',function(e){e.preventDefault();document.body.classList.add('drag','dragh');
+function mv(ev){var r=col.getBoundingClientRect();var px=r.bottom-ev.clientY;var ch=tlContentH();var mx=ch?ch+2:cap();
+col.style.setProperty('--tl',Math.max(48,Math.min(mx,px))+'px');}
+function up(){document.body.classList.remove('drag','dragh');
+window.removeEventListener('mousemove',mv);window.removeEventListener('mouseup',up);}
+window.addEventListener('mousemove',mv);window.addEventListener('mouseup',up);});
+// ── pane gutters (chat|fleet|feed, fixed order) sized by flex-grow. gv-a is always chat|fleet; gv-b's left
+// neighbour is fleet when shown else chat (so it's the chat|feed gutter when fleet is off). On grab we
+// normalise every visible pane's grow to its px width so the drag shifts only that pair; grows persist.
+var PANES=['chat-pane','fleet-pane','feed-pane'];
+var GK='romp-pane-grow',grow={chat:60,fleet:34,feed:40};
 try{var g=JSON.parse(localStorage.getItem(GK)||'null');if(g)grow=Object.assign(grow,g);}catch(e){}
 function setGrow(k,v){grow[k]=v;row.style.setProperty('--g-'+k,v);}
 for(var k in grow)setGrow(k,grow[k]);
-function key(id){return id==='chat-pane'?'chat':id==='fleet-pane'?'fleet':id==='feed-pane'?'feed':'timeline';}
+function key(id){return id==='chat-pane'?'chat':id==='fleet-pane'?'fleet':'feed';}
 function shown(id){var p=document.getElementById(id);return p&&getComputedStyle(p).display!=='none';}
-function rightmostOf(ids){for(var i=0;i<ids.length;i++)if(shown(ids[i]))return ids[i];return ids[ids.length-1];}
 // a pane re-shown from the rail gets a grow comparable to the panes already visible, so it never slots back
-// in as a sliver after the others were dragged to extreme widths (grows are stored as px). Called by the
-// pane controller BEFORE it reveals the pane (so `shown` still excludes it). No-op until this script runs.
-window.__rompGrowFair=function(k){var v=PANES.filter(shown).map(function(id){return grow[key(id)];});
+// in as a sliver after the others were dragged to extreme widths (grows are stored as px). Timeline is the
+// bottom BAND now (fixed-height var, not a row grow), so it's excluded.
+window.__rompGrowFair=function(k){if(k==='timeline')return;var v=PANES.filter(shown).map(function(id){return grow[key(id)];});
 var avg=v.length?v.reduce(function(a,b){return a+b;},0)/v.length:50;setGrow(k,avg);
 try{localStorage.setItem(GK,JSON.stringify(grow));}catch(e){}};
 function gutter(gid,leftPick,rightId){var h=document.getElementById(gid);if(!h)return;
@@ -5379,7 +5389,10 @@ window.removeEventListener('mousemove',mv);window.removeEventListener('mouseup',
 window.addEventListener('mousemove',mv);window.addEventListener('mouseup',up);});}
 gutter('gv-a',function(){return 'chat-pane';},'fleet-pane');
 gutter('gv-b',function(){return document.body.classList.contains('po-fleet')?'fleet-pane':'chat-pane';},'feed-pane');
-gutter('gv-c',function(){return rightmostOf(['feed-pane','fleet-pane','chat-pane']);},'tl-pane');
+tf&&tf.addEventListener('load',function(){autosize();
+try{new ResizeObserver(autosize).observe(tf.contentDocument.body);}catch(e){}});
+window.addEventListener('resize',autosize);
+window.addEventListener('romp-panes',autosize);   // re-fit when the Timeline toggle turns the band on
 })();
 """
 
@@ -5517,12 +5530,12 @@ _STALE_JS = (
 # Pane layout controller (the user 2026-06-24/25). The far-left rail holds Chat / Fleet / Feed / Timeline
 # toggles; each pane is an independent binary on/off (body.po-chat/po-fleet/po-feed/po-timeline → CSS shows/
 # hides the pane + the gutters between visible panes). Fixed visual order — Chat, Fleet, Feed, Timeline left
-# to right — so the rail just flips which are present. Default Chat+Feed (today's layout); state persists in
-# localStorage and ?panes=chat,timeline bookmarks a set. Exposes window.__rompPaneToggle(key,to?) so the
-# legacy toggleFleet postMessage (_LANDING_FLEET_JS) routes through the same path.
+# to right (timeline is the bottom BAND). Default Chat+Feed+Timeline on, Fleet off (the user 2026-06-25);
+# state persists in localStorage and ?panes=chat,timeline bookmarks a set. Exposes window.__rompPaneToggle(
+# key,to?) so the legacy toggleFleet postMessage (_LANDING_FLEET_JS) routes through the same path.
 _LANDING_COLLAPSE_JS = """
 (function(){
-  var PK='romp-panes',po={chat:true,fleet:false,feed:true,timeline:false};
+  var PK='romp-panes',po={chat:true,fleet:false,feed:true,timeline:true};
   try{var s=JSON.parse(localStorage.getItem(PK)||'null');if(s)po=Object.assign(po,s);}catch(e){}
   var qp=new URLSearchParams(location.search).get('panes');
   if(qp!==null){po={chat:false,fleet:false,feed:false,timeline:false};qp.split(',').forEach(function(k){k=k.trim();if(k in po)po[k]=true;});}
@@ -5536,6 +5549,7 @@ _LANDING_COLLAPSE_JS = """
     Array.prototype.forEach.call(document.querySelectorAll('.rail-btn[data-pane]'),function(b){
       var k=b.getAttribute('data-pane');b.classList.toggle('on',!!po[k]);
       b.title=(po[k]?'hide':'show')+' the '+(LBL[k]||k);});
+    try{window.dispatchEvent(new Event('romp-panes'));}catch(e){}   // nudge the timeline band to auto-fit when toggled
   }
   function togglePane(k,to){if(!(k in po))return;var nv=(to===undefined)?!po[k]:!!to;
     if(nv&&!po[k]&&window.__rompGrowFair)window.__rompGrowFair(k);   // newly shown → fair width, not a sliver
@@ -5603,26 +5617,31 @@ def _landing():
             "justify-content:center;transition:color .1s,background .1s}"
             ".rail-btn:hover{color:#cfe6ff;background:rgba(255,255,255,0.06)}"
             ".rail-btn.on{color:var(--accent);background:rgba(156,210,255,0.10)}"
-            # the ⛭/↻ actions sit below a flex spacer that pushes them to the bottom of the rail
-            ".rail-spacer{flex:1 1 auto}"
+            # the ⛭ settings + ↻ refresh actions sit RIGHT BELOW the toggles (the user 2026-06-25), with a small
+            # gap above them — not pushed to the bottom of the rail.
+            ".rail-act:first-of-type{margin-top:8px}"
             ".rail-act{flex:0 0 auto;display:flex;align-items:center;justify-content:center;margin:2px 4px;padding:5px 0;"
             "border-radius:5px;cursor:pointer;color:#8a8a8a;font-size:15px;line-height:1;user-select:none;transition:color .1s,background .1s}"
             ".rail-act:hover{color:#fff;background:rgba(255,255,255,0.06)}"
             ".rail-act:active{transform:scale(0.92)}"
-            # the four panes flex-grow by a per-pane var (resized by the gutters, persisted in localStorage);
-            # toggling a pane off hides it AND the now-orphaned gutters. Fixed order: chat, fleet, feed, timeline.
-            "#chat-pane{flex:var(--g-chat,60) 1 0}#fleet-pane{flex:var(--g-fleet,34) 1 0}#feed-pane{flex:var(--g-feed,40) 1 0}#tl-pane{flex:var(--g-timeline,40) 1 0}"
-            "body:not(.po-chat) #chat-pane{display:none}body:not(.po-fleet) #fleet-pane{display:none}body:not(.po-feed) #feed-pane{display:none}body:not(.po-timeline) #tl-pane{display:none}"
+            # the three TOP panes flex-grow by a per-pane var (resized by the gutters, persisted); toggling one
+            # off hides it AND the now-orphaned gutters. Fixed order: chat, fleet, feed. Timeline is the band.
+            "#chat-pane{flex:var(--g-chat,60) 1 0}#fleet-pane{flex:var(--g-fleet,34) 1 0}#feed-pane{flex:var(--g-feed,40) 1 0}"
+            "body:not(.po-chat) #chat-pane{display:none}body:not(.po-fleet) #fleet-pane{display:none}body:not(.po-feed) #feed-pane{display:none}"
             ".row>.gv{flex:0 0 5px}"
-            # gv-a sits chat|fleet (only when both shown); gv-b sits (fleet|chat)|feed — it's the chat|feed gutter
-            # when fleet is off; gv-c sits (rightmost of feed/fleet/chat)|timeline. Each hides when its right pane
-            # is off OR nothing is shown to its left.
+            # gv-a sits chat|fleet (only when both shown); gv-b sits (fleet|chat)|feed — the chat|feed gutter when fleet off.
             "body:not(.po-chat) #gv-a,body:not(.po-fleet) #gv-a{display:none}"
             "body:not(.po-feed) #gv-b,body:not(.po-chat):not(.po-fleet) #gv-b{display:none}"
-            "body:not(.po-timeline) #gv-c,body:not(.po-chat):not(.po-fleet):not(.po-feed) #gv-c{display:none}"
+            # ── timeline BOTTOM BAND (the user 2026-06-25): a full-width band UNDER the pane row, shown only when
+            # po-timeline (the rail's Timeline toggle); the gh gutter above it resizes it (auto-fits otherwise).
+            # Band + gutter both hide when the toggle is off, so the pane row fills the height.
+            "#tl-pane{flex:0 0 var(--tl,200px)}"
+            "body:not(.po-timeline) #gh,body:not(.po-timeline) #tl-pane{display:none}"
             ".gv{cursor:col-resize;background:linear-gradient(90deg,transparent 2px,#333 2px,#333 3px,transparent 3px)}"
+            ".gh{flex:0 0 5px;cursor:row-resize;background:linear-gradient(180deg,transparent 2px,#333 2px,#333 3px,transparent 3px)}"
             ".gv:hover{background:linear-gradient(90deg,transparent 2px,#007fd4 2px,#007fd4 3px,transparent 3px)}"
-            "body.drag iframe{pointer-events:none}body.dragv{cursor:col-resize}"
+            ".gh:hover{background:linear-gradient(180deg,transparent 2px,#007fd4 2px,#007fd4 3px,transparent 3px)}"
+            "body.drag iframe{pointer-events:none}body.dragv{cursor:col-resize}body.dragh{cursor:row-resize}"
             ".pane{position:relative;min-width:0;min-height:0;overflow:hidden}"
             ".pane>iframe{position:absolute;inset:0;width:100%;height:100%}"
             # FOCUS cue (the user 2026-06-23): NO dimming — the active section is shown by a RING around it.
@@ -5649,7 +5668,7 @@ def _landing():
             "body{display:flex;flex-direction:column;height:100vh;height:var(--app-h,100dvh)}"
             ".col{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;height:auto;padding-bottom:var(--mtabs-h,2.6em)}"
             ".row{flex:1 1 auto;min-height:0;display:block}"
-            ".gv,.pane-rail{display:none}"
+            ".gv,.gh,.pane-rail{display:none}"
             # mobile uses the bottom tab switcher, not the rail: dissolve the .pane wrappers (so the iframes
             # act as direct flex children again, as the mobile rules below expect). The desktop pane-hiding
             # (body:not(.po-*) #x-pane{display:none}) must NOT leak in — the tab bar, not the rail's po-state,
@@ -5660,7 +5679,9 @@ def _landing():
             # reset the desktop iframe absolute-fill (the bare `iframe` reset below re-flows them as tab panes)
             ".pane>iframe{position:static;inset:auto;width:100%;height:100%}"
             "iframe{position:static;display:none;width:100%;height:100%;border:0}"
-            "#f-chat.m-on,#f-feed.m-on,#f-timeline.m-on{display:block}"
+            "#f-chat.m-on,#f-feed.m-on{display:block}"
+            "#f-timeline{flex:1 1 auto;min-height:0}#f-timeline.m-on{display:block}"
+            "body[data-tab=timeline] .row{display:none}"    # timeline tab active → collapse the chat/feed row so the band fills
             # compact text-only switcher, FIXED to the visible viewport bottom so nothing can sit below it.
             # NO safe-area padding-bottom: without viewport-fit=cover the viewport already sits ABOVE the
             # system nav bar, so the inset is redundant — and Firefox Android (unlike Chrome) does NOT zero
@@ -5674,18 +5695,18 @@ def _landing():
             "padding:6px 0;display:flex;align-items:center;justify-content:center}"
             "#mtabs button.on{color:#4da4ff}"
             "}"
-            # default Chat+Feed shown (today's layout); the rail toggles + ?panes= reconcile in _LANDING_COLLAPSE_JS.
-            "</style></head><body class='po-chat po-feed'><div class=col>"
+            # default Chat + Feed + Timeline shown, Fleet off (the user 2026-06-25); the rail toggles + ?panes=
+            # reconcile in _LANDING_COLLAPSE_JS.
+            "</style></head><body class='po-chat po-feed po-timeline'><div class=col>"
             "<div class=row>"
-            # far-left rail: Chat / Fleet / Feed / Timeline toggles, fixed order matching the panes' left→right
-            # order; then the ⛭ settings + ↻ refresh actions pinned to the BOTTOM (the user 2026-06-25) so they
-            # persist regardless of which panes are open — refresh is the bottom-most.
+            # far-left rail: Chat / Fleet / Feed / Timeline toggles, fixed order; then the ⛭ settings + ↻ refresh
+            # actions RIGHT BELOW them (the user 2026-06-25) so they persist regardless of which panes are open —
+            # refresh is the lower of the two.
             "<div class=pane-rail>"
             "<div class=rail-btn data-pane=chat>Chat</div>"
             "<div class=rail-btn data-pane=fleet>Fleet</div>"
             "<div class=rail-btn data-pane=feed>Feed</div>"
             "<div class=rail-btn data-pane=timeline>Timeline</div>"
-            "<div class=rail-spacer></div>"
             "<div class=rail-act id=rail-gear title=Settings aria-label=Settings>⚙</div>"
             "<div class=rail-act id=rail-refresh title='Restart the romp kernel' aria-label=Refresh>↻</div>"
             "</div>"
@@ -5694,9 +5715,11 @@ def _landing():
             "<div class=pane id=fleet-pane><iframe id=f-fleet src=/fleet></iframe></div>"
             "<div class=gv id=gv-b></div>"
             "<div class=pane id=feed-pane><iframe id=f-feed src=/feed></iframe></div>"
-            "<div class=gv id=gv-c></div>"
-            "<div class=pane id=tl-pane><iframe id=f-timeline src=/timeline></iframe></div>"
             "</div>"
+            # the timeline BOTTOM BAND: full-width below the pane row, with a row-resize gutter above it. Both
+            # are hidden (CSS) unless po-timeline (the rail's Timeline toggle).
+            "<div class=gh id=gh></div>"
+            "<div class=pane id=tl-pane><iframe id=f-timeline src=/timeline></iframe></div>"
             "</div>"
             "<nav id=mtabs>"
             "<button data-pane=chat class=on>Chat</button>"
