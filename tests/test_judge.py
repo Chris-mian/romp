@@ -2353,6 +2353,15 @@ class SweepParse(unittest.TestCase):
         self.assertIn("top-level goals are the most important", jd.CLOSER_SYS)
         self.assertIn("sub-goal", jd.CLOSER_SYS, "it also resolves finished sub-goals")
 
+    def test_closer_prompt_catches_a_prose_blocked_on_you_ending(self):
+        # bugs->business 2026-06-25 (obsidian g4): a turn ENDED with prose "⏳ Blocked on you (one
+        # decision): run X yourself, or tell me to do Y", yet the closer left the goal 'working' — so it
+        # read as working + was auto-nudge-eligible when it was really NEEDS-YOU. The closer must take the
+        # assistant's own stated hand-back to the user at face value, even as prose (no formal question).
+        for phrase in ("ENDS by handing the decision back to the user", "even as plain prose",
+                       "at face value"):
+            self.assertIn(phrase, jd.CLOSER_SYS, phrase)
+
 
 class SweepApply(unittest.TestCase):
     def test_completes_listed_dones_with_reason_and_provenance(self):

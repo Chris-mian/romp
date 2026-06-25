@@ -2128,7 +2128,11 @@ CLOSER_SYS = (
     "or answer fully given to the user is done.\n"
     "- blocked: it now needs the user, a decision, approval, or answer owed by the user (the human) "
     "before it can proceed. Waiting on a peer, CI, build, agents it dispatched, or other external thing "
-    "is not blocked; that stays open and working.\n"
+    "is not blocked; that stays open and working. A turn that ENDS by handing the decision back to the "
+    "user — telling them it is blocked on them or waiting on their call, even as plain prose and not a "
+    "formal question (an ending like \"Blocked on you: run X yourself, or tell me to do Y\", \"waiting "
+    "on your decision\", \"let me know how you want to proceed\") — is blocked: take the assistant's own "
+    "stated hand-back to the user at face value, don't leave it working just because work also got done.\n"
     "- otherwise omit it, and it stays working. When in doubt, omit.\n"
     "Reply with only a JSON object (no prose, no markdown fences):\n"
     '{\"done\": [ {\"goal\": <n>, \"why\": \"...\"} ], \"block\": [ {\"goal\": <n>, \"why\": \"...\"} ]}\n'
