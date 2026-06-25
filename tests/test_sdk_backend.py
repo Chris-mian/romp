@@ -243,6 +243,28 @@ class StateAndRegistryFiles(unittest.TestCase):
         self.assertEqual(be.live_sessions()[sid]["model"], "Opus 4.8",
                          "a dormant session shows the persisted live model, not a blank badge")
 
+    def test_dormant_session_shows_persisted_context(self):
+        """Context fill must SURVIVE idle/restart, like the model (the user 2026-06-24: no context bar). The
+        backend persists each turn's % as reg['liveCtx']; the registry path surfaces it so a dormant session
+        still shows its last context, instead of a blank bar."""
+        be = sb.SdkBackend(self.d, "/bin/true", lambda *a, **k: None)
+        sid = be.spawn("ctxsess", self.d)
+        self.assertEqual(be.live_sessions()[sid]["ctx"], "", "no context fill yet → blank")
+        sb.write_reg(self.d, sid, {**sb.read_reg(self.d, sid), "liveCtx": 42})   # as a turn persists
+        self.assertEqual(be.live_sessions()[sid]["ctx"], 42, "dormant shows the persisted context fill")
+
+    def test_new_session_seeds_model_from_fleet(self):
+        """A brand-new SDK session shows NO model until its first turn reports one — so it's seeded from the
+        fleet's known model on spawn, so the badge shows on OPEN (the user 2026-06-24). The session's own
+        init/turn overwrites it."""
+        be = sb.SdkBackend(self.d, "/bin/true", lambda *a, **k: None)
+        s1 = be.spawn("first", self.d)
+        self.assertEqual(be.live_sessions()[s1]["model"], "", "first session, nothing to seed from → blank")
+        sb.write_reg(self.d, s1, {**sb.read_reg(self.d, s1), "liveModel": "Opus 4.8"})   # s1 learned its model
+        s2 = be.spawn("second", self.d)
+        self.assertEqual(sb.read_reg(self.d, s2).get("liveModel"), "Opus 4.8", "new session seeded from the fleet")
+        self.assertEqual(be.live_sessions()[s2]["model"], "Opus 4.8", "so its model shows on open")
+
     def _last_awaiting(self, sid):
         import json as _j
         rec = None

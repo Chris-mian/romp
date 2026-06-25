@@ -616,6 +616,12 @@ class SdkSession:
             self.inflight = max(0, self.inflight - 1)
             if self.inflight == 0:
                 append_state(self.backend.state_dir, self.sid, "waiting")
+                pct = self._ctx_pct()   # persist the turn's context fill so the bar survives idle/restart (like liveModel)
+                if pct is not None:
+                    try:
+                        self.backend._update_reg(self.sid, liveCtx=pct)
+                    except Exception:
+                        pass
                 self.backend._poke()
                 if self._input_wake is not None:   # turn done → release the next queued turn, if any
                     self._input_wake.set()
@@ -809,12 +815,33 @@ class SdkBackend:
         if not bg:                                   # give the session a stable identity colour like tmux sessions get
             bg, fg = pick_identity_color(sid)
         write_name(self.state_dir, sid, name, cwd, bg, fg)
-        write_reg(self.state_dir, sid, {"sid": sid, "name": name, "cwd": cwd,
-                                        "mode": "acceptEdits", "effort": DEFAULT_EFFORT,
-                                        "lastSid": "", "alive": True})
+        reg = {"sid": sid, "name": name, "cwd": cwd, "mode": "acceptEdits",
+               "effort": DEFAULT_EFFORT, "lastSid": "", "alive": True}
+        seed = self._fleet_model()   # show the model on OPEN, before the first turn (the user 2026-06-24): seed
+        if seed:                     # the badge from the fleet's known model; the session's own init/turn corrects it
+            reg["liveModel"] = seed
+        write_reg(self.state_dir, sid, reg)
         append_state(self.state_dir, sid, "waiting")
         self._poke()
         return sid
+
+    def _fleet_model(self) -> str:
+        """The fleet's most-recently-known SDK display model (any reg's liveModel) — a sensible default for a
+        BRAND-NEW session so its model badge shows immediately, before its first turn reports its own. Default
+        sessions all run the same model, so this is right in the common case; the session's real init/turn
+        overwrites it. '' if no SDK session has reported a model yet."""
+        best, best_t = "", -1.0
+        for reg in list_regs(self.state_dir):
+            lm = reg.get("liveModel")
+            if not lm:
+                continue
+            try:
+                mt = _reg_path(self.state_dir, reg["sid"]).stat().st_mtime
+            except OSError:
+                mt = 0
+            if mt > best_t:
+                best, best_t = lm, mt
+        return best
 
     def resume(self, name: str, sid: str, cwd: str | None = None) -> bool:
         reg = read_reg(self.state_dir, sid) or {}
@@ -985,13 +1012,15 @@ class SdkBackend:
                 # current_ask), so it's unaffected. Keyed on thread-not-running, not a time heuristic.
                 if st in ("working", "permission", "picker", "compacting", "retrying"):
                     st = "waiting"
+                lc = reg.get("liveCtx")   # last persisted context fill → bar survives idle/restart
                 out[sid] = {"state": st,
                             "since": str(ls.get("t") or ""),
                             # not running (e.g. post-restart): prefer the last LIVE model we persisted
                             # (liveModel), else the chosen alias — so the badge isn't blank while dormant.
                             "model": model_label(reg.get("liveModel") or "", reg.get("model") or ""),
                             "effort": reg.get("effort", ""),
-                            "mode": reg.get("mode", ""), "ctx": "", "summary": ""}
+                            "mode": reg.get("mode", ""),
+                            "ctx": lc if isinstance(lc, (int, float)) else "", "summary": ""}
         return out
 
     # ---- picker/permission UI bridge (kernel-thread API) ----
