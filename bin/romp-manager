@@ -63,6 +63,16 @@ function idForPort(port) { return Number(port) === KERNEL_PORT ? 'main' : 'k' + 
 const QUICK_CRASH_MS = 2000;
 const MAX_BACKOFF_MS = 10000;
 
+// Restart-storm guard (the user 2026-06-24): the kernel was SIGTERM'd + respawned 300+ times in a tight
+// loop because every /restart restarted 1:1 — concurrent `romp --refresh`es (heavy fleet kernel work) or a
+// stray refresh loop translate straight into respawns, churning every webview (a full reload) + orphaning
+// SDK in-flight state. Cap it: coalesce near-simultaneous requests into ONE trailing restart, and once the
+// rate looks like a storm, hold to 1 restart per cooldown + log loudly so the trigger is visible.
+const RESTART_COALESCE_MS = 3000;     // collapse requests this close together into a single restart
+const STORM_WINDOW_MS = 60000;        // sliding window for storm detection
+const STORM_MAX = 8;                  // ≥ this many restarts in the window = a storm
+const STORM_COOLDOWN_MS = 30000;      // during a storm, hold to 1 restart per this
+
 function spawnKernel(spec) {
   const prev = kernels.get(spec.id);
   // ROMP_MANAGER_PID lets the kernel run a parent-death watchdog (see chat-view/src/kernel/parent-watch):
@@ -110,9 +120,37 @@ function ensureKernel(port) {
   return { id, port: Number(port), pid: rec ? rec.child.pid : null, spawned: true };
 }
 
+// Pure storm-gate decision (time injected → unit-testable). `st` = {last, history}; decide whether to
+// restart NOW or coalesce into a trailing restart, and return the updated state + an inStorm flag.
+function restartGate(st, now, opts) {
+  const history = (st.history || []).filter((t) => now - t < opts.stormWindowMs);
+  const inStorm = history.length >= opts.stormMax;
+  const minGap = inStorm ? opts.stormCooldownMs : opts.coalesceMs;
+  if (st.last != null && now - st.last < minGap) {
+    return { action: 'coalesce', scheduleIn: minGap - (now - st.last), inStorm, last: st.last, history };
+  }
+  return { action: 'restart', scheduleIn: 0, inStorm, last: now, history: [...history, now] };
+}
+
+const STORM_OPTS = { coalesceMs: RESTART_COALESCE_MS, stormWindowMs: STORM_WINDOW_MS,
+  stormMax: STORM_MAX, stormCooldownMs: STORM_COOLDOWN_MS };
+
 function restartKernel(id) {
   const rec = kernels.get(id);
   if (!rec) return false;
+  rec._rs = rec._rs || { last: null, history: [] };
+  const g = restartGate(rec._rs, Date.now(), STORM_OPTS);
+  rec._rs.last = g.last;
+  rec._rs.history = g.history;
+  if (g.action === 'coalesce') {     // too soon — a single trailing restart will pick up the latest code
+    if (g.inStorm && !rec._stormLogged) {
+      log(`kernel '${id}': RESTART STORM — ${rec._rs.history.length}+ restarts in ${STORM_WINDOW_MS / 1000}s; holding to 1 per ${STORM_COOLDOWN_MS / 1000}s + this log. Something is spamming /restart (a refresh loop / concurrent \`romp --refresh\`?).`);
+      rec._stormLogged = true;
+    }
+    if (!rec._pending) rec._pending = setTimeout(() => { rec._pending = null; restartKernel(id); }, Math.max(50, g.scheduleIn));
+    return true;
+  }
+  rec._stormLogged = false;
   rec.stopping = false;          // ensure the exit handler RESPAWNS rather than reaps
   rec.child.kill('SIGTERM');     // the exit handler spawns a fresh one (romp-serve rebuilds if stale)
   return true;
@@ -252,11 +290,16 @@ function ensureUp() {
 }
 
 // ── dispatch ────────────────────────────────────────────────────────────────
-const cmd = process.argv[2];
-if (cmd === 'restart') control('POST', '/restart', process.argv[3]);
-else if (cmd === 'restart-all') control('POST', '/restart-all');
-else if (cmd === 'status') control('GET', '/status');
-else if (cmd === 'down') control('POST', '/stop');
-else if (cmd === 'ensure') ensureUp();
-else if (!cmd || cmd === 'up') runManager();
-else { console.error('usage: romp-manager [up | ensure | restart-all | restart [kernel] | status | down]'); process.exit(2); }
+// Exported for unit tests (restartGate = the pure storm-cap decision). The CLI dispatch runs only when this
+// file is executed directly, so require()-ing it from a test has no side effects.
+module.exports = { restartGate };
+if (require.main === module) {
+  const cmd = process.argv[2];
+  if (cmd === 'restart') control('POST', '/restart', process.argv[3]);
+  else if (cmd === 'restart-all') control('POST', '/restart-all');
+  else if (cmd === 'status') control('GET', '/status');
+  else if (cmd === 'down') control('POST', '/stop');
+  else if (cmd === 'ensure') ensureUp();
+  else if (!cmd || cmd === 'up') runManager();
+  else { console.error('usage: romp-manager [up | ensure | restart-all | restart [kernel] | status | down]'); process.exit(2); }
+}
