@@ -1011,7 +1011,7 @@ class ViewBuilder(unittest.TestCase):
                                                    "status": None, "ledger": None}
         km.build_feed = lambda now, tmux: {"working": [], "asks": []}
         km.build_timeline = lambda now, tmux: None
-        km._send_client = lambda c, key, msg: sent.append((key, msg))
+        km._send_client = lambda c, key, msg, pre=None: sent.append((key, msg))
         client = {"app": "chat", "active": "B", "alive": True}
         try:
             km._push([client])
@@ -1037,7 +1037,7 @@ class ViewBuilder(unittest.TestCase):
                                                    "status": None, "ledger": None}
         km.build_feed = lambda now, tmux: {"working": [], "asks": []}
         km.build_timeline = lambda now, tmux: None
-        km._send_client = lambda c, key, msg: sent.append((key, msg))
+        km._send_client = lambda c, key, msg, pre=None: sent.append((key, msg))
         try:
             km._push([{"app": "chat", "alive": True}])
         finally:
@@ -1045,6 +1045,46 @@ class ViewBuilder(unittest.TestCase):
              km.build_timeline, km._send_client) = saved
         self.assertEqual([key[1] for (key, _) in sent if key[0] == "chat"], ["A", "B", "C"],
                          "no active hint → tab order, all tabs still delivered")
+
+    def test_push_caches_unchanged_background_tabs_but_always_rebuilds_active(self):
+        # the user 2026-06-24 (sluggish UI): the 0.5s pusher rebuilt EVERY open tab — a full transcript reshape
+        # into ChatEvent[] AND a json.dumps of the whole chat, per tab, even when nothing changed — which pegged
+        # the kernel on multi-MB transcripts and starved the webview. A BACKGROUND tab whose transcript+states
+        # are unchanged now reuses its built payload (one stat() instead of a reshape+serialize); the ACTIVE
+        # tab always rebuilds so what the user is watching stays live (incl. SDK live-tail atoms).
+        import tempfile
+        d = tempfile.mkdtemp()
+        pa, pb = os.path.join(d, "A.jsonl"), os.path.join(d, "B.jsonl")
+        for p in (pa, pb):
+            with open(p, "w") as f:
+                f.write("{}\n")
+        calls = []
+        saved = (km._tmux_sessions, km._chat_tab_sessions, km.build_session, km.build_feed,
+                 km.build_timeline, km._send_client)
+        km._tmux_sessions = lambda: {}
+        km._chat_tab_sessions = lambda now, tmux: [{"sid": "A", "path": pa}, {"sid": "B", "path": pb}]
+        km.build_session = lambda sid, now, tmux: (calls.append(sid) or
+                                                   {"id": sid, "name": sid, "color": None, "status": None, "ledger": None})
+        km.build_feed = lambda now, tmux: {"working": [], "asks": []}
+        km.build_timeline = lambda now, tmux: None
+        km._send_client = lambda c, key, msg, pre=None: None
+        km._built_chat.clear()
+        client = {"app": "chat", "active": "A", "alive": True}
+        try:
+            km._push([client])                       # 1st: builds A + B
+            km._push([client])                       # 2nd: A rebuilt (active); B reused (unchanged)
+            after_two = list(calls)
+            with open(pb, "a") as f:                 # B's transcript grows → its signature busts
+                f.write("{}\n")
+            os.utime(pb, None)
+            km._push([client])                       # 3rd: A rebuilt; B rebuilt (changed)
+        finally:
+            (km._tmux_sessions, km._chat_tab_sessions, km.build_session, km.build_feed,
+             km.build_timeline, km._send_client) = saved
+            km._built_chat.clear()
+        self.assertEqual(calls.count("A"), 3, "the ACTIVE tab rebuilds on every push (stays live)")
+        self.assertEqual(after_two.count("B"), 1, "an unchanged BACKGROUND tab is NOT rebuilt on the 2nd push")
+        self.assertEqual(calls.count("B"), 2, "the background tab rebuilds once its transcript actually changes")
 
     def _orphaned_goal(self, idle=True, closer_done=True):
         # an idle (or still-open) session whose top goal still shows "working". closer_done puts the latest

@@ -2210,6 +2210,41 @@ def _fold_tasks(session):
 
 _parse_cache = {}                                # realpath → ((mtime, size), parsed session)
 
+# Built-chat cache (the user 2026-06-24, "the UI is sluggish"): the pusher rebuilt EVERY open chat tab on
+# every 0.5s poll — a full transcript reshape into ChatEvent[] AND a json.dumps of the whole chat, per tab,
+# even when nothing changed. With transcripts now tens of MB, that pegged the kernel and starved the
+# webview. Cache each session's built payload + its serialized string, keyed on the transcript+states
+# (mtime,size) — the same trust model as _parse_cache. The ACTIVE tab(s) always rebuild (so what the user
+# is watching stays live, incl. SDK live-tail atoms that lead the disk); an unchanged BACKGROUND tab reuses
+# the cache → one stat() instead of a reshape+serialize. A real change (or switching to the tab) rebuilds.
+_built_chat = {}                                 # sid → (sig, payload_dict, serialized_str)
+_judge_gen = [0]                                 # bumped each producer pass → busts the cache when the judge
+                                                 # may have changed goal/caption state without a transcript write
+
+
+def _chat_build_sig(sess):
+    """A cheap (transcript mtime,size, states mtime,size) signature for the chat-build cache — busts on any
+    new content OR a state transition (idle/working), the two things that change a session's chat payload.
+    A new caption (TOC headline) lags for a background tab until its transcript next changes or it's opened,
+    which is acceptable for a tab the user isn't looking at. Returns None (→ never cache, always rebuild) if
+    the session has no transcript path or it can't be stat'd."""
+    path = sess.get("path")
+    if not path:
+        return None
+    try:
+        st = os.stat(path)
+        sig = [st.st_mtime, st.st_size]
+    except OSError:
+        return None
+    fsid = os.path.basename(path).rsplit(".", 1)[0]   # transcript filename stem == the fsid
+    try:
+        ss = os.stat(jd.STATESDIR / (fsid + ".jsonl"))
+        sig += [ss.st_mtime, ss.st_size]
+    except OSError:
+        sig += [0, 0]
+    sig.append(_judge_gen[0])     # a judge pass (goal/caption change) busts every tab's cache once
+    return tuple(sig)
+
 
 def _parse(path, sid, now):
     """em.parse_session, CACHED by the transcript's (mtime, size). The build hot path re-parsed every
@@ -4426,10 +4461,12 @@ def _segment_of_uuid(sid, uuid, now):
     return (None, [])
 
 
-def _send_client(c, key, msg):
+def _send_client(c, key, msg, pre=None):
     """Send a payload to ONE client only if it differs from what that client last received (per-client
-    dedup, key = the slot e.g. ("chat", sid)) — so the periodic push re-sends nothing when unchanged."""
-    s = json.dumps(msg)
+    dedup, key = the slot e.g. ("chat", sid)) — so the periodic push re-sends nothing when unchanged.
+    `pre` is the already-serialized msg (json.dumps(msg)) when the caller has it cached — passing it lets
+    a reused/unchanged payload skip re-serializing a large chat on every poll (the chat-build cache)."""
+    s = pre if pre is not None else json.dumps(msg)
     if c.setdefault("sent", {}).get(key) == s:
         return
     c["sent"][key] = s
@@ -4591,12 +4628,26 @@ def _push(targets):
             active = {c.get("active") for c in chat_clients if c.get("active")}
             build_order = sorted(chat_list, key=lambda s: 0 if s["sid"] in active else 1)   # stable: active first
             for s in build_order:
-                m = build_session(s["sid"], now, tmux)
+                is_active = s["sid"] in active           # the watched tab(s) always rebuild → stay live
+                sig = _chat_build_sig(s)
+                hit = _built_chat.get(s["sid"])
+                if not is_active and hit is not None and sig is not None and hit[0] == sig:
+                    m, ms = hit[1], hit[2]               # unchanged background tab → reuse, no reshape/serialize
+                else:
+                    m = build_session(s["sid"], now, tmux)
+                    ms = json.dumps(m) if m is not None else None
+                    if m is not None and sig is not None:
+                        if len(_built_chat) > 256:       # bounded by fleet size; a wholesale clear is fine
+                            _built_chat.clear()
+                        _built_chat[s["sid"]] = (sig, m, ms)
                 if not m:
                     continue
                 chat_sessions.append(m)
                 for c in chat_clients:
-                    _send_client(c, ("chat", m["id"]), m)   # flush as built → the active tab lands first
+                    _send_client(c, ("chat", m["id"]), m, pre=ms)   # flush as built → the active tab lands first
+            for sid in list(_built_chat):                # drop cache for tabs no longer shown (closed/×-hidden)
+                if sid not in {s["sid"] for s in chat_list}:
+                    _built_chat.pop(sid, None)
         feed = build_feed(now, tmux) if want_feed else None
         if feed is not None and chat_sessions:
             feed["ledgers"] = [{"sid": m["id"], "name": m["name"], "color": m.get("color"),
@@ -4707,6 +4758,9 @@ def _producer():
                 t.start()
             for t in tiers:                            # barrier: both tiers finish before the next wake
                 t.join()
+            _judge_gen[0] += 1     # a judge pass may have changed goal/caption state WITHOUT touching any
+                                   # transcript → bump the generation so the chat-build cache re-builds the
+                                   # background tabs once, keeping their Fleet status/ledger fresh (≤ this cadence).
         except Exception:
             sys.stderr.write("producer: %s\n" % traceback.format_exc())
         # Event-driven: wake the instant a hook pokes /tick (turn ended / prompt landed / postal msg)
