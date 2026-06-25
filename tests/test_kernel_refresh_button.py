@@ -17,9 +17,12 @@ km = SourceFileLoader("romp_kernel", os.path.join(BIN, "romp-kernel")).load_modu
 
 class RefreshButtonDecoupledTest(unittest.TestCase):
     def test_refresh_button_is_always_present(self):
-        # the button itself is unchanged — still in the gear, still POSTs /restart
-        self.assertIn("id=rrefresh", km._GEAR_HTML)
-        self.assertIn("fetch('/restart',{method:'POST'})", km._GEAR_JS)
+        # the ↻ moved to the shell's far-left rail (the user 2026-06-25) so it persists regardless of which
+        # panes are open — always present, still POSTs /restart then polls /healthz and reloads.
+        html = km._landing()
+        self.assertIn("id=rail-refresh", html)
+        self.assertIn("fetch('/restart',{method:'POST'})", html)
+        self.assertNotIn("id=rrefresh", km._GEAR_HTML)   # gone from the feed gear
 
     def test_refresh_button_is_not_gated_on_debug(self):
         # the old applyDebug() helper (which hid #rrefresh unless s.debug) is gone entirely …

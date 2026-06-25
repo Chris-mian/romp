@@ -30,8 +30,8 @@ class LandingShell(unittest.TestCase):
         self.assertIn("#mtabs{display:none}", html)   # hidden by default (desktop)
         self.assertIn("@media", html)                 # a breakpoint reveals it + collapses to one pane
         self.assertIn(".m-on{display:block}", html)   # the single active pane on mobile
-        # the desktop 3-pane grid is still here untouched
-        self.assertIn(".col{display:grid", html)
+        # the desktop shell is the flex pane row (chat | fleet | feed | timeline)
+        self.assertIn(".col{display:flex", html)
         self.assertIn("src=/chat", html)
         self.assertIn("src=/feed", html)
         self.assertIn("src=/timeline", html)
@@ -51,7 +51,7 @@ class LandingShell(unittest.TestCase):
         html = km._landing()
         self.assertIn("padding-bottom:var(--mtabs-h", html)    # .col reserves the bar's height
         self.assertIn("--mtabs-h", km._LANDING_MOBILE_JS)      # ...measured from the live bar (offsetHeight)
-        self.assertIn("body[data-tab=timeline] .row{display:none}", html)
+        self.assertIn("#f-timeline.m-on{display:block}", html) # timeline is a mobile tab pane (it lives in the row now)
         self.assertIn("data-tab", km._LANDING_MOBILE_JS)       # show() marks the active pane on <body>
 
     def test_shell_reveal_listener_wired(self):
@@ -59,11 +59,12 @@ class LandingShell(unittest.TestCase):
         self.assertIn("app=shell", html)              # shell WS catches kernel reveals (feed/timeline tap)
         self.assertIn("'reveal'", html)               # ...and window reveals (timeline deep-link)
 
-    def test_splitter_queries_the_timeline_iframe_that_exists(self):
-        # regression: the desktop splitter used to getElementById('t') with no such element, throwing
-        # on every load (which also killed any script after it). It must query the real iframe id.
-        self.assertIn("id=f-timeline", km._landing())             # the iframe carries this id
-        self.assertIn("getElementById('f-timeline')", km._LANDING_JS)
+    def test_timeline_iframe_is_the_fourth_pane(self):
+        # the timeline is its own rail-toggled pane now (the user 2026-06-24), not a bottom band: the iframe
+        # carries id=f-timeline inside #tl-pane, and the old stale-id splitter bug must not regress.
+        html = km._landing()
+        self.assertIn("id=f-timeline", html)                      # the iframe carries this id
+        self.assertIn("<div class=pane id=tl-pane><iframe id=f-timeline src=/timeline></iframe></div>", html)
         self.assertNotIn("getElementById('t')", km._LANDING_JS)   # the stale id is gone
 
     def test_mobile_switcher_is_isolated_in_its_own_script(self):

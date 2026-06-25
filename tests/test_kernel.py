@@ -1971,12 +1971,14 @@ class ViewBuilder(unittest.TestCase):
         self.assertNotIn("id=rs-subgoals", km._GEAR_HTML)
         self.assertNotIn("explanations", km._GEAR_JS)                               # every trace of the pref is gone
         self.assertIn("dispatchEvent(new Event('romp:settings'))", km._GEAR_JS)     # same-doc re-render signal (compact toggle etc.)
-        self.assertIn("border-radius:6px", km._GEAR_CSS)                            # gear = a rounded-rect button
-        self.assertRegex(km._GEAR_CSS, r"#rgear\{[^}]*border:1px solid")
-        # the kernel-restart ↻ button moved UP next to the gear (the user 2026-06-17): top-right, POST /restart
-        self.assertIn("id=rrefresh", km._GEAR_HTML)
-        self.assertRegex(km._GEAR_CSS, r"#rrefresh\{[^}]*position:fixed;top:6px")
-        self.assertIn("fetch('/restart',{method:'POST'})", km._GEAR_JS)
+        # the ↻ refresh + ⛭ gear BUTTONS moved to the shell's far-left rail (the user 2026-06-25); only the
+        # settings MODAL stays in the feed, opened by the rail gear via a {romp:'openSettings'} postMessage.
+        self.assertNotIn("id=rrefresh", km._GEAR_HTML)                              # refresh is on the rail now
+        self.assertIn("e.data.romp==='openSettings'", km._GEAR_JS)                  # the modal opens on the rail's request
+        landing = km._landing()
+        self.assertIn("id=rail-gear", landing)
+        self.assertIn("id=rail-refresh", landing)
+        self.assertIn("fetch('/restart',{method:'POST'})", landing)                 # the rail ↻ POSTs /restart
 
     def test_gear_polish_tooltips_colormap_bar_no_emoji(self):
         # the user 2026-06-23: descriptions become HOVER tooltips (decluttered), and the analytics button drops
