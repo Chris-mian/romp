@@ -3599,6 +3599,28 @@ function statusOnly(msg: any) {
   if (msg.id === activeId) updateStatusline();
 }
 
+// Drop a session from the panel + reselect another tab, NOW (the user 2026-06-24): used both by the kernel's
+// `closed` event AND optimistically the instant you Close tab / End session — otherwise the reselect waited on
+// that round-trip while the tab bar already updated, leaving you on the CLOSED session's stale content.
+function dismissSession(id: string): void {
+  sessions.delete(id);
+  liveAsks.delete(id);
+  ledgers.delete(id);
+  drafts.delete(id);
+  const v = views.get(id);
+  if (v) { v.el.remove(); views.delete(id); }
+  const oi = order.indexOf(id); if (oi >= 0) order.splice(oi, 1);
+  const mi = mru.indexOf(id); if (mi >= 0) mru.splice(mi, 1);
+  sortTabs();
+  renderTabs();
+  if (activeId === id) {
+    activeId = mru[0] || null; // MRU: return to the previously-active tab, not the positional neighbor
+    const ta = document.getElementById("composer-input") as HTMLTextAreaElement | null;
+    if (ta) { ta.value = (activeId && drafts.get(activeId)) || ""; growComposer(ta); }
+    showActive();
+  }
+}
+
 window.addEventListener("message", (e: MessageEvent) => {
   const m = e.data;
   if (!m) return;
@@ -3658,24 +3680,7 @@ window.addEventListener("message", (e: MessageEvent) => {
     if (s && s.name !== m.name) { s.name = m.name; renderTabs(); }
   }
   else if (m.type === "droppedPath" && typeof m.path === "string") insertComposerText(m.path);
-  else if (m.type === "closed") {
-    sessions.delete(m.id);
-    liveAsks.delete(m.id);
-    ledgers.delete(m.id);
-    drafts.delete(m.id);
-    const v = views.get(m.id);
-    if (v) { v.el.remove(); views.delete(m.id); }
-    const oi = order.indexOf(m.id); if (oi >= 0) order.splice(oi, 1);
-    const mi = mru.indexOf(m.id); if (mi >= 0) mru.splice(mi, 1);
-    sortTabs();
-    renderTabs();
-    if (activeId === m.id) {
-      activeId = mru[0] || null; // MRU: return to the previously-active tab, not the positional neighbor
-      const ta = document.getElementById("composer-input") as HTMLTextAreaElement | null;
-      if (ta) { ta.value = (activeId && drafts.get(activeId)) || ""; growComposer(ta); }
-      showActive();
-    }
-  }
+  else if (m.type === "closed") dismissSession(m.id);   // a session died on its own (or the kernel confirms our close)
 });
 
 // Tick the working timer (the chip color-pulse is pure CSS) and keep the model/ctx
@@ -3887,8 +3892,10 @@ setupSettings();
         "“Close tab” just removes it from this panel and leaves the session running. “End session” shuts it down (the transcript stays on disk).",
         [{ label: "Close tab", value: "close" }, { label: "End session", value: "end", danger: true }, { label: "Cancel", value: "" }],
         (v) => {
-          if (v === "close") vscodeApi?.postMessage({ type: "closeTab", id });
-          else if (v === "end") { vscodeApi?.postMessage({ type: "endSession", id }); vscodeApi?.postMessage({ type: "closeTab", id }); }
+          if (v !== "close" && v !== "end") return;   // Cancel → nothing
+          if (v === "end") vscodeApi?.postMessage({ type: "endSession", id });
+          vscodeApi?.postMessage({ type: "closeTab", id });
+          dismissSession(id);   // drop the tab + reselect NOW (don't wait for the kernel's closed/push → no stale content)
         });
     },
   });

@@ -51,6 +51,11 @@ test("chat tab bar: select + ✕ (Close / End session) are DELEGATED to the stab
   assert.match(RENDER, /close: \(el\) => \{[\s\S]*el\.dataset\.dead === "1"[\s\S]*type: "closeTab"/);
   assert.match(RENDER, /close: \(el\) => \{[\s\S]*showConfirm\(`End/);
   assert.doesNotMatch(RENDER, /type: el\.dataset\.dead === "1" \? "closeTab" : "closeSession"/, "the round-trip close is gone");
+  // and the tab is dropped + a new one reselected OPTIMISTICALLY (don't wait for the kernel's closed event →
+  // no stale content from the just-closed session — the user 2026-06-24)
+  assert.match(RENDER, /closeTab", id \}\);\s*\n\s*dismissSession\(id\);/);
+  assert.match(RENDER, /function dismissSession\(id: string\): void/);
+  assert.match(RENDER, /m\.type === "closed"\) dismissSession\(m\.id\)/);   // the kernel's own death event reuses it
 });
 
 test("Fleet: header / row open + caret fold are DELEGATED to the stable #fleet-list, not per-node", () => {
