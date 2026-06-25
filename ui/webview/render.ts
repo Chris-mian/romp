@@ -1714,6 +1714,11 @@ function onTabKey(e: KeyboardEvent) {
     e.preventDefault();
     const t = tabInAdjacentRow(activeId, e.key === "ArrowDown" ? 1 : -1);
     if (t) { setActive(t); focusActiveTab(); }
+  } else if (e.key === "Enter") {
+    // in "tab mode", Enter drops back into the chat box of the now-selected session (the user 2026-06-25),
+    // the mirror of Escape (composer → tabs). ←/→ pick the session, Enter starts typing in it.
+    e.preventDefault();
+    (document.getElementById("composer-input") as HTMLTextAreaElement | null)?.focus();
   }
 }
 function focusActiveTab() {
@@ -3845,6 +3850,13 @@ function setupComposer() {
       if (restore && !ta.value.trim()) { ta.value = restore; growComposer(ta); }
       lastSent.delete(activeId);
       flashInterrupted(ta);
+      return;
+    }
+    if (e.key === "Escape") {
+      // Escape leaves the chat box for "tab mode" — focus the active tab so ←/→ switch sessions (the user
+      // 2026-06-25). Enter on a tab drops back in (onTabKey). Any draft text stays in the box, untouched.
+      e.preventDefault();
+      focusActiveTab();
       return;
     }
     if (e.key === "Enter" && !e.shiftKey) {

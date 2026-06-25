@@ -32,6 +32,13 @@ test("⏎ jumps focus to the tab bar after sending so ←/→ switch sessions (t
   assert.match(RENDER, /function focusActiveTab\(\)/);
 });
 
+test("Escape ↔ Enter toggle focus between the chat box and the tab bar (the user 2026-06-25)", () => {
+  // Escape in the composer → tab mode (focus the active tab, ←/→ switch sessions); a draft is untouched.
+  assert.match(RENDER, /if \(e\.key === "Escape"\) \{[\s\S]*?focusActiveTab\(\);[\s\S]*?return;/);
+  // Enter on a focused tab (onTabKey) → drop back into the chat box of the selected session
+  assert.match(RENDER, /else if \(e\.key === "Enter"\) \{[\s\S]*?getElementById\("composer-input"\)[\s\S]*?\?\.focus\(\);/);
+});
+
 test("the send button is disabled on a closed (read-only) session", () => {
   assert.match(RENDER, /if \(sendBtn\) sendBtn\.disabled = closed/);
 });
