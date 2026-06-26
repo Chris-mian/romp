@@ -2427,24 +2427,36 @@ def _closed_turns(store):
 def _close_session(fsid, path, now, cap=CLOSE_FAIRNESS):
     """Turn-end backstop for ONE session: for each end-known, not-yet-closed turn (oldest first,
     capped per pass), complete the open top-goals it touched that the model now calls fully done (each
-    with a doneWhy). Idempotent per turn id. Returns the node ids newly completed."""
+    with a doneWhy). Idempotent per turn id — EXCEPT it re-judges a closed turn that has since GROWN.
+    An interrupt+resume folds the resumed work back into the SAME turn id: the closer runs at the
+    interrupt (the turn momentarily idles), sweeps the turn, and a goal it blocks there stays blocked —
+    then the resolution continues under that same turn id, which the closer would never re-judge, so the
+    goal sticks blocked on an already-answered question (the user 2026-06-26, via bugs: g47). closedSig
+    fingerprints each turn's atom count at close; a LARGER count next pass means the turn grew → re-judge
+    it. Legacy turns (closed before this, no sig) are assumed unchanged so we don't re-judge the whole
+    backlog. Returns the node ids newly completed."""
     _judge_ctx.fsid = fsid                            # usage logging: attribute this session's judge calls
     session = parsed_session(fsid, [path], now)
     store = load_goals(fsid)
     swept = _closed_turns(store)
+    sig = dict(store.get("closedSig") or {})
     turns = session["turns"]
     newly, did = [], 0
     for turn in turns:
-        if _turn_open(turn, turns) or turn["id"] in swept:
+        if _turn_open(turn, turns):
+            continue
+        tid, fp = turn["id"], len(turn["atoms"])
+        if tid in swept and sig.get(tid, fp) == fp:    # closed AND unchanged (legacy: no sig → assume unchanged) → skip
             continue
         if did >= cap:
-            break                                      # spread a long backfill across passes
+            break                                      # spread a long backfill (and any re-judges) across passes
         res = _close_turn(store, turn)
         if res is None:
             continue                                   # LLM/parse failed → leave unswept, retry next pass
         newly += res
-        swept.add(turn["id"]); did += 1
+        swept.add(tid); sig[tid] = fp; did += 1        # remember the size we judged at → detect later growth
     store["closedTurns"] = sorted(swept)
+    store["closedSig"] = sig
     rollup_status(store, _session_closed(session))
     save_goals(fsid, store)
     return newly

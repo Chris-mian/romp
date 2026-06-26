@@ -2591,6 +2591,41 @@ class SweepSession(unittest.TestCase):
         jd.closer_llm = lambda tt, mt: (_ for _ in ()).throw(AssertionError("an idempotent pass must not call the LLM"))
         self.assertEqual(jd.run_close(now=self.now), 0, "every turn already swept -> re-running completes nothing")
 
+    def test_re_judges_a_closed_turn_that_grew_after_an_interrupt_resume(self):
+        # the user 2026-06-26 (via bugs): an interrupt+resume folds the resumed work into the SAME turn id.
+        # The closer runs at the interrupt and BLOCKS the goal, sweeps the turn; the in-turn resolution then
+        # grows that turn, which the closer (idempotent per turn id) would never re-judge → the goal stuck
+        # blocked on an already-answered question (g47). closedSig detects the growth → re-judge clears it.
+        path = next(p for f, p, a, n in jd.discover(self.now) if f == SID)
+        recs = [uline(T0, "fix the thing", "u1", ps="typed"),
+                aline(T0 + 30, "asked the user a question", "a1", "u1", stop="end_turn")]
+        Path(path).write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+        jd.run_plan(now=self.now)
+        g = next(nd["id"] for nd in jd.load_goals(SID)["nodes"].values() if nd["parentId"] is None)
+        jd.closer_llm = lambda tt, mt: '{"done": [], "block": [{"goal": 1, "why": "answer my question?"}]}'
+        jd.run_close(now=self.now)
+        store = jd.load_goals(SID)
+        self.assertTrue(store["nodes"][g]["blocked"], "blocked at the interrupt")
+        self.assertEqual(store["status"][g], "blocked")
+        # the turn GROWS: the resume + resolution continue the assistant chain (parent a1, no new prompt →
+        # same turn id), exactly as an interrupt+resume folds back into the turn it interrupted.
+        recs.append(aline(T0 + 200, "user answered; reverted, no change, done", "a2", "a1", stop="end_turn"))
+        Path(path).write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+        jd.closer_llm = lambda tt, mt: '{"done": [{"goal": 1, "why": "resolved: no change needed"}], "block": []}'
+        n = jd.run_close(now=self.now)
+        store = jd.load_goals(SID)
+        self.assertFalse(store["nodes"][g]["blocked"], "the grown turn is re-judged → stale block cleared")
+        self.assertTrue(store["nodes"][g]["nodeComplete"], "the in-turn resolution now completes the goal")
+        self.assertGreaterEqual(n, 1, "the re-judge produced a completion")
+
+    def test_a_closed_turn_that_did_not_grow_is_not_re_judged(self):
+        # the growth check must stay idempotent for a STABLE turn: same atom count → no re-judge, no LLM call.
+        jd.run_plan(now=self.now)
+        jd.closer_llm = lambda tt, mt: '{"done": [{"goal": 1, "why": "done"}]}'
+        jd.run_close(now=self.now)
+        jd.closer_llm = lambda tt, mt: (_ for _ in ()).throw(AssertionError("a stable closed turn must not be re-judged"))
+        self.assertEqual(jd.run_close(now=self.now), 0, "unchanged closed turns are skipped (closedSig matches)")
+
 
 class CloserKeyMigration(unittest.TestCase):
     """The closer's per-session 'already processed' set survives the sweep->close rename: it reads the
