@@ -2041,7 +2041,7 @@ def _scan_bg_tasks(path):
         return []
     keep = [tasks[tid] for tid in order if tasks[tid]["status"] == "running" or tasks[tid]["notePos"] > last_prompt]
     keep.reverse()
-    return keep[:40]
+    return keep[:60]
 
 
 def _bg_tasks(path):
@@ -2064,7 +2064,7 @@ def _bg_tasks(path):
                 _bgtasks_cache.clear()
             _bgtasks_cache[path] = (key, scan)
     out = []
-    for tk in scan[:16]:
+    for tk in scan[:30]:    # show up to 30 lines (the flat list scrolls); count below reports the true total
         out.append({"id": tk["id"], "status": tk["status"], "summary": tk["summary"], "command": tk["command"],
                     "output": _read_task_output(tk["outputFile"])})
     return {"count": len(scan), "tasks": out}

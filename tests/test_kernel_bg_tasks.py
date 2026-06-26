@@ -86,17 +86,17 @@ class BgTasks(unittest.TestCase):
         self.assertEqual(res["tasks"][0]["status"], "running")
 
     def test_count_reflects_all_tasks_even_when_the_list_is_capped(self):
-        # the header count is the TRUE total; the list itself is capped at 16
+        # the header count is the TRUE total; the list itself is capped at 30 (the flat list scrolls)
         recs = []
-        for i in range(20):
+        for i in range(35):
             recs.append(_launch(tid="t%02d" % i, desc="job %d" % i))
         path = _write(recs)
         try:
             res = km._bg_tasks(path)
         finally:
             os.unlink(path)
-        self.assertEqual(res["count"], 20, "count reports every surfaced task")
-        self.assertEqual(len(res["tasks"]), 16, "the list is capped")
+        self.assertEqual(res["count"], 35, "count reports every surfaced task")
+        self.assertEqual(len(res["tasks"]), 30, "the list is capped")
 
     def test_output_file_tail_is_read_for_the_details(self):
         out = tempfile.NamedTemporaryFile(mode="w", suffix=".output", delete=False)

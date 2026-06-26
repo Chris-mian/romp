@@ -28,6 +28,19 @@ for (const [name, lang] of Object.entries({
 }
 
 marked.setOptions({ gfm: true, breaks: false });
+// Strikethrough requires DOUBLE tildes (the user 2026-06-26). marked's built-in GFM `del` tokenizer also
+// fires on a SINGLE tilde, so prose like "near the ~21 Wh/day budget … gives ~1.5–2 days" renders as one big
+// <del> struck through from the first ~ to the second. GitHub itself only strikes ~~double~~, so match that:
+// a lone ~ (commonly "approximately") stays literal. Returning undefined lets marked treat the ~ as text.
+marked.use({
+  tokenizer: {
+    del(src: string) {
+      const m = /^~~(?=\S)([\s\S]*?\S)~~/.exec(src);
+      if (!m) return undefined;
+      return { type: "del", raw: m[0], text: m[1], tokens: (this as { lexer: { inlineTokens(s: string): unknown[] } }).lexer.inlineTokens(m[1]) };
+    },
+  },
+} as Parameters<typeof marked.use>[0]);
 
 // One answered (or pending) question on an AskUserQuestion turn: the prompt + its options, plus the
 // user's answer TEXT per question (`chosen`). Answer text may name an option label OR be free-text
