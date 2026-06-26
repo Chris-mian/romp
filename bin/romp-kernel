@@ -5417,15 +5417,33 @@ sync();})();
 """
 
 
+def _pane_spin(cid):
+    """A per-pane loading overlay (the user 2026-06-26): the spinning romp glyph (reverse spin, matching the
+    boot splash) centered over the pane until its content container `cid` gets its first child, then it fades
+    + self-removes. So each sub-panel shows the romp logo while it loads its data (the chat is the slow one).
+    Self-contained CSS+HTML+JS so it just drops into a page body; a 8s backstop guarantees it never sticks."""
+    return ("<style>#pane-spin{position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;"
+            "background:var(--vscode-editor-background,#1e1e1e);transition:opacity .3s ease}"
+            "#pane-spin.gone{opacity:0;pointer-events:none}"
+            "#pane-spin img{width:58px;height:58px;animation:pane-spin 7s linear infinite}"
+            "@keyframes pane-spin{to{transform:rotate(-360deg)}}</style>"
+            "<div id=pane-spin><img src=/media/romp-swirl-glyph.svg alt=loading></div>"
+            "<script>(function(){var o=document.getElementById('pane-spin'),c=document.getElementById('" + cid + "');"
+            "if(!o)return;var d=false;function h(){if(d)return;d=true;o.classList.add('gone');"
+            "setTimeout(function(){if(o.parentNode)o.parentNode.removeChild(o);},350);}"
+            "if(c){try{new MutationObserver(function(){if(c.children.length)h();}).observe(c,{childList:true});}catch(e){}"
+            "if(c.children.length)h();}setTimeout(h,8000);})();</script>")
+
+
 def _chat_page():
     v = _dist_ver()
     return ("<!DOCTYPE html><html lang=en><head><meta charset=UTF-8>"
             "<meta name=viewport content='width=device-width,initial-scale=1'>"
             "<link rel=icon type=image/svg+xml href=/media/romp-swirl-glyph.svg>"
             "<link href=/dist/styles.css?v=%d rel=stylesheet><title>Romp</title>"
-            "<style>%s\n%s</style></head><body>%s<script>%s</script>"
+            "<style>%s\n%s</style></head><body>%s%s<script>%s</script>"
             "<script src=/dist/render.js?v=%d></script><script>%s</script></body></html>"
-            % (v, THEME_CSS, _CHAT_MOBILE_CSS, _chat_body(), _shim("chat"), v, _CHAT_MOBILE_JS))
+            % (v, THEME_CSS, _CHAT_MOBILE_CSS, _chat_body(), _pane_spin("content"), _shim("chat"), v, _CHAT_MOBILE_JS))
 
 
 # Settings gear (WEB KERNEL ONLY — kernel-injected, never in the shared feed.ts). A ⚙ in the corner
@@ -5717,11 +5735,11 @@ def _feed_page():
             "<meta name=viewport content='width=device-width,initial-scale=1'>"
             "<link rel=icon type=image/svg+xml href=/media/romp-swirl-glyph.svg>"
             "<link href=/dist/feed.css?v=%d rel=stylesheet><title>Romp · feed</title>"
-            "<style>%s\n%s</style></head><body>%s%s<script>%s</script>"
+            "<style>%s\n%s</style></head><body>%s%s%s<script>%s</script>"
             "<script src=/dist/feed.js?v=%d></script><script>%s</script></body></html>"
             % (v, THEME_CSS, _GEAR_CSS,
                '<div id="feed-head"></div><div id="feed-list"></div><div id="feed-foot"></div>', _GEAR_HTML,
-               _shim("feed"), v, _GEAR_JS))
+               _pane_spin("feed-list"), _shim("feed"), v, _GEAR_JS))
 
 
 # Fleet — a BY-SESSION view that MIRRORS the ledger box (the user 2026-06-23): each session, then its goal
@@ -5761,9 +5779,9 @@ def _fleet_page():
             # overrides the body/layout bits so the chat rules don't fight the fleet page.
             "<link href=/dist/styles.css?v=%d rel=stylesheet>"
             "<style>%s\n%s</style></head><body>"
-            "<div id=fleet-list></div><div id=fleet-foot></div>"
+            "<div id=fleet-list></div><div id=fleet-foot></div>%s"
             "<script>%s</script><script src=/dist/fleet.js?v=%d></script></body></html>"
-            % (v, THEME_CSS, _FLEET_CSS, _shim("feed"), v))
+            % (v, THEME_CSS, _FLEET_CSS, _pane_spin("fleet-list"), _shim("feed"), v))
 
 
 # The romp-tl-* styles, verbatim from the obsidian/VS-Code timeline wrapper.
@@ -5840,12 +5858,12 @@ def _timeline_page():
     return ("<!DOCTYPE html><html lang=en><head><meta charset=UTF-8>"
             "<meta name=viewport content='width=device-width,initial-scale=1'>"
             "<link rel=icon type=image/svg+xml href=/media/romp-swirl-glyph.svg>"
-            "<title>Romp · timeline</title><style>%s\n%s</style></head><body><div id=host></div>"
+            "<title>Romp · timeline</title><style>%s\n%s</style></head><body><div id=host></div>%s"
             "<script>%s</script>"
             "<script>var module={exports:{}};(function(module,exports){\n%s\n})(module,module.exports);"
             "var TimelinePanel=module.exports.TimelinePanel;"
             "window.__rompConnectTimeline(new TimelinePanel(document.getElementById('host')));"
-            "</script></body></html>" % (THEME_CSS, TIMELINE_CSS, _TIMELINE_BOOT, view_js))
+            "</script></body></html>" % (THEME_CSS, TIMELINE_CSS, _pane_spin("host"), _TIMELINE_BOOT, view_js))
 
 
 def _chat_body():
@@ -6233,12 +6251,12 @@ def _landing():
             "#romp-boot{position:fixed;inset:0;z-index:9999;background:#181818;display:flex;align-items:center;"
             "justify-content:center;transition:opacity .35s ease}#romp-boot.gone{opacity:0;pointer-events:none}"
             "#romp-boot .rb-in{display:flex;flex-direction:column;align-items:center;gap:15px}"
-            "#romp-boot .rb-logo{width:88px;height:88px;display:block;animation:rb-spin 7s linear infinite}"
+            "#romp-boot .rb-logo{width:220px;height:220px;display:block;animation:rb-spin 7s linear infinite}"
             "#romp-boot .rb-dots{display:flex;gap:7px}"
             "#romp-boot .rb-dots i{width:8px;height:8px;border-radius:50%;background:#9cd2ff;animation:rb-bnc 1.1s ease-in-out infinite}"
             "#romp-boot .rb-dots i:nth-child(2){animation-delay:.16s}#romp-boot .rb-dots i:nth-child(3){animation-delay:.32s}"
             "@keyframes rb-bnc{0%,75%,100%{opacity:.25;transform:translateY(0)}38%{opacity:1;transform:translateY(-5px)}}"
-            "@keyframes rb-spin{to{transform:rotate(360deg)}}"
+            "@keyframes rb-spin{to{transform:rotate(-360deg)}}"
             "</style></head><body class='po-chat po-feed po-timeline'>"
             "<div id=romp-boot><div class=rb-in><img class=rb-logo src=/media/romp-swirl-glyph.svg alt=romp>"
             "<div class=rb-dots><i></i><i></i><i></i></div></div></div>"

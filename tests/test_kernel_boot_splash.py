@@ -45,5 +45,24 @@ class BootSplash(unittest.TestCase):
         self.assertEqual(tv.count("this._signalReady()"), 2, "called on both the lanes paint and the empty-state paint")
 
 
+class PaneSpinner(unittest.TestCase):
+    """Each sub-panel shows the spinning romp logo while it loads its data, then it fades when the pane's
+    content container gets its first child (the user 2026-06-26). The chat is the slow one; the others flash
+    briefly. Self-contained overlay in each pane page — no bundle change — with a backstop so it never sticks."""
+
+    PANES = {"chat": ("content", None), "feed": ("feed-list", None),
+             "fleet": ("fleet-list", None), "timeline": ("host", None)}
+
+    def test_every_pane_shows_a_spinning_logo_that_hides_on_first_content(self):
+        for name, (cid, _) in self.PANES.items():
+            html = getattr(km, "_%s_page" % name)()
+            self.assertIn("id=pane-spin", html, "%s pane has the loading overlay" % name)
+            self.assertIn("romp-swirl-glyph.svg", html, "%s spinner uses the romp logo" % name)
+            self.assertIn("rotate(-360deg)", html, "%s spinner spins (reverse, matching the splash)" % name)
+            self.assertIn("getElementById('%s')" % cid, html, "%s observes its content container" % name)
+            self.assertIn("MutationObserver", html, "%s hides the spinner on first content" % name)
+            self.assertIn("setTimeout(h,8000)", html, "%s has a backstop" % name)
+
+
 if __name__ == "__main__":
     unittest.main()
