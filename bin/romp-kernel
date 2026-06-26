@@ -2390,14 +2390,25 @@ _warm_lock = threading.Lock()
 _warming = [False]
 
 
+def _has_parsing_client():
+    """True iff a CHAT or TIMELINE client is connected — both already parse the living fleet into the SAME
+    kernel parse cache (build_session / build_timeline bars). When one is, the feed's parse warms for free,
+    so the dedicated warmer must NOT also parse: it would only steal GIL from the chat's active-tab reshape
+    on a cold restart (the user 2026-06-26, "chat sessions take a long time to load on restart")."""
+    with _clients_lock:
+        return any(c["app"] in ("chat", "timeline") for c in _clients)
+
+
 def _warm_fleet_bg(now):
-    """Parse every LIVING session into the kernel parse cache in the background (live-first), then drop the
-    feed cache and re-push — so a cold-start feed paints its cards immediately (cache-only) and gets its
-    working-dots + anchors once the parse lands, instead of the build blocking ~1s on it. One warm at a time;
-    a no-op when no client is connected (so it never fires in tests / headless)."""
+    """Parse every LIVING session into the kernel parse cache in the background, then drop the feed cache and
+    re-push — so a FEED-ONLY window (no chat/timeline to warm the cache for it) still gets its working-dots +
+    anchors a beat after the cards. A no-op when nobody's connected, or when a chat/timeline client IS (it
+    warms the cache itself); and it bails mid-sweep the instant one connects, so it never competes."""
     with _clients_lock:
         if not _clients:
             return
+    if _has_parsing_client():
+        return
     with _warm_lock:
         if _warming[0]:
             return
@@ -2407,6 +2418,8 @@ def _warm_fleet_bg(now):
         try:
             tmux = _tmux_sessions()
             for s in _alive_sessions(now, tmux):         # live sessions first
+                if _has_parsing_client():                 # a chat/timeline tab just opened → it'll warm the rest
+                    break
                 _parse(s["path"], s["sid"], now)          # warm the kernel parse cache
             _built_feed[1] = None                         # force the next build to use the now-warm parses
             _push_all()
