@@ -24,6 +24,7 @@ class BootSplash(unittest.TestCase):
 
     def test_the_shell_paints_a_centered_romp_splash_with_dots(self):
         self.assertIn("id=romp-boot", self.html, "a full-window boot overlay rides in the shell HTML")
+        self.assertIn("romp-swirl-glyph.svg", self.html, "the ACTUAL romp logo, not a text wordmark")
         self.assertIn("rb-dots", self.html, "the moving-dots loading cue")
         self.assertIn("#9cd2ff", self.html, "the romp accent blue (loading-dot use)")
         self.assertIn("@keyframes rb-bnc", self.html, "the dots are animated")
