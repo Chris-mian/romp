@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Kernel wiring for the SDK backend (bin/romp-kernel _sdk_route + _tmux_sessions merge).
+"""Kernel wiring for the unified session API (bin/romp-kernel _drive + Sessions.live merge).
 
-Deterministic: _sdk() is stubbed with a FakeBackend that records calls, so this needs
-neither the SDK nor any state on disk. It locks in the routing table (which drive ops go to
-the backend, which fall through to tmux) and the live-session merge.
+Deterministic: _sdk() is stubbed with a FakeBackend that records calls, so this needs neither the SDK nor
+any state on disk. It locks in the routing table — _drive sends each per-session op to whichever backend
+OWNS the sid (Sessions.backend_for): SDK-owned sids → the SDK backend, everything else → the tmux backend —
+plus the live-session merge. (the user 2026-06-26: tmux + SDK behind one session API.)
 """
 import os
 import unittest
@@ -75,15 +76,25 @@ class KernelWiring(unittest.TestCase):
         km._sdk, km._push_all, km._send_to_app, km.jd.optimistic_followup = self.saved
 
     def _route(self, msg):
-        return km._sdk_route(msg, {"send": lambda s: None})
+        return km._drive(msg, {"send": lambda s: None})
 
     def test_send_routes_to_backend(self):
         self.assertTrue(self._route({"type": "sendMessage", "id": "sid-sdk", "text": "hi"}))
         self.assertIn(("send", "sid-sdk", "hi"), self.be.calls)
 
-    def test_non_owned_sid_falls_through(self):
-        self.assertFalse(self._route({"type": "sendMessage", "id": "sid-tmux", "text": "hi"}))
-        self.assertEqual(self.be.calls, [])           # nothing routed; tmux path will handle it
+    def test_non_sdk_sid_routes_to_the_tmux_backend(self):
+        # a non-SDK sid no longer "falls through" — _drive routes it to the tmux backend via
+        # Sessions.backend_for (the fallback). The unified dispatch handles BOTH kinds.
+        tm = FakeBackend(); tm._owned = set()
+        saved = km._TMUX
+        km._TMUX = tm
+        try:
+            self.assertTrue(self._route({"type": "sendMessage", "id": "sid-tmux", "text": "hi"}))
+            self.assertIn(("send", "sid-tmux", "hi"), tm.calls)   # routed to the tmux backend
+            self.assertEqual(self.be.calls, [])                   # the SDK backend was untouched
+        finally:
+            km._TMUX = saved
+            km._tmux_echo.pop("sid-tmux", None)                   # the optimistic echo wrote here — don't leak it
 
     def test_ui_op_falls_through_even_for_sdk_sid(self):
         # closeTab/openSession are backend-agnostic UI ops → never intercepted
@@ -147,7 +158,7 @@ class KernelWiring(unittest.TestCase):
                 sink.append(json.loads(s).get("text", ""))
             except Exception:
                 pass
-        return km._sdk_route(msg, {"send": send})
+        return km._drive(msg, {"send": send})
 
     def test_askfollowup_resolves_sid_from_itemid(self):
         self.assertTrue(self._route({"type": "askFollowUp", "itemId": "sid-sdk:g1", "text": "more"}))
@@ -192,9 +203,11 @@ class LiveTailAndOpen(unittest.TestCase):
         km._sdk = lambda: self.be
         km._push_all = lambda *a, **k: None
         km._send_to_app = lambda *a, **k: None
+        km._tmux_echo.clear()                         # isolate the shared tmux-echo store across tests
 
     def tearDown(self):
         km._sdk, km._sessions, km._push_all, km._send_to_app = self.saved
+        km._tmux_echo.clear()
 
     def test_merge_appends_fresh_live_atom_non_mutating(self):
         self.be._live = {"sid-sdk": [{"type": "assistant", "uuid": "new1", "t": 50,
@@ -212,9 +225,11 @@ class LiveTailAndOpen(unittest.TestCase):
         out = km._merge_live_atoms(session, "sid-sdk")
         self.assertEqual(len(out["turns"][-1]["atoms"]), 1)              # transcript already has it → not re-added
 
-    def test_merge_skips_non_sdk(self):
+    def test_merge_skips_when_no_live_atoms(self):
         session = {"turns": []}
-        self.assertIs(km._merge_live_atoms(session, "sid-tmux"), session)   # not SDK-backed → unchanged
+        # a tmux sid with an empty echo store has no live atoms → the owning backend (tmux) returns [] and
+        # the merge is a no-op (returns the same object). The SDK case is covered by the tests above.
+        self.assertIs(km._merge_live_atoms(session, "sid-tmux"), session)
 
     def test_alive_sessions_includes_transcriptless_sdk(self):
         km._sessions = lambda now: []                                   # discover sees nothing (no transcript yet)
@@ -238,14 +253,14 @@ class SdkQueuedIndicator(unittest.TestCase):
     """An SDK session keeps its message queue in MEMORY (no transcript queue-op records), so the chat's
     'queued' indicator must read the backend's pending_queued, not _pending_queued (business 2026-06-23)."""
 
-    def test_queued_event_reads_sdk_pending_queue(self):
+    def test_queued_event_reads_the_owning_backend_pending_queue(self):
         with open(os.path.join(BIN, "romp-kernel")) as f:
             src = f.read()
-        # for an SDK session the queued texts come from be.pending_queued(sid); hasattr-guarded; tmux still
-        # uses the transcript reader
-        self.assertIn("_be.owns(sid) and hasattr(_be, \"pending_queued\")", src)
-        self.assertIn("queued = _be.pending_queued(sid)", src)
-        self.assertIn('queued = _pending_queued(sess["path"])', src)   # tmux/fallback path kept
+        # build_session reads the queued texts from the OWNING backend, uniformly — the SDK from its
+        # in-memory queue, tmux from the transcript's queue-operation records (TmuxBackend.pending_queued →
+        # _pending_queued). No backend fork in build_session anymore.
+        self.assertIn("queued = Sessions.backend_for(sid).pending_queued(sid)", src)
+        self.assertIn("return _pending_queued(p) if p else []", src)   # tmux pending_queued reads the transcript
 
 
 class SdkMetadataParity(unittest.TestCase):

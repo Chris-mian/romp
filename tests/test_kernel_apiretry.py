@@ -16,11 +16,11 @@ em = SourceFileLoader("romp_event_model", os.path.join(BIN, "romp-event-model"))
 
 class ApiRetryRendersAsRomp(unittest.TestCase):
     def test_the_apiretry_handler_tags_retry_with_the_romp_injected_marker(self):
-        # the apiRetry handler injects "retry" carrying the marker, not a bare "retry"
-        m = re.search(r'"apiRetry".*?_tmux_send\([^,]+,\s*("retry[^)]*")\)', SRC, re.S)
-        self.assertTrue(m, "found the apiRetry inject")
-        self.assertIn("romp-injected", m.group(1), "the injected retry carries the romp-injected marker")
-        self.assertNotEqual(m.group(1), '"retry"', "no longer a bare 'retry' (which would look user-typed)")
+        # the apiRetry handler (now in the unified _drive) injects "retry" carrying the marker on tmux, not a
+        # bare "retry"; the SDK re-drives via its own queue and sends the bare command.
+        ap = SRC.split('t == "apiRetry"', 1)[1].split("elif t ==", 1)[0]
+        self.assertIn("romp-injected", ap, "the injected retry carries the romp-injected marker (tmux)")
+        self.assertIn('if be is _TMUX else "retry"', ap, "marked on tmux, bare on the SDK")
 
     def test_that_injected_retry_is_authored_romp_not_human(self):
         # end-to-end: the exact text romp pastes → author 'romp' (the gray bubble), NOT 'human', even though

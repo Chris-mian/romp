@@ -2983,9 +2983,9 @@ class ApiRetryAndTabOrderRoutes(unittest.TestCase):
 
     def test_routes_present(self):
         src = Path(BIN, "romp-kernel").read_text()
-        self.assertIn('msg.get("type") == "apiRetry"', src, "Retry button → apiRetry handler")
-        self.assertIn(r'_tmux_send(_name_of(msg["id"]) or msg["id"], "retry\n\n<!-- romp-injected -->")', src,
-                      "apiRetry pastes 'retry' tagged romp-injected (→ a gray romp bubble, not a user prompt)")
+        self.assertIn('t == "apiRetry"', src, "Retry button → apiRetry, handled in the unified _drive")
+        self.assertIn(r'"retry\n\n<!-- romp-injected -->" if be is _TMUX else "retry"', src,
+                      "apiRetry pastes 'retry' tagged romp-injected on tmux (→ a gray romp bubble), bare on the SDK")
         self.assertIn('"type": "tabOrder"', src,
                       "kernel pushes the saved tab order on connect so the UI stops reordering (#11)")
 
@@ -3068,12 +3068,13 @@ class CompactSessionRoute(unittest.TestCase):
     was silently dropped (the user 2026-06-16)."""
 
     def test_compact_handler_source_routes_both_shapes(self):
-        # both the chat (compactSession/id) and timeline (compact/name) branches end in _tmux_send(.,"/compact")
+        # both the chat (compactSession/id) and timeline (compact/name) shapes route /compact through the
+        # owning backend (was a tmux-only _tmux_send), unified in _drive.
         src = Path(BIN, "romp-kernel").read_text()
-        self.assertIn('msg.get("type") == "compactSession" and msg.get("id")', src,
-                      "kernel has a compactSession handler (was missing → chat button did nothing)")
-        self.assertIn('_tmux_send(_name_of(msg["id"]) or msg["id"], "/compact")', src,
-                      "compactSession resolves id→name and sends the same /compact as `compact`")
+        self.assertIn('t in ("compact", "compactSession")', src,
+                      "_drive handles both compact shapes (chat battery + timeline)")
+        self.assertIn('be.send(sid, "/compact")', src,
+                      "compact sends the same /compact through whichever backend owns the sid")
 
 
 class TmuxInject(unittest.TestCase):
