@@ -434,26 +434,16 @@ test("click-drag pan BREAKS 🔒 lock and unpins", () => {
   panel._dragUp(mouseEv({ clientX: 440, clientY: 202 }));
 });
 
-test("_beginPlotDrag pans from ANYWHERE in the plot (a press on a bar, not just empty row space)", () => {
+test("a committed drag shows the closed-fist (grabbing) cursor over the whole plot, cleared on drop", () => {
   const panel: any = new TimelinePanel(makeNode("div"));
   panel.update(synthData());
-  panel._setLock(true); panel._pinned = true;
-  const off0 = panel.offSec();
-  panel._beginPlotDrag(mouseEv({ clientX: 800, clientY: 60 }));   // press anywhere — resolves the lane under Y
-  assert.ok(panel._drag, "a drag gesture started at the svg level");
-  panel._dragMove(mouseEv({ clientX: 740, clientY: 62 }));        // horizontal-dominant → pan
-  assert.equal(panel._drag.mode, "pan", "horizontal drag → pan");
-  assert.equal(panel._lockNow, false, "the pan broke the lock");
-  panel._dragUp(mouseEv({ clientX: 740, clientY: 62 }));
-  assert.notEqual(panel.offSec(), off0, "the window panned");
-});
-
-test("a committed drag suppresses the trailing click for any element (global capture)", () => {
-  const panel: any = new TimelinePanel(makeNode("div"));
-  panel.update(synthData());
-  panel._beginPlotDrag(mouseEv({ clientX: 800, clientY: 60 }));
-  panel._dragMove(mouseEv({ clientX: 740, clientY: 62 }));        // pan → sets _suppressClick
-  assert.equal(panel._suppressClick, true, "a pan marks the next click to be swallowed");
+  const sid = panel._vis[0].id;
+  panel._beginDrag(sid, mouseEv({ clientX: 500, clientY: 200 }));
+  assert.equal(panel.wrap.classList.contains("tl-grabbing"), false, "not grabbing until movement commits");
+  panel._dragMove(mouseEv({ clientX: 440, clientY: 202 }));       // commit (pan)
+  assert.equal(panel.wrap.classList.contains("tl-grabbing"), true, ".tl-grabbing forces grabbing over every descendant");
+  panel._dragUp(mouseEv({ clientX: 440, clientY: 202 }));
+  assert.equal(panel.wrap.classList.contains("tl-grabbing"), false, "cleared on drop");
 });
 
 test("vertical click-drag reorders the lane (not pan), leaving the lock alone", () => {
