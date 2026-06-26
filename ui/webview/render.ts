@@ -2678,7 +2678,6 @@ function showActive() {
     if (!vv || !sessions.has(target)) return;
     syncView(target);                   // the heavy build now (clears the loading hint)
     landActive(document.getElementById("content"), vv);
-    { const st = _activeStats(); _perfHud(`switch DEFERRED ${Math.round(performance.now() - _swT0)}ms  events ${st.events}  turns ${st.turns}  win ${st.win}  nodes ${st.nodes}  compact ${settings.compact}`); }
   });
 }
 
@@ -3817,36 +3816,8 @@ function restoreActiveDraftOnce(): void {
   if (!ta.value) { const d = drafts.get(activeId); if (d) { ta.value = d; growComposer(ta); } }
 }
 
-// ---- TEMP perf readout (the user 2026-06-25: switching to long sessions still slow even after windowing
-// + the no-op-switch fix). A tiny on-screen HUD shows the last switch's timing + live DOM node count +
-// event count, so a screenshot pinpoints whether the DOM is actually windowed and where the ms go. REMOVE
-// once diagnosed. ----
-let _swT0 = 0;
-function _perfHud(line: string): void {
-  let hud = document.getElementById("perf-hud");
-  if (!hud) {
-    hud = document.createElement("div"); hud.id = "perf-hud";
-    hud.style.cssText = "position:fixed;left:6px;bottom:6px;z-index:99999;background:rgba(0,0,0,0.82);" +
-      "color:#9cd2ff;font:11px/1.45 ui-monospace,monospace;padding:5px 8px;border-radius:5px;" +
-      "pointer-events:none;white-space:pre;max-width:78vw;box-shadow:0 1px 4px rgba(0,0,0,0.4)";
-    document.body.appendChild(hud);
-  }
-  hud.textContent = line;
-}
-function _activeStats(): { events: number; turns: number; win: number; nodes: number } {
-  const v = activeId ? views.get(activeId) : null;
-  const s = activeId ? sessions.get(activeId) : null;
-  return {
-    events: s ? s.events.length : 0,
-    turns: v ? v.el.querySelectorAll(".turn").length : 0,
-    win: v ? v.winStart : 0,
-    nodes: v ? v.el.getElementsByTagName("*").length : 0,
-  };
-}
-
 function setActive(id: string, anchor?: string, anchorT?: number, anchorKind?: string) {
   if (activeId === id && anchor == null && anchorT == null) return; // already active, nothing to do
-  _swT0 = performance.now();
   closeMetaMenu(); // an open model/effort menu targets the tab we're leaving
   pendingAnchorT = anchorT ?? null;
   pendingAnchorKind = anchorKind ?? null;
@@ -3874,7 +3845,6 @@ function setActive(id: string, anchor?: string, anchorT?: number, anchorKind?: s
   renderTabs();
   showActive();
   schedulePrebuild(); // warm the OTHER tabs in idle (MRU-first) so the next switch is instant
-  { const st = _activeStats(); _perfHud(`switch SYNC ${Math.round(performance.now() - _swT0)}ms  events ${st.events}  turns ${st.turns}  win ${st.win}  nodes ${st.nodes}  compact ${settings.compact}`); }
 }
 
 function cycleTab(dir: number) {
