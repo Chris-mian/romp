@@ -102,6 +102,9 @@ const expandedGroups = new Set<string>();      // compact mode: tool-group keys 
 
 const sessions = new Map<string, Session>();
 const order: string[] = [];           // positional tab order (for cycling)
+// Tab name+color from the kernel's tabOrder push (the user 2026-06-26): lets renderTabs paint the WHOLE
+// strip as placeholders BEFORE each session's build_session arrives, so tabs don't pop in one-by-one.
+const tabMeta = new Map<string, { name: string; color: Color | null }>();
 const mru: string[] = [];             // recency stack, front = most-recently-active (close → return to previous)
 let activeId: string | null = null;
 let renderingSid: string | null = null;   // the session id syncView is currently building (for per-session fold keys)
@@ -1398,8 +1401,20 @@ function commitTabOrder() {
   if (vscodeApi) vscodeApi.postMessage({ type: "reorderTabs", order: order.slice() });
 }
 // Apply a shared order pushed from the host (e.g. the timeline reordered it).
-function applyTabOrder(o: any) {
+function applyTabOrder(o: any, tabs?: any) {
   sharedOrder = Array.isArray(o) ? o.filter((x: any) => typeof x === "string") : [];
+  // name+color per tab → renderTabs paints placeholders for tabs whose session hasn't arrived yet (tabs-first).
+  // The payload is the kernel's AUTHORITATIVE current tab set, so REBUILD (not merge) — a closed tab drops out
+  // and never lingers as a stale placeholder. Absent tabs (older kernel) → keep what we have.
+  if (Array.isArray(tabs)) {
+    tabMeta.clear();
+    for (const t of tabs) {
+      if (t && typeof t.id === "string") {
+        tabMeta.set(t.id, { name: typeof t.name === "string" ? t.name : "",
+                            color: (t.color && typeof t.color.bg === "string") ? t.color : null });
+      }
+    }
+  }
   recordOrder(sharedOrder);
   sortTabs();
   renderTabs();
@@ -1507,14 +1522,42 @@ function showTabTip(tab: HTMLElement, s: Session): void {
 // refresh would otherwise replace the tab bar and destroy the input mid-edit).
 let renameActive = false;
 let renderPendingAfterRename = false;
+// A loading PLACEHOLDER tab (the user 2026-06-26): name + identity color from the kernel's tabOrder push,
+// shown while the session's build_session is still in flight so the strip's full width is reserved up front
+// (no one-by-one pop-in). Non-interactive — no select/close/drag — until the real session arrives and
+// renderTabs swaps in the full tab. A gentle pulse (.tab-placeholder) reads as "loading".
+function makePlaceholderTab(id: string): HTMLElement {
+  const meta = tabMeta.get(id);
+  const tab = el("div", "tab tab-placeholder");
+  tab.dataset.id = id;
+  if (meta?.color) {
+    tab.style.setProperty("--chip-bg", meta.color.bg);
+    tab.style.setProperty("--chip-fg", meta.color.fg);
+    tab.classList.add("colored");
+  }
+  const label = el("span", "tab-label");
+  label.textContent = meta?.name || "…";
+  tab.appendChild(label);
+  return tab;
+}
+
 function renderTabs() {
   if (renameActive) { renderPendingAfterRename = true; return; }
   const bar = document.getElementById("tabs");
   if (!bar) return;
   bar.replaceChildren();
-  for (const id of order) {
+  // TABS-FIRST (the user 2026-06-26): render the WHOLE strip up front — every id the kernel told us about
+  // (tabMeta, from the tabOrder push) plus any session already arrived, in shared order. An id whose session
+  // hasn't landed yet draws as a placeholder (name+color, non-interactive) that fills in when build_session
+  // arrives — so tabs don't pop in one-by-one. Union order ∪ tabMeta, sorted by the shared/last-known index.
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  for (const id of order) { if (!seen.has(id)) { seen.add(id); ids.push(id); } }
+  for (const id of tabMeta.keys()) { if (!seen.has(id)) { seen.add(id); ids.push(id); } }
+  ids.sort((a, b) => effIdx(a) - effIdx(b));
+  for (const id of ids) {
     const s = sessions.get(id);
-    if (!s) continue;
+    if (!s) { bar.appendChild(makePlaceholderTab(id)); continue; }
     const tab = el("div", "tab" + (id === activeId ? " active" : ""));
     tab.tabIndex = 0;            // focusable for keyboard nav
     tab.dataset.id = id;
@@ -4113,7 +4156,7 @@ window.addEventListener("message", (e: MessageEvent) => {
   else if (m.type === "ledger") setLedger(m.id, m.ledger ?? null);
   else if (m.type === "working") { workingSet = new Set(Array.isArray(m.names) ? m.names : []); refreshPostalDots(); }
   else if (m.type === "imgData" && typeof m.path === "string") onImgData(m.path, typeof m.url === "string" ? m.url : null);
-  else if (m.type === "tabOrder") applyTabOrder(m.order);
+  else if (m.type === "tabOrder") applyTabOrder(m.order, m.tabs);
   else if (m.type === "renamed" && m.id && typeof m.name === "string") {
     const s = sessions.get(m.id);
     if (s && s.name !== m.name) { s.name = m.name; renderTabs(); }

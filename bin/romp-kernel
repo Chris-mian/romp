@@ -5063,8 +5063,12 @@ def _push(targets, connect=False):
         # we do NOT build all sessions just for a feed/fleet push: the user 2026-06-24 slow-load regression).
         chat_sessions = []
         if want_chat:
+            # TABS-FIRST (the user 2026-06-26): ship name+color per tab so the client can paint the WHOLE strip
+            # as placeholders up front (no tab popping in one-by-one as each build_session lands). The full
+            # session fills the placeholder in when it arrives below.
+            tab_meta = [{"id": s["sid"], "name": s.get("name", ""), "color": _name_color(s["sid"])} for s in chat_list]
             for c in chat_clients:                       # tab strip first → the shell paints before any build
-                _send_client(c, ("taborder",), {"type": "tabOrder", "order": tab_order})
+                _send_client(c, ("taborder",), {"type": "tabOrder", "order": tab_order, "tabs": tab_meta})
             active = {c.get("active") for c in chat_clients if c.get("active")}
             build_order = sorted(chat_list, key=lambda s: 0 if s["sid"] in active else 1)   # stable: active first
             for s in build_order:
@@ -6646,8 +6650,11 @@ class Handler(BaseHTTPRequestHandler):
             # back to ordering tabs by session STATE — so they drift on their own (worse now that the
             # heartbeat auto-reloads). _ordered_alive is the same order chat tabs + timeline lanes use.
             try:
-                _o = [s["sid"] for s in _ordered_alive(int(time.time()), _tmux_sessions())]
-                client["send"](json.dumps({"type": "tabOrder", "order": _o}))
+                _alive = _ordered_alive(int(time.time()), _tmux_sessions())
+                _o = [s["sid"] for s in _alive]
+                # name+color per tab → the client paints the whole strip as placeholders up front (tabs-first)
+                _tabs = [{"id": s["sid"], "name": s.get("name", ""), "color": _name_color(s["sid"])} for s in _alive]
+                client["send"](json.dumps({"type": "tabOrder", "order": _o, "tabs": _tabs}))
             except Exception:
                 pass
         elif msg and msg.get("type") == "setSessionFlag" and msg.get("id") and msg.get("flag"):
