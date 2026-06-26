@@ -47,11 +47,11 @@ class BgTasks(unittest.TestCase):
     def test_a_finished_background_task_is_parsed_into_a_row(self):
         path = _write([_launch(), _notif(status="failed")])
         try:
-            tasks = km._bg_tasks(path)
+            res = km._bg_tasks(path)
         finally:
             os.unlink(path)
-        self.assertEqual(len(tasks), 1)
-        t = tasks[0]
+        self.assertEqual(res["count"], 1, "the header count")
+        t = res["tasks"][0]
         self.assertEqual(t["status"], "failed")
         self.assertIn("exit code 1", t["summary"])
         self.assertEqual(t["command"], "sleep 5 && false", "the launch command is the expand-to-details body")
@@ -59,29 +59,44 @@ class BgTasks(unittest.TestCase):
     def test_an_unmatched_launch_is_running(self):
         path = _write([_launch()])
         try:
-            tasks = km._bg_tasks(path)
+            res = km._bg_tasks(path)
         finally:
             os.unlink(path)
-        self.assertEqual(tasks[0]["status"], "running")
-        self.assertEqual(tasks[0]["summary"], "Restart server after test", "running shows the launch description")
+        self.assertEqual(res["tasks"][0]["status"], "running")
+        self.assertEqual(res["tasks"][0]["summary"], "Restart server after test", "running shows the launch description")
 
     def test_a_finished_task_self_clears_after_a_later_genuine_prompt(self):
         # completed, THEN the user sends another message → the user moved on → drop it from the box
         path = _write([_launch(), _notif(status="completed"), _prompt()])
         try:
-            self.assertEqual(km._bg_tasks(path), [], "a finished task before the last prompt is cleared")
+            res = km._bg_tasks(path)
         finally:
             os.unlink(path)
+        self.assertEqual(res["count"], 0, "a finished task before the last prompt is cleared")
+        self.assertEqual(res["tasks"], [])
 
     def test_a_running_task_persists_across_a_later_prompt(self):
         # launched, no result yet, then a new prompt → still in flight → keep showing it
         path = _write([_launch(), _prompt()])
         try:
-            tasks = km._bg_tasks(path)
+            res = km._bg_tasks(path)
         finally:
             os.unlink(path)
-        self.assertEqual(len(tasks), 1)
-        self.assertEqual(tasks[0]["status"], "running")
+        self.assertEqual(res["count"], 1)
+        self.assertEqual(res["tasks"][0]["status"], "running")
+
+    def test_count_reflects_all_tasks_even_when_the_list_is_capped(self):
+        # the header count is the TRUE total; the list itself is capped at 16
+        recs = []
+        for i in range(20):
+            recs.append(_launch(tid="t%02d" % i, desc="job %d" % i))
+        path = _write(recs)
+        try:
+            res = km._bg_tasks(path)
+        finally:
+            os.unlink(path)
+        self.assertEqual(res["count"], 20, "count reports every surfaced task")
+        self.assertEqual(len(res["tasks"]), 16, "the list is capped")
 
     def test_output_file_tail_is_read_for_the_details(self):
         out = tempfile.NamedTemporaryFile(mode="w", suffix=".output", delete=False)
@@ -89,11 +104,11 @@ class BgTasks(unittest.TestCase):
         out.close()
         path = _write([_launch(), _notif(status="failed", outfile=out.name)])
         try:
-            tasks = km._bg_tasks(path)
+            res = km._bg_tasks(path)
         finally:
             os.unlink(path)
             os.unlink(out.name)
-        self.assertIn("boom: exit 1", tasks[0]["output"], "the output file's tail is the details body")
+        self.assertIn("boom: exit 1", res["tasks"][0]["output"], "the output file's tail is the details body")
 
     def test_parse_task_notification_keys_on_exact_tags(self):
         note = km._parse_task_notification("<task-notification><status>completed</status><summary>done</summary></task-notification>")

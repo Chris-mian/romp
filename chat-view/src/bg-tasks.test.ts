@@ -10,26 +10,45 @@ import * as path from "node:path";
 const SRC = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
 
-test("a BgTask type rides on the session and is carried across pushes", () => {
+test("the box payload is {count, tasks} and rides on the session across pushes", () => {
   assert.match(SRC, /interface BgTask \{ id: string; status: string; summary: string;/);
-  assert.match(SRC, /bgTasks\?: BgTask\[\];/);
+  assert.match(SRC, /interface BgTasks \{ count: number; tasks: BgTask\[\]; \}/);
+  assert.match(SRC, /bgTasks\?: BgTasks;/);
   assert.match(SRC, /bgTasks: \("bgTasks" in msg\) \? msg\.bgTasks : \(prev \? prev\.bgTasks : undefined\)/);
 });
 
-test("renderBgTasks renders the active session's tasks, hides the box when there are none", () => {
-  assert.match(SRC, /function renderBgTasks\(\)/);
-  assert.match(SRC, /if \(!tasks\.length\) \{ host\.style\.display = "none"; return; \}/);
-  // the header carries the toggle action + id; expansion is keyed by id and survives the re-render
-  assert.match(SRC, /head\.dataset\.act = "bg-toggle"; head\.dataset\.id = t\.id;/);
+test("the header collapses to a count: one → 'Background task · name', many → 'N background tasks'", () => {
+  assert.match(SRC, /count === 1 \? "Background task · " \+ \(tasks\[0\]\.summary \|\| "running"\)/);
+  assert.match(SRC, /: count \+ " background tasks"/);
+  // collapsed by default: when the fold isn't open, only the header renders
+  assert.match(SRC, /const open = bgFoldOpen\.has\(sid\);/);
+  assert.match(SRC, /if \(!open\) return;/);
+});
+
+test("three-level disclosure: header fold, then per-task detail, both keyed so they survive re-render", () => {
   assert.match(SRC, /const bgExpanded = new Set<string>\(\);/);
-  // expand body = the command + the output, textContent only (untrusted)
+  assert.match(SRC, /const bgFoldOpen = new Set<string>\(\);/);
+  assert.match(SRC, /head\.dataset\.act = "bg-fold"; head\.dataset\.id = sid;/);
+  assert.match(SRC, /rh\.dataset\.act = "bg-toggle"; rh\.dataset\.id = t\.id;/);
+  // detail body = command + output, textContent only (untrusted)
   assert.match(SRC, /cmd\.textContent = t\.command;/);
   assert.match(SRC, /out\.textContent = t\.output \|\| "\(no output captured\)";/);
 });
 
-test("renderBgTasks is wired into showActive and the toggle is delegated to the stable container", () => {
+test("the worst status drives the collapsed header dot so a failure is glanceable", () => {
+  assert.match(SRC, /const BG_RANK: Record<string, number> = \{ failed: 3, running: 2, completed: 1 \};/);
+  assert.match(SRC, /const worst = tasks\.reduce\(/);
+});
+
+test("renderBgTasks is wired into showActive and both folds are delegated to the stable container", () => {
   assert.match(SRC, /renderBgTasks\(\); \/\/ swap in the active session's background-task box/);
-  assert.match(SRC, /delegate\(host, \{\s*"bg-toggle": \(el\) => \{/);
+  assert.match(SRC, /"bg-fold": \(el\) => \{/);
+  assert.match(SRC, /"bg-toggle": \(el\) => \{/);
+});
+
+test("the list and the detail bodies scroll independently (overscroll-contain) — the expanded-view fix", () => {
+  assert.match(CSS, /\.bg-list \{[^}]*overflow-y: auto; overscroll-behavior: contain;/);
+  assert.match(CSS, /\.bg-cmd, \.bg-out \{[\s\S]*overflow: auto; overscroll-behavior: contain;/);
 });
 
 test("status tints keep their meaning (running yellow, failed red, completed blue — not the accent)", () => {

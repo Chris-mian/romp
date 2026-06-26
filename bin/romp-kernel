@@ -1977,15 +1977,19 @@ def _parse_task_notification(txt):
 
 
 def _read_task_output(of):
-    """The tail of a background task's output file (the expand-to-details body), capped. '' if unreadable."""
+    """The TAIL of a background task's output file (the expand-to-details body), capped. Reads only the last
+    ~8KB off the end so a huge (e.g. training) log never gets read whole every push. '' if unreadable."""
     if not of:
         return ""
     try:
-        with open(of, errors="replace") as f:
-            data = f.read()
+        with open(of, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            sz = f.tell()
+            f.seek(max(0, sz - 8000))
+            raw = f.read()
     except OSError:
         return ""
-    data = data.strip()
+    data = raw.decode("utf-8", "replace").strip()
     if len(data) > 4000:
         data = "…(truncated)\n" + data[-4000:]
     return data
@@ -2037,12 +2041,14 @@ def _scan_bg_tasks(path):
         return []
     keep = [tasks[tid] for tid in order if tasks[tid]["status"] == "running" or tasks[tid]["notePos"] > last_prompt]
     keep.reverse()
-    return keep[:6]
+    return keep[:40]
 
 
 def _bg_tasks(path):
-    """The chat's background-task rows: the cached transcript scan (cached by mtime+size like _background_why)
-    enriched with each task's current output tail (read fresh). [] when there are none to show."""
+    """The chat's background-task box payload: {count, tasks}. count = how many tasks to surface (drives the
+    'N background tasks' header); tasks = up to 16 of them (newest first) enriched with each one's output tail
+    (read fresh). The cached transcript scan (mtime+size, like _background_why) holds the meta; the output is
+    read live since a running task's log grows independently. {"count":0,"tasks":[]} when there are none."""
     try:
         st = os.stat(path)
         key = (st.st_mtime, st.st_size)
@@ -2058,11 +2064,10 @@ def _bg_tasks(path):
                 _bgtasks_cache.clear()
             _bgtasks_cache[path] = (key, scan)
     out = []
-    for tk in scan:
-        d = {"id": tk["id"], "status": tk["status"], "summary": tk["summary"], "command": tk["command"],
-             "output": _read_task_output(tk["outputFile"])}
-        out.append(d)
-    return out
+    for tk in scan[:16]:
+        out.append({"id": tk["id"], "status": tk["status"], "summary": tk["summary"], "command": tk["command"],
+                    "output": _read_task_output(tk["outputFile"])})
+    return {"count": len(scan), "tasks": out}
 
 
 def _api_error(path):
