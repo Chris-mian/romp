@@ -1225,7 +1225,7 @@ function refreshPostalDots() {
   document.querySelectorAll(".postal-peer").forEach((p) => setPeerDot(p as HTMLElement, workingSet.has((p.textContent || "").trim())));
 }
 
-// A romp postal message, as a compact identity-coloured card.
+// A Romp Postal Service message, as a compact identity-coloured card.
 // One-line summary for a postal card: the incoming Haiku caption, else the first non-empty line of the
 // body (sent mail carries no caption), truncated. The full message lives behind a click-to-expand.
 function postalSummary(ev: Extract<ChatEvent, { kind: "postal" }>): string {
@@ -1280,7 +1280,7 @@ function renderPostal(ev: Extract<ChatEvent, { kind: "postal" }>): HTMLElement {
   makeSessionChip(peer, ev.peer); // click the sender/recipient name → go to that session's tab
   // the romp swirl marks this as a romp-postal message (the user 2026-06-23: postal is "from romp" too)
   const rlogo = el("img", "postal-romp-logo") as HTMLImageElement;
-  rlogo.src = "/media/romp-swirl-glyph.svg"; rlogo.alt = ""; rlogo.title = "romp postal message"; rlogo.onerror = () => rlogo.remove();
+  rlogo.src = "/media/romp-swirl-glyph.svg"; rlogo.alt = ""; rlogo.title = "Romp Postal Service message"; rlogo.onerror = () => rlogo.remove();
   head.appendChild(rlogo);
   head.appendChild(arrow);
   head.appendChild(verb);

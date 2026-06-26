@@ -99,7 +99,7 @@ iso() { mkdir -p "$XDG_STATE_HOME/romp"; printf '{"%s":{"postalOff":true}}' "$1"
 }
 
 @test "an isolated session holds its inbox until it reconnects" {
-    run "$POSTAL" send beta "for beta"           # delivered while beta is on the postal service
+    run "$POSTAL" send beta "for beta"           # delivered while beta is on the Romp Postal Service
     [ "$(cnt "$(mb uuid-b)/new")" = "1" ]
     iso uuid-b                                    # beta now isolates
     export MOCK_CURRENT=beta

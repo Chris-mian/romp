@@ -1991,7 +1991,7 @@ class TimelinePanel {
         });
       }
       // per-session POSTAL ISOLATION toggle (live lanes only): a mailbox icon just right of the feed
-      // checkbox; one click toggles postalOff. Un-slashed = on the postal service (default: visible to peers,
+      // checkbox; one click toggles postalOff. Un-slashed = on the Romp Postal Service (default: visible to peers,
       // can send + receive); slashed + more faded = isolated (hidden from list_agents, no messages in or out
       // — for working privately). Same draw/hit/tooltip pattern as the feed checkbox; enforced in bin/romp-postal.
       if (s.live) {
@@ -2003,10 +2003,10 @@ class TimelinePanel {
         svg.appendChild(mbox);
         const mhit = el('rect', { x: mailColX - 4, y: y - 9, width: EYE_W + 8, height: 18, fill: 'transparent', 'pointer-events': 'all' });
         mhit.style.cursor = 'pointer';
-        mhit.setAttribute('aria-label', moff ? 'session isolated from the postal service' : 'session on the postal service'); svg.appendChild(mhit);
+        mhit.setAttribute('aria-label', moff ? 'session isolated from the Romp Postal Service' : 'session on the Romp Postal Service'); svg.appendChild(mhit);
         const mtip = moff
-          ? "Isolated from the postal service — click to reconnect<div style='opacity:.65;margin-top:2px'>hidden from peers; can’t send or receive messages</div>"
-          : "On the postal service — click to isolate<div style='opacity:.65;margin-top:2px'>work privately: hidden from peers, no messages in or out</div>";
+          ? "Isolated from the Romp Postal Service — click to reconnect<div style='opacity:.65;margin-top:2px'>hidden from peers; can’t send or receive messages</div>"
+          : "On the Romp Postal Service — click to isolate<div style='opacity:.65;margin-top:2px'>work privately: hidden from peers, no messages in or out</div>";
         mhit.addEventListener('mouseenter', (e) => { mbox.setAttribute('opacity', '1'); this.showTip(mtip, e); });
         mhit.addEventListener('mousemove', (e) => this.moveTip(e));
         mhit.addEventListener('mouseleave', () => { mbox.setAttribute('opacity', mdim); this.hideTip(); });

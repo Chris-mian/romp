@@ -39,14 +39,14 @@ class PostalOff(unittest.TestCase):
             pass
 
     def test_default_not_isolated(self):
-        self.assertFalse(pm._postal_off(SID), "no flags file → on the postal service")
+        self.assertFalse(pm._postal_off(SID), "no flags file → on the Romp Postal Service")
         self.assertFalse(pm._postal_off(""), "empty sid → not isolated")
 
     def test_flag_toggles_isolation(self):
         _set_flag(SID, True)
         self.assertTrue(pm._postal_off(SID))
         _set_flag(SID, False)
-        self.assertFalse(pm._postal_off(SID), "clearing the flag rejoins the postal service")
+        self.assertFalse(pm._postal_off(SID), "clearing the flag rejoins the Romp Postal Service")
 
     def test_other_flags_do_not_isolate(self):
         pm.SESSION_FLAGS.parent.mkdir(parents=True, exist_ok=True)

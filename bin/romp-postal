@@ -354,7 +354,7 @@ def _sdk_last_state(sid):
 def sdk_agents():
     """Alive SDK-backed (non-tmux) sessions from the kernel's registry (~/.local/state/romp/sdk/*.json with
     alive=True), shaped like local_agents() rows. WITHOUT this, an SDK session has no tmux session so it's
-    invisible to the postal service — list_agents omits it and a send to it PARKS as if it were dead, even
+    invisible to the Romp Postal Service — list_agents omits it and a send to it PARKS as if it were dead, even
     though it's open and the user can see it (the user via ui, 2026-06-26). Delivery is on-disk + tmux-free,
     so once enumerated they receive normally. (working='' — SDK sessions don't publish an @romp-working note
     via tmux; the immediate deliver-time WAKE is also tmux-keyed, so an idle SDK recipient surfaces mail at

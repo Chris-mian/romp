@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""SDK-backed (non-tmux) sessions must be VISIBLE + reachable to the postal service (the user via ui,
+"""SDK-backed (non-tmux) sessions must be VISIBLE + reachable to the Romp Postal Service (the user via ui,
 2026-06-26). local_agents() enumerated ONLY tmux sessions, so an SDK session had no row → list_agents
 omitted it and a send to it resolved the recipient as DEAD and PARKED instead of delivering, even though
 the session was open. local_agents() now merges alive SDK registry entries (~/.local/state/romp/sdk/*.json).
