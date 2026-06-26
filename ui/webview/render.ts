@@ -2793,12 +2793,15 @@ function virtualizeToViewport(): void {
   const nearTopEdge = (v.winStart ?? 0) > 0 && st < topH + edgePx;
   const nearBotEdge = (v.winEnd ?? total) < total && st + vh > renderedBottom - edgePx;
   if (!nearTopEdge && !nearBotEdge) return;   // window comfortably covers the viewport
-  const idx = unitAtScroll(v, content);
   revirtBusy = true;
   showLoadingPill();
   // Defer one frame so the pill paints before the (possibly heavy) render, then re-anchor on the focus unit.
   requestAnimationFrame(() => {
     try {
+      // Read the focus unit at RENDER time, not scroll-event time: a fast scrollbar DRAG moves on between the
+      // scroll event and this frame, so capturing it earlier anchored to a stale spot → the "snap back" on a
+      // fast random jump (the user 2026-06-25).
+      const idx = unitAtScroll(v, content);
       const working = s.status.state === "working" || s.status.state === "compacting";
       const items = displayItems(s);
       const c = Math.max(0, Math.min(idx, items.length - 1));
