@@ -5949,6 +5949,18 @@ else window.__rompPaneToggle('fleet');});})();
 """
 
 
+# Boot splash dismissal (the user 2026-06-26): fade #romp-boot the moment ANY pane signals first content
+# ({romp:'ready'}) — the timeline lanes render first (no parse), so the splash clears fast — with a 5s
+# backstop so a slow/closed pane can never trap the user behind it. Removed from the DOM after the fade.
+_LANDING_BOOT_JS = """
+(function(){var boot=document.getElementById('romp-boot');if(!boot)return;var done=false;
+function hide(){if(done)return;done=true;boot.classList.add('gone');
+setTimeout(function(){if(boot.parentNode)boot.parentNode.removeChild(boot);},450);}
+window.addEventListener('message',function(e){if(e&&e.data&&e.data.romp==='ready')hide();});
+setTimeout(hide,5000);})();
+"""
+
+
 # Settings full-screen bridge (the user 2026-06-23): the feed iframe's gear posts {romp:'settings',on} when
 # its modal opens/closes; the shell lifts the feed iframe over the whole window (body.settings-open) so the
 # modal's backdrop covers the full screen, and restores it on close.
@@ -6214,7 +6226,22 @@ def _landing():
             "}"
             # default Chat + Feed + Timeline shown, Fleet off (the user 2026-06-25); the rail toggles + ?panes=
             # reconcile in _LANDING_COLLAPSE_JS.
-            "</style></head><body class='po-chat po-feed po-timeline'><div class=col>"
+            # BOOT SPLASH (the user 2026-06-26): a centered romp wordmark + pulsing accent dots, painted with the
+            # shell HTML the instant it lands — so a reload shows "something's happening" at once, before the
+            # panes connect + parse. It fades the moment any pane signals first content ({romp:'ready'}), with a
+            # 5s backstop so it can never trap the user. Accent blue #9cd2ff = the romp accent (loading-dot use).
+            "#romp-boot{position:fixed;inset:0;z-index:9999;background:#181818;display:flex;align-items:center;"
+            "justify-content:center;transition:opacity .35s ease}#romp-boot.gone{opacity:0;pointer-events:none}"
+            "#romp-boot .rb-in{display:flex;flex-direction:column;align-items:center;gap:15px}"
+            "#romp-boot .rb-logo{font:600 21px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;"
+            "color:#9cd2ff;letter-spacing:.08em;opacity:.92}#romp-boot .rb-dots{display:flex;gap:7px}"
+            "#romp-boot .rb-dots i{width:8px;height:8px;border-radius:50%;background:#9cd2ff;animation:rb-bnc 1.1s ease-in-out infinite}"
+            "#romp-boot .rb-dots i:nth-child(2){animation-delay:.16s}#romp-boot .rb-dots i:nth-child(3){animation-delay:.32s}"
+            "@keyframes rb-bnc{0%,75%,100%{opacity:.25;transform:translateY(0)}38%{opacity:1;transform:translateY(-5px)}}"
+            "</style></head><body class='po-chat po-feed po-timeline'>"
+            "<div id=romp-boot><div class=rb-in><div class=rb-logo>romp</div>"
+            "<div class=rb-dots><i></i><i></i><i></i></div></div></div>"
+            "<div class=col>"
             "<div class=row>"
             # far-left rail: Chat / Fleet / Feed / Timeline toggles, fixed order; then the ⛭ settings + ↻ refresh
             # actions RIGHT BELOW them (the user 2026-06-25) so they persist regardless of which panes are open —
@@ -6246,6 +6273,7 @@ def _landing():
             # two separate <script> tags so a throw in the desktop splitter script can never disable
             # the mobile tab bar. (The splitter used to query a stale id=t for the timeline iframe and
             # throw on every load — fixed above by giving that iframe id=f-timeline.)
+            "<script>" + _LANDING_BOOT_JS + "</script>"
             "<script>" + _LANDING_JS + "</script>"
             "<script>" + _LANDING_FOCUS_JS + "</script>"
             "<script>" + _LANDING_FLEET_JS + "</script>"

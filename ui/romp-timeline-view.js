@@ -893,8 +893,16 @@ class TimelinePanel {
     this._winSec = Math.min(12 * 3600, Math.max(3600, Math.round((this.data.now - e) * 1.15)));
   }
 
+  // Tell the shell the dashboard has first content so it can drop the boot splash (the user 2026-06-26).
+  // The timeline lanes render first (no parse), so this is the earliest "something's on screen" signal.
+  _signalReady() {
+    if (this._readySent) return;
+    this._readySent = true;
+    try { if (window.parent && window.parent !== window) window.parent.postMessage({ romp: 'ready' }, '*'); } catch (e) {}
+  }
+
   update(data) {
-    if (!data || data.unavailable || !data.sessions) { this.data = data; this.drawMessage(data && data.unavailable ? 'Timeline needs a desktop Obsidian with tmux.' : 'No romp activity.'); return; }
+    if (!data || data.unavailable || !data.sessions) { this.data = data; this.drawMessage(data && data.unavailable ? 'Timeline needs a desktop Obsidian with tmux.' : 'No romp activity.'); this._signalReady(); return; }
     // The kernel ships the timeline as TWO messages (the user 2026-06-25): {type:"data"} carries the LANES
     // SKELETON (sessions/status/tokens, no turns/judging/messages/nudges) and a following {type:"bars"} carries
     // the heavy detail (applyBars). Carry the last-known detail across a skeleton-only update so the bars don't
@@ -906,6 +914,7 @@ class TimelinePanel {
     }
     this.data = data;
     this._reconcilePendingFlags();   // hold an optimistic eye-toggle sticky until THIS push (or a later one) confirms it
+    this._signalReady();             // first lanes are about to paint → let the shell drop the boot splash
     // Live-edge baseline: free-run off a FIXED anchor and re-snap only on a genuine step, so the few-ms
     // poll-arrival jitter no longer hiccups the gliding edge ~1-2px (the user 2026-06-15). See shouldReanchorEdge.
     const _live = this._liveFollowing(), _tMs = perfNow();
