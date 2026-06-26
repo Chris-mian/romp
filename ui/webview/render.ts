@@ -14,7 +14,7 @@ import yaml from "highlight.js/lib/languages/yaml";
 import type { ParsedAsk } from "../ask-types";
 import { quoteReply } from "../quote";
 import { markerLabel, chooseStamps } from "./time-marker";
-import { compactDisplay, toolCounts } from "./compact";
+import { compactDisplay, toolCounts, type DisplayItem } from "./compact";
 import { loadSettings, onExternalSettingsChange, type RompSettings } from "./settings";
 import { delegate } from "./actions";
 import { prebuildPlan, type ViewState } from "./prebuild";
@@ -129,7 +129,7 @@ let landTrail: string[] = [];
 // ⇒ no spacer, whole transcript rendered (short sessions, compact mode).
 // Invariant: turn children === (len − winStart); view.rendered === len (events
 // accounted), so DOM childNodes === (winStart>0 ? 1 : 0) + (len − winStart).
-interface View { el: HTMLElement; rendered: number; scrollTop: number; stick: boolean; shown: boolean; stale: boolean; winStart: number; avgTurnH?: number; spacerCount?: number; }
+interface View { el: HTMLElement; rendered: number; scrollTop: number; stick: boolean; shown: boolean; stale: boolean; winStart: number; winEnd?: number; avgTurnH?: number; spacerCount?: number; spacerCountBot?: number; unitTotal?: number; }
 const views = new Map<string, View>();
 
 // Pending pickers (AskUserQuestion / tool-permission) keyed by session id. These
@@ -2134,18 +2134,20 @@ function scrollToAnchor(uuid: string): boolean {
   // can drift onto an unrelated turn that happens to be near in time (the user 2026-06-20).
   let target = (v?.el.querySelector(`.turn[data-uuid="${cssEscape(uuid)}"]`)
                 || v?.el.querySelector(`.turn[data-mid="${cssEscape(uuid)}"]`)) as HTMLElement | null;
-  // Deep-link into the HEAD that the tail-window collapsed into the spacer (a jump back into old history):
-  // find the event and expand the window down to it, then re-query — the "load it when you jump there"
-  // behaviour. (No match anywhere → genuinely off the active path; stash for the next render pass.)
+  // Deep-link into history the window doesn't currently cover (the head/tail folded into a spacer): find the
+  // event, render a fresh window AROUND its unit, then re-query — the "load it when you jump there" behaviour.
+  // (No match anywhere → genuinely off the active path; stash for the next render pass.)
   if (!target && v && activeId) {
     const s = sessions.get(activeId);
-    if (s && v.winStart > 0) {
-      const idx = s.events.findIndex((e) => e.uuid === uuid || (e as { mid?: string }).mid === uuid);
-      if (idx >= 0 && idx < v.winStart) {
-        expandWindow(v, s, idx, s.status.state === "working" || s.status.state === "compacting");
-        target = (v.el.querySelector(`.turn[data-uuid="${cssEscape(uuid)}"]`)
-                  || v.el.querySelector(`.turn[data-mid="${cssEscape(uuid)}"]`)) as HTMLElement | null;
-      }
+    const idx = s ? s.events.findIndex((e) => e.uuid === uuid || (e as { mid?: string }).mid === uuid) : -1;
+    if (s && idx >= 0) {
+      const items = displayItems(s);
+      let u = items.findIndex((it) => it.kind === "toolgroup" ? it.indices.includes(idx) : it.index === idx);
+      if (u < 0) u = Math.max(0, items.findIndex((it) => itemFirstEvent(it) >= idx));
+      const working = s.status.state === "working" || s.status.state === "compacting";
+      renderWindowItems(v, s, items, Math.max(0, u - WINDOW_RADIUS), Math.min(items.length, u + WINDOW_RADIUS), working);
+      target = (v.el.querySelector(`.turn[data-uuid="${cssEscape(uuid)}"]`)
+                || v.el.querySelector(`.turn[data-mid="${cssEscape(uuid)}"]`)) as HTMLElement | null;
     }
   }
   if (!target) { pendingAnchor = uuid; landTrail.push("pointer-not-rendered"); return false; }
@@ -2219,6 +2221,10 @@ const TAIL_RECHECK = 25;
 const WINDOW_TAIL = 80;
 const EXPAND_CHUNK = 80;
 const EXPAND_TRIGGER_PX = 600;
+// Bidirectional virtualization: a scroll/jump renders a window of WINDOW_RADIUS units above & below the
+// viewport focus; re-window when the viewport gets within REVIRT_MARGIN units of a rendered edge.
+const WINDOW_RADIUS = 70;
+const REVIRT_MARGIN = 20;
 // A view whose window grew past this (scrolled to the top → lazy-expand crept winStart to 0, or a long
 // session watched as it appended) is re-collapsed to the tail window when you switch BACK to it, so a
 // switch never has to reveal thousands of nodes. Above WINDOW_TAIL so a normally-grown tab isn't churned.
@@ -2232,7 +2238,7 @@ function ensureView(id: string): View {
     elv.dataset.session = id;
     elv.style.display = "none";
     content?.appendChild(elv);
-    v = { el: elv, rendered: 0, scrollTop: 0, stick: true, shown: false, stale: false, winStart: 0 };
+    v = { el: elv, rendered: 0, scrollTop: 0, stick: true, shown: false, stale: false, winStart: 0, winEnd: 0 };
     views.set(id, v);
   }
   return v;
@@ -2256,50 +2262,51 @@ function syncView(id: string): View {
       while (v.el.firstChild) v.el.removeChild(v.el.firstChild);
       const ph = el("div", "tx-empty"); ph.textContent = "No messages yet."; v.el.appendChild(ph);
     }
-    v.rendered = 0; v.stale = false; v.winStart = 0;
+    v.rendered = 0; v.stale = false; v.winStart = 0; v.winEnd = 0;
     return v;
   }
   const working = s.status.state === "working" || s.status.state === "compacting";
-  // Compact mode: hide thinking, collapse consecutive tool runs, then run the SAME rail-timestamp
-  // chain over the resulting display stream. It's a global transform (runs can span the trailing
-  // window), so the compact path always does a full rebuild rather than the incremental append.
-  // (Compaction already shrinks the node count, so it renders whole — no tail-window: winStart 0.)
-  if (settings.compact) { rebuildCompact(v, s, working); return v; }
-  // No-op fast path — a tab SWITCH / repaint with no event change: the view is already current, so just
-  // reveal the cached DOM. Mirrors the compact path's cache guard above. WITHOUT this, every showActive()
-  // re-rendered the trailing TAIL_RECHECK turns (re-parsing markdown + re-running highlight.js on them) —
-  // cheap on a small session, but ~½s on a big working agent whose tail is dense with tool diffs/output/code
-  // (the user 2026-06-25: "still slow switching to the big ones"). A REAL change always lowers v.rendered
-  // (delta-send's chatTail sets it to the change index; an append grows len past it) or sets v.stale — so
-  // this never skips an actual update; it only skips the redundant re-render on a pure switch.
-  if (v.rendered === s.events.length && !v.stale && v.el.childNodes.length > 0) return v;
+  const items = displayItems(s);   // units: one per event (normal) or one folded compactDisplay item (compact)
+  const total = items.length;
   const len = s.events.length;
   const firstBuild = v.rendered === 0 || v.el.childNodes.length === 0;
   const rewind = len < v.rendered;
-  // Window floor: a fresh build or a rewind shows just the tail; otherwise keep the user's
-  // scroll-up expansion. Clamp so the live tail never strands above the window on an append.
-  let winStart = (firstBuild || rewind) ? Math.max(0, len - WINDOW_TAIL) : Math.min(v.winStart, len);
-  winStart = Math.max(0, Math.min(winStart, len - 1));
-  // A full window (re)build is needed when the floor moves or there's no DOM yet; otherwise this is a
-  // cheap incremental append + trailing re-check INSIDE the existing window (the common hot path).
-  if (firstBuild || rewind || winStart !== v.winStart) { renderWindow(v, s, winStart, working); v.stale = false; return v; }
-  const hasSpacer = v.winStart > 0 ? 1 : 0;
-  let from: number;
-  if (v.stale) from = Math.min(v.rendered, lastTurnStart(s.events)); // updated while hidden → re-render the whole current turn
-  else from = Math.min(v.rendered, Math.max(0, len - TAIL_RECHECK)); // append + re-check a trailing window
-  from = Math.max(from, v.winStart);                                 // never re-render below the window floor
-  v.stale = false;
-  // children = [spacer?, turn(winStart) … turn(len-1)]; keep the spacer + turns before `from`
-  const keep = hasSpacer + (from - v.winStart);
+  // A fresh build / rewind shows just the TAIL window (bounded → instant switch + small DOM).
+  if (firstBuild || rewind) {
+    renderWindowItems(v, s, items, Math.max(0, total - WINDOW_TAIL), total, working); v.stale = false; return v;
+  }
+  // No-op fast path — a tab SWITCH / repaint with no event change: reveal the cached DOM, re-render nothing.
+  // WITHOUT this, every showActive() re-built the trailing window (markdown + highlight.js) — the big-session
+  // switch lag (the user 2026-06-25). A REAL change lowers v.rendered (delta-send sets it to the change index;
+  // an append grows len past it) or sets v.stale, so this never skips an actual update.
+  if (v.rendered === len && !v.stale && v.el.childNodes.length > 0) return v;
+  const wasAtTail = (v.winEnd ?? total) >= (v.unitTotal ?? total);   // window was covering the OLD end
+  // An in-place change (tool-group toggle, off-screen update) OR compact mode → re-render the CURRENT window
+  // (so the change shows wherever the user is), extending to the new tail if it was at the tail.
+  if (settings.compact || v.stale) {
+    const span = Math.max(WINDOW_TAIL, (v.winEnd ?? total) - (v.winStart ?? 0));
+    const ws = wasAtTail ? Math.max(0, total - span) : Math.min(v.winStart ?? 0, Math.max(0, total - 1));
+    const we = wasAtTail ? total : Math.min(v.winEnd ?? total, total);
+    renderWindowItems(v, s, items, ws, we, working); v.stale = false; return v;
+  }
+  // Normal mode, pure append. While BROWSING history (window not at the tail), the new events land below the
+  // rendered window → just grow the bottom spacer (no DOM churn); the user sees them on scroll-down.
+  if (!wasAtTail) {
+    v.spacerCountBot = total - (v.winEnd ?? total); v.unitTotal = total; v.rendered = len; sizeSpacers(v); return v;
+  }
+  // Normal mode, append AT the tail (unit === event, top spacer only): the cheap incremental hot path —
+  // append the new turns + re-check a trailing window, tagging data-unit so the scroll↔unit map stays valid.
+  const hasSpacer = (v.winStart ?? 0) > 0 ? 1 : 0;
+  let from = Math.min(v.rendered, Math.max(0, len - TAIL_RECHECK));
+  from = Math.max(from, v.winStart ?? 0);
+  const keep = hasSpacer + (from - (v.winStart ?? 0));
   while (v.el.childNodes.length > keep) v.el.removeChild(v.el.lastChild as ChildNode);
   for (let i = from; i < len; i++) {
-    // the previous TIMED event's epoch → lets renderEvent decide if the minute/day
-    // advanced (untimed events like todo/queued are skipped so the chain holds)
-    let prevEpoch: number | null = null;
-    for (let j = i - 1; j >= 0; j--) { const e = eventEpoch(s.events[j]); if (e != null) { prevEpoch = e; break; } }
-    v.el.appendChild(renderEvent(s.events[i], prevEpoch, turnWorkedSecs(s.events, i, working)));
+    const node = renderEvent(s.events[i], prevTimedEpoch(s.events, i), turnWorkedSecs(s.events, i, working));
+    node.dataset.unit = String(i);   // unit === event in normal mode
+    v.el.appendChild(node);
   }
-  v.rendered = len;
+  v.winEnd = total; v.spacerCount = v.winStart ?? 0; v.spacerCountBot = 0; v.unitTotal = total; v.rendered = len;
   return v;
 }
 
@@ -2311,120 +2318,116 @@ function prevTimedEpoch(events: ChatEvent[], i: number): number | null {
   return null;
 }
 
-// Full (re)build of a view's window [winStart, len): a leading `.tx-spacer` standing in for the hidden
-// head [0, winStart), then the tail turns. Sizes the spacer from the rendered turns' average height so
-// scrollHeight is honest. Does NOT touch scroll (callers handle stick/anchor/compensation).
-function renderWindow(v: View, s: Session, winStart: number, working: boolean): void {
-  const len = s.events.length;
-  while (v.el.firstChild) v.el.removeChild(v.el.firstChild);
-  v.winStart = winStart;
-  if (winStart > 0) v.el.appendChild(el("div", "tx-spacer"));
-  for (let i = winStart; i < len; i++) {
-    v.el.appendChild(renderEvent(s.events[i], prevTimedEpoch(s.events, i), turnWorkedSecs(s.events, i, working)));
-  }
-  v.rendered = len;
-  v.spacerCount = winStart;   // normal path: one hidden turn per hidden event
-  sizeSpacer(v);
-}
+// ── Unified bidirectional virtualization (the user 2026-06-25) ─────────────────────────────────────────
+// Both modes render a window of UNITS [winStart, winEnd): a unit is one event (normal) or one folded
+// compactDisplay item (compact). The hidden head [0, winStart) collapses into a TOP spacer and the hidden
+// tail [winEnd, total) into a BOTTOM spacer, each sized by (hidden-unit count × avg row height) so the
+// scrollbar spans the whole transcript. On scroll, virtualizeToViewport() re-renders AROUND wherever the
+// viewport lands — a steady scroll-back OR a scrollbar jump — so random access works, not just contiguous
+// scroll. Every rendered node is tagged data-unit so the scroll↔unit mapping can locate it.
 
-// Reveal `count` older events at the top by PREPENDING them (cheap — existing turns are untouched, their
-// time-markers already chained against the real prior event). Resizes/removes the spacer to match.
-function expandWindow(v: View, s: Session, newStart: number, working: boolean): void {
-  const oldStart = v.winStart;
-  if (newStart >= oldStart) return;
-  const frag = document.createDocumentFragment();
-  for (let i = newStart; i < oldStart; i++) {
-    frag.appendChild(renderEvent(s.events[i], prevTimedEpoch(s.events, i), turnWorkedSecs(s.events, i, working)));
+// The display units for the current mode: every event as its own pass-through (normal), or the folded
+// compactDisplay stream (compact). O(events), cheap (array ops, no DOM).
+function displayItems(s: Session): DisplayItem[] {
+  if (!settings.compact) {
+    const out: DisplayItem[] = [];
+    for (let i = 0; i < s.events.length; i++) out.push({ kind: "event", index: i });
+    return out;
   }
-  const first = v.el.firstChild as HTMLElement | null;
-  const spacer = first && first.classList?.contains("tx-spacer") ? first : null;
-  v.el.insertBefore(frag, spacer ? spacer.nextSibling : v.el.firstChild);
-  v.winStart = newStart;
-  v.spacerCount = newStart;
-  if (newStart <= 0) { if (spacer) v.el.removeChild(spacer); }
-  else { if (!spacer) v.el.insertBefore(el("div", "tx-spacer"), v.el.firstChild); sizeSpacer(v); }
+  return compactDisplay(s.events.map((e) => e.kind), s.events.map((e) => e.kind === "tool" ? e.name : undefined));
 }
+function itemFirstEvent(it: DisplayItem): number { return it.kind === "toolgroup" ? it.indices[0] : it.index; }
 
-// Size the leading spacer to (hidden-unit count) × the average rendered row height, so the scrollbar
-// reflects the whole (mostly un-rendered) transcript. The hidden-unit count is v.spacerCount: the number of
-// HIDDEN rendered rows the spacer stands for — winStart events in the normal path, or the folded display-
-// item count in compact (which differ, so it can't just be winStart). avgTurnH is measured once off the tail
-// and cached — the spacer sits ABOVE the viewport during normal reading, so a per-row estimate is invisible
-// (expansion keeps the viewport pinned via a scrollHeight-delta compensation), and caching keeps O(1).
-function sizeSpacer(v: View): void {
-  const spacer = v.el.firstChild as HTMLElement | null;
-  if (!spacer || !spacer.classList?.contains("tx-spacer")) return;
-  if (v.avgTurnH == null) {
-    // Measure the rendered tail — but a display:none view (idle pre-build) reports offsetHeight 0, so only
-    // CACHE a real (visible) reading; until then use a rough fallback and re-measure when the view is shown
-    // (landActive calls sizeSpacer once visible). Cached ⇒ later expansions are O(1), not O(n²).
-    const turns = v.el.children.length - 1;   // minus the spacer itself
-    let h = 0;
-    for (let k = 1; k < v.el.children.length; k++) h += (v.el.children[k] as HTMLElement).offsetHeight;
-    if (h > 0 && turns > 0) v.avgTurnH = h / turns;
-  }
-  spacer.style.height = Math.max(0, Math.round((v.spacerCount ?? v.winStart) * (v.avgTurnH ?? 60))) + "px";
-}
-
-// Compact-mode full rebuild: drop thinking, fold consecutive tool runs to a summary line, then walk
-// the resulting display stream computing prevEpoch over IT (same rail-timestamp rules, applied after
-// compaction — the user's requirement). prevEpoch is the previous TIMED display item's epoch.
-function rebuildCompact(v: View, s: Session, working: boolean): void {
-  // A tab switch (or any repaint with no event change) must NOT re-tear-down the whole transcript — that
-  // full O(events) rebuild on every showActive() was the compact-mode arrow-key lag (the user 2026-06-17).
-  // Reuse the cached compact DOM when this view is already built for the current event set; only a REAL
-  // change rebuilds — an append/rewind (len ≠ rendered), an updated-while-hidden `stale`, or a tool-group
-  // toggle (which sets `stale` before repainting). Mirrors the normal path's incremental skip.
-  if (v.rendered === s.events.length && !v.stale && v.el.childNodes.length > 0) return;
-  while (v.el.firstChild) v.el.removeChild(v.el.firstChild);
-  const len = s.events.length;
-  // Tail-window the COMPACT stream too (the user 2026-06-25: a 7128-event session in compact mode rendered
-  // 4144 folded turns / 43k nodes, so every switch was slow). winStart is an EVENT index, same as the normal
-  // path, so the re-collapse-on-switch and the scroll-up expansion share it. A fresh build / rewind shows the
-  // tail; otherwise keep the user's scroll-up expansion.
-  const firstBuild = v.rendered === 0 || v.el.childNodes.length === 0;
-  const winStart = (firstBuild || len < v.rendered) ? Math.max(0, len - WINDOW_TAIL) : Math.max(0, Math.min(v.winStart, len - 1));
-  v.winStart = winStart;
-  // pass tool names too, so a standalone tool (AskUserQuestion) renders first-class instead of collapsing
-  const disp = compactDisplay(s.events.map((e) => e.kind), s.events.map((e) => e.kind === "tool" ? e.name : undefined));
-  // Render only the display items that reach into [winStart, len) — a toolgroup is kept whole if its LAST
-  // event is in range. The hidden head folds into the leading spacer; prevEpoch seeds from the event before.
-  const lastIdx = (it: typeof disp[number]): number => it.kind === "toolgroup" ? it.indices[it.indices.length - 1] : it.index;
-  const firstShown = winStart > 0 ? disp.findIndex((it) => lastIdx(it) >= winStart) : 0;
-  const shown = firstShown <= 0 ? disp : disp.slice(firstShown);
-  if (firstShown > 0) v.el.appendChild(el("div", "tx-spacer"));
-  let prevEpoch: number | null = firstShown > 0 ? prevTimedEpoch(s.events, winStart) : null;
-  const advance = (i: number) => { const ep = eventEpoch(s.events[i]); if (ep != null) prevEpoch = ep; };
-  for (const item of shown) {
-    if (item.kind === "toolgroup") {
-      const first = s.events[item.indices[0]];
-      const key = toolGroupKey(first);
-      const tools = item.indices.map((i) => s.events[i]) as Extract<ChatEvent, { kind: "tool" }>[];
-      const open = expandedGroups.has(key);
-      v.el.appendChild(renderToolGroup(tools, prevEpoch, key, open));   // summary line (caret = collapse toggle)
-      advance(item.indices[0]);
-      if (open) {
-        // expand to the full non-compact portion: the original contiguous span (tools + any thinking
-        // between them), each rendered as its normal turn, with timestamps continuing the chain.
-        const start = item.indices[0], end = item.indices[item.indices.length - 1];
-        for (let i = start; i <= end; i++) {
-          const child = renderEvent(s.events[i], prevEpoch, turnWorkedSecs(s.events, i, working));
-          child.classList.add("tg-child");   // indented under the open arrow → clearly part of the group
-          if (i === end) child.classList.add("tg-last");   // the bottom rail-elbow hangs off the last child
-          v.el.appendChild(child);
-          advance(i);
-        }
+// Append one display unit's DOM to v.el (a turn, or a folded toolgroup + its expansion), tagging every node
+// with data-unit = u for the scroll↔unit map. Returns the advanced prevEpoch.
+function appendItem(v: View, s: Session, items: DisplayItem[], u: number, prevEpoch: number | null, working: boolean): number | null {
+  const it = items[u];
+  const tag = (node: HTMLElement): HTMLElement => { node.dataset.unit = String(u); return node; };
+  const adv = (i: number) => { const ep = eventEpoch(s.events[i]); if (ep != null) prevEpoch = ep; };
+  if (it.kind === "toolgroup") {
+    const first = s.events[it.indices[0]];
+    const key = toolGroupKey(first);
+    const tools = it.indices.map((i) => s.events[i]) as Extract<ChatEvent, { kind: "tool" }>[];
+    const open = expandedGroups.has(key);
+    v.el.appendChild(tag(renderToolGroup(tools, prevEpoch, key, open)));
+    adv(it.indices[0]);
+    if (open) {   // the original contiguous span (tools + any thinking between), each as its normal turn
+      const start = it.indices[0], end = it.indices[it.indices.length - 1];
+      for (let i = start; i <= end; i++) {
+        const child = renderEvent(s.events[i], prevEpoch, turnWorkedSecs(s.events, i, working));
+        child.classList.add("tg-child"); if (i === end) child.classList.add("tg-last");
+        v.el.appendChild(tag(child)); adv(i);
       }
-    } else {
-      v.el.appendChild(renderEvent(s.events[item.index], prevEpoch, turnWorkedSecs(s.events, item.index, working)));
-      advance(item.index);
     }
+  } else {
+    v.el.appendChild(tag(renderEvent(s.events[it.index], prevEpoch, turnWorkedSecs(s.events, it.index, working))));
+    adv(it.index);
   }
-  v.rendered = s.events.length;
-  v.spacerCount = firstShown > 0 ? firstShown : 0;   // hidden DISPLAY items the leading spacer stands for
-  v.stale = false;   // freshly built for this event set → a later tab switch reuses it (see the guard above)
-  sizeSpacer(v);
+  return prevEpoch;
 }
+
+// Full (re)build of the window [unitStart, unitEnd) with head/tail spacers. Does NOT touch scroll (callers
+// anchor). prevEpoch for the first rendered unit chains off the real prior event so its time-marker is right.
+function renderWindowItems(v: View, s: Session, items: DisplayItem[], unitStart: number, unitEnd: number, working: boolean): void {
+  const total = items.length;
+  unitStart = Math.max(0, Math.min(unitStart, total));
+  unitEnd = Math.max(unitStart, Math.min(unitEnd, total));
+  while (v.el.firstChild) v.el.removeChild(v.el.firstChild);
+  if (unitStart > 0) v.el.appendChild(el("div", "tx-spacer tx-spacer-top"));
+  let prevEpoch = unitStart > 0 && unitStart < total ? prevTimedEpoch(s.events, itemFirstEvent(items[unitStart])) : null;
+  for (let u = unitStart; u < unitEnd; u++) prevEpoch = appendItem(v, s, items, u, prevEpoch, working);
+  if (unitEnd < total) v.el.appendChild(el("div", "tx-spacer tx-spacer-bot"));
+  v.winStart = unitStart; v.winEnd = unitEnd;
+  v.spacerCount = unitStart; v.spacerCountBot = total - unitEnd; v.unitTotal = total;
+  v.rendered = s.events.length;
+  sizeSpacers(v);
+}
+
+// Size the head/tail spacers to (hidden-unit count × avg rendered row height) so the scrollbar spans the
+// whole transcript. avgTurnH is measured once off the rendered rows (only when VISIBLE — a display:none
+// pre-built view reports offsetHeight 0, so don't cache a 0) and reused; the spacers sit off-viewport, so a
+// per-row estimate is invisible.
+function sizeSpacers(v: View): void {
+  const top = v.el.querySelector(".tx-spacer-top") as HTMLElement | null;
+  const bot = v.el.querySelector(".tx-spacer-bot") as HTMLElement | null;
+  if (!top && !bot) return;
+  if (v.avgTurnH == null) {
+    let h = 0, n = 0;
+    for (const c of Array.from(v.el.children) as HTMLElement[]) {
+      if (c.classList.contains("tx-spacer")) continue;
+      h += c.offsetHeight; n++;
+    }
+    if (h > 0 && n > 0) v.avgTurnH = h / n;
+  }
+  const avg = v.avgTurnH ?? 60;
+  if (top) top.style.height = Math.max(0, Math.round((v.spacerCount ?? 0) * avg)) + "px";
+  if (bot) bot.style.height = Math.max(0, Math.round((v.spacerCountBot ?? 0) * avg)) + "px";
+}
+
+// Estimate the UNIT index at the viewport top: a spacer maps by avg height; a rendered row by its data-unit.
+function unitAtScroll(v: View, content: HTMLElement): number {
+  const avg = v.avgTurnH ?? 60;
+  const st = content.scrollTop;
+  const cTop = content.getBoundingClientRect().top;
+  const yOf = (e: HTMLElement) => e.getBoundingClientRect().top - cTop + st;   // position in scroll space
+  const top = v.el.querySelector(".tx-spacer-top") as HTMLElement | null;
+  const topH = top ? top.offsetHeight : 0;
+  if (st < topH) return Math.max(0, Math.floor(st / avg));   // in the top spacer
+  let lastUnit = v.winStart ?? 0;
+  for (const c of Array.from(v.el.children) as HTMLElement[]) {
+    if (c.classList.contains("tx-spacer")) continue;
+    const t0 = yOf(c);
+    if (st < t0) break;
+    if (c.dataset.unit != null) lastUnit = Number(c.dataset.unit);
+    if (st < t0 + c.offsetHeight) return lastUnit;
+  }
+  const bot = v.el.querySelector(".tx-spacer-bot") as HTMLElement | null;
+  if (bot) { const bTop = yOf(bot); if (st >= bTop) return (v.winEnd ?? 0) + Math.floor((st - bTop) / avg); }
+  return lastUnit;
+}
+
+// (Compact rendering is no longer a separate path: syncView routes BOTH modes through renderWindowItems,
+// which renders compactDisplay units the same way it renders per-event units — see appendItem.)
 
 // Stable identity for a collapsed tool run (survives rebuilds) = the first tool's uuid (else its epoch).
 function toolGroupKey(first: ChatEvent): string { return "tg:" + (first.uuid || String(eventEpoch(first) ?? "")); }
@@ -2476,7 +2479,7 @@ function toggleToolGroup(key: string): void {
 // next syncView rebuilds it via the right path, then repaint the active one.
 function rerenderAll(): void {
   cancelPrebuild(); // the queued plan is now stale (every view reset below) — re-warm after showActive
-  for (const v of views.values()) { while (v.el.firstChild) v.el.removeChild(v.el.firstChild); v.rendered = 0; v.stale = false; v.winStart = 0; v.avgTurnH = undefined; v.spacerCount = undefined; }
+  for (const v of views.values()) { while (v.el.firstChild) v.el.removeChild(v.el.firstChild); v.rendered = 0; v.stale = false; v.winStart = 0; v.winEnd = 0; v.avgTurnH = undefined; v.spacerCount = undefined; v.spacerCountBot = undefined; v.unitTotal = undefined; }
   showActive();
   schedulePrebuild(); // rebuild every off-screen view in idle under the new setting, so switches stay instant
 }
@@ -2684,7 +2687,7 @@ function showActive() {
 // both paths land identically (the user 2026-06-17).
 function landActive(content: HTMLElement | null, v: View): void {
   if (!content) return;
-  sizeSpacer(v);   // the view is now VISIBLE (display set in showActive), so the spacer gets a real height
+  sizeSpacers(v);  // the view is now VISIBLE (display set in showActive), so the spacers get a real height
                    // measurement — a tab pre-built while display:none could only fall back until now
   const att = { anchor: pendingAnchor, t: pendingAnchorT, kind: pendingAnchorKind };   // this pass's landing attempt, for diagnostics
   if (att.anchor || att.t != null) landTrail = [];
@@ -2739,61 +2742,64 @@ if (typeof ResizeObserver === "function") {
   if (c) ro.observe(c);
 }
 
-// Lazy-load older history: when the user scrolls back within EXPAND_TRIGGER_PX of the top of a
-// tail-windowed view, reveal the next chunk of older turns and counter-scroll by the scrollHeight delta
-// so the viewport stays visually anchored (event-based — keyed on scroll position, not a timer). Cheap
-// fast-path on every scroll: only the active view, only while its head is still collapsed (winStart > 0).
-let expandingWindow = false;
-function maybeExpandWindow(): void {
-  if (expandingWindow || !activeId) return;
+// Keep the rendered window over the viewport as the user scrolls — a steady scroll-back OR a scrollbar JUMP
+// to anywhere (random access). On every scroll we estimate the unit at the viewport top; if it has drifted
+// within REVIRT_MARGIN units of a rendered edge (or sits in a blank spacer after a jump), we re-render a
+// fresh window AROUND it and re-anchor so the focused unit stays put. Event-based (keyed on scroll position,
+// not a timer); coalesced to one rebuild per frame. A "Loading…" pill paints first so a jump into
+// un-rendered history reads as loading, not frozen.
+let revirtBusy = false;
+function virtualizeToViewport(): void {
+  if (revirtBusy || !activeId) return;
   const v = views.get(activeId);
-  if (!v || v.winStart <= 0) return;
   const content = document.getElementById("content");
-  if (!content) return;
-  // Trigger off proximity to the TOP OF THE RENDERED TURNS, not absolute scrollTop. The head folds into a
-  // tall top spacer, so once you've scrolled up at all, scrollTop is huge and an `scrollTop < buffer` test
-  // never fired — that's why scroll-back stopped auto-loading (the user 2026-06-25). The rendered turns
-  // start at y = topSpacerHeight; `gap` is how far the viewport top sits BELOW that. Load the next older
-  // chunk when the viewport is approaching the rendered top from inside the rendered region (0 ≤ gap ≤
-  // buffer). gap < 0 means the viewport JUMPED up into the blank spacer (random access) — handled in Ship 2.
-  const sp = v.el.firstChild as HTMLElement | null;
-  const topH = sp && sp.classList?.contains("tx-spacer") ? sp.offsetHeight : 0;
-  const gap = content.scrollTop - topH;
-  if (gap < 0 || gap > EXPAND_TRIGGER_PX) return;
   const s = sessions.get(activeId);
-  if (!s) return;
-  expandingWindow = true;
-  showLoadingPill();   // brief "loading earlier…" cue at the top of the pane (mostly a flash here; the longer
-  // random-access jumps in Ship 2 are where it really earns its keep)
-  // Defer the actual render one frame so the pill paints first, then re-anchor the viewport.
+  if (!v || !content || !s) return;
+  const total = v.unitTotal ?? 0;
+  if (total === 0 || ((v.winStart ?? 0) === 0 && (v.winEnd ?? total) >= total)) return; // whole thing rendered
+  // CHEAP pre-check first (this runs on EVERY scroll): is the viewport comfortably inside the rendered band?
+  // Only when it nears a rendered edge do we pay the precise unit walk + re-render. Without this, every scroll
+  // event would getBoundingClientRect every rendered row → jank.
+  const avg = v.avgTurnH ?? 60;
+  const edgePx = REVIRT_MARGIN * avg;
+  const topEl = v.el.querySelector(".tx-spacer-top") as HTMLElement | null;
+  const botEl = v.el.querySelector(".tx-spacer-bot") as HTMLElement | null;
+  const cRectTop = content.getBoundingClientRect().top;
+  const topH = topEl ? topEl.offsetHeight : 0;
+  const renderedBottom = botEl ? botEl.getBoundingClientRect().top - cRectTop + content.scrollTop : content.scrollHeight;
+  const st = content.scrollTop, vh = content.clientHeight;
+  const nearTopEdge = (v.winStart ?? 0) > 0 && st < topH + edgePx;
+  const nearBotEdge = (v.winEnd ?? total) < total && st + vh > renderedBottom - edgePx;
+  if (!nearTopEdge && !nearBotEdge) return;   // window comfortably covers the viewport
+  const idx = unitAtScroll(v, content);
+  revirtBusy = true;
+  showLoadingPill();
+  // Defer one frame so the pill paints before the (possibly heavy) render, then re-anchor on the focus unit.
   requestAnimationFrame(() => {
     try {
-      // Anchor on DISTANCE-FROM-BOTTOM, not a prepend delta. Expansion only ever adds content ABOVE the
-      // viewport, so the distance to the bottom is invariant. The compact path FULL-REBUILDS (clears the
-      // DOM), which resets scrollTop to ~0 — a prepend-delta compensation then lands at the top of the loaded
-      // part ("snaps me back to the top", the user 2026-06-25). Restoring distance-from-bottom re-anchors
-      // correctly for BOTH the normal prepend and the compact rebuild.
-      const distFromBottom = content.scrollHeight - content.scrollTop;
       const working = s.status.state === "working" || s.status.state === "compacting";
-      const newStart = Math.max(0, v.winStart - EXPAND_CHUNK);
-      if (settings.compact) {
-        // compact has no incremental prepend (the display stream is folded) — lower the floor and rebuild the
-        // (still-bounded) compact window. stale bypasses rebuildCompact's no-op cache guard.
-        v.winStart = newStart; v.stale = true; rebuildCompact(v, s, working);
-      } else {
-        expandWindow(v, s, newStart, working);
+      const items = displayItems(s);
+      const c = Math.max(0, Math.min(idx, items.length - 1));
+      // where unit c sits relative to the viewport top NOW (so it doesn't jump); null ⇒ it's in a spacer
+      // (a jump) → land it at the viewport top.
+      const before = v.el.querySelector(`[data-unit="${c}"]`) as HTMLElement | null;
+      const beforeY = before ? before.getBoundingClientRect().top - content.getBoundingClientRect().top : 0;
+      renderWindowItems(v, s, items, Math.max(0, c - WINDOW_RADIUS), Math.min(items.length, c + WINDOW_RADIUS), working);
+      const anchor = v.el.querySelector(`[data-unit="${c}"]`) as HTMLElement | null;
+      if (anchor) {
+        const yNow = anchor.getBoundingClientRect().top - content.getBoundingClientRect().top + content.scrollTop;
+        content.scrollTop = yNow - beforeY;
       }
-      content.scrollTop = content.scrollHeight - distFromBottom;
       scheduleRestamp();
     } finally {
       hideLoadingPill();
-      expandingWindow = false;   // always release, even if a render threw — a wedged flag = no more loading
+      revirtBusy = false;   // always release, even if a render threw — a wedged flag = no more loading
     }
   });
 }
 {
   const c = document.getElementById("content");
-  if (c) c.addEventListener("scroll", maybeExpandWindow, { passive: true });
+  if (c) c.addEventListener("scroll", virtualizeToViewport, { passive: true });
 }
 
 // A small "Loading earlier messages…" pill at the top-center of the chat pane, shown while a window
