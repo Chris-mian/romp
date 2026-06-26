@@ -209,7 +209,12 @@ body { display: flex; flex-direction: column; }
 .tab-add:hover { color: var(--fg); background: rgba(255, 255, 255, 0.04); }
 /* (The .tab-fleet pill was removed 2026-06-24 — Fleet/Chat are now the rotated toggles in the chat pane's
    vertical strip, so the tab-bar pill was redundant.) */
-.tab:focus-visible { outline: 1.5px solid var(--fg); outline-offset: 1px; } /* keyboard focus ring for arrow-nav */
+/* No white focus ring on a tab (the user 2026-06-26): switching sessions or sending a message (⏎) moves
+   focus onto the active tab, which drew a white ring on top of its colored identity border. The active tab's
+   own gray fill + identity-colored ring already shows where focus is, so the ring is pure noise. We rely on
+   the low-specificity `.tab { outline: none }` above to suppress the UA focus ring in all cases — and DON'T
+   add a `:focus`/`:focus-visible` rule here, since that would have equal specificity to the dashed STATE
+   outlines (.tab-awaiting / .tab-blocked / .tab-retrying) and, coming later, would clobber them on focus. */
 
 /* ---------- content ---------- */
 /* overflow-x:hidden — never let a wide child scroll the whole pane sideways
