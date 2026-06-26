@@ -142,6 +142,26 @@ class LiveTail(unittest.TestCase):
         be.prune_live("s", {"a1"}, {"hi"})     # a1 now on disk; echo text "hi" now on disk
         self.assertEqual(be.live_atoms("s"), [])
 
+    def test_image_echo_pruned_by_human_floor_when_text_cant_match(self):
+        # The screenshots-piling-up bug (the user 2026-06-25): an image send's echo text is the raw composer
+        # text (an image path), but the transcript extracts the path into an image block, so the echoed path
+        # is NOT in tx_user_texts and the text-prune can never retire it → every screenshot echo accumulates.
+        # The FIFO floor retires it once the transcript's newest genuine-human turn is at/after its send time.
+        be = sb.SdkBackend(tempfile.mkdtemp(), "/bin/true", lambda *a, **k: None)
+        be._live["s"] = {"echo:img": {"uuid": "echo:img", "t": 100, "_echo_text": "/abs/shot.png"}}
+        be.prune_live("s", set(), set())               # no text/uuid match, no floor → echo persists (the bug)
+        self.assertEqual([a["uuid"] for a in be.live_atoms("s")], ["echo:img"])
+        be.prune_live("s", set(), set(), human_floor=120)   # a later genuine-human turn landed → FIFO-retire it
+        self.assertEqual(be.live_atoms("s"), [])
+        # a not-yet-landed echo (send time AFTER the floor) must survive
+        be._live["s"] = {"echo:new": {"uuid": "echo:new", "t": 200, "_echo_text": "/abs/new.png"}}
+        be.prune_live("s", set(), set(), human_floor=120)
+        self.assertEqual([a["uuid"] for a in be.live_atoms("s")], ["echo:new"])
+        # the floor must NOT retire a real stream atom (no _echo_text) — those prune by uuid only
+        be._live["s"]["a9"] = {"uuid": "a9", "t": 50}
+        be.prune_live("s", set(), set(), human_floor=300)
+        self.assertEqual([a["uuid"] for a in be.live_atoms("s")], ["a9"])
+
     def test_send_adds_optimistic_echo(self):
         be = sb.SdkBackend(tempfile.mkdtemp(), "/bin/true", lambda *a, **k: None)
         be._ensure = lambda sid: type("S", (), {"enqueue": lambda self, t: None})()   # no real session thread

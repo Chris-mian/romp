@@ -3635,7 +3635,7 @@ class TmuxInputEcho(unittest.TestCase):
                  "message": {"role": "assistant", "content": [{"type": "text", "text": "on it"}]}}]
         km._sdk = lambda: type("B", (), {"owns": lambda self, s: True,
                                          "live_atoms": lambda self, s: live,
-                                         "prune_live": lambda self, s, u, t: None})()
+                                         "prune_live": lambda self, s, u, t, hf=0: None})()
         try:
             merged = km._merge_live_atoms(self._session([self._real_user("go")]), SID)
         finally:

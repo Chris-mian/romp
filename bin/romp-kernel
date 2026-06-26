@@ -2606,7 +2606,13 @@ def _merge_live_atoms(session, sid, shown_texts=()):
     tx_uuids = {a.get("uuid") for turn in session["turns"] for a in turn["atoms"] if a.get("uuid")}
     tx_texts = {t for turn in session["turns"] for a in turn["atoms"] if (t := _atom_user_text(a))}
     if sdk_owns:
-        be.prune_live(sid, tx_uuids, tx_texts)
+        # FIFO floor: the newest GENUINE-HUMAN turn the transcript has — retires an input echo whose text
+        # can't match because the transcript extracted an image path out of it (screenshots piling up at the
+        # bottom, the user 2026-06-25). SDK-only: a tmux echo must SURVIVE a later turn to keep a dropped
+        # send visible, so it keeps the text/uuid-only prune.
+        human_floor = max((a.get("t", 0) for turn in session["turns"] for a in turn["atoms"]
+                           if a.get("type") == "user" and a.get("author") == "human"), default=0)
+        be.prune_live(sid, tx_uuids, tx_texts, human_floor)
     else:
         _tmux_echo_prune(sid, tx_uuids, tx_texts)
     hide = tx_texts | {t.strip() for t in shown_texts if t}    # transcript dups + already-shown queued msgs

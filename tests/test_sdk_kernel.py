@@ -54,7 +54,7 @@ class FakeBackend:
     def live_atoms(self, sid):
         return getattr(self, "_live", {}).get(sid, [])
 
-    def prune_live(self, sid, tx_uuids, tx_texts=()):
+    def prune_live(self, sid, tx_uuids, tx_texts=(), human_floor=0):
         self.calls.append(("prune_live", sid))
 
 

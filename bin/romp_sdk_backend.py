@@ -1131,15 +1131,26 @@ class SdkBackend:
         d = self._live.get(sid)
         return sorted(d.values(), key=lambda a: a.get("t", 0)) if d else []
 
-    def prune_live(self, sid: str, tx_uuids, tx_user_texts=()) -> None:
+    def prune_live(self, sid: str, tx_uuids, tx_user_texts=(), human_floor: int = 0) -> None:
         """Drop live atoms the transcript has now caught up on — by uuid (assistant/tool/user from the
-        stream) or by text (the optimistic input echo, which has a synthetic uuid)."""
+        stream) or by text (the optimistic input echo, which has a synthetic uuid).
+
+        FIFO floor for echoes: an input echo whose text can't match — because the transcript EXTRACTED an
+        image path out of the user text, so `_atom_user_text` no longer contains the echoed path (the
+        screenshots-piling-up-at-the-bottom bug, the user 2026-06-25) — is also retired once the transcript's
+        newest GENUINE-HUMAN turn is at/after the echo's send time. SDK sends always enqueue and land in
+        submission order, so a human turn that recent means this (earlier or equal) echo's message has been
+        processed; a still-queued send keeps showing via the event-based `queued` indicator, so this never
+        hides a message. (Echo-only: real stream atoms have no _echo_text and prune by uuid as before.)"""
         d = self._live.get(sid)
         if not d:
             return
         for k in list(d.keys()):
             a = d[k]
-            if a.get("uuid") in tx_uuids or (a.get("_echo_text") and a["_echo_text"] in tx_user_texts):
+            et = a.get("_echo_text")
+            landed = a.get("uuid") in tx_uuids or (et and et in tx_user_texts)
+            stale_echo = bool(et) and human_floor and a.get("t", 0) <= human_floor
+            if landed or stale_echo:
                 del d[k]
         if not d:
             self._live.pop(sid, None)
