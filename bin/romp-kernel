@@ -956,20 +956,52 @@ def _auto_nudge_tick(now, tmux):
         _push_all()
 
 
+WORKING_DIR = jd.STATE / "working"     # backend-agnostic working-note store (working/<sid> files): the
+                                       # set_working ownership claim list_agents shows. Replaces the tmux
+                                       # @romp-working var so SDK sessions can publish one too, and so the
+                                       # postal bus reads/writes it through the kernel, never tmux (the user
+                                       # 2026-06-26).
+
+
+def _working_note_path(sid):
+    sid = str(sid)
+    if not sid or "/" in sid or sid in (".", ".."):   # sid is a path component → reject traversal
+        return None
+    return WORKING_DIR / sid
+
+
 def _working_notes():
-    """{sid: note} for live tmux sessions with a NON-EMPTY @romp-working note (one tmux read). The note is
-    the set_working ownership claim the postal bus shows in list_agents. Empty/absent → omitted."""
+    """{sid: note} for every session with a NON-EMPTY published working-note, from the backend-agnostic store
+    (working/<sid> files). The note is the set_working ownership claim the postal bus shows in list_agents;
+    _session_rows attaches it per live sid. Empty/absent → omitted."""
     out = {}
-    for line in _TMUX.list_lines(_TMUX.NOTE_FMT):
-        p = line.split("|", 2)
-        if len(p) == 3 and p[0] == "1" and p[1] and p[2].strip():
-            out[p[1]] = p[2]
+    try:
+        for f in WORKING_DIR.iterdir():
+            try:
+                note = f.read_text().strip()
+            except OSError:
+                continue
+            if note:
+                out[f.name] = note
+    except OSError:
+        pass
     return out
 
 
 def _set_working_note(sid, text):
-    """Set (or clear, text='') a session's @romp-working note — what the postal bus reads for list_agents."""
-    _TMUX.set_var(_name_of(sid) or sid, "@romp-working", text)
+    """Publish (text) or clear (text='') a session's working-note in the backend-agnostic store — what the
+    postal bus reads for list_agents. Works for BOTH backends (no tmux); replaces the @romp-working var."""
+    p = _working_note_path(sid)
+    if p is None:
+        return
+    if (text or "").strip():
+        WORKING_DIR.mkdir(parents=True, exist_ok=True)
+        _atomic_write(p, text)
+    else:
+        try:
+            p.unlink()
+        except OSError:
+            pass
 
 
 def _clear_done_working_notes(now, tmux):
@@ -1372,7 +1404,6 @@ class TmuxBackend(sb.SessionBackend):
     LANE_FMT = ("#{@romp}|#{@romp-session-id}|#{@claude-state}|#{@claude-state-since}|"
                 "#{@claude-model}|#{@claude-effort}|#{@claude-context}|#{@claude-compact-pct}|#{@identity-bg}|"
                 "#{@claude-permission-mode}")
-    NOTE_FMT = "#{@romp}|#{@romp-session-id}|#{@romp-working}"
     NAME_FMT = "#{@romp-session-id}\t#{session_name}"
 
     # ── the SOLE raw-tmux primitives ──
@@ -1558,6 +1589,21 @@ class Sessions:
             except Exception:
                 sys.stderr.write("sdk live_sessions merge: %s\n" % traceback.format_exc())
         return out
+
+    # coordination — the working-note ("what I'm working on" ownership claim list_agents shows) lives in ONE
+    # backend-agnostic kernel store (working/<sid> files), so both backends publish it and the postal bus
+    # reads/writes it through the kernel, never tmux. (the user 2026-06-26.)
+    @staticmethod
+    def working_note(sid):
+        p = _working_note_path(sid)
+        try:
+            return p.read_text().strip() if p else ""
+        except OSError:
+            return ""
+
+    @staticmethod
+    def set_working_note(sid, text):
+        _set_working_note(sid, text)
 
 
 def _tmux_name_of(sid):
@@ -6751,6 +6797,19 @@ class Handler(BaseHTTPRequestHandler):
                 sid = _sid_of(body["who"])
                 Sessions.backend_for(sid).send(sid, body["text"])   # no optimistic echo: an external/postal
                 return self._send(200, json.dumps({"ok": True}), "application/json")   # send isn't a human composer bubble
+            if u.path == "/working":
+                # Publish/clear a session's working-note in the backend-agnostic store, so the postal bus's
+                # set_working goes through the kernel (no tmux @romp-working) and an SDK session can publish a
+                # note too. Body: {"id": <sid>, "text": <note|"">}. (the user 2026-06-26.)
+                try:
+                    body = json.loads(raw_body or b"{}")
+                except Exception:
+                    body = None
+                sid = str((body or {}).get("id") or "")
+                if not isinstance(body, dict) or not sid:
+                    return self._send(400, json.dumps({"ok": False, "error": "id required"}), "application/json")
+                Sessions.set_working_note(sid, str(body.get("text") or ""))
+                return self._send(200, json.dumps({"ok": True}), "application/json")
             return self._send(404, "not found", "text/plain")
         except (BrokenPipeError, ConnectionResetError):
             pass

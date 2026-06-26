@@ -369,6 +369,23 @@ def local_agents():
                     "state": s.get("state", "")})   # state: working/idle/waiting/... → working-note freshness
     return res
 
+
+def _publish_working(sid, text):
+    """Publish/clear THIS session's working-note via the kernel's backend-agnostic store (POST /working) — no
+    tmux. The kernel owns the store and both backends read it (it appears in GET /sessions' `working` field),
+    so an SDK session can publish a note too. True on success, False if the kernel is unreachable."""
+    if not sid:
+        return False
+    import urllib.request
+    try:
+        req = urllib.request.Request(KERNEL_BASE + "/working",
+                                     data=json.dumps({"id": str(sid), "text": text}).encode("utf-8"),
+                                     headers={"Content-Type": "application/json"}, method="POST")
+        with urllib.request.urlopen(req, timeout=2) as r:
+            return getattr(r, "status", 200) == 200
+    except Exception:
+        return False
+
 def all_agents():
     agents = local_agents()
     local_ids = {a["id"] for a in agents}
@@ -1508,10 +1525,10 @@ def _mcp_call(name, args):
         res = _http("GET", "/agents?me=%s" % urllib.parse.quote(me or ""))
         return format_agents(res.get("agents", []), me), False
     if name == "set_working":
-        if not me:
+        if not mid:
             return "Not inside a romp session.", True
         text = args.get("text", "")
-        tmux("set", "-t", me, "@romp-working", text)
+        _publish_working(mid, text)        # backend-agnostic kernel store (POST /working), not the @romp-working var
         return ("Cleared your 'working on' note." if not text.strip()
                 else "Published — others see: working on '%s'." % text), False
     if name == "check_sent":
@@ -1659,11 +1676,11 @@ def cli_agents():
     return 0
 
 def cli_working(argv):
-    name = my_name()
-    if not name:
+    sid = my_id()
+    if not sid:
         sys.stderr.write("[romp mail] not in a romp session\n"); return 1
     text = " ".join(argv)
-    tmux("set", "-t", name, "@romp-working", text)
+    _publish_working(sid, text)        # backend-agnostic kernel store (POST /working), not the @romp-working var
     print("[romp mail] working: %s" % (text or "(cleared)"))
     return 0
 

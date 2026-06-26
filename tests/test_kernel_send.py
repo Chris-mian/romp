@@ -69,5 +69,43 @@ class SessionList(unittest.TestCase):
         self.assertEqual(km._session_rows(), [])
 
 
+class WorkingNoteStore(unittest.TestCase):
+    """The backend-agnostic working-note store (working/<sid> files): the postal bus's set_working goes
+    through the kernel (Sessions.set_working_note, served at POST /working), works for ANY sid incl. an SDK
+    session, and the note surfaces in _working_notes (→ GET /sessions). Replaces the tmux @romp-working var."""
+
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+        self._saved = km.WORKING_DIR
+        km.WORKING_DIR = Path(tempfile.mkdtemp()) / "working"
+
+    def tearDown(self):
+        km.WORKING_DIR = self._saved
+
+    def test_set_read_and_clear_round_trip(self):
+        km.Sessions.set_working_note("sid-x", "owns feed.ts")
+        self.assertEqual(km.Sessions.working_note("sid-x"), "owns feed.ts")
+        self.assertEqual(km._working_notes(), {"sid-x": "owns feed.ts"})
+        km.Sessions.set_working_note("sid-x", "")          # clear → the claim is lifted
+        self.assertEqual(km.Sessions.working_note("sid-x"), "")
+        self.assertEqual(km._working_notes(), {})
+
+    def test_any_backend_sid_can_publish(self):
+        # no backend gate: an SDK session's sid stores + reads the same way a tmux one does
+        km.Sessions.set_working_note("sdk-sid", "drafting api")
+        self.assertEqual(km._working_notes().get("sdk-sid"), "drafting api")
+
+    def test_rejects_path_traversal_sid(self):
+        km.Sessions.set_working_note("../evil", "x")        # sid is a path component → must not escape the store
+        self.assertEqual(km._working_notes(), {})
+        self.assertEqual(km.Sessions.working_note("../evil"), "")
+
+    def test_post_working_endpoint_is_wired(self):
+        src = open(os.path.join(BIN, "romp-kernel")).read()
+        self.assertIn('u.path == "/working"', src, "POST /working routes set_working through the kernel")
+        self.assertIn("Sessions.set_working_note(sid, str(body.get(\"text\") or \"\"))", src)
+
+
 if __name__ == "__main__":
     unittest.main()
