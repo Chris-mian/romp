@@ -1085,7 +1085,10 @@ class TimelinePanel {
     const rect = this.svg.getBoundingClientRect();
     const scaleX = rect.width ? g.W / rect.width : 1;
     const dt = (ev.clientX - d.startX) * scaleX * (d.panWin / g.plotW);
-    this._offSec = Math.max(0, Math.min(MAX_OFFSET, d.panOff - dt));
+    // GRAB-THE-CONTENT direction (the user 2026-06-26): drag RIGHT → the content follows your hand right,
+    // revealing earlier time on the left (offset grows into the past); drag LEFT → toward now. (This is the
+    // opposite sign from the trackpad/scrollbar pan in onWheel, which the user is happy with.)
+    this._offSec = Math.max(0, Math.min(MAX_OFFSET, d.panOff + dt));
     this._setLock(false);                                      // a drag turns OFF 🔒 — no snap-back to now
     this._pinned = false;
     this._offDirty = true;

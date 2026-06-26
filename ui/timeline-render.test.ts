@@ -434,6 +434,24 @@ test("click-drag pan BREAKS 🔒 lock and unpins", () => {
   panel._dragUp(mouseEv({ clientX: 440, clientY: 202 }));
 });
 
+test("click-drag pans grab-the-content style: drag right → into the past, drag left → toward now", () => {
+  const panel: any = new TimelinePanel(makeNode("div"));
+  panel.update(synthData());
+  const sid = panel._vis[0].id;
+  panel._offSec = 1000; panel._pinned = false;                    // start panned back so we can move either way
+  panel._beginDrag(sid, mouseEv({ clientX: 400, clientY: 200 }));
+  panel._dragMove(mouseEv({ clientX: 600, clientY: 201 }));       // drag RIGHT
+  const afterRight = panel.offSec();
+  panel._dragUp(mouseEv({ clientX: 600, clientY: 201 }));
+  assert.ok(afterRight > 1000, "drag right grows the offset (reveals earlier time)");
+  panel._offSec = 1000; panel._pinned = false;
+  panel._beginDrag(sid, mouseEv({ clientX: 600, clientY: 200 }));
+  panel._dragMove(mouseEv({ clientX: 400, clientY: 201 }));       // drag LEFT
+  const afterLeft = panel.offSec();
+  panel._dragUp(mouseEv({ clientX: 400, clientY: 201 }));
+  assert.ok(afterLeft < 1000, "drag left shrinks the offset (toward now)");
+});
+
 test("a committed drag shows the closed-fist (grabbing) cursor over the whole plot, cleared on drop", () => {
   const panel: any = new TimelinePanel(makeNode("div"));
   panel.update(synthData());
