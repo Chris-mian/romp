@@ -2311,15 +2311,18 @@ class TimelinePanel {
     const color = on ? ROMP_BLUE : '#6e7681';          // accent when locked, gray when unlocked
     const x0 = cx - 7.5, y0 = axisY + 6;               // center the 15-wide glyph under the now-edge, in the bottom margin
     const g = el('g', { transform: 'translate(' + x0 + ' ' + y0 + ')' }); g.style.cursor = 'pointer';
-    g.appendChild(el('rect', { x: -2, y: -1, width: 19, height: 15, fill: 'transparent' }));   // hit pad (whole glyph clickable)
+    const hit = el('rect', { x: -2, y: -1, width: 19, height: 15, fill: 'transparent' });   // hit pad (whole glyph clickable)
+    // Native tooltip ON the actually-hovered element (the hit pad), not the parent <g>, so it reliably shows
+    // what the lock does on hover (the user 2026-06-26). Says the action the click will take.
+    const ttl = el('title', {}); ttl.textContent = on
+      ? 'Locked to the present — click to unlock (allow panning)'
+      : 'Lock the timeline to the present — keeps the now-edge in view (a focus jump zooms out instead of panning away)';
+    hit.appendChild(ttl);
+    g.appendChild(hit);
     const st = { fill: 'none', stroke: color, 'stroke-width': 1.4, 'stroke-linecap': 'round', 'pointer-events': 'none' };
     g.appendChild(el('rect', Object.assign({ x: 3, y: 6.2, width: 8, height: 5.6, rx: 1.2 }, st)));
     g.appendChild(el('path', Object.assign({ d: on ? 'M4.8 6.2 V4.4 a2.2 2.2 0 0 1 4.4 0 V6.2'           // seated shackle (locked)
                                                   : 'M9.4 6.2 V5.3 A2.4 2.4 0 0 1 13.6 3.7' }, st)));   // swung-out shackle (unlocked)
-    const ttl = el('title', {}); ttl.textContent = on
-      ? 'Locked to the present — click to unlock (allow panning)'
-      : 'Click to lock the timeline at the present (focus jumps zoom out instead of panning away)';
-    g.appendChild(ttl);
     g.addEventListener('click', (ev) => {
       ev.stopPropagation();
       const next = !this._lockNow;

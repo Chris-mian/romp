@@ -31,3 +31,11 @@ test("_drawLockToggle is accent-blue when locked and gray when unlocked", () => 
 test("clicking the padlock toggles the lock and snaps to now when locking", () => {
   assert.match(SRC, /const next = !this\._lockNow;\s*this\._setLock\(next\);\s*if \(next\) this\._jumpToNow\(\);/);
 });
+
+test("the padlock carries a native tooltip ON the hovered hit pad, saying what it does", () => {
+  // attached to the hit pad (the element actually hovered), not the parent <g>, so it reliably shows
+  assert.match(SRC, /const ttl = el\('title', \{\}\);/);
+  assert.match(SRC, /hit\.appendChild\(ttl\);/);
+  assert.match(SRC, /Locked to the present — click to unlock/);
+  assert.match(SRC, /Lock the timeline to the present/);
+});
