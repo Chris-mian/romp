@@ -24,7 +24,7 @@ class BootSplash(unittest.TestCase):
 
     def test_the_shell_paints_a_centered_romp_loader(self):
         self.assertIn("id=romp-boot", self.html, "a full-window boot overlay rides in the shell HTML")
-        self.assertIn("romp-swirl-glyph.svg", self.html, "the swirl glyph (it IS the 'o')")
+        self.assertIn("romp-swirl-o.svg", self.html, "the centered o-glyph is the swirl")
         self.assertIn("class=rl-o", self.html, "the swirl spins as the lowercase 'o' in the wordmark")
         self.assertIn("Anta-Regular.ttf", self.html, "the wordmark is set in Anta, like the README hero")
         self.assertIn("#1EA1EB", self.html, "the R wears the swirl's blue arm colour")
@@ -59,7 +59,7 @@ class PaneSpinner(unittest.TestCase):
         for name, (cid, _) in self.PANES.items():
             html = getattr(km, "_%s_page" % name)()
             self.assertIn("id=pane-spin", html, "%s pane has the loading overlay" % name)
-            self.assertIn("romp-swirl-glyph.svg", html, "%s loader uses the swirl glyph" % name)
+            self.assertIn("romp-swirl-o.svg", html, "%s loader uses the centered o-glyph" % name)
             self.assertIn("class=rl-o", html, "%s loader shows the wordmark (swirl as the 'o')" % name)
             self.assertIn("rl-dots", html, "%s loader has the dots (same look as the splash)" % name)
             self.assertIn("rotate(-360deg)", html, "%s swirl spins (reverse, matching the splash)" % name)
