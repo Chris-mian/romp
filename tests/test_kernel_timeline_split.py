@@ -32,6 +32,22 @@ class BuildGating(unittest.TestCase):
         self.assertIn('m.type==="bars"', boot)
         self.assertIn("panel.applyBars(m)", boot)
 
+    def test_the_lanes_skeleton_does_not_parse_any_transcript(self):
+        # cold-start speed (the user 2026-06-26): a fresh kernel (the refresh button = POST /restart) re-parses
+        # every transcript (~1.3s). The lanes don't need it — derive them from tmux + goals + the transcript
+        # mtime. Only the {type:"bars"} build (with_bars=True) does the real parse.
+        calls = {"parse": 0}
+        o_ts, o_parse = km._timeline_sessions, km._parse
+        km._timeline_sessions = lambda now, tmux: [{"sid": "S", "name": "n", "path": "/no/such/transcript"}]
+        km._parse = lambda path, sid, now: (calls.__setitem__("parse", calls["parse"] + 1), {"turns": []})[1]
+        try:
+            km.build_timeline(0, {}, with_bars=False)
+            self.assertEqual(calls["parse"], 0, "the lanes skeleton must NOT parse a transcript")
+            km.build_timeline(0, {}, with_bars=True)
+            self.assertGreater(calls["parse"], 0, "the bars build DOES parse")
+        finally:
+            km._timeline_sessions, km._parse = o_ts, o_parse
+
 
 class PushSplit(unittest.TestCase):
     def test_push_ships_the_lanes_skeleton_before_the_bars(self):

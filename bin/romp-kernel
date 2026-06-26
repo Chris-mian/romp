@@ -4454,20 +4454,29 @@ def build_timeline(now, tmux=None, with_bars=True):
         tm = tmux.get(sid)
         live = tm is not None
         hexcol = (tm and tm["color"]) or (_name_color(sid) or {}).get("bg", "#888888")
-        try:
-            session = _parse(s["path"], sid, now)
-        except Exception:
-            session = {"turns": []}
-        caps = _captions(sid)
         goals = jd.load_goals(sid)
-        st_turns = session["turns"]
+        if with_bars:
+            try:
+                session = _parse(s["path"], sid, now)
+            except Exception:
+                session = {"turns": []}
+            caps = _captions(sid)
+            st_turns = session["turns"]
+            open_now = _session_working(st_turns)         # WORKING from the event model — the one shared signal
+        else:
+            # SKELETON: NO full transcript parse. A fresh kernel start (the ↻ refresh button) otherwise re-parses
+            # every transcript (~1.3s; this 49MB session ~0.5s alone) before the fleet can paint — but the LANES
+            # don't need it. Derive the lane from cheap signals (tmux + the goal store + the transcript mtime) so
+            # the fleet appears AT ONCE; the bars ride the {type:"bars"} build, which does the real parse and
+            # refines the lane a beat later. (the user 2026-06-26.)
+            session = {"turns": []}; caps = {}; st_turns = []
+            open_now = bool(tm and tm.get("state") == "working")
         last_turn = st_turns[-1] if st_turns else None
-        open_now = _session_working(st_turns)             # WORKING from the event model — the one shared signal
         if tm:                            # live: tmux state drives the lane badge (working/waiting/idle/permission/compacting)
             state = tm["state"] or "idle"
-            if _compacting(sid, state, session, now, tm.get("since")):
+            if with_bars and _compacting(sid, state, session, now, tm.get("since")):
                 state = "compacting"      # event-corroborated (incl. the optimistic /compact cue) — matches the chip
-            elif state == "compacting":   # a STUCK tmux 'compacting' the event model contradicts → show the real state
+            elif state == "compacting":   # a STUCK tmux 'compacting' (or the un-parsed skeleton) → show the real state
                 state = "working" if open_now else "waiting"
         else:                             # dead lane: NEVER "working" — a turn left open at death (e.g. a stalled API
                                           # turn that never returned a ResultMessage, then ended) must not read as
@@ -4511,6 +4520,11 @@ def build_timeline(now, tmux=None, with_bars=True):
                         "nudgeAuto": bool((trig or {}).get("rompAuto")),   # ONLY an AUTO-nudge (not the Nudge button / retry) →
                         #                                       the view marks it as a romp message (swirl on a black dot)
                         "workUuid": work_uuid, "replyUuid": reply_uuid})
+        if not with_bars and last_t is None:
+            try:
+                last_t = os.stat(s["path"]).st_mtime     # lane `since` ≈ the transcript's last write (last activity), no parse
+            except OSError:
+                pass
         if with_bars:
             turns[sid] = bars
             _derive_judging(sid, caps, goals, now - TL_HORIZON, semantic, seg_ends)
