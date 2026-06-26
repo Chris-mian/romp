@@ -3721,6 +3721,10 @@ def build_session(sid, now, tmux=None):
     return {"type": "session", "id": sid, "name": sess["name"], "color": _name_color(sid),
             "cwd": _tilde(_cwd_of(sid) or meta.get("cwd") or ""),   # fixed-at-creation dir; lane tab shows it (the user 2026-06-22)
             "events": events, "status": status, "ledger": ledger, "bgTasks": _bg_tasks(sess["path"]),
+            # per-session view flags (the user 2026-06-26): the tab right-click menu toggles these too, mirroring
+            # the timeline lane's feed checkbox + postal mailbox. Same flags + legacy fallback as build_timeline.
+            "hideFromFeed": _session_flag(sid, "hideFromFeed"),
+            "postalServiceOff": _session_flag(sid, "postalServiceOff") or _session_flag(sid, "postalOff"),
             "firstSeen": session["turns"][0]["t"] if session["turns"] else now}
 
 

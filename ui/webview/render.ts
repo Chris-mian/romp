@@ -110,7 +110,7 @@ interface BgTasks { count: number; tasks: BgTask[]; }
 // kernel ships only the last WIRE_TAIL events (headFrom > 0) to keep startup light; older history streams in
 // on scroll-back (loadOlder → chatHead prepends, lowering headFrom). headFrom 0 = the whole transcript is
 // resident. chatTail's `from` is GLOBAL and mapped through headFrom.
-interface Session { id: string; name: string; color: Color | null; events: ChatEvent[]; status: Status; firstSeen?: number; cwd?: string; headFrom?: number; headTotal?: number; bgTasks?: BgTasks; }
+interface Session { id: string; name: string; color: Color | null; events: ChatEvent[]; status: Status; firstSeen?: number; cwd?: string; headFrom?: number; headTotal?: number; bgTasks?: BgTasks; hideFromFeed?: boolean; postalServiceOff?: boolean; }
 
 const vscodeApi =
   typeof (window as any).acquireVsCodeApi === "function" ? (window as any).acquireVsCodeApi() : undefined;
@@ -1725,6 +1725,28 @@ function quoteSelectionIntoComposer(text: string) {
 function copyToClipboard(text: string) {
   navigator.clipboard?.writeText(text).catch(() => { try { document.execCommand("copy"); } catch { /* best effort */ } });
 }
+// Toggle a per-session view flag (feed mute / postal isolation) — the SAME message the timeline lane toggles
+// send, persisted + re-broadcast by the kernel. Optimistically update the local copy so reopening the menu
+// reflects it before the next push (the kernel reconciles).
+function setSessionFlag(id: string, flag: "hideFromFeed" | "postalServiceOff", value: boolean) {
+  const s = sessions.get(id);
+  if (s) (s as Record<string, unknown>)[flag] = value;
+  if (vscodeApi) vscodeApi.postMessage({ type: "setSessionFlag", id, flag, value });
+}
+
+// Small inline-SVG icon for the tab menu's toggle items (trusted constant markup; `off` slashes + dims it,
+// matching the timeline lane toggles). 16-unit viewBox; currentColor so .ctx-icon/.off set the tint.
+function ctxIcon(kind: "feed" | "mail", off: boolean): HTMLElement {
+  const span = el("span", "ctx-icon" + (off ? " off" : ""));
+  const slash = off ? '<line x1="1.6" y1="14.4" x2="14.4" y2="1.6"/>' : "";
+  const body = kind === "feed"
+    ? '<circle cx="8" cy="8" r="6"/><path d="M5 8.3 L7.2 10.7 L11.4 5.3"/>'              // circle + check (on the feed)
+    : '<rect x="2" y="4" width="12" height="8" rx="1.5"/><path d="M2.5 5 L8 9 L13.5 5"/>';  // envelope (on the postal service)
+  span.innerHTML = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" '
+    + 'stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">' + body + slash + "</svg>";
+  return span;
+}
+
 function showTabMenu(e: MouseEvent, tab: HTMLElement, label: HTMLElement, id: string) {
   dismissTabMenu();
   const menu = el("div", "ctx-menu");
@@ -1732,6 +1754,30 @@ function showTabMenu(e: MouseEvent, tab: HTMLElement, label: HTMLElement, id: st
   rename.textContent = "Rename";
   rename.addEventListener("click", (ev) => { ev.stopPropagation(); dismissTabMenu(); startTabRename(tab, label, id); });
   menu.appendChild(rename);
+  // Feed + Mail per-session toggles (the user 2026-06-26) — the same controls as the timeline lane's feed
+  // checkbox + postal mailbox, here as icon + label + a faint "what it does" sub-line. State from the session.
+  const s = sessions.get(id);
+  const offFeed = !!(s && s.hideFromFeed);
+  const offMail = !!(s && s.postalServiceOff);
+  menu.appendChild(el("div", "ctx-sep"));
+  const toggle = (kind: "feed" | "mail", off: boolean, lab: string, sub: string, fn: () => void) => {
+    const item = el("div", "ctx-item ctx-item-toggle");
+    item.appendChild(ctxIcon(kind, off));
+    const bodyEl = el("span", "ctx-item-body");
+    const l = el("span", "ctx-item-label"); l.textContent = lab; bodyEl.appendChild(l);
+    const sb = el("span", "ctx-item-sub"); sb.textContent = sub; bodyEl.appendChild(sb);
+    item.appendChild(bodyEl);
+    item.addEventListener("click", (ev) => { ev.stopPropagation(); dismissTabMenu(); fn(); });
+    menu.appendChild(item);
+  };
+  toggle("feed", offFeed,
+    offFeed ? "Show in feed" : "Hide from feed",
+    offFeed ? "let its prompts make feed cards again" : "stop its prompts making feed cards",
+    () => setSessionFlag(id, "hideFromFeed", !offFeed));
+  toggle("mail", offMail,
+    offMail ? "Rejoin mail" : "Mute mail",
+    offMail ? "reconnect it to the postal service" : "hide from peers — no messages in or out",
+    () => setSessionFlag(id, "postalServiceOff", !offMail));
   document.body.appendChild(menu);
   ctxMenuEl = menu;
   // at the cursor, clamped so it never overflows the pane
@@ -4029,6 +4075,8 @@ function upsert(msg: any) {
     headFrom: msg.headFrom ?? 0,
     headTotal: msg.headTotal ?? ((msg.events || (prev ? prev.events : [])).length),
     bgTasks: ("bgTasks" in msg) ? msg.bgTasks : (prev ? prev.bgTasks : undefined),
+    hideFromFeed: ("hideFromFeed" in msg) ? !!msg.hideFromFeed : (prev ? prev.hideFromFeed : undefined),
+    postalServiceOff: ("postalServiceOff" in msg) ? !!msg.postalServiceOff : (prev ? prev.postalServiceOff : undefined),
   };
   sessions.set(msg.id, s);
   // The kernel re-sends the FULL "session" payload on every push. Distinguish an APPEND (more turns

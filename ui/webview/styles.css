@@ -177,6 +177,15 @@ body { display: flex; flex-direction: column; }
   background: var(--vscode-menu-selectionBackground, rgba(255, 255, 255, 0.1));
   color: var(--vscode-menu-selectionForeground, var(--fg));
 }
+/* toggle items (Feed / Mail) carry an icon + a label and a faint sub-line describing what the click does
+   (the user 2026-06-26). The icon is the same metaphor as the timeline lane toggles; a .off icon is slashed
+   + dimmed to show the flag is currently off (matching the timeline). */
+.ctx-sep { height: 1px; margin: 4px 6px; background: var(--box-border); }
+.ctx-item-toggle { display: flex; align-items: flex-start; gap: 8px; }
+.ctx-item-toggle .ctx-icon { flex: 0 0 auto; margin-top: 1px; color: var(--fg); display: flex; }
+.ctx-item-toggle .ctx-icon.off { color: var(--dim); }
+.ctx-item-body { display: flex; flex-direction: column; line-height: 1.25; }
+.ctx-item-sub { font-size: 0.82em; opacity: 0.6; }
 
 .tab-close { opacity: 0; font-size: 1.1em; line-height: 1; padding: 0 2px; border-radius: 3px; color: var(--dim); }
 .tab:hover .tab-close { opacity: 0.7; }
