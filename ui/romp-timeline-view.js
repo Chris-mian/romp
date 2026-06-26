@@ -208,7 +208,8 @@ const MODEL_FG = '#9aa0a6';
 // 2026-06-24): an ENABLED toggle reads as romp-blue, a disabled one as a faded, struck-out gray.
 const ROMP_BLUE = '#9cd2ff';
 function modelLabel(s) {
-  if (!s || !s.model) return '';
+  if (!s) return '';
+  if (!s.model) return s.effort || '';   // effort is always known (registry) — show it even before the model connects
   return s.effort ? s.model + ' ' + s.effort : s.model;
 }
 
@@ -1708,7 +1709,7 @@ class TimelinePanel {
     // model+effort column: each word is a clickable picker drawn as [model ▾] [effort ▾], so reserve the
     // word + caret widths (+ a gap between the two pickers). Same 11px font as ctx (ctxWidth).
     const META_GAP = 6, caretW = this.ctxWidth(META_CARET);
-    const metaWidth = (s) => { if (!s.model) return 0; let w = this.ctxWidth(s.model) + caretW; if (s.effort) w += META_GAP + this.ctxWidth(s.effort) + caretW; return w; };
+    const metaWidth = (s) => { let w = 0; if (s.model) w += this.ctxWidth(s.model) + caretW; if (s.effort) w += (w ? META_GAP : 0) + this.ctxWidth(s.effort) + caretW; return w; };
     const maxModel = Math.max(0, ...vis.map(metaWidth));
     const maxChip = Math.max(0, ...visB.map((b) => (b ? this.badgeWidth(b.label) + 12 : 0)));
     const maxCtx = (visC.some((c) => c) || vis.some((s) => compactingNow(s))) ? BAT_W : 0;   // ctx column = battery bar
@@ -2018,7 +2019,7 @@ class TimelinePanel {
       // model + effort, muted, between the name and the state chip (left-aligned in its column). On a
       // LIVE lane each word is a drop-down picker — hover reveals a ▾ caret, click opens a menu whose
       // pick injects /model or /effort into that pane. Dead/historical lanes render it as static text.
-      if (s.model) {
+      if (s.model || s.effort) {   // a freshly-launched SDK lane has no model for a few seconds, but effort is always known
         if (!s.live) {
           const mt = el('text', { x: modelColX, y: y + 3.5, 'text-anchor': 'start', 'font-size': 11, 'font-weight': 600, fill: F(MODEL_FG), 'pointer-events': 'none' });
           mt.textContent = modelLabel(s); svg.appendChild(mt);
@@ -2042,8 +2043,8 @@ class TimelinePanel {
             wt.addEventListener('click', (e) => { e.stopPropagation(); this._openMetaMenu(kind, s, wt); });
             px += ww + caretW;
           };
-          drawPiece('model', s.model);
-          if (s.effort) { px += META_GAP; drawPiece('effort', s.effort); }
+          if (s.model) drawPiece('model', s.model);
+          if (s.effort) { if (s.model) px += META_GAP; drawPiece('effort', s.effort); }
         }
       }
       const bdg = visB[i];
