@@ -22,9 +22,9 @@ conversation.
 
 - **`bin/romp`** — launch/resume/attach managed sessions (tmux sessions tagged
   `@romp`), with identity colors; terminal views (`-d` dashboard, `-f` feed).
-- **Romp Postal Service** (`bin/romp-postal`) — inter-session mail: send,
+- **Romp Postal Service** (`bin/romp-postal-service`) — inter-session mail: send,
   inbox, working-notes, parked mail for dead sessions, session search, revive.
-  Exposed to Claude sessions as an MCP server (`romp-postal mcp`) and on the
+  Exposed to Claude sessions as an MCP server (`romp-postal-service mcp`) and on the
   shell as `romp --mail …`.
 - **Kernel** (`bin/romp-kernel`) — THE always-on core: one Python process,
   single writer. It parses each session's transcript into an event tree

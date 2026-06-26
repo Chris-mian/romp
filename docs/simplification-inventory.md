@@ -48,7 +48,7 @@ These removals are independent of the spine, so they are the low-risk way to cle
 
 ### Finding 5: time-based workarounds persist against the project's own rule
 
-Several components infer session state from clocks and screen-scrapes because no event tells them the truth, which `CLAUDE.md`'s "event-based over time heuristics" rule forbids. Two of them exist only because Claude fires no hook when a turn is interrupted with Esc: `bin/romp-idle-dots` captures the tmux pane and pattern-matches it to guess whether a "working" session is actually stuck, and `bin/romp-interrupt-reset` does the same guess a second way. Around them sits a swarm of magic-second constants in `romp-pipeline`, `romp-dashboard`, `romp-postal`, and the kernel (`PENDING_WINDOW`, `STALE_AFTER`, `RETRY_INTERVAL`, `ORPHAN_GRACE`, `now-addedAt>6000`, `probeTick%4`, and others).
+Several components infer session state from clocks and screen-scrapes because no event tells them the truth, which `CLAUDE.md`'s "event-based over time heuristics" rule forbids. Two of them exist only because Claude fires no hook when a turn is interrupted with Esc: `bin/romp-idle-dots` captures the tmux pane and pattern-matches it to guess whether a "working" session is actually stuck, and `bin/romp-interrupt-reset` does the same guess a second way. Around them sits a swarm of magic-second constants in `romp-pipeline`, `romp-dashboard`, `romp-postal-service`, and the kernel (`PENDING_WINDOW`, `STALE_AFTER`, `RETRY_INTERVAL`, `ORPHAN_GRACE`, `now-addedAt>6000`, `probeTick%4`, and others).
 
 The honest fix is the one the design note already names: emit a single real interrupt event. With that event in place, both scrapers delete (about 273 lines), and the kernel's interrupt timers re-key onto it.
 
@@ -79,7 +79,7 @@ The sections below are for lookup, not linear reading.
 
 Claude Code sessions run in tmux panes, and their transcripts under `~/.claude/projects/*.jsonl` are the source of truth. The system splits into two halves joined only by the records under `~/.local/state/romp/`.
 
-The producer half is the Python in `bin/`. `romp-events` chops each transcript into turn events with stable ids. `romp-summarize-backfill`, an always-on daemon, runs four model roles (judge, announcer, auditor, writer) over those events and writes the records. `romp-postal` is the inter-session mail bus.
+The producer half is the Python in `bin/`. `romp-events` chops each transcript into turn events with stable ids. `romp-summarize-backfill`, an always-on daemon, runs four model roles (judge, announcer, auditor, writer) over those events and writes the records. `romp-postal-service` is the inter-session mail bus.
 
 The consumer half folds the records into surfaces: the feed, the ask columns, the chat, and the timeline. The TypeScript kernel under `chat-view/src/kernel/`, run by `romp-serve`, reads the records and the transcripts, drives sessions through a `SessionBackend`, and serves the UI bundles over HTTP and WebSocket to thin clients in the browser, the VS Code extension, and Obsidian.
 
@@ -110,7 +110,7 @@ The consumer half folds the records into surfaces: the feed, the ask columns, th
 | File | LoC | Role |
 |---|---|---|
 | `romp` | 829 | Launcher: spawn/resume/attach, identity colors, self-provisioning tmux glue, resume picker, `--mail` dispatch. |
-| `romp-postal` | 1776 | Romp Postal Service, MCP server (8 tools), CLI, hook helpers, tmux mail decoration. |
+| `romp-postal-service` | 1776 | Romp Postal Service, MCP server (8 tools), CLI, hook helpers, tmux mail decoration. |
 | `romp-manager` | 205 | Supervises the kernel (`romp-serve`): respawn and control endpoint. |
 | `romp-interrupt-reset` | 61 | Esc-interrupt workaround (no hook fires); pane-scrape heal. |
 | `romp-mail-clear` | 16 | Clears mail-badge tmux vars. |
@@ -208,7 +208,7 @@ Writer: backfill (`_declog`:485). Rotated at 2 MB.
 - `names/<sid>`: writer `bin/romp`. Tab-delimited 4 fields, `name<TAB>dir<TAB>bg_hex<TAB>fg_color`. Outlives the session, so it backs dead-session resolution and revive.
 - `states/<sid>.jsonl`: writer `tmux-status.sh`, `romp-idle-dots`, and the headless backends. `{t, state}`, state in waiting, working, idle, permission, compacting, picker. One line per transition; picker rows add `{tier}`.
 - `postal/mail/<sid>/{tmp,new,cur}/`: Maildir; the filename is the message id and joins the maildir, `timeline/messages.jsonl`, and the status-bar prefix. `postal/mail-pending/<sid>` is a zero-byte marker that exists exactly when unread mail does.
-- `timeline/messages.jsonl`: writer `romp-postal`. `{ev:"sent", id, from, from_id, to_id, body, t, park?}` plus `exec` and `recall` rows. `timeline/message-summaries.jsonl` holds `{id, summary}`.
+- `timeline/messages.jsonl`: writer `romp-postal-service`. `{ev:"sent", id, from, from_id, to_id, body, t, park?}` plus `exec` and `recall` rows. `timeline/message-summaries.jsonl` holds `{id, summary}`.
 - Top-level singletons: `chat-active`, `timeline-focus.json`, `timeline-hover.json`, `session-order.json`, `usage.json`, `web-kernel.json`, `idle-dots.pid`, `summarize-backfill.pid`, `locate-diag.jsonl`, `REQUESTS.md`, `SEARCH.md`. `drops/` holds dropped screenshots and is not pipeline-related.
 
 ### What the data model shows
@@ -285,11 +285,11 @@ Each is removable without touching the spine, so these are the low-risk first cu
 - [ ] **Missed-handoff suspect auditor**: backfill:1368-1496 (~110), plus `feed.ts` `missedHandoffSuspects`:584 and the server overlay. "Near-zero precision" per its own comment.
 - [ ] **`--rejudge`**: backfill:1501-1586 (~85). Dead one-time backfill.
 - [ ] **headless and stream backends**: `headless-backend.ts` (265) and `stream-backend.ts` (262), plus the `tui:null` branches through `server.ts` and `chat.ts`. Keep one or zero.
-- [ ] **Postal immediate-wake injection**: `_box_region`, `_is_prompt_box`, `_inject`, `_picker_tier`, `_push`, romp-postal:621-994 (~370). The drain is the sufficient backstop.
+- [ ] **Postal immediate-wake injection**: `_box_region`, `_is_prompt_box`, `_inject`, `_picker_tier`, `_push`, romp-postal-service:621-994 (~370). The drain is the sufficient backstop.
 - [ ] **Postal retry/wake/orphan loops**: `_retry_*`, `_wake_when_ready`, `_sweep_orphans` (~100), plus their time constants.
-- [ ] **find_sessions / session-search**: `_session_records`, `_find_sessions`, `format_find`, `_resolve_session`, romp-postal:411-538 (~130). One MCP tool and one CLI verb.
+- [ ] **find_sessions / session-search**: `_session_records`, `_find_sessions`, `format_find`, `_resolve_session`, romp-postal-service:411-538 (~130). One MCP tool and one CLI verb.
 - [ ] **Postal HTTP bus**: justified only by the remote-tunnel feature; a local-only design could use a file lock.
-- [ ] **Cosmetic tmux mail decoration**: peer chips, message pill, badge, romp-postal:641-769 (~130), plus the `status-format[1]` 10-slot string (bin/romp:153).
+- [ ] **Cosmetic tmux mail decoration**: peer chips, message pill, badge, romp-postal-service:641-769 (~130), plus the `status-format[1]` 10-slot string (bin/romp:153).
 - [ ] **`romp-manager` multi-kernel registry**: future-proofing for a single kernel (205).
 - [ ] **Blocked-session synthetic card**: feed.ts:1244-1391. Self-described as impossible.
 - [ ] **`romp-timeline-serve`**: superseded by kernel `/timeline` (66).

@@ -21,7 +21,7 @@ while [[ -L "$src" ]]; do
         *)  src="$(cd "$(dirname "$src")" && pwd)/$tgt" ;;
     esac
 done
-postal="$(cd "$(dirname "$src")/../bin" 2>/dev/null && pwd)/romp-postal"
+postal="$(cd "$(dirname "$src")/../bin" 2>/dev/null && pwd)/romp-postal-service"
 [[ -x "$postal" ]] || exit 0
 
 "$postal" ensure >/dev/null 2>&1

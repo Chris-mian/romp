@@ -16,7 +16,7 @@ BIN = os.path.join(ROOT, "bin")
 SKILL = os.path.join(ROOT, "claude", "skills", "romp-postal", "SKILL.md")
 
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()      # hermetic; constants resolve under here at import
-pm = SourceFileLoader("romp_postal", os.path.join(BIN, "romp-postal")).load_module()
+pm = SourceFileLoader("romp_postal", os.path.join(BIN, "romp-postal-service")).load_module()
 
 
 def _tool_desc(name):

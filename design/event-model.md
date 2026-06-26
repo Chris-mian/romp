@@ -52,7 +52,7 @@ future stream substrate is a near passthrough.
 - **Postal is detected by the existing `<!-- romp-msg-id: <id> -->` marker**, with
   the peer ROMP UUID filled by joining the id to `timeline/messages.jsonl`
   (`from_id` = sender anchor sid). Never the `"Stop hook feedback"` prefix (any
-  blocking Stop hook produces it). No new marker, no romp-postal change.
+  blocking Stop hook produces it). No new marker, no romp-postal-service change.
 - **The event layer is not opinionated** about which atom matters. No `workUuid`,
   no `replyUuid`. "Which line a click lands on" is a render-time function over a
   turn's atoms.
@@ -150,7 +150,7 @@ interface Atom {
                                         //   hook-injected (postal) and tool_result lines
 
   // THE one genuine addition over the stream: who authored a user atom. Derived —
-  // promptSource typed/queued→human, sdk→sdk, system→system; the romp-postal
+  // promptSource typed/queued→human, sdk→sdk, system→system; the romp-postal-service
   // marker→peer. A tool_result-only user atom has no author (it's harness output).
   author?: "human" | "sdk" | "system" | { peer: string /* peer rompUuid */ };
 }
@@ -278,7 +278,7 @@ on `author` covers all origins uniformly.
 `timeline/messages.jsonl`: the `sent` row's `from_id` is the sender's anchor sid,
 `to_id` the recipient. peer = null only when the id isn't in the log (legacy/rare).
 The postal log is the authoritative sender-identity source (the same contract
-postal-spec.ts relies on), so no inline `from=` and no romp-postal change are
+postal-spec.ts relies on), so no inline `from=` and no romp-postal-service change are
 needed. Never key on the `"Stop hook feedback"` prefix: Claude Code's generic
 wrapper around any blocking Stop hook, not a postal signal.
 

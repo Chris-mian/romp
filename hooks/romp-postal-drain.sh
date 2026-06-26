@@ -21,8 +21,8 @@ input="$(cat)"
 [[ "$input" =~ \"session_id\":\"([^\"]+)\" ]] || exit 0
 sid="${BASH_REMATCH[1]}"
 
-# Locate romp-postal via this hook's REAL (symlink-followed) path: the hook
-# lives at dotfiles/claude/hooks/ and romp-postal at dotfiles/scripts/.
+# Locate romp-postal-service via this hook's REAL (symlink-followed) path: the hook
+# lives at dotfiles/claude/hooks/ and romp-postal-service at dotfiles/scripts/.
 src="${BASH_SOURCE[0]}"
 while [[ -L "$src" ]]; do
     tgt="$(readlink "$src")"
@@ -31,7 +31,7 @@ while [[ -L "$src" ]]; do
         *)  src="$(cd "$(dirname "$src")" && pwd)/$tgt" ;;
     esac
 done
-postal="$(cd "$(dirname "$src")/../bin" 2>/dev/null && pwd)/romp-postal"
+postal="$(cd "$(dirname "$src")/../bin" 2>/dev/null && pwd)/romp-postal-service"
 [[ -x "$postal" ]] || exit 0
 
 # Loop-guarded, consuming drain (also autostarts the bus if needed).
