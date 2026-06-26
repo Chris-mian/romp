@@ -2407,7 +2407,7 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(km._mode_presses("auto", "plan"), 3)              # auto(0) → … → plan(3)
         self.assertEqual(km._mode_presses("plan", "plan"), 0)              # already there → no presses
         self.assertIsNone(km._mode_presses("default", "bypassPermissions"))  # flag-only, not a cycle target
-        self.assertIn("@claude-permission-mode", km.TMUX_FMT)              # kernel reads the mode var
+        self.assertIn("@claude-permission-mode", km.TmuxBackend.LANE_FMT)  # kernel reads the mode var (now a TmuxBackend const)
 
     def test_cycle_mode_records_the_new_mode(self):
         # The user's bug (2026-06-18): a chat mode switch flipped the terminal but the chat LABEL stayed

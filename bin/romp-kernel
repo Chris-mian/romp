@@ -27,6 +27,7 @@ em = SourceFileLoader("romp_event_model", str(HERE / "romp-event-model")).load_m
 jd = SourceFileLoader("romp_judge", str(HERE / "romp-judge")).load_module()
 cm = SourceFileLoader("romp_colormap", str(HERE / "romp_colormap.py")).load_module()  # age → recency tint
 ap = SourceFileLoader("romp_askparse", str(HERE / "romp-askparse")).load_module()  # tmux-pane → live AskUserQuestion picker
+sb = SourceFileLoader("romp_session_backend", str(HERE / "romp_session_backend.py")).load_module()  # the SessionBackend ABC
 CHAT_VIEW = ROOT / "chat-view"               # the tuned UI, current in this worktree via `git merge main`
 DIST = CHAT_VIEW / "dist"                    # bundles built from ui/webview sources (the human's tuned render layer)
 MEDIA = CHAT_VIEW / "media"
@@ -939,26 +940,17 @@ def _auto_nudge_tick(now, tmux):
 def _working_notes():
     """{sid: note} for live tmux sessions with a NON-EMPTY @romp-working note (one tmux read). The note is
     the set_working ownership claim the postal bus shows in list_agents. Empty/absent → omitted."""
-    try:
-        r = subprocess.run(["tmux", "list-sessions", "-F", "#{@romp}|#{@romp-session-id}|#{@romp-working}"],
-                           capture_output=True, text=True, timeout=2.5)
-    except Exception:
-        return {}
     out = {}
-    if r.returncode == 0:
-        for line in r.stdout.splitlines():
-            p = line.split("|", 2)
-            if len(p) == 3 and p[0] == "1" and p[1] and p[2].strip():
-                out[p[1]] = p[2]
+    for line in _TMUX.list_lines(_TMUX.NOTE_FMT):
+        p = line.split("|", 2)
+        if len(p) == 3 and p[0] == "1" and p[1] and p[2].strip():
+            out[p[1]] = p[2]
     return out
 
 
 def _set_working_note(sid, text):
     """Set (or clear, text='') a session's @romp-working note — what the postal bus reads for list_agents."""
-    try:
-        subprocess.run(["tmux", "set", "-t", _name_of(sid) or sid, "@romp-working", text], timeout=3)
-    except Exception:
-        pass
+    _TMUX.set_var(_name_of(sid) or sid, "@romp-working", text)
 
 
 def _clear_done_working_notes(now, tmux):
@@ -1326,19 +1318,80 @@ def _revive_session(sid):
     _reveal_chat({"type": "focus", "id": sid})
 
 
+# ─────────────────────────── TmuxBackend: the ONE place that shells tmux ───────────────────────────
+# Every raw `tmux` invocation lives inside this class — the tmux-specific format strings (@claude-* / @romp
+# vars), list-sessions, send-keys, paste-buffer, capture-pane, set, rename/kill-session. Higher layers
+# (build_*, control handlers, the postal bus) speak the SessionBackend API and never shell tmux; a guard
+# test (tests/test_session_api.py) asserts no `["tmux"` / send-keys / @claude- / list-sessions outside this
+# class so the leak can't reappear. tmux is keyed by session NAME, so the sid-keyed ABC methods map
+# sid→name via _name_of/_tmux_name_of internally. (the user 2026-06-26: tmux + SDK behind one session API.)
+class TmuxBackend:  # becomes TmuxBackend(sb.SessionBackend) once the sid-keyed methods land (P1)
+    # tmux -F format strings (the only place @claude-*/@romp vars are named):
+    LANE_FMT = ("#{@romp}|#{@romp-session-id}|#{@claude-state}|#{@claude-state-since}|"
+                "#{@claude-model}|#{@claude-effort}|#{@claude-context}|#{@claude-compact-pct}|#{@identity-bg}|"
+                "#{@claude-permission-mode}")
+    LIST_FMT = "#{@romp}|#{session_name}|#{@claude-state}|#{@claude-dir}|#{@identity-bg}|#{@identity-fg}"
+    NOTE_FMT = "#{@romp}|#{@romp-session-id}|#{@romp-working}"
+    NAME_FMT = "#{@romp-session-id}\t#{session_name}"
+
+    # ── the SOLE raw-tmux primitives ──
+    def _run(self, args, t=3):
+        try:
+            return subprocess.run(["tmux"] + list(args), capture_output=True, text=True, timeout=t)
+        except Exception:
+            return None
+
+    def _fire(self, args, t=3):                          # fire-and-forget (no captured output needed)
+        try:
+            subprocess.run(["tmux"] + list(args), timeout=t)
+        except Exception:
+            pass
+
+    def list_lines(self, fmt, t=2.5):
+        r = self._run(["list-sessions", "-F", fmt], t)
+        return r.stdout.splitlines() if (r and r.returncode == 0) else []
+
+    def send_keys(self, name, *keys, t=3):
+        self._fire(["send-keys", "-t", name, *keys], t)
+
+    def set_var(self, name, var, val, t=3):
+        self._fire(["set", "-t", name, var, val], t)
+
+    def capture(self, name, join=False, t=2.5):
+        r = self._run(["capture-pane", "-p"] + (["-J"] if join else []) + ["-t", name], t)
+        return r.stdout if (r and r.returncode == 0) else ""
+
+    def pane_in_mode(self, name, t=2):
+        r = self._run(["display-message", "-p", "-t", name, "#{pane_in_mode}"], t)
+        return bool(r and r.stdout.strip() == "1")
+
+    def set_buffer(self, text):
+        self._run(["set-buffer", "-b", "rompkernel", text])
+
+    def paste_buffer(self, name):
+        self._run(["paste-buffer", "-b", "rompkernel", "-d", "-p", "-t", name])
+
+    def kill_by_name(self, name, t=4):
+        self._fire(["kill-session", "-t", name], t)
+
+    def rename_by_name(self, old, new, t=5):
+        try:
+            subprocess.run(["tmux", "rename-session", "-t", old, new], timeout=t,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            sys.stderr.write("tmux rename '%s': %s\n" % (old, traceback.format_exc()))
+
+
+_TMUX = TmuxBackend()
+
+
 def _tmux_name_of(sid):
     """The LIVE tmux session NAME for a romp sid (keyed by @romp-session-id), or None when the session
     isn't running. Needed to target `tmux rename-session`, since tmux is keyed by name, not by sid."""
-    try:
-        r = subprocess.run(["tmux", "list-sessions", "-F", "#{@romp-session-id}\t#{session_name}"],
-                           capture_output=True, text=True, timeout=2.5)
-        if r.returncode == 0:
-            for line in r.stdout.splitlines():
-                p = line.split("\t")
-                if len(p) == 2 and p[0] == sid:
-                    return p[1]
-    except Exception:
-        pass
+    for line in _TMUX.list_lines(_TMUX.NAME_FMT):
+        p = line.split("\t")
+        if len(p) == 2 and p[0] == sid:
+            return p[1]
     return None
 
 
@@ -1367,19 +1420,10 @@ def _rename_session(sid, name):
     live = _tmux_name_of(sid)
     if live:
         if live != name:
-            try:
-                subprocess.run(["tmux", "rename-session", "-t", live, name], timeout=5,
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            except Exception:
-                sys.stderr.write("rename '%s': %s\n" % (sid, traceback.format_exc()))
+            _TMUX.rename_by_name(live, name)
     else:
         _set_name(sid, name)                           # dead tab → names file directly
     return name
-
-
-TMUX_FMT = ("#{@romp}|#{@romp-session-id}|#{@claude-state}|#{@claude-state-since}|"
-            "#{@claude-model}|#{@claude-effort}|#{@claude-context}|#{@claude-compact-pct}|#{@identity-bg}|"
-            "#{@claude-permission-mode}")
 
 
 def _num(x):
@@ -1395,15 +1439,8 @@ def _tmux_sessions_raw():
     kernel → tmux (no Claude runs on the phone). Best-effort {} when tmux is absent (rare headless
     run); the builders then fall back to file-derived state. Canonical @claude-state values:
     working | waiting | idle | permission | compacting (hooks/tmux-status.sh)."""
-    try:
-        r = subprocess.run(["tmux", "list-sessions", "-F", TMUX_FMT],
-                           capture_output=True, text=True, timeout=2.5)
-    except Exception:
-        return {}
-    if r.returncode != 0:
-        return {}
     out = {}
-    for line in r.stdout.splitlines():
+    for line in _TMUX.list_lines(_TMUX.LANE_FMT):
         p = line.split("|")
         if len(p) < 9 or p[0] != "1" or not p[1]:           # p[0]=@romp tag (1 = a romp session)
             continue
@@ -1435,9 +1472,6 @@ def _tmux_sessions():
     return out
 
 
-SESSIONS_FMT ="#{@romp}|#{session_name}|#{@claude-state}|#{@claude-dir}|#{@identity-bg}|#{@identity-fg}"
-
-
 def _tmux_session_list():
     """Romp sessions with the fields an external tool needs (the Obsidian Cmd+M picker + diff chips):
     name, claude-state, working dir, identity bg/fg. The kernel runs the tmux query (it's on the host)
@@ -1447,15 +1481,8 @@ def _tmux_session_list():
     and since this 0-arg def came later it SHADOWED the picker's, so the webview's requestSessions handler
     called it with 2 args → TypeError → the WS thread died → reconnect blanked the chat + the picker showed no
     existing sessions (the user 2026-06-22). Keep the names distinct."""
-    try:
-        r = subprocess.run(["tmux", "list-sessions", "-F", SESSIONS_FMT],
-                           capture_output=True, text=True, timeout=2.5)
-    except Exception:
-        return []
-    if r.returncode != 0:
-        return []
     out = []
-    for line in r.stdout.splitlines():
+    for line in _TMUX.list_lines(_TMUX.LIST_FMT):
         p = line.split("|")
         if len(p) < 6 or p[0] != "1" or not p[1]:           # p[0]=@romp tag (1 = a romp session)
             continue
@@ -1475,10 +1502,7 @@ def _clear_pane_input(name):
     normal empty-input send)."""
     if not name:
         return
-    try:
-        subprocess.run(["tmux", "send-keys", "-t", name, "C-a", "BSpace"], timeout=3)
-    except Exception:
-        pass
+    _TMUX.send_keys(name, "C-a", "BSpace")
 
 
 def _interrupt(name, _async=True):
@@ -1490,10 +1514,7 @@ def _interrupt(name, _async=True):
         return
 
     def go():
-        try:
-            subprocess.run(["tmux", "send-keys", "-t", name, "Escape"], timeout=3)
-        except Exception:
-            return
+        _TMUX.send_keys(name, "Escape")
         time.sleep(0.15)                              # let Claude Code restore the recalled prompt before we wipe it
         _clear_pane_input(name)
     threading.Thread(target=go, daemon=True).start() if _async else go()
@@ -1525,20 +1546,13 @@ def _tmux_send(name, text, model_cmd=False, _async=True):
     if not name or not text:
         return
 
-    def run(args, t=3):
-        try:
-            return subprocess.run(["tmux"] + args, capture_output=True, text=True, timeout=t)
-        except Exception:
-            return None
-
     def go():
-        r = run(["display-message", "-p", "-t", name, "#{pane_in_mode}"], 2)
-        if r and r.stdout.strip() == "1":
-            run(["send-keys", "-t", name, "-X", "cancel"], 2)        # exit copy-mode so paste+Enter land
+        if _TMUX.pane_in_mode(name):
+            _TMUX.send_keys(name, "-X", "cancel", t=2)              # exit copy-mode so paste+Enter land
         _clear_pane_input(name)                                     # wipe any leftover (e.g. an interrupt-restored prompt) so the paste REPLACES, never appends
         time.sleep(0.05)                                            # let the clear land before the paste
-        run(["set-buffer", "-b", "rompkernel", text])
-        run(["paste-buffer", "-b", "rompkernel", "-d", "-p", "-t", name])   # -p bracketed, -d delete buf
+        _TMUX.set_buffer(text)
+        _TMUX.paste_buffer(name)                                    # bracketed (-p), delete buf (-d)
         paths = _injected_img_paths(text)
         if paths:
             # Claude Code reads each pasted image PATH asynchronously and rewrites it to "[Image #N]" in the
@@ -1547,16 +1561,16 @@ def _tmux_send(name, text, model_cmd=False, _async=True):
             # last beat for the input to settle. Event-based, not a fixed gap (-J joins wrapped path lines).
             for _ in range(40):
                 time.sleep(0.1)
-                cap = run(["capture-pane", "-p", "-J", "-t", name], 2)
-                if not cap or all(p not in cap.stdout for p in paths):
+                cap = _TMUX.capture(name, join=True)
+                if all(p not in cap for p in paths):
                     break
             time.sleep(0.2)
         else:
             time.sleep(0.25)
-        run(["send-keys", "-t", name, "Enter"])
+        _TMUX.send_keys(name, "Enter")
         if model_cmd:
             time.sleep(0.85)
-            run(["send-keys", "-t", name, "Enter"])                 # accept the hookless /model confirm
+            _TMUX.send_keys(name, "Enter")                          # accept the hookless /model confirm
     threading.Thread(target=go, daemon=True).start() if _async else go()
 
 
@@ -1605,10 +1619,7 @@ def _cycle_mode(name, sid, target):
 
     def go():
         for _ in range(presses):
-            try:
-                subprocess.run(["tmux", "send-keys", "-t", name, "BTab"], timeout=3)
-            except Exception:
-                return
+            _TMUX.send_keys(name, "BTab")
             time.sleep(0.18)                                        # let each cycle land before the next
         # Record the mode we just cycled to. Unlike model/effort/context, the permission mode is NOT in
         # Claude Code's statusLine JSON, so @claude-permission-mode has NO event source to self-heal from
@@ -1616,10 +1627,7 @@ def _cycle_mode(name, sid, target):
         # launch value: the chat label never updated AND the next _cycle_mode computed its press count from
         # a stale `cur`. We caused the change, so we know the new mode is `target` — write it. (A switch made
         # directly in the terminal TUI still can't be observed; that's a CC-exposure gap, not ours.) (2026-06-18.)
-        try:
-            subprocess.run(["tmux", "set", "-t", name, "@claude-permission-mode", target], timeout=3)
-        except Exception:
-            pass
+        _TMUX.set_var(name, "@claude-permission-mode", target)
         _push_all()                                                 # re-render so the chat mode label flips now
     threading.Thread(target=go, daemon=True).start()
 
@@ -1633,25 +1641,15 @@ def _cycle_mode(name, sid, target):
 # recv loop never blocks on the ~110ms gaps. NOTE: end-to-end behavior needs live tmux verification — a
 # real picker — since a static-pane unit test can't model the cursor moving in response to the keys.
 def _capture_pane(name):
-    try:
-        r = subprocess.run(["tmux", "capture-pane", "-p", "-t", name], capture_output=True, text=True, timeout=2.5)
-        return r.stdout if r.returncode == 0 else ""
-    except Exception:
-        return ""
+    return _TMUX.capture(name)
 
 
 def _send_keys(name, keys):
-    try:
-        subprocess.run(["tmux", "send-keys", "-t", name] + list(keys), timeout=3)
-    except Exception:
-        pass
+    _TMUX.send_keys(name, *keys)
 
 
 def _send_literal(name, text):
-    try:
-        subprocess.run(["tmux", "send-keys", "-t", name, "-l", "--", text], timeout=3)
-    except Exception:
-        pass
+    _TMUX.send_keys(name, "-l", "--", text)
 
 
 def _nav_key(cur, target):
@@ -6737,10 +6735,7 @@ class Handler(BaseHTTPRequestHandler):
         elif msg and msg.get("type") == "endSession" and msg.get("id"):
             nm = _name_of(msg["id"])
             if nm:
-                try:
-                    subprocess.run(["tmux", "kill-session", "-t", nm], timeout=4)
-                except Exception:
-                    pass
+                _TMUX.kill_by_name(nm)
             _send_to_app("chat", {"type": "closed", "id": msg["id"]})
             _push_all()
         elif msg and msg.get("type") == "openSession" and msg.get("id"):
