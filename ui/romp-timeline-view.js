@@ -367,6 +367,18 @@ class TimelinePanel {
     };
     window.addEventListener('pointerup', _release);
     window.addEventListener('pointercancel', _release);
+    // The timeline is a THIN band: a press (or hover) begun inside it commonly ENDS OUTSIDE it — over the
+    // chat/feed pane — so the window 'pointerup' / the tip's mouseleave never fire here and _pointerHeld (or a
+    // shown tooltip) sticks true. update() then buffers EVERY push (the freeze path) and the lanes freeze on a
+    // STALE frame — e.g. a since-revived session still reading 'not running' while this.data already says it's
+    // live — because this.data updates silently but draw() never runs (the user 2026-06-25). Focus leaving the
+    // iframe means no press/hover can still be live here, so blur is a reliable release proxy for the lost
+    // pointerup AND a stuck tip: clear both and flush the buffered redraw. Event-based (blur genuinely fires),
+    // not a timeout — there's no pointerup to wait for when it was released in another frame.
+    window.addEventListener('blur', () => {
+      if (this.tip && this.tip.classList && this.tip.classList.contains('show')) this.hideTip();
+      _release();
+    });
 
     // controls row BELOW the time axis. Layout (the user 2026-06-11): usage bars LEFT-justified,
     // then a flexible spacer, then RIGHT-justified "collapse idle gaps" with the 🔒 lock-to-now

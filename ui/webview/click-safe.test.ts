@@ -87,6 +87,16 @@ test("Timeline: the EXTERNAL redraws (poll + live-tick) are held under a pressed
   assert.ok(!/if \(this\._pointerHeld\) \{ this\._drawDeferred/.test(TIMELINE), "no blanket draw() guard — that would freeze pans");
 });
 
+test("Timeline: blur force-releases a stuck press/tip so the lanes can't freeze on a stale frame (the user 2026-06-25)", () => {
+  // the band is thin: a press/hover begun inside it often releases OUTSIDE it, so window 'pointerup' /
+  // the tip mouseleave never fire and _pointerHeld (or a shown tip) sticks → update() buffers every push
+  // and the lanes freeze on a stale frame (e.g. a live session reading 'not running'). blur (focus leaving
+  // the iframe) is the release proxy: it clears a stuck tip via hideTip and runs _release (clears the press
+  // + flushes the buffered redraw).
+  assert.match(TIMELINE, /window\.addEventListener\('blur', \(\) => \{/);
+  assert.match(TIMELINE, /window\.addEventListener\('blur', \(\) => \{[\s\S]*?contains\('show'\)\) this\.hideTip\(\);[\s\S]*?_release\(\);/);
+});
+
 test("Feed Nudge acknowledges the click: guards the double-fire, disables + relabels, self-restores", () => {
   assert.match(FEED, /if \(nudge\.disabled\) return;/);          // a nudge with no visible change invites a re-click
   assert.match(FEED, /nudge\.disabled = true;/);
