@@ -1828,16 +1828,38 @@ def _view_cleared():
     return cur
 
 
+def _subtree_done(nodes, children, nid):
+    """Bottom-up completeness, mirroring rollup_status' is_complete: complete if the node's own nodeComplete
+    is set, or it HAS children and they are ALL complete. A childless node needs its own nodeComplete."""
+    if nodes[nid].get("nodeComplete"):
+        return True
+    kids = children.get(nid, [])
+    return bool(kids) and all(_subtree_done(nodes, children, c) for c in kids)
+
+
 def _group_tops(store, cap=20):
     """The session's OPEN top-level goals, oldest-first, capped — the grouper's candidate forest. A top is
-    open if it is not complete, not node-cleared, and not VIEW-cleared (the user crossed it off the feed —
-    re-wrapping it would resurrect it under a new umbrella id). A top has no ancestor, so no walk up. Cap
-    covers every real session while bounding the prompt on a pathological one."""
+    open if it is not DONE, not node-cleared, and not VIEW-cleared (the user crossed it off the feed —
+    re-wrapping it would resurrect it under a new umbrella id). "Done" is the FULL completed signal the user
+    sees, not just the top's own nodeComplete flag: a goal completed BOTTOM-UP (all children done, the top's
+    own flag never set) or sticky-completed (settledDone) or rolled up to status "completed" also counts —
+    otherwise the working grouper could nest a card the user sees as DONE under a freshly minted umbrella,
+    making it vanish from the board without the user ever clearing it (the user 2026-06-25). A top has no
+    ancestor, so no walk up. Cap covers every real session while bounding the prompt on a pathological one."""
     nodes = store["nodes"]
     vc = _view_cleared()
+    status = store.get("status", {})
+    children = {}
+    for nd in nodes.values():
+        children.setdefault(nd.get("parentId"), []).append(nd["id"])
+
+    def done(nid):                                     # any signal the board reads as "completed"
+        return (status.get(nid) == "completed" or nodes[nid].get("settledDone")
+                or _subtree_done(nodes, children, nid))
+
     tops = [nd for nd in nodes.values()
-            if nd.get("parentId") is None and not nd.get("nodeComplete")
-            and not nd.get("cleared") and nd["id"] not in vc]
+            if nd.get("parentId") is None and not nd.get("cleared")
+            and nd["id"] not in vc and not done(nd["id"])]
     tops.sort(key=lambda nd: nd.get("t", 0))
     return tops[-cap:] if len(tops) > cap else tops
 

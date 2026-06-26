@@ -1044,6 +1044,37 @@ class Grouper(unittest.TestCase):
         self.assertEqual(n, 1, "A (never done) is relinked under B")
         self.assertEqual(s["nodes"][a]["parentId"], b, "the once-done node serves as the parent")
 
+    def test_a_bottom_up_completed_top_is_not_a_grouper_candidate(self):
+        # the user 2026-06-25: a goal the board shows as DONE must never be a grouper source/target — else it
+        # gets nested under a fresh umbrella and vanishes without the user clearing it. A top completed
+        # BOTTOM-UP (its only child is done, the TOP's own nodeComplete never set) is exactly such a goal, and
+        # the old _group_tops (which keyed on the top's nodeComplete alone) still offered it up.
+        s = _store()
+        jd.apply_plan(s, "s1", T0, [{"do": "mint", "why": "x", "text": "Done Goal"}], [])
+        g = s["placements"]["s1"]
+        jd.apply_plan(s, "s2", T0 + 5, [{"do": "sub", "why": "x", "under": 1, "text": "the step"}], jd.open_menu(s))
+        ci = next(i for i, nd in enumerate(jd.open_menu(s), 1) if nd["id"] != g)
+        jd.apply_plan(s, "s3", T0 + 10, [{"do": "done", "why": "shipped", "goal": ci}], jd.open_menu(s))
+        self.assertFalse(s["nodes"][g].get("nodeComplete"), "the TOP's own nodeComplete was never set (only the child's)")
+        self.assertNotIn(g, [nd["id"] for nd in jd._group_tops(s)],
+                         "a bottom-up-completed top is excluded from grouping candidacy")
+
+    def test_a_settled_done_top_is_not_a_grouper_candidate(self):
+        # sticky completion (settledDone) is a "done" signal too — exclude it, keep the still-open top.
+        s, a, b = self._two_tops()
+        s["nodes"][a]["settledDone"] = True
+        tops = [nd["id"] for nd in jd._group_tops(s)]
+        self.assertNotIn(a, tops, "a sticky-completed (settledDone) top is excluded from grouping")
+        self.assertIn(b, tops, "the still-open top B is still a candidate")
+
+    def test_a_status_completed_top_is_not_a_grouper_candidate(self):
+        # the rolled-up display status the user actually sees: status 'completed' excludes it from grouping.
+        s, a, b = self._two_tops()
+        s["status"] = {a: "completed"}
+        tops = [nd["id"] for nd in jd._group_tops(s)]
+        self.assertNotIn(a, tops, "a top the board shows as completed is excluded from grouping")
+        self.assertIn(b, tops, "the still-open top B is still a candidate")
+
     # ── the session pass: event-gated by the open-top set ──
     def _setup(self, store, records):
         td = Path(tempfile.mkdtemp())
