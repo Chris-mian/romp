@@ -646,6 +646,35 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(card["awaiting"]["why"], "Waiting on the 3 research agents it dispatched.")
         self.assertIsNone(card["blocked"], "an awaiting goal is not a live block")
 
+    def test_stale_awaiting_overlay_superseded_by_a_later_work_turn(self):
+        # the user 2026-06-26: open_mvv showed the yellow 'working' dot + badge + timer + interrupt button in
+        # the chat off a STALE awaiting:true (the producer dropped the clearing false), while idle on the
+        # timeline. The chat working = open_now OR awaiting; the timeline = open_now alone; so a stale awaiting
+        # splits them. A later WORK turn after the last awaiting:true proves the session moved on → NOT awaiting.
+        sdir = jd.STATE / "states"; sdir.mkdir(parents=True, exist_ok=True)
+        recs = [{"t": 100, "awaiting": True, "why": "background work still running"},
+                {"t": 200, "state": "idle"},                 # idle WHILE awaiting → does NOT supersede
+                {"t": 300, "state": "working"},              # a real work turn resumed → supersedes the stale true
+                {"t": 400, "state": "idle"}]
+        (sdir / (SID + ".jsonl")).write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+        self.assertFalse(km._states_awaiting_overlay(SID).get("awaiting"),
+                         "a stale awaiting:true superseded by a later work turn reads NOT awaiting")
+        self.assertIsNone(km._session_awaiting(SID, str(self.tpath), True),
+                          "→ the chat's working signal drops it, matching the timeline")
+
+    def test_genuine_awaiting_overlay_with_no_later_work_turn_is_honored(self):
+        # the valid case stays intact: awaiting:true, then only idle (idle WHILE the bg job runs) → still
+        # awaiting. A WORK turn BEFORE the awaiting:true doesn't supersede it (the record resets the flag).
+        sdir = jd.STATE / "states"; sdir.mkdir(parents=True, exist_ok=True)
+        recs = [{"t": 100, "state": "working"},
+                {"t": 200, "awaiting": True, "why": "Waiting on 2 background jobs it launched."},
+                {"t": 300, "state": "idle"}]
+        (sdir / (SID + ".jsonl")).write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+        self.assertTrue(km._states_awaiting_overlay(SID).get("awaiting"),
+                        "awaiting:true with no later work turn stays awaiting")
+        self.assertEqual(km._session_awaiting(SID, str(self.tpath), True),
+                         "Waiting on 2 background jobs it launched.", "the genuine awaiting badge still shows")
+
     def test_feed_postal_floor_overrides_a_stale_block(self):
         # A session with an unanswered outbound to a LIVE peer is awaiting a delegation, not stalled — so a
         # STALE soft block on its top yields to that postal wait-for signal → awaiting (working column), and

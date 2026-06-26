@@ -1857,24 +1857,35 @@ def _session_awaiting(sid, path, idle):
 
 
 def _states_awaiting_overlay(sid):
-    """The LAST awaiting-overlay record in states/<sid>.jsonl, or None if there are none. The SDK producer
-    interleaves {"t":…,"awaiting":bool,"why":…} overlay records among its state records, so we scan for the
-    most-recent line carrying an 'awaiting' key and ignore the rest (api 2026-06-22)."""
+    """The CURRENT awaiting verdict from states/<sid>.jsonl, or None if there are no overlay records. The SDK
+    producer interleaves {"t":…,"awaiting":bool,"why":…} overlay records among its state records; it writes
+    awaiting:true when a background job starts and awaiting:false when it ends. We take the most-recent
+    overlay record — EXCEPT a stale awaiting:true whose clearing false was DROPPED: a later WORK turn
+    (state=="working") after the last awaiting:true is proof the session moved on, so we report NOT awaiting
+    (the user 2026-06-26: open_mvv showed the yellow 'working' dot + badge + timer + interrupt button in the
+    chat off a stale awaiting:true from 08:57 — never cleared — while idle on the timeline; the chat's working
+    signal is open_now OR awaiting, the timeline's is open_now alone, so a stale awaiting splits them). An
+    idle/waiting state after an awaiting:true is consistent with awaiting (idle while the job runs) and does
+    NOT supersede it. State records carry "state", overlay records carry "awaiting"; the two never overlap."""
     p = jd.STATE / "states" / ("%s.jsonl" % sid)
     last = None
+    working_after = False
     try:
         with open(p, errors="replace") as f:
             for line in f:
-                if '"awaiting"' not in line:
-                    continue
-                try:
-                    o = json.loads(line)
-                except Exception:
-                    continue
-                if isinstance(o, dict) and "awaiting" in o:
-                    last = o
+                if '"awaiting"' in line:
+                    try:
+                        o = json.loads(line)
+                    except Exception:
+                        continue
+                    if isinstance(o, dict) and "awaiting" in o:
+                        last, working_after = o, False     # a fresh overlay record resets the supersede flag
+                elif '"state"' in line and '"working"' in line:
+                    working_after = True                   # a real work turn resumed since the last overlay record
     except OSError:
         return None
+    if last is not None and last.get("awaiting") and working_after:
+        return {"awaiting": False, "why": None}            # stale true — superseded by a later work turn
     return last
 
 
