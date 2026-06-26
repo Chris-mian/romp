@@ -36,6 +36,8 @@ test("the chip reads 'working' for an open turn OR awaiting background work (not
   assert.match(KERNEL, /else "working" if \(open_now or awaiting_why\) else "ready"\)/);
 });
 
-test("the FEED's blocked column still gates _api_error on `not who_working` (unchanged)", () => {
-  assert.match(KERNEL, /aerr = _api_error\(s\["path"\]\) if not who_working else None/);
+test("the FEED's blocked column still gates _api_error on `not who_working` (+ cache-only `ps`)", () => {
+  // the feed is cache-only on a cold start (the user 2026-06-26): the API-error floor reads the parse only
+  // when it's already cached (`ps`), still gated on `not who_working` — the badge fills in after the warm.
+  assert.match(KERNEL, /aerr = _api_error\(s\["path"\]\) if \(ps and not who_working\) else None/);
 });

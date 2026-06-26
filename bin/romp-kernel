@@ -2371,6 +2371,53 @@ def _parse(path, sid, now):
     return session
 
 
+def _parse_cached(path):
+    """The CACHED parse for `path` (matching its (mtime,size)) or None — NEVER parses, so it adds no cold
+    cost on the request path. build_feed reads it for the working-dots + deep-link anchors so its CARDS
+    (which come from the goal store, cheap) paint AT ONCE on a cold kernel start; the dots/anchors fill in a
+    beat later once _warm_fleet_bg has parsed the session in the background (the user 2026-06-26: the feed
+    cards lagged the timeline lanes on startup, all of it the ~1s cold parse of the fleet)."""
+    try:
+        st = os.stat(path)
+        key = (st.st_mtime, st.st_size)
+    except OSError:
+        return None
+    hit = _parse_cache.get(path)
+    return hit[1] if (hit is not None and hit[0] == key) else None
+
+
+_warm_lock = threading.Lock()
+_warming = [False]
+
+
+def _warm_fleet_bg(now):
+    """Parse every LIVING session into the kernel parse cache in the background (live-first), then drop the
+    feed cache and re-push — so a cold-start feed paints its cards immediately (cache-only) and gets its
+    working-dots + anchors once the parse lands, instead of the build blocking ~1s on it. One warm at a time;
+    a no-op when no client is connected (so it never fires in tests / headless)."""
+    with _clients_lock:
+        if not _clients:
+            return
+    with _warm_lock:
+        if _warming[0]:
+            return
+        _warming[0] = True
+
+    def go():
+        try:
+            tmux = _tmux_sessions()
+            for s in _alive_sessions(now, tmux):         # live sessions first
+                _parse(s["path"], s["sid"], now)          # warm the kernel parse cache
+            _built_feed[1] = None                         # force the next build to use the now-warm parses
+            _push_all()
+        except Exception:
+            sys.stderr.write("warm: %s\n" % traceback.format_exc())
+        finally:
+            with _warm_lock:
+                _warming[0] = False
+    threading.Thread(target=go, daemon=True, name="parse-warm").start()
+
+
 def _ask_fill_chosen(blocks, output):
     """Fill each AskUserQuestion block's `chosen` from the tool_result string, which records the answers
     as `"<question>"="<answer>"` pairs (a multiSelect answer joins the picked labels as 'A, B, C'; a
@@ -3420,14 +3467,22 @@ def build_feed(now, tmux=None):
     asks, working = [], []
     alive = _alive_sessions(now, tmux)               # hard filter: living sessions only
     wmap = _wait_for_graph(now, {s["sid"] for s in alive})   # per-session 'waiting on a live peer' (the user 2026-06-22)
+    cold_parse = False                               # any living session not yet parsed → warm it in the background
     for s in alive:
         fsid, name = s["sid"], s["name"]
         if _session_flag(fsid, "hideFromFeed"):      # muted from the feed (the user 2026-06-19) → timeline-only
             continue
         color = _name_color(fsid)
         tm = tmux.get(fsid); live = tm is not None
+        # CACHE-ONLY parse (the user 2026-06-26): the CARDS come from the goal store (cheap) and must paint at
+        # once on a cold start, so the working-dot + the deep-link anchors read the parse ONLY if it's already
+        # cached — never paying the ~1s cold parse here. _warm_fleet_bg fills the cache + re-pushes; the dots
+        # and anchors snap in a beat later.
+        ps = _parse_cached(s["path"])
+        if ps is None:
+            cold_parse = True
         try:                                             # WORKING from the EVENT MODEL (open turn), not tmux state —
-            who_working = _session_working(_parse(s["path"], fsid, now)["turns"])   # one backend-agnostic dot signal
+            who_working = _session_working(ps["turns"]) if ps else False   # one backend-agnostic dot signal
         except Exception:
             who_working = False
         if who_working:
@@ -3445,7 +3500,7 @@ def build_feed(now, tmux=None):
         # nearest-time landing (the user 2026-06-17). (Both are emitted .turn[data-uuid]s in the chat.)
         seg_uuid, seg_trig, seg_best = {}, {}, {}
         try:
-            for turn in _parse(s["path"], fsid, now)["turns"]:
+            for turn in (ps["turns"] if ps else []):     # cached parse only; anchors fill in after _warm_fleet_bg
                 for seg in em.segments(turn):
                     w, r = _seg_anchors(seg["atoms"])
                     seg_uuid[seg["id"]] = r or w
@@ -3550,7 +3605,7 @@ def build_feed(now, tmux=None):
         # API-error floor: a session stopped on an API error (transcript isApiErrorMessage, event-based)
         # floors its focus top-goal under BLOCKED with an apiError reason → the feed card shows a red
         # "API error" badge + a Retry button (the user 2026-06-16). Same focus-goal walk as the perm floor.
-        aerr = _api_error(s["path"]) if not who_working else None
+        aerr = _api_error(s["path"]) if (ps and not who_working) else None   # cache-only: the badge fills in after the warm
         api_top = None
         if aerr:
             f = store.get("lastNode")
@@ -3561,7 +3616,7 @@ def build_feed(now, tmux=None):
         # AWAITING signal (event-model, the user 2026-06-22): the session is paused on work it dispatched or
         # delegated — a WORKING flavor, never needs-input. Sourced from the SDK producer's states overlay
         # (api, branch headless-sdk-backend) or the transcript bg-tool stopgap; None when actively working.
-        sess_awaiting_why = _session_awaiting(fsid, s["path"], not who_working)
+        sess_awaiting_why = _session_awaiting(fsid, s["path"], not who_working) if ps else None   # cache-only: fills in after the warm
         had_working = False                          # does this session show ANY working card? → drives the provisional placeholder
         for nid in children.get(None, []):
             col = status.get(nid, "working")
@@ -3654,10 +3709,12 @@ def build_feed(now, tmux=None):
         # A session actively working a brand-new ask shows NO card until the planner classifies the held
         # segment at turn-end — surface a live-prompt placeholder so it isn't invisible. Only when nothing
         # already covers it (no working card); replaced by the real card once the planner places it.
-        if not had_working:
+        if not had_working and ps:                   # cache-only: the live-prompt placeholder needs the parse → after the warm
             pc = _provisional_card(s, name, color, fsid, live, now)
             if pc:
                 asks.append(pc)
+    if cold_parse:
+        _warm_fleet_bg(now)                          # a living session wasn't parsed yet → warm it + re-push (dots/anchors)
     # NO caption stream. The feed's cards are TOP-LEVEL GOALS ONLY (read-side.md: Inbox = goal cards;
     # a sub-goal's block rolls UP to its top card → that card moves to BLOCKED, and the modal shows
     # which leaf). Turn captions are NOT cards — emitting them as standalone DETAILS items piled

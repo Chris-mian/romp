@@ -1988,6 +1988,7 @@ class ViewBuilder(unittest.TestCase):
         (jd.GOALDIR / (SID + ".json")).write_text(json.dumps(store))
         with self.tpath.open("a") as f:
             f.write(json.dumps(apierr_line(T0 + 60, "e1", "a2")) + "\n")
+        self._warm_tpath()                             # cache-only build_feed reads the API-error floor only if the parse is warm
         d = km.build_feed(NOW)
         card = next(a for a in d["asks"] if a["text"] == "Awaiting a decision")
         self.assertEqual(card["blocked"]["state"], "apiError")
