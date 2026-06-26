@@ -37,3 +37,13 @@ test("the placeholder has a loading pulse and is non-interactive in CSS", () => 
   assert.match(CSS, /\.tab\.tab-placeholder \{ cursor: default; animation: tab-ph-pulse/);
   assert.match(CSS, /@keyframes tab-ph-pulse/);
 });
+
+test("no white focus ring on tabs: .tab suppresses the UA outline and nothing re-adds a solid one", () => {
+  // .tab { ... outline: none ... } suppresses the UA/keyboard focus ring (the user 2026-06-26)
+  const tabRule = CSS.slice(CSS.indexOf(".tab {"), CSS.indexOf("}", CSS.indexOf(".tab {")) + 1);
+  assert.match(tabRule, /outline: none/, ".tab clears the UA focus ring");
+  // and NO rule re-adds a solid focus outline on a tab (that was the white border)
+  assert.doesNotMatch(CSS, /\.tab:focus(-visible)?\s*\{[^}]*outline:\s*[0-9]/, "no solid focus outline re-added");
+  // the dashed STATE outlines (awaiting/blocked/retrying) are untouched
+  assert.match(CSS, /\.tab\.tab-awaiting, \.tab\.tab-blocked, \.tab\.tab-retrying \{ outline: 2px dashed/);
+});
