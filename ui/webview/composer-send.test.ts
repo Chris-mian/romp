@@ -55,3 +55,11 @@ test("the composer sits tight to the bottom — no wasted gap below it (the user
   assert.match(CSS, /#composer \{[^}]*padding: 8px 24px 6px;/);
   assert.match(CSS, /#composer-attach, #composer-send \{[\s\S]*bottom: 12px;/);
 });
+
+test("focusing a tab (after ⏎-send) draws NO white UA focus ring around its colored border (the user 2026-06-25)", () => {
+  // ⏎-send / Escape move focus onto the active tab; the base .tab rule sets outline:none so the browser's
+  // default focus outline doesn't draw a redundant white ring around the identity-colored border.
+  assert.match(CSS, /\.tab \{[^}]*outline: none;[^}]*\}/);
+  // the dashed STATE outlines stay (higher specificity than the base .tab rule, so outline:none can't kill them)
+  assert.match(CSS, /\.tab\.tab-awaiting, \.tab\.tab-blocked, \.tab\.tab-retrying \{ outline: 2px dashed/);
+});
