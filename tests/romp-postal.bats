@@ -15,25 +15,22 @@ setup() {
     export ROMP_POSTAL_HEARTBEAT_TTL=2
     export HOME="$TEST_DIR/home"; mkdir -p "$HOME"   # sandbox the client-only marker
     unset SSH_CONNECTION SSH_TTY                      # default: not a remote machine
-    unset CLAUDE_CODE_SESSION_ID                      # hermetic self-identity: don't inherit the dev's own romp session (romp is developed INSIDE one) — _self_id must resolve via the mocked tmux, not the runner's env
 
-    # local_agents reads the kernel's unified GET /sessions (not tmux); the bus gets its list from the
-    # ROMP_SESSIONS_FILE seam, generated from a "name|uuid" fixture by mksessions. The tmux mock still serves
-    # `show @romp-session-id` (self-identity) + `display-message` (current session).
+    # The bus no longer shells tmux for session ops. Identity is the CLAUDE_CODE_SESSION_ID env (the harness
+    # sets it for every session) resolved to a name via the names registry; the session list comes from the
+    # kernel's GET /sessions (ROMP_SESSIONS_FILE seam, from a "name|uuid" fixture via mksessions). Delivery +
+    # status-bar chrome go through the kernel too — absent here, they no-op (the maildir-drain backstop covers
+    # delivery). A hermetic stub tmux (always-empty) keeps any residual tmux() call from touching real tmux.
     MOCK="$TEST_DIR/mock"; mkdir -p "$MOCK"
     export SESS="$TEST_DIR/sessions.txt"
     printf 'alpha|uuid-a\nbeta|uuid-b\n' > "$SESS"
     export ROMP_SESSIONS_FILE="$TEST_DIR/sessions.json"
     mksessions                                       # SESS → the kernel's unified-rows JSON the seam reads
-    export MOCK_CURRENT=alpha
-    cat > "$MOCK/tmux" <<MOCK
-#!/usr/bin/env bash
-case "\$1" in
-  display-message) echo "\${MOCK_CURRENT}" ;;
-  show) [ "\$5" = "@romp-session-id" ] && grep "^\$3|" "$SESS" | head -1 | cut -d'|' -f2 ;;
-esac
-exit 0
-MOCK
+    mkdir -p "$XDG_STATE_HOME/romp/names"            # names registry: my_id (env) → my_name + identity colours
+    printf 'alpha\t%s\t#111111\t#ffffff\n' "$HOME" > "$XDG_STATE_HOME/romp/names/uuid-a"
+    printf 'beta\t%s\t#222222\t#ffffff\n' "$HOME" > "$XDG_STATE_HOME/romp/names/uuid-b"
+    export CLAUDE_CODE_SESSION_ID=uuid-a             # "this session" = alpha by default (tests acting as beta override it)
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$MOCK/tmux"   # hermetic stub: every tmux call → "" (no real tmux)
     chmod +x "$MOCK/tmux"
     export PATH="$MOCK:$PATH"
 
@@ -116,7 +113,7 @@ iso() { mkdir -p "$XDG_STATE_HOME/romp"; printf '{"%s":{"postalOff":true}}' "$1"
     run "$POSTAL" send beta "for beta"           # delivered while beta is on the postal service
     [ "$(cnt "$(mb uuid-b)/new")" = "1" ]
     iso uuid-b                                    # beta now isolates
-    export MOCK_CURRENT=beta
+    export CLAUDE_CODE_SESSION_ID=uuid-b
     run "$POSTAL" inbox
     [ "$status" -eq 0 ]
     [[ "$output" != *"for beta"* ]]              # held — not delivered while isolated
@@ -182,7 +179,7 @@ iso() { mkdir -p "$XDG_STATE_HOME/romp"; printf '{"%s":{"postalOff":true}}' "$1"
     [ ! -e "$pend" ]
     "$POSTAL" send beta "ping"
     [ -e "$pend" ]                                  # delivery raises the marker
-    MOCK_CURRENT=beta "$POSTAL" inbox >/dev/null    # consuming read empties new/
+    CLAUDE_CODE_SESSION_ID=uuid-b "$POSTAL" inbox >/dev/null    # consuming read empties new/
     [ ! -e "$pend" ]                                # ...and clears the marker
 }
 
@@ -239,10 +236,10 @@ EOF
 
 @test "inbox consumes; peek does not" {
     "$POSTAL" send beta "keep then read"
-    MOCK_CURRENT=beta run "$POSTAL" peek
+    CLAUDE_CODE_SESSION_ID=uuid-b run "$POSTAL" peek
     [[ "$output" == *"keep then read"* ]]
     [ "$(cnt "$(mb uuid-b)/new")" = "1" ]
-    MOCK_CURRENT=beta run "$POSTAL" inbox
+    CLAUDE_CODE_SESSION_ID=uuid-b run "$POSTAL" inbox
     [[ "$output" == *"keep then read"* ]]
     [ "$(cnt "$(mb uuid-b)/new")" = "0" ]
 }
@@ -265,7 +262,7 @@ EOF
 {"jsonrpc":"2.0","id":2,"method":"tools/list"}
 {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_agents","arguments":{}}}
 {"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"send_message","arguments":{"to":"beta","body":"via tool"}}}'
-    out="$(printf '%s\n' "$req" | MOCK_CURRENT=alpha "$POSTAL" mcp 2>/dev/null)"
+    out="$(printf '%s\n' "$req" | CLAUDE_CODE_SESSION_ID=uuid-a "$POSTAL" mcp 2>/dev/null)"
     [[ "$out" == *'"protocolVersion": "2025-06-18"'* ]]
     [[ "$out" == *"send_message"* ]]
     [[ "$out" == *"check_inbox"* ]]

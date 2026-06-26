@@ -114,36 +114,25 @@ def tmux(*args):
         return ""
 
 def _self_id():
-    """THIS session's fsid. Prefer CLAUDE_CODE_SESSION_ID — the harness sets it for EVERY session (SDK and
-    tmux alike), so it's the reliable identity. Fall back to the tmux @romp-session-id var only when it's
-    absent. The tmux var is WRONG for an SDK (non-tmux) session: its MCP is parented under whatever leftover
-    tmux pane it spawned in, so it returns a DIFFERENT session's id — an SDK session sitting in a stale 'FRO'
-    pane resolved to the FRO session and sent mail AS it (and was wrongly blocked as isolated, since FRO was
-    isolated) while the timeline icon, keyed on the real fsid, correctly showed it un-isolated (the user
-    2026-06-24)."""
-    env_id = (os.environ.get("CLAUDE_CODE_SESSION_ID") or "").strip()
-    if env_id:
-        return env_id
-    name = tmux("display-message", "-p", "#S").strip()
-    if not name:
-        return None
-    return tmux("show", "-t", name, "-v", "@romp-session-id").strip() or None
+    """THIS session's fsid, from CLAUDE_CODE_SESSION_ID — the harness sets it for EVERY session (SDK and tmux
+    alike), so it's the reliable identity, and the only one that's right for an SDK session (whose MCP may be
+    parented under a leftover tmux pane and so resolve to a DIFFERENT session — the user 2026-06-24). None when
+    not in a romp session. No tmux fallback: the bus never shells tmux; the env var IS the designed identity."""
+    return (os.environ.get("CLAUDE_CODE_SESSION_ID") or "").strip() or None
 
 def my_id():
     return _self_id()
 
 def my_name():
     # Resolve the NAME from our real id (names registry) so name + id never disagree — same reason as
-    # _self_id. Fall back to the tmux session name only when we have no id / no registry entry.
+    # _self_id. None when not in a romp session (no tmux fallback: the bus never shells tmux).
     sid = _self_id()
-    if sid:
-        try:
-            n = (NAMES_DIR / sid).read_text().split("\t")[0].strip()
-            if n:
-                return n
-        except Exception:
-            pass
-    return tmux("display-message", "-p", "#S").strip() or None
+    if not sid:
+        return None
+    try:
+        return (NAMES_DIR / sid).read_text().split("\t")[0].strip() or None
+    except Exception:
+        return None
 
 # ───────────────────────── maildir store ─────────────────────────
 
@@ -370,21 +359,28 @@ def local_agents():
     return res
 
 
-def _publish_working(sid, text):
-    """Publish/clear THIS session's working-note via the kernel's backend-agnostic store (POST /working) — no
-    tmux. The kernel owns the store and both backends read it (it appears in GET /sessions' `working` field),
-    so an SDK session can publish a note too. True on success, False if the kernel is unreachable."""
-    if not sid:
+def _kernel_post(path, body):
+    """POST a small JSON body to the kernel (loopback, token-free) — the bus's one-way control channel for the
+    ops the kernel owns now that the bus never shells tmux: the working-note, mail delivery/wake, and the
+    tmux status-bar chrome. True on a 2xx, False otherwise (unreachable kernel → the caller degrades). No-op
+    (False) under the ROMP_SESSIONS_FILE test seam, which signals a test running with no live kernel."""
+    if os.environ.get("ROMP_SESSIONS_FILE"):
         return False
     import urllib.request
     try:
-        req = urllib.request.Request(KERNEL_BASE + "/working",
-                                     data=json.dumps({"id": str(sid), "text": text}).encode("utf-8"),
+        req = urllib.request.Request(KERNEL_BASE + path, data=json.dumps(body).encode("utf-8"),
                                      headers={"Content-Type": "application/json"}, method="POST")
         with urllib.request.urlopen(req, timeout=2) as r:
-            return getattr(r, "status", 200) == 200
+            return getattr(r, "status", 200) // 100 == 2
     except Exception:
         return False
+
+
+def _publish_working(sid, text):
+    """Publish/clear THIS session's working-note via the kernel's backend-agnostic store (POST /working) — no
+    tmux. The kernel owns the store and both backends read it (it appears in GET /sessions' `working` field),
+    so an SDK session can publish a note too."""
+    return _kernel_post("/working", {"id": str(sid), "text": text}) if sid else False
 
 def all_agents():
     agents = local_agents()

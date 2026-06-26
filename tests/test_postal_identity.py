@@ -32,21 +32,11 @@ class SelfIdentity(unittest.TestCase):
         pm.tmux = lambda *a: "wrong-stale-pane-id"   # tmux would return a DIFFERENT session's id
         self.assertEqual(pm.my_id(), FSID)           # env wins → the real session, never the stale pane
 
-    def test_my_id_falls_back_to_tmux_when_env_absent(self):
+    def test_my_id_is_none_when_env_absent_no_tmux_fallback(self):
+        # the env IS the identity now — there is NO tmux fallback (the bus never shells tmux). Even if a tmux
+        # query would answer, we never ask it.
         os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
-
-        def fake_tmux(*a):
-            if a[:2] == ("display-message", "-p"):
-                return "somesess\n"
-            if a and a[0] == "show":
-                return "tmux-fallback-id\n"
-            return ""
-        pm.tmux = fake_tmux
-        self.assertEqual(pm.my_id(), "tmux-fallback-id")
-
-    def test_my_id_is_none_when_nothing_resolves(self):
-        os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
-        pm.tmux = lambda *a: ""                       # no tmux either
+        pm.tmux = lambda *a: "tmux-would-answer-but-we-never-ask"
         self.assertIsNone(pm.my_id())
 
 

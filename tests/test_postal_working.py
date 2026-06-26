@@ -38,7 +38,7 @@ class WorkingNoteThroughKernel(unittest.TestCase):
 
     def test_source_routes_set_working_through_the_kernel_not_tmux(self):
         src = open(os.path.join(BIN, "romp-postal")).read()
-        self.assertIn('KERNEL_BASE + "/working"', src, "_publish_working POSTs to the kernel working endpoint")
+        self.assertIn('_kernel_post("/working"', src, "_publish_working POSTs to the kernel working endpoint")
         self.assertIn("_publish_working(mid, text)", src, "the set_working MCP tool routes through the kernel")
         self.assertNotIn('"@romp-working"', src, "no tmux @romp-working var write remains in postal")
 
