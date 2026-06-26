@@ -3808,11 +3808,13 @@ def _usage():
     except Exception:
         return None
 
+    stops = cm.stops_for(_colormap())                 # the GLOBAL colormap (the user 2026-06-26) colors the used bar
     def seg(s):
         if isinstance(s, dict) and isinstance(s.get("pct"), (int, float)):
             ra = s.get("resets_at")
-            return {"pct": max(0, min(100, round(s["pct"]))),
-                    "resetsAt": ra if isinstance(ra, (int, float)) else None}
+            pct = max(0, min(100, round(s["pct"])))
+            return {"pct": pct, "resetsAt": ra if isinstance(ra, (int, float)) else None,
+                    "color": list(cm.ramp(pct / 100.0, stops))}   # used-% on the selected colormap
         return None
     five, seven = seg(o.get("five_hour")), seg(o.get("seven_day"))
     if not five and not seven:
@@ -6012,22 +6014,35 @@ setTimeout(hide,5000);})();
 # refresh button — same green/amber/red usage colours the timeline used — with the full detail on hover.
 _LANDING_USAGE_JS = """
 (function(){var el=document.getElementById('rail-usage');if(!el)return;
+var tip=document.createElement('div');tip.id='ru-tip';tip.style.display='none';document.body.appendChild(tip);
 function fmtR(ep){var dt=ep-Math.floor(Date.now()/1000);if(dt<=0)return'soon';var d=Math.floor(dt/86400);dt-=d*86400;
 var h=Math.floor(dt/3600);dt-=h*3600;var m=Math.floor(dt/60);return(d?d+'d ':'')+((h||d)?h+'h ':'')+m+'m';}
 function esc(s){return String(s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
-var WINS=[['fiveHour',5*3600,'5h','Session (5h)'],['sevenDay',7*86400,'7d','Weekly']];
-function render(u){if(!u||(!u.fiveHour&&!u.sevenDay)){el.innerHTML='';return;}
-var nowS=Math.floor(Date.now()/1000),html='';
+var WINS=[['fiveHour',5*3600,'5h','Session','your rolling 5-hour rate-limit window'],
+          ['sevenDay',7*86400,'7d','Weekly','your 7-day rate-limit window']];
+var LAST={};
+function render(u){if(!u||(!u.fiveHour&&!u.sevenDay)){el.innerHTML='';tip.style.display='none';return;}
+var nowS=Math.floor(Date.now()/1000),html='';LAST={};
 WINS.forEach(function(w){var seg=u[w[0]];if(!seg)return;
 var rolled=seg.resetsAt&&nowS>seg.resetsAt,pct=rolled?0:(seg.pct||0);
-var col=pct>=90?'#c0392b':(pct>=70?'#e0b020':'#54B204');
+var col=(seg.color&&seg.color.length===3)?('rgb('+seg.color.join(',')+')'):'#54B204';   // selected colormap (server-computed)
 var tp=(seg.resetsAt&&w[1])?Math.max(0,Math.min(100,Math.round((nowS-(seg.resetsAt-w[1]))/w[1]*100))):null;
-var title=w[3]+' \\u2014 usage '+pct+'%'+(tp!=null?' \\u00b7 '+tp+'% through the window':'')+(seg.resetsAt?' \\u00b7 resets in '+fmtR(seg.resetsAt):'');
-html+='<div class=ru-w title="'+esc(title)+'"><div class=ru-bars>'
+LAST[w[0]]={name:w[3],span:w[2],desc:w[4],pct:pct,col:col,tp:tp,reset:seg.resetsAt?fmtR(seg.resetsAt):null};
+html+='<div class=ru-w data-w="'+w[0]+'"><div class=ru-bars>'
 +'<div class=ru-bar><i style="height:'+pct+'%;background:'+col+'"></i></div>'
 +'<div class=ru-bar><i style="height:'+(tp||0)+'%;background:#6b7a8c"></i></div></div>'
 +'<div class=ru-lab>'+pct+'%</div><div class=ru-win>'+w[2]+'</div></div>';});
 el.innerHTML=html;}
+function showTip(k,a){var d=LAST[k];if(!d){tip.style.display='none';return;}
+tip.innerHTML='<div class=ru-tip-h>'+esc(d.name)+' \\u00b7 '+d.span+'</div>'
++'<div class=ru-tip-d>'+esc(d.desc)+'</div>'
++'<div class=ru-tip-r><span class=ru-sw style="background:'+d.col+'"></span>usage used <b>'+d.pct+'%</b></div>'
++(d.tp!=null?'<div class=ru-tip-r><span class=ru-sw style="background:#6b7a8c"></span><b>'+d.tp+'%</b> through the window</div>':'')
++(d.reset?'<div class=ru-tip-foot>resets in '+esc(d.reset)+'</div>':'');
+var r=a.getBoundingClientRect();tip.style.display='block';
+tip.style.left=(r.right+9)+'px';tip.style.top=Math.max(6,Math.min(window.innerHeight-tip.offsetHeight-6,r.top-6))+'px';}
+el.addEventListener('mouseover',function(e){var w=e.target.closest&&e.target.closest('.ru-w');if(w)showTip(w.getAttribute('data-w'),w);});
+el.addEventListener('mouseout',function(e){var w=e.target.closest&&e.target.closest('.ru-w');if(w&&(!e.relatedTarget||!w.contains(e.relatedTarget)))tip.style.display='none';});
 window.addEventListener('message',function(e){var m=e.data;if(m&&m.romp==='usage')render(m.usage);});})();
 """
 
@@ -6234,6 +6249,16 @@ def _landing():
             ".ru-bar i{display:block;width:100%;border-radius:2px;transition:height .3s ease}"
             ".ru-lab{font:600 9px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#cfe6ff;font-variant-numeric:tabular-nums;line-height:1}"
             ".ru-win{font:600 8px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#6e7681;letter-spacing:.04em;line-height:1}"
+            ".ru-w{cursor:default}"
+            # the rich hover panel explaining the windows (the user 2026-06-26): name + what the window is +
+            # the two bars (used on the selected colormap, elapsed in slate) + the reset countdown.
+            "#ru-tip{position:fixed;z-index:300;background:#1e1e1e;border:1px solid #3a3a3a;border-radius:7px;"
+            "padding:8px 10px;font:500 11px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#cfd6dd;"
+            "box-shadow:0 5px 18px rgba(0,0,0,0.45);pointer-events:none;max-width:210px;line-height:1.5}"
+            ".ru-tip-h{font-weight:700;color:#e8eef5}.ru-tip-d{opacity:.62;font-size:10px;margin:1px 0 5px}"
+            ".ru-tip-r{display:flex;align-items:center;gap:6px}.ru-tip-r b{color:#e8eef5}"
+            ".ru-sw{width:8px;height:8px;border-radius:2px;flex:0 0 auto;display:inline-block}"
+            ".ru-tip-foot{margin-top:4px;opacity:.65;font-size:10px}"
             # the three TOP panes flex-grow by a per-pane var (resized by the gutters, persisted); toggling one
             # off hides it AND the now-orphaned gutters. Fixed order: chat, fleet, feed. Timeline is the band.
             "#chat-pane{flex:var(--g-chat,60) 1 0}#fleet-pane{flex:var(--g-fleet,34) 1 0}#feed-pane{flex:var(--g-feed,40) 1 0}"

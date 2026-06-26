@@ -3,6 +3,7 @@ to shrink the timeline. They live in a different document (the shell), so the ti
 data to the shell ({romp:'usage'}) and the shell renders compact vertical bar-pairs (used % colored + elapsed
 % slate) under the refresh button, with the full detail on hover. Standalone (Obsidian) keeps its own copy.
 """
+import inspect
 import os
 import pathlib
 import unittest
@@ -26,14 +27,18 @@ class RailUsage(unittest.TestCase):
         self.assertIn(".ru-bar{", self.html, "the compact vertical bar styling")
         self.assertIn(".ru-lab{", self.html, "the percentage label styling")
 
-    def test_the_shell_renders_the_posted_usage_with_the_timeline_colours_and_hover(self):
+    def test_the_shell_renders_the_posted_usage_colormapped_with_a_hover_panel(self):
         self.assertIn("romp==='usage'", self.html, "the shell listens for the timeline's usage post")
         for win in ("fiveHour", "sevenDay"):
             self.assertIn(win, self.html, "renders both rate-limit windows")
-        for col in ("#c0392b", "#e0b020", "#54B204"):                       # red / amber / green, same as the timeline
-            self.assertIn(col, self.html, "used-bar colour %s (matches the timeline usage bars)" % col)
-        self.assertIn("ru-w title=", self.html, "each window carries a native title — full detail on hover")
-        self.assertIn("resets in", self.html, "the hover detail includes the reset countdown")
+        # the used bar wears the SELECTED COLORMAP colour (server-computed in _usage, read here as seg.color)
+        self.assertIn("seg.color", self.html, "the used bar is colored by the selected colormap")
+        self.assertIn("cm.ramp(pct / 100.0, stops)", inspect.getsource(km._usage),
+                      "_usage maps used-% onto the global colormap")
+        # a rich hover PANEL (not a native title) explaining the windows
+        self.assertIn("#ru-tip{", self.html, "a styled hover tooltip panel")
+        self.assertIn("rate-limit window", self.html, "the panel explains what each window is")
+        self.assertIn("resets in", self.html, "the panel includes the reset countdown")
 
     def test_the_timeline_forwards_usage_to_the_shell_and_hides_its_own_copy_when_embedded(self):
         tv = (pathlib.Path(BIN).parent / "ui" / "romp-timeline-view.js").read_text()
