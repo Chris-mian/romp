@@ -99,7 +99,7 @@ as ledger nodes (`LedgerTreeNode`, `render.ts:143`).
 | `rompUuid` | uuid | ✅ never changes | launcher | session / tab identity |
 | `Atom.uuid` | uuid | ✅ API-supplied | Claude transcript | **the one good deep-link key** |
 | `tool_use.id` / `tool_result.tool_use_id` | string | ✅ API-supplied | Claude transcript | STABLE, **currently unused** as anchor |
-| `mid` (postal) | uuid | ✅ | romp-postal | postal highlight (`data-mid`) |
+| `mid` (postal) | uuid | ✅ | romp-postal-service | postal highlight (`data-mid`) |
 | `Turn.id` / `Segment.id` | `rompUuid:t:sha1(triggertext)[:8]` | ⚠️ content-hashed | minted by romp | judge dedup key; breaks if trigger text edited |
 | `fsid` | filename stem | ❌ positional | filename | click-to-open file only; new on resume |
 | `node.id` | `rompUuid:gN` | ✅ within session | judge | goal identity |

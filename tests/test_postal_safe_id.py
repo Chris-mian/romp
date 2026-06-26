@@ -16,7 +16,7 @@ BIN = os.path.join(os.path.dirname(HERE), "bin")
 
 # Hermetic state dir so exercising the bus never touches real mail.
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
-pm = SourceFileLoader("romp_postal", os.path.join(BIN, "romp-postal")).load_module()
+pm = SourceFileLoader("romp_postal", os.path.join(BIN, "romp-postal-service")).load_module()
 
 
 class SafeId(unittest.TestCase):

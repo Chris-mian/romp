@@ -35,9 +35,9 @@ test("the swirl LOGO is gated on rompAuto (auto-nudge); the 'romp' tag stays on 
 });
 
 test("a postal card carries the romp swirl (postal is 'from romp' too — the user 2026-06-23)", () => {
-  assert.match(RENDER, /el\("img", "postal-romp-logo"\)/);
+  assert.match(RENDER, /el\("img", "postal-service-romp-logo"\)/);
   assert.match(RENDER, /rlogo\.src = "\/media\/romp-swirl-glyph\.svg"/);
-  assert.match(CSS, /\.postal-romp-logo \{/);
+  assert.match(CSS, /\.postal-service-romp-logo \{/);
 });
 
 test("the romp bubble is a gray, right-aligned bubble (inherits the non-injected right-align)", () => {

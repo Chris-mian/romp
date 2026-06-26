@@ -161,7 +161,7 @@ fi
 # Clear the transient "←/→ peer:" top-line message prefix when a NORMAL prompt
 # starts — but KEEP it when the prompt is an injected peer-message banner (which
 # carries a long "####…" rule), so the label rides along with that message's turn.
-# (Set by scripts/romp-postal _set_msg_prefix; rendered by status-right.)
+# (Set by scripts/romp-postal-service _set_msg_prefix; rendered by status-right.)
 if [[ "$EVENT" == "UserPromptSubmit" && "$input" != *"####################"* ]]; then
     tmux set -t "$session_name" @romp-msg-dir "" \;\
          set -t "$session_name" @romp-msg-peer "" \;\

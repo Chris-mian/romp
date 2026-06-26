@@ -11,7 +11,7 @@ from importlib.machinery import SourceFileLoader
 HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()      # hermetic; constants resolve under here at import
-pm = SourceFileLoader("romp_postal", os.path.join(BIN, "romp-postal")).load_module()
+pm = SourceFileLoader("romp_postal", os.path.join(BIN, "romp-postal-service")).load_module()
 
 
 class WorkingNoteThroughKernel(unittest.TestCase):
@@ -35,7 +35,7 @@ class WorkingNoteThroughKernel(unittest.TestCase):
         self.assertEqual(self.published, [("sid-self", "")])
 
     def test_source_routes_set_working_through_the_kernel_not_tmux(self):
-        src = open(os.path.join(BIN, "romp-postal")).read()
+        src = open(os.path.join(BIN, "romp-postal-service")).read()
         self.assertIn('_kernel_post("/working"', src, "_publish_working POSTs to the kernel working endpoint")
         self.assertIn("_publish_working(mid, text)", src, "the set_working MCP tool routes through the kernel")
         self.assertNotIn('"@romp-working"', src, "no tmux @romp-working var write remains in postal")

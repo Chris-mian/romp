@@ -10,7 +10,7 @@ import unittest
 from importlib.machinery import SourceFileLoader
 
 BIN = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "bin")
-pm = SourceFileLoader("romp_postal_id", os.path.join(BIN, "romp-postal")).load_module()
+pm = SourceFileLoader("romp_postal_id", os.path.join(BIN, "romp-postal-service")).load_module()
 
 FSID = "11111111-2222-3333-4444-555555555555"
 

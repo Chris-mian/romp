@@ -28,6 +28,19 @@ for (const [name, lang] of Object.entries({
 }
 
 marked.setOptions({ gfm: true, breaks: false });
+// Strikethrough requires DOUBLE tildes (the user 2026-06-26). marked's built-in GFM `del` tokenizer also
+// fires on a SINGLE tilde, so prose like "near the ~21 Wh/day budget … gives ~1.5–2 days" renders as one big
+// <del> struck through from the first ~ to the second. GitHub itself only strikes ~~double~~, so match that:
+// a lone ~ (commonly "approximately") stays literal. Returning undefined lets marked treat the ~ as text.
+marked.use({
+  tokenizer: {
+    del(src: string) {
+      const m = /^~~(?=\S)([\s\S]*?\S)~~/.exec(src);
+      if (!m) return undefined;
+      return { type: "del", raw: m[0], text: m[1], tokens: (this as { lexer: { inlineTokens(s: string): unknown[] } }).lexer.inlineTokens(m[1]) };
+    },
+  },
+} as Parameters<typeof marked.use>[0]);
 
 // One answered (or pending) question on an AskUserQuestion turn: the prompt + its options, plus the
 // user's answer TEXT per question (`chosen`). Answer text may name an option label OR be free-text
@@ -56,7 +69,7 @@ type ChatEvent = (
       askAnswer?: AskAnswerBlock[];
     }
   | {
-      kind: "postal";
+      kind: "postal-service";
       direction: "in" | "out";
       peer: string;
       color: { bg: string; fg: string } | null;
@@ -88,11 +101,16 @@ interface TodoTask { id: string; subject: string; activeForm?: string; status: s
 type ChipState = "working" | "ready" | "awaiting" | "idle" | "closed" | "compacting" | "blocked" | "retrying";
 interface Status { state: ChipState; sinceEpoch: number | null; effort?: string; model?: string; mode?: string; ctx?: string; ctxColor?: number[]; faded?: boolean; backend?: string; }   // backend = "tmux" | "sdk" (the kernel's _session_backend) → shown in the tab-title hover tooltip; ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side
 interface Color { bg: string; fg: string; }
+// A run_in_background task surfaced in the #bg-tasks box (the kernel's _bg_tasks): a one-line summary +
+// status, expandable to the command + its output. status = running | completed | failed.
+interface BgTask { id: string; status: string; summary: string; command?: string; output?: string; }
+// The box payload: count (total to surface → the "N background tasks" header) + up to 16 tasks (the list).
+interface BgTasks { count: number; tasks: BgTask[]; }
 // events is a contiguous TAIL of the transcript: global indices [headFrom, headTotal). On a fresh load the
 // kernel ships only the last WIRE_TAIL events (headFrom > 0) to keep startup light; older history streams in
 // on scroll-back (loadOlder → chatHead prepends, lowering headFrom). headFrom 0 = the whole transcript is
 // resident. chatTail's `from` is GLOBAL and mapped through headFrom.
-interface Session { id: string; name: string; color: Color | null; events: ChatEvent[]; status: Status; firstSeen?: number; cwd?: string; headFrom?: number; headTotal?: number; }
+interface Session { id: string; name: string; color: Color | null; events: ChatEvent[]; status: Status; firstSeen?: number; cwd?: string; headFrom?: number; headTotal?: number; bgTasks?: BgTasks; }
 
 const vscodeApi =
   typeof (window as any).acquireVsCodeApi === "function" ? (window as any).acquireVsCodeApi() : undefined;
@@ -650,7 +668,7 @@ function eventEpoch(ev: ChatEvent): number | null {
   }
   // postal "in" events carry their epoch in `t` (seconds) rather than an ISO `ts`,
   // so they still anchor a rail dot's hover wiring and deep-link fallback.
-  if (ev.kind === "postal" && ev.t != null) return Math.floor(ev.t);
+  if (ev.kind === "postal-service" && ev.t != null) return Math.floor(ev.t);
   return null;
 }
 
@@ -797,7 +815,7 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
     turn.appendChild(clamp);
     return turn;
   }
-  if (ev.kind === "postal") return renderPostal(ev);
+  if (ev.kind === "postal-service") return renderPostalService(ev);
   if (ev.kind === "todo") return renderTodo(ev);
   if (ev.kind === "queued") return renderQueued(ev);
   if (ev.kind === "apiError") return renderApiError(ev);
@@ -1217,13 +1235,13 @@ function setPeerDot(peerEl: HTMLElement, on: boolean) {
   else if (!on && has) prev!.remove();
 }
 function refreshPostalDots() {
-  document.querySelectorAll(".postal-peer").forEach((p) => setPeerDot(p as HTMLElement, workingSet.has((p.textContent || "").trim())));
+  document.querySelectorAll(".postal-service-peer").forEach((p) => setPeerDot(p as HTMLElement, workingSet.has((p.textContent || "").trim())));
 }
 
-// A romp postal message, as a compact identity-coloured card.
+// A Romp Postal Service message, as a compact identity-coloured card.
 // One-line summary for a postal card: the incoming Haiku caption, else the first non-empty line of the
 // body (sent mail carries no caption), truncated. The full message lives behind a click-to-expand.
-function postalSummary(ev: Extract<ChatEvent, { kind: "postal" }>): string {
+function postalServiceSummary(ev: Extract<ChatEvent, { kind: "postal-service" }>): string {
   const cap = ev.summary && ev.summary.trim();
   if (cap) return cap;
   const first = (ev.body || "").split("\n").map((s) => s.trim()).find(Boolean) || "";
@@ -1246,36 +1264,36 @@ const POSTAL_INTENTS: Record<string, { label: string; cls: string }> = {
   QUESTION: { label: "question", cls: "question" },
   Q: { label: "question", cls: "question" },                // legacy → question
 };
-function postalIntent(body: string | undefined): { label: string; cls: string } | null {
+function postalServiceIntent(body: string | undefined): { label: string; cls: string } | null {
   const m = /^\s*\*{0,2}([A-Za-z]{1,12})\*{0,2}\s*:/.exec(body || "");
   return m ? (POSTAL_INTENTS[m[1].toUpperCase()] || null) : null;
 }
 
-function renderPostal(ev: Extract<ChatEvent, { kind: "postal" }>): HTMLElement {
-  const turn = el("div", "turn turn-postal postal-" + ev.direction);
+function renderPostalService(ev: Extract<ChatEvent, { kind: "postal-service" }>): HTMLElement {
+  const turn = el("div", "turn turn-postal-service postal-service-" + ev.direction);
   if (ev.mid) turn.dataset.mid = ev.mid;   // joins feed-modal handoff hovers to this card
   const d = dot("ring");
   d.classList.add("mail");
   if (ev.color) d.style.background = ev.color.bg;
   turn.appendChild(d);
 
-  const card = el("div", "postal-card");
+  const card = el("div", "postal-service-card");
   if (ev.color) {
     card.style.setProperty("--peer-bg", ev.color.bg);
     card.style.setProperty("--peer-fg", ev.color.fg);
   }
 
-  const head = el("div", "postal-head");
-  const arrow = el("span", "postal-arrow");
+  const head = el("div", "postal-service-head");
+  const arrow = el("span", "postal-service-arrow");
   arrow.textContent = ev.direction === "in" ? "↙" : "↗";
-  const verb = el("span", "postal-dir");
+  const verb = el("span", "postal-service-dir");
   verb.textContent = ev.direction === "in" ? "from" : "to";
-  const peer = el("span", "postal-peer");
+  const peer = el("span", "postal-service-peer");
   peer.textContent = ev.peer;
   makeSessionChip(peer, ev.peer); // click the sender/recipient name → go to that session's tab
-  // the romp swirl marks this as a romp-postal message (the user 2026-06-23: postal is "from romp" too)
-  const rlogo = el("img", "postal-romp-logo") as HTMLImageElement;
-  rlogo.src = "/media/romp-swirl-glyph.svg"; rlogo.alt = ""; rlogo.title = "romp postal message"; rlogo.onerror = () => rlogo.remove();
+  // the romp swirl marks this as a romp-postal-service message (the user 2026-06-23: postal is "from romp" too)
+  const rlogo = el("img", "postal-service-romp-logo") as HTMLImageElement;
+  rlogo.src = "/media/romp-swirl-glyph.svg"; rlogo.alt = ""; rlogo.title = "Romp Postal Service message"; rlogo.onerror = () => rlogo.remove();
   head.appendChild(rlogo);
   head.appendChild(arrow);
   head.appendChild(verb);
@@ -1283,20 +1301,20 @@ function renderPostal(ev: Extract<ChatEvent, { kind: "postal" }>): HTMLElement {
   setPeerDot(peer, workingSet.has(ev.peer));   // working dot before the peer name if that session is working
 
   // interaction-type chip (delegation / coordination / ask / question / FYI), from the leading intent token
-  const intent = postalIntent(ev.body);
+  const intent = postalServiceIntent(ev.body);
   if (intent) {
-    const ib = el("span", "postal-intent postal-intent-" + intent.cls);
+    const ib = el("span", "postal-service-intent postal-service-intent-" + intent.cls);
     ib.textContent = intent.label;
     ib.title = "interaction type";
     head.appendChild(ib);
   }
 
   if (ev.park || ev.status === "parked") {
-    const b = el("span", "postal-badge parked");
+    const b = el("span", "postal-service-badge parked");
     b.textContent = "⏸ parked";
     head.appendChild(b);
   } else if (ev.status === "delivered") {
-    const b = el("span", "postal-badge delivered");
+    const b = el("span", "postal-service-badge delivered");
     b.textContent = "✓ delivered";
     head.appendChild(b);
   }
@@ -1309,21 +1327,21 @@ function renderPostal(ev: Extract<ChatEvent, { kind: "postal" }>): HTMLElement {
   // the first line of the message — and let a click expand the box to the full message inline (the user
   // 2026-06-16). Both directions read the same now: a summary that opens on demand, instead of a hover
   // tooltip (incoming) vs. the whole body always (outgoing).
-  const body = el("div", "postal-body md");
+  const body = el("div", "postal-service-body md");
   const fullText = (ev.body || "").trim();
-  const summaryText = postalSummary(ev);
+  const summaryText = postalServiceSummary(ev);
   const expandable = !!summaryText && !!fullText && collapseWs(fullText) !== collapseWs(summaryText);
   if (expandable) {
-    const sum = el("div", "postal-summary");
-    const caret = el("span", "postal-expand-caret"); caret.textContent = "▸"; sum.appendChild(caret);
-    const sumText = el("span", "postal-summary-text"); sumText.textContent = summaryText; sum.appendChild(sumText);
-    const full = el("div", "postal-full md"); full.innerHTML = md(ev.body); highlight(full);
+    const sum = el("div", "postal-service-summary");
+    const caret = el("span", "postal-service-expand-caret"); caret.textContent = "▸"; sum.appendChild(caret);
+    const sumText = el("span", "postal-service-summary-text"); sumText.textContent = summaryText; sum.appendChild(sumText);
+    const full = el("div", "postal-service-full md"); full.innerHTML = md(ev.body); highlight(full);
     sum.title = "click to expand the full message";
     sum.addEventListener("click", () => {
       const open = body.classList.toggle("expanded");
       caret.textContent = open ? "▾" : "▸";
     });
-    body.classList.add("postal-expandable");
+    body.classList.add("postal-service-expandable");
     body.appendChild(sum);
     body.appendChild(full);
   } else {
@@ -2205,10 +2223,10 @@ function scrollToAnchor(uuid: string): boolean {
   // the one place that can't be fooled: a prompt-intent ("user") anchor must land
   // on the originating MESSAGE — a user turn OR a peer's postal card (a peer-opened
   // node's prompt IS the incoming message) — never an assistant turn. A peer opener
-  // used to be refused here (.turn-postal isn't .turn-user) and fall through to the
+  // used to be refused here (.turn-postal-service isn't .turn-user) and fall through to the
   // time fallback; accepting postal lets it resolve BY ID instead (the user 2026-06-20).
   if (pendingAnchorIntent === "user"
-      && !target.classList.contains("turn-user") && !target.classList.contains("turn-postal")) {
+      && !target.classList.contains("turn-user") && !target.classList.contains("turn-postal-service")) {
     pendingAnchor = null; pendingAnchorIntent = null; landTrail.push("pointer-wrong-kind"); return false;
   }
   pendingAnchor = null; pendingAnchorIntent = null;
@@ -2668,6 +2686,7 @@ function showActive() {
   notifyActive();
   renderLedger();  // swap in the active session's digest box (or hide if none)
   renderLiveAsk(); // swap in the active session's pending picker (or hide if none)
+  renderBgTasks(); // swap in the active session's background-task box (or hide if none)
   let empty = document.getElementById("empty-state");
   const s = activeId ? sessions.get(activeId) : null;
   if (!s) {
@@ -3132,6 +3151,65 @@ function renderLedger() {
   // #ledger empty + hidden. The ledger DATA (ledgers map) and .ledger-* styling stay — the tooltip + Fleet use them.
   const host = document.getElementById("ledger");
   if (host) { host.replaceChildren(); host.style.display = "none"; }
+}
+
+// Background-task box (#bg-tasks) between the transcript and the composer (the user 2026-06-26). Three-level
+// disclosure, like a tool-use fold — and COLLAPSED by default so a busy session (e.g. many running training
+// tasks) doesn't fill the box:
+//   1. a count HEADER — "Background task · <name>" for one, "N background tasks" for many (+ a worst-status
+//      dot so a failure is glanceable while collapsed). Click → toggle the list.
+//   2. the LIST — one row per task (status dot + summary), scrollable (~5 visible). Click a row → details.
+//   3. per-task DETAILS — the command + its output, each in its own scrollable block.
+// Both fold levels persist across the per-push re-render (keyed by session id / task id); every toggle is
+// DELEGATED to the stable #bg-tasks container so a rebuild mid-click never drops it. textContent only
+// (command/output are untrusted).
+const bgExpanded = new Set<string>();   // task ids whose details are open
+const bgFoldOpen = new Set<string>();   // session ids whose list is expanded
+const BG_RANK: Record<string, number> = { failed: 3, running: 2, completed: 1 };
+function renderBgTasks() {
+  const host = document.getElementById("bg-tasks");
+  if (!host) return;
+  host.replaceChildren();
+  const s = activeId ? sessions.get(activeId) : null;
+  const box = s && s.bgTasks;
+  const tasks = (box && box.tasks) || [];
+  const count = box ? box.count : 0;
+  if (!count || !tasks.length) { host.style.display = "none"; return; }
+  host.style.display = "";
+  const sid = activeId as string;
+  const open = bgFoldOpen.has(sid);
+  // worst status among the shown tasks → the header dot color (so a failure shows even while collapsed)
+  const worst = tasks.reduce((w, t) => (BG_RANK[t.status] || 0) > (BG_RANK[w] || 0) ? t.status : w, "completed");
+  const head = el("div", "bg-fold-head bg-" + worst + (open ? " open" : ""));
+  head.dataset.act = "bg-fold"; head.dataset.id = sid;
+  const car = el("span", "bg-caret"); car.textContent = open ? "▾" : "▸"; head.appendChild(car);
+  head.appendChild(el("span", "bg-dot"));
+  const lab = el("span", "bg-fold-label");
+  lab.textContent = count === 1 ? "Background task · " + (tasks[0].summary || "running")
+    : count + " background tasks";
+  head.appendChild(lab);
+  host.appendChild(head);
+  if (!open) return;
+  const list = el("div", "bg-list");
+  for (const t of tasks) {
+    const tOpen = bgExpanded.has(t.id);
+    const row = el("div", "bg-task bg-" + (t.status || "running") + (tOpen ? " open" : ""));
+    const rh = el("div", "bg-head");
+    rh.dataset.act = "bg-toggle"; rh.dataset.id = t.id;   // the row header toggles; clicks in the detail body don't collapse it
+    rh.appendChild(el("span", "bg-dot"));
+    const sum = el("span", "bg-sum"); sum.textContent = t.summary || "Background task"; rh.appendChild(sum);
+    const st = el("span", "bg-status"); st.textContent = t.status || "running"; rh.appendChild(st);
+    const rc = el("span", "bg-caret"); rc.textContent = tOpen ? "▾" : "▸"; rh.appendChild(rc);
+    row.appendChild(rh);
+    if (tOpen) {
+      const det = el("div", "bg-detail");
+      if (t.command) { const cmd = el("pre", "bg-cmd"); cmd.textContent = t.command; det.appendChild(cmd); }
+      const out = el("pre", "bg-out"); out.textContent = t.output || "(no output captured)"; det.appendChild(out);
+      row.appendChild(det);
+    }
+    list.appendChild(row);
+  }
+  host.appendChild(list);
 }
 
 // A tree node's right-side time: the CURRENT node shows its live elapsed "(Xm)" (how long it's been
@@ -3950,6 +4028,7 @@ function upsert(msg: any) {
     // A trimmed full send carries headFrom/headTotal; a whole-transcript send omits them (headFrom 0).
     headFrom: msg.headFrom ?? 0,
     headTotal: msg.headTotal ?? ((msg.events || (prev ? prev.events : [])).length),
+    bgTasks: ("bgTasks" in msg) ? msg.bgTasks : (prev ? prev.bgTasks : undefined),
   };
   sessions.set(msg.id, s);
   // The kernel re-sends the FULL "session" payload on every push. Distinguish an APPEND (more turns
@@ -3972,7 +4051,7 @@ function upsert(msg: any) {
   renderTabs();
   // Active tab: a content refresh appends + preserves scroll (appendActive); a new tab or a fork
   // lands at the bottom/anchor (showActive). This is what keeps new pushes from snapping to bottom.
-  if (msg.id === activeId) { if (existed && !forked) appendActive(); else showActive(); }
+  if (msg.id === activeId) { if (existed && !forked) appendActive(); else showActive(); renderBgTasks(); }
   // A non-active session's view is left to sync lazily when it's next shown.
   // The session the user just created has arrived → drop the "Opening…" cue and
   // focus its fresh tab (the whole point of opening it).
@@ -4371,6 +4450,24 @@ setupSettings();
 // Tab-bar clicks are DELEGATED to the stable #tabs container (installed once), not hung on the per-tab nodes
 // that renderTabs() rebuilds on every push — so selecting a tab or clicking its ✕ (Close/End session) always
 // lands, even mid-rebuild. Each tab/✕ carries its data-act + data-id (see renderTabs, ./actions).
+// Background-task rows toggle open/closed — delegated to the stable #bg-tasks container (installed once),
+// not the per-task rows that renderBgTasks() rebuilds on every push, so the click always lands.
+(() => {
+  const host = document.getElementById("bg-tasks");
+  if (!host) return;
+  delegate(host, {
+    "bg-fold": (el) => {   // the count header → show/hide the task list
+      const id = el.dataset.id; if (!id) return;
+      if (bgFoldOpen.has(id)) bgFoldOpen.delete(id); else bgFoldOpen.add(id);
+      renderBgTasks();
+    },
+    "bg-toggle": (el) => {   // a task row → show/hide its command + output
+      const id = el.dataset.id; if (!id) return;
+      if (bgExpanded.has(id)) bgExpanded.delete(id); else bgExpanded.add(id);
+      renderBgTasks();
+    },
+  });
+})();
 (() => {
   const tabs = document.getElementById("tabs");
   if (!tabs) return;

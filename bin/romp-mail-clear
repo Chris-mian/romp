@@ -2,7 +2,7 @@
 # romp-mail-clear — clear the Romp Postal Service "incoming mail" status-bar badge for
 # a session. Called by the tmux `client-session-changed` hook when you switch to
 # a session (you've now seen it), and usable by hand. The badge itself is set by
-# scripts/romp-postal (_set_mail_badge) when mail arrives; romp-postal also
+# scripts/romp-postal-service (_set_mail_badge) when mail arrives; romp-postal-service also
 # auto-expires it after ROMP_POSTAL_BADGE_TTL as a backstop.
 #
 # Clear by setting each option to empty (not `set -u`, which prints a spurious

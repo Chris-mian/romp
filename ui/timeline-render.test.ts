@@ -36,6 +36,7 @@ g.document = {
   createElement(t: string) { return t === "canvas" ? { getContext() { return { font: "", measureText(s: string) { return { width: (s ? s.length : 0) * 6 }; } }; } } : makeNode(t); },
   createElementNS(_n: any, t: string) { return makeNode(t); },
   body: makeNode("body"), documentElement: makeNode("html"), head: makeNode("head"),
+  getElementById() { return null; },   // the loader overlay injects its <style> once via this
   addEventListener() {}, removeEventListener() {},
 };
 g.localStorage = { getItem() { return null; }, setItem() {}, removeItem() {} };
@@ -431,6 +432,36 @@ test("click-drag pan BREAKS 🔒 lock and unpins", () => {
   assert.equal(panel._lockNow, false, "a pan-drag turns OFF the lock");
   assert.equal(panel._pinned, false, "a pan-drag unpins (edge leaves now)");
   panel._dragUp(mouseEv({ clientX: 440, clientY: 202 }));
+});
+
+test("click-drag pans grab-the-content style: drag right → into the past, drag left → toward now", () => {
+  const panel: any = new TimelinePanel(makeNode("div"));
+  panel.update(synthData());
+  const sid = panel._vis[0].id;
+  panel._offSec = 1000; panel._pinned = false;                    // start panned back so we can move either way
+  panel._beginDrag(sid, mouseEv({ clientX: 400, clientY: 200 }));
+  panel._dragMove(mouseEv({ clientX: 600, clientY: 201 }));       // drag RIGHT
+  const afterRight = panel.offSec();
+  panel._dragUp(mouseEv({ clientX: 600, clientY: 201 }));
+  assert.ok(afterRight > 1000, "drag right grows the offset (reveals earlier time)");
+  panel._offSec = 1000; panel._pinned = false;
+  panel._beginDrag(sid, mouseEv({ clientX: 600, clientY: 200 }));
+  panel._dragMove(mouseEv({ clientX: 400, clientY: 201 }));       // drag LEFT
+  const afterLeft = panel.offSec();
+  panel._dragUp(mouseEv({ clientX: 400, clientY: 201 }));
+  assert.ok(afterLeft < 1000, "drag left shrinks the offset (toward now)");
+});
+
+test("a committed drag shows the closed-fist (grabbing) cursor over the whole plot, cleared on drop", () => {
+  const panel: any = new TimelinePanel(makeNode("div"));
+  panel.update(synthData());
+  const sid = panel._vis[0].id;
+  panel._beginDrag(sid, mouseEv({ clientX: 500, clientY: 200 }));
+  assert.equal(panel.wrap.classList.contains("tl-grabbing"), false, "not grabbing until movement commits");
+  panel._dragMove(mouseEv({ clientX: 440, clientY: 202 }));       // commit (pan)
+  assert.equal(panel.wrap.classList.contains("tl-grabbing"), true, ".tl-grabbing forces grabbing over every descendant");
+  panel._dragUp(mouseEv({ clientX: 440, clientY: 202 }));
+  assert.equal(panel.wrap.classList.contains("tl-grabbing"), false, "cleared on drop");
 });
 
 test("vertical click-drag reorders the lane (not pan), leaving the lock alone", () => {

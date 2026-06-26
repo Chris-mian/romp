@@ -1,10 +1,10 @@
 #!/usr/bin/env bats
 
-# Exercises the romp-postal program end to end: a real bus (own port per test),
+# Exercises the romp-postal-service program end to end: a real bus (own port per test),
 # CLI client ops, the loop guard, the stdio MCP server, and autostop. tmux is
 # mocked so no real sessions are needed.
 
-POSTAL="$(cd "$(dirname "$BATS_TEST_FILENAME")/../bin" && pwd)/romp-postal"
+POSTAL="$(cd "$(dirname "$BATS_TEST_FILENAME")/../bin" && pwd)/romp-postal-service"
 
 setup() {
     TEST_DIR="$(mktemp -d)"
@@ -61,7 +61,7 @@ mksessions() {
     } > "$ROMP_SESSIONS_FILE"
 }
 # toggle POSTAL ISOLATION on for a session uuid (writes the kernel's session-flags.json that the bus reads)
-iso() { mkdir -p "$XDG_STATE_HOME/romp"; printf '{"%s":{"postalOff":true}}' "$1" > "$XDG_STATE_HOME/romp/session-flags.json"; }
+iso() { mkdir -p "$XDG_STATE_HOME/romp"; printf '{"%s":{"postalServiceOff":true}}' "$1" > "$XDG_STATE_HOME/romp/session-flags.json"; }
 
 @test "agents lists live sessions and marks you" {
     run "$POSTAL" agents
@@ -98,6 +98,8 @@ iso() { mkdir -p "$XDG_STATE_HOME/romp"; printf '{"%s":{"postalOff":true}}' "$1"
     run "$POSTAL" send beta "secret"
     [ "$status" -ne 0 ]
     [[ "$output" == *"isolation"* ]]
+    [[ "$output" == *"RECIPIENT"* ]]             # the error names whose mailbox is off: the RECIPIENT's
+    [[ "$output" == *"YOUR mailbox is fine"* ]]  # ...and reassures the sender it's not them
     [ "$(cnt "$(mb uuid-b)/new")" = "0" ]        # nothing delivered or parked
 }
 
@@ -106,11 +108,13 @@ iso() { mkdir -p "$XDG_STATE_HOME/romp"; printf '{"%s":{"postalOff":true}}' "$1"
     run "$POSTAL" send beta "hi"
     [ "$status" -ne 0 ]
     [[ "$output" == *"isolation"* ]]
+    [[ "$output" == *"YOUR OWN mailbox is OFF"* ]]   # makes clear it's the SENDER's own mailbox,
+    [[ "$output" == *"relay"* ]]                     # ...so a relaying agent tells the user the right thing
     [ "$(cnt "$(mb uuid-b)/new")" = "0" ]
 }
 
 @test "an isolated session holds its inbox until it reconnects" {
-    run "$POSTAL" send beta "for beta"           # delivered while beta is on the postal service
+    run "$POSTAL" send beta "for beta"           # delivered while beta is on the Romp Postal Service
     [ "$(cnt "$(mb uuid-b)/new")" = "1" ]
     iso uuid-b                                    # beta now isolates
     export CLAUDE_CODE_SESSION_ID=uuid-b

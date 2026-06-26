@@ -367,6 +367,44 @@ body { display: flex; flex-direction: column; }
 .ledger-bullet-text { flex: 1 1 auto; min-width: 0; line-height: 1.45; overflow-wrap: anywhere; }
 
 /* ---------- fixed footer: status line + composer ---------- */
+/* Background-task box (the user 2026-06-26): run_in_background tasks the kernel surfaced, between the
+   transcript and the composer. COLLAPSED by default to a count header; expanding shows a flat LIST of task
+   lines (no per-task boxes) that grows to fill the window (up to 70vh) and scrolls beyond, so a busy session
+   with many agents shows them all. status tints the dot/label, keeping status meaning (running =
+   working-yellow, failed = red, completed = ready-blue — NOT the accent). */
+#bg-tasks { flex: 0 1 auto; min-height: 0; max-height: 70vh; overflow: hidden;
+  max-width: var(--chat-col); width: 100%; margin: 0 auto; box-sizing: border-box;
+  padding: 4px 24px 0; display: flex; flex-direction: column; }
+/* level 1: the count header ("N background tasks" / "Background task · name") — the ONE box */
+.bg-fold-head { --bgt: var(--st-working-bg); flex: 0 0 auto; display: flex; align-items: center; gap: 7px;
+  padding: 5px 9px; cursor: pointer; user-select: none; font-size: 12px; border: 1px solid var(--box-border);
+  border-radius: 7px; background: var(--vscode-editor-background, var(--bg)); }
+.bg-fold-head:hover { background: rgba(255, 255, 255, 0.04); }
+.bg-fold-head.bg-failed { --bgt: var(--st-blocked-bg); }
+.bg-fold-head.bg-completed { --bgt: var(--st-ready-bg); }
+.bg-fold-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }
+/* level 2: a flat list of task LINES (no boxes), fills the remaining height and scrolls */
+.bg-list { margin-top: 4px; flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+  display: flex; flex-direction: column; }
+.bg-task { --bgt: var(--st-working-bg); }
+.bg-task.bg-failed { --bgt: var(--st-blocked-bg); }
+.bg-task.bg-completed { --bgt: var(--st-ready-bg); }
+.bg-head { display: flex; align-items: center; gap: 8px; padding: 5px 9px; cursor: pointer; user-select: none; border-radius: 5px; }
+.bg-head:hover { background: rgba(255, 255, 255, 0.04); }
+.bg-dot { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; background: var(--bgt); }
+.bg-running .bg-dot { animation: bg-pulse 1.2s ease-in-out infinite; }
+@keyframes bg-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+.bg-sum { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--fg); }
+.bg-status { flex: 0 0 auto; font-size: 10px; text-transform: uppercase; letter-spacing: .04em; font-weight: 600; color: var(--bgt); }
+.bg-caret { flex: 0 0 auto; color: var(--dim); font-size: 10px; width: 10px; }
+/* level 3: a task's command + output, each its own scrollable block, indented under the line (overscroll-
+   contain so the wheel scrolls the body, not the chat behind it — the "expanded view won't scroll" fix) */
+.bg-detail { padding: 2px 9px 8px 25px; }
+.bg-cmd, .bg-out { margin: 4px 0 0; padding: 6px 8px; background: rgba(0, 0, 0, 0.25); border-radius: 5px;
+  font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; color: #cdd9e5;
+  white-space: pre-wrap; word-break: break-word; max-height: 220px; overflow: auto; overscroll-behavior: contain; }
+.bg-cmd { color: #9cd2ff; }
+
 #footer {
   flex: 0 0 auto;
   border-top: 1px solid var(--box-border);
@@ -919,8 +957,8 @@ body { display: flex; flex-direction: column; }
 
 /* ---------- postal cards (romp peer mail) ---------- */
 .dot.mail { background: var(--peer-bg, var(--dim)); border: none; }
-.turn-postal { padding-top: 11px; padding-bottom: 11px; }
-.postal-card {
+.turn-postal-service { padding-top: 11px; padding-bottom: 11px; }
+.postal-service-card {
   border: 1px solid var(--box-border);
   border-left: 3px solid var(--peer-bg, var(--dim));
   border-radius: 6px;
@@ -930,18 +968,18 @@ body { display: flex; flex-direction: column; }
   background: color-mix(in srgb, var(--peer-bg, transparent) 8%, var(--box-bg));
 }
 /* sent mail: accent + wash sit on the right, so direction reads at a glance */
-.postal-out .postal-card {
+.postal-service-out .postal-service-card {
   border-left: 1px solid var(--box-border);
   border-right: 3px solid var(--peer-bg, var(--dim));
 }
-.postal-head {
+.postal-service-head {
   display: flex; align-items: center; gap: 7px; flex-wrap: wrap;
   margin-bottom: 6px; font-size: 0.9em;
 }
-.postal-romp-logo { width: 13px; height: 13px; flex: 0 0 auto; border-radius: 2px; }   /* romp-postal identity mark (the user 2026-06-23) */
-.postal-arrow { color: var(--peer-bg, var(--dim)); font-weight: 700; }
-.postal-dir { color: var(--dim); font-size: 0.86em; }
-.postal-peer {
+.postal-service-romp-logo { width: 13px; height: 13px; flex: 0 0 auto; border-radius: 2px; }   /* romp-postal-service identity mark (the user 2026-06-23) */
+.postal-service-arrow { color: var(--peer-bg, var(--dim)); font-weight: 700; }
+.postal-service-dir { color: var(--dim); font-size: 0.86em; }
+.postal-service-peer {
   display: inline-flex; align-items: center;
   font-weight: 700; font-size: 0.82em; letter-spacing: 0.02em;
   padding: 2px 9px; border-radius: 11px;
@@ -951,29 +989,29 @@ body { display: flex; flex-direction: column; }
 /* a session-name chip that navigates on click (sender/recipient name) */
 .chip-nav { cursor: pointer; }
 .chip-nav:hover { filter: brightness(1.12); text-decoration: underline; text-underline-offset: 2px; }
-.postal-badge { font-size: 0.74em; font-weight: 700; letter-spacing: 0.03em; padding: 2px 8px; border-radius: 9px; }
-.postal-badge.parked { background: var(--st-awaiting-bg); color: var(--st-awaiting-fg); }
-.postal-badge.delivered { color: var(--check-bg); }
+.postal-service-badge { font-size: 0.74em; font-weight: 700; letter-spacing: 0.03em; padding: 2px 8px; border-radius: 9px; }
+.postal-service-badge.parked { background: var(--st-awaiting-bg); color: var(--st-awaiting-fg); }
+.postal-service-badge.delivered { color: var(--check-bg); }
 /* interaction-type chip on a postal card — THREE top-level categories (the user 2026-06-17): delegation /
    coordination / question. A small outlined pill in a per-type colour, scannable in compact + expanded
    views. (FYI folds into coordination now — it is no longer its own chip.) */
-.postal-intent { font-size: 0.7em; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
+.postal-service-intent { font-size: 0.7em; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
   padding: 1px 7px; border-radius: 9px; border: 1px solid currentColor; opacity: 0.95; }
-.postal-intent-delegate { color: #b08cff; }            /* delegation — a peer handed off work */
-.postal-intent-coordinate { color: #14b8a6; }          /* coordination — teal (heads-up, optional reply) */
-.postal-intent-question { color: var(--st-working-bg); }  /* question — amber, needs an answer */
-.postal-body { color: var(--fg); }
-.postal-body.md > :first-child { margin-top: 0; }
-.postal-body.md > :last-child { margin-bottom: 0; }
+.postal-service-intent-delegate { color: #b08cff; }            /* delegation — a peer handed off work */
+.postal-service-intent-coordinate { color: #14b8a6; }          /* coordination — teal (heads-up, optional reply) */
+.postal-service-intent-question { color: var(--st-working-bg); }  /* question — amber, needs an answer */
+.postal-service-body { color: var(--fg); }
+.postal-service-body.md > :first-child { margin-top: 0; }
+.postal-service-body.md > :last-child { margin-bottom: 0; }
 /* postal body: ALWAYS a one-line summary that expands to the full message on click — both incoming
    (Haiku caption) and outgoing (first line) read the same now (the user 2026-06-16). */
-.postal-summary { display: flex; align-items: baseline; gap: 6px; }
-.postal-expandable .postal-summary { cursor: pointer; }
-.postal-expandable .postal-summary:hover .postal-summary-text { text-decoration: underline; text-underline-offset: 2px; }
-.postal-expand-caret { flex: 0 0 auto; font-size: 0.78em; opacity: 0.7; }
-.postal-summary-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
-.postal-full { display: none; margin-top: 7px; }
-.postal-expandable.expanded .postal-full { display: block; }
+.postal-service-summary { display: flex; align-items: baseline; gap: 6px; }
+.postal-service-expandable .postal-service-summary { cursor: pointer; }
+.postal-service-expandable .postal-service-summary:hover .postal-service-summary-text { text-decoration: underline; text-underline-offset: 2px; }
+.postal-service-expand-caret { flex: 0 0 auto; font-size: 0.78em; opacity: 0.7; }
+.postal-service-summary-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.postal-service-full { display: none; margin-top: 7px; }
+.postal-service-expandable.expanded .postal-service-full { display: block; }
 
 /* ---------- progressive disclosure + tool vocabulary ---------- */
 /* error tool: hollow red dot + red name (consistent "this failed" cue) */
@@ -1297,7 +1335,7 @@ pre.has-copy:hover .code-copy, .code-copy:focus-visible { opacity: 0.9; }
    when a handoff message is hovered, and the bubble itself for dot-less user
    turns. Transient — cleared when the hover ends. */
 .turn.ext-glow .dot { box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.85); }
-.turn.ext-glow .postal-card { outline: 1.5px solid rgba(255, 255, 255, 0.75); outline-offset: 1px; }
+.turn.ext-glow .postal-service-card { outline: 1.5px solid rgba(255, 255, 255, 0.75); outline-offset: 1px; }
 .turn.ext-glow:not(:has(.dot)) { outline: 1.5px solid rgba(255, 255, 255, 0.55); outline-offset: -1px; border-radius: 9px; }
 /* overview ruler (link_audit's #4, the user 2026-06-22): a fixed strip over the #content scrollbar gutter
    that bands the full-transcript location of the currently .ext-glow'd turns, so a cross-surface hover shows

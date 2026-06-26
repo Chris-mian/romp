@@ -2346,7 +2346,7 @@ class ViewBuilder(unittest.TestCase):
             km._reveal_chat = orig_rc; km._tmux_sessions = orig_tx; km._push_all = orig_pa
 
     def test_revive_session_resumes_and_unhides_tab(self):
-        # confirming the modal's "Revive" must actually resume the session (romp-postal revive → romp
+        # confirming the modal's "Revive" must actually resume the session (romp-postal-service revive → romp
         # --resume --detach) AND un-hide its tab. Regression: the kernel had no reviveSession handler,
         # so the modal's Revive did nothing — "it didn't revive it" (the user 2026-06-16).
         km._set_hidden_tab("deadsid000", True)            # it was hidden when closed
@@ -2358,7 +2358,7 @@ class ViewBuilder(unittest.TestCase):
             km.subprocess.run = saved
         self.assertTrue(calls, "revive must shell out to the resume path")
         argv = calls[0]
-        self.assertTrue(str(argv[0]).endswith("romp-postal"))
+        self.assertTrue(str(argv[0]).endswith("romp-postal-service"))
         self.assertEqual(argv[-2:], ["revive", "deadsid000"])
         self.assertNotIn("deadsid000", km._hidden_tabs(), "the revived tab is un-hidden")
 
@@ -2526,7 +2526,7 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(m["text"], "a long verbose body that the user finds too noisy", "raw body kept as fallback")
 
     def test_postal_card_carries_caption(self):
-        # the incoming CHAT card carries the caption too (renderPostal shows it over the verbose body,
+        # the incoming CHAT card carries the caption too (renderPostalService shows it over the verbose body,
         # full message on hover); the raw body stays as the fallback
         saved = km._msg_summaries
         km._msg_summaries = lambda: {"m1": "asks to rebase onto main"}
@@ -2538,7 +2538,7 @@ class ViewBuilder(unittest.TestCase):
         finally:
             km._msg_summaries = saved
         self.assertEqual(len(cards), 1)
-        self.assertEqual((cards[0]["kind"], cards[0]["direction"]), ("postal", "in"))
+        self.assertEqual((cards[0]["kind"], cards[0]["direction"]), ("postal-service", "in"))
         self.assertEqual(cards[0]["summary"], "asks to rebase onto main", "card carries the caption")
         self.assertEqual(cards[0]["body"], "a long verbose handoff body the user finds noisy", "raw body kept (hover)")
 
@@ -2650,7 +2650,7 @@ class ViewBuilder(unittest.TestCase):
                "the clean message\n<!-- romp-msg-id: m1 -->\n(to reply: romp --mail send ...)")
         out = km._hydrate_postal([{"kind": "user", "md": raw, "uuid": "u1", "ts": "x", "human": False}], index)
         self.assertEqual(len(out), 1)
-        self.assertEqual((out[0]["kind"], out[0]["direction"]), ("postal", "in"))
+        self.assertEqual((out[0]["kind"], out[0]["direction"]), ("postal-service", "in"))
         self.assertEqual(out[0]["body"], "the clean message", "renders the log body, not the boilerplate")
         self.assertEqual(out[0]["peer"], "alpha")
         self.assertEqual(out[0]["color"], {"bg": "#00ff00", "fg": "#ffffff"})
@@ -2662,7 +2662,7 @@ class ViewBuilder(unittest.TestCase):
               "input": json.dumps({"to": "beta", "body": "ASK: do X"}), "output": "Delivered to 'beta'.",
               "isError": False, "uuid": "t1", "ts": "x"}
         out = km._hydrate_postal([ev], {})
-        self.assertEqual((out[0]["kind"], out[0]["direction"]), ("postal", "out"))
+        self.assertEqual((out[0]["kind"], out[0]["direction"]), ("postal-service", "out"))
         self.assertEqual((out[0]["peer"], out[0]["body"], out[0]["status"]), ("beta", "ASK: do X", "delivered"))
         self.assertEqual(out[0]["color"], {"bg": "#0000ff", "fg": "#ffffff"}, "recipient color resolved by name")
 

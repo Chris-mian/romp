@@ -273,7 +273,7 @@ The pieces already exist; here is how they compose with the merged kernel.
   stay local to the machine that produced them.
 - **Postal federates over SSH.** Local and remote sessions share one bus address; a
   remote session tunnels the bus port to the laptop with `ssh -R
-  PORT:127.0.0.1:PORT` and heartbeats for presence (`bin/romp-postal`). So messages
+  PORT:127.0.0.1:PORT` and heartbeats for presence (`bin/romp-postal-service`). So messages
   cross machines today; nothing in the merged kernel changes that.
 - **Viewing remote sessions**: simplest path is to forward the remote kernel's HTTP
   port and open a second browser view at it (one view per machine). A unified view

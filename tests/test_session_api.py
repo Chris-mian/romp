@@ -99,7 +99,7 @@ class PostalIsFullyTmuxFree(unittest.TestCase):
     mail/peer/message chrome all go over HTTP. So bin/romp-postal shells NO tmux at all; a regression fails CI
     instead of silently re-coupling the bus to tmux. (the user 2026-06-26.)"""
 
-    POSTAL = os.path.join(BIN, "romp-postal")
+    POSTAL = os.path.join(BIN, "romp-postal-service")
 
     def test_no_raw_tmux_anywhere_in_the_bus(self):
         src = open(self.POSTAL, encoding="utf-8").read()

@@ -20,10 +20,15 @@ class RailUsage(unittest.TestCase):
     def setUp(self):
         self.html = km._landing()
 
-    def test_the_rail_hosts_the_usage_bars_under_the_refresh_button(self):
+    def test_the_rail_usage_sticks_to_the_top_with_refresh_and_settings_at_the_bottom(self):
+        # the user 2026-06-26: usage sticks to the TOP (under the toggles); refresh + settings are pushed to
+        # the BOTTOM, settings (⛭ rail-gear) at the very bottom, refresh just above it.
         self.assertIn("id=rail-usage", self.html, "a usage container sits in the rail")
-        # ...positioned AFTER the refresh action (so it renders beneath it)
-        self.assertLess(self.html.index("id=rail-refresh"), self.html.index("id=rail-usage"))
+        self.assertLess(self.html.index("id=rail-usage"), self.html.index("id=rail-refresh"),
+                        "usage is above refresh (sticky to the top)")
+        self.assertLess(self.html.index("id=rail-refresh"), self.html.index("id=rail-gear"),
+                        "refresh is above settings (settings is the very bottom)")
+        self.assertIn("#rail-refresh{margin-top:auto}", self.html, "the bottom group is pushed down")
         self.assertIn(".ru-bar{", self.html, "the compact vertical bar styling")
         self.assertIn(".ru-lab{", self.html, "the percentage label styling")
 
@@ -35,10 +40,21 @@ class RailUsage(unittest.TestCase):
         self.assertIn("seg.color", self.html, "the used bar is colored by the selected colormap")
         self.assertIn("cm.ramp(pct / 100.0, stops)", inspect.getsource(km._usage),
                       "_usage maps used-% onto the global colormap")
-        # a rich hover PANEL (not a native title) explaining the windows
+        # ONE shared hover PANEL for BOTH windows (the user 2026-06-26): it reproduces the used/elapsed bars
+        # that used to sit under the timeline, with the reset countdown, and NO explanatory prose.
         self.assertIn("#ru-tip{", self.html, "a styled hover tooltip panel")
-        self.assertIn("rate-limit window", self.html, "the panel explains what each window is")
         self.assertIn("resets in", self.html, "the panel includes the reset countdown")
+
+    def test_the_usage_tooltip_is_one_shared_panel_reproducing_both_windows_bars(self):
+        # a SINGLE tooltip on the whole rail-usage area (mouseenter on el), not a per-window panel
+        self.assertIn("el.addEventListener('mouseenter',showTip)", self.html, "one shared tooltip for the area")
+        self.assertIn("['fiveHour','sevenDay'].filter", self.html, "the tooltip covers BOTH windows at once")
+        # it reproduces the used + elapsed bars (the exact set that used to sit under the timeline)
+        self.assertIn("ru-tip-track", self.html, "horizontal used/elapsed bars in the tooltip")
+        self.assertIn(">used<", self.html)
+        self.assertIn(">elapsed<", self.html)
+        # and drops the old explanatory prose ("...rate-limit window") — no extra stuff
+        self.assertNotIn("rate-limit window", self.html, "no explanatory prose, just the bars + %")
 
     def test_the_timeline_forwards_usage_to_the_shell_and_hides_its_own_copy_when_embedded(self):
         tv = (pathlib.Path(BIN).parent / "ui" / "romp-timeline-view.js").read_text()

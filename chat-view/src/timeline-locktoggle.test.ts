@@ -28,6 +28,18 @@ test("_drawLockToggle is accent-blue when locked and gray when unlocked", () => 
   assert.match(SRC, /on \? 'M4\.8 6\.2 V4\.4 a2\.2 2\.2 0 0 1 4\.4 0 V6\.2'/);
 });
 
-test("clicking the padlock toggles the lock and snaps to now when locking", () => {
+test("the padlock toggles on POINTERDOWN (single press even when the pane wasn't focused)", () => {
+  // pointerdown, not click: an unfocused iframe spends the first CLICK focusing, but the pointerdown fires
+  assert.match(SRC, /g\.addEventListener\('pointerdown', \(ev\) => \{/);
   assert.match(SRC, /const next = !this\._lockNow;\s*this\._setLock\(next\);\s*if \(next\) this\._jumpToNow\(\);/);
+});
+
+test("the padlock tooltip uses the romp tip (instant + freezes redraws), not a native <title>", () => {
+  // native <title> never appeared — the live edge rebuilds the SVG and resets the browser hover timer
+  const fn = SRC.slice(SRC.indexOf("_drawLockToggle(svg, cx, axisY)"), SRC.indexOf("_showLoader(show)"));
+  assert.ok(fn.length > 0, "found the _drawLockToggle body");
+  assert.doesNotMatch(fn, /el\('title'/, "the lock no longer uses a native <title>");
+  assert.match(fn, /hit\.addEventListener\('mouseenter', \(e\) => this\.showTip\(tipHtml, e\)\);/);
+  assert.match(fn, /hit\.addEventListener\('mouseleave', \(\) => this\.hideTip\(\)\);/);
+  assert.match(fn, /Lock the timeline to the present/);
 });

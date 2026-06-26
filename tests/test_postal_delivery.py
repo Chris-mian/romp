@@ -11,7 +11,7 @@ from importlib.machinery import SourceFileLoader
 HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
-pm = SourceFileLoader("romp_postal_delivery", os.path.join(BIN, "romp-postal")).load_module()
+pm = SourceFileLoader("romp_postal_delivery", os.path.join(BIN, "romp-postal-service")).load_module()
 
 
 class PushThroughKernel(unittest.TestCase):
@@ -55,7 +55,7 @@ class PushThroughKernel(unittest.TestCase):
         self.assertEqual(self.redelivered, [])
 
     def test_source_uses_the_kernel_deliver_not_a_tmux_inject(self):
-        src = open(os.path.join(BIN, "romp-postal"), encoding="utf-8").read()
+        src = open(os.path.join(BIN, "romp-postal-service"), encoding="utf-8").read()
         self.assertIn('_kernel_post("/deliver"', src, "the live-push wakes via the kernel")
         self.assertNotIn("paste-buffer", src, "no tmux pane-inject remains in the bus")
         self.assertNotIn("capture-pane", src, "no tmux pane-capture remains in the bus")

@@ -8,7 +8,7 @@
 # context means a session revived on un-acted handoffs would just sit idle. So
 # instead of printing the mail here, we ask the bus to FORCE-DELIVER it: the bus
 # polls until this session's prompt box is actually live, then injects AND submits
-# it (`romp-postal wake` → _wake_when_ready → _push), so the session takes a real
+# it (`romp-postal-service wake` → _wake_when_ready → _push), so the session takes a real
 # turn (waiting→working→acts→waiting) and shows WORKING in every view.
 #
 # The pending-mail marker (mail-pending/<sid>, kept in sync by the bus) is the
@@ -40,8 +40,8 @@ sess="$(tmux display-message -p '#S' 2>/dev/null || true)"
 [[ -n "$sess" ]] || exit 0
 [[ -n "$(tmux show -t "$sess" -v @romp 2>/dev/null || true)" ]] || exit 0
 
-# Locate romp-postal via this hook's REAL (symlink-followed) path: the hook lives
-# at dotfiles/claude/hooks/ and romp-postal at dotfiles/scripts/.
+# Locate romp-postal-service via this hook's REAL (symlink-followed) path: the hook lives
+# at dotfiles/claude/hooks/ and romp-postal-service at dotfiles/scripts/.
 src="${BASH_SOURCE[0]}"
 while [[ -L "$src" ]]; do
     tgt="$(readlink "$src")"
@@ -50,7 +50,7 @@ while [[ -L "$src" ]]; do
         *)  src="$(cd "$(dirname "$src")" && pwd)/$tgt" ;;
     esac
 done
-postal="$(cd "$(dirname "$src")/../bin" 2>/dev/null && pwd)/romp-postal"
+postal="$(cd "$(dirname "$src")/../bin" 2>/dev/null && pwd)/romp-postal-service"
 [[ -x "$postal" ]] || exit 0
 
 # Hand off to the bus: force-deliver once the prompt is live. Non-blocking — the

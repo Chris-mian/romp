@@ -57,7 +57,7 @@ test("the toggle RECONCILES the optimistic flip onto the live objects before dra
   // _reconcilePendingFlags() (which re-applies _pendingFlags onto the CURRENT this.data.sessions, keyed by id)
   // immediately before draw(), so the flip always shows AND the kernel still receives it.
   assert.match(SRC, /'hideFromFeed', next\);[\s\S]*?this\._reconcilePendingFlags\(\);[^\n]*\n\s*this\.draw\(\);/);
-  assert.match(SRC, /'postalOff', next\);[\s\S]*?this\._reconcilePendingFlags\(\);[^\n]*\n\s*this\.draw\(\);/);
+  assert.match(SRC, /'postalServiceOff', next\);[\s\S]*?this\._reconcilePendingFlags\(\);[^\n]*\n\s*this\.draw\(\);/);
 });
 
 test("the tooltip uses the shared showTip/hideTip (a native SVG <title> never shows — a redraw kills it)", () => {

@@ -239,7 +239,7 @@ function feedCheckIcon(off, cx, cy, color) {
 // Per-lane POSTAL ISOLATION toggle (the user 2026-06-23): a monochrome ROADSIDE MAILBOX — a side-view tube
 // body on a post, with a raised flag — sitting just right of the feed checkbox. Drawn (not an emoji) so it
 // stays crisp + monochrome everywhere, same gray line weight as the checkbox; `off`=true (isolated) adds the
-// SAME strike-through slash so the disabled state reads identically. Enforced in bin/romp-postal (hidden from
+// SAME strike-through slash so the disabled state reads identically. Enforced in bin/romp-postal-service (hidden from
 // peers, no messages in or out).
 function mailboxIcon(off, cx, cy, color) {
   const g = el('g', { 'pointer-events': 'none' });
@@ -370,6 +370,18 @@ class TimelinePanel {
     // so they are never held — panning stays live. Event-based (pointerdown/up), no time heuristic. CLAUDE.md.
     this._pointerHeld = false;
     this.svg.addEventListener('pointerdown', () => { this._pointerHeld = true; });
+    // Click-drag to pan / reorder starts ONLY on EMPTY row space (the per-lane rowHit, below). Bars, dots and
+    // the postal connectors keep their own click → jump-to-chat; a press on them does NOT start a drag.
+    // While dragging, force the CLOSED-FIST (grabbing) cursor over the WHOLE plot: setting it on the svg
+    // alone doesn't show, because a child under the pointer (rowHit's 'grab') wins — so override every
+    // descendant with !important via a .tl-grabbing class on the wrap (the user 2026-06-26).
+    try {
+      if (typeof document !== 'undefined' && document.head && !document.getElementById('tl-grab-css')) {
+        const gst = document.createElement('style'); gst.id = 'tl-grab-css';
+        gst.textContent = '.tl-grabbing,.tl-grabbing *{cursor:grabbing!important}';
+        document.head.appendChild(gst);
+      }
+    } catch (e) {}
     const _release = () => {
       if (!this._pointerHeld) return;
       this._pointerHeld = false;
@@ -959,7 +971,7 @@ class TimelinePanel {
       if (this._focusNonce === undefined) this._focusNonce = data.focus.nonce;
       else if (data.focus.nonce !== this._focusNonce) { this._focusNonce = data.focus.nonce; this.focusEvent(data.focus); }
     }
-    this._startLiveTick();   // re-arm the smooth-advance loop each poll (no-op unless live-following + visible)
+    if (this._barsLoaded) this._startLiveTick();   // re-arm the smooth-advance loop each poll (skip while the loader is up — draw() no-ops then)
   }
 
   // The heavy second half of a timeline push (the user 2026-06-25): the per-segment work BARS + the judging
@@ -967,7 +979,7 @@ class TimelinePanel {
   // first. The skeleton always lands first (TCP-ordered on the one socket), so this.data.sessions is set.
   applyBars(m) {
     if (!m || !this.data || !this.data.sessions) return;
-    this._barsLoaded = true;   // the bars payload has landed (even if empty) → drop the plot-area loader
+    this._barsLoaded = true;   // the bars payload has landed (even if empty) → drop the loader, show the timeline
     this.data.turns = m.turns || {};
     this.data.judging = m.judging || [];
     this.data.messages = m.messages || [];
@@ -977,6 +989,7 @@ class TimelinePanel {
     // honor the same freeze-on-hover / click-hold guard update() uses (don't relayout under a held pointer/tip)
     if ((this.tip && this.tip.classList && this.tip.classList.contains('show')) || this._pointerHeld) { this._dirtyWhileTip = true; return; }
     this.draw();
+    this._startLiveTick();   // bars are up now → resume the smooth-advance loop (gated off while the loader showed)
   }
 
   // Direct hover push from the kernel (server.ts pushHover) — the FAST path that skips the
@@ -1060,7 +1073,7 @@ class TimelinePanel {
     if (d.mode == null) {
       d.mode = dragAxis(ev.clientX - d.startX, ev.clientY - d.startY);
       if (d.mode == null) return;                              // below threshold → still a potential click
-      d.moved = true; this.svg.style.cursor = 'grabbing';
+      d.moved = true; this.wrap.classList.add('tl-grabbing');   // closed-fist cursor over the whole plot (pan OR reorder)
       if (d.mode === 'row') this.selectedSid = d.sid;
     }
     if (d.mode === 'pan') this._panDragMove(ev); else this._rowDragMove(ev);
@@ -1072,7 +1085,10 @@ class TimelinePanel {
     const rect = this.svg.getBoundingClientRect();
     const scaleX = rect.width ? g.W / rect.width : 1;
     const dt = (ev.clientX - d.startX) * scaleX * (d.panWin / g.plotW);
-    this._offSec = Math.max(0, Math.min(MAX_OFFSET, d.panOff - dt));
+    // GRAB-THE-CONTENT direction (the user 2026-06-26): drag RIGHT → the content follows your hand right,
+    // revealing earlier time on the left (offset grows into the past); drag LEFT → toward now. (This is the
+    // opposite sign from the trackpad/scrollbar pan in onWheel, which the user is happy with.)
+    this._offSec = Math.max(0, Math.min(MAX_OFFSET, d.panOff + dt));
     this._setLock(false);                                      // a drag turns OFF 🔒 — no snap-back to now
     this._pinned = false;
     this._offDirty = true;
@@ -1098,7 +1114,7 @@ class TimelinePanel {
     window.removeEventListener('mousemove', this._onDragMove, true);
     window.removeEventListener('mouseup', this._onDragUp, true);
     this._onDragMove = this._onDragUp = null;
-    this._drag = null; this.svg.style.cursor = '';
+    this._drag = null; this.svg.style.cursor = ''; this.wrap.classList.remove('tl-grabbing');
     if (!d || !d.moved) { this._dragOrder = null; return; }    // no movement → a click; let select fire
     if (d.mode === 'pan') {
       this._markOffsetGesture();                               // re-pin if dragged back to the now-edge
@@ -1451,7 +1467,7 @@ class TimelinePanel {
 
   // Click the context battery → send `/compact` to that session's terminal. VS Code: hand the session
   // name to the extension host (no Node in the webview); Obsidian: shell tmux directly. Types the slash
-  // command literally then submits it. (Targets the tmux session by name, like romp-postal's inject.)
+  // command literally then submits it. (Targets the tmux session by name, like romp-postal-service's inject.)
   _compactSession(name) {
     if (!name) return;
     try {
@@ -1601,6 +1617,13 @@ class TimelinePanel {
 
   draw() {
     const data = this.data; if (!data || !data.sessions) return;
+    // LOADING (the user 2026-06-26): until the heavy bars arrive, show ONLY the romp wordmark loader (R +
+    // spinning swirl-o + m + p + dots) — NO lanes, NO gridlines. Partial data + empty gridlines read as
+    // "broken", so suppress the SVG entirely and show the loader until applyBars sets _barsLoaded. (Data that
+    // already carries turns — a full one-shot, or a direct draw() — counts as loaded even without the flag.)
+    const barsReady = this._barsLoaded || !!(data.turns && Object.keys(data.turns).length);
+    if (!barsReady) { this._showLoader(true); return; }
+    this._showLoader(false);
     const svg = this.svg, M = this.M;
     while (svg.firstChild) svg.removeChild(svg.firstChild);
     // candy-cane hatch for AWAITING spans: diagonal white stripes overlaid on the bar
@@ -1790,7 +1813,7 @@ class TimelinePanel {
       // are pointer-events:none so their area falls through here; bars/dots keep their handlers on top.
       const rowHit = el('rect', { x: 0, y: y - LANE_GAP / 2, width: W, height: LANE_GAP, fill: 'transparent' });
       rowHit.style.cursor = 'grab';   // grab = drag to PAN (horizontal) or REORDER (vertical); a plain click still selects/opens
-      rowHit.addEventListener('mousedown', (e) => this._beginDrag(s.id, e));
+      rowHit.addEventListener('mousedown', (e) => this._beginDrag(s.id, e));   // drag starts on EMPTY row space only (bars/dots keep their click → jump-to-chat)
       rowHit.addEventListener('click', () => {
         if (this._suppressClick) { this._suppressClick = false; return; }   // just finished a drag → not a select
         this._select(s.id); this.openChat(this._laneTid(s), null, true);
@@ -1968,11 +1991,11 @@ class TimelinePanel {
         });
       }
       // per-session POSTAL ISOLATION toggle (live lanes only): a mailbox icon just right of the feed
-      // checkbox; one click toggles postalOff. Un-slashed = on the postal service (default: visible to peers,
+      // checkbox; one click toggles postalServiceOff. Un-slashed = on the Romp Postal Service (default: visible to peers,
       // can send + receive); slashed + more faded = isolated (hidden from list_agents, no messages in or out
-      // — for working privately). Same draw/hit/tooltip pattern as the feed checkbox; enforced in bin/romp-postal.
+      // — for working privately). Same draw/hit/tooltip pattern as the feed checkbox; enforced in bin/romp-postal-service.
       if (s.live) {
-        const moff = !!s.postalOff;
+        const moff = !!s.postalServiceOff;
         const mcx = mailColX + 5, mcy = y + 0.5;
         const mdim = moff ? '0.3' : '0.9';             // off = faded; on = a confident romp-blue (the user 2026-06-24)
         const mbox = mailboxIcon(moff, mcx, mcy, moff ? MODEL_FG : ROMP_BLUE);   // ON = romp blue, OFF = struck-out gray
@@ -1980,19 +2003,19 @@ class TimelinePanel {
         svg.appendChild(mbox);
         const mhit = el('rect', { x: mailColX - 4, y: y - 9, width: EYE_W + 8, height: 18, fill: 'transparent', 'pointer-events': 'all' });
         mhit.style.cursor = 'pointer';
-        mhit.setAttribute('aria-label', moff ? 'session isolated from the postal service' : 'session on the postal service'); svg.appendChild(mhit);
+        mhit.setAttribute('aria-label', moff ? 'session isolated from the Romp Postal Service' : 'session on the Romp Postal Service'); svg.appendChild(mhit);
         const mtip = moff
-          ? "Isolated from the postal service — click to reconnect<div style='opacity:.65;margin-top:2px'>hidden from peers; can’t send or receive messages</div>"
-          : "On the postal service — click to isolate<div style='opacity:.65;margin-top:2px'>work privately: hidden from peers, no messages in or out</div>";
+          ? "Isolated from the Romp Postal Service — click to reconnect<div style='opacity:.65;margin-top:2px'>hidden from peers; can’t send or receive messages</div>"
+          : "On the Romp Postal Service — click to isolate<div style='opacity:.65;margin-top:2px'>work privately: hidden from peers, no messages in or out</div>";
         mhit.addEventListener('mouseenter', (e) => { mbox.setAttribute('opacity', '1'); this.showTip(mtip, e); });
         mhit.addEventListener('mousemove', (e) => this.moveTip(e));
         mhit.addEventListener('mouseleave', () => { mbox.setAttribute('opacity', mdim); this.hideTip(); });
         mhit.addEventListener('pointerdown', (e) => {   // pointerdown, not click: a redraw between mousedown
           e.stopPropagation();                          // and mouseup ate the click → "sometimes unresponsive"
-          const next = !s.postalOff;
-          s.postalOff = next;                            // optimistic …
-          (this._pendingFlags[s.id] = this._pendingFlags[s.id] || {}).postalOff = next;   // … held sticky until the kernel confirms
-          this._setSessionFlag(s, 'postalOff', next);
+          const next = !s.postalServiceOff;
+          s.postalServiceOff = next;                            // optimistic …
+          (this._pendingFlags[s.id] = this._pendingFlags[s.id] || {}).postalServiceOff = next;   // … held sticky until the kernel confirms
+          this._setSessionFlag(s, 'postalServiceOff', next);
           this.hideTip();
           this._reconcilePendingFlags();   // apply onto the CURRENT objects draw() reads — a poll may have swapped
           this.draw();                     // this.data mid-press, leaving `s` stale (see the feed checkbox above)
@@ -2290,10 +2313,6 @@ class TimelinePanel {
       // still surfaces as a romp-logo dot on its own lane; the band is now judge run-spans only.)
     }
 
-    // bars still in flight → romp swirl loader in the (empty) plot area; the lanes + axis already painted
-    // from the skeleton. Removed on the next draw once applyBars sets _barsLoaded. CLAUDE.md loader rule.
-    if (!this._barsLoaded) this._drawBarsLoader(svg, M.left + plotW / 2, (M.top + axisY) / 2);
-
     // far-right ⟩⟩ jump-to-now button — only when held back off the live edge (unpinned)
     if (!this._pinned) this._drawNowButton(svg);
 
@@ -2311,16 +2330,27 @@ class TimelinePanel {
     const color = on ? ROMP_BLUE : '#6e7681';          // accent when locked, gray when unlocked
     const x0 = cx - 7.5, y0 = axisY + 6;               // center the 15-wide glyph under the now-edge, in the bottom margin
     const g = el('g', { transform: 'translate(' + x0 + ' ' + y0 + ')' }); g.style.cursor = 'pointer';
-    g.appendChild(el('rect', { x: -2, y: -1, width: 19, height: 15, fill: 'transparent' }));   // hit pad (whole glyph clickable)
+    const hit = el('rect', { x: -2, y: -1, width: 19, height: 15, fill: 'transparent' });   // hit pad (whole glyph clickable)
+    g.appendChild(hit);
     const st = { fill: 'none', stroke: color, 'stroke-width': 1.4, 'stroke-linecap': 'round', 'pointer-events': 'none' };
     g.appendChild(el('rect', Object.assign({ x: 3, y: 6.2, width: 8, height: 5.6, rx: 1.2 }, st)));
     g.appendChild(el('path', Object.assign({ d: on ? 'M4.8 6.2 V4.4 a2.2 2.2 0 0 1 4.4 0 V6.2'           // seated shackle (locked)
                                                   : 'M9.4 6.2 V5.3 A2.4 2.4 0 0 1 13.6 3.7' }, st)));   // swung-out shackle (unlocked)
-    const ttl = el('title', {}); ttl.textContent = on
-      ? 'Locked to the present — click to unlock (allow panning)'
-      : 'Click to lock the timeline at the present (focus jumps zoom out instead of panning away)';
-    g.appendChild(ttl);
-    g.addEventListener('click', (ev) => {
+    // Tooltip via the romp tip, NOT a native <title> (the user 2026-06-26: the native one never appeared —
+    // the live edge rebuilds the SVG many times a second, resetting the browser's hover-delay timer). showTip
+    // shows the styled tip INSTANTLY on mouseenter AND freezes redraws while hovering, which also keeps the
+    // lock element stable so a press can't be dropped by a mid-gesture rebuild.
+    const tipHtml = '<div class="b">' + (on
+      ? 'Locked to the present — click to unlock (allow panning).'
+      : 'Lock the timeline to the present — keeps the now-edge in view; a focus jump zooms out instead of panning away.') + '</div>';
+    hit.addEventListener('mouseenter', (e) => this.showTip(tipHtml, e));
+    hit.addEventListener('mousemove', (e) => this.moveTip(e));
+    hit.addEventListener('mouseleave', () => this.hideTip());
+    // Toggle on POINTERDOWN, not click: when the timeline pane isn't focused, the browser spends the first
+    // CLICK focusing the iframe (so the lock used to need two clicks) — but the pointerdown still fires, so
+    // acting on it makes lock/unlock a single, seamless press (the user 2026-06-26).
+    g.addEventListener('pointerdown', (ev) => {
+      if (ev.button != null && ev.button !== 0) return;   // primary button only
       ev.stopPropagation();
       const next = !this._lockNow;
       this._setLock(next);
@@ -2330,20 +2360,44 @@ class TimelinePanel {
     svg.appendChild(g);
   }
 
-  // The reverse-spinning romp swirl-as-"o", centered in the plot area, shown while the deferred bars
-  // payload is still in flight (the user 2026-06-26). The lanes/axis paint instantly off the skeleton; this
-  // fills the otherwise-empty plot so it doesn't read as "no activity" until applyBars lands. Reverse spin
-  // (-360) + 7s matches the shared romp loader (_LOADER_CSS .rl-o). Removed on the next draw.
-  _drawBarsLoader(svg, cx, cy) {
-    const R = 22;
-    const g = el('g', { 'pointer-events': 'none' });
-    const img = el('image', { x: cx - R, y: cy - R, width: 2 * R, height: 2 * R, opacity: 0.92 });
-    img.setAttributeNS('http://www.w3.org/1999/xlink', 'href', '/media/romp-swirl-o.svg');
-    img.setAttribute('href', '/media/romp-swirl-o.svg');
-    img.appendChild(el('animateTransform', { attributeName: 'transform', attributeType: 'XML', type: 'rotate',
-      from: '0 ' + cx + ' ' + cy, to: '-360 ' + cx + ' ' + cy, dur: '7s', repeatCount: 'indefinite' }));
-    g.appendChild(img);
-    svg.appendChild(g);
+  // The full romp WORDMARK loader (the user 2026-06-26): "R" + the reverse-spinning swirl-as-"o" + "m" + "p"
+  // (the swirl's three arm colours) over three pulsing accent-blue dots — the SAME look as the boot splash +
+  // every pane loader (CLAUDE.md "Loading/waiting states"). Shown in place of the SVG while the heavy bars
+  // load, so the timeline never flashes partial data / empty gridlines. Built once, then just toggled.
+  _showLoader(show) {
+    if (show && !this._loaderEl) this._buildLoader();
+    if (this._loaderEl) this._loaderEl.style.display = show ? 'flex' : 'none';
+    if (this.svg) this.svg.style.display = show ? 'none' : '';
+  }
+  _buildLoader() {
+    if (!document.getElementById('tl-loader-css')) {
+      const st = document.createElement('style'); st.id = 'tl-loader-css';
+      st.textContent =
+        "@font-face{font-family:'RompAnta';src:url(/media/Anta-Regular.ttf) format('truetype');font-display:swap}"
+        + ".tl-loader{min-height:240px;display:flex;align-items:center;justify-content:center}"
+        + ".tl-loader .rl-in{display:flex;flex-direction:column;align-items:center;gap:18px}"
+        + ".tl-loader .rl-word{font-family:'RompAnta',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;"
+        + "font-size:38px;line-height:1;white-space:nowrap}"
+        + ".tl-loader .rl-o{width:.65em;height:.65em;vertical-align:middle;margin:0 -.0335em;animation:tl-rl-spin 7s linear infinite}"
+        + ".tl-loader .rl-dots{display:flex;gap:7px}"
+        + ".tl-loader .rl-dots i{width:7px;height:7px;border-radius:50%;background:#9cd2ff;animation:tl-rl-bnc 1.1s ease-in-out infinite}"
+        + ".tl-loader .rl-dots i:nth-child(2){animation-delay:.16s}.tl-loader .rl-dots i:nth-child(3){animation-delay:.32s}"
+        + "@keyframes tl-rl-bnc{0%,75%,100%{opacity:.25;transform:translateY(0)}38%{opacity:1;transform:translateY(-5px)}}"
+        + "@keyframes tl-rl-spin{to{transform:rotate(-360deg)}}";
+      document.head.appendChild(st);
+    }
+    const wrap = document.createElement('div'); wrap.className = 'tl-loader';
+    const inner = document.createElement('div'); inner.className = 'rl-in';
+    const word = document.createElement('div'); word.className = 'rl-word';
+    const mk = (t, c) => { const s = document.createElement('span'); s.style.color = c; s.textContent = t; return s; };
+    const o = document.createElement('img'); o.className = 'rl-o'; o.src = '/media/romp-swirl-o.svg'; o.alt = 'o';
+    word.appendChild(mk('R', '#1EA1EB')); word.appendChild(o);
+    word.appendChild(mk('m', '#54B204')); word.appendChild(mk('p', '#4EA8A9'));
+    const dots = document.createElement('div'); dots.className = 'rl-dots';
+    for (let i = 0; i < 3; i++) dots.appendChild(document.createElement('i'));
+    inner.appendChild(word); inner.appendChild(dots); wrap.appendChild(inner);
+    this._loaderEl = wrap;
+    this.wrap.insertBefore(wrap, this.svg);   // sits in the pane flow, above the (hidden) svg
   }
 
   // hover bodies: the prompt DOT shows the MESSAGE caption — a gist of what the user ASKED — once the

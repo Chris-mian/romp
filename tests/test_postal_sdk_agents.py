@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""SDK-backed (non-tmux) sessions must be VISIBLE + reachable to the postal service (the user via ui,
+"""SDK-backed (non-tmux) sessions must be VISIBLE + reachable to the Romp Postal Service (the user via ui,
 2026-06-26). local_agents() now reads the kernel's UNIFIED GET /sessions (tmux + SDK) — the kernel merges
 both backends — so an SDK session the kernel reports is a live postal agent here too: a send to it DELIVERS
 instead of resolving DEAD and PARKING. The bus no longer reads the SDK registry directly or shells tmux;
@@ -13,7 +13,7 @@ from importlib.machinery import SourceFileLoader
 HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()      # hermetic; constants resolve under here at import
-pm = SourceFileLoader("romp_postal", os.path.join(BIN, "romp-postal")).load_module()
+pm = SourceFileLoader("romp_postal", os.path.join(BIN, "romp-postal-service")).load_module()
 
 SID = "11111111-2222-3333-4444-555555555555"
 

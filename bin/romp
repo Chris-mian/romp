@@ -21,7 +21,7 @@
 
 set -euo pipefail
 
-# Sibling scripts (romp-postal, romp-dashboard, ...) live next to this script;
+# Sibling scripts (romp-postal-service, romp-dashboard, ...) live next to this script;
 # make them resolvable regardless of the caller's PATH.
 PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd):$PATH"
 
@@ -112,10 +112,10 @@ _romp_provision_server() {
     hooks="$(tmux show-hooks -g 2>/dev/null || true)"
     # Keep the name<->id map + Claude's pill synced on a rename made by ANY means.
     grep -q '^after-rename-session' <<<"$hooks" || tmux set-hook -g after-rename-session \
-        "run-shell -b \"$bin_dir/romp _renamed #{q:session_name}; $bin_dir/romp-postal prune\""
+        "run-shell -b \"$bin_dir/romp _renamed #{q:session_name}; $bin_dir/romp-postal-service prune\""
     # Drop dead sessions from postal peer rows the moment one closes.
     grep -q '^session-closed' <<<"$hooks" || tmux set-hook -g session-closed \
-        "run-shell -b \"$bin_dir/romp-postal prune\""
+        "run-shell -b \"$bin_dir/romp-postal-service prune\""
     # Clear the unread-mail badge when the user switches to a session's window.
     grep -q '^client-session-changed' <<<"$hooks" || tmux set-hook -g client-session-changed \
         "run-shell -b \"$bin_dir/romp-mail-clear #{q:client_session}\""
@@ -133,7 +133,7 @@ _romp_provision_server() {
 }
 
 # SESSION display decorations — the romp status line (live summary on the
-# right, postal peers row when romp-postal flips this session to `status 2`)
+# right, postal peers row when romp-postal-service flips this session to `status 2`)
 # and the terminal-tab title dot. Session-scoped (`set -t`), so non-romp
 # sessions and the user's global status config are untouched. Mirrors what
 # previously lived only in the author's dotfiles tmux.conf.
@@ -155,7 +155,7 @@ _romp_provision_session() {   # <session>
     # dotfiles' global tmux.conf to session scope; the user's report 2026-06-12).
     # Pin [0] to the live global composition before defining [1].
     tmux set -t "$s" 'status-format[0]' "$(tmux show -gv 'status-format[0]')"
-    # Second status row: who this session is talking to (romp-postal maintains
+    # Second status row: who this session is talking to (romp-postal-service maintains
     # @romp-peerN and flips `status 2` when the list is non-empty).
     tmux set -t "$s" 'status-format[1]' '#[align=right]#{?@romp-peer1, #[bg=#{@romp-peer1c}#,fg=#{@romp-peer1f}] #{@romp-peer1} #[default],}#{?@romp-peer2, #[bg=#{@romp-peer2c}#,fg=#{@romp-peer2f}] #{@romp-peer2} #[default],}#{?@romp-peer3, #[bg=#{@romp-peer3c}#,fg=#{@romp-peer3f}] #{@romp-peer3} #[default],}#{?@romp-peer4, #[bg=#{@romp-peer4c}#,fg=#{@romp-peer4f}] #{@romp-peer4} #[default],}#{?@romp-peer5, #[bg=#{@romp-peer5c}#,fg=#{@romp-peer5f}] #{@romp-peer5} #[default],}#{?@romp-peer6, #[bg=#{@romp-peer6c}#,fg=#{@romp-peer6f}] #{@romp-peer6} #[default],}#{?@romp-peer7, #[bg=#{@romp-peer7c}#,fg=#{@romp-peer7f}] #{@romp-peer7} #[default],}#{?@romp-peer8, #[bg=#{@romp-peer8c}#,fg=#{@romp-peer8f}] #{@romp-peer8} #[default],}#{?@romp-peer9, #[bg=#{@romp-peer9c}#,fg=#{@romp-peer9f}] #{@romp-peer9} #[default],}#{?@romp-peer10, #[bg=#{@romp-peer10c}#,fg=#{@romp-peer10f}] #{@romp-peer10} #[default],} '
 }
@@ -595,7 +595,7 @@ For scripts / agents (double-dash = not for everyday use):
 EOF
     _romp_cmd "romp --resume <id>"         -            "Resume a specific conversation by its UUID"
     _romp_cmd "romp --detach"              -            "Create the session without attaching (prints attach cmd)"
-    _romp_cmd "romp --mail ..."            romp-postal  "Romp Postal Service: send <to> <text> | inbox | agents | remote"
+    _romp_cmd "romp --mail ..."            romp-postal-service  "Romp Postal Service: send <to> <text> | inbox | agents | remote"
     exit 0
 fi
 
@@ -636,11 +636,11 @@ fi
 
 # Romp Postal Service — peer messaging between romp sessions. Double-dash because
 # it's a scripting/agent entrypoint, not an everyday command (and agents usually
-# use the MCP tools). Delegates to romp-postal, same pattern as `-d` -> dashboard.
+# use the MCP tools). Delegates to romp-postal-service, same pattern as `-d` -> dashboard.
 if [[ "${1:-}" == "--mail" ]]; then
     shift
     # ROMP_POSTAL_BIN: test seam — see the -d dispatch above.
-    exec "${ROMP_POSTAL_BIN:-romp-postal}" "$@"
+    exec "${ROMP_POSTAL_BIN:-romp-postal-service}" "$@"
 fi
 
 # `romp --version` — what's running across the moving parts (working tree, kernel /version, bundles
@@ -996,7 +996,7 @@ else
     # (the feed treats that as NEEDS INPUT). We do NOT auto-answer it — guessing the
     # key / "from summary" loses context; the user clears it by hand.
     if $resume && [[ -n "$sid" ]]; then
-        ( romp-postal picker-check --name "$name" --id "$sid" >/dev/null 2>&1 & )
+        ( romp-postal-service picker-check --name "$name" --id "$sid" >/dev/null 2>&1 & )
     fi
 
     # Attach — or, when detaching, just report how to get there.
