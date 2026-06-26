@@ -1453,6 +1453,12 @@ class TmuxBackend(sb.SessionBackend):
         except Exception:
             sys.stderr.write("tmux rename '%s': %s\n" % (old, traceback.format_exc()))
 
+    def record_permission_mode(self, name, mode):
+        """Persist the permission mode we just cycled to in @claude-permission-mode — CC doesn't expose it in
+        statusLine JSON, so there's no event source to self-heal from; we caused the change, so we record it.
+        (Keeps the @claude-* var name inside the class — the higher cycle helper stays tmux-string-free.)"""
+        self.set_var(name, "@claude-permission-mode", mode)
+
     # ── the sid-keyed SessionBackend contract (maps sid→tmux NAME internally; tmux is name-keyed) ──
     # Each method is a thin wrapper over the module-level helpers; the kernel + postal drive a tmux session
     # ONLY through these (never by shelling tmux), so the SessionBackend API is the single seam.
@@ -1834,7 +1840,7 @@ def _cycle_mode(name, sid, target):
         # launch value: the chat label never updated AND the next _cycle_mode computed its press count from
         # a stale `cur`. We caused the change, so we know the new mode is `target` — write it. (A switch made
         # directly in the terminal TUI still can't be observed; that's a CC-exposure gap, not ours.) (2026-06-18.)
-        _TMUX.set_var(name, "@claude-permission-mode", target)
+        _TMUX.record_permission_mode(name, target)
         _push_all()                                                 # re-render so the chat mode label flips now
     threading.Thread(target=go, daemon=True).start()
 
