@@ -895,6 +895,15 @@ class TimelinePanel {
 
   update(data) {
     if (!data || data.unavailable || !data.sessions) { this.data = data; this.drawMessage(data && data.unavailable ? 'Timeline needs a desktop Obsidian with tmux.' : 'No romp activity.'); return; }
+    // The kernel ships the timeline as TWO messages (the user 2026-06-25): {type:"data"} carries the LANES
+    // SKELETON (sessions/status/tokens, no turns/judging/messages/nudges) and a following {type:"bars"} carries
+    // the heavy detail (applyBars). Carry the last-known detail across a skeleton-only update so the bars don't
+    // blink out every push. A full data object (the test harness, or an older one-shot) keeps its own bars.
+    const prev = this.data;
+    if (prev && (!data.turns || !Object.keys(data.turns).length)) {
+      data.turns = prev.turns || {}; data.judging = prev.judging || [];
+      data.messages = prev.messages || []; data.nudges = prev.nudges || [];
+    }
     this.data = data;
     this._reconcilePendingFlags();   // hold an optimistic eye-toggle sticky until THIS push (or a later one) confirms it
     // Live-edge baseline: free-run off a FIXED anchor and re-snap only on a genuine step, so the few-ms
@@ -904,7 +913,7 @@ class TimelinePanel {
       this._nowBaseSec = data.now; this._nowBaseMs = _tMs;   // monotonic ms when this data.now was observed
     }
     this._wasLive = _live;
-    if (!this.fitted) { this.fitWindow(); this.fitted = true; }
+    if (!this.fitted && Object.keys(this.data.turns || {}).length) { this.fitWindow(); this.fitted = true; }   // fit once bars exist (a skeleton-only first paint waits for applyBars)
     // first paint with a chat already open → seed the highlight from it (don't override a later local pick)
     if (this.selectedSid == null) { const sid = this._sidForActiveChat(data.activeChat); if (sid) this.selectedSid = sid; }
     // Feed→timeline HOVER from the FILE (timeline-hover.json — the cross-front-end broadcast channel,
@@ -941,6 +950,22 @@ class TimelinePanel {
       else if (data.focus.nonce !== this._focusNonce) { this._focusNonce = data.focus.nonce; this.focusEvent(data.focus); }
     }
     this._startLiveTick();   // re-arm the smooth-advance loop each poll (no-op unless live-following + visible)
+  }
+
+  // The heavy second half of a timeline push (the user 2026-06-25): the per-segment work BARS + the judging
+  // band + message connectors + nudge marks — ~95% of the payload, deferred so the lanes (update()) paint
+  // first. The skeleton always lands first (TCP-ordered on the one socket), so this.data.sessions is set.
+  applyBars(m) {
+    if (!m || !this.data || !this.data.sessions) return;
+    this.data.turns = m.turns || {};
+    this.data.judging = m.judging || [];
+    this.data.messages = m.messages || [];
+    this.data.nudges = m.nudges || [];
+    if (typeof m.now === 'number') this.data.now = m.now;
+    if (!this.fitted && Object.keys(this.data.turns).length) { this.fitWindow(); this.fitted = true; }
+    // honor the same freeze-on-hover / click-hold guard update() uses (don't relayout under a held pointer/tip)
+    if ((this.tip && this.tip.classList && this.tip.classList.contains('show')) || this._pointerHeld) { this._dirtyWhileTip = true; return; }
+    this.draw();
   }
 
   // Direct hover push from the kernel (server.ts pushHover) — the FAST path that skips the

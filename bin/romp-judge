@@ -1249,7 +1249,61 @@ def _custom_title(p):
     return None
 
 
+_discover_lock = threading.Lock()
+_discover_cache = {"fp": None, "result": None}        # fingerprint → cached discover() result (see _discover_fingerprint)
+
+
+def _discover_fingerprint():
+    """A cheap structural signature of the transcript namespace that changes EXACTLY when discover()'s
+    output would: a session ADDED/RENAMED (a names/ entry's set or mtime changes) or a FORK appearing (a
+    .jsonl added to a project dir bumps that dir's mtime). A plain transcript APPEND adds no directory entry,
+    so it leaves this unchanged — which is the whole point: discover()'s LIST doesn't change on an append, so
+    we must not re-walk ~80 project dirs + read every fork's head 2-4× per push for nothing. Same (mtime)
+    change-detection idiom as the parse cache; NOT a time heuristic. ~2ms vs ~60-250ms for a full discover."""
+    try:
+        entries = sorted(NAMES.iterdir())
+    except OSError:
+        return None
+    fp = []
+    for f in entries:
+        try:
+            mt = f.stat().st_mtime
+        except OSError:
+            continue
+        try:
+            parts = f.read_text().rstrip("\n").split("\t")
+            cdir = parts[1] if len(parts) > 1 else ""
+        except Exception:
+            cdir = ""
+        pm = 0
+        if cdir:
+            try:
+                pm = os.stat(_proj_dir(cdir)).st_mtime          # a new fork in this project bumps the DIR mtime
+            except OSError:
+                pm = 0
+        fp.append((f.name, mt, pm))
+    return tuple(fp)
+
+
 def discover(now):
+    """[(fsid, path, anchor_sid, name)] for every transcript of a romp session touched within WINDOW —
+    CACHED behind a directory-mtime fingerprint (the result only changes on a session add/rename/fork, not on
+    a transcript append), so the feed + timeline + chat builds and both judge tiers share ONE filesystem walk
+    per change instead of re-walking every push. The cached list is read-only for all callers."""
+    fp = _discover_fingerprint()
+    if fp is not None:
+        with _discover_lock:
+            if _discover_cache["fp"] == fp and _discover_cache["result"] is not None:
+                return _discover_cache["result"]
+    res = _discover_impl(now)
+    if fp is not None:
+        with _discover_lock:
+            _discover_cache["fp"] = fp
+            _discover_cache["result"] = res
+    return res
+
+
+def _discover_impl(now):
     """[(fsid, path, anchor_sid, name)] for every transcript of a romp session touched within
     WINDOW: the session's anchor transcript plus any same-customTitle fork in its project dir.
     File-based (names/), no tmux — works for headless sessions too."""

@@ -4430,14 +4430,20 @@ def _nudge_marks(t0, alive_sids):
     return out
 
 
-def build_timeline(now, tmux=None):
+def build_timeline(now, tmux=None, with_bars=True):
     """A {type:"timeline"} message the ported timeline bundle consumes (ui-parity.md: timeline =
     ADAPT). Lanes per session; work bars are SEGMENTS [t,end] from the event model (not the deleted
     `romp-events --emit`); prompt dots at segment starts; tooltips from the captioner; awaiting/
     compacting stripes from states/; compaction markers from compact_boundary atoms; usage from
     usage.json; live state + model/effort/context%/compaction% per lane from tmux @claude-* vars.
     Message connectors (need the courier) and cross-pane focus/hover are later increments — emitted
-    empty/null so the render's conditional paths hide them."""
+    empty/null so the render's conditional paths hide them.
+
+    with_bars=False builds only the LANES SKELETON (sessions + tokens + status) — the heavy per-segment
+    bars, the judging band, the message connectors and the nudge marks are left empty. The push sends this
+    skeleton FIRST so the lanes paint instantly, then ships the bars as a separate {type:"bars"} message
+    (the user 2026-06-25: "load everything else and have the bars load after"). build_timeline is ~95%
+    bars+judging by payload and the dominant startup cost, so the skeleton is cheap and lands immediately."""
     if tmux is None:
         tmux = _tmux_sessions()
     alive = _timeline_sessions(now, tmux)            # living + window-dead lanes; per-session `live` below marks the dead ones (struck), the timeline's active-filter reveals them on scrollback (the user 2026-06-16)
@@ -4475,18 +4481,20 @@ def build_timeline(now, tmux=None):
                          and not _suspended_after(turn["end"]))   # dead lane (live False) or pre-sleep freeze → not an open bar
             segs = em.segments(turn)
             for si, seg in enumerate(segs):
+                # A bar must not span a host sleep. EXCISE every suspension inside the segment → one bar per
+                # awake stretch, so work done AFTER the lid reopened isn't erased (the user 2026-06-22). The
+                # asleep gaps between pieces read as idle (and collapse under 'collapse gaps').
+                spans = _awake_spans(seg["t"], seg["end"])
+                last_t = max(last_t or 0, spans[-1][1])            # the true work END (last awake activity) — drives the lane `since`
+                seg_ends[seg["t"]] = spans[-1][1]                  # a completion mark lands at its segment's END (after the work)
+                if not with_bars:
+                    continue                                       # SKELETON: lane `since` needs last_t, but not the bar dicts/captions
                 cap = caps.get(seg["id"], {}).get("caption", "")               # WORK caption (the bar)
                 msg_cap = caps.get(seg["id"] + "#p", {}).get("caption", "")    # MESSAGE caption (the dot) — gist of the ask, ready early
                 work_uuid, reply_uuid = _seg_anchors(seg["atoms"])
                 trig = next((x for x in seg["atoms"] if x.get("uuid") == seg.get("trigger")), None)
                 author = (trig or {}).get("author")
                 src = "queued" if isinstance(author, dict) else "typed"
-                # A bar must not span a host sleep. EXCISE every suspension inside the segment → one bar per
-                # awake stretch, so work done AFTER the lid reopened isn't erased (the user 2026-06-22). The
-                # asleep gaps between pieces read as idle (and collapse under 'collapse gaps').
-                spans = _awake_spans(seg["t"], seg["end"])
-                last_t = max(last_t or 0, spans[-1][1])            # the true work END (last awake activity)
-                seg_ends[seg["t"]] = spans[-1][1]                  # a completion mark lands at its segment's END (after the work)
                 for sj, (bstart, bend) in enumerate(spans):
                     bars.append({
                         # promptId = the prompt atom (the DOT), workId = the first work atom (the BAR) — so a
@@ -4503,8 +4511,9 @@ def build_timeline(now, tmux=None):
                         "nudgeAuto": bool((trig or {}).get("rompAuto")),   # ONLY an AUTO-nudge (not the Nudge button / retry) →
                         #                                       the view marks it as a romp message (swirl on a black dot)
                         "workUuid": work_uuid, "replyUuid": reply_uuid})
-        turns[sid] = bars
-        _derive_judging(sid, caps, goals, now - TL_HORIZON, semantic, seg_ends)
+        if with_bars:
+            turns[sid] = bars
+            _derive_judging(sid, caps, goals, now - TL_HORIZON, semantic, seg_ends)
         compactions = [{"t": a["t"]} for turn in st_turns for a in turn["atoms"]
                        if a.get("type") == "system" and a.get("subtype") == "compact_boundary" and a.get("t")]
         active = bool(tm and tm["state"] in ("working", "permission", "compacting", "waiting"))
@@ -4523,18 +4532,22 @@ def build_timeline(now, tmux=None):
             "stale": faded, "faded": faded,
             "hideFromFeed": _session_flag(sid, "hideFromFeed"),    # lane checkbox → mute from feed (timeline-only)
             "postalOff": _session_flag(sid, "postalOff")})         # lane mailbox → isolate from the postal service (bin/romp-postal)
-    messages = _postal_messages(now, set(id2name), id2name)
-    _bind_message_execs(messages, turns)                 # connector exec → the recipient's process-start (real transit)
-    # token usage by rate-limit WINDOW (the user 2026-06-17): the coding SESSIONS + the judge PIPELINE,
-    # summed over the SAME windows /usage meters (5h "session", 7d "week"), in/out split — so the count
-    # lines up with the % the bars show. Both halves draw the same subscription quota.
-    # The band's marks are the per-call RUN SPANS (g70): each judge call plotted at its real [sent, recv],
-    # glossed by the nearest artifact mark — so a judge that ran shows up WHEN it ran (incl. distiller lag +
-    # coordinating-courier classifications the artifact marks miss), not back-placed onto the work.
-    judging = _run_judging(now - TL_HORIZON, set(id2name), semantic)
+    if with_bars:
+        messages = _postal_messages(now, set(id2name), id2name)
+        _bind_message_execs(messages, turns)             # connector exec → the recipient's process-start (real transit)
+        # The band's marks are the per-call RUN SPANS (g70): each judge call plotted at its real [sent, recv],
+        # glossed by the nearest artifact mark — so a judge that ran shows up WHEN it ran (incl. distiller lag +
+        # coordinating-courier classifications the artifact marks miss), not back-placed onto the work.
+        judging = _run_judging(now - TL_HORIZON, set(id2name), semantic)
+        nudges = _nudge_marks(now - TL_HORIZON, set(id2name))
+    else:                                                # SKELETON: the heavy time-plotted detail rides the {type:"bars"} message
+        messages, judging, nudges = [], [], []
+    # `tokens` (the per-rate-limit-window token totals) is DEAD payload — the view dropped its token-count
+    # display and reads only `usage` now (romp-timeline-view.js: "nothing reads it"). Computing it cost ~184ms
+    # PER BUILD (it summed usage.jsonl across every session) — the single biggest slice of the timeline build,
+    # paid on every cold connect. Ship []; re-add it LAZILY + CACHED if the token display ever returns.
     return {"type": "timeline", "now": now, "sessions": sessions, "turns": turns,
-            "messages": messages, "judging": judging, "nudges": _nudge_marks(now - TL_HORIZON, set(id2name)),
-            "tokens": _token_windows([s["path"] for s in alive], now),
+            "messages": messages, "judging": judging, "nudges": nudges, "tokens": [],
             "activeChat": None, "focus": None, "hover": None, "usage": _usage()}
 
 
@@ -4971,7 +4984,17 @@ def _push(targets, connect=False):
                                     "status": m.get("status"), "ledger": m.get("ledger")} for m in chat_sessions]
             for c in chat_clients:                       # the working-dot list (chat reads feed["working"])
                 _send_client(c, ("working",), {"type": "working", "names": feed["working"]})
-        timeline = _cached_timeline(now, tmux, fsig, connect) if want_tl else None
+        # TIMELINE in two messages (the user 2026-06-25): the LANES SKELETON ({type:"data"}) flushes FIRST —
+        # cheap, so the lanes/status paint instantly — THEN the heavy bars+judging ride a {type:"bars"} message
+        # (the ~95% of the payload). On a COLD connect the skeleton is on the wire before the expensive
+        # _cached_timeline build even runs, so the user sees the fleet at once instead of a blank wait.
+        timeline = None
+        if want_tl:
+            tl_clients = [c for c in targets if c["app"] == "timeline"]
+            skel = build_timeline(now, tmux, with_bars=False)
+            for c in tl_clients:
+                _send_client(c, ("timeline",), {"type": "data", "data": skel})
+            timeline = _cached_timeline(now, tmux, fsig, connect)
     except Exception:
         sys.stderr.write("push build: %s\n" % traceback.format_exc())
         return
@@ -4979,7 +5002,9 @@ def _push(targets, connect=False):
         if c["app"] == "feed":   # the feed pane AND the Fleet view both connect app=feed (Fleet reads feed.ledgers)
             _send_client(c, ("feed",), feed)
         elif c["app"] == "timeline" and timeline is not None:
-            _send_client(c, ("timeline",), {"type": "data", "data": timeline})
+            _send_client(c, ("timelinebars",), {"type": "bars", "turns": timeline["turns"],
+                         "judging": timeline["judging"], "messages": timeline["messages"],
+                         "nudges": timeline["nudges"], "now": timeline["now"]})
     with _clients_lock:
         _clients[:] = [c for c in _clients if c.get("alive", True)]
 
@@ -5680,6 +5705,7 @@ ws=new WebSocket(proto+location.host+"/ws?app=timeline"+(wid?"&wid="+encodeURICo
 ws.onopen=function(){for(var i=0;i<queue.length;i++)ws.send(queue[i]);queue=[];};
 ws.onmessage=function(ev){var m;try{m=JSON.parse(ev.data);}catch(e){return;}
 if(m.type==="data")panel.update(m.data);
+else if(m.type==="bars"&&panel.applyBars)panel.applyBars(m);
 else if(m.type==="activeChat"&&panel.setActiveChat)panel.setActiveChat(m.activeChat);
 else if(m.type==="hover"&&panel.setHover)panel.setHover(m);};
 ws.onclose=function(){setTimeout(function(){location.reload();},1500);};}

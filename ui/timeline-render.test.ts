@@ -524,3 +524,30 @@ test("prompt-dot hover shows the MESSAGE caption once ready, falling back to the
                "until the message caption lands, fall back to the raw prompt — never the work summary");
   assert.equal(panel.req({}), "", "neither → empty");
 });
+
+// ── BARS-DEFER (the user 2026-06-25, "load everything else and have the bars load after"): the kernel
+// ships the timeline as TWO ws messages — {type:"data"} = the lanes SKELETON (sessions/status, no
+// turns/judging/messages/nudges) which paints instantly, then {type:"bars"} = the heavy detail. update()
+// renders the skeleton; applyBars() fills the bars; and a skeleton-only update must NOT blink the bars out.
+function skeletonOf(full: any) {
+  return { now: full.now, sessions: full.sessions, turns: {}, judging: [], messages: [], nudges: [],
+           activeChat: null, focus: null, hover: null, usage: null };
+}
+test("applyBars fills the deferred bars onto a lanes-only skeleton, and draw() emits them", () => {
+  const panel: any = new TimelinePanel(makeNode("div"));
+  const full = synthData();
+  panel.update(skeletonOf(full));                                    // the {type:"data"} lanes skeleton
+  assert.equal(Object.keys(panel.data.turns).length, 0, "the skeleton paints lanes with no bars yet");
+  panel.applyBars({ type: "bars", turns: full.turns, judging: [], messages: [], nudges: [], now: full.now });
+  assert.deepEqual(panel.data.turns, full.turns, "applyBars merges the bars into the live data");
+  assert.ok(panel.svg.children.length > 10, "the bars render after applyBars (a populated SVG)");
+});
+test("a skeleton-only update preserves the bars from the last applyBars (no per-push blink)", () => {
+  const panel: any = new TimelinePanel(makeNode("div"));
+  const full = synthData();
+  panel.update(skeletonOf(full));
+  panel.applyBars({ type: "bars", turns: full.turns, judging: [], messages: [], nudges: [], now: full.now });
+  const next = skeletonOf(full); next.now = full.now + 1;           // a fresh push: lanes skeleton again
+  panel.update(next);
+  assert.deepEqual(panel.data.turns, full.turns, "the prior bars survive a lanes-only update (carried over)");
+});
