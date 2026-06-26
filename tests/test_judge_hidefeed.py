@@ -83,5 +83,60 @@ class HiddenFromFeed(unittest.TestCase):
         self.assertEqual(sorted(seen), sorted([MUTED, VISIBLE]), "with no flag, every session is planned")
 
 
+class FastForwardOnUnmute(unittest.TestCase):
+    """UN-muting must NOT backfill (the user 2026-06-25): the planner is gated off while muted, so segments
+    pile up unplaced; re-enabling task tracking must resume from the PRESENT, not retro-create a burst of
+    goals for the muted gap. fast_forward_placements seals every outstanding unit as processed-with-no-goal.
+    Synthetic only."""
+
+    def setUp(self):
+        self._saved_state = jd.STATE
+        self._td = tempfile.mkdtemp()
+        jd._rebind_state(Path(self._td))
+
+    def tearDown(self):
+        jd._rebind_state(self._saved_state)
+        shutil.rmtree(self._td, ignore_errors=True)
+
+    # two ended work segments (the gap) + one open prompt segment (in flight)
+    UNITS = [("segA", "work", 1, "did A", True, None),
+             ("segB", "work", 2, "did B", True, None),
+             ("segC", "prompt", 3, "asking C", True, None)]
+
+    def _run(self, fsid):
+        saved_pu, saved_ps = jd.plan_units, jd.parsed_session
+        jd.plan_units = lambda session: list(self.UNITS)
+        jd.parsed_session = lambda fsid, paths, now: {"turns": []}
+        try:
+            return jd.fast_forward_placements(fsid, path="/x", now=1700000000)
+        finally:
+            jd.plan_units, jd.parsed_session = saved_pu, saved_ps
+
+    def test_seals_every_outstanding_unit_with_no_goal(self):
+        n = self._run(MUTED)
+        p = jd.load_goals(MUTED)["placements"]
+        self.assertIn("segA", p); self.assertIsNone(p["segA"], "ended work segment sealed, no goal")
+        self.assertIn("segB", p); self.assertIsNone(p["segB"])
+        self.assertIn("segC#p", p, "the open segment's prompt-run is sealed")
+        self.assertIn("segC", p, "AND its FUTURE work-run, so the in-flight segment stays untracked too")
+        self.assertEqual(n, 4, "segA, segB, segC#p, segC")
+        self.assertEqual(jd.load_goals(MUTED)["nodes"], {}, "NO goals created — backfill suppressed")
+
+    def test_leaves_already_placed_units_untouched(self):
+        st = jd.load_goals(MUTED); st["placements"]["segA"] = "node-1"; jd.save_goals(MUTED, st)
+        n = self._run(MUTED)
+        p = jd.load_goals(MUTED)["placements"]
+        self.assertEqual(p["segA"], "node-1", "an already-planned segment keeps its real placement")
+        self.assertEqual(n, 3, "only segB, segC#p, segC are newly sealed")
+
+    def test_missing_transcript_is_a_safe_noop(self):
+        saved = jd.discover
+        jd.discover = lambda now: []          # session not discoverable → no path
+        try:
+            self.assertEqual(jd.fast_forward_placements("nope", now=1700000000), 0)
+        finally:
+            jd.discover = saved
+
+
 if __name__ == "__main__":
     unittest.main()

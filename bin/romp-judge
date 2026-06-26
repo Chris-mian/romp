@@ -1738,6 +1738,40 @@ def run_plan(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, verb
     return placed
 
 
+def fast_forward_placements(fsid, path=None, now=None):
+    """Seal every currently-OUTSTANDING planner unit as processed-with-no-goal (the None sentinel the
+    retirement path already uses), WITHOUT planning any of it — so the planner resumes from the PRESENT
+    instead of backfilling. Called when a session is UN-muted from the feed (hideFromFeed cleared): the
+    planner is gated OFF while muted, so its segments pile up unplaced; re-enabling task tracking must NOT
+    retro-create a burst of goals for the work that happened while muted (the user 2026-06-25). The whole
+    in-flight segment is sealed too (its prompt-run key AND its future work-run key seg_id), so the board
+    truly resumes clean — the next FRESH activity is the first new task. Returns units sealed; best-effort
+    (a missing transcript → 0)."""
+    if now is None:
+        now = int(time.time())
+    if path is None:
+        hit = next((s for s in discover(now) if s[0] == fsid), None)
+        if not hit:
+            return 0
+        path = str(hit[1])
+    session = parsed_session(fsid, [path], now)
+    store = load_goals(fsid)
+    placements = store["placements"]
+    n = 0
+    for u in plan_units(session):
+        seg_id, phase = u[0], u[1]
+        keys = {_unit_key(seg_id, phase)}
+        if phase == "prompt":
+            keys.add(seg_id)                          # the open segment's FUTURE work-run, sealed now too
+        for key in keys:
+            if key not in placements:
+                placements[key] = None                # processed, no goal — the planner dedups it out next pass
+                n += 1
+    if n:
+        save_goals(fsid, store)
+    return n
+
+
 # ───────────────────────── the grouper (triage tier; forest reorganization) ─────────────────────────
 # The planner places each segment's work but never reshapes the board. The grouper, running after it,
 # takes a session's OPEN top-level goals and nests related ones into a few coherent trees — relinking one

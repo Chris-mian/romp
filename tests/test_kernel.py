@@ -325,6 +325,21 @@ class ViewBuilder(unittest.TestCase):
         self.assertFalse(any(a["sid"] == SID for a in km.build_feed(NOW)["asks"]),
                          "un-muting does NOT resurface the view-cleared goal — it stays sealed")
 
+    def test_unmuting_fast_forwards_the_planner_so_it_does_not_backfill(self):
+        # the user 2026-06-25: re-enabling task tracking must NOT retro-create a burst of goals for the work
+        # that happened while muted. Unmuting calls jd.fast_forward_placements (seals the gap); muting must not.
+        km._flags_cache.clear()
+        calls = []
+        saved = jd.fast_forward_placements
+        jd.fast_forward_placements = lambda sid, *a, **k: calls.append(sid)
+        try:
+            km._set_session_flag(SID, "hideFromFeed", True)     # mute → no fast-forward
+            self.assertEqual(calls, [], "muting must NOT fast-forward (it seals current goals, keeps history)")
+            km._set_session_flag(SID, "hideFromFeed", False)    # unmute → fast-forward the gap
+            self.assertEqual(calls, [SID], "un-muting fast-forwards this session's planner cursor")
+        finally:
+            jd.fast_forward_placements = saved
+
     def test_timeline_lane_reports_hide_from_feed_for_the_gear(self):
         """The timeline lane carries hideFromFeed so the gear can render its on/off state."""
         km._flags_cache.clear()

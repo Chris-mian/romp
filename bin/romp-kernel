@@ -635,6 +635,16 @@ def _set_session_flag(sid, flag, value):
                 _mark_nodes_cleared(tops, True)               # durable node flag → sealed across judge passes
         except Exception:
             pass
+    if flag == "hideFromFeed" and not value:
+        # UN-muting → re-enable task tracking, but DON'T backfill: the planner was gated off while muted, so
+        # this session's segments piled up unplaced. Without this, the next planner pass would retro-create a
+        # burst of goals for everything that happened while muted (the user 2026-06-25). Fast-forward the
+        # planner's cursor — seal every outstanding unit as processed-with-no-goal — so it resumes from the
+        # present and the next FRESH activity is the first new task.
+        try:
+            jd.fast_forward_placements(sid)
+        except Exception:
+            sys.stderr.write("unmute fast-forward: %s\n" % traceback.format_exc())
 
 
 # ── Auto Nudge (the user 2026-06-19) ──────────────────────────────────────────────────────────────
