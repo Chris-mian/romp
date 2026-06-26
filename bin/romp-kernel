@@ -5896,15 +5896,19 @@ def _timeline_page():
         return ("<!DOCTYPE html><html><body style='font-family:-apple-system,sans-serif;color:#999;"
                 "background:#1e1e1e;padding:12px'>romp timeline needs the ui/ modules "
                 "(romp-timeline-view.js).</body></html>")
+    # No _pane_spin("host") here (the user 2026-06-26): that full-pane loader hides the instant #host gets
+    # its first child — which is the .romp-tl-wrap on TimelinePanel construction, BEFORE any bars — so it
+    # left an empty bar gap. The view now owns its own bars-area loader (draw()'s _drawBarsLoader, gated on
+    # _barsLoaded) so the spinner stays until the deferred {type:"bars"} payload actually renders.
     return ("<!DOCTYPE html><html lang=en><head><meta charset=UTF-8>"
             "<meta name=viewport content='width=device-width,initial-scale=1'>"
             "<link rel=icon type=image/svg+xml href=/media/romp-swirl-glyph.svg>"
-            "<title>Romp · timeline</title><style>%s\n%s</style></head><body><div id=host></div>%s"
+            "<title>Romp · timeline</title><style>%s\n%s</style></head><body><div id=host></div>"
             "<script>%s</script>"
             "<script>var module={exports:{}};(function(module,exports){\n%s\n})(module,module.exports);"
             "var TimelinePanel=module.exports.TimelinePanel;"
             "window.__rompConnectTimeline(new TimelinePanel(document.getElementById('host')));"
-            "</script></body></html>" % (THEME_CSS, TIMELINE_CSS, _pane_spin("host"), _TIMELINE_BOOT, view_js))
+            "</script></body></html>" % (THEME_CSS, TIMELINE_CSS, _TIMELINE_BOOT, view_js))
 
 
 def _chat_body():

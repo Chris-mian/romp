@@ -294,6 +294,11 @@ class TimelinePanel {
     this.host = host;
     this.data = null;
     this.fitted = false;
+    // The kernel ships the timeline as a LANES skeleton ({type:"data"}, no turns) then the heavy BARS
+    // ({type:"bars"} → applyBars). Until the bars land, the plot area (right of the lane labels) is empty,
+    // so draw() paints the romp swirl loader there. Set true the instant applyBars runs (or a full one-shot
+    // data object arrives through update()), and the loader is gone on the next draw. CLAUDE.md loader rule.
+    this._barsLoaded = false;
     this.M = { left: 130, right: 16, top: 8, bottom: 22 };   // axis labels live in the bottom margin
     this._mc = document.createElement('canvas').getContext('2d');
 
@@ -915,6 +920,10 @@ class TimelinePanel {
     // SKELETON (sessions/status/tokens, no turns/judging/messages/nudges) and a following {type:"bars"} carries
     // the heavy detail (applyBars). Carry the last-known detail across a skeleton-only update so the bars don't
     // blink out every push. A full data object (the test harness, or an older one-shot) keeps its own bars.
+    // A FULL data object (the test harness / an older one-shot) carries its own turns, so the bars are
+    // already present → no loader. The two-message path leaves turns empty here; the loader shows until
+    // applyBars lands. Read the RAW turns BEFORE the prev-carry below back-fills them.
+    if (data.turns && Object.keys(data.turns).length) this._barsLoaded = true;
     const prev = this.data;
     if (prev && (!data.turns || !Object.keys(data.turns).length)) {
       data.turns = prev.turns || {}; data.judging = prev.judging || [];
@@ -974,6 +983,7 @@ class TimelinePanel {
   // first. The skeleton always lands first (TCP-ordered on the one socket), so this.data.sessions is set.
   applyBars(m) {
     if (!m || !this.data || !this.data.sessions) return;
+    this._barsLoaded = true;   // the bars payload has landed (even if empty) → drop the plot-area loader
     this.data.turns = m.turns || {};
     this.data.judging = m.judging || [];
     this.data.messages = m.messages || [];
@@ -2292,8 +2302,28 @@ class TimelinePanel {
       // still surfaces as a romp-logo dot on its own lane; the band is now judge run-spans only.)
     }
 
+    // bars still in flight → romp swirl loader in the (empty) plot area; the lanes + axis already painted
+    // from the skeleton. Removed on the next draw once applyBars sets _barsLoaded. CLAUDE.md loader rule.
+    if (!this._barsLoaded) this._drawBarsLoader(svg, M.left + plotW / 2, (M.top + axisY) / 2);
+
     // far-right ⟩⟩ jump-to-now button — only when held back off the live edge (unpinned)
     if (!this._pinned) this._drawNowButton(svg);
+  }
+
+  // The reverse-spinning romp swirl-as-"o", centered in the plot area, shown while the deferred bars
+  // payload is still in flight (the user 2026-06-26). The lanes/axis paint instantly off the skeleton; this
+  // fills the otherwise-empty plot so it doesn't read as "no activity" until applyBars lands. Reverse spin
+  // (-360) + 7s matches the shared romp loader (_LOADER_CSS .rl-o). Removed on the next draw.
+  _drawBarsLoader(svg, cx, cy) {
+    const R = 22;
+    const g = el('g', { 'pointer-events': 'none' });
+    const img = el('image', { x: cx - R, y: cy - R, width: 2 * R, height: 2 * R, opacity: 0.92 });
+    img.setAttributeNS('http://www.w3.org/1999/xlink', 'href', '/media/romp-swirl-o.svg');
+    img.setAttribute('href', '/media/romp-swirl-o.svg');
+    img.appendChild(el('animateTransform', { attributeName: 'transform', attributeType: 'XML', type: 'rotate',
+      from: '0 ' + cx + ' ' + cy, to: '-360 ' + cx + ' ' + cy, dur: '7s', repeatCount: 'indefinite' }));
+    g.appendChild(img);
+    svg.appendChild(g);
   }
 
   // hover bodies: the prompt DOT shows the MESSAGE caption — a gist of what the user ASKED — once the

@@ -49,6 +49,22 @@ class BuildGating(unittest.TestCase):
             km._timeline_sessions, km._parse = o_ts, o_parse
 
 
+class TimelinePageLoader(unittest.TestCase):
+    """The timeline pane no longer carries the full-pane _pane_spin("host") overlay (the user 2026-06-26): it
+    hid the instant #host got its first child — the .romp-tl-wrap on TimelinePanel construction, BEFORE any
+    bars — leaving an empty bar gap. The view owns the bars-area loader now (_drawBarsLoader, gated on
+    _barsLoaded), so the spinner stays until the deferred {type:"bars"} payload renders."""
+
+    def test_timeline_page_drops_the_full_pane_spin_but_keeps_the_host(self):
+        page = km._timeline_page()
+        self.assertIn("<div id=host>", page, "the timeline still mounts into #host")
+        self.assertNotIn("id=pane-spin", page, "no full-pane _pane_spin overlay (it hid before the bars)")
+
+    def test_other_panes_keep_their_pane_spin(self):
+        # the chat/feed/fleet loaders are unaffected — only the timeline's was dropped
+        self.assertIn("id=pane-spin", km._pane_spin("content"))
+
+
 class PushSplit(unittest.TestCase):
     def test_push_ships_the_lanes_skeleton_before_the_bars(self):
         sent = []
