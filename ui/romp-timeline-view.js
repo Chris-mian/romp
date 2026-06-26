@@ -370,6 +370,14 @@ class TimelinePanel {
     // so they are never held — panning stays live. Event-based (pointerdown/up), no time heuristic. CLAUDE.md.
     this._pointerHeld = false;
     this.svg.addEventListener('pointerdown', () => { this._pointerHeld = true; });
+    // Click-drag ANYWHERE on the plot to PAN (the user 2026-06-26): grab the timeline like a map. mousedown
+    // bubbles up from bars/dots/empty alike, so ONE svg-level handler makes the WHOLE plot draggable — the
+    // per-lane rowHit drag couldn't start on a bar (bars are siblings drawn on top). dragAxis still splits
+    // horizontal→pan, vertical→reorder; a plain click (no movement) falls through to the element's own handler.
+    this.svg.addEventListener('mousedown', (e) => this._beginPlotDrag(e));
+    // A committed drag (pan or reorder) sets _suppressClick; swallow the trailing click for EVERY element in
+    // capture, since bars/dots open on click and don't each check the flag (only rowHit did).
+    this.svg.addEventListener('click', (e) => { if (this._suppressClick) { this._suppressClick = false; e.stopPropagation(); e.preventDefault(); } }, true);
     const _release = () => {
       if (!this._pointerHeld) return;
       this._pointerHeld = false;
@@ -1036,6 +1044,17 @@ class TimelinePanel {
     const rect = this.svg.getBoundingClientRect();
     const scaleY = rect.height ? g.H / rect.height : 1;   // svg user-units per client px
     return (e.clientY - rect.top) * scaleY;
+  }
+  // A mousedown ANYWHERE on the plot: resolve the lane under the cursor (clamped) and start the shared drag
+  // gesture, so a press on a bar/dot/empty alike can pan (horizontal) or reorder that lane (vertical). The
+  // controls (lock / feed checkbox / mailbox / pickers) act on their own pointerdown; a no-movement press
+  // here just cleans up and lets their click/select fire. See _beginDrag / dragAxis.
+  _beginPlotDrag(e) {
+    if (e.button !== 0 || !this._geom || this._drag) return;
+    const vis = this._vis || []; if (!vis.length) return;
+    let idx = Math.round((this._svgY(e) - this._geom.top - LANE_GAP / 2) / LANE_GAP);
+    idx = Math.max(0, Math.min(vis.length - 1, idx));
+    this._beginDrag(vis[idx].id, e);
   }
   // One mousedown on a lane; the first real movement decides via dragAxis: horizontal → PAN the plot,
   // vertical → REORDER the lane. A plain click (no movement) falls through to the row's select handler.
@@ -1798,7 +1817,7 @@ class TimelinePanel {
       // are pointer-events:none so their area falls through here; bars/dots keep their handlers on top.
       const rowHit = el('rect', { x: 0, y: y - LANE_GAP / 2, width: W, height: LANE_GAP, fill: 'transparent' });
       rowHit.style.cursor = 'grab';   // grab = drag to PAN (horizontal) or REORDER (vertical); a plain click still selects/opens
-      rowHit.addEventListener('mousedown', (e) => this._beginDrag(s.id, e));
+      // (the drag now starts at the SVG level — _beginPlotDrag — so a press on a BAR pans too, not just empty row space)
       rowHit.addEventListener('click', () => {
         if (this._suppressClick) { this._suppressClick = false; return; }   // just finished a drag → not a select
         this._select(s.id); this.openChat(this._laneTid(s), null, true);
