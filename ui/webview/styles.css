@@ -182,7 +182,9 @@ body { display: flex; flex-direction: column; }
    + dimmed to show the flag is currently off (matching the timeline). */
 .ctx-sep { height: 1px; margin: 4px 6px; background: var(--box-border); }
 .ctx-item-toggle { display: flex; align-items: flex-start; gap: 8px; }
-.ctx-item-toggle .ctx-icon { flex: 0 0 auto; margin-top: 1px; color: var(--fg); display: flex; }
+/* ON = the romp accent blue, matching the timeline lane's feed/mail icons (the user 2026-06-26); OFF = dim
+   gray + slashed. So the same blue marks "enabled" in both the menu and the timeline. */
+.ctx-item-toggle .ctx-icon { flex: 0 0 auto; margin-top: 1px; color: var(--accent); display: flex; }
 .ctx-item-toggle .ctx-icon.off { color: var(--dim); }
 .ctx-item-body { display: flex; flex-direction: column; line-height: 1.25; }
 .ctx-item-sub { font-size: 0.82em; opacity: 0.6; }
@@ -456,6 +458,10 @@ body { display: flex; flex-direction: column; }
 }
 #composer-input:disabled { opacity: 0.55; cursor: not-allowed; }
 #composer-input::placeholder { color: var(--dim); }
+/* Cursor in the message box → a thin romp-blue border, exactly on the box edge — the same accent blue that
+   marks the focused panel (the user 2026-06-26). It only fills in the existing 1px border (no glow, no layout
+   shift), so the chat's two focus spots read clearly: the tabs, or the message box. */
+#composer-input:focus { border-color: var(--accent); }
 /* brief amber flash when Ctrl+C fires an interrupt — visible confirmation that the
    stop was sent (the restored prompt is the other half of the feedback) */
 #composer-input.interrupted-flash {

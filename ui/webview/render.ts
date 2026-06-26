@@ -4520,7 +4520,10 @@ setupSettings();
   const tabs = document.getElementById("tabs");
   if (!tabs) return;
   delegate(tabs, {
-    select: (el) => { const id = el.dataset.id; if (id) setActive(id); },
+    // Clicking a tab leaves focus ON the tab (renderTabs rebuilds the tab during setActive, which dropped
+    // focus to the body — so Enter afterward did nothing). Now focus the (rebuilt) active tab, so the model
+    // is consistent: tab focused → Enter drops into the message box; Escape there returns to the tabs.
+    select: (el) => { const id = el.dataset.id; if (id) { setActive(id); focusActiveTab(); } },
     close: (el) => {
       const id = el.dataset.id;
       if (!id || !vscodeApi) return;
