@@ -88,7 +88,11 @@ interface TodoTask { id: string; subject: string; activeForm?: string; status: s
 type ChipState = "working" | "ready" | "awaiting" | "idle" | "closed" | "compacting" | "blocked" | "retrying";
 interface Status { state: ChipState; sinceEpoch: number | null; effort?: string; model?: string; mode?: string; ctx?: string; faded?: boolean; backend?: string; }   // backend = "tmux" | "sdk" (the kernel's _session_backend) → shown in the tab-title hover tooltip
 interface Color { bg: string; fg: string; }
-interface Session { id: string; name: string; color: Color | null; events: ChatEvent[]; status: Status; firstSeen?: number; cwd?: string; }
+// events is a contiguous TAIL of the transcript: global indices [headFrom, headTotal). On a fresh load the
+// kernel ships only the last WIRE_TAIL events (headFrom > 0) to keep startup light; older history streams in
+// on scroll-back (loadOlder → chatHead prepends, lowering headFrom). headFrom 0 = the whole transcript is
+// resident. chatTail's `from` is GLOBAL and mapped through headFrom.
+interface Session { id: string; name: string; color: Color | null; events: ChatEvent[]; status: Status; firstSeen?: number; cwd?: string; headFrom?: number; headTotal?: number; }
 
 const vscodeApi =
   typeof (window as any).acquireVsCodeApi === "function" ? (window as any).acquireVsCodeApi() : undefined;
@@ -2770,7 +2774,8 @@ function virtualizeToViewport(): void {
   const s = sessions.get(activeId);
   if (!v || !content || !s) return;
   const total = v.unitTotal ?? 0;
-  if (total === 0 || ((v.winStart ?? 0) === 0 && (v.winEnd ?? total) >= total)) return; // whole thing rendered
+  const moreOnServer = (s.headFrom ?? 0) > 0;   // older history not yet resident (wire tail-windowing)
+  if (total === 0 || ((v.winStart ?? 0) === 0 && (v.winEnd ?? total) >= total && !moreOnServer)) return; // everything rendered + resident
   // CHEAP pre-check first (this runs on EVERY scroll): is the viewport comfortably inside the rendered band?
   // Only when it nears a rendered edge do we pay the precise unit walk + re-render. Without this, every scroll
   // event would getBoundingClientRect every rendered row → jank.
@@ -2782,6 +2787,9 @@ function virtualizeToViewport(): void {
   const topH = topEl ? topEl.offsetHeight : 0;
   const renderedBottom = botEl ? botEl.getBoundingClientRect().top - cRectTop + content.scrollTop : content.scrollHeight;
   const st = content.scrollTop, vh = content.clientHeight;
+  // At the top of the RESIDENT events with older history still on the server → fetch the previous chunk
+  // (loadOlder → chatHead). winStart 0 ⇒ no top spacer left to expand into; topH is 0 so this is "near 0".
+  if (moreOnServer && (v.winStart ?? 0) === 0 && st < topH + edgePx) { requestOlder(activeId, v, content); return; }
   const nearTopEdge = (v.winStart ?? 0) > 0 && st < topH + edgePx;
   const nearBotEdge = (v.winEnd ?? total) < total && st + vh > renderedBottom - edgePx;
   if (!nearTopEdge && !nearBotEdge) return;   // window comfortably covers the viewport
@@ -3888,6 +3896,9 @@ function upsert(msg: any) {
     status: msg.status || (prev ? prev.status : { state: "idle", sinceEpoch: null }),
     firstSeen: msg.firstSeen ?? (prev ? prev.firstSeen : undefined),
     cwd: msg.cwd ?? (prev ? prev.cwd : ""),
+    // A trimmed full send carries headFrom/headTotal; a whole-transcript send omits them (headFrom 0).
+    headFrom: msg.headFrom ?? 0,
+    headTotal: msg.headTotal ?? ((msg.events || (prev ? prev.events : [])).length),
   };
   sessions.set(msg.id, s);
   // The kernel re-sends the FULL "session" payload on every push. Distinguish an APPEND (more turns
@@ -3947,10 +3958,12 @@ function update(msg: any) {
 function chatTail(msg: any) {
   const s = sessions.get(msg.id);
   if (!s) return;                                  // no base yet → ignore; a full session must arrive first
-  const from = Math.max(0, msg.from | 0);
-  if (from > s.events.length) return;              // a gap (a push was missed) → wait for the next full; never corrupt
+  // msg.from is a GLOBAL transcript index; the resident events are the tail [headFrom, …) → map to local.
+  const from = (msg.from | 0) - (s.headFrom || 0);
+  if (from < 0 || from > s.events.length) return;  // below the loaded head, or a gap → wait for the next full
   s.events.length = from;                          // drop the (now superseded) tail...
   for (const e of (msg.events || [])) s.events.push(e);   // ...and append the freshly-changed suffix
+  if (typeof msg.total === "number") s.headTotal = msg.total;
   if (msg.status) s.status = msg.status;
   if ("ledger" in msg) ledgers.set(msg.id, msg.ledger ?? null);
   if (msg.id !== activeId) sortTabs();
@@ -3965,6 +3978,45 @@ function chatTail(msg: any) {
     if (v) v.stale = true;
     schedulePrebuild(); // rebuild the now-stale off-screen view in idle, before the user switches to it
   }
+}
+
+// Older history streaming in from a loadOlder request (scroll-back past the loaded tail, the user 2026-06-25).
+// The kernel replies with the previous chunk; PREPEND it to the resident tail (lowering headFrom) and re-
+// anchor on the row the user was at, so the older content appears ABOVE without the view jumping.
+const loadingOlder = new Set<string>();                 // sessions with a loadOlder in flight
+const pendingOlderAnchor = new Map<string, string>();   // sid → the uuid to re-anchor on when the chunk lands
+function chatHead(msg: any) {
+  loadingOlder.delete(msg.id);
+  hideLoadingPill();
+  const s = sessions.get(msg.id);
+  if (!s) { pendingOlderAnchor.delete(msg.id); return; }
+  const before = msg.before | 0, from = msg.from | 0;
+  if (before !== (s.headFrom ?? 0)) { pendingOlderAnchor.delete(msg.id); return; }   // stale / overlapping → ignore
+  const older = (msg.events || []) as ChatEvent[];
+  if (older.length) s.events = older.concat(s.events);
+  s.headFrom = from;
+  const v = views.get(msg.id);
+  if (msg.id !== activeId) { pendingOlderAnchor.delete(msg.id); if (v) v.stale = true; return; }
+  // re-anchor: reset the active view so it re-windows around the saved row (now further down s.events), and
+  // land on it (deep-link path) — the prepended older content sits above, off-screen, ready to scroll into.
+  if (v) { v.rendered = 0; v.winStart = 0; v.winEnd = 0; v.avgTurnH = undefined; v.spacerCount = undefined; v.spacerCountBot = undefined; v.unitTotal = undefined; }
+  const anchorUuid = pendingOlderAnchor.get(msg.id);
+  pendingOlderAnchor.delete(msg.id);
+  if (anchorUuid) { pendingAnchor = anchorUuid; pendingAnchorIntent = null; pendingAnchorT = null; pendingAnchorKind = null; }
+  showActive();
+}
+
+// Ask the kernel for the chunk of history just before the resident tail. Anchors on the current top row so
+// chatHead can land the user back on it after prepending.
+function requestOlder(sid: string, v: View, _content: HTMLElement): void {
+  const s = sessions.get(sid);
+  if (!s || (s.headFrom ?? 0) <= 0 || loadingOlder.has(sid)) return;
+  const firstTurn = v.el.querySelector(".turn[data-uuid]") as HTMLElement | null;
+  const anchor = firstTurn?.dataset.uuid || (s.events[0] as { uuid?: string } | undefined)?.uuid;
+  if (anchor) pendingOlderAnchor.set(sid, anchor);
+  loadingOlder.add(sid);
+  showLoadingPill();
+  vscodeApi?.postMessage({ type: "loadOlder", id: sid, before: s.headFrom });
 }
 
 function statusOnly(msg: any) {
@@ -4003,6 +4055,7 @@ window.addEventListener("message", (e: MessageEvent) => {
   if (!m) return;
   if (m.type === "session") upsert(m);
   else if (m.type === "chatTail") chatTail(m);
+  else if (m.type === "chatHead") chatHead(m);
   else if (m.type === "update") update(m);
   else if (m.type === "status") statusOnly(m);
   else if (m.type === "focus") setActive(m.id, m.anchor, typeof m.anchorT === "number" ? m.anchorT : undefined, typeof m.anchorKind === "string" ? m.anchorKind : undefined);

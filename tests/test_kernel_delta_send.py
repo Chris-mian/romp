@@ -76,14 +76,40 @@ class SendChatTest(unittest.TestCase):
         km._send_chat(c, self._m("S", [{"uuid": "9"}, {"uuid": "10"}]), None, 0, False)
         self.assertEqual(_last(sent)["type"], "session", "a fork must full-resend, never a tail onto a wrong base")
 
-    def test_a_client_behind_the_change_point_gets_the_full_not_a_tail(self):
-        # a client that only holds 1 event but the change starts at index 3 can't apply a tail (it lacks the
-        # unchanged prefix) → full. (Simulated by hand-setting its echat count below change_from.)
+    def test_a_change_below_the_clients_loaded_tail_forces_a_full(self):
+        # the client holds a TAIL starting at headFrom=2 (echat = (tail_head_uuid, headFrom)). A change at
+        # index 1 is BELOW its loaded tail → it lacks [1,2) → must full-resend, not tail.
         c, sent = _client()
-        c["echat"] = {"S": ("1", 1)}                           # claims head '1', count 1
         evs = [{"uuid": "1"}, {"uuid": "2"}, {"uuid": "3"}, {"uuid": "4"}]
-        km._send_chat(c, self._m("S", evs), None, 3, False)           # change_from 3 > its count 1 → full
+        c["echat"] = {"S": ("3", 2)}                           # holds the tail [2,4): head '3' at index 2
+        km._send_chat(c, self._m("S", evs), None, 1, False)           # change_from 1 < headFrom 2 → full
         self.assertEqual(_last(sent)["type"], "session")
+
+    def test_a_big_session_full_send_is_trimmed_to_the_tail_with_an_offset(self):
+        evs = [{"uuid": str(i)} for i in range(km.WIRE_TAIL + 50)]    # bigger than the wire tail
+        c, sent = _client()
+        km._send_chat(c, self._m("S", evs), None, 0, False)
+        full = _last(sent)
+        self.assertEqual(full["type"], "session")
+        self.assertEqual(len(full["events"]), km.WIRE_TAIL, "ship only the last WIRE_TAIL events")
+        self.assertEqual(full["headFrom"], 50, "offset = total - WIRE_TAIL (older history lives before it)")
+        self.assertEqual(full["headTotal"], km.WIRE_TAIL + 50)
+        self.assertEqual(full["events"][0]["uuid"], "50", "the tail starts at headFrom")
+        # echat now tracks (tail_head_uuid, headFrom) → a later append delta uses the GLOBAL index
+        evs2 = evs + [{"uuid": "NEW"}]
+        km._send_chat(c, self._m("S", evs2), None, len(evs), False)   # appended at global index = old total
+        tail = _last(sent)
+        self.assertEqual(tail["type"], "chatTail")
+        self.assertEqual(tail["from"], len(evs), "the tail's `from` is the GLOBAL index, mapped by the browser")
+        self.assertEqual([e["uuid"] for e in tail["events"]], ["NEW"])
+
+    def test_a_small_session_under_the_tail_is_sent_whole(self):
+        evs = [{"uuid": "1"}, {"uuid": "2"}]
+        c, sent = _client()
+        km._send_chat(c, self._m("S", evs), None, 0, False)
+        full = _last(sent)
+        self.assertEqual(full["type"], "session")
+        self.assertNotIn("headFrom", full, "a session that fits under WIRE_TAIL is sent whole, no offset")
 
     def test_the_ledger_rides_the_tail_only_when_it_changed(self):
         # the ledger (goal tree, tens of KB) only changes on a judge pass, so it must NOT ride every 0.5s delta
@@ -98,15 +124,30 @@ class SendChatTest(unittest.TestCase):
 
 
 class RenderHandlesTheTail(unittest.TestCase):
-    def test_render_truncates_to_from_appends_and_repaints_from_the_changed_point(self):
+    def _render(self):
         import pathlib
-        src = pathlib.Path(BIN).parent / "ui" / "webview" / "render.ts"
-        r = src.read_text()
+        return (pathlib.Path(BIN).parent / "ui" / "webview" / "render.ts").read_text()
+
+    def test_render_truncates_to_from_appends_and_repaints_from_the_changed_point(self):
+        r = self._render()
         self.assertIn('else if (m.type === "chatTail") chatTail(m);', r)       # dispatched
+        self.assertIn("const from = (msg.from | 0) - (s.headFrom || 0);", r)   # GLOBAL index → resident-tail local
+        self.assertIn("if (from < 0 || from > s.events.length) return;", r)    # below the loaded head / gap → wait for a full
         self.assertIn("s.events.length = from;", r)                            # truncate the superseded tail
         self.assertIn("for (const e of (msg.events || [])) s.events.push(e);", r)  # append the suffix
         self.assertIn("v.rendered = Math.min(v.rendered, from);", r)           # repaint from the exact change
-        self.assertIn("if (from > s.events.length) return;", r)                # gap guard → wait for a full
+
+    def test_render_handles_a_partial_session_and_streams_older_in(self):
+        r = self._render()
+        # upsert records the wire offset → s.events is the tail [headFrom, headTotal)
+        self.assertIn("headFrom: msg.headFrom ?? 0,", r)
+        # scroll to the top of the resident tail with older on the server → request the previous chunk
+        self.assertIn('vscodeApi?.postMessage({ type: "loadOlder", id: sid, before: s.headFrom });', r)
+        self.assertIn("if (moreOnServer && (v.winStart ?? 0) === 0 && st < topH + edgePx) { requestOlder(", r)
+        # chatHead PREPENDS the chunk + lowers headFrom + re-anchors
+        self.assertIn('else if (m.type === "chatHead") chatHead(m);', r)
+        self.assertIn("if (older.length) s.events = older.concat(s.events);", r)
+        self.assertIn("s.headFrom = from;", r)
 
 
 if __name__ == "__main__":
