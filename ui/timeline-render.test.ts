@@ -36,6 +36,7 @@ g.document = {
   createElement(t: string) { return t === "canvas" ? { getContext() { return { font: "", measureText(s: string) { return { width: (s ? s.length : 0) * 6 }; } }; } } : makeNode(t); },
   createElementNS(_n: any, t: string) { return makeNode(t); },
   body: makeNode("body"), documentElement: makeNode("html"), head: makeNode("head"),
+  getElementById() { return null; },   // the loader overlay injects its <style> once via this
   addEventListener() {}, removeEventListener() {},
 };
 g.localStorage = { getItem() { return null; }, setItem() {}, removeItem() {} };

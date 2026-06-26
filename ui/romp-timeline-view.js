@@ -959,7 +959,7 @@ class TimelinePanel {
       if (this._focusNonce === undefined) this._focusNonce = data.focus.nonce;
       else if (data.focus.nonce !== this._focusNonce) { this._focusNonce = data.focus.nonce; this.focusEvent(data.focus); }
     }
-    this._startLiveTick();   // re-arm the smooth-advance loop each poll (no-op unless live-following + visible)
+    if (this._barsLoaded) this._startLiveTick();   // re-arm the smooth-advance loop each poll (skip while the loader is up — draw() no-ops then)
   }
 
   // The heavy second half of a timeline push (the user 2026-06-25): the per-segment work BARS + the judging
@@ -967,7 +967,7 @@ class TimelinePanel {
   // first. The skeleton always lands first (TCP-ordered on the one socket), so this.data.sessions is set.
   applyBars(m) {
     if (!m || !this.data || !this.data.sessions) return;
-    this._barsLoaded = true;   // the bars payload has landed (even if empty) → drop the plot-area loader
+    this._barsLoaded = true;   // the bars payload has landed (even if empty) → drop the loader, show the timeline
     this.data.turns = m.turns || {};
     this.data.judging = m.judging || [];
     this.data.messages = m.messages || [];
@@ -977,6 +977,7 @@ class TimelinePanel {
     // honor the same freeze-on-hover / click-hold guard update() uses (don't relayout under a held pointer/tip)
     if ((this.tip && this.tip.classList && this.tip.classList.contains('show')) || this._pointerHeld) { this._dirtyWhileTip = true; return; }
     this.draw();
+    this._startLiveTick();   // bars are up now → resume the smooth-advance loop (gated off while the loader showed)
   }
 
   // Direct hover push from the kernel (server.ts pushHover) — the FAST path that skips the
@@ -1601,6 +1602,13 @@ class TimelinePanel {
 
   draw() {
     const data = this.data; if (!data || !data.sessions) return;
+    // LOADING (the user 2026-06-26): until the heavy bars arrive, show ONLY the romp wordmark loader (R +
+    // spinning swirl-o + m + p + dots) — NO lanes, NO gridlines. Partial data + empty gridlines read as
+    // "broken", so suppress the SVG entirely and show the loader until applyBars sets _barsLoaded. (Data that
+    // already carries turns — a full one-shot, or a direct draw() — counts as loaded even without the flag.)
+    const barsReady = this._barsLoaded || !!(data.turns && Object.keys(data.turns).length);
+    if (!barsReady) { this._showLoader(true); return; }
+    this._showLoader(false);
     const svg = this.svg, M = this.M;
     while (svg.firstChild) svg.removeChild(svg.firstChild);
     // candy-cane hatch for AWAITING spans: diagonal white stripes overlaid on the bar
@@ -2290,10 +2298,6 @@ class TimelinePanel {
       // still surfaces as a romp-logo dot on its own lane; the band is now judge run-spans only.)
     }
 
-    // bars still in flight → romp swirl loader in the (empty) plot area; the lanes + axis already painted
-    // from the skeleton. Removed on the next draw once applyBars sets _barsLoaded. CLAUDE.md loader rule.
-    if (!this._barsLoaded) this._drawBarsLoader(svg, M.left + plotW / 2, (M.top + axisY) / 2);
-
     // far-right ⟩⟩ jump-to-now button — only when held back off the live edge (unpinned)
     if (!this._pinned) this._drawNowButton(svg);
 
@@ -2312,18 +2316,26 @@ class TimelinePanel {
     const x0 = cx - 7.5, y0 = axisY + 6;               // center the 15-wide glyph under the now-edge, in the bottom margin
     const g = el('g', { transform: 'translate(' + x0 + ' ' + y0 + ')' }); g.style.cursor = 'pointer';
     const hit = el('rect', { x: -2, y: -1, width: 19, height: 15, fill: 'transparent' });   // hit pad (whole glyph clickable)
-    // Native tooltip ON the actually-hovered element (the hit pad), not the parent <g>, so it reliably shows
-    // what the lock does on hover (the user 2026-06-26). Says the action the click will take.
-    const ttl = el('title', {}); ttl.textContent = on
-      ? 'Locked to the present — click to unlock (allow panning)'
-      : 'Lock the timeline to the present — keeps the now-edge in view (a focus jump zooms out instead of panning away)';
-    hit.appendChild(ttl);
     g.appendChild(hit);
     const st = { fill: 'none', stroke: color, 'stroke-width': 1.4, 'stroke-linecap': 'round', 'pointer-events': 'none' };
     g.appendChild(el('rect', Object.assign({ x: 3, y: 6.2, width: 8, height: 5.6, rx: 1.2 }, st)));
     g.appendChild(el('path', Object.assign({ d: on ? 'M4.8 6.2 V4.4 a2.2 2.2 0 0 1 4.4 0 V6.2'           // seated shackle (locked)
                                                   : 'M9.4 6.2 V5.3 A2.4 2.4 0 0 1 13.6 3.7' }, st)));   // swung-out shackle (unlocked)
-    g.addEventListener('click', (ev) => {
+    // Tooltip via the romp tip, NOT a native <title> (the user 2026-06-26: the native one never appeared —
+    // the live edge rebuilds the SVG many times a second, resetting the browser's hover-delay timer). showTip
+    // shows the styled tip INSTANTLY on mouseenter AND freezes redraws while hovering, which also keeps the
+    // lock element stable so a press can't be dropped by a mid-gesture rebuild.
+    const tipHtml = '<div class="b">' + (on
+      ? 'Locked to the present — click to unlock (allow panning).'
+      : 'Lock the timeline to the present — keeps the now-edge in view; a focus jump zooms out instead of panning away.') + '</div>';
+    hit.addEventListener('mouseenter', (e) => this.showTip(tipHtml, e));
+    hit.addEventListener('mousemove', (e) => this.moveTip(e));
+    hit.addEventListener('mouseleave', () => this.hideTip());
+    // Toggle on POINTERDOWN, not click: when the timeline pane isn't focused, the browser spends the first
+    // CLICK focusing the iframe (so the lock used to need two clicks) — but the pointerdown still fires, so
+    // acting on it makes lock/unlock a single, seamless press (the user 2026-06-26).
+    g.addEventListener('pointerdown', (ev) => {
+      if (ev.button != null && ev.button !== 0) return;   // primary button only
       ev.stopPropagation();
       const next = !this._lockNow;
       this._setLock(next);
@@ -2333,20 +2345,44 @@ class TimelinePanel {
     svg.appendChild(g);
   }
 
-  // The reverse-spinning romp swirl-as-"o", centered in the plot area, shown while the deferred bars
-  // payload is still in flight (the user 2026-06-26). The lanes/axis paint instantly off the skeleton; this
-  // fills the otherwise-empty plot so it doesn't read as "no activity" until applyBars lands. Reverse spin
-  // (-360) + 7s matches the shared romp loader (_LOADER_CSS .rl-o). Removed on the next draw.
-  _drawBarsLoader(svg, cx, cy) {
-    const R = 22;
-    const g = el('g', { 'pointer-events': 'none' });
-    const img = el('image', { x: cx - R, y: cy - R, width: 2 * R, height: 2 * R, opacity: 0.92 });
-    img.setAttributeNS('http://www.w3.org/1999/xlink', 'href', '/media/romp-swirl-o.svg');
-    img.setAttribute('href', '/media/romp-swirl-o.svg');
-    img.appendChild(el('animateTransform', { attributeName: 'transform', attributeType: 'XML', type: 'rotate',
-      from: '0 ' + cx + ' ' + cy, to: '-360 ' + cx + ' ' + cy, dur: '7s', repeatCount: 'indefinite' }));
-    g.appendChild(img);
-    svg.appendChild(g);
+  // The full romp WORDMARK loader (the user 2026-06-26): "R" + the reverse-spinning swirl-as-"o" + "m" + "p"
+  // (the swirl's three arm colours) over three pulsing accent-blue dots — the SAME look as the boot splash +
+  // every pane loader (CLAUDE.md "Loading/waiting states"). Shown in place of the SVG while the heavy bars
+  // load, so the timeline never flashes partial data / empty gridlines. Built once, then just toggled.
+  _showLoader(show) {
+    if (show && !this._loaderEl) this._buildLoader();
+    if (this._loaderEl) this._loaderEl.style.display = show ? 'flex' : 'none';
+    if (this.svg) this.svg.style.display = show ? 'none' : '';
+  }
+  _buildLoader() {
+    if (!document.getElementById('tl-loader-css')) {
+      const st = document.createElement('style'); st.id = 'tl-loader-css';
+      st.textContent =
+        "@font-face{font-family:'RompAnta';src:url(/media/Anta-Regular.ttf) format('truetype');font-display:swap}"
+        + ".tl-loader{min-height:240px;display:flex;align-items:center;justify-content:center}"
+        + ".tl-loader .rl-in{display:flex;flex-direction:column;align-items:center;gap:18px}"
+        + ".tl-loader .rl-word{font-family:'RompAnta',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;"
+        + "font-size:38px;line-height:1;white-space:nowrap}"
+        + ".tl-loader .rl-o{width:.65em;height:.65em;vertical-align:middle;margin:0 -.0335em;animation:tl-rl-spin 7s linear infinite}"
+        + ".tl-loader .rl-dots{display:flex;gap:7px}"
+        + ".tl-loader .rl-dots i{width:7px;height:7px;border-radius:50%;background:#9cd2ff;animation:tl-rl-bnc 1.1s ease-in-out infinite}"
+        + ".tl-loader .rl-dots i:nth-child(2){animation-delay:.16s}.tl-loader .rl-dots i:nth-child(3){animation-delay:.32s}"
+        + "@keyframes tl-rl-bnc{0%,75%,100%{opacity:.25;transform:translateY(0)}38%{opacity:1;transform:translateY(-5px)}}"
+        + "@keyframes tl-rl-spin{to{transform:rotate(-360deg)}}";
+      document.head.appendChild(st);
+    }
+    const wrap = document.createElement('div'); wrap.className = 'tl-loader';
+    const inner = document.createElement('div'); inner.className = 'rl-in';
+    const word = document.createElement('div'); word.className = 'rl-word';
+    const mk = (t, c) => { const s = document.createElement('span'); s.style.color = c; s.textContent = t; return s; };
+    const o = document.createElement('img'); o.className = 'rl-o'; o.src = '/media/romp-swirl-o.svg'; o.alt = 'o';
+    word.appendChild(mk('R', '#1EA1EB')); word.appendChild(o);
+    word.appendChild(mk('m', '#54B204')); word.appendChild(mk('p', '#4EA8A9'));
+    const dots = document.createElement('div'); dots.className = 'rl-dots';
+    for (let i = 0; i < 3; i++) dots.appendChild(document.createElement('i'));
+    inner.appendChild(word); inner.appendChild(dots); wrap.appendChild(inner);
+    this._loaderEl = wrap;
+    this.wrap.insertBefore(wrap, this.svg);   // sits in the pane flow, above the (hidden) svg
   }
 
   // hover bodies: the prompt DOT shows the MESSAGE caption — a gist of what the user ASKED — once the
