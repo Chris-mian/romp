@@ -2291,8 +2291,8 @@ _prev_chat_ledger = {}                           # sid → the previous build's 
 # only draws a window) and streams OLDER history in on scroll-back, WIRE_CHUNK events per `loadOlder` request.
 # The build itself is unchanged (every session still builds its full events + ledger — so the Fleet ledger
 # that rides the chat builds is intact); only what crosses the wire is trimmed.
-WIRE_TAIL = 800                                  # events shipped on a full chat send; older streams in on scroll-back
-WIRE_CHUNK = 400                                 # events per loadOlder (chatHead) response
+WIRE_TAIL = 250                                  # events shipped on a full chat send; older streams in on scroll-back
+WIRE_CHUNK = 250                                 # events per loadOlder (chatHead) response
 
 
 def _chat_diff(prev, cur):
@@ -4839,14 +4839,16 @@ def _push(targets):
                     _built_chat.pop(sid, None)
                     _prev_chat_events.pop(sid, None)
                     _prev_chat_ledger.pop(sid, None)
-        feed = build_feed(now, tmux) if want_feed else None
-        if feed is not None and chat_sessions:
-            feed["ledgers"] = [{"sid": m["id"], "name": m["name"], "color": m.get("color"),
-                                "status": m.get("status"), "ledger": m.get("ledger")} for m in chat_sessions]
+        fsig = _fleet_view_sig(now, tmux) if (want_feed or want_tl) else None
+        feed = _cached_feed(now, tmux, fsig) if want_feed else None
         if feed is not None:
+            feed = dict(feed)                            # copy so the per-push ledger attach never dirties the cache
+            if chat_sessions:
+                feed["ledgers"] = [{"sid": m["id"], "name": m["name"], "color": m.get("color"),
+                                    "status": m.get("status"), "ledger": m.get("ledger")} for m in chat_sessions]
             for c in chat_clients:                       # the working-dot list (chat reads feed["working"])
                 _send_client(c, ("working",), {"type": "working", "names": feed["working"]})
-        timeline = build_timeline(now, tmux) if want_tl else None
+        timeline = _cached_timeline(now, tmux, fsig) if want_tl else None
     except Exception:
         sys.stderr.write("push build: %s\n" % traceback.format_exc())
         return
@@ -4910,6 +4912,49 @@ def _producer_sig(browser):
     except OSError:
         pass
     return sig
+
+
+# Feed + timeline were the OTHER half of "reload/startup is slow" (the user 2026-06-25): they re-segment
+# every session on EVERY push (~2.7s combined, uncached) — a fresh connect waits for that, and an idle
+# dashboard re-does it every tick. Cache each payload, keyed on a fleet fingerprint; an UNCHANGED fleet (a
+# reload, an idle tick) reuses the last build instead of rebuilding.
+_built_feed = [None, None]                        # (fleet_sig, payload)
+_built_timeline = [None, None]                    # (fleet_sig, payload)
+
+
+def _fleet_view_sig(now, tmux):
+    """Cheap fingerprint of everything build_feed/build_timeline read. Busts on any transcript/names/states/
+    postal change (_producer_sig), a judge pass (goal/caption via _judge_gen), a live tmux BADGE change
+    (state/model/ctx/effort — touches no file), a colormap or session-flags change, or a 5s time bucket so
+    'X ago'/elapsed keeps advancing when nothing else changes."""
+    sig = _producer_sig(True)
+    sig["__judge__"] = _judge_gen[0]
+    sig["__bucket__"] = now // 5
+    for p, k in ((jd.STATE / "colormap", "__cmap__"), (jd.STATE / "session-flags.json", "__flags__")):
+        try:
+            sig[k] = os.stat(p).st_mtime
+        except OSError:
+            pass
+    for s in sorted(tmux):
+        t = tmux[s]
+        sig["t:" + s] = (t.get("state"), t.get("model"), t.get("ctx"), t.get("effort"), t.get("mode"), t.get("since"))
+    return tuple(sorted(sig.items()))
+
+
+def _cached_feed(now, tmux, sig):
+    if _built_feed[0] == sig and _built_feed[1] is not None:
+        return _built_feed[1]
+    feed = build_feed(now, tmux)
+    _built_feed[0], _built_feed[1] = sig, feed
+    return feed
+
+
+def _cached_timeline(now, tmux, sig):
+    if _built_timeline[0] == sig and _built_timeline[1] is not None:
+        return _built_timeline[1]
+    tl = build_timeline(now, tmux)
+    _built_timeline[0], _built_timeline[1] = sig, tl
+    return tl
 
 
 def _run_tier(fn):
