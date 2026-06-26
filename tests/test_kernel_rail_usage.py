@@ -20,10 +20,15 @@ class RailUsage(unittest.TestCase):
     def setUp(self):
         self.html = km._landing()
 
-    def test_the_rail_hosts_the_usage_bars_under_the_refresh_button(self):
+    def test_the_rail_usage_sticks_to_the_top_with_refresh_and_settings_at_the_bottom(self):
+        # the user 2026-06-26: usage sticks to the TOP (under the toggles); refresh + settings are pushed to
+        # the BOTTOM, settings (⛭ rail-gear) at the very bottom, refresh just above it.
         self.assertIn("id=rail-usage", self.html, "a usage container sits in the rail")
-        # ...positioned AFTER the refresh action (so it renders beneath it)
-        self.assertLess(self.html.index("id=rail-refresh"), self.html.index("id=rail-usage"))
+        self.assertLess(self.html.index("id=rail-usage"), self.html.index("id=rail-refresh"),
+                        "usage is above refresh (sticky to the top)")
+        self.assertLess(self.html.index("id=rail-refresh"), self.html.index("id=rail-gear"),
+                        "refresh is above settings (settings is the very bottom)")
+        self.assertIn("#rail-refresh{margin-top:auto}", self.html, "the bottom group is pushed down")
         self.assertIn(".ru-bar{", self.html, "the compact vertical bar styling")
         self.assertIn(".ru-lab{", self.html, "the percentage label styling")
 

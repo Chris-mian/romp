@@ -6273,9 +6273,10 @@ def _landing():
             "justify-content:center;transition:color .1s,background .1s}"
             ".rail-btn:hover{color:#cfe6ff;background:rgba(255,255,255,0.06)}"
             ".rail-btn.on{color:var(--accent);background:rgba(156,210,255,0.10)}"
-            # the ⛭ settings + ↻ refresh actions sit RIGHT BELOW the toggles (the user 2026-06-25), with a small
-            # gap above them — not pushed to the bottom of the rail.
-            ".rail-act:first-of-type{margin-top:8px}"
+            # the ↻ refresh + ⛭ settings actions are pushed to the BOTTOM of the rail (the user 2026-06-26):
+            # margin-top:auto on the first of them (refresh) absorbs the free space, so they stick to the bottom
+            # with settings (⛭, last in the DOM) at the very bottom and refresh just above it.
+            "#rail-refresh{margin-top:auto}"
             ".rail-act{flex:0 0 auto;display:flex;align-items:center;justify-content:center;margin:2px 4px;padding:5px 0;"
             "border-radius:5px;cursor:pointer;color:#8a8a8a;font-size:15px;line-height:1;user-select:none;transition:color .1s,background .1s}"
             ".rail-act:hover{color:#fff;background:rgba(255,255,255,0.06)}"
@@ -6392,19 +6393,20 @@ def _landing():
             "<div id=romp-boot>" + _loader_inner() + "</div>"
             "<div class=col>"
             "<div class=row>"
-            # far-left rail: Chat / Fleet / Feed / Timeline toggles, fixed order; then the ⛭ settings + ↻ refresh
-            # actions RIGHT BELOW them (the user 2026-06-25) so they persist regardless of which panes are open —
-            # refresh is the lower of the two.
+            # far-left rail (the user 2026-06-26): top group sticks to the TOP — Chat / Fleet / Feed / Timeline
+            # toggles, then the /usage rate-limit bars; the ⛭ settings + ↻ refresh actions are pushed to the
+            # BOTTOM (settings the very last, refresh just above it) via #rail-refresh margin-top:auto.
             "<div class=pane-rail>"
             "<div class=rail-btn data-pane=chat>Chat</div>"
             "<div class=rail-btn data-pane=fleet>Fleet</div>"
             "<div class=rail-btn data-pane=feed>Feed</div>"
             "<div class=rail-btn data-pane=timeline>Timeline</div>"
-            "<div class=rail-act id=rail-gear title=Settings aria-label=Settings>⚙</div>"
-            "<div class=rail-act id=rail-refresh title='Restart the romp kernel' aria-label=Refresh>↻</div>"
-            # the Claude /usage rate-limit bars, moved here from the timeline toolbar (the user 2026-06-26):
-            # two compact vertical bar-pairs (used % colored + elapsed % slate), %-label, full detail on hover.
+            # the Claude /usage rate-limit bars (Pro/Max): two compact vertical bar-pairs (used % colored +
+            # elapsed % slate), %-label, full detail on hover. Sticky to the top, under the toggles.
             "<div id=rail-usage></div>"
+            # refresh + settings, pushed to the very bottom (settings last):
+            "<div class=rail-act id=rail-refresh title='Restart the romp kernel' aria-label=Refresh>↻</div>"
+            "<div class=rail-act id=rail-gear title=Settings aria-label=Settings>⚙</div>"
             "</div>"
             "<div class=pane id=chat-pane><iframe id=f-chat class=m-on src=/chat></iframe></div>"
             "<div class=gv id=gv-a></div>"
