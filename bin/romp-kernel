@@ -6007,6 +6007,31 @@ setTimeout(hide,5000);})();
 """
 
 
+# Usage bars in the rail (the user 2026-06-26): the timeline iframe posts {romp:'usage',usage} (it no longer
+# draws them itself in the web shell); render two compact vertical bar-pairs (used %, elapsed %) under the
+# refresh button — same green/amber/red usage colours the timeline used — with the full detail on hover.
+_LANDING_USAGE_JS = """
+(function(){var el=document.getElementById('rail-usage');if(!el)return;
+function fmtR(ep){var dt=ep-Math.floor(Date.now()/1000);if(dt<=0)return'soon';var d=Math.floor(dt/86400);dt-=d*86400;
+var h=Math.floor(dt/3600);dt-=h*3600;var m=Math.floor(dt/60);return(d?d+'d ':'')+((h||d)?h+'h ':'')+m+'m';}
+function esc(s){return String(s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
+var WINS=[['fiveHour',5*3600,'5h','Session (5h)'],['sevenDay',7*86400,'7d','Weekly']];
+function render(u){if(!u||(!u.fiveHour&&!u.sevenDay)){el.innerHTML='';return;}
+var nowS=Math.floor(Date.now()/1000),html='';
+WINS.forEach(function(w){var seg=u[w[0]];if(!seg)return;
+var rolled=seg.resetsAt&&nowS>seg.resetsAt,pct=rolled?0:(seg.pct||0);
+var col=pct>=90?'#c0392b':(pct>=70?'#e0b020':'#54B204');
+var tp=(seg.resetsAt&&w[1])?Math.max(0,Math.min(100,Math.round((nowS-(seg.resetsAt-w[1]))/w[1]*100))):null;
+var title=w[3]+' \\u2014 usage '+pct+'%'+(tp!=null?' \\u00b7 '+tp+'% through the window':'')+(seg.resetsAt?' \\u00b7 resets in '+fmtR(seg.resetsAt):'');
+html+='<div class=ru-w title="'+esc(title)+'"><div class=ru-bars>'
++'<div class=ru-bar><i style="height:'+pct+'%;background:'+col+'"></i></div>'
++'<div class=ru-bar><i style="height:'+(tp||0)+'%;background:#6b7a8c"></i></div></div>'
++'<div class=ru-lab>'+pct+'%</div><div class=ru-win>'+w[2]+'</div></div>';});
+el.innerHTML=html;}
+window.addEventListener('message',function(e){var m=e.data;if(m&&m.romp==='usage')render(m.usage);});})();
+"""
+
+
 # Settings full-screen bridge (the user 2026-06-23): the feed iframe's gear posts {romp:'settings',on} when
 # its modal opens/closes; the shell lifts the feed iframe over the whole window (body.settings-open) so the
 # modal's backdrop covers the full screen, and restores it on close.
@@ -6199,6 +6224,16 @@ def _landing():
             "border-radius:5px;cursor:pointer;color:#8a8a8a;font-size:15px;line-height:1;user-select:none;transition:color .1s,background .1s}"
             ".rail-act:hover{color:#fff;background:rgba(255,255,255,0.06)}"
             ".rail-act:active{transform:scale(0.92)}"
+            # usage rate-limit bars in the rail (the user 2026-06-26): per window (5h/7d), a used-% bar (colored
+            # green/amber/red like the timeline's) beside an elapsed-% bar (slate) — pace at a glance; %-label;
+            # window tag; full detail on hover (native title). Compact to fit the 30px rail.
+            "#rail-usage{flex:0 0 auto;display:flex;flex-direction:column;align-items:center;gap:9px;margin-top:12px}"
+            ".ru-w{display:flex;flex-direction:column;align-items:center;gap:2px}"
+            ".ru-bars{display:flex;gap:2px;height:38px;align-items:flex-end}"
+            ".ru-bar{width:7px;height:100%;background:rgba(255,255,255,0.10);border-radius:2px;display:flex;align-items:flex-end;overflow:hidden}"
+            ".ru-bar i{display:block;width:100%;border-radius:2px;transition:height .3s ease}"
+            ".ru-lab{font:600 9px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#cfe6ff;font-variant-numeric:tabular-nums;line-height:1}"
+            ".ru-win{font:600 8px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#6e7681;letter-spacing:.04em;line-height:1}"
             # the three TOP panes flex-grow by a per-pane var (resized by the gutters, persisted); toggling one
             # off hides it AND the now-orphaned gutters. Fixed order: chat, fleet, feed. Timeline is the band.
             "#chat-pane{flex:var(--g-chat,60) 1 0}#fleet-pane{flex:var(--g-fleet,34) 1 0}#feed-pane{flex:var(--g-feed,40) 1 0}"
@@ -6296,6 +6331,9 @@ def _landing():
             "<div class=rail-btn data-pane=timeline>Timeline</div>"
             "<div class=rail-act id=rail-gear title=Settings aria-label=Settings>⚙</div>"
             "<div class=rail-act id=rail-refresh title='Restart the romp kernel' aria-label=Refresh>↻</div>"
+            # the Claude /usage rate-limit bars, moved here from the timeline toolbar (the user 2026-06-26):
+            # two compact vertical bar-pairs (used % colored + elapsed % slate), %-label, full detail on hover.
+            "<div id=rail-usage></div>"
             "</div>"
             "<div class=pane id=chat-pane><iframe id=f-chat class=m-on src=/chat></iframe></div>"
             "<div class=gv id=gv-a></div>"
@@ -6317,6 +6355,7 @@ def _landing():
             # the mobile tab bar. (The splitter used to query a stale id=t for the timeline iframe and
             # throw on every load — fixed above by giving that iframe id=f-timeline.)
             "<script>" + _LANDING_BOOT_JS + "</script>"
+            "<script>" + _LANDING_USAGE_JS + "</script>"
             "<script>" + _LANDING_JS + "</script>"
             "<script>" + _LANDING_FOCUS_JS + "</script>"
             "<script>" + _LANDING_FLEET_JS + "</script>"

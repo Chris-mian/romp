@@ -852,6 +852,14 @@ class TimelinePanel {
   // Fill the usage bars from data.usage (Claude /usage rate-limit %). Hidden when absent (not Pro/Max,
   // or nothing reported yet). A window past its resets_at has rolled over → show 0 until the next write.
   _updateUsage(usage) {
+    // In the web shell the usage bars live in the LEFT RAIL (the user 2026-06-26): forward the data to the
+    // shell (it renders them under the refresh button) and keep the timeline's own copy HIDDEN so the pane
+    // stays compact. Standalone (Obsidian / no parent frame) keeps rendering them in the toolbar as before.
+    if (typeof window !== 'undefined' && window.parent && window.parent !== window) {
+      try { window.parent.postMessage({ romp: 'usage', usage: usage || null }, '*'); } catch (e) {}
+      if (this._usageWrap) this._usageWrap.style.display = 'none';
+      return;
+    }
     if (!this._usageWrap) return;
     if (!usage || (!usage.fiveHour && !usage.sevenDay)) { this._usageWrap.style.display = 'none'; return; }
     this._usageWrap.style.display = 'flex';
