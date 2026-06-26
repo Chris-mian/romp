@@ -1405,6 +1405,8 @@ class TmuxBackend(sb.SessionBackend):
                 "#{@claude-model}|#{@claude-effort}|#{@claude-context}|#{@claude-compact-pct}|#{@identity-bg}|"
                 "#{@claude-permission-mode}")
     NAME_FMT = "#{@romp-session-id}\t#{session_name}"
+    BADGE_TTL = int(os.environ.get("ROMP_POSTAL_BADGE_TTL", "300"))   # auto-clear the status-bar mail badge after N s
+    PEER_CAP = 10                                                     # max peers on the status-bar "talking to" line
 
     # ── the SOLE raw-tmux primitives ──
     def _run(self, args, t=3):
@@ -1439,6 +1441,20 @@ class TmuxBackend(sb.SessionBackend):
     def pane_in_mode(self, name, t=2):
         r = self._run(["display-message", "-p", "-t", name, "#{pane_in_mode}"], t)
         return bool(r and r.stdout.strip() == "1")
+
+    def display(self, name, fmt, t=2.5):                   # read tmux -F vars for ONE session (status-bar chrome)
+        r = self._run(["display-message", "-t", name, "-p", fmt], t)
+        return r.stdout if (r and r.returncode == 0) else ""
+
+    def show_var(self, name, var, t=2.5):                  # read a single @-var (badge token / msg-peer)
+        r = self._run(["show", "-t", name, "-v", var], t)
+        return r.stdout if (r and r.returncode == 0) else ""
+
+    def refresh_client(self):
+        self._fire(["refresh-client", "-S"])
+
+    def fire(self, args, t=3):                             # a batched tmux command line (status-bar chrome uses `;`)
+        self._fire(args, t)
 
     def set_buffer(self, text):
         self._run(["set-buffer", "-b", "rompkernel", text])
@@ -1623,6 +1639,130 @@ class TmuxBackend(sb.SessionBackend):
             else:
                 sys.stderr.write("deliver: box did not clear for %s; draft left safely in stash\n" % name)
         return True
+
+    # status-bar chrome — the tmux mail badge / peer "talking to" chips / top-line message indicator (ported
+    # from the postal bus so it never shells tmux). All of it paints @-vars and is a no-op for an SDK session
+    # with no tmux status bar: each entry point resolves sid→name and skips when there's none. Chips are
+    # stored in @-vars keyed by NAME, by their stable peer SID. (the user 2026-06-26.)
+    def _expire_badge(self, name, token):
+        time.sleep(self.BADGE_TTL)
+        try:
+            if self.show_var(name, "@romp-mail-token").strip() == token:   # still the same badge → clear it
+                for v in ("@romp-mail-from", "@romp-mail-bg", "@romp-mail-fg", "@romp-mail-token"):
+                    self.set_var(name, v, "")
+                self.refresh_client()
+        except Exception:
+            pass
+
+    def mail_badge(self, sid, from_name, from_id):
+        """Paint a sender-coloured "📬 from X" segment into the recipient's tmux status bar (no-op if the
+        recipient has no tmux session). Cleared by the client-session-changed hook, or after BADGE_TTL."""
+        name = _name_of(sid)
+        if not name:
+            return
+        bg, fg = _identity_of(from_id)
+        if not bg:
+            bg, fg = "#888888", "white"                   # unknown sender → neutral grey
+        token = str(int(time.time() * 1000))
+        try:
+            self.set_var(name, "@romp-mail-from", from_name or "?")
+            self.set_var(name, "@romp-mail-bg", bg)
+            self.set_var(name, "@romp-mail-fg", fg or "white")
+            self.set_var(name, "@romp-mail-token", token)
+            self.refresh_client()
+        except Exception:
+            sys.stderr.write("mail-badge %s: %s\n" % (name, traceback.format_exc()))
+            return
+        threading.Thread(target=self._expire_badge, args=(name, token), daemon=True).start()
+
+    def _peer_get(self, name):
+        """Current peer chips of a session as [(id, name, bg, fg)] (oldest first), keyed by the stable peer SID."""
+        fmt = "|".join("#{@romp-peer%d-id}\t#{@romp-peer%d}\t#{@romp-peer%dc}\t#{@romp-peer%df}" % (i, i, i, i)
+                       for i in range(1, self.PEER_CAP + 1))
+        res = []
+        for part in self.display(name, fmt).rstrip("\n").split("|"):
+            f = (part.split("\t") + ["", "", ""])[:4]
+            if f[1].strip():
+                res.append((f[0].strip(), f[1].strip(), f[2].strip(), f[3].strip()))
+        return res
+
+    def _peer_write(self, name, chips):
+        """Write the chip list (oldest→newest) into the slots + set status to 2 lines (or 1 when empty). One
+        batched tmux call."""
+        cmds = ["set", "-t", name, "status", "2" if chips else "on"]
+        for i in range(1, self.PEER_CAP + 1):
+            pid, nm, cl, fgc = chips[i - 1] if i <= len(chips) else ("", "", "", "")
+            cmds += [";", "set", "-t", name, "@romp-peer%d-id" % i, pid,
+                     ";", "set", "-t", name, "@romp-peer%d" % i, nm,
+                     ";", "set", "-t", name, "@romp-peer%dc" % i, cl,
+                     ";", "set", "-t", name, "@romp-peer%df" % i, fgc]
+        self.fire(cmds)
+
+    def _update_peers(self, name, peer_id, peer_name, color, fg):
+        """Record peer (by SID) as a correspondent of `name` — newest at the END, deduped by id, capped."""
+        if not name or not peer_id or not peer_name:
+            return
+        try:
+            chips = [t for t in self._peer_get(name) if t[0] != peer_id]
+            chips.append((peer_id, peer_name, color or "#888888", fg or "white"))
+            self._peer_write(name, chips[-self.PEER_CAP:])
+        except Exception:
+            sys.stderr.write("peers %s: %s\n" % (name, traceback.format_exc()))
+
+    def _msg_prefix(self, name, arrow, peer, bg, fg, body, mid):
+        """The top-line message indicator: a pill "<arrow> <peer>" in the PEER's colour + the message text.
+        @romp-msg-id-cur stashes the message id for the timeline daemon's Haiku swap-in. Cleared on the next
+        non-message prompt by the tmux-status hook."""
+        if not name or not peer:
+            return
+        s = " ".join((body or "").split())[:120]
+        try:
+            self.fire(["set", "-t", name, "@romp-msg-dir", arrow,
+                       ";", "set", "-t", name, "@romp-msg-peer", peer,
+                       ";", "set", "-t", name, "@romp-msg-bg", bg or "#888888",
+                       ";", "set", "-t", name, "@romp-msg-fg", fg or "white",
+                       ";", "set", "-t", name, "@romp-msg-summary", s,
+                       ";", "set", "-t", name, "@romp-msg-id-cur", mid or "",
+                       ";", "refresh-client", "-S"])
+        except Exception:
+            sys.stderr.write("msg-prefix %s: %s\n" % (name, traceback.format_exc()))
+
+    def deliver_chrome(self, recip_id, recip_name, sender_id, sender_name, body, mid):
+        """Both ends of a delivery learn of each other (peer chips) + get the top-line message indicator.
+        Keyed by sid; resolves each to its tmux name (no-op for an end with no tmux session)."""
+        rname, sname = _name_of(recip_id) or recip_name, _name_of(sender_id) or sender_name
+        sb, sf = _identity_of(sender_id)
+        rb, rf = _identity_of(recip_id)
+        self._update_peers(rname, sender_id, sname, sb, sf)
+        self._update_peers(sname, recip_id, rname, rb, rf)
+        self._msg_prefix(rname, "←", sname, sb, sf, body, mid)   # receiver: ← from sender (sender's colour)
+        self._msg_prefix(sname, "→", rname, rb, rf, body, mid)   # sender:   → to recipient (its colour)
+
+    def reconcile_peers(self):
+        """On every live TMUX session: drop chips whose peer SID is no longer live, refresh each surviving
+        chip's display name from that SID's CURRENT name, and drop a stale top-line "←/→ peer:" prefix. Peer
+        validity is checked against ALL live sessions (a chip may reference a live SDK peer); only tmux
+        sessions hold chips."""
+        name_of = {sid: _name_of(sid) for sid in Sessions.live()}    # all backends — a chip may point at an SDK peer
+        name_of = {sid: nm for sid, nm in name_of.items() if nm}
+        live_names = set(name_of.values())
+        for sid in self.live_sessions():                            # only tmux sessions have chips
+            name = _name_of(sid)
+            if not name:
+                continue
+            cur = self._peer_get(name)
+            new = [(pid, name_of[pid], c, f) for (pid, nm, c, f) in cur if pid in name_of]
+            mp = self.show_var(name, "@romp-msg-peer").strip()
+            drop_mp = bool(mp) and mp not in live_names
+            if new == cur and not drop_mp:
+                continue
+            try:
+                self._peer_write(name, new)
+                if drop_mp:
+                    self.fire(["set", "-t", name, "@romp-msg-dir", "", ";", "set", "-t", name, "@romp-msg-peer", "",
+                               ";", "set", "-t", name, "@romp-msg-id-cur", ""])
+            except Exception:
+                sys.stderr.write("reconcile %s: %s\n" % (name, traceback.format_exc()))
 
 
 _TMUX = TmuxBackend()
@@ -7010,6 +7150,26 @@ class Handler(BaseHTTPRequestHandler):
                 if not sid:
                     return self._send(400, json.dumps({"ok": False, "error": "id required"}), "application/json")
                 _picker_check(sid)
+                return self._send(200, json.dumps({"ok": True}), "application/json")
+            if u.path in ("/mail-badge", "/deliver-chrome", "/reconcile-peers"):
+                # tmux status-bar chrome the postal bus used to paint itself (the mail badge, the peer "talking
+                # to" chips, the top-line message indicator). The bus POSTs the SEMANTIC data; the kernel sets
+                # the @romp-* vars (no-op for an SDK session with no tmux status bar) so the bus never shells
+                # tmux. (the user 2026-06-26.)
+                try:
+                    body = json.loads(raw_body or b"{}")
+                except Exception:
+                    body = None
+                if not isinstance(body, dict):
+                    body = {}
+                if u.path == "/mail-badge":
+                    _TMUX.mail_badge(str(body.get("id") or ""), body.get("from_name") or "", body.get("from_id") or "")
+                elif u.path == "/deliver-chrome":
+                    _TMUX.deliver_chrome(str(body.get("recip_id") or ""), body.get("recip_name") or "",
+                                         str(body.get("sender_id") or ""), body.get("sender_name") or "",
+                                         body.get("body") or "", body.get("mid") or "")
+                else:
+                    _TMUX.reconcile_peers()
                 return self._send(200, json.dumps({"ok": True}), "application/json")
             return self._send(404, "not found", "text/plain")
         except (BrokenPipeError, ConnectionResetError):

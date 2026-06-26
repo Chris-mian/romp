@@ -16,21 +16,19 @@ pm = SourceFileLoader("romp_postal", os.path.join(BIN, "romp-postal")).load_modu
 
 class WorkingNoteThroughKernel(unittest.TestCase):
     def setUp(self):
-        self._saved = (pm._publish_working, pm.tmux, pm.my_id)
+        self._saved = (pm._publish_working, pm.my_id)
         self.published = []
         pm._publish_working = lambda sid, text: (self.published.append((sid, text)), True)[1]
-        self.tmux_calls = []
-        pm.tmux = lambda *a, **k: (self.tmux_calls.append(a), "")[1]
         pm.my_id = lambda: "sid-self"
 
     def tearDown(self):
-        pm._publish_working, pm.tmux, pm.my_id = self._saved
+        pm._publish_working, pm.my_id = self._saved
 
-    def test_cli_working_posts_to_the_kernel_and_shells_no_tmux(self):
+    def test_cli_working_posts_to_the_kernel(self):
         rc = pm.cli_working(["editing", "feed.ts"])
         self.assertEqual(rc, 0)
         self.assertEqual(self.published, [("sid-self", "editing feed.ts")])
-        self.assertEqual(self.tmux_calls, [], "cli_working must not shell tmux")
+        self.assertFalse(hasattr(pm, "tmux"), "the bus has no tmux() helper")
 
     def test_cli_working_clear_publishes_empty(self):
         pm.cli_working([])

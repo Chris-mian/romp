@@ -93,23 +93,30 @@ class NoRawTmuxOutsideTmuxBackend(unittest.TestCase):
         self.assertIn('"list-sessions"', body)
 
 
-class PostalSessionControlOffTmux(unittest.TestCase):
-    """P2 + the P3 working-note: the postal bus ENUMERATES sessions and PUBLISHES its working-note through the
-    kernel, never tmux. (Delivery's live pane-inject, the tmux status-bar mail/peer chrome, the @claude-state
-    picker-grace, and the self-identity fallback are the remaining P3 relocation — NOT yet asserted here; this
-    guard pins only what is already off tmux so it can't regress.)"""
+class PostalIsFullyTmuxFree(unittest.TestCase):
+    """P3 complete: the postal bus (a SEPARATE process) reaches tmux ONLY through the kernel's session API —
+    session enumeration, the working-note, mail delivery/wake, the resume-picker check, and the status-bar
+    mail/peer/message chrome all go over HTTP. So bin/romp-postal shells NO tmux at all; a regression fails CI
+    instead of silently re-coupling the bus to tmux. (the user 2026-06-26.)"""
 
     POSTAL = os.path.join(BIN, "romp-postal")
 
-    def test_session_enumeration_goes_through_the_kernel(self):
+    def test_no_raw_tmux_anywhere_in_the_bus(self):
         src = open(self.POSTAL, encoding="utf-8").read()
-        self.assertNotIn('"list-sessions"', src, "local_agents reads the kernel's GET /sessions, not tmux list-sessions")
-        self.assertIn("_kernel_sessions", src, "postal enumerates sessions via the kernel")
+        leaks = _scan_tmux(src)
+        self.assertEqual(leaks, [], "raw tmux leaked into the postal bus:\n"
+                         + "\n".join("  L%d [%s]: %s" % x for x in leaks))
 
-    def test_working_note_goes_through_the_kernel_not_a_tmux_var(self):
+    def test_the_tmux_shell_helper_is_gone(self):
         src = open(self.POSTAL, encoding="utf-8").read()
-        self.assertNotIn('"@romp-working"', src, "set_working publishes via the kernel store (POST /working), not the @romp-working var")
-        self.assertIn('"/working"', src, "postal POSTs the working-note to the kernel")
+        self.assertNotIn("def tmux(", src, "the bus's tmux() shell helper is removed")
+        self.assertNotIn("def tmux_bin(", src)
+
+    def test_the_bus_reaches_the_kernel_for_every_session_op(self):
+        src = open(self.POSTAL, encoding="utf-8").read()
+        for ep in ('"/sessions"', '"/working"', '"/deliver"', '"/picker-check"',
+                   '"/mail-badge"', '"/deliver-chrome"', '"/reconcile-peers"'):
+            self.assertIn(ep, src, "the bus reaches the kernel endpoint %s" % ep)
 
 
 if __name__ == "__main__":

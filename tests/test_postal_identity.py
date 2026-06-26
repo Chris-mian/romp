@@ -18,25 +18,22 @@ FSID = "11111111-2222-3333-4444-555555555555"
 class SelfIdentity(unittest.TestCase):
     def setUp(self):
         self._env = os.environ.get("CLAUDE_CODE_SESSION_ID")
-        self._tmux = pm.tmux
 
     def tearDown(self):
         if self._env is None:
             os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
         else:
             os.environ["CLAUDE_CODE_SESSION_ID"] = self._env
-        pm.tmux = self._tmux
 
-    def test_my_id_prefers_the_env_over_the_tmux_var(self):
+    def test_my_id_is_the_env_session_id(self):
+        # the env IS the identity — the bus has no tmux at all to fall back to (it was the wrong id for an
+        # SDK session in a leftover pane; the env is always right).
         os.environ["CLAUDE_CODE_SESSION_ID"] = FSID
-        pm.tmux = lambda *a: "wrong-stale-pane-id"   # tmux would return a DIFFERENT session's id
-        self.assertEqual(pm.my_id(), FSID)           # env wins → the real session, never the stale pane
+        self.assertEqual(pm.my_id(), FSID)
+        self.assertFalse(hasattr(pm, "tmux"), "the bus has no tmux() helper to fall back to")
 
-    def test_my_id_is_none_when_env_absent_no_tmux_fallback(self):
-        # the env IS the identity now — there is NO tmux fallback (the bus never shells tmux). Even if a tmux
-        # query would answer, we never ask it.
+    def test_my_id_is_none_when_env_absent(self):
         os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
-        pm.tmux = lambda *a: "tmux-would-answer-but-we-never-ask"
         self.assertIsNone(pm.my_id())
 
 

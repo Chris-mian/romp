@@ -108,5 +108,47 @@ class SdkDeliverSourcePin(unittest.TestCase):
         self.assertIn("Sessions.backend_for(sid).deliver(sid, text)", src)
 
 
+class Chrome(unittest.TestCase):
+    """The tmux status-bar chrome moved into TmuxBackend (the postal bus POSTs the semantic data via
+    /mail-badge, /deliver-chrome, /reconcile-peers): the mail badge, peer chips, and message indicator. A
+    no-op for a session with no tmux name (an SDK session skips)."""
+
+    def setUp(self):
+        self.T = km._TMUX
+        self.saved = (self.T.set_var, self.T.fire, self.T.display, self.T.show_var, self.T.refresh_client,
+                      km._name_of, km._identity_of)
+        self.sets, self.fires = [], []
+        self.T.set_var = lambda name, var, val, t=3: self.sets.append((name, var, val))
+        self.T.fire = lambda args, t=3: self.fires.append(tuple(args))
+        self.T.display = lambda name, fmt, t=2.5: ""              # no existing chips
+        self.T.show_var = lambda name, var, t=2.5: ""
+        self.T.refresh_client = lambda: None
+        km._identity_of = lambda sid: ("#abc", "#fff")
+
+    def tearDown(self):
+        (self.T.set_var, self.T.fire, self.T.display, self.T.show_var, self.T.refresh_client,
+         km._name_of, km._identity_of) = self.saved
+
+    def test_mail_badge_paints_the_recipient(self):
+        km._name_of = lambda sid: "recip" if sid == "r" else None
+        self.T.mail_badge("r", "alpha", "a")
+        vset = {v: val for (nm, v, val) in self.sets if nm == "recip"}
+        self.assertEqual(vset.get("@romp-mail-from"), "alpha")
+        self.assertEqual(vset.get("@romp-mail-bg"), "#abc")       # the sender's identity colour
+
+    def test_mail_badge_is_a_noop_without_a_tmux_session(self):
+        km._name_of = lambda sid: None                            # SDK / unknown → no tmux name → no paint
+        self.T.mail_badge("sdk", "alpha", "a")
+        self.assertEqual(self.sets, [])
+
+    def test_deliver_chrome_writes_both_ends(self):
+        km._name_of = lambda sid: {"r": "recip", "s": "sender"}.get(sid)
+        self.T.deliver_chrome("r", "recip", "s", "sender", "hello", "mid1")
+        # one peer-chip write + one message-prefix write per end → 4 batched tmux calls
+        self.assertEqual(len(self.fires), 4)
+        prefixes = [f for f in self.fires if "@romp-msg-dir" in f]
+        self.assertEqual(len(prefixes), 2, "the directional message indicator is set on both ends")
+
+
 if __name__ == "__main__":
     unittest.main()
