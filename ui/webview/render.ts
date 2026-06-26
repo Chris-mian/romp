@@ -2765,22 +2765,30 @@ function maybeExpandWindow(): void {
   expandingWindow = true;
   showLoadingPill();   // brief "loading earlier…" cue at the top of the pane (mostly a flash here; the longer
   // random-access jumps in Ship 2 are where it really earns its keep)
-  // Defer the actual render one frame so the pill paints first, then anchor the viewport across the prepend.
+  // Defer the actual render one frame so the pill paints first, then re-anchor the viewport.
   requestAnimationFrame(() => {
-    const before = content.scrollHeight;
-    const working = s.status.state === "working" || s.status.state === "compacting";
-    const newStart = Math.max(0, v.winStart - EXPAND_CHUNK);
-    if (settings.compact) {
-      // compact has no incremental prepend (the display stream is folded) — lower the floor and rebuild the
-      // (still-bounded) compact window. stale bypasses rebuildCompact's no-op cache guard.
-      v.winStart = newStart; v.stale = true; rebuildCompact(v, s, working);
-    } else {
-      expandWindow(v, s, newStart, working);
+    try {
+      // Anchor on DISTANCE-FROM-BOTTOM, not a prepend delta. Expansion only ever adds content ABOVE the
+      // viewport, so the distance to the bottom is invariant. The compact path FULL-REBUILDS (clears the
+      // DOM), which resets scrollTop to ~0 — a prepend-delta compensation then lands at the top of the loaded
+      // part ("snaps me back to the top", the user 2026-06-25). Restoring distance-from-bottom re-anchors
+      // correctly for BOTH the normal prepend and the compact rebuild.
+      const distFromBottom = content.scrollHeight - content.scrollTop;
+      const working = s.status.state === "working" || s.status.state === "compacting";
+      const newStart = Math.max(0, v.winStart - EXPAND_CHUNK);
+      if (settings.compact) {
+        // compact has no incremental prepend (the display stream is folded) — lower the floor and rebuild the
+        // (still-bounded) compact window. stale bypasses rebuildCompact's no-op cache guard.
+        v.winStart = newStart; v.stale = true; rebuildCompact(v, s, working);
+      } else {
+        expandWindow(v, s, newStart, working);
+      }
+      content.scrollTop = content.scrollHeight - distFromBottom;
+      scheduleRestamp();
+    } finally {
+      hideLoadingPill();
+      expandingWindow = false;   // always release, even if a render threw — a wedged flag = no more loading
     }
-    content.scrollTop += content.scrollHeight - before;   // anchor the viewport across the prepend/rebuild
-    hideLoadingPill();
-    expandingWindow = false;
-    scheduleRestamp();
   });
 }
 {

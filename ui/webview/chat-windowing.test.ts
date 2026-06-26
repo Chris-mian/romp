@@ -93,9 +93,12 @@ test("scroll-back auto-loads by proximity to the RENDERED TOP, not absolute scro
   assert.match(RENDER, /const topH = sp && sp\.classList\?\.contains\("tx-spacer"\) \? sp\.offsetHeight : 0;/);
   assert.match(RENDER, /const gap = content\.scrollTop - topH;/);
   assert.match(RENDER, /if \(gap < 0 \|\| gap > EXPAND_TRIGGER_PX\) return;/);
-  // a "loading earlier…" cue paints, then the render is deferred one frame; the viewport is re-anchored after
+  // a "loading earlier…" cue paints, then the render is deferred one frame; the viewport is re-anchored on
+  // DISTANCE-FROM-BOTTOM (invariant under prepend/rebuild — the compact rebuild resets scrollTop, so a
+  // prepend-delta would snap to the top of the loaded part).
   assert.match(RENDER, /showLoadingPill\(\);/);
-  assert.match(RENDER, /content\.scrollTop \+= content\.scrollHeight - before;/);
+  assert.match(RENDER, /const distFromBottom = content\.scrollHeight - content\.scrollTop;/);
+  assert.match(RENDER, /content\.scrollTop = content\.scrollHeight - distFromBottom;/);
   assert.match(RENDER, /hideLoadingPill\(\);/);
   assert.match(RENDER, /c\.addEventListener\("scroll", maybeExpandWindow, \{ passive: true \}\);/);
 });
