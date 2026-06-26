@@ -88,11 +88,14 @@ interface TodoTask { id: string; subject: string; activeForm?: string; status: s
 type ChipState = "working" | "ready" | "awaiting" | "idle" | "closed" | "compacting" | "blocked" | "retrying";
 interface Status { state: ChipState; sinceEpoch: number | null; effort?: string; model?: string; mode?: string; ctx?: string; ctxColor?: number[]; faded?: boolean; backend?: string; }   // backend = "tmux" | "sdk" (the kernel's _session_backend) → shown in the tab-title hover tooltip; ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side
 interface Color { bg: string; fg: string; }
+// A run_in_background task surfaced in the #bg-tasks box (the kernel's _bg_tasks): a one-line summary +
+// status, expandable to the command + its output. status = running | completed | failed.
+interface BgTask { id: string; status: string; summary: string; command?: string; output?: string; }
 // events is a contiguous TAIL of the transcript: global indices [headFrom, headTotal). On a fresh load the
 // kernel ships only the last WIRE_TAIL events (headFrom > 0) to keep startup light; older history streams in
 // on scroll-back (loadOlder → chatHead prepends, lowering headFrom). headFrom 0 = the whole transcript is
 // resident. chatTail's `from` is GLOBAL and mapped through headFrom.
-interface Session { id: string; name: string; color: Color | null; events: ChatEvent[]; status: Status; firstSeen?: number; cwd?: string; headFrom?: number; headTotal?: number; }
+interface Session { id: string; name: string; color: Color | null; events: ChatEvent[]; status: Status; firstSeen?: number; cwd?: string; headFrom?: number; headTotal?: number; bgTasks?: BgTask[]; }
 
 const vscodeApi =
   typeof (window as any).acquireVsCodeApi === "function" ? (window as any).acquireVsCodeApi() : undefined;
@@ -2668,6 +2671,7 @@ function showActive() {
   notifyActive();
   renderLedger();  // swap in the active session's digest box (or hide if none)
   renderLiveAsk(); // swap in the active session's pending picker (or hide if none)
+  renderBgTasks(); // swap in the active session's background-task box (or hide if none)
   let empty = document.getElementById("empty-state");
   const s = activeId ? sessions.get(activeId) : null;
   if (!s) {
@@ -3132,6 +3136,41 @@ function renderLedger() {
   // #ledger empty + hidden. The ledger DATA (ledgers map) and .ledger-* styling stay — the tooltip + Fleet use them.
   const host = document.getElementById("ledger");
   if (host) { host.replaceChildren(); host.style.display = "none"; }
+}
+
+// Background-task box (#bg-tasks) between the transcript and the composer (the user 2026-06-26): one row per
+// run_in_background task the kernel surfaced (running, or finished since the last prompt) — a status dot + a
+// one-line summary, click the header to expand the command + its output. Expansion is keyed by task id so it
+// survives the per-push re-render; the toggle is DELEGATED to the stable #bg-tasks container (see the wiring
+// near setupSettings) so a rebuild between mousedown and mouseup never drops the click. textContent only
+// (command/output are untrusted).
+const bgExpanded = new Set<string>();
+function renderBgTasks() {
+  const host = document.getElementById("bg-tasks");
+  if (!host) return;
+  host.replaceChildren();
+  const s = activeId ? sessions.get(activeId) : null;
+  const tasks = (s && s.bgTasks) || [];
+  if (!tasks.length) { host.style.display = "none"; return; }
+  host.style.display = "";
+  for (const t of tasks) {
+    const open = bgExpanded.has(t.id);
+    const row = el("div", "bg-task bg-" + (t.status || "running") + (open ? " open" : ""));
+    const head = el("div", "bg-head");
+    head.dataset.act = "bg-toggle"; head.dataset.id = t.id;   // header toggles; clicks in the detail body don't collapse it
+    head.appendChild(el("span", "bg-dot"));
+    const sum = el("span", "bg-sum"); sum.textContent = t.summary || "Background task"; head.appendChild(sum);
+    const st = el("span", "bg-status"); st.textContent = t.status || "running"; head.appendChild(st);
+    const car = el("span", "bg-caret"); car.textContent = open ? "▾" : "▸"; head.appendChild(car);
+    row.appendChild(head);
+    if (open) {
+      const det = el("div", "bg-detail");
+      if (t.command) { const cmd = el("pre", "bg-cmd"); cmd.textContent = t.command; det.appendChild(cmd); }
+      const out = el("pre", "bg-out"); out.textContent = t.output || "(no output captured)"; det.appendChild(out);
+      row.appendChild(det);
+    }
+    host.appendChild(row);
+  }
 }
 
 // A tree node's right-side time: the CURRENT node shows its live elapsed "(Xm)" (how long it's been
@@ -3950,6 +3989,7 @@ function upsert(msg: any) {
     // A trimmed full send carries headFrom/headTotal; a whole-transcript send omits them (headFrom 0).
     headFrom: msg.headFrom ?? 0,
     headTotal: msg.headTotal ?? ((msg.events || (prev ? prev.events : [])).length),
+    bgTasks: ("bgTasks" in msg) ? msg.bgTasks : (prev ? prev.bgTasks : undefined),
   };
   sessions.set(msg.id, s);
   // The kernel re-sends the FULL "session" payload on every push. Distinguish an APPEND (more turns
@@ -3972,7 +4012,7 @@ function upsert(msg: any) {
   renderTabs();
   // Active tab: a content refresh appends + preserves scroll (appendActive); a new tab or a fork
   // lands at the bottom/anchor (showActive). This is what keeps new pushes from snapping to bottom.
-  if (msg.id === activeId) { if (existed && !forked) appendActive(); else showActive(); }
+  if (msg.id === activeId) { if (existed && !forked) appendActive(); else showActive(); renderBgTasks(); }
   // A non-active session's view is left to sync lazily when it's next shown.
   // The session the user just created has arrived → drop the "Opening…" cue and
   // focus its fresh tab (the whole point of opening it).
@@ -4371,6 +4411,19 @@ setupSettings();
 // Tab-bar clicks are DELEGATED to the stable #tabs container (installed once), not hung on the per-tab nodes
 // that renderTabs() rebuilds on every push — so selecting a tab or clicking its ✕ (Close/End session) always
 // lands, even mid-rebuild. Each tab/✕ carries its data-act + data-id (see renderTabs, ./actions).
+// Background-task rows toggle open/closed — delegated to the stable #bg-tasks container (installed once),
+// not the per-task rows that renderBgTasks() rebuilds on every push, so the click always lands.
+(() => {
+  const host = document.getElementById("bg-tasks");
+  if (!host) return;
+  delegate(host, {
+    "bg-toggle": (el) => {
+      const id = el.dataset.id; if (!id) return;
+      if (bgExpanded.has(id)) bgExpanded.delete(id); else bgExpanded.add(id);
+      renderBgTasks();
+    },
+  });
+})();
 (() => {
   const tabs = document.getElementById("tabs");
   if (!tabs) return;

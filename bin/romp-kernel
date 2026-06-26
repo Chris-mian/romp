@@ -1944,6 +1944,127 @@ def _inflight_bg_tool(path):
     return why
 
 
+# ── background-task box (the user 2026-06-26) ───────────────────────────────────────────────────────
+# Surface run_in_background tasks in the chat: a launch (a tool_use with run_in_background:true) paired with
+# its <task-notification> result. The harness folds those notifications into "system reminders" inline; this
+# pulls them out as structured rows for a dedicated box (#bg-tasks) between the transcript and the composer.
+_bgtasks_cache = {}   # path -> ((mtime,size), [task dicts, no output])
+
+
+def _result_text(content):
+    """The text of a tool_result's content, whether it's a plain string or a list of {type:text} blocks."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text")
+    return ""
+
+
+def _parse_task_notification(txt):
+    """Parse a <task-notification> block's fields, or None if it isn't one. Keys on the exact tags the
+    harness emits (status / summary / output-file), not a guess."""
+    if not txt or "<task-notification>" not in txt:
+        return None
+
+    def fld(tag):
+        a = txt.find("<" + tag + ">")
+        if a < 0:
+            return ""
+        a += len(tag) + 2
+        b = txt.find("</" + tag + ">", a)
+        return txt[a:b].strip() if b >= 0 else ""
+    return {"status": (fld("status") or "completed").lower(), "summary": fld("summary"), "output_file": fld("output-file")}
+
+
+def _read_task_output(of):
+    """The tail of a background task's output file (the expand-to-details body), capped. '' if unreadable."""
+    if not of:
+        return ""
+    try:
+        with open(of, errors="replace") as f:
+            data = f.read()
+    except OSError:
+        return ""
+    data = data.strip()
+    if len(data) > 4000:
+        data = "…(truncated)\n" + data[-4000:]
+    return data
+
+
+def _scan_bg_tasks(path):
+    """Walk the transcript pairing run_in_background launches with their <task-notification> results. Show a
+    task when it's still RUNNING (in flight across turns) OR it finished AFTER the last genuine prompt — so a
+    finished task self-clears once the user moves on (sends another message), while a running one persists.
+    Newest-launched first, capped. No output content here (read fresh in _bg_tasks — a running task's output
+    grows independently of the transcript). Returns [{id,status,summary,command,outputFile}]."""
+    tasks, order, last_prompt, pos = {}, [], -1, 0
+    try:
+        with open(path, errors="replace") as f:
+            for line in f:
+                pos += 1
+                if '"type"' not in line:
+                    continue
+                try:
+                    o = json.loads(line)
+                except Exception:
+                    continue
+                t = o.get("type")
+                c = (o.get("message") or {}).get("content")
+                if t == "assistant" and isinstance(c, list):
+                    for b in c:
+                        if isinstance(b, dict) and b.get("type") == "tool_use" and (b.get("input") or {}).get("run_in_background"):
+                            tid, inp = b.get("id"), (b.get("input") or {})
+                            if tid and tid not in tasks:
+                                tasks[tid] = {"id": tid, "status": "running",
+                                              "summary": (inp.get("description") or b.get("name") or "Background task"),
+                                              "command": inp.get("command") or "", "outputFile": "", "notePos": -1}
+                                order.append(tid)
+                elif t == "user" and isinstance(c, list):
+                    had_result = False
+                    for b in c:
+                        if isinstance(b, dict) and b.get("type") == "tool_result":
+                            had_result = True
+                            tid = b.get("tool_use_id")
+                            note = _parse_task_notification(_result_text(b.get("content")))
+                            if tid in tasks and note:
+                                tasks[tid].update(status=note["status"], outputFile=note["output_file"], notePos=pos,
+                                                  summary=note["summary"] or tasks[tid]["summary"])
+                    if not had_result and any(isinstance(b, dict) and b.get("type") == "text" and b.get("text", "").strip() for b in c):
+                        last_prompt = pos
+                elif t == "user" and isinstance(c, str) and c.strip():
+                    last_prompt = pos
+    except OSError:
+        return []
+    keep = [tasks[tid] for tid in order if tasks[tid]["status"] == "running" or tasks[tid]["notePos"] > last_prompt]
+    keep.reverse()
+    return keep[:6]
+
+
+def _bg_tasks(path):
+    """The chat's background-task rows: the cached transcript scan (cached by mtime+size like _background_why)
+    enriched with each task's current output tail (read fresh). [] when there are none to show."""
+    try:
+        st = os.stat(path)
+        key = (st.st_mtime, st.st_size)
+    except OSError:
+        key = None
+    hit = _bgtasks_cache.get(path)
+    if hit is not None and key is not None and hit[0] == key:
+        scan = hit[1]
+    else:
+        scan = _scan_bg_tasks(path)
+        if key is not None:
+            if len(_bgtasks_cache) > 256:
+                _bgtasks_cache.clear()
+            _bgtasks_cache[path] = (key, scan)
+    out = []
+    for tk in scan:
+        d = {"id": tk["id"], "status": tk["status"], "summary": tk["summary"], "command": tk["command"],
+             "output": _read_task_output(tk["outputFile"])}
+        out.append(d)
+    return out
+
+
 def _api_error(path):
     """If the session is sitting BLOCKED on an API error right now, the error; else None. Claude Code
     writes every API failure to the transcript as an assistant record with top-level
@@ -3094,8 +3215,8 @@ def build_session(sid, now, tmux=None):
         events.insert(0, sysinfo)
     return {"type": "session", "id": sid, "name": sess["name"], "color": _name_color(sid),
             "cwd": _tilde(_cwd_of(sid) or meta.get("cwd") or ""),   # fixed-at-creation dir; lane tab shows it (the user 2026-06-22)
-            "events": events, "status": status, "ledger": ledger, "firstSeen": session["turns"][0]["t"]
-            if session["turns"] else now}
+            "events": events, "status": status, "ledger": ledger, "bgTasks": _bg_tasks(sess["path"]),
+            "firstSeen": session["turns"][0]["t"] if session["turns"] else now}
 
 
 # ───────────────────────── feed clear / undo (inbox-zero) ─────────────────────────
@@ -5935,6 +6056,7 @@ def _chat_body():
     return ('<div id="winframe"></div><div id="tabbar"><span id="tabs"></span></div>'
             '<div id="ledger" style="display:none"></div><div id="content"></div>'
             '<div id="live-ask" style="display:none"></div>'
+            '<div id="bg-tasks" style="display:none"></div>'   # background-task box: sits between the transcript and the composer
             '<div id="footer"><div id="statusline" class="statusline"></div>'
             '<div id="composer"><textarea id="composer-input" rows="1" '
             'placeholder="Message this session…"></textarea>'
