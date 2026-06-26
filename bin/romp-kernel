@@ -1429,8 +1429,11 @@ class TmuxBackend(sb.SessionBackend):
     def set_var(self, name, var, val, t=3):
         self._fire(["set", "-t", name, var, val], t)
 
-    def capture(self, name, join=False, t=2.5):
-        r = self._run(["capture-pane", "-p"] + (["-J"] if join else []) + ["-t", name], t)
+    def capture(self, name, join=False, colour=False, t=2.5):
+        # colour=True (-e) keeps the SGR escapes the deliver-time prompt-box parse needs (dim ghost-suggestion
+        # spans, the "stashed" indicator); join=True (-J) un-wraps long lines for the image-path wait.
+        args = ["capture-pane", "-p"] + (["-J"] if join else []) + (["-e"] if colour else []) + ["-t", name]
+        r = self._run(args, t)
         return r.stdout if (r and r.returncode == 0) else ""
 
     def pane_in_mode(self, name, t=2):
@@ -1458,6 +1461,11 @@ class TmuxBackend(sb.SessionBackend):
         statusLine JSON, so there's no event source to self-heal from; we caused the change, so we record it.
         (Keeps the @claude-* var name inside the class — the higher cycle helper stays tmux-string-free.)"""
         self.set_var(name, "@claude-permission-mode", mode)
+
+    def record_state(self, name, state):
+        """Persist a @claude-state value we derived externally (the revive-picker watcher's 'picker', which
+        blocks before any Claude hook can fire). Keeps the @claude-* var name inside the class."""
+        self.set_var(name, "@claude-state", state)
 
     # ── the sid-keyed SessionBackend contract (maps sid→tmux NAME internally; tmux is name-keyed) ──
     # Each method is a thin wrapper over the module-level helpers; the kernel + postal drive a tmux session
@@ -1560,6 +1568,61 @@ class TmuxBackend(sb.SessionBackend):
             return ap.parse_ask_pane(self.capture(name))
         except Exception:
             return None
+
+    # delivery — the deliver-time WAKE for a tmux session: live-inject a postal banner into the pane,
+    # preserving any draft (ported from the postal bus's _push/_inject so the bus never shells tmux).
+    def deliver(self, sid, text):
+        """Inject `text` (a postal banner) into the session's prompt and submit/queue it, preserving any draft.
+        True iff injected. False — leaving the mail for the maildir-drain backstop — when the pane isn't at a
+        live ❯ prompt, is stuck in copy-mode, or holds a draft we can't safely stash."""
+        name = _name_of(sid)
+        if not name:
+            return False
+        state = (self.live_sessions().get(str(sid)) or {}).get("state", "")
+        if state not in ("waiting", "idle", "working"):
+            return False                                  # permission / unknown / picker → drain later
+        if self.pane_in_mode(name):                       # scrolled up = copy-mode, where a paste's Enter is eaten
+            self.send_keys(name, "-X", "cancel")          # exit it (drop to the live prompt) or bail
+            if not _deliver_wait(lambda: not self.pane_in_mode(name), 1.0):
+                return False
+        cap = self.capture(name, colour=True)
+        if not _is_prompt_box(cap):
+            # not at a ❯ prompt. An IDLE session on a dismissible slash-command modal (/usage, /help, …) over
+            # the prompt: Esc once to close it + recheck (mail pulls it out instead of stranding). NOT when
+            # working (an AskUserQuestion/ExitPlanMode Esc would cancel), at a permission dialog (state already
+            # excluded), or on the resume picker (left as a needs-input signal).
+            if state in ("waiting", "idle") and not _picker_tier(cap):
+                self.send_keys(name, "Escape")
+                _deliver_wait(lambda: bool(_is_prompt_box(self.capture(name, colour=True))), 1.0)
+                cap = self.capture(name, colour=True)
+            if not _is_prompt_box(cap):
+                return False
+        has_draft = bool(_box_text(cap))
+        if has_draft and (state == "working" or _is_stashed(cap)):
+            return False                                  # can't clear safely → drain later
+        return self._inject(name, text, has_draft)
+
+    def _inject(self, name, text, has_draft):
+        """Type `text` into `name`'s prompt and submit it, preserving any draft via the Ctrl+S stash toggle.
+        False if the paste never lands (caller leaves the mail for the drain). A multi-line paste collapses to
+        a "[Pasted text +N lines]" placeholder, so "landed" = the box is no longer empty (not that the banner
+        text itself is visible)."""
+        if has_draft:
+            self.send_keys(name, "C-s")                   # stash the draft away
+            _deliver_wait(lambda: not _box_text(self.capture(name, colour=True)), 1.5)
+        self.set_buffer(text)
+        self.paste_buffer(name)                           # bracketed paste (no submit)
+        if not _deliver_wait(lambda: bool(_box_text(self.capture(name, colour=True))), 2.0):
+            if has_draft:
+                self.send_keys(name, "C-s")               # un-stash before bailing
+            return False
+        self.send_keys(name, "Enter")                     # submit (idle) / queue (working)
+        if has_draft:                                     # restore once the banner clears
+            if _deliver_wait(lambda: not _box_text(self.capture(name, colour=True)), 3.0):
+                self.send_keys(name, "C-s")
+            else:
+                sys.stderr.write("deliver: box did not clear for %s; draft left safely in stash\n" % name)
+        return True
 
 
 _TMUX = TmuxBackend()
@@ -1681,6 +1744,109 @@ def _session_rows():
                     "dir": _cwd_of(sid), "bg": bg, "fg": fg,
                     "working": notes.get(sid, ""), "backend": meta.get("backend", "")})
     return out
+
+
+# ── deliver-time prompt-box parsing (ported from the postal bus; PURE — operate on a captured pane) ──
+# Relied-on Claude Code TUI invariants: the input box sits between the last two ─── rules; the live prompt
+# carries a ❯ glyph; a ghost auto-suggestion is rendered DIM (\e[2m) while a real draft is not; a "› stashed"
+# indicator means a draft is already stashed; after Enter the box clears asynchronously.
+PROMPT_GLYPH = "❯"
+_SGR_RE = re.compile(r"\x1b\[[0-9;]*m")                      # any SGR colour code
+_DIM_RE = re.compile(r"\x1b\[2m.*?(?:\x1b\[(?:0|22)m|$)")    # a dim (ghost-suggestion) span
+_RULE_RE = re.compile("─{10,}")                              # the box's ───… borders
+_PICKER_STRICT = ("resume from summary", "resume full session as-is")   # Claude's resume-picker option labels
+_PICKER_LOOSE = re.compile(r"summ", re.I)                   # the picker is the only pre-prompt screen with a "summary"
+
+
+def _deliver_wait(pred, timeout, interval=0.12):
+    waited = 0.0
+    while waited < timeout:
+        if pred():
+            return True
+        time.sleep(interval)
+        waited += interval
+    return pred()
+
+
+def _box_region(cap):
+    """The raw lines of the prompt box (between its last two ─── rules), or None if it can't be located — in
+    which case the caller must NOT inject (it can't tell whether a draft is present)."""
+    lines = cap.split("\n")
+    rules = [i for i, l in enumerate(lines) if _RULE_RE.search(l)]
+    if len(rules) < 2:
+        return None
+    return lines[rules[-2] + 1:rules[-1]]
+
+
+def _is_prompt_box(cap):
+    """True ONLY when the box between the last two rules is the live Claude INPUT prompt (the ❯ glyph) — not a
+    resume/loading screen or the session picker, which also draw rule-bordered boxes but carry no ❯ (injecting
+    into those would consume the mail into a dead screen and lose it)."""
+    region = _box_region(cap)
+    return bool(region) and any(PROMPT_GLYPH in l for l in region)
+
+
+def _picker_tier(cap):
+    """Which tier matched Claude's resume picker, or None (STRICT exact labels beats the LOOSE /summ/ fallback)."""
+    txt = _SGR_RE.sub("", cap or "")
+    if any(s in txt.lower() for s in _PICKER_STRICT):
+        return "strict"
+    return "loose" if _PICKER_LOOSE.search(txt) else None
+
+
+def _box_text(cap):
+    """The prompt-box contents with ghost-suggestions + colour codes stripped — '' = empty (ready to inject)."""
+    region = _box_region(cap)
+    if region is None:
+        return ""
+    out = []
+    for raw in region:
+        seg = raw.split(PROMPT_GLYPH, 1)[1] if PROMPT_GLYPH in raw else raw
+        seg = _DIM_RE.sub("", seg)        # drop dim ghost-suggestion spans
+        seg = _SGR_RE.sub("", seg)        # drop remaining colour codes
+        out.append(seg)
+    return "\n".join(out).strip()
+
+
+def _is_stashed(cap):
+    return "stashed" in _SGR_RE.sub("", cap)
+
+
+_NORMAL_STATES = ("waiting", "working", "idle", "permission")          # any real @claude-state → past the picker
+_PICKER_GRACE = int(os.environ.get("ROMP_POSTAL_PICKER_GRACE", "10"))  # secs to watch a revive for the resume picker
+
+
+def _picker_check(sid):
+    """Surface a REVIVED session stuck on Claude's resume picker (it blocks before the session starts, so NO
+    Claude hook fires while it's up). Poll up to _PICKER_GRACE: if the session reaches a normal @claude-state
+    or a real ❯ prompt, it's fine (past/no picker); if the picker is visibly up (no ❯ + a 'summary' option),
+    set @claude-state=picker and append a 'picker' state event so the feed shows it as NEEDS INPUT. We do NOT
+    answer the picker (the user clears it; the normal hooks overwrite the state next transition). Ported from
+    the postal bus's cli_picker_check so the bus never shells tmux. (the user 2026-06-26.)"""
+    name = _name_of(sid)
+    if not name:
+        return
+    deadline = time.time() + _PICKER_GRACE
+    while time.time() < deadline:
+        if (_TMUX.live_sessions().get(str(sid)) or {}).get("state", "") in _NORMAL_STATES:
+            return                                            # real state reached → past/no picker
+        cap = _TMUX.capture(name, colour=True)
+        if _is_prompt_box(cap):
+            return                                            # real prompt up → fine
+        tier = _picker_tier(cap)
+        if tier:                                              # confirmed blocking picker → surface it
+            _TMUX.record_state(name, "picker")
+            try:
+                sdir = jd.STATE / "states"
+                sdir.mkdir(parents=True, exist_ok=True)
+                with open(sdir / (str(sid) + ".jsonl"), "a") as fh:
+                    # tier is additive to tmux-status.sh's {t,state} schema (consumers ignore it); lets us
+                    # spot CLI label drift (only-loose-ever-fires).
+                    fh.write(json.dumps({"t": int(time.time()), "state": "picker", "tier": tier}) + "\n")
+            except Exception:
+                sys.stderr.write("picker-check log failed for %s: %s\n" % (name, traceback.format_exc()))
+            return
+        time.sleep(0.5)
 
 
 def _clear_pane_input(name):
@@ -6815,6 +6981,35 @@ class Handler(BaseHTTPRequestHandler):
                 if not isinstance(body, dict) or not sid:
                     return self._send(400, json.dumps({"ok": False, "error": "id required"}), "application/json")
                 Sessions.set_working_note(sid, str(body.get("text") or ""))
+                return self._send(200, json.dumps({"ok": True}), "application/json")
+            if u.path == "/deliver":
+                # Live-deliver a postal banner to a session — the deliver-time WAKE. The bus drains its maildir
+                # and hands the banner here; the kernel injects it into the pane (tmux, draft-preserving) or
+                # enqueues it (SDK). {id, text} → {injected: bool}; the bus re-delivers to the maildir if false.
+                # Runs synchronously (the tmux inject polls the pane up to a few seconds) — fine on the
+                # threaded server. (the user 2026-06-26.)
+                try:
+                    body = json.loads(raw_body or b"{}")
+                except Exception:
+                    body = None
+                sid = str((body or {}).get("id") or "")
+                text = (body or {}).get("text") if isinstance(body, dict) else None
+                if not sid or not isinstance(text, str) or not text:
+                    return self._send(400, json.dumps({"ok": False, "error": "id and text required"}), "application/json")
+                injected = bool(Sessions.backend_for(sid).deliver(sid, text))
+                return self._send(200, json.dumps({"ok": True, "injected": injected}), "application/json")
+            if u.path == "/picker-check":
+                # Surface a revived tmux session stuck on Claude's resume picker (it blocks before any hook
+                # fires). The bus's `romp-postal picker-check` (run by romp on resume) calls this so it never
+                # shells tmux. {id}. Synchronous poll up to _PICKER_GRACE — fine on the threaded server.
+                try:
+                    body = json.loads(raw_body or b"{}")
+                except Exception:
+                    body = None
+                sid = str((body or {}).get("id") or "")
+                if not sid:
+                    return self._send(400, json.dumps({"ok": False, "error": "id required"}), "application/json")
+                _picker_check(sid)
                 return self._send(200, json.dumps({"ok": True}), "application/json")
             return self._send(404, "not found", "text/plain")
         except (BrokenPipeError, ConnectionResetError):

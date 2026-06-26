@@ -949,6 +949,19 @@ class SdkBackend:
         self._wake_push()
         return True
 
+    def deliver(self, sid: str, text: str) -> bool:
+        """Deliver-time wake for an SDK session: enqueue the postal banner so the session processes it on its
+        next turn — the SDK analogue of the tmux pane-inject (the user 2026-06-26). NO optimistic human echo:
+        it's a peer's mail, not the user's composer input; the transcript records it and the chat renders it as
+        a postal card. True if the session is live/resumable (so the bus consumed the maildir copy), else False
+        (the bus keeps it for the drain backstop)."""
+        s = self._ensure(sid)
+        if not s:
+            return False
+        s.enqueue(text)
+        self._poke()
+        return True
+
     def interrupt(self, sid: str) -> bool:
         s = self.sessions.get(sid)
         if not s:

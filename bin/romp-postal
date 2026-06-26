@@ -359,28 +359,31 @@ def local_agents():
     return res
 
 
-def _kernel_post(path, body):
+def _kernel_post(path, body, timeout=2):
     """POST a small JSON body to the kernel (loopback, token-free) — the bus's one-way control channel for the
-    ops the kernel owns now that the bus never shells tmux: the working-note, mail delivery/wake, and the
-    tmux status-bar chrome. True on a 2xx, False otherwise (unreachable kernel → the caller degrades). No-op
-    (False) under the ROMP_SESSIONS_FILE test seam, which signals a test running with no live kernel."""
+    ops the kernel owns now that the bus never shells tmux: the working-note, mail delivery/wake, the
+    status-bar chrome, and the resume-picker check. Returns the parsed JSON response dict, or None
+    (unreachable kernel / non-2xx / parse error → the caller degrades). No-op (None) under the
+    ROMP_SESSIONS_FILE test seam, which signals a test running with no live kernel."""
     if os.environ.get("ROMP_SESSIONS_FILE"):
-        return False
+        return None
     import urllib.request
     try:
         req = urllib.request.Request(KERNEL_BASE + path, data=json.dumps(body).encode("utf-8"),
                                      headers={"Content-Type": "application/json"}, method="POST")
-        with urllib.request.urlopen(req, timeout=2) as r:
-            return getattr(r, "status", 200) // 100 == 2
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            if getattr(r, "status", 200) // 100 != 2:
+                return None
+            return json.loads(r.read().decode("utf-8") or "{}")
     except Exception:
-        return False
+        return None
 
 
 def _publish_working(sid, text):
     """Publish/clear THIS session's working-note via the kernel's backend-agnostic store (POST /working) — no
     tmux. The kernel owns the store and both backends read it (it appears in GET /sessions' `working` field),
     so an SDK session can publish a note too."""
-    return _kernel_post("/working", {"id": str(sid), "text": text}) if sid else False
+    return _kernel_post("/working", {"id": str(sid), "text": text}) is not None if sid else False
 
 def all_agents():
     agents = local_agents()
@@ -723,31 +726,14 @@ def _drain(sid):
         return {"messages": read_box(sid, consume=True), "paused": False}
 
 # ───────────────────────── push-on-deliver (auto-wake) ─────────────────────────
-# When mail lands for a LOCAL romp session that's sitting idle, type it straight
-# into that session's prompt and submit it, so the recipient wakes immediately
-# instead of waiting for its next Stop-hook drain. The drain stays as the
-# backstop: whenever live injection isn't safe (a remote session, a permission
-# prompt, a draft we can't preserve, Claude mid-turn with a draft), we DON'T
-# inject — the message stays in the mailbox and the drain delivers it at the next
-# turn boundary, exactly as before. Disable with ~/.claude/romp-postal-nopush
-# (or romp-postal-off, which also disables the drain).
-#
-# Everything we know about Claude Code's prompt box (verified empirically against
-# v2.1.x), which this relies on:
-#   • multi-line text pasted via `paste-buffer -p` (bracketed paste) lands in the
-#     box WITHOUT submitting; a separate Enter submits it;
-#   • Ctrl+S is a stash TOGGLE — stashes+clears a draft, restores it when empty —
-#     so we save/restore the user's draft with perfect fidelity and no parsing;
-#   • a ghost auto-suggestion is rendered DIM (\e[2m); a real draft is not — so we
-#     tell them apart from the colour codes in `capture-pane -e`;
-#   • the "› stashed" indicator means a draft is already stashed (don't clobber it);
-#   • after Enter, the box clears asynchronously — poll for it before unstashing.
-
-PROMPT_GLYPH = "❯"                          # ❯
-PUSH_SENTINEL = "#" * 44                          # banner rule; used to detect paste/submit
-_SGR_RE = re.compile(r"\x1b\[[0-9;]*m")           # any SGR colour code
-_DIM_RE = re.compile(r"\x1b\[2m.*?(?:\x1b\[(?:0|22)m|$)")   # a dim (ghost-suggestion) span
-_RULE_RE = re.compile("─{10,}")              # the box's ─────… borders
+# When mail lands for a LOCAL romp session that's sitting idle, the bus wakes the recipient through the
+# kernel (POST /deliver) so it sees the mail immediately instead of waiting for its next Stop-hook drain. The
+# kernel owns the wake per backend — a tmux session gets the banner pasted into its prompt (draft-preserving),
+# an SDK session gets it enqueued — so the BUS never shells tmux. The maildir drain stays as the backstop:
+# whenever the kernel can't inject safely (a permission prompt, a draft it can't preserve, Claude mid-turn
+# with a draft), it returns injected:false and the bus puts the mail back for the next-turn drain. Disable
+# the live push with ~/.claude/romp-postal-nopush (or romp-postal-off, which also disables the drain).
+PUSH_SENTINEL = "#" * 44                          # the banner's rule line (format_push)
 
 def _push_disabled():
     h = Path.home() / ".claude"
@@ -939,7 +925,7 @@ def _sweep_orphans():
                           % (recip, " ".join(body.split())[:160]))
                 try:
                     deliver(s["id"], "Romp Postal Service", "", bounce)
-                    threading.Thread(target=_push, args=(s["name"], s["id"], False), daemon=True).start()
+                    threading.Thread(target=_push, args=(s["id"], s), daemon=True).start()
                 except Exception as e:
                     _log("bounce to %s failed: %s" % (s["name"], e))
             try:
@@ -953,78 +939,6 @@ def _sweep_orphans():
         except Exception:
             pass
 
-def _capture(name):
-    return tmux("capture-pane", "-t", name, "-p", "-e")
-
-def _box_region(cap):
-    """The raw lines that make up the prompt box (between its last two ─── rules),
-    or None if the box can't be located — in which case the caller should NOT
-    inject, since it can't tell whether a draft is present."""
-    lines = cap.split("\n")
-    rules = [i for i, l in enumerate(lines) if _RULE_RE.search(l)]
-    if len(rules) < 2:
-        return None
-    return lines[rules[-2] + 1:rules[-1]]
-
-def _is_prompt_box(cap):
-    """True ONLY when the box between the last two ─── rules is the live Claude
-    INPUT prompt — identified by the ❯ glyph on its input line. A resume/loading
-    screen and Claude's session PICKER also draw rule-bordered, box-shaped regions,
-    but none carries the ❯ input prompt. Without this positive check, _push would
-    treat such a screen as a prompt, _drain (consume) the mail, and paste it into a
-    dead screen where the keystrokes vanish — losing the message. When this is
-    False we bail and leave the mail in `new` for the Stop-hook drain or the
-    SessionStart revive hook to deliver once Claude is actually back."""
-    region = _box_region(cap)
-    if region is None:
-        return False
-    return any(PROMPT_GLYPH in l for l in region)
-
-_NORMAL_STATES = ("waiting", "working", "idle", "permission")  # any real @claude-state -> past the picker
-# Claude's resume picker option labels, verbatim from the installed CLI (v2.1.170,
-# per feed_design). Tiered match: STRICT (these literals) first for false-positive
-# resistance; LOOSE (/summ/) as a fallback so a label change on a CLI update still
-# fires instead of going blind. The matched tier is recorded so drift is visible.
-_PICKER_STRICT = ("resume from summary", "resume full session as-is")
-_PICKER_LOOSE = re.compile(r"summ", re.I)   # the picker is the only pre-prompt screen offering a "summary"
-
-def _picker_tier(cap):
-    """Which tier matched Claude's resume picker, or None. STRICT (exact labels) wins
-    over LOOSE (/summ/ fallback). Returned tier is logged so we can tell when the
-    strict labels stop matching (a CLI version drifted the wording)."""
-    txt = _SGR_RE.sub("", cap or "")
-    low = txt.lower()
-    if any(s in low for s in _PICKER_STRICT):
-        return "strict"
-    if _PICKER_LOOSE.search(txt):
-        return "loose"
-    return None
-
-def _box_text(cap):
-    """The current prompt-box contents with ghost-suggestions and colour codes
-    stripped — '' means the box is empty (ready for injection)."""
-    region = _box_region(cap)
-    if region is None:
-        return ""
-    out = []
-    for raw in region:
-        seg = raw.split(PROMPT_GLYPH, 1)[1] if PROMPT_GLYPH in raw else raw
-        seg = _DIM_RE.sub("", seg)        # drop dim ghost-suggestion spans
-        seg = _SGR_RE.sub("", seg)        # drop remaining colour codes
-        out.append(seg)
-    return "\n".join(out).strip()
-
-def _is_stashed(cap):
-    return "stashed" in _SGR_RE.sub("", cap)
-
-def _wait(pred, timeout, interval=0.12):
-    waited = 0.0
-    while waited < timeout:
-        if pred():
-            return True
-        time.sleep(interval)
-        waited += interval
-    return pred()
 
 def _hhmm(iso):
     # _iso_now() -> "2026-06-05T14:23:45-0700"; pull HH:MM, else fall back to now.
@@ -1046,104 +960,58 @@ def format_push(msgs):
                % msgs[0].get("from", ""))
     return "\n".join(out)
 
-def _inject(name, text, has_draft):
-    """Type `text` into session `name`'s prompt and submit it, preserving any
-    existing draft. Raises if the paste never lands (caller restores the mail)."""
-    if has_draft:                                              # stash the draft away
-        tmux("send-keys", "-t", name, "C-s")
-        _wait(lambda: not _box_text(_capture(name)), 1.5)
-    tmux("set-buffer", "-b", "romppush", "--", text)           # bracketed paste (no submit)
-    tmux("paste-buffer", "-b", "romppush", "-t", name, "-p", "-d")
-    # A multi-line paste collapses to a "[Pasted text +N lines]" placeholder in the
-    # box (it expands in full on submit), so "landed" just means the box is no
-    # longer empty — not that the banner text itself is visible.
-    if not _wait(lambda: bool(_box_text(_capture(name))), 2.0):
-        if has_draft:
-            tmux("send-keys", "-t", name, "C-s")              # un-stash before bailing
-        raise RuntimeError("paste did not land in the prompt box")
-    tmux("send-keys", "-t", name, "Enter")                     # submit (idle) / queue (working)
-    if has_draft:                                             # restore once the banner clears
-        if _wait(lambda: not _box_text(_capture(name)), 3.0):
-            tmux("send-keys", "-t", name, "C-s")
-        else:
-            _log("push: box did not clear for %s; draft left safely in stash" % name)
-
-def _push(name, sid, remote):
-    """Decide whether it's safe to live-inject into `name`, then do it. Anything
-    unsafe just returns — the Stop-hook drain remains the backstop."""
-    if remote or _push_disabled():
-        return
+def _push(sid, agent):
+    """Live-deliver pending mail to a session by WAKING it through the kernel (POST /deliver) — the kernel
+    injects the banner into the pane (tmux, draft-preserving) or enqueues it (SDK); the bus never shells tmux.
+    Coarse-skip a clearly not-ready session (remote / not idle-or-working) to avoid a needless drain; the
+    kernel does the fine pane-safety (at a ❯ prompt, out of copy-mode, a draft it can safely stash) and tells
+    us whether it injected. Not injected → put the mail back for the maildir-drain backstop. Returns True iff
+    injected (so a revive poll knows to stop). `agent` is the GET /sessions row (id, state, backend, remote)."""
+    if _push_disabled() or not agent or agent.get("remote"):
+        return False
+    if os.environ.get("ROMP_SESSIONS_FILE"):                  # test seam: no live kernel → leave it for the drain (don't churn the maildir)
+        return False
+    if agent.get("state", "") not in ("waiting", "idle", "working"):
+        return False                                          # permission / unknown / picker → drain later
     try:
-        state = tmux("show", "-t", name, "-v", "@claude-state").strip()
-        if state not in ("waiting", "idle", "working"):
-            return                                            # permission / unknown -> drain later
-        # Scrolled up = the pane is in copy-mode, where a paste's Enter gets eaten
-        # (stuck, unsubmitted) and capture-pane reads the scrolled view. Exit
-        # copy-mode (drop to the live prompt) so the message submits immediately.
-        if tmux("display-message", "-t", name, "-p", "#{pane_in_mode}").strip() == "1":
-            tmux("send-keys", "-t", name, "-X", "cancel")
-            _wait(lambda: tmux("display-message", "-t", name, "-p", "#{pane_in_mode}").strip() != "1", 1.0)
-        cap = _capture(name)
-        if not _is_prompt_box(cap):
-            # Not at a ❯ prompt. If the session is IDLE and sitting on a dismissible
-            # slash-command modal the user opened over the prompt (/usage, /help,
-            # /config, …), press Esc once to close it and recheck — so mail pulls an
-            # idle session out of the modal instead of stranding (same spirit as the
-            # copy-mode cancel above). We deliberately do NOT do this when WORKING (it
-            # could be an AskUserQuestion / ExitPlanMode decision mid-turn that Esc
-            # would cancel), at a permission dialog (state isn't waiting/idle, already
-            # returned above), or on the resume picker (left as a needs-input signal).
-            # If Esc doesn't reveal a prompt (a loading screen / stale state / stubborn
-            # modal), bail WITHOUT draining — the mail stays in `new` for the drain or
-            # the revive hook, and the retry loop will try again.
-            if state in ("waiting", "idle") and not _picker_tier(cap):
-                tmux("send-keys", "-t", name, "Escape")
-                _wait(lambda: bool(_is_prompt_box(_capture(name))), 1.0)
-                cap = _capture(name)
-            if not _is_prompt_box(cap):
-                return
-        has_draft = bool(_box_text(cap))
-        if has_draft and (state == "working" or _is_stashed(cap)):
-            return                                            # can't clear safely -> drain later
-        res = _drain(sid)                                      # claim mail (guarded + consuming)
+        res = _drain(sid)                                     # claim mail (guarded + consuming)
         msgs = res.get("messages", [])
         if not msgs:
-            return                                            # nothing, or loop-guard paused
-        try:
-            _inject(name, format_push(msgs), has_draft)
-        except Exception as e:                                # put the mail back for the drain
-            for m in msgs:
-                deliver(sid, m.get("from", "?"), m.get("from_id", ""), m.get("body", ""))
-            _log("push to %s failed (%s); restored %d msg(s) for drain" % (name, e, len(msgs)))
+            return False                                      # nothing, or loop-guard paused
+        resp = _kernel_post("/deliver", {"id": sid, "text": format_push(msgs)}, timeout=12)
+        if resp and resp.get("injected"):
+            return True
+        for m in msgs:                                        # not injected → put it back for the drain
+            deliver(sid, m.get("from", "?"), m.get("from_id", ""), m.get("body", ""))
+        _log("push to %s deferred; %d msg(s) restored for the drain backstop" % (sid, len(msgs)))
+        return False
     except Exception as e:
-        _log("push error for %s: %s" % (name, e))
+        _log("push error for %s: %s" % (sid, e))
+        return False
 
 WAKE_TIMEOUT = int(os.environ.get("ROMP_POSTAL_WAKE_TIMEOUT", "45"))
 
 def _wake_when_ready(sid):
-    """Force-deliver pending mail to a REVIVING session once its prompt is live.
+    """Force-deliver pending mail to a REVIVING session once it's ready.
 
-    A resumed session loads its transcript before its prompt box is interactive,
-    and a SessionStart hook can only inject PASSIVE context (verified — it cannot
-    force a turn), so a session revived with parked handoffs would just sit idle on
-    un-acted mail. Instead we poll until the real ❯ prompt is up, then _push —
-    which injects AND submits (Enter) — so the session actually takes a turn
-    (waiting→working→acts→waiting) and shows WORKING in every existing view, no view
-    changes needed. _push's loop guard prevents a mail-storm from spinning it. If
-    the prompt never appears within WAKE_TIMEOUT (e.g. a huge transcript), the mail
-    stays in new/ for the Stop-hook drain — delivered on the first turn, just not
-    force-acted. Runs off the /wake handler so the revive hook returns instantly."""
+    A resumed session loads its transcript before its prompt box is interactive, and a SessionStart hook can
+    only inject PASSIVE context (it cannot force a turn), so a session revived with parked handoffs would just
+    sit idle on un-acted mail. Instead we poll until the session is live, then _push — which (via the kernel's
+    /deliver) injects AND submits so the session takes a turn (waiting→working→acts→waiting) and shows WORKING
+    in every existing view. The kernel returns injected:false while the prompt isn't live yet, so we just retry
+    until it lands; if it never does within WAKE_TIMEOUT (a huge transcript), the mail stays in new/ for the
+    Stop-hook drain — delivered on the first turn, just not force-acted. Runs off the /wake handler so the
+    revive hook returns instantly."""
     try:
         deadline = time.time() + WAKE_TIMEOUT
         while time.time() < deadline:
             newd = MAILROOT / sid / "new"
             if not (newd.is_dir() and any(newd.iterdir())):
                 return                                        # nothing pending (or already delivered)
-            live = {a["id"]: a["name"] for a in local_agents()}
-            if sid not in live:
+            agent = next((a for a in local_agents() if a["id"] == sid), None)
+            if not agent:
                 return                                        # session died during load
-            if _is_prompt_box(_capture(live[sid])):
-                _push(live[sid], sid, False)                  # drain + inject + SUBMIT -> forces a turn
+            if _push(sid, agent):                             # injected (drain + submit → forces a turn) → done
                 return
             time.sleep(0.5)
     except Exception as e:
@@ -1228,9 +1096,9 @@ class Handler(BaseHTTPRequestHandler):
                 # ...record correspondence (peer line) + directional top-line prefix...
                 threading.Thread(target=_on_deliver, args=(a0["name"], a0["id"], frm, frm_id, data.get("body", ""), mid),
                                  daemon=True).start()
-                # ...and auto-wake it if it's idle, typing the mail into its prompt
-                # (off-thread so send latency stays low).
-                threading.Thread(target=_push, args=(a0["name"], a0["id"], False),
+                # ...and auto-wake it if it's idle (the kernel injects/enqueues the mail;
+                # off-thread so send latency stays low).
+                threading.Thread(target=_push, args=(a0["id"], a0),
                                  daemon=True).start()
             return self._send({"ok": True, "to": to})
         if u.path == "/recall":
@@ -1296,7 +1164,7 @@ def _retry_pending():
     revival); a stale marker (new/ already empty) is reconciled away."""
     if not MAILPENDING.is_dir():
         return
-    live = {a["id"]: a["name"] for a in local_agents()}
+    live = {a["id"]: a for a in local_agents()}
     for m in list(MAILPENDING.iterdir()):
         if not m.is_file():
             continue
@@ -1307,9 +1175,9 @@ def _retry_pending():
             continue
         if sid in live:
             try:
-                _push(live[sid], sid, False)   # re-attempt; _push defers again if still unsafe
+                _push(sid, live[sid])          # re-attempt; the kernel defers again if still unsafe
             except Exception as e:
-                _log("retry push to %s failed: %s" % (live[sid], e))
+                _log("retry push to %s failed: %s" % (sid, e))
 
 def _retry_loop():
     while True:
@@ -1759,39 +1627,16 @@ def _argval(argv, flag):
     return None
 
 def cli_picker_check(argv):
-    """Backgrounded by `romp` on RESUME (romp-postal picker-check --name N --id S).
-    Claude's "resume as-is / from summary" PICKER blocks before the session starts,
-    so NO Claude hook fires while it's up — an external watcher is the only way to
-    surface it. Poll up to PICKER_GRACE: if the session reaches a normal @claude-state
-    or a real ❯ prompt, it's fine (past/no picker). If the picker is visibly up
-    (no ❯ + mentions a summary), set @claude-state=picker and append a 'picker'
-    state event so the feed shows it as NEEDS INPUT. We deliberately do NOT answer
-    the picker (guessing keys / 'from summary' loses context); the user clears it and
-    the normal hooks overwrite the state on the next transition."""
-    name, sid = _argval(argv, "--name"), _argval(argv, "--id")
-    if not name or not sid:
+    """Backgrounded by `romp` on RESUME (romp-postal picker-check --name N --id S). Claude's "resume as-is /
+    from summary" PICKER blocks before the session starts, so NO Claude hook fires while it's up — an external
+    watcher is the only way to surface it. Routed through the kernel (POST /picker-check): the kernel polls the
+    pane + @claude-state for up to PICKER_GRACE and, if the picker is confirmed up, marks @claude-state=picker
+    + appends a 'picker' state event so the feed shows NEEDS INPUT. The bus never shells tmux."""
+    sid = _argval(argv, "--id")
+    if not sid:
         return 0
-    deadline = time.time() + PICKER_GRACE
-    while time.time() < deadline:
-        if tmux("show", "-t", name, "-v", "@claude-state").strip() in _NORMAL_STATES:
-            return 0                                  # real state reached -> past/no picker
-        cap = _capture(name)
-        if _is_prompt_box(cap):
-            return 0                                  # real prompt up -> fine
-        tier = _picker_tier(cap)
-        if tier:                                      # confirmed blocking picker -> surface it
-            tmux("set", "-t", name, "@claude-state", "picker")
-            try:
-                STATESDIR.mkdir(parents=True, exist_ok=True)
-                with open(STATESDIR / (sid + ".jsonl"), "a") as fh:
-                    # tier is additive to tmux-status.sh's {t,state} schema (consumers
-                    # ignore it); lets us spot CLI label drift (only-loose-ever-fires).
-                    fh.write(json.dumps({"t": int(time.time()), "state": "picker", "tier": tier}) + "\n")
-            except Exception as e:
-                _log("picker-check log failed for %s: %s" % (name, e))
-            return 0
-        time.sleep(0.5)
-    return 0                                           # never confirmed a picker (slow load / unknown) -> leave it
+    _kernel_post("/picker-check", {"id": sid}, timeout=PICKER_GRACE + 5)
+    return 0
 
 def cli_drain(argv):
     # For the Stop hook. --id is authoritative (from Claude's hook payload).

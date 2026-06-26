@@ -95,6 +95,14 @@ class SessionBackend(ABC):
         tmux pressed Enter in the pane; the SDK enqueues a drain. True if a wake was issued."""
         return False
 
+    def deliver(self, sid: str, text: str) -> bool:
+        """Live-deliver a postal banner to `sid` as the deliver-time WAKE — put it into the session's input so
+        an idle recipient surfaces the mail NOW instead of on its next turn. tmux pastes it into the pane
+        (draft-preserving); the SDK enqueues it. True iff delivered. Default: not delivered (the postal bus
+        then leaves the mail for its maildir-drain backstop). The bus reaches this via the kernel's POST
+        /deliver so it never shells tmux."""
+        return False
+
     # ── chat tail ────────────────────────────────────────────────────────────────────────────────
     @abstractmethod
     def pending_queued(self, sid: str) -> list:

@@ -1,0 +1,112 @@
+#!/usr/bin/env python3
+"""The deliver-time WAKE moved into the kernel (the user 2026-06-26): the postal bus drains its maildir and
+hands the banner to the kernel (POST /deliver), which injects it into the pane for a tmux session (draft-
+preserving, ported from the bus's _push/_inject) or enqueues it for an SDK session. The bus never shells
+tmux. Also the resume-picker watcher (_picker_check). Deterministic — the tmux primitives are stubbed.
+"""
+import json
+import os
+import tempfile
+import unittest
+from importlib.machinery import SourceFileLoader
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+BIN = os.path.join(os.path.dirname(HERE), "bin")
+os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
+km = SourceFileLoader("romp_kernel_deliver", os.path.join(BIN, "romp-kernel")).load_module()
+
+
+class TmuxDeliver(unittest.TestCase):
+    """TmuxBackend.deliver: inject the banner only at a live ❯ prompt we can write to; otherwise defer (the
+    mail stays in the maildir for the Stop-hook drain)."""
+
+    def setUp(self):
+        self.T = km._TMUX
+        self.saved = {n: getattr(self.T, n) for n in
+                      ("send_keys", "set_var", "capture", "pane_in_mode", "set_buffer", "paste_buffer", "live_sessions")}
+        self.saved_name = km._name_of
+        self.keys = []
+        self.T.send_keys = lambda name, *a, **k: self.keys.append(a)
+        self.T.set_var = lambda *a, **k: None
+        self.T.set_buffer = lambda text: None
+        self.pasted = False
+        self.T.paste_buffer = lambda name: setattr(self, "pasted", True)
+        self.T.pane_in_mode = lambda name, t=2: False
+        km._name_of = lambda sid: "sess" if sid == "s1" else None
+        self.T.live_sessions = lambda: {"s1": {"state": "idle"}}
+
+    def tearDown(self):
+        for n, v in self.saved.items():
+            setattr(self.T, n, v)
+        km._name_of = self.saved_name
+
+    def _cap_after_paste(self, before, after):
+        self.T.capture = lambda *a, **k: (after if self.pasted else before)
+
+    def test_injects_at_idle_empty_prompt(self):
+        # the box rule is ─{10,}; use 12 so _box_region finds it
+        self._cap_after_paste("────────────\n❯ \n────────────",
+                              "────────────\n❯ [Pasted text +2 lines]\n────────────")
+        self.assertTrue(self.T.deliver("s1", "## banner"))
+        self.assertIn(("Enter",), self.keys, "submitted after the paste landed")
+
+    def test_defers_when_not_at_a_prompt(self):
+        self.T.capture = lambda *a, **k: "Loading session…\n(no prompt box yet)"   # no ❯ → not injectable
+        self.assertFalse(self.T.deliver("s1", "x"))
+
+    def test_defers_a_draft_while_working(self):
+        self.T.live_sessions = lambda: {"s1": {"state": "working"}}
+        self.T.capture = lambda *a, **k: "────────────\n❯ a half-typed draft\n────────────"   # has_draft + working → unsafe
+        self.assertFalse(self.T.deliver("s1", "x"))
+
+    def test_defers_an_unknown_session(self):
+        self.assertFalse(self.T.deliver("nope", "x"))
+
+    def test_defers_a_non_injectable_state(self):
+        self.T.live_sessions = lambda: {"s1": {"state": "permission"}}   # at a permission dialog → never inject
+        self.assertFalse(self.T.deliver("s1", "x"))
+
+
+class PickerCheck(unittest.TestCase):
+    """_picker_check surfaces a revived session stuck on Claude's resume picker (no hook fires while it's up):
+    if the pane shows the picker (no ❯ + a 'summary' option), mark @claude-state=picker + log a picker event."""
+
+    def setUp(self):
+        self.T = km._TMUX
+        self.saved = (self.T.capture, self.T.live_sessions, km._name_of, km.jd.STATE)
+        km._name_of = lambda sid: "sess"
+        self.T.live_sessions = lambda: {"s1": {"state": ""}}     # never reaches a normal state → keep polling
+        self.recorded = []
+        self._saved_rec = self.T.record_state
+        self.T.record_state = lambda name, state: self.recorded.append((name, state))
+        km.jd.STATE = __import__("pathlib").Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        self.T.capture, self.T.live_sessions, km._name_of, km.jd.STATE = self.saved
+        self.T.record_state = self._saved_rec
+
+    def test_marks_picker_when_the_resume_picker_is_up(self):
+        self.T.capture = lambda *a, **k: "  Resume from summary\n  Resume full session as-is\n"
+        km._PICKER_GRACE = 1
+        km._picker_check("s1")
+        self.assertIn(("sess", "picker"), self.recorded, "a confirmed picker is surfaced as @claude-state=picker")
+        log = (km.jd.STATE / "states" / "s1.jsonl").read_text()
+        self.assertIn('"state": "picker"', log)
+        self.assertIn('"tier": "strict"', log)
+
+
+class SdkDeliverSourcePin(unittest.TestCase):
+    def test_sdk_backend_defines_deliver_as_a_no_echo_enqueue(self):
+        src = open(os.path.join(BIN, "romp_sdk_backend.py"), encoding="utf-8").read()
+        body = src.split("def deliver(", 1)[1].split("\n    def ", 1)[0]
+        self.assertIn("s.enqueue(text)", body, "SDK deliver enqueues the banner (the deliver-time wake)")
+        self.assertNotIn("_echo_text", body, "no optimistic human echo — it's a peer's mail, not the user's input")
+
+    def test_post_deliver_routes_through_backend_for(self):
+        src = open(os.path.join(BIN, "romp-kernel"), encoding="utf-8").read()
+        self.assertIn('u.path == "/deliver"', src)
+        self.assertIn("Sessions.backend_for(sid).deliver(sid, text)", src)
+
+
+if __name__ == "__main__":
+    unittest.main()
