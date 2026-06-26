@@ -68,7 +68,6 @@ NAMES_DIR = Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local/stat
 TLDIR = STATE.parent / "timeline"     # append-only logs for the timeline view (messages.jsonl)
 ARCHIVE_DIR = STATE.parent / "archive"        # per-session {headline, abstract} (the archiver — the search index)
 CAPTIONS_DIR = STATE.parent / "captions"      # per-transcript turn/segment captions (the activity log)
-STATESDIR = STATE.parent / "states"          # per-session state-transition log (tmux-status.sh schema)
 SESSION_FLAGS = STATE.parent / "session-flags.json"   # the kernel's per-session view flags {sid:{flag:true}}; we honour postalOff
 
 # The romp launcher (same dir as this script); used to REVIVE a dead session via
