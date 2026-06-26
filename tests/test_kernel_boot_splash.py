@@ -24,10 +24,11 @@ class BootSplash(unittest.TestCase):
 
     def test_the_shell_paints_a_centered_romp_loader(self):
         self.assertIn("id=romp-boot", self.html, "a full-window boot overlay rides in the shell HTML")
-        self.assertIn("romp-swirl-glyph.svg", self.html, "the ACTUAL romp logo (swirl glyph)")
-        self.assertIn("class=rl-word>romp<", self.html, "the 'romp' wordmark renders with the logo")
+        self.assertIn("romp-swirl-glyph.svg", self.html, "the swirl glyph (it IS the 'o')")
+        self.assertIn("class=rl-o", self.html, "the swirl spins as the lowercase 'o' in the wordmark")
+        self.assertIn("Anta-Regular.ttf", self.html, "the wordmark is set in Anta, like the README hero")
+        self.assertIn("#1EA1EB", self.html, "the R wears the swirl's blue arm colour")
         self.assertIn("rl-dots", self.html, "the moving-dots loading cue below it")
-        self.assertIn("#9cd2ff", self.html, "the romp accent blue (loading-dot + wordmark)")
         self.assertIn("@keyframes rl-bnc", self.html, "the dots are animated")
         # the overlay sits before the panes so it covers the whole window from the first paint
         self.assertLess(self.html.index("id=romp-boot"), self.html.index("id=f-chat"))
@@ -58,10 +59,10 @@ class PaneSpinner(unittest.TestCase):
         for name, (cid, _) in self.PANES.items():
             html = getattr(km, "_%s_page" % name)()
             self.assertIn("id=pane-spin", html, "%s pane has the loading overlay" % name)
-            self.assertIn("romp-swirl-glyph.svg", html, "%s loader uses the romp logo" % name)
-            self.assertIn("class=rl-word>romp<", html, "%s loader shows the 'romp' wordmark too" % name)
+            self.assertIn("romp-swirl-glyph.svg", html, "%s loader uses the swirl glyph" % name)
+            self.assertIn("class=rl-o", html, "%s loader shows the wordmark (swirl as the 'o')" % name)
             self.assertIn("rl-dots", html, "%s loader has the dots (same look as the splash)" % name)
-            self.assertIn("rotate(-360deg)", html, "%s logo spins (reverse, matching the splash)" % name)
+            self.assertIn("rotate(-360deg)", html, "%s swirl spins (reverse, matching the splash)" % name)
             self.assertIn("getElementById('%s')" % cid, html, "%s observes its content container" % name)
             self.assertIn("MutationObserver", html, "%s hides the spinner on first content" % name)
             self.assertIn("setTimeout(h,8000)", html, "%s has a backstop" % name)
