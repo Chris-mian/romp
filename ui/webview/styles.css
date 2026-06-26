@@ -368,28 +368,28 @@ body { display: flex; flex-direction: column; }
 
 /* ---------- fixed footer: status line + composer ---------- */
 /* Background-task box (the user 2026-06-26): run_in_background tasks the kernel surfaced, between the
-   transcript and the composer. Three-level disclosure, COLLAPSED by default (so a busy session stays out of
-   the way): a count header → the task list (scrollable, ~5 rows) → per-task command + output (each
-   scrollable). status tints the dot/border/label, keeping status meaning (running = working-yellow, failed =
-   red, completed = ready-blue — NOT the accent). */
-#bg-tasks { flex: 0 0 auto; max-width: var(--chat-col); width: 100%; margin: 0 auto; box-sizing: border-box;
+   transcript and the composer. COLLAPSED by default to a count header; expanding shows a flat LIST of task
+   lines (no per-task boxes) that grows to fill the window (up to 70vh) and scrolls beyond, so a busy session
+   with many agents shows them all. status tints the dot/label, keeping status meaning (running =
+   working-yellow, failed = red, completed = ready-blue — NOT the accent). */
+#bg-tasks { flex: 0 1 auto; min-height: 0; max-height: 70vh; overflow: hidden;
+  max-width: var(--chat-col); width: 100%; margin: 0 auto; box-sizing: border-box;
   padding: 4px 24px 0; display: flex; flex-direction: column; }
-/* level 1: the count header ("N background tasks" / "Background task · name") */
-.bg-fold-head { --bgt: var(--st-working-bg); display: flex; align-items: center; gap: 7px; padding: 5px 9px;
-  cursor: pointer; user-select: none; font-size: 12px; border: 1px solid var(--box-border); border-radius: 7px;
-  background: var(--vscode-editor-background, var(--bg)); }
+/* level 1: the count header ("N background tasks" / "Background task · name") — the ONE box */
+.bg-fold-head { --bgt: var(--st-working-bg); flex: 0 0 auto; display: flex; align-items: center; gap: 7px;
+  padding: 5px 9px; cursor: pointer; user-select: none; font-size: 12px; border: 1px solid var(--box-border);
+  border-radius: 7px; background: var(--vscode-editor-background, var(--bg)); }
 .bg-fold-head:hover { background: rgba(255, 255, 255, 0.04); }
 .bg-fold-head.bg-failed { --bgt: var(--st-blocked-bg); }
 .bg-fold-head.bg-completed { --bgt: var(--st-ready-bg); }
 .bg-fold-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }
-/* level 2: the task list, scrollable to ~5 rows */
-.bg-list { margin-top: 5px; max-height: 230px; overflow-y: auto; overscroll-behavior: contain;
-  display: flex; flex-direction: column; gap: 5px; }
-.bg-task { --bgt: var(--st-working-bg); border: 1px solid var(--box-border); border-left: 3px solid var(--bgt);
-  border-radius: 7px; background: var(--vscode-editor-background, var(--bg)); overflow: hidden; }
+/* level 2: a flat list of task LINES (no boxes), fills the remaining height and scrolls */
+.bg-list { margin-top: 4px; flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+  display: flex; flex-direction: column; }
+.bg-task { --bgt: var(--st-working-bg); }
 .bg-task.bg-failed { --bgt: var(--st-blocked-bg); }
 .bg-task.bg-completed { --bgt: var(--st-ready-bg); }
-.bg-head { display: flex; align-items: center; gap: 8px; padding: 6px 9px; cursor: pointer; user-select: none; }
+.bg-head { display: flex; align-items: center; gap: 8px; padding: 5px 9px; cursor: pointer; user-select: none; border-radius: 5px; }
 .bg-head:hover { background: rgba(255, 255, 255, 0.04); }
 .bg-dot { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; background: var(--bgt); }
 .bg-running .bg-dot { animation: bg-pulse 1.2s ease-in-out infinite; }
@@ -397,9 +397,9 @@ body { display: flex; flex-direction: column; }
 .bg-sum { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--fg); }
 .bg-status { flex: 0 0 auto; font-size: 10px; text-transform: uppercase; letter-spacing: .04em; font-weight: 600; color: var(--bgt); }
 .bg-caret { flex: 0 0 auto; color: var(--dim); font-size: 10px; width: 10px; }
-/* level 3: a task's command + output, each its own scrollable block (overscroll-contain so the wheel scrolls
-   the body, not the chat behind it — the "expanded view won't scroll" fix) */
-.bg-detail { padding: 0 9px 8px; }
+/* level 3: a task's command + output, each its own scrollable block, indented under the line (overscroll-
+   contain so the wheel scrolls the body, not the chat behind it — the "expanded view won't scroll" fix) */
+.bg-detail { padding: 2px 9px 8px 25px; }
 .bg-cmd, .bg-out { margin: 4px 0 0; padding: 6px 8px; background: rgba(0, 0, 0, 0.25); border-radius: 5px;
   font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; color: #cdd9e5;
   white-space: pre-wrap; word-break: break-word; max-height: 220px; overflow: auto; overscroll-behavior: contain; }

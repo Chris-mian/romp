@@ -51,6 +51,15 @@ test("the list and the detail bodies scroll independently (overscroll-contain) �
   assert.match(CSS, /\.bg-cmd, \.bg-out \{[\s\S]*overflow: auto; overscroll-behavior: contain;/);
 });
 
+test("expanded list fills the window (up to 70vh) and scrolls; tasks are flat lines, not boxes", () => {
+  assert.match(CSS, /#bg-tasks \{[^}]*max-height: 70vh;/);
+  assert.match(CSS, /\.bg-list \{[^}]*flex: 1 1 auto; min-height: 0; overflow-y: auto;/);
+  // a task is a flat line now — the .bg-task rule carries no border/background box
+  const taskRule = CSS.slice(CSS.indexOf(".bg-task {"), CSS.indexOf(".bg-task.bg-failed"));
+  assert.ok(taskRule.length > 0, "found the .bg-task rule");
+  assert.doesNotMatch(taskRule, /border|background/);
+});
+
 test("status tints keep their meaning (running yellow, failed red, completed blue — not the accent)", () => {
   assert.match(CSS, /\.bg-task \{ --bgt: var\(--st-working-bg\)/);
   assert.match(CSS, /\.bg-task\.bg-failed \{ --bgt: var\(--st-blocked-bg\); \}/);
