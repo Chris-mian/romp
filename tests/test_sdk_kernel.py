@@ -69,7 +69,7 @@ class KernelWiring(unittest.TestCase):
         # insulate the real goal store: record the optimistic-reopen call, no disk I/O. Tests that need a
         # "reopened" return flip this to True.
         self.fu_calls = []
-        km.jd.optimistic_followup = lambda sid, gid: (self.fu_calls.append((sid, gid)), False)[1]
+        km.jd.optimistic_followup = lambda sid, gid, **kw: (self.fu_calls.append((sid, gid)), False)[1]   # **kw tolerates text=/now=/stub= (judge optimistic_followup signature grew)
 
     def tearDown(self):
         km._sdk, km._push_all, km._send_to_app, km.jd.optimistic_followup = self.saved
@@ -157,7 +157,7 @@ class KernelWiring(unittest.TestCase):
         # SDK parity with the tmux path (the user 2026-06-23): a follow-up on an SDK card reopens its goal NOW
         # (optimistic_followup → board jumps to WORKING + a "Followed up" chip), not just sends the text. A
         # reopen (True) triggers a push so the board updates immediately.
-        km.jd.optimistic_followup = lambda sid, gid: (self.fu_calls.append((sid, gid)), True)[1]
+        km.jd.optimistic_followup = lambda sid, gid, **kw: (self.fu_calls.append((sid, gid)), True)[1]   # **kw tolerates text=/now=/stub=
         self.pushes.clear()
         self.assertTrue(self._route({"type": "askFollowUp", "itemId": "sid-sdk:g1", "nudge": True, "text": "status?"}))
         self.assertIn(("send", "sid-sdk", "status?"), self.be.calls)
