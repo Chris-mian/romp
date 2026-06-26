@@ -11,7 +11,7 @@ const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview"
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
 
 test("intent token → ONE of three categories: delegation / coordination / question", () => {
-  assert.match(RENDER, /function postalIntent/);
+  assert.match(RENDER, /function postalServiceIntent/);
   assert.match(RENDER, /DELEGATE: \{ label: "delegation", cls: "delegate" \}/);
   assert.match(RENDER, /HANDOFF: \{ label: "delegation"/);        // legacy term folds into delegation
   assert.match(RENDER, /ASK: \{ label: "delegation"/);            // legacy "do this" → delegation
@@ -25,10 +25,10 @@ test("intent token → ONE of three categories: delegation / coordination / ques
 });
 
 test("the chip is rendered on the postal head and styled per type (three classes only)", () => {
-  assert.match(RENDER, /el\("span", "postal-intent postal-intent-" \+ intent\.cls\)/);
-  assert.match(CSS, /\.postal-intent \{/);
-  assert.match(CSS, /\.postal-intent-delegate \{/);
-  assert.match(CSS, /\.postal-intent-coordinate \{/);
-  assert.match(CSS, /\.postal-intent-question \{/);
-  assert.doesNotMatch(CSS, /\.postal-intent-fyi \{/);    // FYI chip class is gone
+  assert.match(RENDER, /el\("span", "postal-service-intent postal-service-intent-" \+ intent\.cls\)/);
+  assert.match(CSS, /\.postal-service-intent \{/);
+  assert.match(CSS, /\.postal-service-intent-delegate \{/);
+  assert.match(CSS, /\.postal-service-intent-coordinate \{/);
+  assert.match(CSS, /\.postal-service-intent-question \{/);
+  assert.doesNotMatch(CSS, /\.postal-service-intent-fyi \{/);    // FYI chip class is gone
 });

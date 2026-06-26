@@ -56,7 +56,7 @@ type ChatEvent = (
       askAnswer?: AskAnswerBlock[];
     }
   | {
-      kind: "postal";
+      kind: "postal-service";
       direction: "in" | "out";
       peer: string;
       color: { bg: string; fg: string } | null;
@@ -655,7 +655,7 @@ function eventEpoch(ev: ChatEvent): number | null {
   }
   // postal "in" events carry their epoch in `t` (seconds) rather than an ISO `ts`,
   // so they still anchor a rail dot's hover wiring and deep-link fallback.
-  if (ev.kind === "postal" && ev.t != null) return Math.floor(ev.t);
+  if (ev.kind === "postal-service" && ev.t != null) return Math.floor(ev.t);
   return null;
 }
 
@@ -802,7 +802,7 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
     turn.appendChild(clamp);
     return turn;
   }
-  if (ev.kind === "postal") return renderPostal(ev);
+  if (ev.kind === "postal-service") return renderPostalService(ev);
   if (ev.kind === "todo") return renderTodo(ev);
   if (ev.kind === "queued") return renderQueued(ev);
   if (ev.kind === "apiError") return renderApiError(ev);
@@ -1222,13 +1222,13 @@ function setPeerDot(peerEl: HTMLElement, on: boolean) {
   else if (!on && has) prev!.remove();
 }
 function refreshPostalDots() {
-  document.querySelectorAll(".postal-peer").forEach((p) => setPeerDot(p as HTMLElement, workingSet.has((p.textContent || "").trim())));
+  document.querySelectorAll(".postal-service-peer").forEach((p) => setPeerDot(p as HTMLElement, workingSet.has((p.textContent || "").trim())));
 }
 
 // A Romp Postal Service message, as a compact identity-coloured card.
 // One-line summary for a postal card: the incoming Haiku caption, else the first non-empty line of the
 // body (sent mail carries no caption), truncated. The full message lives behind a click-to-expand.
-function postalSummary(ev: Extract<ChatEvent, { kind: "postal" }>): string {
+function postalServiceSummary(ev: Extract<ChatEvent, { kind: "postal-service" }>): string {
   const cap = ev.summary && ev.summary.trim();
   if (cap) return cap;
   const first = (ev.body || "").split("\n").map((s) => s.trim()).find(Boolean) || "";
@@ -1251,35 +1251,35 @@ const POSTAL_INTENTS: Record<string, { label: string; cls: string }> = {
   QUESTION: { label: "question", cls: "question" },
   Q: { label: "question", cls: "question" },                // legacy → question
 };
-function postalIntent(body: string | undefined): { label: string; cls: string } | null {
+function postalServiceIntent(body: string | undefined): { label: string; cls: string } | null {
   const m = /^\s*\*{0,2}([A-Za-z]{1,12})\*{0,2}\s*:/.exec(body || "");
   return m ? (POSTAL_INTENTS[m[1].toUpperCase()] || null) : null;
 }
 
-function renderPostal(ev: Extract<ChatEvent, { kind: "postal" }>): HTMLElement {
-  const turn = el("div", "turn turn-postal postal-" + ev.direction);
+function renderPostalService(ev: Extract<ChatEvent, { kind: "postal-service" }>): HTMLElement {
+  const turn = el("div", "turn turn-postal-service postal-service-" + ev.direction);
   if (ev.mid) turn.dataset.mid = ev.mid;   // joins feed-modal handoff hovers to this card
   const d = dot("ring");
   d.classList.add("mail");
   if (ev.color) d.style.background = ev.color.bg;
   turn.appendChild(d);
 
-  const card = el("div", "postal-card");
+  const card = el("div", "postal-service-card");
   if (ev.color) {
     card.style.setProperty("--peer-bg", ev.color.bg);
     card.style.setProperty("--peer-fg", ev.color.fg);
   }
 
-  const head = el("div", "postal-head");
-  const arrow = el("span", "postal-arrow");
+  const head = el("div", "postal-service-head");
+  const arrow = el("span", "postal-service-arrow");
   arrow.textContent = ev.direction === "in" ? "↙" : "↗";
-  const verb = el("span", "postal-dir");
+  const verb = el("span", "postal-service-dir");
   verb.textContent = ev.direction === "in" ? "from" : "to";
-  const peer = el("span", "postal-peer");
+  const peer = el("span", "postal-service-peer");
   peer.textContent = ev.peer;
   makeSessionChip(peer, ev.peer); // click the sender/recipient name → go to that session's tab
-  // the romp swirl marks this as a romp-postal message (the user 2026-06-23: postal is "from romp" too)
-  const rlogo = el("img", "postal-romp-logo") as HTMLImageElement;
+  // the romp swirl marks this as a romp-postal-service message (the user 2026-06-23: postal is "from romp" too)
+  const rlogo = el("img", "postal-service-romp-logo") as HTMLImageElement;
   rlogo.src = "/media/romp-swirl-glyph.svg"; rlogo.alt = ""; rlogo.title = "Romp Postal Service message"; rlogo.onerror = () => rlogo.remove();
   head.appendChild(rlogo);
   head.appendChild(arrow);
@@ -1288,20 +1288,20 @@ function renderPostal(ev: Extract<ChatEvent, { kind: "postal" }>): HTMLElement {
   setPeerDot(peer, workingSet.has(ev.peer));   // working dot before the peer name if that session is working
 
   // interaction-type chip (delegation / coordination / ask / question / FYI), from the leading intent token
-  const intent = postalIntent(ev.body);
+  const intent = postalServiceIntent(ev.body);
   if (intent) {
-    const ib = el("span", "postal-intent postal-intent-" + intent.cls);
+    const ib = el("span", "postal-service-intent postal-service-intent-" + intent.cls);
     ib.textContent = intent.label;
     ib.title = "interaction type";
     head.appendChild(ib);
   }
 
   if (ev.park || ev.status === "parked") {
-    const b = el("span", "postal-badge parked");
+    const b = el("span", "postal-service-badge parked");
     b.textContent = "⏸ parked";
     head.appendChild(b);
   } else if (ev.status === "delivered") {
-    const b = el("span", "postal-badge delivered");
+    const b = el("span", "postal-service-badge delivered");
     b.textContent = "✓ delivered";
     head.appendChild(b);
   }
@@ -1314,21 +1314,21 @@ function renderPostal(ev: Extract<ChatEvent, { kind: "postal" }>): HTMLElement {
   // the first line of the message — and let a click expand the box to the full message inline (the user
   // 2026-06-16). Both directions read the same now: a summary that opens on demand, instead of a hover
   // tooltip (incoming) vs. the whole body always (outgoing).
-  const body = el("div", "postal-body md");
+  const body = el("div", "postal-service-body md");
   const fullText = (ev.body || "").trim();
-  const summaryText = postalSummary(ev);
+  const summaryText = postalServiceSummary(ev);
   const expandable = !!summaryText && !!fullText && collapseWs(fullText) !== collapseWs(summaryText);
   if (expandable) {
-    const sum = el("div", "postal-summary");
-    const caret = el("span", "postal-expand-caret"); caret.textContent = "▸"; sum.appendChild(caret);
-    const sumText = el("span", "postal-summary-text"); sumText.textContent = summaryText; sum.appendChild(sumText);
-    const full = el("div", "postal-full md"); full.innerHTML = md(ev.body); highlight(full);
+    const sum = el("div", "postal-service-summary");
+    const caret = el("span", "postal-service-expand-caret"); caret.textContent = "▸"; sum.appendChild(caret);
+    const sumText = el("span", "postal-service-summary-text"); sumText.textContent = summaryText; sum.appendChild(sumText);
+    const full = el("div", "postal-service-full md"); full.innerHTML = md(ev.body); highlight(full);
     sum.title = "click to expand the full message";
     sum.addEventListener("click", () => {
       const open = body.classList.toggle("expanded");
       caret.textContent = open ? "▾" : "▸";
     });
-    body.classList.add("postal-expandable");
+    body.classList.add("postal-service-expandable");
     body.appendChild(sum);
     body.appendChild(full);
   } else {
@@ -2210,10 +2210,10 @@ function scrollToAnchor(uuid: string): boolean {
   // the one place that can't be fooled: a prompt-intent ("user") anchor must land
   // on the originating MESSAGE — a user turn OR a peer's postal card (a peer-opened
   // node's prompt IS the incoming message) — never an assistant turn. A peer opener
-  // used to be refused here (.turn-postal isn't .turn-user) and fall through to the
+  // used to be refused here (.turn-postal-service isn't .turn-user) and fall through to the
   // time fallback; accepting postal lets it resolve BY ID instead (the user 2026-06-20).
   if (pendingAnchorIntent === "user"
-      && !target.classList.contains("turn-user") && !target.classList.contains("turn-postal")) {
+      && !target.classList.contains("turn-user") && !target.classList.contains("turn-postal-service")) {
     pendingAnchor = null; pendingAnchorIntent = null; landTrail.push("pointer-wrong-kind"); return false;
   }
   pendingAnchor = null; pendingAnchorIntent = null;

@@ -239,7 +239,7 @@ function feedCheckIcon(off, cx, cy, color) {
 // Per-lane POSTAL ISOLATION toggle (the user 2026-06-23): a monochrome ROADSIDE MAILBOX — a side-view tube
 // body on a post, with a raised flag — sitting just right of the feed checkbox. Drawn (not an emoji) so it
 // stays crisp + monochrome everywhere, same gray line weight as the checkbox; `off`=true (isolated) adds the
-// SAME strike-through slash so the disabled state reads identically. Enforced in bin/romp-postal (hidden from
+// SAME strike-through slash so the disabled state reads identically. Enforced in bin/romp-postal-service (hidden from
 // peers, no messages in or out).
 function mailboxIcon(off, cx, cy, color) {
   const g = el('g', { 'pointer-events': 'none' });
@@ -1467,7 +1467,7 @@ class TimelinePanel {
 
   // Click the context battery → send `/compact` to that session's terminal. VS Code: hand the session
   // name to the extension host (no Node in the webview); Obsidian: shell tmux directly. Types the slash
-  // command literally then submits it. (Targets the tmux session by name, like romp-postal's inject.)
+  // command literally then submits it. (Targets the tmux session by name, like romp-postal-service's inject.)
   _compactSession(name) {
     if (!name) return;
     try {
@@ -1991,11 +1991,11 @@ class TimelinePanel {
         });
       }
       // per-session POSTAL ISOLATION toggle (live lanes only): a mailbox icon just right of the feed
-      // checkbox; one click toggles postalOff. Un-slashed = on the Romp Postal Service (default: visible to peers,
+      // checkbox; one click toggles postalServiceOff. Un-slashed = on the Romp Postal Service (default: visible to peers,
       // can send + receive); slashed + more faded = isolated (hidden from list_agents, no messages in or out
-      // — for working privately). Same draw/hit/tooltip pattern as the feed checkbox; enforced in bin/romp-postal.
+      // — for working privately). Same draw/hit/tooltip pattern as the feed checkbox; enforced in bin/romp-postal-service.
       if (s.live) {
-        const moff = !!s.postalOff;
+        const moff = !!s.postalServiceOff;
         const mcx = mailColX + 5, mcy = y + 0.5;
         const mdim = moff ? '0.3' : '0.9';             // off = faded; on = a confident romp-blue (the user 2026-06-24)
         const mbox = mailboxIcon(moff, mcx, mcy, moff ? MODEL_FG : ROMP_BLUE);   // ON = romp blue, OFF = struck-out gray
@@ -2012,10 +2012,10 @@ class TimelinePanel {
         mhit.addEventListener('mouseleave', () => { mbox.setAttribute('opacity', mdim); this.hideTip(); });
         mhit.addEventListener('pointerdown', (e) => {   // pointerdown, not click: a redraw between mousedown
           e.stopPropagation();                          // and mouseup ate the click → "sometimes unresponsive"
-          const next = !s.postalOff;
-          s.postalOff = next;                            // optimistic …
-          (this._pendingFlags[s.id] = this._pendingFlags[s.id] || {}).postalOff = next;   // … held sticky until the kernel confirms
-          this._setSessionFlag(s, 'postalOff', next);
+          const next = !s.postalServiceOff;
+          s.postalServiceOff = next;                            // optimistic …
+          (this._pendingFlags[s.id] = this._pendingFlags[s.id] || {}).postalServiceOff = next;   // … held sticky until the kernel confirms
+          this._setSessionFlag(s, 'postalServiceOff', next);
           this.hideTip();
           this._reconcilePendingFlags();   // apply onto the CURRENT objects draw() reads — a poll may have swapped
           this.draw();                     // this.data mid-press, leaving `s` stale (see the feed checkbox above)

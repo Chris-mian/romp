@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Postal isolation (the user 2026-06-23): a session with the timeline lane's mailbox toggled off
-(postalOff in the kernel's session-flags.json) is invisible to list_agents, can't send, and can't receive —
+(postalServiceOff — legacy postalOff — in the kernel's session-flags.json) is invisible to list_agents, can't send, and can't receive —
 for working privately. These pin the flag reader + the read_box RECEIVE gate at the unit level; the
 end-to-end /send + /agents enforcement is in tests/romp-postal.bats.
 
@@ -16,7 +16,7 @@ HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
 
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()      # hermetic; constants resolve under here at import
-pm = SourceFileLoader("romp_postal", os.path.join(BIN, "romp-postal")).load_module()
+pm = SourceFileLoader("romp_postal", os.path.join(BIN, "romp-postal-service")).load_module()
 
 SID = "11111111-2222-3333-4444-555555555555"
 
@@ -25,7 +25,7 @@ def _set_flag(sid, postal_off):
     pm.SESSION_FLAGS.parent.mkdir(parents=True, exist_ok=True)
     data = json.loads(pm.SESSION_FLAGS.read_text()) if pm.SESSION_FLAGS.exists() else {}
     if postal_off:
-        data[sid] = {"postalOff": True}
+        data[sid] = {"postalOff": True}     # legacy key on purpose: pins back-compat (reader honours old + new)
     else:
         data.pop(sid, None)
     pm.SESSION_FLAGS.write_text(json.dumps(data))
@@ -73,18 +73,18 @@ class PostalOff(unittest.TestCase):
 
 
 class WiringAcrossSurfaces(unittest.TestCase):
-    """The postalOff flag spans three files (kernel boot exposure → timeline render/toggle → postal
+    """The postalServiceOff flag spans three files (kernel boot exposure → timeline render/toggle → postal
     enforcement). Pin the cross-surface wiring by name so a rename can't silently disconnect a surface."""
 
     def test_kernel_boot_exposes_postaloff(self):
         src = open(os.path.join(BIN, "romp-kernel")).read()
-        self.assertIn('"postalOff": _session_flag(sid, "postalOff")', src,
-                      "the kernel must publish postalOff in the session boot so the timeline can render it")
+        self.assertIn('"postalServiceOff": _session_flag(sid, "postalServiceOff")', src,
+                      "the kernel must publish postalServiceOff in the session boot so the timeline can render it")
 
     def test_timeline_view_draws_and_toggles_the_mailbox(self):
         src = open(os.path.join(os.path.dirname(BIN), "ui", "romp-timeline-view.js")).read()
         self.assertIn("mailboxIcon", src, "the timeline draws a (monochrome) mailbox icon")
-        self.assertIn("_setSessionFlag(s, 'postalOff'", src, "clicking the mailbox toggles the postalOff flag")
+        self.assertIn("_setSessionFlag(s, 'postalServiceOff'", src, "clicking the mailbox toggles the postalServiceOff flag")
 
 
 if __name__ == "__main__":

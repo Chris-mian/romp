@@ -571,8 +571,8 @@ def _set_hidden_tab(sid, hidden):
 
 # ── per-session view flags (the user 2026-06-19) ──────────────────────────────────────────────────
 # A persisted {sid: {flag: true}} dict under STATE. Flags today: hideFromFeed (a session whose prompts
-# should NOT mint feed cards — a per-session "mute from the feed") and postalOff (isolate the session from
-# the Romp Postal Service — enforced in bin/romp-postal: invisible to list_agents, can't send/receive). Both are
+# should NOT mint feed cards — a per-session "mute from the feed") and postalServiceOff (isolate the session from
+# the Romp Postal Service — enforced in bin/romp-postal-service: invisible to list_agents, can't send/receive). Both are
 # set from the timeline's lane controls; the session stays on the timeline. mtime-cached since
 # build_feed/build_timeline read it on every push.
 _flags_cache = {}   # str(path) -> ((mtime,size), dict)
@@ -1310,13 +1310,13 @@ def _open_or_revive(sid):
 
 
 def _revive_session(sid):
-    """Bring a DEAD session back: `romp-postal revive <sid>` (→ romp <name> --resume <sid> --detach in
+    """Bring a DEAD session back: `romp-postal-service revive <sid>` (→ romp <name> --resume <sid> --detach in
     the session's recorded dir, reusing the SAME UUID), then un-hide its tab and focus the chat on it.
     Reuses the battle-tested postal revive path (dir resolution, picker-grace, parked-mail wake). Runs
     in a thread off the WS recv loop — the ~seconds-long resume must not block it; the sid is unchanged,
     so the focus lands on the same tab once the periodic pusher delivers it. (the user 2026-06-16)"""
     try:
-        subprocess.run([str(HERE / "romp-postal"), "revive", sid], timeout=40,
+        subprocess.run([str(HERE / "romp-postal-service"), "revive", sid], timeout=40,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception:
         sys.stderr.write("revive '%s': %s\n" % (sid, traceback.format_exc()))
@@ -2317,7 +2317,7 @@ def _postal_out_card(ev):
         return None
     parked = "parked" in (ev.get("output") or "").lower()
     status = None if ev.get("isError") else ("parked" if parked else "delivered")
-    return {"kind": "postal", "direction": "out", "peer": args["to"], "color": _name_color_by_name(args["to"]),
+    return {"kind": "postal-service", "direction": "out", "peer": args["to"], "color": _name_color_by_name(args["to"]),
             "body": args["body"], "status": status, "ts": ev.get("ts"), "uuid": ev.get("uuid")}
 
 
@@ -2333,7 +2333,7 @@ def _cli_send_card(ev):
     out = ev.get("output") or ""
     if ev.get("isError") or not re.search(r"delivered to|parked as a handoff", out, re.I):
         return None
-    return {"kind": "postal", "direction": "out", "peer": m.group(1), "color": _name_color_by_name(m.group(1)),
+    return {"kind": "postal-service", "direction": "out", "peer": m.group(1), "color": _name_color_by_name(m.group(1)),
             "body": body, "status": "parked" if re.search(r"parked", out, re.I) else "delivered",
             "ts": ev.get("ts"), "uuid": ev.get("uuid")}
 
@@ -2360,7 +2360,7 @@ def _hydrate_postal(events, index):
             for mid in ids:
                 rec = index.get(mid)
                 if rec:
-                    cards.append({"kind": "postal", "direction": "in", "peer": rec["from"] or "?",
+                    cards.append({"kind": "postal-service", "direction": "in", "peer": rec["from"] or "?",
                                   "color": _name_color(rec["fromId"]) if rec["fromId"] else None,
                                   "body": rec["body"], "summary": msgsum.get(rec["id"]),   # incoming caption (full body on expand)
                                   "mid": rec["id"], "t": rec["t"] or None,
@@ -3003,7 +3003,7 @@ def build_session(sid, now, tmux=None):
         # work (assistant/tool/sent message) → the BAR (segment workId). Falls back to the segment id.
         seg = uuid2seg.get(ev.get("uuid"))
         anchors = seg_anchors.get(seg)
-        is_prompt = ev.get("kind") == "user" or (ev.get("kind") == "postal" and ev.get("direction") == "in")
+        is_prompt = ev.get("kind") == "user" or (ev.get("kind") == "postal-service" and ev.get("direction") == "in")
         ev["tlId"] = ((anchors[0] if is_prompt else anchors[1]) or seg) if anchors else seg
         if ev.get("askAnswer"):                       # AskUserQuestion → fill chosen now the answer's in
             _ask_fill_chosen(ev["askAnswer"], ev.get("output") or "")
@@ -4781,7 +4781,7 @@ def build_timeline(now, tmux=None, with_bars=True, live_only=False):
             "compactions": compactions, "pendingMail": _pending_mail(sid),
             "stale": faded, "faded": faded,
             "hideFromFeed": _session_flag(sid, "hideFromFeed"),    # lane checkbox → mute from feed (timeline-only)
-            "postalOff": _session_flag(sid, "postalOff")})         # lane mailbox → isolate from the Romp Postal Service (bin/romp-postal)
+            "postalServiceOff": _session_flag(sid, "postalServiceOff") or _session_flag(sid, "postalOff")})  # lane mailbox → isolate from the Romp Postal Service (bin/romp-postal-service)
     if with_bars:
         messages = _postal_messages(now, set(id2name), id2name)
         _bind_message_execs(messages, turns)             # connector exec → the recipient's process-start (real transit)

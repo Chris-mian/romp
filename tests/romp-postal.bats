@@ -1,10 +1,10 @@
 #!/usr/bin/env bats
 
-# Exercises the romp-postal program end to end: a real bus (own port per test),
+# Exercises the romp-postal-service program end to end: a real bus (own port per test),
 # CLI client ops, the loop guard, the stdio MCP server, and autostop. tmux is
 # mocked so no real sessions are needed.
 
-POSTAL="$(cd "$(dirname "$BATS_TEST_FILENAME")/../bin" && pwd)/romp-postal"
+POSTAL="$(cd "$(dirname "$BATS_TEST_FILENAME")/../bin" && pwd)/romp-postal-service"
 
 setup() {
     TEST_DIR="$(mktemp -d)"
@@ -46,7 +46,7 @@ teardown() {
 mb() { echo "$XDG_STATE_HOME/romp/postal/mail/$1"; }
 cnt() { ls -1 "$1" 2>/dev/null | wc -l | tr -d ' '; }
 # toggle POSTAL ISOLATION on for a session uuid (writes the kernel's session-flags.json that the bus reads)
-iso() { mkdir -p "$XDG_STATE_HOME/romp"; printf '{"%s":{"postalOff":true}}' "$1" > "$XDG_STATE_HOME/romp/session-flags.json"; }
+iso() { mkdir -p "$XDG_STATE_HOME/romp"; printf '{"%s":{"postalServiceOff":true}}' "$1" > "$XDG_STATE_HOME/romp/session-flags.json"; }
 
 @test "agents lists live sessions and marks you" {
     run "$POSTAL" agents

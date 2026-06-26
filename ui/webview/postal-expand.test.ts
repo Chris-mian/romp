@@ -12,7 +12,7 @@ const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview"
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
 
 test("a postal summary is the caption, or the first non-empty line of the body when there's none", () => {
-  assert.match(RENDER, /function postalSummary/);
+  assert.match(RENDER, /function postalServiceSummary/);
   assert.match(RENDER, /const cap = ev\.summary && ev\.summary\.trim\(\)/);
   assert.match(RENDER, /\.split\("\\n"\)\.map\(\(s\) => s\.trim\(\)\)\.find\(Boolean\)/);
 });
@@ -20,7 +20,7 @@ test("a postal summary is the caption, or the first non-empty line of the body w
 test("both directions render the summary + a click-to-expand full body (no hover tooltip)", () => {
   // expandable when the full body differs from the summary — same path for incoming and outgoing
   assert.match(RENDER, /const expandable = .*collapseWs\(fullText\) !== collapseWs\(summaryText\)/);
-  assert.match(RENDER, /body\.classList\.add\("postal-expandable"\)/);
+  assert.match(RENDER, /body\.classList\.add\("postal-service-expandable"\)/);
   // a click toggles the full message inline; the old hover-tooltip caption is gone
   assert.match(RENDER, /body\.classList\.toggle\("expanded"\)/);
   assert.doesNotMatch(RENDER, /body\.title = ev\.body/, "the old hover-tooltip full body must be gone");
@@ -28,7 +28,7 @@ test("both directions render the summary + a click-to-expand full body (no hover
 });
 
 test("the postal expand box is styled (full body hidden until expanded; summary is clickable)", () => {
-  assert.match(CSS, /\.postal-full \{[^}]*display: none/);
-  assert.match(CSS, /\.postal-expandable\.expanded \.postal-full \{[^}]*display: block/);
-  assert.match(CSS, /\.postal-expandable \.postal-summary \{[^}]*cursor: pointer/);
+  assert.match(CSS, /\.postal-service-full \{[^}]*display: none/);
+  assert.match(CSS, /\.postal-service-expandable\.expanded \.postal-service-full \{[^}]*display: block/);
+  assert.match(CSS, /\.postal-service-expandable \.postal-service-summary \{[^}]*cursor: pointer/);
 });

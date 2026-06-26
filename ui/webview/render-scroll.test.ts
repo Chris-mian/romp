@@ -43,10 +43,10 @@ test("the PROMPT-tier time fallback is removed — an unresolvable prompt anchor
 });
 
 test("the kind guard accepts a peer's postal card as a valid PROMPT target (recovers peer openers by id)", () => {
-  // a peer-opened node's promptAnchorUuid is the postal atom's uuid; the card is .turn-postal, not
+  // a peer-opened node's promptAnchorUuid is the postal atom's uuid; the card is .turn-postal-service, not
   // .turn-user. The guard used to refuse it (→ the time fallback); now it accepts user OR postal, so the
   // click lands on the originating message BY ID — shrinking the ~29% before the fallback was removed (the user 2026-06-20).
-  assert.match(RENDER, /pendingAnchorIntent === "user"\s+&& !target\.classList\.contains\("turn-user"\) && !target\.classList\.contains\("turn-postal"\)/);
+  assert.match(RENDER, /pendingAnchorIntent === "user"\s+&& !target\.classList\.contains\("turn-user"\) && !target\.classList\.contains\("turn-postal-service"\)/);
 });
 
 test("honest-fail fires whenever the deep-link can't resolve by id (the turn is genuinely gone)", () => {

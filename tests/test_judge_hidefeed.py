@@ -48,8 +48,8 @@ class HiddenFromFeed(unittest.TestCase):
         self.assertFalse(jd._hidden_from_feed(MUTED), "a corrupt flags file must NOT wedge the judge")
 
     def test_postaloff_does_not_stop_tracking(self):
-        self._mute(MUTED, flag="postalOff")
-        self.assertFalse(jd._hidden_from_feed(MUTED), "postalOff (mailbox) alone must not stop task tracking")
+        self._mute(MUTED, flag="postalServiceOff")
+        self.assertFalse(jd._hidden_from_feed(MUTED), "postalServiceOff (mailbox) alone must not stop task tracking")
 
     # ── the planner/closer fleet gate ──
     def _fleet(self):
