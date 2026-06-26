@@ -3529,10 +3529,11 @@ class SessionOrderStable(unittest.TestCase):
         km._kept_open.clear(); km._kept_open.update(kept)
 
     def _fleet(self):
-        # B is the MOST recently active (mtime 999) — it would sort FIRST under the old mtime ordering.
-        A = {"sid": "A", "name": "a", "path": "/a", "mtime": 100}
-        B = {"sid": "B", "name": "b", "path": "/b", "mtime": 999}
-        C = {"sid": "C", "name": "c", "path": "/c", "mtime": 50}
+        # B is the MOST recently active (mtime newest) — it would sort FIRST under the old mtime ordering.
+        # mtimes are within the 12h dead-lane window (the user 2026-06-26) so dead B is still a timeline lane.
+        A = {"sid": "A", "name": "a", "path": "/a", "mtime": NOW - 200}
+        B = {"sid": "B", "name": "b", "path": "/b", "mtime": NOW - 5}
+        C = {"sid": "C", "name": "c", "path": "/c", "mtime": NOW - 400}
         km._session_order = lambda: ["A", "B", "C"]      # the persisted (drag) order
         km._sessions = lambda now: [B, A, C]             # _sessions is mtime-DESC → B first
         # _chat_tab_sessions/_timeline_sessions now read _alive_sessions directly and order via _ordered

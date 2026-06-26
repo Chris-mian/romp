@@ -1011,12 +1011,21 @@ def _chat_tab_sessions(now, tmux):
     return _ordered([s for s in live + dead_kept if s["sid"] not in hidden])
 
 
-def _timeline_sessions(now, tmux):
+TL_LANE_WINDOW = 12 * 3600       # default: DEAD lanes only from the last 12h (the user 2026-06-26: "rarely
+                                 # looking at a 48h window, usually much smaller"). The view auto-zooms to ~12h
+                                 # anyway; older dead sessions just aren't loaded. LIVE sessions show at any age.
+
+
+def _timeline_sessions(now, tmux, live_only=False):
     """Sessions shown as TIMELINE LANES (the user 2026-06-16): living sessions in the shared order PLUS
-    every DEAD session whose transcript is still in the discover window — so scrolling back surfaces the
+    every DEAD session whose transcript is within TL_LANE_WINDOW (12h) — so scrolling back surfaces the
     sessions that were active then, struck through. Independent of chat tabs: a dead session is a lane
     without needing a tab. The timeline's own `active` filter shows a dead lane ONLY while the window
     covers its activity.
+
+    live_only=True returns ONLY the living sessions — used for the FIRST paint on a cold kernel start so the
+    fleet comes up at once without reading any dead session; the producer then adds the dead-within-12h lanes
+    on its next pass (the user 2026-06-26: "get the main UI up with the live sessions first, dead in background").
 
     The timeline is a COMPLETE activity history, so ×-hiding a tab does NOT drop its lane (the user
     2026-06-17 reversed the earlier "X in the chat also drops the timeline lane"): closing a tab is a
@@ -1025,8 +1034,12 @@ def _timeline_sessions(now, tmux):
     filter alone gates it. So `_hidden_tabs()` is deliberately NOT consulted here (it still gates the
     chat tab strip in _chat_tab_sessions)."""
     live = _alive_sessions(now, tmux)
+    if live_only:
+        return _ordered(live)                          # cold-start first paint: live sessions only, no dead reads
     live_sids = {s["sid"] for s in live}
-    dead = [s for s in _sessions(now) if s["sid"] not in live_sids]
+    cutoff = now - TL_LANE_WINDOW
+    dead = [s for s in _sessions(now)                  # dead lanes only within the 12h default window
+            if s["sid"] not in live_sids and s.get("mtime", 0) >= cutoff]
     # ONE stable order for live + dead, purely the persisted session-order.json (see _ordered) — NO
     # auto-reorder by activity, ever, even for dead/idle lanes. A session that DIES keeps its PERSISTED
     # slot instead of jumping into an activity-sorted dead block; only a drag reorders.
@@ -4430,7 +4443,7 @@ def _nudge_marks(t0, alive_sids):
     return out
 
 
-def build_timeline(now, tmux=None, with_bars=True):
+def build_timeline(now, tmux=None, with_bars=True, live_only=False):
     """A {type:"timeline"} message the ported timeline bundle consumes (ui-parity.md: timeline =
     ADAPT). Lanes per session; work bars are SEGMENTS [t,end] from the event model (not the deleted
     `romp-events --emit`); prompt dots at segment starts; tooltips from the captioner; awaiting/
@@ -4446,7 +4459,7 @@ def build_timeline(now, tmux=None, with_bars=True):
     bars+judging by payload and the dominant startup cost, so the skeleton is cheap and lands immediately."""
     if tmux is None:
         tmux = _tmux_sessions()
-    alive = _timeline_sessions(now, tmux)            # living + window-dead lanes; per-session `live` below marks the dead ones (struck), the timeline's active-filter reveals them on scrollback (the user 2026-06-16)
+    alive = _timeline_sessions(now, tmux, live_only=live_only)   # living + window-dead (≤12h) lanes; per-session `live` below marks the dead ones (struck). live_only → live sessions only (cold-start first paint)
     id2name = {s["sid"]: s["name"] for s in alive}
     sessions, turns, semantic = [], {}, []   # `semantic`: artifact-derived marks (for gloss text); the band's marks are RUN spans, below
     for s in alive:
@@ -5002,13 +5015,21 @@ def _push(targets, connect=False):
         # cheap, so the lanes/status paint instantly — THEN the heavy bars+judging ride a {type:"bars"} message
         # (the ~95% of the payload). On a COLD connect the skeleton is on the wire before the expensive
         # _cached_timeline build even runs, so the user sees the fleet at once instead of a blank wait.
+        # LIVE-FIRST (the user 2026-06-26): the very first paint after a kernel start reads NO dead session — it
+        # builds live sessions only (lanes + bars) so the main UI is up at once; the producer warms the full
+        # build (live + dead-within-12h) and the next pusher push folds the dead lanes in, in the background.
         timeline = None
         if want_tl:
             tl_clients = [c for c in targets if c["app"] == "timeline"]
-            skel = build_timeline(now, tmux, with_bars=False)
+            live_first = connect and _built_timeline[1] is None     # cold start, nothing warmed yet → live only
+            skel = build_timeline(now, tmux, with_bars=False, live_only=live_first)
             for c in tl_clients:
                 _send_client(c, ("timeline",), {"type": "data", "data": skel})
-            timeline = _cached_timeline(now, tmux, fsig, connect)
+            if live_first:
+                timeline = build_timeline(now, tmux, with_bars=True, live_only=True)   # live bars now (no dead reads)
+                _producer_wake.set()                                # warm the full build (live + dead) in the background
+            else:
+                timeline = _cached_timeline(now, tmux, fsig, connect)
     except Exception:
         sys.stderr.write("push build: %s\n" % traceback.format_exc())
         return
