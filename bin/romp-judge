@@ -38,6 +38,8 @@ PROJECTS = HOME / ".claude" / "projects"
 CAPDIR   = STATE / "captions"            # the new summaries/ — one .jsonl per transcript, keyed by unit id
 ARCHDIR  = STATE / "archive"             # per-session {headline, abstract} (replaces digest/), keyed by rompUuid
 GOALDIR  = STATE / "goals"               # per-session goal tree (the inbox), keyed by rompUuid
+GOALARCHDIR = STATE / "goals-archive"    # CLEARED (dismissed) goal subtrees moved out of the live tree, keyed by rompUuid:
+                                         #   keeps the live store flat so build_feed stops re-deriving dismissed cards every push
 STATESDIR = STATE / "states"             # per-session real idle/compacting transitions → idle atoms (settled gate)
 PCACHE   = STATE / "judge-units-cache"   # (mtime,size) cache of a transcript's ready units
 MESSAGES = STATE / "timeline" / "messages.jsonl"
@@ -51,9 +53,10 @@ def _rebind_state(path):
     save_goals wrote synthetic fixtures into the live goals/ and the triage pass then stormed
     judge-errors.jsonl over those orphans every pass forever (the user 2026-06-24). A test must call this
     instead of assigning jd.STATE alone. Not used in production (STATE is bound once at import)."""
-    global STATE, NAMES, CAPDIR, ARCHDIR, GOALDIR, STATESDIR, PCACHE, MESSAGES, ERRORS, USAGE
+    global STATE, NAMES, CAPDIR, ARCHDIR, GOALDIR, GOALARCHDIR, STATESDIR, PCACHE, MESSAGES, ERRORS, USAGE
     STATE = path
     NAMES, CAPDIR, ARCHDIR, GOALDIR = STATE / "names", STATE / "captions", STATE / "archive", STATE / "goals"
+    GOALARCHDIR = STATE / "goals-archive"
     STATESDIR, PCACHE = STATE / "states", STATE / "judge-units-cache"
     MESSAGES, ERRORS, USAGE = STATE / "timeline" / "messages.jsonl", STATE / "judge-errors.jsonl", STATE / "judge-usage.jsonl"
 
@@ -900,6 +903,24 @@ def save_goals(fsid, store):
     tmp = GOALDIR / (fsid + ".json.tmp.%d" % os.getpid())
     tmp.write_text(json.dumps(store))
     tmp.rename(GOALDIR / (fsid + ".json"))            # atomic publish
+
+
+def load_goal_archive(fsid):
+    """The CLEARED-goal archive for a session (goals-archive/<fsid>.json) — dismissed top goals + their
+    subtrees moved out of the live store by the kernel's compaction sweep. Same shape as the live store
+    (nodes/status). The judge never reads this (its placements dedup + view-cleared sealing already keep it
+    from re-minting an archived node); only the kernel's undo-clear restore and the ledger merge touch it."""
+    try:
+        return json.loads((GOALARCHDIR / (fsid + ".json")).read_text())
+    except Exception:
+        return {"rompUuid": fsid, "nodes": {}, "status": {}}
+
+
+def save_goal_archive(fsid, store):
+    GOALARCHDIR.mkdir(parents=True, exist_ok=True)
+    tmp = GOALARCHDIR / (fsid + ".json.tmp.%d" % os.getpid())
+    tmp.write_text(json.dumps(store))
+    tmp.rename(GOALARCHDIR / (fsid + ".json"))        # atomic publish
 
 
 def open_menu(store, cap=20):

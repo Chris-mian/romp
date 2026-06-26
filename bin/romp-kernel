@@ -3140,7 +3140,129 @@ def _undo_clear():
     with (jd.STATE / "cleared.jsonl").open("a") as f:
         for iid in restored:
             f.write(json.dumps({"id": iid, "t": time.time(), "op": "undo"}) + "\n")
-    _mark_nodes_cleared(restored, False)              # un-set the durable flag → the node rejoins its real status
+    _restore_goal_archive(restored)                   # pull the restored tops back OUT of the archive FIRST,
+    _mark_nodes_cleared(restored, False)              # so this finds the nodes → un-set the durable flag → real status
+
+
+# ── goal-store compaction: archive dismissed (cleared) cards out of the live tree ──────────────────────────
+# build_feed re-derives the WHOLE goal store every push (cards, rollups), for every session — and ~92% of all
+# nodes ever created are CLEARED (the user crossed them off the feed), so the store grew monotonically and the
+# feed got "slower and slower over time" (the user 2026-06-25). The fix: physically MOVE each cleared top + its
+# subtree into goals-archive/<sid>.json, so the live store stays ≈ what's actually on the board. KEY POINTS:
+#  - Keyed purely on CLEARED — exactly the cards the feed already hides (build_feed skips `nid in cleared`), so
+#    nothing visible to the user leaves the board. (Done-but-not-cleared cards stay live for the Completed column.)
+#  - store["placements"] is LEFT in the live store, so the judge's (segment-id, phase) dedup still skips these
+#    segments and NEVER re-mints an archived node. cleared.jsonl (view-cleared) is the durable, judge-respected
+#    seal (_reopen/_group refuse it), so an archived node stays sealed even if a judge read-modify-write race
+#    drifts it back — the next sweep just re-archives it. Idempotent and race-tolerant.
+#  - Runs in the producer thread AFTER the judge tiers join (single writer), plus a one-time migration on the
+#    first pass. Undo-clear restores from the archive (the inverse) before the card returns to the feed/ledger.
+def _compact_goal_store(fsid):
+    """Move every CLEARED top goal (+ its subtree) from the live goals/<fsid>.json into goals-archive/<fsid>.json.
+    Returns the count of nodes moved. Whole-subtree only (a cleared top rolls cleared/done DOWN its tree, so the
+    subtree is terminal) and roots only (parentId is null), so an active card never loses children."""
+    cleared = _cleared_ids()
+    store = jd.load_goals(fsid)
+    nodes = store.get("nodes", {})
+    if not nodes:
+        return 0
+    status = store.get("status", {})
+    children = {}
+    for nid, nd in nodes.items():
+        children.setdefault(nd.get("parentId"), []).append(nid)
+
+    def _cleared_root(nid):                            # a top the user dismissed: node flag OR cleared.jsonl OR rolled-up
+        nd = nodes.get(nid) or {}
+        return bool(nd.get("cleared")) or nid in cleared or status.get(nid) == "cleared"
+
+    move = []
+    for r in children.get(None, []):                   # ROOTS only
+        if _cleared_root(r):
+            stack = [r]
+            while stack:                               # the whole subtree
+                x = stack.pop()
+                move.append(x)
+                stack.extend(children.get(x, []))
+    if not move:
+        return 0
+    arch = jd.load_goal_archive(fsid)
+    a_nodes = arch.setdefault("nodes", {})
+    a_status = arch.setdefault("status", {})
+    for nid in move:
+        a_nodes[nid] = nodes.pop(nid)
+        if nid in status:
+            a_status[nid] = status.pop(nid)
+    arch["rompUuid"] = store.get("rompUuid", fsid)
+    jd.save_goal_archive(fsid, arch)
+    jd.save_goals(fsid, store)                          # placements/seq/lastNode stay → judge dedup intact
+    return len(move)
+
+
+_compact_seen = {}                                     # fsid → live-store mtime last swept (skip unchanged stores)
+
+
+def _compact_goal_stores():
+    """Sweep every session's goal store, archiving newly-cleared tops. Cheap: skips a store whose live file
+    hasn't changed since the last sweep (no new clears, no judge write), so the steady state is just stats."""
+    import glob
+    moved = 0
+    try:
+        paths = glob.glob(str(jd.GOALDIR / "*.json"))
+    except Exception:
+        return 0
+    for fp in paths:
+        fsid = os.path.basename(fp)[:-5]
+        try:
+            mt = os.path.getmtime(fp)
+        except OSError:
+            continue
+        if _compact_seen.get(fsid) == mt:
+            continue                                   # unchanged → nothing new to archive
+        moved += _compact_goal_store(fsid)
+        try:                                           # record OUR write's mtime so we don't re-sweep it next pass
+            _compact_seen[fsid] = os.path.getmtime(jd.GOALDIR / (fsid + ".json"))
+        except OSError:
+            _compact_seen[fsid] = mt
+    return moved
+
+
+def _restore_goal_archive(item_ids):
+    """Undo-clear: pull each restored top (+ its subtree) back OUT of goals-archive into the LIVE store — the
+    inverse of _compact_goal_store — so _mark_nodes_cleared finds the nodes to un-clear and the card returns to
+    the feed/ledger. Grouped by sid; best-effort (a not-archived id is just skipped)."""
+    by_sid = {}
+    for iid in item_ids:
+        by_sid.setdefault(iid.rsplit(":", 1)[0], []).append(iid)
+    for sid, ids in by_sid.items():
+        arch = jd.load_goal_archive(sid)
+        a_nodes = arch.get("nodes", {})
+        if not a_nodes:
+            continue
+        a_status = arch.get("status", {})
+        a_children = {}
+        for nid, nd in a_nodes.items():
+            a_children.setdefault(nd.get("parentId"), []).append(nid)
+        move = []
+        for iid in ids:
+            if iid in a_nodes:
+                stack = [iid]
+                while stack:
+                    x = stack.pop()
+                    if x in a_nodes:
+                        move.append(x)
+                        stack.extend(a_children.get(x, []))
+        if not move:
+            continue
+        store = jd.load_goals(sid)
+        nodes = store.setdefault("nodes", {})
+        status = store.setdefault("status", {})
+        for nid in move:
+            nodes[nid] = a_nodes.pop(nid)
+            if nid in a_status:
+                status[nid] = a_status.pop(nid)
+        jd.save_goals(sid, store)
+        jd.save_goal_archive(sid, arch)
+        _compact_seen.pop(sid, None)                   # force a re-stat next sweep (we just changed the live file)
 
 
 def _resolve_node(sid, node_id):
@@ -5007,6 +5129,12 @@ def _producer():
                 t.start()
             for t in tiers:                            # barrier: both tiers finish before the next wake
                 t.join()
+            try:                                       # AFTER the join → single writer: archive newly-cleared
+                moved = _compact_goal_stores()         # cards out of the live goal stores (keeps build_feed flat).
+                if moved:                              # the first pass migrates the whole backlog of cleared nodes.
+                    sys.stderr.write("compact: archived %d cleared goal node(s)\n" % moved)
+            except Exception:
+                sys.stderr.write("compact: %s\n" % traceback.format_exc())
             _judge_gen[0] += 1     # a judge pass may have changed goal/caption state WITHOUT touching any
                                    # transcript → bump the generation so the chat-build cache re-builds the
                                    # background tabs once, keeping their Fleet status/ledger fresh (≤ this cadence).
