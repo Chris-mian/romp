@@ -2844,9 +2844,15 @@ def build_session(sid, now, tmux=None):
                         if b.get("name") in ("TaskCreate", "TaskUpdate"):
                             continue                     # folded into the one todo checklist (see _fold_tasks)
                         inp = b.get("input") or {}
+                        # A send_message tool's input is parsed WHOLE by _postal_out_card into an outgoing card,
+                        # so it must stay valid JSON — truncating a long message body to 4000 chars cut it
+                        # mid-string, json.loads failed, and the card silently fell back to a raw tool row (the
+                        # user 2026-06-26: a long handoff message never showed in the chat). Keep it intact for
+                        # send_message (it's dropped once _hydrate_postal swaps in the card → no payload bloat).
+                        _full = bool(b.get("name") and _SEND_TOOL_RE.search(b.get("name")))
                         ev = {"kind": "tool", "name": b.get("name", "tool"),
                               "desc": str(inp.get("description") or "")[:200],
-                              "input": json.dumps(inp)[:4000], "output": "", "isError": False,
+                              "input": json.dumps(inp) if _full else json.dumps(inp)[:4000], "output": "", "isError": False,
                               "uuid": a.get("uuid"), "ts": ts,
                               "file": inp.get("file_path") or inp.get("path") or "",
                               "diff": _edit_diff(inp) if b.get("name") in ("Edit", "MultiEdit", "Write") else ""}
@@ -5584,12 +5590,14 @@ _GEAR_HTML = ("<button id=rgear hidden aria-hidden=true></button>"
               "</span></label>"
               # (Explanations toggle removed 2026-06-18 — cards show the distiller summary, not the planner's
               #  why. The Sub-goals toggle moved to the feed FOOTER, beside Clear all / Undo clear.)
-              # Feed colormap: the dropdown OPTIONS are the gradient BARS themselves — no map names (the user
-              # 2026-06-23). A custom widget (a native <select> can't render gradient options): the button shows
-              # the selected map's bar, the list shows one bar per map; click a bar to pick it.
-              "<div class=rs-row style='cursor:default'><span style='flex:1 1 auto'><b>Feed colormap</b>"
-              "<span class=rs-sub>Recency tint for feed cards — newest is bright.</span>"
-              "<div id=rs-cmap><button id=rs-cmap-btn type=button title='Pick the feed recency colormap'></button>"
+              # Colormap (GLOBAL now — the user 2026-06-26): one ramp colors the feed recency tint, the usage
+              # "used" bar, and the context-window % bars across every surface. The dropdown OPTIONS are the
+              # gradient BARS themselves — no map names (the user 2026-06-23). A custom widget (a native <select>
+              # can't render gradient options): the button shows the selected map's bar, the list shows one bar
+              # per map; click a bar to pick it.
+              "<div class=rs-row style='cursor:default'><span style='flex:1 1 auto'><b>Colormap</b>"
+              "<span class=rs-sub>One ramp for the whole dashboard — feed recency, usage, and context bars. Brightest = newest / highest.</span>"
+              "<div id=rs-cmap><button id=rs-cmap-btn type=button title='Pick the recency colormap'></button>"
               "<div id=rs-cmap-list hidden></div></div></span></div>"
               "<div class=rs-sec>Sessions</div>"
               "<div class='rs-row' style='cursor:default'><span style='flex:1 1 auto'><b>Default backend</b>"
