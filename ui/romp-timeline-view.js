@@ -190,7 +190,12 @@ const BAT_W = 48, BAT_H = 14;
 function ctxInfo(s) {
   if (!s || s.context == null) return null;
   const p = s.context;
-  return { label: p + '%', pct: p, color: p >= 85 ? '#c0392b' : (p >= 60 ? '#e0b020' : '#54B204') };
+  // The GLOBAL colormap (the user 2026-06-26): the kernel computes the fill color server-side (s.ctxColor =
+  // ramp(context%) on the selected map, bright = full) so the client just applies it — same pattern as the
+  // usage bar. Fall back to the old traffic-light only if an older kernel didn't ship a color.
+  const color = (s.ctxColor && s.ctxColor.length === 3) ? 'rgb(' + s.ctxColor.join(',') + ')'
+    : (p >= 85 ? '#c0392b' : (p >= 60 ? '#e0b020' : '#54B204'));
+  return { label: p + '%', pct: p, color: color };
 }
 
 // Model + effort, e.g. "Opus 4.8 xhigh" — the SAME string the Claude status bar shows.

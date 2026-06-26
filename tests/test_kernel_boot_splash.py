@@ -52,8 +52,11 @@ class PaneSpinner(unittest.TestCase):
     content container gets its first child (the user 2026-06-26). The chat is the slow one; the others flash
     briefly. Self-contained overlay in each pane page — no bundle change — with a backstop so it never sticks."""
 
+    # The timeline is NOT here (the user 2026-06-26): its full-pane _pane_spin hid the instant #host got its
+    # first child (the wrap, on construction — before any bars), leaving an empty bar gap, so the view owns a
+    # bars-area loader instead (see test_kernel_timeline_split.TimelinePageLoader + the JS barsloader test).
     PANES = {"chat": ("content", None), "feed": ("feed-list", None),
-             "fleet": ("fleet-list", None), "timeline": ("host", None)}
+             "fleet": ("fleet-list", None)}
 
     def test_every_pane_shows_a_spinning_logo_that_hides_on_first_content(self):
         for name, (cid, _) in self.PANES.items():

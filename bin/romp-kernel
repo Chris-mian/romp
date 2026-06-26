@@ -3069,7 +3069,11 @@ def build_session(sid, now, tmux=None):
         status = {"state": chip, "sinceEpoch": since_ms, "faded": faded,
                   "backend": _session_backend(sid, tm),
                   "model": tm["model"], "effort": tm["effort"], "mode": tm.get("mode", ""),
-                  "ctx": str(tm["context"]) if tm["context"] is not None else ""}
+                  "ctx": str(tm["context"]) if tm["context"] is not None else "",
+                  # context% on the GLOBAL colormap (the user 2026-06-26): computed server-side so the chat
+                  # battery + tab tooltip just apply it (mirrors the usage bar + timeline lanes). bright = full.
+                  "ctxColor": (list(cm.ramp(tm["context"] / 100.0, cm.stops_for(_colormap())))
+                               if tm["context"] is not None else None)}
     elif tmux or _has_tmux():                          # tmux usable but this session isn't running → closed
         status = {"state": "closed", "sinceEpoch": since_ms, "faded": True}
     else:                                              # no tmux at all (rare headless) → event-model fallback
@@ -4552,6 +4556,7 @@ def build_timeline(now, tmux=None, with_bars=True, live_only=False):
     alive = _timeline_sessions(now, tmux, live_only=live_only)   # living + window-dead (≤12h) lanes; per-session `live` below marks the dead ones (struck). live_only → live sessions only (cold-start first paint)
     id2name = {s["sid"]: s["name"] for s in alive}
     sessions, turns, semantic = [], {}, []   # `semantic`: artifact-derived marks (for gloss text); the band's marks are RUN spans, below
+    ctx_stops = cm.stops_for(_colormap())    # the GLOBAL colormap (the user 2026-06-26): color the per-lane context bar server-side
     for s in alive:
         sid, name = s["sid"], s["name"]
         tm = tmux.get(sid)
@@ -4642,6 +4647,8 @@ def build_timeline(now, tmux=None, with_bars=True, live_only=False):
             "model": (tm["model"] if tm else ""), "effort": (tm["effort"] if tm else ""),
             "backend": _session_backend(sid, tm),
             "context": (tm["context"] if tm else None),
+            "ctxColor": (list(cm.ramp((tm["context"] or 0) / 100.0, ctx_stops))
+                         if tm and tm["context"] is not None else None),   # context% on the GLOBAL colormap (bright = full)
             "compactPct": (tm["compactPct"] if tm else None),
             "awaiting": _state_intervals(sid, "permission", now),
             "compacting": _state_intervals(sid, "compacting", now),

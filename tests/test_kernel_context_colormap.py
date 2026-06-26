@@ -1,0 +1,50 @@
+"""The GLOBAL colormap (the user 2026-06-26) now colors the CONTEXT-window % bars too, not just the feed
+recency tint + the usage "used" bar. The kernel computes the color SERVER-SIDE (ctxColor=[r,g,b]) where it
+builds each payload — the timeline lanes (build_timeline) and the chat status (build_session) — so the three
+client surfaces (timeline battery, chat statusline battery, chat tab-tooltip battery) just apply it, exactly
+like the usage bar. The gear's colormap label is global now ("Colormap", not "Feed colormap").
+"""
+import inspect
+import os
+import unittest
+from importlib.machinery import SourceFileLoader
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+BIN = os.path.join(os.path.dirname(HERE), "bin")
+os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
+os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
+km = SourceFileLoader("romp_kernel", os.path.join(BIN, "romp-kernel")).load_module()
+
+
+class ContextColormap(unittest.TestCase):
+    def test_build_timeline_colors_the_lane_context_bar_server_side(self):
+        src = inspect.getsource(km.build_timeline)
+        self.assertIn("ctx_stops = cm.stops_for(_colormap())", src, "the global colormap stops are read once")
+        self.assertIn('"ctxColor"', src, "each lane carries a server-computed context color")
+        self.assertIn("cm.ramp((tm[\"context\"] or 0) / 100.0, ctx_stops)", src,
+                      "context% maps onto the global colormap (bright = full)")
+
+    def test_build_session_status_carries_a_context_color(self):
+        src = inspect.getsource(km.build_session)
+        self.assertIn('"ctxColor"', src, "the chat status carries a server-computed context color")
+        self.assertIn("cm.ramp(tm[\"context\"] / 100.0, cm.stops_for(_colormap()))", src,
+                      "context% maps onto the global colormap")
+
+    def test_context_color_is_none_when_there_is_no_context_yet(self):
+        # both payloads guard on context is not None so a dormant/never-reported lane sends no color
+        self.assertIn('if tm and tm["context"] is not None else None', inspect.getsource(km.build_timeline))
+        self.assertIn('if tm["context"] is not None else None', inspect.getsource(km.build_session))
+
+    def test_the_gear_colormap_label_is_global_not_feed_only(self):
+        self.assertIn(">Colormap<", km._GEAR_HTML, "the label is global now")
+        self.assertNotIn(">Feed colormap<", km._GEAR_HTML, "no longer scoped to the feed")
+
+    def test_ramp_brightens_with_higher_context(self):
+        # a high fill lands at the colormap's BRIGHT end (sum of channels higher) — sanity on the mapping
+        stops = km.cm.stops_for(km.cm.DEFAULT)
+        lo, hi = km.cm.ramp(0.1, stops), km.cm.ramp(0.95, stops)
+        self.assertGreater(sum(hi), sum(lo), "fuller context → brighter color on the default map")
+
+
+if __name__ == "__main__":
+    unittest.main()

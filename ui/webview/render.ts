@@ -86,7 +86,7 @@ type ChatEvent = (
 interface TodoTask { id: string; subject: string; activeForm?: string; status: string }
 
 type ChipState = "working" | "ready" | "awaiting" | "idle" | "closed" | "compacting" | "blocked" | "retrying";
-interface Status { state: ChipState; sinceEpoch: number | null; effort?: string; model?: string; mode?: string; ctx?: string; faded?: boolean; backend?: string; }   // backend = "tmux" | "sdk" (the kernel's _session_backend) → shown in the tab-title hover tooltip
+interface Status { state: ChipState; sinceEpoch: number | null; effort?: string; model?: string; mode?: string; ctx?: string; ctxColor?: number[]; faded?: boolean; backend?: string; }   // backend = "tmux" | "sdk" (the kernel's _session_backend) → shown in the tab-title hover tooltip; ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side
 interface Color { bg: string; fg: string; }
 // events is a contiguous TAIL of the transcript: global indices [headFrom, headTotal). On a fresh load the
 // kernel ships only the last WIRE_TAIL events (headFrom > 0) to keep startup light; older history streams in
@@ -1455,7 +1455,7 @@ function showTabTip(tab: HTMLElement, s: Session): void {
   if (s.status.ctx) {
     const cr = el("div", "tab-tip-row tab-tip-ctx");          // extra vertical room — the battery bar is tall
     const ck = el("span", "tab-tip-k"); ck.textContent = "Context"; cr.appendChild(ck);
-    const bar = ctxBar(); setCtxBar(bar, s.status.ctx, s.status.state === "compacting");
+    const bar = ctxBar(); setCtxBar(bar, s.status.ctx, s.status.state === "compacting", s.status.ctxColor);
     cr.appendChild(bar); tip.appendChild(cr);
   }
   // ledger rows, LABELLED + aligned with the rows above (the user 2026-06-23 v3): the summary, then the
@@ -3710,7 +3710,7 @@ function ctxBar(): HTMLElement {
   });
   return bar;
 }
-function setCtxBar(bar: HTMLElement, ctxStr: string | undefined, compacting = false) {
+function setCtxBar(bar: HTMLElement, ctxStr: string | undefined, compacting = false, ctxColor?: number[]) {
   // Compacting: hide the fill/% (the number is about to be wrong anyway) and run
   // the scanning bar instead, mirroring the timeline's battery. No ctx% needed.
   bar.classList.toggle("ctx-compacting", compacting);
@@ -3725,7 +3725,12 @@ function setCtxBar(bar: HTMLElement, ctxStr: string | undefined, compacting = fa
   const pct = Math.max(0, Math.min(100, parseInt(ctxStr, 10) || 0));
   const fill = bar.querySelector(".ctx-fill") as HTMLElement | null;
   const txt = bar.querySelector(".ctx-text") as HTMLElement | null;
-  if (fill) { fill.style.width = pct + "%"; fill.style.background = pct >= 85 ? "#c0392b" : pct >= 60 ? "#e0b020" : "#54B204"; }
+  // The GLOBAL colormap (the user 2026-06-26): the kernel computes the fill color server-side (ctxColor =
+  // ramp(context%) on the selected map, bright = full) so the chat battery matches the timeline + usage bars.
+  // Fall back to the old traffic-light if an older kernel didn't ship a color.
+  const fillBg = (ctxColor && ctxColor.length === 3) ? `rgb(${ctxColor.join(",")})`
+    : (pct >= 85 ? "#c0392b" : pct >= 60 ? "#e0b020" : "#54B204");
+  if (fill) { fill.style.width = pct + "%"; fill.style.background = fillBg; }
   if (txt) txt.textContent = pct + "%";
   bar.title = `context ${pct}% used — click to /compact`;
 }
@@ -3813,7 +3818,7 @@ function updateStatusline() {
   syncMetaControls(meta, s.status);
   sl.appendChild(meta);
   const bar = ctxBar();
-  setCtxBar(bar, s.status.ctx, s.status.state === "compacting");
+  setCtxBar(bar, s.status.ctx, s.status.state === "compacting", s.status.ctxColor);
   sl.appendChild(bar);
 }
 
@@ -4130,7 +4135,7 @@ setInterval(() => {
   const meta = document.getElementById("spinner-meta");
   if (meta) syncMetaControls(meta, s.status);
   const bar = document.getElementById("ctx-bar");
-  if (bar) setCtxBar(bar, s.status.ctx, s.status.state === "compacting");
+  if (bar) setCtxBar(bar, s.status.ctx, s.status.state === "compacting", s.status.ctxColor);
 }, 1000);
 
 // the last message we delivered per session — so a Ctrl+C interrupt can put it back
