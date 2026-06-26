@@ -53,6 +53,18 @@ romp blue." Do NOT use it for STATUS colors, which keep their own meaning: worki
 `--st-working-bg` (yellow), blocked/API-error = red, ready = `--st-ready-bg`, compacting =
 teal. New accent chrome should reference `var(--accent)`, never re-hardcode the hex.
 
+### Loading/waiting states: show the romp loader FIRST
+Anytime something is loading, parsing, or otherwise making the user wait, the FIRST
+thing to put up is the romp loader animation — the spinning swirl glyph
+(`/media/romp-swirl-glyph.svg`, reverse spin) + the "romp" wordmark + three pulsing
+accent-blue (`#9cd2ff`) dots — centered over the waiting surface, fading the instant
+real content arrives (event-based; a backstop timeout so it can never trap the user).
+It's the boot splash (`_landing` `#romp-boot`) and every pane's loader (`_pane_spin`).
+Reuse that treatment for any new wait state rather than a blank, a bare spinner, or
+text — a consistent "something's happening, it's romp" beats a frozen-looking screen.
+A determinate progress bar is even better *when real progress is knowable*; default to
+the loader animation otherwise.
+
 ### Buttons must stay click-safe across re-renders, and always acknowledge
 The dashboard re-renders on every kernel push (a 0.5–3s backstop, plus an
 immediate push per SDK stream event and per hook `/tick`). A control whose action

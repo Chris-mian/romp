@@ -5417,17 +5417,35 @@ sync();})();
 """
 
 
+# The shared romp LOADER (the user 2026-06-26): the reverse-spinning swirl glyph + the "romp" wordmark + three
+# pulsing accent-blue dots. ONE look for every wait state (boot splash + each pane loader); see CLAUDE.md
+# "Loading/waiting states". `rl-*` classes; the container overrides the logo/word size (the splash is big).
+_LOADER_CSS = (
+    ".rl-in{display:flex;flex-direction:column;align-items:center;gap:14px}"
+    ".rl-logo{width:64px;height:64px;display:block;animation:rl-spin 7s linear infinite}"
+    ".rl-word{font:600 18px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#9cd2ff;letter-spacing:.16em;opacity:.92}"
+    ".rl-dots{display:flex;gap:7px}"
+    ".rl-dots i{width:8px;height:8px;border-radius:50%;background:#9cd2ff;animation:rl-bnc 1.1s ease-in-out infinite}"
+    ".rl-dots i:nth-child(2){animation-delay:.16s}.rl-dots i:nth-child(3){animation-delay:.32s}"
+    "@keyframes rl-bnc{0%,75%,100%{opacity:.25;transform:translateY(0)}38%{opacity:1;transform:translateY(-5px)}}"
+    "@keyframes rl-spin{to{transform:rotate(-360deg)}}")
+
+
+def _loader_inner():
+    """The loader's inner markup — swirl glyph + 'romp' wordmark + dots. Drop inside a positioned overlay."""
+    return ("<div class=rl-in><img class=rl-logo src=/media/romp-swirl-glyph.svg alt=romp>"
+            "<div class=rl-word>romp</div><div class=rl-dots><i></i><i></i><i></i></div></div>")
+
+
 def _pane_spin(cid):
-    """A per-pane loading overlay (the user 2026-06-26): the spinning romp glyph (reverse spin, matching the
-    boot splash) centered over the pane until its content container `cid` gets its first child, then it fades
-    + self-removes. So each sub-panel shows the romp logo while it loads its data (the chat is the slow one).
-    Self-contained CSS+HTML+JS so it just drops into a page body; a 8s backstop guarantees it never sticks."""
+    """A per-pane loading overlay (the user 2026-06-26): the romp LOADER (swirl + 'romp' + dots) centered over
+    the pane until its content container `cid` gets its first child, then it fades + self-removes. So each
+    sub-panel shows the romp loader while it loads its data (the chat is the slow one). Self-contained
+    CSS+HTML+JS so it just drops into a page body; an 8s backstop guarantees it never sticks."""
     return ("<style>#pane-spin{position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;"
             "background:var(--vscode-editor-background,#1e1e1e);transition:opacity .3s ease}"
-            "#pane-spin.gone{opacity:0;pointer-events:none}"
-            "#pane-spin img{width:58px;height:58px;animation:pane-spin 7s linear infinite}"
-            "@keyframes pane-spin{to{transform:rotate(-360deg)}}</style>"
-            "<div id=pane-spin><img src=/media/romp-swirl-glyph.svg alt=loading></div>"
+            "#pane-spin.gone{opacity:0;pointer-events:none}" + _LOADER_CSS + "</style>"
+            "<div id=pane-spin>" + _loader_inner() + "</div>"
             "<script>(function(){var o=document.getElementById('pane-spin'),c=document.getElementById('" + cid + "');"
             "if(!o)return;var d=false;function h(){if(d)return;d=true;o.classList.add('gone');"
             "setTimeout(function(){if(o.parentNode)o.parentNode.removeChild(o);},350);}"
@@ -6250,16 +6268,12 @@ def _landing():
             # 5s backstop so it can never trap the user. Accent blue #9cd2ff = the romp accent (loading-dot use).
             "#romp-boot{position:fixed;inset:0;z-index:9999;background:#181818;display:flex;align-items:center;"
             "justify-content:center;transition:opacity .35s ease}#romp-boot.gone{opacity:0;pointer-events:none}"
-            "#romp-boot .rb-in{display:flex;flex-direction:column;align-items:center;gap:15px}"
-            "#romp-boot .rb-logo{width:220px;height:220px;display:block;animation:rb-spin 7s linear infinite}"
-            "#romp-boot .rb-dots{display:flex;gap:7px}"
-            "#romp-boot .rb-dots i{width:8px;height:8px;border-radius:50%;background:#9cd2ff;animation:rb-bnc 1.1s ease-in-out infinite}"
-            "#romp-boot .rb-dots i:nth-child(2){animation-delay:.16s}#romp-boot .rb-dots i:nth-child(3){animation-delay:.32s}"
-            "@keyframes rb-bnc{0%,75%,100%{opacity:.25;transform:translateY(0)}38%{opacity:1;transform:translateY(-5px)}}"
-            "@keyframes rb-spin{to{transform:rotate(-360deg)}}"
+            + _LOADER_CSS +
+            # the splash is the BIG version of the shared loader
+            "#romp-boot .rl-in{gap:20px}#romp-boot .rl-logo{width:220px;height:220px}"
+            "#romp-boot .rl-word{font-size:30px;letter-spacing:.2em}#romp-boot .rl-dots i{width:10px;height:10px}"
             "</style></head><body class='po-chat po-feed po-timeline'>"
-            "<div id=romp-boot><div class=rb-in><img class=rb-logo src=/media/romp-swirl-glyph.svg alt=romp>"
-            "<div class=rb-dots><i></i><i></i><i></i></div></div></div>"
+            "<div id=romp-boot>" + _loader_inner() + "</div>"
             "<div class=col>"
             "<div class=row>"
             # far-left rail: Chat / Fleet / Feed / Timeline toggles, fixed order; then the ⛭ settings + ↻ refresh

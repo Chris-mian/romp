@@ -22,12 +22,13 @@ class BootSplash(unittest.TestCase):
     def setUp(self):
         self.html = km._landing()
 
-    def test_the_shell_paints_a_centered_romp_splash_with_dots(self):
+    def test_the_shell_paints_a_centered_romp_loader(self):
         self.assertIn("id=romp-boot", self.html, "a full-window boot overlay rides in the shell HTML")
-        self.assertIn("romp-swirl-glyph.svg", self.html, "the ACTUAL romp logo, not a text wordmark")
-        self.assertIn("rb-dots", self.html, "the moving-dots loading cue")
-        self.assertIn("#9cd2ff", self.html, "the romp accent blue (loading-dot use)")
-        self.assertIn("@keyframes rb-bnc", self.html, "the dots are animated")
+        self.assertIn("romp-swirl-glyph.svg", self.html, "the ACTUAL romp logo (swirl glyph)")
+        self.assertIn("class=rl-word>romp<", self.html, "the 'romp' wordmark renders with the logo")
+        self.assertIn("rl-dots", self.html, "the moving-dots loading cue below it")
+        self.assertIn("#9cd2ff", self.html, "the romp accent blue (loading-dot + wordmark)")
+        self.assertIn("@keyframes rl-bnc", self.html, "the dots are animated")
         # the overlay sits before the panes so it covers the whole window from the first paint
         self.assertLess(self.html.index("id=romp-boot"), self.html.index("id=f-chat"))
 
@@ -57,8 +58,10 @@ class PaneSpinner(unittest.TestCase):
         for name, (cid, _) in self.PANES.items():
             html = getattr(km, "_%s_page" % name)()
             self.assertIn("id=pane-spin", html, "%s pane has the loading overlay" % name)
-            self.assertIn("romp-swirl-glyph.svg", html, "%s spinner uses the romp logo" % name)
-            self.assertIn("rotate(-360deg)", html, "%s spinner spins (reverse, matching the splash)" % name)
+            self.assertIn("romp-swirl-glyph.svg", html, "%s loader uses the romp logo" % name)
+            self.assertIn("class=rl-word>romp<", html, "%s loader shows the 'romp' wordmark too" % name)
+            self.assertIn("rl-dots", html, "%s loader has the dots (same look as the splash)" % name)
+            self.assertIn("rotate(-360deg)", html, "%s logo spins (reverse, matching the splash)" % name)
             self.assertIn("getElementById('%s')" % cid, html, "%s observes its content container" % name)
             self.assertIn("MutationObserver", html, "%s hides the spinner on first content" % name)
             self.assertIn("setTimeout(h,8000)", html, "%s has a backstop" % name)
