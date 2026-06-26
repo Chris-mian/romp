@@ -314,7 +314,15 @@ class TimelinePanel {
     this._lockNow = false;
     this._compactClicked = {};   // sid → click ts: show the compacting cue OPTIMISTICALLY until the real state catches up
     this._pendingFlags = {};     // sid → {flag: value}: an optimistic eye-toggle held STICKY across pushes until the kernel's data confirms it (no flicker-back)
-    try { if (localStorage.getItem(this.CSTORE) === '0') this._collapseGaps = false; } catch (e) {}
+    // "Collapse idle gaps" now lives in the SETTINGS dialog (romp:settings.collapseGaps), moved out of the
+    // timeline toolbar (the user 2026-06-25). Read it fresh here + re-read on the 'storage' event so a toggle
+    // in the gear iframe live-syncs. (CSTORE is the legacy per-view key — honoured as a one-time fallback so
+    // an existing OFF preference isn't lost on upgrade.)
+    try {
+      const raw = localStorage.getItem('romp:settings');
+      if (raw) this._collapseGaps = JSON.parse(raw).collapseGaps !== false;
+      else if (localStorage.getItem(this.CSTORE) === '0') this._collapseGaps = false;
+    } catch (e) {}
     try { if (localStorage.getItem(this.LSTORE) === '1') this._lockNow = true; } catch (e) {}
     try { const v = localStorage.getItem(this.WSTORE); if (v != null && /^\d+(\.\d+)?$/.test(v)) { this._winSec = +v; this.fitted = true; } } catch (e) {}
     try { const v = localStorage.getItem(this.OSTORE); if (v != null && /^\d+(\.\d+)?$/.test(v)) this._offSec = +v; } catch (e) {}
@@ -407,21 +415,10 @@ class TimelinePanel {
     // (The per-window token grid that used to sit here was removed at the user's request 2026-06-18 — only
     // the /usage rate-limit bars above remain. The kernel still ships data.tokens; nothing reads it now.)
 
-    // spacer: everything after it sits flush right
+    // spacer: everything after it sits flush right ("collapse idle gaps" moved to the Settings dialog's
+    // Timeline section, the user 2026-06-25 — so the toolbar no longer hosts that checkbox).
     const ctlSpacer = this.controls.createDiv();
     ctlSpacer.setAttribute('style', 'flex:1 1 auto;');
-
-    const cbWrap = this.controls.createEl('label');
-    cbWrap.setAttribute('style', 'display:inline-flex;align-items:center;gap:5px;cursor:pointer;');
-    this._collapseBox = cbWrap.createEl('input');
-    this._collapseBox.type = 'checkbox';   // set as a property (the VS Code createEl shim ignores {type})
-    this._collapseBox.checked = this._collapseGaps;
-    cbWrap.createSpan({ text: 'collapse gaps' });
-    this._collapseBox.addEventListener('change', () => {
-      this._collapseGaps = this._collapseBox.checked;
-      try { localStorage.setItem(this.CSTORE, this._collapseGaps ? '1' : '0'); } catch (e) {}
-      this.draw();
-    });
 
     // Lock-to-now, far right: while checked the live edge can't be left — pans snap back,
     // and an off-screen focus ZOOMS OUT (right edge stays at now) instead of panning away.
@@ -452,10 +449,16 @@ class TimelinePanel {
 
     this.tip = document.body.createDiv({ cls: 'romp-tl-tip' });
     this._tipOwner = null;   // the hit element that opened the current tip (see _onTipSweep)
-    // The judging band is gated on the global Debug setting (romp:settings.debug), which the feed-gear ⛭
-    // toggles in another same-origin iframe. React to that toggle via the storage event so the band
-    // appears/disappears live (no reload). draw() reads the flag fresh, so we just repaint.
-    try { window.addEventListener('storage', (e) => { if (e && e.key === 'romp:settings') this.draw(); }); } catch (e) {}
+    // The judging band (Debug) AND "collapse idle gaps" are both global romp:settings, toggled by the gear ⛭
+    // in another same-origin iframe. React to that via the storage event so they apply live (no reload):
+    // re-read collapseGaps, then repaint (draw() reads debug fresh).
+    try {
+      window.addEventListener('storage', (e) => {
+        if (!e || e.key !== 'romp:settings') return;
+        try { this._collapseGaps = JSON.parse(e.newValue || localStorage.getItem('romp:settings') || '{}').collapseGaps !== false; } catch (e2) {}
+        this.draw();
+      });
+    } catch (e) {}
 
     // model/effort drop-down pickers: the open menu element + per-lane optimistic "pending" cues
     // ('sid:kind' → {was, until}) that dim a word until the tmux var actually flips (or 20s elapses).

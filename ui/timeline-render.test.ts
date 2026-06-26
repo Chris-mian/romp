@@ -326,6 +326,22 @@ test("the timeline controls no longer embed a settings gear (merged into the fee
   assert.equal(gear, undefined, "the timeline's settings gear moved to the feed's top-right ⛭");
 });
 
+// "collapse idle gaps" moved from the timeline toolbar into the Settings dialog's Timeline section (the user
+// 2026-06-25). So the toolbar no longer hosts that checkbox, and the view reads it from the shared setting.
+test("the timeline controls no longer embed a 'collapse gaps' checkbox (moved to the Settings dialog)", () => {
+  const panel = new TimelinePanel(makeNode("div"));
+  const texts: string[] = [];
+  const walk = (n: any) => { if (n && n.textContent) texts.push(n.textContent); (n && n.children || []).forEach(walk); };
+  panel.controls.children.forEach(walk);
+  assert.ok(!texts.some((t) => t.includes("collapse gaps")), "the collapse-gaps checkbox moved to Settings → Timeline");
+});
+
+test("the timeline reads collapse-gaps from the shared romp:settings (live-synced via the storage event)", () => {
+  const src = require("node:fs").readFileSync(viewPath, "utf8");
+  assert.match(src, /this\._collapseGaps = JSON\.parse\(raw\)\.collapseGaps !== false/);   // constructor read
+  assert.match(src, /e\.key !== 'romp:settings'\) return;[\s\S]*?collapseGaps !== false/);   // storage live-sync
+});
+
 // Freeze-on-hover must actually STOP the edge (the user 2026-06-13: "timeline doesn't stop when I hover").
 test("freeze-on-hover also fires under 🔒 lock-to-now, and never marks offDirty", () => {
   const panel = new TimelinePanel(makeNode("div"));
