@@ -443,32 +443,11 @@ class TimelinePanel {
     const ctlSpacer = this.controls.createDiv();
     ctlSpacer.setAttribute('style', 'flex:1 1 auto;');
 
-    // Lock-to-now, far right: while checked the live edge can't be left — pans snap back,
-    // and an off-screen focus ZOOMS OUT (right edge stays at now) instead of panning away.
-    // The icon is an inline SVG padlock (not the emoji): locked = shackle seated on the body;
-    // unlocked = shackle hinged at the top-right, swung clearly out to the SIDE (the user 2026-06-11).
-    const LOCK_CLOSED = '<svg viewBox="0 0 15 14" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" style="display:block">'
-      + '<rect x="3" y="6.2" width="8" height="5.6" rx="1.2"/>'
-      + '<path d="M4.8 6.2 V4.4 a2.2 2.2 0 0 1 4.4 0 V6.2"/></svg>';
-    const LOCK_OPEN = '<svg viewBox="0 0 15 14" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" style="display:block">'
-      + '<rect x="3" y="6.2" width="8" height="5.6" rx="1.2"/>'
-      + '<path d="M9.4 6.2 V5.3 A2.4 2.4 0 0 1 13.6 3.7"/></svg>';
-    const lockWrap = this.controls.createEl('label');
-    lockWrap.setAttribute('style', 'display:inline-flex;align-items:center;gap:5px;cursor:pointer;');
-    lockWrap.title = 'keep the timeline at the present: focus jumps zoom out instead of panning away';
-    this._lockBox = lockWrap.createEl('input');
-    this._lockBox.type = 'checkbox';
-    this._lockBox.checked = this._lockNow;
-    this._lockIcon = lockWrap.createSpan();
-    this._LOCK_CLOSED = LOCK_CLOSED; this._LOCK_OPEN = LOCK_OPEN;   // stashed so _setLock can repaint the icon (e.g. a drag unlocks)
-    this._lockIcon.setAttribute('style', 'display:inline-flex;align-items:center;opacity:' + (this._lockNow ? '1' : '0.7') + ';');
-    this._lockIcon.innerHTML = this._lockNow ? LOCK_CLOSED : LOCK_OPEN;
-    lockWrap.createSpan({ text: 'now' });
-    this._lockBox.addEventListener('change', () => {
-      this._setLock(this._lockBox.checked);
-      if (this._lockNow) this._jumpToNow();   // snap to the live edge the moment it locks
-      this.draw();
-    });
+    // Lock-to-now is NO LONGER a toolbar checkbox (the user 2026-06-26): it's a padlock ICON drawn at the
+    // NOW-EDGE (bottom of the rightmost tick) in draw()/_drawLockToggle — accent-blue when locked, gray when
+    // unlocked, click toggles. _setLock keeps _lockNow + the persisted state in sync; the icon is redrawn
+    // each frame so there's no separate DOM element to keep current. (_lockBox/_lockIcon are gone; _setLock's
+    // guards skip them.)
 
     this.tip = document.body.createDiv({ cls: 'romp-tl-tip' });
     this._tipOwner = null;   // the hit element that opened the current tip (see _onTipSweep)
@@ -774,8 +753,7 @@ class TimelinePanel {
     on = !!on;
     if (this._lockNow === on) return;
     this._lockNow = on;
-    if (this._lockBox) this._lockBox.checked = on;
-    if (this._lockIcon) { this._lockIcon.innerHTML = on ? this._LOCK_CLOSED : this._LOCK_OPEN; this._lockIcon.style.opacity = on ? '1' : '0.7'; }
+    // The padlock is drawn in the SVG each frame (_drawLockToggle) — no DOM element to sync; just persist.
     try { localStorage.setItem(this.LSTORE, on ? '1' : '0'); } catch (e) {}
   }
 
@@ -1752,6 +1730,10 @@ class TimelinePanel {
     // ticks draw first so they always win — the gap-break boundary clocks (drawn after) yield.
     const placedLabels = [];
     const placeLabel = (a, b) => { for (const p of placedLabels) if (a < p[1] + 6 && b > p[0] - 6) return false; placedLabels.push([a, b]); return true; };
+    // Reserve a slot at the NOW-EDGE for the lock padlock (_drawLockToggle, below) so the nearest time label
+    // never renders into its area (the user 2026-06-26): seed the collision list with its x-extent up front.
+    const lockCx = x(t1), lockHalf = 9;
+    placedLabels.push([lockCx - lockHalf, lockCx + lockHalf]);
     for (let tk = Math.ceil(t0 / step) * step; tk <= t1; tk += step) {
       if (inGap(tk)) continue;
       svg.appendChild(el('line', { x1: x(tk), y1: M.top, x2: x(tk), y2: axisY, stroke: '#ffffff10', 'stroke-width': 1 }));
@@ -2314,6 +2296,38 @@ class TimelinePanel {
 
     // far-right ⟩⟩ jump-to-now button — only when held back off the live edge (unpinned)
     if (!this._pinned) this._drawNowButton(svg);
+
+    // 🔒 lock-to-now padlock at the now-edge (replaces the old toolbar checkbox, the user 2026-06-26)
+    this._drawLockToggle(svg, lockCx, axisY);
+  }
+
+  // The lock-to-now padlock, drawn at the NOW-EDGE (bottom of the rightmost tick) — accent-blue when LOCKED,
+  // gray (the feed mailbox gray) when unlocked; click toggles (the user 2026-06-26, replacing the toolbar
+  // checkbox). Reuses the toolbar lock geometry (a 0..15/0..14 glyph) via a translate, so locked = shackle
+  // seated, unlocked = shackle swung out. Click-safe: draw()'s _pointerHeld guard defers external redraws
+  // while a pointer is pressed, so the click survives a rebuild (CLAUDE.md; same model as _drawNowButton).
+  _drawLockToggle(svg, cx, axisY) {
+    const on = this._lockNow;
+    const color = on ? ROMP_BLUE : '#6e7681';          // accent when locked, gray when unlocked
+    const x0 = cx - 7.5, y0 = axisY + 6;               // center the 15-wide glyph under the now-edge, in the bottom margin
+    const g = el('g', { transform: 'translate(' + x0 + ' ' + y0 + ')' }); g.style.cursor = 'pointer';
+    g.appendChild(el('rect', { x: -2, y: -1, width: 19, height: 15, fill: 'transparent' }));   // hit pad (whole glyph clickable)
+    const st = { fill: 'none', stroke: color, 'stroke-width': 1.4, 'stroke-linecap': 'round', 'pointer-events': 'none' };
+    g.appendChild(el('rect', Object.assign({ x: 3, y: 6.2, width: 8, height: 5.6, rx: 1.2 }, st)));
+    g.appendChild(el('path', Object.assign({ d: on ? 'M4.8 6.2 V4.4 a2.2 2.2 0 0 1 4.4 0 V6.2'           // seated shackle (locked)
+                                                  : 'M9.4 6.2 V5.3 A2.4 2.4 0 0 1 13.6 3.7' }, st)));   // swung-out shackle (unlocked)
+    const ttl = el('title', {}); ttl.textContent = on
+      ? 'Locked to the present — click to unlock (allow panning)'
+      : 'Click to lock the timeline at the present (focus jumps zoom out instead of panning away)';
+    g.appendChild(ttl);
+    g.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      const next = !this._lockNow;
+      this._setLock(next);
+      if (next) this._jumpToNow();   // snap to the live edge + resume live (also redraws)
+      else this.draw();
+    });
+    svg.appendChild(g);
   }
 
   // The reverse-spinning romp swirl-as-"o", centered in the plot area, shown while the deferred bars
