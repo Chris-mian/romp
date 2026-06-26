@@ -91,6 +91,19 @@ test("syncView: compact / an in-place change re-renders the CURRENT window; a br
   assert.match(RENDER, /if \(!wasAtTail\) \{\s*\n\s*v\.spacerCountBot = total - \(v\.winEnd \?\? total\);/);
 });
 
+test("a new message while scrolled UP keeps the viewport put (no backwards jump)", () => {
+  // appendActive: at the bottom → follow it; scrolled up → restore the exact scrollTop after the sync, and
+  // tell syncView atBottom=stick so a compact append KEEPS winStart (content above the viewport unchanged)
+  // instead of evicting the top — which (with the compact full-rebuild that resets scrollTop) was jumping
+  // the view "backwards" when messages arrived (the user 2026-06-25).
+  assert.match(RENDER, /const before = content\.scrollTop;/);
+  assert.match(RENDER, /syncView\(activeId, stick\);/);
+  assert.match(RENDER, /else content\.scrollTop = before;/);
+  // the compact branch keeps winStart on a scrolled-up append
+  assert.match(RENDER, /const keepTop = wasAtTail && atBottom === false;/);
+  assert.match(RENDER, /const ws = keepTop \? \(v\.winStart \?\? 0\)/);
+});
+
 test("an oversized view (window grew past the cap) re-collapses to the tail on switch", () => {
   assert.match(RENDER, /if \(!pendingAnchor && pendingAnchorT == null\s*\n?\s*&& v\.el\.querySelectorAll\("\.turn"\)\.length > WINDOW_CAP\) \{/);
   assert.match(RENDER, /v\.rendered = 0; v\.winStart = 0; v\.avgTurnH = undefined; v\.stick = true;/);

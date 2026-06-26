@@ -2247,7 +2247,12 @@ function ensureView(id: string): View {
 // Bring this view's DOM up to date with its session's events: append new ones
 // and re-render a bounded trailing window (cheap), or rebuild fully on a shrink
 // (rewind). Does NOT touch scroll. No-op cost when nothing changed is ~O(TAIL).
-function syncView(id: string): View {
+function syncView(id: string, atBottom?: boolean): View {
+  // atBottom (passed by appendActive): false ⇒ the user is scrolled UP reading. A compact append must then
+  // NOT evict the window top — evicting shifts the content above the viewport, and since the compact path
+  // FULL-REBUILDS (clears the DOM, resetting scrollTop), the caller can only restore the position if the
+  // content above is unchanged. true/undefined ⇒ free to evict the top (we're at the bottom, or it's a
+  // non-append sync).
   renderingSid = id;          // so renderSystem can key the pinned card's persisted open-state by session
   const v = ensureView(id);
   const s = sessions.get(id);
@@ -2285,8 +2290,12 @@ function syncView(id: string): View {
   // (so the change shows wherever the user is), extending to the new tail if it was at the tail.
   if (settings.compact || v.stale) {
     const span = Math.max(WINDOW_TAIL, (v.winEnd ?? total) - (v.winStart ?? 0));
-    const ws = wasAtTail ? Math.max(0, total - span) : Math.min(v.winStart ?? 0, Math.max(0, total - 1));
-    const we = wasAtTail ? total : Math.min(v.winEnd ?? total, total);
+    // Scrolled-up append (atBottom === false): KEEP winStart so the content above the viewport is unchanged
+    // and the caller's scrollTop restore lands exactly. Otherwise extend the tail window, evicting the top.
+    const keepTop = wasAtTail && atBottom === false;
+    const ws = keepTop ? (v.winStart ?? 0)
+                       : wasAtTail ? Math.max(0, total - span) : Math.min(v.winStart ?? 0, Math.max(0, total - 1));
+    const we = (wasAtTail || keepTop) ? total : Math.min(v.winEnd ?? total, total);
     renderWindowItems(v, s, items, ws, we, working); v.stale = false; return v;
   }
   // Normal mode, pure append. While BROWSING history (window not at the tail), the new events land below the
@@ -2717,14 +2726,20 @@ function landActive(content: HTMLElement | null, v: View): void {
   scheduleRestamp();
 }
 
-// Live tail-append to the ACTIVE view, preserving stick-to-bottom.
+// Live tail-append to the ACTIVE view. At the bottom → follow it. Scrolled UP reading → keep the viewport
+// exactly where it is: a new message must NOT move what you're looking at (the user 2026-06-25 — incoming
+// messages were jumping the view "backwards"; the compact path FULL-REBUILDS on append, clearing the DOM and
+// resetting scrollTop). Pass atBottom=false so the rebuild keeps winStart (content above the viewport
+// unchanged), then restore the exact scrollTop.
 function appendActive() {
   const content = document.getElementById("content");
   if (!content || !activeId) { showActive(); return; }
   const stick = nearBottom(content);
-  syncView(activeId);
+  const before = content.scrollTop;
+  syncView(activeId, stick);
   updateStatusline();
   if (stick) content.scrollTop = content.scrollHeight;
+  else content.scrollTop = before;   // appended content is BELOW the viewport → its position is unchanged
   scheduleRestamp();
 }
 
