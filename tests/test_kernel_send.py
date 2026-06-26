@@ -35,27 +35,38 @@ class ParseSendBody(unittest.TestCase):
 
 
 class SessionList(unittest.TestCase):
-    """GET /sessions parsing — the romp session list the Obsidian plugin reads instead of
-    shelling to tmux for the Cmd+M picker + diff chip colors/state."""
+    """GET /sessions — the UNIFIED (tmux + SDK) romp session list external tools read (the Obsidian Cmd+M
+    picker + diff chips, the postal bus) instead of shelling tmux. _session_rows assembles each LIVE session
+    from Sessions.live() (the backend query) + the names registry + working-notes."""
 
-    def test_parses_romp_sessions_and_skips_the_rest(self):
-        out = (
-            "1|alpha|working|/work/a|#112233|#ffffff\n"
-            "1|beta|idle|/work/b|blue|white\n"
-            "0|not-romp|idle|/x|#000|#fff\n"   # @romp != 1 → skipped
-            "|||||\n"                           # junk → skipped
-        )
-        with mock.patch.object(km.subprocess, "run", return_value=mock.Mock(returncode=0, stdout=out)):
-            sessions = km._tmux_session_list()
-        self.assertEqual([s["name"] for s in sessions], ["alpha", "beta"])
-        self.assertEqual(sessions[0],
-                         {"name": "alpha", "state": "working", "dir": "/work/a", "bg": "#112233", "fg": "#ffffff"})
+    def _stub(self, live, notes, names):
+        saved = (km.Sessions.live, km._working_notes, km._name_of, km._cwd_of, km._identity_of)
+        km.Sessions.live = staticmethod(lambda: live)
+        km._working_notes = lambda: notes
+        km._name_of = lambda sid: names.get(sid, (sid[:8],))[0]
+        km._cwd_of = lambda sid: names[sid][1]
+        km._identity_of = lambda sid: names[sid][2:4]
+        self.addCleanup(lambda: setattr(km.Sessions, "live", saved[0]))
+        self.addCleanup(lambda: (setattr(km, "_working_notes", saved[1]), setattr(km, "_name_of", saved[2]),
+                                 setattr(km, "_cwd_of", saved[3]), setattr(km, "_identity_of", saved[4])))
 
-    def test_empty_on_tmux_failure_or_absence(self):
-        with mock.patch.object(km.subprocess, "run", return_value=mock.Mock(returncode=1, stdout="")):
-            self.assertEqual(km._tmux_session_list(), [])
-        with mock.patch.object(km.subprocess, "run", side_effect=Exception("no tmux")):
-            self.assertEqual(km._tmux_session_list(), [])
+    def test_session_rows_assembles_both_backends(self):
+        self._stub(
+            live={"sid-t": {"state": "working", "backend": "tmux"},
+                  "sid-s": {"state": "waiting", "backend": "sdk"}},
+            notes={"sid-t": "owns feed.ts"},           # SDK has no working-note yet (P3) → ''
+            names={"sid-t": ("alpha", "/work/a", "#112233", "#ffffff"),
+                   "sid-s": ("beta", "/work/b", "blue", "white")})
+        rows = {r["id"]: r for r in km._session_rows()}
+        self.assertEqual(set(rows), {"sid-t", "sid-s"})
+        self.assertEqual(rows["sid-t"], {"id": "sid-t", "name": "alpha", "state": "working", "dir": "/work/a",
+                                         "bg": "#112233", "fg": "#ffffff", "working": "owns feed.ts", "backend": "tmux"})
+        self.assertEqual(rows["sid-s"], {"id": "sid-s", "name": "beta", "state": "waiting", "dir": "/work/b",
+                                         "bg": "blue", "fg": "white", "working": "", "backend": "sdk"})
+
+    def test_empty_when_no_live_sessions(self):
+        self._stub(live={}, notes={}, names={})
+        self.assertEqual(km._session_rows(), [])
 
 
 if __name__ == "__main__":

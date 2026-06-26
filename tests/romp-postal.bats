@@ -15,18 +15,22 @@ setup() {
     export ROMP_POSTAL_HEARTBEAT_TTL=2
     export HOME="$TEST_DIR/home"; mkdir -p "$HOME"   # sandbox the client-only marker
     unset SSH_CONNECTION SSH_TTY                      # default: not a remote machine
+    unset CLAUDE_CODE_SESSION_ID                      # hermetic self-identity: don't inherit the dev's own romp session (romp is developed INSIDE one) — _self_id must resolve via the mocked tmux, not the runner's env
 
-    # mock tmux over a "name|uuid" fixture (all @romp=1)
+    # local_agents reads the kernel's unified GET /sessions (not tmux); the bus gets its list from the
+    # ROMP_SESSIONS_FILE seam, generated from a "name|uuid" fixture by mksessions. The tmux mock still serves
+    # `show @romp-session-id` (self-identity) + `display-message` (current session).
     MOCK="$TEST_DIR/mock"; mkdir -p "$MOCK"
     export SESS="$TEST_DIR/sessions.txt"
     printf 'alpha|uuid-a\nbeta|uuid-b\n' > "$SESS"
+    export ROMP_SESSIONS_FILE="$TEST_DIR/sessions.json"
+    mksessions                                       # SESS → the kernel's unified-rows JSON the seam reads
     export MOCK_CURRENT=alpha
     cat > "$MOCK/tmux" <<MOCK
 #!/usr/bin/env bash
 case "\$1" in
   display-message) echo "\${MOCK_CURRENT}" ;;
   show) [ "\$5" = "@romp-session-id" ] && grep "^\$3|" "$SESS" | head -1 | cut -d'|' -f2 ;;
-  list-sessions) while IFS='|' read -r n u; do [ -n "\$n" ] && echo "1|\$n|\$u"; done < "$SESS" ;;
 esac
 exit 0
 MOCK
@@ -45,6 +49,20 @@ teardown() {
 
 mb() { echo "$XDG_STATE_HOME/romp/postal/mail/$1"; }
 cnt() { ls -1 "$1" 2>/dev/null | wc -l | tr -d ' '; }
+# convert the "name|uuid" SESS fixture into the kernel's unified GET /sessions JSON rows (what the
+# ROMP_SESSIONS_FILE seam serves to local_agents). Call after any change to $SESS.
+mksessions() {
+    { printf '['
+      local first=1 n u
+      while IFS='|' read -r n u; do
+          [ -n "$n" ] || continue
+          [ "$first" = 1 ] || printf ','
+          first=0
+          printf '{"id":"%s","name":"%s","state":"working","dir":"","bg":"","fg":"","working":"","backend":"tmux"}' "$u" "$n"
+      done < "$SESS"
+      printf ']'
+    } > "$ROMP_SESSIONS_FILE"
+}
 # toggle POSTAL ISOLATION on for a session uuid (writes the kernel's session-flags.json that the bus reads)
 iso() { mkdir -p "$XDG_STATE_HOME/romp"; printf '{"%s":{"postalOff":true}}' "$1" > "$XDG_STATE_HOME/romp/session-flags.json"; }
 
@@ -259,7 +277,7 @@ EOF
 }
 
 @test "bus self-stops when no romp clients remain" {
-    : > "$SESS"   # drop all sessions; heartbeats age out (TTL=2)
+    : > "$SESS"; mksessions   # drop all sessions (also from the seam the bus reads); heartbeats age out (TTL=2)
     local stopped=0 _
     for _ in $(seq 1 30); do
         curl -s "127.0.0.1:$ROMP_POSTAL_PORT/ping" >/dev/null 2>&1 || { stopped=1; break; }

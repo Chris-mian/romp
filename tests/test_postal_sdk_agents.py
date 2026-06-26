@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
 """SDK-backed (non-tmux) sessions must be VISIBLE + reachable to the postal service (the user via ui,
-2026-06-26). local_agents() enumerated ONLY tmux sessions, so an SDK session had no row → list_agents
-omitted it and a send to it resolved the recipient as DEAD and PARKED instead of delivering, even though
-the session was open. local_agents() now merges alive SDK registry entries (~/.local/state/romp/sdk/*.json).
-Delivery is on-disk + tmux-free, so enumeration is the whole fix for the parking. Synthetic only —
-placeholder UUIDs, hostname-free.
+2026-06-26). local_agents() now reads the kernel's UNIFIED GET /sessions (tmux + SDK) — the kernel merges
+both backends — so an SDK session the kernel reports is a live postal agent here too: a send to it DELIVERS
+instead of resolving DEAD and PARKING. The bus no longer reads the SDK registry directly or shells tmux;
+the kernel is the single source. Synthetic only — placeholder UUIDs, hostname-free.
 """
-import json
 import os
 import tempfile
 import unittest
@@ -22,28 +20,21 @@ SID = "11111111-2222-3333-4444-555555555555"
 
 class SdkAgentsVisibleToPostal(unittest.TestCase):
     def setUp(self):
-        self._tmux = pm.tmux
-        pm.tmux = lambda *a, **k: ""                    # no tmux sessions in the test → local_agents = SDK only
-        pm.SDKDIR.mkdir(parents=True, exist_ok=True)
-        pm.STATESDIR.mkdir(parents=True, exist_ok=True)
-        self._reg = pm.SDKDIR / (SID + ".json")
-        self._reg.write_text(json.dumps({"sid": SID, "name": "sdksess", "cwd": "/work/dir", "alive": True}))
-        (pm.STATESDIR / (SID + ".jsonl")).write_text(json.dumps({"t": 1, "state": "waiting"}) + "\n")
+        # stub the kernel fetch: the kernel reports the OPEN SDK session (alive) in its unified /sessions.
+        self._saved = pm._kernel_sessions
+        pm._kernel_sessions = lambda: [
+            {"id": SID, "name": "sdksess", "state": "waiting", "dir": "/work/dir",
+             "bg": "", "fg": "", "working": "", "backend": "sdk"}]
 
     def tearDown(self):
-        pm.tmux = self._tmux
-        for p in (self._reg, pm.STATESDIR / (SID + ".jsonl")):
-            try:
-                p.unlink()
-            except OSError:
-                pass
+        pm._kernel_sessions = self._saved
 
     def test_alive_sdk_session_is_a_live_local_agent(self):
         a = {x["id"]: x for x in pm.local_agents()}.get(SID)
-        self.assertIsNotNone(a, "an alive SDK-backed session must be a live postal agent (else sends park)")
+        self.assertIsNotNone(a, "an SDK session the kernel reports must be a live postal agent (else sends park)")
         self.assertEqual(a["name"], "sdksess")
         self.assertEqual(a["dir"], "/work/dir")
-        self.assertEqual(a["state"], "waiting")     # read from states/<sid>.jsonl
+        self.assertEqual(a["state"], "waiting")     # from the kernel's unified state
         self.assertFalse(a["remote"])
 
     def test_send_resolves_an_sdk_session_ALIVE_not_parked(self):
@@ -51,14 +42,15 @@ class SdkAgentsVisibleToPostal(unittest.TestCase):
         self.assertEqual(sid, SID)
         self.assertTrue(alive, "a send to an open SDK session must resolve ALIVE (deliver), not dead (park)")
 
-    def test_dead_sdk_session_is_not_a_live_agent(self):
-        self._reg.write_text(json.dumps({"sid": SID, "name": "sdksess", "cwd": "/work/dir", "alive": False}))
+    def test_session_absent_from_kernel_is_not_a_live_agent(self):
+        pm._kernel_sessions = lambda: []            # the kernel reports nothing live (dead/ended) → not an agent
         self.assertNotIn(SID, {x["id"] for x in pm.local_agents()})
 
-    def test_same_id_in_both_sources_is_not_duplicated(self):
-        pm.tmux = lambda *a, **k: "1|sdksess|%s|||working" % SID   # hypothetically also a tmux row
-        ids = [x["id"] for x in pm.local_agents()]
-        self.assertEqual(ids.count(SID), 1, "a session in both tmux + SDK sources must appear once")
+    def test_unreachable_kernel_yields_no_local_agents(self):
+        # _kernel_sessions returns [] on any failure (the real impl swallows the urlopen error); the bus then
+        # shows no local agents rather than shelling tmux behind the abstraction.
+        pm._kernel_sessions = lambda: []
+        self.assertEqual(pm.local_agents(), [])
 
 
 if __name__ == "__main__":

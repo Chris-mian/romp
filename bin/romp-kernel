@@ -283,6 +283,17 @@ def _cwd_of(sid):
         return ""
 
 
+def _identity_of(sid):
+    """The session's identity colors (bg, fg) from the names registry (3rd/4th tab fields), or ("", ""). Written
+    at launch for BOTH backends (tmux launcher + SDK write_name), so it's available without shelling tmux —
+    the unified GET /sessions reads identity from here for either backend."""
+    try:
+        parts = (NAMES / sid).read_text().rstrip("\n").split("\t")
+        return (parts[2] if len(parts) > 2 else "", parts[3] if len(parts) > 3 else "")
+    except Exception:
+        return ("", "")
+
+
 def _session_backend(sid, tm):
     """Per-session backend label ('sdk' | 'tmux') for the UI (tab tooltip / timeline lane): the live
     metadata's field if present, else SDK-registry ownership (so a DEAD lane still reports which kind it
@@ -1361,7 +1372,6 @@ class TmuxBackend(sb.SessionBackend):
     LANE_FMT = ("#{@romp}|#{@romp-session-id}|#{@claude-state}|#{@claude-state-since}|"
                 "#{@claude-model}|#{@claude-effort}|#{@claude-context}|#{@claude-compact-pct}|#{@identity-bg}|"
                 "#{@claude-permission-mode}")
-    LIST_FMT = "#{@romp}|#{session_name}|#{@claude-state}|#{@claude-dir}|#{@identity-bg}|#{@identity-fg}"
     NOTE_FMT = "#{@romp}|#{@romp-session-id}|#{@romp-working}"
     NAME_FMT = "#{@romp-session-id}\t#{session_name}"
 
@@ -1602,22 +1612,22 @@ def _tmux_sessions():
     return Sessions.live()
 
 
-def _tmux_session_list():
-    """Romp sessions with the fields an external tool needs (the Obsidian Cmd+M picker + diff chips):
-    name, claude-state, working dir, identity bg/fg. The kernel runs the tmux query (it's on the host)
-    and serves it at GET /sessions, so the plugin reads sessions WITHOUT shelling to tmux — a future
-    romp-off-tmux changes only here. Best-effort [] when tmux is absent.
-    NB: distinct name from the picker's _session_list(now, tmux) — they used to collide (both `_session_list`),
-    and since this 0-arg def came later it SHADOWED the picker's, so the webview's requestSessions handler
-    called it with 2 args → TypeError → the WS thread died → reconnect blanked the chat + the picker showed no
-    existing sessions (the user 2026-06-22). Keep the names distinct."""
+def _session_rows():
+    """Every LIVE romp session (tmux + SDK) with the fields external tools need: id (sid), name, claude-state,
+    working dir, identity bg/fg, the set_working ownership note, and which backend drives it. Served at GET
+    /sessions so a plugin (the Obsidian Cmd+M picker / diff chips) AND the postal bus read sessions through the
+    kernel WITHOUT shelling tmux — the kernel owns the backend query: Sessions.live() enumerates BOTH backends
+    (TmuxBackend for tmux liveness, the SDK registry for SDK sessions). Replaces the tmux-only
+    _tmux_session_list (the user 2026-06-26: tmux + SDK behind one session API). Best-effort [] if no backend
+    responds. NB: 0-arg, distinct from the picker's _session_list(now, tmux) — they once collided (the user
+    2026-06-22); keep the names distinct."""
+    notes = _working_notes()                                # {sid: working-note} (tmux @romp-working; P3 adds SDK)
     out = []
-    for line in _TMUX.list_lines(_TMUX.LIST_FMT):
-        p = line.split("|")
-        if len(p) < 6 or p[0] != "1" or not p[1]:           # p[0]=@romp tag (1 = a romp session)
-            continue
-        out.append({"name": p[1], "state": p[2].strip(), "dir": p[3].strip(),
-                    "bg": p[4].strip(), "fg": p[5].strip()})
+    for sid, meta in Sessions.live().items():
+        bg, fg = _identity_of(sid)
+        out.append({"id": sid, "name": _name_of(sid) or sid[:8], "state": meta.get("state", ""),
+                    "dir": _cwd_of(sid), "bg": bg, "fg": fg,
+                    "working": notes.get(sid, ""), "backend": meta.get("backend", "")})
     return out
 
 
@@ -6647,8 +6657,8 @@ class Handler(BaseHTTPRequestHandler):
                 w = max(300, min(w, 30 * 86400))              # clamp 5min .. 30d
                 return self._send(200, json.dumps(_token_analytics(int(time.time()), w)),
                                   "application/json", cache="no-cache")
-            if p == "/sessions":                              # romp session list for external tools (the Obsidian plugin)
-                return self._send(200, json.dumps(_tmux_session_list()), "application/json", cache="no-cache")
+            if p == "/sessions":                              # unified romp session list (tmux + SDK) for external tools (the Obsidian plugin, the postal bus)
+                return self._send(200, json.dumps(_session_rows()), "application/json", cache="no-cache")
             # HTML pages are served no-cache so a reload always gets the freshest markup — which carries
             # the latest ?v= bundle url, so even a cached old bundle is bypassed (stale-client fix).
             if p in ("/", ""):

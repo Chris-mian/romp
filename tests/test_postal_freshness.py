@@ -55,14 +55,17 @@ class WorkingNoteFreshness(unittest.TestCase):
         self.assertIn("api.ts", line)
         self.assertNotIn(STALE, line, "unknown state must not be reported as stale")
 
-    def test_local_agents_parses_the_state_field(self):
-        # local_agents reads @claude-state as the 6th pipe field; a stub tmux exercises the parse.
-        saved = pm.tmux
+    def test_local_agents_maps_the_kernel_session_fields(self):
+        # local_agents now consumes the kernel's unified GET /sessions rows (no tmux shell); each row's
+        # state / working / dir carry straight into the agent row used for working-note freshness.
+        saved = pm._kernel_sessions
         try:
-            pm.tmux = lambda *a, **k: "1|bugs|sid-1|feed.ts|/dir|working\n1|ui|sid-2|render.ts|/dir|idle"
+            pm._kernel_sessions = lambda: [
+                {"id": "sid-1", "name": "bugs", "state": "working", "dir": "/dir", "working": "feed.ts", "backend": "tmux"},
+                {"id": "sid-2", "name": "ui", "state": "idle", "dir": "/dir", "working": "render.ts", "backend": "sdk"}]
             agents = {a["name"]: a for a in pm.local_agents()}
         finally:
-            pm.tmux = saved
+            pm._kernel_sessions = saved
         self.assertEqual(agents["bugs"]["state"], "working")
         self.assertEqual(agents["ui"]["state"], "idle")
         self.assertEqual(agents["ui"]["working"], "render.ts")

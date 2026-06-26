@@ -57,6 +57,7 @@ from pathlib import Path
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("ROMP_POSTAL_PORT", "47100"))
 BASE = f"http://{HOST}:{PORT}"
+KERNEL_BASE = "http://127.0.0.1:%s" % os.environ.get("ROMP_KERNEL_PORT", "7433")  # the dashboard kernel — it owns the backend session query (tmux + SDK)
 
 STATE = Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "romp" / "postal"
 MAILROOT = STATE / "mail"
@@ -68,7 +69,6 @@ TLDIR = STATE.parent / "timeline"     # append-only logs for the timeline view (
 ARCHIVE_DIR = STATE.parent / "archive"        # per-session {headline, abstract} (the archiver — the search index)
 CAPTIONS_DIR = STATE.parent / "captions"      # per-transcript turn/segment captions (the activity log)
 STATESDIR = STATE.parent / "states"          # per-session state-transition log (tmux-status.sh schema)
-SDKDIR = STATE.parent / "sdk"                 # the kernel's SDK-backend session registry (non-tmux sessions)
 SESSION_FLAGS = STATE.parent / "session-flags.json"   # the kernel's per-session view flags {sid:{flag:true}}; we honour postalOff
 
 # The romp launcher (same dir as this script); used to REVIVE a dead session via
@@ -330,68 +330,43 @@ HEARTBEATS = {}        # id -> (name, last_seen_epoch)   (remote presence)
 STREAKS = {}           # id -> (count, last_epoch)        (loop guard)
 _lock = threading.Lock()
 
-def _sdk_last_state(sid):
-    """The most-recent state value in states/<sid>.jsonl ('working'/'waiting'/'idle'/…), '' if none. SDK
-    sessions report their state here (the SDK backend writes it), since they have no tmux @claude-state var."""
-    p = STATESDIR / (sid + ".jsonl")
-    val = ""
-    try:
-        with open(p, errors="replace") as f:
-            for line in f:
-                if '"state"' not in line:
-                    continue
-                try:
-                    rec = json.loads(line)
-                except ValueError:
-                    continue
-                if isinstance(rec, dict) and isinstance(rec.get("state"), str):
-                    val = rec["state"]
-    except OSError:
-        return ""
-    return val
+def _kernel_sessions():
+    """LIVE romp sessions (tmux + SDK) from the kernel's unified GET /sessions — the kernel owns the backend
+    query (TmuxBackend for tmux liveness + the SDK registry), so the bus enumerates sessions WITHOUT shelling
+    tmux and WITHOUT reading the SDK registry directly: ONE source. Loopback, token-free (the kernel's loopback
+    Host gate). [] if the kernel is unreachable (rare — the manager supervises it); the bus then shows no local
+    agents until it's back, rather than reaching past the abstraction to tmux.
 
-
-def sdk_agents():
-    """Alive SDK-backed (non-tmux) sessions from the kernel's registry (~/.local/state/romp/sdk/*.json with
-    alive=True), shaped like local_agents() rows. WITHOUT this, an SDK session has no tmux session so it's
-    invisible to the postal service — list_agents omits it and a send to it PARKS as if it were dead, even
-    though it's open and the user can see it (the user via ui, 2026-06-26). Delivery is on-disk + tmux-free,
-    so once enumerated they receive normally. (working='' — SDK sessions don't publish an @romp-working note
-    via tmux; the immediate deliver-time WAKE is also tmux-keyed, so an idle SDK recipient surfaces mail at
-    its next turn rather than being poked — both are follow-ups, not this visibility/parking fix.)"""
-    res = []
-    try:
-        files = list(SDKDIR.glob("*.json"))
-    except OSError:
-        return res
-    for f in files:
+    ROMP_SESSIONS_FILE is a test seam (like ROMP_*_BIN): a JSON file of the same rows, read instead of the
+    live kernel so the bus is testable without one."""
+    seam = os.environ.get("ROMP_SESSIONS_FILE")
+    if seam:
         try:
-            r = json.loads(f.read_text())
-        except (OSError, ValueError):
-            continue
-        if not r.get("alive"):
-            continue
-        sid = r.get("sid") or f.stem
-        res.append({"name": r.get("name", sid[:8]), "id": sid, "remote": False,
-                    "working": "", "dir": r.get("cwd", ""), "state": _sdk_last_state(sid)})
-    return res
+            data = json.loads(Path(seam).read_text())
+            return data if isinstance(data, list) else []
+        except Exception:
+            return []
+    import urllib.request
+    try:
+        with urllib.request.urlopen(KERNEL_BASE + "/sessions", timeout=2) as r:
+            data = json.loads(r.read().decode("utf-8"))
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
 
 
 def local_agents():
-    out = tmux("list-sessions", "-F",
-               "#{@romp}|#{session_name}|#{@romp-session-id}|#{@romp-working}|#{@claude-dir}|#{@claude-state}")
+    """LIVE local sessions (tmux + SDK) as postal agent rows, read from the kernel's unified GET /sessions.
+    The kernel merges both backends, so an SDK session is a live agent here too — a send to an open SDK
+    session delivers instead of parking as dead (the user via ui, 2026-06-26)."""
     res = []
-    for line in out.splitlines():
-        p = line.split("|")
-        if len(p) >= 3 and p[0] == "1" and p[2]:
-            res.append({"name": p[1], "id": p[2], "remote": False,
-                        "working": p[3] if len(p) > 3 else "",
-                        "dir": p[4] if len(p) > 4 else "",
-                        "state": p[5] if len(p) > 5 else ""})   # @claude-state: working/idle/waiting/... → working-note freshness
-    seen = {a["id"] for a in res}
-    for a in sdk_agents():           # SDK-backed sessions have no tmux row — merge them in so they're live + reachable
-        if a["id"] not in seen:
-            res.append(a)
+    for s in _kernel_sessions():
+        sid = s.get("id")
+        if not sid:
+            continue
+        res.append({"name": s.get("name") or sid[:8], "id": sid, "remote": False,
+                    "working": s.get("working", ""), "dir": s.get("dir", ""),
+                    "state": s.get("state", "")})   # state: working/idle/waiting/... → working-note freshness
     return res
 
 def all_agents():

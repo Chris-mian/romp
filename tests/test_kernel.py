@@ -3361,18 +3361,18 @@ class SessionListNameCollision(unittest.TestCase):
     def came LATER, so it SHADOWED the picker's. The webview's `requestSessions` handler calls it with two
     args → TypeError → the WS handler thread died → the socket dropped → the client reconnected and BLANKED
     the chat (wiping the half-typed new-session name), and the picker dropdown showed NO existing sessions.
-    Fix: the tmux query is renamed _tmux_session_list. Guard the two from re-colliding."""
+    Fix: the GET /sessions query is its OWN distinct 0-arg name (now _session_rows). Guard the re-collision."""
 
     def test_picker_session_list_keeps_its_now_tmux_signature(self):
         import inspect
         self.assertEqual(list(inspect.signature(km._session_list).parameters), ["now", "tmux"],
                          "the picker payload builder must stay _session_list(now, tmux) — requestSessions calls it that way")
 
-    def test_tmux_session_list_is_a_distinct_zero_arg_function(self):
+    def test_session_rows_is_a_distinct_zero_arg_function(self):
         import inspect
-        self.assertTrue(hasattr(km, "_tmux_session_list"), "the GET /sessions tmux query has its OWN name now")
-        self.assertEqual(list(inspect.signature(km._tmux_session_list).parameters), [],
-                         "_tmux_session_list is the 0-arg query GET /sessions serves")
+        self.assertTrue(hasattr(km, "_session_rows"), "the GET /sessions query has its OWN name now")
+        self.assertEqual(list(inspect.signature(km._session_rows).parameters), [],
+                         "_session_rows is the 0-arg unified (tmux+SDK) query GET /sessions serves")
 
     def test_requestSessions_call_shape_does_not_raise_typeerror(self):
         # exactly how the WS handler invokes it (now, tmux) — must NOT TypeError (the shadowing bug), and the
