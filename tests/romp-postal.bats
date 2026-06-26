@@ -83,6 +83,8 @@ iso() { mkdir -p "$XDG_STATE_HOME/romp"; printf '{"%s":{"postalOff":true}}' "$1"
     run "$POSTAL" send beta "secret"
     [ "$status" -ne 0 ]
     [[ "$output" == *"isolation"* ]]
+    [[ "$output" == *"RECIPIENT"* ]]             # the error names whose mailbox is off: the RECIPIENT's
+    [[ "$output" == *"YOUR mailbox is fine"* ]]  # ...and reassures the sender it's not them
     [ "$(cnt "$(mb uuid-b)/new")" = "0" ]        # nothing delivered or parked
 }
 
@@ -91,6 +93,8 @@ iso() { mkdir -p "$XDG_STATE_HOME/romp"; printf '{"%s":{"postalOff":true}}' "$1"
     run "$POSTAL" send beta "hi"
     [ "$status" -ne 0 ]
     [[ "$output" == *"isolation"* ]]
+    [[ "$output" == *"YOUR OWN mailbox is OFF"* ]]   # makes clear it's the SENDER's own mailbox,
+    [[ "$output" == *"relay"* ]]                     # ...so a relaying agent tells the user the right thing
     [ "$(cnt "$(mb uuid-b)/new")" = "0" ]
 }
 
