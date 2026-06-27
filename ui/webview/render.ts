@@ -2993,7 +2993,7 @@ function agehms(secs: number): string {
 // reads the chosen map here so it matches the feed (which gets the map via the kernel's trgb). Each is
 // dark→light (recent → the last/bright stop).
 const COLORMAPS: Record<string, Array<[number, number, number]>> = {
-  aurora: [[144, 136, 240], [113, 145, 244], [74, 155, 241], [14, 164, 227], [25, 168, 201], [66, 169, 176], [35, 175, 156], [0, 180, 115], [84, 178, 4]],   // romp purple→blue→teal→green at CONSTANT lightness — the default
+  aurora: [[84, 178, 4], [0, 180, 115], [35, 175, 156], [66, 169, 176], [25, 168, 201], [14, 164, 227], [74, 155, 241], [113, 145, 244], [144, 136, 240]],   // romp green→teal→blue→purple at CONSTANT lightness — the default
   hawaii: [[140, 2, 115], [146, 46, 85], [151, 78, 62], [155, 111, 40], [156, 150, 28], [137, 189, 74], [107, 212, 142], [103, 233, 213], [179, 242, 253]],
   viridis: [[68, 1, 84], [72, 40, 120], [62, 74, 137], [49, 104, 142], [38, 130, 142], [31, 158, 137], [53, 183, 121], [110, 206, 88], [181, 222, 43], [253, 231, 37]],
   magma: [[0, 0, 4], [28, 16, 68], [79, 18, 123], [129, 37, 129], [181, 54, 122], [229, 80, 100], [251, 135, 97], [254, 194, 135], [252, 253, 191]],
