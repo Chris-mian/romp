@@ -422,6 +422,21 @@ test("onWheel: a HORIZONTAL wheel ZOOMS when 🔒locked to now (nowhere to pan) 
   assert.equal(panel.offSec(), 0, "still pinned at now");
 });
 
+test("onWheel pans/zooms only over the PLOT, not the gutter controls (the user 2026-06-27)", () => {
+  const panel: any = new TimelinePanel(makeNode("div"));
+  panel.update(synthData());
+  const off0 = panel.offSec();
+  // over the gutter (small clientX → svgX < the plot's left edge g.ml): a horizontal wheel must NOT pan,
+  // and must NOT preventDefault (so it falls through to the lane control / native)
+  let prevented = false;
+  panel.onWheel(wheelEv({ deltaX: -40, clientX: 12, preventDefault() { prevented = true; } }));
+  assert.equal(panel.offSec(), off0, "a horizontal wheel over the gutter does not pan");
+  assert.equal(prevented, false, "and it is left to the control/native (no preventDefault)");
+  // over the plot: the same wheel DOES pan (leftward → into the past, so the offset grows off the now-edge)
+  panel.onWheel(wheelEv({ deltaX: -40, clientX: 820 }));
+  assert.notEqual(panel.offSec(), off0, "the same wheel over the plot pans");
+});
+
 test("click-drag pan BREAKS 🔒 lock and unpins", () => {
   const panel = new TimelinePanel(makeNode("div"));
   panel.update(synthData());

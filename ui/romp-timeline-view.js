@@ -635,9 +635,14 @@ class TimelinePanel {
     // horizontal wheel ZOOMS with the right edge pinned at now instead (the user 2026-06-22; mirrors the
     // locked touch-drag). Click-drag also pans — and BREAKS the lock; the wheel keeps it.
     if (!pinch && !horiz) return;                             // plain vertical → don't preventDefault, let it scroll
-    e.preventDefault();
     const rect = this.svg.getBoundingClientRect();
     const scaleX = rect.width ? g.W / rect.width : 1;          // svg user-units per client px
+    // Only pan/zoom when the cursor is over the PLOT, not the gutter that holds the lane name + feed/mail
+    // toggles + model/effort pickers + status chip + context battery (the user 2026-06-27): a horizontal
+    // scroll or pinch over those controls must not move the timeline. g.ml is the plot's left edge. Bail
+    // WITHOUT preventDefault so the gesture falls through to the control / native, never to the timeline.
+    if ((e.clientX - rect.left) * scaleX < g.ml) return;
+    e.preventDefault();
     const curWin = this.winSec(), curOff = this.offSec();
     // Work in COMPRESSED time (the geom's mapping is LINEAR there). cT0 = window's left edge in
     // compressed seconds. Pan = translate at a CONSTANT compressed-sec-per-px scale → smooth, no rescale.
