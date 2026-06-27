@@ -777,9 +777,16 @@ class SdkSession:
     # ---- snapshot for live_sessions() ----
 
     def snapshot(self) -> dict:
-        if self.inflight > 0:
-            # a user interrupt shows 'waiting' (stopped) even though inflight stays 1 until the
-            # aborted turn's ResultMessage settles it — see _do_interrupt.
+        # Parked in can_use_tool/_ask_user waiting on the USER (a permission Allow/Deny or an
+        # AskUserQuestion picker)? The turn stays inflight through that wait, so reporting "working" made
+        # the feed/timeline miss it — the kernel floors a card to BLOCKED off the live "permission"/"picker"
+        # state, exactly as it does for tmux (the user 2026-06-27: an SDK AskUserQuestion didn't register as
+        # blocked the way tmux's does). _pending_ask is set for the whole ask (both kinds), and the ask
+        # handlers append the needs-input state BEFORE raising it, so last_state is authoritative here.
+        parked = self.backend._pending_ask.get(self.sid) is not None
+        if self.inflight > 0 and not parked:
+            # actively producing. A user interrupt shows 'waiting' (stopped) even though inflight stays 1
+            # until the aborted turn's ResultMessage settles it — see _do_interrupt.
             state = "waiting" if self._interrupted else ("retrying" if self.retrying else "working")
             since = self.since
         else:

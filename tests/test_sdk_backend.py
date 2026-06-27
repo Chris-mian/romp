@@ -215,6 +215,46 @@ class LiveTail(unittest.TestCase):
         self.assertEqual(s.model, "Opus 4.8", "a synthetic turn must NOT overwrite the real model")
 
 
+class SnapshotParkedOnAsk(unittest.TestCase):
+    """A RUNNING SDK session parked in can_use_tool/_ask_user on a permission/picker prompt must snapshot
+    as that needs-input state, NOT 'working'. The turn stays inflight through the wait, so the old snapshot
+    reported 'working' and the kernel never floored the card to blocked (the user 2026-06-27: an SDK
+    AskUserQuestion didn't register as blocked the way tmux's does)."""
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.be = sb.SdkBackend(self.d, "/bin/true", lambda *a, **k: None)
+        self.sid = "11111111-2222-3333-4444-555555555555"
+        self.s = sb.SdkSession(self.be, {"sid": self.sid, "name": "n", "cwd": "/tmp"})
+
+    def test_inflight_and_not_parked_is_working(self):
+        self.s.inflight = 1
+        self.assertEqual(self.s.snapshot()["state"], "working", "actively producing → working")
+
+    def test_parked_on_a_picker_reports_picker(self):
+        self.s.inflight = 1                                    # turn still in flight (mid-tool)
+        sb.append_state(self.d, self.sid, "picker")            # _ask_user logs it before raising the picker
+        self.be._pending_ask[self.sid] = {"kind": "single"}   # the ask is up, awaiting the user
+        self.assertEqual(self.s.snapshot()["state"], "picker",
+                         "parked on an AskUserQuestion picker → needs-input, not working")
+
+    def test_parked_on_a_permission_reports_permission(self):
+        self.s.inflight = 1
+        sb.append_state(self.d, self.sid, "permission")
+        self.be._pending_ask[self.sid] = {"permission": True}
+        self.assertEqual(self.s.snapshot()["state"], "permission",
+                         "parked on a tool-permission Allow/Deny → needs-input")
+
+    def test_back_to_working_after_the_ask_clears(self):
+        self.s.inflight = 1
+        sb.append_state(self.d, self.sid, "picker")
+        self.be._pending_ask[self.sid] = {"kind": "single"}
+        self.be._pending_ask.pop(self.sid, None)              # user answered → _clear_ask
+        sb.append_state(self.d, self.sid, "working")          # _ask_user's finally re-logs working
+        self.assertEqual(self.s.snapshot()["state"], "working",
+                         "ask resolved, turn resumes → working again")
+
+
 class StateAndRegistryFiles(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp()
