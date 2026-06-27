@@ -885,11 +885,10 @@ body { display: flex; flex-direction: column; }
 .ask-answered-tag { font-size: 0.72em; letter-spacing: 0.04em; font-weight: 700; color: #6da0ff; margin-bottom: 6px; }
 
 /* ---------- live "awaiting your input" picker (pending, click-to-answer) ---------- */
-#live-ask {
-  flex: 0 0 auto; max-height: 42vh; overflow-y: auto;
-  border-top: 1px solid var(--box-border);
-  background: var(--vscode-editor-background, var(--bg));
-}
+/* The picker is part of the scrolling transcript (the user 2026-06-27): it's the last child of #content and
+   flows at the BOTTOM of the chat, scrolling WITH the history — no fixed region, no separate scrollbar, so a
+   tall picker never hides the context above it. The .ask-live card centers itself in the chat column. */
+#live-ask { padding-bottom: 6px; }
 .ask-live {
   max-width: var(--chat-col); margin: 8px auto 6px; padding: 10px 13px;
   border-color: var(--st-awaiting-bg);

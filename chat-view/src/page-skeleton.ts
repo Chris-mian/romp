@@ -21,8 +21,7 @@ export function chatBody(attachTitle: string): string {
   return `  <div id="winframe"></div>
   <div id="tabbar"><span id="tabs"></span></div>
   <div id="ledger" style="display:none"></div>
-  <div id="content"></div>
-  <div id="live-ask" style="display:none"></div>
+  <div id="content"><div id="live-ask" style="display:none"></div></div>
   <div id="footer">
     <div id="statusline" class="statusline"></div>
     <div id="composer"><textarea id="composer-input" rows="1" placeholder="Message this session…  (⏎ send · ⇧⏎ newline)"></textarea><button id="composer-attach" title="${attachTitle}" aria-label="Attach file">📎</button><button id="composer-send" title="Send (⏎)" aria-label="Send">➤</button></div>

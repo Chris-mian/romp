@@ -2368,7 +2368,10 @@ function ensureView(id: string): View {
     const elv = el("div", "thread");
     elv.dataset.session = id;
     elv.style.display = "none";
-    content?.appendChild(elv);
+    // The live-ask picker is the LAST child of #content (it flows at the bottom of the transcript and scrolls
+    // with it). Insert new threads BEFORE it so the picker always stays beneath the active thread; insertBefore
+    // with a null/absent ref node just appends, so this is safe whether or not the picker node exists yet.
+    content?.insertBefore(elv, document.getElementById("live-ask"));
     v = { el: elv, rendered: 0, scrollTop: 0, stick: true, shown: false, stale: false, winStart: 0, winEnd: 0 };
     views.set(id, v);
   }
@@ -3367,13 +3370,19 @@ let sendingTimer: ReturnType<typeof setTimeout> | undefined;
 let liveAskFocus = 0;
 let liveAskFocusKey = "";
 
-// Render the widget matching the active session's pending prompt; it takes over
-// the message box. single → radio rows, multi → checkboxes + Submit/Cancel,
+// Render the widget matching the active session's pending prompt. It lives at the BOTTOM of the transcript
+// (the last child of #content) and scrolls WITH the chat history (the user 2026-06-27) — so a tall picker
+// never buries the context above it; scroll up and the question's context is still right there. It still takes
+// over the message box (the composer hides). single → radio rows, multi → checkboxes + Submit/Cancel,
 // submit → review + action buttons, null → free-text input.
 function renderLiveAsk() {
   const host = document.getElementById("live-ask");
   const footer = document.getElementById("footer");
+  const content = document.getElementById("content");
   if (!host) return;
+  // Keep the picker the LAST child of #content so it sits beneath the active thread even if a thread was
+  // appended after it (e.g. switching to a never-seen session while a picker is up).
+  if (content && host.parentNode === content && host !== content.lastChild) content.appendChild(host);
   host.replaceChildren();
   host.classList.remove("sending");
   if (sendingTimer) { clearTimeout(sendingTimer); sendingTimer = undefined; }
@@ -3394,6 +3403,10 @@ function renderLiveAsk() {
   else if (ask.kind === "submit") renderSubmitCard(ask);
   else renderSingleCard(ask);
   renderAskPreview();   // focus-aware: the FOCUSED option's own preview (SDK) or the single scraped one (tmux)
+  // Reveal the picker if the user is parked at the bottom — it's part of the scroll flow now, so new/taller
+  // pickers would otherwise land below the fold. Never yank a user who has scrolled UP to read context.
+  const v = activeId ? views.get(activeId) : undefined;
+  if (content && (!v || v.stick)) content.scrollTop = content.scrollHeight;
 }
 
 // The focused option's side-by-side preview box, reproduced VERBATIM in a monospace block (the user
@@ -3452,9 +3465,10 @@ function qline(card: HTMLElement, text?: string) {
   if (text) { const qt = el("div", "ask-qtext"); qt.textContent = text; card.appendChild(qt); }
 }
 
-// The pickable rows of a single-select card — the TUI's "Type something." /
-// "Chat about this" chrome rows are driven by dedicated UI instead (the inline
-// custom field / nothing). Falls back to everything rather than render zero rows.
+// The pickable rows of a single-select card. "Type something." is driven by the inline custom field (not a
+// row); "Chat about this" IS a real selectable answer (the user 2026-06-27) — picking it tells the agent you
+// want to discuss instead of choosing, exactly like the terminal — so it's kept. Falls back to everything
+// rather than render zero rows.
 function singleOptions(ask: ParsedAsk) {
   const real = ask.options.filter((o) => !isMetaOption(o.label));
   return real.length ? real : ask.options;
@@ -3499,10 +3513,11 @@ function renderSingleCard(ask: ParsedAsk) {
   card.focus({ preventScroll: true });
 }
 
-// "Type something" is the inline free-text slot (handled by the +custom field);
-// "Chat about this" / "Submit" are TUI chrome, not selectable answers.
+// "Type something" is the inline free-text slot (handled by the +custom field) and "Submit" is the dedicated
+// button, so both are filtered out of the option rows. "Chat about this" is NOT filtered — it's a genuine
+// answer the user can pick (the user 2026-06-27).
 function isTypeSomething(label: string): boolean { return /^\s*type something/i.test(label); }
-function isMetaOption(label: string): boolean { return /^\s*(type something|chat about|submit$)/i.test(label.trim()); }
+function isMetaOption(label: string): boolean { return /^\s*(type something|submit$)/i.test(label.trim()); }
 
 // MULTI-select: a real checkbox per real option, an inline "add your own" field
 // (drives the TUI's Type-something slot), and Submit / Cancel buttons.
