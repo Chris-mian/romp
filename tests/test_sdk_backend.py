@@ -436,6 +436,61 @@ class SetModelModePure(unittest.TestCase):
         self.assertEqual(s2.effort, sb.DEFAULT_EFFORT)   # no reg effort → default (so the picker is never empty)
 
 
+class RememberedDefaults(unittest.TestCase):
+    """A NEW SDK session seeds its model+effort from the user's LAST pick on any session (remembered
+    globally in sdk-defaults.json), falling back to the hardcoded defaults — and the seed lands in the new
+    session's OWN reg, so the badge can't desync from what _options launches with (the user 2026-06-27).
+    CI-safe: spawn/set_model/set_effort all work with no live session thread."""
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.be = sb.SdkBackend(self.d, "/bin/true", lambda *a, **k: None)
+
+    def test_fresh_install_uses_hardcoded_defaults(self):
+        sid = self.be.spawn("a", self.d)
+        reg = sb.read_reg(self.d, sid)
+        self.assertEqual(reg["effort"], sb.DEFAULT_EFFORT)
+        self.assertNotIn("model", reg)               # nothing remembered → account default (no model override)
+        self.assertEqual(sb.read_sdk_defaults(self.d), {})
+
+    def test_set_effort_is_remembered_and_seeds_the_next_session(self):
+        s1 = self.be.spawn("a", self.d)
+        self.assertTrue(self.be.set_effort(s1, "low"))
+        self.assertEqual(sb.read_sdk_defaults(self.d).get("effort"), "low", "the pick is remembered globally")
+        s2 = self.be.spawn("b", self.d)                                   # a NEW session, created AFTER the pick
+        self.assertEqual(sb.read_reg(self.d, s2)["effort"], "low", "new session seeds the remembered effort")
+        self.assertEqual(self.be.live_sessions()[s2]["effort"], "low", "and the badge shows exactly that")
+
+    def test_set_model_is_remembered_and_seeds_the_next_session(self):
+        s1 = self.be.spawn("a", self.d)
+        self.assertTrue(self.be.set_model(s1, "sonnet"))
+        self.assertEqual(sb.read_sdk_defaults(self.d).get("model"), "sonnet")
+        s2 = self.be.spawn("b", self.d)
+        self.assertEqual(sb.read_reg(self.d, s2)["model"], "sonnet", "new session seeds the remembered model")
+        # no desync: what the dormant badge shows pre-connect == the alias it will actually launch with
+        self.assertEqual(self.be.live_sessions()[s2]["model"], "Sonnet")
+        self.assertEqual(sb.SdkSession(self.be, sb.read_reg(self.d, s2)).chosen_model, "sonnet")
+
+    def test_remembering_model_does_not_clobber_remembered_effort(self):
+        s1 = self.be.spawn("a", self.d)
+        self.be.set_effort(s1, "max")
+        self.be.set_model(s1, "opus")                                    # touches model only
+        d = sb.read_sdk_defaults(self.d)
+        self.assertEqual((d.get("model"), d.get("effort")), ("opus", "max"))
+
+    def test_resetting_model_to_default_clears_the_override_for_new_sessions(self):
+        s1 = self.be.spawn("a", self.d)
+        self.be.set_model(s1, "sonnet")
+        self.be.set_model(s1, "default")                                 # user resets to the account default
+        self.assertEqual(sb.read_sdk_defaults(self.d).get("model"), "default")
+        s2 = self.be.spawn("b", self.d)
+        self.assertNotIn("model", sb.read_reg(self.d, s2), "remembered 'default' → no model override (account default)")
+
+    def test_bad_remembered_effort_falls_back_to_hardcoded(self):
+        sb.write_sdk_default(self.d, effort="ultra")                     # a level that isn't valid (e.g. stale file)
+        sid = self.be.spawn("a", self.d)
+        self.assertEqual(sb.read_reg(self.d, sid)["effort"], sb.DEFAULT_EFFORT)
+
+
 class LiveAskReplay(unittest.TestCase):
     """A blocked SDK session's prompt must REPLAY, not vanish (the user 2026-06-24: blocked-no-prompt). _emit_ask
     STORES the ask (not just a bool) so the kernel's _ask_poll can re-push it to any chat client that connects /
@@ -523,12 +578,25 @@ class AskRoundTrip(unittest.TestCase):
             async def set_permission_mode(self, mode):
                 self.mode_calls.append(mode)
 
+            async def get_context_usage(self):
+                # The DESIGNED control request behind the CLI's /context. Unlike the message stream, it
+                # answers PRE-TURN — returning the live model id + % the instant the control channel is up.
+                # This is the source the eager-connect publish relies on (verified against the real SDK).
+                return {"percentage": 2, "model": "claude-x"}
+
             async def receive_messages(self):
-                yield _sdk.SystemMessage("init", {
-                    "model": "claude-x", "permissionMode": "acceptEdits",
-                    "session_id": (self.options.session_id or "fsid")})
+                # FAITHFUL to the real CLI: a turn-less streaming connection emits NO message at all — the
+                # `init` SystemMessage rides the FIRST turn's response, NOT connect. (The old fake yielded
+                # init on connect, which let the broken pre-turn path pass CI while real sessions stayed
+                # blank until message 1 — the user 2026-06-27.) So init is yielded only once a turn arrives.
+                first = True
                 while True:
                     await self._turnq.get()              # next enqueued user turn
+                    if first:
+                        first = False
+                        yield _sdk.SystemMessage("init", {
+                            "model": "claude-x", "permissionMode": "acceptEdits",
+                            "session_id": (self.options.session_id or "fsid")})
                     allow = await self.options.can_use_tool("AskUserQuestion", QUESTION, _Ctx())
                     self.captured = allow
                     yield _sdk.AssistantMessage(content=[_sdk.TextBlock("ok")], model="claude-x")
@@ -585,14 +653,25 @@ class AskRoundTrip(unittest.TestCase):
         self.assertTrue(self._wait(
             lambda: sb.last_state(self.d, sid).get("state") == "waiting"))
 
-    def test_connect_publishes_model_without_a_turn(self):
-        """Eager-connect (used at createSession) brings up the session WITHOUT a user turn, so the model
-        publishes from the init message right away — like a tmux session shows it on launch."""
+    def test_connect_publishes_model_and_ctx_without_a_turn(self):
+        """Eager-connect (used at createSession + on chat open) brings up the session WITHOUT a user turn, and
+        its model AND context % must publish on OPEN — like a tmux session shows them on launch (the user
+        2026-06-27). The streaming `init` SystemMessage does NOT arrive until the first turn (the FakeClient
+        now models this), so connect resolves both from get_context_usage() — the designed control request
+        that answers pre-turn. REGRESSION: the old code keyed model/ctx resolution off that init message, so a
+        freshly-created SDK session showed neither until the first message was sent."""
         sid = self.backend.spawn("eager", self.d)
         self.assertEqual(self.backend.live_sessions()[sid]["model"], "", "no model before connect")
+        self.assertEqual(self.backend.live_sessions()[sid]["ctx"], "", "no context before connect")
         self.assertTrue(self.backend.connect(sid))
         self.assertTrue(self._wait(lambda: self.backend.live_sessions().get(sid, {}).get("model")),
-                        "eager-connect publishes the model from init, with no user turn sent")
+                        "eager-connect must publish the model via get_context_usage — no init message, no turn")
+        snap = self.backend.live_sessions()[sid]
+        self.assertEqual(snap["model"], "claude-x", "model resolves from get_context_usage on connect")
+        self.assertEqual(snap["ctx"], 2, "context % resolves from get_context_usage on connect")
+        # prove no user turn was ever fed: the ask callback never fired
+        self.assertTrue(self.Fake.instances, "a client was created on connect")
+        self.assertIsNone(self.Fake.instances[0].captured, "no turn was sent — can_use_tool must not have run")
         self.assertFalse(self.backend.connect("no-such-sid"))
 
     def test_kill_marks_dead(self):

@@ -73,7 +73,7 @@ def model_label(live: str, chosen: str) -> str:
     shows its model RIGHT AWAY (the user 2026-06-24) — like a tmux session does on launch — instead of a blank
     until the first turn. A raw id → pretty_model ('claude-opus-4-8' → 'Opus 4.8'); a CLI alias (opus/sonnet/…)
     → capitalised (matches set_model's live-change label); 'default'/unset → '' (the real default name fills in
-    from the init message, which eager-connect now pokes through immediately)."""
+    on connect from get_context_usage(), which _amain pulls before the first turn)."""
     if live:
         return live
     if not chosen or chosen == "default":
@@ -318,6 +318,41 @@ def list_regs(state_dir: Path) -> list[dict]:
         except (OSError, ValueError):
             continue
     return out
+
+
+# ---------------------------------------------------------------------------
+# Remembered SDK defaults (model + effort) for NEW sessions. A brand-new SDK session starts at the hardcoded
+# fallbacks (DEFAULT_EFFORT + the account-default model); but the moment the user picks a model or effort on
+# ANY session, we remember it here and seed the NEXT new session with it — so "what I last chose" becomes the
+# startup default (the user 2026-06-27). No desync risk: the remembered value is written into the new
+# session's OWN reg, which is exactly what _options launches with AND what the badge reads. Per-session
+# changes still persist per-session (the reg, restored on resume); this is only the seed for new sessions.
+# Stored OUTSIDE sdk/ so list_regs' sdk/*.json glob never mistakes it for a session.
+# ---------------------------------------------------------------------------
+
+def _defaults_path(state_dir: Path) -> Path:
+    return Path(state_dir) / "sdk-defaults.json"
+
+
+def read_sdk_defaults(state_dir: Path) -> dict:
+    """{'model': <alias|'default'>, 'effort': <level>} — whatever the user last picked, or {} if never."""
+    try:
+        d = json.loads(_defaults_path(state_dir).read_text())
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def write_sdk_default(state_dir: Path, **fields) -> None:
+    """Merge {model?, effort?} into the remembered defaults (atomic tmp+rename). Only non-None keys passed
+    are touched, so remembering a model never clobbers the remembered effort and vice-versa."""
+    d = read_sdk_defaults(state_dir)
+    d.update({k: v for k, v in fields.items() if v is not None})
+    p = _defaults_path(state_dir)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(".tmp")
+    tmp.write_text(json.dumps(d))
+    os.replace(tmp, p)
 
 
 # ---------------------------------------------------------------------------
@@ -590,6 +625,17 @@ class SdkSession:
             opts = self.backend._options(self, ClaudeAgentOptions)
             async with ClaudeSDKClient(options=opts) as client:
                 self.client = client
+                # PRE-TURN PUBLISH (the user 2026-06-27): pull the live model + context % the INSTANT we
+                # connect — before any turn — so a freshly-created SDK session shows its model and context on
+                # OPEN, like a tmux session does on launch. The old path keyed model/ctx resolution off the
+                # `init` SystemMessage (see _on_message's init branch), but that message is NOT emitted on a
+                # turn-less streaming connection: it only arrives with the FIRST user turn (verified against the
+                # SDK — get_context_usage() answers pre-turn, but no init/system message streams until a turn is
+                # sent). That false assumption is why every prior fix left the model/context blank until the
+                # first message. get_context_usage() is the DESIGNED control request behind the CLI's /context
+                # and returns BOTH the live model id and the % pre-turn, so this one refresh fills both. Runs on
+                # every (re)connect; guarded + idempotent + pokes only on change.
+                asyncio.ensure_future(self._do_refresh_context())
                 feeder = asyncio.ensure_future(client.query(inputs()))
                 recv = asyncio.ensure_future(drain(client))
                 waker = asyncio.ensure_future(self._wake.wait())
@@ -641,11 +687,13 @@ class SdkSession:
             if fsid and fsid != self.resume_sid:
                 self.resume_sid = fsid
                 self.backend._update_reg(self.sid, lastSid=fsid)
-            self.backend._poke()   # publish the model + permission-mode from init RIGHT AWAY (the eager-connect
-                                   # whole point): the snapshot reads self.model, but with no poke the new model
-                                   # would wait out the 3s producer backstop instead of showing on connect.
-            asyncio.ensure_future(self._do_refresh_context())   # pull the real context % + model from the SDK
-                                   # the moment we connect, so BOTH show on OPEN — before the first turn.
+            self.backend._poke()   # publish the model + permission-mode from init promptly: the snapshot reads
+                                   # self.model, but with no poke the new model would wait out the 3s producer
+                                   # backstop. NB: this init branch fires only once the FIRST turn arrives — the
+                                   # CLI emits no init message on a turn-less connect — so the PRE-turn publish
+                                   # is _amain's on-connect _do_refresh_context() (get_context_usage); this is
+                                   # the refinement once a real turn lands.
+            asyncio.ensure_future(self._do_refresh_context())   # re-pull the real context % + model from the SDK
         elif isinstance(msg, SystemMessage) and msg.subtype == "api_retry":
             # the API returned a retryable error (rate-limit / overload); the CLI is backing off + retrying.
             # Surface a distinct 'retrying' state so a stall reads as an API issue, not a silent hang (the
@@ -890,11 +938,18 @@ class SdkBackend:
         if not bg:                                   # give the session a stable identity colour like tmux sessions get
             bg, fg = pick_identity_color(sid)
         write_name(self.state_dir, sid, name, cwd, bg, fg)
-        # No model is recorded here: a brand-new SDK session's real model is unknown until it connects. The
-        # lane falls back to model_label('', chosen) meanwhile, and eager-connect-on-open resolves the real
-        # model + context % from get_context_usage() within a moment — no fleet-wide guess (the user 2026-06-24).
+        # Seed model + effort from the REMEMBERED defaults (the user's last pick on any session), falling back
+        # to the hardcoded ones (the user 2026-06-27). effort always has a value (the connect flag). A model is
+        # recorded ONLY when a real choice was remembered: an unset / 'default' model stays the account default
+        # (model_label + _options both treat '' and 'default' as "no override"), and the real default name still
+        # fills in on connect from get_context_usage(). The seed lands in THIS session's reg — exactly what
+        # _options launches with and what the badge reads — so the display can never desync from what's used.
+        d = read_sdk_defaults(self.state_dir)
+        eff = d.get("effort") if d.get("effort") in EFFORT_LEVELS else DEFAULT_EFFORT
         reg = {"sid": sid, "name": name, "cwd": cwd, "mode": "acceptEdits",
-               "effort": DEFAULT_EFFORT, "lastSid": "", "alive": True}
+               "effort": eff, "lastSid": "", "alive": True}
+        if d.get("model") and d["model"] != "default":
+            reg["model"] = d["model"]
         write_reg(self.state_dir, sid, reg)
         append_state(self.state_dir, sid, "waiting")
         self._poke()
@@ -926,9 +981,12 @@ class SdkBackend:
             return s
 
     def connect(self, sid: str) -> bool:
-        """Eagerly start (connect) a session WITHOUT sending a turn, so its model + permission-mode publish
-        from the init message right away — like a tmux session shows them on launch — instead of only after
-        the first message (the user 2026-06-23). Idempotent; a no-op if already running."""
+        """Eagerly start (connect) a session WITHOUT sending a turn, so its model + context % publish right
+        away — like a tmux session shows them on launch — instead of only after the first message (the user
+        2026-06-23). The streaming `init` SystemMessage does NOT arrive until the first turn, so _amain pulls
+        the model + % on connect via get_context_usage() (the designed control request that answers pre-turn);
+        permission-mode shows the registry default immediately, refined by init once a turn lands. Idempotent;
+        a no-op if already running."""
         return self._ensure(sid) is not None
 
     def pending_queued(self, sid: str) -> list[str]:
@@ -1016,6 +1074,7 @@ class SdkBackend:
             return False
         reg["model"] = value
         write_reg(self.state_dir, sid, reg)
+        write_sdk_default(self.state_dir, model=value)   # remember as the seed for the NEXT new session (the user 2026-06-27)
         s = self.sessions.get(sid)
         if s:
             s.chosen_model = value
@@ -1049,6 +1108,7 @@ class SdkBackend:
             return False
         reg["effort"] = value
         write_reg(self.state_dir, sid, reg)
+        write_sdk_default(self.state_dir, effort=value)   # remember as the seed for the NEXT new session (the user 2026-06-27)
         s = self.sessions.get(sid)
         if s:
             s.effort = value        # picker label reflects it now; the reconnect makes it real
