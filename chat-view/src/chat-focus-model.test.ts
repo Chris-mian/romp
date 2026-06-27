@@ -33,6 +33,16 @@ test("Escape in the message box → the tabs", () => {
   assert.match(block, /if \(e\.key === "Escape"\)[\s\S]*?focusActiveTab\(\)/);
 });
 
+test("Enter from the bare chat area (no focused control) drops into the message box, untouched clicks", () => {
+  // gated on activeElement === body so it never steals Enter from a control/tab/the live-ask card, and it
+  // hooks no clicks → highlighting + expanding folds are unaffected
+  const i = SRC.indexOf('window.addEventListener("keydown"', SRC.indexOf("NAV_SCROLL_STEP"));
+  const block = SRC.slice(i, i + 2600);
+  assert.match(block, /e\.key === "Enter"/);
+  assert.match(block, /const ae = document\.activeElement;\s*if \(ae && ae !== document\.body\) return;/);
+  assert.match(block, /getElementById\("composer-input"\)[\s\S]*?if \(ta && !ta\.disabled\) \{ e\.preventDefault\(\); ta\.focus\(\); \}/);
+});
+
 test("the message box shows a thin accent-blue border when focused (panel-focus blue, on the border)", () => {
   assert.match(CSS, /#composer-input:focus \{ border-color: var\(--accent\); \}/);
 });

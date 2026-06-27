@@ -1889,6 +1889,17 @@ window.addEventListener("keydown", (e) => {
     if (!content) return;
     e.preventDefault();
     content.scrollBy({ top: e.key === "ArrowDown" ? NAV_SCROLL_STEP : -NAV_SCROLL_STEP });
+  } else if (e.key === "Enter") {
+    // Enter from the bare chat AREA → drop the cursor into the message box, so after clicking in the
+    // transcript to read/select you can just hit Enter to type (the user 2026-06-26). Gated on
+    // activeElement being the body (no focused control), so it never steals Enter from a focused tab
+    // (onTabKey), the live-ask card, a code-copy button, etc. — and it touches NO clicks, so highlighting
+    // and expanding folds are completely unaffected. The two-state model (tabs ↔ box) thus has a sensible
+    // default: Enter always lands you in the box unless you're already on a tab or in the box.
+    const ae = document.activeElement;
+    if (ae && ae !== document.body) return;
+    const ta = document.getElementById("composer-input") as HTMLTextAreaElement | null;
+    if (ta && !ta.disabled) { e.preventDefault(); ta.focus(); }
   }
 });
 // Nearest tab in the row above (dir<0) or below (dir>0) the given tab, by column.
