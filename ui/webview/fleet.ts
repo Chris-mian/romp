@@ -23,6 +23,24 @@ let sessions: FleetSession[] = [];
 const DONE_KEY = "romp:fleetShowDone";
 function showDone(): boolean { try { return localStorage.getItem(DONE_KEY) === "1"; } catch { return false; } }
 function setShowDone(on: boolean) { try { localStorage.setItem(DONE_KEY, on ? "1" : "0"); } catch { /* ignore */ } }
+
+// Recency cutoff (the user 2026-06-27): a LOGARITHMIC slider hides sessions whose freshest activity is older
+// than the window. Stored as a 0..1000 slider position; cutoffSecs() maps it log-uniformly from 1 minute to
+// 1 month, so each pixel covers a constant RATIO of time. Default = max (1 month, most inclusive).
+const CUTOFF_KEY = "romp:fleetCutoffPos";
+const CUT_MIN = 60, CUT_MAX = 30 * 86400;            // 1 minute … 1 month (seconds)
+function cutoffPos(): number {
+  try { const v = parseInt(localStorage.getItem(CUTOFF_KEY) || "", 10); return Number.isFinite(v) ? Math.max(0, Math.min(1000, v)) : 1000; }
+  catch { return 1000; }
+}
+function setCutoffPos(p: number) { try { localStorage.setItem(CUTOFF_KEY, String(p)); } catch { /* ignore */ } }
+function cutoffSecs(): number { return CUT_MIN * Math.pow(CUT_MAX / CUT_MIN, cutoffPos() / 1000); }   // log-uniform 1m…1mo
+function fmtAge(s: number): string {
+  if (s < 3600) return Math.round(s / 60) + "m";
+  if (s < 86400) return Math.round(s / 3600) + "h";
+  if (s < CUT_MAX - 1) return Math.round(s / 86400) + "d";
+  return "1mo";
+}
 const folded = new Set<string>(), expanded = new Set<string>();   // fold state, keyed "sid\0nodeId"
 const fkey = (sid: string, id: string) => sid + "\0" + id;
 
@@ -142,10 +160,15 @@ function render() {
   const now = Math.floor(Date.now() / 1000);
   let any = false;
 
+  const cutoff = cutoffSecs();
   for (const s of sessions) {
     const tree = s.ledger?.tree || [];
     if (!tree.length) continue;
     stampSubtreeRecency(tree, s.ledger?.current || null);
+    // recency cutoff (the user 2026-06-27): skip a session whose freshest activity (rolled-up node recency
+    // or its live current-node time) is older than the slider's window.
+    const freshest = Math.max(s.ledger?.current?.t || 0, ...tree.map(nodeRecency));
+    if (freshest && (now - freshest) > cutoff) continue;
     const byId = new Map(tree.map((n) => [n.id, n] as const));
     const roots = tree.filter((n) => n.depth === 0);
     // open = a top goal that's not done and not crossed off; "show completed" reveals the rest
@@ -287,6 +310,29 @@ function mountChip() {
   document.body.appendChild(lbl);
 }
 
+// Recency-cutoff slider (the user 2026-06-27): a floating chip just ABOVE "Show completed", with a label
+// ("≤ 2d") + a logarithmic range slider (1 minute … 1 month). Dragging filters the fleet live and persists.
+function mountCutoff() {
+  if (document.getElementById("fl-cutoff")) return;      // mount once
+  const box = el("div");
+  box.id = "fl-cutoff";
+  box.style.cssText = "position:fixed;bottom:38px;right:10px;z-index:20;display:inline-flex;align-items:center;gap:8px;"
+    + "user-select:none;font-size:11.5px;color:var(--vscode-descriptionForeground,#9a9a9a);"
+    + "background:rgba(40,40,42,0.92);border:1px solid rgba(255,255,255,0.12);border-radius:6px;padding:3px 9px";
+  const lab = el("span");
+  lab.style.cssText = "min-width:42px;text-align:right;font-variant-numeric:tabular-nums";
+  const sl = document.createElement("input");
+  sl.type = "range"; sl.min = "0"; sl.max = "1000"; sl.step = "1"; sl.value = String(cutoffPos());
+  sl.style.cssText = "width:110px;cursor:pointer";
+  (sl.style as CSSStyleDeclaration & { accentColor: string }).accentColor = "var(--accent, #9cd2ff)";
+  sl.title = "Include sessions active within this window — logarithmic, 1 minute … 1 month";
+  const paint = () => { lab.textContent = "≤ " + fmtAge(cutoffSecs()); };
+  sl.addEventListener("input", () => { setCutoffPos(parseInt(sl.value, 10)); paint(); render(); });
+  paint();
+  box.appendChild(lab); box.appendChild(sl);
+  document.body.appendChild(box);
+}
+
 window.addEventListener("message", (e: MessageEvent) => {
   const m = e.data;
   if (!m || m.type !== "feed") return;               // Fleet rides the FEED payload (proven channel); reads its `ledgers`
@@ -328,6 +374,7 @@ window.addEventListener("storage", (e: StorageEvent) => { if (e.key === "romp:se
 })();
 
 mountChip();
+mountCutoff();
 render();
 vscodeApi?.postMessage({ type: "ready" });   // ask the kernel to push the initial fleet state (like feed/timeline)
 
