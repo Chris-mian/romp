@@ -30,11 +30,25 @@ class PureTranslation(unittest.TestCase):
         self.assertEqual(ask["kind"], "single")
         self.assertEqual(ask["header"], "H")
         self.assertFalse(ask["multiSelect"])
-        self.assertEqual([o["n"] for o in ask["options"]], [1, 2])
+        real = [o for o in ask["options"] if o["label"] != sb.TYPE_SOMETHING]
+        self.assertEqual([o["n"] for o in real], [1, 2])
         self.assertEqual(ask["options"][0]["label"], "A")
         self.assertEqual(ask["options"][0]["desc"], "aa")
         self.assertFalse(ask["options"][0]["selected"])
+        # the "add your own" affordance is ALWAYS offered, as a trailing meta option (the user 2026-06-27)
+        self.assertEqual(ask["options"][-1]["label"], sb.TYPE_SOMETHING)
+        self.assertEqual(ask["options"][-1]["n"], 3, "contiguous after the real options")
         self.assertNotIn("progress", ask)        # single question -> no "n of m"
+
+    def test_add_your_own_offered_for_multi_and_shows_typed_customs(self):
+        q = {"question": "Pick many", "header": "H", "multiSelect": True,
+             "options": [{"label": "A"}, {"label": "B"}]}
+        ask = sb.ask_question_to_live(q, 0, 1, selected={1}, customs=["my own thing"])
+        labels = [o["label"] for o in ask["options"]]
+        self.assertEqual(labels, ["A", "B", "my own thing", sb.TYPE_SOMETHING])
+        self.assertTrue(ask["options"][2]["checked"], "a typed custom shows as a checked row")
+        self.assertFalse(ask["options"][3]["checked"], "the meta add-your-own row is not checked")
+        self.assertEqual([o["n"] for o in ask["options"]], [1, 2, 3, 4], "contiguous ordinals")
 
     def test_multi_question_marks_checked_and_progress(self):
         q = {"question": "Pick many", "header": "H", "multiSelect": True,
@@ -772,6 +786,54 @@ class AskRoundTrip(unittest.TestCase):
         self.assertEqual(c2.options.resume, sid)             # resume continues the SAME conversation, not a fresh session
         self.assertEqual(sb.read_reg(self.d, sid)["effort"], "low")
         self.backend.kill(sid)
+
+
+@unittest.skipUnless(_HAVE_SDK, "claude_agent_sdk not installed")
+class CustomAnswerRoundTrip(unittest.TestCase):
+    """The 'add your own' free-text affordance on AskUserQuestion (the user 2026-06-27). _ask_one is driven
+    through a scripted sequence of actions: each emitted askLive triggers the next action via on_ask, exactly
+    as the kernel routes a UI click. Single-select returns the typed text; multi accumulates customs and
+    includes them on Submit; unchecking a typed custom removes it."""
+
+    SID = "11111111-2222-3333-4444-555555555555"
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.actions = []
+        def notify(app, msg):
+            if msg.get("type") == "askLive" and self.actions:
+                kind, payload = self.actions.pop(0)
+                self.backend.on_ask(msg["id"], kind, payload)
+        self.backend = sb.SdkBackend(self.d, "/bin/true", notify)
+        self.sess = sb.SdkSession(self.backend, {"sid": self.SID, "name": "n", "cwd": self.d})
+        self.backend.sessions[self.SID] = self.sess
+
+    def _ask(self, question, actions):
+        import asyncio
+        self.actions = list(actions)
+        async def go():
+            self.sess.loop = asyncio.get_running_loop()
+            return await self.sess._ask_one(question, 0, 1)
+        return asyncio.run(go())
+
+    def test_single_select_returns_typed_custom_answer(self):
+        q = {"question": "Pick", "header": "H", "multiSelect": False,
+             "options": [{"label": "A"}, {"label": "B"}]}
+        res = self._ask(q, [("custom", "something else entirely")])
+        self.assertEqual(res, "something else entirely")
+
+    def test_multi_select_includes_custom_with_checked_options(self):
+        q = {"question": "Pick many", "header": "H", "multiSelect": True,
+             "options": [{"label": "A"}, {"label": "B"}]}
+        res = self._ask(q, [("toggle", 1), ("custom", "extra"), ("submit", None)])
+        self.assertEqual(res, ["A", "extra"])
+
+    def test_multi_select_unchecking_a_custom_removes_it(self):
+        q = {"question": "Pick many", "header": "H", "multiSelect": True,
+             "options": [{"label": "A"}, {"label": "B"}]}
+        # add a custom (becomes option n=3), then toggle n=3 off, then submit → nothing chosen
+        res = self._ask(q, [("custom", "oops"), ("toggle", 3), ("submit", None)])
+        self.assertEqual(res, [])
 
 
 @unittest.skipUnless(_HAVE_SDK, "claude_agent_sdk not installed")

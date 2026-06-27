@@ -122,7 +122,10 @@ def msg_to_atom(msg, sid, fsid, t):
     return None
 
 
-def ask_question_to_live(question: dict, qi: int, total: int, selected=None) -> dict:
+TYPE_SOMETHING = "Type something"   # meta-option label the webview turns into the inline "add your own" field
+
+
+def ask_question_to_live(question: dict, qi: int, total: int, selected=None, customs=None) -> dict:
     """Translate ONE AskUserQuestion question into the askLive `ask` shape the
     existing picker UI already renders (the same shape bin/romp-askparse emits),
     so SDK sessions reuse the pane-scraper's UI with zero changes.
@@ -130,8 +133,15 @@ def ask_question_to_live(question: dict, qi: int, total: int, selected=None) -> 
     `question` is one element of the tool input's `questions[]`:
       {question, header, multiSelect, options:[{label, description, preview?}]}.
     `selected` is the set of 1-based option numbers currently toggled (multi).
+    `customs` are free-text answers the user has typed so far (multi-select shows them as already-checked
+    rows). A trailing "Type something" meta option is ALWAYS appended so the webview renders the inline
+    "add your own answer" field — the TUI always offers it, but the SDK's raw tool input doesn't, so the
+    SDK backend synthesizes it (the user 2026-06-27). The webview filters the meta row out of the pickable
+    options (isMetaOption); numbering stays contiguous (real → customs → meta) so a toggle ordinal maps
+    back here unambiguously.
     """
     selected = selected or set()
+    customs = customs or []
     multi = bool(question.get("multiSelect"))
     opts = []
     for i, o in enumerate(question.get("options") or []):
@@ -144,6 +154,13 @@ def ask_question_to_live(question: dict, qi: int, total: int, selected=None) -> 
         if o.get("preview"):
             opt["preview"] = o["preview"]
         opts.append(opt)
+    for c in customs:                                 # already-typed free-text (multi) → checked rows
+        opt = {"n": len(opts) + 1, "label": c}
+        opt["checked" if multi else "selected"] = True
+        opts.append(opt)
+    meta = {"n": len(opts) + 1, "label": TYPE_SOMETHING, "desc": "add your own answer"}
+    meta["checked" if multi else "selected"] = False
+    opts.append(meta)
     ask = {
         "kind": "multi" if multi else "single",
         "header": question.get("header", ""),
@@ -887,30 +904,36 @@ class SdkSession:
 
     async def _ask_one(self, question: dict, qi: int, total: int):
         multi = bool(question.get("multiSelect"))
+        nreal = len(question.get("options") or [])
         selected: set[int] = set()
-        self.backend._emit_ask(self, ask_question_to_live(question, qi, total, selected))
+        customs: list[str] = []                       # free-text answers the user typed (multi accumulates)
+        def emit():
+            self.backend._emit_ask(self, ask_question_to_live(question, qi, total, selected, customs))
+        emit()
         while True:
             kind, payload = await self._next_ask_action()
             if kind == "cancel":
                 raise _AskCancelled()
-            if kind == "custom" and payload:
-                return str(payload)
-            if kind == "text" and payload:
-                return str(payload)
+            if kind in ("custom", "text") and payload:
+                if not multi:
+                    return str(payload)               # single-select: the typed answer IS the answer
+                customs.append(str(payload)); emit(); continue   # multi: add it, keep going until Submit
             if not multi and kind == "answer":
                 return label_for_target(question, payload)
             if multi and kind == "toggle":
                 try:
                     n = int(payload)
-                    selected.discard(n) if n in selected else selected.add(n)
                 except (TypeError, ValueError):
-                    pass
-                self.backend._emit_ask(self, ask_question_to_live(question, qi, total, selected))
-                continue
+                    n = -1
+                if 1 <= n <= nreal:
+                    selected.discard(n) if n in selected else selected.add(n)
+                elif nreal < n <= nreal + len(customs):   # unchecking a typed custom row removes it
+                    del customs[n - nreal - 1]
+                emit(); continue
             if multi and kind == "submit":
-                return [label_for_target(question, n) for n in sorted(selected)]
+                return [label_for_target(question, n) for n in sorted(selected)] + customs
             # single-select that received a toggle, or vice versa: re-emit.
-            self.backend._emit_ask(self, ask_question_to_live(question, qi, total, selected))
+            emit()
 
     # ---- the awaiting producer (bugz's event-model overlay) ----
 
