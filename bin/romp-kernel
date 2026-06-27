@@ -3777,10 +3777,9 @@ def build_session(sid, now, tmux=None):
                   "backend": _session_backend(sid, tm),
                   "model": tm["model"], "effort": tm["effort"], "mode": tm.get("mode", ""),
                   "ctx": str(tm["context"]) if tm["context"] is not None else "",
-                  # context% on the GLOBAL colormap, read REVERSED (1 - pct) (the user 2026-06-27): keeps the
-                  # context battery's coloring unchanged when the aurora map is flipped — only the forward-
-                  # reading surfaces (feed cards, fleet) switch. Mirrors the timeline lane battery above.
-                  "ctxColor": (list(cm.ramp(1 - tm["context"] / 100.0, cm.stops_for(_colormap())))
+                  # context% on the GLOBAL colormap (the user 2026-06-26): computed server-side so the chat
+                  # battery + tab tooltip just apply it (mirrors the usage bar + timeline lanes). bright = full.
+                  "ctxColor": (list(cm.ramp(tm["context"] / 100.0, cm.stops_for(_colormap())))
                                if tm["context"] is not None else None)}
     elif tmux or _has_tmux():                          # tmux usable but this session isn't running → closed
         status = {"state": "closed", "sinceEpoch": since_ms, "faded": True}
@@ -5363,11 +5362,8 @@ def build_timeline(now, tmux=None, with_bars=True, live_only=False):
             "model": (tm["model"] if tm else ""), "effort": (tm["effort"] if tm else ""),
             "backend": _session_backend(sid, tm),
             "context": (tm["context"] if tm else None),
-            # context% on the GLOBAL colormap, read REVERSED (1 - pct) (the user 2026-06-27): so the context
-            # battery's coloring is unchanged when the aurora map itself is flipped — only the feed/fleet
-            # (which read the colormap forward) switch with the flip.
-            "ctxColor": (list(cm.ramp(1 - (tm["context"] or 0) / 100.0, ctx_stops))
-                         if tm and tm["context"] is not None else None),
+            "ctxColor": (list(cm.ramp((tm["context"] or 0) / 100.0, ctx_stops))
+                         if tm and tm["context"] is not None else None),   # context% on the GLOBAL colormap (bright = full)
             "compactPct": (tm["compactPct"] if tm else None),
             "awaiting": _state_intervals(sid, _NEEDS_INPUT_STATES, now),
             "compacting": _state_intervals(sid, "compacting", now),
@@ -6399,7 +6395,7 @@ if(cg)cg.addEventListener('change',function(){var s=load();s.collapseGaps=cg.che
 // posts to the kernel; the checkbox is (re)initialized from /version on every gear open (see fill()).
 if(an)an.addEventListener('change',function(){try{window.acquireVsCodeApi&&window.acquireVsCodeApi().postMessage({type:'setAutoNudge',enabled:an.checked});}catch(e){}});
 // feed-colormap preview bar: a horizontal gradient of the SELECTED map's stops (mirrors render.ts COLORMAPS).
-var CMAPS={aurora:[[144,136,240],[113,145,244],[74,155,241],[14,164,227],[25,168,201],[66,169,176],[35,175,156],[0,180,115],[84,178,4]],
+var CMAPS={aurora:[[84,178,4],[0,180,115],[35,175,156],[66,169,176],[25,168,201],[14,164,227],[74,155,241],[113,145,244],[144,136,240]],
 hawaii:[[140,2,115],[146,46,85],[151,78,62],[155,111,40],[156,150,28],[137,189,74],[107,212,142],[103,233,213],[179,242,253]],
 viridis:[[68,1,84],[72,40,120],[62,74,137],[49,104,142],[38,130,142],[31,158,137],[53,183,121],[110,206,88],[181,222,43],[253,231,37]],
 magma:[[0,0,4],[28,16,68],[79,18,123],[129,37,129],[181,54,122],[229,80,100],[251,135,97],[254,194,135],[252,253,191]],
