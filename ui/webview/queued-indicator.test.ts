@@ -14,15 +14,23 @@ test("a queued ChatEvent carries the pending messages (backend-agnostic, per-mes
   assert.match(RENDER, /kind: "queued"; texts: \{ md: string; followUp\?: boolean; goal\?: string \}\[\]/);
 });
 
-test("renderQueued draws the ⌛ header (singular/plural) + one markdown bubble per queued message", () => {
+test("renderQueued draws a wireframe-hourglass header (singular/plural) + one markdown bubble per queued message", () => {
   assert.match(RENDER, /ev\.kind === "queued"\) return renderQueued\(ev\)/);
   assert.match(RENDER, /el\("div", "turn turn-queued"\)/);
-  // header: "⌛ N queued message(s)" — pluralizes on count
-  assert.match(RENDER, /`⌛ \$\{n\} queued message\$\{n === 1 \? "" : "s"\}`/);
+  // header: a stroked accent-blue hourglass ICON (no ⌛ emoji) + "N queued message(s)" — pluralizes on count
+  assert.doesNotMatch(RENDER, /⌛/, "no hourglass emoji — it clashes with the app's line-icon style");
+  assert.match(RENDER, /head\.appendChild\(hourglassIcon\(\)\)/);
+  assert.match(RENDER, /function hourglassIcon\(\): HTMLElement/);
+  assert.match(RENDER, /stroke="currentColor"[\s\S]*?<path d="M4 3 H12 L8 8 L12 13 H4 L8 8 Z"\/>/, "wireframe hourglass path");
+  assert.match(RENDER, /label\.textContent = `\$\{n\} queued message\$\{n === 1 \? "" : "s"\}`/);
   assert.match(RENDER, /el\("div", "queued-head"\)/);
   // one faint "you" bubble per pending message, rendered as markdown (like a landed message)
   assert.match(RENDER, /for \(const t of ev\.texts\)[\s\S]*?el\("div", "queued-bubble md"\)/);
   assert.match(RENDER, /bubble\.innerHTML = md\(t\.md\)/);
+});
+
+test("the queued-header hourglass uses the accent blue, like the feed/mail toggle icons", () => {
+  assert.match(CSS, /\.queued-head \.queued-icon \{ color: var\(--accent\)/);
 });
 
 test("the queued turn + bubbles are styled (so the dot is actually visible)", () => {

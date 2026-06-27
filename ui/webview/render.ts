@@ -1039,6 +1039,18 @@ function followUpHeader(goal?: string): HTMLElement {
   return h;
 }
 
+// A wireframe hourglass in the romp accent blue, drawn in the SAME line-icon style as the feed/mail toggle
+// icons (ctxIcon) — used on the queued-messages header instead of an hourglass emoji, which clashed with the
+// app's stroked-icon look (the user 2026-06-27). One continuous path: top bar → right wall to the center pinch →
+// bottom bar → left wall back up.
+function hourglassIcon(): HTMLElement {
+  const span = el("span", "queued-icon");
+  span.innerHTML = '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" '
+    + 'stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">'
+    + '<path d="M4 3 H12 L8 8 L12 13 H4 L8 8 Z"/></svg>';
+  return span;
+}
+
 // Pending queued messages — the user's inputs submitted while the session was still working, not yet
 // processed. Rendered at the bottom (closest to the composer) as faint right-aligned "you" bubbles, the SAME
 // way a landed message renders (markdown, follow-ups cleaned of the romp goal-context + markers, with the
@@ -1047,7 +1059,9 @@ function renderQueued(ev: Extract<ChatEvent, { kind: "queued" }>): HTMLElement {
   const turn = el("div", "turn turn-queued");
   const n = ev.texts.length;
   const head = el("div", "queued-head");
-  head.textContent = `⌛ ${n} queued message${n === 1 ? "" : "s"}`;
+  head.appendChild(hourglassIcon());
+  const label = el("span"); label.textContent = `${n} queued message${n === 1 ? "" : "s"}`;
+  head.appendChild(label);
   turn.appendChild(head);
   for (const t of ev.texts) {
     if (t.followUp) turn.appendChild(followUpHeader(t.goal));

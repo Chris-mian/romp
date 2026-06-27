@@ -787,7 +787,8 @@ body { display: flex; flex-direction: column; }
    not yet a turn. Right-aligned like his sent bubbles, but faint + dashed to read
    as "waiting", with a header count. (Mirrors the queue Claude Code shows.) */
 .turn-queued { display: flex; flex-direction: column; align-items: flex-end; padding: 6px 0 10px; gap: 5px; }
-.queued-head { font-size: 0.78em; color: var(--dim); letter-spacing: 0.02em; }
+.queued-head { display: inline-flex; align-items: center; gap: 5px; font-size: 0.78em; color: var(--dim); letter-spacing: 0.02em; }
+.queued-head .queued-icon { color: var(--accent); display: flex; }   /* wireframe hourglass in the accent blue */
 .queued-bubble {
   max-width: 72%; overflow-wrap: anywhere; display: flow-root;
   background: rgba(43, 108, 239, 0.10); border: 1px dashed rgba(43, 108, 239, 0.65);
