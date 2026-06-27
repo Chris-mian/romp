@@ -275,6 +275,36 @@ class TestAskParse(unittest.TestCase):
         ])
         self.assertIsNone(parse(list_output))
 
+    def test_path_c_spaced_dash_rule_caps_question_no_transcript_bleed(self):
+        # The native /effort (and /model) confirmation is footer-less (PATH C).
+        # Claude Code separates it from the prior turn with a SPACED dashed rule
+        # ("─ ─ ─ …"), not a solid run. RULE_RE must treat that as a rule so the
+        # upward question walk stops there — otherwise it climbs into the chat
+        # transcript above and bleeds unrelated prose into the question (the bug
+        # the user hit). Synthetic prose; no real session data.
+        picker = "\n".join([
+            "⏺ Some unrelated prior assistant prose that must NOT be captured,",
+            "  the kind of sentence that wraps across a couple of lines here.",
+            "─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─",
+            "  Change effort level?",
+            "  Your next response will be slower and use more tokens",
+            "",
+            "  This conversation is cached for the current effort level.",
+            "  Switching to xhigh means the full history gets re-read.",
+            "",
+            "  ❯ 1. Yes, switch to xhigh",
+            "    2. No, go back",
+            "",
+        ])
+        ask = parse(picker)
+        self.assertIsNotNone(ask, "footer-less confirmation must parse")
+        self.assertEqual(ask["kind"], "single")
+        self.assertEqual(len(ask["options"]), 2)
+        self.assertIn("Change effort level?", ask["question"])
+        # the spaced rule must have capped the walk — no transcript bleed
+        self.assertNotIn("prior assistant prose", ask["question"])
+        self.assertNotIn("wraps across", ask["question"])
+
     def test_side_by_side_preview_box_captured_kept_out_of_labels(self):
         # An AskUserQuestion whose options carry a `preview` renders the option
         # list on the LEFT and a bordered diagram box on the RIGHT, on the SAME

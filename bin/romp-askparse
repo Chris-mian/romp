@@ -34,7 +34,11 @@ import re
 
 OPT_RE = re.compile(r"^\s*(❯)?\s*(\d+)\.\s+(.*\S)\s*$")   # ❯? N. label
 CHECK_RE = re.compile(r"^\[\s*([^\]]?)\s*\]\s*(.*)$")     # [✔] label / [ ] label
-RULE_RE = re.compile(r"^\s*[─-]{3,}.*$")
+# A separator rule: a solid run of dashes (─/-) OR a SPACED dashed line
+# (`─ ─ ─ …`, which Claude Code uses between the prior turn and a footer-less
+# confirmation). Both must start the line; the `\s?` lets single gaps in without
+# matching prose that merely contains a hyphen (a second dash must follow).
+RULE_RE = re.compile(r"^\s*(?:[─-]\s?){3,}.*$")
 HEADER_RE = re.compile(r"^\s*[☐☑▣▢]\s+(.+?)\s*$")
 FOOTER_RE = re.compile(r"to navigate|Enter to select|Esc to (cancel|exit)")
 # The normal composer/status footer — its presence anywhere means the pane is at
