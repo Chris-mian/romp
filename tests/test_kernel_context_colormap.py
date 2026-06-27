@@ -39,11 +39,13 @@ class ContextColormap(unittest.TestCase):
         self.assertIn(">Colormap<", km._GEAR_HTML, "the label is global now")
         self.assertNotIn(">Feed colormap<", km._GEAR_HTML, "no longer scoped to the feed")
 
-    def test_ramp_brightens_with_higher_context(self):
-        # a high fill lands at the colormap's BRIGHT end (sum of channels higher) — sanity on the mapping
-        stops = km.cm.stops_for(km.cm.DEFAULT)
+    def test_ramp_maps_higher_to_the_bright_end_on_a_darklight_map(self):
+        # ramp(v) walks v=0→stops[0] to v=1→stops[-1]; on a DARK→LIGHT map (hawaii) a higher fill lands
+        # brighter. (The default 'aurora' is intentionally ISO-LUMINANT — it conveys value by hue, not
+        # brightness — so this brightness check is pinned on hawaii, not cm.DEFAULT.)
+        stops = km.cm.stops_for("hawaii")
         lo, hi = km.cm.ramp(0.1, stops), km.cm.ramp(0.95, stops)
-        self.assertGreater(sum(hi), sum(lo), "fuller context → brighter color on the default map")
+        self.assertGreater(sum(hi), sum(lo), "fuller context → brighter color on a dark→light map")
 
 
 if __name__ == "__main__":

@@ -18,6 +18,7 @@ import { compactDisplay, toolCounts, type DisplayItem } from "./compact";
 import { loadSettings, onExternalSettingsChange, type RompSettings } from "./settings";
 import { delegate } from "./actions";
 import { prebuildPlan, type ViewState } from "./prebuild";
+import { reconcileTabOrder } from "./tab-order";
 
 for (const [name, lang] of Object.entries({
   bash, sh: bash, shell: bash, python, py: python, javascript, js: javascript,
@@ -1398,44 +1399,21 @@ function fadedColor(hex: string): string {
   return `#${hx(r, br)}${hx(g, bgc)}${hx(b, bb)}`;
 }
 
-// Tab display order mirrors the romp timeline's lanes: three tiers, each by
-// first-seen (launch) ascending. tier 0 = active live (within the last hour),
-// tier 1 = ended/closed, tier 2 = idle live (>1h quiet).
-// The shared, drag-set order (SID array) from the host — synced with the timeline.
-// Sessions listed here come first in that explicit order; the rest fall back to the
-// tier/first-seen default and append.
-let sharedOrder: string[] = [];
-// A session's LAST position in the shared order. A tab that drops out of the live order (its session
-// died or /cleared → new id) keeps THIS slot instead of re-tiering to the end — so rows don't move on
-// their own (the user 2026-06-16). Only sessions never seen in any order fall to the tier/first-seen default.
-const lastIdx = new Map<string, number>();
-function recordOrder(arr: string[]) { arr.forEach((id, i) => lastIdx.set(id, i)); }
-function effIdx(id: string): number {
-  const i = sharedOrder.indexOf(id);
-  return i >= 0 ? i : (lastIdx.has(id) ? (lastIdx.get(id) as number) : Infinity);
-}
-function sortTabs() {
-  order.sort((a, b) => {
-    const ia = effIdx(a), ib = effIdx(b);
-    if (ia !== ib) return ia - ib;                  // current OR last-known position — no jump when a tab dies
-    const sa = sessions.get(a), sb = sessions.get(b);
-    if (!sa || !sb) return 0;
-    // Sessions not covered by the shared order tie here → order by LAUNCH TIME only, NEVER by state, so a
-    // tab never moves on its own when its chip changes (working→ready→blocked/faded). The host now pushes
-    // the saved order on connect, so covered tabs already resolve via effIdx above (the user 2026-06-16, #11).
-    return (sa.firstSeen ?? 0) - (sb.firstSeen ?? 0);
-  });
-}
-// Persist the current full tab order to the shared store (host writes the file →
-// the timeline picks it up). Called after a drag.
+// Tab order is the KERNEL's order, verbatim (the user 2026-06-27). The kernel (bin/romp-kernel `_ordered`)
+// is the single source of truth — a pure positional list with NO activity / mtime / idle / status input, so
+// it never reshuffles on its own. The client does NOT re-derive it: a tab moves ONLY when the user drags it
+// (rewrites the list), a new session arrives (`order.push`, at the end), or a tab closes (`order.splice`).
+// NOTHING re-sorts on a status/activity push. The whole reconciliation is the pure `reconcileTabOrder`
+// (./tab-order). This replaced a parallel client sort (effIdx + a firstSeen tiebreaker) that diverged from
+// the kernel and made tabs jump on ordinary activity — invisible to the kernel's own (passing) order tests.
+
+// Persist the current full tab order to the shared store (host writes session-order.json → the timeline reads
+// the same file). Called only after a drag — the one client action that changes the order.
 function commitTabOrder() {
-  sharedOrder = order.slice();
-  recordOrder(sharedOrder);
   if (vscodeApi) vscodeApi.postMessage({ type: "reorderTabs", order: order.slice() });
 }
-// Apply a shared order pushed from the host (e.g. the timeline reordered it).
+// Apply the kernel's authoritative tab order (its tabOrder push, also re-sent after a timeline drag).
 function applyTabOrder(o: any, tabs?: any) {
-  sharedOrder = Array.isArray(o) ? o.filter((x: any) => typeof x === "string") : [];
   // name+color per tab → renderTabs paints placeholders for tabs whose session hasn't arrived yet (tabs-first).
   // The payload is the kernel's AUTHORITATIVE current tab set, so REBUILD (not merge) — a closed tab drops out
   // and never lingers as a stale placeholder. Absent tabs (older kernel) → keep what we have.
@@ -1448,8 +1426,11 @@ function applyTabOrder(o: any, tabs?: any) {
       }
     }
   }
-  recordOrder(sharedOrder);
-  sortTabs();
+  // Adopt the kernel order verbatim, keeping any just-arrived tab the push doesn't carry yet (see tab-order.ts).
+  const kernelOrder = Array.isArray(o) ? o.filter((x: any) => typeof x === "string") : [];
+  const next = reconcileTabOrder(kernelOrder, order, (id) => sessions.has(id) || tabMeta.has(id));
+  order.length = 0;
+  for (const id of next) order.push(id);
   renderTabs();
 }
 let draggedId: string | null = null;
@@ -1579,15 +1560,14 @@ function renderTabs() {
   const bar = document.getElementById("tabs");
   if (!bar) return;
   bar.replaceChildren();
-  // TABS-FIRST (the user 2026-06-26): render the WHOLE strip up front — every id the kernel told us about
-  // (tabMeta, from the tabOrder push) plus any session already arrived, in shared order. An id whose session
-  // hasn't landed yet draws as a placeholder (name+color, non-interactive) that fills in when build_session
-  // arrives — so tabs don't pop in one-by-one. Union order ∪ tabMeta, sorted by the shared/last-known index.
+  // TABS-FIRST (the user 2026-06-26): render the WHOLE strip up front, in `order` — the kernel's order
+  // verbatim (applyTabOrder), plus any just-arrived tab not yet pushed. An id whose session hasn't landed yet
+  // draws as a placeholder (name+color, non-interactive) that fills in when build_session arrives — so tabs
+  // don't pop in one-by-one. NO re-sort here: the order is whatever `order` holds (the user 2026-06-27).
   const ids: string[] = [];
   const seen = new Set<string>();
   for (const id of order) { if (!seen.has(id)) { seen.add(id); ids.push(id); } }
-  for (const id of tabMeta.keys()) { if (!seen.has(id)) { seen.add(id); ids.push(id); } }
-  ids.sort((a, b) => effIdx(a) - effIdx(b));
+  for (const id of tabMeta.keys()) { if (!seen.has(id)) { seen.add(id); ids.push(id); } }   // any pushed tab not yet in `order` (placeholder)
   for (const id of ids) {
     const s = sessions.get(id);
     if (!s) { bar.appendChild(makePlaceholderTab(id)); continue; }
@@ -3013,6 +2993,7 @@ function agehms(secs: number): string {
 // reads the chosen map here so it matches the feed (which gets the map via the kernel's trgb). Each is
 // dark→light (recent → the last/bright stop).
 const COLORMAPS: Record<string, Array<[number, number, number]>> = {
+  aurora: [[144, 136, 240], [113, 145, 244], [74, 155, 241], [14, 164, 227], [25, 168, 201], [66, 169, 176], [35, 175, 156], [0, 180, 115], [84, 178, 4]],   // romp purple→blue→teal→green at CONSTANT lightness — the default
   hawaii: [[140, 2, 115], [146, 46, 85], [151, 78, 62], [155, 111, 40], [156, 150, 28], [137, 189, 74], [107, 212, 142], [103, 233, 213], [179, 242, 253]],
   viridis: [[68, 1, 84], [72, 40, 120], [62, 74, 137], [49, 104, 142], [38, 130, 142], [31, 158, 137], [53, 183, 121], [110, 206, 88], [181, 222, 43], [253, 231, 37]],
   magma: [[0, 0, 4], [28, 16, 68], [79, 18, 123], [129, 37, 129], [181, 54, 122], [229, 80, 100], [251, 135, 97], [254, 194, 135], [252, 253, 191]],
@@ -3021,7 +3002,7 @@ const COLORMAPS: Record<string, Array<[number, number, number]>> = {
   cividis: [[0, 34, 78], [33, 59, 110], [76, 85, 108], [108, 110, 114], [142, 137, 120], [177, 165, 112], [217, 197, 92], [254, 232, 56]],
 };
 function selectedStops(): Array<[number, number, number]> {
-  return COLORMAPS[(settings.colormap || "").toLowerCase()] || COLORMAPS.hawaii;   // settings updated + rerenderAll on change
+  return COLORMAPS[(settings.colormap || "").toLowerCase()] || COLORMAPS.aurora;   // settings updated + rerenderAll on change
 }
 function ramp(v: number): [number, number, number] {
   const STOPS = selectedStops();
@@ -4079,7 +4060,6 @@ function setActive(id: string, anchor?: string, anchorT?: number, anchorKind?: s
   pendingAnchorIntent = anchor ? (anchorKind ?? null) : null;
   activeId = id;
   try { vscodeApi?.setState?.({ ...(vscodeApi.getState?.() || {}), activeId: id }); } catch { /* ignore */ }
-  sortTabs(); // re-sort on switch — applies any tier change deferred while a tab was active
   renderTabs();
   showActive();
   schedulePrebuild(); // warm the OTHER tabs in idle (MRU-first) so the next switch is instant
@@ -4135,8 +4115,7 @@ function upsert(msg: any) {
   if (!existed) order.push(msg.id);
   if (!activeId) activeId = msg.id;
   if (wantActive && msg.id === wantActive) { wantActive = null; setActive(msg.id); }   // restore persisted tab on arrival
-  sortTabs();
-  renderTabs();
+  renderTabs();                                   // a new id appended to `order` above → strip repaints in kernel order
   // Active tab: a content refresh appends + preserves scroll (appendActive); a new tab or a fork
   // lands at the bottom/anchor (showActive). This is what keeps new pushes from snapping to bottom.
   if (msg.id === activeId) { if (existed && !forked) appendActive(); else showActive(); renderBgTasks(); }
@@ -4155,8 +4134,7 @@ function update(msg: any) {
   if (!s) return;
   s.events = msg.events || s.events;
   s.status = msg.status || s.status;
-  if (msg.id !== activeId) sortTabs(); // re-sort on a non-active tier change; defer the active tab so it won't jump mid-read
-  renderTabs();
+  renderTabs();                          // status/chip change only — repaint, never re-order (the user 2026-06-27)
   if (msg.id === activeId) {
     appendActive();
     renderLedger(); // refresh the summary box (ages + any new items) as the active session works
@@ -4184,7 +4162,6 @@ function chatTail(msg: any) {
   if (typeof msg.total === "number") s.headTotal = msg.total;
   if (msg.status) s.status = msg.status;
   if ("ledger" in msg) ledgers.set(msg.id, msg.ledger ?? null);
-  if (msg.id !== activeId) sortTabs();
   renderTabs();
   if (msg.id === activeId) {
     const v = views.get(msg.id);
@@ -4241,8 +4218,7 @@ function statusOnly(msg: any) {
   const s = sessions.get(msg.id);
   if (!s) return;
   s.status = msg.status || s.status;
-  if (msg.id !== activeId) sortTabs(); // tier change on a non-active tab can re-order; active tab deferred
-  renderTabs();
+  renderTabs();                          // status-only push → repaint the chip; order is untouched
   if (msg.id === activeId) updateStatusline();
 }
 
@@ -4258,8 +4234,7 @@ function dismissSession(id: string): void {
   if (v) { v.el.remove(); views.delete(id); }
   const oi = order.indexOf(id); if (oi >= 0) order.splice(oi, 1);
   const mi = mru.indexOf(id); if (mi >= 0) mru.splice(mi, 1);
-  sortTabs();
-  renderTabs();
+  renderTabs();                          // tab removed from `order` above → repaint without it
   if (activeId === id) {
     activeId = mru[0] || null; // MRU: return to the previously-active tab, not the positional neighbor
     const ta = document.getElementById("composer-input") as HTMLTextAreaElement | null;

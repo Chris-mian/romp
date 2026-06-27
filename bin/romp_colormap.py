@@ -15,9 +15,16 @@ exact LUT of any: `pip install matplotlib` (or cmcrameri for hawaii) then
 """
 import math
 
-# dark -> light. The default name; views fall back to this for an unknown name.
-DEFAULT = "hawaii"
+# dark -> light. The default name; views fall back to this for an unknown name. romp's own 'aurora' is the
+# default (the user 2026-06-27) and is listed FIRST so it leads the picker.
+DEFAULT = "aurora"
 COLORMAPS = {
+    # romp's brand hues — purple → blue → teal → green — swept at CONSTANT (perceptual) lightness (the user
+    # 2026-06-27). Generated in OKLCH: the four anchors (#9088F0 #1EA1EB #4EA8A9 #54B204) all sit at L≈0.678,
+    # so the ramp holds that L throughout while only the hue turns — value reads by HUE, not brightness (an
+    # iso-luminant map). Per-anchor chroma is interpolated, so the ends ARE the true romp purple/green.
+    "aurora": [(144, 136, 240), (113, 145, 244), (74, 155, 241), (14, 164, 227), (25, 168, 201),
+               (66, 169, 176), (35, 175, 156), (0, 180, 115), (84, 178, 4)],
     "hawaii": [(140, 2, 115), (146, 46, 85), (151, 78, 62), (155, 111, 40), (156, 150, 28),
                (137, 189, 74), (107, 212, 142), (103, 233, 213), (179, 242, 253)],
     "viridis": [(68, 1, 84), (72, 40, 120), (62, 74, 137), (49, 104, 142), (38, 130, 142),
@@ -32,7 +39,7 @@ COLORMAPS = {
                 (177, 165, 112), (217, 197, 92), (254, 232, 56)],
 }
 # original module-level name kept so any old `from romp_colormap import STOPS` still works.
-STOPS = COLORMAPS["hawaii"]
+STOPS = COLORMAPS[DEFAULT]
 FADE_LO, FADE_HI = 120.0, 345600.0           # 2 min (brightest) .. 96 h (darkest)
 
 

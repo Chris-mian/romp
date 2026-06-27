@@ -37,8 +37,8 @@ class Colormaps(unittest.TestCase):
         except Exception:
             self.skipTest("matplotlib not installed")
         for name, stops in cm.COLORMAPS.items():
-            if name == "hawaii":
-                continue                                # crameri, not in matplotlib
+            if name in ("hawaii", "aurora"):
+                continue                                # hawaii=crameri, aurora=romp-generated — neither in matplotlib
             real = [tuple(round(c * 255) for c in matplotlib.colormaps[name](x)[:3])
                     for x in np.linspace(0, 1, len(stops))]
             err = max(max(abs(a - b) for a, b in zip(s, r)) for s, r in zip(stops, real))

@@ -2463,9 +2463,10 @@ class ViewBuilder(unittest.TestCase):
             self.assertIn(name, km.cm.COLORMAPS)
         age = 3600
         self.assertNotEqual(km.cm.age_rgb(age, "viridis"), km.cm.age_rgb(age, "hawaii"))  # name changes the colour
-        self.assertEqual(km.cm.age_rgb(age, "nope"), km.cm.age_rgb(age, "hawaii"))        # unknown → default
-        # kernel selection: default hawaii, set persists + round-trips, an unknown name is ignored
-        self.assertEqual(km._colormap(), "hawaii")
+        self.assertEqual(km.cm.age_rgb(age, "nope"), km.cm.age_rgb(age, "aurora"))        # unknown → default (aurora)
+        # kernel selection: default aurora (the user 2026-06-27), set persists + round-trips, unknown ignored
+        (km.jd.STATE / "colormap").unlink(missing_ok=True)                                # no persisted pick → default
+        self.assertEqual(km._colormap(), "aurora")
         km._set_colormap("magma"); self.assertEqual(km._colormap(), "magma")
         km._set_colormap("bogus"); self.assertEqual(km._colormap(), "magma")             # unknown ignored
         # the gear exposes the chooser (now a bar-options dropdown — see test_gear_colormap_dropdown_options_*)
