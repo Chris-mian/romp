@@ -257,6 +257,19 @@ test("setHover applies by atom ids and gates on nonce (stale push ignored, clear
   assert.equal(panel._hoverNonce, 7);
 });
 
+test("a feed-card hover PERSISTS across periodic pushes — hover:null/absent doesn't clear it (the user 2026-06-27)", () => {
+  const panel: any = new TimelinePanel(makeNode("div"));
+  panel.update(synthData());
+  panel.setHover({ ids: ["S1:1:aa#w"], nonce: 5 });          // the direct feed-card hover push lights segments
+  assert.ok(panel._hover && panel._hover.ids.length, "hover set");
+  panel.update({ ...synthData(), hover: null });             // a periodic timeline push carries hover:null …
+  assert.ok(panel._hover && panel._hover.ids.length, "… and must NOT clear the highlight (the half-second fade)");
+  panel.update(synthData());                                 // hover absent entirely → still intact
+  assert.ok(panel._hover && panel._hover.ids.length, "an absent hover leaves it intact too");
+  panel.update({ ...synthData(), hover: { ids: [], nonce: 6 } });   // an explicit newer empty file-hover clears it
+  assert.equal(panel._hover, null, "an explicit newer empty hover does clear it");
+});
+
 test("a file-poll hover cannot revert a fresher direct push (nonce gate in update)", () => {
   const panel = new TimelinePanel(makeNode("div"));
   const data: any = synthData();

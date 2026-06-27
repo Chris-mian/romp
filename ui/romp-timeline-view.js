@@ -946,14 +946,17 @@ class TimelinePanel {
     // Feed→timeline HOVER from the FILE (timeline-hover.json — the cross-front-end broadcast channel,
     // also read by VS Code trackchanges + the Obsidian vault). data.hover.ids = the subtree's events +
     // delegation messages ([] = cleared). The SAME monotonic nonce rides both this file and the direct
-    // setHover push (server.ts pushHover), so gate on it: apply only when it's not OLDER than the last
-    // hover we showed — a poll that races a fresh push ties (same nonce, no-op) instead of reverting it,
-    // and a stale read (lower nonce) is ignored. nonce absent (old writer) → always apply (today's
-    // behavior). A separate transient channel from the click focus (no pan/pulse/open). [[contract with vs_chat]]
-    const _hvN = (data.hover && typeof data.hover.nonce === 'number') ? data.hover.nonce : null;
-    if (_hvN == null || this._hoverNonce == null || _hvN >= this._hoverNonce) {
-      this._hover = (data.hover && data.hover.ids && data.hover.ids.length) ? data.hover : null;
-      if (_hvN != null) this._hoverNonce = _hvN;
+    // setHover push (server.ts pushHover), so gate on it. Apply ONLY when data.hover actually carries a
+    // hover with a nonce — a periodic push with hover:null/absent must NOT clear a highlight set by the
+    // direct pushHover, or a feed-card hover blinks out ~0.5s later when the next poll lands (the user
+    // 2026-06-27). A newer (or equal) file nonce updates/clears; an older one is ignored. The highlight
+    // persists until an explicit clear (mouseleave → showAskPath off → direct push [] ). [[contract with vs_chat]]
+    if (data.hover && typeof data.hover.nonce === 'number') {
+      const _hvN = data.hover.nonce;
+      if (this._hoverNonce == null || _hvN >= this._hoverNonce) {
+        this._hover = (data.hover.ids && data.hover.ids.length) ? data.hover : null;
+        this._hoverNonce = _hvN;
+      }
     }
     // DAG overlay is DERIVED state: re-synced from the current focus file on EVERY poll, so it clears
     // the instant the feed clears/replaces the focus's dag — even when no fresh focusEvent fires (e.g.
