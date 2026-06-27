@@ -915,6 +915,14 @@ body { display: flex; flex-direction: column; }
   background: rgba(255, 255, 255, 0.04); border: 1px solid var(--box-border);
   border-radius: 5px; color: var(--vscode-foreground, #ddd);
 }
+/* Diff preview (Edit/Write permission on the SDK backend): green adds, red removes, dim hunks. Each line
+   is its own row so white-space:pre still wraps long lines via overflow-x. Backgrounds are faint so the
+   monospace stays readable. (the user 2026-06-27.) */
+.ask-preview-diff { white-space: pre; }
+.ask-preview-diff .diff-add { color: #7ee787; background: rgba(46, 160, 67, 0.15); }
+.ask-preview-diff .diff-del { color: #ff9492; background: rgba(248, 81, 73, 0.15); }
+.ask-preview-diff .diff-hunk { color: var(--accent); opacity: 0.85; }
+.ask-preview-diff .diff-ctx { color: var(--vscode-foreground, #ddd); opacity: 0.75; }
 #live-ask.sending { opacity: 0.5; pointer-events: none; }
 /* multi-select checkboxes */
 /* inline "add your own answer" field (drives the TUI Type-something slot) */

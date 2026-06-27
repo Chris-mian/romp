@@ -3419,7 +3419,28 @@ function renderAskPreview() {
   let pre = card.querySelector(".ask-preview") as HTMLElement | null;
   if (!preview) { if (pre) pre.remove(); return; }
   if (!pre) { pre = el("pre", "ask-preview"); card.appendChild(pre); }
-  pre.textContent = preview;
+  // A "diff" preview (Edit/Write permission on the SDK backend) gets per-line +/- coloring; everything
+  // else stays verbatim monospace. Still text-only — each line's text is set via textContent (untrusted
+  // tool output), only the row's CLASS is derived from its leading char (the user 2026-06-27).
+  if (ask && ask.previewKind === "diff") {
+    pre.classList.add("ask-preview-diff");
+    pre.replaceChildren(...preview.split("\n").map(diffLineEl));
+  } else {
+    pre.classList.remove("ask-preview-diff");
+    pre.textContent = preview;
+  }
+}
+
+// One diff row: green for an added (+) line, red for a removed (-) line, dim for a hunk (@@) header,
+// neutral otherwise. unified-diff prefixes context lines with a space, so real code starting with +/-
+// isn't miscolored. textContent only.
+function diffLineEl(line: string): HTMLElement {
+  const cls = line.startsWith("@@") ? "diff-hunk"
+    : line.startsWith("+") ? "diff-add"
+    : line.startsWith("-") ? "diff-del" : "diff-ctx";
+  const row = el("div", cls);
+  row.textContent = line.length ? line : "​";   // keep blank rows at line height
+  return row;
 }
 
 function askCard(extraClass = ""): HTMLElement {

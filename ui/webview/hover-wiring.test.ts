@@ -61,3 +61,20 @@ test("the live ask card renders the focused option's preview as a monospace pre 
   assert.match(body, /pre\.textContent = preview/);
   assert.doesNotMatch(body, /innerHTML/, "untrusted pane text must never go through innerHTML");
 });
+
+// Diff colorization (the user 2026-06-27): an Edit/Write permission on the SDK backend sends
+// previewKind:"diff", and the preview is rendered with per-line +/- coloring — still textContent per row,
+// never innerHTML, so untrusted tool output can't inject markup.
+test("a diff preview is colorized per line, still via textContent", () => {
+  const fn = RENDER.slice(RENDER.indexOf("function renderAskPreview("));
+  const body = fn.slice(0, fn.indexOf("\n}\n"));
+  assert.match(body, /ask\.previewKind === "diff"/, "diff kind switches on colorized rendering");
+  assert.match(body, /preview\.split\("\\n"\)\.map\(diffLineEl\)/, "splits into per-line rows");
+  const dl = RENDER.slice(RENDER.indexOf("function diffLineEl("));
+  const dbody = dl.slice(0, dl.indexOf("\n}\n"));
+  assert.match(dbody, /startsWith\("\+"\)\s*\?\s*"diff-add"/);
+  assert.match(dbody, /startsWith\("-"\)\s*\?\s*"diff-del"/);
+  assert.match(dbody, /startsWith\("@@"\)\s*\?\s*"diff-hunk"/);
+  assert.match(dbody, /row\.textContent =/, "each row's text via textContent");
+  assert.doesNotMatch(dbody, /innerHTML/, "diff rows never use innerHTML");
+});

@@ -27,5 +27,8 @@ export interface ParsedAsk {
   multiSelect: boolean; // back-compat: kind === "multi"
   preview?: string;     // the side-by-side preview box (verbatim monospace text, with its border) the
                         // focused option draws to the RIGHT of the option list — undefined when none.
+  previewKind?: "diff" | "plan"; // how to render `preview`: "diff" → colorize +/- lines (Edit/Write
+                        // permission on the SDK backend), "plan" → plain (ExitPlanMode). undefined → verbatim
+                        // monospace (the tmux side-by-side scrape). (the user 2026-06-27.)
   sig: string;          // change-signature, so the host only re-posts when it actually changed
 }
