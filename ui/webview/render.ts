@@ -1845,15 +1845,30 @@ function onTabKey(e: KeyboardEvent) {
     const t = tabInAdjacentRow(activeId, e.key === "ArrowDown" ? 1 : -1);
     if (t) { setActive(t); focusActiveTab(); }
   } else if (e.key === "Enter") {
-    // in "tab mode", Enter drops back into the chat box of the now-selected session (the user 2026-06-25),
-    // the mirror of Escape (composer → tabs). ←/→ pick the session, Enter starts typing in it.
+    // in "tab mode", Enter drops back into the now-selected session below the transcript (the user
+    // 2026-06-25), the mirror of Escape (composer → tabs). ←/→ pick the session, Enter starts. If a live
+    // AskUserQuestion picker is up instead of the message box, Enter focuses the PICKER so ↑/↓ step the
+    // options (the user 2026-06-27) — it used to focus the now-hidden composer, so the picker never got keys.
     e.preventDefault();
-    (document.getElementById("composer-input") as HTMLTextAreaElement | null)?.focus();
+    focusComposerOrAsk();
   }
 }
 function focusActiveTab() {
   const bar = document.getElementById("tabs");
   (bar?.querySelector(`.tab[data-id="${activeId}"]`) as HTMLElement | null)?.focus();
+}
+// "Enter to start typing" lands on whatever's actually showing below the transcript: when a live
+// AskUserQuestion picker is up the composer is hidden and the PICKER CARD owns the keyboard (↑/↓ step the
+// options, Enter confirms), so focus that; otherwise focus the message box (the user 2026-06-27). Returns
+// whether it focused something (so the caller can preventDefault only then).
+function focusComposerOrAsk(): boolean {
+  if (activeId && liveAsks.has(activeId)) {
+    const card = document.querySelector("#live-ask .ask-card") as HTMLElement | null;
+    if (card) { card.focus({ preventScroll: true }); return true; }
+  }
+  const ta = document.getElementById("composer-input") as HTMLTextAreaElement | null;
+  if (ta && !ta.disabled) { ta.focus(); return true; }
+  return false;
 }
 
 // Window-level arrow nav for when the CHAT WINDOW (not the composer or a dialog)
@@ -1898,8 +1913,7 @@ window.addEventListener("keydown", (e) => {
     // default: Enter always lands you in the box unless you're already on a tab or in the box.
     const ae = document.activeElement;
     if (ae && ae !== document.body) return;
-    const ta = document.getElementById("composer-input") as HTMLTextAreaElement | null;
-    if (ta && !ta.disabled) { e.preventDefault(); ta.focus(); }
+    if (focusComposerOrAsk()) e.preventDefault();   // the picker card if one's up, else the message box
   }
 });
 // Nearest tab in the row above (dir<0) or below (dir>0) the given tab, by column.

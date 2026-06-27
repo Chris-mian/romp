@@ -17,12 +17,18 @@ test("clicking a tab focuses the (rebuilt) active tab so Enter drops into the bo
   assert.match(SRC, /select: \(el\) => \{ const id = el\.dataset\.id; if \(id\) \{ setActive\(id\); focusActiveTab\(\); \} \}/);
 });
 
-test("Enter on a focused tab → the message box", () => {
-  // onTabKey's Enter branch focuses the composer
+test("Enter on a focused tab → the message box (or the live-ask picker if one is up)", () => {
+  // onTabKey's Enter branch routes through focusComposerOrAsk()
   const fn = SRC.slice(SRC.indexOf("function onTabKey"), SRC.indexOf("function focusActiveTab"));
   assert.ok(fn.length > 0, "found onTabKey");
   assert.match(fn, /e\.key === "Enter"/);
-  assert.match(fn, /getElementById\("composer-input"\)[\s\S]*?\.focus\(\)/);
+  assert.match(fn, /focusComposerOrAsk\(\)/);
+});
+
+test("Enter focuses the live-ask PICKER card (not the hidden composer) when a picker is up", () => {
+  // focusComposerOrAsk: picker card first (it owns ↑/↓ stepping), else the message box
+  assert.match(SRC, /function focusComposerOrAsk\(\): boolean \{/);
+  assert.match(SRC, /if \(activeId && liveAsks\.has\(activeId\)\) \{[\s\S]*?querySelector\("#live-ask \.ask-card"\)[\s\S]*?card\.focus\(\{ preventScroll: true \}\); return true;/);
 });
 
 test("Escape in the message box → the tabs", () => {
@@ -40,7 +46,7 @@ test("Enter from the bare chat area (no focused control) drops into the message 
   const block = SRC.slice(i, i + 2600);
   assert.match(block, /e\.key === "Enter"/);
   assert.match(block, /const ae = document\.activeElement;\s*if \(ae && ae !== document\.body\) return;/);
-  assert.match(block, /getElementById\("composer-input"\)[\s\S]*?if \(ta && !ta\.disabled\) \{ e\.preventDefault\(\); ta\.focus\(\); \}/);
+  assert.match(block, /if \(focusComposerOrAsk\(\)\) e\.preventDefault\(\);/);
 });
 
 test("the message box shows a thin accent-blue border when focused (panel-focus blue, on the border)", () => {
