@@ -868,6 +868,13 @@ def _last_state_value(sid):
 # Auto-nudge must never fire while the log shows one of these — see the gate in _auto_nudge_tick.
 _PROGRESSING_STATES = ("working", "compacting", "retrying", "permission", "picker")
 
+# Live states where the session is STOPPED on a prompt only the user can answer — a tool-permission
+# Allow/Deny ("permission") OR an AskUserQuestion / resume picker ("picker"). Both floor the focus card to
+# BLOCKED and show the awaiting chip. tmux labels an AskUserQuestion "permission" (its Notification hook)
+# while the SDK backend labels it "picker" (it IS a picker, not a permission) — so every needs-input
+# surface must honor BOTH, or an SDK AskUserQuestion never registers as blocked (the user 2026-06-27).
+_NEEDS_INPUT_STATES = ("permission", "picker")
+
 
 def _closer_settled(store, turn_id, atom_count):
     """True iff the closer's RECORDED verdict for `turn_id` reflects the turn at its CURRENT size
@@ -911,7 +918,7 @@ def _auto_nudge_tick(now, tmux):
         if _session_flag(sid, "hideFromFeed"):           # muted from the feed → no auto-nudges either; a nudge IS a
             continue                                     # feed feature, so opting out of the feed opts out of nudges (the user)
         st = (tmux.get(sid) or {}).get("state", "")
-        if st in ("permission", "compacting"):           # awaiting approval / compacting → not orphaned
+        if st in _NEEDS_INPUT_STATES or st == "compacting":   # awaiting your input/approval / compacting → not orphaned
             continue
         if _api_error(s["path"]):                        # stopped on an API error → not orphaned
             continue
@@ -1046,8 +1053,8 @@ def _clear_done_working_notes(now, tmux):
         sid = s["sid"]
         if sid not in notes:
             continue
-        if (tmux.get(sid) or {}).get("state", "") in ("working", "compacting", "permission", "retrying"):
-            continue                                     # actively progressing per tmux → keep (cheap pre-gate, no parse)
+        if (tmux.get(sid) or {}).get("state", "") in ("working", "compacting", "permission", "picker", "retrying"):
+            continue                                     # actively progressing / awaiting input per tmux → keep (cheap pre-gate, no parse)
         try:
             turns = jd.parsed_session(sid, [s["path"]], now)["turns"]
         except Exception:
@@ -3714,7 +3721,7 @@ def build_session(sid, now, tmux=None):
         # blocked (API error) is the strongest signal — the turn ended in an error, so it beats the live
         # tmux states (the session can't simultaneously be compacting or at a permission prompt).
         compacting = _compacting(sid, st, session, now, tm["since"])   # event-corroborated: a stuck @claude-state
-        chip = ("blocked" if aerr else "awaiting" if st == "permission" else "compacting" if compacting   # can't pin it
+        chip = ("blocked" if aerr else "awaiting" if st in _NEEDS_INPUT_STATES else "compacting" if compacting   # can't pin it
                 else "retrying" if st == "retrying" else "working" if (open_now or awaiting_why) else "ready")   # api_retry stall (SDK); working = open turn OR awaiting bg work (the user 2026-06-24)
         faded = chip == "ready" and bool(tm["since"]) and now - tm["since"] > 3600
         status = {"state": chip, "sinceEpoch": since_ms, "faded": faded,
@@ -4285,7 +4292,8 @@ def build_feed(now, tmux=None):
         # settled "completed" (or user-"cleared") card is left alone, its block being for new, not-yet-placed
         # work. (the user 2026-06-18: a live-blocked nodeComplete-but-working focus wasn't reaching BLOCKED.)
         perm_top = None
-        if tm and tm.get("state") == "permission":
+        perm_state = tm.get("state") if tm else None
+        if perm_state in _NEEDS_INPUT_STATES:               # live prompt (permission Allow/Deny OR a picker)
             f = store.get("lastNode")
             while f and nodes.get(f, {}).get("parentId") is not None:
                 f = nodes[f]["parentId"]
@@ -4390,8 +4398,9 @@ def build_feed(now, tmux=None):
                              "status": aerr.get("status"), "category": aerr.get("category"),
                              "text": aerr.get("text"),
                              "what": "this session stopped on an API error — Retry to resume"} if nid == api_top
-                            else {"state": "permission", "since": tm.get("since"),
-                                  "what": "this session is stopped awaiting your approval"} if nid == perm_top
+                            else {"state": perm_state, "since": tm.get("since"),
+                                  "what": ("this session is stopped awaiting your input" if perm_state == "picker"
+                                           else "this session is stopped awaiting your approval")} if nid == perm_top
                             else None),
                 "column": column,
                 "openQuestions": [], "openPaths": [], "tree": flatten(nid, [])})
@@ -4446,10 +4455,12 @@ MSG_INFLIGHT_MAX = 1800                        # a message older than this isn't
 
 
 def _state_intervals(sid, want, now):
-    """Every [start,end] the session sat in `want` ('permission' → awaiting candy-stripes,
+    """Every [start,end] the session sat in `want` ('permission'/'picker' → awaiting candy-stripes,
     'compacting' → cross-hatch), from states/<sid>.jsonl: an entry runs until the next transition
-    (or `now` if still in it). Forward-only — periods predating the log don't appear. File-based
+    (or `now` if still in it). `want` is a single state or any collection of them (the awaiting band
+    passes both needs-input states). Forward-only — periods predating the log don't appear. File-based
     port of the obsidian timeline's stateIntervals (the kernel reads states/, never tmux)."""
+    want = {want} if isinstance(want, str) else set(want)
     try:
         text = (jd.STATE / "states" / (sid + ".jsonl")).read_text(errors="replace")
     except OSError:
@@ -4467,7 +4478,7 @@ def _state_intervals(sid, want, now):
     ev.sort()
     cutoff, out = now - TL_HORIZON, []
     for i, (t, st) in enumerate(ev):
-        if st != want:
+        if st not in want:
             continue
         end = ev[i + 1][0] if i + 1 < len(ev) else now
         if end < cutoff:
@@ -5293,7 +5304,7 @@ def build_timeline(now, tmux=None, with_bars=True, live_only=False):
             _derive_judging(sid, caps, goals, now - TL_HORIZON, semantic, seg_ends)
         compactions = [{"t": a["t"]} for turn in st_turns for a in turn["atoms"]
                        if a.get("type") == "system" and a.get("subtype") == "compact_boundary" and a.get("t")]
-        active = bool(tm and tm["state"] in ("working", "permission", "compacting", "waiting"))
+        active = bool(tm and tm["state"] in ("working", "permission", "picker", "compacting", "waiting"))
         faded = (not live) or (not active and bool(tm and tm["since"]) and now - tm["since"] > 3600)
         sessions.append({
             "id": sid, "name": name, "live": live, "state": state,
@@ -5305,7 +5316,7 @@ def build_timeline(now, tmux=None, with_bars=True, live_only=False):
             "ctxColor": (list(cm.ramp((tm["context"] or 0) / 100.0, ctx_stops))
                          if tm and tm["context"] is not None else None),   # context% on the GLOBAL colormap (bright = full)
             "compactPct": (tm["compactPct"] if tm else None),
-            "awaiting": _state_intervals(sid, "permission", now),
+            "awaiting": _state_intervals(sid, _NEEDS_INPUT_STATES, now),
             "compacting": _state_intervals(sid, "compacting", now),
             "compactions": compactions, "pendingMail": _pending_mail(sid),
             "stale": faded, "faded": faded,

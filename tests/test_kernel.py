@@ -2158,6 +2158,27 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(card["blocked"]["state"], "permission", "a live permission prompt floors the focus card")
         self.assertEqual(card["blocked"]["since"], NOW - 30)
 
+    def test_feed_live_picker_floors_focus_card_to_blocked(self):
+        """An SDK AskUserQuestion reports live state "picker" (it IS a picker, not a permission Allow/Deny;
+        tmux's Notification hook calls the same prompt "permission"). The hard blocked floor must honor
+        "picker" too, else an SDK session stopped on a question never registers as blocked the way a tmux
+        one does (the user 2026-06-27). The card text says "awaiting your input" (vs "approval")."""
+        g = "%s:g8" % SID
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+            "rompUuid": SID, "seq": 8, "lastNode": g,
+            "nodes": {g: {"id": g, "text": "Work in progress", "parentId": None,
+                          "nodeComplete": False, "blocked": False, "cleared": False, "trail": [], "t": NOW - 50}},
+            "placements": {}, "status": {g: "working"}}))
+        km._tmux_sessions = lambda: {SID: {"state": "picker", "since": NOW - 30, "model": "",
+                                           "effort": "", "context": None, "compactPct": None, "color": None}}
+        card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
+        self.assertEqual(card["blocked"]["state"], "picker", "a live picker floors the focus card to blocked")
+        self.assertEqual(card["blocked"]["since"], NOW - 30)
+        self.assertIn("input", card["blocked"]["what"], "picker wording reflects a question, not an approval")
+        # the session chip (build_session payload) also reads "awaiting" on a picker, like a permission
+        self.assertEqual(km.build_session(SID, NOW)["status"]["state"], "awaiting",
+                         "the session chip reads awaiting on a live picker")
+
     def test_feed_permission_does_not_floor_a_completed_focus(self):
         """The floor applies only to an OPEN focus goal — a live prompt while the focus is already
         completed (the block is on not-yet-placed new work) leaves the completed card alone."""
