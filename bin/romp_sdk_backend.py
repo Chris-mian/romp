@@ -18,6 +18,7 @@ and the kernel degrades gracefully when the SDK is absent.
 """
 from __future__ import annotations
 import asyncio
+import difflib
 import json
 import os
 import re
@@ -183,27 +184,84 @@ def build_answers(questions: list, picks: dict) -> dict:
     return answers
 
 
-def permission_to_live(tool_name: str, tool_input: dict) -> dict:
-    """Render an ordinary tool-permission request as a 2-option askLive picker
-    (Allow / Deny), so permissions reuse the same UI as questions."""
+_PREVIEW_MAX_LINES = 200             # cap a diff/plan preview so a huge edit can't bloat the push
+
+
+def _clip_lines(lines: list[str]) -> str:
+    if len(lines) > _PREVIEW_MAX_LINES:
+        kept = lines[:_PREVIEW_MAX_LINES]
+        kept.append("… (%d more lines)" % (len(lines) - _PREVIEW_MAX_LINES))
+        lines = kept
+    return "\n".join(lines)
+
+
+def _unified(path: str, old: str, new: str) -> list[str]:
+    """A unified diff old→new, headed by the path. +/- prefixed so the webview can colorize it."""
+    a, b = (old or "").splitlines(), (new or "").splitlines()
+    body = list(difflib.unified_diff(a, b, lineterm="", n=2))
+    # difflib emits ---/+++ file headers; drop them (we print our own path header) but keep @@ hunks.
+    body = [ln for ln in body if not ln.startswith("--- ") and not ln.startswith("+++ ")]
+    head = path or "(file)"
+    return [head] + (body if body else ["(no textual change)"])
+
+
+def tool_preview(tool_name: str, tool_input: dict) -> tuple[str, str] | None:
+    """A monospace preview for a tool-permission prompt — (kind, text) or None when there's nothing
+    visual to show. kind is "diff" (Edit/Write/MultiEdit, colorizable +/- lines) or "plan"
+    (ExitPlanMode). Lets the user SEE what they're approving instead of a bare tool name, the way the
+    tmux pane scrape shows the TUI's diff/plan (the user 2026-06-27). Pure → unit-tested."""
+    ti = tool_input or {}
+    if tool_name == "ExitPlanMode":
+        plan = str(ti.get("plan") or "").rstrip()
+        return ("plan", _clip_lines(plan.split("\n"))) if plan else None
+    if tool_name in ("Edit", "NotebookEdit"):
+        path = ti.get("file_path") or ti.get("notebook_path") or ti.get("path") or ""
+        return ("diff", _clip_lines(_unified(path, ti.get("old_string", ""), ti.get("new_string", ""))))
+    if tool_name == "MultiEdit":
+        path = ti.get("file_path") or ti.get("path") or ""
+        lines: list[str] = []
+        for e in (ti.get("edits") or []):
+            lines += _unified(path, e.get("old_string", ""), e.get("new_string", ""))
+            lines.append("")
+        return ("diff", _clip_lines(lines)) if lines else None
+    if tool_name == "Write":
+        path = ti.get("file_path") or ti.get("path") or ""
+        content = str(ti.get("content") or "")
+        # a new/overwritten file → show its content as all-additions
+        return ("diff", _clip_lines([path or "(file)"] + ["+" + ln for ln in content.split("\n")]))
+    return None
+
+
+def permission_to_live(tool_name: str, tool_input: dict, context=None) -> dict:
+    """Render an ordinary tool-permission request as an askLive picker — Allow / Deny, plus an
+    "Allow & don't ask again" option when the SDK offers permission-rule suggestions (the user
+    2026-06-27). Uses the SDK's own prompt sentence (context.title) and subtitle (context.description)
+    when present — the DESIGNED text — instead of reconstructing from the tool name, and attaches a
+    diff/plan preview so the user can see what they're approving."""
+    title = getattr(context, "title", None)
+    desc = getattr(context, "description", None)
     summary = tool_input.get("command") or tool_input.get("file_path") \
         or tool_input.get("path") or tool_input.get("description") or ""
-    q = f"Allow {tool_name}?"
-    if summary:
-        q += f"\n{str(summary)[:300]}"
-    return {
+    q = title or (f"Allow {tool_name}?" + (f"\n{str(summary)[:300]}" if summary else ""))
+    options = [{"n": 1, "label": "Allow", "desc": desc or f"Run {tool_name} once", "selected": False}]
+    if getattr(context, "suggestions", None):
+        options.append({"n": 2, "label": "Allow & don't ask again",
+                        "desc": "Allow and remember this for the session", "selected": False})
+    options.append({"n": len(options) + 1, "label": "Deny", "desc": "Refuse this call", "selected": False})
+    ask = {
         "kind": "single",
         "header": "Permission",
         "question": q,
-        "options": [
-            {"n": 1, "label": "Allow", "desc": f"Run {tool_name}", "selected": False},
-            {"n": 2, "label": "Deny", "desc": "Refuse this call", "selected": False},
-        ],
+        "options": options,
         "multiSelect": False,
         "cursor": 0,
         "cursorFound": True,
         "permission": True,
     }
+    pv = tool_preview(tool_name, tool_input)
+    if pv:
+        ask["previewKind"], ask["preview"] = pv[0], pv[1]
+    return ask
 
 
 # State-log helpers — match the kernel's `states/<sid>.jsonl` format exactly
@@ -741,26 +799,76 @@ class SdkSession:
             return PermissionResultAllow(
                 behavior="allow",
                 updated_input={"questions": tool_input.get("questions", []), "answers": answers})
-        # Ordinary tool permission -> Allow/Deny picker.
-        ask = permission_to_live(tool_name, tool_input)
+        if tool_name == "ExitPlanMode":
+            return await self._approve_plan(tool_input)
+        # Ordinary tool permission. Options are Allow (1), optionally Allow-&-don't-ask-again (2 when the
+        # SDK supplied permission suggestions), then Deny (last). _next_ask_action returns the chosen
+        # ordinal so we map it back to the action here.
+        ask = permission_to_live(tool_name, tool_input, context)
+        remember_n = 2 if getattr(context, "suggestions", None) else None
         append_state(self.backend.state_dir, self.sid, "permission")
         self.backend._emit_ask(self, ask)
+        decision = "deny"
         try:
             while True:
                 kind, payload = await self._next_ask_action()
-                if kind in ("answer",):
-                    allow = (str(payload) == "1")
+                if kind == "answer":
+                    n = str(payload)
+                    decision = "allow" if n == "1" else "remember" if n == str(remember_n) else "deny"
                     break
                 if kind == "cancel":
-                    allow = False
+                    decision = "deny"
                     break
         finally:
             self.backend._clear_ask(self)
             if self.inflight:
                 append_state(self.backend.state_dir, self.sid, "working")
-        if allow:
+        if decision == "remember":
+            return PermissionResultAllow(behavior="allow", updated_permissions=list(context.suggestions))
+        if decision == "allow":
             return PermissionResultAllow(behavior="allow")
         return PermissionResultDeny(behavior="deny", message="Denied by user.", interrupt=False)
+
+    async def _approve_plan(self, tool_input: dict):
+        """Plan-mode approval (ExitPlanMode): show the PLAN itself, not a bare 'Allow ExitPlanMode?'.
+        Options: proceed (exit plan mode), proceed + auto-accept edits (also flip the session into
+        acceptEdits via a setMode permission update), or keep planning (deny → stay in plan mode).
+        (the user 2026-06-27.)"""
+        from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny, PermissionUpdate
+        pv = tool_preview("ExitPlanMode", tool_input)
+        ask = {
+            "kind": "single", "header": "Plan ready",
+            "question": "Proceed with this plan?",
+            "options": [
+                {"n": 1, "label": "Yes, proceed", "desc": "Exit plan mode and start", "selected": False},
+                {"n": 2, "label": "Yes, auto-accept edits",
+                 "desc": "Proceed and don't prompt for each edit", "selected": False},
+                {"n": 3, "label": "No, keep planning", "desc": "Stay in plan mode", "selected": False},
+            ],
+            "multiSelect": False, "cursor": 0, "cursorFound": True, "permission": True,
+        }
+        if pv:
+            ask["previewKind"], ask["preview"] = pv[0], pv[1]
+        append_state(self.backend.state_dir, self.sid, "permission")
+        self.backend._emit_ask(self, ask)
+        choice = "3"
+        try:
+            while True:
+                kind, payload = await self._next_ask_action()
+                if kind == "answer":
+                    choice = str(payload); break
+                if kind == "cancel":
+                    choice = "3"; break
+        finally:
+            self.backend._clear_ask(self)
+            if self.inflight:
+                append_state(self.backend.state_dir, self.sid, "working")
+        if choice == "1":
+            return PermissionResultAllow(behavior="allow")
+        if choice == "2":
+            return PermissionResultAllow(behavior="allow",
+                                         updated_permissions=[PermissionUpdate(type="setMode", mode="acceptEdits")])
+        return PermissionResultDeny(behavior="deny", message="Keep planning.", interrupt=False)
 
     async def _ask_user(self, tool_input: dict) -> dict:
         """Drive the picker UI for each question (sequentially for multi-question),

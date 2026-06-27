@@ -68,6 +68,55 @@ class PureTranslation(unittest.TestCase):
         self.assertTrue(ask["permission"])
         self.assertEqual([o["label"] for o in ask["options"]], ["Allow", "Deny"])
         self.assertIn("rm -rf", ask["question"])
+        self.assertNotIn("preview", ask, "a Bash command has no diff preview")
+
+    def test_permission_uses_sdk_title_and_description(self):
+        class Ctx:
+            title = "Claude wants to read foo.txt"
+            description = "Read a file in the project"
+            suggestions = []
+        ask = sb.permission_to_live("Read", {"file_path": "foo.txt"}, Ctx())
+        self.assertEqual(ask["question"], "Claude wants to read foo.txt", "uses the SDK's own prompt sentence")
+        self.assertEqual(ask["options"][0]["desc"], "Read a file in the project")
+
+    def test_permission_adds_allow_and_remember_when_suggestions_present(self):
+        class Ctx:
+            title = None; description = None
+            suggestions = ["<a PermissionUpdate>"]   # truthy → offer the remember option
+        ask = sb.permission_to_live("Bash", {"command": "ls"}, Ctx())
+        labels = [o["label"] for o in ask["options"]]
+        self.assertEqual(labels, ["Allow", "Allow & don't ask again", "Deny"])
+        self.assertEqual([o["n"] for o in ask["options"]], [1, 2, 3], "ordinals stay 1..N for arrow-nav")
+
+    def test_edit_permission_carries_a_diff_preview(self):
+        ask = sb.permission_to_live("Edit", {"file_path": "a.py", "old_string": "x = 1\ny = 2",
+                                              "new_string": "x = 1\ny = 3"})
+        self.assertEqual(ask["previewKind"], "diff")
+        self.assertIn("a.py", ask["preview"])
+        self.assertIn("-y = 2", ask["preview"])
+        self.assertIn("+y = 3", ask["preview"])
+
+    def test_tool_preview_write_plan_multiedit_and_none(self):
+        # Write → all-additions diff
+        kind, txt = sb.tool_preview("Write", {"file_path": "n.txt", "content": "hello\nworld"})
+        self.assertEqual(kind, "diff")
+        self.assertIn("+hello", txt); self.assertIn("+world", txt)
+        # ExitPlanMode → the plan verbatim, kind "plan"
+        kind, txt = sb.tool_preview("ExitPlanMode", {"plan": "1. do this\n2. then that"})
+        self.assertEqual(kind, "plan"); self.assertIn("do this", txt)
+        # MultiEdit → concatenated diffs
+        kind, txt = sb.tool_preview("MultiEdit", {"file_path": "m.py",
+            "edits": [{"old_string": "a", "new_string": "b"}, {"old_string": "c", "new_string": "d"}]})
+        self.assertEqual(kind, "diff"); self.assertIn("-a", txt); self.assertIn("+d", txt)
+        # a tool with nothing visual → None
+        self.assertIsNone(sb.tool_preview("Bash", {"command": "ls"}))
+        self.assertIsNone(sb.tool_preview("ExitPlanMode", {"plan": ""}))
+
+    def test_tool_preview_clips_huge_diffs(self):
+        big = "\n".join("line %d" % i for i in range(1000))
+        _, txt = sb.tool_preview("Write", {"file_path": "big.txt", "content": big})
+        self.assertIn("more lines)", txt, "an enormous preview is capped, not sent whole")
+        self.assertLess(len(txt.splitlines()), 1000)
 
     def test_pretty_model(self):
         self.assertEqual(sb.pretty_model("claude-opus-4-8"), "Opus 4.8")
@@ -723,6 +772,79 @@ class AskRoundTrip(unittest.TestCase):
         self.assertEqual(c2.options.resume, sid)             # resume continues the SAME conversation, not a fresh session
         self.assertEqual(sb.read_reg(self.d, sid)["effort"], "low")
         self.backend.kill(sid)
+
+
+@unittest.skipUnless(_HAVE_SDK, "claude_agent_sdk not installed")
+class PermissionAndPlanRoundTrip(unittest.TestCase):
+    """Drive _can_use_tool / _approve_plan directly and assert the PermissionResult the SDK gets back.
+    The picker answer is delivered via resolve_ask (call_soon_threadsafe), exactly as the kernel does
+    on an inbound on_ask. (the user 2026-06-27: plan approval + diffs + allow-and-don't-ask-again.)"""
+
+    SID = "11111111-2222-3333-4444-555555555555"
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.answer = "1"
+        def notify(app, msg):
+            if msg.get("type") == "askLive":
+                self.last_ask = msg["ask"]
+                self.backend.on_ask(msg["id"], "answer", self.answer)
+        self.backend = sb.SdkBackend(self.d, "/bin/true", notify)
+        self.sess = sb.SdkSession(self.backend, {"sid": self.SID, "name": "n", "cwd": self.d})
+        self.backend.sessions[self.SID] = self.sess
+        self.sess.inflight = 1                      # mid-turn (a permission interrupts a live turn)
+
+    def _drive(self, coro_fn):
+        import asyncio
+        async def go():
+            self.sess.loop = asyncio.get_running_loop()
+            return await coro_fn()
+        return asyncio.run(go())
+
+    def test_allow_and_dont_ask_again_returns_updated_permissions(self):
+        # the remember path just echoes the SDK's own suggestions back verbatim, so a sentinel suffices
+        upd = _sdk.PermissionUpdate(type="setMode", mode="acceptEdits")
+        class Ctx:
+            title = None; description = None; suggestions = [upd]
+        self.answer = "2"                            # "Allow & don't ask again"
+        res = self._drive(lambda: self.sess._can_use_tool("Bash", {"command": "ls"}, Ctx()))
+        self.assertEqual(res.behavior, "allow")
+        self.assertEqual(res.updated_permissions, [upd], "the SDK's own suggestion is echoed back as the rule")
+
+    def test_plain_allow_carries_no_rule(self):
+        class Ctx:
+            title = None; description = None; suggestions = []
+        self.answer = "1"
+        res = self._drive(lambda: self.sess._can_use_tool("Bash", {"command": "ls"}, Ctx()))
+        self.assertEqual(res.behavior, "allow")
+        self.assertIsNone(res.updated_permissions)
+
+    def test_deny_is_deny(self):
+        class Ctx:
+            title = None; description = None; suggestions = []
+        self.answer = "2"                            # with no suggestions, option 2 is Deny
+        res = self._drive(lambda: self.sess._can_use_tool("Bash", {"command": "ls"}, Ctx()))
+        self.assertEqual(res.behavior, "deny")
+
+    def test_plan_proceed_allows(self):
+        self.answer = "1"
+        res = self._drive(lambda: self.sess._approve_plan({"plan": "do the thing"}))
+        self.assertEqual(res.behavior, "allow")
+        self.assertIsNone(res.updated_permissions)
+        self.assertEqual(self.last_ask["previewKind"], "plan")
+        self.assertIn("do the thing", self.last_ask["preview"])
+
+    def test_plan_accept_edits_sets_mode(self):
+        self.answer = "2"                            # "Yes, auto-accept edits"
+        res = self._drive(lambda: self.sess._approve_plan({"plan": "go"}))
+        self.assertEqual(res.behavior, "allow")
+        self.assertEqual(res.updated_permissions[0].type, "setMode")
+        self.assertEqual(res.updated_permissions[0].mode, "acceptEdits")
+
+    def test_plan_keep_planning_denies(self):
+        self.answer = "3"
+        res = self._drive(lambda: self.sess._approve_plan({"plan": "go"}))
+        self.assertEqual(res.behavior, "deny")
 
 
 @unittest.skipUnless(_HAVE_SDK, "claude_agent_sdk not installed")
