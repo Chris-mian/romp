@@ -35,14 +35,14 @@ class Aurora(unittest.TestCase):
         self.assertEqual(cm.ramp(0.0, stops), stops[0])     # v=0 → purple end
         self.assertEqual(cm.ramp(1.0, stops), stops[-1])    # v=1 → green end
 
-    def test_ends_are_the_true_romp_green_and_purple(self):
+    def test_ends_are_the_true_romp_purple_and_green(self):
         stops = cm.stops_for("aurora")
-        # reversed (the user 2026-06-27): green end first, purple end last. Per-anchor chroma is preserved,
-        # so the ends faithfully ARE the romp shades.
-        self.assertEqual(stops[0], (84, 178, 4), "green end (first) is the romp green #54B204")
-        rN, gN, bN = stops[-1]
-        self.assertGreater(bN, gN, "purple end (last): blue channel above green")
-        self.assertGreater(bN, rN, "purple end: blue-leaning (romp #9088F0)")
+        # purple end first, green end last. Per-anchor chroma is preserved, so the ends faithfully ARE the
+        # romp shades.
+        self.assertEqual(stops[-1], (84, 178, 4), "green end (last) is the romp green #54B204")
+        r0, g0, b0 = stops[0]
+        self.assertGreater(b0, g0, "purple end (first): blue channel above green")
+        self.assertGreater(b0, r0, "purple end: blue-leaning (romp #9088F0)")
 
     def test_lightness_is_constant(self):
         Ls = [_oklab_L(*s) for s in cm.stops_for("aurora")]
@@ -50,7 +50,7 @@ class Aurora(unittest.TestCase):
 
     def test_selectable_first_in_the_gear_picker(self):
         page = km._feed_page()   # the gear picker lives in the feed iframe
-        self.assertIn("CMAPS={aurora:[[84,178,4]", page, "the gear picker lists aurora FIRST as an option")
+        self.assertIn("CMAPS={aurora:[[144,136,240]", page, "the gear picker lists aurora FIRST as an option")
 
     def test_set_colormap_accepts_aurora(self):
         try:

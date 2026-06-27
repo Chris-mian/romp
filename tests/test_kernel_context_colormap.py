@@ -21,14 +21,25 @@ class ContextColormap(unittest.TestCase):
         src = inspect.getsource(km.build_timeline)
         self.assertIn("ctx_stops = cm.stops_for(_colormap())", src, "the global colormap stops are read once")
         self.assertIn('"ctxColor"', src, "each lane carries a server-computed context color")
-        self.assertIn("cm.ramp((tm[\"context\"] or 0) / 100.0, ctx_stops)", src,
-                      "context% maps onto the global colormap (bright = full)")
+        self.assertIn("cm.ramp(1 - (tm[\"context\"] or 0) / 100.0, ctx_stops)", src,
+                      "context% maps onto the global colormap, REVERSED so the battery is unaffected by a map flip")
 
     def test_build_session_status_carries_a_context_color(self):
         src = inspect.getsource(km.build_session)
         self.assertIn('"ctxColor"', src, "the chat status carries a server-computed context color")
-        self.assertIn("cm.ramp(tm[\"context\"] / 100.0, cm.stops_for(_colormap()))", src,
-                      "context% maps onto the global colormap")
+        self.assertIn("cm.ramp(1 - tm[\"context\"] / 100.0, cm.stops_for(_colormap()))", src,
+                      "context% maps onto the global colormap, REVERSED (1 - pct)")
+
+    def test_context_reversal_keeps_color_through_a_map_flip(self):
+        # the point of reading context REVERSED (1 - pct): flipping the colormap (reversing its stops) leaves
+        # the context battery's color for any fill UNCHANGED — the identity ramp(1-v, reversed) == ramp(v,
+        # stops). A forward-reading surface (feed cards, fleet) switches with the flip; the battery doesn't
+        # (the user 2026-06-27).
+        stops = km.cm.stops_for("aurora")
+        rev = list(reversed(stops))
+        for v in (0.0, 0.3, 0.5, 0.8, 1.0):
+            self.assertEqual(km.cm.ramp(1 - v, rev), km.cm.ramp(v, stops),
+                             "context (reversed, on the flipped map) == its color before the flip")
 
     def test_context_color_is_none_when_there_is_no_context_yet(self):
         # both payloads guard on context is not None so a dormant/never-reported lane sends no color
