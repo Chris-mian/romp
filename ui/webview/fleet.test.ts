@@ -69,8 +69,8 @@ test("completed top goals hide by default; a 'Show completed' chip sits bottom-r
   assert.match(SRC, /localStorage\.getItem\(DONE_KEY\) === "1"/);  // default OFF
   assert.match(SRC, /roots\.filter\(\(n\) => !n\.done && !n\.cleared\)/);
   assert.match(SRC, /createTextNode\("Show completed"\)/);
-  // it's a FLOATING BOTTOM-right chip now, matching the feed's bottom-right controls; the old #fleet-foot is hidden
-  assert.match(SRC, /function mountChip\(\)/);
+  // it shares ONE floating bottom-right row with the recency slider now (the user 2026-06-27); #fleet-foot is hidden
+  assert.match(SRC, /function mountControls\(\)/);
   assert.match(SRC, /position:fixed;bottom:8px;right:10px/);
   assert.match(SRC, /foot\.style\.display = "none"/);
 });

@@ -32,10 +32,19 @@ test("render() skips a session whose freshest activity is older than the cutoff"
   assert.match(SRC, /if \(freshest && \(now - freshest\) > cutoff\) continue;/);
 });
 
-test("a floating slider chip is mounted with a live '≤ <age>' label", () => {
-  assert.match(SRC, /function mountCutoff\(\)/);
+test("the slider + 'Show completed' mount as ONE horizontal row (the user 2026-06-27)", () => {
+  // a single control strip, not two stacked chips
+  assert.match(SRC, /function mountControls\(\)/);
+  assert.match(SRC, /row\.id = "fl-controls";/);
+  // the row carries BOTH the recency slider and the Show-completed checkbox
   assert.match(SRC, /sl\.type = "range"; sl\.min = "0"; sl\.max = "1000"/);
   assert.match(SRC, /lab\.textContent = "≤ " \+ fmtAge\(cutoffSecs\(\)\)/);
   assert.match(SRC, /sl\.addEventListener\("input", \(\) => \{ setCutoffPos\(parseInt\(sl\.value, 10\)\); paint\(\); render\(\); \}\)/);
-  assert.match(SRC, /^mountCutoff\(\);$/m, "mounted at startup");
+  assert.match(SRC, /lbl\.appendChild\(document\.createTextNode\("Show completed"\)\)/);
+  assert.match(SRC, /row\.appendChild\(lab\); row\.appendChild\(sl\);/);
+  assert.match(SRC, /row\.appendChild\(lbl\);/);
+  // the old two-chip mounts are gone
+  assert.doesNotMatch(SRC, /function mountChip\(\)/);
+  assert.doesNotMatch(SRC, /function mountCutoff\(\)/);
+  assert.match(SRC, /^mountControls\(\);$/m, "mounted at startup");
 });

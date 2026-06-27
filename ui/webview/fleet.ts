@@ -288,37 +288,20 @@ function render() {
   }
 }
 
-// "Show completed" sits as a small FLOATING chip at the BOTTOM-right of the Fleet view (the user 2026-06-24),
-// matching the feed's own bottom-right controls so the two panes are consistent — not a footer bar. (The way
-// BACK to chat is the rail's "Chat" toggle in the shell, so no footer "← Chat" is needed.)
-function mountChip() {
+// The Fleet controls live on ONE floating row at the BOTTOM-right (the user 2026-06-27): the recency-cutoff
+// slider (a live "≤ <age>" label + a logarithmic 1-minute…1-month range) sits directly BESIDE the "Show
+// completed" checkbox, a single horizontal strip rather than two stacked chips. Mounted once; matches the
+// feed's bottom-right controls so the panes stay consistent. (The old footer bar is gone.)
+function mountControls() {
   const foot = document.getElementById("fleet-foot");
   if (foot) foot.style.display = "none";                 // the old footer bar is gone
-  if (document.getElementById("fl-showdone")) return;    // mount once
-  const lbl = el("label", "fl-showdone") as HTMLLabelElement;
-  lbl.id = "fl-showdone";
-  lbl.style.cssText = "position:fixed;bottom:8px;right:10px;z-index:20;display:inline-flex;align-items:center;gap:6px;"
-    + "cursor:pointer;user-select:none;font-size:11.5px;color:var(--vscode-descriptionForeground,#9a9a9a);"
-    + "background:rgba(40,40,42,0.92);border:1px solid rgba(255,255,255,0.12);border-radius:6px;padding:3px 9px";
-  const cb = document.createElement("input");
-  cb.type = "checkbox";
-  cb.checked = showDone();
-  cb.style.cursor = "pointer";
-  cb.addEventListener("change", () => { setShowDone(cb.checked); render(); });
-  lbl.appendChild(cb);
-  lbl.appendChild(document.createTextNode("Show completed"));
-  document.body.appendChild(lbl);
-}
-
-// Recency-cutoff slider (the user 2026-06-27): a floating chip just ABOVE "Show completed", with a label
-// ("≤ 2d") + a logarithmic range slider (1 minute … 1 month). Dragging filters the fleet live and persists.
-function mountCutoff() {
-  if (document.getElementById("fl-cutoff")) return;      // mount once
-  const box = el("div");
-  box.id = "fl-cutoff";
-  box.style.cssText = "position:fixed;bottom:38px;right:10px;z-index:20;display:inline-flex;align-items:center;gap:8px;"
+  if (document.getElementById("fl-controls")) return;    // mount once
+  const row = el("div");
+  row.id = "fl-controls";
+  row.style.cssText = "position:fixed;bottom:8px;right:10px;z-index:20;display:inline-flex;align-items:center;gap:10px;"
     + "user-select:none;font-size:11.5px;color:var(--vscode-descriptionForeground,#9a9a9a);"
-    + "background:rgba(40,40,42,0.92);border:1px solid rgba(255,255,255,0.12);border-radius:6px;padding:3px 9px";
+    + "background:rgba(40,40,42,0.92);border:1px solid rgba(255,255,255,0.12);border-radius:6px;padding:3px 10px";
+  // recency cutoff: a "≤ <age>" label + a logarithmic range slider (1 minute … 1 month).
   const lab = el("span");
   lab.style.cssText = "min-width:42px;text-align:right;font-variant-numeric:tabular-nums";
   const sl = document.createElement("input");
@@ -329,8 +312,22 @@ function mountCutoff() {
   const paint = () => { lab.textContent = "≤ " + fmtAge(cutoffSecs()); };
   sl.addEventListener("input", () => { setCutoffPos(parseInt(sl.value, 10)); paint(); render(); });
   paint();
-  box.appendChild(lab); box.appendChild(sl);
-  document.body.appendChild(box);
+  row.appendChild(lab); row.appendChild(sl);
+  // a thin vertical divider, then the "Show completed" checkbox on the SAME row.
+  const sep = el("span");
+  sep.style.cssText = "width:1px;align-self:stretch;background:rgba(255,255,255,0.14);margin:1px 0";
+  row.appendChild(sep);
+  const lbl = el("label") as HTMLLabelElement;
+  lbl.style.cssText = "display:inline-flex;align-items:center;gap:6px;cursor:pointer";
+  const cb = document.createElement("input");
+  cb.type = "checkbox";
+  cb.checked = showDone();
+  cb.style.cursor = "pointer";
+  cb.addEventListener("change", () => { setShowDone(cb.checked); render(); });
+  lbl.appendChild(cb);
+  lbl.appendChild(document.createTextNode("Show completed"));
+  row.appendChild(lbl);
+  document.body.appendChild(row);
 }
 
 window.addEventListener("message", (e: MessageEvent) => {
@@ -373,8 +370,7 @@ window.addEventListener("storage", (e: StorageEvent) => { if (e.key === "romp:se
   });
 })();
 
-mountChip();
-mountCutoff();
+mountControls();
 render();
 vscodeApi?.postMessage({ type: "ready" });   // ask the kernel to push the initial fleet state (like feed/timeline)
 
