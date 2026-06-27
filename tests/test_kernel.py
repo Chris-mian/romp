@@ -3689,5 +3689,47 @@ class TmuxInputEcho(unittest.TestCase):
         self.assertNotIn("padded message", texts, "stripped-text match suppresses the echo against the queued bubble")
 
 
+class TestCloserSettledGate(unittest.TestCase):
+    """Auto-nudge must wait for the closer's verdict on the turn AT ITS CURRENT SIZE, not merely the
+    turn id's presence in closedTurns — an interrupt+resume reuses the turn id, so a turn closed at an
+    earlier idle then grown is stale until the closer re-judges it (the user 2026-06-27). _closer_settled
+    mirrors the closer's own closedSig freshness check (judge:2449)."""
+
+    TID = "turn-aaaa-bbbb"
+
+    def _store(self, closed=None, sig=None):
+        return {"closedTurns": list(closed or []), "closedSig": dict(sig or {})}
+
+    def test_not_closed_is_not_settled(self):
+        self.assertFalse(km._closer_settled(self._store(), self.TID, 5),
+                         "a turn the closer hasn't processed at all is not settled")
+
+    def test_closed_at_current_size_is_settled(self):
+        store = self._store(closed=[self.TID], sig={self.TID: 5})
+        self.assertTrue(km._closer_settled(store, self.TID, 5),
+                        "closed AND sig matches the current atom count → verdict reflects this turn")
+
+    def test_closed_then_grown_is_not_settled(self):
+        # The race: closer closed the turn at 5 atoms (an earlier idle), then it resumed/grew to 9.
+        # Bare membership would (wrongly) pass; the sig mismatch holds the nudge until the re-judge lands.
+        store = self._store(closed=[self.TID], sig={self.TID: 5})
+        self.assertFalse(km._closer_settled(store, self.TID, 9),
+                         "turn grew since the closer judged it → stale verdict, not settled")
+
+    def test_legacy_close_without_sig_is_assumed_settled(self):
+        store = self._store(closed=[self.TID], sig={})   # closed before closedSig existed
+        self.assertTrue(km._closer_settled(store, self.TID, 9),
+                        "legacy close (no sig) is assumed current, matching the closer (judge:2449)")
+
+    def test_closer_off_is_always_settled(self):
+        saved = jd.CLOSER_ON
+        jd.CLOSER_ON = False
+        try:
+            self.assertTrue(km._closer_settled(self._store(), self.TID, 5),
+                            "closer off → nothing to wait for, never suppress the nudge")
+        finally:
+            jd.CLOSER_ON = saved
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

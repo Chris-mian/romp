@@ -869,6 +869,28 @@ def _last_state_value(sid):
 _PROGRESSING_STATES = ("working", "compacting", "retrying", "permission", "picker")
 
 
+def _closer_settled(store, turn_id, atom_count):
+    """True iff the closer's RECORDED verdict for `turn_id` reflects the turn at its CURRENT size
+    (`atom_count` = len(turn atoms)) — i.e. the closer has finished judging THIS turn's content and
+    delivered its verdict, not a smaller earlier snapshot it closed at a prior idle. Membership in
+    `closedTurns` alone is NOT enough: an interrupt+resume (and the agent's own resumption) folds the
+    resumed work back into the SAME turn id, so a turn the closer closed at an earlier idle can GROW;
+    the closer only re-judges it once `closedSig` shows the growth (see _close_session, judge:2449), and
+    until that re-judge lands its verdict is stale. Auto-nudge keying on bare membership therefore fired
+    BEFORE the closer had judged the turn's final content (the user 2026-06-27: nudge landed while the
+    closer hadn't finished running for the triggering turn). We mirror the closer's own freshness check
+    so the nudge waits for the considered verdict. The closer runs FIRST among the goal-status tiers
+    (planner→closer→…), so a settled closer implies the planner has also processed this content. When the
+    closer is OFF there's nothing to wait for → settled. Legacy closes (no sig entry) are assumed current,
+    exactly as the closer assumes (judge:2449), so we don't wedge nudges on a pre-sig backlog."""
+    if not jd.CLOSER_ON:
+        return True
+    if turn_id not in jd._closed_turns(store):
+        return False
+    sig = store.get("closedSig") or {}
+    return sig.get(turn_id, atom_count) == atom_count
+
+
 def _auto_nudge_tick(now, tmux):
     """One Auto-Nudge pass (from the periodic pusher). For each ALIVE, IDLE session (its turn ended) that
     isn't awaiting/compacting/api-error, isn't WAITING ON A LIVE PEER (a wait isn't a stall — the human's
@@ -935,12 +957,15 @@ def _auto_nudge_tick(now, tmux):
             #   across turns UNTIL it's blocked/completed. A stop that persists across several pusher ticks must
             #   NOT re-fire each tick: that produced two nudges ~6s apart in one stop, before the agent consumed
             #   the first (replacing the buggy two-per-turn cap, which only stopped the 3rd same-turn fire).
-        # Don't nudge until the CLOSER has classified this turn. A turn that ENDS by asking you a question is
-        # "working" only in the window before the closer marks its goal blocked; nudging the AGENT there is
-        # pointless (it's waiting on YOU, not stalled) and churns. Gate on the closer having processed the
-        # latest turn (its id in closedTurns) so "working" is the considered verdict, not a pre-classification
-        # default. Skip the gate when the closer is off — it would otherwise suppress every nudge. (2026-06-21)
-        if jd.CLOSER_ON and lt_id not in jd._closed_turns(store):
+        # Don't nudge until the CLOSER has classified this turn AT ITS CURRENT SIZE. A turn that ENDS by
+        # asking you a question is "working" only in the window before the closer marks its goal blocked;
+        # nudging the AGENT there is pointless (it's waiting on YOU, not stalled) and churns. We require the
+        # closer's recorded verdict to reflect the turn's current content — not bare membership in
+        # closedTurns, which a turn closed at an earlier idle then resumed/grown would satisfy stale, firing
+        # the nudge before the closer re-judges the final content (the user 2026-06-27). _closer_settled
+        # mirrors the closer's own closedSig freshness check; it's a no-op when the closer is off (else it
+        # would suppress every nudge). (2026-06-21, hardened 2026-06-27)
+        if not _closer_settled(store, lt_id, len(lt.get("atoms") or [])):
             continue
         count = rec.get("count", 0) + 1
         Sessions.backend_for(sid).send(sid, _followup_body(gid, None, AUTO_NUDGE_TEXT, injected=True, auto=True))   # romp's own AUTO-nudge → gray bubble + romp-logo marker (both backends)
