@@ -4149,6 +4149,49 @@ def _provisional_card(s, name, color, fsid, live, now):
             "provisional": True, "tree": []}
 
 
+def _blocked_placeholder(s, name, color, fsid, live, now, perm_state, since):
+    """A NEEDS-INPUT placeholder for a session HARD-BLOCKED on a live prompt (permission / picker) BEFORE the
+    planner has minted ANY goal — e.g. an SDK session that fired an AskUserQuestion on its very first turn
+    (the user 2026-06-27). The hard-block floor (build_feed) can only floor an EXISTING focus card under
+    BLOCKED; with zero goals there is no node to floor (store['lastNode'] is None), so the blocked session
+    would be INVISIBLE in the feed — exactly the bug where a hard block never reached the Blocked column and
+    the planner looked like it never ran (it can't: there's no settled work to plan until the ask is answered).
+
+    This synthesizes an ephemeral needs-input card from the LIVE prompt, mirroring _provisional_card's
+    placeholder treatment (no goal node, empty tree, dim + dashed, open-on-click) but carrying a `blocked`
+    badge so feed.ts files it under BLOCKED. Replaced by the real card the instant the planner places the
+    answered work. Event-based: keyed on the live perm/picker state, not a timer; build_feed only asks when the
+    session has NO working card AND no focus to floor, so it never duplicates a real card."""
+    text = None
+    t = now
+    try:
+        turns = _parse(s["path"], fsid, now)["turns"]
+    except Exception:
+        turns = None
+    if turns:
+        lt = turns[-1]
+        segs = em.segments(lt)
+        if segs:
+            held = segs[-1]                          # the live segment — what the user is being asked about
+            t = held.get("t", lt["t"])
+            if jd._seg_human(held):
+                prompt = _split_reminders(_seg_prompt(held))[0].strip()
+                if prompt:
+                    g = _captions(fsid).get(held["id"] + "#p", {}).get("caption")
+                    text = ("Analyzing: " + g) if g else prompt[:140].strip()
+    if not text:
+        text = "Awaiting your input" if perm_state == "picker" else "Awaiting your approval"
+    return {"itemId": "blocked:" + fsid, "sid": fsid, "name": name, "color": color, "text": text,
+            "t": t, "created": t, "live": live, "trgb": list(cm.age_rgb(now - t, _colormap())),
+            "done": 0, "needsYou": 1, "linked": [], "turnId": None, "turnIds": [], "origin": None,
+            "blockWhy": None, "doneWhy": None, "followupPending": None, "summary": None, "blockSummary": None,
+            "blocked": {"state": perm_state, "since": since,
+                        "what": ("this session is stopped awaiting your input" if perm_state == "picker"
+                                 else "this session is stopped awaiting your approval")},
+            "column": "needs_input", "openQuestions": [], "openPaths": [],
+            "provisional": True, "tree": []}
+
+
 # A postal message that REQUIRES a reply (QUESTION/ASK/Q) — vs a COORDINATE/FYI heads-up that doesn't. Only
 # these create a "waiting on" edge, so an actively-coordinating session isn't falsely shown waiting for every
 # FYI it sent (the user 2026-06-22).
@@ -4460,6 +4503,13 @@ def build_feed(now, tmux=None):
             pc = _provisional_card(s, name, color, fsid, live, now)
             if pc:
                 asks.append(pc)
+            elif perm_state in _NEEDS_INPUT_STATES and perm_top is None:
+                # Hard-blocked on a live permission/picker prompt but with NO goal to floor (the planner hasn't
+                # run — nothing to plan until the ask is answered). Surface a needs-input placeholder so the
+                # block reaches the Blocked column instead of being invisible (the user 2026-06-27). Replaced
+                # by the real card once the planner places the answered work.
+                asks.append(_blocked_placeholder(s, name, color, fsid, live, now, perm_state,
+                                                 tm.get("since") if tm else None))
     if cold_parse:
         _warm_fleet_bg(now)                          # a living session wasn't parsed yet → warm it + re-push (dots/anchors)
     # NO caption stream. The feed's cards are TOP-LEVEL GOALS ONLY (read-side.md: Inbox = goal cards;
@@ -6649,8 +6699,10 @@ def _timeline_page():
 def _chat_body():
     # ported from chat-view page-skeleton.chatBody
     return ('<div id="winframe"></div><div id="tabbar"><span id="tabs"></span></div>'
-            '<div id="ledger" style="display:none"></div><div id="content"></div>'
-            '<div id="live-ask" style="display:none"></div>'
+            '<div id="ledger" style="display:none"></div>'
+            # the live-ask picker lives INSIDE #content (the user 2026-06-27) so it flows at the bottom of the
+            # transcript and scrolls WITH the chat history, instead of a fixed mini-window below it.
+            '<div id="content"><div id="live-ask" style="display:none"></div></div>'
             '<div id="bg-tasks" style="display:none"></div>'   # background-task box: sits between the transcript and the composer
             '<div id="footer"><div id="statusline" class="statusline"></div>'
             '<div id="composer"><textarea id="composer-input" rows="1" '
