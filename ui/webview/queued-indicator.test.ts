@@ -10,18 +10,19 @@ import * as path from "node:path";
 const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
 
-test("a queued ChatEvent carries the pending texts (backend-agnostic)", () => {
-  assert.match(RENDER, /kind: "queued"; texts: string\[\]/);
+test("a queued ChatEvent carries the pending messages (backend-agnostic, per-message md)", () => {
+  assert.match(RENDER, /kind: "queued"; texts: \{ md: string; followUp\?: boolean; goal\?: string \}\[\]/);
 });
 
-test("renderQueued draws the ⌛ header (singular/plural) + one bubble per queued text", () => {
+test("renderQueued draws the ⌛ header (singular/plural) + one markdown bubble per queued message", () => {
   assert.match(RENDER, /ev\.kind === "queued"\) return renderQueued\(ev\)/);
   assert.match(RENDER, /el\("div", "turn turn-queued"\)/);
   // header: "⌛ N queued message(s)" — pluralizes on count
   assert.match(RENDER, /`⌛ \$\{n\} queued message\$\{n === 1 \? "" : "s"\}`/);
   assert.match(RENDER, /el\("div", "queued-head"\)/);
-  // one faint "you" bubble per pending text
-  assert.match(RENDER, /for \(const t of ev\.texts\)[\s\S]*?el\("div", "queued-bubble"\)/);
+  // one faint "you" bubble per pending message, rendered as markdown (like a landed message)
+  assert.match(RENDER, /for \(const t of ev\.texts\)[\s\S]*?el\("div", "queued-bubble md"\)/);
+  assert.match(RENDER, /bubble\.innerHTML = md\(t\.md\)/);
 });
 
 test("the queued turn + bubbles are styled (so the dot is actually visible)", () => {

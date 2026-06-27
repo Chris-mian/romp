@@ -2342,6 +2342,30 @@ def _genuine_queued(text):
     return not ("romp-msg-id" in t or t.startswith("####################") or "\U0001F4EC" in t)
 
 
+_FOLLOWUP_GOAL_RE = re.compile(r"romp-goal-id:\s*([^\s>]+)")
+
+
+def _split_followup(text):
+    """Split a romp FOLLOW-UP message into (goal_title, body, is_followup) for display. A follow-up carries a
+    <!-- romp-goal-id --> marker; romp prepends the goal context as a leading `> …` blockquote, the user's
+    body follows, and the romp markers trail. For the chat we drop the quote + the comment markers and keep
+    just the body, surfacing the goal TITLE (the first quote line) separately so the turn can render a compact
+    'Follow-up · <goal>' header. Non-follow-ups pass straight through (None, text, False)."""
+    if not text or not _FOLLOWUP_GOAL_RE.search(text):
+        return None, text, False
+    clean = re.sub(r"<!--.*?-->", "", text, flags=re.S)        # drop romp-injected / romp-auto / romp-goal-id
+    lines = clean.split("\n")
+    quote, i = [], 0
+    while i < len(lines) and lines[i].lstrip().startswith(">"):
+        quote.append(re.sub(r"^\s*>\s?", "", lines[i]))
+        i += 1
+    while i < len(lines) and lines[i].strip() == "":           # skip the blank line between quote and body
+        i += 1
+    body = "\n".join(lines[i:]).strip()
+    goal = quote[0].strip() if quote else None
+    return goal, body, True
+
+
 def _pending_queued(path):
     """Still-pending queued messages, folded FIFO from the transcript's queue-operation records
     (type:"queue-operation"; operation enqueue/dequeue/remove; content on enqueue). enqueue appends; each
@@ -3479,9 +3503,22 @@ def build_session(sid, now, tmux=None):
                         imgs = _user_images(blocks, prompt, author == "human")
                         if imgs and prompt:                      # drop the composer's "[Image #N]" placeholder chips
                             prompt = " ".join(re.sub(r"\[Image #\d+\]\s?", "", prompt).split())
+                        # A TYPED follow-up (human) carries romp's goal-context quote + the comment markers —
+                        # strip them for display, keep just the body, and surface the goal title as a compact
+                        # 'Follow-up' header (the user 2026-06-27). A romp NUDGE keeps its full text: there the
+                        # quote (the enumerated sub-goals) IS the content, not throwaway context.
+                        fu_goal = None
+                        if author == "human":
+                            fu_goal, fu_body, fu = _split_followup(prompt)
+                            if fu:
+                                prompt = fu_body
                         if prompt or reminders or imgs:
                             ev = {"kind": "user", "md": prompt, "uuid": a.get("uuid"), "ts": ts,
                                   "human": author == "human" or bool(imgs), "reminders": reminders}
+                            if fu_goal is not None or (author == "human" and "romp-goal-id" in text):
+                                ev["followUp"] = True
+                                if fu_goal:
+                                    ev["goal"] = fu_goal
                             if author == "romp":         # a feed nudge/follow-up romp injected → gray romp bubble
                                 ev["romp"] = True
                                 if a.get("rompAuto"):    # an AUTO-nudge (not the Nudge button) → the chat draws the romp swirl
@@ -3550,7 +3587,19 @@ def build_session(sid, now, tmux=None):
     # pane-scrape dropped a 2nd queued message → both vanished, 2026-06-16). The matching input echo (if any)
     # was suppressed at merge time, so a queued message shows exactly once, here.
     if queued:
-        events.append({"kind": "queued", "texts": queued})
+        # Each pending message is rendered like a landed one (markdown) — and a follow-up is cleaned of the
+        # romp goal-context quote + the comment markers, carrying just the body + the goal title (the user
+        # 2026-06-27). Same _split_followup the landed human turns use, so pending + landed match.
+        qmsgs = []
+        for t in queued:
+            goal, body, fu = _split_followup(t)
+            m = {"md": body}
+            if fu:
+                m["followUp"] = True
+                if goal:
+                    m["goal"] = goal
+            qmsgs.append(m)
+        events.append({"kind": "queued", "texts": qmsgs})
     # WORKING from the event model (open turn, no idle atom) — the one shared signal. Computed up here so the
     # API-error gate just below can use it (it's also read later for the chip + work-timer base).
     open_now = _session_working(session["turns"])

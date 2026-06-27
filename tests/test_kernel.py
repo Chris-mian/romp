@@ -1949,8 +1949,9 @@ class ViewBuilder(unittest.TestCase):
         m = km.build_session(SID, NOW)
         q = [e for e in m["events"] if e["kind"] == "queued"]
         self.assertEqual(len(q), 1, "one queued card")
-        self.assertEqual(q[0]["texts"], ["fix the flaky test", "then bump the version"],
+        self.assertEqual([t["md"] for t in q[0]["texts"]], ["fix the flaky test", "then bump the version"],
                          "BOTH queued messages, in submission order (the 2-message regression)")
+        self.assertTrue(all("followUp" not in t for t in q[0]["texts"]), "plain queued messages aren't follow-ups")
         self.assertEqual(m["events"][-1]["kind"], "queued", "queued sits at the bottom, by the composer")
 
     def test_queued_card_absent_when_all_dequeued(self):

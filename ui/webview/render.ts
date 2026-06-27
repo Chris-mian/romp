@@ -48,7 +48,7 @@ marked.use({
 type AskAnswerBlock = { question: string; header?: string; options: { label: string; description?: string }[]; chosen: string[] };
 
 type ChatEvent = (
-  | { kind: "user"; md: string; uuid?: string; ts?: string; reminders?: string[]; human?: boolean; romp?: boolean; rompAuto?: boolean; images?: { src: string; path?: string }[] }
+  | { kind: "user"; md: string; uuid?: string; ts?: string; reminders?: string[]; human?: boolean; romp?: boolean; rompAuto?: boolean; followUp?: boolean; goal?: string; images?: { src: string; path?: string }[] }
   | { kind: "assistant"; md: string; uuid?: string; ts?: string }
   | { kind: "thinking"; text: string; encrypted: boolean; uuid?: string; ts?: string }
   | {
@@ -84,7 +84,7 @@ type ChatEvent = (
     }
   // Claude Code's Task to-do list, folded into one live checklist.
   | { kind: "todo"; tasks: TodoTask[]; ts?: string; uuid?: string }
-  | { kind: "queued"; texts: string[]; ts?: string; uuid?: string }
+  | { kind: "queued"; texts: { md: string; followUp?: boolean; goal?: string }[]; ts?: string; uuid?: string }
   // The turn stopped on an API error (event-based: transcript isApiErrorMessage). The session is BLOCKED
   // until retried — a red-dot card at the bottom with a Retry button (the user 2026-06-16).
   | { kind: "apiError"; text: string; status?: number; category?: string; ts?: string; uuid?: string }
@@ -754,6 +754,9 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
     // renderEvent). Genuine prompts get the solid blue dot; a romp injection a gray dot; harness notes the
     // hollow ring used by assistant turns.
     turn.appendChild(dot(romp ? "romp" : injected ? "ring" : "user"));
+    // a TYPED follow-up (resumed a goal) → a compact "↩ Follow-up · <goal>" header, the romp goal-context
+    // quote + markers already stripped server-side. Same header the pending queued render uses (consistency).
+    if (ev.followUp && !romp) turn.appendChild(followUpHeader(ev.goal));
     const hasImgs = !!(ev.images && ev.images.length);
     if (ev.md || hasImgs) {
       if (romp) {
@@ -1025,9 +1028,20 @@ function renderCompact(_ev: Extract<ChatEvent, { kind: "compact" }>): HTMLElemen
   return turn;
 }
 
-// Pending queued messages — the user's inputs submitted while the session was still
-// working, not yet processed. Rendered at the bottom (closest to the composer),
-// styled as faint right-aligned "you" bubbles so they read as his words, waiting.
+// A compact "Follow-up" header above a message that resumed a goal (the user 2026-06-27): a ↩ glyph + the
+// goal title (when known), muted, so a follow-up reads as such WITHOUT dumping romp's goal-context quote into
+// the bubble. Shared by landed user turns + pending queued messages so the two render consistently.
+function followUpHeader(goal?: string): HTMLElement {
+  const h = el("div", "followup-tag");
+  h.appendChild(document.createTextNode("↩ Follow-up"));
+  if (goal) { const g = el("span", "followup-goal"); g.textContent = goal; h.appendChild(g); }
+  return h;
+}
+
+// Pending queued messages — the user's inputs submitted while the session was still working, not yet
+// processed. Rendered at the bottom (closest to the composer) as faint right-aligned "you" bubbles, the SAME
+// way a landed message renders (markdown, follow-ups cleaned of the romp goal-context + markers, with the
+// compact Follow-up header) so a pending message looks like what it'll become (the user 2026-06-27).
 function renderQueued(ev: Extract<ChatEvent, { kind: "queued" }>): HTMLElement {
   const turn = el("div", "turn turn-queued");
   const n = ev.texts.length;
@@ -1035,8 +1049,9 @@ function renderQueued(ev: Extract<ChatEvent, { kind: "queued" }>): HTMLElement {
   head.textContent = `⌛ ${n} queued message${n === 1 ? "" : "s"}`;
   turn.appendChild(head);
   for (const t of ev.texts) {
-    const bubble = el("div", "queued-bubble");
-    bubble.textContent = t;
+    if (t.followUp) turn.appendChild(followUpHeader(t.goal));
+    const bubble = el("div", "queued-bubble md");
+    bubble.innerHTML = md(t.md);
     turn.appendChild(bubble);
   }
   return turn;
