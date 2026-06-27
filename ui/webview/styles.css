@@ -946,6 +946,9 @@ body { display: flex; flex-direction: column; }
   border: 1px solid var(--box-border); background: rgba(255, 255, 255, 0.06); color: var(--fg);
 }
 .ask-btn:hover { background: rgba(255, 255, 255, 0.13); }
+/* keyboard focus ring on the Submit/Cancel buttons — they're part of the multi-select arrow-key nav now
+   (arrow down past the checkboxes to reach them; Enter activates the focused one) (the user 2026-06-27) */
+.ask-btn.focus { outline: 2px solid var(--accent); outline-offset: 1px; }
 .ask-btn-primary { background: var(--st-awaiting-bg); border-color: var(--st-awaiting-bg); color: var(--st-awaiting-fg); font-weight: 600; }
 .ask-btn-primary:hover { filter: brightness(1.1); }
 /* free-text answer input */

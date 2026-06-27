@@ -3496,13 +3496,14 @@ function renderMultiCard(ask: ParsedAsk) {
   // A custom answer that's already been typed shows up as a normal checked option
   // (its label is the text, no longer "Type something"), so it renders as a checkbox.
   const checkOpts = multiOptions(ask);
-  // keyboard focus (the user 2026-06-22): ↑/↓ move a highlight across the checkboxes, Space toggles the
-  // focused one, Enter submits — so multi-select is fully keyboard-drivable, not just click. Reset the
-  // highlight only when the screen actually changes (same keying as the single card), so a re-mirror of the
-  // same prompt keeps your place.
+  // keyboard focus (the user 2026-06-22, revised 2026-06-27): ↑/↓ move a highlight across the checkboxes AND
+  // the Submit/Cancel buttons (one combined list); Enter TOGGLES the focused checkbox (or activates Submit/
+  // Cancel when the highlight is on a button) — you arrow DOWN past the checkboxes to Submit, then Enter to
+  // submit. Reset the highlight only when the screen actually changes, so a re-mirror keeps your place.
+  const navCount = checkOpts.length + 2;   // checkboxes + Submit + Cancel
   const key = (activeId || "") + "§multi§" + checkOpts.map((o) => `${o.n}:${o.label}`).join("|");
   if (key !== liveAskFocusKey) { liveAskFocusKey = key; const sel = checkOpts.findIndex((o) => o.selected); liveAskFocus = sel >= 0 ? sel : 0; }
-  liveAskFocus = Math.max(0, Math.min(liveAskFocus, Math.max(0, checkOpts.length - 1)));
+  liveAskFocus = Math.max(0, Math.min(liveAskFocus, navCount - 1));
   checkOpts.forEach((o, i) => {
     const row = el("label", "ask-check" + (i === liveAskFocus ? " focus" : ""));
     const box = document.createElement("input"); box.type = "checkbox"; box.checked = !!o.checked;
@@ -3528,8 +3529,15 @@ function renderMultiCard(ask: ParsedAsk) {
     card.appendChild(row);
   }
   const actions = el("div", "ask-actions");
-  const submit = el("button", "ask-btn ask-btn-primary"); submit.textContent = "Submit"; submit.addEventListener("click", () => submitLiveAsk()); actions.appendChild(submit);
-  const cancel = el("button", "ask-btn"); cancel.textContent = "Cancel"; cancel.addEventListener("click", () => cancelLiveAsk()); actions.appendChild(cancel);
+  const sIdx = checkOpts.length, cIdx = checkOpts.length + 1;   // Submit / Cancel positions in the combined nav list
+  const submit = el("button", "ask-btn ask-btn-primary" + (liveAskFocus === sIdx ? " focus" : "")); submit.textContent = "Submit";
+  submit.addEventListener("click", () => submitLiveAsk());
+  submit.addEventListener("mousemove", () => { if (liveAskFocus !== sIdx) { liveAskFocus = sIdx; paintMultiFocus(); } });
+  actions.appendChild(submit);
+  const cancel = el("button", "ask-btn" + (liveAskFocus === cIdx ? " focus" : "")); cancel.textContent = "Cancel";
+  cancel.addEventListener("click", () => cancelLiveAsk());
+  cancel.addEventListener("mousemove", () => { if (liveAskFocus !== cIdx) { liveAskFocus = cIdx; paintMultiFocus(); } });
+  actions.appendChild(cancel);
   card.appendChild(actions);
   card.tabIndex = 0;
   card.addEventListener("keydown", onMultiKey);
@@ -3538,18 +3546,29 @@ function renderMultiCard(ask: ParsedAsk) {
 // MULTI-select keyboard: ↑/↓ move the highlight, Space toggles the focused checkbox, Enter submits, a digit
 // jumps to + toggles its row. The actual toggle is still the optimistic toggleLiveAsk (host re-mirrors).
 function paintMultiFocus() {
-  const rows = document.querySelectorAll("#live-ask .ask-live-multi .ask-check");
-  rows.forEach((r, i) => r.classList.toggle("focus", i === liveAskFocus));
+  const checks = document.querySelectorAll("#live-ask .ask-live-multi .ask-check");
+  const btns = document.querySelectorAll("#live-ask .ask-live-multi .ask-actions .ask-btn");
+  const nC = checks.length;
+  checks.forEach((r, i) => r.classList.toggle("focus", i === liveAskFocus));   // checkboxes are 0..nC-1
+  btns.forEach((b, j) => b.classList.toggle("focus", nC + j === liveAskFocus)); // Submit = nC, Cancel = nC+1
 }
 function onMultiKey(e: KeyboardEvent) {
   const ask = activeId ? liveAsks.get(activeId) : null;
   if (!ask || ask.kind !== "multi") return;
   const opts = multiOptions(ask);
   const n = opts.length; if (!n) return;
-  if (e.key === "ArrowDown") { e.preventDefault(); liveAskFocus = (liveAskFocus + 1) % n; paintMultiFocus(); }
-  else if (e.key === "ArrowUp") { e.preventDefault(); liveAskFocus = (liveAskFocus - 1 + n) % n; paintMultiFocus(); }
-  else if (e.key === " " || e.key === "Spacebar") { e.preventDefault(); toggleLiveAsk(opts[liveAskFocus].n); }
-  else if (e.key === "Enter") { e.preventDefault(); submitLiveAsk(); }
+  const navCount = n + 2;   // checkboxes + Submit + Cancel — arrow keys walk the whole list
+  if (e.key === "ArrowDown") { e.preventDefault(); liveAskFocus = (liveAskFocus + 1) % navCount; paintMultiFocus(); }
+  else if (e.key === "ArrowUp") { e.preventDefault(); liveAskFocus = (liveAskFocus - 1 + navCount) % navCount; paintMultiFocus(); }
+  else if (e.key === " " || e.key === "Spacebar") { e.preventDefault(); if (liveAskFocus < n) toggleLiveAsk(opts[liveAskFocus].n); }
+  else if (e.key === "Enter") {
+    e.preventDefault();
+    // Enter TOGGLES the focused checkbox (the user 2026-06-27) — NOT submit. Arrow down to the Submit button
+    // and Enter there to submit; on Cancel, Enter cancels.
+    if (liveAskFocus < n) toggleLiveAsk(opts[liveAskFocus].n);
+    else if (liveAskFocus === n) submitLiveAsk();
+    else cancelLiveAsk();
+  }
   else if (/^[1-9]$/.test(e.key)) { const idx = opts.findIndex((o) => o.n === parseInt(e.key, 10)); if (idx >= 0) { liveAskFocus = idx; paintMultiFocus(); toggleLiveAsk(opts[idx].n); } }
 }
 

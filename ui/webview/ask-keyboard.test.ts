@@ -30,16 +30,22 @@ test("navLiveAsk posts a navAsk (move cursor, no select) and is debounced", () =
   assert.match(RENDER, /vscodeApi\?\.postMessage\(\{ type: "navAsk", id, target \}\)/);
 });
 
-test("multi-select is keyboard-drivable: ↑/↓ focus, Space toggles, Enter submits", () => {
+test("multi-select keyboard: ↑/↓ walk checkboxes + Submit/Cancel; Enter TOGGLES (the user 2026-06-27)", () => {
   // the card grabs keyboard focus + a keydown handler, like the single card
   assert.match(RENDER, /card\.addEventListener\("keydown", onMultiKey\);/);
   assert.match(RENDER, /function onMultiKey\(e: KeyboardEvent\)/);
-  assert.match(RENDER, /e\.key === "ArrowDown"[^}]*paintMultiFocus\(\)/);
-  assert.match(RENDER, /\(e\.key === " " \|\| e\.key === "Spacebar"\)[^}]*toggleLiveAsk\(opts\[liveAskFocus\]\.n\)/);
-  assert.match(RENDER, /e\.key === "Enter"[^}]*submitLiveAsk\(\)/);
-  // the focused checkbox row carries a .focus highlight, styled like the single card's
+  // arrows walk a COMBINED list = checkboxes + Submit + Cancel
+  assert.match(RENDER, /const navCount = n \+ 2;/);
+  assert.match(RENDER, /e\.key === "ArrowDown"[^}]*% navCount[^}]*paintMultiFocus\(\)/);
+  // Space toggles the focused checkbox (only when the highlight is on one)
+  assert.match(RENDER, /\(e\.key === " " \|\| e\.key === "Spacebar"\)[^}]*if \(liveAskFocus < n\) toggleLiveAsk\(opts\[liveAskFocus\]\.n\)/);
+  // Enter TOGGLES the focused checkbox — submit only when the highlight is ON the Submit button
+  assert.match(RENDER, /if \(liveAskFocus < n\) toggleLiveAsk\(opts\[liveAskFocus\]\.n\);\s*else if \(liveAskFocus === n\) submitLiveAsk\(\);\s*else cancelLiveAsk\(\);/);
+  // the focused checkbox row AND the Submit/Cancel buttons carry the .focus highlight
   assert.match(RENDER, /"ask-check" \+ \(i === liveAskFocus \? " focus" : ""\)/);
+  assert.match(RENDER, /btns\.forEach\(\(b, j\) => b\.classList\.toggle\("focus", nC \+ j === liveAskFocus\)\)/);
   assert.match(CSS, /\.ask-check\.focus \{[^}]*box-shadow: inset 2px 0 0/);
+  assert.match(CSS, /\.ask-btn\.focus \{ outline: 2px solid var\(--accent\)/);
 });
 
 test("a custom-answer field stops its keys from reaching the card's arrow/Space nav", () => {
