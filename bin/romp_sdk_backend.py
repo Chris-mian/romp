@@ -1197,10 +1197,18 @@ class SdkBackend:
         # stream has it yet at send time — only we know the text). Synthetic uuid; pruned by text once the
         # transcript writes the real user atom.
         key = "echo:" + uuid.uuid4().hex
-        self._live.setdefault(sid, {})[key] = {
+        # AUTHOR the echo from the romp markers, exactly as the event model authors the REAL atom — else a
+        # romp-injected nudge/auto-nudge sent through send() echoed as a BLUE HUMAN bubble (a "Follow-up"),
+        # not the GRAY "from romp" auto-nudge it is, until the transcript atom replaced it (the user
+        # 2026-06-28). romp-injected → author 'romp'; romp-auto → the romp-logo (rompAuto) marker.
+        injected = "romp-injected" in text
+        echo = {
             "type": "user", "uuid": key, "session_id": sid, "t": int(time.time()), "parentUuid": None,
-            "author": "human", "_echo_text": text,            # the human typed it → blue bubble (matches the transcript atom)
+            "author": "romp" if injected else "human", "_echo_text": text,
             "message": {"role": "user", "content": [{"type": "text", "text": text}]}}
+        if injected and "romp-auto" in text:
+            echo["rompAuto"] = True                          # auto-nudge → romp-logo on the chat/timeline
+        self._live.setdefault(sid, {})[key] = echo
         self._wake_push()
         return True
 
