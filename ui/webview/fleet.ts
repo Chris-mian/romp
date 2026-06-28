@@ -5,6 +5,7 @@
 // bottom "Show completed" checkbox (default off). The recency colour helpers are copied verbatim from render.ts
 // so the colours are IDENTICAL to the ledger box.
 import { delegate } from "./actions";
+import { fleetVisibleRoots } from "./fleet-roots";
 
 type Color = { bg: string; fg: string } | null;
 interface LedgerNode {
@@ -13,7 +14,7 @@ interface LedgerNode {
   cleared?: boolean; onpath?: boolean; children?: string[];
   summary?: string | null; blockSummary?: string | null; _rec?: number;
 }
-interface Ledger { summary?: string; tree: LedgerNode[]; current?: { t?: number } | null; }
+interface Ledger { summary?: string; tree: LedgerNode[]; current?: { t?: number } | null; archivedTops?: LedgerNode[]; }
 interface FleetSession { sid: string; name: string; color: Color; status?: { state?: string } | null; ledger?: Ledger | null; }
 
 const vscodeApi =
@@ -25,21 +26,36 @@ function showDone(): boolean { try { return localStorage.getItem(DONE_KEY) === "
 function setShowDone(on: boolean) { try { localStorage.setItem(DONE_KEY, on ? "1" : "0"); } catch { /* ignore */ } }
 
 // Recency cutoff (the user 2026-06-27): a LOGARITHMIC slider hides sessions whose freshest activity is older
-// than the window. Stored as a 0..1000 slider position; cutoffSecs() maps it log-uniformly from 1 minute to
-// 1 month, so each pixel covers a constant RATIO of time. Default = max (1 month, most inclusive).
+// than the window. Stored as a 0..1000 slider position. The right end is ADAPTIVE (the user 2026-06-27): it
+// tracks the OLDEST session currently in the fleet, so the slider's whole travel always spans the real fleet
+// and every drag does something — a fixed 1-month max left the upper third a dead zone for a fleet that only
+// spans hours. The 1-minute FLOOR is preserved and far-right still means "show everything". cutoffSecs() maps
+// the position log-uniformly from 1 minute to that adaptive max (each pixel = a constant RATIO of time).
 const CUTOFF_KEY = "romp:fleetCutoffPos";
-const CUT_MIN = 60, CUT_MAX = 30 * 86400;            // 1 minute … 1 month (seconds)
+const CUT_MIN = 60, CUT_MAX = 30 * 86400;            // 1 minute (floor) … 1 month (initial fallback before the first render)
+let fleetMaxAge = CUT_MAX;                            // adaptive right end — the oldest in-fleet age, refreshed each render()
+let refreshCutoffLabel: (() => void) | null = null;  // mountControls registers its label painter so render() can refresh it
 function cutoffPos(): number {
   try { const v = parseInt(localStorage.getItem(CUTOFF_KEY) || "", 10); return Number.isFinite(v) ? Math.max(0, Math.min(1000, v)) : 1000; }
   catch { return 1000; }
 }
 function setCutoffPos(p: number) { try { localStorage.setItem(CUTOFF_KEY, String(p)); } catch { /* ignore */ } }
-function cutoffSecs(): number { return CUT_MIN * Math.pow(CUT_MAX / CUT_MIN, cutoffPos() / 1000); }   // log-uniform 1m…1mo
+function cutoffSecs(): number { return CUT_MIN * Math.pow(Math.max(fleetMaxAge, CUT_MIN * 2) / CUT_MIN, cutoffPos() / 1000); }   // log-uniform 1m … oldest-in-fleet
 function fmtAge(s: number): string {
   if (s < 3600) return Math.round(s / 60) + "m";
   if (s < 86400) return Math.round(s / 3600) + "h";
-  if (s < CUT_MAX - 1) return Math.round(s / 86400) + "d";
-  return "1mo";
+  return Math.round(s / 86400) + "d";
+}
+// The freshest activity time (unix secs) for a session, rolled up the visible tree (0 if nothing visible) —
+// the SAME basis the cutoff filter uses, factored out so render() can both compute the adaptive max and filter.
+function sessionFreshest(s: FleetSession): number {
+  const tree = s.ledger?.tree || [];
+  stampSubtreeRecency(tree, s.ledger?.current || null);
+  const archivedTops = Array.isArray(s.ledger?.archivedTops) ? s.ledger!.archivedTops! : [];
+  const roots = tree.filter((n) => n.depth === 0);
+  const visibleRoots = fleetVisibleRoots(roots, archivedTops, showDone());
+  if (!visibleRoots.length) return 0;
+  return Math.max(s.ledger?.current?.t || 0, ...visibleRoots.map(nodeRecency));
 }
 const folded = new Set<string>(), expanded = new Set<string>();   // fold state, keyed "sid\0nodeId"
 const fkey = (sid: string, id: string) => sid + "\0" + id;
@@ -160,20 +176,29 @@ function render() {
   const now = Math.floor(Date.now() / 1000);
   let any = false;
 
+  // Adaptive cutoff range: the slider's right end tracks the OLDEST in-fleet age, so its travel always spans
+  // the real fleet (no dead zone). Compute it BEFORE filtering, then refresh the slider's "≤ <age>" label.
+  let maxAge = CUT_MIN * 2;
+  for (const s of sessions) { const f = sessionFreshest(s); if (f) maxAge = Math.max(maxAge, now - f); }
+  fleetMaxAge = maxAge;
+  refreshCutoffLabel?.();
   const cutoff = cutoffSecs();
   for (const s of sessions) {
     const tree = s.ledger?.tree || [];
-    if (!tree.length) continue;
+    // "Show completed" surfaces the FULLY-COMPLETED top tasks the compaction sweep archived out of the live
+    // tree (the user 2026-06-27) — otherwise a finished+archived session has an empty live tree and vanishes,
+    // and "Show completed" has nothing to reveal. They render as collapsed done rows; ONLY when the toggle is
+    // on (fleetVisibleRoots gates them). The whole top-row selection is the pure, tested ./fleet-roots.
+    const archivedTops = Array.isArray(s.ledger?.archivedTops) ? s.ledger!.archivedTops! : [];
     stampSubtreeRecency(tree, s.ledger?.current || null);
-    // recency cutoff (the user 2026-06-27): skip a session whose freshest activity (rolled-up node recency
-    // or its live current-node time) is older than the slider's window.
-    const freshest = Math.max(s.ledger?.current?.t || 0, ...tree.map(nodeRecency));
-    if (freshest && (now - freshest) > cutoff) continue;
     const byId = new Map(tree.map((n) => [n.id, n] as const));
     const roots = tree.filter((n) => n.depth === 0);
-    // open = a top goal that's not done and not crossed off; "show completed" reveals the rest
-    const visibleRoots = sd ? roots : roots.filter((n) => !n.done && !n.cleared);
-    if (!visibleRoots.length) continue;
+    const visibleRoots = fleetVisibleRoots(roots, archivedTops, sd);
+    if (!visibleRoots.length) continue;                  // nothing to show for this session → skip
+    // recency cutoff (the user 2026-06-27): skip a session whose freshest VISIBLE activity (rolled-up node
+    // recency or its live current-node time) is older than the slider's window.
+    const freshest = Math.max(s.ledger?.current?.t || 0, ...visibleRoots.map(nodeRecency));
+    if (freshest && (now - freshest) > cutoff) continue;
     any = true;
 
     const sec = el("div", "fl-session");
@@ -310,6 +335,7 @@ function mountControls() {
   (sl.style as CSSStyleDeclaration & { accentColor: string }).accentColor = "var(--accent, #9cd2ff)";
   sl.title = "Include sessions active within this window — logarithmic, 1 minute … 1 month";
   const paint = () => { lab.textContent = "≤ " + fmtAge(cutoffSecs()); };
+  refreshCutoffLabel = paint;   // render() refreshes the label when the adaptive max shifts with the fleet
   sl.addEventListener("input", () => { setCutoffPos(parseInt(sl.value, 10)); paint(); render(); });
   paint();
   row.appendChild(lab); row.appendChild(sl);
