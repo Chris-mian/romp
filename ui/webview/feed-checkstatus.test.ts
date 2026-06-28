@@ -29,7 +29,7 @@ test("Nudge acknowledges the click immediately (the user 2026-06-24): guards re-
 });
 
 test("Nudge shows ONLY on a real working card (it.column === 'working', not a provisional placeholder)", () => {
-  assert.match(FEED, /a\._nudge\.style\.display = \(it\.column === "working" && !it\.provisional\) \? "" : "none";/);
+  assert.match(FEED, /a\._nudge\.style\.display = \(it\.column === "working" && !it\.provisional && !it\.recheck\) \? "" : "none";/);
 });
 
 test("Nudge is NO LONGER in the modal footer (it moved to the card)", () => {
@@ -44,7 +44,7 @@ test("a card 'Follow up' button on blocked/completed cards jumps straight into t
   assert.match(FEED, /actions\.append\(apiRetry, revive, nudge, cardFup, clr\)/);
   // shown ONLY on blocked (needs_input) or completed cards — mutually exclusive with Nudge (working only)
   assert.match(FEED, /a\._cardFup\.style\.display = \(\(it\.column === "needs_input" \|\| it\.column === "completed"\) && !it\.provisional\) \? "" : "none"/);
-  assert.match(FEED, /a\._nudge\.style\.display = \(it\.column === "working" && !it\.provisional\)/);
+  assert.match(FEED, /a\._nudge\.style\.display = \(it\.column === "working" && !it\.provisional && !it\.recheck\)/);
   // click → open THIS goal's modal AND request the composer pop open on the next render
   assert.match(FEED, /cardFup\.onclick = \(ev\) => \{ ev\.stopPropagation\(\); fullscreenAskId = it\.itemId; openFollowUpOnRender = true; renderModal\(\); \}/);
   // renderModal consumes the flag: pops the box open + focuses, but only when the modal's Follow up is visible
