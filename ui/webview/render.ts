@@ -845,6 +845,18 @@ function prettyModel(id: string): string {
 // written to the transcript, so it can't be shown; the closing note says so. Carries no dot/timestamp
 // (no ts/uuid) → renderEvent leaves it off the conversational rail. Its open/closed state is persisted
 // per session (keyed by renderingSid) so a send/turn re-render never snaps it shut.
+// Make `elem` open the local folder `cwd` with the configured opener on click (the user 2026-06-27): used
+// EVERYWHERE a folder location is shown (statusline, the System-context Directory row, …). Click-safe — the
+// action rides a data-act caught by the document-level openFolder delegate, so it works under any re-rendering
+// surface without per-node handlers.
+function asFolderLink(elem: HTMLElement, cwd: string): void {
+  if (!cwd) return;
+  elem.dataset.act = "openFolder";
+  elem.dataset.cwd = cwd;
+  elem.classList.add("folder-link");
+  elem.title = cwd + "  ·  click to open this folder";
+}
+
 function renderSystem(ev: Extract<ChatEvent, { kind: "system" }>): HTMLElement {
   const turn = el("div", "turn turn-system");
   const key = renderingSid ? "sysctx:" + renderingSid : undefined;
@@ -876,7 +888,9 @@ function renderSystem(ev: Extract<ChatEvent, { kind: "system" }>): HTMLElement {
     const grid = el("div", "sys-meta");
     for (const [k, val] of rows) {
       const ke = el("span", "sys-key"); ke.textContent = k; grid.appendChild(ke);
-      const ve = el("span", "sys-val"); ve.textContent = val; grid.appendChild(ve);
+      const ve = el("span", "sys-val"); ve.textContent = val;
+      if (k === "Directory") asFolderLink(ve, val);   // the cwd path → click to open the folder
+      grid.appendChild(ve);
     }
     body.appendChild(grid);
   }
@@ -4080,14 +4094,10 @@ function updateStatusline() {
   const dir = el("span", "status-dir");
   if (s.cwd) {
     dir.textContent = "📁 " + (s.cwd.replace(/\/+$/, "").split("/").pop() || s.cwd);
-    dir.title = s.cwd + "  ·  click to open this folder";
-    // Click → run the configured folder opener for this dir (the user 2026-06-27; default: the OS opener —
-    // Finder / xdg-open — overridable via ROMP_OPEN_FOLDER or ~/.config/romp/open-folder, e.g. open in Ghostty).
-    // Click-safe: the action rides a data-act on the STABLE #statusline (delegate below), so the per-push
-    // statusline rebuild can't drop it.
-    dir.dataset.act = "openFolder";
-    dir.dataset.cwd = s.cwd;
-    dir.classList.add("status-dir-link");
+    // Click → run the configured folder opener for this dir (default: the OS opener — Finder / xdg-open —
+    // overridable via ROMP_OPEN_FOLDER or ~/.config/romp/open-folder, e.g. open in Ghostty). asFolderLink wires
+    // the data-act caught by the document-level openFolder delegate, so the per-push rebuild can't drop it.
+    asFolderLink(dir, s.cwd);
   }
   sl.appendChild(dir);
   // The session's git branch, just right of the dir — only when known and only if the user hasn't hidden it
@@ -4632,11 +4642,11 @@ setupSettings();
   });
 })();
 (() => {
-  // The statusline rebuilds on every kernel push, so the folder link's action rides a data-act on the STABLE
-  // #statusline (delegate installed once) — a click can't be dropped by a mid-press rebuild (the user 2026-06-27).
-  const sl = document.getElementById("statusline");
-  if (!sl) return;
-  delegate(sl, {
+  // ONE openFolder delegate for the WHOLE chat (the user 2026-06-27): installed on document.body so EVERY place
+  // that shows a local folder — the statusline 📁, the System-context "Directory" row, anywhere asFolderLink is
+  // applied — opens that folder on click. Body is stable across every per-push rebuild, so a click is never
+  // dropped mid-press. (Only elements carrying data-act="openFolder" are matched; nothing else is affected.)
+  delegate(document.body, {
     openFolder: (el) => { const cwd = el.dataset.cwd; if (cwd && vscodeApi) vscodeApi.postMessage({ type: "openFolder", cwd }); },
   });
 })();

@@ -38,9 +38,10 @@ test("renderPicker populates the datalist from items' dirs (unique, non-empty)",
 test("a session carries cwd, shown on the statusline just left of the mode/model/effort controls", () => {
   assert.match(RENDER, /interface Session \{[^}]*cwd\?: string/);
   assert.match(RENDER, /cwd: msg\.cwd \?\? \(prev \? prev\.cwd : ""\)/);
-  // a status-dir element (basename + full path on hover), appended BEFORE #spinner-meta (the controls cluster)
+  // a status-dir element (basename; full path on hover + click-to-open via asFolderLink), appended BEFORE
+  // #spinner-meta (the controls cluster)
   assert.match(RENDER, /el\("span", "status-dir"\)/);
-  assert.match(RENDER, /dir\.title = s\.cwd/);
+  assert.match(RENDER, /asFolderLink\(dir, s\.cwd\)/);
   assert.match(RENDER, /sl\.appendChild\(dir\);[\s\S]*?const meta = el\("span", "spinner-meta"\)/);
   // and NOT on the tab anymore (the user 2026-06-23)
   assert.doesNotMatch(RENDER, /tab-dir/);
