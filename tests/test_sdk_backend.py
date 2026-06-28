@@ -232,7 +232,25 @@ class LiveTail(unittest.TestCase):
         echoes = [a for a in be.live_atoms("s") if a.get("_echo_text") == "type this"]
         self.assertEqual(len(echoes), 1)
         self.assertEqual(echoes[0]["type"], "user")
+        self.assertEqual(echoes[0]["author"], "human", "a typed message echoes as a human (blue) bubble")
         self.assertEqual(echoes[0]["message"]["content"], [{"type": "text", "text": "type this"}])
+
+    def test_send_echo_authors_a_romp_nudge_as_romp_not_human(self):
+        # the bug (the user 2026-06-28): an auto-nudge sent through send() echoed as a BLUE HUMAN "Follow-up"
+        # instead of the GRAY "from romp" auto-nudge it is, because the echo hardcoded author="human". The echo
+        # must author from the same markers the event model uses on the real atom.
+        be = sb.SdkBackend(tempfile.mkdtemp(), "/bin/true", lambda *a, **k: None)
+        be._ensure = lambda sid: type("S", (), {"enqueue": lambda self, t: None})()
+        body = "Status on the goal above?\n<!-- romp-injected --><!-- romp-auto --><!-- romp-goal-id: s:g1 -->"
+        be.send("s", body)
+        e = next(a for a in be.live_atoms("s") if a.get("_echo_text") == body)
+        self.assertEqual(e["author"], "romp", "a romp-injected nudge echoes as romp, not human")
+        self.assertTrue(e.get("rompAuto"), "the romp-auto marker → the romp-logo (auto-nudge) flag")
+        # a NUDGE-BUTTON injection (romp-injected, NOT romp-auto) is romp but not auto
+        be.send("s", "do X\n<!-- romp-injected --><!-- romp-goal-id: s:g1 -->")
+        e2 = next(a for a in be.live_atoms("s") if a.get("_echo_text", "").startswith("do X"))
+        self.assertEqual(e2["author"], "romp")
+        self.assertFalse(e2.get("rompAuto"), "a Nudge-button injection is romp but not auto (no romp-logo)")
 
     def test_context_pct_from_sdk_get_context_usage(self):
         """The context bar reads the SDK's OWN number, not a window guess (the user 2026-06-24: SDK read 14%

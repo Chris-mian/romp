@@ -694,7 +694,7 @@ class ViewBuilder(unittest.TestCase):
             "placements": {}, "status": {top: "blocked"}}))
         saved_w, saved_a = km._wait_for_graph, km._session_awaiting
         km._wait_for_graph = lambda now, alive: {SID: {"peerSid": "peerY", "name": "peerY",
-                                                       "color": None, "inCycle": False}}
+                                                       "color": None, "inCycle": False, "since": NOW}}
         km._session_awaiting = lambda sid, path, idle: None      # isolate the POSTAL path
         try:
             card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == top)
@@ -1258,7 +1258,7 @@ class ViewBuilder(unittest.TestCase):
         km._set_auto_nudge(True)
         saved = km._wait_for_graph
         km._wait_for_graph = lambda now, alive: {SID: {"peerSid": "peerY", "name": "peerY",
-                                                       "color": None, "inCycle": False}}
+                                                       "color": None, "inCycle": False, "since": NOW}}
         sent, restore = self._stub_nudge()
         try:
             km._auto_nudge_tick(NOW, km._tmux_sessions())
@@ -2311,6 +2311,31 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(card["summaryAnchorUuid"], "aReply",
                          "summary anchor resolves despite the trail seg id's drifted timestamp")
         self.assertEqual(card["turnId"], g)   # sanity: it's the card we built
+
+    def test_peer_wait_only_decorates_goals_minted_before_the_question(self):
+        # the user 2026-06-28: a stale wait (an unanswered QUESTION to a live peer, hours old) was decorating
+        # a brand-new unrelated goal with "Awaiting <peer>". A wait can only apply to goals that EXISTED when
+        # the question was sent — a goal minted after it can't be awaiting that answer.
+        old, new = "%s:gOld" % SID, "%s:gNew" % SID
+        def nd(gid, t):
+            return {"id": gid, "text": gid, "parentId": None, "nodeComplete": False, "blocked": False,
+                    "cleared": False, "trail": [], "t": t, "mt": t}
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+            "rompUuid": SID, "seq": 2, "lastNode": new,
+            "nodes": {old: nd(old, NOW - 1000), new: nd(new, NOW - 10)},
+            "placements": {}, "status": {old: "working", new: "working"}}))
+        km._tmux_sessions = lambda: {SID: {"state": "idle", "since": NOW - 50, "model": "",
+                                           "effort": "", "context": None, "compactPct": None, "color": None}}
+        saved = km._wait_for_graph
+        try:                                              # the question was sent at NOW-500 (between gOld and gNew)
+            km._wait_for_graph = lambda now, alive: {SID: {"peerSid": "peerz", "name": "peerz",
+                "color": {"bg": "#fff", "fg": "#000"}, "inCycle": False, "since": NOW - 500}}
+            cards = {a["itemId"]: a for a in km.build_feed(NOW)["asks"]}
+            self.assertIsNotNone(cards[old].get("waitingOn"), "a goal predating the question shows Awaiting")
+            self.assertIsNone(cards[new].get("waitingOn"),
+                              "a goal minted AFTER the question is NOT decorated by the stale wait")
+        finally:
+            km._wait_for_graph = saved
 
     def _sender_goal(self, sender, gid, **kw):
         """Write a sender's goal store with one linked goal (open by default) — the cross-agent end of a

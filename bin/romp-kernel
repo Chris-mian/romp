@@ -972,9 +972,11 @@ def _auto_nudge_tick(now, tmux):
         if _all_outstanding_delegated(store.get("nodes", {}), gid):   # the goal's only OPEN work is delegated to
             continue                                                  # peers → nothing for THIS session to do (the
             #                                                           user 2026-06-22). Parts it handles itself stay nudgeable.
-        if sid in waitfor:                               # WAITING ON A LIVE PEER (or a mutual-wait deadlock) → not
-            continue                                     # stalled: "waiting on a peer isn't needs-you" (the human's
-            #                                              philosophy). A cycle is surfaced by the ⟲ deadlock chip.
+        gnode = store.get("nodes", {}).get(gid) or {}
+        if sid in waitfor and gnode.get("t", 0) <= waitfor[sid]["since"]:   # WAITING ON A LIVE PEER → not stalled,
+            continue                                     # "waiting on a peer isn't needs-you" (the human's philosophy).
+            #   But only when the working goal PREDATES the question — a goal minted after it can't be awaiting that
+            #   answer, so a stale wait must NOT suppress its nudge (the user 2026-06-28). Cycle → ⟲ deadlock chip.
         if _session_awaiting(sid, s["path"], True):      # AWAITING dispatched/delegated work (SDK overlay / bg-tool) →
             continue                                     # in flight, not stalled (the user 2026-06-22); idle is True here
         lt_id = lt.get("id")
@@ -4370,7 +4372,9 @@ def _wait_for_graph(now, alive_sids):
         if node in seen:
             in_cycle.update(seen[seen.index(node):])
     return {x: {"peerSid": y, "name": _name_of(y) or y[:8], "color": _name_color(y),
-                "inCycle": x in in_cycle} for x, y in edge.items()}
+                "inCycle": x in in_cycle,
+                "since": last_q[(x, y)]}   # when the unanswered question was sent → a goal minted AFTER it can't be awaiting it
+            for x, y in edge.items()}
 
 
 # ───────────────────────── view-builder: goals → feed (parity: feed = ADAPT; minimal here) ─────────────────────────
@@ -4550,8 +4554,12 @@ def build_feed(now, tmux=None):
             # from (a) the session-level awaiting signal (SDK states overlay / transcript bg-tool stopgap),
             # or (b) an unanswered outbound to a LIVE peer (postal wait-for — a stale block on a peer-waiting
             # session yields to it). The live permission / API-error floors still win (the present event).
+            # the peer-wait only applies to a goal that EXISTED when the question was sent — a goal minted
+            # AFTER it can't be awaiting that answer (the user 2026-06-28). Scopes the stale session-level
+            # wait off unrelated newer goals; if every pre-question goal is resolved, nothing floors.
+            _peer_wait = (fsid in wmap and nodes[nid]["t"] <= wmap[fsid]["since"])
             if nid != api_top and nid != perm_top and col in ("working", "blocked") and (
-                    sess_awaiting_why or (col == "blocked" and fsid in wmap)):
+                    sess_awaiting_why or (col == "blocked" and _peer_wait)):
                 col = "awaiting"
             o = nodes[nid].get("origin")             # courier delegation provenance: planted by a peer
             origin = None
@@ -4625,7 +4633,7 @@ def build_feed(now, tmux=None):
                 "blockWhy": block_why,               # one-sentence "why blocked" on the card (soft planner block)
                 "doneWhy": done_why,                 # one-sentence "why done" on a completed card (the done page)
                 "followupPending": nodes[nid].get("followupPending"),   # optimistic reopen → "Followed up" chip until the judge catches up
-                "waitingOn": (wmap.get(fsid) if column == "working" else None),   # 'waiting on <peer>' chip: this session has an unanswered outbound to a live peer (the user 2026-06-22)
+                "waitingOn": (wmap.get(fsid) if (column == "working" and _peer_wait) else None),   # 'waiting on <peer>' chip: unanswered outbound to a live peer, only on a goal that predates the question (the user 2026-06-22/28)
                 "awaiting": ({"why": await_why} if col == "awaiting" else None),   # awaiting flavor: held in Working with a ⏳ awaiting badge (waiting on dispatched/delegated work) — the user 2026-06-22
                 "summary": nodes[nid].get("summary"),    # the distiller's key takeaway for a completed goal (modal) — the user 2026-06-17
                 "blockSummary": nodes[nid].get("blockSummary"),    # the block-distiller's decision brief for a blocked goal (modal); null until produced — the user 2026-06-18
