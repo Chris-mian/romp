@@ -1070,9 +1070,10 @@ class PendingQueue(unittest.TestCase):
 
 @unittest.skipUnless(_HAVE_SDK, "claude_agent_sdk not installed")
 class PendingQueueLoop(unittest.TestCase):
-    """End-to-end gate: a turn enqueued while another is IN FLIGHT stays in pending_queued and is
-    NOT fed to the SDK until the in-flight turn ends, then is released in order. This is the fix —
-    before it, queued turns were flushed straight into the SDK and were invisible to the chat."""
+    """End-to-end: a turn enqueued while another is IN FLIGHT is FORWARDED to the SDK immediately
+    (next-tool-boundary delivery), not held until the in-flight turn ends (the user 2026-06-27).
+    It leaves romp's pending queue as soon as it's fed. (A wedged/interrupted turn still holds the
+    queue — see InterruptWithQueue.)"""
 
     def setUp(self):
         self.d = tempfile.mkdtemp()
@@ -1131,23 +1132,22 @@ class PendingQueueLoop(unittest.TestCase):
             time.sleep(0.01)
         return False
 
-    def test_second_turn_held_until_first_completes(self):
+    def test_second_turn_forwarded_immediately_mid_flight(self):
         sid = self.backend.spawn("q", self.d)
         self.assertTrue(self.backend.send(sid, "A"))
         self.assertTrue(self._wait(lambda: self.Gated.received == ["A"]), "A never reached the SDK")
 
-        # B is enqueued while A is in flight: VISIBLE as queued, and NOT fed to the SDK.
+        # B is enqueued while A is in flight: it is FORWARDED straight to the stream — it does NOT linger in
+        # romp's queue waiting for A to finish (the user 2026-06-27). pending clears immediately.
         self.assertTrue(self.backend.send(sid, "B"))
-        self.assertTrue(self._wait(lambda: self.backend.pending_queued(sid) == ["B"]),
-                        "B should show as queued while A is in flight")
-        self.assertEqual(self.Gated.received, ["A"], "B must NOT be fed to the SDK until A finishes")
+        self.assertTrue(self._wait(lambda: self.backend.pending_queued(sid) == []),
+                        "B should be forwarded to the SDK at once, not held in romp's queue")
 
-        # Let A finish: B is released in order and drains from the pending list.
+        # The mock's receiver serializes (one turn at a time, like the CLI), so B SURFACES after A is released
+        # — but it was already fed. Order is preserved.
         self.Gated.release.set()
         self.assertTrue(self._wait(lambda: self.Gated.received == ["A", "B"]),
-                        "B should be released to the SDK once A completes")
-        self.assertTrue(self._wait(lambda: self.backend.pending_queued(sid) == []),
-                        "pending clears the instant B starts processing")
+                        "B is delivered after A, in order")
 
 
 @unittest.skipUnless(_HAVE_SDK, "claude_agent_sdk not installed")
@@ -1210,25 +1210,26 @@ class InterruptWithQueue(unittest.TestCase):
             time.sleep(0.01)
         return False
 
-    def test_interrupt_does_not_release_or_double_count_the_queue(self):
+    def test_interrupt_holds_a_turn_queued_after_it(self):
         sid = self.backend.spawn("x", self.d)
         self.backend.send(sid, "A")
         self.assertTrue(self._wait(lambda: self.Fake.received == ["A"]), "A is in flight")
-        self.backend.send(sid, "B")
-        self.assertTrue(self._wait(lambda: self.backend.pending_queued(sid) == ["B"]))
 
-        # Interrupt the (wedged) A. Interrupt must only FLAG it — not drop inflight or release B.
+        # Interrupt the (wedged) A. Interrupt must only FLAG it — not drop inflight.
         self.assertTrue(self.backend.interrupt(sid))
-        self.assertTrue(self._wait(lambda: self.Fake.instances[0].interrupted), "client.interrupt() sent")
+        self.assertTrue(self._wait(lambda: self.backend.live_sessions().get(sid, {}).get("state") == "waiting"),
+                        "interrupted turn reads 'waiting' (inflight held, _interrupted set)")
 
-        # Settle window: a forced-settle-on-interrupt (the bug) would free inflight and pop B into the
-        # stuck CLI here. The fix holds inflight, so B is never released no matter how long we wait.
+        # Mid-turn forwarding is SUSPENDED while interrupted: a turn queued AFTER the interrupt is HELD, not
+        # force-fed into the stuck CLI (the double-count / wedge hazard). It releases once the wedged turn
+        # settles inflight to 0 (the user 2026-06-27).
+        self.backend.send(sid, "B")
         time.sleep(0.3)
         self.assertEqual(self.backend.pending_queued(sid), ["B"],
-                         "B stays queued behind the still-in-flight interrupted turn — not force-released")
-        self.assertEqual(self.Fake.received, ["A"], "B was NOT fed to the SDK by the interrupt")
+                         "B stays queued behind the interrupted turn — not fed into a stuck CLI")
+        self.assertEqual(self.Fake.received, ["A"], "B was NOT fed to the SDK while interrupted")
         self.assertEqual(self.backend.live_sessions().get(sid, {}).get("state"), "waiting",
-                         "the interrupted turn reads 'waiting' (display) while inflight is held — not 'working'")
+                         "still 'waiting' — inflight held, not double-counted")
 
 
 if __name__ == "__main__":

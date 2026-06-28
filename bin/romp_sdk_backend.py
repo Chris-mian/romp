@@ -670,21 +670,27 @@ class SdkSession:
         # generator below picks them up on its first pass (no separate pre-buffer needed).
 
         async def inputs():
-            # Release queued turns ONE AT A TIME: a turn leaves self._pending and is fed to the SDK
-            # only once the previous turn has finished (inflight == 0). Until then it stays in
-            # self._pending — VISIBLE to pending_queued — so the kernel renders the "queued" indicator.
-            # Recreated per reconnect (see the while-loop below); self._pending carries the not-yet-
-            # started turns across the reconnect.
+            # Forward queued turns to the SDK AS SOON AS they're available — even while a turn is in flight —
+            # so a message you send mid-turn reaches the model at its NEXT tool boundary instead of being held
+            # until the whole turn finishes (the user 2026-06-27: "forward it in as soon as you can, that's
+            # what I do with a queued message"). The CLI's streaming input owns the boundary timing; romp just
+            # stops artificially holding. EXCEPTION: when the current turn is INTERRUPTED/wedged (inflight>0
+            # AND _interrupted), HOLD the queue — feeding the next turn into a stuck CLI is the double-count /
+            # zombie hazard the interrupt path guards against; it releases once that turn's ResultMessage
+            # settles inflight to 0. Recreated per reconnect; self._pending carries unstarted turns across it.
             while not self.ended:
                 self._input_wake.clear()
                 with self._lock:
-                    item = self._pending.pop(0) if (self.inflight == 0 and self._pending) else None
+                    blocked = self.inflight > 0 and self._interrupted   # wedged turn → don't feed a stuck CLI
+                    item = self._pending.pop(0) if (self._pending and not blocked) else None
+                    fresh = item is not None and self.inflight == 0     # starting from idle, not mid-turn
                 if item is None:
-                    await self._input_wake.wait()   # idle, or a turn still in flight → wait for a change
+                    await self._input_wake.wait()   # idle, or holding behind a wedged turn → wait for a change
                     continue
-                self.since = int(time.time())        # inflight was 0 → a new turn starts now
+                if fresh:
+                    self.since = int(time.time())    # a new turn starts now (mid-turn forwards keep the turn's clock)
+                    self._interrupted = False        # a fresh turn → clear any stale interrupt flag
                 self.inflight += 1
-                self._interrupted = False            # a fresh turn → clear any stale interrupt flag
                 append_state(self.backend.state_dir, self.sid, "working")
                 self.backend._poke()
                 yield {"type": "user",
