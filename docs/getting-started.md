@@ -42,3 +42,27 @@ read in place from where Claude Code already writes them
 
     - `~/.claude/romp-summarize-off` — the live tmux activity phrase
     - `~/.claude/romp-postal-off` — the postal service
+
+## Configuration
+
+### Folder click → open in your terminal/editor
+
+The chat statusline shows the session's working directory (`📁 <folder>`). Click
+it to open that folder. By default romp uses the OS opener — `open` on macOS
+(Finder), `xdg-open` on Linux — since that's the only portable "open this"
+command. To open it somewhere else (your terminal, an editor), set a command via
+either the env var `ROMP_OPEN_FOLDER` or the first non-comment line of
+`~/.config/romp/open-folder`. A `{dir}` placeholder is replaced with the clicked
+path; if you omit it, the path is appended as the last argument. The command runs
+on the **kernel's** machine (where the sessions run).
+
+```bash
+# ~/.config/romp/open-folder  — pick ONE line
+open -a Ghostty {dir}               # macOS: a new Ghostty window in that folder
+open -a iTerm {dir}                 # macOS: iTerm
+ghostty --working-directory={dir}   # Linux: Ghostty
+code {dir}                          # open the folder in VS Code instead
+```
+
+There is no portable OS API for "the default terminal" (macOS has no
+folder→terminal handler), so this explicit command is the reliable knob.

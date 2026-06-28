@@ -4080,10 +4080,12 @@ function updateStatusline() {
   const dir = el("span", "status-dir");
   if (s.cwd) {
     dir.textContent = "📁 " + (s.cwd.replace(/\/+$/, "").split("/").pop() || s.cwd);
-    dir.title = s.cwd + "  ·  click to open a terminal here";
-    // Click → open a terminal in this folder (the user 2026-06-27). Click-safe: the action rides a data-act on
-    // the STABLE #statusline (delegate installed once below), so the per-push statusline rebuild can't drop it.
-    dir.dataset.act = "openTerm";
+    dir.title = s.cwd + "  ·  click to open this folder";
+    // Click → run the configured folder opener for this dir (the user 2026-06-27; default: the OS opener —
+    // Finder / xdg-open — overridable via ROMP_OPEN_FOLDER or ~/.config/romp/open-folder, e.g. open in Ghostty).
+    // Click-safe: the action rides a data-act on the STABLE #statusline (delegate below), so the per-push
+    // statusline rebuild can't drop it.
+    dir.dataset.act = "openFolder";
     dir.dataset.cwd = s.cwd;
     dir.classList.add("status-dir-link");
   }
@@ -4635,7 +4637,7 @@ setupSettings();
   const sl = document.getElementById("statusline");
   if (!sl) return;
   delegate(sl, {
-    openTerm: (el) => { const cwd = el.dataset.cwd; if (cwd && vscodeApi) vscodeApi.postMessage({ type: "openTerminal", cwd }); },
+    openFolder: (el) => { const cwd = el.dataset.cwd; if (cwd && vscodeApi) vscodeApi.postMessage({ type: "openFolder", cwd }); },
   });
 })();
 (() => {
