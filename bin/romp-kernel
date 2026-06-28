@@ -6344,20 +6344,25 @@ def _loader_inner():
             "</div><div class=rl-dots><i></i><i></i><i></i></div></div>")
 
 
-def _pane_spin(cid):
+def _pane_spin(cid, ignore_id=""):
     """A per-pane loading overlay (the user 2026-06-26): the romp LOADER (swirl + 'romp' + dots) centered over
-    the pane until its content container `cid` gets its first child, then it fades + self-removes. So each
+    the pane until its content container `cid` gets its first REAL child, then it fades + self-removes. So each
     sub-panel shows the romp loader while it loads its data (the chat is the slow one). Self-contained
-    CSS+HTML+JS so it just drops into a page body; an 8s backstop guarantees it never sticks."""
+    CSS+HTML+JS so it just drops into a page body; an 8s backstop guarantees it never sticks.
+
+    ignore_id: a permanent child of `cid` that does NOT count as content (the user 2026-06-27) — the chat's
+    #content always holds a hidden #live-ask picker host, so without this the loader hid instantly over a blank
+    chat (the regression: tab names pulsed, no loader). Counting children whose id != ignore_id fixes it."""
     return ("<style>#pane-spin{position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;"
             "background:var(--vscode-editor-background,#1e1e1e);transition:opacity .3s ease}"
             "#pane-spin.gone{opacity:0;pointer-events:none}" + _LOADER_CSS + "</style>"
             "<div id=pane-spin>" + _loader_inner() + "</div>"
-            "<script>(function(){var o=document.getElementById('pane-spin'),c=document.getElementById('" + cid + "');"
+            "<script>(function(){var o=document.getElementById('pane-spin'),c=document.getElementById('" + cid + "'),IGN='" + ignore_id + "';"
             "if(!o)return;var d=false;function h(){if(d)return;d=true;o.classList.add('gone');"
             "setTimeout(function(){if(o.parentNode)o.parentNode.removeChild(o);},350);}"
-            "if(c){try{new MutationObserver(function(){if(c.children.length)h();}).observe(c,{childList:true});}catch(e){}"
-            "if(c.children.length)h();}setTimeout(h,8000);})();</script>")
+            "function ready(){if(!c)return false;for(var i=0;i<c.children.length;i++){if(!IGN||c.children[i].id!==IGN)return true;}return false;}"
+            "if(c){try{new MutationObserver(function(){if(ready())h();}).observe(c,{childList:true});}catch(e){}"
+            "if(ready())h();}setTimeout(h,8000);})();</script>")
 
 
 def _chat_page():
@@ -6368,7 +6373,7 @@ def _chat_page():
             "<link href=/dist/styles.css?v=%d rel=stylesheet><title>Romp</title>"
             "<style>%s\n%s</style></head><body>%s%s<script>%s</script>"
             "<script src=/dist/render.js?v=%d></script><script>%s</script></body></html>"
-            % (v, THEME_CSS, _CHAT_MOBILE_CSS, _chat_body(), _pane_spin("content"), _shim("chat"), v, _CHAT_MOBILE_JS))
+            % (v, THEME_CSS, _CHAT_MOBILE_CSS, _chat_body(), _pane_spin("content", "live-ask"), _shim("chat"), v, _CHAT_MOBILE_JS))
 
 
 # Settings gear (WEB KERNEL ONLY — kernel-injected, never in the shared feed.ts). A ⚙ in the corner
