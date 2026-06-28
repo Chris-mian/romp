@@ -133,6 +133,15 @@ const askEls = new Map<string, HTMLElement>();
 // suppress those ids from incoming payloads until the kernel's payload confirms the clear (no longer
 // lists them), so a stale push can't resurrect a card mid-dismiss (the user 2026-06-19).
 const pendingCleared = new Set<string>();
+// A LIFO of recently-cleared card batches, holding the AskItem data itself (a single Clear pushes [it]; a
+// Clear-all pushes the whole batch). "Undo clear" pops the latest and re-inserts those cards IMMEDIATELY —
+// optimistic restore — so the card reappears on click instead of waiting on the kernel round-trip + next feed
+// build. Mirrors the kernel's _undo_clear (restores the most-recent clear batch). (the user 2026-06-27.)
+const clearedStack: AskItem[][] = [];
+// The inverse of pendingCleared: ids we've optimistically RESTORED, kept (with their cached card) until a
+// kernel push actually carries them again — otherwise the very next push (before the kernel un-archived) would
+// replace `asks` and drop the just-restored card, a flicker. Dropped once the kernel lists the id.
+const pendingRestored = new Map<string, AskItem>();
 // Group cards keyed by turnId, stored under "g:"+turnId. The focus state
 // (hoverAskId/pinnedAskId) holds EITHER a raw ask itemId OR a group key
 // "g:"+turnId; applyFocus + focusAnchorId understand both.
@@ -317,6 +326,7 @@ function makeCard(it: FeedItem): HTMLElement {
   clr.onclick = (ev) => {
     ev.stopPropagation();
     pendingCleared.add(it.itemId);   // suppress until the kernel confirms — no mid-dismiss pop-back
+    clearedStack.push([it]);         // cache for an instant optimistic Undo clear
     card.classList.add("dismissing");
     vscodeApi?.postMessage({ type: "askClear", itemId: it.itemId });   // reply ids share cleared.jsonl
     setTimeout(() => { if (cardEls.get(it.itemId) === card && card.classList.contains("dismissing")) { card.remove(); cardEls.delete(it.itemId); } }, 180);
@@ -512,6 +522,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   clr.onclick = (ev) => {
     ev.stopPropagation();
     pendingCleared.add(it.itemId);   // suppress from incoming pushes until the kernel confirms the clear
+    clearedStack.push([it]);         // cache for an instant optimistic Undo clear
     card.classList.add("dismissing");
     vscodeApi?.postMessage({ type: "askClear", itemId: it.itemId });
     setTimeout(() => { if (askEls.get(it.itemId) === card && card.classList.contains("dismissing")) { card.remove(); askEls.delete(it.itemId); } }, 180);
@@ -878,6 +889,7 @@ function makeGroupCard(g: AskGroup): HTMLElement {
     ev.stopPropagation();
     const cur = (card as any)._g as AskGroup;
     card.classList.add("dismissing");
+    clearedStack.push(cur.members.slice());   // cache the whole batch for an instant optimistic Undo clear
     for (const m of cur.members) { pendingCleared.add(m.itemId); vscodeApi?.postMessage({ type: "askClear", itemId: m.itemId }); }   // clear every member
     // only finalize if a render in the 180ms window didn't revive (re-render clears
     // .dismissing) or replace this card — else a stale timeout yanks the wrong one
@@ -1558,7 +1570,26 @@ function makeUndoClearBtn(): HTMLElement {
   b.id = "feed-undoclear";
   b.textContent = "Undo clear";
   b.title = "restore the most recently cleared card";
-  b.onclick = (ev) => { ev.stopPropagation(); pendingCleared.clear(); vscodeApi?.postMessage({ type: "undoClear" }); };   // undo un-suppresses, so a restored card re-appears even mid-window
+  b.onclick = (ev) => {
+    ev.stopPropagation();
+    b.classList.add("romp-acted");   // instant press acknowledgment (CLAUDE.md), before any round-trip
+    // OPTIMISTIC restore (the user 2026-06-27): re-insert the most-recently-cleared batch RIGHT NOW from the
+    // client cache, instead of waiting for the kernel to un-archive + rebuild + re-push the feed (the lag the
+    // user felt). The kernel's undoClear reconciles on its next push; pendingCleared is dropped for these ids
+    // so that push can't re-suppress them.
+    const batch = clearedStack.pop();
+    if (batch && batch.length) {
+      for (const it of batch) {
+        pendingCleared.delete(it.itemId);
+        pendingRestored.set(it.itemId, it);                                  // stay sticky until the kernel push carries it
+        if (!asks.some((a) => a.itemId === it.itemId)) asks.push(it);        // show it NOW
+      }
+      render();
+    } else {
+      pendingCleared.clear();   // nothing cached (e.g. cleared in another session) → fall back to the round-trip
+    }
+    vscodeApi?.postMessage({ type: "undoClear" });
+  };
   return b;
 }
 
@@ -1817,6 +1848,13 @@ window.addEventListener("message", (e: MessageEvent) => {
     // any still-pending (kernel hasn't caught up) from this payload so a stale push can't resurrect them.
     for (const id of Array.from(pendingCleared)) if (!incomingAsks.some((a) => a.itemId === id)) pendingCleared.delete(id);
     asks = pendingCleared.size ? incomingAsks.filter((a) => !pendingCleared.has(a.itemId)) : incomingAsks;
+    // An optimistic Undo clear is CONFIRMED once the kernel's payload carries the id again → stop forcing it.
+    // Until then, keep the cached card in `asks` so the replace above can't drop the just-restored card (flicker).
+    if (pendingRestored.size) {
+      for (const id of Array.from(pendingRestored.keys())) if (incomingAsks.some((a) => a.itemId === id)) pendingRestored.delete(id);
+      const present = new Set(asks.map((a) => a.itemId));
+      for (const it of pendingRestored.values()) if (!present.has(it.itemId)) asks.push(it);
+    }
     workingSet = new Set(Array.isArray(m.working) ? m.working : []);
     hostNow = typeof m.now === "number" ? m.now : Math.floor(Date.now() / 1000);
     if (typeof m.dismissedCount === "number") dismissedCount = m.dismissedCount;

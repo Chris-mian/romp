@@ -32,6 +32,23 @@ test("a mid-dismiss card is NOT removed by a push — its own timer finishes the
   assert.match(FEED, /!desired\.has\("a:" \+ id\) && undismissed\(askEls\.get\(id\)\)/);
 });
 
-test("Undo clears the suppression so a restored card re-appears even mid-window", () => {
-  assert.match(FEED, /pendingCleared\.clear\(\); vscodeApi\?\.postMessage\(\{ type: "undoClear" \}\)/);
+test("Undo clear is OPTIMISTIC + acknowledges instantly (the user 2026-06-27)", () => {
+  // every Clear caches the card data so Undo can restore it without a round-trip
+  assert.match(FEED, /const clearedStack: AskItem\[\]\[\] = \[\];/);
+  const caches = FEED.match(/clearedStack\.push\(/g) || [];
+  assert.ok(caches.length >= 3, "single item, ask card, and group-member clears all cache their data");
+  // instant press acknowledgment before any round-trip
+  assert.match(FEED, /b\.classList\.add\("romp-acted"\);/);
+  // pop the latest batch, un-suppress + re-insert it NOW, then re-render
+  assert.match(FEED, /const batch = clearedStack\.pop\(\);/);
+  assert.match(FEED, /pendingRestored\.set\(it\.itemId, it\);/);
+  assert.match(FEED, /if \(!asks\.some\(\(a\) => a\.itemId === it\.itemId\)\) asks\.push\(it\);/);
+  // still posts undoClear so the kernel reconciles
+  assert.match(FEED, /vscodeApi\?\.postMessage\(\{ type: "undoClear" \}\)/);
+});
+
+test("an optimistically-restored card stays sticky until the kernel push carries it (no flicker)", () => {
+  assert.match(FEED, /const pendingRestored = new Map<string, AskItem>\(\);/);
+  assert.match(FEED, /if \(incomingAsks\.some\(\(a\) => a\.itemId === id\)\) pendingRestored\.delete\(id\)/);
+  assert.match(FEED, /for \(const it of pendingRestored\.values\(\)\) if \(!present\.has\(it\.itemId\)\) asks\.push\(it\)/);
 });
