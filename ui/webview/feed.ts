@@ -1190,6 +1190,20 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
     const sum = el("div", "ftree-summary" + (distillText ? "" : " generating"));
     sum.style.paddingLeft = (depth * TREE_INDENT_EM + 1.6) + "em";   // align under the node text (past the tri + mark)
     const stext = el("span", "ftree-summary-text"); stext.textContent = distillText || "(generating…)"; sum.appendChild(stext);
+    // Clicking the distilled summary jumps to the SAME place the concise card's summary line does (the user
+    // 2026-06-27): the ROOT node's summary IS the card's summary → land on it.summaryAnchorUuid (the biggest
+    // contiguous assistant-text block, anchor "work"), exactly like setAutoLine. A sub-node has no per-node
+    // summary anchor, so it falls back to goWork (where that node resolved). Only once the text has settled.
+    if (distillText) {
+      sum.classList.add("lz-nav");
+      if (depth === 0 && it.summaryAnchorUuid) {
+        sum.title = "jump to the most substantive note about this";
+        sum.onclick = (ev) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: it.itemId, sid: it.sid, t: it.t, anchor: "work", anchorUuid: it.summaryAnchorUuid }); };
+      } else {
+        sum.title = "jump to where this resolved";
+        sum.onclick = goWork;
+      }
+    }
     if (reasonTip) sum.title = reasonTip;   // the planner's one-line reason → hover (like the card auto-line + the ledger)
     box.appendChild(sum);
   }

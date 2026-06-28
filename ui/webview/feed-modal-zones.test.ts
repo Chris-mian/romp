@@ -11,6 +11,16 @@ import * as path from "node:path";
 const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.css"), "utf8");
 
+test("the modal's distilled summary links to the SAME place as the concise card's summary (the user 2026-06-27)", () => {
+  // the concise card's summary line (setAutoLine) navigates to it.summaryAnchorUuid, anchor "work"
+  assert.match(FEED, /el\.onclick = \(ev\) => \{ ev\.stopPropagation\(\); vscodeApi\?\.postMessage\(\{ type: "showOnTimeline", itemId: it\.itemId, sid: it\.sid, t: it\.t, anchor: "work", anchorUuid: anchor \}\); \};/);
+  // the modal's distilled-summary line is now clickable too: the ROOT node (= the card's summary) lands on the
+  // SAME it.summaryAnchorUuid; a sub-node falls back to its own work anchor (goWork).
+  assert.match(FEED, /if \(depth === 0 && it\.summaryAnchorUuid\) \{[\s\S]*?anchorUuid: it\.summaryAnchorUuid \}\); \};/);
+  assert.match(FEED, /\} else \{\s*\n\s*sum\.title = "jump to where this resolved";\s*\n\s*sum\.onclick = goWork;/);
+  assert.match(FEED, /sum\.classList\.add\("lz-nav"\);/);
+});
+
 test("modal node: text → the minting MESSAGE (anchor 'prompt', resolves by promptAnchorUuid)", () => {
   // the prompt jump now carries the node's promptAnchorUuid (the user's minting turn) → resolves BY ID, not
   // the old anchorUuid:null + time-landing (kernel 92e23ff + bugs' contract).
