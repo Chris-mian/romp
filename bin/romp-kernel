@@ -1414,6 +1414,35 @@ def _reveal_or_confirm(sid, focus_msg):
         _reveal_chat(focus_msg)
 
 
+def _open_terminal(cwd):
+    """Open a terminal app in `cwd` on the KERNEL's machine — where the session actually runs (the user
+    2026-06-27: click the statusline folder to open a terminal there). macOS: `open -a <app> <dir>`, honoring
+    the terminal romp was launched from (TERM_PROGRAM) when recognizable, else Terminal.app; Linux: try the
+    common launchers. Best-effort + guarded — a bad path or missing app never throws into the WS loop."""
+    d = os.path.expanduser(str(cwd or "")).rstrip("/") or "/"
+    if not os.path.isdir(d):
+        return
+    try:
+        if sys.platform == "darwin":
+            app = {"iTerm.app": "iTerm", "Apple_Terminal": "Terminal", "ghostty": "Ghostty",
+                   "WarpTerminal": "Warp", "Hyper": "Hyper", "WezTerm": "WezTerm",
+                   "vscode": "Terminal"}.get(os.environ.get("TERM_PROGRAM", ""), "Terminal")
+            r = subprocess.run(["open", "-a", app, d], timeout=10,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if r.returncode != 0 and app != "Terminal":   # unknown app name → fall back to the system default
+                subprocess.run(["open", "-a", "Terminal", d], timeout=10,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            for argv in (["x-terminal-emulator"], ["gnome-terminal"], ["konsole"], ["xterm"]):
+                try:
+                    subprocess.Popen(argv, cwd=d, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    break
+                except FileNotFoundError:
+                    continue
+    except Exception:
+        sys.stderr.write("openTerminal: %s\n" % traceback.format_exc())
+
+
 def _open_or_revive(sid):
     """openSession routing: a LIVE session → un-hide its tab + focus the chat; a DEAD one → the
     confirmRevive modal (no silent reopen, no auto read-only tab — the user 2026-06-17)."""
@@ -7707,6 +7736,9 @@ class Handler(BaseHTTPRequestHandler):
         elif msg and msg.get("type") == "openSession" and msg.get("id"):
             # live → reopen the hidden tab + focus; dead → the chat's confirmRevive modal
             _open_or_revive(msg["id"])
+        elif msg and msg.get("type") == "openTerminal" and msg.get("cwd"):
+            _open_terminal(str(msg["cwd"]))             # statusline folder click → a terminal in that dir
+
         elif msg and msg.get("type") == "reviveSession" and msg.get("id"):
             # confirmRevive → "Revive": resume the dead session in the background (the kernel had
             # no handler, so the modal's Revive silently did nothing — the user 2026-06-16)

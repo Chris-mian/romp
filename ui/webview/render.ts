@@ -4056,7 +4056,12 @@ function updateStatusline() {
   const dir = el("span", "status-dir");
   if (s.cwd) {
     dir.textContent = "📁 " + (s.cwd.replace(/\/+$/, "").split("/").pop() || s.cwd);
-    dir.title = s.cwd;
+    dir.title = s.cwd + "  ·  click to open a terminal here";
+    // Click → open a terminal in this folder (the user 2026-06-27). Click-safe: the action rides a data-act on
+    // the STABLE #statusline (delegate installed once below), so the per-push statusline rebuild can't drop it.
+    dir.dataset.act = "openTerm";
+    dir.dataset.cwd = s.cwd;
+    dir.classList.add("status-dir-link");
   }
   sl.appendChild(dir);
   // The session's git branch, just right of the dir — only when known and only if the user hasn't hidden it
@@ -4598,6 +4603,15 @@ setupSettings();
       if (bgExpanded.has(id)) bgExpanded.delete(id); else bgExpanded.add(id);
       renderBgTasks();
     },
+  });
+})();
+(() => {
+  // The statusline rebuilds on every kernel push, so the folder link's action rides a data-act on the STABLE
+  // #statusline (delegate installed once) — a click can't be dropped by a mid-press rebuild (the user 2026-06-27).
+  const sl = document.getElementById("statusline");
+  if (!sl) return;
+  delegate(sl, {
+    openTerm: (el) => { const cwd = el.dataset.cwd; if (cwd && vscodeApi) vscodeApi.postMessage({ type: "openTerminal", cwd }); },
   });
 })();
 (() => {
