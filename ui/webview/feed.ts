@@ -71,6 +71,7 @@ interface AskItem {
   openPaths: AskPath[];                            // open leaves → "waiting on X" drop-point lines
   reopened?: boolean;                              // resurrected: a question arrived AFTER the user cleared it
   followupPending?: boolean;                       // you followed up on a settled card → optimistically reopened, awaiting the judge's re-file (kernel)
+  recheck?: boolean;                               // soft-block you've already replied to (targeted card-reply OR a plain thread reply after it) → de-urgented (dotted), dropped from the "need input" count, until the judge resolves or re-blocks it (kernel build_feed; the user 2026-06-27)
   autoFiled?: boolean;                             // settled → moved to COMPLETED by the auto-filing rule (keeps the green ring)
   explicitDone?: boolean;                          // every path explicitly DONE-stamped → blue ring (blue+green when settled agrees)
   turnIds?: string[];                              // typed turns that minted/amended this card
@@ -278,7 +279,7 @@ function updateHeader() {
   ensureHeader();
   // "N need input" = the actionable count: asks whose newest link is a DECISION
   // plus standalone DECISION deliverables (everything sitting in column 2).
-  const needInput = asks.filter((a) => askColumn(a) === "needsInput").length
+  const needInput = asks.filter((a) => askColumn(a) === "needsInput" && !a.recheck).length   // re-check cards aren't on you anymore → out of the count
     + standaloneItems().filter((i) => i.relevance === "DECISION").length;
   const liveN = new Set([
     ...asks.filter((a) => a.live).map((a) => a.sid),
@@ -612,11 +613,20 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
     card.style.borderStyle = "dashed";
     card.style.borderWidth = "1.5px";
     card.style.borderColor = "rgba(255, 255, 255, 0.45)";
+  } else if (it.recheck) {
+    // RE-CHECK: a soft-block you've already replied to — de-urgented with the same dotted treatment as a
+    // provisional card (you're no longer the bottleneck), but readable, until the judge resolves or
+    // re-blocks it (the user 2026-06-27).
+    card.style.borderStyle = "dashed";
+    card.style.borderWidth = "1.5px";
+    card.style.borderColor = "rgba(255, 255, 255, 0.32)";
   } else {
     card.style.borderStyle = "";
     card.style.borderWidth = "";
     card.style.borderColor = `rgba(${r}, ${g}, ${b}, ${Math.min(TINT_ALPHA + 0.2, 0.9)})`;
   }
+  // a re-check card dims slightly (between a normal card and a provisional ghost) so it reads as "handled, pending"
+  if (!it.provisional) card.style.opacity = it.recheck ? ".8" : "";
   a._title.textContent = it.text;
   a._name.textContent = it.name;
   if (it.color) a._name.style.color = it.color.bg;
@@ -641,7 +651,20 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   a._reopened.style.display = it.reopened ? "" : "none";
   // "↻ Followed up" while the kernel has optimistically reopened a settled card you followed up on, before
   // the judge re-files it (it.followupPending self-clears on the next pass). (judges delegation, 2026-06-17.)
-  a._followedup.style.display = it.followupPending ? "" : "none";
+  // RE-CHECK chip (the user 2026-06-27): a soft-block you've replied to — targeted (followupPending) OR a
+  // plain thread reply (kernel `recheck`, the superset). Reads "↩ re-checking" so you know it registered and
+  // isn't on you, pending the judge's verdict. Falls back to the legacy "↻ Followed up" text otherwise.
+  if (it.recheck) {
+    a._followedup.style.display = "";
+    a._followedup.textContent = "↩ re-checking";
+    a._followedup.title = "you've replied — no longer waiting on you; the judge will resolve it or re-block it on the next pass";
+  } else if (it.followupPending) {
+    a._followedup.style.display = "";
+    a._followedup.textContent = "↻ Followed up";
+    a._followedup.title = "you followed up — reopened to Working; the planner will re-file it on the next pass";
+  } else {
+    a._followedup.style.display = "none";
+  }
   // "Awaiting <peer>" — this session has an unanswered message out to a live peer (kernel _wait_for_graph):
   // held in Working, not stalled, so auto-nudge skips it. The peer NAME renders in its NATIVE identity colour
   // (like the "↪ from" provenance), no emoji prefix (the user 2026-06-22). A mutual-wait CYCLE keeps the red

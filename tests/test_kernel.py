@@ -2211,6 +2211,72 @@ class ViewBuilder(unittest.TestCase):
         comp = next(a for a in km.build_feed(NOW)["asks"] if a["column"] == "completed")
         self.assertIsNone(comp["blocked"], "no live permission (idle) → no hard block floor")
 
+    def test_last_plain_user_turn_t_excludes_followups_and_romp(self):
+        # a PLAIN human prompt counts; a romp-injected nudge (author romp) and a typed card-reply (carries
+        # the romp-goal-id marker) do NOT — only untargeted replies set the re-check sweep (the user 2026-06-27).
+        def turn(uuid, author, text, t):
+            return {"trigger": uuid, "t": t,
+                    "atoms": [{"uuid": uuid, "type": "user", "author": author, "t": t,
+                               "message": {"role": "user", "content": [{"type": "text", "text": text}]}}]}
+        turns = [
+            turn("u1", "human", "hello there", 100),
+            turn("u2", "romp", "nudge", 400),                                # romp-injected → excluded
+            turn("u3", "human", "answer <!-- romp-goal-id: x:g1 -->", 500),  # targeted card-reply → excluded
+            turn("u4", "human", "just chatting", 250),                       # plain → counts
+        ]
+        self.assertEqual(km._last_plain_user_turn_t(turns), 250)
+        self.assertEqual(km._last_plain_user_turn_t([]), 0)
+
+    def _blocked_store(self, **nodes_extra):
+        g = "%s:gR" % SID
+        nd = {"id": g, "text": "blocked goal", "parentId": None, "nodeComplete": False,
+              "blocked": True, "blockWhy": "need your call", "cleared": False,
+              "trail": [], "t": NOW - 100, "mt": NOW - 100}
+        nd.update(nodes_extra)
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+            "rompUuid": SID, "seq": 1, "lastNode": g,
+            "nodes": {g: nd}, "placements": {}, "status": {g: "blocked"}}))
+        km._tmux_sessions = lambda: {SID: {"state": "idle", "since": NOW - 50, "model": "",
+                                           "effort": "", "context": None, "compactPct": None, "color": None}}
+        return g
+
+    def test_feed_recheck_on_plain_reply_after_block(self):
+        g = self._blocked_store()
+        saved = km._last_plain_user_turn_t
+        try:
+            km._last_plain_user_turn_t = lambda turns: NOW - 10      # a plain reply AFTER the block (mt NOW-100)
+            card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
+            self.assertTrue(card["recheck"], "plain reply after the block → re-check (de-urgented)")
+            self.assertEqual(card["column"], "needs_input", "still files under blocked, just de-urgented")
+            km._last_plain_user_turn_t = lambda turns: NOW - 300     # a reply that PRE-dates the block
+            card2 = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
+            self.assertFalse(card2["recheck"], "no reply since the block → still urgent")
+        finally:
+            km._last_plain_user_turn_t = saved
+
+    def test_feed_recheck_targeted_followup_does_not_sweep_siblings(self):
+        # two blocked tops; a TARGETED follow-up (followupPending) on g1 only. No plain reply. g1 re-checks,
+        # g2 stays urgent — a direct card-reply doesn't move everything (the user 2026-06-27).
+        g1, g2 = "%s:gA" % SID, "%s:gB" % SID
+        def nd(gid, **kw):
+            n = {"id": gid, "text": gid, "parentId": None, "nodeComplete": False, "blocked": True,
+                 "blockWhy": "?", "cleared": False, "trail": [], "t": NOW - 100, "mt": NOW - 100}
+            n.update(kw); return n
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+            "rompUuid": SID, "seq": 2, "lastNode": g1,
+            "nodes": {g1: nd(g1, followupPending=True), g2: nd(g2)},
+            "placements": {}, "status": {g1: "blocked", g2: "blocked"}}))
+        km._tmux_sessions = lambda: {SID: {"state": "idle", "since": NOW - 50, "model": "",
+                                           "effort": "", "context": None, "compactPct": None, "color": None}}
+        saved = km._last_plain_user_turn_t
+        try:
+            km._last_plain_user_turn_t = lambda turns: 0            # NO plain reply
+            cards = {a["itemId"]: a for a in km.build_feed(NOW)["asks"]}
+            self.assertTrue(cards[g1]["recheck"], "targeted followup → that card re-checks")
+            self.assertFalse(cards[g2]["recheck"], "sibling without a follow-up stays urgent-blocked")
+        finally:
+            km._last_plain_user_turn_t = saved
+
     def _sender_goal(self, sender, gid, **kw):
         """Write a sender's goal store with one linked goal (open by default) — the cross-agent end of a
         courier handoff that build_feed checks to decide whether the '↪ from <peer>' badge is still live."""

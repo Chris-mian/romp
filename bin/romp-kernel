@@ -96,6 +96,28 @@ def _turn_romp_injected(turn):
     return bool(a and a.get("author") == "romp")
 
 
+def _last_plain_user_turn_t(turns):
+    """Timestamp of the most recent GENUINE PLAIN human prompt on this thread — a turn whose trigger atom
+    is author 'human' AND carries no `romp-goal-id` marker. That marker rides on BOTH a romp nudge and a
+    TYPED card-reply (see _followup_body), so excluding it leaves only untargeted replies — the user
+    talking on the thread, not answering one specific card. The feed's re-check derivation uses this: a
+    plain reply after a soft block de-urgents that session's blocks (you've re-engaged, so you're no longer
+    the bottleneck), while a targeted card-reply de-urgents only its own card via followupPending. 0 if
+    none. (the user 2026-06-27.)"""
+    best = 0
+    for turn in turns or []:
+        atoms = turn.get("atoms") or []
+        trig = turn.get("trigger") or {}
+        tuid = trig.get("uuid") if isinstance(trig, dict) else trig
+        a = next((x for x in atoms if x.get("uuid") == tuid), None) or (atoms[0] if atoms else None)
+        if not a or a.get("author") != "human":
+            continue
+        if "romp-goal-id" in (_atom_user_text(a) or ""):   # a nudge / typed card-reply → targeted, not a plain reply
+            continue
+        best = max(best, a.get("t") or turn.get("t") or 0)
+    return best
+
+
 def _awake_spans(start, end):
     """Split a work span [start, end] into the sub-spans the host was AWAKE for, EXCISING every recorded
     suspension that overlaps it. A segment that kept working after the lid reopened thus renders as one bar
@@ -4461,6 +4483,7 @@ def build_feed(now, tmux=None):
         # delegated — a WORKING flavor, never needs-input. Sourced from the SDK producer's states overlay
         # (api, branch headless-sdk-backend) or the transcript bg-tool stopgap; None when actively working.
         sess_awaiting_why = _session_awaiting(fsid, s["path"], not who_working) if ps else None   # cache-only: fills in after the warm
+        plain_user_t = _last_plain_user_turn_t(ps["turns"]) if ps else 0   # re-check: a plain reply after a soft block de-urgents it
         had_working = False                          # does this session show ANY working card? → drives the provisional placeholder
         for nid in children.get(None, []):
             col = status.get(nid, "working")
@@ -4514,6 +4537,15 @@ def build_feed(now, tmux=None):
                        if nodes[x].get("blocked") and not _closure_done(x)]
                 if bts:
                     disp_t = max(bts)
+            # RE-CHECK (the user 2026-06-27): a SOFT-blocked top you've already replied to is no longer on
+            # YOU — render it de-urgented (dotted, dropped from the needs-you tally) until the judge either
+            # resolves it or re-blocks it. Two triggers: a TARGETED card-reply/nudge (followupPending on the
+            # top, precise — only this card), or a PLAIN reply on the thread AFTER the block (disp_t = when
+            # blocked), which sweeps the session's soft-blocks since we can't attribute it; the judge re-blocks
+            # the ones the reply didn't actually resolve (its mt then advances past the reply → urgent again).
+            # Never the live hard floors (api/permission) — a reply doesn't clear those.
+            recheck = bool(col == "blocked" and nid != api_top and nid != perm_top and (
+                nodes[nid].get("followupPending") or plain_user_t > disp_t))
             # awaiting is a flavor of WORKING → the working column (never needs-input), card time = mint t; the awaiting badge carries the why
             column = ("needs_input" if (nid == api_top or col == "blocked")
                       else "completed" if col == "completed" else "working")
@@ -4550,6 +4582,7 @@ def build_feed(now, tmux=None):
                                            else "this session is stopped awaiting your approval")} if nid == perm_top
                             else None),
                 "column": column,
+                "recheck": recheck,                  # soft-block you've replied to → de-urgented (dotted) pending re-judge
                 "openQuestions": [], "openPaths": [], "tree": flatten(nid, [])})
         # A session actively working a brand-new ask shows NO card until the planner classifies the held
         # segment at turn-end — surface a live-prompt placeholder so it isn't invisible. Only when nothing
