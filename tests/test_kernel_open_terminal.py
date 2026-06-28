@@ -1,6 +1,8 @@
 """Click the statusline folder → open a terminal in that dir on the kernel's machine (the user 2026-06-27).
-_open_terminal validates the path and shells `open -a <app> <dir>` on macOS. SYNTHETIC fixtures; subprocess is
-stubbed so the test never actually launches a terminal."""
+There's no portable "default terminal" API (macOS has no folder→terminal handler), so _open_terminal honors an
+explicit override ($ROMP_TERMINAL / ~/.config/romp/terminal), then the launched-from terminal, then the first
+INSTALLED popular terminal (Ghostty/iTerm/… before Terminal), then the OS default. SYNTHETIC fixtures;
+subprocess is stubbed so the test never launches anything."""
 import inspect
 import os
 import sys
@@ -16,26 +18,46 @@ km = SourceFileLoader("romp_kernel", os.path.join(BIN, "romp-kernel")).load_modu
 GOOD = "/tmp/TESTHOST/somedir"
 
 
+class _R:
+    def __init__(self, rc=0): self.returncode = rc
+
+
 class OpenTerminal(unittest.TestCase):
     def setUp(self):
-        self._run = km.subprocess.run
-        self._isdir = km.os.path.isdir
+        self._run, self._popen, self._isdir = km.subprocess.run, km.subprocess.Popen, km.os.path.isdir
+        self._env = dict(os.environ)
         self.calls = []
-        km.subprocess.run = lambda argv, **kw: self.calls.append(argv) or type("R", (), {"returncode": 0})()
+        km.subprocess.run = lambda argv, **kw: self.calls.append(argv) or _R(0)   # every app "installed"
+        km.subprocess.Popen = lambda argv, **kw: self.calls.append(("popen", argv, kw.get("cwd")))
         km.os.path.isdir = lambda p: p == GOOD
+        os.environ.pop("ROMP_TERMINAL", None)
+        os.environ.pop("TERM_PROGRAM", None)
 
     def tearDown(self):
-        km.subprocess.run = self._run
-        km.os.path.isdir = self._isdir
+        km.subprocess.run, km.subprocess.Popen, km.os.path.isdir = self._run, self._popen, self._isdir
+        os.environ.clear(); os.environ.update(self._env)
 
-    @unittest.skipUnless(sys.platform == "darwin", "macOS open path")
+    def _launch(self):
+        # on macOS the launch is the `open -a <app> <dir>` call (probes use `open -Ra`); on Linux it's the Popen.
+        if sys.platform == "darwin":
+            return next((c for c in self.calls if isinstance(c, list) and "-a" in c), None)
+        return next((c for c in self.calls if isinstance(c, tuple) and c[0] == "popen"), None)
+
     def test_opens_a_terminal_in_an_existing_dir(self):
         km._open_terminal(GOOD)
-        self.assertEqual(len(self.calls), 1, "one launch")
-        argv = self.calls[0]
-        self.assertEqual(argv[0], "open")
-        self.assertEqual(argv[1], "-a")
-        self.assertEqual(argv[-1], GOOD, "the chosen dir is the target")
+        launch = self._launch()
+        self.assertIsNotNone(launch, "a terminal is launched for a real dir")
+        if sys.platform == "darwin":
+            self.assertEqual(launch[-1], GOOD, "the chosen dir is the open target")
+        else:
+            self.assertEqual(launch[2], GOOD, "the terminal starts in the chosen dir (Popen cwd)")
+
+    @unittest.skipUnless(sys.platform == "darwin", "macOS open -a path")
+    def test_explicit_override_wins(self):
+        os.environ["ROMP_TERMINAL"] = "Ghostty"
+        km._open_terminal(GOOD)
+        launch = self._launch()
+        self.assertEqual(launch, ["open", "-a", "Ghostty", GOOD], "the user's $ROMP_TERMINAL is honored first")
 
     def test_a_nonexistent_dir_is_a_no_op(self):
         km._open_terminal("/no/such/TESTHOST/dir")
@@ -44,6 +66,10 @@ class OpenTerminal(unittest.TestCase):
     def test_blank_cwd_is_a_no_op(self):
         km._open_terminal("")
         self.assertEqual(self.calls, [])
+
+    def test_terminal_pref_reads_env(self):
+        os.environ["ROMP_TERMINAL"] = "  iTerm  "
+        self.assertEqual(km._terminal_pref(), "iTerm", "trimmed env override")
 
     def test_dispatch_routes_openTerminal(self):
         src = inspect.getsource(km)

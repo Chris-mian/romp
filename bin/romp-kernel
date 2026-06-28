@@ -1414,29 +1414,60 @@ def _reveal_or_confirm(sid, focus_msg):
         _reveal_chat(focus_msg)
 
 
+def _terminal_pref():
+    """The user's chosen terminal, if any: $ROMP_TERMINAL or one line in ~/.config/romp/terminal. On macOS
+    this is an app NAME (for `open -a`), e.g. "Ghostty"; on Linux a command, e.g. "ghostty". Empty if unset.
+    (There's no portable OS API for "the default terminal" — macOS has no folder→terminal handler — so an
+    explicit override is the reliable knob, with installed-terminal autodetection as the fallback.)"""
+    t = os.environ.get("ROMP_TERMINAL", "").strip()
+    if t:
+        return t
+    try:
+        p = Path(os.path.expanduser("~/.config/romp/terminal"))
+        if p.is_file():
+            return p.read_text().splitlines()[0].strip() if p.read_text().strip() else ""
+    except Exception:
+        pass
+    return ""
+
+
 def _open_terminal(cwd):
     """Open a terminal app in `cwd` on the KERNEL's machine — where the session actually runs (the user
-    2026-06-27: click the statusline folder to open a terminal there). macOS: `open -a <app> <dir>`, honoring
-    the terminal romp was launched from (TERM_PROGRAM) when recognizable, else Terminal.app; Linux: try the
-    common launchers. Best-effort + guarded — a bad path or missing app never throws into the WS loop."""
+    2026-06-27: click the statusline folder to open a terminal there).
+
+    Terminal choice, in order: an explicit override ($ROMP_TERMINAL / ~/.config/romp/terminal), then the
+    terminal romp was launched from (TERM_PROGRAM — only when that survives into the kernel's env), then the
+    first INSTALLED terminal from a popular list, then the OS default. macOS has no queryable "default
+    terminal", so we detect what's installed (`open -Ra <app>`) and prefer a real terminal over Finder; Linux
+    honors $TERMINAL then x-terminal-emulator then common emulators. Best-effort + guarded."""
     d = os.path.expanduser(str(cwd or "")).rstrip("/") or "/"
     if not os.path.isdir(d):
         return
+    pref = _terminal_pref()
     try:
         if sys.platform == "darwin":
-            app = {"iTerm.app": "iTerm", "Apple_Terminal": "Terminal", "ghostty": "Ghostty",
-                   "WarpTerminal": "Warp", "Hyper": "Hyper", "WezTerm": "WezTerm",
-                   "vscode": "Terminal"}.get(os.environ.get("TERM_PROGRAM", ""), "Terminal")
-            r = subprocess.run(["open", "-a", app, d], timeout=10,
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            if r.returncode != 0 and app != "Terminal":   # unknown app name → fall back to the system default
-                subprocess.run(["open", "-a", "Terminal", d], timeout=10,
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        else:
-            for argv in (["x-terminal-emulator"], ["gnome-terminal"], ["konsole"], ["xterm"]):
+            def installed(name):
                 try:
-                    subprocess.Popen(argv, cwd=d, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    break
+                    return subprocess.run(["open", "-Ra", name], timeout=5, stdout=subprocess.DEVNULL,
+                                          stderr=subprocess.DEVNULL).returncode == 0
+                except Exception:
+                    return False
+            from_env = {"iTerm.app": "iTerm", "ghostty": "Ghostty", "WarpTerminal": "Warp", "Hyper": "Hyper",
+                        "WezTerm": "WezTerm", "Apple_Terminal": "Terminal"}.get(os.environ.get("TERM_PROGRAM", ""), "")
+            # explicit override → launched-from → popular installed (Ghostty/iTerm/… before Terminal) → Terminal
+            for name in (pref, from_env, "Ghostty", "iTerm", "WezTerm", "kitty", "Alacritty", "Warp", "Hyper", "Terminal"):
+                if name and installed(name):
+                    subprocess.run(["open", "-a", name, d], timeout=10, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    return
+            subprocess.run(["open", d], timeout=10, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)   # last resort: Finder
+        else:
+            for term in (pref, os.environ.get("TERMINAL", ""), "x-terminal-emulator", "ghostty", "gnome-terminal",
+                         "konsole", "xfce4-terminal", "alacritty", "kitty", "wezterm", "xterm"):
+                if not term:
+                    continue
+                try:
+                    subprocess.Popen([term], cwd=d, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    return
                 except FileNotFoundError:
                     continue
     except Exception:
