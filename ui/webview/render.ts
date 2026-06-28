@@ -3144,7 +3144,6 @@ try { ledgerCollapsed = !!((vscodeApi && vscodeApi.getState && vscodeApi.getStat
 // (ids are session-scoped, so the sets are safe to keep global across session switches).
 const ledgerFolded = new Set<string>();    // explicitly folded by the user (overrides a default-open)
 const ledgerExpanded = new Set<string>();  // explicitly expanded by the user (overrides a default-fold)
-const ledgerSummaryOpen = new Set<string>();  // node ids whose ⊕ distiller-summary panel is expanded (the user 2026-06-21)
 // One-shot FLIP source (the user 2026-06-18): capture WHERE the goal text sits now, so the next render can
 // MORPH the destination element from this spot — BOTH ways: expanding glides the collapsed line into its
 // pinned row (then the rest fades in); collapsing glides the row text back up into the compact line.

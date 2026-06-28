@@ -11,14 +11,11 @@ import * as path from "node:path";
 const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.css"), "utf8");
 
-test("the modal's distilled summary links to the SAME place as the concise card's summary (the user 2026-06-27)", () => {
-  // the concise card's summary line (setAutoLine) navigates to it.summaryAnchorUuid, anchor "work"
-  assert.match(FEED, /el\.onclick = \(ev\) => \{ ev\.stopPropagation\(\); vscodeApi\?\.postMessage\(\{ type: "showOnTimeline", itemId: it\.itemId, sid: it\.sid, t: it\.t, anchor: "work", anchorUuid: anchor \}\); \};/);
-  // the modal's distilled-summary line is now clickable too: the ROOT node (= the card's summary) lands on the
-  // SAME it.summaryAnchorUuid; a sub-node falls back to its own work anchor (goWork).
-  assert.match(FEED, /if \(depth === 0 && it\.summaryAnchorUuid\) \{[\s\S]*?anchorUuid: it\.summaryAnchorUuid \}\); \};/);
-  assert.match(FEED, /\} else \{\s*\n\s*sum\.title = "jump to where this resolved";\s*\n\s*sum\.onclick = goWork;/);
-  assert.match(FEED, /sum\.classList\.add\("lz-nav"\);/);
+test("the modal has NO distilled-summary / why lines (removed 2026-06-27 — just the goal tree)", () => {
+  assert.doesNotMatch(FEED, /ftree-summary/);
+  assert.doesNotMatch(FEED, /ftree-why/);
+  assert.doesNotMatch(FEED, /distillText/);
+  assert.doesNotMatch(FEED, /"\(generating…\)"/);
 });
 
 test("modal node: text → the minting MESSAGE (anchor 'prompt', resolves by promptAnchorUuid)", () => {
@@ -68,15 +65,10 @@ test("modal UNRESOLVED node: checkbox + text light together, checkbox STAYS a ci
   assert.doesNotMatch(CSS, /lz-merge/);                          // no square/bridged merge fill
 });
 
-test("an OPEN node shows the planner's creation 'why' INLINE, clickable to where it was authored", () => {
-  // done/blocked nodes use the distiller line (summary/blockSummary) now; only an OPEN node shows its
-  // planner creation rationale as a clickable .ftree-why line → goWork (its minting segment). (2026-06-18.)
-  assert.match(FEED, /if \(node\.status === "open" && node\.why\) \{/);
-  assert.match(FEED, /el\("div", "ftree-why lz-nav"\)/);
-  assert.match(FEED, /w\.textContent = node\.why/);
-  assert.match(FEED, /w\.onclick = goWork/);
-  assert.match(CSS, /\.ftree-why \{/);
-  assert.match(CSS, /\.ftree-why\.lz-nav \{[^}]*cursor: pointer/);
+test("an OPEN node no longer shows a creation 'why' line (removed 2026-06-27 — just the goal text)", () => {
+  assert.doesNotMatch(FEED, /node\.status === "open" && node\.why/);
+  assert.doesNotMatch(FEED, /ftree-why/);
+  assert.doesNotMatch(CSS, /\.ftree-why/);
 });
 
 test("modal BLOCKED node: white-on-red 'BLOCKED' chip + red '?' in a red ring; tooltip says 'marked blocked' (the user 2026-06-17)", () => {

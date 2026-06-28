@@ -249,14 +249,7 @@ body { display: flex; flex-direction: column; position: relative; }   /* positio
 .fask-origin { flex: 0 0 auto; font-size: 0.8em; cursor: pointer; white-space: nowrap; }
 .fask-origin-pre { color: var(--dim); }
 .fask-origin-peer { font-weight: 600; }
-/* the .fask-blockwhy/.fask-donewhy auto-line (the distiller summary) DEEP-LINKS when the kernel resolved a
-   summaryAnchorUuid → .nav gives it a clickable hover that jumps to the most substantive message in the
-   work span; without an anchor it stays plain text (was plain-only before — the user 2026-06-22). */
-/* the summary text wraps a long no-space token (a file/function/type name) instead of overflowing the card
-   edge (the user 2026-06-23) — no base rule existed, so a token like SdkBackend.pending_queued(sid:str) spilled */
-.fask-blockwhy, .fask-donewhy { overflow-wrap: anywhere; }
-.fask-blockwhy.nav, .fask-donewhy.nav { cursor: pointer; border-radius: 4px; transition: background 0.1s ease; }
-.fask-blockwhy.nav:hover, .fask-donewhy.nav:hover { background: rgba(255, 255, 255, 0.07); text-decoration: underline; text-underline-offset: 2px; }
+/* (the .fask-blockwhy / .fask-donewhy card auto-line was removed 2026-06-27 — no why/distiller line on cards) */
 .fask-origin:hover { text-decoration: underline; text-underline-offset: 2px; }
 
 /* "reopened" badge — a cleared ask resurrected by a new question */
@@ -318,19 +311,8 @@ body { display: flex; flex-direction: column; position: relative; }   /* positio
    snug against the name (~3px), not floating ~11px away (the user 2026-06-10) */
 .fwork-dot { display: inline-block; flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: #e0b020; vertical-align: middle; margin-right: -3px; }
 .ftree-meta { flex: 0 0 auto; margin-left: 6px; color: var(--dim); font-size: 0.82em; white-space: nowrap; }
-/* the planner's rationale, shown INLINE under a node in the modal tree (the user 2026-06-17) — the same
-   "why" the card surfaces, no longer tooltip-only. Dim italic so it reads as annotation, not a sub-goal. */
-.ftree-why { font-size: 0.82em; line-height: 1.3; opacity: 0.72; font-style: italic; color: var(--dim); margin: 0 0 3px; overflow-wrap: anywhere; }
-/* the rationale is clickable → jumps to where the planner authored it (the user 2026-06-17) */
-.ftree-why.lz-nav { cursor: pointer; }
-.ftree-why.lz-nav:hover { opacity: 1; text-decoration: underline; text-underline-offset: 2px; }
-/* the DISTILLER's key takeaway for a completed goal (the user 2026-06-17): the MODAL's deliverable line —
-   brighter than the dim italic why-line (it's content, not annotation). pre-wrap keeps an artifact
-   (command / path / snippet) intact across lines; selectable text, no copy button (the user 2026-06-18). */
-.ftree-summary { font-size: 0.86em; line-height: 1.45; margin: 2px 0 6px; color: var(--fg); white-space: pre-wrap; overflow-wrap: anywhere; }
-/* the distiller hasn't produced yet → a dim italic "(generating…)" placeholder (NEVER a doneWhy/blockWhy
-   fallback; it stays until the field lands, the user 2026-06-18) */
-.ftree-summary.generating { opacity: 0.6; font-style: italic; }
+/* (the modal's per-node rationale + distiller-summary lines were removed 2026-06-27 — the modal shows just the
+   goal tree now, no why-created / why-blocked / why-done / generating lines.) */
 .st-done .ftree-mark { color: var(--rel-done); }
 /* a BLOCKED (needs-you) node: the "?" is RED inside a RED ring the SAME 13px size as the ✓ checkbox disc,
    and its label reads "BLOCKED" in red (the user 2026-06-17) — a stronger, unmistakable block signal than

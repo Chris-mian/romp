@@ -24,7 +24,7 @@ test("each session renders the real LEDGER TREE — .ledger-* nodes, marks, coll
   assert.match(SRC, /el\("span", "ledger-ttime"\)/);
 });
 
-test("FULL ledger parity (the user 2026-06-24): pointer-cursor zones, grouped hover highlight, ⊕ summary expander", () => {
+test("ledger parity (the user 2026-06-24): pointer-cursor zones + grouped hover highlight (no ⊕ summary expander)", () => {
   // .lz-nav → the pointer cursor (styles.css) on the checkbox / text / time, so each reads as clickable
   assert.match(SRC, /"ledger-tmark lz-nav"/);
   assert.match(SRC, /"ledger-ttext lz-nav"/);
@@ -34,14 +34,11 @@ test("FULL ledger parity (the user 2026-06-24): pointer-cursor zones, grouped ho
   assert.match(SRC, /g\.classList\.add\("lz-hl"\)/);
   assert.match(SRC, /linkHover\(\[mark, txt\]\)/);                  // open node: checkbox + text are one block
   assert.match(SRC, /linkHover\(time\.textContent \? \[mark, time\] : \[mark\]\)/);   // resolved: checkbox + time
-  // the ⊕/⊖ distiller-summary expander + its on-its-own-line panel
-  assert.match(SRC, /el\("span", "ledger-tsum-toggle nav"\)/);
-  assert.match(SRC, /sumToggle\.textContent = isSumOpen \? "⊖" : "⊕"/);
-  assert.match(SRC, /sumToggle\.dataset\.act = "sum"/);            // delegated like fold (innermost data-act)
-  assert.match(SRC, /el\("div", "ledger-tsum"\)/);                 // the expanded summary panel
-  // the delegate toggles the per-node summary panel
-  assert.match(SRC, /sum: \(el\) => \{/);
-  assert.match(SRC, /if \(sumOpen\.has\(k\)\) sumOpen\.delete\(k\); else sumOpen\.add\(k\);/);
+  // the ⊕/⊖ distiller-summary expander + its panel + delegate were removed 2026-06-27 (just the goals now)
+  assert.doesNotMatch(SRC, /ledger-tsum/);
+  assert.doesNotMatch(SRC, /sumToggle/);
+  assert.doesNotMatch(SRC, /sumOpen/);
+  assert.doesNotMatch(SRC, /sum: \(el\) => \{/);
 });
 
 test("a session-level collapse caret folds the whole session's tree WITHOUT opening it (the user 2026-06-24)", () => {

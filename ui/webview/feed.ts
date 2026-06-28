@@ -482,16 +482,9 @@ function makeAskCard(it: AskItem): HTMLElement {
   // the list therefore always means active, so the dot is always on.
   const checklist = el("div", "fask-checklist");   // inline sub-goal list (top 2 levels); filled in updateAskCard
   const delegations = el("div", "fask-delegations");
-  // The card's ONE auto-written line (the human's redesign, 2026-06-18): the DISTILLER's summary — the
-  // blocked card shows blockSummary, the completed card shows summary — else the literal "(generating…)"
-  // until the distiller produces (it can stay that way indefinitely). It NEVER falls back to the planner's
-  // hand-written why; that demotes to this line's hover tooltip. PLAIN TEXT, not a link (a synthesized
-  // summary has no single chat location). Inline-styled (ui owns styles.css); content/style set in updateAskCard.
-  const blockReason = el("div", "fask-blockwhy");
-  blockReason.style.cssText = "display:none;font-size:11px;line-height:1.3;margin:1px 0 3px";
-  const doneReason = el("div", "fask-donewhy");
-  doneReason.style.cssText = "display:none;font-size:11px;line-height:1.3;margin:1px 0 3px";
-  main.append(row1, blockReason, doneReason, row2, row3, checklist, delegations);   // no expand button — body click opens the modal
+  // (The card's auto-written why / distiller-summary line was removed 2026-06-27 — the user: just show the
+  //  goals, not the why-created / why-blocked / why-done rationales, which also stuck on a generating placeholder.)
+  main.append(row1, row2, row3, checklist, delegations);   // no expand button — body click opens the modal
   card.append(main);
   // Follow-up lives in the modal now (the user 2026-06-10), not on the card.
 
@@ -591,8 +584,6 @@ function makeAskCard(it: AskItem): HTMLElement {
   a._apiBadge = apiBadge; a._apiRetry = apiRetry; a._revive = revive; a._nudge = nudge; a._cardFup = cardFup; a._clr = clr;
   a._delegations = delegations;
   a._checklist = checklist;
-  a._blockwhy = blockReason;
-  a._donewhy = doneReason;
   a._origin = origin;
   return card;
 }
@@ -706,35 +697,8 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
     a._blocked.title = it.blocked.what + " — click to open the session";
     a._blocked.onclick = (ev: Event) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "openSession", id: it.sid }); };
   }
-  // The card's ONE auto-written line (the human's redesign 2026-06-18): the distiller's summary, or
-  // "(generating…)" until it lands. NEVER the planner's why — that demotes to the line's hover tooltip.
-  // Blocked card → blockSummary (title = blockWhy); completed card → summary (title = doneWhy). Plain text.
-  const setAutoLine = (el: HTMLElement, sum: string | null | undefined, why: string | undefined, show: boolean, anchor?: string | null) => {
-    el.onclick = null; el.classList.remove("nav"); el.style.cursor = "";   // reset — cards are reused across pushes
-    if (!show) { el.style.display = "none"; el.removeAttribute("title"); return; }
-    const text = (sum ?? "").trim();
-    // Three states, keyed on the distiller's field: null/undefined = still generating → the dim placeholder;
-    // "" = the distiller SETTLED with no takeaway (e.g. an umbrella/verify goal with no work of its own) →
-    // no line at all, never a stuck "(generating…)"; a real string = the takeaway. (kernel/distiller "" sentinel.)
-    if (sum != null && !text) { el.style.display = "none"; el.removeAttribute("title"); return; }
-    el.style.display = "";
-    const generating = !text;
-    el.textContent = generating ? "(generating…)" : text;
-    el.style.fontStyle = generating ? "italic" : "normal";   // the placeholder is dim italic; a real summary reads plainly
-    el.style.opacity = generating ? ".5" : ".82";
-    if (why && why.trim()) el.title = why.trim(); else el.removeAttribute("title");
-    // A real summary DEEP-LINKS to the most substantive message about it (the user 2026-06-22): the kernel's
-    // summaryAnchorUuid = the biggest contiguous block of assistant text between the goal's mint and its
-    // resolution. stopPropagation so the click jumps to the chat instead of opening the card's modal.
-    if (anchor && !generating) {
-      el.classList.add("nav"); el.style.cursor = "pointer";
-      el.title = (el.title ? el.title + " · " : "") + "jump to the most substantive message about this";
-      el.onclick = (ev) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: it.itemId, sid: it.sid, t: it.t, anchor: "work", anchorUuid: anchor }); };
-    }
-  };
-  // blocked: only when there's a planner block context (a pure API-error/permission block has no summary/why)
-  setAutoLine(a._blockwhy, it.blockSummary, it.blockWhy, it.column === "needs_input" && !!(it.blockSummary || it.blockWhy), it.summaryAnchorUuid);
-  setAutoLine(a._donewhy, it.summary, it.doneWhy, it.column === "completed", it.summaryAnchorUuid);
+  // (The card's auto-written distiller-summary / why line was removed 2026-06-27 — the user: just show the
+  //  goals, drop the why-created / why-blocked / why-done rationales and the generating placeholder.)
   // API error → a red "API error" badge + a Retry button that pastes "retry" into the session to resume
   // the stalled turn (the user 2026-06-16). The card already files under BLOCKED (askColumn → needsInput).
   a._apiBadge.style.display = isApiErr ? "" : "none";
@@ -1137,12 +1101,7 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
   line.appendChild(tri);
   const mark = el("span", "ftree-mark"); mark.textContent = nodeMark(node); line.appendChild(mark);
   const txt = el("span", "ftree-text"); txt.textContent = node.text || "(node)"; line.appendChild(txt);
-  // hover tooltip = the planner's rationale for THIS node (native title → no styles.css edit). The
-  // block/done reason wins over the creation "why". (the user 2026-06-16.)
-  const tip = (node.status === "question" && node.blockWhy) ? "⏸ " + node.blockWhy
-            : (node.status === "done" && node.doneWhy) ? "✓ " + node.doneWhy
-            : (node.why || "");
-  if (tip) txt.title = tip;
+  // (The node's why/blocked/done rationale hover tooltip was removed 2026-06-27 — just the goal text now.)
   if (node.who && node.who !== parentWho) {
     const who = el("a", "ftree-who"); who.title = node.whoWorking ? "open this session (working now)" : "open this session";
     who.appendChild(document.createTextNode("→ "));
@@ -1211,47 +1170,9 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
   box.appendChild(line);
   if (repeat) return;                                   // dim repeat: line only, no descent
   seen.add(node.id);
-  // The DISTILLER's output is the modal's one auto-written line for a DONE or BLOCKED node (the user
-  // 2026-06-18): node.summary (the completed-goal takeaway — an artifact or 1-3 sentences) / node.blockSummary
-  // (the block-distiller's decision brief — what you must decide + options + only the needed context), else
-  // the literal "(generating…)" until it's produced — NEVER a fall back to doneWhy/blockWhy. The planner's
-  // one-line reason (doneWhy/blockWhy) demotes to the hover tooltip; the line is PLAIN TEXT (a synthesized
-  // summary has no single chat location). pre-wrap keeps an artifact intact across lines.
-  const distillText = node.status === "done" ? node.summary : node.status === "question" ? node.blockSummary : undefined;
-  const reasonTip = node.status === "done" ? node.doneWhy : node.status === "question" ? node.blockWhy : undefined;
-  // null/undefined = the distiller is still running → the "(generating…)" placeholder; "" = it SETTLED with no
-  // takeaway (an umbrella/verify goal with no work of its own) → no summary line at all, never a stuck placeholder.
-  if ((node.status === "done" || node.status === "question") && distillText !== "") {
-    const sum = el("div", "ftree-summary" + (distillText ? "" : " generating"));
-    sum.style.paddingLeft = (depth * TREE_INDENT_EM + 1.6) + "em";   // align under the node text (past the tri + mark)
-    const stext = el("span", "ftree-summary-text"); stext.textContent = distillText || "(generating…)"; sum.appendChild(stext);
-    // Clicking the distilled summary jumps to the SAME place the concise card's summary line does (the user
-    // 2026-06-27): the ROOT node's summary IS the card's summary → land on it.summaryAnchorUuid (the biggest
-    // contiguous assistant-text block, anchor "work"), exactly like setAutoLine. A sub-node has no per-node
-    // summary anchor, so it falls back to goWork (where that node resolved). Only once the text has settled.
-    if (distillText) {
-      sum.classList.add("lz-nav");
-      if (depth === 0 && it.summaryAnchorUuid) {
-        sum.title = "jump to the most substantive note about this";
-        sum.onclick = (ev) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: it.itemId, sid: it.sid, t: it.t, anchor: "work", anchorUuid: it.summaryAnchorUuid }); };
-      } else {
-        sum.title = "jump to where this resolved";
-        sum.onclick = goWork;
-      }
-    }
-    if (reasonTip) sum.title = reasonTip;   // the planner's one-line reason → hover (like the card auto-line + the ledger)
-    box.appendChild(sum);
-  }
-  // An OPEN node has no distiller text — it keeps the planner's CREATION rationale ("why" this goal exists),
-  // clickable to where the planner authored it (its minting turn = goWork). (the user 2026-06-17.)
-  if (node.status === "open" && node.why) {
-    const w = el("div", "ftree-why lz-nav");
-    w.textContent = node.why;
-    w.style.paddingLeft = (depth * TREE_INDENT_EM + 1.6) + "em";   // align under the node text (past the tri + mark)
-    w.title = "jump to where this was noted";
-    w.onclick = goWork;
-    box.appendChild(w);
-  }
+  // (Removed 2026-06-27, the user: the modal's per-node rationale lines — the distiller summary / decision
+  //  brief for done/blocked nodes, the generating placeholder, and the open node's creation rationale — are
+  //  gone. The modal shows just the goal tree now. The judge still produces these; they're only un-displayed.)
   // (the in-feed decision sub-card was removed — a blocked node shows its red BLOCKED marker and
   // links to the session; answering happens in the session, not in the feed. the user 2026-06-15.)
   // node history (rows) — progressive, only when this node was clicked open.

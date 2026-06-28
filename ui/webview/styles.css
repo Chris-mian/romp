@@ -340,15 +340,8 @@ body { display: flex; flex-direction: column; }
    node is NO LONGER excluded — its checkbox matches every other blocked item (the user 2026-06-17). */
 .ledger-tnode.blocked .ledger-tmark { border-color: var(--err); color: var(--err); }
 .ledger-ttext { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
-/* ⊕ distiller-summary expander, right of the task name — reveals the distiller's takeaway (done) / decision
-   brief (blocked) on a detail line under the row (the user 2026-06-21). Only rendered when one exists. */
-.ledger-tsum-toggle { flex: 0 0 auto; color: var(--dim); font-size: 0.95em; line-height: 1; cursor: pointer; opacity: 0.7; }
-.ledger-tsum-toggle:hover { color: var(--fg); opacity: 1; }
-/* width:0 + min-width:100% (border-box) keeps the detail from WIDENING the fit-content tree: its long text
-   would otherwise become the widest child and push the whole tree — and the right-aligned time labels —
-   outward. Instead it spans the tree's existing width and wraps within it (the user 2026-06-21; verified
-   headless: with this the time labels stay put on expand, Δ=0, vs +84px without). */
-.ledger-tsum { box-sizing: border-box; width: 0; min-width: 100%; font-size: 0.85em; line-height: 1.4; color: var(--dim); padding-right: 6px; margin: -1px 0 1px; overflow-wrap: anywhere; white-space: pre-wrap; }
+/* (the ⊕ distiller-summary expander + its .ledger-tsum panel were removed 2026-06-27 — the Fleet tree shows
+   just the goals now, no distiller takeaway / decision-brief line.) */
 /* extra whitespace before the right-aligned times so they don't crowd the text (the user 2026-06-16). */
 .ledger-ttime { flex: 0 0 auto; margin-left: 1.75em; font-size: 0.85em; font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--dim); }
 /* a done item's text is tinted to its recency colour inline (renderLedger); this is the fallback for a

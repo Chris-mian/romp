@@ -64,7 +64,6 @@ function sessionFreshest(s: FleetSession): number {
 const folded = new Set<string>(), expanded = new Set<string>();   // fold state, keyed "sid\0nodeId"
 const fkey = (sid: string, id: string) => sid + "\0" + id;
 
-const sumOpen = new Set<string>();   // ⊕ distiller-summary panels currently expanded, keyed fkey(sid,nodeId)
 const sessFolded = new Set<string>();   // sessions whose WHOLE task tree is collapsed, keyed by sid (the user 2026-06-24)
 
 function el(tag: string, cls?: string): HTMLElement { const e = document.createElement(tag); if (cls) e.className = cls; return e; }
@@ -295,18 +294,8 @@ function render() {
       txt.dataset.sid = s.sid; txt.dataset.nid = n.id; txt.dataset.act = "goprompt";   // text → the asking message
       txt.textContent = n.text;
       txt.title = n.text;            // the full goal text on hover (it can wrap/clip in the narrow Fleet pane)
-      // ⊕ distiller-summary expander (parity with the ledger box): the takeaway (done) / decision brief
-      // (blocked) on its own line. data-act=sum so the #fleet-list delegate toggles it instead of opening the
-      // session; state in sumOpen, keyed per session+node so each row remembers independently.
-      const sumText = (n.summary || n.blockSummary || "").trim();
-      const isSumOpen = sumOpen.has(fkey(s.sid, n.id));
-      let sumToggle: HTMLElement | null = null;
-      if (sumText) {
-        sumToggle = el("span", "ledger-tsum-toggle nav");
-        sumToggle.textContent = isSumOpen ? "⊖" : "⊕";
-        sumToggle.title = isSumOpen ? "hide the distiller's summary" : "show the distiller's summary";
-        sumToggle.dataset.act = "sum"; sumToggle.dataset.sid = s.sid; sumToggle.dataset.nid = n.id;
-      }
+      // (The ⊕ distiller-summary expander was removed 2026-06-27 — the user: show just the goals, not the
+      //  distiller takeaway / decision brief.)
       const time = el("span", "ledger-ttime");
       if (n.current && curT) {
         time.textContent = `(${agehms(now - curT)})`; time.style.color = ageColorReadable(now - curT);
@@ -321,16 +310,9 @@ function render() {
       if (n.done || n.blocked) { linkHover([txt]); linkHover(time.textContent ? [mark, time] : [mark]); }
       else { linkHover([mark, txt]); if (time.textContent) linkHover([time]); }
       row.appendChild(tri); row.appendChild(mark); row.appendChild(txt);
-      if (sumToggle) row.appendChild(sumToggle);
       row.appendChild(time);
       row.dataset.act = "open"; row.dataset.sid = s.sid;   // click-safe: action lives on the #fleet-list delegate
       treeBox.appendChild(row);
-      if (sumText && isSumOpen) {                            // the ⊕'s expanded panel: the summary on its own line
-        const det = el("div", "ledger-tsum");
-        det.textContent = sumText;
-        det.style.paddingLeft = (4 + depth * 15 + 22) + "px";   // align under the text, past the mark column
-        treeBox.appendChild(det);
-      }
       if (expandable && !isFolded) for (const cid of n.children!) { const c = byId.get(cid); if (c) renderNode(c, depth + 1); }
     };
     if (!sfolded) { for (const r of visibleRoots) renderNode(r, 0); sec.appendChild(treeBox); }   // folded → head only
@@ -410,13 +392,6 @@ window.addEventListener("storage", (e: StorageEvent) => { if (e.key === "romp:se
       const sid = el.dataset.sid;
       if (!sid) return;
       if (sessFolded.has(sid)) sessFolded.delete(sid); else sessFolded.add(sid);
-      render();
-    },
-    sum: (el) => {                                       // ⊕/⊖ → toggle this node's distiller-summary panel
-      const sid = el.dataset.sid, nid = el.dataset.nid;
-      if (!sid || !nid) return;
-      const k = fkey(sid, nid);
-      if (sumOpen.has(k)) sumOpen.delete(k); else sumOpen.add(k);
       render();
     },
     fold: (el) => {

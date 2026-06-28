@@ -101,5 +101,5 @@ test("a long no-space token (file/func/type name) WRAPS instead of overflowing t
   // overflow-wrap: anywhere (not break-word) so a token like SdkBackend.pending_queued(sid:str) breaks to
   // fit — the title used break-word (kept the longest word as min-width) and the summary had NO wrap at all.
   assert.match(CSS, /\.fcard-title \{[^}]*overflow-wrap: anywhere/);
-  assert.match(CSS, /\.fask-blockwhy, \.fask-donewhy \{[^}]*overflow-wrap: anywhere/);
+  // (the .fask-blockwhy/.fask-donewhy auto-line was removed 2026-06-27, so its wrap rule is gone too)
 });

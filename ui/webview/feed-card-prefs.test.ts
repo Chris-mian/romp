@@ -16,14 +16,10 @@ test("feed reads the sub-goals pref from romp:settings, defaulting ON; explanati
   assert.doesNotMatch(FEED, /explanations/);   // every trace of the old pref is gone from the feed
 });
 
-test("the card's ONE auto-line = distiller summary (else '(generating…)'), why → hover tooltip, no showWhy gate", () => {
-  // a shared setter fills the line; the placeholder reads "(generating…)" forever until the distiller lands
-  assert.match(FEED, /const setAutoLine =/);
-  assert.match(FEED, /"\(generating…\)"/);
-  // blocked → blockSummary (title blockWhy); completed → summary (title doneWhy)
-  assert.match(FEED, /setAutoLine\(a\._blockwhy, it\.blockSummary, it\.blockWhy, it\.column === "needs_input"/);
-  assert.match(FEED, /setAutoLine\(a\._donewhy, it\.summary, it\.doneWhy, it\.column === "completed", it\.summaryAnchorUuid\)/);
-  // the why is the TOOLTIP, never the visible line; the old explanations gate is gone
+test("the card has NO auto-written why/distiller line (removed 2026-06-27 — just the goals)", () => {
+  assert.doesNotMatch(FEED, /const setAutoLine =/);
+  assert.doesNotMatch(FEED, /"\(generating…\)"/, "no '(generating…)' placeholder anywhere");
+  assert.doesNotMatch(FEED, /fask-blockwhy|fask-donewhy/);
   assert.doesNotMatch(FEED, /showWhy/);
 });
 
