@@ -11,7 +11,7 @@ const SRC = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
 
 test("queued payload is per-message {md, followUp?, goal?}, not raw strings", () => {
-  assert.match(SRC, /kind: "queued"; texts: \{ md: string; followUp\?: boolean; goal\?: string \}\[\]/);
+  assert.match(SRC, /kind: "queued"; texts: \{ md: string; followUp\?: boolean; goal\?: string; idx\?: number; cancelable\?: boolean \}\[\]/);
 });
 
 test("renderQueued renders markdown (not raw text) + the follow-up header", () => {

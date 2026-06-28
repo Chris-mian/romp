@@ -11,7 +11,7 @@ const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview"
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
 
 test("a queued ChatEvent carries the pending messages (backend-agnostic, per-message md)", () => {
-  assert.match(RENDER, /kind: "queued"; texts: \{ md: string; followUp\?: boolean; goal\?: string \}\[\]/);
+  assert.match(RENDER, /kind: "queued"; texts: \{ md: string; followUp\?: boolean; goal\?: string; idx\?: number; cancelable\?: boolean \}\[\]/);
 });
 
 test("renderQueued draws a wireframe-hourglass header (singular/plural) + one markdown bubble per queued message", () => {
@@ -25,8 +25,23 @@ test("renderQueued draws a wireframe-hourglass header (singular/plural) + one ma
   assert.match(RENDER, /label\.textContent = `\$\{n\} queued message\$\{n === 1 \? "" : "s"\}`/);
   assert.match(RENDER, /el\("div", "queued-head"\)/);
   // one faint "you" bubble per pending message, rendered as markdown (like a landed message)
-  assert.match(RENDER, /for \(const t of ev\.texts\)[\s\S]*?el\("div", "queued-bubble md"\)/);
+  assert.match(RENDER, /for \(const t of ev\.texts\)[\s\S]*?el\("div", "queued-bubble md" \+ \(t\.cancelable \? " cancelable" : ""\)\)/);
   assert.match(RENDER, /bubble\.innerHTML = md\(t\.md\)/);
+});
+
+test("a cancelable queued bubble is clickable → cancelQueued + restore to the composer (the user 2026-06-27)", () => {
+  // only SDK-owned queues are cancelable; click posts the idx and pulls the text back into the composer
+  assert.match(RENDER, /if \(t\.cancelable && t\.idx !== undefined\)/);
+  assert.match(RENDER, /type: "cancelQueued", id: activeId, idx: t\.idx/);
+  assert.match(RENDER, /restoreToComposer\(t\.md\)/);
+  assert.match(RENDER, /bubble\.remove\(\)/, "optimistic removal before the next push");
+  // restoreToComposer fills the composer textarea, fires input (autosize/enable), focuses, caret to end
+  assert.match(RENDER, /function restoreToComposer\(text: string\)/);
+  assert.match(RENDER, /getElementById\("composer-input"\)/);
+  assert.match(RENDER, /dispatchEvent\(new Event\("input"/);
+  // the affordance is advertised: pointer cursor + a hover lift
+  assert.match(CSS, /\.queued-bubble\.cancelable \{ cursor: pointer/);
+  assert.match(CSS, /\.queued-bubble\.cancelable:hover/);
 });
 
 test("the queued-header hourglass uses the accent blue, like the feed/mail toggle icons", () => {

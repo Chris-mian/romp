@@ -85,7 +85,7 @@ type ChatEvent = (
     }
   // Claude Code's Task to-do list, folded into one live checklist.
   | { kind: "todo"; tasks: TodoTask[]; ts?: string; uuid?: string }
-  | { kind: "queued"; texts: { md: string; followUp?: boolean; goal?: string }[]; ts?: string; uuid?: string }
+  | { kind: "queued"; texts: { md: string; followUp?: boolean; goal?: string; idx?: number; cancelable?: boolean }[]; ts?: string; uuid?: string }
   // The turn stopped on an API error (event-based: transcript isApiErrorMessage). The session is BLOCKED
   // until retried — a red-dot card at the bottom with a Retry button (the user 2026-06-16).
   | { kind: "apiError"; text: string; status?: number; category?: string; ts?: string; uuid?: string }
@@ -1065,11 +1065,35 @@ function renderQueued(ev: Extract<ChatEvent, { kind: "queued" }>): HTMLElement {
   turn.appendChild(head);
   for (const t of ev.texts) {
     if (t.followUp) turn.appendChild(followUpHeader(t.goal));
-    const bubble = el("div", "queued-bubble md");
+    const bubble = el("div", "queued-bubble md" + (t.cancelable ? " cancelable" : ""));
     bubble.innerHTML = md(t.md);
+    // CANCELABLE (SDK queue, romp owns it): click a still-queued message to pull it BACK OUT — cancels it
+    // and drops its text into the composer to re-edit/re-send (the user 2026-06-27). Hover highlight + a
+    // tooltip advertise that it's clickable. tmux queues aren't cancelable (Claude Code owns them), so those
+    // bubbles render plain.
+    if (t.cancelable && t.idx !== undefined) {
+      bubble.title = "click to cancel this queued message and move it back to the composer";
+      bubble.addEventListener("click", () => {
+        if (activeId && vscodeApi) vscodeApi.postMessage({ type: "cancelQueued", id: activeId, idx: t.idx });
+        restoreToComposer(t.md);
+        bubble.remove();                                   // optimistic; the next push rebuilds without it
+      });
+    }
     turn.appendChild(bubble);
   }
   return turn;
+}
+
+// Put a canceled queued message back into the composer so the user can edit/re-send it. Appends on a new
+// line if there's already a draft, else fills it; focuses + caret to end + fires `input` so the autosize
+// + send-button enable react (the user 2026-06-27).
+function restoreToComposer(text: string) {
+  const ta = document.getElementById("composer-input") as HTMLTextAreaElement | null;
+  if (!ta) return;
+  ta.value = ta.value.trim() ? ta.value.replace(/\s*$/, "") + "\n" + text : text;
+  ta.dispatchEvent(new Event("input", { bubbles: true }));
+  ta.focus();
+  ta.setSelectionRange(ta.value.length, ta.value.length);
 }
 
 // The turn stopped on an API error — the session is BLOCKED until retried. A red-dot card at the bottom
