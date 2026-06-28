@@ -4546,8 +4546,11 @@ def build_feed(now, tmux=None):
             # Never the live hard floors (api/permission) — a reply doesn't clear those.
             recheck = bool(col == "blocked" and nid != api_top and nid != perm_top and (
                 nodes[nid].get("followupPending") or plain_user_t > disp_t))
-            # awaiting is a flavor of WORKING → the working column (never needs-input), card time = mint t; the awaiting badge carries the why
-            column = ("needs_input" if (nid == api_top or col == "blocked")
+            # awaiting is a flavor of WORKING → the working column (never needs-input), card time = mint t; the awaiting badge carries the why.
+            # A RE-CHECK'd soft-block also drops to WORKING (the user 2026-06-27): once you've replied it's the
+            # agent's move, not yours, so it leaves the needs-input column entirely (still dotted + "↩ re-checking"
+            # so you can see it pending). The live hard floors (api_top / col stays blocked when NOT recheck) keep needs_input.
+            column = ("needs_input" if (nid == api_top or (col == "blocked" and not recheck))
                       else "completed" if col == "completed" else "working")
             had_working = had_working or column == "working"
             # summaryAnchorUuid: the biggest contiguous block of assistant text ANYWHERE in this goal's work
