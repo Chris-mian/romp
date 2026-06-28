@@ -133,6 +133,7 @@ let pendingAnchor: string | null = null; // deep-link target waiting to be scrol
 let pendingAnchorIntent: string | null = null; // kind the uuid anchor must honor — sticks with pendingAnchor across render-pass retries (pendingAnchorKind is cleared each pass, this isn't)
 let pendingAnchorT: number | null = null; // time fallback (epoch s) when the uuid can't resolve
 let pendingAnchorKind: string | null = null; // intent for the time fallback: "user" = land on the user's own turn
+let anchorPendingOlder = false; // scrollToAnchor kicked off a loadOlder fetch for an anchor past the resident tail → don't toast "couldn't locate"; chatHead re-lands when the chunk arrives (the user 2026-06-27)
 // Landing diagnostics (the user's ask, 2026-06-10): record HOW each deep-link
 // landing resolved — exact pointer / refused wrong-kind pointer / time-nearby
 // / gave up. The trail is posted to the host (→ ~/.local/state/romp/
@@ -2295,6 +2296,7 @@ function cssEscape(s: string): string {
 // assistant turn) — target the first. If it's not rendered yet, stash it as
 // pendingAnchor for the next render pass to retry.
 function scrollToAnchor(uuid: string): boolean {
+  anchorPendingOlder = false;            // fresh attempt; set true below only if we kick off an older-history fetch
   if (!uuid) return false;
   const v = activeId ? views.get(activeId) : null;
   // Resolve BY ID against the rendered turns: the atom uuid (every turn) OR the postal message id (postal
@@ -2317,6 +2319,15 @@ function scrollToAnchor(uuid: string): boolean {
       renderWindowItems(v, s, items, Math.max(0, u - WINDOW_RADIUS), Math.min(items.length, u + WINDOW_RADIUS), working);
       target = (v.el.querySelector(`.turn[data-uuid="${cssEscape(uuid)}"]`)
                 || v.el.querySelector(`.turn[data-mid="${cssEscape(uuid)}"]`)) as HTMLElement | null;
+    } else if (s && (s.headFrom ?? 0) > 0) {
+      // The anchor is OLDER than the resident tail — the chat ships only WIRE_TAIL events and streams older
+      // history in on demand, so a deep-link to a message past the tail had nothing to match and honest-failed
+      // with "couldn't locate" even though it's in the transcript (the user 2026-06-27). Fetch the next older
+      // chunk re-anchored on THIS uuid; chatHead lands on it when it arrives, and if it's STILL further back
+      // this same branch fires again — a fetch-until-resident loop that terminates when headFrom reaches 0.
+      if (fetchOlderForAnchor(activeId, uuid)) {
+        pendingAnchor = uuid; anchorPendingOlder = true; landTrail.push("pointer-fetch-older"); return false;
+      }
     }
   }
   if (!target) { pendingAnchor = uuid; landTrail.push("pointer-not-rendered"); return false; }
@@ -2889,7 +2900,7 @@ function landActive(content: HTMLElement | null, v: View): void {
       type: "locateDiag", id: activeId, ok: scrolled, trail: landTrail.slice(),
       anchor: att.anchor ?? undefined, anchorT: att.t ?? undefined, kind: att.kind ?? undefined,
     });
-    if (!scrolled) landToast("couldn't locate this in the transcript");
+    if (!scrolled && !anchorPendingOlder) landToast("couldn't locate this in the transcript");  // fetching older history → chatHead re-lands, no false "couldn't locate"
   }
   if (!scrolled) {
     if (!v.shown || v.stick) content.scrollTop = content.scrollHeight;
@@ -3388,7 +3399,7 @@ function wireBulletNav(row: HTMLElement, b: LedgerBullet) {
   row.addEventListener("click", () => {
     if (!b.id) return;
     pendingAnchorIntent = null;                 // a bullet has no kind intent (captioned turn, user or assistant)
-    if (!scrollToAnchor(b.id)) landToast("couldn't locate this in the transcript");
+    if (!scrollToAnchor(b.id) && !anchorPendingOlder) landToast("couldn't locate this in the transcript");  // fetching older → re-lands on chatHead
   });
 }
 
@@ -4299,6 +4310,20 @@ function chatHead(msg: any) {
   pendingOlderAnchor.delete(msg.id);
   if (anchorUuid) { pendingAnchor = anchorUuid; pendingAnchorIntent = null; pendingAnchorT = null; pendingAnchorKind = null; }
   showActive();
+}
+
+// Fetch the next older history chunk re-anchored on `uuid` (a deep-link target past the resident tail), so
+// chatHead lands on it when the chunk arrives — instead of "couldn't locate" (the user 2026-06-27). Same
+// loadOlder request requestOlder uses, but it stashes the TARGET uuid rather than the current top row. False
+// when there's nothing older to fetch (headFrom 0) or a fetch is already in flight.
+function fetchOlderForAnchor(sid: string, uuid: string): boolean {
+  const s = sessions.get(sid);
+  if (!s || (s.headFrom ?? 0) <= 0 || loadingOlder.has(sid)) return false;
+  pendingOlderAnchor.set(sid, uuid);
+  loadingOlder.add(sid);
+  showLoadingPill();
+  vscodeApi?.postMessage({ type: "loadOlder", id: sid, before: s.headFrom });
+  return true;
 }
 
 // Ask the kernel for the chunk of history just before the resident tail. Anchors on the current top row so
