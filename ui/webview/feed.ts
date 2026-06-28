@@ -1748,6 +1748,56 @@ function reconcileCol(listEl: HTMLElement, entries: Entry[], globalDesired: Set<
   // including an old placeholder, is already removed at the top of this reconcile.)
 }
 
+// ── FLIP: animate a card FLYING to its new column when its status changes (the user 2026-06-27) ──
+// Cards are reused DOM nodes that reconcileCol MOVES between columns, so a status change relocates the same
+// element — perfect for FLIP (First-Last-Invert-Play): record each card's screen rect + column BEFORE the
+// move, then after it, offset the card back to where it was and transition that offset to zero so it glides to
+// its new home. The flying card sits in the BACK layer (position:relative; z-index:-1 → behind sibling cards
+// but above the column background) so it never flies OVER other content. Respects prefers-reduced-motion.
+type FlipState = { rect: DOMRect; col: string };
+const FLY_COLS: ("asks" | "needsInput" | "completed")[] = ["asks", "needsInput", "completed"];
+function captureCardRects(cols: ReturnType<typeof ensureCols>): Map<string, FlipState> {
+  const m = new Map<string, FlipState>();
+  for (const key of FLY_COLS) {
+    const colEl = cols[key];
+    for (const c of Array.from(colEl.children) as HTMLElement[]) {
+      if (c.dataset.key) m.set(c.dataset.key, { rect: c.getBoundingClientRect(), col: colEl.id });
+    }
+  }
+  return m;
+}
+function flyColumnChanges(first: Map<string, FlipState>, cols: ReturnType<typeof ensureCols>): void {
+  if (!first.size) return;
+  try { if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return; } catch { /* no matchMedia */ }
+  for (const key of FLY_COLS) {
+    const colEl = cols[key];
+    for (const c of Array.from(colEl.children) as HTMLElement[]) {
+      const k = c.dataset.key; if (!k) continue;
+      const prev = first.get(k);
+      if (!prev || prev.col === colEl.id) continue;        // brand-new card, or it stayed put → don't fly
+      const now = c.getBoundingClientRect();
+      const dx = prev.rect.left - now.left, dy = prev.rect.top - now.top;
+      if (!dx && !dy) continue;
+      // Invert: jump the card back to its old spot, instantly, in the back layer.
+      c.classList.add("fitem-flying");
+      c.style.transition = "none";
+      c.style.transform = `translate(${dx}px, ${dy}px)`;
+      // Play: next frame, release the offset with a transition → it glides to the new column.
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        c.style.transition = "transform .42s cubic-bezier(.22, .61, .36, 1)";
+        c.style.transform = "translate(0, 0)";
+      }));
+      const done = (ev: TransitionEvent) => {
+        if (ev.propertyName !== "transform") return;
+        c.removeEventListener("transitionend", done);
+        c.classList.remove("fitem-flying");
+        c.style.transition = ""; c.style.transform = "";   // back to normal flow + stacking
+      };
+      c.addEventListener("transitionend", done);
+    }
+  }
+}
+
 // THE view: one screen, three columns merging open asks with standalone
 // completions; cards move between columns as links arrive.
 function render() {
@@ -1801,6 +1851,10 @@ function render() {
   const oldestFirst = feedPrefs().oldestFirst;
   for (const k of Object.keys(buckets) as Column[]) buckets[k].sort((x, y) => oldestFirst ? x.t - y.t : y.t - x.t);
 
+  // FLIP step 1 (the user 2026-06-27): record every visible card's position + column BEFORE the reconcile, so
+  // a card that changes column can FLY from its old spot to the new one instead of teleporting.
+  const flipFirst = captureCardRects(cols);
+
   const desired = new Set<string>();
   reconcileCol(cols.asks, buckets.asks, desired);
   reconcileCol(cols.needsInput, buckets.needsInput, desired);
@@ -1820,6 +1874,8 @@ function render() {
   for (const id of Array.from(cardEls.keys())) if (!desired.has("i:" + id) && undismissed(cardEls.get(id))) { cardEls.get(id)?.remove(); cardEls.delete(id); }
 
   list.scrollTop = prevScroll;
+  // FLIP step 2: any card whose column changed flies from its recorded spot to the new one (in the back layer).
+  flyColumnChanges(flipFirst, cols);
   renderModal();   // keep the ⛶ full-screen tree (if open) in sync with this push
   applyExtHover(); // reconcile/renderModal may have rebuilt nodes — re-apply the rail-dot outlines (cards AND modal rows)
 }
