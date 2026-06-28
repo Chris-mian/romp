@@ -50,7 +50,22 @@ test("the kind guard accepts a peer's postal card as a valid PROMPT target (reco
 });
 
 test("honest-fail fires whenever the deep-link can't resolve by id (the turn is genuinely gone)", () => {
-  assert.match(RENDER, /if \(!scrolled\) landToast\("couldn't locate this in the transcript"\)/);
+  // now gated on !anchorPendingOlder so it doesn't fire while we're fetching older history for the anchor
+  assert.match(RENDER, /if \(!scrolled && !anchorPendingOlder\) landToast\("couldn't locate this in the transcript"\)/);
+});
+
+test("a deep-link to an anchor OLDER than the resident tail fetches older history, then lands (the user 2026-06-27)", () => {
+  // the bug: the chat ships only WIRE_TAIL events; an anchor past the tail wasn't in s.events, so
+  // scrollToAnchor honest-failed even though the message is in the transcript. Fix: fetch the older chunk
+  // re-anchored on the uuid (chatHead re-lands), looping until resident or headFrom hits 0.
+  assert.match(RENDER, /else if \(s && \(s\.headFrom \?\? 0\) > 0\) \{/, "older-than-tail branch in scrollToAnchor");
+  assert.match(RENDER, /if \(fetchOlderForAnchor\(activeId, uuid\)\) \{\s*pendingAnchor = uuid; anchorPendingOlder = true;/);
+  // the helper stashes the TARGET uuid (not the current top row) so chatHead lands on it
+  assert.match(RENDER, /function fetchOlderForAnchor\(sid: string, uuid: string\): boolean/);
+  assert.match(RENDER, /pendingOlderAnchor\.set\(sid, uuid\)/);
+  assert.match(RENDER, /vscodeApi\?\.postMessage\(\{ type: "loadOlder", id: sid, before: s\.headFrom \}\)/);
+  // the flag is reset at the start of each attempt so it can't leak a stale "fetching" state
+  assert.match(RENDER, /anchorPendingOlder = false;\s+\/\/ fresh attempt/);
 });
 
 // (The two ledger-zone deep-link tests were removed 2026-06-24 with the in-chat ledger box itself —
