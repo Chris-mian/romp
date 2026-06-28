@@ -965,49 +965,43 @@ def _auto_nudge_tick(now, tmux):
             # read state-log 'working' continuously 17:51:36→17:54:14, yet a nudge fired at 17:52:10). Only nudge
             # once the log shows a genuine stop ('waiting'/'idle'). Keyed on the stop EVENT, not a time window.
             continue
-        gid = _working_top_goal(sid)
-        if not gid:
-            continue
-        store = jd.load_goals(sid)
-        if _all_outstanding_delegated(store.get("nodes", {}), gid):   # the goal's only OPEN work is delegated to
-            continue                                                  # peers → nothing for THIS session to do (the
-            #                                                           user 2026-06-22). Parts it handles itself stay nudgeable.
-        gnode = store.get("nodes", {}).get(gid) or {}
-        if sid in waitfor and gnode.get("t", 0) <= waitfor[sid]["since"]:   # WAITING ON A LIVE PEER → not stalled,
-            continue                                     # "waiting on a peer isn't needs-you" (the human's philosophy).
-            #   But only when the working goal PREDATES the question — a goal minted after it can't be awaiting that
-            #   answer, so a stale wait must NOT suppress its nudge (the user 2026-06-28). Cycle → ⟲ deadlock chip.
         if _session_awaiting(sid, s["path"], True):      # AWAITING dispatched/delegated work (SDK overlay / bg-tool) →
             continue                                     # in flight, not stalled (the user 2026-06-22); idle is True here
         lt_id = lt.get("id")
-        rec = nudged.get(gid) or {}
-        if rec.get("lastTurnId") == lt_id:
-            continue                                     # ONE nudge per turn (the user 2026-06-26): this turn is
-            #   already nudged — re-arm only on a genuinely NEW ended turn. The agent's OWN nudge-response is a
-            #   new turn, so if it ends still-working it re-arms too — that's what keeps a goal getting nudged
-            #   across turns UNTIL it's blocked/completed. A stop that persists across several pusher ticks must
-            #   NOT re-fire each tick: that produced two nudges ~6s apart in one stop, before the agent consumed
-            #   the first (replacing the buggy two-per-turn cap, which only stopped the 3rd same-turn fire).
-        # Don't nudge until the CLOSER has classified this turn AT ITS CURRENT SIZE. A turn that ENDS by
-        # asking you a question is "working" only in the window before the closer marks its goal blocked;
-        # nudging the AGENT there is pointless (it's waiting on YOU, not stalled) and churns. We require the
-        # closer's recorded verdict to reflect the turn's current content — not bare membership in
-        # closedTurns, which a turn closed at an earlier idle then resumed/grown would satisfy stale, firing
-        # the nudge before the closer re-judges the final content (the user 2026-06-27). _closer_settled
-        # mirrors the closer's own closedSig freshness check; it's a no-op when the closer is off (else it
-        # would suppress every nudge). (2026-06-21, hardened 2026-06-27)
+        store = jd.load_goals(sid)
+        # Don't nudge until the CLOSER has classified this turn AT ITS CURRENT SIZE (session-level gate). A turn
+        # that ENDS by asking you a question is "working" only in the window before the closer marks its goal
+        # blocked; nudging there is pointless (it's waiting on YOU) and churns. _closer_settled mirrors the
+        # closer's own closedSig freshness check; no-op when the closer is off (2026-06-21, hardened 2026-06-27).
         if not _closer_settled(store, lt_id, len(lt.get("atoms") or [])):
             continue
-        count = rec.get("count", 0) + 1
-        Sessions.backend_for(sid).send(sid, _followup_body(gid, None, AUTO_NUDGE_TEXT, injected=True, auto=True))   # romp's own AUTO-nudge → gray bubble + romp-logo marker (both backends)
-        try:
-            jd.optimistic_followup(sid, gid)             # reopen the card now (Followed-up chip), like a manual nudge
-        except Exception:
-            pass
-        _mark_auto_nudged(gid, lt_id, count)             # {count, lastTurnId} → re-arm on the next ended-working turn
-        _log_nudge_event(sid, gid, now, count)           # timeline ⚡ marker (business's view)
-        nudged[gid] = {"count": count, "lastTurnId": lt_id}   # mirror in-memory for the rest of this tick
-        fired = True
+        nodes, status = store.get("nodes", {}), store.get("status", {})
+        cleared = _cleared_ids()
+        # Nudge EVERY still-'working' TOP goal — not just the first (the user 2026-06-28): all of a session's
+        # working goals get nudged each time it stops, re-arming PER GOAL on each genuinely-new ended turn (one
+        # per turn, count climbing), until the session moves each to blocked/completed. Skip a top whose only
+        # open work is delegated to peers, or that's awaiting a pre-question peer reply. NO optimistic_followup:
+        # an auto-nudge must NOT paint the "Followed up"/re-checking chip — that's reserved for the user's OWN
+        # follow-ups (the user 2026-06-28).
+        for gid in list(nodes):
+            nd = nodes[gid]
+            if nd.get("parentId") is not None or nd.get("cleared") or gid in cleared:
+                continue                                 # top-level, live goals only
+            if status.get(gid, "working") != "working":
+                continue                                 # blocked/completed → the session resolved it; not orphaned
+            if _all_outstanding_delegated(nodes, gid):
+                continue                                 # all open work handed to peers → nothing for THIS session
+            if sid in waitfor and nd.get("t", 0) <= waitfor[sid]["since"]:
+                continue                                 # awaiting a live peer's reply to a question this goal predates
+            rec = nudged.get(gid) or {}
+            if rec.get("lastTurnId") == lt_id:
+                continue                                 # already nudged this turn — re-arm only on a NEW ended turn
+            count = rec.get("count", 0) + 1
+            Sessions.backend_for(sid).send(sid, _followup_body(gid, None, AUTO_NUDGE_TEXT, injected=True, auto=True))   # gray romp bubble + romp-logo (both backends)
+            _mark_auto_nudged(gid, lt_id, count)         # {count, lastTurnId} → re-arm on the next ended-working turn
+            _log_nudge_event(sid, gid, now, count)       # timeline romp-logo dot + escalation count
+            nudged[gid] = {"count": count, "lastTurnId": lt_id}   # mirror in-memory for the rest of this tick
+            fired = True
     if fired:
         _push_all()
 

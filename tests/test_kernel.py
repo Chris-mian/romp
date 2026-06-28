@@ -1177,6 +1177,42 @@ class ViewBuilder(unittest.TestCase):
         finally:
             restore()
 
+    def test_auto_nudge_fires_for_every_working_top(self):
+        # all of a session's WORKING top goals get nudged each stop — not just the first (the user 2026-06-28).
+        self._open_turn_transcript(ended=True); km._parse_cache.clear()
+        lt = km._parse(str(self.tpath), SID, NOW)["turns"][-1]["id"]
+        g1, g2 = SID + ":g1", SID + ":g2"
+        def n(nid):
+            return {"id": nid, "text": nid, "parentId": None, "nodeComplete": False,
+                    "blocked": False, "cleared": False, "trail": [], "t": T0}
+        self._goal_store({g1: n(g1), g2: n(g2)}, {g1: "working", g2: "working"}, last=g2, closed=[lt])
+        km._set_auto_nudge(True)
+        sent, restore = self._stub_nudge()
+        try:
+            km._auto_nudge_tick(NOW, km._tmux_sessions())
+            bodies = [b for (_n, b) in sent]
+            self.assertEqual(len(sent), 2, "BOTH working tops nudged in one stop, not just the first")
+            self.assertTrue(any("romp-goal-id: " + g1 in b for b in bodies), "g1 nudged")
+            self.assertTrue(any("romp-goal-id: " + g2 in b for b in bodies), "g2 nudged")
+        finally:
+            restore()
+
+    def test_auto_nudge_does_not_paint_the_followed_up_chip(self):
+        # an auto-nudge must NOT optimistic-followup the goal — the "Followed up"/re-checking chip is reserved
+        # for the user's OWN follow-ups, not romp's auto-nudge (the user 2026-06-28).
+        g = self._orphaned_goal(idle=True)
+        km._set_auto_nudge(True)
+        sent, fu_calls = [], []
+        saved_send, saved_fu = km._tmux_send, jd.optimistic_followup
+        km._tmux_send = lambda name, body, **kw: sent.append(body)
+        jd.optimistic_followup = lambda sid, gid, **kw: fu_calls.append(gid)
+        try:
+            km._auto_nudge_tick(NOW, km._tmux_sessions())
+            self.assertEqual(len(sent), 1, "the nudge fired")
+            self.assertEqual(fu_calls, [], "auto-nudge does NOT optimistic-followup → no Followed-up chip")
+        finally:
+            km._tmux_send, jd.optimistic_followup = saved_send, saved_fu
+
     def _stall_transcript(self, recs):
         # write a transcript, clear the parse cache, and (re)create the working goal with ALL its turn ids
         # marked closer-classified (so the closer-gate always passes for the latest). Returns the goal id.
