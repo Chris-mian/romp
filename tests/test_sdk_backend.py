@@ -414,6 +414,31 @@ class StateAndRegistryFiles(unittest.TestCase):
         self.assertEqual(before, after, "no awaiting overlay → nothing to heal")
         self.assertIsNone(sb.last_awaiting(self.d, "sid_plain"))
 
+    def test_kernel_restart_heals_stale_working_state(self):
+        """A turn in flight when the kernel restarts is killed mid-stream, so no ResultMessage ever writes
+        "waiting" — the state log is left at "working". _last_state_value then reads "working" forever and the
+        auto-nudge GENUINE-STOP gate treats the dormant session as actively progressing → it never nudges its
+        stalled goals (the user 2026-06-27: a run of kernel refreshes left a session stuck "working" ~40m,
+        silently suppressing every auto-nudge). On (re)construction the backend heals a dormant session's
+        stale progressing state to "waiting". Idempotent."""
+        sb.write_reg(self.d, "sid_w", {"sid": "sid_w", "name": "n", "cwd": "/tmp", "alive": True})
+        sb.append_state(self.d, "sid_w", "working")                     # a turn that never got its ResultMessage
+        sb.SdkBackend(self.d, "/bin/true", lambda *a, **k: None)        # kernel restart re-constructs the backend
+        self.assertEqual(sb.last_state(self.d, "sid_w").get("state"), "waiting",
+                         "a dormant session's stale 'working' heals to 'waiting' so auto-nudge isn't blocked")
+        path = os.path.join(self.d, "states", "sid_w.jsonl")
+        before = len(open(path).read().splitlines())
+        sb.SdkBackend(self.d, "/bin/true", lambda *a, **k: None)        # already waiting → no redundant write
+        self.assertEqual(len(open(path).read().splitlines()), before, "idempotent: no spam when already settled")
+
+    def test_restart_heal_leaves_a_genuinely_waiting_session_alone(self):
+        sb.write_reg(self.d, "sid_ok", {"sid": "sid_ok", "name": "n", "cwd": "/tmp", "alive": True})
+        sb.append_state(self.d, "sid_ok", "waiting")
+        p = os.path.join(self.d, "states", "sid_ok.jsonl")
+        before = len(open(p).read().splitlines())
+        sb.SdkBackend(self.d, "/bin/true", lambda *a, **k: None)
+        self.assertEqual(len(open(p).read().splitlines()), before, "an already-waiting session is untouched")
+
     def test_new_session_does_not_guess_a_model(self):
         """A brand-new SDK session's model is UNKNOWN until it connects — we DON'T guess it from the fleet (the
         user 2026-06-24: implement the designed way, not heuristics). spawn writes no liveModel; the lane shows

@@ -1023,6 +1023,23 @@ class SdkBackend:
         for reg in list_regs(self.state_dir):
             if reg.get("alive"):
                 self._heal_stale_awaiting(reg["sid"])
+                self._heal_stale_state(reg["sid"])
+
+    def _heal_stale_state(self, sid: str) -> None:
+        """On kernel restart, a dormant SDK session's last logged STATE can be a stale in-flight value
+        ("working"/"retrying"/permission/picker/compacting) — its turn was killed with the previous kernel,
+        so no ResultMessage ever wrote "waiting". Left uncleared, _last_state_value reads it forever, and the
+        auto-nudge GENUINE-STOP GATE treats "working" as 'actively progressing' → it NEVER nudges the
+        session's stalled goals (the user 2026-06-27: a run of refreshes left a session stuck "working" ~40m,
+        which silently suppressed every auto-nudge). Append "waiting" — the true state of a dormant session —
+        once, so the LOG agrees with live_sessions' dormant in-flight→waiting display heal. Idempotent: only
+        when the last state is actually a stale progressing one (a resume writes "working" again)."""
+        try:
+            if last_state(self.state_dir, sid).get("state") in (
+                    "working", "retrying", "compacting", "permission", "picker"):
+                append_state(self.state_dir, sid, "waiting")
+        except Exception:
+            pass
 
     def _heal_stale_awaiting(self, sid: str) -> None:
         """Clear a stale awaiting:true overlay for a NOT-running session. A dormant SDK session can't have live
