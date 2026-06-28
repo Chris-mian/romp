@@ -28,7 +28,7 @@ test("FULL ledger parity (the user 2026-06-24): pointer-cursor zones, grouped ho
   // .lz-nav → the pointer cursor (styles.css) on the checkbox / text / time, so each reads as clickable
   assert.match(SRC, /"ledger-tmark lz-nav"/);
   assert.match(SRC, /"ledger-ttext lz-nav"/);
-  assert.match(SRC, /if \(time\.textContent\) time\.classList\.add\("lz-nav"\)/);
+  assert.match(SRC, /if \(time\.textContent\) \{ time\.classList\.add\("lz-nav"\)/);
   // grouped hover (.lz-hl toggled together) — the ledger box's linkHover, ported verbatim
   assert.match(SRC, /function linkHover\(group: HTMLElement\[\]\)/);
   assert.match(SRC, /g\.classList\.add\("lz-hl"\)/);
@@ -67,7 +67,10 @@ test("recency colour is copied VERBATIM from render.ts (identical to the ledger 
 
 test("completed top goals hide by default; a 'Show completed' chip sits bottom-right (the user 2026-06-24)", () => {
   assert.match(SRC, /localStorage\.getItem\(DONE_KEY\) === "1"/);  // default OFF
-  assert.match(SRC, /roots\.filter\(\(n\) => !n\.done && !n\.cleared\)/);
+  // the top-row selection (open-only vs +done +archived) is the pure, BEHAVIORALLY-tested ./fleet-roots
+  // (fleet-roots.test.ts) — here we just pin that fleet.ts routes through it (the user 2026-06-27)
+  assert.match(SRC, /import \{ fleetVisibleRoots \} from "\.\/fleet-roots"/);
+  assert.match(SRC, /const visibleRoots = fleetVisibleRoots\(roots, archivedTops, sd\)/);
   assert.match(SRC, /createTextNode\("Show completed"\)/);
   // it shares ONE floating bottom-right row with the recency slider now (the user 2026-06-27); #fleet-foot is hidden
   assert.match(SRC, /function mountControls\(\)/);
@@ -98,6 +101,21 @@ test("a node/header click opens that session AND flips back to chat (the user 20
   assert.match(SRC, /row\.dataset\.act = "open"; row\.dataset\.sid = s\.sid;/);
   // leaving Fleet is now the shell strip's "Chat" toggle; openSession still returns via {romp:"toggleFleet", to:"chat"}
   assert.match(SRC, /window\.parent\.postMessage\(\{ romp: "toggleFleet", to: "chat" \}/);
+});
+
+test("fleet nodes DEEP-LINK to the same place the feed modal does (the user 2026-06-27)", () => {
+  // the node carries the kernel's per-node anchor uuids (already sent in build_session's tree)
+  assert.match(SRC, /promptAnchorUuid\?: string \| null; anchorUuid\?: string \| null;/);
+  // zones declare data-act mirroring the modal: TEXT → the asking message; a RESOLVED mark/time → the work
+  assert.match(SRC, /txt\.dataset\.act = "goprompt"/);
+  assert.match(SRC, /mark\.dataset\.act = resolved \? "gowork" : "goprompt"/);
+  assert.match(SRC, /time\.dataset\.act = "gowork"/);
+  // delegated (click-safe) through fleetNavTo, which posts the SAME showOnTimeline message shape as feed.ts
+  assert.match(SRC, /goprompt: \(el\) => fleetNavTo\(el, "prompt"\)/);
+  assert.match(SRC, /gowork: \(el\) => fleetNavTo\(el, "work"\)/);
+  assert.match(SRC, /vscodeApi\?\.postMessage\(\{ type: "showOnTimeline", itemId: nid, sid, t, anchor: kind, anchorUuid \}\)/);
+  // work jump uses the resolved node's mt (where it resolved), prompt jump uses its start t — like wireNodeZones
+  assert.match(SRC, /const t = kind === "work" \? \(\(resolved && n\.mt\) \? n\.mt : n\.t\) : n\.t;/);
 });
 
 test("it's a MODULE (own scope) so it doesn't collide with feed.ts's globals", () => {

@@ -13,6 +13,10 @@ interface LedgerNode {
   t: number; mt?: number; current: boolean; derived?: boolean; recent?: boolean;
   cleared?: boolean; onpath?: boolean; children?: string[];
   summary?: string | null; blockSummary?: string | null; _rec?: number;
+  // EXACT turn uuids the kernel already sends per node (build_session tree) — let the fleet deep-link a node to
+  // the SAME place the feed modal does (the user 2026-06-27): promptAnchorUuid = the user's minting message,
+  // anchorUuid = where the node resolved (an assistant turn).
+  promptAnchorUuid?: string | null; anchorUuid?: string | null;
 }
 interface Ledger { summary?: string; tree: LedgerNode[]; current?: { t?: number } | null; archivedTops?: LedgerNode[]; }
 interface FleetSession { sid: string; name: string; color: Color; status?: { state?: string } | null; ledger?: Ledger | null; }
@@ -78,6 +82,27 @@ function linkHover(group: HTMLElement[]): void {
 // lives in the chat tab bar, which is hidden while Fleet is shown — so picking a session must return there.
 function backToChat() { try { if (window.parent !== window) window.parent.postMessage({ romp: "toggleFleet", to: "chat" }, "*"); } catch { /* not in the shell */ } }
 function openSession(sid: string) { vscodeApi?.postMessage({ type: "openSession", id: sid }); backToChat(); }
+
+// Deep-link a fleet node to the SAME place the feed modal's matching zone does (the user 2026-06-27): post the
+// SAME `showOnTimeline` message (sid + anchorUuid + t), keyed off the node's kernel-supplied anchor uuids, then
+// leave the full-screen Fleet view so the chat/timeline land is visible. kind="prompt" → the asking message
+// (promptAnchorUuid); kind="work" → where it resolved (anchorUuid, using mt for a resolved node). A null anchor
+// falls back to time-based nav kernel-side, exactly as the modal does.
+function fleetNode(sid: string, nid: string): LedgerNode | null {
+  const s = sessions.find((x) => x.sid === sid);
+  return (s?.ledger?.tree || []).find((n) => n.id === nid) || null;
+}
+function fleetNavTo(el: HTMLElement, kind: "prompt" | "work") {
+  const sid = el.dataset.sid, nid = el.dataset.nid;
+  if (!sid) return;
+  const n = nid ? fleetNode(sid, nid) : null;
+  if (!n) { openSession(sid); return; }   // node gone from the payload → just open the session
+  const resolved = !!(n.done || n.blocked);
+  const t = kind === "work" ? ((resolved && n.mt) ? n.mt : n.t) : n.t;
+  const anchorUuid = kind === "work" ? (n.anchorUuid ?? null) : (n.promptAnchorUuid ?? null);
+  vscodeApi?.postMessage({ type: "showOnTimeline", itemId: nid, sid, t, anchor: kind, anchorUuid });
+  backToChat();
+}
 
 // ── recency colour, copied verbatim from render.ts so Fleet's "(Xm ago)" colours match the ledger box ──
 const COLORMAPS: Record<string, Array<[number, number, number]>> = {
@@ -239,10 +264,15 @@ function render() {
       // click-safe: the fold toggle lives on the #fleet-list delegate; this caret just carries its state. The
       // caret is the innermost data-act, so a click on it folds without also firing the row's "open".
       if (expandable) { tri.dataset.act = "fold"; tri.dataset.sid = s.sid; tri.dataset.nid = n.id; tri.dataset.folded = isFolded ? "1" : "0"; }
-      // .lz-nav → the pointer cursor (from styles.css), so the checkbox / text / time read as clickable — the
-      // same per-zone affordance the ledger box has (the user 2026-06-24). The whole row still opens the
-      // session (row data-act=open); these zones carry no data-act, so a click on them bubbles up to it.
+      // .lz-nav → the pointer cursor (from styles.css), so the checkbox / text / time read as clickable. Each
+      // zone DEEP-LINKS to the same place the feed modal's matching zone does (the user 2026-06-27): the TEXT
+      // jumps to the message that asked for this (goprompt), and a resolved node's MARK + TIME jump to where it
+      // resolved (gowork) — an open node's mark goes to the prompt, its time to the latest work. The zones carry
+      // their own data-act (innermost wins), so a click lands the deep-link; the row's data-act="open" remains
+      // the fallback for a click on the row's empty space. (Delegated via #fleet-list — see ./actions.)
+      const resolved = !!(n.done || n.blocked);
       const mark = el("span", "ledger-tmark lz-nav");
+      mark.dataset.sid = s.sid; mark.dataset.nid = n.id; mark.dataset.act = resolved ? "gowork" : "goprompt";
       mark.textContent = n.done ? "✓" : n.blocked ? "⏸" : "";   // open = a hollow CSS ring (no glyph)
       // restore the ledger box's mark TOOLTIP (the user 2026-06-24): the checkbox leads with WHY it reads the
       // way it does — explicit vs inferred (roll-up = every sub-step done, roll-down = a resolved parent) vs
@@ -262,6 +292,7 @@ function render() {
       };
       mark.title = markReason();
       const txt = el("span", "ledger-ttext lz-nav");
+      txt.dataset.sid = s.sid; txt.dataset.nid = n.id; txt.dataset.act = "goprompt";   // text → the asking message
       txt.textContent = n.text;
       txt.title = n.text;            // the full goal text on hover (it can wrap/clip in the narrow Fleet pane)
       // ⊕ distiller-summary expander (parity with the ledger box): the takeaway (done) / decision brief
@@ -284,7 +315,7 @@ function render() {
         time.textContent = `(${agehms(dt)} ago)`; time.style.color = ageColorReadable(dt);
         txt.style.color = ageColorReadable(dt);                 // done text matches its rolled-up recency colour
       }
-      if (time.textContent) time.classList.add("lz-nav");
+      if (time.textContent) { time.classList.add("lz-nav"); time.dataset.sid = s.sid; time.dataset.nid = n.id; time.dataset.act = "gowork"; }   // time → where the work happened/resolved
       // group the hover highlight like the ledger: a resolved node's checkbox + time light together, the text
       // on its own; an open node's checkbox + text are one block, the time on its own (the user 2026-06-24).
       if (n.done || n.blocked) { linkHover([txt]); linkHover(time.textContent ? [mark, time] : [mark]); }
@@ -373,6 +404,8 @@ window.addEventListener("storage", (e: StorageEvent) => { if (e.key === "romp:se
   if (!list) return;
   delegate(list, {
     open: (el) => { const sid = el.dataset.sid; if (sid) openSession(sid); },
+    goprompt: (el) => fleetNavTo(el, "prompt"),   // text/open-mark zone → the asking message (like the modal)
+    gowork: (el) => fleetNavTo(el, "work"),        // resolved mark/time zone → where it resolved (like the modal)
     sessfold: (el) => {                                  // ▶/▼ on the session head → collapse/expand its whole tree
       const sid = el.dataset.sid;
       if (!sid) return;
