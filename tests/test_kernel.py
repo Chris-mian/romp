@@ -2277,6 +2277,41 @@ class ViewBuilder(unittest.TestCase):
         finally:
             km._last_plain_user_turn_t = saved
 
+    def test_seg_key_strips_the_volatile_timestamp(self):
+        self.assertEqual(km._seg_key("11111111-2222:1782627917:19cee1e8"), "11111111-2222:19cee1e8")
+        self.assertEqual(km._seg_key("11111111-2222:1782627951:19cee1e8"), "11111111-2222:19cee1e8",
+                         "a different middle timestamp maps to the SAME key")
+        self.assertIsNone(km._seg_key(None))
+        self.assertEqual(km._seg_key("nocolons"), "nocolons", "a non-conforming id passes through")
+
+    def test_drifted_trail_seg_id_still_resolves_the_summary_anchor(self):
+        # the bug (the user 2026-06-27): a goal's trail seg id carried the SDK echo's send-time timestamp,
+        # but the live parse's seg id for the same segment uses the real atom's process-time — same session,
+        # same trigger-text hash, different t. The summary then showed no hover link / "couldn't locate".
+        # build_feed must resolve it via the timestamp-invariant key.
+        recs = [uline(NOW - 100, "wire the overview strip", "uTrig"),
+                aline(NOW - 95, "Done — wired the overview strip.", "aReply", "uTrig")]
+        self.tpath.write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+        km._parse_cache.clear()
+        ps = km._parse(str(self.tpath), SID, NOW)              # warm the cache (build_feed reads cache-only)
+        real_id = em.segments(ps["turns"][-1])[0]["id"]
+        p = real_id.split(":")
+        drifted = "%s:%d:%s" % (p[0], int(p[1]) - 30, p[2])    # same session + hash, send-time-shifted
+        self.assertNotEqual(drifted, real_id)
+        g = "%s:gD" % SID
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+            "rompUuid": SID, "seq": 1, "lastNode": g,
+            "nodes": {g: {"id": g, "text": "wire the strip", "parentId": None, "nodeComplete": True,
+                          "blocked": False, "cleared": False, "trail": [drifted], "t": NOW - 100,
+                          "mt": NOW - 95, "summary": "Wired the overview strip."}},
+            "placements": {}, "status": {g: "completed"}}))
+        km._tmux_sessions = lambda: {SID: {"state": "idle", "since": NOW - 50, "model": "",
+                                           "effort": "", "context": None, "compactPct": None, "color": None}}
+        card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
+        self.assertEqual(card["summaryAnchorUuid"], "aReply",
+                         "summary anchor resolves despite the trail seg id's drifted timestamp")
+        self.assertEqual(card["turnId"], g)   # sanity: it's the card we built
+
     def _sender_goal(self, sender, gid, **kw):
         """Write a sender's goal store with one linked goal (open by default) — the cross-agent end of a
         courier handoff that build_feed checks to decide whether the '↪ from <peer>' badge is still live."""
