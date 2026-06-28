@@ -410,7 +410,8 @@ def _defaults_path(state_dir: Path) -> Path:
 
 
 def read_sdk_defaults(state_dir: Path) -> dict:
-    """{'model': <alias|'default'>, 'effort': <level>} — whatever the user last picked, or {} if never."""
+    """{'model': <alias|'default'>, 'effort': <level>, 'mode': <permission mode>} — whatever the user last
+    picked on any session, seeded into the next new session by spawn(); {} if never set."""
     try:
         d = json.loads(_defaults_path(state_dir).read_text())
         return d if isinstance(d, dict) else {}
@@ -1094,7 +1095,8 @@ class SdkBackend:
         # _options launches with and what the badge reads — so the display can never desync from what's used.
         d = read_sdk_defaults(self.state_dir)
         eff = d.get("effort") if d.get("effort") in EFFORT_LEVELS else DEFAULT_EFFORT
-        reg = {"sid": sid, "name": name, "cwd": cwd, "mode": "acceptEdits",
+        mode = d.get("mode") or "acceptEdits"   # seed the permission mode from the remembered default too (the user 2026-06-27)
+        reg = {"sid": sid, "name": name, "cwd": cwd, "mode": mode,
                "effort": eff, "lastSid": "", "alive": True}
         if d.get("model") and d["model"] != "default":
             reg["model"] = d["model"]
@@ -1261,6 +1263,7 @@ class SdkBackend:
             return False
         reg["mode"] = mode
         write_reg(self.state_dir, sid, reg)
+        write_sdk_default(self.state_dir, mode=mode)   # remember as the seed for the NEXT new session, like model/effort (the user 2026-06-27)
         s = self.sessions.get(sid)
         if s:
             s.mode = mode

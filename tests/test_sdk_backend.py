@@ -540,6 +540,26 @@ class RememberedDefaults(unittest.TestCase):
         d = sb.read_sdk_defaults(self.d)
         self.assertEqual((d.get("model"), d.get("effort")), ("opus", "max"))
 
+    def test_fresh_session_defaults_to_acceptEdits_mode(self):
+        sid = self.be.spawn("a", self.d)
+        self.assertEqual(sb.read_reg(self.d, sid)["mode"], "acceptEdits", "no remembered mode → acceptEdits")
+
+    def test_set_mode_is_remembered_and_seeds_the_next_session(self):
+        # the bug (the user 2026-06-27): mode wasn't remembered like model/effort, so every new SDK session
+        # came up acceptEdits regardless of the user's preferred (e.g. bypassPermissions/auto-accept) mode.
+        s1 = self.be.spawn("a", self.d)
+        self.assertTrue(self.be.set_mode(s1, "bypassPermissions"))
+        self.assertEqual(sb.read_sdk_defaults(self.d).get("mode"), "bypassPermissions", "remembered globally")
+        s2 = self.be.spawn("b", self.d)                                  # a NEW session, created AFTER the pick
+        self.assertEqual(sb.read_reg(self.d, s2)["mode"], "bypassPermissions", "new session seeds the mode")
+        self.assertEqual(self.be.live_sessions()[s2]["mode"], "bypassPermissions", "and the badge shows it")
+
+    def test_remembering_mode_does_not_clobber_model_or_effort(self):
+        s1 = self.be.spawn("a", self.d)
+        self.be.set_effort(s1, "low"); self.be.set_model(s1, "opus"); self.be.set_mode(s1, "plan")
+        d = sb.read_sdk_defaults(self.d)
+        self.assertEqual((d.get("model"), d.get("effort"), d.get("mode")), ("opus", "low", "plan"))
+
     def test_resetting_model_to_default_clears_the_override_for_new_sessions(self):
         s1 = self.be.spawn("a", self.d)
         self.be.set_model(s1, "sonnet")
