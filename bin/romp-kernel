@@ -6524,12 +6524,9 @@ _GEAR_HTML = ("<button id=rgear hidden aria-hidden=true></button>"
               "<span class=rs-sub>Show the session's git branch (when it's in a repo) in the chat bottom bar, beside the directory.</span>"
               "</span></label>"
               "<div class=rs-sec>Feed</div>"
-              "<label class=rs-row><input type=checkbox id=rs-oldest checked>"
-              "<span><b>Oldest first</b>"
-              "<span class=rs-sub>Order feed cards oldest-at-top instead of the default newest-at-top.</span>"
-              "</span></label>"
-              # (Explanations toggle removed 2026-06-18 — cards show the distiller summary, not the planner's
-              #  why. The Sub-goals toggle moved to the feed FOOTER, beside Clear all / Undo clear.)
+              # (Oldest-first toggle removed 2026-06-27 — feed cards are ALWAYS oldest-at-top now, so the newest
+              #  work sits at the bottom nearest the eye. Explanations toggle removed 2026-06-18 — cards show the
+              #  distiller summary, not the planner's why. The Sub-goals toggle moved to the feed FOOTER.)
               # Colormap (GLOBAL now — the user 2026-06-26): one ramp colors the feed recency tint, the usage
               # "used" bar, and the context-window % bars across every surface. The dropdown OPTIONS are the
               # gradient BARS themselves — no map names (the user 2026-06-23). A custom widget (a native <select>
@@ -6591,13 +6588,12 @@ _GEAR_HTML = ("<button id=rgear hidden aria-hidden=true></button>"
               "</div></div>")
 _GEAR_JS = r"""(function(){var g=document.getElementById('rgear'),p=document.getElementById('rsettings'),
 b=document.getElementById('rsver'),cc=document.getElementById('rs-compact'),
-db=document.getElementById('rs-debug'),an=document.getElementById('rs-autonudge'),bk=document.getElementById('rs-backend'),dd=document.getElementById('rs-defaultdir'),of=document.getElementById('rs-oldest'),gb=document.getElementById('rs-branch'),cg=document.getElementById('rs-collapsegaps');
-function load(){try{return Object.assign({compact:false,colormap:'aurora',subgoals:true,debug:false,backend:'tmux',defaultDir:'',oldestFirst:true,showBranch:true,collapseGaps:true},JSON.parse(localStorage.getItem('romp:settings')||'null'));}catch(e){return {compact:false,colormap:'aurora',subgoals:true,debug:false,backend:'tmux',defaultDir:'',oldestFirst:true,showBranch:true,collapseGaps:true};}}
+db=document.getElementById('rs-debug'),an=document.getElementById('rs-autonudge'),bk=document.getElementById('rs-backend'),dd=document.getElementById('rs-defaultdir'),gb=document.getElementById('rs-branch'),cg=document.getElementById('rs-collapsegaps');
+function load(){try{return Object.assign({compact:false,colormap:'aurora',subgoals:true,debug:false,backend:'tmux',defaultDir:'',showBranch:true,collapseGaps:true},JSON.parse(localStorage.getItem('romp:settings')||'null'));}catch(e){return {compact:false,colormap:'aurora',subgoals:true,debug:false,backend:'tmux',defaultDir:'',showBranch:true,collapseGaps:true};}}
 function save(s){try{localStorage.setItem('romp:settings',JSON.stringify(s));}catch(e){}}
 function emit(){try{window.dispatchEvent(new Event('romp:settings'));}catch(e){}}   // same-doc signal → the feed re-gates its cards
 cc.addEventListener('change',function(){var s=load();s.compact=cc.checked;save(s);});
 if(gb)gb.addEventListener('change',function(){var s=load();s.showBranch=gb.checked;save(s);emit();});   // chat statusline re-reads loadSettings() on the next render; emit nudges open tabs
-if(of)of.addEventListener('change',function(){var s=load();s.oldestFirst=of.checked;save(s);emit();});   // feed re-sorts its cards live on the 'romp:settings' event
 // (Explanations + Sub-goals toggles removed from the gear 2026-06-18 — Sub-goals lives in the feed footer now.)
 // The ↻ kernel-restart button is ALWAYS visible now (the user 2026-06-24): decoupled from Debug mode, which
 // used to hide it. Debug still gates the timeline's judging band (read from romp:settings.debug over there).
@@ -6653,7 +6649,7 @@ function setModalCls(on){var de=document.documentElement,m='rs-modal-open';
 if(on){de.classList.add(m);document.body.classList.add(m);}else{de.classList.remove(m);document.body.classList.remove(m);}}
 function closeSettings(){p.hidden=true;setModalCls(false);feedFull(false);}
 function openSettings(){if(!p.hidden){closeSettings();return;}   // the rail gear toggles the modal (the user 2026-06-25)
-p.hidden=false;setModalCls(true);feedFull(true);var s=load();cc.checked=!!s.compact;db.checked=!!s.debug;if(of)of.checked=!!s.oldestFirst;if(gb)gb.checked=s.showBranch!==false;if(cg)cg.checked=s.collapseGaps!==false;cmBuild();cmPaint(s.colormap||'aurora');if(bk)bk.value=s.backend||'tmux';if(dd)dd.value=s.defaultDir||'';fill();}
+p.hidden=false;setModalCls(true);feedFull(true);var s=load();cc.checked=!!s.compact;db.checked=!!s.debug;if(gb)gb.checked=s.showBranch!==false;if(cg)cg.checked=s.collapseGaps!==false;cmBuild();cmPaint(s.colormap||'aurora');if(bk)bk.value=s.backend||'tmux';if(dd)dd.value=s.defaultDir||'';fill();}
 if(g)g.onclick=function(e){e.stopPropagation();openSettings();};   // the gear is hidden now; the rail drives it via a message
 window.addEventListener('message',function(e){if(e.data&&e.data.romp==='openSettings')openSettings();});
 p.addEventListener('click',function(e){if(e.target===p)closeSettings();});   // click the dimmed backdrop (not the card) → close

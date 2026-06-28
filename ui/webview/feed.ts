@@ -170,11 +170,11 @@ let items: FeedItem[] = [];
 // Card-display prefs read straight from the shared 'romp:settings' (the kernel's ⛭ gear writes it; same
 // document as this feed bundle). Default ON. These gate the CARDS only — the modal always shows everything
 // (the user 2026-06-17). `!== false` so a missing key defaults to shown.
-function feedPrefs(): { subgoals: boolean; oldestFirst: boolean } {
+function feedPrefs(): { subgoals: boolean } {
   try {
     const s = JSON.parse(localStorage.getItem("romp:settings") || "{}");
-    return { subgoals: s.subgoals !== false, oldestFirst: s.oldestFirst !== false };   // oldest-at-top is the DEFAULT (the user 2026-06-23)
-  } catch { return { subgoals: true, oldestFirst: true }; }
+    return { subgoals: s.subgoals !== false };
+  } catch { return { subgoals: true }; }
 }
 // names of sessions currently WORKING → a working dot before that name everywhere
 // it renders (card titles, modal title, group name). Pushed in each feed message.
@@ -1847,9 +1847,9 @@ function render() {
   }
   for (const a of asks) { if (grouped.has(a.itemId)) continue; buckets[askColumn(a)].push({ kind: "ask", t: a.t, ask: a }); }
   for (const it of standalone) buckets[it.relevance === "DONE" ? "completed" : "needsInput"].push({ kind: "item", t: it.t, item: it });
-  // newest-first by default; the ⛭ gear's "Oldest first" flips every column to oldest-at-top (the user 2026-06-23)
-  const oldestFirst = feedPrefs().oldestFirst;
-  for (const k of Object.keys(buckets) as Column[]) buckets[k].sort((x, y) => oldestFirst ? x.t - y.t : y.t - x.t);
+  // ALWAYS oldest-at-top (the user 2026-06-27): the newest work sits at the BOTTOM of each column, nearest the
+  // eye, and new/moved cards stack onto the bottom (matches the fly animation). No toggle — this is the behavior.
+  for (const k of Object.keys(buckets) as Column[]) buckets[k].sort((x, y) => x.t - y.t);
 
   // FLIP step 1 (the user 2026-06-27): record every visible card's position + column BEFORE the reconcile, so
   // a card that changes column can FLY from its old spot to the new one instead of teleporting.

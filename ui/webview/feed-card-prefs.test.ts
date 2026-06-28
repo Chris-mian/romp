@@ -12,7 +12,7 @@ const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", 
 test("feed reads the sub-goals pref from romp:settings, defaulting ON; explanations is gone", () => {
   assert.match(FEED, /function feedPrefs\(\)/);
   assert.match(FEED, /localStorage\.getItem\("romp:settings"\)/);
-  assert.match(FEED, /return \{ subgoals: s\.subgoals !== false, oldestFirst: s\.oldestFirst !== false \};/);
+  assert.match(FEED, /return \{ subgoals: s\.subgoals !== false \};/);   // oldestFirst pref removed (always oldest-first now)
   assert.doesNotMatch(FEED, /explanations/);   // every trace of the old pref is gone from the feed
 });
 

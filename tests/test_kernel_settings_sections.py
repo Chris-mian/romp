@@ -1,6 +1,6 @@
 """The Settings gear groups its rows into labelled SUBSECTIONS (the user 2026-06-24): Chat / Feed /
-Sessions / Debug, in that order, so the settings read by surface instead of one flat list. Plus
-'Oldest first' is checked by default (it's already the default in feedPrefs()/the gear's load()).
+Sessions / Debug, in that order, so the settings read by surface instead of one flat list. (The Feed's
+'Oldest first' toggle was removed 2026-06-27 — the feed is always oldest-at-top now.)
 """
 import os
 import unittest
@@ -32,9 +32,9 @@ class SettingsSectionsTest(unittest.TestCase):
         # Chat: compact + branch come before the Feed header
         self.assertLess(h.index("id=rs-compact"), h.index(">Feed<"))
         self.assertLess(h.index("id=rs-branch"), h.index(">Feed<"))
-        # Feed: oldest + colormap between Feed and Sessions
-        self.assertTrue(h.index(">Feed<") < h.index("id=rs-oldest") < h.index(">Sessions<"))
+        # Feed: colormap between Feed and Sessions (the Oldest-first toggle was removed 2026-06-27)
         self.assertTrue(h.index(">Feed<") < h.index("id=rs-cmap") < h.index(">Sessions<"))
+        self.assertNotIn("rs-oldest", h)
         # Sessions: backend, default dir, auto-nudge between Sessions and Timeline
         self.assertTrue(h.index(">Sessions<") < h.index("id=rs-backend") < h.index(">Timeline<"))
         self.assertTrue(h.index(">Sessions<") < h.index("id=rs-defaultdir") < h.index(">Timeline<"))
@@ -55,8 +55,10 @@ class SettingsSectionsTest(unittest.TestCase):
         self.assertIn("#rsettings .rs-sec{", km._GEAR_CSS)
         self.assertIn("#rsettings .rs-sec-first{border-top:0", km._GEAR_CSS)
 
-    def test_oldest_first_is_checked_by_default(self):
-        self.assertIn("<input type=checkbox id=rs-oldest checked>", km._GEAR_HTML)
+    def test_oldest_first_toggle_is_gone(self):
+        # the feed is always oldest-at-top now → no checkbox, no wiring (the user 2026-06-27)
+        self.assertNotIn("rs-oldest", km._GEAR_HTML)
+        self.assertNotIn("oldestFirst", km._GEAR_JS)
 
 
 if __name__ == "__main__":
