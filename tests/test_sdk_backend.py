@@ -1062,6 +1062,21 @@ class PendingQueue(unittest.TestCase):
         self.assertIsNone(self.be.unqueue("q3", 9), "out-of-range idx is a safe no-op")
         self.assertIsNone(self.be.unqueue("no-such-sid", 0), "unknown session → None")
 
+    def test_unqueue_clears_the_optimistic_echo(self):
+        # the bug (the user 2026-06-27): canceling a queued message popped its text back to the composer but
+        # it kept rendering as a solid-blue SENT bubble, because send()'s optimistic echo — which normally
+        # prunes when the real user atom lands in the transcript — was never cleared for a message that never
+        # lands. unqueue must drop the echo too.
+        sid = "qe1"
+        s = self._sess(sid)
+        s.enqueue("cancel me")
+        self.be._live.setdefault(sid, {})["echo:x"] = {"type": "user", "_echo_text": "cancel me",
+            "message": {"role": "user", "content": [{"type": "text", "text": "cancel me"}]}}
+        self.assertEqual(self.be.unqueue(sid, 0), "cancel me")
+        self.assertEqual(s.pending(), [])
+        self.assertFalse(any(a.get("_echo_text") == "cancel me" for a in self.be._live.get(sid, {}).values()),
+                         "the optimistic echo is gone → the canceled message no longer reads as sent")
+
     def test_pending_queued_empty_for_unknown_or_idle(self):
         self.assertEqual(self.be.pending_queued("no-such-sid"), [])     # not an SDK session
         self._sess("q2")

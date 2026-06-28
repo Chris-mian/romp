@@ -1149,10 +1149,25 @@ class SdkBackend:
     def unqueue(self, sid: str, idx: int) -> str | None:
         """Cancel the queued turn at `idx` for an SDK session (the kernel's cancelQueued route). Returns
         its text, or None. tmux has no equivalent (its queue lives in Claude Code), so only SDK sessions
-        expose this — the kernel gates the chat's cancel affordance on the backend having `unqueue`."""
+        expose this — the kernel gates the chat's cancel affordance on the backend having `unqueue`.
+
+        ALSO drops the message's optimistic echo from the live tail: send() adds a blue 'you' bubble that
+        normally prunes when the real user atom lands in the transcript — but a CANCELED message never
+        lands, so without this the echo lingered and the canceled message kept rendering as 'sent' even
+        though it wasn't (the user 2026-06-27)."""
         with self._lock:
             s = self.sessions.get(sid)
-        return s.unqueue(idx) if s else None
+        if not s:
+            return None
+        text = s.unqueue(idx)
+        if text is not None:
+            live = self._live.get(sid) or {}
+            for k, a in list(live.items()):                # snapshot: the live-tail thread may mutate concurrently
+                if a.get("_echo_text") == text:
+                    live.pop(k, None)                      # one echo per canceled message
+                    break
+            self._wake_push()                              # repaint without the echo so it stops reading as sent
+        return text
 
     def send(self, sid: str, text: str) -> bool:
         s = self._ensure(sid)
