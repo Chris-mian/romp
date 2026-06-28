@@ -7043,6 +7043,16 @@ var r=el.getBoundingClientRect();tip.style.display='block';
 tip.style.left=(r.right+9)+'px';tip.style.top=Math.max(6,Math.min(window.innerHeight-tip.offsetHeight-6,r.top-4))+'px';}
 el.addEventListener('mouseenter',showTip);
 el.addEventListener('mouseleave',function(){tip.style.display='none';});
+// Vertical-fit (the user 2026-06-27): when the scrollable top group can't hold the toggles + usage bars, drop
+// the USAGE bars first (.rail-tight). The refresh/gear live in the FIXED .rail-acts below, so they're never
+// pushed off; if even the toggles don't fit, .rail-scroll scrolls them (hidden scrollbar). Re-checked on
+// resize and whenever the usage data re-renders.
+var sc=el.parentNode;   // the .rail-scroll wrapper (#rail-usage's parent)
+function fitRail(){if(!sc)return;sc.classList.remove('rail-tight');
+if(sc.scrollHeight>sc.clientHeight+1)sc.classList.add('rail-tight');}
+window.addEventListener('resize',fitRail);
+var _render=render;render=function(u){_render(u);fitRail();};   // re-fit after the bars change height
+requestAnimationFrame(fitRail);
 window.addEventListener('message',function(e){var m=e.data;if(m&&m.romp==='usage')render(m.usage);});})();
 """
 
@@ -7224,18 +7234,26 @@ def _landing():
             "body.settings-open #f-feed{position:fixed;inset:0;z-index:200;width:100vw;height:100vh}"
             # ── far-left pane rail (the user 2026-06-24): a thin vertical toolbar with Chat / Fleet / Feed
             # toggles (rotated labels). Each is an independent on/off; the lit one is in the romp accent.
+            # SHORT-WINDOW behavior (the user 2026-06-27): the rail splits into a SCROLLABLE top (toggles +
+            # usage) and a FIXED bottom (refresh + gear). The gear/refresh never get pushed off — they stay
+            # pinned at the bottom; the usage bars DISAPPEAR first (fitRail → .rail-tight) when room runs out;
+            # only if even the toggles don't fit do THEY scroll (hidden scrollbar — the gear used to spill over
+            # the feed). So the gear can never collide with the toggle labels.
             ".pane-rail{flex:0 0 30px;box-sizing:border-box;display:flex;flex-direction:column;gap:6px;"
-            "padding:8px 0;background:#202021;border-right:1px solid #2c2c2d;z-index:10}"
+            "padding:8px 0;background:#202021;border-right:1px solid #2c2c2d;z-index:10;overflow:hidden}"
+            ".rail-scroll{flex:0 1 auto;min-height:0;display:flex;flex-direction:column;gap:6px;"
+            "overflow-y:auto;overflow-x:hidden;scrollbar-width:none}"
+            ".rail-scroll::-webkit-scrollbar{width:0;height:0}"
+            ".rail-scroll.rail-tight #rail-usage{display:none}"   # out of vertical space → the usage bars disappear first
+            ".rail-acts{flex:0 0 auto;display:flex;flex-direction:column;gap:6px;margin-top:auto}"   # pinned to the bottom, always visible
             ".rail-btn{flex:0 0 auto;writing-mode:vertical-rl;text-orientation:mixed;letter-spacing:.04em;"
             "font:600 11px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#8a8a8a;margin:0 4px;"
             "padding:8px 0;border-radius:5px;cursor:pointer;user-select:none;display:flex;align-items:center;"
             "justify-content:center;transition:color .1s,background .1s}"
             ".rail-btn:hover{color:#cfe6ff;background:rgba(255,255,255,0.06)}"
             ".rail-btn.on{color:var(--accent);background:rgba(156,210,255,0.10)}"
-            # the ↻ refresh + ⛭ settings actions are pushed to the BOTTOM of the rail (the user 2026-06-26):
-            # margin-top:auto on the first of them (refresh) absorbs the free space, so they stick to the bottom
-            # with settings (⛭, last in the DOM) at the very bottom and refresh just above it.
-            "#rail-refresh{margin-top:auto}"
+            # the ↻ refresh + ⛭ settings actions sit in .rail-acts, pinned to the BOTTOM (margin-top:auto on the
+            # wrapper) and ALWAYS visible — settings (⛭, last in the DOM) at the very bottom, refresh just above.
             ".rail-act{flex:0 0 auto;display:flex;align-items:center;justify-content:center;margin:2px 4px;padding:5px 0;"
             "border-radius:5px;cursor:pointer;color:#8a8a8a;font-size:15px;line-height:1;user-select:none;transition:color .1s,background .1s}"
             ".rail-act:hover{color:#fff;background:rgba(255,255,255,0.06)}"
@@ -7361,20 +7379,25 @@ def _landing():
             "<div id=romp-offline><span class=ro-dot></span><span>Disconnected — reconnecting…</span></div>"
             "<div class=col>"
             "<div class=row>"
-            # far-left rail (the user 2026-06-26): top group sticks to the TOP — Chat / Fleet / Feed / Timeline
-            # toggles, then the /usage rate-limit bars; the ⛭ settings + ↻ refresh actions are pushed to the
-            # BOTTOM (settings the very last, refresh just above it) via #rail-refresh margin-top:auto.
+            # far-left rail (the user 2026-06-26/27): a SCROLLABLE top group (.rail-scroll) — Chat / Fleet / Feed
+            # / Timeline toggles, then the /usage rate-limit bars — and a FIXED bottom group (.rail-acts) with
+            # the ↻ refresh + ⛭ settings, pinned to the bottom and always visible. On a short window the usage
+            # bars disappear first (fitRail), then the toggles scroll; the actions never get pushed off.
             "<div class=pane-rail>"
+            "<div class=rail-scroll>"
             "<div class=rail-btn data-pane=chat>Chat</div>"
             "<div class=rail-btn data-pane=fleet>Fleet</div>"
             "<div class=rail-btn data-pane=feed>Feed</div>"
             "<div class=rail-btn data-pane=timeline>Timeline</div>"
             # the Claude /usage rate-limit bars (Pro/Max): two compact vertical bar-pairs (used % colored +
-            # elapsed % slate), %-label, full detail on hover. Sticky to the top, under the toggles.
+            # elapsed % slate), %-label, full detail on hover.
             "<div id=rail-usage></div>"
-            # refresh + settings, pushed to the very bottom (settings last):
+            "</div>"   # /.rail-scroll
+            # refresh + settings, pinned to the very bottom (settings last), always visible:
+            "<div class=rail-acts>"
             "<div class=rail-act id=rail-refresh title='Restart the romp kernel' aria-label=Refresh>↻</div>"
             "<div class=rail-act id=rail-gear title=Settings aria-label=Settings>⚙</div>"
+            "</div>"   # /.rail-acts
             "</div>"
             "<div class=pane id=chat-pane><iframe id=f-chat class=m-on src=/chat></iframe></div>"
             "<div class=gv id=gv-a></div>"

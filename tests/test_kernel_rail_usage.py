@@ -21,14 +21,15 @@ class RailUsage(unittest.TestCase):
         self.html = km._landing()
 
     def test_the_rail_usage_sticks_to_the_top_with_refresh_and_settings_at_the_bottom(self):
-        # the user 2026-06-26: usage sticks to the TOP (under the toggles); refresh + settings are pushed to
-        # the BOTTOM, settings (⛭ rail-gear) at the very bottom, refresh just above it.
+        # the user 2026-06-26/27: usage sits in the scrollable TOP group (under the toggles); refresh + settings
+        # are in the FIXED .rail-acts at the BOTTOM, settings (⛭ rail-gear) at the very bottom, refresh above it.
         self.assertIn("id=rail-usage", self.html, "a usage container sits in the rail")
         self.assertLess(self.html.index("id=rail-usage"), self.html.index("id=rail-refresh"),
-                        "usage is above refresh (sticky to the top)")
+                        "usage is above refresh (top group)")
         self.assertLess(self.html.index("id=rail-refresh"), self.html.index("id=rail-gear"),
                         "refresh is above settings (settings is the very bottom)")
-        self.assertIn("#rail-refresh{margin-top:auto}", self.html, "the bottom group is pushed down")
+        self.assertIn(".rail-acts{flex:0 0 auto;display:flex;flex-direction:column;gap:6px;margin-top:auto}",
+                      self.html, "the bottom action group is pinned down")
         self.assertIn(".ru-bar{", self.html, "the compact vertical bar styling")
         self.assertIn(".ru-lab{", self.html, "the percentage label styling")
 
