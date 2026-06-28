@@ -1326,7 +1326,7 @@ def _drive(msg, client):
         return False
     t = msg.get("type")
     ID_OPS = ("sendMessage", "interrupt", "compactSession", "answerAsk", "navAsk", "toggleAsk", "submitAsk",
-              "addCustomAsk", "cancelAsk", "askText", "apiRetry", "setModel", "setEffort", "setMode",
+              "addCustomAsk", "cancelAsk", "askText", "cancelQueued", "apiRetry", "setModel", "setEffort", "setMode",
               "endSession", "renameSession")
     if t in ID_OPS and msg.get("id"):
         sid = str(msg["id"])
@@ -1380,6 +1380,9 @@ def _drive(msg, client):
         be.on_ask(sid, "cancel")
     elif t == "askText" and msg.get("text"):
         be.on_ask(sid, "text", str(msg["text"]))
+    elif t == "cancelQueued" and msg.get("idx") is not None and hasattr(be, "unqueue"):
+        be.unqueue(sid, int(msg["idx"]))                  # pull a queued (not-yet-started) message back out; the
+        _push_all()                                       # webview already refilled the composer with its text
     elif t == "apiRetry":
         # tmux pastes the MARKED retry → GRAY romp bubble (author_of keys on the marker, ROMP_INJECT_RE); the
         # SDK re-drives via its own queue and sends the bare command (the user 2026-06-19).
@@ -3715,10 +3718,13 @@ def build_session(sid, now, tmux=None):
         # Each pending message is rendered like a landed one (markdown) — and a follow-up is cleaned of the
         # romp goal-context quote + the comment markers, carrying just the body + the goal title (the user
         # 2026-06-27). Same _split_followup the landed human turns use, so pending + landed match.
+        # CANCELABLE only when romp OWNS the queue — the SDK backend holds _pending in memory (exposes
+        # unqueue); tmux's queue lives inside Claude Code (no recall), so those bubbles aren't clickable.
+        cancelable = hasattr(Sessions.backend_for(sid), "unqueue")
         qmsgs = []
-        for t in queued:
+        for i, t in enumerate(queued):
             goal, body, fu = _split_followup(t)
-            m = {"md": body}
+            m = {"md": body, "idx": i, "cancelable": cancelable}   # idx ↔ the backend's _pending position (cancelQueued)
             if fu:
                 m["followUp"] = True
                 if goal:
@@ -4606,8 +4612,11 @@ def build_feed(now, tmux=None):
             # Never the live hard floors (api/permission) — a reply doesn't clear those.
             recheck = bool(col == "blocked" and nid != api_top and nid != perm_top and (
                 nodes[nid].get("followupPending") or plain_user_t > disp_t))
-            # awaiting is a flavor of WORKING → the working column (never needs-input), card time = mint t; the awaiting badge carries the why
-            column = ("needs_input" if (nid == api_top or col == "blocked")
+            # awaiting is a flavor of WORKING → the working column (never needs-input), card time = mint t; the awaiting badge carries the why.
+            # A RE-CHECK'd soft-block also drops to WORKING (the user 2026-06-27): once you've replied it's the
+            # agent's move, not yours, so it leaves the needs-input column entirely (still dotted + "↩ re-checking"
+            # so you can see it pending). The live hard floors (api_top / col stays blocked when NOT recheck) keep needs_input.
+            column = ("needs_input" if (nid == api_top or (col == "blocked" and not recheck))
                       else "completed" if col == "completed" else "working")
             had_working = had_working or column == "working"
             # summaryAnchorUuid: the biggest contiguous block of assistant text ANYWHERE in this goal's work

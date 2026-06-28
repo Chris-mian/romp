@@ -1053,6 +1053,15 @@ class PendingQueue(unittest.TestCase):
         snap = s.pending(); snap.append("mutated")
         self.assertEqual(s.pending(), ["a"])                            # internal list untouched
 
+    def test_unqueue_removes_by_index_and_returns_text(self):
+        # the chat's cancel affordance: pull a still-queued message back out by its position (the user 2026-06-27)
+        s = self._sess("q3")
+        s.enqueue("alpha"); s.enqueue("beta"); s.enqueue("gamma")
+        self.assertEqual(self.be.unqueue("q3", 1), "beta")              # cancel the middle one
+        self.assertEqual(s.pending(), ["alpha", "gamma"])              # the rest keep order
+        self.assertIsNone(self.be.unqueue("q3", 9), "out-of-range idx is a safe no-op")
+        self.assertIsNone(self.be.unqueue("no-such-sid", 0), "unknown session → None")
+
     def test_pending_queued_empty_for_unknown_or_idle(self):
         self.assertEqual(self.be.pending_queued("no-such-sid"), [])     # not an SDK session
         self._sess("q2")

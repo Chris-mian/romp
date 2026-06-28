@@ -798,6 +798,13 @@ body { display: flex; flex-direction: column; }
   background: rgba(43, 108, 239, 0.10); border: 1px dashed rgba(43, 108, 239, 0.65);
   border-radius: 14px; padding: 7px 13px; color: var(--fg); opacity: 0.85;
 }
+/* A CANCELABLE queued bubble (SDK queue): clickable to pull it back to the composer. The cursor + a hover
+   lift (accent-blue ring, fuller opacity) advertise it; a tooltip spells it out (the user 2026-06-27). */
+.queued-bubble.cancelable { cursor: pointer; transition: opacity .1s, border-color .1s, background .1s; }
+.queued-bubble.cancelable:hover {
+  opacity: 1; border-color: var(--accent); border-style: solid;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
 /* compact "↩ Follow-up · <goal>" header above a message that resumed a goal — landed user turns AND pending
    queued messages, so the two render the same (the user 2026-06-27). Right-aligned with the outgoing bubble. */
 .followup-tag { display: flex; align-items: baseline; gap: 6px; max-width: 72%; margin-bottom: 1px;

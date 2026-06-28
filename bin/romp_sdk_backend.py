@@ -503,6 +503,17 @@ class SdkSession:
         with self._lock:
             return list(self._pending)
 
+    def unqueue(self, idx: int) -> str | None:
+        """Remove the queued turn at position `idx` (the chat's queued list is this same _pending order)
+        and return its raw text, or None if out of range. Lets the user CANCEL a message they queued
+        behind a busy turn — click it in the chat to pull it back out and re-edit (the user 2026-06-27).
+        Only pending (not-yet-started) turns are cancelable; once the input generator has fed a turn to
+        the SDK it's gone from _pending and no longer listed, so there's nothing to mis-cancel."""
+        with self._lock:
+            if 0 <= idx < len(self._pending):
+                return self._pending.pop(idx)
+        return None
+
     def interrupt(self):
         if self.loop and self.client:
             self.loop.call_soon_threadsafe(
@@ -1128,6 +1139,14 @@ class SdkBackend:
         with self._lock:
             s = self.sessions.get(sid)
         return s.pending() if s else []
+
+    def unqueue(self, sid: str, idx: int) -> str | None:
+        """Cancel the queued turn at `idx` for an SDK session (the kernel's cancelQueued route). Returns
+        its text, or None. tmux has no equivalent (its queue lives in Claude Code), so only SDK sessions
+        expose this — the kernel gates the chat's cancel affordance on the backend having `unqueue`."""
+        with self._lock:
+            s = self.sessions.get(sid)
+        return s.unqueue(idx) if s else None
 
     def send(self, sid: str, text: str) -> bool:
         s = self._ensure(sid)

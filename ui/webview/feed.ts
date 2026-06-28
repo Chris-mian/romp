@@ -685,7 +685,7 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
     a._waitOn.replaceChildren();
     a._waitOn.style.display = "none";
   }
-  a._nudge.style.display = (it.column === "working" && !it.provisional) ? "" : "none";   // Nudge only on a real working card (the user 2026-06-18)
+  a._nudge.style.display = (it.column === "working" && !it.provisional && !it.recheck) ? "" : "none";   // Nudge only on a real working card — not a re-checking one (you just replied) (the user 2026-06-18/27)
   a._cardFup.style.display = ((it.column === "needs_input" || it.column === "completed") && !it.provisional) ? "" : "none";   // Follow up on blocked/completed cards (the user 2026-06-22)
   a._clr.style.display = it.provisional ? "none" : "";   // a placeholder has nothing to curate — no Clear
   // ⏳ awaiting: held in Working, waiting on work it dispatched/delegated (agents, a subagent, a build).

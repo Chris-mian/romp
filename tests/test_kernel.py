@@ -2247,7 +2247,7 @@ class ViewBuilder(unittest.TestCase):
             km._last_plain_user_turn_t = lambda turns: NOW - 10      # a plain reply AFTER the block (mt NOW-100)
             card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
             self.assertTrue(card["recheck"], "plain reply after the block → re-check (de-urgented)")
-            self.assertEqual(card["column"], "needs_input", "still files under blocked, just de-urgented")
+            self.assertEqual(card["column"], "working", "re-check drops out of needs-input into Working (the user 2026-06-27)")
             km._last_plain_user_turn_t = lambda turns: NOW - 300     # a reply that PRE-dates the block
             card2 = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
             self.assertFalse(card2["recheck"], "no reply since the block → still urgent")
