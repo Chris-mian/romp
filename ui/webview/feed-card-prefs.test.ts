@@ -17,11 +17,12 @@ test("feed reads the sub-goals pref from romp:settings, defaulting ON; explanati
 });
 
 test("the card shows the DISTILLER's line (summary/blockSummary) but NO why/generating placeholder (restored 2026-06-29)", () => {
-  // the distiller's own output is back on the card — completed → summary, blocked → blockSummary
+  // the card's distiller line is wired through ./distiller-line — the BEHAVIOR is executed in
+  // distiller-line.test.ts (completed→summary, blocked→blockSummary, hidden when empty). These pins just
+  // confirm the card creates the element and routes through that single rule.
   assert.match(FEED, /const distill = el\("div", "fask-distill"\)/);
-  assert.match(FEED, /it\.column === "completed" \? it\.summary/);
-  assert.match(FEED, /it\.column === "needs_input" \? it\.blockSummary/);
-  assert.match(FEED, /dl\.style\.display = distillText \? "" : "none"/);   // shown ONLY once the distiller produces
+  assert.match(FEED, /import \{ distillText, applyDistillLine \} from "\.\/distiller-line"/);
+  assert.match(FEED, /applyDistillLine\(a\._distill[^)]*it\.column === "completed", it\.column === "needs_input",\s*it\.summary, it\.blockSummary\)/);
   // but the planner's why-rationale AND the stuck "(generating…)" placeholder stay GONE (the user 2026-06-27/29)
   assert.doesNotMatch(FEED, /const setAutoLine =/);
   assert.doesNotMatch(FEED, /"\(generating…\)"/, "no '(generating…)' placeholder anywhere");

@@ -12,10 +12,10 @@ const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", 
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.css"), "utf8");
 
 test("the modal shows the DISTILLER's per-node line (summary/blockSummary) but NO why/generating (restored 2026-06-29)", () => {
-  // a done node's takeaway / a blocked node's decision brief, shown only when produced
+  // a done node's takeaway / a blocked node's decision brief, via the SAME executable rule as the card
+  // (./distiller-line, behaviorally tested in distiller-line.test.ts); shown only when produced.
   assert.match(FEED, /el\("div", "ftree-summary"\)/);
-  assert.match(FEED, /node\.status === "done" \? node\.summary/);
-  assert.match(FEED, /node\.status === "question" \? node\.blockSummary/);
+  assert.match(FEED, /const nodeDistill = distillText\(node\.status === "done", node\.status === "question",\s*node\.summary, node\.blockSummary\)/);
   assert.match(FEED, /if \(nodeDistill\) \{/);
   // the planner's per-node why-rationale lines + the "(generating…)" placeholder stay GONE (the user 2026-06-27/29)
   assert.doesNotMatch(FEED, /ftree-why/);

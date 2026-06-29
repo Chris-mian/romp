@@ -6,6 +6,7 @@
 // Rendering is KEYED + INCREMENTAL: cards are kept alive across the host's live
 // pushes and updated in place — never torn down — so hovering one doesn't flicker
 // when the fleet streams new deliverables in.
+import { distillText, applyDistillLine } from "./distiller-line";
 
 interface FeedItem {
   itemId: string;
@@ -706,14 +707,12 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
     a._blocked.title = it.blocked.what + " — click to open the session";
     a._blocked.onclick = (ev: Event) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "openSession", id: it.sid }); };
   }
-  // The DISTILLER's line (restored 2026-06-29): a completed card shows its takeaway (it.summary), a blocked
-  // card its decision brief (it.blockSummary). Shown ONLY when the distiller has produced a non-empty string —
-  // never a generating-state placeholder, never the planner's why (which the user dropped). Plain text.
-  const distillText = ((it.column === "completed" ? it.summary
-                        : it.column === "needs_input" ? it.blockSummary : "") || "").trim();
-  const dl = a._distill as HTMLElement;
-  dl.textContent = distillText;
-  dl.style.display = distillText ? "" : "none";
+  // The DISTILLER's line (restored 2026-06-29): completed card → takeaway (it.summary), blocked card → decision
+  // brief (it.blockSummary), shown ONLY when produced; never a generating placeholder, never the planner's why.
+  // The rule lives in ./distiller-line so distiller-line.test.ts can EXECUTE it (a regex pin let it silently
+  // turn off once — the user 2026-06-29). updateAskCard runs every push, so this re-applies on every refresh.
+  applyDistillLine(a._distill as HTMLElement, it.column === "completed", it.column === "needs_input",
+                   it.summary, it.blockSummary);
   // API error → a red "API error" badge + a Retry button that pastes "retry" into the session to resume
   // the stalled turn (the user 2026-06-16). The card STAYS in Working (the user 2026-06-29) — an API error is
   // a transient stall, not a block — so this badge + Retry are the only API-error cue; no column move.
@@ -1192,8 +1191,8 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
   // NOT the planner's why-created/why-blocked/why-done rationales). A done node shows its takeaway
   // (node.summary), a blocked node its decision brief (node.blockSummary) — ONLY when produced (non-empty),
   // never a generating-state placeholder. pre-wrap (CSS) keeps a copy-pasteable artifact intact across lines.
-  const nodeDistill = ((node.status === "done" ? node.summary
-                        : node.status === "question" ? node.blockSummary : "") || "").trim();
+  const nodeDistill = distillText(node.status === "done", node.status === "question",
+                                  node.summary, node.blockSummary);
   if (nodeDistill) {
     const sum = el("div", "ftree-summary");
     sum.style.paddingLeft = ((depth + 1) * TREE_INDENT_EM) + "em";
