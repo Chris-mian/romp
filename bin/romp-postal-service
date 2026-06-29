@@ -43,6 +43,7 @@ import os
 import random
 import re
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -63,6 +64,7 @@ KERNEL_BASE = "http://127.0.0.1:%s" % os.environ.get("ROMP_KERNEL_PORT", "7433")
 STATE = Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "romp" / "postal"
 MAILROOT = STATE / "mail"
 MAILPENDING = STATE / "mail-pending"   # touch <sid> here IFF that session has unread mail in new/
+WARNED = STATE / "warned-undelivered"  # marker per msg-id we've already warned a sender is STILL UNDELIVERED (one-time)
 LOG = STATE / "server.log"
 PIDFILE = STATE / "server.pid"
 NAMES_DIR = Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "romp" / "names"
@@ -83,6 +85,7 @@ MAX = 6            # loop-guard: max auto-deliveries per window before pausing
 RETRY_INTERVAL = int(os.environ.get("ROMP_POSTAL_RETRY", "5"))  # re-attempt deferred deliveries every N s
 PICKER_GRACE = int(os.environ.get("ROMP_POSTAL_PICKER_GRACE", "10"))  # secs the kernel watches a revive for the resume picker (passed as the /picker-check timeout)
 ORPHAN_GRACE = int(os.environ.get("ROMP_POSTAL_ORPHAN_GRACE", "900"))  # bounce unread mail to a dead recipient after N s
+STUCK_GRACE = int(os.environ.get("ROMP_POSTAL_STUCK_GRACE", "600"))  # warn the SENDER when a LIVE-but-idle recipient still hasn't read after N s
 
 REPLY_HINT = ('To reply (only if you have something substantive to add, not just to '
               'acknowledge): romp --mail send <name> "<text>" — lead with DELEGATE:/COORDINATE:/QUESTION: '
@@ -781,6 +784,82 @@ def _sweep_orphans():
             pass
 
 
+def _warn_stuck_mail():
+    """BACKSTOP sender feedback for a LIVE-but-unreachable recipient (the user 2026-06-29). The orphan sweep
+    only bounces mail to a DEAD recipient; but mail can also strand UNREAD in a LIVE recipient's box — the
+    recipient is idle yet never drains it (the stale-bus bug, or a wedged backend). The retry loop delivers to
+    an idle session in seconds, so a message STILL unread after STUCK_GRACE while the recipient sits
+    idle/waiting means something is wrong. Warn the (live) sender ONCE — '↩ STILL UNDELIVERED …' — and LEAVE
+    the message in new/ (unlike the orphan bounce: a live recipient may yet receive it). Gated on the recipient
+    being idle/waiting, NOT working — a message to a session mid-turn legitimately waits for its next turn, so
+    that must never trip a false alarm. One-time via a persisted WARNED/<msg-id> marker; markers for delivered
+    messages are pruned so WARNED stays bounded to currently-pending mail."""
+    if not MAILROOT.is_dir():
+        return
+    live = local_agents()
+    if not live:                                       # kernel hiccup, not "everyone's stuck" — don't warn
+        return
+    by_id = {a["id"]: a for a in live}
+    by_name = {a["name"]: a for a in live}
+    now = time.time()
+    seen_ids = set()                                   # every msg id still pending anywhere → prune stale markers after
+    for box in MAILROOT.iterdir():
+        if not box.is_dir():
+            continue
+        newd = box / "new"
+        if not newd.is_dir():
+            continue
+        recip = by_id.get(box.name)
+        recip_settled = bool(recip and recip.get("state", "") in ("idle", "waiting"))
+        for f in list(newd.iterdir()):
+            if not f.is_file():
+                continue
+            seen_ids.add(f.name)
+            if not recip_settled:                      # dead / unknown / working recipient → not (yet) provably stuck
+                continue
+            try:
+                if now - f.stat().st_mtime < STUCK_GRACE:   # still within the normal delivery window
+                    continue
+            except Exception:
+                continue
+            marker = WARNED / f.name
+            if marker.exists():                        # already warned the sender about this one
+                continue
+            try:
+                text = f.read_text(errors="replace")
+            except Exception:
+                continue
+            meta = {}
+            head, _, body = text.partition("\n\n")
+            for ln in head.splitlines():
+                k, _, v = ln.partition(": "); meta[k.lower()] = v
+            if meta.get("x-park"):                       # deliberate handoff → waits for revival, never 'stuck'
+                continue
+            s = by_name.get(meta.get("from", ""))
+            if s and s["id"] != box.name:               # warn the live sender (never self)
+                warn = ("↩ STILL UNDELIVERED — '%s' is live but hasn't read your message after %d min; it may "
+                        "be stuck. Check on it or resend.\nOriginal: %s"
+                        % (recip.get("name") or box.name[:8], max(1, STUCK_GRACE // 60),
+                           " ".join(body.split())[:160]))
+                try:
+                    deliver(s["id"], "Romp Postal Service", "", warn)
+                    threading.Thread(target=_push, args=(s["id"], s), daemon=True).start()
+                except Exception as e:
+                    _log("stuck-warn to %s failed: %s" % (s.get("name", "?"), e))
+            try:                                        # mark one-time even if the sender was dead/absent → no re-scan churn
+                WARNED.mkdir(parents=True, exist_ok=True)
+                marker.touch()
+            except Exception:
+                pass
+    try:                                                # prune markers whose message finally delivered (left new/)
+        if WARNED.is_dir():
+            for mk in WARNED.iterdir():
+                if mk.name not in seen_ids:
+                    mk.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
 def _hhmm(iso):
     # _iso_now() -> "2026-06-05T14:23:45-0700"; pull HH:MM, else fall back to now.
     if iso and len(iso) >= 16 and iso[10:11] == "T":
@@ -1024,6 +1103,10 @@ def _monitor(httpd, boot_fp=""):
         except Exception:
             pass
         try:
+            _warn_stuck_mail()  # warn the sender when a LIVE-but-idle recipient still hasn't read (backstop)
+        except Exception:
+            pass
+        try:
             n = present_count()
         except Exception:
             n = 1   # on error, err on the side of staying up
@@ -1183,6 +1266,30 @@ def ensure():
             return True
         time.sleep(0.1)
     return ping()
+
+def restart():
+    """Force a FRESH bus process so 'restart everything' (`romp --refresh`) actually includes the bus, not
+    just the kernels (the user 2026-06-29). The bus is a port-keyed singleton, so `ensure` alone is a no-op
+    while the old one answers; SIGTERM the running pid, wait for the port to free, then re-ensure. Pending
+    mail lives in the maildir, so the fresh bus just re-delivers it. On a client-only host the real bus is
+    remote — don't kill anything, just re-ensure the tunnel."""
+    if not is_client_only():
+        try:
+            pid = int(PIDFILE.read_text().strip())
+        except Exception:
+            pid = 0
+        if pid:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            except Exception as e:
+                _log("restart: could not signal bus pid %d (%s)" % (pid, e))
+            for _ in range(50):       # ~5s for the old bus to exit + release the port so ensure() can bind
+                if not ping():
+                    break
+                time.sleep(0.1)
+    return ensure()
 
 def _heartbeat(sid, name):
     if sid:
@@ -1608,7 +1715,7 @@ USAGE = """romp-postal-service — the Romp Postal Service
   romp --mail find [query]            search past+present sessions by summary + captions
   romp --mail revive <name> [msg]     revive a dead session (resumes it; optional wake message)
   romp --mail remote                  connect this (remote) machine to your laptop's bus
-(internal: serve | ensure | mcp | drain --id <id> | wake --id <id> | picker-check --name <n> --id <id>)"""
+(internal: serve | ensure | restart | mcp | drain --id <id> | wake --id <id> | picker-check --name <n> --id <id>)"""
 
 def main(argv):
     if not argv:
@@ -1616,6 +1723,7 @@ def main(argv):
     cmd, rest = argv[0], argv[1:]
     if cmd == "serve":   return serve()
     if cmd == "ensure":  return 0 if ensure() else 1
+    if cmd == "restart": return 0 if restart() else 1   # `romp --refresh` bounces the bus too, not just the kernels
     if cmd == "mcp":     return mcp()
     if cmd == "remote":  return setup_remote(force=("--force" in rest or "-f" in rest))
     if cmd == "drain":   return cli_drain(rest)

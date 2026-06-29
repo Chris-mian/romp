@@ -33,6 +33,24 @@ This repo may go public; assume every commit is permanent and world-readable.
   hostname, home path, plus `~/.config/romp/private-strings.txt`); run it
   before committing fixtures.
 
+## Worktrees — work on an isolated worktree by default (user rule, 2026-06-29)
+Do ALL non-trivial work on its own git worktree, not the shared main tree — concurrent
+peer sessions clobber/commit each other's uncommitted edits in the shared tree (a peer's
+broad `git add` will sweep up your work). Conventions:
+- **One worktree per session, named after the session.** Branch + directory take the
+  session's name, e.g. session `bugsdk2` → branch `bugsdk2`, dir `../romp-bugsdk2`
+  (`git worktree add -b <session> ../romp-<session> HEAD`). So a glance at
+  `git worktree list` says who owns what.
+- **Standing green light to merge.** When the work is done and tests pass, merge it back
+  to `main` and push — no need to ask first. (This is explicit standing permission from
+  the user; the usual "branch first / ask before committing" caution is lifted here.)
+- **Clean up when finished.** After merging, remove the worktree
+  (`git worktree remove ../romp-<session>`) and delete its branch — don't leave stale
+  worktrees lying around.
+- **Exception:** a quick, already-in-flight change in the main tree (or an explicit
+  "do this in main") can stay there — commit it promptly with a focused `git add <paths>`
+  (never `git add -A`, which sweeps peers' edits). See [[shared-worktree-use-isolated]].
+
 ## Testing
 Every bug fix or feature change must land with a test that covers it (user rule,
 2026-06-12). Test homes: `tests/test_romp_events_golden.py` and the other

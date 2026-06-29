@@ -580,7 +580,7 @@ EOF
     _romp_cmd "romp -j"                    romp-judge-monitor "Judges health monitor — are they keeping up, any exceptions"
     _romp_cmd "romp --serve [on|off|status]" -          "Expose the kernel to the tailnet/phone (token-gated), or revert to local-only"
     _romp_cmd "romp --on"                  romp-manager "Start the kernel manager (foreground — Ctrl+C stops it and its kernels)"
-    _romp_cmd "romp --refresh"             romp-manager "Restart all romp kernels (picks up new code — run after an update)"
+    _romp_cmd "romp --refresh"             romp-manager "Restart the postal bus + all romp kernels (picks up new code — run after an update)"
     _romp_cmd "romp --status"              romp-manager "Show manager + kernel status"
     _romp_cmd "romp --version"             romp-version "Versions across the parts (tree, kernel, served vs built bundles)"
     _romp_cmd "romp -h"                    -            "Show this help"
@@ -704,7 +704,7 @@ fi
 # the web dashboard, Obsidian) ATTACH rather than spawn. `romp --on` is PURELY "start the manager" — the
 # actions are their OWN flags, none hidden under `romp --on` (the user 2026-06-13):
 #   romp --on        run the manager in the foreground (Ctrl+C stops it AND its kernels)
-#   romp --refresh   restart EVERY kernel the manager owns (picks up new code — run after an update)
+#   romp --refresh   restart EVERYTHING — the postal bus AND every kernel (picks up new code after an update)
 #   romp --status    manager + kernel status
 # No `romp --down`: `romp --on` is foreground, so Ctrl+C stops it (the user 2026-06-13). The manager still
 # honors SIGINT/SIGTERM + a direct /stop for that path — there's just no romp flag for it.
@@ -712,7 +712,11 @@ fi
 # 2026-06-16). ROMP_MANAGER_BIN is the test seam (same pattern as ROMP_DASHBOARD_BIN / ROMP_POSTAL_BIN).
 case "${1:-}" in
     --on)      exec "${ROMP_MANAGER_BIN:-romp-manager}" up ;;
-    --refresh) exec "${ROMP_MANAGER_BIN:-romp-manager}" restart-all ;;
+    --refresh) # restart EVERYTHING (the user 2026-06-29): the postal bus too, not just the kernels — the bus
+               # is a separate long-lived singleton the manager doesn't own, so a kernel-only refresh left it
+               # serving stale code. Bounce the bus first (best-effort), then exec the kernel restart.
+               "${ROMP_POSTAL_BIN:-romp-postal-service}" restart >/dev/null 2>&1 || true
+               exec "${ROMP_MANAGER_BIN:-romp-manager}" restart-all ;;
     --status)  exec "${ROMP_MANAGER_BIN:-romp-manager}" status ;;
 esac
 
