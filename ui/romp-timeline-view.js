@@ -518,7 +518,11 @@ class TimelinePanel {
     this._unfreezeTimer = null;  // deferred hideTip resume — cancelled by a quick glyph→glyph hover handoff
     this.wrap.tabIndex = 0; this.wrap.style.outline = 'none';
     this._onKey = (e) => this.onKey(e);
-    this._focusWrap = () => this.wrap.focus();
+    // preventScroll: focusing on mousedown must NOT scroll the wrap into view — that scroll shifts the layout
+    // BETWEEN mousedown and mouseup, so the click lands on a different element (or nothing) and is dropped. It
+    // was the "first click only focuses, second click acts" bug on the % compact battery (the user 2026-06-29):
+    // the first press focused (+ scrolled), eating the click; the second, already focused, landed.
+    this._focusWrap = () => { try { this.wrap.focus({ preventScroll: true }); } catch (e) { this.wrap.focus(); } };
     this.wrap.addEventListener('keydown', this._onKey);
     this.wrap.addEventListener('mousedown', this._focusWrap);
     // SAFETY NET for a stuck tooltip: a hit's own mouseleave never fires if a redraw
