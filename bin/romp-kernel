@@ -4358,18 +4358,22 @@ def _resolve_node(sid, node_id):
     return True
 
 
-def _provisional_card(s, name, color, fsid, live, now):
-    """A lightweight WORKING placeholder for a session actively in an in-progress turn whose held human
-    prompt the planner hasn't classified yet (the user 2026-06-18). The planner withholds the final segment
-    of an OPEN turn — it can't judge what a segment did to the goal tree until the segment ends — so a
-    session that just got a brand-new ask, with every existing card done/blocked/cleared, shows NO card
-    while it works. This surfaces one from the LIVE prompt (the same gist build_session's `current` uses) so
-    the session isn't invisible. It carries NO goal node — empty tree, no clear/nudge/modal — and is
-    naturally replaced by the real card the instant the planner places the segment (this stops emitting once
-    a working card exists / the held segment is placed). Returns the ask dict, or None when unwarranted.
+def _provisional_card(s, name, color, fsid, live, now, store=None):
+    """A lightweight WORKING placeholder for a LIVE session whose latest human prompt the planner hasn't
+    classified into a card yet (the user 2026-06-18). The planner withholds the open turn's final segment —
+    it can't judge what a segment did to the tree until it ends — and places it only on a LATER pass (often an
+    LLM call), so a session that just got a brand-new ask, with every existing card done/blocked/cleared,
+    would show NO card meanwhile. This surfaces one from the prompt's gist; it carries NO goal node (empty
+    tree) and is dropped the INSTANT the planner places the segment, so the placeholder and the real card swap
+    in ONE build.
 
-    Event-based (keyed on the open-turn signal the planner itself uses), not a timer; the build_feed caller
-    only asks for one when the session has NO working card, so it never duplicates a live card."""
+    The drop gate is the planner's PLACEMENT (placements), NOT the turn being open. Keying on the open turn
+    (the old _session_working gate) dropped the placeholder at TURN-END — but the planner classifies a pass or
+    two later, so the feed showed NOTHING in that gap (the user 2026-06-29: "serious delay between the
+    provisional disappearing and the real cards appearing"). Live-session only (a dead one isn't planning), and
+    the build_feed caller only asks when there's NO working card, so it never duplicates a real card."""
+    if not live:                                     # only a LIVE (running) session is 'analyzing' a fresh ask
+        return None
     try:
         turns = _parse(s["path"], fsid, now)["turns"]
     except Exception:
@@ -4377,13 +4381,19 @@ def _provisional_card(s, name, color, fsid, live, now):
     if not turns:
         return None
     lt = turns[-1]
-    if not _session_working(turns):                  # not actively working (event model) → no provisional card
-        return None
     segs = em.segments(lt)
     if not segs:
         return None
-    held = segs[-1]                                  # the final segment of the open turn — what the planner withholds
+    held = segs[-1]                                  # the latest segment — the ask the planner withholds / just got
     if not jd._seg_human(held):                      # only a real user prompt warrants a placeholder (peer/sdk don't)
+        return None
+    # PLACED already? the planner stamps placements the moment it classifies this segment — its prompt-run
+    # (#p, fired while the turn is open) or its work-run (bare id, fired once the turn ends), set even for a
+    # SKIP. Either means the real card (or none) is on the board → stop the placeholder. This is the true
+    # "replaced the instant the planner places the segment" gate the docstring always promised, now keyed on
+    # the placement EVENT instead of the open-turn proxy — so it persists across turn-end and never gaps.
+    placements = (store or {}).get("placements") or {}
+    if held["id"] in placements or (held["id"] + "#p") in placements:
         return None
     prompt = _split_reminders(_seg_prompt(held))[0].strip()
     if not prompt:
@@ -4793,7 +4803,7 @@ def build_feed(now, tmux=None):
             # perm_top excluded: a live-blocked focus card no longer counts as "working" (it reports needs_input
             # now), so without this guard a session whose ONLY card is the picker-blocked one would ALSO get a
             # provisional working placeholder — a duplicate. A floored perm_top already covers the live prompt.
-            pc = _provisional_card(s, name, color, fsid, live, now)
+            pc = _provisional_card(s, name, color, fsid, live, now, store)
             if pc:
                 asks.append(pc)
             elif perm_state in _NEEDS_INPUT_STATES:      # perm_top is None here (outer guard) → no goal to floor

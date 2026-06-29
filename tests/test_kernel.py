@@ -122,13 +122,17 @@ class ViewBuilder(unittest.TestCase):
             {"headline": "Fixing the feed", "abstract": "Fixed a flicker.", "turns": 1}))
         jd.GOALDIR.mkdir(parents=True)
         g1, g2 = "%s:g1" % SID, "%s:g2" % SID
+        # The planner records a PLACEMENT for every segment it classifies, so a realistic store with finished
+        # goals has the turn's segment placed — else the provisional placeholder would (correctly) surface for
+        # the still-unplaced ask (the user 2026-06-29). Stamp the fixture turn's segment as placed.
+        _held = em.segments(session["turns"][-1])[-1]
         (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
             "rompUuid": SID, "seq": 2, "lastNode": g1,
             "nodes": {g1: {"id": g1, "text": "Fix the feed flicker", "parentId": None,
                            "nodeComplete": True, "blocked": False, "cleared": False, "trail": [], "t": turn["t"]},
                       g2: {"id": g2, "text": "Awaiting a decision", "parentId": None,
                            "nodeComplete": False, "blocked": True, "cleared": False, "trail": [], "t": turn["t"]}},
-            "placements": {}, "status": {g1: "completed", g2: "blocked"}}))
+            "placements": {_held["id"]: g1}, "status": {g1: "completed", g2: "blocked"}}))
         self._warm_tpath()                             # cache-only build_feed reads the parse only if warmed
 
     def tearDown(self):
@@ -1555,18 +1559,30 @@ class ViewBuilder(unittest.TestCase):
         on_disk = json.loads((jd.STATE / "auto-nudge.json").read_text())
         self.assertNotIn("done", on_disk, "the next write cleans 'done' from the file")
 
-    def test_no_provisional_card_once_the_turn_ends(self):
-        # The placeholder is for IN-PROGRESS work only — once the turn ends, the planner will place the
-        # segment on its next pass, so a placeholder would only race the real card. Keyed on the open turn.
-        self._open_turn_transcript(ended=True)
+    def test_provisional_persists_past_turn_end_until_the_planner_places_it(self):
+        # The user 2026-06-29: the placeholder must NOT vanish at turn-end. The planner classifies the held
+        # segment a pass or two LATER (often an LLM call), so dropping it at turn-end left the feed showing
+        # NOTHING in the gap ("serious delay between the provisional disappearing and the real cards
+        # appearing"). It now persists until the planner PLACES the segment, so placeholder → real card swap
+        # in one build. Keyed on the placement EVENT, not the open turn.
+        self._open_turn_transcript(ended=True)         # ENDED turn; its 2nd-turn ask isn't placed yet (placements: {})
         g1 = SID + ":g1"
         self._goal_store(
             {g1: {"id": g1, "text": "first ask", "parentId": None, "nodeComplete": True,
                   "blocked": False, "cleared": False, "trail": [], "t": T0}},
             {g1: "completed"}, last=g1)
         self._working_tmux()
-        asks = km.build_feed(NOW)["asks"]
-        self.assertFalse([a for a in asks if a.get("provisional")], "a closed turn gets no placeholder")
+        prov = [a for a in km.build_feed(NOW)["asks"] if a.get("provisional")]
+        self.assertEqual(len(prov), 1, "an ENDED but unplaced ask still shows the placeholder — no gap before the real card")
+        # Once the planner PLACES that segment (its key lands in placements — set even for a skip), the
+        # placeholder drops: the real card / skip is on the board.
+        session = em.parse_session(str(self.tpath), rompuuid=SID, candidate_files=[str(self.tpath)], now=NOW)
+        held = em.segments(session["turns"][-1])[-1]
+        store = json.loads((jd.GOALDIR / (SID + ".json")).read_text())
+        store["placements"][held["id"]] = None
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps(store))
+        self.assertFalse([a for a in km.build_feed(NOW)["asks"] if a.get("provisional")],
+                         "once the planner places the held segment, the placeholder is gone (replaced by the real card)")
 
     def test_no_provisional_card_when_a_working_card_already_covers_the_session(self):
         # The placeholder fills the gap only when NOTHING already shows the session working. An open top
