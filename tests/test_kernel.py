@@ -3560,6 +3560,11 @@ class ServeSecurity(unittest.TestCase):
         self.assertIn("id=fleet-foot", body)
         self.assertIn("/dist/fleet.js", body)
         self.assertIn('app=feed', body)              # reuses the feed payload, no new kernel data
+        # the romp loader RE-SHOWS on a kernel restart / WS drop (the user 2026-06-29): the shim fires
+        # 'romp:wsdown' on ws.onclose and the pane loader un-fades over the stale pane until reconnect.
+        self.assertIn("window.addEventListener('romp:wsdown',show)", body)        # loader re-shows
+        self.assertIn('dispatchEvent(new Event("romp:wsdown"))', body)            # shim fires it on close
+        self.assertIn("function show(){o.classList.remove('gone')", body)         # kept in the DOM, not removed
 
     def test_landing_fleet_is_its_own_pane_toggled_from_the_rail(self):
         # Fleet is its OWN pane now (the user 2026-06-24): the old .show-fleet SWAP (Fleet living inside the

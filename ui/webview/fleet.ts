@@ -74,19 +74,49 @@ const fkey = (sid: string, id: string) => sid + "\0" + id;
 
 const sessFolded = new Set<string>();   // sessions whose WHOLE task tree is collapsed, keyed by sid (the user 2026-06-24)
 
-// Bottom-bar Collapse-all / Expand-all (the user 2026-06-29). Collapse-all folds EVERYTHING — every session
-// header and every expandable node — so the view shrinks to just session names (grouped) / top goals (flat).
-// Expand-all clears every manual fold, restoring the DEFAULT auto-shown depth where finished tops still
-// auto-collapse (that's the natural view, not a fully-exploded tree).
-function collapseAll() {
+// Collapse / Expand are STICKY TOGGLE MODES (the user 2026-06-29), persisted across kernel restarts + reopens.
+// "collapse" → render() folds EVERYTHING (every session + node) and KEEPS it folded as new work streams in;
+// "expand" → render() force-expands everything; null → the manual per-node state (folded/expanded sets +
+// the finished-top default). The active button "stays clicked". A manual fold/sessfold click LEAVES the mode
+// (bakeFoldMode writes the mode's current look into the sets first, so only the node you touched changes).
+type FoldMode = "collapse" | "expand" | null;
+const FOLD_MODE_KEY = "romp:fleetFoldMode";
+function foldMode(): FoldMode { try { const v = localStorage.getItem(FOLD_MODE_KEY); return v === "collapse" || v === "expand" ? v : null; } catch { return null; } }
+function setFoldMode(m: FoldMode) { try { if (m) localStorage.setItem(FOLD_MODE_KEY, m); else localStorage.removeItem(FOLD_MODE_KEY); } catch { /* ignore */ } }
+let curFoldMode: FoldMode = null;   // snapshot read once per render() so renderFleetNode doesn't re-hit localStorage per node
+
+// A Collapse/Expand BUTTON click: toggle that mode on/off (mutually exclusive). Clear the manual sets so the
+// mode is clean and toggling it back OFF returns to the default view.
+function toggleFoldMode(m: "collapse" | "expand") {
+  const on = foldMode() === m;
   folded.clear(); expanded.clear(); sessFolded.clear();
-  for (const s of sessions) {
-    sessFolded.add(s.sid);
-    for (const n of s.ledger?.tree || []) if (n.children && n.children.length) folded.add(fkey(s.sid, n.id));
-  }
+  setFoldMode(on ? null : m);
   render();
 }
-function expandAll() { folded.clear(); expanded.clear(); sessFolded.clear(); render(); }
+// Bake the ACTIVE mode's current look into the manual sets, then leave the mode — called when the user folds
+// something by hand, so the auto mode releases but the view it produced is preserved (only the hand-toggled
+// node then differs).
+function bakeFoldMode() {
+  const m = foldMode();
+  if (!m) return;
+  if (m === "collapse") {
+    for (const s of sessions) {
+      sessFolded.add(s.sid);
+      for (const n of s.ledger?.tree || []) if (n.children && n.children.length) { folded.add(fkey(s.sid, n.id)); expanded.delete(fkey(s.sid, n.id)); }
+    }
+  } else {
+    sessFolded.clear();
+    for (const s of sessions) for (const n of s.ledger?.tree || []) if (n.children && n.children.length) { expanded.add(fkey(s.sid, n.id)); folded.delete(fkey(s.sid, n.id)); }
+  }
+  setFoldMode(null);
+}
+// Paint the two toggle buttons' "on" state from the persisted mode (called from render + at mount).
+function paintFoldButtons() {
+  const m = foldMode();
+  const c = document.getElementById("fl-collapse"), e = document.getElementById("fl-expand");
+  if (c) c.classList.toggle("on", m === "collapse");
+  if (e) e.classList.toggle("on", m === "expand");
+}
 
 function el(tag: string, cls?: string): HTMLElement { const e = document.createElement(tag); if (cls) e.className = cls; return e; }
 
@@ -226,7 +256,11 @@ function renderFleetNode(ctx: SessCtx, n: LedgerNode, depth: number, container: 
   const { s, byId, curT } = ctx;
   const expandable = !!(n.children && n.children.length);
   const defaultFold = !!n.done && (depth === 0 || !n.onpath);   // a finished top folds by default
-  const isFolded = expandable && (folded.has(fkey(s.sid, n.id)) || (defaultFold && !expanded.has(fkey(s.sid, n.id))));
+  // a sticky Collapse/Expand mode overrides the per-node state (the user 2026-06-29); null → manual default
+  const isFolded = expandable && (
+    curFoldMode === "collapse" ? true
+    : curFoldMode === "expand" ? false
+    : (folded.has(fkey(s.sid, n.id)) || (defaultFold && !expanded.has(fkey(s.sid, n.id)))));
   const row = el("div", "ledger-tnode" + (depth === 0 ? " ledger-top" : "")
     + (n.current ? " current" : "") + (n.done ? " done" : "")
     + (n.blocked && !n.done ? " blocked" : "") + (n.derived ? " derived" : "")
@@ -307,6 +341,8 @@ function render() {
   list.replaceChildren();
   const sd = showDone();
   const grouped = isGrouped();
+  curFoldMode = foldMode();   // snapshot the sticky Collapse/Expand mode once for this render
+  paintFoldButtons();
   const now = Math.floor(Date.now() / 1000);
   let any = false;
 
@@ -350,7 +386,7 @@ function render() {
       // session-level collapse caret (the user 2026-06-24): folds this session's WHOLE task tree. Its OWN
       // data-act="sessfold" (the innermost data-act in the head) so clicking it folds WITHOUT opening the
       // session — only a click on the name/rest of the head (data-act="open") jumps in.
-      const sfolded = sessFolded.has(s.sid);
+      const sfolded = curFoldMode === "collapse" ? true : curFoldMode === "expand" ? false : sessFolded.has(s.sid);
       const caret = el("span", "fl-caret");
       caret.textContent = sfolded ? "▶" : "▼";
       caret.title = sfolded ? "expand this session's tasks" : "collapse this session's tasks";
@@ -412,12 +448,14 @@ function mountControls() {
   grp.addEventListener("change", () => { setGrouped(grp.checked); render(); });
   grpLbl.appendChild(grp);
   grpLbl.appendChild(document.createTextNode("Group"));   // short label; the tooltip carries the full meaning
-  const collapse = el("button", "fl-foot-btn");
-  collapse.textContent = "Collapse"; collapse.title = "Collapse everything — every session and goal folds shut";
-  collapse.addEventListener("click", () => { collapse.classList.add("romp-acted"); setTimeout(() => collapse.classList.remove("romp-acted"), 280); collapseAll(); });
-  const expand = el("button", "fl-foot-btn");
-  expand.textContent = "Expand"; expand.title = "Expand back to the default view (completed work still auto-collapses)";
-  expand.addEventListener("click", () => { expand.classList.add("romp-acted"); setTimeout(() => expand.classList.remove("romp-acted"), 280); expandAll(); });
+  // Collapse / Expand are STICKY toggle buttons: click to enter the mode (button "stays clicked"), click
+  // again to leave, or fold something by hand to release it. id'd so paintFoldButtons can light the active one.
+  const collapse = el("button", "fl-foot-btn"); collapse.id = "fl-collapse";
+  collapse.textContent = "Collapse"; collapse.title = "Keep everything collapsed — folds every session + goal and stays that way as work streams in (click again, or fold something by hand, to release)";
+  collapse.addEventListener("click", () => { collapse.classList.add("romp-acted"); setTimeout(() => collapse.classList.remove("romp-acted"), 280); toggleFoldMode("collapse"); });
+  const expand = el("button", "fl-foot-btn"); expand.id = "fl-expand";
+  expand.textContent = "Expand"; expand.title = "Keep everything expanded — opens every goal and stays that way as work streams in (click again, or fold something by hand, to release)";
+  expand.addEventListener("click", () => { expand.classList.add("romp-acted"); setTimeout(() => expand.classList.remove("romp-acted"), 280); toggleFoldMode("expand"); });
   left.append(grpLbl, collapse, expand);
 
   // ── RIGHT cluster: recency cutoff slider + Show completed ──
@@ -425,16 +463,17 @@ function mountControls() {
   const lab = el("span");
   lab.style.cssText = "min-width:42px;text-align:right;font-variant-numeric:tabular-nums";
   const sl = document.createElement("input");
-  // REVERSED direction (the user 2026-06-29): dragging RIGHT shows only MORE-RECENT sessions (tighter window),
-  // LEFT shows everything. The stored cutoffPos keeps its meaning (1000 = show all), so the slider's displayed
-  // value is its mirror (1000 - pos) on the way in and out — no change to cutoffSecs / persistence semantics.
-  sl.type = "range"; sl.min = "0"; sl.max = "1000"; sl.step = "1"; sl.value = String(1000 - cutoffPos());
-  sl.style.cssText = "width:84px;cursor:pointer";
+  // REVERSED direction + blue fill on the RIGHT (the user 2026-06-29): dragging RIGHT shows only MORE-RECENT
+  // sessions (tighter window), LEFT shows everything. Done with a horizontal flip (scaleX(-1)) of the native
+  // slider rather than mirroring the VALUE — so the accent (blue) fill, which a native range paints on the
+  // LOW side, lands on the RIGHT. cutoffPos keeps its meaning (1000 = show all) and the value maps directly.
+  sl.type = "range"; sl.min = "0"; sl.max = "1000"; sl.step = "1"; sl.value = String(cutoffPos());
+  sl.style.cssText = "width:84px;cursor:pointer;transform:scaleX(-1)";
   (sl.style as CSSStyleDeclaration & { accentColor: string }).accentColor = "var(--accent, #9cd2ff)";
   sl.title = "Drag RIGHT to show only more-recent sessions (down to the last minute); LEFT shows everything — logarithmic";
   const paint = () => { lab.textContent = "≤ " + fmtAge(cutoffSecs()); };
   refreshCutoffLabel = paint;   // render() refreshes the label when the adaptive max shifts with the fleet
-  sl.addEventListener("input", () => { setCutoffPos(1000 - parseInt(sl.value, 10)); paint(); render(); });
+  sl.addEventListener("input", () => { setCutoffPos(parseInt(sl.value, 10)); paint(); render(); });
   paint();
   right.appendChild(lab); right.appendChild(sl);
   // "Show completed" checkbox on the SAME row (no divider — the cluster gap separates them).
@@ -473,12 +512,14 @@ window.addEventListener("storage", (e: StorageEvent) => { if (e.key === "romp:se
     sessfold: (el) => {                                  // ▶/▼ on the session head → collapse/expand its whole tree
       const sid = el.dataset.sid;
       if (!sid) return;
+      bakeFoldMode();   // a hand-fold leaves the sticky Collapse/Expand mode, preserving the current look
       if (sessFolded.has(sid)) sessFolded.delete(sid); else sessFolded.add(sid);
       render();
     },
     fold: (el) => {
       const sid = el.dataset.sid, nid = el.dataset.nid;
       if (!sid || !nid) return;
+      bakeFoldMode();   // a hand-fold leaves the sticky Collapse/Expand mode, preserving the current look
       const k = fkey(sid, nid);
       if (el.dataset.folded === "1") { expanded.add(k); folded.delete(k); } else { folded.add(k); expanded.delete(k); }
       render();

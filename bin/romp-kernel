@@ -6371,8 +6371,9 @@ ws=new WebSocket(proto+location.host+"/ws?app=%s"+(wid?"&wid="+encodeURIComponen
 ws.onopen=function(){netState("up");if(everConnected){location.reload();return;}everConnected=true;for(var i=0;i<queue.length;i++)ws.send(queue[i]);queue=[];};
 ws.onmessage=function(ev){var msg;try{msg=JSON.parse(ev.data);}catch(e){return;}
 window.dispatchEvent(new MessageEvent("message",{data:msg}));};
-// onclose: flag the shell + RETRY (don't blind-reload — on a real outage the reload just fails into a dead page).
-ws.onclose=function(){netState("down");setTimeout(connect,1500);};
+// onclose: flag the shell, RE-SHOW this pane's romp loader (the user 2026-06-29: "the swirling thing upon
+// kernel restart"), + RETRY (don't blind-reload — on a real outage the reload just fails into a dead page).
+ws.onclose=function(){netState("down");try{window.dispatchEvent(new Event("romp:wsdown"));}catch(e){}setTimeout(connect,1500);};
 ws.onerror=function(){try{ws.close();}catch(e){}};}
 function send(m){var s=JSON.stringify(m);if(ws&&ws.readyState===1)ws.send(s);else queue.push(s);}
 var SK="romp-vscode-state-%s";   // persist webview state to localStorage so UI prefs survive a refresh
@@ -6498,9 +6499,14 @@ def _loader_inner():
 
 def _pane_spin(cid, ignore_id=""):
     """A per-pane loading overlay (the user 2026-06-26): the romp LOADER (swirl + 'romp' + dots) centered over
-    the pane until its content container `cid` gets its first REAL child, then it fades + self-removes. So each
-    sub-panel shows the romp loader while it loads its data (the chat is the slow one). Self-contained
-    CSS+HTML+JS so it just drops into a page body; an 8s backstop guarantees it never sticks.
+    the pane until its content container `cid` gets its first REAL child, then it FADES (kept in the DOM, not
+    removed). So each sub-panel shows the romp loader while it loads its data (the chat is the slow one).
+    Self-contained CSS+HTML+JS so it just drops into a page body; an 8s backstop guarantees it never sticks.
+
+    It RE-SHOWS on a kernel restart / WS drop (the user 2026-06-29): the shim fires `romp:wsdown` on
+    ws.onclose, and the loader un-fades over the stale pane — "romp is reconnecting" — until fresh content
+    arrives after the reconnect-reload. Event-based (the WS close), not a timer. Kept in the DOM (never
+    removeChild) precisely so it can be shown again.
 
     ignore_id: a permanent child of `cid` that does NOT count as content (the user 2026-06-27) — the chat's
     #content always holds a hidden #live-ask picker host, so without this the loader hid instantly over a blank
@@ -6510,11 +6516,11 @@ def _pane_spin(cid, ignore_id=""):
             "#pane-spin.gone{opacity:0;pointer-events:none}" + _LOADER_CSS + "</style>"
             "<div id=pane-spin>" + _loader_inner() + "</div>"
             "<script>(function(){var o=document.getElementById('pane-spin'),c=document.getElementById('" + cid + "'),IGN='" + ignore_id + "';"
-            "if(!o)return;var d=false;function h(){if(d)return;d=true;o.classList.add('gone');"
-            "setTimeout(function(){if(o.parentNode)o.parentNode.removeChild(o);},350);}"
+            "if(!o)return;function show(){o.classList.remove('gone');}function hide(){o.classList.add('gone');}"
             "function ready(){if(!c)return false;for(var i=0;i<c.children.length;i++){if(!IGN||c.children[i].id!==IGN)return true;}return false;}"
-            "if(c){try{new MutationObserver(function(){if(ready())h();}).observe(c,{childList:true});}catch(e){}"
-            "if(ready())h();}setTimeout(h,8000);})();</script>")
+            "if(c){try{new MutationObserver(function(){if(ready())hide();}).observe(c,{childList:true});}catch(e){}"
+            "if(ready())hide();}setTimeout(hide,8000);"
+            "window.addEventListener('romp:wsdown',show);})();</script>")
 
 
 def _chat_page():
@@ -6860,6 +6866,9 @@ _FLEET_CSS = (
     "border:1px solid var(--vscode-editorHoverWidget-border,rgba(255,255,255,0.14));border-radius:5px;cursor:pointer;"
     "font:inherit;font-size:11px;padding:2px 9px}"
     ".fl-foot-btn:hover{background:rgba(255,255,255,0.12)}"
+    # a toggled-ON Collapse/Expand button "stays clicked" — accent fill (the romp blue), per CLAUDE.md
+    ".fl-foot-btn.on{background:var(--accent,#9cd2ff);color:var(--accent-fg,#0c1a2e);border-color:var(--accent,#9cd2ff)}"
+    ".fl-foot-btn.on:hover{background:var(--accent,#9cd2ff)}"
     ".fl-back{background:#1d3a52;color:#9cd2ff;border:1px solid #2b6088;border-radius:6px;cursor:pointer;"
     "font:600 12px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;padding:4px 11px}"
     ".fl-back:hover{background:#234a6a;color:#fff}"
