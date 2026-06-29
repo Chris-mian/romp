@@ -125,6 +125,18 @@ test("a manual fold LEAVES the sticky mode, baking its look first (the user 2026
   assert.match(SRC, /bakeFoldMode\(\);[^\n]*hand-fold leaves the sticky/);
 });
 
+test("a super-category AUTO-COLLAPSES the instant it finishes, overriding a manual expand (the user 2026-06-29)", () => {
+  // event-based on the not-done → done TRANSITION (tracked in seenDone), so it fires once: clear the manual
+  // expand so defaultFold folds the finished top, even if it was expanded mid-progress; re-arm when it reopens.
+  assert.match(SRC, /const seenDone = new Set<string>\(\);/);
+  assert.match(SRC, /for \(const r of s\.ledger\?\.tree \|\| \[\]\) \{/);
+  assert.match(SRC, /if \(r\.depth !== 0\) continue;/);
+  assert.match(SRC, /if \(r\.done\) \{ if \(!seenDone\.has\(k\)\) \{ expanded\.delete\(k\); seenDone\.add\(k\); \} \}/);
+  assert.match(SRC, /else seenDone\.delete\(k\);/);                       // reopened → re-arm the transition
+  // it runs over EVERY top goal, before the survivors filter, so it sticks even when "Show completed" is off
+  assert.match(SRC, /for \(const s of sessions\) \{\s*\n\s*for \(const r of s\.ledger\?\.tree/);
+});
+
 test("Fleet restores the ledger box's per-node mark TOOLTIP (the user 2026-06-24)", () => {
   // the checkbox explains WHY it reads the way it does — explicit / inferred (roll-up vs roll-down) / dismissed
   // / blocked / open — plus the full goal text on the row's text zone (it can clip in the narrow Fleet pane).
