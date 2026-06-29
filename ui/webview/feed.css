@@ -260,7 +260,7 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 .fask-awaiting-swirl {
   width: 14px; height: 14px; flex: 0 0 auto;
   background: url(../media/romp-swirl-glyph.svg) center / contain no-repeat;
-  animation: fask-swirl-spin 1.4s linear infinite;
+  animation: fask-swirl-spin 2.4s linear infinite;   /* a calm, unhurried spin (the user 2026-06-29) */
 }
 .fask-awaiting-why { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 @keyframes fask-swirl-spin { to { transform: rotate(-360deg); } }

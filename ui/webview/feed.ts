@@ -715,12 +715,26 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   //  • RE-CHECK — a soft-block you've ALREADY replied to, de-urgented (dashed) until the judge re-judges → "Re-checking…".
   // The blocked placeholder (provisional but needs-input: "Awaiting your input") is on YOU, not in motion, so
   // it's excluded — only the working-column dashed cards spin.
-  let spinCaption: string | null = null;
-  if (aw && !it.waitingOn) spinCaption = aw.why || "Waiting on work it dispatched…";
-  else if (it.provisional && it.column === "working") spinCaption = "Working…";
-  else if (it.recheck) spinCaption = "Re-checking…";
+  // Each case pairs a short body caption with a FULLER tooltip (hover the swirl/caption) that explains what's
+  // actually happening — including, for a provisional card, WHY it's dashed.
+  let spinCaption: string | null = null, spinTip = "";
+  if (aw && !it.waitingOn) {
+    spinCaption = aw.why || "Waiting on work it dispatched…";
+    spinTip = aw.why
+      ? aw.why + " — it's working on dispatched/delegated work (agents, a subagent, a build/CI), not waiting on you; stays in Working, exempt from auto-nudge, and lifts when the result lands."
+      : "Held in Working while it waits on work it dispatched or delegated (agents, a subagent, a build/CI) — not on you; exempt from auto-nudge; lifts when the result lands.";
+  } else if (it.provisional && it.column === "working") {
+    spinCaption = "Working…";
+    spinTip = "This session is working a brand-new prompt the planner hasn't sorted into a goal yet — so this is a temporary placeholder (that's the dashed border), replaced by the real card the moment the work is classified.";
+  } else if (it.recheck) {
+    spinCaption = "Re-checking…";
+    spinTip = "You've replied to this blocked sub-goal, so it's no longer waiting on you. The judge will resolve it or re-block it on the next pass; it's dashed (de-urgented) until then.";
+  }
   a._awaitSpin.style.display = spinCaption ? "" : "none";
-  if (spinCaption) a._awaitWhy.textContent = spinCaption;
+  if (spinCaption) { a._awaitWhy.textContent = spinCaption; a._awaitSpin.title = spinTip || spinCaption; }
+  // The swirl's "Re-checking…" caption + tooltip REPLACES the separate "↩ re-checking" chip (the user
+  // 2026-06-29: don't show both) — drop the chip the recheck branch set above when the swirl is saying it.
+  if (spinCaption === "Re-checking…") a._followedup.style.display = "none";
   // ⏸ live block badge: the session is stopped mid-turn on a permission prompt /
   // picker FOR THIS CARD's work — the card files under BLOCKED while it lasts
   const isApiErr = it.blocked?.state === "apiError";

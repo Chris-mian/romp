@@ -22,16 +22,27 @@ test("the swirl + caption covers awaiting, provisional, and re-check — shown w
   // a single computed caption drives the swirl: awaiting → the why; a working provisional placeholder →
   // "Working…"; a re-check (replied soft-block) → "Re-checking…". The blocked placeholder (needs-input) is
   // NOT covered — it's on you, not in motion.
-  assert.match(FEED, /if \(aw && !it\.waitingOn\) spinCaption = aw\.why \|\| "Waiting on work it dispatched…";/);
-  assert.match(FEED, /else if \(it\.provisional && it\.column === "working"\) spinCaption = "Working…";/);
-  assert.match(FEED, /else if \(it\.recheck\) spinCaption = "Re-checking…";/);
+  assert.match(FEED, /if \(aw && !it\.waitingOn\) \{\s*\n\s*spinCaption = aw\.why \|\| "Waiting on work it dispatched…";/);
+  assert.match(FEED, /\} else if \(it\.provisional && it\.column === "working"\) \{\s*\n\s*spinCaption = "Working…";/);
+  assert.match(FEED, /\} else if \(it\.recheck\) \{\s*\n\s*spinCaption = "Re-checking…";/);
   assert.match(FEED, /a\._awaitSpin\.style\.display = spinCaption \? "" : "none";/);
-  assert.match(FEED, /if \(spinCaption\) a\._awaitWhy\.textContent = spinCaption;/);
+  assert.match(FEED, /a\._awaitWhy\.textContent = spinCaption; a\._awaitSpin\.title = spinTip \|\| spinCaption;/);
 });
 
-test("the swirl uses the shared glyph, REVERSE-spins like the loader, and respects reduced-motion", () => {
+test("each case carries a FULLER tooltip on the swirl (hover → what's actually happening)", () => {
+  assert.match(FEED, /let spinCaption: string \| null = null, spinTip = "";/);
+  assert.match(FEED, /spinTip = "This session is working a brand-new prompt the planner hasn't sorted into a goal yet/);
+  assert.match(FEED, /spinTip = "You've replied to this blocked sub-goal/);
+  assert.match(FEED, /a\._awaitSpin\.title = spinTip \|\| spinCaption;/);
+});
+
+test("the swirl's Re-checking caption REPLACES the '↩ re-checking' chip (no double-labeling)", () => {
+  assert.match(FEED, /if \(spinCaption === "Re-checking…"\) a\._followedup\.style\.display = "none";/);
+});
+
+test("the swirl uses the shared glyph, spins SLOWER (calmer) + reverse like the loader, and respects reduced-motion", () => {
   assert.match(CSS, /\.fask-awaiting-swirl \{[\s\S]*?url\(\.\.\/media\/romp-swirl-glyph\.svg\)/);
-  assert.match(CSS, /animation: fask-swirl-spin 1\.4s linear infinite;/);
+  assert.match(CSS, /animation: fask-swirl-spin 2\.4s linear infinite;/);   // slowed from 1.4s (the user 2026-06-29)
   assert.match(CSS, /@keyframes fask-swirl-spin \{ to \{ transform: rotate\(-360deg\); \} \}/);   // reverse, like rl-spin
   assert.match(CSS, /@media \(prefers-reduced-motion: reduce\) \{ \.fask-awaiting-swirl \{ animation: none; \} \}/);
 });
