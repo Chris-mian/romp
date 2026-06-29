@@ -657,6 +657,28 @@ class ViewBuilder(unittest.TestCase):
         qmsgs = [m["md"] for e in events if e["kind"] == "queued" for m in e["texts"]]
         self.assertNotIn("a fresh idle send", qmsgs, "an idle send is NOT queued")
 
+    def test_a_romp_authored_echo_renders_as_a_GRAY_bubble_not_blue(self):
+        # A NUDGE/auto-follow-up echo carries author "romp" → the chat draws the gray romp bubble (ev.romp),
+        # NOT the blue human bubble (the user 2026-06-29). This is the colour half of the nudge-vanish fix:
+        # the optimistic echo bridges the dequeue→landed gap, so it must read like the real romp atom will.
+        km._parse_cache.clear()
+        km._tmux_echo.pop(SID, None)
+        km._tmux_echo_add(SID, "checking in on the goal", author="romp")
+        try:
+            events = km.build_session(SID, NOW)["events"]
+        finally:
+            km._tmux_echo.pop(SID, None)
+        ev = next(e for e in events if e["kind"] == "user" and e.get("md") == "checking in on the goal")
+        self.assertTrue(ev.get("romp"), "a romp-authored echo is a gray romp bubble")
+        self.assertFalse(ev.get("human"), "and NOT a blue human bubble")
+
+    def test_followup_dispatch_adds_an_optimistic_echo_authored_by_nudge_vs_typed(self):
+        # the dispatch wiring: a tmux askFollowUp echoes the body so it survives the queued→landed gap; a
+        # nudge echoes as "romp" (gray), a typed follow-up as "human" (blue).
+        import inspect
+        src = inspect.getsource(km._drive)
+        self.assertIn('_optimistic_echo(sid, body, author="romp" if msg.get("nudge") else "human")', src)
+
     def test_feed_awaiting_via_session_signal_is_held_in_working_with_a_badge(self):
         # AWAITING = a flavor of WORKING (the user 2026-06-22): when the EVENT-MODEL signal says the session
         # is paused on dispatched/delegated work, its working top stays in the working column (never

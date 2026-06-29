@@ -1355,6 +1355,13 @@ def _drive(msg, client):
         body = (_followup_body(iid, msg.get("title"), msg["text"], injected=bool(msg.get("nudge")))
                 if (iid and be is _TMUX) else str(msg["text"]))
         be.send(sid, body)
+        # Optimistic echo for a tmux follow-up/nudge (the user 2026-06-29): without it, a follow-up sent while
+        # the session is WORKING showed as a queued bubble that VANISHED in the dequeue→landed gap (the queue-op
+        # record resolves before the real user atom lands). The echo + the while-working queued fold keep it
+        # visible across that gap, then prune when the atom lands. author "romp" for a nudge → gray bubble even
+        # in the brief idle-send case; "human" for a typed follow-up → blue.
+        if be is _TMUX:
+            _optimistic_echo(sid, body, author="romp" if msg.get("nudge") else "human")
         if iid:                                           # optimistic: reopen the card NOW, before the judge pass
             try:
                 if jd.optimistic_followup(sid, iid, text=str(msg["text"]), now=int(time.time()),
@@ -2200,14 +2207,15 @@ def _sid_of(who):
     return who if who in live else _live_names(live).get(who, who)
 
 
-def _optimistic_echo(sid, text):
+def _optimistic_echo(sid, text, author="human"):
     """Show a composer send INSTANTLY. The SDK backend already adds its own input echo inside send() (its
     _live store), so this only adds the kernel-side tmux echo for a tmux sid. Either way the echo is pruned
-    once the transcript's real user atom lands (or, for a dropped tmux send, it persists so the loss shows)."""
+    once the transcript's real user atom lands (or, for a dropped tmux send, it persists so the loss shows).
+    `author` is "human" for a typed send (blue) or "romp" for a nudge/follow-up (gray)."""
     be = _sdk()
     if be and be.owns(str(sid)):
         return                                       # SDK send() already echoed (its own store)
-    _tmux_echo_add(str(sid), text)
+    _tmux_echo_add(str(sid), text, author=author)
 
 
 # The permission mode has NO slash command — it's the shift+tab cycle (mirrored from the terminal UI,
@@ -3419,11 +3427,13 @@ def _atom_user_text(a):
 # lost message stays visible (no response) instead of vanishing silently.
 _tmux_echo = {}                                       # sid -> {key -> synthetic user atom}
 
-def _tmux_echo_add(sid, text):
+def _tmux_echo_add(sid, text, author="human"):
     key = "echo:" + uuid.uuid4().hex
     _tmux_echo.setdefault(sid, {})[key] = {
         "type": "user", "uuid": key, "session_id": sid, "t": int(time.time()), "parentUuid": None,
-        "author": "human", "_echo_text": text,        # human typed it → blue bubble (matches the transcript atom)
+        # author drives the bubble: "human" → blue (a typed message), "romp" → gray (a nudge/auto-follow-up).
+        # Matches the real transcript atom's author so the optimistic echo reads identically until it lands.
+        "author": author, "_echo_text": text,
         "message": {"role": "user", "content": [{"type": "text", "text": text}]}}
 
 def _tmux_echo_atoms(sid):
