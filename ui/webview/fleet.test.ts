@@ -11,7 +11,8 @@ const SRC = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "
 
 test("fleet rides the FEED payload, reading its per-session `ledgers`", () => {
   assert.match(SRC, /m\.type !== "feed"/);                  // the proven feed channel
-  assert.match(SRC, /sessions = Array\.isArray\(m\.ledgers\)/);
+  assert.match(SRC, /if \(!Array\.isArray\(m\.ledgers\)\) return;/);   // only a ledgers-bearing push counts as loaded
+  assert.match(SRC, /sessions = m\.ledgers as FleetSession\[\]/);
 });
 
 test("each session renders the real LEDGER TREE — .ledger-* nodes, marks, collapse, recency time", () => {
@@ -167,12 +168,21 @@ test("it's a MODULE (own scope) so it doesn't collide with feed.ts's globals", (
   assert.match(SRC, /export \{\};/);
 });
 
-test("before the first payload, the fleet shows the LOADER — not a false 'no work' (the user 2026-06-29)", () => {
-  // `loaded` flips true only when a feed payload arrives; render() bails BEFORE the empty path while !loaded,
-  // leaving #fleet-list empty so the page's romp loader (_pane_spin over #fleet-list) keeps holding the screen.
+test("the loader holds until the LEDGERS actually land — not just any feed message (the user 2026-06-29)", () => {
+  // `loaded` flips true only when m.ledgers is an array (the kernel built the fleet data, maybe empty) — a
+  // bare feed push that beat the cold ledger build is ignored, so the loader keeps holding instead of dropping
+  // onto a blank pane. render() bails before the empty path while !loaded, leaving #fleet-list empty.
   assert.match(SRC, /let loaded = false;/);
-  assert.match(SRC, /loaded = true;\s*\/\/ the first real payload landed/);
+  assert.match(SRC, /if \(!Array\.isArray\(m\.ledgers\)\) return;\s*\n\s*loaded = true;/);
   assert.match(SRC, /if \(!loaded\) \{ emptyShown = false; return; \}/);
+});
+
+test("the romp loader is kept up (beating the _pane_spin 8s backstop) until data lands", () => {
+  // a big cold fleet build can exceed the shared loader's 8s backstop; re-assert the loader until `loaded`,
+  // then stop — so there's never a blank gap between the loader hiding and the tasks painting.
+  assert.match(SRC, /const _keepLoader = setInterval\(\(\) => \{/);
+  assert.match(SRC, /if \(loaded\) \{ clearInterval\(_keepLoader\); return; \}/);
+  assert.match(SRC, /spin\.classList\.remove\("gone"\)/);
 });
 
 test("genuinely-empty fleet fades in the romp WORDMARK (like the feed), once per empty transition", () => {

@@ -510,8 +510,13 @@ function mountControls() {
 window.addEventListener("message", (e: MessageEvent) => {
   const m = e.data;
   if (!m || m.type !== "feed") return;               // Fleet rides the FEED payload (proven channel); reads its `ledgers`
-  loaded = true;                                      // the first real payload landed → past the loading gap
-  sessions = Array.isArray(m.ledgers) ? (m.ledgers as FleetSession[]) : [];
+  // "loaded" means the kernel actually BUILT the fleet's ledgers (the key is present, even if []) — NOT merely
+  // that some feed message arrived. A feed push can reach us before the (cold) ledger build finishes; treating
+  // that as loaded would drop the loader onto an empty pane (the user 2026-06-29). Until ledgers land, keep the
+  // loader up (render() bails, leaving the list empty so _pane_spin holds).
+  if (!Array.isArray(m.ledgers)) return;
+  loaded = true;
+  sessions = m.ledgers as FleetSession[];
   render();
 });
 window.addEventListener("storage", (e: StorageEvent) => { if (e.key === "romp:settings") render(); });   // colormap change → recolour
@@ -548,5 +553,16 @@ window.addEventListener("storage", (e: StorageEvent) => { if (e.key === "romp:se
 mountControls();
 render();
 vscodeApi?.postMessage({ type: "ready" });   // ask the kernel to push the initial fleet state (like feed/timeline)
+
+// Hold the romp loader up until the ledgers actually land (the user 2026-06-29: "show the loading thing until
+// the tasks are ready to render"). The shared _pane_spin loader has an 8s backstop that would otherwise hide
+// it over an EMPTY pane while a cold kernel is still building every session's ledger (which can take longer
+// than 8s for a big fleet) — leaving a blank gap before the tasks paint. So while we're not loaded yet, keep
+// re-asserting the loader, beating that backstop; stop the instant the data arrives (event-based via `loaded`).
+const _keepLoader = setInterval(() => {
+  if (loaded) { clearInterval(_keepLoader); return; }
+  const spin = document.getElementById("pane-spin");
+  if (spin) spin.classList.remove("gone");
+}, 1000);
 
 export {};   // module scope — keep its globals off feed.ts's (a global script)
