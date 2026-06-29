@@ -20,8 +20,9 @@ class DisconnectBanner(unittest.TestCase):
         js = km._shim("chat")
         # reports up/down to the shell
         self.assertIn('postMessage({romp:"wsState",app:APP,state:s}', js)
-        self.assertIn('ws.onopen=function(){netState("up");', js)
-        self.assertIn('ws.onclose=function(){netState("down");setTimeout(connect,1500);};', js)
+        self.assertIn('ws.onopen=function(){lastRecv=Date.now();netState("up");', js)   # lastRecv stamp → heartbeat watchdog
+        self.assertIn('ws.onclose=function(){netState("down");', js)   # reconnects on close (wsdown loader + retry follow)
+        self.assertIn("setTimeout(connect,1500);", js)
         self.assertIn("ws.onerror=function(){try{ws.close();}catch(e){}};", js)
         # a RECONNECT reloads to resync, but only once the socket actually reopened (not a blind reload on close)
         self.assertIn("if(everConnected){location.reload();return;}", js)
@@ -31,7 +32,7 @@ class DisconnectBanner(unittest.TestCase):
     def test_timeline_boot_reports_state_and_reconnects(self):
         js = km._TIMELINE_BOOT
         self.assertIn('postMessage({romp:"wsState",app:"timeline",state:s}', js)
-        self.assertIn('ws.onopen=function(){netState("up");if(everConnected){location.reload();return;}', js)
+        self.assertIn('ws.onopen=function(){lastRecv=Date.now();netState("up");if(everConnected){location.reload();return;}', js)
         self.assertIn('ws.onclose=function(){netState("down");setTimeout(connect,1500);};', js)
         self.assertNotIn("ws.onclose=function(){setTimeout(function(){location.reload();},1500);};", js)
 

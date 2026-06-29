@@ -5804,6 +5804,25 @@ def _send_to_app(app, msg):
             c["alive"] = False
 
 
+# WS heartbeat (the user 2026-06-29): the pusher DEDUPS — a quiet fleet sends no view frames for minutes — so a
+# client whose socket went SILENTLY half-open (TCP dead, no onclose fires) received nothing and never detected
+# the death, freezing the feed on stale cards until a manual reload. _keepalive_all sends a tiny frame to EVERY
+# client on a fixed cadence (bypassing the dedup); the shim stamps lastRecv on every frame and force-reconnects
+# when the keepalive stops arriving (→ onclose → reconnect → reload-resync). 'ka' frames are ignored by bundles.
+KEEPALIVE_S = float(os.environ.get("ROMP_WS_KEEPALIVE", "10"))   # heartbeat cadence (s); the shim re-connects at ~3x this
+_last_keepalive = [0.0]
+
+def _keepalive_all():
+    s = json.dumps({"type": "ka"})
+    with _clients_lock:
+        targets = list(_clients)
+    for c in targets:
+        try:
+            c["send"](s)
+        except Exception:
+            c["alive"] = False
+
+
 def _reveal_chat(focus_msg):
     """A cross-pane action that brings the chat forward (a feed/timeline session tap): focus the chat
     clients AND tell the mobile shell (app=shell) to switch to its Chat tab. On desktop the shell
@@ -6399,6 +6418,10 @@ def _pusher():
             any_client = bool(_clients)
         if any_client:
             _push_all()
+        nowm = time.time()                    # WS heartbeat: a tiny frame to every client every KEEPALIVE_S, so a
+        if nowm - _last_keepalive[0] >= KEEPALIVE_S:   # silently half-open socket (no onclose, quiet fleet → no view
+            _last_keepalive[0] = nowm                  # frames) still arrives at the shim's watchdog (the user 2026-06-29)
+            _keepalive_all()
         try:                                  # Auto Nudge runs server-side even with no browser open (cheap when off)
             _auto_nudge_tick(int(time.time()), _tmux_sessions())
         except Exception:
@@ -6432,7 +6455,7 @@ body{font-family:var(--vscode-font-family);font-size:13px;color:var(--vscode-for
 def _shim(app):
     return """
 (function(){var queue=[],ws=null,everConnected=false;var wid=new URLSearchParams(location.search).get("wid")||"";
-var APP="%s";
+var APP="%s";var lastRecv=0;var STALE_MS=30000;   // watchdog: no frame (incl. keepalive) for this long → the socket is dead → reconnect
 // Tell the shell this pane's WS state so it can show ONE "disconnected" banner (the user 2026-06-27): a real
 // network drop used to blind-reload into a dead page, leaving the pane silently frozen with no explanation.
 function netState(s){try{if(window.parent!==window)window.parent.postMessage({romp:"wsState",app:APP,state:s},"*");}catch(e){}}
@@ -6441,8 +6464,9 @@ var active="";try{var st0=JSON.parse(localStorage.getItem(SK)||"null");active=(s
 ws=new WebSocket(proto+location.host+"/ws?app=%s"+(wid?"&wid="+encodeURIComponent(wid):"")+(active?"&active="+encodeURIComponent(active):""));
 // onopen: first connect → flush the queue; a RECONNECT (after a drop) → reload to resync, since the kernel
 // lost this client's push state while we were gone — but only NOW that the socket is actually back.
-ws.onopen=function(){netState("up");if(everConnected){location.reload();return;}everConnected=true;for(var i=0;i<queue.length;i++)ws.send(queue[i]);queue=[];};
-ws.onmessage=function(ev){var msg;try{msg=JSON.parse(ev.data);}catch(e){return;}
+ws.onopen=function(){lastRecv=Date.now();netState("up");if(everConnected){location.reload();return;}everConnected=true;for(var i=0;i<queue.length;i++)ws.send(queue[i]);queue=[];};
+ws.onmessage=function(ev){lastRecv=Date.now();var msg;try{msg=JSON.parse(ev.data);}catch(e){return;}
+if(msg&&msg.type==="ka")return;   // keepalive: stamped lastRecv above; nothing for the bundle to render
 window.dispatchEvent(new MessageEvent("message",{data:msg}));};
 // onclose: flag the shell, RE-SHOW this pane's romp loader (the user 2026-06-29: "the swirling thing upon
 // kernel restart"), + RETRY (don't blind-reload — on a real outage the reload just fails into a dead page).
@@ -6452,7 +6476,10 @@ function send(m){var s=JSON.stringify(m);if(ws&&ws.readyState===1)ws.send(s);els
 var SK="romp-vscode-state-%s";   // persist webview state to localStorage so UI prefs survive a refresh
 window.acquireVsCodeApi=function(){return{postMessage:function(m){send(m);},
 getState:function(){try{return JSON.parse(localStorage.getItem(SK)||"null");}catch(e){return null;}},
-setState:function(s){try{localStorage.setItem(SK,JSON.stringify(s));}catch(e){}}};};connect();})();
+setState:function(s){try{localStorage.setItem(SK,JSON.stringify(s));}catch(e){}}};};connect();
+// staleness watchdog: a half-open socket fires no onclose, so poll lastRecv — if the keepalive (and all
+// frames) stopped arriving, force-close to trigger onclose → reconnect → reload-resync (the user 2026-06-29).
+setInterval(function(){if(everConnected&&ws&&ws.readyState===1&&Date.now()-lastRecv>STALE_MS){try{ws.close();}catch(e){}}},5000);})();
 """ % (app, app, app)
 
 
@@ -7003,14 +7030,15 @@ if(!P.createEl)P.createEl=function(tag,o){var e=document.createElement(tag);if(o
 if(!P.createDiv)P.createDiv=function(o){return this.createEl('div',o);};
 if(!P.createSpan)P.createSpan=function(o){return this.createEl('span',o);};})();
 (function(){var wid=new URLSearchParams(location.search).get("wid")||"";var queue=[],ws=null,panel=null,everConnected=false;
+var lastRecv=0;var STALE_MS=30000;   // watchdog: no frame (incl. keepalive) for this long → dead socket → reconnect
 function send(m){var s=JSON.stringify(m);if(ws&&ws.readyState===1)ws.send(s);else queue.push(s);}
 // Report this pane's WS state to the shell so it can show the shared "disconnected" banner (the user 2026-06-27)
 // — the timeline data is PUSHED from the kernel (server-side parse), so a drop silently freezes it ("stopped moving").
 function netState(s){try{if(window.parent!==window)window.parent.postMessage({romp:"wsState",app:"timeline",state:s},"*");}catch(e){}}
 function connect(){var proto=location.protocol==="https:"?"wss://":"ws://";
 ws=new WebSocket(proto+location.host+"/ws?app=timeline"+(wid?"&wid="+encodeURIComponent(wid):""));
-ws.onopen=function(){netState("up");if(everConnected){location.reload();return;}everConnected=true;for(var i=0;i<queue.length;i++)ws.send(queue[i]);queue=[];};
-ws.onmessage=function(ev){var m;try{m=JSON.parse(ev.data);}catch(e){return;}
+ws.onopen=function(){lastRecv=Date.now();netState("up");if(everConnected){location.reload();return;}everConnected=true;for(var i=0;i<queue.length;i++)ws.send(queue[i]);queue=[];};
+ws.onmessage=function(ev){lastRecv=Date.now();var m;try{m=JSON.parse(ev.data);}catch(e){return;}
 if(m.type==="data")panel.update(m.data);
 else if(m.type==="bars"&&panel.applyBars)panel.applyBars(m);
 else if(m.type==="activeChat"&&panel.setActiveChat)panel.setActiveChat(m.activeChat);
@@ -7025,7 +7053,8 @@ window.__rompTimelineCompact=function(name){send({type:"compact",name:name});};
 window.__rompTimelineSendCommand=function(name,cmd){send({type:"sendCommand",name:name,cmd:cmd});};
 window.__rompTimelineSetFlag=function(id,flag,value){send({type:"setSessionFlag",id:id,flag:flag,value:!!value});};
 window.__rompTimelineHover=function(sid,segIds,t0,t1){send(sid?{type:"timelineHover",sid:sid,segIds:segIds||[],t0:t0,t1:t1}:{type:"timelineHover",off:true});};
-window.__rompConnectTimeline=function(p){panel=p;connect();send({type:"ready"});};})();
+window.__rompConnectTimeline=function(p){panel=p;connect();send({type:"ready"});};
+setInterval(function(){if(everConnected&&ws&&ws.readyState===1&&Date.now()-lastRecv>STALE_MS){try{ws.close();}catch(e){}}},5000);})();
 """
 
 
