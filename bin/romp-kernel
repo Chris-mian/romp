@@ -118,6 +118,27 @@ def _last_plain_user_turn_t(turns):
     return best
 
 
+def _latest_human_send_t(sid):
+    """Time of the most recent OPTIMISTIC human send still in the backend's live echo — a plain reply you JUST
+    sent that hasn't landed in the transcript yet. build_feed reads its re-check basis from the CACHED parse
+    (no live-merge, for speed), so a blocked card only de-urgented a push or two later, once the atom landed and
+    the parse re-read it — the delay the user hit (2026-06-29). Counting the echo makes the card leave Blocked
+    the INSTANT you reply. Excludes a targeted card-reply/nudge (the romp-goal-id marker), matching
+    _last_plain_user_turn_t. 0 if none / on any error."""
+    try:
+        atoms = Sessions.backend_for(str(sid)).live_atoms(str(sid))
+    except Exception:
+        return 0
+    best = 0
+    for a in atoms or []:
+        if a.get("author") != "human":
+            continue
+        if "romp-goal-id" in (a.get("_echo_text") or _atom_user_text(a) or ""):   # targeted reply, not a plain one
+            continue
+        best = max(best, a.get("t") or 0)
+    return best
+
+
 def _awake_spans(start, end):
     """Split a work span [start, end] into the sub-spans the host was AWAKE for, EXCISING every recorded
     suspension that overlaps it. A segment that kept working after the lid reopened thus renders as one bar
@@ -4673,6 +4694,7 @@ def build_feed(now, tmux=None):
         # (api, branch headless-sdk-backend) or the transcript bg-tool stopgap; None when actively working.
         sess_awaiting_why = _session_awaiting(fsid, s["path"], not who_working) if ps else None   # cache-only: fills in after the warm
         plain_user_t = _last_plain_user_turn_t(ps["turns"]) if ps else 0   # re-check: a plain reply after a soft block de-urgents it
+        plain_user_t = max(plain_user_t, _latest_human_send_t(fsid))       # incl. a JUST-SENT reply still in the echo → instant de-urgent (the user 2026-06-29)
         had_working = False                          # does this session show ANY working card? → drives the provisional placeholder
         for nid in children.get(None, []):
             col = status.get(nid, "working")

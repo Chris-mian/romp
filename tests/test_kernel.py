@@ -2438,6 +2438,30 @@ class ViewBuilder(unittest.TestCase):
         finally:
             km._last_plain_user_turn_t = saved
 
+    def test_feed_recheck_is_INSTANT_from_a_just_sent_reply_still_in_the_echo(self):
+        # The delay fix (the user 2026-06-29): a plain reply de-urgents a blocked card the INSTANT it's sent —
+        # while still only an optimistic echo (not yet a transcript turn). build_feed reads the cached parse
+        # (no plain reply there), so without counting the echo the card stays Blocked until the atom lands.
+        g = self._blocked_store()
+        km._tmux_echo.pop(SID, None)
+        # the parsed transcript shows NO plain reply (cache-only) → recheck would be False on its own
+        card_before = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
+        self.assertFalse(card_before["recheck"], "no reply yet → still urgent (Blocked)")
+        self.assertEqual(card_before["column"], "needs_input")
+        # now the user sends a plain reply — only an optimistic echo so far
+        km._tmux_echo_add(SID, "go ahead, do option B", author="human")
+        try:
+            card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
+            self.assertTrue(card["recheck"], "the just-sent echo de-urgents the card AT ONCE")
+            self.assertEqual(card["column"], "working", "→ moves out of Blocked into Working immediately")
+            # a TARGETED reply (romp-goal-id) is NOT a plain reply → does NOT sweep via this path
+            km._tmux_echo.pop(SID, None)
+            km._tmux_echo_add(SID, "answer <!-- romp-goal-id: x:g1 -->", author="human")
+            card3 = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
+            self.assertFalse(card3["recheck"], "a targeted card-reply doesn't sweep the session's blocks")
+        finally:
+            km._tmux_echo.pop(SID, None)
+
     def test_feed_recheck_targeted_followup_does_not_sweep_siblings(self):
         # two blocked tops; a TARGETED follow-up (followupPending) on g1 only. No plain reply. g1 re-checks,
         # g2 stays urgent — a direct card-reply doesn't move everything (the user 2026-06-27).
