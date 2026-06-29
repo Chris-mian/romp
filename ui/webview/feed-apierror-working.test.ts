@@ -7,8 +7,13 @@ import * as path from "node:path";
 
 const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
 
-test("askColumn keeps an apiError card in its own column (Working), only real blocks file under needs-input", () => {
-  assert.match(FEED, /if \(it\.blocked && it\.blocked\.state !== "apiError"\) return "needsInput";/);
+test("askColumn maps it.column directly — no crafty it.blocked re-route (the user 2026-06-29)", () => {
+  // it.column is AUTHORITATIVE now: the kernel floors a live permission/picker block to needs_input itself, so
+  // the client just maps snake_case. The old `if (it.blocked && state !== "apiError") return "needsInput"`
+  // override is GONE — it existed only because the kernel used to report a picker-blocked card as "working".
+  assert.doesNotMatch(FEED, /it\.blocked && it\.blocked\.state !== "apiError"/, "the it.blocked override is gone");
+  assert.match(FEED, /return it\.column === "needs_input" \? "needsInput" : it\.column === "completed" \? "completed" : "asks";/);
+  // an apiError card keeps column=working from the kernel → lands in "asks" (Working), no special-casing needed.
 });
 
 test("the apiError chip + Retry still show (they key on blocked.state, not the column)", () => {

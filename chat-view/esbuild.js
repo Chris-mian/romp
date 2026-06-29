@@ -81,6 +81,10 @@ function testBuild() {
 
 async function main() {
   if (tests) {
+    // Clean out-tests/ first so a DELETED test source can't leave an orphaned .js behind that `node --test`
+    // would still run — a renamed/removed .test.ts otherwise fails forever against the new implementation (the
+    // user 2026-06-29: 8 phantom failures from feed-donewhy/feed-distiller-summary .js whose sources were gone).
+    fs.rmSync(path.join(__dirname, "out-tests"), { recursive: true, force: true });
     await esbuild.build(testBuild());
   } else if (watch) {
     const a = await esbuild.context(extension);

@@ -155,11 +155,12 @@ const groupEls = new Map<string, HTMLElement>();
 // (completed only when every subgraph node is DONE); we just map its snake_case.
 type Column = "asks" | "needsInput" | "completed";
 function askColumn(it: AskItem): Column {
-  // a live permission/picker block files the card under BLOCKED — but an API error does NOT (the user
-  // 2026-06-29): it's a transient stall, so an apiError card stays in its natural column (working) and just
-  // carries the "⚠ API error" chip + Retry. The kernel already sets column=working for it; this keeps the
-  // client from re-flooring it to needs-input on the `blocked` field.
-  if (it.blocked && it.blocked.state !== "apiError") return "needsInput";
+  // it.column is AUTHORITATIVE — the kernel already floors a live permission/picker block to needs_input (and
+  // parked handoffs / placeholders set it too), so the client just maps its snake_case. We no longer re-route
+  // by it.blocked: that crafty override existed only because the kernel used to report a picker-blocked card as
+  // "working" while showing it under Blocked — it now reports needs_input directly (the user 2026-06-29). An
+  // API-error card stays in its natural column (working): the kernel keeps column=working for it (a transient
+  // stall, not a block), so it lands in "asks" with just the "⚠ API error" chip + Retry.
   return it.column === "needs_input" ? "needsInput" : it.column === "completed" ? "completed" : "asks";
 }
 

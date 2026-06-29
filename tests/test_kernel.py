@@ -2262,9 +2262,9 @@ class ViewBuilder(unittest.TestCase):
         self.assertIsNone(comp["origin"], "a normal (non-courier) card carries no handoff origin")
 
     def test_feed_live_permission_floors_focus_card_to_blocked(self):
-        """A session stopped on a LIVE permission prompt floors its active-focus card under BLOCKED
-        (it.blocked) — the hard floor, beats the goal's planner status; the render's askColumn then
-        files it under needsInput and shows the ⏸ approval badge."""
+        """A session stopped on a LIVE permission prompt floors its active-focus card under BLOCKED — the hard
+        floor, beats the goal's planner status. The kernel reports column=needs_input DIRECTLY (it.column is
+        authoritative; no working/blocked split routed by it.blocked), and the ⏸ approval badge rides it."""
         g = "%s:g5" % SID
         (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
             "rompUuid": SID, "seq": 5, "lastNode": g,
@@ -2276,6 +2276,7 @@ class ViewBuilder(unittest.TestCase):
         card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
         self.assertEqual(card["blocked"]["state"], "permission", "a live permission prompt floors the focus card")
         self.assertEqual(card["blocked"]["since"], NOW - 30)
+        self.assertEqual(card["column"], "needs_input", "the kernel files the floored card under BLOCKED directly")
 
     def test_feed_live_picker_floors_focus_card_to_blocked(self):
         """An SDK AskUserQuestion reports live state "picker" (it IS a picker, not a permission Allow/Deny;
@@ -2293,6 +2294,7 @@ class ViewBuilder(unittest.TestCase):
         card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
         self.assertEqual(card["blocked"]["state"], "picker", "a live picker floors the focus card to blocked")
         self.assertEqual(card["blocked"]["since"], NOW - 30)
+        self.assertEqual(card["column"], "needs_input", "a picker-floored card files under BLOCKED directly")
         self.assertIn("input", card["blocked"]["what"], "picker wording reflects a question, not an approval")
         # the session chip (build_session payload) also reads "awaiting" on a picker, like a permission
         self.assertEqual(km.build_session(SID, NOW)["status"]["state"], "awaiting",
@@ -2323,7 +2325,8 @@ class ViewBuilder(unittest.TestCase):
         card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
         self.assertEqual(card["blocked"]["state"], "permission",
                          "a nodeComplete-but-WORKING focus IS floored by a live permission prompt")
-        self.assertEqual(card["column"], "working", "its column stays working; the client routes by it.blocked")
+        self.assertEqual(card["column"], "needs_input",
+                         "the kernel reports the floored card as needs_input directly — no working/blocked split")
 
     def test_feed_no_permission_no_hard_block(self):
         comp = next(a for a in km.build_feed(NOW)["asks"] if a["column"] == "completed")
