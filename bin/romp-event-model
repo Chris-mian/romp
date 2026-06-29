@@ -55,11 +55,13 @@ ROMP_INJECT_RE = re.compile(r"romp-injected\b")
 # romp-logo marker; the user's own button/follow-ups are not (the user 2026-06-23). Rides alongside
 # romp-injected; an atom carrying it gets atom["rompAuto"]=True for the timeline/chat to mark.
 ROMP_AUTO_RE = re.compile(r"romp-auto\b")
-# Claude Code's slash-command transcript wrappers (`/model`, `/effort`, …). They are
-# user lines with NO promptSource and isMeta unset, so the absent->human default would
-# otherwise mint a spurious human turn for every slash command. They are harness echoes,
-# never conversational messages — skipped as atoms (but kept in the parentUuid graph).
+# Claude Code's slash-command transcript wrappers. The INVOCATION (`<command-name>`) and its OUTPUT
+# (`<local-command-stdout>`) become a tracked COMMAND TURN (the user 2026-06-29) — see atoms(); the rest
+# (`<command-message|args|contents>`, `<local-command-caveat>`) stay skipped as harness noise.
 CMD_WRAP_RE = re.compile(r"^\s*<(?:command-(?:name|message|args|contents)|local-command-(?:stdout|caveat))>")
+COMMAND_NAME_RE = re.compile(r"^\s*<command-name>([^<]*)</command-name>")           # the slash command itself, e.g. "/usage"
+COMMAND_ARGS_RE = re.compile(r"<command-args>([\s\S]*?)</command-args>")            # its arguments (often empty)
+LOCAL_STDOUT_RE = re.compile(r"^\s*<local-command-stdout>([\s\S]*?)</local-command-stdout>")   # the command's output
 
 
 # ───────────────────────── small helpers ─────────────────────────
@@ -375,19 +377,47 @@ class FileAdapter:
                                              # reply; deep-link anchors must skip it (kernel _seg_anchors)
                 out.append(a)
             elif t == "user":
+                blocks = _content(r.get("message"))
+                btext = _text_of(blocks) if blocks else ""
+                # SLASH-COMMAND TURN (the user 2026-06-29): a "/usage"-style command is no longer dropped — its
+                # INVOCATION becomes a `command`-flagged user atom (an opener → a tracked, working turn that
+                # shows in the chat + timeline) and its OUTPUT a synthetic assistant atom (so the turn has a
+                # reply and ENDS naturally). The `command` flag makes the planner/judge skip it (never a goal /
+                # feed card — see _seg_command). This runs BEFORE the isMeta skip because some Claude versions
+                # mark these records isMeta. The other wrappers (message/args/contents/caveat) stay skipped.
+                mcmd = COMMAND_NAME_RE.match(btext)
+                if mcmd and u not in replay_uuids:
+                    name = mcmd.group(1).strip() or "/?"
+                    if not name.startswith("/"):
+                        name = "/" + name
+                    margs = COMMAND_ARGS_RE.search(btext)
+                    args = (margs.group(1).strip() if margs else "")
+                    disp = name + ((" " + args) if args else "")
+                    out.append({"type": "user", "uuid": u, "session_id": rompuuid, "t": ts,
+                                "fsid": fsid, "parentUuid": r.get("parentUuid"), "_seq": seq,
+                                "author": "human", "command": name,
+                                "message": {"role": "user", "content": [{"type": "text", "text": disp}]}})
+                    continue
+                mout = LOCAL_STDOUT_RE.match(btext)
+                if mout and u not in replay_uuids:
+                    out.append({"type": "assistant", "uuid": u, "session_id": rompuuid, "t": ts,
+                                "fsid": fsid, "parentUuid": r.get("parentUuid"), "_seq": seq, "command": True,
+                                "message": {"role": "assistant",
+                                            "content": [{"type": "text", "text": mout.group(1).strip()}],
+                                            "stop_reason": "end_turn"}})
+                    continue
                 if r.get("isMeta") is True:
-                    continue   # `<command-…>` echoes, local-command-stdout — harness noise, not a message
+                    continue   # `<command-…>` echoes / caveats — harness noise, not a message
                 if r.get("isCompactSummary") is True:
                     continue   # the compaction SUMMARY payload — kept in the graph (above) but not an atom;
                                # the compaction itself is the system:compact_boundary atom below
                 if u in replay_uuids:
                     continue   # a post-compaction REPLAY of restored context (see the pre-pass above) — not new
                                # work; dropping it keeps the planner's seg-id dedup intact, so no goal re-mints
-                blocks = _content(r.get("message"))
                 if not blocks:
                     continue
-                if CMD_WRAP_RE.match(_text_of(blocks)):
-                    continue   # slash-command echo, not a message
+                if CMD_WRAP_RE.match(btext):
+                    continue   # the remaining slash-command wrappers (message/args/contents/caveat) — noise
                 ps = r.get("promptSource")
                 atom = {"type": "user", "uuid": u, "session_id": rompuuid, "t": ts,
                         "fsid": fsid, "parentUuid": r.get("parentUuid"),
@@ -507,6 +537,8 @@ def segment_turns(atoms, rompuuid):
         if atom["type"] == "assistant":
             sr = (atom.get("message") or {}).get("stop_reason")
             ended = sr in END_STOPS
+        if atom["type"] == "user" and atom.get("command"):
+            ended = True   # a slash-command invocation is self-contained → ends its turn so the NEXT prompt opens fresh
     for turn in turns:
         _finalize_turn(turn, rompuuid)
     turns.sort(key=lambda t: t["t"])

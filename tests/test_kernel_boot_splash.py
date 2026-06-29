@@ -68,7 +68,7 @@ class PaneSpinner(unittest.TestCase):
             self.assertIn("rotate(-360deg)", html, "%s swirl spins (reverse, matching the splash)" % name)
             self.assertIn("getElementById('%s')" % cid, html, "%s observes its content container" % name)
             self.assertIn("MutationObserver", html, "%s hides the spinner on first content" % name)
-            self.assertIn("setTimeout(h,8000)", html, "%s has a backstop" % name)
+            self.assertIn("setTimeout(hide,8000)", html, "%s has a backstop" % name)
 
 
 if __name__ == "__main__":

@@ -20,8 +20,8 @@ class PaneLoaderIgnore(unittest.TestCase):
         self.assertIn("IGN='live-ask'", js, "the ignore id is wired in")
         # readiness counts only children whose id != the ignore id
         self.assertIn("c.children[i].id!==IGN", js)
-        self.assertIn("if(ready())h();", js, "hide only once a REAL child exists")
-        self.assertNotIn("if(c.children.length)h();", js, "the old any-child hide is gone")
+        self.assertIn("if(ready())hide();", js, "hide only once a REAL child exists")
+        self.assertNotIn("if(c.children.length)hide();", js, "the old any-child hide is gone")
 
     def test_other_panes_unaffected_count_all_children(self):
         js = km._pane_spin("feed-list")
