@@ -6121,7 +6121,11 @@ def _push(targets, connect=False):
     tmux = _tmux_sessions()                       # one tmux read per push, shared by all builders
     _seen_live.update(tmux)                       # remember who's been alive → keep their tab when they die
     want_chat = any(c["app"] == "chat" for c in targets)
-    want_feed = any(c["app"] in ("feed", "chat") for c in targets)   # chat needs feed["working"]
+    # The FLEET connects as its OWN app (the user 2026-06-29) so we build its per-session ledgers EVEN when no
+    # chat client is open — previously the fleet rode app=feed and got ledgers only as a side effect of a chat
+    # build (want_chat), so opening the fleet alone showed an empty/loading screen until a chat push happened.
+    want_fleet = any(c["app"] == "fleet" for c in targets)
+    want_feed = any(c["app"] in ("feed", "fleet", "chat") for c in targets)   # fleet rides the feed payload; chat needs feed["working"]
     want_tl = any(c["app"] == "timeline" for c in targets)
     chat_clients = [c for c in targets if c["app"] == "chat"]
     try:
@@ -6136,7 +6140,7 @@ def _push(targets, connect=False):
         # The FEED's per-session Fleet ledger slice still rides along, attached AFTER the builds (want_chat —
         # we do NOT build all sessions just for a feed/fleet push: the user 2026-06-24 slow-load regression).
         chat_sessions = []
-        if want_chat:
+        if want_chat or want_fleet:   # the fleet needs every session's ledger slice (built below, attached to feed)
             # TABS-FIRST (the user 2026-06-26): ship name+color per tab so the client can paint the WHOLE strip
             # as placeholders up front (no tab popping in one-by-one as each build_session lands). The full
             # session fills the placeholder in when it arrives below.
@@ -6215,7 +6219,7 @@ def _push(targets, connect=False):
         sys.stderr.write("push build: %s\n" % traceback.format_exc())
         return
     for c in targets:
-        if c["app"] == "feed":   # the feed pane AND the Fleet view both connect app=feed (Fleet reads feed.ledgers)
+        if c["app"] in ("feed", "fleet"):   # the feed pane AND the Fleet view both ride the feed payload (Fleet reads feed.ledgers)
             _send_client(c, ("feed",), feed)
         elif c["app"] == "timeline" and timeline is not None:
             _send_client(c, ("timelinebars",), {"type": "bars", "turns": timeline["turns"],
@@ -6957,7 +6961,7 @@ def _fleet_page():
             "<style>%s\n%s</style></head><body>"
             "<div id=fleet-list></div><div id=fleet-foot></div>%s"
             "<script>%s</script><script src=/dist/fleet.js?v=%d></script></body></html>"
-            % (v, THEME_CSS, _FLEET_CSS, _pane_spin("fleet-list"), _shim("feed"), v))
+            % (v, THEME_CSS, _FLEET_CSS, _pane_spin("fleet-list"), _shim("fleet"), v))
 
 
 # The romp-tl-* styles, verbatim from the obsidian/VS-Code timeline wrapper.
