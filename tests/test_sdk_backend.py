@@ -432,30 +432,38 @@ class StateAndRegistryFiles(unittest.TestCase):
         self.assertEqual(before, after, "no awaiting overlay → nothing to heal")
         self.assertIsNone(sb.last_awaiting(self.d, "sid_plain"))
 
-    def test_kernel_restart_heals_stale_working_state(self):
-        """A turn in flight when the kernel restarts is killed mid-stream, so no ResultMessage ever writes
-        "waiting" — the state log is left at "working". _last_state_value then reads "working" forever and the
-        auto-nudge GENUINE-STOP gate treats the dormant session as actively progressing → it never nudges its
-        stalled goals (the user 2026-06-27: a run of kernel refreshes left a session stuck "working" ~40m,
-        silently suppressing every auto-nudge). On (re)construction the backend heals a dormant session's
-        stale progressing state to "waiting". Idempotent."""
+    def test_restart_does_NOT_heal_a_stale_working_state(self):
+        """A turn in flight when the kernel restarts is killed mid-stream (e.g. the user hit Refresh mid-turn),
+        so no ResultMessage ever writes "waiting" — the state log is left at "working". The backend must LEAVE
+        that "working" in place: the auto-nudge GENUINE-STOP gate (_last_state_value in _PROGRESSING_STATES)
+        then correctly SKIPS the session — it was interrupted, not stopped, and must not be nudged (the user
+        2026-06-29: Refresh was nudging in-progress sessions). We used to heal "working"→"waiting" here, which
+        opened that gate and caused the spurious nudge; that heal is gone. The dormant in-flight→waiting heal
+        is DISPLAY-only and lives in live_sessions, not in the state LOG."""
         sb.write_reg(self.d, "sid_w", {"sid": "sid_w", "name": "n", "cwd": "/tmp", "alive": True})
         sb.append_state(self.d, "sid_w", "working")                     # a turn that never got its ResultMessage
         sb.SdkBackend(self.d, "/bin/true", lambda *a, **k: None)        # kernel restart re-constructs the backend
-        self.assertEqual(sb.last_state(self.d, "sid_w").get("state"), "waiting",
-                         "a dormant session's stale 'working' heals to 'waiting' so auto-nudge isn't blocked")
-        path = os.path.join(self.d, "states", "sid_w.jsonl")
-        before = len(open(path).read().splitlines())
-        sb.SdkBackend(self.d, "/bin/true", lambda *a, **k: None)        # already waiting → no redundant write
-        self.assertEqual(len(open(path).read().splitlines()), before, "idempotent: no spam when already settled")
+        self.assertEqual(sb.last_state(self.d, "sid_w").get("state"), "working",
+                         "a refresh-interrupted session keeps 'working' so the auto-nudge stop-gate skips it")
 
-    def test_restart_heal_leaves_a_genuinely_waiting_session_alone(self):
-        sb.write_reg(self.d, "sid_ok", {"sid": "sid_ok", "name": "n", "cwd": "/tmp", "alive": True})
-        sb.append_state(self.d, "sid_ok", "waiting")
-        p = os.path.join(self.d, "states", "sid_ok.jsonl")
-        before = len(open(p).read().splitlines())
+    def test_restart_still_heals_a_stale_awaiting_overlay(self):
+        """The awaiting OVERLAY heal stays (a dormant session can't have live background tasks), even though the
+        state heal is gone — they're independent. The awaiting heal appends an awaiting-only record, so the
+        latest STATE-bearing record (what the kernel's _last_state_value reads, ignoring overlays) must still
+        be "working" — never rewritten to "waiting"."""
+        import json as _j
+        sb.write_reg(self.d, "sid_a", {"sid": "sid_a", "name": "n", "cwd": "/tmp", "alive": True})
+        sb.append_state(self.d, "sid_a", "working")
+        sb.append_awaiting(self.d, "sid_a", True, "1 background task(s) running")
         sb.SdkBackend(self.d, "/bin/true", lambda *a, **k: None)
-        self.assertEqual(len(open(p).read().splitlines()), before, "an already-waiting session is untouched")
+        self.assertEqual(sb.last_awaiting(self.d, "sid_a"), False, "stale awaiting:true is cleared on restart")
+        states = []
+        with open(os.path.join(self.d, "states", "sid_a.jsonl")) as f:
+            for line in f:
+                rec = _j.loads(line)
+                if isinstance(rec.get("state"), str):
+                    states.append(rec["state"])
+        self.assertEqual(states[-1], "working", "the latest STATE record is untouched (no 'waiting' heal)")
 
     def test_new_session_does_not_guess_a_model(self):
         """A brand-new SDK session's model is UNKNOWN until it connects — we DON'T guess it from the fleet (the
