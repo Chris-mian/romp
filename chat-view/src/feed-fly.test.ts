@@ -14,8 +14,17 @@ const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "
 test("render() captures rects BEFORE the reconcile and flies changed cards AFTER", () => {
   // capture must precede the column reconciles…
   assert.match(FEED, /const flipFirst = captureCardRects\(cols\);[\s\S]*?reconcileCol\(cols\.asks/);
-  // …and the fly runs after the DOM (and scroll) settle
-  assert.match(FEED, /list\.scrollTop = prevScroll;\s*\n\s*\/\/ FLIP step 2[\s\S]*?flyColumnChanges\(flipFirst, cols\);/);
+  // …and the fly runs after the DOM (and scroll) settle (the identity-alias step sits just before it)
+  assert.match(FEED, /list\.scrollTop = prevScroll;[\s\S]*?\/\/ FLIP step 2[\s\S]*?flyColumnChanges\(flipFirst, cols\);/);
+});
+
+test("FLIP-across-identity: a new-key card aliases to its predecessor's rect so it slides, not pops", () => {
+  // each render maps goal itemId → covering card key; a card whose key is NEW borrows its predecessor's First rect
+  assert.match(FEED, /const curItemKey = new Map<string, string>\(\);/);
+  assert.match(FEED, /coverInto\("a:" \+ e\.ask\.itemId, \[e\.ask\.itemId, \.\.\.\(e\.ask\.tree \|\| \[\]\)\.map\(\(n\) => n\.id\)\]\)/);
+  assert.match(FEED, /const prevKey = prevItemKey\.get\(itemId\);/);
+  assert.match(FEED, /if \(prevKey && prevKey !== curKey && flipFirst\.has\(prevKey\)\) flipFirst\.set\(curKey, flipFirst\.get\(prevKey\)!\);/);
+  assert.match(FEED, /prevItemKey = curItemKey;/);   // remembered for next render
 });
 
 test("captureCardRects records each card's rect + column", () => {

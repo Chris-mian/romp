@@ -205,6 +205,12 @@ let canUndoClear = false;   // host: cleared.jsonl has rows → the UndoClear bu
 const expanded = new Set<string>();
 const details = new Map<string, DetailState>();
 const cardEls = new Map<string, HTMLElement>();   // itemId -> live card element (reused)
+// FLIP-across-identity (the user 2026-06-29): which render KEY covered each goal itemId on the LAST render.
+// A goal's card can change identity — a group ("g:"+turnId) dissolving to a solo ask ("a:"+itemId), a goal
+// absorbed under an umbrella ("a:"+umbrellaId) — which is a DIFFERENT DOM node, so the normal FLIP (reuse one
+// node) can't slide it and it would pop. We map the new card back to its predecessor's old rect so it slides
+// from there instead of appearing from nowhere. Rebuilt every render.
+let prevItemKey = new Map<string, string>();
 
 function el(tag: string, cls?: string): HTMLElement {
   const e = document.createElement(tag);
@@ -1903,6 +1909,18 @@ function render() {
   // eye, and new/moved cards stack onto the bottom (matches the fly animation). No toggle — this is the behavior.
   for (const k of Object.keys(buckets) as Column[]) buckets[k].sort((x, y) => x.t - y.t);
 
+  // FLIP-across-identity bookkeeping (the user 2026-06-29): map every goal itemId this render → the card KEY
+  // that renders it, so the next render can slide a card whose IDENTITY changed (group↔solo, umbrella absorb)
+  // from its predecessor's old spot. An ask/group "covers" its own id AND its tree node ids, so an umbrella
+  // card covers the goals it just absorbed (their solo cards were the predecessors).
+  const curItemKey = new Map<string, string>();
+  const coverInto = (key: string, ids: string[]) => { for (const id of ids) if (!curItemKey.has(id)) curItemKey.set(id, key); };
+  for (const k of Object.keys(buckets) as Column[]) for (const e of buckets[k]) {
+    if (e.kind === "ask") coverInto("a:" + e.ask.itemId, [e.ask.itemId, ...(e.ask.tree || []).map((n) => n.id)]);
+    else if (e.kind === "group") coverInto("g:" + e.group.turnId, e.group.members.flatMap((m) => [m.itemId, ...(m.tree || []).map((n) => n.id)]));
+    else coverInto("i:" + e.item.itemId, [e.item.itemId]);
+  }
+
   // FLIP step 1 (the user 2026-06-27): record every visible card's position + column BEFORE the reconcile, so
   // a card that changes column can FLY from its old spot to the new one instead of teleporting.
   const flipFirst = captureCardRects(cols);
@@ -1943,8 +1961,18 @@ function render() {
   for (const id of Array.from(cardEls.keys())) if (!desired.has("i:" + id) && undismissed(cardEls.get(id))) { cardEls.get(id)?.remove(); cardEls.delete(id); }
 
   list.scrollTop = prevScroll;
+  // FLIP-across-identity: a card whose KEY is new this render (group→solo, solo→group, umbrella absorb) has no
+  // First rect of its own, so the normal FLIP can't slide it. Alias it to its PREDECESSOR's rect — the card
+  // key that covered one of its goals LAST render — so it glides in from where that predecessor sat instead of
+  // popping (the user 2026-06-29). First predecessor found wins; never overwrite a card's own real First rect.
+  if (!reduceMotion) for (const [itemId, curKey] of curItemKey) {
+    if (flipFirst.has(curKey)) continue;                 // this card has its own First rect → normal FLIP path
+    const prevKey = prevItemKey.get(itemId);
+    if (prevKey && prevKey !== curKey && flipFirst.has(prevKey)) flipFirst.set(curKey, flipFirst.get(prevKey)!);
+  }
   // FLIP step 2: any card whose column changed flies from its recorded spot to the new one (in the back layer).
   flyColumnChanges(flipFirst, cols);
+  prevItemKey = curItemKey;   // remember this render's identity map for the next FLIP-across-identity
   renderModal();   // keep the ⛶ full-screen tree (if open) in sync with this push
   applyExtHover(); // reconcile/renderModal may have rebuilt nodes — re-apply the rail-dot outlines (cards AND modal rows)
 }
