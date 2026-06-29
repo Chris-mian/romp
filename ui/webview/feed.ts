@@ -1724,15 +1724,20 @@ function flyColumnChanges(first: Map<string, FlipState>, cols: ReturnType<typeof
     for (const c of Array.from(colEl.children) as HTMLElement[]) {
       const k = c.dataset.key; if (!k) continue;
       const prev = first.get(k);
-      if (!prev || prev.col === colEl.id) continue;        // brand-new card, or it stayed put → don't fly
+      if (!prev) continue;                                 // brand-new card → no FLIP (nothing to glide from)
       const now = c.getBoundingClientRect();
       const dx = prev.rect.left - now.left, dy = prev.rect.top - now.top;
-      if (!dx && !dy) continue;
-      // Invert: jump the card back to its old spot, instantly, in the back layer.
-      c.classList.add("fitem-flying");
+      if (!dx && !dy) continue;                            // didn't move → leave it alone
+      // Two flavors of move, ONE FLIP (the user 2026-06-29): a card that CHANGED COLUMN flies in the BACK
+      // layer (z-index:-1 → behind the other cards, so it never sails over them); a card that STAYED in its
+      // column but shifted — because the card that left it vacated a slot — glides IN PLACE in normal flow, so
+      // the remaining cards reflow smoothly to their new spots instead of snapping there in a discrete jump.
+      const crossed = prev.col !== colEl.id;
+      if (crossed) c.classList.add("fitem-flying");
+      // Invert: jump the card back to its old spot, instantly.
       c.style.transition = "none";
       c.style.transform = `translate(${dx}px, ${dy}px)`;
-      // Play: next frame, release the offset with a transition → it glides to the new column.
+      // Play: next frame, release the offset with a transition → it glides to its new home.
       requestAnimationFrame(() => requestAnimationFrame(() => {
         c.style.transition = "transform .42s cubic-bezier(.22, .61, .36, 1)";
         c.style.transform = "translate(0, 0)";
@@ -1740,7 +1745,7 @@ function flyColumnChanges(first: Map<string, FlipState>, cols: ReturnType<typeof
       const done = (ev: TransitionEvent) => {
         if (ev.propertyName !== "transform") return;
         c.removeEventListener("transitionend", done);
-        c.classList.remove("fitem-flying");
+        if (crossed) c.classList.remove("fitem-flying");
         c.style.transition = ""; c.style.transform = "";   // back to normal flow + stacking
       };
       c.addEventListener("transitionend", done);
