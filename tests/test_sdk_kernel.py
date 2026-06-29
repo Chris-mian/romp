@@ -259,7 +259,8 @@ class SdkQueuedIndicator(unittest.TestCase):
         # build_session reads the queued texts from the OWNING backend, uniformly — the SDK from its
         # in-memory queue, tmux from the transcript's queue-operation records (TmuxBackend.pending_queued →
         # _pending_queued). No backend fork in build_session anymore.
-        self.assertIn("queued = Sessions.backend_for(sid).pending_queued(sid)", src)
+        self.assertIn("be = Sessions.backend_for(sid)", src)
+        self.assertIn("queued = be.pending_queued(sid)", src)
         self.assertIn("return _pending_queued(p) if p else []", src)   # tmux pending_queued reads the transcript
 
 

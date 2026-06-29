@@ -621,6 +621,42 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(nodes["a blocked step"]["blockWhy"], "waiting on the user's choice")
         self.assertEqual(nodes["a finished step"]["doneWhy"], "shipped the fix")
 
+    def test_tmux_send_while_working_echoes_as_QUEUED_not_a_sent_bubble(self):
+        # The flicker (the user 2026-06-29): a composer send while a tmux session is WORKING flashed as a
+        # SENT (solid) bubble, then ~1s later flipped to the DOTTED queued bubble once Claude Code's
+        # queue-operation record landed in the transcript. Fix: while the turn is open, the optimistic tmux
+        # echo is folded into the queued list immediately → it renders dotted from the very first push, with
+        # no flip. No transcript queue-op record yet (pending_queued is still empty), so this is purely the
+        # optimistic path.
+        with self.tpath.open("a") as f:                  # an OPEN turn → _session_working is true
+            f.write(json.dumps(uline(NOW, "keep working on the strip", "uOpen", parent="a2")) + "\n")
+        km._parse_cache.clear()
+        km._tmux_echo.pop(SID, None)
+        km._tmux_echo_add(SID, "and also fix the header")  # the send fired while busy → will be queued by Claude Code
+        try:
+            events = km.build_session(SID, NOW)["events"]
+        finally:
+            km._tmux_echo.pop(SID, None)
+        qmsgs = [m["md"] for e in events if e["kind"] == "queued" for m in e["texts"]]
+        self.assertIn("and also fix the header", qmsgs, "a send while working shows as a QUEUED (dotted) bubble")
+        sent = [e for e in events if e["kind"] == "user" and e.get("md") == "and also fix the header"]
+        self.assertEqual(sent, [], "it must NOT also show as a sent (solid) user bubble — that was the flip")
+
+    def test_tmux_send_while_IDLE_echoes_as_a_sent_bubble_not_queued(self):
+        # the gate: when the session is IDLE (default fixture ends on an ended turn), the SAME echo is a
+        # genuine sent message — it shows as a solid user bubble, never the dotted queued indicator.
+        km._parse_cache.clear()
+        km._tmux_echo.pop(SID, None)
+        km._tmux_echo_add(SID, "a fresh idle send")
+        try:
+            events = km.build_session(SID, NOW)["events"]
+        finally:
+            km._tmux_echo.pop(SID, None)
+        sent = [e for e in events if e["kind"] == "user" and e.get("md") == "a fresh idle send"]
+        self.assertEqual(len(sent), 1, "an idle send shows as a solid user bubble")
+        qmsgs = [m["md"] for e in events if e["kind"] == "queued" for m in e["texts"]]
+        self.assertNotIn("a fresh idle send", qmsgs, "an idle send is NOT queued")
+
     def test_feed_awaiting_via_session_signal_is_held_in_working_with_a_badge(self):
         # AWAITING = a flavor of WORKING (the user 2026-06-22): when the EVENT-MODEL signal says the session
         # is paused on dispatched/delegated work, its working top stays in the working column (never
