@@ -3559,7 +3559,7 @@ class ServeSecurity(unittest.TestCase):
         self.assertIn("id=fleet-list", body)
         self.assertIn("id=fleet-foot", body)
         self.assertIn("/dist/fleet.js", body)
-        self.assertIn('app=feed', body)              # reuses the feed payload, no new kernel data
+        self.assertIn('app=fleet', body)             # fleet has its own WS app now (per-pane disconnect state); still fed the feed payload
         # the romp loader RE-SHOWS on a kernel restart / WS drop (the user 2026-06-29): the shim fires
         # 'romp:wsdown' on ws.onclose and the pane loader un-fades over the stale pane until reconnect.
         self.assertIn("window.addEventListener('romp:wsdown',show)", body)        # loader re-shows
