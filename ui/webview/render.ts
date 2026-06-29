@@ -775,7 +775,18 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
         turn.appendChild(tag);
       }
       const bubble = el("div", (romp ? "romp-bubble" : injected ? "user-note" : "user-bubble") + " md");
-      if (ev.md) bubble.innerHTML = md(ev.md);
+      // A slash COMMAND you sent reads as a special keyword, not prose (the user 2026-06-29): render the leading
+      // "/cmd" token as a monospace chip, with any arguments after it as plain text. Genuine human bubbles only;
+      // "/cmd" must be a WHOLE leading token (followed by a space or end) so a "/Users/…" path is never chipped.
+      const cmd = (!romp && !injected && ev.md) ? ev.md.match(/^(\/[A-Za-z][\w-]*)(?=\s|$)([\s\S]*)$/) : null;
+      if (cmd) {
+        const chip = el("span", "slash-cmd-chip"); chip.textContent = cmd[1];
+        bubble.appendChild(chip);
+        const rest = cmd[2].replace(/^\s+/, "");
+        if (rest) { const args = el("span", "slash-cmd-args"); args.textContent = rest; bubble.appendChild(args); }
+      } else if (ev.md) {
+        bubble.innerHTML = md(ev.md);
+      }
       // images, IN the bubble (part of his message): thumbnail + open/copy caption;
       // a literal path in the typed text becomes the same open-link inline.
       if (ev.images) {

@@ -786,6 +786,16 @@ body { display: flex; flex-direction: column; }
 /* white-on-blue legibility for inner markdown */
 .user-bubble a { color: #fff; text-decoration: underline; text-underline-offset: 2px; }
 .user-bubble :not(pre) > code { background: rgba(255, 255, 255, 0.2); color: #fff; }
+/* a slash COMMAND you sent (the user 2026-06-29): the "/cmd" token renders as a monospace KEYWORD chip inside
+   the blue bubble — a darkened, outlined pill so it reads as a command, not prose. Args sit after it as text. */
+.slash-cmd-chip {
+  display: inline-block; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-weight: 650; font-size: 0.9em; letter-spacing: 0.02em;
+  background: rgba(0, 0, 0, 0.24); color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.38); border-radius: 6px;
+  padding: 1px 7px; line-height: 1.5; white-space: nowrap;
+}
+.slash-cmd-args { margin-left: 7px; }
 /* ---------- romp-injected message (a feed nudge / follow-up) ----------
    A GRAY bubble in the SAME right-aligned spot as the blue user bubble (so it sits where "an outgoing
    message" goes), but clearly NOT you — gray, with a small "↯ romp" tag above it (the user 2026-06-19).
