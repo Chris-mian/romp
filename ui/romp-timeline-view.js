@@ -1476,6 +1476,15 @@ class TimelinePanel {
   // Click the context battery → send `/compact` to that session's terminal. VS Code: hand the session
   // name to the extension host (no Node in the webview); Obsidian: shell tmux directly. Types the slash
   // command literally then submits it. (Targets the tmux session by name, like romp-postal-service's inject.)
+  // SMIL `begin` offset so a REPEATING animation resumes at its current phase when draw() recreates its
+  // element every poll — instead of snapping back to 0, the visible "jumping/hiccup" (the user 2026-06-29).
+  // begin='0s' was ASSUMED to ride the persistent SVG doc-timeline, but browsers restart a freshly-INSERTED
+  // <animate> from zero; an explicit NEGATIVE begin = -(docTime % dur) makes it start mid-cycle, at exactly
+  // the phase the previous (destroyed) element was at → seamless across the per-poll rebuild.
+  _smilBegin(dur) {
+    try { const ct = (this.svg && this.svg.getCurrentTime) ? this.svg.getCurrentTime() : 0; return '-' + (ct % dur).toFixed(3) + 's'; }
+    catch (e) { return '0s'; }
+  }
   _compactSession(name) {
     if (!name) return;
     try {
@@ -2073,7 +2082,7 @@ class TimelinePanel {
         if (s.state === 'working') {
           // calcMode=spline keySplines 0.37 0 0.63 1 = ease-in-out-sine; begin='0s' rides the persistent
           // SVG doc-time phase so the ~1s poll rebuild resumes mid-cycle, seamless.
-          bt.appendChild(el('animate', { attributeName: 'fill', values: WK_A + ';' + WK_B + ';' + WK_A, keyTimes: '0;0.5;1', calcMode: 'spline', keySplines: '0.37 0 0.63 1;0.37 0 0.63 1', dur: '1.5s', begin: '0s', repeatCount: 'indefinite' }));   // 1.5s = 2× the old 3s, matches the chat chip-pulse (the user 2026-06-16)
+          bt.appendChild(el('animate', { attributeName: 'fill', values: WK_A + ';' + WK_B + ';' + WK_A, keyTimes: '0;0.5;1', calcMode: 'spline', keySplines: '0.37 0 0.63 1;0.37 0 0.63 1', dur: '1.5s', begin: this._smilBegin(1.5), repeatCount: 'indefinite' }));   // 1.5s = 2× the old 3s; begin = -(docTime%dur) so the per-poll rebuild resumes mid-cycle (the user 2026-06-16/29)
         }
         svg.appendChild(bt);
         if (s.faded) { fadedEls.push({ el: chipBg, full: bdg.bg, faded: F(bdg.bg) }); fadedEls.push({ el: bt, full: bdg.fg, faded: F(bdg.fg) }); }
@@ -2091,9 +2100,10 @@ class TimelinePanel {
           // `this.svg` — and thus its SMIL document timeline — PERSISTS, so begin='0s' lands each freshly-
           // created rect at the current phase (docTime % DUR) → the per-poll rebuild is seamless.
           const ix0 = ctxColX + 1, innerW = BAT_W - 2, minW = 1, DUR = 3.2, TEAL = '#14b8a6';
+          const cbeg = this._smilBegin(DUR);   // resume mid-cycle on the per-poll rebuild (no snap-back)
           const bar = el('rect', { x: ix0, y: byTop + 1, width: innerW, height: BAT_H - 2, rx: 1, fill: TEAL, 'pointer-events': 'none' });
-          bar.appendChild(el('animate', { attributeName: 'width', values: innerW + ';' + innerW + ';' + minW + ';' + minW, keyTimes: '0;0.1;0.9;1', dur: DUR + 's', begin: '0s', repeatCount: 'indefinite' }));
-          bar.appendChild(el('animate', { attributeName: 'opacity', values: '0;1;1;0', keyTimes: '0;0.1;0.9;1', dur: DUR + 's', begin: '0s', repeatCount: 'indefinite' }));
+          bar.appendChild(el('animate', { attributeName: 'width', values: innerW + ';' + innerW + ';' + minW + ';' + minW, keyTimes: '0;0.1;0.9;1', dur: DUR + 's', begin: cbeg, repeatCount: 'indefinite' }));
+          bar.appendChild(el('animate', { attributeName: 'opacity', values: '0;1;1;0', keyTimes: '0;0.1;0.9;1', dur: DUR + 's', begin: cbeg, repeatCount: 'indefinite' }));
           svg.appendChild(bar);
         } else {
           const innerW = BAT_W - 2, fillW = Math.max(0, Math.min(1, cinfo.pct / 100)) * innerW, fillCol = F(cinfo.color);

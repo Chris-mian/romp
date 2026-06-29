@@ -3550,8 +3550,7 @@ class ServeSecurity(unittest.TestCase):
         self.assertIn("document.body.classList.toggle('settings-open',!!m.on)", html)
 
     def test_fleet_page_served(self):
-        # Fleet (the user 2026-06-23): /fleet serves the by-session open-work view, fed by the SAME app=feed
-        # stream and rendered by dist/fleet.js.
+        # Fleet (the user 2026-06-23): /fleet serves the by-session open-work view, rendered by dist/fleet.js.
         import urllib.request
         with urllib.request.urlopen("http://127.0.0.1:%d/fleet" % self.port, timeout=5) as r:
             self.assertEqual(r.status, 200)
@@ -3559,7 +3558,9 @@ class ServeSecurity(unittest.TestCase):
         self.assertIn("id=fleet-list", body)
         self.assertIn("id=fleet-foot", body)
         self.assertIn("/dist/fleet.js", body)
-        self.assertIn('app=feed', body)              # reuses the feed payload, no new kernel data
+        # the fleet connects as its OWN app (the user 2026-06-29) so the kernel builds its per-session ledgers
+        # even with no chat client open — it still rides the feed PAYLOAD, but as app=fleet, not app=feed.
+        self.assertIn('app=fleet', body)
         # the romp loader RE-SHOWS on a kernel restart / WS drop (the user 2026-06-29): the shim fires
         # 'romp:wsdown' on ws.onclose and the pane loader un-fades over the stale pane until reconnect.
         self.assertIn("window.addEventListener('romp:wsdown',show)", body)        # loader re-shows

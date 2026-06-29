@@ -5656,9 +5656,17 @@ def build_timeline(now, tmux=None, with_bars=True, live_only=False):
         last_turn = st_turns[-1] if st_turns else None
         if tm:                            # live: tmux state drives the lane badge (working/waiting/idle/permission/compacting)
             state = tm["state"] or "idle"
-            if with_bars and _compacting(sid, state, session, now, tm.get("since")):
+            # Corroborate compacting on BOTH builds (the user 2026-06-29): the SKELETON sets the lane state the
+            # client actually uses (the {type:"bars"} message carries no state), so skipping _compacting here
+            # made the timeline drop 'compacting' the moment the client's 6s optimistic window lapsed — while
+            # the chat/tab (both use _compacting) kept showing it. The skeleton has no fresh parse, so use the
+            # CACHED one (no cold cost); _compacting also rides the kernel's own /compact optimistic cue
+            # (_compact_clicked), which persists event-based until the compact_boundary lands, so it stays in
+            # sync even before @claude-state latches.
+            comp_sess = session if with_bars else (_parse_cached(s["path"]) or {"turns": []})
+            if _compacting(sid, state, comp_sess, now, tm.get("since")):
                 state = "compacting"      # event-corroborated (incl. the optimistic /compact cue) — matches the chip
-            elif state == "compacting":   # a STUCK tmux 'compacting' (or the un-parsed skeleton) → show the real state
+            elif state == "compacting":   # a STUCK tmux 'compacting' → show the real state
                 state = "working" if open_now else "waiting"
         else:                             # dead lane: NEVER "working" — a turn left open at death (e.g. a stalled API
                                           # turn that never returned a ResultMessage, then ended) must not read as
@@ -6204,7 +6212,11 @@ def _push(targets, connect=False):
         feed = _cached_feed(now, tmux, fsig, connect) if want_feed else None
         if feed is not None:
             feed = dict(feed)                            # copy so the per-push ledger attach never dirties the cache
-            if chat_sessions:
+            # Attach `ledgers` whenever the session build RAN (want_chat or want_fleet) — even as an EMPTY list
+            # for a fleet with no sessions — so the fleet can tell "the build ran, here's the data (maybe none)"
+            # from "no data yet, still loading" and keep its loader up until real data lands (the user
+            # 2026-06-29). Without this, an empty/ledger-less push looked identical to a not-yet-built one.
+            if chat_sessions or want_fleet:
                 feed["ledgers"] = [{"sid": m["id"], "name": m["name"], "color": m.get("color"),
                                     "status": m.get("status"),
                                     # attach the archived-completed TOP tasks so the Fleet's "Show completed"
