@@ -4481,6 +4481,10 @@ function growComposer(ta: HTMLTextAreaElement) {
   ta.style.height = Math.min(ta.scrollHeight, 120) + "px";
 }
 
+// One slash command from the kernel's /commands (the Agent SDK's get_server_info): the name (no leading "/"),
+// a one-line description, an optional argument hint, and any aliases.
+interface SlashCmd { name: string; description?: string; argumentHint?: string; aliases?: string[]; }
+
 // Composer: Enter sends the message to the active session as its next prompt,
 // Shift+Enter inserts a newline; the box auto-grows a few lines.
 function setupComposer() {
@@ -4501,7 +4505,116 @@ function setupComposer() {
   // affordance too). mousedown, not click, so the textarea keeps focus and a follow-up keeps typing.
   const sendBtn = document.getElementById("composer-send") as HTMLButtonElement | null;
   sendBtn?.addEventListener("mousedown", (e) => { e.preventDefault(); sendComposer(); ta.focus(); });
+
+  // ── slash-command autocomplete (the user 2026-06-29) ── a "/" at the START of the box opens a filterable,
+  // arrow-navigable menu of THIS session's slash commands (name + description + arg hint), sourced from the
+  // kernel's /commands (the Agent SDK's get_server_info, per-cwd — works for tmux + SDK alike). Enter/Tab/click
+  // FILLS "/name " so you add arguments then send yourself; Esc closes. The list is fetched per active session
+  // and cached; while the kernel warms its (slow) probe the menu shows the romp loader. Modeled on the VS Code
+  // client's command palette + the terminal UI.
+  let slashCmds: SlashCmd[] = [];
+  let slashSid: string | null = null;   // which session's list we hold; null = never loaded (distinct from the "" cwd-fallback sid)
+  let slashWarming = false;
+  let slashPoll: number | undefined;
+  let pop: HTMLElement | null = null;
+  let items: SlashCmd[] = [];
+  let sel = 0;
+  const loadCmds = (sid: string, then?: () => void) => {
+    fetch("/commands?sid=" + encodeURIComponent(sid), { cache: "no-store" })
+      .then((r) => r.json())
+      .then((d) => {
+        slashCmds = Array.isArray(d.commands) ? d.commands : [];
+        slashWarming = !!d.warming; slashSid = sid;
+        if (slashWarming) { clearTimeout(slashPoll); slashPoll = window.setTimeout(() => loadCmds(sid, then), 1500); }
+        then && then();
+      })
+      .catch(() => { slashCmds = []; slashWarming = false; slashSid = sid; then && then(); });
+  };
+  const slashQuery = (): string | null => (/^\/\S*$/.test(ta.value) ? ta.value.slice(1) : null);   // active only while the box is one "/token"
+  const filterCmds = (q: string): SlashCmd[] => {
+    const ql = q.toLowerCase();
+    return slashCmds
+      .map((c) => {
+        let best = -1;
+        for (const n of [c.name, ...(c.aliases || [])]) {
+          const i = n.toLowerCase().indexOf(ql);
+          best = Math.max(best, ql === "" ? 0 : i === 0 ? 2 : i > 0 ? 1 : -1);   // prefix > substring > miss
+        }
+        return { c, best };
+      })
+      .filter((x) => x.best >= 0)
+      .sort((a, b) => b.best - a.best || a.c.name.localeCompare(b.c.name))
+      .map((x) => x.c).slice(0, 60);
+  };
+  const closeSlash = () => { if (pop) { pop.remove(); pop = null; } if (slashPoll) { clearTimeout(slashPoll); slashPoll = undefined; } };
+  const positionSlash = () => {
+    if (!pop) return;
+    const r = ta.getBoundingClientRect();
+    pop.style.left = r.left + "px";
+    pop.style.width = Math.max(r.width, 300) + "px";
+    pop.style.bottom = (window.innerHeight - r.top + 6) + "px";   // sit just ABOVE the composer
+  };
+  const pickSlash = (c: SlashCmd) => {
+    ta.value = "/" + c.name + " ";                               // FILL (not send) — add args, then ⏎
+    closeSlash();
+    ta.focus();
+    ta.setSelectionRange(ta.value.length, ta.value.length);
+    growComposer(ta);
+    if (activeId) { drafts.set(activeId, ta.value); persistDrafts(); }
+  };
+  const paintSlash = () => {
+    if (!pop) return;
+    pop.replaceChildren();
+    if (slashWarming && !slashCmds.length) {
+      const l = document.createElement("div"); l.className = "slash-loading";
+      const s = document.createElement("span"); s.className = "slash-spin"; s.setAttribute("aria-hidden", "true");
+      l.append(s, document.createTextNode("loading commands…"));
+      pop.appendChild(l); positionSlash(); return;
+    }
+    if (!items.length) {
+      const e = document.createElement("div"); e.className = "slash-empty";
+      e.textContent = slashCmds.length ? "no matching commands" : "no commands available";
+      pop.appendChild(e); positionSlash(); return;
+    }
+    items.forEach((c, i) => {
+      const row = document.createElement("div"); row.className = "slash-row" + (i === sel ? " sel" : "");
+      const nm = document.createElement("span"); nm.className = "slash-name"; nm.textContent = "/" + c.name;
+      if (c.argumentHint) { const a = document.createElement("span"); a.className = "slash-arg"; a.textContent = " " + c.argumentHint; nm.appendChild(a); }
+      const ds = document.createElement("span"); ds.className = "slash-desc"; ds.textContent = c.description || "";
+      row.append(nm, ds);
+      row.addEventListener("mousedown", (ev) => { ev.preventDefault(); pickSlash(c); });   // mousedown keeps focus
+      row.addEventListener("mousemove", () => { if (sel !== i) { sel = i; paintSlash(); } });
+      pop!.appendChild(row);
+    });
+    positionSlash();
+    (pop.querySelector(".slash-row.sel") as HTMLElement | null)?.scrollIntoView({ block: "nearest" });
+  };
+  const updateSlash = () => {
+    const q = slashQuery();
+    if (q === null) { closeSlash(); return; }
+    const sid = activeId || "";
+    if (slashSid !== sid) loadCmds(sid, updateSlash);   // (re)load for the active session (""→ kernel cwd fallback)
+    items = filterCmds(q);
+    if (sel >= items.length) sel = 0;
+    if (!pop) { pop = document.createElement("div"); pop.className = "slash-pop"; pop.id = "slash-pop"; document.body.appendChild(pop); }
+    paintSlash();
+  };
+  // arrow/enter/tab/esc while the menu is OPEN; returns true when it consumed the key (so the composer's own
+  // Enter-to-send / Esc-to-tab handlers below don't also fire).
+  const slashKey = (e: KeyboardEvent): boolean => {
+    if (!pop) return false;
+    if (e.key === "ArrowDown") { e.preventDefault(); if (items.length) { sel = (sel + 1) % items.length; paintSlash(); } return true; }
+    if (e.key === "ArrowUp") { e.preventDefault(); if (items.length) { sel = (sel - 1 + items.length) % items.length; paintSlash(); } return true; }
+    if ((e.key === "Enter" || e.key === "Tab") && items.length) { e.preventDefault(); pickSlash(items[sel]); return true; }
+    if (e.key === "Escape") { e.preventDefault(); closeSlash(); return true; }
+    return false;
+  };
+  ta.addEventListener("focus", () => { if (slashSid !== (activeId || "")) loadCmds(activeId || ""); });   // pre-warm the cache before "/"
+  ta.addEventListener("blur", () => window.setTimeout(closeSlash, 120));   // close when leaving (a row's mousedown keeps focus, so it fires only on a real leave)
+  window.addEventListener("resize", positionSlash);
+
   ta.addEventListener("keydown", (e) => {
+    if (slashKey(e)) return;   // the slash menu owns ↑/↓/⏎/Tab/Esc while it's open
     // Ctrl+C = terminal-style interrupt of the active session (Control, not Cmd — on
     // macOS copy is Cmd+C, so this never collides with copy). The host sends Esc to
     // the pane; here we mirror Claude Code's UI: flash a cue, and drop the just-sent
@@ -4533,6 +4646,7 @@ function setupComposer() {
   });
   ta.addEventListener("input", () => {
     growComposer(ta);
+    updateSlash();   // open/refresh/close the slash-command menu as the leading "/token" changes
     // keep the per-tab draft (and its persisted copy) current as you type, so a reload restores it
     if (activeId) { if (ta.value) drafts.set(activeId, ta.value); else drafts.delete(activeId); persistDrafts(); }
   });

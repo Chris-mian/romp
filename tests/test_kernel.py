@@ -4053,5 +4053,36 @@ class TestCloserSettledGate(unittest.TestCase):
             jd.CLOSER_ON = saved
 
 
+class SlashCommands(unittest.TestCase):
+    """The composer's "/" autocomplete list (the user 2026-06-29): /commands serves the per-cwd slash-command
+    list, sourced from the Agent SDK's get_server_info(), cached + background-warmed. The cache logic is tested
+    directly (no live `claude` probe); the endpoint + designed-API source are pinned."""
+
+    def test_cache_serves_fresh_without_reprobe(self):
+        km._CMD_CACHE.clear()
+        km._CMD_CACHE["/tmp/proj"] = {"commands": [{"name": "clear", "description": "d"}],
+                                      "ts": km.time.time(), "warming": False, "err": ""}
+        cmds, warming = km._commands_for_cwd("/tmp/proj")
+        self.assertFalse(warming, "a fresh cache entry serves immediately, not warming")
+        self.assertEqual(cmds[0]["name"], "clear")
+
+    def test_cache_reports_warming_without_spawning_a_second_probe(self):
+        # an entry already flagged warming → return warming, DON'T kick another probe thread
+        km._CMD_CACHE.clear()
+        km._CMD_CACHE["/tmp/cold"] = {"commands": [], "ts": 0.0, "warming": True, "err": ""}
+        cmds, warming = km._commands_for_cwd("/tmp/cold")
+        self.assertTrue(warming)
+        self.assertEqual(cmds, [])
+
+    def test_endpoint_and_designed_sdk_source(self):
+        src = Path(BIN, "romp-kernel").read_text()
+        self.assertIn('if p == "/commands":', src)                      # the GET endpoint exists
+        self.assertIn('json.dumps({"commands": cmds, "warming": warming})', src)
+        # the list comes from the SDK's DESIGNED get_server_info()['commands'] — not pane-scraping, not a
+        # hand-maintained built-in list (the repo rule: use the SDK's designed API)
+        self.assertIn("c.get_server_info()", src)
+        self.assertIn('.get("commands", [])', src)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

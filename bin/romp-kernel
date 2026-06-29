@@ -1342,6 +1342,60 @@ def _sdk():
     return _sdk_backend or None
 
 
+# ── slash-command list for the composer's "/" autocomplete (the user 2026-06-29) ──────────────────────────────
+# The DESIGNED source is the Agent SDK's get_server_info()['commands'] — each {name, description, argumentHint,
+# aliases} — and it covers BOTH backends, because the command set is fixed by the `claude` binary + config + cwd,
+# NOT by how the session was launched (tmux TUI vs SDK). So we probe ONCE per cwd with a short-lived SDK client
+# (minimal options: just cli_path + cwd; no MCP — commands come from skills/plugins/custom/built-ins, not MCP) and
+# cache it; tmux + SDK sessions in the same dir share the list. The probe spawns a `claude` process (slow), so it
+# is CACHED + BACKGROUND-WARMED: the first request for a cold cwd kicks the warm and returns warming=true; the
+# composer shows the romp loader and re-fetches when it's ready. Per the repo rule, this uses the SDK's designed
+# API rather than scraping the tmux pane or hand-maintaining a built-in list.
+_CMD_CACHE = {}                  # cwd -> {"commands": [...], "ts": float, "warming": bool, "err": str}
+_CMD_CACHE_LOCK = threading.Lock()
+_CMD_TTL = 300.0                 # re-probe a cwd at most this often (the command set rarely changes mid-session)
+
+
+async def _aprobe_commands(cwd):
+    import claude_agent_sdk as sdk
+    import anyio
+    with anyio.fail_after(30):                                    # bound the probe so a hung connect can't wedge the warmer
+        opts = sdk.ClaudeAgentOptions(cli_path=_claude_bin(), cwd=cwd or None)
+        async with sdk.ClaudeSDKClient(options=opts) as c:
+            info = await c.get_server_info() or {}
+    return (info or {}).get("commands", []) or []
+
+
+def _do_warm_commands(cwd):
+    cmds, err = [], ""
+    try:
+        if not _ensure_sdk_on_path():
+            err = "sdk-unavailable"
+        else:
+            import anyio
+            cmds = anyio.run(_aprobe_commands, cwd)
+    except Exception as e:
+        err = (str(e) or e.__class__.__name__)[:200]
+    with _CMD_CACHE_LOCK:
+        _CMD_CACHE[cwd] = {"commands": cmds, "ts": time.time(), "warming": False, "err": err}
+
+
+def _commands_for_cwd(cwd):
+    """(commands, warming) for `cwd` — the cached slash-command list, kicking a background probe when cold/stale.
+    Never blocks the HTTP handler on the (slow) SDK probe; the cached list (possibly stale) is served meanwhile."""
+    cwd = cwd or ""
+    now = time.time()
+    with _CMD_CACHE_LOCK:
+        ent = _CMD_CACHE.get(cwd)
+        if ent and not ent.get("warming") and (now - ent.get("ts", 0)) < _CMD_TTL:
+            return ent["commands"], False
+        if not ent or not ent.get("warming"):
+            _CMD_CACHE[cwd] = {"commands": (ent or {}).get("commands", []),
+                               "ts": (ent or {}).get("ts", 0.0), "warming": True, "err": ""}
+            threading.Thread(target=_do_warm_commands, args=(cwd,), daemon=True).start()
+        return (ent or {}).get("commands", []), True
+
+
 def _drive(msg, client):
     """Route a per-session DRIVE op — send / interrupt / compact / ask picker / model·effort·mode / rename /
     end / follow-up — to whichever backend OWNS the sid (Sessions.backend_for(sid)), and return True. UI /
@@ -7643,6 +7697,11 @@ class Handler(BaseHTTPRequestHandler):
                                   "application/json", cache="no-cache")
             if p == "/sessions":                              # unified romp session list (tmux + SDK) for external tools (the Obsidian plugin, the postal bus)
                 return self._send(200, json.dumps(_session_rows()), "application/json", cache="no-cache")
+            if p == "/commands":                              # slash-command list for the composer's "/" autocomplete (SDK get_server_info, per-cwd cached)
+                sid = (q.get("sid") or [""])[0]
+                cmds, warming = _commands_for_cwd(_cwd_of(sid) if sid else "")
+                return self._send(200, json.dumps({"commands": cmds, "warming": warming}),
+                                  "application/json", cache="no-cache")
             # HTML pages are served no-cache so a reload always gets the freshest markup — which carries
             # the latest ?v= bundle url, so even a cached old bundle is bypassed (stale-client fix).
             if p in ("/", ""):

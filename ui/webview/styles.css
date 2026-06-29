@@ -424,6 +424,30 @@ body { display: flex; flex-direction: column; }
   display: flex; align-items: center; gap: 10px;
 }
 #composer { position: relative; max-width: var(--chat-col); margin: 0 auto; padding: 8px 24px 6px; }
+
+/* ── slash-command autocomplete popup (the user 2026-06-29) ── a filterable, arrow-navigable menu of the
+   session's slash commands, floating just above the composer. Selected row uses the romp accent. */
+.slash-pop {
+  position: fixed; z-index: 120; max-height: 46vh; overflow-y: auto;
+  background: var(--vscode-menu-background, #252526);
+  border: 1px solid var(--box-border); border-radius: 8px;
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.45); padding: 4px;
+  font-size: 12.5px;
+}
+.slash-row { display: flex; align-items: baseline; gap: 9px; padding: 5px 9px; border-radius: 5px; cursor: pointer; }
+.slash-row.sel { background: var(--accent); }
+.slash-row.sel .slash-name, .slash-row.sel .slash-desc, .slash-row.sel .slash-arg { color: var(--accent-fg); }
+.slash-name { flex: 0 0 auto; font-weight: 650; color: var(--fg); white-space: nowrap; }
+.slash-arg { font-weight: 400; opacity: 0.7; font-style: italic; }
+.slash-desc { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--vscode-descriptionForeground, #9a9a9a); }
+.slash-empty, .slash-loading { padding: 8px 10px; color: var(--vscode-descriptionForeground, #9a9a9a);
+  display: flex; align-items: center; gap: 8px; }
+.slash-spin { display: inline-block; width: 13px; height: 13px; flex: 0 0 auto;
+  background: url(/media/romp-swirl-glyph.svg) center / contain no-repeat;
+  animation: slash-spin 2.4s linear infinite; }
+@keyframes slash-spin { to { transform: rotate(-360deg); } }
+@media (prefers-reduced-motion: reduce) { .slash-spin { animation: none; } }
 #composer-attach, #composer-send {
   position: absolute; bottom: 12px;
   width: 26px; height: 26px; padding: 0; line-height: 1;
