@@ -59,3 +59,10 @@ test("the tab-menu feed/mail icons use the accent blue when on (matching the tim
   assert.match(TL, /const ROMP_BLUE = '#9cd2ff';/);
   assert.match(CSS, /--accent: #9cd2ff;/, "the accent IS that blue → the menu + timeline match");
 });
+
+test("renderTabs preserves tab-mode focus across the per-push rebuild (the user 2026-06-29)", () => {
+  // replaceChildren() destroys the focused tab; capture whether a tab held focus, restore it after the rebuild
+  // — otherwise ←/→/Enter nav silently died after a send or any kernel push (focus left the strip/iframe).
+  assert.match(SRC, /const refocusTab = bar\.contains\(document\.activeElement\);\s*\n\s*bar\.replaceChildren\(\);/);
+  assert.match(SRC, /if \(refocusTab\) focusActiveTab\(\);/);
+});

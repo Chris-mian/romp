@@ -1612,6 +1612,12 @@ function renderTabs() {
   if (renameActive) { renderPendingAfterRename = true; return; }
   const bar = document.getElementById("tabs");
   if (!bar) return;
+  // Preserve TAB-MODE keyboard focus across the rebuild (the user 2026-06-29). renderTabs runs on EVERY kernel
+  // push (0.5–3s), and replaceChildren() destroys the focused tab — dropping focus out of the strip (often out
+  // of the chat iframe entirely), which silently killed ←/→/Enter nav after a send or any push: you were left
+  // focused on nothing, so the keyboard model was dead until you clicked again. If a tab held focus, re-focus
+  // the active tab after the rebuild so "tab mode" survives the repaint.
+  const refocusTab = bar.contains(document.activeElement);
   bar.replaceChildren();
   // TABS-FIRST (the user 2026-06-26): render the WHOLE strip up front, in `order` — the kernel's order
   // verbatim (applyTabOrder), plus any just-arrived tab not yet pushed. An id whose session hasn't landed yet
@@ -1717,6 +1723,8 @@ function renderTabs() {
   add.title = "Open a session";
   add.addEventListener("click", () => openPicker());
   bar.appendChild(add);
+  // Restore tab-mode focus if a tab held it before this rebuild (see the top of renderTabs).
+  if (refocusTab) focusActiveTab();
   // (The Fleet toggle that briefly lived here as a tab-bar pill was removed 2026-06-24: Fleet/Chat are now
   // the rotated toggles in the chat pane's vertical strip — see _LANDING_FLEET_JS — so the pill was redundant.)
   // (The collapse caret moved OFF the tab bar into the #ledger strip's title row — the strip now always
