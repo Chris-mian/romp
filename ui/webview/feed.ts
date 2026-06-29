@@ -486,9 +486,12 @@ function makeAskCard(it: AskItem): HTMLElement {
   // the list therefore always means active, so the dot is always on.
   const checklist = el("div", "fask-checklist");   // inline sub-goal list (top 2 levels); filled in updateAskCard
   const delegations = el("div", "fask-delegations");
-  // (The card's auto-written why / distiller-summary line was removed 2026-06-27 — the user: just show the
-  //  goals, not the why-created / why-blocked / why-done rationales, which also stuck on a generating placeholder.)
-  main.append(row1, row2, row3, checklist, delegations);   // no expand button — body click opens the modal
+  // The DISTILLER's own line, restored 2026-06-29 (the user: show everything the distiller produces — just NOT
+  // the planner's why-created/why-blocked/why-done rationales). One line per card: a completed card shows the
+  // takeaway (summary), a blocked card the decision brief (blockSummary). Shown ONLY once it exists — no
+  // generating-state placeholder (which used to stick) and no why tooltip. Filled in updateAskCard.
+  const distill = el("div", "fask-distill");
+  main.append(row1, row2, row3, distill, checklist, delegations);   // no expand button — body click opens the modal
   card.append(main);
   // Follow-up lives in the modal now (the user 2026-06-10), not on the card.
 
@@ -588,6 +591,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   a._apiBadge = apiBadge; a._apiRetry = apiRetry; a._revive = revive; a._nudge = nudge; a._cardFup = cardFup; a._clr = clr;
   a._delegations = delegations;
   a._checklist = checklist;
+  a._distill = distill;
   a._origin = origin;
   return card;
 }
@@ -701,8 +705,14 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
     a._blocked.title = it.blocked.what + " — click to open the session";
     a._blocked.onclick = (ev: Event) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "openSession", id: it.sid }); };
   }
-  // (The card's auto-written distiller-summary / why line was removed 2026-06-27 — the user: just show the
-  //  goals, drop the why-created / why-blocked / why-done rationales and the generating placeholder.)
+  // The DISTILLER's line (restored 2026-06-29): a completed card shows its takeaway (it.summary), a blocked
+  // card its decision brief (it.blockSummary). Shown ONLY when the distiller has produced a non-empty string —
+  // never a generating-state placeholder, never the planner's why (which the user dropped). Plain text.
+  const distillText = ((it.column === "completed" ? it.summary
+                        : it.column === "needs_input" ? it.blockSummary : "") || "").trim();
+  const dl = a._distill as HTMLElement;
+  dl.textContent = distillText;
+  dl.style.display = distillText ? "" : "none";
   // API error → a red "API error" badge + a Retry button that pastes "retry" into the session to resume
   // the stalled turn (the user 2026-06-16). The card STAYS in Working (the user 2026-06-29) — an API error is
   // a transient stall, not a block — so this badge + Retry are the only API-error cue; no column move.
@@ -1175,9 +1185,18 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
   box.appendChild(line);
   if (repeat) return;                                   // dim repeat: line only, no descent
   seen.add(node.id);
-  // (Removed 2026-06-27, the user: the modal's per-node rationale lines — the distiller summary / decision
-  //  brief for done/blocked nodes, the generating placeholder, and the open node's creation rationale — are
-  //  gone. The modal shows just the goal tree now. The judge still produces these; they're only un-displayed.)
+  // The DISTILLER's per-node line (restored 2026-06-29, the user: show everything the distiller produces, just
+  // NOT the planner's why-created/why-blocked/why-done rationales). A done node shows its takeaway
+  // (node.summary), a blocked node its decision brief (node.blockSummary) — ONLY when produced (non-empty),
+  // never a generating-state placeholder. pre-wrap (CSS) keeps a copy-pasteable artifact intact across lines.
+  const nodeDistill = ((node.status === "done" ? node.summary
+                        : node.status === "question" ? node.blockSummary : "") || "").trim();
+  if (nodeDistill) {
+    const sum = el("div", "ftree-summary");
+    sum.style.paddingLeft = ((depth + 1) * TREE_INDENT_EM) + "em";
+    sum.textContent = nodeDistill;
+    box.appendChild(sum);
+  }
   // (the in-feed decision sub-card was removed — a blocked node shows its red BLOCKED marker and
   // links to the session; answering happens in the session, not in the feed. the user 2026-06-15.)
   // node history (rows) — progressive, only when this node was clicked open.

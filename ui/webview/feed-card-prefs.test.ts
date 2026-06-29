@@ -16,10 +16,16 @@ test("feed reads the sub-goals pref from romp:settings, defaulting ON; explanati
   assert.doesNotMatch(FEED, /explanations/);   // every trace of the old pref is gone from the feed
 });
 
-test("the card has NO auto-written why/distiller line (removed 2026-06-27 — just the goals)", () => {
+test("the card shows the DISTILLER's line (summary/blockSummary) but NO why/generating placeholder (restored 2026-06-29)", () => {
+  // the distiller's own output is back on the card — completed → summary, blocked → blockSummary
+  assert.match(FEED, /const distill = el\("div", "fask-distill"\)/);
+  assert.match(FEED, /it\.column === "completed" \? it\.summary/);
+  assert.match(FEED, /it\.column === "needs_input" \? it\.blockSummary/);
+  assert.match(FEED, /dl\.style\.display = distillText \? "" : "none"/);   // shown ONLY once the distiller produces
+  // but the planner's why-rationale AND the stuck "(generating…)" placeholder stay GONE (the user 2026-06-27/29)
   assert.doesNotMatch(FEED, /const setAutoLine =/);
   assert.doesNotMatch(FEED, /"\(generating…\)"/, "no '(generating…)' placeholder anywhere");
-  assert.doesNotMatch(FEED, /fask-blockwhy|fask-donewhy/);
+  assert.doesNotMatch(FEED, /fask-blockwhy|fask-donewhy/, "the old why-tooltip auto-line stays removed");
   assert.doesNotMatch(FEED, /showWhy/);
 });
 
