@@ -472,6 +472,10 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
    within the #feed-cols stacking context → behind all cards, above the feed bg) so it never passes OVER other
    content. pointer-safe + GPU-hinted while it glides; the inline transform/transition drive the motion (FLIP). */
 .fitem-flying { position: relative; z-index: -1; pointer-events: none; will-change: transform; }
+/* ABSORB (the user 2026-06-29): a card that became a sub-goal shrinks + flies INTO its new parent card. It's
+   detached to a fixed overlay ABOVE the board (z-index over cards, since it's diving toward a target, not
+   sliding under siblings); the inline transform/opacity/transition drive the motion, then the node is removed. */
+.fitem-absorbing { z-index: 6; pointer-events: none; will-change: transform, opacity; box-shadow: 0 6px 22px rgba(0, 0, 0, 0.35); }
 @keyframes fask-dismiss {
   from { opacity: 1; transform: scale(1); max-height: 60vh; }
   to   { opacity: 0; transform: scale(0.78); max-height: 0; margin: 0; padding: 0; border-width: 0; }

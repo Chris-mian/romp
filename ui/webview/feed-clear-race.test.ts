@@ -29,7 +29,9 @@ test("incoming feed payloads drop still-pending ids, and release once the kernel
 
 test("a mid-dismiss card is NOT removed by a push — its own timer finishes the collapse", () => {
   assert.match(FEED, /const undismissed = \(el\?: HTMLElement\) => !!el && !el\.classList\.contains\("dismissing"\);/);
-  assert.match(FEED, /!desired\.has\("a:" \+ id\) && undismissed\(askEls\.get\(id\)\)/);
+  // the ask-removal loop skips a card that's still desired OR mid-dismiss (a desired one stays; a dismissing
+  // one is left to its own timer); only a genuinely-leaving card falls through to absorb / instant-remove.
+  assert.match(FEED, /if \(desired\.has\("a:" \+ id\) \|\| !undismissed\(askEls\.get\(id\)\)\) continue;/);
 });
 
 test("Undo clear is OPTIMISTIC + acknowledges instantly (the user 2026-06-27)", () => {

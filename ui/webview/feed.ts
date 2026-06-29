@@ -1765,6 +1765,34 @@ function flyColumnChanges(first: Map<string, FlipState>, cols: ReturnType<typeof
   }
 }
 
+// ── Absorb: when a top-level ask card becomes a SUB-GOAL of another card, it shrinks + flies INTO the parent
+// instead of just vanishing (the user 2026-06-29). Detected at reconcile time: a card that's leaving the board
+// AND whose itemId now appears as a node inside some still-visible ask's tree. We detach the leaving node to a
+// fixed overlay at its old spot, then transition it scaling down + translating to the parent card's center.
+function absorbIntoParent(card: HTMLElement, fromRect: DOMRect, parent: HTMLElement): void {
+  const to = parent.getBoundingClientRect();
+  if (!to.width || !fromRect.width) { card.remove(); return; }   // parent off-screen → just drop it
+  card.remove();                                                 // out of column flow first
+  card.classList.add("fitem-absorbing");
+  Object.assign(card.style, {
+    position: "fixed", left: `${fromRect.left}px`, top: `${fromRect.top}px`,
+    width: `${fromRect.width}px`, height: `${fromRect.height}px`, margin: "0",
+  });
+  document.body.appendChild(card);
+  const dx = (to.left + to.width / 2) - (fromRect.left + fromRect.width / 2);
+  const dy = (to.top + to.height / 2) - (fromRect.top + fromRect.height / 2);
+  let gone = false;
+  const done = () => { if (gone) return; gone = true; card.removeEventListener("transitionend", done); card.remove(); };
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    card.style.transition = "transform .4s cubic-bezier(.4, 0, .2, 1), opacity .4s ease";
+    card.style.transformOrigin = "center center";
+    card.style.transform = `translate(${dx}px, ${dy}px) scale(0.14)`;
+    card.style.opacity = "0";
+  }));
+  card.addEventListener("transitionend", done);
+  setTimeout(done, 650);                                         // backstop if transitionend never fires
+}
+
 // THE view: one screen, three columns merging open asks with standalone
 // completions; cards move between columns as links arrive.
 function render() {
@@ -1836,7 +1864,24 @@ function render() {
   // Remove cards no longer in the payload — EXCEPT one mid-dismiss (.dismissing): let its own 180ms timer
   // finish the collapse animation instead of yanking it instantly on a push (the user 2026-06-19).
   const undismissed = (el?: HTMLElement) => !!el && !el.classList.contains("dismissing");
-  for (const id of Array.from(askEls.keys())) if (!desired.has("a:" + id) && undismissed(askEls.get(id))) { askEls.get(id)?.remove(); askEls.delete(id); }
+  // A card that's leaving because it became a SUB-GOAL of another card absorbs INTO that parent (the user
+  // 2026-06-29). Map each visible ask's NON-root tree-node ids → that ask's card, so a leaving id can find its
+  // new home. (Falls back to an instant remove if there's no parent or motion is reduced.)
+  let reduceMotion = false;
+  try { reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches; } catch { /* no matchMedia */ }
+  const subgoalParent = new Map<string, HTMLElement>();
+  if (!reduceMotion) for (const a of asks) {
+    const pcard = askEls.get(a.itemId); if (!pcard) continue;
+    for (const node of a.tree) { if (node.id !== a.itemId && !subgoalParent.has(node.id)) subgoalParent.set(node.id, pcard); }
+  }
+  for (const id of Array.from(askEls.keys())) {
+    if (desired.has("a:" + id) || !undismissed(askEls.get(id))) continue;
+    const leaving = askEls.get(id)!;
+    const parent = subgoalParent.get(id), first = flipFirst.get("a:" + id);
+    if (parent && first && parent !== leaving) absorbIntoParent(leaving, first.rect, parent);
+    else leaving.remove();
+    askEls.delete(id);
+  }
   for (const tid of Array.from(groupEls.keys())) if (!desired.has("g:" + tid) && undismissed(groupEls.get(tid))) { groupEls.get(tid)?.remove(); groupEls.delete(tid); }
   for (const id of Array.from(cardEls.keys())) if (!desired.has("i:" + id) && undismissed(cardEls.get(id))) { cardEls.get(id)?.remove(); cardEls.delete(id); }
 
