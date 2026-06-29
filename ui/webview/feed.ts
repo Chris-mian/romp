@@ -153,7 +153,11 @@ const groupEls = new Map<string, HTMLElement>();
 // (completed only when every subgraph node is DONE); we just map its snake_case.
 type Column = "asks" | "needsInput" | "completed";
 function askColumn(it: AskItem): Column {
-  if (it.blocked) return "needsInput";   // a live permission/picker block files the card under BLOCKED
+  // a live permission/picker block files the card under BLOCKED — but an API error does NOT (the user
+  // 2026-06-29): it's a transient stall, so an apiError card stays in its natural column (working) and just
+  // carries the "⚠ API error" chip + Retry. The kernel already sets column=working for it; this keeps the
+  // client from re-flooring it to needs-input on the `blocked` field.
+  if (it.blocked && it.blocked.state !== "apiError") return "needsInput";
   return it.column === "needs_input" ? "needsInput" : it.column === "completed" ? "completed" : "asks";
 }
 
@@ -676,7 +680,7 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
     a._waitOn.replaceChildren();
     a._waitOn.style.display = "none";
   }
-  a._nudge.style.display = (it.column === "working" && !it.provisional && !it.recheck) ? "" : "none";   // Nudge only on a real working card — not a re-checking one (you just replied) (the user 2026-06-18/27)
+  a._nudge.style.display = (it.column === "working" && !it.provisional && !it.recheck && it.blocked?.state !== "apiError") ? "" : "none";   // Nudge only on a real working card — not a re-checking one, and not an API-error one (Retry is its action) (the user 2026-06-18/27/29)
   a._cardFup.style.display = ((it.column === "needs_input" || it.column === "completed") && !it.provisional) ? "" : "none";   // Follow up on blocked/completed cards (the user 2026-06-22)
   a._clr.style.display = it.provisional ? "none" : "";   // a placeholder has nothing to curate — no Clear
   // ⏳ awaiting: held in Working, waiting on work it dispatched/delegated (agents, a subagent, a build).
@@ -700,7 +704,8 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   // (The card's auto-written distiller-summary / why line was removed 2026-06-27 — the user: just show the
   //  goals, drop the why-created / why-blocked / why-done rationales and the generating placeholder.)
   // API error → a red "API error" badge + a Retry button that pastes "retry" into the session to resume
-  // the stalled turn (the user 2026-06-16). The card already files under BLOCKED (askColumn → needsInput).
+  // the stalled turn (the user 2026-06-16). The card STAYS in Working (the user 2026-06-29) — an API error is
+  // a transient stall, not a block — so this badge + Retry are the only API-error cue; no column move.
   a._apiBadge.style.display = isApiErr ? "" : "none";
   a._apiRetry.style.display = isApiErr ? "" : "none";
   if (isApiErr && it.blocked) {

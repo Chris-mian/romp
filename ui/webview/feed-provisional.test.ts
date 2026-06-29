@@ -28,7 +28,7 @@ test("a provisional 'ghost' card gets a DASHED outline (distinct from a real car
 });
 
 test("a placeholder has no curation affordances — Clear and Nudge are hidden", () => {
-  assert.match(FEED, /a\._nudge\.style\.display = \(it\.column === "working" && !it\.provisional && !it\.recheck\) \? "" : "none";/);
+  assert.match(FEED, /a\._nudge\.style\.display = \(it\.column === "working" && !it\.provisional && !it\.recheck && it\.blocked\?\.state !== "apiError"\) \? "" : "none";/);
   assert.match(FEED, /a\._clr\.style\.display = it\.provisional \? "none" : "";/);
   assert.match(FEED, /a\._clr = clr;/);   // the ref must be stored for updateAskCard to reach it
 });

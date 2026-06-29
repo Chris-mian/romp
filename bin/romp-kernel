@@ -4605,8 +4605,11 @@ def build_feed(now, tmux=None):
             # awaiting is a flavor of WORKING → the working column (never needs-input), card time = mint t; the awaiting badge carries the why.
             # A RE-CHECK'd soft-block also drops to WORKING (the user 2026-06-27): once you've replied it's the
             # agent's move, not yours, so it leaves the needs-input column entirely (still dotted + "↩ re-checking"
-            # so you can see it pending). The live hard floors (api_top / col stays blocked when NOT recheck) keep needs_input.
-            column = ("needs_input" if (nid == api_top or (col == "blocked" and not recheck))
+            # so you can see it pending). An API error is NOT blocking either (the user 2026-06-29): it's a
+            # transient stall, so the card STAYS in its natural column (working) and just shows the "⚠ API error"
+            # chip + Retry — it does not move to needs-input. Only a genuine soft block (col stays blocked when
+            # NOT recheck) or a live permission/picker floor keeps needs_input.
+            column = ("needs_input" if (col == "blocked" and not recheck)
                       else "completed" if col == "completed" else "working")
             had_working = had_working or column == "working"
             # summaryAnchorUuid: the biggest contiguous block of assistant text ANYWHERE in this goal's work
