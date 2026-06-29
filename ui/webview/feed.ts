@@ -493,7 +493,15 @@ function makeAskCard(it: AskItem): HTMLElement {
   // takeaway (summary), a blocked card the decision brief (blockSummary). Shown ONLY once it exists — no
   // generating-state placeholder (which used to stick) and no why tooltip. Filled in updateAskCard.
   const distill = el("div", "fask-distill");
-  main.append(row1, row2, row3, distill, checklist, delegations);   // no expand button — body click opens the modal
+  // ⏳ AWAITING cue (the user 2026-06-29): a small romp swirl spinning in the SAME body spot the distiller line
+  // will eventually fill — a completed/blocked card shows its takeaway there; a WORKING card that's awaiting
+  // dispatched/delegated work shows the spinning swirl instead, a glanceable "in flight, not stalled" sign.
+  // The "why" rides beside it (it was tooltip-only on the ⏳ badge). Shown only while awaiting; see updateAskCard.
+  const awaitSpin = el("div", "fask-awaiting"); awaitSpin.style.display = "none";
+  const awaitGlyph = el("span", "fask-awaiting-swirl"); awaitGlyph.setAttribute("aria-hidden", "true");
+  const awaitWhy = el("span", "fask-awaiting-why");
+  awaitSpin.append(awaitGlyph, awaitWhy);
+  main.append(row1, row2, row3, distill, awaitSpin, checklist, delegations);   // no expand button — body click opens the modal
   card.append(main);
   // Follow-up lives in the modal now (the user 2026-06-10), not on the card.
 
@@ -594,6 +602,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   a._delegations = delegations;
   a._checklist = checklist;
   a._distill = distill;
+  a._awaitSpin = awaitSpin; a._awaitWhy = awaitWhy;
   a._origin = origin;
   return card;
 }
@@ -695,8 +704,11 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   if (aw && !it.waitingOn) {
     a._wait.style.display = "";
     a._wait.title = aw.why || "waiting on work it dispatched or delegated (agents, a subagent, a build/CI) — not on you; stays in Working, exempt from auto-nudge; lifts when the result lands";
+    a._awaitSpin.style.display = "";              // the spinning swirl in the body, where the distiller line will land
+    a._awaitWhy.textContent = aw.why || "";
   } else {
     a._wait.style.display = "none";
+    a._awaitSpin.style.display = "none";
   }
   // ⏸ live block badge: the session is stopped mid-turn on a permission prompt /
   // picker FOR THIS CARD's work — the card files under BLOCKED while it lasts

@@ -253,6 +253,18 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
    No why-rationale line; hidden until the distiller produces. pre-wrap keeps a copy-pasteable artifact intact. */
 .fask-distill { font-size: 0.86em; line-height: 1.4; margin: 1px 0 2px; color: var(--fg); opacity: 0.82; white-space: pre-wrap; overflow-wrap: anywhere; }
 .fask-origin:hover { text-decoration: underline; text-underline-offset: 2px; }
+/* ⏳ AWAITING cue (the user 2026-06-29): a small romp swirl spinning in the distiller-line spot of a WORKING
+   card that's waiting on dispatched/delegated work — a glanceable "in flight, not stalled" sign. The swirl
+   REVERSE-spins like the shared loader (rotate(-360deg)); the awaiting "why" rides beside it, dimmed. */
+.fask-awaiting { display: flex; align-items: center; gap: 7px; margin: 2px 0 3px; font-size: 0.86em; color: var(--dim); }
+.fask-awaiting-swirl {
+  width: 14px; height: 14px; flex: 0 0 auto;
+  background: url(../media/romp-swirl-glyph.svg) center / contain no-repeat;
+  animation: fask-swirl-spin 1.4s linear infinite;
+}
+.fask-awaiting-why { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@keyframes fask-swirl-spin { to { transform: rotate(-360deg); } }
+@media (prefers-reduced-motion: reduce) { .fask-awaiting-swirl { animation: none; } }
 
 /* "reopened" badge — a cleared ask resurrected by a new question */
 .fask-reopened { flex: 0 0 auto; font-size: 0.64em; font-weight: 700; letter-spacing: 0.04em;
