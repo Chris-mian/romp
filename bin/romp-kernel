@@ -862,14 +862,16 @@ def _pure_delegation_top(nodes, top_id):
     return bool(leaves) and all(isinstance(nodes.get(nid, {}).get("handoff"), dict) for nid in leaves)
 
 
-def _last_state_value(sid):
-    """The most-recent STATE transition in states/<sid>.jsonl ('working'/'waiting'/'idle'/…), ignoring the
-    interleaved awaiting overlays; '' when there's no state file yet. The Stop hook (tmux) and the SDK backend
-    (on ResultMessage) BOTH write a stopped state ('waiting'/'idle') here on a GENUINE turn-end, so this is the
-    authoritative "properly stopped" signal — used to gate auto-nudge so a mid-turn lull (where the event-model
-    working heuristic can momentarily read not-working) never fires a premature nudge (the user 2026-06-25)."""
+def _last_state(sid):
+    """(value, t) of the most-recent STATE transition in states/<sid>.jsonl ('working'/'waiting'/'idle'/…),
+    ignoring the interleaved awaiting overlays; ('', 0) when there's no state file yet. The Stop hook (tmux) and
+    the SDK backend (on ResultMessage) BOTH write a stopped state ('waiting'/'idle') here on a GENUINE turn-end,
+    so this is the authoritative "properly stopped" signal. The TIME matters for auto-nudge: a progressing
+    state recorded AFTER the parsed turn's end means the session is genuinely still working (a newer turn the
+    parse hasn't caught up to); one recorded BEFORE it means the turn ended and the post-turn 'waiting' write
+    was lost (e.g. a kernel restart) — a stale record that must not block the nudge forever."""
     p = jd.STATE / "states" / ("%s.jsonl" % sid)
-    val = ""
+    val, vt = "", 0
     try:
         with open(p, errors="replace") as f:
             for line in f:
@@ -881,9 +883,15 @@ def _last_state_value(sid):
                     continue
                 if isinstance(rec, dict) and isinstance(rec.get("state"), str):
                     val = rec["state"]
+                    vt = rec.get("t", vt)
     except OSError:
-        return ""
-    return val
+        return ("", 0)
+    return (val, vt)
+
+
+def _last_state_value(sid):
+    """Just the value of _last_state — the most-recent STATE transition; '' when none."""
+    return _last_state(sid)[0]
 
 
 # Session states the authoritative log reports while a session is ACTIVELY PROGRESSING (not genuinely stopped).
@@ -957,13 +965,21 @@ def _auto_nudge_tick(now, tmux):
         lt = turns[-1]
         if _session_working(turns):                      # still actively working (event model) → not orphaned
             continue
-        if _last_state_value(sid) in _PROGRESSING_STATES:
+        ls_val, ls_t = _last_state(sid)
+        if ls_val in _PROGRESSING_STATES and ls_t >= lt.get("end", lt.get("t", 0)):
             # GENUINE-STOP GATE (the user 2026-06-25, obsidian): the AUTHORITATIVE state log (Stop hook / SDK
             # ResultMessage) says the session is actively progressing, so the event-model "not working" read
             # above is a transient mid-turn lull, NOT a real stop. Nudging here fires MID-TURN, and that fire
             # poisons the once-per-turn re-arm so the genuine post-stop stall never gets nudged (repro: obsidian
-            # read state-log 'working' continuously 17:51:36→17:54:14, yet a nudge fired at 17:52:10). Only nudge
-            # once the log shows a genuine stop ('waiting'/'idle'). Keyed on the stop EVENT, not a time window.
+            # read state-log 'working' continuously 17:51:36→17:54:14, yet a nudge fired at 17:52:10).
+            #
+            # The discriminator is the state record's TIME vs the parsed turn's END (the user 2026-06-29): a
+            # progressing record AT/AFTER the turn end means the session really is still going (a newer turn the
+            # parse hasn't caught up to) → skip. But a progressing record from BEFORE the turn end means the turn
+            # genuinely ended and the post-turn 'waiting' write was LOST (a kernel restart killed it before the
+            # ResultMessage handler) → the record is STALE and must NOT block the nudge forever (repro: bugsdk2
+            # finished its turn at 20:13:18 but its state log was stuck at 'working' 20:12:20, so its working card
+            # never got nudged). Two real-event timestamps, not a time window.
             continue
         if _session_awaiting(sid, s["path"], True):      # AWAITING dispatched/delegated work (SDK overlay / bg-tool) →
             continue                                     # in flight, not stalled (the user 2026-06-22); idle is True here

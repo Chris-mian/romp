@@ -1329,21 +1329,46 @@ class ViewBuilder(unittest.TestCase):
 
     def test_auto_nudge_skips_a_mid_turn_lull_per_the_state_log(self):
         # the user 2026-06-25 (obsidian): during a long tool lull the event model can momentarily read "not
-        # working" while the AUTHORITATIVE state log still says 'working'. A nudge fired then is MID-TURN and
-        # poisons the once-per-turn re-arm so the real post-stop stall never gets nudged. Gate on the state log:
-        # never nudge while it reports an actively-progressing state; fire only once it shows a GENUINE stop.
-        g = self._orphaned_goal(idle=True)                       # transcript ENDED → _session_working() False
+        # working" (a STALE parse showing an old turn ended) while the AUTHORITATIVE state log still says
+        # 'working' for a NEWER turn the parse hasn't caught up to. A nudge fired then is MID-TURN and poisons
+        # the once-per-turn re-arm so the real post-stop stall never gets nudged. Gate: skip while the latest
+        # progressing state record is AT/AFTER the parsed turn's end (T0+120) — it's newer than the parse, so
+        # the session really is still going. (the user 2026-06-29: the discriminator is the record's TIME.)
+        g = self._orphaned_goal(idle=True)                       # parsed turn ends at T0+120
         km._set_auto_nudge(True)
         sp = jd.STATE / "states" / (SID + ".jsonl")
         sp.parent.mkdir(parents=True, exist_ok=True)
-        sp.write_text(json.dumps({"t": T0 + 5, "state": "working"}) + "\n")   # log says: still actively working
+        sp.write_text(json.dumps({"t": T0 + 300, "state": "working"}) + "\n")   # working AFTER the parsed end → still going
         sent, restore = self._stub_nudge()
         try:
             km._auto_nudge_tick(NOW, km._tmux_sessions())
-            self.assertEqual(len(sent), 0, "no nudge while the state log reports the session still 'working'")
-            sp.write_text(json.dumps({"t": T0 + 6, "state": "waiting"}) + "\n")   # genuine stop now
+            self.assertEqual(len(sent), 0, "no nudge: the 'working' record is newer than the parsed turn end")
+            sp.write_text(json.dumps({"t": T0 + 301, "state": "waiting"}) + "\n")   # genuine stop now
             km._auto_nudge_tick(NOW, km._tmux_sessions())
             self.assertEqual(len(sent), 1, "once genuinely stopped (state log 'waiting'), the nudge fires")
+        finally:
+            restore()
+            try:
+                sp.unlink()
+            except OSError:
+                pass
+
+    def test_auto_nudge_fires_when_a_finished_turn_left_a_stale_working_record(self):
+        # the user 2026-06-29 (bugsdk2): a turn that genuinely ENDED (transcript end_turn at T0+120) but whose
+        # post-turn 'waiting' write was LOST — e.g. a kernel restart killed the SDK ResultMessage handler — left
+        # the state log stuck at 'working' from BEFORE the turn end (T0+50). The session is really stopped with a
+        # working card, so it MUST be nudged; the stale 'working' must not block it forever. (The old value-only
+        # gate skipped it permanently — the regression from dropping the restart-heal.)
+        g = self._orphaned_goal(idle=True)                       # parsed turn ends at T0+120
+        km._set_auto_nudge(True)
+        sp = jd.STATE / "states" / (SID + ".jsonl")
+        sp.parent.mkdir(parents=True, exist_ok=True)
+        sp.write_text(json.dumps({"t": T0 + 50, "state": "working"}) + "\n")   # stale: BEFORE the turn end, no later 'waiting'
+        sent, restore = self._stub_nudge()
+        try:
+            km._auto_nudge_tick(NOW, km._tmux_sessions())
+            self.assertEqual(len(sent), 1, "a finished turn with a stale pre-end 'working' record still gets nudged")
+            self.assertIn("romp-goal-id: " + g, sent[0][1], "the nudge targets the orphaned working goal")
         finally:
             restore()
             try:
