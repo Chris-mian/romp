@@ -572,17 +572,29 @@ def _ordered(sessions):
     migration (the user 2026-06-24: keep ONE slot across /clear / revive)."""
     order = _session_order()
     known = set(order)
-    # forks of ONE logical session share an anchor; default to the sid for sessions not (yet) in discover.
-    anchor = {s["sid"]: (s.get("anchor") or s["sid"]) for s in sessions}
+    # Slot inheritance keys on the STABLE session NAME (customTitle), NOT the fsid or discover's anchor: a
+    # /clear, relaunch, or revive mints a NEW transcript fsid for the SAME logical session, and it must
+    # inherit that session's existing slot rather than jump to the END. Keying on the name — resolved from
+    # the names registry, so even a DEAD order entry's name is known — is robust to fsid churn AND to
+    # discover occasionally SELF-anchoring a fork (a fork that has its own names entry, processed first in
+    # the lexical scan, anchors to itself instead of grouping under its session): that lexical-order accident
+    # was the silent, intermittent tab reorder the user kept hitting (2026-06-29). A genuinely-new session has
+    # a unique name → no sibling → appends at the end, then is frozen.
+    sess_name = {s["sid"]: (s.get("name") or "") for s in sessions}
+    def _nm(sid):
+        return sess_name.get(sid) or _name_of(sid) or ""
     new = [s["sid"] for s in sessions if s["sid"] not in known]
     if new:
+        name_at = [_nm(o) for o in order]                # each existing slot's stable name (resolved once)
         for sid in new:
-            a = anchor.get(sid, sid)
-            sib = [i for i, o in enumerate(order) if anchor.get(o, o) == a]   # same-session entries already placed
+            a = _nm(sid)
+            sib = [i for i, n in enumerate(name_at) if a and n == a]   # same-name entries already placed
             if sib:
                 order.insert(sib[-1] + 1, sid)           # a fork inherits its session's slot, not the END
+                name_at.insert(sib[-1] + 1, a)           # keep name_at aligned with order as we splice
             else:
                 order.append(sid)                        # a genuinely new session appends, then is frozen
+                name_at.append(a)
         _write_session_order(order)
     idx = {sid: i for i, sid in enumerate(order)}
     return sorted(sessions, key=lambda s: idx.get(s["sid"], len(idx)))   # stable sort: ties keep input order
@@ -1110,15 +1122,18 @@ def _chat_tab_sessions(now, tmux):
     live_sids = {s["sid"] for s in live}
     all_sessions = _sessions(now)
     dead_kept = [s for s in all_sessions if s["sid"] in _kept_open and s["sid"] not in live_sids]
-    # Self-clean the persisted order here, where it runs on every push (the chat is always built): prune sids
-    # that are GONE — not alive AND no transcript left in the discover window — so session-order.json stays
-    # bounded and a closed / aged-out session drops out on its own (the user 2026-06-24). A session that is
-    # merely dead-but-in-window (or explicitly kept-open) stays in the known set and keeps its slot.
+    # Order FIRST (a relaunch/clear fork inherits its session's slot by name while the OLD fsid is still
+    # in-window), THEN self-clean. Doing the GC before _ordered would drop the old fsid in the same build the
+    # new fork first appears, so the fork would find no same-name sibling to inherit from and jump to the END
+    # — the reorder this fix prevents (the user 2026-06-29). Order is purely the persisted session-order.json
+    # (see _ordered) — no activity reshuffle; a dying tab keeps its slot. live + dead_kept resolve through the
+    # SAME index map _timeline_sessions uses, so chat tabs and timeline lanes stay in lockstep.
+    result = _ordered([s for s in live + dead_kept if s["sid"] not in hidden])
+    # Prune sids that are GONE — not alive AND no transcript left in the discover window — so
+    # session-order.json stays bounded and a closed / aged-out session drops out on its own (the user
+    # 2026-06-24). A session merely dead-but-in-window (or explicitly kept-open) stays known and keeps its slot.
     _gc_session_order(live_sids | {s["sid"] for s in all_sessions} | set(_kept_open))
-    # Order is purely the persisted session-order.json (see _ordered) — no activity reshuffle; a dying tab
-    # keeps its slot. live + dead_kept resolve through the SAME index map _timeline_sessions uses, so chat
-    # tabs and timeline lanes stay in lockstep.
-    return _ordered([s for s in live + dead_kept if s["sid"] not in hidden])
+    return result
 
 
 TL_LANE_WINDOW = 12 * 3600       # default: DEAD lanes only from the last 12h (the user 2026-06-26: "rarely

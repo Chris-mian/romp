@@ -153,6 +153,47 @@ class SessionOrder(unittest.TestCase):
         self.sids(km._ordered([f(A, A), f(B, B), f(D2, D2)]))   # D2 is its own anchor → no sibling
         self.assertEqual(self.order_file(), [A, B, D2])
 
+    # ── the silent-reorder bug: a SELF-anchored fork (discover's lexical scan anchored it to itself) must
+    #    STILL inherit its session's slot by NAME, not jump to the END (the user 2026-06-29) ─────────────
+    def test_a_self_anchored_fork_inherits_by_NAME_not_the_end(self):
+        # A relaunch/clear of the session named "obsidian" mints a new fsid that — because it has its OWN
+        # names entry, scanned first — discover SELF-anchors (anchor == its own sid). The OLD inheritance
+        # keyed on that anchor, so it found no sibling and appended at the END (obsidian jumped). Keying on
+        # the stable NAME, the fork lands right after its same-name sibling instead.
+        km._write_session_order([A, B, C])
+        OBS2 = "00000000-0000-0000-0000-00000000ob2"          # lexically-small fork → discover self-anchors it
+        def f(sid, name, anchor):
+            return {"sid": sid, "name": name, "anchor": anchor, "path": "/x/%s.jsonl" % sid, "mtime": 1}
+        # A is the original "obsidian"; OBS2 is its relaunch fork, self-anchored, but SAME name "obsidian"
+        out = self.sids(km._ordered([f(A, "obsidian", A), f(B, "bee", B), f(C, "see", C),
+                                     f(OBS2, "obsidian", OBS2)]))
+        self.assertEqual(self.order_file(), [A, OBS2, B, C], "the fork inherits obsidian's slot, not the END")
+        self.assertEqual(out, [A, OBS2, B, C])
+
+    def test_relaunch_transfers_the_slot_across_a_chat_push_gc(self):
+        # End-to-end through _chat_tab_sessions: the OLD fsid is dead-but-in-window while the relaunch fork is
+        # alive; ordering must run BEFORE the GC so the fork inherits the slot in the SAME build (a GC-first
+        # order would drop the old fsid first, leaving the fork no sibling → it would jump to the END).
+        km._write_session_order([A, B, C])                     # A = "obsidian" original, in slot 0
+        OBS2 = "00000000-0000-0000-0000-00000000ob2"
+        def f(sid, name):
+            return {"sid": sid, "name": name, "path": "/x/%s.jsonl" % sid, "mtime": 1}
+        # the dead original A is NOT in the live input, so _ordered resolves its NAME from the names registry
+        # (in production its names entry persists across a relaunch — both fsids keep one). Stub that lookup.
+        reg = {A: "obsidian", OBS2: "obsidian", B: "bee", C: "see"}
+        saved_name_of = km._name_of
+        km._name_of = lambda sid: reg.get(sid)
+        self.addCleanup(lambda: setattr(km, "_name_of", saved_name_of))
+        # A is no longer alive (relaunched) but its transcript is still in-window; OBS2 is the live fork
+        km._alive_sessions = lambda now, tmux: [f(OBS2, "obsidian"), f(B, "bee"), f(C, "see")]
+        km._sessions = lambda now: [f(A, "obsidian"), f(OBS2, "obsidian"), f(B, "bee"), f(C, "see")]
+        out = self.sids(km._chat_tab_sessions(0, {}))
+        # OBS2 inherited slot 1 (right after A); A is dead-but-in-window so it keeps its slot in the FILE
+        self.assertEqual(self.order_file(), [A, OBS2, B, C])
+        # the LIVE tabs are OBS2, B, C (dead A isn't rendered) — OBS2 sits FIRST in obsidian's slot, NOT at
+        # the end behind B and C, which is where the self-anchored-fork bug pushed it.
+        self.assertEqual(out, [OBS2, B, C], "the fork renders in obsidian's slot (first), not at the end")
+
 
 if __name__ == "__main__":
     unittest.main()
