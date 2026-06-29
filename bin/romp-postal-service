@@ -37,6 +37,7 @@
 # to the drain whenever live injection isn't safe. Disable the push alone with
 # ~/.claude/romp-postal-nopush; disable everything with ~/.claude/romp-postal-off.
 
+import hashlib
 import json
 import os
 import random
@@ -972,10 +973,52 @@ def _log(msg):
     except Exception:
         pass
 
-def _monitor(httpd):
+# ── code-staleness self-restart ─────────────────────────────────────────────────────────────────────────
+# The bus is a long-lived SINGLETON keyed on its port: `ensure` is a no-op while the old process answers, and
+# `romp --refresh` restarts the KERNEL, not the bus. So a bus started before a code change keeps serving STALE
+# in-memory code indefinitely — which silently stranded mail to SDK sessions: a bus from before the "deliver
+# via the kernel, not by pasting into a tmux pane" refactor literally couldn't reach a pane-less SDK recipient,
+# and the message sat unread forever with no bounce (the user 2026-06-29). Guard: the bus fingerprints its own
+# source at boot and the monitor re-execs into the new code the moment the file on disk changes. Pending mail
+# lives in the maildir, so nothing is lost across the swap.
+_SRC = os.path.abspath(__file__)
+
+def _source_fingerprint(path=None):
+    """sha1 of the bus's own source bytes, or "" if unreadable. "" never counts as a change (see
+    _should_restart_for_code) so a transient read error can't trigger a spurious restart."""
+    try:
+        return hashlib.sha1(Path(path or _SRC).read_bytes()).hexdigest()
+    except Exception:
+        return ""
+
+def _should_restart_for_code(boot_fp, cur_fp):
+    """True iff the source changed since boot: BOTH fingerprints present AND different. An empty fp fails
+    safe (stay up). After a re-exec the new boot fp equals the on-disk fp, so this can't loop."""
+    return bool(boot_fp and cur_fp and boot_fp != cur_fp)
+
+def _restart_self():
+    """Re-exec the bus so it loads the new on-disk code. The listening socket is close-on-exec (Python
+    default) so the port frees and the fresh image re-binds (HTTPServer.allow_reuse_address); stdout/stderr
+    stay pointed at server.log. Does not return on success."""
+    _log("source changed on disk — re-exec'ing into the new code (pid %d)" % os.getpid())
+    try:
+        os.execv(sys.executable, [sys.executable, _SRC, "serve"])
+    except Exception as e:
+        _log("re-exec failed (%s); staying on the old code" % e)
+
+def _maybe_restart_for_code(boot_fp):
+    """One monitor tick's staleness check. Returns True (and re-execs, not returning) when the source
+    changed; False otherwise. Factored out so the decision is unit-testable without the execv."""
+    if _should_restart_for_code(boot_fp, _source_fingerprint()):
+        _restart_self()        # does not return on success
+        return True
+    return False
+
+def _monitor(httpd, boot_fp=""):
     idle = 0
     while True:
         time.sleep(POLL)
+        _maybe_restart_for_code(boot_fp)   # reload if the on-disk code changed under us (does not return on restart)
         try:
             _sweep_orphans()    # bounce mail stuck unread in dead recipients' mailboxes
         except Exception:
@@ -1059,7 +1102,8 @@ def serve():
     except Exception:
         pass
     _log("bus up on %s (pid %d)" % (BASE, os.getpid()))
-    threading.Thread(target=_monitor, args=(httpd,), daemon=True).start()
+    boot_fp = _source_fingerprint()                              # so the monitor can reload if the code changes under us
+    threading.Thread(target=_monitor, args=(httpd, boot_fp), daemon=True).start()
     threading.Thread(target=_retry_loop, daemon=True).start()   # re-deliver deferred/stranded mail
     try:
         httpd.serve_forever()
