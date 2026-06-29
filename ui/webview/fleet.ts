@@ -411,12 +411,12 @@ function mountControls() {
   grp.title = "Group goals under their session. Off = one chronological list across every session, each tagged with its session.";
   grp.addEventListener("change", () => { setGrouped(grp.checked); render(); });
   grpLbl.appendChild(grp);
-  grpLbl.appendChild(document.createTextNode("Group by session"));
+  grpLbl.appendChild(document.createTextNode("Group"));   // short label; the tooltip carries the full meaning
   const collapse = el("button", "fl-foot-btn");
-  collapse.textContent = "Collapse all"; collapse.title = "Collapse everything — every session and goal folds shut";
+  collapse.textContent = "Collapse"; collapse.title = "Collapse everything — every session and goal folds shut";
   collapse.addEventListener("click", () => { collapse.classList.add("romp-acted"); setTimeout(() => collapse.classList.remove("romp-acted"), 280); collapseAll(); });
   const expand = el("button", "fl-foot-btn");
-  expand.textContent = "Expand all"; expand.title = "Expand back to the default view (completed work still auto-collapses)";
+  expand.textContent = "Expand"; expand.title = "Expand back to the default view (completed work still auto-collapses)";
   expand.addEventListener("click", () => { expand.classList.add("romp-acted"); setTimeout(() => expand.classList.remove("romp-acted"), 280); expandAll(); });
   left.append(grpLbl, collapse, expand);
 
@@ -425,13 +425,16 @@ function mountControls() {
   const lab = el("span");
   lab.style.cssText = "min-width:42px;text-align:right;font-variant-numeric:tabular-nums";
   const sl = document.createElement("input");
-  sl.type = "range"; sl.min = "0"; sl.max = "1000"; sl.step = "1"; sl.value = String(cutoffPos());
-  sl.style.cssText = "width:110px;cursor:pointer";
+  // REVERSED direction (the user 2026-06-29): dragging RIGHT shows only MORE-RECENT sessions (tighter window),
+  // LEFT shows everything. The stored cutoffPos keeps its meaning (1000 = show all), so the slider's displayed
+  // value is its mirror (1000 - pos) on the way in and out — no change to cutoffSecs / persistence semantics.
+  sl.type = "range"; sl.min = "0"; sl.max = "1000"; sl.step = "1"; sl.value = String(1000 - cutoffPos());
+  sl.style.cssText = "width:84px;cursor:pointer";
   (sl.style as CSSStyleDeclaration & { accentColor: string }).accentColor = "var(--accent, #9cd2ff)";
-  sl.title = "Include sessions active within this window — logarithmic, 1 minute … 1 month";
+  sl.title = "Drag RIGHT to show only more-recent sessions (down to the last minute); LEFT shows everything — logarithmic";
   const paint = () => { lab.textContent = "≤ " + fmtAge(cutoffSecs()); };
   refreshCutoffLabel = paint;   // render() refreshes the label when the adaptive max shifts with the fleet
-  sl.addEventListener("input", () => { setCutoffPos(parseInt(sl.value, 10)); paint(); render(); });
+  sl.addEventListener("input", () => { setCutoffPos(1000 - parseInt(sl.value, 10)); paint(); render(); });
   paint();
   right.appendChild(lab); right.appendChild(sl);
   // a thin vertical divider, then the "Show completed" checkbox on the SAME row.

@@ -50,7 +50,10 @@ test("the slider + 'Show completed' mount in the docked bar's RIGHT cluster (the
   assert.match(SRC, /const right = el\("div", "fl-foot-right"\);/);
   assert.match(SRC, /sl\.type = "range"; sl\.min = "0"; sl\.max = "1000"/);
   assert.match(SRC, /lab\.textContent = "≤ " \+ fmtAge\(cutoffSecs\(\)\)/);
-  assert.match(SRC, /sl\.addEventListener\("input", \(\) => \{ setCutoffPos\(parseInt\(sl\.value, 10\)\); paint\(\); render\(\); \}\)/);
+  // REVERSED direction (the user 2026-06-29): the displayed value mirrors the stored pos (1000 - pos) both ways,
+  // so dragging RIGHT tightens the window (more-recent only) while cutoffSecs/persistence keep their meaning.
+  assert.match(SRC, /sl\.value = String\(1000 - cutoffPos\(\)\)/);
+  assert.match(SRC, /sl\.addEventListener\("input", \(\) => \{ setCutoffPos\(1000 - parseInt\(sl\.value, 10\)\); paint\(\); render\(\); \}\)/);
   assert.match(SRC, /lbl\.appendChild\(document\.createTextNode\("Show completed"\)\)/);
   assert.match(SRC, /right\.appendChild\(lab\); right\.appendChild\(sl\);/);
   assert.match(SRC, /right\.appendChild\(lbl\);/);

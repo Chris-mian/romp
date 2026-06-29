@@ -86,7 +86,7 @@ test("'Group by session' toggles the FLAT chronological view (the user 2026-06-2
   // default ON (grouped); OFF = one merged list newest-first, each top goal tagged with its session
   assert.match(SRC, /const GROUP_KEY = "romp:fleetGroupBySession"/);
   assert.match(SRC, /function isGrouped\(\): boolean/);
-  assert.match(SRC, /createTextNode\("Group by session"\)/);
+  assert.match(SRC, /createTextNode\("Group"\)/);   // short label; tooltip carries the full meaning
   assert.match(SRC, /const grouped = isGrouped\(\);/);
   // flat list: merge every survivor's visible roots, sort newest-first, render into one .fl-flat tree with the
   // session tag (flat=true)
@@ -104,8 +104,8 @@ test("Collapse all / Expand all sit in the bar and drive the fold sets (the user
   // collapse-all folds every session header + every expandable node
   assert.match(SRC, /sessFolded\.add\(s\.sid\);/);
   assert.match(SRC, /if \(n\.children && n\.children\.length\) folded\.add\(fkey\(s\.sid, n\.id\)\)/);
-  assert.match(SRC, /collapse\.textContent = "Collapse all"/);
-  assert.match(SRC, /expand\.textContent = "Expand all"/);
+  assert.match(SRC, /collapse\.textContent = "Collapse"/);
+  assert.match(SRC, /expand\.textContent = "Expand"/);
 });
 
 test("Fleet restores the ledger box's per-node mark TOOLTIP (the user 2026-06-24)", () => {
