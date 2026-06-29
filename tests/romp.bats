@@ -411,20 +411,30 @@ echo "romp-manager called: $*" >> "$MOCK_LOG"
 MOCK
     chmod +x "$MOCK_DIR/romp-manager"
     export ROMP_MANAGER_BIN="$MOCK_DIR/romp-manager"
+    # --refresh also bounces the postal bus now; mock it so the test never touches the real bus
+    cat > "$MOCK_DIR/romp-postal-service" << 'MOCK'
+#!/usr/bin/env bash
+echo "romp-postal-service called: $*" >> "$MOCK_LOG"
+MOCK
+    chmod +x "$MOCK_DIR/romp-postal-service"
+    export ROMP_POSTAL_BIN="$MOCK_DIR/romp-postal-service"
 
     run run_romp --on            # `romp --on` is PURELY start-the-manager
     [ "$status" -eq 0 ]
     grep -q 'romp-manager called: up' "$MOCK_LOG"
+    ! grep -q 'romp-postal-service called' "$MOCK_LOG"   # --on does not touch the bus
 
     : > "$MOCK_LOG"
-    run run_romp --refresh       # restart ALL kernels
+    run run_romp --refresh       # restart EVERYTHING: the bus AND all kernels
     [ "$status" -eq 0 ]
-    grep -q 'romp-manager called: restart-all' "$MOCK_LOG"
+    grep -q 'romp-postal-service called: restart' "$MOCK_LOG"   # bus bounced first
+    grep -q 'romp-manager called: restart-all' "$MOCK_LOG"      # then the kernels
 
     : > "$MOCK_LOG"
     run run_romp --status
     [ "$status" -eq 0 ]
     grep -q 'romp-manager called: status' "$MOCK_LOG"
+    ! grep -q 'romp-postal-service called' "$MOCK_LOG"   # --status does not touch the bus
 }
 
 @test "romp --on no longer forwards a restart sub-verb (romp --refresh replaces it)" {
