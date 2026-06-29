@@ -702,15 +702,25 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   // ⏳ awaiting: held in Working, waiting on work it dispatched/delegated (agents, a subagent, a build).
   // The peer case already shows the "Awaiting <peer>" chip (waitingOn), so suppress the generic badge then.
   const aw = it.awaiting;
+  a._wait.style.display = (aw && !it.waitingOn) ? "" : "none";
   if (aw && !it.waitingOn) {
-    a._wait.style.display = "";
     a._wait.title = aw.why || "waiting on work it dispatched or delegated (agents, a subagent, a build/CI) — not on you; stays in Working, exempt from auto-nudge; lifts when the result lands";
-    a._awaitSpin.style.display = "";              // the spinning swirl in the body, where the distiller line will land
-    a._awaitWhy.textContent = aw.why || "";
-  } else {
-    a._wait.style.display = "none";
-    a._awaitSpin.style.display = "none";
   }
+  // SPINNING SWIRL + a short caption in the card body (the user 2026-06-29): any card that's "in motion but
+  // not on you" — the ones that read as dashed/ghosted in Working — shows the spinning romp swirl where the
+  // distiller line will eventually land, with a couple words saying what's happening. Three cases:
+  //  • AWAITING — held in Working, waiting on dispatched/delegated work (the kernel's why, else a generic line).
+  //  • PROVISIONAL — a dashed live-prompt placeholder: the session is working a BRAND-NEW ask the planner
+  //    hasn't classified into a goal yet (THAT's why it's dashed — it's not a real card yet) → "Working…".
+  //  • RE-CHECK — a soft-block you've ALREADY replied to, de-urgented (dashed) until the judge re-judges → "Re-checking…".
+  // The blocked placeholder (provisional but needs-input: "Awaiting your input") is on YOU, not in motion, so
+  // it's excluded — only the working-column dashed cards spin.
+  let spinCaption: string | null = null;
+  if (aw && !it.waitingOn) spinCaption = aw.why || "Waiting on work it dispatched…";
+  else if (it.provisional && it.column === "working") spinCaption = "Working…";
+  else if (it.recheck) spinCaption = "Re-checking…";
+  a._awaitSpin.style.display = spinCaption ? "" : "none";
+  if (spinCaption) a._awaitWhy.textContent = spinCaption;
   // ⏸ live block badge: the session is stopped mid-turn on a permission prompt /
   // picker FOR THIS CARD's work — the card files under BLOCKED while it lasts
   const isApiErr = it.blocked?.state === "apiError";

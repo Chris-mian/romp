@@ -1,7 +1,8 @@
-// ⏳ AWAITING swirl (the user 2026-06-29): a card held in Working because it's waiting on dispatched/delegated
-// work (it.awaiting, NOT a peer wait) shows a small romp swirl spinning in the body — in the SAME spot the
-// distiller takeaway/decision-brief lands for completed/blocked cards. It's a glanceable "in flight, not
-// stalled" cue; the awaiting "why" rides beside it (it was tooltip-only on the ⏳ badge). Source pin (no jsdom).
+// Spinning-swirl + caption on "in motion, not on you" cards (the user 2026-06-29): a small romp swirl spins in
+// the card body — the SAME spot the distiller takeaway/decision-brief lands for completed/blocked cards — with a
+// couple words saying what's happening. THREE cases, all in the Working column: AWAITING (it.awaiting, not a
+// peer wait → the kernel why), PROVISIONAL (a dashed live-prompt placeholder → "Working…"), and RE-CHECK (a
+// soft-block you've replied to, dashed pending re-judge → "Re-checking…"). Source pin (no jsdom).
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
@@ -17,10 +18,15 @@ test("the swirl element is built in the body, right after the distiller line, an
   assert.match(FEED, /a\._awaitSpin = awaitSpin; a\._awaitWhy = awaitWhy;/);
 });
 
-test("it.awaiting (and NOT a peer wait) shows the swirl + the why; otherwise it's hidden", () => {
-  // gated on the SAME `if (aw && !it.waitingOn)` branch as the ⏳ badge — a peer wait uses the waitingOn chip
-  assert.match(FEED, /a\._awaitSpin\.style\.display = "";[^\n]*\n\s*a\._awaitWhy\.textContent = aw\.why \|\| "";/);
-  assert.match(FEED, /a\._awaitSpin\.style\.display = "none";/);
+test("the swirl + caption covers awaiting, provisional, and re-check — shown when there's a caption, else hidden", () => {
+  // a single computed caption drives the swirl: awaiting → the why; a working provisional placeholder →
+  // "Working…"; a re-check (replied soft-block) → "Re-checking…". The blocked placeholder (needs-input) is
+  // NOT covered — it's on you, not in motion.
+  assert.match(FEED, /if \(aw && !it\.waitingOn\) spinCaption = aw\.why \|\| "Waiting on work it dispatched…";/);
+  assert.match(FEED, /else if \(it\.provisional && it\.column === "working"\) spinCaption = "Working…";/);
+  assert.match(FEED, /else if \(it\.recheck\) spinCaption = "Re-checking…";/);
+  assert.match(FEED, /a\._awaitSpin\.style\.display = spinCaption \? "" : "none";/);
+  assert.match(FEED, /if \(spinCaption\) a\._awaitWhy\.textContent = spinCaption;/);
 });
 
 test("the swirl uses the shared glyph, REVERSE-spins like the loader, and respects reduced-motion", () => {
