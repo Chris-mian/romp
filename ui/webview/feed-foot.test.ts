@@ -14,19 +14,19 @@ test("the Undo-clear button label is two words", () => {
   assert.doesNotMatch(FEED, /"UndoClear"/);
 });
 
-test("#feed-foot FLOATS as a small bottom-right sub-pane (no reserved full-width row that clips cards)", () => {
-  // the user 2026-06-27: in-flow it reserved a full-width row that shortened #feed-list and clipped the card
-  // columns early. It now floats over the bottom-right corner so the columns use the full pane height.
-  assert.match(CSS, /#feed-foot \{[^}]*position: absolute/);
-  assert.match(CSS, /#feed-foot \{[^}]*right: 12px; bottom: 12px/);
-  assert.match(CSS, /#feed-foot \{[^}]*width: fit-content/);     // still hugs the buttons (not a bar)
-  assert.match(CSS, /#feed-foot \{[^}]*border: 1px solid var\(--card-border\)/);  // a boxed sub-pane…
-  assert.match(CSS, /#feed-foot \{[^}]*border-radius/);          // …with rounded corners
-  assert.doesNotMatch(CSS, /#feed-foot \{[^}]*align-self: flex-end/);   // no longer an in-flow flex item
+test("#feed-foot DOCKS as a dedicated in-flow bottom bar (the user 2026-06-29), not a floating overlay", () => {
+  // the user 2026-06-29: the control panel is its own dedicated rectangle at the bottom in normal flow, NOT a
+  // floating thing on top. The body is a column flex so #feed-list flexes above the bar without overlap.
+  assert.match(CSS, /#feed-foot \{[^}]*flex: 0 0 auto/);          // an in-flow flex item, not floated
+  assert.match(CSS, /#feed-foot \{[^}]*border-top: 1px solid var\(--card-border\)/);  // a docked bar with a top edge
+  assert.doesNotMatch(CSS, /#feed-foot \{[^}]*position: absolute/);   // no longer floats
+  assert.doesNotMatch(CSS, /#feed-foot \{[^}]*width: fit-content/);   // spans the bar, doesn't hug the buttons
+  // the Sub-goals toggle pins far-left so Clear all / Undo clear group to the right
+  assert.match(CSS, /#feed-foot #feed-subgoals \{ margin-right: auto; \}/);
 });
 
-test("the floating footer is anchored + cleared so it never reserves a band or covers a card", () => {
-  assert.match(CSS, /body \{ display: flex; flex-direction: column; position: relative; \}/);   // positioning context
+test("the docked footer leaves the list a proper scroll container with no float clearance", () => {
+  assert.match(CSS, /body \{ display: flex; flex-direction: column; position: relative; \}/);   // column flex
   assert.match(CSS, /#feed-list \{[^}]*min-height: 0;/);          // proper scroll container
-  assert.match(CSS, /#feed-list \{[^}]*padding: 12px 12px 46px;/); // bottom clearance for the floating footer
+  assert.match(CSS, /#feed-list \{[^}]*padding: 12px;/);          // no reserved band for a float anymore
 });

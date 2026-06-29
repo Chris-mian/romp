@@ -48,7 +48,7 @@ test("a session-level collapse caret folds the whole session's tree WITHOUT open
   assert.match(SRC, /caret\.dataset\.act = "sessfold"; caret\.dataset\.sid = s\.sid;/);
   assert.match(SRC, /head\.appendChild\(caret\)/);
   // folded → render the head only, skip the tree
-  assert.match(SRC, /if \(!sfolded\) \{ for \(const r of visibleRoots\) renderNode\(r, 0\); sec\.appendChild\(treeBox\); \}/);
+  assert.match(SRC, /if \(!sfolded\) \{ for \(const r of visibleRoots\) renderFleetNode\(ctx, r, 0, treeBox, now, false\); sec\.appendChild\(treeBox\); \}/);
   // the delegate toggles per-session fold, separate from the row "open" action
   assert.match(SRC, /sessfold: \(el\) => \{/);
   assert.match(SRC, /if \(sessFolded\.has\(sid\)\) sessFolded\.delete\(sid\); else sessFolded\.add\(sid\);/);
@@ -62,17 +62,50 @@ test("recency colour is copied VERBATIM from render.ts (identical to the ledger 
   assert.match(SRC, /time\.style\.color = ageColorReadable\(dt\)/); // …in the shared colour
 });
 
-test("completed top goals hide by default; a 'Show completed' chip sits bottom-right (the user 2026-06-24)", () => {
+test("completed top goals hide by default; 'Show completed' lives in the docked control bar (the user 2026-06-29)", () => {
   assert.match(SRC, /localStorage\.getItem\(DONE_KEY\) === "1"/);  // default OFF
   // the top-row selection (open-only vs +done +archived) is the pure, BEHAVIORALLY-tested ./fleet-roots
   // (fleet-roots.test.ts) — here we just pin that fleet.ts routes through it (the user 2026-06-27)
   assert.match(SRC, /import \{ fleetVisibleRoots \} from "\.\/fleet-roots"/);
   assert.match(SRC, /const visibleRoots = fleetVisibleRoots\(roots, archivedTops, sd\)/);
   assert.match(SRC, /createTextNode\("Show completed"\)/);
-  // it shares ONE floating bottom-right row with the recency slider now (the user 2026-06-27); #fleet-foot is hidden
+});
+
+test("the controls DOCK into #fleet-foot as a bottom bar — not a floating overlay (the user 2026-06-29)", () => {
+  // mountControls fills the in-flow #fleet-foot rectangle (mounted once) instead of appending a position:fixed
+  // float to <body>. The old floating row + the foot-hiding line are gone.
   assert.match(SRC, /function mountControls\(\)/);
-  assert.match(SRC, /position:fixed;bottom:8px;right:10px/);
-  assert.match(SRC, /foot\.style\.display = "none"/);
+  assert.match(SRC, /const foot = document\.getElementById\("fleet-foot"\)/);
+  assert.match(SRC, /foot\.dataset\.mounted = "1"/);
+  assert.match(SRC, /foot\.append\(left, right\)/);
+  assert.doesNotMatch(SRC, /position:fixed;bottom:8px;right:10px/);   // no longer floats
+  assert.doesNotMatch(SRC, /foot\.style\.display = "none"/);          // the footer is the panel now, not hidden
+});
+
+test("'Group by session' toggles the FLAT chronological view (the user 2026-06-29)", () => {
+  // default ON (grouped); OFF = one merged list newest-first, each top goal tagged with its session
+  assert.match(SRC, /const GROUP_KEY = "romp:fleetGroupBySession"/);
+  assert.match(SRC, /function isGrouped\(\): boolean/);
+  assert.match(SRC, /createTextNode\("Group by session"\)/);
+  assert.match(SRC, /const grouped = isGrouped\(\);/);
+  // flat list: merge every survivor's visible roots, sort newest-first, render into one .fl-flat tree with the
+  // session tag (flat=true)
+  assert.match(SRC, /el\("div", "ledger-tree fl-flat"\)/);
+  assert.match(SRC, /flatRoots\.sort\(\(a, b\) => nodeRecency\(b\.root\) - nodeRecency\(a\.root\)\)/);
+  assert.match(SRC, /renderFleetNode\(ctx, root, 0, treeBox, now, true\)/);
+  // the right-side session tag is added only on a flat top row
+  assert.match(SRC, /if \(flat && depth === 0\) \{/);
+  assert.match(SRC, /el\("span", "fl-sesslabel"\)/);
+});
+
+test("Collapse all / Expand all sit in the bar and drive the fold sets (the user 2026-06-29)", () => {
+  assert.match(SRC, /function collapseAll\(\)/);
+  assert.match(SRC, /function expandAll\(\) \{ folded\.clear\(\); expanded\.clear\(\); sessFolded\.clear\(\); render\(\); \}/);
+  // collapse-all folds every session header + every expandable node
+  assert.match(SRC, /sessFolded\.add\(s\.sid\);/);
+  assert.match(SRC, /if \(n\.children && n\.children\.length\) folded\.add\(fkey\(s\.sid, n\.id\)\)/);
+  assert.match(SRC, /collapse\.textContent = "Collapse all"/);
+  assert.match(SRC, /expand\.textContent = "Expand all"/);
 });
 
 test("Fleet restores the ledger box's per-node mark TOOLTIP (the user 2026-06-24)", () => {
