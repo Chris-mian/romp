@@ -77,6 +77,10 @@ function sessionFreshest(s: FleetSession): number {
 const folded = new Set<string>(), expanded = new Set<string>();   // fold state, keyed "sid\0nodeId"
 const fkey = (sid: string, id: string) => sid + "\0" + id;
 
+// Top-level goals last seen as DONE (keyed "sid\0nodeId") — the basis for auto-collapsing a super-category the
+// instant it FINISHES (the user 2026-06-29). See the transition pass in render().
+const seenDone = new Set<string>();
+
 const sessFolded = new Set<string>();   // sessions whose WHOLE task tree is collapsed, keyed by sid (the user 2026-06-24)
 
 // Collapse / Expand are STICKY TOGGLE MODES (the user 2026-06-29), persisted across kernel restarts + reopens.
@@ -363,6 +367,22 @@ function render() {
   fleetMaxAge = maxAge;
   refreshCutoffLabel?.();
   const cutoff = cutoffSecs();
+
+  // Auto-collapse a super-category the instant it FINISHES (the user 2026-06-29): when a top-level goal flips
+  // not-done → done (every sub-step checked off), drop any manual "expand" for it so it folds shut — even if
+  // you'd expanded it while it was in progress. Event-based (keyed on the done TRANSITION, via seenDone), and
+  // one-shot: you can re-expand it afterward and it stays open, since the transition won't fire again until it
+  // reopens and re-completes. Runs over EVERY top goal (not just visible ones) so the collapse sticks even when
+  // "Show completed" is off and the finished goal is momentarily filtered out. Once folded, defaultFold (a done
+  // top with no manual expand) keeps it shut.
+  for (const s of sessions) {
+    for (const r of s.ledger?.tree || []) {
+      if (r.depth !== 0) continue;
+      const k = fkey(s.sid, r.id);
+      if (r.done) { if (!seenDone.has(k)) { expanded.delete(k); seenDone.add(k); } }   // just finished → collapse
+      else seenDone.delete(k);                                                          // (re)opened → re-arm
+    }
+  }
 
   // First pass (shared by both views): keep the sessions whose freshest VISIBLE activity is inside the
   // slider window, each paired with its render context + visible roots.
