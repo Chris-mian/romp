@@ -98,14 +98,29 @@ test("'Group by session' toggles the FLAT chronological view (the user 2026-06-2
   assert.match(SRC, /el\("span", "fl-sesslabel"\)/);
 });
 
-test("Collapse all / Expand all sit in the bar and drive the fold sets (the user 2026-06-29)", () => {
-  assert.match(SRC, /function collapseAll\(\)/);
-  assert.match(SRC, /function expandAll\(\) \{ folded\.clear\(\); expanded\.clear\(\); sessFolded\.clear\(\); render\(\); \}/);
-  // collapse-all folds every session header + every expandable node
-  assert.match(SRC, /sessFolded\.add\(s\.sid\);/);
-  assert.match(SRC, /if \(n\.children && n\.children\.length\) folded\.add\(fkey\(s\.sid, n\.id\)\)/);
+test("Collapse / Expand are STICKY persisted toggle MODES that render() obeys (the user 2026-06-29)", () => {
+  assert.match(SRC, /const FOLD_MODE_KEY = "romp:fleetFoldMode"/);   // persisted across restarts/reopens
+  assert.match(SRC, /function foldMode\(\): FoldMode/);
+  assert.match(SRC, /function toggleFoldMode\(m: "collapse" \| "expand"\)/);
   assert.match(SRC, /collapse\.textContent = "Collapse"/);
   assert.match(SRC, /expand\.textContent = "Expand"/);
+  assert.match(SRC, /toggleFoldMode\("collapse"\)/);
+  assert.match(SRC, /toggleFoldMode\("expand"\)/);
+  // render() snapshots the mode and OVERRIDES the per-node fold state with it
+  assert.match(SRC, /curFoldMode = foldMode\(\);/);
+  assert.match(SRC, /curFoldMode === "collapse" \? true/);
+  assert.match(SRC, /curFoldMode === "expand" \? false/);
+  // the active button "stays clicked" (.on), painted from the persisted mode
+  assert.match(SRC, /function paintFoldButtons\(\)/);
+  assert.match(SRC, /c\.classList\.toggle\("on", m === "collapse"\)/);
+});
+
+test("a manual fold LEAVES the sticky mode, baking its look first (the user 2026-06-29)", () => {
+  // bakeFoldMode writes the mode's current look into the sets then clears the mode, so only the hand-toggled
+  // node differs; both the node-fold and session-fold handlers call it before applying the manual toggle
+  assert.match(SRC, /function bakeFoldMode\(\)/);
+  assert.match(SRC, /if \(n\.children && n\.children\.length\) \{ folded\.add\(fkey\(s\.sid, n\.id\)\); expanded\.delete\(fkey\(s\.sid, n\.id\)\); \}/);
+  assert.match(SRC, /bakeFoldMode\(\);[^\n]*hand-fold leaves the sticky/);
 });
 
 test("Fleet restores the ledger box's per-node mark TOOLTIP (the user 2026-06-24)", () => {
