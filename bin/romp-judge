@@ -2716,6 +2716,29 @@ def brief_llm(goal_text, work_text, block_why):
     return _judge_run(TRIAGE_MODEL, BLOCK_BRIEF_SYS, user, judge="distiller").strip()[:600]
 
 
+def _last_state_value(fsid):
+    """The most-recent STATE transition in states/<fsid>.jsonl ('working'/'waiting'/'picker'/…), ignoring the
+    interleaved awaiting overlays; '' when there's no state file. Mirrors the kernel's _last_state_value — the
+    distiller uses it to spot a session parked RIGHT NOW on a live picker/permission prompt (a transient live
+    state the planner hasn't classified into the goal store), so it can brief that focus goal too."""
+    p = STATESDIR / (fsid + ".jsonl")
+    val = ""
+    try:
+        with open(p, errors="replace") as f:
+            for line in f:
+                if '"state"' not in line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(rec, dict) and isinstance(rec.get("state"), str):
+                    val = rec["state"]
+    except OSError:
+        return ""
+    return val
+
+
 def _distill_session(fsid, path, now):
     """Distill each newly-(re)resolved TOP goal of ONE session, COMPLETED and BLOCKED alike (the user
     2026-06-18). Gather the goal's full WORK history — the text of every segment in its trail and its whole
@@ -2724,7 +2747,9 @@ def _distill_session(fsid, path, now):
     (event-gated on distilledMt vs mt). A BLOCKED top → the block-distiller's DECISION BRIEF in
     node["blockSummary"], fed the same work PLUS the owed question (the latest still-blocked node's
     blockWhy), event-gated on briefedMt vs mt. The two markers are independent so a goal that goes
-    block→done carries each. Returns the number of goals (re)summarized."""
+    block→done carries each. A LIVE-PICKER/permission focus top is briefed too (the user 2026-06-29): it's
+    blocked-on-you though its stored status is still 'working', so without this its card would carry no
+    distiller line while you decide. Returns the number of goals (re)summarized."""
     _judge_ctx.fsid = fsid                            # usage logging: attribute this session's judge calls
     store = load_goals(fsid)
     status, nodes = store.get("status", {}), store.get("nodes", {})
@@ -2739,6 +2764,21 @@ def _distill_session(fsid, path, now):
                                     or nodes[nid].get("summary") is None)) or
             (st == "blocked" and (nodes[nid].get("briefedMt") != nodes[nid].get("mt")
                                   or nodes[nid].get("blockSummary") is None)))]
+    # LIVE picker/permission floor (the user 2026-06-29): a session parked RIGHT NOW on a live prompt is
+    # blocked-on-you, but the planner hasn't classified its focus goal — its stored status is still 'working',
+    # so the loop above never briefs it and the card shows no distiller line. Detect it from the state log and
+    # brief that focus top too (treated as blocked below). Event-gated on briefedMt vs mt exactly like a stored
+    # block, so it briefs ONCE per episode (mt is stable while parked), not every pass.
+    live_brief = set()
+    if _last_state_value(fsid) in ("picker", "permission"):
+        f = store.get("lastNode")
+        while f and nodes.get(f, {}).get("parentId") is not None:
+            f = nodes[f].get("parentId")
+        if (f in nodes and status.get(f) not in ("completed", "cleared")
+                and (nodes[f].get("briefedMt") != nodes[f].get("mt") or nodes[f].get("blockSummary") is None)):
+            live_brief.add(f)
+            if f not in todo:
+                todo.append(f)
     if not todo:
         return 0
     session = parsed_session(fsid, [path], now)
@@ -2748,7 +2788,7 @@ def _distill_session(fsid, path, now):
         children.setdefault(nd.get("parentId"), []).append(nid)
     n, changed = 0, False
     for top in todo:
-        blocked = status.get(top) == "blocked"
+        blocked = status.get(top) == "blocked" or top in live_brief   # live-picker focus → brief it like a block
         stack, sub = [top], []                         # the top + all descendants (its whole subtree)
         while stack:
             x = stack.pop(); sub.append(x); stack.extend(children.get(x, []))

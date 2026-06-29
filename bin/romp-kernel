@@ -4658,7 +4658,12 @@ def build_feed(now, tmux=None):
             # is too long" error IS on you (compact needed) → it floors to needs-input like a real block. So
             # only api_top WHEN tooLong, or a genuine soft block (col blocked & not recheck), keeps needs_input.
             api_block = (nid == api_top and bool(aerr and aerr.get("tooLong")))
-            column = ("needs_input" if (api_block or (col == "blocked" and not recheck))
+            # A live picker/permission floor (perm_top) is a GENUINE block, so the kernel reports its column as
+            # needs_input — NOT "working" with the client re-routing it by it.blocked (which was crafty + split
+            # the truth: build_feed said working while the card showed under Blocked, and the distiller line,
+            # keyed on it.column, then stayed hidden). Now it.column is authoritative: the card IS blocked, the
+            # client files by it.column, and the distiller line shows (the user 2026-06-29).
+            column = ("needs_input" if (api_block or nid == perm_top or (col == "blocked" and not recheck))
                       else "completed" if col == "completed" else "working")
             had_working = had_working or column == "working"
             # summaryAnchorUuid: the biggest contiguous block of assistant text ANYWHERE in this goal's work
@@ -4699,11 +4704,14 @@ def build_feed(now, tmux=None):
         # A session actively working a brand-new ask shows NO card until the planner classifies the held
         # segment at turn-end — surface a live-prompt placeholder so it isn't invisible. Only when nothing
         # already covers it (no working card); replaced by the real card once the planner places it.
-        if not had_working and ps:                   # cache-only: the live-prompt placeholder needs the parse → after the warm
+        if not had_working and perm_top is None and ps:   # cache-only: the live-prompt placeholder needs the parse → after the warm
+            # perm_top excluded: a live-blocked focus card no longer counts as "working" (it reports needs_input
+            # now), so without this guard a session whose ONLY card is the picker-blocked one would ALSO get a
+            # provisional working placeholder — a duplicate. A floored perm_top already covers the live prompt.
             pc = _provisional_card(s, name, color, fsid, live, now)
             if pc:
                 asks.append(pc)
-            elif perm_state in _NEEDS_INPUT_STATES and perm_top is None:
+            elif perm_state in _NEEDS_INPUT_STATES:      # perm_top is None here (outer guard) → no goal to floor
                 # Hard-blocked on a live permission/picker prompt but with NO goal to floor (the planner hasn't
                 # run — nothing to plan until the ask is answered). Surface a needs-input placeholder so the
                 # block reaches the Blocked column instead of being invisible (the user 2026-06-27). Replaced

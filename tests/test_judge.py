@@ -3434,5 +3434,76 @@ class OrphanRollup(unittest.TestCase):
         self.assertEqual(s["status"][top["id"]], "working", "no instant re-completion: the reopened top is working")
 
 
+class LivePickerBrief(unittest.TestCase):
+    """A session parked RIGHT NOW on a live picker/permission prompt is blocked-on-you even though its focus
+    goal's stored status is still 'working' (the planner hasn't classified the transient live state). The
+    block-distiller briefs that focus top too, so the card carries a decision brief while you decide (the user
+    2026-06-29: "when something is blocked from the picker, I still want a distiller summary on the card").
+    Gated on the live STATE log; the STORED status is left to the planner."""
+
+    def setUp(self):
+        self._saved = (jd.GOALDIR, jd.STATESDIR, jd.STATE, jd.brief_llm, jd.distill_llm)
+        self._td = Path(tempfile.mkdtemp())
+        jd.GOALDIR = self._td / "goals"
+        jd.STATE = self._td
+        jd.STATESDIR = self._td / "states"
+        jd.STATESDIR.mkdir(parents=True, exist_ok=True)
+
+    def tearDown(self):
+        (jd.GOALDIR, jd.STATESDIR, jd.STATE, jd.brief_llm, jd.distill_llm) = self._saved
+        shutil.rmtree(self._td, ignore_errors=True)
+
+    _RECORDS = [uline(T0, "wire the picker", "u1", ps="typed"),
+                aline(T0 + 30, "Working on it; one question for you.", "a1", "u1", stop="end_turn")]
+
+    def _setup(self, last_state):
+        """A working focus top whose trail is the transcript's one segment, plus a state log whose LAST state
+        record is `last_state`. Returns (transcript_path, focus_gid)."""
+        path = self._td / (SID + ".jsonl")
+        path.write_text("\n".join(json.dumps(r) for r in self._RECORDS) + "\n")
+        (jd.STATESDIR / (SID + ".jsonl")).write_text(json.dumps({"t": NOW - 20, "state": last_state}) + "\n")
+        seg = em.segments(jd.parsed_session(SID, [str(path)], NOW)["turns"][0])[0]["id"]   # same parse _distill sees
+        g = SID + ":g1"
+        jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "lastNode": g,
+                            "nodes": {g: {"id": g, "text": "Wire the picker", "parentId": None,
+                                          "nodeComplete": False, "blocked": False, "cleared": False,
+                                          "trail": [seg], "t": T0, "mt": T0 + 30}},
+                            "placements": {}, "status": {g: "working"}})
+        return str(path), g
+
+    def test_live_picker_briefs_a_working_focus_top(self):
+        path, g = self._setup("picker")
+        jd.brief_llm = lambda goal, work, owed: "Decide: option A or B. Context provided."
+        jd.distill_llm = lambda *a, **k: self.fail("a working goal must not take the DONE-distiller path")
+        n = jd._distill_session(SID, path, NOW)
+        nd = jd.load_goals(SID)["nodes"][g]
+        self.assertEqual(n, 1, "the live-picker focus top is briefed")
+        self.assertEqual(nd["blockSummary"], "Decide: option A or B. Context provided.",
+                         "the card gets a decision brief though its stored status is 'working'")
+        self.assertEqual(nd["briefedMt"], nd["mt"], "briefedMt stamped → event-gated, won't re-brief while parked")
+        self.assertEqual(jd.load_goals(SID)["status"][g], "working", "the STORED status is untouched (planner owns it)")
+
+    def test_permission_also_briefs(self):
+        path, g = self._setup("permission")
+        jd.brief_llm = lambda goal, work, owed: "Approve the edit to keep going?"
+        n = jd._distill_session(SID, path, NOW)
+        self.assertEqual(n, 1, "a live PERMISSION prompt briefs its focus top too, like a picker")
+
+    def test_idempotent_while_parked(self):
+        path, g = self._setup("picker")
+        calls = []
+        jd.brief_llm = lambda goal, work, owed: (calls.append(1), "brief")[1]
+        jd._distill_session(SID, path, NOW)
+        jd._distill_session(SID, path, NOW)            # a 2nd pass while STILL parked
+        self.assertEqual(len(calls), 1, "briefed ONCE per episode (briefedMt == mt), not every producer pass")
+
+    def test_not_at_a_live_prompt_is_not_briefed(self):
+        path, g = self._setup("working")
+        jd.brief_llm = lambda *a, **k: self.fail("a session NOT at a live prompt must not be live-briefed")
+        n = jd._distill_session(SID, path, NOW)
+        self.assertEqual(n, 0, "no live picker/permission state → no live brief")
+        self.assertIsNone(jd.load_goals(SID)["nodes"][g].get("blockSummary"), "blockSummary stays null")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
