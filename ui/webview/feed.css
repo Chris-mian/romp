@@ -326,10 +326,8 @@ body { display: flex; flex-direction: column; position: relative; }   /* positio
   border-radius: 50%; border: 1.5px solid var(--err); background: transparent;
   color: var(--err); font-size: 9px; font-weight: 700; line-height: 1;
 }
-/* in the MODAL, a blocked node's red ?-ring is also the "cross it off" override (the user 2026-06-17): on
-   hover it previews its resolved state — a green ✓-ring — so a click reads unmistakably as "check this off". */
-.ftree-mark-resolve { cursor: pointer; }
-.ftree-mark-resolve:hover { border-color: var(--check-bg); color: var(--check-bg); }
+/* (the modal mark no longer doubles as a "cross it off" override — it's pure nav now, like the card; the old
+   resolve-on-hover-preview rule was removed 2026-06-29 in favour of explicit Done / Follow up buttons.) */
 /* a BLOCKED node's label is a white-on-red CHIP — the same red as the feed's "Blocked" column header
    (.fcol-chip-blocked), so a blocked step in the modal reads with the same weight as the column (the user
    2026-06-17). */
@@ -344,10 +342,17 @@ body { display: flex; flex-direction: column; position: relative; }   /* positio
 /* drop-point fix: the user adjudicates a stale leaf done (writes a correction) */
 .ftree-fix { flex: 0 0 auto; margin-left: 8px; font-size: 0.8em; color: var(--dim); cursor: pointer; }
 .ftree-fix:hover { color: var(--rel-done); text-decoration: underline; text-underline-offset: 2px; }
-/* per-sub actions on a blocked node in the modal tree (the user 2026-06-17): "↳ follow up" re-targets the
-   footer composer at THIS sub; the "↻ Followed up" chip shows while that sub is optimistically reopened. */
-.ftree-followup { flex: 0 0 auto; margin-left: 8px; font-size: 0.78em; color: var(--dim); cursor: pointer; white-space: nowrap; }
-.ftree-followup:hover { color: #5aa2ff; text-decoration: underline; text-underline-offset: 2px; }
+/* per-sub actions on a blocked node in the modal tree (the user 2026-06-29): two explicit BUTTONS sit at the
+   end of the line — "Done" crosses the sub off, "Follow up" re-targets the footer composer at THIS sub. The
+   "↻ Followed up" chip below shows while that sub is optimistically reopened. */
+.ftree-node-acts { flex: 0 0 auto; margin-left: 8px; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.ftree-act-btn {
+  font: inherit; font-size: 0.72em; line-height: 1.4; padding: 1px 8px; border-radius: 6px;
+  background: transparent; border: 1px solid var(--dim); color: var(--dim); cursor: pointer;
+}
+.ftree-act-done:hover { border-color: var(--rel-done); color: var(--rel-done); }
+.ftree-act-fup { border-color: rgba(90, 162, 255, 0.55); color: #5aa2ff; }
+.ftree-act-fup:hover { border-color: #5aa2ff; background: rgba(90, 162, 255, 0.12); }
 .ftree-followedup { flex: 0 0 auto; margin-left: 8px; font-size: 0.68em; font-weight: 700; letter-spacing: 0.03em;
   padding: 0 6px; border-radius: 999px; line-height: 1.6; color: #5aa2ff; border: 1px solid rgba(90, 162, 255, 0.6); white-space: nowrap; }
 .ftree-node.repeat { opacity: 0.5; }

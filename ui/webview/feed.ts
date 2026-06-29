@@ -1153,20 +1153,23 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
   // card checklist also uses) so only the modal flips — the card checklist + ledger marks stay pure-nav.
   // Skips repeats (dim back-links) and handoff nodes (those resolve in another session's store).
   if (!repeat && node.status === "question" && node.kind !== "handoff") {
-    // (A) the MARK "crosses it off": flip it from nav → override. Posts nodeOverride op:resolve; the kernel
-    // marks the node resolved (done) + clears the block + re-rolls inline, so the BLOCKED chip clears on the
-    // click without a judge pass (bugs owns the handler, 3dded52). NAV stays on the TEXT (→ minting message)
-    // and the META time (→ resolving work) — only the mark flips. Immediate-apply (no drafts → nothing to
-    // lose on a live re-render, and you can cross several off in a row).
-    mark.classList.add("ftree-mark-resolve");
-    mark.title = "cross this off — it stops blocking and the thread's other work continues";
-    mark.onclick = (ev) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "nodeOverride", sid: it.sid, nodeId: node.id, op: "resolve" }); };
-    // (#2) a per-sub FOLLOW UP: re-target the footer composer at THIS sub so the answer files under it and
-    // unblocks just this branch (the judge reopens + force-files under any node id — no kernel change).
-    const fu = el("span", "ftree-followup"); fu.textContent = "↳ follow up";
+    // The MARK stays pure NAV here (it keeps wireNodeZones → jump to where it got blocked), EXACTLY like the
+    // main card — clicking a node in the modal no longer silently crosses it off, which was confusing (the
+    // user 2026-06-29). Instead two explicit BUTTONS sit on the line: "Done" crosses it off, "Follow up"
+    // answers just this sub-goal.
+    const acts = el("span", "ftree-node-acts");
+    // "Done": post nodeOverride op:resolve — the kernel marks the node resolved + clears the block + re-rolls
+    // inline (no judge pass; bugs owns the handler 3dded52). Immediate-apply (no draft to lose on a re-render).
+    const done = el("button", "ftree-act-btn ftree-act-done"); done.textContent = "Done";
+    done.title = "mark this done — it stops blocking and the thread's other work continues";
+    done.onclick = (ev) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "nodeOverride", sid: it.sid, nodeId: node.id, op: "resolve" }); };
+    // "Follow up": re-target the footer composer at THIS sub so the answer files under it and unblocks just
+    // this branch (the judge reopens + force-files under any node id — no kernel change).
+    const fu = el("button", "ftree-act-btn ftree-act-fup"); fu.textContent = "Follow up";
     fu.title = "follow up on this specific blocked sub-goal";
     fu.onclick = (ev) => { ev.stopPropagation(); openSubFollowUp?.(node.id, node.text || "(sub-goal)"); };
-    line.appendChild(fu);
+    acts.append(done, fu);
+    line.appendChild(acts);
   }
   // a per-node "↻ Followed up" chip while THIS sub is optimistically reopened by a follow-up, until the judge
   // re-files it (node.followupPending, emitted per-node by build_feed's flatten — judges 047264f).
