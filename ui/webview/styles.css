@@ -1438,3 +1438,17 @@ pre.has-copy:hover .code-copy, .code-copy:focus-visible { opacity: 0.9; }
 }
 .fl-wordmark.no-anim { animation: none; }
 @keyframes fl-wordmark-in { from { opacity: 0; } to { opacity: 0.75; } }
+
+/* Fleet PROVISIONAL signature (the user 2026-06-29): a dotted "about to appear" row for a session working a
+   brand-new prompt the planner hasn't filed as a task yet (it has no ledger node, so it'd be invisible). A
+   spinning romp swirl + the live gist, dimmed + dashed so it reads as not-yet-real, like the feed's ghost card. */
+.fl-prov { opacity: 0.7; cursor: pointer; }
+.fl-prov:hover { opacity: 1; }
+.fl-prov-text { font-style: italic; border-bottom: 1px dashed rgba(255, 255, 255, 0.25); }
+.fl-prov-swirl {
+  display: inline-block; width: 12px; height: 12px; flex: 0 0 auto; margin-right: 2px; vertical-align: middle;
+  background: url(../media/romp-swirl-glyph.svg) center / contain no-repeat;
+  animation: fl-prov-spin 2.4s linear infinite;
+}
+@keyframes fl-prov-spin { to { transform: rotate(-360deg); } }
+@media (prefers-reduced-motion: reduce) { .fl-prov-swirl { animation: none; } }

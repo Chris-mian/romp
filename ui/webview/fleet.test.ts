@@ -48,8 +48,9 @@ test("a session-level collapse caret folds the whole session's tree WITHOUT open
   assert.match(SRC, /const sessFolded = new Set<string>\(\)/);
   assert.match(SRC, /caret\.dataset\.act = "sessfold"; caret\.dataset\.sid = s\.sid;/);
   assert.match(SRC, /head\.appendChild\(caret\)/);
-  // folded → render the head only, skip the tree
-  assert.match(SRC, /if \(!sfolded\) \{ for \(const r of visibleRoots\) renderFleetNode\(ctx, r, 0, treeBox, now, false\); sec\.appendChild\(treeBox\); \}/);
+  // folded → render the head only, skip the tree (a provisional signature row joins the tree when present)
+  assert.match(SRC, /if \(!sfolded\) \{\s*\n\s*for \(const r of visibleRoots\) renderFleetNode\(ctx, r, 0, treeBox, now, false\);/);
+  assert.match(SRC, /sec\.appendChild\(treeBox\);\s*\n\s*\}/);
   // the delegate toggles per-session fold, separate from the row "open" action
   assert.match(SRC, /sessfold: \(el\) => \{/);
   assert.match(SRC, /if \(sessFolded\.has\(sid\)\) sessFolded\.delete\(sid\); else sessFolded\.add\(sid\);/);
@@ -183,6 +184,22 @@ test("the romp loader is kept up (beating the _pane_spin 8s backstop) until data
   assert.match(SRC, /const _keepLoader = setInterval\(\(\) => \{/);
   assert.match(SRC, /if \(loaded\) \{ clearInterval\(_keepLoader\); return; \}/);
   assert.match(SRC, /spin\.classList\.remove\("gone"\)/);
+});
+
+test("provisional (about-to-appear) work gets a dotted swirl signature in the fleet (the user 2026-06-29)", () => {
+  const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
+  // read from feed.asks (the SAME payload), keep only provisional cards
+  assert.match(SRC, /\.filter\(\(a: any\) => a && a\.provisional && a\.sid\)/);
+  // a dotted signature row: swirl + gist, click-opens the session
+  assert.match(SRC, /const makeProvRow = \(p: ProvCard, flat: boolean\) =>/);
+  assert.match(SRC, /el\("div", "ledger-tnode ledger-top fl-prov"\)/);
+  assert.match(SRC, /row\.appendChild\(el\("span", "fl-prov-swirl"\)\)/);
+  // a session that's ONLY provisional (skipped above for an empty tree) still gets a minimal section
+  assert.match(SRC, /for \(const \[, p\] of Array\.from\(provBySid\)/);
+  // and the flat view shows them too
+  assert.match(SRC, /if \(flatRoots\.length \|\| provBySid\.size\)/);
+  assert.match(CSS, /\.fl-prov-swirl \{[\s\S]*?url\(\.\.\/media\/romp-swirl-glyph\.svg\)/);
+  assert.match(CSS, /@keyframes fl-prov-spin \{ to \{ transform: rotate\(-360deg\); \} \}/);
 });
 
 test("genuinely-empty fleet fades in the romp WORDMARK (like the feed), once per empty transition", () => {

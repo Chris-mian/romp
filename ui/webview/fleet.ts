@@ -30,6 +30,12 @@ let sessions: FleetSession[] = [];
 // the page's romp loader (_pane_spin) stays up, exactly like the other panes, until real data arrives.
 let loaded = false;
 let emptyShown = false;   // the romp wordmark is currently showing → don't replay its fade-in every push
+// Provisional cards (the user 2026-06-29): a session working a brand-new prompt the planner hasn't classified
+// into a goal yet has NO ledger node, so it's invisible in the fleet — exactly the "things about to appear" the
+// user wants to track. They ride the SAME feed payload (feed.asks, provisional:true), so surface a dotted
+// signature row per such session here. Stored from each push.
+interface ProvCard { sid: string; name: string; color: { bg: string; fg: string } | null; text: string }
+let provCards: ProvCard[] = [];
 const DONE_KEY = "romp:fleetShowDone";
 function showDone(): boolean { try { return localStorage.getItem(DONE_KEY) === "1"; } catch { return false; } }
 function setShowDone(on: boolean) { try { localStorage.setItem(DONE_KEY, on ? "1" : "0"); } catch { /* ignore */ } }
@@ -364,6 +370,29 @@ function render() {
   refreshCutoffLabel?.();
   const cutoff = cutoffSecs();
 
+  // Provisional signature (the user 2026-06-29): a dotted "about to appear" row for a session working a
+  // not-yet-classified prompt. Spinning swirl + the live gist; clicking opens the session. `flat` adds the
+  // session-name tag on the right (matching renderFleetNode's flat tagging). Provisionals are always current,
+  // so they ignore the recency cutoff.
+  const provBySid = new Map<string, ProvCard>();
+  for (const p of provCards) if (!provBySid.has(p.sid)) provBySid.set(p.sid, p);
+  const makeProvRow = (p: ProvCard, flat: boolean) => {
+    const row = el("div", "ledger-tnode ledger-top fl-prov");
+    row.dataset.act = "open"; row.dataset.sid = p.sid;   // click-safe via the #fleet-list delegate
+    row.title = "this session is working a brand-new prompt — the planner hasn't filed it as a task yet";
+    row.appendChild(el("span", "fl-prov-swirl"));
+    const txt = el("span", "ledger-ttext fl-prov-text"); txt.textContent = p.text;
+    row.appendChild(txt);
+    if (flat && p.name) {
+      const tag = el("span", "fl-sesslabel");
+      const tnm = el("span", "fl-sesslabel-name"); tnm.textContent = p.name;
+      if (p.color?.bg) tnm.style.color = p.color.bg;
+      tag.appendChild(tnm);
+      row.appendChild(tag);
+    }
+    return row;
+  };
+
   // First pass (shared by both views): keep the sessions whose freshest VISIBLE activity is inside the
   // slider window, each paired with its render context + visible roots.
   const survivors: { ctx: SessCtx; visibleRoots: LedgerNode[] }[] = [];
@@ -414,7 +443,26 @@ function render() {
       sec.appendChild(head);
 
       const treeBox = el("div", "ledger-tree");
-      if (!sfolded) { for (const r of visibleRoots) renderFleetNode(ctx, r, 0, treeBox, now, false); sec.appendChild(treeBox); }   // folded → head only
+      if (!sfolded) {
+        for (const r of visibleRoots) renderFleetNode(ctx, r, 0, treeBox, now, false);
+        const prov = provBySid.get(s.sid);               // a provisional row joins this session's tree
+        if (prov) { treeBox.appendChild(makeProvRow(prov, false)); provBySid.delete(s.sid); }
+        sec.appendChild(treeBox);
+      }
+      list.appendChild(sec);
+    }
+    // sessions that are ONLY provisional (no ledger tree → skipped above) still get a minimal section, so the
+    // "about to appear" work is visible. Sorted by name for a stable order.
+    for (const [, p] of Array.from(provBySid).sort((a, b) => (a[1].name || "").localeCompare(b[1].name || ""))) {
+      any = true;
+      const sec = el("div", "fl-session");
+      const head = el("div", "fl-head");
+      head.appendChild(el("span", "fl-workdot"));
+      const nm = el("span", "fl-name"); nm.textContent = p.name; if (p.color?.bg) nm.style.color = p.color.bg;
+      head.appendChild(nm);
+      head.title = "Open this session"; head.dataset.act = "open"; head.dataset.sid = p.sid;
+      sec.appendChild(head);
+      const treeBox = el("div", "ledger-tree"); treeBox.appendChild(makeProvRow(p, false)); sec.appendChild(treeBox);
       list.appendChild(sec);
     }
   } else {
@@ -424,10 +472,12 @@ function render() {
     const flatRoots: { ctx: SessCtx; root: LedgerNode }[] = [];
     for (const { ctx, visibleRoots } of survivors) for (const r of visibleRoots) flatRoots.push({ ctx, root: r });
     flatRoots.sort((a, b) => nodeRecency(b.root) - nodeRecency(a.root));   // newest first
-    if (flatRoots.length) {
+    if (flatRoots.length || provBySid.size) {
       any = true;
       const treeBox = el("div", "ledger-tree fl-flat");
       for (const { ctx, root } of flatRoots) renderFleetNode(ctx, root, 0, treeBox, now, true);
+      for (const [, p] of Array.from(provBySid).sort((a, b) => (a[1].name || "").localeCompare(b[1].name || "")))
+        treeBox.appendChild(makeProvRow(p, true));   // provisional rows ride the flat list too, tagged by session
       list.appendChild(treeBox);
     }
   }
@@ -517,6 +567,9 @@ window.addEventListener("message", (e: MessageEvent) => {
   if (!Array.isArray(m.ledgers)) return;
   loaded = true;
   sessions = m.ledgers as FleetSession[];
+  provCards = (Array.isArray(m.asks) ? m.asks : [])
+    .filter((a: any) => a && a.provisional && a.sid)
+    .map((a: any) => ({ sid: a.sid, name: a.name || "", color: a.color || null, text: a.text || "Working…" }));
   render();
 });
 window.addEventListener("storage", (e: StorageEvent) => { if (e.key === "romp:settings") render(); });   // colormap change → recolour
