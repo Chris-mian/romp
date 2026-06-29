@@ -314,6 +314,15 @@ def run_single(name):
                                 postal_log=sent or [], now=NOW)
 
 
+def run_recs(records):
+    """Run the event model over a raw record list (for ad-hoc, non-golden scenarios)."""
+    with tempfile.TemporaryDirectory() as td:
+        path = Path(td) / (SID + ".jsonl")
+        path.write_text("\n".join(json.dumps(r) for r in records) + "\n")
+        return em.parse_session(str(path), rompuuid=SID, name="impl", dir="/TESTDIR",
+                                candidate_files=[str(path)], states=None, postal_log=[], now=NOW)
+
+
 def run_resume():
     with tempfile.TemporaryDirectory() as td:
         pa = Path(td) / (FSID_A + ".jsonl")
@@ -627,13 +636,40 @@ class BrokenChainFloor(unittest.TestCase):
 
 
 class SlashCommandTurn(unittest.TestCase):
-    def test_command_only_turn_forms_null_trigger_turn(self):
+    def test_command_turn_is_tracked_and_flagged(self):
+        # the user 2026-06-29: a slash command is no longer dropped — its invocation is a `command`-flagged
+        # user atom that OPENS a tracked turn (so it shows in the chat/timeline + counts as working), with the
+        # model work absorbed into that turn. The `command` flag is what makes the planner skip it (no goal).
         out = run_scenario("slash_command_turn")
         self.assertEqual(len(out["turns"]), 1)
         turn = out["turns"][0]
-        self.assertIsNone(turn["trigger"], "a slash-command-only turn has a null trigger")
+        self.assertEqual(turn["trigger"], {"uuid": "cmd1"}, "the command invocation opens (triggers) the turn")
         uuids = [a.get("uuid") for a in turn["atoms"]]
-        self.assertEqual(uuids, ["a1"], "the command echo is skipped; the work is not orphaned")
+        self.assertEqual(uuids, ["cmd1", "a1"], "the invocation is an atom; the work absorbs into its turn")
+        cmd = turn["atoms"][0]
+        self.assertEqual(cmd.get("command"), "/code-review", "the invocation atom carries the command flag (the name)")
+        self.assertEqual(_text(cmd), "/code-review", "its display text is the slash command itself")
+        self.assertTrue(turn["ended"], "the turn ends (the model work stopped end_turn) — not stuck working")
+
+    def test_local_command_output_becomes_a_synthetic_assistant_reply(self):
+        # a LOCAL command (e.g. /usage) writes <command-name> then <local-command-stdout> with the output and
+        # NO model turn. The invocation → command user atom; the stdout → a synthetic assistant reply, so the
+        # turn has content + ends naturally and the working signal lifts when the output lands.
+        recs = [
+            {"type": "user", "timestamp": iso(T0), "uuid": "c1", "parentUuid": None,
+             "message": {"role": "user", "content": "<command-name>/usage</command-name>"}},
+            {"type": "user", "timestamp": iso(T0 + 1), "uuid": "o1", "parentUuid": "c1",
+             "message": {"role": "user", "content": "<local-command-stdout>You have 42 credits left.</local-command-stdout>"}},
+        ]
+        out = run_recs(recs)
+        self.assertEqual(len(out["turns"]), 1)
+        turn = out["turns"][0]
+        self.assertEqual([a.get("uuid") for a in turn["atoms"]], ["c1", "o1"])
+        self.assertEqual(turn["atoms"][0].get("command"), "/usage")
+        self.assertEqual(turn["atoms"][1]["type"], "assistant", "the stdout becomes the turn's reply")
+        self.assertTrue(turn["atoms"][1].get("command"), "the output atom is flagged as command output")
+        self.assertIn("42 credits", _text(turn["atoms"][1]))
+        self.assertTrue(turn["ended"], "the turn ends once the output lands")
 
 
 def _text(atom):

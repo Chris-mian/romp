@@ -1503,6 +1503,8 @@ def plan_units(session):
                      and not any(a["type"] == "idle" for a in turn["atoms"]))
         segs = em.segments(turn)
         for si, seg in enumerate(segs):
+            if _seg_command(seg):                         # a slash-command turn — tracked in chat/timeline, but NEVER a goal/feed card
+                continue
             work_text = _unit_text(seg["atoms"])
             if not work_text:
                 continue
@@ -2948,6 +2950,15 @@ def _seg_human(seg):
     atoms = seg.get("atoms") or []
     trig = next((a for a in atoms if a.get("uuid") == seg.get("trigger")), None) or (atoms[0] if atoms else None)
     return bool(trig and trig.get("author") == "human")
+
+
+def _seg_command(seg):
+    """True if this segment is a SLASH-COMMAND turn — its trigger atom carries `command` (the event model
+    flags a "/usage"-style invocation). A command turn is shown in the chat + timeline and counts as working,
+    but the planner NEVER mints a goal / feed card from it (the user 2026-06-29). Mirrors _seg_human's lookup."""
+    atoms = seg.get("atoms") or []
+    trig = next((a for a in atoms if a.get("uuid") == seg.get("trigger")), None) or (atoms[0] if atoms else None)
+    return bool(trig and trig.get("command"))
 
 
 def _seg_followup(seg):
