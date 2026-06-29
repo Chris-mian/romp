@@ -25,6 +25,10 @@ test("the swirl + caption covers awaiting, provisional, and re-check — shown w
   assert.match(FEED, /if \(aw && !it\.waitingOn\) \{\s*\n\s*spinCaption = aw\.why \|\| "Waiting on work it dispatched…";/);
   assert.match(FEED, /\} else if \(it\.provisional && it\.column === "working"\) \{\s*\n\s*spinCaption = "Working…";/);
   assert.match(FEED, /\} else if \(it\.recheck\) \{\s*\n\s*spinCaption = "Re-checking…";/);
+  // a resolved card awaiting its distiller line → "Distilling…" (the user 2026-06-29) — the executable rule is
+  // distillPending (distiller-line.test.ts); here we just pin that the card branch uses it + sets the caption
+  assert.match(FEED, /\} else if \(distillPending\(it\.column === "completed", it\.column === "needs_input", it\.summary, it\.blockSummary, !!it\.blocked\)\) \{[\s\S]*?spinCaption = "Distilling…";/);
+  assert.match(FEED, /import \{ distillText, applyDistillLine, distillPending \} from "\.\/distiller-line";/);
   assert.match(FEED, /a\._awaitSpin\.style\.display = spinCaption \? "" : "none";/);
   assert.match(FEED, /a\._awaitWhy\.textContent = spinCaption; a\._awaitSpin\.title = spinTip \|\| spinCaption;/);
 });

@@ -5,7 +5,7 @@
 // through these functions, so this is the single executable source of truth for "is the distiller shown?".
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
-import { distillText, applyDistillLine } from "./distiller-line";
+import { distillText, applyDistillLine, distillPending } from "./distiller-line";
 
 // ── distillText: the rule, executed ───────────────────────────────────────────────────────────────────────
 test("a COMPLETED item shows the distiller's takeaway (summary)", () => {
@@ -65,4 +65,25 @@ test("applyDistillLine shows the blockSummary on a blocked card", () => {
   applyDistillLine(el, false, true, null, "Decide A vs B");
   assert.equal(el.textContent, "Decide A vs B");
   assert.equal(el.style.display, "");
+});
+
+// ── distillPending: the "distiller is running → show the spinning swirl" rule, executed (the user 2026-06-29) ──
+test("a COMPLETED card is distill-PENDING while its summary is null (distiller running → spinner)", () => {
+  assert.equal(distillPending(true, false, null, null), true, "no summary yet → pending");
+  assert.equal(distillPending(true, false, undefined, null), true, "undefined summary → pending");
+});
+
+test("a COMPLETED card is NOT pending once the distiller settled — produced OR gave up", () => {
+  assert.equal(distillPending(true, false, "Shipped X", null), false, "produced takeaway → line shows, no spin");
+  assert.equal(distillPending(true, false, "", null), false, "gave-up '' sentinel → no spin, no line");
+});
+
+test("a BLOCKED card is distill-PENDING while its blockSummary is null — but NOT when live-blocked (on you)", () => {
+  assert.equal(distillPending(false, true, null, null), true, "awaiting decision brief → pending");
+  assert.equal(distillPending(false, true, null, "Decide A vs B"), false, "brief produced → no spin");
+  assert.equal(distillPending(false, true, null, null, true), false, "live permission/picker block is ON YOU → no distill spin");
+});
+
+test("an open/working card (neither completed nor blocked) is never distill-pending", () => {
+  assert.equal(distillPending(false, false, null, null), false);
 });

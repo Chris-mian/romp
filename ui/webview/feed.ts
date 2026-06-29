@@ -6,7 +6,7 @@
 // Rendering is KEYED + INCREMENTAL: cards are kept alive across the host's live
 // pushes and updated in place — never torn down — so hovering one doesn't flicker
 // when the fleet streams new deliverables in.
-import { distillText, applyDistillLine } from "./distiller-line";
+import { distillText, applyDistillLine, distillPending } from "./distiller-line";
 
 interface FeedItem {
   itemId: string;
@@ -729,6 +729,16 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   } else if (it.recheck) {
     spinCaption = "Re-checking…";
     spinTip = "You've replied to this blocked sub-goal, so it's no longer waiting on you. The judge will resolve it or re-block it on the next pass; it's dashed (de-urgented) until then.";
+  } else if (distillPending(it.column === "completed", it.column === "needs_input", it.summary, it.blockSummary, !!it.blocked)) {
+    //  • DISTILLING (the user 2026-06-29) — a resolved card whose distiller hasn't produced its line yet:
+    //    a completed goal awaiting its takeaway (summary), or a blocked goal awaiting its decision brief
+    //    (blockSummary). The same swirl spins in the distiller-line spot until the line lands, so a card that
+    //    "is in motion" (the distiller LLM is running) reads as busy rather than blank. Excludes a live
+    //    permission/picker block (on YOU). distillPending lives in ./distiller-line so the test EXECUTES it.
+    spinCaption = "Distilling…";
+    spinTip = it.column === "completed"
+      ? "Summarizing what was accomplished — the distiller is writing this goal's key takeaway; it'll appear here in a moment."
+      : "Preparing the decision brief — the block-distiller is summarizing what you need to decide; it'll appear here in a moment.";
   }
   a._awaitSpin.style.display = spinCaption ? "" : "none";
   if (spinCaption) { a._awaitWhy.textContent = spinCaption; a._awaitSpin.title = spinTip || spinCaption; }

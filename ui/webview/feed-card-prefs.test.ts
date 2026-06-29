@@ -21,7 +21,7 @@ test("the card shows the DISTILLER's line (summary/blockSummary) but NO why/gene
   // distiller-line.test.ts (completed→summary, blocked→blockSummary, hidden when empty). These pins just
   // confirm the card creates the element and routes through that single rule.
   assert.match(FEED, /const distill = el\("div", "fask-distill"\)/);
-  assert.match(FEED, /import \{ distillText, applyDistillLine \} from "\.\/distiller-line"/);
+  assert.match(FEED, /import \{ distillText, applyDistillLine, distillPending \} from "\.\/distiller-line"/);
   assert.match(FEED, /applyDistillLine\(a\._distill[^)]*it\.column === "completed", it\.column === "needs_input",\s*it\.summary, it\.blockSummary\)/);
   // but the planner's why-rationale AND the stuck "(generating…)" placeholder stay GONE (the user 2026-06-27/29)
   assert.doesNotMatch(FEED, /const setAutoLine =/);
