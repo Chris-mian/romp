@@ -1121,6 +1121,14 @@ def rollup_status(store, session_closed):
         return nodes[nid].get("nodeComplete") or (bool(kids) and all(is_complete(c) for c in kids))
 
     focus = top_ancestor(store["lastNode"]) if store.get("lastNode") in nodes else None
+    # settledAt = WHEN a top first entered the Completed column — the session's latest activity at the moment
+    # it settled (focus moved on / the session closed), NOT when its nodeComplete was stamped. A goal can sit
+    # nodeComplete-but-still-focus for many segments; its `mt` froze at the done op, but the CARD only enters
+    # Completed at settlement, possibly much later. Ordering the column by the stale `mt` dropped a just-moved
+    # card ABOVE older completions instead of at the bottom (the user 2026-06-29). Global max mt = the latest
+    # segment in this store = the settlement instant when focus has moved to a newer top. Stamped ONCE
+    # (setdefault) so it freezes the entry order; cleared by _reopen so a re-completion re-stamps.
+    latest_t = max((max(nd.get("mt", 0) or 0, nd.get("t", 0) or 0) for nd in nodes.values()), default=0)
     status = {}
     for nid in children.get(None, []):                # precedence: cleared > blocked > followup-pending > complete+settled > working
         settled = (nid != focus) or session_closed
@@ -1141,6 +1149,8 @@ def rollup_status(store, session_closed):
             # the judge clears by re-asserting the TOP's nodeComplete (top-down done verdict), so this still
             # drops the stale flag there.
             if nodes[nid].get("nodeComplete") and (settled or nodes[nid].get("settledDone")):
+                if not nodes[nid].get("settledDone"):     # the FIRST settlement → freeze its column-entry time
+                    nodes[nid]["settledAt"] = latest_t    # (transition only; a legacy completed top keeps the mt fallback)
                 nodes[nid]["settledDone"] = True
                 nodes[nid].pop("followupPending", None)   # resolved → drop the stale optimistic chip
                 status[nid] = "completed"
@@ -1153,6 +1163,8 @@ def rollup_status(store, session_closed):
         # clears nodeComplete). The FIRST completion still needs the real settled gate, so nothing
         # completes prematurely while the session is actively working under it pre-settle.
         elif is_complete(nid) and (settled or nodes[nid].get("settledDone")):
+            if not nodes[nid].get("settledDone"):         # the FIRST settlement → freeze its column-entry time
+                nodes[nid]["settledAt"] = latest_t        # (transition only; a legacy completed top keeps the mt fallback)
             nodes[nid]["settledDone"] = True
             status[nid] = "completed"
         else:
@@ -1561,6 +1573,7 @@ def _reopen(store, gid):
     while x is not None:
         nodes[x]["blocked"] = False
         nodes[x].pop("settledDone", None)              # genuine reopen clears the sticky-completed marker → back to working
+        nodes[x].pop("settledAt", None)                # ...and its column-entry stamp, so a re-completion re-stamps (back to the bottom)
         x = nodes.get(x, {}).get("parentId")
     # Un-resolve the steps rollup_status auto-rolled under this goal (rolledUp) — else they'd stay
     # complete/cleared and bottom-up is_complete would immediately RE-complete the reopened top. Only the

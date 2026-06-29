@@ -1371,6 +1371,44 @@ class PlanRollup(unittest.TestCase):
         self.assertEqual(s["status"][g1], "completed", "complete AND no longer the focus -> completed")
         self.assertEqual(s["status"][g2], "working")
 
+    def test_settled_top_stamps_settledAt_when_it_enters_completed_not_when_doned(self):
+        # The Completed-column ordering bug (the user 2026-06-29): a top's `mt` froze at its done op, but it
+        # only ENTERS the Completed column later, when the focus moves on (it settles). Sorting the column by
+        # that stale `mt` dropped a just-moved card above older completions. settledAt records the SETTLEMENT
+        # instant (the session's latest activity then), so the feed sorts it to the bottom.
+        s = _store()
+        self._mint(s, "s1", T0, "G1")
+        self._done(s, "s2", T0 + 10, 1)                          # G1 done — its mt freezes at T0+10
+        self._mint(s, "s3", T0 + 20, "G2")                       # focus moves to G2 → G1 settles HERE, at T0+20
+        g1 = s["placements"]["s1"]
+        jd.rollup_status(s, session_closed=False)
+        self.assertEqual(s["status"][g1], "completed")
+        self.assertEqual(s["nodes"][g1].get("settledAt"), T0 + 20,
+                         "settledAt = the settlement instant (latest activity), NOT the done-op mt (T0+10)")
+        # FROZEN: later activity must not bump an already-settled card's column-entry time
+        self._mint(s, "s4", T0 + 90, "G3")
+        jd.rollup_status(s, session_closed=False)
+        self.assertEqual(s["nodes"][g1].get("settledAt"), T0 + 20, "settledAt is stamped once and frozen")
+        # a genuine reopen clears it so a re-completion re-stamps (re-enters the column at the bottom)
+        jd._reopen(s, g1)
+        self.assertIsNone(s["nodes"][g1].get("settledAt"), "reopen clears the column-entry stamp")
+
+    def test_legacy_completed_top_is_not_retroactively_stamped(self):
+        # Safety: a top that settled BEFORE this fix has settledDone but no settledAt. The judge must NOT
+        # back-stamp it (only the genuine first-settlement transition stamps), else every pre-existing
+        # completed card would jump to the bottom at once on the next pass. It keeps the done-mt fallback.
+        s = _store()
+        self._mint(s, "s1", T0, "G1")
+        self._done(s, "s2", T0 + 10, 1)
+        self._mint(s, "s3", T0 + 20, "G2")
+        g1 = s["placements"]["s1"]
+        s["nodes"][g1]["settledDone"] = True                     # already settled in a prior (pre-fix) pass
+        s["nodes"][g1].pop("settledAt", None)
+        jd.rollup_status(s, session_closed=False)
+        self.assertEqual(s["status"][g1], "completed")
+        self.assertIsNone(s["nodes"][g1].get("settledAt"),
+                          "a legacy already-settled top is left unstamped — no mass reshuffle on deploy")
+
     def test_focus_complete_goal_held_until_session_closed(self):
         s = _store()
         self._mint(s, "s1", T0, "G")

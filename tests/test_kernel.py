@@ -798,6 +798,31 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(card["doneWhy"], "shipped the fix",
                          "the completed card surfaces the most-recently-completed node's doneWhy")
 
+    def test_feed_completed_card_time_is_when_it_entered_the_column_not_the_done_mt(self):
+        # Completed-column ordering (the user 2026-06-29): the column sorts by card.t oldest-at-top, so a
+        # just-completed card belongs at the BOTTOM. But a goal's done `mt` froze when it was marked done,
+        # which can lag the moment it ENTERS the column (settlement). The judge stamps settledAt at
+        # settlement; build_feed must key the completed card's time off it, NOT the older done mt — else the
+        # card lands above more-recent completions (the reported "moved into the top" bug).
+        top, s1 = (SID + ":top", SID + ":s1")
+        def gn(nid, text, parent, **kw):
+            d = {"id": nid, "text": text, "parentId": parent, "nodeComplete": False,
+                 "blocked": False, "cleared": False, "trail": [], "t": T0, "mt": T0}
+            d.update(kw); return d
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+            "rompUuid": SID, "seq": 2, "lastNode": None,
+            # done long ago (mt T0+40) but it only settled into Completed at T0+500 — its card time = T0+500
+            "nodes": {
+                top: gn(top, "the goal", None, nodeComplete=True, doneWhy="done", mt=T0 + 40, settledAt=T0 + 500),
+                s1:  gn(s1, "a step", top, nodeComplete=True, mt=T0 + 20),
+            },
+            "placements": {}, "status": {top: "completed"}}))
+        card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == top)
+        self.assertEqual(card["column"], "completed")
+        self.assertEqual(card["t"], T0 + 500,
+                         "the card sorts by when it ENTERED Completed (settledAt), not the older done mt (T0+40)")
+        self.assertEqual(card["created"], T0, "created still records the true mint time")
+
     def test_feed_distiller_summary_rides_modal_tree_node(self):
         # The distiller's key takeaway shows in the MODAL, not as the card subline (the user 2026-06-17):
         # the card keeps doneWhy as its subline, while every modal tree node also carries `summary` so the
@@ -2020,6 +2045,27 @@ class ViewBuilder(unittest.TestCase):
         m2 = km.build_session(SID, NOW + 2)
         self.assertNotEqual(m2["status"]["state"], "compacting", "a compact_boundary clears the optimistic cue")
         self.assertNotIn(SID, km._compact_clicked, "the flag is popped once the boundary lands")
+
+    def test_compacting_beats_blocked_when_user_compacts_an_api_errored_session(self):
+        # The reported bug (the user 2026-06-29): a session whose context filled died on an API error, the
+        # user clicked Compact to recover, and the chip stayed "blocked" the whole compaction — no sign the
+        # compact was happening (worst on SDK sessions, which have no tmux 'compacting' state, so the chip
+        # rides entirely on the optimistic /compact flag). The in-flight compaction MUST win over blocked.
+        km._api_err_cache.clear()
+        km._compact_clicked.clear()
+        with self.tpath.open("a") as f:
+            f.write(json.dumps(apierr_line(T0 + 60, "e1", "a2")) + "\n")
+        self.assertEqual(km.build_session(SID, NOW)["status"]["state"], "blocked",
+                         "fixture sanity: the API error alone files the chip under blocked")
+        km._compact_clicked[SID] = NOW - 5                    # user clicks Compact on the blocked session
+        self.assertEqual(km.build_session(SID, NOW)["status"]["state"], "compacting",
+                         "the compaction the user just kicked off surfaces, not the stale blocked chip")
+        # and once the compaction lands a boundary, the optimistic cue clears (back to blocked until retried)
+        with self.tpath.open("a") as f:
+            f.write(json.dumps({"type": "system", "subtype": "compact_boundary",
+                                "timestamp": iso(NOW + 1), "uuid": "cb1", "parentUuid": "e1"}) + "\n")
+        self.assertNotEqual(km.build_session(SID, NOW + 2)["status"]["state"], "compacting",
+                            "a compact_boundary clears the optimistic cue even on an API-errored session")
 
     def test_api_error_chat_card_and_blocked_chip(self):
         # an API error as the last record → a {kind:"apiError"} card at the bottom + the chip flips to

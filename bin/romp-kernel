@@ -4603,6 +4603,12 @@ def build_feed(now, tmux=None):
                 dts = [nodes[x].get("mt", nodes[x]["t"]) for x in _subtree(nid) if _closure_done(x)]
                 if dts:
                     disp_t = max(dts)
+                # settledAt = when the card actually ENTERED the Completed column (the judge stamps it at
+                # settlement, which can lag the done op's mt by many segments). The column sorts by `t`
+                # oldest-at-top, so using settledAt drops a just-settled card to the BOTTOM where the eye
+                # expects it, instead of above older completions whose stale `mt` was even further back (the
+                # user 2026-06-29). Falls back to the completion mt for legacy stores with no settledAt.
+                disp_t = max(disp_t, nodes[nid].get("settledAt") or 0)
             elif col == "blocked":
                 bts = [nodes[x].get("mt", nodes[x]["t"]) for x in _subtree(nid)
                        if nodes[x].get("blocked") and not _closure_done(x)]
