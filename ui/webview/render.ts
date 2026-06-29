@@ -100,7 +100,7 @@ type ChatEvent = (
 interface TodoTask { id: string; subject: string; activeForm?: string; status: string }
 
 type ChipState = "working" | "ready" | "awaiting" | "idle" | "closed" | "compacting" | "blocked" | "retrying";
-interface Status { state: ChipState; sinceEpoch: number | null; effort?: string; model?: string; mode?: string; ctx?: string; ctxColor?: number[]; faded?: boolean; backend?: string; }   // backend = "tmux" | "sdk" (the kernel's _session_backend) → shown in the tab-title hover tooltip; ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side
+interface Status { state: ChipState; sinceEpoch: number | null; effort?: string; model?: string; mode?: string; ctx?: string; ctxColor?: number[]; faded?: boolean; backend?: string; apiTooLong?: boolean; }   // backend = "tmux" | "sdk"; apiTooLong = the "blocked" is a "prompt is too long" error (on you → red tab) vs a transient API error (amber/retrying); ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side
 interface Color { bg: string; fg: string; }
 // A run_in_background task surfaced in the #bg-tasks box (the kernel's _bg_tasks): a one-line summary +
 // status, expandable to the command + its output. status = running | completed | failed.
@@ -1656,7 +1656,9 @@ function renderTabs() {
     }
     const st = s.status.state;
     if (st === "working") tab.classList.add("tab-working");
-    else if (st === "blocked") tab.classList.add("tab-blocked");     // red: stopped on an API error
+    // "blocked" is an API error. A "prompt is too long" one is on YOU (compact) → alarm-red dashed; a TRANSIENT
+    // API error is auto-retrying and needs no attention → the amber retrying treatment, not red (the user 2026-06-29).
+    else if (st === "blocked") tab.classList.add(s.status.apiTooLong ? "tab-blocked" : "tab-retrying");
     else if (st === "awaiting") tab.classList.add("tab-awaiting");
     else if (st === "retrying") tab.classList.add("tab-retrying");       // amber: soft-blocked on an API auto-retry
     else if (st === "compacting") tab.classList.add("tab-compacting");

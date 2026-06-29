@@ -78,6 +78,7 @@ interface AskItem {
   // the owning session is live-blocked (permission/picker, or stopped on an API error) ON this card's
   // work → the card itself files under BLOCKED (the user's ruling 2026-06-11; apiError 2026-06-16).
   blocked?: { state: string; since?: number; what: string; status?: number; category?: string; text?: string;
+              tooLong?: boolean;   // apiError: a "prompt is too long" error (on you → compact) vs a transient API error
               toName?: string; toSid?: string; fromName?: string; msgId?: string; body?: string };   // parkedHandoff adds to*/from*
   blockWhy?: string;                               // planner's one-sentence "why blocked" → now the HOVER tooltip on the blocked card's auto-line (the user 2026-06-18)
   doneWhy?: string;                                // planner's one-sentence "why done" → now the HOVER tooltip on the completed card's auto-line (the user 2026-06-18)
@@ -709,7 +710,9 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   a._apiBadge.style.display = isApiErr ? "" : "none";
   a._apiRetry.style.display = isApiErr ? "" : "none";
   if (isApiErr && it.blocked) {
-    a._apiBadge.textContent = it.blocked.status ? `⚠ API error · ${it.blocked.status}` : "⚠ API error";
+    // "prompt is too long" is on you (compact); other API errors are transient (auto-retrying) — the user 2026-06-29
+    a._apiBadge.textContent = it.blocked.tooLong ? "⚠ Prompt too long"
+      : it.blocked.status ? `⚠ API error · ${it.blocked.status}` : "⚠ API error";
     a._apiBadge.title = it.blocked.text || it.blocked.what;
     a._apiRetry.disabled = false; a._apiRetry.textContent = "Retry";
     a._apiRetry.onclick = (ev: Event) => {

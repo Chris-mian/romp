@@ -2747,8 +2747,12 @@ def _api_error(path):
                         text = (" ".join(b.get("text", "") for b in c
                                          if isinstance(b, dict) and b.get("type") == "text").strip()
                                 if isinstance(c, list) else (c.strip() if isinstance(c, str) else ""))
+                        # "prompt is too long" is NOT a transient API error (the user 2026-06-29): it means the
+                        # context needs compacting → it's on YOU. Flag it so it (and only it) blocks; other API
+                        # errors are transient (auto-retry recovers them) and stay in Working.
                         err = {"text": text, "status": o.get("apiErrorStatus"),
-                               "category": o.get("error") or "unknown"}
+                               "category": o.get("error") or "unknown",
+                               "tooLong": "too long" in text.lower()}
                     elif (isinstance(c, list) and any(isinstance(b, dict)
                             and b.get("type") in ("text", "tool_use", "thinking") for b in c)) \
                             or (isinstance(c, str) and c.strip()):
@@ -3882,13 +3886,24 @@ def build_session(sid, now, tmux=None):
         # blue mid-work + flicker). tmux supplies only what the transcript can't see: permission
         # (awaiting) and compacting, plus the model/effort/ctx metadata.
         st = tm["state"]
-        # blocked (API error) is the strongest signal — the turn ended in an error, so it beats the live
-        # tmux states (the session can't simultaneously be compacting or at a permission prompt).
+        # COMPACTING wins over blocked (API error). The classic case: the context fills, the turn dies with
+        # an API error, and that is EXACTLY when the user clicks Compact to recover — so _compacting (incl.
+        # the optimistic just-clicked cue) is the in-flight ACTION resolving the error and MUST surface. With
+        # blocked checked first, the click gave zero feedback and the chip sat on "blocked" the whole
+        # compaction (the user 2026-06-29; worst on SDK sessions, which have no tmux @claude-state='compacting'
+        # so the chip rides entirely on the optimistic flag). Flipping off "blocked" also halts the render-side
+        # auto-retry loop while we compact; the API-error CARD stays put, so its Retry is still there if the
+        # compaction stalls. After that, blocked is the strongest signal — the turn ended in an error, so it
+        # beats the live tmux states (the session can't simultaneously be at a permission prompt mid-error).
         compacting = _compacting(sid, st, session, now, tm["since"])   # event-corroborated: a stuck @claude-state
-        chip = ("blocked" if aerr else "awaiting" if st in _NEEDS_INPUT_STATES else "compacting" if compacting   # can't pin it
+        chip = ("compacting" if compacting else "blocked" if aerr else "awaiting" if st in _NEEDS_INPUT_STATES   # can't pin it
                 else "retrying" if st == "retrying" else "working" if (open_now or awaiting_why) else "ready")   # api_retry stall (SDK); working = open turn OR awaiting bg work (the user 2026-06-24)
         faded = chip == "ready" and bool(tm["since"]) and now - tm["since"] > 3600
+        # apiTooLong distinguishes a "prompt is too long" block (on YOU → red dashed tab) from a TRANSIENT API
+        # error (auto-retrying → the tab renders amber/retrying, not alarm-red). chip stays "blocked" either way
+        # so the client auto-retry still fires + recovers the transient ones (the user 2026-06-29).
         status = {"state": chip, "sinceEpoch": since_ms, "faded": faded,
+                  "apiTooLong": bool(aerr and aerr.get("tooLong")),
                   "backend": _session_backend(sid, tm),
                   "model": tm["model"], "effort": tm["effort"], "mode": tm.get("mode", ""),
                   "ctx": str(tm["context"]) if tm["context"] is not None else "",
@@ -4605,11 +4620,12 @@ def build_feed(now, tmux=None):
             # awaiting is a flavor of WORKING → the working column (never needs-input), card time = mint t; the awaiting badge carries the why.
             # A RE-CHECK'd soft-block also drops to WORKING (the user 2026-06-27): once you've replied it's the
             # agent's move, not yours, so it leaves the needs-input column entirely (still dotted + "↩ re-checking"
-            # so you can see it pending). An API error is NOT blocking either (the user 2026-06-29): it's a
-            # transient stall, so the card STAYS in its natural column (working) and just shows the "⚠ API error"
-            # chip + Retry — it does not move to needs-input. Only a genuine soft block (col stays blocked when
-            # NOT recheck) or a live permission/picker floor keeps needs_input.
-            column = ("needs_input" if (col == "blocked" and not recheck)
+            # so you can see it pending). A TRANSIENT API error is NOT blocking either (the user 2026-06-29):
+            # auto-retry recovers it, so the card STAYS in Working with the "⚠ API error" chip. But a "prompt
+            # is too long" error IS on you (compact needed) → it floors to needs-input like a real block. So
+            # only api_top WHEN tooLong, or a genuine soft block (col blocked & not recheck), keeps needs_input.
+            api_block = (nid == api_top and bool(aerr and aerr.get("tooLong")))
+            column = ("needs_input" if (api_block or (col == "blocked" and not recheck))
                       else "completed" if col == "completed" else "working")
             had_working = had_working or column == "working"
             # summaryAnchorUuid: the biggest contiguous block of assistant text ANYWHERE in this goal's work
@@ -4637,8 +4653,9 @@ def build_feed(now, tmux=None):
                 "summaryAnchorUuid": _sa_u,    # click the summary line → the biggest text block in the work span (the user 2026-06-22)
                 "blocked": ({"state": "apiError", "since": (tm.get("since") if tm else None),
                              "status": aerr.get("status"), "category": aerr.get("category"),
-                             "text": aerr.get("text"),
-                             "what": "this session stopped on an API error — Retry to resume"} if nid == api_top
+                             "text": aerr.get("text"), "tooLong": bool(aerr.get("tooLong")),
+                             "what": ("this session's prompt is too long — compact it to continue" if aerr.get("tooLong")
+                                      else "this session stopped on an API error — Retry to resume")} if nid == api_top
                             else {"state": perm_state, "since": tm.get("since"),
                                   "what": ("this session is stopped awaiting your input" if perm_state == "picker"
                                            else "this session is stopped awaiting your approval")} if nid == perm_top

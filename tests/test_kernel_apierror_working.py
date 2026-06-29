@@ -1,6 +1,6 @@
-"""An API error is a transient stall, not a block (the user 2026-06-29): build_feed no longer floors the
-api-error focus card under needs-input — it stays in its natural column (working) and just carries the
-'apiError' blocked badge (the feed renders that as the ⚠ chip + Retry). Source pin on build_feed."""
+"""API errors (the user 2026-06-29): a TRANSIENT API error is not blocking — its card stays in Working with the
+⚠ chip and auto-retry recovers it. BUT a "prompt is too long" error is on YOU (compact needed), so it (and only
+it) floors the focus card to needs-input and gets the alarm-red tab. Source pins on _api_error + build_feed."""
 import inspect
 import os
 import unittest
@@ -14,17 +14,24 @@ km = SourceFileLoader("romp_kernel", os.path.join(BIN, "romp-kernel")).load_modu
 
 
 class ApiErrorWorking(unittest.TestCase):
-    def test_api_top_no_longer_forces_needs_input(self):
-        src = inspect.getsource(km.build_feed)
-        # the column condition no longer includes `nid == api_top` — an API error doesn't move the card
-        self.assertIn('column = ("needs_input" if (col == "blocked" and not recheck)', src)
-        self.assertNotIn('"needs_input" if (nid == api_top', src)
+    def test_api_error_carries_a_tooLong_flag(self):
+        src = inspect.getsource(km._api_error)
+        self.assertIn('"tooLong": "too long" in text.lower()', src)
 
-    def test_api_top_still_computed_for_the_badge_and_awaiting_exclusion(self):
-        # api_top is still derived (it carries the apiError blocked badge + excludes the card from the awaiting floor)
+    def test_only_tooLong_floors_the_card_to_needs_input(self):
         src = inspect.getsource(km.build_feed)
-        self.assertIn("api_top", src)
-        self.assertIn('"state": "apiError"', src)
+        # api_block fires ONLY for a "prompt too long" api_top; a transient error does NOT move the card
+        self.assertIn('api_block = (nid == api_top and bool(aerr and aerr.get("tooLong")))', src)
+        self.assertIn('column = ("needs_input" if (api_block or (col == "blocked" and not recheck))', src)
+
+    def test_status_marks_tooLong_so_the_tab_can_color_it(self):
+        src = inspect.getsource(km.build_session)
+        self.assertIn('"apiTooLong": bool(aerr and aerr.get("tooLong"))', src)
+
+    def test_the_card_blocked_badge_distinguishes_tooLong(self):
+        src = inspect.getsource(km.build_feed)
+        self.assertIn('"tooLong": bool(aerr.get("tooLong"))', src)
+        self.assertIn("prompt is too long — compact it to continue", src)
 
 
 if __name__ == "__main__":
