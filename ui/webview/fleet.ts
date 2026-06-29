@@ -437,10 +437,7 @@ function mountControls() {
   sl.addEventListener("input", () => { setCutoffPos(1000 - parseInt(sl.value, 10)); paint(); render(); });
   paint();
   right.appendChild(lab); right.appendChild(sl);
-  // a thin vertical divider, then the "Show completed" checkbox on the SAME row.
-  const sep = el("span");
-  sep.style.cssText = "width:1px;align-self:stretch;background:rgba(255,255,255,0.14);margin:1px 0";
-  right.appendChild(sep);
+  // "Show completed" checkbox on the SAME row (no divider — the cluster gap separates them).
   const lbl = el("label", "fl-foot-toggle") as HTMLLabelElement;
   const cb = document.createElement("input");
   cb.type = "checkbox";
