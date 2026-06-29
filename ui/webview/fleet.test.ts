@@ -166,3 +166,24 @@ test("fleet nodes DEEP-LINK to the same place the feed modal does (the user 2026
 test("it's a MODULE (own scope) so it doesn't collide with feed.ts's globals", () => {
   assert.match(SRC, /export \{\};/);
 });
+
+test("before the first payload, the fleet shows the LOADER — not a false 'no work' (the user 2026-06-29)", () => {
+  // `loaded` flips true only when a feed payload arrives; render() bails BEFORE the empty path while !loaded,
+  // leaving #fleet-list empty so the page's romp loader (_pane_spin over #fleet-list) keeps holding the screen.
+  assert.match(SRC, /let loaded = false;/);
+  assert.match(SRC, /loaded = true;\s*\/\/ the first real payload landed/);
+  assert.match(SRC, /if \(!loaded\) \{ emptyShown = false; return; \}/);
+});
+
+test("genuinely-empty fleet fades in the romp WORDMARK (like the feed), once per empty transition", () => {
+  const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
+  // the empty branch mints .fl-wordmark (not the old text), with .no-anim when it was ALREADY empty (no replay)
+  assert.match(SRC, /el\("div", "fl-wordmark" \+ \(emptyShown \? " no-anim" : ""\)\)/);
+  assert.match(SRC, /emptyShown = true;/);
+  assert.match(SRC, /\} else \{\s*\n\s*emptyShown = false;\s*\n\s*\}/);   // reset when work reappears
+  // the wordmark + its one-time fade live in styles.css (the fleet page loads /dist/styles.css)
+  assert.match(CSS, /\.fl-wordmark \{[\s\S]*?url\(\.\.\/media\/romp-wordmark\.png\)/);
+  assert.match(CSS, /animation: fl-wordmark-in 1s ease both;/);
+  assert.match(CSS, /\.fl-wordmark\.no-anim \{ animation: none; \}/);
+  assert.match(CSS, /@keyframes fl-wordmark-in \{ from \{ opacity: 0; \} to \{ opacity: 0\.75; \} \}/);
+});

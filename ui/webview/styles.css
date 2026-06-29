@@ -1389,3 +1389,18 @@ pre.has-copy:hover .code-copy, .code-copy:focus-visible { opacity: 0.9; }
 .glow-ruler-band { position: absolute; left: 1px; right: 1px; border-radius: 3px;
   background: color-mix(in srgb, var(--active-accent, #fff) 50%, transparent);
   box-shadow: 0 0 3px color-mix(in srgb, var(--active-accent, #fff) 40%, transparent); }
+
+/* Fleet inbox-zero (the user 2026-06-29): when the fleet has loaded but has no open work, show the romp
+   tri-color WORDMARK centered + faded in — the SAME calm at-rest mark as the feed's .feed-empty, mirrored
+   here because the fleet page loads styles.css (not feed.css). The fade plays ONCE on the not-empty→empty
+   transition (fleet.ts adds .no-anim on a still-empty re-render) so it doesn't replay on every push. Before
+   the FIRST payload the list is left empty instead — the page's romp loader (_pane_spin) holds the screen. */
+.fl-wordmark {
+  min-height: 60vh; margin: 8px 12px;
+  background-image: url(../media/romp-wordmark.png);
+  background-repeat: no-repeat; background-position: center center; background-size: 100% auto;
+  opacity: 0.75; user-select: none;
+  animation: fl-wordmark-in 1s ease both;
+}
+.fl-wordmark.no-anim { animation: none; }
+@keyframes fl-wordmark-in { from { opacity: 0; } to { opacity: 0.75; } }

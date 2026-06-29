@@ -25,6 +25,11 @@ const vscodeApi =
   typeof (window as any).acquireVsCodeApi === "function" ? (window as any).acquireVsCodeApi() : undefined;
 
 let sessions: FleetSession[] = [];
+// Whether the FIRST feed payload has arrived (the user 2026-06-29): before it has, the fleet must NOT claim
+// "no work" — that's the loading gap, where the data simply hasn't landed yet. We leave #fleet-list empty so
+// the page's romp loader (_pane_spin) stays up, exactly like the other panes, until real data arrives.
+let loaded = false;
+let emptyShown = false;   // the romp wordmark is currently showing → don't replay its fade-in every push
 const DONE_KEY = "romp:fleetShowDone";
 function showDone(): boolean { try { return localStorage.getItem(DONE_KEY) === "1"; } catch { return false; } }
 function setShowDone(on: boolean) { try { localStorage.setItem(DONE_KEY, on ? "1" : "0"); } catch { /* ignore */ } }
@@ -339,6 +344,11 @@ function render() {
   const list = document.getElementById("fleet-list");
   if (!list) return;
   list.replaceChildren();
+  // BEFORE the first payload: leave the list EMPTY so the page's romp loader (_pane_spin over #fleet-list)
+  // stays up — no child means it never hides — instead of flashing a false "no work" message (the user
+  // 2026-06-29). A WS drop / kernel restart re-shows that same loader (romp:wsdown), so a restart shows the
+  // swirl, not "no tasks".
+  if (!loaded) { emptyShown = false; return; }
   const sd = showDone();
   const grouped = isGrouped();
   curFoldMode = foldMode();   // snapshot the sticky Collapse/Expand mode once for this render
@@ -423,9 +433,16 @@ function render() {
   }
 
   if (!any) {
-    const empty = el("div", "fl-empty");
-    empty.textContent = sd ? "No work across the fleet yet." : "No open work — every session is clear.";
-    list.appendChild(empty);
+    // GENUINELY empty (data loaded, no open work): the romp tri-color WORDMARK, centered + faded in — the
+    // same calm inbox-zero treatment as the feed (the user 2026-06-29). The fade plays ONCE on the
+    // not-empty→empty transition (emptyShown guard), not on every push, since render() rebuilds each time.
+    const wm = el("div", "fl-wordmark" + (emptyShown ? " no-anim" : ""));
+    wm.setAttribute("role", "img");
+    wm.setAttribute("aria-label", sd ? "No work across the fleet yet" : "No open work — every session is clear");
+    list.appendChild(wm);
+    emptyShown = true;
+  } else {
+    emptyShown = false;
   }
 }
 
@@ -493,6 +510,7 @@ function mountControls() {
 window.addEventListener("message", (e: MessageEvent) => {
   const m = e.data;
   if (!m || m.type !== "feed") return;               // Fleet rides the FEED payload (proven channel); reads its `ledgers`
+  loaded = true;                                      // the first real payload landed → past the loading gap
   sessions = Array.isArray(m.ledgers) ? (m.ledgers as FleetSession[]) : [];
   render();
 });
