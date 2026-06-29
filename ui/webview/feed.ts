@@ -758,8 +758,23 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   // brief (it.blockSummary), shown ONLY when produced; never a generating placeholder, never the planner's why.
   // The rule lives in ./distiller-line so distiller-line.test.ts can EXECUTE it (a regex pin let it silently
   // turn off once — the user 2026-06-29). updateAskCard runs every push, so this re-applies on every refresh.
-  applyDistillLine(a._distill as HTMLElement, it.column === "completed", it.column === "needs_input",
+  const distillShown = applyDistillLine(a._distill as HTMLElement, it.column === "completed", it.column === "needs_input",
                    it.summary, it.blockSummary);
+  // The distiller line is a LINK: clicking it jumps to where the takeaway/brief was actually written — the
+  // biggest contiguous assistant-text block in the goal's work span (it.summaryAnchorUuid; kernel
+  // _seg_best_text). This was lost when the line was restored via applyDistillLine (which only sets text), so
+  // the summary read like plain text with no affordance (the user 2026-06-29). stopPropagation so it doesn't
+  // also open the modal (the card-body click). Falls back to non-clickable when there's no anchor.
+  const dl = a._distill as HTMLElement;
+  if (distillShown && it.summaryAnchorUuid) {
+    dl.classList.add("fask-distill-link");
+    dl.title = "jump to where this was written";
+    dl.onclick = (ev: Event) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: it.itemId, sid: it.sid, t: it.t, anchor: "work", anchorUuid: it.summaryAnchorUuid }); };
+  } else {
+    dl.classList.remove("fask-distill-link");
+    dl.onclick = null;
+    dl.removeAttribute("title");
+  }
   // API error → a red "API error" badge + a Retry button that pastes "retry" into the session to resume
   // the stalled turn (the user 2026-06-16). The card STAYS in Working (the user 2026-06-29) — an API error is
   // a transient stall, not a block — so this badge + Retry are the only API-error cue; no column move.
@@ -1247,6 +1262,13 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
     const sum = el("div", "ftree-summary");
     sum.style.paddingLeft = ((depth + 1) * TREE_INDENT_EM) + "em";
     sum.textContent = nodeDistill;
+    // parity with the card's distiller line (the user 2026-06-29): the modal summary is also a LINK — clicking
+    // it follows to where the node resolved (its work anchor, the SAME target as the node's mark/time zones).
+    if (!repeat && node.anchorUuid) {
+      sum.classList.add("ftree-summary-link");
+      sum.title = "jump to where this was written";
+      sum.onclick = goWork;
+    }
     box.appendChild(sum);
   }
   // (the in-feed decision sub-card was removed — a blocked node shows its red BLOCKED marker and

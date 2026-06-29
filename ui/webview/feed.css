@@ -252,6 +252,10 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 /* the DISTILLER's one line on a card (restored 2026-06-29): completed → takeaway, blocked → decision brief.
    No why-rationale line; hidden until the distiller produces. pre-wrap keeps a copy-pasteable artifact intact. */
 .fask-distill { font-size: 0.86em; line-height: 1.4; margin: 1px 0 2px; color: var(--fg); opacity: 0.82; white-space: pre-wrap; overflow-wrap: anywhere; }
+/* the distiller line is a LINK to where its text was written (it.summaryAnchorUuid) — give it the affordance
+   when it's wired (the user 2026-06-29). A subtle rounded hover fill, like the modal's nav zones. */
+.fask-distill-link { cursor: pointer; border-radius: 6px; margin-left: -4px; margin-right: -4px; padding-left: 4px; padding-right: 4px; transition: background 0.1s ease; }
+.fask-distill-link:hover { background: rgba(255, 255, 255, 0.07); opacity: 1; text-decoration: underline; text-underline-offset: 2px; }
 .fask-origin:hover { text-decoration: underline; text-underline-offset: 2px; }
 /* ⏳ AWAITING cue (the user 2026-06-29): a small romp swirl spinning in the distiller-line spot of a WORKING
    card that's waiting on dispatched/delegated work — a glanceable "in flight, not stalled" sign. The swirl
@@ -328,6 +332,8 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 /* the DISTILLER's per-node line in the modal (restored 2026-06-29): a done node's takeaway / a blocked node's
    decision brief. No why-rationale lines (those stay removed); shown only when produced. pre-wrap for artifacts. */
 .ftree-summary { font-size: 0.86em; line-height: 1.45; margin: 2px 0 6px; color: var(--fg); white-space: pre-wrap; overflow-wrap: anywhere; }
+.ftree-summary-link { cursor: pointer; border-radius: 6px; transition: background 0.1s ease; }
+.ftree-summary-link:hover { background: rgba(255, 255, 255, 0.07); text-decoration: underline; text-underline-offset: 2px; }
 .st-done .ftree-mark { color: var(--rel-done); }
 /* a BLOCKED (needs-you) node: the "?" is RED inside a RED ring the SAME 13px size as the ✓ checkbox disc,
    and its label reads "BLOCKED" in red (the user 2026-06-17) — a stronger, unmistakable block signal than
