@@ -5,3 +5,5 @@ site/
 prototypes/romp-timeline-data.js
 __pycache__/
 .DS_Store
+# local Claude Code state — git worktree checkouts (machine-specific), never committed
+.claude/
