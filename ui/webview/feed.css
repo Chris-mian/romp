@@ -39,7 +39,7 @@ html, body {
   background: var(--bg); color: var(--fg);
   font-family: var(--sans); font-size: var(--fs); line-height: 1.5;
 }
-body { display: flex; flex-direction: column; position: relative; }   /* position:relative → anchors the floating #feed-foot */
+body { display: flex; flex-direction: column; position: relative; }   /* column flex: #feed-list flexes, #feed-foot docks below it */
 
 /* ---------- header ---------- */
 /* header bar removed per the user — the columns are self-labeling */
@@ -110,9 +110,9 @@ body { display: flex; flex-direction: column; position: relative; }   /* positio
 #feed-list {
   flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden;
   display: flex; flex-direction: column; gap: 8px;
-  /* the bottom padding clears the FLOATING #feed-foot (below) so a scrolled-to-bottom card is never hidden
-     under it — the footer no longer reserves a full-width row, so the card columns use the full pane height. */
-  padding: 12px 12px 46px;
+  /* #feed-foot now DOCKS below as an in-flow flex item (the user 2026-06-29), so the list no longer needs to
+     reserve space for a float — it just flexes to fill above the bar. */
+  padding: 12px;
   container-type: inline-size;   /* so the columns can stack responsively (see @container below) */
 }
 /* inbox zero → the romp tri-color WORDMARK, centered (the user 2026-06-22; was the plain swirl
@@ -557,18 +557,17 @@ body { display: flex; flex-direction: column; position: relative; }   /* positio
 /* "Follow up" reuses the action-button chrome but hovers BLUE (it reopens the
    card to ASKS — a continuation, not the red destructive Clear) */
 .fdismiss.ffollow:hover { color: #fff; border-color: #2b7fb8; background: #2b7fb8; }
-/* UndoClear — restorative, so it hovers BLUE like Follow up, not Clear's red. Pinned to the
-   TOP-RIGHT of the feed pane (the user 2026-06-14), fixed so it stays put while the list scrolls. */
-/* Clear-all + Undo-clear + the Sub-goals toggle live in #feed-foot — a small bordered sub-pane hugging the
-   buttons in the BOTTOM-RIGHT. It FLOATS (position:absolute) over the bottom-right corner (the user 2026-06-27)
-   rather than sitting in flow: an in-flow footer reserved a full-width row that shortened #feed-list and
-   CLIPPED the card columns early (a dark band below the cut, even though the box is only on the right). Floated,
-   the card columns use the full pane height; #feed-list's bottom padding keeps the last card clear of the box.
-   Undo-clear is right (restorative, blue hover via .ffollow); Clear all sits to its left (destructive, red). */
-#feed-foot { position: absolute; right: 12px; bottom: 12px; z-index: 5; width: fit-content;
-  display: inline-flex; align-items: center; gap: 8px; padding: 4px 8px;
-  border: 1px solid var(--card-border); border-radius: 7px;
-  background: var(--vscode-editorWidget-background, #252526); }   /* opaque so it reads as a panel, never shows a card through */
+/* UndoClear — restorative, so it hovers BLUE like Follow up, not Clear's red. */
+/* Clear-all + Undo-clear + the Sub-goals toggle live in #feed-foot — a DOCKED control bar (the user
+   2026-06-29): its own dedicated rectangle in normal flow at the bottom of the pane, NOT a floating overlay.
+   The body is a column flex, so #feed-list flexes to fill above it and the bar sits below without overlapping
+   a card. Sub-goals toggle sits far-left (margin-right:auto pushes the rest right); Undo-clear is far-right
+   (restorative, blue hover via .ffollow); Clear all to its left (destructive, red). */
+#feed-foot { flex: 0 0 auto; z-index: 5;
+  display: flex; align-items: center; gap: 8px; padding: 6px 12px;
+  border-top: 1px solid var(--card-border);
+  background: var(--vscode-editorWidget-background, #252526); }   /* opaque panel so it reads as a dedicated bar */
+#feed-foot #feed-subgoals { margin-right: auto; }   /* far-left; clear/undo group to the right */
 #feed-foot .fdismiss { font-size: 10.5px; padding: 1px 9px; opacity: 0.95; }
 /* downstream sessions an ask is waiting on (drop points) — experiment
    2026-06-10; live working dot + age per session, newest first */

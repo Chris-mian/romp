@@ -29,6 +29,14 @@ const DONE_KEY = "romp:fleetShowDone";
 function showDone(): boolean { try { return localStorage.getItem(DONE_KEY) === "1"; } catch { return false; } }
 function setShowDone(on: boolean) { try { localStorage.setItem(DONE_KEY, on ? "1" : "0"); } catch { /* ignore */ } }
 
+// "Group by session" (the user 2026-06-29): ON by default = the original by-session sections. OFF = a FLAT
+// chronological list of every session's goals merged together, newest first, each row tagged on the RIGHT
+// with the session it belongs to (.fl-sesslabel). The fold state keys are session-scoped either way, so a
+// node's collapse carries across both modes.
+const GROUP_KEY = "romp:fleetGroupBySession";
+function isGrouped(): boolean { try { return localStorage.getItem(GROUP_KEY) !== "0"; } catch { return true; } }
+function setGrouped(on: boolean) { try { localStorage.setItem(GROUP_KEY, on ? "1" : "0"); } catch { /* ignore */ } }
+
 // Recency cutoff (the user 2026-06-27): a LOGARITHMIC slider hides sessions whose freshest activity is older
 // than the window. Stored as a 0..1000 slider position. The right end is ADAPTIVE (the user 2026-06-27): it
 // tracks the OLDEST session currently in the fleet, so the slider's whole travel always spans the real fleet
@@ -65,6 +73,20 @@ const folded = new Set<string>(), expanded = new Set<string>();   // fold state,
 const fkey = (sid: string, id: string) => sid + "\0" + id;
 
 const sessFolded = new Set<string>();   // sessions whose WHOLE task tree is collapsed, keyed by sid (the user 2026-06-24)
+
+// Bottom-bar Collapse-all / Expand-all (the user 2026-06-29). Collapse-all folds EVERYTHING — every session
+// header and every expandable node — so the view shrinks to just session names (grouped) / top goals (flat).
+// Expand-all clears every manual fold, restoring the DEFAULT auto-shown depth where finished tops still
+// auto-collapse (that's the natural view, not a fully-exploded tree).
+function collapseAll() {
+  folded.clear(); expanded.clear(); sessFolded.clear();
+  for (const s of sessions) {
+    sessFolded.add(s.sid);
+    for (const n of s.ledger?.tree || []) if (n.children && n.children.length) folded.add(fkey(s.sid, n.id));
+  }
+  render();
+}
+function expandAll() { folded.clear(); expanded.clear(); sessFolded.clear(); render(); }
 
 function el(tag: string, cls?: string): HTMLElement { const e = document.createElement(tag); if (cls) e.className = cls; return e; }
 
@@ -192,11 +214,99 @@ function stampSubtreeRecency(tree: LedgerNode[], cur: { t?: number } | null): vo
   for (const n of tree) calc(n);
 }
 
+// Per-session context a node needs to render (its node lookup + live-current time). One per session; in the
+// FLAT view the same renderFleetNode is called with each root's own ctx so nodes from different sessions land
+// in one shared container.
+interface SessCtx { s: FleetSession; byId: Map<string, LedgerNode>; curT?: number; }
+
+// Render node `n` (and its open children) into `container`. Hoisted out of render() so the FLAT (ungrouped)
+// view can merge nodes from many sessions into one list. `flat` adds the session-name tag on the RIGHT of a
+// depth-0 row (the ungrouped view's "which session is this" marker).
+function renderFleetNode(ctx: SessCtx, n: LedgerNode, depth: number, container: HTMLElement, now: number, flat: boolean) {
+  const { s, byId, curT } = ctx;
+  const expandable = !!(n.children && n.children.length);
+  const defaultFold = !!n.done && (depth === 0 || !n.onpath);   // a finished top folds by default
+  const isFolded = expandable && (folded.has(fkey(s.sid, n.id)) || (defaultFold && !expanded.has(fkey(s.sid, n.id))));
+  const row = el("div", "ledger-tnode" + (depth === 0 ? " ledger-top" : "")
+    + (n.current ? " current" : "") + (n.done ? " done" : "")
+    + (n.blocked && !n.done ? " blocked" : "") + (n.derived ? " derived" : "")
+    + (n.cleared ? " cleared" : "") + (n.cleared && n.summary && n.summary.trim() ? " cleared-done" : ""));
+  row.style.paddingLeft = (4 + depth * 15) + "px";
+  const tri = el("span", "ledger-tri" + (expandable ? " nav" : " empty"));
+  tri.textContent = expandable ? (isFolded ? "▶" : "▼") : "";
+  // click-safe: the fold toggle lives on the #fleet-list delegate; this caret just carries its state. The
+  // caret is the innermost data-act, so a click on it folds without also firing the row's "open".
+  if (expandable) { tri.dataset.act = "fold"; tri.dataset.sid = s.sid; tri.dataset.nid = n.id; tri.dataset.folded = isFolded ? "1" : "0"; }
+  // .lz-nav → the pointer cursor (from styles.css), so the checkbox / text / time read as clickable. Each
+  // zone DEEP-LINKS to the same place the feed modal's matching zone does (the user 2026-06-27): the TEXT
+  // jumps to the message that asked for this (goprompt), and a resolved node's MARK + TIME jump to where it
+  // resolved (gowork) — an open node's mark goes to the prompt, its time to the latest work. The zones carry
+  // their own data-act (innermost wins), so a click lands the deep-link; the row's data-act="open" remains
+  // the fallback for a click on the row's empty space. (Delegated via #fleet-list — see ./actions.)
+  const resolved = !!(n.done || n.blocked);
+  const mark = el("span", "ledger-tmark lz-nav");
+  mark.dataset.sid = s.sid; mark.dataset.nid = n.id; mark.dataset.act = resolved ? "gowork" : "goprompt";
+  mark.textContent = n.done ? "✓" : n.blocked ? "⏸" : "";   // open = a hollow CSS ring (no glyph)
+  // restore the ledger box's mark TOOLTIP (the user 2026-06-24): the checkbox leads with WHY it reads the
+  // way it does — explicit vs inferred (roll-up = every sub-step done, roll-down = a resolved parent) vs
+  // dismissed vs blocked vs open — worked out from the children the render already has (no kernel round-trip).
+  const markReason = (): string => {
+    if (!n.done) return n.blocked ? "blocked — needs you" : "not yet done";
+    if (n.cleared) {
+      if (n.summary && n.summary.trim()) return "completed, then dismissed (cleared)";
+      if (n.blockSummary && n.blockSummary.trim()) return "blocked, then dismissed (cleared)";
+      return "dismissed — cleared, never judged done";
+    }
+    if (!n.derived) return "done — explicitly checked off";
+    const kids = (n.children || []).map((id) => byId.get(id)).filter(Boolean) as LedgerNode[];
+    return (kids.length > 0 && kids.every((k) => k.done))
+      ? "done — inferred: every sub-step is complete"
+      : "done — inferred: a parent goal was checked off";
+  };
+  mark.title = markReason();
+  const txt = el("span", "ledger-ttext lz-nav");
+  txt.dataset.sid = s.sid; txt.dataset.nid = n.id; txt.dataset.act = "goprompt";   // text → the asking message
+  txt.textContent = n.text;
+  txt.title = n.text;            // the full goal text on hover (it can wrap/clip in the narrow Fleet pane)
+  // (The ⊕ distiller-summary expander was removed 2026-06-27 — the user: show just the goals, not the
+  //  distiller takeaway / decision brief.)
+  const time = el("span", "ledger-ttime");
+  if (n.current && curT) {
+    time.textContent = `(${agehms(now - curT)})`; time.style.color = ageColorReadable(now - curT);
+  } else if (n.done && nodeRecency(n)) {
+    const dt = now - nodeRecency(n);
+    time.textContent = `(${agehms(dt)} ago)`; time.style.color = ageColorReadable(dt);
+    txt.style.color = ageColorReadable(dt);                 // done text matches its rolled-up recency colour
+  }
+  if (time.textContent) { time.classList.add("lz-nav"); time.dataset.sid = s.sid; time.dataset.nid = n.id; time.dataset.act = "gowork"; }   // time → where the work happened/resolved
+  // group the hover highlight like the ledger: a resolved node's checkbox + time light together, the text
+  // on its own; an open node's checkbox + text are one block, the time on its own (the user 2026-06-24).
+  if (n.done || n.blocked) { linkHover([txt]); linkHover(time.textContent ? [mark, time] : [mark]); }
+  else { linkHover([mark, txt]); if (time.textContent) linkHover([time]); }
+  row.appendChild(tri); row.appendChild(mark); row.appendChild(txt);
+  row.appendChild(time);
+  // FLAT view: tag each top-level goal with the session it belongs to, on the row's RIGHT (the user 2026-06-29).
+  // It's a label, not its own action — a click bubbles to the row's data-act="open" and jumps into the session.
+  if (flat && depth === 0) {
+    const tag = el("span", "fl-sesslabel");
+    if (s.status?.state === "working") tag.appendChild(el("span", "fl-workdot"));
+    const tnm = el("span", "fl-sesslabel-name"); tnm.textContent = s.name;
+    if (s.color?.bg) tnm.style.color = s.color.bg;
+    tag.appendChild(tnm);
+    tag.title = "this goal belongs to “" + s.name + "” — click to open it";
+    row.appendChild(tag);
+  }
+  row.dataset.act = "open"; row.dataset.sid = s.sid;   // click-safe: action lives on the #fleet-list delegate
+  container.appendChild(row);
+  if (expandable && !isFolded) for (const cid of n.children!) { const c = byId.get(cid); if (c) renderFleetNode(ctx, c, depth + 1, container, now, flat); }
+}
+
 function render() {
   const list = document.getElementById("fleet-list");
   if (!list) return;
   list.replaceChildren();
   const sd = showDone();
+  const grouped = isGrouped();
   const now = Math.floor(Date.now() / 1000);
   let any = false;
 
@@ -207,6 +317,10 @@ function render() {
   fleetMaxAge = maxAge;
   refreshCutoffLabel?.();
   const cutoff = cutoffSecs();
+
+  // First pass (shared by both views): keep the sessions whose freshest VISIBLE activity is inside the
+  // slider window, each paired with its render context + visible roots.
+  const survivors: { ctx: SessCtx; visibleRoots: LedgerNode[] }[] = [];
   for (const s of sessions) {
     const tree = s.ledger?.tree || [];
     // "Show completed" surfaces the FULLY-COMPLETED top tasks the compaction sweep archived out of the live
@@ -223,100 +337,53 @@ function render() {
     // recency or its live current-node time) is older than the slider's window.
     const freshest = Math.max(s.ledger?.current?.t || 0, ...visibleRoots.map(nodeRecency));
     if (freshest && (now - freshest) > cutoff) continue;
-    any = true;
+    survivors.push({ ctx: { s, byId, curT: s.ledger?.current?.t }, visibleRoots });
+  }
 
-    const sec = el("div", "fl-session");
-    const head = el("div", "fl-head");
-    // session-level collapse caret (the user 2026-06-24): folds this session's WHOLE task tree. Its OWN
-    // data-act="sessfold" (the innermost data-act in the head) so clicking it folds WITHOUT opening the
-    // session — only a click on the name/rest of the head (data-act="open") jumps in.
-    const sfolded = sessFolded.has(s.sid);
-    const caret = el("span", "fl-caret");
-    caret.textContent = sfolded ? "▶" : "▼";
-    caret.title = sfolded ? "expand this session's tasks" : "collapse this session's tasks";
-    caret.dataset.act = "sessfold"; caret.dataset.sid = s.sid;
-    caret.style.cssText = "flex:0 0 auto;cursor:pointer;color:var(--vscode-descriptionForeground,#9a9a9a);"
-      + "font-size:9px;width:13px;text-align:center;user-select:none";
-    head.appendChild(caret);
-    if (s.status?.state === "working") head.appendChild(el("span", "fl-workdot"));
-    const nm = el("span", "fl-name");
-    nm.textContent = s.name;
-    if (s.color?.bg) nm.style.color = s.color.bg;
-    head.appendChild(nm);
-    head.title = "Open this session";
-    head.dataset.act = "open"; head.dataset.sid = s.sid;   // click-safe: action lives on the #fleet-list delegate
-    sec.appendChild(head);
+  if (grouped) {
+    // BY-SESSION view: each session, then its goal tree beneath it (the original layout).
+    for (const { ctx, visibleRoots } of survivors) {
+      any = true;
+      const s = ctx.s;
+      const sec = el("div", "fl-session");
+      const head = el("div", "fl-head");
+      // session-level collapse caret (the user 2026-06-24): folds this session's WHOLE task tree. Its OWN
+      // data-act="sessfold" (the innermost data-act in the head) so clicking it folds WITHOUT opening the
+      // session — only a click on the name/rest of the head (data-act="open") jumps in.
+      const sfolded = sessFolded.has(s.sid);
+      const caret = el("span", "fl-caret");
+      caret.textContent = sfolded ? "▶" : "▼";
+      caret.title = sfolded ? "expand this session's tasks" : "collapse this session's tasks";
+      caret.dataset.act = "sessfold"; caret.dataset.sid = s.sid;
+      caret.style.cssText = "flex:0 0 auto;cursor:pointer;color:var(--vscode-descriptionForeground,#9a9a9a);"
+        + "font-size:9px;width:13px;text-align:center;user-select:none";
+      head.appendChild(caret);
+      if (s.status?.state === "working") head.appendChild(el("span", "fl-workdot"));
+      const nm = el("span", "fl-name");
+      nm.textContent = s.name;
+      if (s.color?.bg) nm.style.color = s.color.bg;
+      head.appendChild(nm);
+      head.title = "Open this session";
+      head.dataset.act = "open"; head.dataset.sid = s.sid;   // click-safe: action lives on the #fleet-list delegate
+      sec.appendChild(head);
 
-    const treeBox = el("div", "ledger-tree");
-    const curT = s.ledger?.current?.t;
-    const renderNode = (n: LedgerNode, depth: number) => {
-      const expandable = !!(n.children && n.children.length);
-      const defaultFold = !!n.done && (depth === 0 || !n.onpath);   // a finished top folds by default
-      const isFolded = expandable && (folded.has(fkey(s.sid, n.id)) || (defaultFold && !expanded.has(fkey(s.sid, n.id))));
-      const row = el("div", "ledger-tnode" + (depth === 0 ? " ledger-top" : "")
-        + (n.current ? " current" : "") + (n.done ? " done" : "")
-        + (n.blocked && !n.done ? " blocked" : "") + (n.derived ? " derived" : "")
-        + (n.cleared ? " cleared" : "") + (n.cleared && n.summary && n.summary.trim() ? " cleared-done" : ""));
-      row.style.paddingLeft = (4 + depth * 15) + "px";
-      const tri = el("span", "ledger-tri" + (expandable ? " nav" : " empty"));
-      tri.textContent = expandable ? (isFolded ? "▶" : "▼") : "";
-      // click-safe: the fold toggle lives on the #fleet-list delegate; this caret just carries its state. The
-      // caret is the innermost data-act, so a click on it folds without also firing the row's "open".
-      if (expandable) { tri.dataset.act = "fold"; tri.dataset.sid = s.sid; tri.dataset.nid = n.id; tri.dataset.folded = isFolded ? "1" : "0"; }
-      // .lz-nav → the pointer cursor (from styles.css), so the checkbox / text / time read as clickable. Each
-      // zone DEEP-LINKS to the same place the feed modal's matching zone does (the user 2026-06-27): the TEXT
-      // jumps to the message that asked for this (goprompt), and a resolved node's MARK + TIME jump to where it
-      // resolved (gowork) — an open node's mark goes to the prompt, its time to the latest work. The zones carry
-      // their own data-act (innermost wins), so a click lands the deep-link; the row's data-act="open" remains
-      // the fallback for a click on the row's empty space. (Delegated via #fleet-list — see ./actions.)
-      const resolved = !!(n.done || n.blocked);
-      const mark = el("span", "ledger-tmark lz-nav");
-      mark.dataset.sid = s.sid; mark.dataset.nid = n.id; mark.dataset.act = resolved ? "gowork" : "goprompt";
-      mark.textContent = n.done ? "✓" : n.blocked ? "⏸" : "";   // open = a hollow CSS ring (no glyph)
-      // restore the ledger box's mark TOOLTIP (the user 2026-06-24): the checkbox leads with WHY it reads the
-      // way it does — explicit vs inferred (roll-up = every sub-step done, roll-down = a resolved parent) vs
-      // dismissed vs blocked vs open — worked out from the children the render already has (no kernel round-trip).
-      const markReason = (): string => {
-        if (!n.done) return n.blocked ? "blocked — needs you" : "not yet done";
-        if (n.cleared) {
-          if (n.summary && n.summary.trim()) return "completed, then dismissed (cleared)";
-          if (n.blockSummary && n.blockSummary.trim()) return "blocked, then dismissed (cleared)";
-          return "dismissed — cleared, never judged done";
-        }
-        if (!n.derived) return "done — explicitly checked off";
-        const kids = (n.children || []).map((id) => byId.get(id)).filter(Boolean) as LedgerNode[];
-        return (kids.length > 0 && kids.every((k) => k.done))
-          ? "done — inferred: every sub-step is complete"
-          : "done — inferred: a parent goal was checked off";
-      };
-      mark.title = markReason();
-      const txt = el("span", "ledger-ttext lz-nav");
-      txt.dataset.sid = s.sid; txt.dataset.nid = n.id; txt.dataset.act = "goprompt";   // text → the asking message
-      txt.textContent = n.text;
-      txt.title = n.text;            // the full goal text on hover (it can wrap/clip in the narrow Fleet pane)
-      // (The ⊕ distiller-summary expander was removed 2026-06-27 — the user: show just the goals, not the
-      //  distiller takeaway / decision brief.)
-      const time = el("span", "ledger-ttime");
-      if (n.current && curT) {
-        time.textContent = `(${agehms(now - curT)})`; time.style.color = ageColorReadable(now - curT);
-      } else if (n.done && nodeRecency(n)) {
-        const dt = now - nodeRecency(n);
-        time.textContent = `(${agehms(dt)} ago)`; time.style.color = ageColorReadable(dt);
-        txt.style.color = ageColorReadable(dt);                 // done text matches its rolled-up recency colour
-      }
-      if (time.textContent) { time.classList.add("lz-nav"); time.dataset.sid = s.sid; time.dataset.nid = n.id; time.dataset.act = "gowork"; }   // time → where the work happened/resolved
-      // group the hover highlight like the ledger: a resolved node's checkbox + time light together, the text
-      // on its own; an open node's checkbox + text are one block, the time on its own (the user 2026-06-24).
-      if (n.done || n.blocked) { linkHover([txt]); linkHover(time.textContent ? [mark, time] : [mark]); }
-      else { linkHover([mark, txt]); if (time.textContent) linkHover([time]); }
-      row.appendChild(tri); row.appendChild(mark); row.appendChild(txt);
-      row.appendChild(time);
-      row.dataset.act = "open"; row.dataset.sid = s.sid;   // click-safe: action lives on the #fleet-list delegate
-      treeBox.appendChild(row);
-      if (expandable && !isFolded) for (const cid of n.children!) { const c = byId.get(cid); if (c) renderNode(c, depth + 1); }
-    };
-    if (!sfolded) { for (const r of visibleRoots) renderNode(r, 0); sec.appendChild(treeBox); }   // folded → head only
-    list.appendChild(sec);
+      const treeBox = el("div", "ledger-tree");
+      if (!sfolded) { for (const r of visibleRoots) renderFleetNode(ctx, r, 0, treeBox, now, false); sec.appendChild(treeBox); }   // folded → head only
+      list.appendChild(sec);
+    }
+  } else {
+    // FLAT (ungrouped) view (the user 2026-06-29): every session's top goals merged into ONE chronological
+    // list, newest first, each tagged on the right with its session. The whole subtree still expands inline,
+    // and the per-node fold state (session-scoped keys) carries over from the grouped view.
+    const flatRoots: { ctx: SessCtx; root: LedgerNode }[] = [];
+    for (const { ctx, visibleRoots } of survivors) for (const r of visibleRoots) flatRoots.push({ ctx, root: r });
+    flatRoots.sort((a, b) => nodeRecency(b.root) - nodeRecency(a.root));   // newest first
+    if (flatRoots.length) {
+      any = true;
+      const treeBox = el("div", "ledger-tree fl-flat");
+      for (const { ctx, root } of flatRoots) renderFleetNode(ctx, root, 0, treeBox, now, true);
+      list.appendChild(treeBox);
+    }
   }
 
   if (!any) {
@@ -326,20 +393,35 @@ function render() {
   }
 }
 
-// The Fleet controls live on ONE floating row at the BOTTOM-right (the user 2026-06-27): the recency-cutoff
-// slider (a live "≤ <age>" label + a logarithmic 1-minute…1-month range) sits directly BESIDE the "Show
-// completed" checkbox, a single horizontal strip rather than two stacked chips. Mounted once; matches the
-// feed's bottom-right controls so the panes stay consistent. (The old footer bar is gone.)
+// The Fleet controls live in a DOCKED bottom bar — its own dedicated rectangle in normal flow (#fleet-foot),
+// NOT a floating overlay (the user 2026-06-29). Left side: the view controls — "Group by session" (off = the
+// flat chronological list) + Collapse-all / Expand-all. Right side: the recency-cutoff slider ("≤ <age>",
+// logarithmic 1 minute … 1 month) beside the "Show completed" checkbox. Mounted once into #fleet-foot.
 function mountControls() {
   const foot = document.getElementById("fleet-foot");
-  if (foot) foot.style.display = "none";                 // the old footer bar is gone
-  if (document.getElementById("fl-controls")) return;    // mount once
-  const row = el("div");
-  row.id = "fl-controls";
-  row.style.cssText = "position:fixed;bottom:8px;right:10px;z-index:20;display:inline-flex;align-items:center;gap:10px;"
-    + "user-select:none;font-size:11.5px;color:var(--vscode-descriptionForeground,#9a9a9a);"
-    + "background:rgba(40,40,42,0.92);border:1px solid rgba(255,255,255,0.12);border-radius:6px;padding:3px 10px";
-  // recency cutoff: a "≤ <age>" label + a logarithmic range slider (1 minute … 1 month).
+  if (!foot || foot.dataset.mounted === "1") return;     // mount once into the docked footer
+  foot.dataset.mounted = "1";
+  foot.replaceChildren();
+
+  // ── LEFT cluster: grouping + collapse/expand ──
+  const left = el("div", "fl-foot-left");
+  const grpLbl = el("label", "fl-foot-toggle") as HTMLLabelElement;
+  const grp = document.createElement("input");
+  grp.type = "checkbox"; grp.checked = isGrouped(); grp.style.cursor = "pointer";
+  grp.title = "Group goals under their session. Off = one chronological list across every session, each tagged with its session.";
+  grp.addEventListener("change", () => { setGrouped(grp.checked); render(); });
+  grpLbl.appendChild(grp);
+  grpLbl.appendChild(document.createTextNode("Group by session"));
+  const collapse = el("button", "fl-foot-btn");
+  collapse.textContent = "Collapse all"; collapse.title = "Collapse everything — every session and goal folds shut";
+  collapse.addEventListener("click", () => { collapse.classList.add("romp-acted"); setTimeout(() => collapse.classList.remove("romp-acted"), 280); collapseAll(); });
+  const expand = el("button", "fl-foot-btn");
+  expand.textContent = "Expand all"; expand.title = "Expand back to the default view (completed work still auto-collapses)";
+  expand.addEventListener("click", () => { expand.classList.add("romp-acted"); setTimeout(() => expand.classList.remove("romp-acted"), 280); expandAll(); });
+  left.append(grpLbl, collapse, expand);
+
+  // ── RIGHT cluster: recency cutoff slider + Show completed ──
+  const right = el("div", "fl-foot-right");
   const lab = el("span");
   lab.style.cssText = "min-width:42px;text-align:right;font-variant-numeric:tabular-nums";
   const sl = document.createElement("input");
@@ -351,13 +433,12 @@ function mountControls() {
   refreshCutoffLabel = paint;   // render() refreshes the label when the adaptive max shifts with the fleet
   sl.addEventListener("input", () => { setCutoffPos(parseInt(sl.value, 10)); paint(); render(); });
   paint();
-  row.appendChild(lab); row.appendChild(sl);
+  right.appendChild(lab); right.appendChild(sl);
   // a thin vertical divider, then the "Show completed" checkbox on the SAME row.
   const sep = el("span");
   sep.style.cssText = "width:1px;align-self:stretch;background:rgba(255,255,255,0.14);margin:1px 0";
-  row.appendChild(sep);
-  const lbl = el("label") as HTMLLabelElement;
-  lbl.style.cssText = "display:inline-flex;align-items:center;gap:6px;cursor:pointer";
+  right.appendChild(sep);
+  const lbl = el("label", "fl-foot-toggle") as HTMLLabelElement;
   const cb = document.createElement("input");
   cb.type = "checkbox";
   cb.checked = showDone();
@@ -365,8 +446,9 @@ function mountControls() {
   cb.addEventListener("change", () => { setShowDone(cb.checked); render(); });
   lbl.appendChild(cb);
   lbl.appendChild(document.createTextNode("Show completed"));
-  row.appendChild(lbl);
-  document.body.appendChild(row);
+  right.appendChild(lbl);
+
+  foot.append(left, right);
 }
 
 window.addEventListener("message", (e: MessageEvent) => {
