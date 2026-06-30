@@ -141,9 +141,7 @@ export class FederationManager {
     this.app = w.__rompApp || "chat";
     w.__rompFed = { inbound: (h: string, m: any) => this.inbound(h, m), outbound: (m: any) => this.outbound(m) };
     this.poll();
-    setInterval(() => this.poll(), 4000); // converge on attach/detach made from any pane
-    if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", () => this.mountUI());
-    else this.mountUI();
+    setInterval(() => this.poll(), 4000); // converge on attach/detach made from the shell's network panel
   }
 
   // kernel → browser: prefix this host's ids, merge tab orders, hand the rest to the panes.
@@ -196,7 +194,6 @@ export class FederationManager {
     const want = new Map<string, any>(tunnels.filter((t) => t.token && t.localPort).map((t) => [t.host, t]));
     for (const [host, t] of want) if (!this.conns.has(host)) this.openRemote(host, t.localPort, t.token);
     for (const host of [...this.conns.keys()]) if (!want.has(host)) this.closeRemote(host);
-    this.renderUI(tunnels);
   }
 
   private openRemote(host: string, port: number, token: string): void {
@@ -255,78 +252,6 @@ export class FederationManager {
     delete this.perHostTabs[host];
     delete this.perHostSids[host];
     this.emitMergedOrder();
-  }
-
-  // ── attach UI (lives in the feed gear panel #rsettings; no-op on panes without it) ──
-  private async mountUI(): Promise<void> {
-    const panel = document.getElementById("rsettings");
-    if (!panel || document.getElementById("rs-remotes")) return;
-    const sec = document.createElement("div");
-    sec.className = "rs-sec";
-    sec.textContent = "Remote kernels";
-    const row = document.createElement("div");
-    row.className = "rs-row rs-sep";
-    row.style.cursor = "default";
-    row.innerHTML =
-      "<span style='flex:1 1 auto'><b>Attach a remote kernel</b>" +
-      "<span class=rs-sub>Federate another machine's romp over SSH — its sessions appear here prefixed <code>host:</code>, and its sessions can message yours. Reads ~/.ssh/config.</span>" +
-      "<div style='display:flex;gap:6px;margin-top:5px'>" +
-      "<select id=rs-remote-host style='flex:1 1 auto;min-width:0;background:#1e1e1e;color:#ccc;border:1px solid #3a3a3a;border-radius:5px;padding:3px 4px;cursor:pointer'></select>" +
-      "<button id=rs-remote-attach type=button style='flex:0 0 auto;cursor:pointer;background:var(--accent);color:var(--accent-fg);border:none;border-radius:5px;padding:3px 10px;font-weight:600'>Attach</button>" +
-      "</div><div id=rs-remotes style='margin-top:7px;display:flex;flex-direction:column;gap:4px'></div></span>";
-    panel.appendChild(sec);
-    panel.appendChild(row);
-    try {
-      const r = await fetch("/ssh-hosts", { cache: "no-store" });
-      const hosts: string[] = (await r.json()).hosts || [];
-      const sel = document.getElementById("rs-remote-host") as HTMLSelectElement | null;
-      if (sel) {
-        sel.innerHTML = hosts.length
-          ? hosts.map((h) => `<option value="${h}">${h}</option>`).join("")
-          : "<option value=''>(no ~/.ssh/config hosts)</option>";
-      }
-    } catch (e) {}
-    const btn = document.getElementById("rs-remote-attach");
-    btn?.addEventListener("click", async () => {
-      const sel = document.getElementById("rs-remote-host") as HTMLSelectElement | null;
-      const host = sel && sel.value;
-      if (!host) return;
-      (btn as HTMLButtonElement).disabled = true;
-      btn!.textContent = "Attaching…";
-      try {
-        await fetch("/tunnels", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ host }) });
-      } catch (e) {}
-      (btn as HTMLButtonElement).disabled = false;
-      btn!.textContent = "Attach";
-      this.poll();
-    });
-  }
-
-  private renderUI(tunnels: any[]): void {
-    const list = document.getElementById("rs-remotes");
-    if (!list) return;
-    list.innerHTML = "";
-    for (const t of tunnels) {
-      const dot = t.status === "up" ? "#7CD992" : t.status === "error" ? "#E5534B" : "var(--accent)";
-      const card = document.createElement("div");
-      card.style.cssText = "display:flex;align-items:center;gap:7px;font-size:12px;color:#ccc";
-      card.innerHTML =
-        `<span style="width:7px;height:7px;border-radius:50%;background:${dot};flex:0 0 auto"></span>` +
-        `<span style="flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><b>${t.host}</b> <span class=rs-sub style="display:inline">${t.status}${t.token ? "" : " · no token"}</span></span>` +
-        `<button type=button data-detach="${t.host}" style="flex:0 0 auto;cursor:pointer;background:#2a2a2a;color:#ccc;border:1px solid #3a3a3a;border-radius:5px;padding:2px 8px">Detach</button>`;
-      list.appendChild(card);
-    }
-    list.querySelectorAll<HTMLButtonElement>("button[data-detach]").forEach((b) => {
-      b.addEventListener("click", async () => {
-        const host = b.getAttribute("data-detach");
-        if (!host) return;
-        b.disabled = true;
-        try {
-          await fetch("/tunnels/detach", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ host }) });
-        } catch (e) {}
-        this.poll();
-      });
-    });
   }
 }
 

@@ -7672,6 +7672,42 @@ var n=0;(function again(){setTimeout(function(){n++;fetch('/healthz',{cache:'no-
 """
 
 
+# The rail's network popover: attach/detach federated remote kernels. Shell-native (drives the kernel's
+# /ssh-hosts + /tunnels endpoints directly with fetch); the per-pane federation managers converge on the
+# change via their own /tunnels poll. Polls /tunnels for live status only while the panel is open.
+_LANDING_REMOTES_JS = """
+(function(){
+var icon=document.getElementById('rail-net'),back=document.getElementById('rnet-back');
+if(!icon||!back)return;
+var hostSel=document.getElementById('rnet-host'),attach=document.getElementById('rnet-attach'),
+list=document.getElementById('rnet-list'),x=document.getElementById('rnet-x');
+var poll=null;
+function open(){back.hidden=false;loadHosts();refresh();poll=setInterval(refresh,3000);}
+function close(){back.hidden=true;if(poll){clearInterval(poll);poll=null;}}
+icon.onclick=function(e){e.stopPropagation();if(back.hidden)open();else close();};
+back.onclick=function(e){if(e.target===back)close();};
+if(x)x.onclick=close;
+document.addEventListener('keydown',function(e){if(e.key==='Escape'&&!back.hidden)close();});
+function loadHosts(){fetch('/ssh-hosts',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){
+var hs=(d&&d.hosts)||[];hostSel.innerHTML=hs.length?hs.map(function(h){return '<option value=\"'+h+'\">'+h+'</option>';}).join(''):'<option value=\"\">(no ~/.ssh/config hosts)</option>';}).catch(function(){});}
+function refresh(){fetch('/tunnels',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){render((d&&d.tunnels)||[]);}).catch(function(){});}
+function render(ts){list.innerHTML='';
+if(!ts.length){var e=document.createElement('div');e.className='rnet-empty';e.textContent='No remotes attached.';list.appendChild(e);return;}
+ts.forEach(function(t){var row=document.createElement('div');row.className='rnet-row';
+var c=t.status==='up'?'#7CD992':(t.status==='error'?'#E5534B':'var(--accent)');
+row.innerHTML='<span class=rnet-dot style=\"background:'+c+'\"></span>'+
+'<span class=nm><b>'+t.host+'</b> <span class=st>'+t.status+(t.token?'':' \\u00b7 no token')+'</span></span>'+
+'<button data-h=\"'+t.host+'\">Detach</button>';
+list.appendChild(row);});
+list.querySelectorAll('button[data-h]').forEach(function(b){b.onclick=function(){var h=b.getAttribute('data-h');
+b.disabled=true;fetch('/tunnels/detach',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h})}).then(refresh).catch(function(){});};});}
+attach.onclick=function(){var h=hostSel.value;if(!h)return;attach.disabled=true;attach.textContent='Attaching\\u2026';
+fetch('/tunnels',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h})}).then(function(){
+attach.disabled=false;attach.textContent='Attach';refresh();}).catch(function(){attach.disabled=false;attach.textContent='Attach';});};
+})();
+"""
+
+
 # Mobile shell behavior, layered on top of the desktop splitter above. The bottom tab bar (#mtabs,
 # shown only by the media query below) swaps which single iframe is full-screen by toggling `m-on`.
 # A cross-pane "reveal" auto-switches the visible tab: the kernel pushes {type:"reveal",pane} over an
@@ -7853,6 +7889,30 @@ def _landing():
             "border-radius:5px;cursor:pointer;color:#8a8a8a;font-size:15px;line-height:1;user-select:none;transition:color .1s,background .1s}"
             ".rail-act:hover{color:#fff;background:rgba(255,255,255,0.06)}"
             ".rail-act:active{transform:scale(0.92)}"
+            ".rail-act svg{display:block}"
+            # the rail's network (⧉) action opens a shell-native popover anchored by the rail to manage
+            # federated remote kernels (attach a host from ~/.ssh/config, see status, detach).
+            "#rnet-back{position:fixed;inset:0;z-index:120}#rnet-back[hidden]{display:none}"
+            "#rnet-panel{position:fixed;left:46px;bottom:10px;width:300px;max-width:calc(100vw - 60px);"
+            "background:#1c1c1d;border:1px solid #3a3a3a;border-radius:10px;box-shadow:0 8px 30px rgba(0,0,0,0.5);"
+            "padding:12px;color:#ddd;font-size:13px}"
+            "#rnet-panel .rnet-top{display:flex;align-items:center;gap:8px;font-weight:600;margin-bottom:6px}"
+            ".rnet-top span{flex:1 1 auto}"
+            "#rnet-x{background:none;border:none;color:#999;font-size:18px;line-height:1;cursor:pointer;padding:0 2px}"
+            "#rnet-x:hover{color:#fff}"
+            ".rnet-sub{color:#999;font-size:11px;line-height:1.4;margin-bottom:9px}"
+            ".rnet-sub code{background:#2a2a2a;border-radius:3px;padding:0 3px}"
+            ".rnet-add{display:flex;gap:6px;margin-bottom:9px}"
+            "#rnet-host{flex:1 1 auto;min-width:0;background:#121212;color:#ccc;border:1px solid #3a3a3a;border-radius:6px;padding:4px 6px}"
+            "#rnet-attach{flex:0 0 auto;background:var(--accent);color:var(--accent-fg);border:none;border-radius:6px;padding:4px 12px;font-weight:600;cursor:pointer}"
+            "#rnet-attach:disabled{opacity:0.5;cursor:default}"
+            "#rnet-list{display:flex;flex-direction:column;gap:5px}"
+            ".rnet-row{display:flex;align-items:center;gap:7px}"
+            ".rnet-dot{width:7px;height:7px;border-radius:50%;flex:0 0 auto}"
+            ".rnet-row .nm{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}"
+            ".rnet-row .st{color:#999;font-size:11px}"
+            ".rnet-row button{flex:0 0 auto;background:#2a2a2a;color:#ccc;border:1px solid #3a3a3a;border-radius:6px;padding:2px 8px;cursor:pointer}"
+            ".rnet-empty{color:#777;font-size:11px}"
             # usage rate-limit bars in the rail (the user 2026-06-26): per window (5h/7d), a used-% bar (colored
             # green/amber/red like the timeline's) beside an elapsed-% bar (slate) — pace at a glance; %-label;
             # window tag; full detail on hover (native title). Compact to fit the 30px rail.
@@ -7990,6 +8050,10 @@ def _landing():
             "</div>"   # /.rail-scroll
             # refresh + settings, pinned to the very bottom (settings last), always visible:
             "<div class=rail-acts>"
+            "<div class=rail-act id=rail-net title='Remote kernels' aria-label='Remote kernels'>"
+            "<svg viewBox='0 0 16 16' width=15 height=15 fill=none stroke=currentColor stroke-width=1.3 stroke-linecap=round stroke-linejoin=round>"
+            "<circle cx=3 cy=4.5 r=1.7/><circle cx=13 cy=4.5 r=1.7/><circle cx=8 cy=12 r=1.7/>"
+            "<path d='M4.6 5 11.4 5'/><path d='M3.8 6.1 7.2 10.4'/><path d='M12.2 6.1 8.8 10.4'/></svg></div>"
             "<div class=rail-act id=rail-refresh title='Restart the romp kernel' aria-label=Refresh>↻</div>"
             "<div class=rail-act id=rail-gear title=Settings aria-label=Settings>⚙</div>"
             "</div>"   # /.rail-acts
@@ -8010,6 +8074,14 @@ def _landing():
             "<button data-pane=feed>Feed</button>"
             "<button data-pane=timeline>Timeline</button>"
             "</nav>"
+            # the rail's network popover — manage federated remote kernels (driven by _LANDING_REMOTES_JS).
+            "<div id=rnet-back hidden><div id=rnet-panel>"
+            "<div class=rnet-top><span>Remote kernels</span><button id=rnet-x aria-label=Close>×</button></div>"
+            "<div class=rnet-sub>Federate another machine's romp over SSH — its sessions appear here prefixed "
+            "<code>host:</code> and can message yours. Reads <code>~/.ssh/config</code>.</div>"
+            "<div class=rnet-add><select id=rnet-host></select><button id=rnet-attach>Attach</button></div>"
+            "<div id=rnet-list></div>"
+            "</div></div>"
             # two separate <script> tags so a throw in the desktop splitter script can never disable
             # the mobile tab bar. (The splitter used to query a stale id=t for the timeline iframe and
             # throw on every load — fixed above by giving that iframe id=f-timeline.)
@@ -8020,6 +8092,7 @@ def _landing():
             "<script>" + _LANDING_FOCUS_JS + "</script>"
             "<script>" + _LANDING_FLEET_JS + "</script>"
             "<script>" + _LANDING_SETTINGS_JS + "</script>"
+            "<script>" + _LANDING_REMOTES_JS + "</script>"
             "<script>" + _LANDING_MOBILE_JS + "</script>"
             "<script>" + _LANDING_COLLAPSE_JS + "</script>"
             + _stale_block(v) +
