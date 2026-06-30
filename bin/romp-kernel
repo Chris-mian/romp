@@ -7088,6 +7088,9 @@ _GEAR_CSS = ("#rgear{position:fixed;top:6px;right:8px;z-index:60;background:#2a2
              "#rsettings .rs-sec-first{border-top:0;margin-top:7px;padding-top:0}"
              "#rsettings .rs-row{display:flex;align-items:flex-start;gap:8px;padding:2px 0 6px;cursor:pointer;position:relative}"
              "#rsettings .rs-row input{margin:3px 0 0;flex:0 0 auto;cursor:pointer}"
+             # two checkboxes side by side on one row (the Judges sets) — each half keeps the .rs-row look
+             "#rsettings .rs-judges{display:flex;gap:18px}"
+             "#rsettings .rs-judges .rs-half{flex:1 1 0;min-width:0}"
              # the per-setting description is a HOVER tooltip now, not always-on clutter (the user 2026-06-23):
              # hidden by default, floats below the row on hover (absolute → no layout shift).
              "#rsettings .rs-sub{display:none}"
@@ -7186,11 +7189,20 @@ _GEAR_HTML = ("<button id=rgear hidden aria-hidden=true></button>"
               "<span><b>Collapse idle gaps</b>"
               "<span class=rs-sub>Squish long idle stretches (no work on any lane — e.g. overnight) into a thin break on the timeline, so the active periods get the width.</span>"
               "</span></label>"
-              "<div class=rs-sec>Debug</div>"
-              "<label class=rs-row><input type=checkbox id=rs-debug>"
-              "<span><b>Debug mode</b>"
-              "<span class=rs-sub>Reveal the kernel-restart (↻) button and the judging timeline — the summarizer judges' actions, on a band under the lanes.</span>"
+              "<div class=rs-sec>Judges</div>"
+              # the timeline's judging band, split into its two judge SETS (the user 2026-06-29): index = the
+              # captioner + archiver; triage = the planner/grouper/closer/distiller/courier. Two checkboxes on
+              # ONE row, each gating its set's row(s) on the band. (Replaces the old single Debug-mode toggle.)
+              "<div class=rs-judges>"
+              "<label class=rs-row rs-half><input type=checkbox id=rs-judges-index>"
+              "<span><b>Indexing judges</b>"
+              "<span class=rs-sub>Show the captioner + archiver on the timeline's judging band.</span>"
               "</span></label>"
+              "<label class=rs-row rs-half><input type=checkbox id=rs-judges-triage>"
+              "<span><b>Triage judges</b>"
+              "<span class=rs-sub>Show the planner, grouper, closer, distiller + courier on the judging band.</span>"
+              "</span></label>"
+              "</div>"
               "<div class=rs-sep style='padding-top:8px'>"
               "<button id=ra-open class=ra-openbtn>Token usage analytics</button></div>"
               "<div class='rs-h rs-sep'>romp · version</div>"
@@ -7215,16 +7227,19 @@ _GEAR_HTML = ("<button id=rgear hidden aria-hidden=true></button>"
               "</div></div>")
 _GEAR_JS = r"""(function(){var g=document.getElementById('rgear'),p=document.getElementById('rsettings'),
 b=document.getElementById('rsver'),cc=document.getElementById('rs-compact'),
-db=document.getElementById('rs-debug'),an=document.getElementById('rs-autonudge'),bk=document.getElementById('rs-backend'),dd=document.getElementById('rs-defaultdir'),gb=document.getElementById('rs-branch'),cg=document.getElementById('rs-collapsegaps');
+jix=document.getElementById('rs-judges-index'),jtr=document.getElementById('rs-judges-triage'),an=document.getElementById('rs-autonudge'),bk=document.getElementById('rs-backend'),dd=document.getElementById('rs-defaultdir'),gb=document.getElementById('rs-branch'),cg=document.getElementById('rs-collapsegaps');
 function load(){try{return Object.assign({compact:false,colormap:'aurora',subgoals:true,debug:false,backend:'tmux',defaultDir:'',showBranch:true,collapseGaps:true},JSON.parse(localStorage.getItem('romp:settings')||'null'));}catch(e){return {compact:false,colormap:'aurora',subgoals:true,debug:false,backend:'tmux',defaultDir:'',showBranch:true,collapseGaps:true};}}
 function save(s){try{localStorage.setItem('romp:settings',JSON.stringify(s));}catch(e){}}
 function emit(){try{window.dispatchEvent(new Event('romp:settings'));}catch(e){}}   // same-doc signal → the feed re-gates its cards
 cc.addEventListener('change',function(){var s=load();s.compact=cc.checked;save(s);});
 if(gb)gb.addEventListener('change',function(){var s=load();s.showBranch=gb.checked;save(s);emit();});   // chat statusline re-reads loadSettings() on the next render; emit nudges open tabs
 // (Explanations + Sub-goals toggles removed from the gear 2026-06-18 — Sub-goals lives in the feed footer now.)
-// The ↻ kernel-restart button is ALWAYS visible now (the user 2026-06-24): decoupled from Debug mode, which
-// used to hide it. Debug still gates the timeline's judging band (read from romp:settings.debug over there).
-db.addEventListener('change',function(){var s=load();s.debug=db.checked;save(s);emit();});
+// The two judge-set toggles gate the timeline's judging band, split by set (the user 2026-06-29): index =
+// captioner+archiver, triage = planner/grouper/closer/distiller/courier. The timeline reads
+// showIndexJudges / showTriageJudges fresh on its redraw. (Replaces the single Debug toggle; the ↻ restart
+// button has been always-visible since 2026-06-24, so nothing else hung on debug.)
+jix.addEventListener('change',function(){var s=load();s.showIndexJudges=jix.checked;save(s);emit();});
+jtr.addEventListener('change',function(){var s=load();s.showTriageJudges=jtr.checked;save(s);emit();});
 // Timeline "collapse idle gaps" lives here now (moved out of the timeline toolbar, the user 2026-06-25):
 // the timeline iframe reads romp:settings.collapseGaps fresh on its 'storage'-event redraw.
 if(cg)cg.addEventListener('change',function(){var s=load();s.collapseGaps=cg.checked;save(s);emit();});
@@ -7276,7 +7291,7 @@ function setModalCls(on){var de=document.documentElement,m='rs-modal-open';
 if(on){de.classList.add(m);document.body.classList.add(m);}else{de.classList.remove(m);document.body.classList.remove(m);}}
 function closeSettings(){p.hidden=true;setModalCls(false);feedFull(false);}
 function openSettings(){if(!p.hidden){closeSettings();return;}   // the rail gear toggles the modal (the user 2026-06-25)
-p.hidden=false;setModalCls(true);feedFull(true);var s=load();cc.checked=!!s.compact;db.checked=!!s.debug;if(gb)gb.checked=s.showBranch!==false;if(cg)cg.checked=s.collapseGaps!==false;cmBuild();cmPaint(s.colormap||'aurora');if(bk)bk.value=s.backend||'tmux';if(dd)dd.value=s.defaultDir||'';fill();}
+p.hidden=false;setModalCls(true);feedFull(true);var s=load();cc.checked=!!s.compact;jix.checked=(s.showIndexJudges!==undefined?!!s.showIndexJudges:!!s.debug);jtr.checked=(s.showTriageJudges!==undefined?!!s.showTriageJudges:!!s.debug);if(gb)gb.checked=s.showBranch!==false;if(cg)cg.checked=s.collapseGaps!==false;cmBuild();cmPaint(s.colormap||'aurora');if(bk)bk.value=s.backend||'tmux';if(dd)dd.value=s.defaultDir||'';fill();}
 if(g)g.onclick=function(e){e.stopPropagation();openSettings();};   // the gear is hidden now; the rail drives it via a message
 window.addEventListener('message',function(e){if(e.data&&e.data.romp==='openSettings')openSettings();});
 p.addEventListener('click',function(e){if(e.target===p)closeSettings();});   // click the dimmed backdrop (not the card) → close

@@ -9,12 +9,25 @@ import * as path from "node:path";
 
 const SRC = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "romp-timeline-view.js"), "utf8");
 
+test("judges are split into index/triage sets, gated by the two settings toggles with debug migration (the user 2026-06-29)", () => {
+  // the captioner + archiver are the 'index' set; the rest are 'triage'
+  assert.match(SRC, /\{ key: 'captioner', color: '#1EA1EB', group: 'index' \}/);
+  assert.match(SRC, /\{ key: 'archiver', color: '#54B204', group: 'index' \}/);
+  assert.match(SRC, /\{ key: 'planner', color: '#E0B020', group: 'triage' \}/);
+  assert.match(SRC, /\{ key: 'courier', color: '#9088F0', group: 'triage' \}/);
+  // judgesShown() reads the two toggles, falling back to the legacy `debug` flag when a toggle is unset
+  assert.match(SRC, /function judgesShown\(\)/);
+  assert.match(SRC, /s\.showIndexJudges !== undefined \? !!s\.showIndexJudges : !!s\.debug/);
+  assert.match(SRC, /s\.showTriageJudges !== undefined \? !!s\.showTriageJudges : !!s\.debug/);
+  assert.match(SRC, /JUDGES\.filter\(\(j\) => \(j\.group === 'index' \? idx : tri\)\)/);
+});
+
 test("the judge band no longer draws auto-nudge ⚡ marks, and its visibility doesn't depend on nudges", () => {
   // the ⚡ band loop over data.nudges is gone
   assert.doesNotMatch(SRC, /for \(const n of \(data\.nudges \|\| \[\]\)\.filter/, "the auto-nudge ⚡ band loop is removed");
   assert.doesNotMatch(SRC, /g\.textContent = '⚡'/, "no ⚡ text glyph on the judge band");
-  // the band shows for judge run-spans ONLY now (no || data.nudges.some)
-  assert.match(SRC, /const jShow = !!\(debugOn && data\.judging && data\.judging\.some/);
+  // the band shows for ENABLED-judge run-spans ONLY now (no || data.nudges.some); the two judge-set toggles gate it
+  assert.match(SRC, /const jShow = !!\(shownJudges\.length && data\.judging && data\.judging\.some\(\(e\) => shownKeys\.has\(e\.judge\) && inWin\(e\.t\)\)\)/);
   assert.doesNotMatch(SRC, /jShow[\s\S]{0,160}data\.nudges && data\.nudges\.some/, "band visibility no longer keys on nudges");
 });
 
