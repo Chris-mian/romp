@@ -114,15 +114,29 @@ class PaneRailTest(unittest.TestCase):
         self.assertIn("aria-label=Settings>⛭</div>", self.html)
         self.assertNotIn("⚙", self.html)
 
-    def test_help_button_opens_a_keyboard_shortcuts_modal(self):
+    def test_help_button_is_a_question_mark_in_a_circle_outline(self):
+        # the ? is a plain question mark inside a thin circle outline (the user 2026-06-29), not a bare glyph
+        self.assertIn("id=rail-help", self.html)
+        self.assertIn("<span class=rhelp-q>?</span>", self.html)
+        self.assertIn(".rhelp-q{", self.html)
+        self.assertIn("border-radius:50%", self.html)   # the circle
+
+    def test_help_modal_lists_only_the_verified_non_obvious_shortcuts(self):
         # the ? opens a self-contained shortcuts dialog in the SHELL (not the feed iframe), so it's always available
         self.assertIn("id=rhelp-overlay", self.html)
         self.assertIn("Keyboard shortcuts", self.html)
-        # representative rows across the surfaces, keys wrapped in <kbd>
+        # a short, flat, verified list — keys wrapped in <kbd>
         self.assertIn("<kbd>Enter</kbd>", self.html)
         self.assertIn("Send message", self.html)
         self.assertIn("Interrupt the session", self.html)
-        self.assertIn("Switch session", self.html)
+        self.assertIn("Switch session (from the tabs)", self.html)
+        self.assertIn("Jump to the session tabs", self.html)
+        # trimmed (the user 2026-06-29): no slash-menu / question-picker sections, no h4 groups, no "composer" wording
+        self.assertNotIn("Slash-command menu", self.html)
+        self.assertNotIn("Question picker", self.html)
+        self.assertNotIn("rhelp-sec", self.html)
+        self.assertNotIn("Leave the composer", self.html)
+        self.assertNotIn("Jump into the composer", self.html)
         # wired: the ? toggles it, Esc / backdrop / × close it
         self.assertIn("btn.onclick=function(){ov.hidden=!ov.hidden;}", self.html)
         self.assertIn("if(e.key==='Escape'&&!ov.hidden)close()", self.html)
