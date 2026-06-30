@@ -8156,9 +8156,13 @@ def _landing():
             # refresh + settings, pinned to the very bottom (settings last), always visible:
             "<div class=rail-acts>"
             "<div class=rail-act id=rail-net title='Remote kernels' aria-label='Remote kernels'>"
-            "<svg viewBox='0 0 16 16' width=15 height=15 fill=none stroke=currentColor stroke-width=1.3 stroke-linecap=round stroke-linejoin=round>"
-            "<circle cx=3 cy=4.5 r=1.7/><circle cx=13 cy=4.5 r=1.7/><circle cx=8 cy=12 r=1.7/>"
-            "<path d='M4.6 5 11.4 5'/><path d='M3.8 6.1 7.2 10.4'/><path d='M12.2 6.1 8.8 10.4'/></svg></div>"
+            # a LAN/network glyph: one device up top, wired down a bus to two devices below (reads as
+            # "networked machines", not the copy/share dots it replaced — the user 2026-06-30).
+            "<svg viewBox='0 0 16 16' width=15 height=15 fill=none stroke=currentColor stroke-width=1.2 stroke-linejoin=round>"
+            "<rect x=5.4 y=1 width=5.2 height=3.8 rx=0.6/>"
+            "<rect x=0.6 y=11.2 width=4.8 height=3.8 rx=0.6/>"
+            "<rect x=10.6 y=11.2 width=4.8 height=3.8 rx=0.6/>"
+            "<path d='M8 4.8 L8 8 M3 11.2 L3 8 L13 8 L13 11.2'/></svg></div>"
             "<div class=rail-act id=rail-refresh title='Restart the romp kernel' aria-label=Refresh>↻</div>"
             "<div class=rail-act id=rail-help title='Keyboard shortcuts' aria-label='Keyboard shortcuts'><span class=rhelp-q>?</span></div>"
             "<div class=rail-act id=rail-gear title=Settings aria-label=Settings>⛭</div>"   # ⛭ (gear-without-hub): the bigger, bolder gear the user prefers (restored 2026-06-29)
