@@ -7399,6 +7399,99 @@ var n=0;(function again(){setTimeout(function(){n++;fetch('/healthz',{cache:'no-
 """
 
 
+# ── Keyboard-shortcuts help (the user 2026-06-29) ──────────────────────────────────────────────────────────
+# The rail's "?" (between ↻ refresh and ⛭ settings) opens a self-contained modal IN THE SHELL document — not the
+# feed iframe like settings — so it's always available regardless of which panes are open. Static content: the
+# shortcuts don't change at runtime. A kernel test pins the button + the modal + a few representative rows.
+_HELP_SHORTCUTS = [
+    ("Composer", [
+        ("Enter", "Send message"),
+        ("Shift + Enter", "New line"),
+        ("Esc", "Leave the composer, focus the tabs"),
+        ("Ctrl + C", "Interrupt the session"),
+    ]),
+    ("Sessions (tabs focused)", [
+        ("← / →", "Switch session"),
+        ("↑ / ↓", "Move between tab rows"),
+        ("Enter", "Jump into the composer"),
+    ]),
+    ("Slash-command menu", [
+        ("↑ / ↓", "Move"),
+        ("Enter / Tab", "Insert command"),
+        ("Esc", "Close the menu"),
+    ]),
+    ("Question picker", [
+        ("↑ / ↓", "Move"),
+        ("Space", "Toggle (multi-select)"),
+        ("Enter", "Submit"),
+        ("Esc", "Dismiss"),
+    ]),
+]
+
+
+def _kbd(keys):
+    """Wrap each key token in <kbd>, leaving the ' + ' / ' / ' separators as plain text."""
+    import html as _h
+    parts = re.split(r'(\s*[+/]\s*)', keys)
+    out = []
+    for p in parts:
+        if not p:
+            continue
+        out.append(_h.escape(p) if re.fullmatch(r'\s*[+/]\s*', p) else "<kbd>%s</kbd>" % _h.escape(p))
+    return "".join(out)
+
+
+def _help_modal():
+    import html as _h
+    secs = []
+    for group, rows in _HELP_SHORTCUTS:
+        rws = "".join(
+            "<div class=rhelp-row><span class=rhelp-keys>%s</span><span class=rhelp-desc>%s</span></div>"
+            % (_kbd(keys), _h.escape(desc)) for keys, desc in rows)
+        secs.append("<section class=rhelp-sec><h4>%s</h4>%s</section>" % (_h.escape(group), rws))
+    return ("<div id=rhelp-overlay hidden>"
+            "<div id=rhelp role=dialog aria-modal=true aria-label='Keyboard shortcuts'>"
+            "<div class=rhelp-head><span>Keyboard shortcuts</span>"
+            "<button id=rhelp-close type=button aria-label=Close>×</button></div>"
+            "<div class=rhelp-body>" + "".join(secs) + "</div></div></div>")
+
+
+_HELP_CSS = (
+    "#rhelp-overlay{position:fixed;inset:0;z-index:200;display:flex;align-items:center;justify-content:center;"
+    "background:rgba(0,0,0,0.55)}"
+    "#rhelp-overlay[hidden]{display:none}"
+    "#rhelp{background:#26262a;color:#e6e6e6;border:1px solid #3a3a3d;border-radius:10px;min-width:320px;"
+    "max-width:440px;max-height:80vh;overflow:auto;box-shadow:0 12px 40px rgba(0,0,0,0.5);"
+    "font:13px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}"
+    ".rhelp-head{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:12px 16px;"
+    "border-bottom:1px solid #34343a;font-weight:650;font-size:14px;position:sticky;top:0;background:#26262a}"
+    "#rhelp-close{background:none;border:0;color:#9a9a9a;font-size:20px;line-height:1;cursor:pointer;padding:0 2px}"
+    "#rhelp-close:hover{color:#fff}"
+    ".rhelp-body{padding:4px 16px 16px}"
+    ".rhelp-sec{margin-top:12px}"
+    ".rhelp-sec h4{margin:0 0 6px;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--accent,#9cd2ff)}"
+    ".rhelp-row{display:flex;align-items:baseline;gap:12px;padding:3px 0}"
+    ".rhelp-keys{flex:0 0 auto;min-width:104px}"
+    ".rhelp-desc{flex:1 1 auto;color:#cfcfcf}"
+    "#rhelp kbd{display:inline-block;background:#1c1c1f;border:1px solid #3d3d42;border-bottom-width:2px;"
+    "border-radius:4px;padding:1px 6px;font:600 11px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;color:#e6e6e6}"
+)
+
+
+_LANDING_HELP_JS = """
+(function(){
+var ov=document.getElementById('rhelp-overlay'),btn=document.getElementById('rail-help'),
+cl=document.getElementById('rhelp-close');
+if(!ov||!btn)return;
+function close(){ov.hidden=true;}
+btn.onclick=function(){ov.hidden=!ov.hidden;};   // the rail ? toggles the dialog
+if(cl)cl.onclick=close;
+ov.addEventListener('click',function(e){if(e.target===ov)close();});   // click the backdrop to close
+document.addEventListener('keydown',function(e){if(e.key==='Escape'&&!ov.hidden)close();});
+})();
+"""
+
+
 # Mobile shell behavior, layered on top of the desktop splitter above. The bottom tab bar (#mtabs,
 # shown only by the media query below) swaps which single iframe is full-screen by toggling `m-on`.
 # A cross-pane "reveal" auto-switches the visible tab: the kernel pushes {type:"reveal",pane} over an
@@ -7580,6 +7673,7 @@ def _landing():
             "border-radius:5px;cursor:pointer;color:#8a8a8a;font-size:15px;line-height:1;user-select:none;transition:color .1s,background .1s}"
             ".rail-act:hover{color:#fff;background:rgba(255,255,255,0.06)}"
             ".rail-act:active{transform:scale(0.92)}"
+            + _HELP_CSS +
             # usage rate-limit bars in the rail (the user 2026-06-26): per window (5h/7d), a used-% bar (colored
             # green/amber/red like the timeline's) beside an elapsed-% bar (slate) — pace at a glance; %-label;
             # window tag; full detail on hover (native title). Compact to fit the 30px rail.
@@ -7718,8 +7812,10 @@ def _landing():
             # refresh + settings, pinned to the very bottom (settings last), always visible:
             "<div class=rail-acts>"
             "<div class=rail-act id=rail-refresh title='Restart the romp kernel' aria-label=Refresh>↻</div>"
-            "<div class=rail-act id=rail-gear title=Settings aria-label=Settings>⚙</div>"
+            "<div class=rail-act id=rail-help title='Keyboard shortcuts' aria-label='Keyboard shortcuts'>?</div>"
+            "<div class=rail-act id=rail-gear title=Settings aria-label=Settings>⛭</div>"   # ⛭ (gear-without-hub): the bigger, bolder gear the user prefers (restored 2026-06-29)
             "</div>"   # /.rail-acts
+            + _help_modal() +
             "</div>"
             "<div class=pane id=chat-pane><iframe id=f-chat class=m-on src=/chat></iframe></div>"
             "<div class=gv id=gv-a></div>"
@@ -7747,6 +7843,7 @@ def _landing():
             "<script>" + _LANDING_FOCUS_JS + "</script>"
             "<script>" + _LANDING_FLEET_JS + "</script>"
             "<script>" + _LANDING_SETTINGS_JS + "</script>"
+            "<script>" + _LANDING_HELP_JS + "</script>"
             "<script>" + _LANDING_MOBILE_JS + "</script>"
             "<script>" + _LANDING_COLLAPSE_JS + "</script>"
             + _stale_block(v) +

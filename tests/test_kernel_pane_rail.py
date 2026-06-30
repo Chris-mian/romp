@@ -103,6 +103,30 @@ class PaneRailTest(unittest.TestCase):
         self.assertIn("col.style.setProperty('--tl'", self.html)
         self.assertIn("window.addEventListener('romp-panes',autosize)", self.html)
 
+    def test_rail_actions_are_refresh_then_help_then_gear(self):
+        # the bottom rail-acts group: ↻ refresh, then a ? help button, then the ⛭ settings gear (the user 2026-06-29)
+        self.assertIn("id=rail-refresh", self.html)
+        self.assertIn("id=rail-help", self.html)
+        self.assertIn("id=rail-gear", self.html)
+        idxs = [self.html.index("id=" + k) for k in ("rail-refresh", "rail-help", "rail-gear")]
+        self.assertEqual(idxs, sorted(idxs), "rail actions order: refresh, help, gear")
+        # the gear is the bigger ⛭ (gear-without-hub) the user restored — NOT the thinner ⚙
+        self.assertIn("aria-label=Settings>⛭</div>", self.html)
+        self.assertNotIn("⚙", self.html)
+
+    def test_help_button_opens_a_keyboard_shortcuts_modal(self):
+        # the ? opens a self-contained shortcuts dialog in the SHELL (not the feed iframe), so it's always available
+        self.assertIn("id=rhelp-overlay", self.html)
+        self.assertIn("Keyboard shortcuts", self.html)
+        # representative rows across the surfaces, keys wrapped in <kbd>
+        self.assertIn("<kbd>Enter</kbd>", self.html)
+        self.assertIn("Send message", self.html)
+        self.assertIn("Interrupt the session", self.html)
+        self.assertIn("Switch session", self.html)
+        # wired: the ? toggles it, Esc / backdrop / × close it
+        self.assertIn("btn.onclick=function(){ov.hidden=!ov.hidden;}", self.html)
+        self.assertIn("if(e.key==='Escape'&&!ov.hidden)close()", self.html)
+
     def test_rail_and_fleet_pane_are_hidden_on_mobile(self):
         # mobile shows one pane at a time via the bottom tab bar, not the rail; the desktop po-* pane-hiding
         # must NOT leak in (the tab bar governs), so chat/feed/timeline panes are forced back to display:contents
