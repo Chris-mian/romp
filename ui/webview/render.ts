@@ -2612,13 +2612,15 @@ function appendItem(v: View, s: Session, items: DisplayItem[], u: number, prevEp
     const open = expandedGroups.has(key);
     v.el.appendChild(tag(renderToolGroup(tools, prevEpoch, key, open)));
     adv(it.indices[0]);
-    if (open) {   // the original contiguous span (tools + any thinking between), each as its normal turn
-      const start = it.indices[0], end = it.indices[it.indices.length - 1];
-      for (let i = start; i <= end; i++) {
+    if (open) {   // expanded → the GROUPED TOOLS, each as its normal turn. Compact mode hides thinking
+      // everywhere, so the expansion must too: iterate it.indices (the tools only), NOT the contiguous
+      // start..end span, which would surface the thinking that sat between the tools (the user 2026-06-29).
+      // it.indices already excludes thinking — compactDisplay skipped it while building the run.
+      it.indices.forEach((i, j) => {
         const child = renderEvent(s.events[i], prevEpoch, turnWorkedSecs(s.events, i, working));
-        child.classList.add("tg-child"); if (i === end) child.classList.add("tg-last");
+        child.classList.add("tg-child"); if (j === it.indices.length - 1) child.classList.add("tg-last");
         v.el.appendChild(tag(child)); adv(i);
-      }
+      });
     }
   } else {
     v.el.appendChild(tag(renderEvent(s.events[it.index], prevEpoch, turnWorkedSecs(s.events, it.index, working))));
