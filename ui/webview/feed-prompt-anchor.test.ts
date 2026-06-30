@@ -18,7 +18,7 @@ test("the card title resolves prompt-intent by promptAnchorUuid; the work/origin
   // cardAnchorUuid stays the WORK uuid; a separate titleUuid picks the prompt uuid only for the "prompt"
   // title. (The why-line that used to reuse cardAnchorUuid is gone — the card auto-line is plain text now.)
   assert.match(FEED, /const cardAnchorUuid = rootNode\?\.anchorUuid \?\? null;/);
-  assert.match(FEED, /const titleUuid = titleAnchor === "prompt" \? \(rootNode\?\.promptAnchorUuid \?\? null\) : cardAnchorUuid;/);
+  assert.match(FEED, /let titleUuid = titleAnchor === "prompt" \? \(rootNode\?\.promptAnchorUuid \?\? null\) : cardAnchorUuid;/);
   assert.match(FEED, /anchor: titleAnchor, anchorUuid: titleUuid/);
 });
 

@@ -54,8 +54,22 @@ test("the card title deep-links by id — promptAnchorUuid for a 'prompt' title,
   // title keeps the work uuid. cardAnchorUuid stays the work uuid (goNoted / the why-line reuses it).
   assert.match(FEED, /const rootNode = it\.tree\?\.find\(\(n\) => n\.id === it\.itemId\)/);
   assert.match(FEED, /const cardAnchorUuid = rootNode\?\.anchorUuid \?\? null/);
-  assert.match(FEED, /const titleUuid = titleAnchor === "prompt" \? \(rootNode\?\.promptAnchorUuid \?\? null\) : cardAnchorUuid/);
+  assert.match(FEED, /let titleUuid = titleAnchor === "prompt" \? \(rootNode\?\.promptAnchorUuid \?\? null\) : cardAnchorUuid/);
   assert.match(FEED, /title\.onclick = .*showOnTimeline".*anchor: titleAnchor, anchorUuid: titleUuid/);
+});
+
+test("a 'prompt' title with NO minting message falls back to the work turn instead of toasting", () => {
+  // the user 2026-06-30: an autonomous NOTE the agent wrote itself (or an opener compacted off-path) has no
+  // promptAnchorUuid, so a "prompt" jump used to honest-fail with "couldn't locate this in the transcript".
+  // Fall back to WHERE THE NOTE WAS WRITTEN — the work turn — switching to anchor "work" so the chat's kind
+  // guard accepts the assistant uuid (it refuses an assistant turn under a "prompt" intent).
+  assert.match(FEED, /if \(titleAnchor === "prompt" && !titleUuid && cardAnchorUuid\) \{ titleAnchor = "work"; titleUuid = cardAnchorUuid; \}/);
+});
+
+test("the modal tree TEXT zone (goMsg) also falls back to goWork when a node has no minting message", () => {
+  // same fallback as the card title, for the prompt-intent text zone inside the modal tree (the user 2026-06-30):
+  // a node with no promptAnchorUuid jumps to where the work happened rather than honest-failing.
+  assert.match(FEED, /if \(!node\.promptAnchorUuid && node\.anchorUuid\) \{ goWork\(ev\); return; \}/);
 });
 
 test("a blocked card has NO follow-up button — the follow-up is modal-only", () => {
