@@ -36,6 +36,7 @@ const webview = {
     "../ui/webview/feed.ts",
     "../ui/webview/feed.css",
     "../ui/webview/fleet.ts",
+    "../ui/webview/federation.ts",   // multi-kernel manager: loaded after the shim on chat/feed/fleet pages
   ],
   nodePaths: [path.join(__dirname, "node_modules")],
   bundle: true,

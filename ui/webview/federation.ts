@@ -113,3 +113,224 @@ export function mergeHostOrder(perHost: Record<string, readonly string[]>, hostS
   }
   return out;
 }
+
+// ── the wiring: WebSockets per kernel + the attach UI ────────────────────────────────────────────
+// Thin glue over the pure functions above. The LOCAL kernel stays the shim's existing single WS — this
+// manager only ADDS connections to attached remote kernels, so with no remotes attached the dashboard is
+// byte-for-byte the single-kernel path. The shim calls window.__rompFed.inbound("", msg) for local frames
+// and window.__rompFed.outbound(m) for sends (both no-ops when this module isn't loaded, e.g. the timeline
+// pane), and exposes window.__rompLocalSend + window.__rompApp.
+
+interface Conn {
+  host: string;
+  ws: WebSocket | null;
+  url: string;
+  closed: boolean;
+}
+
+export class FederationManager {
+  app = "chat";
+  private conns = new Map<string, Conn>();
+  private perHostOrder: Record<string, string[]> = {};
+  private perHostTabs: Record<string, any[]> = {};
+  private perHostSids: Record<string, Set<string>> = {};
+  private hostSeq: string[] = [LOCAL]; // local first, then attach order — fixes the group order in the strip
+
+  start(): void {
+    const w = window as any;
+    this.app = w.__rompApp || "chat";
+    w.__rompFed = { inbound: (h: string, m: any) => this.inbound(h, m), outbound: (m: any) => this.outbound(m) };
+    this.poll();
+    setInterval(() => this.poll(), 4000); // converge on attach/detach made from any pane
+    if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", () => this.mountUI());
+    else this.mountUI();
+  }
+
+  // kernel → browser: prefix this host's ids, merge tab orders, hand the rest to the panes.
+  inbound(host: string, msg: any): void {
+    const m = prefixInbound(host, msg);
+    if (m && m.type === "session" && typeof m.id === "string") {
+      (this.perHostSids[host] ||= new Set()).add(m.id);
+    }
+    if (m && m.type === "tabOrder") {
+      this.perHostOrder[host] = Array.isArray(m.order) ? m.order.filter((x: any) => typeof x === "string") : [];
+      this.perHostTabs[host] = Array.isArray(m.tabs) ? m.tabs : [];
+      this.ensureHost(host);
+      this.emitMergedOrder();
+      return;
+    }
+    window.dispatchEvent(new MessageEvent("message", { data: m }));
+  }
+
+  private emitMergedOrder(): void {
+    const order = mergeHostOrder(this.perHostOrder, this.hostSeq);
+    const tabs = this.hostSeq.flatMap((h) => this.perHostTabs[h] || []);
+    window.dispatchEvent(new MessageEvent("message", { data: { type: "tabOrder", order, tabs } }));
+  }
+
+  // browser → kernel: route each message to the owning kernel, prefix stripped.
+  outbound(m: any): void {
+    for (const r of routeOutbound(m)) {
+      if (r.host === LOCAL) {
+        const s = (window as any).__rompLocalSend;
+        if (typeof s === "function") s(r.msg);
+      } else {
+        const c = this.conns.get(r.host);
+        if (c && c.ws && c.ws.readyState === 1) c.ws.send(JSON.stringify(r.msg));
+      }
+    }
+  }
+
+  private ensureHost(h: string): void {
+    if (!this.hostSeq.includes(h)) this.hostSeq.push(h);
+  }
+
+  private async poll(): Promise<void> {
+    let tunnels: any[] = [];
+    try {
+      const r = await fetch("/tunnels", { cache: "no-store" });
+      tunnels = (await r.json()).tunnels || [];
+    } catch (e) {
+      return;
+    }
+    const want = new Map<string, any>(tunnels.filter((t) => t.token && t.localPort).map((t) => [t.host, t]));
+    for (const [host, t] of want) if (!this.conns.has(host)) this.openRemote(host, t.localPort, t.token);
+    for (const host of [...this.conns.keys()]) if (!want.has(host)) this.closeRemote(host);
+    this.renderUI(tunnels);
+  }
+
+  private openRemote(host: string, port: number, token: string): void {
+    const proto = location.protocol === "https:" ? "wss://" : "ws://";
+    const url = `${proto}127.0.0.1:${port}/ws?app=${encodeURIComponent(this.app)}&token=${encodeURIComponent(token)}`;
+    const conn: Conn = { host, ws: null, url, closed: false };
+    this.conns.set(host, conn);
+    this.ensureHost(host);
+    this.connect(conn);
+  }
+
+  private connect(conn: Conn): void {
+    if (conn.closed) return;
+    let ws: WebSocket;
+    try {
+      ws = new WebSocket(conn.url);
+    } catch (e) {
+      setTimeout(() => this.connect(conn), 2000);
+      return;
+    }
+    conn.ws = ws;
+    ws.onmessage = (ev: MessageEvent) => {
+      let msg: any;
+      try {
+        msg = JSON.parse(ev.data);
+      } catch (e) {
+        return;
+      }
+      if (msg && msg.type === "ka") return;
+      this.inbound(conn.host, msg);
+    };
+    ws.onclose = () => {
+      if (!conn.closed) setTimeout(() => this.connect(conn), 2000); // reconnect a dropped remote
+    };
+    ws.onerror = () => {
+      try {
+        ws.close();
+      } catch (e) {}
+    };
+  }
+
+  private closeRemote(host: string): void {
+    const c = this.conns.get(host);
+    if (!c) return;
+    c.closed = true;
+    try {
+      c.ws && c.ws.close();
+    } catch (e) {}
+    this.conns.delete(host);
+    this.hostSeq = this.hostSeq.filter((h) => h !== host);
+    // drop that host's tabs from the panes (else they linger stale), then re-emit the merged order.
+    for (const sid of this.perHostSids[host] || []) {
+      window.dispatchEvent(new MessageEvent("message", { data: { type: "closed", id: sid } }));
+    }
+    delete this.perHostOrder[host];
+    delete this.perHostTabs[host];
+    delete this.perHostSids[host];
+    this.emitMergedOrder();
+  }
+
+  // ── attach UI (lives in the feed gear panel #rsettings; no-op on panes without it) ──
+  private async mountUI(): Promise<void> {
+    const panel = document.getElementById("rsettings");
+    if (!panel || document.getElementById("rs-remotes")) return;
+    const sec = document.createElement("div");
+    sec.className = "rs-sec";
+    sec.textContent = "Remote kernels";
+    const row = document.createElement("div");
+    row.className = "rs-row rs-sep";
+    row.style.cursor = "default";
+    row.innerHTML =
+      "<span style='flex:1 1 auto'><b>Attach a remote kernel</b>" +
+      "<span class=rs-sub>Federate another machine's romp over SSH — its sessions appear here prefixed <code>host:</code>, and its sessions can message yours. Reads ~/.ssh/config.</span>" +
+      "<div style='display:flex;gap:6px;margin-top:5px'>" +
+      "<select id=rs-remote-host style='flex:1 1 auto;min-width:0;background:#1e1e1e;color:#ccc;border:1px solid #3a3a3a;border-radius:5px;padding:3px 4px;cursor:pointer'></select>" +
+      "<button id=rs-remote-attach type=button style='flex:0 0 auto;cursor:pointer;background:var(--accent);color:var(--accent-fg);border:none;border-radius:5px;padding:3px 10px;font-weight:600'>Attach</button>" +
+      "</div><div id=rs-remotes style='margin-top:7px;display:flex;flex-direction:column;gap:4px'></div></span>";
+    panel.appendChild(sec);
+    panel.appendChild(row);
+    try {
+      const r = await fetch("/ssh-hosts", { cache: "no-store" });
+      const hosts: string[] = (await r.json()).hosts || [];
+      const sel = document.getElementById("rs-remote-host") as HTMLSelectElement | null;
+      if (sel) {
+        sel.innerHTML = hosts.length
+          ? hosts.map((h) => `<option value="${h}">${h}</option>`).join("")
+          : "<option value=''>(no ~/.ssh/config hosts)</option>";
+      }
+    } catch (e) {}
+    const btn = document.getElementById("rs-remote-attach");
+    btn?.addEventListener("click", async () => {
+      const sel = document.getElementById("rs-remote-host") as HTMLSelectElement | null;
+      const host = sel && sel.value;
+      if (!host) return;
+      (btn as HTMLButtonElement).disabled = true;
+      btn!.textContent = "Attaching…";
+      try {
+        await fetch("/tunnels", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ host }) });
+      } catch (e) {}
+      (btn as HTMLButtonElement).disabled = false;
+      btn!.textContent = "Attach";
+      this.poll();
+    });
+  }
+
+  private renderUI(tunnels: any[]): void {
+    const list = document.getElementById("rs-remotes");
+    if (!list) return;
+    list.innerHTML = "";
+    for (const t of tunnels) {
+      const dot = t.status === "up" ? "#7CD992" : t.status === "error" ? "#E5534B" : "var(--accent)";
+      const card = document.createElement("div");
+      card.style.cssText = "display:flex;align-items:center;gap:7px;font-size:12px;color:#ccc";
+      card.innerHTML =
+        `<span style="width:7px;height:7px;border-radius:50%;background:${dot};flex:0 0 auto"></span>` +
+        `<span style="flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><b>${t.host}</b> <span class=rs-sub style="display:inline">${t.status}${t.token ? "" : " · no token"}</span></span>` +
+        `<button type=button data-detach="${t.host}" style="flex:0 0 auto;cursor:pointer;background:#2a2a2a;color:#ccc;border:1px solid #3a3a3a;border-radius:5px;padding:2px 8px">Detach</button>`;
+      list.appendChild(card);
+    }
+    list.querySelectorAll<HTMLButtonElement>("button[data-detach]").forEach((b) => {
+      b.addEventListener("click", async () => {
+        const host = b.getAttribute("data-detach");
+        if (!host) return;
+        b.disabled = true;
+        try {
+          await fetch("/tunnels/detach", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ host }) });
+        } catch (e) {}
+        this.poll();
+      });
+    });
+  }
+}
+
+// Bootstrap on the browser only (the node test imports the pure functions above; this never runs there).
+if (typeof window !== "undefined" && typeof document !== "undefined") {
+  new FederationManager().start();
+}

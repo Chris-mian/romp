@@ -6810,14 +6810,15 @@ ws=new WebSocket(proto+location.host+"/ws?app=%s"+(wid?"&wid="+encodeURIComponen
 ws.onopen=function(){lastRecv=Date.now();netState("up");if(everConnected){location.reload();return;}everConnected=true;for(var i=0;i<queue.length;i++)ws.send(queue[i]);queue=[];};
 ws.onmessage=function(ev){lastRecv=Date.now();var msg;try{msg=JSON.parse(ev.data);}catch(e){return;}
 if(msg&&msg.type==="ka")return;   // keepalive: stamped lastRecv above; nothing for the bundle to render
-window.dispatchEvent(new MessageEvent("message",{data:msg}));};
+if(window.__rompFed){window.__rompFed.inbound("",msg);}else{window.dispatchEvent(new MessageEvent("message",{data:msg}));}};
 // onclose: flag the shell, RE-SHOW this pane's romp loader (the user 2026-06-29: "the swirling thing upon
 // kernel restart"), + RETRY (don't blind-reload — on a real outage the reload just fails into a dead page).
 ws.onclose=function(){netState("down");try{window.dispatchEvent(new Event("romp:wsdown"));}catch(e){}setTimeout(connect,1500);};
 ws.onerror=function(){try{ws.close();}catch(e){}};}
 function send(m){var s=JSON.stringify(m);if(ws&&ws.readyState===1)ws.send(s);else queue.push(s);}
+window.__rompLocalSend=send;window.__rompApp=APP;   // federation.ts (the multi-kernel manager) routes local sends + knows the app through these
 var SK="romp-vscode-state-%s";   // persist webview state to localStorage so UI prefs survive a refresh
-window.acquireVsCodeApi=function(){return{postMessage:function(m){send(m);},
+window.acquireVsCodeApi=function(){return{postMessage:function(m){if(window.__rompFed){window.__rompFed.outbound(m);}else{send(m);}},
 getState:function(){try{return JSON.parse(localStorage.getItem(SK)||"null");}catch(e){return null;}},
 setState:function(s){try{localStorage.setItem(SK,JSON.stringify(s));}catch(e){}}};};connect();
 // staleness watchdog: a half-open socket fires no onclose, so poll lastRecv — if the keepalive (and all
@@ -6973,8 +6974,9 @@ def _chat_page():
             "<link rel=icon type=image/svg+xml href=/media/romp-swirl-glyph.svg>"
             "<link href=/dist/styles.css?v=%d rel=stylesheet><title>Romp</title>"
             "<style>%s\n%s</style></head><body>%s%s<script>%s</script>"
+            "<script src=/dist/federation.js?v=%d></script>"   # multi-kernel manager: after the shim, before the bundle
             "<script src=/dist/render.js?v=%d></script><script>%s</script></body></html>"
-            % (v, THEME_CSS, _CHAT_MOBILE_CSS, _chat_body(), _pane_spin("content", "live-ask"), _shim("chat"), v, _CHAT_MOBILE_JS))
+            % (v, THEME_CSS, _CHAT_MOBILE_CSS, _chat_body(), _pane_spin("content", "live-ask"), _shim("chat"), v, v, _CHAT_MOBILE_JS))
 
 
 # Settings gear (WEB KERNEL ONLY — kernel-injected, never in the shared feed.ts). A ⚙ in the corner
@@ -7266,10 +7268,11 @@ def _feed_page():
             "<link rel=icon type=image/svg+xml href=/media/romp-swirl-glyph.svg>"
             "<link href=/dist/feed.css?v=%d rel=stylesheet><title>Romp · feed</title>"
             "<style>%s\n%s</style></head><body>%s%s%s<script>%s</script>"
+            "<script src=/dist/federation.js?v=%d></script>"   # multi-kernel manager (also hosts the attach UI in the gear)
             "<script src=/dist/feed.js?v=%d></script><script>%s</script></body></html>"
             % (v, THEME_CSS, _GEAR_CSS,
                '<div id="feed-head"></div><div id="feed-list"></div><div id="feed-foot"></div>', _GEAR_HTML,
-               _pane_spin("feed-list"), _shim("feed"), v, _GEAR_JS))
+               _pane_spin("feed-list"), _shim("feed"), v, v, _GEAR_JS))
 
 
 # Fleet — a BY-SESSION view that MIRRORS the ledger box (the user 2026-06-23): each session, then its goal
@@ -7352,8 +7355,9 @@ def _fleet_page():
             "<button id=fleet-search-clear type=button aria-label='Clear search' title='Clear search' hidden>×</button>"
             "</div></div>"
             "<div id=fleet-list></div><div id=fleet-foot></div>%s"
-            "<script>%s</script><script src=/dist/fleet.js?v=%d></script></body></html>"
-            % (v, THEME_CSS, _FLEET_CSS, _pane_spin("fleet-list"), _shim("fleet"), v))
+            "<script>%s</script><script src=/dist/federation.js?v=%d></script>"   # multi-kernel manager: after the shim
+            "<script src=/dist/fleet.js?v=%d></script></body></html>"
+            % (v, THEME_CSS, _FLEET_CSS, _pane_spin("fleet-list"), _shim("fleet"), v, v))
 
 
 # The romp-tl-* styles, verbatim from the obsidian/VS-Code timeline wrapper.
