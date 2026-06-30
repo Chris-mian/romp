@@ -5138,19 +5138,29 @@ def build_feed(now, tmux=None):
                        if nodes[x].get("blocked") and not _closure_done(x)]
                 if bts:
                     disp_t = max(bts)
-            # RE-CHECK (the user 2026-06-27): a SOFT-blocked top you've already replied to is no longer on
-            # YOU — render it de-urgented (dotted, dropped from the needs-you tally) until the judge either
-            # resolves it or re-blocks it. Two triggers: a TARGETED card-reply/nudge (followupPending on the
-            # top, precise — only this card), or a PLAIN reply on the thread AFTER the block (disp_t = when
-            # blocked), which sweeps the session's soft-blocks since we can't attribute it; the judge re-blocks
-            # the ones the reply didn't actually resolve (its mt then advances past the reply → urgent again).
-            # Never the live hard floors (api/permission) — a reply doesn't clear those.
-            recheck = bool(col == "blocked" and nid != api_top and nid != perm_top and (
-                nodes[nid].get("followupPending") or plain_user_t > disp_t))
+            # RE-CHECK (the user 2026-06-27): a SOFT-blocked top you've answered with a TARGETED card-reply/nudge
+            # (followupPending on the top — precise, only this card) is no longer on YOU. It de-urgents (dotted,
+            # dropped from the needs-you tally) and drops to WORKING until the judge resolves or re-blocks it.
+            recheck = bool(col == "blocked" and nid != api_top and nid != perm_top
+                           and nodes[nid].get("followupPending"))
+            # RE-JUDGING (the user 2026-06-30): a PLAIN reply on the thread AFTER the block is DIFFERENT — we
+            # can't tell whether it actually addressed THIS block, so the card STAYS in Needs-You (still on you,
+            # still counted). The earlier design swept the session's soft-blocks to Working on any plain reply and
+            # leaned on the judge to re-block the untouched ones — but if the reply was unrelated and the agent
+            # never revisits the goal, no re-block fires and the card silently left your inbox forever. Instead we
+            # just show a "Re-judging…" swirl while a turn is in flight (who_working): a re-evaluation MAY be
+            # coming, but the card never leaves Blocked on a guess. Self-limited by who_working so it isn't a
+            # permanent spinner; when the turn ends the store is authoritative (resolved → it leaves Blocked on
+            # its own; still blocked → spinner clears, stays in Needs-You). Never the hard floors (api/permission).
+            rejudging = bool(col == "blocked" and nid != api_top and nid != perm_top
+                             and not nodes[nid].get("followupPending")
+                             and plain_user_t > disp_t and who_working)
             # awaiting is a flavor of WORKING → the working column (never needs-input), card time = mint t; the awaiting badge carries the why.
-            # A RE-CHECK'd soft-block also drops to WORKING (the user 2026-06-27): once you've replied it's the
-            # agent's move, not yours, so it leaves the needs-input column entirely (still dotted + "↩ re-checking"
-            # so you can see it pending). A TRANSIENT API error is NOT blocking either (the user 2026-06-29):
+            # A RE-CHECK'd soft-block (targeted follow-up) drops to WORKING (the user 2026-06-27): once you've
+            # replied to THAT card it's the agent's move, not yours, so it leaves the needs-input column entirely
+            # (still dotted + a "Re-judging…" swirl so you can see it pending). A plain reply (rejudging) does NOT
+            # leave needs_input — it's not recheck — so the column formula below keeps it under Blocked.
+            # A TRANSIENT API error is NOT blocking either (the user 2026-06-29):
             # auto-retry recovers it, so the card STAYS in Working with the "⚠ API error" chip. But a "prompt
             # is too long" error IS on you (compact needed) → it floors to needs-input like a real block. So
             # only api_top WHEN tooLong, or a genuine soft block (col blocked & not recheck), keeps needs_input.
@@ -5196,7 +5206,8 @@ def build_feed(now, tmux=None):
                                            else "this session is stopped awaiting your approval")} if nid == perm_top
                             else None),
                 "column": column,
-                "recheck": recheck,                  # soft-block you've replied to → de-urgented (dotted) pending re-judge
+                "recheck": recheck,                  # targeted follow-up on a soft-block → de-urgented (dotted), moved to Working, pending re-judge
+                "rejudging": rejudging,              # plain thread reply after a block → STAYS in Needs-You, "Re-judging…" swirl while a turn is in flight (the user 2026-06-30)
                 "openQuestions": [], "openPaths": [], "tree": flatten(nid, [])})
         # A session actively working a brand-new ask shows NO card until the planner classifies the held
         # segment at turn-end — surface a live-prompt placeholder so it isn't invisible. Only when nothing

@@ -2447,43 +2447,60 @@ class ViewBuilder(unittest.TestCase):
                                            "effort": "", "context": None, "compactPct": None, "color": None}}
         return g
 
-    def test_feed_recheck_on_plain_reply_after_block(self):
+    def test_feed_plain_reply_keeps_block_in_needs_you_and_rejudges(self):
+        # the user 2026-06-30: a PLAIN thread reply must NOT move a soft-blocked card to Working — we can't tell
+        # if it addressed THIS block, and the old sweep left genuinely-blocked cards stranded in Working when the
+        # reply was unrelated and the agent never re-touched them. Now the card STAYS in Needs-You; a "Re-judging…"
+        # swirl (the `rejudging` flag) only shows while a turn is in flight (who_working).
         g = self._blocked_store()
-        saved = km._last_plain_user_turn_t
+        saved_p, saved_w = km._last_plain_user_turn_t, km._session_working
         try:
             km._last_plain_user_turn_t = lambda turns: NOW - 10      # a plain reply AFTER the block (mt NOW-100)
+            km._session_working = lambda turns: True                 # a turn is in flight → re-judge plausibly pending
             card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
-            self.assertTrue(card["recheck"], "plain reply after the block → re-check (de-urgented)")
-            self.assertEqual(card["column"], "working", "re-check drops out of needs-input into Working (the user 2026-06-27)")
+            self.assertEqual(card["column"], "needs_input", "a plain reply does NOT move the block out of Needs-You")
+            self.assertFalse(card["recheck"], "a plain reply is not a TARGETED follow-up → recheck stays False")
+            self.assertTrue(card["rejudging"], "a plain reply + a turn in flight → 'Re-judging…' swirl")
+            km._session_working = lambda turns: False                # session idle → no turn in flight
+            card_idle = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
+            self.assertEqual(card_idle["column"], "needs_input", "still in Needs-You while idle")
+            self.assertFalse(card_idle["rejudging"], "no turn in flight → no spinner (not a permanent spin)")
             km._last_plain_user_turn_t = lambda turns: NOW - 300     # a reply that PRE-dates the block
-            card2 = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
-            self.assertFalse(card2["recheck"], "no reply since the block → still urgent")
+            km._session_working = lambda turns: True
+            card_pre = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
+            self.assertFalse(card_pre["rejudging"], "no reply since the block → nothing to re-judge")
+            self.assertEqual(card_pre["column"], "needs_input")
         finally:
-            km._last_plain_user_turn_t = saved
+            km._last_plain_user_turn_t, km._session_working = saved_p, saved_w
 
-    def test_feed_recheck_is_INSTANT_from_a_just_sent_reply_still_in_the_echo(self):
-        # The delay fix (the user 2026-06-29): a plain reply de-urgents a blocked card the INSTANT it's sent —
-        # while still only an optimistic echo (not yet a transcript turn). build_feed reads the cached parse
-        # (no plain reply there), so without counting the echo the card stays Blocked until the atom lands.
+    def test_feed_rejudging_is_INSTANT_from_a_just_sent_reply_still_in_the_echo(self):
+        # The delay fix (the user 2026-06-29), now feeding `rejudging` (the user 2026-06-30): a plain reply
+        # registers the INSTANT it's sent — while still only an optimistic echo (not yet a transcript turn). The
+        # card STAYS in Needs-You; the echo just lets the "Re-judging…" swirl appear at once instead of a push
+        # or two later. build_feed reads the cached parse (no plain reply there), so the echo is what supplies it.
         g = self._blocked_store()
         km._tmux_echo.pop(SID, None)
-        # the parsed transcript shows NO plain reply (cache-only) → recheck would be False on its own
-        card_before = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
-        self.assertFalse(card_before["recheck"], "no reply yet → still urgent (Blocked)")
-        self.assertEqual(card_before["column"], "needs_input")
-        # now the user sends a plain reply — only an optimistic echo so far
-        km._tmux_echo_add(SID, "go ahead, do option B", author="human")
+        saved_w = km._session_working
         try:
+            km._session_working = lambda turns: True                  # a turn is in flight
+            # the parsed transcript shows NO plain reply (cache-only) → rejudging would be False on its own
+            card_before = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
+            self.assertFalse(card_before["rejudging"], "no reply yet → no re-judge")
+            self.assertEqual(card_before["column"], "needs_input", "still urgent (Blocked)")
+            # now the user sends a plain reply — only an optimistic echo so far
+            km._tmux_echo_add(SID, "go ahead, do option B", author="human")
             card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
-            self.assertTrue(card["recheck"], "the just-sent echo de-urgents the card AT ONCE")
-            self.assertEqual(card["column"], "working", "→ moves out of Blocked into Working immediately")
-            # a TARGETED reply (romp-goal-id) is NOT a plain reply → does NOT sweep via this path
+            self.assertTrue(card["rejudging"], "the just-sent echo lights 'Re-judging…' AT ONCE")
+            self.assertEqual(card["column"], "needs_input", "but it STAYS in Needs-You — never moved on a guess")
+            self.assertFalse(card["recheck"], "a plain reply is not a targeted follow-up")
+            # a TARGETED reply (romp-goal-id) is NOT a plain reply → does NOT feed rejudging
             km._tmux_echo.pop(SID, None)
             km._tmux_echo_add(SID, "answer <!-- romp-goal-id: x:g1 -->", author="human")
             card3 = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
-            self.assertFalse(card3["recheck"], "a targeted card-reply doesn't sweep the session's blocks")
+            self.assertFalse(card3["rejudging"], "a targeted card-reply doesn't feed the plain-reply re-judge")
         finally:
             km._tmux_echo.pop(SID, None)
+            km._session_working = saved_w
 
     def test_feed_recheck_targeted_followup_does_not_sweep_siblings(self):
         # two blocked tops; a TARGETED follow-up (followupPending) on g1 only. No plain reply. g1 re-checks,
