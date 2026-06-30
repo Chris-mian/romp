@@ -4432,6 +4432,9 @@ def _provisional_card(s, name, color, fsid, live, now, store=None):
     held = segs[-1]                                  # the latest segment — the ask the planner withholds / just got
     if not jd._seg_human(held):                      # only a real user prompt warrants a placeholder (peer/sdk don't)
         return None
+    if jd._seg_command(held):                        # a SLASH-COMMAND turn is never classified into a goal (the planner
+        return None                                  # skips it), so it would NEVER place → the placeholder would hang
+                                                     # forever (the JLD /usage case). No placeholder for a command. (2026-06-29)
     # PLACED already? the planner stamps placements the moment it classifies this segment — its prompt-run
     # (#p, fired while the turn is open) or its work-run (bare id, fired once the turn ends), set even for a
     # SKIP. Either means the real card (or none) is on the board → stop the placeholder. This is the true
