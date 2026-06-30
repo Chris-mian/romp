@@ -801,6 +801,19 @@ def _set_auto_nudge(enabled):
     _write_auto_nudge(d)
 
 
+def _retry_paused_on():
+    p = jd.STATE / "retry-paused.json"
+    try:
+        d = json.loads(p.read_text())
+        return bool(d.get("paused"))
+    except Exception:
+        return False
+
+
+def _set_retry_paused(paused):
+    _atomic_write(jd.STATE / "retry-paused.json", json.dumps({"paused": bool(paused)}))
+
+
 def _mark_auto_nudged(gid, turn_id, count):
     """Record an auto-nudge of `gid`: {count, lastTurnId}. `count` is the TOTAL fired (the climbing escalation
     alert); `lastTurnId` is the turn this fired on, so the tick nudges each turn id at most ONCE and re-arms
@@ -1476,6 +1489,7 @@ def _drive(msg, client):
         return False                                      # not a drive op (UI/nav) → _dispatch_ws handles it
     be = Sessions.backend_for(sid)
     if t == "sendMessage" and msg.get("text"):
+
         be.send(sid, str(msg["text"])); _optimistic_echo(sid, str(msg["text"])); _push_all()  # show the send instantly
     elif t == "interrupt":
         be.interrupt(sid); _push_all()                    # Esc/stop AND settle idle (in the backend) → chip → ready
@@ -1529,6 +1543,8 @@ def _drive(msg, client):
         be.unqueue(sid, int(msg["idx"]))                  # pull a queued (not-yet-started) message back out; the
         _push_all()                                       # webview already refilled the composer with its text
     elif t == "apiRetry":
+        if _retry_paused_on():
+            return
         # tmux pastes the MARKED retry → GRAY romp bubble (author_of keys on the marker, ROMP_INJECT_RE); the
         # SDK re-drives via its own queue and sends the bare command (the user 2026-06-19).
         be.send(sid, "retry\n\n<!-- romp-injected -->" if be is _TMUX else "retry")
@@ -6595,6 +6611,7 @@ def _push(targets, connect=False):
             # session fills the placeholder in when it arrives below.
             tab_meta = [{"id": s["sid"], "name": s.get("name", ""), "color": _name_color(s["sid"])} for s in chat_list]
             for c in chat_clients:                       # tab strip first → the shell paints before any build
+                _send_client(c, ("globalRetryPaused",), {"type": "globalRetryPaused", "value": _retry_paused_on()})
                 _send_client(c, ("taborder",), {"type": "tabOrder", "order": tab_order, "tabs": tab_meta})
             active = {c.get("active") for c in chat_clients if c.get("active")}
             build_order = sorted(chat_list, key=lambda s: 0 if s["sid"] in active else 1)   # stable: active first
@@ -6820,7 +6837,7 @@ def _producer():
             # segment, an uncaptioned unit, a fresh completion) — so an idle pass costs filesystem stats, not
             # model calls. (_producer_sig stays available but no longer gates triage.)
             tiers = []
-            if _tmux_sessions():
+            if _tmux_sessions() and not _retry_paused_on():
                 tiers.append(threading.Thread(target=_run_tier, args=(jd.run_index,), name="index"))
                 tiers.append(threading.Thread(target=_run_tier, args=(jd.run_triage,), name="triage"))
             for t in tiers:
@@ -8177,11 +8194,13 @@ def _landing():
             # remote-kernels (federation): a LAN glyph — one device wired down a bus to two below. Goes
             # accent-blue (.on) while a remote is connected. Below help, above settings (the user 2026-06-30).
             "<div class=rail-act id=rail-net title='Remote kernels' aria-label='Remote kernels'>"
-            "<svg viewBox='0 0 16 16' width=17 height=17>"
-            "<path d='M8 5.2 L8 8 M3 10.8 L3 8 L13 8 L13 10.8' fill=none stroke=currentColor stroke-width=1 stroke-linejoin=round/>"
-            "<rect x=5.8 y=1 width=4.4 height=4.4 rx=0.5 fill=currentColor/>"
-            "<rect x=0.8 y=10.8 width=4.4 height=4.4 rx=0.5 fill=currentColor/>"
-            "<rect x=10.8 y=10.8 width=4.4 height=4.4 rx=0.5 fill=currentColor/></svg></div>"
+            "<svg viewBox='0 0 16 16' width=18 height=18 overflow=visible>"
+            # glyph centered with ~2.5px margin top/bottom so the rail can't clip it (the user 2026-06-30:
+            # it was edge-to-edge vertically and read as a single square because the rail cropped the rest).
+            "<path d='M8 6.5 L8 8 M3.5 9.5 L3.5 8 L12.5 8 L12.5 9.5' fill=none stroke=currentColor stroke-width=1 stroke-linejoin=round/>"
+            "<rect x=6 y=2.5 width=4 height=4 rx=0.5 fill=currentColor/>"
+            "<rect x=1.5 y=9.5 width=4 height=4 rx=0.5 fill=currentColor/>"
+            "<rect x=10.5 y=9.5 width=4 height=4 rx=0.5 fill=currentColor/></svg></div>"
             "<div class=rail-act id=rail-gear title=Settings aria-label=Settings>⛭</div>"   # ⛭ (gear-without-hub): the bigger, bolder gear the user prefers (restored 2026-06-29)
             "</div>"   # /.rail-acts
             "</div>"
@@ -8562,6 +8581,10 @@ class Handler(BaseHTTPRequestHandler):
                                                        "before": before, "events": evs[frm:before]}))
             except Exception:
                 sys.stderr.write("loadOlder: %s\n" % traceback.format_exc())
+            return
+        if msg and msg.get("type") == "setGlobalRetryPaused":
+            _set_retry_paused(msg.get("value"))
+            _push_all()
             return
         if msg and msg.get("type") == "ready":
             self._push_one(client)
