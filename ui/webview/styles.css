@@ -1201,6 +1201,19 @@ body { display: flex; flex-direction: column; }
 /* diff (Edit/MultiEdit): collapsed by default; reuse the hljs add/del accents */
 .diff-fold .hljs-addition { color: var(--green); }
 .diff-fold .hljs-deletion { color: var(--err); }
+/* line-number gutter (the user 2026-06-29): each diff row is gut-old | gut-new | sign | code. The gutter
+   numbers positions WITHIN the change (the Edit result has no absolute file lines). pre-wrap keeps long lines
+   wrapping under the code column, not the gutter. */
+.diff-fold .diff-row { display: grid; grid-template-columns: auto auto 1ch 1fr; gap: 0;
+  column-gap: 8px; align-items: baseline; }
+.diff-gut { flex: 0 0 auto; text-align: right; color: var(--dim); opacity: 0.7; user-select: none;
+  font-variant-numeric: tabular-nums; min-width: 1.4em; }
+.diff-sign { user-select: none; text-align: center; }
+.diff-code { white-space: pre-wrap; word-break: break-word; }
+.diff-add .diff-code, .diff-add .diff-sign { color: var(--green); }
+.diff-del .diff-code, .diff-del .diff-sign { color: var(--err); }
+.diff-add { background: color-mix(in srgb, var(--green) 9%, transparent); }
+.diff-del { background: color-mix(in srgb, var(--err) 9%, transparent); }
 
 /* ---------- markdown ---------- */
 .md { overflow-wrap: anywhere; } /* wrap long unbreakable strings (tokens/base64/urls) */
