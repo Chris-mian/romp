@@ -14,7 +14,7 @@ import stat
 import tempfile
 import threading
 import unittest
-from http.server import ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.machinery import SourceFileLoader
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -138,6 +138,67 @@ class HostForSidMap(unittest.TestCase):
                                "detail": "", "sids": ["aaaa-1111"]}
         self.assertIs(km._host_for_sid("aaaa-1111"), km._remotes["gpu1"])
         self.assertIsNone(km._host_for_sid("local-only-sid"))
+
+
+class _StubRemoteKernel(BaseHTTPRequestHandler):
+    """Stands in for the remote kernel at the far end of the -L tunnel: records the forwarded /deliver."""
+    received = []  # class-level capture: [(path, body)]
+
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length") or 0)
+        body = json.loads(self.rfile.read(n) or b"{}") if n else {}
+        _StubRemoteKernel.received.append((self.path, body))
+        out = json.dumps({"ok": True, "injected": True}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(out)))
+        self.end_headers()
+        self.wfile.write(out)
+
+    def log_message(self, *a):
+        pass
+
+
+class WakeRouter(unittest.TestCase):
+    """Phase 3: the bus POSTs /deliver {id} to the LOCAL kernel; for a REMOTE session the kernel forwards the
+    wake over that host's -L tunnel so the idle remote session starts immediately (not at its next turn)."""
+    REMOTE_SID = "bbbb-2222-cccc-3333"
+
+    def setUp(self):
+        km._remotes.clear()
+        _StubRemoteKernel.received = []
+        # the "remote kernel" at the tunnel's far end
+        self.remote = ThreadingHTTPServer(("127.0.0.1", 0), _StubRemoteKernel)
+        self.remote_port = self.remote.server_address[1]
+        threading.Thread(target=self.remote.serve_forever, daemon=True).start()
+        # the local kernel under test
+        self.srv = ThreadingHTTPServer(("127.0.0.1", 0), km.Handler)
+        self.port = self.srv.server_address[1]
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        # register the remote, pointing its -L local_port at the stub, owning REMOTE_SID
+        km._remotes["gpu1"] = {"host": "gpu1", "kernel_port": 7433, "local_port": self.remote_port,
+                               "token": "", "proc": None, "status": "up", "detail": "",
+                               "sids": [self.REMOTE_SID]}
+
+    def tearDown(self):
+        km._remotes.clear()
+        self.srv.shutdown(); self.srv.server_close()
+        self.remote.shutdown(); self.remote.server_close()
+
+    def test_deliver_to_remote_sid_forwards_over_the_tunnel(self):
+        status, body = _req(self.port, "POST", "/deliver", {"id": self.REMOTE_SID, "text": "DELEGATE: go"})
+        self.assertEqual(status, 200)
+        self.assertTrue(body["injected"], "the remote kernel's injected result must propagate back")
+        self.assertEqual(len(_StubRemoteKernel.received), 1, "exactly one forwarded /deliver")
+        path, fwd = _StubRemoteKernel.received[0]
+        self.assertEqual(path, "/deliver")
+        self.assertEqual(fwd, {"id": self.REMOTE_SID, "text": "DELEGATE: go"})
+
+    def test_deliver_to_unknown_sid_does_not_forward(self):
+        # a sid no remote owns is local: it must NOT be forwarded (it would inject locally — no session here,
+        # but crucially the stub remote sees nothing).
+        _req(self.port, "POST", "/deliver", {"id": "some-local-sid", "text": "hi"})
+        self.assertEqual(_StubRemoteKernel.received, [], "a local sid must never forward to a remote kernel")
 
 
 if __name__ == "__main__":

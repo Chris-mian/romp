@@ -2303,6 +2303,25 @@ def _host_for_sid(sid):
     return None
 
 
+def _remote_forward(r, path, body):
+    """Forward a small CONTROL call (deliver/send/working) to a remote kernel THROUGH its -L tunnel — this is
+    the wake-router. The postal bus only ever talks to THIS local kernel (POST /deliver {id}); when the id is
+    a remote session the kernel forwards the wake here so the remote, idle session starts working immediately
+    (not at its next turn). Only the tiny control signal crosses — never the bulk session-data stream. Returns
+    the parsed JSON response, or None on failure (caller degrades; the bus re-delivers via the maildir)."""
+    import urllib.parse
+    try:
+        c = http.client.HTTPConnection("127.0.0.1", int(r["local_port"]), timeout=8)
+        p = path + (("?token=" + urllib.parse.quote(r["token"])) if r.get("token") else "")
+        c.request("POST", p, json.dumps(body), {"Content-Type": "application/json"})
+        resp = c.getresponse()
+        data = resp.read()
+        c.close()
+        return json.loads(data.decode("utf-8") or "{}") if resp.status == 200 else None
+    except Exception:
+        return None
+
+
 def _tunnel_supervisor():
     """Keep attached tunnels alive (re-spawn a dead ssh), refresh status, and learn which session ids live on
     each host by polling its kernel's /sessions THROUGH the -L tunnel — the host↔sid map the wake-router uses
@@ -8204,6 +8223,10 @@ class Handler(BaseHTTPRequestHandler):
                 if not body:
                     return self._send(400, json.dumps({"ok": False, "error": "id and text required"}), "application/json")
                 sid = _sid_of(body["who"])
+                r = _host_for_sid(sid)
+                if r is not None:                                   # remote session → forward over its -L tunnel
+                    _remote_forward(r, "/send", {"id": sid, "text": body["text"]})
+                    return self._send(200, json.dumps({"ok": True}), "application/json")
                 Sessions.backend_for(sid).send(sid, body["text"])   # no optimistic echo: an external/postal
                 return self._send(200, json.dumps({"ok": True}), "application/json")   # send isn't a human composer bubble
             if u.path == "/working":
@@ -8217,6 +8240,10 @@ class Handler(BaseHTTPRequestHandler):
                 sid = str((body or {}).get("id") or "")
                 if not isinstance(body, dict) or not sid:
                     return self._send(400, json.dumps({"ok": False, "error": "id required"}), "application/json")
+                r = _host_for_sid(sid)
+                if r is not None:                                   # remote session → forward over its -L tunnel
+                    _remote_forward(r, "/working", {"id": sid, "text": str(body.get("text") or "")})
+                    return self._send(200, json.dumps({"ok": True}), "application/json")
                 Sessions.set_working_note(sid, str(body.get("text") or ""))
                 return self._send(200, json.dumps({"ok": True}), "application/json")
             if u.path == "/deliver":
@@ -8233,6 +8260,10 @@ class Handler(BaseHTTPRequestHandler):
                 text = (body or {}).get("text") if isinstance(body, dict) else None
                 if not sid or not isinstance(text, str) or not text:
                     return self._send(400, json.dumps({"ok": False, "error": "id and text required"}), "application/json")
+                r = _host_for_sid(sid)
+                if r is not None:                                   # remote session → forward the wake over its -L tunnel
+                    res = _remote_forward(r, "/deliver", {"id": sid, "text": text})
+                    return self._send(200, json.dumps({"ok": True, "injected": bool(res and res.get("injected"))}), "application/json")
                 injected = bool(Sessions.backend_for(sid).deliver(sid, text))
                 return self._send(200, json.dumps({"ok": True, "injected": injected}), "application/json")
             if u.path == "/picker-check":
