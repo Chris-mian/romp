@@ -5,7 +5,7 @@
 // the diff a familiar two-column gutter for reading/referencing a multi-line edit.
 
 export interface DiffRow {
-  sign: "+" | "-" | " ";
+  sign: "+" | "-" | " " | "@";   // "@" = a per-hunk header row (only from the kernel's real-line-number rows)
   text: string;            // the line content, WITHOUT the leading "+ " / "- " marker
   oldNo: number | null;    // old-side number (removed + context lines), else null
   newNo: number | null;    // new-side number (added + context lines), else null

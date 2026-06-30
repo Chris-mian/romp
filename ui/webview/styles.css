@@ -1214,6 +1214,10 @@ body { display: flex; flex-direction: column; }
 .diff-del .diff-code, .diff-del .diff-sign { color: var(--err); }
 .diff-add { background: color-mix(in srgb, var(--green) 9%, transparent); }
 .diff-del { background: color-mix(in srgb, var(--err) 9%, transparent); }
+/* a per-hunk "@@ -old +new @@" header (real-line-number diffs from structuredPatch): faint, spanning the code
+   column, separating hunks of a multi-hunk MultiEdit. The gutter cells stay blank on this row. */
+.diff-hunk .diff-code { color: var(--dim); opacity: 0.65; font-style: italic; }
+.diff-hunk { margin-top: 2px; }
 
 /* ---------- markdown ---------- */
 .md { overflow-wrap: anywhere; } /* wrap long unbreakable strings (tokens/base64/urls) */

@@ -19,7 +19,7 @@ import { loadSettings, onExternalSettingsChange, type RompSettings } from "./set
 import { delegate } from "./actions";
 import { prebuildPlan, type ViewState } from "./prebuild";
 import { reconcileTabOrder } from "./tab-order";
-import { numberDiff } from "./diff-lines";
+import { numberDiff, type DiffRow } from "./diff-lines";
 
 for (const [name, lang] of Object.entries({
   bash, sh: bash, shell: bash, python, py: python, javascript, js: javascript,
@@ -65,6 +65,9 @@ type ChatEvent = (
       ts?: string;
       file?: string;
       diff?: string;
+      // Edit/MultiEdit: REAL-line-number diff rows from Claude Code's structuredPatch (the kernel's
+      // _patch_rows). Preferred over `diff`; absent on older records → the client falls back to numberDiff.
+      diffRows?: DiffRow[];
       // AskUserQuestion only: the kernel joins the posed questions/options to the recorded answer and
       // attaches them here (the user 2026-06-16). Empty `chosen` while pending; filled once answered →
       // renderAsk flips the turn to the blue "you answered Claude's question" box.
@@ -1240,19 +1243,21 @@ function renderTool(ev: Extract<ChatEvent, { kind: "tool" }>): HTMLElement {
       const n = ev.output ? countLines(ev.output) : 0;
       inlineFold(head, turn, n ? `error · ${n} line${n === 1 ? "" : "s"}` : "error", io, fkey);
     }
-  } else if (ev.diff) {
-    // Edit/MultiEdit: "+add −del" on the head line; the red/green diff hangs below, hidden. Each row gets a
-    // line-number gutter (the user 2026-06-29): a two-column old#/new# gutter, numbered within the change
-    // (the Edit result carries no absolute file lines), built by numberDiff and styled like a diff viewer.
-    const rows = numberDiff(ev.diff);
+  } else if (ev.diffRows?.length || ev.diff) {
+    // Edit/MultiEdit: the red/green diff hangs below the head, hidden, with a line-number gutter (the user
+    // 2026-06-29). PREFER ev.diffRows — REAL file line numbers + context, from Claude Code's structuredPatch
+    // (kernel _patch_rows). Fall back to numberDiff(ev.diff), a relative gutter, for older records with no
+    // structured patch. Styled like a diff viewer: old#/new# columns, +/- coloring, faint @@ hunk headers.
+    const rows: DiffRow[] = ev.diffRows?.length ? ev.diffRows : numberDiff(ev.diff || "");
     const add = rows.filter((r) => r.sign === "+").length;
     const del = rows.filter((r) => r.sign === "-").length;
     const pre = el("pre", "io-pre fold-pre diff-fold");
     for (const r of rows) {
-      const row = el("div", "diff-row " + (r.sign === "+" ? "diff-add" : r.sign === "-" ? "diff-del" : "diff-ctx"));
+      const cls = r.sign === "+" ? "diff-add" : r.sign === "-" ? "diff-del" : r.sign === "@" ? "diff-hunk" : "diff-ctx";
+      const row = el("div", "diff-row " + cls);
       const og = el("span", "diff-gut diff-gut-old"); og.textContent = r.oldNo == null ? "" : String(r.oldNo);
       const ng = el("span", "diff-gut diff-gut-new"); ng.textContent = r.newNo == null ? "" : String(r.newNo);
-      const sign = el("span", "diff-sign"); sign.textContent = r.sign === " " ? " " : r.sign;
+      const sign = el("span", "diff-sign"); sign.textContent = r.sign === " " || r.sign === "@" ? "" : r.sign;
       const txt = el("span", "diff-code"); txt.textContent = r.text;
       row.append(og, ng, sign, txt);
       pre.appendChild(row);
