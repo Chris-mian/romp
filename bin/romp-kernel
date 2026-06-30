@@ -3237,6 +3237,32 @@ def _edit_diff(inp):
     return "\n".join(lines)
 
 
+def _patch_rows(sp):
+    """Claude Code's structuredPatch (toolUseResult) → numbered diff rows with REAL file line numbers + context.
+    Each row: {sign, text, oldNo, newNo}. sign is '+'/'-'/' ' for add/del/context, or '@' for a per-hunk
+    "@@ -old +new @@" header. Removed lines carry only an old number, added lines only a new one, context both.
+    Capped so a huge MultiEdit can't bloat the payload. Returns [] when there's nothing usable."""
+    rows = []
+    for h in (sp or []):
+        try:
+            o = int(h["oldStart"]); n = int(h["newStart"])
+        except Exception:
+            continue
+        rows.append({"sign": "@", "text": "@@ -%d +%d @@" % (o, n), "oldNo": None, "newNo": None})
+        for ln in (h.get("lines") or []):
+            mark = ln[:1]
+            if mark == "+":
+                rows.append({"sign": "+", "text": ln[1:], "oldNo": None, "newNo": n}); n += 1
+            elif mark == "-":
+                rows.append({"sign": "-", "text": ln[1:], "oldNo": o, "newNo": None}); o += 1
+            else:                                            # context (leading space) — keep both columns
+                rows.append({"sign": " ", "text": ln[1:] if mark == " " else ln, "oldNo": o, "newNo": n})
+                o += 1; n += 1
+            if len(rows) > 600:                              # safety cap on payload size
+                return rows
+    return rows
+
+
 def _split_reminders(text):
     """Split a user message into (prompt, [reminders]): harness-injected blocks become folded reminders
     (render.ts shows them as a 'ⓘ N system reminders' fold); the rest is the real prompt. Precise — keys
@@ -4062,6 +4088,7 @@ def build_session(sid, now, tmux=None):
                 author = a.get("author")
                 trs = [b for b in blocks if isinstance(b, dict) and b.get("type") == "tool_result"]
                 if trs:                                          # tool_result → fill the matching tool event's output
+                    tur = a.get("toolUseResult") if isinstance(a.get("toolUseResult"), dict) else None
                     for tr in trs:
                         ev = by_tool.get(tr.get("tool_use_id"))
                         if ev is not None:
@@ -4069,6 +4096,15 @@ def build_session(sid, now, tmux=None):
                             ev["output"] = (c if isinstance(c, str) else json.dumps(c))[:16000]
                             ev["isError"] = bool(tr.get("is_error"))
                             ev["resultUuid"] = a.get("uuid")
+                            # Edit/MultiEdit: Claude Code records a structuredPatch (toolUseResult) carrying REAL
+                            # file line numbers + context — turn it into numbered diff rows so the chat shows a
+                            # true line-number gutter (the user 2026-06-29). filePath-matched so the right result
+                            # feeds the right tool. The client falls back to numberDiff's relative gutter without it.
+                            if (tur and tur.get("structuredPatch") and ev.get("diff")
+                                    and tur.get("filePath") == ev.get("file")):
+                                pr = _patch_rows(tur["structuredPatch"])
+                                if pr:
+                                    ev["diffRows"] = pr
                 else:                                            # a genuine prompt OR a delivered peer message
                     text = " ".join(b.get("text", "") for b in blocks if b.get("type") == "text").strip() \
                            if blocks else (msg.get("content") if isinstance(msg.get("content"), str) else "")
