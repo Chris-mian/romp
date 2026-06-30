@@ -3718,15 +3718,21 @@ def build_session(sid, now, tmux=None):
     be = Sessions.backend_for(sid)
     queued = be.pending_queued(sid)
     parsed = _parse(sess["path"], sid, now)
-    # Optimistic queued echo (TMUX only): a composer send while the session is WORKING gets queued by Claude
-    # Code, but its queue-operation record only lands in the transcript ~1s later — so _pending_queued can't
-    # see it yet. Without this, the input echo would flash as a SENT (solid) bubble and then flip to the
-    # DOTTED queued bubble once the record lands (the user 2026-06-29). So while the turn is open, fold any
-    # not-yet-landed, not-yet-queued tmux echo INTO `queued` now → it renders dotted from the first push, and
-    # dedups against the real queue record when it arrives. (SDK queues in memory → pending_queued is instant,
-    # no gap; its echoes are skipped here via the unqueue discriminator.) Keys on _session_working — the
-    # event-model signal, never the tmux pane state — and an echo-only merge keeps the turn's real ended state.
-    if not hasattr(be, "unqueue") and _session_working(parsed["turns"]):
+    # Optimistic queued echo (TMUX only): a composer send while the session is BUSY (a working turn OR a
+    # compaction in progress) gets queued by Claude Code, but its queue-operation record only lands in the
+    # transcript ~1s later — so _pending_queued can't see it yet. Without this, the input echo would flash as a
+    # SENT (solid blue) bubble and then flip to the DOTTED queued bubble once the record lands (the user
+    # 2026-06-29). So while the session is busy, fold any not-yet-landed, not-yet-queued tmux echo INTO `queued`
+    # now → it renders dotted from the first push, and dedups against the real queue record when it arrives.
+    # COMPACTING must count too: a /compact runs no open assistant turn, so _session_working is False the whole
+    # time — without the compacting arm a message typed mid-compaction showed solid blue (the user 2026-06-29).
+    # (SDK queues in memory → pending_queued is instant, no gap; its echoes are skipped here via the unqueue
+    # discriminator.) Keys on the EVENT MODEL (_session_working / _compacting), never the tmux pane state — and
+    # an echo-only merge keeps the turn's real ended state.
+    tm0 = tmux.get(sid)
+    busy = _session_working(parsed["turns"]) or _compacting(sid, (tm0 or {}).get("state", ""), parsed, now,
+                                                            (tm0 or {}).get("since"))
+    if not hasattr(be, "unqueue") and busy:
         already = {q.strip() for q in queued}
         tx_user = {t for turn in parsed["turns"] for a in turn["atoms"] if (t := _atom_user_text(a))}
         for a in be.live_atoms(sid):

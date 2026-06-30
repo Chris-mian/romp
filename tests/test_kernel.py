@@ -661,6 +661,29 @@ class ViewBuilder(unittest.TestCase):
         qmsgs = [m["md"] for e in events if e["kind"] == "queued" for m in e["texts"]]
         self.assertNotIn("a fresh idle send", qmsgs, "an idle send is NOT queued")
 
+    def test_tmux_send_while_COMPACTING_echoes_as_QUEUED_not_a_sent_bubble(self):
+        # The user 2026-06-29: a composer send while a tmux session was COMPACTING showed as a SENT (solid blue)
+        # bubble, not a dotted queued one. A /compact runs no open assistant turn, so _session_working is False
+        # the whole compaction — the optimistic-echo fold only armed on _session_working, so it never fired and
+        # the echo rendered solid. Fix: the fold now also arms when the session is COMPACTING (_compacting). The
+        # default fixture ends on an ENDED turn (idle/not working); the optimistic compacting flag makes
+        # _compacting true with no tmux needed.
+        km._parse_cache.clear()
+        km._tmux_echo.pop(SID, None)
+        km._compact_clicked[SID] = NOW                    # optimistic compacting cue (no open turn, no boundary-since)
+        km._tmux_echo_add(SID, "switch to the dark palette")  # sent mid-compaction → Claude Code will queue it
+        try:
+            self.assertTrue(km._compacting(SID, "", km._parse(str(self.tpath), SID, NOW), NOW, None),
+                            "precondition: the session reads as compacting")
+            events = km.build_session(SID, NOW)["events"]
+        finally:
+            km._tmux_echo.pop(SID, None)
+            km._compact_clicked.pop(SID, None)
+        qmsgs = [m["md"] for e in events if e["kind"] == "queued" for m in e["texts"]]
+        self.assertIn("switch to the dark palette", qmsgs, "a send while compacting shows as a QUEUED (dotted) bubble")
+        sent = [e for e in events if e["kind"] == "user" and e.get("md") == "switch to the dark palette"]
+        self.assertEqual(sent, [], "it must NOT show as a sent (solid blue) user bubble")
+
     def test_a_romp_authored_echo_renders_as_a_GRAY_bubble_not_blue(self):
         # A NUDGE/auto-follow-up echo carries author "romp" → the chat draws the gray romp bubble (ev.romp),
         # NOT the blue human bubble (the user 2026-06-29). This is the colour half of the nudge-vanish fix:
