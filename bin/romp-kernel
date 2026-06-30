@@ -7458,8 +7458,8 @@ _HELP_CSS = (
     "border-radius:4px;padding:1px 6px;font:600 11px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;color:#e6e6e6}"
     # the rail "?" — a plain question mark inside a thin circle outline (the user 2026-06-29); currentColor so it
     # tracks the rail-act idle/hover color
-    ".rhelp-q{display:flex;align-items:center;justify-content:center;width:16px;height:16px;border:1.5px solid "
-    "currentColor;border-radius:50%;font:600 11px/1 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}"
+    ".rhelp-q{display:flex;align-items:center;justify-content:center;width:13px;height:13px;border:1.3px solid "
+    "currentColor;border-radius:50%;font:600 9px/1 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}"
 )
 
 
