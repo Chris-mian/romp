@@ -7808,16 +7808,20 @@ class Handler(BaseHTTPRequestHandler):
         return ""
 
     def _authorize(self, q):
-        """(ok, cookie_to_set, reason). Origin gate always; token gate only for non-local Host —
-        a valid ?token sets the cookie so the client (and its same-origin /ws) never re-prompts."""
+        """(ok, cookie_to_set, reason). A valid token IS sufficient auth and bypasses the Origin gate.
+        This is what lets the FEDERATED dashboard work: a browser served by ANOTHER kernel opens a
+        tunnel'd /ws (or fetch) here carrying ?token — a foreign Origin, but the unguessable token is
+        the credential, and a cross-site page can't forge it. Without a token the Origin gate always
+        applies (the ClawJacked/WS hole), and a non-local Host additionally requires the token. A valid
+        ?token also sets the cookie so a same-origin client never re-prompts."""
+        if TOKEN and _ct_eq((q.get("token") or [""])[0], TOKEN):
+            return True, TOKEN, ""                    # valid ?token → authorize (any origin) + set cookie
+        if TOKEN and _ct_eq(self._cookie_token(), TOKEN):
+            return True, None, ""                     # valid token cookie → authorize (any origin)
         if not self._origin_ok():
             return False, None, "cross-site origin"
         if self._is_local_host():
-            return True, None, ""                    # local passes on the Origin check alone
-        if TOKEN and _ct_eq((q.get("token") or [""])[0], TOKEN):
-            return True, TOKEN, ""                    # first non-local hit with ?token → set the cookie
-        if TOKEN and _ct_eq(self._cookie_token(), TOKEN):
-            return True, None, ""
+            return True, None, ""                    # local, same-origin → no token needed
         return False, None, "token required for non-local access"
 
     def do_GET(self):

@@ -36,8 +36,10 @@ os.environ.setdefault("ROMP_SERVE_TOKEN", "test-token-DO-NOT-USE")
 km = SourceFileLoader("romp_kernel", os.path.join(BIN, "romp-kernel")).load_module()
 
 
-def _ws_handshake(port, origin=None, host=None, path="/ws?app=chat", timeout=2.0):
+def _ws_handshake(port, origin=None, host=None, path="/ws?app=chat", token=None, timeout=2.0):
     """Send one raw WebSocket upgrade; return the numeric HTTP status (e.g. 101, 403)."""
+    if token is not None:
+        path = path + ("&" if "?" in path else "?") + "token=" + token
     key = base64.b64encode(os.urandom(16)).decode()
     lines = [
         "GET %s HTTP/1.1" % path,
@@ -97,6 +99,21 @@ class WsOriginGuard(unittest.TestCase):
         self.assertEqual(
             _ws_handshake(self.port, origin=origin), 101,
             "same-origin local UI must still upgrade")
+
+    def test_valid_token_authorizes_foreign_origin(self):
+        # FEDERATED dashboard: the browser is served by ANOTHER kernel, so its Origin is foreign
+        # here, but it carries this kernel's token over the -L tunnel. The token IS the auth, so
+        # it must upgrade despite the cross-site Origin.
+        self.assertEqual(
+            _ws_handshake(self.port, origin="http://localhost:9999",
+                          token="test-token-DO-NOT-USE"), 101,
+            "a valid token must authorize a tunnel'd /ws from a foreign-origin dashboard")
+
+    def test_invalid_token_foreign_origin_rejected(self):
+        # The bypass requires a VALID token — a wrong token + foreign Origin is still ClawJacked.
+        self.assertEqual(
+            _ws_handshake(self.port, origin="http://evil.example", token="wrong-token"), 403,
+            "only a valid token bypasses the Origin gate; a wrong token must not")
 
 
 if __name__ == "__main__":
