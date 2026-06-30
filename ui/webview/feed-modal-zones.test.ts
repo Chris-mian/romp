@@ -25,8 +25,10 @@ test("the modal shows the DISTILLER's per-node line (summary/blockSummary) but N
 test("modal node: text → the minting MESSAGE (anchor 'prompt', resolves by promptAnchorUuid)", () => {
   // the prompt jump now carries the node's promptAnchorUuid (the user's minting turn) → resolves BY ID, not
   // the old anchorUuid:null + time-landing (kernel 92e23ff + bugs' contract).
-  assert.match(FEED, /const goMsg = \(ev: Event\) => \{[^}]*anchor: "prompt", anchorUuid: node\.promptAnchorUuid \?\? null \}/);
-  assert.match(FEED, /t: node\.t, anchor: "prompt"/);
+  // goMsg is multi-statement now (it falls back to goWork when a node has no minting message — see the
+  // fallback test in feed-nav-hover); the prompt emit it still carries is pinned by the next two asserts.
+  assert.match(FEED, /const goMsg = \(ev: Event\) => \{/);
+  assert.match(FEED, /t: node\.t, anchor: "prompt", anchorUuid: node\.promptAnchorUuid \?\? null/);
   assert.match(FEED, /txt\.classList\.add\("lz-nav"\); txt\.title = "jump to the message that asked for this"; txt\.onclick = goMsg/);
 });
 

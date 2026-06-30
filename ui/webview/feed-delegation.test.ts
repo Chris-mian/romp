@@ -54,6 +54,6 @@ test("a narrow card WRAPS the '↪ from' provenance under the name instead of ov
 test("a delegation card's title anchors on 'work' (not 'prompt') so it doesn't jump to an unrelated user msg", () => {
   // a delegation card has no originating user prompt; anchor:"prompt" landed on the nearest user turn
   // in time (wrong). origin cards anchor on "work" → land where the delegation was processed (rompinfra).
-  assert.match(FEED, /const titleAnchor = it\.origin \? "work" : "prompt"/);
+  assert.match(FEED, /let titleAnchor = it\.origin \? "work" : "prompt"/);
   assert.match(FEED, /anchor: titleAnchor/);
 });
