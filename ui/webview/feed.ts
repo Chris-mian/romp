@@ -472,14 +472,12 @@ function makeAskCard(it: AskItem): HTMLElement {
     + '<path d="M4 3 H12 L8 8 L12 13 H4 L8 8 Z"/></svg><span>awaiting</span>';
   waitBadge.title = "Waiting on work it started, not on you. Clears when the result lands.";
   const clr = el("button", "fdismiss"); clr.textContent = "Clear"; clr.title = "clear this ask (inbox-zero; the one human-asserted fact)";
-  // "Nudge" on the card itself (the user 2026-06-18): a one-click status follow-up for a WORKING card,
-  // beside Clear, so you don't have to open the modal. Sends the canned status question down the SAME
-  // follow-up path (askFollowUp → the kernel quotes the goal as context). Shown only for working cards.
-  const nudge = el("button", "fdismiss ffollow fask-nudge"); nudge.textContent = "Nudge"; nudge.title = "nudge this session for a status update on this goal"; nudge.style.display = "none";
+  // Manual "Nudge" REMOVED (the user 2026-06-30): once Auto Nudge is robust you never hand-nudge — the
+  // background nudge follows up on a stalled working goal automatically, so the manual button (and the whole
+  // concept of manually nudging) is gone. Working cards now have no footer action of their own.
   // "Follow up" on a BLOCKED or COMPLETED card (the user 2026-06-22): one click opens THIS goal's modal and
   // jumps straight into its follow-up composer (via openFollowUpOnRender), saving the open-modal-then-click
-  // step. The modal's own Follow up button stays. Working cards get Nudge instead — the two are mutually
-  // exclusive by column, so the footer never shows both.
+  // step. The modal's own Follow up button stays.
   const cardFup = el("button", "fdismiss ffollow fask-fup"); cardFup.textContent = "Follow up"; cardFup.title = "open this goal and jump straight into a follow-up"; cardFup.style.display = "none";
   cardFup.onclick = (ev) => { ev.stopPropagation(); fullscreenAskId = it.itemId; openFollowUpOnRender = true; renderModal(); };
   // Session-STATE badges (⏸ approval / ⚠ API error / ⏳ waiting) ride the SESSION-NAME row, right after the
@@ -487,8 +485,8 @@ function makeAskCard(it: AskItem): HTMLElement {
   // the buttons past the card's right edge on a narrow card (the user 2026-06-19; mirrors the ↻ Followed-up
   // chip moved up 2026-06-18). idwrap is flex:1 so the name ellipsizes before the badge is ever clipped.
   idwrap.append(waitBadge, apiBadge, blkBadge);
-  // The action row holds ONLY buttons now (Retry / Nudge / Follow up / Clear).
-  actions.append(apiRetry, revive, nudge, cardFup, clr);
+  // The action row holds ONLY buttons now (Retry / Revive / Follow up / Clear).
+  actions.append(apiRetry, revive, cardFup, clr);
   // "↪ from <peer>" provenance + the "reopened"/"↻ Followed up" chips ride the name row's right side;
   // row2 wraps them onto a new line when there isn't room, so the provenance never overlaps a chip
   // (the user 2026-06-20). origin sits left of the chips, matching the "from … · Followed up" reading order.
@@ -551,16 +549,6 @@ function makeAskCard(it: AskItem): HTMLElement {
     vscodeApi?.postMessage({ type: "askClear", itemId: it.itemId });
     setTimeout(() => { if (askEls.get(it.itemId) === card && card.classList.contains("dismissing")) { card.remove(); askEls.delete(it.itemId); } }, 180);
   };
-  nudge.onclick = (ev) => {
-    ev.stopPropagation();
-    if (nudge.disabled) return;        // guard the double-fire: a nudge with no visible change invites a re-click
-    nudge.disabled = true;             // immediate feedback (the user 2026-06-24): the click ALWAYS shows it took,
-    nudge.textContent = "Nudged";      // before the kernel round-trip — then it self-restores. See ./actions / CLAUDE.md.
-    nudge.classList.add("romp-acted");
-    setTimeout(() => nudge.classList.remove("romp-acted"), 280);
-    vscodeApi?.postMessage({ type: "askFollowUp", itemId: it.itemId, nudge: true, text: "Status on the goal above: what's done, what's left, and is anything blocked waiting on a decision from me?" });   // nudge:true → romp authored it → gray bubble. text mirrors AUTO_NUDGE_TEXT (bin/romp-kernel)
-    setTimeout(() => { if (nudge.isConnected) { nudge.disabled = false; nudge.textContent = "Nudge"; } }, 1500);
-  };
   // HOVER (120ms intent debounce so sweeps don't spam) → white border + preview
   // this card's timeline journey. LEAVE → restore the pinned card's journey, or
   // clear if none pinned.
@@ -611,7 +599,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   a._title = title; a._name = name; a._time = time; a._reopened = reBadge; a._followedup = fupBadge;
   a._waitOn = waitOnBadge;
   a._blocked = blkBadge; a._wait = waitBadge;
-  a._apiBadge = apiBadge; a._apiRetry = apiRetry; a._revive = revive; a._nudge = nudge; a._cardFup = cardFup; a._clr = clr;
+  a._apiBadge = apiBadge; a._apiRetry = apiRetry; a._revive = revive; a._cardFup = cardFup; a._clr = clr;
   a._delegations = delegations;
   a._checklist = checklist;
   a._distill = distill;
@@ -708,7 +696,6 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
     a._waitOn.replaceChildren();
     a._waitOn.style.display = "none";
   }
-  a._nudge.style.display = (it.column === "working" && !it.provisional && !it.recheck && it.blocked?.state !== "apiError") ? "" : "none";   // Nudge only on a real working card — not a re-checking one, and not an API-error one (Retry is its action) (the user 2026-06-18/27/29)
   a._cardFup.style.display = ((it.column === "needs_input" || it.column === "completed") && !it.provisional) ? "" : "none";   // Follow up on blocked/completed cards (the user 2026-06-22)
   a._clr.style.display = it.provisional ? "none" : "";   // a placeholder has nothing to curate — no Clear
   // ⏳ awaiting: held in Working, waiting on work it dispatched/delegated (agents, a subagent, a build).

@@ -27,8 +27,8 @@ test("a provisional 'ghost' card gets a DASHED outline (distinct from a real car
   assert.match(FEED, /\} else \{[\s\S]*?card\.style\.borderStyle = "";[\s\S]*?card\.style\.borderColor = `rgba/);
 });
 
-test("a placeholder has no curation affordances — Clear and Nudge are hidden", () => {
-  assert.match(FEED, /a\._nudge\.style\.display = \(it\.column === "working" && !it\.provisional && !it\.recheck && it\.blocked\?\.state !== "apiError"\) \? "" : "none";/);
+test("a placeholder has no curation affordances — Clear is hidden", () => {
+  // (the manual Nudge button was removed 2026-06-30 — Auto Nudge replaces it, so there's no per-card nudge)
   assert.match(FEED, /a\._clr\.style\.display = it\.provisional \? "none" : "";/);
   assert.match(FEED, /a\._clr = clr;/);   // the ref must be stored for updateAskCard to reach it
 });

@@ -22,6 +22,3 @@ test("the apiError chip + Retry still show (they key on blocked.state, not the c
   assert.match(FEED, /a\._apiRetry\.style\.display = isApiErr \? "" : "none";/);
 });
 
-test("Nudge is suppressed on an apiError card (Retry is its action)", () => {
-  assert.match(FEED, /a\._nudge\.style\.display = \(it\.column === "working"[^)]*it\.blocked\?\.state !== "apiError"\)/);
-});

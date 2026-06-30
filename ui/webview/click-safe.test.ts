@@ -97,11 +97,11 @@ test("Timeline: blur force-releases a stuck press/tip so the lanes can't freeze 
   assert.match(TIMELINE, /window\.addEventListener\('blur', \(\) => \{[\s\S]*?contains\('show'\)\) this\.hideTip\(\);[\s\S]*?_release\(\);/);
 });
 
-test("Feed Nudge acknowledges the click: guards the double-fire, disables + relabels, self-restores", () => {
-  assert.match(FEED, /if \(nudge\.disabled\) return;/);          // a nudge with no visible change invites a re-click
-  assert.match(FEED, /nudge\.disabled = true;/);
-  assert.match(FEED, /nudge\.textContent = "Nudged";/);
-  assert.match(FEED, /if \(nudge\.isConnected\) \{ nudge\.disabled = false; nudge\.textContent = "Nudge"; \} \}, 1500\)/);
+// The manual Nudge button was REMOVED (the user 2026-06-30) — once Auto Nudge is robust you never hand-nudge.
+// Its click-acknowledgement test is gone with it; pin that no Nudge button remains on the feed card.
+test("the manual Nudge button is gone (Auto Nudge replaces it)", () => {
+  assert.doesNotMatch(FEED, /fask-nudge/);
+  assert.doesNotMatch(FEED, /nudge\.onclick/);
 });
 
 test("the .romp-acted press pulse exists in BOTH stylesheets (feed page loads only feed.css)", () => {

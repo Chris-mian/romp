@@ -70,10 +70,10 @@ test("a 'Followed up' chip shows while the kernel optimistically reopened a foll
 });
 
 test("session-STATE badges (⏸ approval / ⚠ API error / ⏳ waiting) ride the name row; the footer is buttons only (the user 2026-06-19)", () => {
-  // the bug: ⏸ approval + Nudge + Clear in the SAME footer row shoved Nudge/Clear off a narrow card.
+  // the bug: ⏸ approval + buttons + Clear in the SAME footer row shoved them off a narrow card.
   // Fix: the state badges move up beside the session name; the action row holds only the buttons.
   assert.match(FEED, /idwrap\.append\(waitBadge, apiBadge, blkBadge\)/, "state badges sit beside the name");
-  assert.match(FEED, /actions\.append\(apiRetry, revive, nudge, cardFup, clr\)/, "footer = buttons only (Retry/Revive/Nudge/Follow up/Clear)");
+  assert.match(FEED, /actions\.append\(apiRetry, revive, cardFup, clr\)/, "footer = buttons only (Retry/Revive/Follow up/Clear) — manual Nudge removed");
   // the badges keep their refs so updateAskCard still toggles them by display
   assert.match(FEED, /a\._blocked = blkBadge; a\._wait = waitBadge;/);
 });
