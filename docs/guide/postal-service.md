@@ -14,8 +14,6 @@ messages the recipient can act on from the first line.
 | `set_working(text)` | Publish what you're working on so peers see it. |
 | `check_sent()` | See whether your sent messages were read yet. |
 | `recall_message(to, id?)` | Unsend a message the recipient hasn't read yet. |
-| `find_sessions(query)` | Search past and present sessions by their saved summaries. |
-| `revive_session(session, message?)` | Bring a dead session back, resuming its full conversation. |
 
 ## From the shell
 
@@ -26,17 +24,14 @@ romp --mail send <name> "<text>"
 romp --mail inbox
 romp --mail agents
 romp --mail working "<note>"
-romp --mail find "<query>"
-romp --mail revive <name> "<msg>"
 ```
 
-## Parked handoffs
+## Addressing is live-only
 
-!!! info "Messages to a dead session are not lost"
-    Message a session that has exited and the message is **parked**: it waits on
-    disk and is delivered the instant that session is ever revived — even days
-    later — and is silently ignored if it never returns. The send response tells
-    you whether the message was delivered (live) or parked (dead).
+!!! info "You can only message live sessions"
+    Addressing resolves against the currently-live fleet (see `list_agents`). A
+    name that isn't a live session errors — there is no parking mail for, or
+    reviving, dead sessions.
 
 ## Coordinating parallel edits
 

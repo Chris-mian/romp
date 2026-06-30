@@ -14,8 +14,6 @@
 #   romp-postal-service working <text>   publish what this session is working on          [CLI]
 #   romp-postal-service sent             this session's sent messages + read status       [CLI]
 #   romp-postal-service recall <to> [id] unsend an unread/parked message you sent          [CLI]
-#   romp-postal-service find [query]     search past+present sessions by summary + captions [CLI]
-#   romp-postal-service revive <name>    revive a dead session (romp --resume, detached)   [CLI]
 #   romp-postal-service drain --id <id>  loop-guarded consume, for the Stop hook
 #
 # Architecture: the bus is the single source of truth. Everything (the MCP
@@ -69,13 +67,7 @@ LOG = STATE / "server.log"
 PIDFILE = STATE / "server.pid"
 NAMES_DIR = Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "romp" / "names"
 TLDIR = STATE.parent / "timeline"     # append-only logs for the timeline view (messages.jsonl)
-ARCHIVE_DIR = STATE.parent / "archive"        # per-session {headline, abstract} (the archiver — the search index)
-CAPTIONS_DIR = STATE.parent / "captions"      # per-transcript turn/segment captions (the activity log)
 SESSION_FLAGS = STATE.parent / "session-flags.json"   # the kernel's per-session view flags {sid:{flag:true}}; we honour postalServiceOff (legacy: postalOff)
-
-# The romp launcher (same dir as this script); used to REVIVE a dead session via
-# `romp <name> --resume <uuid> --detach`. Overridable for tests.
-ROMP_BIN = os.environ.get("ROMP_BIN") or str(Path(__file__).resolve().parent / "romp")
 
 POLL = int(os.environ.get("ROMP_POSTAL_POLL", "30"))        # autostop poll interval (seconds)
 IDLE_GRACE = int(os.environ.get("ROMP_POSTAL_IDLE_GRACE", "2"))  # empty polls before the bus exits
@@ -416,42 +408,16 @@ def _name_for_id(sid):
     except Exception:
         return sid[:8]
 
-def _dead_id_for_name(name):
-    """Resolve a peer NAME that is NOT currently live to the session UUID of the
-    most recent past session that used it — from the persistent names/ records,
-    which outlive the session. Returns None if no session ever had that name, so a
-    genuine typo still fails loudly (404) instead of parking into the void; a name
-    that really existed parks a handoff for whenever it's revived. (Live names are
-    handled by the normal /send path and never reach here.)"""
-    if not name or not NAMES_DIR.is_dir():
-        return None
-    live_ids = {a["id"] for a in local_agents()}
-    cands = []
-    for f in NAMES_DIR.iterdir():
-        if not f.is_file() or f.name in live_ids:
-            continue
-        try:
-            if f.read_text().split("\t")[0].strip() != name:
-                continue
-            mtime = f.stat().st_mtime
-        except Exception:
-            continue
-        # Prefer a candidate that still has a mailbox (a handoff mid-flight), then
-        # the most recently seen session by that name.
-        cands.append(((MAILROOT / f.name).is_dir(), mtime, f.name))
-    if not cands:
-        return None
-    cands.sort(reverse=True)
-    return cands[0][2]
-
 def _recip_id_for(to):
-    """A recipient reference (live name, UUID, or dead name) -> session UUID, or None."""
+    """A recipient reference (live name, or UUID with an existing mailbox) -> session
+    UUID, or None. Addressing is LIVE-only: a name that isn't a currently-live session
+    fails (no dead-session resurrection)."""
     for a in all_agents():
         if a["name"] == to:
             return a["id"]
-    if _safe_id(to) and ((MAILROOT / to).is_dir() or (NAMES_DIR / to).is_file()):  # already an id
+    if _safe_id(to) and (MAILROOT / to).is_dir():  # already an id with a mailbox (in-flight mail)
         return to
-    return _dead_id_for_name(to)
+    return None
 
 def _recall(from_id, to, mid):
     """Unsend UNREAD mail: delete messages still sitting in a recipient's `new/`
@@ -494,181 +460,6 @@ def _recall(from_id, to, mid):
             _tl_append("messages.jsonl", {"t": int(time.time()), "ev": "recall", "id": f.name})
         _mark_pending(rid)         # recall may have emptied new/ -> reconcile the marker
     return removed
-
-# ───────────────────── session discovery + revival ─────────────────────
-# Every past/present romp session leaves a persistent trail on disk: names/<sid>
-# (name, dir, identity colour) and the NEW index the judges write: archive/<sid>.json
-# (a one-line headline + a 2-3 sentence abstract per session) and captions/<sid>.jsonl
-# (the per-turn/segment activity log). That's a searchable index of expertise: a live
-# session can find a DEAD session that worked on a relevant problem and REVIVE it
-# (`romp <name> --resume <uuid> --detach`). (Replaces the retired summaries/ store.)
-
-def _session_records():
-    """Join names/ + the judges' index (archive/ headline+abstract + captions/ activity log)
-       into one record per session: {id, name, dir, alive, last, headline, abstract,
-       caps:[{t,text}]}, newest first. last = most recent caption epoch, else the file mtime."""
-    live = {a["id"]: a for a in local_agents()}
-    ids = set()
-    if NAMES_DIR.is_dir():
-        ids |= {f.name for f in NAMES_DIR.iterdir() if f.is_file()}
-    if CAPTIONS_DIR.is_dir():
-        ids |= {f.stem for f in CAPTIONS_DIR.iterdir() if f.suffix == ".jsonl"}
-    out = []
-    for sid in ids:
-        name, d = sid[:8], ""
-        nf = NAMES_DIR / sid
-        if nf.is_file():
-            try:
-                p = nf.read_text().split("\t")
-                name = p[0].strip() or name
-                d = p[1].strip() if len(p) > 1 else ""
-            except Exception:
-                pass
-        if sid in live:                       # a live session's name/dir may be newer than the record
-            name = live[sid].get("name", name)
-            d = live[sid].get("dir", "") or d
-        headline, abstract = "", ""
-        af = ARCHIVE_DIR / (sid + ".json")
-        if af.is_file():
-            try:
-                a = json.loads(af.read_text())
-                headline = (a.get("headline") or "").strip()
-                abstract = (a.get("abstract") or "").strip()
-            except Exception:
-                pass
-        caps, last = [], 0
-        cf = CAPTIONS_DIR / (sid + ".jsonl")
-        if cf.is_file():
-            for ln in cf.read_text(errors="replace").splitlines():
-                try: e = json.loads(ln)
-                except Exception: continue
-                txt = (e.get("caption") or "").strip()
-                if not txt: continue
-                t = int(e.get("t", 0))
-                caps.append({"t": t, "text": txt})
-                last = max(last, t)
-        if not last:
-            try: last = int((cf if cf.is_file() else (af if af.is_file() else nf)).stat().st_mtime)
-            except Exception: last = 0
-        out.append({"id": sid, "name": name, "dir": d, "alive": sid in live,
-                    "last": last, "headline": headline, "abstract": abstract, "caps": caps})
-    out.sort(key=lambda s: s["last"], reverse=True)
-    return out
-
-def _rel_age(t):
-    if not t: return "?"
-    s = max(0, int(time.time()) - int(t))
-    if s < 90:  return "%ds ago" % s
-    m = s // 60
-    if m < 90:  return "%dm ago" % m
-    h = m // 60
-    if h < 36:  return "%dh ago" % h
-    return "%dd ago" % (h // 24)
-
-def _find_sessions(query, limit=12):
-    """Rank sessions by how well name/dir/headline/abstract/captions match the query tokens
-    (empty query -> most recent). Returns (ranked records [each + 'snips'], fell_back)."""
-    recs = _session_records()
-    toks = [w for w in re.split(r"\s+", (query or "").lower().strip()) if w]
-    fell_back = False
-    if toks:
-        def score(r):
-            hay = (r["name"] + " " + r["dir"] + " " + r["headline"] + " " + r["abstract"] + " " +
-                   " ".join(c["text"] for c in r["caps"])).lower()
-            return sum(hay.count(t) for t in toks)
-        hits = [(score(r), r) for r in recs]
-        hits = [(sc, r) for sc, r in hits if sc > 0]
-        if hits:
-            hits.sort(key=lambda x: (x[0], x[1]["last"]), reverse=True)
-            ranked = [r for _, r in hits[:limit]]
-        else:
-            ranked, fell_back = recs[:limit], True
-    else:
-        ranked = recs[:limit]
-    for r in ranked:                          # attach the most relevant snippet lines (matching captions)
-        snips = [c for c in r["caps"] if any(t in c["text"].lower() for t in toks)] if toks else []
-        if not snips:
-            snips = r["caps"][-3:]             # fall back to the latest few
-        r["snips"] = snips[-4:]
-    return ranked, fell_back
-
-def format_find(ranked, query, fell_back, me_id=None):
-    if not ranked:
-        return "No past romp sessions on record."
-    if fell_back:
-        head = 'No sessions matched "%s" — showing the most recent instead:' % query
-    elif query:
-        head = 'Past & present romp sessions matching "%s":' % query
-    else:
-        head = "Recent romp sessions:"
-    out = [head, ""]
-    for r in ranked:
-        dot = "●" if r["alive"] else "○"   # ● alive / ○ dead
-        st = "ALIVE" if r["alive"] else "dead"
-        you = " (you)" if me_id and r["id"] == me_id else ""
-        dirb = os.path.basename(r["dir"]) if r["dir"] else "?"
-        out.append("%s %s%s  [%s]  %s · last active %s  ·  %s"
-                   % (dot, r["name"], you, dirb, st, _rel_age(r["last"]), r["id"][:8]))
-        if r.get("headline"):
-            out.append("    %s" % r["headline"])
-        for c in r.get("snips", []):
-            out.append("    - %s" % c["text"])
-    out += ["", '(to wake one: revive_session("<name>")  ·  romp --mail revive <name>)']
-    return "\n".join(out)
-
-def _resolve_session(name_or_id):
-    """name_or_id -> (sid, name, dir, alive). Accepts a live name, a UUID we have a
-    record for, or a dead name (most recent past session by that name). (None,...)
-    if nothing matches."""
-    x = (name_or_id or "").strip()
-    if not x:
-        return None, None, None, False
-    la = local_agents()
-    by_name = {a["name"]: a for a in la}
-    if x in by_name:                          # a live session by that name -> already running
-        a = by_name[x]
-        return a["id"], a["name"], a.get("dir", ""), True
-    # `x` is used as a path component below; reject traversal so a crafted
-    # revive target (e.g. `../../../etc/hosts`) can't read an arbitrary file or
-    # feed attacker-chosen contents into the spawn.
-    if not _safe_id(x):
-        return None, None, None, False
-    if (NAMES_DIR / x).is_file() or (CAPTIONS_DIR / (x + ".jsonl")).is_file():
-        sid = x
-    else:
-        sid = _dead_id_for_name(x)
-    if not sid:
-        return None, None, None, False
-    name, d = sid[:8], ""
-    nf = NAMES_DIR / sid
-    if nf.is_file():
-        try:
-            p = nf.read_text().split("\t"); name = p[0].strip() or name
-            d = p[1].strip() if len(p) > 1 else ""
-        except Exception:
-            pass
-    return sid, name, d, sid in {a["id"] for a in la}
-
-def _revive(name_or_id):
-    """Spawn `romp <name> --resume <uuid> --detach` in the session's recorded dir
-    (so claude --resume finds the transcript). Returns
-    (ok, sid, name, already_alive, detail)."""
-    sid, name, d, alive = _resolve_session(name_or_id)
-    if not sid:
-        return False, None, name_or_id, False, "no live or past romp session named '%s'" % name_or_id
-    if alive:
-        return True, sid, name, True, "already running"
-    if not os.path.exists(ROMP_BIN):
-        return False, sid, name, False, "romp launcher not found at %s" % ROMP_BIN
-    workdir = d if d and os.path.isdir(d) else str(Path.home())
-    try:
-        r = subprocess.run([ROMP_BIN, name, "--resume", sid, "--detach"],
-                           cwd=workdir, capture_output=True, text=True, timeout=30)
-    except Exception as e:
-        return False, sid, name, False, "revive failed: %s" % e
-    if r.returncode != 0:
-        return False, sid, name, False, (r.stderr or r.stdout or "romp exited %d" % r.returncode).strip()
-    return True, sid, name, False, (r.stdout or "").strip()
 
 def _sent_receipts(mid):
     """[{to, id, sent, exec, recalled}] for messages SENT by `mid`, joined by id,
@@ -1001,17 +792,12 @@ class Handler(BaseHTTPRequestHandler):
                                    "say it's YOUR mailbox that's off, not theirs."}, 403)
             match = [a for a in all_agents() if a["name"] == to and not _postal_off(a["id"])]
             if not match:
-                # No live peer by that name. If a PAST session used it, park a
-                # handoff that delivers whenever it's revived (ignored if it never
-                # returns). A name no session ever had is a typo -> 404.
-                dead = _dead_id_for_name(to)
-                if dead and not _postal_off(dead):
-                    deliver(dead, frm, frm_id, body, park=True)
-                    return self._send({"ok": True, "to": to, "parked": True})
-                if any(a["name"] == to for a in all_agents()):   # live, but isolated → say so (don't 404 or park)
+                # Addressing is LIVE-only: no dead-session resurrection. A live-but-
+                # isolated recipient says so; anything else is a typo -> 404.
+                if any(a["name"] == to for a in all_agents()):   # live, but isolated → say so
                     return self._send({"error": "isolation: the RECIPIENT '%s' has its mailbox OFF (it's in "
                                        "postal isolation — its mailbox icon is toggled off), so it can't receive "
-                                       "mail right now. YOUR mailbox is fine; nothing was sent or parked. It'll "
+                                       "mail right now. YOUR mailbox is fine; nothing was sent. It'll "
                                        "be reachable once the user toggles ITS mailbox back on." % to}, 403)
                 return self._send({"error": "no live romp session named '%s'" % to}, 404)
             a0 = match[0]
@@ -1318,14 +1104,12 @@ WRITE SO THE RECIPIENT CAN ACT FROM YOUR FIRST LINE.
 
 COORDINATE BEFORE PARALLEL EDITS — BY READING STATE, NOT BY WAKING PEERS. Before editing a shared repo, run list_agents to see peers' working-notes and branches (file overlap only collides on the SAME branch), and publish your own with set_working. Resolve ownership by READING that state — never message a peer to ask "do you still own this?". Discount a stale claim: a note flagged "(idle now — claim may be stale)" is from a session that finished its turn, and a peer with NO note isn't actively holding files (romp auto-clears the note when a session's work is done). Treat a file as owned only when the peer is on your branch AND actively working it now; never wake an idle session just to disambiguate ownership (a false interrupt). When handing off or working alongside a peer, declare ownership in your first line ("I own files A/B — stay off them"). Use check_sent to see if a message was read instead of asking "did you get it?". Confirm substantive coordination (a delegation plan, an ownership boundary) — never just to acknowledge.
 
-If you message a session that has been killed, it is parked as a handoff: delivered if that session is ever revived, ignored otherwise — and its responsibility is yours now. If YOU are a revived session, mail flagged "parked" may be stale: reconcile before assuming your old task still stands.
-
-DON'T RECRUIT PAST SESSIONS ON YOUR OWN. find_sessions and revive_session reach OUTSIDE your live fleet into the user's whole session history; surfacing old work and waking it back up is the user's call, not a step you take toward your own task. Use them only when the user asks for it ("find the session that did X", "bring Y back"), or to hand a responsibility back to a specific dead session you already know about — never as a self-directed move to research or staff your own work. Coordinating with your LIVE peers (list_agents / send_message) is normal in-fleet work and needs no such restraint.
+Addressing is LIVE-only: you can only message sessions that are currently live (see list_agents). A name that isn't a live session errors — there's no parking mail for, or reviving, dead sessions.
 """
 
 MCP_TOOLS = [
     {"name": "send_message",
-     "description": "Send a message to another romp session by its name. A live recipient gets it at the end of its current turn. The recipient shares none of your context, so lead the body with DELEGATE:/COORDINATE:/QUESTION: and put the whole point in the first sentence — context after, only what's needed to act. If you name a session that has been KILLED (but really existed), the message is PARKED as a handoff: it waits on disk and is delivered the instant that session is ever revived (even days later), or ignored if it never returns — useful for telling a dead session you've taken over its work. The response says whether it was delivered or parked. A name no session ever had still errors. Use list_agents to see who's live.",
+     "description": "Send a message to another romp session by its name. A live recipient gets it at the end of its current turn. The recipient shares none of your context, so lead the body with DELEGATE:/COORDINATE:/QUESTION: and put the whole point in the first sentence — context after, only what's needed to act. Addressing is live-only: a name that isn't a currently-live session errors. Use list_agents to see who's live.",
      "inputSchema": {"type": "object",
                      "properties": {"to": {"type": "string", "description": "recipient romp session name"},
                                     "body": {"type": "string", "description": "message text"}},
@@ -1344,20 +1128,10 @@ MCP_TOOLS = [
      "description": "See your recently sent messages and whether each was read/acted on by the recipient yet, or is still pending — instead of asking 'did you get it?'.",
      "inputSchema": {"type": "object", "properties": {}}},
     {"name": "recall_message",
-     "description": "Unsend a message you sent that the recipient HASN'T read yet — still queued, or PARKED for a dead session. Deletes it from their mailbox so a now-stale ask never lands (e.g. the task became moot, or you're superseding it). Give 'to' (the recipient) to recall your unread message(s) to them; add 'id' (from check_sent) to target one specific message. Only your OWN, still-UNREAD messages can be recalled — anything already read is gone. Returns what was removed.",
+     "description": "Unsend a message you sent that the recipient HASN'T read yet — still queued in their mailbox. Deletes it so a now-stale ask never lands (e.g. the task became moot, or you're superseding it). Give 'to' (the recipient) to recall your unread message(s) to them; add 'id' (from check_sent) to target one specific message. Only your OWN, still-UNREAD messages can be recalled — anything already read is gone. Returns what was removed.",
      "inputSchema": {"type": "object",
                      "properties": {"to": {"type": "string", "description": "recipient session name (or UUID) whose queued message(s) from you to cancel"},
                                     "id": {"type": "string", "description": "optional specific message id (from check_sent) to recall just that one"}}}},
-    {"name": "find_sessions",
-     "description": "Search PAST and present romp sessions by their archived summary + activity log (what each one was about and did), plus name and directory — to find a session with expertise or context worth reusing. Returns matching sessions (alive ● / dead ○) with directory, last-active time, UUID, and the matching caption snippets. Omit the query to list the most recent sessions. Read-only; follow up with revive_session to wake a dead one. USE ONLY WHEN THE USER ASKS you to look up a past session — this reaches outside your live fleet into the user's whole history, so don't go spelunking for old sessions on your own initiative.",
-     "inputSchema": {"type": "object",
-                     "properties": {"query": {"type": "string", "description": "keywords describing the expertise/topic you're after; omit to list recent sessions"}}}},
-    {"name": "revive_session",
-     "description": "Bring a DEAD romp session back to life — resumes its full conversation in its original directory, reusing its name + identity colour, and it rejoins list_agents. It comes back IDLE (does nothing until messaged). Pass an optional 'message' (e.g. 'DELEGATE: ...') to tell it why it was woken — delivered as it finishes loading. Naming a session that's already live is a no-op (just routes your message). Spawns a process, so the human is asked to approve. USE ONLY WHEN THE USER ASKS you to bring a session back, or to hand a responsibility back to a specific dead session you already know about — never as a self-directed step to recruit help for your own task; surfacing and waking past work is the user's call.",
-     "inputSchema": {"type": "object",
-                     "properties": {"session": {"type": "string", "description": "the session name (or UUID) to revive"},
-                                    "message": {"type": "string", "description": "optional note delivered to it on wake, e.g. 'DELEGATE: take back the build'"}},
-                     "required": ["session"]}},
 ]
 
 def _mcp_call(name, args):
@@ -1368,12 +1142,7 @@ def _mcp_call(name, args):
         if not to or not body:
             return "Need both 'to' and 'body'.", True
         try:
-            res = _http("POST", "/send", {"to": to, "from": me or "unknown", "from_id": mid or "", "body": body})
-            if res.get("parked"):
-                return ("'%s' isn't running right now, so I parked this as a handoff. It'll be "
-                        "delivered the instant that session is revived — even days later — and "
-                        "is simply ignored if it never comes back. Treat its responsibility as "
-                        "yours now." % to), False
+            _http("POST", "/send", {"to": to, "from": me or "unknown", "from_id": mid or "", "body": body})
             return "Delivered to '%s'." % to, False
         except BusError as e:
             return str(e), True
@@ -1411,34 +1180,6 @@ def _mcp_call(name, args):
         for r in removed:
             lines.append("  ✕ to %s: %s" % (r["to"], r["body"]))
         return "\n".join(lines), False
-    if name == "find_sessions":
-        q = args.get("query", "")
-        ranked, fb = _find_sessions(q)
-        return format_find(ranked, q, fb, mid), False
-    if name == "revive_session":
-        target = args.get("session", "") or args.get("name", "")
-        if not target:
-            return "Need 'session' — the name or UUID to revive.", True
-        ok, sid, rname, already, detail = _revive(target)
-        if not ok:
-            return detail, True
-        msg = args.get("message", "")
-        note = ""
-        if msg:
-            try:
-                res = _http("POST", "/send", {"to": rname, "from": me or "unknown",
-                                              "from_id": mid or "", "body": msg})
-                if already:
-                    note = (" It was parked (delivers on its next revival)." if res.get("parked")
-                            else " Your message was delivered.")
-                else:
-                    note = " Your message will reach it as it finishes loading."
-            except BusError as e:
-                note = " (couldn't deliver your message: %s)" % e
-        if already:
-            return ("'%s' is already running.%s" % (rname, note)), False
-        return ("Reviving '%s' (uuid %s) in the background — it'll appear in list_agents shortly "
-                "and comes back idle until messaged.%s" % (rname, sid[:8], note)), False
     return "Unknown tool: %s" % name, True
 
 def mcp():
@@ -1501,13 +1242,10 @@ def cli_send(argv):
         sys.stderr.write("[romp mail] %s\n" % _unreachable_hint()); return 1
     me, mid = my_name(), my_id()
     try:
-        res = _http("POST", "/send", {"to": to, "from": me or "unknown", "from_id": mid or "", "body": body})
+        _http("POST", "/send", {"to": to, "from": me or "unknown", "from_id": mid or "", "body": body})
     except BusError as e:
         sys.stderr.write("[romp mail] %s\n" % e); return 1
-    if res.get("parked"):
-        print("[romp mail] '%s' is offline — parked as a handoff; it'll be delivered on revival (ignored if it never returns)." % to)
-    else:
-        print("[romp mail] delivered to '%s'" % to)
+    print("[romp mail] delivered to '%s'" % to)
     return 0
 
 def cli_inbox(peek=False):
@@ -1572,33 +1310,6 @@ def cli_recall(argv):
         print("[romp mail] nothing to recall (already read, or none queued to '%s')" % to)
     else:
         print("[romp mail] recalled %d message(s) to '%s' before they were read" % (len(removed), to))
-    return 0
-
-def cli_find(argv):
-    q = " ".join(argv)
-    ranked, fb = _find_sessions(q)
-    print(format_find(ranked, q, fb, my_id()))
-    return 0
-
-def cli_revive(argv):
-    if not argv:
-        sys.stderr.write("usage: romp --mail revive <name|uuid> [message...]\n"); return 2
-    target, msg = argv[0], " ".join(argv[1:])
-    ok, sid, rname, already, detail = _revive(target)
-    if not ok:
-        sys.stderr.write("[romp mail] %s\n" % detail); return 1
-    if msg:
-        ensure()
-        try:
-            _http("POST", "/send", {"to": rname, "from": my_name() or "unknown",
-                                    "from_id": my_id() or "", "body": msg})
-        except BusError as e:
-            sys.stderr.write("[romp mail] revived, but message failed: %s\n" % e)
-    if already:
-        print("[romp mail] '%s' is already running%s" % (rname, " (message sent)" if msg else ""))
-    else:
-        print("[romp mail] reviving '%s' (%s) in the background%s"
-              % (rname, sid[:8], " — message will reach it on load" if msg else ""))
     return 0
 
 def cli_wake(argv):
@@ -1705,15 +1416,13 @@ def setup_remote(force=False):
     return 1
 
 USAGE = """romp-postal-service — the Romp Postal Service
-  romp --mail send <session> <text>   message a romp session (parks a handoff if it's dead but revivable)
+  romp --mail send <session> <text>   message a live romp session
   romp --mail inbox                   read + clear messages sent to this session
   romp --mail peek                    show messages without clearing them
   romp --mail agents                  list romp sessions (with branch + what they're working on)
   romp --mail working <text>          publish what you're working on (empty to clear)
   romp --mail sent                    show your sent messages + whether each was read
-  romp --mail recall <to> [id]        unsend an unread/parked message you sent to <to>
-  romp --mail find [query]            search past+present sessions by summary + captions
-  romp --mail revive <name> [msg]     revive a dead session (resumes it; optional wake message)
+  romp --mail recall <to> [id]        unsend an unread message you sent to <to>
   romp --mail remote                  connect this (remote) machine to your laptop's bus
 (internal: serve | ensure | restart | mcp | drain --id <id> | wake --id <id> | picker-check --name <n> --id <id>)"""
 
@@ -1740,8 +1449,6 @@ def main(argv):
     elif cmd in ("agents", "ls"):  rc = cli_agents()
     elif cmd == "working":         rc = cli_working(rest)
     elif cmd == "sent":            rc = cli_sent()
-    elif cmd == "find":            rc = cli_find(rest)
-    elif cmd == "revive":          rc = cli_revive(rest)
     elif cmd == "recall":          rc = cli_recall(rest)
     else:
         sys.stderr.write("unknown command: %s\n%s\n" % (cmd, USAGE)); return 2

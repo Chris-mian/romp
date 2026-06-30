@@ -37,12 +37,10 @@ class TraversalAtSinks(unittest.TestCase):
         # never read another directory's `new/`.
         self.assertEqual(pm.read_box("../../../../etc", consume=False), [])
 
-    def test_resolve_session_rejects_traversal(self):
-        # revive_session reaches _resolve_session; a traversal target must not
-        # resolve to an arbitrary file's contents.
-        self.assertEqual(
-            pm._resolve_session("../../../../etc/hosts"),
-            (None, None, None, False))
+    def test_recip_id_rejects_traversal(self):
+        # /send reaches _recip_id_for; a traversal reference must not resolve to a
+        # path component under the mail/names roots (the _safe_id guard rejects it).
+        self.assertIsNone(pm._recip_id_for("../../../../etc/hosts"))
 
     def test_mailbox_refuses_unsafe(self):
         with self.assertRaises(ValueError):

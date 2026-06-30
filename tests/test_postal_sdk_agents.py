@@ -37,10 +37,10 @@ class SdkAgentsVisibleToPostal(unittest.TestCase):
         self.assertEqual(a["state"], "waiting")     # from the kernel's unified state
         self.assertFalse(a["remote"])
 
-    def test_send_resolves_an_sdk_session_ALIVE_not_parked(self):
-        sid, name, d, alive = pm._resolve_session("sdksess")
-        self.assertEqual(sid, SID)
-        self.assertTrue(alive, "a send to an open SDK session must resolve ALIVE (deliver), not dead (park)")
+    def test_send_resolves_an_sdk_session_ALIVE_not_dead(self):
+        # a send to an open SDK session resolves to its live id (delivers); live-only
+        # addressing means a non-live name would resolve to nothing instead.
+        self.assertEqual(pm._recip_id_for("sdksess"), SID)
 
     def test_session_absent_from_kernel_is_not_a_live_agent(self):
         pm._kernel_sessions = lambda: []            # the kernel reports nothing live (dead/ended) → not an agent
