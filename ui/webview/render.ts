@@ -19,6 +19,7 @@ import { loadSettings, onExternalSettingsChange, type RompSettings } from "./set
 import { delegate } from "./actions";
 import { prebuildPlan, type ViewState } from "./prebuild";
 import { reconcileTabOrder } from "./tab-order";
+import { numberDiff } from "./diff-lines";
 
 for (const [name, lang] of Object.entries({
   bash, sh: bash, shell: bash, python, py: python, javascript, js: javascript,
@@ -1240,13 +1241,23 @@ function renderTool(ev: Extract<ChatEvent, { kind: "tool" }>): HTMLElement {
       inlineFold(head, turn, n ? `error · ${n} line${n === 1 ? "" : "s"}` : "error", io, fkey);
     }
   } else if (ev.diff) {
-    // Edit/MultiEdit: "+add −del" on the head line; the red/green diff hangs below, hidden.
-    let add = 0, del = 0;
-    for (const l of ev.diff.split("\n")) { if (l[0] === "+") add++; else if (l[0] === "-") del++; }
+    // Edit/MultiEdit: "+add −del" on the head line; the red/green diff hangs below, hidden. Each row gets a
+    // line-number gutter (the user 2026-06-29): a two-column old#/new# gutter, numbered within the change
+    // (the Edit result carries no absolute file lines), built by numberDiff and styled like a diff viewer.
+    const rows = numberDiff(ev.diff);
+    const add = rows.filter((r) => r.sign === "+").length;
+    const del = rows.filter((r) => r.sign === "-").length;
     const pre = el("pre", "io-pre fold-pre diff-fold");
-    const code = el("code", "language-diff"); code.textContent = ev.diff; pre.appendChild(code);
+    for (const r of rows) {
+      const row = el("div", "diff-row " + (r.sign === "+" ? "diff-add" : r.sign === "-" ? "diff-del" : "diff-ctx"));
+      const og = el("span", "diff-gut diff-gut-old"); og.textContent = r.oldNo == null ? "" : String(r.oldNo);
+      const ng = el("span", "diff-gut diff-gut-new"); ng.textContent = r.newNo == null ? "" : String(r.newNo);
+      const sign = el("span", "diff-sign"); sign.textContent = r.sign === " " ? " " : r.sign;
+      const txt = el("span", "diff-code"); txt.textContent = r.text;
+      row.append(og, ng, sign, txt);
+      pre.appendChild(row);
+    }
     inlineFold(head, turn, `+${add} −${del}`, pre, fkey);
-    highlight(pre, false);   // diffs carry +/− markers + already wrap (io-pre); no line-number gutter
   } else if (ev.name === "Read") {
     if (ev.output) inlineFold(head, turn, `${countLines(ev.output)} lines`, preEl(ev.output), fkey);
   } else if (!ack && (ev.input || ev.output)) {

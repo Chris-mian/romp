@@ -24,6 +24,13 @@ test("wrapped code carries a subtle (faint) line-number gutter", () => {
   assert.match(RENDER, /class="cl"><span class="ct"/);
 });
 
-test("diffs skip the line-number gutter (they already carry +/- markers)", () => {
-  assert.match(RENDER, /highlight\(pre, false\)/);
+test("Edit diffs render a two-column line-number gutter (the user 2026-06-29)", () => {
+  // the diff is built from numberDiff into rows, each: old# | new# | sign | code
+  assert.match(RENDER, /const rows = numberDiff\(ev\.diff\);/);
+  assert.match(RENDER, /el\("span", "diff-gut diff-gut-old"\)/);
+  assert.match(RENDER, /el\("span", "diff-gut diff-gut-new"\)/);
+  assert.match(RENDER, /el\("div", "diff-row " \+ \(r\.sign === "\+" \? "diff-add"/);
+  // the gutter + add/del coloring are styled
+  assert.match(CSS, /\.diff-fold \.diff-row \{[^}]*display: grid/);
+  assert.match(CSS, /\.diff-gut \{[^}]*tabular-nums/);
 });
