@@ -31,6 +31,20 @@ class AuthorSdkHuman(unittest.TestCase):
         self.assertEqual(em.author_of(TEXT, "typed", {}, sdk_human=True), "human")
         self.assertEqual(em.author_of(TEXT, "system", {}, sdk_human=True), "system")
 
+    def test_harness_system_wrappers_author_system_not_human(self):
+        # a background-task <task-notification> / <system-reminder> arrives over the SDK channel as
+        # promptSource 'sdk'; without this it authored 'human' → opened a turn → the planner force-pinned a
+        # junk goal titled "<task-notification>" (the user 2026-06-30). Anchored at START, so a real prompt
+        # with a reminder APPENDED is NOT caught.
+        tn = [{"type": "text", "text": "<task-notification>\n<task-id>abc</task-id>\n<status>completed</status>"}]
+        sr = [{"type": "text", "text": "<system-reminder>do the thing</system-reminder>"}]
+        appended = [{"type": "text", "text": "do the thing\n<system-reminder>note</system-reminder>"}]
+        self.assertEqual(em.author_of(tn, "sdk", {}, sdk_human=True), "system")
+        self.assertEqual(em.author_of(sr, "sdk", {}, sdk_human=True), "system")
+        self.assertEqual(em.author_of(appended, "sdk", {}, sdk_human=True), "human")   # appended reminder ≠ system msg
+        # author 'system' means _is_opener folds it in (never opens a turn → never a goal)
+        self.assertFalse(em._is_opener({"type": "user", "author": "system"}))
+
 
 if __name__ == "__main__":
     unittest.main()

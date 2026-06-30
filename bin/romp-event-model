@@ -55,6 +55,12 @@ ROMP_INJECT_RE = re.compile(r"romp-injected\b")
 # romp-logo marker; the user's own button/follow-ups are not (the user 2026-06-23). Rides alongside
 # romp-injected; an atom carrying it gets atom["rompAuto"]=True for the timeline/chat to mark.
 ROMP_AUTO_RE = re.compile(r"romp-auto\b")
+# Harness-injected SYSTEM wrappers that are NOT the user: a background-task completion (`<task-notification>`,
+# fired when a backgrounded Agent/Task finishes) and `<system-reminder>` blocks. In an SDK session these arrive
+# over the stream as promptSource "sdk", so sdk_human would author them 'human' → _is_opener opens a turn →
+# the planner force-pins a junk goal titled "<task-notification>" (the user 2026-06-30, screenshot). Anchored
+# at the START so a real user message with a reminder APPENDED isn't caught (the kernel splits those off).
+SYSTEM_WRAPPER_RE = re.compile(r"^\s*<(?:task-notification|system-reminder)\b")
 # Claude Code's slash-command transcript wrappers. The INVOCATION (`<command-name>`) and its OUTPUT
 # (`<local-command-stdout>`) become a tracked COMMAND TURN (the user 2026-06-29) — see atoms(); the rest
 # (`<command-message|args|contents>`, `<local-command-caveat>`) stay skipped as harness noise.
@@ -155,6 +161,8 @@ def author_of(blocks, prompt_source, postal_index, sdk_human=False):
     Off (the default) elsewhere, where "sdk" means a genuine programmatic/autonomous injection."""
     text = _text_of(blocks)
     if text:
+        if SYSTEM_WRAPPER_RE.match(text):         # a harness <task-notification> / <system-reminder>, not the user
+            return "system"                       # → author 'system' so _is_opener folds it in, never a goal
         mids = POSTAL_RE.findall(text)
         if mids:
             peer = None
