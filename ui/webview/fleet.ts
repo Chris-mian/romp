@@ -615,14 +615,14 @@ function mountControls() {
   // ── RIGHT cluster: recency cutoff slider + Show completed ──
   const right = el("div", "fl-foot-right");
   const lab = el("span");
-  lab.style.cssText = "min-width:42px;text-align:right;font-variant-numeric:tabular-nums";
+  lab.style.cssText = "min-width:32px;text-align:right;font-variant-numeric:tabular-nums;flex:0 0 auto";
   const sl = document.createElement("input");
   // REVERSED direction + blue fill on the RIGHT (the user 2026-06-29): dragging RIGHT shows only MORE-RECENT
   // sessions (tighter window), LEFT shows everything. Done with a horizontal flip (scaleX(-1)) of the native
   // slider rather than mirroring the VALUE — so the accent (blue) fill, which a native range paints on the
   // LOW side, lands on the RIGHT. cutoffPos keeps its meaning (1000 = show all) and the value maps directly.
   sl.type = "range"; sl.min = "0"; sl.max = "1000"; sl.step = "1"; sl.value = String(cutoffPos());
-  sl.style.cssText = "width:84px;cursor:pointer;transform:scaleX(-1)";
+  sl.style.cssText = "width:72px;min-width:48px;cursor:pointer;transform:scaleX(-1)";   // compact; shrinks on a narrow pane
   (sl.style as CSSStyleDeclaration & { accentColor: string }).accentColor = "var(--accent, #9cd2ff)";
   sl.title = "Drag RIGHT to show only more-recent sessions (down to the last minute); LEFT shows everything — logarithmic";
   const paint = () => { lab.textContent = "≤ " + fmtAge(cutoffSecs()); };

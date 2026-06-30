@@ -7033,16 +7033,18 @@ _FLEET_CSS = (
     ".fl-sesslabel-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}"
     # DOCKED control bar (the user 2026-06-29): a dedicated bottom rectangle in normal flow — left cluster =
     # grouping + collapse/expand, right cluster = recency slider + Show completed.
+    # COMPACT docked bar (the user 2026-06-29): 10.5px to MATCH the feed's controls, tight padding/gaps, and
+    # flex-wrap so the clusters STACK (never clip/overflow) when the fleet pane is narrow.
     "#fleet-foot{flex:0 0 auto;border-top:1px solid var(--vscode-editorHoverWidget-border,rgba(255,255,255,0.12));"
-    "background:var(--vscode-editorWidget-background,#252526);padding:7px 14px;display:flex;align-items:center;"
-    "justify-content:space-between;gap:16px;user-select:none;font-size:11.5px;"
+    "background:var(--vscode-editorWidget-background,#252526);padding:6px 10px;display:flex;align-items:center;"
+    "flex-wrap:wrap;justify-content:space-between;gap:7px 12px;user-select:none;font-size:10.5px;"
     "color:var(--vscode-descriptionForeground,#9a9a9a)}"
-    ".fl-foot-left,.fl-foot-right{display:flex;align-items:center;gap:10px}"
-    ".fl-foot-toggle{display:inline-flex;align-items:center;gap:6px;cursor:pointer}"
-    ".fl-foot-toggle input{cursor:pointer}"
+    ".fl-foot-left,.fl-foot-right{display:flex;align-items:center;flex-wrap:wrap;gap:7px}"
+    ".fl-foot-toggle{display:inline-flex;align-items:center;gap:4px;cursor:pointer;white-space:nowrap}"
+    ".fl-foot-toggle input{cursor:pointer;margin:0;width:13px;height:13px}"
     ".fl-foot-btn{background:rgba(255,255,255,0.06);color:var(--vscode-foreground,#ccc);"
     "border:1px solid var(--vscode-editorHoverWidget-border,rgba(255,255,255,0.14));border-radius:5px;cursor:pointer;"
-    "font:inherit;font-size:11px;padding:2px 9px}"
+    "font:inherit;font-size:10.5px;padding:2px 8px;white-space:nowrap}"
     ".fl-foot-btn:hover{background:rgba(255,255,255,0.12)}"
     # a toggled-ON Collapse/Expand button "stays clicked" — accent fill (the romp blue), per CLAUDE.md
     ".fl-foot-btn.on{background:var(--accent,#9cd2ff);color:var(--accent-fg,#0c1a2e);border-color:var(--accent,#9cd2ff)}"
