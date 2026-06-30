@@ -1268,17 +1268,25 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
     // user 2026-06-29). Instead two explicit BUTTONS sit on the line: "Done" crosses it off, "Follow up"
     // answers just this sub-goal.
     const acts = el("span", "ftree-node-acts");
-    // "Done": post nodeOverride op:resolve — the kernel marks the node resolved + clears the block + re-rolls
-    // inline (no judge pass; bugs owns the handler 3dded52). Immediate-apply (no draft to lose on a re-render).
-    const done = el("button", "ftree-act-btn ftree-act-done"); done.textContent = "Done";
-    done.title = "mark this done — it stops blocking and the thread's other work continues";
-    done.onclick = (ev) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "nodeOverride", sid: it.sid, nodeId: node.id, op: "resolve" }); };
+    // "Done" is SUB-TASK-ONLY (the user 2026-06-30): it must NOT appear on the TOP-LEVEL goal (the tree root),
+    // because the card's own "Clear" already resolves the whole goal — a second top-level "done" is redundant.
+    // The root is it.tree[0]; in the skip-root single-ask modal it's never drawn here anyway, so every drawn
+    // node IS a sub-task and keeps Done. "Follow up" stays on every blocked node.
+    const isRoot = node.id === it.tree?.[0]?.id;
+    if (!isRoot) {
+      // "Done": post nodeOverride op:resolve — the kernel marks the node resolved + clears the block + re-rolls
+      // inline (no judge pass; bugs owns the handler 3dded52). Immediate-apply (no draft to lose on a re-render).
+      const done = el("button", "ftree-act-btn ftree-act-done"); done.textContent = "Done";
+      done.title = "mark this sub-goal done — it stops blocking and the thread's other work continues";
+      done.onclick = (ev) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "nodeOverride", sid: it.sid, nodeId: node.id, op: "resolve" }); };
+      acts.append(done);
+    }
     // "Follow up": re-target the footer composer at THIS sub so the answer files under it and unblocks just
     // this branch (the judge reopens + force-files under any node id — no kernel change).
     const fu = el("button", "ftree-act-btn ftree-act-fup"); fu.textContent = "Follow up";
     fu.title = "follow up on this specific blocked sub-goal";
     fu.onclick = (ev) => { ev.stopPropagation(); openSubFollowUp?.(node.id, node.text || "(sub-goal)"); };
-    acts.append(done, fu);
+    acts.append(fu);
     line.appendChild(acts);
   }
   // a per-node "↻ Followed up" chip while THIS sub is optimistically reopened by a follow-up, until the judge

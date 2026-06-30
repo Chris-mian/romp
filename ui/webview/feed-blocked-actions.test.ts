@@ -22,6 +22,14 @@ test("(A) a blocked sub's 'Done' button crosses it off — posts nodeOverride op
   assert.match(CSS, /\.ftree-act-done:hover \{[^}]*color: var\(--rel-done\)/);
 });
 
+test("(A) 'Done' is SUB-TASK-ONLY — the top-level goal (tree root) gets only 'Follow up'; Clear covers the root (the user 2026-06-30)", () => {
+  // the root is identified as it.tree[0]; the Done button is gated behind !isRoot
+  assert.match(FEED, /const isRoot = node\.id === it\.tree\?\.\[0\]\?\.id;/);
+  assert.match(FEED, /if \(!isRoot\) \{[\s\S]*?ftree-act-done[\s\S]*?acts\.append\(done\);\s*\n\s*\}/);
+  // Follow up is appended unconditionally (every blocked node, the root included)
+  assert.match(FEED, /acts\.append\(fu\);/);
+});
+
 test("(A) MODAL-ONLY: the buttons are added AROUND wireNodeZones; the MARK stays pure nav", () => {
   // the Done/Follow up buttons are appended to the line AFTER the shared wireNodeZones call returns, so the
   // mark (goMsg/goWork), the text and the time keep their nav, and the card's inline checklist — which calls
