@@ -33,10 +33,11 @@ test("the swirl + caption covers awaiting, provisional, and re-check — shown w
   assert.match(FEED, /a\._awaitWhy\.textContent = spinCaption; a\._awaitSpin\.title = spinTip \|\| spinCaption;/);
 });
 
-test("each case carries a FULLER tooltip on the swirl (hover → what's actually happening)", () => {
+test("each case carries a concise tooltip on the swirl (hover → the key idea, not an essay)", () => {
   assert.match(FEED, /let spinCaption: string \| null = null, spinTip = "";/);
-  assert.match(FEED, /spinTip = "This session is working a brand-new prompt the planner hasn't sorted into a goal yet/);
-  assert.match(FEED, /spinTip = "You've replied to this blocked sub-goal/);
+  // tooltips are short and plain-spoken (the user 2026-06-29): convey the key idea, no LLM-essay phrasing
+  assert.match(FEED, /spinTip = "A brand-new prompt, not yet sorted into a goal — a placeholder until it is\.";/);
+  assert.match(FEED, /spinTip = "You've replied — waiting on the judge to resolve or re-block it\.";/);
   assert.match(FEED, /a\._awaitSpin\.title = spinTip \|\| spinCaption;/);
 });
 
