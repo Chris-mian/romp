@@ -1,0 +1,49 @@
+// Optimistic follow-up MOVE (the user 2026-06-30): submitting a follow-up on a blocked card moves it to
+// Working IMMEDIATELY rather than waiting the kernel round-trip. The kernel stays AUTHORITATIVE — the move is a
+// short-lived prediction reconciled by the next push; if the kernel never confirms it within the window, the
+// card reverts AND a transient toast surfaces the inconsistency. Source-level pins, mirroring feed-clear-race.
+import { test } from "node:test";
+import * as assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as path from "node:path";
+
+const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
+const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.css"), "utf8");
+
+test("there is a pendingFollowMove prediction map keyed by card itemId", () => {
+  assert.match(FEED, /const pendingFollowMove = new Map<string, number>\(\);/);
+});
+
+test("submitting a follow-up registers the optimistic move and re-renders the feed at once", () => {
+  // postFollowUp predicts the move on the visible card (fbId), then renders so the card slides over immediately
+  assert.match(FEED, /optimisticFollowMove\(fbId\);\s*\n\s*render\(\);/);
+});
+
+test("a predicted card is kept in Working at render, styled like the kernel's re-checked follow-up", () => {
+  assert.match(FEED, /function applyFollowMove\(list: AskItem\[\]\)/);
+  assert.match(FEED, /a\.column = "working"; a\.recheck = true; a\.followupPending = true;/);
+  // applied at the top of render so EVERY render (push, modal close) reflects the prediction
+  assert.match(FEED, /function render\(\) \{\s*\n\s*const list = document\.getElementById\("feed-list"\)!;\s*\n\s*applyFollowMove\(asks\);/);
+});
+
+test("the kernel is authoritative: a confirming push clears the prediction, an unconfirmed one is left predicting", () => {
+  // reconcile runs against the authoritative incoming payload on every feed push
+  assert.match(FEED, /reconcileFollowMove\(incomingAsks\);/);
+  // CONFIRMED = the kernel now lists the card as working, OR no longer lists it (cleared/absorbed)
+  assert.match(FEED, /if \(!a \|\| a\.column === "working"\) \{/);
+});
+
+test("an unconfirmed prediction reverts AND toasts after the window (so a behavior change is visible)", () => {
+  assert.match(FEED, /const FOLLOW_MOVE_MS = 4000;/);
+  // the timer fires only if STILL pending (a confirming push would have deleted it), then drops the prediction,
+  // toasts, and re-renders to the kernel's authoritative state
+  assert.match(FEED, /if \(!pendingFollowMove\.has\(itemId\)\) return;/);
+  assert.match(FEED, /feedToast\(/);
+  assert.match(FEED, /function feedToast\(text: string\)/);
+});
+
+test("the toast is a styled, auto-dismissing transient notice", () => {
+  assert.match(FEED, /t\.classList\.add\("show"\)/);
+  assert.match(CSS, /\.feed-toast \{/);
+  assert.match(CSS, /\.feed-toast\.show \{ opacity: 1;/);
+});

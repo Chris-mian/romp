@@ -716,3 +716,16 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 .pickdlg-opt:hover { background: rgba(255, 255, 255, 0.1); }
 .pickdlg-opt:focus { outline: 1px solid var(--vscode-focusBorder, #4daafc); }
 .pickdlg-cancel { color: var(--vscode-descriptionForeground, #999); }
+
+/* transient feed notice (the user 2026-06-30): surfaces an inconsistency — e.g. an optimistic follow-up move
+   the kernel never confirmed — as a small toast at the bottom, then auto-dismisses. Amber left rule = "heads up,
+   not an error you must act on". Fades in/out via .show (added a frame after mount, removed before teardown). */
+.feed-toast {
+  position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%) translateY(8px);
+  z-index: 200; max-width: min(440px, 90vw); padding: 9px 13px;
+  background: var(--vscode-menu-background, #26262a); color: var(--fg);
+  border: 1px solid rgba(255, 255, 255, 0.12); border-left: 3px solid #e0a020; border-radius: 7px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45); font-size: 0.86em; line-height: 1.35;
+  opacity: 0; transition: opacity 0.18s ease, transform 0.18s ease; pointer-events: none;
+}
+.feed-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }

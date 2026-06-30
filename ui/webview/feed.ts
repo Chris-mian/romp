@@ -145,6 +145,43 @@ const clearedStack: AskItem[][] = [];
 // kernel push actually carries them again — otherwise the very next push (before the kernel un-archived) would
 // replace `asks` and drop the just-restored card, a flicker. Dropped once the kernel lists the id.
 const pendingRestored = new Map<string, AskItem>();
+// Optimistic follow-up MOVE (the user 2026-06-30): submitting a follow-up on a blocked card moves it to
+// Working IMMEDIATELY, instead of waiting out the kernel round-trip (be.send + build_feed + push). The kernel
+// stays AUTHORITATIVE — this is only a short-lived prediction: the kernel's own optimistic_followup flips the
+// card to working, and the next push that confirms it clears the prediction (reconcileFollowMove). If the
+// kernel does NOT confirm within FOLLOW_MOVE_MS, the prediction was wrong → revert to the kernel's state AND
+// show a transient toast, so a behavior change is apparent rather than silently masked. Mirrors pendingCleared.
+const FOLLOW_MOVE_MS = 4000;
+const pendingFollowMove = new Map<string, number>();   // card itemId → revert/toast timer id
+function optimisticFollowMove(itemId: string) {
+  const prev = pendingFollowMove.get(itemId); if (prev) clearTimeout(prev);
+  const timer = window.setTimeout(() => {
+    if (!pendingFollowMove.has(itemId)) return;        // a push already confirmed the move → nothing to do
+    pendingFollowMove.delete(itemId);                  // give the kernel authority: drop the prediction
+    feedToast("That follow-up didn’t move the card to Working — the session may not have picked it up. Check it.");
+    render();                                          // fall back to the kernel-authoritative state
+  }, FOLLOW_MOVE_MS);
+  pendingFollowMove.set(itemId, timer);
+}
+// On a fresh authoritative payload: a predicted card the kernel now lists as working (or no longer lists at
+// all — cleared/absorbed) is CONFIRMED → drop the prediction + its timer. Else keep predicting (not caught up).
+function reconcileFollowMove(incoming: AskItem[]) {
+  for (const id of Array.from(pendingFollowMove.keys())) {
+    const a = incoming.find((x) => x.itemId === id);
+    if (!a || a.column === "working") {
+      const t = pendingFollowMove.get(id); if (t) clearTimeout(t);
+      pendingFollowMove.delete(id);
+    }
+  }
+}
+// Render-time: keep each still-unconfirmed predicted card in Working, styled like the kernel's own re-checked
+// follow-up (recheck + followupPending), so the optimistic card matches the authoritative one with no jump.
+function applyFollowMove(list: AskItem[]) {
+  if (!pendingFollowMove.size) return;
+  for (const a of list) if (pendingFollowMove.has(a.itemId) && a.column !== "working") {
+    a.column = "working"; a.recheck = true; a.followupPending = true;
+  }
+}
 // Group cards keyed by turnId, stored under "g:"+turnId. The focus state
 // (hoverAskId/pinnedAskId) holds EITHER a raw ask itemId OR a group key
 // "g:"+turnId; applyFocus + focusAnchorId understand both.
@@ -1459,6 +1496,10 @@ function renderModal() {
   const postFollowUp = (txt: string, fbId: string, fbTitle?: string) => {
     const tgt = followupSub;
     vscodeApi?.postMessage({ type: "askFollowUp", itemId: tgt ? tgt.itemId : fbId, title: tgt ? tgt.title : fbTitle, text: txt });
+    // Optimistically move THIS card (fbId is the visible card/group, even when a sub-goal is the message target)
+    // to Working now, then re-render the feed so it slides over immediately — the kernel reconciles on its push.
+    optimisticFollowMove(fbId);
+    render();
     setFollowTarget(null);
   };
   setFollowTarget(followupSub);   // sync the label to the current target on every (re)render
@@ -1863,8 +1904,25 @@ function absorbIntoParent(card: HTMLElement, fromRect: DOMRect, parent: HTMLElem
 
 // THE view: one screen, three columns merging open asks with standalone
 // completions; cards move between columns as links arrive.
+// A small transient notice at the bottom of the feed — used to surface an inconsistency (e.g. an optimistic
+// follow-up move the kernel never confirmed), so a behavior change is visible rather than silent. Auto-dismisses.
+let feedToastEl: HTMLElement | null = null;
+let feedToastTimer: number | undefined;
+function feedToast(text: string) {
+  if (feedToastEl) feedToastEl.remove();
+  const t = el("div", "feed-toast"); t.textContent = text; t.setAttribute("role", "status");
+  document.body.appendChild(t); feedToastEl = t;
+  requestAnimationFrame(() => t.classList.add("show"));
+  clearTimeout(feedToastTimer);
+  feedToastTimer = window.setTimeout(() => {
+    t.classList.remove("show");
+    window.setTimeout(() => { if (feedToastEl === t) feedToastEl = null; t.remove(); }, 300);
+  }, 4200);
+}
+
 function render() {
   const list = document.getElementById("feed-list")!;
+  applyFollowMove(asks);   // keep optimistically-moved follow-up cards in Working until the kernel confirms (or reverts)
   const prevScroll = list.scrollTop;
   const standalone = standaloneItems();
   // footer pane (below the cards, no overlap): Sub-goals toggle (left) · Clear all · UndoClear (right)
@@ -2029,6 +2087,7 @@ window.addEventListener("message", (e: MessageEvent) => {
     // any still-pending (kernel hasn't caught up) from this payload so a stale push can't resurrect them.
     for (const id of Array.from(pendingCleared)) if (!incomingAsks.some((a) => a.itemId === id)) pendingCleared.delete(id);
     asks = pendingCleared.size ? incomingAsks.filter((a) => !pendingCleared.has(a.itemId)) : incomingAsks;
+    reconcileFollowMove(incomingAsks);   // confirm/clear optimistic follow-up moves against the authoritative payload
     // An optimistic Undo clear is CONFIRMED once the kernel's payload carries the id again → stop forcing it.
     // Until then, keep the cached card in `asks` so the replace above can't drop the just-restored card (flicker).
     if (pendingRestored.size) {
