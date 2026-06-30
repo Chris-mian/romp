@@ -65,9 +65,11 @@ def _rebind_state(path):
 INDEX_MODEL  = "claude-haiku-4-5-20251001"   # captioner + archiver (index tier — high volume, low stakes)
 TRIAGE_MODEL = "claude-sonnet-4-6"           # planner + courier + closer (triage tier — judgment)
 WINDOW      = 48 * 3600                  # only caption transcripts touched in the last N hours (matches the parse horizon)
-BUDGET      = 60                         # max captions written per pass
-FAIRNESS    = 10                         # max captions per session per pass (so one busy session can't starve the rest)
-ARCH_BUDGET = 30                         # max session archives (re)built per pass
+BUDGET      = None                       # per-pass caption-CALL cap — REMOVED (the user 2026-06-30): these are
+FAIRNESS    = None                       # cheap Haiku index-tier calls; the per-pass / per-session caption caps
+                                         # never mattered in practice and join the goal-status fairness caps in
+                                         # being removed. None → the `>= budget`/`>= fairness` guards no-op.
+ARCH_BUDGET = None                       # per-pass session-archive cap — REMOVED: arch_tasks[:None] is all of them
 PLAN_SESSIONS = None                     # per-pass session cap — REMOVED (the user 2026-06-30): the fairness
                                          # caps were a recurring source of confusing starvation bugs (a goal/
                                          # nudge stuck behind a full per-pass window), never clearly needed.
@@ -1416,10 +1418,10 @@ def run_index(now=None, budget=BUDGET, fairness=FAIRNESS, concurrency=CONCURRENC
                                 "live": task.get("live", False), "natoms": task.get("natoms")})
     pending.sort(key=lambda x: x["t"], reverse=True)      # most recent activity first
     per_session, selected = {}, []
-    for task in pending:                                  # budget caps CALLS, fairness caps per session
-        if len(selected) >= budget:
+    for task in pending:                                  # budget/fairness caps REMOVED (None) → caption everything;
+        if budget is not None and len(selected) >= budget:   # an explicit caller can still bound a pass (tests)
             break
-        if per_session.get(task["anchor"], 0) >= fairness:
+        if fairness is not None and per_session.get(task["anchor"], 0) >= fairness:
             continue
         per_session[task["anchor"]] = per_session.get(task["anchor"], 0) + 1
         selected.append(task)
@@ -1741,6 +1743,19 @@ def _plan_session(fsid, path, now):
             target = followup
             if not (target and target in store["nodes"]):
                 continue                              # no resolvable target → skip (re-examinable)
+            # An auto-nudge must NOT reopen an already-RESOLVED goal (the user 2026-06-30). The nudge fires on a
+            # 'working' goal, but a later pass (grouper/consolidate/re-roll) can complete it in the window before
+            # this response is processed; the old unconditional _reopen below then UN-completed it, and a "blocked
+            # on you" reply re-blocked it — a completed→blocked flip, which must never happen. If the goal is
+            # already done, the nudge is moot (its "what's the status?" is answered by completion): record the
+            # unit processed and place NOTHING, leaving the completed goal completed.
+            _nkids = {}
+            for _nid, _nd in store["nodes"].items():
+                _nkids.setdefault(_nd.get("parentId"), []).append(_nid)
+            if _subtree_done(store["nodes"], _nkids, target) or store["nodes"][target].get("settledDone"):
+                store["placements"][seg_id] = None
+                save_goals(fsid, store)
+                continue
             _reopen(store, target)                     # unseal if the closer already completed it (refused if view-cleared)
             sub = [nd for nd in open_menu(store)       # SCOPED menu: the goal + its open descendants, goal first (#1)
                    if nd["id"] == target or _top_ancestor(store["nodes"], nd["id"]) == target]
