@@ -35,9 +35,11 @@ test("the swirl + caption covers awaiting, provisional, and re-check — shown w
 
 test("each case carries a concise tooltip on the swirl (hover → the key idea, not an essay)", () => {
   assert.match(FEED, /let spinCaption: string \| null = null, spinTip = "";/);
-  // tooltips are short and plain-spoken (the user 2026-06-29): convey the key idea, no LLM-essay phrasing
-  assert.match(FEED, /spinTip = "A brand-new prompt, not yet sorted into a goal — a placeholder until it is\.";/);
-  assert.match(FEED, /spinTip = "You've replied — waiting on the judge to resolve or re-block it\.";/);
+  // tooltips are short and plain-spoken (the user 2026-06-29): the key idea, no LLM-essay phrasing, no em dashes
+  assert.match(FEED, /spinTip = "A new prompt, not yet sorted into a goal\. Placeholder until it is\.";/);
+  assert.match(FEED, /spinTip = "You've replied\. The judge will resolve or re-block it\.";/);
+  // no em dashes anywhere in the swirl tooltips (JLD + the user's house style ban them)
+  assert.doesNotMatch(FEED, /spinTip = "[^"]*—/);
   assert.match(FEED, /a\._awaitSpin\.title = spinTip \|\| spinCaption;/);
 });
 

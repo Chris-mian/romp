@@ -470,7 +470,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   waitBadge.innerHTML = '<svg class="fask-wait-glyph" viewBox="0 0 16 16" width="11" height="11" fill="none" '
     + 'stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
     + '<path d="M4 3 H12 L8 8 L12 13 H4 L8 8 Z"/></svg><span>awaiting</span>';
-  waitBadge.title = "Waiting on work it kicked off — not on you. Clears when the result lands.";
+  waitBadge.title = "Waiting on work it started, not on you. Clears when the result lands.";
   const clr = el("button", "fdismiss"); clr.textContent = "Clear"; clr.title = "clear this ask (inbox-zero; the one human-asserted fact)";
   // "Nudge" on the card itself (the user 2026-06-18): a one-click status follow-up for a WORKING card,
   // beside Clear, so you don't have to open the modal. Sends the canned status question down the SAME
@@ -716,7 +716,7 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   const aw = it.awaiting;
   a._wait.style.display = (aw && !it.waitingOn) ? "" : "none";
   if (aw && !it.waitingOn) {
-    a._wait.title = aw.why || "Waiting on work it kicked off — not on you. Clears when the result lands.";
+    a._wait.title = aw.why || "Waiting on work it started, not on you. Clears when the result lands.";
   }
   // SPINNING SWIRL + a short caption in the card body (the user 2026-06-29): any card that's "in motion but
   // not on you" — the ones that read as dashed/ghosted in Working — shows the spinning romp swirl where the
@@ -733,14 +733,14 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   if (aw && !it.waitingOn) {
     spinCaption = aw.why || "Waiting on work it dispatched…";
     spinTip = aw.why
-      ? aw.why + " — not on you. Clears when the result lands."
-      : "Waiting on work it kicked off (agents, a subagent, a build) — not on you.";
+      ? aw.why + ". Not on you."
+      : "Waiting on work it started, not on you. Clears when the result lands.";
   } else if (it.provisional && it.column === "working") {
     spinCaption = "Working…";
-    spinTip = "A brand-new prompt, not yet sorted into a goal — a placeholder until it is.";
+    spinTip = "A new prompt, not yet sorted into a goal. Placeholder until it is.";
   } else if (it.recheck) {
     spinCaption = "Re-checking…";
-    spinTip = "You've replied — waiting on the judge to resolve or re-block it.";
+    spinTip = "You've replied. The judge will resolve or re-block it.";
   } else if (distillPending(it.column === "completed", it.column === "needs_input", it.summary, it.blockSummary, !!it.blocked)) {
     //  • DISTILLING (the user 2026-06-29) — a resolved card whose distiller hasn't produced its line yet:
     //    a completed goal awaiting its takeaway (summary), or a blocked goal awaiting its decision brief
