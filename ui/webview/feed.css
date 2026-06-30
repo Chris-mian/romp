@@ -532,8 +532,10 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
    dashed = stalled-in-Asks (unfinished handoff, nobody working)
    gold   = active-but-Completed (owner still mid-turn). */
 /* ⏳ external-wait chip: paused on the world, not on the user — dim cyan */
-.fask-wait { flex: 0 0 auto; font-size: 0.72em; font-weight: 700; letter-spacing: 0.03em;
+.fask-wait { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 3px;
+             font-size: 0.72em; font-weight: 700; letter-spacing: 0.03em;
              color: #4EA8A9; white-space: nowrap; cursor: default; }
+.fask-wait-glyph { flex: 0 0 auto; }
 
 .fitem-main { flex: 1 1 auto; min-width: 0; }
 /* right rail: just the timestamp now (Expand/Dismiss moved into the main column) */

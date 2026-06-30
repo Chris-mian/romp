@@ -692,10 +692,16 @@ window.addEventListener("storage", (e: StorageEvent) => { if (e.key === "romp:se
 
 // Wire the top search bar (the user 2026-06-29): typing filters the fleet to sessions whose NAME matches.
 // The input lives in the page body (kernel _fleet_page); installed once, re-renders on each keystroke.
+// The trailing ✕ clears it (shown only while there's text), like any search bar — refocuses the input so you
+// can keep typing.
 (() => {
   const search = document.getElementById("fleet-search") as HTMLInputElement | null;
+  const clear = document.getElementById("fleet-search-clear") as HTMLButtonElement | null;
   if (!search) return;
-  search.addEventListener("input", () => { searchQuery = search.value; render(); });
+  const syncClear = () => { if (clear) clear.hidden = search.value === ""; };
+  search.addEventListener("input", () => { searchQuery = search.value; syncClear(); render(); });
+  clear?.addEventListener("click", () => { search.value = ""; searchQuery = ""; syncClear(); search.focus(); render(); });
+  syncClear();
 })();
 
 mountControls();

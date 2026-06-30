@@ -463,7 +463,13 @@ function makeAskCard(it: AskItem): HTMLElement {
   const apiBadge = el("span", "fask-apierror"); apiBadge.textContent = "⚠ API error"; apiBadge.style.display = "none";   // red: session stopped on an API error
   const apiRetry = el("button", "fdismiss fretry"); apiRetry.textContent = "Retry"; apiRetry.title = "send “retry” into this session to resume"; apiRetry.style.display = "none";
   const revive = el("button", "fdismiss frevive"); revive.textContent = "Revive"; revive.title = "bring this offline session back so the parked hand-off is delivered"; revive.style.display = "none";
-  const waitBadge = el("span", "fask-wait"); waitBadge.textContent = "⏳ awaiting"; waitBadge.style.display = "none";
+  // monochrome wireframe hourglass (the SAME line-icon drawn for the queued-messages header — render.ts
+  // hourglassIcon) instead of the ⏳ emoji, which clashed with the app's stroked-icon look (the user 2026-06-29).
+  // stroke=currentColor → it picks up the badge's teal; .fask-wait is inline-flex so the icon + word align.
+  const waitBadge = el("span", "fask-wait"); waitBadge.style.display = "none";
+  waitBadge.innerHTML = '<svg class="fask-wait-glyph" viewBox="0 0 16 16" width="11" height="11" fill="none" '
+    + 'stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+    + '<path d="M4 3 H12 L8 8 L12 13 H4 L8 8 Z"/></svg><span>awaiting</span>';
   waitBadge.title = "waiting on work it dispatched or delegated (agents, a subagent, a build/CI) — not on you; stays in Working, exempt from auto-nudge; lifts when the result lands";
   const clr = el("button", "fdismiss"); clr.textContent = "Clear"; clr.title = "clear this ask (inbox-zero; the one human-asserted fact)";
   // "Nudge" on the card itself (the user 2026-06-18): a one-click status follow-up for a WORKING card,

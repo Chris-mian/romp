@@ -96,7 +96,15 @@ test("the search bar matches session NAME or goal CONTENT, expands hits, and say
   assert.match(SRC, /nr\.textContent = "No results for/);
   // wired to the #fleet-search input (in the kernel page body), re-rendering on each keystroke
   assert.match(SRC, /document\.getElementById\("fleet-search"\)/);
-  assert.match(SRC, /search\.addEventListener\("input", \(\) => \{ searchQuery = search\.value; render\(\); \}\)/);
+  assert.match(SRC, /search\.addEventListener\("input", \(\) => \{ searchQuery = search\.value; syncClear\(\); render\(\); \}\)/);
+});
+
+test("the search bar has a trailing ✕ clear button, shown only while there's text (the user 2026-06-29)", () => {
+  // the clear button lives in the kernel fleet page next to the input; fleet.ts wires it to blank the query
+  assert.match(SRC, /document\.getElementById\("fleet-search-clear"\)/);
+  // shown only when there's text (hidden toggled off the input value), and clears + refocuses on click
+  assert.match(SRC, /clear\.hidden = search\.value === ""/);
+  assert.match(SRC, /clear\?\.addEventListener\("click", \(\) => \{ search\.value = ""; searchQuery = ""; syncClear\(\); search\.focus\(\); render\(\); \}\)/);
 });
 
 test("the controls DOCK into #fleet-foot as a bottom bar — not a floating overlay (the user 2026-06-29)", () => {

@@ -3598,6 +3598,7 @@ class ServeSecurity(unittest.TestCase):
         self.assertIn("id=fleet-list", body)
         self.assertIn("id=fleet-foot", body)
         self.assertIn("id=fleet-search", body)        # top name-filter search bar (the user 2026-06-29)
+        self.assertIn("id=fleet-search-clear", body)   # trailing ✕ that clears the search (the user 2026-06-29)
         self.assertIn("/dist/fleet.js", body)
         # the fleet connects as its OWN app (the user 2026-06-29) so the kernel builds its per-session ledgers
         # even with no chat client open — it still rides the feed PAYLOAD, but as app=fleet, not app=feed.
