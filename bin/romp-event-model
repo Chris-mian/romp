@@ -556,6 +556,13 @@ def _finalize_turn(turn, rompuuid):
         if a["type"] == "assistant":
             last_sr = (a.get("message") or {}).get("stop_reason")
     turn["ended"] = last_sr in END_STOPS
+    # a slash-COMMAND turn with no reply/output atom is SELF-CONTAINED → ended (the user 2026-06-29). Without
+    # this, a command that produced no output (a hung /usage, a control command) leaves the turn open forever,
+    # so the session reads as "working" indefinitely and a stuck provisional card never resolves (the JLD case).
+    # A command WITH output / model work ends naturally on that assistant atom's stop_reason above; this only
+    # catches the bare-invocation case. (Working-during-execution is the live backend state's job, not this.)
+    if not turn["ended"] and atoms[0].get("command") and not any(a["type"] == "assistant" for a in atoms):
+        turn["ended"] = True
     turn["id"] = _turn_id(rompuuid, turn)
 
 

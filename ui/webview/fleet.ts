@@ -30,6 +30,7 @@ let sessions: FleetSession[] = [];
 // the page's romp loader (_pane_spin) stays up, exactly like the other panes, until real data arrives.
 let loaded = false;
 let emptyShown = false;   // the romp wordmark is currently showing → don't replay its fade-in every push
+let searchQuery = "";     // #fleet-search filter (the user 2026-06-29): show only sessions whose NAME matches
 // Provisional cards (the user 2026-06-29): a session working a brand-new prompt the planner hasn't classified
 // into a goal yet has NO ledger node, so it's invisible in the fleet — exactly the "things about to appear" the
 // user wants to track. They ride the SAME feed payload (feed.asks, provisional:true), so surface a dotted
@@ -416,17 +417,23 @@ function render() {
   // First pass (shared by both views): keep the sessions whose freshest VISIBLE activity is inside the
   // slider window, each paired with its render context + visible roots.
   const survivors: { ctx: SessCtx; visibleRoots: LedgerNode[] }[] = [];
+  const sq = searchQuery.trim().toLowerCase();           // name filter (the user 2026-06-29)
   for (const s of sessions) {
+    if (sq && !s.name.toLowerCase().includes(sq)) continue;   // the search bar filters by SESSION NAME
     const tree = s.ledger?.tree || [];
-    // "Show completed" surfaces the FULLY-COMPLETED top tasks the compaction sweep archived out of the live
-    // tree (the user 2026-06-27) — otherwise a finished+archived session has an empty live tree and vanishes,
-    // and "Show completed" has nothing to reveal. They render as collapsed done rows; ONLY when the toggle is
-    // on (fleetVisibleRoots gates them). The whole top-row selection is the pure, tested ./fleet-roots.
+    // "Show completed" surfaces the FULLY-COMPLETED tops the compaction sweep archived out of the live tree
+    // (the user 2026-06-27) — otherwise a finished+archived session has an empty live tree and vanishes, and
+    // "Show completed" has nothing to reveal. The archive now carries each top's WHOLE SUBTREE (the user
+    // 2026-06-29), so an archived completed goal EXPANDS to its hierarchy like a live one. ONLY shown when the
+    // toggle is on (fleetVisibleRoots gates the depth-0 roots). The top-row selection is the pure ./fleet-roots.
     const archivedTops = Array.isArray(s.ledger?.archivedTops) ? s.ledger!.archivedTops! : [];
     stampSubtreeRecency(tree, s.ledger?.current || null);
-    const byId = new Map(tree.map((n) => [n.id, n] as const));
+    // byId spans the live tree AND the archived subtrees, so renderFleetNode can walk an archived top's
+    // descendants. Only depth-0 archived nodes are ROOTS; the rest are reachable via their parents' children.
+    const byId = new Map([...tree, ...archivedTops].map((n) => [n.id, n] as const));
     const roots = tree.filter((n) => n.depth === 0);
-    const visibleRoots = fleetVisibleRoots(roots, archivedTops, sd);
+    const archRoots = archivedTops.filter((n) => n.depth === 0);
+    const visibleRoots = fleetVisibleRoots(roots, archRoots, sd);
     if (!visibleRoots.length) continue;                  // nothing to show for this session → skip
     // recency cutoff (the user 2026-06-27): skip a session whose freshest VISIBLE activity (rolled-up node
     // recency or its live current-node time) is older than the slider's window.
@@ -621,6 +628,14 @@ window.addEventListener("storage", (e: StorageEvent) => { if (e.key === "romp:se
       render();
     },
   });
+})();
+
+// Wire the top search bar (the user 2026-06-29): typing filters the fleet to sessions whose NAME matches.
+// The input lives in the page body (kernel _fleet_page); installed once, re-renders on each keystroke.
+(() => {
+  const search = document.getElementById("fleet-search") as HTMLInputElement | null;
+  if (!search) return;
+  search.addEventListener("input", () => { searchQuery = search.value; render(); });
 })();
 
 mountControls();
