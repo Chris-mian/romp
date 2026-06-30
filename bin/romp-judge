@@ -544,6 +544,20 @@ def _fileset_key(files):
 _PARSE_CACHE = {}          # fsid -> (fileset_key, parsed_session)
 
 
+def _sdk_owned(fsid):
+    """True if FSID is an SDK-backed session — mirrors the SDK backend's owns() (a registry file under
+    STATE/sdk/<fsid>.json, written when the SDK session is created). The judge MUST know this so it can author
+    the human's composer input as 'human': in an SDK session that input arrives over the stream as
+    promptSource 'sdk', and author_of only maps it to 'human' when sdk_human is set. Without this the judge
+    mis-authors every SDK human prompt as 'sdk', so _seg_human is False and plan_units never emits the
+    PROMPT-run unit for the open final segment — the in-progress ask is never PLACED while the turn is open.
+    Since that placement is the kernel provisional placeholder's only drop gate, and the kernel DOES see the
+    human (it parses with sdk_human=True), the dotted placeholder sticks for the whole open turn — forever if
+    the turn reads as 'working' indefinitely — and each new message just re-renders a fresh one (the user
+    2026-06-29). Computed from the live STATE global so it follows _rebind_state in tests."""
+    return (STATE / "sdk" / (fsid + ".json")).exists()
+
+
 def parsed_session(fsid, files, now):
     """ONE event-model parse per (transcript+states, mtime+size), reused across the captioner, planner,
     sweep, courier, and grouper — which all re-parsed the SAME leaf every pass (up to 4× per change, and
@@ -565,7 +579,8 @@ def parsed_session(fsid, files, now):
     if key is not None and hit and hit[0] == key:
         return hit[1]
     session = em.parse_session(files[0], rompuuid=fsid, candidate_files=list(files),
-                               states=str(states), postal_log=str(MESSAGES), now=now)
+                               states=str(states), postal_log=str(MESSAGES), now=now,
+                               sdk_human=_sdk_owned(fsid))   # SDK session → composer input is promptSource "sdk" = the human (mirrors the kernel)
     if key is not None:
         if len(_PARSE_CACHE) > 256:        # bounded by fleet size; a wholesale clear on overflow is fine
             _PARSE_CACHE.clear()
