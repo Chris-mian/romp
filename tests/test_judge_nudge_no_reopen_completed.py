@@ -86,6 +86,22 @@ class NudgeNoReopenCompleted(unittest.TestCase):
         # the unit is recorded processed so it doesn't re-run every pass
         self.assertIn(units[0][0], store["placements"])
 
+    def test_reopen_of_a_completed_goal_writes_an_instrumentation_line(self):
+        # TEMP instrumentation: _reopen un-completing a done goal logs a 'reopen-done' line tagged by caller,
+        # so a completed→blocked flip is attributable in the wild. (Remove with the instrumentation.)
+        Gx = SID + ":gx"
+        st = {"rompUuid": SID, "seq": 1,
+              "nodes": {Gx: {"id": Gx, "text": "x", "parentId": None, "nodeComplete": True,
+                             "blocked": False, "cleared": False, "trail": [], "t": 1}},
+              "placements": {}, "status": {}}
+        jd._reopen(st, Gx, by="followup")
+        diag = Path(self.td) / "nudge-diag.jsonl"
+        lines = [json.loads(l) for l in diag.read_text().splitlines()] if diag.exists() else []
+        rd = [l for l in lines if l.get("event") == "reopen-done"]
+        self.assertEqual(len(rd), 1)
+        self.assertEqual(rd[0]["by"], "followup")
+        self.assertEqual(rd[0]["gid"], Gx)
+
 
 if __name__ == "__main__":
     unittest.main()

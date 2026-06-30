@@ -1052,6 +1052,9 @@ def _auto_nudge_tick(now, tmux):
             continue
         nodes, status = store.get("nodes", {}), store.get("status", {})
         cleared = _cleared_ids()
+        _diag_kids = {}                                  # TEMP INSTRUMENTATION (jd._nudge_diag): child map for the
+        for _nid, _nd in nodes.items():                  # actual-completeness check logged at fire time below
+            _diag_kids.setdefault(_nd.get("parentId"), []).append(_nid)
         # Nudge EVERY still-'working' TOP goal — not just the first (the user 2026-06-28): all of a session's
         # working goals get nudged each time it stops, re-arming PER GOAL on each genuinely-new ended turn (one
         # per turn, count climbing), until the session moves each to blocked/completed. Skip a top whose only
@@ -1072,6 +1075,13 @@ def _auto_nudge_tick(now, tmux):
             if rec.get("lastTurnId") == lt_id:
                 continue                                 # already nudged this turn — re-arm only on a NEW ended turn
             count = rec.get("count", 0) + 1
+            # INSTRUMENTATION (the user 2026-06-30, see jd._nudge_diag): record the goal's ACTUAL completeness
+            # vs its status label at fire time. A 'nudge-fire' with nodeComplete/subtreeDone True proves the
+            # firing-side bug — the nudge fired on a done goal whose status column still read 'working'.
+            jd._nudge_diag("nudge-fire", sid=sid, gid=gid, status=status.get(gid, "working"),
+                           nodeComplete=bool(nd.get("nodeComplete")),
+                           subtreeDone=bool(jd._subtree_done(nodes, _diag_kids, gid)),
+                           settledDone=bool(nd.get("settledDone")), count=count)
             Sessions.backend_for(sid).send(sid, _followup_body(gid, None, AUTO_NUDGE_TEXT, injected=True, auto=True))   # gray romp bubble + romp-logo (both backends)
             _mark_auto_nudged(gid, lt_id, count)         # {count, lastTurnId} → re-arm on the next ended-working turn
             _log_nudge_event(sid, gid, now, count)       # timeline romp-logo dot + escalation count

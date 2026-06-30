@@ -1573,20 +1573,41 @@ def _coerce_place(menu, text):
     return [{"do": "mint", "text": label, "why": why}]
 
 
-def _reopen(store, gid):
+def _nudge_diag(event, **fields):
+    """TEMP INSTRUMENTATION (the user 2026-06-30) — append one JSON line to STATE/nudge-diag.jsonl to catch
+    the completed→blocked flip IN THE WILD. We could not reproduce it synthetically: the open question is
+    whether an auto-nudge ever FIRES on a goal that is actually done (nodeComplete / subtree-complete) while
+    its rolled-up STATUS still reads 'working' (a settledDone-never-stamped window) — and, separately, which
+    code path ever _reopen's an already-completed goal. Two events are recorded:
+      'nudge-fire'  (logged in the kernel's _auto_nudge_tick) — the goal's nodeComplete / subtreeDone /
+                    status / settledDone at the instant a nudge fires. A fire with nodeComplete=True proves
+                    the firing-side bug is real.
+      'reopen-done' (logged here) — a _reopen UN-COMPLETED a goal that was nodeComplete, tagged with the
+                    caller (`by`) so we see WHICH path (nudge / followup / optimistic / delegation) did it.
+    Remove once the cause is found. Best-effort; never raises into the caller."""
+    try:
+        with (STATE / "nudge-diag.jsonl").open("a") as f:
+            f.write(json.dumps({"event": event, "t": int(time.time()), **fields}) + "\n")
+    except Exception:
+        pass
+
+
+def _reopen(store, gid, by="?"):
     """Reopen a completed/blocked goal so a tagged FOLLOW-UP can accrue more work under it: clear
     nodeComplete + cleared on the node (unsealing its subtree from open_menu) and unblock it and its
     ancestors. Clears followupPending — the OFFICIAL reopen supersedes the kernel's optimistic one. The
     settled gate re-completes it once the follow-up work is done. This is the ONLY exception to the
     sealed-completed-subtree rule (the user 2026-06-17) — EXCEPT a goal the user crossed off the feed
     (view-cleared): that stays sealed, a follow-up to it must NOT revive it, so the caller places the work
-    as a fresh goal instead (the user 2026-06-22)."""
+    as a fresh goal instead (the user 2026-06-22). `by` is a TEMP instrumentation tag (see _nudge_diag)
+    naming the caller, so a reopen of an already-completed goal is attributed to its source."""
     nodes = store["nodes"]
     if gid not in nodes:
         return
     if gid in _view_cleared():                         # crossed off the feed → stays sealed; don't un-seal it
         return
     if nodes[gid].get("nodeComplete"):                 # reopening a DONE node: stamp the durable everDone marker
+        _nudge_diag("reopen-done", gid=gid, by=by)     # INSTRUMENTATION: a COMPLETED goal is being un-completed — by whom?
         nodes[gid]["everDone"] = True                  # BEFORE clearing nodeComplete, so the grouper never relinks it
     nodes[gid]["nodeComplete"] = False
     nodes[gid]["cleared"] = False
@@ -1632,7 +1653,7 @@ def optimistic_followup(fsid, gid, text="", now=None, stub=False):
     store = load_goals(fsid)
     if gid not in store.get("nodes", {}):
         return False
-    _reopen(store, gid)                                # unseal + unblock (also clears any stale followupPending)
+    _reopen(store, gid, by="optimistic")               # unseal + unblock (also clears any stale followupPending)
     store["nodes"][gid]["followupPending"] = True      # → rollup shows working + the feed shows the chip
     if stub:
         seq = store.get("seq", 0) + 1; store["seq"] = seq
@@ -1715,7 +1736,7 @@ def _plan_session(fsid, path, now):
             if not (isinstance(target, str) and target in store["nodes"]):
                 continue                              # courier hasn't run yet (UNSET) → stay re-examinable ('fyi' was
                 #                                       already retired in the collection loop, so it never reaches here)
-            _reopen(store, target)                     # unseal if the closer already flat-completed G (refused if view-cleared)
+            _reopen(store, target, by="delegation")    # unseal if the closer already flat-completed G (refused if view-cleared)
             sub = [nd for nd in open_menu(store)       # SCOPED menu: G + its open descendants, G first (menu #1)
                    if nd["id"] == target or _top_ancestor(store["nodes"], nd["id"]) == target]
             sub.sort(key=lambda nd: (nd["id"] != target, nd.get("t", 0)))
@@ -1756,7 +1777,7 @@ def _plan_session(fsid, path, now):
                 store["placements"][seg_id] = None
                 save_goals(fsid, store)
                 continue
-            _reopen(store, target)                     # unseal if the closer already completed it (refused if view-cleared)
+            _reopen(store, target, by="nudge")         # unseal if the closer already completed it (refused if view-cleared)
             sub = [nd for nd in open_menu(store)       # SCOPED menu: the goal + its open descendants, goal first (#1)
                    if nd["id"] == target or _top_ancestor(store["nodes"], nd["id"]) == target]
             sub.sort(key=lambda nd: (nd["id"] != target, nd.get("t", 0)))
@@ -1778,7 +1799,7 @@ def _plan_session(fsid, path, now):
             save_goals(fsid, store)
             continue
         if followup and followup in store["nodes"]:   # tagged follow-up: reopen the target, force work UNDER it
-            _reopen(store, followup)
+            _reopen(store, followup, by="followup")
             for k in [k for k, v in list(store["nodes"].items())   # drop the kernel's provisional follow-up STUB:
                       if v.get("provisional") and v.get("parentId") == followup]:   # the real sub below supersedes it
                 store["nodes"].pop(k, None); store.get("status", {}).pop(k, None)
