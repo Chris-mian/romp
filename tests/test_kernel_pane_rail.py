@@ -25,12 +25,13 @@ class PaneRailTest(unittest.TestCase):
         # one thin toolbar on the far left; FOUR toggle buttons, ordered to match the panes' left→right order
         self.assertIn("<div class=pane-rail>", self.html)
         self.assertIn("<div class=rail-btn data-pane=chat>Chat</div>", self.html)
-        self.assertIn("<div class=rail-btn data-pane=fleet>Fleet</div>", self.html)
+        # the by-session view is labelled "Outline" (the user 2026-06-29); the data-pane KEY stays 'fleet' internally
+        self.assertIn("<div class=rail-btn data-pane=fleet>Outline</div>", self.html)
         self.assertIn("<div class=rail-btn data-pane=feed>Feed</div>", self.html)
         self.assertIn("<div class=rail-btn data-pane=timeline>Timeline</div>", self.html)
         # Chat before Fleet before Feed before Timeline in the rail (fixed top-to-bottom order)
         idxs = [self.html.index("data-pane=" + k) for k in ("chat", "fleet", "feed", "timeline")]
-        self.assertEqual(idxs, sorted(idxs), "rail order must be Chat, Fleet, Feed, Timeline")
+        self.assertEqual(idxs, sorted(idxs), "rail order must be Chat, Outline, Feed, Timeline")
         # the old per-pane strips + the show-fleet swap + the timeline minimize bar are gone
         self.assertNotIn("pane-strip", self.html)
         self.assertNotIn("strip-toggle", self.html)

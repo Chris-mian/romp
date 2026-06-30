@@ -7092,13 +7092,13 @@ def _fleet_page():
     v = _dist_ver()
     return ("<!DOCTYPE html><html lang=en><head><meta charset=UTF-8>"
             "<meta name=viewport content='width=device-width,initial-scale=1'>"
-            "<link rel=icon type=image/svg+xml href=/media/romp-swirl-glyph.svg><title>Romp · fleet</title>"
+            "<link rel=icon type=image/svg+xml href=/media/romp-swirl-glyph.svg><title>Romp · outline</title>"
             # the chat's stylesheet provides the .ledger-* tree styling; _FLEET_CSS (in the <style> AFTER it)
             # overrides the body/layout bits so the chat rules don't fight the fleet page.
             "<link href=/dist/styles.css?v=%d rel=stylesheet>"
             "<style>%s\n%s</style></head><body>"
             "<div id=fleet-search-bar><div id=fleet-search-wrap>"
-            "<input id=fleet-search type=search autocomplete=off placeholder='Filter sessions by name…'>"
+            "<input id=fleet-search type=search autocomplete=off placeholder='Search sessions and tasks…'>"
             "<button id=fleet-search-clear type=button aria-label='Clear search' title='Clear search' hidden>×</button>"
             "</div></div>"
             "<div id=fleet-list></div><div id=fleet-foot></div>%s"
@@ -7708,7 +7708,7 @@ def _landing():
             "<div class=pane-rail>"
             "<div class=rail-scroll>"
             "<div class=rail-btn data-pane=chat>Chat</div>"
-            "<div class=rail-btn data-pane=fleet>Fleet</div>"
+            "<div class=rail-btn data-pane=fleet>Outline</div>"   # data-pane key stays 'fleet' (internal); the user-facing label is Outline
             "<div class=rail-btn data-pane=feed>Feed</div>"
             "<div class=rail-btn data-pane=timeline>Timeline</div>"
             # the Claude /usage rate-limit bars (Pro/Max): two compact vertical bar-pairs (used % colored +
