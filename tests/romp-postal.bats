@@ -124,16 +124,15 @@ iso() { mkdir -p "$XDG_STATE_HOME/romp"; printf '{"%s":{"postalServiceOff":true}
     [ "$(cnt "$(mb uuid-b)/new")" = "1" ]        # still waiting in new/
 }
 
-@test "send to a dead-but-known session parks a handoff" {
-    # gamma has a persistent names/ record but is NOT a live session
+@test "send to a non-live session errors (addressing is live-only)" {
+    # gamma has a persistent names/ record but is NOT a live session: live-only
+    # addressing means the send fails and nothing is parked.
     mkdir -p "$XDG_STATE_HOME/romp/names"
     printf 'gamma\t/tmp\t#aa3344\twhite\n' > "$XDG_STATE_HOME/romp/names/uuid-g"
     run "$POSTAL" send gamma "DELEGATE: I'm taking over; you're relieved."
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"parked as a handoff"* ]]
-    [ "$(cnt "$(mb uuid-g)/new")" = "1" ]
-    grep -q "X-Park: 1" "$(mb uuid-g)/new/"*
-    grep -q "taking over" "$(mb uuid-g)/new/"*
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"no live romp session named 'gamma'"* ]]
+    [ "$(cnt "$(mb uuid-g)/new")" = "0" ]
 }
 
 @test "tool descriptions use only the DELEGATE/COORDINATE/QUESTION vocabulary (no stale ASK:/FYI:/HANDOFF:)" {
@@ -143,12 +142,13 @@ iso() { mkdir -p "$XDG_STATE_HOME/romp"; printf '{"%s":{"postalServiceOff":true}
     [ "$status" -ne 0 ]   # grep finds nothing → non-zero → pass
 }
 
-@test "parked handoff survives the orphan sweep; a normal orphan does not" {
-    mkdir -p "$XDG_STATE_HOME/romp/names"
-    printf 'gamma\t/tmp\t#aa3344\twhite\n' > "$XDG_STATE_HOME/romp/names/uuid-g"
-    "$POSTAL" send gamma "parked: take over"                 # -> X-Park handoff
+@test "orphan sweep bounces a normal orphan but spares a parked handoff" {
+    # Build the orphan mailbox by hand: live-only addressing means a send can't create
+    # one (gamma/uuid-g is not a live session). The X-Park plumbing is retained, so a
+    # parked message still survives the sweep while a normal orphan is bounced.
     local box; box="$(mb uuid-g)/new"; mkdir -p "$box"
     printf 'From: alpha\nFrom-Id: uuid-a\nDate: t\n\nnormal stale\n' > "$box/normal.msg"
+    printf 'From: alpha\nFrom-Id: uuid-a\nX-Park: 1\nDate: t\n\nparked: take over\n' > "$box/parked.msg"
     [ "$(cnt "$box")" = "2" ]
     ROMP_POSTAL_ORPHAN_GRACE=0 run "$POSTAL" sweep
     [ "$status" -eq 0 ]
@@ -187,55 +187,12 @@ iso() { mkdir -p "$XDG_STATE_HOME/romp"; printf '{"%s":{"postalServiceOff":true}
     [ ! -e "$pend" ]                                # ...and clears the marker
 }
 
-@test "pending-mail marker is set for a DEAD parked recipient and survives" {
-    mkdir -p "$XDG_STATE_HOME/romp/names"
-    printf 'gamma\t/tmp\t#aa3344\twhite\n' > "$XDG_STATE_HOME/romp/names/uuid-g"
-    "$POSTAL" send gamma "parked handoff"           # gamma is dead -> parks
-    [ -e "$XDG_STATE_HOME/romp/postal/mail-pending/uuid-g" ]   # visible even though dead
-}
-
 @test "retry reconciles a stale pending marker (new/ already empty)" {
     mkdir -p "$XDG_STATE_HOME/romp/postal/mail-pending"
     touch "$XDG_STATE_HOME/romp/postal/mail-pending/uuid-ghost"   # marker but no new/ mail
     run "$POSTAL" retry
     [ "$status" -eq 0 ]
     [ ! -e "$XDG_STATE_HOME/romp/postal/mail-pending/uuid-ghost" ]   # reconciled away
-}
-
-@test "find searches past sessions by their archived summary + captions" {
-    mkdir -p "$XDG_STATE_HOME/romp/names" "$XDG_STATE_HOME/romp/archive" "$XDG_STATE_HOME/romp/captions"
-    printf 'oldzot\t/tmp/proj\t#179EE8\twhite\n' > "$XDG_STATE_HOME/romp/names/uuid-z"
-    printf '{"headline":"Zotero sync work","abstract":"Worked on the zotero metadata sync."}\n' \
-        > "$XDG_STATE_HOME/romp/archive/uuid-z.json"
-    printf '{"id":"uuid-z:1","grain":"turn","t":1780000000,"caption":"Fixed the zotero metadata sync"}\n' \
-        > "$XDG_STATE_HOME/romp/captions/uuid-z.jsonl"
-    run "$POSTAL" find zotero
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"oldzot"* ]]
-    [[ "$output" == *"zotero metadata"* ]]
-    [[ "$output" == *"dead"* ]]                              # uuid-z is not among the live mock sessions
-}
-
-@test "revive resumes a dead session via the romp launcher" {
-    mkdir -p "$XDG_STATE_HOME/romp/names"
-    printf 'oldzot\t%s\t#179EE8\twhite\n' "$TEST_DIR" > "$XDG_STATE_HOME/romp/names/uuid-z"
-    local log="$TEST_DIR/romp-call.log"
-    cat > "$MOCK/romp" <<EOF
-#!/usr/bin/env bash
-echo "ARGS=[\$*] CWD=\$PWD" > "$log"
-echo "[romp] started (detached)."
-EOF
-    chmod +x "$MOCK/romp"
-    ROMP_BIN="$MOCK/romp" run "$POSTAL" revive oldzot
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"reviving 'oldzot'"* ]]
-    grep -q "ARGS=\[oldzot --resume uuid-z --detach\]" "$log"
-}
-
-@test "revive of an unknown session name errors" {
-    ROMP_BIN=/bin/false run "$POSTAL" revive nope-never-existed
-    [ "$status" -ne 0 ]
-    [[ "$output" == *"no live or past romp session"* ]]
 }
 
 @test "inbox consumes; peek does not" {

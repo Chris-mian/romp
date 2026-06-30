@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """hideFromFeed takes a session OUT of task tracking (the user 2026-06-23): when the timeline's feed checkbox
 is crossed out, the judge's PLANNER and CLOSER skip the session — so no goal backlog accumulates while it's
-muted (toggling off→on then surfaces nothing). The captioner/archiver (run_index, the search index) is
-deliberately NOT gated, so a muted session stays findable via find_sessions.
+muted (toggling off→on then surfaces nothing). The captioner/archiver (run_index) is
+deliberately NOT gated, so a muted session stays captioned/archived for the dashboard.
 
 Synthetic only — placeholder UUIDs, hermetic temp STATE, no real session data.
 """

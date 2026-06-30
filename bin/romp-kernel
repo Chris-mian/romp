@@ -2107,6 +2107,275 @@ def _tmux_sessions():
     return Sessions.live()
 
 
+# ── tunnel concierge: attach a remote kernel over SSH for the FEDERATED dashboard ────────────────
+# The federated dashboard merges sessions from many kernels IN THE BROWSER (one WebSocket per kernel).
+# For the browser to reach a remote kernel — and for that machine's sessions to reach THIS laptop's
+# postal bus — the kernel manages the ssh tunnels (it's the long-lived local process, the natural owner
+# of the child ssh procs). ONE ssh per host carries both directions:
+#     -L <local_port>:127.0.0.1:<remote_kernel_port>   browser → remote kernel   (dashboard view)
+#     -R <bus_port>:127.0.0.1:<bus_port>               remote sessions → this bus (postal messaging)
+# The kernel is NOT a data relay — the browser talks to the remote kernel DIRECTLY through the -L
+# tunnel (authorizing with the remote's token, which a valid-token request carries past the Origin
+# gate; see _authorize). We just open the door + report state. The registry persists to
+# STATE/remotes.json so attached hosts survive a kernel restart (the supervisor re-spawns their procs).
+
+REMOTES_FILE = jd.STATE / "remotes.json"
+BUS_PORT = int(os.environ.get("ROMP_POSTAL_PORT", "47100"))      # this laptop's postal bus (reverse-forwarded)
+SSH_BIN = os.environ.get("ROMP_SSH_BIN", "ssh")                  # overridable for tests
+SSH_CONFIG = Path(os.environ.get("ROMP_SSH_CONFIG") or (Path.home() / ".ssh" / "config"))
+_REMOTE_KERNEL_PORT = int(os.environ.get("ROMP_REMOTE_KERNEL_PORT", str(PORT)))   # remote kernels default to our port
+# key-only (no prompts), fail fast if a forward can't bind, keepalive so a dropped link is detected → re-spawn.
+_SSH_OPTS = ["-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=yes",
+             "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-o", "ConnectTimeout=10"]
+
+_remotes = {}                  # host -> {host, kernel_port, local_port, token, proc, status, detail, sids}
+_remotes_lock = threading.Lock()
+_tunnel_wake = threading.Event()
+
+
+def _ssh_config_hosts():
+    """Host aliases declared in ~/.ssh/config (the 'find the things' for the attach UI). Concrete 'Host'
+    patterns only — wildcards/negations are skipped (not connectable targets). Best-effort: a missing or
+    unreadable config yields []."""
+    hosts = []
+    try:
+        for raw in SSH_CONFIG.read_text(errors="replace").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            key, _, val = line.partition(" ")
+            if key.lower() not in ("host",):
+                k2, sep, v2 = line.partition("=")     # tolerate "Host=foo"
+                if sep and k2.strip().lower() == "host":
+                    val = v2
+                else:
+                    continue
+            for tok in val.replace(",", " ").split():
+                if tok and not any(c in tok for c in "*?!") and tok not in hosts:
+                    hosts.append(tok)
+    except OSError:
+        pass
+    return hosts
+
+
+def _free_port():
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+    finally:
+        s.close()
+
+
+def _port_open(port):
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(0.3)
+    try:
+        return s.connect_ex(("127.0.0.1", int(port))) == 0
+    except OSError:
+        return False
+    finally:
+        s.close()
+
+
+def _fetch_remote_token(host):
+    """Read the remote kernel's serve-token over ssh so the browser can authorize against it (the token
+    bypasses the Origin gate — see _authorize). Best-effort: '' if ssh fails or the file is absent (the
+    tunnel still opens; the dashboard just can't authorize until romp is set up on the remote)."""
+    cmd = 'cat "${XDG_STATE_HOME:-$HOME/.local/state}/romp/serve-token"'
+    try:
+        r = subprocess.run([SSH_BIN] + _SSH_OPTS + [host, cmd],
+                           capture_output=True, text=True, timeout=20)
+        return (r.stdout or "").strip() if r.returncode == 0 else ""
+    except Exception:
+        return ""
+
+
+def _tunnel_argv(r):
+    return ([SSH_BIN, "-N", "-T"] + _SSH_OPTS +
+            ["-L", "%d:127.0.0.1:%d" % (r["local_port"], r["kernel_port"]),
+             "-R", "%d:127.0.0.1:%d" % (BUS_PORT, BUS_PORT),
+             r["host"]])
+
+
+def _spawn_tunnel(r):
+    """(Re)spawn the ssh tunnel proc for one remote. Caller holds _remotes_lock."""
+    try:
+        r["proc"] = subprocess.Popen(_tunnel_argv(r), stdin=subprocess.DEVNULL,
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        r["status"], r["detail"] = "starting", ""
+    except Exception as e:
+        r["proc"], r["status"], r["detail"] = None, "error", str(e)
+
+
+def _tunnel_proc_alive(r):
+    p = r.get("proc")
+    return bool(p) and p.poll() is None
+
+
+def _remote_public(r):
+    """The API view of a remote row — everything the browser needs to open its own WS, minus the Popen."""
+    return {"host": r["host"], "kernelPort": r["kernel_port"], "localPort": r["local_port"],
+            "token": r.get("token") or "", "status": r.get("status") or "down",
+            "detail": r.get("detail") or "", "sids": list(r.get("sids") or [])}
+
+
+def _remotes_save():
+    """Persist the attached set (sans the live Popen) so a kernel restart re-attaches them."""
+    with _remotes_lock:
+        rows = [{k: v for k, v in r.items() if k != "proc"} for r in _remotes.values()]
+    try:
+        _atomic_write(REMOTES_FILE, json.dumps(rows))
+    except Exception:
+        sys.stderr.write("remotes save: %s\n" % traceback.format_exc())
+
+
+def _remotes_load():
+    try:
+        rows = json.loads(REMOTES_FILE.read_text())
+    except Exception:
+        return
+    if not isinstance(rows, list):
+        return
+    with _remotes_lock:
+        for row in rows:
+            if not isinstance(row, dict) or not row.get("host"):
+                continue
+            r = dict(row)
+            r["proc"], r["status"] = None, "down"
+            r.setdefault("sids", [])
+            r.setdefault("kernel_port", _REMOTE_KERNEL_PORT)
+            r.setdefault("local_port", _free_port())
+            _remotes[r["host"]] = r
+
+
+def attach_remote(host, kernel_port=None):
+    """Attach a remote kernel: pick a local port, fetch its token, spawn the ssh tunnel, record it. Returns
+    the public row. Idempotent per host — re-attaching refreshes the token + restarts a dead tunnel."""
+    host = (host or "").strip()
+    if not host:
+        raise ValueError("host required")
+    with _remotes_lock:
+        r = _remotes.get(host)
+        if r is None:
+            r = {"host": host, "kernel_port": int(kernel_port or _REMOTE_KERNEL_PORT),
+                 "local_port": _free_port(), "token": "", "proc": None,
+                 "status": "starting", "detail": "", "sids": []}
+            _remotes[host] = r
+        elif kernel_port:
+            r["kernel_port"] = int(kernel_port)
+    token = _fetch_remote_token(host)              # ssh round-trip, outside the lock
+    with _remotes_lock:
+        r = _remotes.get(host)
+        if r is None:                              # detached mid-fetch
+            return None
+        if token:
+            r["token"] = token
+        if not _tunnel_proc_alive(r):
+            _spawn_tunnel(r)
+        pub = _remote_public(r)
+    _remotes_save()
+    _tunnel_wake.set()
+    return pub
+
+
+def detach_remote(host):
+    """Detach a remote: kill its tunnel proc and forget it."""
+    host = (host or "").strip()
+    with _remotes_lock:
+        r = _remotes.pop(host, None)
+    if r and r.get("proc"):
+        try:
+            r["proc"].terminate()
+        except Exception:
+            pass
+    _remotes_save()
+    return bool(r)
+
+
+def list_remotes():
+    with _remotes_lock:
+        return [_remote_public(r) for r in _remotes.values()]
+
+
+def _poll_remote_sids(r):
+    """GET the remote kernel's /sessions THROUGH the -L tunnel; return its session ids (for the wake-router's
+    host↔sid map). None on any failure — leave the last-known map in place."""
+    import urllib.parse
+    try:
+        c = http.client.HTTPConnection("127.0.0.1", int(r["local_port"]), timeout=4)
+        path = "/sessions" + (("?token=" + urllib.parse.quote(r["token"])) if r.get("token") else "")
+        c.request("GET", path)
+        resp = c.getresponse()
+        data = resp.read()
+        c.close()
+        if resp.status != 200:
+            return None
+        rows = json.loads(data.decode("utf-8"))
+        return [x.get("id") for x in rows if isinstance(x, dict) and x.get("id")]
+    except Exception:
+        return None
+
+
+def _host_for_sid(sid):
+    """The attached remote row that owns this sid (from the supervisor's polled map), or None if local."""
+    sid = str(sid)
+    with _remotes_lock:
+        for r in _remotes.values():
+            if sid in (r.get("sids") or []):
+                return r
+    return None
+
+
+def _remote_forward(r, path, body):
+    """Forward a small CONTROL call (deliver/send/working) to a remote kernel THROUGH its -L tunnel — this is
+    the wake-router. The postal bus only ever talks to THIS local kernel (POST /deliver {id}); when the id is
+    a remote session the kernel forwards the wake here so the remote, idle session starts working immediately
+    (not at its next turn). Only the tiny control signal crosses — never the bulk session-data stream. Returns
+    the parsed JSON response, or None on failure (caller degrades; the bus re-delivers via the maildir)."""
+    import urllib.parse
+    try:
+        c = http.client.HTTPConnection("127.0.0.1", int(r["local_port"]), timeout=8)
+        p = path + (("?token=" + urllib.parse.quote(r["token"])) if r.get("token") else "")
+        c.request("POST", p, json.dumps(body), {"Content-Type": "application/json"})
+        resp = c.getresponse()
+        data = resp.read()
+        c.close()
+        return json.loads(data.decode("utf-8") or "{}") if resp.status == 200 else None
+    except Exception:
+        return None
+
+
+def _tunnel_supervisor():
+    """Keep attached tunnels alive (re-spawn a dead ssh), refresh status, and learn which session ids live on
+    each host by polling its kernel's /sessions THROUGH the -L tunnel — the host↔sid map the wake-router uses
+    to forward a /deliver to the owning remote kernel."""
+    while True:
+        _tunnel_wake.clear()
+        try:
+            with _remotes_lock:
+                rows = list(_remotes.values())
+            for r in rows:
+                with _remotes_lock:
+                    if r["host"] not in _remotes:
+                        continue
+                    if not _tunnel_proc_alive(r):
+                        _spawn_tunnel(r)
+                up = _port_open(r["local_port"])              # outside the lock (socket round-trip)
+                sids = _poll_remote_sids(r) if up else None
+                with _remotes_lock:
+                    if r["host"] not in _remotes:
+                        continue
+                    r["status"] = ("up" if up else "starting") if _tunnel_proc_alive(r) else "down"
+                    if sids is not None:
+                        r["sids"] = sids
+        except Exception:
+            sys.stderr.write("tunnel-supervisor: %s\n" % traceback.format_exc())
+        _tunnel_wake.wait(15)
+
+
 def _session_rows():
     """Every LIVE romp session (tmux + SDK) with the fields external tools need: id (sid), name, claude-state,
     working dir, identity bg/fg, the set_working ownership note, and which backend drives it. Served at GET
@@ -6586,14 +6855,15 @@ ws=new WebSocket(proto+location.host+"/ws?app=%s"+(wid?"&wid="+encodeURIComponen
 ws.onopen=function(){lastRecv=Date.now();netState("up");if(everConnected){location.reload();return;}everConnected=true;for(var i=0;i<queue.length;i++)ws.send(queue[i]);queue=[];};
 ws.onmessage=function(ev){lastRecv=Date.now();var msg;try{msg=JSON.parse(ev.data);}catch(e){return;}
 if(msg&&msg.type==="ka")return;   // keepalive: stamped lastRecv above; nothing for the bundle to render
-window.dispatchEvent(new MessageEvent("message",{data:msg}));};
+if(window.__rompFed){window.__rompFed.inbound("",msg);}else{window.dispatchEvent(new MessageEvent("message",{data:msg}));}};
 // onclose: flag the shell, RE-SHOW this pane's romp loader (the user 2026-06-29: "the swirling thing upon
 // kernel restart"), + RETRY (don't blind-reload — on a real outage the reload just fails into a dead page).
 ws.onclose=function(){netState("down");try{window.dispatchEvent(new Event("romp:wsdown"));}catch(e){}setTimeout(connect,1500);};
 ws.onerror=function(){try{ws.close();}catch(e){}};}
 function send(m){var s=JSON.stringify(m);if(ws&&ws.readyState===1)ws.send(s);else queue.push(s);}
+window.__rompLocalSend=send;window.__rompApp=APP;   // federation.ts (the multi-kernel manager) routes local sends + knows the app through these
 var SK="romp-vscode-state-%s";   // persist webview state to localStorage so UI prefs survive a refresh
-window.acquireVsCodeApi=function(){return{postMessage:function(m){send(m);},
+window.acquireVsCodeApi=function(){return{postMessage:function(m){if(window.__rompFed){window.__rompFed.outbound(m);}else{send(m);}},
 getState:function(){try{return JSON.parse(localStorage.getItem(SK)||"null");}catch(e){return null;}},
 setState:function(s){try{localStorage.setItem(SK,JSON.stringify(s));}catch(e){}}};};connect();
 // staleness watchdog: a half-open socket fires no onclose, so poll lastRecv — if the keepalive (and all
@@ -6749,8 +7019,9 @@ def _chat_page():
             "<link rel=icon type=image/svg+xml href=/media/romp-swirl-glyph.svg>"
             "<link href=/dist/styles.css?v=%d rel=stylesheet><title>Romp</title>"
             "<style>%s\n%s</style></head><body>%s%s<script>%s</script>"
+            "<script src=/dist/federation.js?v=%d></script>"   # multi-kernel manager: after the shim, before the bundle
             "<script src=/dist/render.js?v=%d></script><script>%s</script></body></html>"
-            % (v, THEME_CSS, _CHAT_MOBILE_CSS, _chat_body(), _pane_spin("content", "live-ask"), _shim("chat"), v, _CHAT_MOBILE_JS))
+            % (v, THEME_CSS, _CHAT_MOBILE_CSS, _chat_body(), _pane_spin("content", "live-ask"), _shim("chat"), v, v, _CHAT_MOBILE_JS))
 
 
 # Settings gear (WEB KERNEL ONLY — kernel-injected, never in the shared feed.ts). A ⚙ in the corner
@@ -7042,10 +7313,11 @@ def _feed_page():
             "<link rel=icon type=image/svg+xml href=/media/romp-swirl-glyph.svg>"
             "<link href=/dist/feed.css?v=%d rel=stylesheet><title>Romp · feed</title>"
             "<style>%s\n%s</style></head><body>%s%s%s<script>%s</script>"
+            "<script src=/dist/federation.js?v=%d></script>"   # multi-kernel manager (also hosts the attach UI in the gear)
             "<script src=/dist/feed.js?v=%d></script><script>%s</script></body></html>"
             % (v, THEME_CSS, _GEAR_CSS,
                '<div id="feed-head"></div><div id="feed-list"></div><div id="feed-foot"></div>', _GEAR_HTML,
-               _pane_spin("feed-list"), _shim("feed"), v, _GEAR_JS))
+               _pane_spin("feed-list"), _shim("feed"), v, v, _GEAR_JS))
 
 
 # Fleet — a BY-SESSION view that MIRRORS the ledger box (the user 2026-06-23): each session, then its goal
@@ -7128,8 +7400,9 @@ def _fleet_page():
             "<button id=fleet-search-clear type=button aria-label='Clear search' title='Clear search' hidden>×</button>"
             "</div></div>"
             "<div id=fleet-list></div><div id=fleet-foot></div>%s"
-            "<script>%s</script><script src=/dist/fleet.js?v=%d></script></body></html>"
-            % (v, THEME_CSS, _FLEET_CSS, _pane_spin("fleet-list"), _shim("fleet"), v))
+            "<script>%s</script><script src=/dist/federation.js?v=%d></script>"   # multi-kernel manager: after the shim
+            "<script src=/dist/fleet.js?v=%d></script></body></html>"
+            % (v, THEME_CSS, _FLEET_CSS, _pane_spin("fleet-list"), _shim("fleet"), v, v))
 
 
 # The romp-tl-* styles, verbatim from the obsidian/VS-Code timeline wrapper.
@@ -7503,6 +7776,42 @@ document.addEventListener('keydown',function(e){if(e.key==='Escape'&&!ov.hidden)
 """
 
 
+# The rail's network popover: attach/detach federated remote kernels. Shell-native (drives the kernel's
+# /ssh-hosts + /tunnels endpoints directly with fetch); the per-pane federation managers converge on the
+# change via their own /tunnels poll. Polls /tunnels for live status only while the panel is open.
+_LANDING_REMOTES_JS = """
+(function(){
+var icon=document.getElementById('rail-net'),back=document.getElementById('rnet-back');
+if(!icon||!back)return;
+var hostSel=document.getElementById('rnet-host'),attach=document.getElementById('rnet-attach'),
+list=document.getElementById('rnet-list'),x=document.getElementById('rnet-x');
+var poll=null;
+function open(){back.hidden=false;loadHosts();refresh();poll=setInterval(refresh,3000);}
+function close(){back.hidden=true;if(poll){clearInterval(poll);poll=null;}}
+icon.onclick=function(e){e.stopPropagation();if(back.hidden)open();else close();};
+back.onclick=function(e){if(e.target===back)close();};
+if(x)x.onclick=close;
+document.addEventListener('keydown',function(e){if(e.key==='Escape'&&!back.hidden)close();});
+function loadHosts(){fetch('/ssh-hosts',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){
+var hs=(d&&d.hosts)||[];hostSel.innerHTML=hs.length?hs.map(function(h){return '<option value=\"'+h+'\">'+h+'</option>';}).join(''):'<option value=\"\">(no ~/.ssh/config hosts)</option>';}).catch(function(){});}
+function refresh(){fetch('/tunnels',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){render((d&&d.tunnels)||[]);}).catch(function(){});}
+function render(ts){list.innerHTML='';
+if(!ts.length){var e=document.createElement('div');e.className='rnet-empty';e.textContent='No remotes attached.';list.appendChild(e);return;}
+ts.forEach(function(t){var row=document.createElement('div');row.className='rnet-row';
+var c=t.status==='up'?'#7CD992':(t.status==='error'?'#E5534B':'var(--accent)');
+row.innerHTML='<span class=rnet-dot style=\"background:'+c+'\"></span>'+
+'<span class=nm><b>'+t.host+'</b> <span class=st>'+t.status+(t.token?'':' \\u00b7 no token')+'</span></span>'+
+'<button data-h=\"'+t.host+'\">Detach</button>';
+list.appendChild(row);});
+list.querySelectorAll('button[data-h]').forEach(function(b){b.onclick=function(){var h=b.getAttribute('data-h');
+b.disabled=true;fetch('/tunnels/detach',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h})}).then(refresh).catch(function(){});};});}
+attach.onclick=function(){var h=hostSel.value;if(!h)return;attach.disabled=true;attach.textContent='Attaching\\u2026';
+fetch('/tunnels',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h})}).then(function(){
+attach.disabled=false;attach.textContent='Attach';refresh();}).catch(function(){attach.disabled=false;attach.textContent='Attach';});};
+})();
+"""
+
+
 # Mobile shell behavior, layered on top of the desktop splitter above. The bottom tab bar (#mtabs,
 # shown only by the media query below) swaps which single iframe is full-screen by toggling `m-on`.
 # A cross-pane "reveal" auto-switches the visible tab: the kernel pushes {type:"reveal",pane} over an
@@ -7685,6 +7994,30 @@ def _landing():
             ".rail-act:hover{color:#fff;background:rgba(255,255,255,0.06)}"
             ".rail-act:active{transform:scale(0.92)}"
             + _HELP_CSS +
+            ".rail-act svg{display:block}"
+            # the rail's network (⧉) action opens a shell-native popover anchored by the rail to manage
+            # federated remote kernels (attach a host from ~/.ssh/config, see status, detach).
+            "#rnet-back{position:fixed;inset:0;z-index:120}#rnet-back[hidden]{display:none}"
+            "#rnet-panel{position:fixed;left:46px;bottom:10px;width:300px;max-width:calc(100vw - 60px);"
+            "background:#1c1c1d;border:1px solid #3a3a3a;border-radius:10px;box-shadow:0 8px 30px rgba(0,0,0,0.5);"
+            "padding:12px;color:#ddd;font-size:13px}"
+            "#rnet-panel .rnet-top{display:flex;align-items:center;gap:8px;font-weight:600;margin-bottom:6px}"
+            ".rnet-top span{flex:1 1 auto}"
+            "#rnet-x{background:none;border:none;color:#999;font-size:18px;line-height:1;cursor:pointer;padding:0 2px}"
+            "#rnet-x:hover{color:#fff}"
+            ".rnet-sub{color:#999;font-size:11px;line-height:1.4;margin-bottom:9px}"
+            ".rnet-sub code{background:#2a2a2a;border-radius:3px;padding:0 3px}"
+            ".rnet-add{display:flex;gap:6px;margin-bottom:9px}"
+            "#rnet-host{flex:1 1 auto;min-width:0;background:#121212;color:#ccc;border:1px solid #3a3a3a;border-radius:6px;padding:4px 6px}"
+            "#rnet-attach{flex:0 0 auto;background:var(--accent);color:var(--accent-fg);border:none;border-radius:6px;padding:4px 12px;font-weight:600;cursor:pointer}"
+            "#rnet-attach:disabled{opacity:0.5;cursor:default}"
+            "#rnet-list{display:flex;flex-direction:column;gap:5px}"
+            ".rnet-row{display:flex;align-items:center;gap:7px}"
+            ".rnet-dot{width:7px;height:7px;border-radius:50%;flex:0 0 auto}"
+            ".rnet-row .nm{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}"
+            ".rnet-row .st{color:#999;font-size:11px}"
+            ".rnet-row button{flex:0 0 auto;background:#2a2a2a;color:#ccc;border:1px solid #3a3a3a;border-radius:6px;padding:2px 8px;cursor:pointer}"
+            ".rnet-empty{color:#777;font-size:11px}"
             # usage rate-limit bars in the rail (the user 2026-06-26): per window (5h/7d), a used-% bar (colored
             # green/amber/red like the timeline's) beside an elapsed-% bar (slate) — pace at a glance; %-label;
             # window tag; full detail on hover (native title). Compact to fit the 30px rail.
@@ -7822,6 +8155,10 @@ def _landing():
             "</div>"   # /.rail-scroll
             # refresh + settings, pinned to the very bottom (settings last), always visible:
             "<div class=rail-acts>"
+            "<div class=rail-act id=rail-net title='Remote kernels' aria-label='Remote kernels'>"
+            "<svg viewBox='0 0 16 16' width=15 height=15 fill=none stroke=currentColor stroke-width=1.3 stroke-linecap=round stroke-linejoin=round>"
+            "<circle cx=3 cy=4.5 r=1.7/><circle cx=13 cy=4.5 r=1.7/><circle cx=8 cy=12 r=1.7/>"
+            "<path d='M4.6 5 11.4 5'/><path d='M3.8 6.1 7.2 10.4'/><path d='M12.2 6.1 8.8 10.4'/></svg></div>"
             "<div class=rail-act id=rail-refresh title='Restart the romp kernel' aria-label=Refresh>↻</div>"
             "<div class=rail-act id=rail-help title='Keyboard shortcuts' aria-label='Keyboard shortcuts'><span class=rhelp-q>?</span></div>"
             "<div class=rail-act id=rail-gear title=Settings aria-label=Settings>⛭</div>"   # ⛭ (gear-without-hub): the bigger, bolder gear the user prefers (restored 2026-06-29)
@@ -7844,6 +8181,14 @@ def _landing():
             "<button data-pane=feed>Feed</button>"
             "<button data-pane=timeline>Timeline</button>"
             "</nav>"
+            # the rail's network popover — manage federated remote kernels (driven by _LANDING_REMOTES_JS).
+            "<div id=rnet-back hidden><div id=rnet-panel>"
+            "<div class=rnet-top><span>Remote kernels</span><button id=rnet-x aria-label=Close>×</button></div>"
+            "<div class=rnet-sub>Federate another machine's romp over SSH — its sessions appear here prefixed "
+            "<code>host:</code> and can message yours. Reads <code>~/.ssh/config</code>.</div>"
+            "<div class=rnet-add><select id=rnet-host></select><button id=rnet-attach>Attach</button></div>"
+            "<div id=rnet-list></div>"
+            "</div></div>"
             # two separate <script> tags so a throw in the desktop splitter script can never disable
             # the mobile tab bar. (The splitter used to query a stale id=t for the timeline iframe and
             # throw on every load — fixed above by giving that iframe id=f-timeline.)
@@ -7855,6 +8200,7 @@ def _landing():
             "<script>" + _LANDING_FLEET_JS + "</script>"
             "<script>" + _LANDING_SETTINGS_JS + "</script>"
             "<script>" + _LANDING_HELP_JS + "</script>"
+            "<script>" + _LANDING_REMOTES_JS + "</script>"
             "<script>" + _LANDING_MOBILE_JS + "</script>"
             "<script>" + _LANDING_COLLAPSE_JS + "</script>"
             + _stale_block(v) +
@@ -7916,16 +8262,20 @@ class Handler(BaseHTTPRequestHandler):
         return ""
 
     def _authorize(self, q):
-        """(ok, cookie_to_set, reason). Origin gate always; token gate only for non-local Host —
-        a valid ?token sets the cookie so the client (and its same-origin /ws) never re-prompts."""
+        """(ok, cookie_to_set, reason). A valid token IS sufficient auth and bypasses the Origin gate.
+        This is what lets the FEDERATED dashboard work: a browser served by ANOTHER kernel opens a
+        tunnel'd /ws (or fetch) here carrying ?token — a foreign Origin, but the unguessable token is
+        the credential, and a cross-site page can't forge it. Without a token the Origin gate always
+        applies (the ClawJacked/WS hole), and a non-local Host additionally requires the token. A valid
+        ?token also sets the cookie so a same-origin client never re-prompts."""
+        if TOKEN and _ct_eq((q.get("token") or [""])[0], TOKEN):
+            return True, TOKEN, ""                    # valid ?token → authorize (any origin) + set cookie
+        if TOKEN and _ct_eq(self._cookie_token(), TOKEN):
+            return True, None, ""                     # valid token cookie → authorize (any origin)
         if not self._origin_ok():
             return False, None, "cross-site origin"
         if self._is_local_host():
-            return True, None, ""                    # local passes on the Origin check alone
-        if TOKEN and _ct_eq((q.get("token") or [""])[0], TOKEN):
-            return True, TOKEN, ""                    # first non-local hit with ?token → set the cookie
-        if TOKEN and _ct_eq(self._cookie_token(), TOKEN):
-            return True, None, ""
+            return True, None, ""                    # local, same-origin → no token needed
         return False, None, "token required for non-local access"
 
     def do_GET(self):
@@ -7960,6 +8310,12 @@ class Handler(BaseHTTPRequestHandler):
                                   "application/json", cache="no-cache")
             if p == "/palette":                               # the session-identity palette for the tab right-click color picker
                 return self._send(200, json.dumps({"colors": _PALETTE}), "application/json", cache="no-cache")
+            if p == "/ssh-hosts":                             # ~/.ssh/config Host aliases for the attach-a-remote UI
+                return self._send(200, json.dumps({"hosts": _ssh_config_hosts()}),
+                                  "application/json", cache="no-cache")
+            if p == "/tunnels":                               # attached remote kernels + state (drives the federated dashboard)
+                return self._send(200, json.dumps({"tunnels": list_remotes()}),
+                                  "application/json", cache="no-cache")
             # HTML pages are served no-cache so a reload always gets the freshest markup — which carries
             # the latest ?v= bundle url, so even a cached old bundle is bypassed (stale-client fix).
             if p in ("/", ""):
@@ -8050,6 +8406,10 @@ class Handler(BaseHTTPRequestHandler):
                 if not body:
                     return self._send(400, json.dumps({"ok": False, "error": "id and text required"}), "application/json")
                 sid = _sid_of(body["who"])
+                r = _host_for_sid(sid)
+                if r is not None:                                   # remote session → forward over its -L tunnel
+                    _remote_forward(r, "/send", {"id": sid, "text": body["text"]})
+                    return self._send(200, json.dumps({"ok": True}), "application/json")
                 Sessions.backend_for(sid).send(sid, body["text"])   # no optimistic echo: an external/postal
                 return self._send(200, json.dumps({"ok": True}), "application/json")   # send isn't a human composer bubble
             if u.path == "/working":
@@ -8063,6 +8423,10 @@ class Handler(BaseHTTPRequestHandler):
                 sid = str((body or {}).get("id") or "")
                 if not isinstance(body, dict) or not sid:
                     return self._send(400, json.dumps({"ok": False, "error": "id required"}), "application/json")
+                r = _host_for_sid(sid)
+                if r is not None:                                   # remote session → forward over its -L tunnel
+                    _remote_forward(r, "/working", {"id": sid, "text": str(body.get("text") or "")})
+                    return self._send(200, json.dumps({"ok": True}), "application/json")
                 Sessions.set_working_note(sid, str(body.get("text") or ""))
                 return self._send(200, json.dumps({"ok": True}), "application/json")
             if u.path == "/deliver":
@@ -8079,6 +8443,10 @@ class Handler(BaseHTTPRequestHandler):
                 text = (body or {}).get("text") if isinstance(body, dict) else None
                 if not sid or not isinstance(text, str) or not text:
                     return self._send(400, json.dumps({"ok": False, "error": "id and text required"}), "application/json")
+                r = _host_for_sid(sid)
+                if r is not None:                                   # remote session → forward the wake over its -L tunnel
+                    res = _remote_forward(r, "/deliver", {"id": sid, "text": text})
+                    return self._send(200, json.dumps({"ok": True, "injected": bool(res and res.get("injected"))}), "application/json")
                 injected = bool(Sessions.backend_for(sid).deliver(sid, text))
                 return self._send(200, json.dumps({"ok": True, "injected": injected}), "application/json")
             if u.path == "/picker-check":
@@ -8114,6 +8482,32 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     _TMUX.reconcile_peers()
                 return self._send(200, json.dumps({"ok": True}), "application/json")
+            if u.path == "/tunnels":
+                # Attach a remote kernel: open its ssh tunnels + fetch its token so the browser can merge
+                # its fleet. Body: {"host": <ssh alias>, "kernelPort"?: <remote port>}. The blocking ssh
+                # round-trip (token fetch) is fine on the threaded server. Returns the public tunnel row.
+                try:
+                    body = json.loads(raw_body or b"{}")
+                except Exception:
+                    body = None
+                host = str((body or {}).get("host") or "").strip() if isinstance(body, dict) else ""
+                if not host:
+                    return self._send(400, json.dumps({"ok": False, "error": "host required"}), "application/json")
+                try:
+                    pub = attach_remote(host, (body or {}).get("kernelPort"))
+                except Exception as e:
+                    return self._send(500, json.dumps({"ok": False, "error": str(e)}), "application/json")
+                return self._send(200, json.dumps({"ok": True, "tunnel": pub}), "application/json")
+            if u.path == "/tunnels/detach":
+                # Detach a remote: kill its tunnel + forget it. Body: {"host": <ssh alias>}.
+                try:
+                    body = json.loads(raw_body or b"{}")
+                except Exception:
+                    body = None
+                host = str((body or {}).get("host") or "").strip() if isinstance(body, dict) else ""
+                if not host:
+                    return self._send(400, json.dumps({"ok": False, "error": "host required"}), "application/json")
+                return self._send(200, json.dumps({"ok": True, "detached": detach_remote(host)}), "application/json")
             return self._send(404, "not found", "text/plain")
         except (BrokenPipeError, ConnectionResetError):
             pass
@@ -8442,6 +8836,8 @@ def main():
     threading.Thread(target=_pusher, daemon=True).start()
     threading.Thread(target=_ask_poll, daemon=True).start()   # scrape live AskUserQuestion pickers → chat
     threading.Thread(target=_parent_watch, daemon=True).start()
+    _remotes_load()                                            # re-attach remote kernels from a prior run
+    threading.Thread(target=_tunnel_supervisor, daemon=True).start()   # keep ssh tunnels alive + poll host↔sid map
     srv = ThreadingHTTPServer((BIND, PORT), Handler)
     url = "http://127.0.0.1:%d" % PORT
     sys.stderr.write("romp-kernel: serving the ported UI at %s  (Ctrl-C to stop)\n" % url)
