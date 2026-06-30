@@ -524,7 +524,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   // message — the user hit this). For origin cards anchor on "work" instead, landing where the
   // delegation was processed, mirroring the modal tree-node nav (rompinfra, the user 2026-06-16).
   // agent → open session; Clear → inbox-zero. stopPropagation so the card-body handlers don't also fire.
-  const titleAnchor = it.origin ? "work" : "prompt";
+  let titleAnchor = it.origin ? "work" : "prompt";
   // PREFERRED: the card's root node carries the EXACT turn uuid (kernel 996ebd7) → id-based deep-link,
   // killing the nearest-time miss (delegation cards land on where the work happened, not an unrelated
   // user message). The card's root node is the one whose id IS the card's itemId. Null → time fallback.
@@ -536,7 +536,13 @@ function makeAskCard(it: AskItem): HTMLElement {
   // (origin) title keeps the work uuid. cardAnchorUuid stays the WORK uuid — goNoted (the why-line) reuses it.
   const rootNode = it.tree?.find((n) => n.id === it.itemId);
   const cardAnchorUuid = rootNode?.anchorUuid ?? null;
-  const titleUuid = titleAnchor === "prompt" ? (rootNode?.promptAnchorUuid ?? null) : cardAnchorUuid;
+  let titleUuid = titleAnchor === "prompt" ? (rootNode?.promptAnchorUuid ?? null) : cardAnchorUuid;
+  // No minting user message — an autonomous NOTE the agent wrote itself (no opener), or the opener got
+  // compacted off the active path — so a "prompt" jump has nothing to land on and used to honest-fail with
+  // the "couldn't locate this in the transcript" toast. Fall back to WHERE THE NOTE WAS WRITTEN: the work
+  // turn (an assistant turn). That needs anchor "work" so the chat's kind guard accepts a non-user uuid
+  // (a "prompt" intent refuses an assistant turn). (the user 2026-06-30.)
+  if (titleAnchor === "prompt" && !titleUuid && cardAnchorUuid) { titleAnchor = "work"; titleUuid = cardAnchorUuid; }
   // A PROVISIONAL placeholder has no goal node / timeline anchor — clicking anywhere just opens the live
   // session (go see what it's working on); the modal, timeline deep-link, and path-hover are all skipped.
   title.onclick = (ev) => { ev.stopPropagation(); if (it.provisional) { openOrReviveSession(it.sid, it.live, it.name); return; } vscodeApi?.postMessage({ type: "showOnTimeline", itemId: it.itemId, sid: it.sid, t: it.t, anchor: titleAnchor, anchorUuid: titleUuid }); };
@@ -1143,8 +1149,14 @@ function wireNodeZones(it: AskItem, node: AskTreeNode, mark: HTMLElement, txt: H
   const navSid = node.whoSid || (node.kind === "handoff" ? node.id.split(":")[0] : it.sid);
   const resolved = node.status === "done" || node.status === "question";   // done / blocked → has a resolution
   const resolveT = (resolved && node.mt) ? node.mt : node.t;
-  const goMsg = (ev: Event) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: navId, sid: navSid, t: node.t, anchor: "prompt", anchorUuid: node.promptAnchorUuid ?? null }); };
   const goWork = (ev: Event) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: navId, sid: navSid, t: resolveT, anchor: "work", anchorUuid: node.anchorUuid ?? null }); };
+  // prompt-intent: jump to the minting user message. But a node with no opener (an autonomous note, or an
+  // opener compacted off-path) has no promptAnchorUuid, so the jump would honest-fail with "couldn't locate".
+  // Fall back to goWork — where the work actually happened — rather than toast (the user 2026-06-30).
+  const goMsg = (ev: Event) => {
+    if (!node.promptAnchorUuid && node.anchorUuid) { goWork(ev); return; }
+    ev.stopPropagation(); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: navId, sid: navSid, t: node.t, anchor: "prompt", anchorUuid: node.promptAnchorUuid ?? null });
+  };
   if (!wire) return goWork;
   // tooltip names the destination by status: a blocked node was "marked blocked", a done node "checked off"
   const workTitle = node.status === "question" ? "jump to where this got marked blocked"
