@@ -1709,13 +1709,14 @@ class PostalDelegation(unittest.TestCase):
         self.assertIsNone(store["placements"][seg_id + "#d"])
 
     def test_fyi_delegations_dont_starve_newer_units(self):
-        """THE starvation regression (the user 2026-06-22, via link_audit): a session with MORE than
-        PLAN_FAIRNESS coordination ('fyi') peer segments must still advance its newer units in ONE pass.
-        Before the fix each 'fyi' delegation hit a bare skip (continue WITHOUT marking) every pass, so the
-        oldest-first PLAN_FAIRNESS window stayed permanently clogged with no-op skips and every newer goal was
-        starved forever (g54's live nudge loop). Now 'fyi' #d units are RETIRED in the collection loop, before
-        the cap, freeing the whole window in one pass."""
-        N = jd.PLAN_FAIRNESS + 3                           # strictly more fyi segments than the per-pass cap
+        """THE starvation regression (the user 2026-06-22, via link_audit): a session with a LARGE backlog of
+        coordination ('fyi') peer segments must still advance its newer units in ONE pass. Before the fix each
+        'fyi' delegation hit a bare skip (continue WITHOUT marking) every pass, clogging the oldest-first window
+        with no-op skips so every newer goal was starved forever (g54's live nudge loop). 'fyi' #d units are now
+        RETIRED in the collection loop, so they never re-clog. (The per-pass PLAN_FAIRNESS cap that made this
+        starvation possible was itself REMOVED 2026-06-30 — retiring a FINAL fyi verdict is still correct, and
+        this still pins the one-pass advance + retirement.)"""
+        N = 11                                             # a large fyi backlog (was PLAN_FAIRNESS + 3, pre-removal)
         recs, parent = [], None
         for i in range(N):
             u, a = "p%d" % i, "pa%d" % i
@@ -1737,7 +1738,7 @@ class PostalDelegation(unittest.TestCase):
             try:
                 session = jd.parsed_session(SID, [str(tpath)], NOW)
                 peers = [s for turn in session["turns"] for s in em.segments(turn) if jd._seg_peer(s)]
-                self.assertGreater(len(peers), jd.PLAN_FAIRNESS, "more fyi segments than the cap (the starvation setup)")
+                self.assertGreaterEqual(len(peers), 10, "a large fyi backlog (the starvation setup)")
                 store = {"rompUuid": SID, "seq": 0, "nodes": {}, "placements": {}, "status": {}}
                 for s in peers:                            # the courier marked every one coordination
                     store["placements"][s["id"]] = "fyi"

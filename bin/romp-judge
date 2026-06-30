@@ -68,11 +68,13 @@ WINDOW      = 48 * 3600                  # only caption transcripts touched in t
 BUDGET      = 60                         # max captions written per pass
 FAIRNESS    = 10                         # max captions per session per pass (so one busy session can't starve the rest)
 ARCH_BUDGET = 30                         # max session archives (re)built per pass
-PLAN_SESSIONS = 40                       # max sessions the planner/closer advance per pass — raised now
-                                         # that parsed_session caches the parse (an unchanged session
-                                         # costs ~0), so a live session is never starved past the cap
-                                         # (the goal-less-ledger bug: a working session sat at index 12)
-PLAN_FAIRNESS = 8                        # max segments planned per session per pass
+PLAN_SESSIONS = None                     # per-pass session cap — REMOVED (the user 2026-06-30): the fairness
+                                         # caps were a recurring source of confusing starvation bugs (a goal/
+                                         # nudge stuck behind a full per-pass window), never clearly needed.
+                                         # None → fleet[:None] is the whole fleet (advance EVERY session each
+                                         # pass). Parses are cached, so an unchanged session still costs ~0.
+PLAN_FAIRNESS = None                     # per-session segment cap — REMOVED (the user 2026-06-30): None →
+                                         # units[:None] is all units (plan EVERY un-placed segment each pass)
 PLAN_PARSE_RETRIES = 3                    # parse-fails on ONE segment before we stop retrying it: a reply
                                          # that never parses can't storm the error log / burn Sonnet calls
                                          # forever — a human message is then hard-placed, a non-user
@@ -89,7 +91,8 @@ DISTILL_FAIL_CAP = 3                      # consecutive distill/brief CALL fails
 DISTILL_WORK_CHARS = 24000               # cap the work history fed to a distill/brief call (keep the most
                                          # recent tail): an unbounded subtree could time out the Sonnet call
                                          # (logged "call"); the recent work is what the brief needs anyway.
-CLOSE_FAIRNESS = 8                       # max turn-end completion sweeps per session per pass (backfill spread)
+CLOSE_FAIRNESS = None                    # per-session turn-close cap — REMOVED (the user 2026-06-30): close
+                                         # EVERY end-known turn each pass. The `did >= cap` guard no-ops on None.
 CONCURRENCY = 6                          # concurrent claude -p calls
 # The CLOSER: the turn-end completion backstop (judge.md HYBRID; named the "closer" 2026-06-16 — it
 # closes out goals whose outcome is delivered). SHIPPED as the default 2026-06-15 after the fleet A/B
@@ -1681,10 +1684,9 @@ def _plan_session(fsid, path, now):
             if seg_id in store["placements"] and not (isinstance(tgt, str) and tgt in store["nodes"]):
                 # The courier RESOLVED this peer segment as COORDINATION ("fyi") — a FINAL verdict, never
                 # work to file under a goal. RETIRE the #d phase here (mark it processed, the user 2026-06-22
-                # via link_audit) so it stops eating a PLAN_FAIRNESS slot EVERY pass: a session with ≥8 such
-                # coordination messages would otherwise have its whole oldest-first window clogged by no-op
-                # skips, starving every newer goal/nudge behind them forever. Retiring in the COLLECTION loop
-                # (before the cap) drains them all in ONE pass without consuming a slot. A genuinely UNSET seg
+                # via link_audit) so it stops being re-collected and re-skipped EVERY pass. (Historically this
+                # also kept it from eating a per-pass PLAN_FAIRNESS slot; that cap is gone now, but retiring a
+                # FINAL verdict is still correct — no point re-examining it forever.) A genuinely UNSET seg
                 # (courier not run yet) keeps seg_id ABSENT → stays re-examinable, handled in the branch.
                 store["placements"][key] = None
                 retired = True
@@ -2478,8 +2480,8 @@ def _close_session(fsid, path, now, cap=CLOSE_FAIRNESS):
         tid, fp = turn["id"], len(turn["atoms"])
         if tid in swept and sig.get(tid, fp) == fp:    # closed AND unchanged (legacy: no sig → assume unchanged) → skip
             continue
-        if did >= cap:
-            break                                      # spread a long backfill (and any re-judges) across passes
+        if cap is not None and did >= cap:             # cap is None by default now (no per-pass close cap);
+            break                                      # an explicit caller (a test) can still bound a backfill
         res = _close_turn(store, turn)
         if res is None:
             continue                                   # LLM/parse failed → leave unswept, retry next pass
