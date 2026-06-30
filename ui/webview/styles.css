@@ -312,6 +312,8 @@ body { display: flex; flex-direction: column; }
    from the highlight machinery; keep a small gap so goals still read apart. Scoped to #fleet-list so the
    chat tab-hover tooltip (also .ledger-*) keeps its separators. */
 #fleet-list .ledger-tnode.ledger-top { border-top: 0; padding-top: 0; margin-top: 8px; }
+/* Fleet search-match highlight (the user 2026-06-29): the matched substring in a session name or goal text. */
+.fl-hit { background: var(--accent, #9cd2ff); color: var(--accent-fg, #0c1a2e); border-radius: 2px; padding: 0 1px; }
 /* every mark is the SAME 13px disc (the user 2026-06-16): not-done = hollow ring, done = blue ✓ disc,
    blocked = red ⏸ ring. ✓/⏸ are the mark's own text; the ring is pure CSS. The CURRENT/active node gets
    NO special mark — its checkbox is IDENTICAL to every other item; only the ROW is highlighted (the user

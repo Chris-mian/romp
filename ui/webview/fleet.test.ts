@@ -71,15 +71,29 @@ test("completed top goals hide by default; 'Show completed' lives in the docked 
   assert.match(SRC, /import \{ fleetVisibleRoots \} from "\.\/fleet-roots"/);
   // archived COMPLETED tops now carry their subtree; only depth-0 archived nodes are roots, the rest go in byId
   assert.match(SRC, /const archRoots = archivedTops\.filter\(\(n\) => n\.depth === 0\)/);
-  assert.match(SRC, /const visibleRoots = fleetVisibleRoots\(roots, archRoots, sd\)/);
+  assert.match(SRC, /visibleRoots = fleetVisibleRoots\(roots, archRoots, sd\)/);   // non-search path gates by Show-completed
   assert.match(SRC, /const byId = new Map\(\[\.\.\.tree, \.\.\.archivedTops\]\.map/);   // archived descendants resolvable for expansion
   assert.match(SRC, /createTextNode\("Show completed"\)/);
 });
 
-test("a NAME search bar filters the fleet to matching sessions (the user 2026-06-29)", () => {
+test("the search bar matches session NAME or goal CONTENT, expands hits, and says 'No results' (the user 2026-06-29)", () => {
   assert.match(SRC, /let searchQuery = "";/);
   assert.match(SRC, /const sq = searchQuery\.trim\(\)\.toLowerCase\(\);/);
-  assert.match(SRC, /if \(sq && !s\.name\.toLowerCase\(\)\.includes\(sq\)\) continue;/);
+  // a session is kept if its NAME or any goal TEXT matches (subtreeHit over its visible nodes)
+  assert.match(SRC, /const subtreeHit = \(id: string\): boolean =>/);
+  assert.match(SRC, /node\.text\.toLowerCase\(\)\.includes\(sq\)/);
+  // search looks through DONE/ARCHIVED content too (not gated by Show-completed): a name match shows the whole
+  // session, a content match shows just the hitting tops (live or archived)
+  assert.match(SRC, /visibleRoots = s\.name\.toLowerCase\(\)\.includes\(sq\) \? allRoots : allRoots\.filter\(\(r\) => subtreeHit\(r\.id\)\)/);
+  // a collapsed branch that CONTAINS a match is force-expanded so the hit is revealed
+  assert.match(SRC, /const hitChild = expandable && curSearch && !!ctx\.subtreeHit\s*\n?\s*&& \(n\.children \|\| \[\]\)\.some\(\(cid\) => ctx\.subtreeHit!\(cid\)\);/);
+  assert.match(SRC, /const isFolded = expandable && !hitChild &&/);
+  // the matched substring is highlighted (text-node based, never innerHTML)
+  assert.match(SRC, /function highlightInto\(elm: HTMLElement, text: string, q: string\)/);
+  assert.match(SRC, /highlightInto\(txt, n\.text, curSearch\)/);
+  // empty search result → "No results", NOT the wordmark
+  assert.match(SRC, /if \(!any && sq\) \{/);
+  assert.match(SRC, /nr\.textContent = "No results for/);
   // wired to the #fleet-search input (in the kernel page body), re-rendering on each keystroke
   assert.match(SRC, /document\.getElementById\("fleet-search"\)/);
   assert.match(SRC, /search\.addEventListener\("input", \(\) => \{ searchQuery = search\.value; render\(\); \}\)/);

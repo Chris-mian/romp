@@ -263,7 +263,27 @@ function stampSubtreeRecency(tree: LedgerNode[], cur: { t?: number } | null): vo
 // Per-session context a node needs to render (its node lookup + live-current time). One per session; in the
 // FLAT view the same renderFleetNode is called with each root's own ctx so nodes from different sessions land
 // in one shared container.
-interface SessCtx { s: FleetSession; byId: Map<string, LedgerNode>; curT?: number; }
+interface SessCtx { s: FleetSession; byId: Map<string, LedgerNode>; curT?: number;
+  // SEARCH (the user 2026-06-29): subtreeHit(id) = this node OR any descendant matches the query → used to
+  // FORCE-EXPAND collapsed branches that contain a match so the hit is revealed. null when not searching.
+  subtreeHit?: (id: string) => boolean; }
+let curSearch = "";   // the active query (lowercased), snapshot per render() for highlighting + fold override
+
+// Paint `text` into `elm`, wrapping every case-insensitive occurrence of `q` in a .fl-hit highlight span (no
+// match, or no query → plain text). Uses text nodes (no innerHTML) so goal text can never inject markup.
+function highlightInto(elm: HTMLElement, text: string, q: string): void {
+  elm.replaceChildren();
+  if (!q) { elm.textContent = text; return; }
+  const lc = text.toLowerCase();
+  let i = 0, idx: number;
+  while ((idx = lc.indexOf(q, i)) !== -1) {
+    if (idx > i) elm.appendChild(document.createTextNode(text.slice(i, idx)));
+    const m = el("span", "fl-hit"); m.textContent = text.slice(idx, idx + q.length);
+    elm.appendChild(m);
+    i = idx + q.length;
+  }
+  if (i < text.length) elm.appendChild(document.createTextNode(text.slice(i)));
+}
 
 // Render node `n` (and its open children) into `container`. Hoisted out of render() so the FLAT (ungrouped)
 // view can merge nodes from many sessions into one list. `flat` adds the session-name tag on the RIGHT of a
@@ -272,8 +292,12 @@ function renderFleetNode(ctx: SessCtx, n: LedgerNode, depth: number, container: 
   const { s, byId, curT } = ctx;
   const expandable = !!(n.children && n.children.length);
   const defaultFold = !!n.done && (depth === 0 || !n.onpath);   // a finished top folds by default
+  // SEARCH force-expand (the user 2026-06-29): if a collapsed branch CONTAINS a match, open it so the hit is
+  // revealed — overriding the fold/mode state while a query is active.
+  const hitChild = expandable && curSearch && !!ctx.subtreeHit
+    && (n.children || []).some((cid) => ctx.subtreeHit!(cid));
   // a sticky Collapse/Expand mode overrides the per-node state (the user 2026-06-29); null → manual default
-  const isFolded = expandable && (
+  const isFolded = expandable && !hitChild && (
     curFoldMode === "collapse" ? true
     : curFoldMode === "expand" ? false
     : (folded.has(fkey(s.sid, n.id)) || (defaultFold && !expanded.has(fkey(s.sid, n.id)))));
@@ -316,7 +340,7 @@ function renderFleetNode(ctx: SessCtx, n: LedgerNode, depth: number, container: 
   mark.title = markReason();
   const txt = el("span", "ledger-ttext lz-nav");
   txt.dataset.sid = s.sid; txt.dataset.nid = n.id; txt.dataset.act = "goprompt";   // text → the asking message
-  txt.textContent = n.text;
+  highlightInto(txt, n.text, curSearch);   // search: highlight the matched substring (plain text otherwise)
   txt.title = n.text;            // the full goal text on hover (it can wrap/clip in the narrow Fleet pane)
   // (The ⊕ distiller-summary expander was removed 2026-06-27 — the user: show just the goals, not the
   //  distiller takeaway / decision brief.)
@@ -340,7 +364,7 @@ function renderFleetNode(ctx: SessCtx, n: LedgerNode, depth: number, container: 
   if (flat && depth === 0) {
     const tag = el("span", "fl-sesslabel");
     if (s.status?.state === "working") tag.appendChild(el("span", "fl-workdot"));
-    const tnm = el("span", "fl-sesslabel-name"); tnm.textContent = s.name;
+    const tnm = el("span", "fl-sesslabel-name"); highlightInto(tnm, s.name, curSearch);
     if (s.color?.bg) tnm.style.color = s.color.bg;
     tag.appendChild(tnm);
     tag.title = "this goal belongs to “" + s.name + "” — click to open it";
@@ -417,9 +441,9 @@ function render() {
   // First pass (shared by both views): keep the sessions whose freshest VISIBLE activity is inside the
   // slider window, each paired with its render context + visible roots.
   const survivors: { ctx: SessCtx; visibleRoots: LedgerNode[] }[] = [];
-  const sq = searchQuery.trim().toLowerCase();           // name filter (the user 2026-06-29)
+  const sq = searchQuery.trim().toLowerCase();           // search (the user 2026-06-29): session NAME or goal CONTENT
+  curSearch = sq;                                        // snapshot for renderFleetNode (highlight + force-expand)
   for (const s of sessions) {
-    if (sq && !s.name.toLowerCase().includes(sq)) continue;   // the search bar filters by SESSION NAME
     const tree = s.ledger?.tree || [];
     // "Show completed" surfaces the FULLY-COMPLETED tops the compaction sweep archived out of the live tree
     // (the user 2026-06-27) — otherwise a finished+archived session has an empty live tree and vanishes, and
@@ -433,14 +457,43 @@ function render() {
     const byId = new Map([...tree, ...archivedTops].map((n) => [n.id, n] as const));
     const roots = tree.filter((n) => n.depth === 0);
     const archRoots = archivedTops.filter((n) => n.depth === 0);
-    const visibleRoots = fleetVisibleRoots(roots, archRoots, sd);
-    if (!visibleRoots.length) continue;                  // nothing to show for this session → skip
-    // recency cutoff (the user 2026-06-27): skip a session whose freshest VISIBLE activity (rolled-up node
-    // recency or its live current-node time) is older than the slider's window.
-    const freshest = Math.max(s.ledger?.current?.t || 0, ...visibleRoots.map(nodeRecency));
-    if (freshest && (now - freshest) > cutoff) continue;
-    survivors.push({ ctx: { s, byId, curT: s.ledger?.current?.t }, visibleRoots });
+    // SEARCH (the user 2026-06-29): subtreeHit(id) = node OR any descendant text contains the query — memoized
+    // over this session's nodes (live + archived). Drives the keep decision + the force-expand of collapsed
+    // hits. Searching looks through DONE / ARCHIVED content too, even when "Show completed" is off (a match in
+    // finished work should still be findable) — that's why it walks the whole tree, not just the open roots.
+    const hitMemo = new Map<string, boolean>();
+    const subtreeHit = (id: string): boolean => {
+      const cached = hitMemo.get(id);
+      if (cached !== undefined) return cached;
+      hitMemo.set(id, false);                            // cycle guard (trees are acyclic, but be safe)
+      const node = byId.get(id);
+      let h = !!node && node.text.toLowerCase().includes(sq);
+      if (!h && node) for (const cid of node.children || []) if (subtreeHit(cid)) { h = true; break; }
+      hitMemo.set(id, h);
+      return h;
+    };
+    let visibleRoots: LedgerNode[];
+    if (sq) {
+      // a match by session NAME shows the whole session (every top, done + archived); a CONTENT match shows
+      // just the tops whose subtree hits — so completed/archived work IS revealed by search regardless of the
+      // "Show completed" toggle (renderFleetNode then force-expands to the hit). The recency cutoff is bypassed:
+      // an explicit search should find a goal no matter how old.
+      const allRoots = roots.concat(archRoots);
+      visibleRoots = s.name.toLowerCase().includes(sq) ? allRoots : allRoots.filter((r) => subtreeHit(r.id));
+      if (!visibleRoots.length) continue;                // no name/content match → drop the session
+    } else {
+      visibleRoots = fleetVisibleRoots(roots, archRoots, sd);
+      if (!visibleRoots.length) continue;                // nothing to show for this session → skip
+      // recency cutoff (the user 2026-06-27): skip a session whose freshest VISIBLE activity is older than the window.
+      const freshest = Math.max(s.ledger?.current?.t || 0, ...visibleRoots.map(nodeRecency));
+      if (freshest && (now - freshest) > cutoff) continue;
+    }
+    survivors.push({ ctx: { s, byId, curT: s.ledger?.current?.t, subtreeHit: sq ? subtreeHit : undefined }, visibleRoots });
   }
+  // SEARCH also filters the provisional ("about to appear") rows: keep one only if its session name or its
+  // live gist matches the query (the user 2026-06-29).
+  if (sq) for (const [sid, p] of Array.from(provBySid))
+    if (!p.name.toLowerCase().includes(sq) && !(p.text || "").toLowerCase().includes(sq)) provBySid.delete(sid);
 
   if (grouped) {
     // BY-SESSION view: each session, then its goal tree beneath it (the original layout).
@@ -462,7 +515,7 @@ function render() {
       head.appendChild(caret);
       if (s.status?.state === "working") head.appendChild(el("span", "fl-workdot"));
       const nm = el("span", "fl-name");
-      nm.textContent = s.name;
+      highlightInto(nm, s.name, curSearch);   // highlight a name match
       if (s.color?.bg) nm.style.color = s.color.bg;
       head.appendChild(nm);
       head.title = "Open this session";
@@ -509,7 +562,14 @@ function render() {
     }
   }
 
-  if (!any) {
+  if (!any && sq) {
+    // SEARCH with no match (the user 2026-06-29): say "No results" — NOT the romp wordmark, which reads as
+    // "all clear" and hides that you're filtering.
+    const nr = el("div", "fl-empty");
+    nr.textContent = "No results for “" + searchQuery.trim() + "”";
+    list.appendChild(nr);
+    emptyShown = false;
+  } else if (!any) {
     // GENUINELY empty (data loaded, no open work): the romp tri-color WORDMARK, centered + faded in — the
     // same calm inbox-zero treatment as the feed (the user 2026-06-29). The fade plays ONCE on the
     // not-empty→empty transition (emptyShown guard), not on every push, since render() rebuilds each time.
