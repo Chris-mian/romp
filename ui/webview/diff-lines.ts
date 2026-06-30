@@ -1,8 +1,8 @@
-// Turn the kernel's Edit/MultiEdit diff string (lines prefixed "- " for removed, "+ " for added) into rows
-// carrying a relative line-number gutter (the user 2026-06-29). The Edit tool result in this environment is
-// just "file updated" — it carries no absolute file line numbers — so the gutter numbers positions WITHIN the
-// change: removed lines count up the OLD column, added lines count up the NEW column, both from 1. That gives
-// the diff a familiar two-column gutter for reading/referencing a multi-line edit.
+// FALLBACK diff gutter (the user 2026-06-29). The preferred source is the kernel's diffRows — REAL file line
+// numbers + context from Claude Code's structuredPatch (kernel _patch_rows). This function is the fallback for
+// records that carry no structured patch: it turns the kernel's Edit/MultiEdit diff string (lines prefixed
+// "- " removed / "+ " added) into rows with a RELATIVE gutter — removed lines count up the OLD column, added
+// lines up the NEW column, both from 1 — so the diff still reads with a familiar two-column gutter.
 
 export interface DiffRow {
   sign: "+" | "-" | " " | "@";   // "@" = a per-hunk header row (only from the kernel's real-line-number rows)
