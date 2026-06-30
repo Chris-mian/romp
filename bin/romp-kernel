@@ -2081,6 +2081,256 @@ def _tmux_sessions():
     return Sessions.live()
 
 
+# ── tunnel concierge: attach a remote kernel over SSH for the FEDERATED dashboard ────────────────
+# The federated dashboard merges sessions from many kernels IN THE BROWSER (one WebSocket per kernel).
+# For the browser to reach a remote kernel — and for that machine's sessions to reach THIS laptop's
+# postal bus — the kernel manages the ssh tunnels (it's the long-lived local process, the natural owner
+# of the child ssh procs). ONE ssh per host carries both directions:
+#     -L <local_port>:127.0.0.1:<remote_kernel_port>   browser → remote kernel   (dashboard view)
+#     -R <bus_port>:127.0.0.1:<bus_port>               remote sessions → this bus (postal messaging)
+# The kernel is NOT a data relay — the browser talks to the remote kernel DIRECTLY through the -L
+# tunnel (authorizing with the remote's token, which a valid-token request carries past the Origin
+# gate; see _authorize). We just open the door + report state. The registry persists to
+# STATE/remotes.json so attached hosts survive a kernel restart (the supervisor re-spawns their procs).
+
+REMOTES_FILE = jd.STATE / "remotes.json"
+BUS_PORT = int(os.environ.get("ROMP_POSTAL_PORT", "47100"))      # this laptop's postal bus (reverse-forwarded)
+SSH_BIN = os.environ.get("ROMP_SSH_BIN", "ssh")                  # overridable for tests
+SSH_CONFIG = Path(os.environ.get("ROMP_SSH_CONFIG") or (Path.home() / ".ssh" / "config"))
+_REMOTE_KERNEL_PORT = int(os.environ.get("ROMP_REMOTE_KERNEL_PORT", str(PORT)))   # remote kernels default to our port
+# key-only (no prompts), fail fast if a forward can't bind, keepalive so a dropped link is detected → re-spawn.
+_SSH_OPTS = ["-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=yes",
+             "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-o", "ConnectTimeout=10"]
+
+_remotes = {}                  # host -> {host, kernel_port, local_port, token, proc, status, detail, sids}
+_remotes_lock = threading.Lock()
+_tunnel_wake = threading.Event()
+
+
+def _ssh_config_hosts():
+    """Host aliases declared in ~/.ssh/config (the 'find the things' for the attach UI). Concrete 'Host'
+    patterns only — wildcards/negations are skipped (not connectable targets). Best-effort: a missing or
+    unreadable config yields []."""
+    hosts = []
+    try:
+        for raw in SSH_CONFIG.read_text(errors="replace").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            key, _, val = line.partition(" ")
+            if key.lower() not in ("host",):
+                k2, sep, v2 = line.partition("=")     # tolerate "Host=foo"
+                if sep and k2.strip().lower() == "host":
+                    val = v2
+                else:
+                    continue
+            for tok in val.replace(",", " ").split():
+                if tok and not any(c in tok for c in "*?!") and tok not in hosts:
+                    hosts.append(tok)
+    except OSError:
+        pass
+    return hosts
+
+
+def _free_port():
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+    finally:
+        s.close()
+
+
+def _port_open(port):
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(0.3)
+    try:
+        return s.connect_ex(("127.0.0.1", int(port))) == 0
+    except OSError:
+        return False
+    finally:
+        s.close()
+
+
+def _fetch_remote_token(host):
+    """Read the remote kernel's serve-token over ssh so the browser can authorize against it (the token
+    bypasses the Origin gate — see _authorize). Best-effort: '' if ssh fails or the file is absent (the
+    tunnel still opens; the dashboard just can't authorize until romp is set up on the remote)."""
+    cmd = 'cat "${XDG_STATE_HOME:-$HOME/.local/state}/romp/serve-token"'
+    try:
+        r = subprocess.run([SSH_BIN] + _SSH_OPTS + [host, cmd],
+                           capture_output=True, text=True, timeout=20)
+        return (r.stdout or "").strip() if r.returncode == 0 else ""
+    except Exception:
+        return ""
+
+
+def _tunnel_argv(r):
+    return ([SSH_BIN, "-N", "-T"] + _SSH_OPTS +
+            ["-L", "%d:127.0.0.1:%d" % (r["local_port"], r["kernel_port"]),
+             "-R", "%d:127.0.0.1:%d" % (BUS_PORT, BUS_PORT),
+             r["host"]])
+
+
+def _spawn_tunnel(r):
+    """(Re)spawn the ssh tunnel proc for one remote. Caller holds _remotes_lock."""
+    try:
+        r["proc"] = subprocess.Popen(_tunnel_argv(r), stdin=subprocess.DEVNULL,
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        r["status"], r["detail"] = "starting", ""
+    except Exception as e:
+        r["proc"], r["status"], r["detail"] = None, "error", str(e)
+
+
+def _tunnel_proc_alive(r):
+    p = r.get("proc")
+    return bool(p) and p.poll() is None
+
+
+def _remote_public(r):
+    """The API view of a remote row — everything the browser needs to open its own WS, minus the Popen."""
+    return {"host": r["host"], "kernelPort": r["kernel_port"], "localPort": r["local_port"],
+            "token": r.get("token") or "", "status": r.get("status") or "down",
+            "detail": r.get("detail") or "", "sids": list(r.get("sids") or [])}
+
+
+def _remotes_save():
+    """Persist the attached set (sans the live Popen) so a kernel restart re-attaches them."""
+    with _remotes_lock:
+        rows = [{k: v for k, v in r.items() if k != "proc"} for r in _remotes.values()]
+    try:
+        _atomic_write(REMOTES_FILE, json.dumps(rows))
+    except Exception:
+        sys.stderr.write("remotes save: %s\n" % traceback.format_exc())
+
+
+def _remotes_load():
+    try:
+        rows = json.loads(REMOTES_FILE.read_text())
+    except Exception:
+        return
+    if not isinstance(rows, list):
+        return
+    with _remotes_lock:
+        for row in rows:
+            if not isinstance(row, dict) or not row.get("host"):
+                continue
+            r = dict(row)
+            r["proc"], r["status"] = None, "down"
+            r.setdefault("sids", [])
+            r.setdefault("kernel_port", _REMOTE_KERNEL_PORT)
+            r.setdefault("local_port", _free_port())
+            _remotes[r["host"]] = r
+
+
+def attach_remote(host, kernel_port=None):
+    """Attach a remote kernel: pick a local port, fetch its token, spawn the ssh tunnel, record it. Returns
+    the public row. Idempotent per host — re-attaching refreshes the token + restarts a dead tunnel."""
+    host = (host or "").strip()
+    if not host:
+        raise ValueError("host required")
+    with _remotes_lock:
+        r = _remotes.get(host)
+        if r is None:
+            r = {"host": host, "kernel_port": int(kernel_port or _REMOTE_KERNEL_PORT),
+                 "local_port": _free_port(), "token": "", "proc": None,
+                 "status": "starting", "detail": "", "sids": []}
+            _remotes[host] = r
+        elif kernel_port:
+            r["kernel_port"] = int(kernel_port)
+    token = _fetch_remote_token(host)              # ssh round-trip, outside the lock
+    with _remotes_lock:
+        r = _remotes.get(host)
+        if r is None:                              # detached mid-fetch
+            return None
+        if token:
+            r["token"] = token
+        if not _tunnel_proc_alive(r):
+            _spawn_tunnel(r)
+        pub = _remote_public(r)
+    _remotes_save()
+    _tunnel_wake.set()
+    return pub
+
+
+def detach_remote(host):
+    """Detach a remote: kill its tunnel proc and forget it."""
+    host = (host or "").strip()
+    with _remotes_lock:
+        r = _remotes.pop(host, None)
+    if r and r.get("proc"):
+        try:
+            r["proc"].terminate()
+        except Exception:
+            pass
+    _remotes_save()
+    return bool(r)
+
+
+def list_remotes():
+    with _remotes_lock:
+        return [_remote_public(r) for r in _remotes.values()]
+
+
+def _poll_remote_sids(r):
+    """GET the remote kernel's /sessions THROUGH the -L tunnel; return its session ids (for the wake-router's
+    host↔sid map). None on any failure — leave the last-known map in place."""
+    import urllib.parse
+    try:
+        c = http.client.HTTPConnection("127.0.0.1", int(r["local_port"]), timeout=4)
+        path = "/sessions" + (("?token=" + urllib.parse.quote(r["token"])) if r.get("token") else "")
+        c.request("GET", path)
+        resp = c.getresponse()
+        data = resp.read()
+        c.close()
+        if resp.status != 200:
+            return None
+        rows = json.loads(data.decode("utf-8"))
+        return [x.get("id") for x in rows if isinstance(x, dict) and x.get("id")]
+    except Exception:
+        return None
+
+
+def _host_for_sid(sid):
+    """The attached remote row that owns this sid (from the supervisor's polled map), or None if local."""
+    sid = str(sid)
+    with _remotes_lock:
+        for r in _remotes.values():
+            if sid in (r.get("sids") or []):
+                return r
+    return None
+
+
+def _tunnel_supervisor():
+    """Keep attached tunnels alive (re-spawn a dead ssh), refresh status, and learn which session ids live on
+    each host by polling its kernel's /sessions THROUGH the -L tunnel — the host↔sid map the wake-router uses
+    to forward a /deliver to the owning remote kernel."""
+    while True:
+        _tunnel_wake.clear()
+        try:
+            with _remotes_lock:
+                rows = list(_remotes.values())
+            for r in rows:
+                with _remotes_lock:
+                    if r["host"] not in _remotes:
+                        continue
+                    if not _tunnel_proc_alive(r):
+                        _spawn_tunnel(r)
+                up = _port_open(r["local_port"])              # outside the lock (socket round-trip)
+                sids = _poll_remote_sids(r) if up else None
+                with _remotes_lock:
+                    if r["host"] not in _remotes:
+                        continue
+                    r["status"] = ("up" if up else "starting") if _tunnel_proc_alive(r) else "down"
+                    if sids is not None:
+                        r["sids"] = sids
+        except Exception:
+            sys.stderr.write("tunnel-supervisor: %s\n" % traceback.format_exc())
+        _tunnel_wake.wait(15)
+
+
 def _session_rows():
     """Every LIVE romp session (tmux + SDK) with the fields external tools need: id (sid), name, claude-state,
     working dir, identity bg/fg, the set_working ownership note, and which backend drives it. Served at GET
@@ -7854,6 +8104,12 @@ class Handler(BaseHTTPRequestHandler):
                 cmds, warming = _commands_for_cwd(_cwd_of(sid) if sid else "")
                 return self._send(200, json.dumps({"commands": cmds, "warming": warming}),
                                   "application/json", cache="no-cache")
+            if p == "/ssh-hosts":                             # ~/.ssh/config Host aliases for the attach-a-remote UI
+                return self._send(200, json.dumps({"hosts": _ssh_config_hosts()}),
+                                  "application/json", cache="no-cache")
+            if p == "/tunnels":                               # attached remote kernels + state (drives the federated dashboard)
+                return self._send(200, json.dumps({"tunnels": list_remotes()}),
+                                  "application/json", cache="no-cache")
             # HTML pages are served no-cache so a reload always gets the freshest markup — which carries
             # the latest ?v= bundle url, so even a cached old bundle is bypassed (stale-client fix).
             if p in ("/", ""):
@@ -8008,6 +8264,32 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     _TMUX.reconcile_peers()
                 return self._send(200, json.dumps({"ok": True}), "application/json")
+            if u.path == "/tunnels":
+                # Attach a remote kernel: open its ssh tunnels + fetch its token so the browser can merge
+                # its fleet. Body: {"host": <ssh alias>, "kernelPort"?: <remote port>}. The blocking ssh
+                # round-trip (token fetch) is fine on the threaded server. Returns the public tunnel row.
+                try:
+                    body = json.loads(raw_body or b"{}")
+                except Exception:
+                    body = None
+                host = str((body or {}).get("host") or "").strip() if isinstance(body, dict) else ""
+                if not host:
+                    return self._send(400, json.dumps({"ok": False, "error": "host required"}), "application/json")
+                try:
+                    pub = attach_remote(host, (body or {}).get("kernelPort"))
+                except Exception as e:
+                    return self._send(500, json.dumps({"ok": False, "error": str(e)}), "application/json")
+                return self._send(200, json.dumps({"ok": True, "tunnel": pub}), "application/json")
+            if u.path == "/tunnels/detach":
+                # Detach a remote: kill its tunnel + forget it. Body: {"host": <ssh alias>}.
+                try:
+                    body = json.loads(raw_body or b"{}")
+                except Exception:
+                    body = None
+                host = str((body or {}).get("host") or "").strip() if isinstance(body, dict) else ""
+                if not host:
+                    return self._send(400, json.dumps({"ok": False, "error": "host required"}), "application/json")
+                return self._send(200, json.dumps({"ok": True, "detached": detach_remote(host)}), "application/json")
             return self._send(404, "not found", "text/plain")
         except (BrokenPipeError, ConnectionResetError):
             pass
@@ -8331,6 +8613,8 @@ def main():
     threading.Thread(target=_pusher, daemon=True).start()
     threading.Thread(target=_ask_poll, daemon=True).start()   # scrape live AskUserQuestion pickers → chat
     threading.Thread(target=_parent_watch, daemon=True).start()
+    _remotes_load()                                            # re-attach remote kernels from a prior run
+    threading.Thread(target=_tunnel_supervisor, daemon=True).start()   # keep ssh tunnels alive + poll host↔sid map
     srv = ThreadingHTTPServer((BIND, PORT), Handler)
     url = "http://127.0.0.1:%d" % PORT
     sys.stderr.write("romp-kernel: serving the ported UI at %s  (Ctrl-C to stop)\n" % url)

@@ -105,8 +105,7 @@ class WsOriginGuard(unittest.TestCase):
         # here, but it carries this kernel's token over the -L tunnel. The token IS the auth, so
         # it must upgrade despite the cross-site Origin.
         self.assertEqual(
-            _ws_handshake(self.port, origin="http://localhost:9999",
-                          token="test-token-DO-NOT-USE"), 101,
+            _ws_handshake(self.port, origin="http://localhost:9999", token=km.TOKEN), 101,
             "a valid token must authorize a tunnel'd /ws from a foreign-origin dashboard")
 
     def test_invalid_token_foreign_origin_rejected(self):
