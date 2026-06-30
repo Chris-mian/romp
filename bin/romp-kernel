@@ -7080,8 +7080,8 @@ _GEAR_CSS = ("#rgear{position:fixed;top:6px;right:8px;z-index:60;background:#2a2
              ".rs-modal-open{background:transparent}"
              "body.rs-modal-open #feed-head,body.rs-modal-open #feed-list,body.rs-modal-open #feed-foot{visibility:hidden}"
              ".rs-card{width:min(560px,94%);max-height:88vh;overflow:auto;background:#252526;border:1px solid #3a3a3a;"
-             "border-radius:10px;padding:16px 20px;font:13px/1.6 -apple-system,sans-serif;color:#ccc;box-shadow:0 12px 36px #000000aa}"
-             "#rsettings .rs-h{font-weight:600;margin-bottom:6px;color:#9aa0a6}#rsver{white-space:pre-line}"
+             "border-radius:10px;padding:16px 20px;font:13px/1.6 system-ui,-apple-system,'Segoe UI',sans-serif;color:#ccc;box-shadow:0 12px 36px #000000aa}"
+             "#rsettings .rs-h{font-size:14px;font-weight:600;margin-bottom:6px;color:#e8eaed}#rsver{white-space:pre-line}"
              # subsection headers (Chat / Feed / Sessions / Debug) so the settings group by surface (the user 2026-06-24)
              "#rsettings .rs-sec{font-size:10.5px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;"
              "color:#6f747c;margin:15px 0 5px;border-top:1px solid #333;padding-top:11px}"
@@ -7106,6 +7106,12 @@ _GEAR_CSS = ("#rgear{position:fixed;top:6px;right:8px;z-index:60;background:#2a2
              ".rs-cmap-opt:first-child{margin-top:0}.rs-cmap-opt:last-child{margin-bottom:0}"
              ".rs-cmap-opt.sel{outline:2px solid #9cd2ff;outline-offset:1px;border-color:transparent}"
              "#rsettings .rs-sep{border-top:1px solid #3a3a3a;margin-top:6px;padding-top:8px}"
+             # keyboard-shortcuts rows (folded into settings): key combo + description, with <kbd> chips.
+             "#rsettings .rs-key{display:flex;align-items:baseline;gap:12px;padding:3px 0}"
+             "#rsettings .rs-key-combo{flex:0 0 auto;min-width:108px}"
+             "#rsettings .rs-key-desc{flex:1 1 auto;color:#cdd3da}"
+             "#rsettings kbd{display:inline-block;background:#1c1c1f;border:1px solid #3d3d42;border-bottom-width:2px;"
+             "border-radius:4px;padding:1px 6px;font:600 11px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;color:#e6e6e6}"
              # token-usage analytics: a button in the gear panel opens a centered modal with the chart.
              ".ra-openbtn{margin-top:8px;width:100%;background:#2d2d2f;border:1px solid #3a3a3a;border-radius:6px;"
              "color:#cdd3da;font:600 12px/1.4 -apple-system,sans-serif;padding:7px;cursor:pointer}"
@@ -7138,7 +7144,8 @@ _GEAR_CSS = ("#rgear{position:fixed;top:6px;right:8px;z-index:60;background:#2a2
 # when the feed pane is closed; only the settings MODAL (#rsettings) stays here, opened by the rail gear via a
 # {romp:'openSettings'} postMessage. (#rgear is kept as a hidden anchor so the gear JS's close-on-outside-click
 # can still reference it without a null guard scattered everywhere.)
-_GEAR_HTML = ("<button id=rgear hidden aria-hidden=true></button>"
+def _gear_html():
+  return ("<button id=rgear hidden aria-hidden=true></button>"
               "<div id=rsettings hidden><div class=rs-card>"
               "<div class=rs-h>Settings</div>"
               "<div class='rs-sec rs-sec-first'>Chat</div>"
@@ -7191,6 +7198,8 @@ _GEAR_HTML = ("<button id=rgear hidden aria-hidden=true></button>"
               "<span><b>Debug mode</b>"
               "<span class=rs-sub>Reveal the kernel-restart (↻) button and the judging timeline — the summarizer judges' actions, on a band under the lanes.</span>"
               "</span></label>"
+              "<div class=rs-sec>Keyboard shortcuts</div>"
+              + _shortcut_rows() +
               "<div class=rs-sep style='padding-top:8px'>"
               "<button id=ra-open class=ra-openbtn>Token usage analytics</button></div>"
               "<div class='rs-h rs-sep'>romp · version</div>"
@@ -7352,7 +7361,7 @@ def _feed_page():
             "<script src=/dist/federation.js?v=%d></script>"   # multi-kernel manager (also hosts the attach UI in the gear)
             "<script src=/dist/feed.js?v=%d></script><script>%s</script></body></html>"
             % (v, THEME_CSS, _GEAR_CSS,
-               '<div id="feed-head"></div><div id="feed-list"></div><div id="feed-foot"></div>', _GEAR_HTML,
+               '<div id="feed-head"></div><div id="feed-list"></div><div id="feed-foot"></div>', _gear_html(),
                _pane_spin("feed-list"), _shim("feed"), v, v, _GEAR_JS))
 
 
@@ -7735,9 +7744,8 @@ var n=0;(function again(){setTimeout(function(){n++;fetch('/healthz',{cache:'no-
 
 
 # ── Keyboard-shortcuts help (the user 2026-06-29) ──────────────────────────────────────────────────────────
-# The rail's "?" (between ↻ refresh and ⛭ settings) opens a self-contained modal IN THE SHELL document — not the
-# feed iframe like settings — so it's always available regardless of which panes are open. Static content: the
-# shortcuts don't change at runtime. A kernel test pins the button + the modal + the rows.
+# Rendered as a "Keyboard shortcuts" section INSIDE the settings modal (the user 2026-06-30) — no rail button.
+# Static content: the shortcuts don't change at runtime.
 # A short, verified list (the user 2026-06-29): only the non-obvious, romp-specific keys — no per-menu
 # Esc-closes filler, no slash/picker sections. Each is checked against the real handler in render.ts (the
 # composer keydown + onTabKey). One flat list, no section headers.
@@ -7762,54 +7770,13 @@ def _kbd(keys):
     return "".join(out)
 
 
-def _help_modal():
+def _shortcut_rows():
+    """The keyboard-shortcut rows for the settings modal's 'Keyboard shortcuts' section (the user 2026-06-30:
+    folded the old standalone ? rail modal into settings)."""
     import html as _h
-    rows = "".join(
-        "<div class=rhelp-row><span class=rhelp-keys>%s</span><span class=rhelp-desc>%s</span></div>"
+    return "".join(
+        "<div class=rs-key><span class=rs-key-combo>%s</span><span class=rs-key-desc>%s</span></div>"
         % (_kbd(keys), _h.escape(desc)) for keys, desc in _HELP_SHORTCUTS)
-    return ("<div id=rhelp-overlay hidden>"
-            "<div id=rhelp role=dialog aria-modal=true aria-label='Keyboard shortcuts'>"
-            "<div class=rhelp-head><span>Keyboard shortcuts</span>"
-            "<button id=rhelp-close type=button aria-label=Close>×</button></div>"
-            "<div class=rhelp-body>" + rows + "</div></div></div>")
-
-
-_HELP_CSS = (
-    "#rhelp-overlay{position:fixed;inset:0;z-index:200;display:flex;align-items:center;justify-content:center;"
-    "background:rgba(0,0,0,0.55)}"
-    "#rhelp-overlay[hidden]{display:none}"
-    "#rhelp{background:#26262a;color:#e6e6e6;border:1px solid #3a3a3d;border-radius:10px;min-width:320px;"
-    "max-width:440px;max-height:80vh;overflow:auto;box-shadow:0 12px 40px rgba(0,0,0,0.5);"
-    "font:13px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}"
-    ".rhelp-head{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:12px 16px;"
-    "border-bottom:1px solid #34343a;font-weight:650;font-size:14px;position:sticky;top:0;background:#26262a}"
-    "#rhelp-close{background:none;border:0;color:#9a9a9a;font-size:20px;line-height:1;cursor:pointer;padding:0 2px}"
-    "#rhelp-close:hover{color:#fff}"
-    ".rhelp-body{padding:10px 16px 14px}"
-    ".rhelp-row{display:flex;align-items:baseline;gap:12px;padding:4px 0}"
-    ".rhelp-keys{flex:0 0 auto;min-width:104px}"
-    ".rhelp-desc{flex:1 1 auto;color:#cfcfcf}"
-    "#rhelp kbd{display:inline-block;background:#1c1c1f;border:1px solid #3d3d42;border-bottom-width:2px;"
-    "border-radius:4px;padding:1px 6px;font:600 11px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;color:#e6e6e6}"
-    # the rail "?" — a plain question mark inside a thin circle outline (the user 2026-06-29); currentColor so it
-    # tracks the rail-act idle/hover color
-    ".rhelp-q{display:flex;align-items:center;justify-content:center;width:13px;height:13px;border:1.3px solid "
-    "currentColor;border-radius:50%;font:600 9px/1 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}"
-)
-
-
-_LANDING_HELP_JS = """
-(function(){
-var ov=document.getElementById('rhelp-overlay'),btn=document.getElementById('rail-help'),
-cl=document.getElementById('rhelp-close');
-if(!ov||!btn)return;
-function close(){ov.hidden=true;}
-btn.onclick=function(){ov.hidden=!ov.hidden;};   // the rail ? toggles the dialog
-if(cl)cl.onclick=close;
-ov.addEventListener('click',function(e){if(e.target===ov)close();});   // click the backdrop to close
-document.addEventListener('keydown',function(e){if(e.key==='Escape'&&!ov.hidden)close();});
-})();
-"""
 
 
 # The rail's network popover: attach/detach federated remote kernels. Shell-native (drives the kernel's
@@ -8018,7 +7985,7 @@ def _landing():
             "overflow-y:auto;overflow-x:hidden;scrollbar-width:none}"
             ".rail-scroll::-webkit-scrollbar{width:0;height:0}"
             ".rail-scroll.rail-tight #rail-usage{display:none}"   # out of vertical space → the usage bars disappear first
-            ".rail-acts{flex:0 0 auto;display:flex;flex-direction:column;gap:6px;margin-top:auto}"   # pinned to the bottom, always visible
+            ".rail-acts{flex:0 0 auto;display:flex;flex-direction:column;gap:2px;margin-top:auto;padding-bottom:2px}"   # compact: tight stack of refresh/network/settings   # pinned to the bottom, always visible
             ".rail-btn{flex:0 0 auto;writing-mode:vertical-rl;text-orientation:mixed;letter-spacing:.04em;"
             "font:600 11px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#8a8a8a;margin:0 4px;"
             "padding:8px 0;border-radius:5px;cursor:pointer;user-select:none;display:flex;align-items:center;"
@@ -8027,11 +7994,10 @@ def _landing():
             ".rail-btn.on{color:var(--accent);background:rgba(156,210,255,0.10)}"
             # the ↻ refresh + ⛭ settings actions sit in .rail-acts, pinned to the BOTTOM (margin-top:auto on the
             # wrapper) and ALWAYS visible — settings (⛭, last in the DOM) at the very bottom, refresh just above.
-            ".rail-act{flex:0 0 auto;display:flex;align-items:center;justify-content:center;margin:2px 4px;padding:5px 0;"
+            ".rail-act{flex:0 0 auto;display:flex;align-items:center;justify-content:center;margin:1px 4px;padding:4px 0;"
             "border-radius:5px;cursor:pointer;color:#8a8a8a;font-size:15px;line-height:1;user-select:none;transition:color .1s,background .1s}"
             ".rail-act:hover{color:#fff;background:rgba(255,255,255,0.06)}"
             ".rail-act:active{transform:scale(0.92)}"
-            + _HELP_CSS +
             ".rail-act svg{display:block}"
             # the rail's network (⧉) action opens a shell-native popover anchored by the rail to manage
             # federated remote kernels (attach a host from ~/.ssh/config, see status, detach).
@@ -8039,14 +8005,15 @@ def _landing():
             # a centered modal (like settings/help), shell-native so it renders over collapsed panes too.
             "#rnet-back{position:fixed;inset:0;z-index:200;display:flex;align-items:center;justify-content:center;"
             "background:rgba(0,0,0,0.55)}#rnet-back[hidden]{display:none}"
-            "#rnet-panel{width:min(560px,90vw);max-height:80vh;overflow:auto;"
-            "background:#1c1c1d;border:1px solid #3a3a3a;border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,0.55);"
-            "padding:18px 20px;color:#ddd;font-size:13px}"
-            "#rnet-panel .rnet-top{display:flex;align-items:center;gap:8px;font-weight:600;margin-bottom:6px}"
+            "#rnet-panel{width:min(560px,94%);max-height:88vh;overflow:auto;"   # matches the settings .rs-card
+            "background:#252526;border:1px solid #3a3a3a;border-radius:10px;box-shadow:0 12px 36px #000000aa;"
+            "padding:16px 20px;color:#ccc;font:13px/1.6 system-ui,-apple-system,'Segoe UI',sans-serif}"
+            "#rnet-panel .rnet-top{display:flex;align-items:center;gap:8px;font-size:14px;font-weight:600;color:#e8eaed;"
+            "margin:0 0 12px;padding-bottom:10px;border-bottom:1px solid #34343a}"
             ".rnet-top span{flex:1 1 auto}"
-            "#rnet-x{background:none;border:none;color:#999;font-size:18px;line-height:1;cursor:pointer;padding:0 2px}"
+            "#rnet-x{background:none;border:none;color:#9aa0a6;font-size:16px;line-height:1;cursor:pointer;padding:0 2px}"
             "#rnet-x:hover{color:#fff}"
-            ".rnet-sub{color:#999;font-size:11px;line-height:1.4;margin-bottom:9px}"
+            ".rnet-sub{color:#9aa0a6;font-size:11.5px;line-height:1.45;margin-bottom:11px}"
             ".rnet-sub code{background:#2a2a2a;border-radius:3px;padding:0 3px}"
             ".rnet-add{display:flex;gap:6px;margin-bottom:9px}"
             "#rnet-host{flex:1 1 auto;min-width:0;background:#121212;color:#ccc;border:1px solid #3a3a3a;border-radius:6px;padding:4px 6px}"
@@ -8197,18 +8164,16 @@ def _landing():
             # refresh + settings, pinned to the very bottom (settings last), always visible:
             "<div class=rail-acts>"
             "<div class=rail-act id=rail-refresh title='Restart the romp kernel' aria-label=Refresh>↻</div>"
-            "<div class=rail-act id=rail-help title='Keyboard shortcuts' aria-label='Keyboard shortcuts'><span class=rhelp-q>?</span></div>"
             # remote-kernels (federation): a LAN glyph — one device wired down a bus to two below. Goes
             # accent-blue (.on) while a remote is connected. Below help, above settings (the user 2026-06-30).
             "<div class=rail-act id=rail-net title='Remote kernels' aria-label='Remote kernels'>"
-            "<svg viewBox='0 0 16 16' width=16 height=16 fill=none stroke=currentColor stroke-width=1.1 stroke-linejoin=round>"
-            "<rect x=5 y=1.3 width=6 height=4 rx=0.7/>"
-            "<rect x=0.6 y=10.7 width=5 height=4 rx=0.7/>"
-            "<rect x=10.4 y=10.7 width=5 height=4 rx=0.7/>"
-            "<path d='M8 5.3 L8 8 M3.1 10.7 L3.1 8 L12.9 8 L12.9 10.7'/></svg></div>"
+            "<svg viewBox='0 0 16 16' width=17 height=17>"
+            "<path d='M8 5 L8 8 M3 11 L3 8 L13 8 L13 11' fill=none stroke=currentColor stroke-width=1.3 stroke-linejoin=round/>"
+            "<rect x=5.6 y=0.8 width=4.8 height=4.4 rx=1.1 fill=currentColor/>"
+            "<rect x=0.6 y=11 width=4.8 height=4.4 rx=1.1 fill=currentColor/>"
+            "<rect x=10.6 y=11 width=4.8 height=4.4 rx=1.1 fill=currentColor/></svg></div>"
             "<div class=rail-act id=rail-gear title=Settings aria-label=Settings>⛭</div>"   # ⛭ (gear-without-hub): the bigger, bolder gear the user prefers (restored 2026-06-29)
             "</div>"   # /.rail-acts
-            + _help_modal() +
             "</div>"
             "<div class=pane id=chat-pane><iframe id=f-chat class=m-on src=/chat></iframe></div>"
             "<div class=gv id=gv-a></div>"
@@ -8244,7 +8209,6 @@ def _landing():
             "<script>" + _LANDING_FOCUS_JS + "</script>"
             "<script>" + _LANDING_FLEET_JS + "</script>"
             "<script>" + _LANDING_SETTINGS_JS + "</script>"
-            "<script>" + _LANDING_HELP_JS + "</script>"
             "<script>" + _LANDING_REMOTES_JS + "</script>"
             "<script>" + _LANDING_MOBILE_JS + "</script>"
             "<script>" + _LANDING_COLLAPSE_JS + "</script>"

@@ -2258,13 +2258,13 @@ class ViewBuilder(unittest.TestCase):
         # the ⛭ settings gear (web dashboard) reads as a rounded-rect BUTTON (the user 2026-06-17). The old
         # Explanations + Sub-goals toggles are GONE from the gear (the user 2026-06-18): cards show the
         # distiller summary (no Explanations), and Sub-goals moved to the feed FOOTER.
-        self.assertNotIn("id=rs-explanations", km._GEAR_HTML)
-        self.assertNotIn("id=rs-subgoals", km._GEAR_HTML)
+        self.assertNotIn("id=rs-explanations", km._gear_html())
+        self.assertNotIn("id=rs-subgoals", km._gear_html())
         self.assertNotIn("explanations", km._GEAR_JS)                               # every trace of the pref is gone
         self.assertIn("dispatchEvent(new Event('romp:settings'))", km._GEAR_JS)     # same-doc re-render signal (compact toggle etc.)
         # the ↻ refresh + ⛭ gear BUTTONS moved to the shell's far-left rail (the user 2026-06-25); only the
         # settings MODAL stays in the feed, opened by the rail gear via a {romp:'openSettings'} postMessage.
-        self.assertNotIn("id=rrefresh", km._GEAR_HTML)                              # refresh is on the rail now
+        self.assertNotIn("id=rrefresh", km._gear_html())                              # refresh is on the rail now
         self.assertIn("e.data.romp==='openSettings'", km._GEAR_JS)                  # the modal opens on the rail's request
         landing = km._landing()
         self.assertIn("id=rail-gear", landing)
@@ -2276,17 +2276,17 @@ class ViewBuilder(unittest.TestCase):
         # its 📊 emoji.
         self.assertIn("#rsettings .rs-sub{display:none}", km._GEAR_CSS)               # descriptions hidden by default
         self.assertRegex(km._GEAR_CSS, r"#rsettings \.rs-row:hover \.rs-sub\{display:block;position:absolute")  # float on hover
-        self.assertNotIn("\U0001F4CA", km._GEAR_HTML)                                 # the 📊 emoji is gone
-        self.assertIn("Token usage analytics", km._GEAR_HTML)                          # the label itself stays
+        self.assertNotIn("\U0001F4CA", km._gear_html())                                 # the 📊 emoji is gone
+        self.assertIn("Token usage analytics", km._gear_html())                          # the label itself stays
 
     def test_gear_colormap_dropdown_options_are_bars_not_names(self):
         # the user 2026-06-23: the feed-colormap selector's OPTIONS are the gradient bars themselves — no map
         # NAMES. A custom widget (native <select> can't render gradient options): a button shows the picked
         # map's bar, and the list is one bar per map; clicking a bar selects it + posts setColormap.
-        self.assertNotIn("<select id=rs-colormap", km._GEAR_HTML)                      # the native name-list select is gone
-        self.assertNotIn(">Hawaii<", km._GEAR_HTML)                                    # no map names listed
-        self.assertIn("id=rs-cmap-btn", km._GEAR_HTML)                                 # the button shows the picked bar
-        self.assertIn("id=rs-cmap-list", km._GEAR_HTML)                                # the bar list
+        self.assertNotIn("<select id=rs-colormap", km._gear_html())                      # the native name-list select is gone
+        self.assertNotIn(">Hawaii<", km._gear_html())                                    # no map names listed
+        self.assertIn("id=rs-cmap-btn", km._gear_html())                                 # the button shows the picked bar
+        self.assertIn("id=rs-cmap-list", km._gear_html())                                # the bar list
         self.assertIn(".rs-cmap-opt{", km._GEAR_CSS)                                   # each option is a styled bar
         self.assertIn("function cmGrad(name)", km._GEAR_JS)                            # builds a bar gradient per map
         self.assertIn("linear-gradient(to right,", km._GEAR_JS)
@@ -2297,8 +2297,8 @@ class ViewBuilder(unittest.TestCase):
         # the user 2026-06-23: a "Show git branch" checkbox controls whether the chat bottom-bar shows the
         # session's git branch beside the dir. ON by default (showBranch !== false). It mirrors render.ts'
         # loadSettings().showBranch read, persisted in romp:settings.
-        self.assertIn("id=rs-branch", km._GEAR_HTML)
-        self.assertIn("Show git branch", km._GEAR_HTML)
+        self.assertIn("id=rs-branch", km._gear_html())
+        self.assertIn("Show git branch", km._gear_html())
         self.assertIn("s.showBranch=gb.checked", km._GEAR_JS)        # change → persist
         self.assertIn("gb.checked=s.showBranch!==false", km._GEAR_JS)  # open → reflect (default ON)
         self.assertIn("showBranch:true", km._GEAR_JS)                # load() default ON, both branches
@@ -2828,7 +2828,7 @@ class ViewBuilder(unittest.TestCase):
         km._set_colormap("bogus"); self.assertEqual(km._colormap(), "magma")             # unknown ignored
         # the gear exposes the chooser (now a bar-options dropdown — see test_gear_colormap_dropdown_options_*)
         # and posts setColormap to the kernel
-        self.assertIn("id=rs-cmap-btn", km._GEAR_HTML)
+        self.assertIn("id=rs-cmap-btn", km._gear_html())
         self.assertIn("setColormap", km._GEAR_JS)
 
     def test_webview_colormaps_match_the_kernel(self):
@@ -3602,7 +3602,7 @@ class ServeSecurity(unittest.TestCase):
         self.assertIn(".rs-card{", km._GEAR_CSS)
         self.assertIn(".rs-modal-open{background:transparent}", km._GEAR_CSS)            # feed iframe transparent while open
         self.assertIn("body.rs-modal-open #feed-list", km._GEAR_CSS)                     # feed cards hidden while open
-        self.assertIn("<div id=rsettings hidden><div class=rs-card>", km._GEAR_HTML)
+        self.assertIn("<div id=rsettings hidden><div class=rs-card>", km._gear_html())
         self.assertIn("feedFull(true)", km._GEAR_JS)              # open → ask the shell to go full-window
         self.assertIn("setModalCls(true)", km._GEAR_JS)          # open → feed goes transparent + hides content
         self.assertIn("if(e.target===p)closeSettings()", km._GEAR_JS)   # backdrop click closes
@@ -3901,7 +3901,7 @@ class CreateDirResolution(unittest.TestCase):
         self.assertIn("defaultDir", km._version_info())                  # the gear loads its field from here
 
     def test_gear_persists_default_dir_with_browse(self):
-        self.assertIn("rs-defaultdir-browse", km._GEAR_HTML)             # the gear's Browse button
+        self.assertIn("rs-defaultdir-browse", km._gear_html())             # the gear's Browse button
         self.assertIn("setDefaultDir", km._GEAR_JS)                      # change → kernel-side persist (the file)
         self.assertIn("target:'gear'", km._GEAR_JS)                      # Browse posts browseDir target=gear
 

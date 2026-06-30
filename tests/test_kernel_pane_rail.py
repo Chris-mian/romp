@@ -103,43 +103,40 @@ class PaneRailTest(unittest.TestCase):
         self.assertIn("col.style.setProperty('--tl'", self.html)
         self.assertIn("window.addEventListener('romp-panes',autosize)", self.html)
 
-    def test_rail_actions_are_refresh_then_help_then_gear(self):
-        # the bottom rail-acts group: ↻ refresh, then a ? help button, then the ⛭ settings gear (the user 2026-06-29)
+    def test_rail_actions_are_refresh_then_network_then_gear(self):
+        # the bottom rail-acts group: ↻ refresh, the network (remote-kernels) icon, then the ⛭ settings gear.
+        # The standalone ? help button is gone — shortcuts moved INTO settings (the user 2026-06-30).
         self.assertIn("id=rail-refresh", self.html)
-        self.assertIn("id=rail-help", self.html)
+        self.assertIn("id=rail-net", self.html)
         self.assertIn("id=rail-gear", self.html)
-        idxs = [self.html.index("id=" + k) for k in ("rail-refresh", "rail-help", "rail-gear")]
-        self.assertEqual(idxs, sorted(idxs), "rail actions order: refresh, help, gear")
+        self.assertNotIn("id=rail-help", self.html)
+        idxs = [self.html.index("id=" + k) for k in ("rail-refresh", "rail-net", "rail-gear")]
+        self.assertEqual(idxs, sorted(idxs), "rail actions order: refresh, network, gear")
         # the gear is the bigger ⛭ (gear-without-hub) the user restored — NOT the thinner ⚙
         self.assertIn("aria-label=Settings>⛭</div>", self.html)
         self.assertNotIn("⚙", self.html)
 
-    def test_help_button_is_a_question_mark_in_a_circle_outline(self):
-        # the ? is a plain question mark inside a thin circle outline (the user 2026-06-29), not a bare glyph
-        self.assertIn("id=rail-help", self.html)
-        self.assertIn("<span class=rhelp-q>?</span>", self.html)
-        self.assertIn(".rhelp-q{", self.html)
-        self.assertIn("border-radius:50%", self.html)   # the circle
+    def test_network_icon_lights_accent_when_a_remote_is_connected(self):
+        # the remote-kernels icon goes accent-blue (.on) while a tunnel is up, driven by the /tunnels poll
+        self.assertIn("id=rail-net", self.html)
+        self.assertIn(".rail-act.on{color:var(--accent)}", self.html)
+        self.assertIn("icon.classList.toggle('on'", self.html)
 
-    def test_help_modal_lists_only_the_verified_non_obvious_shortcuts(self):
-        # the ? opens a self-contained shortcuts dialog in the SHELL (not the feed iframe), so it's always available
-        self.assertIn("id=rhelp-overlay", self.html)
-        self.assertIn("Keyboard shortcuts", self.html)
-        # a short, flat, verified list — keys wrapped in <kbd>
-        self.assertIn("<kbd>Enter</kbd>", self.html)
-        self.assertIn("Send message", self.html)
-        self.assertIn("Interrupt the session", self.html)
-        self.assertIn("Switch session (from the tabs)", self.html)
-        self.assertIn("Jump to the session tabs", self.html)
-        # trimmed (the user 2026-06-29): no slash-menu / question-picker sections, no h4 groups, no "composer" wording
-        self.assertNotIn("Slash-command menu", self.html)
-        self.assertNotIn("Question picker", self.html)
-        self.assertNotIn("rhelp-sec", self.html)
-        self.assertNotIn("Leave the composer", self.html)
-        self.assertNotIn("Jump into the composer", self.html)
-        # wired: the ? toggles it, Esc / backdrop / × close it
-        self.assertIn("btn.onclick=function(){ov.hidden=!ov.hidden;}", self.html)
-        self.assertIn("if(e.key==='Escape'&&!ov.hidden)close()", self.html)
+    def test_keyboard_shortcuts_live_in_the_settings_modal(self):
+        # folded into settings (the user 2026-06-30): no standalone ? modal in the shell anymore
+        self.assertNotIn("id=rhelp-overlay", self.html)
+        self.assertNotIn("id=rail-help", self.html)
+        # the shortcuts render as a section in the feed's settings modal — a flat verified list, keys in <kbd>
+        feed = km._feed_page()
+        self.assertIn(">Keyboard shortcuts</div>", feed)
+        self.assertIn("class=rs-key", feed)
+        self.assertIn("<kbd>Enter</kbd>", feed)
+        self.assertIn("Send message", feed)
+        self.assertIn("Interrupt the session", feed)
+        self.assertIn("Switch session (from the tabs)", feed)
+        self.assertIn("Jump to the session tabs", feed)
+        self.assertNotIn("Slash-command menu", feed)
+        self.assertNotIn("Question picker", feed)
 
     def test_rail_and_fleet_pane_are_hidden_on_mobile(self):
         # mobile shows one pane at a time via the bottom tab bar, not the rail; the desktop po-* pane-hiding
