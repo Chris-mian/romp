@@ -11,7 +11,8 @@ const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview"
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
 
 test("the LAST expanded child is tagged so the bottom rail-elbow can hang off it", () => {
-  assert.match(RENDER, /if \(i === end\) child\.classList\.add\("tg-last"\)/);
+  // the expansion walks the grouped tool indices; the last one carries .tg-last (see toolgroup-expand.test.ts)
+  assert.match(RENDER, /if \(j === it\.indices\.length - 1\) child\.classList\.add\("tg-last"\)/);
 });
 
 test("two horizontal connectors bracket the children onto the main rail, in the rail colour", () => {
