@@ -3498,6 +3498,48 @@ _built_chat = {}                                 # sid → (sig, payload_dict, s
 _judge_gen = [0]                                 # bumped each producer pass → busts the cache when the judge
                                                  # may have changed goal/caption state without a transcript write
 
+# ATOMIC JUDGE-PASS VISIBILITY (the user 2026-06-30): the triage judges (planner → closer → courier →
+# grouper → distiller) each write goals/<sid>.json INCREMENTALLY within one producer pass, and build_feed
+# reads it LIVE on every rebuild. A rebuild triggered mid-pass (the 5s time bucket, a streamed transcript
+# change) therefore catches a HALF-APPLIED store — e.g. the planner's transient "blocked" that the closer is
+# about to overrule to "completed" in the SAME pass — so a card visibly flickered working → blocked →
+# completed. Fix: snapshot every goal store at pass START (its PRE-pass state) and serve the feed from that
+# snapshot for the pass's duration, so a card only ever moves between PASS-BOUNDARY states (the transient
+# never shows). Outside a pass the snapshot is None → live reads, so user actions (clear/follow-up) stay
+# immediate (clears also route through cleared.jsonl, untouched). Pre-pass (not lazy-on-first-read) is the
+# point: a lazy snapshot could capture the planner's mid-pass "blocked" and freeze on THAT.
+_goals_snap = [None]                             # {sid: store} while a judge pass is mid-flight, else None
+_goals_snap_lock = threading.Lock()
+
+def _begin_goals_pass():
+    """Capture the PRE-pass goal stores so build_feed serves a pass-boundary-consistent view for the pass."""
+    snap = {}
+    try:
+        for p in jd.GOALDIR.glob("*.json"):
+            try:
+                snap[p.stem] = json.loads(p.read_text())
+            except Exception:
+                pass
+    except Exception:
+        pass
+    with _goals_snap_lock:
+        _goals_snap[0] = snap
+
+def _end_goals_pass():
+    """Pass over — drop the snapshot so reads go live again (post-pass results + any user writes show now)."""
+    with _goals_snap_lock:
+        _goals_snap[0] = None
+
+def _feed_goals(sid):
+    """Goal store for the FEED, frozen at the pre-pass snapshot while a judge pass is mid-flight (so a card
+    never shows a half-applied intermediate), else a live read. A sid minted DURING the pass isn't in the
+    snapshot → live (it has no prior state to flicker from). See the _goals_snap note above."""
+    with _goals_snap_lock:
+        snap = _goals_snap[0]
+    if snap is not None and sid in snap:
+        return snap[sid]
+    return jd.load_goals(sid)
+
 # Delta-send (the user 2026-06-25, "stop re-sending what didn't change"): the chat pusher used to send the
 # FULL events array (~8MB for a 34MB transcript) on every change, even when one event was appended. Keep the
 # whole transcript resident in the browser (instant scrollback) but send only the CHANGED SUFFIX. _prev_chat_
@@ -4942,7 +4984,8 @@ def build_feed(now, tmux=None):
             who_working = False
         if who_working:
             working.append(name)
-        store = jd.load_goals(fsid)
+        store = _feed_goals(fsid)                # pre-pass snapshot while a judge pass is mid-flight → the card's
+                                                 # status never shows a half-applied intermediate (atomic visibility)
         nodes, status = store.get("nodes", {}), store.get("status", {})
         # Exact click-to-jump anchors: map each goal segment → the work/reply uuid — the SAME anchors the
         # timeline/ledger already use — so a card click deep-links to the precise turn BY ID instead of the
@@ -6824,6 +6867,8 @@ def _producer():
             if _tmux_sessions():
                 tiers.append(threading.Thread(target=_run_tier, args=(jd.run_index,), name="index"))
                 tiers.append(threading.Thread(target=_run_tier, args=(jd.run_triage,), name="triage"))
+            _begin_goals_pass()                        # snapshot PRE-pass goal stores → the feed serves them for the
+                                                       # whole pass, so no half-applied intermediate ever shows
             for t in tiers:
                 t.start()
             for t in tiers:                            # barrier: both tiers finish before the next wake
@@ -6834,11 +6879,15 @@ def _producer():
                     sys.stderr.write("compact: archived %d cleared goal node(s)\n" % moved)
             except Exception:
                 sys.stderr.write("compact: %s\n" % traceback.format_exc())
+            _end_goals_pass()      # pass + compact done → drop the snapshot BEFORE bumping the gen, so the cache-
+                                   # busting rebuild below reads the fully-applied (post-pass) state, not pre-pass.
             _judge_gen[0] += 1     # a judge pass may have changed goal/caption state WITHOUT touching any
                                    # transcript → bump the generation so the chat-build cache re-builds the
                                    # background tabs once, keeping their Fleet status/ledger fresh (≤ this cadence).
         except Exception:
             sys.stderr.write("producer: %s\n" % traceback.format_exc())
+        finally:
+            _end_goals_pass()      # safety net: never leave a pass's snapshot stuck if the pass raised mid-flight
         # Event-driven: wake the instant a hook pokes /tick (turn ended / prompt landed / postal msg)
         # instead of waiting out the backstop. The 3s is only a BACKSTOP — for changes we don't get poked
         # for (e.g. a segment closing mid-turn) and a safety net if a poke is ever missed. A pass is cheap

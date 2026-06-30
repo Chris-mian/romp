@@ -2525,6 +2525,53 @@ class ViewBuilder(unittest.TestCase):
         finally:
             km._last_plain_user_turn_t = saved
 
+    def _store_with_status(self, st):
+        # one top goal in a given rolled-up status — used to simulate the judge rewriting the store mid-pass
+        g = "%s:gP" % SID
+        nd = {"id": g, "text": "the goal", "parentId": None,
+              "nodeComplete": (st == "completed"), "blocked": (st == "blocked"),
+              "blockWhy": ("need your call" if st == "blocked" else None),
+              "cleared": False, "trail": [], "t": NOW - 100, "mt": NOW - 50}
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+            "rompUuid": SID, "seq": 1, "lastNode": g,
+            "nodes": {g: nd}, "placements": {}, "status": {g: st}}))
+        return g
+
+    def test_feed_freezes_goal_reads_during_a_judge_pass_no_intermediate_flicker(self):
+        # the user 2026-06-30: within ONE producer pass the planner writes a transient "blocked" that the closer
+        # overrules to "completed"; a feed rebuild fired mid-pass (the 5s time bucket) used to read that
+        # half-applied store and flicker the card working -> blocked -> completed. The PRE-pass snapshot makes
+        # the feed serve a pass-boundary-consistent view: the card holds its pre-pass state for the whole pass,
+        # then jumps straight to the post-pass state. (Without the snapshot, the first assert reads live "blocked"
+        # and fails — this is the regression guard.)
+        km._tmux_sessions = lambda: {SID: {"state": "idle", "since": NOW - 50, "model": "",
+                                           "effort": "", "context": None, "compactPct": None, "color": None}}
+        g = self._store_with_status("working")             # PRE-pass state: working
+        km._begin_goals_pass()                             # judge pass starts → snapshot the pre-pass stores
+        try:
+            self._store_with_status("blocked")             # planner's transient mid-pass write lands on disk
+            card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
+            self.assertEqual(card["column"], "working",
+                             "mid-pass the feed serves the PRE-pass snapshot, NOT the transient blocked")
+            self._store_with_status("completed")           # closer overrules to completed, still mid-pass
+            card2 = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
+            self.assertEqual(card2["column"], "working", "still the pre-pass snapshot until the pass ends")
+        finally:
+            km._end_goals_pass()                           # pass over → live reads resume
+        card3 = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
+        self.assertEqual(card3["column"], "completed", "after the pass the feed shows the fully-applied state")
+
+    def test_feed_reads_live_outside_a_judge_pass(self):
+        # the snapshot only applies DURING a pass — with no pass active a write shows immediately, so user
+        # actions (clear/follow-up) aren't delayed (the user 2026-06-30).
+        km._tmux_sessions = lambda: {SID: {"state": "idle", "since": NOW - 50, "model": "",
+                                           "effort": "", "context": None, "compactPct": None, "color": None}}
+        g = self._store_with_status("working")
+        km._end_goals_pass()                               # ensure no pass snapshot is active
+        self._store_with_status("blocked")
+        card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
+        self.assertEqual(card["column"], "needs_input", "no pass active → live read shows the block at once")
+
     def test_seg_key_strips_the_volatile_timestamp(self):
         self.assertEqual(km._seg_key("11111111-2222:1782627917:19cee1e8"), "11111111-2222:19cee1e8")
         self.assertEqual(km._seg_key("11111111-2222:1782627951:19cee1e8"), "11111111-2222:19cee1e8",
