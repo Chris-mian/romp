@@ -7785,16 +7785,17 @@ var icon=document.getElementById('rail-net'),back=document.getElementById('rnet-
 if(!icon||!back)return;
 var hostSel=document.getElementById('rnet-host'),attach=document.getElementById('rnet-attach'),
 list=document.getElementById('rnet-list'),x=document.getElementById('rnet-x');
-var poll=null;
-function open(){back.hidden=false;loadHosts();refresh();poll=setInterval(refresh,3000);}
-function close(){back.hidden=true;if(poll){clearInterval(poll);poll=null;}}
+function open(){back.hidden=false;loadHosts();refresh();}
+function close(){back.hidden=true;}
 icon.onclick=function(e){e.stopPropagation();if(back.hidden)open();else close();};
 back.onclick=function(e){if(e.target===back)close();};
 if(x)x.onclick=close;
 document.addEventListener('keydown',function(e){if(e.key==='Escape'&&!back.hidden)close();});
 function loadHosts(){fetch('/ssh-hosts',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){
 var hs=(d&&d.hosts)||[];hostSel.innerHTML=hs.length?hs.map(function(h){return '<option value=\"'+h+'\">'+h+'</option>';}).join(''):'<option value=\"\">(no ~/.ssh/config hosts)</option>';}).catch(function(){});}
-function refresh(){fetch('/tunnels',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){render((d&&d.tunnels)||[]);}).catch(function(){});}
+function refresh(){fetch('/tunnels',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){
+var ts=(d&&d.tunnels)||[];icon.classList.toggle('on',ts.some(function(t){return t.status==='up';}));   // glow accent-blue while a remote is connected
+if(!back.hidden)render(ts);}).catch(function(){});}
 function render(ts){list.innerHTML='';
 if(!ts.length){var e=document.createElement('div');e.className='rnet-empty';e.textContent='No remotes attached.';list.appendChild(e);return;}
 ts.forEach(function(t){var row=document.createElement('div');row.className='rnet-row';
@@ -7808,6 +7809,7 @@ b.disabled=true;fetch('/tunnels/detach',{method:'POST',headers:{'Content-Type':'
 attach.onclick=function(){var h=hostSel.value;if(!h)return;attach.disabled=true;attach.textContent='Attaching\\u2026';
 fetch('/tunnels',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h})}).then(function(){
 attach.disabled=false;attach.textContent='Attach';refresh();}).catch(function(){attach.disabled=false;attach.textContent='Attach';});};
+refresh();setInterval(refresh,3000);   // always-on: keep the rail icon's connected-state highlight current even while closed
 })();
 """
 
@@ -7997,10 +7999,13 @@ def _landing():
             ".rail-act svg{display:block}"
             # the rail's network (⧉) action opens a shell-native popover anchored by the rail to manage
             # federated remote kernels (attach a host from ~/.ssh/config, see status, detach).
-            "#rnet-back{position:fixed;inset:0;z-index:120}#rnet-back[hidden]{display:none}"
-            "#rnet-panel{position:fixed;left:46px;bottom:10px;width:300px;max-width:calc(100vw - 60px);"
-            "background:#1c1c1d;border:1px solid #3a3a3a;border-radius:10px;box-shadow:0 8px 30px rgba(0,0,0,0.5);"
-            "padding:12px;color:#ddd;font-size:13px}"
+            ".rail-act.on{color:var(--accent)}"   # the network icon glows accent-blue while a remote is connected
+            # a centered modal (like settings/help), shell-native so it renders over collapsed panes too.
+            "#rnet-back{position:fixed;inset:0;z-index:200;display:flex;align-items:center;justify-content:center;"
+            "background:rgba(0,0,0,0.55)}#rnet-back[hidden]{display:none}"
+            "#rnet-panel{width:min(560px,90vw);max-height:80vh;overflow:auto;"
+            "background:#1c1c1d;border:1px solid #3a3a3a;border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,0.55);"
+            "padding:18px 20px;color:#ddd;font-size:13px}"
             "#rnet-panel .rnet-top{display:flex;align-items:center;gap:8px;font-weight:600;margin-bottom:6px}"
             ".rnet-top span{flex:1 1 auto}"
             "#rnet-x{background:none;border:none;color:#999;font-size:18px;line-height:1;cursor:pointer;padding:0 2px}"
@@ -8155,16 +8160,16 @@ def _landing():
             "</div>"   # /.rail-scroll
             # refresh + settings, pinned to the very bottom (settings last), always visible:
             "<div class=rail-acts>"
-            "<div class=rail-act id=rail-net title='Remote kernels' aria-label='Remote kernels'>"
-            # a LAN/network glyph: one device up top, wired down a bus to two devices below (reads as
-            # "networked machines", not the copy/share dots it replaced — the user 2026-06-30).
-            "<svg viewBox='0 0 16 16' width=15 height=15 fill=none stroke=currentColor stroke-width=1.2 stroke-linejoin=round>"
-            "<rect x=5.4 y=1 width=5.2 height=3.8 rx=0.6/>"
-            "<rect x=0.6 y=11.2 width=4.8 height=3.8 rx=0.6/>"
-            "<rect x=10.6 y=11.2 width=4.8 height=3.8 rx=0.6/>"
-            "<path d='M8 4.8 L8 8 M3 11.2 L3 8 L13 8 L13 11.2'/></svg></div>"
             "<div class=rail-act id=rail-refresh title='Restart the romp kernel' aria-label=Refresh>↻</div>"
             "<div class=rail-act id=rail-help title='Keyboard shortcuts' aria-label='Keyboard shortcuts'><span class=rhelp-q>?</span></div>"
+            # remote-kernels (federation): a LAN glyph — one device wired down a bus to two below. Goes
+            # accent-blue (.on) while a remote is connected. Below help, above settings (the user 2026-06-30).
+            "<div class=rail-act id=rail-net title='Remote kernels' aria-label='Remote kernels'>"
+            "<svg viewBox='0 0 16 16' width=16 height=16 fill=none stroke=currentColor stroke-width=1.1 stroke-linejoin=round>"
+            "<rect x=5 y=1.3 width=6 height=4 rx=0.7/>"
+            "<rect x=0.6 y=10.7 width=5 height=4 rx=0.7/>"
+            "<rect x=10.4 y=10.7 width=5 height=4 rx=0.7/>"
+            "<path d='M8 5.3 L8 8 M3.1 10.7 L3.1 8 L12.9 8 L12.9 10.7'/></svg></div>"
             "<div class=rail-act id=rail-gear title=Settings aria-label=Settings>⛭</div>"   # ⛭ (gear-without-hub): the bigger, bolder gear the user prefers (restored 2026-06-29)
             "</div>"   # /.rail-acts
             + _help_modal() +
