@@ -38,9 +38,17 @@ test("the menu OWNS ↑/↓/⏎/Tab/Esc while open, so they don't send / leave t
   assert.match(RENDER, /if \(e\.key === "ArrowDown"\) \{ e\.preventDefault\(\); if \(items\.length\) \{ sel = \(sel \+ 1\) % items\.length/);
   assert.match(RENDER, /if \(e\.key === "ArrowUp"\)/);
   assert.match(RENDER, /if \(\(e\.key === "Enter" \|\| e\.key === "Tab"\) && items\.length\) \{ e\.preventDefault\(\); pickSlash\(items\[sel\]\); return true; \}/);
-  assert.match(RENDER, /if \(e\.key === "Escape"\) \{ e\.preventDefault\(\); closeSlash\(\); return true; \}/);
+  assert.match(RENDER, /if \(e\.key === "Escape"\) \{ e\.preventDefault\(\); slashDismissed = true; closeSlash\(\); return true; \}/);
   // when the menu is closed, slashKey returns false so Enter still sends and Esc still leaves the box
   assert.match(RENDER, /const slashKey = \(e: KeyboardEvent\): boolean => \{\s*\n\s*if \(!pop\) return false;/);
+});
+
+test("Escape latches the menu DISMISSED — typing more of the same \"/token\" won't re-pop it; clearing the \"/\" re-arms (the user 2026-06-29)", () => {
+  // Esc sets the latch; updateSlash refuses to reopen while latched
+  assert.match(RENDER, /let slashDismissed = false;/);
+  assert.match(RENDER, /if \(slashDismissed\) return;/);
+  // the ONLY reset is the "/token" context going away (slashQuery → null): clear the "/" and start over
+  assert.match(RENDER, /if \(q === null\) \{ slashDismissed = false; closeSlash\(\); return; \}/);
 });
 
 test("picking a command FILLS \"/name \" (does not send) so the user adds args + ⏎", () => {

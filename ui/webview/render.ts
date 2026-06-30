@@ -4530,6 +4530,10 @@ function setupComposer() {
   let pop: HTMLElement | null = null;
   let items: SlashCmd[] = [];
   let sel = 0;
+  // Escape DISMISSES the menu until you clear the "/" and start over (the user 2026-06-29): once you've Esc'd
+  // out, typing more of the same "/token" must NOT re-pop it — only deleting back past the "/" (slashQuery →
+  // null) re-arms it. Latched here; set on Esc, cleared the moment the "/token" context is gone.
+  let slashDismissed = false;
   const loadCmds = (sid: string, then?: () => void) => {
     fetch("/commands?sid=" + encodeURIComponent(sid), { cache: "no-store" })
       .then((r) => r.json())
@@ -4602,7 +4606,8 @@ function setupComposer() {
   };
   const updateSlash = () => {
     const q = slashQuery();
-    if (q === null) { closeSlash(); return; }
+    if (q === null) { slashDismissed = false; closeSlash(); return; }   // "/" gone → re-arm for the next one
+    if (slashDismissed) return;   // Esc'd out: stay closed until the "/" is cleared (q===null above re-arms)
     const sid = activeId || "";
     if (slashSid !== sid) loadCmds(sid, updateSlash);   // (re)load for the active session (""→ kernel cwd fallback)
     items = filterCmds(q);
@@ -4617,7 +4622,7 @@ function setupComposer() {
     if (e.key === "ArrowDown") { e.preventDefault(); if (items.length) { sel = (sel + 1) % items.length; paintSlash(); } return true; }
     if (e.key === "ArrowUp") { e.preventDefault(); if (items.length) { sel = (sel - 1 + items.length) % items.length; paintSlash(); } return true; }
     if ((e.key === "Enter" || e.key === "Tab") && items.length) { e.preventDefault(); pickSlash(items[sel]); return true; }
-    if (e.key === "Escape") { e.preventDefault(); closeSlash(); return true; }
+    if (e.key === "Escape") { e.preventDefault(); slashDismissed = true; closeSlash(); return true; }   // stays dismissed until the "/" is cleared
     return false;
   };
   ta.addEventListener("focus", () => { if (slashSid !== (activeId || "")) loadCmds(activeId || ""); });   // pre-warm the cache before "/"
