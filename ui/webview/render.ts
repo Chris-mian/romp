@@ -124,6 +124,11 @@ const order: string[] = [];           // positional tab order (for cycling)
 // Tab name+color from the kernel's tabOrder push (the user 2026-06-26): lets renderTabs paint the WHOLE
 // strip as placeholders BEFORE each session's build_session arrives, so tabs don't pop in one-by-one.
 const tabMeta = new Map<string, { name: string; color: Color | null }>();
+// The romp identity palette for the tab right-click color picker (the user 2026-06-29). Fetched once from the
+// kernel's /palette so the client holds no color literals; empty until it lands (the menu just omits the row).
+let paletteColors: string[] = [];
+fetch("/palette", { cache: "no-store" }).then((r) => r.json())
+  .then((d) => { if (Array.isArray(d.colors)) paletteColors = d.colors; }).catch(() => { /* menu omits the swatch row */ });
 const mru: string[] = [];             // recency stack, front = most-recently-active (close → return to previous)
 let activeId: string | null = null;
 let renderingSid: string | null = null;   // the session id syncView is currently building (for per-session fold keys)
@@ -1802,6 +1807,19 @@ function setSessionFlag(id: string, flag: "hideFromFeed" | "postalServiceOff", v
   if (s) (s as Record<string, unknown>)[flag] = value;
   if (vscodeApi) vscodeApi.postMessage({ type: "setSessionFlag", id, flag, value });
 }
+// Override a session's identity color from the tab menu's swatches (the user 2026-06-29). Optimistically paint
+// the new color now (session + placeholder copies), then post to the kernel, which persists it to the names
+// registry and re-broadcasts so every surface (tabs, lanes, feed cards) agrees. fg stays white, matching
+// _name_color. The kernel accepts only a real palette value, so a stale id is a harmless no-op there.
+function setSessionColor(id: string, bg: string) {
+  const color: Color = { bg, fg: "#ffffff" };
+  const s = sessions.get(id);
+  if (s) s.color = color;
+  const meta = tabMeta.get(id);
+  if (meta) meta.color = color;
+  renderTabs();
+  if (vscodeApi) vscodeApi.postMessage({ type: "setSessionColor", id, bg });
+}
 
 // Small inline-SVG icon for the tab menu's toggle items (trusted constant markup; `off` slashes + dims it,
 // matching the timeline lane toggles). 16-unit viewBox; currentColor so .ctx-icon/.off set the tint.
@@ -1847,6 +1865,22 @@ function showTabMenu(e: MouseEvent, tab: HTMLElement, label: HTMLElement, id: st
     offMail ? "Rejoin mail" : "Mute mail",
     offMail ? "reconnect it to the postal service" : "hide from peers — no messages in or out",
     () => setSessionFlag(id, "postalServiceOff", !offMail));
+  // Color swatches (the user 2026-06-29): the romp identity palette as circles, the session's current one
+  // ringed. Click one to recolor the session. Omitted until /palette has loaded (paletteColors empty).
+  if (paletteColors.length) {
+    menu.appendChild(el("div", "ctx-sep"));
+    const cur = (s && s.color ? s.color.bg : "").toLowerCase();
+    const row = el("div", "ctx-colors");
+    for (const bg of paletteColors) {
+      const sw = el("button", "ctx-swatch" + (bg.toLowerCase() === cur ? " sel" : ""));
+      sw.style.background = bg;
+      sw.title = bg;
+      sw.setAttribute("aria-label", "Set color " + bg);
+      sw.addEventListener("click", (ev) => { ev.stopPropagation(); dismissTabMenu(); setSessionColor(id, bg); });
+      row.appendChild(sw);
+    }
+    menu.appendChild(row);
+  }
   document.body.appendChild(menu);
   ctxMenuEl = menu;
   // at the cursor, clamped so it never overflows the pane

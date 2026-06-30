@@ -188,6 +188,15 @@ body { display: flex; flex-direction: column; }
 .ctx-item-toggle .ctx-icon.off { color: var(--dim); }
 .ctx-item-body { display: flex; flex-direction: column; line-height: 1.25; }
 .ctx-item-sub { font-size: 0.82em; opacity: 0.6; }
+/* identity-color swatches (the user 2026-06-29): the romp palette as circles, the current one ringed. A grid
+   so 9 colors wrap to a tidy block instead of one long row. */
+.ctx-colors { display: grid; grid-template-columns: repeat(5, 18px); gap: 7px; padding: 6px 8px 4px;
+  justify-content: start; }
+.ctx-swatch { width: 18px; height: 18px; padding: 0; border: 0; border-radius: 50%; cursor: pointer;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.25); }
+.ctx-swatch:hover { transform: scale(1.12); }
+/* the session's current color: a white ring with a gap (the menu-bg fills the gap so it reads as a halo) */
+.ctx-swatch.sel { box-shadow: 0 0 0 2px var(--vscode-menu-background, #252526), 0 0 0 3.5px #fff; }
 
 .tab-close { opacity: 0; font-size: 1.1em; line-height: 1; padding: 0 2px; border-radius: 3px; color: var(--dim); }
 .tab:hover .tab-close { opacity: 0.7; }
