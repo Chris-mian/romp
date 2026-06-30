@@ -46,11 +46,40 @@ class BlockedNoGoal(unittest.TestCase):
 
     def test_build_feed_synthesizes_it_only_when_blocked_with_no_floorable_goal(self):
         src = inspect.getsource(km.build_feed)
-        # the synthesis is gated: a live perm/picker state AND no top goal to floor under BLOCKED (perm_top None)
-        self.assertIn("perm_state in _NEEDS_INPUT_STATES and perm_top is None", src)
+        # the synthesis is gated: no working card AND no top goal to floor under BLOCKED (perm_top None) ...
+        self.assertIn("if not had_working and perm_top is None and ps:", src)
+        # ... and only as the fallback when there's no provisional card and a live perm/picker state
+        self.assertIn("elif perm_state in _NEEDS_INPUT_STATES:", src)
         self.assertIn("_blocked_placeholder(s, name, color, fsid, live, now, perm_state", src)
-        # and only inside the "no working card" branch, so it never duplicates a real/provisional card
-        self.assertIn("if not had_working and ps:", src)
+
+    def test_picker_card_titles_with_the_live_questions_actual_text(self):
+        # the most useful title is WHAT input is being asked for — read from the live ask the backend holds
+        # (the user 2026-06-29). Patch backend_for→a stub current_ask so no real session is needed.
+        class _StubBackend:
+            def current_ask(self, sid):
+                return {"kind": "single", "header": "Backend", "question": "Use tmux or the SDK backend?",
+                        "options": [{"label": "tmux"}, {"label": "SDK"}]}
+        orig = km.Sessions.backend_for
+        km.Sessions.backend_for = lambda sid: _StubBackend()
+        try:
+            c = _card("picker")
+        finally:
+            km.Sessions.backend_for = orig
+        self.assertEqual(c["text"], "Use tmux or the SDK backend?", "card shows the question, not the generic line")
+
+    def test_picker_question_is_truncated_with_an_ellipsis(self):
+        long_q = "A" * 200
+        class _StubBackend:
+            def current_ask(self, sid):
+                return {"question": long_q, "header": ""}
+        orig = km.Sessions.backend_for
+        km.Sessions.backend_for = lambda sid: _StubBackend()
+        try:
+            c = _card("picker")
+        finally:
+            km.Sessions.backend_for = orig
+        self.assertTrue(c["text"].endswith("…"))
+        self.assertLessEqual(len(c["text"]), 140)
 
     def test_placeholder_carries_no_goal_node_so_it_is_replaced_when_the_planner_runs(self):
         # turnId/turnIds empty + provisional → feed.ts dims it and gives it no Clear/Nudge/modal; the real

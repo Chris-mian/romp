@@ -4492,6 +4492,22 @@ def _blocked_placeholder(s, name, color, fsid, live, now, perm_state, since):
                     g = _captions(fsid).get(held["id"] + "#p", {}).get("caption")
                     text = ("Analyzing: " + g) if g else prompt[:140].strip()
     if not text:
+        # The picker/permission prompt's actual QUESTION is the most useful title — it says WHAT input is being
+        # asked for, not just "Awaiting your input" (the user 2026-06-29). Pull it from the live ask the backend
+        # is holding (SDK: the dict stored in _emit_ask; tmux: a pane scrape). Best-effort — falls through to
+        # the generic line when there's no readable ask.
+        try:
+            ask = Sessions.backend_for(fsid).current_ask(fsid)
+        except Exception:
+            ask = None
+        if ask:
+            q = (ask.get("question") or "").strip()
+            h = (ask.get("header") or "").strip()
+            if q:
+                text = (q[:139].rstrip() + "…") if len(q) > 140 else q
+            elif h and h.lower() != "permission":   # a bare "Permission" header adds nothing; keep the generic
+                text = h
+    if not text:
         text = "Awaiting your input" if perm_state == "picker" else "Awaiting your approval"
     return {"itemId": "blocked:" + fsid, "sid": fsid, "name": name, "color": color, "text": text,
             "t": t, "created": t, "live": live, "trgb": list(cm.age_rgb(now - t, _colormap())),
