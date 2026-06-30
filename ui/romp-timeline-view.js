@@ -358,6 +358,34 @@ class TimelinePanel {
     this.wrap = host.createDiv({ cls: 'romp-tl-wrap' });
     this.svg = document.createElementNS(SVGNS, 'svg');
     this.svg.setAttribute('xmlns', SVGNS); this.wrap.appendChild(this.svg);
+    // PERSISTENT compacting scan-bar overlay (the user 2026-06-29): the compacting battery's leftward
+    // "compression" sweep is POSITIONAL motion, and as a SMIL <rect> it lived inside the SVG which draw()
+    // WIPES + recreates every poll AND every live-edge rAF frame — so the bar could only ever animate as
+    // smoothly as that irregular, heavy redraw cadence (visibly jumpy), unlike the chat tab's bar which is a
+    // CSS animation on a PERSISTENT DOM node the compositor drives independently of JS. _smilBegin only fixed
+    // the PHASE on rebuild, not the cadence. So the sweep now rides HTML divs in this overlay layer that draw()
+    // REPOSITIONS (cheap, never restarts a CSS animation) but never destroys → it glides on the compositor like
+    // the chat. The SVG keeps only the static battery box + the transparent /compact click target. The wrap is
+    // 1:1 with the SVG viewBox (viewBox '0 0 W H', width=W=wrap.clientWidth), so overlay px == SVG user coords.
+    this.wrap.style.position = this.wrap.style.position || 'relative';
+    this._compactLayer = document.createElement('div');
+    this._compactLayer.className = 'romp-tl-compact-layer';
+    this._compactLayer.style.cssText = 'position:absolute;inset:0;pointer-events:none;overflow:hidden';
+    this.wrap.appendChild(this._compactLayer);
+    this._compactBars = new Map();   // sid -> persistent scan-bar div (CSS-animated; repositioned per draw)
+    try {
+      if (typeof document !== 'undefined' && document.head && !document.getElementById('tl-compact-css')) {
+        const cst = document.createElement('style'); cst.id = 'tl-compact-css';
+        // scaleX (transform-origin:left) from full → ~1px, compositor-accelerated; opacity fades the loop ends
+        // so it never snaps. DUR 3.2s matches the old SMIL sweep. minW/innerW ≈ 1/46 ≈ 0.022.
+        cst.textContent = '.romp-tl-compact-bar{position:absolute;border-radius:1px;background:#14b8a6;'
+          + 'pointer-events:none;transform-origin:left center;will-change:transform,opacity;'
+          + 'animation:romp-tl-compact 3.2s linear infinite}'
+          + '@keyframes romp-tl-compact{0%{transform:scaleX(1);opacity:0}10%{transform:scaleX(1);opacity:1}'
+          + '90%{transform:scaleX(0.022);opacity:1}100%{transform:scaleX(0.022);opacity:0}}';
+        document.head.appendChild(cst);
+      }
+    } catch (e) {}
 
     // Click-safe redraws (the user 2026-06-24): the EXTERNAL redraw paths — the poll update() and the live-edge
     // _tickLive() (which rebuilds the SVG every animation frame while following now) — wipe and recreate every
@@ -1489,6 +1517,48 @@ class TimelinePanel {
     try { const ct = (this.svg && this.svg.getCurrentTime) ? this.svg.getCurrentTime() : 0; return '-' + (ct % dur).toFixed(3) + 's'; }
     catch (e) { return '0s'; }
   }
+  // SVG-user-coords → overlay (wrap) px. The svg renders at width/height = its viewBox on DESKTOP (1:1), but on
+  // TOUCH the CSS scales it (svg{width:100%;height:auto}) and overflow-x:auto can scroll it — so map through the
+  // svg's ACTUAL rendered rect vs its viewBox, and offset by the svg's position within the wrap (handles scroll).
+  // Memoized per draw (keyed by _drawSeq) so the getBoundingClientRect reflow happens at most once per paint, and
+  // only when a lane is actually compacting. try/catch → identity in a DOM-less test/headless context.
+  _ovScaleNow() {
+    if (this._ovSeq === this._drawSeq && this._ovScale) return this._ovScale;
+    let m = { sx: 1, sy: 1, ox: 0, oy: 0 };
+    try {
+      const sr = this.svg.getBoundingClientRect(), wr = this.wrap.getBoundingClientRect();
+      const vbW = +this.svg.getAttribute('width') || sr.width || 1;
+      const vbH = +this.svg.getAttribute('height') || sr.height || 1;
+      m = { sx: sr.width / vbW, sy: sr.height / vbH, ox: sr.left - wr.left, oy: sr.top - wr.top };
+    } catch (e) {}
+    this._ovSeq = this._drawSeq; this._ovScale = m;
+    return m;
+  }
+  // Create-or-reposition this sid's PERSISTENT compacting scan-bar div over its battery cell. The div's CSS
+  // `animation` is set ONCE on creation and never touched again, so the compositor runs the sweep continuously;
+  // draw() only nudges left/top/width here, which never restarts a CSS animation → smooth regardless of how
+  // often (or unevenly) draw() fires. (Mirrors the chat tab's CSS-animated compaction bar. The user 2026-06-29.)
+  _positionCompactBar(sid, x, y, w, h) {
+    if (!this._compactLayer) return;
+    let bar = this._compactBars.get(sid);
+    if (!bar) {
+      bar = document.createElement('div');
+      bar.className = 'romp-tl-compact-bar';
+      this._compactLayer.appendChild(bar);
+      this._compactBars.set(sid, bar);
+    }
+    const m = this._ovScaleNow();
+    bar.style.left = (m.ox + x * m.sx) + 'px'; bar.style.top = (m.oy + y * m.sy) + 'px';
+    bar.style.width = (w * m.sx) + 'px'; bar.style.height = (h * m.sy) + 'px';
+  }
+  // Remove scan-bar divs for sids that aren't compacting (or scrolled off) this draw — so a finished compaction,
+  // a closed lane, or the loader screen leaves no orphan bar. `keep` is the set of sids drawn a bar this pass.
+  _reapCompactBars(keep) {
+    if (!this._compactBars) return;
+    for (const [sid, bar] of this._compactBars) {
+      if (!keep || !keep.has(sid)) { try { bar.remove(); } catch (e) {} this._compactBars.delete(sid); }
+    }
+  }
   _compactSession(name) {
     if (!name) return;
     try {
@@ -1638,12 +1708,13 @@ class TimelinePanel {
 
   draw() {
     const data = this.data; if (!data || !data.sessions) return;
+    this._drawSeq = (this._drawSeq || 0) + 1;   // per-paint nonce: memoizes the overlay scale reflow (_ovScaleNow)
     // LOADING (the user 2026-06-26): until the heavy bars arrive, show ONLY the romp wordmark loader (R +
     // spinning swirl-o + m + p + dots) — NO lanes, NO gridlines. Partial data + empty gridlines read as
     // "broken", so suppress the SVG entirely and show the loader until applyBars sets _barsLoaded. (Data that
     // already carries turns — a full one-shot, or a direct draw() — counts as loaded even without the flag.)
     const barsReady = this._barsLoaded || !!(data.turns && Object.keys(data.turns).length);
-    if (!barsReady) { this._showLoader(true); return; }
+    if (!barsReady) { this._showLoader(true); this._reapCompactBars(null); return; }   // loader up → no lanes, drop any scan-bars
     this._showLoader(false);
     const svg = this.svg, M = this.M;
     while (svg.firstChild) svg.removeChild(svg.firstChild);
@@ -1817,6 +1888,7 @@ class TimelinePanel {
     // would put those blocks in a TDZ and crash draw() on the first in-window bar.)
     const dagOrHover = (id) => !!id && ((dag && dag.events.has(id)) || (hoverSet && hoverSet.has(id)));
     const dagOrHoverMsg = (id) => !!id && ((dag && dag.msgs.has(id)) || (hoverSet && hoverSet.has(id)));
+    const compactSeen = new Set();   // sids whose compacting scan-bar is live this draw → reconcile the overlay after
     vis.forEach((s, i) => {
       const y = laneY(i);
       // perceptual idle fade: faded lanes blend their colors toward bgRGB to a uniform low luminance.
@@ -2098,17 +2170,14 @@ class TimelinePanel {
         const byTop = y - BAT_H / 2;
         svg.appendChild(el('rect', { x: ctxColX, y: byTop, width: BAT_W, height: BAT_H, rx: 3, fill: 'rgba(255,255,255,0.07)', stroke: 'rgba(255,255,255,0.35)', 'stroke-width': 1, 'pointer-events': 'none' }));
         if (isComp) {
-          // a solid TEAL rectangle fills the battery, then its RIGHT edge slides left (width shrinks from a
-          // fixed left x) — a "compression" cue. It fades in at full width and out when compressed so the
-          // loop never snaps. No % while compacting. draw() recreates this <rect> every ~1s poll, but
-          // `this.svg` — and thus its SMIL document timeline — PERSISTS, so begin='0s' lands each freshly-
-          // created rect at the current phase (docTime % DUR) → the per-poll rebuild is seamless.
-          const ix0 = ctxColX + 1, innerW = BAT_W - 2, minW = 1, DUR = 3.2, TEAL = '#14b8a6';
-          const cbeg = this._smilBegin(DUR);   // resume mid-cycle on the per-poll rebuild (no snap-back)
-          const bar = el('rect', { x: ix0, y: byTop + 1, width: innerW, height: BAT_H - 2, rx: 1, fill: TEAL, 'pointer-events': 'none' });
-          bar.appendChild(el('animate', { attributeName: 'width', values: innerW + ';' + innerW + ';' + minW + ';' + minW, keyTimes: '0;0.1;0.9;1', dur: DUR + 's', begin: cbeg, repeatCount: 'indefinite' }));
-          bar.appendChild(el('animate', { attributeName: 'opacity', values: '0;1;1;0', keyTimes: '0;0.1;0.9;1', dur: DUR + 's', begin: cbeg, repeatCount: 'indefinite' }));
-          svg.appendChild(bar);
+          // a solid TEAL rectangle fills the battery, then its RIGHT edge slides left (width shrinks via a
+          // scaleX from a fixed left edge) — a "compression" cue, fading in full + out when compressed so the
+          // loop never snaps. No % while compacting. This rides a PERSISTENT overlay div (CSS-animated on the
+          // compositor) that draw() only REPOSITIONS, not a per-frame-recreated SVG <rect> — so it glides
+          // smoothly regardless of the redraw cadence (the user 2026-06-29: the SVG sweep read as jumpy because
+          // draw() destroyed+rebuilt it every rAF/poll). _positionCompactBar reconciles _compactBars by sid.
+          this._positionCompactBar(s.id, ctxColX + 1, byTop + 1, BAT_W - 2, BAT_H - 2);
+          compactSeen.add(s.id);
         } else {
           const innerW = BAT_W - 2, fillW = Math.max(0, Math.min(1, cinfo.pct / 100)) * innerW, fillCol = F(cinfo.color);
           if (fillW > 0.5) {
@@ -2135,6 +2204,7 @@ class TimelinePanel {
       // (The 📬 unread/parked-mail glyph was removed 2026-06-24: the DOTTED message-flow connector already
       // signals an undelivered/waiting message between sessions, so the emoji was redundant.)
     });
+    this._reapCompactBars(compactSeen);   // drop overlay scan-bars for lanes no longer compacting / off-screen
 
     // obstacles for routing — at each event's process-start (a pending event rides `now` via execAt/startAt)
     const obstacles = [];
