@@ -671,6 +671,19 @@ class SlashCommandTurn(unittest.TestCase):
         self.assertIn("42 credits", _text(turn["atoms"][1]))
         self.assertTrue(turn["ended"], "the turn ends once the output lands")
 
+    def test_bare_command_with_no_output_still_ends(self):
+        # the user 2026-06-29 (the JLD /usage case): a command that produced NO output (no stdout, no model
+        # work) must NOT leave the turn open forever — that read the session as "working" for hours and left a
+        # stuck card. The _finalize_turn backstop ends a bare command turn so the session settles to idle.
+        recs = [{"type": "user", "timestamp": iso(T0), "uuid": "c1", "parentUuid": None,
+                 "message": {"role": "user", "content": "<command-name>/usage</command-name>"}}]
+        out = run_recs(recs)
+        self.assertEqual(len(out["turns"]), 1)
+        turn = out["turns"][0]
+        self.assertEqual([a.get("uuid") for a in turn["atoms"]], ["c1"])
+        self.assertEqual(turn["atoms"][0].get("command"), "/usage")
+        self.assertTrue(turn["ended"], "a bare command turn self-ends — never traps the session in 'working'")
+
 
 def _text(atom):
     msg = atom.get("message") or {}

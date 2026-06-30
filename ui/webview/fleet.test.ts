@@ -69,8 +69,20 @@ test("completed top goals hide by default; 'Show completed' lives in the docked 
   // the top-row selection (open-only vs +done +archived) is the pure, BEHAVIORALLY-tested ./fleet-roots
   // (fleet-roots.test.ts) — here we just pin that fleet.ts routes through it (the user 2026-06-27)
   assert.match(SRC, /import \{ fleetVisibleRoots \} from "\.\/fleet-roots"/);
-  assert.match(SRC, /const visibleRoots = fleetVisibleRoots\(roots, archivedTops, sd\)/);
+  // archived COMPLETED tops now carry their subtree; only depth-0 archived nodes are roots, the rest go in byId
+  assert.match(SRC, /const archRoots = archivedTops\.filter\(\(n\) => n\.depth === 0\)/);
+  assert.match(SRC, /const visibleRoots = fleetVisibleRoots\(roots, archRoots, sd\)/);
+  assert.match(SRC, /const byId = new Map\(\[\.\.\.tree, \.\.\.archivedTops\]\.map/);   // archived descendants resolvable for expansion
   assert.match(SRC, /createTextNode\("Show completed"\)/);
+});
+
+test("a NAME search bar filters the fleet to matching sessions (the user 2026-06-29)", () => {
+  assert.match(SRC, /let searchQuery = "";/);
+  assert.match(SRC, /const sq = searchQuery\.trim\(\)\.toLowerCase\(\);/);
+  assert.match(SRC, /if \(sq && !s\.name\.toLowerCase\(\)\.includes\(sq\)\) continue;/);
+  // wired to the #fleet-search input (in the kernel page body), re-rendering on each keystroke
+  assert.match(SRC, /document\.getElementById\("fleet-search"\)/);
+  assert.match(SRC, /search\.addEventListener\("input", \(\) => \{ searchQuery = search\.value; render\(\); \}\)/);
 });
 
 test("the controls DOCK into #fleet-foot as a bottom bar — not a floating overlay (the user 2026-06-29)", () => {

@@ -38,18 +38,25 @@ class FleetArchivedTops(unittest.TestCase):
     def test_no_archive_file_returns_empty(self):
         self.assertEqual(km._fleet_archived_tops("no-such-sid"), [])
 
-    def test_surfaces_completed_tops_not_bare_dismissals_or_children(self):
+    def test_surfaces_completed_tops_with_their_subtrees_not_bare_dismissals(self):
+        # the user 2026-06-29: an archived completed top now carries its WHOLE SUBTREE (depth + children ids)
+        # so the Fleet can EXPAND it — not a flat childless row. Bare dismissals (t2) are still excluded.
         self._write(SID, {"nodes": {
             "t1": {"text": "Ship feature", "parentId": None, "nodeComplete": True, "t": 100, "mt": 200},
             "t2": {"text": "Investigate idea", "parentId": None, "t": 110, "mt": 150},      # dismissed, never finished
             "t3": {"text": "Write doc", "parentId": None, "t": 120, "mt": 300, "summary": "wrote it"},  # done (takeaway)
-            "c1": {"text": "a child", "parentId": "t1", "nodeComplete": True, "t": 130, "mt": 140},      # not a top
+            "c1": {"text": "a child", "parentId": "t1", "nodeComplete": True, "t": 130, "mt": 140},
+            "c2": {"text": "a grandchild", "parentId": "c1", "nodeComplete": True, "t": 135, "mt": 138},
         }, "status": {"t2": "cleared"}})
-        tops = km._fleet_archived_tops(SID)
-        self.assertEqual([n["id"] for n in tops], ["t3", "t1"],
-                         "completed tops only, newest-first; no bare-dismissal t2, no child c1")
-        self.assertTrue(all(n["depth"] == 0 and n["done"] and n["archived"] and n["children"] == [] for n in tops),
-                        "each is a collapsed (childless) done top, tagged archived")
+        out = km._fleet_archived_tops(SID)
+        # flat list: tops newest-first, each FOLLOWED by its descendants; no bare-dismissal t2
+        self.assertEqual([n["id"] for n in out], ["t3", "t1", "c1", "c2"])
+        by = {n["id"]: n for n in out}
+        self.assertEqual(by["t3"]["depth"], 0); self.assertEqual(by["t3"]["children"], [])
+        self.assertEqual(by["t1"]["depth"], 0); self.assertEqual(by["t1"]["children"], ["c1"])   # expandable now
+        self.assertEqual(by["c1"]["depth"], 1); self.assertEqual(by["c1"]["children"], ["c2"])
+        self.assertEqual(by["c2"]["depth"], 2)
+        self.assertTrue(all(n["done"] and n["archived"] for n in out), "every archived node is done + tagged archived")
 
     def test_status_completed_counts_as_done(self):
         self._write(SID, {"nodes": {"t1": {"text": "x", "parentId": None, "t": 1, "mt": 2}},
