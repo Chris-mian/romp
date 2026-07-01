@@ -2156,7 +2156,10 @@ SSH_CONFIG = Path(os.environ.get("ROMP_SSH_CONFIG") or (Path.home() / ".ssh" / "
 _REMOTE_KERNEL_PORT = int(os.environ.get("ROMP_REMOTE_KERNEL_PORT", str(PORT)))   # remote kernels default to our port
 # key-only (no prompts), fail fast if a forward can't bind, keepalive so a dropped link is detected → re-spawn.
 _SSH_OPTS = ["-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=yes",
-             "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-o", "ConnectTimeout=10"]
+             "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-o", "ConnectTimeout=10",
+             # NEVER touch the user's ssh connection multiplexing: a concierge ssh must not create or reuse a
+             # ControlMaster socket, or a half-open one could hang the user's own `ssh <host>` (the user 2026-06-30).
+             "-o", "ControlMaster=no", "-o", "ControlPath=none"]
 
 _remotes = {}                  # host -> {host, kernel_port, local_port, token, proc, status, detail, sids}
 _remotes_lock = threading.Lock()
@@ -2388,17 +2391,37 @@ def _tunnel_supervisor():
             with _remotes_lock:
                 rows = list(_remotes.values())
             for r in rows:
+                now = time.time()
+                skip = False
                 with _remotes_lock:
                     if r["host"] not in _remotes:
                         continue
                     if not _tunnel_proc_alive(r):
-                        _spawn_tunnel(r)
+                        # BACK OFF re-spawns (exponential, capped 5min) so an unreachable host isn't hammered
+                        # every tick — repeated ssh attempts can trip the remote sshd's rate-limit (the user
+                        # 2026-06-30). A healthy tunnel resets the backoff below.
+                        if now >= r.get("next_try", 0):
+                            fails = r.get("fails", 0)
+                            r["next_try"] = now + min(300, 15 * (2 ** min(fails, 5)))
+                            r["fails"] = fails + 1
+                            _spawn_tunnel(r)
+                        else:
+                            if r.get("status") != "error":
+                                r["status"] = "down"
+                            skip = True                        # backing off — don't poll a down tunnel
+                if skip:
+                    continue
                 up = _port_open(r["local_port"])              # outside the lock (socket round-trip)
                 sids = _poll_remote_sids(r) if up else None
                 with _remotes_lock:
                     if r["host"] not in _remotes:
                         continue
-                    r["status"] = ("up" if up else "starting") if _tunnel_proc_alive(r) else "down"
+                    if _tunnel_proc_alive(r):
+                        r["status"] = "up" if up else "starting"
+                        if up:
+                            r["fails"], r["next_try"] = 0, 0   # healthy → clear the backoff
+                    elif r.get("status") != "error":
+                        r["status"] = "down"
                     if sids is not None:
                         r["sids"] = sids
         except Exception:
