@@ -4585,6 +4585,7 @@ def build_session(sid, now, tmux=None):
                                       explicit or derived or clr or bool(nd.get("blocked")))
         tree.append({"id": nid, "text": nd["text"], "depth": depth,
                      "done": explicit or derived or clr, "derived": derived, "cleared": clr,
+                     "auth": (nd.get("agentTask") or {}).get("status"),   # authoritative tier (agent's own to-do); see build_feed
                      "blocked": bool(nd.get("blocked")), "t": nd["t"],
                      # mt = the segment where this node was last touched (resolved/blocked) — the click-
                      # to-jump nav lands done/blocked goals on their mt (the assistant turn that finished
@@ -5279,6 +5280,10 @@ def build_feed(now, tmux=None):
             _pa, _wa = _node_anchor_uuids(nd, seg_trig, seg_uuid, st in ("done", "question"))
             out.append({"id": nid, "kind": "ask", "text": nd["text"], "who": name, "whoSid": fsid,
                         "whoColor": color, "whoWorking": who_working, "status": st, "derived": derived,
+                        # AUTHORITATIVE tier: this node mirrors an item on the agent's OWN to-do list, so its
+                        # open/done is agent-asserted (solidity = authority in the disc render). None = a plain
+                        # judge-inferred node. (the user 2026-07-01)
+                        "auth": (nd.get("agentTask") or {}).get("status"),
                         "t": nd["t"], "last": nd["t"], "trgb": list(cm.age_rgb(now - nd["t"], _colormap())),
                         # mt = last-modified (the segment the planner applied done / block) → a blocked or
                         # done node deep-links to WHERE IT RESOLVED, not where it was minted. Falls back to

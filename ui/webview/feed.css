@@ -644,6 +644,16 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
   color: var(--err); font-size: 9px; font-weight: 700; line-height: 1;
   display: inline-flex; align-items: center; justify-content: center; align-self: center;
 }
+/* AUTHORITATIVE tier (the user 2026-07-01): a node that mirrors the agent's OWN to-do item.
+   solidity = authority — the agent asserting a status binds harder than the judge inferring one.
+   auth-OPEN: the ◉ glyph tinted bold accent (var(--accent)) — a DOMINANT open, visibly stronger
+   than the soft inferred hollow ○. auth-DONE: keep the blue ✓ disc but ring it in accent, so
+   "the agent itself crossed this off" reads as the strongest done. Applied on card + modal tree. */
+.fcheck.auth-open .fcheck-mark { color: var(--accent); font-weight: 800; font-size: 12px; }
+.fcheck.auth-open .fcheck-text { color: var(--fg); }   /* a live agent-owed item stays full-weight, never dimmed */
+.fcheck.auth-done .fcheck-mark { box-shadow: 0 0 0 1.5px var(--accent); }
+.ftree-node.auth-open .ftree-mark { color: var(--accent); font-weight: 800; }
+.ftree-node.auth-done .ftree-mark { box-shadow: 0 0 0 1.5px var(--accent); }
 /* a card sub-goal is clickable just like the modal tree node (the user 2026-06-17): the checkbox + text are
    separate links. Per-ZONE hover highlight (.lz-hl, JS-toggled) — a halo on the mark, a fill on the text. */
 .fcheck .lz-nav { cursor: pointer; }
