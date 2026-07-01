@@ -5218,14 +5218,18 @@ def build_feed(now, tmux=None):
         # title is prompt-intent and must land on the USER turn — passing the trigger uuid (which the chat
         # tags + the kind guard accepts as turn-user) lets it resolve BY ID instead of a kind-restricted
         # nearest-time landing (the user 2026-06-17). (Both are emitted .turn[data-uuid]s in the chat.)
-        seg_uuid, seg_trig, seg_best = {}, {}, {}
+        seg_uuid, seg_trig, seg_best, atom_uuids = {}, {}, {}, set()
         try:
             for turn in (ps["turns"] if ps else []):     # cached parse only; anchors fill in after _warm_fleet_bg
                 for seg in em.segments(turn):
                     w, r = _seg_anchors(seg["atoms"])
                     seg_uuid[_seg_key(seg["id"])] = r or w                # timestamp-invariant key (SDK echo/real seg-id drift)
                     seg_trig[_seg_key(seg["id"])] = seg.get("trigger")
-                    seg_best[_seg_key(seg["id"])] = _seg_best_text(seg["atoms"])   # biggest text block → summary deep-link
+                    _lu, _lsub = _seg_last_text(seg["atoms"])
+                    seg_best[_seg_key(seg["id"])] = (_lu, _lsub, seg.get("t", 0))   # latest prose → summary deep-link fallback
+                    for _a in seg["atoms"]:              # resolvable-uuid set: gates the distiller's CITED anchor
+                        if _a.get("uuid"):
+                            atom_uuids.add(_a["uuid"])
         except Exception:
             pass
         children = {}
@@ -5442,16 +5446,26 @@ def build_feed(now, tmux=None):
             column = ("needs_input" if (api_block or nid == perm_top or (col == "blocked" and not recheck))
                       else "completed" if col == "completed" else "working")
             had_working = had_working or column == "working"
-            # summaryAnchorUuid: the biggest contiguous block of assistant text ANYWHERE in this goal's work
-            # span — its whole subtree's trail segments (mint→resolution). A click on the distilled summary
-            # line jumps to the most substantive thing the agent said about it (the user 2026-06-22). Subtree,
-            # not just the top node, so a goal that delegated still links where the real prose was written.
-            _sa_u, _sa_n = None, 0
-            for _x in _subtree(nid):
-                for _sid in (nodes[_x].get("trail") or []):
-                    _u, _n = seg_best.get(_seg_key(_sid), (None, 0))   # timestamp-invariant: resolve a drifted trail seg id
-                    if _u and _n > _sa_n:
-                        _sa_u, _sa_n = _u, _n
+            # summaryAnchorUuid: where a click on the distilled summary line lands. PREFERRED: the anchor the
+            # distiller/brief itself CITED while writing the line (node["summaryAnchor"], judge _split_source)
+            # — the same reader that wrote the summary names what it read, so the link is "what informed the
+            # summary" by construction (the user 2026-07-01); honored only when the uuid resolves in this
+            # parse. FALLBACK (older goals, no/invalid citation): the most CURRENT substantive assistant
+            # message across the goal's whole subtree trail (mint→resolution) — the wrap-up that closed the
+            # work. Never the old biggest-text-block pick: "longest ever" is monotone, so a long early
+            # analysis held the anchor forever while the real outcome landed later (the user 2026-07-01).
+            _sa_u, _cited = None, nodes[nid].get("summaryAnchor")
+            if _cited and _cited in atom_uuids:
+                _sa_u = _cited
+            else:
+                _best = None                             # (substantive, seg_t): prefer substantive, then latest
+                for _x in _subtree(nid):
+                    for _sid in (nodes[_x].get("trail") or []):
+                        _u, _sub, _t = seg_best.get(_seg_key(_sid), (None, False, 0))   # timestamp-invariant: resolve a drifted trail seg id
+                        if _u and (_best is None or (_sub, _t) > (_best[0], _best[1])):
+                            _best = (_sub, _t, _u)
+                if _best:
+                    _sa_u = _best[2]
             asks.append({
                 "itemId": nid, "sid": fsid, "name": name, "color": color, "text": nodes[nid]["text"],
                 "t": disp_t, "created": nodes[nid]["t"], "live": live,
@@ -5763,12 +5777,15 @@ def _seg_anchors(atoms):
     return work, reply
 
 
-def _seg_best_text(atoms):
-    """(uuid, char_count) of the assistant atom carrying the MOST text in a segment — the 'biggest contiguous
-    block of text' heuristic for deep-linking a distilled summary to the most substantive thing the agent
-    said in the work span (the user 2026-06-22). API-error atoms are skipped (like _seg_anchors: a failed
-    turn carries text but is never a jump target). (None, 0) when the segment has no assistant prose."""
-    best_u, best_n = None, 0
+def _seg_last_text(atoms):
+    """(uuid, substantive) — the LAST assistant prose atom in a segment, preferring a SUBSTANTIVE one
+    (≥200 chars of text). The summary deep-link FALLBACK when the distiller didn't cite a source: the most
+    current substantive message (the wrap-up that closed the work) is where the outcome lives, per the
+    closer's own doctrine that the completion verdict is the ground truth to anchor on. Replaces the old
+    biggest-text-block pick, which let a long early analysis hold the anchor forever (the user 2026-07-01).
+    API-error atoms are skipped (like _seg_anchors: a failed turn carries text but is never a jump target).
+    (None, False) when the segment has no assistant prose."""
+    last_any, last_sub = None, None
     for a in atoms:
         if a.get("type") != "assistant" or a.get("isApiError"):
             continue
@@ -5777,9 +5794,11 @@ def _seg_best_text(atoms):
             continue
         n = sum(len(b.get("text", "")) for b in blocks
                 if isinstance(b, dict) and b.get("type") == "text")
-        if n > best_n and a.get("uuid"):
-            best_u, best_n = a.get("uuid"), n
-    return best_u, best_n
+        if n and a.get("uuid"):
+            last_any = a["uuid"]
+            if n >= 200:
+                last_sub = a["uuid"]
+    return (last_sub or last_any), last_sub is not None
 
 
 def _seg_key(seg_id):
