@@ -5007,6 +5007,11 @@ def _provisional_card(s, name, color, fsid, live, now, store=None):
     if jd._seg_command(held):                        # a SLASH-COMMAND turn is never classified into a goal (the planner
         return None                                  # skips it), so it would NEVER place → the placeholder would hang
                                                      # forever (the JLD /usage case). No placeholder for a command. (2026-06-29)
+    if jd._seg_followup(held):                       # a FOLLOW-UP (carries romp-goal-id) files UNDER its target goal,
+        return None                                  # which the send already reopened optimistically — so a SEPARATE
+                                                     # provisional card just FLASHES: a new dotted goal appears, then
+                                                     # vanishes as the target moves to Working. Skip it; the reopened
+                                                     # target IS the card (the user 2026-07-01).
     # PLACED already? the planner stamps placements the moment it classifies this segment — its prompt-run
     # (#p, fired while the turn is open) or its work-run (bare id, fired once the turn ends), set even for a
     # SKIP. Either means the real card (or none) is on the board → stop the placeholder. This is the true
