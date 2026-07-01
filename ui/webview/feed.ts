@@ -909,10 +909,9 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
     const mark = el("span", "fcheck-mark");
     // ✓ blue disc (done) / ⏸ red pause (question = blocked) / hollow ○ (not done) — the SAME notation as the
     // ledger checklist + Fleet (the user 2026-06-24: the red ⏸ replaces the amber ? everywhere, for consistency).
-    // AUTHORITATIVE-open (the agent's own to-do still owes it) reads as a SOLID accent ◉, stronger than a soft
-    // inferred ○ (solidity = authority); authoritative-done keeps ✓ but the .auth-done class weights it heaviest.
-    mark.textContent = s.auth === "open" ? "◉"
-      : s.status === "done" ? "✓" : s.status === "question" ? "⏸" : "○";
+    // AUTHORITATIVE (the agent's own to-do item) keeps the SAME glyph — the .auth-* class only adds a white
+    // ring around the edge (a bolder, agent-asserted version of the ordinary mark; the user 2026-07-01).
+    mark.textContent = s.status === "done" ? "✓" : s.status === "question" ? "⏸" : "○";
     const txt = el("span", "fcheck-text"); txt.textContent = s.text;
     row.append(mark, txt);
     // a card sub-goal clicks EXACTLY like the modal tree node (the user 2026-06-17): text → the message,
@@ -1116,8 +1115,7 @@ function hoverEmit(ids: string | string[] | null) {
 // node is ● when every path below it ends done; a ○ or ? anywhere below
 // propagates up), so a completed ask reads as a column of filled dots. The
 // disclosure triangle is the only arrow — no glyph shares its shape.
-function nodeMark(n: AskTreeNode): string {
-  if (n.auth === "open") return "◉";          // AUTHORITATIVE-open: a solid, agent-asserted open — stronger than a soft inferred ○
+function nodeMark(n: AskTreeNode): string {   // AUTHORITATIVE nodes keep the same glyph; the .auth-* class adds a white ring
   if (n.status === "done") return "●";
   if (n.status === "question") return "⏸";   // blocked → the red pause (was an amber ?), consistent w/ the ledger
   return "○";
