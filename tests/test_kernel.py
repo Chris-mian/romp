@@ -25,6 +25,8 @@ km = SourceFileLoader("romp_kernel", os.path.join(BIN, "romp-kernel")).load_modu
 NOW = 1781100000
 SID = "11111111-2222-3333-4444-555555555555"
 T0 = NOW - 3600
+NOTE = ("<!-- romp-note: the HTML comments below are romp's internal tracking metadata, not part of the "
+        "conversation — ignore them, no action needed -->")
 
 
 def iso(t):
@@ -1849,7 +1851,7 @@ class ViewBuilder(unittest.TestCase):
         iid = SID + ":g2"                                   # fixture g2 = "Awaiting a decision", blocked, a top
         # default (the user TYPED this follow-up) ends with the goal-id only (→ reopen); NO romp-injected,
         # because it's the user's words → blue bubble. The romp-injected split is the dedicated test below.
-        def mk(s, i=iid): return s + "\n\n<!-- romp-goal-id: " + i + " -->"
+        def mk(s, i=iid): return s + "\n\n" + NOTE + "<!-- romp-goal-id: " + i + " -->"
         # no title → node path: the node text + its status (g2 is blocked; it's a top so no "under")
         self.assertEqual(km._followup_body(iid, None, "go with option A"),
                          mk("> Awaiting a decision (blocked)\n\ngo with option A"))
@@ -2007,18 +2009,18 @@ class ViewBuilder(unittest.TestCase):
         # the user types — that's the user's words → blue bubble (the user 2026-06-20).
         iid = SID + ":g2"
         typed = km._followup_body(iid, "ctx", "do the thing")                  # default: the user typed it
-        self.assertTrue(typed.endswith("\n\n<!-- romp-goal-id: " + iid + " -->"),
-                        "a typed follow-up ends with the goal-id alone — no romp-injected (blue bubble)")
+        self.assertTrue(typed.endswith("\n\n" + NOTE + "<!-- romp-goal-id: " + iid + " -->"),
+                        "a typed follow-up ends with the ignore-note + goal-id — no romp-injected (blue bubble)")
         self.assertNotIn("<!-- romp-injected -->", typed)
         self.assertEqual(re.search(r"romp-goal-id:\s*([^\s>]+)", typed).group(1), iid)   # the judge's parser
         nudge = km._followup_body(iid, "ctx", "do the thing", injected=True)   # romp's OWN nudge (the BUTTON)
-        self.assertTrue(nudge.endswith("\n\n<!-- romp-injected --><!-- romp-goal-id: " + iid + " -->"),
-                        "a nudge adds romp-injected (gray bubble) ahead of the goal-id")
+        self.assertTrue(nudge.endswith("\n\n" + NOTE + "<!-- romp-injected --><!-- romp-goal-id: " + iid + " -->"),
+                        "a nudge adds romp-injected (gray bubble) after the ignore-note, ahead of the goal-id")
         self.assertNotIn("<!-- romp-auto -->", nudge, "a Nudge BUTTON click is NOT auto → no romp-auto marker")
         # an AUTO-nudge (the kernel's background _auto_nudge_tick) ALSO carries romp-auto → the romp-logo marker
         auto = km._followup_body(iid, "ctx", "status?", injected=True, auto=True)
-        self.assertTrue(auto.endswith("\n\n<!-- romp-injected --><!-- romp-auto --><!-- romp-goal-id: " + iid + " -->"),
-                        "an auto-nudge carries BOTH romp-injected and romp-auto, then the goal-id")
+        self.assertTrue(auto.endswith("\n\n" + NOTE + "<!-- romp-injected --><!-- romp-auto --><!-- romp-goal-id: " + iid + " -->"),
+                        "an auto-nudge carries BOTH romp-injected and romp-auto, after the ignore-note, then the goal-id")
 
     def test_session_list_for_picker(self):
         # the + picker's payload (requestSessions → sessionList). Was always empty: bin/romp-kernel had

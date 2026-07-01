@@ -407,7 +407,7 @@ def _atom_text(atom):
 # node id, so the planner reopens that exact goal and files the new work UNDER it (the user 2026-06-17).
 FOLLOWUP_RE = re.compile(r"romp-goal-id:\s*([^\s>]+)")              # the tagged target goal-node id
 NUDGE_MARKER_RE = re.compile(r"<!--\s*romp-injected\s*-->")        # a romp NUDGE (auto-nudge / Nudge button), the user 2026-06-22
-_FOLLOWUP_MARKER_RE = re.compile(r"<!--\s*romp-(?:goal-id:[^>]*|injected)\s*-->")  # BOTH romp markers (goal-id + injected), stripped from model-facing text
+_FOLLOWUP_MARKER_RE = re.compile(r"<!--\s*romp-(?:goal-id:[^>]*|injected|note:[^>]*)\s*-->")  # romp markers, stripped from model-facing text
 
 
 def _shape(s, head, tail):
