@@ -462,6 +462,10 @@ class SdkSession:
         self._ctx_refreshing = False             # one get_context_usage control request in flight at a time
         self.retrying = False                        # an api_retry storm (API rate-limit/overload) is stalling the turn → 'retrying', not 'working'
         self._interrupted = False                    # user interrupted the in-flight turn → snapshot reads 'waiting' (display only; inflight stays event-driven)
+        self._subagents: dict[str, dict] = {}        # LIVE Task-spawned subagents: agent_id -> {"type","since"}. Fed
+        #   by the SubagentStart/SubagentStop hooks — the exact, event-based "what's running right now" signal the
+        #   tmux backend never had. Keeps the session 'working' while any run and surfaces a live count on the lane.
+        self._sub_lock = threading.Lock()            #   hooks mutate on the loop thread; snapshot() reads from the kernel thread
         self.chosen_model = reg.get("model") or ""   # the alias the user picked (opus/sonnet/…); self.model is the display name
         self.effort = reg.get("effort") or DEFAULT_EFFORT   # connect-time --effort; tracked since the init msg doesn't echo it
         self.perm_mode = self.mode
@@ -988,6 +992,36 @@ class SdkSession:
         self.backend._poke()
         return {}
 
+    # ---- subagent tracking (the transparency tmux never had) ----
+
+    async def _subagent_start_hook(self, inp, tool_use_id, context):
+        """A Task-spawned subagent just STARTED. Record it live (agent_id -> type + start time) so the session
+        reads 'working' while it runs and the lane can show how many are in flight. The SDK's SubagentStart
+        hook input carries agent_id + agent_type. Best-effort; never raises inside the hook."""
+        aid = inp.get("agent_id") if isinstance(inp, dict) else None
+        if aid:
+            with self._sub_lock:
+                self._subagents[aid] = {"type": (inp.get("agent_type") or ""), "since": int(time.time())}
+            self.backend._poke()
+        return {}
+
+    async def _subagent_stop_hook(self, inp, tool_use_id, context):
+        """A Task-spawned subagent FINISHED — drop it from the live set (SubagentStop carries the same agent_id).
+        When the last one clears, the session falls back to its real state (working if the main turn is still in
+        flight, else idle)."""
+        aid = inp.get("agent_id") if isinstance(inp, dict) else None
+        if aid:
+            with self._sub_lock:
+                self._subagents.pop(aid, None)
+            self.backend._poke()
+        return {}
+
+    def _live_subagents(self) -> list:
+        """The Task subagents running RIGHT NOW: [{"type","since"}], oldest first. Copied under the lock (hooks
+        mutate on the loop thread; snapshot() reads on the kernel thread)."""
+        with self._sub_lock:
+            return sorted((dict(v) for v in self._subagents.values()), key=lambda d: d.get("since") or 0)
+
     # ---- snapshot for live_sessions() ----
 
     def snapshot(self) -> dict:
@@ -998,17 +1032,26 @@ class SdkSession:
         # blocked the way tmux's does). _pending_ask is set for the whole ask (both kinds), and the ask
         # handlers append the needs-input state BEFORE raising it, so last_state is authoritative here.
         parked = self.backend._pending_ask.get(self.sid) is not None
+        subs = self._live_subagents()
         if self.inflight > 0 and not parked:
             # actively producing. A user interrupt shows 'waiting' (stopped) even though inflight stays 1
-            # until the aborted turn's ResultMessage settles it — see _do_interrupt.
+            # until the aborted turn's ResultMessage settles it — see _do_interrupt. A synchronous Task keeps
+            # the main turn in flight, so this branch already reads 'working' the whole time it runs.
             state = "waiting" if self._interrupted else ("retrying" if self.retrying else "working")
             since = self.since
+        elif subs and not parked and not self._interrupted:
+            # The main turn settled (inflight 0) but a Task subagent is still running — a BACKGROUNDED one that
+            # outlives the turn. The session IS still working; surface that instead of idling to 'waiting' (the
+            # user 2026-06-30: "mark it working when it has subagents running"). Clears itself when the last
+            # SubagentStop lands and the set empties.
+            state, since = "working", (min((s.get("since") or 0) for s in subs) or self.since)
         else:
             ls = last_state(self.backend.state_dir, self.sid)
             state, since = ls.get("state") or "waiting", ls.get("t") or 0
         return {"state": state, "since": str(since) if since else "",
                 "model": model_label(self.model, self.chosen_model), "effort": self.effort,
-                "mode": self.perm_mode, "ctx": self._ctx_pct(), "summary": ""}
+                "mode": self.perm_mode, "ctx": self._ctx_pct(), "summary": "",
+                "subagents": subs}   # live Task subagents (count + types) → lane affordance; [] when none
 
 
 # ---------------------------------------------------------------------------
@@ -1115,7 +1158,9 @@ class SdkBackend:
             cli_path=self.claude_bin,
             cwd=sess.cwd,
             can_use_tool=sess._can_use_tool,
-            hooks={"Stop": [HookMatcher(matcher=None, hooks=[sess._stop_hook])]},   # awaiting overlay producer
+            hooks={"Stop": [HookMatcher(matcher=None, hooks=[sess._stop_hook])],          # awaiting overlay producer
+                   "SubagentStart": [HookMatcher(matcher=None, hooks=[sess._subagent_start_hook])],  # live subagent
+                   "SubagentStop": [HookMatcher(matcher=None, hooks=[sess._subagent_stop_hook])]},    #   count/types
             permission_mode=sess.mode,
             include_partial_messages=False,
             effort=sess.effort or DEFAULT_EFFORT,   # connect-time --effort (no runtime control); a change reconnects

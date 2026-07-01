@@ -336,6 +336,59 @@ class LiveTail(unittest.TestCase):
         self.assertEqual(s.snapshot()["state"], "waiting", "an interrupted in-flight turn reads 'waiting', not 'working'")
 
 
+class LiveSubagents(unittest.TestCase):
+    """SubagentStart/SubagentStop hooks track the Task subagents running RIGHT NOW — the transparency the tmux
+    backend never had (the user 2026-06-30). The live set keeps the session 'working' while any run (covers a
+    BACKGROUNDED subagent that outlives the main turn) and surfaces a count on the lane."""
+
+    def _sess(self):
+        be = sb.SdkBackend(tempfile.mkdtemp(), "/bin/true", lambda *a, **k: None)
+        return sb.SdkSession(be, {"sid": "11111111-2222-3333-4444-555555555555", "name": "n", "cwd": "/tmp"})
+
+    def test_start_and_stop_track_the_live_set(self):
+        import asyncio
+        s = self._sess()
+        async def run():
+            await s._subagent_start_hook({"agent_id": "a1", "agent_type": "code-reviewer"}, None, None)
+            await s._subagent_start_hook({"agent_id": "a2", "agent_type": "general-purpose"}, None, None)
+            self.assertEqual({d["type"] for d in s._live_subagents()}, {"code-reviewer", "general-purpose"})
+            await s._subagent_stop_hook({"agent_id": "a1"}, None, None)
+            self.assertEqual([d["type"] for d in s._live_subagents()], ["general-purpose"])
+            await s._subagent_stop_hook({"agent_id": "a2"}, None, None)
+            self.assertEqual(s._live_subagents(), [], "the set empties when the last subagent stops")
+        asyncio.run(run())
+
+    def test_snapshot_exposes_the_live_subagents(self):
+        import asyncio
+        s = self._sess()
+        asyncio.run(s._subagent_start_hook({"agent_id": "a1", "agent_type": "code-reviewer"}, None, None))
+        snap = s.snapshot()
+        self.assertEqual([d["type"] for d in snap["subagents"]], ["code-reviewer"],
+                         "the snapshot carries the live subagents for the lane")
+
+    def test_backgrounded_subagent_keeps_the_session_working(self):
+        """The main turn settled (inflight 0) but a backgrounded Task subagent is still running: the session is
+        still working, not idle. Clears itself when the subagent stops."""
+        import asyncio
+        s = self._sess()
+        s.inflight = 0                                          # main turn already ended
+        self.assertEqual(s.snapshot()["state"], "waiting", "no subagents → idles to waiting")
+        asyncio.run(s._subagent_start_hook({"agent_id": "a1", "agent_type": "explorer"}, None, None))
+        self.assertEqual(s.snapshot()["state"], "working", "a live backgrounded subagent reads 'working'")
+        asyncio.run(s._subagent_stop_hook({"agent_id": "a1"}, None, None))
+        self.assertEqual(s.snapshot()["state"], "waiting", "back to idle once it stops")
+
+    def test_a_parked_permission_still_wins_over_subagents(self):
+        """A live subagent must NOT mask a permission/picker prompt that needs the user — parked wins."""
+        import asyncio
+        s = self._sess()
+        s.inflight = 1
+        s.backend._pending_ask[s.sid] = {"kind": "single"}     # parked on a prompt
+        asyncio.run(s._subagent_start_hook({"agent_id": "a1", "agent_type": "x"}, None, None))
+        sb.append_state(s.backend.state_dir, s.sid, "permission")
+        self.assertEqual(s.snapshot()["state"], "permission", "needs-you still surfaces over a running subagent")
+
+
 class SnapshotParkedOnAsk(unittest.TestCase):
     """A RUNNING SDK session parked in can_use_tool/_ask_user on a permission/picker prompt must snapshot
     as that needs-input state, NOT 'working'. The turn stays inflight through the wait, so the old snapshot
