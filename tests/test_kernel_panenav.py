@@ -21,10 +21,11 @@ class PaneNav(unittest.TestCase):
         self.assertIn("var COLS=['f-chat','f-fleet','f-feed']", JS, "the three side-by-side columns, left->right")
         self.assertIn("var TL='f-timeline'", JS, "the timeline is the bottom band")
 
-    def test_shift_arrow_is_the_trigger_only_outside_text_fields(self):
-        self.assertIn("if(!e.shiftKey||e.metaKey||e.ctrlKey||e.altKey)return;", JS, "Shift+Arrow only (no other mods)")
+    def test_alt_arrow_is_the_trigger_only_outside_text_fields(self):
+        # Alt(Option)+Arrow — NOT Shift (selects text), NOT Ctrl/Cmd (macOS Spaces / browser back-forward)
+        self.assertIn("if(!e.altKey||e.shiftKey||e.ctrlKey||e.metaKey)return;", JS, "Alt+Arrow only (no other mods)")
         self.assertIn("{ArrowLeft:'left',ArrowRight:'right',ArrowUp:'up',ArrowDown:'down'}", JS)
-        # inside a textarea/input Shift+Arrow must still select text, not move panes
+        # inside a textarea/input Alt+Arrow must still word-jump, not move panes
         self.assertIn("if(editable(e.target))return;", JS)
         self.assertIn("tag==='textarea'||tag==='input'||tag==='select'||t.isContentEditable", JS)
 
