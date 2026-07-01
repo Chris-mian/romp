@@ -2914,6 +2914,12 @@ def _genuine_queued(text):
     t = (text or "").strip()
     if not t:
         return False
+    # A harness SYSTEM injection — a backgrounded agent's <task-notification>, a <system-reminder> — gets QUEUED
+    # by Claude Code when it lands while the session is busy/compacting (verified: the enqueue content starts
+    # with the wrapper). It is NOT the user's typed input, so it must not show as a "queued message" (the user
+    # 2026-06-30: a task-notification rendered as a raw "1 queued message" in the chat).
+    if em.SYSTEM_WRAPPER_RE.match(t):
+        return False
     return not ("romp-msg-id" in t or t.startswith("####################") or "\U0001F4EC" in t)
 
 

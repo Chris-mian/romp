@@ -3428,8 +3428,9 @@ class ApiRetryAndTabOrderRoutes(unittest.TestCase):
     def test_routes_present(self):
         src = Path(BIN, "romp-kernel").read_text()
         self.assertIn('t == "apiRetry"', src, "Retry button → apiRetry, handled in the unified _drive")
-        self.assertIn(r'"retry\n\n<!-- romp-injected -->" if be is _TMUX else "retry"', src,
-                      "apiRetry pastes 'retry' tagged romp-injected on tmux (→ a gray romp bubble), bare on the SDK")
+        self.assertIn(r'be.send(sid, "retry\n\n<!-- romp-injected -->")', src,
+                      "apiRetry pastes 'retry' tagged romp-injected on BOTH backends (→ a gray romp bubble; the "
+                      "planner skips a work-less retry instead of minting a junk goal — the user 2026-06-30)")
         self.assertIn('"type": "tabOrder"', src,
                       "kernel pushes the saved tab order on connect so the UI stops reordering (#11)")
 
@@ -3494,6 +3495,25 @@ class TestPendingQueued(unittest.TestCase):
         self.assertFalse(km._genuine_queued("text with romp-msg-id: 11111111 inside"))
         self.assertFalse(km._genuine_queued("\U0001F4EC delivered"))
         self.assertFalse(km._genuine_queued("####################\nbanner"))
+
+    def test_genuine_queued_excludes_system_wrappers(self):
+        # a harness <task-notification> / <system-reminder> is not the user's typed input (the user 2026-06-30)
+        self.assertFalse(km._genuine_queued('<task-notification>\n<task-id>x</task-id></task-notification>'))
+        self.assertFalse(km._genuine_queued('<system-reminder>be concise</system-reminder>'))
+        self.assertTrue(km._genuine_queued("a normal message"))
+
+    def test_drops_queued_system_wrappers(self):
+        # a backgrounded agent's <task-notification> gets QUEUED when it lands while the session is busy/
+        # compacting — a harness injection, NOT typed input, so it must not show as a "queued message" (the
+        # user 2026-06-30: it rendered as a raw "1 queued message" in the chat). Synthetic: invented ids, TESTHOST.
+        notif = ('<task-notification>\n<task-id>11111111aaaa</task-id>'
+                 '<tool-use-id>toolu_0abc</tool-use-id>'
+                 '<output-file>/tmp/TESTHOST/tasks/11111111aaaa.output</output-file>'
+                 '<status>completed</status><summary>Agent "widget audit" came to rest</summary>'
+                 '<result>done</result></task-notification>')
+        self._write(("enqueue", notif), ("enqueue", "my real queued ask"))
+        self.assertEqual(km._pending_queued(self.p), ["my real queued ask"],
+                         "the queued task-notification is filtered, only the typed message remains")
 
     def test_cache_keys_on_mtime_size(self):
         # build_session calls this every push; an unchanged transcript returns the cached list, a changed
