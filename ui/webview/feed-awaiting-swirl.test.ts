@@ -23,7 +23,8 @@ test("the swirl + caption covers awaiting, provisional, and re-check — shown w
   // a single computed caption drives the swirl: awaiting → the why; a working provisional placeholder →
   // "Working…"; a targeted-follow-up re-check → "Re-judging…"; a plain-reply rejudging (STAYS in Needs-You) →
   // "Re-judging…". The blocked placeholder (needs-input) is NOT covered — it's on you, not in motion.
-  assert.match(FEED, /if \(aw && !it\.waitingOn\) \{\s*\n\s*spinCaption = aw\.why \|\| "Waiting on work it dispatched…";/);
+  // AWAITING is the PAUSED case: a fixed "Awaiting background agents" label (the user 2026-07-01), NOT the swirl
+  assert.match(FEED, /if \(aw && !it\.waitingOn\) \{\s*\n\s*awaitingBg = true;\s*\n\s*spinCaption = "Awaiting background agents";/);
   assert.match(FEED, /\} else if \(it\.provisional && it\.column === "working"\) \{\s*\n\s*spinCaption = "Working…";/);
   assert.match(FEED, /\} else if \(it\.recheck\) \{\s*\n\s*spinCaption = "Re-judging…";/);
   assert.match(FEED, /\} else if \(it\.rejudging\) \{\s*\n\s*spinCaption = "Re-judging…";/);
@@ -36,7 +37,7 @@ test("the swirl + caption covers awaiting, provisional, and re-check — shown w
 });
 
 test("each case carries a concise tooltip on the swirl (hover → the key idea, not an essay)", () => {
-  assert.match(FEED, /let spinCaption: string \| null = null, spinTip = "";/);
+  assert.match(FEED, /let spinCaption: string \| null = null, spinTip = "", awaitingBg = false;/);
   // tooltips are short and plain-spoken (the user 2026-06-29): the key idea, no LLM-essay phrasing, no em dashes
   assert.match(FEED, /spinTip = "A new prompt, not yet sorted into a goal\. Placeholder until it is\.";/);
   assert.match(FEED, /spinTip = "You followed up\. Reopened to Working; the judge will resolve it or re-block it\.";/);
@@ -48,6 +49,15 @@ test("each case carries a concise tooltip on the swirl (hover → the key idea, 
 
 test("the swirl's Re-judging caption REPLACES the '↩ re-judging' chip (no double-labeling)", () => {
   assert.match(FEED, /if \(spinCaption === "Re-judging…"\) a\._followedup\.style\.display = "none";/);
+});
+
+test("the PAUSED awaiting case gets a rounded box + a STATIC (non-spinning) swirl (the user 2026-07-01)", () => {
+  // only the awaiting-background-agents case is paused; the class marks it so
+  assert.match(FEED, /a\._awaitSpin\.classList\.toggle\("await-paused", awaitingBg\);/);
+  // rounded outline box for the paused state
+  assert.match(CSS, /\.fask-awaiting\.await-paused \{[\s\S]*?border: 1px solid var\(--box-border\); border-radius: 8px;/);
+  // and the romp swirl STOPS — a spin only ever means romp/the session is actually working
+  assert.match(CSS, /\.fask-awaiting\.await-paused \.fask-awaiting-swirl \{ animation: none;/);
 });
 
 test("the swirl uses the shared glyph, spins SLOWER (calmer) + reverse like the loader, and respects reduced-motion", () => {
