@@ -2457,6 +2457,23 @@ class BlockCompletionCorrectness(unittest.TestCase):
         self.assertNotIn("ANSWERED THE USER", jd.PLAN_SYS, "answers are no longer routed to block")
         self.assertNotIn("if the ask was a QUESTION", jd.PLAN_SYS, "the done op no longer exempts questions")
 
+    def test_scoping_then_asking_approval_is_block_not_done(self):
+        # the user 2026-07-01: a turn that finishes a phase (research/design/scoping) and then asks the
+        # user to approve starting the NAMED next step ("I've scoped it; want me to build it?") kept getting
+        # marked DONE, because "an answer fully given is done" won over the hand-back-to-user block rule.
+        # BOTH judges (the WORK-run planner PLAN_SYS + the turn-end closer CLOSER_SYS) now carve the
+        # approval-ask out of done and route it to block. Guard the prompts against a revert.
+        for phrase in ("want me to build this?", "shall I proceed?",
+                       "Being thorough is not the same as being finished"):
+            self.assertIn(phrase, jd.PLAN_SYS, "planner: " + phrase)
+        for phrase in ("want me to build this?", "Being thorough is not the same as being finished",
+                       "want me to build it?"):
+            self.assertIn(phrase, jd.CLOSER_SYS, "closer: " + phrase)
+        # the carve-out lives on the DONE side too (not only restated in block), so the two rules don't compete
+        done_clause = jd.CLOSER_SYS.split("- blocked:", 1)[0]
+        self.assertIn("is NOT done", done_clause, "the closer done rule itself defers the approval-ask to block")
+        self.assertIn("is a block, not a done", jd.PLAN_SYS, "the planner done op defers the approval-ask to block")
+
     def test_answer_goal_completes_with_the_answer_as_donewhy(self):
         # mechanics: mint an answer-goal + done it via ref → it lands complete with the answer as doneWhy
         # (the inline reason the feed shows on the done card). No block needed.
