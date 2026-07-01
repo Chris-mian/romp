@@ -419,7 +419,8 @@ function renderAgentNotif(a: AgentNotif, key?: string): HTMLElement {
   } else {
     const p = el("div", "agent-notif-summary"); p.textContent = a.summary; body.appendChild(p);
   }
-  const head = `🤖 ${a.label} · ${a.status || "returned"}`;
+  // No emoji anywhere (the user 2026-06-30): the accent-coloured "Agent" prefix is the cue, not a glyph.
+  const head = `Agent "${a.label}" · ${a.status || "returned"}`;
   const f = foldable(head, body, key);
   f.classList.add("agent-notif-fold");
   return f;
