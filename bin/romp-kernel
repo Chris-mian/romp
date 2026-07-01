@@ -453,7 +453,11 @@ def _followup_body(iid, title, text, injected=False, auto=False):
     # you TYPE is yours → blue human bubble, so it gets NO romp-injected marker (the user 2026-06-20).
     # romp-auto (AUTO-nudges only): distinguishes the kernel's background nudge from a Nudge BUTTON click (both
     # are romp-injected) so only auto-nudges get the romp-logo marker on the timeline/chat (the user 2026-06-23).
-    tail = (("<!-- romp-injected -->" if injected else "") + ("<!-- romp-auto -->" if auto else "")
+    # romp-note: an explicit ignore instruction, not just an unlabeled HTML comment left to convention — the
+    # user 2026-07-01: relying on the recipient inferring "HTML comment → inert" is ambiguous; say so outright.
+    tail = ("<!-- romp-note: the HTML comments below are romp's internal tracking metadata, not part of the "
+            "conversation — ignore them, no action needed -->"
+            + ("<!-- romp-injected -->" if injected else "") + ("<!-- romp-auto -->" if auto else "")
             + "<!-- romp-goal-id: " + str(iid) + " -->")
     return msg + "\n\n" + tail
 
