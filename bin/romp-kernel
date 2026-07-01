@@ -7977,6 +7977,13 @@ f.contentWindow.addEventListener('focus',emit);
 d.addEventListener('keydown',onKey,true);}catch(e){}}   // capture Alt+Arrow before the pane's own handlers
 Object.keys(PANE).forEach(function(id){var f=document.getElementById(id);if(!f)return;
 f.addEventListener('load',function(){wire(f);});wire(f);});   // wire now (already-loaded) + on every (re)load
+// ALSO claim Alt+Arrow at the TOP-LEVEL shell document (the user 2026-07-01): a keydown fires in whichever
+// document has focus and does NOT cross the iframe boundary, so the per-iframe handlers miss the case where
+// focus sits on the shell itself (right after load, or after clicking shell chrome) — there Alt+Left fell
+// through to Firefox's Back. Capturing here + preventDefault (in onKey) cancels the browser default. This is
+// the general web-app pattern (capture on window/document + preventDefault); Alt+Arrow is cancelable (unlike
+// macOS Ctrl+Arrow / Spaces, which is OS-level and can't be intercepted).
+document.addEventListener('keydown',onKey,true);
 setFocus('f-chat');})();   // default: the chat section is ringed on open
 """
 
