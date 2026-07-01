@@ -1016,6 +1016,16 @@ class ViewBuilder(unittest.TestCase):
             self.assertFalse(km._session_working([{"ended": False, "atoms": [{"type": "idle"}], "t": NOW, "end": NOW}]),
                              "an idle-terminated turn = not working")
             self.assertFalse(km._session_working([]), "no turns = not working")
+            # IDLE-LED-THEN-RESUMED (the user 2026-06-30, judge_audit): a session stalled (an idle span), then got
+            # re-engaged and is ACTIVELY WORKING again — the earlier idle folds into the SAME turn, so the idle
+            # atom sits in the MIDDLE with real work after it. Keying on ANY idle atom wrongly read this as
+            # not-working mid-work, and the auto-nudge fired a spurious "status?" on it. Only a TAIL idle stops.
+            self.assertTrue(km._session_working([{"ended": False, "t": NOW - 90, "end": NOW,
+                             "atoms": [{"type": "idle"}, {"type": "assistant"}, {"type": "user"}]}]),
+                            "idle in the MIDDLE but work resumed after it = working")
+            self.assertFalse(km._session_working([{"ended": False, "t": NOW - 90, "end": NOW,
+                             "atoms": [{"type": "assistant"}, {"type": "user"}, {"type": "idle"}]}]),
+                             "worked then went idle AT THE TAIL = not working")
         finally:
             km._downtime = saved
 
@@ -1322,6 +1332,58 @@ class ViewBuilder(unittest.TestCase):
             self.assertEqual(fu_calls, [], "auto-nudge does NOT optimistic-followup → no Followed-up chip")
         finally:
             km._tmux_send, jd.optimistic_followup = saved_send, saved_fu
+
+    def _drive_nudge_over(self, turn, last_state):
+        # Drive one _auto_nudge_tick over a single controlled TURN + _last_state, exercising the REAL
+        # _session_working / genuine-stop gate. Returns the captured sends. One orphaned working top goal.
+        g = SID + ":gw"
+        self._goal_store({g: {"id": g, "text": "wire up the thing", "parentId": None, "nodeComplete": False,
+                              "blocked": False, "cleared": False, "trail": [], "t": T0}},
+                         {g: "working"}, last=g, closed=[turn["id"]])
+        km._set_auto_nudge(True)
+        saved = (jd.parsed_session, km._last_state, km._alive_sessions, km._session_awaiting,
+                 km._api_error, km._wait_for_graph, km._session_flag, list(km._downtime))
+        km._downtime[:] = []                                         # no host-sleep interfering with _session_working
+        jd.parsed_session = lambda sid, paths, now: {"turns": [turn]}
+        km._last_state = lambda sid: last_state
+        km._alive_sessions = lambda now, tmux: [{"sid": SID, "path": str(self.tpath)}]
+        km._session_awaiting = lambda *a, **k: None
+        km._api_error = lambda p: None
+        km._wait_for_graph = lambda now, sids: {}
+        km._session_flag = lambda sid, flag: False
+        sent, restore = self._stub_nudge()
+        try:
+            km._auto_nudge_tick(NOW, {SID: {"state": "working"}})
+            return list(sent)
+        finally:
+            restore()
+            (jd.parsed_session, km._last_state, km._alive_sessions, km._session_awaiting,
+             km._api_error, km._wait_for_graph, km._session_flag, dt) = saved
+            km._downtime[:] = dt
+
+    def test_auto_nudge_skips_an_idle_led_but_resumed_turn(self):
+        # THE judge_audit BUG (the user 2026-06-30): a session stalled (an idle span), then the user re-engaged
+        # and it's ACTIVELY WORKING again — the earlier idle folds into the SAME turn (an idle-led turn that
+        # RESUMED), so the idle atom sits in the MIDDLE with real work after it. The old _session_working keyed
+        # on ANY idle atom → read it as not-working mid-work; the genuine-stop gate then raced on _last_state
+        # (working stamped once at turn-START, so its time is BEFORE the turn's latest atom) and let the nudge
+        # through — a spurious "status?" fired 31s into real work. An actively-working session must NOT be nudged.
+        turn = {"id": SID + ":t1", "ended": False, "t": T0, "end": NOW,
+                "atoms": [{"type": "idle", "t": T0, "end": T0 + 40},   # the stall, at the HEAD of the turn
+                          {"type": "user", "t": T0 + 40},              # re-engaged
+                          {"type": "assistant", "t": NOW}]}            # resumed work — the TAIL is live work
+        sent = self._drive_nudge_over(turn, last_state=("working", T0 + 40))   # working stamped at turn-start (racy)
+        self.assertEqual(sent, [], "idle-led-but-resumed (actively working) must NOT be nudged")
+
+    def test_auto_nudge_still_fires_on_a_stale_stuck_working_state(self):
+        # bugsdk2 (the user 2026-06-25) — the case the idle-led fix must NOT reopen: a turn genuinely ENDED, but
+        # the state log stuck at 'working' (a kernel restart lost the post-turn 'waiting' write). That stale
+        # working record sits BEFORE the turn end, so the genuine-stop gate must still let the nudge through.
+        turn = {"id": SID + ":t1", "ended": True, "t": T0, "end": NOW,
+                "atoms": [{"type": "user", "t": T0}, {"type": "assistant", "t": NOW}]}
+        sent = self._drive_nudge_over(turn, last_state=("working", T0 - 60))   # stale 'working', BEFORE the turn end
+        self.assertEqual(len(sent), 1, "a genuinely-ended turn with a stale-stuck 'working' state STILL gets nudged")
+        self.assertIn("romp-goal-id: " + SID + ":gw", sent[0][1])
 
     def _stall_transcript(self, recs):
         # write a transcript, clear the parse cache, and (re)create the working goal with ALL its turn ids

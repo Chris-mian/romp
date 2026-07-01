@@ -79,7 +79,14 @@ def _session_working(turns):
     if not turns:
         return False
     lt = turns[-1]
-    if lt.get("ended") or any(a.get("type") == "idle" for a in lt["atoms"]):
+    atoms = lt.get("atoms") or []
+    # Not working iff the turn genuinely ENDED, or it's idle AT ITS TAIL (the last atom is an idle span). Keying
+    # on ANY idle atom was wrong for an IDLE-LED turn that RESUMED: a session that stalled, then got re-engaged
+    # (a fresh prompt) and is actively working again, folds the earlier idle span into the SAME turn — so `any
+    # idle` read it as not-working mid-work, and the auto-nudge fired a spurious "status?" on it (the user
+    # 2026-06-30: judge_audit stalled 21:29:19→21:30:03, was re-engaged, and got nudged 31s into real work). An
+    # idle in the MIDDLE means the turn resumed; only an idle at the END means it's still stopped.
+    if lt.get("ended") or (atoms and atoms[-1].get("type") == "idle"):
         return False
     return not _suspended_after(lt.get("end", lt.get("t")))
 
@@ -1134,10 +1141,17 @@ def _auto_nudge_tick(now, tmux):
             # INSTRUMENTATION (the user 2026-06-30, see jd._nudge_diag): record the goal's ACTUAL completeness
             # vs its status label at fire time. A 'nudge-fire' with nodeComplete/subtreeDone True proves the
             # firing-side bug — the nudge fired on a done goal whose status column still read 'working'.
+            _lt_atoms = lt.get("atoms") or []
             jd._nudge_diag("nudge-fire", sid=sid, gid=gid, status=status.get(gid, "working"),
                            nodeComplete=bool(nd.get("nodeComplete")),
                            subtreeDone=bool(jd._subtree_done(nodes, _diag_kids, gid)),
-                           settledDone=bool(nd.get("settledDone")), count=count)
+                           settledDone=bool(nd.get("settledDone")), count=count,
+                           # WORKING-GUARD inputs (the user 2026-06-30): so a "fired while working" case is
+                           # diagnosable from the log alone — the live snapshot state, the parsed turn's
+                           # tail/end, and the last_state (val,t) the genuine-stop gate compared against.
+                           liveState=st, lastAtomType=(_lt_atoms[-1].get("type") if _lt_atoms else ""),
+                           ltEnd=lt.get("end"), ltId=lt_id, nTurns=len(turns),
+                           lsVal=ls_val, lsT=ls_t)
             Sessions.backend_for(sid).send(sid, _followup_body(gid, None, AUTO_NUDGE_TEXT, injected=True, auto=True))   # gray romp bubble + romp-logo (both backends)
             _mark_auto_nudged(gid, lt_id, count)         # {count, lastTurnId} → re-arm on the next ended-working turn
             _log_nudge_event(sid, gid, now, count)       # timeline romp-logo dot + escalation count
