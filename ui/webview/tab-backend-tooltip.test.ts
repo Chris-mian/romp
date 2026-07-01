@@ -32,7 +32,7 @@ test("backend is bold and coloured BY BACKEND — tmux green / SDK blue, the can
 });
 
 test("v4: git branch + context battery + Summary row + the last 5 worked-on items, recency-coloured (the user 2026-06-24)", () => {
-  assert.match(RENDER, /rows\.push\(\["Branch", sys\.gitBranch\]\)/);                 // git branch from the system event
+  assert.match(RENDER, /rows\.push\(\["Branch", s\.gitBranch\]\)/);                   // git branch from the top-level session field (resident even when the head system event is windowed out — the user 2026-06-30)
   assert.match(RENDER, /const bar = ctxBar\(\); setCtxBar\(bar, s\.status\.ctx/);     // the battery widget, not "X%"
   assert.match(RENDER, /const lg = ledgers\.get\(s\.id\)/);
   assert.match(RENDER, /k\.textContent = "Summary"[\s\S]*?v\.textContent = lg\.summary/);   // labelled Summary row
