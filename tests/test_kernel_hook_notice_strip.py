@@ -44,9 +44,11 @@ class CompactionRendering(unittest.TestCase):
     def test_boundary_emits_a_compact_divider_with_metadata(self):
         src = inspect.getsource(km.build_session)
         self.assertIn('"kind": "compact"', src)
-        self.assertIn('"trigger": cm.get("trigger")', src)
-        self.assertIn('"preTokens": cm.get("pre_tokens")', src)
-        self.assertIn('"postTokens": cm.get("post_tokens")', src)
+        # local metadata is `cmeta`, NOT `cm` — `cm` is the colormap module used later in build_session
+        self.assertIn('"trigger": cmeta.get("trigger")', src)
+        self.assertIn('"preTokens": cmeta.get("pre_tokens")', src)
+        self.assertIn('"postTokens": cmeta.get("post_tokens")', src)
+        self.assertNotIn("cm = a.get(\"compact_metadata\")", src, "must not shadow the colormap module `cm`")
         self.assertNotIn('"md": "✦ Compacted"', src, "no longer a plain assistant paragraph")
 
     def test_compacted_only_command_output_is_dropped(self):
