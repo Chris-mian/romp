@@ -5764,10 +5764,18 @@ def _node_anchor_uuids(nd, seg_trig, seg_work, resolved):
     RESOLVED (done/blocked → its LAST trail segment) or was MINTED (open → its FIRST). Shared by
     build_feed + build_session so a feed card and the ledger TOC for the SAME node land on the SAME turn —
     replacing the ledger's old nearest-time heuristic (the user 2026-06-19). Lookups go through _seg_key so
-    a timestamp-drifted trail seg id (SDK echo vs real atom) still resolves."""
+    a timestamp-drifted trail seg id (SDK echo vs real atom) still resolves.
+
+    PROMPT anchor: prefer the node's STORED `promptUuid` (the judge stamps the trigger atom's uuid at mint,
+    2026-07-01) over re-deriving it from trail[0]'s segment key. The derivation drifts: _seg_key reconciles
+    the TIMESTAMP axis of the echo-vs-atom mismatch but NOT the TEXT axis, so a trigger-text difference
+    (a trailing marker, whitespace, an image placeholder) changes the text-hash → the key misses → the
+    title click silently no-ops (the user: 'the modal title jump fails to link'). The stored uuid needs no
+    re-match. Falls back to the derivation for nodes minted before the field existed (no promptUuid)."""
     trail = nd.get("trail") or []
     anchor_seg = (trail[-1] if resolved else trail[0]) if trail else None
-    return (seg_trig.get(_seg_key(trail[0] if trail else None)), seg_work.get(_seg_key(anchor_seg)))
+    prompt = nd.get("promptUuid") or seg_trig.get(_seg_key(trail[0] if trail else None))
+    return (prompt, seg_work.get(_seg_key(anchor_seg)))
 
 
 def _seg_prompt(seg):

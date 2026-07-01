@@ -1962,6 +1962,27 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(tnode["promptAnchorUuid"], seg.get("trigger"),
                          "title prompt anchor = the minting segment's trigger (the user's message) uuid")
 
+    def test_node_anchor_prefers_stored_prompt_uuid_over_seg_key_derivation(self):
+        # The judge stamps promptUuid (the trigger atom uuid) on every node at mint (2026-07-01, via bugs).
+        # The kernel must PREFER it over re-deriving the prompt anchor from trail[0]'s segment key — that
+        # derivation drifts on trigger-TEXT mismatch (optimistic echo vs the real atom), which _seg_key can't
+        # reconcile (it only fixes the timestamp axis), and the goal-modal title click then silently no-ops.
+        # With the stored uuid there is nothing to re-match. Here seg_trig is EMPTY, so the derivation would
+        # return None — the stored uuid must still win.
+        nd = {"trail": ["sid:1000:deadbeef"], "promptUuid": "11111111-2222-3333-4444-555555555555"}
+        prompt, _work = km._node_anchor_uuids(nd, {}, {}, resolved=False)
+        self.assertEqual(prompt, "11111111-2222-3333-4444-555555555555",
+                         "the stored promptUuid wins even when the seg-key derivation misses (text drift)")
+
+    def test_node_anchor_falls_back_to_derivation_when_no_stored_prompt_uuid(self):
+        # A node minted BEFORE the promptUuid field existed has none → derive from trail[0]'s segment key,
+        # exactly as before (additive: order of landing the judge write vs this kernel read doesn't matter).
+        seg = "sid:1000:deadbeef"
+        seg_trig = {km._seg_key(seg): "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"}
+        prompt, _work = km._node_anchor_uuids({"trail": [seg]}, seg_trig, {}, resolved=False)
+        self.assertEqual(prompt, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                         "no stored uuid → fall back to the seg_trig derivation (unchanged legacy path)")
+
     def test_card_carries_summary_anchor_for_the_summary_deep_link(self):
         # the distilled summary LINE deep-links to the biggest contiguous assistant-text block in the goal's
         # work span (the user 2026-06-22): the card's summaryAnchorUuid = _seg_best_text over the node's trail.
