@@ -58,9 +58,20 @@ test("sending with a citation routes as an askFollowUp (reopen) and consumes the
   assert.match(RENDER, /if \(cite\) \{ composerCitations\.delete\(activeId\); renderComposerChips\(activeId\); \}/);
 });
 
-test("citations persist + restore like drafts (survive reload + tab switch)", () => {
+test("a citation survives a RELOAD but is dropped on tab SWITCH (the user 2026-07-01)", () => {
+  // persisted so a mid-reply reload keeps the chip
   assert.match(RENDER, /citations: Object\.fromEntries\(composerCitations\)/);
   assert.match(RENDER, /const savedCites = \(\(vscodeApi\?\.getState\?\.\(\) \|\| \{\}\) as any\)\.citations;/);
-  // restored on the one-shot post-reload pass, and on every tab switch
   assert.match(RENDER, /renderComposerChips\(activeId\);\s*\/\/ a citation persisted across the reload/);
+  // but switching AWAY from a tab abandons its chip (a "reply right now" intent)
+  assert.match(RENDER, /if \(ta\.value\) drafts\.set\(activeId, ta\.value\); else drafts\.delete\(activeId\);\s*\n[\s\S]*?composerCitations\.delete\(activeId\);/);
+});
+
+test("clearing a card drops any composer chip pointing at it (the user 2026-07-01)", () => {
+  // the kernel pushes dropCitation{itemId} on a single clear, dropCitationsAll on Clear-all
+  assert.match(RENDER, /m\.type === "dropCitation" && typeof m\.itemId === "string"\) dropCitationByItem\(m\.itemId\)/);
+  assert.match(RENDER, /m\.type === "dropCitationsAll"\) \{[\s\S]*?composerCitations\.clear\(\); persistDrafts\(\); renderComposerChips\(activeId\);/);
+  // dropCitationByItem removes the matching session's chip (itemId is sid-prefixed → one session)
+  assert.match(RENDER, /function dropCitationByItem\(itemId: string\): void/);
+  assert.match(RENDER, /if \(c\.itemId === itemId\) \{ composerCitations\.delete\(sid\);/);
 });

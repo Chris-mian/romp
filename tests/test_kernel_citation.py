@@ -107,5 +107,18 @@ class FollowupPreview(unittest.TestCase):
         self.assertIn("_followup_body(iid, None, text", src, "built from the real send-path builder")
 
 
+class ClearDropsCitation(unittest.TestCase):
+    """Clearing a card tells the chat to drop any composer citation chip pointing at it (the user 2026-07-01):
+    a single clear pushes dropCitation{itemId}; Clear-all pushes dropCitationsAll."""
+
+    def test_clear_handlers_push_drop_to_the_chat(self):
+        with open(os.path.join(BIN, "romp-kernel")) as fh:
+            src = fh.read()
+        self.assertIn('_send_to_app("chat", {"type": "dropCitation", "itemId": str(msg["itemId"])})', src,
+                      "a single askClear pushes dropCitation for the cleared card")
+        self.assertIn('_send_to_app("chat", {"type": "dropCitationsAll"})', src,
+                      "Clear-all pushes dropCitationsAll")
+
+
 if __name__ == "__main__":
     unittest.main()

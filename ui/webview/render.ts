@@ -4458,6 +4458,16 @@ function focusComposer(): void {
   const ta = document.getElementById("composer-input") as HTMLTextAreaElement | null;
   ta?.focus();
 }
+
+// Drop any session's citation that points at a now-cleared card (itemId = the goal node id, sid-prefixed so
+// it belongs to exactly one session's composer). Re-renders the strip if it was the active tab's chip.
+function dropCitationByItem(itemId: string): void {
+  let changed = false;
+  for (const [sid, c] of composerCitations) {
+    if (c.itemId === itemId) { composerCitations.delete(sid); changed = true; if (sid === activeId) renderComposerChips(sid); }
+  }
+  if (changed) persistDrafts();
+}
 let draftsRestored = false;
 function restoreActiveDraftOnce(): void {
   if (draftsRestored) return;
@@ -4484,6 +4494,9 @@ function setActive(id: string, anchor?: string, anchorT?: number, anchorKind?: s
   if (ta && activeId !== id) {
     if (activeId) {
       if (ta.value) drafts.set(activeId, ta.value); else drafts.delete(activeId);
+      // A citation chip is a "reply to this card right now" intent — switching tabs abandons it, so drop the
+      // leaving tab's chip (the user 2026-07-01). A feed click that seeds a chip sets it AFTER this switch.
+      composerCitations.delete(activeId);
     }
     ta.value = drafts.get(id) ?? "";
     growComposer(ta);
@@ -4717,6 +4730,12 @@ window.addEventListener("message", (e: MessageEvent) => {
     setActive(m.id, m.anchor, typeof m.anchorT === "number" ? m.anchorT : undefined, typeof m.anchorKind === "string" ? m.anchorKind : undefined);
     // A feed card click that resolved to a live goal → seed the composer citation chip (the user 2026-07-01).
     if (m.cite && typeof m.cite.itemId === "string" && typeof m.cite.title === "string") setCitation(m.id, { itemId: m.cite.itemId, title: m.cite.title });
+  }
+  // A card was CLEARED → drop any composer citation chip pointing at it (the user 2026-07-01): the goal is
+  // gone, so following up on it makes no sense. dropCitationsAll (Clear-all) drops every chip.
+  else if (m.type === "dropCitation" && typeof m.itemId === "string") dropCitationByItem(m.itemId);
+  else if (m.type === "dropCitationsAll") {
+    if (composerCitations.size) { composerCitations.clear(); persistDrafts(); renderComposerChips(activeId); }
   }
   else if (m.type === "nextTab") cycleTab(1);
   else if (m.type === "prevTab") cycleTab(-1);
