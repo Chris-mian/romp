@@ -22,10 +22,11 @@ test("the cutoff is a logarithmic 1-minute … OLDEST-IN-FLEET map of the 0..100
   assert.ok(Math.abs(secs(500, MAX) - Math.sqrt(CUT_MIN * MAX)) < 1, "midpoint is the geometric mean (log scale)");
 });
 
-test("render() computes the adaptive max from the oldest session BEFORE filtering, and refreshes the label", () => {
-  // pass 1: the oldest in-fleet freshest age becomes the slider's right end
+test("render() computes the adaptive max from the oldest eligible TOP goal BEFORE filtering, and refreshes the label (the user 2026-06-30)", () => {
+  // pass 1: the oldest in-fleet TOP-goal age (not the oldest session's newest activity) becomes the slider's right end
   assert.match(SRC, /let maxAge = CUT_MIN \* 2;/);
-  assert.match(SRC, /for \(const s of sessions\) \{ const f = sessionFreshest\(s\); if \(f\) maxAge = Math\.max\(maxAge, now - f\); \}/);
+  assert.match(SRC, /for \(const s of sessions\) maxAge = Math\.max\(maxAge, sessionOldestTopAge\(s, now\)\);/);
+  assert.match(SRC, /function sessionOldestTopAge\(s: FleetSession, now: number\): number/);
   assert.match(SRC, /fleetMaxAge = maxAge;/);
   assert.match(SRC, /refreshCutoffLabel\?\.\(\);/);
   // the label painter is registered so render() can refresh "≤ <age>" as the fleet (and thus the max) shifts
@@ -38,10 +39,19 @@ test("the slider persists its position and defaults to the most-inclusive end (s
   assert.match(SRC, /localStorage\.setItem\(CUTOFF_KEY, String\(p\)\)/);
 });
 
-test("render() skips a session whose freshest activity is older than the cutoff", () => {
+test("render() filters INDIVIDUAL top goals by recency — not whole sessions — so old completed tops drop even in an active session (the user 2026-06-30)", () => {
   assert.match(SRC, /const cutoff = cutoffSecs\(\);/);
-  assert.match(SRC, /const freshest = Math\.max\(s\.ledger\?\.current\?\.t \|\| 0, \.\.\.visibleRoots\.map\(nodeRecency\)\);/);
-  assert.match(SRC, /if \(freshest && \(now - freshest\) > cutoff\) continue;/);
+  // each visible top is gated on its own subtree-rolled-up recency; the old per-session freshest skip is gone
+  assert.match(SRC, /visibleRoots = visibleRoots\.filter\(\(r\) => \(now - nodeRecency\(r\)\) <= cutoff\);/);
+  assert.doesNotMatch(SRC, /const freshest = Math\.max\(s\.ledger\?\.current\?\.t/);
+  // an emptied-out session (no top within the window) is then skipped
+  assert.match(SRC, /if \(!visibleRoots\.length\) continue;/);
+});
+
+test("the recency slider grows to fill the control bar when there's room (the user 2026-06-30)", () => {
+  // the right cluster grows; the slider flexes within it (min-width floor keeps it usable on a narrow pane)
+  assert.match(SRC, /right\.style\.flex = "1 1 auto"; right\.style\.minWidth = "0";/);
+  assert.match(SRC, /sl\.style\.cssText = "flex:1 1 96px;min-width:48px;cursor:pointer;transform:scaleX\(-1\)";/);
 });
 
 test("the slider + 'Show completed' mount in the docked bar's RIGHT cluster (the user 2026-06-29)", () => {

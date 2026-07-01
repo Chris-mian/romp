@@ -70,16 +70,18 @@ function fmtAge(s: number): string {
   if (s < 86400) return Math.round(s / 3600) + "h";
   return Math.round(s / 86400) + "d";
 }
-// The freshest activity time (unix secs) for a session, rolled up the visible tree (0 if nothing visible) —
-// the SAME basis the cutoff filter uses, factored out so render() can both compute the adaptive max and filter.
-function sessionFreshest(s: FleetSession): number {
+// The AGE (secs) of a session's OLDEST currently-eligible TOP goal (respecting Show-completed), or 0 if none.
+// The slider's adaptive right end takes the max of this across the fleet, so tightening the window can reach an
+// old COMPLETED top even in an otherwise-active session — the per-TOP basis the cutoff filter also uses (NOT the
+// session's single newest activity, which stayed ≈ now for any live session and made the slider a no-op).
+function sessionOldestTopAge(s: FleetSession, now: number): number {
   const tree = s.ledger?.tree || [];
   stampSubtreeRecency(tree, s.ledger?.current || null);
-  const archivedTops = Array.isArray(s.ledger?.archivedTops) ? s.ledger!.archivedTops! : [];
+  const archRoots = (Array.isArray(s.ledger?.archivedTops) ? s.ledger!.archivedTops! : []).filter((n) => n.depth === 0);
   const roots = tree.filter((n) => n.depth === 0);
-  const visibleRoots = fleetVisibleRoots(roots, archivedTops, showDone());
-  if (!visibleRoots.length) return 0;
-  return Math.max(s.ledger?.current?.t || 0, ...visibleRoots.map(nodeRecency));
+  let age = 0;
+  for (const r of fleetVisibleRoots(roots, archRoots, showDone())) { const rec = nodeRecency(r); if (rec) age = Math.max(age, now - rec); }
+  return age;
 }
 const folded = new Set<string>(), expanded = new Set<string>();   // fold state, keyed "sid\0nodeId"
 const fkey = (sid: string, id: string) => sid + "\0" + id;
@@ -391,10 +393,11 @@ function render() {
   const now = Math.floor(Date.now() / 1000);
   let any = false;
 
-  // Adaptive cutoff range: the slider's right end tracks the OLDEST in-fleet age, so its travel always spans
-  // the real fleet (no dead zone). Compute it BEFORE filtering, then refresh the slider's "≤ <age>" label.
+  // Adaptive cutoff range: the slider's right end tracks the OLDEST currently-eligible TOP goal (the user
+  // 2026-06-30), so its travel always spans the real work — including old COMPLETED tops when Show-completed is
+  // on — with no dead zone. Compute it BEFORE filtering, then refresh the slider's "≤ <age>" label.
   let maxAge = CUT_MIN * 2;
-  for (const s of sessions) { const f = sessionFreshest(s); if (f) maxAge = Math.max(maxAge, now - f); }
+  for (const s of sessions) maxAge = Math.max(maxAge, sessionOldestTopAge(s, now));
   fleetMaxAge = maxAge;
   refreshCutoffLabel?.();
   const cutoff = cutoffSecs();
@@ -438,8 +441,8 @@ function render() {
     return row;
   };
 
-  // First pass (shared by both views): keep the sessions whose freshest VISIBLE activity is inside the
-  // slider window, each paired with its render context + visible roots.
+  // First pass (shared by both views): per session, keep the visible TOP goals inside the slider window (the
+  // recency cutoff is applied per-top below), each session paired with its render context + surviving roots.
   const survivors: { ctx: SessCtx; visibleRoots: LedgerNode[] }[] = [];
   const sq = searchQuery.trim().toLowerCase();           // search (the user 2026-06-29): session NAME or goal CONTENT
   curSearch = sq;                                        // snapshot for renderFleetNode (highlight + force-expand)
@@ -484,9 +487,13 @@ function render() {
     } else {
       visibleRoots = fleetVisibleRoots(roots, archRoots, sd);
       if (!visibleRoots.length) continue;                // nothing to show for this session → skip
-      // recency cutoff (the user 2026-06-27): skip a session whose freshest VISIBLE activity is older than the window.
-      const freshest = Math.max(s.ledger?.current?.t || 0, ...visibleRoots.map(nodeRecency));
-      if (freshest && (now - freshest) > cutoff) continue;
+      // recency cutoff (the user 2026-06-30): filter INDIVIDUAL top goals by recency — not just whole sessions.
+      // Before, a session was kept whole if its NEWEST activity was recent, so an active session's old COMPLETED
+      // tops always rode along and the slider looked dead. Now each top is gated on its own subtree-rolled-up
+      // recency (_rec, stamped above): a live/in-progress top stays (≈ now), an old completed one drops as you
+      // tighten the window. If nothing's left in-window, the session header is skipped too.
+      visibleRoots = visibleRoots.filter((r) => (now - nodeRecency(r)) <= cutoff);
+      if (!visibleRoots.length) continue;
     }
     survivors.push({ ctx: { s, byId, curT: s.ledger?.current?.t, subtreeHit: sq ? subtreeHit : undefined }, visibleRoots });
   }
@@ -613,7 +620,9 @@ function mountControls() {
   left.append(grpLbl, collapse, expand);
 
   // ── RIGHT cluster: recency cutoff slider + Show completed ──
-  const right = el("div", "fl-foot-right");
+  // Grow to fill the space between the left cluster and the right edge (the user 2026-06-30) so the slider can
+  // stretch when the control bar has room; it still wraps + shrinks to its min on a narrow pane.
+  const right = el("div", "fl-foot-right"); right.style.flex = "1 1 auto"; right.style.minWidth = "0";
   const lab = el("span");
   lab.style.cssText = "min-width:32px;text-align:right;font-variant-numeric:tabular-nums;flex:0 0 auto";
   const sl = document.createElement("input");
@@ -622,7 +631,7 @@ function mountControls() {
   // slider rather than mirroring the VALUE — so the accent (blue) fill, which a native range paints on the
   // LOW side, lands on the RIGHT. cutoffPos keeps its meaning (1000 = show all) and the value maps directly.
   sl.type = "range"; sl.min = "0"; sl.max = "1000"; sl.step = "1"; sl.value = String(cutoffPos());
-  sl.style.cssText = "width:72px;min-width:48px;cursor:pointer;transform:scaleX(-1)";   // compact; shrinks on a narrow pane
+  sl.style.cssText = "flex:1 1 96px;min-width:48px;cursor:pointer;transform:scaleX(-1)";   // grows to fill the bar; shrinks to min on a narrow pane
   (sl.style as CSSStyleDeclaration & { accentColor: string }).accentColor = "var(--accent, #9cd2ff)";
   sl.title = "Drag RIGHT to show only more-recent sessions (down to the last minute); LEFT shows everything — logarithmic";
   const paint = () => { lab.textContent = "≤ " + fmtAge(cutoffSecs()); };
