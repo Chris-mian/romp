@@ -61,10 +61,10 @@ test("a 'Followed up' chip shows while the kernel optimistically reopened a foll
   // the chip rides the SESSION-NAME row (right-justified), NOT the bottom action row, so it stops crowding
   // Clear off the card's right edge (the user 2026-06-18); origin sits left of it on the same wrapping row
   assert.match(FEED, /row2\.append\(idwrap, origin, reBadge, fupBadge, waitOnBadge\)/);
-  // the chip now serves both states: a soft-block you've replied to shows "↩ re-checking" (recheck, the
-  // superset), else a settled card you followed up on shows "↻ Followed up" (the user 2026-06-27).
+  // the chip now serves both states: a soft-block you answered with a TARGETED follow-up shows "↩ re-judging"
+  // (recheck), else a settled card you followed up on shows "↻ Followed up" (the user 2026-06-27/30).
   assert.match(FEED, /if \(it\.recheck\) \{/);
-  assert.match(FEED, /a\._followedup\.textContent = "↩ re-checking"/);
+  assert.match(FEED, /a\._followedup\.textContent = "↩ re-judging"/);
   assert.match(FEED, /\} else if \(it\.followupPending\) \{/);
   assert.match(CSS, /\.fask-followedup \{/);
 });

@@ -31,11 +31,12 @@ class RefreshButtonDecoupledTest(unittest.TestCase):
         self.assertNotRegex(km._GEAR_JS, r"rf\.style\.display\s*=")
         self.assertNotRegex(km._GEAR_JS, r"rrefresh[^\n]*display:none")
 
-    def test_debug_toggle_no_longer_touches_the_refresh_button(self):
-        # the Debug checkbox handler still saves the pref + emits the settings event, but no longer
-        # re-runs any refresh-button visibility logic
-        self.assertIn("s.debug=db.checked", km._GEAR_JS)
-        self.assertNotRegex(km._GEAR_JS, r"db\.checked;[^\n]*applyDebug")
+    def test_judge_toggles_do_not_touch_the_refresh_button(self):
+        # the judge-set toggles (which replaced the single Debug toggle) save the pref + emit, but never
+        # re-run any refresh-button visibility logic — the ↻ is always visible
+        self.assertIn("s.showIndexJudges=jix.checked", km._GEAR_JS)
+        self.assertIn("s.showTriageJudges=jtr.checked", km._GEAR_JS)
+        self.assertNotRegex(km._GEAR_JS, r"checked;[^\n]*applyDebug")
 
 
 if __name__ == "__main__":

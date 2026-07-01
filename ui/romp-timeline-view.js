@@ -51,12 +51,24 @@ const FONT = '-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-ser
 // summarizer judge (design/judge.md). Each mark is FILLED with the colour of the SESSION it acted on and
 // OUTLINED in the judge's OWN colour (so a bar reads as "judge X on session Y"). Fed by
 // data.judging = [{judge, sid, t, kind, text}]. Each judge's colour is a distinct hue from the romp palette.
+// Each judge belongs to a SET (the user 2026-06-29): 'index' = the captioner + archiver (caption/archive
+// bookkeeping); 'triage' = planner/grouper/closer/distiller/courier (goal triage). The two settings toggles
+// (showIndexJudges / showTriageJudges) gate each set's rows on the band — see judgesShown().
 const JUDGES = [
-  { key: 'captioner', color: '#1EA1EB' }, { key: 'archiver', color: '#54B204' },
-  { key: 'planner', color: '#E0B020' }, { key: 'grouper', color: '#4EA8A9' },
-  { key: 'closer', color: '#C0392B' }, { key: 'distiller', color: '#D26EA8' },
-  { key: 'courier', color: '#9088F0' },
+  { key: 'captioner', color: '#1EA1EB', group: 'index' }, { key: 'archiver', color: '#54B204', group: 'index' },
+  { key: 'planner', color: '#E0B020', group: 'triage' }, { key: 'grouper', color: '#4EA8A9', group: 'triage' },
+  { key: 'closer', color: '#C0392B', group: 'triage' }, { key: 'distiller', color: '#D26EA8', group: 'triage' },
+  { key: 'courier', color: '#9088F0', group: 'triage' },
 ];
+// The judges to show right now, from the two settings toggles. Legacy migration: when a toggle is unset, fall
+// back to the old single `debug` flag, so an existing Debug-on user still sees every judge. Read fresh so a
+// settings change repaints the band on the next draw().
+function judgesShown() {
+  let s = {}; try { s = JSON.parse(localStorage.getItem('romp:settings') || '{}') || {}; } catch (e) {}
+  const idx = s.showIndexJudges !== undefined ? !!s.showIndexJudges : !!s.debug;
+  const tri = s.showTriageJudges !== undefined ? !!s.showTriageJudges : !!s.debug;
+  return JUDGES.filter((j) => (j.group === 'index' ? idx : tri));
+}
 const JROW = 14, JBAR_H = 9, JB_TOPGAP = 17, JB_BOTGAP = 5, JMARK_MINW = 6, JMERGE_GAP = 110;
 const JUDGE_KIND = { segment: 'caption', turn: 'turn caption', index: 'archived', mint: 'new goal',
   sub: 'filed a step', done: 'completed', block: 'needs you', group: 'regrouped', plant: 'handoff in',
@@ -1821,12 +1833,13 @@ class TimelinePanel {
     // judging band height: a compact judge row per JUDGES entry, shown only when there's judging
     // activity inside the current window. Folded into H so the shared axis (axisY = H - M.bottom)
     // and its gridlines span BOTH bands, with the time labels at the very bottom.
-    // the global Debug setting (romp:settings.debug, set in the feed gear) gates the whole band; read fresh
-    let debugOn = false; try { debugOn = !!JSON.parse(localStorage.getItem('romp:settings') || '{}').debug; } catch (e) {}
-    // the band shows when there are judge run-spans in window (auto-nudge ⚡ marks were removed from the band
-    // entirely — the user 2026-06-23; an auto-nudge still shows as a romp-logo dot on its lane)
-    const jShow = !!(debugOn && data.judging && data.judging.some((e) => inWin(e.t)));
-    const bandH = jShow ? (JB_TOPGAP + JUDGES.length * JROW + JB_BOTGAP) : 0;
+    // the two judge-set toggles (romp:settings, set in the gear) gate WHICH judges show; read fresh each draw
+    const shownJudges = judgesShown();
+    // the band shows when an ENABLED judge has run-spans in window (auto-nudge ⚡ marks were removed from the
+    // band entirely — the user 2026-06-23; an auto-nudge still shows as a romp-logo dot on its lane)
+    const shownKeys = new Set(shownJudges.map((j) => j.key));
+    const jShow = !!(shownJudges.length && data.judging && data.judging.some((e) => shownKeys.has(e.judge) && inWin(e.t)));
+    const bandH = jShow ? (JB_TOPGAP + shownJudges.length * JROW + JB_BOTGAP) : 0;
     const W = Math.max(640, this.wrap.clientWidth || 900);
     const plotW = W - M.left - M.right, H = M.top + Math.max(1, vis.length) * LANE_GAP + bandH + M.bottom;
     svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H); svg.setAttribute('height', H); svg.setAttribute('width', W);
@@ -2335,9 +2348,9 @@ class TimelinePanel {
       const sepY = jb0 - JB_TOPGAP * 0.5;
       svg.appendChild(el('line', { x1: M.left, y1: sepY, x2: x(t1), y2: sepY, stroke: '#ffffff14', 'stroke-width': 1, 'pointer-events': 'none' }));
       // vertical "judges" section label in the freed gutter space, just left of the right-justified judge names
-      const jcx = Math.max(12, M.left - 72), jcy = (jY(0) + jY(JUDGES.length - 1)) / 2;
+      const jcx = Math.max(12, M.left - 72), jcy = (jY(0) + jY(shownJudges.length - 1)) / 2;
       const hd = el('text', { x: jcx, y: jcy, fill: 'var(--text-faint)', 'font-size': 9, 'font-weight': 700, 'letter-spacing': '.08em', 'text-anchor': 'middle', transform: 'rotate(-90 ' + jcx + ' ' + jcy + ')' }); hd.textContent = 'judges'; svg.appendChild(hd);
-      JUDGES.forEach((J, ji) => {
+      shownJudges.forEach((J, ji) => {
         const y = jY(ji);
         // baseline rail through the row, faintly tinted in the judge's colour so each row is identifiable
         svg.appendChild(el('line', { x1: M.left, y1: y, x2: x(t1), y2: y, stroke: J.color, 'stroke-opacity': 0.28, 'stroke-width': 2, 'stroke-linecap': 'round', 'pointer-events': 'none' }));

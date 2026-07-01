@@ -20,12 +20,13 @@ class SettingsSectionsTest(unittest.TestCase):
         self.assertIn("<div class=rs-sec>Feed</div>", h)
         self.assertIn("<div class=rs-sec>Sessions</div>", h)
         self.assertIn("<div class=rs-sec>Timeline</div>", h)
-        self.assertIn("<div class=rs-sec>Debug</div>", h)
-        # in order: Chat < Feed < Sessions < Timeline < Debug
+        # the old "Debug" section is now "Judges" (the user 2026-06-29): two judge-set toggles, not one Debug toggle
+        self.assertIn("<div class=rs-sec>Judges</div>", h)
+        # in order: Chat < Feed < Sessions < Timeline < Judges
         self.assertLess(h.index(">Chat<"), h.index(">Feed<"))
         self.assertLess(h.index(">Feed<"), h.index(">Sessions<"))
         self.assertLess(h.index(">Sessions<"), h.index(">Timeline<"))
-        self.assertLess(h.index(">Timeline<"), h.index(">Debug<"))
+        self.assertLess(h.index(">Timeline<"), h.index(">Judges<"))
 
     def test_each_setting_sits_under_the_right_section(self):
         h = km._gear_html()
@@ -39,12 +40,14 @@ class SettingsSectionsTest(unittest.TestCase):
         self.assertTrue(h.index(">Sessions<") < h.index("id=rs-backend") < h.index(">Timeline<"))
         self.assertTrue(h.index(">Sessions<") < h.index("id=rs-defaultdir") < h.index(">Timeline<"))
         self.assertTrue(h.index(">Sessions<") < h.index("id=rs-autonudge") < h.index(">Timeline<"))
-        # Timeline: collapse idle gaps between Timeline and Debug (the user 2026-06-25, moved from the toolbar)
-        self.assertTrue(h.index(">Timeline<") < h.index("id=rs-collapsegaps") < h.index(">Debug<"))
-        # Debug: debug mode, analytics, version after Debug
-        self.assertLess(h.index(">Debug<"), h.index("id=rs-debug"))
-        self.assertLess(h.index(">Debug<"), h.index("id=ra-open"))
-        self.assertLess(h.index(">Debug<"), h.index("id=rsver"))
+        # Timeline: collapse idle gaps between Timeline and Judges (the user 2026-06-25, moved from the toolbar)
+        self.assertTrue(h.index(">Timeline<") < h.index("id=rs-collapsegaps") < h.index(">Judges<"))
+        # Judges: the two judge-set toggles (index + triage), analytics, version after Judges
+        self.assertLess(h.index(">Judges<"), h.index("id=rs-judges-index"))
+        self.assertLess(h.index(">Judges<"), h.index("id=rs-judges-triage"))
+        self.assertLess(h.index(">Judges<"), h.index("id=ra-open"))
+        self.assertLess(h.index(">Judges<"), h.index("id=rsver"))
+        self.assertNotIn("id=rs-debug", h)   # the single Debug toggle is gone
 
     def test_collapse_gaps_is_wired_to_the_shared_collapseGaps_setting(self):
         # the gear JS persists/loads romp:settings.collapseGaps; the timeline reads it (see romp-timeline-view.js)

@@ -72,7 +72,8 @@ interface AskItem {
   openPaths: AskPath[];                            // open leaves → "waiting on X" drop-point lines
   reopened?: boolean;                              // resurrected: a question arrived AFTER the user cleared it
   followupPending?: boolean;                       // you followed up on a settled card → optimistically reopened, awaiting the judge's re-file (kernel)
-  recheck?: boolean;                               // soft-block you've already replied to (targeted card-reply OR a plain thread reply after it) → de-urgented (dotted), dropped from the "need input" count, until the judge resolves or re-blocks it (kernel build_feed; the user 2026-06-27)
+  recheck?: boolean;                               // soft-block you answered with a TARGETED follow-up → de-urgented (dotted), moved to Working, dropped from the "need input" count, until the judge resolves or re-blocks it (kernel build_feed; the user 2026-06-27)
+  rejudging?: boolean;                             // soft-block + a PLAIN thread reply after it → STAYS in Needs-You (still counted), shows a "Re-judging…" swirl while a turn is in flight; the card never leaves Blocked on a guess (kernel build_feed; the user 2026-06-30)
   autoFiled?: boolean;                             // settled → moved to COMPLETED by the auto-filing rule (keeps the green ring)
   explicitDone?: boolean;                          // every path explicitly DONE-stamped → blue ring (blue+green when settled agrees)
   turnIds?: string[];                              // typed turns that minted/amended this card
@@ -705,13 +706,14 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   a._reopened.style.display = it.reopened ? "" : "none";
   // "↻ Followed up" while the kernel has optimistically reopened a settled card you followed up on, before
   // the judge re-files it (it.followupPending self-clears on the next pass). (judges delegation, 2026-06-17.)
-  // RE-CHECK chip (the user 2026-06-27): a soft-block you've replied to — targeted (followupPending) OR a
-  // plain thread reply (kernel `recheck`, the superset). Reads "↩ re-checking" so you know it registered and
-  // isn't on you, pending the judge's verdict. Falls back to the legacy "↻ Followed up" text otherwise.
+  // RE-CHECK chip (the user 2026-06-27): a soft-block you answered with a TARGETED follow-up (kernel `recheck`).
+  // Reads "↩ re-judging" so you know it registered and isn't on you, pending the judge's verdict. (A PLAIN reply
+  // is `rejudging`, not `recheck` — it stays in Needs-You, so no chip here; its swirl says "Re-judging…".) Falls
+  // back to the legacy "↻ Followed up" text otherwise.
   if (it.recheck) {
     a._followedup.style.display = "";
-    a._followedup.textContent = "↩ re-checking";
-    a._followedup.title = "you've replied — no longer waiting on you; the judge will resolve it or re-block it on the next pass";
+    a._followedup.textContent = "↩ re-judging";
+    a._followedup.title = "you followed up — no longer waiting on you; the judge will resolve it or re-block it on the next pass";
   } else if (it.followupPending) {
     a._followedup.style.display = "";
     a._followedup.textContent = "↻ Followed up";
@@ -748,15 +750,20 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   if (aw && !it.waitingOn) {
     a._wait.title = aw.why || "Waiting on work it started, not on you. Clears when the result lands.";
   }
-  // SPINNING SWIRL + a short caption in the card body (the user 2026-06-29): any card that's "in motion but
-  // not on you" — the ones that read as dashed/ghosted in Working — shows the spinning romp swirl where the
-  // distiller line will eventually land, with a couple words saying what's happening. Three cases:
+  // SPINNING SWIRL + a short caption in the card body (the user 2026-06-29): a card with a re-evaluation or
+  // dispatched work in flight shows the spinning romp swirl where the distiller line will eventually land, with
+  // a couple words saying what's happening. Cases:
   //  • AWAITING — held in Working, waiting on dispatched/delegated work (the kernel's why, else a generic line).
   //  • PROVISIONAL — a dashed live-prompt placeholder: the session is working a BRAND-NEW ask the planner
   //    hasn't classified into a goal yet (THAT's why it's dashed — it's not a real card yet) → "Working…".
-  //  • RE-CHECK — a soft-block you've ALREADY replied to, de-urgented (dashed) until the judge re-judges → "Re-checking…".
-  // The blocked placeholder (provisional but needs-input: "Awaiting your input") is on YOU, not in motion, so
-  // it's excluded — only the working-column dashed cards spin.
+  //  • RE-CHECK — a soft-block you answered with a TARGETED follow-up, moved to Working, de-urgented (dashed)
+  //    until the judge re-judges → "Re-judging…".
+  //  • RE-JUDGING — a soft-block + a PLAIN thread reply, with a turn now in flight (the user 2026-06-30). UNLIKE
+  //    the others this card STAYS in Needs-You (we can't tell the reply addressed it), so a Blocked/needs-input
+  //    card spins here — the deliberate exception to "only working cards spin": it signals a re-evaluation may be
+  //    coming without yanking it off your plate. → "Re-judging…".
+  // The blocked placeholder (provisional but needs-input: "Awaiting your input") is on YOU with nothing in
+  // motion, so it's still excluded.
   // Each case pairs a short body caption with a FULLER tooltip (hover the swirl/caption) that explains what's
   // actually happening — including, for a provisional card, WHY it's dashed.
   let spinCaption: string | null = null, spinTip = "";
@@ -769,8 +776,11 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
     spinCaption = "Working…";
     spinTip = "A new prompt, not yet sorted into a goal. Placeholder until it is.";
   } else if (it.recheck) {
-    spinCaption = "Re-checking…";
-    spinTip = "You've replied. The judge will resolve or re-block it.";
+    spinCaption = "Re-judging…";
+    spinTip = "You followed up. Reopened to Working; the judge will resolve it or re-block it.";
+  } else if (it.rejudging) {
+    spinCaption = "Re-judging…";
+    spinTip = "You replied on this thread. Re-evaluating; still needs you until the judge clears or re-confirms it.";
   } else if (distillPending(it.column === "completed", it.column === "needs_input", it.summary, it.blockSummary, !!it.blocked)) {
     //  • DISTILLING (the user 2026-06-29) — a resolved card whose distiller hasn't produced its line yet:
     //    a completed goal awaiting its takeaway (summary), or a blocked goal awaiting its decision brief
@@ -784,9 +794,9 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   }
   a._awaitSpin.style.display = spinCaption ? "" : "none";
   if (spinCaption) { a._awaitWhy.textContent = spinCaption; a._awaitSpin.title = spinTip || spinCaption; }
-  // The swirl's "Re-checking…" caption + tooltip REPLACES the separate "↩ re-checking" chip (the user
+  // The swirl's "Re-judging…" caption + tooltip REPLACES the separate "↩ re-judging" chip (the user
   // 2026-06-29: don't show both) — drop the chip the recheck branch set above when the swirl is saying it.
-  if (spinCaption === "Re-checking…") a._followedup.style.display = "none";
+  if (spinCaption === "Re-judging…") a._followedup.style.display = "none";
   // ⏸ live block badge: the session is stopped mid-turn on a permission prompt /
   // picker FOR THIS CARD's work — the card files under BLOCKED while it lasts
   const isApiErr = it.blocked?.state === "apiError";

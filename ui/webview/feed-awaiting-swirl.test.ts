@@ -1,8 +1,9 @@
 // Spinning-swirl + caption on "in motion, not on you" cards (the user 2026-06-29): a small romp swirl spins in
 // the card body — the SAME spot the distiller takeaway/decision-brief lands for completed/blocked cards — with a
 // couple words saying what's happening. THREE cases, all in the Working column: AWAITING (it.awaiting, not a
-// peer wait → the kernel why), PROVISIONAL (a dashed live-prompt placeholder → "Working…"), and RE-CHECK (a
-// soft-block you've replied to, dashed pending re-judge → "Re-checking…"). Source pin (no jsdom).
+// peer wait → the kernel why), PROVISIONAL (a dashed live-prompt placeholder → "Working…"), RE-CHECK (a
+// soft-block you answered with a TARGETED follow-up, moved to Working → "Re-judging…"), and REJUDGING (a
+// soft-block + a PLAIN reply that STAYS in Needs-You, with a turn in flight → "Re-judging…"). Source pin (no jsdom).
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
@@ -20,11 +21,12 @@ test("the swirl element is built in the body, right after the distiller line, an
 
 test("the swirl + caption covers awaiting, provisional, and re-check — shown when there's a caption, else hidden", () => {
   // a single computed caption drives the swirl: awaiting → the why; a working provisional placeholder →
-  // "Working…"; a re-check (replied soft-block) → "Re-checking…". The blocked placeholder (needs-input) is
-  // NOT covered — it's on you, not in motion.
+  // "Working…"; a targeted-follow-up re-check → "Re-judging…"; a plain-reply rejudging (STAYS in Needs-You) →
+  // "Re-judging…". The blocked placeholder (needs-input) is NOT covered — it's on you, not in motion.
   assert.match(FEED, /if \(aw && !it\.waitingOn\) \{\s*\n\s*spinCaption = aw\.why \|\| "Waiting on work it dispatched…";/);
   assert.match(FEED, /\} else if \(it\.provisional && it\.column === "working"\) \{\s*\n\s*spinCaption = "Working…";/);
-  assert.match(FEED, /\} else if \(it\.recheck\) \{\s*\n\s*spinCaption = "Re-checking…";/);
+  assert.match(FEED, /\} else if \(it\.recheck\) \{\s*\n\s*spinCaption = "Re-judging…";/);
+  assert.match(FEED, /\} else if \(it\.rejudging\) \{\s*\n\s*spinCaption = "Re-judging…";/);
   // a resolved card awaiting its distiller line → "Distilling…" (the user 2026-06-29) — the executable rule is
   // distillPending (distiller-line.test.ts); here we just pin that the card branch uses it + sets the caption
   assert.match(FEED, /\} else if \(distillPending\(it\.column === "completed", it\.column === "needs_input", it\.summary, it\.blockSummary, !!it\.blocked\)\) \{[\s\S]*?spinCaption = "Distilling…";/);
@@ -37,14 +39,15 @@ test("each case carries a concise tooltip on the swirl (hover → the key idea, 
   assert.match(FEED, /let spinCaption: string \| null = null, spinTip = "";/);
   // tooltips are short and plain-spoken (the user 2026-06-29): the key idea, no LLM-essay phrasing, no em dashes
   assert.match(FEED, /spinTip = "A new prompt, not yet sorted into a goal\. Placeholder until it is\.";/);
-  assert.match(FEED, /spinTip = "You've replied\. The judge will resolve or re-block it\.";/);
+  assert.match(FEED, /spinTip = "You followed up\. Reopened to Working; the judge will resolve it or re-block it\.";/);
+  assert.match(FEED, /spinTip = "You replied on this thread\. Re-evaluating; still needs you until the judge clears or re-confirms it\.";/);
   // no em dashes anywhere in the swirl tooltips (JLD + the user's house style ban them)
   assert.doesNotMatch(FEED, /spinTip = "[^"]*—/);
   assert.match(FEED, /a\._awaitSpin\.title = spinTip \|\| spinCaption;/);
 });
 
-test("the swirl's Re-checking caption REPLACES the '↩ re-checking' chip (no double-labeling)", () => {
-  assert.match(FEED, /if \(spinCaption === "Re-checking…"\) a\._followedup\.style\.display = "none";/);
+test("the swirl's Re-judging caption REPLACES the '↩ re-judging' chip (no double-labeling)", () => {
+  assert.match(FEED, /if \(spinCaption === "Re-judging…"\) a\._followedup\.style\.display = "none";/);
 });
 
 test("the swirl uses the shared glyph, spins SLOWER (calmer) + reverse like the loader, and respects reduced-motion", () => {

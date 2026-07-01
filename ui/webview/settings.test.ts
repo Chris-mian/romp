@@ -20,8 +20,9 @@ test("the Sub-goals card pref defaults ON; the old Explanations pref is gone (th
   assert.equal((DEFAULT_SETTINGS as any).explanations, undefined);
 });
 
-test("Debug mode defaults OFF (the user 2026-06-17): refresh button + judging band stay hidden", () => {
-  assert.equal(DEFAULT_SETTINGS.debug, false);
+test("both judge-set toggles default OFF (the user 2026-06-29): the timeline's judging band stays hidden", () => {
+  assert.equal(DEFAULT_SETTINGS.showIndexJudges, false);
+  assert.equal(DEFAULT_SETTINGS.showTriageJudges, false);
 });
 
 test("Default backend defaults to tmux (the user 2026-06-22): the + button preserves today's behavior; both backends coexist", () => {
