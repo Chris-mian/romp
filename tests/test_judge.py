@@ -1186,7 +1186,7 @@ class Grouper(unittest.TestCase):
         jd._PARSE_CACHE.clear()
         gcalls = []
         try:
-            jd.plan_llm = (lambda text, menu, human=False:
+            jd.plan_llm = (lambda text, menu, human=False, **_kw:
                            '{"ops":[{"why":"x","do":"mint","text":"%s"}]}' % ("A" if "one" in text else "B"))
 
             def fake_group(menu):
@@ -2051,7 +2051,7 @@ class PlanPass(unittest.TestCase):
             (names / SID).write_text("testsess\t%s\t#abcdef\n" % str(cdir))
             saved = (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.plan_llm)
             jd.NAMES, jd.PROJECTS, jd.GOALDIR = names, proj, td / "goals"
-            jd.plan_llm = lambda text, menu, human=False: ('{"ops":[{"why":"x","do":"mint","text":"Goal one"}]}'
+            jd.plan_llm = lambda text, menu, human=False, **_kw: ('{"ops":[{"why":"x","do":"mint","text":"Goal one"}]}'
                                                            if "no open goals" in menu
                                                            else '{"ops":[{"why":"x","do":"sub","under":1,"text":"a step"}]}')
             try:
@@ -2102,7 +2102,7 @@ class PlanSkip(unittest.TestCase):
         self._run(records)
         calls = []
 
-        def fake_plan(text, menu, human=False):
+        def fake_plan(text, menu, human=False, **_kw):
             calls.append((text, human))
             return '{"ops":[{"why":"nothing to do","do":"skip"}]}'           # model tries to skip BOTH
         jd.plan_llm = fake_plan
@@ -2129,7 +2129,7 @@ class PlanSkip(unittest.TestCase):
                    aline(T0 + 110, "yw", "a2", "u2", stop="end_turn")]
         self._run(records)
 
-        def fake_plan(text, menu, human=False):
+        def fake_plan(text, menu, human=False, **_kw):
             return ('{"ops":[{"why":"x","do":"mint","text":"the task"}]}' if "TOOLS USED" in text
                     else '{"ops":[{"why":"bare thanks","do":"skip"}]}')
         jd.plan_llm = fake_plan
@@ -2480,7 +2480,7 @@ class SweepApply(unittest.TestCase):
         s["placements"] = {em.segments(turn)[0]["id"]: g["id"]}   # so _turn_menu sees the turn touched g
         saved = jd.closer_llm
         try:
-            jd.closer_llm = lambda tt, mt: '{"done": [{"goal": 1, "why": "done"}], "block": []}'
+            jd.closer_llm = lambda tt, mt, *_a: '{"done": [{"goal": 1, "why": "done"}], "block": []}'
             newly = jd._close_turn(s, turn)
         finally:
             jd.closer_llm = saved
@@ -2549,7 +2549,7 @@ class SweepTurn(unittest.TestCase):
     def test_completes_the_touched_top(self):
         store = _store(); g1 = _mknode(store, "Do X")
         store["placements"][self.seg["id"]] = g1["id"]
-        jd.closer_llm = lambda tt, mt: '{"done": [{"goal": 1, "why": "finished X"}]}'
+        jd.closer_llm = lambda tt, mt, *_a: '{"done": [{"goal": 1, "why": "finished X"}]}'
         self.assertEqual(jd._close_turn(store, self.turn), [g1["id"]])
         self.assertTrue(store["nodes"][g1["id"]]["nodeComplete"])
         self.assertEqual(store["nodes"][g1["id"]]["doneWhy"], "finished X",
@@ -2560,12 +2560,12 @@ class SweepTurn(unittest.TestCase):
     def test_llm_failure_completes_nothing(self):
         store = _store(); g1 = _mknode(store, "Do X")
         store["placements"][self.seg["id"]] = g1["id"]
-        jd.closer_llm = lambda tt, mt: ""                          # -> _parse_close None -> retry, complete nothing
+        jd.closer_llm = lambda tt, mt, *_a: ""                          # -> _parse_close None -> retry, complete nothing
         self.assertIsNone(jd._close_turn(store, self.turn))
         self.assertFalse(store["nodes"][g1["id"]]["nodeComplete"], "an LLM failure must not complete a goal")
 
     def test_no_touched_goal_is_a_noop_without_calling_the_llm(self):
-        jd.closer_llm = lambda tt, mt: (_ for _ in ()).throw(AssertionError("LLM must not run on an empty menu"))
+        jd.closer_llm = lambda tt, mt, *_a: (_ for _ in ()).throw(AssertionError("LLM must not run on an empty menu"))
         self.assertEqual(jd._close_turn(_store(), self.turn), [], "a turn that placed nothing -> no-op")
 
 
@@ -2591,7 +2591,7 @@ class SweepSession(unittest.TestCase):
         (names / SID).write_text("testsess\t%s\t#abcdef\n" % str(cdir))
         jd.NAMES, jd.PROJECTS, jd.GOALDIR = names, proj, td / "goals"
         # positive-only: always MINT a top, never DONE -> every top is left 'working'
-        jd.plan_llm = lambda text, menu, human=False: '{"ops":[{"why":"x","do":"mint","text":"Goal"}]}'
+        jd.plan_llm = lambda text, menu, human=False, **_kw: '{"ops":[{"why":"x","do":"mint","text":"Goal"}]}'
         jd.group_llm = lambda menu: '{"ops":[]}'   # planner now groups inline; keep the sweep's tops un-nested
         self.now = T0 + 5000
 
@@ -2606,7 +2606,7 @@ class SweepSession(unittest.TestCase):
         self.assertEqual(len(tops), 2)
         self.assertTrue(all(not nd["nodeComplete"] for nd in tops), "positive-only DONE'd nothing")
         self.assertTrue(all(store["status"][nd["id"]] == "working" for nd in tops), "both working before the sweep")
-        jd.closer_llm = lambda tt, mt: '{"done": [{"goal": 1, "why": "done"}]}'   # each turn's single touched top reported done
+        jd.closer_llm = lambda tt, mt, *_a: '{"done": [{"goal": 1, "why": "done"}]}'   # each turn's single touched top reported done
         n = jd.run_close(now=self.now)
         store = jd.load_goals(SID)
         g1, g2 = tops[0]["id"], tops[1]["id"]
@@ -2622,12 +2622,12 @@ class SweepSession(unittest.TestCase):
         g0 = _mknode(seed, "Dormant goal from another topic", t=T0 - 1000)
         jd.save_goals(SID, seed)
         jd.run_plan(now=self.now)
-        jd.closer_llm = lambda tt, mt: '{"done": [{"goal": 1, "why": "done"}]}'
+        jd.closer_llm = lambda tt, mt, *_a: '{"done": [{"goal": 1, "why": "done"}]}'
         jd.run_close(now=self.now)
         store = jd.load_goals(SID)
         self.assertFalse(store["nodes"][g0["id"]]["nodeComplete"],
                          "a goal no turn touched is never completed by the sweep (the false-positive guard)")
-        jd.closer_llm = lambda tt, mt: (_ for _ in ()).throw(AssertionError("an idempotent pass must not call the LLM"))
+        jd.closer_llm = lambda tt, mt, *_a: (_ for _ in ()).throw(AssertionError("an idempotent pass must not call the LLM"))
         self.assertEqual(jd.run_close(now=self.now), 0, "every turn already swept -> re-running completes nothing")
 
     def test_re_judges_a_closed_turn_that_grew_after_an_interrupt_resume(self):
@@ -2641,7 +2641,7 @@ class SweepSession(unittest.TestCase):
         Path(path).write_text("\n".join(json.dumps(r) for r in recs) + "\n")
         jd.run_plan(now=self.now)
         g = next(nd["id"] for nd in jd.load_goals(SID)["nodes"].values() if nd["parentId"] is None)
-        jd.closer_llm = lambda tt, mt: '{"done": [], "block": [{"goal": 1, "why": "answer my question?"}]}'
+        jd.closer_llm = lambda tt, mt, *_a: '{"done": [], "block": [{"goal": 1, "why": "answer my question?"}]}'
         jd.run_close(now=self.now)
         store = jd.load_goals(SID)
         self.assertTrue(store["nodes"][g]["blocked"], "blocked at the interrupt")
@@ -2650,7 +2650,7 @@ class SweepSession(unittest.TestCase):
         # same turn id), exactly as an interrupt+resume folds back into the turn it interrupted.
         recs.append(aline(T0 + 200, "user answered; reverted, no change, done", "a2", "a1", stop="end_turn"))
         Path(path).write_text("\n".join(json.dumps(r) for r in recs) + "\n")
-        jd.closer_llm = lambda tt, mt: '{"done": [{"goal": 1, "why": "resolved: no change needed"}], "block": []}'
+        jd.closer_llm = lambda tt, mt, *_a: '{"done": [{"goal": 1, "why": "resolved: no change needed"}], "block": []}'
         n = jd.run_close(now=self.now)
         store = jd.load_goals(SID)
         self.assertFalse(store["nodes"][g]["blocked"], "the grown turn is re-judged → stale block cleared")
@@ -2660,9 +2660,9 @@ class SweepSession(unittest.TestCase):
     def test_a_closed_turn_that_did_not_grow_is_not_re_judged(self):
         # the growth check must stay idempotent for a STABLE turn: same atom count → no re-judge, no LLM call.
         jd.run_plan(now=self.now)
-        jd.closer_llm = lambda tt, mt: '{"done": [{"goal": 1, "why": "done"}]}'
+        jd.closer_llm = lambda tt, mt, *_a: '{"done": [{"goal": 1, "why": "done"}]}'
         jd.run_close(now=self.now)
-        jd.closer_llm = lambda tt, mt: (_ for _ in ()).throw(AssertionError("a stable closed turn must not be re-judged"))
+        jd.closer_llm = lambda tt, mt, *_a: (_ for _ in ()).throw(AssertionError("a stable closed turn must not be re-judged"))
         self.assertEqual(jd.run_close(now=self.now), 0, "unchanged closed turns are skipped (closedSig matches)")
 
 
@@ -2896,7 +2896,7 @@ class FollowUp(unittest.TestCase):
                    aline(T0 + 10, "handled it", "a1", "u1", stop="end_turn")]
         self._setup(records, self._completed_top(gid))
         # the planner describes the work; the parent is forced to the tagged goal regardless of "under"
-        jd.plan_llm = lambda text, menu, human=False: '{"ops":[{"why":"covered the edge case","do":"mint","text":"edge case handled"}]}'
+        jd.plan_llm = lambda text, menu, human=False, **_kw: '{"ops":[{"why":"covered the edge case","do":"mint","text":"edge case handled"}]}'
         jd.run_plan(now=T0 + 5000)
         st = jd.load_goals(SID)
         self.assertFalse(st["nodes"][gid]["nodeComplete"], "the tagged goal was reopened")
@@ -2910,7 +2910,7 @@ class FollowUp(unittest.TestCase):
         records = [uline(T0, "here's my answer: yes <!-- romp-goal-id: %s -->" % gid, "u1", ps="typed"),
                    aline(T0 + 10, "proceeding", "a1", "u1", stop="end_turn")]
         self._setup(records, self._completed_top(gid, blocked=True))
-        jd.plan_llm = lambda text, menu, human=False: '{"ops":[{"why":"answered, moving on","do":"sub","under":1,"text":"resumed after the answer"}]}'
+        jd.plan_llm = lambda text, menu, human=False, **_kw: '{"ops":[{"why":"answered, moving on","do":"sub","under":1,"text":"resumed after the answer"}]}'
         jd.run_plan(now=T0 + 5000)
         st = jd.load_goals(SID)
         self.assertFalse(st["nodes"][gid]["blocked"], "answering the follow-up unblocked the goal")
@@ -2920,7 +2920,7 @@ class FollowUp(unittest.TestCase):
         records = [uline(T0, "brand new thing <!-- romp-goal-id: %s:g99 -->" % SID, "u1", ps="typed"),
                    aline(T0 + 10, "did it", "a1", "u1", stop="end_turn")]
         self._setup(records, {"rompUuid": SID, "seq": 0, "nodes": {}, "placements": {}, "status": {}})
-        jd.plan_llm = lambda text, menu, human=False: '{"ops":[{"why":"new ask","do":"mint","text":"New thing"}]}'
+        jd.plan_llm = lambda text, menu, human=False, **_kw: '{"ops":[{"why":"new ask","do":"mint","text":"New thing"}]}'
         jd.run_plan(now=T0 + 5000)
         tops = [nd for nd in jd.load_goals(SID)["nodes"].values() if nd["parentId"] is None]
         self.assertEqual(len(tops), 1, "a stale follow-up id falls back to normal placement (minted a top)")
