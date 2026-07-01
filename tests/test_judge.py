@@ -687,6 +687,14 @@ class TwoRunPlanner(unittest.TestCase):
         units = jd.plan_units(build_session(recs))
         self.assertEqual([u[1] for u in units], ["work"], "an ended segment is placed by its work-run alone")
 
+    def test_units_carry_the_segments_trigger_uuid(self):
+        # the user 2026-07-01, via bugs: plan_units' 7th field is the segment's OWN trigger atom uuid
+        # (the human message that opened it), threaded through to apply_plan for node["promptUuid"].
+        recs = [uline(T0, "ship feature X", "u1", ps="typed"),
+                aline(T0 + 10, "Shipped it.", "a1", "u1", stop="end_turn")]
+        units = jd.plan_units(build_session(recs))
+        self.assertEqual(units[0][6], "u1", "the work unit's trigger is the human message atom's uuid")
+
     def test_prompt_run_places_the_ask_immediately(self):
         # the PROMPT-run mints the goal while the turn is still OPEN (keyed seg#p); the work-run has NOT run.
         recs = [uline(T0, "build the export feature", "u1", ps="typed"),
@@ -700,6 +708,8 @@ class TwoRunPlanner(unittest.TestCase):
         keys = list(store["placements"].keys())
         self.assertTrue(keys and all(k.endswith("#p") for k in keys),
                         "only the prompt phase placed (seg#p); the work key (seg) is still free")
+        self.assertEqual(tops[0]["promptUuid"], "u1",
+                         "the PROMPT-run's mint carries the human message atom's uuid end-to-end")
 
     def test_prompt_then_work_no_double_top(self):
         # PROMPT-run mints while open; the turn then ENDS and the WORK-run files UNDER the same goal.
@@ -819,6 +829,22 @@ class PlanApply(unittest.TestCase):
         jd.apply_plan(s, "seg1", T0, [{"do": "mint", "why": "x", "text": "G"}], [])
         jd.apply_plan(s, "seg2", T0 + 10, [{"do": "done", "why": "finished", "goal": 1}], jd.open_menu(s))
         self.assertIn("seg2", s["placements"], "a done-only segment still records a placements key (idempotent)")
+
+    def test_prompt_uuid_stamped_on_every_node_created_this_call(self):
+        # the user 2026-07-01, via bugs: the goal-modal's title-click jump anchors on node["promptUuid"]
+        # (the trigger atom uuid) instead of re-deriving it from trail[0]'s segment key.
+        s = _store()
+        jd.apply_plan(s, "seg1", T0, [{"do": "mint", "why": "x", "text": "G"},
+                                      {"do": "sub", "why": "x", "ref": 1, "text": "step"}], [],
+                      prompt_uuid="u-trigger-1")
+        for nd in s["nodes"].values():
+            self.assertEqual(nd["promptUuid"], "u-trigger-1", "every node this call created carries the trigger uuid")
+
+    def test_prompt_uuid_defaults_to_none(self):
+        s = _store()
+        jd.apply_plan(s, "seg1", T0, [{"do": "mint", "why": "x", "text": "G"}], [])
+        nid = s["placements"]["seg1"]
+        self.assertIsNone(s["nodes"][nid]["promptUuid"], "no prompt_uuid passed -> None, not a missing key")
 
     def test_retitle_changes_the_nodes_own_text_and_bumps_mt(self):
         s = _store()

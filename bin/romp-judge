@@ -1074,14 +1074,18 @@ def _mark_node_done(store, nid, why, t):
         stack.extend(kids.get(x, []))
 
 
-def apply_plan(store, seg_id, seg_t, ops, menu, place_key=None):
+def apply_plan(store, seg_id, seg_t, ops, menu, place_key=None, prompt_uuid=None):
     """Apply an ORDERED list of planner ops for one segment (idempotent per place_key via placements).
     Each op's one-sentence rationale is PERSISTED: a created node carries `why`; a block carries
     `blockWhy`; a done carries `doneWhy` — so the feed can show WHY a card is blocked/done and reveal
     why a goal exists. `placements[place_key]` is the phase's focus (its last placement, or the last node
     it touched), set even for a done-only or skip segment so the pass stays idempotent. `place_key`
     defaults to seg_id (the WORK-run); the two-run PROMPT-run passes seg_id+"#p" so the two phases dedup
-    independently — (segment-id, phase). seg_id/seg_t still stamp the node's trail + mt."""
+    independently — (segment-id, phase). seg_id/seg_t still stamp the node's trail + mt. prompt_uuid (the
+    user 2026-07-01, via bugs) is the triggering segment's trigger atom uuid — stored on every node CREATED
+    by this call as node["promptUuid"], the data-model anchor for the goal-modal's title-click jump (the
+    kernel prefers it over re-deriving trail[0]'s segment key, which drifts on optimistic-echo text mismatch).
+    None for an autonomous/continuation segment with no distinct trigger, or for a caller that predates this."""
     nodes, placements = store["nodes"], store["placements"]
     place_key = place_key if place_key is not None else seg_id
     created = []                                       # nodes minted/subbed in THIS reply, in order (for "ref")
@@ -1090,7 +1094,7 @@ def apply_plan(store, seg_id, seg_t, ops, menu, place_key=None):
         store["seq"] = store.get("seq", 0) + 1
         nid = "%s:g%d" % (store["rompUuid"], store["seq"])
         nodes[nid] = {"id": nid, "text": text, "parentId": parent, "nodeComplete": False,
-                      "blocked": False, "cleared": False, "trail": [seg_id],
+                      "blocked": False, "cleared": False, "trail": [seg_id], "promptUuid": prompt_uuid,
                       "t": seg_t, "mt": seg_t, "why": why}   # mt = last-modified (create/done/block); t stays create
         created.append(nid)
         return nid
@@ -1568,8 +1572,13 @@ def _session_closed(session):
 
 
 def plan_units(session):
-    """Ordered (seg_id, phase, t, text, human, followup) planner units for the TWO-RUN model (the user
-    2026-06-21, via link_audit), oldest-first:
+    """Ordered (seg_id, phase, t, text, human, followup, trigger) planner units for the TWO-RUN model (the
+    user 2026-06-21, via link_audit), oldest-first. `trigger` (the user 2026-07-01, via bugs) is the
+    segment's trigger atom uuid (seg["trigger"], None for an autonomous/continuation segment with no
+    distinct trigger) — threaded through to apply_plan so a newly-minted node can store it as
+    node["promptUuid"], the data-model fix for the goal-modal's title-click jump (sidesteps re-deriving the
+    anchor from trail[0]'s segment KEY, which drifts when the optimistic echo and the final transcript atom
+    differ on TEXT, not just timestamp):
       - the OPEN final segment (work in progress) yields a 'prompt' unit only — its opening user MESSAGE,
         so the PROMPT-run places the ask on the board IMMEDIATELY (mint-or-amend), before the work lands.
         Human, non-followup segments only; `text` is the raw prompt gist.
@@ -1599,21 +1608,22 @@ def plan_units(session):
             if not work_text:
                 continue
             is_open_final = turn_open and si == len(segs) - 1
+            trig = seg.get("trigger")
             if _seg_peer(seg):                            # POSTAL segment → DELEGATION work-run (files under the courier's goal)
                 if not is_open_final:                     # ended → the recipient's work is known; place it under G
-                    out.append((seg["id"], "delegation", seg["t"], work_text, False, None))
+                    out.append((seg["id"], "delegation", seg["t"], work_text, False, None, trig))
                 continue                                  # peer segs never get a prompt-run or a normal work-run
             human, followup = _seg_human(seg), _seg_followup(seg)
             if is_open_final:                             # the IN-PROGRESS segment → PROMPT-run only (place the ask now)
                 if human and not followup:
                     ptext = _prompt_text(seg["atoms"])
                     if ptext:
-                        out.append((seg["id"], "prompt", seg["t"], ptext, human, followup))
+                        out.append((seg["id"], "prompt", seg["t"], ptext, human, followup, trig))
                 continue                                  # no work unit yet — its work hasn't ended
             if _seg_nudge(seg) and followup:              # a romp NUDGE on a goal → RESOLVE it (done/block), not a plain step
-                out.append((seg["id"], "nudge", seg["t"], work_text, False, followup))
+                out.append((seg["id"], "nudge", seg["t"], work_text, False, followup, trig))
             else:
-                out.append((seg["id"], "work", seg["t"], work_text, human, followup))   # ENDED segment → WORK-run
+                out.append((seg["id"], "work", seg["t"], work_text, human, followup, trig))   # ENDED segment → WORK-run
     return out
 
 
@@ -1794,14 +1804,14 @@ def _plan_session(fsid, path, now):
         save_goals(fsid, store)                       # persist the retirements so they dedup out next pass
     units = units[:PLAN_FAIRNESS]
     placed = 0
-    for seg_id, phase, seg_t, text, human, followup in units:
+    for seg_id, phase, seg_t, text, human, followup, trig in units:
         menu = open_menu(store)
         if phase == "prompt":                         # PROMPT-run: place the ask NOW (mint-or-amend), before the work
             ops = _parse_plan(plan_prompt_llm(text, _menu_text(store, menu)), len(menu)) or []
             ops = [o for o in ops if o["do"] in ("mint", "sub")]   # places only; drop any stray done/block/skip
             if not ops:
                 ops = _coerce_place(menu, text)       # MUST place: a prompted goal never stays unplaced
-            apply_plan(store, seg_id, seg_t, ops, menu, place_key=seg_id + "#p")
+            apply_plan(store, seg_id, seg_t, ops, menu, place_key=seg_id + "#p", prompt_uuid=trig)
             placed += 1
             _group_store(store, fsid, now)
             save_goals(fsid, store)
@@ -1833,7 +1843,7 @@ def _plan_session(fsid, path, now):
             ops = _restrict_retitle(ops, 1)              # goal_num=1 above → retitle is only valid on #1
             if not ops:
                 ops = [{"do": "sub", "under": 1, "text": _seg_label(text), "why": "work handed off from a peer"}]
-            apply_plan(store, seg_id, seg_t, ops, sub, place_key=seg_id + "#d")
+            apply_plan(store, seg_id, seg_t, ops, sub, place_key=seg_id + "#d", prompt_uuid=trig)
             placed += 1
             _group_store(store, fsid, now)
             save_goals(fsid, store)
@@ -1874,7 +1884,7 @@ def _plan_session(fsid, path, now):
             ops = [{"do": "sub", "under": 1, "text": o.get("text"), "why": o.get("why")}
                    if o["do"] == "mint" else o for o in ops if o["do"] != "skip"]
             ops = _restrict_retitle(ops, 1)              # goal_num=1 above → retitle is only valid on #1
-            apply_plan(store, seg_id, seg_t, ops, sub)
+            apply_plan(store, seg_id, seg_t, ops, sub, prompt_uuid=trig)
             placed += 1
             _group_store(store, fsid, now)
             save_goals(fsid, store)
@@ -1898,7 +1908,7 @@ def _plan_session(fsid, path, now):
                 forced = [{"do": "sub", "under": gi, "text": step, "why": why}]
                 if retitle:
                     forced.append(retitle)              # the model may ALSO retitle #gi itself (the user 2026-07-01)
-                apply_plan(store, seg_id, seg_t, forced, menu)
+                apply_plan(store, seg_id, seg_t, forced, menu, prompt_uuid=trig)
                 placed += 1
                 _group_store(store, fsid, now)
                 save_goals(fsid, store)
@@ -1934,7 +1944,7 @@ def _plan_session(fsid, path, now):
             ops = _coerce_place(menu, text)           # HARD GUARD: a user message never silently vanishes
         store.get("parseFails", {}).pop(seg_id, None)  # placed → forget any earlier parse-fails on it
         ops = _restrict_retitle(ops, pgi)              # only the segment's own prompt-run node is retitle-eligible
-        apply_plan(store, seg_id, seg_t, ops, menu)
+        apply_plan(store, seg_id, seg_t, ops, menu, prompt_uuid=trig)
         placed += 1
         _group_store(store, fsid, now)                # regroup the forest after this placement (event-gated, no-op if tops unchanged)
         save_goals(fsid, store)                       # crash-safe: persist plan + group together
