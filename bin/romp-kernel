@@ -4158,6 +4158,40 @@ def _fleet_archived_tops(sid, cap=20):
     return out
 
 
+_arch_roots_cache = {}   # archive path -> (mtime, [root {text,t,done,cleared,blocked}]) for the tab-hover Recent
+
+
+def _archive_roots(sid):
+    """Every TOP-level node in goals-archive/<sid>.json REGARDLESS of status — the raw cleared/completed tops,
+    for the tab-hover "Recent" which wants the last 5 things a session DID, cleared or not (the user 2026-06-30).
+    DISTINCT from _fleet_archived_tops, which keeps only COMPLETED tops (+ their subtrees) for the Fleet's "Show
+    completed"; a bare-dismissed (cleared, not completed) top is exactly what that excludes but Recent wants.
+    Roots only (no subtrees — Recent lists tasks, not steps). mtime-cached on the archive file → ~free."""
+    p = jd.GOALARCHDIR / (sid + ".json")
+    try:
+        mt = p.stat().st_mtime
+    except OSError:
+        return []
+    hit = _arch_roots_cache.get(str(p))
+    if hit and hit[0] == mt:
+        return hit[1]
+    try:
+        arch = jd.load_goal_archive(sid) or {}
+    except Exception:
+        arch = {}
+    nodes, status = arch.get("nodes", {}), arch.get("status", {})
+    out = [{"text": nd.get("text", ""), "t": nd.get("mt", nd.get("t", 0)),
+            "done": bool(nd.get("nodeComplete")) or status.get(nid) == "completed",
+            "cleared": bool(nd.get("cleared")) or status.get(nid) == "cleared",
+            "blocked": bool(nd.get("blocked"))}
+           for nid, nd in nodes.items()
+           if nd.get("parentId") is None and (nd.get("text") or "").strip()]
+    if len(_arch_roots_cache) > 256:
+        _arch_roots_cache.clear()
+    _arch_roots_cache[str(p)] = (mt, out)
+    return out
+
+
 def build_session(sid, now, tmux=None):
     """A {type:"session"} message the render.js bundle consumes: the event tree reshaped to
     ChatEvent[], plus the TOC ledger (archiver headline + turn captions) and a status chip."""
@@ -4507,11 +4541,20 @@ def build_session(sid, now, tmux=None):
             _twalk(c, depth + 1, ancestor_done=explicit or derived or clr)
     for _rid in sorted(gkids.get(None, []), key=_submax, reverse=True):
         _twalk(_rid, 0)
+    # "Recent" for the tab-hover (the user 2026-06-30): the up-to-5 most-recently-touched TOP-level tasks across
+    # the LIVE store AND the archive, REGARDLESS of status (done / blocked / cleared) — so a session whose tops
+    # were all crossed off still lists the last 5 things it did, not just its summary. Roots only (tasks, not
+    # steps). The live tree usually holds ≤1 open top; the rest are cleared+archived, hence the archive merge.
+    _live_roots = [{"text": nd["text"], "t": nd.get("mt", nd.get("t", 0)),
+                    "done": bool(nd.get("nodeComplete")), "cleared": _cleared(nid), "blocked": bool(nd.get("blocked"))}
+                   for nid, nd in gnodes.items()
+                   if nd.get("parentId") is None and (nd.get("text") or "").strip()]
+    recent_tops = sorted(_live_roots + _archive_roots(sid), key=lambda r: r["t"] or 0, reverse=True)[:5]
     # bullets kept as a fallback for goal-less sessions (render shows the tree when it's non-empty).
     if _session_flag(sid, "hideFromFeed"):       # muted → out of task tracking: the ledger shows no goal tree / current task
-        tree, current = [], None
+        tree, current, recent_tops = [], None, []
     ledger = {"summary": arch.get("headline", ""), "tree": tree[:80],
-              "current": current, "bullets": bullets}
+              "current": current, "bullets": bullets, "recent": recent_tops}
     # work-timer base, in MILLISECONDS (render's elapsedMs does Date.now()ms - sinceEpoch; a seconds
     # value showed ~494,000h — the user's "400,000 hours" bug): the current open turn's start while
     # working, else the last activity; None when unknown (render then shows no timer).

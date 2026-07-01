@@ -40,8 +40,8 @@ test("v4: git branch + context battery + Summary row + the last 5 worked-on item
   // text+time in its recency colour — replaces the single "Latest" top-goal line.
   assert.match(RENDER, /k\.textContent = "Recent"/);
   assert.doesNotMatch(RENDER, /k\.textContent = "Latest"/, "the single Latest line is gone");
-  assert.match(RENDER, /\.map\(\(n\) => \(\{ n, t: \(n\.mt \?\? n\.t\) \|\| 0 \}\)\)/);
-  assert.match(RENDER, /const recent = \[\.\.\.timed, \.\.\.untimed\]\.slice\(0, 5\)/);   // newest-first, capped at 5
+  assert.match(RENDER, /recentItems = lg\.recent\.map\(\(r\) => \(\{ text: r\.text, t: r\.t \|\| 0 \}\)\)/);   // prefer the server recent (live + archive)
+  assert.match(RENDER, /recentItems = \[\.\.\.timed, \.\.\.untimed\]\.slice\(0, 5\)/);   // fallback: newest-first, capped at 5
   assert.match(RENDER, /item\.style\.color = ageColorReadable\(now - t\)/);           // each item in its recency colour
   assert.match(CSS, /\.tab-tip-recent-list \{/);                                      // the list + per-item rules exist
   assert.match(CSS, /\.tab-tip-recent-item \{/);
@@ -56,13 +56,16 @@ test("the Recent list has NO recency cutoff — it shows the last 5 even if days
   // still list what it last worked on rather than going blank once its work ages out.
   const recentBlock = RENDER.slice(RENDER.indexOf('k.textContent = "Recent"') - 1200, RENDER.indexOf('r.appendChild(k); r.appendChild(list)'));
   assert.doesNotMatch(recentBlock, /now - t [<>]=?|Date\.now\(\)[^;]*<|MAX_AGE|RECENT_WINDOW/, "no age cutoff on the Recent list");
-  // shown REGARDLESS of completion status (the user 2026-06-30): the Recent filter is text-only — it does NOT
-  // exclude done / blocked / cleared nodes, so "the 5 most recent things it did" includes finished + dismissed work
+  // shown REGARDLESS of completion status (the user 2026-06-30): PREFER the server `recent` (live + archive,
+  // any status) so a session whose tops were all cleared still lists them; the fallback tree path is text-only
+  // (does NOT exclude done / blocked / cleared)
+  assert.match(RENDER, /if \(lg\?\.recent && lg\.recent\.length\) \{/);
+  assert.match(RENDER, /recentItems = lg\.recent\.map\(\(r\) => \(\{ text: r\.text, t: r\.t \|\| 0 \}\)\);/);
   assert.match(RENDER, /const named = lg\.tree\.filter\(\(n\) => \(n\.text \|\| ""\)\.trim\(\)\);/);
-  assert.doesNotMatch(RENDER, /const named = lg\.tree\.filter\(\(n\) => \(n\.text \|\| ""\)\.trim\(\) && !n\.cleared\)/);
-  // timed nodes lead; untimed text nodes backfill so a session with >=5 goals always surfaces 5
+  assert.doesNotMatch(RENDER, /!n\.cleared\)/);
+  // fallback: timed nodes lead; untimed text nodes backfill so a session with >=5 goals always surfaces 5
   assert.match(RENDER, /const untimed = named\.filter\(\(n\) => !\(\(n\.mt \?\? n\.t\) \|\| 0\)\)/);
-  assert.match(RENDER, /const recent = \[\.\.\.timed, \.\.\.untimed\]\.slice\(0, 5\)/);
+  assert.match(RENDER, /recentItems = \[\.\.\.timed, \.\.\.untimed\]\.slice\(0, 5\)/);
   // a backfilled (undated) item shows no "(ago)" label and falls back to the oldest-bucket colour
   assert.match(RENDER, /if \(t > 0\) \{[\s\S]*?agehms\(now - t\)/);
   assert.match(RENDER, /item\.style\.color = ageColorReadable\(345600\)/);
