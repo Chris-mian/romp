@@ -295,6 +295,26 @@ class LiveTail(unittest.TestCase):
                       _AssistantMessage, _ResultMessage, _Sys)
         self.assertEqual(s.model, "Opus 4.8", "a synthetic turn must NOT overwrite the real model")
 
+    def test_compact_boundary_refreshes_context_now(self):
+        """After /compact the active context drops to the summary, but the % used to refresh only on the next
+        turn's ResultMessage. The CLI auto-runs a continuation turn after /compact that can work for minutes,
+        so until it settled the bar kept showing the STALE pre-compact % (the user 2026-06-30: "I compacted
+        but it still says 72%"). A compact_boundary system message must re-pull the % on the boundary itself."""
+        import asyncio
+        class _Sys:                                              # stand-in for SystemMessage (isinstance + subtype)
+            def __init__(self, subtype): self.subtype = subtype; self.data = {}
+        be = sb.SdkBackend(tempfile.mkdtemp(), "/bin/true", lambda *a, **k: None)
+        s = sb.SdkSession(be, {"sid": "11111111-2222-3333-4444-555555555555", "name": "n", "cwd": "/tmp"})
+        calls = []
+        async def _fake_refresh(): calls.append(True)
+        s._do_refresh_context = _fake_refresh
+
+        async def run():
+            s._on_message(_Sys("compact_boundary"), _AssistantMessage, _ResultMessage, _Sys)
+            await asyncio.sleep(0)                               # let the ensure_future'd refresh run
+        asyncio.run(run())
+        self.assertEqual(len(calls), 1, "compact_boundary re-pulls the context % immediately, not next turn")
+
 
 class SnapshotParkedOnAsk(unittest.TestCase):
     """A RUNNING SDK session parked in can_use_tool/_ask_user on a permission/picker prompt must snapshot

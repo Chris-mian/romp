@@ -787,6 +787,13 @@ class SdkSession:
                                    # is _amain's on-connect _do_refresh_context() (get_context_usage); this is
                                    # the refinement once a real turn lands.
             asyncio.ensure_future(self._do_refresh_context())   # re-pull the real context % + model from the SDK
+        elif isinstance(msg, SystemMessage) and msg.subtype == "compact_boundary":
+            # Compaction just landed: the active context dropped to the summary. Re-pull the % NOW, on the
+            # boundary event itself, rather than waiting for the next turn's ResultMessage — the CLI auto-runs
+            # a continuation turn after /compact that can work for minutes, and until it settled the bar kept
+            # showing the STALE pre-compaction % (the user 2026-06-30: "I compacted but it still says 72%").
+            # get_context_usage() reads current state, so it reports the post-compaction number here.
+            asyncio.ensure_future(self._do_refresh_context())
         elif isinstance(msg, SystemMessage) and msg.subtype == "api_retry":
             # the API returned a retryable error (rate-limit / overload); the CLI is backing off + retrying.
             # Surface a distinct 'retrying' state so a stall reads as an API issue, not a silent hang (the
