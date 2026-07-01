@@ -150,6 +150,8 @@ class SyncFindOrCreate(unittest.TestCase):
 
     def test_reopen_clears_only_our_done(self):
         store = fresh_store()
+        # born OPEN under watch, then completed → kept as authoritative-done
+        jd._sync_declared_plan(store, plan_session([("Phase A", "Doing A", [])]), "s0", T0)
         jd._sync_declared_plan(store, plan_session([("Phase A", "Doing A", [("completed",)])]), "s1", T0 + 10)
         nd = agent_nodes(store)["1"]
         self.assertTrue(nd["nodeComplete"])
@@ -158,11 +160,43 @@ class SyncFindOrCreate(unittest.TestCase):
         self.assertEqual(nd["agentTask"]["status"], "open")
         self.assertFalse(nd["nodeComplete"])
 
-    def test_cancelled_is_not_open(self):
+    def test_completed_item_is_never_minted_retroactively(self):
+        """The regression (the user 2026-07-01): an idle session's ALREADY-completed to-do items must NOT
+        pop up as fresh completed cards. A done/cancelled item with no node is skipped, not minted."""
         store = fresh_store()
-        jd._sync_declared_plan(store, plan_session([("Phase A", "Doing A", [("cancelled",)])]), "s1", T0 + 10)
-        nd = agent_nodes(store)["1"]
-        self.assertEqual(nd["agentTask"]["status"], "done", "cancelled is abandoned, not owed — never open")
+        s = plan_session([("Done phase", "Doing", [("completed",)]),
+                          ("Cancelled phase", "Doing", [("cancelled",)]),
+                          ("Live phase", "Doing", [])])
+        jd._sync_declared_plan(store, s, "s1", T0 + 10)
+        keys = set(agent_nodes(store))
+        self.assertEqual(keys, {"3"}, "only the OPEN item (#3) is minted; done/cancelled backlog is not")
+        self.assertEqual(agent_nodes(store)["3"]["agentTask"]["status"], "open")
+
+    def test_backlog_done_node_self_heals_away(self):
+        """A pre-fix backlog mint — a DONE agentTask node that was never watched-open (agentBornOpen absent)
+        — is deleted on the next sync, clearing the flooded completed cards."""
+        store = fresh_store()
+        store["seq"] = 1
+        store["nodes"]["11111111-2222-3333-4444-555555555555:g1"] = {
+            "id": "11111111-2222-3333-4444-555555555555:g1", "text": "Phase 1 (already done)", "parentId": None,
+            "nodeComplete": True, "blocked": False, "cleared": False, "trail": ["seg0"], "t": T0, "mt": T0,
+            "agentTask": {"key": "1", "status": "done", "raw": "completed"}}   # NO agentBornOpen → backlog
+        s = plan_session([("Phase 1 (already done)", "Doing", [("completed",)])])
+        self.assertTrue(jd._sync_declared_plan(store, s, "s1", T0 + 10))
+        self.assertEqual(agent_nodes(store), {}, "the born-done backlog node is self-healed away")
+
+    def test_open_backlog_node_is_adopted_not_deleted(self):
+        """A pre-fix OPEN agentTask node (marker absent) is ADOPTED (marker added), never deleted — so it
+        keeps holding its goal working and is protected from the done-heal when it later completes."""
+        store = fresh_store()
+        store["seq"] = 1
+        nid = "11111111-2222-3333-4444-555555555555:g1"
+        store["nodes"][nid] = {"id": nid, "text": "Live phase", "parentId": None, "nodeComplete": False,
+                               "blocked": False, "cleared": False, "trail": ["seg0"], "t": T0, "mt": T0,
+                               "agentTask": {"key": "1", "status": "open", "raw": "in_progress"}}
+        jd._sync_declared_plan(store, plan_session([("Live phase", "Doing", [("in_progress",)])]), "s1", T0 + 10)
+        self.assertIn(nid, store["nodes"], "an open backlog node is kept")
+        self.assertTrue(store["nodes"][nid].get("agentBornOpen"), "and adopted (marker added)")
 
 
 class RollupAuthority(unittest.TestCase):

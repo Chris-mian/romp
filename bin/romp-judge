@@ -1309,49 +1309,68 @@ def rollup_status(store, session_closed):
 
 def _sync_declared_plan(store, session, seg_id, seg_t):
     """DETERMINISTIC (no LLM): mirror the agent's live to-do list (Claude Code's Task tool) into the goal
-    graph so every declared plan item IS a node carrying `agentTask:{key,status}` — the authoritative tier
-    rollup_status honors. Find-or-create by the stable Task id: an existing node's status is refreshed (and
-    its nodeComplete tracks authoritative-done); a NEW item is minted as its own top so the grouper can
-    place/merge it naturally (no forced rooting under any goal). Runs every pass before rollup, idempotent
-    by key. A cancelled item is abandoned, not owed → treated as done so it can't hold a goal open forever.
-    `agentDone` records that WE stamped nodeComplete, so a done→open reopen only clears a done WE set, never
-    a closer/planner completion. Returns True if it mutated the store (caller regroups)."""
-    items = em.declared_plan(session)
+    graph as `agentTask:{key,status}` nodes — the authoritative tier rollup_status honors.
+
+    A node exists ONLY for an item that was OPEN under watch (the user 2026-07-01): an OPEN item is
+    find-or-created and minted as its own top for the grouper to place/merge; a done/cancelled item is
+    NEVER minted retroactively. That guard matters — minting a done item flooded the feed with an idle
+    session's whole COMPLETED to-do backlog as fresh completed cards (the reported bug). A node BORN open
+    (`agentBornOpen`) that later completes flips to authoritative-done and is KEPT (a live completion is a
+    signal, not backlog). A done agentTask node that was never watched-open — a pre-fix backlog mint,
+    marker absent — SELF-HEALS away (deleted if childless). Idempotent; runs every pass before rollup.
+    Returns True if it mutated the store (caller regroups)."""
+    items = {it["key"]: it for it in em.declared_plan(session)}
     nodes = store["nodes"]
-    existing = {}
+    has_child, by_key = set(), {}
     for nid, nd in nodes.items():
+        if nd.get("parentId") is not None:
+            has_child.add(nd["parentId"])
         k = (nd.get("agentTask") or {}).get("key")
         if k is not None:
-            existing[k] = nid
-    if not items and not existing:
+            by_key[k] = nid
+    if not items and not by_key:
         return False
+
+    def _is_open(it):
+        return bool(it) and it["status"] not in ("completed", "cancelled")
+
     changed = False
-    for it in items:
-        key, raw = it["key"], it["status"]
-        our = "done" if raw in ("completed", "cancelled") else "open"
-        if key in existing:
-            nd = nodes[existing[key]]
-            at = nd.get("agentTask") or {}
-            if at.get("status") == our and at.get("raw") == raw:
-                continue                                   # unchanged → no churn
-            nd["agentTask"] = {"key": key, "status": our, "raw": raw}
-            if our == "done":
-                nd["nodeComplete"] = True                  # authoritative-done
-            elif nd.get("agentDone"):
-                nd["nodeComplete"] = False                 # agent RE-OPENED it → drop the done WE stamped
-            nd["agentDone"] = (our == "done")
-            nd["mt"] = seg_t
+    # 1) reconcile the agentTask nodes we already track against the current declared plan
+    for key, nid in list(by_key.items()):
+        it, nd = items.get(key), nodes[nid]
+        at = nd.get("agentTask") or {}
+        if _is_open(it):
+            if at.get("status") != "open" or at.get("raw") != it["status"] or not nd.get("agentBornOpen"):
+                nd["agentTask"] = {"key": key, "status": "open", "raw": it["status"]}
+                nd["agentBornOpen"] = True                  # adopt: watched-open now → protected from the done-heal
+                if nd.get("agentDone"):                     # agent RE-OPENED it → drop the done WE stamped
+                    nd["nodeComplete"] = False; nd["agentDone"] = False
+                nd["mt"] = seg_t
+                changed = True
+        elif nd.get("agentBornOpen"):                       # watched-open item that has now COMPLETED → authoritative-done (kept)
+            if at.get("status") != "done":
+                nd["agentTask"] = {"key": key, "status": "done", "raw": (it or {}).get("status") or "completed"}
+                nd["nodeComplete"] = True; nd["agentDone"] = True; nd["mt"] = seg_t
+                changed = True
+        elif nid not in has_child:                          # born-DONE backlog leaf (pre-fix) → self-heal it away
+            nodes.pop(nid, None)
+            store.get("status", {}).pop(nid, None)
+            del by_key[key]
             changed = True
-        else:
-            store["seq"] = store.get("seq", 0) + 1
-            nid = "%s:g%d" % (store["rompUuid"], store["seq"])
-            nodes[nid] = {"id": nid, "text": it["text"] or it.get("activeForm") or "(declared step)",
-                          "parentId": None, "nodeComplete": (our == "done"), "blocked": False,
-                          "cleared": False, "trail": [seg_id] if seg_id else [], "promptUuid": None,
-                          "t": seg_t, "mt": seg_t, "why": "declared in the agent's own to-do list",
-                          "agentTask": {"key": key, "status": our, "raw": raw}, "agentDone": (our == "done")}
-            existing[key] = nid
-            changed = True
+
+    # 2) mint the OPEN items we don't track yet (a done item is NEVER minted retroactively)
+    for key, it in items.items():
+        if key in by_key or not _is_open(it):
+            continue
+        store["seq"] = store.get("seq", 0) + 1
+        nid = "%s:g%d" % (store["rompUuid"], store["seq"])
+        nodes[nid] = {"id": nid, "text": it["text"] or it.get("activeForm") or "(declared step)",
+                      "parentId": None, "nodeComplete": False, "blocked": False, "cleared": False,
+                      "trail": [seg_id] if seg_id else [], "promptUuid": None, "t": seg_t, "mt": seg_t,
+                      "why": "declared in the agent's own to-do list",
+                      "agentTask": {"key": key, "status": "open", "raw": it["status"]}, "agentBornOpen": True}
+        by_key[key] = nid
+        changed = True
     return changed
 
 
