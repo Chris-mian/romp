@@ -7895,19 +7895,23 @@ var r=el.getBoundingClientRect();tip.style.display='block';
 tip.style.left=(r.right+9)+'px';tip.style.top=Math.max(6,Math.min(window.innerHeight-tip.offsetHeight-6,r.top-4))+'px';}
 el.addEventListener('mouseenter',showTip);
 el.addEventListener('mouseleave',function(){tip.style.display='none';});
-// Click-to-refresh (the user 2026-06-30): the bars already re-read each poll, but a click forces the SAME
-// check NOW — GET /usage re-reads usage.json (the snapshot Claude Code's statusline writes) and re-renders
-// immediately. The listener sits on the STABLE #rail-usage container, so render()'s innerHTML swap can't drop
-// it; the click is acknowledged instantly (dim pulse) BEFORE the round-trip, per the button rules.
+// Refresh-from-source (the user 2026-06-30): GET /usage re-reads usage.json — the snapshot Claude Code's
+// statusline (tmux) OR the SDK backend's RateLimitEvent capture writes — and re-renders. `pull(ack)` is the
+// shared path: a CLICK forces it now (ack=true → instant dim pulse before the round-trip, per the button
+// rules); a 60s TIMER runs it silently as a BACKUP so the bars stay fresh even when the timeline iframe isn't
+// forwarding usage (idle, or the Timeline pane toggled off) — the gap that made them look stale until a click.
+// The listener sits on the STABLE #rail-usage container, so render()'s innerHTML swap can't drop it.
 el.style.cursor='pointer';el.title='Click to refresh usage';
 var _ruBusy=false;
-el.addEventListener('click',function(){if(_ruBusy)return;_ruBusy=true;
-el.style.opacity='0.45';                         // instant ack, before the fetch
-tip.style.display='none';
+function pull(ack){if(_ruBusy)return;_ruBusy=true;
+if(ack){el.style.opacity='0.45';tip.style.display='none';}   // instant ack only on a real click
 var done=function(){_ruBusy=false;el.style.opacity='';};
 fetch('/usage',{cache:'no-store'}).then(function(r){return r.ok?r.json():null;})
 .then(function(u){render(u&&(u.fiveHour||u.sevenDay)?u:null);done();})
-.catch(function(){done();});});
+.catch(function(){done();});}
+el.addEventListener('click',function(){pull(true);});
+setInterval(function(){pull(false);},60000);     // backup auto-refresh: re-read usage.json every 60s
+pull(false);                                     // fill on load, independent of the timeline-forward path
 // Vertical-fit (the user 2026-06-27): when the scrollable top group can't hold the toggles + usage bars, drop
 // the USAGE bars first (.rail-tight). The refresh/gear live in the FIXED .rail-acts below, so they're never
 // pushed off; if even the toggles don't fit, .rail-scroll scrolls them (hidden scrollbar). Re-checked on

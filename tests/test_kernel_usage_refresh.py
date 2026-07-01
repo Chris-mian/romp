@@ -75,6 +75,14 @@ class UsageRefreshWiring(unittest.TestCase):
         # re-entrancy guard so a double-click doesn't stack fetches
         self.assertIn("_ruBusy", html)
 
+    def test_rail_usage_has_a_backup_auto_refresh_timer(self):
+        # a 60s timer re-reads /usage silently so the bars stay fresh even when the timeline iframe isn't
+        # forwarding usage (idle / Timeline pane off) — the gap that made them look stale until a click.
+        html = km._landing()
+        self.assertIn("setInterval(function(){pull(false);},60000)", html)
+        self.assertIn("function pull(ack)", html, "click + timer share one refresh path")
+        self.assertIn("pull(false);", html)   # also pulled once on load, independent of the timeline forward
+
 
 if __name__ == "__main__":
     unittest.main()
