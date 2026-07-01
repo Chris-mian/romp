@@ -1194,7 +1194,10 @@ const TREE_INDENT_EM = 1.4;
 function wireNodeZones(it: AskItem, node: AskTreeNode, mark: HTMLElement, txt: HTMLElement, meta: HTMLElement | null, wire: boolean): (ev: Event) => void {
   const navId = node.kind === "handoff" ? node.id : it.turnId;
   const navSid = node.whoSid || (node.kind === "handoff" ? node.id.split(":")[0] : it.sid);
-  const resolved = node.status === "done" || node.status === "question";   // done / blocked → has a resolution
+  // An agentTask-OPEN node is authoritatively unchecked — never "resolved", so the mark hover can't read
+  // "jump to where this got checked off" on an item the agent hasn't crossed off (the user 2026-07-01).
+  // Defense-in-depth for the kernel's _agent_open_set fix: correct even if a stale build serves status:"done".
+  const resolved = (node.status === "done" || node.status === "question") && node.auth !== "open";
   const resolveT = (resolved && node.mt) ? node.mt : node.t;
   const goWork = (ev: Event) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: navId, sid: navSid, t: resolveT, anchor: "work", anchorUuid: node.anchorUuid ?? null }); };
   // prompt-intent: jump to the minting user message. But a node with no opener (an autonomous note, or an
@@ -1225,7 +1228,10 @@ function wireNodeZones(it: AskItem, node: AskTreeNode, mark: HTMLElement, txt: H
     // NOT yet checked off / blocked → no completion: the checkbox + text are ONE block (both the goal
     // itself), navigating to the message together and lighting together. The meta time (when present) stays
     // its own zone → the node's latest work. (the user 2026-06-17.)
-    mark.classList.add("lz-nav"); mark.title = "jump to the message that asked for this"; mark.onclick = goMsg;
+    // An agent's OWN to-do item has no "message that asked for it" — the mark jumps to its latest work instead.
+    mark.classList.add("lz-nav");
+    mark.title = node.auth ? "jump to the latest work on this to-do item" : "jump to the message that asked for this";
+    mark.onclick = node.auth ? goWork : goMsg;
     if (meta) { meta.classList.add("lz-nav"); meta.title = "jump to the latest work here"; meta.onclick = goWork; }
     linkHover([mark, txt]);   // checkbox + text light together, each keeping its own shape
     if (meta) linkHover([meta]);

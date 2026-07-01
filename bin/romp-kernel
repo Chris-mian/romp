@@ -4248,6 +4248,30 @@ def _strip_hook_notices(text):
     return re.sub(r"\s+", " ", _HOOK_NOTICE_RE.sub("", text)).strip()
 
 
+def _agent_open_set(nodes, children):
+    """The set of node ids that ARE, or have a descendant that is, an agentTask-OPEN node — the
+    AUTHORITATIVE-open subtree. A node in this set must NEVER render 'done', mirroring the judge's
+    rollup_status is_complete override: the agent's own to-do list says the work is still owed, which
+    outranks a nodeComplete umbrella rolling 'done' DOWN onto it. build_feed / build_session derive a
+    node's done-state independently of the judge's per-top status, so without this an open to-do under a
+    flat-completed umbrella came back 'done' — the mark drew the hollow auth ring (CSS) but the status
+    said done, so the hover read "jump to where this got checked off" on an unchecked item (the user
+    2026-07-01). Keyed off the SAME nodes/children the caller already built."""
+    openset = set()
+    def walk(nid):
+        nd = nodes.get(nid) or {}
+        r = (nd.get("agentTask") or {}).get("status") == "open"
+        for c in children.get(nid, []):
+            if walk(c):
+                r = True
+        if r:
+            openset.add(nid)
+        return r
+    for top in children.get(None, []):
+        walk(top)
+    return openset
+
+
 def build_session(sid, now, tmux=None):
     """A {type:"session"} message the render.js bundle consumes: the event tree reshaped to
     ChatEvent[], plus the TOC ledger (archiver headline + turn captions) and a status chip."""
@@ -4512,6 +4536,7 @@ def build_session(sid, now, tmux=None):
     gkids = {}
     for _gid, _gn in gnodes.items():
         gkids.setdefault(_gn.get("parentId"), []).append(_gid)
+    g_agent_open = _agent_open_set(gnodes, gkids)   # authoritative-open subtree → never 'done' (mirrors build_feed / the judge)
     focus = gstore.get("lastNode")
     tree = []
 
@@ -4575,13 +4600,17 @@ def build_session(sid, now, tmux=None):
         if not nd:
             return
         clr = _cleared(nid)
-        explicit = bool(nd.get("nodeComplete"))
+        # AUTHORITATIVE-open override (the user 2026-07-01): an open agent to-do item — or an umbrella holding
+        # one — is never 'done' here either, so the ledger matches the feed + the judge (see _agent_open_set).
+        # A CLEARED node is still dismissed (clr wins), so the override only applies while it's live.
+        aopen = (nid in g_agent_open) and not clr
+        explicit = bool(nd.get("nodeComplete")) and not aopen
         # done rolls BOTH ways, like the ask-tree flatten() (the user 2026-06-16): a node under a done
         # parent is derived-done too (roll-DOWN via ancestor_done), not just when its own subtree is done
         # (roll-UP via _subtree_done). So a completed subtree reads as all-dimmed-✓, instead of a child
         # showing ○ under a done top. A CLEARED (dismissed) top counts as done for this roll-down too: its
         # open children fade with it rather than sitting as ○ under a faded-✓ parent (the user 2026-06-16).
-        derived = (not explicit) and (not clr) and (_subtree_done(nid) or ancestor_done)
+        derived = (not explicit) and (not clr) and (not aopen) and (_subtree_done(nid) or ancestor_done)
         kids = sorted(gkids.get(nid, []), key=_submax, reverse=True)
         # EXACT deep-link anchors (the user 2026-06-19): a ledger TOC click lands on the precise chat turn
         # BY UUID — the SAME anchors build_feed gives its cards — so the ledger and the feed for one node
@@ -5235,6 +5264,7 @@ def build_feed(now, tmux=None):
         children = {}
         for nid, nd in nodes.items():
             children.setdefault(nd.get("parentId"), []).append(nid)
+        agent_open = _agent_open_set(nodes, children)   # authoritative-open subtree → never rendered 'done' (see helper)
 
         def _subtree(root):                          # all node ids at/under root (pre-order)
             stack, acc = [root], []
@@ -5282,7 +5312,10 @@ def build_feed(now, tmux=None):
             nd = nodes[nid]
             kids = sorted(children.get(nid, []), key=_fsubmax, reverse=True)   # most-recent-first (matches the ledger)
             explicit = bool(nd.get("nodeComplete"))
-            done = explicit or _closure_done(nid) or ancestor_done
+            # AUTHORITATIVE-open override (the user 2026-07-01): an open agent to-do item — or an umbrella
+            # holding one — is NEVER done, even if a nodeComplete ancestor would roll 'done' down onto it.
+            # Mirrors the judge's rollup_status; without it the open item read 'done' → the "checked off" hover.
+            done = (explicit or _closure_done(nid) or ancestor_done) and nid not in agent_open
             derived = done and not explicit            # roll-up / roll-down → DIMMED ✓ disc, not the full one
             st = "done" if done else ("question" if nd.get("blocked") else "open")
             # The node's deep-link target SEGMENT: where it RESOLVED (done/blocked → its last trail seg,
