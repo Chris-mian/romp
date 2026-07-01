@@ -1,20 +1,22 @@
 #!/usr/bin/env bash
-# SessionStart hook (romp): in a romp session, auto-load the Romp Postal Service
-# norms (the romp-postal skill) as session context — so peer-messaging guidance
-# is present WITHOUT living in the always-on global CLAUDE.md (it only applies to
-# romp sessions). Non-romp / non-tmux sessions get nothing: gated on the @romp
-# tmux flag. The skill SKILL.md is the single source of truth; this emits its
-# body (frontmatter stripped) as SessionStart additionalContext.
+# SessionStart hook (romp): tell a romp session it can message peers, in a COMPACT
+# pointer, not the full skill. The old hook emitted the entire SKILL.md body every
+# session (~1.4k tokens, re-sent every turn) and duplicated the postal MCP tools'
+# own instructions + descriptions. Now it emits only the essentials the session
+# needs up front, and defers the full guide (shell CLI, remote-machine setup,
+# coordination detail) to the romp-postal skill, loaded on demand. Non-romp /
+# non-tmux sessions get nothing (gated on @romp); SDK sessions get the norms from
+# the postal MCP's own instructions instead. Keep this in sync with SKILL.md.
 [ "$(tmux show -v @romp 2>/dev/null)" = "1" ] || exit 0
-exec python3 - "$HOME/.claude/skills/romp-postal/SKILL.md" <<'PY'
-import json, re, sys
-try:
-    txt = open(sys.argv[1], encoding="utf-8").read()
-except OSError:
-    sys.exit(0)
-body = re.sub(r"\A---\n.*?\n---\n", "", txt, count=1, flags=re.S).strip()
-if body:
-    print(json.dumps({"hookSpecificOutput": {
-        "hookEventName": "SessionStart",
-        "additionalContext": body}}))
+read -r -d '' CTX <<'TXT'
+You're in a romp session with sibling sessions you can message: use the postal MCP tools (send_message, list_agents, set_working, check_inbox, check_sent, recall_message) or `romp --mail`. Each tool's description carries its norms. Two to know up front:
+- Message a peer only for something substantive (it wakes them and costs a turn), leading with DELEGATE:/COORDINATE:/QUESTION: and the whole point in the first sentence.
+- BEFORE editing shared files, run list_agents and check peers' branches + working-notes to avoid collisions (overlap only collides on the same branch); publish yours with set_working.
+For the full guide (shell CLI, remote-machine tunnel setup, coordination detail), invoke the romp-postal skill.
+TXT
+python3 - "$CTX" <<'PY'
+import json, sys
+print(json.dumps({"hookSpecificOutput": {
+    "hookEventName": "SessionStart",
+    "additionalContext": sys.argv[1]}}))
 PY

@@ -1090,26 +1090,24 @@ def _heartbeat(sid, name):
 # This is the self-contained copy of the messaging norms: it ships with the
 # software, so sessions get them even without any global CLAUDE.md.
 MCP_INSTRUCTIONS = """\
-Norms for messaging peer sessions. A peer shares none of your context — only the bytes you send.
+Messaging peer romp sessions. A peer shares none of your context, only the bytes you send.
 
-KEEP EXCHANGES TIGHT. Message a peer only with something substantive: a question, information they need, or a result worth sharing. Never reply just to acknowledge; a message wakes the recipient and costs it a whole turn. Stop once the exchange has served its purpose.
+Message a peer only for something substantive: a question, information they need, or a result worth sharing. A message wakes the recipient and costs it a turn, so never send just to acknowledge, and stop once the exchange is done.
 
-WRITE SO THE RECIPIENT CAN ACT FROM YOUR FIRST LINE.
-- Lead with intent: start the body with DELEGATE: (you own this now), COORDINATE: (aligning / confirming / heads-up, reply optional), or QUESTION: (reply required, no work transferred).
-- First sentence = the whole point: the conclusion or ask itself, not the story of how you got there. Context after, only as much as the recipient needs to act.
-- Name things exactly: files by path, sessions by name, the same term every time — never "the thing", a synonym, or a codename you invented mid-task.
-- Match wording to evidence: "verified X (repro'd)" and "suspect Y (untested)" are different claims — make established vs. guessed legible from the words alone. When relaying, say whose ask or decision it is (the human's, yours, a peer's).
-- End with the response you need, or that none is.
-- Cut words, not information: one point per message; routine coordination is 1-3 lines, a delegation can be long. When brevity and clarity conflict, clarity wins.
+Write so the recipient can act from your first line:
+- Lead with DELEGATE: (you own this now), COORDINATE: (aligning/heads-up, reply optional), or QUESTION: (reply required).
+- First sentence is the whole point (the ask or conclusion), not how you got there.
+- Name things exactly: files by path, sessions by name. Mark verified vs. suspected, and whose ask it is.
+- End with the reply you need, or that none is. One point per message.
 
-COORDINATE BEFORE PARALLEL EDITS — BY READING STATE, NOT BY WAKING PEERS. Before editing a shared repo, run list_agents to see peers' working-notes and branches (file overlap only collides on the SAME branch), and publish your own with set_working. Resolve ownership by READING that state — never message a peer to ask "do you still own this?". Discount a stale claim: a note flagged "(idle now — claim may be stale)" is from a session that finished its turn, and a peer with NO note isn't actively holding files (romp auto-clears the note when a session's work is done). Treat a file as owned only when the peer is on your branch AND actively working it now; never wake an idle session just to disambiguate ownership (a false interrupt). When handing off or working alongside a peer, declare ownership in your first line ("I own files A/B — stay off them"). Use check_sent to see if a message was read instead of asking "did you get it?". Confirm substantive coordination (a delegation plan, an ownership boundary) — never just to acknowledge.
+Before editing a shared repo, run list_agents and read peers' branches + working-notes (overlap only collides on the SAME branch), and publish yours with set_working. Resolve ownership by reading that state, never by messaging "do you still own this?": an idle peer's note may be stale, and a peer with no note holds nothing. Declare what you own in your first line. Never wake an idle session just to coordinate.
 
-Addressing is LIVE-only: you can only message sessions that are currently live (see list_agents). A name that isn't a live session errors — there's no parking mail for, or reviving, dead sessions.
+Addressing is live-only: you can message only currently-live sessions (list_agents). Dead names error, with no parked mail or reviving.
 """
 
 MCP_TOOLS = [
     {"name": "send_message",
-     "description": "Send a message to another romp session by its name. A live recipient gets it at the end of its current turn. The recipient shares none of your context, so lead the body with DELEGATE:/COORDINATE:/QUESTION: and put the whole point in the first sentence — context after, only what's needed to act. Addressing is live-only: a name that isn't a currently-live session errors. Use list_agents to see who's live.",
+     "description": "Message a live romp session by name; it arrives at the end of the recipient's current turn. They share none of your context, so lead with DELEGATE:/COORDINATE:/QUESTION: and put the whole point first. Live-only (see list_agents).",
      "inputSchema": {"type": "object",
                      "properties": {"to": {"type": "string", "description": "recipient romp session name"},
                                     "body": {"type": "string", "description": "message text"}},
@@ -1118,17 +1116,17 @@ MCP_TOOLS = [
      "description": "Read and clear any messages other romp sessions have sent you. Messages are also delivered automatically at the end of each turn, so you rarely need to call this.",
      "inputSchema": {"type": "object", "properties": {}}},
     {"name": "list_agents",
-     "description": "List the live romp sessions you can message (yours is marked), with each one's git branch and what it's currently working on — check this before editing shared files to avoid collisions. A working-note flagged '(idle now — claim may be stale)' is from a session that finished its turn: discount it rather than coordinating against it, and never wake an idle peer just to ask if it still owns a file.",
+     "description": "List live romp sessions you can message (yours marked), each with its git branch and working-note. Check before editing shared files to avoid collisions; discount a note flagged '(idle now, claim may be stale)' and never wake an idle peer to ask if it still owns a file.",
      "inputSchema": {"type": "object", "properties": {}}},
     {"name": "set_working",
-     "description": "Publish what you're currently working on (files / surface) so peers see it in list_agents and steer clear. Your git branch is shown automatically. Pass empty text to clear when done — romp also auto-clears it once your work is done and the session goes idle, so a finished session stops advertising a stale claim.",
+     "description": "Publish what you're working on (files/surface) so peers steer clear; your branch shows automatically. Empty text clears it (romp also auto-clears once your work is done and the session idles).",
      "inputSchema": {"type": "object",
                      "properties": {"text": {"type": "string", "description": "short note, e.g. 'editing scripts/romp-postal + tmux.conf'"}}}},
     {"name": "check_sent",
      "description": "See your recently sent messages and whether each was read/acted on by the recipient yet, or is still pending — instead of asking 'did you get it?'.",
      "inputSchema": {"type": "object", "properties": {}}},
     {"name": "recall_message",
-     "description": "Unsend a message you sent that the recipient HASN'T read yet — still queued in their mailbox. Deletes it so a now-stale ask never lands (e.g. the task became moot, or you're superseding it). Give 'to' (the recipient) to recall your unread message(s) to them; add 'id' (from check_sent) to target one specific message. Only your OWN, still-UNREAD messages can be recalled — anything already read is gone. Returns what was removed.",
+     "description": "Unsend a still-unread (queued) message when the ask went moot. Give 'to' to recall your unread message(s) to them, or add 'id' (from check_sent) for one. Only your own unread messages; anything already read is gone.",
      "inputSchema": {"type": "object",
                      "properties": {"to": {"type": "string", "description": "recipient session name (or UUID) whose queued message(s) from you to cancel"},
                                     "id": {"type": "string", "description": "optional specific message id (from check_sent) to recall just that one"}}}},
