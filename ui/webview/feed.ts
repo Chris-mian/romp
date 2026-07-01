@@ -762,12 +762,17 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   // motion, so it's still excluded.
   // Each case pairs a short body caption with a FULLER tooltip (hover the swirl/caption) that explains what's
   // actually happening — including, for a provisional card, WHY it's dashed.
-  let spinCaption: string | null = null, spinTip = "";
+  // AWAITING is the one PAUSED case — the session is held, waiting on background work it dispatched (agents),
+  // NOT romp doing anything. So it reads differently: a boxed "Awaiting background agents" label with a STATIC
+  // (non-spinning) glyph. The spinning romp swirl is reserved for cases where romp/the session is actually
+  // working (provisional / re-judging / distilling), so a spin always means real motion (the user 2026-07-01).
+  let spinCaption: string | null = null, spinTip = "", awaitingBg = false;
   if (aw && !it.waitingOn) {
-    spinCaption = aw.why || "Waiting on work it dispatched…";
+    awaitingBg = true;
+    spinCaption = "Awaiting background agents";
     spinTip = aw.why
-      ? aw.why + ". Not on you."
-      : "Waiting on work it started, not on you. Clears when the result lands.";
+      ? aw.why + ". Not on you; paused until the background work lands."
+      : "Paused, waiting on background work it dispatched (not on you). Clears when the result lands.";
   } else if (it.provisional && it.column === "working") {
     spinCaption = "Working…";
     spinTip = "A new prompt, not yet sorted into a goal. Placeholder until it is.";
@@ -789,6 +794,8 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
       : "Writing the decision brief…";
   }
   a._awaitSpin.style.display = spinCaption ? "" : "none";
+  // The paused AWAITING case gets a rounded box + a static glyph; every other case keeps the spinning swirl.
+  a._awaitSpin.classList.toggle("await-paused", awaitingBg);
   if (spinCaption) { a._awaitWhy.textContent = spinCaption; a._awaitSpin.title = spinTip || spinCaption; }
   // The swirl's "Re-judging…" caption + tooltip REPLACES the separate "↩ re-judging" chip (the user
   // 2026-06-29: don't show both) — drop the chip the recheck branch set above when the swirl is saying it.
