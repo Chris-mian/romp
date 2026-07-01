@@ -82,5 +82,30 @@ class ShowOnTimelineFocus(unittest.TestCase):
         self.assertNotIn("cite", f, "a target that isn't a live goal node seeds no chip")
 
 
+class FollowupPreview(unittest.TestCase):
+    """Clicking the composer chip fetches the EXACT prompt romp will send from GET /followup-preview, so the
+    user can audit the injected context. The endpoint is _followup_body (the same builder the send path uses),
+    so the preview can't drift from what's actually sent (the user 2026-07-01)."""
+
+    def setUp(self):
+        self._orig = km.jd.load_goals
+
+    def tearDown(self):
+        km.jd.load_goals = self._orig
+
+    def test_preview_body_is_the_real_send_body(self):
+        km.jd.load_goals = lambda fsid: {"nodes": {SID + ":g1": {"text": "Audit the citation flow"}}}
+        body = km._followup_body(SID + ":g1", None, "does the context look right?")
+        self.assertIn("> Audit the citation flow", body, "the injected goal-context quote is shown")
+        self.assertIn("does the context look right?", body, "the user's draft is in place")
+        self.assertIn("<!-- romp-goal-id: " + SID + ":g1 -->", body, "the hidden reopen marker is visible in the audit")
+
+    def test_get_route_is_wired(self):
+        import inspect
+        src = inspect.getsource(km.Handler.do_GET)
+        self.assertIn('p == "/followup-preview"', src)
+        self.assertIn("_followup_body(iid, None, text", src, "built from the real send-path builder")
+
+
 if __name__ == "__main__":
     unittest.main()

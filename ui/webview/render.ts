@@ -4373,23 +4373,69 @@ try {
 } catch { /* ignore */ }
 
 // Render (or clear) the citation chip strip for a session's composer. The chip is a pill in the romp accent
-// with the cited title + an ✕; clicking ✕ dismisses it. It lives ABOVE the textarea (a textarea can't host
-// inline DOM), so it reads as attached-but-separate context, not typed text.
+// with the cited title + an ✕; clicking the ✕ dismisses it, clicking the pill itself opens an AUDIT preview
+// of the exact prompt romp will send (the user 2026-07-01). It lives ABOVE the textarea (a textarea can't
+// host inline DOM), so it reads as attached-but-separate context, not typed text.
 function renderComposerChips(id: string | null): void {
   const strip = document.getElementById("composer-chips");
   if (!strip) return;
+  closeCitePreview();   // the chip is being rebuilt (or removed) → drop any open audit popover for the old chip
   strip.replaceChildren();
   const cite = id ? composerCitations.get(id) : undefined;
   if (!cite) { strip.style.display = "none"; return; }
   strip.style.display = "flex";
   const chip = el("div", "composer-chip");
-  chip.title = "following up on: " + cite.title;
+  chip.title = "click to see exactly what romp will send the model · ✕ to remove";
+  chip.style.cursor = "pointer";
+  chip.addEventListener("click", () => { if (id) openCitePreview(id, chip); });
   const mark = el("span", "composer-chip-mark"); mark.textContent = "↩"; chip.appendChild(mark);
   const label = el("span", "composer-chip-label"); label.textContent = cite.title; chip.appendChild(label);
   const x = el("button", "composer-chip-x"); x.setAttribute("aria-label", "Remove citation"); x.textContent = "✕";
-  x.addEventListener("click", () => { if (id) removeCitation(id); });
+  x.addEventListener("click", (e) => { e.stopPropagation(); if (id) removeCitation(id); });   // stop → don't open the preview
   chip.appendChild(x);
   strip.appendChild(chip);
+}
+
+// Audit popover — the EXACT wrapped body romp will send the model for this citation, fetched from the kernel's
+// /followup-preview (the SAME _followup_body the send path uses, so it can't drift). Shows the injected
+// goal-context quote + your current draft (or a placeholder) + the hidden romp-goal-id marker, in a scrollable
+// monospace box anchored above the chip. Click outside or Esc closes. (the user 2026-07-01)
+let citePreviewEl: HTMLElement | null = null;
+function closeCitePreview(): void {
+  if (citePreviewEl) { citePreviewEl.remove(); citePreviewEl = null; }
+  document.removeEventListener("keydown", citePreviewKey, true);
+  document.removeEventListener("mousedown", citePreviewOutside, true);
+}
+function citePreviewKey(e: KeyboardEvent): void { if (e.key === "Escape") { e.preventDefault(); closeCitePreview(); } }
+function citePreviewOutside(e: MouseEvent): void {
+  if (citePreviewEl && !citePreviewEl.contains(e.target as Node)) closeCitePreview();
+}
+function openCitePreview(id: string, anchor: HTMLElement): void {
+  const cite = composerCitations.get(id);
+  if (!cite) return;
+  if (citePreviewEl) { closeCitePreview(); return; }   // second click on the chip toggles it closed
+  const ta = document.getElementById("composer-input") as HTMLTextAreaElement | null;
+  const draft = (ta?.value || "").trim();
+  const pop = el("div", "cite-preview");
+  const head = el("div", "cite-preview-head"); head.textContent = "What romp will send the model";
+  const sub = el("div", "cite-preview-sub"); sub.textContent = "the context romp injects around your message — audit it here";
+  const body = el("pre", "cite-preview-body"); body.textContent = "loading…";
+  pop.append(head, sub, body);
+  document.body.appendChild(pop);
+  citePreviewEl = pop;
+  // position: above the chip, left-aligned to it, clamped into the viewport
+  const r = anchor.getBoundingClientRect();
+  pop.style.left = Math.max(8, Math.min(r.left, window.innerWidth - pop.offsetWidth - 8)) + "px";
+  pop.style.top = Math.max(8, r.top - pop.offsetHeight - 8) + "px";
+  document.addEventListener("keydown", citePreviewKey, true);
+  document.addEventListener("mousedown", citePreviewOutside, true);
+  const url = "/followup-preview?itemId=" + encodeURIComponent(cite.itemId) + "&text=" + encodeURIComponent(draft);
+  fetch(url, { cache: "no-store" }).then((r) => r.json()).then((d) => {
+    if (citePreviewEl !== pop) return;   // closed while loading
+    body.textContent = (d && typeof d.body === "string" && d.body) ? d.body : "(no context — this goal may have been cleared)";
+    // re-clamp now that the real content set the height
+    pop.style.top = Math.max(8, r.top - pop.offsetHeight - 8) + "px";
+  }).catch(() => { if (citePreviewEl === pop) body.textContent = "(couldn't load the preview)"; });
 }
 
 // Seed the citation for a session (from a feed card click that landed in the chat), replacing any prior one.

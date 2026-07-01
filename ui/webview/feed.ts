@@ -494,7 +494,10 @@ function makeAskCard(it: AskItem): HTMLElement {
   idwrap.append(name);
   const actions = el("div", "fask-actions");
   const reBadge = el("span", "fask-reopened"); reBadge.textContent = "reopened"; reBadge.title = "a question arrived after you cleared this"; reBadge.style.display = "none";
-  const fupBadge = el("span", "fask-followedup"); fupBadge.textContent = "↻ Followed up"; fupBadge.title = "you followed up — reopened to Working; the planner will re-file it on the next pass"; fupBadge.style.display = "none";
+  // Now serves ONLY the "↩ re-judging" recheck state — the plain "↻ Followed up" (reopened-to-Working) badge
+  // was removed (the user 2026-07-01: click-to-cite makes follow-up routine, so the ack is noise). updateAskCard
+  // sets the text/title when it shows for recheck.
+  const fupBadge = el("span", "fask-followedup"); fupBadge.textContent = "↩ re-judging"; fupBadge.title = "you followed up — no longer waiting on you; the judge will resolve it or re-block it on the next pass"; fupBadge.style.display = "none";
   const waitOnBadge = el("span", "fask-waiton"); waitOnBadge.style.display = "none";   // "Awaiting <peer>" / "Deadlock <peer>", peer name in native colour (the user 2026-06-22)
   const blkBadge = el("a", "fask-blocked"); blkBadge.style.display = "none";   // ⏸ live permission/picker block → click opens the session
   const apiBadge = el("span", "fask-apierror"); apiBadge.textContent = "⚠ API error"; apiBadge.style.display = "none";   // red: session stopped on an API error
@@ -702,20 +705,16 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   }
   a._time.textContent = relAge(hostNow - it.t);
   a._reopened.style.display = it.reopened ? "" : "none";
-  // "↻ Followed up" while the kernel has optimistically reopened a settled card you followed up on, before
-  // the judge re-files it (it.followupPending self-clears on the next pass). (judges delegation, 2026-06-17.)
   // RE-CHECK chip (the user 2026-06-27): a soft-block you answered with a TARGETED follow-up (kernel `recheck`).
   // Reads "↩ re-judging" so you know it registered and isn't on you, pending the judge's verdict. (A PLAIN reply
-  // is `rejudging`, not `recheck` — it stays in Needs-You, so no chip here; its swirl says "Re-judging…".) Falls
-  // back to the legacy "↻ Followed up" text otherwise.
+  // is `rejudging`, not `recheck` — it stays in Needs-You, so no chip here; its swirl says "Re-judging…".)
+  // The plain "↻ Followed up" chip (followupPending → reopened to Working) was REMOVED (the user 2026-07-01):
+  // click-to-cite makes following up routine, so acknowledging it on the card is now noise — the card just
+  // silently returns to Working. (followupPending still drives that column move; only its badge is gone.)
   if (it.recheck) {
     a._followedup.style.display = "";
     a._followedup.textContent = "↩ re-judging";
     a._followedup.title = "you followed up — no longer waiting on you; the judge will resolve it or re-block it on the next pass";
-  } else if (it.followupPending) {
-    a._followedup.style.display = "";
-    a._followedup.textContent = "↻ Followed up";
-    a._followedup.title = "you followed up — reopened to Working; the planner will re-file it on the next pass";
   } else {
     a._followedup.style.display = "none";
   }
