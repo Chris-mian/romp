@@ -688,6 +688,46 @@ def parse_session(leaf_path, rompuuid=None, name=None, color="#888888", dir=None
             "color": color, "leafFsid": leaf_path.stem, "turns": turns}
 
 
+def declared_plan(session):
+    """The agent's OWN live to-do list (Claude Code's Task tool) folded into ordered items
+    [{key, text, activeForm, status}] — the SINGLE home for Task-tool folding, so downstream
+    (the judge's plan-sync) sees a generic 'declared plan' shape instead of raw tool calls.
+    Mirrors the kernel's _fold_tasks. `key` is the stable `Task #N` id lifted from TaskCreate's
+    result text (a creation-order `cN` fallback if the result is unreadable); `status` rides each
+    TaskUpdate. Only TaskCreate/TaskUpdate are folded — plain TodoWrite (no durable ids) is not
+    used by romp. Empty list if the session declared no plan."""
+    results = {}                                           # tool_use_id → result text (carries 'Task #N')
+    for turn in session["turns"]:
+        for a in turn["atoms"]:
+            if a.get("type") != "user":
+                continue
+            for b in (a.get("message") or {}).get("content", []) or []:
+                if isinstance(b, dict) and b.get("type") == "tool_result" and b.get("tool_use_id"):
+                    c = b.get("content")
+                    results[b["tool_use_id"]] = c if isinstance(c, str) else json.dumps(c)
+    tasks, order = {}, 0
+    for turn in session["turns"]:
+        for a in turn["atoms"]:
+            if a.get("type") != "assistant":
+                continue
+            for b in (a.get("message") or {}).get("content", []) or []:
+                if not isinstance(b, dict) or b.get("type") != "tool_use":
+                    continue
+                inp = b.get("input") or {}
+                if b.get("name") == "TaskCreate":
+                    m = re.search(r"Task #(\d+)", results.get(b.get("id"), "") or "")
+                    key = m.group(1) if m else "c%d" % order
+                    af = inp.get("activeForm")
+                    tasks[key] = {"_order": order, "key": key, "text": str(inp.get("subject") or ""),
+                                  "activeForm": str(af) if af else None, "status": "pending"}
+                    order += 1
+                elif b.get("name") == "TaskUpdate":
+                    t = tasks.get(str(inp.get("taskId", "")))
+                    if t:
+                        t["status"] = str(inp.get("status") or t["status"])
+    return sorted(tasks.values(), key=lambda t: t["_order"])
+
+
 # ───────────────────────── CLI ─────────────────────────
 def _hh(t):
     return datetime.fromtimestamp(t).strftime("%H:%M:%S") if t else "--:--:--"

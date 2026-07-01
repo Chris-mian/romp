@@ -56,6 +56,7 @@ interface AskTreeNode {
   promptAnchorUuid?: string | null;                              // EXACT turn uuid for this node's PROMPT target = the user's minting message (a user turn) → prompt-intent jumps (title, text) resolve BY ID (kernel 92e23ff)
   why?: string; blockWhy?: string; doneWhy?: string;             // planner's one-sentence rationales — revealed on hover in the modal
   derived?: boolean;                                             // done by roll-up/roll-down (kernel), not explicit → DIMMED ✓ disc
+  auth?: "open" | "done";                                        // AUTHORITATIVE tier: mirrors an item on the agent's OWN to-do list → solidity=authority disc (open = bold accent ring; done = heaviest check). Absent = plain judge-inferred node.
   followupPending?: boolean;                                     // this sub was optimistically reopened by a per-sub follow-up → "↻ Followed up" chip (kernel flatten, judges 047264f)
   summary?: string | null;                                       // the DISTILLER's key takeaway for a completed goal (artifact or 1-3 sentences) → the modal's auto-line for a DONE node (kernel flatten 78fc97b)
   blockSummary?: string | null;                                  // the BLOCK-distiller's decision brief for a blocked goal → the modal's auto-line for a BLOCKED node (kernel 466393c); null until produced
@@ -904,11 +905,14 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
     ? root.children.map((id) => tree.find((n) => n.id === id)).filter((n): n is AskTreeNode => !!n && n.kind !== "handoff")
     : [];
   for (const s of subs.slice(0, 8)) {
-    const row = el("div", "fcheck " + nodeStatusClass(s));
+    const row = el("div", "fcheck " + nodeStatusClass(s) + (s.auth ? " auth-" + s.auth : ""));
     const mark = el("span", "fcheck-mark");
     // ✓ blue disc (done) / ⏸ red pause (question = blocked) / hollow ○ (not done) — the SAME notation as the
     // ledger checklist + Fleet (the user 2026-06-24: the red ⏸ replaces the amber ? everywhere, for consistency).
-    mark.textContent = s.status === "done" ? "✓" : s.status === "question" ? "⏸" : "○";
+    // AUTHORITATIVE-open (the agent's own to-do still owes it) reads as a SOLID accent ◉, stronger than a soft
+    // inferred ○ (solidity = authority); authoritative-done keeps ✓ but the .auth-done class weights it heaviest.
+    mark.textContent = s.auth === "open" ? "◉"
+      : s.status === "done" ? "✓" : s.status === "question" ? "⏸" : "○";
     const txt = el("span", "fcheck-text"); txt.textContent = s.text;
     row.append(mark, txt);
     // a card sub-goal clicks EXACTLY like the modal tree node (the user 2026-06-17): text → the message,
@@ -1113,6 +1117,7 @@ function hoverEmit(ids: string | string[] | null) {
 // propagates up), so a completed ask reads as a column of filled dots. The
 // disclosure triangle is the only arrow — no glyph shares its shape.
 function nodeMark(n: AskTreeNode): string {
+  if (n.auth === "open") return "◉";          // AUTHORITATIVE-open: a solid, agent-asserted open — stronger than a soft inferred ○
   if (n.status === "done") return "●";
   if (n.status === "question") return "⏸";   // blocked → the red pause (was an amber ?), consistent w/ the ledger
   return "○";
@@ -1234,7 +1239,7 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
   const repeat = seen.has(node.id);
   const nodeKey = it.itemId + ":" + node.id;
   const expandable = !repeat && (node.rows.length > 0 || (node.children || []).length > 0);
-  const line = el("div", "ftree-node st-" + nodeStatusClass(node) + (repeat ? " repeat" : "") + (depth === 0 ? " ftree-root" : "") + (node.derived ? " derived" : ""));
+  const line = el("div", "ftree-node st-" + nodeStatusClass(node) + (repeat ? " repeat" : "") + (depth === 0 ? " ftree-root" : "") + (node.derived ? " derived" : "") + (node.auth ? " auth-" + node.auth : ""));
   // the event this line stands for (handoff → its postal msg id; root → the typed
   // turn) — lets a chat rail-dot hover ring this line back (applyExtHover)
   line.dataset.eid = node.kind === "handoff" ? node.id : it.turnId;

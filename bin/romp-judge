@@ -1178,6 +1178,24 @@ def rollup_status(store, session_closed):
     for nid, nd in nodes.items():
         children.setdefault(nd.get("parentId"), []).append(nid)
 
+    # AUTHORITATIVE tier (the user 2026-07-01): a node the agent's OWN to-do list still marks open is
+    # an authoritative-open leaf inference must respect — its open state TRUMPS a judge/rollup 'done'
+    # (we trust the agent over inference). Precompute the set of nodes whose subtree (incl. self) holds
+    # an agentTask-open node; is_complete / _roll_down below key off it, so a completed umbrella with a
+    # live to-do still open under it reads WORKING, not done. Event-based: the set empties — and normal
+    # inference resumes — the instant the agent crosses the item off (the sync flips its status to done).
+    open_task = set()
+    def _mark_open(nid):
+        has = (nodes.get(nid, {}).get("agentTask") or {}).get("status") == "open"
+        for c in children.get(nid, []):
+            if _mark_open(c):                             # loop (not any()) so EVERY descendant is marked
+                has = True
+        if has:
+            open_task.add(nid)
+        return has
+    for _top in children.get(None, []):
+        _mark_open(_top)
+
     def top_ancestor(nid):
         while nodes.get(nid, {}).get("parentId") is not None:
             nid = nodes[nid]["parentId"]
@@ -1194,9 +1212,14 @@ def rollup_status(store, session_closed):
         return nodes[nid].get("blocked") or any(any_blocked(c) for c in children.get(nid, []))
 
     def is_complete(nid):
-        # Complete if explicitly nodeComplete (TOP-DOWN — the closer / a DONE marks the top, the common
-        # driver) OR it has children and they are ALL recursively complete (BOTTOM-UP backstop for when
-        # every leaf does get DONE'd). A childless node needs its own nodeComplete.
+        # AUTHORITY OVERRIDE FIRST (the user 2026-07-01): a node with an agentTask-OPEN self-or-descendant
+        # is never complete — the agent says this work is still owed, and that outranks nodeComplete + any
+        # roll-up. Checked before the nodeComplete short-circuit so a top the closer flat-DONE'd still reads
+        # working while a live to-do hangs under it. Then: complete if explicitly nodeComplete (TOP-DOWN —
+        # the closer / a DONE marks the top, the common driver) OR it has children and they are ALL
+        # recursively complete (BOTTOM-UP backstop). A childless node needs its own nodeComplete.
+        if nid in open_task:
+            return False
         kids = children.get(nid, [])
         return nodes[nid].get("nodeComplete") or (bool(kids) and all(is_complete(c) for c in kids))
 
@@ -1228,7 +1251,7 @@ def rollup_status(store, session_closed):
             # is_complete would re-complete it INSTANTLY and defeat the optimistic reopen. The g70 stale case
             # the judge clears by re-asserting the TOP's nodeComplete (top-down done verdict), so this still
             # drops the stale flag there.
-            if nodes[nid].get("nodeComplete") and (settled or nodes[nid].get("settledDone")):
+            if nodes[nid].get("nodeComplete") and (settled or nodes[nid].get("settledDone")) and nid not in open_task:
                 if not nodes[nid].get("settledDone"):     # the FIRST settlement → freeze its column-entry time
                     nodes[nid]["settledAt"] = latest_t    # (transition only; a legacy completed top keeps the mt fallback)
                 nodes[nid]["settledDone"] = True
@@ -1259,6 +1282,8 @@ def rollup_status(store, session_closed):
     # auto-rolled steps (not a genuinely-DONE leaf) if the goal is reopened. Only RESOLVED tops propagate.
     def _roll_down(nid, field):
         for c in children.get(nid, []):
+            if field == "nodeComplete" and c in open_task:
+                continue                                   # authoritative-open subtree: never auto-done it
             nd = nodes[c]
             if not nd.get("cleared") and not nd.get("nodeComplete"):
                 nd[field] = True
@@ -1280,6 +1305,54 @@ def rollup_status(store, session_closed):
             nodes[nid]["blocked"] = False
             nodes[nid].pop("blockWhy", None)
     store["status"] = status
+
+
+def _sync_declared_plan(store, session, seg_id, seg_t):
+    """DETERMINISTIC (no LLM): mirror the agent's live to-do list (Claude Code's Task tool) into the goal
+    graph so every declared plan item IS a node carrying `agentTask:{key,status}` — the authoritative tier
+    rollup_status honors. Find-or-create by the stable Task id: an existing node's status is refreshed (and
+    its nodeComplete tracks authoritative-done); a NEW item is minted as its own top so the grouper can
+    place/merge it naturally (no forced rooting under any goal). Runs every pass before rollup, idempotent
+    by key. A cancelled item is abandoned, not owed → treated as done so it can't hold a goal open forever.
+    `agentDone` records that WE stamped nodeComplete, so a done→open reopen only clears a done WE set, never
+    a closer/planner completion. Returns True if it mutated the store (caller regroups)."""
+    items = em.declared_plan(session)
+    nodes = store["nodes"]
+    existing = {}
+    for nid, nd in nodes.items():
+        k = (nd.get("agentTask") or {}).get("key")
+        if k is not None:
+            existing[k] = nid
+    if not items and not existing:
+        return False
+    changed = False
+    for it in items:
+        key, raw = it["key"], it["status"]
+        our = "done" if raw in ("completed", "cancelled") else "open"
+        if key in existing:
+            nd = nodes[existing[key]]
+            at = nd.get("agentTask") or {}
+            if at.get("status") == our and at.get("raw") == raw:
+                continue                                   # unchanged → no churn
+            nd["agentTask"] = {"key": key, "status": our, "raw": raw}
+            if our == "done":
+                nd["nodeComplete"] = True                  # authoritative-done
+            elif nd.get("agentDone"):
+                nd["nodeComplete"] = False                 # agent RE-OPENED it → drop the done WE stamped
+            nd["agentDone"] = (our == "done")
+            nd["mt"] = seg_t
+            changed = True
+        else:
+            store["seq"] = store.get("seq", 0) + 1
+            nid = "%s:g%d" % (store["rompUuid"], store["seq"])
+            nodes[nid] = {"id": nid, "text": it["text"] or it.get("activeForm") or "(declared step)",
+                          "parentId": None, "nodeComplete": (our == "done"), "blocked": False,
+                          "cleared": False, "trail": [seg_id] if seg_id else [], "promptUuid": None,
+                          "t": seg_t, "mt": seg_t, "why": "declared in the agent's own to-do list",
+                          "agentTask": {"key": key, "status": our, "raw": raw}, "agentDone": (our == "done")}
+            existing[key] = nid
+            changed = True
+    return changed
 
 
 def plan_llm(segment_text, menu_text, model=None, effort=None, human=False, nudge=False,
@@ -1948,6 +2021,14 @@ def _plan_session(fsid, path, now):
         placed += 1
         _group_store(store, fsid, now)                # regroup the forest after this placement (event-gated, no-op if tops unchanged)
         save_goals(fsid, store)                       # crash-safe: persist plan + group together
+    # AUTHORITATIVE plan-sync (the user 2026-07-01): mirror the agent's live to-do list into the graph as
+    # agentTask nodes BEFORE the roll-up, so an open to-do item holds its goal 'working' and a crossed-off
+    # one reads authoritative-done. Deterministic (no LLM); regroup if it minted/changed anything so a
+    # freshly-minted to-do top gets placed/merged this pass instead of lingering as a bare top.
+    latest_seg = max(seg_by_id.values(), key=lambda s: s.get("t") or 0, default=None)
+    if _sync_declared_plan(store, session, (latest_seg or {}).get("id"), (latest_seg or {}).get("t") or now):
+        _group_store(store, fsid, now)
+        save_goals(fsid, store)
     rollup_status(store, _session_closed(session))
     save_goals(fsid, store)
     return placed
