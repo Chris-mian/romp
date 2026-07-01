@@ -4192,6 +4192,17 @@ def _archive_roots(sid):
     return out
 
 
+# A slash command that fires lifecycle hooks (e.g. /compact) echoes each one back in its output as
+# "PreCompact [~/.claude/hooks/tmux-status.sh] completed successfully" — internal plumbing the user never
+# wants to see (the user 2026-06-30: "what is this pre-compact thing?"). Strip those notices from a command's
+# OUTPUT text; the meaningful event (a compaction) is already marked by the ✦ Compacted boundary. Shape is
+# invariant: "<HookName> [<path>] completed successfully".
+_HOOK_NOTICE_RE = re.compile(r"\b[A-Za-z][A-Za-z]+\s+\[[^\]]+\]\s+completed successfully")
+
+def _strip_hook_notices(text):
+    return re.sub(r"\s+", " ", _HOOK_NOTICE_RE.sub("", text)).strip()
+
+
 def build_session(sid, now, tmux=None):
     """A {type:"session"} message the render.js bundle consumes: the event tree reshaped to
     ChatEvent[], plus the TOC ledger (archiver headline + turn captions) and a status chip."""
@@ -4317,12 +4328,12 @@ def build_session(sid, now, tmux=None):
                         events.append({"kind": "thinking", "text": b.get("thinking", ""),
                                        "encrypted": bool(b.get("signature")), "uuid": a.get("uuid"), "ts": ts})
                     elif b.get("type") == "text" and b.get("text", "").strip():
-                        # `cmd` = this is a slash-command's OUTPUT atom (event model sets command:True on the
-                        # synthetic <local-command-stdout> assistant atom), NOT normal model prose. The chat's
-                        # hook-notice chip rendering keys on this so it can NEVER hijack a real message that
-                        # merely contains the phrase "X [y] completed successfully" (the user 2026-06-30).
-                        events.append({"kind": "assistant", "md": b["text"], "uuid": a.get("uuid"), "ts": ts,
-                                       "cmd": bool(a.get("command"))})
+                        txt = b["text"]
+                        if a.get("command"):             # a slash command's OUTPUT (command:True on the synthetic
+                            txt = _strip_hook_notices(txt)   # <local-command-stdout> atom) → strip hook-completion
+                            if not txt:                      # plumbing; if nothing else remains (e.g. /compact was
+                                continue                     # ONLY notices), drop the atom — the ✦ Compacted stays.
+                        events.append({"kind": "assistant", "md": txt, "uuid": a.get("uuid"), "ts": ts})
                     elif b.get("type") == "tool_use":
                         if b.get("name") in ("TaskCreate", "TaskUpdate"):
                             continue                     # folded into the one todo checklist (see _fold_tasks)

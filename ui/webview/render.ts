@@ -21,7 +21,6 @@ import { prebuildPlan, type ViewState } from "./prebuild";
 import { reconcileTabOrder } from "./tab-order";
 import { numberDiff, type DiffRow } from "./diff-lines";
 import { parseAgentNotif, type AgentNotif } from "./agent-notif";
-import { parseHookNotices } from "./hook-notices";
 
 for (const [name, lang] of Object.entries({
   bash, sh: bash, shell: bash, python, py: python, javascript, js: javascript,
@@ -53,7 +52,7 @@ type AskAnswerBlock = { question: string; header?: string; options: { label: str
 
 type ChatEvent = (
   | { kind: "user"; md: string; uuid?: string; ts?: string; reminders?: string[]; human?: boolean; romp?: boolean; rompAuto?: boolean; followUp?: boolean; goal?: string; images?: { src: string; path?: string }[] }
-  | { kind: "assistant"; md: string; uuid?: string; ts?: string; cmd?: boolean }
+  | { kind: "assistant"; md: string; uuid?: string; ts?: string }
   | { kind: "thinking"; text: string; encrypted: boolean; uuid?: string; ts?: string }
   | {
       kind: "tool";
@@ -845,12 +844,6 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
     return turn;
   }
   if (ev.kind === "assistant") {
-    // ONLY a slash-command's OUTPUT (ev.cmd) can render as hook-notice chips — never normal model prose, which
-    // would otherwise be destroyed if it merely contained "X [y] completed successfully" (the user 2026-06-30).
-    if (ev.cmd) {
-      const hn = parseHookNotices(ev.md);        // hook-execution echoes (e.g. /compact) → registered chips
-      if (hn) return renderHookNotices(hn.notices, hn.lead);
-    }
     const turn = el("div", "turn turn-assistant");
     turn.appendChild(dot("ring"));
     const body = el("div", "assistant md");
@@ -1097,26 +1090,6 @@ function renderCompact(_ev: Extract<ChatEvent, { kind: "compact" }>): HTMLElemen
   line.textContent = "✦ Compacted";
   line.title = "the conversation was compacted here";
   turn.appendChild(line);
-  return turn;
-}
-
-// A slash command that fires lifecycle hooks (e.g. /compact) echoes each one back as a hook-execution notice
-// — "PreCompact [~/.claude/hooks/tmux-status.sh] completed successfully" — which used to render as a wall of
-// gray prose (the user 2026-06-30). parseHookNotices (./hook-notices) pulls them out; here we render each as a
-// compact "⚙ Hook ✓" chip — the same registered-chip look as the rest of the chat, full hook path on hover.
-function renderHookNotices(notices: { evt: string; path: string }[], lead: string): HTMLElement {
-  const turn = el("div", "turn turn-hook-notice");
-  turn.appendChild(dot("ring"));
-  const row = el("div", "hook-notice-row");
-  if (lead) { const l = el("span", "hook-notice-lead"); l.textContent = lead; row.appendChild(l); }   // e.g. /compact's "Compacted"
-  for (const n of notices) {
-    const chip = el("span", "hook-notice-chip");
-    chip.title = n.path;                              // the full hook path lives on hover, not in the line
-    chip.textContent = "⚙ " + n.evt;
-    const ok = el("span", "hook-notice-ok"); ok.textContent = "✓"; chip.appendChild(ok);
-    row.appendChild(chip);
-  }
-  turn.appendChild(row);
   return turn;
 }
 

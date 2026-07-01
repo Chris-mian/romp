@@ -807,18 +807,6 @@ body { display: flex; flex-direction: column; }
   padding: 1px 7px; line-height: 1.5; white-space: nowrap;
 }
 .slash-cmd-args { margin-left: 7px; }
-/* ---------- hook-execution notices (e.g. /compact's "PreCompact [hook] completed successfully") ----------
-   Rendered as compact "⚙ Hook ✓" chips instead of a wall of gray prose (the user 2026-06-30). Muted by
-   default (they're housekeeping, not content); the full hook path is on hover. */
-.hook-notice-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-.hook-notice-lead { color: var(--dim); font-size: 0.9em; font-weight: 600; letter-spacing: 0.02em; margin-right: 2px; }
-.hook-notice-chip {
-  display: inline-flex; align-items: center; gap: 5px;
-  font-size: 0.82em; font-weight: 600; letter-spacing: 0.02em; color: var(--dim);
-  background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.16);
-  border-radius: 6px; padding: 1px 7px; line-height: 1.5; white-space: nowrap; cursor: default;
-}
-.hook-notice-ok { color: var(--st-ready-bg, #2b7fb8); font-weight: 700; }
 /* ---------- romp-injected message (a feed nudge / follow-up) ----------
    A GRAY bubble in the SAME right-aligned spot as the blue user bubble (so it sits where "an outgoing
    message" goes), but clearly NOT you — gray, with a small "↯ romp" tag above it (the user 2026-06-19).
