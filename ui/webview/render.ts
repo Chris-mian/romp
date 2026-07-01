@@ -192,7 +192,8 @@ interface LedgerBullet { text: string; t?: number; id?: string; sid?: string; tl
 // 2026-06-16). Empty/false → explicit done (full disc).
 interface LedgerTreeNode { id: string; text: string; depth: number; done: boolean; blocked: boolean; t?: number; mt?: number; current: boolean; derived?: boolean; recent?: boolean; cleared?: boolean; onpath?: boolean; promptAnchorUuid?: string | null; anchorUuid?: string | null; children?: string[]; summary?: string | null; blockSummary?: string | null; _rec?: number; }   // summary/blockSummary = the distiller's takeaway / decision brief, revealed by the row's ⊕ expander; _rec = render-stamped subtree-rolled-up recency
 // tree = the goal overview (preferred view); bullets = captioned-turn fallback for goal-less sessions.
-interface Ledger { summary: string; tree?: LedgerTreeNode[]; bullets: LedgerBullet[]; current?: LedgerBullet | null; }
+interface LedgerRecent { text: string; t: number; done?: boolean; cleared?: boolean; blocked?: boolean; }   // tab-hover "Recent": up-to-5 most-recent TOP tasks across live + archive, any status (the user 2026-06-30)
+interface Ledger { summary: string; tree?: LedgerTreeNode[]; bullets: LedgerBullet[]; current?: LedgerBullet | null; recent?: LedgerRecent[]; }
 const ledgers = new Map<string, Ledger | null>();
 
 function el(tag: string, cls?: string): HTMLElement {
@@ -1639,41 +1640,38 @@ function showTabTip(tab: HTMLElement, s: Session): void {
     const v = el("span", "tab-tip-v"); v.textContent = lg.summary;
     r.appendChild(k); r.appendChild(v); tip.appendChild(r);
   }
-  if (lg?.tree && lg.tree.length) {
-    // The last few things this session worked on (the user 2026-06-24; ALWAYS-show 2026-06-30): the up-to-5
-    // most-recently-touched ledger nodes, each in its own recency colour with a "(Xm ago)" time — replaces
-    // the single "Latest" line. Sorted by each node's OWN recency (mt ?? t), so it's the actual recent work
-    // items, not umbrella tops floated up by a rolled-up subtree recency. Shown REGARDLESS of completion status
-    // AND regardless of age (the user 2026-06-30): done, blocked, and cleared nodes all count — "the 5 most
-    // recent things it did" — with NO recency cutoff, so an idle session still lists what it last worked on
-    // rather than going blank. Timed nodes lead (newest first); if fewer than 5 are timed, backfill from the
-    // remaining text nodes in tree order so a session with ≥5 goals always surfaces 5.
+  // "Recent" — the up-to-5 most recent TOP tasks this session did, ALWAYS shown when any exist, regardless of
+  // completion status (done/blocked/cleared) and regardless of age (the user 2026-06-30). PREFER the server's
+  // `recent` list: it merges the live store AND the archive, so a session whose tops were all crossed off still
+  // lists what it last worked on (the live tree alone would be near-empty → "just a Summary, no Recent"). Fall
+  // back to the live tree for an older kernel that doesn't ship `recent`.
+  let recentItems: { text: string; t: number }[] = [];
+  if (lg?.recent && lg.recent.length) {
+    recentItems = lg.recent.map((r) => ({ text: r.text, t: r.t || 0 }));
+  } else if (lg?.tree && lg.tree.length) {
     const named = lg.tree.filter((n) => (n.text || "").trim());
-    const timed = named
-      .map((n) => ({ n, t: (n.mt ?? n.t) || 0 }))
-      .filter((x) => x.t > 0)
-      .sort((a, b) => b.t - a.t);
-    const untimed = named.filter((n) => !((n.mt ?? n.t) || 0)).map((n) => ({ n, t: 0 }));
-    const recent = [...timed, ...untimed].slice(0, 5);
-    if (recent.length) {
-      const r = el("div", "tab-tip-row tab-tip-recent");
-      const k = el("span", "tab-tip-k"); k.textContent = "Recent";
-      const list = el("div", "tab-tip-recent-list");
-      for (const { n, t } of recent) {
-        const item = el("div", "tab-tip-recent-item");
-        const txt = el("span"); txt.textContent = n.text;
-        item.appendChild(txt);
-        if (t > 0) {                                            // dated: show the recency-coloured "(Xd ago)"
-          const ago = el("span", "tab-tip-ago"); ago.textContent = " (" + agehms(now - t) + " ago)";
-          item.appendChild(ago);
-          item.style.color = ageColorReadable(now - t);        // text + time both in the node's recency colour
-        } else {
-          item.style.color = ageColorReadable(345600);         // undated backfill → the oldest-bucket colour
-        }
-        list.appendChild(item);
+    const timed = named.map((n) => ({ text: n.text, t: (n.mt ?? n.t) || 0 })).filter((x) => x.t > 0).sort((a, b) => b.t - a.t);
+    const untimed = named.filter((n) => !((n.mt ?? n.t) || 0)).map((n) => ({ text: n.text, t: 0 }));
+    recentItems = [...timed, ...untimed].slice(0, 5);
+  }
+  if (recentItems.length) {
+    const r = el("div", "tab-tip-row tab-tip-recent");
+    const k = el("span", "tab-tip-k"); k.textContent = "Recent";
+    const list = el("div", "tab-tip-recent-list");
+    for (const { text, t } of recentItems) {
+      const item = el("div", "tab-tip-recent-item");
+      const txt = el("span"); txt.textContent = text;
+      item.appendChild(txt);
+      if (t > 0) {                                            // dated: show the recency-coloured "(Xd ago)"
+        const ago = el("span", "tab-tip-ago"); ago.textContent = " (" + agehms(now - t) + " ago)";
+        item.appendChild(ago);
+        item.style.color = ageColorReadable(now - t);        // text + time both in the node's recency colour
+      } else {
+        item.style.color = ageColorReadable(345600);         // undated backfill → the oldest-bucket colour
       }
-      r.appendChild(k); r.appendChild(list); tip.appendChild(r);
+      list.appendChild(item);
     }
+    r.appendChild(k); r.appendChild(list); tip.appendChild(r);
   }
   if (!tip.childElementCount) { tip.style.display = "none"; return; }
   tip.style.display = "block";
