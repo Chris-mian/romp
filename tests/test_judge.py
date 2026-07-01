@@ -3323,6 +3323,49 @@ class KnownTargetContext(unittest.TestCase):
         self.assertEqual(len(subs), 1, "the new work still filed as a step under it")
 
 
+class SourceCitation(unittest.TestCase):
+    """The distiller cites its source (the user 2026-07-01): assistant messages fed to a distill/brief
+    call carry [mN] labels (_CiteMarks via _goal_work_text/_unit_text), the reply ends with a SOURCE: mN
+    line (_split_source), and the resolved uuid becomes node["summaryAnchor"] — so the summary line's
+    deep-link is what the summary was GROUNDED IN, written by the same reader, not a length heuristic."""
+
+    def test_marks_label_assistant_messages_and_map_back_to_uuids(self):
+        records = [uline(T0, "do part one", "u1", ps="typed"),
+                   aline(T0 + 10, "did part one", "a1", "u1", stop="end_turn"),
+                   uline(T0 + 100, "now part two", "u2", "a1", ps="typed"),
+                   aline(T0 + 110, "finished part two", "a2", "u2", stop="end_turn")]
+        s = build_session(records)
+        segs = [sg for turn in s["turns"] for sg in em.segments(turn)]
+        seg_by_id = {sg["id"]: sg for sg in segs}
+        st = _store()
+        g = _mknode(st, "Build the thing")
+        st["nodes"][g["id"]]["trail"] = [sg["id"] for sg in segs]
+        marks = jd._CiteMarks()
+        work = jd._goal_work_text(st, seg_by_id, g["id"], 10000, marks=marks)
+        self.assertIn("[m1] did part one", work, "each assistant message carries its inline label")
+        self.assertIn("[m2] finished part two", work)
+        self.assertEqual(marks.map, {"m1": "a1", "m2": "a2"}, "labels resolve back to the exact atom uuids")
+        unmarked = jd._goal_work_text(st, seg_by_id, g["id"], 10000)
+        self.assertNotIn("[m1]", unmarked, "no marks → the shared gather is unchanged for the other judges")
+
+    def test_split_source_strips_the_final_citation_line(self):
+        self.assertEqual(jd._split_source("The fix shipped.\nSOURCE: m3"), ("The fix shipped.", "m3"))
+        self.assertEqual(jd._split_source("The fix shipped.\n SOURCE: [m12] "), ("The fix shipped.", "m12"))
+
+    def test_split_source_is_none_when_absent_or_not_final(self):
+        self.assertEqual(jd._split_source("No citation."), ("No citation.", None))
+        self.assertEqual(jd._split_source(""), ("", None))
+        body = "It mentions SOURCE: m2 mid-sentence and keeps going."
+        self.assertEqual(jd._split_source(body), (body, None),
+                         "only a citation anchored at the END of the reply is parsed off")
+
+    def test_prompts_ask_for_the_source_line(self):
+        for sys_prompt in (jd.DISTILL_SYS, jd.BLOCK_BRIEF_SYS):
+            self.assertIn("SOURCE: mN", sys_prompt, "the call is told to cite one labeled message")
+        self.assertIn("most current", jd.DISTILL_SYS, "the citation targets the most informative AND most "
+                      "current message (the user 2026-07-01), not an early plan or superseded attempt")
+
+
 class Distiller(unittest.TestCase):
     """The distiller (the user 2026-06-17): when a TOP completes, summarize the goal's full WORK history —
     its trail + subtree trails across all open→done cycles (DISCONTINUOUS; never the unrelated work
@@ -3385,6 +3428,75 @@ class Distiller(unittest.TestCase):
         jd.distill_llm = lambda g, w, dw="": (calls.append(1), "x")[1]
         self.assertEqual(jd.run_distill(now=now), 0)
         self.assertEqual(calls, [], "a goal already distilled at this mt is not re-distilled")
+
+    def test_distill_stores_the_cited_source_as_summary_anchor(self):
+        # the reply's SOURCE line resolves through the call's _CiteMarks to the exact atom uuid, stored as
+        # node["summaryAnchor"] — the summary deep-link then lands on what the summary was grounded in
+        # (the user 2026-07-01). The SOURCE line itself never reaches the stored summary.
+        records = [uline(T0, "do part one", "u1", ps="typed"),
+                   aline(T0 + 10, "did part one", "a1", "u1", stop="end_turn"),
+                   uline(T0 + 200, "now finish part two", "u2", "a1", ps="typed"),
+                   aline(T0 + 210, "finished part two, all wrapped up", "a2", "u2", stop="end_turn")]
+        path = self._setup(records)
+        now = T0 + 5000
+        session = jd.parsed_session(SID, [path], now)
+        trail = [em.segments(t)[0]["id"] for t in session["turns"]]
+        gid = SID + ":g1"
+        jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "status": {gid: "completed"}, "placements": {},
+                            "nodes": {gid: {"id": gid, "text": "Build the thing", "parentId": None,
+                                            "nodeComplete": True, "blocked": False, "cleared": False,
+                                            "trail": trail, "t": T0, "mt": T0 + 210}}})
+        seen = {}
+        def fake_distill(goal_text, work_text, done_why=""):
+            seen["work"] = work_text
+            return "Both parts delivered.\nSOURCE: m2"
+        jd.distill_llm = fake_distill
+        self.assertEqual(jd.run_distill(now=now), 1)
+        nd = jd.load_goals(SID)["nodes"][gid]
+        self.assertIn("[m1] did part one", seen["work"], "the work fed to the call carries the labels")
+        self.assertIn("[m2] finished part two", seen["work"])
+        self.assertEqual(nd["summary"], "Both parts delivered.", "the SOURCE line is parsed off the summary")
+        self.assertEqual(nd["summaryAnchor"], "a2", "the cited label resolves to the exact atom uuid")
+
+    def test_distill_without_citation_stores_no_anchor(self):
+        # an uncited reply (older model behavior, or the line dropped) → summaryAnchor None; the kernel
+        # falls back to its deterministic latest-prose anchor rather than keeping a stale citation.
+        records = [uline(T0, "do the thing", "u1", ps="typed"),
+                   aline(T0 + 10, "did the thing", "a1", "u1", stop="end_turn")]
+        path = self._setup(records)
+        now = T0 + 5000
+        s1 = em.segments(jd.parsed_session(SID, [path], now)["turns"][0])[0]["id"]
+        gid = SID + ":g1"
+        jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "status": {gid: "completed"}, "placements": {},
+                            "nodes": {gid: {"id": gid, "text": "Build the thing", "parentId": None,
+                                            "nodeComplete": True, "blocked": False, "cleared": False,
+                                            "trail": [s1], "t": T0, "mt": T0 + 10}}})
+        jd.distill_llm = lambda g, w, dw="": "Delivered without a citation."
+        self.assertEqual(jd.run_distill(now=now), 1)
+        nd = jd.load_goals(SID)["nodes"][gid]
+        self.assertEqual(nd["summary"], "Delivered without a citation.")
+        self.assertIsNone(nd["summaryAnchor"], "no SOURCE line → no anchor (kernel falls back)")
+
+    def test_brief_stores_the_cited_source_as_summary_anchor(self):
+        # the block-brief cites too (usually where the question and options were laid out), through the
+        # same summaryAnchor field the card's distiller-line click reads.
+        records = [uline(T0, "ship it", "u1", ps="typed"),
+                   aline(T0 + 10, "need your call on the approach: A or B, tradeoffs laid out", "a1", "u1",
+                         stop="end_turn")]
+        path = self._setup(records)
+        now = T0 + 5000
+        s1 = em.segments(jd.parsed_session(SID, [path], now)["turns"][0])[0]["id"]
+        gid = SID + ":g1"
+        jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "status": {gid: "blocked"}, "placements": {},
+                            "nodes": {gid: {"id": gid, "text": "Ship the feature", "parentId": None,
+                                            "nodeComplete": False, "blocked": True, "cleared": False,
+                                            "blockWhy": "Which approach — A or B?", "trail": [s1],
+                                            "t": T0, "mt": T0 + 10}}})
+        jd.brief_llm = lambda g, w, ow="": "Decide A or B.\nSOURCE: [m1]"
+        self.assertEqual(jd.run_distill(now=now), 1)
+        nd = jd.load_goals(SID)["nodes"][gid]
+        self.assertEqual(nd["blockSummary"], "Decide A or B.", "the SOURCE line is parsed off the brief")
+        self.assertEqual(nd["summaryAnchor"], "a1", "the brief's citation lands in the same anchor field")
 
     def test_distill_self_heals_after_repeated_call_failures(self):
         # the user 2026-06-24: a distill call that PERSISTENTLY fails must NOT loop "(generating…)" forever.

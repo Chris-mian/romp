@@ -435,9 +435,11 @@ def _tool_arg(name, inp):
     return ""
 
 
-def _unit_text(atoms):
+def _unit_text(atoms, marker=None):
     """The caption model's input for one unit (segment or turn): what the user asked, what the
-    assistant said, and the tools it used (with each tool's key arg) — drawn from the unit's atoms."""
+    assistant said, and the tools it used (with each tool's key arg) — drawn from the unit's atoms.
+    `marker` (a _CiteMarks, distill/brief calls only) labels each assistant message inline ([m3]) so
+    the model can CITE the one message its takeaway is grounded in (see _split_source)."""
     user_said, asst_said, tools = [], [], []
     for a in atoms:
         if a["type"] == "user" and a.get("author") is not None:
@@ -447,6 +449,8 @@ def _unit_text(atoms):
         elif a["type"] == "assistant":
             t = _atom_text(a)
             if t:
+                if marker is not None and a.get("uuid") and not a.get("isApiError"):
+                    t = "%s %s" % (marker.label(a["uuid"]), t)   # never label an API error: not a jump target
                 asst_said.append(t)
             for b in (a.get("message") or {}).get("content", []):
                 if isinstance(b, dict) and b.get("type") == "tool_use":
@@ -1007,13 +1011,43 @@ def _menu_text(store, menu):
     return "\n".join(out) if out else "(no open goals yet)"
 
 
-def _goal_work_text(store, seg_by_id, nid, char_cap, subtree=True):
+class _CiteMarks:
+    """Sequential [mN] labels over the assistant messages fed to ONE distill/brief call, with the
+    label→uuid map kept OUT of the prompt: the model cites a label (its reply's SOURCE line) and the
+    caller resolves it back to the exact transcript atom — the summary line's deep-link anchor is then
+    "what the summary was actually grounded in" by construction, not a length heuristic (the user
+    2026-07-01). One instance per call; labels are meaningless across calls."""
+    def __init__(self):
+        self.map = {}                                       # "m3" → atom uuid
+        self._n = 0
+
+    def label(self, uuid):
+        self._n += 1
+        lab = "m%d" % self._n
+        self.map[lab] = uuid
+        return "[%s]" % lab
+
+
+def _split_source(text):
+    """(body, label) — split the model's final `SOURCE: mN` citation line off a distill/brief reply.
+    Lenient on shape (optional [brackets], stray whitespace) but anchored to the END of the reply, so a
+    body that merely mentions a label is never mistaken for the citation. label is None when the line
+    is absent/malformed — the kernel then falls back to its deterministic anchor."""
+    text = (text or "").strip()
+    m = re.search(r"(?:^|\n)\s*SOURCE:\s*\[?(m\d+)\]?\s*$", text)
+    if not m:
+        return text, None
+    return text[:m.start()].strip(), m.group(1)
+
+
+def _goal_work_text(store, seg_by_id, nid, char_cap, subtree=True, marks=None):
     """The raw work already logged under goal `nid` — its own trail segments, plus its whole subtree's if
     `subtree` (the same gather the distiller uses for a goal's history), oldest-first, deduped, bounded to
     the most recent char_cap chars. '' if nid has no captured segments. Lets a judge that already knows
     WHICH goal it's acting on (a tagged follow-up, a nudge, a delegation, a turn-end close) see that goal's
     real history, not just its compressed ≤10-word title (the user 2026-07-01: the menu title alone loses
-    whatever the title left out, e.g. a constraint or approach settled a few turns back)."""
+    whatever the title left out, e.g. a constraint or approach settled a few turns back). `marks` (a
+    _CiteMarks, distill/brief only) labels each assistant message inline so the call can cite its source."""
     nodes = store["nodes"]
     ids = [nid]
     if subtree:
@@ -1029,7 +1063,7 @@ def _goal_work_text(store, seg_by_id, nid, char_cap, subtree=True):
             if sid not in seen:
                 seen.add(sid); seg_ids.append(sid)
     segs = sorted((seg_by_id[s] for s in seg_ids if s in seg_by_id), key=lambda sg: sg.get("t", 0))
-    work = "\n\n".join(_unit_text(sg["atoms"]) for sg in segs).strip()
+    work = "\n\n".join(_unit_text(sg["atoms"], marker=marks) for sg in segs).strip()
     if len(work) > char_cap:                            # keep the most recent tail (matches the distiller's bound)
         work = "…\n\n" + work[-char_cap:]
     return work
@@ -2978,7 +3012,12 @@ DISTILL_SYS = (
     "quoted snippets. If the goal was a question, give the answer. Be as brief as the point allows, "
     "usually one sentence and at most two or three; the user can click through for detail. Plain "
     "declarative sentences from the user's vantage, no self-narration, no filler, no em dashes. Reply "
-    "with only that text: no JSON, no preamble, no markdown.")
+    "with only that text: no JSON, no preamble, no markdown.\n\n"
+    "Assistant messages in <work> may carry [mN] labels. If they do, add one final line, SOURCE: mN, "
+    "citing the single message the user should open to see the full substance behind your takeaway. "
+    "Pick the most informative AND most current one, usually the message that wrapped up the work; "
+    "never an early plan, analysis, or superseded attempt when a later message reflects how it "
+    "actually ended. This line is parsed off and never shown.")
 
 
 def distill_llm(goal_text, work_text, done_why=""):
@@ -2989,7 +3028,7 @@ def distill_llm(goal_text, work_text, done_why=""):
     user = "<goal>\n%s\n</goal>\n<work>\n%s\n</work>" % (goal_text, work_text)
     if done_why:
         user += "\n<completed>\n%s\n</completed>" % done_why
-    return _judge_run(TRIAGE_MODEL, DISTILL_SYS, user, judge="distiller").strip()[:600]
+    return _judge_run(TRIAGE_MODEL, DISTILL_SYS, user, judge="distiller").strip()   # caller splits SOURCE, then caps
 
 
 # The BLOCK-DISTILLER (the user 2026-06-18, via business): the done-distiller's twin for a BLOCKED top.
@@ -3009,7 +3048,11 @@ BLOCK_BRIEF_SYS = (
     "context needed to decide: what was tried, what is at stake. Be as brief as the decision allows, "
     "usually a sentence or two; write from the user's vantage, the decision itself, not a play-by-play, "
     "no self-narration, no filler, no em dashes. Reply with only that text: no JSON, no preamble, no "
-    "markdown.")
+    "markdown.\n\n"
+    "Assistant messages in <work> may carry [mN] labels. If they do, add one final line, SOURCE: mN, "
+    "citing the single message the user should open for the fullest, most current context on the "
+    "decision, usually where the question and its options were actually laid out. This line is parsed "
+    "off and never shown.")
 
 
 def brief_llm(goal_text, work_text, block_why):
@@ -3018,7 +3061,7 @@ def brief_llm(goal_text, work_text, block_why):
     timeline mark is emitted on the distiller row (kind 'brief') — a 'brief' usage label orphaned the run
     from its mark, so its API time/tokens never showed in the hover (the user 2026-06-19)."""
     user = "<goal>\n%s\n</goal>\n<work>\n%s\n</work>\n<owed>\n%s\n</owed>" % (goal_text, work_text, block_why)
-    return _judge_run(TRIAGE_MODEL, BLOCK_BRIEF_SYS, user, judge="distiller").strip()[:600]
+    return _judge_run(TRIAGE_MODEL, BLOCK_BRIEF_SYS, user, judge="distiller").strip()   # caller splits SOURCE, then caps
 
 
 def _last_state_value(fsid):
@@ -3097,7 +3140,11 @@ def _distill_session(fsid, path, now):
         stack, sub = [top], []                         # the top + all descendants (its whole subtree) — still
         while stack:                                   # needed below for blkd, so kept alongside _goal_work_text
             x = stack.pop(); sub.append(x); stack.extend(children.get(x, []))
-        work = _goal_work_text(store, seg_by_id, top, DISTILL_WORK_CHARS)   # the goal's own work, subtree included
+        marks = _CiteMarks()                           # [mN] labels the call can cite (SOURCE line) — the
+        # cited label resolves to the exact transcript atom, stored as node["summaryAnchor"]: the summary
+        # line's deep-link then lands on what the summary was GROUNDED IN, by the same reader that wrote
+        # it, not on a length heuristic (the user 2026-07-01).
+        work = _goal_work_text(store, seg_by_id, top, DISTILL_WORK_CHARS, marks=marks)   # the goal's own work, subtree included
         if blocked:
             blkd = [nodes[x] for x in sub if nodes[x].get("blocked") and nodes[x].get("blockWhy")]
             owed = max(blkd, key=lambda d: d.get("mt", d.get("t", 0)))["blockWhy"] if blkd else ""
@@ -3121,7 +3168,9 @@ def _distill_session(fsid, path, now):
                     nodes[top]["briefFails"] = fails    # keep counting; retry next pass (leave blockSummary null)
                 changed = True                          # persist the counter / the settle
                 continue
-            nodes[top]["blockSummary"] = out
+            out, src = _split_source(out)
+            nodes[top]["blockSummary"] = out[:600]
+            nodes[top]["summaryAnchor"] = marks.map.get(src)   # the brief's cited source (None → kernel's deterministic fallback)
             nodes[top]["briefedMt"] = nodes[top].get("mt")
             nodes[top]["briefFails"] = 0                # success → reset the counter (for a future re-open)
             n += 1; changed = True
@@ -3147,7 +3196,9 @@ def _distill_session(fsid, path, now):
                 nodes[top]["distillFails"] = fails     # keep counting; retry next pass (leave summary null)
             changed = True
             continue
-        nodes[top]["summary"] = out
+        out, src = _split_source(out)
+        nodes[top]["summary"] = out[:600]
+        nodes[top]["summaryAnchor"] = marks.map.get(src)   # the takeaway's cited source (None → kernel's deterministic fallback)
         nodes[top]["distilledMt"] = nodes[top].get("mt")
         nodes[top]["distillFails"] = 0                 # success → reset the counter
         n += 1; changed = True

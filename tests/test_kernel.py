@@ -1986,12 +1986,13 @@ class ViewBuilder(unittest.TestCase):
                          "no stored uuid → fall back to the seg_trig derivation (unchanged legacy path)")
 
     def test_card_carries_summary_anchor_for_the_summary_deep_link(self):
-        # the distilled summary LINE deep-links to the biggest contiguous assistant-text block in the goal's
-        # work span (the user 2026-06-22): the card's summaryAnchorUuid = _seg_best_text over the node's trail.
+        # the distilled summary LINE deep-links: with no distiller citation stored on the node, the
+        # fallback anchor is the trail's most CURRENT prose (the wrap-up), via _seg_last_text — not the
+        # old biggest-text-block pick (the user 2026-07-01).
         session = em.parse_session(str(self.tpath), rompuuid=SID, candidate_files=[str(self.tpath)], now=NOW)
         seg = em.segments(session["turns"][0])[0]
-        expect, n = km._seg_best_text(seg["atoms"])
-        self.assertTrue(expect and n > 0, "the fixture segment has assistant prose to anchor on")
+        expect, _sub = km._seg_last_text(seg["atoms"])
+        self.assertTrue(expect, "the fixture segment has assistant prose to anchor on")
         nid = SID + ":g42"
         store = {"rompUuid": SID, "seq": 42, "nodes": {
             nid: {"id": nid, "text": "Ship it", "parentId": None, "nodeComplete": True,
@@ -1999,7 +2000,64 @@ class ViewBuilder(unittest.TestCase):
         (jd.GOALDIR / (SID + ".json")).write_text(json.dumps(store))
         card = {a["itemId"]: a for a in km.build_feed(NOW)["asks"]}[nid]
         self.assertEqual(card["summaryAnchorUuid"], expect,
-                         "the card links its summary to the segment's biggest assistant-text block")
+                         "no citation stored → the card links its summary to the trail's latest prose")
+
+    def test_summary_anchor_prefers_the_distillers_cited_source(self):
+        # the distiller CITES the message its takeaway is grounded in (node["summaryAnchor"], written by
+        # the judge from the reply's SOURCE line): the kernel honors that over the deterministic fallback
+        # whenever the uuid resolves in the live parse (the user 2026-07-01). Here the fallback would pick
+        # the LAST prose atom (a2); the citation names the earlier a1 and must win.
+        session = em.parse_session(str(self.tpath), rompuuid=SID, candidate_files=[str(self.tpath)], now=NOW)
+        seg = em.segments(session["turns"][0])[0]
+        nid = SID + ":g43"
+        store = {"rompUuid": SID, "seq": 43, "nodes": {
+            nid: {"id": nid, "text": "Ship it", "parentId": None, "nodeComplete": True, "blocked": False,
+                  "trail": [seg["id"]], "t": NOW, "summary": "Shipped.", "summaryAnchor": "a1"}},
+            "placements": {}, "status": {}}
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps(store))
+        card = {a["itemId"]: a for a in km.build_feed(NOW)["asks"]}[nid]
+        self.assertEqual(card["summaryAnchorUuid"], "a1", "the distiller's cited source wins over the fallback")
+
+    def test_summary_anchor_ignores_a_cited_source_that_does_not_resolve(self):
+        # a citation whose uuid isn't in this parse (stale store, model copy error) must NOT ship a dead
+        # link: the kernel falls back to the deterministic latest-prose anchor.
+        session = em.parse_session(str(self.tpath), rompuuid=SID, candidate_files=[str(self.tpath)], now=NOW)
+        seg = em.segments(session["turns"][0])[0]
+        expect, _sub = km._seg_last_text(seg["atoms"])
+        nid = SID + ":g44"
+        store = {"rompUuid": SID, "seq": 44, "nodes": {
+            nid: {"id": nid, "text": "Ship it", "parentId": None, "nodeComplete": True, "blocked": False,
+                  "trail": [seg["id"]], "t": NOW, "summary": "Shipped.",
+                  "summaryAnchor": "99999999-dead-beef-0000-111111111111"}},
+            "placements": {}, "status": {}}
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps(store))
+        card = {a["itemId"]: a for a in km.build_feed(NOW)["asks"]}[nid]
+        self.assertEqual(card["summaryAnchorUuid"], expect,
+                         "an unresolvable citation falls back to the latest-prose anchor, never a dead link")
+
+    def test_summary_anchor_fallback_prefers_the_latest_substantive_segment(self):
+        # cross-segment recency (the user 2026-07-01): a goal whose trail spans an EARLY segment with a long
+        # analysis and a LATER segment with a shorter (but substantive) wrap-up must anchor on the wrap-up.
+        # Under the old max-length rule the early analysis held the anchor forever.
+        early = "Deep analysis of the options. " + "detail " * 60          # long early prose (~450 chars)
+        wrap = "Shipped: merged, tests pass, worktree cleaned up. " + "done " * 32   # substantive, shorter (~210)
+        recs = [uline(T0, "build the feature", "u1", ps="typed"),
+                aline(T0 + 20, early, "a1", "u1", stop="end_turn"),
+                uline(T0 + 100, "continue", "u2", "a1", ps="typed"),
+                aline(T0 + 120, wrap, "a2", "u2", stop="end_turn")]
+        self.tpath.write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+        self._warm_tpath()
+        session = em.parse_session(str(self.tpath), rompuuid=SID, candidate_files=[str(self.tpath)], now=NOW)
+        segs = [sg for turn in session["turns"] for sg in em.segments(turn)]
+        nid = SID + ":g45"
+        store = {"rompUuid": SID, "seq": 45, "nodes": {
+            nid: {"id": nid, "text": "Build the feature", "parentId": None, "nodeComplete": True,
+                  "blocked": False, "trail": [sg["id"] for sg in segs], "t": NOW}},
+            "placements": {}, "status": {}}
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps(store))
+        card = {a["itemId"]: a for a in km.build_feed(NOW)["asks"]}[nid]
+        self.assertEqual(card["summaryAnchorUuid"], "a2",
+                         "the latest substantive message (the wrap-up) beats a longer early analysis")
 
     def test_followup_body_appends_goal_marker(self):
         # The follow-up judge reopens the tagged goal: every follow-up ends with a hidden
@@ -3938,10 +3996,12 @@ class SessionListNameCollision(unittest.TestCase):
         self.assertIsInstance(items, list, "the picker payload is a list of session rows")
 
 
-class SegBestText(unittest.TestCase):
-    """_seg_best_text: the biggest contiguous block of assistant TEXT in a segment → a distilled summary's
-    deep-link target (the user 2026-06-22). Skips API-error atoms (a failed turn carries text but is never a
-    jump target, like _seg_anchors)."""
+class SegLastText(unittest.TestCase):
+    """_seg_last_text: the LAST assistant prose atom in a segment, preferring a SUBSTANTIVE one (≥200
+    chars) — the summary deep-link FALLBACK when the distiller stored no citation (the user 2026-07-01;
+    replaces the biggest-text-block pick, whose 'longest ever' monotonicity let a long early analysis hold
+    the anchor forever). Skips API-error atoms (a failed turn carries text but is never a jump target,
+    like _seg_anchors)."""
 
     @staticmethod
     def _a(uuid, text, api=False):
@@ -3950,25 +4010,33 @@ class SegBestText(unittest.TestCase):
             a["isApiError"] = True
         return a
 
-    def test_picks_the_assistant_atom_with_the_most_text(self):
-        big = "a much longer reply with a lot more words than the others here"
-        atoms = [self._a("u1", "short"), self._a("u2", big), self._a("u3", "mid length reply")]
-        u, n = km._seg_best_text(atoms)
-        self.assertEqual(u, "u2")
-        self.assertEqual(n, len(big))
+    def test_prefers_the_last_substantive_atom_over_a_longer_early_one(self):
+        early_long = "an early analysis with the most words by far " + "x" * 500
+        late_wrap = "Shipped: merged to main and the tests pass. " + "y" * 200
+        atoms = [self._a("u1", early_long), self._a("u2", "ok"), self._a("u3", late_wrap)]
+        u, sub = km._seg_last_text(atoms)
+        self.assertEqual(u, "u3", "the most CURRENT substantive message wins, not the longest ever")
+        self.assertTrue(sub)
 
-    def test_skips_api_error_atoms_even_when_they_are_the_longest(self):
-        atoms = [self._a("u1", "the real reply"),
-                 self._a("uErr", "API Error: overloaded — " + "x" * 200, api=True)]
-        u, _ = km._seg_best_text(atoms)
-        self.assertEqual(u, "u1", "a long API-error line is never the jump target")
+    def test_falls_back_to_the_last_short_prose_when_nothing_substantive(self):
+        atoms = [self._a("u1", "ok"), self._a("u2", "done")]
+        u, sub = km._seg_last_text(atoms)
+        self.assertEqual(u, "u2", "no substantive prose → the last short prose, flagged non-substantive")
+        self.assertFalse(sub)
+
+    def test_skips_api_error_atoms_even_when_last_and_substantive(self):
+        atoms = [self._a("u1", "the real reply, plenty substantive " + "z" * 200),
+                 self._a("uErr", "API Error: overloaded — " + "x" * 300, api=True)]
+        u, sub = km._seg_last_text(atoms)
+        self.assertEqual(u, "u1", "a trailing API-error line is never the jump target")
+        self.assertTrue(sub)
 
     def test_no_assistant_prose_returns_none(self):
         atoms = [{"type": "user", "uuid": "u1", "message": {"content": "hi"}},
                  {"type": "assistant", "uuid": "u2", "message": {"content": [{"type": "tool_use", "name": "Read"}]}}]
-        u, n = km._seg_best_text(atoms)
+        u, sub = km._seg_last_text(atoms)
         self.assertIsNone(u)
-        self.assertEqual(n, 0)
+        self.assertFalse(sub)
 
 
 class WsLoopResilience(unittest.TestCase):
