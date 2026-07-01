@@ -2107,7 +2107,8 @@ class Sessions:
                     out[sid] = {"state": st.get("state", ""), "since": _num(str(st.get("since") or "")),
                                 "model": st.get("model", ""), "effort": st.get("effort", ""),
                                 "context": ctx if isinstance(ctx, (int, float)) else None, "compactPct": None,
-                                "color": (st.get("color") or None), "mode": st.get("mode", ""), "backend": "sdk"}
+                                "color": (st.get("color") or None), "mode": st.get("mode", ""), "backend": "sdk",
+                                "subagents": st.get("subagents") or []}   # live Task subagents (SDK only) → lane pill
             except Exception:
                 sys.stderr.write("sdk live_sessions merge: %s\n" % traceback.format_exc())
         return out
@@ -6300,6 +6301,7 @@ def build_timeline(now, tmux=None, with_bars=True, live_only=False):
             "ctxColor": (list(cm.ramp((tm["context"] or 0) / 100.0, ctx_stops))
                          if tm and tm["context"] is not None else None),   # context% on the GLOBAL colormap (bright = full)
             "compactPct": (tm["compactPct"] if tm else None),
+            "subagents": ((tm.get("subagents") if tm else None) or []),   # live Task subagents (SDK) → lane pill
             "awaiting": _state_intervals(sid, _NEEDS_INPUT_STATES, now),
             "compacting": _state_intervals(sid, "compacting", now),
             "compactions": compactions, "pendingMail": _pending_mail(sid),

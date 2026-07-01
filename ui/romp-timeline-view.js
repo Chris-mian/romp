@@ -187,7 +187,12 @@ function idleGaps(merged, gapCT, now) {
 function badgeFor(s) {
   if (!s || !s.live) return null;
   let m = null;
-  if (s.state === 'working') m = { label: 'WORKING', kind: 'working' };
+  if (s.state === 'working') {
+    // Live Task-subagent count (SDK only) rides the WORKING badge, the same way COMPACTING carries its % —
+    // so "what's actually running" is glanceable, the transparency the tmux backend never had. Blank when none.
+    const n = (s.subagents && s.subagents.length) || 0;
+    m = { label: n ? 'WORKING · ' + n + (n === 1 ? ' agent' : ' agents') : 'WORKING', kind: 'working' };
+  }
   else if (s.state === 'retrying') m = { label: 'RETRYING', kind: 'retrying' };   // amber, distinct from the red BLOCKED — a soft API-retry stall (api 2026-06-23)
   else if (s.state === 'permission' || s.state === 'awaiting') m = { label: 'BLOCKED', kind: 'attention' };
   else if (s.state === 'waiting' || s.state === 'idle') m = { label: 'READY', kind: 'ready' };
