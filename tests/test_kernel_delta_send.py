@@ -103,6 +103,19 @@ class SendChatTest(unittest.TestCase):
         self.assertEqual(tail["from"], len(evs), "the tail's `from` is the GLOBAL index, mapped by the browser")
         self.assertEqual([e["uuid"] for e in tail["events"]], ["NEW"])
 
+    def test_the_top_level_git_branch_survives_the_tail_trim(self):
+        # Regression (the user 2026-06-30): the status-bar branch + tab tooltip read a TOP-LEVEL gitBranch field,
+        # never the head system event. The system event lives at events[0]; a >WIRE_TAIL session ships only the
+        # last WIRE_TAIL events, so that head event (and its branch) fell off the wire → the branch vanished on
+        # every long session. A top-level field is not part of the windowed events, so it must always ride along.
+        evs = [{"uuid": str(i)} for i in range(km.WIRE_TAIL + 50)]    # bigger than the wire tail
+        m = self._m("S", evs); m["gitBranch"] = "main"
+        c, sent = _client()
+        km._send_chat(c, m, None, 0, False)
+        full = _last(sent)
+        self.assertEqual(len(full["events"]), km.WIRE_TAIL, "events are still trimmed to the tail")
+        self.assertEqual(full.get("gitBranch"), "main", "the top-level branch rides along even when trimmed")
+
     def test_a_small_session_under_the_tail_is_sent_whole(self):
         evs = [{"uuid": "1"}, {"uuid": "2"}]
         c, sent = _client()

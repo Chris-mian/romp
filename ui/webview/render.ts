@@ -115,7 +115,7 @@ interface BgTasks { count: number; tasks: BgTask[]; }
 // kernel ships only the last WIRE_TAIL events (headFrom > 0) to keep startup light; older history streams in
 // on scroll-back (loadOlder → chatHead prepends, lowering headFrom). headFrom 0 = the whole transcript is
 // resident. chatTail's `from` is GLOBAL and mapped through headFrom.
-interface Session { id: string; name: string; color: Color | null; events: ChatEvent[]; status: Status; firstSeen?: number; cwd?: string; headFrom?: number; headTotal?: number; bgTasks?: BgTasks; hideFromFeed?: boolean; postalServiceOff?: boolean; }
+interface Session { id: string; name: string; color: Color | null; events: ChatEvent[]; status: Status; firstSeen?: number; cwd?: string; gitBranch?: string; headFrom?: number; headTotal?: number; bgTasks?: BgTasks; hideFromFeed?: boolean; postalServiceOff?: boolean; }
 
 const vscodeApi =
   typeof (window as any).acquireVsCodeApi === "function" ? (window as any).acquireVsCodeApi() : undefined;
@@ -1554,10 +1554,10 @@ function showTabTip(tab: HTMLElement, s: Session): void {
     tip.appendChild(b);
   }
   if (s.cwd) { const d = el("div", "tab-tip-path"); d.textContent = s.cwd; tip.appendChild(d); }
-  // labelled rows: git branch (from the system-context event) + mode / model / effort
-  const sys = s.events.find((e) => e.kind === "system") as Extract<ChatEvent, { kind: "system" }> | undefined;
+  // labelled rows: git branch (top-level session field, resident even when the head system event is windowed
+  // out of the wire tail — the user 2026-06-30) + mode / model / effort
   const rows: Array<[string, string]> = [];
-  if (sys?.gitBranch) rows.push(["Branch", sys.gitBranch]);
+  if (s.gitBranch) rows.push(["Branch", s.gitBranch]);
   if (s.status.mode) rows.push(["Mode", prettyMode(s.status.mode)]);
   if (s.status.model) rows.push(["Model", s.status.model]);
   if (s.status.effort) rows.push(["Effort", s.status.effort]);
@@ -4248,15 +4248,14 @@ function updateStatusline() {
   }
   sl.appendChild(dir);
   // The session's git branch, just right of the dir — only when known and only if the user hasn't hidden it
-  // (Settings → "Show git branch", on by default — the user 2026-06-23). Pulled from the system-context event.
-  if (loadSettings().showBranch !== false) {
-    const sys = s.events.find((e) => e.kind === "system") as Extract<ChatEvent, { kind: "system" }> | undefined;
-    if (sys?.gitBranch) {
-      const br = el("span", "status-branch");
-      br.textContent = "⎇ " + sys.gitBranch;
-      br.title = "git branch: " + sys.gitBranch;
-      sl.appendChild(br);
-    }
+  // (Settings → "Show git branch", on by default — the user 2026-06-23). Read from the TOP-LEVEL session field,
+  // never the head system event: that event is windowed out of the wire tail on any >250-event session, which
+  // used to blank the branch on most sessions (the user 2026-06-30).
+  if (loadSettings().showBranch !== false && s.gitBranch) {
+    const br = el("span", "status-branch");
+    br.textContent = "⎇ " + s.gitBranch;
+    br.title = "git branch: " + s.gitBranch;
+    sl.appendChild(br);
   }
   const meta = el("span", "spinner-meta");
   meta.id = "spinner-meta";
@@ -4348,6 +4347,10 @@ function upsert(msg: any) {
     status: msg.status || (prev ? prev.status : { state: "idle", sinceEpoch: null }),
     firstSeen: msg.firstSeen ?? (prev ? prev.firstSeen : undefined),
     cwd: msg.cwd ?? (prev ? prev.cwd : ""),
+    // top-level git branch (the user 2026-06-30): the status-bar branch + tab tooltip read this, NOT the head
+    // system event — that event lives at events[0] and the WIRE_TAIL window drops it on any >250-event session,
+    // so the branch used to vanish there. A chatTail delta omits it → keep the last-known via prev.
+    gitBranch: msg.gitBranch ?? (prev ? prev.gitBranch : ""),
     // A trimmed full send carries headFrom/headTotal; a whole-transcript send omits them (headFrom 0).
     headFrom: msg.headFrom ?? 0,
     headTotal: msg.headTotal ?? ((msg.events || (prev ? prev.events : [])).length),

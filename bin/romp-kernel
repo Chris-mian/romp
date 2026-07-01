@@ -4520,6 +4520,12 @@ def build_session(sid, now, tmux=None):
         events.insert(0, sysinfo)
     return {"type": "session", "id": sid, "name": sess["name"], "color": _name_color(sid),
             "cwd": _tilde(_cwd_of(sid) or meta.get("cwd") or ""),   # fixed-at-creation dir; lane tab shows it (the user 2026-06-22)
+            # git branch as a TOP-LEVEL session field, NOT just inside the head system event: the status-bar
+            # branch + tab tooltip must show for EVERY session, but the system event lives at events[0] and the
+            # WIRE_TAIL window ships only the last 250 events — so on any session with >250 events the head
+            # system event (and its branch) fell off the wire and the branch vanished (the user 2026-06-30). A
+            # top-level field is never windowed, so the branch is always resident.
+            "gitBranch": sysinfo["gitBranch"],
             "events": events, "status": status, "ledger": ledger, "bgTasks": _bg_tasks(sess["path"]),
             # per-session view flags (the user 2026-06-26): the tab right-click menu toggles these too, mirroring
             # the timeline lane's feed checkbox + postal mailbox. Same flags + legacy fallback as build_timeline.
