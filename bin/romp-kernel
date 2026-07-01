@@ -811,7 +811,50 @@ def _retry_paused_on():
 
 
 def _set_retry_paused(paused):
-    _atomic_write(jd.STATE / "retry-paused.json", json.dumps({"paused": bool(paused)}))
+    # Record WHEN a pause began: the auto-resume floor. Only a successful response AFTER this instant proves
+    # the API recovered (an old success from before the outage doesn't). No `t` when un-pausing.
+    d = {"paused": bool(paused)}
+    if paused:
+        d["t"] = time.time()
+    _atomic_write(jd.STATE / "retry-paused.json", json.dumps(d))
+
+
+def _retry_pause_ts():
+    """The wall-clock instant the current pause began (the auto-resume floor), or 0."""
+    try:
+        return float(json.loads((jd.STATE / "retry-paused.json").read_text()).get("t") or 0)
+    except Exception:
+        return 0.0
+
+
+def _auto_resume_retry(now, tmux):
+    """The global retry-pause is an API-HEALTH flag, not a permanent switch. The user flips it to stop the
+    auto-retry (and, with it, the judge) storm during an API / usage-limit outage — but it must AUTO-CLEAR
+    the moment the API is healthy again: "cleared the second I get a successful response that's not an API
+    error on any session" (the user 2026-06-30). Without this the pause stuck ON for hours and silently
+    killed EVERY judge (the tier is gated on `not _retry_paused_on()`), turning the storm's fix into a
+    permanent outage the user had to infer.
+
+    Event-based recovery signal: a live session that is NOT currently blocked on an API error AND has written
+    fresh transcript output since the pause began (mtime past the pause floor) is proof the account can serve
+    requests again. Clearing re-enables both auto-retry and the judges together."""
+    if not _retry_paused_on():
+        return
+    floor = _retry_pause_ts()
+    for s in _alive_sessions(now, tmux):
+        path = s.get("path")
+        if not path or _api_error(path):                 # still blocked on an API error → not proof of recovery
+            continue
+        try:
+            fresh = os.stat(path).st_mtime > floor       # wrote something new since the pause → a served request
+        except OSError:
+            continue
+        if fresh:
+            _set_retry_paused(False)
+            sys.stderr.write("retry-pause: auto-cleared — session %s recovered → judges + auto-retry resume\n"
+                             % s.get("sid", "?"))
+            _push_all()                                  # globalRetryPaused=false reaches the UI immediately
+            return
 
 
 def _mark_auto_nudged(gid, turn_id, count):
@@ -6970,6 +7013,10 @@ def _pusher():
             _auto_nudge_tick(int(time.time()), _tmux_sessions())
         except Exception:
             sys.stderr.write("auto-nudge: %s\n" % traceback.format_exc())
+        try:                                  # a paused retry auto-clears once any session serves a request again
+            _auto_resume_retry(int(time.time()), _tmux_sessions())
+        except Exception:
+            sys.stderr.write("auto-resume-retry: %s\n" % traceback.format_exc())
         try:                                  # expire stale set_working notes once a session goes idle + done (cheap when no notes)
             _clear_done_working_notes(int(time.time()), _tmux_sessions())
         except Exception:
