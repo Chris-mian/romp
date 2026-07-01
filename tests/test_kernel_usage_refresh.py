@@ -1,0 +1,80 @@
+#!/usr/bin/env python3
+"""Click-to-refresh on the rail usage bars (the user 2026-06-30).
+
+The rail's /usage rate-limit bars already re-read each poll, but the user wanted a CLICK to force the same
+check on demand. The mechanism is unchanged — _usage() re-reads usage.json (the snapshot Claude Code's
+statusline writes) — exposed as a GET /usage endpoint the rail widget fetches on click. Synthetic fixtures.
+"""
+import json
+import os
+import tempfile
+import unittest
+from importlib.machinery import SourceFileLoader
+from pathlib import Path
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+BIN = os.path.join(os.path.dirname(HERE), "bin")
+SourceFileLoader("romp_event_model", os.path.join(BIN, "romp-event-model")).load_module()
+SourceFileLoader("romp_judge", os.path.join(BIN, "romp-judge")).load_module()
+os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
+os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
+km = SourceFileLoader("romp_kernel_usage", os.path.join(BIN, "romp-kernel")).load_module()
+jd = km.jd
+
+
+class UsageReadMechanism(unittest.TestCase):
+    """The refresh reuses _usage() — the exact check the push already uses (re-reading usage.json)."""
+
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory()
+        self.saved = jd.STATE
+        jd.STATE = Path(self.td.name)
+
+    def tearDown(self):
+        jd.STATE = self.saved
+        self.td.cleanup()
+
+    def test_reads_the_statusline_snapshot_into_five_hour_and_weekly_segments(self):
+        (jd.STATE / "usage.json").write_text(json.dumps({
+            "t": 1782868545,
+            "five_hour": {"pct": 10, "resets_at": 1782787200},
+            "seven_day": {"pct": 11, "resets_at": 1783364400},
+        }))
+        u = km._usage()
+        self.assertIsNotNone(u, "a present usage.json yields bars")
+        self.assertEqual(u["fiveHour"]["pct"], 10)
+        self.assertEqual(u["fiveHour"]["resetsAt"], 1782787200)
+        self.assertEqual(u["sevenDay"]["pct"], 11)
+        self.assertIn("color", u["fiveHour"], "the used bar carries the server-computed colormap")
+
+    def test_missing_or_empty_usage_is_none_not_an_error(self):
+        self.assertIsNone(km._usage(), "no usage.json → None (the widget hides)")
+        (jd.STATE / "usage.json").write_text(json.dumps({"t": 1, "five_hour": None, "seven_day": None}))
+        self.assertIsNone(km._usage(), "both segments absent → None")
+
+
+class UsageRefreshWiring(unittest.TestCase):
+    """Source-level pins: the GET /usage route + the clickable rail widget that fetches it."""
+
+    def test_get_usage_route_returns_the_usage_read(self):
+        src = Path(os.path.join(BIN, "romp-kernel")).read_text()
+        self.assertIn('if p == "/usage":', src, "a GET /usage endpoint exists")
+        self.assertIn("json.dumps(_usage() or {})", src, "it serves the SAME _usage() read the push uses")
+
+    def test_rail_usage_widget_is_click_to_refresh(self):
+        html = km._landing()
+        # the widget is a clickable, discoverable affordance
+        self.assertIn("id=rail-usage", html)
+        self.assertIn("el.style.cursor='pointer'", html)
+        self.assertIn("Click to refresh usage", html)
+        # a click fetches the on-demand endpoint and re-renders through the normal render() path
+        self.assertIn("fetch('/usage'", html)
+        self.assertIn("el.addEventListener('click'", html)
+        # instant acknowledgement BEFORE the round-trip (dim), then restored — per the button rules
+        self.assertIn("el.style.opacity='0.45'", html)
+        # re-entrancy guard so a double-click doesn't stack fetches
+        self.assertIn("_ruBusy", html)
+
+
+if __name__ == "__main__":
+    unittest.main()
