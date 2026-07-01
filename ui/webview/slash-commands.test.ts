@@ -73,3 +73,7 @@ test("the popup + selected-row accent + loader spin are styled", () => {
   assert.match(CSS, /@keyframes slash-spin \{ to \{ transform: rotate\(-360deg\); \} \}/);
   assert.match(CSS, /@media \(prefers-reduced-motion: reduce\) \{ \.slash-spin \{ animation: none; \} \}/);
 });
+
+test("the composer placeholder hints that / opens commands (the user 2026-06-30)", () => {
+  assert.match(RENDER, /composer\.placeholder = closed \? "Session closed — read-only" : "Message this session…  \(⏎ send · ⇧⏎ newline · type \/ for commands\)";/);
+});
