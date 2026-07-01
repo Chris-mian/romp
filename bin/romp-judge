@@ -298,12 +298,13 @@ def _judge_env(tier):
 
 
 def _judge_run(model, sys_prompt, user, effort=None, judge=None):
-    """Run ONE judge model call (claude -p, zero tools, MCP off, portable 45s alarm cap — macOS has no
-    `timeout`). Returns the model's TEXT, '' on any failure. `model` selects the tier (INDEX_MODEL=Haiku,
-    TRIAGE_MODEL=Sonnet); `effort` sets --effort (thinking). The single subprocess point for every judge,
-    so the tier/effort knobs — and per-call usage logging — live in one place. --output-format json wraps
-    stdout as {"result", "usage", ...}; we unwrap to .result and log usage to USAGE. Fully defensive: an
-    unparseable/missing wrapper falls back to returning raw stdout (today's plain-text path), never raising."""
+    """Run ONE judge model call. ..."""
+    try:
+        p = STATE / "retry-paused.json"
+        if p.exists() and json.loads(p.read_text()).get("paused"):
+            return ""
+    except Exception:
+        pass
     tier = "index" if model == INDEX_MODEL else "triage"
     env = _judge_env(tier)
     fsid = getattr(_judge_ctx, "fsid", None)

@@ -22,7 +22,7 @@ class RefreshButtonDecoupledTest(unittest.TestCase):
         html = km._landing()
         self.assertIn("id=rail-refresh", html)
         self.assertIn("fetch('/restart',{method:'POST'})", html)
-        self.assertNotIn("id=rrefresh", km._GEAR_HTML)   # gone from the feed gear
+        self.assertNotIn("id=rrefresh", km._gear_html())   # gone from the feed gear
 
     def test_refresh_button_is_not_gated_on_debug(self):
         # the old applyDebug() helper (which hid #rrefresh unless s.debug) is gone entirely …

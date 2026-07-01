@@ -10,22 +10,20 @@ import * as path from "node:path";
 const R = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
 
-test("the API-error card has a Stop/Resume retry button that pauses retryPaused for the session", () => {
-  assert.match(R, /const retryPaused = new Set<string>\(\)/);
+test("the API-error card has a global Stop/Resume retry button that pauses retrying globally", () => {
+  assert.match(R, /let globalRetryPaused = false/);
   assert.match(R, /const stop = el\("button", "apierror-stop"\)/);
-  assert.match(R, /stop\.textContent = paused \? "Resume" : "Stop retrying"/);
-  // clicking toggles the pause for the active session; resuming re-arms the countdown
-  assert.match(R, /if \(retryPaused\.has\(id\)\) \{ retryPaused\.delete\(id\)[\s\S]*apiRetryNext\.set\(id, Date\.now\(\) \+ API_RETRY_MS\)/);
-  assert.match(R, /else \{ retryPaused\.add\(id\)/);
+  assert.match(R, /stop\.textContent = paused \? "Resume all auto-retries" : "Stop all auto-retries"/);
+  // clicking toggles the pause globally
+  assert.match(R, /globalRetryPaused = !globalRetryPaused/);
+  assert.match(R, /vscodeApi\.postMessage\(\{ type: "setGlobalRetryPaused", value: globalRetryPaused \}\)/);
 });
 
-test("the retry tick SKIPS a paused session and re-arms it on recovery (per-instance reset)", () => {
+test("the retry tick SKIPS all retries when paused globally", () => {
   // paused → no auto-retry this pass
-  assert.match(R, /if \(retryPaused\.has\(id\)\) return;/);
-  // recovered (no longer blocked) → drop from retryPaused so the NEXT error auto-retries again
-  assert.match(R, /retryPaused\.forEach\(\(id\) => \{ if \(!blocked\.has\(id\)\) retryPaused\.delete\(id\); \}\)/);
-  // the countdown reads "auto-retry off" while paused
-  assert.match(R, /retryPaused\.has\(activeId\)\) cd\.textContent = "auto-retry off"/);
+  assert.match(R, /if \(globalRetryPaused\) return;/);
+  // the countdown reads "auto-retry off (global)" while paused
+  assert.match(R, /if \(paused\) countdown\.textContent = "auto-retry off \(global\)"/);
 });
 
 test("Stop retrying reads as a NEUTRAL action, not the red Retry alarm", () => {

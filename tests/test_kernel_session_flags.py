@@ -67,8 +67,8 @@ class AutoNudgeWiring(unittest.TestCase):
     and the checkbox reflects the kernel's state via /version (not localStorage) — the user 2026-06-19."""
 
     def test_gear_has_the_autonudge_toggle_posting_to_the_kernel(self):
-        self.assertIn("rs-autonudge", km._GEAR_HTML, "the gear panel has an Auto Nudge checkbox")
-        self.assertIn("Auto Nudge", km._GEAR_HTML)
+        self.assertIn("rs-autonudge", km._gear_html(), "the gear panel has an Auto Nudge checkbox")
+        self.assertIn("Auto Nudge", km._gear_html())
         self.assertIn("setAutoNudge", km._GEAR_JS, "toggling posts the server-side message")
 
     def test_version_reports_autonudge_state_for_the_checkbox(self):

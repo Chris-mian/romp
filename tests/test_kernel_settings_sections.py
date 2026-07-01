@@ -15,7 +15,7 @@ km = SourceFileLoader("romp_kernel", os.path.join(BIN, "romp-kernel")).load_modu
 
 class SettingsSectionsTest(unittest.TestCase):
     def test_the_subsection_headers_are_present_in_order(self):
-        h = km._GEAR_HTML
+        h = km._gear_html()
         self.assertIn("<div class='rs-sec rs-sec-first'>Chat</div>", h)
         self.assertIn("<div class=rs-sec>Feed</div>", h)
         self.assertIn("<div class=rs-sec>Sessions</div>", h)
@@ -28,7 +28,7 @@ class SettingsSectionsTest(unittest.TestCase):
         self.assertLess(h.index(">Timeline<"), h.index(">Debug<"))
 
     def test_each_setting_sits_under_the_right_section(self):
-        h = km._GEAR_HTML
+        h = km._gear_html()
         # Chat: compact + branch come before the Feed header
         self.assertLess(h.index("id=rs-compact"), h.index(">Feed<"))
         self.assertLess(h.index("id=rs-branch"), h.index(">Feed<"))
@@ -57,7 +57,7 @@ class SettingsSectionsTest(unittest.TestCase):
 
     def test_oldest_first_toggle_is_gone(self):
         # the feed is always oldest-at-top now → no checkbox, no wiring (the user 2026-06-27)
-        self.assertNotIn("rs-oldest", km._GEAR_HTML)
+        self.assertNotIn("rs-oldest", km._gear_html())
         self.assertNotIn("oldestFirst", km._GEAR_JS)
 
 
