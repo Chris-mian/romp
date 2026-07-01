@@ -461,9 +461,10 @@ function render() {
     const roots = tree.filter((n) => n.depth === 0);
     const archRoots = archivedTops.filter((n) => n.depth === 0);
     // SEARCH (the user 2026-06-29): subtreeHit(id) = node OR any descendant text contains the query — memoized
-    // over this session's nodes (live + archived). Drives the keep decision + the force-expand of collapsed
-    // hits. Searching looks through DONE / ARCHIVED content too, even when "Show completed" is off (a match in
-    // finished work should still be findable) — that's why it walks the whole tree, not just the open roots.
+    // over this session's nodes (live + archived). Drives the keep decision + the force-expand of collapsed hits.
+    // It walks a top's WHOLE subtree (so a match in a live top's already-DONE sub-step still reveals that top),
+    // but the tops it's applied to are the in-window, completed-gated `base` (the user 2026-06-30) — so search
+    // stays inside the "Show completed" toggle + recency slider rather than reaching past them.
     const hitMemo = new Map<string, boolean>();
     const subtreeHit = (id: string): boolean => {
       const cached = hitMemo.get(id);
@@ -477,13 +478,14 @@ function render() {
     };
     let visibleRoots: LedgerNode[];
     if (sq) {
-      // a match by session NAME shows the whole session (every top, done + archived); a CONTENT match shows
-      // just the tops whose subtree hits — so completed/archived work IS revealed by search regardless of the
-      // "Show completed" toggle (renderFleetNode then force-expands to the hit). The recency cutoff is bypassed:
-      // an explicit search should find a goal no matter how old.
-      const allRoots = roots.concat(archRoots);
-      visibleRoots = s.name.toLowerCase().includes(sq) ? allRoots : allRoots.filter((r) => subtreeHit(r.id));
-      if (!visibleRoots.length) continue;                // no name/content match → drop the session
+      // Search filters WITHIN the current view, it does NOT bypass it (the user 2026-06-30): apply the SAME
+      // "Show completed" gating + recency cutoff as the no-search case FIRST, then keep only the tops that hit.
+      // So a query surfaces a completed/old goal only when the toggle/slider would already be showing it —
+      // typing in the search box narrows what's visible, it doesn't reach past the window. (A NAME match keeps
+      // the session's in-window tops; a CONTENT match keeps just the tops whose subtree hits.)
+      const base = fleetVisibleRoots(roots, archRoots, sd).filter((r) => (now - nodeRecency(r)) <= cutoff);
+      visibleRoots = s.name.toLowerCase().includes(sq) ? base : base.filter((r) => subtreeHit(r.id));
+      if (!visibleRoots.length) continue;                // no in-window name/content match → drop the session
     } else {
       visibleRoots = fleetVisibleRoots(roots, archRoots, sd);
       if (!visibleRoots.length) continue;                // nothing to show for this session → skip

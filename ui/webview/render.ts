@@ -1639,11 +1639,12 @@ function showTabTip(tab: HTMLElement, s: Session): void {
     // The last few things this session worked on (the user 2026-06-24; ALWAYS-show 2026-06-30): the up-to-5
     // most-recently-touched ledger nodes, each in its own recency colour with a "(Xm ago)" time — replaces
     // the single "Latest" line. Sorted by each node's OWN recency (mt ?? t), so it's the actual recent work
-    // items, not umbrella tops floated up by a rolled-up subtree recency. NO recency cutoff: show the last 5
-    // even if they're DAYS old (the user 2026-06-30) — a session you haven't touched in a while should still
-    // list what it last worked on, not go blank. Timed nodes lead (newest first); if fewer than 5 are timed,
-    // backfill from the remaining text nodes in tree order so a session with ≥5 goals always surfaces 5.
-    const named = lg.tree.filter((n) => (n.text || "").trim() && !n.cleared);
+    // items, not umbrella tops floated up by a rolled-up subtree recency. Shown REGARDLESS of completion status
+    // AND regardless of age (the user 2026-06-30): done, blocked, and cleared nodes all count — "the 5 most
+    // recent things it did" — with NO recency cutoff, so an idle session still lists what it last worked on
+    // rather than going blank. Timed nodes lead (newest first); if fewer than 5 are timed, backfill from the
+    // remaining text nodes in tree order so a session with ≥5 goals always surfaces 5.
+    const named = lg.tree.filter((n) => (n.text || "").trim());
     const timed = named
       .map((n) => ({ n, t: (n.mt ?? n.t) || 0 }))
       .filter((x) => x.t > 0)

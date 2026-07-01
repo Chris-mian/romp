@@ -56,6 +56,10 @@ test("the Recent list has NO recency cutoff — it shows the last 5 even if days
   // still list what it last worked on rather than going blank once its work ages out.
   const recentBlock = RENDER.slice(RENDER.indexOf('k.textContent = "Recent"') - 1200, RENDER.indexOf('r.appendChild(k); r.appendChild(list)'));
   assert.doesNotMatch(recentBlock, /now - t [<>]=?|Date\.now\(\)[^;]*<|MAX_AGE|RECENT_WINDOW/, "no age cutoff on the Recent list");
+  // shown REGARDLESS of completion status (the user 2026-06-30): the Recent filter is text-only — it does NOT
+  // exclude done / blocked / cleared nodes, so "the 5 most recent things it did" includes finished + dismissed work
+  assert.match(RENDER, /const named = lg\.tree\.filter\(\(n\) => \(n\.text \|\| ""\)\.trim\(\)\);/);
+  assert.doesNotMatch(RENDER, /const named = lg\.tree\.filter\(\(n\) => \(n\.text \|\| ""\)\.trim\(\) && !n\.cleared\)/);
   // timed nodes lead; untimed text nodes backfill so a session with >=5 goals always surfaces 5
   assert.match(RENDER, /const untimed = named\.filter\(\(n\) => !\(\(n\.mt \?\? n\.t\) \|\| 0\)\)/);
   assert.match(RENDER, /const recent = \[\.\.\.timed, \.\.\.untimed\]\.slice\(0, 5\)/);

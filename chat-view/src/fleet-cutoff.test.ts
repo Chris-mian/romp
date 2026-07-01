@@ -75,3 +75,11 @@ test("the slider + 'Show completed' mount in the docked bar's RIGHT cluster (the
   assert.doesNotMatch(SRC, /function mountCutoff\(\)/);
   assert.match(SRC, /^mountControls\(\);$/m, "mounted at startup");
 });
+
+test("search filters WITHIN the recency window + Show-completed, it does not bypass them (the user 2026-06-30)", () => {
+  // the search branch gates by fleetVisibleRoots(sd) + the cutoff FIRST, then keeps the tops that hit
+  assert.match(SRC, /const base = fleetVisibleRoots\(roots, archRoots, sd\)\.filter\(\(r\) => \(now - nodeRecency\(r\)\) <= cutoff\);/);
+  assert.match(SRC, /visibleRoots = s\.name\.toLowerCase\(\)\.includes\(sq\) \? base : base\.filter\(\(r\) => subtreeHit\(r\.id\)\);/);
+  // the old bypass — searching over ALL roots (live + archived) ignoring the toggle + slider — is gone
+  assert.doesNotMatch(SRC, /const allRoots = roots\.concat\(archRoots\);/);
+});
