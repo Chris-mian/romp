@@ -49,6 +49,17 @@ class ProvisionalCommand(unittest.TestCase):
         card = km._provisional_card(s, "JLD", {"bg": "#fff", "fg": "#000"}, SID, True, now, store={})
         self.assertIsNotNone(card, "a real unplaced human prompt still surfaces a placeholder")
 
+    def test_a_followup_gets_no_provisional_placeholder(self):
+        # a follow-up (carries the romp-goal-id marker) files UNDER its already-reopened target goal, so a
+        # separate provisional card would just FLASH then vanish. No placeholder (the user 2026-07-01).
+        now = int(time.time())
+        body = "does the context look right?\n\n<!-- romp-goal-id: %s:g7 -->" % SID
+        s = self._session([{"type": "user", "timestamp": _iso(now - 5), "uuid": "u1", "parentUuid": None,
+                            "promptSource": "typed",
+                            "message": {"role": "user", "content": body}}])
+        card = km._provisional_card(s, "JLD", {"bg": "#fff", "fg": "#000"}, SID, True, now, store={})
+        self.assertIsNone(card, "a follow-up reopens its target goal — no separate provisional flash")
+
 
 if __name__ == "__main__":
     unittest.main()
