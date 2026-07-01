@@ -87,3 +87,13 @@ test("a postal deep-link resolves to the message's card BY data-mid, not just da
   assert.match(RENDER, /querySelector\(`\.turn\[data-mid="\$\{cssEscape\(uuid\)\}"\]`\)/,
     "scrollToAnchor resolves a postal anchor by data-mid");
 });
+
+test("a deep-link into a HIDDEN chat pane defers the land until the pane is visible (the user 2026-06-30)", () => {
+  // landActive keeps the pending anchor and re-runs once the pane shows, instead of scrolling a 0-height view
+  assert.match(RENDER, /if \(\(pendingAnchor \|\| pendingAnchorT != null\) && content\.clientHeight === 0\) \{/);
+  assert.match(RENDER, /whenChatVisible\(\(\) => \{ const c = document\.getElementById\("content"\);/);
+  // the visibility watch: ResizeObserver on #content catches the 0→height reflow, window resize as a fallback
+  assert.match(RENDER, /function whenChatVisible\(cb: \(\) => void\): void/);
+  assert.match(RENDER, /new ResizeObserver\(fire\)\.observe\(c\)/);
+  assert.match(RENDER, /window\.addEventListener\("resize", fire\)/);
+});

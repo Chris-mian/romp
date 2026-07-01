@@ -2966,8 +2966,39 @@ function showActive() {
 // Scroll/anchor landing + deep-link diagnostics + restamp, AFTER the active view's DOM is up to date —
 // run synchronously for an already-built view, or deferred (next frame) after a heavy build. Factored so
 // both paths land identically (the user 2026-06-17).
+// Deferred deep-link land: when a jump arrives while the chat pane is hidden (#content clientHeight 0), we keep
+// the anchor and re-run the land the moment the pane is next visible. The pane is toggled in the SHELL (this
+// iframe just gets un-hidden), so we watch #content's own size: a ResizeObserver catches the 0→height reflow,
+// plus a window-resize listener as belt-and-braces for the display:none-iframe edge case. Installed once; a
+// no-op until something arms `armedDeferredLand`. (the user 2026-06-30.)
+let armedDeferredLand: (() => void) | null = null;
+let visibilityWatchOn = false;
+function whenChatVisible(cb: () => void): void {
+  const c = document.getElementById("content");
+  if (c && c.clientHeight > 0) { cb(); return; }
+  armedDeferredLand = cb;
+  if (visibilityWatchOn) return;
+  visibilityWatchOn = true;
+  const fire = () => {
+    const cc = document.getElementById("content");
+    if (cc && cc.clientHeight > 0 && armedDeferredLand) { const f = armedDeferredLand; armedDeferredLand = null; f(); }
+  };
+  if (c && typeof ResizeObserver !== "undefined") new ResizeObserver(fire).observe(c);
+  window.addEventListener("resize", fire);
+}
+
 function landActive(content: HTMLElement | null, v: View): void {
   if (!content) return;
+  // DEEP-LINK INTO A HIDDEN CHAT PANE (the user 2026-06-30): a jump from the Outline/feed/timeline can arrive
+  // while the chat pane is toggled OFF (display:none → #content clientHeight 0). A scroll can't land in a
+  // zero-height view, and the code below would consume pendingAnchor anyway — so the jump silently no-ops and
+  // never re-lands when the pane comes back (the "Outline links don't work" report). Instead: KEEP the anchor
+  // and defer this land until the pane is next visible. Confirmed live: with the pane visible the same anchors
+  // land pointer-exact; only the hidden case dropped them.
+  if ((pendingAnchor || pendingAnchorT != null) && content.clientHeight === 0) {
+    whenChatVisible(() => { const c = document.getElementById("content"); const vv = activeId ? views.get(activeId) : null; if (c && vv) landActive(c, vv); });
+    return;
+  }
   sizeSpacers(v);  // the view is now VISIBLE (display set in showActive), so the spacers get a real height
                    // measurement — a tab pre-built while display:none could only fall back until now
   const att = { anchor: pendingAnchor, t: pendingAnchorT, kind: pendingAnchorKind };   // this pass's landing attempt, for diagnostics
