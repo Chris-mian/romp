@@ -30,7 +30,20 @@ test("the chip renders a pill with the cited title + a dismiss ✕", () => {
   assert.match(RENDER, /el\("div", "composer-chip"\)/);
   assert.match(RENDER, /el\("span", "composer-chip-label"\); label\.textContent = cite\.title;/);
   assert.match(RENDER, /el\("button", "composer-chip-x"\)/);
-  assert.match(RENDER, /x\.addEventListener\("click", \(\) => \{ if \(id\) removeCitation\(id\); \}\);/);
+  // ✕ dismisses but stops the click from also opening the audit preview
+  assert.match(RENDER, /x\.addEventListener\("click", \(e\) => \{ e\.stopPropagation\(\); if \(id\) removeCitation\(id\); \}\);/);
+});
+
+test("clicking the chip opens an audit preview of the exact prompt from /followup-preview (the user 2026-07-01)", () => {
+  assert.match(RENDER, /chip\.addEventListener\("click", \(\) => \{ if \(id\) openCitePreview\(id, chip\); \}\);/);
+  assert.match(RENDER, /function openCitePreview\(id: string, anchor: HTMLElement\): void/);
+  // fetches the REAL wrapped body (kernel _followup_body) with the current draft substituted, escaped as text
+  assert.match(RENDER, /"\/followup-preview\?itemId=" \+ encodeURIComponent\(cite\.itemId\) \+ "&text=" \+ encodeURIComponent\(draft\)/);
+  assert.match(RENDER, /el\("pre", "cite-preview-body"\)/);
+  assert.match(RENDER, /body\.textContent = \(d && typeof d\.body === "string" && d\.body\)/);
+  // Esc / outside-click / re-render close it
+  assert.match(RENDER, /function closeCitePreview\(\): void/);
+  assert.match(RENDER, /if \(e\.key === "Escape"\) \{ e\.preventDefault\(\); closeCitePreview\(\); \}/);
 });
 
 test("Backspace at the start of the box deletes the citation like a character", () => {

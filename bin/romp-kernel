@@ -8650,6 +8650,14 @@ class Handler(BaseHTTPRequestHandler):
                 # _usage() re-reads usage.json (the snapshot Claude Code's statusline writes) — just forced NOW
                 # instead of on the next poll, so a click surfaces the freshest on-disk snapshot immediately.
                 return self._send(200, json.dumps(_usage() or {}), "application/json", cache="no-cache")
+            if p == "/followup-preview":                      # the EXACT wrapped body a citation chip will send (the
+                # user 2026-07-01): clicking the composer chip shows this so you can AUDIT what romp is telling the
+                # model — the goal-context quote it injects + your draft + the hidden romp-goal-id marker. Built from
+                # the SAME _followup_body the send path uses, so the preview can't drift from what's actually sent.
+                iid = (q.get("itemId") or [""])[0]
+                text = (q.get("text") or [""])[0].strip()
+                body = _followup_body(iid, None, text or "‹your message will go here›") if iid else ""
+                return self._send(200, json.dumps({"body": body}), "application/json", cache="no-cache")
             if p == "/ssh-hosts":                             # ~/.ssh/config Host aliases for the attach-a-remote UI
                 return self._send(200, json.dumps({"hosts": _ssh_config_hosts()}),
                                   "application/json", cache="no-cache")
