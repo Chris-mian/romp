@@ -11,8 +11,8 @@ import * as path from "node:path";
 const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
 
 test("drafts are persisted to and reloaded from the webview's saved state", () => {
-  // persist: mirror the Map into setState, alongside (not replacing) whatever else is saved
-  assert.match(RENDER, /function persistDrafts\(\): void \{[\s\S]*setState\?\.\(\{ \.\.\.\(vscodeApi\.getState\?\.\(\) \|\| \{\}\), drafts: Object\.fromEntries\(drafts\) \}\)/);
+  // persist: mirror the Map into setState, alongside (not replacing) whatever else is saved — plus citations
+  assert.match(RENDER, /function persistDrafts\(\): void \{[\s\S]*setState\?\.\(\{ \.\.\.\(vscodeApi\.getState\?\.\(\) \|\| \{\}\), drafts: Object\.fromEntries\(drafts\),[\s\S]*citations: Object\.fromEntries\(composerCitations\) \}\)/);
   // reload: hydrate the Map from saved state at startup (string values only)
   assert.match(RENDER, /const saved = \(\(vscodeApi\?\.getState\?\.\(\) \|\| \{\}\) as any\)\.drafts;/);
   assert.match(RENDER, /for \(const \[k, v\] of Object\.entries\(saved\)\) if \(typeof v === "string"\) drafts\.set\(k, v\);/);
@@ -32,10 +32,10 @@ test("the post-reload restore is one-shot and never clobbers live typing", () =>
 });
 
 test("every draft mutation keeps the persisted copy in sync (switch / send / close)", () => {
-  // tab switch stashes the leaving tab's draft → persist
-  assert.match(RENDER, /ta\.value = drafts\.get\(id\) \?\? "";\s*\n\s*growComposer\(ta\);\s*\n\s*persistDrafts\(\);/);
+  // tab switch stashes the leaving tab's draft (and renders the entering tab's citation chip) → persist
+  assert.match(RENDER, /ta\.value = drafts\.get\(id\) \?\? "";\s*\n\s*growComposer\(ta\);\s*\n\s*renderComposerChips\(id\);[\s\S]*?persistDrafts\(\);/);
   // sending clears the draft → persist
   assert.match(RENDER, /drafts\.delete\(activeId\); persistDrafts\(\);\s*\/\/ sent/);
-  // closing a tab drops its draft → persist
-  assert.match(RENDER, /drafts\.delete\(id\); persistDrafts\(\);/);
+  // closing a tab drops its draft AND its citation → persist
+  assert.match(RENDER, /drafts\.delete\(id\); composerCitations\.delete\(id\); persistDrafts\(\);/);
 });

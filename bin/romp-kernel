@@ -1562,11 +1562,13 @@ def _drive(msg, client):
             be.send(sid, cmd)
     elif t == "askFollowUp":
         iid = str(msg.get("itemId") or "")
-        # tmux pastes a QUOTED body (the ask being answered → the recipient has context); the SDK queue takes
-        # the raw text. nudge:true (the canned Nudge button) → romp-authored gray bubble; a typed follow-up →
-        # blue human bubble (the user 2026-06-20).
+        # QUOTE the ask being followed up above the user's text so the recipient has context, and ride the
+        # romp-goal-id marker along for the reopen + the chat's ↩ Follow-up header — for BOTH backends now
+        # (the user 2026-07-01): the SDK path used to take raw text, so an SDK follow-up got no context quote
+        # and no header; wrapping unifies it (the SDK `send` is a plain text send, no injection of its own).
+        # nudge:true (the canned Nudge button) → romp-authored gray bubble; a typed follow-up → blue human.
         body = (_followup_body(iid, msg.get("title"), msg["text"], injected=bool(msg.get("nudge")))
-                if (iid and be is _TMUX) else str(msg["text"]))
+                if iid else str(msg["text"]))
         be.send(sid, body)
         # Optimistic echo for a tmux follow-up/nudge (the user 2026-06-29): without it, a follow-up sent while
         # the session is WORKING showed as a queued bubble that VANISHED in the dequeue→landed gap (the queue-op
@@ -6506,14 +6508,43 @@ def _focus_kind(anchor):
     return "user" if anchor == "prompt" else None
 
 
+def _cite_for(item_id):
+    """A CITATION for a feed card element the user clicked into the chat (the user 2026-07-01): {itemId,
+    title} when item_id resolves to a LIVE goal node, else None. The chat seeds a dismissible composer chip
+    from it; sending with the chip routes through askFollowUp so the goal's context rides along and the goal
+    reopens (done→working) — exactly the follow-up path, made granular (a sub-goal cites itself) + automatic.
+    A CLEARED goal is archived out of the live store → not found → None, so a cleared card never seeds a chip
+    (and its follow-up would no-op anyway) — matching "move it back to working only if it's not cleared"."""
+    iid = str(item_id or "")
+    if not iid:
+        return None
+    sid = iid.rsplit(":", 1)[0]
+    try:
+        nd = jd.load_goals(sid).get("nodes", {}).get(iid)
+    except Exception:
+        nd = None
+    if not nd or nd.get("cleared"):
+        return None
+    title = str(nd.get("text", "")).strip()
+    if not title:
+        return None
+    return {"itemId": iid, "title": title}
+
+
 def _show_on_timeline_focus(msg):
     """A feed showOnTimeline tap → the chat `focus` message. anchorUuid (kernel 996ebd7) is the EXACT turn
     uuid the chat lands on (scrollToAnchor) — fully id-based deep-link, no nearest-time miss. There is no
     time fallback anymore (scrollToNearestT deleted, link_audit 3d0a80d): t + the "prompt"/"work" anchor are
     kept only to pick the turn KIND for resolution; if the uuid can't resolve the chat honest-fails rather
-    than landing on an unrelated nearest-time turn. (the user 2026-06-17, via rompinfra.)"""
-    return {"type": "focus", "id": msg["sid"], "anchor": msg.get("anchorUuid"),
-            "anchorT": msg.get("t"), "anchorKind": _focus_kind(msg.get("anchor"))}
+    than landing on an unrelated nearest-time turn. (the user 2026-06-17, via rompinfra.)
+    `cite` (the user 2026-07-01): a click that resolves to a live goal node also seeds a dismissible citation
+    chip in the composer (see _cite_for) → a follow-up without the explicit Follow-up button."""
+    f = {"type": "focus", "id": msg["sid"], "anchor": msg.get("anchorUuid"),
+         "anchorT": msg.get("t"), "anchorKind": _focus_kind(msg.get("anchor"))}
+    cite = _cite_for(msg.get("itemId"))
+    if cite:
+        f["cite"] = cite
+    return f
 
 
 def _request_feed_detail(item_id, generate):
