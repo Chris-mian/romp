@@ -8198,13 +8198,14 @@ def _landing():
             # remote-kernels (federation): a LAN glyph — one device wired down a bus to two below. Goes
             # accent-blue (.on) while a remote is connected. Below help, above settings (the user 2026-06-30).
             "<div class=rail-act id=rail-net title='Remote kernels' aria-label='Remote kernels'>"
-            "<svg viewBox='0 0 16 16' width=18 height=18 overflow=visible>"
-            # glyph centered with ~2.5px margin top/bottom so the rail can't clip it (the user 2026-06-30:
-            # it was edge-to-edge vertically and read as a single square because the rail cropped the rest).
-            "<path d='M8 6.5 L8 8 M3.5 9.5 L3.5 8 L12.5 8 L12.5 9.5' fill=none stroke=currentColor stroke-width=1 stroke-linejoin=round/>"
-            "<rect x=6 y=2.5 width=4 height=4 rx=0.5 fill=currentColor/>"
-            "<rect x=1.5 y=9.5 width=4 height=4 rx=0.5 fill=currentColor/>"
-            "<rect x=10.5 y=9.5 width=4 height=4 rx=0.5 fill=currentColor/></svg></div>"
+            # A network tree: one node wired down a bus to two below. ATTRIBUTES MUST BE QUOTED — unquoted
+            # `fill=currentColor/>` HTML-parses as the invalid color `currentColor/`, so the filled squares
+            # render INVISIBLE and only the connector lines show (the whole "single square" saga, 2026-06-30).
+            "<svg viewBox='0 0 16 16' width='18' height='18'>"
+            "<path d='M8 5 L8 8 M3 11 L3 8 L13 8 L13 11' fill='none' stroke='currentColor' stroke-width='1' stroke-linejoin='round'/>"
+            "<rect x='6' y='1' width='4' height='4' rx='0.6' fill='currentColor'/>"
+            "<rect x='1' y='11' width='4' height='4' rx='0.6' fill='currentColor'/>"
+            "<rect x='11' y='11' width='4' height='4' rx='0.6' fill='currentColor'/></svg></div>"
             "<div class=rail-act id=rail-gear title=Settings aria-label=Settings>⛭</div>"   # ⛭ (gear-without-hub): the bigger, bolder gear the user prefers (restored 2026-06-29)
             "</div>"   # /.rail-acts
             "</div>"
