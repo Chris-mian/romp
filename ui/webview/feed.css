@@ -645,19 +645,20 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
   display: inline-flex; align-items: center; justify-content: center; align-self: center;
 }
 /* AUTHORITATIVE tier (the user 2026-07-01): a node that mirrors the agent's OWN to-do item keeps the
-   EXACT ordinary mark — the blue ✓ disc when checked off, the hollow ring when not — and just gets an
-   extra WHITE ring around the edge, so an agent-asserted item reads as a bolder, ringed version of the
-   normal mark. Applied on the card checklist + the modal tree. */
+   EXACT ordinary mark and is emphasised with WHITE — but tight, NOT a big ring (the user found the fat
+   ring too large / too filled-looking). NOT-checked → the hollow ring recoloured a BOLD WHITE stroke at
+   the SAME size (no growth, still clearly hollow); checked → the blue ✓ disc + a thin 1px white halo.
+   Applied on the card checklist + the modal tree. */
 /* card checklist: an open item's mark is normally a plain ○ glyph, not a disc — render it as the SAME
-   hollow 13px ring the modal uses so the white ring hugs a circle (the "○" text is hidden; border = ring). */
+   hollow 13px ring the modal uses, but a bold white stroke (the "○" text is hidden; border = the ring). */
 .fcheck.auth-open .fcheck-mark {
   width: 13px; height: 13px; min-width: 13px; box-sizing: border-box; align-self: center;
   display: inline-flex; align-items: center; justify-content: center;
-  border-radius: 50%; border: 1.5px solid var(--dim); background: transparent; color: transparent; font-size: 0;
+  border-radius: 50%; border: 2px solid #fff; background: transparent; color: transparent; font-size: 0;
 }
 .fcheck.auth-open .fcheck-text { color: var(--fg); }   /* a live agent-owed item stays full-weight, never dimmed */
-.fcheck.auth-open .fcheck-mark, .fcheck.auth-done .fcheck-mark,
-.ftree-node.auth-open .ftree-mark, .ftree-node.auth-done .ftree-mark { box-shadow: 0 0 0 1.5px #fff; }
+.ftree-node.auth-open .ftree-mark { border-color: #fff; border-width: 2px; }   /* modal open ring → bold white, same size */
+.fcheck.auth-done .fcheck-mark, .ftree-node.auth-done .ftree-mark { box-shadow: 0 0 0 1px #fff; }   /* tight white halo */
 /* a card sub-goal is clickable just like the modal tree node (the user 2026-06-17): the checkbox + text are
    separate links. Per-ZONE hover highlight (.lz-hl, JS-toggled) — a halo on the mark, a fill on the text. */
 .fcheck .lz-nav { cursor: pointer; }
