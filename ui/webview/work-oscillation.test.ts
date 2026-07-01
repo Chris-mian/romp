@@ -14,8 +14,12 @@ test("chat working chip breathes on the 1.5s clock (2× the old 3s)", () => {
   assert.match(CSS, /\.chip-pulse \{[^}]*animation: chip-pulse 1\.5s/);
 });
 
-test("timeline working chip SMIL breathe is 1.5s too", () => {
-  assert.match(TIMELINE, /attributeName: 'fill'[^)]*dur: '1\.5s'/);
+test("timeline working chip breathes on the SAME 1.5s clock — a persistent CSS overlay (the user 2026-07-01)", () => {
+  // was an in-SVG SMIL <animate> that stuttered at the redraw cadence; now a compositor-driven overlay div,
+  // same 1.5s ease-in-out-sine + same black↔teal tones as the chat chip's .chip-pulse
+  assert.match(TIMELINE, /animation:romp-tl-workpulse 1\.5s cubic-bezier\(0\.37,0,0\.63,1\) infinite/);
+  assert.match(TIMELINE, /@keyframes romp-tl-workpulse\{0%,100%\{color:#1a1a1a\}50%\{color:#0d9488\}\}/);
+  assert.doesNotMatch(TIMELINE, /attributeName: 'fill'/, "no per-draw-recreated SMIL breathe");
 });
 
 test("working DOTS are SOLID — no animation (oscillation was distracting)", () => {

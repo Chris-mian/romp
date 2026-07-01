@@ -25,10 +25,16 @@ test("the compacting battery sweep is a persistent CSS-animated overlay div, not
   assert.doesNotMatch(SRC, /begin: cbeg, repeatCount: 'indefinite'/);   // the old recreated-each-draw SMIL sweep is gone
 });
 
-test("the working-chip breathe still resumes at its phase on rebuild (negative SMIL begin from the SVG doc time)", () => {
-  assert.match(SRC, /_smilBegin\(dur\) \{[\s\S]*?getCurrentTime\(\)[\s\S]*?'-' \+ \(ct % dur\)\.toFixed\(3\) \+ 's'/);
-  assert.match(SRC, /dur: '1\.5s', begin: this\._smilBegin\(1\.5\)/);          // working-chip breathe
-  assert.doesNotMatch(SRC, /begin: '0s', repeatCount: 'indefinite'/);          // the snap-back form is gone
+test("the working-chip breathe is a persistent CSS overlay div too (no in-SVG SMIL) — the user 2026-07-01", () => {
+  // same fix as the compacting sweep: a persistent overlay label the compositor breathes, repositioned by draw()
+  assert.match(SRC, /this\._workLabels = new Map\(\)/);
+  assert.match(SRC, /@keyframes romp-tl-workpulse\{0%,100%\{color:#1a1a1a\}50%\{color:#0d9488\}\}/);
+  assert.match(SRC, /animation:romp-tl-workpulse 1\.5s cubic-bezier\(0\.37,0,0\.63,1\) infinite/);
+  assert.match(SRC, /this\._positionWorkLabel\(s\.id,/);
+  assert.match(SRC, /this\._reapWorkLabels\(workSeen\)/);
+  // the in-SVG SMIL breathe (and its phase-resync helper method) are gone
+  assert.doesNotMatch(SRC, /_smilBegin\(dur\) \{/, "the _smilBegin helper method is removed");
+  assert.doesNotMatch(SRC, /attributeName: 'fill'/);
 });
 
 test("focusing the wrap on mousedown uses preventScroll (so the first % click isn't eaten)", () => {

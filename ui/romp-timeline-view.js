@@ -379,8 +379,8 @@ class TimelinePanel {
     // "compression" sweep is POSITIONAL motion, and as a SMIL <rect> it lived inside the SVG which draw()
     // WIPES + recreates every poll AND every live-edge rAF frame — so the bar could only ever animate as
     // smoothly as that irregular, heavy redraw cadence (visibly jumpy), unlike the chat tab's bar which is a
-    // CSS animation on a PERSISTENT DOM node the compositor drives independently of JS. _smilBegin only fixed
-    // the PHASE on rebuild, not the cadence. So the sweep now rides HTML divs in this overlay layer that draw()
+    // CSS animation on a PERSISTENT DOM node the compositor drives independently of JS. A SMIL phase-resync only
+    // fixed the PHASE on rebuild, not the cadence. So the sweep now rides HTML divs in this overlay layer that draw()
     // REPOSITIONS (cheap, never restarts a CSS animation) but never destroys → it glides on the compositor like
     // the chat. The SVG keeps only the static battery box + the transparent /compact click target. The wrap is
     // 1:1 with the SVG viewBox (viewBox '0 0 W H', width=W=wrap.clientWidth), so overlay px == SVG user coords.
@@ -390,6 +390,7 @@ class TimelinePanel {
     this._compactLayer.style.cssText = 'position:absolute;inset:0;pointer-events:none;overflow:hidden';
     this.wrap.appendChild(this._compactLayer);
     this._compactBars = new Map();   // sid -> persistent scan-bar div (CSS-animated; repositioned per draw)
+    this._workLabels = new Map();    // sid -> persistent WORKING-badge label div (CSS color-pulse; repositioned per draw)
     try {
       if (typeof document !== 'undefined' && document.head && !document.getElementById('tl-compact-css')) {
         const cst = document.createElement('style'); cst.id = 'tl-compact-css';
@@ -401,6 +402,18 @@ class TimelinePanel {
           + '@keyframes romp-tl-compact{0%{transform:scaleX(1);opacity:0}10%{transform:scaleX(1);opacity:1}'
           + '90%{transform:scaleX(0.022);opacity:1}100%{transform:scaleX(0.022);opacity:0}}';
         document.head.appendChild(cst);
+      }
+      // WORKING-badge label pulse: black↔teal on the SAME 1.5s ease-in-out-sine clock as the chat chip's
+      // .chip-pulse (the user 2026-07-01). A PERSISTENT overlay div the compositor breathes independently of
+      // draw() — replaces the per-<text> SMIL <animate>, which stuttered/truncated because the SVG wipe
+      // recreated it at the (irregular) redraw cadence. draw() only repositions it (see _positionWorkLabel).
+      if (typeof document !== 'undefined' && document.head && !document.getElementById('tl-work-css')) {
+        const wst = document.createElement('style'); wst.id = 'tl-work-css';
+        wst.textContent = '.romp-tl-work-label{position:absolute;pointer-events:none;white-space:nowrap;'
+          + 'font-weight:700;letter-spacing:0.03em;transform:translate(-50%,-50%);will-change:color;'
+          + 'animation:romp-tl-workpulse 1.5s cubic-bezier(0.37,0,0.63,1) infinite}'
+          + '@keyframes romp-tl-workpulse{0%,100%{color:#1a1a1a}50%{color:#0d9488}}';
+        document.head.appendChild(wst);
       }
     } catch (e) {}
 
@@ -1525,15 +1538,10 @@ class TimelinePanel {
   // Click the context battery → send `/compact` to that session's terminal. VS Code: hand the session
   // name to the extension host (no Node in the webview); Obsidian: shell tmux directly. Types the slash
   // command literally then submits it. (Targets the tmux session by name, like romp-postal-service's inject.)
-  // SMIL `begin` offset so a REPEATING animation resumes at its current phase when draw() recreates its
-  // element every poll — instead of snapping back to 0, the visible "jumping/hiccup" (the user 2026-06-29).
-  // begin='0s' was ASSUMED to ride the persistent SVG doc-timeline, but browsers restart a freshly-INSERTED
-  // <animate> from zero; an explicit NEGATIVE begin = -(docTime % dur) makes it start mid-cycle, at exactly
-  // the phase the previous (destroyed) element was at → seamless across the per-poll rebuild.
-  _smilBegin(dur) {
-    try { const ct = (this.svg && this.svg.getCurrentTime) ? this.svg.getCurrentTime() : 0; return '-' + (ct % dur).toFixed(3) + 's'; }
-    catch (e) { return '0s'; }
-  }
+  // (Removed _smilBegin: the working-badge breathe no longer uses an in-SVG SMIL <animate> — a phase resync
+  // couldn't fix the CADENCE, so even phase-correct it stuttered/truncated at the irregular redraw rate. It's
+  // now a persistent CSS-animated overlay div (see _positionWorkLabel), like the compacting sweep — the user
+  // 2026-07-01.)
   // SVG-user-coords → overlay (wrap) px. The svg renders at width/height = its viewBox on DESKTOP (1:1), but on
   // TOUCH the CSS scales it (svg{width:100%;height:auto}) and overflow-x:auto can scroll it — so map through the
   // svg's ACTUAL rendered rect vs its viewBox, and offset by the svg's position within the wrap (handles scroll).
@@ -1574,6 +1582,32 @@ class TimelinePanel {
     if (!this._compactBars) return;
     for (const [sid, bar] of this._compactBars) {
       if (!keep || !keep.has(sid)) { try { bar.remove(); } catch (e) {} this._compactBars.delete(sid); }
+    }
+  }
+  // Create-or-reposition this sid's PERSISTENT working-badge label div (CSS color-pulse set once on creation,
+  // never touched again → the compositor breathes it continuously, smooth regardless of the redraw cadence).
+  // draw() only nudges its position/text/size here. Centered on (cx, cy) in SVG user coords via translate(-50%).
+  // (Mirrors _positionCompactBar; the chat chip's .chip-pulse gets the same 1.5s clock. The user 2026-07-01.)
+  _positionWorkLabel(sid, cx, cy, text) {
+    if (!this._compactLayer) return;
+    let lab = this._workLabels.get(sid);
+    if (!lab) {
+      lab = document.createElement('div');
+      lab.className = 'romp-tl-work-label';
+      this._compactLayer.appendChild(lab);
+      this._workLabels.set(sid, lab);
+    }
+    if (lab.textContent !== text) lab.textContent = text;
+    const m = this._ovScaleNow();
+    lab.style.left = (m.ox + cx * m.sx) + 'px';
+    lab.style.top = (m.oy + cy * m.sy) + 'px';
+    lab.style.fontSize = (BADGE_FS * m.sy) + 'px';
+  }
+  // Remove working-label divs for sids no longer working (or scrolled off / loader up) this draw.
+  _reapWorkLabels(keep) {
+    if (!this._workLabels) return;
+    for (const [sid, lab] of this._workLabels) {
+      if (!keep || !keep.has(sid)) { try { lab.remove(); } catch (e) {} this._workLabels.delete(sid); }
     }
   }
   _compactSession(name) {
@@ -1731,7 +1765,7 @@ class TimelinePanel {
     // "broken", so suppress the SVG entirely and show the loader until applyBars sets _barsLoaded. (Data that
     // already carries turns — a full one-shot, or a direct draw() — counts as loaded even without the flag.)
     const barsReady = this._barsLoaded || !!(data.turns && Object.keys(data.turns).length);
-    if (!barsReady) { this._showLoader(true); this._reapCompactBars(null); return; }   // loader up → no lanes, drop any scan-bars
+    if (!barsReady) { this._showLoader(true); this._reapCompactBars(null); this._reapWorkLabels(null); return; }   // loader up → no lanes, drop any overlays
     this._showLoader(false);
     const svg = this.svg, M = this.M;
     while (svg.firstChild) svg.removeChild(svg.firstChild);
@@ -1907,6 +1941,7 @@ class TimelinePanel {
     const dagOrHover = (id) => !!id && ((dag && dag.events.has(id)) || (hoverSet && hoverSet.has(id)));
     const dagOrHoverMsg = (id) => !!id && ((dag && dag.msgs.has(id)) || (hoverSet && hoverSet.has(id)));
     const compactSeen = new Set();   // sids whose compacting scan-bar is live this draw → reconcile the overlay after
+    const workSeen = new Set();      // sids whose WORKING label overlay is live this draw → reconcile after (persistent pulse)
     vis.forEach((s, i) => {
       const y = laneY(i);
       // perceptual idle fade: faded lanes blend their colors toward bgRGB to a uniform low luminance.
@@ -2167,19 +2202,20 @@ class TimelinePanel {
       if (bdg) {
         const h = 14, padX = 6, w = Math.ceil(this.badgeWidth(bdg.label)) + padX * 2, by = y - h / 2;
         const chipBg = el('rect', { x: chipColX, y: by, width: w, height: h, rx: h / 2, fill: F(bdg.bg), 'pointer-events': 'none' }); svg.appendChild(chipBg);
-        // WORKING chip letters are a SOLID color that breathes between two tones on a sine ease (mirrors
-        // romp-chat-view's .chip-pulse); other chips keep their solid fg. Working sessions are never faded.
-        const WK_A = '#1a1a1a', WK_B = '#0d9488';   // near-black ↔ teal, both contrast the yellow pill
-        const chipFill = s.state === 'working' ? WK_A : F(bdg.fg);
-        const bt = el('text', { x: chipColX + w / 2, y: y + 3, 'text-anchor': 'middle', fill: chipFill, 'font-size': BADGE_FS, 'font-weight': 700, 'pointer-events': 'none' });
-        bt.setAttribute('letter-spacing', '0.03em'); bt.textContent = bdg.label;
         if (s.state === 'working') {
-          // calcMode=spline keySplines 0.37 0 0.63 1 = ease-in-out-sine; begin='0s' rides the persistent
-          // SVG doc-time phase so the ~1s poll rebuild resumes mid-cycle, seamless.
-          bt.appendChild(el('animate', { attributeName: 'fill', values: WK_A + ';' + WK_B + ';' + WK_A, keyTimes: '0;0.5;1', calcMode: 'spline', keySplines: '0.37 0 0.63 1;0.37 0 0.63 1', dur: '1.5s', begin: this._smilBegin(1.5), repeatCount: 'indefinite' }));   // 1.5s = 2× the old 3s; begin = -(docTime%dur) so the per-poll rebuild resumes mid-cycle (the user 2026-06-16/29)
+          // WORKING label breathes black↔teal on the 1.5s ease-in-out-sine clock, exactly like the chat chip's
+          // .chip-pulse. It rides a PERSISTENT CSS-animated overlay div (compositor-driven) that draw() only
+          // repositions — NOT a per-<text> SMIL <animate>, which stuttered/truncated because the SVG wipe
+          // recreated it at the (irregular) redraw cadence (the user 2026-07-01). Working sessions are never
+          // faded, so no fade handling needed here.
+          this._positionWorkLabel(s.id, chipColX + w / 2, y, bdg.label);
+          workSeen.add(s.id);
+        } else {
+          const bt = el('text', { x: chipColX + w / 2, y: y + 3, 'text-anchor': 'middle', fill: F(bdg.fg), 'font-size': BADGE_FS, 'font-weight': 700, 'pointer-events': 'none' });
+          bt.setAttribute('letter-spacing', '0.03em'); bt.textContent = bdg.label;
+          svg.appendChild(bt);
+          if (s.faded) { fadedEls.push({ el: chipBg, full: bdg.bg, faded: F(bdg.bg) }); fadedEls.push({ el: bt, full: bdg.fg, faded: F(bdg.fg) }); }
         }
-        svg.appendChild(bt);
-        if (s.faded) { fadedEls.push({ el: chipBg, full: bdg.bg, faded: F(bdg.bg) }); fadedEls.push({ el: bt, full: bdg.fg, faded: F(bdg.fg) }); }
       }
       // context-window battery bar (matches the chat-view): faint box + level-colored fill (width ∝ pct)
       // + "N%" inside. While COMPACTING it instead shows a rainbow scan-bar (no %), the live cue.
@@ -2223,6 +2259,7 @@ class TimelinePanel {
       // signals an undelivered/waiting message between sessions, so the emoji was redundant.)
     });
     this._reapCompactBars(compactSeen);   // drop overlay scan-bars for lanes no longer compacting / off-screen
+    this._reapWorkLabels(workSeen);        // drop overlay WORKING labels for lanes no longer working / off-screen
 
     // obstacles for routing — at each event's process-start (a pending event rides `now` via execAt/startAt)
     const obstacles = [];
