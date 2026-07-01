@@ -8925,6 +8925,9 @@ class Handler(BaseHTTPRequestHandler):
             _auto_nudge_tick(int(time.time()), _tmux_sessions())   # act immediately on turn-on (don't wait 4s)
         elif msg and msg.get("type") == "askClear" and msg.get("itemId"):
             _clear_ask(msg["itemId"])
+            # a cleared card drops any composer citation chip pointing at it (the user 2026-07-01) — the goal
+            # is gone, so following up on it makes no sense; the chat removes a matching chip.
+            _send_to_app("chat", {"type": "dropCitation", "itemId": str(msg["itemId"])})
             _push_all()                        # reflect the clear on every feed client now
         elif msg and msg.get("type") == "nodeOverride" and msg.get("sid") and msg.get("nodeId"):
             # modal surgical override: cross a node off (op:resolve → nodeComplete). Other ops can
@@ -8934,6 +8937,7 @@ class Handler(BaseHTTPRequestHandler):
         elif msg and msg.get("type") == "clearAll":
             d = build_feed(int(time.time()))
             _clear_all([a["itemId"] for a in d["asks"]] + [c["itemId"] for c in d["items"]])
+            _send_to_app("chat", {"type": "dropCitationsAll"})   # every card cleared → drop every composer chip
             _push_all()
         elif msg and msg.get("type") == "undoClear":
             _undo_clear()
