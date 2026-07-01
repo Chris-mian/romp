@@ -725,6 +725,21 @@ class SdkSession:
         while not self.ended:
             self._wake.clear()
             self._reconnect = False
+            # RECONCILE INFLIGHT ACROSS A RECONNECT (the user 2026-07-01: "switch the model on a new session
+            # → it says working indefinitely"). A reconnect abandons the previous client; a turn it left in
+            # flight can NEVER get its ResultMessage on the new connection (that client, and its receive loop,
+            # are gone) — so inflight, and the "working" signal it drives, would be stranded elevated FOREVER.
+            # request_reconnect defers while inflight>0, but a race (it fired at inflight==0, then the input
+            # generator started a turn before the teardown ran) can still leave a turn stranded here. At the
+            # TOP of the loop no client is connected, so nothing can legitimately be in flight: settle it to
+            # idle. A not-yet-STARTED _pending turn survives (it was never fed to the dead client) and the new
+            # inputs() re-feeds it, re-stamping "working". No-op on the first connect and on a clean reconnect
+            # (inflight already 0). Event-based on the reconnect itself, not a time/age heuristic.
+            if self.inflight:
+                self.inflight = 0
+                self._interrupted = False
+                append_state(self.backend.state_dir, self.sid, "waiting")
+                self.backend._poke()
             opts = self.backend._options(self, ClaudeAgentOptions)
             async with ClaudeSDKClient(options=opts) as client:
                 self.client = client

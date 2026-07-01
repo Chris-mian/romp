@@ -1411,5 +1411,86 @@ class InterruptWithQueue(unittest.TestCase):
                          "still 'waiting' — inflight held, not double-counted")
 
 
+@unittest.skipUnless(_HAVE_SDK, "claude_agent_sdk not installed")
+class ReconnectReconcilesInflight(unittest.TestCase):
+    """A reconnect abandons the previous client; a turn it left IN FLIGHT can never get its ResultMessage on
+    the new connection (that client and its receive loop are gone), so inflight — and the 'working' signal it
+    drives — would be stranded elevated FOREVER: the session reads 'working' indefinitely though it's idle
+    (the user 2026-07-01: "start a new session, immediately switch the model → the model switches but then it
+    says it's working indefinitely, when it just changed the model and is ready"). request_reconnect defers
+    while inflight>0, but a race (it fired at inflight==0, then the input generator started a turn before the
+    teardown ran) still strands one. The reconnect must reconcile inflight to idle.
+      fix : after the reconnect, inflight == 0 and the session reads 'waiting'.
+      bug : inflight stays 1 across the reconnect → snapshot 'working' forever."""
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self._orig = _sdk.ClaudeSDKClient
+        import asyncio as _aio
+
+        class StallClient:
+            instances = []
+            received = []                  # turn texts actually fed to the SDK, in order
+
+            def __init__(self, options=None, transport=None):
+                self.options = options
+                self._turnq = _aio.Queue()
+                StallClient.instances.append(self)
+
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
+
+            async def query(self, prompt, session_id="default"):
+                async for turn in prompt:
+                    await self._turnq.put(turn)
+
+            async def interrupt(self): pass
+            async def set_model(self, model=None): pass
+            async def get_context_usage(self): return {"percentage": 2, "model": "claude-x"}
+
+            async def receive_messages(self):
+                yield _sdk.SystemMessage("init", {"session_id": self.options.session_id or "fsid"})
+                while True:
+                    turn = await self._turnq.get()
+                    StallClient.received.append(turn["message"]["content"][0]["text"])
+                    await _aio.sleep(3600)           # stall this turn forever (never a ResultMessage)
+
+        _sdk.ClaudeSDKClient = StallClient
+        self.Fake = StallClient
+        StallClient.instances = []
+        StallClient.received = []
+        self.backend = sb.SdkBackend(self.d, "/bin/true", lambda *a, **k: None)
+
+    def tearDown(self):
+        _sdk.ClaudeSDKClient = self._orig
+
+    def _wait(self, pred, timeout=6.0):
+        end = time.time() + timeout
+        while time.time() < end:
+            if pred():
+                return True
+            time.sleep(0.01)
+        return False
+
+    def test_reconnect_settles_a_turn_stranded_by_the_teardown(self):
+        sid = self.backend.spawn("recon", self.d)
+        self.backend.send(sid, "A")                              # first turn → inflight 1, state 'working'
+        self.assertTrue(self._wait(lambda: self.Fake.received == ["A"]), "A never reached the SDK (in flight)")
+        s = self.backend.sessions[sid]
+        self.assertEqual(s.inflight, 1)
+        self.assertEqual(s.snapshot()["state"], "working", "the in-flight turn reads 'working'")
+        # Force a reconnect WHILE the turn is in flight — models the race where request_reconnect fired at
+        # inflight==0 but the input generator started a turn before _amain tore the client down.
+        s.loop.call_soon_threadsafe(lambda: (setattr(s, "_reconnect", True), s._wake_set()))
+        self.assertTrue(self._wait(lambda: len(self.Fake.instances) >= 2), "the reconnect did not rebuild the client")
+        self.assertTrue(self._wait(lambda: s.inflight == 0),
+                        "inflight must reconcile to 0 across the reconnect (else 'working' is stranded forever)")
+        self.assertEqual(s.snapshot()["state"], "waiting",
+                         "idle on the new connection reads 'waiting', not a stranded 'working'")
+        self.assertEqual(sb.last_state(self.d, sid).get("state"), "waiting",
+                         "the state log agrees — else snapshot's last_state branch re-reads the stale 'working'")
+        self.backend.kill(sid)
+
+
 if __name__ == "__main__":
     unittest.main()
