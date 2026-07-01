@@ -20,6 +20,7 @@ import { delegate } from "./actions";
 import { prebuildPlan, type ViewState } from "./prebuild";
 import { reconcileTabOrder } from "./tab-order";
 import { numberDiff, type DiffRow } from "./diff-lines";
+import { parseAgentNotif, type AgentNotif } from "./agent-notif";
 
 for (const [name, lang] of Object.entries({
   bash, sh: bash, shell: bash, python, py: python, javascript, js: javascript,
@@ -405,6 +406,22 @@ function foldable(label: string, content: HTMLElement, key?: string): HTMLElemen
   wrap.appendChild(head);
   wrap.appendChild(content);
   return wrap;
+}
+
+// Render an agent's completion (<task-notification>) as an informative, collapsed card: the agent name +
+// status on the fold head, its final message (markdown) as the body — no raw XML, no internal ids (the user
+// 2026-06-30). The pure parse lives in agent-notif.ts (testable); this owns the DOM.
+function renderAgentNotif(a: AgentNotif, key?: string): HTMLElement {
+  const body = el("div", "agent-notif-body");
+  if (a.result) {
+    const m = el("div", "agent-notif-md md"); m.innerHTML = md(a.result); highlight(m); body.appendChild(m);
+  } else {
+    const p = el("div", "agent-notif-summary"); p.textContent = a.summary; body.appendChild(p);
+  }
+  const head = `🤖 ${a.label} · ${a.status || "returned"}`;
+  const f = foldable(head, body, key);
+  f.classList.add("agent-notif-fold");
+  return f;
 }
 
 // ---- path-source pasted images ----
@@ -805,12 +822,22 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
       turn.appendChild(bubble);
     }
     if (ev.reminders && ev.reminders.length) {
-      const body = el("div", "reminder-body");
-      for (const r of ev.reminders) body.appendChild(preEl(r));
-      const n = ev.reminders.length;
-      const f = foldable(`ⓘ ${n} system reminder${n > 1 ? "s" : ""}`, body, ev.uuid ? "rem:" + ev.uuid : undefined);
-      f.classList.add("reminder-fold");
-      turn.appendChild(f);
+      // A backgrounded agent's <task-notification> gets its OWN informative card (name + status + result);
+      // everything else stays a plain "ⓘ N system reminders" fold (the user 2026-06-30).
+      const plain: string[] = [];
+      ev.reminders.forEach((r, i) => {
+        const a = parseAgentNotif(r);
+        if (a) turn.appendChild(renderAgentNotif(a, ev.uuid ? "agn:" + ev.uuid + ":" + i : undefined));
+        else plain.push(r);
+      });
+      if (plain.length) {
+        const body = el("div", "reminder-body");
+        for (const r of plain) body.appendChild(preEl(r));
+        const n = plain.length;
+        const f = foldable(`ⓘ ${n} system reminder${n > 1 ? "s" : ""}`, body, ev.uuid ? "rem:" + ev.uuid : undefined);
+        f.classList.add("reminder-fold");
+        turn.appendChild(f);
+      }
     }
     return turn;
   }
