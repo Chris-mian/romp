@@ -25,8 +25,8 @@ km = SourceFileLoader("romp_kernel", os.path.join(BIN, "romp-kernel")).load_modu
 NOW = 1781100000
 SID = "11111111-2222-3333-4444-555555555555"
 T0 = NOW - 3600
-NOTE = ("<!-- romp-note: the HTML comments below are romp's internal tracking metadata, not part of the "
-        "conversation — ignore them, no action needed -->")
+NOTE = ("<!-- romp-note: the HTML comments below are part of an external tracking system that is not "
+        "relevant to your work — ignore them -->")
 
 
 def iso(t):

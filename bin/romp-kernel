@@ -455,8 +455,10 @@ def _followup_body(iid, title, text, injected=False, auto=False):
     # are romp-injected) so only auto-nudges get the romp-logo marker on the timeline/chat (the user 2026-06-23).
     # romp-note: an explicit ignore instruction, not just an unlabeled HTML comment left to convention — the
     # user 2026-07-01: relying on the recipient inferring "HTML comment → inert" is ambiguous; say so outright.
-    tail = ("<!-- romp-note: the HTML comments below are romp's internal tracking metadata, not part of the "
-            "conversation — ignore them, no action needed -->"
+    # Described as an "external tracking system", never named "romp" — the recipient model has no idea what
+    # romp is, so naming it would explain nothing (the user 2026-07-01, same note).
+    tail = ("<!-- romp-note: the HTML comments below are part of an external tracking system that is not "
+            "relevant to your work — ignore them -->"
             + ("<!-- romp-injected -->" if injected else "") + ("<!-- romp-auto -->" if auto else "")
             + "<!-- romp-goal-id: " + str(iid) + " -->")
     return msg + "\n\n" + tail
