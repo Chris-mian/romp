@@ -114,7 +114,6 @@ const expandedAsks = new Set<string>();
 const collapsedNodes = new Set<string>();
 let fullscreenAskId: string | null = null; // ask itemId OR group key "g:<turnId>" shown in the modal (single-click)
 let modalRenderedId: string | null = null; // last target the modal body was built for → reset body cache on change
-let openFollowUpOnRender = false;           // a card's "Follow up" opened the modal → pop+focus its composer on the next renderModal (the user 2026-06-22)
 // Per-sub FOLLOW-UP target (the user 2026-06-17): a blocked sub-node's "↳ follow up" re-points the (robust,
 // outside-the-tree-body) footer composer at THAT sub instead of the whole card, so the answer files under it
 // and unblocks just that branch. null = the composer follows up on the whole card (the default).
@@ -513,18 +512,17 @@ function makeAskCard(it: AskItem): HTMLElement {
   // Manual "Nudge" REMOVED (the user 2026-06-30): once Auto Nudge is robust you never hand-nudge — the
   // background nudge follows up on a stalled working goal automatically, so the manual button (and the whole
   // concept of manually nudging) is gone. Working cards now have no footer action of their own.
-  // "Follow up" on a BLOCKED or COMPLETED card (the user 2026-06-22): one click opens THIS goal's modal and
-  // jumps straight into its follow-up composer (via openFollowUpOnRender), saving the open-modal-then-click
-  // step. The modal's own Follow up button stays.
-  const cardFup = el("button", "fdismiss ffollow fask-fup"); cardFup.textContent = "Follow up"; cardFup.title = "open this goal and jump straight into a follow-up"; cardFup.style.display = "none";
-  cardFup.onclick = (ev) => { ev.stopPropagation(); fullscreenAskId = it.itemId; openFollowUpOnRender = true; renderModal(); };
+  // The card's own "Follow up" button was REMOVED (the user 2026-07-01): click-to-cite covers it — clicking the
+  // card (its summary or a sub-goal) drops a dismissible context chip in the chat composer, so a follow-up
+  // needs no dedicated button. The MODAL keeps its Follow up (feed-modal-follow) for reading-then-replying, and
+  // the modal tree keeps its per-sub-goal Follow up.
   // Session-STATE badges (⏸ approval / ⚠ API error / ⏳ waiting) ride the SESSION-NAME row, right after the
   // name — they describe the session's live state, and keeping them OFF the action row stops them shoving
   // the buttons past the card's right edge on a narrow card (the user 2026-06-19; mirrors the ↻ Followed-up
   // chip moved up 2026-06-18). idwrap is flex:1 so the name ellipsizes before the badge is ever clipped.
   idwrap.append(waitBadge, apiBadge, blkBadge);
-  // The action row holds ONLY buttons now (Retry / Revive / Follow up / Clear).
-  actions.append(apiRetry, revive, cardFup, clr);
+  // The action row holds ONLY buttons now (Retry / Revive / Clear). Card-level follow-up is click-to-cite.
+  actions.append(apiRetry, revive, clr);
   // "↪ from <peer>" provenance + the "reopened"/"↻ Followed up" chips ride the name row's right side;
   // row2 wraps them onto a new line when there isn't room, so the provenance never overlaps a chip
   // (the user 2026-06-20). origin sits left of the chips, matching the "from … · Followed up" reading order.
@@ -643,7 +641,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   a._title = title; a._name = name; a._time = time; a._reopened = reBadge; a._followedup = fupBadge;
   a._waitOn = waitOnBadge;
   a._blocked = blkBadge; a._wait = waitBadge;
-  a._apiBadge = apiBadge; a._apiRetry = apiRetry; a._revive = revive; a._cardFup = cardFup; a._clr = clr;
+  a._apiBadge = apiBadge; a._apiRetry = apiRetry; a._revive = revive; a._clr = clr;
   a._delegations = delegations;
   a._checklist = checklist;
   a._distill = distill;
@@ -741,7 +739,6 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
     a._waitOn.replaceChildren();
     a._waitOn.style.display = "none";
   }
-  a._cardFup.style.display = ((it.column === "needs_input" || it.column === "completed") && !it.provisional) ? "" : "none";   // Follow up on blocked/completed cards (the user 2026-06-22)
   a._clr.style.display = it.provisional ? "none" : "";   // a placeholder has nothing to curate — no Clear
   // ⏳ awaiting: held in Working, waiting on work it dispatched/delegated (agents, a subagent, a build).
   // The peer case already shows the "Awaiting <peer>" chip (waitingOn), so suppress the generic badge then.
@@ -1587,16 +1584,6 @@ function renderModal() {
   // addEventListener) so each re-render overwrites instead of stacking handlers.
   ttlEl.onmouseenter = titleHoverId ? () => hoverEmit(titleHoverId) : null;
   ttlEl.onmouseleave = titleHoverId ? () => hoverEmit(null) : null;
-  // One-click "Follow up" from a blocked/completed feed card (the user 2026-06-22): the card opened THIS
-  // modal AND asked to jump straight into the composer — pop it open + focus, exactly like clicking the
-  // modal's own Follow up. Runs after the branches set fupEl's visibility, so it no-ops for a standalone
-  // deliverable (whose Follow up is hidden). One-shot: the flag is consumed here.
-  if (openFollowUpOnRender) {
-    openFollowUpOnRender = false;
-    if (fupEl && fupEl.style.display !== "none" && fuboxEl && fuinEl) {
-      fuboxEl.style.display = ""; growFollowUp(fuinEl); fuinEl.focus();
-    }
-  }
 }
 
 

@@ -11,7 +11,7 @@ const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", 
 
 test("a parkedHandoff card gets a Revive button, shown only for that block state", () => {
   assert.match(FEED, /const revive = el\("button", "fdismiss frevive"\)/);
-  assert.match(FEED, /actions\.append\(apiRetry, revive, cardFup, clr\)/);
+  assert.match(FEED, /actions\.append\(apiRetry, revive, clr\)/);
   assert.match(FEED, /const isParked = it\.blocked\?\.state === "parkedHandoff"/);
   assert.match(FEED, /a\._revive\.style\.display = isParked \? "" : "none"/);
 });
