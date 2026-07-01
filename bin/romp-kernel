@@ -8087,13 +8087,16 @@ fetch('/usage',{cache:'no-store'}).then(function(r){return r.ok?r.json():null;})
 el.addEventListener('click',function(){pull(true);});
 setInterval(function(){pull(false);},60000);     // backup auto-refresh: re-read usage.json every 60s
 pull(false);                                     // fill on load, independent of the timeline-forward path
-// Vertical-fit (the user 2026-06-27): when the scrollable top group can't hold the toggles + usage bars, drop
-// the USAGE bars first (.rail-tight). The refresh/gear live in the FIXED .rail-acts below, so they're never
-// pushed off; if even the toggles don't fit, .rail-scroll scrolls them (hidden scrollbar). Re-checked on
-// resize and whenever the usage data re-renders.
+// Vertical-fit (the user 2026-06-27): when the scrollable top group can't hold the toggles + usage bars, the
+// USAGE bars degrade by level (data-ruc; see fitRail below) rather than vanishing. The refresh/gear live in the
+// FIXED .rail-acts below, so they're never pushed off; if even the toggles don't fit, .rail-scroll scrolls them
+// (hidden scrollbar). Re-checked on resize and whenever the usage data re-renders.
 var sc=el.parentNode;   // the .rail-scroll wrapper (#rail-usage's parent)
-function fitRail(){if(!sc)return;sc.classList.remove('rail-tight');
-if(sc.scrollHeight>sc.clientHeight+1)sc.classList.add('rail-tight');}
+// GRADED vertical fit (the user 2026-07-01): when the top group can't hold the toggles + usage bars, the bars
+// don't vanish all at once — they DEGRADE by level (data-ruc): 1 = shorter bars, 2 = drop the % readout, 3 =
+// drop the 5h/7d labels (compressed bars only), 4 = hidden (last resort). Bump the level until it fits.
+function fitRail(){if(!sc)return;
+for(var lvl=0;lvl<=4;lvl++){el.dataset.ruc=String(lvl);if(sc.scrollHeight<=sc.clientHeight+1)break;}}
 window.addEventListener('resize',fitRail);
 var _render=render;render=function(u){_render(u);fitRail();};   // re-fit after the bars change height
 requestAnimationFrame(fitRail);
@@ -8354,7 +8357,7 @@ def _landing():
             # toggles (rotated labels). Each is an independent on/off; the lit one is in the romp accent.
             # SHORT-WINDOW behavior (the user 2026-06-27): the rail splits into a SCROLLABLE top (toggles +
             # usage) and a FIXED bottom (refresh + gear). The gear/refresh never get pushed off — they stay
-            # pinned at the bottom; the usage bars DISAPPEAR first (fitRail → .rail-tight) when room runs out;
+            # pinned at the bottom; the usage bars DEGRADE gracefully (fitRail → data-ruc) when room runs out;
             # only if even the toggles don't fit do THEY scroll (hidden scrollbar — the gear used to spill over
             # the feed). So the gear can never collide with the toggle labels.
             ".pane-rail{flex:0 0 30px;box-sizing:border-box;display:flex;flex-direction:column;gap:6px;"
@@ -8362,7 +8365,18 @@ def _landing():
             ".rail-scroll{flex:0 1 auto;min-height:0;display:flex;flex-direction:column;gap:6px;"
             "overflow-y:auto;overflow-x:hidden;scrollbar-width:none}"
             ".rail-scroll::-webkit-scrollbar{width:0;height:0}"
-            ".rail-scroll.rail-tight #rail-usage{display:none}"   # out of vertical space → the usage bars disappear first
+            # GRADED degrade as vertical room runs out (fitRail bumps data-ruc), instead of vanishing at once:
+            # 1 = shorter bars, 2 = drop the % readout, 3 = bars only (drop 5h/7d labels), 4 = hidden last (the user 2026-07-01).
+            "#rail-usage[data-ruc='1']{gap:7px}"
+            "#rail-usage[data-ruc='1'] .ru-bars{height:24px}"
+            "#rail-usage[data-ruc='2']{gap:6px;margin-top:8px}"
+            "#rail-usage[data-ruc='2'] .ru-bars{height:19px}"
+            "#rail-usage[data-ruc='2'] .ru-lab{display:none}"
+            "#rail-usage[data-ruc='3']{gap:5px;margin-top:6px}"
+            "#rail-usage[data-ruc='3'] .ru-bars{height:14px}"
+            "#rail-usage[data-ruc='3'] .ru-lab{display:none}"
+            "#rail-usage[data-ruc='3'] .ru-win{display:none}"
+            "#rail-usage[data-ruc='4']{display:none}"
             ".rail-acts{flex:0 0 auto;display:flex;flex-direction:column;gap:2px;margin-top:auto;padding-bottom:2px}"   # compact: tight stack of refresh/network/settings   # pinned to the bottom, always visible
             ".rail-btn{flex:0 0 auto;writing-mode:vertical-rl;text-orientation:mixed;letter-spacing:.04em;"
             "font:600 11px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#8a8a8a;margin:0 4px;"

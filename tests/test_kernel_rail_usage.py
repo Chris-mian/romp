@@ -28,7 +28,7 @@ class RailUsage(unittest.TestCase):
                         "usage is above refresh (top group)")
         self.assertLess(self.html.index("id=rail-refresh"), self.html.index("id=rail-gear"),
                         "refresh is above settings (settings is the very bottom)")
-        self.assertIn(".rail-acts{flex:0 0 auto;display:flex;flex-direction:column;gap:6px;margin-top:auto}",
+        self.assertIn(".rail-acts{flex:0 0 auto;display:flex;flex-direction:column;gap:2px;margin-top:auto;padding-bottom:2px}",
                       self.html, "the bottom action group is pinned down")
         self.assertIn(".ru-bar{", self.html, "the compact vertical bar styling")
         self.assertIn(".ru-lab{", self.html, "the percentage label styling")
