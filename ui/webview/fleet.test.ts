@@ -82,9 +82,11 @@ test("the search bar matches session NAME or goal CONTENT, expands hits, and say
   // a session is kept if its NAME or any goal TEXT matches (subtreeHit over its visible nodes)
   assert.match(SRC, /const subtreeHit = \(id: string\): boolean =>/);
   assert.match(SRC, /node\.text\.toLowerCase\(\)\.includes\(sq\)/);
-  // search looks through DONE/ARCHIVED content too (not gated by Show-completed): a name match shows the whole
-  // session, a content match shows just the hitting tops (live or archived)
-  assert.match(SRC, /visibleRoots = s\.name\.toLowerCase\(\)\.includes\(sq\) \? allRoots : allRoots\.filter\(\(r\) => subtreeHit\(r\.id\)\)/);
+  // search stays WITHIN the current view (the user 2026-06-30): it gates by Show-completed + the recency cutoff
+  // FIRST (`base`), THEN a name match keeps the session's in-window tops and a content match keeps just the
+  // hitting ones — it does NOT reach past the toggle/slider
+  assert.match(SRC, /const base = fleetVisibleRoots\(roots, archRoots, sd\)\.filter\(\(r\) => \(now - nodeRecency\(r\)\) <= cutoff\);/);
+  assert.match(SRC, /visibleRoots = s\.name\.toLowerCase\(\)\.includes\(sq\) \? base : base\.filter\(\(r\) => subtreeHit\(r\.id\)\)/);
   // a collapsed branch that CONTAINS a match is force-expanded so the hit is revealed
   assert.match(SRC, /const hitChild = expandable && curSearch && !!ctx\.subtreeHit\s*\n?\s*&& \(n\.children \|\| \[\]\)\.some\(\(cid\) => ctx\.subtreeHit!\(cid\)\);/);
   assert.match(SRC, /const isFolded = expandable && !hitChild &&/);
