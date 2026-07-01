@@ -2991,7 +2991,7 @@ function showActive() {
   if (composer) {
     const closed = s.status.state === "closed";
     composer.disabled = closed;
-    composer.placeholder = closed ? "Session closed — read-only" : "Message this session…  (⏎ send · ⇧⏎ newline)";
+    composer.placeholder = closed ? "Session closed — read-only" : "Message this session…  (⏎ send · ⇧⏎ newline · type / for commands)";
     const sendBtn = document.getElementById("composer-send") as HTMLButtonElement | null;
     if (sendBtn) sendBtn.disabled = closed;   // read-only session → the explicit send button is dead too
   }
