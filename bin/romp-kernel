@@ -834,6 +834,23 @@ def _retry_pause_ts():
         return 0.0
 
 
+def _auto_pause_on_limit():
+    """Hitting a usage limit (5h Session or 7d Weekly at 100%) auto-engages the global retry-pause (the user
+    2026-07-01): retrying into a rate-limited account just burns failed requests, so stop the auto-retry AND
+    the judges (both gate on this flag) until the window resets. _auto_resume_retry clears it the moment a
+    session serves a request again — which, while the account is genuinely limited, can't happen, so the pause
+    holds exactly as long as the limit does. Idempotent: only writes when it isn't already paused."""
+    try:
+        u = _usage()
+    except Exception:
+        return
+    if u and u.get("limited") and not _retry_paused_on():
+        _set_retry_paused(True)
+        sys.stderr.write("retry-pause: auto-engaged — usage limit reached (%s) → auto-retry + judges paused until reset\n"
+                         % ",".join(k for k, v in u["limited"].items() if v))
+        _push_all()
+
+
 def _auto_resume_retry(now, tmux):
     """The global retry-pause is an API-HEALTH flag, not a permanent switch. The user flips it to stop the
     auto-retry (and, with it, the judge) storm during an API / usage-limit outage — but it must AUTO-CLEAR
@@ -5562,8 +5579,15 @@ def _usage():
     five, seven = seg(o.get("five_hour")), seg(o.get("seven_day"))
     if not five and not seven:
         return None
+    # LIMIT REACHED (the user 2026-07-01): a window at 100% whose reset is still in the future = the account is
+    # rate-limited on it now. Drives the top banner + the auto retry-pause. A window past its resetsAt has rolled
+    # (its pct is stale until the next reading) → not limited.
+    def _lim(s):
+        return bool(s and s.get("pct", 0) >= 100 and not (s.get("resetsAt") and time.time() > s["resetsAt"]))
+    limited = {"fiveHour": _lim(five), "sevenDay": _lim(seven)}
     t = o.get("t")
-    return {"fiveHour": five, "sevenDay": seven, "t": t if isinstance(t, (int, float)) else None}
+    return {"fiveHour": five, "sevenDay": seven, "t": t if isinstance(t, (int, float)) else None,
+            "limited": limited if (limited["fiveHour"] or limited["sevenDay"]) else None}
 
 
 _msg_sum_cache = {}                               # cached {msg id: caption}, keyed by the transcripts' signature
@@ -7147,6 +7171,10 @@ def _pusher():
             _auto_nudge_tick(int(time.time()), _tmux_sessions())
         except Exception:
             sys.stderr.write("auto-nudge: %s\n" % traceback.format_exc())
+        try:                                  # hitting a usage limit auto-engages the retry-pause (before the resume check)
+            _auto_pause_on_limit()
+        except Exception:
+            sys.stderr.write("auto-pause-on-limit: %s\n" % traceback.format_exc())
         try:                                  # a paused retry auto-clears once any session serves a request again
             _auto_resume_retry(int(time.time()), _tmux_sessions())
         except Exception:
@@ -8041,7 +8069,13 @@ function esc(s){return String(s).replace(/[&<>"]/g,function(c){return{'&':'&amp;
 var WINS=[['fiveHour',5*3600,'5h','Session'],
           ['sevenDay',7*86400,'7d','Weekly']];
 var LAST={};
-function render(u){if(!u||(!u.fiveHour&&!u.sevenDay)){el.innerHTML='';tip.style.display='none';return;}
+function render(u){
+// LIMIT BANNER (the user 2026-07-01): a top banner whenever a usage window is maxed (kernel `limited`), like
+// the disconnected one. Says which window + that retries are paused (the kernel auto-engages the retry-pause).
+var lb=document.getElementById('romp-limit');
+if(lb){var lim=u&&u.limited,on=!!(lim&&(lim.fiveHour||lim.sevenDay));lb.classList.toggle('show',on);
+if(on){var msg=lb.querySelector('.rl-msg');if(msg)msg.textContent=(lim.fiveHour&&lim.sevenDay?'Session and weekly':lim.fiveHour?'Session (5h)':'Weekly (7d)')+' usage limit reached — retries paused until it resets';}}
+if(!u||(!u.fiveHour&&!u.sevenDay)){el.innerHTML='';tip.style.display='none';return;}
 var nowS=Math.floor(Date.now()/1000),html='';LAST={};
 WINS.forEach(function(w){var seg=u[w[0]];if(!seg)return;
 var rolled=seg.resetsAt&&nowS>seg.resetsAt,pct=rolled?0:(seg.pct||0);
@@ -8534,9 +8568,18 @@ def _landing():
             "#romp-offline .ro-dot{width:8px;height:8px;border-radius:50%;background:#ff6b6b;"
             "animation:roPulse 1.1s ease-in-out infinite}"
             "@keyframes roPulse{0%,100%{opacity:.3}50%{opacity:1}}"
+            # usage-limit banner (the user 2026-07-01): amber, sits just below the offline slot so the two never
+            # overlap; shown when a usage window hits 100% (kernel `limited`) — retries auto-pause until it resets.
+            "#romp-limit{position:fixed;top:0;left:50%;transform:translateX(-50%);z-index:9999;display:none;"
+            "align-items:center;gap:8px;background:#3a2f16;color:#ffe6b3;border:1px solid #7a5f24;border-top:none;"
+            "border-radius:0 0 9px 9px;padding:5px 15px;font-size:12.5px;font-family:var(--vscode-font-family);"
+            "box-shadow:0 3px 12px rgba(0,0,0,.45)}#romp-limit.show{display:flex}"
+            "#romp-offline.show ~ #romp-limit.show{top:34px}"   # if both are up, stack the limit banner below
+            "#romp-limit .rl-dot{width:8px;height:8px;border-radius:50%;background:#e0a030;flex:0 0 auto}"
             "</style></head><body class='po-chat po-feed po-timeline'>"
             "<div id=romp-boot>" + _loader_inner() + "</div>"
             "<div id=romp-offline><span class=ro-dot></span><span>Disconnected — reconnecting…</span></div>"
+            "<div id=romp-limit><span class=rl-dot></span><span class=rl-msg>Usage limit reached — retries paused until it resets</span></div>"
             "<div class=col>"
             "<div class=row>"
             # far-left rail (the user 2026-06-26/27): a SCROLLABLE top group (.rail-scroll) — Chat / Fleet / Feed
