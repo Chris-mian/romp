@@ -574,19 +574,25 @@ class SdkSession:
     # ---- async internals (run inside the quarantined loop) ----
 
     async def _do_interrupt(self):
+        # ACKNOWLEDGE FIRST, then send the control request. client.interrupt() BLOCKS until the CLI
+        # acknowledges the interrupt — and the CLI won't acknowledge until the in-flight model call reaches
+        # a boundary, which can take SECONDS mid-stream. Setting _interrupted only AFTER that await meant the
+        # snapshot kept reading 'working' the whole time, so a stopped turn still looked like it was spinning
+        # (the user 2026-06-30: "I interrupted but it said working for a while"). Flip + poke up front so the
+        # lane reads 'waiting' the instant the user hits stop; the interrupt itself completes below.
+        #
+        # Don't touch inflight or release the next queued turn here. A normal interrupt aborts the turn and the
+        # SDK emits its ResultMessage, which does the SINGLE decrement + the natural release in _on_message;
+        # forcing inflight=0 here too would double-count and corrupt the next turn's release. The snapshot
+        # reads 'waiting' while inflight>0 (kills the 2026-06-23 zombie-working); a truly-wedged turn that
+        # never results keeps inflight>0 and PAUSES the queue — honest (kill recovers). A fresh turn clears
+        # _interrupted (see inputs()), and the ResultMessage clears it too.
+        self._interrupted = True
+        self.backend._poke()
         try:
             await self.client.interrupt()
         except Exception:
             pass
-        # Don't touch inflight or release the next queued turn here. A normal interrupt aborts the turn
-        # and the SDK emits its ResultMessage, which does the SINGLE decrement + the natural release in
-        # _on_message; forcing inflight=0 here too would double-count and corrupt the next turn's release.
-        # Instead flag the interrupt: the snapshot reads 'waiting' while inflight>0 so the user sees it
-        # stopped (this is what kills the 2026-06-23 zombie-working), without a second decrement. A truly-
-        # wedged turn that never results keeps inflight>0 and PAUSES the queue — honest (the CLI is stuck;
-        # kill recovers) rather than feeding the next turn into a stuck CLI.
-        self._interrupted = True
-        self.backend._poke()
 
     async def _do_set_model(self, model):
         try:

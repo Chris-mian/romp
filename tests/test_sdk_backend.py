@@ -315,6 +315,26 @@ class LiveTail(unittest.TestCase):
         asyncio.run(run())
         self.assertEqual(len(calls), 1, "compact_boundary re-pulls the context % immediately, not next turn")
 
+    def test_interrupt_flips_to_waiting_before_the_blocking_control_request(self):
+        """client.interrupt() BLOCKS until the CLI acknowledges the interrupt, which can take seconds mid-
+        stream (the CLI won't ack until the model call hits a boundary). If _interrupted — the flag that makes
+        the snapshot read 'waiting' — were set only AFTER that await, a stopped turn keeps reading 'working'
+        the whole time (the user 2026-06-30: "I interrupted but it said working for a while"). The flag must
+        flip up front, so the lane reflects the stop the instant the user hits it."""
+        import asyncio
+        be = sb.SdkBackend(tempfile.mkdtemp(), "/bin/true", lambda *a, **k: None)
+        s = sb.SdkSession(be, {"sid": "11111111-2222-3333-4444-555555555555", "name": "n", "cwd": "/tmp"})
+        s.inflight = 1
+        seen = {}
+        class _Client:
+            async def interrupt(self):
+                seen["interrupted_at_send"] = s._interrupted   # what the UI already reads when the request goes out
+        s.client = _Client()
+        asyncio.run(s._do_interrupt())
+        self.assertTrue(seen.get("interrupted_at_send"),
+                        "the snapshot already read 'waiting' BEFORE the blocking control request")
+        self.assertEqual(s.snapshot()["state"], "waiting", "an interrupted in-flight turn reads 'waiting', not 'working'")
+
 
 class SnapshotParkedOnAsk(unittest.TestCase):
     """A RUNNING SDK session parked in can_use_tool/_ask_user on a permission/picker prompt must snapshot
