@@ -51,6 +51,17 @@ class CiteFor(unittest.TestCase):
         self.assertIsNone(km._cite_for(SID + ":g1"))
 
 
+class ChatBodyHasChipStrip(unittest.TestCase):
+    """The WEB dashboard's composer HTML is a hand-ported copy in _chat_body (separate from the VS Code
+    extension's page-skeleton.ts). The citation chip renders into #composer-chips, so that element MUST be in
+    the served HTML or renderComposerChips silently no-ops and no chip ever shows (the bug on 2026-07-01)."""
+
+    def test_composer_has_the_citation_chip_strip(self):
+        html = km._chat_body()
+        self.assertIn('id="composer-chips"', html, "#composer-chips must exist for the chip to render")
+        self.assertIn('id="composer-input"', html, "the strip sits alongside the textarea")
+
+
 class ShowOnTimelineFocus(unittest.TestCase):
     def setUp(self):
         self._orig = km.jd.load_goals

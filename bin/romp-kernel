@@ -7856,7 +7856,8 @@ def _chat_body():
             '<div id="content"><div id="live-ask" style="display:none"></div></div>'
             '<div id="bg-tasks" style="display:none"></div>'   # background-task box: sits between the transcript and the composer
             '<div id="footer"><div id="statusline" class="statusline"></div>'
-            '<div id="composer"><textarea id="composer-input" rows="1" '
+            '<div id="composer"><div id="composer-chips" style="display:none"></div>'   # click-to-cite chip strip (the user 2026-07-01)
+            '<textarea id="composer-input" rows="1" '
             'placeholder="Message this session…"></textarea>'
             '<button id="composer-attach" title="Attach a file — inserts its path">📎</button>'
             '<button id="composer-send" title="Send (Enter)" aria-label="Send">➤</button></div></div>')
