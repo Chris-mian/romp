@@ -1156,6 +1156,16 @@ body { display: flex; flex-direction: column; }
 .reminder-body .fold-pre + .fold-pre { margin-top: 6px; }
 .reminder-fold .fold-head { font-style: italic; }
 
+/* a backgrounded agent's completion (<task-notification>) → an informative card, not raw XML (the user
+   2026-06-30): the fold head names the agent + status in the romp accent; the body is its final message. */
+.agent-notif-fold .fold-head { color: var(--accent); font-weight: 600; }
+.agent-notif-fold .fold-head:hover { color: var(--accent); filter: brightness(1.15); }
+.agent-notif-body {
+  margin: 5px 0 0; border: 1px solid var(--box-border); border-left: 2px solid var(--accent);
+  border-radius: 6px; background: var(--box-bg); padding: 9px 12px; max-height: 420px; overflow: auto;
+}
+.agent-notif-summary { color: var(--dim); }
+
 /* the pinned "system context" card (the user 2026-06-19): a proper bordered BOX at the very top of the
    transcript that looks complete even when collapsed (a ⚙ header + one-line summary + caret), expanding
    to the config grid + CLAUDE.md sub-boxes. It is meta, not a conversational turn, so it sits OFF the
