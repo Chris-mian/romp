@@ -22,11 +22,21 @@ test("renderQueued draws a wireframe-hourglass header (singular/plural) + one ma
   assert.match(RENDER, /head\.appendChild\(hourglassIcon\(\)\)/);
   assert.match(RENDER, /function hourglassIcon\(\): HTMLElement/);
   assert.match(RENDER, /stroke="currentColor"[\s\S]*?<path d="M4 3 H12 L8 8 L12 13 H4 L8 8 Z"\/>/, "wireframe hourglass path");
-  assert.match(RENDER, /label\.textContent = `\$\{n\} queued message\$\{n === 1 \? "" : "s"\}`/);
+  // noun matches the content: all-commands → "command", all-prose → "message", mixed → "item" (the user 2026-07-01)
+  assert.match(RENDER, /const noun = nCmd === n \? "command" : nCmd === 0 \? "message" : "item";/);
+  assert.match(RENDER, /label\.textContent = `\$\{n\} queued \$\{noun\}\$\{n === 1 \? "" : "s"\}`/);
   assert.match(RENDER, /el\("div", "queued-head"\)/);
   // one faint "you" bubble per pending message, rendered as markdown (like a landed message)
   assert.match(RENDER, /for \(const t of ev\.texts\)[\s\S]*?el\("div", "queued-bubble md" \+ \(t\.cancelable \? " cancelable" : ""\)\)/);
-  assert.match(RENDER, /bubble\.innerHTML = md\(t\.md\)/);
+  assert.match(RENDER, /if \(!renderSlashCmd\(bubble, t\.md\)\) bubble\.innerHTML = md\(t\.md\)/);
+});
+
+test("a queued slash command renders as a command chip, not a plain 'message' (the user 2026-07-01)", () => {
+  // the SAME helper the landed user turn uses, so a queued /compact reads as a COMMAND
+  assert.match(RENDER, /function renderSlashCmd\(bubble: HTMLElement, text: string\): boolean/);
+  assert.match(RENDER, /el\("span", "slash-cmd-chip"\)/);
+  // the header counts commands vs. prose to pick the noun
+  assert.match(RENDER, /const nCmd = ev\.texts\.filter\(\(t\) => SLASH_CMD_RE\.test\(t\.md\)\)\.length;/);
 });
 
 test("a cancelable queued bubble is clickable → cancelQueued + restore to the composer (the user 2026-06-27)", () => {

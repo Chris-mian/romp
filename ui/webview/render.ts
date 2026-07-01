@@ -94,7 +94,7 @@ type ChatEvent = (
   // The turn stopped on an API error (event-based: transcript isApiErrorMessage). The session is BLOCKED
   // until retried — a red-dot card at the bottom with a Retry button (the user 2026-06-16).
   | { kind: "apiError"; text: string; status?: number; category?: string; ts?: string; uuid?: string }
-  | { kind: "compact"; ts?: string; uuid?: string }
+  | { kind: "compact"; trigger?: string; preTokens?: number; postTokens?: number; ts?: string; uuid?: string }
   // Pinned, collapsed "system context" card at the top of the transcript (the user 2026-06-19): the
   // CLAUDE.md instructions in effect + session config. NOT the verbatim harness prompt — it's never
   // recorded, so it can't be shown (renderSystem says so). No ts/uuid → off the rail (no dot/hover).
@@ -804,14 +804,9 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
       }
       const bubble = el("div", (romp ? "romp-bubble" : injected ? "user-note" : "user-bubble") + " md");
       // A slash COMMAND you sent reads as a special keyword, not prose (the user 2026-06-29): render the leading
-      // "/cmd" token as a monospace chip, with any arguments after it as plain text. Genuine human bubbles only;
-      // "/cmd" must be a WHOLE leading token (followed by a space or end) so a "/Users/…" path is never chipped.
-      const cmd = (!romp && !injected && ev.md) ? ev.md.match(/^(\/[A-Za-z][\w-]*)(?=\s|$)([\s\S]*)$/) : null;
-      if (cmd) {
-        const chip = el("span", "slash-cmd-chip"); chip.textContent = cmd[1];
-        bubble.appendChild(chip);
-        const rest = cmd[2].replace(/^\s+/, "");
-        if (rest) { const args = el("span", "slash-cmd-args"); args.textContent = rest; bubble.appendChild(args); }
+      // "/cmd" token as a monospace chip. Genuine human bubbles only (a romp/injected note is never a command).
+      if (!romp && !injected && ev.md && renderSlashCmd(bubble, ev.md)) {
+        /* rendered as a command chip */
       } else if (ev.md) {
         bubble.innerHTML = md(ev.md);
       }
@@ -1083,14 +1078,31 @@ function renderTodo(ev: Extract<ChatEvent, { kind: "todo" }>): HTMLElement {
 // A context compaction → one clean teal rail marker (the user 2026-06-14): replaces the raw /compact
 // stdout (leaked ANSI dim codes + hook-completion noise). renderEvent adds the rail time-marker +
 // hover wiring (this turn has a .dot); in compact mode it passes through unchanged → the same marker.
-function renderCompact(_ev: Extract<ChatEvent, { kind: "compact" }>): HTMLElement {
+function renderCompact(ev: Extract<ChatEvent, { kind: "compact" }>): HTMLElement {
   const turn = el("div", "turn turn-compact");
   turn.appendChild(dot("ring"));
   const line = el("div", "compact-line");
-  line.textContent = "✦ Compacted";
-  line.title = "the conversation was compacted here";
+  line.appendChild(document.createTextNode("✦ Context compacted"));
+  line.title = "the conversation was compacted here — earlier context was summarized to free the window";
+  // A muted meta suffix, when the boundary carried it: the trigger (auto vs. the user's /compact) and the
+  // token win (before → after), so the divider says WHY at a glance without dumping the raw summary.
+  const bits: string[] = [];
+  if (ev.trigger === "auto") bits.push("auto");
+  else if (ev.trigger === "manual") bits.push("manual");
+  if (ev.preTokens) bits.push(ev.postTokens ? `${compactTokens(ev.preTokens)} → ${compactTokens(ev.postTokens)}` : `${compactTokens(ev.preTokens)} freed`);
+  if (bits.length) {
+    const meta = el("span", "compact-meta"); meta.textContent = "· " + bits.join(" · ");
+    line.appendChild(meta);
+  }
   turn.appendChild(line);
   return turn;
+}
+
+// Compact a token count for the compaction divider: 795232 → "795k", 6514 → "6.5k", 900 → "900".
+function compactTokens(n: number): string {
+  if (n < 1000) return String(n);
+  const k = n / 1000;
+  return (k < 10 ? k.toFixed(1).replace(/\.0$/, "") : Math.round(k)) + "k";
 }
 
 // A compact "Follow-up" header above a message that resumed a goal (the user 2026-06-27): a ↩ glyph + the
@@ -1115,22 +1127,43 @@ function hourglassIcon(): HTMLElement {
   return span;
 }
 
+// A leading "/cmd [args]" is a command keyword, not prose. "/cmd" must be a WHOLE leading token (space or end
+// after it) so a "/Users/…" path is never chipped.
+const SLASH_CMD_RE = /^(\/[A-Za-z][\w-]*)(?=\s|$)([\s\S]*)$/;
+
+// Render `text` into `bubble` as a monospace command chip + plain args when it's a slash command; returns true
+// if it did. Shared by landed user turns AND pending queued messages so a command reads the same either way —
+// a queued /compact should look like a COMMAND, not a generic "message" (the user 2026-07-01).
+function renderSlashCmd(bubble: HTMLElement, text: string): boolean {
+  const m = text.match(SLASH_CMD_RE);
+  if (!m) return false;
+  const chip = el("span", "slash-cmd-chip"); chip.textContent = m[1];
+  bubble.appendChild(chip);
+  const rest = m[2].replace(/^\s+/, "");
+  if (rest) { const args = el("span", "slash-cmd-args"); args.textContent = rest; bubble.appendChild(args); }
+  return true;
+}
+
 // Pending queued messages — the user's inputs submitted while the session was still working, not yet
 // processed. Rendered at the bottom (closest to the composer) as faint right-aligned "you" bubbles, the SAME
 // way a landed message renders (markdown, follow-ups cleaned of the romp goal-context + markers, with the
-// compact Follow-up header) so a pending message looks like what it'll become (the user 2026-06-27).
+// compact Follow-up header) so a pending message looks like what it'll become (the user 2026-06-27). A queued
+// slash command renders as a command chip, and the header noun matches (a /compact is a queued "command", not
+// a "message" — the user 2026-07-01).
 function renderQueued(ev: Extract<ChatEvent, { kind: "queued" }>): HTMLElement {
   const turn = el("div", "turn turn-queued");
   const n = ev.texts.length;
+  const nCmd = ev.texts.filter((t) => SLASH_CMD_RE.test(t.md)).length;
+  const noun = nCmd === n ? "command" : nCmd === 0 ? "message" : "item";
   const head = el("div", "queued-head");
   head.appendChild(hourglassIcon());
-  const label = el("span"); label.textContent = `${n} queued message${n === 1 ? "" : "s"}`;
+  const label = el("span"); label.textContent = `${n} queued ${noun}${n === 1 ? "" : "s"}`;
   head.appendChild(label);
   turn.appendChild(head);
   for (const t of ev.texts) {
     if (t.followUp) turn.appendChild(followUpHeader(t.goal));
     const bubble = el("div", "queued-bubble md" + (t.cancelable ? " cancelable" : ""));
-    bubble.innerHTML = md(t.md);
+    if (!renderSlashCmd(bubble, t.md)) bubble.innerHTML = md(t.md);
     // CANCELABLE (SDK queue, romp owns it): click a still-queued message to pull it BACK OUT — cancels it
     // and drops its text into the composer to re-edit/re-send (the user 2026-06-27). Hover highlight + a
     // tooltip advertise that it's clickable. tmux queues aren't cancelable (Claude Code owns them), so those

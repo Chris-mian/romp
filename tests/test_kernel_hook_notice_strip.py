@@ -5,6 +5,7 @@ to see (the user 2026-06-30: "what is this pre-compact thing?"). build_session s
 command's output text via _strip_hook_notices; when nothing else remains, the atom is dropped entirely (the
 ✦ Compacted boundary already marks the compaction). This tests the stripper directly.
 """
+import inspect
 import os
 import unittest
 from importlib.machinery import SourceFileLoader
@@ -33,6 +34,24 @@ class StripHookNotices(unittest.TestCase):
     def test_prose_mentioning_a_bracketed_path_without_the_notice_shape_is_kept(self):
         s = "Wrote the config [prod] and moved on."
         self.assertEqual(km._strip_hook_notices(s), s)
+
+
+class CompactionRendering(unittest.TestCase):
+    """build_session turns the compact_boundary into a dedicated {kind:"compact"} divider carrying the
+    trigger + token before/after (the client draws the clean teal marker), and drops the /compact stdout
+    when it reduces to just the bare "Compacted" confirmation (the divider covers it) — the user 2026-07-01."""
+
+    def test_boundary_emits_a_compact_divider_with_metadata(self):
+        src = inspect.getsource(km.build_session)
+        self.assertIn('"kind": "compact"', src)
+        self.assertIn('"trigger": cm.get("trigger")', src)
+        self.assertIn('"preTokens": cm.get("pre_tokens")', src)
+        self.assertIn('"postTokens": cm.get("post_tokens")', src)
+        self.assertNotIn('"md": "✦ Compacted"', src, "no longer a plain assistant paragraph")
+
+    def test_compacted_only_command_output_is_dropped(self):
+        src = inspect.getsource(km.build_session)
+        self.assertIn('txt.strip().lower() == "compacted"', src)
 
 
 if __name__ == "__main__":

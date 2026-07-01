@@ -4351,8 +4351,10 @@ def build_session(sid, now, tmux=None):
                         txt = b["text"]
                         if a.get("command"):             # a slash command's OUTPUT (command:True on the synthetic
                             txt = _strip_hook_notices(txt)   # <local-command-stdout> atom) → strip hook-completion
-                            if not txt:                      # plumbing; if nothing else remains (e.g. /compact was
-                                continue                     # ONLY notices), drop the atom — the ✦ Compacted stays.
+                            if not txt or txt.strip().lower() == "compacted":
+                                continue                     # plumbing; if nothing meaningful remains (e.g. /compact's
+                                                             # output was ONLY notices + the "Compacted" confirmation),
+                                                             # drop the atom — the compaction divider below covers it.
                         events.append({"kind": "assistant", "md": txt, "uuid": a.get("uuid"), "ts": ts})
                     elif b.get("type") == "tool_use":
                         if b.get("name") in ("TaskCreate", "TaskUpdate"):
@@ -4384,7 +4386,14 @@ def build_session(sid, now, tmux=None):
                         by_tool[b.get("id")] = ev
                         events.append(ev)
             elif a["type"] == "system" and a.get("subtype") == "compact_boundary":
-                events.append({"kind": "assistant", "md": "✦ Compacted", "uuid": a.get("uuid"), "ts": ts})
+                # A context compaction → a dedicated {kind:"compact"} DIVIDER (the client draws a clean teal
+                # rail marker), NOT a plain assistant paragraph — the summary payload + hook stdout are already
+                # dropped, so this glanceable line is all the user needs (the user 2026-07-01). Carries the
+                # trigger (manual/auto) + token before/after so the divider can note the win.
+                cm = a.get("compact_metadata") or {}
+                events.append({"kind": "compact", "uuid": a.get("uuid"), "ts": ts,
+                               "trigger": cm.get("trigger"), "preTokens": cm.get("pre_tokens"),
+                               "postTokens": cm.get("post_tokens")})
     events = _hydrate_postal(events, _postal_index())   # swap postal traffic for clean in/out cards (no boilerplate)
     for ev in events:
         # tlId = the timeline atom a chat hover lights: a message/prompt → the DOT (segment promptId),

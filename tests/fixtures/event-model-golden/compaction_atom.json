@@ -52,6 +52,7 @@
     },
     {
      "compact_metadata": {
+      "post_tokens": 6514,
       "pre_tokens": 263239,
       "trigger": "manual"
      },

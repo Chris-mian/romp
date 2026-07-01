@@ -444,7 +444,8 @@ class FileAdapter:
                             "session_id": rompuuid, "t": ts, "fsid": fsid,
                             "parentUuid": self.parent_of.get(u),   # the repaired stitch (see _repair_compaction_stitches)
                             "compact_metadata": {"trigger": cm.get("trigger"),
-                                                 "pre_tokens": cm.get("preTokens") or cm.get("pre_tokens")},
+                                                 "pre_tokens": cm.get("preTokens") or cm.get("pre_tokens"),
+                                                 "post_tokens": cm.get("postTokens") or cm.get("post_tokens")},
                             "_seq": seq})
             # other system subtypes (turn_duration, stop_hook_summary, local_command,
             # away_summary) are harness bookkeeping, not conversational messages -> skipped.
