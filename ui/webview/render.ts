@@ -53,7 +53,7 @@ type AskAnswerBlock = { question: string; header?: string; options: { label: str
 
 type ChatEvent = (
   | { kind: "user"; md: string; uuid?: string; ts?: string; reminders?: string[]; human?: boolean; romp?: boolean; rompAuto?: boolean; followUp?: boolean; goal?: string; images?: { src: string; path?: string }[] }
-  | { kind: "assistant"; md: string; uuid?: string; ts?: string }
+  | { kind: "assistant"; md: string; uuid?: string; ts?: string; cmd?: boolean }
   | { kind: "thinking"; text: string; encrypted: boolean; uuid?: string; ts?: string }
   | {
       kind: "tool";
@@ -844,8 +844,12 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
     return turn;
   }
   if (ev.kind === "assistant") {
-    const hn = parseHookNotices(ev.md);          // hook-execution echoes (e.g. /compact) → registered chips, not prose
-    if (hn) return renderHookNotices(hn.notices, hn.lead);
+    // ONLY a slash-command's OUTPUT (ev.cmd) can render as hook-notice chips — never normal model prose, which
+    // would otherwise be destroyed if it merely contained "X [y] completed successfully" (the user 2026-06-30).
+    if (ev.cmd) {
+      const hn = parseHookNotices(ev.md);        // hook-execution echoes (e.g. /compact) → registered chips
+      if (hn) return renderHookNotices(hn.notices, hn.lead);
+    }
     const turn = el("div", "turn turn-assistant");
     turn.appendChild(dot("ring"));
     const body = el("div", "assistant md");

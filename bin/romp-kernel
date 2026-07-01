@@ -4283,7 +4283,12 @@ def build_session(sid, now, tmux=None):
                         events.append({"kind": "thinking", "text": b.get("thinking", ""),
                                        "encrypted": bool(b.get("signature")), "uuid": a.get("uuid"), "ts": ts})
                     elif b.get("type") == "text" and b.get("text", "").strip():
-                        events.append({"kind": "assistant", "md": b["text"], "uuid": a.get("uuid"), "ts": ts})
+                        # `cmd` = this is a slash-command's OUTPUT atom (event model sets command:True on the
+                        # synthetic <local-command-stdout> assistant atom), NOT normal model prose. The chat's
+                        # hook-notice chip rendering keys on this so it can NEVER hijack a real message that
+                        # merely contains the phrase "X [y] completed successfully" (the user 2026-06-30).
+                        events.append({"kind": "assistant", "md": b["text"], "uuid": a.get("uuid"), "ts": ts,
+                                       "cmd": bool(a.get("command"))})
                     elif b.get("type") == "tool_use":
                         if b.get("name") in ("TaskCreate", "TaskUpdate"):
                             continue                     # folded into the one todo checklist (see _fold_tasks)
