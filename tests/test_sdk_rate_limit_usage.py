@@ -45,6 +45,18 @@ class RecordRateLimit(unittest.TestCase):
         self.assertEqual(u["seven_day"], {"pct": 11, "resets_at": 1783364400})
         self.assertIsInstance(u["t"], int)
 
+    def test_a_seven_day_event_does_not_null_the_statusline_five_hour(self):
+        # Regression (the user 2026-06-30, "the session limit disappeared"): usage.json is account-wide and also
+        # written by the tmux statusline. A seven_day-only SDK event must MERGE — preserve the five_hour another
+        # writer set — not clobber the whole file from our partial accumulator.
+        (self.state / "usage.json").write_text(json.dumps({
+            "t": 1, "five_hour": {"pct": 10, "resets_at": 1782787200},   # as the statusline wrote it
+            "seven_day": {"pct": 11, "resets_at": 1783364400}}))
+        self.be._record_rate_limit(_info("seven_day", 0.52, 1783364400))   # SDK sees ONLY a seven_day event
+        u = self._usage()
+        self.assertEqual(u["five_hour"], {"pct": 10, "resets_at": 1782787200}, "the Session (5h) window is preserved")
+        self.assertEqual(u["seven_day"]["pct"], 52, "the weekly window is updated from the event")
+
     def test_weekly_takes_the_binding_highest_seven_day_variant(self):
         # opus / sonnet sub-limits also feed the weekly bar; the BINDING (highest) one wins
         self.be._record_rate_limit(_info("seven_day", 0.11, 1))

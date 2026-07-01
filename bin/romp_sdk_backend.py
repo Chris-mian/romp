@@ -1085,6 +1085,21 @@ class SdkBackend:
             segs = [rl[t] for t in types if t in rl]
             return max(segs, key=lambda s: s["pct"]) if segs else None   # weekly = the binding (highest) window
         five, seven = pick("five_hour"), pick("seven_day", "seven_day_opus", "seven_day_sonnet")
+        # NEVER null a window this backend hasn't seen an event for — usage.json is account-wide and ALSO
+        # written by the tmux statusline (and by earlier events); each event carries ONE window, so writing the
+        # whole file from our partial accumulator would clobber the other window to null (the user 2026-06-30:
+        # "the session limit disappeared" — a seven_day event nulled the statusline's five_hour). Merge with the
+        # current file: overwrite only the window(s) we actually have, preserve the rest.
+        try:
+            cur = json.loads((self.state_dir / "usage.json").read_text())
+            if not isinstance(cur, dict):
+                cur = {}
+        except Exception:
+            cur = {}
+        if five is None:
+            five = cur.get("five_hour")
+        if seven is None:
+            seven = cur.get("seven_day")
         if not five and not seven:
             return
         data = {"t": int(time.time()), "five_hour": five, "seven_day": seven}
