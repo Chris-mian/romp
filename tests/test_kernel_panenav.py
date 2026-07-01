@@ -45,6 +45,9 @@ class PaneNav(unittest.TestCase):
         self.assertIn("f.contentWindow.postMessage({romp:'paneFocus',dir:dir||'',from:'shell'},'*');", JS)
         # the handler is wired on each iframe's document in CAPTURE so it beats the pane's own key handlers
         self.assertIn("d.addEventListener('keydown',onKey,true);", JS)
+        # AND on the top-level shell document, so the shortcut works when focus sits on the shell itself
+        # (a keydown doesn't cross the iframe boundary) — else Alt+Left fell through to Firefox Back
+        self.assertIn("document.addEventListener('keydown',onKey,true);", JS)
 
 
 if __name__ == "__main__":
