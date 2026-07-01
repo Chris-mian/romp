@@ -123,6 +123,13 @@ let followupSub: { itemId: string; title: string } | null = null;
 let openSubFollowUp: ((itemId: string, title: string) => void) | null = null;
 let hoverAskId: string | null = null;      // transient hover focus (white border + previewed journey)
 let pinnedAskId: string | null = null;     // double-click PIN (persists after hover-leave)
+// KEYBOARD-NAV cursor (the user 2026-07-01): "" = mouse mode; "cards" = an arrow cursor over cards; "card" =
+// focus is inside one card, arrows step its clickable elements. Armed when the shell hands the feed keyboard
+// focus (Alt+Arrow). Reuses the mouse hover + click code paths so behavior can't drift. See the kb* block below.
+let kbMode: "" | "cards" | "card" = "";
+let kbCardEl: HTMLElement | null = null;    // the card the cursor is on
+let kbEls: HTMLElement[] = [];              // that card's clickable elements (in "card" mode)
+let kbElIdx = -1;
 // effective focus = hover ?? pinned; the white border + lit timeline journey follow it.
 function applyFocus() {
   const eff = hoverAskId ?? pinnedAskId;
@@ -2066,6 +2073,7 @@ window.addEventListener("keydown", (e) => {
 // to chat. Same-origin combined page only — a no-op on the standalone /feed page
 // or inside VS Code, where there's no sibling chat-frame to reach.
 function feedWantsKeys(t: EventTarget | null): boolean {
+  if (kbMode) return true;   // keyboard-nav is active → keep focus in the feed so the arrows land here
   if (document.getElementById("feed-modal")) return true;
   const el = t as HTMLElement | null;
   return !!el && (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) || el.isContentEditable);
@@ -2082,6 +2090,76 @@ window.addEventListener("click", (e) => {
   setTimeout(() => { if (!feedWantsKeys(t)) returnFocusToChat(); }, 0);
 });
 
+// ── keyboard navigation of cards + their elements (the user 2026-07-01) ── the shell hands the feed keyboard
+// focus via {romp:'paneFocus'} (Alt+Arrow); from there plain Arrow keys move a cursor over cards, Enter drops
+// INTO a card and steps its clickable elements, Enter on one ACTIVATES it (a real click), Escape steps back
+// out. Every highlight + action reuses the mouse path — card cursor = the same hoverAskId/applyFocus/showAskPath
+// the hover uses; element cursor dispatches a real mouseenter (so zone highlights + timeline light exactly as on
+// hover) and Enter calls the element's own click() — so the keyboard can never drift from the mouse.
+const KB_EL_SEL = ".fcard-title.nav,.fask-distill-link,.fname,.fask-apiRetry,.fask-revive,.fdismiss,.fcheck .lz-nav,.fask-delegation";
+function kbCardEls(): HTMLElement[] {
+  return Array.from(document.querySelectorAll<HTMLElement>(".feed-cols .fitem:not(.dismissing)"));
+}
+function kbHoverId(el: HTMLElement): string {
+  const key = el.dataset.key || "";
+  return key.startsWith("g:") ? key : key.slice(2);   // group card → "g:<tid>" (applyFocus key); ask/deliverable → itemId
+}
+function kbSelectCard(el: HTMLElement | null): void {
+  kbCardEl = el;
+  const id = el ? kbHoverId(el) : null;
+  hoverAskId = id; applyFocus();                       // the SAME white .focused ring the mouse hover shows
+  if (el) el.scrollIntoView({ block: "nearest" });
+  if (id && !id.startsWith("g:")) vscodeApi?.postMessage({ type: "showAskPath", itemId: id, locate: false });   // same lit timeline journey
+}
+function kbEnterCards(): void {
+  kbMode = "cards";
+  const cards = kbCardEls();
+  kbSelectCard((kbCardEl && cards.indexOf(kbCardEl) >= 0) ? kbCardEl : (cards[0] || null));
+}
+function kbClearEl(): void {
+  document.querySelectorAll(".kbd-focus").forEach((e) => e.classList.remove("kbd-focus"));
+  if (kbEls[kbElIdx]) kbEls[kbElIdx].dispatchEvent(new MouseEvent("mouseleave"));
+}
+function kbSelectEl(idx: number): void {
+  kbClearEl();
+  kbElIdx = idx;
+  const el = kbEls[idx];
+  if (!el) return;
+  el.classList.add("kbd-focus");                       // accent ring so title/Clear/etc read as focused
+  el.scrollIntoView({ block: "nearest" });
+  el.dispatchEvent(new MouseEvent("mouseenter"));       // reuse the element's OWN hover (zone .lz-hl + timeline)
+}
+function kbEnterCard(): void {
+  if (!kbCardEl) return;
+  kbEls = Array.from(kbCardEl.querySelectorAll<HTMLElement>(KB_EL_SEL)).filter((e) => e.offsetParent !== null);
+  if (!kbEls.length) return;                            // nothing focusable inside → stay on the card cursor
+  kbMode = "card"; kbSelectEl(0);
+}
+function kbExitCard(): void { kbClearEl(); kbEls = []; kbElIdx = -1; kbMode = "cards"; }   // back to the card cursor
+function kbExit(): void { kbClearEl(); kbEls = []; kbElIdx = -1; kbMode = ""; kbCardEl = null; hoverAskId = null; applyFocus(); }
+
+window.addEventListener("keydown", (e) => {
+  if (!kbMode) return;
+  if (e.altKey || e.ctrlKey || e.metaKey) return;      // Alt+Arrow is the shell's pane move; leave other combos alone
+  if (document.getElementById("feed-modal")) return;   // the modal owns keys while it's open
+  const k = e.key, fwd = (k === "ArrowDown" || k === "ArrowRight"), back = (k === "ArrowUp" || k === "ArrowLeft");
+  if (kbMode === "cards") {
+    if (fwd || back) {
+      const cards = kbCardEls();
+      let i = kbCardEl ? cards.indexOf(kbCardEl) : -1;
+      if (i < 0 && hoverAskId) i = cards.findIndex((c) => kbHoverId(c) === hoverAskId);   // survive a re-render by key
+      i = (i < 0) ? 0 : Math.max(0, Math.min(cards.length - 1, i + (fwd ? 1 : -1)));
+      e.preventDefault(); kbSelectCard(cards[i] || null);
+    } else if (k === "Enter") { e.preventDefault(); kbEnterCard(); }
+    else if (k === "Escape") { e.preventDefault(); kbExit(); }
+  } else if (kbMode === "card") {
+    if (fwd || back) { e.preventDefault(); kbSelectEl(Math.max(0, Math.min(kbEls.length - 1, kbElIdx + (fwd ? 1 : -1)))); }
+    else if (k === "Enter") { e.preventDefault(); kbEls[kbElIdx]?.click(); }   // EXACTLY a mouse click on that element
+    else if (k === "Escape") { e.preventDefault(); kbExitCard(); }
+  }
+});
+window.addEventListener("blur", () => { if (kbMode) kbExit(); });   // shell moved focus to another pane → drop the cursor
+
 // Re-render when the card-display prefs change: a 'storage' event fires for a change made in ANOTHER
 // same-origin pane/tab, and the ⛭ gear (same document) dispatches a "romp:settings" event after it writes
 // (a same-doc write fires no storage event). Either way the cards re-gate to the new Explanations/Sub-goals.
@@ -2091,6 +2169,7 @@ window.addEventListener("romp:settings", () => render());
 window.addEventListener("message", (e: MessageEvent) => {
   const m = e.data;
   if (!m) return;
+  if (m.romp === "paneFocus") { kbEnterCards(); return; }   // the shell handed us keyboard focus → arm card nav
   if (m.type === "feed") {
     items = Array.isArray(m.items) ? m.items : [];
     const incomingAsks: AskItem[] = Array.isArray(m.asks) ? m.asks : [];

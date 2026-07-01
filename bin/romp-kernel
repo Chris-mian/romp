@@ -7932,14 +7932,49 @@ window.addEventListener('romp-panes',autosize);   // re-fit when the Timeline to
 # mobile (one pane at a time; .pane is display:contents).
 _LANDING_FOCUS_JS = """
 (function(){var PANE={'f-chat':'chat-pane','f-fleet':'fleet-pane','f-feed':'feed-pane','f-timeline':'tl-pane'};   // Fleet is its own pane
+var COLS=['f-chat','f-fleet','f-feed'];   // the side-by-side column panes, left->right (Fleet = the Outline)
+var TL='f-timeline';                       // the timeline is a bottom BAND under the columns
+var curFocus='f-chat', lastCol='f-chat';   // for Shift-Up out of the timeline: return to the last column used
 // The active pane gets a focus RING (.pane-focused). Same-origin iframes, so the shell sets it directly on
 // pointerdown / focusin / window-focus — event-based, no polling. Exactly one pane is ringed at a time.
-function setFocus(id){var pid=PANE[id];if(!pid)return;
+function setFocus(id){var pid=PANE[id];if(!pid)return;curFocus=id;if(COLS.indexOf(id)>=0)lastCol=id;
 for(var k in PANE){var el=document.getElementById(PANE[k]);if(el)el.classList.toggle('pane-focused',PANE[k]===pid);}}
+// SPATIAL cross-pane keyboard nav (the user 2026-07-01): Alt(Option)+Arrow jumps focus between VISIBLE panes —
+// Alt-Left/Right along the columns (Chat <-> Outline <-> Feed, skipping hidden ones), Alt-Down into the
+// timeline band, Alt-Up back out. Alt (not Shift, which selects text; not Ctrl/Cmd, which macOS uses for
+// Spaces / browser back-forward) — the one modifier free outside a text field. Iframes can't focus each other,
+// but the shell (their parent) can; it then posts {romp:'paneFocus'} so the target pane can arm its own
+// intra-pane arrow nav (feed/outline cards). Configurable later; hardcoded for now (the user 2026-07-01).
+function paneVisible(id){var el=document.getElementById(PANE[id]);if(!el)return false;
+try{return getComputedStyle(el).display!=='none';}catch(e){return true;}}
+function visCols(){return COLS.filter(paneVisible);}
+function focusPane(id,dir){var f=document.getElementById(id);if(!f)return;
+try{f.contentWindow.focus();}catch(e){}setFocus(id);
+try{f.contentWindow.postMessage({romp:'paneFocus',dir:dir||'',from:'shell'},'*');}catch(e){}}
+function moveFocus(dir){
+  if(curFocus===TL){                                   // in the timeline band: only Alt-Up leaves it
+    if(dir==='up'){var c=paneVisible(lastCol)?lastCol:(visCols()[0]||null);if(c)focusPane(c,dir);}
+    return;
+  }
+  var cols=visCols(), i=cols.indexOf(curFocus);
+  if(dir==='left'){if(i>0)focusPane(cols[i-1],dir);}
+  else if(dir==='right'){if(i>=0&&i<cols.length-1)focusPane(cols[i+1],dir);}
+  else if(dir==='down'){if(paneVisible(TL))focusPane(TL,dir);}   // up from a column = already the top row, no-op
+}
+function editable(t){if(!t)return false;var tag=(t.tagName||'').toLowerCase();
+return tag==='textarea'||tag==='input'||tag==='select'||t.isContentEditable;}
+function onKey(e){
+  if(!e.altKey||e.shiftKey||e.ctrlKey||e.metaKey)return;   // Alt(Option)+Arrow ONLY (no other modifiers)
+  var dir={ArrowLeft:'left',ArrowRight:'right',ArrowUp:'up',ArrowDown:'down'}[e.key];
+  if(!dir)return;
+  if(editable(e.target))return;   // inside a text field Alt+Arrow does word-jump; only jump panes outside one
+  e.preventDefault();e.stopPropagation();moveFocus(dir);
+}
 function wire(f){try{var d=f.contentDocument;if(!d||d.readyState==='loading')return;   // not ready → its 'load' re-wires
 var emit=function(){setFocus(f.id);};
 d.addEventListener('pointerdown',emit,true);d.addEventListener('focusin',emit,true);
-f.contentWindow.addEventListener('focus',emit);}catch(e){}}
+f.contentWindow.addEventListener('focus',emit);
+d.addEventListener('keydown',onKey,true);}catch(e){}}   // capture Alt+Arrow before the pane's own handlers
 Object.keys(PANE).forEach(function(id){var f=document.getElementById(id);if(!f)return;
 f.addEventListener('load',function(){wire(f);});wire(f);});   // wire now (already-loaded) + on every (re)load
 setFocus('f-chat');})();   // default: the chat section is ringed on open

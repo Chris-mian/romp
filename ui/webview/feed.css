@@ -468,6 +468,9 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 /* background + border-color are set INLINE per card (the hawaii recency tint);
    recent cards read brighter, older ones fade toward dark magenta. The WHOLE card
    is clickable (locate on timeline). Two columns: main content + right rail. */
+/* keyboard-nav element cursor (the user 2026-07-01): an accent ring on the focused clickable element inside a
+   card (title / Clear / summary / sub-goal), so keyboard focus is visible on elements that have no hover style. */
+.kbd-focus { outline: 2px solid var(--accent, #9cd2ff); outline-offset: 1px; border-radius: 4px; }
 .fitem {
   display: flex; gap: 10px; align-items: flex-start;
   border: 1px solid transparent;
