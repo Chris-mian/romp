@@ -1682,6 +1682,17 @@ function showTabTip(tab: HTMLElement, s: Session): void {
 // refresh would otherwise replace the tab bar and destroy the input mid-edit).
 let renameActive = false;
 let renderPendingAfterRename = false;
+// While a pointer is PRESSED on the tab strip, defer re-renders (the user 2026-06-30). renderTabs runs on
+// EVERY kernel push and does `#tabs`.replaceChildren(), so a push that lands between your mousedown and
+// mouseup on a tab's ✕ DESTROYS the pressed node mid-press: the native `click` then never fires (or
+// retargets to the data-act-less #tabs), so the delegate never runs and the "End session?" dialog never
+// opens — the intermittent "the ✕ is sometimes unresponsive" bug (frequent while the fleet is busy = many
+// pushes, rare when idle; NOT focus-related). Delegation alone can't save a click whose pressed node is
+// gone. So we HOLD the rebuild while the strip is pressed and flush it AFTER release — exactly the
+// timeline's _pointerHeld guard (romp-timeline-view.js). The flush is deferred a tick so the click, which
+// dispatches right after pointerup, fires against the still-present node first.
+let tabPointerHeld = false;
+let renderPendingWhilePressed = false;
 // A loading PLACEHOLDER tab (the user 2026-06-26): name + identity color from the kernel's tabOrder push,
 // shown while the session's build_session is still in flight so the strip's full width is reserved up front
 // (no one-by-one pop-in). Non-interactive — no select/close/drag — until the real session arrives and
@@ -1703,6 +1714,7 @@ function makePlaceholderTab(id: string): HTMLElement {
 
 function renderTabs() {
   if (renameActive) { renderPendingAfterRename = true; return; }
+  if (tabPointerHeld) { renderPendingWhilePressed = true; return; }   // don't destroy a tab mid-click (see tabPointerHeld)
   const bar = document.getElementById("tabs");
   if (!bar) return;
   // Preserve TAB-MODE keyboard focus across the rebuild (the user 2026-06-29). renderTabs runs on EVERY kernel
@@ -5020,6 +5032,21 @@ setupSettings();
         });
     },
   });
+  // Click-safe pressing (the user 2026-06-30): hold renderTabs() while a pointer is pressed anywhere on the
+  // strip, so a kernel push mid-press can't replaceChildren() out from under the ✕/tab you're clicking and
+  // drop the click (see tabPointerHeld). #tabs is stable across every rebuild, so this listener is installed
+  // ONCE. Release on pointerup/cancel (anywhere — a press often ends off the tiny ✕) and on blur (the press
+  // may end in another frame / outside the window, where no pointerup reaches us). The flush is a setTimeout(0)
+  // so the click — dispatched immediately after pointerup, before the timer — fires against the live node first.
+  tabs.addEventListener("pointerdown", () => { tabPointerHeld = true; });
+  const releaseTabs = () => {
+    if (!tabPointerHeld) return;
+    tabPointerHeld = false;
+    if (renderPendingWhilePressed) { renderPendingWhilePressed = false; setTimeout(() => renderTabs(), 0); }
+  };
+  window.addEventListener("pointerup", releaseTabs);
+  window.addEventListener("pointercancel", releaseTabs);
+  window.addEventListener("blur", releaseTabs);
 })();
 // right-click a selection in the transcript → Reply (quote it) / Copy
 document.getElementById("content")?.addEventListener("contextmenu", showSelectionMenu);
