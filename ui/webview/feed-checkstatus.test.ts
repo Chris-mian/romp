@@ -14,7 +14,7 @@ test("the manual Nudge button is gone (Auto Nudge replaces it)", () => {
   assert.doesNotMatch(FEED, /nudge\.onclick/);
   assert.doesNotMatch(FEED, /a\._nudge/);
   // the action row is buttons only (the state badges moved up to the name row, 2026-06-19); no Nudge now
-  assert.match(FEED, /actions\.append\(apiRetry, revive, cardFup, clr\)/);
+  assert.match(FEED, /actions\.append\(apiRetry, revive, clr\)/);
 });
 
 test("the modal footer is age · Follow up · Clear (no check-status control)", () => {
@@ -23,13 +23,12 @@ test("the modal footer is age · Follow up · Clear (no check-status control)", 
   assert.match(FEED, /footRow\.append\(age, fup, clr\)/);
 });
 
-test("a card 'Follow up' button on blocked/completed cards jumps straight into the modal composer (the user 2026-06-22)", () => {
-  assert.match(FEED, /const cardFup = el\("button", "fdismiss ffollow fask-fup"\); cardFup\.textContent = "Follow up"/);
-  assert.match(FEED, /actions\.append\(apiRetry, revive, cardFup, clr\)/);
-  // shown ONLY on blocked (needs_input) or completed cards
-  assert.match(FEED, /a\._cardFup\.style\.display = \(\(it\.column === "needs_input" \|\| it\.column === "completed"\) && !it\.provisional\) \? "" : "none"/);
-  // click → open THIS goal's modal AND request the composer pop open on the next render
-  assert.match(FEED, /cardFup\.onclick = \(ev\) => \{ ev\.stopPropagation\(\); fullscreenAskId = it\.itemId; openFollowUpOnRender = true; renderModal\(\); \}/);
-  assert.match(FEED, /if \(openFollowUpOnRender\) \{\s*openFollowUpOnRender = false;\s*if \(fupEl && fupEl\.style\.display !== "none" && fuboxEl && fuinEl\) \{\s*fuboxEl\.style\.display = ""; growFollowUp\(fuinEl\); fuinEl\.focus\(\);/);
+test("the card's own 'Follow up' button is removed — click-to-cite covers it (the user 2026-07-01)", () => {
+  // no card button, no toggle, no stored ref, and the one-click open-modal-into-composer plumbing is gone
+  assert.doesNotMatch(FEED, /fask-fup/, "the card Follow up button (fask-fup) is gone");
+  assert.doesNotMatch(FEED, /a\._cardFup/, "no stored card-Follow-up ref");
+  assert.doesNotMatch(FEED, /openFollowUpOnRender/, "the card-only pop-into-composer flag is removed as dead code");
+  // but the MODAL keeps its own Follow up (and its composer wiring)
+  assert.match(FEED, /const fup = el\("button", "fdismiss ffollow feed-modal-follow"\)/, "the modal Follow up button stays");
   assert.match(FEED, /wireFollowUp\(fupEl, fuboxEl, fuinEl, fusendEl/, "the modal's own Follow up composer is still wired");
 });
