@@ -55,17 +55,14 @@ test("courier handoff: the '↪ from <sender>' origin marker is wired and styled
   assert.match(CSS, /\.fask-origin-peer \{[^}]*font-weight: 600/); // peer bold like other session names
 });
 
-test("a 'Followed up' chip shows while the kernel optimistically reopened a followed-up card (judges, 2026-06-17)", () => {
-  assert.match(FEED, /followupPending\?: boolean/);
-  assert.match(FEED, /el\("span", "fask-followedup"\); fupBadge\.textContent = "↻ Followed up"/);
-  // the chip rides the SESSION-NAME row (right-justified), NOT the bottom action row, so it stops crowding
-  // Clear off the card's right edge (the user 2026-06-18); origin sits left of it on the same wrapping row
+test("the follow-up badge serves ONLY '↩ re-judging' now — the '↻ Followed up' chip was removed (the user 2026-07-01)", () => {
+  assert.match(FEED, /el\("span", "fask-followedup"\); fupBadge\.textContent = "↩ re-judging"/);
+  // the badge rides the SESSION-NAME row (right-justified), NOT the bottom action row
   assert.match(FEED, /row2\.append\(idwrap, origin, reBadge, fupBadge, waitOnBadge\)/);
-  // the chip now serves both states: a soft-block you answered with a TARGETED follow-up shows "↩ re-judging"
-  // (recheck), else a settled card you followed up on shows "↻ Followed up" (the user 2026-06-27/30).
-  assert.match(FEED, /if \(it\.recheck\) \{/);
-  assert.match(FEED, /a\._followedup\.textContent = "↩ re-judging"/);
-  assert.match(FEED, /\} else if \(it\.followupPending\) \{/);
+  // the CARD badge block is now recheck-only: recheck → "↩ re-judging", else hidden. No followupPending branch.
+  // (The modal tree's per-node "↻ Followed up" chip, ftree-followedup, is a separate thing and stays.)
+  assert.match(FEED, /if \(it\.recheck\) \{\s*\n\s*a\._followedup\.style\.display = "";\s*\n\s*a\._followedup\.textContent = "↩ re-judging";[\s\S]*?\} else \{\s*\n\s*a\._followedup\.style\.display = "none";\s*\n\s*\}/);
+  assert.doesNotMatch(FEED, /else if \(it\.followupPending\) \{/, "the card's reopened-to-Working '↻ Followed up' branch is gone");
   assert.match(CSS, /\.fask-followedup \{/);
 });
 
