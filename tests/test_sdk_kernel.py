@@ -160,9 +160,18 @@ class KernelWiring(unittest.TestCase):
                 pass
         return km._drive(msg, {"send": send})
 
+    def _sent_to(self, sid):
+        return [c[2] for c in self.be.calls if c[0] == "send" and c[1] == sid]
+
     def test_askfollowup_resolves_sid_from_itemid(self):
+        # unified with tmux (the user 2026-07-01): an itemId follow-up now sends the WRAPPED body on the SDK
+        # too — the user's text plus the romp-goal-id marker (for the reopen + the chat's ↩ Follow-up header),
+        # no longer raw text. (No goal store in the test → the context quote is empty, so the body is just the
+        # text + the marker tail.)
         self.assertTrue(self._route({"type": "askFollowUp", "itemId": "sid-sdk:g1", "text": "more"}))
-        self.assertIn(("send", "sid-sdk", "more"), self.be.calls)
+        sent = self._sent_to("sid-sdk")
+        self.assertTrue(sent and sent[0].startswith("more"), "the user's text leads the body")
+        self.assertIn("<!-- romp-goal-id: sid-sdk:g1 -->", sent[0], "the goal marker rides along for the reopen")
 
     def test_askfollowup_optimistically_reopens_the_card(self):
         # SDK parity with the tmux path (the user 2026-06-23): a follow-up on an SDK card reopens its goal NOW
@@ -171,7 +180,9 @@ class KernelWiring(unittest.TestCase):
         km.jd.optimistic_followup = lambda sid, gid, **kw: (self.fu_calls.append((sid, gid)), True)[1]   # **kw tolerates text=/now=/stub=
         self.pushes.clear()
         self.assertTrue(self._route({"type": "askFollowUp", "itemId": "sid-sdk:g1", "nudge": True, "text": "status?"}))
-        self.assertIn(("send", "sid-sdk", "status?"), self.be.calls)
+        sent = self._sent_to("sid-sdk")
+        self.assertTrue(sent and "status?" in sent[0], "the follow-up body carries the text")
+        self.assertIn("<!-- romp-injected -->", sent[0], "a nudge is romp-authored → gray bubble marker")
         self.assertIn(("sid-sdk", "sid-sdk:g1"), self.fu_calls, "the SDK follow-up reopens the goal optimistically")
         self.assertTrue(self.pushes, "a reopen pushes the refreshed board at once")
 

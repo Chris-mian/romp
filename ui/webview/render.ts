@@ -4343,17 +4343,75 @@ function updateStatusline() {
 // switching back restores it.
 const drafts = new Map<string, string>();
 
+// A CITATION seeded into the composer when you click a feed card's summary or a sub-goal into the chat (the
+// user 2026-07-01): a dismissible chip that says "you're following up on THIS". It rides the message out as a
+// romp follow-up (via askFollowUp on send), so the goal's context travels along and the goal reopens
+// (done→working, unless cleared). One per session's composer — clicking another card REPLACES it (matches the
+// singular "one of those little boxes"). Keyed by session id like drafts, so it belongs to its tab.
+interface Citation { itemId: string; title: string }
+const composerCitations = new Map<string, Citation>();
+
 // Persist drafts across a full RELOAD (the user 2026-06-25: a half-typed message must survive a refresh, not
 // only a tab switch). The Map is in-memory, so mirror it into the webview's persisted state — the same store
 // that remembers the active tab — and reload it at startup. restoreActiveDraftOnce() drops the active tab's
 // draft back into the box ONE time after load, and only when the box is empty, so it never clobbers live typing.
+// Citations persist alongside drafts (same lifecycle: survive reload + tab switch, cleared on send/dismiss).
 function persistDrafts(): void {
-  try { vscodeApi?.setState?.({ ...(vscodeApi.getState?.() || {}), drafts: Object.fromEntries(drafts) }); } catch { /* ignore */ }
+  try {
+    vscodeApi?.setState?.({ ...(vscodeApi.getState?.() || {}), drafts: Object.fromEntries(drafts),
+                            citations: Object.fromEntries(composerCitations) });
+  } catch { /* ignore */ }
 }
 try {
   const saved = ((vscodeApi?.getState?.() || {}) as any).drafts;
   if (saved && typeof saved === "object") for (const [k, v] of Object.entries(saved)) if (typeof v === "string") drafts.set(k, v);
+  const savedCites = ((vscodeApi?.getState?.() || {}) as any).citations;
+  if (savedCites && typeof savedCites === "object")
+    for (const [k, v] of Object.entries(savedCites))
+      if (v && typeof (v as any).itemId === "string" && typeof (v as any).title === "string")
+        composerCitations.set(k, { itemId: (v as any).itemId, title: (v as any).title });
 } catch { /* ignore */ }
+
+// Render (or clear) the citation chip strip for a session's composer. The chip is a pill in the romp accent
+// with the cited title + an ✕; clicking ✕ dismisses it. It lives ABOVE the textarea (a textarea can't host
+// inline DOM), so it reads as attached-but-separate context, not typed text.
+function renderComposerChips(id: string | null): void {
+  const strip = document.getElementById("composer-chips");
+  if (!strip) return;
+  strip.replaceChildren();
+  const cite = id ? composerCitations.get(id) : undefined;
+  if (!cite) { strip.style.display = "none"; return; }
+  strip.style.display = "flex";
+  const chip = el("div", "composer-chip");
+  chip.title = "following up on: " + cite.title;
+  const mark = el("span", "composer-chip-mark"); mark.textContent = "↩"; chip.appendChild(mark);
+  const label = el("span", "composer-chip-label"); label.textContent = cite.title; chip.appendChild(label);
+  const x = el("button", "composer-chip-x"); x.setAttribute("aria-label", "Remove citation"); x.textContent = "✕";
+  x.addEventListener("click", () => { if (id) removeCitation(id); });
+  chip.appendChild(x);
+  strip.appendChild(chip);
+}
+
+// Seed the citation for a session (from a feed card click that landed in the chat), replacing any prior one.
+function setCitation(id: string, cite: Citation): void {
+  composerCitations.set(id, cite);
+  persistDrafts();
+  if (id === activeId) { renderComposerChips(id); focusComposer(); }
+}
+
+// Dismiss the citation — via the chip ✕ or Backspace at the very start of an empty composer (so it deletes
+// "like a character", as the user asked). Re-focuses the box so typing continues uninterrupted.
+function removeCitation(id: string): void {
+  if (!composerCitations.has(id)) return;
+  composerCitations.delete(id);
+  persistDrafts();
+  if (id === activeId) { renderComposerChips(id); focusComposer(); }
+}
+
+function focusComposer(): void {
+  const ta = document.getElementById("composer-input") as HTMLTextAreaElement | null;
+  ta?.focus();
+}
 let draftsRestored = false;
 function restoreActiveDraftOnce(): void {
   if (draftsRestored) return;
@@ -4361,6 +4419,7 @@ function restoreActiveDraftOnce(): void {
   if (!ta || !activeId) return;            // wait until the active tab is established after load
   draftsRestored = true;
   if (!ta.value) { const d = drafts.get(activeId); if (d) { ta.value = d; growComposer(ta); } }
+  renderComposerChips(activeId);   // a citation persisted across the reload → show its chip again
 }
 
 function setActive(id: string, anchor?: string, anchorT?: number, anchorKind?: string) {
@@ -4382,6 +4441,7 @@ function setActive(id: string, anchor?: string, anchorT?: number, anchorKind?: s
     }
     ta.value = drafts.get(id) ?? "";
     growComposer(ta);
+    renderComposerChips(id);   // the entering tab's own citation chip (if any)
     persistDrafts();   // the leaving tab's draft was just stashed → keep the persisted copy in sync
   }
   pendingAnchor = anchor ?? null;
@@ -4575,7 +4635,7 @@ function dismissSession(id: string): void {
   sessions.delete(id);
   liveAsks.delete(id);
   ledgers.delete(id);
-  drafts.delete(id); persistDrafts();
+  drafts.delete(id); composerCitations.delete(id); persistDrafts();
   const v = views.get(id);
   if (v) { v.el.remove(); views.delete(id); }
   const oi = order.indexOf(id); if (oi >= 0) order.splice(oi, 1);
@@ -4607,7 +4667,11 @@ window.addEventListener("message", (e: MessageEvent) => {
   else if (m.type === "chatHead") chatHead(m);
   else if (m.type === "update") update(m);
   else if (m.type === "status") statusOnly(m);
-  else if (m.type === "focus") setActive(m.id, m.anchor, typeof m.anchorT === "number" ? m.anchorT : undefined, typeof m.anchorKind === "string" ? m.anchorKind : undefined);
+  else if (m.type === "focus") {
+    setActive(m.id, m.anchor, typeof m.anchorT === "number" ? m.anchorT : undefined, typeof m.anchorKind === "string" ? m.anchorKind : undefined);
+    // A feed card click that resolved to a live goal → seed the composer citation chip (the user 2026-07-01).
+    if (m.cite && typeof m.cite.itemId === "string" && typeof m.cite.title === "string") setCitation(m.id, { itemId: m.cite.itemId, title: m.cite.title });
+  }
   else if (m.type === "nextTab") cycleTab(1);
   else if (m.type === "prevTab") cycleTab(-1);
   else if (m.type === "sessionList") { if (typeof m.defaultDir === "string") kernelDefaultDir = m.defaultDir; renderPicker(m.items || []); }
@@ -4708,7 +4772,16 @@ function setupComposer() {
     const text = ta.value.trim();
     if (!text || !activeId) return;
     lastSent.set(activeId, text);   // remembered for a possible Ctrl+C restore
-    if (vscodeApi) vscodeApi.postMessage({ type: "sendMessage", id: activeId, text });
+    // A pending citation chip → send as a FOLLOW-UP on that goal (the user 2026-07-01): askFollowUp wraps the
+    // text with the goal's context + the romp-goal-id marker (kernel side), so the goal reopens (done→working,
+    // unless cleared) and the chat renders the ↩ Follow-up header — the same path the Follow-up button uses,
+    // just seeded by the click. A plain message (no chip) still goes out as sendMessage.
+    const cite = composerCitations.get(activeId);
+    if (vscodeApi) {
+      if (cite) vscodeApi.postMessage({ type: "askFollowUp", itemId: cite.itemId, text });
+      else vscodeApi.postMessage({ type: "sendMessage", id: activeId, text });
+    }
+    if (cite) { composerCitations.delete(activeId); renderComposerChips(activeId); }   // consumed on send
     drafts.delete(activeId); persistDrafts();   // sent — no draft to restore on a later switch-back
     ta.value = "";
     ta.style.height = "";
@@ -4832,6 +4905,14 @@ function setupComposer() {
 
   ta.addEventListener("keydown", (e) => {
     if (slashKey(e)) return;   // the slash menu owns ↑/↓/⏎/Tab/Esc while it's open
+    // Backspace at the very START of the box deletes the citation chip "like a character" (the user
+    // 2026-07-01) — the chip sits just before the caret, so this is the natural way to remove it by keyboard.
+    if (e.key === "Backspace" && !e.metaKey && !e.ctrlKey && ta.selectionStart === 0 && ta.selectionEnd === 0
+        && activeId && composerCitations.has(activeId)) {
+      e.preventDefault();
+      removeCitation(activeId);
+      return;
+    }
     // Ctrl+C = terminal-style interrupt of the active session (Control, not Cmd — on
     // macOS copy is Cmd+C, so this never collides with copy). The host sends Esc to
     // the pane; here we mirror Claude Code's UI: flash a cue, and drop the just-sent

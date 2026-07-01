@@ -436,6 +436,24 @@ body { display: flex; flex-direction: column; }
 }
 #composer { position: relative; max-width: var(--chat-col); margin: 0 auto; padding: 8px 24px 6px; }
 
+/* ── citation chip strip (the user 2026-07-01) ── a click on a feed card summary / sub-goal seeds a
+   dismissible pill here, ABOVE the textarea: "you're following up on THIS". Accent-blue, with an ✕ to
+   dismiss (Backspace-at-start dismisses too). Reads as attached context, not typed text. */
+#composer-chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 0 6px 2px; }
+.composer-chip {
+  display: inline-flex; align-items: center; gap: 5px; max-width: 100%;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  border: 1px solid var(--accent); color: var(--fg);
+  border-radius: 12px; padding: 2px 4px 2px 8px; font-size: 12px; line-height: 1.4;
+}
+.composer-chip-mark { color: var(--accent); font-weight: 600; }
+.composer-chip-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 42ch; }
+.composer-chip-x {
+  flex: 0 0 auto; border: none; background: none; cursor: pointer; color: var(--dim);
+  font-size: 11px; line-height: 1; padding: 2px 4px; border-radius: 8px;
+}
+.composer-chip-x:hover { color: var(--fg); background: color-mix(in srgb, var(--accent) 28%, transparent); }
+
 /* ── slash-command autocomplete popup (the user 2026-06-29) ── a filterable, arrow-navigable menu of the
    session's slash commands, floating just above the composer. Selected row uses the romp accent. */
 .slash-pop {
