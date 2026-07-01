@@ -7846,6 +7846,19 @@ var r=el.getBoundingClientRect();tip.style.display='block';
 tip.style.left=(r.right+9)+'px';tip.style.top=Math.max(6,Math.min(window.innerHeight-tip.offsetHeight-6,r.top-4))+'px';}
 el.addEventListener('mouseenter',showTip);
 el.addEventListener('mouseleave',function(){tip.style.display='none';});
+// Click-to-refresh (the user 2026-06-30): the bars already re-read each poll, but a click forces the SAME
+// check NOW — GET /usage re-reads usage.json (the snapshot Claude Code's statusline writes) and re-renders
+// immediately. The listener sits on the STABLE #rail-usage container, so render()'s innerHTML swap can't drop
+// it; the click is acknowledged instantly (dim pulse) BEFORE the round-trip, per the button rules.
+el.style.cursor='pointer';el.title='Click to refresh usage';
+var _ruBusy=false;
+el.addEventListener('click',function(){if(_ruBusy)return;_ruBusy=true;
+el.style.opacity='0.45';                         // instant ack, before the fetch
+tip.style.display='none';
+var done=function(){_ruBusy=false;el.style.opacity='';};
+fetch('/usage',{cache:'no-store'}).then(function(r){return r.ok?r.json():null;})
+.then(function(u){render(u&&(u.fiveHour||u.sevenDay)?u:null);done();})
+.catch(function(){done();});});
 // Vertical-fit (the user 2026-06-27): when the scrollable top group can't hold the toggles + usage bars, drop
 // the USAGE bars first (.rail-tight). The refresh/gear live in the FIXED .rail-acts below, so they're never
 // pushed off; if even the toggles don't fit, .rail-scroll scrolls them (hidden scrollbar). Re-checked on
@@ -8459,6 +8472,11 @@ class Handler(BaseHTTPRequestHandler):
                                   "application/json", cache="no-cache")
             if p == "/palette":                               # the session-identity palette for the tab right-click color picker
                 return self._send(200, json.dumps({"colors": _PALETTE}), "application/json", cache="no-cache")
+            if p == "/usage":                                 # the /usage rate-limit bars, re-read on demand: the rail's
+                # usage widget is click-to-refresh (the user 2026-06-30). Same mechanism the push already uses —
+                # _usage() re-reads usage.json (the snapshot Claude Code's statusline writes) — just forced NOW
+                # instead of on the next poll, so a click surfaces the freshest on-disk snapshot immediately.
+                return self._send(200, json.dumps(_usage() or {}), "application/json", cache="no-cache")
             if p == "/ssh-hosts":                             # ~/.ssh/config Host aliases for the attach-a-remote UI
                 return self._send(200, json.dumps({"hosts": _ssh_config_hosts()}),
                                   "application/json", cache="no-cache")
