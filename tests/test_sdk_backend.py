@@ -11,10 +11,12 @@ Two layers:
     PermissionResultAllow(updated_input={questions, answers}) goes back.
 """
 import os
+import json
 import threading
 import time
 import tempfile
 import unittest
+from pathlib import Path
 from importlib.machinery import SourceFileLoader
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -1490,6 +1492,60 @@ class ReconnectReconcilesInflight(unittest.TestCase):
         self.assertEqual(sb.last_state(self.d, sid).get("state"), "waiting",
                          "the state log agrees — else snapshot's last_state branch re-reads the stale 'working'")
         self.backend.kill(sid)
+
+
+class RateLimitUsageStaleness(unittest.TestCase):
+    """usage.json (the /usage rail's 5h + weekly bars) is written by BOTH the tmux statusline — the CLI's
+    CURRENT rate_limits handed to it every render, always fresh — and the SDK backend, which only sees the
+    transition-gated RateLimitEvent (emitted on a status change, NOT on a plain utilization reset). So this
+    backend's five_hour can be hours stale. It must NEVER clobber a fresher window already in the file (the
+    user 2026-07-01: `/usage` read 5h=69% but the rail showed 0% — an SDK seven_day event re-wrote usage.json
+    dragging its own hours-old five_hour over the statusline's 69%)."""
+
+    def _info(self, rlt, util, resets_at):
+        class _I:
+            pass
+        i = _I()
+        i.rate_limit_type, i.utilization, i.resets_at, i.status = rlt, util, resets_at, "allowed"
+        return i
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.be = sb.SdkBackend(self.d, "/bin/true", lambda *a, **k: None)
+
+    def _usage(self):
+        return json.loads((Path(self.d) / "usage.json").read_text())
+
+    def _write_usage(self, data):
+        (Path(self.d) / "usage.json").write_text(json.dumps(data))
+
+    def test_sdk_event_does_not_clobber_the_statuslines_fresh_five_hour(self):
+        now = int(time.time())
+        # 1) the SDK once saw a five_hour reading; that window has since RESET, so its resets_at is now past.
+        self.be._record_rate_limit(self._info("five_hour", 0.0, now - 9 * 3600))
+        # 2) the tmux statusline then wrote a FRESH snapshot (current rate_limits every render): 5h=69%, wk=65%.
+        self._write_usage({"t": now, "five_hour": {"pct": 69, "resets_at": now + 3600},
+                                       "seven_day": {"pct": 65, "resets_at": now + 500000}})
+        # 3) a seven_day RateLimitEvent fires — the write must NOT drag the stale five_hour back over 69%.
+        self.be._record_rate_limit(self._info("seven_day", 0.65, now + 500000))
+        out = self._usage()
+        self.assertEqual(out["five_hour"]["pct"], 69,
+                         "the statusline's fresh five_hour must survive an SDK seven_day write, not be clobbered")
+        self.assertEqual(out["seven_day"]["pct"], 65)
+
+    def test_higher_pct_wins_within_the_same_window(self):
+        # Same window (same resets_at): usage only climbs within a window, so the higher pct is the newer read.
+        now = int(time.time())
+        self._write_usage({"t": now, "five_hour": {"pct": 69, "resets_at": now + 3600}, "seven_day": None})
+        self.be._record_rate_limit(self._info("five_hour", 0.10, now + 3600))   # a stale low read, same window
+        self.assertEqual(self._usage()["five_hour"]["pct"], 69, "a stale lower read must not lower the bar")
+
+    def test_a_genuinely_newer_window_replaces_an_older_one(self):
+        # A later resets_at IS a newer window (the old one reset): the fresh low read is correct, take it.
+        now = int(time.time())
+        self._write_usage({"t": now, "five_hour": {"pct": 90, "resets_at": now + 60}, "seven_day": None})
+        self.be._record_rate_limit(self._info("five_hour", 0.05, now + 5 * 3600))   # window reset → new window
+        self.assertEqual(self._usage()["five_hour"]["pct"], 5, "a genuinely newer window replaces the old one")
 
 
 if __name__ == "__main__":

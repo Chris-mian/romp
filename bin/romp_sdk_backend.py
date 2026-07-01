@@ -1154,10 +1154,31 @@ class SdkBackend:
                 cur = {}
         except Exception:
             cur = {}
-        if five is None:
-            five = cur.get("five_hour")
-        if seven is None:
-            seven = cur.get("seven_day")
+        # PREFER THE FRESHER READING PER WINDOW — never let this backend's data clobber a fresher value in the
+        # file (the user 2026-07-01: /usage read 5h=69% but the rail showed 0%). The statusline writes the CLI's
+        # current rate_limits on every render (always fresh); this backend only sees the transition-gated
+        # RateLimitEvent (the CLI emits it on a status change — allowed↔warning↔rejected — NOT on a plain
+        # utilization reset), so our five_hour can be hours stale. Freshness is authoritative, not a heuristic:
+        # a LATER resets_at is a newer window, and WITHIN a window utilization only climbs (it drops only at the
+        # reset, which advances resets_at), so a higher pct is the more recent reading; an EXPIRED window
+        # (resets_at already passed) loses to any live one. So an SDK seven_day event can no longer drag a stale
+        # five_hour back over the statusline's fresh one.
+        now_ = int(time.time())
+        def fresher(a, b):
+            if not a:
+                return b
+            if not b:
+                return a
+            ra_a = a.get("resets_at") if isinstance(a.get("resets_at"), (int, float)) else None
+            ra_b = b.get("resets_at") if isinstance(b.get("resets_at"), (int, float)) else None
+            live_a, live_b = (ra_a is not None and ra_a > now_), (ra_b is not None and ra_b > now_)
+            if live_a != live_b:                                  # a live window beats an expired/undated one
+                return a if live_a else b
+            if ra_a is not None and ra_b is not None and ra_a != ra_b:
+                return a if ra_a > ra_b else b                    # newer window (later reset) wins
+            return a if (a.get("pct") or 0) >= (b.get("pct") or 0) else b   # same window → higher (later) usage
+        five = fresher(five, cur.get("five_hour"))
+        seven = fresher(seven, cur.get("seven_day"))
         if not five and not seven:
             return
         data = {"t": int(time.time()), "five_hour": five, "seven_day": seven}
