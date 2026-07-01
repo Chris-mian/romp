@@ -853,7 +853,23 @@ class SdkSession:
         elif getattr(msg, "rate_limit_info", None) is not None:
             # A RateLimitEvent: the account-wide /usage limits (5h + weekly) the CLI streams when the limit state
             # changes — the SDK's designed source for the rail usage bars. Duck-typed (no SDK-type import needed).
-            self.backend._record_rate_limit(msg.rate_limit_info)
+            info = msg.rate_limit_info
+            # CADENCE INSTRUMENTATION (the user 2026-07-01, TEMPORARY): before dropping the usage.json/statusline
+            # path in favor of reading the SDK's in-memory rate-limit state, measure how OFTEN these events
+            # actually arrive. The SDK docs say they fire only on status TRANSITIONS (sparse) — if that's true,
+            # event-only can't keep the 5h bar live as usage climbs and we'll need a staleness cue; if they
+            # actually arrive ~per-turn, the in-memory-SDK design is fully fresh. One jsonl line per arrival →
+            # analyze the real frequency, then remove this. Best-effort; never disturbs the stream.
+            try:
+                with open(self.backend.state_dir / "rate-limit-events.jsonl", "a") as _f:
+                    _f.write(json.dumps({"t": int(time.time()), "sid": self.sid, "name": self.name,
+                                         "type": getattr(info, "rate_limit_type", None),
+                                         "util": getattr(info, "utilization", None),
+                                         "status": getattr(info, "status", None),
+                                         "resets_at": getattr(info, "resets_at", None)}) + "\n")
+            except Exception:
+                pass
+            self.backend._record_rate_limit(info)
         # Forward the raw message to the kernel for live chat/event use.
         self.backend._forward(self, msg)
 

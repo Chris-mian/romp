@@ -1547,6 +1547,26 @@ class RateLimitUsageStaleness(unittest.TestCase):
         self.be._record_rate_limit(self._info("five_hour", 0.05, now + 5 * 3600))   # window reset → new window
         self.assertEqual(self._usage()["five_hour"]["pct"], 5, "a genuinely newer window replaces the old one")
 
+    def test_rate_limit_event_is_logged_for_cadence_measurement(self):
+        # TEMPORARY instrumentation (2026-07-01): every RateLimitEvent arrival appends one jsonl line, so we can
+        # measure how often the SDK actually streams them before deciding whether event-only tracking is fresh
+        # enough to drop the usage.json/statusline path.
+        s = sb.SdkSession(self.be, {"sid": "11111111-2222-3333-4444-555555555555", "name": "n", "cwd": self.d})
+
+        class _Msg:            # a duck-typed RateLimitEvent (the branch keys off `rate_limit_info`)
+            pass
+        m = _Msg()
+        m.rate_limit_info = self._info("five_hour", 0.42, int(time.time()) + 3600)
+
+        class _T:              # dummy type classes — the msg is none of Assistant/Result/System
+            pass
+        s._on_message(m, _T, _T, _T)
+        lines = [json.loads(l) for l in (Path(self.d) / "rate-limit-events.jsonl").read_text().splitlines()]
+        self.assertEqual(len(lines), 1, "one line logged per RateLimitEvent")
+        self.assertEqual(lines[0]["type"], "five_hour")
+        self.assertEqual(lines[0]["util"], 0.42)
+        self.assertEqual(lines[0]["name"], "n")
+
 
 if __name__ == "__main__":
     unittest.main()
