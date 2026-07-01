@@ -48,6 +48,11 @@ class SettingsSectionsTest(unittest.TestCase):
         self.assertLess(h.index(">Judges<"), h.index("id=ra-open"))
         self.assertLess(h.index(">Judges<"), h.index("id=rsver"))
         self.assertNotIn("id=rs-debug", h)   # the single Debug toggle is gone
+        # the judge toggles read as a DEBUG *show* control, not an on/off for the judges (the user 2026-06-30):
+        # labels lead with "Show", and the sub spells out that it doesn't enable/disable them
+        self.assertIn("<b>Show indexing judges</b>", h)
+        self.assertIn("<b>Show triage judges</b>", h)
+        self.assertIn("does NOT turn the judges on or off", h)
 
     def test_collapse_gaps_is_wired_to_the_shared_collapseGaps_setting(self):
         # the gear JS persists/loads romp:settings.collapseGaps; the timeline reads it (see romp-timeline-view.js)

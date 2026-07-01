@@ -7311,17 +7311,19 @@ def _gear_html():
               "<span class=rs-sub>Squish long idle stretches (no work on any lane — e.g. overnight) into a thin break on the timeline, so the active periods get the width.</span>"
               "</span></label>"
               "<div class=rs-sec>Judges</div>"
-              # the timeline's judging band, split into its two judge SETS (the user 2026-06-29): index = the
-              # captioner + archiver; triage = the planner/grouper/closer/distiller/courier. Two checkboxes on
-              # ONE row, each gating its set's row(s) on the band. (Replaces the old single Debug-mode toggle.)
+              # DEBUG VISUALIZATION ONLY (the user 2026-06-30): these two toggles just SHOW each judge SET's
+              # activity on the timeline's judging band — they do NOT enable/disable the judges (which always
+              # run). Labels lead with "Show" + the sub spells out "doesn't turn them on/off" so it can't be
+              # misread as an activation switch. index = captioner + archiver; triage = planner/grouper/closer/
+              # distiller/courier. Two checkboxes on ONE row. (Replaces the old single Debug-mode toggle.)
               "<div class=rs-judges>"
               "<label class=rs-row rs-half><input type=checkbox id=rs-judges-index>"
-              "<span><b>Indexing judges</b>"
-              "<span class=rs-sub>Show the captioner + archiver on the timeline's judging band.</span>"
+              "<span><b>Show indexing judges</b>"
+              "<span class=rs-sub>Debug view: draws the captioner + archiver on the timeline's judging band. It does NOT turn the judges on or off — they always run; this only shows their activity.</span>"
               "</span></label>"
               "<label class=rs-row rs-half><input type=checkbox id=rs-judges-triage>"
-              "<span><b>Triage judges</b>"
-              "<span class=rs-sub>Show the planner, grouper, closer, distiller + courier on the judging band.</span>"
+              "<span><b>Show triage judges</b>"
+              "<span class=rs-sub>Debug view: draws the planner, grouper, closer, distiller + courier on the timeline's judging band. It does NOT turn the judges on or off — they always run; this only shows their activity.</span>"
               "</span></label>"
               "</div>"
               "<div class=rs-sec>Keyboard shortcuts</div>"
