@@ -823,6 +823,9 @@ PLAN_SYS = (
     "it working, and asking 'shall I proceed?' blocks when the go-ahead is owed by the user — but if it "
     "is waiting on work it dispatched or delegated in order to proceed (agents, a peer, a build), that is "
     "not a block, it stays working. (Use \"ref\":<k> to block a node created in this reply.)\n"
+    '- {\"why\",\"do\":\"retitle\",\"goal\":<n>,\"text\":\"<new title ≤10 words>\"}: change the title of '
+    "goal #n itself. Only valid on the ONE goal a <note> explicitly names as retitle-eligible for this segment; "
+    "invalid on any other listed goal, so only emit this when such a <note> is present.\n"
     '- {\"why\",\"do\":\"skip\"}: only a segment with no real user message that also did no real work, '
     "a system notification, an SDK/automated turn, an interruption or empty/aborted turn. A segment "
     "that carries a real user message is flagged with a <note> after the open-goals; never skip that "
@@ -866,11 +869,13 @@ PLAN_PROMPT_SYS = (
 
 def _parse_plan(raw, menu_len):
     """Parse the planner's JSON reply into an ORDERED list of normalized ops, or None if nothing is
-    usable. Expected: {"ops": [ {"why", "do": mint|sub|done|block|skip, ...}, ... ]}. Tolerant:
+    usable. Expected: {"ops": [ {"why", "do": mint|sub|done|block|retitle|skip, ...}, ... ]}. Tolerant:
     isolates the outermost {...} (ignoring code fences / surrounding prose), drops malformed ops but
     keeps the good ones, and a bad menu ref on a sub falls back to a mint (never orphan real work) while
-    a bad ref on done/block drops that op. Returns [] never — None when there is no usable JSON,
-    else a non-empty list (a single {"do":"skip"} signals a no-work segment)."""
+    a bad ref on done/block/retitle drops that op. Returns [] never — None when there is no usable JSON,
+    else a non-empty list (a single {"do":"skip"} signals a no-work segment). retitle is further
+    restricted by the CALLER (_plan_session) to the one goal # a call's <note> named eligible — never
+    trust it against the wider menu here, since this parser has no notion of which call this was."""
     obj = _json_obj(raw)                                # outermost {...}; tolerates ``` fences + prose
     if obj is None:
         return None
@@ -915,6 +920,10 @@ def _parse_plan(raw, menu_len):
                 ops.append({"do": do, "why": why, "goal": g})
             elif r and r >= 1:
                 ops.append({"do": do, "why": why, "ref": r})           # resolved against this reply's mints
+        elif do == "retitle":
+            g = _int(o, "goal")                         # goal-only (no "ref"): retitle targets a PRE-EXISTING
+            if g and 1 <= g <= menu_len and _has_alpha(text):   # node, never a same-reply mint
+                ops.append({"do": "retitle", "why": why, "goal": g, "text": text})
     return ops or None
 
 
@@ -1020,6 +1029,13 @@ def _goal_work_text(store, seg_by_id, nid, char_cap, subtree=True):
     if len(work) > char_cap:                            # keep the most recent tail (matches the distiller's bound)
         work = "…\n\n" + work[-char_cap:]
     return work
+
+
+def _restrict_retitle(ops, allowed):
+    """Drop any `retitle` op that doesn't target `allowed` — the one goal # a call's <note> told the model
+    it may retitle (see plan_llm). A defensive floor against the model retitling some OTHER listed goal;
+    `allowed=None` drops every retitle (no eligible goal this call)."""
+    return [o for o in ops if o["do"] != "retitle" or o.get("goal") == allowed]
 
 
 def _depth(nodes, nid):
@@ -1130,6 +1146,11 @@ def apply_plan(store, seg_id, seg_t, ops, menu, place_key=None):
             t = _target(o)
             if t:
                 nodes[t]["blocked"] = True; nodes[t]["blockWhy"] = o["why"]
+                nodes[t]["mt"] = seg_t; touched = t
+        elif do == "retitle":
+            t = _target(o)                              # the caller has already restricted `goal` to the
+            if t:                                        # one goal # this call's <note> named eligible
+                nodes[t]["text"] = o["text"]
                 nodes[t]["mt"] = seg_t; touched = t
     placements[place_key] = focus if focus is not None else touched   # key presence marks the phase processed
     if focus is not None:
@@ -1266,14 +1287,19 @@ def plan_llm(segment_text, menu_text, model=None, effort=None, human=False, nudg
     here — the kernel's auto-nudge gate already SKIPS nudging a session waiting on a live peer (2026-06-22),
     so anything that gets a nudge segment is genuinely stalled. goal_history/goal_num (the user 2026-07-01):
     when this segment is a KNOWN continuation of one specific open goal (a tagged follow-up, a nudge, a
-    delegation), goal_history is that goal's own raw work-so-far (see _goal_work_text) and goal_num is its
-    <open-goals> index — richer grounding than the goal's one-line title alone. Cap is generous (a multi-op
+    delegation, or the WORK-run's own earlier PROMPT-run placement), goal_history is that goal's own raw
+    work-so-far (see _goal_work_text, '' when there's none yet) and goal_num is its <open-goals> index —
+    richer grounding than the goal's one-line title alone, PLUS it's the only goal `retitle` may target
+    this call (the caller then enforces that restriction when applying ops). Cap is generous (a multi-op
     reply is long)."""
     user = "<segment>\n%s\n</segment>\n<open-goals>\n%s\n</open-goals>" % (segment_text, menu_text)
-    if goal_history and goal_num:
-        user += ("\n<goal-history>\n%s\n</goal-history>\n<note>The above is goal #%d's own raw work logged "
-                 "so far — richer than its one-line title in <open-goals>. Weigh it, not just the title, "
-                 "when placing or resolving #%d.</note>" % (goal_history, goal_num, goal_num))
+    if goal_num:
+        if goal_history:
+            user += ("\n<goal-history>\n%s\n</goal-history>\n<note>The above is goal #%d's own raw work logged "
+                     "so far — richer than its one-line title in <open-goals>. Weigh it, not just the title, "
+                     "when placing or resolving #%d.</note>" % (goal_history, goal_num, goal_num))
+        user += ("\n<note>This segment is about goal #%d specifically — \"retitle\" is valid ONLY on #%d, "
+                 "never on any other listed goal.</note>" % (goal_num, goal_num))
     if nudge:
         user += ("\n<note>This segment is a romp NUDGE — an automated status check on goal #1 still showing "
                  "'working', NOT a real user request. RESOLVE goal #1: mark it DONE if its outcome is already "
@@ -1729,12 +1755,13 @@ def _plan_session(fsid, path, now):
     tree's open menu) and GROUP after every placement (the user 2026-06-17: planner + grouper are both
     segment-level; the closer is turn-level), then roll up status gated by settled. TWO-RUN (the user
     2026-06-21, via link_audit): a human segment is planned twice — a PROMPT-run when its message lands
-    (mint-or-amend, so the goal shows immediately) and a WORK-run when the work ends (amend/complete/block),
-    deduped independently via (segment-id, phase). A tagged FOLLOW-UP reopens its target goal and forces the
-    new work UNDER it (work-run only). A POSTAL DELEGATION files its work UNDER the COURIER's planted goal G
-    with the SAME sub/done/block expressivity a human-minted top gets, only re-rooted under G (work-run only,
-    keyed seg#d; skipped — and left re-examinable — until the courier plants a real goal). Returns placements
-    made."""
+    (mint-or-sub, so the goal shows immediately) and a WORK-run when the work ends (sub/done/block, plus a
+    RETITLE of its own prompt-run guess when the finished work reveals a better title — the user
+    2026-07-01), deduped independently via (segment-id, phase). A tagged FOLLOW-UP reopens its target goal
+    and forces the new work UNDER it (work-run only; may also retitle that one goal). A POSTAL DELEGATION
+    files its work UNDER the COURIER's planted goal G with the SAME sub/done/block/retitle expressivity a
+    human-minted top gets, only re-rooted under G (work-run only, keyed seg#d; skipped — and left
+    re-examinable — until the courier plants a real goal). Returns placements made."""
     _judge_ctx.fsid = fsid                            # usage logging: attribute this session's judge calls
     session = parsed_session(fsid, [path], now)
     store = load_goals(fsid)
@@ -1803,6 +1830,7 @@ def _plan_session(fsid, path, now):
             # never a competing top. Skips drop; an empty/skip-only reply falls back to one sub under G.
             ops = [{"do": "sub", "under": 1, "text": o.get("text"), "why": o.get("why")}
                    if o["do"] == "mint" else o for o in ops if o["do"] != "skip"]
+            ops = _restrict_retitle(ops, 1)              # goal_num=1 above → retitle is only valid on #1
             if not ops:
                 ops = [{"do": "sub", "under": 1, "text": _seg_label(text), "why": "work handed off from a peer"}]
             apply_plan(store, seg_id, seg_t, ops, sub, place_key=seg_id + "#d")
@@ -1845,6 +1873,7 @@ def _plan_session(fsid, path, now):
             # auto-nudge re-armed forever (infinite nudge loop on a genuinely-finished goal).
             ops = [{"do": "sub", "under": 1, "text": o.get("text"), "why": o.get("why")}
                    if o["do"] == "mint" else o for o in ops if o["do"] != "skip"]
+            ops = _restrict_retitle(ops, 1)              # goal_num=1 above → retitle is only valid on #1
             apply_plan(store, seg_id, seg_t, ops, sub)
             placed += 1
             _group_store(store, fsid, now)
@@ -1861,15 +1890,26 @@ def _plan_session(fsid, path, now):
                 hist = _goal_work_text(store, seg_by_id, followup, GOAL_HISTORY_CHARS)
                 ops = _parse_plan(plan_llm(text, _menu_text(store, menu), human=True,
                                            goal_history=hist, goal_num=gi), len(menu)) or []
-                desc = next((o for o in ops if o.get("text")), None)   # reuse the planner's description, force the parent
+                retitle = next((o for o in ops if o["do"] == "retitle" and o.get("goal") == gi), None)
+                desc = next((o for o in ops if o.get("text") and o["do"] != "retitle"), None)   # reuse the
+                # planner's description, force the parent — exclude retitle, whose "text" is a new TITLE, not a step
                 step = (desc or {}).get("text") or _seg_label(text)
                 why = (desc or {}).get("why") or "followed up on this goal"
-                apply_plan(store, seg_id, seg_t, [{"do": "sub", "under": gi, "text": step, "why": why}], menu)
+                forced = [{"do": "sub", "under": gi, "text": step, "why": why}]
+                if retitle:
+                    forced.append(retitle)              # the model may ALSO retitle #gi itself (the user 2026-07-01)
+                apply_plan(store, seg_id, seg_t, forced, menu)
                 placed += 1
                 _group_store(store, fsid, now)
                 save_goals(fsid, store)
                 continue                               # forced placement done; skip the free-placement path
-        ops = _parse_plan(plan_llm(text, _menu_text(store, menu), human=human), len(menu))
+        # The WORK-run may correct its OWN earlier PROMPT-run guess (the user 2026-07-01): if this exact
+        # segment already has a prompt-run placement, that node's current menu # is the one goal `retitle`
+        # may target here — no goal_history (its trail is just this same segment, nothing new to show).
+        p_target = store["placements"].get(seg_id + "#p")
+        pgi = (next((i for i, nd in enumerate(menu, 1) if nd["id"] == p_target), None)
+               if isinstance(p_target, str) else None)
+        ops = _parse_plan(plan_llm(text, _menu_text(store, menu), human=human, goal_num=pgi), len(menu))
         if not ops:
             _log_judge_error("planner", fsid, "parse")
             fails = store.setdefault("parseFails", {})
@@ -1893,6 +1933,7 @@ def _plan_session(fsid, path, now):
                 continue
             ops = _coerce_place(menu, text)           # HARD GUARD: a user message never silently vanishes
         store.get("parseFails", {}).pop(seg_id, None)  # placed → forget any earlier parse-fails on it
+        ops = _restrict_retitle(ops, pgi)              # only the segment's own prompt-run node is retitle-eligible
         apply_plan(store, seg_id, seg_t, ops, menu)
         placed += 1
         _group_store(store, fsid, now)                # regroup the forest after this placement (event-gated, no-op if tops unchanged)
@@ -1988,10 +2029,11 @@ GROUP_SYS = (
     '- {\"why\",\"do\":\"mint\",\"text\":\"<outcome ≤10 words>\"}: a new higher-level umbrella goal '
     "naming a shared outcome, created to nest existing tops under.\n"
     '- {\"why\",\"do\":\"group\",\"goal\":<n>,\"under\":<m>}: relink open top #n (its whole subtree '
-    "comes with it) to sit under top #m. Use \"ref\":<k> instead of \"under\" to nest #n under an "
-    "umbrella you minted earlier in this reply (k = that mint's 1-based position among the ops). #n and "
-    f"#m are open-goals numbers; #n must differ from #m. Keep trees shallow: do not nest more than {MAX_DEPTH} "
-    "levels deep.\n"
+    "comes with it) to sit under top #m. Optionally add \"retitle\":\"<new text ≤10 words>\" to also "
+    "change #n's own title, e.g. when nesting it under #m reveals #n's current title no longer fits. Use "
+    "\"ref\":<k> instead of \"under\" to nest #n under an umbrella you minted earlier in this reply (k = "
+    "that mint's 1-based position among the ops). #n and #m are open-goals numbers; #n must differ from "
+    f"#m. Keep trees shallow: do not nest more than {MAX_DEPTH} levels deep.\n"
     "Be aggressive about grouping a real shared purpose, since a few real trees beat a flat list of "
     "every request, but never group on look-alike wording alone, and leave a standalone goal as its "
     "own top. Reuse an existing umbrella rather than minting a duplicate. Doing nothing is a valid, "
@@ -2111,11 +2153,18 @@ def _parse_group(raw, menu_len):
                 ops.append({"do": "mint", "why": why, "text": text})
         elif do == "group":
             g, n, r = _int(o, "goal"), _int(o, "under"), _int(o, "ref")
+            retitle = " ".join(str(o.get("retitle", "")).split())[:120]
+            retitle = retitle if re.sub(r"[^A-Za-z]", "", retitle) else ""
             if g and 1 <= g <= menu_len:                                # relink an open top under another node
                 if n and 1 <= n <= menu_len and n != g:
-                    ops.append({"do": "group", "why": why, "goal": g, "under": n})
+                    op = {"do": "group", "why": why, "goal": g, "under": n}
                 elif r and r >= 1:
-                    ops.append({"do": "group", "why": why, "goal": g, "ref": r})
+                    op = {"do": "group", "why": why, "goal": g, "ref": r}
+                else:
+                    continue
+                if retitle:
+                    op["retitle"] = retitle
+                ops.append(op)
     return ops
 
 
@@ -2177,6 +2226,8 @@ def apply_group(store, tops, ops, t, allow_done=False):
         while _depth(nodes, parent) >= MAX_DEPTH:      # keep trees shallow; clamp the parent up
             parent = nodes[parent]["parentId"]
         nodes[child]["parentId"] = parent
+        if o.get("retitle"):                           # the user 2026-07-01: a relink may also correct the
+            nodes[child]["text"] = o["retitle"]         # child's own title, now that it sits under `parent`
         nodes[child]["mt"] = t
         relinks += 1
 

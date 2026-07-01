@@ -574,6 +574,21 @@ class PlanParse(unittest.TestCase):
         raw = '{"ops":[{"why":"y","do":"mint","text":"A"}]}{not json {at all}}'
         self.assertEqual(jd._parse_plan(raw, 3)[0]["text"], "A")
 
+    def test_retitle_parses_with_valid_goal_and_text(self):
+        # retitle (the user 2026-07-01, narrower than the cut amend): a goal-number op, no "ref" (it only
+        # ever targets a PRE-existing node, never a same-reply mint).
+        self.assertEqual(jd._parse_plan('{"ops":[{"why":"scope grew","do":"retitle","goal":1,'
+                                        '"text":"Bigger goal"}]}', 2),
+                         [{"do": "retitle", "why": "scope grew", "goal": 1, "text": "Bigger goal"}])
+
+    def test_retitle_out_of_range_goal_dropped(self):
+        self.assertIsNone(jd._parse_plan('{"ops":[{"why":"x","do":"retitle","goal":9,"text":"y"}]}', 2),
+                          "an out-of-range retitle target -> dropped -> no usable op")
+
+    def test_retitle_empty_text_dropped(self):
+        self.assertIsNone(jd._parse_plan('{"ops":[{"why":"x","do":"retitle","goal":1,"text":"   "}]}', 2),
+                          "a retitle with no real text is dropped, same as mint/sub")
+
 
 class PlanParseStorm(unittest.TestCase):
     """A planner reply that never parses must not retry forever (the user 2026-06-18). After
@@ -701,6 +716,50 @@ class TwoRunPlanner(unittest.TestCase):
         self.assertTrue(any(k.endswith("#p") for k in keys) and any(not k.endswith("#p") for k in keys),
                         "both phases placed, keyed independently (seg#p + seg)")
 
+    def test_work_run_retitles_its_own_prompt_run_guess(self):
+        # the user 2026-07-01: the PROMPT-run's title is a guess from the message alone; once the WORK-run
+        # sees the actual work, it may correct that ONE node's title (never any other listed goal).
+        open_recs = [uline(T0, "build the export feature", "u1", ps="typed"),
+                     aline(T0 + 10, "on it…", "a1", "u1", stop=None)]
+        ended_recs = [uline(T0, "build the export feature", "u1", ps="typed"),
+                      aline(T0 + 10, "Turns out this needs a full import/export round-trip.",
+                            "a1", "u1", stop="end_turn")]
+        store = self._plan_two(open_recs, ended_recs,
+                               prompt=lambda *a, **k: '{"ops":[{"why":"new ask","do":"mint","text":"Export feature"}]}',
+                               work=lambda *a, **k: ('{"ops":[{"why":"broader scope","do":"retitle","goal":1,'
+                                                     '"text":"Import/export round-trip"},'
+                                                     '{"why":"shipped the round-trip","do":"sub","under":1,'
+                                                     '"text":"built the round-trip"}]}'))
+        tops = [nd for nd in store["nodes"].values() if nd["parentId"] is None]
+        self.assertEqual(len(tops), 1)
+        self.assertEqual(tops[0]["text"], "Import/export round-trip",
+                         "the work-run corrected its own prompt-run guess")
+
+    def test_work_run_offered_retitle_only_on_its_own_prompt_placement(self):
+        calls = []
+
+        def work(text, menu, human=False, **k):
+            calls.append(k.get("goal_num"))
+            return '{"ops":[{"why":"shipped","do":"sub","under":1,"text":"shipped export"}]}'
+        open_recs = [uline(T0, "build the export feature", "u1", ps="typed"),
+                     aline(T0 + 10, "on it…", "a1", "u1", stop=None)]
+        ended_recs = [uline(T0, "build the export feature", "u1", ps="typed"),
+                      aline(T0 + 10, "Shipped the export feature.", "a1", "u1", stop="end_turn")]
+        self._plan_two(open_recs, ended_recs,
+                       prompt=lambda *a, **k: '{"ops":[{"why":"new ask","do":"mint","text":"Export feature"}]}',
+                       work=work)
+        self.assertEqual(calls, [1], "the work-run is told goal #1 (its own prompt-run mint) is retitle-eligible")
+
+    def test_no_prompt_run_means_no_retitle_eligibility(self):
+        calls = []
+
+        def work(text, menu, human=False, **k):
+            calls.append(k.get("goal_num"))
+            return '{"ops":[{"why":"x","do":"mint","text":"T"}]}'
+        recs = [uline(T0, "ship X", "u1", ps="typed"), aline(T0 + 10, "Shipped.", "a1", "u1", stop="end_turn")]
+        self._plan(recs, prompt=lambda *a, **k: "", work=work)
+        self.assertEqual(calls, [None], "an ended-only segment has no prior prompt-run node to retitle")
+
     def test_prompt_run_must_place_even_on_skip(self):
         # the prompt-run forbids skip/done/block; a stray one is dropped and the ask is hard-placed.
         recs = [uline(T0, "investigate the crash", "u1", ps="typed"),
@@ -761,6 +820,17 @@ class PlanApply(unittest.TestCase):
         jd.apply_plan(s, "seg2", T0 + 10, [{"do": "done", "why": "finished", "goal": 1}], jd.open_menu(s))
         self.assertIn("seg2", s["placements"], "a done-only segment still records a placements key (idempotent)")
 
+    def test_retitle_changes_the_nodes_own_text_and_bumps_mt(self):
+        s = _store()
+        jd.apply_plan(s, "seg1", T0, [{"do": "mint", "why": "x", "text": "Goal A"}], [])
+        nid = s["placements"]["seg1"]
+        jd.apply_plan(s, "seg2", T0 + 50,
+                      [{"do": "retitle", "why": "scope grew", "goal": 1, "text": "Goal A, wider scope"}],
+                      jd.open_menu(s))
+        self.assertEqual(s["nodes"][nid]["text"], "Goal A, wider scope")
+        self.assertEqual(s["nodes"][nid]["mt"], T0 + 50, "a retitle bumps mt like done/block")
+        self.assertIn("seg2", s["placements"], "a retitle-only segment still records a placements key")
+
     def test_mt_tracks_last_modified_t_stays_create(self):
         s = _store()
         jd.apply_plan(s, "s1", T0, [{"do": "mint", "why": "x", "text": "G"}], [])
@@ -795,6 +865,29 @@ class PlanApply(unittest.TestCase):
         labels = {nd["text"] for nd in jd.open_menu(s)}
         self.assertIn("top", labels)
         self.assertNotIn("Following up: also handle X", labels, "the provisional stub is hidden from the planner")
+
+
+class RestrictRetitle(unittest.TestCase):
+    """_restrict_retitle is the defensive floor behind every `retitle`-eligible planner call (the user
+    2026-07-01): the model is TOLD which one goal # it may retitle (via plan_llm's <note>), but nothing
+    stops it replying with a different one, so the caller drops any mismatch before apply_plan ever sees it."""
+
+    def test_drops_retitle_targeting_the_wrong_goal(self):
+        ops = [{"do": "retitle", "goal": 2, "why": "x", "text": "new title"},
+               {"do": "sub", "under": 1, "why": "y", "text": "a step"}]
+        self.assertEqual(jd._restrict_retitle(ops, 1), [ops[1]])
+
+    def test_keeps_retitle_targeting_the_allowed_goal(self):
+        ops = [{"do": "retitle", "goal": 1, "why": "x", "text": "new title"}]
+        self.assertEqual(jd._restrict_retitle(ops, 1), ops)
+
+    def test_none_allowed_drops_every_retitle(self):
+        ops = [{"do": "retitle", "goal": 1, "why": "x", "text": "new title"}]
+        self.assertEqual(jd._restrict_retitle(ops, None), [], "no eligible goal this call -> no retitle survives")
+
+    def test_leaves_non_retitle_ops_untouched(self):
+        ops = [{"do": "done", "goal": 3, "why": "x"}]
+        self.assertEqual(jd._restrict_retitle(ops, 1), ops)
 
 
 class ClearedSeal(unittest.TestCase):
@@ -958,6 +1051,16 @@ class Grouper(unittest.TestCase):
         self.assertEqual(jd._parse_group('{"ops":[]}', 3), [], "empty ops is valid: nothing to group")
         self.assertIsNone(jd._parse_group("not json", 3), "unusable JSON → None (retry)")
 
+    def test_parse_group_with_optional_retitle(self):
+        # the user 2026-07-01: a relink may ALSO retitle the child, now that continuous card identity in
+        # the UI (it visibly moves under the new parent) means a title change no longer reads as a new card.
+        ops = jd._parse_group('{"ops":[{"why":"x","do":"group","goal":2,"under":1,'
+                              '"retitle":"a clearer title"}]}', 3)
+        self.assertEqual(ops, [{"do": "group", "why": "x", "goal": 2, "under": 1, "retitle": "a clearer title"}])
+        # blank/whitespace-only retitle is dropped, same as an empty mint/sub text
+        ops2 = jd._parse_group('{"ops":[{"why":"x","do":"group","goal":2,"under":1,"retitle":"   "}]}', 3)
+        self.assertNotIn("retitle", ops2[0], "a blank retitle is dropped, not applied as an empty title")
+
     # ── apply ──
     def test_relinks_a_top_under_another(self):
         s, a, b = self._two_tops()
@@ -968,6 +1071,24 @@ class Grouper(unittest.TestCase):
         self.assertEqual(n, 1, "one relink applied")
         self.assertEqual(s["nodes"][b]["parentId"], a, "B is relinked under A (its subtree moves with it)")
         self.assertIsNone(s["nodes"][a]["parentId"], "A stays a top")
+
+    def test_relink_can_retitle_the_child(self):
+        s, a, b = self._two_tops()
+        tops = jd._group_tops(s)
+        ai = next(i for i, nd in enumerate(tops, 1) if nd["id"] == a)
+        bi = next(i for i, nd in enumerate(tops, 1) if nd["id"] == b)
+        jd.apply_group(s, tops, [{"do": "group", "why": "both serve X", "goal": bi, "under": ai,
+                                  "retitle": "B, narrowed"}], T0 + 20)
+        self.assertEqual(s["nodes"][b]["text"], "B, narrowed", "the relink also retitled the child")
+        self.assertEqual(s["nodes"][b]["mt"], T0 + 20)
+
+    def test_relink_without_retitle_leaves_the_childs_title_alone(self):
+        s, a, b = self._two_tops()
+        tops = jd._group_tops(s)
+        ai = next(i for i, nd in enumerate(tops, 1) if nd["id"] == a)
+        bi = next(i for i, nd in enumerate(tops, 1) if nd["id"] == b)
+        jd.apply_group(s, tops, [{"do": "group", "why": "both serve X", "goal": bi, "under": ai}], T0 + 20)
+        self.assertEqual(s["nodes"][b]["text"], "Goal B", "no retitle in the op -> title unchanged")
 
     def test_two_tops_under_a_fresh_umbrella_with_anchor_backfill(self):
         s, a, b = self._two_tops()
@@ -2568,6 +2689,44 @@ class SweepTurn(unittest.TestCase):
         jd.closer_llm = lambda tt, mt, *_a: (_ for _ in ()).throw(AssertionError("LLM must not run on an empty menu"))
         self.assertEqual(jd._close_turn(_store(), self.turn), [], "a turn that placed nothing -> no-op")
 
+    def test_seg_by_id_threads_the_touched_goals_own_prior_history(self):
+        # the user 2026-07-01: given seg_by_id, the closer sees each touched goal's own PRIOR trail work,
+        # not just the current turn's text and the goal's one-line title.
+        s = build_session([
+            uline(T0, "please add caching", "u1", ps="typed"),
+            aline(T0 + 10, "Added an LRU cache.", "a1", "u1", stop="end_turn"),
+            uline(T0 + 100, "also add a size limit", "u2", "a1", ps="typed"),
+            aline(T0 + 110, "Capped it at 200 entries.", "a2", "u2", stop="end_turn"),
+        ])
+        turn0, turn1 = s["turns"][0], s["turns"][1]
+        seg0, seg1 = em.segments(turn0)[0], em.segments(turn1)[0]
+        store = _store()
+        g1 = _mknode(store, "Add caching")
+        g1["trail"] = [seg0["id"]]                     # the goal's PRIOR work — not this turn's own segment
+        store["placements"][seg1["id"]] = g1["id"]      # turn1 (the one being closed) touched g1
+        seg_by_id = {seg0["id"]: seg0, seg1["id"]: seg1}
+        captured = {}
+
+        def spy(tt, mt, gh=""):
+            captured["gh"] = gh
+            return '{"done": [{"goal": 1, "why": "done"}]}'
+        jd.closer_llm = spy
+        jd._close_turn(store, turn1, seg_by_id=seg_by_id)
+        self.assertIn("LRU cache", captured.get("gh", ""),
+                     "the goal's earlier trail work, richer than its one-line title")
+
+    def test_no_seg_by_id_means_no_goal_history_block(self):
+        store = _store(); g1 = _mknode(store, "Do X")
+        store["placements"][self.seg["id"]] = g1["id"]
+        captured = {}
+
+        def spy(tt, mt, gh=""):
+            captured["gh"] = gh
+            return '{"done": [{"goal": 1, "why": "done"}]}'
+        jd.closer_llm = spy
+        jd._close_turn(store, self.turn)                # seg_by_id omitted (the A/B harness's calling shape)
+        self.assertEqual(captured.get("gh"), "", "no seg_by_id -> unchanged behavior, no history block")
+
 
 class SweepSession(unittest.TestCase):
     """End-to-end on a sandboxed fleet: the planner (positive-only, never DONE'ing) leaves tops
@@ -2991,6 +3150,134 @@ class FollowUp(unittest.TestCase):
             self.assertEqual(st["status"][top], "working", "the top card goes off-blocked → working immediately")
         finally:
             jd.GOALDIR = saved
+
+
+class GoalWorkText(unittest.TestCase):
+    """_goal_work_text / _menu_history_text (the user 2026-07-01): the raw history a judge sees for a
+    goal it already knows the identity of, assembled from the goal's own trail segments — the same gather
+    the distiller already used, now shared so the planner/closer can use it too."""
+
+    def _seg_by_id(self, records):
+        s = build_session(records)
+        segs = [sg for turn in s["turns"] for sg in em.segments(turn)]
+        return {sg["id"]: sg for sg in segs}, segs
+
+    def test_gathers_own_trail_oldest_first_regardless_of_trail_order(self):
+        records = [uline(T0, "please add caching", "u1", ps="typed"),
+                   aline(T0 + 10, "Added an LRU cache.", "a1", "u1", stop="end_turn"),
+                   uline(T0 + 100, "also add a size limit", "u2", "a1", ps="typed"),
+                   aline(T0 + 110, "Capped it at 200 entries.", "a2", "u2", stop="end_turn")]
+        seg_by_id, segs = self._seg_by_id(records)
+        s = _store()
+        g = _mknode(s, "Add caching")
+        s["nodes"][g["id"]]["trail"] = [segs[1]["id"], segs[0]["id"]]   # deliberately out of order
+        work = jd._goal_work_text(s, seg_by_id, g["id"], 10000)
+        self.assertLess(work.index("LRU cache"), work.index("size limit"), "oldest-first regardless of trail order")
+
+    def test_subtree_true_includes_child_trails_false_excludes(self):
+        records = [uline(T0, "please add caching", "u1", ps="typed"),
+                   aline(T0 + 10, "Added an LRU cache.", "a1", "u1", stop="end_turn"),
+                   uline(T0 + 100, "also add a size limit", "u2", "a1", ps="typed"),
+                   aline(T0 + 110, "Capped it at 200 entries.", "a2", "u2", stop="end_turn")]
+        seg_by_id, segs = self._seg_by_id(records)
+        s = _store()
+        top = _mknode(s, "Add caching"); top["trail"] = [segs[0]["id"]]
+        step = _mknode(s, "size limit", parent=top["id"]); step["trail"] = [segs[1]["id"]]
+        with_subtree = jd._goal_work_text(s, seg_by_id, top["id"], 10000, subtree=True)
+        without_subtree = jd._goal_work_text(s, seg_by_id, top["id"], 10000, subtree=False)
+        self.assertIn("200 entries", with_subtree, "subtree=True pulls in the child step's own trail")
+        self.assertNotIn("200 entries", without_subtree, "subtree=False stays scoped to the node's own trail")
+
+    def test_char_cap_keeps_the_recent_tail(self):
+        records = [uline(T0, "x" * 50, "u1", ps="typed"), aline(T0 + 10, "y" * 50, "a1", "u1", stop="end_turn"),
+                   uline(T0 + 20, "recent ask", "u2", "a1", ps="typed"),
+                   aline(T0 + 30, "recent reply", "a2", "u2", stop="end_turn")]
+        seg_by_id, segs = self._seg_by_id(records)
+        s = _store()
+        g = _mknode(s, "G"); g["trail"] = [sg["id"] for sg in segs]
+        work = jd._goal_work_text(s, seg_by_id, g["id"], 40)
+        self.assertTrue(work.startswith("…"), "over-cap keeps the tail, marked with an ellipsis")
+        self.assertTrue(work.endswith("recent reply"), "the kept tail is the MOST RECENT work")
+
+    def test_empty_when_no_captured_segments(self):
+        s = _store()
+        g = _mknode(s, "G")                                # default trail=[]
+        self.assertEqual(jd._goal_work_text(s, {}, g["id"], 1000), "")
+
+    def test_menu_history_labels_each_goal_by_number(self):
+        records = [uline(T0, "first ask", "u1", ps="typed"), aline(T0 + 10, "did first", "a1", "u1", stop="end_turn"),
+                   uline(T0 + 100, "second ask", "u2", "a1", ps="typed"),
+                   aline(T0 + 110, "did second", "a2", "u2", stop="end_turn")]
+        seg_by_id, segs = self._seg_by_id(records)
+        s = _store()
+        g1 = _mknode(s, "Goal one"); g1["trail"] = [segs[0]["id"]]
+        g2 = _mknode(s, "Goal two"); g2["trail"] = [segs[1]["id"]]
+        hist = jd._menu_history_text(s, seg_by_id, [g1, g2], 10000)
+        self.assertIn("Goal #1 (Goal one):", hist)
+        self.assertIn("Goal #2 (Goal two):", hist)
+        self.assertIn("did first", hist)
+        self.assertIn("did second", hist)
+
+    def test_menu_history_skips_goals_with_no_captured_work(self):
+        s = _store()
+        g1 = _mknode(s, "Goal one")                        # default trail=[] -> no captured segments
+        self.assertEqual(jd._menu_history_text(s, {}, [g1], 1000), "")
+
+
+class KnownTargetContext(unittest.TestCase):
+    """End-to-end over two REAL _plan_session passes (the user 2026-07-01), so a follow-up's target goal
+    has a genuine trail segment, not a synthetic id: the planner gets that goal's own raw history
+    alongside its menu title, and may retitle that one goal."""
+
+    def _plan_twice(self, recs1, plan1, recs2, plan2):
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            tpath = td / (SID + ".jsonl")
+            saved = (jd.GOALDIR, jd.PCACHE, jd.plan_llm, jd.plan_prompt_llm, jd._group_store)
+            jd.GOALDIR, jd.PCACHE = td / "goals", td / "pcache"
+            jd.plan_prompt_llm = lambda *a, **k: ""
+            jd._group_store = lambda *a, **k: None
+            try:
+                tpath.write_text("\n".join(json.dumps(r) for r in recs1) + "\n")
+                jd._PARSE_CACHE.clear()
+                jd.plan_llm = plan1
+                jd._plan_session(SID, str(tpath), NOW)
+                tpath.write_text("\n".join(json.dumps(r) for r in recs2) + "\n")
+                jd._PARSE_CACHE.clear()
+                jd.plan_llm = plan2
+                jd._plan_session(SID, str(tpath), NOW + 200)
+                return jd.load_goals(SID)
+            finally:
+                (jd.GOALDIR, jd.PCACHE, jd.plan_llm, jd.plan_prompt_llm, jd._group_store) = saved
+
+    def test_followup_gets_the_targets_own_history_and_may_retitle_it(self):
+        records1 = [uline(T0, "please add caching", "u1", ps="typed"),
+                    aline(T0 + 10, "Added an LRU cache.", "a1", "u1", stop="end_turn")]
+        plan1 = lambda *a, **k: '{"ops":[{"why":"new ask","do":"mint","text":"Add caching"}]}'   # noqa: E731
+
+        # first, a throwaway pass to learn the minted goal's id (needed for the follow-up marker below)
+        store1 = self._plan_twice(records1, plan1, records1, lambda *a, **k: "")
+        gid = next(iter(store1["nodes"]))
+
+        calls = []
+
+        def plan2(text, menu, human=False, **k):
+            calls.append(k)
+            return ('{"ops":[{"why":"widened scope","do":"retitle","goal":1,'
+                    '"text":"Add caching, with a size cap"},'
+                    '{"why":"added the cap","do":"sub","under":1,"text":"added a size cap"}]}')
+        records2 = records1 + [
+            uline(T0 + 100, "also add a size limit <!-- romp-goal-id: %s -->" % gid, "u2", "a1", ps="typed"),
+            aline(T0 + 110, "Capped it at 200 entries.", "a2", "u2", stop="end_turn")]
+        store2 = self._plan_twice(records1, plan1, records2, plan2)
+
+        self.assertEqual(calls[0].get("goal_num"), 1, "the follow-up target is menu #1 (the only open goal)")
+        self.assertIn("LRU cache", calls[0].get("goal_history", ""),
+                     "the target's own real trail text, not just its compressed title")
+        self.assertEqual(store2["nodes"][gid]["text"], "Add caching, with a size cap",
+                        "the WORK-run retitled the follow-up target")
+        subs = [nd for nd in store2["nodes"].values() if nd["parentId"] == gid]
+        self.assertEqual(len(subs), 1, "the new work still filed as a step under it")
 
 
 class Distiller(unittest.TestCase):
