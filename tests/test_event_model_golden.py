@@ -75,10 +75,10 @@ def attline(t, prompt, uuid, parent=None):
             "isSidechain": False, "attachment": {"type": "queued_command", "prompt": prompt}}
 
 
-def compact_line(t, uuid, logical_parent, trigger="manual", pre=263239):
+def compact_line(t, uuid, logical_parent, trigger="manual", pre=263239, post=6514):
     return {"type": "system", "subtype": "compact_boundary", "timestamp": iso(t), "uuid": uuid,
             "parentUuid": None, "logicalParentUuid": logical_parent, "isMeta": False,
-            "compactMetadata": {"trigger": trigger, "preTokens": pre}}
+            "compactMetadata": {"trigger": trigger, "preTokens": pre, "postTokens": post}}
 
 
 def compact_line_broken(t, uuid, dangling_logical, preserved_tail, trigger="auto", pre=99999):
@@ -542,7 +542,8 @@ class Compaction(unittest.TestCase):
         out = run_scenario("compaction_atom")
         comp = [a for t in out["turns"] for a in t["atoms"] if a.get("subtype") == "compact_boundary"]
         self.assertEqual(len(comp), 1)
-        self.assertEqual(comp[0]["compact_metadata"], {"trigger": "manual", "pre_tokens": 263239})
+        self.assertEqual(comp[0]["compact_metadata"],
+                         {"trigger": "manual", "pre_tokens": 263239, "post_tokens": 6514})
 
     def test_compact_summary_line_not_emitted(self):
         out = run_scenario("compaction_atom")

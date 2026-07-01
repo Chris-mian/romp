@@ -11,9 +11,9 @@ const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview"
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
 
 test("a leading slash command in a human bubble becomes a .slash-cmd-chip, args follow as text", () => {
-  // matched only for a genuine human bubble (not a romp injection / harness note)
-  assert.match(RENDER, /const cmd = \(!romp && !injected && ev\.md\) \? ev\.md\.match\(\/\^\(\\\/\[A-Za-z\]\[\\w-\]\*\)\(\?=\\s\|\$\)\(\[\\s\\S\]\*\)\$\/\) : null;/);
-  assert.match(RENDER, /const chip = el\("span", "slash-cmd-chip"\); chip\.textContent = cmd\[1\];/);
+  // matched only for a genuine human bubble (not a romp injection / harness note), via the shared helper
+  assert.match(RENDER, /if \(!romp && !injected && ev\.md && renderSlashCmd\(bubble, ev\.md\)\) \{/);
+  assert.match(RENDER, /const chip = el\("span", "slash-cmd-chip"\); chip\.textContent = m\[1\];/);
   assert.match(RENDER, /const args = el\("span", "slash-cmd-args"\); args\.textContent = rest;/);
   // the non-command path still renders markdown as before
   assert.match(RENDER, /\} else if \(ev\.md\) \{\s*\n\s*bubble\.innerHTML = md\(ev\.md\);\s*\n\s*\}/);

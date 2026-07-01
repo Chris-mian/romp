@@ -46,6 +46,7 @@
     },
     {
      "compact_metadata": {
+      "post_tokens": null,
       "pre_tokens": 99999,
       "trigger": "auto"
      },

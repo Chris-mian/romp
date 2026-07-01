@@ -701,6 +701,7 @@ body { display: flex; flex-direction: column; }
 .turn-compact .dot, .turn-compact .time-marker { top: 10px; }
 .turn-compact .dot { background: var(--st-compacting-bg, #14b8a6); border: none; }
 .compact-line { color: var(--st-compacting-bg, #14b8a6); font-size: 0.9em; font-weight: 600; letter-spacing: 0.02em; }
+.compact-meta { margin-left: 6px; color: var(--dim); font-weight: 400; letter-spacing: normal; }
 /* compact-mode collapsed tool run → one line ("▸ 3 Edits, 2 Reads"); click to expand/collapse */
 .turn-toolgroup .dot, .turn-toolgroup .time-marker { top: 10px; }
 .toolgroup-line { color: var(--dim); font-size: 0.9em; line-height: 1.4; cursor: pointer; width: fit-content; padding-right: 6px; }
