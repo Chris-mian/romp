@@ -97,3 +97,18 @@ test("a deep-link into a HIDDEN chat pane defers the land until the pane is visi
   assert.match(RENDER, /new ResizeObserver\(fire\)\.observe\(c\)/);
   assert.match(RENDER, /window\.addEventListener\("resize", fire\)/);
 });
+
+// Tab-bar wrap must not jump the chat text (the user 2026-06-30). #tabbar (flex 0 0 auto) sits directly
+// above the flex 1 1 auto #content scroll area, so a working dot that wraps the strip 1→2 rows grows
+// #tabbar by a row and shoves #content — and every line under it — down. A ResizeObserver on #tabbar
+// cancels that by shifting #content.scrollTop by the same height delta (unless stuck to the bottom /
+// pane hidden). Source-pin.
+test("a ResizeObserver on #tabbar compensates #content.scrollTop by the height delta so text stays put", () => {
+  assert.match(RENDER, /const tb = document\.getElementById\("tabbar"\)/, "it observes the tab bar");
+  assert.match(RENDER, /const tro = new ResizeObserver/, "via a dedicated tab-bar ResizeObserver");
+  // shift scrollTop by (new - old) tab-bar height — only when not stuck to bottom and the pane is visible
+  assert.match(RENDER, /content\.clientHeight > 0 && !nearBottom\(content\)/,
+    "skipped when stuck to the bottom or the pane is hidden");
+  assert.match(RENDER, /content\.scrollTop \+= h - lastTabbarH/, "compensates by the exact height delta");
+  assert.match(RENDER, /if \(v\) v\.scrollTop = content\.scrollTop/, "keeps the per-view saved scroll in sync");
+});

@@ -41,7 +41,7 @@ test("v4: git branch + context battery + Summary row + the last 5 worked-on item
   assert.match(RENDER, /k\.textContent = "Recent"/);
   assert.doesNotMatch(RENDER, /k\.textContent = "Latest"/, "the single Latest line is gone");
   assert.match(RENDER, /\.map\(\(n\) => \(\{ n, t: \(n\.mt \?\? n\.t\) \|\| 0 \}\)\)/);
-  assert.match(RENDER, /\.sort\(\(a, b\) => b\.t - a\.t\)\s*\n\s*\.slice\(0, 5\)/);   // newest-first, capped at 5
+  assert.match(RENDER, /const recent = \[\.\.\.timed, \.\.\.untimed\]\.slice\(0, 5\)/);   // newest-first, capped at 5
   assert.match(RENDER, /item\.style\.color = ageColorReadable\(now - t\)/);           // each item in its recency colour
   assert.match(CSS, /\.tab-tip-recent-list \{/);                                      // the list + per-item rules exist
   assert.match(CSS, /\.tab-tip-recent-item \{/);
@@ -49,6 +49,19 @@ test("v4: git branch + context battery + Summary row + the last 5 worked-on item
   // narrow fixed box; the positioner clamps it to a small left margin once it's this wide.
   assert.match(CSS, /\.tab-tip \{[\s\S]*?max-width: calc\(100vw - 12px\)/);
   assert.doesNotMatch(CSS, /\.tab-tip \{[\s\S]*?max-width: 440px/);
+});
+
+test("the Recent list has NO recency cutoff — it shows the last 5 even if days old, backfilling untimed nodes (the user 2026-06-30)", () => {
+  // there is no `now - t < WINDOW` / age-threshold gate anywhere near the Recent list: an idle session must
+  // still list what it last worked on rather than going blank once its work ages out.
+  const recentBlock = RENDER.slice(RENDER.indexOf('k.textContent = "Recent"') - 1200, RENDER.indexOf('r.appendChild(k); r.appendChild(list)'));
+  assert.doesNotMatch(recentBlock, /now - t [<>]=?|Date\.now\(\)[^;]*<|MAX_AGE|RECENT_WINDOW/, "no age cutoff on the Recent list");
+  // timed nodes lead; untimed text nodes backfill so a session with >=5 goals always surfaces 5
+  assert.match(RENDER, /const untimed = named\.filter\(\(n\) => !\(\(n\.mt \?\? n\.t\) \|\| 0\)\)/);
+  assert.match(RENDER, /const recent = \[\.\.\.timed, \.\.\.untimed\]\.slice\(0, 5\)/);
+  // a backfilled (undated) item shows no "(ago)" label and falls back to the oldest-bucket colour
+  assert.match(RENDER, /if \(t > 0\) \{[\s\S]*?agehms\(now - t\)/);
+  assert.match(RENDER, /item\.style\.color = ageColorReadable\(345600\)/);
 });
 
 test("the tall context battery gets vertical breathing room", () => {

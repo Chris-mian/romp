@@ -1585,16 +1585,20 @@ function showTabTip(tab: HTMLElement, s: Session): void {
     r.appendChild(k); r.appendChild(v); tip.appendChild(r);
   }
   if (lg?.tree && lg.tree.length) {
-    // The last few things this session worked on (the user 2026-06-24): the up-to-5 most-recently-touched
-    // ledger nodes, each in its own recency colour with a "(Xm ago)" time — replaces the single "Latest"
-    // line. Sorted by each node's OWN recency (mt ?? t), so it's the actual recent work items, not umbrella
-    // tops floated up by a rolled-up subtree recency.
-    const recent = lg.tree
-      .filter((n) => (n.text || "").trim() && !n.cleared)
+    // The last few things this session worked on (the user 2026-06-24; ALWAYS-show 2026-06-30): the up-to-5
+    // most-recently-touched ledger nodes, each in its own recency colour with a "(Xm ago)" time — replaces
+    // the single "Latest" line. Sorted by each node's OWN recency (mt ?? t), so it's the actual recent work
+    // items, not umbrella tops floated up by a rolled-up subtree recency. NO recency cutoff: show the last 5
+    // even if they're DAYS old (the user 2026-06-30) — a session you haven't touched in a while should still
+    // list what it last worked on, not go blank. Timed nodes lead (newest first); if fewer than 5 are timed,
+    // backfill from the remaining text nodes in tree order so a session with ≥5 goals always surfaces 5.
+    const named = lg.tree.filter((n) => (n.text || "").trim() && !n.cleared);
+    const timed = named
       .map((n) => ({ n, t: (n.mt ?? n.t) || 0 }))
       .filter((x) => x.t > 0)
-      .sort((a, b) => b.t - a.t)
-      .slice(0, 5);
+      .sort((a, b) => b.t - a.t);
+    const untimed = named.filter((n) => !((n.mt ?? n.t) || 0)).map((n) => ({ n, t: 0 }));
+    const recent = [...timed, ...untimed].slice(0, 5);
     if (recent.length) {
       const r = el("div", "tab-tip-row tab-tip-recent");
       const k = el("span", "tab-tip-k"); k.textContent = "Recent";
@@ -1602,9 +1606,14 @@ function showTabTip(tab: HTMLElement, s: Session): void {
       for (const { n, t } of recent) {
         const item = el("div", "tab-tip-recent-item");
         const txt = el("span"); txt.textContent = n.text;
-        const ago = el("span", "tab-tip-ago"); ago.textContent = " (" + agehms(now - t) + " ago)";
-        item.appendChild(txt); item.appendChild(ago);
-        item.style.color = ageColorReadable(now - t);          // text + time both in the node's recency colour
+        item.appendChild(txt);
+        if (t > 0) {                                            // dated: show the recency-coloured "(Xd ago)"
+          const ago = el("span", "tab-tip-ago"); ago.textContent = " (" + agehms(now - t) + " ago)";
+          item.appendChild(ago);
+          item.style.color = ageColorReadable(now - t);        // text + time both in the node's recency colour
+        } else {
+          item.style.color = ageColorReadable(345600);         // undated backfill → the oldest-bucket colour
+        }
         list.appendChild(item);
       }
       r.appendChild(k); r.appendChild(list); tip.appendChild(r);
@@ -3058,6 +3067,28 @@ if (typeof ResizeObserver === "function") {
   const ro = new ResizeObserver(() => paintGlowRuler());
   const c = document.getElementById("content");
   if (c) ro.observe(c);
+}
+// Tab-bar wrap → keep the chat text visually anchored (the user 2026-06-30). #tabbar is `flex: 0 0 auto`
+// directly above the `flex: 1 1 auto` #content scroll area, so when a working dot appears and pushes the
+// strip from one row to two, #tabbar grows by a row and shoves #content down by that Δ — every line under
+// it jumped down. Compensate by shifting #content.scrollTop by the SAME Δ (box moved down by Δ → scroll the
+// content up by Δ to cancel it), so the line you were reading stays fixed on screen. Symmetric: when the
+// dot leaves and the strip collapses back to one row, Δ is negative and the text holds too. Skipped when
+// stuck to the bottom (that view follows the tail anyway) or when the pane is hidden (clientHeight 0).
+if (typeof ResizeObserver === "function") {
+  let lastTabbarH = 0;
+  const tro = new ResizeObserver((entries) => {
+    const h = entries[0]?.contentRect?.height ?? 0;
+    const content = document.getElementById("content");
+    if (content && lastTabbarH && h !== lastTabbarH && content.clientHeight > 0 && !nearBottom(content)) {
+      content.scrollTop += h - lastTabbarH;
+      const v = activeId ? views.get(activeId) : null;
+      if (v) v.scrollTop = content.scrollTop;                 // keep the per-view saved position in sync
+    }
+    lastTabbarH = h;
+  });
+  const tb = document.getElementById("tabbar");
+  if (tb) tro.observe(tb);
 }
 
 // Keep the rendered window over the viewport as the user scrolls — a steady scroll-back OR a scrollbar JUMP
