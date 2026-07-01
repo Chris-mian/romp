@@ -831,6 +831,10 @@ class SdkSession:
                     self._reconnect_when_idle = False
                     self._reconnect = True
                     self._wake_set()
+        elif getattr(msg, "rate_limit_info", None) is not None:
+            # A RateLimitEvent: the account-wide /usage limits (5h + weekly) the CLI streams when the limit state
+            # changes — the SDK's designed source for the rail usage bars. Duck-typed (no SDK-type import needed).
+            self.backend._record_rate_limit(msg.rate_limit_info)
         # Forward the raw message to the kernel for live chat/event use.
         self.backend._forward(self, msg)
 
@@ -1030,6 +1034,8 @@ class SdkBackend:
         self._lock = threading.Lock()
         self._pending_ask: dict[str, bool] = {}   # sid -> has an ask awaiting answer
         self._live: dict[str, dict] = {}          # sid -> {key -> atom}: the in-memory LIVE TAIL (ahead of disk)
+        self._rl: dict[str, dict] = {}            # rate_limit_type -> {"pct","resets_at"}: account-wide /usage
+        self._rl_lock = threading.Lock()          #   windows the CLI streams as RateLimitEvents (_record_rate_limit)
         # Kernel-restart heal: nothing is running yet, so any alive session still reading awaiting:true is stale
         # — its background tasks (and the Stop hook that clears the overlay) died with the previous kernel. Left
         # uncleared it reads working/awaiting forever, climbing a ghost work-timer (reorder_bug 2026-06-24).
@@ -1052,6 +1058,41 @@ class SdkBackend:
         try:
             if last_awaiting(self.state_dir, sid) is True:
                 append_awaiting(self.state_dir, sid, False)
+        except Exception:
+            pass
+
+    def _record_rate_limit(self, info) -> None:
+        """Persist the account-wide rate-limit /usage the CLI streams as a RateLimitEvent — the SDK's DESIGNED
+        source for the rail's usage bars (the user 2026-06-30). Each event carries ONE window's utilization
+        (0.0-1.0) + resets_at; we accumulate the windows and write the SAME usage.json the tmux statusline
+        writes (account-wide, latest writer wins), so the bars stay fresh for SDK sessions that have NO tmux
+        statusline. Event-based, not polled: the CLI emits it whenever the limit state changes — get_context_usage()
+        is the CONTEXT window, a different number. `info` is a duck-typed RateLimitInfo (rate_limit_type /
+        utilization / resets_at)."""
+        rlt = getattr(info, "rate_limit_type", None)
+        if rlt not in ("five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet"):
+            return   # the bars show only the 5h + weekly windows; overage / None are ignored
+        util = getattr(info, "utilization", None)
+        if not isinstance(util, (int, float)):
+            return
+        ra = getattr(info, "resets_at", None)
+        seg = {"pct": max(0, min(100, round(util * 100))),
+               "resets_at": int(ra) if isinstance(ra, (int, float)) else None}
+        with self._rl_lock:
+            self._rl[rlt] = seg
+            rl = dict(self._rl)
+        def pick(*types):
+            segs = [rl[t] for t in types if t in rl]
+            return max(segs, key=lambda s: s["pct"]) if segs else None   # weekly = the binding (highest) window
+        five, seven = pick("five_hour"), pick("seven_day", "seven_day_opus", "seven_day_sonnet")
+        if not five and not seven:
+            return
+        data = {"t": int(time.time()), "five_hour": five, "seven_day": seven}
+        try:
+            tmp = self.state_dir / "usage.json.tmp"
+            tmp.write_text(json.dumps(data))
+            os.replace(tmp, self.state_dir / "usage.json")
+            self._poke()   # nudge the producer so the rail re-reads usage.json promptly, not on the next backstop
         except Exception:
             pass
 
