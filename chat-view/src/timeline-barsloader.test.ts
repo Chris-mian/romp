@@ -21,7 +21,7 @@ test("a full one-shot data object through update() also marks the bars loaded (t
 test("draw() shows ONLY the loader and returns early until bars are ready (no lanes, no gridlines)", () => {
   // ready = the flag is set OR the data already carries turns (a full one-shot / a direct draw())
   assert.match(SRC, /const barsReady = this\._barsLoaded \|\| !!\(data\.turns && Object\.keys\(data\.turns\)\.length\);/);
-  assert.match(SRC, /if \(!barsReady\) \{ this\._showLoader\(true\); this\._reapCompactBars\(null\); return; \}/);
+  assert.match(SRC, /if \(!barsReady\) \{ this\._showLoader\(true\); this\._reapCompactBars\(null\); this\._reapWorkLabels\(null\); return; \}/);
   assert.match(SRC, /this\._showLoader\(false\);/);
 });
 
