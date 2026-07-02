@@ -52,10 +52,24 @@ export function prefixInbound(host: string, msg: any): any {
     if (Array.isArray(out[k])) out[k] = out[k].map((x: any) => (typeof x === "string" ? prefixId(host, x) : x));
   for (const k of OBJ_SID)
     if (Array.isArray(out[k]))
-      out[k] = out[k].map((o: any) => (o && typeof o === "object" && typeof o.sid === "string" ? { ...o, sid: prefixId(host, o.sid) } : o));
+      out[k] = out[k].map((o: any) => _prefixIdBearing(host, o, "sid"));
   for (const k of OBJ_ID)
     if (Array.isArray(out[k]))
-      out[k] = out[k].map((o: any) => (o && typeof o === "object" && typeof o.id === "string" ? { ...o, id: prefixId(host, o.id) } : o));
+      out[k] = out[k].map((o: any) => _prefixIdBearing(host, o, "id"));
+  // A `name` is DISPLAY text, not an address — prefix it too (on session-bearing messages) so a remote
+  // session reads "host:name" everywhere it surfaces (chat tab + header), never colliding visually with a
+  // local same-named one. Guarded by a co-present id/sid so we never touch an unrelated `name` field.
+  if (typeof out.name === "string" && (typeof out.id === "string" || typeof out.sid === "string"))
+    out.name = prefixId(host, out.name);
+  return out;
+}
+
+/** Prefix an object's id field (`sid`/`id`) AND its display `name`, returning a copy (or the object
+ *  unchanged if it isn't a prefixable object). */
+function _prefixIdBearing(host: string, o: any, idKey: string): any {
+  if (!o || typeof o !== "object" || typeof o[idKey] !== "string") return o;
+  const out: any = { ...o, [idKey]: prefixId(host, o[idKey]) };
+  if (typeof out.name === "string") out.name = prefixId(host, out.name);
   return out;
 }
 

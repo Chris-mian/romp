@@ -33,11 +33,24 @@ test("prefixInbound: working.names[] array of ids", () => {
   assert.deepEqual(out.names, ["gpu1:" + U, "gpu1:" + V]);
 });
 
-test("prefixInbound: tabOrder order[] and tabs[].id", () => {
+test("prefixInbound: tabOrder order[] and tabs[].id (+ display name)", () => {
   const out = prefixInbound("gpu1", { type: "tabOrder", order: [U, V], tabs: [{ id: U, name: "a" }] });
   assert.deepEqual(out.order, ["gpu1:" + U, "gpu1:" + V]);
   assert.equal(out.tabs[0].id, "gpu1:" + U);
-  assert.equal(out.tabs[0].name, "a", "non-id fields are untouched");
+  assert.equal(out.tabs[0].name, "gpu1:a", "the tab's display name is host-prefixed too (host:name)");
+});
+
+test("prefixInbound: display name is host-prefixed on session-bearing messages", () => {
+  // a session's tab + chat header should read "gpu1:foo" so a remote session never collides visually with a
+  // local same-named one. Only prefixed when a co-present id/sid marks it as a session name.
+  assert.equal(prefixInbound("gpu1", { type: "session", id: U, name: "foo" }).name, "gpu1:foo");
+  assert.equal(prefixInbound("gpu1", { type: "renamed", id: U, name: "bar" }).name, "gpu1:bar");
+  // feed items carry sid+name → their card name is prefixed too
+  const fed = prefixInbound("gpu1", { type: "feed", items: [{ sid: U, name: "baz" }] });
+  assert.equal(fed.items[0].sid, "gpu1:" + U);
+  assert.equal(fed.items[0].name, "gpu1:baz");
+  // a bare `name` with NO id is left alone (not a session name)
+  assert.deepEqual(prefixInbound("gpu1", { type: "toast", name: "hi" }), { type: "toast", name: "hi" });
 });
 
 test("prefixInbound: feed payload asks/items/ledgers[].sid and working[]", () => {
