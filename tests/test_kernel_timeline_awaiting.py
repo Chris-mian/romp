@@ -94,5 +94,77 @@ class TimelineAwaiting(unittest.TestCase):
         self.assertIsNone(lane["awaitingBg"], "a dead session cannot be awaiting background work")
 
 
+class TimelineLiveTail(TimelineAwaiting):
+    """build_timeline merges the LIVE TAIL like the chat (the user 2026-07-02): a /model change streams
+    the CLI's confirmation as a live command atom, but the CLI persists no transcript record until a
+    later turn writes the file — the timeline's dot appeared only RETROACTIVELY while the chat showed
+    the event at once. Reuses the TimelineAwaiting sandbox (setUp/tearDown)."""
+
+    def _fake_backend(self, atoms):
+        class FakeBE:
+            def live_atoms(self, sid):
+                return list(atoms)
+
+            def prune_live(self, *a, **k):
+                pass
+        return FakeBE()
+
+    def test_live_command_atoms_land_a_dot_immediately(self):
+        # the SDK backend's synthetic /model INVOCATION atom (a segment opener) + the CLI's streamed
+        # confirmation — exactly what setModel puts in the live tail (romp_sdk_backend.set_model).
+        inv = {"type": "user", "uuid": "cmd:1:model", "t": NOW - 20, "author": "human", "command": "/model",
+               "_echo_text": "/model sonnet", "session_id": SID, "fsid": None, "parentUuid": None,
+               "message": {"role": "user", "content": [{"type": "text", "text": "/model sonnet"}]}}
+        out = {"type": "assistant", "uuid": "live-c1", "t": NOW - 19, "command": True,
+               "session_id": SID, "fsid": None, "parentUuid": None,
+               "message": {"role": "assistant", "content": [{"type": "text", "text": "Set model to sonnet"}],
+                           "stop_reason": "end_turn"}}
+        saved = km.Sessions.backend_for
+        km.Sessions.backend_for = lambda sid: self._fake_backend([inv, out])
+        try:
+            tl = km.build_timeline(NOW, with_bars=True)
+            bars = tl["turns"].get(SID) or []
+            live_bar = next((b for b in bars if b["start"] >= NOW - 21), None)
+            self.assertIsNotNone(live_bar, "the /model invocation forms a segment NOW, not after a later "
+                                 "disk write: %r" % [(b["start"], b["end"]) for b in bars])
+            self.assertEqual(live_bar["promptId"], "cmd:1:model", "the dot anchors on the invocation atom")
+            lane = next(l for l in tl["sessions"] if l["id"] == SID)
+            self.assertNotEqual(lane["state"], "working",
+                                "a merged command exchange never flips the lane to working")
+        finally:
+            km.Sessions.backend_for = saved
+
+    def test_dead_lane_skips_the_live_merge(self):
+        km._tmux_sessions = lambda: {}                   # session process gone
+        called = []
+        saved = km.Sessions.backend_for
+        km.Sessions.backend_for = lambda sid: (called.append(sid), self._fake_backend([]))[1]
+        try:
+            km.build_timeline(NOW, with_bars=True)
+            self.assertNotIn(SID, called, "no live process → no live tail to merge")
+        finally:
+            km.Sessions.backend_for = saved
+
+
+class CommandTailNeutral(unittest.TestCase):
+    """_session_working: trailing COMMAND atoms are neutral (the user 2026-07-02) — a /model confirmation
+    merged AFTER the tail idle span must not hide the idle and read the turn as working again."""
+
+    def test_command_after_idle_tail_stays_not_working(self):
+        km._downtime[:] = []
+        turns = [{"id": "t", "t": NOW - 100, "end": NOW, "ended": False, "trigger": None,
+                  "atoms": [{"type": "user", "t": NOW - 100},
+                            {"type": "idle", "t": NOW - 50},
+                            {"type": "assistant", "t": NOW - 10, "command": True}]}]
+        self.assertFalse(km._session_working(turns), "the idle tail still counts through a trailing command atom")
+
+    def test_genuinely_open_turn_still_reads_working(self):
+        km._downtime[:] = []
+        turns = [{"id": "t", "t": NOW - 100, "end": NOW, "ended": False, "trigger": None,
+                  "atoms": [{"type": "user", "t": NOW - 100},
+                            {"type": "assistant", "t": NOW - 10}]}]
+        self.assertTrue(km._session_working(turns))
+
+
 if __name__ == "__main__":
     unittest.main()
