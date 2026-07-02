@@ -4,7 +4,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { prefixId, hostOf, bareId, prefixInbound, routeOutbound, mergeHostOrder } from "./federation";
+import { prefixId, hostOf, bareId, prefixInbound, routeOutbound, mergeHostOrder, mergeHostFeeds } from "./federation";
 
 const U = "11111111-2222-3333-4444-555555555555";
 const V = "99999999-8888-7777-6666-555555555555";
@@ -106,4 +106,46 @@ test("mergeHostOrder: never re-sorts within a host (kernel order is authoritativ
   // even though V<U lexically, gpu1's given order is preserved verbatim
   const merged = mergeHostOrder({ gpu1: ["gpu1:" + U, "gpu1:" + V] }, ["gpu1"]);
   assert.deepEqual(merged, ["gpu1:" + U, "gpu1:" + V]);
+});
+
+test("mergeHostFeeds: concatenates items/asks/working across hosts (local first), keeps local chrome", () => {
+  // Regression: without a merge, the local + remote feed snapshots (each pushed ~2s) clobber each other and
+  // the feed visibly flips back and forth. mergeHostFeeds combines them into one stable snapshot.
+  const perHost = {
+    "": { type: "feed", items: [{ sid: U }], asks: [{ sid: U, itemId: "a" }], working: [U],
+          ledgers: [{ sid: U }], now: 1000, dismissedCount: 3, showDismissed: false, canUndoClear: true },
+    jetty: { type: "feed", items: [{ sid: "jetty:" + V }], asks: [{ sid: "jetty:" + V, itemId: "b" }],
+             working: ["jetty:" + V], ledgers: [{ sid: "jetty:" + V }], now: 999, dismissedCount: 7 },
+  };
+  const m = mergeHostFeeds(perHost, ["", "jetty"]);
+  assert.equal(m.type, "feed");
+  assert.deepEqual(m.items.map((i: any) => i.sid), [U, "jetty:" + V], "items concatenated, local first");
+  assert.deepEqual(m.asks.map((a: any) => a.sid), [U, "jetty:" + V], "asks concatenated");
+  assert.deepEqual(m.working, [U, "jetty:" + V], "working concatenated");
+  assert.deepEqual(m.ledgers.map((l: any) => l.sid), [U, "jetty:" + V], "ledgers (fleet) concatenated");
+  // local is authoritative for the dashboard's own chrome — remote's counts/clock don't leak in.
+  assert.equal(m.now, 1000);
+  assert.equal(m.dismissedCount, 3);
+  assert.equal(m.showDismissed, false);
+  assert.equal(m.canUndoClear, true);
+});
+
+test("mergeHostFeeds: single (local) host is an equivalent passthrough", () => {
+  const local = { type: "feed", items: [{ sid: U }], asks: [], working: [U], now: 5, dismissedCount: 0 };
+  const m = mergeHostFeeds({ "": local }, [""]);
+  assert.deepEqual(m.items, [{ sid: U }]);
+  assert.deepEqual(m.working, [U]);
+  assert.equal(m.now, 5);
+});
+
+test("mergeHostFeeds: a host with no feed yet contributes nothing (no crash)", () => {
+  const m = mergeHostFeeds({ "": { type: "feed", items: [{ sid: U }], asks: [], working: [] } }, ["", "jetty"]);
+  assert.deepEqual(m.items.map((i: any) => i.sid), [U]);
+});
+
+test("mergeHostFeeds: ledgers omitted until some host builds them (fleet loader holds)", () => {
+  // No host has a ledgers array yet → merged carries no `ledgers` key, so fleet.ts keeps its loader up
+  // rather than dropping onto an empty pane.
+  const m = mergeHostFeeds({ "": { type: "feed", items: [], asks: [], working: [] } }, [""]);
+  assert.equal("ledgers" in m, false);
 });

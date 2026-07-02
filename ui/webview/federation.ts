@@ -114,6 +114,33 @@ export function mergeHostOrder(perHost: Record<string, readonly string[]>, hostS
   return out;
 }
 
+/** Merge per-host feed snapshots into ONE payload. The `feed` message is a WHOLE-feed snapshot that the
+ *  pane wholesale-replaces its state from — so without merging, the local kernel's snapshot and each
+ *  remote's snapshot (both pushed ~every 2s) alternate and clobber each other, and the feed visibly flips
+ *  back and forth ("repeatedly reloading"). Concatenate the arrays (items/asks/working) in hostSeq order
+ *  (local first); keep the scalar chrome fields (now, dismissedCount, flags) from the LOCAL host, since the
+ *  dashboard's own controls are local-authoritative. Ids are already prefixed by prefixInbound. */
+export function mergeHostFeeds(perHost: Record<string, any>, hostSeq: readonly string[]): any {
+  const local = perHost[LOCAL] || {};
+  const merged: any = { ...local, type: "feed", items: [], asks: [], working: [] };
+  // `ledgers` drives the FLEET pane (it rides the same feed message). Only include it once at least one host
+  // has actually BUILT its ledgers — else the fleet's loader-gate (needs an array) would drop onto an empty
+  // pane. Kept undefined until then so the loader holds, exactly like the single-kernel path.
+  let anyLedgers = false;
+  const ledgers: any[] = [];
+  for (const h of hostSeq) {
+    const f = perHost[h];
+    if (!f) continue;
+    if (Array.isArray(f.items)) merged.items.push(...f.items);
+    if (Array.isArray(f.asks)) merged.asks.push(...f.asks);
+    if (Array.isArray(f.working)) merged.working.push(...f.working);
+    if (Array.isArray(f.ledgers)) { anyLedgers = true; ledgers.push(...f.ledgers); }
+  }
+  if (anyLedgers) merged.ledgers = ledgers;
+  else delete merged.ledgers;
+  return merged;
+}
+
 // ── the wiring: WebSockets per kernel + the attach UI ────────────────────────────────────────────
 // Thin glue over the pure functions above. The LOCAL kernel stays the shim's existing single WS — this
 // manager only ADDS connections to attached remote kernels, so with no remotes attached the dashboard is
@@ -134,6 +161,7 @@ export class FederationManager {
   private perHostOrder: Record<string, string[]> = {};
   private perHostTabs: Record<string, any[]> = {};
   private perHostSids: Record<string, Set<string>> = {};
+  private perHostFeed: Record<string, any> = {}; // last feed snapshot per host — merged so they don't clobber
   private hostSeq: string[] = [LOCAL]; // local first, then attach order — fixes the group order in the strip
 
   start(): void {
@@ -157,7 +185,17 @@ export class FederationManager {
       this.emitMergedOrder();
       return;
     }
+    if (m && m.type === "feed") {
+      this.perHostFeed[host] = m;
+      this.ensureHost(host);
+      this.emitMergedFeed();
+      return;
+    }
     window.dispatchEvent(new MessageEvent("message", { data: m }));
+  }
+
+  private emitMergedFeed(): void {
+    window.dispatchEvent(new MessageEvent("message", { data: mergeHostFeeds(this.perHostFeed, this.hostSeq) }));
   }
 
   private emitMergedOrder(): void {
@@ -251,7 +289,9 @@ export class FederationManager {
     delete this.perHostOrder[host];
     delete this.perHostTabs[host];
     delete this.perHostSids[host];
+    delete this.perHostFeed[host];
     this.emitMergedOrder();
+    this.emitMergedFeed(); // drop the detached host's feed items so they don't linger
   }
 }
 
