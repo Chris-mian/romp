@@ -8427,55 +8427,50 @@ box-shadow:0 8px 24px #00000066;opacity:0;transform:translateY(4px);transition:o
 
 
 # The timeline page bootstrap (adapted from chat-view/src/kernel/timeline.ts): shim the 3 Obsidian
-# DOM helpers TimelinePanel uses, connect the kernel WS (app=timeline), drive panel.update() from the
-# {type:"data"} payload, and provide the host bridges as WS messages (the view can't shell out from a
-# browser). deepLink/writeOrder/compact/sendCommand are accepted-and-ignored by the kernel for now
-# (cross-pane nav + reorder + tmux pickers are later increments) — the page degrades cleanly.
+# DOM helpers TimelinePanel uses, then ADAPT the panel to the shared WS shim + federation manager —
+# the SAME transport every other pane uses. (The timeline used to hand-roll its own WebSocket here —
+# a copy of _shim's connect/queue/watchdog with panel dispatch bolted on — which bypassed the
+# federation merge entirely, so remote lanes could never appear. One shim, one merge, all panes.)
+# Inbound frames arrive as window "message" events (dispatched by the shim/manager); the outbound
+# __rompTimeline* host bridges post through acquireVsCodeApi so the manager routes each action to the
+# session's owning kernel (a remote lane's compact/flag/hover goes over that host's tunnel).
 _TIMELINE_BOOT = """
 (function(){var P=HTMLElement.prototype;
 if(!P.createEl)P.createEl=function(tag,o){var e=document.createElement(tag);if(o&&o.cls)e.className=o.cls;if(o&&o.text)e.textContent=o.text;this.appendChild(e);return e;};
 if(!P.createDiv)P.createDiv=function(o){return this.createEl('div',o);};
 if(!P.createSpan)P.createSpan=function(o){return this.createEl('span',o);};})();
-(function(){var wid=new URLSearchParams(location.search).get("wid")||"";var queue=[],ws=null,panel=null,everConnected=false;
-var lastRecv=0;var STALE_MS=30000;   // watchdog: no frame (incl. keepalive) for this long → dead socket → reconnect
-function send(m){var s=JSON.stringify(m);if(ws&&ws.readyState===1)ws.send(s);else queue.push(s);}
-// Report this pane's WS state to the shell so it can show the shared "disconnected" banner (the user 2026-06-27)
-// — the timeline data is PUSHED from the kernel (server-side parse), so a drop silently freezes it ("stopped moving").
-function netState(s){try{if(window.parent!==window)window.parent.postMessage({romp:"wsState",app:"timeline",state:s},"*");}catch(e){}}
-function connect(){var proto=location.protocol==="https:"?"wss://":"ws://";
-ws=new WebSocket(proto+location.host+"/ws?app=timeline"+(wid?"&wid="+encodeURIComponent(wid):""));
-ws.onopen=function(){lastRecv=Date.now();netState("up");if(everConnected){location.reload();return;}everConnected=true;for(var i=0;i<queue.length;i++)ws.send(queue[i]);queue=[];};
-ws.onmessage=function(ev){lastRecv=Date.now();var m;try{m=JSON.parse(ev.data);}catch(e){return;}
+(function(){var api=window.acquireVsCodeApi(),panel=null;
+function post(m){api.postMessage(m);}
+window.addEventListener("message",function(ev){var m=ev.data;if(!m||!panel)return;
 if(m.type==="data")panel.update(m.data);
 else if(m.type==="bars"&&panel.applyBars)panel.applyBars(m);
 else if(m.type==="activeChat"&&panel.setActiveChat)panel.setActiveChat(m.activeChat);
-else if(m.type==="hover"&&panel.setHover)panel.setHover(m);};
-ws.onclose=function(){netState("down");setTimeout(connect,1500);};
-ws.onerror=function(){try{ws.close();}catch(e){}};}
+else if(m.type==="hover"&&panel.setHover)panel.setHover(m);});
 window.__rompTimelineOpenExternal=function(url){try{var u=new URL(url);if(u.protocol==="vscode:"){var q=u.searchParams;
-send({type:"deepLink",session:q.get("session"),anchor:q.get("anchor")||undefined,anchorT:Number(q.get("anchorT"))||undefined,anchorKind:q.get("anchorKind")||undefined,compose:q.get("compose")==="1"});
+post({type:"deepLink",session:q.get("session"),anchor:q.get("anchor")||undefined,anchorT:Number(q.get("anchorT"))||undefined,anchorKind:q.get("anchorKind")||undefined,compose:q.get("compose")==="1"});
 if(window.parent!==window)window.parent.postMessage({romp:"reveal",pane:"chat"},"*");return;}}catch(e){}window.open(url,"_blank");};
-window.__rompTimelineWriteOrder=function(order){send({type:"writeOrder",order:order});};
-window.__rompTimelineCompact=function(name){send({type:"compact",name:name});};
-window.__rompTimelineSendCommand=function(name,cmd){send({type:"sendCommand",name:name,cmd:cmd});};
-window.__rompTimelineSetFlag=function(id,flag,value){send({type:"setSessionFlag",id:id,flag:flag,value:!!value});};
-window.__rompTimelineDismiss=function(id){send({type:"dismissLane",id:id});};
-window.__rompTimelineHover=function(sid,segIds,t0,t1){send(sid?{type:"timelineHover",sid:sid,segIds:segIds||[],t0:t0,t1:t1}:{type:"timelineHover",off:true});};
-window.__rompConnectTimeline=function(p){panel=p;connect();send({type:"ready"});};
-setInterval(function(){if(everConnected&&ws&&ws.readyState===1&&Date.now()-lastRecv>STALE_MS){try{ws.close();}catch(e){}}},5000);})();
+window.__rompTimelineWriteOrder=function(order){post({type:"writeOrder",order:order});};
+window.__rompTimelineCompact=function(name){post({type:"compact",name:name});};
+window.__rompTimelineSendCommand=function(name,cmd){post({type:"sendCommand",name:name,cmd:cmd});};
+window.__rompTimelineSetFlag=function(id,flag,value){post({type:"setSessionFlag",id:id,flag:flag,value:!!value});};
+window.__rompTimelineDismiss=function(id){post({type:"dismissLane",id:id});};
+window.__rompTimelineHover=function(sid,segIds,t0,t1){post(sid?{type:"timelineHover",sid:sid,segIds:segIds||[],t0:t0,t1:t1}:{type:"timelineHover",off:true});};
+window.__rompConnectTimeline=function(p){panel=p;post({type:"ready"});};})();
 """
 
 
 def _timeline_page():
     """The timeline pane: the shared TimelinePanel (ui/romp-timeline-view.js) injected verbatim
-    and driven by build_timeline over the kernel WS (app=timeline) — the same view the VS Code/web
-    surfaces use. The view JS is read live from UI/ so an edit goes live on a browser reload."""
+    and driven by build_timeline over the shared kernel WS shim (app=timeline) + the federation
+    manager — the same transport/merge path as chat/feed/fleet, so attached remote hosts' lanes
+    appear here too. The view JS is read live from UI/ so an edit goes live on a browser reload."""
     try:
         view_js = (UI / "romp-timeline-view.js").read_text()
     except OSError:
         return ("<!DOCTYPE html><html><body style='font-family:-apple-system,sans-serif;color:#999;"
                 "background:#1e1e1e;padding:12px'>romp timeline needs the ui/ modules "
                 "(romp-timeline-view.js).</body></html>")
+    v = _dist_ver()
     # No _pane_spin("host") here (the user 2026-06-26): that full-pane loader hides the instant #host gets
     # its first child — which is the .romp-tl-wrap on TimelinePanel construction, BEFORE any bars — so it
     # left an empty bar gap. The view now owns its own bars-area loader (draw()'s _drawBarsLoader, gated on
@@ -8484,11 +8479,13 @@ def _timeline_page():
             "<meta name=viewport content='width=device-width,initial-scale=1'>"
             "<link rel=icon type=image/svg+xml href=/media/romp-swirl-glyph.svg>"
             "<title>Romp · timeline</title><style>%s\n%s</style></head><body><div id=host></div>"
+            "<script>%s</script>"                               # the shared WS shim (connect/queue/watchdog)
+            "<script src=/dist/federation.js?v=%d></script>"    # multi-kernel manager: after the shim, before the boot
             "<script>%s</script>"
             "<script>var module={exports:{}};(function(module,exports){\n%s\n})(module,module.exports);"
             "var TimelinePanel=module.exports.TimelinePanel;"
             "window.__rompConnectTimeline(new TimelinePanel(document.getElementById('host')));"
-            "</script></body></html>" % (THEME_CSS, TIMELINE_CSS, _TIMELINE_BOOT, view_js))
+            "</script></body></html>" % (THEME_CSS, TIMELINE_CSS, _shim("timeline"), v, _TIMELINE_BOOT, view_js))
 
 
 def _chat_body():

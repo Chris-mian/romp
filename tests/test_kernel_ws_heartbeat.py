@@ -55,13 +55,15 @@ class ShimWatchdogSourcePins(unittest.TestCase):
         self.assertIn("_keepalive_all()", KSRC)
         self.assertIn("_last_keepalive", KSRC)
 
-    def test_both_shims_stamp_lastrecv_and_watchdog_reconnect(self):
-        # _shim (feed/chat/fleet) AND the timeline inline shim each declare lastRecv + STALE_MS ...
-        self.assertGreaterEqual(KSRC.count("var lastRecv=0;var STALE_MS=30000;"), 2)
-        # ... stamp it on every frame ...
-        self.assertGreaterEqual(KSRC.count("lastRecv=Date.now()"), 4)   # onopen + onmessage in each of the two shims
-        # ... and force-close a stale-but-open socket so onclose → reconnect → reload fires.
-        self.assertGreaterEqual(KSRC.count("Date.now()-lastRecv>STALE_MS"), 2)
+    def test_the_one_shared_shim_stamps_lastrecv_and_watchdog_reconnects(self):
+        # ONE shim serves every pane — the timeline's former hand-rolled copy (a second lastRecv/STALE_MS
+        # watchdog) is gone; it now rides _shim("timeline") + federation like chat/feed/fleet. Pin the
+        # watchdog wiring in the shared shim AND that no second copy has crept back in.
+        self.assertEqual(KSRC.count("var lastRecv=0;var STALE_MS=30000;"), 1)
+        self.assertGreaterEqual(KSRC.count("lastRecv=Date.now()"), 2)   # onopen + onmessage
+        # a stale-but-open socket is force-closed so onclose → reconnect → reload fires.
+        self.assertEqual(KSRC.count("Date.now()-lastRecv>STALE_MS"), 1)
+        self.assertNotIn("new WebSocket", km._TIMELINE_BOOT, "the timeline boot owns no socket of its own")
 
     def test_shim_ignores_the_keepalive_frame(self):
         self.assertIn('if(msg&&msg.type==="ka")return;', KSRC)

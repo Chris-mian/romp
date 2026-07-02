@@ -2270,6 +2270,12 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
     };
     beWrap.append(beLabel, mkBe("tmux", "tmux", "Drives a real terminal pane (tmux)."),
                   mkBe("sdk", "SDK", "Runs headless via the Claude Agent SDK."));
+    // per-session HOST picker (federation, the user 2026-07-02): local | each attached SSH host — the new
+    // session is created BY that host's kernel (over its tunnel) and appears prefixed `host:name`. The
+    // options are rebuilt on every open (hosts attach/detach live); the row hides with no hosts attached.
+    const hostWrap = el("div", "picker-backend picker-host");
+    const hostLabel = el("span", "picker-backend-label"); hostLabel.textContent = "Host";
+    hostWrap.appendChild(hostLabel);
     const actions = el("div", "picker-actions");
     const newSess = el("button", "picker-action");
     newSess.id = "picker-new-btn";
@@ -2282,9 +2288,12 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
       if (!/^[A-Za-z0-9._-]+$/.test(name)) { pickerError("Session names: letters, digits, . _ - only."); search.focus(); return; }
       // backend: this picker's toggle (defaults to the gear's "Default backend", overridable per session)
       const beSel = beWrap.querySelector(".picker-be-opt.sel") as HTMLElement | null;
-      if (vscodeApi) vscodeApi.postMessage({ type: "createSession", name, backend: beSel?.dataset.be || loadSettings().backend, dir: dirInput.value.trim() });
+      // host: local ("") or an attached SSH host — the federation manager routes createSession there.
+      const hostSel = (hostWrap.querySelector(".picker-be-opt.sel") as HTMLElement | null)?.dataset.host || "";
+      if (vscodeApi) vscodeApi.postMessage({ type: "createSession", name, backend: beSel?.dataset.be || loadSettings().backend, dir: dirInput.value.trim(), host: hostSel });
       closePicker();
-      showOpeningModal(name);   // "Opening…" cue until the new tab arrives (see upsert)
+      // a remote session's tab arrives host-prefixed — register the prefixed name so the cue dismisses
+      showOpeningModal(hostSel ? hostSel + ":" + name : name);   // "Opening…" cue until the new tab arrives (see upsert)
     });
     const openAll = el("button", "picker-action");
     openAll.textContent = "↗ Open all running sessions";
@@ -2299,6 +2308,7 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
     box.appendChild(list);
     box.appendChild(dirWrap);
     box.appendChild(beWrap);
+    box.appendChild(hostWrap);
     box.appendChild(actions);
     overlay.appendChild(box);
     overlay.addEventListener("click", (e) => { if (e.target === overlay) closePicker(); });
@@ -2310,11 +2320,34 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
   if (actions) actions.style.display = pick ? "none" : "";
   const dirWrap = overlay.querySelector(".picker-dir") as HTMLElement | null;
   if (dirWrap) dirWrap.style.display = pick ? "none" : "";   // dir only matters when creating, not picking
-  const beWrapEl = overlay.querySelector(".picker-backend") as HTMLElement | null;
+  const beWrapEl = overlay.querySelector(".picker-backend:not(.picker-host)") as HTMLElement | null;
   if (beWrapEl) {   // reset the backend toggle to the gear default each open (overridable for this session)
     beWrapEl.style.display = pick ? "none" : "";
     const def = loadSettings().backend || "tmux";
     beWrapEl.querySelectorAll(".picker-be-opt").forEach((x) => x.classList.toggle("sel", (x as HTMLElement).dataset.be === def));
+  }
+  const hostWrapEl = overlay.querySelector(".picker-host") as HTMLElement | null;
+  if (hostWrapEl) {   // rebuild the host options each open (attach/detach is live); hide with no remotes
+    const hosts: string[] = ((window as any).__rompFed?.hosts?.() || []) as string[];
+    hostWrapEl.style.display = pick || !hosts.length ? "none" : "";
+    hostWrapEl.querySelectorAll(".picker-be-opt").forEach((x) => x.remove());
+    for (const h of ["", ...hosts]) {
+      const b = el("button", "picker-be-opt" + (h === "" ? " sel" : "")) as HTMLButtonElement;
+      b.type = "button"; b.textContent = h || "local"; b.dataset.host = h;
+      b.title = h ? `Create the session on ${h} (its kernel spawns it; the tab shows as ${h}:name).`
+                  : "Create the session on this machine.";
+      b.addEventListener("click", () => {
+        hostWrapEl.querySelectorAll(".picker-be-opt").forEach((x) => x.classList.toggle("sel", x === b));
+        // the Browse… dialog and dir autocomplete are LOCAL-machine paths — misleading for a remote host
+        const browse = overlay!.querySelector(".picker-browse") as HTMLButtonElement | null;
+        if (browse) { browse.disabled = !!h; browse.title = h ? "Directory browsing is host-local; type the remote path (blank = that kernel's default)." : "Pick a folder with the native macOS dialog (opens on the kernel's machine — host-local)"; }
+        const dirIn = document.getElementById("picker-dir") as HTMLInputElement | null;
+        if (dirIn) dirIn.placeholder = h ? `New-session directory on ${h} (blank = its default)` : "New-session directory (blank = default)";
+      });
+      hostWrapEl.appendChild(b);
+    }
+    const browse0 = overlay.querySelector(".picker-browse") as HTMLButtonElement | null;
+    if (browse0) browse0.disabled = false;   // fresh open defaults back to local
   }
   const di = document.getElementById("picker-dir") as HTMLInputElement | null;
   if (di) di.value = kernelDefaultDir || loadSettings().defaultDir || "";   // the kernel's persisted default (file→env) wins; localStorage is a same-tab cache

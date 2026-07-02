@@ -44,8 +44,9 @@ class DismissLane(unittest.TestCase):
         self.assertIn('_dismissed_lanes.add(str(msg["id"]))', src)
 
     def test_boot_hook_posts_dismiss_lane(self):
-        # the timeline iframe exposes __rompTimelineDismiss(id) → send({type:"dismissLane",id})
-        self.assertIn('window.__rompTimelineDismiss=function(id){send({type:"dismissLane",id:id});};',
+        # the timeline iframe exposes __rompTimelineDismiss(id) → post({type:"dismissLane",id}) — routed
+        # through acquireVsCodeApi so the federation manager sends it to the lane's owning kernel
+        self.assertIn('window.__rompTimelineDismiss=function(id){post({type:"dismissLane",id:id});};',
                       km._TIMELINE_BOOT)
 
 

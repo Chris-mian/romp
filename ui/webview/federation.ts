@@ -61,6 +61,10 @@ export function prefixInbound(host: string, msg: any): any {
   // local same-named one. Guarded by a co-present id/sid so we never touch an unrelated `name` field.
   if (typeof out.name === "string" && (typeof out.id === "string" || typeof out.sid === "string"))
     out.name = prefixId(host, out.name);
+  // timeline payloads: the lanes skeleton nests everything under `data`; the bars detail is top-level.
+  if (out.type === "data" && out.data && typeof out.data === "object") out.data = prefixTimelineData(host, out.data);
+  else if (out.type === "bars") return { ...out, ..._prefixTimelineDetail(host, out) };
+  if (out.activeChat && typeof out.activeChat === "object") out.activeChat = _prefixActiveChat(host, out.activeChat);
   return out;
 }
 
@@ -73,6 +77,59 @@ function _prefixIdBearing(host: string, o: any, idKey: string): any {
   return out;
 }
 
+// ── timeline payloads ────────────────────────────────────────────────────────────────────────────
+// The timeline rides the same WS as everything else (app=timeline): a {type:"data", data:{…}} lanes
+// skeleton and a heavy {type:"bars"} detail message. Both are per-sid keyed, so a remote host's copy
+// needs the same prefixing as the flat messages above — but nested.
+
+/** Prefix the per-sid DETAIL shared by {type:"data"}.data and {type:"bars"}: `turns` (an object keyed
+ *  by sid whose bars carry `tid` = their sid), postal `messages` (fromId/toId), and the `judging` +
+ *  `nudges` marks (sid). Event uuids (bar id/promptId/workId, hover ids) are globally unique already
+ *  and stay bare. */
+function _prefixTimelineDetail(host: string, d: any): any {
+  const out: any = { ...d };
+  if (out.turns && typeof out.turns === "object" && !Array.isArray(out.turns)) {
+    const turns: any = {};
+    for (const [sid, bars] of Object.entries(out.turns))
+      turns[prefixId(host, sid)] = Array.isArray(bars)
+        ? bars.map((b: any) => (b && typeof b === "object" && typeof b.tid === "string" ? { ...b, tid: prefixId(host, b.tid) } : b))
+        : bars;
+    out.turns = turns;
+  }
+  if (Array.isArray(out.messages))
+    out.messages = out.messages.map((m: any) => {
+      if (!m || typeof m !== "object") return m;
+      const c: any = { ...m };
+      if (typeof c.fromId === "string") c.fromId = prefixId(host, c.fromId);
+      if (typeof c.toId === "string") c.toId = prefixId(host, c.toId);
+      return c;
+    });
+  for (const k of ["judging", "nudges"])
+    if (Array.isArray(out[k]))
+      out[k] = out[k].map((e: any) => (e && typeof e === "object" && typeof e.sid === "string" ? { ...e, sid: prefixId(host, e.sid) } : e));
+  return out;
+}
+
+/** The active-chat cue: `tid` is the chat's transcript sid (matched against bars' prefixed `tid`) and
+ *  `name` its display name — prefix both so a remote kernel's cue lights its own (prefixed) lane. */
+function _prefixActiveChat(host: string, ac: any): any {
+  if (!ac || typeof ac !== "object") return ac;
+  const out: any = { ...ac };
+  if (typeof out.tid === "string") out.tid = prefixId(host, out.tid);
+  if (typeof out.name === "string") out.name = prefixId(host, out.name);
+  return out;
+}
+
+/** Prefix a full timeline lanes payload ({type:"data"}.data): sessions (id + display name) plus the
+ *  shared detail fields. */
+export function prefixTimelineData(host: string, d: any): any {
+  if (!host || !d || typeof d !== "object") return d;
+  const out = _prefixTimelineDetail(host, d);
+  if (Array.isArray(out.sessions)) out.sessions = out.sessions.map((s: any) => _prefixIdBearing(host, s, "id"));
+  if (out.activeChat) out.activeChat = _prefixActiveChat(host, out.activeChat);
+  return out;
+}
+
 export interface Route {
   host: string; // "" = the local kernel
   msg: any; // a copy with this host's ids stripped back to bare
@@ -81,11 +138,24 @@ export interface Route {
 /** Decide which kernel(s) an OUTBOUND (browser→kernel) message goes to, stripping the host prefix off the
  *  ids for that kernel. Most messages target one session → one route. A reorder (an `order[]` that can mix
  *  hosts after a cross-host drag) fans out to one route PER host, each carrying only its own sids in their
- *  relative order. A message with no session id (a global pref like setColormap, or `ready`) → local. */
-export function routeOutbound(msg: any): Route[] {
+ *  relative order. A message with no session id (a global pref like setColormap, or `ready`) → local.
+ *
+ *  `knownHosts` (the manager passes its attached set) enables two extra routings that need to know which
+ *  hosts exist: NAME-addressed messages (the timeline's compact/sendCommand target a session by display
+ *  name, which inbound prefixing made `host:name`) route to a KNOWN host only — a local name that happens
+ *  to contain ":" must never misroute — and a hover CLEAR (`timelineHover {off}` carries no sid) fans out
+ *  to every kernel so a remote highlight can't stick. */
+export function routeOutbound(msg: any, knownHosts?: ReadonlySet<string>): Route[] {
   if (!msg || typeof msg !== "object") return [{ host: LOCAL, msg }];
 
-  // order[] (reorderTabs): split across the hosts it touches.
+  // an explicit `host` field wins (the + modal's createSession picks the target kernel): route there with
+  // the field stripped — the kernel's handlers are host-blind.
+  if (typeof msg.host === "string") {
+    const { host, ...rest } = msg;
+    return [{ host: host || LOCAL, msg: rest }];
+  }
+
+  // order[] (reorderTabs / the timeline's writeOrder): split across the hosts it touches.
   if (Array.isArray(msg.order) && msg.order.some((x: any) => typeof x === "string")) {
     const byHost = new Map<string, string[]>();
     for (const x of msg.order) {
@@ -97,6 +167,9 @@ export function routeOutbound(msg: any): Route[] {
     return [...byHost.entries()].map(([host, order]) => ({ host, msg: { ...msg, order } }));
   }
 
+  // a hover CLEAR has no session id — broadcast so every kernel drops its highlight.
+  if (msg.type === "timelineHover" && msg.off) return [LOCAL, ...(knownHosts || [])].map((h) => ({ host: h, msg }));
+
   // a scalar session id picks the owning host.
   let host = LOCAL;
   for (const k of SCALAR_ID) {
@@ -105,10 +178,24 @@ export function routeOutbound(msg: any): Route[] {
       if (h) { host = h; break; }
     }
   }
-  if (host === LOCAL) return [{ host: LOCAL, msg }];
-  const out: any = { ...msg };
-  for (const k of SCALAR_ID) if (typeof out[k] === "string") out[k] = bareId(out[k]);
-  return [{ host, msg: out }];
+  if (host !== LOCAL) {
+    const out: any = { ...msg };
+    for (const k of SCALAR_ID) if (typeof out[k] === "string") out[k] = bareId(out[k]);
+    return [{ host, msg: out }];
+  }
+
+  // name-addressed (compact/sendCommand `name`, deepLink `session`): a remote lane's display name is
+  // host-prefixed — route to that KNOWN host with the prefix stripped. Only the field that decided the
+  // route is stripped (e.g. renameSession's `name` is the user's new title, untouched — it routed by id).
+  if (knownHosts && knownHosts.size) {
+    for (const k of ["name", "session"]) {
+      if (typeof msg[k] === "string") {
+        const h = hostOf(msg[k]);
+        if (h && knownHosts.has(h)) return [{ host: h, msg: { ...msg, [k]: bareId(msg[k]) } }];
+      }
+    }
+  }
+  return [{ host: LOCAL, msg }];
 }
 
 /** Merge per-host tab orders into ONE list for the merged strip: each host's order VERBATIM (the kernel is
@@ -155,6 +242,39 @@ export function mergeHostFeeds(perHost: Record<string, any>, hostSeq: readonly s
   return merged;
 }
 
+/** Merge per-host timeline lanes payloads ({type:"data"}.data, already prefixed) into ONE. Sessions
+ *  concatenate in hostSeq order (local lanes first, each remote host's group below — the view draws a
+ *  half-row gap at each host boundary via the `host` field stamped here); `turns` (keyed by prefixed sid)
+ *  union; the marks arrays concatenate. Scalar chrome (now/usage/focus/hover/cmapGrad…) stays LOCAL —
+ *  the browser's own kernel is the clock + chrome authority, same as the feed merge. */
+export function mergeHostTimelines(perHost: Record<string, any>, hostSeq: readonly string[]): any {
+  const local = perHost[LOCAL] || {};
+  const merged: any = { ...local, sessions: [], turns: {}, messages: [], judging: [], nudges: [] };
+  for (const h of hostSeq) {
+    const d = perHost[h];
+    if (!d) continue;
+    if (Array.isArray(d.sessions)) merged.sessions.push(...d.sessions.map((s: any) => ({ ...s, host: h })));
+    if (d.turns && typeof d.turns === "object") Object.assign(merged.turns, d.turns);
+    for (const k of ["messages", "judging", "nudges"]) if (Array.isArray(d[k])) merged[k].push(...d[k]);
+  }
+  return merged;
+}
+
+/** Merge per-host {type:"bars"} detail messages (already prefixed) into ONE. The panel's applyBars
+ *  wholesale-replaces its turns/marks, so per-host bars MUST be merged here or each host's push would
+ *  clobber the others' bars (the same clobber the feed had). `now` stays LOCAL (clock authority). */
+export function mergeHostBars(perHost: Record<string, any>, hostSeq: readonly string[]): any {
+  const local = perHost[LOCAL] || {};
+  const merged: any = { ...local, type: "bars", turns: {}, messages: [], judging: [], nudges: [] };
+  for (const h of hostSeq) {
+    const b = perHost[h];
+    if (!b) continue;
+    if (b.turns && typeof b.turns === "object") Object.assign(merged.turns, b.turns);
+    for (const k of ["messages", "judging", "nudges"]) if (Array.isArray(b[k])) merged[k].push(...b[k]);
+  }
+  return merged;
+}
+
 // ── the wiring: WebSockets per kernel + the attach UI ────────────────────────────────────────────
 // Thin glue over the pure functions above. The LOCAL kernel stays the shim's existing single WS — this
 // manager only ADDS connections to attached remote kernels, so with no remotes attached the dashboard is
@@ -176,12 +296,18 @@ export class FederationManager {
   private perHostTabs: Record<string, any[]> = {};
   private perHostSids: Record<string, Set<string>> = {};
   private perHostFeed: Record<string, any> = {}; // last feed snapshot per host — merged so they don't clobber
+  private perHostTl: Record<string, any> = {}; //   last timeline lanes payload ({type:"data"}.data) per host
+  private perHostTlBars: Record<string, any> = {}; // last timeline {type:"bars"} detail per host
   private hostSeq: string[] = [LOCAL]; // local first, then attach order — fixes the group order in the strip
 
   start(): void {
     const w = window as any;
     this.app = w.__rompApp || "chat";
-    w.__rompFed = { inbound: (h: string, m: any) => this.inbound(h, m), outbound: (m: any) => this.outbound(m) };
+    w.__rompFed = {
+      inbound: (h: string, m: any) => this.inbound(h, m),
+      outbound: (m: any) => this.outbound(m),
+      hosts: () => this.hostSeq.filter((h) => h !== LOCAL), // attached hosts (the + modal's host picker)
+    };
     this.poll();
     setInterval(() => this.poll(), 4000); // converge on attach/detach made from the shell's network panel
   }
@@ -205,11 +331,31 @@ export class FederationManager {
       this.emitMergedFeed();
       return;
     }
+    // timeline snapshots replace the panel's state wholesale (update/applyBars) — merge per host like the feed.
+    if (m && m.type === "data" && m.data && typeof m.data === "object") {
+      this.perHostTl[host] = m.data;
+      this.ensureHost(host);
+      this.emitMergedTimeline(false);
+      return;
+    }
+    if (m && m.type === "bars") {
+      this.perHostTlBars[host] = m;
+      this.ensureHost(host);
+      this.emitMergedTimeline(true);
+      return;
+    }
     window.dispatchEvent(new MessageEvent("message", { data: m }));
   }
 
   private emitMergedFeed(): void {
     window.dispatchEvent(new MessageEvent("message", { data: mergeHostFeeds(this.perHostFeed, this.hostSeq) }));
+  }
+
+  private emitMergedTimeline(bars: boolean): void {
+    const data = bars
+      ? mergeHostBars(this.perHostTlBars, this.hostSeq)
+      : { type: "data", data: mergeHostTimelines(this.perHostTl, this.hostSeq) };
+    window.dispatchEvent(new MessageEvent("message", { data }));
   }
 
   private emitMergedOrder(): void {
@@ -220,7 +366,7 @@ export class FederationManager {
 
   // browser → kernel: route each message to the owning kernel, prefix stripped.
   outbound(m: any): void {
-    for (const r of routeOutbound(m)) {
+    for (const r of routeOutbound(m, new Set(this.hostSeq.filter((h) => h !== LOCAL)))) {
       if (r.host === LOCAL) {
         const s = (window as any).__rompLocalSend;
         if (typeof s === "function") s(r.msg);
@@ -304,8 +450,12 @@ export class FederationManager {
     delete this.perHostTabs[host];
     delete this.perHostSids[host];
     delete this.perHostFeed[host];
+    const hadTl = host in this.perHostTl || host in this.perHostTlBars;
+    delete this.perHostTl[host];
+    delete this.perHostTlBars[host];
     this.emitMergedOrder();
     this.emitMergedFeed(); // drop the detached host's feed items so they don't linger
+    if (hadTl) { this.emitMergedTimeline(false); this.emitMergedTimeline(true); } // …and its lanes/bars
   }
 }
 

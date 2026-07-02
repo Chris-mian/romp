@@ -1190,7 +1190,15 @@ class TimelinePanel {
   _rowDragMove(ev) {
     const d = this._drag; if (!d) return;
     const n = d.order.length, y = this._svgY(ev);
-    let toIdx = Math.round((y - this._geom.top - LANE_GAP / 2) / LANE_GAP);
+    // invert laneY with the host-group offsets: pick the lane whose center is nearest the pointer
+    // (offsets shift live as the drag crosses a group boundary — nearest-center keeps it stable).
+    const offs = (this._geom && this._geom.laneOffs) || [];
+    let toIdx = 0, bestDy = Infinity;
+    for (let i = 0; i < n; i++) {
+      const ly = this._geom.top + i * LANE_GAP + (offs[i] || 0) + LANE_GAP / 2;
+      const dy = Math.abs(y - ly);
+      if (dy < bestDy) { bestDy = dy; toIdx = i; }
+    }
     toIdx = Math.max(0, Math.min(n - 1, toIdx));
     d.toIdx = toIdx;
     // rebuild from the ORIGINAL order each move (no drift): pull the dragged sid, splice at the target band.
@@ -1447,7 +1455,7 @@ class TimelinePanel {
     const g = this._geom; if (!g) return;
     const i = (this._vis || []).findIndex((s) => s.id === sid);
     if (i < 0) return;
-    const y = g.top + i * LANE_GAP + LANE_GAP * 0.5;
+    const y = g.top + i * LANE_GAP + ((g.laneOffs && g.laneOffs[i]) || 0) + LANE_GAP * 0.5;
     const X = (tt) => g.ml + ((g.compress ? g.compress(tt) : tt) - g.cT0) / g.winSec * g.plotW;   // compressed-time x
     const startMs = (typeof performance !== 'undefined' && performance.now) ? performance.now() : null;
     const DUR = 1400;
@@ -1881,6 +1889,17 @@ class TimelinePanel {
     }
     this._vis = vis;   // visible lanes in order → keyboard ↑/↓ selection
     const vidx = {}; vis.forEach((s, i) => { vidx[s.id] = i; });
+    // Host grouping (federation): the merged payload stamps each session's owning kernel on s.host
+    // ('' = local; the merge concatenates local-first). Remote hosts' lanes sit BELOW the local group
+    // with a HALF-ROW gap at each host boundary (the user 2026-07-02) so "a different machine" reads at
+    // a glance. laneOffs[i] = the cumulative extra y before lane i; single-kernel data has no host
+    // field → all offsets 0 → layout identical to before.
+    const laneOffs = []; let laneOffAcc = 0;
+    for (let i = 0; i < vis.length; i++) {
+      if (i > 0 && (vis[i].host || '') !== (vis[i - 1].host || '')) laneOffAcc += LANE_GAP * 0.5;
+      laneOffs.push(laneOffAcc);
+    }
+    const laneOffTotal = laneOffAcc;
 
 
     // "compacting" = the real @claude-state OR an OPTIMISTIC click not yet confirmed (≤6s) — so the cue
@@ -1924,12 +1943,12 @@ class TimelinePanel {
     const jShow = !!(shownJudges.length && data.judging && data.judging.some((e) => shownKeys.has(e.judge) && inWin(e.t)));
     const bandH = jShow ? (JB_TOPGAP + shownJudges.length * JROW + JB_BOTGAP) : 0;
     const W = Math.max(640, this.wrap.clientWidth || 900);
-    const plotW = W - M.left - M.right, H = M.top + Math.max(1, vis.length) * LANE_GAP + bandH + M.bottom;
+    const plotW = W - M.left - M.right, H = M.top + Math.max(1, vis.length) * LANE_GAP + laneOffTotal + bandH + M.bottom;
     svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H); svg.setAttribute('height', H); svg.setAttribute('width', W);
     // x is LINEAR in compressed time → smooth pan (only zoom rescales). Identity compress = plain linear.
     const x = (t) => M.left + (compress(t) - cT0) / winSec * plotW;
-    const laneY = (i) => M.top + i * LANE_GAP + LANE_GAP * 0.5;
-    this._geom = { ml: M.left, plotW, W, H, top: M.top, t0, t1, cT0, winSec, compress, decompress };
+    const laneY = (i) => M.top + i * LANE_GAP + (laneOffs[i] || 0) + LANE_GAP * 0.5;
+    this._geom = { ml: M.left, plotW, W, H, top: M.top, t0, t1, cT0, winSec, compress, decompress, laneOffs };
 
     // axis — gridlines + time labels. Ticks at real nice intervals, drawn at their compressed x (evenly
     // spaced in active regions, squished across gaps). A tick inside a collapsed gap is skipped — the
@@ -2478,7 +2497,7 @@ class TimelinePanel {
     // by the SESSION it acted on; adjacent same-session marks merge into a stretch of attention. A mark
     // within ~8s of the live edge is "running now" (white-outlined). (design/judge.md; data.judging.)
     if (jShow) {
-      const jb0 = M.top + vis.length * LANE_GAP + JB_TOPGAP;     // top of the first judge row
+      const jb0 = M.top + vis.length * LANE_GAP + laneOffTotal + JB_TOPGAP;     // top of the first judge row (below the host-group gaps)
       const jY = (i) => jb0 + i * JROW + JROW * 0.5;
       const nameOf = (sid) => { const s = data.sessions.find((z) => z.id === sid); return s ? s.name : sid; };
       const sepY = jb0 - JB_TOPGAP * 0.5;
