@@ -606,18 +606,26 @@ function makeAskCard(it: AskItem): HTMLElement {
   // context"): BACKGROUND (re-orientation, collapsed by default) above the takeaway (expanded by default),
   // each toggled by a small +/− button. Collapse state lives in module sets keyed by itemId so the keyed
   // incremental re-render never snaps a section shut.
-  // Collapsed = ONE small rounded-rect pill ("background +" / "summary +"); expanded = the paragraph runs
-  // full card width with a tiny trailing "−" pill after its last line (the user 2026-07-02: the circle
-  // buttons were clunky, and a left button column wasted the horizontal space the summary needs).
+  // Disclosure in the chat's own visual language (the ↩ Follow-up header's ▸/▾): a BARE muted text row —
+  // no border, no pill, no fill — "▸ background" whose triangle flips to ▾ with the body below (the
+  // Notion-toggle / Finder-disclosure pattern; the user 2026-07-02: boxes read clunky, elegant apps use
+  // naked disclosure text). The takeaway shows NO header while open (its text IS the content, full
+  // width); it collapses via a quiet trailing "less" link (the App Store more/less pattern) and reopens
+  // from a "▸ summary" row.
   const bgSec = el("div", "fask-sec fask-bg"); bgSec.style.display = "none";
-  const bgBtn = el("button", "fask-sec-pill"); bgBtn.textContent = "background +"; bgBtn.title = "expand";
+  const bgBtn = el("button", "fask-sec-head"); bgBtn.title = "expand";
+  const bgTri = el("span", "fask-sec-tri"); bgTri.textContent = "▸";
+  const bgName = el("span"); bgName.textContent = "background";
+  bgBtn.append(bgTri, bgName);
   const bgBody = el("div", "fask-bg-body");
-  const bgMin = el("button", "fask-sec-min"); bgMin.textContent = "−"; bgMin.title = "collapse";
   bgSec.append(bgBtn, bgBody);
   const takeSec = el("div", "fask-sec fask-take"); takeSec.style.display = "none";
-  const takeBtn = el("button", "fask-sec-pill"); takeBtn.textContent = "summary +"; takeBtn.title = "expand";
+  const takeBtn = el("button", "fask-sec-head"); takeBtn.title = "expand";
+  const takeTri = el("span", "fask-sec-tri"); takeTri.textContent = "▸";
+  const takeName = el("span"); takeName.textContent = "summary";
+  takeBtn.append(takeTri, takeName);
   const distill = el("div", "fask-distill");
-  const takeMin = el("button", "fask-sec-min"); takeMin.textContent = "−"; takeMin.title = "collapse";
+  const takeLess = el("button", "fask-sec-less"); takeLess.textContent = "less"; takeLess.title = "collapse";
   takeSec.append(takeBtn, distill);
   // ⏳ AWAITING cue (the user 2026-06-29): a small romp swirl spinning in the SAME body spot the distiller line
   // will eventually fill — a completed/blocked card shows its takeaway there; a WORKING card that's awaiting
@@ -726,8 +734,8 @@ function makeAskCard(it: AskItem): HTMLElement {
   a._delegations = delegations;
   a._checklist = checklist;
   a._distill = distill;
-  a._bgSec = bgSec; a._bgBtn = bgBtn; a._bgBody = bgBody; a._bgMin = bgMin;
-  a._takeSec = takeSec; a._takeBtn = takeBtn; a._takeMin = takeMin;
+  a._bgSec = bgSec; a._bgBtn = bgBtn; a._bgTri = bgTri; a._bgBody = bgBody;
+  a._takeSec = takeSec; a._takeBtn = takeBtn; a._takeLess = takeLess;
   a._awaitSpin = awaitSpin; a._awaitWhy = awaitWhy;
   a._origin = origin;
   return card;
@@ -740,11 +748,11 @@ const bgOpen = new Set<string>();
 const takeClosed = new Set<string>();
 
 // Fill + wire the BACKGROUND and takeaway sections. BACKGROUND shows only alongside a produced
-// takeaway/brief (orientation with no outcome would dangle) and starts collapsed to a "background +"
-// pill; the takeaway starts expanded and collapses to "summary +". Expanded, each paragraph carries a
-// small trailing "−" pill appended AFTER its text (appendChild re-appends the same node, so a re-render
-// that reset textContent gets the pill back without accumulating). stopPropagation on every toggle —
-// the card-body click opens the modal.
+// takeaway/brief (orientation with no outcome would dangle): a "▸ background" disclosure row whose
+// triangle flips to ▾ with the body below — the row persists as the close control. The takeaway starts
+// expanded (no header; its text is the content) and collapses via the trailing "less" link into a
+// "▸ summary" row. appendChild re-appends the same "less" node after a re-render reset textContent, so
+// nothing accumulates. stopPropagation on every toggle — the card-body click opens the modal.
 function applyDistillSections(a: any, it: AskItem, distillShown: boolean): void {
   const id = it.itemId;
   const flipBg = (ev: Event) => {
@@ -761,23 +769,20 @@ function applyDistillSections(a: any, it: AskItem, distillShown: boolean): void 
   a._bgSec.style.display = bg ? "" : "none";
   if (bg) {
     const open = bgOpen.has(id);
-    a._bgBtn.style.display = open ? "none" : "";
+    a._bgTri.textContent = open ? "▾" : "▸";   // the header row PERSISTS when open (Notion-toggle style)
+    a._bgBtn.title = open ? "collapse" : "expand";
     a._bgBody.style.display = open ? "" : "none";
-    if (open) {
-      a._bgBody.textContent = bg;
-      a._bgBody.appendChild(a._bgMin);       // the trailing − pill, inline after the last line
-    }
+    if (open) a._bgBody.textContent = bg;
     a._bgBtn.onclick = flipBg;
-    a._bgMin.onclick = flipBg;
   }
   a._takeSec.style.display = distillShown ? "" : "none";
   if (distillShown) {
     const open = !takeClosed.has(id);
     a._takeBtn.style.display = open ? "none" : "";
     (a._distill as HTMLElement).style.display = open ? "" : "none";
-    if (open) (a._distill as HTMLElement).appendChild(a._takeMin);   // trails the takeaway text
+    if (open) (a._distill as HTMLElement).appendChild(a._takeLess);   // quiet "less" after the last line
     a._takeBtn.onclick = flipTake;
-    a._takeMin.onclick = flipTake;
+    a._takeLess.onclick = flipTake;
   }
 }
 
