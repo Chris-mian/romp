@@ -2464,7 +2464,9 @@ def attach_remote(host, kernel_port=None):
         if r is None:
             r = {"host": host, "kernel_port": int(kernel_port or _REMOTE_KERNEL_PORT),
                  "local_port": _free_port(), "token": "", "proc": None,
-                 "status": "starting", "detail": "", "sids": []}
+                 # phase the browser popover surfaces: authorizing (ssh + token) → connecting
+                 # (tunnel up, waiting for the port) → up. See _LANDING_REMOTES_JS's LBL map.
+                 "status": "authorizing", "detail": "", "sids": []}
             _remotes[host] = r
         elif kernel_port:
             r["kernel_port"] = int(kernel_port)
@@ -8538,15 +8540,24 @@ if(x)x.onclick=close;
 document.addEventListener('keydown',function(e){if(e.key==='Escape'&&!back.hidden)close();});
 function loadHosts(){fetch('/ssh-hosts',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){
 var hs=(d&&d.hosts)||[];hostSel.innerHTML=hs.length?hs.map(function(h){return '<option value=\"'+h+'\">'+h+'</option>';}).join(''):'<option value=\"\">(no ~/.ssh/config hosts)</option>';}).catch(function(){});}
+var LBL={up:'connected',authorizing:'authorizing\\u2026',connecting:'connecting\\u2026',starting:'connecting\\u2026',down:'disconnected',error:'error'};
+var _timer;function schedule(ms){clearTimeout(_timer);_timer=setTimeout(refresh,ms);}
+function busyStatus(s){return s!=='up'&&s!=='down'&&s!=='error';}   // mid-attach (authorizing/connecting)
 function refresh(){fetch('/tunnels',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){
 var ts=(d&&d.tunnels)||[];icon.classList.toggle('on',ts.some(function(t){return t.status==='up';}));   // glow accent-blue while a remote is connected
-if(!back.hidden)render(ts);}).catch(function(){});}
+if(!back.hidden)render(ts);
+// while any tunnel is mid-attach, poll fast so the phase words (authorizing -> connecting -> connected)
+// are actually visible in the couple seconds it takes; settle to a slow keep-alive once all up/down.
+schedule(ts.some(function(t){return busyStatus(t.status);})?600:3000);
+}).catch(function(){schedule(3000);});}
 function render(ts){list.innerHTML='';
 if(!ts.length){var e=document.createElement('div');e.className='rnet-empty';e.textContent='No remotes attached.';list.appendChild(e);return;}
 ts.forEach(function(t){var row=document.createElement('div');row.className='rnet-row';
-var c=t.status==='up'?'#7CD992':(t.status==='error'?'#E5534B':'var(--accent)');
-row.innerHTML='<span class=rnet-dot style=\"background:'+c+'\"></span>'+
-'<span class=nm><b>'+t.host+'</b> <span class=st>'+t.status+(t.token?'':' \\u00b7 no token')+'</span></span>'+
+// connected -> solid accent dot (matches the lit rail icon); mid-attach -> hollow accent RING (glanceably
+// "in progress"); down -> grey; error -> red. Word beside it names the phase.
+var dot=t.status==='up'?'background:var(--accent)':t.status==='error'?'background:#E5534B':t.status==='down'?'background:#8a8a8a':'background:transparent;box-shadow:inset 0 0 0 1.5px var(--accent)';
+row.innerHTML='<span class=rnet-dot style=\"'+dot+'\"></span>'+
+'<span class=nm><b>'+t.host+'</b> <span class=st>'+(LBL[t.status]||t.status)+(t.token?'':' \\u00b7 no token')+'</span></span>'+
 '<button data-h=\"'+t.host+'\">Detach</button>';
 list.appendChild(row);});
 list.querySelectorAll('button[data-h]').forEach(function(b){b.onclick=function(){var h=b.getAttribute('data-h');
@@ -8554,7 +8565,7 @@ b.disabled=true;fetch('/tunnels/detach',{method:'POST',headers:{'Content-Type':'
 attach.onclick=function(){var h=hostSel.value;if(!h)return;attach.disabled=true;attach.textContent='Attaching\\u2026';
 fetch('/tunnels',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h})}).then(function(){
 attach.disabled=false;attach.textContent='Attach';refresh();}).catch(function(){attach.disabled=false;attach.textContent='Attach';});};
-refresh();setInterval(refresh,3000);   // always-on: keep the rail icon's connected-state highlight current even while closed
+refresh();   // self-schedules (fast while attaching, slow keep-alive otherwise) so the rail icon's connected-state highlight stays current even while closed
 })();
 """
 

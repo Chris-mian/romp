@@ -95,7 +95,7 @@ class TunnelConcierge(unittest.TestCase):
         self.assertEqual(t["host"], "testhost")
         self.assertEqual(t["token"], FAKE_TOKEN, "the remote serve-token must be fetched over ssh")
         self.assertGreater(t["localPort"], 0, "a local -L port must be allocated for the browser")
-        self.assertIn(t["status"], ("starting", "up"))
+        self.assertIn(t["status"], ("authorizing", "connecting", "starting", "up"))
         self.assertTrue(km._tunnel_proc_alive(km._remotes["testhost"]), "the ssh tunnel proc must be running")
 
     def test_list_tunnels_includes_attached_host(self):
