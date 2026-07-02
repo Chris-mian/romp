@@ -3737,6 +3737,115 @@ class Distiller(unittest.TestCase):
         self.assertEqual(nd["summary"], "Delivered without a citation.")
         self.assertIsNone(nd["summaryAnchor"], "no SOURCE line → no anchor (kernel falls back)")
 
+    def test_cite_miss_stamps_a_card_warn_and_logs(self):
+        # A reply that was OFFERED [mN] labels but returned no usable SOURCE line is an anomaly the
+        # pipeline used to swallow silently: summaryAnchor stayed null and the deep-link degraded to the
+        # heuristic fallback with no trace. Now it stamps a node WARN (yellow "warning" chip on the card;
+        # click shows what happened and why) AND logs err "cite-miss" to judge-errors.jsonl (the user
+        # 2026-07-02, after a live summary link landed on the goal's opening restatement).
+        records = [uline(T0, "do the thing", "u1", ps="typed"),
+                   aline(T0 + 10, "did the thing, wrapped up and shipped", "a1", "u1", stop="end_turn")]
+        path = self._setup(records)
+        now = T0 + 5000
+        s1 = em.segments(jd.parsed_session(SID, [path], now)["turns"][0])[0]["id"]
+        gid = SID + ":g1"
+        jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "status": {gid: "completed"}, "placements": {},
+                            "nodes": {gid: {"id": gid, "text": "Build the thing", "parentId": None,
+                                            "nodeComplete": True, "blocked": False, "cleared": False,
+                                            "trail": [s1], "t": T0, "mt": T0 + 10}}})
+        jd.distill_llm = lambda g, w, dw="": "Delivered, but no citation line."
+        d = Path(tempfile.mkdtemp()); saved_errors = jd.ERRORS
+        try:
+            jd.ERRORS = d / "judge-errors.jsonl"
+            self.assertEqual(jd.run_distill(now=now), 1)
+            recs = [json.loads(l) for l in jd.ERRORS.read_text().splitlines()]
+            self.assertEqual([(r["tier"], r["err"]) for r in recs], [("distiller", "cite-miss")],
+                             "the miss is recorded for romp -j, distinct from a call failure")
+        finally:
+            jd.ERRORS = saved_errors
+        nd = jd.load_goals(SID)["nodes"][gid]
+        self.assertEqual(nd["summary"], "Delivered, but no citation line.", "the summary itself still lands")
+        ws = nd["warns"]
+        self.assertEqual([w["kind"] for w in ws], ["cite-miss"], "one live warn, stamped on the node")
+        self.assertEqual(ws[0]["t"], now)
+        self.assertIn("SOURCE", ws[0]["detail"], "the detail explains the mechanism that failed")
+        self.assertIn("no citation line", ws[0]["detail"], "…and carries the reply tail for the audit")
+
+    def test_invented_label_counts_as_cite_miss(self):
+        # citing a label that was never offered (m99) is the same anomaly as omitting the line: nothing
+        # resolvable was stored, so the warn + error fire and summaryAnchor stays None.
+        records = [uline(T0, "do the thing", "u1", ps="typed"),
+                   aline(T0 + 10, "did the thing", "a1", "u1", stop="end_turn")]
+        path = self._setup(records)
+        now = T0 + 5000
+        s1 = em.segments(jd.parsed_session(SID, [path], now)["turns"][0])[0]["id"]
+        gid = SID + ":g1"
+        jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "status": {gid: "completed"}, "placements": {},
+                            "nodes": {gid: {"id": gid, "text": "Build the thing", "parentId": None,
+                                            "nodeComplete": True, "blocked": False, "cleared": False,
+                                            "trail": [s1], "t": T0, "mt": T0 + 10}}})
+        jd.distill_llm = lambda g, w, dw="": "Delivered.\nSOURCE: m99"
+        d = Path(tempfile.mkdtemp()); saved_errors = jd.ERRORS
+        try:
+            jd.ERRORS = d / "judge-errors.jsonl"
+            self.assertEqual(jd.run_distill(now=now), 1)
+            self.assertTrue(jd.ERRORS.exists(), "an unresolvable citation is a recorded miss")
+        finally:
+            jd.ERRORS = saved_errors
+        nd = jd.load_goals(SID)["nodes"][gid]
+        self.assertIsNone(nd["summaryAnchor"])
+        self.assertEqual([w["kind"] for w in nd["warns"]], ["cite-miss"])
+        self.assertIn("m99", nd["warns"][0]["detail"], "the detail names the label that didn't resolve")
+
+    def test_cite_success_clears_the_stale_warn(self):
+        # the warn means "this anomaly is live" — a later re-distill that DOES cite takes the chip off
+        # the card (and drops the key entirely so stores stay clean).
+        records = [uline(T0, "do the thing", "u1", ps="typed"),
+                   aline(T0 + 10, "did the thing, wrapped up", "a1", "u1", stop="end_turn")]
+        path = self._setup(records)
+        now = T0 + 5000
+        s1 = em.segments(jd.parsed_session(SID, [path], now)["turns"][0])[0]["id"]
+        gid = SID + ":g1"
+        jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "status": {gid: "completed"}, "placements": {},
+                            "nodes": {gid: {"id": gid, "text": "Build the thing", "parentId": None,
+                                            "nodeComplete": True, "blocked": False, "cleared": False,
+                                            "trail": [s1], "t": T0, "mt": T0 + 10,
+                                            "warns": [{"kind": "cite-miss", "t": T0, "msg": "m",
+                                                       "detail": "d"}]}}})
+        jd.distill_llm = lambda g, w, dw="": "Delivered.\nSOURCE: m1"
+        self.assertEqual(jd.run_distill(now=now), 1)
+        nd = jd.load_goals(SID)["nodes"][gid]
+        self.assertEqual(nd["summaryAnchor"], "a1")
+        self.assertNotIn("warns", nd, "a citing re-distill retires the warn — the chip comes off")
+
+    def test_brief_cite_miss_stamps_the_warn(self):
+        # the block-brief path is the distiller's twin — the same miss stamps the same warn kind (logged
+        # under tier "brief", matching its other error records).
+        records = [uline(T0, "ship it", "u1", ps="typed"),
+                   aline(T0 + 10, "need your call on the approach", "a1", "u1", stop="end_turn")]
+        path = self._setup(records)
+        now = T0 + 5000
+        s1 = em.segments(jd.parsed_session(SID, [path], now)["turns"][0])[0]["id"]
+        gid = SID + ":g1"
+        jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "status": {gid: "blocked"}, "placements": {},
+                            "nodes": {gid: {"id": gid, "text": "Ship the feature", "parentId": None,
+                                            "nodeComplete": False, "blocked": True, "cleared": False,
+                                            "blockWhy": "Which approach?", "trail": [s1],
+                                            "t": T0, "mt": T0 + 10}}})
+        jd.brief_llm = lambda g, w, ow="": "Decide the approach, options laid out."
+        d = Path(tempfile.mkdtemp()); saved_errors = jd.ERRORS
+        try:
+            jd.ERRORS = d / "judge-errors.jsonl"
+            self.assertEqual(jd.run_distill(now=now), 1)
+            recs = [json.loads(l) for l in jd.ERRORS.read_text().splitlines()]
+            self.assertEqual([(r["tier"], r["err"]) for r in recs], [("brief", "cite-miss")])
+        finally:
+            jd.ERRORS = saved_errors
+        nd = jd.load_goals(SID)["nodes"][gid]
+        self.assertEqual([w["kind"] for w in nd["warns"]], ["cite-miss"])
+        self.assertIn("decision brief", nd["warns"][0]["detail"],
+                      "the detail speaks in the brief's terms, not the distiller's")
+
     def test_brief_stores_the_cited_source_as_summary_anchor(self):
         # the block-brief cites too (usually where the question and options were laid out), through the
         # same summaryAnchor field the card's distiller-line click reads.

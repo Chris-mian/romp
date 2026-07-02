@@ -2257,6 +2257,27 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(card["summaryAnchorUuid"], expect,
                          "no citation stored → the card links its summary to the trail's latest prose")
 
+    def test_card_carries_the_judge_stamped_warns(self):
+        # judge _node_warn stamps anomalies (e.g. a distiller cite-miss) on the node; the card must carry
+        # them verbatim so the feed can show the yellow "warning" chip and the click-through detail
+        # (the user 2026-07-02). A node with no warns ships null, not a stray empty list.
+        session = em.parse_session(str(self.tpath), rompuuid=SID, candidate_files=[str(self.tpath)], now=NOW)
+        seg = em.segments(session["turns"][0])[0]
+        warn = {"kind": "cite-miss", "t": NOW - 60,
+                "msg": "the distiller's source citation didn't come back",
+                "detail": "What happened: …\n\nWhy it's unexpected: …"}
+        nid, plain = SID + ":g45", SID + ":g46"
+        store = {"rompUuid": SID, "seq": 45, "nodes": {
+            nid: {"id": nid, "text": "Ship it", "parentId": None, "nodeComplete": True, "blocked": False,
+                  "trail": [seg["id"]], "t": NOW, "summary": "Shipped.", "warns": [warn]},
+            plain: {"id": plain, "text": "Other thing", "parentId": None, "nodeComplete": True,
+                    "blocked": False, "trail": [seg["id"]], "t": NOW, "summary": "Done."}},
+            "placements": {}, "status": {}}
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps(store))
+        cards = {a["itemId"]: a for a in km.build_feed(NOW)["asks"]}
+        self.assertEqual(cards[nid]["warns"], [warn], "the stamped warn reaches the card unchanged")
+        self.assertIsNone(cards[plain]["warns"], "no warns → null on the card")
+
     def test_summary_anchor_prefers_the_distillers_cited_source(self):
         # the distiller CITES the message its takeaway is grounded in (node["summaryAnchor"], written by
         # the judge from the reply's SOURCE line): the kernel honors that over the deterministic fallback
