@@ -1387,41 +1387,16 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(len(sent), 1, "a genuinely-ended turn with a stale-stuck 'working' state STILL gets nudged")
         self.assertIn("romp-goal-id: " + SID + ":gw", sent[0][1])
 
-    def test_auto_nudge_re_arms_when_work_folds_into_the_nudged_turn(self):
-        # THE track BUG (the user 2026-07-01): a nudge-RESPONSE folds back into the SAME turn id (the SDK
-        # continues the turn rather than opening a new one for an injected message), so the agent resumed, did
-        # real tool work, and re-stalled — all under the already-nudged turn id. The old `lastTurnId == lt_id`
-        # gate blocked re-nudging FOREVER: the id never changes, and the session can't produce a new turn id
-        # without being nudged → deadlock. Re-arm on GENUINE work (a tool_use) past the fire point (firedAtoms).
-        tid = SID + ":t1"
-        turn = {"id": tid, "ended": True, "t": T0, "end": NOW,
-                "atoms": [{"type": "user", "t": T0}, {"type": "assistant", "t": T0 + 5},        # 0,1: pre-nudge
-                          {"type": "user", "t": T0 + 20},                                       # 2: the nudge, folded in
-                          {"type": "assistant", "t": T0 + 30,                                   # 3: GENUINE resumed work
-                           "message": {"content": [{"type": "tool_use", "name": "Edit"}]}},
-                          {"type": "assistant", "t": NOW}]}                                     # 4: more, then stops
-        # already nudged this turn; firedAtoms=2 (before the folded nudge). Written directly (not via
-        # _mark_auto_nudged) so the assertion fails CLEANLY on the pre-fix code (which blocks on lastTurnId).
-        km._write_auto_nudge({"enabled": True,
-                              "nudged": {SID + ":gw": {"count": 1, "lastTurnId": tid, "firedAtoms": 2}}})
+    def test_auto_nudge_does_not_re_arm_on_its_own_nudge_response(self):
+        # THE runaway (the user 2026-07-01, track: count climbed to 82 at ~5s intervals, burning tokens). A
+        # nudge injects a message; the agent's RESPONSE turn is opened by that romp-authored trigger. Re-arming
+        # off it (the 2026-06-25 "keep nudging til resolved" rule) tight-looped. A romp-opened turn must NEVER
+        # re-arm — a persistent stall is surfaced as blocked + a nudge-failed chip instead, not nudged forever.
+        turn = {"id": SID + ":t1", "ended": True, "t": T0, "end": NOW, "trigger": "u1",
+                "atoms": [{"type": "user", "uuid": "u1", "author": "romp", "t": T0},   # the nudge opened this turn
+                          {"type": "assistant", "t": NOW}]}                            # response, still working
         sent = self._drive_nudge_over(turn, last_state=("waiting", NOW))
-        self.assertEqual(len(sent), 1, "genuine work folded into the nudged turn re-arms the nudge (no new turn id needed)")
-        self.assertIn("romp-goal-id: " + SID + ":gw", sent[0][1])
-
-    def test_auto_nudge_does_not_re_arm_on_a_bare_folded_nudge_response(self):
-        # The flip side (option A, the user 2026-07-01): if the agent only ECHOED an acknowledgement (no
-        # tool_use) into the folded turn and stopped, that bare nudge-response must NOT re-nudge — only genuine
-        # resumed work does. Guards the re-arm fix above from spamming a session that just said "on it".
-        tid = SID + ":t1"
-        turn = {"id": tid, "ended": True, "t": T0, "end": NOW,
-                "atoms": [{"type": "user", "t": T0}, {"type": "assistant", "t": T0 + 5},        # 0,1: pre-nudge
-                          {"type": "user", "t": T0 + 20},                                       # 2: the nudge
-                          {"type": "assistant", "t": NOW,                                       # 3: text-only "on it"
-                           "message": {"content": [{"type": "text", "text": "on it"}]}}]}
-        km._write_auto_nudge({"enabled": True,
-                              "nudged": {SID + ":gw": {"count": 1, "lastTurnId": tid, "firedAtoms": 2}}})
-        sent = self._drive_nudge_over(turn, last_state=("waiting", NOW))
-        self.assertEqual(sent, [], "a bare text nudge-response (no tool_use) must NOT re-arm")
+        self.assertEqual(sent, [], "a turn opened by our own nudge must NOT re-arm (kills the runaway loop)")
 
     def _stall_transcript(self, recs):
         # write a transcript, clear the parse cache, and (re)create the working goal with ALL its turn ids
@@ -1503,22 +1478,23 @@ class ViewBuilder(unittest.TestCase):
             except OSError:
                 pass
 
-    def test_auto_nudge_re_arms_on_a_nudge_response_that_stays_working(self):
-        # the user 2026-06-25: keep nudging UNTIL blocked/completed — so the agent's OWN nudge-response turn,
-        # if it ends still-working, re-arms too (it's a new turn id). This replaces the prior "don't re-arm on
-        # a nudge-response" rule; the two-per-turn cap (tested above) is what now bounds the loop.
+    def test_auto_nudge_does_not_re_arm_on_a_nudge_response_that_stays_working(self):
+        # the user 2026-07-01 — REVERSES the 2026-06-25 "keep nudging til resolved" rule, which tight-looped
+        # (track: count 82 at ~5s intervals, burning tokens). The agent's OWN nudge-response turn, even if it
+        # ends still-working, must NOT re-arm: its trigger is romp-authored (_turn_romp_injected). A stall that
+        # persists WITHOUT genuine new work is surfaced as blocked + a nudge-failed chip, not nudged forever.
         base = [uline(T0, "a1", "u1", ps="typed"), aline(T0 + 10, "d1", "a1", "u1", stop="end_turn")]
         g = self._stall_transcript(base)
         km._set_auto_nudge(True)
         sent, restore = self._stub_nudge()
         try:
             km._auto_nudge_tick(NOW, km._tmux_sessions())
-            self.assertEqual(len(sent), 1, "the genuine stall is nudged")
+            self.assertEqual(len(sent), 1, "the genuine stall is nudged once")
             nudge = "Status?\n\n<!-- romp-injected --><!-- romp-goal-id: %s -->" % g   # romp-authored turn
             self._stall_transcript(base + [uline(T0 + 100, nudge, "u2", "a1", ps="typed"),
                                            aline(T0 + 110, "still working", "a2", "u2", stop="end_turn")])
             km._auto_nudge_tick(NOW, km._tmux_sessions())
-            self.assertEqual(len(sent), 2, "a nudge-response that stays working re-arms — keep nudging til resolved")
+            self.assertEqual(len(sent), 1, "the nudge-RESPONSE turn does NOT re-arm — kills the runaway (the user 2026-07-01)")
         finally:
             restore()
 
@@ -1637,16 +1613,16 @@ class ViewBuilder(unittest.TestCase):
     def test_auto_nudge_storage_round_trip(self):
         self.assertFalse(km._auto_nudge_on(), "off by default")
         km._set_auto_nudge(True); self.assertTrue(km._auto_nudge_on())
-        km._mark_auto_nudged(SID + ":g1", "turn-A", 1, 7)   # firedAtoms=7 → re-arm baseline for a folded turn
+        km._mark_auto_nudged(SID + ":g1", "turn-A", 1)
         self.assertEqual(km._auto_nudge_data()["nudged"][SID + ":g1"],
-                         {"count": 1, "lastTurnId": "turn-A", "firedAtoms": 7})
+                         {"count": 1, "lastTurnId": "turn-A"})
         km._set_auto_nudge(False)
         self.assertFalse(km._auto_nudge_on())
         self.assertEqual(km._auto_nudge_data()["nudged"][SID + ":g1"]["lastTurnId"], "turn-A",
                          "toggling off keeps the per-goal re-arm record")
-        km._mark_auto_nudged(SID + ":g1", "turn-B", 2)   # NEW turn → count climbs, turn advances, firedAtoms defaults
+        km._mark_auto_nudged(SID + ":g1", "turn-B", 2)   # NEW turn → count climbs, turn advances
         self.assertEqual(km._auto_nudge_data()["nudged"][SID + ":g1"],
-                         {"count": 2, "lastTurnId": "turn-B", "firedAtoms": 0})
+                         {"count": 2, "lastTurnId": "turn-B"})
 
     def test_auto_nudge_turn_id_comes_from_the_closer_states_aware_parse(self):
         # the user 2026-06-22 (obsidian): the closer parses WITH states (idle atoms) and writes THAT turn id to
