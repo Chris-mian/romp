@@ -5733,7 +5733,8 @@ def build_feed(now, tmux=None):
         # (api, branch headless-sdk-backend) or the transcript bg-tool stopgap; None when actively working.
         sess_awaiting_why = _session_awaiting(fsid, s["path"], not who_working) if ps else None   # cache-only: fills in after the warm
         plain_user_t = _last_plain_user_turn_t(ps["turns"]) if ps else 0   # re-check: a plain reply after a soft block de-urgents it
-        plain_user_t = max(plain_user_t, _latest_human_send_t(fsid))       # incl. a JUST-SENT reply still in the echo → instant de-urgent (the user 2026-06-29)
+        echo_send_t = _latest_human_send_t(fsid)     # a JUST-SENT reply still in the echo (not yet a turn)
+        plain_user_t = max(plain_user_t, echo_send_t)  # → instant, not a push or two later (the user 2026-06-29)
         had_working = False                          # does this session show ANY working card? → drives the provisional placeholder
         for nid in children.get(None, []):
             col = status.get(nid, "working")
@@ -5804,23 +5805,25 @@ def build_feed(now, tmux=None):
             # dropped from the needs-you tally) and drops to WORKING until the judge resolves or re-blocks it.
             recheck = bool(col == "blocked" and nid != api_top and nid != perm_top
                            and nodes[nid].get("followupPending"))
-            # RE-JUDGING (the user 2026-06-30): a PLAIN reply on the thread AFTER the block is DIFFERENT — we
-            # can't tell whether it actually addressed THIS block, so the card STAYS in Needs-You (still on you,
-            # still counted). The earlier design swept the session's soft-blocks to Working on any plain reply and
-            # leaned on the judge to re-block the untouched ones — but if the reply was unrelated and the agent
-            # never revisits the goal, no re-block fires and the card silently left your inbox forever. Instead we
-            # just show a "Re-judging…" swirl while a turn is in flight (who_working): a re-evaluation MAY be
-            # coming, but the card never leaves Blocked on a guess. Self-limited by who_working so it isn't a
-            # permanent spinner; when the turn ends the store is authoritative (resolved → it leaves Blocked on
-            # its own; still blocked → spinner clears, stays in Needs-You). Never the hard floors (api/permission).
+            # RE-JUDGING (the user 2026-06-30; MOVED to Working 2026-07-02): a PLAIN reply on the thread
+            # AFTER the block moves the card to WORKING immediately — the moment you hit send it's the
+            # agent's move, and the delay before the card left Needs-You was the user's complaint
+            # (2026-07-02: "make it immediate"). This is NOT the old permanent sweep whose failure mode was
+            # an unrelated reply stranding a real block in Working forever (the 2026-06-30 regression): the
+            # move is EVENT-BOUNDED by the reply being in flight — the just-sent echo (echo_send_t, before
+            # the turn even opens → instant) or the open turn (who_working). When the turn ends and the
+            # judge left the goal blocked, both flags drop and the card RETURNS to Needs-You on its own;
+            # if the judge resolved it, the store moves it out authoritatively. The "Re-judging…" swirl
+            # rides along in Working. Never the hard floors (api/permission).
             rejudging = bool(col == "blocked" and nid != api_top and nid != perm_top
                              and not nodes[nid].get("followupPending")
-                             and plain_user_t > disp_t and who_working)
+                             and plain_user_t > disp_t
+                             and (who_working or echo_send_t > disp_t))
             # awaiting is a flavor of WORKING → the working column (never needs-input), card time = mint t; the awaiting badge carries the why.
             # A RE-CHECK'd soft-block (targeted follow-up) drops to WORKING (the user 2026-06-27): once you've
             # replied to THAT card it's the agent's move, not yours, so it leaves the needs-input column entirely
-            # (still dotted + a "Re-judging…" swirl so you can see it pending). A plain reply (rejudging) does NOT
-            # leave needs_input — it's not recheck — so the column formula below keeps it under Blocked.
+            # (still dotted + a "Re-judging…" swirl so you can see it pending). A plain reply (rejudging) now
+            # ALSO drops to Working — but only WHILE in flight (see the rejudging comment above).
             # A TRANSIENT API error is NOT blocking either (the user 2026-06-29):
             # auto-retry recovers it, so the card STAYS in Working with the "⚠ API error" chip. But a "prompt
             # is too long" error IS on you (compact needed) → it floors to needs-input like a real block. So
@@ -5846,7 +5849,7 @@ def build_feed(now, tmux=None):
             # keyed on it.column, then stayed hidden). Now it.column is authoritative: the card IS blocked, the
             # client files by it.column, and the distiller line shows (the user 2026-06-29).
             column = ("needs_input" if (api_block or nid == perm_top or stalled_floor
-                                        or (col == "blocked" and not recheck))
+                                        or (col == "blocked" and not recheck and not rejudging))
                       else "completed" if col == "completed" else "working")
             had_working = had_working or column == "working"
             # summaryAnchorUuid: where a click on the distilled summary line lands. PREFERRED: the anchor the
