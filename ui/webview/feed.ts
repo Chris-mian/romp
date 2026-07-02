@@ -767,6 +767,9 @@ function applyDistillSections(a: any, it: AskItem, distillShown: boolean): void 
   };
   const bg = distillShown && it.background ? it.background : null;
   a._bgSec.style.display = bg ? "" : "none";
+  // the blank line between the sections exists only while EITHER is expanded; two collapsed rows
+  // fall tight together (the user 2026-07-02)
+  a._bgSec.classList.toggle("gap", !!bg && (bgOpen.has(id) || !takeClosed.has(id)));
   if (bg) {
     const open = bgOpen.has(id);
     a._bgBtn.style.display = open ? "none" : "";   // open → the label disappears; the text is its own label

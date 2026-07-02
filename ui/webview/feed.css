@@ -266,9 +266,10 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
    has no header — its text IS the content, full card width — and collapses via a quiet trailing "less"
    link (the App Store more/less pattern), reopening from a "▸ summary" row. */
 .fask-sec { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 6px; margin-top: 1px; }
-/* one empty text line ALWAYS separates the background from the summary (the user 2026-07-02);
-   display:none collapses the margin away when there is no background section */
-.fask-sec.fask-bg { margin-bottom: 1.2em; }
+/* one empty text line separates the background from the summary ONLY while either section is
+   EXPANDED (.gap, set in applyDistillSections); two collapsed "▸ (…)" rows fall tight together
+   (the user 2026-07-02). display:none drops it entirely when there is no background section. */
+.fask-sec.fask-bg.gap { margin-bottom: 1.2em; }
 /* collapsed rows read at the SAME size as the body text they reveal (the user 2026-07-02) */
 .fask-sec-head { display: inline-flex; align-items: baseline; gap: 5px; padding: 0; border: 0;
   background: none; color: var(--dim); font-size: 0.86em; line-height: 1.4; cursor: pointer; }
