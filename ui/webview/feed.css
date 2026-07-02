@@ -260,17 +260,19 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 .fask-distill-link { cursor: pointer; border-radius: 6px; margin-left: -4px; margin-right: -4px; padding-left: 4px; padding-right: 4px; transition: background 0.1s ease; }
 .fask-distill-link:hover { background: rgba(255, 255, 255, 0.07); opacity: 1; text-decoration: underline; text-underline-offset: 2px; }
 /* the card's TWO collapsible distiller sections (the user 2026-07-02): BACKGROUND (collapsed by default,
-   re-orientation for a reader who forgot the thread) above the takeaway (expanded by default). Collapsed
-   = one small rounded-RECT pill ("background +" / "summary +"); expanded = the paragraph runs the full
-   card width with a tiny trailing "−" pill after its last line — no button column, no indent: horizontal
-   space is the scarce resource on these cards (the user 2026-07-02, replacing the clunky circles). */
+   re-orientation for a reader who forgot the thread) above the takeaway (expanded by default). Disclosure
+   is BARE muted text in the chat followup-header's language — "▸ background" flips to ▾ with the body
+   below, no border/pill/fill (Notion-toggle / Finder-disclosure; boxes read clunky). The open takeaway
+   has no header — its text IS the content, full card width — and collapses via a quiet trailing "less"
+   link (the App Store more/less pattern), reopening from a "▸ summary" row. */
 .fask-sec { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 6px; margin-top: 1px; }
-.fask-sec-pill, .fask-sec-min { flex: none; padding: 0 6px; border: 1px solid var(--card-border);
-  border-radius: 6px; background: transparent; color: var(--dim);
-  font: 500 10px/15px -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; cursor: pointer; }
-.fask-sec-pill:hover, .fask-sec-min:hover { color: var(--fg); border-color: var(--fg); }
-.fask-sec-min { display: inline-block; padding: 0 5px; margin-left: 6px; line-height: 13px;
-  vertical-align: baseline; }
+.fask-sec-head { display: inline-flex; align-items: baseline; gap: 5px; padding: 0; border: 0;
+  background: none; color: var(--dim); font-size: 0.78em; cursor: pointer; }
+.fask-sec-head:hover { color: var(--fg); }
+.fask-sec-tri { font-size: 0.9em; }
+.fask-sec-less { display: inline; border: 0; background: none; padding: 0; margin-left: 7px;
+  color: var(--dim); font-size: 0.85em; cursor: pointer; }
+.fask-sec-less:hover { color: var(--fg); text-decoration: underline; text-underline-offset: 2px; }
 .fask-sec .fask-distill { flex: 1 1 0; min-width: 0; margin: 0; }
 .fask-bg-body { flex: 1 1 100%; min-width: 0; font-size: 0.82em; line-height: 1.4; color: var(--fg);
   opacity: 0.66; white-space: pre-wrap; overflow-wrap: anywhere; }
