@@ -104,16 +104,18 @@ class CardTime(unittest.TestCase):
         self.assertEqual(card["t"], NOW - 300, "blocked card time = when it BLOCKED (mt), not the 5h-ago mint")
         self.assertEqual(card["created"], NOW - 5 * 3600)
 
-    def test_working_card_time_stays_the_mint_time(self):
-        # A still-working card keeps showing when it was MINTED ("started Xm ago") — only completed/blocked
-        # cards switch to their state-event time.
+    def test_working_card_time_is_last_activity_not_mint(self):
+        # A still-working card shows its LAST ACTIVITY (the newest mt anywhere in its subtree, _fsubmax),
+        # not the mint time — a reply advances the goal's mt, so the card must freshen with it instead of
+        # reading "15m ago" right after you replied (the user 2026-07-01, kernel 8180d8f). `created` keeps
+        # the true mint time for the record.
         top = SID + ":top"
         self._store(
             {top: {"id": top, "text": "in progress", "parentId": None, "nodeComplete": False,
                    "blocked": False, "cleared": False, "trail": [], "t": NOW - 1800, "mt": NOW - 60}},
             {top: "working"})
         card = self._card(top)
-        self.assertEqual(card["t"], NOW - 1800, "a working card still shows the mint time")
+        self.assertEqual(card["t"], NOW - 60, "a working card freshens to its last activity (mt)")
         self.assertEqual(card["created"], NOW - 1800)
 
 

@@ -36,8 +36,9 @@ class ContextColormap(unittest.TestCase):
         self.assertIn('if tm["context"] is not None else None', inspect.getsource(km.build_session))
 
     def test_the_gear_colormap_label_is_global_not_feed_only(self):
-        self.assertIn(">Colormap<", km._GEAR_HTML, "the label is global now")
-        self.assertNotIn(">Feed colormap<", km._GEAR_HTML, "no longer scoped to the feed")
+        # _GEAR_HTML became the _gear_html() builder when the settings modal went dynamic
+        self.assertIn(">Colormap<", km._gear_html(), "the label is global now")
+        self.assertNotIn(">Feed colormap<", km._gear_html(), "no longer scoped to the feed")
 
     def test_ramp_maps_higher_to_the_bright_end_on_a_darklight_map(self):
         # ramp(v) walks v=0→stops[0] to v=1→stops[-1]; on a DARK→LIGHT map (hawaii) a higher fill lands
