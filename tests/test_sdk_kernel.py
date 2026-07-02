@@ -74,14 +74,12 @@ class KernelWiring(unittest.TestCase):
         # a compactSession routed by ONE test sets the optimistic compacting flag, which makes a LATER
         # test's setModel PARK instead of applying (the intended mid-compaction behavior) — isolate both.
         km._compact_clicked.clear()
-        km._pending_model.clear()
-        km._pending_sends.clear()
+        km._pending_ops.clear()
 
     def tearDown(self):
         km._sdk, km._push_all, km._send_to_app, km.jd.optimistic_followup = self.saved
         km._compact_clicked.clear()
-        km._pending_model.clear()
-        km._pending_sends.clear()
+        km._pending_ops.clear()
 
     def _route(self, msg):
         return km._drive(msg, {"send": lambda s: None})
@@ -147,7 +145,7 @@ class KernelWiring(unittest.TestCase):
         self._route({"type": "setModel", "id": "sid-sdk", "value": "opus"})
         self.assertFalse(any(c[0] == "set_model" for c in self.be.calls),
                          "mid-compaction the backend is NOT touched — that broke the compaction")
-        self.assertEqual(km._pending_model.get("sid-sdk"), "opus", "parked for after the compaction")
+        self.assertEqual(km._pending_ops.get("sid-sdk"), [("model", "opus")], "parked for after the compaction")
 
     def test_seteffort_goes_to_backend_compact_still_slash(self):
         # effort routes to set_effort (the backend reconnects with --effort); compact has no control → slash

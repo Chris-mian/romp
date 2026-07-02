@@ -65,8 +65,9 @@ test("the chrome is BARE text: no borders, no pills; typography matches the summ
   assert.match(CSS, /\.fask-sec-less \{[^}]*border: 1px solid var\(--card-border\)/);
   assert.match(CSS, /\.fask-sec-less \{[^}]*border-radius: 6px/);
   assert.match(CSS, /\.fask-sec-less \{[^}]*margin-left: 18px/, "a wide gap before the less button");
-  // one empty line always separates the background from the summary
-  assert.match(CSS, /\.fask-sec\.fask-bg \{ margin-bottom: 1\.2em; \}/);
+  // one empty line separates the sections ONLY while either is expanded; collapsed rows fall together
+  assert.match(CSS, /\.fask-sec\.fask-bg\.gap \{ margin-bottom: 1\.2em; \}/);
+  assert.match(FEED, /a\._bgSec\.classList\.toggle\("gap", !!bg && \(bgOpen\.has\(id\) \|\| !takeClosed\.has\(id\)\)\);/);
   // the background body is typographically IDENTICAL to the summary (.fask-distill)
   assert.match(CSS, /\.fask-bg-body \{[^}]*font-size: 0\.86em/);
   assert.match(CSS, /\.fask-bg-body \{[^}]*opacity: 0\.82/);
