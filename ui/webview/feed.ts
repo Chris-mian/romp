@@ -1192,7 +1192,11 @@ const TREE_INDENT_EM = 1.4;
 // node's checkbox + text light together as one unit. `meta` is null on the card (no time cell). `wire`
 // false (a dim repeat node) skips the wiring but still returns goWork — the modal's rationale links to it.
 function wireNodeZones(it: AskItem, node: AskTreeNode, mark: HTMLElement, txt: HTMLElement, meta: HTMLElement | null, wire: boolean): (ev: Event) => void {
-  const navId = node.kind === "handoff" ? node.id : it.turnId;
+  // itemId = the CLICKED node's own id, not the card's top (the user 2026-07-01): the kernel's _cite_for
+  // seeds the composer chip from it, so a sub-goal click cites THAT sub-goal — its own title and its own
+  // injected context in the audit preview — instead of a generic top-goal chip. The kernel uses itemId
+  // only for the citation; the chat landing is fully anchorUuid-based, so navigation is unchanged.
+  const navId = node.id || it.turnId;
   const navSid = node.whoSid || (node.kind === "handoff" ? node.id.split(":")[0] : it.sid);
   // An agentTask-OPEN node is authoritatively unchecked — never "resolved", so the mark hover can't read
   // "jump to where this got checked off" on an item the agent hasn't crossed off (the user 2026-07-01).

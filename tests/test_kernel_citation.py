@@ -108,16 +108,44 @@ class FollowupPreview(unittest.TestCase):
 
 
 class ClearDropsCitation(unittest.TestCase):
-    """Clearing a card tells the chat to drop any composer citation chip pointing at it (the user 2026-07-01):
-    a single clear pushes dropCitation{itemId}; Clear-all pushes dropCitationsAll."""
+    """Clearing a card tells the chat to drop any composer citation chip pointing INTO it (the user
+    2026-07-01): chips can cite a SUB-goal (wireNodeZones sends the clicked node's own id), so a single
+    clear pushes dropCitation{itemId, itemIds: the card's whole subtree, read BEFORE the clear archives
+    it}; Clear-all pushes dropCitationsAll."""
 
     def test_clear_handlers_push_drop_to_the_chat(self):
         with open(os.path.join(BIN, "romp-kernel")) as fh:
             src = fh.read()
-        self.assertIn('_send_to_app("chat", {"type": "dropCitation", "itemId": str(msg["itemId"])})', src,
-                      "a single askClear pushes dropCitation for the cleared card")
+        self.assertIn('_gone = _subtree_item_ids(str(msg["itemId"]))', src,
+                      "the subtree is collected BEFORE _clear_ask archives it out of the live store")
+        self.assertIn('_send_to_app("chat", {"type": "dropCitation", "itemId": str(msg["itemId"]), "itemIds": _gone})', src,
+                      "a single askClear pushes dropCitation with the cleared card's whole subtree")
         self.assertIn('_send_to_app("chat", {"type": "dropCitationsAll"})', src,
                       "Clear-all pushes dropCitationsAll")
+
+    def test_subtree_item_ids_walks_the_whole_card(self):
+        import json, tempfile
+        from pathlib import Path
+        td = Path(tempfile.mkdtemp())
+        saved = km.jd.GOALDIR
+        km.jd.GOALDIR = td
+        try:
+            top, sub, subsub, other = SID + ":g1", SID + ":g2", SID + ":g3", SID + ":g9"
+            (td / (SID + ".json")).write_text(json.dumps({"rompUuid": SID, "seq": 4, "nodes": {
+                top: {"id": top, "text": "T", "parentId": None},
+                sub: {"id": sub, "text": "S", "parentId": top},
+                subsub: {"id": subsub, "text": "SS", "parentId": sub},
+                other: {"id": other, "text": "O", "parentId": None}},
+                "placements": {}, "status": {}}))
+            got = km._subtree_item_ids(top)
+            self.assertEqual(sorted(got), sorted([top, sub, subsub]),
+                             "the whole subtree, and never an unrelated sibling card")
+        finally:
+            km.jd.GOALDIR = saved
+
+    def test_subtree_item_ids_degrades_to_the_top_alone(self):
+        self.assertEqual(km._subtree_item_ids("no-such-sid:g1"), ["no-such-sid:g1"],
+                         "unreadable store → the top id alone, so a top-citing chip still drops")
 
 
 if __name__ == "__main__":

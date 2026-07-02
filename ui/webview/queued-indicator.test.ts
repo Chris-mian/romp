@@ -11,7 +11,7 @@ const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview"
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
 
 test("a queued ChatEvent carries the pending messages (backend-agnostic, per-message md)", () => {
-  assert.match(RENDER, /kind: "queued"; texts: \{ md: string; followUp\?: boolean; goal\?: string; idx\?: number; cancelable\?: boolean \}\[\]/);
+  assert.match(RENDER, /kind: "queued"; texts: \{ md: string; followUp\?: boolean; goal\?: string; fuCtx\?: string; idx\?: number; cancelable\?: boolean \}\[\]/);
 });
 
 test("renderQueued draws a wireframe-hourglass header (singular/plural) + one markdown bubble per queued message", () => {
