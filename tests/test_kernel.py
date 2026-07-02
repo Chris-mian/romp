@@ -2866,23 +2866,23 @@ class ViewBuilder(unittest.TestCase):
                                            "effort": "", "context": None, "compactPct": None, "color": None}}
         return g
 
-    def test_feed_plain_reply_keeps_block_in_needs_you_and_rejudges(self):
-        # the user 2026-06-30: a PLAIN thread reply must NOT move a soft-blocked card to Working — we can't tell
-        # if it addressed THIS block, and the old sweep left genuinely-blocked cards stranded in Working when the
-        # reply was unrelated and the agent never re-touched them. Now the card STAYS in Needs-You; a "Re-judging…"
-        # swirl (the `rejudging` flag) only shows while a turn is in flight (who_working).
+    def test_feed_plain_reply_moves_block_to_working_while_in_flight(self):
+        # the user 2026-07-02 ("make it immediate"): a PLAIN thread reply after a soft block moves the card
+        # to WORKING — but only WHILE the reply is in flight (open turn / just-sent echo), so an unrelated
+        # reply can never strand a real block in Working forever (the 2026-06-30 regression): when the turn
+        # ends and the judge left the goal blocked, the card RETURNS to Needs-You on its own.
         g = self._blocked_store()
         saved_p, saved_w = km._last_plain_user_turn_t, km._session_working
         try:
             km._last_plain_user_turn_t = lambda turns: NOW - 10      # a plain reply AFTER the block (mt NOW-100)
-            km._session_working = lambda turns: True                 # a turn is in flight → re-judge plausibly pending
+            km._session_working = lambda turns: True                 # a turn is in flight
             card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
-            self.assertEqual(card["column"], "needs_input", "a plain reply does NOT move the block out of Needs-You")
+            self.assertEqual(card["column"], "working", "the reply moves the block to Working at once")
             self.assertFalse(card["recheck"], "a plain reply is not a TARGETED follow-up → recheck stays False")
-            self.assertTrue(card["rejudging"], "a plain reply + a turn in flight → 'Re-judging…' swirl")
-            km._session_working = lambda turns: False                # session idle → no turn in flight
+            self.assertTrue(card["rejudging"], "the 'Re-judging…' swirl rides along in Working")
+            km._session_working = lambda turns: False                # turn ended, judge left it blocked
             card_idle = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
-            self.assertEqual(card_idle["column"], "needs_input", "still in Needs-You while idle")
+            self.assertEqual(card_idle["column"], "needs_input", "unresolved after the turn → back to Needs-You")
             self.assertFalse(card_idle["rejudging"], "no turn in flight → no spinner (not a permanent spin)")
             km._last_plain_user_turn_t = lambda turns: NOW - 300     # a reply that PRE-dates the block
             km._session_working = lambda turns: True
@@ -2893,24 +2893,25 @@ class ViewBuilder(unittest.TestCase):
             km._last_plain_user_turn_t, km._session_working = saved_p, saved_w
 
     def test_feed_rejudging_is_INSTANT_from_a_just_sent_reply_still_in_the_echo(self):
-        # The delay fix (the user 2026-06-29), now feeding `rejudging` (the user 2026-06-30): a plain reply
-        # registers the INSTANT it's sent — while still only an optimistic echo (not yet a transcript turn). The
-        # card STAYS in Needs-You; the echo just lets the "Re-judging…" swirl appear at once instead of a push
-        # or two later. build_feed reads the cached parse (no plain reply there), so the echo is what supplies it.
+        # The delay fix (the user 2026-06-29 → immediate COLUMN move 2026-07-02): a plain reply registers the
+        # INSTANT it's sent — while still only an optimistic echo (not yet a transcript turn, turn not even
+        # open). The echo alone moves the card to Working with the "Re-judging…" swirl; build_feed reads the
+        # cached parse (no plain reply there), so the echo is what supplies both the reply time and in-flight.
         g = self._blocked_store()
         km._tmux_echo.pop(SID, None)
         saved_w = km._session_working
         try:
-            km._session_working = lambda turns: True                  # a turn is in flight
-            # the parsed transcript shows NO plain reply (cache-only) → rejudging would be False on its own
+            # NO open turn yet — the send instant, before the CLI even starts the turn (the user 2026-07-02:
+            # the card must move the moment you hit send, not when the turn opens or the atom lands)
+            km._session_working = lambda turns: False
             card_before = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
             self.assertFalse(card_before["rejudging"], "no reply yet → no re-judge")
             self.assertEqual(card_before["column"], "needs_input", "still urgent (Blocked)")
-            # now the user sends a plain reply — only an optimistic echo so far
+            # now the user sends a plain reply — only an optimistic echo so far, turn not open
             km._tmux_echo_add(SID, "go ahead, do option B", author="human")
             card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
             self.assertTrue(card["rejudging"], "the just-sent echo lights 'Re-judging…' AT ONCE")
-            self.assertEqual(card["column"], "needs_input", "but it STAYS in Needs-You — never moved on a guess")
+            self.assertEqual(card["column"], "working", "and moves the card to Working AT ONCE — send-instant")
             self.assertFalse(card["recheck"], "a plain reply is not a targeted follow-up")
             # a TARGETED reply (romp-goal-id) is NOT a plain reply → does NOT feed rejudging
             km._tmux_echo.pop(SID, None)

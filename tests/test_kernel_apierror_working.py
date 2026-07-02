@@ -23,7 +23,7 @@ class ApiErrorWorking(unittest.TestCase):
         # api_block fires ONLY for a "prompt too long" api_top; a transient error does NOT move the card
         self.assertIn('api_block = (nid == api_top and bool(aerr and aerr.get("tooLong")))', src)
         self.assertIn('column = ("needs_input" if (api_block or nid == perm_top or stalled_floor', src)
-        self.assertIn('or (col == "blocked" and not recheck))', src)
+        self.assertIn('or (col == "blocked" and not recheck and not rejudging))', src)
 
     def test_status_marks_tooLong_so_the_tab_can_color_it(self):
         src = inspect.getsource(km.build_session)

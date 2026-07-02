@@ -74,7 +74,7 @@ interface AskItem {
   reopened?: boolean;                              // resurrected: a question arrived AFTER the user cleared it
   followupPending?: boolean;                       // you followed up on a settled card → optimistically reopened, awaiting the judge's re-file (kernel)
   recheck?: boolean;                               // soft-block you answered with a TARGETED follow-up → de-urgented (dotted), moved to Working, dropped from the "need input" count, until the judge resolves or re-blocks it (kernel build_feed; the user 2026-06-27)
-  rejudging?: boolean;                             // soft-block + a PLAIN thread reply after it → STAYS in Needs-You (still counted), shows a "Re-judging…" swirl while a turn is in flight; the card never leaves Blocked on a guess (kernel build_feed; the user 2026-06-30)
+  rejudging?: boolean;                             // soft-block + a PLAIN thread reply after it → moves to WORKING while the reply is in flight (echo/open turn), with a "Re-judging…" swirl; returns to Needs-You on its own if the judge leaves it blocked (kernel build_feed; the user 2026-07-02, immediate)
   nudgeFailed?: boolean;                           // the ONE auto-nudge on this stalled goal didn't resolve it (response turn ended, still working) → "nudge failed" chip; never re-nudged — a fork-flavored failure also floors the card via blocked.state "stalled" (kernel build_feed; design/stalled-open-todos-nudge.md)
   autoFiled?: boolean;                             // settled → moved to COMPLETED by the auto-filing rule (keeps the green ring)
   explicitDone?: boolean;                          // every path explicitly DONE-stamped → blue ring (blue+green when settled agrees)
@@ -933,7 +933,7 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
     spinTip = "You followed up. Reopened to Working; the judge will resolve it or re-block it.";
   } else if (it.rejudging) {
     spinCaption = "Re-judging…";
-    spinTip = "You replied on this thread. Re-evaluating; still needs you until the judge clears or re-confirms it.";
+    spinTip = "You replied on this thread. Moved to Working while the reply runs; it comes back if the judge re-confirms the block.";
   } else if (distillPending(it.column === "completed", it.column === "needs_input", it.summary, it.blockSummary, !!it.blocked)) {
     //  • DISTILLING (the user 2026-06-29) — a resolved card whose distiller hasn't produced its line yet:
     //    a completed goal awaiting its takeaway (summary), or a blocked goal awaiting its decision brief

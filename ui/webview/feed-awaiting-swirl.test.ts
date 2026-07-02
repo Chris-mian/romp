@@ -22,7 +22,7 @@ test("the swirl element is built in the body, right after the distiller line, an
 
 test("the swirl + caption covers awaiting, provisional, and re-check — shown when there's a caption, else hidden", () => {
   // a single computed caption drives the swirl: awaiting → the why; a working provisional placeholder →
-  // "Working…"; a targeted-follow-up re-check → "Re-judging…"; a plain-reply rejudging (STAYS in Needs-You) →
+  // "Working…"; a targeted-follow-up re-check → "Re-judging…"; a plain-reply rejudging (moved to Working while in flight) →
   // "Re-judging…". The blocked placeholder (needs-input) is NOT covered — it's on you, not in motion.
   // AWAITING is the PAUSED case: a fixed "Awaiting background agents" label (the user 2026-07-01), NOT the swirl
   assert.match(FEED, /if \(aw && !it\.waitingOn\) \{\s*\n\s*awaitingBg = true;\s*\n\s*spinCaption = "Awaiting background agents";/);
@@ -42,7 +42,7 @@ test("each case carries a concise tooltip on the swirl (hover → the key idea, 
   // tooltips are short and plain-spoken (the user 2026-06-29): the key idea, no LLM-essay phrasing, no em dashes
   assert.match(FEED, /spinTip = "A new prompt, not yet sorted into a goal\. Placeholder until it is\.";/);
   assert.match(FEED, /spinTip = "You followed up\. Reopened to Working; the judge will resolve it or re-block it\.";/);
-  assert.match(FEED, /spinTip = "You replied on this thread\. Re-evaluating; still needs you until the judge clears or re-confirms it\.";/);
+  assert.match(FEED, /spinTip = "You replied on this thread\. Moved to Working while the reply runs; it comes back if the judge re-confirms the block\.";/);
   // no em dashes anywhere in the swirl tooltips (JLD + the user's house style ban them)
   assert.doesNotMatch(FEED, /spinTip = "[^"]*—/);
   assert.match(FEED, /a\._awaitSpin\.title = spinTip \|\| spinCaption;/);
