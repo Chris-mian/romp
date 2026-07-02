@@ -1736,7 +1736,7 @@ def _drive(msg, client):
         if cmd.startswith("/model "):
             _set_model_or_park(be, sid, cmd[len("/model "):].strip())   # mid-compaction → parked as a queued command
         elif cmd.startswith("/effort "):
-            be.set_effort(sid, cmd[len("/effort "):].strip())
+            _set_effort_or_park(be, sid, cmd[len("/effort "):].strip())   # mid-compaction → parked as a queued command
         else:
             _send_or_park(be, sid, cmd)   # mid-compaction → parked as a queued command
     elif t == "askFollowUp":
@@ -1793,7 +1793,7 @@ def _drive(msg, client):
     elif t == "setModel" and msg.get("value"):
         _set_model_or_park(be, sid, str(msg["value"])); _push_all()   # mid-compaction → parked as a queued command
     elif t == "setEffort" and msg.get("value"):
-        be.set_effort(sid, str(msg["value"])); _push_all()   # tmux: /effort; SDK: reconnect with --effort
+        _set_effort_or_park(be, sid, str(msg["value"])); _push_all()   # tmux: /effort; SDK: reconnect with --effort; mid-compaction → parked
     elif t == "setMode" and msg.get("value"):
         be.set_mode(sid, str(msg["value"])); _push_all()
     elif t == "endSession":
@@ -4087,12 +4087,13 @@ def _compacting(sid, st, session, now, since):
     return True
 
 
-# A model change requested WHILE the session compacts is PARKED here instead of applied (the user
-# 2026-07-01: switching the model mid-compaction broke the compaction — tmux keystrokes land in the
-# compacting UI and the /model confirm Enter derails it; the wanted behavior is a queued command that
-# takes effect after). build_session renders the park as a queued '/model …' bubble; the producer tick
-# fires it via _apply_pending_models the moment compaction ends.
-_pending_model = {}           # sid -> parked model value
+# ANY drive op requested WHILE the session compacts is PARKED (the user 2026-07-01 for /model — tmux
+# keystrokes land in the compacting UI and derail it; generalized 2026-07-02 to messages AND /effort, as
+# ONE FIFO queue): whatever sequence of messages and slash commands you send during a compaction, the
+# chat renders them as queued bubbles IN THAT ORDER and _apply_pending_ops delivers them IN THAT ORDER
+# the moment compaction ends. A repeated model/effort pick REPLACES its earlier parked op in place (last
+# pick wins — one queued chip, not a pile), since only the final setting can matter.
+_pending_ops = {}             # sid -> [("send", text, echo) | ("model", v) | ("effort", v), …] in park order
 
 
 def _compacting_now(sid):
@@ -4106,70 +4107,79 @@ def _compacting_now(sid):
     return _compacting(sid, (tm or {}).get("state", ""), session, int(time.time()), (tm or {}).get("since"))
 
 
-def _set_model_or_park(be, sid, value):
-    """Apply a model change now — or PARK it while the session compacts (see _pending_model). A park
-    pushes immediately so the queued-command bubble appears at once (build_session appends it), never
-    waiting out the backstop poll."""
-    if _compacting_now(sid):
-        _pending_model[str(sid)] = value
-        _push_all()
+def _park_op(sid, op):
+    """Park one mid-compaction drive op in the sid's FIFO queue and push at once (the queued bubble
+    appears immediately, never waiting out the backstop poll). A repeat model/effort pick REPLACES the
+    earlier parked op of the same kind IN PLACE — its queue position stands, its value updates — so the
+    chat shows one "/model …" chip carrying the latest pick. Messages always append."""
+    q = _pending_ops.setdefault(str(sid), [])
+    if op[0] in ("model", "effort"):
+        for i, o in enumerate(q):
+            if o[0] == op[0]:
+                q[i] = op
+                break
+        else:
+            q.append(op)
     else:
-        be.set_model(sid, value)
-
-
-def _apply_pending_models():
-    """Producer tick: fire parked model changes whose compaction has ENDED — event-corroborated
-    (_compacting flips false on the compact_boundary or resumed work; its 180s optimistic cap covers a
-    cancelled compaction), so a park can never stick forever. A dead session's park is dropped (its
-    backend call fails once, logged), never retried into a void."""
-    for sid, v in list(_pending_model.items()):
-        if _compacting_now(sid):
-            continue
-        _pending_model.pop(sid, None)
-        try:
-            Sessions.backend_for(sid).set_model(sid, v)
-        except Exception:
-            sys.stderr.write("pending model apply: %s\n" % traceback.format_exc())
-        _push_all()
-
-
-# A MESSAGE sent while the session compacts is parked here too (the user 2026-07-02: a mid-compaction send
-# rendered instantly as a landed chat bubble — no queued/pending cue — and its live-tail echo opened a turn
-# that KILLED the 'compacting' indicator (_compacting treats resumed work as compaction-over)). Parking
-# fixes both: no echo atom lands, so 'compacting' stays; build_session renders the park as a QUEUED bubble;
-# _apply_pending_sends delivers the moment compaction ends (same event-corroborated gate as the model park).
-_pending_sends = {}           # sid -> [(text, echo_author_or_None), …] parked in send order
+        q.append(op)
+    _push_all()
 
 
 def _send_or_park(be, sid, text, echo=None):
-    """Deliver `text` now — or PARK it while the session compacts (see _pending_sends). `echo` is the
-    _optimistic_echo author to stamp when the send actually fires (None = the backend echoes for itself).
-    A park pushes immediately so the queued bubble appears at once."""
+    """Deliver `text` now — or PARK it while the session compacts (the user 2026-07-02: a mid-compaction
+    send rendered instantly as a landed bubble — no queued cue — and its live-tail echo opened a turn that
+    KILLED the 'compacting' indicator). Parked, no echo atom lands so 'compacting' stays, and the send
+    shows as a queued bubble in park order. `echo` is the _optimistic_echo author stamped when the send
+    actually fires (None = the backend echoes for itself)."""
     if _compacting_now(sid):
-        _pending_sends.setdefault(str(sid), []).append((text, echo))
-        _push_all()
+        _park_op(sid, ("send", text, echo))
         return
     be.send(sid, text)
     if echo:
         _optimistic_echo(sid, text, author=echo)
 
 
-def _apply_pending_sends():
-    """Producer tick: deliver messages parked during a compaction that has now ended, in send order.
-    Runs AFTER _apply_pending_models so a model change parked in the same compaction is in effect before
-    the message opens a turn. A dead session's park is dropped (fails once, logged), never retried."""
-    for sid, msgs in list(_pending_sends.items()):
+def _set_model_or_park(be, sid, value):
+    """Apply a model change now — or park it in the sid's FIFO op queue while the session compacts."""
+    if _compacting_now(sid):
+        _park_op(sid, ("model", value))
+    else:
+        be.set_model(sid, value)
+
+
+def _set_effort_or_park(be, sid, value):
+    """Apply an effort change now — or park it while the session compacts (the user 2026-07-02: /effort
+    is a slash command like /model, so it must queue the same way — it used to slip straight through,
+    with no queued chip and the same derail risk the /model park was built for)."""
+    if _compacting_now(sid):
+        _park_op(sid, ("effort", value))
+    else:
+        be.set_effort(sid, value)
+
+
+def _apply_pending_ops():
+    """Producer tick: FIFO-deliver the ops parked during a compaction that has now ENDED — in exactly the
+    order they were parked, which is exactly the order the chat rendered their queued bubbles (the user
+    2026-07-02: what you see is what runs). Event-corroborated (_compacting flips false on the
+    compact_boundary or resumed work; its 180s optimistic cap covers a cancelled compaction), so a park
+    can never stick forever. A dead session's queue is dropped (fails once, logged), never retried."""
+    for sid, ops in list(_pending_ops.items()):
         if _compacting_now(sid):
             continue
-        _pending_sends.pop(sid, None)
+        _pending_ops.pop(sid, None)
         try:
             be = Sessions.backend_for(sid)
-            for text, echo in msgs:
-                be.send(sid, text)
-                if echo:
-                    _optimistic_echo(sid, text, author=echo)
+            for op in ops:
+                if op[0] == "send":
+                    be.send(sid, op[1])
+                    if op[2]:
+                        _optimistic_echo(sid, op[1], author=op[2])
+                elif op[0] == "model":
+                    be.set_model(sid, op[1])
+                elif op[0] == "effort":
+                    be.set_effort(sid, op[1])
         except Exception:
-            sys.stderr.write("pending send apply: %s\n" % traceback.format_exc())
+            sys.stderr.write("pending ops apply: %s\n" % traceback.format_exc())
         _push_all()
 
 
@@ -4761,9 +4771,8 @@ def build_session(sid, now, tmux=None):
     # composer, like the old TS kernel — so it's visible instead of vanishing (the user 2026-06-15;
     # pane-scrape dropped a 2nd queued message → both vanished, 2026-06-16). The matching input echo (if any)
     # was suppressed at merge time, so a queued message shows exactly once, here.
-    pending_model = _pending_model.get(sid)
-    pending_sends = _pending_sends.get(sid) or []
-    if queued or pending_model or pending_sends:
+    pending_ops = _pending_ops.get(sid) or []
+    if queued or pending_ops:
         # Each pending message is rendered like a landed one (markdown) — and a follow-up is cleaned of the
         # romp goal-context quote + the comment markers, carrying just the body + the goal title (the user
         # 2026-06-27). Same _split_followup the landed human turns use, so pending + landed match.
@@ -4781,28 +4790,25 @@ def build_session(sid, now, tmux=None):
                 if ctx:                                       # expandable header on queued follow-ups too
                     m["fuCtx"] = ctx
             qmsgs.append(m)
-        # messages parked while this session COMPACTS (the user 2026-07-02): rendered as queued bubbles
-        # exactly like the backend's own queue — same _split_followup so a parked follow-up matches a landed
-        # one — delivered by _apply_pending_sends the moment compaction ends. Appended AFTER the real queue
-        # (idx positions must keep matching the backend's _pending for cancelQueued) and NOT cancelable
-        # (they live in _pending_sends, not the backend's queue).
-        for t, _echo in pending_sends:
-            goal, body, fu, ctx = _split_followup(t)
-            m = {"md": body}
-            if fu:
-                m["followUp"] = True
-                if goal:
-                    m["goal"] = goal
-                if ctx:
-                    m["fuCtx"] = ctx
-            qmsgs.append(m)
-        if pending_model:
-            # a model change parked while this session COMPACTS (the user 2026-07-01): rendered as a queued
-            # COMMAND exactly like a queued message ("/model …" → the slash-command chip), applied by
-            # _apply_pending_models the moment compaction ends. Appended AFTER the real queue — idx
-            # positions must keep matching the backend's _pending for cancelQueued — and NOT cancelable
-            # (it lives in _pending_model, not the backend's queue).
-            qmsgs.append({"md": "/model " + pending_model})
+        # ops parked while this session COMPACTS (the user 2026-07-02): messages and slash commands render
+        # as queued bubbles IN PARK ORDER — the same FIFO _apply_pending_ops delivers in, so the rendering
+        # IS the execution order. A message gets the same _split_followup treatment as the backend's own
+        # queue (a parked follow-up matches a landed one); a model/effort pick renders as its slash-command
+        # chip ("/model …" / "/effort …"). Appended AFTER the real queue (idx positions must keep matching
+        # the backend's _pending for cancelQueued) and NOT cancelable (they live in _pending_ops).
+        for op in pending_ops:
+            if op[0] == "send":
+                goal, body, fu, ctx = _split_followup(op[1])
+                m = {"md": body}
+                if fu:
+                    m["followUp"] = True
+                    if goal:
+                        m["goal"] = goal
+                    if ctx:
+                        m["fuCtx"] = ctx
+                qmsgs.append(m)
+            else:
+                qmsgs.append({"md": "/%s %s" % (op[0], op[1])})
         events.append({"kind": "queued", "texts": qmsgs})
     # WORKING from the event model (open turn, no idle atom) — the one shared signal. Computed up here so the
     # API-error gate just below can use it (it's also read later for the chip + work-timer base).
@@ -7707,8 +7713,7 @@ def _producer():
             _judge_gen[0] += 1     # a judge pass may have changed goal/caption state WITHOUT touching any
                                    # transcript → bump the generation so the chat-build cache re-builds the
                                    # background tabs once, keeping their Fleet status/ledger fresh (≤ this cadence).
-            _apply_pending_models()   # fire model changes parked during a compaction that has now ended
-            _apply_pending_sends()    # then deliver messages parked the same way (model first — see docstring)
+            _apply_pending_ops()      # FIFO-deliver everything parked during a compaction that has now ended
         except Exception:
             sys.stderr.write("producer: %s\n" % traceback.format_exc())
         finally:

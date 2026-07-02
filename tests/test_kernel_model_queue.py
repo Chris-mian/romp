@@ -2,7 +2,7 @@
 """A model change requested WHILE a session compacts is PARKED, not applied (the user 2026-07-01:
 switching the model mid-compaction broke the compaction — the wanted behavior is a queued command that
 takes effect after). The kernel parks it in _pending_model, build_session renders it as a queued
-'/model …' bubble, and _apply_pending_models (producer tick) fires it the moment compaction ends —
+'/model …' bubble, and _apply_pending_ops (producer tick) fires it the moment compaction ends —
 event-corroborated via the same _compacting signal the chip uses (compact_boundary / resumed work /
 the 180s optimistic cap), so a park can never stick forever. SYNTHETIC fixtures only."""
 import os
@@ -33,56 +33,57 @@ class ParkOrApply(unittest.TestCase):
         self.be = _FakeBackend()
         self._saved = (km._compacting_now, km.Sessions.backend_for, km._push_all)
         km._push_all = lambda: None
-        km._pending_model.clear()
+        km._pending_ops.clear()
 
     def tearDown(self):
         (km._compacting_now, km.Sessions.backend_for, km._push_all) = self._saved
-        km._pending_model.clear()
+        km._pending_ops.clear()
 
     def test_not_compacting_applies_immediately(self):
         km._compacting_now = lambda sid: False
         km._set_model_or_park(self.be, SID, "sonnet")
         self.assertEqual(self.be.calls, [(SID, "sonnet")], "no compaction → the switch fires now")
-        self.assertNotIn(SID, km._pending_model)
+        self.assertNotIn(SID, km._pending_ops)
 
     def test_compacting_parks_instead_of_applying(self):
         km._compacting_now = lambda sid: True
         km._set_model_or_park(self.be, SID, "opus")
         self.assertEqual(self.be.calls, [], "mid-compaction the backend is NOT touched — that broke the compaction")
-        self.assertEqual(km._pending_model.get(SID), "opus")
+        self.assertEqual(km._pending_ops.get(SID), [("model", "opus")])
 
     def test_repeat_change_while_parked_keeps_only_the_latest(self):
         km._compacting_now = lambda sid: True
         km._set_model_or_park(self.be, SID, "opus")
         km._set_model_or_park(self.be, SID, "sonnet")
-        self.assertEqual(km._pending_model.get(SID), "sonnet", "last pick wins — one queued command, not a pile")
+        self.assertEqual(km._pending_ops.get(SID), [("model", "sonnet")],
+                         "last pick wins IN PLACE — one queued command, not a pile")
 
     def test_apply_fires_when_compaction_ends_and_not_before(self):
-        km._pending_model[SID] = "opus"
+        km._pending_ops[SID] = [("model", "opus")]
         km.Sessions.backend_for = lambda sid: self.be
         km._compacting_now = lambda sid: True
-        km._apply_pending_models()
+        km._apply_pending_ops()
         self.assertEqual(self.be.calls, [], "still compacting → still parked")
-        self.assertIn(SID, km._pending_model)
+        self.assertIn(SID, km._pending_ops)
         km._compacting_now = lambda sid: False
-        km._apply_pending_models()
+        km._apply_pending_ops()
         self.assertEqual(self.be.calls, [(SID, "opus")], "compaction over → the parked switch fires")
-        self.assertNotIn(SID, km._pending_model, "consumed — never re-fired")
+        self.assertNotIn(SID, km._pending_ops, "consumed — never re-fired")
 
     def test_dead_session_park_is_dropped_not_retried(self):
-        km._pending_model[SID] = "opus"
+        km._pending_ops[SID] = [("model", "opus")]
         km._compacting_now = lambda sid: False
 
         def dead(sid):
             raise RuntimeError("no such session")
         km.Sessions.backend_for = dead
-        km._apply_pending_models()                      # must not raise
-        self.assertNotIn(SID, km._pending_model, "a dead session's park is dropped, never retried forever")
+        km._apply_pending_ops()                         # must not raise
+        self.assertNotIn(SID, km._pending_ops, "a dead session's park is dropped, never retried forever")
 
     def test_producer_ticks_the_apply(self):
         import inspect
         src = inspect.getsource(km._producer)
-        self.assertIn("_apply_pending_models()", src, "the producer tick fires parked switches")
+        self.assertIn("_apply_pending_ops()", src, "the producer tick fires parked ops")
 
 
 class CompactingNowGate(unittest.TestCase):
@@ -117,10 +118,10 @@ class QueuedBubble(unittest.TestCase):
     def test_build_session_appends_the_parked_model_as_a_queued_command(self):
         import inspect
         src = inspect.getsource(km.build_session)
-        self.assertIn("pending_model = _pending_model.get(sid)", src)
-        self.assertIn('qmsgs.append({"md": "/model " + pending_model})', src,
-                      "the park renders as a queued /model command bubble")
-        self.assertIn("if queued or pending_model or pending_sends:", src,
+        self.assertIn("pending_ops = _pending_ops.get(sid) or []", src)
+        self.assertIn('qmsgs.append({"md": "/%s %s" % (op[0], op[1])})', src,
+                      "a parked model/effort renders as its slash-command chip, in park order")
+        self.assertIn("if queued or pending_ops:", src,
                       "the queued indicator shows even when a park is the only pending item")
 
 
