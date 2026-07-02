@@ -75,6 +75,7 @@ interface AskItem {
   followupPending?: boolean;                       // you followed up on a settled card → optimistically reopened, awaiting the judge's re-file (kernel)
   recheck?: boolean;                               // soft-block you answered with a TARGETED follow-up → de-urgented (dotted), moved to Working, dropped from the "need input" count, until the judge resolves or re-blocks it (kernel build_feed; the user 2026-06-27)
   rejudging?: boolean;                             // soft-block + a PLAIN thread reply after it → STAYS in Needs-You (still counted), shows a "Re-judging…" swirl while a turn is in flight; the card never leaves Blocked on a guess (kernel build_feed; the user 2026-06-30)
+  nudgeFailed?: boolean;                           // the ONE auto-nudge on this stalled goal didn't resolve it (response turn ended, still working) → "nudge failed" chip; never re-nudged — a fork-flavored failure also floors the card via blocked.state "stalled" (kernel build_feed; design/stalled-open-todos-nudge.md)
   autoFiled?: boolean;                             // settled → moved to COMPLETED by the auto-filing rule (keeps the green ring)
   explicitDone?: boolean;                          // every path explicitly DONE-stamped → blue ring (blue+green when settled agrees)
   turnIds?: string[];                              // typed turns that minted/amended this card
@@ -506,6 +507,11 @@ function makeAskCard(it: AskItem): HTMLElement {
   // was removed (the user 2026-07-01: click-to-cite makes follow-up routine, so the ack is noise). updateAskCard
   // sets the text/title when it shows for recheck.
   const fupBadge = el("span", "fask-followedup"); fupBadge.textContent = "↩ re-judging"; fupBadge.title = "you followed up — no longer waiting on you; the judge will resolve it or re-block it on the next pass"; fupBadge.style.display = "none";
+  // "nudge failed" (design/stalled-open-todos-nudge.md): romp asked this stalled goal ONCE and the response
+  // didn't resolve it; per the anti-loop rule it is never re-asked, so the card says so instead.
+  const nfBadge = el("span", "fask-nudgefailed"); nfBadge.textContent = "nudge failed";
+  nfBadge.title = "romp followed up on this stalled goal once; the response didn't resolve it and it won't be re-asked — it's waiting on you";
+  nfBadge.style.display = "none";
   const waitOnBadge = el("span", "fask-waiton"); waitOnBadge.style.display = "none";   // "Awaiting <peer>" / "Deadlock <peer>", peer name in native colour (the user 2026-06-22)
   const blkBadge = el("a", "fask-blocked"); blkBadge.style.display = "none";   // ⏸ live permission/picker block → click opens the session
   const apiBadge = el("span", "fask-apierror"); apiBadge.textContent = "⚠ API error"; apiBadge.style.display = "none";   // red: session stopped on an API error
@@ -537,7 +543,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   // "↪ from <peer>" provenance + the "reopened"/"↻ Followed up" chips ride the name row's right side;
   // row2 wraps them onto a new line when there isn't room, so the provenance never overlaps a chip
   // (the user 2026-06-20). origin sits left of the chips, matching the "from … · Followed up" reading order.
-  row2.append(idwrap, origin, reBadge, fupBadge, waitOnBadge);
+  row2.append(idwrap, origin, reBadge, fupBadge, nfBadge, waitOnBadge);
   // ROW 3 — timestamp bottom-left · action buttons bottom-right
   const row3 = el("div", "fask-row3"); row3.append(time, actions);
   // the user's handoff spec (2026-06-10): below the main session, list the OTHER
@@ -650,6 +656,7 @@ function makeAskCard(it: AskItem): HTMLElement {
 
   const a = card as any;
   a._title = title; a._name = name; a._time = time; a._reopened = reBadge; a._followedup = fupBadge;
+  a._nudgeFailed = nfBadge;
   a._waitOn = waitOnBadge;
   a._blocked = blkBadge; a._wait = waitBadge;
   a._apiBadge = apiBadge; a._apiRetry = apiRetry; a._revive = revive; a._clr = clr;
@@ -726,6 +733,10 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   } else {
     a._followedup.style.display = "none";
   }
+  // "nudge failed" chip (design/stalled-open-todos-nudge.md): the one auto-nudge didn't resolve the stall
+  // and it is never re-asked — the card says so. A fork-flavored failure ALSO floors the card to Needs-you
+  // (blocked.state "stalled"); a regular-flavor one stays in Working with just this chip.
+  a._nudgeFailed.style.display = it.nudgeFailed ? "" : "none";
   // "Awaiting <peer>" — this session has an unanswered message out to a live peer (kernel _wait_for_graph):
   // held in Working, not stalled, so auto-nudge skips it. The peer NAME renders in its NATIVE identity colour
   // (like the "↪ from" provenance), no emoji prefix (the user 2026-06-22). A mutual-wait CYCLE keeps the red
@@ -813,7 +824,10 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   const isApiErr = it.blocked?.state === "apiError";
   a._blocked.style.display = (it.blocked && !isApiErr) ? "" : "none";
   if (it.blocked && !isApiErr) {
-    a._blocked.textContent = it.blocked.state === "permission" ? "⏸ approval" : "⏸ picker";
+    // "stalled" (design/stalled-open-todos-nudge.md): not a live prompt — the session stopped with its own
+    // to-do items open and the one fork nudge didn't get them moving, so the card floors to Needs-you.
+    a._blocked.textContent = it.blocked.state === "permission" ? "⏸ approval"
+      : it.blocked.state === "stalled" ? "⏸ stalled" : "⏸ picker";
     a._blocked.title = it.blocked.what + " — click to open the session";
     a._blocked.onclick = (ev: Event) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "openSession", id: it.sid }); };
   }

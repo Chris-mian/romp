@@ -1,7 +1,28 @@
 # Stalled-with-open-to-dos → blocked + a distinct one-shot nudge
 
-**Status:** Increment 1 (loop-safe re-arm) SHIPPED (`58bc7ad`). Increments 2–4 (this doc) NOT
-started. Author: bugs session, 2026-07-01, at the user's direction.
+**Status: SHIPPED.** Increment 1 (loop-safe re-arm) landed as `58bc7ad`; increments 2–4 (this doc)
+are implemented (branch `nudge`, 2026-07-01). Author: bugs/nudge session, at the user's direction.
+
+**Scrutiny outcome (what changed vs the plan below):**
+- **§4a needed NO judge production change.** The plan assumed the authoritative-open override had to be
+  relaxed for a planner block to stick — reading `rollup_status` showed `blocked` already outranks it:
+  `open_task` only gates completeness (`is_complete` / `_roll_down`), `any_blocked` runs first in the
+  precedence, and the stale-block heal clears blocks only on COMPLETE nodes (an open-task node is never
+  complete). `_sync_declared_plan` never touches `blocked` either. The contract is now PINNED by tests
+  (`tests/test_judge_authoritative_plan_sync.py::BlockedAuthority`,
+  `tests/test_judge.py::Distiller::test_brief_fires_for_a_blocked_open_agent_todo`) so it can't silently
+  break. The planner needed nothing new either: the existing nudge-mode note already pushes done/block.
+- **The fork nudge integrates with `_followup_body`'s hierarchical enumeration** (a `stalled=True` kwarg):
+  the quote still names the open pieces; only the body forks to "continue these, or tell me which are
+  blocked and what you need" (`AUTO_NUDGE_STALLED_TEXT` covers the flat form).
+- **`nudgeFailed` is stamped at the tick's re-arm gate** — by then the response turn has ended and
+  `_closer_settled` has passed, and the closer runs LAST among the judge tiers, so the planner has already
+  had its say: no race with a block landing late. A fresh fire writes a fresh record, resetting the flag.
+- **The §7 floor question resolved to: kernel floor only, keyed on the FAILED fork nudge** (record
+  `stalled`+`failed`, goal still working, open to-dos still present AT DISPLAY TIME so it self-heals when
+  they're crossed off; the live api/permission floors still win). Flooring on detection alone would have
+  interrupted the human before the cheap agent-side ask, and the judge can't see "fork-nudged and
+  unresolved" — that's kernel state. A regular-flavor failure gets the chip only, staying in Working.
 
 ## 1. Problem & root cause
 

@@ -10,9 +10,11 @@ import * as path from "node:path";
 const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
 
 test("the manual Nudge button is gone (Auto Nudge replaces it)", () => {
-  assert.doesNotMatch(FEED, /fask-nudge/);
+  // exact-string pins: the passive "nudge failed" CHIP (fask-nudgefailed / a._nudgeFailed — a status cue
+  // from the auto-nudge, design/stalled-open-todos-nudge.md) is a different thing and allowed to exist.
+  assert.doesNotMatch(FEED, /"fask-nudge"/);
   assert.doesNotMatch(FEED, /nudge\.onclick/);
-  assert.doesNotMatch(FEED, /a\._nudge/);
+  assert.doesNotMatch(FEED, /a\._nudge[^A-Za-z]/);
   // the action row is buttons only (the state badges moved up to the name row, 2026-06-19); no Nudge now
   assert.match(FEED, /actions\.append\(apiRetry, revive, clr\)/);
 });
