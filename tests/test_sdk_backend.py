@@ -253,6 +253,21 @@ class LiveTail(unittest.TestCase):
         be.prune_live("s", set(), set(), human_floor=300)
         self.assertEqual([a["uuid"] for a in be.live_atoms("s")], ["a9"])
 
+    def test_stale_command_atom_pruned_by_human_floor(self):
+        # a COMMAND atom (the CLI's streamed /model feedback) from a TURN-LESS control request may never
+        # get a transcript record to land against (the user 2026-07-02) — the floor retires it once a
+        # genuine human turn postdates it, so the stale confirmation never rides inside later turns.
+        be = sb.SdkBackend(tempfile.mkdtemp(), "/bin/true", lambda *a, **k: None)
+        cmd = {"uuid": "c1", "t": 100, "command": True, "type": "assistant"}
+        be._live["s"] = {"c1": dict(cmd)}
+        be.prune_live("s", set(), set())                    # no floor yet → the confirmation stays visible
+        self.assertEqual([a["uuid"] for a in be.live_atoms("s")], ["c1"])
+        be.prune_live("s", set(), set(), human_floor=150)   # a later genuine human turn → retire it
+        self.assertEqual(be.live_atoms("s"), [])
+        be._live["s"] = {"c2": {"uuid": "c2", "t": 200, "command": True, "type": "assistant"}}
+        be.prune_live("s", set(), set(), human_floor=150)   # newer than the floor → survives
+        self.assertEqual([a["uuid"] for a in be.live_atoms("s")], ["c2"])
+
     def test_send_adds_optimistic_echo(self):
         be = sb.SdkBackend(tempfile.mkdtemp(), "/bin/true", lambda *a, **k: None)
         be._ensure = lambda sid: type("S", (), {"enqueue": lambda self, t: None})()   # no real session thread

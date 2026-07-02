@@ -1625,7 +1625,12 @@ class SdkBackend:
             et = a.get("_echo_text")
             landed = a.get("uuid") in tx_uuids or (et and et in tx_user_texts)
             stale_echo = bool(et) and human_floor and a.get("t", 0) <= human_floor
-            if landed or stale_echo:
+            # A COMMAND atom (the CLI's streamed /model, /compact feedback) from a TURN-LESS control
+            # request may never get a transcript record to land against — retire it once a genuine human
+            # turn postdates it, so the stale confirmation line doesn't ride pinned inside every later
+            # turn forever (the user 2026-07-02, with the live_work command exemption).
+            stale_cmd = bool(a.get("command")) and human_floor and a.get("t", 0) <= human_floor
+            if landed or stale_echo or stale_cmd:
                 del d[k]
         if not d:
             self._live.pop(sid, None)
