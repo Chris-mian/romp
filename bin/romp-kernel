@@ -6563,8 +6563,15 @@ def build_timeline(now, tmux=None, with_bars=True, live_only=False):
                        if a.get("type") == "system" and a.get("subtype") == "compact_boundary" and a.get("t")]
         active = bool(tm and tm["state"] in ("working", "permission", "picker", "compacting", "waiting"))
         faded = (not live) or (not active and bool(tm and tm["since"]) and now - tm["since"] > 3600)
+        # AWAITING dispatched/background work — the SAME _session_awaiting the chat chip folds into its
+        # yellow working dot, emitted per lane so the timeline shows the in-flight-elsewhere state instead
+        # of a bare READY (the user 2026-07-01: the surfaces must share one working model; this was the
+        # last designed chat/timeline split). Named awaitingBg: the lane's legacy 'awaiting' STATE and the
+        # `awaiting` intervals field below both mean blocked-on-YOU. Cheap (states overlay + cached
+        # bg-tool scan), so both the skeleton and the bars build carry it.
+        awaiting_bg = (_session_awaiting(sid, s["path"], not open_now) if live else None)
         sessions.append({
-            "id": sid, "name": name, "live": live, "state": state,
+            "id": sid, "name": name, "live": live, "state": state, "awaitingBg": awaiting_bg,
             "since": (tm["since"] if tm and tm["since"] else last_t),
             "color": hexcol,
             "model": (tm["model"] if tm else ""), "effort": (tm["effort"] if tm else ""),

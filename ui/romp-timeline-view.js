@@ -195,6 +195,12 @@ function badgeFor(s) {
   }
   else if (s.state === 'retrying') m = { label: 'RETRYING', kind: 'retrying' };   // amber, distinct from the red BLOCKED — a soft API-retry stall (api 2026-06-23)
   else if (s.state === 'permission' || s.state === 'awaiting') m = { label: 'BLOCKED', kind: 'attention' };
+  // AWAITING dispatched/background work (s.awaitingBg, the kernel's _session_awaiting — the SAME signal the
+  // chat folds into its yellow working dot): in flight elsewhere, NOT on you, NOT plain READY. Closes the
+  // last designed chat/timeline split in the working model (the user 2026-07-01). Working-yellow family so
+  // the two surfaces read consistently; distinct label so it never claims the session itself is producing.
+  // (The LEGACY lane state 'awaiting' above means blocked-on-you — the new field dodges that name.)
+  else if (s.awaitingBg) m = { label: 'AWAITING', kind: 'working' };
   else if (s.state === 'waiting' || s.state === 'idle') m = { label: 'READY', kind: 'ready' };
   if (!m) return null;
   return { label: m.label, bg: BADGE[m.kind].bg, fg: BADGE[m.kind].fg };
