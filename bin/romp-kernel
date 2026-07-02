@@ -594,10 +594,66 @@ def _atomic_write(path, text):
         raise
 
 
+# ── session-order audit log (the user 2026-07-02) ──────────────────────────────────────────────────
+# Tabs/lanes STILL occasionally reorder themselves and every read-the-code hunt has come up empty, so
+# instrument the order itself: every mutation of the authoritative order (session-order.json), every
+# PERMUTED kernel push, and every permuted CLIENT render (reported over WS) appends one JSON line here —
+# with the stack that made the change — so the next reorder names its culprit instead of starting
+# another archaeology dig. Grep it with:  jq 'select(.permuted)' ~/.local/state/romp/order-audit.jsonl
+_ORDER_AUDIT_CAP = 1_000_000  # bytes; past this the oldest half is dropped (bounded, self-cleaning)
+_last_tab_order = []          # the previous push's tab order (the push-side permutation check in _push)
+
+
+def _order_audit_path():
+    return jd.STATE / "order-audit.jsonl"   # resolved per call: tests redirect jd.STATE
+
+
+def _order_permuted(old, new):
+    """True when the sids PRESENT IN BOTH lists changed relative order — the reorder bug. Pure adds,
+    drops, and inserts keep every survivor's relative slot and return False (routine churn, not a bug)."""
+    common = set(old) & set(new)
+    return [x for x in old if x in common] != [x for x in new if x in common]
+
+
+def _order_audit(kind, old, new, stack=None, only_permuted=False):
+    """Append one audit record for an order change. `stack` overrides the captured Python stack (a client
+    report carries its own JS stack). only_permuted=True skips routine set churn (the push-side check runs
+    every push — adds/drops there are just sessions appearing/dying). Never raises: diagnostics must not
+    take down the path they watch."""
+    try:
+        old = [str(x) for x in old if isinstance(x, str)]
+        new = [str(x) for x in new if isinstance(x, str)]
+        if old == new:
+            return
+        permuted = _order_permuted(old, new)
+        if only_permuted and not permuted:
+            return
+        rec = {"ts": int(time.time()), "kind": kind, "permuted": permuted,
+               "old": old, "new": new,
+               "added": [x for x in new if x not in set(old)],
+               "dropped": [x for x in old if x not in set(new)],
+               "stack": stack if stack is not None else "".join(traceback.format_stack()[:-2])}
+        line = json.dumps(rec) + "\n"
+        path = _order_audit_path()
+        try:
+            if path.exists() and path.stat().st_size > _ORDER_AUDIT_CAP:
+                lines = path.read_text().splitlines(keepends=True)
+                _atomic_write(path, "".join(lines[len(lines) // 2:]))
+        except Exception:
+            pass
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a") as f:
+            f.write(line)
+    except Exception:
+        sys.stderr.write("order audit: %s\n" % traceback.format_exc())
+
+
 def _write_session_order(order):
     if not isinstance(order, list):
         return
-    _atomic_write(jd.STATE / "session-order.json", json.dumps([x for x in order if isinstance(x, str)]))
+    new = [x for x in order if isinstance(x, str)]
+    _order_audit("persist", _session_order(), new)   # every mutation of the authoritative order, with its stack
+    _atomic_write(jd.STATE / "session-order.json", json.dumps(new))
 
 
 def _gc_session_order(known):
@@ -7209,6 +7265,10 @@ def _push(targets, connect=False):
     try:
         chat_list = _chat_tab_sessions(now, tmux)   # living + recently-died-while-shown, minus ×-hidden
         tab_order = [s["sid"] for s in chat_list]
+        # order audit: a PERMUTED push (survivors swapped slots vs the previous push) is the reorder bug
+        # leaving the kernel — log it with the stack. Set churn (a tab appearing/dying) is routine → skipped.
+        _order_audit("push", _last_tab_order, tab_order, only_permuted=True)
+        _last_tab_order[:] = tab_order
         # ACTIVE-TAB-FIRST STREAMING (the user 2026-06-24): a fresh connect used to wait for EVERY tab's
         # build_session (a full transcript reshape each) before the client saw ANY chat — the "slow to load"
         # lag. Now we push the tab strip immediately, then build + FLUSH the tab each client is LOOKING AT
@@ -9390,6 +9450,13 @@ class Handler(BaseHTTPRequestHandler):
             # carry the Clear button; build_timeline drops the sid only while it's dead, so a revived one returns.
             _dismissed_lanes.add(str(msg["id"]))
             _push_all()
+        elif msg and msg.get("type") == "orderAudit":
+            # a CLIENT detected its rendered tab order permuting (render.ts auditTabOrder) → same audit log
+            # as the kernel's own order mutations, with the client's JS stack, so one file tells the whole
+            # story of a reorder: which side moved first, and from where.
+            _order_audit("client:" + str(msg.get("surface") or "?"),
+                         msg.get("old") or [], msg.get("new") or [],
+                         stack=str(msg.get("stack") or "") + ("\n[user drag]" if msg.get("drag") else ""))
         elif msg and msg.get("type") in ("reorderTabs", "writeOrder") and isinstance(msg.get("order"), list):
             # tab-drag or lane-drag → reorder BOTH surfaces. MERGE the dragged surface's order into the
             # persisted one (don't overwrite): a chat-tab drag must not drop/reshuffle timeline-only lanes.
