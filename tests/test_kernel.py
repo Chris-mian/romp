@@ -1897,9 +1897,44 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(km._followup_body(SID + ":nope", None, "hi"),
                          mk("hi", SID + ":nope"), "no context → no empty quote (marker still appended)")
 
+    def test_followup_body_prefers_the_verbatim_mint_quote(self):
+        # g13 (the user 2026-07-01): a node carrying the minting message's VERBATIM head (node["quote"],
+        # judge _mint_quote) is quoted back in the user's OWN WORDS — the way a person re-raises a thread —
+        # with NO "(under X, done)" status tags and NO planner why. The paraphrased-title form stays only
+        # as the legacy fallback (the test below).
+        top, sub = SID + ":g1", SID + ":g3"
+        store = {"rompUuid": SID, "seq": 3, "nodes": {
+            top: {"id": top, "text": "Ship the release", "parentId": None,
+                  "nodeComplete": True, "doneWhy": "All parts landed.", "blocked": False, "t": T0},
+            sub: {"id": sub, "text": "Decide the version bump", "parentId": top, "nodeComplete": False,
+                  "blocked": True, "blockWhy": "Need you to choose major vs minor.",
+                  "quote": "can you figure out what version bump this release needs?", "t": T0}},
+            "placements": {}, "status": {}}
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps(store))
+        out = km._followup_body(sub, None, "go minor")
+        self.assertIn("> can you figure out what version bump this release needs?", out,
+                      "the user's own words, quoted back")
+        self.assertNotIn("Decide the version bump", out, "the planner's paraphrase is not used")
+        self.assertNotIn("(under", out, "no status/place tags — a person wouldn't annotate their own quote")
+        self.assertNotIn("Need you to choose", out, "no planner why line")
+        self.assertTrue(out.endswith("<!-- romp-goal-id: " + sub + " -->"), "the reopen marker still rides")
+
+    def test_hierarchical_nudge_enumeration_wins_over_the_quote(self):
+        # a NUDGE on a hierarchical top still enumerates the unfinished pieces (the user 2026-06-24) even
+        # when the top carries a verbatim quote — the checklist is the more useful nudge form (g13 scope:
+        # the multi-sub-goal case stays as-is).
+        top = self._hier_goal_store()
+        st = json.loads((jd.GOALDIR / (SID + ".json")).read_text())
+        st["nodes"][top]["quote"] = "please ship the auth refactor end to end"
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps(st))
+        out = km._followup_body(top, None, km.AUTO_NUDGE_TEXT, injected=True)
+        self.assertIn("Unfinished pieces under this goal", out)
+        self.assertNotIn("please ship the auth refactor", out)
+
     def test_followup_body_enriches_with_path_status_and_why(self):
         # the user 2026-06-17: the follow-up must carry more than a one-line title so the recipient session
         # understands WHAT it's following up on — the node's place (top goal), status, and the planner's why.
+        # Since g13 this is the LEGACY fallback, used only by nodes minted before verbatim quotes were cached.
         top, sub = SID + ":g1", SID + ":g3"
         store = {"rompUuid": SID, "seq": 3, "nodes": {
             top: {"id": top, "text": "Ship the release", "parentId": None,

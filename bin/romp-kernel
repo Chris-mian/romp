@@ -383,9 +383,10 @@ def _session_backend(sid, tm):
 def _followup_body(iid, title, text, injected=False, auto=False):
     """Pane message for a feed follow-up: QUOTE the ask being followed up ('> <ask>') above the user's
     text, so the recipient session knows what the reply answers. An explicit `title` (the group modal) is
-    used verbatim; otherwise the quote is built from the goal NODE — its text, the TOP goal it sits under,
-    its status, and the planner's one-line why — so the recipient understands WHAT is being followed up on
-    instead of a bare ≤10-word line (the user 2026-06-17). None of these → the text alone (no empty quote).
+    used verbatim; otherwise the quote PREFERS the node's cached VERBATIM mint quote (node["quote"], judge
+    _mint_quote) — the user's own words, re-raised the way a person would, with no status tags (the user
+    2026-07-01, g13) — falling back for legacy nodes to the enriched title form: the node's text, the TOP
+    goal it sits under, its status, and the planner's one-line why (the user 2026-06-17). None of these → the text alone (no empty quote).
     When a NUDGE (`injected` — the Nudge button OR the background auto-nudge, which both land here with iid =
     the TOP goal) targets a HIERARCHICAL goal, the quote ENUMERATES its unfinished lower-level nodes and the
     body asks for a status on each, with the top goal as context — so the session reports on the specific
@@ -428,7 +429,16 @@ def _followup_body(iid, title, text, injected=False, auto=False):
                 quote.append("  • …and %d more" % (len(subs) - CAP))
             body = ("For each unfinished piece above: what's done, what's left, and is anything blocked "
                     "waiting on a decision from me? Keep the overall goal in mind, but report per piece.")
+        elif str(nd.get("quote") or "").strip():
+            # The node cached the minting message's VERBATIM head (judge _mint_quote; the user 2026-07-01,
+            # g13): quote the user's OWN WORDS back — exactly how a person re-raises a thread — instead of
+            # the planner's paraphrased title with "(under X, done)" tags and the planner's why, which read
+            # report-like and used terminology the user never typed. No status annotations: the recipient
+            # has its own history, and the body carries the actual ask.
+            quote.append(str(nd["quote"]).strip())
         elif head:
+            # legacy node minted before quotes were cached → the enriched title form (title + place +
+            # status + the planner's why), still better than a bare ≤10-word line.
             tags, top, seen = [], str(iid), set()      # walk to the TOP goal this node sits under
             while nodes.get(top, {}).get("parentId") and top not in seen:
                 seen.add(top); top = nodes[top]["parentId"]
@@ -773,7 +783,7 @@ def _set_session_flag(sid, flag, value):
 # first — the 2nd landed as a type:attachment as the session resumed, so it rendered without the romp logo).
 # Off by default. State: auto-nudge.json {"enabled": bool, "nudged": {goalId: {count, lastTurnId}}}; each
 # fire also appends {sid,gid,t,count} to nudge-events.jsonl for the timeline's ⚡ marker.
-AUTO_NUDGE_TEXT = "Status on the goal above: what's done, what's left, and is anything blocked waiting on a decision from me?"   # mirrors the feed Nudge button (ui/webview/feed.ts)
+AUTO_NUDGE_TEXT = "Where does this stand? What's done, what's left, and is anything blocked waiting on a decision from me?"   # the auto-nudge ask (the manual feed Nudge button was removed 2026-06-30); phrased like a person checking in, not a status form (g13)
 _autonudge_cache = {}   # str(path) -> ((mtime_ns,size), dict)
 
 
