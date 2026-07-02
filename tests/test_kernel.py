@@ -2035,6 +2035,20 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(tnode["promptAnchorUuid"], seg.get("trigger"),
                          "title prompt anchor = the minting segment's trigger (the user's message) uuid")
 
+    def test_working_card_time_freshens_to_last_activity_not_mint(self):
+        # A reply/nudge re-files under a WORKING goal and advances its mt; the card's age must FRESHEN to that
+        # last activity, not stay pinned to the mint t (the user 2026-07-01: "I replied but it still says 15m
+        # ago — should be 0m"). completed/blocked cards already show their resolution mt; this fixes working.
+        g = SID + ":gw"
+        self._goal_store({g: {"id": g, "text": "confirm go-ahead", "parentId": None, "nodeComplete": False,
+                              "blocked": False, "cleared": False, "trail": [], "t": NOW - 900, "mt": NOW - 120}},
+                         {g: "working"}, last=g)
+        card = {a["itemId"]: a for a in km.build_feed(NOW)["asks"]}[g]
+        self.assertEqual(card["t"], NOW - 120, "working card time = last activity (mt), so a reply freshens it")
+        self.assertEqual(card["created"], NOW - 900, "created keeps the true mint time for the record")
+        root = next(n for n in card["tree"] if n["id"] == g)
+        self.assertEqual(root["last"], NOW - 120, "the modal root row age freshens to last activity too")
+
     def test_node_anchor_prefers_stored_prompt_uuid_over_seg_key_derivation(self):
         # The judge stamps promptUuid (the trigger atom uuid) on every node at mint (2026-07-01, via bugs).
         # The kernel must PREFER it over re-deriving the prompt anchor from trail[0]'s segment key — that
