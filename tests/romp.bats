@@ -21,6 +21,12 @@ setup() {
     cat > "$MOCK_DIR/tmux" << 'MOCK'
 #!/usr/bin/env bash
 echo "tmux $*" >> "$MOCK_LOG"
+# Opt-in: simulate an older tmux that rejects a given option (e.g. tmux 3.0 has no
+# copy-mode-position-style, added in 3.2). Off unless a test sets MOCK_TMUX_FAIL_OPT.
+if [[ -n "${MOCK_TMUX_FAIL_OPT:-}" && "$*" == *"$MOCK_TMUX_FAIL_OPT"* ]]; then
+  echo "invalid option: $MOCK_TMUX_FAIL_OPT" >&2
+  exit 1
+fi
 case "$1" in
   has-session)
     # $3 is "=<name>"; a session exists iff its name is in the file
@@ -111,6 +117,18 @@ run_romp() {
     [ "$status" -eq 0 ]
     grep -q 'tmux respawn-pane -k -t myproject exec claude' "$MOCK_LOG"
     ! grep -q 'send-keys.*exec claude' "$MOCK_LOG"
+}
+
+@test "old tmux without copy-mode-position-style still launches claude (no set -e abort)" {
+    # Regression: bin/romp sets the cosmetic copy-mode-position-style, added in tmux
+    # 3.2. On an older tmux (e.g. a remote host on 3.0) that errors "invalid option",
+    # which under `set -e` aborted session creation before the claude launch — the
+    # pane was left at a bare shell. The cosmetic set must be guarded so the session
+    # still starts. Simulate the old tmux by failing exactly that option.
+    export MOCK_TMUX_FAIL_OPT="copy-mode-position-style"
+    run run_romp --detach
+    [ "$status" -eq 0 ]
+    grep -qE 'tmux respawn-pane -k -t myproject exec claude' "$MOCK_LOG"
 }
 
 @test "append-system-prompt: omitted when no working-style prompt is installed" {
