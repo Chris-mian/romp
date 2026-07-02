@@ -1636,6 +1636,24 @@ class RateLimitUsageStaleness(unittest.TestCase):
         self.assertTrue(any("usage.json write failed" in str(m) for m in self.logs),
                         "the write failure is logged")
 
+    def test_fable_window_lands_in_its_own_key(self):
+        # `seven_day_overage_included` = the included Fable 5 weekly allowance (Claude Code /usage labels it
+        # "Fable 5 limit", the user 2026-07-02) -> usage.json `fable`, the rail's third bar. It must not
+        # touch the 5h/weekly windows, and they must not clobber it.
+        now = int(time.time())
+        self._write_usage({"t": now, "five_hour": {"pct": 21, "resets_at": now + 3600}, "seven_day": None})
+        self.be._record_rate_limit(self._info("seven_day_overage_included", 0.34, now + 500000))
+        out = self._usage()
+        self.assertEqual(out["fable"], {"pct": 34, "resets_at": now + 500000})
+        self.assertEqual(out["five_hour"]["pct"], 21, "the 5h window is untouched")
+        self.be._record_rate_limit(self._info("five_hour", 0.5, now + 3600))
+        self.assertEqual(self._usage()["fable"]["pct"], 34, "a 5h event must not clobber the fable window")
+
+    def test_rejected_fable_window_reads_100(self):
+        now = int(time.time())
+        self.be._record_rate_limit(self._info("seven_day_overage_included", None, now + 500000, status="rejected"))
+        self.assertEqual(self._usage()["fable"]["pct"], 100, "hitting the Fable 5 limit shows, even util-less")
+
     def test_on_message_routes_rate_limit_events_to_the_recorder(self):
         s = sb.SdkSession(self.be, {"sid": "11111111-2222-3333-4444-555555555555", "name": "n", "cwd": self.d})
 

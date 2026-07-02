@@ -5949,8 +5949,11 @@ def _state_intervals(sid, want, now):
 
 
 def _usage():
-    """The /usage rate-limit bars (5h + weekly) from usage.json, or None. File-based, like the
-    obsidian timeline's readUsage."""
+    """The /usage rate-limit bars (5h + weekly + Fable 5) from usage.json, or None. File-based, like the
+    obsidian timeline's readUsage. `fable` is the included-Fable-5 weekly allowance Claude Code added to
+    /usage (the user 2026-07-02) — the CLI's window type is `seven_day_overage_included`, labeled
+    'Fable 5 limit'; the SDK backend writes it to usage.json as `fable` (the statusline payload does NOT
+    carry it — five_hour/seven_day only — so events are its one in-band source)."""
     try:
         o = json.loads((jd.STATE / "usage.json").read_text())
     except Exception:
@@ -5964,18 +5967,19 @@ def _usage():
             return {"pct": pct, "resetsAt": ra if isinstance(ra, (int, float)) else None,
                     "color": list(cm.ramp(pct / 100.0, stops))}   # used-% on the selected colormap
         return None
-    five, seven = seg(o.get("five_hour")), seg(o.get("seven_day"))
-    if not five and not seven:
+    five, seven, fable = seg(o.get("five_hour")), seg(o.get("seven_day")), seg(o.get("fable"))
+    if not five and not seven and not fable:
         return None
     # LIMIT REACHED (the user 2026-07-01): a window at 100% whose reset is still in the future = the account is
     # rate-limited on it now. Drives the top banner + the auto retry-pause. A window past its resetsAt has rolled
     # (its pct is stale until the next reading) → not limited.
     def _lim(s):
         return bool(s and s.get("pct", 0) >= 100 and not (s.get("resetsAt") and time.time() > s["resetsAt"]))
-    limited = {"fiveHour": _lim(five), "sevenDay": _lim(seven)}
+    limited = {"fiveHour": _lim(five), "sevenDay": _lim(seven), "fable": _lim(fable)}
     t = o.get("t")
-    return {"fiveHour": five, "sevenDay": seven, "t": t if isinstance(t, (int, float)) else None,
-            "limited": limited if (limited["fiveHour"] or limited["sevenDay"]) else None}
+    return {"fiveHour": five, "sevenDay": seven, "fable": fable,
+            "t": t if isinstance(t, (int, float)) else None,
+            "limited": limited if any(limited.values()) else None}
 
 
 _msg_sum_cache = {}                               # cached {msg id: caption}, keyed by the transcripts' signature
@@ -8574,15 +8578,17 @@ var m=Math.round(dt/60);if(m<60)return m+'m ago';var h=Math.floor(m/60);m-=h*60;
 return(h<24?h+'h '+(m?m+'m ':''):Math.floor(h/24)+'d ')+'ago';}
 function esc(s){return String(s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
 var WINS=[['fiveHour',5*3600,'5h','Session'],
-          ['sevenDay',7*86400,'7d','Weekly']];
+          ['sevenDay',7*86400,'7d','Weekly'],
+          ['fable',7*86400,'F5','Fable 5']];
 var LAST={};
 function render(u){
 // LIMIT BANNER (the user 2026-07-01): a top banner whenever a usage window is maxed (kernel `limited`), like
 // the disconnected one. Says which window + that retries are paused (the kernel auto-engages the retry-pause).
 var lb=document.getElementById('romp-limit');
-if(lb){var lim=u&&u.limited,on=!!(lim&&(lim.fiveHour||lim.sevenDay));lb.classList.toggle('show',on);
-if(on){var msg=lb.querySelector('.rl-msg');if(msg)msg.textContent=(lim.fiveHour&&lim.sevenDay?'Session and weekly':lim.fiveHour?'Session (5h)':'Weekly (7d)')+' usage limit reached — retries paused until it resets';}}
-if(!u||(!u.fiveHour&&!u.sevenDay)){el.innerHTML='';tip.style.display='none';return;}
+if(lb){var lim=u&&u.limited,on=!!(lim&&(lim.fiveHour||lim.sevenDay||lim.fable));lb.classList.toggle('show',on);
+if(on){var msg=lb.querySelector('.rl-msg');if(msg){var names=[];if(lim.fiveHour)names.push('Session (5h)');if(lim.sevenDay)names.push('Weekly (7d)');if(lim.fable)names.push('Fable 5 (7d)');
+msg.textContent=names.join(' and ')+' usage limit reached — retries paused until it resets';}}}
+if(!u||(!u.fiveHour&&!u.sevenDay&&!u.fable)){el.innerHTML='';tip.style.display='none';return;}
 var nowS=Math.floor(Date.now()/1000),html='';LAST={};LAST._t=(typeof u.t==='number')?u.t:null;
 WINS.forEach(function(w){var seg=u[w[0]];if(!seg)return;
 var rolled=seg.resetsAt&&nowS>seg.resetsAt,pct=rolled?0:(seg.pct||0);
@@ -8602,7 +8608,7 @@ function barRows(d){return '<div class=ru-tip-row><span class=ru-tip-k>used</spa
 +(d.tp!=null?'<div class=ru-tip-row><span class=ru-tip-k>elapsed</span>'
 +'<span class=ru-tip-track><i style="width:'+d.tp+'%;background:#6b7a8c"></i></span>'
 +'<span class=ru-tip-v>'+d.tp+'%</span></div>':'');}
-function showTip(){var keys=['fiveHour','sevenDay'].filter(function(k){return LAST[k];});
+function showTip(){var keys=['fiveHour','sevenDay','fable'].filter(function(k){return LAST[k];});
 if(!keys.length){tip.style.display='none';return;}
 tip.innerHTML=keys.map(function(k){var d=LAST[k];
 return '<div class=ru-tip-win><div class=ru-tip-name><span>'+esc(d.name)+' ('+esc(d.span)+')</span>'
@@ -8624,7 +8630,7 @@ function pull(ack){if(_ruBusy)return;_ruBusy=true;
 if(ack){el.style.opacity='0.45';tip.style.display='none';}   // instant ack only on a real click
 var done=function(){_ruBusy=false;el.style.opacity='';};
 fetch('/usage',{cache:'no-store'}).then(function(r){return r.ok?r.json():null;})
-.then(function(u){render(u&&(u.fiveHour||u.sevenDay)?u:null);done();})
+.then(function(u){render(u&&(u.fiveHour||u.sevenDay||u.fable)?u:null);done();})
 .catch(function(){done();});}
 el.addEventListener('click',function(){pull(true);});
 setInterval(function(){pull(false);},60000);     // backup auto-refresh: re-read usage.json every 60s

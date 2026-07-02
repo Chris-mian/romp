@@ -49,7 +49,7 @@ class RailUsage(unittest.TestCase):
     def test_the_usage_tooltip_is_one_shared_panel_reproducing_both_windows_bars(self):
         # a SINGLE tooltip on the whole rail-usage area (mouseenter on el), not a per-window panel
         self.assertIn("el.addEventListener('mouseenter',showTip)", self.html, "one shared tooltip for the area")
-        self.assertIn("['fiveHour','sevenDay'].filter", self.html, "the tooltip covers BOTH windows at once")
+        self.assertIn("['fiveHour','sevenDay','fable'].filter", self.html, "the tooltip covers ALL windows at once")
         # it reproduces the used + elapsed bars (the exact set that used to sit under the timeline)
         self.assertIn("ru-tip-track", self.html, "horizontal used/elapsed bars in the tooltip")
         self.assertIn(">used<", self.html)
@@ -65,6 +65,17 @@ class RailUsage(unittest.TestCase):
         self.assertIn("ru-tip-age", self.html, "the tooltip carries an age footer")
         self.assertIn("updated '+fmtAgo(LAST._t)", self.html, "formatted as 'updated ... ago'")
         self.assertIn("function fmtAgo(ep)", self.html)
+
+    def test_the_fable_window_is_a_third_bar_everywhere(self):
+        # the included Fable 5 weekly allowance (the user 2026-07-02): a third bar in the rail, a third
+        # window in the tooltip, and a third pair on the timeline's standalone toolbar copy
+        import inspect
+        self.assertIn("['fable',7*86400,'F5','Fable 5']", self.html, "the rail renders a Fable 5 bar")
+        self.assertIn("['fiveHour','sevenDay','fable'].filter", self.html, "the tooltip covers it")
+        self.assertIn('"fable": fable', inspect.getsource(km._usage), "_usage serves the fable window")
+        tv = (pathlib.Path(BIN).parent / "ui" / "romp-timeline-view.js").read_text()
+        self.assertIn("mkUsageBar('fable', 'Fable 5', 7 * 86400)", tv)
+        self.assertIn("apply('fable', usage.fable, 'Fable 5 (7d)')", tv)
 
     def test_the_timeline_forwards_usage_to_the_shell_and_hides_its_own_copy_when_embedded(self):
         tv = (pathlib.Path(BIN).parent / "ui" / "romp-timeline-view.js").read_text()

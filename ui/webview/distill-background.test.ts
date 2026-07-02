@@ -44,8 +44,12 @@ test("background shows only alongside a produced takeaway, and the takeaway keep
 test("the section chrome is styled: small circled +/− buttons, muted labels, indented background body", () => {
   assert.match(CSS, /\.fask-sec \{ display: flex; flex-wrap: wrap;/);
   assert.match(CSS, /\.fask-sec-btn \{[^}]*cursor: pointer/);
-  // the toggle renders as a little CIRCLE around the +/− in both states (the user 2026-07-02)
+  // the toggle renders as a little CIRCLE around the +/− in both states (the user 2026-07-02). The ring
+  // must use a variable feed.css itself DEFINES: border shorthand with an undefined var() is void — the
+  // first attempt used styles.css's --box-border and rendered with NO border at all on the feed page.
   assert.match(CSS, /\.fask-sec-btn \{[^}]*border-radius: 50%/);
+  assert.match(CSS, /\.fask-sec-btn \{[^}]*border: 1px solid var\(--dim\)/);
+  assert.match(CSS, /--box-border: rgba\(255, 255, 255, 0\.12\)/, "feed.css defines --box-border for its other users");
   assert.match(CSS, /\.fask-sec-label \{[^}]*var\(--dim\)/);
   assert.match(CSS, /\.fask-bg-body \{[^}]*pre-wrap/);
 });
