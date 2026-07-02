@@ -493,15 +493,33 @@ test("a committed drag shows the closed-fist (grabbing) cursor over the whole pl
 });
 
 test("vertical click-drag reorders the lane (not pan), leaving the lock alone", () => {
-  const panel = new TimelinePanel(makeNode("div"));
-  panel.update(synthData());
-  const lockBefore = panel._lockNow;
-  const sid = panel._vis[0].id;
-  panel._beginDrag(sid, mouseEv({ clientX: 500, clientY: 200 }));
-  panel._dragMove(mouseEv({ clientX: 502, clientY: 270 }));   // vertical-dominant → reorder
-  assert.equal(panel._drag.mode, "row", "vertical drag → reorder mode");
-  assert.equal(panel._lockNow, lockBefore, "reorder must not touch the lock");
-  panel._dragUp(mouseEv({ clientX: 502, clientY: 270 }));
+  // Persistence MUST route through the host hook here: without it, _persistOrder's Obsidian-desktop
+  // fallback wrote the REAL ~/.local/state/romp/session-order.json from this very test — every
+  // `npm test` wiped the user's tab order to ["S2","S1"], the long-mysterious "tabs keep reordering
+  // themselves" bug (caught by the order-audit log, 2026-07-02). The hook captures the write, and the
+  // view additionally refuses the direct write outside Electron.
+  const persisted: string[][] = [];
+  (g as any).__rompTimelineWriteOrder = (o: string[]) => persisted.push(o);
+  try {
+    const panel = new TimelinePanel(makeNode("div"));
+    panel.update(synthData());
+    const lockBefore = panel._lockNow;
+    const sid = panel._vis[0].id;
+    panel._beginDrag(sid, mouseEv({ clientX: 500, clientY: 200 }));
+    panel._dragMove(mouseEv({ clientX: 502, clientY: 270 }));   // vertical-dominant → reorder
+    assert.equal(panel._drag.mode, "row", "vertical drag → reorder mode");
+    assert.equal(panel._lockNow, lockBefore, "reorder must not touch the lock");
+    panel._dragUp(mouseEv({ clientX: 502, clientY: 270 }));
+    for (const o of persisted) assert.ok(Array.isArray(o), "order writes are captured by the hook, never disk");
+  } finally {
+    delete (g as any).__rompTimelineWriteOrder;
+  }
+});
+
+test("_persistOrder without a host hook refuses the direct file write outside Electron", () => {
+  const src = require("node:fs").readFileSync(viewPath, "utf8");
+  assert.match(src, /if \(typeof process === 'undefined' \|\| !process\.versions \|\| !process\.versions\.electron\) return;/,
+    "the direct session-order.json write is Electron-only (Obsidian desktop) — plain node (the test runner) must never touch the real state file");
 });
 
 // ── judging band (2026-06-17): a compact second timeline under the lanes, one row per summarizer
