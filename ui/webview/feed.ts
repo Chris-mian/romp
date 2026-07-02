@@ -562,16 +562,19 @@ function makeAskCard(it: AskItem): HTMLElement {
   // context"): BACKGROUND (re-orientation, collapsed by default) above the takeaway (expanded by default),
   // each toggled by a small +/− button. Collapse state lives in module sets keyed by itemId so the keyed
   // incremental re-render never snaps a section shut.
+  // Collapsed = ONE small rounded-rect pill ("background +" / "summary +"); expanded = the paragraph runs
+  // full card width with a tiny trailing "−" pill after its last line (the user 2026-07-02: the circle
+  // buttons were clunky, and a left button column wasted the horizontal space the summary needs).
   const bgSec = el("div", "fask-sec fask-bg"); bgSec.style.display = "none";
-  const bgBtn = el("button", "fask-sec-btn");
-  const bgLabel = el("span", "fask-sec-label"); bgLabel.textContent = "background";
+  const bgBtn = el("button", "fask-sec-pill"); bgBtn.textContent = "background +"; bgBtn.title = "expand";
   const bgBody = el("div", "fask-bg-body");
-  bgSec.append(bgBtn, bgLabel, bgBody);
+  const bgMin = el("button", "fask-sec-min"); bgMin.textContent = "−"; bgMin.title = "collapse";
+  bgSec.append(bgBtn, bgBody);
   const takeSec = el("div", "fask-sec fask-take"); takeSec.style.display = "none";
-  const takeBtn = el("button", "fask-sec-btn");
-  const takeLabel = el("span", "fask-sec-label"); takeLabel.textContent = "summary";
+  const takeBtn = el("button", "fask-sec-pill"); takeBtn.textContent = "summary +"; takeBtn.title = "expand";
   const distill = el("div", "fask-distill");
-  takeSec.append(takeBtn, takeLabel, distill);
+  const takeMin = el("button", "fask-sec-min"); takeMin.textContent = "−"; takeMin.title = "collapse";
+  takeSec.append(takeBtn, distill);
   // ⏳ AWAITING cue (the user 2026-06-29): a small romp swirl spinning in the SAME body spot the distiller line
   // will eventually fill — a completed/blocked card shows its takeaway there; a WORKING card that's awaiting
   // dispatched/delegated work shows the spinning swirl instead, a glanceable "in flight, not stalled" sign.
@@ -678,8 +681,8 @@ function makeAskCard(it: AskItem): HTMLElement {
   a._delegations = delegations;
   a._checklist = checklist;
   a._distill = distill;
-  a._bgSec = bgSec; a._bgBtn = bgBtn; a._bgBody = bgBody;
-  a._takeSec = takeSec; a._takeBtn = takeBtn; a._takeLabel = takeLabel;
+  a._bgSec = bgSec; a._bgBtn = bgBtn; a._bgBody = bgBody; a._bgMin = bgMin;
+  a._takeSec = takeSec; a._takeBtn = takeBtn; a._takeMin = takeMin;
   a._awaitSpin = awaitSpin; a._awaitWhy = awaitWhy;
   a._origin = origin;
   return card;
@@ -691,42 +694,45 @@ function makeAskCard(it: AskItem): HTMLElement {
 const bgOpen = new Set<string>();
 const takeClosed = new Set<string>();
 
-function sectionToggle(btn: HTMLElement, open: boolean): void {
-  btn.textContent = open ? "−" : "+";
-  btn.title = open ? "collapse" : "expand";
-}
-
 // Fill + wire the BACKGROUND and takeaway sections. BACKGROUND shows only alongside a produced
-// takeaway/brief (orientation with no outcome would dangle) and starts collapsed: a single "+ background"
-// line that expands to the distiller's re-orientation paragraph. The takeaway wraps the existing distill
-// line (applyDistillLine already set its text): expanded it reads as before with a leading −; collapsed it
-// shrinks to "+ summary". stopPropagation on both buttons — the card-body click opens the modal.
+// takeaway/brief (orientation with no outcome would dangle) and starts collapsed to a "background +"
+// pill; the takeaway starts expanded and collapses to "summary +". Expanded, each paragraph carries a
+// small trailing "−" pill appended AFTER its text (appendChild re-appends the same node, so a re-render
+// that reset textContent gets the pill back without accumulating). stopPropagation on every toggle —
+// the card-body click opens the modal.
 function applyDistillSections(a: any, it: AskItem, distillShown: boolean): void {
   const id = it.itemId;
+  const flipBg = (ev: Event) => {
+    ev.stopPropagation();
+    if (bgOpen.has(id)) bgOpen.delete(id); else bgOpen.add(id);
+    applyDistillSections(a, it, distillShown);
+  };
+  const flipTake = (ev: Event) => {
+    ev.stopPropagation();
+    if (takeClosed.has(id)) takeClosed.delete(id); else takeClosed.add(id);
+    applyDistillSections(a, it, distillShown);
+  };
   const bg = distillShown && it.background ? it.background : null;
   a._bgSec.style.display = bg ? "" : "none";
   if (bg) {
     const open = bgOpen.has(id);
-    a._bgBody.textContent = bg;
+    a._bgBtn.style.display = open ? "none" : "";
     a._bgBody.style.display = open ? "" : "none";
-    sectionToggle(a._bgBtn, open);
-    a._bgBtn.onclick = (ev: Event) => {
-      ev.stopPropagation();
-      if (bgOpen.has(id)) bgOpen.delete(id); else bgOpen.add(id);
-      applyDistillSections(a, it, distillShown);
-    };
+    if (open) {
+      a._bgBody.textContent = bg;
+      a._bgBody.appendChild(a._bgMin);       // the trailing − pill, inline after the last line
+    }
+    a._bgBtn.onclick = flipBg;
+    a._bgMin.onclick = flipBg;
   }
   a._takeSec.style.display = distillShown ? "" : "none";
   if (distillShown) {
     const open = !takeClosed.has(id);
+    a._takeBtn.style.display = open ? "none" : "";
     (a._distill as HTMLElement).style.display = open ? "" : "none";
-    (a._takeLabel as HTMLElement).style.display = open ? "none" : "";   // open → the text is its own label
-    sectionToggle(a._takeBtn, open);
-    a._takeBtn.onclick = (ev: Event) => {
-      ev.stopPropagation();
-      if (takeClosed.has(id)) takeClosed.delete(id); else takeClosed.add(id);
-      applyDistillSections(a, it, distillShown);
-    };
+    if (open) (a._distill as HTMLElement).appendChild(a._takeMin);   // trails the takeaway text
+    a._takeBtn.onclick = flipTake;
+    a._takeMin.onclick = flipTake;
   }
 }
 
