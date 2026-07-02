@@ -71,9 +71,15 @@ class KernelWiring(unittest.TestCase):
         # "reopened" return flip this to True.
         self.fu_calls = []
         km.jd.optimistic_followup = lambda sid, gid, **kw: (self.fu_calls.append((sid, gid)), False)[1]   # **kw tolerates text=/now=/stub= (judge optimistic_followup signature grew)
+        # a compactSession routed by ONE test sets the optimistic compacting flag, which makes a LATER
+        # test's setModel PARK instead of applying (the intended mid-compaction behavior) — isolate both.
+        km._compact_clicked.clear()
+        km._pending_model.clear()
 
     def tearDown(self):
         km._sdk, km._push_all, km._send_to_app, km.jd.optimistic_followup = self.saved
+        km._compact_clicked.clear()
+        km._pending_model.clear()
 
     def _route(self, msg):
         return km._drive(msg, {"send": lambda s: None})
@@ -129,6 +135,17 @@ class KernelWiring(unittest.TestCase):
         self._route({"type": "setModel", "id": "sid-sdk", "value": "opus"})
         self.assertIn(("set_model", "sid-sdk", "opus"), self.be.calls)
         self.assertFalse(any(c == ("send", "sid-sdk", "/model opus") for c in self.be.calls))
+
+    def test_setmodel_mid_compaction_parks_as_a_queued_command(self):
+        # the user 2026-07-01: switching the model while a compaction ran broke the compaction — the
+        # kernel now PARKS the change (a queued '/model …' bubble) and _apply_pending_models fires it
+        # the moment compaction ends. The optimistic click flag alone is enough to engage the park.
+        import time as _time
+        km._compact_clicked["sid-sdk"] = _time.time()    # the kernel just sent /compact for this session
+        self._route({"type": "setModel", "id": "sid-sdk", "value": "opus"})
+        self.assertFalse(any(c[0] == "set_model" for c in self.be.calls),
+                         "mid-compaction the backend is NOT touched — that broke the compaction")
+        self.assertEqual(km._pending_model.get("sid-sdk"), "opus", "parked for after the compaction")
 
     def test_seteffort_goes_to_backend_compact_still_slash(self):
         # effort routes to set_effort (the backend reconnects with --effort); compact has no control → slash
