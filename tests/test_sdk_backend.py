@@ -200,6 +200,32 @@ class LiveTail(unittest.TestCase):
         self.assertIsNone(sb.msg_to_atom(_ResultMessage(), "s", "f", 5))   # result has no renderable content
         self.assertIsNone(sb.msg_to_atom(_AssistantMessage([]), "s", "f", 5))  # empty content → None
 
+    def test_command_stdout_stream_becomes_a_turn_ENDING_assistant_atom(self):
+        # the user 2026-07-02: client.set_model() makes the CLI stream its feedback as a UserMessage
+        # wrapped in <local-command-stdout>. As a raw USER atom it opened a turn no reply would ever
+        # close — the chat chip read "working" forever (fresh session + set model) while the timeline
+        # (disk-only) showed nothing. The live atom must get the FILE adapter's classification: a
+        # synthetic ASSISTANT command atom whose stop_reason end_turn CLOSES the turn.
+        m = _UserMessage([_TextBlock("<local-command-stdout>Set model to sonnet (claude-sonnet-5)</local-command-stdout>")])
+        a = sb.msg_to_atom(m, "s", "f", 5)
+        self.assertEqual(a["type"], "assistant", "command OUTPUT is a synthetic assistant atom, like the file adapter")
+        self.assertTrue(a["command"])
+        self.assertEqual(a["message"]["stop_reason"], "end_turn", "the turn CLOSES — no phantom working chip")
+        self.assertEqual(a["message"]["content"], [{"type": "text", "text": "Set model to sonnet (claude-sonnet-5)"}])
+
+    def test_command_name_stream_becomes_the_command_chip_user_atom(self):
+        m = _UserMessage([_TextBlock("<command-name>/model</command-name>\n"
+                                     "<command-message>model</command-message>\n"
+                                     "<command-args>sonnet</command-args>")])
+        a = sb.msg_to_atom(m, "s", "f", 5)
+        self.assertEqual(a["type"], "user")
+        self.assertEqual(a["command"], "/model", "the invocation carries the command flag (the chat's chip)")
+        self.assertEqual(a["message"]["content"], [{"type": "text", "text": "/model sonnet"}])
+
+    def test_other_command_wrappers_are_noise(self):
+        m = _UserMessage([_TextBlock("<local-command-caveat>whatever</local-command-caveat>")])
+        self.assertIsNone(sb.msg_to_atom(m, "s", "f", 5), "non-invocation/output wrappers stay dropped, like the file adapter")
+
     def test_live_store_and_prune(self):
         be = sb.SdkBackend(tempfile.mkdtemp(), "/bin/true", lambda *a, **k: None)
         be._live["s"] = {"a1": {"uuid": "a1", "t": 2}, "echo:x": {"uuid": "echo:x", "t": 1, "_echo_text": "hi"}}
