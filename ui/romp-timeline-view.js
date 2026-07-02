@@ -2250,12 +2250,17 @@ class TimelinePanel {
           let px = modelColX;
           const drawPiece = (kind, word) => {
             const pend = pendingOf(kind), ww = this.ctxWidth(word);
-            const wt = el('text', { x: px, y: y + 3.5, 'text-anchor': 'start', 'font-size': 11, 'font-weight': 600, fill: MODEL_FG, 'pointer-events': 'auto' });
+            // Tint the model name / effort on the GLOBAL colormap by capability/effort rank (kernel modelColor/
+            // effortColor, the user 2026-07-02); unknown → the default gray. The caret stays neutral gray, and
+            // hover still brightens to META_HOVER_FG — mouseleave restores the TINT, not the gray.
+            const tint = kind === 'model' ? s.modelColor : s.effortColor;
+            const base = (tint && tint.length === 3) ? ('rgb(' + tint[0] + ',' + tint[1] + ',' + tint[2] + ')') : MODEL_FG;
+            const wt = el('text', { x: px, y: y + 3.5, 'text-anchor': 'start', 'font-size': 11, 'font-weight': 600, fill: base, 'pointer-events': 'auto' });
             wt.textContent = word; wt.style.cursor = 'pointer'; if (pend) wt.setAttribute('opacity', '0.45'); svg.appendChild(wt);
             const ct = el('text', { x: px + ww, y: y + 3.5, 'text-anchor': 'start', 'font-size': 11, 'font-weight': 600, fill: MODEL_FG, opacity: pend ? '0.45' : '0', 'pointer-events': 'none' });
             ct.textContent = META_CARET; svg.appendChild(ct);
             wt.addEventListener('mouseenter', () => { wt.setAttribute('fill', META_HOVER_FG); ct.setAttribute('fill', META_HOVER_FG); ct.setAttribute('opacity', '1'); });
-            wt.addEventListener('mouseleave', () => { wt.setAttribute('fill', MODEL_FG); ct.setAttribute('fill', MODEL_FG); ct.setAttribute('opacity', pendingOf(kind) ? '0.45' : '0'); });
+            wt.addEventListener('mouseleave', () => { wt.setAttribute('fill', base); ct.setAttribute('fill', MODEL_FG); ct.setAttribute('opacity', pendingOf(kind) ? '0.45' : '0'); });
             wt.addEventListener('click', (e) => { e.stopPropagation(); this._openMetaMenu(kind, s, wt); });
             px += ww + caretW;
           };

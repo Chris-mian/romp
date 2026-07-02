@@ -105,7 +105,7 @@ type ChatEvent = (
 interface TodoTask { id: string; subject: string; activeForm?: string; status: string }
 
 type ChipState = "working" | "ready" | "awaiting" | "idle" | "closed" | "compacting" | "blocked" | "retrying";
-interface Status { state: ChipState; sinceEpoch: number | null; effort?: string; model?: string; mode?: string; ctx?: string; ctxColor?: number[]; faded?: boolean; backend?: string; apiTooLong?: boolean; }   // backend = "tmux" | "sdk"; apiTooLong = the "blocked" is a "prompt is too long" error (on you → red tab) vs a transient API error (amber/retrying); ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side
+interface Status { state: ChipState; sinceEpoch: number | null; effort?: string; model?: string; mode?: string; ctx?: string; ctxColor?: number[]; modelColor?: number[]; effortColor?: number[]; faded?: boolean; backend?: string; apiTooLong?: boolean; }   // backend = "tmux" | "sdk"; apiTooLong = the "blocked" is a "prompt is too long" error (on you → red tab) vs a transient API error (amber/retrying); ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side; modelColor/effortColor = the same map's RGB tint for the model name + effort (by capability/effort rank), server-computed
 interface Color { bg: string; fg: string; }
 // A run_in_background task surfaced in the #bg-tasks box (the kernel's _bg_tasks): a one-line summary +
 // status, expandable to the command + its output. status = running | completed | failed.
@@ -4220,6 +4220,13 @@ function metaButton(kind: MetaKind, text: string): HTMLElement {
   return btn;
 }
 
+// The model/effort label tint, from the server-computed colormap RGB (by capability/effort rank, the user
+// 2026-07-02) — "" for mode (untinted) or an unknown model/effort, which resets to the default gray.
+function metaColor(kind: MetaKind, st: Status): string {
+  const c = kind === "model" ? st.modelColor : kind === "effort" ? st.effortColor : undefined;
+  return (c && c.length === 3) ? `rgb(${c[0]},${c[1]},${c[2]})` : "";
+}
+
 // Build or refresh the model/effort buttons inside #spinner-meta. Called from
 // updateStatusline (fresh container) and the 1s ticker (label refresh in place).
 function syncMetaControls(meta: HTMLElement, st: Status) {
@@ -4237,6 +4244,7 @@ function syncMetaControls(meta: HTMLElement, st: Status) {
     const disp = kind === "mode" ? prettyMode(st.mode) : metaCurrent(kind, st);
     const label = b.querySelector(".meta-label") as HTMLElement | null;
     if (label && label.textContent !== disp) label.textContent = disp;
+    if (label) label.style.color = metaColor(kind, st);   // tint the model name / effort by the colormap rank
     b.classList.toggle("meta-pending", isMetaPending(kind, st));
   }
 }

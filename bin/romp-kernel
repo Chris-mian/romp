@@ -4961,6 +4961,10 @@ def build_session(sid, now, tmux=None):
                   "backend": _session_backend(sid, tm),
                   "model": tm["model"], "effort": tm["effort"], "mode": tm.get("mode", ""),
                   "ctx": str(tm["context"]) if tm["context"] is not None else "",
+                  # model name + effort tinted on the GLOBAL colormap by capability/effort rank (the user
+                  # 2026-07-02): the statusline meta buttons just apply these (mirrors ctxColor). None = default.
+                  "modelColor": _model_color(tm["model"], cm.stops_for(_colormap())),
+                  "effortColor": _effort_color(tm["effort"], cm.stops_for(_colormap())),
                   # context% on the GLOBAL colormap (the user 2026-06-26): computed server-side so the chat
                   # battery + tab tooltip just apply it (mirrors the usage bar + timeline lanes). bright = full.
                   "ctxColor": (list(cm.ramp(tm["context"] / 100.0, cm.stops_for(_colormap())))
@@ -6859,6 +6863,10 @@ def build_timeline(now, tmux=None, with_bars=True, live_only=False):
             "since": (tm["since"] if tm and tm["since"] else last_t),
             "color": hexcol,
             "model": (tm["model"] if tm else ""), "effort": (tm["effort"] if tm else ""),
+            # model name + effort tinted on the GLOBAL colormap by capability/effort rank (the user 2026-07-02);
+            # the lane just applies these, like ctxColor. None → the lane keeps its default gray text.
+            "modelColor": _model_color(tm["model"] if tm else "", ctx_stops),
+            "effortColor": _effort_color(tm["effort"] if tm else "", ctx_stops),
             "backend": _session_backend(sid, tm),
             "context": (tm["context"] if tm else None),
             "ctxColor": (list(cm.ramp((tm["context"] or 0) / 100.0, ctx_stops))
@@ -7202,6 +7210,29 @@ def _colormap():
         _cmap_cache["name"] = n if n in cm.COLORMAPS else cm.DEFAULT
         _cmap_cache["mt"] = mt
     return _cmap_cache["name"]
+
+
+# Model-name + effort TEXT tint (the user 2026-07-02): color the model name and the effort on the SAME global
+# colormap as the context bars, by capability / effort RANK — brighter (the map's high end) = more capable /
+# higher effort. These two rank tables are the ONE place the ordering lives; the chat statusline + timeline
+# lanes just apply the RGB the kernel computes here (mirrors ctxColor). Unknown model/effort → None so the
+# client keeps its default gray. Model is matched by family WORD (the same leading-word the /model picker keys
+# on) so it works whether tmux reports "opus", "claude-opus-4-8", or "Opus 4.8".
+_MODEL_RANK = [("fable", 1.0), ("opus", 2 / 3), ("sonnet", 1 / 3), ("haiku", 0.0)]   # capability high→low; bright=most capable
+_EFFORT_RANK = {"low": 0.0, "medium": 0.25, "high": 0.5, "xhigh": 0.75, "max": 1.0}   # thinking effort low→max
+
+
+def _model_color(model, stops):
+    m = (model or "").lower()
+    for word, v in _MODEL_RANK:
+        if word in m:
+            return list(cm.ramp(v, stops))
+    return None
+
+
+def _effort_color(effort, stops):
+    v = _EFFORT_RANK.get((effort or "").strip().lower())
+    return list(cm.ramp(v, stops)) if v is not None else None
 
 
 def _set_colormap(name):
