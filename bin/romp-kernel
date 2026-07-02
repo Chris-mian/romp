@@ -9387,9 +9387,15 @@ class Handler(BaseHTTPRequestHandler):
             if p == "/models":                                # the ONE model + effort choice list — chat statusline, timeline lanes, AND judge settings all read it (the user 2026-07-02: no hardcoding in multiple places)
                 return self._send(200, json.dumps({"models": MODEL_CHOICES, "efforts": EFFORT_CHOICES}), "application/json", cache="no-cache")
             if p == "/usage":                                 # the /usage rate-limit bars, re-read on demand: the rail's
-                # usage widget is click-to-refresh (the user 2026-06-30). Same mechanism the push already uses —
-                # _usage() re-reads usage.json (the snapshot Claude Code's statusline writes) — just forced NOW
-                # instead of on the next poll, so a click surfaces the freshest on-disk snapshot immediately.
+                # usage widget is click-to-refresh (the user 2026-06-30). Returns the freshest on-disk snapshot
+                # NOW, and (2026-07-02) also pokes one live SDK session for an exact get_usage snapshot — the
+                # async result lands in usage.json a beat later, so the 60s backup pull / next click reads it.
+                try:
+                    be = _sdk()
+                    if be:
+                        be.refresh_usage()
+                except Exception:
+                    pass
                 return self._send(200, json.dumps(_usage() or {}), "application/json", cache="no-cache")
             if p == "/followup-preview":                      # the EXACT wrapped body a citation chip will send (the
                 # user 2026-07-01): clicking the composer chip shows this so you can AUDIT what romp is telling the

@@ -501,6 +501,7 @@ class SdkSession:
         self._ctx: int | None = _lc0 if isinstance(_lc0, (int, float)) else None  # seeded from the last persisted
         #   value so the bar survives idle/restart; refreshed live from get_context_usage() on connect + each turn.
         self._ctx_refreshing = False             # one get_context_usage control request in flight at a time
+        self._usage_refreshing = False           # one get_usage control request in flight at a time
         self.retrying = False                        # an api_retry storm (API rate-limit/overload) is stalling the turn → 'retrying', not 'working'
         self._interrupted = False                    # user interrupted the in-flight turn → snapshot reads 'waiting' (display only; inflight stays event-driven)
         self._subagents: dict[str, dict] = {}        # LIVE Task-spawned subagents: agent_id -> {"type","since"}. Fed
@@ -688,6 +689,34 @@ class SdkSession:
                 self.backend._update_reg(self.sid, **upd)
             except Exception:
                 pass
+
+    async def _do_refresh_usage(self):
+        """Pull the EXACT account-wide /usage snapshot from the CLI — the designed data behind the /usage
+        screen itself. `get_usage` is a CLI control request (the bridge's onGetUsage handler; the Python
+        SDK doesn't wrap it yet, so it goes through _send_control_request directly — found 2026-07-02 by
+        mining the binary next to get_context_usage). Its rate_limits.limits[] carries a true percent for
+        EVERY window — session, weekly_all, and the model-scoped weekly (Fable) — numbers the
+        RateLimitEvent stream only ever supplies in the warning band and the statusline never carries at
+        all (it lacks the Fable window entirely). Refreshed at every turn end (event-based, beside the
+        context refresh) and on demand from the kernel's /usage click. Guarded: one in flight."""
+        if not self.client or self._usage_refreshing:
+            return
+        self._usage_refreshing = True
+        try:
+            q = getattr(self.client, "_query", None)
+            r = (await q._send_control_request({"subtype": "get_usage"})) if q else None
+        except Exception:
+            r = None
+        finally:
+            self._usage_refreshing = False
+        if isinstance(r, dict):
+            self.backend._record_usage_snapshot(r)
+
+    def refresh_usage(self):
+        """Thread-safe trigger for _do_refresh_usage (the kernel's /usage click path)."""
+        if self.loop and self.client:
+            self.loop.call_soon_threadsafe(
+                lambda: asyncio.ensure_future(self._do_refresh_usage()))
         if changed:
             self.backend._poke()
 
@@ -884,6 +913,7 @@ class SdkSession:
                 append_state(self.backend.state_dir, self.sid, "waiting")
                 asyncio.ensure_future(self._do_refresh_context())   # refresh ctx % + model from the SDK and
                 #   persist them, so the bar reflects the turn that just landed and survives idle/restart.
+                asyncio.ensure_future(self._do_refresh_usage())     # + the exact /usage snapshot (rail bars)
                 self.backend._poke()
                 if self._input_wake is not None:   # turn done → release the next queued turn, if any
                     self._input_wake.set()
@@ -1161,6 +1191,76 @@ class SdkBackend:
                 append_awaiting(self.state_dir, sid, False)
         except Exception:
             pass
+
+    def refresh_usage(self):
+        """Best-effort: ask ONE live connected session for the exact /usage snapshot (get_usage control
+        request). The kernel's /usage click calls this so the NEXT read is fresh; per-turn-end refreshes
+        keep the file current the rest of the time."""
+        with self._lock:
+            sessions = list(self.sessions.values())
+        for s in sessions:
+            if s.client and s.loop and not s.ended:
+                s.refresh_usage()
+                return
+
+    def _record_usage_snapshot(self, r) -> None:
+        """Fold a get_usage control-request snapshot into usage.json — EXACT utilization for every window,
+        the /usage screen's own data (2026-07-02). rate_limits.limits[] maps: kind session → five_hour,
+        weekly_all → seven_day, weekly_scoped whose scope.model.display_name says Fable → fable (the
+        included Fable 5 weekly allowance — the window NO other in-band source carries: RateLimitEvents
+        attach a number only in the warning band and the statusline payload lacks the window entirely).
+        resets_at arrives ISO-8601 → stored as epoch. This is an authoritative FULL snapshot, so mapped
+        windows are overwritten outright (the merge games in _record_rate_limit are for partial sources);
+        windows the snapshot doesn't carry keep their file value. Writes only on change (t stays the time
+        of the last real reading — the rail tooltip's "updated … ago")."""
+        rl = r.get("rate_limits") if isinstance(r, dict) else None
+        lims = rl.get("limits") if isinstance(rl, dict) else None
+        if not isinstance(lims, list):
+            return
+
+        def _epoch(v):
+            if isinstance(v, (int, float)):
+                return int(v)
+            try:
+                from datetime import datetime
+                return int(datetime.fromisoformat(str(v)).timestamp())
+            except Exception:
+                return None
+        out = {}
+        for l in lims:
+            if not isinstance(l, dict) or not isinstance(l.get("percent"), (int, float)):
+                continue
+            kind = l.get("kind")
+            scope_model = str((((l.get("scope") or {}).get("model") or {}).get("display_name")) or "")
+            key = ("five_hour" if kind == "session"
+                   else "seven_day" if kind == "weekly_all"
+                   else "fable" if (kind == "weekly_scoped" and "fable" in scope_model.lower())
+                   else None)
+            if key:
+                out[key] = {"pct": max(0, min(100, round(l["percent"]))), "resets_at": _epoch(l.get("resets_at"))}
+        if not out:
+            return
+        with self._rl_lock:
+            try:
+                cur = json.loads((self.state_dir / "usage.json").read_text())
+                if not isinstance(cur, dict):
+                    cur = {}
+            except Exception:
+                cur = {}
+            data = {"t": int(time.time()),
+                    "five_hour": out.get("five_hour", cur.get("five_hour")),
+                    "seven_day": out.get("seven_day", cur.get("seven_day")),
+                    "fable": out.get("fable", cur.get("fable"))}
+            if all(data[k] == cur.get(k) for k in ("five_hour", "seven_day", "fable")):
+                return                                # no change → keep t honest
+            try:
+                tmp = self.state_dir / "usage.json.tmp"
+                tmp.write_text(json.dumps(data))
+                os.replace(tmp, self.state_dir / "usage.json")
+            except Exception:
+                self._log("usage.json write failed: %s" % traceback.format_exc())   # never silent
+                return
+        self._poke()
 
     def _record_rate_limit(self, info) -> None:
         """Persist the account-wide rate-limit /usage the CLI streams as a RateLimitEvent — the SDK's DESIGNED

@@ -1654,6 +1654,51 @@ class RateLimitUsageStaleness(unittest.TestCase):
         self.be._record_rate_limit(self._info("seven_day_overage_included", None, now + 500000, status="rejected"))
         self.assertEqual(self._usage()["fable"]["pct"], 100, "hitting the Fable 5 limit shows, even util-less")
 
+    def test_get_usage_snapshot_maps_all_three_windows_exactly(self):
+        # get_usage (a CLI control request the SDK doesn't wrap; found 2026-07-02) returns the /usage
+        # screen's own limits[] with an EXACT percent per window — the ONLY in-band source for the
+        # Fable-scoped weekly, and exact numbers below the warning band for the others.
+        snap = {"rate_limits": {"limits": [
+            {"kind": "session", "percent": 54, "resets_at": "2026-07-03T00:59:59+00:00"},
+            {"kind": "weekly_all", "percent": 39, "resets_at": "2026-07-06T18:59:59+00:00"},
+            {"kind": "weekly_scoped", "percent": 45, "resets_at": "2026-07-06T18:59:59+00:00",
+             "scope": {"model": {"id": None, "display_name": "Fable"}}},
+        ]}}
+        self.be._record_usage_snapshot(snap)
+        out = self._usage()
+        self.assertEqual(out["five_hour"]["pct"], 54)
+        self.assertEqual(out["seven_day"]["pct"], 39)
+        self.assertEqual(out["fable"]["pct"], 45, "the Fable-scoped weekly lands as the third bar")
+        self.assertIsInstance(out["fable"]["resets_at"], int, "ISO resets_at is stored as an epoch")
+
+    def test_get_usage_snapshot_is_authoritative_but_preserves_unmapped_windows(self):
+        now = int(time.time())
+        self._write_usage({"t": now - 500, "five_hour": {"pct": 98, "resets_at": now + 60},
+                           "seven_day": None, "fable": {"pct": 7, "resets_at": now + 500000}})
+        self.be._record_usage_snapshot({"rate_limits": {"limits": [
+            {"kind": "session", "percent": 12, "resets_at": now + 3600}]}})
+        out = self._usage()
+        self.assertEqual(out["five_hour"], {"pct": 12, "resets_at": now + 3600},
+                         "a full-snapshot window OVERWRITES — no max-merge games for the exact source")
+        self.assertEqual(out["fable"]["pct"], 7, "a window the snapshot lacks keeps its file value")
+
+    def test_get_usage_snapshot_no_change_no_rewrite(self):
+        now = int(time.time())
+        self._write_usage({"t": now - 999, "five_hour": {"pct": 12, "resets_at": now + 3600},
+                           "seven_day": None, "fable": None})
+        self.be._record_usage_snapshot({"rate_limits": {"limits": [
+            {"kind": "session", "percent": 12, "resets_at": now + 3600}]}})
+        self.assertEqual(self._usage()["t"], now - 999, "an identical snapshot must not refresh t")
+
+    def test_turn_end_schedules_the_usage_refresh(self):
+        import inspect
+        src = inspect.getsource(sb.SdkSession._on_message)
+        self.assertIn("asyncio.ensure_future(self._do_refresh_usage())", src,
+                      "every turn end refreshes the exact /usage snapshot (event-based)")
+        q = inspect.getsource(sb.SdkSession._do_refresh_usage)
+        self.assertIn('_send_control_request({"subtype": "get_usage"})', q,
+                      "the designed CLI control request, via the SDK transport")
+
     def test_on_message_routes_rate_limit_events_to_the_recorder(self):
         s = sb.SdkSession(self.be, {"sid": "11111111-2222-3333-4444-555555555555", "name": "n", "cwd": self.d})
 
