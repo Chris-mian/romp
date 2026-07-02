@@ -594,10 +594,66 @@ def _atomic_write(path, text):
         raise
 
 
+# ── session-order audit log (the user 2026-07-02) ──────────────────────────────────────────────────
+# Tabs/lanes STILL occasionally reorder themselves and every read-the-code hunt has come up empty, so
+# instrument the order itself: every mutation of the authoritative order (session-order.json), every
+# PERMUTED kernel push, and every permuted CLIENT render (reported over WS) appends one JSON line here —
+# with the stack that made the change — so the next reorder names its culprit instead of starting
+# another archaeology dig. Grep it with:  jq 'select(.permuted)' ~/.local/state/romp/order-audit.jsonl
+_ORDER_AUDIT_CAP = 1_000_000  # bytes; past this the oldest half is dropped (bounded, self-cleaning)
+_last_tab_order = []          # the previous push's tab order (the push-side permutation check in _push)
+
+
+def _order_audit_path():
+    return jd.STATE / "order-audit.jsonl"   # resolved per call: tests redirect jd.STATE
+
+
+def _order_permuted(old, new):
+    """True when the sids PRESENT IN BOTH lists changed relative order — the reorder bug. Pure adds,
+    drops, and inserts keep every survivor's relative slot and return False (routine churn, not a bug)."""
+    common = set(old) & set(new)
+    return [x for x in old if x in common] != [x for x in new if x in common]
+
+
+def _order_audit(kind, old, new, stack=None, only_permuted=False):
+    """Append one audit record for an order change. `stack` overrides the captured Python stack (a client
+    report carries its own JS stack). only_permuted=True skips routine set churn (the push-side check runs
+    every push — adds/drops there are just sessions appearing/dying). Never raises: diagnostics must not
+    take down the path they watch."""
+    try:
+        old = [str(x) for x in old if isinstance(x, str)]
+        new = [str(x) for x in new if isinstance(x, str)]
+        if old == new:
+            return
+        permuted = _order_permuted(old, new)
+        if only_permuted and not permuted:
+            return
+        rec = {"ts": int(time.time()), "kind": kind, "permuted": permuted,
+               "old": old, "new": new,
+               "added": [x for x in new if x not in set(old)],
+               "dropped": [x for x in old if x not in set(new)],
+               "stack": stack if stack is not None else "".join(traceback.format_stack()[:-2])}
+        line = json.dumps(rec) + "\n"
+        path = _order_audit_path()
+        try:
+            if path.exists() and path.stat().st_size > _ORDER_AUDIT_CAP:
+                lines = path.read_text().splitlines(keepends=True)
+                _atomic_write(path, "".join(lines[len(lines) // 2:]))
+        except Exception:
+            pass
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a") as f:
+            f.write(line)
+    except Exception:
+        sys.stderr.write("order audit: %s\n" % traceback.format_exc())
+
+
 def _write_session_order(order):
     if not isinstance(order, list):
         return
-    _atomic_write(jd.STATE / "session-order.json", json.dumps([x for x in order if isinstance(x, str)]))
+    new = [x for x in order if isinstance(x, str)]
+    _order_audit("persist", _session_order(), new)   # every mutation of the authoritative order, with its stack
+    _atomic_write(jd.STATE / "session-order.json", json.dumps(new))
 
 
 def _gc_session_order(known):
@@ -1656,7 +1712,7 @@ def _drive(msg, client):
     be = Sessions.backend_for(sid)
     if t == "sendMessage" and msg.get("text"):
 
-        be.send(sid, str(msg["text"])); _optimistic_echo(sid, str(msg["text"])); _push_all()  # show the send instantly
+        _send_or_park(be, sid, str(msg["text"]), echo="human"); _push_all()  # instant echo — or a queued bubble mid-compaction
     elif t == "interrupt":
         be.interrupt(sid); _push_all()                    # Esc/stop AND settle idle (in the backend) → chip → ready
     elif t in ("compact", "compactSession"):
@@ -1668,7 +1724,7 @@ def _drive(msg, client):
         elif cmd.startswith("/effort "):
             be.set_effort(sid, cmd[len("/effort "):].strip())
         else:
-            be.send(sid, cmd)
+            _send_or_park(be, sid, cmd)   # mid-compaction → parked as a queued command
     elif t == "askFollowUp":
         iid = str(msg.get("itemId") or "")
         # QUOTE the ask being followed up above the user's text so the recipient has context, and ride the
@@ -1678,14 +1734,14 @@ def _drive(msg, client):
         # nudge:true (the canned Nudge button) → romp-authored gray bubble; a typed follow-up → blue human.
         body = (_followup_body(iid, msg.get("title"), msg["text"], injected=bool(msg.get("nudge")))
                 if iid else str(msg["text"]))
-        be.send(sid, body)
         # Optimistic echo for a tmux follow-up/nudge (the user 2026-06-29): without it, a follow-up sent while
         # the session is WORKING showed as a queued bubble that VANISHED in the dequeue→landed gap (the queue-op
         # record resolves before the real user atom lands). The echo + the while-working queued fold keep it
         # visible across that gap, then prune when the atom lands. author "romp" for a nudge → gray bubble even
-        # in the brief idle-send case; "human" for a typed follow-up → blue.
-        if be is _TMUX:
-            _optimistic_echo(sid, body, author="romp" if msg.get("nudge") else "human")
+        # in the brief idle-send case; "human" for a typed follow-up → blue. Mid-compaction the whole send is
+        # PARKED instead (queued bubble; delivered when compaction ends — _send_or_park).
+        _send_or_park(be, sid, body,
+                      echo=("romp" if msg.get("nudge") else "human") if be is _TMUX else None)
         if iid:                                           # optimistic: reopen the card NOW, before the judge pass
             try:
                 if jd.optimistic_followup(sid, iid, text=str(msg["text"]), now=int(time.time()),
@@ -4035,6 +4091,46 @@ def _apply_pending_models():
         _push_all()
 
 
+# A MESSAGE sent while the session compacts is parked here too (the user 2026-07-02: a mid-compaction send
+# rendered instantly as a landed chat bubble — no queued/pending cue — and its live-tail echo opened a turn
+# that KILLED the 'compacting' indicator (_compacting treats resumed work as compaction-over)). Parking
+# fixes both: no echo atom lands, so 'compacting' stays; build_session renders the park as a QUEUED bubble;
+# _apply_pending_sends delivers the moment compaction ends (same event-corroborated gate as the model park).
+_pending_sends = {}           # sid -> [(text, echo_author_or_None), …] parked in send order
+
+
+def _send_or_park(be, sid, text, echo=None):
+    """Deliver `text` now — or PARK it while the session compacts (see _pending_sends). `echo` is the
+    _optimistic_echo author to stamp when the send actually fires (None = the backend echoes for itself).
+    A park pushes immediately so the queued bubble appears at once."""
+    if _compacting_now(sid):
+        _pending_sends.setdefault(str(sid), []).append((text, echo))
+        _push_all()
+        return
+    be.send(sid, text)
+    if echo:
+        _optimistic_echo(sid, text, author=echo)
+
+
+def _apply_pending_sends():
+    """Producer tick: deliver messages parked during a compaction that has now ended, in send order.
+    Runs AFTER _apply_pending_models so a model change parked in the same compaction is in effect before
+    the message opens a turn. A dead session's park is dropped (fails once, logged), never retried."""
+    for sid, msgs in list(_pending_sends.items()):
+        if _compacting_now(sid):
+            continue
+        _pending_sends.pop(sid, None)
+        try:
+            be = Sessions.backend_for(sid)
+            for text, echo in msgs:
+                be.send(sid, text)
+                if echo:
+                    _optimistic_echo(sid, text, author=echo)
+        except Exception:
+            sys.stderr.write("pending send apply: %s\n" % traceback.format_exc())
+        _push_all()
+
+
 # ── the chat's pinned "system context" card (the user 2026-06-19) ──────────────────────────────────
 # A collapsed card at the very top of the transcript showing the CLAUDE.md instructions in effect plus
 # the session's model / cwd / branch / permission-mode / Claude Code version. It is NOT the verbatim
@@ -4618,7 +4714,8 @@ def build_session(sid, now, tmux=None):
     # pane-scrape dropped a 2nd queued message → both vanished, 2026-06-16). The matching input echo (if any)
     # was suppressed at merge time, so a queued message shows exactly once, here.
     pending_model = _pending_model.get(sid)
-    if queued or pending_model:
+    pending_sends = _pending_sends.get(sid) or []
+    if queued or pending_model or pending_sends:
         # Each pending message is rendered like a landed one (markdown) — and a follow-up is cleaned of the
         # romp goal-context quote + the comment markers, carrying just the body + the goal title (the user
         # 2026-06-27). Same _split_followup the landed human turns use, so pending + landed match.
@@ -4634,6 +4731,21 @@ def build_session(sid, now, tmux=None):
                 if goal:
                     m["goal"] = goal
                 if ctx:                                       # expandable header on queued follow-ups too
+                    m["fuCtx"] = ctx
+            qmsgs.append(m)
+        # messages parked while this session COMPACTS (the user 2026-07-02): rendered as queued bubbles
+        # exactly like the backend's own queue — same _split_followup so a parked follow-up matches a landed
+        # one — delivered by _apply_pending_sends the moment compaction ends. Appended AFTER the real queue
+        # (idx positions must keep matching the backend's _pending for cancelQueued) and NOT cancelable
+        # (they live in _pending_sends, not the backend's queue).
+        for t, _echo in pending_sends:
+            goal, body, fu, ctx = _split_followup(t)
+            m = {"md": body}
+            if fu:
+                m["followUp"] = True
+                if goal:
+                    m["goal"] = goal
+                if ctx:
                     m["fuCtx"] = ctx
             qmsgs.append(m)
         if pending_model:
@@ -7211,6 +7323,10 @@ def _push(targets, connect=False):
     try:
         chat_list = _chat_tab_sessions(now, tmux)   # living + recently-died-while-shown, minus ×-hidden
         tab_order = [s["sid"] for s in chat_list]
+        # order audit: a PERMUTED push (survivors swapped slots vs the previous push) is the reorder bug
+        # leaving the kernel — log it with the stack. Set churn (a tab appearing/dying) is routine → skipped.
+        _order_audit("push", _last_tab_order, tab_order, only_permuted=True)
+        _last_tab_order[:] = tab_order
         # ACTIVE-TAB-FIRST STREAMING (the user 2026-06-24): a fresh connect used to wait for EVERY tab's
         # build_session (a full transcript reshape each) before the client saw ANY chat — the "slow to load"
         # lag. Now we push the tab strip immediately, then build + FLUSH the tab each client is LOOKING AT
@@ -7473,6 +7589,7 @@ def _producer():
                                    # transcript → bump the generation so the chat-build cache re-builds the
                                    # background tabs once, keeping their Fleet status/ledger fresh (≤ this cadence).
             _apply_pending_models()   # fire model changes parked during a compaction that has now ended
+            _apply_pending_sends()    # then deliver messages parked the same way (model first — see docstring)
         except Exception:
             sys.stderr.write("producer: %s\n" % traceback.format_exc())
         finally:
@@ -9401,6 +9518,13 @@ class Handler(BaseHTTPRequestHandler):
             # carry the Clear button; build_timeline drops the sid only while it's dead, so a revived one returns.
             _dismissed_lanes.add(str(msg["id"]))
             _push_all()
+        elif msg and msg.get("type") == "orderAudit":
+            # a CLIENT detected its rendered tab order permuting (render.ts auditTabOrder) → same audit log
+            # as the kernel's own order mutations, with the client's JS stack, so one file tells the whole
+            # story of a reorder: which side moved first, and from where.
+            _order_audit("client:" + str(msg.get("surface") or "?"),
+                         msg.get("old") or [], msg.get("new") or [],
+                         stack=str(msg.get("stack") or "") + ("\n[user drag]" if msg.get("drag") else ""))
         elif msg and msg.get("type") in ("reorderTabs", "writeOrder") and isinstance(msg.get("order"), list):
             # tab-drag or lane-drag → reorder BOTH surfaces. MERGE the dragged surface's order into the
             # persisted one (don't overwrite): a chat-tab drag must not drop/reshuffle timeline-only lanes.

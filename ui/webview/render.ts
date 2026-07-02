@@ -1608,6 +1608,28 @@ function applyTabOrder(o: any, tabs?: any) {
   for (const id of next) order.push(id);
   renderTabs();
 }
+// Order-audit instrumentation (the user 2026-07-02): tabs STILL occasionally reorder themselves and code
+// reading alone has never found why, so watch the RENDERED order itself. Whenever two tabs present in both
+// the previous and the current render swap relative slots (a permutation — adds/drops are routine churn),
+// capture the JS stack of whoever triggered this render and report it to the kernel's order-audit.jsonl,
+// alongside the kernel's own persist/push records — one log tells which side moved first, and from where.
+// A user drag permutes legitimately; it's tagged (drag:true) so the log separates it from the bug.
+let lastTabIds: string[] = [];
+let tabDragJustCommitted = false;
+function auditTabOrder(ids: string[]) {
+  const both = new Set(ids.filter((id) => lastTabIds.includes(id)));
+  const prev = JSON.stringify(lastTabIds.filter((id) => both.has(id)));
+  const next = JSON.stringify(ids.filter((id) => both.has(id)));
+  if (prev !== next) {
+    const stack = new Error("tab order permuted").stack || "";
+    const rec = { type: "orderAudit", surface: "chat-tabs", old: lastTabIds.slice(), new: ids.slice(),
+                  stack, drag: tabDragJustCommitted };
+    console.warn("[romp] tab order permuted", rec);
+    if (vscodeApi) vscodeApi.postMessage(rec);
+  }
+  tabDragJustCommitted = false;
+  lastTabIds = ids.slice();
+}
 let draggedId: string | null = null;
 function reorderTo(dragId: string, targetId: string, after: boolean) {
   const di = order.indexOf(dragId);
@@ -1616,6 +1638,7 @@ function reorderTo(dragId: string, targetId: string, after: boolean) {
   const ti = order.indexOf(targetId);
   if (ti < 0) order.push(dragId);
   else order.splice(after ? ti + 1 : ti, 0, dragId);
+  tabDragJustCommitted = true;   // the next render's permutation is this drag, not the bug (order audit)
   commitTabOrder();
   renderTabs();
 }
@@ -1768,6 +1791,7 @@ function renderTabs() {
   const seen = new Set<string>();
   for (const id of order) { if (!seen.has(id)) { seen.add(id); ids.push(id); } }
   for (const id of tabMeta.keys()) { if (!seen.has(id)) { seen.add(id); ids.push(id); } }   // any pushed tab not yet in `order` (placeholder)
+  auditTabOrder(ids);
   for (const id of ids) {
     const s = sessions.get(id);
     if (!s) { bar.appendChild(makePlaceholderTab(id)); continue; }

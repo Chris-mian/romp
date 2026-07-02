@@ -41,9 +41,11 @@ test("background shows only alongside a produced takeaway, and the takeaway keep
   assert.match(FEED, /dl\.classList\.add\("fask-distill-link"\)/);
 });
 
-test("the section chrome is styled: small square +/− buttons, muted labels, indented background body", () => {
+test("the section chrome is styled: small circled +/− buttons, muted labels, indented background body", () => {
   assert.match(CSS, /\.fask-sec \{ display: flex; flex-wrap: wrap;/);
   assert.match(CSS, /\.fask-sec-btn \{[^}]*cursor: pointer/);
+  // the toggle renders as a little CIRCLE around the +/− in both states (the user 2026-07-02)
+  assert.match(CSS, /\.fask-sec-btn \{[^}]*border-radius: 50%/);
   assert.match(CSS, /\.fask-sec-label \{[^}]*var\(--dim\)/);
   assert.match(CSS, /\.fask-bg-body \{[^}]*pre-wrap/);
 });

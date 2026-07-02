@@ -703,10 +703,12 @@ class ViewBuilder(unittest.TestCase):
 
     def test_followup_dispatch_adds_an_optimistic_echo_authored_by_nudge_vs_typed(self):
         # the dispatch wiring: a tmux askFollowUp echoes the body so it survives the queued→landed gap; a
-        # nudge echoes as "romp" (gray), a typed follow-up as "human" (blue).
+        # nudge echoes as "romp" (gray), a typed follow-up as "human" (blue). The send routes through
+        # _send_or_park (the user 2026-07-02: a mid-compaction follow-up parks as a queued bubble), which
+        # stamps the echo when it actually delivers.
         import inspect
         src = inspect.getsource(km._drive)
-        self.assertIn('_optimistic_echo(sid, body, author="romp" if msg.get("nudge") else "human")', src)
+        self.assertIn('echo=("romp" if msg.get("nudge") else "human") if be is _TMUX else None', src)
 
     def test_feed_awaiting_via_session_signal_is_held_in_working_with_a_badge(self):
         # AWAITING = a flavor of WORKING (the user 2026-06-22): when the EVENT-MODEL signal says the session

@@ -261,7 +261,7 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
    by a small +/− button. The body wraps below the toggle row (flex-wrap; the body takes the full width). */
 .fask-sec { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 6px; margin-top: 1px; }
 .fask-sec-btn { flex: none; width: 15px; height: 15px; padding: 0; border: 1px solid var(--box-border);
-  border-radius: 4px; background: transparent; color: var(--dim);
+  border-radius: 50%; background: transparent; color: var(--dim);
   font: 600 11px/13px ui-monospace, SFMono-Regular, Menlo, monospace; cursor: pointer; }
 .fask-sec-btn:hover { color: var(--fg); border-color: var(--fg); }
 .fask-sec-label { font-size: 0.78em; color: var(--dim); }
