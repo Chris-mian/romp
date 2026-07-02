@@ -5137,8 +5137,8 @@ def _provisional_card(s, name, color, fsid, live, now, store=None):
     # "replaced the instant the planner places the segment" gate the docstring always promised, now keyed on
     # the placement EVENT instead of the open-turn proxy — so it persists across turn-end and never gaps.
     placements = (store or {}).get("placements") or {}
-    if held["id"] in placements or (held["id"] + "#p") in placements:
-        return None
+    if _seg_placed(placements, held["id"]):            # timestamp-invariant: the judge's recorded key can
+        return None                                    # carry a drifted t for the SAME segment (SDK echo)
     prompt = _split_reminders(_seg_prompt(held))[0].strip()
     if not prompt:
         return None
@@ -5146,7 +5146,7 @@ def _provisional_card(s, name, color, fsid, live, now, store=None):
     # dot reads), produced the moment the message lands. Until it lands, the raw prompt so the card is never
     # blank. (the user 2026-06-19: reuses the captioner's message caption rather than a SEPARATE 'gist' judge
     # call — the captioner already glosses every message, so there's no redundant call and no hidden judge.)
-    g = _captions(fsid).get(held["id"] + "#p", {}).get("caption")
+    g = _seg_caption(_captions(fsid), held["id"])      # drift-safe (same key family as _seg_placed)
     text = "Analyzing: " + g if g else prompt[:140].strip()
     t = held.get("t", lt["t"])
     return {"itemId": "provisional:" + fsid, "sid": fsid, "name": name, "color": color, "text": text,
@@ -5185,7 +5185,7 @@ def _blocked_placeholder(s, name, color, fsid, live, now, perm_state, since):
             if jd._seg_human(held):
                 prompt = _split_reminders(_seg_prompt(held))[0].strip()
                 if prompt:
-                    g = _captions(fsid).get(held["id"] + "#p", {}).get("caption")
+                    g = _seg_caption(_captions(fsid), held["id"])
                     text = ("Analyzing: " + g) if g else prompt[:140].strip()
     if not text:
         # The picker/permission prompt's actual QUESTION is the most useful title — it says WHAT input is being
@@ -5921,6 +5921,33 @@ def _seg_key(seg_id):
     return (parts[0] + ":" + parts[-1]) if len(parts) >= 3 else seg_id
 
 
+def _seg_placed(placements, seg_id):
+    """Is this LIVE-parse segment already placed by the planner (any phase: bare work key, '#p' prompt-run,
+    '#d' delegation)? Timestamp-INVARIANT, like every other kernel read of a judge-written seg key: the
+    judge records placement keys from ITS OWN parse, whose middle `t` can differ from this parse's for the
+    SAME segment (the SDK optimistic echo lands at SEND time, the real transcript atom at PROCESS time — a
+    queued message drifts by however long it waited). A raw `in placements` then misses forever, so the
+    provisional placeholder never dropped: an idle session kept a phantom dotted "working" card for hours
+    (the user 2026-07-01, session at rest since 17:34 still 'Analyzing' at 20:35). A RETIRED placement
+    (value None) still counts as placed — the planner ruled; nothing is pending."""
+    if seg_id in placements or (seg_id + "#p") in placements or (seg_id + "#d") in placements:
+        return True                                    # exact hit — the common, no-drift case
+    want = {_seg_key(seg_id), _seg_key(seg_id + "#p"), _seg_key(seg_id + "#d")}
+    return any(_seg_key(k) in want for k in placements)
+
+
+def _seg_caption(caps, seg_id):
+    """The captioner's MESSAGE caption for a segment (store id '<seg>#p'), resilient to the same seg-id
+    timestamp drift as _seg_placed — the captioner keys its store from the JUDGE's parse. The drift made
+    the provisional card silently fall back to the raw prompt instead of its 'Analyzing: <gist>' line, and
+    dropped timeline message-dot gists, for any queued/forwarded SDK message. '' when absent."""
+    hit = caps.get(seg_id + "#p")
+    if hit is None:
+        want = _seg_key(seg_id + "#p")
+        hit = next((v for k, v in caps.items() if k.endswith("#p") and _seg_key(k) == want), None)
+    return (hit or {}).get("caption", "")
+
+
 def _node_anchor_uuids(nd, seg_trig, seg_work, resolved):
     """(promptAnchorUuid, anchorUuid) — the EXACT chat .turn[data-uuid]s a goal node's ledger/feed zones
     deep-link to. promptAnchorUuid = the MINTING segment's trigger (the user message → the text/title
@@ -6520,7 +6547,7 @@ def build_timeline(now, tmux=None, with_bars=True, live_only=False):
                 if not with_bars:
                     continue                                       # SKELETON: lane `since` needs last_t, but not the bar dicts/captions
                 cap = caps.get(seg["id"], {}).get("caption", "")               # WORK caption (the bar)
-                msg_cap = caps.get(seg["id"] + "#p", {}).get("caption", "")    # MESSAGE caption (the dot) — gist of the ask, ready early
+                msg_cap = _seg_caption(caps, seg["id"])    # MESSAGE caption (the dot) — gist of the ask, ready early; drift-safe
                 work_uuid, reply_uuid = _seg_anchors(seg["atoms"])
                 trig = next((x for x in seg["atoms"] if x.get("uuid") == seg.get("trigger")), None)
                 author = (trig or {}).get("author")
