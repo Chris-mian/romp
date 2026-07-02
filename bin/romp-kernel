@@ -431,9 +431,9 @@ def _followup_body(iid, title, text, injected=False, auto=False, stalled=False):
             # agent's OWN to-do list still marks open, so instead of a per-piece status report the body asks
             # the agent to pick a branch — continue, or name the blockers (which the planner then applies as
             # blocks). The enumerated quote above already names the open pieces.
-            body = (("You stopped with these still open on your own to-do list. If you don't need anything "
-                     "from me, please continue with them now. If any are blocked, tell me which ones and "
-                     "what you need from me to finish them.") if stalled else
+            body = (("These are still open on your own to-do list. For each one: where does it stand, and "
+                     "if you don't need anything from me, please continue with it now. If any is blocked, "
+                     "tell me which one and exactly what you need from me to finish it.") if stalled else
                     ("For each unfinished piece above: what's done, what's left, and is anything blocked "
                      "waiting on a decision from me? Keep the overall goal in mind, but report per piece."))
         elif str(nd.get("quote") or "").strip():
@@ -796,9 +796,10 @@ AUTO_NUDGE_TEXT = "Where does this stand? What's done, what's left, and is anyth
 # Code's to-do system has no "blocked" state, so a session routinely stops with open items and can't say why —
 # this asks the agent to pick a branch: continue the work, or name what it needs from the user (which the
 # planner's nudge-mode note then turns into a block + blockWhy → the block-distiller's decision brief).
-AUTO_NUDGE_STALLED_TEXT = ("You stopped with items on your own to-do list still open. If you don't need "
-                           "anything from me, please continue with them now. If any are blocked, tell me "
-                           "which ones and what you need from me to finish them.")
+AUTO_NUDGE_STALLED_TEXT = ("You stopped with items on your own to-do list still open. For each open item: "
+                           "where does it stand, and if you don't need anything from me, please continue "
+                           "with it now. If any is blocked, tell me which one and exactly what you need "
+                           "from me to finish it.")
 _autonudge_cache = {}   # str(path) -> ((mtime_ns,size), dict)
 
 
@@ -985,14 +986,18 @@ def _open_leaves(nodes, top_id):
     """The OUTSTANDING leaves under top_id, in tree (document) order: each an OPEN node (not done, not
     cleared) with no OPEN children — so the umbrella tops don't count as work, only the actual pending
     leaves. A flat top with no open children is its own single leaf. Shared by the auto-nudge gate
-    (_all_outstanding_delegated) and the nudge prompt's sub-goal enumeration (_open_leaves_for_nudge)."""
+    (_all_outstanding_delegated) and the nudge prompt's sub-goal enumeration (_open_leaves_for_nudge).
+    AUTHORITATIVE-open pierces a done marker (the user 2026-07-02): an agentTask-open node — or one holding
+    such a node below — is open despite its own nodeComplete, so a flat-DONE'd umbrella with live to-dos
+    under it (track g9's shape) still enumerates them instead of pruning the whole walk at the top."""
     children = {}
     for nid, nd in nodes.items():
         children.setdefault(nd.get("parentId"), []).append(nid)
+    aopen = _agent_open_set(nodes, children)
 
     def _open(nid):
         nd = nodes.get(nid, {})
-        return bool(nd) and not nd.get("nodeComplete") and not nd.get("cleared")
+        return bool(nd) and not nd.get("cleared") and (not nd.get("nodeComplete") or nid in aopen)
 
     leaves, seen = [], set()
 

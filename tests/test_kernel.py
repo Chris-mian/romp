@@ -1419,16 +1419,43 @@ class ViewBuilder(unittest.TestCase):
         try:
             km._auto_nudge_tick(NOW, km._tmux_sessions())
             self.assertEqual(len(sent), 1, "the stalled goal is nudged")
-            # the fork ask (both the flat and the hierarchical-enumeration form carry this sentence)
-            self.assertIn("please continue with them now", sent[0][1],
+            # the fork ask (both the flat and the hierarchical-enumeration form carry these sentences):
+            # per-item progress + the continue-or-name-the-blocker fork (the user 2026-07-02)
+            self.assertIn("please continue with it now", sent[0][1],
                           "the FORK text, not the plain status check")
-            self.assertIn("tell me which ones and what you need from me", sent[0][1])
+            self.assertIn("where does it stand", sent[0][1], "asks for per-item progress")
+            self.assertIn("tell me which one and exactly what you need from me", sent[0][1])
             self.assertIn("hook up the adapter", sent[0][1], "the open item is named in the quote")
             self.assertNotIn(km.AUTO_NUDGE_TEXT, sent[0][1])
             self.assertTrue(km._auto_nudge_data()["nudged"][g].get("stalled"),
                             "the record marks the fork flavor")
         finally:
             restore()
+
+    def test_fork_nudge_enumerates_open_todos_under_a_flat_done_top(self):
+        # track g9 (the user 2026-07-02): the closer flat-DONE'd + settled the umbrella while the agent's
+        # own to-do list still holds OPEN items under it. _open_leaves used to prune the whole walk at the
+        # nodeComplete top, so the fork nudge quoted only the goal title and never named the items — the
+        # authoritative-open set now pierces that marker and the items are enumerated.
+        top, c1, c2, d1 = SID + ":gw", SID + ":gt1", SID + ":gt2", SID + ":gd"
+        self._goal_store(
+            {top: {"id": top, "text": "land the plugin system", "parentId": None, "nodeComplete": True,
+                   "settledDone": True, "blocked": False, "cleared": False, "trail": [], "t": T0},
+             c1: {"id": c1, "text": "rewire the plugin to the new engine", "parentId": top,
+                  "nodeComplete": False, "blocked": False, "cleared": False, "trail": [], "t": T0,
+                  "agentTask": {"key": "1", "status": "open", "raw": "pending"}, "agentBornOpen": True},
+             c2: {"id": c2, "text": "migrate stores and land the branch", "parentId": top,
+                  "nodeComplete": False, "blocked": False, "cleared": False, "trail": [], "t": T0,
+                  "agentTask": {"key": "2", "status": "open", "raw": "pending"}, "agentBornOpen": True},
+             d1: {"id": d1, "text": "a genuinely done step", "parentId": top, "nodeComplete": True,
+                  "blocked": False, "cleared": False, "trail": [], "t": T0}},
+            {top: "working"}, last=top)
+        body = km._followup_body(top, None, km.AUTO_NUDGE_STALLED_TEXT, injected=True, auto=True, stalled=True)
+        self.assertIn("rewire the plugin to the new engine", body, "open to-do #1 is named")
+        self.assertIn("migrate stores and land the branch", body, "open to-do #2 is named")
+        self.assertNotIn("a genuinely done step", body, "a done step is not")
+        self.assertIn("still open on your own to-do list", body, "the fork body rides the enumeration")
+        self.assertIn("where does it stand", body, "and asks for per-item progress")
 
     def test_auto_nudge_stamps_failed_when_its_response_leaves_the_goal_stalled(self):
         # design/stalled-open-todos-nudge.md: after the ONE nudge, the agent's response turn ends (judged —
