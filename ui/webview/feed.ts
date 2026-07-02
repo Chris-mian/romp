@@ -606,27 +606,26 @@ function makeAskCard(it: AskItem): HTMLElement {
   // context"): BACKGROUND (re-orientation, collapsed by default) above the takeaway (expanded by default),
   // each toggled by a small +/− button. Collapse state lives in module sets keyed by itemId so the keyed
   // incremental re-render never snaps a section shut.
-  // Disclosure in the chat's own visual language (the ↩ Follow-up header's ▸/▾): a BARE muted text row —
-  // no border, no pill, no fill — "▸ background" / "▸ summary" at the SAME size as the body text (the
-  // Notion-toggle / Finder-disclosure pattern; the user 2026-07-02: boxes read clunky, elegant apps use
-  // naked disclosure text). Open, BOTH sections are symmetric: the label disappears entirely — the text
-  // is its own label — and the collapse control is just "(▾)" trailing the last line after a wide gap
-  // (the user 2026-07-02: no "less", no lingering "background" header; the triangle alone says it).
+  // Disclosure in the chat's own visual language (the ↩ Follow-up header's ▸): a BARE muted text row —
+  // "▸ (background)" / "▸ (summary)", caret + parenthesized label at the body's size (the user
+  // 2026-07-02). Open, BOTH sections are symmetric: the label disappears — the text is its own label —
+  // and the collapse control is a small inline "less" button in the Clear button's chrome, trailing the
+  // last line. One empty line always separates the background from the summary (.fask-bg margin).
   const bgSec = el("div", "fask-sec fask-bg"); bgSec.style.display = "none";
   const bgBtn = el("button", "fask-sec-head"); bgBtn.title = "expand";
   const bgTri = el("span", "fask-sec-tri"); bgTri.textContent = "▸";
-  const bgName = el("span"); bgName.textContent = "background";
+  const bgName = el("span"); bgName.textContent = "(background)";
   bgBtn.append(bgTri, bgName);
   const bgBody = el("div", "fask-bg-body");
-  const bgLess = el("button", "fask-sec-less"); bgLess.textContent = "(▾)"; bgLess.title = "collapse";
+  const bgLess = el("button", "fask-sec-less"); bgLess.textContent = "less"; bgLess.title = "collapse";
   bgSec.append(bgBtn, bgBody);
   const takeSec = el("div", "fask-sec fask-take"); takeSec.style.display = "none";
   const takeBtn = el("button", "fask-sec-head"); takeBtn.title = "expand";
   const takeTri = el("span", "fask-sec-tri"); takeTri.textContent = "▸";
-  const takeName = el("span"); takeName.textContent = "summary";
+  const takeName = el("span"); takeName.textContent = "(summary)";
   takeBtn.append(takeTri, takeName);
   const distill = el("div", "fask-distill");
-  const takeLess = el("button", "fask-sec-less"); takeLess.textContent = "(▾)"; takeLess.title = "collapse";
+  const takeLess = el("button", "fask-sec-less"); takeLess.textContent = "less"; takeLess.title = "collapse";
   takeSec.append(takeBtn, distill);
   // ⏳ AWAITING cue (the user 2026-06-29): a small romp swirl spinning in the SAME body spot the distiller line
   // will eventually fill — a completed/blocked card shows its takeaway there; a WORKING card that's awaiting
@@ -774,7 +773,7 @@ function applyDistillSections(a: any, it: AskItem, distillShown: boolean): void 
     a._bgBody.style.display = open ? "" : "none";
     if (open) {
       a._bgBody.textContent = bg;
-      a._bgBody.appendChild(a._bgLess);            // "(▾)" trailing the last line
+      a._bgBody.appendChild(a._bgLess);            // the inline "less" button trailing the last line
     }
     a._bgBtn.onclick = flipBg;
     a._bgLess.onclick = flipBg;
@@ -784,7 +783,7 @@ function applyDistillSections(a: any, it: AskItem, distillShown: boolean): void 
     const open = !takeClosed.has(id);
     a._takeBtn.style.display = open ? "none" : "";
     (a._distill as HTMLElement).style.display = open ? "" : "none";
-    if (open) (a._distill as HTMLElement).appendChild(a._takeLess);   // "(▾)" trailing the last line
+    if (open) (a._distill as HTMLElement).appendChild(a._takeLess);   // the inline "less" button trailing the last line
     a._takeBtn.onclick = flipTake;
     a._takeLess.onclick = flipTake;
   }
