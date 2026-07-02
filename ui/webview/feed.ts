@@ -1890,6 +1890,34 @@ function ensureClearAll(): HTMLElement {
   return b;
 }
 
+// Collapse/expand ALL cards' distiller sections at once (the user 2026-07-02): a footer button so a
+// crowded feed compacts in one click. "Collapse" closes every card's background AND summary; when
+// nothing is left open it reads "Expand", which restores the DEFAULTS (summaries open, backgrounds
+// closed) — it never force-opens every background. View-only: nothing is cleared or sent.
+function anySectionOpen(): boolean {
+  return asks.some((it) => !takeClosed.has(it.itemId) || bgOpen.has(it.itemId));
+}
+function makeCollapseAllBtn(): HTMLElement {
+  const b = el("button", "fdismiss ffollow");   // view action → blue hover, same chrome as Undo clear
+  b.id = "feed-collapseall";
+  b.onclick = (ev) => {
+    ev.stopPropagation();
+    if (anySectionOpen()) {
+      bgOpen.clear();
+      for (const it of asks) takeClosed.add(it.itemId);
+    } else {
+      takeClosed.clear();                        // back to defaults: summaries open, backgrounds closed
+    }
+    render();
+  };
+  return b;
+}
+function ensureCollapseAll(): HTMLElement {
+  let b = document.getElementById("feed-collapseall");
+  if (!b) { b = makeCollapseAllBtn(); (document.getElementById("feed-foot") || document.body).appendChild(b); }
+  return b;
+}
+
 // Sub-goals toggle (the user 2026-06-18): moved OUT of the ⛭ gear and INTO the feed footer, beside Clear
 // all / Undo clear. Gates each card's inline sub-goal checklist. Writes the SHARED romp:settings.subgoals
 // and fires the same 'romp:settings' event the gear does, so flipping it re-gates the cards live (and
@@ -2105,6 +2133,12 @@ function render() {
   // footer pane (below the cards, no overlap): Sub-goals toggle (left) · Clear all · UndoClear (right)
   const showCA = !!(asks.length || standalone.length);
   ensureSubgoalsToggle();   // the toggle lives in the footer now; visible whenever the footer is
+  const collapseAll = ensureCollapseAll();
+  collapseAll.style.display = showCA ? "" : "none";
+  collapseAll.textContent = anySectionOpen() ? "Collapse" : "Expand";
+  collapseAll.title = anySectionOpen()
+    ? "collapse every card's background + summary (compact cards)"
+    : "restore the default sections (summaries open)";
   ensureClearAll().style.display = showCA ? "" : "none";
   ensureUndoClear().style.display = canUndoClear ? "" : "none";
   const foot = document.getElementById("feed-foot");
