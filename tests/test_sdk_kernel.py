@@ -75,11 +75,13 @@ class KernelWiring(unittest.TestCase):
         # test's setModel PARK instead of applying (the intended mid-compaction behavior) — isolate both.
         km._compact_clicked.clear()
         km._pending_model.clear()
+        km._pending_sends.clear()
 
     def tearDown(self):
         km._sdk, km._push_all, km._send_to_app, km.jd.optimistic_followup = self.saved
         km._compact_clicked.clear()
         km._pending_model.clear()
+        km._pending_sends.clear()
 
     def _route(self, msg):
         return km._drive(msg, {"send": lambda s: None})

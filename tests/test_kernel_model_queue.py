@@ -120,8 +120,8 @@ class QueuedBubble(unittest.TestCase):
         self.assertIn("pending_model = _pending_model.get(sid)", src)
         self.assertIn('qmsgs.append({"md": "/model " + pending_model})', src,
                       "the park renders as a queued /model command bubble")
-        self.assertIn("if queued or pending_model:", src,
-                      "the queued indicator shows even when the park is the only pending item")
+        self.assertIn("if queued or pending_model or pending_sends:", src,
+                      "the queued indicator shows even when a park is the only pending item")
 
 
 if __name__ == "__main__":

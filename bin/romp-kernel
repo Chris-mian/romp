@@ -1712,7 +1712,7 @@ def _drive(msg, client):
     be = Sessions.backend_for(sid)
     if t == "sendMessage" and msg.get("text"):
 
-        be.send(sid, str(msg["text"])); _optimistic_echo(sid, str(msg["text"])); _push_all()  # show the send instantly
+        _send_or_park(be, sid, str(msg["text"]), echo="human"); _push_all()  # instant echo — or a queued bubble mid-compaction
     elif t == "interrupt":
         be.interrupt(sid); _push_all()                    # Esc/stop AND settle idle (in the backend) → chip → ready
     elif t in ("compact", "compactSession"):
@@ -1724,7 +1724,7 @@ def _drive(msg, client):
         elif cmd.startswith("/effort "):
             be.set_effort(sid, cmd[len("/effort "):].strip())
         else:
-            be.send(sid, cmd)
+            _send_or_park(be, sid, cmd)   # mid-compaction → parked as a queued command
     elif t == "askFollowUp":
         iid = str(msg.get("itemId") or "")
         # QUOTE the ask being followed up above the user's text so the recipient has context, and ride the
@@ -1734,14 +1734,14 @@ def _drive(msg, client):
         # nudge:true (the canned Nudge button) → romp-authored gray bubble; a typed follow-up → blue human.
         body = (_followup_body(iid, msg.get("title"), msg["text"], injected=bool(msg.get("nudge")))
                 if iid else str(msg["text"]))
-        be.send(sid, body)
         # Optimistic echo for a tmux follow-up/nudge (the user 2026-06-29): without it, a follow-up sent while
         # the session is WORKING showed as a queued bubble that VANISHED in the dequeue→landed gap (the queue-op
         # record resolves before the real user atom lands). The echo + the while-working queued fold keep it
         # visible across that gap, then prune when the atom lands. author "romp" for a nudge → gray bubble even
-        # in the brief idle-send case; "human" for a typed follow-up → blue.
-        if be is _TMUX:
-            _optimistic_echo(sid, body, author="romp" if msg.get("nudge") else "human")
+        # in the brief idle-send case; "human" for a typed follow-up → blue. Mid-compaction the whole send is
+        # PARKED instead (queued bubble; delivered when compaction ends — _send_or_park).
+        _send_or_park(be, sid, body,
+                      echo=("romp" if msg.get("nudge") else "human") if be is _TMUX else None)
         if iid:                                           # optimistic: reopen the card NOW, before the judge pass
             try:
                 if jd.optimistic_followup(sid, iid, text=str(msg["text"]), now=int(time.time()),
@@ -4089,6 +4089,46 @@ def _apply_pending_models():
         _push_all()
 
 
+# A MESSAGE sent while the session compacts is parked here too (the user 2026-07-02: a mid-compaction send
+# rendered instantly as a landed chat bubble — no queued/pending cue — and its live-tail echo opened a turn
+# that KILLED the 'compacting' indicator (_compacting treats resumed work as compaction-over)). Parking
+# fixes both: no echo atom lands, so 'compacting' stays; build_session renders the park as a QUEUED bubble;
+# _apply_pending_sends delivers the moment compaction ends (same event-corroborated gate as the model park).
+_pending_sends = {}           # sid -> [(text, echo_author_or_None), …] parked in send order
+
+
+def _send_or_park(be, sid, text, echo=None):
+    """Deliver `text` now — or PARK it while the session compacts (see _pending_sends). `echo` is the
+    _optimistic_echo author to stamp when the send actually fires (None = the backend echoes for itself).
+    A park pushes immediately so the queued bubble appears at once."""
+    if _compacting_now(sid):
+        _pending_sends.setdefault(str(sid), []).append((text, echo))
+        _push_all()
+        return
+    be.send(sid, text)
+    if echo:
+        _optimistic_echo(sid, text, author=echo)
+
+
+def _apply_pending_sends():
+    """Producer tick: deliver messages parked during a compaction that has now ended, in send order.
+    Runs AFTER _apply_pending_models so a model change parked in the same compaction is in effect before
+    the message opens a turn. A dead session's park is dropped (fails once, logged), never retried."""
+    for sid, msgs in list(_pending_sends.items()):
+        if _compacting_now(sid):
+            continue
+        _pending_sends.pop(sid, None)
+        try:
+            be = Sessions.backend_for(sid)
+            for text, echo in msgs:
+                be.send(sid, text)
+                if echo:
+                    _optimistic_echo(sid, text, author=echo)
+        except Exception:
+            sys.stderr.write("pending send apply: %s\n" % traceback.format_exc())
+        _push_all()
+
+
 # ── the chat's pinned "system context" card (the user 2026-06-19) ──────────────────────────────────
 # A collapsed card at the very top of the transcript showing the CLAUDE.md instructions in effect plus
 # the session's model / cwd / branch / permission-mode / Claude Code version. It is NOT the verbatim
@@ -4672,7 +4712,8 @@ def build_session(sid, now, tmux=None):
     # pane-scrape dropped a 2nd queued message → both vanished, 2026-06-16). The matching input echo (if any)
     # was suppressed at merge time, so a queued message shows exactly once, here.
     pending_model = _pending_model.get(sid)
-    if queued or pending_model:
+    pending_sends = _pending_sends.get(sid) or []
+    if queued or pending_model or pending_sends:
         # Each pending message is rendered like a landed one (markdown) — and a follow-up is cleaned of the
         # romp goal-context quote + the comment markers, carrying just the body + the goal title (the user
         # 2026-06-27). Same _split_followup the landed human turns use, so pending + landed match.
@@ -4688,6 +4729,21 @@ def build_session(sid, now, tmux=None):
                 if goal:
                     m["goal"] = goal
                 if ctx:                                       # expandable header on queued follow-ups too
+                    m["fuCtx"] = ctx
+            qmsgs.append(m)
+        # messages parked while this session COMPACTS (the user 2026-07-02): rendered as queued bubbles
+        # exactly like the backend's own queue — same _split_followup so a parked follow-up matches a landed
+        # one — delivered by _apply_pending_sends the moment compaction ends. Appended AFTER the real queue
+        # (idx positions must keep matching the backend's _pending for cancelQueued) and NOT cancelable
+        # (they live in _pending_sends, not the backend's queue).
+        for t, _echo in pending_sends:
+            goal, body, fu, ctx = _split_followup(t)
+            m = {"md": body}
+            if fu:
+                m["followUp"] = True
+                if goal:
+                    m["goal"] = goal
+                if ctx:
                     m["fuCtx"] = ctx
             qmsgs.append(m)
         if pending_model:
@@ -7531,6 +7587,7 @@ def _producer():
                                    # transcript → bump the generation so the chat-build cache re-builds the
                                    # background tabs once, keeping their Fleet status/ledger fresh (≤ this cadence).
             _apply_pending_models()   # fire model changes parked during a compaction that has now ended
+            _apply_pending_sends()    # then deliver messages parked the same way (model first — see docstring)
         except Exception:
             sys.stderr.write("producer: %s\n" % traceback.format_exc())
         finally:
