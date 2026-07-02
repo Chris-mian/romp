@@ -29,15 +29,12 @@ OLD_BARE_STATUS = "What is the status of the above goal?"
 
 
 class AutoNudgePrompt(unittest.TestCase):
-    def _feed_nudge_text(self):
+    def test_kernel_constant_is_the_only_copy(self):
+        # the manual feed Nudge button was REMOVED (the user 2026-06-30) — auto-nudge is the only nudge, so
+        # the kernel constant is the single copy of the prompt and feed.ts must carry NO nudge button text
+        # (the old in-sync check went stale when the button left and silently failed on the missing regex).
         src = open(FEED_TS, encoding="utf-8").read()
-        m = re.search(r'nudge\.onclick[\s\S]*?text:\s*"([^"]*)"', src)
-        self.assertIsNotNone(m, "could not find the Nudge button's askFollowUp text in feed.ts")
-        return m.group(1)
-
-    def test_kernel_and_feed_button_in_sync(self):
-        # the background auto-nudge and the manual Nudge button must send the SAME prompt
-        self.assertEqual(km.AUTO_NUDGE_TEXT, self._feed_nudge_text())
+        self.assertNotRegex(src, r'nudge\.onclick', "the manual Nudge button stays removed")
 
     def test_prompt_elicits_done_and_blocked_on_user(self):
         t = km.AUTO_NUDGE_TEXT.lower()
@@ -47,6 +44,15 @@ class AutoNudgePrompt(unittest.TestCase):
         self.assertIn("blocked", t, "nudge should ask what's blocked")
         self.assertTrue("me" in t or "you" in t,
                         "nudge should ask whether anything is blocked waiting on the user")
+
+    def test_prompt_reads_like_a_person_not_a_status_form(self):
+        # g13 (the user 2026-07-01): the nudge must read like an ordinary user turn, never disclose an
+        # automated/tracking origin, and not open with a form-like "Status on the goal above:" header.
+        t = km.AUTO_NUDGE_TEXT.lower()
+        for robotic in ("status on the goal above", "romp", "automated", "tracking"):
+            self.assertNotIn(robotic, t, robotic)
+        self.assertTrue(km.AUTO_NUDGE_TEXT[0].isupper() and "?" in km.AUTO_NUDGE_TEXT,
+                        "a natural question, addressed to the session")
 
 
 class PlannerBlockRule(unittest.TestCase):

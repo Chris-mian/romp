@@ -695,6 +695,14 @@ class TwoRunPlanner(unittest.TestCase):
         units = jd.plan_units(build_session(recs))
         self.assertEqual(units[0][6], "u1", "the work unit's trigger is the human message atom's uuid")
 
+    def test_units_carry_the_verbatim_mint_quote(self):
+        # g13 (the user 2026-07-01): the unit's LAST field is the trigger's verbatim head (_mint_quote),
+        # threaded through to apply_plan for node["quote"] — follow-ups/nudges quote the user's own words.
+        recs = [uline(T0, "ship feature X", "u1", ps="typed"),
+                aline(T0 + 10, "Shipped it.", "a1", "u1", stop="end_turn")]
+        units = jd.plan_units(build_session(recs))
+        self.assertEqual(units[0][-1], "ship feature X")
+
     def test_prompt_run_places_the_ask_immediately(self):
         # the PROMPT-run mints the goal while the turn is still OPEN (keyed seg#p); the work-run has NOT run.
         recs = [uline(T0, "build the export feature", "u1", ps="typed"),
@@ -785,6 +793,56 @@ class TwoRunPlanner(unittest.TestCase):
         jd.apply_plan(s, "seg1", T0, [{"do": "mint", "why": "x", "text": "G"}], [], place_key="seg1#p")
         self.assertIn("seg1#p", s["placements"])
         self.assertNotIn("seg1", s["placements"], "the prompt-run dedups under seg#p, leaving the work key (seg) free")
+
+
+class MintQuote(unittest.TestCase):
+    """g13 (the user 2026-07-01): every node the planner mints caches the minting message's VERBATIM head
+    (node["quote"], _mint_quote — no LLM call, the promptUuid precedent), so a follow-up/nudge can quote
+    the user's own terminology back instead of the planner's ≤10-word paraphrase, which read robotic."""
+
+    def _seg(self, text):
+        recs = [uline(T0, text, "u1", ps="typed"), aline(T0 + 10, "ok.", "a1", "u1", stop="end_turn")]
+        return em.segments(build_session(recs)["turns"][0])[0]
+
+    def test_quote_is_the_triggers_verbatim_text(self):
+        self.assertEqual(jd._mint_quote(self._seg("please add caching to the parser")),
+                         "please add caching to the parser")
+
+    def test_quote_strips_markers_and_an_embedded_context_block(self):
+        # a goal minted FROM a follow-up: its trigger carries romp's `> …` context quote + trailing
+        # markers — plumbing, not the user's words for THIS ask.
+        txt = ("> Some earlier goal (done)\n> the planner's why line\n\n"
+               "here is my actual reply text\n\n<!-- romp-goal-id: S:g1 -->")
+        self.assertEqual(jd._mint_quote(self._seg(txt)), "here is my actual reply text")
+
+    def test_quote_caps_at_a_word_boundary(self):
+        q = jd._mint_quote(self._seg("wordish " * 80))
+        self.assertLessEqual(len(q), jd.QUOTE_CAP + 2)
+        self.assertTrue(q.endswith(" …"), "over-cap is marked with an ellipsis")
+        self.assertTrue(all(w == "wordish" for w in q[:-2].split()), "cut lands on a word boundary")
+
+    def test_autonomous_segment_has_no_quote(self):
+        # no user trigger (assistant-only continuation) → '' → apply_plan stores None → title fallback
+        recs = [uline(T0, "kick off", "u1", ps="typed"),
+                aline(T0 + 10, "one", "a1", "u1", stop="end_turn")]
+        seg = em.segments(build_session(recs)["turns"][0])[0]
+        seg = dict(seg, atoms=[a for a in seg["atoms"] if a.get("type") != "user"], trigger=None)
+        self.assertEqual(jd._mint_quote(seg), "")
+
+    def test_apply_plan_stores_the_quote_on_minted_nodes(self):
+        s = _store()
+        jd.apply_plan(s, "seg1", T0, [{"do": "mint", "why": "asked", "text": "Wire the exporter"},
+                                      {"do": "sub", "ref": 1, "why": "step", "text": "Pick a format"}],
+                      [], quote="wire up the exporter for me")
+        quotes = {nd["text"]: nd.get("quote") for nd in s["nodes"].values()}
+        self.assertEqual(quotes["Wire the exporter"], "wire up the exporter for me")
+        self.assertEqual(quotes["Pick a format"], "wire up the exporter for me",
+                         "a sub minted in the same reply shares the minting message's quote")
+
+    def test_apply_plan_without_a_quote_stores_none(self):
+        s = _store()
+        jd.apply_plan(s, "seg1", T0, [{"do": "mint", "why": "x", "text": "G"}], [])
+        self.assertIsNone(next(iter(s["nodes"].values()))["quote"], "legacy/quoteless mint → None (title fallback)")
 
 
 def _store():
