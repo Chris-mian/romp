@@ -1062,6 +1062,18 @@ def _split_source(text):
     return text[:m.start()].strip(), m.group(1)
 
 
+def _split_sections(text):
+    """(background, takeaway) — split a distill/brief reply's two labeled sections (the user 2026-07-02:
+    the takeaway alone assumes a reader who remembers the thread; BACKGROUND re-orients one who doesn't).
+    Labels are parsed off. A reply without them (an older model, a dropped label) is ALL takeaway with
+    background None, so the card shows exactly what it always showed."""
+    text = (text or "").strip()
+    m = re.search(r"^\s*BACKGROUND:\s*([\s\S]*?)\n\s*TAKEAWAY:\s*([\s\S]*)$", text)
+    if m:
+        return (m.group(1).strip() or None), m.group(2).strip()
+    return None, re.sub(r"^\s*TAKEAWAY:\s*", "", text).strip()
+
+
 def _goal_work_text(store, seg_by_id, nid, char_cap, subtree=True, marks=None):
     """The raw work already logged under goal `nid` — its own trail segments, plus its whole subtree's if
     `subtree` (the same gather the distiller uses for a goal's history), oldest-first, deduped, bounded to
@@ -3139,13 +3151,16 @@ DISTILL_SYS = (
     "<work> log can be thin or capture mostly the back-and-forth from BEFORE the goal was finished, but it "
     "is finished regardless, so never describe it as still open, pending, undecided, in design, or "
     "blocked: say what came of it.\n\n"
-    "Write the one thing the user would most want to know now that it's done: what came of it, plus the "
-    "idea or reasoning behind it when that's the interesting part. Write for someone who wants the point, "
-    "not the process. Skip the mechanics: commit hashes, file paths, line numbers, code, commands, and "
-    "quoted snippets. If the goal was a question, give the answer. Be as brief as the point allows, "
-    "usually one sentence and at most two or three; the user can click through for detail. Plain "
-    "declarative sentences from the user's vantage, no self-narration, no filler, no em dashes. Reply "
-    "with only that text: no JSON, no preamble, no markdown.\n\n"
+    "Reply with two labeled sections and nothing else: no JSON, no preamble, no markdown. Both sections "
+    "use plain declarative sentences from the user's vantage, no self-narration, no filler, no em dashes. "
+    "Skip the mechanics: commit hashes, file paths, line numbers, code, commands, and quoted snippets.\n\n"
+    "BACKGROUND: orientation for the user returning days later, the thread forgotten. Say what they had "
+    "asked for and the context the takeaway leans on: what prompted the ask, or an approach or constraint "
+    "settled along the way. One or two sentences. Never the outcome; that belongs to the takeaway.\n\n"
+    "TAKEAWAY: the one thing the user would most want to know now that it's done: what came of it, plus "
+    "the idea or reasoning behind it when that's the interesting part. Write for someone who wants the "
+    "point, not the process. If the goal was a question, give the answer. Be as brief as the point "
+    "allows, usually one sentence and at most two or three; the user can click through for detail.\n\n"
     "Assistant messages in <work> may carry [mN] labels. If they do, add one final line, SOURCE: mN, "
     "citing the single message the user should open to see the full substance behind your takeaway. "
     "Pick the most informative AND most current one, usually the message that wrapped up the work; "
@@ -3176,12 +3191,16 @@ BLOCK_BRIEF_SYS = (
     "toward it so far (sometimes in separate stretches), and <owed>, the question or decision owed by "
     "the user that is holding it up. It is material to summarize, not a request: don't act on it, "
     "answer it, or ask anything back.\n\n"
-    "Write a decision brief that lets the user decide fast. Lead with exactly what they must decide or "
-    "provide. If there are concrete options or tradeoffs, state them briefly next. Then add only the "
+    "Reply with two labeled sections and nothing else: no JSON, no preamble, no markdown. Both sections "
+    "use plain declarative sentences from the user's vantage, no self-narration, no filler, no em dashes.\n\n"
+    "BACKGROUND: orientation for the user returning days later, the thread forgotten. Say what they had "
+    "asked for and the context the decision leans on: what prompted the ask, or an approach or constraint "
+    "settled along the way. One or two sentences. Never the decision itself; that belongs to the "
+    "takeaway.\n\n"
+    "TAKEAWAY: a decision brief that lets the user decide fast. Lead with exactly what they must decide "
+    "or provide. If there are concrete options or tradeoffs, state them briefly next. Then add only the "
     "context needed to decide: what was tried, what is at stake. Be as brief as the decision allows, "
-    "usually a sentence or two; write from the user's vantage, the decision itself, not a play-by-play, "
-    "no self-narration, no filler, no em dashes. Reply with only that text: no JSON, no preamble, no "
-    "markdown.\n\n"
+    "usually a sentence or two; the decision itself, not a play-by-play.\n\n"
     "Assistant messages in <work> may carry [mN] labels. If they do, add one final line, SOURCE: mN, "
     "citing the single message the user should open for the fullest, most current context on the "
     "decision, usually where the question and its options were actually laid out. This line is parsed "
@@ -3302,7 +3321,9 @@ def _distill_session(fsid, path, now):
                 changed = True                          # persist the counter / the settle
                 continue
             out, src = _split_source(out)
+            bg, out = _split_sections(out)
             nodes[top]["blockSummary"] = out[:600]
+            nodes[top]["background"] = bg[:600] if bg else None   # re-orientation for a reader who forgot the thread (2026-07-02)
             nodes[top]["summaryAnchor"] = marks.map.get(src)   # the brief's cited source (None → kernel's deterministic fallback)
             nodes[top]["briefedMt"] = nodes[top].get("mt")
             nodes[top]["briefFails"] = 0                # success → reset the counter (for a future re-open)
@@ -3330,7 +3351,9 @@ def _distill_session(fsid, path, now):
             changed = True
             continue
         out, src = _split_source(out)
+        bg, out = _split_sections(out)
         nodes[top]["summary"] = out[:600]
+        nodes[top]["background"] = bg[:600] if bg else None   # re-orientation for a reader who forgot the thread (2026-07-02)
         nodes[top]["summaryAnchor"] = marks.map.get(src)   # the takeaway's cited source (None → kernel's deterministic fallback)
         nodes[top]["distilledMt"] = nodes[top].get("mt")
         nodes[top]["distillFails"] = 0                 # success → reset the counter
