@@ -897,40 +897,21 @@ def _auto_resume_retry(now, tmux):
             return
 
 
-def _mark_auto_nudged(gid, turn_id, count, fired_atoms=0):
-    """Record an auto-nudge of `gid`: {count, lastTurnId, firedAtoms}. `count` is the TOTAL fired (the climbing
-    escalation alert); `lastTurnId` is the turn this fired on, so the tick nudges each turn id at most ONCE and
-    re-arms only on a genuinely NEW ended turn (the user 2026-06-26) — a goal keeps getting nudged across turns
-    until it's blocked/completed, but a single stalled turn is never nudged twice. `firedAtoms` is the turn's
-    atom count at fire time, so a nudge-RESPONSE that folds back into the SAME turn id (the SDK continues the
-    turn rather than opening a new one) can still re-arm on GENUINE work past that point (see _worked_since,
-    the user 2026-07-01 / track). Bounded to recent goals."""
+def _mark_auto_nudged(gid, turn_id, count):
+    """Record an auto-nudge of `gid`: {count, lastTurnId}. `count` is the TOTAL fired (the climbing escalation
+    alert); `lastTurnId` is the turn this fired on, so the tick nudges each turn id at most ONCE and re-arms
+    only on a genuinely NEW ended turn — and NEVER on the agent's own nudge-response turn (see the tick's
+    _turn_romp_injected gate). A stall that persists without genuine new work is surfaced as blocked + a
+    "nudge failed" chip rather than nudged forever (the user 2026-07-01, replacing the 2026-06-25 loop).
+    Bounded to recent goals."""
     d = dict(_auto_nudge_data())
     nudged = dict(d.get("nudged", {}))
     nudged.pop(gid, None)
-    nudged[gid] = {"count": count, "lastTurnId": turn_id, "firedAtoms": fired_atoms}   # reinsert → most-recent
+    nudged[gid] = {"count": count, "lastTurnId": turn_id}   # reinsert → most-recent
     if len(nudged) > 3000:                                  # bounded; drop the oldest
         nudged = dict(list(nudged.items())[-3000:])
     d["nudged"] = nudged
     _write_auto_nudge(d)
-
-
-def _worked_since(lt, fired_atoms):
-    """True if the turn did GENUINE work — an assistant `tool_use` — at/after the atom index recorded when this
-    goal was last auto-nudged. Guards the re-arm against turn-FOLDING: a nudge-response continues the SAME turn
-    id (the SDK doesn't open a new turn for an injected message), so the plain `lastTurnId == lt_id` gate would
-    block re-nudging forever even after the agent resumed, worked for minutes, and re-stalled with open to-dos
-    (the user 2026-07-01, track). A bare "on it" text acknowledgement carries no tool_use → does NOT re-arm; a
-    real resumed work stretch does. Event-based (a tool_use in the atom stream), not a size/time threshold."""
-    atoms = lt.get("atoms") or []
-    start = fired_atoms if isinstance(fired_atoms, int) and fired_atoms > 0 else 0
-    for a in atoms[start:]:
-        if a.get("type") != "assistant":
-            continue
-        for b in (a.get("message") or {}).get("content") or []:
-            if isinstance(b, dict) and b.get("type") == "tool_use":
-                return True
-    return False
 
 
 def _log_nudge_event(sid, gid, t, count):
@@ -1189,14 +1170,16 @@ def _auto_nudge_tick(now, tmux):
             if sid in waitfor and nd.get("t", 0) <= waitfor[sid]["since"]:
                 continue                                 # awaiting a live peer's reply to a question this goal predates
             rec = nudged.get(gid) or {}
-            # Re-arm on a NEW ended turn — OR, when a nudge-RESPONSE folded back into the SAME turn id (the SDK
-            # continues the turn rather than opening a new one for an injected message), on evidence the agent
-            # did GENUINE work since the last nudge (a tool_use past the fire point) and re-stalled. Without the
-            # second clause a session that resumed from a nudge, worked for minutes, and stopped again with open
-            # to-dos was stuck un-nudged forever: the turn id never changed, so `lastTurnId == lt_id` blocked it
-            # permanently, and it can't produce a new turn id without being nudged — a deadlock (the user
-            # 2026-07-01, track). A bare text "on it" (no tool_use) still does NOT re-arm.
-            if rec.get("lastTurnId") == lt_id and not _worked_since(lt, rec.get("firedAtoms", 0)):
+            # Fire at most ONCE per GENUINE stall. Skip if we already nudged this exact turn, OR if the latest
+            # ended turn is the agent's OWN response to a nudge (its trigger is romp-authored) — NEVER re-arm off
+            # our own nudge. Re-arming on the nudge-response is the ~5s runaway that burned tokens (the user
+            # 2026-07-01, track: count climbed to 82). A response either folds into the nudged turn (caught by
+            # lastTurnId==lt_id) or opens a new romp-injected turn (caught by _turn_romp_injected); either way it
+            # must not re-fire. Re-arm ONLY on a genuine (human/sdk/peer-opened) NEW ended turn that re-stalls —
+            # a stall that persists WITHOUT genuine new work is surfaced as blocked + a "nudge failed" chip
+            # instead of being nudged forever (the user 2026-07-01, replacing the 2026-06-25 "keep nudging til
+            # resolved" rule, which was the loop).
+            if rec.get("lastTurnId") == lt_id or _turn_romp_injected(lt):
                 continue
             count = rec.get("count", 0) + 1
             # INSTRUMENTATION (the user 2026-06-30, see jd._nudge_diag): record the goal's ACTUAL completeness
@@ -1214,9 +1197,9 @@ def _auto_nudge_tick(now, tmux):
                            ltEnd=lt.get("end"), ltId=lt_id, nTurns=len(turns),
                            lsVal=ls_val, lsT=ls_t)
             Sessions.backend_for(sid).send(sid, _followup_body(gid, None, AUTO_NUDGE_TEXT, injected=True, auto=True))   # gray romp bubble + romp-logo (both backends)
-            _mark_auto_nudged(gid, lt_id, count, len(_lt_atoms))   # {count, lastTurnId, firedAtoms} → re-arm on a new turn OR genuine work past here
+            _mark_auto_nudged(gid, lt_id, count)         # {count, lastTurnId} → re-arm only on the next GENUINE ended-working turn
             _log_nudge_event(sid, gid, now, count)       # timeline romp-logo dot + escalation count
-            nudged[gid] = {"count": count, "lastTurnId": lt_id, "firedAtoms": len(_lt_atoms)}   # mirror in-memory for the rest of this tick
+            nudged[gid] = {"count": count, "lastTurnId": lt_id}   # mirror in-memory for the rest of this tick
             fired = True
     if fired:
         _push_all()
