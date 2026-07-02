@@ -8538,6 +8538,9 @@ _LANDING_USAGE_JS = """
 var tip=document.createElement('div');tip.id='ru-tip';tip.style.display='none';document.body.appendChild(tip);
 function fmtR(ep){var dt=ep-Math.floor(Date.now()/1000);if(dt<=0)return'soon';var d=Math.floor(dt/86400);dt-=d*86400;
 var h=Math.floor(dt/3600);dt-=h*3600;var m=Math.floor(dt/60);return(d?d+'d ':'')+((h||d)?h+'h ':'')+m+'m';}
+function fmtAgo(ep){var dt=Math.max(0,Math.floor(Date.now()/1000)-ep);if(dt<90)return'just now';
+var m=Math.round(dt/60);if(m<60)return m+'m ago';var h=Math.floor(m/60);m-=h*60;
+return(h<24?h+'h '+(m?m+'m ':''):Math.floor(h/24)+'d ')+'ago';}
 function esc(s){return String(s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
 var WINS=[['fiveHour',5*3600,'5h','Session'],
           ['sevenDay',7*86400,'7d','Weekly']];
@@ -8549,7 +8552,7 @@ var lb=document.getElementById('romp-limit');
 if(lb){var lim=u&&u.limited,on=!!(lim&&(lim.fiveHour||lim.sevenDay));lb.classList.toggle('show',on);
 if(on){var msg=lb.querySelector('.rl-msg');if(msg)msg.textContent=(lim.fiveHour&&lim.sevenDay?'Session and weekly':lim.fiveHour?'Session (5h)':'Weekly (7d)')+' usage limit reached — retries paused until it resets';}}
 if(!u||(!u.fiveHour&&!u.sevenDay)){el.innerHTML='';tip.style.display='none';return;}
-var nowS=Math.floor(Date.now()/1000),html='';LAST={};
+var nowS=Math.floor(Date.now()/1000),html='';LAST={};LAST._t=(typeof u.t==='number')?u.t:null;
 WINS.forEach(function(w){var seg=u[w[0]];if(!seg)return;
 var rolled=seg.resetsAt&&nowS>seg.resetsAt,pct=rolled?0:(seg.pct||0);
 var col=(seg.color&&seg.color.length===3)?('rgb('+seg.color.join(',')+')'):'#54B204';   // selected colormap (server-computed)
@@ -8572,7 +8575,8 @@ function showTip(){var keys=['fiveHour','sevenDay'].filter(function(k){return LA
 if(!keys.length){tip.style.display='none';return;}
 tip.innerHTML=keys.map(function(k){var d=LAST[k];
 return '<div class=ru-tip-win><div class=ru-tip-name><span>'+esc(d.name)+' ('+esc(d.span)+')</span>'
-+(d.reset?'<span class=ru-tip-reset>resets in '+esc(d.reset)+'</span>':'')+'</div>'+barRows(d)+'</div>';}).join('');
++(d.reset?'<span class=ru-tip-reset>resets in '+esc(d.reset)+'</span>':'')+'</div>'+barRows(d)+'</div>';}).join('')
++(LAST._t?'<div class=ru-tip-age>updated '+fmtAgo(LAST._t)+'</div>':'');
 var r=el.getBoundingClientRect();tip.style.display='block';
 tip.style.left=(r.right+9)+'px';tip.style.top=Math.max(6,Math.min(window.innerHeight-tip.offsetHeight-6,r.top-4))+'px';}
 el.addEventListener('mouseenter',showTip);
@@ -8959,6 +8963,8 @@ def _landing():
             ".ru-tip-track{width:64px;height:6px;border-radius:3px;background:rgba(255,255,255,0.10);overflow:hidden;display:inline-block}"
             ".ru-tip-track i{display:block;height:100%;border-radius:3px;transition:width .3s ease}"
             ".ru-tip-v{min-width:30px;text-align:right;font-variant-numeric:tabular-nums}"
+            ".ru-tip-age{margin-top:7px;padding-top:5px;border-top:1px solid rgba(255,255,255,0.08);"
+            "opacity:.55;font-size:10px}"
             # the three TOP panes flex-grow by a per-pane var (resized by the gutters, persisted); toggling one
             # off hides it AND the now-orphaned gutters. Fixed order: chat, fleet, feed. Timeline is the band.
             "#chat-pane{flex:var(--g-chat,60) 1 0}#fleet-pane{flex:var(--g-fleet,34) 1 0}#feed-pane{flex:var(--g-feed,40) 1 0}"

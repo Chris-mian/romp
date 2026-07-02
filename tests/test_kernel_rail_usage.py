@@ -57,6 +57,15 @@ class RailUsage(unittest.TestCase):
         # and drops the old explanatory prose ("...rate-limit window") — no extra stuff
         self.assertNotIn("rate-limit window", self.html, "no explanatory prose, just the bars + %")
 
+    def test_the_tooltip_shows_the_snapshots_age(self):
+        # "updated ... ago" (the user 2026-07-02): the bars lagged the CLI's own /usage with no cue the reading
+        # was old — usage.json refreshes only when a statusline render or a rate-limit event produces a NEW
+        # reading, so staleness must be VISIBLE, not silent. The footer formats usage.json's `t`.
+        self.assertIn("LAST._t=(typeof u.t==='number')?u.t:null", self.html, "render() keeps the snapshot time")
+        self.assertIn("ru-tip-age", self.html, "the tooltip carries an age footer")
+        self.assertIn("updated '+fmtAgo(LAST._t)", self.html, "formatted as 'updated ... ago'")
+        self.assertIn("function fmtAgo(ep)", self.html)
+
     def test_the_timeline_forwards_usage_to_the_shell_and_hides_its_own_copy_when_embedded(self):
         tv = (pathlib.Path(BIN).parent / "ui" / "romp-timeline-view.js").read_text()
         # only when embedded (window.parent !== window) — standalone/Obsidian keeps drawing them locally

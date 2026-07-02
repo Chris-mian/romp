@@ -4,8 +4,10 @@
 The rail's rate-limit bars (5h Session + 7d Weekly) read usage.json. Under tmux that file is written by
 Claude Code's statusline.sh; an SDK session has NO statusline, so the bars went stale/blank there. The
 Agent SDK's DESIGNED source is the RateLimitEvent stream — each carries one window's utilization (0.0-1.0)
-+ resets_at. SdkBackend._record_rate_limit accumulates those and writes the SAME usage.json shape, so the
-same kernel _usage() reader lights the bars for SDK sessions too. Synthetic fixtures (duck-typed info)."""
++ resets_at (utilization only in the allowed_warning band — see RateLimitUsageStaleness in
+test_sdk_backend.py for the status-aware merge). SdkBackend._record_rate_limit folds each event into the
+SAME usage.json shape, so the same kernel _usage() reader lights the bars for SDK sessions too. Synthetic
+fixtures (duck-typed info)."""
 import json
 import os
 import tempfile
@@ -71,9 +73,17 @@ class RecordRateLimit(unittest.TestCase):
         self.assertEqual(u["five_hour"]["pct"], 25)
         self.assertIsNone(u["seven_day"], "overage/None never populate the weekly bar")
 
-    def test_non_numeric_utilization_writes_nothing(self):
+    def test_null_utilization_with_a_window_id_still_establishes_the_live_window(self):
+        # The CLI attaches utilization ONLY in the allowed_warning band (2026-07-02 cadence data: 4 of 452
+        # events); a plain `allowed` event carries None. It still names the LIVE window (resets_at), so it
+        # writes pct=0 for a window we know nothing else about — bars light up honest-low instead of staying
+        # blank/stale until the warning band.
         self.be._record_rate_limit(_info("five_hour", None, 5))
-        self.assertFalse((self.state / "usage.json").exists(), "a malformed event is dropped, not written")
+        self.assertEqual(self._usage()["five_hour"], {"pct": 0, "resets_at": 5})
+
+    def test_an_event_with_no_utilization_and_no_window_id_writes_nothing(self):
+        self.be._record_rate_limit(_info("five_hour", None, None))
+        self.assertFalse((self.state / "usage.json").exists(), "nothing to say -> nothing written")
 
     def test_the_kernel_usage_reader_lights_the_bars_from_what_the_sdk_wrote(self):
         # End-to-end: the SDK writer + the kernel reader agree on usage.json (no statusline in the loop).

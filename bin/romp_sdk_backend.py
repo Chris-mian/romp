@@ -24,6 +24,7 @@ import os
 import re
 import threading
 import time
+import traceback
 import uuid
 from pathlib import Path
 
@@ -893,23 +894,10 @@ class SdkSession:
         elif getattr(msg, "rate_limit_info", None) is not None:
             # A RateLimitEvent: the account-wide /usage limits (5h + weekly) the CLI streams when the limit state
             # changes — the SDK's designed source for the rail usage bars. Duck-typed (no SDK-type import needed).
-            info = msg.rate_limit_info
-            # CADENCE INSTRUMENTATION (the user 2026-07-01, TEMPORARY): before dropping the usage.json/statusline
-            # path in favor of reading the SDK's in-memory rate-limit state, measure how OFTEN these events
-            # actually arrive. The SDK docs say they fire only on status TRANSITIONS (sparse) — if that's true,
-            # event-only can't keep the 5h bar live as usage climbs and we'll need a staleness cue; if they
-            # actually arrive ~per-turn, the in-memory-SDK design is fully fresh. One jsonl line per arrival →
-            # analyze the real frequency, then remove this. Best-effort; never disturbs the stream.
-            try:
-                with open(self.backend.state_dir / "rate-limit-events.jsonl", "a") as _f:
-                    _f.write(json.dumps({"t": int(time.time()), "sid": self.sid, "name": self.name,
-                                         "type": getattr(info, "rate_limit_type", None),
-                                         "util": getattr(info, "utilization", None),
-                                         "status": getattr(info, "status", None),
-                                         "resets_at": getattr(info, "resets_at", None)}) + "\n")
-            except Exception:
-                pass
-            self.backend._record_rate_limit(info)
+            # (The 2026-07-01 TEMPORARY cadence instrumentation lived here; its 19h/452-event answer — events
+            # arrive ~per-API-call but carry utilization ONLY in the allowed_warning band — is baked into
+            # _record_rate_limit's status-aware merge, so the jsonl capture is gone.)
+            self.backend._record_rate_limit(msg.rate_limit_info)
         # Forward the raw message to the kernel for live chat/event use.
         self.backend._forward(self, msg)
 
@@ -1148,8 +1136,7 @@ class SdkBackend:
         self._lock = threading.Lock()
         self._pending_ask: dict[str, bool] = {}   # sid -> has an ask awaiting answer
         self._live: dict[str, dict] = {}          # sid -> {key -> atom}: the in-memory LIVE TAIL (ahead of disk)
-        self._rl: dict[str, dict] = {}            # rate_limit_type -> {"pct","resets_at"}: account-wide /usage
-        self._rl_lock = threading.Lock()          #   windows the CLI streams as RateLimitEvents (_record_rate_limit)
+        self._rl_lock = threading.Lock()          # serializes usage.json read-merge-write (_record_rate_limit)
         # Kernel-restart heal: nothing is running yet, so any alive session still reading awaiting:true is stale
         # — its background tasks (and the Stop hook that clears the overlay) died with the previous kernel. Left
         # uncleared it reads working/awaiting forever, climbing a ghost work-timer (reorder_bug 2026-06-24).
@@ -1177,74 +1164,78 @@ class SdkBackend:
 
     def _record_rate_limit(self, info) -> None:
         """Persist the account-wide rate-limit /usage the CLI streams as a RateLimitEvent — the SDK's DESIGNED
-        source for the rail's usage bars (the user 2026-06-30). Each event carries ONE window's utilization
-        (0.0-1.0) + resets_at; we accumulate the windows and write the SAME usage.json the tmux statusline
-        writes (account-wide, latest writer wins), so the bars stay fresh for SDK sessions that have NO tmux
-        statusline. Event-based, not polled: the CLI emits it whenever the limit state changes — get_context_usage()
-        is the CONTEXT window, a different number. `info` is a duck-typed RateLimitInfo (rate_limit_type /
-        utilization / resets_at)."""
+        source for the rail's usage bars (the user 2026-06-30) — into the SAME usage.json the tmux statusline
+        writes. Status-aware (the user 2026-07-02): 19h of cadence instrumentation showed the CLI attaches
+        `utilization` ONLY in the allowed_warning band (4 of 452 events); plain `allowed` and even `rejected`
+        events carry utilization=None. The old util-only path silently dropped 97% of events — including every
+        REJECTED one, so romp never showed "limit reached" (the user hit the session limit without realizing),
+        and after an account switch nothing ever replaced the old account's reading (bars stuck). Every event
+        DOES always carry `status` + `resets_at`, so use those:
+
+        - `resets_at` names the LIVE window for that limit type, straight from the running CLI. A file reading
+          from a DIFFERENT window (the old account's, or a window that rolled) is dead — replace it, never let
+          it out-compete the live one. (The old later-resets_at-wins rule protected the statusline's fresh file
+          from this backend's stale ACCUMULATOR replaying hours-old windows; the accumulator is gone — each
+          event now touches only its own window — so that guard is obsolete, and across an account switch it
+          was exactly what STUCK the bars: the old account's later reset beat the new account's live window.)
+        - `rejected` IS the limit: pct=100 even with utilization=None → the rail's limited banner + retry-pause
+          engage (previously this event was dropped and romp missed the limit entirely).
+        - `allowed` with unknown utilization in a brand-new window reads pct=0 (a window rolls with ~0 usage;
+          an account switch lands near the statusline's next fresh write). Within the SAME window, an unknown
+          utilization keeps the file's pct (usage only climbs in-window; statusline/warning events refine it),
+          and a KNOWN pct merges as max(file, event). An `allowed` event also proves we are NOT limited, so a
+          same-window pct that claims 100 is capped to 99 — a stale limited banner can't outlive the CLI
+          saying "allowed".
+
+        The write happens only when the merged segment actually CHANGES, so usage.json's `t` (the rail
+        tooltip's "updated … ago") stays the time of the last real reading, not of the last no-op event."""
         rlt = getattr(info, "rate_limit_type", None)
         if rlt not in ("five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet"):
             return   # the bars show only the 5h + weekly windows; overage / None are ignored
+        key = "five_hour" if rlt == "five_hour" else "seven_day"
+        status = getattr(info, "status", None)
         util = getattr(info, "utilization", None)
-        if not isinstance(util, (int, float)):
-            return
         ra = getattr(info, "resets_at", None)
-        seg = {"pct": max(0, min(100, round(util * 100))),
-               "resets_at": int(ra) if isinstance(ra, (int, float)) else None}
-        with self._rl_lock:
-            self._rl[rlt] = seg
-            rl = dict(self._rl)
-        def pick(*types):
-            segs = [rl[t] for t in types if t in rl]
-            return max(segs, key=lambda s: s["pct"]) if segs else None   # weekly = the binding (highest) window
-        five, seven = pick("five_hour"), pick("seven_day", "seven_day_opus", "seven_day_sonnet")
-        # NEVER null a window this backend hasn't seen an event for — usage.json is account-wide and ALSO
-        # written by the tmux statusline (and by earlier events); each event carries ONE window, so writing the
-        # whole file from our partial accumulator would clobber the other window to null (the user 2026-06-30:
-        # "the session limit disappeared" — a seven_day event nulled the statusline's five_hour). Merge with the
-        # current file: overwrite only the window(s) we actually have, preserve the rest.
-        try:
-            cur = json.loads((self.state_dir / "usage.json").read_text())
-            if not isinstance(cur, dict):
+        ra = int(ra) if isinstance(ra, (int, float)) else None
+        pct = None
+        if isinstance(util, (int, float)):
+            pct = max(0, min(100, round(util * 100)))
+        elif status == "rejected":
+            pct = 100                                 # rejected IS 100%: the CLI sends no utilization with it
+        with self._rl_lock:                           # one read-merge-write at a time (many sessions stream events)
+            try:
+                cur = json.loads((self.state_dir / "usage.json").read_text())
+                if not isinstance(cur, dict):
+                    cur = {}
+            except Exception:
                 cur = {}
-        except Exception:
-            cur = {}
-        # PREFER THE FRESHER READING PER WINDOW — never let this backend's data clobber a fresher value in the
-        # file (the user 2026-07-01: /usage read 5h=69% but the rail showed 0%). The statusline writes the CLI's
-        # current rate_limits on every render (always fresh); this backend only sees the transition-gated
-        # RateLimitEvent (the CLI emits it on a status change — allowed↔warning↔rejected — NOT on a plain
-        # utilization reset), so our five_hour can be hours stale. Freshness is authoritative, not a heuristic:
-        # a LATER resets_at is a newer window, and WITHIN a window utilization only climbs (it drops only at the
-        # reset, which advances resets_at), so a higher pct is the more recent reading; an EXPIRED window
-        # (resets_at already passed) loses to any live one. So an SDK seven_day event can no longer drag a stale
-        # five_hour back over the statusline's fresh one.
-        now_ = int(time.time())
-        def fresher(a, b):
-            if not a:
-                return b
-            if not b:
-                return a
-            ra_a = a.get("resets_at") if isinstance(a.get("resets_at"), (int, float)) else None
-            ra_b = b.get("resets_at") if isinstance(b.get("resets_at"), (int, float)) else None
-            live_a, live_b = (ra_a is not None and ra_a > now_), (ra_b is not None and ra_b > now_)
-            if live_a != live_b:                                  # a live window beats an expired/undated one
-                return a if live_a else b
-            if ra_a is not None and ra_b is not None and ra_a != ra_b:
-                return a if ra_a > ra_b else b                    # newer window (later reset) wins
-            return a if (a.get("pct") or 0) >= (b.get("pct") or 0) else b   # same window → higher (later) usage
-        five = fresher(five, cur.get("five_hour"))
-        seven = fresher(seven, cur.get("seven_day"))
-        if not five and not seven:
-            return
-        data = {"t": int(time.time()), "five_hour": five, "seven_day": seven}
-        try:
-            tmp = self.state_dir / "usage.json.tmp"
-            tmp.write_text(json.dumps(data))
-            os.replace(tmp, self.state_dir / "usage.json")
-            self._poke()   # nudge the producer so the rail re-reads usage.json promptly, not on the next backstop
-        except Exception:
-            pass
+            seg = cur.get(key) if isinstance(cur.get(key), dict) else None
+            cur_ra = seg.get("resets_at") if seg and isinstance(seg.get("resets_at"), (int, float)) else None
+            if ra is not None and cur_ra != ra:
+                new = {"pct": pct if pct is not None else 0, "resets_at": ra}   # the event's window is the live one
+            elif seg:
+                new = dict(seg)                       # same window (or the event carries no window identity)
+                if pct is not None:
+                    new["pct"] = max(int(new.get("pct") or 0), pct)   # in-window usage only climbs
+            elif pct is not None:
+                new = {"pct": pct, "resets_at": ra}
+            else:
+                return                                # no file seg, no pct, no window id → nothing to say
+            if status == "allowed" and (new.get("pct") or 0) >= 100:
+                new["pct"] = 99                       # the CLI says allowed → we are provably NOT limited
+            if new == seg:
+                return                                # no change → keep t honest (the tooltip's "updated … ago")
+            cur[key] = new
+            data = {"t": int(time.time()),
+                    "five_hour": cur.get("five_hour"), "seven_day": cur.get("seven_day")}
+            try:
+                tmp = self.state_dir / "usage.json.tmp"
+                tmp.write_text(json.dumps(data))
+                os.replace(tmp, self.state_dir / "usage.json")
+            except Exception:
+                self._log("usage.json write failed: %s" % traceback.format_exc())   # never silent (the user 2026-07-02)
+                return
+        self._poke()   # nudge the producer so the rail re-reads usage.json promptly, not on the next backstop
 
     # ---- logging / wakeups ----
     def _log(self, m):
