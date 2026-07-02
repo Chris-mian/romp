@@ -43,17 +43,15 @@ test("focusing the wrap on mousedown uses preventScroll (so the first % click is
   assert.match(SRC, /this\.wrap\.focus\(\{ preventScroll: true \}\)/);
 });
 
-test("clicking the battery sends /compact via a focus-proof pointerup (not the click a pane-focus swallows)", () => {
-  // The action fires on pointerdown→pointerup on the hit, NOT addEventListener('click', …): when the timeline
-  // iframe isn't the focused pane, the browser spends the first press focusing it and DROPS the synthesized
-  // click (the "first click only focuses, second acts" bug, the user 2026-07-02 — preventScroll above only
-  // covered focusing the inner wrap, not the cross-pane iframe focus). Pointer events reach the element
-  // regardless of window focus. The `pressed` guard ignores a pointerup after a press that began elsewhere.
-  assert.match(SRC, /let pressed = false;/);
-  assert.match(SRC, /hit\.addEventListener\('pointerdown', \(e\) => \{ if \(e\.button === 0\) pressed = true; \}\)/);
-  assert.match(SRC, /hit\.addEventListener\('pointerup', \(e\) => \{/);
-  assert.match(SRC, /if \(!pressed \|\| e\.button !== 0\) return;/);
-  assert.match(SRC, /this\._compactClicked\[s\.id\] = \(Date\.now \? Date\.now\(\) : 0\);\s*this\._compactSession\(s\.name\)/);
+test("clicking the battery sends /compact on POINTERDOWN (not a click/down→up a pane-focus redraw swallows)", () => {
+  // The action fires in the pointerdown handler itself — NOT on 'click' and NOT on a pointerdown→pointerup
+  // pair. When the timeline pane isn't focused, the first press focuses it AND a poll redraw lands mid-press,
+  // REPLACING this hit-rect, so the matching pointerup/click fires on a different node and is dropped — the
+  // two-click bug (the user 2026-07-02, still present after the down→up attempt). pointerdown lands on the very
+  // first press, the same fix the feed/postal lane toggles use. No `pressed`/pointerup pairing anymore.
+  assert.match(SRC, /hit\.addEventListener\('pointerdown', \(e\) => \{\s*\n\s*if \(e\.button !== 0\) return;/);
+  assert.match(SRC, /this\._compactClicked\[s\.id\] = \(Date\.now \? Date\.now\(\) : 0\);\s*\n?\s*this\._compactSession\(s\.name\)/);
+  assert.doesNotMatch(SRC, /hit\.addEventListener\('pointerup'/, "no pointerup pairing — a mid-press redraw would drop it");
   assert.match(SRC, /window\.__rompTimelineCompact === 'function'/);
 });
 

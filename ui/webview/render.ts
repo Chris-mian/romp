@@ -3326,8 +3326,12 @@ function ramp(v: number): [number, number, number] {
 //   (b) sample ramp() at the sweep's scaleX stops (see @keyframes tab-compact / ctx-compress in styles.css)
 //       and hand them to CSS as vars: --cmp4 (widest = the map's "full"/100% colour) … --cmp0 (narrowest =
 //       the map's 0% colour). The bar then slides through the SAME hues the battery fill uses as it narrows.
-function applyCompactSweep(fillEl: HTMLElement, durationMs = 1600): void {
-  fillEl.style.animationDelay = `-${Date.now() % durationMs}ms`;
+// phaseSync: seed the wall-clock phase ONLY on a FRESHLY-created element. For a REUSED element the animation
+// is already running on the compositor, and re-seeding animationDelay RESTARTS it — which is exactly the jump
+// the user saw on the statusline bar (its in-place refresh reuses #ctx-bar), 2026-07-02. The gradient vars are
+// always safe to (re)apply: changing a custom prop the keyframes reference recolors WITHOUT restarting.
+function applyCompactSweep(fillEl: HTMLElement, durationMs = 1600, phaseSync = true): void {
+  if (phaseSync) fillEl.style.animationDelay = `-${Date.now() % durationMs}ms`;
   const rgb = (v: number): string => { const c = ramp(v); return `rgb(${c[0]},${c[1]},${c[2]})`; };
   fillEl.style.setProperty("--cmp0", rgb(0.12));   // narrowest width in the sweep → the map's low end
   fillEl.style.setProperty("--cmp1", rgb(0.34));
@@ -4281,9 +4285,20 @@ function setCtxBar(bar: HTMLElement, ctxStr: string | undefined, compacting = fa
     bar.style.display = "";
     bar.title = "compacting context…";
     const scan = bar.querySelector(".ctx-scan") as HTMLElement | null;
-    if (scan) applyCompactSweep(scan, 3200);   // colormap gradient + phase-sync (ctx-compress runs 3.2s)
+    if (scan) {
+      // setCtxBar runs on BOTH the fresh bar updateStatusline builds AND the reused #ctx-bar the lighter
+      // in-place refresh keeps — so phase-sync ONLY a fresh scan (no `swept` flag yet); re-seeding a reused
+      // one every refresh restarted its animation, the jump the user saw (2026-07-02). The gradient still
+      // (re)applies either way (recolors without restarting).
+      const fresh = !scan.dataset.swept;
+      if (fresh) scan.dataset.swept = "1";
+      applyCompactSweep(scan, 3200, fresh);   // ctx-compress runs 3.2s
+    }
     return;
   }
+  // left compacting → clear the arm flag so the NEXT episode re-seeds the phase on this (possibly reused) bar
+  const scanOff = bar.querySelector(".ctx-scan") as HTMLElement | null;
+  if (scanOff) delete scanOff.dataset.swept;
   if (!ctxStr) { bar.style.display = "none"; return; }
   bar.style.display = "";
   const pct = Math.max(0, Math.min(100, parseInt(ctxStr, 10) || 0));

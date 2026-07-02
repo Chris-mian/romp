@@ -2316,19 +2316,15 @@ class TimelinePanel {
           hit.addEventListener('mouseenter', (e) => this.showTip(cmt(), e));
           hit.addEventListener('mousemove', (e) => this.moveTip(e));
           hit.addEventListener('mouseleave', () => this.hideTip());
-          // Activate on pointerdown→pointerup on THIS hit, NOT the synthesized `click`: when the timeline
-          // iframe isn't the focused pane, the browser spends the first press focusing the pane and DROPS the
-          // click that would follow (the "first click only focuses, second acts" bug — the earlier preventScroll
-          // fix only covered focusing the inner wrap, not the cross-pane iframe focus the user hit again
-          // 2026-07-02). Pointer events reach the element regardless of window focus (that's why the svg-level
-          // pointerdown already sets _pointerHeld on the first press), so a same-hit down+up IS a focus-proof
-          // click. The `pressed` guard ignores a pointerup that lands here after a press began elsewhere (e.g. a
-          // pan released over the battery); _pointerHeld holds external redraws so `hit` survives down→up.
-          let pressed = false;
-          hit.addEventListener('pointerdown', (e) => { if (e.button === 0) pressed = true; });
-          hit.addEventListener('pointerup', (e) => {
-            if (!pressed || e.button !== 0) return;
-            pressed = false;
+          // Act on POINTERDOWN, not a click or a down→up pair: when the timeline pane isn't focused, the first
+          // press focuses it AND a poll redraw lands mid-press, which REPLACES this hit-rect — so the matching
+          // pointerup (like a synthesized click) fires on a different node and is dropped, and you have to click
+          // twice ("first click only focuses, second acts", the user 2026-07-02). Firing on pointerdown lands
+          // the action on the very first press, before any redraw can interrupt — the SAME fix the feed/postal
+          // lane toggles already use for this exact reason. A press on the battery is always intent to compact
+          // (it starts no drag: only the empty rowHit does), so there's nothing to wait for a release to confirm.
+          hit.addEventListener('pointerdown', (e) => {
+            if (e.button !== 0) return;
             e.stopPropagation(); this.hideTip();
             this._compactClicked[s.id] = (Date.now ? Date.now() : 0);
             this._compactSession(s.name); this.draw();

@@ -26,16 +26,25 @@ test("compacting tab gets an animated compaction bar before the name (NOT the st
 test("the tab compaction sweep is armed with applyCompactSweep (phase-sync + colormap gradient)", () => {
   // the fill is armed before being appended, so it survives renderTabs()' replaceChildren() rebuilds
   assert.match(RENDER, /const cfill = el\("span", "tab-compacting-fill"\);\s*\n\s*applyCompactSweep\(cfill\);/);
-  // the statusline battery scan is armed too (its ctx-compress runs 3.2s, so the duration is passed)
-  assert.match(RENDER, /applyCompactSweep\(scan, 3200\)/);
+  // the statusline battery scan is armed too (its ctx-compress runs 3.2s), but phase-synced ONLY when fresh
+  assert.match(RENDER, /applyCompactSweep\(scan, 3200, fresh\)/);
+});
+
+test("the statusline sweep is phase-synced ONCE per element — a reused #ctx-bar is NOT re-seeded (no jump)", () => {
+  // setCtxBar runs on BOTH the fresh bar updateStatusline builds AND the reused #ctx-bar the in-place refresh
+  // keeps; re-seeding animationDelay on the reused element restarted the animation — the jump the user saw
+  // (2026-07-02). A `swept` dataset flag arms only a fresh scan; the flag clears when it leaves compacting.
+  assert.match(RENDER, /const fresh = !scan\.dataset\.swept;\s*\n\s*if \(fresh\) scan\.dataset\.swept = "1";/);
+  assert.match(RENDER, /if \(scanOff\) delete scanOff\.dataset\.swept;/);
 });
 
 test("applyCompactSweep phase-syncs across re-renders via a negative wall-clock animation-delay (no restart)", () => {
   // renderTabs()/updateStatusline() recreate the element every push; a plain CSS animation would reset to
   // frame 0 each time (the hiccup). A negative delay of -(now mod duration) makes the phase a pure function
-  // of the wall clock, so a freshly-built element resumes exactly where the destroyed one was.
-  assert.match(RENDER, /function applyCompactSweep\(fillEl: HTMLElement, durationMs = 1600\)/);
-  assert.match(RENDER, /fillEl\.style\.animationDelay = `-\$\{Date\.now\(\) % durationMs\}ms`/);
+  // of the wall clock, so a freshly-built element resumes exactly where the destroyed one was. Guarded by
+  // phaseSync so a REUSED element keeps its running compositor clock instead of restarting.
+  assert.match(RENDER, /function applyCompactSweep\(fillEl: HTMLElement, durationMs = 1600, phaseSync = true\)/);
+  assert.match(RENDER, /if \(phaseSync\) fillEl\.style\.animationDelay = `-\$\{Date\.now\(\) % durationMs\}ms`/);
 });
 
 test("the compaction sweep mirrors the context colormap: ramp() sampled into --cmp0…--cmp4 vars", () => {
