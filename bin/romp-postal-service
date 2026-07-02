@@ -369,6 +369,14 @@ def all_agents():
             agents.append({"name": name, "id": sid, "remote": True})
     return agents
 
+def _record_heartbeat(sid, name):
+    """Record remote-presence for an incoming heartbeat — but ONLY for a sid the local kernel does NOT already
+    own. A local session is already visible via the kernel's /sessions, so recording its heartbeat would leave
+    it lingering as a phantom [remote] peer for the TTL after it dies. A genuine REMOTE (federated) session,
+    reaching us over an -R tunnel, is NOT in the local kernel — heartbeats are its only presence signal."""
+    if sid and _safe_id(sid) and sid not in {a["id"] for a in local_agents()}:
+        HEARTBEATS[sid] = (name or "?", time.time())
+
 def present_count():
     return len(all_agents())
 
@@ -678,11 +686,14 @@ def _push(sid, agent):
     kernel does the fine pane-safety (at a ❯ prompt, out of copy-mode, a draft it can safely stash) and tells
     us whether it injected. Not injected → put the mail back for the maildir-drain backstop. Returns True iff
     injected (so a revive poll knows to stop). `agent` is the GET /sessions row (id, state, backend, remote)."""
-    if _push_disabled() or not agent or agent.get("remote"):
+    if _push_disabled() or not agent:
         return False
     if os.environ.get("ROMP_SESSIONS_FILE"):                  # test seam: no live kernel → leave it for the drain (don't churn the maildir)
         return False
-    if agent.get("state", "") not in ("waiting", "idle", "working"):
+    # A REMOTE (heartbeat) peer on an attached host: we don't have its live state here, so skip the local
+    # state gate and POST /deliver anyway — the local kernel's wake-router forwards it over the host's -L
+    # tunnel, and the OWNING kernel does the pane-safety and tells us whether it injected.
+    if not agent.get("remote") and agent.get("state", "") not in ("waiting", "idle", "working"):
         return False                                          # permission / unknown / picker → drain later
     try:
         res = _drain(sid)                                     # claim mail (guarded + consuming)
@@ -812,6 +823,11 @@ class Handler(BaseHTTPRequestHandler):
                                  args=("/deliver-chrome", {"recip_id": a0["id"], "recip_name": a0["name"],
                                        "sender_id": frm_id, "sender_name": frm, "body": data.get("body", ""), "mid": mid})).start()
                 threading.Thread(target=_push, args=(a0["id"], a0), daemon=True).start()
+            else:
+                # A REMOTE peer on an attached host: still WAKE it — _push POSTs /deliver to the local kernel,
+                # whose wake-router forwards it over the host's -L tunnel to the owning kernel (which injects
+                # into the pane). The tmux status chrome above is local-only, so it's skipped for remotes.
+                threading.Thread(target=_push, args=(a0["id"], a0), daemon=True).start()
             return self._send({"ok": True, "to": to})
         if u.path == "/recall":
             frm_id = data.get("from_id", "")
@@ -825,9 +841,7 @@ class Handler(BaseHTTPRequestHandler):
                 threading.Thread(target=_wake_when_ready, args=(sid,), daemon=True).start()
             return self._send({"ok": True})
         if u.path == "/heartbeat":
-            sid = data.get("id")
-            if sid and _safe_id(sid):
-                HEARTBEATS[sid] = (data.get("name", "?"), time.time())
+            _record_heartbeat(data.get("id"), data.get("name", "?"))
             return self._send({"ok": True})
         self._send({"error": "not found"}, 404)
 
@@ -1084,6 +1098,22 @@ def _heartbeat(sid, name):
         except Exception:
             pass
 
+def _heartbeat_loop():
+    """Keep THIS session present to the bus while it's alive, so an IDLE session that hasn't touched a postal
+    tool is still addressable. This is essential for a REMOTE (federated) session: it appears to the laptop's
+    bus ONLY via heartbeats over the -R tunnel (a local session is already visible through the kernel's
+    /sessions). Cadence well under HEARTBEAT_TTL. The bus ignores heartbeats from LOCAL sids, so this costs a
+    local session nothing and is the presence mechanism for remote ones. Runs from the stdio MCP server, which
+    lives exactly as long as the Claude session."""
+    while True:
+        try:
+            sid = my_id()
+            if sid:
+                _heartbeat(sid, my_name())
+        except Exception:
+            pass
+        time.sleep(max(15, HEARTBEAT_TTL // 3))
+
 # ───────────────────────── stdio MCP server ─────────────────────────
 
 # Server-level instructions, surfaced to the model by MCP clients at initialize.
@@ -1184,6 +1214,9 @@ def mcp():
     """Hand-rolled stdio MCP server (newline-delimited JSON-RPC). stdout carries
     ONLY protocol messages; everything else goes to stderr."""
     ensure()
+    # Heartbeat presence while this session lives, so an idle REMOTE (federated) session stays addressable
+    # over the -R tunnel even before it uses a postal tool. No-op for local sids (the bus ignores those).
+    threading.Thread(target=_heartbeat_loop, daemon=True).start()
     out = sys.stdout
 
     def reply(obj):

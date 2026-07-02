@@ -47,12 +47,37 @@ class PushThroughKernel(unittest.TestCase):
         self.assertFalse(pm._push("sid-b", {"id": "sid-b", "state": "idle"}))
         self.assertEqual(self.redelivered, [("sid-b", "hi")])
 
-    def test_skips_remote_and_not_ready_without_draining(self):
+    def test_skips_not_ready_local_without_draining(self):
         pm._kernel_post = lambda *a, **k: self.fail("must not POST for a skipped session")
         pm._drain = lambda sid: self.fail("must not drain a skipped session")
-        self.assertFalse(pm._push("sid-b", {"id": "sid-b", "state": "idle", "remote": True}))
         self.assertFalse(pm._push("sid-b", {"id": "sid-b", "state": "permission"}))
         self.assertEqual(self.redelivered, [])
+
+    def test_remote_agent_is_woken_through_the_kernel(self):
+        # A REMOTE (federated) peer has no local 'state' here; _push must still POST /deliver so the local
+        # kernel's wake-router forwards it over the host's -L tunnel to the owning kernel. (Regression: the
+        # bus used to SKIP remote agents, so an idle remote peer could never be woken cross-machine.)
+        self.posted = []
+        pm._kernel_post = lambda path, body, timeout=2: (self.posted.append((path, body)),
+                                                         {"ok": True, "injected": True})[1]
+        self.assertTrue(pm._push("sid-r", {"id": "sid-r", "remote": True}))
+        self.assertEqual(self.posted[0][0], "/deliver")
+        self.assertEqual(self.posted[0][1]["id"], "sid-r")
+
+    def test_heartbeat_records_remote_but_ignores_local(self):
+        # Only sids the local kernel does NOT own get remote-presence; a local session is already visible via
+        # /sessions and must not linger as a phantom [remote] after it dies.
+        saved = pm.local_agents
+        pm.local_agents = lambda: [{"id": "local-1", "name": "mysess"}]
+        try:
+            pm.HEARTBEATS.clear()
+            pm._record_heartbeat("11111111-2222-3333-4444-555555555555", "jettytest")   # not local → recorded
+            pm._record_heartbeat("local-1", "mysess")                                    # local → ignored
+            self.assertIn("11111111-2222-3333-4444-555555555555", pm.HEARTBEATS)
+            self.assertNotIn("local-1", pm.HEARTBEATS)
+        finally:
+            pm.local_agents = saved
+            pm.HEARTBEATS.clear()
 
     def test_source_uses_the_kernel_deliver_not_a_tmux_inject(self):
         src = open(os.path.join(BIN, "romp-postal-service"), encoding="utf-8").read()
