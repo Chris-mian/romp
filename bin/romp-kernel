@@ -1599,7 +1599,7 @@ def _drive(msg, client):
     elif t == "sendCommand" and msg.get("cmd"):
         cmd = str(msg["cmd"]).strip()                     # the timeline lane menu sends "/model X" / "/effort X"
         if cmd.startswith("/model "):
-            be.set_model(sid, cmd[len("/model "):].strip())
+            _set_model_or_park(be, sid, cmd[len("/model "):].strip())   # mid-compaction → parked as a queued command
         elif cmd.startswith("/effort "):
             be.set_effort(sid, cmd[len("/effort "):].strip())
         else:
@@ -1656,7 +1656,7 @@ def _drive(msg, client):
         # so the echo + transcript render gray and the planner skips a work-less retry instead of minting a goal.
         be.send(sid, "retry\n\n<!-- romp-injected -->")
     elif t == "setModel" and msg.get("value"):
-        be.set_model(sid, str(msg["value"])); _push_all()
+        _set_model_or_park(be, sid, str(msg["value"])); _push_all()   # mid-compaction → parked as a queued command
     elif t == "setEffort" and msg.get("value"):
         be.set_effort(sid, str(msg["value"])); _push_all()   # tmux: /effort; SDK: reconnect with --effort
     elif t == "setMode" and msg.get("value"):
@@ -3917,6 +3917,52 @@ def _compacting(sid, st, session, now, since):
     return True
 
 
+# A model change requested WHILE the session compacts is PARKED here instead of applied (the user
+# 2026-07-01: switching the model mid-compaction broke the compaction — tmux keystrokes land in the
+# compacting UI and the /model confirm Enter derails it; the wanted behavior is a queued command that
+# takes effect after). build_session renders the park as a queued '/model …' bubble; the producer tick
+# fires it via _apply_pending_models the moment compaction ends.
+_pending_model = {}           # sid -> parked model value
+
+
+def _compacting_now(sid):
+    """Is this session compacting RIGHT NOW — the same corroborated signal the chip uses (_compacting:
+    live/optimistic state, disproved by resumed work or a compact_boundary, 180s optimistic cap), read
+    from the CACHED parse only so it's cheap enough for the WS handler and the producer tick."""
+    sid = str(sid)
+    tm = _tmux_sessions().get(sid)
+    path = _path_of(sid)
+    session = (_parse_cached(path) if path else None) or {"turns": []}
+    return _compacting(sid, (tm or {}).get("state", ""), session, int(time.time()), (tm or {}).get("since"))
+
+
+def _set_model_or_park(be, sid, value):
+    """Apply a model change now — or PARK it while the session compacts (see _pending_model). A park
+    pushes immediately so the queued-command bubble appears at once (build_session appends it), never
+    waiting out the backstop poll."""
+    if _compacting_now(sid):
+        _pending_model[str(sid)] = value
+        _push_all()
+    else:
+        be.set_model(sid, value)
+
+
+def _apply_pending_models():
+    """Producer tick: fire parked model changes whose compaction has ENDED — event-corroborated
+    (_compacting flips false on the compact_boundary or resumed work; its 180s optimistic cap covers a
+    cancelled compaction), so a park can never stick forever. A dead session's park is dropped (its
+    backend call fails once, logged), never retried into a void."""
+    for sid, v in list(_pending_model.items()):
+        if _compacting_now(sid):
+            continue
+        _pending_model.pop(sid, None)
+        try:
+            Sessions.backend_for(sid).set_model(sid, v)
+        except Exception:
+            sys.stderr.write("pending model apply: %s\n" % traceback.format_exc())
+        _push_all()
+
+
 # ── the chat's pinned "system context" card (the user 2026-06-19) ──────────────────────────────────
 # A collapsed card at the very top of the transcript showing the CLAUDE.md instructions in effect plus
 # the session's model / cwd / branch / permission-mode / Claude Code version. It is NOT the verbatim
@@ -4489,7 +4535,8 @@ def build_session(sid, now, tmux=None):
     # composer, like the old TS kernel — so it's visible instead of vanishing (the user 2026-06-15;
     # pane-scrape dropped a 2nd queued message → both vanished, 2026-06-16). The matching input echo (if any)
     # was suppressed at merge time, so a queued message shows exactly once, here.
-    if queued:
+    pending_model = _pending_model.get(sid)
+    if queued or pending_model:
         # Each pending message is rendered like a landed one (markdown) — and a follow-up is cleaned of the
         # romp goal-context quote + the comment markers, carrying just the body + the goal title (the user
         # 2026-06-27). Same _split_followup the landed human turns use, so pending + landed match.
@@ -4507,6 +4554,13 @@ def build_session(sid, now, tmux=None):
                 if ctx:                                       # expandable header on queued follow-ups too
                     m["fuCtx"] = ctx
             qmsgs.append(m)
+        if pending_model:
+            # a model change parked while this session COMPACTS (the user 2026-07-01): rendered as a queued
+            # COMMAND exactly like a queued message ("/model …" → the slash-command chip), applied by
+            # _apply_pending_models the moment compaction ends. Appended AFTER the real queue — idx
+            # positions must keep matching the backend's _pending for cancelQueued — and NOT cancelable
+            # (it lives in _pending_model, not the backend's queue).
+            qmsgs.append({"md": "/model " + pending_model})
         events.append({"kind": "queued", "texts": qmsgs})
     # WORKING from the event model (open turn, no idle atom) — the one shared signal. Computed up here so the
     # API-error gate just below can use it (it's also read later for the chip + work-timer base).
@@ -7297,6 +7351,7 @@ def _producer():
             _judge_gen[0] += 1     # a judge pass may have changed goal/caption state WITHOUT touching any
                                    # transcript → bump the generation so the chat-build cache re-builds the
                                    # background tabs once, keeping their Fleet status/ledger fresh (≤ this cadence).
+            _apply_pending_models()   # fire model changes parked during a compaction that has now ended
         except Exception:
             sys.stderr.write("producer: %s\n" % traceback.format_exc())
         finally:
