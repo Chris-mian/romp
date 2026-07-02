@@ -1758,6 +1758,17 @@ class TimelinePanel {
     } catch (e) { /* no host hook + no Node fs → can't persist */ }
   }
 
+  // Clear a DEAD lane's leftover row from the timeline (the Clear pill on a struck-through lane). The kernel
+  // holds the dismissal IN MEMORY only, so it does NOT survive a `romp --refresh` (the user 2026-07-02) —
+  // a mistakenly-cleared lane comes back on restart. Web-shell only (no Obsidian/Node path: nothing to persist).
+  _dismissLane(id) {
+    try {
+      if (typeof window !== 'undefined' && typeof window.__rompTimelineDismiss === 'function') {
+        window.__rompTimelineDismiss(id);
+      }
+    } catch (e) {}
+  }
+
   _tmuxPath() {
     if (this._tmux) return this._tmux;
     this._tmux = 'tmux';
@@ -2187,6 +2198,39 @@ class TimelinePanel {
           this._reconcilePendingFlags();   // apply onto the CURRENT objects draw() reads — a poll may have swapped
           this.draw();                     // this.data mid-press, leaving `s` stale (see the feed checkbox above)
         });
+      }
+      // DEAD lane → a "Clear" pill just right of the struck name (the user 2026-07-02). A dead session lingers
+      // as a faded/struck lane while it's still in the activity window, with NONE of the live controls (no
+      // feed/postal toggle, no model picker, no chip, no ctx battery — all empty), so the row right of the name
+      // is free. The pill mirrors the feed cards' Clear button chrome (outlined, dim → red fill on hover) and
+      // dismisses the leftover lane. The kernel forgets the dismissal on restart, so `romp --refresh` brings a
+      // mistakenly-cleared lane back. pointerdown (not click): a poll redraw between mousedown/up would eat a
+      // 'click', same as the feed/postal toggles above.
+      if (!s.live) {
+        const CL_H = 15, CL_PAD = 7, CL_RED = '#c74e39';
+        const cw = Math.ceil(this.ctxWidth('Clear')), bw = cw + CL_PAD * 2, bx = eyeColX, by = y - CL_H / 2;
+        const box = el('rect', { x: bx, y: by, width: bw, height: CL_H, rx: 6, fill: 'transparent', stroke: MODEL_FG, 'stroke-width': 1, 'stroke-opacity': 0.5, 'pointer-events': 'none' });
+        svg.appendChild(box);
+        const ctx = el('text', { x: bx + bw / 2, y: y + 3.5, 'text-anchor': 'middle', 'font-size': 11, 'font-weight': 600, fill: MODEL_FG, 'pointer-events': 'none' });
+        ctx.textContent = 'Clear'; svg.appendChild(ctx);
+        const chit = el('rect', { x: bx, y: by, width: bw, height: CL_H, rx: 6, fill: 'transparent' });
+        chit.style.cursor = 'pointer'; chit.setAttribute('aria-label', 'clear this ended session from the timeline');
+        chit.addEventListener('mouseenter', (e) => {
+          box.setAttribute('fill', CL_RED); box.setAttribute('stroke', CL_RED); box.setAttribute('stroke-opacity', '1'); ctx.setAttribute('fill', '#ffffff');
+          this.showTip("Clear this ended session from the timeline<div style='opacity:.65;margin-top:2px'>a kernel restart (romp --refresh) brings it back</div>", e);
+        });
+        chit.addEventListener('mousemove', (e) => this.moveTip(e));
+        chit.addEventListener('mouseleave', () => {
+          box.setAttribute('fill', 'transparent'); box.setAttribute('stroke', MODEL_FG); box.setAttribute('stroke-opacity', '0.5'); ctx.setAttribute('fill', MODEL_FG); this.hideTip();
+        });
+        chit.addEventListener('pointerdown', (e) => {
+          e.stopPropagation(); this.hideTip();
+          // optimistic: drop it from the current frame so it vanishes at once; the kernel's next push (now
+          // excluding the dismissed sid) is authoritative, and a restart — forgetting it — brings it back.
+          if (this.data && this.data.sessions) this.data.sessions = this.data.sessions.filter((x) => x.id !== s.id);
+          this._dismissLane(s.id); this.draw();
+        });
+        svg.appendChild(chit);
       }
       // model + effort, muted, between the name and the state chip (left-aligned in its column). On a
       // LIVE lane each word is a drop-down picker — hover reveals a ▾ caret, click opens a menu whose

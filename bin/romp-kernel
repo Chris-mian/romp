@@ -3926,6 +3926,11 @@ def _ask_fill_chosen(blocks, output):
 
 
 _compact_clicked = {}         # sid -> ts of a compact WE initiated → optimistic cross-surface "compacting"
+# Dead-lane dismissals (the user 2026-07-02): a DEAD session lingers in the timeline as a faded/struck lane
+# while it's still in the activity window; its Clear button adds the sid here to drop it. DELIBERATELY in
+# memory only (never persisted) — a kernel restart forgets it, so `romp --refresh` brings a mistakenly-cleared
+# lane back. Only filters a lane while it's dead; a revived sid reappears (see build_timeline).
+_dismissed_lanes = set()      # sids the user cleared from the timeline (dead lanes only, forgotten on restart)
 
 
 def _mark_compacting(sid):
@@ -6608,6 +6613,8 @@ def build_timeline(now, tmux=None, with_bars=True, live_only=False):
     if tmux is None:
         tmux = _tmux_sessions()
     alive = _timeline_sessions(now, tmux, live_only=live_only)   # living + window-dead (≤12h) lanes; per-session `live` below marks the dead ones (struck). live_only → live sessions only (cold-start first paint)
+    if _dismissed_lanes:   # drop lanes the user cleared — but ONLY while still dead; a revived sid reappears (in-memory, forgotten on restart)
+        alive = [s for s in alive if not (s["sid"] in _dismissed_lanes and tmux.get(s["sid"]) is None)]
     id2name = {s["sid"]: s["name"] for s in alive}
     sessions, turns, semantic = [], {}, []   # `semantic`: artifact-derived marks (for gloss text); the band's marks are RUN spans, below
     ctx_stops = cm.stops_for(_colormap())    # the GLOBAL colormap (the user 2026-06-26): color the per-lane context bar server-side
@@ -8154,6 +8161,7 @@ window.__rompTimelineWriteOrder=function(order){send({type:"writeOrder",order:or
 window.__rompTimelineCompact=function(name){send({type:"compact",name:name});};
 window.__rompTimelineSendCommand=function(name,cmd){send({type:"sendCommand",name:name,cmd:cmd});};
 window.__rompTimelineSetFlag=function(id,flag,value){send({type:"setSessionFlag",id:id,flag:flag,value:!!value});};
+window.__rompTimelineDismiss=function(id){send({type:"dismissLane",id:id});};
 window.__rompTimelineHover=function(sid,segIds,t0,t1){send(sid?{type:"timelineHover",sid:sid,segIds:segIds||[],t0:t0,t1:t1}:{type:"timelineHover",off:true});};
 window.__rompConnectTimeline=function(p){panel=p;connect();send({type:"ready"});};
 setInterval(function(){if(everConnected&&ws&&ws.readyState===1&&Date.now()-lastRecv>STALE_MS){try{ws.close();}catch(e){}}},5000);})();
@@ -9353,6 +9361,12 @@ class Handler(BaseHTTPRequestHandler):
             _push_all()
         elif msg and msg.get("type") == "undoClear":
             _undo_clear()
+            _push_all()
+        elif msg and msg.get("type") == "dismissLane" and msg.get("id"):
+            # timeline: clear a DEAD lane's leftover row (the user 2026-07-02). IN-MEMORY only — a kernel
+            # restart forgets it, so a mistakenly-cleared lane comes back on `romp --refresh`. Only dead lanes
+            # carry the Clear button; build_timeline drops the sid only while it's dead, so a revived one returns.
+            _dismissed_lanes.add(str(msg["id"]))
             _push_all()
         elif msg and msg.get("type") in ("reorderTabs", "writeOrder") and isinstance(msg.get("order"), list):
             # tab-drag or lane-drag → reorder BOTH surfaces. MERGE the dragged surface's order into the
