@@ -3071,44 +3071,44 @@ class ModelTiers(unittest.TestCase):
     model (Haiku); planner + courier + closer on the TRIAGE model (Sonnet)."""
 
     def setUp(self):
-        # Sandbox STATE so _triage_model() sees no override (and the real ~/.local/state judge-model, if the
-        # user picked one in the UI, is neither read nor deleted). The tier split must hold on the DEFAULT.
+        # Sandbox STATE so the per-tier readers see no override (and the real ~/.local/state picks are neither
+        # read nor deleted). The tier split must hold on the DEFAULT aliases.
         self._saved_state = jd.STATE
         self._td = tempfile.mkdtemp()
         jd.STATE = Path(self._td)
-        jd._judge_model_cache["mt"] = None
+        jd._state_cache.clear()
 
     def tearDown(self):
         jd.STATE = self._saved_state
-        jd._judge_model_cache["mt"] = None
+        jd._state_cache.clear()
         shutil.rmtree(self._td, ignore_errors=True)
 
     def test_index_vs_triage_split(self):
-        self.assertIn("haiku", jd.INDEX_MODEL, "index tier is Haiku")
-        self.assertEqual(jd.TRIAGE_MODEL, "claude-sonnet-5", "triage default is Sonnet 5 (bumped from 4.6)")
-        self.assertEqual(jd.JUDGE_MODELS[0][0], jd.TRIAGE_MODEL, "the default leads the selectable menu")
+        # Defaults are `claude --model` ALIASES now (auto-track latest), the same vocabulary the pickers use.
+        self.assertEqual(jd.INDEX_MODEL, "haiku", "index tier defaults to the haiku alias")
+        self.assertEqual(jd.TRIAGE_MODEL, "sonnet", "triage tier defaults to the sonnet alias (→ latest Sonnet)")
         self.assertNotEqual(jd.INDEX_MODEL, jd.TRIAGE_MODEL)
         calls, saved = [], jd._judge_run
-        jd._judge_run = lambda model, sysp, user, effort=None, judge=None: (calls.append((model, sysp)) or "")
+        jd._judge_run = lambda model, sysp, user, effort=None, judge=None, tier="triage": (calls.append((model, sysp, tier)) or "")
         try:
             jd.caption_llm("x"); jd.archive_llm("x"); jd.plan_llm("x", "y")
             jd.courier_llm("x", "y"); jd.closer_llm("x", "y")
         finally:
             jd._judge_run = saved
-        by_sys = {sysp: m for (m, sysp) in calls}
-        self.assertEqual(by_sys[jd.CAPTION_SYS], jd.INDEX_MODEL, "captioner → index (Haiku)")
-        self.assertEqual(by_sys[jd.ARCHIVE_SYS], jd.INDEX_MODEL, "archiver → index (Haiku)")
-        self.assertEqual(by_sys[jd.PLAN_SYS], jd.TRIAGE_MODEL, "planner → triage (Sonnet)")
-        self.assertEqual(by_sys[jd.COURIER_SYS], jd.TRIAGE_MODEL, "courier → triage (Sonnet)")
-        self.assertEqual(by_sys[jd.CLOSER_SYS], jd.TRIAGE_MODEL, "closer → triage (Sonnet)")
+        by_sys = {sysp: (m, tier) for (m, sysp, tier) in calls}
+        self.assertEqual(by_sys[jd.CAPTION_SYS], ("haiku", "index"), "captioner → index model + tier")
+        self.assertEqual(by_sys[jd.ARCHIVE_SYS], ("haiku", "index"), "archiver → index model + tier")
+        self.assertEqual(by_sys[jd.PLAN_SYS], ("sonnet", "triage"), "planner → triage model + tier")
+        self.assertEqual(by_sys[jd.COURIER_SYS], ("sonnet", "triage"), "courier → triage")
+        self.assertEqual(by_sys[jd.CLOSER_SYS], ("sonnet", "triage"), "closer → triage")
 
     def test_plan_llm_model_and_effort_override(self):
-        """plan_llm takes model + effort overrides (for the classification A/B); default is triage, no effort."""
+        """plan_llm takes model + effort overrides (for the classification A/B); default is the triage model."""
         seen, saved = {}, jd._judge_run
-        jd._judge_run = lambda model, sysp, user, effort=None, judge=None: (seen.update(model=model, effort=effort) or "")
+        jd._judge_run = lambda model, sysp, user, effort=None, judge=None, tier="triage": (seen.update(model=model, effort=effort) or "")
         try:
             jd.plan_llm("seg", "menu")
-            self.assertEqual((seen["model"], seen["effort"]), (jd.TRIAGE_MODEL, None), "default: triage, no thinking")
+            self.assertEqual((seen["model"], seen["effort"]), ("sonnet", None), "default: triage alias, no explicit effort")
             jd.plan_llm("seg", "menu", model="claude-opus-4-8", effort="medium")
             self.assertEqual((seen["model"], seen["effort"]), ("claude-opus-4-8", "medium"), "overrides pass through")
         finally:
@@ -4081,13 +4081,13 @@ class GistLlm(unittest.TestCase):
     def test_uses_index_model_and_gist_sys_and_cleans_the_phrase(self):
         seen = {}
 
-        def fake(model, sys_prompt, user, effort=None, judge=None):
-            seen.update(model=model, sys=sys_prompt, user=user, judge=judge)
+        def fake(model, sys_prompt, user, effort=None, judge=None, tier="triage"):
+            seen.update(model=model, sys=sys_prompt, user=user, judge=judge, tier=tier)
             return "  a dark-mode toggle for settings.  "       # stray padding + trailing dot
         jd._judge_run = fake
         out = jd.gist_llm("please add a dark mode toggle to the settings page")
         self.assertEqual(out, "a dark-mode toggle for settings", "normalized: trimmed, trailing dot dropped")
-        self.assertEqual(seen["model"], jd.INDEX_MODEL, "the cheap INDEX tier (Haiku)")
+        self.assertEqual((seen["model"], seen["tier"]), (jd._index_model(), "index"), "the cheap INDEX tier (Haiku)")
         self.assertIs(seen["sys"], jd.GIST_SYS)
         self.assertEqual(seen["judge"], "captioner",
                          "the prompt gist is the CAPTIONER's message caption, not a separate hidden 'gist' judge (the user 2026-06-19)")

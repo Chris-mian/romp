@@ -280,14 +280,17 @@ function mailboxIcon(off, cx, cy, color) {
   if (off) g.appendChild(el('line', { x1: cx - 6.5, y1: cy + 4.5, x2: cx + 6.5, y2: cy - 4.5, stroke: color, 'stroke-width': 1.4, 'stroke-linecap': 'round' }));
   return g;
 }
-const MODEL_CHOICES = [
-  { label: 'Fable', value: 'fable' },
-  { label: 'Opus', value: 'opus' },
-  { label: 'Sonnet', value: 'sonnet' },
-  { label: 'Haiku', value: 'haiku' },
-  { label: 'Default', value: 'default' },
-];
-const EFFORT_CHOICES = ['low', 'medium', 'high', 'xhigh', 'max'].map((v) => ({ label: v, value: v }));
+// Model + effort choices come from the kernel's /models — the ONE list shared with the chat statusline picker
+// and the judge-tier settings (the user 2026-07-02: no hardcoded model list per surface). Populated in place
+// on load so _openMetaMenu keeps its reference; the lane picker appends its own 'Default' sentinel (not a model).
+const MODEL_CHOICES = [];
+const EFFORT_CHOICES = [];
+try {
+  if (typeof fetch !== 'undefined') fetch('/models', { cache: 'no-store' }).then((r) => r.json()).then((d) => {
+    if (Array.isArray(d.models)) { MODEL_CHOICES.length = 0; for (const m of d.models) MODEL_CHOICES.push(m); MODEL_CHOICES.push({ label: 'Default', value: 'default' }); }
+    if (Array.isArray(d.efforts)) { EFFORT_CHOICES.length = 0; for (const e of d.efforts) EFFORT_CHOICES.push(e); }
+  }).catch(() => {});
+} catch (e) {}
 // Is this menu entry the lane's CURRENT value? Effort matches exactly; the model var holds a display
 // name ("Opus 4.8"), so match on the leading word — same rule as the chat-view's isCurrentMeta.
 function isCurrentMeta(kind, s, value) {

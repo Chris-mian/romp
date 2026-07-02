@@ -61,43 +61,42 @@ def _rebind_state(path):
     MESSAGES, ERRORS, USAGE = STATE / "timeline" / "messages.jsonl", STATE / "judge-errors.jsonl", STATE / "judge-usage.jsonl"
 
 # Two model tiers (the Haiku cost lever, judge.md §Two run tiers; shipped 2026-06-15): cheap always-on
-# INDEXING on Haiku, judgment-heavy TRIAGE on Sonnet.
-INDEX_MODEL  = "claude-haiku-4-5-20251001"   # captioner + archiver (index tier — high volume, low stakes)
-TRIAGE_MODEL = "claude-sonnet-5"             # DEFAULT triage model (planner/grouper/closer/distiller/courier);
-                                             # bumped from Sonnet 4.6 → Sonnet 5 (the user 2026-07-02). The live
-                                             # pick is settings-overridable — see JUDGE_MODELS + _triage_model().
-# Selectable triage-judge models for the settings dropdown (the user 2026-07-02). (id, label) in menu order;
-# the first is the default. The live choice is persisted in STATE/judge-model and read by _triage_model(), so a
-# settings change lands on the judge's NEXT pass with no restart. Index-tier stays on Haiku (a deliberate cost
-# lever, not exposed). Only judgment-capable models belong here (Fable is writing-specialised → omitted).
-JUDGE_MODELS = [
-    ("claude-sonnet-5", "Sonnet 5 — balanced (default)"),
-    ("claude-opus-4-8", "Opus 4.8 — strongest judgment, priciest"),
-    ("claude-sonnet-4-6", "Sonnet 4.6 — previous default"),
-    ("claude-haiku-4-5-20251001", "Haiku 4.5 — fastest / cheapest"),
-]
-_judge_model_cache = {"id": None, "mt": None}
+# INDEXING on Haiku, judgment-heavy TRIAGE on Sonnet. Defaults are `claude --model` ALIASES (fable/opus/
+# sonnet/haiku) — the SAME set the chat + timeline model pickers use — so an alias auto-tracks the latest of
+# its family (e.g. `sonnet` → Sonnet 5 today, and forward) and there's one model vocabulary across the app.
+INDEX_MODEL  = "haiku"    # captioner + archiver (index tier — high volume, low stakes)
+TRIAGE_MODEL = "sonnet"   # planner/grouper/closer/distiller/courier (triage tier — judgment)
+# The selectable model/effort CHOICES are defined ONCE, in the kernel (MODEL_CHOICES / EFFORT_CHOICES), and
+# served to EVERY picker — chat, timeline, and the judge-tier settings (the user 2026-07-02: "same code path,
+# don't hardcode in multiple places"). The judge holds no list: it reads the per-tier override the kernel
+# persisted (already validated against MODEL_CHOICES) and falls back to the default above.
+_state_cache = {}   # STATE-relative filename -> {"val": str, "mt": float} (mtime-cached, like the kernel's _colormap)
 
 
-def _triage_model():
-    """The TRIAGE-tier model to use RIGHT NOW: the STATE/judge-model override when it names a known
-    JUDGE_MODELS id, else the default TRIAGE_MODEL. Read fresh each call (mtime-cached, like the kernel's
-    _colormap) so a settings change is honored on the next pass without a restart — the judge runs both as a
-    fresh `--once` subprocess AND inside the long-lived kernel, so an import-time constant wouldn't update."""
-    f = STATE / "judge-model"
+def _state_str(name, default=""):
+    """The stripped contents of STATE/<name>, else `default`. Read fresh each call (mtime-cached) so a settings
+    change lands on the judge's NEXT pass with no restart — the judge runs both as a fresh `--once` subprocess
+    AND inside the long-lived kernel, so an import-time constant wouldn't update. The kernel validates before
+    writing, so the judge trusts the file (no local allow-list to keep in sync)."""
+    f = STATE / name
     try:
         mt = f.stat().st_mtime
     except OSError:
-        return TRIAGE_MODEL
-    if _judge_model_cache["mt"] != mt:
+        return default
+    c = _state_cache.get(name)
+    if not c or c["mt"] != mt:
         try:
-            mid = f.read_text().strip()
+            v = f.read_text().strip()
         except OSError:
-            mid = ""
-        valid = {m[0] for m in JUDGE_MODELS}
-        _judge_model_cache["id"] = mid if mid in valid else TRIAGE_MODEL
-        _judge_model_cache["mt"] = mt
-    return _judge_model_cache["id"]
+            v = ""
+        _state_cache[name] = c = {"val": v or default, "mt": mt}
+    return c["val"]
+
+
+def _triage_model():  return _state_str("judge-model", TRIAGE_MODEL)   # gear "Triage model" → STATE/judge-model
+def _index_model():   return _state_str("index-model", INDEX_MODEL)    # gear "Indexing model" → STATE/index-model
+def _triage_effort(): return _state_str("judge-effort", "")   # "" → pass NO --effort (the long-standing default)
+def _index_effort():  return _state_str("index-effort", "")
 WINDOW      = 48 * 3600                  # only caption transcripts touched in the last N hours (matches the parse horizon)
 BUDGET      = None                       # per-pass caption-CALL cap — REMOVED (the user 2026-06-30): these are
 FAIRNESS    = None                       # cheap Haiku index-tier calls; the per-pass / per-session caption caps
@@ -337,7 +336,7 @@ def _judge_env(tier):
     return env
 
 
-def _judge_run(model, sys_prompt, user, effort=None, judge=None):
+def _judge_run(model, sys_prompt, user, effort=None, judge=None, tier="triage"):
     """Run ONE judge model call. ..."""
     try:
         p = STATE / "retry-paused.json"
@@ -345,8 +344,11 @@ def _judge_run(model, sys_prompt, user, effort=None, judge=None):
             return ""
     except Exception:
         pass
-    tier = "index" if model == INDEX_MODEL else "triage"
     env = _judge_env(tier)
+    # Per-tier effort from the gear (STATE/judge-effort | index-effort) when the caller didn't pass one — "" or
+    # None means NO --effort flag, the long-standing default. An explicit caller effort (the plan A/B) still wins.
+    if effort is None:
+        effort = (_index_effort() if tier == "index" else _triage_effort()) or None
     fsid = getattr(_judge_ctx, "fsid", None)
     sent = time.time()                                # literal wall-clock: the prompt goes to the API now
     rid = _active_begin(judge or tier, fsid, sent)    # live bar starts NOW (deregistered in finally below)
@@ -401,7 +403,7 @@ def caption_llm(unit_text):
     """One caption from the INDEX-tier model (Haiku), zero tools / MCP off (it can't act). The model emits
     the BARE phrase (no JSON wrapper, thinking off); _clean_caption strips a stray fence/quotes, normalizes,
     and applies the anti-chat guards. '' on failure or no finished work."""
-    return _clean_caption(_judge_run(INDEX_MODEL, CAPTION_SYS, "<unit>\n%s\n</unit>" % unit_text, judge="captioner"))
+    return _clean_caption(_judge_run(_index_model(), CAPTION_SYS, "<unit>\n%s\n</unit>" % unit_text, judge="captioner", tier="index"))
 
 
 # The GIST prompt — captioner's sibling for an IN-PROGRESS request (the feed's "Analyzing: …" placeholder,
@@ -427,7 +429,7 @@ def gist_llm(prompt_text, judge="captioner"):
     caption (the timeline dot + the provisional card's 'Analyzing: …', which reads the same persisted
     caption). Attributed to the CAPTIONER, never a separate 'gist' judge (the user 2026-06-19). Same
     BARE-phrase contract as the captioner, so _clean_caption normalizes + guards it. '' on failure."""
-    return _clean_caption(_judge_run(INDEX_MODEL, GIST_SYS, "<prompt>\n%s\n</prompt>" % prompt_text, judge=judge))
+    return _clean_caption(_judge_run(_index_model(), GIST_SYS, "<prompt>\n%s\n</prompt>" % prompt_text, judge=judge, tier="index"))
 
 
 # ───────────────────────── unit text (caption input) ─────────────────────────
@@ -762,7 +764,7 @@ def _parse_archive(out):
 def archive_llm(session_log):
     """One {headline, abstract} from the INDEX-tier model (Haiku) over a session's turn-caption log.
     None on failure."""
-    out = _judge_run(INDEX_MODEL, ARCHIVE_SYS, "<session>\n%s\n</session>" % session_log, judge="archiver")
+    out = _judge_run(_index_model(), ARCHIVE_SYS, "<session>\n%s\n</session>" % session_log, judge="archiver", tier="index")
     return _parse_archive(out) if out else None
 
 

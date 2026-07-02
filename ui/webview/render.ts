@@ -4143,15 +4143,16 @@ function elapsedMs(sinceMs: number | null): string {
 // /model or /effort slash command into the session's pane; the label then updates
 // when the TUI's statusline republishes the tmux vars (meta-pending bridges the gap).
 type MetaKind = "mode" | "model" | "effort";
-const MODEL_CHOICES: { label: string; value: string }[] = [
-  { label: "Fable", value: "fable" },
-  { label: "Opus", value: "opus" },
-  { label: "Sonnet", value: "sonnet" },
-  { label: "Haiku", value: "haiku" },
-  { label: "Default", value: "default" },
-];
-const EFFORT_CHOICES: { label: string; value: string }[] =
-  ["low", "medium", "high", "xhigh", "max"].map((v) => ({ label: v, value: v }));
+// Model + effort choices come from the kernel's /models — the ONE list shared with the timeline lanes and the
+// judge-tier settings (the user 2026-07-02: "same code path ... don't hardcode this in multiple places"), so
+// the client holds no model literals (mirrors paletteColors above). Populated in place on load so META_CHOICES
+// keeps its reference; the session picker appends its own "Default" (use-the-CLI-default) sentinel — not a model.
+const MODEL_CHOICES: { label: string; value: string }[] = [];
+const EFFORT_CHOICES: { label: string; value: string }[] = [];
+fetch("/models", { cache: "no-store" }).then((r) => r.json()).then((d) => {
+  if (Array.isArray(d.models)) { MODEL_CHOICES.length = 0; MODEL_CHOICES.push(...d.models, { label: "Default", value: "default" }); }
+  if (Array.isArray(d.efforts)) { EFFORT_CHOICES.length = 0; EFFORT_CHOICES.push(...d.efforts); }
+}).catch(() => { /* picker stays empty until it lands */ });
 // Permission mode: the shift+tab cycle (no slash command), so the picker offers the three cycle modes;
 // the host sets them by sending shift+tab the right number of times (the user 2026-06-16).
 const MODE_CHOICES: { label: string; value: string }[] = [
