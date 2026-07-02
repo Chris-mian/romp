@@ -845,6 +845,92 @@ class MintQuote(unittest.TestCase):
         self.assertIsNone(next(iter(s["nodes"].values()))["quote"], "legacy/quoteless mint → None (title fallback)")
 
 
+class SegKeyDrift(unittest.TestCase):
+    """Timestamp-invariant seg-key LOOKUPS in the judge (the user 2026-07-01, working-state audit): the
+    SAME segment parses to different ids across time — the states-overlay idle atoms shift a segment's
+    start t whenever a new idle record lands before its trigger, and an SDK optimistic echo drifts SEND
+    vs PROCESS time. Recorded keys (placements, trails) keep the raw id; every lookup resolves through
+    _seg_key, so a t-shifted duplicate never re-plans (double-mints), never re-plants a courier goal, and
+    never silently drops a trail segment from a goal's gathered history."""
+
+    SEG = SID + ":1000:cafebabe"
+    DRIFTED = SID + ":952:cafebabe"                    # same trigger-text hash, shifted middle t
+    OTHER = SID + ":1000:deadbeef"                     # a genuinely different segment
+
+    def test_seg_key_normalizes_bare_and_suffixed(self):
+        self.assertEqual(jd._seg_key(self.SEG), jd._seg_key(self.DRIFTED))
+        self.assertEqual(jd._seg_key(self.SEG + "#p"), jd._seg_key(self.DRIFTED + "#p"))
+        self.assertNotEqual(jd._seg_key(self.SEG), jd._seg_key(self.OTHER))
+        self.assertIsNone(jd._seg_key(None))
+
+    def test_placed_key_and_placement_of_survive_drift(self):
+        pl = {self.DRIFTED: SID + ":g1", self.DRIFTED + "#p": None}
+        self.assertTrue(jd._placed_key(pl, self.SEG), "a drifted work key still dedups")
+        self.assertTrue(jd._placed_key(pl, self.SEG + "#p"), "a drifted (retired) prompt key still dedups")
+        self.assertFalse(jd._placed_key(pl, self.OTHER), "a different segment never matches")
+        self.assertEqual(jd._placement_of(pl, self.SEG), SID + ":g1", "the drifted key's value resolves")
+        self.assertIsNone(jd._placement_of(pl, self.OTHER))
+
+    def test_segs_for_resolves_drifted_trail_ids(self):
+        seg = {"id": self.SEG, "t": 1000, "atoms": []}
+        got = jd._segs_for({self.SEG: seg}, [self.DRIFTED, self.OTHER])
+        self.assertEqual(got, [seg], "the drifted trail id resolves; the unknown one drops")
+
+    def test_planner_does_not_replan_a_drift_shifted_placement(self):
+        # integration: plan once (placement recorded), shift every recorded key's middle t on disk (what a
+        # new states idle record does to the parse side), re-plan — the planner must treat everything as
+        # already placed: no LLM call, no second goal.
+        recs = [uline(T0, "ship the exporter", "u1", ps="typed"),
+                aline(T0 + 10, "Shipped it.", "a1", "u1", stop="end_turn")]
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            tpath = td / (SID + ".jsonl")
+            saved = (jd.GOALDIR, jd.PCACHE, jd.plan_llm, jd.plan_prompt_llm, jd._group_store)
+            jd.GOALDIR, jd.PCACHE = td / "goals", td / "pcache"
+            jd.plan_prompt_llm = lambda *a, **k: ""
+            jd._group_store = lambda *a, **k: None
+            try:
+                tpath.write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+                jd._PARSE_CACHE.clear()
+                jd.plan_llm = lambda *a, **k: '{"ops":[{"why":"asked","do":"mint","text":"Ship the exporter"}]}'
+                jd._plan_session(SID, str(tpath), NOW)
+                store = jd.load_goals(SID)
+                self.assertEqual(len(store["nodes"]), 1, "first pass minted the goal")
+
+                def shift(k):                          # sid:t:hash[#x] → sid:(t-48):hash[#x]
+                    parts = k.split(":")
+                    if len(parts) < 3 or not parts[1].isdigit():
+                        return k
+                    return "%s:%d:%s" % (parts[0], int(parts[1]) - 48, ":".join(parts[2:]))
+                store["placements"] = {shift(k): v for k, v in store["placements"].items()}
+                jd.save_goals(SID, store)
+
+                calls = []
+                jd.plan_llm = lambda *a, **k: (calls.append(1), '{"ops":[{"why":"dup","do":"mint","text":"DUP"}]}')[1]
+                jd._PARSE_CACHE.clear()
+                jd._plan_session(SID, str(tpath), NOW + 100)
+                self.assertEqual(calls, [], "a drift-shifted placement still dedups — the planner is not re-run")
+                self.assertEqual(len(jd.load_goals(SID)["nodes"]), 1, "no duplicate goal was minted")
+            finally:
+                (jd.GOALDIR, jd.PCACHE, jd.plan_llm, jd.plan_prompt_llm, jd._group_store) = saved
+
+    def test_goal_work_text_reads_a_drift_shifted_trail(self):
+        records = [uline(T0, "please add caching", "u1", ps="typed"),
+                   aline(T0 + 10, "Added an LRU cache.", "a1", "u1", stop="end_turn")]
+        s = build_session(records)
+        segs = [sg for turn in s["turns"] for sg in em.segments(turn)]
+        seg_by_id = {sg["id"]: sg for sg in segs}
+        st = _store()
+        g = _mknode(st, "Add caching")
+
+        def shift(k):
+            parts = k.split(":")
+            return "%s:%d:%s" % (parts[0], int(parts[1]) - 48, parts[2])
+        st["nodes"][g["id"]]["trail"] = [shift(segs[0]["id"])]   # the recorded trail id drifted
+        work = jd._goal_work_text(st, seg_by_id, g["id"], 10000)
+        self.assertIn("LRU cache", work, "a drifted trail id still contributes the goal's real history")
+
+
 def _store():
     return {"rompUuid": SID, "seq": 0, "nodes": {}, "placements": {}, "status": {}}
 
