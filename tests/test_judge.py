@@ -3642,6 +3642,41 @@ class Distiller(unittest.TestCase):
         self.assertEqual(nd["blockSummary"], "Decide A or B.", "the SOURCE line is parsed off the brief")
         self.assertEqual(nd["summaryAnchor"], "a1", "the brief's citation lands in the same anchor field")
 
+    def test_brief_fires_for_a_blocked_open_agent_todo(self):
+        # design/stalled-open-todos-nudge.md: the fork-nudge path ends with the planner blocking an OPEN
+        # agentTask node. The authoritative-open tier (which holds the top un-complete) must not keep that
+        # block from the block-distiller: rollup stamps the TOP blocked, and the brief runs with the open
+        # item's blockWhy as the owed question.
+        records = [uline(T0, "migrate the schema", "u1", ps="typed"),
+                   aline(T0 + 10, "stopped: I need the staging credentials to run the migration", "a1", "u1",
+                         stop="end_turn")]
+        path = self._setup(records)
+        now = T0 + 5000
+        s1 = em.segments(jd.parsed_session(SID, [path], now)["turns"][0])[0]["id"]
+        gid, cid = SID + ":g1", SID + ":g2"
+        store = {"rompUuid": SID, "seq": 2, "placements": {}, "status": {}, "lastNode": gid,
+                 "nodes": {gid: {"id": gid, "text": "Migrate the schema", "parentId": None,
+                                 "nodeComplete": False, "blocked": False, "cleared": False,
+                                 "trail": [s1], "t": T0, "mt": T0 + 10},
+                           cid: {"id": cid, "text": "run the migration", "parentId": gid,
+                                 "nodeComplete": False, "blocked": True, "cleared": False,
+                                 "blockWhy": "needs the staging credentials from the user",
+                                 "trail": [s1], "t": T0, "mt": T0 + 10, "agentBornOpen": True,
+                                 "agentTask": {"key": "1", "status": "open", "raw": "pending"}}}}
+        jd.rollup_status(store, True)
+        self.assertEqual(store["status"][gid], "blocked", "the open-todo block rolls the top to blocked")
+        jd.save_goals(SID, store)
+        seen = {}
+        def fake_brief(goal_text, work_text, block_why):
+            seen["owed"] = block_why
+            return "Provide the staging credentials so the migration can run."
+        jd.brief_llm = fake_brief
+        self.assertEqual(jd.run_distill(now=now), 1, "the blocked open-todo top is briefed")
+        nd = jd.load_goals(SID)["nodes"][gid]
+        self.assertEqual(nd["blockSummary"], "Provide the staging credentials so the migration can run.")
+        self.assertEqual(seen["owed"], "needs the staging credentials from the user",
+                         "the open item's blockWhy is the owed question fed to the brief")
+
     def test_distill_self_heals_after_repeated_call_failures(self):
         # the user 2026-06-24: a distill call that PERSISTENTLY fails must NOT loop "(generating…)" forever.
         # After DISTILL_FAIL_CAP consecutive fails the card settles to the "" sentinel (distilled, no takeaway).

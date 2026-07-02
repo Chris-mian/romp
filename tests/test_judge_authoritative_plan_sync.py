@@ -239,5 +239,64 @@ class RollupAuthority(unittest.TestCase):
                          "the open to-do node is never auto-completed")
 
 
+class BlockedAuthority(unittest.TestCase):
+    """Stalled-with-open-to-dos (design/stalled-open-todos-nudge.md): the agent CANNOT self-mark a to-do
+    blocked (Claude Code's to-do system has no such state), so when the fork nudge elicits "blocked because
+    …" the PLANNER blocks the open agentTask node — and that block must STICK. The rollup contract that
+    makes it stick: blocked outranks the authoritative-open tier (open_task only gates completeness), and
+    the stale-block heal clears blocks only on COMPLETE nodes, which an open-task node never is. These pin
+    that contract so the fork-nudge → planner-block → needs-you path can't silently break."""
+
+    def _blocked_open_todo(self, umbrella_complete=False):
+        store = fresh_store()
+        store["nodes"] = {
+            "T": {"id": "T", "text": "umbrella", "parentId": None, "nodeComplete": umbrella_complete,
+                  "blocked": False, "cleared": False, "trail": ["seg0"], "t": T0, "mt": T0},
+            "C": {"id": "C", "text": "wire the adapter", "parentId": "T", "nodeComplete": False,
+                  "blocked": True, "blockWhy": "needs the staging credentials from the user",
+                  "cleared": False, "trail": ["seg0"], "t": T0, "mt": T0 + 10, "agentBornOpen": True,
+                  "agentTask": {"key": "1", "status": "open", "raw": "pending"}},
+        }
+        store["lastNode"] = "T"
+        return store
+
+    def test_block_on_open_todo_rolls_up_blocked(self):
+        store = self._blocked_open_todo()
+        jd.rollup_status(store, True)
+        self.assertEqual(store["status"]["T"], "blocked",
+                         "a planner block on an open agent to-do pulls the top to blocked/needs-you")
+        self.assertTrue(store["nodes"]["C"]["blocked"], "the raw block flag survives the rollup")
+        self.assertEqual(store["nodes"]["C"]["blockWhy"], "needs the staging credentials from the user")
+
+    def test_block_outranks_a_flat_done_umbrella(self):
+        """Even when the closer flat-DONE'd the top, a blocked still-open to-do keeps the card in
+        needs-you: the open-task authority holds the top un-complete, so any_blocked isn't short-circuited
+        and the stale-block heal never fires."""
+        store = self._blocked_open_todo(umbrella_complete=True)
+        jd.rollup_status(store, True)
+        self.assertEqual(store["status"]["T"], "blocked")
+
+    def test_block_survives_a_declared_plan_resync(self):
+        """_sync_declared_plan refreshes agentTask status but must not touch a planner block: while the
+        agent's list still says the item is open, the block (+ its why) rides along un-clobbered."""
+        store = self._blocked_open_todo()
+        jd._sync_declared_plan(store, plan_session([("wire the adapter", "Wiring", [])]), "s1", T0 + 50)
+        self.assertTrue(store["nodes"]["C"]["blocked"], "re-sync of a still-open item keeps the block")
+        self.assertEqual(store["nodes"]["C"]["blockWhy"], "needs the staging credentials from the user")
+        jd.rollup_status(store, True)
+        self.assertEqual(store["status"]["T"], "blocked")
+
+    def test_crossing_off_the_blocked_todo_heals_the_block(self):
+        """Positive control: once the agent completes the item, the block's answer is moot — the sync
+        stamps authoritative-done and the rollup's stale-block heal clears the raw flag + blockWhy."""
+        store = self._blocked_open_todo()
+        jd._sync_declared_plan(store, plan_session([("wire the adapter", "Wiring", [("completed",)])]),
+                               "s2", T0 + 100)
+        jd.rollup_status(store, True)
+        self.assertEqual(store["status"]["T"], "completed")
+        self.assertFalse(store["nodes"]["C"]["blocked"], "a complete node can't stay blocked")
+        self.assertNotIn("blockWhy", store["nodes"]["C"])
+
+
 if __name__ == "__main__":
     unittest.main()

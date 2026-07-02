@@ -286,6 +286,11 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 .fask-followedup { flex: 0 0 auto; font-size: 0.64em; font-weight: 700; letter-spacing: 0.04em;
   padding: 1px 6px; border-radius: 999px; line-height: 1.4;
   color: #5aa2ff; border: 1px solid rgba(90, 162, 255, 0.6); }
+/* "nudge failed" — the one auto-nudge didn't resolve the stall and is never re-asked (design/
+   stalled-open-todos-nudge.md); red pill: this thread is waiting on the human now */
+.fask-nudgefailed { flex: 0 0 auto; font-size: 0.64em; font-weight: 700; letter-spacing: 0.04em;
+  padding: 1px 6px; border-radius: 999px; line-height: 1.4;
+  color: #ff6a6a; border: 1px solid rgba(255, 106, 106, 0.6); }
 /* "waiting on <peer>" — an unanswered message out to a live peer; held in Working, not stalled (the user
    2026-06-22); teal pill, red for a mutual-wait deadlock cycle */
 .fask-waiton { flex: 0 0 auto; font-size: 0.64em; font-weight: 700; letter-spacing: 0.04em;

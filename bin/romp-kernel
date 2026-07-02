@@ -380,7 +380,7 @@ def _session_backend(sid, tm):
     return "sdk" if (be and be.owns(sid)) else "tmux"
 
 
-def _followup_body(iid, title, text, injected=False, auto=False):
+def _followup_body(iid, title, text, injected=False, auto=False, stalled=False):
     """Pane message for a feed follow-up: QUOTE the ask being followed up ('> <ask>') above the user's
     text, so the recipient session knows what the reply answers. An explicit `title` (the group modal) is
     used verbatim; otherwise the quote PREFERS the node's cached VERBATIM mint quote (node["quote"], judge
@@ -427,8 +427,15 @@ def _followup_body(iid, title, text, injected=False, auto=False):
                 quote.append("  • " + lt + (" (blocked)" if ld.get("blocked") else "") + why)
             if len(subs) > CAP:
                 quote.append("  • …and %d more" % (len(subs) - CAP))
-            body = ("For each unfinished piece above: what's done, what's left, and is anything blocked "
-                    "waiting on a decision from me? Keep the overall goal in mind, but report per piece.")
+            # `stalled` = the FORK nudge (design/stalled-open-todos-nudge.md): the goal has items the
+            # agent's OWN to-do list still marks open, so instead of a per-piece status report the body asks
+            # the agent to pick a branch — continue, or name the blockers (which the planner then applies as
+            # blocks). The enumerated quote above already names the open pieces.
+            body = (("You stopped with these still open on your own to-do list. If you don't need anything "
+                     "from me, please continue with them now. If any are blocked, tell me which ones and "
+                     "what you need from me to finish them.") if stalled else
+                    ("For each unfinished piece above: what's done, what's left, and is anything blocked "
+                     "waiting on a decision from me? Keep the overall goal in mind, but report per piece."))
         elif str(nd.get("quote") or "").strip():
             # The node cached the minting message's VERBATIM head (judge _mint_quote; the user 2026-07-01,
             # g13): quote the user's OWN WORDS back — exactly how a person re-raises a thread — instead of
@@ -784,6 +791,14 @@ def _set_session_flag(sid, flag, value):
 # Off by default. State: auto-nudge.json {"enabled": bool, "nudged": {goalId: {count, lastTurnId}}}; each
 # fire also appends {sid,gid,t,count} to nudge-events.jsonl for the timeline's ⚡ marker.
 AUTO_NUDGE_TEXT = "Where does this stand? What's done, what's left, and is anything blocked waiting on a decision from me?"   # the auto-nudge ask (the manual feed Nudge button was removed 2026-06-30); phrased like a person checking in, not a status form (g13)
+# The FORK nudge (design/stalled-open-todos-nudge.md, the user 2026-07-01): sent INSTEAD of AUTO_NUDGE_TEXT
+# when the stalled goal has items the agent's OWN to-do list still marks open (authoritative-open). Claude
+# Code's to-do system has no "blocked" state, so a session routinely stops with open items and can't say why —
+# this asks the agent to pick a branch: continue the work, or name what it needs from the user (which the
+# planner's nudge-mode note then turns into a block + blockWhy → the block-distiller's decision brief).
+AUTO_NUDGE_STALLED_TEXT = ("You stopped with items on your own to-do list still open. If you don't need "
+                           "anything from me, please continue with them now. If any are blocked, tell me "
+                           "which ones and what you need from me to finish them.")
 _autonudge_cache = {}   # str(path) -> ((mtime_ns,size), dict)
 
 
@@ -897,19 +912,40 @@ def _auto_resume_retry(now, tmux):
             return
 
 
-def _mark_auto_nudged(gid, turn_id, count):
-    """Record an auto-nudge of `gid`: {count, lastTurnId}. `count` is the TOTAL fired (the climbing escalation
-    alert); `lastTurnId` is the turn this fired on, so the tick nudges each turn id at most ONCE and re-arms
-    only on a genuinely NEW ended turn — and NEVER on the agent's own nudge-response turn (see the tick's
-    _turn_romp_injected gate). A stall that persists without genuine new work is surfaced as blocked + a
+def _mark_auto_nudged(gid, turn_id, count, stalled=False):
+    """Record an auto-nudge of `gid`: {count, lastTurnId[, stalled]}. `count` is the TOTAL fired (the climbing
+    escalation alert); `lastTurnId` is the turn this fired on, so the tick nudges each turn id at most ONCE and
+    re-arms only on a genuinely NEW ended turn — and NEVER on the agent's own nudge-response turn (see the
+    tick's _turn_romp_injected gate). A stall that persists without genuine new work is surfaced as blocked + a
     "nudge failed" chip rather than nudged forever (the user 2026-07-01, replacing the 2026-06-25 loop).
-    Bounded to recent goals."""
+    `stalled` marks a FORK nudge (open authoritative to-dos → AUTO_NUDGE_STALLED_TEXT): if it fails, build_feed
+    floors the card to needs-you. A fresh fire writes a fresh record, so any earlier `failed` flag resets with
+    the new episode. Bounded to recent goals."""
     d = dict(_auto_nudge_data())
     nudged = dict(d.get("nudged", {}))
     nudged.pop(gid, None)
-    nudged[gid] = {"count": count, "lastTurnId": turn_id}   # reinsert → most-recent
+    rec = {"count": count, "lastTurnId": turn_id}
+    if stalled:
+        rec["stalled"] = True
+    nudged[gid] = rec                                       # reinsert → most-recent
     if len(nudged) > 3000:                                  # bounded; drop the oldest
         nudged = dict(list(nudged.items())[-3000:])
+    d["nudged"] = nudged
+    _write_auto_nudge(d)
+
+
+def _mark_nudge_failed(gid):
+    """Stamp `failed` on `gid`'s nudge record — the nudge-RESPONSE turn completed (closer-settled, so the
+    planner has processed it too) and the goal is STILL working-stalled: the one ask didn't resolve it, and
+    per the anti-loop rule we never re-ask. The feed surfaces it instead (the "nudge failed" chip; a FORK
+    nudge additionally floors the card to needs-you). Event-based — stamped at the tick's re-arm gate, whose
+    session-level gates ARE "response turn ended + judged"; cleared by the next genuine fire's fresh record."""
+    d = dict(_auto_nudge_data())
+    nudged = dict(d.get("nudged", {}))
+    rec = nudged.get(gid)
+    if not rec or rec.get("failed"):
+        return
+    nudged[gid] = dict(rec, failed=True)
     d["nudged"] = nudged
     _write_auto_nudge(d)
 
@@ -1180,6 +1216,16 @@ def _auto_nudge_tick(now, tmux):
             # instead of being nudged forever (the user 2026-07-01, replacing the 2026-06-25 "keep nudging til
             # resolved" rule, which was the loop).
             if rec.get("lastTurnId") == lt_id or _turn_romp_injected(lt):
+                # NUDGE FAILED (design/stalled-open-todos-nudge.md): we already nudged, the agent's response
+                # turn has ENDED (the session-level gates above passed: not working, genuine stop, closer
+                # settled — and the closer runs LAST among the judge tiers, so the planner has processed the
+                # response too), yet the goal is STILL 'working' (the per-goal status gate above). The one
+                # ask didn't resolve it and we never re-ask — surface it to the human instead: stamp the
+                # record so build_feed shows the "nudge failed" chip (a FORK nudge also floors to needs-you).
+                if rec and not rec.get("failed"):
+                    _mark_nudge_failed(gid)
+                    nudged[gid] = dict(rec, failed=True)   # mirror in-memory for the rest of this tick
+                    fired = True                           # push so the chip/floor reaches the feed now
                 continue
             count = rec.get("count", 0) + 1
             # INSTRUMENTATION (the user 2026-06-30, see jd._nudge_diag): record the goal's ACTUAL completeness
@@ -1196,10 +1242,18 @@ def _auto_nudge_tick(now, tmux):
                            liveState=st, lastAtomType=(_lt_atoms[-1].get("type") if _lt_atoms else ""),
                            ltEnd=lt.get("end"), ltId=lt_id, nTurns=len(turns),
                            lsVal=ls_val, lsT=ls_t)
-            Sessions.backend_for(sid).send(sid, _followup_body(gid, None, AUTO_NUDGE_TEXT, injected=True, auto=True))   # gray romp bubble + romp-logo (both backends)
-            _mark_auto_nudged(gid, lt_id, count)         # {count, lastTurnId} → re-arm only on the next GENUINE ended-working turn
+            # FORK vs regular text (design/stalled-open-todos-nudge.md): a goal whose subtree holds an item
+            # the agent's OWN to-do list still marks open gets the STALLED fork — "continue these, or tell me
+            # which are blocked and what you need" — instead of the plain status check. The agent can't
+            # self-mark a to-do blocked (Claude Code has no such state), so the fork elicits the blocker the
+            # planner's nudge-mode note then applies as a block. _followup_body's quote already enumerates the
+            # goal's unfinished sub-nodes, naming the open items.
+            stalled = gid in _agent_open_set(nodes, _diag_kids)
+            text = AUTO_NUDGE_STALLED_TEXT if stalled else AUTO_NUDGE_TEXT
+            Sessions.backend_for(sid).send(sid, _followup_body(gid, None, text, injected=True, auto=True, stalled=stalled))   # gray romp bubble + romp-logo (both backends)
+            _mark_auto_nudged(gid, lt_id, count, stalled=stalled)   # {count, lastTurnId[, stalled]} → re-arm only on the next GENUINE ended-working turn; a fresh record resets `failed`
             _log_nudge_event(sid, gid, now, count)       # timeline romp-logo dot + escalation count
-            nudged[gid] = {"count": count, "lastTurnId": lt_id}   # mirror in-memory for the rest of this tick
+            nudged[gid] = dict({"count": count, "lastTurnId": lt_id}, **({"stalled": True} if stalled else {}))   # mirror in-memory for the rest of this tick
             fired = True
     if fired:
         _push_all()
@@ -5580,12 +5634,27 @@ def build_feed(now, tmux=None):
             # is too long" error IS on you (compact needed) → it floors to needs-input like a real block. So
             # only api_top WHEN tooLong, or a genuine soft block (col blocked & not recheck), keeps needs_input.
             api_block = (nid == api_top and bool(aerr and aerr.get("tooLong")))
+            # NUDGE FAILED (design/stalled-open-todos-nudge.md, the user 2026-07-01): the tick stamped
+            # `failed` on this goal's nudge record — the nudge-response turn completed (judged) and the goal
+            # was still working-stalled; per the anti-loop rule it is never re-nudged, so the card carries
+            # the story instead. Surfaced only while the goal still reads working (a later block/completion
+            # resolves it, and `awaiting` means it's genuinely in flight — no failure to show then). A FORK
+            # nudge (`stalled` — the goal had open authoritative to-dos) that failed additionally FLOORS the
+            # card to needs-you: the agent can't self-block a to-do, we asked once, nothing moved — the
+            # human is the bottleneck now. The floor keeps requiring open to-dos AT DISPLAY TIME (agent_open)
+            # so it self-heals the instant the agent crosses the items off; the live api/permission floors
+            # still win (the present event).
+            nrec = _auto_nudge_data().get("nudged", {}).get(nid) or {}
+            nudge_failed = bool(nrec.get("failed")) and col == "working"
+            stalled_floor = bool(nudge_failed and nrec.get("stalled") and nid in agent_open
+                                 and nid != api_top and nid != perm_top)
             # A live picker/permission floor (perm_top) is a GENUINE block, so the kernel reports its column as
             # needs_input — NOT "working" with the client re-routing it by it.blocked (which was crafty + split
             # the truth: build_feed said working while the card showed under Blocked, and the distiller line,
             # keyed on it.column, then stayed hidden). Now it.column is authoritative: the card IS blocked, the
             # client files by it.column, and the distiller line shows (the user 2026-06-29).
-            column = ("needs_input" if (api_block or nid == perm_top or (col == "blocked" and not recheck))
+            column = ("needs_input" if (api_block or nid == perm_top or stalled_floor
+                                        or (col == "blocked" and not recheck))
                       else "completed" if col == "completed" else "working")
             had_working = had_working or column == "working"
             # summaryAnchorUuid: where a click on the distilled summary line lands. PREFERRED: the anchor the
@@ -5629,7 +5698,12 @@ def build_feed(now, tmux=None):
                             else {"state": perm_state, "since": tm.get("since"),
                                   "what": ("this session is stopped awaiting your input" if perm_state == "picker"
                                            else "this session is stopped awaiting your approval")} if nid == perm_top
+                            else {"state": "stalled", "since": None,
+                                  "what": ("this session stopped with its own to-do items still open — a "
+                                           "follow-up didn't get them moving, so it likely needs something "
+                                           "from you")} if stalled_floor
                             else None),
+                "nudgeFailed": nudge_failed,         # the one auto-nudge didn't resolve the stall → "nudge failed" chip; never re-nudged (design/stalled-open-todos-nudge.md)
                 "column": column,
                 "recheck": recheck,                  # targeted follow-up on a soft-block → de-urgented (dotted), moved to Working, pending re-judge
                 "rejudging": rejudging,              # plain thread reply after a block → STAYS in Needs-You, "Re-judging…" swirl while a turn is in flight (the user 2026-06-30)

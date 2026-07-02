@@ -1398,6 +1398,148 @@ class ViewBuilder(unittest.TestCase):
         sent = self._drive_nudge_over(turn, last_state=("waiting", NOW))
         self.assertEqual(sent, [], "a turn opened by our own nudge must NOT re-arm (kills the runaway loop)")
 
+    def test_auto_nudge_sends_the_fork_text_for_open_agent_todos(self):
+        # design/stalled-open-todos-nudge.md: a stalled goal whose subtree holds an item the agent's OWN
+        # to-do list still marks open gets the FORK nudge — "continue these, or tell me which are blocked
+        # and what you need" — instead of the plain status check. Claude Code's to-do system has no
+        # "blocked" state, so this is how the blocker gets said out loud (the planner's nudge-mode note
+        # then applies it as a block). The record carries `stalled` so a failure floors the card.
+        self._open_turn_transcript(ended=True); km._parse_cache.clear()
+        lt = km._parse(str(self.tpath), SID, NOW)["turns"][-1]["id"]
+        g, c = SID + ":gw", SID + ":gt"
+        self._goal_store(
+            {g: {"id": g, "text": "wire up the thing", "parentId": None, "nodeComplete": False,
+                 "blocked": False, "cleared": False, "trail": [], "t": T0},
+             c: {"id": c, "text": "hook up the adapter", "parentId": g, "nodeComplete": False,
+                 "blocked": False, "cleared": False, "trail": [], "t": T0,
+                 "agentTask": {"key": "1", "status": "open", "raw": "pending"}, "agentBornOpen": True}},
+            {g: "working"}, last=g, closed=[lt])
+        km._set_auto_nudge(True)
+        sent, restore = self._stub_nudge()
+        try:
+            km._auto_nudge_tick(NOW, km._tmux_sessions())
+            self.assertEqual(len(sent), 1, "the stalled goal is nudged")
+            # the fork ask (both the flat and the hierarchical-enumeration form carry this sentence)
+            self.assertIn("please continue with them now", sent[0][1],
+                          "the FORK text, not the plain status check")
+            self.assertIn("tell me which ones and what you need from me", sent[0][1])
+            self.assertIn("hook up the adapter", sent[0][1], "the open item is named in the quote")
+            self.assertNotIn(km.AUTO_NUDGE_TEXT, sent[0][1])
+            self.assertTrue(km._auto_nudge_data()["nudged"][g].get("stalled"),
+                            "the record marks the fork flavor")
+        finally:
+            restore()
+
+    def test_auto_nudge_stamps_failed_when_its_response_leaves_the_goal_stalled(self):
+        # design/stalled-open-todos-nudge.md: after the ONE nudge, the agent's response turn ends (judged —
+        # the closer-settled gate has passed, and the closer runs last among the judge tiers) with the goal
+        # STILL working → never re-nudged; the record is stamped `failed` so the feed shows the "nudge
+        # failed" chip (and floors a fork-flavored one to needs-you). Event-based: the trigger is the
+        # response turn's END, not a timer.
+        turn = {"id": SID + ":t1", "ended": True, "t": T0, "end": NOW, "trigger": "u1",
+                "atoms": [{"type": "user", "uuid": "u1", "author": "romp", "t": T0},   # our nudge opened it
+                          {"type": "assistant", "t": NOW}]}
+        km._write_auto_nudge({"enabled": True, "nudged": {
+            SID + ":gw": {"count": 1, "lastTurnId": SID + ":t0", "stalled": True}}})
+        sent = self._drive_nudge_over(turn, last_state=("waiting", NOW))
+        self.assertEqual(sent, [], "no re-nudge off our own response")
+        rec = km._auto_nudge_data()["nudged"][SID + ":gw"]
+        self.assertTrue(rec.get("failed"), "the unresolved response stamps `failed`")
+        self.assertTrue(rec.get("stalled"), "the fork flavor is preserved on the record")
+
+    def test_auto_nudge_stamps_failed_on_a_folded_response_too(self):
+        # the SDK folds the nudge-response into the SAME turn id (no new turn) — the lastTurnId==lt_id arm
+        # of the re-arm gate must stamp `failed` exactly like the romp-opened-turn arm.
+        turn = {"id": SID + ":t1", "ended": True, "t": T0, "end": NOW,
+                "atoms": [{"type": "user", "t": T0}, {"type": "assistant", "t": NOW}]}
+        km._write_auto_nudge({"enabled": True, "nudged": {
+            SID + ":gw": {"count": 1, "lastTurnId": SID + ":t1"}}})
+        sent = self._drive_nudge_over(turn, last_state=("waiting", NOW))
+        self.assertEqual(sent, [], "same turn id → no re-fire")
+        self.assertTrue(km._auto_nudge_data()["nudged"][SID + ":gw"].get("failed"))
+
+    def test_a_fresh_fire_resets_the_failed_flag(self):
+        # a NEW genuine stall re-arms and fires; the fresh record must drop the previous episode's `failed`
+        # (and its fork flavor) so the chip/floor reflect THIS episode, not a stale one.
+        base = [uline(T0, "a1", "u1", ps="typed"), aline(T0 + 10, "d1", "a1", "u1", stop="end_turn")]
+        g = self._stall_transcript(base)
+        km._write_auto_nudge({"enabled": True, "nudged": {
+            g: {"count": 3, "lastTurnId": SID + ":told", "failed": True, "stalled": True}}})
+        sent, restore = self._stub_nudge()
+        try:
+            km._auto_nudge_tick(NOW, km._tmux_sessions())
+            self.assertEqual(len(sent), 1, "the new genuine stall fires")
+            rec = km._auto_nudge_data()["nudged"][g]
+            self.assertNotIn("failed", rec, "a fresh fire opens a fresh episode — failed resets")
+            self.assertNotIn("stalled", rec, "no open to-dos this time → regular flavor")
+            self.assertEqual(rec["count"], 4, "the escalation count still climbs across episodes")
+        finally:
+            restore()
+
+    def test_nudge_failed_flag_rides_the_working_card(self):
+        # A REGULAR-flavor failed nudge: the card stays in Working (no floor without the fork flavor),
+        # carrying nudgeFailed for the chip — glanceable, not an interrupt.
+        g = SID + ":gw"
+        self._goal_store({g: {"id": g, "text": "wire up the thing", "parentId": None, "nodeComplete": False,
+                              "blocked": False, "cleared": False, "trail": [], "t": T0}},
+                         {g: "working"}, last=g)
+        km._write_auto_nudge({"enabled": True, "nudged": {g: {"count": 1, "lastTurnId": "x", "failed": True}}})
+        card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
+        self.assertTrue(card["nudgeFailed"], "the card carries the nudge-failed chip flag")
+        self.assertEqual(card["column"], "working", "a regular-flavor failure does NOT floor to needs-you")
+        self.assertIsNone(card["blocked"], "no stalled badge without the fork flavor")
+
+    def test_failed_fork_nudge_floors_the_card_to_needs_input(self):
+        # design/stalled-open-todos-nudge.md: fork flavor + to-dos STILL open + the response didn't resolve
+        # it → the human is the bottleneck; the card floors to needs-you with the "stalled" badge (and is
+        # never re-nudged — escalation instead of the loop).
+        g, c = SID + ":gw", SID + ":gt"
+        self._goal_store(
+            {g: {"id": g, "text": "wire up the thing", "parentId": None, "nodeComplete": False,
+                 "blocked": False, "cleared": False, "trail": [], "t": T0},
+             c: {"id": c, "text": "hook up the adapter", "parentId": g, "nodeComplete": False,
+                 "blocked": False, "cleared": False, "trail": [], "t": T0,
+                 "agentTask": {"key": "1", "status": "open", "raw": "pending"}, "agentBornOpen": True}},
+            {g: "working"}, last=g)
+        km._write_auto_nudge({"enabled": True, "nudged": {
+            g: {"count": 1, "lastTurnId": "x", "failed": True, "stalled": True}}})
+        card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
+        self.assertEqual(card["column"], "needs_input", "the failed fork nudge floors the card")
+        self.assertEqual((card["blocked"] or {}).get("state"), "stalled", "with the stalled badge")
+        self.assertTrue(card["nudgeFailed"])
+
+    def test_stalled_floor_self_heals_when_the_todos_are_crossed_off(self):
+        # the floor requires open to-dos AT DISPLAY TIME: the instant the agent crosses the items off, the
+        # card returns to Working on its own (event-based — the sync flips agentTask to done; no timer).
+        g, c = SID + ":gw", SID + ":gt"
+        self._goal_store(
+            {g: {"id": g, "text": "wire up the thing", "parentId": None, "nodeComplete": False,
+                 "blocked": False, "cleared": False, "trail": [], "t": T0},
+             c: {"id": c, "text": "hook up the adapter", "parentId": g, "nodeComplete": True,
+                 "blocked": False, "cleared": False, "trail": [], "t": T0, "agentDone": True,
+                 "agentTask": {"key": "1", "status": "done", "raw": "completed"}, "agentBornOpen": True}},
+            {g: "working"}, last=g)
+        km._write_auto_nudge({"enabled": True, "nudged": {
+            g: {"count": 1, "lastTurnId": "x", "failed": True, "stalled": True}}})
+        card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
+        self.assertEqual(card["column"], "working", "crossed-off to-dos lift the floor")
+        self.assertIsNone(card["blocked"])
+
+    def test_nudge_failed_is_suppressed_once_the_goal_resolves(self):
+        # the planner later blocks the goal off the fork response (or a follow-up) → the block story takes
+        # over: the stale failed flag must not keep painting the chip on a card that has a real blockWhy.
+        g = SID + ":gw"
+        self._goal_store({g: {"id": g, "text": "wire up the thing", "parentId": None, "nodeComplete": False,
+                              "blocked": True, "blockWhy": "needs the staging credentials",
+                              "cleared": False, "trail": [], "t": T0, "mt": T0 + 10}},
+                         {g: "blocked"}, last=g)
+        km._write_auto_nudge({"enabled": True, "nudged": {
+            g: {"count": 1, "lastTurnId": "x", "failed": True, "stalled": True}}})
+        card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
+        self.assertFalse(card["nudgeFailed"], "a resolved (blocked) goal drops the nudge-failed chip")
+        self.assertEqual(card["column"], "needs_input", "the ordinary soft-block path files it")
+        self.assertEqual(card["blockWhy"], "needs the staging credentials")
+
     def _stall_transcript(self, recs):
         # write a transcript, clear the parse cache, and (re)create the working goal with ALL its turn ids
         # marked closer-classified (so the closer-gate always passes for the latest). Returns the goal id.
