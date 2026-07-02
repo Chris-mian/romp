@@ -260,17 +260,20 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 .fask-distill-link { cursor: pointer; border-radius: 6px; margin-left: -4px; margin-right: -4px; padding-left: 4px; padding-right: 4px; transition: background 0.1s ease; }
 .fask-distill-link:hover { background: rgba(255, 255, 255, 0.07); opacity: 1; text-decoration: underline; text-underline-offset: 2px; }
 /* the card's TWO collapsible distiller sections (the user 2026-07-02): BACKGROUND (collapsed by default,
-   re-orientation for a reader who forgot the thread) above the takeaway (expanded by default), each toggled
-   by a small +/− button. The body wraps below the toggle row (flex-wrap; the body takes the full width). */
+   re-orientation for a reader who forgot the thread) above the takeaway (expanded by default). Collapsed
+   = one small rounded-RECT pill ("background +" / "summary +"); expanded = the paragraph runs the full
+   card width with a tiny trailing "−" pill after its last line — no button column, no indent: horizontal
+   space is the scarce resource on these cards (the user 2026-07-02, replacing the clunky circles). */
 .fask-sec { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 6px; margin-top: 1px; }
-.fask-sec-btn { flex: none; width: 15px; height: 15px; padding: 0; border: 1px solid var(--dim);
-  border-radius: 50%; background: transparent; color: var(--dim);
-  font: 600 11px/13px ui-monospace, SFMono-Regular, Menlo, monospace; cursor: pointer; }
-.fask-sec-btn:hover { color: var(--fg); border-color: var(--fg); }
-.fask-sec-label { font-size: 0.78em; color: var(--dim); }
+.fask-sec-pill, .fask-sec-min { flex: none; padding: 0 6px; border: 1px solid var(--card-border);
+  border-radius: 6px; background: transparent; color: var(--dim);
+  font: 500 10px/15px -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; cursor: pointer; }
+.fask-sec-pill:hover, .fask-sec-min:hover { color: var(--fg); border-color: var(--fg); }
+.fask-sec-min { display: inline-block; padding: 0 5px; margin-left: 6px; line-height: 13px;
+  vertical-align: baseline; }
 .fask-sec .fask-distill { flex: 1 1 0; min-width: 0; margin: 0; }
 .fask-bg-body { flex: 1 1 100%; min-width: 0; font-size: 0.82em; line-height: 1.4; color: var(--fg);
-  opacity: 0.66; white-space: pre-wrap; overflow-wrap: anywhere; margin-left: 21px; }
+  opacity: 0.66; white-space: pre-wrap; overflow-wrap: anywhere; }
 .fask-origin:hover { text-decoration: underline; text-underline-offset: 2px; }
 /* ⏳ AWAITING cue (the user 2026-06-29): a small romp swirl spinning in the distiller-line spot of a WORKING
    card that's waiting on dispatched/delegated work — a glanceable "in flight, not stalled" sign. The swirl
