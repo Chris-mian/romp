@@ -97,11 +97,29 @@ def _block_to_dict(b):
     return None
 
 
+# Claude Code's slash-command wrappers, TWINS of bin/romp-event-model's (kept in lockstep — see its
+# "slash-command transcript wrappers" block): the CLI streams its /model, /compact etc. feedback as
+# UserMessages wrapped in these markers, and the LIVE atom must classify them exactly like the file
+# adapter classifies the matching transcript records.
+_COMMAND_NAME_RE = re.compile(r"^\s*<command-name>([^<]*)</command-name>")
+_COMMAND_ARGS_RE = re.compile(r"<command-args>([\s\S]*?)</command-args>")
+_LOCAL_STDOUT_RE = re.compile(r"^\s*<local-command-stdout>([\s\S]*?)</local-command-stdout>")
+_CMD_WRAP_RE = re.compile(r"^\s*<(?:command-(?:name|message|args|contents)|local-command-(?:stdout|caveat))>")
+
+
 def msg_to_atom(msg, sid, fsid, t):
     """An SDK stream message → an event-model atom (the SAME shape the file adapter emits from a
     transcript line), so the chat renders a LIVE atom identically and it dedups against the transcript
     by uuid (verified: the SDK message uuid == the transcript atom uuid). Returns None for messages
-    with no renderable content (init/result/etc.)."""
+    with no renderable content (init/result/etc.).
+
+    Slash-command wrappers get the FILE ADAPTER's classification, not a raw user atom (the user
+    2026-07-02): client.set_model() makes the CLI stream a `<local-command-stdout>Set model to …`
+    UserMessage; as a raw user atom it OPENED a turn no reply would ever close — the chat chip then read
+    "working" forever while the timeline (disk-only; the CLI persists no transcript for a turn-less
+    control request) showed nothing. Mirroring the adapter, the output becomes a synthetic ASSISTANT
+    command atom with stop_reason end_turn — the turn closes, the chip stays consistent, and the chat
+    still shows the confirmation line."""
     n = type(msg).__name__
     u = getattr(msg, "uuid", None)
     if n == "AssistantMessage":
@@ -116,6 +134,28 @@ def msg_to_atom(msg, sid, fsid, t):
         content = [d for b in c if (d := _block_to_dict(b))] if isinstance(c, list) else (
             [{"type": "text", "text": str(c)}] if c else [])
         if not content:
+            return None
+        text = " ".join(b.get("text", "") for b in content
+                        if isinstance(b, dict) and b.get("type") == "text")
+        mcmd = _COMMAND_NAME_RE.match(text)
+        if mcmd:                                     # the command INVOCATION → the command-flagged user atom
+            name = mcmd.group(1).strip() or "/?"
+            if not name.startswith("/"):
+                name = "/" + name
+            margs = _COMMAND_ARGS_RE.search(text)
+            args = (margs.group(1).strip() if margs else "")
+            disp = name + ((" " + args) if args else "")
+            return {"type": "user", "uuid": u, "session_id": sid, "t": t, "fsid": fsid, "parentUuid": None,
+                    "author": "human", "command": name,
+                    "message": {"role": "user", "content": [{"type": "text", "text": disp}]}}
+        mout = _LOCAL_STDOUT_RE.match(text)
+        if mout:                                     # the command OUTPUT → a synthetic assistant atom that ENDS the turn
+            return {"type": "assistant", "uuid": u, "session_id": sid, "t": t, "fsid": fsid, "parentUuid": None,
+                    "command": True,
+                    "message": {"role": "assistant",
+                                "content": [{"type": "text", "text": mout.group(1).strip()}],
+                                "stop_reason": "end_turn"}}
+        if _CMD_WRAP_RE.match(text):                 # the remaining wrappers (message/args/contents/caveat) — noise
             return None
         return {"type": "user", "uuid": u, "session_id": sid, "t": t, "fsid": fsid, "parentUuid": None,
                 "message": {"role": "user", "content": content}}
