@@ -2268,8 +2268,8 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
       b.addEventListener("click", () => beWrap.querySelectorAll(".picker-be-opt").forEach((x) => x.classList.toggle("sel", x === b)));
       return b;
     };
-    beWrap.append(beLabel, mkBe("tmux", "tmux", "Drives a real terminal pane (tmux)."),
-                  mkBe("sdk", "SDK", "Runs headless via the Claude Agent SDK."));
+    beWrap.append(beLabel, mkBe("sdk", "SDK", "Runs headless via the Claude Agent SDK."),
+                  mkBe("tmux", "tmux", "Drives a real terminal pane (tmux)."));   // SDK first — the de-facto default (the user 2026-07-02)
     // per-session HOST picker (federation, the user 2026-07-02): local | each attached SSH host — the new
     // session is created BY that host's kernel (over its tunnel) and appears prefixed `host:name`. The
     // options are rebuilt on every open (hosts attach/detach live); the row hides with no hosts attached.
