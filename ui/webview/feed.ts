@@ -607,17 +607,18 @@ function makeAskCard(it: AskItem): HTMLElement {
   // each toggled by a small +/− button. Collapse state lives in module sets keyed by itemId so the keyed
   // incremental re-render never snaps a section shut.
   // Disclosure in the chat's own visual language (the ↩ Follow-up header's ▸/▾): a BARE muted text row —
-  // no border, no pill, no fill — "▸ background" whose triangle flips to ▾ with the body below (the
+  // no border, no pill, no fill — "▸ background" / "▸ summary" at the SAME size as the body text (the
   // Notion-toggle / Finder-disclosure pattern; the user 2026-07-02: boxes read clunky, elegant apps use
-  // naked disclosure text). The takeaway shows NO header while open (its text IS the content, full
-  // width); it collapses via a quiet trailing "less" link (the App Store more/less pattern) and reopens
-  // from a "▸ summary" row.
+  // naked disclosure text). Open, BOTH sections are symmetric: the label disappears entirely — the text
+  // is its own label — and the collapse control is just "(▾)" trailing the last line after a wide gap
+  // (the user 2026-07-02: no "less", no lingering "background" header; the triangle alone says it).
   const bgSec = el("div", "fask-sec fask-bg"); bgSec.style.display = "none";
   const bgBtn = el("button", "fask-sec-head"); bgBtn.title = "expand";
   const bgTri = el("span", "fask-sec-tri"); bgTri.textContent = "▸";
   const bgName = el("span"); bgName.textContent = "background";
   bgBtn.append(bgTri, bgName);
   const bgBody = el("div", "fask-bg-body");
+  const bgLess = el("button", "fask-sec-less"); bgLess.textContent = "(▾)"; bgLess.title = "collapse";
   bgSec.append(bgBtn, bgBody);
   const takeSec = el("div", "fask-sec fask-take"); takeSec.style.display = "none";
   const takeBtn = el("button", "fask-sec-head"); takeBtn.title = "expand";
@@ -625,7 +626,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   const takeName = el("span"); takeName.textContent = "summary";
   takeBtn.append(takeTri, takeName);
   const distill = el("div", "fask-distill");
-  const takeLess = el("button", "fask-sec-less"); takeLess.textContent = "less"; takeLess.title = "collapse";
+  const takeLess = el("button", "fask-sec-less"); takeLess.textContent = "(▾)"; takeLess.title = "collapse";
   takeSec.append(takeBtn, distill);
   // ⏳ AWAITING cue (the user 2026-06-29): a small romp swirl spinning in the SAME body spot the distiller line
   // will eventually fill — a completed/blocked card shows its takeaway there; a WORKING card that's awaiting
@@ -734,7 +735,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   a._delegations = delegations;
   a._checklist = checklist;
   a._distill = distill;
-  a._bgSec = bgSec; a._bgBtn = bgBtn; a._bgTri = bgTri; a._bgBody = bgBody;
+  a._bgSec = bgSec; a._bgBtn = bgBtn; a._bgBody = bgBody; a._bgLess = bgLess;
   a._takeSec = takeSec; a._takeBtn = takeBtn; a._takeLess = takeLess;
   a._awaitSpin = awaitSpin; a._awaitWhy = awaitWhy;
   a._origin = origin;
@@ -769,18 +770,21 @@ function applyDistillSections(a: any, it: AskItem, distillShown: boolean): void 
   a._bgSec.style.display = bg ? "" : "none";
   if (bg) {
     const open = bgOpen.has(id);
-    a._bgTri.textContent = open ? "▾" : "▸";   // the header row PERSISTS when open (Notion-toggle style)
-    a._bgBtn.title = open ? "collapse" : "expand";
+    a._bgBtn.style.display = open ? "none" : "";   // open → the label disappears; the text is its own label
     a._bgBody.style.display = open ? "" : "none";
-    if (open) a._bgBody.textContent = bg;
+    if (open) {
+      a._bgBody.textContent = bg;
+      a._bgBody.appendChild(a._bgLess);            // "(▾)" trailing the last line
+    }
     a._bgBtn.onclick = flipBg;
+    a._bgLess.onclick = flipBg;
   }
   a._takeSec.style.display = distillShown ? "" : "none";
   if (distillShown) {
     const open = !takeClosed.has(id);
     a._takeBtn.style.display = open ? "none" : "";
     (a._distill as HTMLElement).style.display = open ? "" : "none";
-    if (open) (a._distill as HTMLElement).appendChild(a._takeLess);   // quiet "less" after the last line
+    if (open) (a._distill as HTMLElement).appendChild(a._takeLess);   // "(▾)" trailing the last line
     a._takeBtn.onclick = flipTake;
     a._takeLess.onclick = flipTake;
   }

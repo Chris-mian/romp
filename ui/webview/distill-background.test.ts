@@ -20,19 +20,21 @@ test("the card builds both sections and registers their refs", () => {
   assert.match(FEED, /bgName\.textContent = "background"/);
   assert.match(FEED, /takeName\.textContent = "summary"/);
   assert.match(FEED, /takeSec\.append\(takeBtn, distill\)/, "the takeaway section WRAPS the existing distill line");
-  assert.match(FEED, /a\._bgSec = bgSec; a\._bgBtn = bgBtn; a\._bgTri = bgTri; a\._bgBody = bgBody;/);
+  assert.match(FEED, /a\._bgSec = bgSec; a\._bgBtn = bgBtn; a\._bgBody = bgBody; a\._bgLess = bgLess;/);
   assert.match(FEED, /background\?: string \| null;/, "the AskItem carries the kernel's background field");
 });
 
-test("disclosure is the chat's ▸/▾ language: the background row persists and flips", () => {
-  // same glyph pair the ↩ Follow-up header uses — one visual language across chat + feed
+test("disclosure is the chat's ▸ language; open, BOTH labels vanish and only (▾) trails the text", () => {
+  // same glyph the ↩ Follow-up header uses — one visual language across chat + feed
   assert.match(FEED, /bgTri\.textContent = "▸";/);
-  assert.match(FEED, /a\._bgTri\.textContent = open \? "▾" : "▸";/, "the row persists as the close control");
-  // the takeaway's collapsed row is the same pattern; open, only the trailing "less" shows
   assert.match(FEED, /takeTri\.textContent = "▸";/);
-  assert.match(FEED, /takeLess\.textContent = "less"/);
+  // open = symmetric for both sections: label row hidden, "(▾)" appended after the text (no words)
+  assert.match(FEED, /bgLess\.textContent = "\(▾\)"/);
+  assert.match(FEED, /takeLess\.textContent = "\(▾\)"/);
+  assert.match(FEED, /a\._bgBtn\.style\.display = open \? "none" : "";/, "the background label vanishes when open");
   assert.match(FEED, /a\._takeBtn\.style\.display = open \? "none" : "";/);
-  assert.match(FEED, /\(a\._distill as HTMLElement\)\.appendChild\(a\._takeLess\);/, "the 'less' trails the last line");
+  assert.match(FEED, /a\._bgBody\.appendChild\(a\._bgLess\);/, "the (▾) trails the background's last line");
+  assert.match(FEED, /\(a\._distill as HTMLElement\)\.appendChild\(a\._takeLess\);/, "and the summary's");
 });
 
 test("defaults: background collapsed, takeaway expanded; the flips drive per-card sets", () => {
@@ -44,6 +46,7 @@ test("defaults: background collapsed, takeaway expanded; the flips drive per-car
   const flips = FEED.match(/ev\.stopPropagation\(\);\s*\n\s*if \((?:bgOpen|takeClosed)\.has\(id\)\)/g) || [];
   assert.equal(flips.length, 2, "each section's flip stops the card-body click");
   assert.match(FEED, /a\._takeBtn\.onclick = flipTake;\s*\n\s*a\._takeLess\.onclick = flipTake;/);
+  assert.match(FEED, /a\._bgBtn\.onclick = flipBg;\s*\n\s*a\._bgLess\.onclick = flipBg;/);
 });
 
 test("background shows only alongside a produced takeaway, and the takeaway keeps its deep-link", () => {
@@ -52,14 +55,17 @@ test("background shows only alongside a produced takeaway, and the takeaway keep
   assert.match(FEED, /dl\.classList\.add\("fask-distill-link"\)/);
 });
 
-test("the chrome is BARE text: no borders, no pills; bodies run full width", () => {
+test("the chrome is BARE text: no borders, no pills; typography matches the summary", () => {
   assert.match(CSS, /\.fask-sec \{ display: flex; flex-wrap: wrap;/);
   assert.match(CSS, /\.fask-sec-head \{[^}]*border: 0/, "no box around the disclosure row");
   assert.match(CSS, /\.fask-sec-head \{[^}]*background: none/);
+  assert.match(CSS, /\.fask-sec-head \{[^}]*font-size: 0\.86em/, "collapsed rows read at BODY size (the user 2026-07-02)");
   assert.match(CSS, /\.fask-sec-head:hover \{ color: var\(--fg\); \}/, "hover brightens — that IS the affordance");
-  assert.match(CSS, /\.fask-sec-less \{[^}]*border: 0/, "the trailing less is a naked link, not a button box");
-  assert.match(CSS, /\.fask-sec-less:hover \{[^}]*underline/);
-  // the expanded background body takes the FULL card width — no gutter
+  assert.match(CSS, /\.fask-sec-less \{[^}]*border: 0/, "the trailing (▾) is naked text, not a button box");
+  assert.match(CSS, /\.fask-sec-less \{[^}]*margin-left: 18px/, "a wide ~2-space gap before the (▾)");
+  // the background body is typographically IDENTICAL to the summary (.fask-distill)
+  assert.match(CSS, /\.fask-bg-body \{[^}]*font-size: 0\.86em/);
+  assert.match(CSS, /\.fask-bg-body \{[^}]*opacity: 0\.82/);
   assert.doesNotMatch(CSS, /\.fask-bg-body \{[^}]*margin-left/);
   assert.match(CSS, /\.fask-bg-body \{[^}]*pre-wrap/);
   // feed.css must define --box-border itself (border shorthand with an undefined var() is VOID — the
