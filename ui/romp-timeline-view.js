@@ -1244,6 +1244,12 @@ class TimelinePanel {
       if (typeof window !== 'undefined' && typeof window.__rompTimelineWriteOrder === 'function') {
         window.__rompTimelineWriteOrder(order); return;
       }
+      // The direct write is the OBSIDIAN DESKTOP path — an Electron app. Under PLAIN node with a window
+      // shim (the `node --test` runner) there is no romp UI at all, so never touch the real state file:
+      // the lane-drag test used to land here and WIPE ~/.local/state/romp/session-order.json to its
+      // two fixture sids on every `npm test`, which is exactly the "tabs keep reordering themselves"
+      // bug the order-audit log finally pinned (the user 2026-07-02). Electron-or-nothing, no heuristic.
+      if (typeof process === 'undefined' || !process.versions || !process.versions.electron) return;
       const fs = require('fs'), path = require('path'), os = require('os');
       const base = process.env.XDG_STATE_HOME || path.join(os.homedir(), '.local', 'state');
       const f = path.join(base, 'romp', 'session-order.json'), tmp = f + '.tmp';
