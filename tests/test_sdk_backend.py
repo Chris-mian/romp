@@ -1537,22 +1537,25 @@ class ReconnectReconcilesInflight(unittest.TestCase):
 
 class RateLimitUsageStaleness(unittest.TestCase):
     """usage.json (the /usage rail's 5h + weekly bars) is written by BOTH the tmux statusline — the CLI's
-    CURRENT rate_limits handed to it every render, always fresh — and the SDK backend, which only sees the
-    transition-gated RateLimitEvent (emitted on a status change, NOT on a plain utilization reset). So this
-    backend's five_hour can be hours stale. It must NEVER clobber a fresher window already in the file (the
-    user 2026-07-01: `/usage` read 5h=69% but the rail showed 0% — an SDK seven_day event re-wrote usage.json
-    dragging its own hours-old five_hour over the statusline's 69%)."""
+    CURRENT rate_limits handed to it every render, always fresh — and the SDK backend's _record_rate_limit,
+    which is STATUS-AWARE (the user 2026-07-02): 19h of cadence instrumentation showed the CLI attaches
+    `utilization` only in the allowed_warning band; `allowed` and `rejected` events carry None. The old
+    util-only path dropped 97% of events — every REJECTED one included, so romp never showed the limit —
+    and after an account switch nothing replaced the old account's reading. Now `status` + `resets_at`
+    (always present) drive the merge: rejected=100, the event's resets_at names the LIVE window, and a
+    same-window unknown utilization keeps the file's pct."""
 
-    def _info(self, rlt, util, resets_at):
+    def _info(self, rlt, util, resets_at, status="allowed"):
         class _I:
             pass
         i = _I()
-        i.rate_limit_type, i.utilization, i.resets_at, i.status = rlt, util, resets_at, "allowed"
+        i.rate_limit_type, i.utilization, i.resets_at, i.status = rlt, util, resets_at, status
         return i
 
     def setUp(self):
         self.d = tempfile.mkdtemp()
-        self.be = sb.SdkBackend(self.d, "/bin/true", lambda *a, **k: None)
+        self.logs = []
+        self.be = sb.SdkBackend(self.d, "/bin/true", lambda *a, **k: None, log=self.logs.append)
 
     def _usage(self):
         return json.loads((Path(self.d) / "usage.json").read_text())
@@ -1562,12 +1565,10 @@ class RateLimitUsageStaleness(unittest.TestCase):
 
     def test_sdk_event_does_not_clobber_the_statuslines_fresh_five_hour(self):
         now = int(time.time())
-        # 1) the SDK once saw a five_hour reading; that window has since RESET, so its resets_at is now past.
-        self.be._record_rate_limit(self._info("five_hour", 0.0, now - 9 * 3600))
-        # 2) the tmux statusline then wrote a FRESH snapshot (current rate_limits every render): 5h=69%, wk=65%.
+        # the tmux statusline wrote a FRESH snapshot (current rate_limits every render): 5h=69%, wk=65%.
         self._write_usage({"t": now, "five_hour": {"pct": 69, "resets_at": now + 3600},
                                        "seven_day": {"pct": 65, "resets_at": now + 500000}})
-        # 3) a seven_day RateLimitEvent fires — the write must NOT drag the stale five_hour back over 69%.
+        # a seven_day RateLimitEvent fires — it touches ONLY its own window, never the five_hour.
         self.be._record_rate_limit(self._info("seven_day", 0.65, now + 500000))
         out = self._usage()
         self.assertEqual(out["five_hour"]["pct"], 69,
@@ -1588,10 +1589,54 @@ class RateLimitUsageStaleness(unittest.TestCase):
         self.be._record_rate_limit(self._info("five_hour", 0.05, now + 5 * 3600))   # window reset → new window
         self.assertEqual(self._usage()["five_hour"]["pct"], 5, "a genuinely newer window replaces the old one")
 
-    def test_rate_limit_event_is_logged_for_cadence_measurement(self):
-        # TEMPORARY instrumentation (2026-07-01): every RateLimitEvent arrival appends one jsonl line, so we can
-        # measure how often the SDK actually streams them before deciding whether event-only tracking is fresh
-        # enough to drop the usage.json/statusline path.
+    def test_rejected_with_null_utilization_reads_100(self):
+        # The CLI attaches NO utilization to a rejected event — but rejected IS the limit. Dropping it (the
+        # old util-only gate) is how the user hit the session limit without romp ever showing it.
+        now = int(time.time())
+        self.be._record_rate_limit(self._info("five_hour", None, now + 3600, status="rejected"))
+        seg = self._usage()["five_hour"]
+        self.assertEqual(seg["pct"], 100, "rejected = the window is full, even with utilization=None")
+        self.assertEqual(seg["resets_at"], now + 3600)
+
+    def test_allowed_event_unsticks_a_dead_windows_reading(self):
+        # ACCOUNT SWITCH (the user 2026-07-02): the file still holds the OLD account's near-limit reading;
+        # the live CLI (new account) streams allowed events with utilization=None for a DIFFERENT window.
+        # The event's resets_at names the LIVE window — the dead reading is replaced, not left to win.
+        now = int(time.time())
+        self._write_usage({"t": now, "five_hour": {"pct": 98, "resets_at": now + 4 * 3600}, "seven_day": None})
+        self.be._record_rate_limit(self._info("five_hour", None, now + 3600, status="allowed"))
+        seg = self._usage()["five_hour"]
+        self.assertEqual(seg["resets_at"], now + 3600, "the live CLI's window replaces the dead one — even with an EARLIER reset")
+        self.assertEqual(seg["pct"], 0, "unknown usage in a fresh window reads 0 (statusline/warning events refine it)")
+
+    def test_allowed_event_with_null_utilization_keeps_the_same_windows_pct(self):
+        # Same window, no utilization → the event adds nothing about the pct; keep the file's reading AND
+        # don't rewrite the file (t = the last real reading, so the tooltip's "updated … ago" stays honest).
+        now = int(time.time())
+        self._write_usage({"t": now - 999, "five_hour": {"pct": 42, "resets_at": now + 3600}, "seven_day": None})
+        self.be._record_rate_limit(self._info("five_hour", None, now + 3600, status="allowed"))
+        out = self._usage()
+        self.assertEqual(out["five_hour"]["pct"], 42)
+        self.assertEqual(out["t"], now - 999, "a no-op event must not refresh t")
+
+    def test_allowed_caps_a_stale_100_at_99(self):
+        # An `allowed` event PROVES the account is not limited: a same-window pct claiming 100 (an earlier
+        # rejected, or a stale statusline write) is capped to 99 so the limited banner can't outlive the CLI.
+        now = int(time.time())
+        self._write_usage({"t": now, "five_hour": {"pct": 100, "resets_at": now + 3600}, "seven_day": None})
+        self.be._record_rate_limit(self._info("five_hour", None, now + 3600, status="allowed"))
+        self.assertEqual(self._usage()["five_hour"]["pct"], 99)
+
+    def test_write_failure_is_logged_not_swallowed(self):
+        # the user 2026-07-02 ("I suspect there's some error somewhere that's being swallowed"): a failed
+        # usage.json write must land in the backend log, never a bare `except: pass`.
+        now = int(time.time())
+        self.be.state_dir = Path(self.d) / "gone" / "deeper"   # no parent → the tmp write raises
+        self.be._record_rate_limit(self._info("five_hour", 0.5, now + 3600))
+        self.assertTrue(any("usage.json write failed" in str(m) for m in self.logs),
+                        "the write failure is logged")
+
+    def test_on_message_routes_rate_limit_events_to_the_recorder(self):
         s = sb.SdkSession(self.be, {"sid": "11111111-2222-3333-4444-555555555555", "name": "n", "cwd": self.d})
 
         class _Msg:            # a duck-typed RateLimitEvent (the branch keys off `rate_limit_info`)
@@ -1602,11 +1647,7 @@ class RateLimitUsageStaleness(unittest.TestCase):
         class _T:              # dummy type classes — the msg is none of Assistant/Result/System
             pass
         s._on_message(m, _T, _T, _T)
-        lines = [json.loads(l) for l in (Path(self.d) / "rate-limit-events.jsonl").read_text().splitlines()]
-        self.assertEqual(len(lines), 1, "one line logged per RateLimitEvent")
-        self.assertEqual(lines[0]["type"], "five_hour")
-        self.assertEqual(lines[0]["util"], 0.42)
-        self.assertEqual(lines[0]["name"], "n")
+        self.assertEqual(self._usage()["five_hour"]["pct"], 42, "the event landed in usage.json")
 
 
 if __name__ == "__main__":
