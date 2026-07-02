@@ -2,8 +2,10 @@
 // pin the wiring at the source: (1) the compacting battery's "compression" sweep rides a PERSISTENT CSS-animated
 // overlay div (not a per-draw-recreated SVG <rect>), so it glides smoothly regardless of the redraw cadence —
 // the chat-tab approach; (2) the working-chip breathe is still a SMIL animation that resumes mid-cycle on the
-// per-poll rebuild via a negative begin offset; (3) focusing the wrap on mousedown uses preventScroll so the
-// first click on the % battery isn't eaten by a focus-scroll. (The lane-state ↔ chip sync lives in the kernel.)
+// per-poll rebuild via a negative begin offset; (3) focusing the wrap on mousedown uses preventScroll AND the
+// battery activates on a focus-proof pointerdown→pointerup (not the synthesized click a cross-pane iframe focus
+// swallows) so the first click on the % battery isn't eaten; (4) the scan-bar mirrors the context colormap
+// (kernel cmapGrad → --cmpN vars). (The lane-state ↔ chip sync lives in the kernel.)
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
@@ -41,7 +43,24 @@ test("focusing the wrap on mousedown uses preventScroll (so the first % click is
   assert.match(SRC, /this\.wrap\.focus\(\{ preventScroll: true \}\)/);
 });
 
-test("clicking the battery sends /compact + flags the optimistic compacting cue", () => {
-  assert.match(SRC, /this\._compactClicked\[s\.id\] = \(Date\.now \? Date\.now\(\) : 0\); this\._compactSession\(s\.name\)/);
+test("clicking the battery sends /compact via a focus-proof pointerup (not the click a pane-focus swallows)", () => {
+  // The action fires on pointerdown→pointerup on the hit, NOT addEventListener('click', …): when the timeline
+  // iframe isn't the focused pane, the browser spends the first press focusing it and DROPS the synthesized
+  // click (the "first click only focuses, second acts" bug, the user 2026-07-02 — preventScroll above only
+  // covered focusing the inner wrap, not the cross-pane iframe focus). Pointer events reach the element
+  // regardless of window focus. The `pressed` guard ignores a pointerup after a press that began elsewhere.
+  assert.match(SRC, /let pressed = false;/);
+  assert.match(SRC, /hit\.addEventListener\('pointerdown', \(e\) => \{ if \(e\.button === 0\) pressed = true; \}\)/);
+  assert.match(SRC, /hit\.addEventListener\('pointerup', \(e\) => \{/);
+  assert.match(SRC, /if \(!pressed \|\| e\.button !== 0\) return;/);
+  assert.match(SRC, /this\._compactClicked\[s\.id\] = \(Date\.now \? Date\.now\(\) : 0\);\s*this\._compactSession\(s\.name\)/);
   assert.match(SRC, /window\.__rompTimelineCompact === 'function'/);
+});
+
+test("the compacting scan-bar mirrors the context colormap via the kernel's cmapGrad", () => {
+  // the bar's background steps through --cmp0 (narrowest = map 0%) … --cmp4 (widest = map 100%), set from the
+  // kernel's cmapGrad in _positionCompactBar (the timeline has no client-side ramp), so it matches the fill.
+  assert.match(SRC, /if \(data\.cmapGrad\) this\._cmapGrad = data\.cmapGrad;/);
+  assert.match(SRC, /background:var\(--cmp0,#14b8a6\)/);
+  assert.match(SRC, /bar\.style\.setProperty\('--cmp' \+ k,/);
 });

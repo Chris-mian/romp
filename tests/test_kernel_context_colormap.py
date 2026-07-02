@@ -30,6 +30,16 @@ class ContextColormap(unittest.TestCase):
         self.assertIn("cm.ramp(tm[\"context\"] / 100.0, cm.stops_for(_colormap()))", src,
                       "context% maps onto the global colormap")
 
+    def test_build_timeline_ships_a_compaction_sweep_gradient(self):
+        # the timeline scan-bar has no client-side colormap, so build_timeline samples the SAME map at the
+        # sweep's scaleX stops (widest→narrowest) and ships cmapGrad; the client sets --cmpN vars from it so
+        # the compaction bar mirrors the context battery fill as it compresses (the user 2026-07-02).
+        src = inspect.getsource(km.build_timeline)
+        self.assertIn('"cmapGrad": cmap_grad', src, "the timeline payload carries the compaction gradient")
+        self.assertIn("cm.ramp(v, ctx_stops)", src, "sampled on the global colormap")
+        self.assertIn("for v in (0.12, 0.34, 0.56, 0.78, 1.0)", src,
+                      "5 stops matching the client's applyCompactSweep positions")
+
     def test_context_color_is_none_when_there_is_no_context_yet(self):
         # both payloads guard on context is not None so a dormant/never-reported lane sends no color
         self.assertIn('if tm and tm["context"] is not None else None', inspect.getsource(km.build_timeline))

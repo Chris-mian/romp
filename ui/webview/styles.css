@@ -126,14 +126,20 @@ body { display: flex; flex-direction: column; }
 }
 .tab-compacting-fill {
   position: absolute; left: 0; top: 0; bottom: 0; width: 100%; border-radius: 2px;
-  background: var(--st-compacting-bg); transform-origin: left center;
+  background: var(--cmp4, var(--st-compacting-bg)); transform-origin: left center;
   animation: tab-compact 1.6s linear infinite;
 }
+/* background steps through the colormap vars (set in JS by applyCompactSweep, sampled from ramp()): full
+   width = the map's high/100% colour (--cmp4), sliding toward its 0% colour (--cmp0) as the bar narrows —
+   mirroring the context battery fill. Fallback to the flat compacting teal if the vars aren't set. */
 @keyframes tab-compact {
-  0%   { transform: scaleX(1);    opacity: 0; }   /* appear at full width */
-  12%  { transform: scaleX(1);    opacity: 1; }
-  88%  { transform: scaleX(0.12); opacity: 1; }   /* right edge has slid left */
-  100% { transform: scaleX(0.12); opacity: 0; }   /* fade out, then restart full */
+  0%   { transform: scaleX(1);    opacity: 0; background: var(--cmp4, var(--st-compacting-bg)); }   /* appear at full width */
+  12%  { transform: scaleX(1);    opacity: 1; background: var(--cmp4, var(--st-compacting-bg)); }
+  31%  { background: var(--cmp3, var(--st-compacting-bg)); }
+  50%  { background: var(--cmp2, var(--st-compacting-bg)); }
+  69%  { background: var(--cmp1, var(--st-compacting-bg)); }
+  88%  { transform: scaleX(0.12); opacity: 1; background: var(--cmp0, var(--st-compacting-bg)); }   /* right edge has slid left */
+  100% { transform: scaleX(0.12); opacity: 0; background: var(--cmp0, var(--st-compacting-bg)); }   /* fade out, then restart full */
 }
 /* CLOSED (dead session kept as a read-only tab): strike the title + dim, so a tab that's still
    present but no longer live reads as past tense (the user 2026-06-16). */
@@ -677,15 +683,20 @@ body { display: flex; flex-direction: column; }
 .ctx-bar.ctx-compacting .ctx-scan {
   display: block; position: absolute; left: 1px; top: 1px; bottom: 1px;
   width: calc(100% - 2px); border-radius: 1px;
-  background: var(--st-compacting-bg);
+  background: var(--cmp4, var(--st-compacting-bg));
   transform-origin: left center;
   animation: ctx-compress 3.2s linear infinite;
 }
+/* colormap gradient as it compresses (vars set in JS by applyCompactSweep) — full width = the map's high
+   colour, sliding to its 0% colour; falls back to the flat compacting teal if unset. */
 @keyframes ctx-compress {
-  0%   { transform: scaleX(1);    opacity: 0; }   /* appear at full width */
-  10%  { transform: scaleX(1);    opacity: 1; }
-  90%  { transform: scaleX(0.05); opacity: 1; }   /* right edge has slid to the left */
-  100% { transform: scaleX(0.05); opacity: 0; }   /* fade out, then restart full */
+  0%   { transform: scaleX(1);    opacity: 0; background: var(--cmp4, var(--st-compacting-bg)); }   /* appear at full width */
+  10%  { transform: scaleX(1);    opacity: 1; background: var(--cmp4, var(--st-compacting-bg)); }
+  30%  { background: var(--cmp3, var(--st-compacting-bg)); }
+  50%  { background: var(--cmp2, var(--st-compacting-bg)); }
+  70%  { background: var(--cmp1, var(--st-compacting-bg)); }
+  90%  { transform: scaleX(0.05); opacity: 1; background: var(--cmp0, var(--st-compacting-bg)); }   /* right edge has slid to the left */
+  100% { transform: scaleX(0.05); opacity: 0; background: var(--cmp0, var(--st-compacting-bg)); }   /* fade out, then restart full */
 }
 .ctx-fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; transition: width 0.3s ease, background 0.3s ease; }
 .ctx-text {

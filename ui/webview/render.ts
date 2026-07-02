@@ -1821,7 +1821,9 @@ function renderTabs() {
     // coincide with working, so no dot clash.
     if (st === "compacting") {
       const ci = el("span", "tab-compacting-bar");
-      ci.appendChild(el("span", "tab-compacting-fill"));
+      const cfill = el("span", "tab-compacting-fill");
+      applyCompactSweep(cfill);   // phase-sync across re-renders (the anim no longer restarts) + colormap gradient
+      ci.appendChild(cfill);
       ci.title = "compacting — compressing the conversation to free up context";
       tab.appendChild(ci);
     }
@@ -3313,6 +3315,26 @@ function ramp(v: number): [number, number, number] {
   const a = STOPS[i], b = STOPS[i + 1];
   return [Math.round(a[0] + (b[0] - a[0]) * fr), Math.round(a[1] + (b[1] - a[1]) * fr), Math.round(a[2] + (b[2] - a[2]) * fr)];
 }
+// Arm a compaction "sweep" fill (the tab bar bar + the statusline battery scan) so it (a) does NOT restart
+// every render and (b) mirrors the context colormap as it compresses.
+//   (a) renderTabs()/updateStatusline() recreate the element on every kernel push (0.5–3s backstop + one per
+//       stream event); a plain CSS animation resets to frame 0 each time, so it visibly hiccups/jumps (the
+//       user 2026-07-02: the tab bar restarted while the timeline's — a persistent repositioned overlay —
+//       stayed smooth). A NEGATIVE animation-delay of -(now mod duration) makes the phase a pure function of
+//       the wall clock, so a freshly-built element resumes exactly where the destroyed one was — seamless
+//       across rebuilds, event-based, no shared timer. Duration MUST match the element's @keyframes duration.
+//   (b) sample ramp() at the sweep's scaleX stops (see @keyframes tab-compact / ctx-compress in styles.css)
+//       and hand them to CSS as vars: --cmp4 (widest = the map's "full"/100% colour) … --cmp0 (narrowest =
+//       the map's 0% colour). The bar then slides through the SAME hues the battery fill uses as it narrows.
+function applyCompactSweep(fillEl: HTMLElement, durationMs = 1600): void {
+  fillEl.style.animationDelay = `-${Date.now() % durationMs}ms`;
+  const rgb = (v: number): string => { const c = ramp(v); return `rgb(${c[0]},${c[1]},${c[2]})`; };
+  fillEl.style.setProperty("--cmp0", rgb(0.12));   // narrowest width in the sweep → the map's low end
+  fillEl.style.setProperty("--cmp1", rgb(0.34));
+  fillEl.style.setProperty("--cmp2", rgb(0.56));
+  fillEl.style.setProperty("--cmp3", rgb(0.78));
+  fillEl.style.setProperty("--cmp4", rgb(1.0));    // full width → the map's high end (matches a ~100% fill)
+}
 // recency → ramp position [0..1] (recent → 1, old → 0), shared log age scale.
 function recencyV(ageSecs: number): number {
   const LO = 120, HI = 345600; // 2 min (brightest) .. 96 h (darkest) — matches romp_colormap.py FADE_HI
@@ -4258,6 +4280,8 @@ function setCtxBar(bar: HTMLElement, ctxStr: string | undefined, compacting = fa
     bar.classList.remove("ctx-clicked");   // the click's pulse cue did its job
     bar.style.display = "";
     bar.title = "compacting context…";
+    const scan = bar.querySelector(".ctx-scan") as HTMLElement | null;
+    if (scan) applyCompactSweep(scan, 3200);   // colormap gradient + phase-sync (ctx-compress runs 3.2s)
     return;
   }
   if (!ctxStr) { bar.style.display = "none"; return; }

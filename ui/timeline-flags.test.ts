@@ -83,8 +83,9 @@ test("the eye toggle is OPTIMISTIC + STICKY: held across pushes until the kernel
   // incoming data matches it (then drop). So the click sticks instantly and never bounces.
   assert.match(SRC, /this\._pendingFlags = \{\};/);
   assert.match(SRC, /\(this\._pendingFlags\[s\.id\] = this\._pendingFlags\[s\.id\] \|\| \{\}\)\.hideFromFeed = next;/);
-  // update() reconciles right after adopting the new data, BEFORE the early-returns/draw
-  assert.match(SRC, /this\.data = data;\s*\n\s*this\._reconcilePendingFlags\(\);/);
+  // update() reconciles right after adopting the new data, BEFORE the early-returns/draw (one benign
+  // assignment — the cmapGrad stash — may sit between, but reconcile still comes first)
+  assert.match(SRC, /this\.data = data;\s*\n(?:[^\n]*\n)?\s*this\._reconcilePendingFlags\(\);/);
   assert.match(SRC, /_reconcilePendingFlags\(\) \{[\s\S]*?if \(s\[flag\] === p\[flag\]\) delete p\[flag\];[\s\S]*?else s\[flag\] = p\[flag\];/);
 });
 

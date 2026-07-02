@@ -6740,8 +6740,13 @@ def build_timeline(now, tmux=None, with_bars=True, live_only=False):
     # display and reads only `usage` now (romp-timeline-view.js: "nothing reads it"). Computing it cost ~184ms
     # PER BUILD (it summed usage.jsonl across every session) — the single biggest slice of the timeline build,
     # paid on every cold connect. Ship []; re-add it LAZILY + CACHED if the token display ever returns.
+    # compaction-sweep gradient (widest→narrowest): the timeline's scan-bar has no client-side colormap, so
+    # ship the GLOBAL map sampled at the same scaleX stops the chat surface uses (render.ts applyCompactSweep),
+    # letting the bar slide through the map's hues as it compresses — mirroring the context battery fill.
+    cmap_grad = [list(cm.ramp(v, ctx_stops)) for v in (0.12, 0.34, 0.56, 0.78, 1.0)]
     return {"type": "timeline", "now": now, "sessions": sessions, "turns": turns,
             "messages": messages, "judging": judging, "nudges": nudges, "tokens": [],
+            "cmapGrad": cmap_grad,
             "activeChat": None, "focus": None, "hover": None, "usage": _usage()}
 
 

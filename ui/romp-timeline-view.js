@@ -402,11 +402,19 @@ class TimelinePanel {
         const cst = document.createElement('style'); cst.id = 'tl-compact-css';
         // scaleX (transform-origin:left) from full → ~1px, compositor-accelerated; opacity fades the loop ends
         // so it never snaps. DUR 3.2s matches the old SMIL sweep. minW/innerW ≈ 1/46 ≈ 0.022.
-        cst.textContent = '.romp-tl-compact-bar{position:absolute;border-radius:1px;background:#14b8a6;'
+        // background steps through the colormap gradient (--cmp4 widest = the map's high colour … --cmp0
+        // narrowest = its 0% colour), set per-draw in _positionCompactBar from the kernel's cmapGrad, so the
+        // scan-bar mirrors the context battery fill as it compresses. Falls back to the flat teal if unset.
+        // (Changing the vars does NOT restart the animation — the persistent div keeps its compositor clock —
+        // so this stays smooth, unlike the tab bar which is rebuilt each render.)
+        cst.textContent = '.romp-tl-compact-bar{position:absolute;border-radius:1px;background:var(--cmp4,#14b8a6);'
           + 'pointer-events:none;transform-origin:left center;will-change:transform,opacity;'
           + 'animation:romp-tl-compact 3.2s linear infinite}'
-          + '@keyframes romp-tl-compact{0%{transform:scaleX(1);opacity:0}10%{transform:scaleX(1);opacity:1}'
-          + '90%{transform:scaleX(0.022);opacity:1}100%{transform:scaleX(0.022);opacity:0}}';
+          + '@keyframes romp-tl-compact{0%{transform:scaleX(1);opacity:0;background:var(--cmp4,#14b8a6)}'
+          + '10%{transform:scaleX(1);opacity:1;background:var(--cmp4,#14b8a6)}'
+          + '30%{background:var(--cmp3,#14b8a6)}50%{background:var(--cmp2,#14b8a6)}70%{background:var(--cmp1,#14b8a6)}'
+          + '90%{transform:scaleX(0.022);opacity:1;background:var(--cmp0,#14b8a6)}'
+          + '100%{transform:scaleX(0.022);opacity:0;background:var(--cmp0,#14b8a6)}}';
         document.head.appendChild(cst);
       }
       // WORKING-badge label pulse: black↔teal on the SAME 1.5s ease-in-out-sine clock as the chat chip's
@@ -999,6 +1007,7 @@ class TimelinePanel {
       data.messages = prev.messages || []; data.nudges = prev.nudges || [];
     }
     this.data = data;
+    if (data.cmapGrad) this._cmapGrad = data.cmapGrad;   // compaction-sweep colormap gradient (persists across the lighter {type:bars} pushes)
     this._reconcilePendingFlags();   // hold an optimistic eye-toggle sticky until THIS push (or a later one) confirms it
     this._signalReady();             // first lanes are about to paint → let the shell drop the boot splash
     // Live-edge baseline: free-run off a FIXED anchor and re-snap only on a genuine step, so the few-ms
@@ -1578,6 +1587,12 @@ class TimelinePanel {
       this._compactLayer.appendChild(bar);
       this._compactBars.set(sid, bar);
     }
+    // colormap gradient for the compression sweep (kernel cmapGrad = 5 rgb stops, narrowest→widest: --cmp0 is
+    // the map's 0% colour, --cmp4 its full/100% colour). Re-applied each draw so a live colormap switch recolours
+    // an in-progress bar; changing a custom prop referenced by the keyframes recolours WITHOUT restarting the
+    // compositor animation, so the sweep stays smooth.
+    const g = this._cmapGrad;
+    if (g && g.length === 5) for (let k = 0; k < 5; k++) bar.style.setProperty('--cmp' + k, 'rgb(' + g[k][0] + ',' + g[k][1] + ',' + g[k][2] + ')');
     const m = this._ovScaleNow();
     bar.style.left = (m.ox + x * m.sx) + 'px'; bar.style.top = (m.oy + y * m.sy) + 'px';
     bar.style.width = (w * m.sx) + 'px'; bar.style.height = (h * m.sy) + 'px';
@@ -2257,7 +2272,23 @@ class TimelinePanel {
           hit.addEventListener('mouseenter', (e) => this.showTip(cmt(), e));
           hit.addEventListener('mousemove', (e) => this.moveTip(e));
           hit.addEventListener('mouseleave', () => this.hideTip());
-          hit.addEventListener('click', (e) => { e.stopPropagation(); this.hideTip(); this._compactClicked[s.id] = (Date.now ? Date.now() : 0); this._compactSession(s.name); this.draw(); });
+          // Activate on pointerdown→pointerup on THIS hit, NOT the synthesized `click`: when the timeline
+          // iframe isn't the focused pane, the browser spends the first press focusing the pane and DROPS the
+          // click that would follow (the "first click only focuses, second acts" bug — the earlier preventScroll
+          // fix only covered focusing the inner wrap, not the cross-pane iframe focus the user hit again
+          // 2026-07-02). Pointer events reach the element regardless of window focus (that's why the svg-level
+          // pointerdown already sets _pointerHeld on the first press), so a same-hit down+up IS a focus-proof
+          // click. The `pressed` guard ignores a pointerup that lands here after a press began elsewhere (e.g. a
+          // pan released over the battery); _pointerHeld holds external redraws so `hit` survives down→up.
+          let pressed = false;
+          hit.addEventListener('pointerdown', (e) => { if (e.button === 0) pressed = true; });
+          hit.addEventListener('pointerup', (e) => {
+            if (!pressed || e.button !== 0) return;
+            pressed = false;
+            e.stopPropagation(); this.hideTip();
+            this._compactClicked[s.id] = (Date.now ? Date.now() : 0);
+            this._compactSession(s.name); this.draw();
+          });
           svg.appendChild(hit);
         }
       }

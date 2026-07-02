@@ -22,3 +22,28 @@ test("compacting tab gets an animated compaction bar before the name (NOT the st
   assert.match(CSS, /animation: tab-compact /);
   assert.match(CSS, /@keyframes tab-compact \{/);
 });
+
+test("the tab compaction sweep is armed with applyCompactSweep (phase-sync + colormap gradient)", () => {
+  // the fill is armed before being appended, so it survives renderTabs()' replaceChildren() rebuilds
+  assert.match(RENDER, /const cfill = el\("span", "tab-compacting-fill"\);\s*\n\s*applyCompactSweep\(cfill\);/);
+  // the statusline battery scan is armed too (its ctx-compress runs 3.2s, so the duration is passed)
+  assert.match(RENDER, /applyCompactSweep\(scan, 3200\)/);
+});
+
+test("applyCompactSweep phase-syncs across re-renders via a negative wall-clock animation-delay (no restart)", () => {
+  // renderTabs()/updateStatusline() recreate the element every push; a plain CSS animation would reset to
+  // frame 0 each time (the hiccup). A negative delay of -(now mod duration) makes the phase a pure function
+  // of the wall clock, so a freshly-built element resumes exactly where the destroyed one was.
+  assert.match(RENDER, /function applyCompactSweep\(fillEl: HTMLElement, durationMs = 1600\)/);
+  assert.match(RENDER, /fillEl\.style\.animationDelay = `-\$\{Date\.now\(\) % durationMs\}ms`/);
+});
+
+test("the compaction sweep mirrors the context colormap: ramp() sampled into --cmp0…--cmp4 vars", () => {
+  // widest width = the map's full/100% colour (--cmp4 = ramp(1.0)); narrowing toward its 0% colour
+  // (--cmp0 = ramp(0.12)) — the SAME map the battery fill uses.
+  assert.match(RENDER, /fillEl\.style\.setProperty\("--cmp0", rgb\(0\.12\)\)/);
+  assert.match(RENDER, /fillEl\.style\.setProperty\("--cmp4", rgb\(1\.0\)\)/);
+  // the keyframes step through the vars (fallback to the flat compacting teal when unset)
+  assert.match(CSS, /@keyframes tab-compact \{[\s\S]*?background: var\(--cmp4, var\(--st-compacting-bg\)\)[\s\S]*?background: var\(--cmp0, var\(--st-compacting-bg\)\)/);
+  assert.match(CSS, /@keyframes ctx-compress \{[\s\S]*?var\(--cmp4, var\(--st-compacting-bg\)\)[\s\S]*?var\(--cmp0, var\(--st-compacting-bg\)\)/);
+});
