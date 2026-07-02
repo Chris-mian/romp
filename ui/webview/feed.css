@@ -8,6 +8,9 @@
   --green: #74c991;
   --err: #c0392b;   /* the block-red — mirrors styles.css; feed.css has its OWN :root, so the ⏸ block marks
                        (and the modal's red ⏸-ring) need it defined HERE or var(--err) falls back to gray */
+  --box-border: rgba(255, 255, 255, 0.12);  /* mirrors styles.css — same trap as --err: an undefined var()
+                       in a border SHORTHAND voids the whole declaration, so the section-toggle circles and
+                       the await-paused outline rendered with NO border at all (the user 2026-07-02) */
 
   /* Card background + border are set inline per card (the hawaii recency tint).
      These neutral tokens are for the chrome that frames them (header, detail box,
@@ -260,7 +263,7 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
    re-orientation for a reader who forgot the thread) above the takeaway (expanded by default), each toggled
    by a small +/− button. The body wraps below the toggle row (flex-wrap; the body takes the full width). */
 .fask-sec { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 6px; margin-top: 1px; }
-.fask-sec-btn { flex: none; width: 15px; height: 15px; padding: 0; border: 1px solid var(--box-border);
+.fask-sec-btn { flex: none; width: 15px; height: 15px; padding: 0; border: 1px solid var(--dim);
   border-radius: 50%; background: transparent; color: var(--dim);
   font: 600 11px/13px ui-monospace, SFMono-Regular, Menlo, monospace; cursor: pointer; }
 .fask-sec-btn:hover { color: var(--fg); border-color: var(--fg); }
