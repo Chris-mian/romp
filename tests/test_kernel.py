@@ -4273,11 +4273,13 @@ class SessionListNameCollision(unittest.TestCase):
 
 
 class SegLastText(unittest.TestCase):
-    """_seg_last_text: the LAST assistant prose atom in a segment, preferring a SUBSTANTIVE one (≥200
+    """_seg_last_text: the LAST assistant prose atom in a segment, preferring a SUBSTANTIVE one (≥80
     chars) — the summary deep-link FALLBACK when the distiller stored no citation (the user 2026-07-01;
     replaces the biggest-text-block pick, whose 'longest ever' monotonicity let a long early analysis hold
-    the anchor forever). Skips API-error atoms (a failed turn carries text but is never a jump target,
-    like _seg_anchors)."""
+    the anchor forever). The floor sits at 80, just above connective stubs, NOT 200 (the user 2026-07-02):
+    a terse-note agent's wrap-ups run 90-190 chars, and a 200 floor filtered every one of them out — the
+    only 'substantive' message left was the opening restatement, the one message this anchor must avoid.
+    Skips API-error atoms (a failed turn carries text but is never a jump target, like _seg_anchors)."""
 
     @staticmethod
     def _a(uuid, text, api=False):
@@ -4292,6 +4294,21 @@ class SegLastText(unittest.TestCase):
         atoms = [self._a("u1", early_long), self._a("u2", "ok"), self._a("u3", late_wrap)]
         u, sub = km._seg_last_text(atoms)
         self.assertEqual(u, "u3", "the most CURRENT substantive message wins, not the longest ever")
+        self.assertTrue(sub)
+
+    def test_terse_wrapups_beat_a_long_opening_restatement(self):
+        # the incident shape (the user 2026-07-02): a 200+ char opening restatement of the goals, then a
+        # whole session of terse working notes (90-190 chars each). Under the old 200 floor the opener was
+        # the only "substantive" atom, so the summary link landed on the plan instead of the outcome.
+        opener = ("Three items: the first fix, the second fix, and the third fix, restating everything "
+                  "the user asked for in one long opening paragraph. Let me check peers and set up a "
+                  "worktree before starting on any of it.")                      # >200 chars, FIRST
+        notes = ["First fix done, with a test pin. Now mapping how the second one flows end to end.",
+                 "Root cause found for the flaky suite: two stray control bytes committed at HEAD.",
+                 "All suites green on the merge. Merged to main, pushed, and the worktree is cleaned up."]   # 80-190 each
+        atoms = [self._a("u1", opener)] + [self._a("u%d" % (i + 2), t) for i, t in enumerate(notes)]
+        u, sub = km._seg_last_text(atoms)
+        self.assertEqual(u, "u4", "the LAST real note (the wrap-up) holds the anchor, never the opener")
         self.assertTrue(sub)
 
     def test_falls_back_to_the_last_short_prose_when_nothing_substantive(self):

@@ -3240,11 +3240,13 @@ DISTILL_SYS = (
     "the idea or reasoning behind it when that's the interesting part. Write for someone who wants the "
     "point, not the process. If the goal was a question, give the answer. Be as brief as the point "
     "allows, usually one sentence and at most two or three; the user can click through for detail.\n\n"
-    "Assistant messages in <work> may carry [mN] labels. If they do, add one final line, SOURCE: mN, "
-    "citing the single message the user should open to see the full substance behind your takeaway. "
-    "Pick the most informative AND most current one, usually the message that wrapped up the work; "
-    "never an early plan, analysis, or superseded attempt when a later message reflects how it "
-    "actually ended. This line is parsed off and never shown.")
+    "Assistant messages in <work> may carry [mN] labels. When they do, your reply is complete ONLY "
+    "with a third element after the takeaway: a final line that is exactly SOURCE: mN, nothing before "
+    "it on the line and nothing after it — never omit it while labels are present, and never invent a "
+    "label you weren't shown. It cites the single message the user should open to see the full "
+    "substance behind your takeaway: the most informative AND most current one, usually the message "
+    "that wrapped up the work; never an early plan, analysis, or superseded attempt when a later "
+    "message reflects how it actually ended. This line is parsed off and never shown.")
 
 
 def distill_llm(goal_text, work_text, done_why=""):
@@ -3280,10 +3282,12 @@ BLOCK_BRIEF_SYS = (
     "or provide. If there are concrete options or tradeoffs, state them briefly next. Then add only the "
     "context needed to decide: what was tried, what is at stake. Be as brief as the decision allows, "
     "usually a sentence or two; the decision itself, not a play-by-play.\n\n"
-    "Assistant messages in <work> may carry [mN] labels. If they do, add one final line, SOURCE: mN, "
-    "citing the single message the user should open for the fullest, most current context on the "
-    "decision, usually where the question and its options were actually laid out. This line is parsed "
-    "off and never shown.")
+    "Assistant messages in <work> may carry [mN] labels. When they do, your reply is complete ONLY "
+    "with a third element after the takeaway: a final line that is exactly SOURCE: mN, nothing before "
+    "it on the line and nothing after it — never omit it while labels are present, and never invent a "
+    "label you weren't shown. It cites the single message the user should open for the fullest, most "
+    "current context on the decision, usually where the question and its options were actually laid "
+    "out. This line is parsed off and never shown.")
 
 
 def brief_llm(goal_text, work_text, block_why):

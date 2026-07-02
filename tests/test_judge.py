@@ -3625,6 +3625,16 @@ class SourceCitation(unittest.TestCase):
         self.assertIn("most current", jd.DISTILL_SYS, "the citation targets the most informative AND most "
                       "current message (the user 2026-07-01), not an early plan or superseded attempt")
 
+    def test_prompts_make_the_source_line_structurally_mandatory(self):
+        # hardened 2026-07-02 (after a live reply dropped the line and the summary link degraded to the
+        # fallback): the SOURCE line is part of the reply's SHAPE — "complete ONLY with" a final line that
+        # is exactly the citation — not an advisory "add one final line" the model can skim past. Both
+        # judges also forbid inventing an unshown label (the other observed miss flavor).
+        for sys_prompt in (jd.DISTILL_SYS, jd.BLOCK_BRIEF_SYS):
+            self.assertIn("complete ONLY", sys_prompt, "the line is required, not suggested")
+            self.assertIn("never omit it while labels are present", sys_prompt)
+            self.assertIn("never invent a label", sys_prompt)
+
 
 class Distiller(unittest.TestCase):
     """The distiller (the user 2026-06-17): when a TOP completes, summarize the goal's full WORK history —
