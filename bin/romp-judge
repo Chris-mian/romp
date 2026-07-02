@@ -1062,7 +1062,7 @@ def _goal_work_text(store, seg_by_id, nid, char_cap, subtree=True, marks=None):
         for sid in nodes.get(n, {}).get("trail", []):
             if sid not in seen:
                 seen.add(sid); seg_ids.append(sid)
-    segs = sorted((seg_by_id[s] for s in seg_ids if s in seg_by_id), key=lambda sg: sg.get("t", 0))
+    segs = sorted(_segs_for(seg_by_id, seg_ids), key=lambda sg: sg.get("t", 0))   # drift-safe trail resolution
     work = "\n\n".join(_unit_text(sg["atoms"], marker=marks) for sg in segs).strip()
     if len(work) > char_cap:                            # keep the most recent tail (matches the distiller's bound)
         work = "…\n\n" + work[-char_cap:]
@@ -1919,6 +1919,58 @@ def _unit_key(seg_id, phase):
     return seg_id + "#p"
 
 
+def _seg_key(seg_id):
+    """A timestamp-INVARIANT segment key (`rompuuid:texthash`, optional '#p'/'#d' suffix riding along) —
+    the seg id with its volatile middle `seg.t` dropped. The SAME segment parses to DIFFERENT ids across
+    time and across consumers: an SDK optimistic echo lands at SEND time vs the real atom at PROCESS time,
+    and this parse's states-overlay idle atoms shift a segment's start t whenever a new idle record lands
+    before its trigger. Identity as WRITTEN keeps the t (unique even for repeated identical prompts, e.g.
+    two "continue"s), but every LOOKUP of a recorded key resolves through this normalization — the
+    universal contract (the user 2026-07-01 working-state audit; twin of the kernel's _seg_key). None-safe;
+    non-conforming ids pass through unchanged."""
+    if not seg_id:
+        return seg_id
+    parts = seg_id.split(":")
+    return (parts[0] + ":" + parts[-1]) if len(parts) >= 3 else seg_id
+
+
+def _placed_key(placements, key):
+    """Timestamp-invariant membership: is `key` (a seg id, bare or '#p'/'#d'-suffixed) already recorded in
+    placements? Exact hit first (the common no-drift case), else via _seg_key — so a segment whose parse t
+    drifted after its placement was recorded still dedups instead of being re-planned (double-minted)."""
+    if key in placements:
+        return True
+    want = _seg_key(key)
+    return any(_seg_key(k) == want for k in placements)
+
+
+def _placement_of(placements, seg_id):
+    """placements[seg_id], timestamp-invariant (see _placed_key). None when absent — indistinguishable from
+    a RETIRED (None-valued) placement by design: both mean 'no goal node here'; callers needing pure
+    membership use _placed_key."""
+    if seg_id in placements:
+        return placements[seg_id]
+    want = _seg_key(seg_id)
+    return next((v for k, v in placements.items() if _seg_key(k) == want), None)
+
+
+def _segs_for(seg_by_id, seg_ids):
+    """Resolve recorded trail seg ids against a parse's seg_by_id, timestamp-invariant, preserving order.
+    A trail id written by an earlier pass can carry a different middle t than this parse's id for the same
+    segment (see _seg_key) — a raw `in` silently dropped that segment from the goal's gathered history."""
+    idx = {}
+    for k, v in seg_by_id.items():
+        idx.setdefault(_seg_key(k), v)
+    out = []
+    for s in seg_ids:
+        seg = seg_by_id.get(s)
+        if seg is None:
+            seg = idx.get(_seg_key(s))
+        if seg is not None:
+            out.append(seg)
+    return out
+
+
 def _plan_session(fsid, path, now):
     """Advance ONE session's goal tree: place its un-placed planner UNITS oldest-first (each sees the prior
     tree's open menu) and GROUP after every placement (the user 2026-06-17: planner + grouper are both
@@ -1942,13 +1994,13 @@ def _plan_session(fsid, path, now):
     for u in plan_units(session):
         seg_id, phase = u[0], u[1]
         key = _unit_key(seg_id, phase)
-        if key in store["placements"]:
-            continue                                  # this phase already placed
-        if phase == "prompt" and seg_id in store["placements"]:
+        if _placed_key(store["placements"], key):     # drift-safe: a recorded key whose parse t has since
+            continue                                  # shifted still dedups (this phase already placed)
+        if phase == "prompt" and _placed_key(store["placements"], seg_id):
             continue                                  # work already placed (legacy/fast segment) → prompt-run is moot
         if phase == "delegation":
-            tgt = store["placements"].get(seg_id)     # the COURIER's verdict for this peer segment
-            if seg_id in store["placements"] and not (isinstance(tgt, str) and tgt in store["nodes"]):
+            tgt = _placement_of(store["placements"], seg_id)   # the COURIER's verdict for this peer segment
+            if _placed_key(store["placements"], seg_id) and not (isinstance(tgt, str) and tgt in store["nodes"]):
                 # The courier RESOLVED this peer segment as COORDINATION ("fyi") — a FINAL verdict, never
                 # work to file under a goal. RETIRE the #d phase here (mark it processed, the user 2026-06-22
                 # via link_audit) so it stops being re-collected and re-skipped EVERY pass. (Historically this
@@ -2179,7 +2231,7 @@ def fast_forward_placements(fsid, path=None, now=None):
         if phase == "prompt":
             keys.add(seg_id)                          # the open segment's FUTURE work-run, sealed now too
         for key in keys:
-            if key not in placements:
+            if not _placed_key(placements, key):      # drift-safe: never double-seal a t-shifted duplicate
                 placements[key] = None                # processed, no goal — the planner dedups it out next pass
                 n += 1
     if n:
@@ -2701,7 +2753,7 @@ def _turn_menu(turn, store):
 
     out, seen = [], set()
     for seg in em.segments(turn):
-        nid = placements.get(seg["id"])
+        nid = _placement_of(placements, seg["id"])    # drift-safe: the recorded key's t may differ
         if not nid or nid not in nodes or _sealed(nid):
             continue
         x = nid                                        # nid is open → it and all its ancestors are open
@@ -2944,9 +2996,7 @@ def _latest_subtree_segment(nid, nodes, children, seg_by_id):
     segs, stack = [], [nid]
     while stack:
         x = stack.pop()
-        for s in nodes.get(x, {}).get("trail", []):
-            if s in seg_by_id:
-                segs.append(seg_by_id[s])
+        segs.extend(_segs_for(seg_by_id, nodes.get(x, {}).get("trail", [])))   # drift-safe trail resolution
         stack.extend(children.get(x, []))
     return max(segs, key=lambda s: s["t"]) if segs else None
 
@@ -3486,7 +3536,7 @@ def run_courier(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, v
     placed = 0
     for seg_t, fsid, seg_id, text, mid, sender in pending:
         store = load_goals(fsid)
-        if seg_id in store["placements"]:
+        if _placed_key(store["placements"], seg_id):  # drift-safe: never re-plant a t-shifted duplicate
             continue
         sender_store = load_goals(sender)
         menu = open_menu(sender_store)
