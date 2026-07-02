@@ -66,3 +66,18 @@ test("the chrome is BARE text: no borders, no pills; bodies run full width", () 
   // await-paused outline silently lost its border this way; the user 2026-07-02)
   assert.match(CSS, /--box-border: rgba\(255, 255, 255, 0\.12\)/);
 });
+
+test("the footer Collapse button compacts every card in one click, then flips to Expand", () => {
+  // the user 2026-07-02: a bulk view action beside Sub-goals / Clear all — closes every background AND
+  // summary; with nothing open it restores the DEFAULTS (takeClosed.clear() — summaries open, backgrounds
+  // stay closed, never force-opened). View-only: no kernel message.
+  assert.match(FEED, /function anySectionOpen\(\): boolean \{\s*\n\s*return asks\.some\(\(it\) => !takeClosed\.has\(it\.itemId\) \|\| bgOpen\.has\(it\.itemId\)\);/);
+  assert.match(FEED, /b\.id = "feed-collapseall";/);
+  assert.match(FEED, /bgOpen\.clear\(\);\s*\n\s*for \(const it of asks\) takeClosed\.add\(it\.itemId\);/);
+  assert.match(FEED, /takeClosed\.clear\(\);\s+\/\/ back to defaults/);
+  assert.match(FEED, /collapseAll\.textContent = anySectionOpen\(\) \? "Collapse" : "Expand";/);
+  // same footer chrome as Undo clear (blue hover), rendered whenever the footer shows cards
+  assert.match(FEED, /const b = el\("button", "fdismiss ffollow"\);   \/\/ view action/);
+  const mk = FEED.slice(FEED.indexOf("function makeCollapseAllBtn"), FEED.indexOf("function ensureCollapseAll"));
+  assert.doesNotMatch(mk, /postMessage/, "view-only — collapsing never talks to the kernel");
+});
