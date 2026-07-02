@@ -4,6 +4,7 @@ surfacing the goal title separately so the turn shows a compact "Follow-up · <g
 landed human turns and pending queued messages so the two render the same. SYNTHETIC fixtures only."""
 import inspect
 import os
+import re
 import unittest
 from importlib.machinery import SourceFileLoader
 
@@ -49,6 +50,27 @@ class SplitFollowup(unittest.TestCase):
         self.assertEqual(body, "hey can you retry that")
         self.assertIsNone(goal, "no quote → no goal title, but still a follow-up")
         self.assertIsNone(ctx, "no quote → nothing to expand")
+
+    def test_image_chip_strip_keeps_the_quote_body_line_structure(self):
+        # Regression (the user 2026-07-02, the bugs-thread screenshot): a follow-up sent WITH screenshots
+        # hit the "[Image #N]" placeholder-strip, whose whitespace collapse flattened the whole prompt to
+        # ONE line — the "> quote\n\nbody" structure vanished, _split_followup swallowed the user's own
+        # message into the quote (fuCtx), and the blue bubble rendered empty. The strip must drop the chips
+        # and tidy spaces WITHIN lines only, never the newlines the split keys on.
+        src = inspect.getsource(km.build_session)
+        self.assertIn('"\\n".join(" ".join(l.split()) for l in prompt.split("\\n")).strip()', src,
+                      "spaces collapse per line; the line structure survives")
+        self.assertNotIn('" ".join(re.sub(r"\\[Image #', src, "the old whole-prompt flatten is gone")
+        # and end-to-end through the split: the same wire text, with an image chip, still splits cleanly
+        wired = ("> ~/Screenshots/a.png the original ask, capped …\n\n"
+                 "[Image #1] The reply body the user typed.\n\n"
+                 "<!-- romp-goal-id: 11111111-2222-3333-4444-555555555555:g1 -->")
+        cleaned = re.sub(r"\[Image #\d+\]\s?", "", wired)
+        cleaned = "\n".join(" ".join(l.split()) for l in cleaned.split("\n")).strip()
+        goal, body, fu, ctx = km._split_followup(cleaned)
+        self.assertTrue(fu)
+        self.assertEqual(body, "The reply body the user typed.")
+        self.assertNotIn("reply body", ctx, "the user's own message never lands in the expandable context")
 
     def test_build_session_applies_it_to_queued_and_landed(self):
         src = inspect.getsource(km.build_session)

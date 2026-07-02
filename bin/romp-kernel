@@ -4615,7 +4615,12 @@ def build_session(sid, now, tmux=None):
                         prompt, reminders = _split_reminders(text)
                         imgs = _user_images(blocks, prompt, author == "human")
                         if imgs and prompt:                      # drop the composer's "[Image #N]" placeholder chips
-                            prompt = " ".join(re.sub(r"\[Image #\d+\]\s?", "", prompt).split())
+                            # Collapse spaces WITHIN lines only — never newlines: flattening the whole prompt
+                            # to one line put a follow-up's "> quote\n\nbody" all on the quote line, so
+                            # _split_followup swallowed the user's own message into fuCtx and the blue bubble
+                            # rendered empty (the user 2026-07-02, the bugs-thread screenshot).
+                            prompt = re.sub(r"\[Image #\d+\]\s?", "", prompt)
+                            prompt = "\n".join(" ".join(l.split()) for l in prompt.split("\n")).strip()
                         # A TYPED follow-up (human) carries romp's goal-context quote + the comment markers —
                         # strip them for display, keep just the body, and surface the goal title as a compact
                         # 'Follow-up' header (the user 2026-06-27). A romp NUDGE keeps its full text: there the
