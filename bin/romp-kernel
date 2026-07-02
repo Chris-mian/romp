@@ -5833,6 +5833,7 @@ def build_feed(now, tmux=None):
                 "blockSummary": nodes[nid].get("blockSummary"),    # the block-distiller's decision brief for a blocked goal (modal); null until produced — the user 2026-06-18
                 "background": nodes[nid].get("background"),    # the distiller's BACKGROUND section: re-orientation for a reader who forgot the thread — collapsed by default on the card (the user 2026-07-02)
                 "summaryAnchorUuid": _sa_u,    # click the summary line → the biggest text block in the work span (the user 2026-06-22)
+                "warns": nodes[nid].get("warns") or None,   # judge-stamped anomalies (judge _node_warn) → yellow "warning" chip; click shows each warn's what/why detail (the user 2026-07-02)
                 "blocked": ({"state": "apiError", "since": (tm.get("since") if tm else None),
                              "status": aerr.get("status"), "category": aerr.get("category"),
                              "text": aerr.get("text"), "tooLong": bool(aerr.get("tooLong")),
@@ -5892,7 +5893,7 @@ def build_feed(now, tmux=None):
             "blockWhy": "%s tried to hand off to %s, which is offline — revive it to deliver, or dismiss."
                         % (ph["fromName"], ph["toName"]),
             "doneWhy": None, "followupPending": None, "waitingOn": None,
-            "summary": None, "blockSummary": None, "background": None, "summaryAnchorUuid": None,
+            "summary": None, "blockSummary": None, "background": None, "summaryAnchorUuid": None, "warns": None,
             "blocked": {"state": "parkedHandoff", "fromName": ph["fromName"], "toSid": ph["toId"],
                         "toName": ph["toName"], "msgId": ph["msgId"], "body": ph["body"],
                         "what": "a handoff from %s is parked — revive %s to deliver it"

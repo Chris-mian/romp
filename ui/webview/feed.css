@@ -303,6 +303,12 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 .fask-nudgefailed { flex: 0 0 auto; font-size: 0.64em; font-weight: 700; letter-spacing: 0.04em;
   padding: 1px 6px; border-radius: 999px; line-height: 1.4;
   color: #ff6a6a; border: 1px solid rgba(255, 106, 106, 0.6); }
+/* "warning" — a judge stamped an anomaly on this goal (judge _node_warn; the user 2026-07-02): yellow
+   pill, a BUTTON — click opens the warn-detail overlay (what happened + why it's unexpected) */
+.fask-warnchip { flex: 0 0 auto; font-size: 0.64em; font-weight: 700; letter-spacing: 0.04em;
+  padding: 1px 6px; border-radius: 999px; line-height: 1.4; font-family: inherit;
+  color: #ffd166; border: 1px solid rgba(255, 209, 102, 0.6); background: transparent; cursor: pointer; }
+.fask-warnchip:hover { background: rgba(255, 209, 102, 0.14); }
 /* "waiting on <peer>" — an unanswered message out to a live peer; held in Working, not stalled (the user
    2026-06-22); teal pill, red for a mutual-wait deadlock cycle */
 .fask-waiton { flex: 0 0 auto; font-size: 0.64em; font-weight: 700; letter-spacing: 0.04em;
@@ -450,6 +456,15 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 .fconfirm-btn.primary { border-color: transparent;
   background: var(--vscode-button-background, #2b7fb8); color: var(--vscode-button-foreground, #fff); }
 .fconfirm-btn.primary:hover { background: var(--vscode-button-hoverBackground, #3690cc); }
+
+/* the warn-detail overlay (feedWarnModal, the user 2026-07-02) — rides the fconfirm chrome, wider so a
+   multi-paragraph what-happened/why-unexpected detail reads comfortably; scrolls when long */
+.fwarn-box { max-width: 560px; max-height: 80vh; overflow-y: auto; }
+.fwarn-head { color: #ffd166; font-weight: 700; letter-spacing: 0.03em; margin-bottom: 2px; }
+.fwarn-sub { color: var(--dim); font-size: 0.9em; margin-bottom: 12px; overflow-wrap: anywhere; }
+.fwarn-entry { border-top: 1px solid var(--card-border, rgba(255, 255, 255, 0.18)); padding: 10px 0 12px; }
+.fwarn-meta { color: var(--dim); font-size: 0.78em; letter-spacing: 0.04em; margin-bottom: 6px; }
+.fwarn-detail { color: var(--fg); line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 0.92em; }
 
 #feed-modal { position: fixed; inset: 0; z-index: 100; background: rgba(0, 0, 0, 0.55);
   display: flex; align-items: center; justify-content: center; padding: 4vh 4vw; }

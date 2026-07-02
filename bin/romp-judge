@@ -1096,6 +1096,49 @@ def _split_source(text):
     return text[:m.start()].strip(), m.group(1)
 
 
+def _node_warn(nd, kind, t, msg, detail):
+    """Stamp a UI-visible WARNING on a goal node: the feed renders a yellow "warning" chip on the card,
+    and clicking it opens `detail` — what happened and why it's unexpected — so an anomaly a judge would
+    otherwise swallow silently is followable from the card (the user 2026-07-02). One live warn per kind
+    (a repeat replaces its predecessor), capped so a store never grows unbounded."""
+    ws = [w for w in nd.get("warns") or [] if isinstance(w, dict) and w.get("kind") != kind]
+    ws.append({"kind": kind, "t": int(t), "msg": msg, "detail": detail})
+    nd["warns"] = ws[-6:]
+
+
+def _node_warn_clear(nd, kind):
+    """Drop a node's live warn of `kind` — the anomaly stopped reproducing (e.g. a re-distill DID cite
+    its source), so the chip comes off the card. Removes the key entirely when nothing is left."""
+    ws = [w for w in nd.get("warns") or [] if not (isinstance(w, dict) and w.get("kind") == kind)]
+    if ws:
+        nd["warns"] = ws
+    else:
+        nd.pop("warns", None)
+
+
+def _warn_cite_miss(nd, judge, src, raw, n_labels, t):
+    """A distill/brief reply was offered [mN] labels but returned no usable SOURCE citation — the designed
+    summary deep-link ("the same reader that wrote the line names what it read") is lost, and the kernel
+    is on its heuristic fallback, which can land on an early plan-restatement instead of the message that
+    closed the work. Stamp the card warn with the full story plus the reply tail, so a prompt regression
+    here shows up on the card instead of silently degrading links (the user 2026-07-02)."""
+    line = ("summary" if judge == "distiller" else "decision brief")
+    what = ("cited a label that was never offered (%s)" % src) if src else "ended without a SOURCE line"
+    detail = (
+        "What happened: the %s (the judge that writes this card's %s) must end its reply with "
+        "'SOURCE: mN', citing the one [mN]-labeled transcript message its text drew on; that citation "
+        "is where a click on the %s line lands. This reply %s (%d labeled messages were offered), so "
+        "no citation was stored.\n\n"
+        "Why it's unexpected: the prompt requires the SOURCE line whenever labels are present — a miss "
+        "means the model dropped or malformed it, and repeated misses point at a prompt regression.\n\n"
+        "Effect: the %s line's click falls back to a heuristic (the most recent substantive message in "
+        "the goal's trail), which can land on an early plan-restatement instead of the wrap-up.\n\n"
+        "Reply tail: %r" % (judge, line, line, what, n_labels, line, (raw or "")[-160:]))
+    _node_warn(nd, "cite-miss", t,
+               "the %s's source citation didn't come back — its link is on a heuristic fallback" % judge,
+               detail)
+
+
 def _split_sections(text):
     """(background, takeaway) — split a distill/brief reply's two labeled sections (the user 2026-07-02:
     the takeaway alone assumes a reader who remembers the thread; BACKGROUND re-orients one who doesn't).
@@ -3354,11 +3397,17 @@ def _distill_session(fsid, path, now):
                     nodes[top]["briefFails"] = fails    # keep counting; retry next pass (leave blockSummary null)
                 changed = True                          # persist the counter / the settle
                 continue
+            raw = out
             out, src = _split_source(out)
             bg, out = _split_sections(out)
             nodes[top]["blockSummary"] = out[:600]
             nodes[top]["background"] = bg[:600] if bg else None   # re-orientation for a reader who forgot the thread (2026-07-02)
             nodes[top]["summaryAnchor"] = marks.map.get(src)   # the brief's cited source (None → kernel's deterministic fallback)
+            if marks.map and marks.map.get(src) is None:   # labels offered, no usable citation → card warn + log
+                _warn_cite_miss(nodes[top], "brief", src, raw, len(marks.map), now)
+                _log_judge_error("brief", fsid, "cite-miss")
+            else:
+                _node_warn_clear(nodes[top], "cite-miss")  # cited (or nothing to cite) → the anomaly is over
             nodes[top]["briefedMt"] = nodes[top].get("mt")
             nodes[top]["briefFails"] = 0                # success → reset the counter (for a future re-open)
             n += 1; changed = True
@@ -3384,11 +3433,17 @@ def _distill_session(fsid, path, now):
                 nodes[top]["distillFails"] = fails     # keep counting; retry next pass (leave summary null)
             changed = True
             continue
+        raw = out
         out, src = _split_source(out)
         bg, out = _split_sections(out)
         nodes[top]["summary"] = out[:600]
         nodes[top]["background"] = bg[:600] if bg else None   # re-orientation for a reader who forgot the thread (2026-07-02)
         nodes[top]["summaryAnchor"] = marks.map.get(src)   # the takeaway's cited source (None → kernel's deterministic fallback)
+        if marks.map and marks.map.get(src) is None:       # labels offered, no usable citation → card warn + log
+            _warn_cite_miss(nodes[top], "distiller", src, raw, len(marks.map), now)
+            _log_judge_error("distiller", fsid, "cite-miss")
+        else:
+            _node_warn_clear(nodes[top], "cite-miss")      # cited (or nothing to cite) → the anomaly is over
         nodes[top]["distilledMt"] = nodes[top].get("mt")
         nodes[top]["distillFails"] = 0                 # success → reset the counter
         n += 1; changed = True
