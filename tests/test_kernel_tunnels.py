@@ -201,5 +201,32 @@ class WakeRouter(unittest.TestCase):
         self.assertEqual(_StubRemoteKernel.received, [], "a local sid must never forward to a remote kernel")
 
 
+class ReapStrayTunnels(unittest.TestCase):
+    """A kernel restart / re-attach used to leak a SECOND ssh -L tunnel (orphan reparented to init). Before
+    spawning, _reap_stray_tunnels SIGTERMs orphans matching our exact signature for the host — and nothing
+    else (not the user's own ssh, not a tunnel to another host, not ourselves)."""
+
+    def test_kills_only_matching_orphan_tunnels(self):
+        BUS = km.BUS_PORT
+        fake_ps = "\n".join([
+            "  12345 /usr/bin/ssh -N -T -L 50512:127.0.0.1:7433 -R %d:127.0.0.1:%d jetty" % (BUS, BUS),  # orphan → kill
+            "  22222 ssh -N -T -L 9:127.0.0.1:7433 -R %d:127.0.0.1:%d otherhost" % (BUS, BUS),           # other host → keep
+            "  33333 ssh jetty",                                                                          # user's own ssh → keep
+            "  %d ssh -N -T -L 1:127.0.0.1:7433 -R %d:127.0.0.1:%d jetty" % (os.getpid(), BUS, BUS),      # us → keep
+        ])
+
+        class _R:
+            stdout = fake_ps
+        killed = []
+        saved_run, saved_kill = km.subprocess.run, km.os.kill
+        km.subprocess.run = lambda *a, **k: _R()
+        km.os.kill = lambda pid, sig: killed.append((pid, sig))
+        try:
+            km._reap_stray_tunnels("jetty")
+        finally:
+            km.subprocess.run, km.os.kill = saved_run, saved_kill
+        self.assertEqual(killed, [(12345, 15)], "only the jetty orphan tunnel is SIGTERM'd")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

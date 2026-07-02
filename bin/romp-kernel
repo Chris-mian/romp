@@ -2472,8 +2472,36 @@ def _tunnel_argv(r):
              r["host"]])
 
 
+def _reap_stray_tunnels(host):
+    """Kill orphaned ssh tunnel procs for `host` left by a PREVIOUS kernel or a re-attach — a kernel restart
+    reparents them to init and they keep holding the -L/-R ports, so a fresh spawn would leak a second tunnel
+    (the user saw two -L ports for one host). Match our EXACT signature (our reverse-bus forward + `-N` + the
+    host as the final arg) so we never touch the user's own ssh to that host. Best-effort."""
+    sig_r = "-R %d:127.0.0.1:%d" % (BUS_PORT, BUS_PORT)
+    try:
+        out = subprocess.run(["ps", "-axo", "pid=,command="], capture_output=True, text=True, timeout=5).stdout
+    except Exception:
+        return
+    mypid = os.getpid()
+    for line in out.splitlines():
+        line = line.strip()
+        pid_s, _, cmd = line.partition(" ")
+        try:
+            pid = int(pid_s)
+        except ValueError:
+            continue
+        if pid == mypid:
+            continue
+        if sig_r in cmd and "-N" in cmd and "-L " in cmd and cmd.rstrip().endswith(host):
+            try:
+                os.kill(pid, 15)   # SIGTERM the orphaned tunnel
+            except Exception:
+                pass
+
+
 def _spawn_tunnel(r):
     """(Re)spawn the ssh tunnel proc for one remote. Caller holds _remotes_lock."""
+    _reap_stray_tunnels(r["host"])   # clear any orphan on this host's ports first, so we never leak a 2nd tunnel
     try:
         r["proc"] = subprocess.Popen(_tunnel_argv(r), stdin=subprocess.DEVNULL,
                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -8042,7 +8070,7 @@ def _gear_html():
               "<span class=rs-sub>What the + button uses for a NEW session — tmux drives a terminal pane; SDK runs headless via the Agent SDK. Both kinds run side by side; this only sets the default.</span>"
               "<select id=rs-backend style='margin-top:5px;width:100%;background:#1e1e1e;color:#ccc;"
               "border:1px solid #3a3a3a;border-radius:5px;padding:3px 4px;cursor:pointer'>"
-              "<option value=tmux>tmux (terminal)</option><option value=sdk>SDK (headless)</option>"
+              "<option value=sdk>SDK (headless)</option><option value=tmux>tmux (terminal)</option>"
               "</select></span></div>"
               "<div class='rs-row rs-sep' style='cursor:default'><span style='flex:1 1 auto'><b>Default directory</b>"
               "<span class=rs-sub>The default directory for NEW sessions (still editable per session). Persisted kernel-side — also settable with <code>romp --default-dir</code>. Falls back to the romp install dir until you set one; blank reverts to it. ~ and $VARs expand.</span>"
