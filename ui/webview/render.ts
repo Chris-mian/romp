@@ -51,7 +51,7 @@ marked.use({
 type AskAnswerBlock = { question: string; header?: string; options: { label: string; description?: string }[]; chosen: string[] };
 
 type ChatEvent = (
-  | { kind: "user"; md: string; uuid?: string; ts?: string; reminders?: string[]; human?: boolean; romp?: boolean; rompAuto?: boolean; followUp?: boolean; goal?: string; images?: { src: string; path?: string }[] }
+  | { kind: "user"; md: string; uuid?: string; ts?: string; reminders?: string[]; human?: boolean; romp?: boolean; rompAuto?: boolean; followUp?: boolean; goal?: string; fuCtx?: string; images?: { src: string; path?: string }[] }
   | { kind: "assistant"; md: string; uuid?: string; ts?: string }
   | { kind: "thinking"; text: string; encrypted: boolean; uuid?: string; ts?: string }
   | {
@@ -90,7 +90,7 @@ type ChatEvent = (
     }
   // Claude Code's Task to-do list, folded into one live checklist.
   | { kind: "todo"; tasks: TodoTask[]; ts?: string; uuid?: string }
-  | { kind: "queued"; texts: { md: string; followUp?: boolean; goal?: string; idx?: number; cancelable?: boolean }[]; ts?: string; uuid?: string }
+  | { kind: "queued"; texts: { md: string; followUp?: boolean; goal?: string; fuCtx?: string; idx?: number; cancelable?: boolean }[]; ts?: string; uuid?: string }
   // The turn stopped on an API error (event-based: transcript isApiErrorMessage). The session is BLOCKED
   // until retried — a red-dot card at the bottom with a Retry button (the user 2026-06-16).
   | { kind: "apiError"; text: string; status?: number; category?: string; ts?: string; uuid?: string }
@@ -786,7 +786,7 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
     turn.appendChild(dot(romp ? "romp" : injected ? "ring" : "user"));
     // a TYPED follow-up (resumed a goal) → a compact "↩ Follow-up · <goal>" header, the romp goal-context
     // quote + markers already stripped server-side. Same header the pending queued render uses (consistency).
-    if (ev.followUp && !romp) turn.appendChild(followUpHeader(ev.goal));
+    if (ev.followUp && !romp) turn.appendChild(followUpHeader(ev.goal, ev.fuCtx, ev.uuid ? "u:" + ev.uuid : undefined));
     const hasImgs = !!(ev.images && ev.images.length);
     if (ev.md || hasImgs) {
       if (romp) {
@@ -1108,11 +1108,37 @@ function compactTokens(n: number): string {
 // A compact "Follow-up" header above a message that resumed a goal (the user 2026-06-27): a ↩ glyph + the
 // goal title (when known), muted, so a follow-up reads as such WITHOUT dumping romp's goal-context quote into
 // the bubble. Shared by landed user turns + pending queued messages so the two render consistently.
-function followUpHeader(goal?: string): HTMLElement {
+// When the event carries the stripped quote (ctx), the header is CLICK-EXPANDABLE (the user 2026-07-01): a
+// ▸ disclosure toggles a muted block showing exactly the goal context that rode along with the message — the
+// strip is display-only, and this is where the hidden part can be audited. Expansion survives the chat's
+// re-renders via fuExpanded (keyed by the turn's uuid / queue slot), NOT DOM state that a rebuild would lose.
+const fuExpanded = new Set<string>();
+function followUpHeader(goal?: string, ctx?: string, key?: string): HTMLElement {
   const h = el("div", "followup-tag");
+  const k = key || "";
+  if (ctx && k) {
+    const tri = el("span", "followup-tri");
+    tri.textContent = fuExpanded.has(k) ? "▾" : "▸";
+    h.appendChild(tri);
+  }
   h.appendChild(document.createTextNode("↩ Follow-up"));
   if (goal) { const g = el("span", "followup-goal"); g.textContent = goal; h.appendChild(g); }
-  return h;
+  if (!ctx || !k) return h;
+  const wrap = el("div", "followup-wrap");
+  wrap.appendChild(h);
+  const box = el("div", "followup-ctx");
+  box.textContent = ctx;
+  box.style.display = fuExpanded.has(k) ? "" : "none";
+  wrap.appendChild(box);
+  h.classList.add("followup-expandable");
+  h.title = "show the goal context romp sent along with this message";
+  h.onclick = () => {
+    const open = !fuExpanded.has(k);
+    if (open) fuExpanded.add(k); else fuExpanded.delete(k);
+    box.style.display = open ? "" : "none";
+    const tri = h.querySelector(".followup-tri"); if (tri) tri.textContent = open ? "▾" : "▸";
+  };
+  return wrap;
 }
 
 // A wireframe hourglass in the romp accent blue, drawn in the SAME line-icon style as the feed/mail toggle
@@ -1161,7 +1187,7 @@ function renderQueued(ev: Extract<ChatEvent, { kind: "queued" }>): HTMLElement {
   head.appendChild(label);
   turn.appendChild(head);
   for (const t of ev.texts) {
-    if (t.followUp) turn.appendChild(followUpHeader(t.goal));
+    if (t.followUp) turn.appendChild(followUpHeader(t.goal, t.fuCtx, t.idx !== undefined ? "q:" + t.idx : undefined));
     const bubble = el("div", "queued-bubble md" + (t.cancelable ? " cancelable" : ""));
     if (!renderSlashCmd(bubble, t.md)) bubble.innerHTML = md(t.md);
     // CANCELABLE (SDK queue, romp owns it): click a still-queued message to pull it BACK OUT — cancels it
@@ -4460,11 +4486,16 @@ function focusComposer(): void {
 }
 
 // Drop any session's citation that points at a now-cleared card (itemId = the goal node id, sid-prefixed so
-// it belongs to exactly one session's composer). Re-renders the strip if it was the active tab's chip.
-function dropCitationByItem(itemId: string): void {
+// it belongs to exactly one session's composer). `itemIds` (when the kernel sends it) is the cleared card's
+// whole SUBTREE: a chip can cite a SUB-goal of the card (wireNodeZones sends the clicked node's id), and
+// clearing the card must drop that chip too, not just a top-goal one (the user 2026-07-01). Re-renders the
+// strip if it was the active tab's chip.
+function dropCitationByItem(itemId: string, itemIds?: string[]): void {
+  const gone = new Set(itemIds && itemIds.length ? itemIds : [itemId]);
+  gone.add(itemId);
   let changed = false;
   for (const [sid, c] of composerCitations) {
-    if (c.itemId === itemId) { composerCitations.delete(sid); changed = true; if (sid === activeId) renderComposerChips(sid); }
+    if (gone.has(c.itemId)) { composerCitations.delete(sid); changed = true; if (sid === activeId) renderComposerChips(sid); }
   }
   if (changed) persistDrafts();
 }
@@ -4733,7 +4764,7 @@ window.addEventListener("message", (e: MessageEvent) => {
   }
   // A card was CLEARED → drop any composer citation chip pointing at it (the user 2026-07-01): the goal is
   // gone, so following up on it makes no sense. dropCitationsAll (Clear-all) drops every chip.
-  else if (m.type === "dropCitation" && typeof m.itemId === "string") dropCitationByItem(m.itemId);
+  else if (m.type === "dropCitation" && typeof m.itemId === "string") dropCitationByItem(m.itemId, Array.isArray(m.itemIds) ? m.itemIds.filter((x: unknown) => typeof x === "string") : undefined);
   else if (m.type === "dropCitationsAll") {
     if (composerCitations.size) { composerCitations.clear(); persistDrafts(); renderComposerChips(activeId); }
   }

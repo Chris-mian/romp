@@ -883,6 +883,16 @@ body { display: flex; flex-direction: column; }
 .followup-tag { display: flex; align-items: baseline; gap: 6px; max-width: 72%; margin-bottom: 1px;
   font-size: 0.74em; color: var(--accent); }
 .followup-goal { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dim); }
+/* expandable follow-up header (the user 2026-07-01): ▸ toggles a muted block showing the goal context romp
+   sent along with the message (the stripped `> …` quote — display-only, this is where it can be audited).
+   The wrap is display:contents so the tag + context box stay DIRECT children of the turn for alignment. */
+.followup-wrap { display: contents; }
+.followup-tag.followup-expandable { cursor: pointer; }
+.followup-tag.followup-expandable:hover .followup-goal { color: var(--fg); }
+.followup-tri { color: var(--dim); font-size: 0.9em; }
+.followup-ctx { max-width: 72%; margin-bottom: 2px; padding: 5px 9px; border-left: 2px solid var(--accent);
+  border-radius: 6px; background: color-mix(in srgb, var(--accent) 8%, transparent); color: var(--dim);
+  font-size: 0.78em; white-space: pre-wrap; overflow-wrap: anywhere; }
 /* pasted images inside the bubble */
 .user-img { display: block; max-width: 100%; max-height: 320px; border-radius: 8px; margin-top: 6px; }
 .user-img-path { display: inline-block; margin-top: 6px; padding: 3px 9px; border-radius: 8px; background: rgba(255, 255, 255, 0.16); font-size: 0.85em; }

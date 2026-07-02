@@ -2966,13 +2966,15 @@ _FOLLOWUP_GOAL_RE = re.compile(r"romp-goal-id:\s*([^\s>]+)")
 
 
 def _split_followup(text):
-    """Split a romp FOLLOW-UP message into (goal_title, body, is_followup) for display. A follow-up carries a
-    <!-- romp-goal-id --> marker; romp prepends the goal context as a leading `> …` blockquote, the user's
-    body follows, and the romp markers trail. For the chat we drop the quote + the comment markers and keep
-    just the body, surfacing the goal TITLE (the first quote line) separately so the turn can render a compact
-    'Follow-up · <goal>' header. Non-follow-ups pass straight through (None, text, False)."""
+    """Split a romp FOLLOW-UP message into (goal_title, body, is_followup, context) for display. A follow-up
+    carries a <!-- romp-goal-id --> marker; romp prepends the goal context as a leading `> …` blockquote, the
+    user's body follows, and the romp markers trail. For the chat we drop the quote + the comment markers and
+    keep just the body, surfacing the goal TITLE (the first quote line) separately so the turn can render a
+    compact 'Follow-up · <goal>' header. `context` is the FULL stripped quote (all lines): the header is
+    click-expandable to reveal exactly what rode along with the message (the user 2026-07-01) — display-only,
+    nothing is lost by the strip. Non-follow-ups pass straight through (None, text, False, None)."""
     if not text or not _FOLLOWUP_GOAL_RE.search(text):
-        return None, text, False
+        return None, text, False, None
     clean = re.sub(r"<!--.*?-->", "", text, flags=re.S)        # drop romp-injected / romp-auto / romp-goal-id
     lines = clean.split("\n")
     quote, i = [], 0
@@ -2983,7 +2985,8 @@ def _split_followup(text):
         i += 1
     body = "\n".join(lines[i:]).strip()
     goal = quote[0].strip() if quote else None
-    return goal, body, True
+    ctx = "\n".join(quote).strip() or None
+    return goal, body, True, ctx
 
 
 def _pending_queued(path):
@@ -4346,9 +4349,9 @@ def build_session(sid, now, tmux=None):
                         # strip them for display, keep just the body, and surface the goal title as a compact
                         # 'Follow-up' header (the user 2026-06-27). A romp NUDGE keeps its full text: there the
                         # quote (the enumerated sub-goals) IS the content, not throwaway context.
-                        fu_goal = None
+                        fu_goal = fu_ctx = None
                         if author == "human":
-                            fu_goal, fu_body, fu = _split_followup(prompt)
+                            fu_goal, fu_body, fu, fu_ctx = _split_followup(prompt)
                             if fu:
                                 prompt = fu_body
                         if prompt or reminders or imgs:
@@ -4358,6 +4361,8 @@ def build_session(sid, now, tmux=None):
                                 ev["followUp"] = True
                                 if fu_goal:
                                     ev["goal"] = fu_goal
+                                if fu_ctx:                       # the FULL stripped quote — the ↩ header expands to show it
+                                    ev["fuCtx"] = fu_ctx
                             if author == "romp":         # a feed nudge/follow-up romp injected → gray romp bubble
                                 ev["romp"] = True
                                 if a.get("rompAuto"):    # an AUTO-nudge (not the Nudge button) → the chat draws the romp swirl
@@ -4448,12 +4453,14 @@ def build_session(sid, now, tmux=None):
         cancelable = hasattr(Sessions.backend_for(sid), "unqueue")
         qmsgs = []
         for i, t in enumerate(queued):
-            goal, body, fu = _split_followup(t)
+            goal, body, fu, ctx = _split_followup(t)
             m = {"md": body, "idx": i, "cancelable": cancelable}   # idx ↔ the backend's _pending position (cancelQueued)
             if fu:
                 m["followUp"] = True
                 if goal:
                     m["goal"] = goal
+                if ctx:                                       # expandable header on queued follow-ups too
+                    m["fuCtx"] = ctx
             qmsgs.append(m)
         events.append({"kind": "queued", "texts": qmsgs})
     # WORKING from the event model (open turn, no idle atom) — the one shared signal. Computed up here so the
@@ -4756,6 +4763,27 @@ def _mark_nodes_cleared(item_ids, value):
 def _clear_ask(item_id):
     """Clear one feed card (inbox-zero) — a batch of one (see _clear_all)."""
     _clear_all([item_id])
+
+
+def _subtree_item_ids(iid):
+    """All live goal-node ids at/under `iid` (the card's whole subtree), read BEFORE a clear archives them
+    — the composer citation chips to drop when the card goes (a chip can cite a SUB-goal, not just the top;
+    the user 2026-07-01). [iid] alone when the store can't be read, so a top-citing chip still drops."""
+    iid = str(iid)
+    try:
+        nodes = jd.load_goals(iid.rsplit(":", 1)[0]).get("nodes", {})
+    except Exception:
+        return [iid]
+    kids = {}
+    for nid, nd in nodes.items():
+        kids.setdefault(nd.get("parentId"), []).append(nid)
+    out, stack, seen = [], [iid], set()
+    while stack:
+        x = stack.pop()
+        if x in seen:
+            continue
+        seen.add(x); out.append(x); stack.extend(kids.get(x, []))
+    return out
 
 
 def _delegation_linked_ids(item_ids):
@@ -9066,10 +9094,13 @@ class Handler(BaseHTTPRequestHandler):
             _set_auto_nudge(bool(msg["enabled"]))   # feed gear → server-side Auto Nudge on/off
             _auto_nudge_tick(int(time.time()), _tmux_sessions())   # act immediately on turn-on (don't wait 4s)
         elif msg and msg.get("type") == "askClear" and msg.get("itemId"):
+            # a cleared card drops any composer citation chip pointing INTO it (the user 2026-07-01) — the
+            # goal is gone, so following up on it makes no sense. Chips can cite a SUB-goal of the card
+            # (wireNodeZones sends the clicked node's own id), so collect the card's whole subtree BEFORE
+            # the clear archives it out of the live store, and drop a chip citing ANY of those nodes.
+            _gone = _subtree_item_ids(str(msg["itemId"]))
             _clear_ask(msg["itemId"])
-            # a cleared card drops any composer citation chip pointing at it (the user 2026-07-01) — the goal
-            # is gone, so following up on it makes no sense; the chat removes a matching chip.
-            _send_to_app("chat", {"type": "dropCitation", "itemId": str(msg["itemId"])})
+            _send_to_app("chat", {"type": "dropCitation", "itemId": str(msg["itemId"]), "itemIds": _gone})
             _push_all()                        # reflect the clear on every feed client now
         elif msg and msg.get("type") == "nodeOverride" and msg.get("sid") and msg.get("nodeId"):
             # modal surgical override: cross a node off (op:resolve → nodeComplete). Other ops can

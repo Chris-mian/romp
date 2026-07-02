@@ -9,6 +9,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
+const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
 const SKELETON = fs.readFileSync(path.resolve(process.cwd(), "src", "page-skeleton.ts"), "utf8");
 
@@ -67,11 +68,21 @@ test("a citation survives a RELOAD but is dropped on tab SWITCH (the user 2026-0
   assert.match(RENDER, /if \(ta\.value\) drafts\.set\(activeId, ta\.value\); else drafts\.delete\(activeId\);\s*\n[\s\S]*?composerCitations\.delete\(activeId\);/);
 });
 
-test("clearing a card drops any composer chip pointing at it (the user 2026-07-01)", () => {
-  // the kernel pushes dropCitation{itemId} on a single clear, dropCitationsAll on Clear-all
-  assert.match(RENDER, /m\.type === "dropCitation" && typeof m\.itemId === "string"\) dropCitationByItem\(m\.itemId\)/);
+test("clearing a card drops any composer chip pointing INTO it (the user 2026-07-01)", () => {
+  // the kernel pushes dropCitation{itemId, itemIds: the card's whole subtree} on a single clear — a chip
+  // can cite a SUB-goal (wireNodeZones sends the clicked node's id) — and dropCitationsAll on Clear-all
+  assert.match(RENDER, /m\.type === "dropCitation" && typeof m\.itemId === "string"\) dropCitationByItem\(m\.itemId, Array\.isArray\(m\.itemIds\)/);
   assert.match(RENDER, /m\.type === "dropCitationsAll"\) \{[\s\S]*?composerCitations\.clear\(\); persistDrafts\(\); renderComposerChips\(activeId\);/);
-  // dropCitationByItem removes the matching session's chip (itemId is sid-prefixed → one session)
-  assert.match(RENDER, /function dropCitationByItem\(itemId: string\): void/);
-  assert.match(RENDER, /if \(c\.itemId === itemId\) \{ composerCitations\.delete\(sid\);/);
+  // dropCitationByItem removes every chip citing the card OR any node under it
+  assert.match(RENDER, /function dropCitationByItem\(itemId: string, itemIds\?: string\[\]\): void/);
+  assert.match(RENDER, /const gone = new Set\(itemIds && itemIds\.length \? itemIds : \[itemId\]\);/);
+  assert.match(RENDER, /if \(gone\.has\(c\.itemId\)\) \{ composerCitations\.delete\(sid\);/);
+});
+
+test("a sub-goal click cites ITSELF, not the card's top goal (the user 2026-07-01)", () => {
+  // wireNodeZones posts the clicked node's own id as showOnTimeline.itemId — the kernel's _cite_for then
+  // seeds the chip (title + audit preview) from THAT node, so the chip context is specific, never the
+  // generic top-goal quote. The kernel uses itemId only for the citation; navigation is anchorUuid-based.
+  assert.match(FEED, /const navId = node\.id \|\| it\.turnId;/);
+  assert.doesNotMatch(FEED, /const navId = node\.kind === "handoff" \? node\.id : it\.turnId;/);
 });
