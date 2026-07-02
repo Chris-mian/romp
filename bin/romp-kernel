@@ -4614,8 +4614,14 @@ def build_session(sid, now, tmux=None):
                     if text:                                     # a peer message → swapped to a clean card by _hydrate_postal
                         prompt, reminders = _split_reminders(text)
                         imgs = _user_images(blocks, prompt, author == "human")
-                        if imgs and prompt:                      # drop the composer's "[Image #N]" placeholder chips
-                            prompt = " ".join(re.sub(r"\[Image #\d+\]\s?", "", prompt).split())
+                        if imgs and prompt:
+                            # drop the composer's "[Image #N]" placeholder chips + tidy the space each leaves.
+                            # PRESERVE NEWLINES: this used to be " ".join(prompt.split()), which flattened the
+                            # whole message to one line — a follow-up sent WITH screenshots then reached
+                            # _split_followup as a single giant "> …" line, so the typed body was classified
+                            # as quote context (the gray expandable) and the blue bubble rendered EMPTY (the
+                            # user 2026-07-02).
+                            prompt = re.sub(r"[ \t]{2,}", " ", re.sub(r"\[Image #\d+\]\s?", "", prompt)).strip()
                         # A TYPED follow-up (human) carries romp's goal-context quote + the comment markers —
                         # strip them for display, keep just the body, and surface the goal title as a compact
                         # 'Follow-up' header (the user 2026-06-27). A romp NUDGE keeps its full text: there the

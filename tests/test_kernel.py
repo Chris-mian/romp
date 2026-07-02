@@ -237,6 +237,29 @@ class ViewBuilder(unittest.TestCase):
         self.assertTrue(users[-1].get("human"), "a follow-up the user typed is human (blue), not romp")
         self.assertFalse(users[-1].get("romp"), "goal-id alone must NOT flag romp")
 
+    def test_followup_with_screenshots_keeps_the_typed_body_out_of_the_context(self):
+        # the user 2026-07-02: a follow-up sent WITH screenshots rendered its typed body inside the gray
+        # follow-up CONTEXT and an EMPTY blue bubble. The goal quote carried the image paths, so the
+        # image-path scan flagged the turn, and the "[Image #N]" chip cleanup flattened EVERY newline —
+        # the whole wrapped message reached _split_followup as one giant "> …" line, classifying the body
+        # as quote. The cleanup must strip chips + tidy spaces WITHOUT touching newlines.
+        typed = ("> /tmp/shot-1.png /tmp/shot-2.png the earlier ask, verbatim, capped …\n\n"
+                 "[Image #1] Yes, I agree with number one. Log it.\nAnd a second line.\n\n"
+                 "<!-- romp-goal-id: %s:g1 -->" % SID)
+        recs = [uline(T0, "real prompt", "u1", ps="typed"),
+                aline(T0 + 10, "ok", "a1", "u1", stop="end_turn"),
+                uline(T0 + 100, typed, "u2", "a1", ps="typed")]
+        self.tpath.write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+        km._parse_cache.clear()
+        ev = [e for e in km.build_session(SID, NOW)["events"] if e["kind"] == "user"][-1]
+        self.assertTrue(ev.get("followUp"))
+        self.assertTrue(ev.get("images"), "the image paths in the quote still hydrate as images")
+        self.assertEqual(ev["md"], "Yes, I agree with number one. Log it.\nAnd a second line.",
+                         "the typed body is the blue bubble — chip stripped, newlines intact")
+        self.assertNotIn("agree with number one", ev.get("fuCtx") or "",
+                         "the typed body must NOT leak into the expandable context")
+        self.assertIn("the earlier ask", ev.get("fuCtx") or "", "the context is the quote alone")
+
     def test_tool_event_pairs_output_and_diff(self):
         m = km.build_session(SID, NOW)
         tool = next(e for e in m["events"] if e["kind"] == "tool")
