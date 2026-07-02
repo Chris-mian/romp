@@ -499,7 +499,8 @@ class TimelinePanel {
     // Each window = a label + a column of TWO stacked mini-bars: the USAGE % (colored) over a
     // TIME-THROUGH-WINDOW bar (neutral slate — how far between the window's start = resets_at−winSec and
     // its reset). Comparing the two fill widths is the BURN-RATE cue: usage ahead of time = spending
-    // faster than the window refills. Only the two account-wide windows (5h + weekly); no model-specific.
+    // faster than the window refills. The account-wide windows: 5h session, weekly, and the included
+    // Fable 5 weekly allowance (the user 2026-07-02; CLI window type seven_day_overage_included).
     const mkUsageBar = (key, label, winSec) => {
       const g = this._usageWrap.createDiv();
       g.setAttribute('style', 'display:inline-flex;align-items:center;gap:6px;');
@@ -521,6 +522,7 @@ class TimelinePanel {
     };
     mkUsageBar('fiveHour', 'session', 5 * 3600);
     mkUsageBar('sevenDay', 'week', 7 * 86400);
+    mkUsageBar('fable', 'Fable 5', 7 * 86400);
 
     // (The per-window token grid that used to sit here was removed at the user's request 2026-06-18 — only
     // the /usage rate-limit bars above remain. The kernel still ships data.tokens; nothing reads it now.)
@@ -946,7 +948,7 @@ class TimelinePanel {
       return;
     }
     if (!this._usageWrap) return;
-    if (!usage || (!usage.fiveHour && !usage.sevenDay)) { this._usageWrap.style.display = 'none'; return; }
+    if (!usage || (!usage.fiveHour && !usage.sevenDay && !usage.fable)) { this._usageWrap.style.display = 'none'; return; }
     this._usageWrap.style.display = 'flex';
     const nowS = (typeof Date !== 'undefined' && Date.now) ? Math.floor(Date.now() / 1000) : 0;
     const apply = (key, seg, name) => {
@@ -967,6 +969,7 @@ class TimelinePanel {
     };
     apply('fiveHour', usage.fiveHour, 'Session (5h)');
     apply('sevenDay', usage.sevenDay, 'Weekly');
+    apply('fable', usage.fable, 'Fable 5 (7d)');
   }
   // Compact "2d 3h 14m" countdown to a reset epoch, for the usage-bar hover title.
   _fmtReset(epoch) {
@@ -2253,12 +2256,17 @@ class TimelinePanel {
           let px = modelColX;
           const drawPiece = (kind, word) => {
             const pend = pendingOf(kind), ww = this.ctxWidth(word);
-            const wt = el('text', { x: px, y: y + 3.5, 'text-anchor': 'start', 'font-size': 11, 'font-weight': 600, fill: MODEL_FG, 'pointer-events': 'auto' });
+            // Tint the model name / effort on the GLOBAL colormap by capability/effort rank (kernel modelColor/
+            // effortColor, the user 2026-07-02); unknown → the default gray. The caret stays neutral gray, and
+            // hover still brightens to META_HOVER_FG — mouseleave restores the TINT, not the gray.
+            const tint = kind === 'model' ? s.modelColor : s.effortColor;
+            const base = (tint && tint.length === 3) ? ('rgb(' + tint[0] + ',' + tint[1] + ',' + tint[2] + ')') : MODEL_FG;
+            const wt = el('text', { x: px, y: y + 3.5, 'text-anchor': 'start', 'font-size': 11, 'font-weight': 600, fill: base, 'pointer-events': 'auto' });
             wt.textContent = word; wt.style.cursor = 'pointer'; if (pend) wt.setAttribute('opacity', '0.45'); svg.appendChild(wt);
             const ct = el('text', { x: px + ww, y: y + 3.5, 'text-anchor': 'start', 'font-size': 11, 'font-weight': 600, fill: MODEL_FG, opacity: pend ? '0.45' : '0', 'pointer-events': 'none' });
             ct.textContent = META_CARET; svg.appendChild(ct);
             wt.addEventListener('mouseenter', () => { wt.setAttribute('fill', META_HOVER_FG); ct.setAttribute('fill', META_HOVER_FG); ct.setAttribute('opacity', '1'); });
-            wt.addEventListener('mouseleave', () => { wt.setAttribute('fill', MODEL_FG); ct.setAttribute('fill', MODEL_FG); ct.setAttribute('opacity', pendingOf(kind) ? '0.45' : '0'); });
+            wt.addEventListener('mouseleave', () => { wt.setAttribute('fill', base); ct.setAttribute('fill', MODEL_FG); ct.setAttribute('opacity', pendingOf(kind) ? '0.45' : '0'); });
             wt.addEventListener('click', (e) => { e.stopPropagation(); this._openMetaMenu(kind, s, wt); });
             px += ww + caretW;
           };

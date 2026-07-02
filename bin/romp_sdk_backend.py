@@ -1190,9 +1190,14 @@ class SdkBackend:
         The write happens only when the merged segment actually CHANGES, so usage.json's `t` (the rail
         tooltip's "updated … ago") stays the time of the last real reading, not of the last no-op event."""
         rlt = getattr(info, "rate_limit_type", None)
-        if rlt not in ("five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet"):
-            return   # the bars show only the 5h + weekly windows; overage / None are ignored
-        key = "five_hour" if rlt == "five_hour" else "seven_day"
+        # `seven_day_overage_included` is the included-Fable-5 weekly allowance (the CLI's /usage labels it
+        # "Fable 5 limit", 2026-07-02) → the rail's third bar. It rides usage.json as `fable`; the tmux
+        # statusline payload carries ONLY five_hour/seven_day, so these events are its one in-band source.
+        if rlt not in ("five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet",
+                       "seven_day_overage_included"):
+            return   # overage / unknown windows are ignored (no bar shows them)
+        key = ("five_hour" if rlt == "five_hour"
+               else "fable" if rlt == "seven_day_overage_included" else "seven_day")
         status = getattr(info, "status", None)
         util = getattr(info, "utilization", None)
         ra = getattr(info, "resets_at", None)
@@ -1226,8 +1231,8 @@ class SdkBackend:
             if new == seg:
                 return                                # no change → keep t honest (the tooltip's "updated … ago")
             cur[key] = new
-            data = {"t": int(time.time()),
-                    "five_hour": cur.get("five_hour"), "seven_day": cur.get("seven_day")}
+            data = {"t": int(time.time()), "five_hour": cur.get("five_hour"),
+                    "seven_day": cur.get("seven_day"), "fable": cur.get("fable")}
             try:
                 tmp = self.state_dir / "usage.json.tmp"
                 tmp.write_text(json.dumps(data))

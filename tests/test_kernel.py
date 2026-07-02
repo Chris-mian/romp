@@ -237,6 +237,29 @@ class ViewBuilder(unittest.TestCase):
         self.assertTrue(users[-1].get("human"), "a follow-up the user typed is human (blue), not romp")
         self.assertFalse(users[-1].get("romp"), "goal-id alone must NOT flag romp")
 
+    def test_followup_with_screenshots_keeps_the_typed_body_out_of_the_context(self):
+        # the user 2026-07-02: a follow-up sent WITH screenshots rendered its typed body inside the gray
+        # follow-up CONTEXT and an EMPTY blue bubble. The goal quote carried the image paths, so the
+        # image-path scan flagged the turn, and the "[Image #N]" chip cleanup flattened EVERY newline —
+        # the whole wrapped message reached _split_followup as one giant "> …" line, classifying the body
+        # as quote. The cleanup must strip chips + tidy spaces WITHOUT touching newlines.
+        typed = ("> /tmp/shot-1.png /tmp/shot-2.png the earlier ask, verbatim, capped …\n\n"
+                 "[Image #1] Yes, I agree with number one. Log it.\nAnd a second line.\n\n"
+                 "<!-- romp-goal-id: %s:g1 -->" % SID)
+        recs = [uline(T0, "real prompt", "u1", ps="typed"),
+                aline(T0 + 10, "ok", "a1", "u1", stop="end_turn"),
+                uline(T0 + 100, typed, "u2", "a1", ps="typed")]
+        self.tpath.write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+        km._parse_cache.clear()
+        ev = [e for e in km.build_session(SID, NOW)["events"] if e["kind"] == "user"][-1]
+        self.assertTrue(ev.get("followUp"))
+        self.assertTrue(ev.get("images"), "the image paths in the quote still hydrate as images")
+        self.assertEqual(ev["md"], "Yes, I agree with number one. Log it.\nAnd a second line.",
+                         "the typed body is the blue bubble — chip stripped, newlines intact")
+        self.assertNotIn("agree with number one", ev.get("fuCtx") or "",
+                         "the typed body must NOT leak into the expandable context")
+        self.assertIn("the earlier ask", ev.get("fuCtx") or "", "the context is the quote alone")
+
     def test_tool_event_pairs_output_and_diff(self):
         m = km.build_session(SID, NOW)
         tool = next(e for e in m["events"] if e["kind"] == "tool")
@@ -2233,6 +2256,27 @@ class ViewBuilder(unittest.TestCase):
         card = {a["itemId"]: a for a in km.build_feed(NOW)["asks"]}[nid]
         self.assertEqual(card["summaryAnchorUuid"], expect,
                          "no citation stored → the card links its summary to the trail's latest prose")
+
+    def test_card_carries_the_judge_stamped_warns(self):
+        # judge _node_warn stamps anomalies (e.g. a distiller cite-miss) on the node; the card must carry
+        # them verbatim so the feed can show the yellow "warning" chip and the click-through detail
+        # (the user 2026-07-02). A node with no warns ships null, not a stray empty list.
+        session = em.parse_session(str(self.tpath), rompuuid=SID, candidate_files=[str(self.tpath)], now=NOW)
+        seg = em.segments(session["turns"][0])[0]
+        warn = {"kind": "cite-miss", "t": NOW - 60,
+                "msg": "the distiller's source citation didn't come back",
+                "detail": "What happened: …\n\nWhy it's unexpected: …"}
+        nid, plain = SID + ":g45", SID + ":g46"
+        store = {"rompUuid": SID, "seq": 45, "nodes": {
+            nid: {"id": nid, "text": "Ship it", "parentId": None, "nodeComplete": True, "blocked": False,
+                  "trail": [seg["id"]], "t": NOW, "summary": "Shipped.", "warns": [warn]},
+            plain: {"id": plain, "text": "Other thing", "parentId": None, "nodeComplete": True,
+                    "blocked": False, "trail": [seg["id"]], "t": NOW, "summary": "Done."}},
+            "placements": {}, "status": {}}
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps(store))
+        cards = {a["itemId"]: a for a in km.build_feed(NOW)["asks"]}
+        self.assertEqual(cards[nid]["warns"], [warn], "the stamped warn reaches the card unchanged")
+        self.assertIsNone(cards[plain]["warns"], "no warns → null on the card")
 
     def test_summary_anchor_prefers_the_distillers_cited_source(self):
         # the distiller CITES the message its takeaway is grounded in (node["summaryAnchor"], written by

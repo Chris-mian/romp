@@ -90,6 +90,7 @@ interface AskItem {
   blockSummary?: string | null;                    // block-distiller's decision brief for a BLOCKED goal → the blocked card's one auto-written line (kernel 466393c); null until produced
   background?: string | null;                      // distiller's BACKGROUND section: re-orientation for a reader who forgot the thread → the card's collapsed-by-default section above the takeaway (the user 2026-07-02)
   summaryAnchorUuid?: string | null;               // click the summary line → the biggest contiguous assistant-text block in the work span (kernel _seg_best_text; the user 2026-06-22)
+  warns?: { kind: string; t: number; msg: string; detail: string }[] | null;   // judge-stamped anomalies (judge _node_warn → kernel build_feed): yellow "warning" chip; click opens the detail modal (the user 2026-07-02)
   origin?: { peer: string; peerSid: string; color: { bg: string; fg: string } | null } | null;  // courier handoff: planted by a peer's message → "↪ from <peer>"
   waitingOn?: { peerSid: string; name: string; color: { bg: string; fg: string } | null; inCycle: boolean } | null;  // unanswered msg out to a live peer → "Awaiting <peer>" chip (peer name in native colour, no emoji; kernel _wait_for_graph; the user 2026-06-22)
   awaiting?: { why?: string | null } | null;       // AWAITING flavor: held in Working, ⏳ awaiting badge — waiting on dispatched/delegated work (agents/subagents/a build), NOT on you (kernel build_feed; the user 2026-06-22). The peer case rides waitingOn; this carries the generic "why".
@@ -281,6 +282,38 @@ function feedConfirm(message: string, confirmLabel: string, onConfirm: () => voi
   const close = () => { back.remove(); document.removeEventListener("keydown", onKey); };
   cancel.onclick = (e) => { e.stopPropagation(); close(); };
   ok.onclick = (e) => { e.stopPropagation(); close(); onConfirm(); };
+  back.onclick = (e) => { if (e.target === back) close(); };
+  document.addEventListener("keydown", onKey);
+  document.body.appendChild(back);
+  ok.focus();
+}
+
+// The warn-detail overlay (the user 2026-07-02): clicking a card's yellow "warning" chip opens this —
+// one entry per judge-stamped anomaly, each telling in detail what happened and why it's unexpected,
+// so pipeline misbehavior is followable from the card instead of buried in judge-errors.jsonl.
+// Same lightweight overlay pattern as feedConfirm (its own state machine; Esc / backdrop / Close).
+function feedWarnModal(cardTitle: string, warns: { kind: string; t: number; msg: string; detail: string }[]): void {
+  const back = el("div", "fconfirm-back fwarn-back");
+  const box = el("div", "fconfirm-box fwarn-box");
+  const head = el("div", "fwarn-head"); head.textContent = "Unexpected behavior";
+  const sub = el("div", "fwarn-sub"); sub.textContent = cardTitle;
+  box.append(head, sub);
+  for (const w of warns) {
+    const entry = el("div", "fwarn-entry");
+    const meta = el("div", "fwarn-meta");
+    meta.textContent = w.kind + " · " + relAge(Math.max(0, Date.now() / 1000 - w.t));
+    const body = el("div", "fwarn-detail"); body.textContent = w.detail || w.msg;
+    entry.append(meta, body);
+    box.append(entry);
+  }
+  const btns = el("div", "fconfirm-btns");
+  const ok = el("button", "fconfirm-btn primary"); ok.textContent = "Close";
+  btns.append(ok);
+  box.append(btns);
+  back.append(box);
+  const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") close(); };
+  const close = () => { back.remove(); document.removeEventListener("keydown", onKey); };
+  ok.onclick = (e) => { e.stopPropagation(); close(); };
   back.onclick = (e) => { if (e.target === back) close(); };
   document.addEventListener("keydown", onKey);
   document.body.appendChild(back);
@@ -514,6 +547,17 @@ function makeAskCard(it: AskItem): HTMLElement {
   const nfBadge = el("span", "fask-nudgefailed"); nfBadge.textContent = "stalled";
   nfBadge.title = "romp followed up on this stalled goal once; the response didn't resolve it and it won't be re-asked — it's waiting on you";
   nfBadge.style.display = "none";
+  // yellow "warning" chip (the user 2026-07-02): a judge stamped an anomaly on this goal (kernel `warns`,
+  // judge _node_warn — e.g. a distiller cite-miss). Click → the warn-detail overlay: what happened and why
+  // it's unexpected, per warn. A BUTTON (not a span) so it's focusable; the element survives re-renders
+  // (updateAskCard mutates it in place) and reads its data from the card at click time, so it's click-safe.
+  const warnChip = el("button", "fask-warnchip"); warnChip.textContent = "warning";
+  warnChip.style.display = "none";
+  warnChip.onclick = (ev) => {
+    ev.stopPropagation();
+    const ws = (card as any)._warnsData as AskItem["warns"];
+    if (ws && ws.length) feedWarnModal((card as any)._title?.textContent || "", ws);
+  };
   const waitOnBadge = el("span", "fask-waiton"); waitOnBadge.style.display = "none";   // "Awaiting <peer>" / "Deadlock <peer>", peer name in native colour (the user 2026-06-22)
   const blkBadge = el("a", "fask-blocked"); blkBadge.style.display = "none";   // ⏸ live permission/picker block → click opens the session
   const apiBadge = el("span", "fask-apierror"); apiBadge.textContent = "⚠ API error"; apiBadge.style.display = "none";   // red: session stopped on an API error
@@ -545,7 +589,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   // "↪ from <peer>" provenance + the "reopened"/"↻ Followed up" chips ride the name row's right side;
   // row2 wraps them onto a new line when there isn't room, so the provenance never overlaps a chip
   // (the user 2026-06-20). origin sits left of the chips, matching the "from … · Followed up" reading order.
-  row2.append(idwrap, origin, reBadge, fupBadge, nfBadge, waitOnBadge);
+  row2.append(idwrap, origin, reBadge, fupBadge, nfBadge, warnChip, waitOnBadge);
   // ROW 3 — timestamp bottom-left · action buttons bottom-right
   const row3 = el("div", "fask-row3"); row3.append(time, actions);
   // the user's handoff spec (2026-06-10): below the main session, list the OTHER
@@ -672,6 +716,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   const a = card as any;
   a._title = title; a._name = name; a._time = time; a._reopened = reBadge; a._followedup = fupBadge;
   a._nudgeFailed = nfBadge;
+  a._warnChip = warnChip;
   a._waitOn = waitOnBadge;
   a._blocked = blkBadge; a._wait = waitBadge;
   a._apiBadge = apiBadge; a._apiRetry = apiRetry; a._revive = revive; a._clr = clr;
@@ -800,6 +845,16 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   // with the "⏸ stalled" badge — the badge already says it, so the chip yields to avoid a double
   // "stalled" (the user 2026-07-02); a regular-flavor failure stays in Working with just this chip.
   a._nudgeFailed.style.display = (it.nudgeFailed && it.blocked?.state !== "stalled") ? "" : "none";
+  // "warning" chip: a judge stamped an anomaly on this goal — show the latest msg on hover, detail on click.
+  // Data rides the card element so the click handler (wired once in build) always reads the current push.
+  a._warnsData = it.warns || null;
+  if (it.warns && it.warns.length) {
+    a._warnChip.style.display = "";
+    a._warnChip.textContent = it.warns.length > 1 ? `warning ×${it.warns.length}` : "warning";
+    a._warnChip.title = it.warns[it.warns.length - 1].msg + " — click for what happened and why";
+  } else {
+    a._warnChip.style.display = "none";
+  }
   // "Awaiting <peer>" — this session has an unanswered message out to a live peer (kernel _wait_for_graph):
   // held in Working, not stalled, so auto-nudge skips it. The peer NAME renders in its NATIVE identity colour
   // (like the "↪ from" provenance), no emoji prefix (the user 2026-06-22). A mutual-wait CYCLE keeps the red

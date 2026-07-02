@@ -4626,8 +4626,14 @@ def build_session(sid, now, tmux=None):
                     if text:                                     # a peer message → swapped to a clean card by _hydrate_postal
                         prompt, reminders = _split_reminders(text)
                         imgs = _user_images(blocks, prompt, author == "human")
-                        if imgs and prompt:                      # drop the composer's "[Image #N]" placeholder chips
-                            prompt = " ".join(re.sub(r"\[Image #\d+\]\s?", "", prompt).split())
+                        if imgs and prompt:
+                            # drop the composer's "[Image #N]" placeholder chips + tidy the space each leaves.
+                            # PRESERVE NEWLINES: this used to be " ".join(prompt.split()), which flattened the
+                            # whole message to one line — a follow-up sent WITH screenshots then reached
+                            # _split_followup as a single giant "> …" line, so the typed body was classified
+                            # as quote context (the gray expandable) and the blue bubble rendered EMPTY (the
+                            # user 2026-07-02).
+                            prompt = re.sub(r"[ \t]{2,}", " ", re.sub(r"\[Image #\d+\]\s?", "", prompt)).strip()
                         # A TYPED follow-up (human) carries romp's goal-context quote + the comment markers —
                         # strip them for display, keep just the body, and surface the goal title as a compact
                         # 'Follow-up' header (the user 2026-06-27). A romp NUDGE keeps its full text: there the
@@ -4973,6 +4979,10 @@ def build_session(sid, now, tmux=None):
                   "backend": _session_backend(sid, tm),
                   "model": tm["model"], "effort": tm["effort"], "mode": tm.get("mode", ""),
                   "ctx": str(tm["context"]) if tm["context"] is not None else "",
+                  # model name + effort tinted on the GLOBAL colormap by capability/effort rank (the user
+                  # 2026-07-02): the statusline meta buttons just apply these (mirrors ctxColor). None = default.
+                  "modelColor": _model_color(tm["model"], cm.stops_for(_colormap())),
+                  "effortColor": _effort_color(tm["effort"], cm.stops_for(_colormap())),
                   # context% on the GLOBAL colormap (the user 2026-06-26): computed server-side so the chat
                   # battery + tab tooltip just apply it (mirrors the usage bar + timeline lanes). bright = full.
                   "ctxColor": (list(cm.ramp(tm["context"] / 100.0, cm.stops_for(_colormap())))
@@ -5845,6 +5855,7 @@ def build_feed(now, tmux=None):
                 "blockSummary": nodes[nid].get("blockSummary"),    # the block-distiller's decision brief for a blocked goal (modal); null until produced — the user 2026-06-18
                 "background": nodes[nid].get("background"),    # the distiller's BACKGROUND section: re-orientation for a reader who forgot the thread — collapsed by default on the card (the user 2026-07-02)
                 "summaryAnchorUuid": _sa_u,    # click the summary line → the biggest text block in the work span (the user 2026-06-22)
+                "warns": nodes[nid].get("warns") or None,   # judge-stamped anomalies (judge _node_warn) → yellow "warning" chip; click shows each warn's what/why detail (the user 2026-07-02)
                 "blocked": ({"state": "apiError", "since": (tm.get("since") if tm else None),
                              "status": aerr.get("status"), "category": aerr.get("category"),
                              "text": aerr.get("text"), "tooLong": bool(aerr.get("tooLong")),
@@ -5904,7 +5915,7 @@ def build_feed(now, tmux=None):
             "blockWhy": "%s tried to hand off to %s, which is offline — revive it to deliver, or dismiss."
                         % (ph["fromName"], ph["toName"]),
             "doneWhy": None, "followupPending": None, "waitingOn": None,
-            "summary": None, "blockSummary": None, "background": None, "summaryAnchorUuid": None,
+            "summary": None, "blockSummary": None, "background": None, "summaryAnchorUuid": None, "warns": None,
             "blocked": {"state": "parkedHandoff", "fromName": ph["fromName"], "toSid": ph["toId"],
                         "toName": ph["toName"], "msgId": ph["msgId"], "body": ph["body"],
                         "what": "a handoff from %s is parked — revive %s to deliver it"
@@ -5957,8 +5968,11 @@ def _state_intervals(sid, want, now):
 
 
 def _usage():
-    """The /usage rate-limit bars (5h + weekly) from usage.json, or None. File-based, like the
-    obsidian timeline's readUsage."""
+    """The /usage rate-limit bars (5h + weekly + Fable 5) from usage.json, or None. File-based, like the
+    obsidian timeline's readUsage. `fable` is the included-Fable-5 weekly allowance Claude Code added to
+    /usage (the user 2026-07-02) — the CLI's window type is `seven_day_overage_included`, labeled
+    'Fable 5 limit'; the SDK backend writes it to usage.json as `fable` (the statusline payload does NOT
+    carry it — five_hour/seven_day only — so events are its one in-band source)."""
     try:
         o = json.loads((jd.STATE / "usage.json").read_text())
     except Exception:
@@ -5972,18 +5986,19 @@ def _usage():
             return {"pct": pct, "resetsAt": ra if isinstance(ra, (int, float)) else None,
                     "color": list(cm.ramp(pct / 100.0, stops))}   # used-% on the selected colormap
         return None
-    five, seven = seg(o.get("five_hour")), seg(o.get("seven_day"))
-    if not five and not seven:
+    five, seven, fable = seg(o.get("five_hour")), seg(o.get("seven_day")), seg(o.get("fable"))
+    if not five and not seven and not fable:
         return None
     # LIMIT REACHED (the user 2026-07-01): a window at 100% whose reset is still in the future = the account is
     # rate-limited on it now. Drives the top banner + the auto retry-pause. A window past its resetsAt has rolled
     # (its pct is stale until the next reading) → not limited.
     def _lim(s):
         return bool(s and s.get("pct", 0) >= 100 and not (s.get("resetsAt") and time.time() > s["resetsAt"]))
-    limited = {"fiveHour": _lim(five), "sevenDay": _lim(seven)}
+    limited = {"fiveHour": _lim(five), "sevenDay": _lim(seven), "fable": _lim(fable)}
     t = o.get("t")
-    return {"fiveHour": five, "sevenDay": seven, "t": t if isinstance(t, (int, float)) else None,
-            "limited": limited if (limited["fiveHour"] or limited["sevenDay"]) else None}
+    return {"fiveHour": five, "sevenDay": seven, "fable": fable,
+            "t": t if isinstance(t, (int, float)) else None,
+            "limited": limited if any(limited.values()) else None}
 
 
 _msg_sum_cache = {}                               # cached {msg id: caption}, keyed by the transcripts' signature
@@ -6871,6 +6886,10 @@ def build_timeline(now, tmux=None, with_bars=True, live_only=False):
             "since": (tm["since"] if tm and tm["since"] else last_t),
             "color": hexcol,
             "model": (tm["model"] if tm else ""), "effort": (tm["effort"] if tm else ""),
+            # model name + effort tinted on the GLOBAL colormap by capability/effort rank (the user 2026-07-02);
+            # the lane just applies these, like ctxColor. None → the lane keeps its default gray text.
+            "modelColor": _model_color(tm["model"] if tm else "", ctx_stops),
+            "effortColor": _effort_color(tm["effort"] if tm else "", ctx_stops),
             "backend": _session_backend(sid, tm),
             "context": (tm["context"] if tm else None),
             "ctxColor": (list(cm.ramp((tm["context"] or 0) / 100.0, ctx_stops))
@@ -7214,6 +7233,29 @@ def _colormap():
         _cmap_cache["name"] = n if n in cm.COLORMAPS else cm.DEFAULT
         _cmap_cache["mt"] = mt
     return _cmap_cache["name"]
+
+
+# Model-name + effort TEXT tint (the user 2026-07-02): color the model name and the effort on the SAME global
+# colormap as the context bars, by capability / effort RANK — brighter (the map's high end) = more capable /
+# higher effort. These two rank tables are the ONE place the ordering lives; the chat statusline + timeline
+# lanes just apply the RGB the kernel computes here (mirrors ctxColor). Unknown model/effort → None so the
+# client keeps its default gray. Model is matched by family WORD (the same leading-word the /model picker keys
+# on) so it works whether tmux reports "opus", "claude-opus-4-8", or "Opus 4.8".
+_MODEL_RANK = [("fable", 1.0), ("opus", 2 / 3), ("sonnet", 1 / 3), ("haiku", 0.0)]   # capability high→low; bright=most capable
+_EFFORT_RANK = {"low": 0.0, "medium": 0.25, "high": 0.5, "xhigh": 0.75, "max": 1.0}   # thinking effort low→max
+
+
+def _model_color(model, stops):
+    m = (model or "").lower()
+    for word, v in _MODEL_RANK:
+        if word in m:
+            return list(cm.ramp(v, stops))
+    return None
+
+
+def _effort_color(effort, stops):
+    v = _EFFORT_RANK.get((effort or "").strip().lower())
+    return list(cm.ramp(v, stops)) if v is not None else None
 
 
 def _set_colormap(name):
@@ -8582,15 +8624,17 @@ var m=Math.round(dt/60);if(m<60)return m+'m ago';var h=Math.floor(m/60);m-=h*60;
 return(h<24?h+'h '+(m?m+'m ':''):Math.floor(h/24)+'d ')+'ago';}
 function esc(s){return String(s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
 var WINS=[['fiveHour',5*3600,'5h','Session'],
-          ['sevenDay',7*86400,'7d','Weekly']];
+          ['sevenDay',7*86400,'7d','Weekly'],
+          ['fable',7*86400,'F5','Fable 5']];
 var LAST={};
 function render(u){
 // LIMIT BANNER (the user 2026-07-01): a top banner whenever a usage window is maxed (kernel `limited`), like
 // the disconnected one. Says which window + that retries are paused (the kernel auto-engages the retry-pause).
 var lb=document.getElementById('romp-limit');
-if(lb){var lim=u&&u.limited,on=!!(lim&&(lim.fiveHour||lim.sevenDay));lb.classList.toggle('show',on);
-if(on){var msg=lb.querySelector('.rl-msg');if(msg)msg.textContent=(lim.fiveHour&&lim.sevenDay?'Session and weekly':lim.fiveHour?'Session (5h)':'Weekly (7d)')+' usage limit reached — retries paused until it resets';}}
-if(!u||(!u.fiveHour&&!u.sevenDay)){el.innerHTML='';tip.style.display='none';return;}
+if(lb){var lim=u&&u.limited,on=!!(lim&&(lim.fiveHour||lim.sevenDay||lim.fable));lb.classList.toggle('show',on);
+if(on){var msg=lb.querySelector('.rl-msg');if(msg){var names=[];if(lim.fiveHour)names.push('Session (5h)');if(lim.sevenDay)names.push('Weekly (7d)');if(lim.fable)names.push('Fable 5 (7d)');
+msg.textContent=names.join(' and ')+' usage limit reached — retries paused until it resets';}}}
+if(!u||(!u.fiveHour&&!u.sevenDay&&!u.fable)){el.innerHTML='';tip.style.display='none';return;}
 var nowS=Math.floor(Date.now()/1000),html='';LAST={};LAST._t=(typeof u.t==='number')?u.t:null;
 WINS.forEach(function(w){var seg=u[w[0]];if(!seg)return;
 var rolled=seg.resetsAt&&nowS>seg.resetsAt,pct=rolled?0:(seg.pct||0);
@@ -8610,7 +8654,7 @@ function barRows(d){return '<div class=ru-tip-row><span class=ru-tip-k>used</spa
 +(d.tp!=null?'<div class=ru-tip-row><span class=ru-tip-k>elapsed</span>'
 +'<span class=ru-tip-track><i style="width:'+d.tp+'%;background:#6b7a8c"></i></span>'
 +'<span class=ru-tip-v>'+d.tp+'%</span></div>':'');}
-function showTip(){var keys=['fiveHour','sevenDay'].filter(function(k){return LAST[k];});
+function showTip(){var keys=['fiveHour','sevenDay','fable'].filter(function(k){return LAST[k];});
 if(!keys.length){tip.style.display='none';return;}
 tip.innerHTML=keys.map(function(k){var d=LAST[k];
 return '<div class=ru-tip-win><div class=ru-tip-name><span>'+esc(d.name)+' ('+esc(d.span)+')</span>'
@@ -8632,7 +8676,7 @@ function pull(ack){if(_ruBusy)return;_ruBusy=true;
 if(ack){el.style.opacity='0.45';tip.style.display='none';}   // instant ack only on a real click
 var done=function(){_ruBusy=false;el.style.opacity='';};
 fetch('/usage',{cache:'no-store'}).then(function(r){return r.ok?r.json():null;})
-.then(function(u){render(u&&(u.fiveHour||u.sevenDay)?u:null);done();})
+.then(function(u){render(u&&(u.fiveHour||u.sevenDay||u.fable)?u:null);done();})
 .catch(function(){done();});}
 el.addEventListener('click',function(){pull(true);});
 setInterval(function(){pull(false);},60000);     // backup auto-refresh: re-read usage.json every 60s
