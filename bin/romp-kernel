@@ -238,6 +238,8 @@ def _version_info():
     return {"kernel_sha": _kernel_sha(), "pid": os.getpid(), "started": int(_STARTED),
             "uptime_s": int(time.time() - _STARTED), "dist_ver": _dist_ver(), "bundles": bundles,
             "autoNudge": _auto_nudge_on(),   # server-side toggle state → the gear checkbox reflects the kernel
+            "judgeModel": jd._triage_model(),   # current triage-judge model → the gear "Judge model" dropdown
+            "judgeModels": jd.JUDGE_MODELS,     # the selectable (id,label) menu, so the dropdown stays in sync with the judge
             "defaultDir": _tilde(_default_create_dir())}   # the resolved default new-session dir → the gear "Default directory" field
 
 
@@ -7212,6 +7214,17 @@ def _set_colormap(name):
             pass
 
 
+def _set_judge_model(mid):
+    """Persist the chosen TRIAGE-judge model (ignored unless it's a known jd.JUDGE_MODELS id); the judge reads
+    it via jd._triage_model() on its NEXT pass, so no restart is needed (the user 2026-07-02)."""
+    if mid in {m[0] for m in jd.JUDGE_MODELS}:
+        try:
+            jd.STATE.mkdir(parents=True, exist_ok=True)
+            (jd.STATE / "judge-model").write_text(mid)
+        except OSError:
+            pass
+
+
 def _reply(c, msg):
     """Send a one-shot reply to ONE client (no per-key dedup; for request/response like imgData)."""
     try:
@@ -7986,6 +7999,16 @@ def _gear_html():
               "<span class=rs-sub>Debug view: draws the planner, grouper, closer, distiller + courier on the timeline's judging band. It does NOT turn the judges on or off — they always run; this only shows their activity.</span>"
               "</span></label>"
               "</div>"
+              # Judge model chooser (the user 2026-07-02): the TRIAGE tier's model (the judgment-heavy judges).
+              # SERVER-SIDE like Auto Nudge — the change posts to the kernel (_set_judge_model → STATE/judge-model)
+              # and the judge reads it next pass; the <option>s come from jd.JUDGE_MODELS so the menu can't drift
+              # from what the judge accepts. Index tier (captioner+archiver) stays on Haiku, not exposed here.
+              "<div class='rs-row rs-sep' style='cursor:default'><span style='flex:1 1 auto'><b>Judge model</b>"
+              "<span class=rs-sub>The model the triage judges use — planner, grouper, closer, distiller, courier (the judgment-heavy tier). Indexing (captioner + archiver) stays on Haiku. Applies on the judges' next pass; no restart.</span>"
+              "<select id=rs-judgemodel style='margin-top:5px;width:100%;background:#1e1e1e;color:#ccc;"
+              "border:1px solid #3a3a3a;border-radius:5px;padding:3px 4px;cursor:pointer'>"
+              + "".join('<option value="%s">%s</option>' % (mid, lbl) for mid, lbl in jd.JUDGE_MODELS) +
+              "</select></span></div>"
               "<div class=rs-sec>Keyboard shortcuts</div>"
               + _shortcut_rows() +
               "<div class=rs-sep style='padding-top:8px'>"
@@ -8012,7 +8035,7 @@ def _gear_html():
               "</div></div>")
 _GEAR_JS = r"""(function(){var g=document.getElementById('rgear'),p=document.getElementById('rsettings'),
 b=document.getElementById('rsver'),cc=document.getElementById('rs-compact'),
-jix=document.getElementById('rs-judges-index'),jtr=document.getElementById('rs-judges-triage'),an=document.getElementById('rs-autonudge'),bk=document.getElementById('rs-backend'),dd=document.getElementById('rs-defaultdir'),gb=document.getElementById('rs-branch'),cg=document.getElementById('rs-collapsegaps');
+jix=document.getElementById('rs-judges-index'),jtr=document.getElementById('rs-judges-triage'),an=document.getElementById('rs-autonudge'),bk=document.getElementById('rs-backend'),dd=document.getElementById('rs-defaultdir'),gb=document.getElementById('rs-branch'),cg=document.getElementById('rs-collapsegaps'),jm=document.getElementById('rs-judgemodel');
 function load(){try{return Object.assign({compact:false,colormap:'aurora',subgoals:true,debug:false,backend:'tmux',defaultDir:'',showBranch:true,collapseGaps:true},JSON.parse(localStorage.getItem('romp:settings')||'null'));}catch(e){return {compact:false,colormap:'aurora',subgoals:true,debug:false,backend:'tmux',defaultDir:'',showBranch:true,collapseGaps:true};}}
 function save(s){try{localStorage.setItem('romp:settings',JSON.stringify(s));}catch(e){}}
 function emit(){try{window.dispatchEvent(new Event('romp:settings'));}catch(e){}}   // same-doc signal → the feed re-gates its cards
@@ -8031,6 +8054,9 @@ if(cg)cg.addEventListener('change',function(){var s=load();s.collapseGaps=cg.che
 // Auto Nudge is a SERVER-SIDE behavior (the kernel runs it), so the kernel is the source of truth: toggling
 // posts to the kernel; the checkbox is (re)initialized from /version on every gear open (see fill()).
 if(an)an.addEventListener('change',function(){try{window.acquireVsCodeApi&&window.acquireVsCodeApi().postMessage({type:'setAutoNudge',enabled:an.checked});}catch(e){}});
+// Judge model is SERVER-SIDE too (the judge runs kernel-side): post the pick to the kernel; the dropdown is
+// (re)initialized from /version on every gear open (see fill()), so it always shows the judge's actual model.
+if(jm)jm.addEventListener('change',function(){try{window.acquireVsCodeApi&&window.acquireVsCodeApi().postMessage({type:'setJudgeModel',model:jm.value});}catch(e){}});
 // feed-colormap preview bar: a horizontal gradient of the SELECTED map's stops (mirrors render.ts COLORMAPS).
 var CMAPS={aurora:[[84,178,4],[0,180,115],[35,175,156],[66,169,176],[25,168,201],[14,164,227],[74,155,241],[113,145,244],[144,136,240]],
 hawaii:[[140,2,115],[146,46,85],[151,78,62],[155,111,40],[156,150,28],[137,189,74],[107,212,142],[103,233,213],[179,242,253]],
@@ -8062,6 +8088,7 @@ function lv(){var t=document.querySelector('script[src*="feed.js"]');
 var m=t&&t.getAttribute('src').match(/[?&]v=(\d+)/);return m?+m[1]:0;}
 function fill(){fetch('/version',{cache:'no-store'}).then(function(r){return r.json();}).then(function(v){
 if(an)an.checked=!!v.autoNudge;
+if(jm&&typeof v.judgeModel==='string')jm.value=v.judgeModel;   // the judge's ACTUAL current model is authoritative
 if(dd&&typeof v.defaultDir==='string')dd.value=v.defaultDir;   // the kernel's persisted default (file → env/install) is authoritative
 var x=lv();b.innerHTML='kernel '+(v.kernel_sha||'?')+'\nserving v'+
 v.dist_ver+'\nthis tab v'+(x||'?');
@@ -9671,6 +9698,8 @@ class Handler(BaseHTTPRequestHandler):
                 client["send"](json.dumps({"type": "defaultDirSaved", "value": _tilde(_default_create_dir())}))
         elif msg and msg.get("type") == "setColormap" and msg.get("name"):
             _set_colormap(str(msg["name"]))    # recency colormap chooser → recolours the feed on next push
+        elif msg and msg.get("type") == "setJudgeModel" and msg.get("model"):
+            _set_judge_model(str(msg["model"]))   # gear "Judge model" dropdown → the judge uses it next pass
 
     def _ws(self):
         key = self.headers.get("Sec-WebSocket-Key")

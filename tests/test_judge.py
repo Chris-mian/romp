@@ -3070,9 +3070,23 @@ class ModelTiers(unittest.TestCase):
     """The Haiku cost lever (judge.md §Two run tiers): captioner + archiver run on the cheap INDEX
     model (Haiku); planner + courier + closer on the TRIAGE model (Sonnet)."""
 
+    def setUp(self):
+        # Sandbox STATE so _triage_model() sees no override (and the real ~/.local/state judge-model, if the
+        # user picked one in the UI, is neither read nor deleted). The tier split must hold on the DEFAULT.
+        self._saved_state = jd.STATE
+        self._td = tempfile.mkdtemp()
+        jd.STATE = Path(self._td)
+        jd._judge_model_cache["mt"] = None
+
+    def tearDown(self):
+        jd.STATE = self._saved_state
+        jd._judge_model_cache["mt"] = None
+        shutil.rmtree(self._td, ignore_errors=True)
+
     def test_index_vs_triage_split(self):
         self.assertIn("haiku", jd.INDEX_MODEL, "index tier is Haiku")
-        self.assertEqual(jd.TRIAGE_MODEL, "claude-sonnet-4-6", "triage tier is Sonnet")
+        self.assertEqual(jd.TRIAGE_MODEL, "claude-sonnet-5", "triage default is Sonnet 5 (bumped from 4.6)")
+        self.assertEqual(jd.JUDGE_MODELS[0][0], jd.TRIAGE_MODEL, "the default leads the selectable menu")
         self.assertNotEqual(jd.INDEX_MODEL, jd.TRIAGE_MODEL)
         calls, saved = [], jd._judge_run
         jd._judge_run = lambda model, sysp, user, effort=None, judge=None: (calls.append((model, sysp)) or "")

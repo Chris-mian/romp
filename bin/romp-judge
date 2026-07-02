@@ -63,7 +63,41 @@ def _rebind_state(path):
 # Two model tiers (the Haiku cost lever, judge.md §Two run tiers; shipped 2026-06-15): cheap always-on
 # INDEXING on Haiku, judgment-heavy TRIAGE on Sonnet.
 INDEX_MODEL  = "claude-haiku-4-5-20251001"   # captioner + archiver (index tier — high volume, low stakes)
-TRIAGE_MODEL = "claude-sonnet-4-6"           # planner + courier + closer (triage tier — judgment)
+TRIAGE_MODEL = "claude-sonnet-5"             # DEFAULT triage model (planner/grouper/closer/distiller/courier);
+                                             # bumped from Sonnet 4.6 → Sonnet 5 (the user 2026-07-02). The live
+                                             # pick is settings-overridable — see JUDGE_MODELS + _triage_model().
+# Selectable triage-judge models for the settings dropdown (the user 2026-07-02). (id, label) in menu order;
+# the first is the default. The live choice is persisted in STATE/judge-model and read by _triage_model(), so a
+# settings change lands on the judge's NEXT pass with no restart. Index-tier stays on Haiku (a deliberate cost
+# lever, not exposed). Only judgment-capable models belong here (Fable is writing-specialised → omitted).
+JUDGE_MODELS = [
+    ("claude-sonnet-5", "Sonnet 5 — balanced (default)"),
+    ("claude-opus-4-8", "Opus 4.8 — strongest judgment, priciest"),
+    ("claude-sonnet-4-6", "Sonnet 4.6 — previous default"),
+    ("claude-haiku-4-5-20251001", "Haiku 4.5 — fastest / cheapest"),
+]
+_judge_model_cache = {"id": None, "mt": None}
+
+
+def _triage_model():
+    """The TRIAGE-tier model to use RIGHT NOW: the STATE/judge-model override when it names a known
+    JUDGE_MODELS id, else the default TRIAGE_MODEL. Read fresh each call (mtime-cached, like the kernel's
+    _colormap) so a settings change is honored on the next pass without a restart — the judge runs both as a
+    fresh `--once` subprocess AND inside the long-lived kernel, so an import-time constant wouldn't update."""
+    f = STATE / "judge-model"
+    try:
+        mt = f.stat().st_mtime
+    except OSError:
+        return TRIAGE_MODEL
+    if _judge_model_cache["mt"] != mt:
+        try:
+            mid = f.read_text().strip()
+        except OSError:
+            mid = ""
+        valid = {m[0] for m in JUDGE_MODELS}
+        _judge_model_cache["id"] = mid if mid in valid else TRIAGE_MODEL
+        _judge_model_cache["mt"] = mt
+    return _judge_model_cache["id"]
 WINDOW      = 48 * 3600                  # only caption transcripts touched in the last N hours (matches the parse horizon)
 BUDGET      = None                       # per-pass caption-CALL cap — REMOVED (the user 2026-06-30): these are
 FAIRNESS    = None                       # cheap Haiku index-tier calls; the per-pass / per-session caption caps
@@ -1498,7 +1532,7 @@ def plan_llm(segment_text, menu_text, model=None, effort=None, human=False, nudg
     elif human:
         user += ("\n<note>This segment contains a real user message, so it MUST be placed "
                  "(mint/sub/done/block) — do NOT return a skip.</note>")
-    return _judge_run(model or TRIAGE_MODEL, PLAN_SYS, user, effort=effort, judge="planner").strip()[:JUDGE_JSON_CAP]
+    return _judge_run(model or _triage_model(), PLAN_SYS, user, effort=effort, judge="planner").strip()[:JUDGE_JSON_CAP]
 
 
 def plan_prompt_llm(prompt_text, menu_text, model=None, effort=None):
@@ -1507,7 +1541,7 @@ def plan_prompt_llm(prompt_text, menu_text, model=None, effort=None):
     not just the _provisional_card placeholder. mint OR sub only (never skip/done/block; no work yet). ''
     on failure. Input is the raw prompt gist (PLAN_PROMPT_SYS), not the captioner's framed unit text."""
     user = "<prompt>\n%s\n</prompt>\n<open-goals>\n%s\n</open-goals>" % (prompt_text, menu_text)
-    return _judge_run(model or TRIAGE_MODEL, PLAN_PROMPT_SYS, user, effort=effort, judge="planner").strip()[:JUDGE_JSON_CAP]
+    return _judge_run(model or _triage_model(), PLAN_PROMPT_SYS, user, effort=effort, judge="planner").strip()[:JUDGE_JSON_CAP]
 
 
 # ───────────────────────── discovery (names/, file-based) ─────────────────────────
@@ -2467,7 +2501,7 @@ def group_llm(menu_text):
     """The grouper's {"ops":[...]} reply from the TRIAGE-tier model (Sonnet) over a session's open top
     goals. '' on failure."""
     user = "<open-goals>\n%s\n</open-goals>" % menu_text
-    return _judge_run(TRIAGE_MODEL, GROUP_SYS, user, judge="grouper").strip()[:JUDGE_JSON_CAP]
+    return _judge_run(_triage_model(), GROUP_SYS, user, judge="grouper").strip()[:JUDGE_JSON_CAP]
 
 
 def apply_group(store, tops, ops, t, allow_done=False):
@@ -2796,7 +2830,7 @@ def closer_llm(turn_text, menu_text, goal_history=""):
         user += ("\n<goal-history>\n%s\n</goal-history>\n<note>The above is each listed goal's own raw work "
                   "logged so far — richer than its one-line title above. Weigh it, not just the title, when "
                   "judging done/block.</note>" % goal_history)
-    return _judge_run(TRIAGE_MODEL, CLOSER_SYS, user, judge="closer").strip()[:JUDGE_JSON_CAP]
+    return _judge_run(_triage_model(), CLOSER_SYS, user, judge="closer").strip()[:JUDGE_JSON_CAP]
 
 
 def _turn_menu(turn, store):
@@ -3176,7 +3210,7 @@ def distill_llm(goal_text, work_text, done_why=""):
     user = "<goal>\n%s\n</goal>\n<work>\n%s\n</work>" % (goal_text, work_text)
     if done_why:
         user += "\n<completed>\n%s\n</completed>" % done_why
-    return _judge_run(TRIAGE_MODEL, DISTILL_SYS, user, judge="distiller").strip()   # caller splits SOURCE, then caps
+    return _judge_run(_triage_model(), DISTILL_SYS, user, judge="distiller").strip()   # caller splits SOURCE, then caps
 
 
 # The BLOCK-DISTILLER (the user 2026-06-18, via business): the done-distiller's twin for a BLOCKED top.
@@ -3213,7 +3247,7 @@ def brief_llm(goal_text, work_text, block_why):
     timeline mark is emitted on the distiller row (kind 'brief') — a 'brief' usage label orphaned the run
     from its mark, so its API time/tokens never showed in the hover (the user 2026-06-19)."""
     user = "<goal>\n%s\n</goal>\n<work>\n%s\n</work>\n<owed>\n%s\n</owed>" % (goal_text, work_text, block_why)
-    return _judge_run(TRIAGE_MODEL, BLOCK_BRIEF_SYS, user, judge="distiller").strip()   # caller splits SOURCE, then caps
+    return _judge_run(_triage_model(), BLOCK_BRIEF_SYS, user, judge="distiller").strip()   # caller splits SOURCE, then caps
 
 
 def _last_state_value(fsid):
@@ -3511,7 +3545,7 @@ def courier_llm(message_text, menu_text):
     """One courier verdict line from the TRIAGE-tier model (Sonnet) over a postal message + the
     sender's open goals. '' on failure."""
     user = "<message>\n%s\n</message>\n<sender-open-goals>\n%s\n</sender-open-goals>" % (message_text, menu_text)
-    return _judge_run(TRIAGE_MODEL, COURIER_SYS, user, judge="courier").strip()[:300]
+    return _judge_run(_triage_model(), COURIER_SYS, user, judge="courier").strip()[:300]
 
 
 def apply_courier(store, seg_id, seg_t, text, origin):
