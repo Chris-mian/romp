@@ -32,25 +32,33 @@ class UsageLimitSignal(unittest.TestCase):
         jd.STATE = self.saved
         self.td.cleanup()
 
-    def _write(self, five_pct, seven_pct, five_reset=None, seven_reset=None):
+    def _write(self, five_pct, seven_pct, five_reset=None, seven_reset=None, fable_pct=None):
         fut = int(time.time()) + 3600
         (jd.STATE / "usage.json").write_text(json.dumps({
             "t": int(time.time()),
             "five_hour": {"pct": five_pct, "resets_at": five_reset if five_reset is not None else fut},
-            "seven_day": {"pct": seven_pct, "resets_at": seven_reset if seven_reset is not None else fut}}))
+            "seven_day": {"pct": seven_pct, "resets_at": seven_reset if seven_reset is not None else fut},
+            "fable": {"pct": fable_pct, "resets_at": fut} if fable_pct is not None else None}))
 
     def test_a_maxed_window_is_flagged_limited(self):
         self._write(100, 40)
         lim = km._usage()["limited"]
-        self.assertEqual(lim, {"fiveHour": True, "sevenDay": False}, "the 5h Session window is at its limit")
+        self.assertEqual(lim, {"fiveHour": True, "sevenDay": False, "fable": False},
+                         "the 5h Session window is at its limit")
 
     def test_both_windows_can_be_limited(self):
         self._write(100, 100)
-        self.assertEqual(km._usage()["limited"], {"fiveHour": True, "sevenDay": True})
+        self.assertEqual(km._usage()["limited"], {"fiveHour": True, "sevenDay": True, "fable": False})
 
     def test_under_the_limit_is_not_flagged(self):
         self._write(90, 99)
         self.assertIsNone(km._usage()["limited"], "below 100% → no limit")
+
+    def test_a_maxed_fable_window_is_flagged_limited(self):
+        # the included Fable 5 weekly allowance (the user 2026-07-02) is a limit like the others: at 100%
+        # it flags limited (banner + retry-pause), and the rail's third bar shows it
+        self._write(10, 20, fable_pct=100)
+        self.assertEqual(km._usage()["limited"], {"fiveHour": False, "sevenDay": False, "fable": True})
 
     def test_a_rolled_over_window_is_not_limited(self):
         # 100% but the reset is in the PAST → the window has rolled; the pct is stale, not a live limit
@@ -74,7 +82,7 @@ class AutoPauseOnLimit(unittest.TestCase):
         self.td.cleanup()
 
     def test_hitting_a_limit_engages_the_retry_pause(self):
-        km._usage = lambda: {"limited": {"fiveHour": True, "sevenDay": False}}
+        km._usage = lambda: {"limited": {"fiveHour": True, "sevenDay": False, "fable": False}}
         self.assertFalse(km._retry_paused_on())
         km._auto_pause_on_limit()
         self.assertTrue(km._retry_paused_on(), "a usage limit auto-engages the global retry-pause")
@@ -99,3 +107,10 @@ class LimitBannerWiring(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FableBanner(unittest.TestCase):
+    def test_the_banner_names_a_maxed_fable_window(self):
+        js = km._LANDING_USAGE_JS
+        self.assertIn("lim.fiveHour||lim.sevenDay||lim.fable", js, "the banner triggers on the fable window too")
+        self.assertIn("names.push('Fable 5 (7d)')", js, "and names it")

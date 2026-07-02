@@ -496,7 +496,8 @@ class TimelinePanel {
     // Each window = a label + a column of TWO stacked mini-bars: the USAGE % (colored) over a
     // TIME-THROUGH-WINDOW bar (neutral slate — how far between the window's start = resets_at−winSec and
     // its reset). Comparing the two fill widths is the BURN-RATE cue: usage ahead of time = spending
-    // faster than the window refills. Only the two account-wide windows (5h + weekly); no model-specific.
+    // faster than the window refills. The account-wide windows: 5h session, weekly, and the included
+    // Fable 5 weekly allowance (the user 2026-07-02; CLI window type seven_day_overage_included).
     const mkUsageBar = (key, label, winSec) => {
       const g = this._usageWrap.createDiv();
       g.setAttribute('style', 'display:inline-flex;align-items:center;gap:6px;');
@@ -518,6 +519,7 @@ class TimelinePanel {
     };
     mkUsageBar('fiveHour', 'session', 5 * 3600);
     mkUsageBar('sevenDay', 'week', 7 * 86400);
+    mkUsageBar('fable', 'Fable 5', 7 * 86400);
 
     // (The per-window token grid that used to sit here was removed at the user's request 2026-06-18 — only
     // the /usage rate-limit bars above remain. The kernel still ships data.tokens; nothing reads it now.)
@@ -943,7 +945,7 @@ class TimelinePanel {
       return;
     }
     if (!this._usageWrap) return;
-    if (!usage || (!usage.fiveHour && !usage.sevenDay)) { this._usageWrap.style.display = 'none'; return; }
+    if (!usage || (!usage.fiveHour && !usage.sevenDay && !usage.fable)) { this._usageWrap.style.display = 'none'; return; }
     this._usageWrap.style.display = 'flex';
     const nowS = (typeof Date !== 'undefined' && Date.now) ? Math.floor(Date.now() / 1000) : 0;
     const apply = (key, seg, name) => {
@@ -964,6 +966,7 @@ class TimelinePanel {
     };
     apply('fiveHour', usage.fiveHour, 'Session (5h)');
     apply('sevenDay', usage.sevenDay, 'Weekly');
+    apply('fable', usage.fable, 'Fable 5 (7d)');
   }
   // Compact "2d 3h 14m" countdown to a reset epoch, for the usage-bar hover title.
   _fmtReset(epoch) {
