@@ -86,7 +86,13 @@ def _session_working(turns):
     # idle` read it as not-working mid-work, and the auto-nudge fired a spurious "status?" on it (the user
     # 2026-06-30: judge_audit stalled 21:29:19→21:30:03, was re-engaged, and got nudged 31s into real work). An
     # idle in the MIDDLE means the turn resumed; only an idle at the END means it's still stopped.
-    if lt.get("ended") or (atoms and atoms[-1].get("type") == "idle"):
+    # Trailing COMMAND atoms are NEUTRAL (the user 2026-07-02): a /model confirmation (a live command atom
+    # merged after the tail idle span) is a completed exchange, not resumed work — without the skip it hid
+    # the idle tail and an idle-terminated turn read as working again (the phantom chip, third route).
+    i = len(atoms) - 1
+    while i >= 0 and atoms[i].get("command"):
+        i -= 1
+    if lt.get("ended") or (i >= 0 and atoms[i].get("type") == "idle"):
         return False
     return not _suspended_after(lt.get("end", lt.get("t")))
 
@@ -4247,6 +4253,11 @@ def _merge_live_atoms(session, sid, shown_texts=()):
                   "ended": not live_work, "atoms": []}]
     turns[-1] = dict(turns[-1])
     turns[-1]["atoms"] = sorted(list(turns[-1]["atoms"]) + fresh, key=lambda a: (a.get("t", 0), a.get("_seq", 0)))
+    # Extend the turn's window over the appended tail (the user 2026-07-02): segments() spans [turn.t,
+    # turn.end], so a live atom past the disk turn's end (a /model invocation minutes after the last work)
+    # otherwise falls OUTSIDE every segment — its timeline dot then appeared only retroactively, once the
+    # disk write moved the real end past it.
+    turns[-1]["end"] = max(turns[-1].get("end") or 0, max(a.get("t", 0) for a in fresh))
     if live_work:
         turns[-1]["ended"] = False
     return {**session, "turns": turns}
@@ -6629,6 +6640,17 @@ def build_timeline(now, tmux=None, with_bars=True, live_only=False):
                 session = _parse(s["path"], sid, now)
             except Exception:
                 session = {"turns": []}
+            if live:
+                # Merge the LIVE TAIL like the chat does (the user 2026-07-02): a /model change streams the
+                # CLI's confirmation as a live command atom, but the CLI persists no transcript record until
+                # a later turn writes the file — so the timeline's dot appeared only RETROACTIVELY while the
+                # chat (which merges) showed the event at once. Merging here gives every surface the same
+                # atoms: dots land in real time and dedup by uuid when the disk record eventually arrives.
+                # Safe for the working signal — a command atom never forces the turn open (live_work).
+                try:
+                    session = _merge_live_atoms(session, sid)
+                except Exception:
+                    pass
             caps = _captions(sid)
             st_turns = session["turns"]
             open_now = _session_working(st_turns)         # WORKING from the event model — the one shared signal

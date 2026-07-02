@@ -1474,6 +1474,19 @@ class SdkBackend:
             s.chosen_model = value
             s.model = value.capitalize()   # immediate label feedback ("Opus"); next assistant turn republishes "Opus 4.8"
             s.set_model_live(None if value in ("", "default") else value)
+            # Synthesize the INVOCATION atom the CLI never streams (it streams only the stdout
+            # confirmation): the chat gets the same "/model sonnet" command chip the tmux path reads from
+            # its transcript, and the timeline's dot lands in REAL TIME instead of after the next disk
+            # write (the user 2026-07-02). _echo_text lets the disk's own command record retire it by
+            # text match if one ever lands; the human-floor prune covers a session that never writes one.
+            t = int(time.time())
+            disp = "/model " + value
+            uid = "cmd:%d:model" % t
+            self._live.setdefault(sid, {})[uid] = {
+                "type": "user", "uuid": uid, "session_id": sid, "fsid": s.resume_sid, "parentUuid": None,
+                "t": t, "author": "human", "command": "/model", "_echo_text": disp,
+                "message": {"role": "user", "content": [{"type": "text", "text": disp}]}}
+            self._wake_push()
         return True
 
     def set_mode(self, sid: str, mode: str) -> bool:
