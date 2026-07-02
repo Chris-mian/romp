@@ -24,6 +24,25 @@ are implemented (branch `nudge`, 2026-07-01). Author: bugs/nudge session, at the
   interrupted the human before the cheap agent-side ask, and the judge can't see "fork-nudged and
   unresolved" — that's kernel state. A regular-flavor failure gets the chip only, staying in Working.
 
+**Follow-up fixes (2026-07-02, from the first live run — track g9):** the "§4a needs nothing" verdict above
+was TOO NARROW. It held for the tested shape (an open item under a merely-working umbrella), but track's
+real shape — the closer had flat-DONE'd **and settled** the umbrella (`nodeComplete` + `settledDone`) while
+the agent's list kept items open under it — hit three OTHER surfaces that predate the authoritative tier
+and treated done/settled as final:
+- **The nudge-phase moot-guard** (`_subtree_done or settledDone` → apply nothing, planner never invoked)
+  discarded every nudge response on that goal shape — "Blocked on you: the push" was never applied, so the
+  goal could never reach blocked. Now: NOT moot while the target's subtree holds an agentTask-open item.
+- **`open_menu`'s seal** (`nodeComplete`/`settledDone` on self-or-ancestor) kept the open items OUT of the
+  planner's menu entirely. Now: an agent_open node's done/settled markers don't seal (the markers are the
+  stale part), but a user `cleared`/view-clear still seals — the user's cross-off outranks the agent's list.
+- **The kernel's `_open_leaves`** pruned its walk at the flat-done top, so the fork nudge quoted only the
+  goal title and never named the items. Now `_agent_open_set`-aware.
+Plus two behavior refinements from the user: the fork body asks **per-item progress** ("For each one:
+where does it stand…"), and the planner's nudge note now NAMES the menu items that mirror the agent's own
+open to-dos (`agent_open_nums`) and requires blocking ≥1 of them on a blocked-flavored reply — the design's
+§3.3 rule, made explicit after the generic note proved insufficient in the wild. The card chip label is
+**"stalled"** (was "nudge failed"), and it yields to the "⏸ stalled" badge on a floored card.
+
 ## 1. Problem & root cause
 
 romp's **authoritative-tier plan-sync** (see `design/` history + memory `authoritative-plan-sync-built`)

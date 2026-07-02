@@ -982,6 +982,26 @@ def open_menu(store, cap=20):
     vc = _view_cleared()                               # ids the user crossed off the feed (cleared.jsonl) — SEALED too:
     #                                                    a goal you cleared must never get new sub/amend work, even if a
     #                                                    follow-up earlier un-set its node `cleared` flag (the user 2026-06-22).
+    # AUTHORITATIVE-open pierces the done/settled seal (the user 2026-07-02): a node that is — or holds —
+    # an item the agent's OWN to-do list still marks open is live work, no matter what a flat-DONE'd or
+    # settled ancestor says (mirrors rollup_status' open_task authority). Without this a live to-do under a
+    # done umbrella was sealed OUT of the planner's menu entirely, so a fork-nudge reply naming its blocker
+    # had nothing to block (track g9). A user view-clear / cleared flag still seals — the user's cross-off
+    # outranks the agent's list, exactly as in the rollup precedence.
+    children = {}
+    for nid, nd in nodes.items():
+        children.setdefault(nd.get("parentId"), []).append(nid)
+    agent_open = set()
+    def _mark_open(nid):
+        has = (nodes[nid].get("agentTask") or {}).get("status") == "open"
+        for c in children.get(nid, []):
+            if _mark_open(c):
+                has = True
+        if has:
+            agent_open.add(nid)
+        return has
+    for _t in children.get(None, []):
+        _mark_open(_t)
 
     def _sealed(nid):                                  # self or any ancestor complete/cleared/view-cleared/settled-done → sealed
         seen = set()
@@ -990,10 +1010,12 @@ def open_menu(store, cap=20):
             nd = nodes.get(nid)
             if not nd:
                 return False
-            if nd.get("nodeComplete") or nd.get("cleared") or nd.get("settledDone") or nid in vc:
+            if nd.get("cleared") or nid in vc:         # the user's cross-off always seals
                 return True
-            nid = nd.get("parentId")
-        return False
+            if nid not in agent_open and (nd.get("nodeComplete") or nd.get("settledDone")):
+                return True                            # an agent_open node's done/settled markers are the
+            nid = nd.get("parentId")                   # stale part — skip them but KEEP climbing (a cleared/
+        return False                                   # view-cleared ancestor above still seals)
 
     opens = [nd for nid, nd in nodes.items() if not _sealed(nid) and not nd.get("provisional")]
     opens.sort(key=lambda nd: nd.get("t", 0))           # provisional = a kernel follow-up STUB (UI-only): never a
@@ -1417,7 +1439,7 @@ def _sync_declared_plan(store, session, seg_id, seg_t):
 
 
 def plan_llm(segment_text, menu_text, model=None, effort=None, human=False, nudge=False,
-             goal_history="", goal_num=None):
+             goal_history="", goal_num=None, agent_open_nums=None):
     """One JSON goal-plan from the TRIAGE-tier model (Sonnet) over a segment + the open-goals menu.
     '' on failure. model/effort override the tier + enable thinking (the classification A/B). When `human`
     (a real user message) a <note> forbids skip. When `nudge` (a romp status-check on a 'working' goal, not
@@ -1449,6 +1471,18 @@ def plan_llm(segment_text, menu_text, model=None, effort=None, human=False, nudg
                  "status — a finished-and-reported goal is DONE. EXCEPTION: only if the agent has genuinely "
                  "RESUMED real, still-unfinished work on the goal, keep it working — never force a false "
                  "done/block.</note>")
+        if agent_open_nums:
+            nums = ", ".join("#%d" % n for n in agent_open_nums)
+            # the FORK-nudge blocked branch (design/stalled-open-todos-nudge.md, the user 2026-07-02): these
+            # items mirror the agent's OWN to-do list, which has no "blocked" state — the planner is the only
+            # place a blocker can be recorded, so on a blocked-flavored reply it must land on ≥1 of them.
+            user += ("\n<note>Of the open goals, %s mirror items still OPEN on the agent's OWN to-do list — "
+                     "the agent cannot mark them blocked itself; this reply is the only place a blocker gets "
+                     "recorded. If the reply names anything it needs from the user, or shows the agent is NOT "
+                     "actively continuing these items, you MUST block at least one of %s (its why = exactly "
+                     "what is needed from the user); block the item the stated blocker belongs to, or all "
+                     "that are stuck on it. Only if the reply shows the agent genuinely continuing that work "
+                     "do you leave them open — never fabricate a block.</note>" % (nums, nums))
     elif human:
         user += ("\n<note>This segment contains a real user message, so it MUST be placed "
                  "(mint/sub/done/block) — do NOT return a skip.</note>")
@@ -2072,7 +2106,21 @@ def _plan_session(fsid, path, now):
             _nkids = {}
             for _nid, _nd in store["nodes"].items():
                 _nkids.setdefault(_nd.get("parentId"), []).append(_nid)
-            if _subtree_done(store["nodes"], _nkids, target) or store["nodes"][target].get("settledDone"):
+            # ...UNLESS the target's subtree still holds an item the agent's OWN to-do list marks open
+            # (authoritative-open, the user 2026-07-02): a flat-DONE'd + settled umbrella with live to-dos
+            # under it reads WORKING on the board (rollup's open_task authority), and the FORK nudge exists
+            # precisely to resolve those items — the done/settled markers are the stale part, not the nudge.
+            # Without this the moot-guard discarded every nudge response on that goal shape before the
+            # planner ran (track g9: "Blocked on you: the push" was never applied), so the goal could never
+            # reach blocked.
+            _stack, _open_items = [target], []
+            while _stack:
+                _x = _stack.pop()
+                if (store["nodes"].get(_x, {}).get("agentTask") or {}).get("status") == "open":
+                    _open_items.append(_x)
+                _stack.extend(_nkids.get(_x, []))
+            if not _open_items and (_subtree_done(store["nodes"], _nkids, target)
+                                    or store["nodes"][target].get("settledDone")):
                 store["placements"][seg_id] = None
                 save_goals(fsid, store)
                 continue
@@ -2083,8 +2131,14 @@ def _plan_session(fsid, path, now):
             if not sub or sub[0]["id"] != target:
                 continue                              # goal not open (e.g. view-cleared) → don't plan
             hist = _goal_work_text(store, seg_by_id, target, GOAL_HISTORY_CHARS)
+            # name the menu items that mirror the agent's OWN still-open to-dos: the note (plan_llm) makes
+            # the planner block at least one of them when the reply names a blocker instead of continuing —
+            # the agent cannot self-block a to-do, so the planner is where "blocked" gets said (design/
+            # stalled-open-todos-nudge.md, the user 2026-07-02).
+            _agent_nums = [i + 1 for i, _snd in enumerate(sub)
+                           if (store["nodes"].get(_snd["id"], {}).get("agentTask") or {}).get("status") == "open"]
             ops = _parse_plan(plan_llm(text, _menu_text(store, sub), nudge=True,
-                                       goal_history=hist, goal_num=1), len(sub)) or []
+                                       goal_history=hist, goal_num=1, agent_open_nums=_agent_nums), len(sub)) or []
             # the must-resolve note pushes DONE/BLOCK on the goal; a MINT is re-rooted as a sub under it, and a
             # genuine-progress SUB files under it too. Skips drop. NO empty-reply fallback (the user 2026-06-22):
             # an unresolved nudge applies NOTHING — apply_plan with empty ops marks the phase processed
