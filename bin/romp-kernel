@@ -6193,12 +6193,16 @@ def _seg_anchors(atoms):
 
 def _seg_last_text(atoms):
     """(uuid, substantive) — the LAST assistant prose atom in a segment, preferring a SUBSTANTIVE one
-    (≥200 chars of text). The summary deep-link FALLBACK when the distiller didn't cite a source: the most
+    (≥80 chars of text). The summary deep-link FALLBACK when the distiller didn't cite a source: the most
     current substantive message (the wrap-up that closed the work) is where the outcome lives, per the
     closer's own doctrine that the completion verdict is the ground truth to anchor on. Replaces the old
     biggest-text-block pick, which let a long early analysis hold the anchor forever (the user 2026-07-01).
-    API-error atoms are skipped (like _seg_anchors: a failed turn carries text but is never a jump target).
-    (None, False) when the segment has no assistant prose."""
+    The substantive floor is 80, NOT 200 (the user 2026-07-02): an agent working in terse status notes can
+    go a whole session with only its OPENING RESTATEMENT past 200 chars — a live card's summary link landed
+    there, on the one message this anchor exists to avoid — while the real wrap-ups ran 90-190. Recency is
+    the signal; the floor only filters connective stubs ("Now the function rewrite:"), so it sits just
+    above them. API-error atoms are skipped (like _seg_anchors: a failed turn carries text but is never a
+    jump target). (None, False) when the segment has no assistant prose."""
     last_any, last_sub = None, None
     for a in atoms:
         if a.get("type") != "assistant" or a.get("isApiError"):
@@ -6210,7 +6214,7 @@ def _seg_last_text(atoms):
                 if isinstance(b, dict) and b.get("type") == "text")
         if n and a.get("uuid"):
             last_any = a["uuid"]
-            if n >= 200:
+            if n >= 80:
                 last_sub = a["uuid"]
     return (last_sub or last_any), last_sub is not None
 
