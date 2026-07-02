@@ -65,7 +65,10 @@ test("card sub-goals click EXACTLY like the modal — same wireNodeZones, separa
 test("modal UNRESOLVED node: checkbox + text light together, checkbox STAYS a circle (the user 2026-06-17)", () => {
   // not yet checked off / blocked → the mark points at the SAME message as the text and they light together,
   // but each keeps its own shape: the checkbox is its CIRCULAR halo, never a square (no .lz-merge fill).
-  assert.match(FEED, /mark\.classList\.add\("lz-nav"\); mark\.title = "jump to the message that asked for this"; mark\.onclick = goMsg/);
+  // auth rider (plan-sync authoritative tier): an agent's OWN to-do item has no minting user message,
+  // so its mark jumps to the latest work instead — a plain judge node keeps the goMsg wiring.
+  assert.match(FEED, /mark\.title = node\.auth \? "jump to the latest work on this to-do item" : "jump to the message that asked for this"/);
+  assert.match(FEED, /mark\.onclick = node\.auth \? goWork : goMsg/);
   assert.match(FEED, /linkHover\(\[mark, txt\]\)/);
   assert.match(CSS, /\.ftree-mark\.lz-hl \{[^}]*box-shadow/);   // checkbox highlight = circular halo
   assert.doesNotMatch(CSS, /lz-merge/);                          // no square/bridged merge fill
