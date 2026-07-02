@@ -5393,7 +5393,11 @@ def build_feed(now, tmux=None):
                         # open/done is agent-asserted (solidity = authority in the disc render). None = a plain
                         # judge-inferred node. (the user 2026-07-01)
                         "auth": (nd.get("agentTask") or {}).get("status"),
-                        "t": nd["t"], "last": nd["t"], "trgb": list(cm.age_rgb(now - nd["t"], _colormap())),
+                        # `last` drives each row's "(Xm ago)" age + recency tint: the node's LAST ACTIVITY
+                        # (newest mt in its subtree, _fsubmax), so a replied-to / re-touched node freshens in
+                        # the modal tree just as its card does — not pinned to the mint `t` (the user
+                        # 2026-07-01). `t` stays the mint time (the node's nav-time fallback).
+                        "t": nd["t"], "last": _fsubmax(nid), "trgb": list(cm.age_rgb(now - _fsubmax(nid), _colormap())),
                         # mt = last-modified (the segment the planner applied done / block) → a blocked or
                         # done node deep-links to WHERE IT RESOLVED, not where it was minted. Falls back to
                         # t for never-modified nodes (open work, derived done). (the user 2026-06-16.)
@@ -5491,10 +5495,12 @@ def build_feed(now, tmux=None):
             await_why = sess_awaiting_why if col == "awaiting" else None   # the ⏳ awaiting badge's "why" (None for the postal-only case → the waitingOn chip names the peer)
             # The card's TIME reflects its CURRENT STATE, not when the goal was minted: a COMPLETED card
             # shows when it was completed, a BLOCKED card when it was blocked — the mt of the most-recent
-            # such node in its subtree — else (working) when it was minted. Keying the time badge to the mint
-            # `t` made a goal OPENED hours ago but FINISHED moments ago read as "done hours ago" (the user
-            # 2026-06-19). `created` keeps the true mint time for the record.
-            disp_t = nodes[nid]["t"]
+            # such node in its subtree — else (working/awaiting) its LAST ACTIVITY (the newest mt anywhere in
+            # its subtree, _fsubmax). Keying the time badge to the mint `t` made a goal OPENED hours ago but
+            # FINISHED moments ago read as "done hours ago" (the user 2026-06-19); the same pin made a WORKING
+            # goal you JUST replied to still read "15m ago" instead of freshening — a reply advances the goal's
+            # mt, so the card must too (the user 2026-07-01). `created` keeps the true mint time for the record.
+            disp_t = _fsubmax(nid)
             if col == "completed":
                 dts = [nodes[x].get("mt", nodes[x]["t"]) for x in _subtree(nid) if _closure_done(x)]
                 if dts:
