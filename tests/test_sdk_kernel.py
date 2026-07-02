@@ -259,6 +259,32 @@ class LiveTailAndOpen(unittest.TestCase):
         # the merge is a no-op (returns the same object). The SDK case is covered by the tests above.
         self.assertIs(km._merge_live_atoms(session, "sid-tmux"), session)
 
+    def test_merge_reopens_the_turn_for_genuine_live_work(self):
+        # a streaming assistant reply IS an in-flight turn — the merge must keep forcing it open
+        self.be._live = {"sid-sdk": [{"type": "assistant", "uuid": "w1", "t": 50,
+                                      "message": {"role": "assistant", "content": [{"type": "text", "text": "hi"}]}}]}
+        out = km._merge_live_atoms({"turns": [{"id": "t", "atoms": [{"uuid": "old", "t": 10}], "ended": True}]}, "sid-sdk")
+        self.assertFalse(out["turns"][-1]["ended"])
+
+    def test_merge_does_NOT_reopen_the_turn_for_a_command_atom(self):
+        # the user 2026-07-02 (second half of the phantom-working fix): client.set_model() streams the
+        # CLI's confirmation, msg_to_atom classifies it as a COMMAND atom (a completed exchange) — but
+        # live_work still counted it and forced the turn open, and on a fresh session NOTHING ever closes
+        # it (no reply is coming; a turn-less control request writes no transcript to supersede the live
+        # atom). A command atom must keep the turn's real ended state on BOTH shapes:
+        cmd = {"type": "assistant", "uuid": "c1", "t": 50, "command": True,
+               "message": {"role": "assistant", "content": [{"type": "text", "text": "Set model to sonnet"}],
+                           "stop_reason": "end_turn"}}
+        # 1) a fresh session (no turns at all) — the synthesized live turn is born ENDED
+        self.be._live = {"sid-sdk": [cmd]}
+        out = km._merge_live_atoms({"turns": []}, "sid-sdk")
+        self.assertTrue(out["turns"][-1]["ended"], "a lone command confirmation never reads as working")
+        self.assertFalse(km._session_working(out["turns"]), "the chip stays consistent with the timeline")
+        # 2) appended to an existing ENDED turn — stays ended
+        self.be._live = {"sid-sdk": [cmd]}
+        out = km._merge_live_atoms({"turns": [{"id": "t", "atoms": [{"uuid": "old", "t": 10}], "ended": True}]}, "sid-sdk")
+        self.assertTrue(out["turns"][-1]["ended"])
+
     def test_alive_sessions_includes_transcriptless_sdk(self):
         km._sessions = lambda now: []                                   # discover sees nothing (no transcript yet)
         alive = km._alive_sessions(1000, {"sid-sdk": {"state": "waiting"}})

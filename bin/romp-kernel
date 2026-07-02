@@ -4225,7 +4225,12 @@ def _merge_live_atoms(session, sid, shown_texts=()):
     # an echo made the chat show a false "working" + counting timer (a dropped send's echo persists forever)
     # while the timeline/feed (no merge) correctly showed idle — the exact chat↔timeline split the user saw
     # (the user 2026-06-25). So an echo-only merge keeps the turn's real ended state.
-    live_work = any(not a.get("_echo_text") for a in fresh)
+    # COMMAND atoms are exempt too (the user 2026-07-02, the other half of the phantom-working fix): the
+    # CLI streams its /model, /compact feedback as command records — msg_to_atom classifies them like the
+    # file adapter (a COMPLETED exchange, stop_reason end_turn) — but counting one as live work still forced
+    # the turn open, and on a fresh session NOTHING ever closes it (no reply is coming, and a turn-less
+    # control request writes no transcript to supersede the live atom): the chip read "working" forever.
+    live_work = any(not a.get("_echo_text") and not a.get("command") for a in fresh)
     turns = [dict(t) for t in session["turns"]]
     if not turns:
         turns = [{"id": "live", "trigger": None, "t": fresh[0]["t"], "end": fresh[-1]["t"],
