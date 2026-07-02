@@ -3467,6 +3467,108 @@ class KnownTargetContext(unittest.TestCase):
         self.assertEqual(len(subs), 1, "the new work still filed as a step under it")
 
 
+class DistillSections(unittest.TestCase):
+    """The distiller's two labeled sections (the user 2026-07-02): the takeaway alone assumes a reader
+    who remembers the thread, so the reply now leads with BACKGROUND (re-orientation: what was asked and
+    the context the takeaway leans on) before TAKEAWAY. _split_sections parses them apart; the card shows
+    background collapsed by default. A label-less reply degrades to all-takeaway (old behavior)."""
+
+    def test_split_sections_parses_both(self):
+        bg, take = jd._split_sections("BACKGROUND: You asked for a faster export.\nTAKEAWAY: It ships gzip now.")
+        self.assertEqual(bg, "You asked for a faster export.")
+        self.assertEqual(take, "It ships gzip now.")
+
+    def test_split_sections_multiline_background(self):
+        bg, take = jd._split_sections("BACKGROUND: Line one.\nLine two.\nTAKEAWAY: Done.")
+        self.assertEqual(bg, "Line one.\nLine two.")
+        self.assertEqual(take, "Done.")
+
+    def test_label_less_reply_is_all_takeaway(self):
+        bg, take = jd._split_sections("The fix shipped and tests pass.")
+        self.assertIsNone(bg, "no labels → no background; the card shows what it always showed")
+        self.assertEqual(take, "The fix shipped and tests pass.")
+
+    def test_lone_takeaway_label_is_stripped(self):
+        bg, take = jd._split_sections("TAKEAWAY: Just the outcome.")
+        self.assertIsNone(bg)
+        self.assertEqual(take, "Just the outcome.")
+
+    def test_prompts_ask_for_both_sections_in_jld_form(self):
+        for sys_prompt in (jd.DISTILL_SYS, jd.BLOCK_BRIEF_SYS):
+            self.assertIn("BACKGROUND:", sys_prompt)
+            self.assertIn("TAKEAWAY:", sys_prompt)
+            self.assertIn("returning days later", sys_prompt, "background is written for the re-engaging reader")
+            self.assertIn("no em dashes", sys_prompt, "the JLD style rules govern both sections")
+        self.assertIn("Never the outcome; that belongs to the takeaway.", jd.DISTILL_SYS,
+                      "the sections don't repeat each other (say it once)")
+
+    def test_distill_session_stores_background_on_done_and_blocked(self):
+        # end-to-end through the same harness the Distiller class uses
+        d = Distiller("test_distills_completed_top_from_its_discontinuous_trail")
+        records = [uline(T0, "make the export faster", "u1", ps="typed"),
+                   aline(T0 + 10, "Shipped gzip export.", "a1", "u1", stop="end_turn")]
+        path = d._setup(records)
+        try:
+            now = T0 + 5000
+            s1 = em.segments(jd.parsed_session(SID, [path], now)["turns"][0])[0]["id"]
+            gid = SID + ":g1"
+            jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "status": {gid: "completed"}, "placements": {},
+                                "nodes": {gid: {"id": gid, "text": "Faster export", "parentId": None,
+                                                "nodeComplete": True, "blocked": False, "cleared": False,
+                                                "trail": [s1], "t": T0, "mt": T0 + 10}}})
+            jd.distill_llm = lambda g, w, dw="": ("BACKGROUND: You asked for a faster export.\n"
+                                                  "TAKEAWAY: It ships gzip now.\nSOURCE: m1")
+            self.assertEqual(jd.run_distill(now=now), 1)
+            nd = jd.load_goals(SID)["nodes"][gid]
+            self.assertEqual(nd["summary"], "It ships gzip now.")
+            self.assertEqual(nd["background"], "You asked for a faster export.")
+            self.assertEqual(nd["summaryAnchor"], "a1", "the SOURCE line still resolves after the section split")
+        finally:
+            d.tearDown()
+
+    def test_brief_stores_background_too(self):
+        d = Distiller("test_distills_completed_top_from_its_discontinuous_trail")
+        records = [uline(T0, "ship it", "u1", ps="typed"),
+                   aline(T0 + 10, "need your call on the approach", "a1", "u1", stop="end_turn")]
+        path = d._setup(records)
+        try:
+            now = T0 + 5000
+            s1 = em.segments(jd.parsed_session(SID, [path], now)["turns"][0])[0]["id"]
+            gid = SID + ":g1"
+            jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "status": {gid: "blocked"}, "placements": {},
+                                "nodes": {gid: {"id": gid, "text": "Ship the feature", "parentId": None,
+                                                "nodeComplete": False, "blocked": True, "cleared": False,
+                                                "blockWhy": "A or B?", "trail": [s1], "t": T0, "mt": T0 + 10}}})
+            jd.brief_llm = lambda g, w, ow="": "BACKGROUND: You asked to ship the feature.\nTAKEAWAY: Decide A or B."
+            self.assertEqual(jd.run_distill(now=now), 1)
+            nd = jd.load_goals(SID)["nodes"][gid]
+            self.assertEqual(nd["blockSummary"], "Decide A or B.")
+            self.assertEqual(nd["background"], "You asked to ship the feature.")
+        finally:
+            d.tearDown()
+
+    def test_label_less_distill_reply_stores_no_background(self):
+        d = Distiller("test_distills_completed_top_from_its_discontinuous_trail")
+        records = [uline(T0, "do it", "u1", ps="typed"),
+                   aline(T0 + 10, "did it", "a1", "u1", stop="end_turn")]
+        path = d._setup(records)
+        try:
+            now = T0 + 5000
+            s1 = em.segments(jd.parsed_session(SID, [path], now)["turns"][0])[0]["id"]
+            gid = SID + ":g1"
+            jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "status": {gid: "completed"}, "placements": {},
+                                "nodes": {gid: {"id": gid, "text": "Do it", "parentId": None,
+                                                "nodeComplete": True, "blocked": False, "cleared": False,
+                                                "trail": [s1], "t": T0, "mt": T0 + 10}}})
+            jd.distill_llm = lambda g, w, dw="": "Delivered."       # an older-style reply
+            self.assertEqual(jd.run_distill(now=now), 1)
+            nd = jd.load_goals(SID)["nodes"][gid]
+            self.assertEqual(nd["summary"], "Delivered.")
+            self.assertIsNone(nd["background"])
+        finally:
+            d.tearDown()
+
+
 class SourceCitation(unittest.TestCase):
     """The distiller cites its source (the user 2026-07-01): assistant messages fed to a distill/brief
     call carry [mN] labels (_CiteMarks via _goal_work_text/_unit_text), the reply ends with a SOURCE: mN

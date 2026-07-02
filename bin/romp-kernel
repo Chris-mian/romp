@@ -5248,7 +5248,7 @@ def _provisional_card(s, name, color, fsid, live, now, store=None):
     return {"itemId": "provisional:" + fsid, "sid": fsid, "name": name, "color": color, "text": text,
             "t": t, "created": t, "live": live, "trgb": list(cm.age_rgb(now - t, _colormap())),
             "done": 0, "needsYou": 0, "linked": [], "turnId": None, "turnIds": [], "origin": None,
-            "blockWhy": None, "doneWhy": None, "followupPending": None, "summary": None, "blockSummary": None,
+            "blockWhy": None, "doneWhy": None, "followupPending": None, "summary": None, "blockSummary": None, "background": None,
             "blocked": None, "column": "working", "openQuestions": [], "openPaths": [],
             "provisional": True, "tree": []}
 
@@ -5304,7 +5304,7 @@ def _blocked_placeholder(s, name, color, fsid, live, now, perm_state, since):
     return {"itemId": "blocked:" + fsid, "sid": fsid, "name": name, "color": color, "text": text,
             "t": t, "created": t, "live": live, "trgb": list(cm.age_rgb(now - t, _colormap())),
             "done": 0, "needsYou": 1, "linked": [], "turnId": None, "turnIds": [], "origin": None,
-            "blockWhy": None, "doneWhy": None, "followupPending": None, "summary": None, "blockSummary": None,
+            "blockWhy": None, "doneWhy": None, "followupPending": None, "summary": None, "blockSummary": None, "background": None,
             "blocked": {"state": perm_state, "since": since,
                         "what": ("this session is stopped awaiting your input" if perm_state == "picker"
                                  else "this session is stopped awaiting your approval")},
@@ -5694,6 +5694,7 @@ def build_feed(now, tmux=None):
                 "awaiting": ({"why": await_why} if col == "awaiting" else None),   # awaiting flavor: held in Working with a ⏳ awaiting badge (waiting on dispatched/delegated work) — the user 2026-06-22
                 "summary": nodes[nid].get("summary"),    # the distiller's key takeaway for a completed goal (modal) — the user 2026-06-17
                 "blockSummary": nodes[nid].get("blockSummary"),    # the block-distiller's decision brief for a blocked goal (modal); null until produced — the user 2026-06-18
+                "background": nodes[nid].get("background"),    # the distiller's BACKGROUND section: re-orientation for a reader who forgot the thread — collapsed by default on the card (the user 2026-07-02)
                 "summaryAnchorUuid": _sa_u,    # click the summary line → the biggest text block in the work span (the user 2026-06-22)
                 "blocked": ({"state": "apiError", "since": (tm.get("since") if tm else None),
                              "status": aerr.get("status"), "category": aerr.get("category"),
@@ -5754,7 +5755,7 @@ def build_feed(now, tmux=None):
             "blockWhy": "%s tried to hand off to %s, which is offline — revive it to deliver, or dismiss."
                         % (ph["fromName"], ph["toName"]),
             "doneWhy": None, "followupPending": None, "waitingOn": None,
-            "summary": None, "blockSummary": None, "summaryAnchorUuid": None,
+            "summary": None, "blockSummary": None, "background": None, "summaryAnchorUuid": None,
             "blocked": {"state": "parkedHandoff", "fromName": ph["fromName"], "toSid": ph["toId"],
                         "toName": ph["toName"], "msgId": ph["msgId"], "body": ph["body"],
                         "what": "a handoff from %s is parked — revive %s to deliver it"

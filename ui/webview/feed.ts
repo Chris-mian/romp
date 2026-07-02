@@ -88,6 +88,7 @@ interface AskItem {
   doneWhy?: string;                                // planner's one-sentence "why done" → now the HOVER tooltip on the completed card's auto-line (the user 2026-06-18)
   summary?: string | null;                         // distiller's key takeaway for a COMPLETED goal → the done card's one auto-written line (kernel asks.append); null until produced
   blockSummary?: string | null;                    // block-distiller's decision brief for a BLOCKED goal → the blocked card's one auto-written line (kernel 466393c); null until produced
+  background?: string | null;                      // distiller's BACKGROUND section: re-orientation for a reader who forgot the thread → the card's collapsed-by-default section above the takeaway (the user 2026-07-02)
   summaryAnchorUuid?: string | null;               // click the summary line → the biggest contiguous assistant-text block in the work span (kernel _seg_best_text; the user 2026-06-22)
   origin?: { peer: string; peerSid: string; color: { bg: string; fg: string } | null } | null;  // courier handoff: planted by a peer's message → "↪ from <peer>"
   waitingOn?: { peerSid: string; name: string; color: { bg: string; fg: string } | null; inCycle: boolean } | null;  // unanswered msg out to a live peer → "Awaiting <peer>" chip (peer name in native colour, no emoji; kernel _wait_for_graph; the user 2026-06-22)
@@ -556,7 +557,20 @@ function makeAskCard(it: AskItem): HTMLElement {
   // the planner's why-created/why-blocked/why-done rationales). One line per card: a completed card shows the
   // takeaway (summary), a blocked card the decision brief (blockSummary). Shown ONLY once it exists — no
   // generating-state placeholder (which used to stick) and no why tooltip. Filled in updateAskCard.
+  // TWO collapsible sections since 2026-07-02 (the user: "I come back after a long time and forget the
+  // context"): BACKGROUND (re-orientation, collapsed by default) above the takeaway (expanded by default),
+  // each toggled by a small +/− button. Collapse state lives in module sets keyed by itemId so the keyed
+  // incremental re-render never snaps a section shut.
+  const bgSec = el("div", "fask-sec fask-bg"); bgSec.style.display = "none";
+  const bgBtn = el("button", "fask-sec-btn");
+  const bgLabel = el("span", "fask-sec-label"); bgLabel.textContent = "background";
+  const bgBody = el("div", "fask-bg-body");
+  bgSec.append(bgBtn, bgLabel, bgBody);
+  const takeSec = el("div", "fask-sec fask-take"); takeSec.style.display = "none";
+  const takeBtn = el("button", "fask-sec-btn");
+  const takeLabel = el("span", "fask-sec-label"); takeLabel.textContent = "summary";
   const distill = el("div", "fask-distill");
+  takeSec.append(takeBtn, takeLabel, distill);
   // ⏳ AWAITING cue (the user 2026-06-29): a small romp swirl spinning in the SAME body spot the distiller line
   // will eventually fill — a completed/blocked card shows its takeaway there; a WORKING card that's awaiting
   // dispatched/delegated work shows the spinning swirl instead, a glanceable "in flight, not stalled" sign.
@@ -565,7 +579,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   const awaitGlyph = el("span", "fask-awaiting-swirl"); awaitGlyph.setAttribute("aria-hidden", "true");
   const awaitWhy = el("span", "fask-awaiting-why");
   awaitSpin.append(awaitGlyph, awaitWhy);
-  main.append(row1, row2, row3, distill, awaitSpin, checklist, delegations);   // no expand button — body click opens the modal
+  main.append(row1, row2, row3, bgSec, takeSec, awaitSpin, checklist, delegations);   // no expand button — body click opens the modal
   card.append(main);
   // Follow-up lives in the modal now (the user 2026-06-10), not on the card.
 
@@ -663,9 +677,56 @@ function makeAskCard(it: AskItem): HTMLElement {
   a._delegations = delegations;
   a._checklist = checklist;
   a._distill = distill;
+  a._bgSec = bgSec; a._bgBtn = bgBtn; a._bgBody = bgBody;
+  a._takeSec = takeSec; a._takeBtn = takeBtn; a._takeLabel = takeLabel;
   a._awaitSpin = awaitSpin; a._awaitWhy = awaitWhy;
   a._origin = origin;
   return card;
+}
+
+// Collapse state for the card's two distiller sections (the user 2026-07-02), keyed by itemId in module
+// sets so the keyed incremental re-render never snaps a section shut: BACKGROUND is closed unless the
+// user opened it; the takeaway is open unless the user closed it.
+const bgOpen = new Set<string>();
+const takeClosed = new Set<string>();
+
+function sectionToggle(btn: HTMLElement, open: boolean): void {
+  btn.textContent = open ? "−" : "+";
+  btn.title = open ? "collapse" : "expand";
+}
+
+// Fill + wire the BACKGROUND and takeaway sections. BACKGROUND shows only alongside a produced
+// takeaway/brief (orientation with no outcome would dangle) and starts collapsed: a single "+ background"
+// line that expands to the distiller's re-orientation paragraph. The takeaway wraps the existing distill
+// line (applyDistillLine already set its text): expanded it reads as before with a leading −; collapsed it
+// shrinks to "+ summary". stopPropagation on both buttons — the card-body click opens the modal.
+function applyDistillSections(a: any, it: AskItem, distillShown: boolean): void {
+  const id = it.itemId;
+  const bg = distillShown && it.background ? it.background : null;
+  a._bgSec.style.display = bg ? "" : "none";
+  if (bg) {
+    const open = bgOpen.has(id);
+    a._bgBody.textContent = bg;
+    a._bgBody.style.display = open ? "" : "none";
+    sectionToggle(a._bgBtn, open);
+    a._bgBtn.onclick = (ev: Event) => {
+      ev.stopPropagation();
+      if (bgOpen.has(id)) bgOpen.delete(id); else bgOpen.add(id);
+      applyDistillSections(a, it, distillShown);
+    };
+  }
+  a._takeSec.style.display = distillShown ? "" : "none";
+  if (distillShown) {
+    const open = !takeClosed.has(id);
+    (a._distill as HTMLElement).style.display = open ? "" : "none";
+    (a._takeLabel as HTMLElement).style.display = open ? "none" : "";   // open → the text is its own label
+    sectionToggle(a._takeBtn, open);
+    a._takeBtn.onclick = (ev: Event) => {
+      ev.stopPropagation();
+      if (takeClosed.has(id)) takeClosed.delete(id); else takeClosed.add(id);
+      applyDistillSections(a, it, distillShown);
+    };
+  }
 }
 
 function updateAskCard(card: HTMLElement, it: AskItem) {
@@ -852,6 +913,9 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
     dl.onclick = null;
     dl.removeAttribute("title");
   }
+  // TWO collapsible distiller sections (the user 2026-07-02): BACKGROUND (re-orientation for a reader who
+  // forgot the thread, collapsed by default) above the takeaway (expanded by default), each with a +/−.
+  applyDistillSections(a, it, distillShown);
   // API error → a red "API error" badge + a Retry button that pastes "retry" into the session to resume
   // the stalled turn (the user 2026-06-16). The card STAYS in Working (the user 2026-06-29) — an API error is
   // a transient stall, not a block — so this badge + Retry are the only API-error cue; no column move.

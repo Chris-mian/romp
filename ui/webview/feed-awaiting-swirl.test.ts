@@ -15,7 +15,8 @@ const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "
 test("the swirl element is built in the body, right after the distiller line, and registered", () => {
   assert.match(FEED, /const awaitSpin = el\("div", "fask-awaiting"\); awaitSpin\.style\.display = "none";/);
   assert.match(FEED, /const awaitGlyph = el\("span", "fask-awaiting-swirl"\)/);
-  assert.match(FEED, /main\.append\(row1, row2, row3, distill, awaitSpin, checklist, delegations\)/);
+  // distill now rides inside the takeaway section (takeSec), with the background section above it (2026-07-02)
+  assert.match(FEED, /main\.append\(row1, row2, row3, bgSec, takeSec, awaitSpin, checklist, delegations\)/);
   assert.match(FEED, /a\._awaitSpin = awaitSpin; a\._awaitWhy = awaitWhy;/);
 });
 
