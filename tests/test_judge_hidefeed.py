@@ -105,7 +105,7 @@ class FastForwardOnUnmute(unittest.TestCase):
 
     def _run(self, fsid):
         saved_pu, saved_ps = jd.plan_units, jd.parsed_session
-        jd.plan_units = lambda session: list(self.UNITS)
+        jd.plan_units = lambda session, store=None: list(self.UNITS)
         jd.parsed_session = lambda fsid, paths, now: {"turns": []}
         try:
             return jd.fast_forward_placements(fsid, path="/x", now=1700000000)

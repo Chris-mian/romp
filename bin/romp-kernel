@@ -4618,8 +4618,9 @@ def build_session(sid, now, tmux=None):
     events, by_tool = [], {}                  # by_tool: tool_use_id → its tool event (fill output later)
     uuid2seg, seg_anchors = {}, {}            # atom uuid → seg id; seg id → (promptId, workId) for the dot/bar split
     seg_trig, seg_work = {}, {}               # goal-node DEEP-LINK anchors: prompt = the segment's trigger
+    _bs_store = jd.load_goals(sid)            # seam-aware seg ids (mirror the judge's split)
     for turn in session["turns"]:             #   (user msg), work = its reply (preferred) — matches build_feed
-        for seg in em.segments(turn):
+        for seg in _segs_seam(turn, _bs_store):
             w, r = _seg_anchors(seg["atoms"])
             seg_anchors[seg["id"]] = (seg.get("trigger"), w)   # timeline DOT/BAR hover ids (workId = first assistant)
             seg_trig[_seg_key(seg["id"])] = seg.get("trigger")   # keyed timestamp-invariant so a drifted goal-trail seg still resolves
@@ -5406,12 +5407,13 @@ def _provisional_card(s, name, color, fsid, live, now, store=None):
     if not turns:
         return None
     lt = turns[-1]
-    segs = em.segments(lt)
+    segs = _segs_seam(lt, store)
     if not segs:
         return None
     held = segs[-1]                                  # the latest segment — the ask the planner withholds / just got
-    if not jd._seg_human(held):                      # only a real user prompt warrants a placeholder (peer/sdk don't)
-        return None
+    if not jd._seg_human(held) and not held.get("seam"):   # a real user prompt warrants a placeholder (peer/sdk don't)…
+        return None                                  # …and so does a settle-SEAM tail: it exists only because real
+                                                     # post-close work exists (design/segment-regrowth.md)
     if jd._seg_command(held):                        # a SLASH-COMMAND turn is never classified into a goal (the planner
         return None                                  # skips it), so it would NEVER place → the placeholder would hang
                                                      # forever (the JLD /usage case). No placeholder for a command. (2026-06-29)
@@ -5429,14 +5431,19 @@ def _provisional_card(s, name, color, fsid, live, now, store=None):
     if _seg_placed(placements, held["id"]):            # timestamp-invariant: the judge's recorded key can
         return None                                    # carry a drifted t for the SAME segment (SDK echo)
     prompt = _split_reminders(_seg_prompt(held))[0].strip()
-    if not prompt:
+    if not prompt and not held.get("seam"):
         return None
     # "Analyzing: <gist>" — the captioner's MESSAGE caption for this held segment (the same gist the timeline
     # dot reads), produced the moment the message lands. Until it lands, the raw prompt so the card is never
     # blank. (the user 2026-06-19: reuses the captioner's message caption rather than a SEPARATE 'gist' judge
     # call — the captioner already glosses every message, so there's no redundant call and no hidden judge.)
+    # A settle-SEAM tail has no prompt: caption when ready, else name the completed goal it followed.
     g = _seg_caption(_captions(fsid), held["id"])      # drift-safe (same key family as _seg_placed)
-    text = "Analyzing: " + g if g else prompt[:140].strip()
+    if held.get("seam") and not prompt:
+        text = ("Analyzing: " + g if g
+                else "Working past “%s”" % (((held.get("seamOf") or {}).get("text") or "a completed goal")[:100]))
+    else:
+        text = "Analyzing: " + g if g else prompt[:140].strip()
     t = held.get("t", lt["t"])
     return {"itemId": "provisional:" + fsid, "sid": fsid, "name": name, "color": color, "text": text,
             "t": t, "created": t, "live": live, "trgb": list(cm.age_rgb(now - t, _colormap())),
@@ -5605,7 +5612,7 @@ def build_feed(now, tmux=None):
         seg_uuid, seg_trig, seg_best, atom_uuids = {}, {}, {}, set()
         try:
             for turn in (ps["turns"] if ps else []):     # cached parse only; anchors fill in after _warm_fleet_bg
-                for seg in em.segments(turn):
+                for seg in _segs_seam(turn, store):
                     w, r = _seg_anchors(seg["atoms"])
                     seg_uuid[_seg_key(seg["id"])] = r or w                # timestamp-invariant key (SDK echo/real seg-id drift)
                     seg_trig[_seg_key(seg["id"])] = seg.get("trigger")
@@ -6078,8 +6085,9 @@ def _msg_summaries():
             if not caps:                                 # no captions yet → nothing to join, skip the parse
                 continue
             session = _parse(s["path"], s["sid"], now)
+            mstore = jd.load_goals(s["sid"])
             for turn in session["turns"]:
-                for seg in em.segments(turn):
+                for seg in _segs_seam(turn, mstore):
                     cap = caps.get(seg["id"], {}).get("caption")
                     if not cap:
                         continue
@@ -6212,6 +6220,13 @@ def _seg_anchors(atoms):
                 for b in blocks):
             reply = a.get("uuid")
     return work, reply
+
+
+def _segs_seam(turn, store):
+    """Seam-aware segmentation — MUST mirror the judge's jd._segs (design/segment-regrowth.md): seg ids
+    the judges place/anchor against a settle-split have to be the same ids the kernel renders/resolves,
+    or trails and deep-links written for a tail would silently stop matching."""
+    return jd.apply_seams(em.segments(turn), store or {})
 
 
 def _seg_last_text(atoms):
@@ -6885,7 +6900,7 @@ def build_timeline(now, tmux=None, with_bars=True, live_only=False):
             turn_open = (live and ti == len(st_turns) - 1 and not turn["ended"]
                          and not any(x["type"] == "idle" for x in turn["atoms"])
                          and not _suspended_after(turn["end"]))   # dead lane (live False) or pre-sleep freeze → not an open bar
-            segs = em.segments(turn)
+            segs = _segs_seam(turn, goals)
             for si, seg in enumerate(segs):
                 # A bar must not span a host sleep. EXCISE every suspension inside the segment → one bar per
                 # awake stretch, so work done AFTER the lid reopened isn't erased (the user 2026-06-22). The
@@ -7189,8 +7204,9 @@ def _segment_atom_uuids(sid, seg_ids, now):
         return []
     out = []
     try:
+        pstore = jd.load_goals(sid)
         for turn in _parse(sess["path"], sid, now)["turns"]:
-            for seg in em.segments(turn):
+            for seg in _segs_seam(turn, pstore):
                 if seg["id"] in want:
                     out.extend(at["uuid"] for at in seg["atoms"] if at.get("uuid"))
     except Exception:
@@ -7209,8 +7225,9 @@ def _segment_of_uuid(sid, uuid, now):
     if not sess:
         return (None, [])
     try:
+        lstore = jd.load_goals(sid)
         for turn in _parse(sess["path"], sid, now)["turns"]:
-            for seg in em.segments(turn):
+            for seg in _segs_seam(turn, lstore):
                 us = [at["uuid"] for at in seg["atoms"] if at.get("uuid")]
                 if uuid in us:
                     return (seg["id"], us)
