@@ -1568,7 +1568,7 @@ def _sync_declared_plan(store, session, seg_id, seg_t):
 
 
 def plan_llm(segment_text, menu_text, model=None, effort=None, human=False, nudge=False,
-             goal_history="", goal_num=None, agent_open_nums=None):
+             goal_history="", goal_num=None, agent_open_nums=None, followup=False):
     """One JSON goal-plan from the TRIAGE-tier model (Sonnet) over a segment + the open-goals menu.
     '' on failure. model/effort override the tier + enable thinking (the classification A/B). When `human`
     (a real user message) a <note> forbids skip. When `nudge` (a romp status-check on a 'working' goal, not
@@ -1589,6 +1589,16 @@ def plan_llm(segment_text, menu_text, model=None, effort=None, human=False, nudg
                      "when placing or resolving #%d.</note>" % (goal_history, goal_num, goal_num))
         user += ("\n<note>This segment is about goal #%d specifically — \"retitle\" is valid ONLY on #%d, "
                  "never on any other listed goal.</note>" % (goal_num, goal_num))
+    if followup and goal_num:
+        # promote-on-pivot (the user 2026-07-03): filing under the cited goal is a STRONG PRIOR, not a
+        # straitjacket — the user replies to cards out of habit, so a reply that clearly starts a
+        # different thread may mint its own top instead of being buried as a sub of the cited goal.
+        user += ("\n<note>The user sent this message as a REPLY to goal #%d. Filing its work under #%d is "
+                 "the STRONG default: do that whenever the message continues, refines, questions, or reports "
+                 "on that goal's thread, even loosely. ONLY if the message clearly starts a DIFFERENT thread "
+                 "of work, unrelated to #%d's, mint a new top-level goal for it instead — the user often "
+                 "replies out of habit when starting something new. Never both for the same ask.</note>"
+                 % (goal_num, goal_num, goal_num))
     if nudge:
         user += ("\n<note>This segment is a romp NUDGE — an automated status check on goal #1 still showing "
                  "'working', NOT a real user request. RESOLVE goal #1: mark it DONE if its outcome is already "
@@ -2357,30 +2367,62 @@ def _plan_session(fsid, path, now):
             _group_store(store, fsid, now)
             save_goals(fsid, store)
             continue
-        if followup and followup in store["nodes"]:   # tagged follow-up: reopen the target, force work UNDER it
-            _reopen(store, followup, by="followup")
+        if followup and followup in store["nodes"]:   # tagged follow-up: file under the target — a STRONG
+            # prior, no longer a straitjacket (the user 2026-07-03): the user replies to cards out of habit,
+            # so a cited reply that clearly starts a DIFFERENT thread may PIVOT — mint its own top (with
+            # pivotFrom provenance) instead of burying the new ask as a sub of the cited goal. The verdict
+            # is the model's; every ambiguous outcome (no mint, empty ops, parse failure) falls through to
+            # the forced-sub default, so an accidental cite still files safely under the target.
             for k in [k for k, v in list(store["nodes"].items())   # drop the kernel's provisional follow-up STUB:
-                      if v.get("provisional") and v.get("parentId") == followup]:   # the real sub below supersedes it
+                      if v.get("provisional") and v.get("parentId") == followup]:   # the real placement below supersedes it
                 store["nodes"].pop(k, None); store.get("status", {}).pop(k, None)
-            menu = open_menu(store)                    # the reopened goal is now back in the menu
+            menu = open_menu(store)
             gi = next((i for i, nd in enumerate(menu, 1) if nd["id"] == followup), None)
+            if gi is None and followup not in _view_cleared():
+                # the target is SEALED (completed/settled) but not user-cleared: show it to the model by
+                # APPENDING it to the menu, WITHOUT reopening yet — reopening used to happen up front, which
+                # was wrong for a pivot (a completed card flipped to Working with nothing new under it).
+                # The reopen now happens only on the file-under verdict below. (A view-cleared target stays
+                # out entirely: gi stays None and the generic free-placement path handles the message.)
+                menu = menu + [store["nodes"][followup]]
+                gi = len(menu)
             if gi:
                 hist = _goal_work_text(store, seg_by_id, followup, GOAL_HISTORY_CHARS)
                 ops = _parse_plan(plan_llm(text, _menu_text(store, menu), human=True,
-                                           goal_history=hist, goal_num=gi), len(menu)) or []
-                retitle = next((o for o in ops if o["do"] == "retitle" and o.get("goal") == gi), None)
-                desc = next((o for o in ops if o.get("text") and o["do"] != "retitle"), None)   # reuse the
-                # planner's description, force the parent — exclude retitle, whose "text" is a new TITLE, not a step
-                step = (desc or {}).get("text") or _seg_label(text)
-                why = (desc or {}).get("why") or "followed up on this goal"
-                forced = [{"do": "sub", "under": gi, "text": step, "why": why}]
-                if retitle:
-                    forced.append(retitle)              # the model may ALSO retitle #gi itself (the user 2026-07-01)
-                apply_plan(store, seg_id, seg_t, forced, menu, prompt_uuid=trig, quote=vq)
-                placed += 1
-                _group_store(store, fsid, now)
-                save_goals(fsid, store)
-                continue                               # forced placement done; skip the free-placement path
+                                           goal_history=hist, goal_num=gi, followup=True), len(menu)) or []
+                if any(o["do"] == "mint" for o in ops):
+                    # PIVOT: the model says this reply starts a new thread — honor its own placement. The
+                    # cited goal is NOT reopened (the kernel's optimistic send-time reopen self-heals: rollup
+                    # re-completes a settled goal and drops followupPending when nothing new lands under it).
+                    ops = _restrict_retitle([o for o in ops if o["do"] != "skip"], gi)
+                    apply_plan(store, seg_id, seg_t, ops, menu, prompt_uuid=trig, quote=vq)
+                    pv = store["placements"].get(seg_id)
+                    if isinstance(pv, str) and pv in store["nodes"]:   # provenance: the minted top remembers
+                        store["nodes"][_top_ancestor(store["nodes"], pv)]["pivotFrom"] = followup
+                    placed += 1
+                    _group_store(store, fsid, now)
+                    save_goals(fsid, store)
+                    continue
+                # CONTINUATION (the strong default, behavior unchanged): reopen the target, force the work
+                # UNDER it, reusing the model's own description + optional retitle from the SAME call.
+                _reopen(store, followup, by="followup")
+                menu = open_menu(store)                # rebuilt: the reopen just unsealed the target
+                gi2 = next((i for i, nd in enumerate(menu, 1) if nd["id"] == followup), None)
+                if gi2:
+                    retitle = next((o for o in ops if o["do"] == "retitle" and o.get("goal") == gi), None)
+                    desc = next((o for o in ops if o.get("text") and o["do"] != "retitle"), None)   # reuse the
+                    # planner's description, force the parent — exclude retitle, whose "text" is a new TITLE, not a step
+                    step = (desc or {}).get("text") or _seg_label(text)
+                    why = (desc or {}).get("why") or "followed up on this goal"
+                    forced = [{"do": "sub", "under": gi2, "text": step, "why": why}]
+                    if retitle:
+                        forced.append(dict(retitle, goal=gi2))   # the model may ALSO retitle the target itself
+                        #                                          (re-pointed at the rebuilt menu's index)
+                    apply_plan(store, seg_id, seg_t, forced, menu, prompt_uuid=trig, quote=vq)
+                    placed += 1
+                    _group_store(store, fsid, now)
+                    save_goals(fsid, store)
+                    continue                           # forced placement done; skip the free-placement path
         # The WORK-run may correct its OWN earlier PROMPT-run guess (the user 2026-07-01): if this exact
         # segment already has a prompt-run placement, that node's current menu # is the one goal `retitle`
         # may target here — no goal_history (its trail is just this same segment, nothing new to show).
