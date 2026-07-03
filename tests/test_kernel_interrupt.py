@@ -87,3 +87,48 @@ class IdleAtomFlipsTheOpenTurn(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InterruptingChip(unittest.TestCase):
+    """The INTERRUPTING chip (the user 2026-07-02): a just-sent stop flips the chip AT ONCE — the stop can
+    take seconds to reach a stream boundary and land on disk, and the UI used to sit on 'working' (button
+    still pressable, timer counting) the whole time. Event-cleared the moment the turn settles."""
+
+    def setUp(self):
+        km._interrupt_clicked.clear()
+
+    def tearDown(self):
+        km._interrupt_clicked.clear()
+
+    def test_stamp_reads_interrupting_while_the_turn_is_still_open(self):
+        km._interrupt_clicked[SID] = NOW - 2
+        self.assertTrue(km._interrupting(SID, True, NOW), "stop sent + turn still open → interrupting")
+
+    def test_clears_the_instant_the_turn_settles(self):
+        km._interrupt_clicked[SID] = NOW - 2
+        self.assertFalse(km._interrupting(SID, False, NOW), "turn no longer open → the stop landed")
+        self.assertNotIn(SID, km._interrupt_clicked, "stamp consumed — never sticks")
+
+    def test_wedged_turn_falls_back_after_the_safety_cap(self):
+        km._interrupt_clicked[SID] = NOW - 121
+        self.assertFalse(km._interrupting(SID, True, NOW), "a wedged turn falls back to honest 'working'")
+        self.assertNotIn(SID, km._interrupt_clicked)
+
+    def test_the_ws_interrupt_handler_stamps_and_pushes(self):
+        with open(os.path.join(BIN, "romp-kernel")) as f:
+            src = f.read()
+        self.assertIn('_interrupt_clicked[str(sid)] = time.time()', src,
+                      "the interrupt op stamps the optimistic state")
+        self.assertIn('"interrupting" if _interrupting(sid, open_now, now) else', src,
+                      "the chip formula reads the stamp, right under compacting")
+
+
+class InterruptMarker(unittest.TestCase):
+    """The CLI's '[Request interrupted by user]' stop record is an EVENT, not typed input (the user
+    2026-07-02): build_session flags it so the chat renders a slim rail marker, never a blue bubble."""
+
+    def test_build_session_flags_the_stop_record(self):
+        import inspect
+        src = inspect.getsource(km.build_session)
+        self.assertIn('if prompt.strip().startswith("[Request interrupted by user"):', src)
+        self.assertIn('ev["interruptMarker"] = True', src)
