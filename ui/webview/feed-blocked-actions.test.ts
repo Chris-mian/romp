@@ -53,10 +53,11 @@ test("(#2) a blocked sub's 'Follow up' button re-targets the footer composer at 
 });
 
 test("(#2) the footer composer posts askFollowUp to the picked sub, else the card/group, then reverts", () => {
-  // postFollowUp prefers the picked sub's id/title, else the card (single) / first member + group title
+  // postFollowUp prefers the picked sub's id/title, else the card (single) / first member + group title;
+  // the card's sid rides along so a REMOTE card's follow-up routes to its owning kernel (federation).
   assert.match(FEED, /itemId: tgt \? tgt\.itemId : fbId, title: tgt \? tgt\.title : fbTitle/);
-  assert.match(FEED, /postFollowUp\(txt, it\.itemId\)/);                         // single-ask modal
-  assert.match(FEED, /postFollowUp\(txt, grp\.members\[0\]\.itemId, grp\.title\)/);   // group modal
+  assert.match(FEED, /postFollowUp\(txt, it\.itemId, it\.sid\)/);                // single-ask modal
+  assert.match(FEED, /postFollowUp\(txt, grp\.members\[0\]\.itemId, grp\.members\[0\]\.sid, grp\.title\)/);   // group modal
   assert.match(FEED, /setFollowTarget\(null\);/);                               // revert to the card after sending
   assert.match(FEED, /followupSub = null;\s*\/\/ a fresh target/);              // and on a fresh modal open
 });

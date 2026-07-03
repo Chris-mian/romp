@@ -427,7 +427,7 @@ function makeCard(it: FeedItem): HTMLElement {
     pendingCleared.add(it.itemId);   // suppress until the kernel confirms — no mid-dismiss pop-back
     clearedStack.push([it]);         // cache for an instant optimistic Undo clear
     card.classList.add("dismissing");
-    vscodeApi?.postMessage({ type: "askClear", itemId: it.itemId });   // reply ids share cleared.jsonl
+    vscodeApi?.postMessage({ type: "askClear", itemId: it.itemId, sid: it.sid });   // reply ids share cleared.jsonl; sid routes a REMOTE card's clear to its owning kernel
     setTimeout(() => { if (cardEls.get(it.itemId) === card && card.classList.contains("dismissing")) { card.remove(); cardEls.delete(it.itemId); } }, 180);
   };
 
@@ -460,7 +460,7 @@ function toggleExpand(id: string) {
     // host reads cache-only for them and never spawns (no "generating…" wait).
     const generate = it ? (it.relevance === "DONE" || it.relevance === "DECISION") : false;
     details.set(id, { state: "loading" });
-    vscodeApi?.postMessage({ type: "expand", itemId: id, generate });
+    vscodeApi?.postMessage({ type: "expand", itemId: id, generate, sid: it?.sid });   // sid → the owning kernel (remote cards)
   }
   render();
 }
@@ -676,7 +676,7 @@ function makeAskCard(it: AskItem): HTMLElement {
     pendingCleared.add(it.itemId);   // suppress from incoming pushes until the kernel confirms the clear
     clearedStack.push([it]);         // cache for an instant optimistic Undo clear
     card.classList.add("dismissing");
-    vscodeApi?.postMessage({ type: "askClear", itemId: it.itemId });
+    vscodeApi?.postMessage({ type: "askClear", itemId: it.itemId, sid: it.sid });
     setTimeout(() => { if (askEls.get(it.itemId) === card && card.classList.contains("dismissing")) { card.remove(); askEls.delete(it.itemId); } }, 180);
   };
   // HOVER (120ms intent debounce so sweeps don't spam) → white border + preview
@@ -1175,7 +1175,7 @@ function makeGroupCard(g: AskGroup): HTMLElement {
     const cur = (card as any)._g as AskGroup;
     card.classList.add("dismissing");
     clearedStack.push(cur.members.slice());   // cache the whole batch for an instant optimistic Undo clear
-    for (const m of cur.members) { pendingCleared.add(m.itemId); vscodeApi?.postMessage({ type: "askClear", itemId: m.itemId }); }   // clear every member
+    for (const m of cur.members) { pendingCleared.add(m.itemId); vscodeApi?.postMessage({ type: "askClear", itemId: m.itemId, sid: m.sid }); }   // clear every member
     // only finalize if a render in the 180ms window didn't revive (re-render clears
     // .dismissing) or replace this card — else a stale timeout yanks the wrong one
     setTimeout(() => { if (groupEls.get(cur.turnId) === card && card.classList.contains("dismissing")) { card.remove(); groupEls.delete(cur.turnId); } }, 180);
@@ -1715,9 +1715,9 @@ function renderModal() {
   if (futgtEl) futgtEl.onclick = () => setFollowTarget(null);   // revert to the whole card
   openSubFollowUp = (itemId, title) => { setFollowTarget({ itemId, title }); fuboxEl.style.display = ""; fuinEl.focus(); };
   // POST a follow-up to the picked sub if one is set, else the card/group fallback; then revert to the card.
-  const postFollowUp = (txt: string, fbId: string, fbTitle?: string) => {
-    const tgt = followupSub;
-    vscodeApi?.postMessage({ type: "askFollowUp", itemId: tgt ? tgt.itemId : fbId, title: tgt ? tgt.title : fbTitle, text: txt });
+  const postFollowUp = (txt: string, fbId: string, fbSid?: string, fbTitle?: string) => {
+    const tgt = followupSub;   // a sub-goal belongs to the same session → same sid routes it
+    vscodeApi?.postMessage({ type: "askFollowUp", itemId: tgt ? tgt.itemId : fbId, title: tgt ? tgt.title : fbTitle, text: txt, sid: fbSid });
     // Optimistically move THIS card (fbId is the visible card/group, even when a sub-goal is the message target)
     // to Working now, then re-render the feed so it slides over immediately — the kernel reconciles on its push.
     optimisticFollowMove(fbId);
@@ -1743,10 +1743,10 @@ function renderModal() {
     agent.onclick = () => vscodeApi?.postMessage({ type: "openSession", id: grp.sid });
     ageEl.textContent = relAge(hostNow - grp.t);
     ageEl.style.color = "rgb(" + grp.trgb.join(",") + ")";   // tint the age by recency (the time colour scheme)
-    clrEl.onclick = () => { for (const mem of grp.members) vscodeApi?.postMessage({ type: "askClear", itemId: mem.itemId }); fullscreenAskId = null; renderModal(); };
+    clrEl.onclick = () => { for (const mem of grp.members) vscodeApi?.postMessage({ type: "askClear", itemId: mem.itemId, sid: mem.sid }); fullscreenAskId = null; renderModal(); };
     // follow-up on a group goes to the session that took the typed prompt — one
     // message prefixed with the GROUP title, filed under the first member's ask
-    wireFollowUp(fupEl, fuboxEl, fuinEl, fusendEl, (txt) => postFollowUp(txt, grp.members[0].itemId, grp.title));
+    wireFollowUp(fupEl, fuboxEl, fuinEl, fusendEl, (txt) => postFollowUp(txt, grp.members[0].itemId, grp.members[0].sid, grp.title));
     renderGroupModalBody(body, grp.members);
   } else if (it) {
     // The top-level goal IS the modal: render it as the ROOT of the tree list (not a separate header
@@ -1759,10 +1759,10 @@ function renderModal() {
     agent.onclick = () => vscodeApi?.postMessage({ type: "openSession", id: it.sid });
     ageEl.textContent = relAge(hostNow - it.t);
     ageEl.style.color = "rgb(" + it.trgb.join(",") + ")";   // tint the age by recency (the time colour scheme)
-    clrEl.onclick = () => { vscodeApi?.postMessage({ type: "askClear", itemId: it.itemId }); fullscreenAskId = null; renderModal(); };
+    clrEl.onclick = () => { vscodeApi?.postMessage({ type: "askClear", itemId: it.itemId, sid: it.sid }); fullscreenAskId = null; renderModal(); };
     // follow-up works in ANY state (the user 2026-06-10) — asks, awaiting, or completed;
     // toggling the button reveals the composer.
-    wireFollowUp(fupEl, fuboxEl, fuinEl, fusendEl, (txt) => postFollowUp(txt, it.itemId));
+    wireFollowUp(fupEl, fuboxEl, fuinEl, fusendEl, (txt) => postFollowUp(txt, it.itemId, it.sid));
     renderTreeBody(body, it, false);   // root goal IS the first list line; sub-goals render beneath it
   } else if (fitem) {
     ttlEl.textContent = fitem.did;
@@ -1771,13 +1771,13 @@ function renderModal() {
     agent.onclick = () => vscodeApi?.postMessage({ type: "openSession", id: fitem.sid });
     ageEl.textContent = relAge(hostNow - fitem.t);
     ageEl.style.color = "rgb(" + fitem.trgb.join(",") + ")";   // tint the age by recency (the time colour scheme)
-    clrEl.onclick = () => { vscodeApi?.postMessage({ type: "askClear", itemId: fitem.itemId }); fullscreenAskId = null; renderModal(); };
+    clrEl.onclick = () => { vscodeApi?.postMessage({ type: "askClear", itemId: fitem.itemId, sid: fitem.sid }); fullscreenAskId = null; renderModal(); };
     fupEl.style.display = "none"; fuboxEl.style.display = "none";   // standalone deliverable: no follow-up
     // fetch the detail once (same machinery the old inline [+] used)
     const d = details.get(fitem.itemId);
     if (!d || d.state === "failed") {
       details.set(fitem.itemId, { state: "loading" });
-      vscodeApi?.postMessage({ type: "expand", itemId: fitem.itemId,
+      vscodeApi?.postMessage({ type: "expand", itemId: fitem.itemId, sid: fitem.sid,
         generate: fitem.relevance === "DONE" || fitem.relevance === "DECISION" });
     }
     renderStandaloneTreeInto(body, fitem);
