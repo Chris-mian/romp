@@ -68,6 +68,24 @@ an unplaced segment and does what it always does — plans it: usually minting a
 ("pivoted to: …"), occasionally re-opening the old goal if the work is actually a
 continuation (its existing judgment, unchanged).
 
+### Trigger semantics (the user 2026-07-02)
+
+The seam fires when the goal that OWNS the open segment settles — not when "any" goal
+finishes (an unrelated card's completion would split a segment whose work is still properly
+owned → noise seams) and not when "all" goals finish (other cards sitting open elsewhere
+would mask the incident case entirely). Ownership is already recorded: `placements[seg_id]`
+names the node the segment was filed under; its top ancestor is the owner. The orphaning
+event is exactly that top's settle while its segment is still open and growing. It composes:
+if the planned tail's new top later settles mid-turn too, that ownership expiry is a fresh
+seam — each seam mints a new segment id, so placement idempotency never bends.
+
+The seam keys on the CLOSER's settle event ONLY — never on the user's Clear. Clear is the
+one human-asserted fact ("stop showing me this"); if clearing a still-working card split its
+segment and re-minted a card for the continuing work, romp would override the dismissal
+moments after it was made. A cleared-but-working goal behaves exactly as today: the work
+continues invisibly under the cleared card, and if it later genuinely needs the user, the
+existing resurrection path (`reopened`) brings it back.
+
 Why this shape:
 
 - It is EXACT and event-based (repo design rule): the boundary is "the closer's settle
