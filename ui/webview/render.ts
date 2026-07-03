@@ -653,6 +653,42 @@ function applyGlow(groups: Array<{ sid: string; uuids: string[] }>, mids: string
     });
   }
   paintGlowRuler();   // mirror the glow as bands on the overview ruler (link_audit's #4)
+  paintRailBand();    // one continuous measured band over the rail line (the user 2026-07-02)
+}
+
+// ONE continuous rail band per hovered segment (the user 2026-07-02): the per-turn ::before slices left
+// gaps wherever the span crossed a uuid-less turn (command chips, synthetic notes never matched by the
+// glowTurns uuids) and their edges sat at turn BOX boundaries — reading as arbitrary mid-line cuts. The
+// dots are the rail's only real coordinates, so MEASURE instead: one band from the hovered segment's own
+// dot center down to the NEXT segment's dot center (fallbacks: the first turn's top / the last turn's
+// bottom when there is no dot to anchor on). Repainted on every glow application; a re-render wipes it
+// and the next hover tick repaints — same transient contract as .ext-glow itself.
+function paintRailBand(): void {
+  document.querySelectorAll(".rail-band").forEach((n) => n.remove());
+  for (const v of views.values()) {
+    const glowed = Array.from(v.el.querySelectorAll<HTMLElement>(".turn.ext-glow"));
+    if (!glowed.length) continue;
+    const hostR = v.el.getBoundingClientRect();
+    const dotCenter = (turn: HTMLElement): number | null => {
+      const d = turn.querySelector<HTMLElement>(".dot");
+      if (!d) return null;
+      const r = d.getBoundingClientRect();
+      return r.top + r.height / 2 - hostR.top;
+    };
+    const first = glowed[0], last = glowed[glowed.length - 1];
+    const fr = first.getBoundingClientRect();
+    const top = dotCenter(first) ?? (fr.top - hostR.top);
+    let nxt: Element | null = last.nextElementSibling;   // the NEXT segment's prompt dot bounds the band
+    while (nxt && !(nxt instanceof HTMLElement && nxt.classList.contains("turn"))) nxt = nxt.nextElementSibling;
+    const nextDot = nxt instanceof HTMLElement ? dotCenter(nxt) : null;
+    const bottom = nextDot ?? (last.getBoundingClientRect().bottom - hostR.top);
+    if (bottom <= top) continue;
+    const band = el("div", "rail-band");
+    band.style.left = `${fr.left - hostR.left + 10.5}px`;   // hug the rail line (.turn::before x)
+    band.style.top = `${top}px`;
+    band.style.height = `${bottom - top}px`;
+    v.el.appendChild(band);
+  }
 }
 
 // ---- overview ruler (link_audit's #4, the user 2026-06-22) ----

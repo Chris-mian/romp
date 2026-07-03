@@ -255,7 +255,7 @@ body { display: flex; flex-direction: column; }
 /* The rail time-markers (.time-marker) + the "worked" footer hang ~55px LEFT of each turn. The
    column now fills the pane (var(--chat-col)), so we ALWAYS reserve that left gutter as real padding
    (54px) — otherwise the HH:MM timestamps overflow left and get clipped by overflow-x:hidden. */
-.thread { max-width: var(--chat-col); margin: 0 auto; padding: 0 24px 0 54px; }
+.thread { max-width: var(--chat-col); margin: 0 auto; padding: 0 24px 0 54px; position: relative; }   /* .rail-band anchors here */
 /* the transcript "No session open" placeholder (#empty-state). Scoped to its OWN class — a bare
    `.empty` selector here used to bleed `padding: 40px` onto every leaf-row tree spacer (the ledger's
    `ledger-tri empty` + the feed's `ftree-tri empty`, both zero-content spans), blowing them up to
@@ -1508,11 +1508,11 @@ pre.has-copy:hover .code-copy, .code-copy:focus-visible { opacity: 0.9; }
    when a handoff message is hovered, and the bubble itself for dot-less user
    turns. Transient — cleared when the hover ends. */
 .turn.ext-glow .dot { box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.85); }
-/* …and the turn's rail-line slice lights too, so a hovered SEGMENT glows as ONE contiguous band down the
-   rail (the user 2026-07-02: the line looked chopped — only the locally-hovered turn's slice lit, while
-   the kernel's glowTurns fan-back was already marking every turn of the segment). Adjacent .turn boxes
-   touch, so the per-turn ::before slices read as a single unbroken line. */
-.turn.ext-glow::before { box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.85); opacity: 1; }
+/* the hovered SEGMENT's stretch of rail lights as ONE measured band (.rail-band, paintRailBand) — from
+   the segment's dot down to the next segment's dot. Replaces the per-turn ::before slice glow, whose
+   box-boundary edges + uuid-less-turn gaps read as arbitrary mid-line cuts (the user 2026-07-02 ×2). */
+.rail-band { position: absolute; width: 2px; border-radius: 2px; pointer-events: none; z-index: 2;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.85); }
 .turn.ext-glow .postal-service-card { outline: 1.5px solid rgba(255, 255, 255, 0.75); outline-offset: 1px; }
 .turn.ext-glow:not(:has(.dot)) { outline: 1.5px solid rgba(255, 255, 255, 0.55); outline-offset: -1px; border-radius: 9px; }
 /* overview ruler (link_audit's #4, the user 2026-06-22): a fixed strip over the #content scrollbar gutter
