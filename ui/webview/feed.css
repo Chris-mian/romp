@@ -728,6 +728,9 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 /* BOTTOM bar (the user 2026-06-16): the checklist sits at the top of the modal; this footer holds the
    age + Follow up + Clear in one row, with the Follow-up composer dropping in full-width beneath. */
 .feed-modal-foot { flex: 0 0 auto; display: flex; flex-direction: column; gap: 6px; padding: 10px 16px; border-top: 1px solid var(--card-border); }
+/* nudge HISTORY line (the user 2026-07-02): the stalled chip's evidence — when romp auto-followed-up
+   on this goal; dim meta text above the age row */
+.feed-modal-nudges { font-size: 0.8em; color: var(--dim); }
 /* per-sub follow-up target label (the user 2026-06-17): names the blocked sub the composer is aimed at; click to revert to the whole card */
 .feed-modal-follow-target { font-size: 0.8em; color: #5aa2ff; cursor: pointer; }
 .feed-modal-follow-target:hover { text-decoration: underline; text-underline-offset: 2px; }

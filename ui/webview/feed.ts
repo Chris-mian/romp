@@ -91,6 +91,7 @@ interface AskItem {
   background?: string | null;                      // distiller's BACKGROUND section: re-orientation for a reader who forgot the thread → the card's collapsed-by-default section above the takeaway (the user 2026-07-02)
   summaryAnchorUuid?: string | null;               // click the summary line → the biggest contiguous assistant-text block in the work span (kernel _seg_best_text; the user 2026-06-22)
   warns?: { kind: string; t: number; msg: string; detail: string }[] | null;   // judge-stamped anomalies (judge _node_warn → kernel build_feed): yellow "warning" chip; click opens the detail modal (the user 2026-07-02)
+  nudged?: { count: number; times: number[] } | null;   // auto-nudge HISTORY (kernel _nudge_times): how many times romp followed up + when — the stalled chip's evidence (tooltip + modal line, the user 2026-07-02)
   origin?: { peer: string; peerSid: string; color: { bg: string; fg: string } | null } | null;  // courier handoff: planted by a peer's message → "↪ from <peer>"
   waitingOn?: { peerSid: string; name: string; color: { bg: string; fg: string } | null; inCycle: boolean } | null;  // unanswered msg out to a live peer → "Awaiting <peer>" chip (peer name in native colour, no emoji; kernel _wait_for_graph; the user 2026-06-22)
   awaiting?: { why?: string | null } | null;       // AWAITING flavor: held in Working, ⏳ awaiting badge — waiting on dispatched/delegated work (agents/subagents/a build), NOT on you (kernel build_feed; the user 2026-06-22). The peer case rides waitingOn; this carries the generic "why".
@@ -328,6 +329,10 @@ function openOrReviveSession(sid: string, live: boolean, name: string): void {
   if (live) { vscodeApi?.postMessage({ type: "openSession", id: sid }); return; }
   feedConfirm(`“${name}” is closed — revive it?`, "Revive",
     () => vscodeApi?.postMessage({ type: "reviveSession", id: sid }));
+}
+
+function clockHM(t: number): string {
+  return new Date(t * 1000).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
 }
 
 function relAge(sec: number): string {
@@ -856,6 +861,11 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   // with the "⏸ stalled" badge — the badge already says it, so the chip yields to avoid a double
   // "stalled" (the user 2026-07-02); a regular-flavor failure stays in Working with just this chip.
   a._nudgeFailed.style.display = (it.nudgeFailed && it.blocked?.state !== "stalled") ? "" : "none";
+  // the chip label says "stalled"; its tooltip carries the EVIDENCE — romp did follow up, and when
+  // (the user 2026-07-02: the bare label read like a state romp observed, not a nudge outcome)
+  a._nudgeFailed.title = it.nudged && it.nudged.times.length
+    ? `romp followed up ${it.nudged.count}× (${it.nudged.times.map(clockHM).join(", ")}); the response didn't resolve it and it won't be re-asked — it's waiting on you`
+    : "romp followed up on this stalled goal once; the response didn't resolve it and it won't be re-asked — it's waiting on you";
   // "warning" chip: a judge stamped an anomaly on this goal — show the latest msg on hover, detail on click.
   // Data rides the card element so the click handler (wired once in build) always reads the current push.
   a._warnsData = it.warns || null;
@@ -1613,7 +1623,8 @@ function renderModal() {
     fubox.append(fuin, fusend);
     // when a blocked sub is the follow-up target, this label says so (click → revert to the whole card)
     const futgt = el("div", "feed-modal-follow-target"); futgt.id = "feed-modal-follow-target"; futgt.style.display = "none";
-    const foot = el("div", "feed-modal-foot"); foot.id = "feed-modal-foot"; foot.append(footRow, futgt, fubox);
+    const nudges = el("div", "feed-modal-nudges"); nudges.id = "feed-modal-nudges"; nudges.style.display = "none";
+    const foot = el("div", "feed-modal-foot"); foot.id = "feed-modal-foot"; foot.append(nudges, footRow, futgt, fubox);
     const body = el("div", "feed-modal-body"); body.id = "feed-modal-body";
     inner.append(head, body, foot);
     m.appendChild(inner);
@@ -1673,6 +1684,19 @@ function renderModal() {
     }
   }
   modalRenderedId = fullscreenAskId;
+  // nudge HISTORY (the user 2026-07-02): the stalled chip's evidence, one click away — when romp followed
+  // up on this goal. Hidden unless the single-ask target has recorded fires.
+  const nudEl = document.getElementById("feed-modal-nudges") as HTMLElement | null;
+  if (nudEl) {
+    const nu = it?.nudged;
+    if (nu && nu.times.length) {
+      nudEl.textContent = `romp followed up ${nu.count}× — ${nu.times.map(clockHM).join(", ")}`;
+      nudEl.title = "automatic follow-ups romp sent on this goal (they render in the chat as gray romp bubbles with the swirl)";
+      nudEl.style.display = "";
+    } else {
+      nudEl.style.display = "none";
+    }
+  }
   const ttlEl = document.getElementById("feed-modal-title") as HTMLElement;
   const agent = document.getElementById("feed-modal-agent") as HTMLElement;
   const ageEl = document.getElementById("feed-modal-age") as HTMLElement;

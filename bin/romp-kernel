@@ -5914,6 +5914,8 @@ def build_feed(now, tmux=None):
                 "background": nodes[nid].get("background"),    # the distiller's BACKGROUND section: re-orientation for a reader who forgot the thread — collapsed by default on the card (the user 2026-07-02)
                 "summaryAnchorUuid": _sa_u,    # click the summary line → the biggest text block in the work span (the user 2026-06-22)
                 "warns": nodes[nid].get("warns") or None,   # judge-stamped anomalies (judge _node_warn) → yellow "warning" chip; click shows each warn's what/why detail (the user 2026-07-02)
+                "nudged": ({"count": int(nrec.get("count", 0)), "times": _nudge_times().get(nid, [])[-8:]}
+                           if nrec.get("count") else None),   # auto-nudge HISTORY (fires + when) → the stalled chip's evidence, on the chip tooltip + modal (the user 2026-07-02)
                 "blocked": ({"state": "apiError", "since": (tm.get("since") if tm else None),
                              "status": aerr.get("status"), "category": aerr.get("category"),
                              "text": aerr.get("text"), "tooLong": bool(aerr.get("tooLong")),
@@ -5974,6 +5976,7 @@ def build_feed(now, tmux=None):
                         % (ph["fromName"], ph["toName"]),
             "doneWhy": None, "followupPending": None, "waitingOn": None,
             "summary": None, "blockSummary": None, "background": None, "summaryAnchorUuid": None, "warns": None,
+            "nudged": None,
             "blocked": {"state": "parkedHandoff", "fromName": ph["fromName"], "toSid": ph["toId"],
                         "toName": ph["toName"], "msgId": ph["msgId"], "body": ph["body"],
                         "what": "a handoff from %s is parked — revive %s to deliver it"
@@ -6799,6 +6802,37 @@ def _run_judging(t0, alive_sids, semantic):
                     "kind": (src or {}).get("kind", "run"), "text": (src or {}).get("text", ""),
                     "ms": 0, "in": 0, "out": 0, "sent": sent, "recv": None, "open": True})
     return out
+
+
+_nudge_times_cache = {}                       # path → ((mtime_ns, size), {gid: [t, ...]})
+
+
+def _nudge_times():
+    """{gid: [fire t, ...]} from STATE/nudge-events.jsonl (judge _log_nudge_event appends one row per
+    auto-nudge fire) — the card-side nudge HISTORY behind the stalled chip (the user 2026-07-02: a chip
+    that just says "stalled" reads like a state romp observed; the evidence that romp DID follow up,
+    and when, must be one click away). mtime-cached like _auto_nudge_data; best-effort {}."""
+    p = jd.STATE / "nudge-events.jsonl"
+    try:
+        st = p.stat(); key = (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return {}
+    hit = _nudge_times_cache.get(str(p))
+    if hit is not None and hit[0] == key:
+        return hit[1]
+    idx = {}
+    try:
+        for line in p.read_text(errors="replace").splitlines():
+            try:
+                o = json.loads(line)
+            except Exception:
+                continue
+            if isinstance(o, dict) and o.get("gid") and o.get("t"):
+                idx.setdefault(o["gid"], []).append(int(o["t"]))
+    except OSError:
+        return {}
+    _nudge_times_cache[str(p)] = (key, idx)
+    return idx
 
 
 def _nudge_marks(t0, alive_sids):
