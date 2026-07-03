@@ -616,20 +616,18 @@ function makeAskCard(it: AskItem): HTMLElement {
   // is ONE flex-wrap container: the full-width bodies force their own lines, lone buttons share a row.
   // Open, the body runs the full card width and its collapse control is a block "less" button on its own
   // line under the text, always bottom-left (the old trailing-inline placement wrapped unpredictably).
+  // TOGGLE buttons (the user 2026-07-02, round 7 — replaces the separate "less" control): "Background" /
+  // "Summary" are always-visible press toggles, capitalized like Clear. Both collapsed → the two buttons
+  // sit side by side on one row. Expanding background splits them apart — each button heads its own
+  // content — with one clear line between the background part and the summary part; expanding only the
+  // summary keeps the buttons side by side with its text below. A pressed toggle wears .on (bright +
+  // filled) so what's showing is visible at a glance; clicking again collapses.
   const secs = el("div", "fask-secs"); secs.style.display = "none";
-  const bgBtn = el("button", "fask-secbtn fask-bg-part"); bgBtn.textContent = "background"; bgBtn.title = "expand";
-  const bgBody = el("div", "fask-bg-body fask-bg-part");
-  const bgLess = el("button", "fask-secbtn fask-less"); bgLess.textContent = "less"; bgLess.title = "collapse";
-  const takeBtn = el("button", "fask-secbtn"); takeBtn.textContent = "summary"; takeBtn.title = "expand";
+  const bgBtn = el("button", "fask-secbtn"); bgBtn.textContent = "Background";
+  const bgBody = el("div", "fask-bg-body");
+  const takeBtn = el("button", "fask-secbtn"); takeBtn.textContent = "Summary";
   const distill = el("div", "fask-distill");
-  const takeLess = el("button", "fask-secbtn fask-less"); takeLess.textContent = "less"; takeLess.title = "collapse";
-  // The less buttons are SIBLINGS of the bodies, not children (the user 2026-07-02): the summary text is
-  // a deep-link with its own hover underline, and the less button collapses — different functions, so the
-  // link's hover must never light the button (a child would inherit the underline + hover fill). Each
-  // rides a full-width row div so it always lands on its own line without stretching the button box.
-  const bgLessRow = el("div", "fask-lessrow"); bgLessRow.appendChild(bgLess);
-  const takeLessRow = el("div", "fask-lessrow"); takeLessRow.appendChild(takeLess);
-  secs.append(bgBtn, bgBody, bgLessRow, takeBtn, distill, takeLessRow);
+  secs.append(bgBtn, bgBody, takeBtn, distill);
   // ⏳ AWAITING cue (the user 2026-06-29): a small romp swirl spinning in the SAME body spot the distiller line
   // will eventually fill — a completed/blocked card shows its takeaway there; a WORKING card that's awaiting
   // dispatched/delegated work shows the spinning swirl instead, a glanceable "in flight, not stalled" sign.
@@ -737,8 +735,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   a._delegations = delegations;
   a._checklist = checklist;
   a._distill = distill;
-  a._secs = secs; a._bgBtn = bgBtn; a._bgBody = bgBody; a._bgLess = bgLess; a._bgLessRow = bgLessRow;
-  a._takeBtn = takeBtn; a._takeLess = takeLess; a._takeLessRow = takeLessRow;
+  a._secs = secs; a._bgBtn = bgBtn; a._bgBody = bgBody; a._takeBtn = takeBtn;
   a._awaitSpin = awaitSpin; a._awaitWhy = awaitWhy;
   a._origin = origin;
   return card;
@@ -773,22 +770,23 @@ function applyDistillSections(a: any, it: AskItem, distillShown: boolean): void 
   a._secs.style.display = distillShown ? "" : "none";
   const bgIsOpen = !!bg && bgOpen.has(id);
   const takeIsOpen = !takeClosed.has(id);
-  a._secs.classList.toggle("gap", !!bg && (bgIsOpen || takeIsOpen));
-  a._bgBtn.style.display = bg && !bgIsOpen ? "" : "none";
+  // both toggles are ALWAYS visible (side by side while nothing splits them); pressed = .on
+  a._bgBtn.style.display = bg ? "" : "none";
+  a._bgBtn.classList.toggle("on", bgIsOpen);
+  a._bgBtn.setAttribute("aria-pressed", bgIsOpen ? "true" : "false");
+  a._bgBtn.title = bgIsOpen ? "hide the background" : "show the background";
   a._bgBody.style.display = bgIsOpen ? "" : "none";
-  a._bgLessRow.style.display = bgIsOpen ? "" : "none";   // sibling row under the text (never inside the body)
   if (bgIsOpen) a._bgBody.textContent = bg as string;
-  // the section gap rides whichever bg element is the section's LAST visible row: the button when
-  // collapsed, the less row when open (a margin on the body would split the body from its own less)
-  a._bgBtn.classList.toggle("fask-gapend", !!bg && !bgIsOpen);
-  a._bgLessRow.classList.toggle("fask-gapend", bgIsOpen);
+  // one clear line between the background part and the summary part, only when the background is open
+  // (its body is what stands between the two sections; collapsed, the buttons sit tight side by side)
+  a._bgBody.classList.toggle("fask-gapend", bgIsOpen);
   a._bgBtn.onclick = flipBg;
-  a._bgLess.onclick = flipBg;
-  a._takeBtn.style.display = distillShown && !takeIsOpen ? "" : "none";
+  a._takeBtn.style.display = distillShown ? "" : "none";
+  a._takeBtn.classList.toggle("on", takeIsOpen);
+  a._takeBtn.setAttribute("aria-pressed", takeIsOpen ? "true" : "false");
+  a._takeBtn.title = takeIsOpen ? "hide the summary" : "show the summary";
   (a._distill as HTMLElement).style.display = takeIsOpen ? "" : "none";
-  a._takeLessRow.style.display = distillShown && takeIsOpen ? "" : "none";
   a._takeBtn.onclick = flipTake;
-  a._takeLess.onclick = flipTake;
 }
 
 function updateAskCard(card: HTMLElement, it: AskItem) {
