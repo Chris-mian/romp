@@ -56,7 +56,11 @@ test("the band is a CAPSULE outline: runs break at each dot's ring, nothing inte
 });
 
 test("the hover strip exists only where the line does (the last turn's 16px stub)", () => {
-  assert.match(CSS, /\.turn:last-child \.rail-hit \{ bottom: auto; height: 16px; \}/);
+  // "no .turn after me", never :last-child — appended .rail-band siblings broke that match mid-hover,
+  // snapping a full-height line over the final text (the user 2026-07-03)
+  assert.match(CSS, /\.turn:not\(:has\(~ \.turn\)\) \.rail-hit \{ bottom: auto; height: 16px; \}/);
+  assert.match(CSS, /\.turn:not\(:has\(~ \.turn\)\)::before \{ bottom: auto; height: 16px; \}/);
+  assert.doesNotMatch(CSS, /\.turn:last-child::before/, "the fragile :last-child stub is gone");
   // local hover past the last dot draws nothing — there is no complete inter-dot span there
   const wire = SRC.slice(SRC.indexOf("function wireTurnHover"), SRC.indexOf("function applyGlow"));
   assert.match(wire, /if \(top != null && bottom != null\) drawRailBand\(host, hostR, turn, top, bottom, true\);/);
