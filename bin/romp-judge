@@ -1959,16 +1959,41 @@ def _mint_quote(seg):
 
 def _seg_label(text, words=10):
     """A short (≤`words`-word) goal label from a segment's unit text — the USER ASKED line if present,
-    else its first non-empty line — for the hard-guard floor placement."""
+    else its first non-empty NON-QUOTED line — for the hard-guard floor placement. Quoted context
+    lines ('> …', a follow-up's citation block) and romp marker comments are never title material: a
+    floor mint during an LLM outage titled a live goal with the user's quoted OLD message instead of
+    the new ask (the user 2026-07-03)."""
     line = ""
     for ln in text.splitlines():
         if ln.startswith("USER ASKED:"):
             line = ln[len("USER ASKED:"):].strip()
             break
     if not line:
+        line = next((ln.strip() for ln in text.splitlines()
+                     if ln.strip() and not ln.lstrip().startswith(">")
+                     and not ln.lstrip().startswith("<!--")), "")
+    if not line:                                       # ALL lines were quotes/markers → fall back to any line
         line = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
     w = line.split()
     return (" ".join(w[:words]) + ("…" if len(w) > words else "")) or "(user message)"
+
+
+def _heal_quote_titles(store):
+    """Deterministic title HEAL (the user 2026-07-03): a goal whose title leads with a quote block
+    ('> …') was floor-titled from a follow-up's unit text — the title is the user's quoted CONTEXT,
+    not their ask (the LLM-outage floor path; _seg_label now prevents new ones, this heals survivors).
+    Retitle from node['quote'], the verbatim head of the minting message with quote lines + romp
+    markers already stripped (_mint_quote) — the user's own words, no LLM call. Event-gated by the
+    '>' prefix, so healed titles never re-enter. Returns the number healed."""
+    n = 0
+    for nd in store.get("nodes", {}).values():
+        if (nd.get("text") or "").lstrip().startswith(">") and (nd.get("quote") or "").strip():
+            t = nd["quote"].strip()
+            if len(t) > 70:
+                t = (t[:70].rsplit(" ", 1)[0] or t[:70]).rstrip(" ,.;:") + " …"
+            nd["text"] = t
+            n += 1
+    return n
 
 
 def _coerce_place(menu, text):
@@ -2196,6 +2221,8 @@ def _plan_session(fsid, path, now):
     _judge_ctx.fsid = fsid                            # usage logging: attribute this session's judge calls
     session = parsed_session(fsid, [path], now)
     store = load_goals(fsid)
+    if _heal_quote_titles(store):                     # quote-leaked floor titles → the user's own words (no LLM)
+        save_goals(fsid, store)                       # persist even if no new units land this pass
     # Built once, used only by the KNOWN-target branches below (delegation/nudge/followup) to hand the
     # planner that one goal's own raw history alongside its menu title (the user 2026-07-01) — no LLM
     # call, just an index over already-parsed atoms. Seam-aware (_segs) so a settle-split tail resolves.
