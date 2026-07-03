@@ -1726,13 +1726,19 @@ def _drive(msg, client):
     be = Sessions.backend_for(sid)
     if t == "sendMessage" and msg.get("text"):
 
-        _send_or_park(be, sid, str(msg["text"]), echo="human"); _push_all()  # instant echo — or a queued bubble mid-compaction
+        _send_or_park(be, sid, str(msg["text"]), echo="human"); _push_all()  # idle → instant echo; busy → a queued bubble, delivered in press order
     elif t == "interrupt":
         be.interrupt(sid)                                 # Esc/stop AND settle idle (in the backend)
         _interrupt_clicked[str(sid)] = time.time()        # chip → "interrupting" NOW (event-cleared on settle)
         _push_all()
     elif t in ("compact", "compactSession"):
-        be.send(sid, "/compact"); _mark_compacting(sid)   # /compact + the instant 'compacting' cue on every surface
+        # Mid-turn (or behind an existing queue) the click PARKS as a queued /compact chip and fires when
+        # the turn ends (the user 2026-07-02: the icon "blinked and nothing happened" while working — now
+        # the queued chip IS the acknowledgement, and later messages chain behind it in press order).
+        if _ops_gate(sid):
+            _park_op(sid, ("compact",))
+        else:
+            be.send(sid, "/compact"); _mark_compacting(sid)   # idle → /compact now + the instant 'compacting' cue
     elif t == "sendCommand" and msg.get("cmd"):
         cmd = str(msg["cmd"]).strip()                     # the timeline lane menu sends "/model X" / "/effort X"
         if cmd.startswith("/model "):
@@ -4133,7 +4139,7 @@ def _session_chip(sid, path, session, tm, now):
 # chat renders them as queued bubbles IN THAT ORDER and _apply_pending_ops delivers them IN THAT ORDER
 # the moment compaction ends. A repeated model/effort pick REPLACES its earlier parked op in place (last
 # pick wins — one queued chip, not a pile), since only the final setting can matter.
-_pending_ops = {}             # sid -> [("send", text, echo) | ("model", v) | ("effort", v), …] in park order
+_pending_ops = {}             # sid -> [("send", text, echo) | ("model", v) | ("effort", v) | ("compact",), …] in park order
 
 
 def _compacting_now(sid):
@@ -4145,6 +4151,26 @@ def _compacting_now(sid):
     path = _path_of(sid)
     session = (_parse_cached(path) if path else None) or {"turns": []}
     return _compacting(sid, (tm or {}).get("state", ""), session, int(time.time()), (tm or {}).get("since"))
+
+
+def _working_now(sid):
+    """Is the session's turn OPEN right now — the event-model working signal off the CACHED parse (cheap
+    enough for the WS handler + producer tick, refreshed by the turn-end pokes; same freshness contract
+    as _compacting_now)."""
+    path = _path_of(sid)
+    session = (_parse_cached(path) if path else None) or {"turns": []}
+    return _session_working(session["turns"])
+
+
+def _ops_gate(sid):
+    """Should a drive op PARK instead of firing? Whenever the session is NOT quiet — compacting OR an
+    open turn (which includes the interrupt-settling window) — and, for strict press-order, whenever a
+    queue ALREADY exists (the user 2026-07-02 ×2: "interrupted, picked a model, sent a message — the
+    model never registered and the message vanished"; input fired into a busy/tearing-down session races
+    and drops. Now EVERY drive op lands as a visible queued chip and delivers in the sequence pressed).
+    Interrupt itself is the one exception — it must always fire immediately (the escape hatch)."""
+    sid = str(sid)
+    return _compacting_now(sid) or _working_now(sid) or bool(_pending_ops.get(sid))
 
 
 def _park_op(sid, op):
@@ -4171,7 +4197,7 @@ def _send_or_park(be, sid, text, echo=None):
     KILLED the 'compacting' indicator). Parked, no echo atom lands so 'compacting' stays, and the send
     shows as a queued bubble in park order. `echo` is the _optimistic_echo author stamped when the send
     actually fires (None = the backend echoes for itself)."""
-    if _compacting_now(sid):
+    if _ops_gate(sid):
         _park_op(sid, ("send", text, echo))
         return
     be.send(sid, text)
@@ -4181,7 +4207,7 @@ def _send_or_park(be, sid, text, echo=None):
 
 def _set_model_or_park(be, sid, value):
     """Apply a model change now — or park it in the sid's FIFO op queue while the session compacts."""
-    if _compacting_now(sid):
+    if _ops_gate(sid):
         _park_op(sid, ("model", value))
     else:
         be.set_model(sid, value)
@@ -4191,35 +4217,55 @@ def _set_effort_or_park(be, sid, value):
     """Apply an effort change now — or park it while the session compacts (the user 2026-07-02: /effort
     is a slash command like /model, so it must queue the same way — it used to slip straight through,
     with no queued chip and the same derail risk the /model park was built for)."""
-    if _compacting_now(sid):
+    if _ops_gate(sid):
         _park_op(sid, ("effort", value))
     else:
         be.set_effort(sid, value)
 
 
 def _apply_pending_ops():
-    """Producer tick: FIFO-deliver the ops parked during a compaction that has now ENDED — in exactly the
-    order they were parked, which is exactly the order the chat rendered their queued bubbles (the user
-    2026-07-02: what you see is what runs). Event-corroborated (_compacting flips false on the
-    compact_boundary or resumed work; its 180s optimistic cap covers a cancelled compaction), so a park
-    can never stick forever. A dead session's queue is dropped (fails once, logged), never retried."""
+    """Producer tick: FIFO-deliver parked ops once the session is QUIET (neither compacting nor an open
+    turn) — in exactly the order they were parked, which is exactly the order the chat rendered their
+    queued bubbles (the user 2026-07-02: what you see is what runs). SEQUENTIAL by construction (the user
+    2026-07-02, compact-mid-turn): settings ops (model/effort) apply instantly and delivery continues,
+    but a SEND or /COMPACT ends the pass — its turn/compaction must finish before the next op fires, so
+    "compact, then two messages, then a model pick" lands as pressed. Event-gated throughout (_compacting
+    + the event-model open-turn signal, both off cached parses refreshed by turn-end pokes); a dead
+    session's queue is dropped (fails once, logged), never retried."""
     for sid, ops in list(_pending_ops.items()):
-        if _compacting_now(sid):
+        if not ops:
+            _pending_ops.pop(sid, None)
             continue
-        _pending_ops.pop(sid, None)
+        if _compacting_now(sid) or _working_now(sid):
+            continue
         try:
             be = Sessions.backend_for(sid)
-            for op in ops:
+            while ops:
+                op = ops[0]
                 if op[0] == "send":
                     be.send(sid, op[1])
                     if op[2]:
                         _optimistic_echo(sid, op[1], author=op[2])
+                    ops.pop(0)
+                    break                             # its turn must END before the next op fires
+                elif op[0] == "compact":
+                    be.send(sid, "/compact")
+                    _mark_compacting(sid)
+                    ops.pop(0)
+                    break                             # the compaction must finish first
                 elif op[0] == "model":
                     be.set_model(sid, op[1])
+                    ops.pop(0)
                 elif op[0] == "effort":
                     be.set_effort(sid, op[1])
+                    ops.pop(0)
+                else:
+                    ops.pop(0)                        # unknown op kind → drop, never wedge the queue
         except Exception:
             sys.stderr.write("pending ops apply: %s\n" % traceback.format_exc())
+            _pending_ops.pop(sid, None)               # a dead session's queue is dropped, never retried
+        if not _pending_ops.get(sid):
+            _pending_ops.pop(sid, None)
         _push_all()
 
 
@@ -4853,6 +4899,8 @@ def build_session(sid, now, tmux=None):
                     if ctx:
                         m["fuCtx"] = ctx
                 qmsgs.append(m)
+            elif op[0] == "compact":
+                qmsgs.append({"md": "/compact"})
             else:
                 qmsgs.append({"md": "/%s %s" % (op[0], op[1])})
         events.append({"kind": "queued", "texts": qmsgs})
