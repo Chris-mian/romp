@@ -17,29 +17,31 @@ test("every nav-able turn grows a rail hit strip, wired like the dot", () => {
   assert.match(fn, /turn\.appendChild\(rail\);/, "created inside wireTurnHover — only turns with nav data get one");
   // the SAME dotHover payload + the same 120ms intent debounce as the dot hover
   assert.match(fn, /railTimer = setTimeout\(\(\) => \{ railTimer = undefined; if \(activeId\) vscodeApi\?\.postMessage\(\{ type: "dotHover", sid: activeId, uuid, t, tlId \}\); \}, 120\);/);
-  assert.match(fn, /turn\.classList\.add\("rail-glow"\);/, "the line lights up immediately on hover");
-  assert.match(fn, /turn\.classList\.remove\("rail-glow"\);/);
+  // instant feedback is a dot-anchored band too — never the old per-turn slice that flashed an
+  // arbitrary chopped bit before the segment band landed (the user 2026-07-02 ×3)
+  assert.match(fn, /const top = railDotAbove\(turn, hostR\)/);
+  assert.match(fn, /drawRailBand\(host, hostR, turn, top, bottom, true\);/);
+  assert.doesNotMatch(fn, /rail-glow/, "the box-bounded slice glow is gone");
 });
 
-test("the line's glow is the dots' expanding white ring, on the ::before segment", () => {
-  assert.match(CSS, /\.turn\.rail-glow::before \{ box-shadow: 0 0 0 2px rgba\(255, 255, 255, 0\.85\); opacity: 1; \}/);
-  // same ring the dot hover uses — one visual language
+test("the band's glow is the dots' expanding white ring — one visual language", () => {
   assert.match(CSS, /\.dot\.dot-nav:hover \{ box-shadow: 0 0 0 2px rgba\(255, 255, 255, 0\.85\); \}/);
+  assert.match(CSS, /\.rail-band \{[^}]*box-shadow: 0 0 0 2px rgba\(255, 255, 255, 0\.85\)/);
 });
 
-test("the cross-highlight lights the segment as ONE measured band, dot to dot", () => {
-  // per-turn ::before slices left gaps at uuid-less turns and cut at box boundaries (the user 2026-07-02
-  // ×2: "what are these cuts?") — paintRailBand measures instead: one absolute band from the hovered
-  // segment's dot center to the NEXT segment's dot center, repainted with every glow application.
+test("every band edge lands ON A DOT — the rail's only meaningful y-coordinates", () => {
+  // the user 2026-07-02 ×3: box-boundary edges and uuid-gap slices read as arbitrary cuts. railDotAbove/
+  // railDotBelow WALK to the nearest dot (up from the band's first turn, down past its last); turn-box
+  // edges remain only as the transcript-end fallback where no bounding dot exists.
+  assert.match(SRC, /function railDotAbove\(turn: HTMLElement, hostR: DOMRect\)/);
+  assert.match(SRC, /function railDotBelow\(turn: HTMLElement, hostR: DOMRect\)/);
   const fn = SRC.slice(SRC.indexOf("function paintRailBand"), SRC.indexOf("function paintGlowRuler"));
-  assert.ok(fn.length > 0, "paintRailBand exists");
-  assert.match(fn, /const top = dotCenter\(first\) \?\? \(fr\.top - hostR\.top\);/, "anchors at the segment's own dot");
-  assert.match(fn, /const bottom = nextDot \?\? \(last\.getBoundingClientRect\(\)\.bottom - hostR\.top\);/,
-               "…and ends at the next segment's dot");
+  assert.match(fn, /const top = railDotAbove\(first, hostR\) \?\? \(first\.getBoundingClientRect\(\)\.top - hostR\.top\);/);
+  assert.match(fn, /const bottom = railDotBelow\(last, hostR\) \?\? \(last\.getBoundingClientRect\(\)\.bottom - hostR\.top\);/);
   assert.match(SRC, /paintRailBand\(\);\s*\/\/ one continuous measured band/, "painted with every glow application");
   assert.match(CSS, /\.rail-band \{ position: absolute; width: 2px;[^}]*box-shadow: 0 0 0 2px rgba\(255, 255, 255, 0\.85\)/);
   assert.match(CSS, /\.rail-band \{[^}]*pointer-events: none/, "the band never intercepts the strip's hover");
-  assert.doesNotMatch(CSS, /\.turn\.ext-glow::before/, "the chopped per-turn slice glow is gone");
+  assert.doesNotMatch(CSS, /\.turn\.ext-glow::before|\.turn\.rail-glow::before/, "no per-turn slice glows remain");
 });
 
 test("the strip hugs the line and never steals the dot's hover", () => {

@@ -618,11 +618,22 @@ function wireTurnHover(turn: HTMLElement, dot: HTMLElement | null, uuid: string 
   rail.title = "hover: highlight on the timeline + feed";
   let railTimer: ReturnType<typeof setTimeout> | undefined;
   rail.addEventListener("mouseenter", () => {
-    turn.classList.add("rail-glow");
+    // instant feedback is a dot-to-dot band too (the user 2026-07-02: the old per-turn slice flashed an
+    // arbitrary-length chopped bit before the segment band landed) — the nearest dot at-or-above the
+    // hovered turn down to the nearest dot below it, replaced by the kernel's full-segment band when the
+    // glow fan-back arrives (~a round-trip later).
+    const host = turn.parentElement;
+    if (host) {
+      document.querySelectorAll(".rail-band-local").forEach((n) => n.remove());
+      const hostR = host.getBoundingClientRect();
+      const top = railDotAbove(turn, hostR) ?? (turn.getBoundingClientRect().top - hostR.top);
+      const bottom = railDotBelow(turn, hostR) ?? (turn.getBoundingClientRect().bottom - hostR.top);
+      drawRailBand(host, hostR, turn, top, bottom, true);
+    }
     railTimer = setTimeout(() => { railTimer = undefined; if (activeId) vscodeApi?.postMessage({ type: "dotHover", sid: activeId, uuid, t, tlId }); }, 120);
   });
   rail.addEventListener("mouseleave", () => {
-    turn.classList.remove("rail-glow");
+    document.querySelectorAll(".rail-band-local").forEach((n) => n.remove());
     if (railTimer) { clearTimeout(railTimer); railTimer = undefined; return; }
     vscodeApi?.postMessage({ type: "dotHover" });
   });
@@ -656,38 +667,48 @@ function applyGlow(groups: Array<{ sid: string; uuids: string[] }>, mids: string
   paintRailBand();    // one continuous measured band over the rail line (the user 2026-07-02)
 }
 
-// ONE continuous rail band per hovered segment (the user 2026-07-02): the per-turn ::before slices left
-// gaps wherever the span crossed a uuid-less turn (command chips, synthetic notes never matched by the
-// glowTurns uuids) and their edges sat at turn BOX boundaries — reading as arbitrary mid-line cuts. The
-// dots are the rail's only real coordinates, so MEASURE instead: one band from the hovered segment's own
-// dot center down to the NEXT segment's dot center (fallbacks: the first turn's top / the last turn's
-// bottom when there is no dot to anchor on). Repainted on every glow application; a re-render wipes it
-// and the next hover tick repaints — same transient contract as .ext-glow itself.
+// Rail bands ALWAYS end on dots (the user 2026-07-02 ×3: "nothing else could really have any meaning in
+// this representation"). The dots are the rail's only real y-coordinates, so every band edge is found by
+// WALKING to a dot: up from a turn to the nearest dot at-or-above it, down to the nearest dot below.
+// Turn-box edges are only the last-resort fallback at the transcript's ends, where no bounding dot exists.
+function railDotAbove(turn: HTMLElement, hostR: DOMRect): number | null {
+  for (let n: Element | null = turn; n; n = n.previousElementSibling) {
+    if (!(n instanceof HTMLElement) || !n.classList.contains("turn")) continue;
+    const d = n.querySelector<HTMLElement>(".dot");
+    if (d) { const r = d.getBoundingClientRect(); return r.top + r.height / 2 - hostR.top; }
+  }
+  return null;
+}
+function railDotBelow(turn: HTMLElement, hostR: DOMRect): number | null {
+  for (let n: Element | null = turn.nextElementSibling; n; n = n.nextElementSibling) {
+    if (!(n instanceof HTMLElement) || !n.classList.contains("turn")) continue;
+    const d = n.querySelector<HTMLElement>(".dot");
+    if (d) { const r = d.getBoundingClientRect(); return r.top + r.height / 2 - hostR.top; }
+  }
+  return null;
+}
+function drawRailBand(host: HTMLElement, hostR: DOMRect, xRef: HTMLElement, top: number, bottom: number, local: boolean): void {
+  if (bottom <= top) return;
+  const band = el("div", "rail-band" + (local ? " rail-band-local" : ""));
+  band.style.left = `${xRef.getBoundingClientRect().left - hostR.left + 10.5}px`;   // hug the rail line (.turn::before x)
+  band.style.top = `${top}px`;
+  band.style.height = `${bottom - top}px`;
+  host.appendChild(band);
+}
+
+// ONE continuous rail band per hovered segment: from the segment's own prompt dot down to the NEXT dot
+// after its last turn. Repainted on every glow application (replacing any instant local band); a
+// re-render wipes it and the next hover tick repaints — same transient contract as .ext-glow itself.
 function paintRailBand(): void {
   document.querySelectorAll(".rail-band").forEach((n) => n.remove());
   for (const v of views.values()) {
     const glowed = Array.from(v.el.querySelectorAll<HTMLElement>(".turn.ext-glow"));
     if (!glowed.length) continue;
     const hostR = v.el.getBoundingClientRect();
-    const dotCenter = (turn: HTMLElement): number | null => {
-      const d = turn.querySelector<HTMLElement>(".dot");
-      if (!d) return null;
-      const r = d.getBoundingClientRect();
-      return r.top + r.height / 2 - hostR.top;
-    };
     const first = glowed[0], last = glowed[glowed.length - 1];
-    const fr = first.getBoundingClientRect();
-    const top = dotCenter(first) ?? (fr.top - hostR.top);
-    let nxt: Element | null = last.nextElementSibling;   // the NEXT segment's prompt dot bounds the band
-    while (nxt && !(nxt instanceof HTMLElement && nxt.classList.contains("turn"))) nxt = nxt.nextElementSibling;
-    const nextDot = nxt instanceof HTMLElement ? dotCenter(nxt) : null;
-    const bottom = nextDot ?? (last.getBoundingClientRect().bottom - hostR.top);
-    if (bottom <= top) continue;
-    const band = el("div", "rail-band");
-    band.style.left = `${fr.left - hostR.left + 10.5}px`;   // hug the rail line (.turn::before x)
-    band.style.top = `${top}px`;
-    band.style.height = `${bottom - top}px`;
-    v.el.appendChild(band);
+    const top = railDotAbove(first, hostR) ?? (first.getBoundingClientRect().top - hostR.top);
+    const bottom = railDotBelow(last, hostR) ?? (last.getBoundingClientRect().bottom - hostR.top);
+    drawRailBand(v.el, hostR, first, top, bottom, false);
   }
 }
 
