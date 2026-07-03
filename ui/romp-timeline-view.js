@@ -188,7 +188,7 @@ function badgeFor(s) {
   if (!s || !s.live) return null;
   let m = null;
   if (s.state === 'working') {
-    // Live Task-subagent count (SDK only) rides the WORKING badge, the same way COMPACTING carries its % —
+    // Live Task-subagent count (SDK only) rides the WORKING badge —
     // so "what's actually running" is glanceable, the transparency the tmux backend never had. Blank when none.
     const n = (s.subagents && s.subagents.length) || 0;
     m = { label: n ? 'WORKING · ' + n + (n === 1 ? ' agent' : ' agents') : 'WORKING', kind: 'working' };
@@ -1909,7 +1909,7 @@ class TimelinePanel {
     // gutter = name column (left-aligned) + chip column (every chip shares an x,
     // like the dashboard's badge column). Names left-aligned, chips follow.
     const visB = vis.map((s) => compactingNow(s)
-      ? { label: 'COMPACTING' + (s.compactPct != null ? ' ' + s.compactPct + '%' : ''), bg: BADGE.compacting.bg, fg: BADGE.compacting.fg }   // live % from @claude-compact-pct
+      ? { label: 'COMPACTING', bg: BADGE.compacting.bg, fg: BADGE.compacting.fg }   // NO %: the scraped pct was laggy/inaccurate, and the SDK offers none (compact_progress events are lifecycle-only — investigated 2026-07-02); the scan-bar is the live cue
       : badgeFor(s));
     const visC = vis.map((s) => ctxInfo(s));
     const maxName = Math.max(40, ...(vis.length ? vis : data.sessions).map((s) => this.labelWidth(s.name)));
