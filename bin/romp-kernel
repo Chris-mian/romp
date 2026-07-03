@@ -9784,11 +9784,18 @@ class Handler(BaseHTTPRequestHandler):
                 elif nm in live:                 # already running → just (re)open it, don't re-spawn
                     _set_hidden_tab(live[nm], False); _push_all()
                     _reveal_chat({"type": "focus", "id": live[nm]})
-                elif msg.get("backend") == "sdk" and _sdk():   # non-tmux: drive via the Agent SDK
-                    sid = _sdk().spawn(nm, cwd)
-                    _sdk().connect(sid)        # eager-connect so the model lists immediately, not only after the 1st message
-                    _set_hidden_tab(sid, False); _push_all()
-                    _reveal_chat({"type": "focus", "id": sid})
+                elif msg.get("backend") == "sdk":   # non-tmux: drive via the Agent SDK
+                    if _sdk():
+                        sid = _sdk().spawn(nm, cwd)
+                        _sdk().connect(sid)    # eager-connect so the model lists immediately, not only after the 1st message
+                        _set_hidden_tab(sid, False); _push_all()
+                        _reveal_chat({"type": "focus", "id": sid})
+                    else:
+                        # NEVER silently fall back to tmux (the user asked for SDK and got a mystery tmux
+                        # session on a host without the venv — jetty, 2026-07-02). Say what's missing.
+                        client["send"](json.dumps({"type": "warn", "text":
+                            "SDK backend unavailable on this kernel (claude-agent-sdk not importable — "
+                            "run bin/romp-sdk-setup with Python 3.10+). Session not created."}))
                 else:
                     threading.Thread(target=_spawn_session, args=(nm, cwd), daemon=True).start()
         elif msg and msg.get("type") == "requestSessions":

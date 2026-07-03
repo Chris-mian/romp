@@ -3767,6 +3767,27 @@ class ViewBuilder(unittest.TestCase):
         self.assertIsNotNone(sl, "requestSessions returns a sessionList")
         self.assertEqual(sl.get("defaultDir"), km._tilde(wd), "the dir field prefills the kernel's default path")
 
+    def test_createSession_sdk_backend_unavailable_warns_instead_of_tmux_fallback(self):
+        """The user asked for an SDK session on a kernel without the SDK venv and got a MYSTERY TMUX session
+        instead (jetty, 2026-07-02) — the handler silently fell through to _spawn_session. Now it warns
+        (naming bin/romp-sdk-setup) and creates nothing."""
+        saved_sdk, saved_spawn, saved_tmux = km._sdk, km._spawn_session, km._tmux_sessions
+        km._sdk = lambda: None                               # the backend is unavailable (no venv / py<3.10)
+        spawned = []
+        km._spawn_session = lambda nm, cwd: spawned.append(nm)
+        km._tmux_sessions = lambda: {}
+        sent = []
+        client = {"send": lambda s: sent.append(json.loads(s)), "app": "chat"}
+        try:
+            km.Handler._dispatch_ws(None, {"type": "createSession", "name": "sdlkless", "backend": "sdk"}, client)
+            time.sleep(0.05)                                 # the tmux path spawns on a thread — give it a beat
+        finally:
+            km._sdk, km._spawn_session, km._tmux_sessions = saved_sdk, saved_spawn, saved_tmux
+        warn = next((m for m in sent if m.get("type") == "warn"), None)
+        self.assertIsNotNone(warn, "the client is told, not silently given a different backend")
+        self.assertIn("romp-sdk-setup", warn["text"], "the warn names the fix")
+        self.assertEqual(spawned, [], "no tmux fallback session is created")
+
     def test_timeline_state_and_metadata_from_tmux(self):
         # live lanes take state + model/effort/context from tmux @claude-* vars (the READY badge =
         # state "waiting"); badgeFor hides the badge unless live, so live must be true here
