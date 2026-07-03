@@ -38,7 +38,9 @@ test("the buttons ARE the toggles: pressed state reads at a glance, no separate 
   assert.match(FEED, /a\._bgBtn\.classList\.toggle\("on", bgIsOpen\);/);
   assert.match(FEED, /a\._takeBtn\.classList\.toggle\("on", takeIsOpen\);/);
   assert.match(FEED, /a\._bgBtn\.setAttribute\("aria-pressed", bgIsOpen \? "true" : "false"\);/);
-  assert.match(CSS, /\.fask-secbtn\.on \{ color: var\(--fg\); border-color: var\(--fg\); background: rgba\(255, 255, 255, 0\.07\); \}/);
+  // selected = the rail toggles' accent language: blue text, accent border, faint accent wash, bolder
+  assert.match(CSS, /\.fask-secbtn\.on \{ color: var\(--accent\); border-color: var\(--accent\);\n  background: rgba\(156, 210, 255, 0\.10\); font-weight: 600; \}/);
+  assert.match(CSS, /--accent: #9cd2ff;/, "feed.css defines --accent in its own :root");
   assert.doesNotMatch(FEED, /fask-less/, "the less control is gone");
   assert.doesNotMatch(CSS, /fask-lessrow/, "and its row styling with it");
 });
