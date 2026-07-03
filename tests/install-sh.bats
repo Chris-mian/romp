@@ -48,6 +48,11 @@ PY
     [[ "$output" == *"already registered"* ]]
     [ "$(count_cmd Stop tmux-status.sh)" = "1" ]
     [ "$(count_cmd UserPromptSubmit romp-summarize.sh)" = "1" ]
+    # regression: a re-run used to FOLLOW the existing skill dir-symlink and drop a new link INSIDE
+    # the repo (claude/skills/romp/romp → an absolute personal path). ln -sfn replaces the link.
+    [ ! -e "$ROMP_DIR/claude/skills/romp/romp" ]
+    [ ! -e "$ROMP_DIR/claude/skills/romp-postal/romp-postal" ]
+    [ -L "$HOME/.claude/skills/romp" ]
 }
 
 @test "install.sh: merges into an existing settings.json without clobbering the user's own config" {

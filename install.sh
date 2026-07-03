@@ -82,8 +82,11 @@ echo "  Symlinked romp-postal.mcp.json (Romp Postal Service MCP config)"
 ln -sf "$ROMP_DIR/claude/romp-session-prompt.md" "$HOME/.claude/romp-session-prompt.md"
 echo "  Symlinked romp-session-prompt.md (working-style append-system-prompt)"
 
-ln -sf "$ROMP_DIR/claude/skills/romp" "$HOME/.claude/skills/romp"
-ln -sf "$ROMP_DIR/claude/skills/romp-postal" "$HOME/.claude/skills/romp-postal"
+# -n: the skill links point at DIRECTORIES — on a re-run, plain -sf would follow the existing
+# dir-symlink and drop a NEW link INSIDE the repo (claude/skills/romp/romp → an absolute personal
+# path, which the no-personal-identifiers test rightly rejects). -n replaces the link itself.
+ln -sfn "$ROMP_DIR/claude/skills/romp" "$HOME/.claude/skills/romp"
+ln -sfn "$ROMP_DIR/claude/skills/romp-postal" "$HOME/.claude/skills/romp-postal"
 echo "  Symlinked romp + romp-postal skills"
 
 # The Agent SDK venv — romp's non-tmux backend. Best-effort: a host without python >= 3.10 still
