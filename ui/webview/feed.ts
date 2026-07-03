@@ -618,7 +618,13 @@ function makeAskCard(it: AskItem): HTMLElement {
   const takeBtn = el("button", "fask-secbtn"); takeBtn.textContent = "summary"; takeBtn.title = "expand";
   const distill = el("div", "fask-distill");
   const takeLess = el("button", "fask-secbtn fask-less"); takeLess.textContent = "less"; takeLess.title = "collapse";
-  secs.append(bgBtn, bgBody, takeBtn, distill);
+  // The less buttons are SIBLINGS of the bodies, not children (the user 2026-07-02): the summary text is
+  // a deep-link with its own hover underline, and the less button collapses — different functions, so the
+  // link's hover must never light the button (a child would inherit the underline + hover fill). Each
+  // rides a full-width row div so it always lands on its own line without stretching the button box.
+  const bgLessRow = el("div", "fask-lessrow"); bgLessRow.appendChild(bgLess);
+  const takeLessRow = el("div", "fask-lessrow"); takeLessRow.appendChild(takeLess);
+  secs.append(bgBtn, bgBody, bgLessRow, takeBtn, distill, takeLessRow);
   // ⏳ AWAITING cue (the user 2026-06-29): a small romp swirl spinning in the SAME body spot the distiller line
   // will eventually fill — a completed/blocked card shows its takeaway there; a WORKING card that's awaiting
   // dispatched/delegated work shows the spinning swirl instead, a glanceable "in flight, not stalled" sign.
@@ -726,8 +732,8 @@ function makeAskCard(it: AskItem): HTMLElement {
   a._delegations = delegations;
   a._checklist = checklist;
   a._distill = distill;
-  a._secs = secs; a._bgBtn = bgBtn; a._bgBody = bgBody; a._bgLess = bgLess;
-  a._takeBtn = takeBtn; a._takeLess = takeLess;
+  a._secs = secs; a._bgBtn = bgBtn; a._bgBody = bgBody; a._bgLess = bgLess; a._bgLessRow = bgLessRow;
+  a._takeBtn = takeBtn; a._takeLess = takeLess; a._takeLessRow = takeLessRow;
   a._awaitSpin = awaitSpin; a._awaitWhy = awaitWhy;
   a._origin = origin;
   return card;
@@ -765,15 +771,17 @@ function applyDistillSections(a: any, it: AskItem, distillShown: boolean): void 
   a._secs.classList.toggle("gap", !!bg && (bgIsOpen || takeIsOpen));
   a._bgBtn.style.display = bg && !bgIsOpen ? "" : "none";
   a._bgBody.style.display = bgIsOpen ? "" : "none";
-  if (bgIsOpen) {
-    a._bgBody.textContent = bg as string;
-    a._bgBody.appendChild(a._bgLess);              // block-level: its own line, bottom-left under the text
-  }
+  a._bgLessRow.style.display = bgIsOpen ? "" : "none";   // sibling row under the text (never inside the body)
+  if (bgIsOpen) a._bgBody.textContent = bg as string;
+  // the section gap rides whichever bg element is the section's LAST visible row: the button when
+  // collapsed, the less row when open (a margin on the body would split the body from its own less)
+  a._bgBtn.classList.toggle("fask-gapend", !!bg && !bgIsOpen);
+  a._bgLessRow.classList.toggle("fask-gapend", bgIsOpen);
   a._bgBtn.onclick = flipBg;
   a._bgLess.onclick = flipBg;
   a._takeBtn.style.display = distillShown && !takeIsOpen ? "" : "none";
   (a._distill as HTMLElement).style.display = takeIsOpen ? "" : "none";
-  if (distillShown && takeIsOpen) (a._distill as HTMLElement).appendChild(a._takeLess);
+  a._takeLessRow.style.display = distillShown && takeIsOpen ? "" : "none";
   a._takeBtn.onclick = flipTake;
   a._takeLess.onclick = flipTake;
 }

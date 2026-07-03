@@ -18,8 +18,9 @@ test("ONE flex-wrap container holds real buttons + full-width bodies", () => {
   assert.match(FEED, /const secs = el\("div", "fask-secs"\); secs\.style\.display = "none";/);
   assert.match(FEED, /bgBtn\.textContent = "background"/, "a real labeled button, no caret/parens");
   assert.match(FEED, /takeBtn\.textContent = "summary"/);
-  assert.match(FEED, /secs\.append\(bgBtn, bgBody, takeBtn, distill\)/, "one container, section order kept");
-  assert.match(FEED, /a\._secs = secs; a\._bgBtn = bgBtn; a\._bgBody = bgBody; a\._bgLess = bgLess;/);
+  assert.match(FEED, /secs\.append\(bgBtn, bgBody, bgLessRow, takeBtn, distill, takeLessRow\)/,
+               "one container, section order kept (less rows as siblings)");
+  assert.match(FEED, /a\._secs = secs; a\._bgBtn = bgBtn; a\._bgBody = bgBody; a\._bgLess = bgLess; a\._bgLessRow = bgLessRow;/);
   assert.match(FEED, /background\?: string \| null;/, "the AskItem carries the kernel's background field");
   // side-by-side falls out of layout: buttons are flex:none, bodies flex-basis 100%
   assert.match(CSS, /\.fask-secs \{ display: flex; flex-wrap: wrap;/);
@@ -35,13 +36,18 @@ test("the buttons wear the Clear chrome with a neutral hover", () => {
                "neutral hover — folding is not destructive, no Clear red");
 });
 
-test("open sections collapse via a block 'less' on its own line (bottom-left, never a wrap artifact)", () => {
+test("open sections collapse via a 'less' SIBLING row — never a child of the link text", () => {
   assert.match(FEED, /bgLess\.textContent = "less"/);
   assert.match(FEED, /takeLess\.textContent = "less"/);
-  assert.match(FEED, /a\._bgBody\.appendChild\(a\._bgLess\);/);
-  assert.match(FEED, /\(a\._distill as HTMLElement\)\.appendChild\(a\._takeLess\);/);
-  assert.match(CSS, /\.fask-less \{ display: block; margin-top: 5px; font-size: 0\.86em; \}/,
-               "block-level, and 0.86em INSIDE the 0.86em body ≈ the other buttons' 0.74 computed size");
+  // the summary text is a deep-link with its own hover underline/fill; the less button collapses —
+  // different functions, so it must hover independently (the user 2026-07-02). A child would inherit
+  // the link's hover chrome; a sibling row cannot.
+  assert.match(FEED, /const bgLessRow = el\("div", "fask-lessrow"\); bgLessRow\.appendChild\(bgLess\);/);
+  assert.match(FEED, /secs\.append\(bgBtn, bgBody, bgLessRow, takeBtn, distill, takeLessRow\);/);
+  assert.doesNotMatch(FEED, /_bgBody\.appendChild\(a\._bgLess\)/, "never re-nested into the body");
+  assert.doesNotMatch(FEED, /_distill as HTMLElement\)\.appendChild\(a\._takeLess\)/, "never re-nested into the link");
+  assert.match(CSS, /\.fask-lessrow \{ flex: 1 1 100%; min-width: 0; margin-top: 2px; \}/,
+               "the full-width row gives the button its own line without stretching its box");
 });
 
 test("defaults + state: background collapsed, takeaway expanded; flips drive per-card sets", () => {
@@ -55,9 +61,12 @@ test("defaults + state: background collapsed, takeaway expanded; flips drive per
   assert.match(FEED, /a\._bgBtn\.onclick = flipBg;\s*\n\s*a\._bgLess\.onclick = flipBg;/);
 });
 
-test("the gap exists only while a section is expanded, riding the visible bg element", () => {
+test("the gap exists only while a section is expanded, riding the bg section's LAST visible row", () => {
   assert.match(FEED, /a\._secs\.classList\.toggle\("gap", !!bg && \(bgIsOpen \|\| takeIsOpen\)\);/);
-  assert.match(CSS, /\.fask-secs\.gap > \.fask-bg-part \{ margin-bottom: 1\.2em; \}/);
+  assert.match(FEED, /a\._bgBtn\.classList\.toggle\("fask-gapend", !!bg && !bgIsOpen\);/);
+  assert.match(FEED, /a\._bgLessRow\.classList\.toggle\("fask-gapend", bgIsOpen\);/,
+               "open → the margin sits AFTER the less row, never between the body and its own less");
+  assert.match(CSS, /\.fask-secs\.gap > \.fask-gapend \{ margin-bottom: 1\.2em; \}/);
 });
 
 test("the MODAL always shows BOTH sections, labeled background / summary", () => {
