@@ -194,6 +194,10 @@ function badgeFor(s) {
     m = { label: n ? 'WORKING · ' + n + (n === 1 ? ' agent' : ' agents') : 'WORKING', kind: 'working' };
   }
   else if (s.state === 'retrying') m = { label: 'RETRYING', kind: 'retrying' };   // amber, distinct from the red BLOCKED — a soft API-retry stall (api 2026-06-23)
+  // the lane state IS the chat chip now (the kernel's shared _session_chip, the user 2026-07-03) — the
+  // chip vocabulary below; the legacy raw names stay accepted for the cold-skeleton fallback.
+  else if (s.state === 'blocked') m = { label: 'API ERROR', kind: 'attention' };  // same red the chat chip shows
+  else if (s.state === 'interrupting') m = { label: 'INTERRUPTING', kind: 'working' };  // stop in flight
   else if (s.state === 'permission' || s.state === 'awaiting') m = { label: 'BLOCKED', kind: 'attention' };
   // AWAITING dispatched/background work (s.awaitingBg, the kernel's _session_awaiting — the SAME signal the
   // chat folds into its yellow working dot): in flight elsewhere, NOT on you, NOT plain READY. Closes the
@@ -201,7 +205,7 @@ function badgeFor(s) {
   // the two surfaces read consistently; distinct label so it never claims the session itself is producing.
   // (The LEGACY lane state 'awaiting' above means blocked-on-you — the new field dodges that name.)
   else if (s.awaitingBg) m = { label: 'AWAITING', kind: 'working' };
-  else if (s.state === 'waiting' || s.state === 'idle') m = { label: 'READY', kind: 'ready' };
+  else if (s.state === 'ready' || s.state === 'waiting' || s.state === 'idle') m = { label: 'READY', kind: 'ready' };
   if (!m) return null;
   return { label: m.label, bg: BADGE[m.kind].bg, fg: BADGE[m.kind].fg };
 }

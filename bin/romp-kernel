@@ -4106,6 +4106,27 @@ def _compacting(sid, st, session, now, since):
     return True
 
 
+def _session_chip(sid, path, session, tm, now):
+    """THE shared session-state derivation (the user 2026-07-03): the chat chip once said API ERROR →
+    READY while the timeline lane sat on raw-snapshot 'working' — two derivations of the same fact
+    diverged. This is the ONE formula, called by build_session (the chip) AND build_timeline (the lane
+    badge): event-model WORKING (open turn), awaiting-background, the api-error gate (only when neither
+    working nor awaiting), compacting corroboration, and the interrupt stamp. `session` should be the
+    freshest parse the caller has (live-merged where available); `tm` the backend snapshot or None."""
+    turns = session.get("turns", [])
+    open_now = _session_working(turns)
+    awaiting_why = _session_awaiting(sid, path, not open_now)
+    aerr = _api_error(path) if not (open_now or awaiting_why) else None
+    st = (tm or {}).get("state", "") or ""
+    compacting = _compacting(sid, st, session, now, (tm or {}).get("since"))
+    return ("compacting" if compacting else
+            "interrupting" if _interrupting(sid, open_now, now) else   # stop sent, turn not yet settled
+            "blocked" if aerr else
+            "awaiting" if st in _NEEDS_INPUT_STATES else               # a live permission/picker prompt
+            "retrying" if st == "retrying" else
+            "working" if (open_now or awaiting_why) else "ready")
+
+
 # ANY drive op requested WHILE the session compacts is PARKED (the user 2026-07-01 for /model — tmux
 # keystrokes land in the compacting UI and derail it; generalized 2026-07-02 to messages AND /effort, as
 # ONE FIFO queue): whatever sequence of messages and slash commands you send during a compaction, the
@@ -5016,7 +5037,6 @@ def build_session(sid, now, tmux=None):
         # signal — NOT @claude-state, which lags/flips between hook events (the user saw the chip go
         # blue mid-work + flicker). tmux supplies only what the transcript can't see: permission
         # (awaiting) and compacting, plus the model/effort/ctx metadata.
-        st = tm["state"]
         # COMPACTING wins over blocked (API error). The classic case: the context fills, the turn dies with
         # an API error, and that is EXACTLY when the user clicks Compact to recover — so _compacting (incl.
         # the optimistic just-clicked cue) is the in-flight ACTION resolving the error and MUST surface. With
@@ -5026,11 +5046,7 @@ def build_session(sid, now, tmux=None):
         # auto-retry loop while we compact; the API-error CARD stays put, so its Retry is still there if the
         # compaction stalls. After that, blocked is the strongest signal — the turn ended in an error, so it
         # beats the live tmux states (the session can't simultaneously be at a permission prompt mid-error).
-        compacting = _compacting(sid, st, session, now, tm["since"])   # event-corroborated: a stuck @claude-state
-        chip = ("compacting" if compacting else
-                "interrupting" if _interrupting(sid, open_now, now) else   # stop sent, turn not yet settled (the user 2026-07-02)
-                "blocked" if aerr else "awaiting" if st in _NEEDS_INPUT_STATES   # can't pin it
-                else "retrying" if st == "retrying" else "working" if (open_now or awaiting_why) else "ready")   # api_retry stall (SDK); working = open turn OR awaiting bg work (the user 2026-06-24)
+        chip = _session_chip(sid, sess["path"], session, tm, now)   # THE shared derivation — identical to the timeline lane (the user 2026-07-03)
         faded = chip == "ready" and bool(tm["since"]) and now - tm["since"] > 3600
         # apiTooLong distinguishes a "prompt is too long" block (on YOU → red dashed tab) from a TRANSIENT API
         # error (auto-retrying → the tab renders amber/retrying, not alarm-red). chip stays "blocked" either way
@@ -6936,20 +6952,21 @@ def build_timeline(now, tmux=None, with_bars=True, live_only=False):
             session = {"turns": []}; caps = {}; st_turns = []
             open_now = bool(tm and tm.get("state") == "working")
         last_turn = st_turns[-1] if st_turns else None
-        if tm:                            # live: tmux state drives the lane badge (working/waiting/idle/permission/compacting)
-            state = tm["state"] or "idle"
-            # Corroborate compacting on BOTH builds (the user 2026-06-29): the SKELETON sets the lane state the
-            # client actually uses (the {type:"bars"} message carries no state), so skipping _compacting here
-            # made the timeline drop 'compacting' the moment the client's 6s optimistic window lapsed — while
-            # the chat/tab (both use _compacting) kept showing it. The skeleton has no fresh parse, so use the
-            # CACHED one (no cold cost); _compacting also rides the kernel's own /compact optimistic cue
-            # (_compact_clicked), which persists event-based until the compact_boundary lands, so it stays in
-            # sync even before @claude-state latches.
-            comp_sess = session if with_bars else (_parse_cached(s["path"]) or {"turns": []})
-            if _compacting(sid, state, comp_sess, now, tm.get("since")):
-                state = "compacting"      # event-corroborated (incl. the optimistic /compact cue) — matches the chip
-            elif state == "compacting":   # a STUCK tmux 'compacting' → show the real state
-                state = "working" if open_now else "waiting"
+        if tm:                            # live lane
+            # ONE derivation with the chat chip (the user 2026-07-03: after an API error the chat read
+            # API ERROR → READY while the lane sat on raw-snapshot 'working'): the lane state IS
+            # _session_chip — same event-model working, api-error gate, compacting corroboration,
+            # interrupt stamp. The SKELETON build has no fresh parse, so it uses the CACHED one (no cold
+            # cost; the {type:"bars"} build refines a beat later); a COLD cache falls back to the raw
+            # snapshot state — the only moment the two surfaces may briefly differ, self-healing on the
+            # next build (the 2026-06-26 fast-first-paint contract).
+            comp_sess = session if with_bars else _parse_cached(s["path"])
+            if comp_sess is not None:
+                state = _session_chip(sid, s["path"], comp_sess, tm, now)
+            else:
+                state = tm["state"] or "idle"
+                if state == "compacting" and not _compacting(sid, state, {"turns": []}, now, tm.get("since")):
+                    state = "working" if open_now else "waiting"
         else:                             # dead lane: NEVER "working" — a turn left open at death (e.g. a stalled API
                                           # turn that never returned a ResultMessage, then ended) must not read as
                                           # active (the user 2026-06-23); badgeFor dims a dead lane anyway.

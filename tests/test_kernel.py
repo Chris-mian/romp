@@ -3680,7 +3680,7 @@ class ViewBuilder(unittest.TestCase):
         self.assertIsNone(m["focus"]); self.assertIsNone(m["hover"])
         lane = next(s for s in m["sessions"] if s["id"] == SID)
         self.assertEqual(lane["color"], "#abcdef", "lane color is the hex string, not {bg,fg}")
-        self.assertEqual(lane["state"], "idle", "turn ended, no blocked goal -> idle")
+        self.assertEqual(lane["state"], "ready", "turn ended → chip 'ready' (the shared derivation, the user 2026-07-03)")
         self.assertEqual(lane["model"], "", "tmux-sourced lane decorations are deferred")
         bars = m["turns"][SID]
         self.assertEqual(len(bars), 1, "the one-input turn is one segment bar")
@@ -3789,17 +3789,30 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(spawned, [], "no tmux fallback session is created")
 
     def test_timeline_state_and_metadata_from_tmux(self):
-        # live lanes take state + model/effort/context from tmux @claude-* vars (the READY badge =
-        # state "waiting"); badgeFor hides the badge unless live, so live must be true here
+        # live lanes take model/effort/context from tmux @claude-* vars; the STATE is the shared
+        # _session_chip derivation (the user 2026-07-03) — an idle tmux 'waiting' reads as chip 'ready'.
+        # badgeFor hides the badge unless live, so live must be true here
         km._tmux_sessions = lambda: {SID: {"state": "waiting", "since": NOW - 10, "model": "Opus 4.8",
                                            "effort": "xhigh", "context": 43, "compactPct": None,
                                            "color": "#abcdef"}}
         lane = next(s for s in km.build_timeline(NOW)["sessions"] if s["id"] == SID)
         self.assertTrue(lane["live"])
-        self.assertEqual(lane["state"], "waiting", "tmux state drives the lane (waiting -> READY badge)")
+        self.assertEqual(lane["state"], "ready", "the lane speaks the CHIP vocabulary now (the user 2026-07-03: one shared derivation with the chat)")
         self.assertEqual(lane["model"], "Opus 4.8")
         self.assertEqual(lane["effort"], "xhigh")
         self.assertEqual(lane["context"], 43)
+
+    def test_chat_chip_and_timeline_lane_are_ONE_derivation(self):
+        # the user 2026-07-03: after an API error the chat chip read API ERROR → READY while the timeline
+        # lane sat on raw-snapshot 'working' — two derivations of one fact. Both surfaces now call the
+        # shared _session_chip, so under ANY backend snapshot they read the SAME state: tmux claims
+        # 'working' here, but the transcript's turn ENDED → both say 'ready', together.
+        km._tmux_sessions = lambda: {SID: {"state": "working", "since": NOW - 10, "model": "", "effort": "",
+                                           "context": None, "compactPct": None, "color": None}}
+        lane = next(s for s in km.build_timeline(NOW)["sessions"] if s["id"] == SID)
+        chip = km.build_session(SID, NOW)["status"]["state"]
+        self.assertEqual(lane["state"], chip, "one shared derivation — the surfaces cannot disagree")
+        self.assertEqual(chip, "ready", "the event model (turn ended) wins over the stale snapshot")
 
     def test_timeline_includes_dead_sessions_for_scrollback(self):
         # the user 2026-06-16: dead sessions appear as struck lanes so scrolling back surfaces them. The

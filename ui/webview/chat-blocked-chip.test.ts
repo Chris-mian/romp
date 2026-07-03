@@ -33,7 +33,10 @@ test("build_session computes open_now + the awaiting signal BEFORE the gate cons
 });
 
 test("the chip reads 'working' for an open turn OR awaiting background work (not 'ready'/'blocked')", () => {
-  assert.match(KERNEL, /else "working" if \(open_now or awaiting_why\) else "ready"\)/);
+  // the formula lives in the SHARED _session_chip now (the user 2026-07-03) — one derivation for the
+  // chat chip AND the timeline lane, so the two surfaces can never disagree
+  assert.match(KERNEL, /"working" if \(open_now or awaiting_why\) else "ready"\)/);
+  assert.match(KERNEL, /chip = _session_chip\(sid, sess\["path"\], session, tm, now\)/);
 });
 
 test("the FEED's blocked column still gates _api_error on `not who_working` (+ cache-only `ps`)", () => {
