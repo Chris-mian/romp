@@ -5,7 +5,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { prefixId, hostOf, bareId, prefixInbound, routeOutbound, mergeHostOrder, mergeHostFeeds,
-         prefixTimelineData, mergeHostTimelines, mergeHostBars } from "./federation";
+         prefixTimelineData, mergeHostTimelines, mergeHostBars, stitchMessages } from "./federation";
 
 const U = "11111111-2222-3333-4444-555555555555";
 const V = "99999999-8888-7777-6666-555555555555";
@@ -253,6 +253,47 @@ test("mergeHostBars: per-host bars union — one host's push can't clobber anoth
   // a host with no bars yet contributes nothing (no crash)
   const single = mergeHostBars({ "": perHost[""] }, ["", "jetty"]);
   assert.deepEqual(Object.keys(single.turns), [U]);
+});
+
+test("stitchMessages: a cross-host connector lands on both lanes, recipient's copy wins the timing", () => {
+  // laptop session U messaged jetty session V. The LOCAL kernel emitted its one-sided copy (toId = the
+  // bare foreign sid — it has no lane for it, no exec); JETTY's kernel emitted its own copy, whose
+  // FOREIGN end (U) got blindly host-prefixed by inbound prefixing, and which KNOWS the delivery time.
+  const sessions = [{ id: U, name: "local-sess" }, { id: "jetty:" + V, name: "jetty:remote-sess" }];
+  const merged = stitchMessages([
+    { id: "m1", fromId: U, toId: V, from: "local-sess", to: "", sent: 100, exec: 100, hasExec: false },
+    { id: "m1", fromId: "jetty:" + U, toId: "jetty:" + V, from: "", to: "jetty:remote-sess", sent: 100, exec: 130, hasExec: true },
+  ], sessions);
+  assert.equal(merged.length, 1, "the two kernels' copies of one message dedupe by id");
+  const m = merged[0];
+  assert.equal(m.fromId, U, "sender endpoint = the local lane");
+  assert.equal(m.toId, "jetty:" + V, "recipient endpoint stitched onto jetty's (prefixed) lane");
+  assert.equal(m.hasExec, true, "the recipient kernel's real delivery time wins");
+  assert.equal(m.exec, 130);
+});
+
+test("stitchMessages: fills a missing display name from the matched lane; unmatched ends pass through", () => {
+  const sessions = [{ id: U, name: "local-sess" }, { id: "jetty:" + V, name: "jetty:remote-sess" }];
+  const [m] = stitchMessages([{ id: "m2", fromId: U, toId: V, from: "local-sess", to: "", sent: 1, exec: 1, hasExec: false }], sessions);
+  assert.equal(m.to, "jetty:remote-sess", "the sender kernel never knew the foreign name — the lane fills it");
+  // an endpoint matching NO lane (a long-dead local sid, or a not-yet-attached host) is left alone —
+  // the view's lane lookup drops the connector, same as ever.
+  const ghost = "77777777-6666-5555-4444-333333333333";
+  const [g] = stitchMessages([{ id: "m3", fromId: U, toId: ghost, sent: 1, exec: 1, hasExec: false }], sessions);
+  assert.equal(g.toId, ghost);
+});
+
+test("mergeHostBars: stitches connectors against the lane list handed in (bars carry no lanes)", () => {
+  const sessions = [{ id: U, name: "a" }, { id: "jetty:" + V, name: "jetty:b" }];
+  const perHost = {
+    "": { type: "bars", turns: {}, judging: [], nudges: [],
+          messages: [{ id: "m1", fromId: U, toId: V, sent: 5, exec: 5, hasExec: false }] },
+    jetty: { type: "bars", turns: {}, judging: [], nudges: [],
+             messages: [{ id: "m1", fromId: "jetty:" + U, toId: "jetty:" + V, sent: 5, exec: 9, hasExec: true }] },
+  };
+  const m = mergeHostBars(perHost, ["", "jetty"], sessions);
+  assert.equal(m.messages.length, 1);
+  assert.deepEqual([m.messages[0].fromId, m.messages[0].toId, m.messages[0].exec], [U, "jetty:" + V, 9]);
 });
 
 test("routeOutbound: an explicit host field routes there, stripped (createSession's + modal host pick)", () => {

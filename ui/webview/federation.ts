@@ -249,11 +249,46 @@ export function mergeHostFeeds(perHost: Record<string, any>, hostSeq: readonly s
   return merged;
 }
 
+/** Stitch CROSS-HOST postal connectors onto merged lanes. Each kernel emits a connector when at least
+ *  one end is its own lane; the FOREIGN end's sid is bare in its log (a kernel knows nothing of host
+ *  prefixes) and inbound prefixing blindly prefixed it with the EMITTING host — so on the merged board
+ *  it matches no lane. Re-point any endpoint that isn't a lane id at the lane whose BARE sid matches
+ *  (uuids — no cross-host collisions), fill a missing display name from that lane, then dedupe the two
+ *  kernels' copies of the same message (by id) — preferring the one that knows the real delivery time
+ *  (hasExec: the recipient's kernel binds exec to its own transcript; the sender's can't). */
+export function stitchMessages(messages: any[], sessions: readonly any[]): any[] {
+  if (!messages.length) return messages;
+  const laneIds = new Set(sessions.map((s: any) => s && s.id));
+  const byBare = new Map(sessions.filter((s: any) => s && typeof s.id === "string").map((s: any) => [bareId(s.id), s]));
+  const best = new Map<string, any>();
+  const out: any[] = [];
+  for (const m of messages) {
+    if (!m || typeof m !== "object") { out.push(m); continue; }
+    const c: any = { ...m };
+    for (const [idKey, nameKey] of [["fromId", "from"], ["toId", "to"]] as const) {
+      const v = c[idKey];
+      if (typeof v !== "string" || laneIds.has(v)) continue;
+      const lane = byBare.get(bareId(v));
+      if (lane) {
+        c[idKey] = lane.id;
+        if (!c[nameKey]) c[nameKey] = lane.name; // the emitting kernel never knew the foreign name
+      }
+    }
+    const key = typeof c.id === "string" ? c.id : null;
+    if (!key) { out.push(c); continue; }
+    const prev = best.get(key);
+    if (!prev) { best.set(key, c); out.push(c); continue; }
+    if (c.hasExec && !prev.hasExec) Object.assign(prev, c); // upgrade in place — keeps sent-order
+  }
+  return out;
+}
+
 /** Merge per-host timeline lanes payloads ({type:"data"}.data, already prefixed) into ONE. Sessions
  *  concatenate in hostSeq order (local lanes first, each remote host's group below — the view draws a
  *  half-row gap at each host boundary via the `host` field stamped here); `turns` (keyed by prefixed sid)
- *  union; the marks arrays concatenate. Scalar chrome (now/usage/focus/hover/cmapGrad…) stays LOCAL —
- *  the browser's own kernel is the clock + chrome authority, same as the feed merge. */
+ *  union; the marks arrays concatenate, with cross-host connectors stitched onto the merged lanes.
+ *  Scalar chrome (now/usage/focus/hover/cmapGrad…) stays LOCAL — the browser's own kernel is the
+ *  clock + chrome authority, same as the feed merge. */
 export function mergeHostTimelines(perHost: Record<string, any>, hostSeq: readonly string[]): any {
   const local = perHost[LOCAL] || {};
   const merged: any = { ...local, sessions: [], turns: {}, messages: [], judging: [], nudges: [] };
@@ -264,13 +299,17 @@ export function mergeHostTimelines(perHost: Record<string, any>, hostSeq: readon
     if (d.turns && typeof d.turns === "object") Object.assign(merged.turns, d.turns);
     for (const k of ["messages", "judging", "nudges"]) if (Array.isArray(d[k])) merged[k].push(...d[k]);
   }
+  merged.messages = stitchMessages(merged.messages, merged.sessions);
   return merged;
 }
 
 /** Merge per-host {type:"bars"} detail messages (already prefixed) into ONE. The panel's applyBars
  *  wholesale-replaces its turns/marks, so per-host bars MUST be merged here or each host's push would
- *  clobber the others' bars (the same clobber the feed had). `now` stays LOCAL (clock authority). */
-export function mergeHostBars(perHost: Record<string, any>, hostSeq: readonly string[]): any {
+ *  clobber the others' bars (the same clobber the feed had). `now` stays LOCAL (clock authority).
+ *  `sessions` (the merged lane list, from mergeHostTimelines) enables the cross-host connector stitch —
+ *  the bars message itself carries no lanes. */
+export function mergeHostBars(perHost: Record<string, any>, hostSeq: readonly string[],
+                              sessions: readonly any[] = []): any {
   const local = perHost[LOCAL] || {};
   const merged: any = { ...local, type: "bars", turns: {}, messages: [], judging: [], nudges: [] };
   for (const h of hostSeq) {
@@ -279,6 +318,7 @@ export function mergeHostBars(perHost: Record<string, any>, hostSeq: readonly st
     if (b.turns && typeof b.turns === "object") Object.assign(merged.turns, b.turns);
     for (const k of ["messages", "judging", "nudges"]) if (Array.isArray(b[k])) merged[k].push(...b[k]);
   }
+  merged.messages = stitchMessages(merged.messages, sessions);
   return merged;
 }
 
@@ -360,7 +400,8 @@ export class FederationManager {
 
   private emitMergedTimeline(bars: boolean): void {
     const data = bars
-      ? mergeHostBars(this.perHostTlBars, this.hostSeq)
+      // the bars message carries no lanes — hand the merged lane list in for the connector stitch
+      ? mergeHostBars(this.perHostTlBars, this.hostSeq, mergeHostTimelines(this.perHostTl, this.hostSeq).sessions)
       : { type: "data", data: mergeHostTimelines(this.perHostTl, this.hostSeq) };
     window.dispatchEvent(new MessageEvent("message", { data }));
   }

@@ -6257,8 +6257,11 @@ def _msg_summaries():
 def _postal_messages(now, alive_sids, id2name):
     """Inter-session connectors for the timeline, from the postal log (timeline/messages.jsonl): each
     'sent' row joined to its 'exec' by id → a [sent,exec] arrow between two lanes. File-based (the old
-    romp-timeline-data.readMessages, trimmed): BOTH ends must be alive lanes, recent only, no
-    self-messages. Connectors that need true process-start binding (the courier) come later."""
+    romp-timeline-data.readMessages, trimmed): recent only, no self-messages, and AT LEAST ONE end a
+    local lane. A CROSS-MACHINE message has its other end on a federated peer this kernel has never
+    heard of — emit it anyway (one-sided): the browser's merge stitches the foreign endpoint onto that
+    host's lane by bare sid, and a connector whose far end matches nothing is dropped by the view's
+    lane lookup, exactly like before."""
     try:
         lines = (jd.STATE / "timeline" / "messages.jsonl").read_text(errors="replace").splitlines()
     except OSError:
@@ -6292,7 +6295,9 @@ def _postal_messages(now, alive_sids, id2name):
         return None
     for mid, e in sent.items():
         f, t, st = e.get("from_id"), e.get("to_id"), e.get("t")
-        if f not in alive_sids or t not in alive_sids or f == t or not st or st < cutoff:
+        # both endpoints must EXIST (bus-origin mail — bounces from the Romp Postal Service itself —
+        # has no sender sid and can never draw), and at least one must be a local lane.
+        if not f or not t or (f not in alive_sids and t not in alive_sids) or f == t or not st or st < cutoff:
             continue
         ex = execd.get(mid)
         out.append({"id": mid, "fromId": f, "toId": t,

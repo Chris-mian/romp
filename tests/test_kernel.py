@@ -3423,22 +3423,31 @@ class ViewBuilder(unittest.TestCase):
         self.assertIsNone(km._name_of("no-such-sid"))
 
     def test_postal_connectors(self):
-        # timeline message connectors from the postal log: a sent row joined to its exec by id, with
-        # BOTH ends alive lanes; a message to a non-alive session is dropped (no endpoint)
+        # timeline message connectors from the postal log: a sent row joined to its exec by id. At least
+        # ONE end must be a local lane — a CROSS-MACHINE message's far end is a sid this kernel has never
+        # seen, and it is emitted ONE-SIDED so the browser's federation merge can stitch it onto the peer
+        # host's lane (stitchMessages); a connector matching no lane is dropped by the view, as before.
         md = jd.STATE / "timeline"; md.mkdir(parents=True, exist_ok=True)
         a, b = "aaaa1111", "bbbb2222"
         (md / "messages.jsonl").write_text(
             json.dumps({"ev": "sent", "id": "m1", "from_id": a, "to_id": b, "t": NOW - 30,
                         "from": "alpha", "body": "do X"}) + "\n"
             + json.dumps({"ev": "exec", "id": "m1", "t": NOW - 20}) + "\n"
-            + json.dumps({"ev": "sent", "id": "m2", "from_id": a, "to_id": "deadsid", "t": NOW - 30,
-                          "from": "alpha", "body": "y"}) + "\n")
-        msgs = km._postal_messages(NOW, {a, b}, {a: "alpha", b: "beta"})
-        self.assertEqual(len(msgs), 1, "only the connector with BOTH ends alive")
-        m = msgs[0]
+            + json.dumps({"ev": "sent", "id": "m2", "from_id": a, "to_id": "foreignsid", "t": NOW - 30,
+                          "from": "alpha", "body": "y"}) + "\n"
+            + json.dumps({"ev": "sent", "id": "m3", "from_id": "strange1", "to_id": "strange2",
+                          "t": NOW - 30, "from": "who", "body": "z"}) + "\n"
+            + json.dumps({"ev": "sent", "id": "m4", "from_id": "", "to_id": a, "t": NOW - 30,
+                          "from": "Romp Postal Service", "body": "bounce"}) + "\n")
+        msgs = {m["id"]: m for m in km._postal_messages(NOW, {a, b}, {a: "alpha", b: "beta"})}
+        self.assertEqual(set(msgs), {"m1", "m2"},
+                         "one local end suffices; neither-end-local and bus-origin (no sender sid) stay dropped")
+        m = msgs["m1"]
         self.assertEqual((m["fromId"], m["toId"]), (a, b))
         self.assertEqual(m["exec"], NOW - 20); self.assertTrue(m["hasExec"]); self.assertFalse(m["pending"])
         self.assertEqual(m["text"], "do X")
+        self.assertEqual(msgs["m2"]["toId"], "foreignsid")
+        self.assertEqual(msgs["m2"]["to"], "", "foreign recipient: no local name — the merge fills it")
 
     def test_postal_connector_binds_to_planted_goal(self):
         # a courier connector carries toGoal = the goal it planted in the recipient (origin.msgId match)
