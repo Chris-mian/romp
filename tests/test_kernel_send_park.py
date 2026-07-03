@@ -40,13 +40,16 @@ class OpQueueParkOrDeliver(unittest.TestCase):
     def setUp(self):
         self.be = _FakeBackend()
         self.echoes = []
-        self._saved = (km._compacting_now, km.Sessions.backend_for, km._push_all, km._optimistic_echo)
+        self._saved = (km._compacting_now, km.Sessions.backend_for, km._push_all, km._optimistic_echo,
+                       km._working_now)
         km._push_all = lambda: None
         km._optimistic_echo = lambda sid, text, author="human": self.echoes.append((text, author))
+        km._working_now = lambda sid: False            # explicit: each test picks the busy state
         km._pending_ops.clear()
 
     def tearDown(self):
-        (km._compacting_now, km.Sessions.backend_for, km._push_all, km._optimistic_echo) = self._saved
+        (km._compacting_now, km.Sessions.backend_for, km._push_all, km._optimistic_echo,
+         km._working_now) = self._saved
         km._pending_ops.clear()
 
     def test_not_compacting_everything_applies_immediately(self):
@@ -79,19 +82,77 @@ class OpQueueParkOrDeliver(unittest.TestCase):
         self.assertEqual(km._pending_ops.get(SID),
                          [("model", "sonnet"), ("send", "first", None), ("send", "second", None)])
 
-    def test_apply_delivers_fifo_when_compaction_ends_and_not_before(self):
+    def test_apply_delivers_sequentially_when_quiet_and_not_before(self):
+        # SEQUENTIAL delivery (the user 2026-07-02, compact-mid-turn): settings ops apply and delivery
+        # continues; a SEND ends the pass — its turn must finish before anything after it fires.
         km._pending_ops[SID] = [("model", "opus"), ("send", "go", "human"), ("effort", "high")]
         km.Sessions.backend_for = lambda sid: self.be
         km._compacting_now = lambda sid: True
+        km._working_now = lambda sid: False
         km._apply_pending_ops()
         self.assertEqual(self.be.calls, [], "still compacting → still parked")
         self.assertIn(SID, km._pending_ops)
         km._compacting_now = lambda sid: False
+        km._working_now = lambda sid: True
         km._apply_pending_ops()
-        self.assertEqual(self.be.calls, [("model", "opus"), ("send", "go"), ("effort", "high")],
-                         "delivered in park order — the order the chat rendered")
+        self.assertEqual(self.be.calls, [], "turn still open → still parked (waits for the turn END)")
+        km._working_now = lambda sid: False
+        km._apply_pending_ops()
+        self.assertEqual(self.be.calls, [("model", "opus"), ("send", "go")],
+                         "model applies and delivery continues; the send ENDS the pass")
+        self.assertEqual(km._pending_ops.get(SID), [("effort", "high")], "the effort waits for that turn")
+        km._apply_pending_ops()                        # the send's turn ended (still quiet in this fixture)
+        self.assertEqual(self.be.calls, [("model", "opus"), ("send", "go"), ("effort", "high")])
         self.assertEqual(self.echoes, [("go", "human")], "echo only where the send path echoed")
         self.assertNotIn(SID, km._pending_ops, "consumed — never re-delivered")
+
+    def test_compact_clicked_mid_turn_parks_and_fires_at_turn_end(self):
+        # the user 2026-07-02: the compact icon "blinked and nothing happened" while the session worked.
+        # The click now parks a ("compact",) op — the queued /compact chip is the acknowledgement — and
+        # fires the real /compact when the turn ends, marking compacting for every surface.
+        km._pending_ops[SID] = [("compact",), ("send", "and then this", None)]
+        km.Sessions.backend_for = lambda sid: self.be
+        km._compacting_now = lambda sid: False
+        km._working_now = lambda sid: True
+        km._apply_pending_ops()
+        self.assertEqual(self.be.calls, [], "turn still open → the /compact waits")
+        km._working_now = lambda sid: False
+        marked = []
+        saved_mark = km._mark_compacting
+        km._mark_compacting = lambda sid: marked.append(sid)
+        try:
+            km._apply_pending_ops()
+        finally:
+            km._mark_compacting = saved_mark
+        self.assertEqual(self.be.calls, [("send", "/compact")], "the parked compact fires — and ONLY it")
+        self.assertEqual(marked, [SID], "the compacting cue lights every surface at once")
+        self.assertEqual(km._pending_ops.get(SID), [("send", "and then this", None)],
+                         "the message waits for the compaction to finish (press order)")
+
+    def test_an_open_turn_parks_everything_too(self):
+        # the user 2026-07-02 ×2 ("interrupted, picked a model, sent a message — the model never
+        # registered and the message vanished"): input fired into a busy/tearing-down session races and
+        # drops. The gate now parks EVERY drive op while a turn is open (the interrupt-settling window
+        # keeps the turn open until the stop lands, so the whole scenario chains in press order).
+        km._compacting_now = lambda sid: False
+        km._working_now = lambda sid: True
+        km._set_model_or_park(self.be, SID, "opus")
+        km._send_or_park(self.be, SID, "now do it", echo="human")
+        self.assertEqual(self.be.calls, [], "nothing fires into an open turn")
+        self.assertEqual(self.echoes, [], "no orphan echo either")
+        self.assertEqual(km._pending_ops.get(SID),
+                         [("model", "opus"), ("send", "now do it", "human")], "press order, as chips")
+
+    def test_a_nonempty_queue_chains_everything_behind_it(self):
+        # strict press-order (the user 2026-07-02): once ANYTHING is parked, later ops park behind it even
+        # if the session is not compacting — otherwise a send would race ahead via the backend's native queue.
+        km._compacting_now = lambda sid: False
+        km._pending_ops[SID] = [("compact",)]
+        km._send_or_park(self.be, SID, "after the compact", echo="human")
+        km._set_model_or_park(self.be, SID, "opus")
+        self.assertEqual(self.be.calls, [], "nothing fires directly while a queue exists")
+        self.assertEqual(km._pending_ops.get(SID),
+                         [("compact",), ("send", "after the compact", "human"), ("model", "opus")])
 
     def test_dead_session_queue_is_dropped_not_retried(self):
         km._pending_ops[SID] = [("send", "into the void", None)]
