@@ -29,19 +29,37 @@ test("the band's glow is the dots' expanding white ring — one visual language"
   assert.match(CSS, /\.rail-band \{[^}]*box-shadow: 0 0 0 2px rgba\(255, 255, 255, 0\.85\)/);
 });
 
-test("every band edge lands ON A DOT — the rail's only meaningful y-coordinates", () => {
-  // the user 2026-07-02 ×3: box-boundary edges and uuid-gap slices read as arbitrary cuts. railDotAbove/
-  // railDotBelow WALK to the nearest dot (up from the band's first turn, down past its last); turn-box
-  // edges remain only as the transcript-end fallback where no bounding dot exists.
+test("every band edge lands ON A DOT — and ONLY between dots (no lineless glow)", () => {
+  // the user 2026-07-02 ×3 + 2026-07-03: box-boundary edges read as arbitrary cuts, and the box-bottom
+  // fallback painted glow over the LINELESS stub after the last event. The band now exists solely
+  // between dots: no bounding dot → clamp to the run's own dots; none at all → no band.
   assert.match(SRC, /function railDotAbove\(turn: HTMLElement, hostR: DOMRect\)/);
   assert.match(SRC, /function railDotBelow\(turn: HTMLElement, hostR: DOMRect\)/);
   const fn = SRC.slice(SRC.indexOf("function paintRailBand"), SRC.indexOf("function paintGlowRuler"));
-  assert.match(fn, /const top = railDotAbove\(first, hostR\) \?\? \(first\.getBoundingClientRect\(\)\.top - hostR\.top\);/);
-  assert.match(fn, /const bottom = railDotBelow\(last, hostR\) \?\? \(last\.getBoundingClientRect\(\)\.bottom - hostR\.top\);/);
+  assert.match(fn, /const top = railDotAbove\(first, hostR\) \?\? railDotBelow\(first, hostR\);/);
+  assert.match(fn, /const bottom = railDotBelow\(last, hostR\) \?\? railDotAbove\(last, hostR\);/);
+  assert.match(fn, /if \(top == null \|\| bottom == null\) continue;/, "no dots → no band, never a box edge");
   assert.match(SRC, /paintRailBand\(\);\s*\/\/ one continuous measured band/, "painted with every glow application");
   assert.match(CSS, /\.rail-band \{ position: absolute; width: 2px;[^}]*box-shadow: 0 0 0 2px rgba\(255, 255, 255, 0\.85\)/);
   assert.match(CSS, /\.rail-band \{[^}]*pointer-events: none/, "the band never intercepts the strip's hover");
   assert.doesNotMatch(CSS, /\.turn\.ext-glow::before|\.turn\.rail-glow::before/, "no per-turn slice glows remain");
+});
+
+test("the band is a CAPSULE outline: runs break at each dot's ring, nothing intersects", () => {
+  // the user 2026-07-03: the straight ring crossed THROUGH the circles' outlines. Sub-bands now stop
+  // tangentially short of every dot in range (RAIL_DOT_CLEAR) and the dot's own ring takes over.
+  assert.match(SRC, /const RAIL_DOT_CLEAR = 7;/);
+  assert.match(SRC, /function railDotsBetween\(host: HTMLElement, hostR: DOMRect, top: number, bottom: number\)/);
+  assert.match(SRC, /const stops = \[top, \.\.\.dots\.map\(\(d\) => d\.y\), bottom\];/);
+  assert.match(SRC, /d\.el\.classList\.add\("rail-ring"\);/, "every dot along the band wears the ring");
+  assert.match(CSS, /\.dot\.rail-ring \{ box-shadow: 0 0 0 2px rgba\(255, 255, 255, 0\.85\); \}/);
+});
+
+test("the hover strip exists only where the line does (the last turn's 16px stub)", () => {
+  assert.match(CSS, /\.turn:last-child \.rail-hit \{ bottom: auto; height: 16px; \}/);
+  // local hover past the last dot draws nothing — there is no complete inter-dot span there
+  const wire = SRC.slice(SRC.indexOf("function wireTurnHover"), SRC.indexOf("function applyGlow"));
+  assert.match(wire, /if \(top != null && bottom != null\) drawRailBand\(host, hostR, turn, top, bottom, true\);/);
 });
 
 test("the strip hugs the line and never steals the dot's hover", () => {

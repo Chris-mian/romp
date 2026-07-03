@@ -626,14 +626,18 @@ function wireTurnHover(turn: HTMLElement, dot: HTMLElement | null, uuid: string 
     if (host) {
       document.querySelectorAll(".rail-band-local").forEach((n) => n.remove());
       const hostR = host.getBoundingClientRect();
-      const top = railDotAbove(turn, hostR) ?? (turn.getBoundingClientRect().top - hostR.top);
-      const bottom = railDotBelow(turn, hostR) ?? (turn.getBoundingClientRect().bottom - hostR.top);
-      drawRailBand(host, hostR, turn, top, bottom, true);
+      // dots only (the user 2026-07-03): hovering past the last dot draws NOTHING locally — there is no
+      // complete inter-dot span there (the cross-highlight still fires below; the fan-back band renders
+      // dot-clamped if the segment has one).
+      const top = railDotAbove(turn, hostR);
+      const bottom = railDotBelow(turn, hostR);
+      if (top != null && bottom != null) drawRailBand(host, hostR, turn, top, bottom, true);
     }
     railTimer = setTimeout(() => { railTimer = undefined; if (activeId) vscodeApi?.postMessage({ type: "dotHover", sid: activeId, uuid, t, tlId }); }, 120);
   });
   rail.addEventListener("mouseleave", () => {
     document.querySelectorAll(".rail-band-local").forEach((n) => n.remove());
+    if (!document.querySelector(".rail-band")) clearRailRings();   // fan-back band may still own the rings
     if (railTimer) { clearTimeout(railTimer); railTimer = undefined; return; }
     vscodeApi?.postMessage({ type: "dotHover" });
   });
@@ -687,13 +691,40 @@ function railDotBelow(turn: HTMLElement, hostR: DOMRect): number | null {
   }
   return null;
 }
+// The band renders as a CAPSULE OUTLINE (the user 2026-07-03): straight ring-runs between dots that
+// break tangentially at each dot's own white ring — the bracketing lines "turn into the lines around
+// the circle and go around", never crossing through it. 7px ≈ where the band ring's edge (±3px off the
+// line) meets the dot ring's outer circle (r 7.5) tangentially.
+const RAIL_DOT_CLEAR = 7;
+function railDotsBetween(host: HTMLElement, hostR: DOMRect, top: number, bottom: number): Array<{ el: HTMLElement; y: number }> {
+  const out: Array<{ el: HTMLElement; y: number }> = [];
+  host.querySelectorAll<HTMLElement>(".turn .dot").forEach((d) => {
+    const r = d.getBoundingClientRect();
+    const y = r.top + r.height / 2 - hostR.top;
+    if (y >= top - 1 && y <= bottom + 1) out.push({ el: d, y });
+  });
+  return out.sort((a, b) => a.y - b.y);
+}
 function drawRailBand(host: HTMLElement, hostR: DOMRect, xRef: HTMLElement, top: number, bottom: number, local: boolean): void {
   if (bottom <= top) return;
-  const band = el("div", "rail-band" + (local ? " rail-band-local" : ""));
-  band.style.left = `${xRef.getBoundingClientRect().left - hostR.left + 10.5}px`;   // hug the rail line (.turn::before x)
-  band.style.top = `${top}px`;
-  band.style.height = `${bottom - top}px`;
-  host.appendChild(band);
+  const left = `${xRef.getBoundingClientRect().left - hostR.left + 10.5}px`;   // hug the rail line (.turn::before x)
+  const cls = "rail-band" + (local ? " rail-band-local" : "");
+  const dots = railDotsBetween(host, hostR, top, bottom);
+  // every dot along the band wears the ring — it IS the band's outline where the line meets a circle
+  for (const d of dots) d.el.classList.add("rail-ring");
+  const stops = [top, ...dots.map((d) => d.y), bottom];
+  for (let i = 0; i < stops.length - 1; i++) {
+    const a = stops[i] + RAIL_DOT_CLEAR, b = stops[i + 1] - RAIL_DOT_CLEAR;
+    if (b <= a) continue;                       // dots closer than the clearance → the rings alone carry it
+    const band = el("div", cls);
+    band.style.left = left;
+    band.style.top = `${a}px`;
+    band.style.height = `${b - a}px`;
+    host.appendChild(band);
+  }
+}
+function clearRailRings(): void {
+  document.querySelectorAll(".dot.rail-ring").forEach((n) => n.classList.remove("rail-ring"));
 }
 
 // ONE continuous rail band per hovered segment: from the segment's own prompt dot down to the NEXT dot
@@ -701,13 +732,18 @@ function drawRailBand(host: HTMLElement, hostR: DOMRect, xRef: HTMLElement, top:
 // re-render wipes it and the next hover tick repaints — same transient contract as .ext-glow itself.
 function paintRailBand(): void {
   document.querySelectorAll(".rail-band").forEach((n) => n.remove());
+  clearRailRings();
   for (const v of views.values()) {
     const glowed = Array.from(v.el.querySelectorAll<HTMLElement>(".turn.ext-glow"));
     if (!glowed.length) continue;
     const hostR = v.el.getBoundingClientRect();
     const first = glowed[0], last = glowed[glowed.length - 1];
-    const top = railDotAbove(first, hostR) ?? (first.getBoundingClientRect().top - hostR.top);
-    const bottom = railDotBelow(last, hostR) ?? (last.getBoundingClientRect().bottom - hostR.top);
+    // dots ONLY — the band exists solely between dots (the user 2026-07-03: the rail line itself is
+    // stubbed after the last event, so nothing may glow over that lineless space; an unterminated tail
+    // isn't a unit yet). No bounding dot below → clamp to the run's own last dot; none at all → no band.
+    const top = railDotAbove(first, hostR) ?? railDotBelow(first, hostR);
+    const bottom = railDotBelow(last, hostR) ?? railDotAbove(last, hostR);
+    if (top == null || bottom == null) continue;
     drawRailBand(v.el, hostR, first, top, bottom, false);
   }
 }

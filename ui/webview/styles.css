@@ -1510,6 +1510,11 @@ pre.has-copy:hover .code-copy, .code-copy:focus-visible { opacity: 0.9; }
    each turn's rail segment (the line is .turn::before — a pseudo can't take pointer events); hovering it
    white-rings the SEGMENT (same expanding ring as the dots) and cross-highlights the timeline/feed. */
 .rail-hit { position: absolute; left: 7px; top: 0; bottom: 0; width: 9px; cursor: pointer; z-index: 0; }
+/* the LAST turn's rail line is a 16px stub (the rail visually ends at the last event) — the hover strip
+   shrinks to match, so only the drawn line is hoverable (the user 2026-07-03) */
+.turn:last-child .rail-hit { bottom: auto; height: 16px; }
+/* a dot the glow band runs through: its ring IS the band's outline there (the capsule look) */
+.dot.rail-ring { box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.85); }
 
 /* composer drop cue: dragging a file over the box shows it will be accepted
    (its path gets inserted at the cursor on drop) */
