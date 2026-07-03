@@ -2474,6 +2474,46 @@ def _tunnel_argv(r):
              r["host"]])
 
 
+# ── remote-kernel bootstrap ("install romp normally, then attach just works" — the user 2026-07-03) ──
+# Attaching a host whose kernel isn't running shouldn't be an error the user must fix by hand: if romp
+# is INSTALLED there (a clone + ./install.sh), the attach starts its kernel over ssh and carries on.
+# Only a host with no romp at all reports a next-step detail instead.
+_BOOT_WAIT_S = 15   # how long attach waits for a bootstrapped kernel's port to come up (patched in tests)
+
+def _remote_kernel_up(host, port):
+    """True when something listens on the remote kernel port — a bash /dev/tcp probe, so it needs no
+    curl/nc on the remote (bash is everywhere romp runs)."""
+    cmd = "bash -c 'exec 3<>/dev/tcp/127.0.0.1/%d' 2>/dev/null && echo UP || echo DOWN" % int(port)
+    try:
+        r = subprocess.run([SSH_BIN] + _SSH_OPTS + [host, cmd], capture_output=True, text=True, timeout=15)
+        return "UP" in (r.stdout or "")
+    except Exception:
+        return False
+
+
+def _start_remote_kernel(host):
+    """Start the remote kernel: nohup romp-serve, found on PATH or in conventional clone locations
+    (a non-login ssh shell often lacks the user's PATH additions). romp-serve itself picks the right
+    python (its pick_python) and self-builds stale UI bundles, so a plain clone is enough. Returns
+    (started, detail) — detail names the next step when romp isn't installed there."""
+    cmd = ('S="$(command -v romp-serve || true)"; '
+           'if [ -z "$S" ]; then for d in "$HOME/GitRepos/romp" "$HOME/romp" "$HOME/code/romp" "$HOME/src/romp"; do '
+           'if [ -x "$d/bin/romp-serve" ]; then S="$d/bin/romp-serve"; break; fi; done; fi; '
+           'if [ -z "$S" ]; then echo NOROMP; exit 0; fi; '
+           'LOGDIR="${XDG_STATE_HOME:-$HOME/.local/state}/romp"; mkdir -p "$LOGDIR"; '
+           'nohup "$S" >>"$LOGDIR/kernel.log" 2>&1 </dev/null & echo "STARTED:$S"')
+    try:
+        r = subprocess.run([SSH_BIN] + _SSH_OPTS + [host, cmd], capture_output=True, text=True, timeout=25)
+        out = (r.stdout or "").strip()
+        if "STARTED" in out:
+            return True, out.partition(":")[2]
+        if "NOROMP" in out:
+            return False, "romp not installed on %s — clone it and run ./install.sh" % host
+        return False, (r.stderr or out or "ssh failed").strip()[:200]
+    except Exception as e:
+        return False, str(e)
+
+
 def _reap_stray_tunnels(host):
     """Kill orphaned ssh tunnel procs for `host` left by a PREVIOUS kernel or a re-attach — a kernel restart
     reparents them to init and they keep holding the -L/-R ports, so a fresh spawn would leak a second tunnel
@@ -2571,6 +2611,25 @@ def attach_remote(host, kernel_port=None):
         elif kernel_port:
             r["kernel_port"] = int(kernel_port)
     token = _fetch_remote_token(host)              # ssh round-trip, outside the lock
+    # BOOTSTRAP: no token yet (the kernel there never ran) or nothing listening on its port → start
+    # romp-serve over ssh and wait for the port, so "install romp on the box, click attach" is the
+    # whole story. A healthy remote costs one extra ssh probe; a romp-less host gets a next-step
+    # detail in the popover instead of a dead tunnel.
+    kernel_port, boot_detail = r["kernel_port"], ""
+    if not token or not _remote_kernel_up(host, kernel_port):
+        with _remotes_lock:
+            rr = _remotes.get(host)
+            if rr:
+                rr["status"], rr["detail"] = "starting", "starting the remote kernel"
+        started, detail = _start_remote_kernel(host)
+        if started:
+            deadline = time.time() + _BOOT_WAIT_S
+            while time.time() < deadline and not _remote_kernel_up(host, kernel_port):
+                time.sleep(1.0)
+            if not token:
+                token = _fetch_remote_token(host)  # the fresh kernel wrote its serve-token on startup
+        elif not token:
+            boot_detail = detail                   # applied below, AFTER _spawn_tunnel resets detail
     with _remotes_lock:
         r = _remotes.get(host)
         if r is None:                              # detached mid-fetch
@@ -2579,6 +2638,8 @@ def attach_remote(host, kernel_port=None):
             r["token"] = token
         if not _tunnel_proc_alive(r):
             _spawn_tunnel(r)
+        if boot_detail and not token:
+            r["detail"] = boot_detail              # the popover's next step (e.g. "run bin/romp-host-setup")
         pub = _remote_public(r)
     _remotes_save()
     _tunnel_wake.set()

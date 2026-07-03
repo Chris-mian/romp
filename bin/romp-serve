@@ -44,6 +44,24 @@ fi
 
 [[ -x "$KERNEL" ]] || { echo "romp-serve: kernel not found/executable at $KERNEL" >&2; exit 1; }
 
+# The kernel runs on the best python available, not blindly `python3`: the Agent SDK backend is
+# imported INTO the kernel process and needs >= 3.10, while some hosts pin the system python3 older
+# (Ubuntu 20.04 = 3.8) with a newer one alongside (e.g. a uv-managed 3.12 in ~/.local/bin — probed
+# explicitly because a non-login ssh shell doesn't have it on PATH). ROMP_PYTHON overrides.
+# KEEP IN SYNC with bin/romp-sdk-setup's pick_python — the SDK venv must be built with the SAME
+# interpreter the kernel runs (its site-packages are added to the kernel's sys.path).
+pick_python() {
+    if [[ -n "${ROMP_PYTHON:-}" ]]; then echo "$ROMP_PYTHON"; return; fi
+    local v c
+    for v in 3.13 3.12 3.11 3.10; do
+        for c in "python$v" "$HOME/.local/bin/python$v"; do
+            if command -v "$c" >/dev/null 2>&1; then command -v "$c"; return; fi
+        done
+    done
+    command -v python3 || { echo "romp: no python3 on PATH" >&2; exit 1; }
+}
+PY="$(pick_python)"
+
 # Map onto the kernel's env, then exec it (preserving the PID for the manager).
 # ROMP_MANAGER_PID (parent-death watchdog) and ROMP_SERVE_TOKEN (auto-loaded from the
 # persisted token file if unset) flow through untouched. ROMP_KERNEL_NO_OPEN keeps a
@@ -53,4 +71,4 @@ export ROMP_BIN="${ROMP_BIN:-$ROMP_DIR/bin/romp}"
 [[ -n "$port" ]] && export ROMP_KERNEL_PORT="$port"
 export ROMP_SERVE_HOST="$host"
 export ROMP_KERNEL_NO_OPEN=1
-exec "$KERNEL"
+exec "$PY" "$KERNEL"

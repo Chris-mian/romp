@@ -1,16 +1,47 @@
 #!/usr/bin/env bash
 # romp-sdk-setup — provision the Claude Agent SDK for romp's non-tmux backend.
 #
-# The kernel runs on the system python3; rather than install the SDK there (PEP 668 /
-# externally-managed envs), we keep it in a DEDICATED venv under romp's state dir and the
-# kernel adds that venv's site-packages to sys.path (see _ensure_sdk_on_path in bin/romp-kernel).
-# The venv is built with the SAME python3 the kernel uses, so the ABI matches. Idempotent;
-# the tmux backend is unaffected whether or not this is run. Re-run to upgrade the SDK.
+# Rather than install the SDK into the system python (PEP 668 / externally-managed envs), we keep
+# it in a DEDICATED venv under romp's state dir and the kernel adds that venv's site-packages to
+# sys.path (see _ensure_sdk_on_path in bin/romp-kernel). The venv is built with the SAME python the
+# kernel runs (pick_python below matches bin/romp-serve's), so the ABI matches — and if the picked
+# python changes (say a 3.12 lands next to the 3.8 the venv was built with), the venv is REBUILT to
+# match. Idempotent; the tmux backend is unaffected whether or not this is run. Re-run to upgrade.
 set -euo pipefail
 STATE="${XDG_STATE_HOME:-$HOME/.local/state}/romp"
 VENV="$STATE/sdkvenv"
-PY="$(command -v python3)"
+
+# The Agent SDK needs python >= 3.10; some hosts pin the system python3 older (Ubuntu 20.04 = 3.8)
+# with a newer one alongside (e.g. a uv-managed 3.12 in ~/.local/bin — probed explicitly because a
+# non-login ssh shell doesn't have it on PATH). ROMP_PYTHON overrides.
+# KEEP IN SYNC with bin/romp-serve's pick_python — the kernel must run the interpreter this venv
+# is built with.
+pick_python() {
+    if [[ -n "${ROMP_PYTHON:-}" ]]; then echo "$ROMP_PYTHON"; return; fi
+    local v c
+    for v in 3.13 3.12 3.11 3.10; do
+        for c in "python$v" "$HOME/.local/bin/python$v"; do
+            if command -v "$c" >/dev/null 2>&1; then command -v "$c"; return; fi
+        done
+    done
+    command -v python3 || { echo "romp: no python3 on PATH" >&2; exit 1; }
+}
+PY="$(pick_python)"
+
+pyver() { "$1" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || echo "?"; }
+if ! "$PY" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)'; then
+  echo "romp-sdk-setup: best python found is $PY ($(pyver "$PY")) but claude-agent-sdk needs >= 3.10." >&2
+  echo "romp-sdk-setup: install one (e.g. 'uv python install 3.12') and re-run. tmux sessions are unaffected." >&2
+  exit 1
+fi
+
 mkdir -p "$STATE"
+# a venv built with a DIFFERENT python than the kernel will run is worse than none — the kernel
+# imports its site-packages in-process. Rebuild on mismatch.
+if [ -x "$VENV/bin/python" ] && [ "$(pyver "$VENV/bin/python")" != "$(pyver "$PY")" ]; then
+  echo "romp-sdk-setup: venv python $(pyver "$VENV/bin/python") != kernel python $(pyver "$PY") — rebuilding"
+  rm -rf "$VENV"
+fi
 if [ ! -x "$VENV/bin/python" ]; then
   echo "romp-sdk-setup: creating venv at $VENV (python: $PY)"
   "$PY" -m venv "$VENV"

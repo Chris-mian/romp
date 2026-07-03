@@ -86,7 +86,13 @@ ln -sf "$ROMP_DIR/claude/skills/romp" "$HOME/.claude/skills/romp"
 ln -sf "$ROMP_DIR/claude/skills/romp-postal" "$HOME/.claude/skills/romp-postal"
 echo "  Symlinked romp + romp-postal skills"
 
-if [[ -x "$ROMP_DIR/chat-view/install.sh" ]]; then
+# The Agent SDK venv — romp's non-tmux backend. Best-effort: a host without python >= 3.10 still
+# works fully for tmux sessions (romp-sdk-setup says what to install). Opt out with ROMP_NO_SDK=1.
+if [[ -z "${ROMP_NO_SDK:-}" && -x "$ROMP_DIR/bin/romp-sdk-setup" ]]; then
+    "$ROMP_DIR/bin/romp-sdk-setup" || echo "  (SDK backend not provisioned — tmux sessions unaffected)"
+fi
+
+if [[ -z "${ROMP_NO_EXT:-}" && -x "$ROMP_DIR/chat-view/install.sh" ]]; then
     echo "  Installing romp-chat-view extension..."
     "$ROMP_DIR/chat-view/install.sh" || echo "  (romp-chat-view install skipped/failed)"
 fi

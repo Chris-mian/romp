@@ -34,10 +34,38 @@ MOCK_SSH = """#!/usr/bin/env bash
 for a in "$@"; do
   case "$a" in
     *serve-token*) echo "%s"; exit 0;;
+    *dev/tcp*) echo UP; exit 0;;      # the attach bootstrap's port probe: kernel already running
   esac
 done
 sleep 20    # the -N tunnel: block so the proc looks alive
 """ % FAKE_TOKEN
+
+# A REMOTE WITH NO RUNNING KERNEL: stateful mock — serve-token/port-probe fail until the "start"
+# command runs (which drops a marker file), then both succeed. Drives the attach bootstrap end to
+# end: probe DOWN → start → wait → probe UP → token fetched.
+MOCK_SSH_BOOT = """#!/usr/bin/env bash
+MARK="%s"
+for a in "$@"; do
+  case "$a" in
+    *serve-token*) if [ -f "$MARK" ]; then echo "%s"; else exit 1; fi; exit 0;;
+    *dev/tcp*) if [ -f "$MARK" ]; then echo UP; else echo DOWN; fi; exit 0;;
+    *romp-serve*) touch "$MARK"; echo "STARTED:$HOME/GitRepos/romp/bin/romp-serve"; exit 0;;
+  esac
+done
+sleep 20
+""" % ("%s", FAKE_TOKEN)
+
+# A HOST WITHOUT ROMP: probes fail and the start command reports NOROMP.
+MOCK_SSH_NOROMP = """#!/usr/bin/env bash
+for a in "$@"; do
+  case "$a" in
+    *serve-token*) exit 1;;
+    *dev/tcp*) echo DOWN; exit 0;;
+    *romp-serve*) echo NOROMP; exit 0;;
+  esac
+done
+sleep 20
+"""
 
 
 def _req(port, method, path, body=None):
@@ -199,6 +227,53 @@ class WakeRouter(unittest.TestCase):
         # but crucially the stub remote sees nothing).
         _req(self.port, "POST", "/deliver", {"id": "some-local-sid", "text": "hi"})
         self.assertEqual(_StubRemoteKernel.received, [], "a local sid must never forward to a remote kernel")
+
+
+class BootstrapRemoteKernel(unittest.TestCase):
+    """'Install romp normally, then attach just works' (the user 2026-07-03): attaching a host whose
+    kernel isn't running STARTS it over ssh (romp-serve, nohup) and then fetches the fresh token; a
+    host without romp at all gets a next-step detail in the popover instead of a dead tunnel."""
+
+    def setUp(self):
+        self.td = tempfile.mkdtemp()
+        km._remotes.clear()
+        self.saved_wait = km._BOOT_WAIT_S
+        km._BOOT_WAIT_S = 3
+        self.srv = ThreadingHTTPServer(("127.0.0.1", 0), km.Handler)
+        self.port = self.srv.server_address[1]
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+
+    def tearDown(self):
+        for host in list(km._remotes):
+            km.detach_remote(host)
+        km._remotes.clear()
+        km._BOOT_WAIT_S = self.saved_wait
+        self.srv.shutdown()
+        self.srv.server_close()
+
+    def _mock(self, script):
+        ssh = os.path.join(self.td, "mock-ssh")
+        with open(ssh, "w") as f:
+            f.write(script)
+        os.chmod(ssh, os.stat(ssh).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+        km.SSH_BIN = ssh
+
+    def test_attach_starts_a_stopped_remote_kernel_and_fetches_its_token(self):
+        marker = os.path.join(self.td, "kernel-started")
+        self._mock(MOCK_SSH_BOOT % marker)
+        status, body = _req(self.port, "POST", "/tunnels", {"host": "testhost"})
+        self.assertEqual(status, 200)
+        self.assertTrue(os.path.exists(marker), "the bootstrap ran the remote start command")
+        self.assertEqual(body["tunnel"]["token"], FAKE_TOKEN,
+                         "the token is fetched AFTER the bootstrapped kernel comes up")
+
+    def test_attach_without_romp_reports_the_next_step(self):
+        self._mock(MOCK_SSH_NOROMP)
+        status, body = _req(self.port, "POST", "/tunnels", {"host": "barehost"})
+        self.assertEqual(status, 200)
+        self.assertEqual(body["tunnel"]["token"], "", "no kernel to authorize against")
+        self.assertIn("install.sh", body["tunnel"]["detail"],
+                      "the popover tells the user the one command to run")
 
 
 class ReapStrayTunnels(unittest.TestCase):
