@@ -272,15 +272,15 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
   border: 1px solid var(--card-border); border-radius: 6px; font: inherit; font-size: 0.74em;
   cursor: pointer; white-space: nowrap; transition: color 0.12s ease, border-color 0.12s ease; }
 .fask-secbtn:hover { color: var(--fg); border-color: var(--fg); }
-/* the open sections' collapse control: block-level → its own line, bottom-left under the text.
-   It sits INSIDE the 0.86em body text, so its 0.74em base would compound smaller than the
-   background/summary/Clear buttons — 0.86em here ≈ 0.74 of the card, the same computed size
-   (the user 2026-07-02: all these buttons read as one family). */
-.fask-less { display: block; margin-top: 5px; font-size: 0.86em; }
+/* the open sections' collapse control: a SIBLING row after the body, never a child of it — the summary
+   text is a deep-link whose hover underline/fill must not light the button (different click functions;
+   the user 2026-07-02). The full-width row div gives it its own line, bottom-left, without stretching
+   the button box; the button keeps the plain .fask-secbtn size (no nesting, no compounding). */
+.fask-lessrow { flex: 1 1 100%; min-width: 0; margin-top: 2px; }
 /* one empty text line separates the background part from the summary part ONLY while either section
-   is expanded (.gap, set in applyDistillSections); two collapsed buttons fall tight together. The
-   margin rides whichever bg element is VISIBLE (button or body) — display:none drops the other's. */
-.fask-secs.gap > .fask-bg-part { margin-bottom: 1.2em; }
+   is expanded; the margin rides whichever bg element is the section's LAST visible row (.fask-gapend,
+   set in applyDistillSections): the button when collapsed, the less row when open. */
+.fask-secs.gap > .fask-gapend { margin-bottom: 1.2em; }
 .fask-secs .fask-distill { flex: 1 1 100%; min-width: 0; margin: 0; }
 /* the background body is typographically IDENTICAL to the summary (.fask-distill) — same font size,
    line height, color, opacity (the user 2026-07-02: one text style for both sections) */
