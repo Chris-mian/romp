@@ -1031,6 +1031,30 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(p["tree"], [], "a placeholder carries no goal node")
         self.assertTrue(any(a["itemId"] == g1 for a in asks), "the real completed card is untouched")
 
+    def test_card_carries_the_auto_nudge_history(self):
+        # the stalled chip's EVIDENCE (the user 2026-07-02): a card whose goal the auto-nudge ledger has
+        # fired on carries nudged {count, times} — the chip tooltip + modal line say romp DID follow up,
+        # and when. The bare "stalled" label read like a state romp observed, not a nudge outcome
+        # (the SSH-thread confusion: two fires, invisible from the card).
+        g1, g2 = SID + ":g1", SID + ":g2"
+        self._goal_store(
+            {g1: {"id": g1, "text": "run the end-to-end test", "parentId": None, "nodeComplete": False,
+                  "blocked": False, "cleared": False, "trail": [], "t": T0},
+             g2: {"id": g2, "text": "an unrelated card", "parentId": None, "nodeComplete": False,
+                  "blocked": False, "cleared": False, "trail": [], "t": T0}},
+            {g1: "working", g2: "working"}, last=g1)
+        (jd.STATE / "auto-nudge.json").write_text(json.dumps(
+            {"enabled": True, "nudged": {g1: {"count": 2, "lastTurnId": SID + ":1:aa", "failed": True}}}))
+        (jd.STATE / "nudge-events.jsonl").write_text(
+            json.dumps({"sid": SID, "gid": g1, "t": NOW - 600, "count": 1}) + "\n"
+            + json.dumps({"sid": SID, "gid": g1, "t": NOW - 300, "count": 2}) + "\n")
+        km._autonudge_cache.clear(); km._nudge_times_cache.clear()
+        cards = {a["itemId"]: a for a in km.build_feed(NOW)["asks"]}
+        self.assertEqual(cards[g1]["nudged"], {"count": 2, "times": [NOW - 600, NOW - 300]},
+                         "the fires and their times ride the card")
+        self.assertTrue(cards[g1]["nudgeFailed"], "the failed stamp still drives the chip itself")
+        self.assertIsNone(cards[g2]["nudged"], "a never-nudged goal ships null")
+
     def test_provisional_card_surfaces_for_a_seam_tail(self):
         # design/segment-regrowth.md: a top settles while its placed segment keeps growing with real
         # work → the tail splits into a fresh unplaced segment, and the feed shows a Working placeholder

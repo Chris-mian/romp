@@ -33,3 +33,23 @@ test("a stalled floor renders its own '⏸ stalled' badge, not the picker fallba
 test("the chip has its own red pill style (waiting on the human now)", () => {
   assert.match(CSS, /\.fask-nudgefailed \{[^}]*color: #ff6a6a/);
 });
+
+// nudge HISTORY (the user 2026-07-02): the chip label says "stalled"; the EVIDENCE that romp did follow
+// up — how many times, and when — rides the card as `nudged` (kernel _nudge_times) and surfaces on the
+// chip tooltip + a modal line. Born of the SSH-thread confusion: two auto-nudges had fired, but nothing
+// card-side said so, so "stalled" read like romp never tried.
+test("the card carries the auto-nudge history and the chip tooltip cites it", () => {
+  assert.match(FEED, /nudged\?: \{ count: number; times: number\[\] \} \| null;/);
+  assert.match(FEED, /a\._nudgeFailed\.title = it\.nudged && it\.nudged\.times\.length/,
+    "with history the tooltip is dynamic…");
+  assert.match(FEED, /romp followed up \$\{it\.nudged\.count\}× \(\$\{it\.nudged\.times\.map\(clockHM\)\.join\(", "\)\}\)/);
+  assert.match(FEED, /: "romp followed up on this stalled goal once; the response didn't resolve it/,
+    "…and the static wording stays as the no-history floor");
+});
+
+test("the modal shows the follow-up history line for a single ask", () => {
+  assert.match(FEED, /const nudges = el\("div", "feed-modal-nudges"\)/, "built once in the modal foot chrome");
+  assert.match(FEED, /nudEl\.textContent = `romp followed up \$\{nu\.count\}× — \$\{nu\.times\.map\(clockHM\)\.join\(", "\)\}`;/);
+  assert.match(FEED, /nudEl\.style\.display = "none";/, "hidden when the target has no recorded fires");
+  assert.match(CSS, /\.feed-modal-nudges \{[^}]*color: var\(--dim\)/, "dim meta text, not a shouting banner");
+});
