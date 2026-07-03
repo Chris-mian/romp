@@ -259,30 +259,26 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
    when it's wired (the user 2026-06-29). A subtle rounded hover fill, like the modal's nav zones. */
 .fask-distill-link { cursor: pointer; border-radius: 6px; margin-left: -4px; margin-right: -4px; padding-left: 4px; padding-right: 4px; transition: background 0.1s ease; }
 .fask-distill-link:hover { background: rgba(255, 255, 255, 0.07); opacity: 1; text-decoration: underline; text-underline-offset: 2px; }
-/* the card's TWO collapsible distiller sections (the user 2026-07-02): BACKGROUND (collapsed by default,
-   re-orientation for a reader who forgot the thread) above the takeaway (expanded by default). Disclosure
-   is BARE muted text in the chat followup-header's language — "▸ background" flips to ▾ with the body
-   below, no border/pill/fill (Notion-toggle / Finder-disclosure; boxes read clunky). The open takeaway
-   has no header — its text IS the content, full card width — and collapses via a quiet trailing "less"
-   link (the App Store more/less pattern), reopening from a "▸ summary" row. */
-.fask-sec { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 6px; margin-top: 1px; }
-/* one empty text line separates the background from the summary ONLY while either section is
-   EXPANDED (.gap, set in applyDistillSections); two collapsed "▸ (…)" rows fall tight together
-   (the user 2026-07-02). display:none drops it entirely when there is no background section. */
-.fask-sec.fask-bg.gap { margin-bottom: 1.2em; }
-/* collapsed rows read at the SAME size as the body text they reveal (the user 2026-07-02) */
-.fask-sec-head { display: inline-flex; align-items: baseline; gap: 5px; padding: 0; border: 0;
-  background: none; color: var(--dim); font-size: 0.86em; line-height: 1.4; cursor: pointer; }
-.fask-sec-head:hover { color: var(--fg); }
-.fask-sec-tri { font-size: 0.9em; }
-/* the open sections' only control: a small inline "less" in the Clear button's chrome (.fdismiss —
-   same border/radius/muted text; a neutral hover, not Clear's destructive red), trailing the text */
-.fask-sec-less { display: inline-block; margin-left: 18px; padding: 0 7px;
-  color: var(--dim); background: transparent; border: 1px solid var(--card-border); border-radius: 6px;
-  font-size: 0.86em; line-height: 1.5; cursor: pointer; vertical-align: baseline;
-  transition: color 0.12s ease, border-color 0.12s ease; }
-.fask-sec-less:hover { color: var(--fg); border-color: var(--fg); }
-.fask-sec .fask-distill { flex: 1 1 0; min-width: 0; margin: 0; }
+/* the card's TWO collapsible distiller sections (the user 2026-07-02, round 5): BACKGROUND (collapsed
+   by default, re-orientation for a reader who forgot the thread) above the takeaway (expanded by
+   default). Collapsed sections are REAL buttons — "background" / "summary" in the Clear button's chrome
+   (border, radius, muted text; NEUTRAL hover, not Clear's destructive red) — and ONE flex-wrap container
+   holds everything: the full-width bodies force their own lines, so two collapsed buttons naturally
+   share a row. Open, the body runs the full card width and collapses via a block "less" button on its
+   own line under the text, always bottom-left (the trailing-inline placement wrapped unpredictably —
+   the user's screenshot). */
+.fask-secs { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 6px; margin-top: 2px; }
+.fask-secbtn { flex: none; padding: 1px 9px; color: var(--dim); background: transparent;
+  border: 1px solid var(--card-border); border-radius: 6px; font: inherit; font-size: 0.74em;
+  cursor: pointer; white-space: nowrap; transition: color 0.12s ease, border-color 0.12s ease; }
+.fask-secbtn:hover { color: var(--fg); border-color: var(--fg); }
+/* the open sections' collapse control: block-level → its own line, bottom-left under the text */
+.fask-less { display: block; margin-top: 5px; }
+/* one empty text line separates the background part from the summary part ONLY while either section
+   is expanded (.gap, set in applyDistillSections); two collapsed buttons fall tight together. The
+   margin rides whichever bg element is VISIBLE (button or body) — display:none drops the other's. */
+.fask-secs.gap > .fask-bg-part { margin-bottom: 1.2em; }
+.fask-secs .fask-distill { flex: 1 1 100%; min-width: 0; margin: 0; }
 /* the background body is typographically IDENTICAL to the summary (.fask-distill) — same font size,
    line height, color, opacity (the user 2026-07-02: one text style for both sections) */
 .fask-bg-body { flex: 1 1 100%; min-width: 0; font-size: 0.86em; line-height: 1.4; color: var(--fg);
@@ -382,6 +378,8 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 /* the DISTILLER's per-node line in the modal (restored 2026-06-29): a done node's takeaway / a blocked node's
    decision brief. No why-rationale lines (those stay removed); shown only when produced. pre-wrap for artifacts. */
 .ftree-summary { font-size: 0.86em; line-height: 1.45; margin: 2px 0 6px; color: var(--fg); white-space: pre-wrap; overflow-wrap: anywhere; }
+/* the modal's section labels ("background" / "summary") when the root node carries both (the user 2026-07-02) */
+.ftree-seclabel { font-size: 0.74em; color: var(--dim); margin-top: 4px; }
 .ftree-summary-link { cursor: pointer; border-radius: 6px; transition: background 0.1s ease; }
 .ftree-summary-link:hover { background: rgba(255, 255, 255, 0.07); text-decoration: underline; text-underline-offset: 2px; }
 .st-done .ftree-mark { color: var(--rel-done); }
