@@ -627,6 +627,49 @@ def segments(turn):
     return segs
 
 
+# ── settle-time SEAM split (design/segment-regrowth.md): when a goal settles while its segment is
+# still growing, the post-settle tail becomes its OWN segment so the planner can see it. The split
+# primitive lives here (pure over a segment); WHICH segments split — ownership via the goal store's
+# placements — is the judge's call (jd.apply_seams), keeping this layer store-free.
+SEAM_PROSE_FLOOR = 80                     # tail "real work" = a tool_use atom or assistant prose past this
+
+
+def _seam_real_work(atoms):
+    """True if `atoms` hold REAL work — any assistant tool_use, or assistant prose ≥ SEAM_PROSE_FLOOR
+    chars (above connective stubs). The event condition that gates a seam split: post-settle wrap-up
+    chatter never mints a noise segment."""
+    for a in atoms:
+        if a.get("type") != "assistant":
+            continue
+        blocks = _content(a.get("message"))
+        if not isinstance(blocks, list):
+            continue
+        for b in blocks:
+            if isinstance(b, dict) and b.get("type") == "tool_use":
+                return True
+        if len(_text_of(blocks)) >= SEAM_PROSE_FLOOR:
+            return True
+    return False
+
+
+def split_segment(seg, t):
+    """(head, tail) or None — split `seg` after the last atom at/before wall-clock `t` (a goal's settle
+    moment, design/segment-regrowth.md). None unless BOTH sides are non-empty and the tail holds real
+    work (_seam_real_work). The head keeps the original id (its t + trigger text are unchanged, so an
+    existing placement still matches); the tail is trigger-less, `seam`-flagged, with a STABLE id from
+    its own first atom — every pass re-derives the same split, so placement idempotency holds."""
+    atoms = seg.get("atoms") or []
+    head_a = [a for a in atoms if a.get("t", 0) <= t]
+    tail_a = [a for a in atoms if a.get("t", 0) > t]
+    if not head_a or not tail_a or not _seam_real_work(tail_a):
+        return None
+    rompuuid = atoms[0].get("session_id", "")
+    head = dict(seg, atoms=head_a, end=tail_a[0]["t"])
+    tail = {"t": tail_a[0]["t"], "end": seg["end"], "trigger": None, "atoms": tail_a, "seam": True,
+            "id": _segment_id(rompuuid, tail_a[0]["t"], tail_a, None)}
+    return head, tail
+
+
 # ═════════════════════════ assembly ═════════════════════════
 def _load_postal_index(postal_log):
     """{msg-id -> sender rompUuid} from timeline/messages.jsonl (`from_id` is the sender's

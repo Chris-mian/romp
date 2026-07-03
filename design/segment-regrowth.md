@@ -1,7 +1,10 @@
 # Segment regrowth: post-close pivot work is invisible to the planner
 
-Status: PROPOSED (the user 2026-07-02). Nothing here is built; the cite-miss warn chip
-(judge `_node_warn`, the yellow card chip) shipped separately and only makes the *symptom*
+Status: BUILT (2026-07-02). em.split_segment (the split primitive), judge `_stamp_seam` +
+`apply_seams` + seam-aware `_segs` across every judge consumer, kernel `_segs_seam` across
+bars/anchors/provisional; validated against the original incident's live transcript (the
+segment splits at the closer's settle moment and the tail plans as its own unit). The
+cite-miss warn chip (judge `_node_warn`) shipped separately and only makes the *symptom*
 visible — this doc is about the cause.
 
 ## The incident shape (synthetic)
@@ -85,6 +88,12 @@ segment and re-minted a card for the continuing work, romp would override the di
 moments after it was made. A cleared-but-working goal behaves exactly as today: the work
 continues invisibly under the cleared card, and if it later genuinely needs the user, the
 existing resurrection path (`reopened`) brings it back.
+
+One refinement the live data forced (found validating against the incident): ownership is
+captured IN the seam at stamp time (`segs`: the top's subtree trails + placements as
+timestamp-invariant keys), never re-resolved through live nodes at read time — the incident
+card was cleared within the hour and goal-store compaction archived its nodes, which would
+have silently re-merged the split and orphaned the tail's placement.
 
 Why this shape:
 

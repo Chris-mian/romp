@@ -4362,5 +4362,163 @@ class LivePickerBrief(unittest.TestCase):
         self.assertIsNone(jd.load_goals(SID)["nodes"][g].get("blockSummary"), "blockSummary stays null")
 
 
+class SeamRegrowth(unittest.TestCase):
+    """Settle-time seam (design/segment-regrowth.md): a top goal that settles while its placed segment
+    keeps GROWING splits that segment at the settle moment — the post-close tail becomes a fresh,
+    unplaced, plannable segment (trigger-less, seam-flagged), so pivot work can't hide behind the placed
+    head. Ownership-gated: only the settled top's own segment splits, and only when the tail holds REAL
+    work (tool_use / substantive prose) — wrap-up chatter never mints a noise segment."""
+
+    G1 = SID + ":g1"
+
+    def _records(self, tail, open_turn=True):
+        # one turn: prompt → real work → a wrap line, then `tail` records after the settle point (T0+100)
+        recs = [uline(T0, "fix A, B and C", "u1", ps="typed"),
+                aline(T0 + 20, "Working through the three items now.", "a1", "u1", tools=("Edit",), stop="tool_use"),
+                aline(T0 + 40, "All three merged and pushed, worktree cleaned up.", "a2", "a1",
+                      stop="tool_use" if (tail or open_turn) else "end_turn")]
+        recs += tail
+        return recs
+
+    def _store(self, seg_id, seam_t=T0 + 100, top_text="fix A, B and C"):
+        return {"rompUuid": SID, "seq": 2, "lastNode": self.G1,
+                "nodes": {self.G1: {"id": self.G1, "text": top_text, "parentId": None,
+                                    "nodeComplete": True, "blocked": False, "cleared": False,
+                                    "settledDone": True, "trail": [seg_id], "t": T0, "mt": T0 + 40}},
+                "placements": {seg_id: self.G1}, "status": {self.G1: "completed"},
+                "seams": [{"t": seam_t, "top": self.G1, "text": top_text,
+                           "segs": [jd._seg_key(seg_id)]}]}
+
+    def test_split_segment_splits_at_the_settle_moment(self):
+        tail = [aline(T0 + 200, "", "a3", "a2", tools=("Bash",), stop="tool_use"),
+                aline(T0 + 220, "Now digging into the flaky auth thing.", "a4", "a3", stop="tool_use")]
+        s = build_session(self._records(tail))
+        seg = em.segments(s["turns"][0])[0]
+        sp = em.split_segment(seg, T0 + 100)
+        self.assertIsNotNone(sp, "real post-settle work → the segment splits")
+        head, t = sp
+        self.assertEqual(head["id"], seg["id"], "the head keeps the placed id — placements still match")
+        self.assertEqual(head["end"], T0 + 200, "the head ends where the tail begins")
+        self.assertTrue(t.get("seam"), "the tail is seam-flagged")
+        self.assertIsNone(t["trigger"], "the tail has no human trigger")
+        self.assertNotEqual(t["id"], seg["id"])
+        self.assertEqual([a["uuid"] for a in t["atoms"]], ["a3", "a4"])
+        again = em.split_segment(em.segments(build_session(self._records(tail))["turns"][0])[0], T0 + 100)
+        self.assertEqual(again[1]["id"], t["id"], "the tail id is STABLE across passes — idempotency holds")
+
+    def test_split_refuses_wrapup_chatter(self):
+        # a short post-settle sign-off is NOT real work — no noise segment (the event-condition gate)
+        tail = [aline(T0 + 200, "Done. Signing off.", "a3", "a2", stop="end_turn")]
+        s = build_session(self._records(tail))
+        seg = em.segments(s["turns"][0])[0]
+        self.assertIsNone(em.split_segment(seg, T0 + 100))
+        self.assertIsNone(em.split_segment(seg, T0 + 500), "no atoms past the seam at all → no split")
+
+    def test_split_accepts_substantive_prose_as_real_work(self):
+        tail = [aline(T0 + 200, "Deep analysis of the auth flake: the token refresh races the retry "
+                                "loop whenever the clock skews, so the fix belongs in the backoff.",
+                      "a3", "a2", stop="tool_use")]
+        s = build_session(self._records(tail))
+        sp = em.split_segment(em.segments(s["turns"][0])[0], T0 + 100)
+        self.assertIsNotNone(sp, "assistant prose past the floor counts as real work")
+
+    def test_apply_seams_only_splits_the_seams_own_segments(self):
+        tail = [aline(T0 + 200, "", "a3", "a2", tools=("Bash",), stop="tool_use")]
+        s = build_session(self._records(tail))
+        seg = em.segments(s["turns"][0])[0]
+        store = self._store(seg["id"])
+        segs = jd.apply_seams([seg], store)
+        self.assertEqual(len(segs), 2, "the settled owner's segment splits")
+        self.assertEqual(segs[1]["seamOf"], {"top": self.G1, "text": "fix A, B and C"},
+                         "the tail names the goal it grew past")
+        other = self._store(seg["id"])
+        other["seams"][0]["segs"] = [jd._seg_key(SID + ":123:deadbeef")]   # someone ELSE's segment
+        self.assertEqual(len(jd.apply_seams([seg], other)), 1, "an unrelated top's settle never splits it")
+        unowned = self._store(seg["id"])
+        unowned["seams"][0]["segs"] = []                                   # nothing owned at settle time
+        self.assertEqual(len(jd.apply_seams([seg], unowned)), 1, "a seam with no owned segments never splits")
+
+    def test_apply_seams_survives_the_owner_being_cleared_and_archived(self):
+        # the live-data lesson (the user 2026-07-02): the incident card was CLEARED within the hour, and
+        # goal-store compaction archived its nodes out of the live store. Ownership lives on the SEAM
+        # (stamp-time keys), so the split — and every placement written against the tail — stays stable.
+        tail = [aline(T0 + 200, "", "a3", "a2", tools=("Bash",), stop="tool_use")]
+        s = build_session(self._records(tail))
+        seg = em.segments(s["turns"][0])[0]
+        store = self._store(seg["id"])
+        store["nodes"] = {}                                            # the Clear sweep archived everything
+        self.assertEqual(len(jd.apply_seams([seg], store)), 2,
+                         "an archived owner cannot re-merge the split")
+
+    def test_stamp_seam_captures_subtree_trails_and_placements(self):
+        # ownership is captured at STAMP time: the top's own trail, its children's trails, and any
+        # placement filed under the subtree — all as timestamp-invariant keys.
+        g1, kid = self.G1, SID + ":g2"
+        store = {"rompUuid": SID, "seq": 2, "lastNode": None,
+                 "nodes": {g1: {"id": g1, "text": "fix A, B and C", "parentId": None, "nodeComplete": True,
+                                "blocked": False, "cleared": False, "trail": [SID + ":100:aaaa1111"], "t": T0},
+                           kid: {"id": kid, "text": "a step", "parentId": g1, "nodeComplete": True,
+                                 "blocked": False, "cleared": False, "trail": [SID + ":200:bbbb2222"], "t": T0}},
+                 "placements": {SID + ":300:cccc3333": kid, SID + ":300:cccc3333#p": g1,
+                                SID + ":400:dddd4444": SID + ":gELSEWHERE"},
+                 "status": {}}
+        jd._stamp_seam(store, g1, NOW)
+        seam = store["seams"][0]
+        self.assertEqual(seam["t"], NOW)
+        self.assertEqual(seam["text"], "fix A, B and C")
+        self.assertEqual(seam["segs"], sorted({SID + ":aaaa1111", SID + ":bbbb2222", SID + ":cccc3333"}),
+                         "subtree trails + subtree placements, invariant-keyed; other goals' segments excluded")
+
+    def test_rollup_stamps_the_seam_once_at_the_settle_transition(self):
+        g = self.G1
+        store = {"rompUuid": SID, "seq": 1, "lastNode": None,
+                 "nodes": {g: {"id": g, "text": "the ask", "parentId": None, "nodeComplete": True,
+                               "blocked": False, "cleared": False, "trail": [], "t": T0, "mt": T0 + 40}},
+                 "placements": {}, "status": {}}
+        jd.rollup_status(store, True, now=NOW)
+        self.assertEqual(store["status"][g], "completed")
+        self.assertEqual([(x["t"], x["top"]) for x in store["seams"]], [(NOW, g)],
+                         "the settle transition stamps ONE seam")
+        jd.rollup_status(store, True, now=NOW + 50)
+        self.assertEqual(len(store["seams"]), 1, "an already-settled top never re-stamps")
+
+    def test_a_user_clear_never_stamps_a_seam(self):
+        g = self.G1
+        store = {"rompUuid": SID, "seq": 1, "lastNode": None,
+                 "nodes": {g: {"id": g, "text": "the ask", "parentId": None, "nodeComplete": False,
+                               "blocked": False, "cleared": True, "trail": [], "t": T0}},
+                 "placements": {}, "status": {}}
+        jd.rollup_status(store, True, now=NOW)
+        self.assertEqual(store["status"][g], "cleared")
+        self.assertNotIn("seams", store, "curation is not a settle (the user 2026-07-02)")
+
+    def test_plan_units_yields_the_seam_tail_as_a_noted_work_unit(self):
+        tail = [aline(T0 + 200, "", "a3", "a2", tools=("Bash",), stop="tool_use"),
+                aline(T0 + 220, "Poking at the flaky auth thing now, new thread.", "a4", "a3", stop="end_turn")]
+        s = build_session(self._records(tail, open_turn=False))
+        base_seg = em.segments(s["turns"][0])[0]
+        store = self._store(base_seg["id"])
+        units = {u[0]: u for u in jd.plan_units(s, store)}
+        tail_id = jd.apply_seams([base_seg], store)[1]["id"]
+        self.assertIn(tail_id, units, "the ENDED tail yields its own work unit")
+        seg_id, phase, seg_t, text, human, followup, trig, vq = units[tail_id]
+        self.assertEqual(phase, "work")
+        self.assertFalse(human)
+        self.assertTrue(text.startswith('NOTE: everything below happened AFTER the goal "fix A, B and C"'),
+                        "the planner is told this is post-close work: wrap-up → skip, pivot → mint")
+        self.assertIn("flaky auth", text, "…followed by the tail's real work text")
+
+    def test_plan_units_withholds_an_open_seam_tail(self):
+        # while the turn is still open the tail is the open-final segment; it has no human prompt, so no
+        # prompt-run fires — the provisional card covers the meanwhile, the work-run plans it at turn end.
+        tail = [aline(T0 + 200, "", "a3", "a2", tools=("Bash",), stop="tool_use")]
+        s = build_session(self._records(tail))
+        base_seg = em.segments(s["turns"][0])[0]
+        store = self._store(base_seg["id"])
+        tail_id = jd.apply_seams([base_seg], store)[1]["id"]
+        self.assertNotIn(tail_id, {u[0] for u in jd.plan_units(s, store)},
+                         "an open tail is withheld, exactly like any in-progress segment")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

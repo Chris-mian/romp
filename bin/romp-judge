@@ -542,7 +542,7 @@ def _has_asst_work(atoms):
     return False
 
 
-def _ready_tasks(session):
+def _ready_tasks(session, store=None):
     """Caption tasks. Two kinds (the user 2026-06-19):
       - kind 'prompt' = the MESSAGE caption, a gist of the user's ask. READY THE MOMENT THE MESSAGE LANDS
         (even the open final segment), so the timeline dot gets a gloss without waiting for the work. Keyed
@@ -559,7 +559,7 @@ def _ready_tasks(session):
         is_last_turn = ti == len(turns) - 1
         has_idle = any(a["type"] == "idle" for a in turn["atoms"])
         turn_open = is_last_turn and not turn["ended"] and not has_idle
-        segs = em.segments(turn)
+        segs = _segs(turn, store) if store is not None else em.segments(turn)   # seam-aware: the tail gets its own caption
         single = len(segs) == 1
         for si, seg in enumerate(segs):
             trig = next((a for a in seg["atoms"] if a.get("uuid") == seg.get("trigger")), None) or (seg["atoms"][0] if seg["atoms"] else None)
@@ -657,7 +657,7 @@ def tasks_for(fsid, leaf, files, now):
         pass
     session = parsed_session(fsid, files, now)
     tasks = []
-    for t in _ready_tasks(session):
+    for t in _ready_tasks(session, load_goals(fsid)):
         kind = t.get("kind", "work")
         text = _prompt_text(t["atoms"]) if kind == "prompt" else _unit_text(t["atoms"])
         task = {"kind": kind, "text": text, "writes": t["writes"]}
@@ -1316,7 +1316,43 @@ def apply_plan(store, seg_id, seg_t, ops, menu, place_key=None, prompt_uuid=None
         store["lastNode"] = focus                     # the active focus = top-goal of the latest placement
 
 
-def rollup_status(store, session_closed):
+SEAM_CAP = 32                             # live seam points kept per store (oldest drop; a seam only
+#                                           matters while its segment can still grow, so the cap is safe)
+
+
+def _stamp_seam(store, top, now):
+    """Record the settle-time SEAM for `top` (design/segment-regrowth.md): the wall-clock moment romp
+    concluded it was done. apply_seams splits a segment that top OWNS here if it keeps growing with
+    real work, making the post-close tail a fresh plannable segment — pivot work can't hide behind the
+    placed head. The seam captures the owned SEGMENT KEYS at stamp time (subtree trails + placements,
+    timestamp-invariant) because read-time ownership is fragile: a Clear archives the top's nodes out
+    of the live store (goal-store compaction), and a seam whose ownership vanished would silently
+    re-merge its split and orphan the tail's placement — the live incident's own card was cleared
+    within the hour. Store-level, append-only (a reopen + re-settle appends a NEW seam; old splits
+    stay stable), stamped only at the settledDone TRANSITION so it fires once per settle episode.
+    NEVER stamped for a user Clear — curation is not a settle (the user 2026-07-02)."""
+    nodes = store.get("nodes") or {}
+    kids = {}
+    for x, nd in nodes.items():
+        kids.setdefault(nd.get("parentId"), []).append(x)
+    segs, stack = set(), [top]
+    while stack:                                      # the top's whole subtree: work is usually placed on a child
+        x = stack.pop()
+        for sid in (nodes.get(x, {}).get("trail") or []):
+            segs.add(_seg_key(sid))
+        stack.extend(kids.get(x, []))
+    for k, nid in (store.get("placements") or {}).items():
+        if isinstance(k, str) and (k.endswith("#p") or k.endswith("#d")):
+            k = k[:-2]
+        if isinstance(nid, str) and nid in nodes and _top_ancestor(nodes, nid) == top:
+            segs.add(_seg_key(k))
+    seams = store.setdefault("seams", [])
+    seams.append({"t": int(now), "top": top, "text": (nodes.get(top, {}).get("text") or "")[:120],
+                  "segs": sorted(segs)})
+    del seams[:-SEAM_CAP]
+
+
+def rollup_status(store, session_closed, now=None):
     """Each top-level goal's rolled-up status. Precedence: BLOCKED (any open descendant needs the
     user) > COMPLETED > working. A goal COMPLETES when its TOP node is nodeComplete AND it is
     SETTLED — settled = it is no longer the session's ACTIVE FOCUS (a later segment filed under a
@@ -1409,6 +1445,7 @@ def rollup_status(store, session_closed):
             if nodes[nid].get("nodeComplete") and (settled or nodes[nid].get("settledDone")) and nid not in open_task:
                 if not nodes[nid].get("settledDone"):     # the FIRST settlement → freeze its column-entry time
                     nodes[nid]["settledAt"] = latest_t    # (transition only; a legacy completed top keeps the mt fallback)
+                    _stamp_seam(store, nid, now if now is not None else time.time())   # settle moment → seam point (segment-regrowth)
                 nodes[nid]["settledDone"] = True
                 nodes[nid].pop("followupPending", None)   # resolved → drop the stale optimistic chip
                 status[nid] = "completed"
@@ -1423,6 +1460,7 @@ def rollup_status(store, session_closed):
         elif is_complete(nid) and (settled or nodes[nid].get("settledDone")):
             if not nodes[nid].get("settledDone"):         # the FIRST settlement → freeze its column-entry time
                 nodes[nid]["settledAt"] = latest_t        # (transition only; a legacy completed top keeps the mt fallback)
+                _stamp_seam(store, nid, now if now is not None else time.time())   # settle moment → seam point (segment-regrowth)
             nodes[nid]["settledDone"] = True
             status[nid] = "completed"
         else:
@@ -1830,7 +1868,7 @@ def _session_closed(session):
     return bool(last.get("ended")) or any(a["type"] == "idle" for a in last["atoms"])
 
 
-def plan_units(session):
+def plan_units(session, store=None):
     """Ordered (seg_id, phase, t, text, human, followup, trigger) planner units for the TWO-RUN model (the
     user 2026-06-21, via link_audit), oldest-first. `trigger` (the user 2026-07-01, via bugs) is the
     segment's trigger atom uuid (seg["trigger"], None for an autonomous/continuation segment with no
@@ -1861,13 +1899,21 @@ def plan_units(session):
     for ti, turn in enumerate(turns):
         turn_open = (ti == len(turns) - 1 and not turn["ended"]
                      and not any(a["type"] == "idle" for a in turn["atoms"]))
-        segs = em.segments(turn)
+        segs = _segs(turn, store) if store is not None else em.segments(turn)
         for si, seg in enumerate(segs):
             if _seg_command(seg):                         # a slash-command turn — tracked in chat/timeline, but NEVER a goal/feed card
                 continue
             work_text = _unit_text(seg["atoms"])
             if not work_text:
                 continue
+            if seg.get("seam"):                           # settle-time seam tail (design/segment-regrowth.md): work that
+                # continued past its goal's close. Tell the planner so wrap-up files without reopening
+                # and only a genuine PIVOT mints its own goal.
+                work_text = ("NOTE: everything below happened AFTER the goal \"%s\" was already completed "
+                             "and closed. If it is merely wrap-up, verification, or cleanup of that finished "
+                             "goal, SKIP it — do not reopen. Only if it is a genuinely NEW or different "
+                             "thread of work, mint a goal for it.\n\n" % ((seg.get("seamOf") or {}).get("text") or "?")
+                             ) + work_text
             is_open_final = turn_open and si == len(segs) - 1
             trig = seg.get("trigger")
             vq = _mint_quote(seg)
@@ -2096,6 +2142,45 @@ def _segs_for(seg_by_id, seg_ids):
     return out
 
 
+def apply_seams(segs, store):
+    """Seam-aware segmentation (design/segment-regrowth.md): split any segment that kept growing with
+    REAL work past the settle moment of the TOP goal that OWNED it. Ownership is read off the SEAM
+    itself (its `segs` keys, captured at stamp time by _stamp_seam) — never re-resolved through live
+    nodes, which a Clear archives away. The tail is a fresh trigger-less segment (em.split_segment)
+    carrying seamOf = the settled goal, so downstream consumers (planner note, provisional card) can
+    say what it follows. Splitting only ever ADDS an unplaced segment — placement idempotency never
+    bends. Pieces re-split recursively: a planned tail whose own top later settles mid-turn carries
+    that seam's keys and seams again."""
+    seams = [s for s in ((store or {}).get("seams") or []) if isinstance(s, dict) and s.get("segs")]
+    if not seams or not segs:
+        return segs
+    out = []
+    for seg in segs:
+        pieces, changed = [seg], True
+        while changed:
+            changed, nxt = False, []
+            for p in pieces:
+                key = _seg_key(p["id"])
+                hits = [s for s in seams if key in s["segs"] and p["t"] < s.get("t", 0) < p["end"]]
+                sm = min(hits, key=lambda s: s["t"]) if hits else None
+                sp = em.split_segment(p, sm["t"]) if sm else None
+                if sp:
+                    sp[1]["seamOf"] = {"top": sm.get("top"), "text": sm.get("text", "")}
+                    nxt.extend(sp); changed = True
+                else:
+                    nxt.append(p)
+            pieces = nxt
+        out.extend(pieces)
+    return out
+
+
+def _segs(turn, store):
+    """em.segments + apply_seams — the seam-aware segmentation every goal-store-adjacent consumer uses
+    (planner, closer, captioner, distiller, courier sweep; the kernel mirrors it), so the seg ids the
+    judges place/anchor and the ones the kernel renders always agree on where a seam split."""
+    return apply_seams(em.segments(turn), store)
+
+
 def _plan_session(fsid, path, now):
     """Advance ONE session's goal tree: place its un-placed planner UNITS oldest-first (each sees the prior
     tree's open menu) and GROUP after every placement (the user 2026-06-17: planner + grouper are both
@@ -2113,10 +2198,10 @@ def _plan_session(fsid, path, now):
     store = load_goals(fsid)
     # Built once, used only by the KNOWN-target branches below (delegation/nudge/followup) to hand the
     # planner that one goal's own raw history alongside its menu title (the user 2026-07-01) — no LLM
-    # call, just an index over already-parsed atoms.
-    seg_by_id = {seg["id"]: seg for turn in session["turns"] for seg in em.segments(turn)}
+    # call, just an index over already-parsed atoms. Seam-aware (_segs) so a settle-split tail resolves.
+    seg_by_id = {seg["id"]: seg for turn in session["turns"] for seg in _segs(turn, store)}
     units, retired = [], False
-    for u in plan_units(session):
+    for u in plan_units(session, store):
         seg_id, phase = u[0], u[1]
         key = _unit_key(seg_id, phase)
         if _placed_key(store["placements"], key):     # drift-safe: a recorded key whose parse t has since
@@ -2370,7 +2455,7 @@ def fast_forward_placements(fsid, path=None, now=None):
     store = load_goals(fsid)
     placements = store["placements"]
     n = 0
-    for u in plan_units(session):
+    for u in plan_units(session, store):
         seg_id, phase = u[0], u[1]
         keys = {_unit_key(seg_id, phase)}
         if phase == "prompt":
@@ -2897,7 +2982,7 @@ def _turn_menu(turn, store):
         return False
 
     out, seen = [], set()
-    for seg in em.segments(turn):
+    for seg in _segs(turn, store):                    # seam-aware: a split head keeps its placed id
         nid = _placement_of(placements, seg["id"])    # drift-safe: the recorded key's t may differ
         if not nid or nid not in nodes or _sealed(nid):
             continue
@@ -2975,7 +3060,7 @@ def _close_turn(store, turn, samples=None, seg_by_id=None):
         _log_judge_error("closer", store.get("rompUuid"), "parse")
         return None
     newly = apply_close(store, menu, out, t=turn.get("t"))
-    segs = em.segments(turn)
+    segs = _segs(turn, store)                          # seam-aware: post-split, the recap lives in the tail
     if segs:                                           # anchor each resolved (done/blocked) top to the recap
         recap, resolved = segs[-1]["id"], set(out["done"]) | set(out["block"])
         for i, nd in enumerate(menu, 1):
@@ -3015,7 +3100,7 @@ def _close_session(fsid, path, now, cap=CLOSE_FAIRNESS):
     _judge_ctx.fsid = fsid                            # usage logging: attribute this session's judge calls
     session = parsed_session(fsid, [path], now)
     store = load_goals(fsid)
-    seg_by_id = {seg["id"]: seg for turn in session["turns"] for seg in em.segments(turn)}
+    seg_by_id = {seg["id"]: seg for turn in session["turns"] for seg in _segs(turn, store)}
     swept = _closed_turns(store)
     sig = dict(store.get("closedSig") or {})
     turns = session["turns"]
@@ -3162,7 +3247,7 @@ def _ab_classify(sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY):
             continue
         store = load_goals(fsid)
         nodes, status = store.get("nodes", {}), store.get("status", {})
-        seg_by_id = {seg["id"]: seg for turn in session["turns"] for seg in em.segments(turn)}
+        seg_by_id = {seg["id"]: seg for turn in session["turns"] for seg in _segs(turn, store)}
         children = {}
         for x, nd in nodes.items():
             children.setdefault(nd.get("parentId"), []).append(x)
@@ -3365,7 +3450,7 @@ def _distill_session(fsid, path, now):
     if not todo:
         return 0
     session = parsed_session(fsid, [path], now)
-    seg_by_id = {seg["id"]: seg for turn in session["turns"] for seg in em.segments(turn)}
+    seg_by_id = {seg["id"]: seg for turn in session["turns"] for seg in _segs(turn, store)}
     children = {}
     for nid, nd in nodes.items():
         children.setdefault(nd.get("parentId"), []).append(nid)
@@ -3695,9 +3780,10 @@ def run_courier(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, v
         except Exception:
             continue
         closed[fsid] = _session_closed(session)
-        placed_ids = load_goals(fsid)["placements"]
+        cstore = load_goals(fsid)
+        placed_ids = cstore["placements"]
         for turn in session["turns"]:
-            for seg in em.segments(turn):
+            for seg in _segs(turn, cstore):
                 if seg["id"] in placed_ids:
                     continue
                 pm = _seg_peer(seg)

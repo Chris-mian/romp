@@ -1031,6 +1031,43 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(p["tree"], [], "a placeholder carries no goal node")
         self.assertTrue(any(a["itemId"] == g1 for a in asks), "the real completed card is untouched")
 
+    def test_provisional_card_surfaces_for_a_seam_tail(self):
+        # design/segment-regrowth.md: a top settles while its placed segment keeps growing with real
+        # work → the tail splits into a fresh unplaced segment, and the feed shows a Working placeholder
+        # NEXT TO the completed card (previously the pivot work was invisible: the segment was placed, so
+        # the placeholder's drop-gate suppressed it by design). Placed tail → the placeholder yields.
+        recs = [uline(T0, "fix A, B and C", "u1", ps="typed"),
+                aline(T0 + 20, "Working through the three items.", "a1", "u1", tools=("Edit",), stop="tool_use"),
+                trline(T0 + 25, "tu_a1_0", "r1", "a1", content="edited"),
+                aline(T0 + 40, "All three merged and pushed.", "a2", "r1", stop="tool_use"),
+                aline(T0 + 200, "", "a3", "a2", tools=("Bash",), stop="tool_use")]   # the post-settle pivot (turn OPEN)
+        self.tpath.write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+        self._warm_tpath()
+        seg_id = em.segments(km._parse(str(self.tpath), SID, NOW)["turns"][0])[0]["id"]
+        g1 = SID + ":g1"
+        store = {"rompUuid": SID, "seq": 1, "lastNode": g1,
+                 "nodes": {g1: {"id": g1, "text": "fix A, B and C", "parentId": None, "nodeComplete": True,
+                                "blocked": False, "cleared": False, "settledDone": True,
+                                "trail": [seg_id], "t": T0, "mt": T0 + 40}},
+                 "placements": {seg_id: g1}, "status": {g1: "completed"},
+                 "seams": [{"t": T0 + 100, "top": g1, "text": "fix A, B and C",
+                            "segs": [jd._seg_key(seg_id)]}]}
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps(store))
+        self._working_tmux()
+        asks = km.build_feed(NOW)["asks"]
+        prov = [a for a in asks if a.get("provisional")]
+        self.assertEqual(len(prov), 1, "the unplaced seam tail surfaces a Working placeholder")
+        self.assertIn("fix A, B and C", prov[0]["text"], "…that names the completed goal it grew past")
+        self.assertEqual(prov[0]["column"], "working")
+        self.assertTrue(any(a["itemId"] == g1 and a["column"] == "completed" for a in asks),
+                        "the completed card stays completed alongside it")
+        # the planner places the tail (even as a SKIP) → the placeholder yields, same drop-gate as ever
+        tail_id = jd.apply_seams([em.segments(km._parse(str(self.tpath), SID, NOW)["turns"][0])[0]], store)[1]["id"]
+        store["placements"][tail_id] = None
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps(store))
+        self.assertFalse([a for a in km.build_feed(NOW)["asks"] if a.get("provisional")],
+                         "a placed tail drops the placeholder")
+
     def test_session_working_reads_the_event_model_not_tmux(self):
         # the user 2026-06-22: WORKING is derived from the TRANSCRIPT (an open, un-ended final turn), never the
         # tmux pane state — tmux is one backend, so the signal must be backend-agnostic.
