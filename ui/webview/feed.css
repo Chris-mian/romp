@@ -11,6 +11,8 @@
   --box-border: rgba(255, 255, 255, 0.12);  /* mirrors styles.css — same trap as --err: an undefined var()
                        in a border SHORTHAND voids the whole declaration, so the section-toggle circles and
                        the await-paused outline rendered with NO border at all (the user 2026-07-02) */
+  --accent: #9cd2ff;  /* the romp accent (CLAUDE.md Design) — feed.css has its OWN :root, so selected-state
+                       chrome here needs it defined locally or var(--accent) silently falls back */
 
   /* Card background + border are set inline per card (the hawaii recency tint).
      These neutral tokens are for the chrome that frames them (header, detail box,
@@ -272,9 +274,12 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
   border: 1px solid var(--card-border); border-radius: 6px; font: inherit; font-size: 0.74em;
   cursor: pointer; white-space: nowrap; transition: color 0.12s ease, border-color 0.12s ease; }
 .fask-secbtn:hover { color: var(--fg); border-color: var(--fg); }
-/* a PRESSED toggle (its section is showing): bright + filled, so the state reads at a glance
-   (the user 2026-07-02, round 7 — the buttons themselves toggle; no separate "less" control) */
-.fask-secbtn.on { color: var(--fg); border-color: var(--fg); background: rgba(255, 255, 255, 0.07); }
+/* a PRESSED toggle (its section is showing) wears the SELECTED look the rail's pane toggles use —
+   accent-blue text + a faint accent wash + accent border, a touch bolder (the user 2026-07-02: one
+   selected-state language across the whole app; gray = off, accent blue = on). Same wash alpha as the
+   rail's .rail-btn.on. */
+.fask-secbtn.on { color: var(--accent); border-color: var(--accent);
+  background: rgba(156, 210, 255, 0.10); font-weight: 600; }
 /* one clear line between the background part and the summary part while the background is open
    (its body is what stands between the sections; both collapsed → the buttons sit tight, side by side) */
 .fask-bg-body.fask-gapend { margin-bottom: 1.2em; }
