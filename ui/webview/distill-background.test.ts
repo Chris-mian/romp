@@ -40,8 +40,8 @@ test("open sections collapse via a block 'less' on its own line (bottom-left, ne
   assert.match(FEED, /takeLess\.textContent = "less"/);
   assert.match(FEED, /a\._bgBody\.appendChild\(a\._bgLess\);/);
   assert.match(FEED, /\(a\._distill as HTMLElement\)\.appendChild\(a\._takeLess\);/);
-  assert.match(CSS, /\.fask-less \{ display: block; margin-top: 5px; \}/,
-               "block-level: its own line under the text, left-aligned with it");
+  assert.match(CSS, /\.fask-less \{ display: block; margin-top: 5px; font-size: 0\.86em; \}/,
+               "block-level, and 0.86em INSIDE the 0.86em body ≈ the other buttons' 0.74 computed size");
 });
 
 test("defaults + state: background collapsed, takeaway expanded; flips drive per-card sets", () => {
@@ -65,6 +65,10 @@ test("the MODAL always shows BOTH sections, labeled background / summary", () =>
   assert.match(FEED, /bl\.textContent = "background"/);
   assert.match(FEED, /sl\.textContent = "summary"/);
   assert.match(CSS, /\.ftree-seclabel \{[^}]*var\(--dim\)/);
+  // label size sits BETWEEN the section text (0.86em) and the tree/checklist lines (1em)
+  assert.match(CSS, /\.ftree-seclabel \{ font-size: 0\.92em;/);
+  // modal times match the checklist lines they correspond to, never bold (the user 2026-07-02)
+  assert.match(CSS, /\.ftree-meta \{[^}]*font-size: 0\.9em; font-weight: 400;/);
 });
 
 test("background shows only alongside a produced takeaway, and the takeaway keeps its deep-link", () => {

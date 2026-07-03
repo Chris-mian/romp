@@ -5878,6 +5878,20 @@ def build_feed(now, tmux=None):
                             _best = (_sub, _t, _u)
                 if _best:
                     _sa_u = _best[2]
+            if not _sa_u:
+                # LAST RESORT (the user 2026-07-02: a completed card's summary was unclickable — the cited
+                # atom fell outside every segment, and no trail segment offered prose either). Fall back to
+                # the newest trail segment's WORK anchor (seg_uuid — the same target the modal's node rows
+                # nav to), so the summary still deep-links to roughly where the work concluded. Only a goal
+                # with NO resolvable trail at all ends up link-less.
+                for _x in _subtree(nid):
+                    for _sid in reversed(nodes[_x].get("trail") or []):
+                        _u = seg_uuid.get(_seg_key(_sid))
+                        if _u:
+                            _sa_u = _u
+                            break
+                    if _sa_u:
+                        break
             asks.append({
                 "itemId": nid, "sid": fsid, "name": name, "color": color, "text": nodes[nid]["text"],
                 "t": disp_t, "created": nodes[nid]["t"], "live": live,
