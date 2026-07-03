@@ -774,7 +774,10 @@ body { display: flex; flex-direction: column; }
    2026-06-15) — replaces the old window-border accent. Neutral --rail when there's no session color. */
 .turn::before { content: ""; position: absolute; left: 10.5px; top: 0; bottom: 0; width: 2px; background: var(--active-accent, var(--rail)); opacity: 0.7; }
 .turn:first-child::before { top: 16px; }
-.turn:last-child::before { bottom: auto; height: 16px; }
+/* the LAST TURN's line is a 16px stub — matched as "no .turn after me", NOT :last-child: the hover
+   glow appends .rail-band divs to the same container, and with :last-child the stub selector stopped
+   matching mid-hover, snapping a full-height line over the final text (the user 2026-07-03). */
+.turn:not(:has(~ .turn))::before { bottom: auto; height: 16px; }
 .dot { position: absolute; left: 6px; top: 15px; width: 11px; height: 11px; border-radius: 50%; box-sizing: border-box; }
 /* timeline-rail TIME MARKER — the time label that REPLACES the hollow per-turn dots
    (the user 2026-06-10): floated in the gap above a turn, on the rail, when the clock
@@ -1511,8 +1514,9 @@ pre.has-copy:hover .code-copy, .code-copy:focus-visible { opacity: 0.9; }
    white-rings the SEGMENT (same expanding ring as the dots) and cross-highlights the timeline/feed. */
 .rail-hit { position: absolute; left: 7px; top: 0; bottom: 0; width: 9px; cursor: pointer; z-index: 0; }
 /* the LAST turn's rail line is a 16px stub (the rail visually ends at the last event) — the hover strip
-   shrinks to match, so only the drawn line is hoverable (the user 2026-07-03) */
-.turn:last-child .rail-hit { bottom: auto; height: 16px; }
+   shrinks to match, so only the drawn line is hoverable (the user 2026-07-03). Same "no .turn after me"
+   match as the stub itself, immune to appended .rail-band siblings. */
+.turn:not(:has(~ .turn)) .rail-hit { bottom: auto; height: 16px; }
 /* a dot the glow band runs through: its ring IS the band's outline there (the capsule look) */
 .dot.rail-ring { box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.85); }
 
