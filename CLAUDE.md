@@ -63,6 +63,14 @@ Prefer exact event-based mechanisms over time-based heuristics (grace periods,
 debounces, age thresholds). If a time window seems needed, find the event it is
 approximating and key on that event instead.
 
+### Font sizes: few, and consistent by information type (user rule, 2026-07-02)
+Do not multiply font sizes. Similar kinds of information wear the SAME size — labels
+match labels, times match the lines they annotate, section bodies match each other.
+Before adding a new `font-size`, reuse one already on the surface; nesting relative
+`em` sizes compounds (a 0.74em button inside 0.86em text renders smaller than its
+siblings), so prefer flat contexts or compensate explicitly. Triggered by the
+follow-up header rendering as a soup of 0.74/0.78/0.9em fragments.
+
 ### The accent color is light blue `#9cd2ff` — use `var(--accent)`
 The romp accent is light blue `#9cd2ff` (`--accent` in `ui/webview/styles.css`, with
 `--accent-fg: #0c1a2e` for text on it). Use it for accent/highlight chrome — selected

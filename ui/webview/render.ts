@@ -1175,7 +1175,7 @@ function followUpHeader(goal?: string, ctx?: string, key?: string): HTMLElement 
     tri.textContent = fuExpanded.has(k) ? "▾" : "▸";
     h.appendChild(tri);
   }
-  h.appendChild(document.createTextNode("↩ Follow-up"));
+  const lbl = el("span", "followup-lbl"); lbl.textContent = "↩ Follow-up"; h.appendChild(lbl);
   if (goal) { const g = el("span", "followup-goal"); g.textContent = goal; h.appendChild(g); }
   if (!ctx || !k) return h;
   const wrap = el("div", "followup-wrap");

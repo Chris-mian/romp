@@ -24,7 +24,7 @@ test("renderQueued renders markdown (not raw text) + the follow-up header", () =
 
 test("a shared followUpHeader builds a ↩ Follow-up label with the goal title", () => {
   assert.match(SRC, /function followUpHeader\(goal\?: string, ctx\?: string, key\?: string\): HTMLElement/);
-  assert.match(SRC, /createTextNode\("↩ Follow-up"\)/);
+  assert.match(SRC, /lbl\.textContent = "↩ Follow-up"/, "a styleable span — a bare text node wrapped into a 3-line column");
   assert.match(SRC, /"followup-goal"/);
 });
 
