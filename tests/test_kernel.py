@@ -2257,6 +2257,32 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(card["summaryAnchorUuid"], expect,
                          "no citation stored → the card links its summary to the trail's latest prose")
 
+    def test_summary_anchor_last_resort_is_the_trail_work_anchor(self):
+        # a completed card whose citation doesn't resolve AND whose trail segments have no substantive
+        # prose (tool-only work) previously shipped NO anchor at all — the summary rendered as plain,
+        # unclickable text (the user 2026-07-02). Last resort now: the newest trail segment's WORK anchor
+        # (seg_uuid — the same target the modal's node rows nav to), so the summary still deep-links.
+        session = em.parse_session(str(self.tpath), rompuuid=SID, candidate_files=[str(self.tpath)], now=NOW)
+        seg = em.segments(session["turns"][0])[0]
+        w, r = km._seg_anchors(seg["atoms"])
+        expect = r or w
+        self.assertTrue(expect, "the fixture segment has a work anchor")
+        saved = km._seg_last_text
+        km._seg_last_text = lambda atoms: (None, False)   # no prose anywhere → the latest-prose fallback yields nothing
+        try:
+            nid = SID + ":g47"
+            store = {"rompUuid": SID, "seq": 47, "nodes": {
+                nid: {"id": nid, "text": "Ship it", "parentId": None, "nodeComplete": True, "blocked": False,
+                      "trail": [seg["id"]], "t": NOW, "summary": "Shipped.",
+                      "summaryAnchor": "00000000-dead-dead-dead-000000000000"}},   # citation never resolves
+                "placements": {}, "status": {}}
+            (jd.GOALDIR / (SID + ".json")).write_text(json.dumps(store))
+            card = {a["itemId"]: a for a in km.build_feed(NOW)["asks"]}[nid]
+            self.assertEqual(card["summaryAnchorUuid"], expect,
+                             "no citation + no prose → the trail's work anchor keeps the summary clickable")
+        finally:
+            km._seg_last_text = saved
+
     def test_card_carries_the_judge_stamped_warns(self):
         # judge _node_warn stamps anomalies (e.g. a distiller cite-miss) on the node; the card must carry
         # them verbatim so the feed can show the yellow "warning" chip and the click-through detail

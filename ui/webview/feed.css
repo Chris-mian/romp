@@ -272,8 +272,11 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
   border: 1px solid var(--card-border); border-radius: 6px; font: inherit; font-size: 0.74em;
   cursor: pointer; white-space: nowrap; transition: color 0.12s ease, border-color 0.12s ease; }
 .fask-secbtn:hover { color: var(--fg); border-color: var(--fg); }
-/* the open sections' collapse control: block-level → its own line, bottom-left under the text */
-.fask-less { display: block; margin-top: 5px; }
+/* the open sections' collapse control: block-level → its own line, bottom-left under the text.
+   It sits INSIDE the 0.86em body text, so its 0.74em base would compound smaller than the
+   background/summary/Clear buttons — 0.86em here ≈ 0.74 of the card, the same computed size
+   (the user 2026-07-02: all these buttons read as one family). */
+.fask-less { display: block; margin-top: 5px; font-size: 0.86em; }
 /* one empty text line separates the background part from the summary part ONLY while either section
    is expanded (.gap, set in applyDistillSections); two collapsed buttons fall tight together. The
    margin rides whichever bg element is VISIBLE (button or body) — display:none drops the other's. */
@@ -374,12 +377,14 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 /* margin-right is negative to offset the .fask-id flex gap (6px) → the dot sits
    snug against the name (~3px), not floating ~11px away (the user 2026-06-10) */
 .fwork-dot { display: inline-block; flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: #e0b020; vertical-align: middle; margin-right: -3px; }
-.ftree-meta { flex: 0 0 auto; margin-left: 6px; color: var(--dim); font-size: 0.82em; white-space: nowrap; }
+.ftree-meta { flex: 0 0 auto; margin-left: 6px; color: var(--dim); font-size: 0.9em; font-weight: 400;
+  white-space: nowrap; }   /* same size as the card checklist lines it corresponds to, never bold (the user 2026-07-02) */
 /* the DISTILLER's per-node line in the modal (restored 2026-06-29): a done node's takeaway / a blocked node's
    decision brief. No why-rationale lines (those stay removed); shown only when produced. pre-wrap for artifacts. */
 .ftree-summary { font-size: 0.86em; line-height: 1.45; margin: 2px 0 6px; color: var(--fg); white-space: pre-wrap; overflow-wrap: anywhere; }
-/* the modal's section labels ("background" / "summary") when the root node carries both (the user 2026-07-02) */
-.ftree-seclabel { font-size: 0.74em; color: var(--dim); margin-top: 4px; }
+/* the modal's section labels ("background" / "summary") when the root node carries both — sized BETWEEN
+   the section text (0.86em) and the tree/checklist lines (1em) (the user 2026-07-02) */
+.ftree-seclabel { font-size: 0.92em; color: var(--dim); margin-top: 4px; }
 .ftree-summary-link { cursor: pointer; border-radius: 6px; transition: background 0.1s ease; }
 .ftree-summary-link:hover { background: rgba(255, 255, 255, 0.07); text-decoration: underline; text-underline-offset: 2px; }
 .st-done .ftree-mark { color: var(--rel-done); }
