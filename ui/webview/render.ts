@@ -609,6 +609,24 @@ function wireTurnHover(turn: HTMLElement, dot: HTMLElement | null, uuid: string 
       if (activeId) vscodeApi?.postMessage({ type: "dotOpen", sid: activeId, uuid, t });
     });
   }
+  // The rail LINE is a nav handle too (the user 2026-07-02): hovering EXACTLY on the line segment lights
+  // it with the same expanding white ring the dots use, and drives the same timeline/feed cross-highlight
+  // (same dotHover payload + 120ms intent debounce). The line itself is the turn's ::before pseudo — it
+  // can't take pointer events — so a slim invisible hit strip overlays it; the dot's enlarged hit pad
+  // stacks ABOVE the strip, so the dot always wins where they overlap.
+  const rail = el("div", "rail-hit");
+  rail.title = "hover: highlight on the timeline + feed";
+  let railTimer: ReturnType<typeof setTimeout> | undefined;
+  rail.addEventListener("mouseenter", () => {
+    turn.classList.add("rail-glow");
+    railTimer = setTimeout(() => { railTimer = undefined; if (activeId) vscodeApi?.postMessage({ type: "dotHover", sid: activeId, uuid, t, tlId }); }, 120);
+  });
+  rail.addEventListener("mouseleave", () => {
+    turn.classList.remove("rail-glow");
+    if (railTimer) { clearTimeout(railTimer); railTimer = undefined; return; }
+    vscodeApi?.postMessage({ type: "dotHover" });
+  });
+  turn.appendChild(rail);
 }
 
 // Transient cross-highlight FROM the timeline (host fans a bar hover here as
