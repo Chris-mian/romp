@@ -137,11 +137,21 @@ test("mergeHostFeeds: concatenates items/asks/working across hosts (local first)
   assert.deepEqual(m.asks.map((a: any) => a.sid), [U, "jetty:" + V], "asks concatenated");
   assert.deepEqual(m.working, [U, "jetty:" + V], "working concatenated");
   assert.deepEqual(m.ledgers.map((l: any) => l.sid), [U, "jetty:" + V], "ledgers (fleet) concatenated");
-  // local is authoritative for the dashboard's own chrome — remote's counts/clock don't leak in.
+  // local is authoritative for the dashboard's own chrome (clock, toggles)…
   assert.equal(m.now, 1000);
-  assert.equal(m.dismissedCount, 3);
   assert.equal(m.showDismissed, false);
+  // …but the dismissed/undo chrome spans hosts: counts SUM, undo lights when ANY kernel can undo.
+  assert.equal(m.dismissedCount, 10, "3 local + 7 remote dismissed");
   assert.equal(m.canUndoClear, true);
+});
+
+test("mergeHostFeeds: a remote-only undo lights the Undo button (clear routed to that kernel)", () => {
+  const m = mergeHostFeeds({
+    "": { type: "feed", items: [], asks: [], working: [], canUndoClear: false, dismissedCount: 0 },
+    jetty: { type: "feed", items: [], asks: [], working: [], canUndoClear: true, dismissedCount: 2 },
+  }, ["", "jetty"]);
+  assert.equal(m.canUndoClear, true);
+  assert.equal(m.dismissedCount, 2);
 });
 
 test("mergeHostFeeds: single (local) host is an equivalent passthrough", () => {
@@ -269,6 +279,17 @@ test("routeOutbound: name-addressed messages route to a KNOWN host only (compact
   // renameSession routes by ID; its `name` (the user's new title) is never stripped
   const rn = routeOutbound({ type: "renameSession", id: "jetty:" + U, name: "newtitle" }, known);
   assert.deepEqual(rn, [{ host: "jetty", msg: { type: "renameSession", id: U, name: "newtitle" } }]);
+});
+
+test("routeOutbound: a feed card action routes by its sid, itemId untouched (askClear/expand/askFollowUp)", () => {
+  // Regression (the user 2026-07-02): Clear on a REMOTE card sent {askClear, itemId} with NO sid → routed
+  // to the LOCAL kernel (a no-op there), so the card resurrected on every reload. The card's sid now rides
+  // along purely for routing; the itemId stays bare — it's already the owning kernel's own id.
+  const r = routeOutbound({ type: "askClear", itemId: U + ":g3", sid: "jetty:" + U });
+  assert.deepEqual(r, [{ host: "jetty", msg: { type: "askClear", itemId: U + ":g3", sid: U } }]);
+  // a local card is unchanged: bare sid → local kernel
+  const l = routeOutbound({ type: "askClear", itemId: U + ":g3", sid: U });
+  assert.equal(l[0].host, "");
 });
 
 test("routeOutbound: a hover CLEAR broadcasts to every kernel (no sid to route by)", () => {

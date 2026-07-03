@@ -229,6 +229,9 @@ export function mergeHostFeeds(perHost: Record<string, any>, hostSeq: readonly s
   // pane. Kept undefined until then so the loader holds, exactly like the single-kernel path.
   let anyLedgers = false;
   const ledgers: any[] = [];
+  // dismissed/undo chrome spans hosts: the count SUMS and undo is possible when ANY kernel can undo —
+  // clearing a remote card must light the local Undo button (the clear routed to that kernel).
+  let dismissed = 0, anyDismissed = false, canUndo = false;
   for (const h of hostSeq) {
     const f = perHost[h];
     if (!f) continue;
@@ -236,9 +239,13 @@ export function mergeHostFeeds(perHost: Record<string, any>, hostSeq: readonly s
     if (Array.isArray(f.asks)) merged.asks.push(...f.asks);
     if (Array.isArray(f.working)) merged.working.push(...f.working);
     if (Array.isArray(f.ledgers)) { anyLedgers = true; ledgers.push(...f.ledgers); }
+    if (typeof f.dismissedCount === "number") { anyDismissed = true; dismissed += f.dismissedCount; }
+    if (f.canUndoClear) canUndo = true;
   }
   if (anyLedgers) merged.ledgers = ledgers;
   else delete merged.ledgers;
+  if (anyDismissed) merged.dismissedCount = dismissed;
+  if ("canUndoClear" in merged || canUndo) merged.canUndoClear = canUndo;
   return merged;
 }
 
@@ -364,9 +371,21 @@ export class FederationManager {
     window.dispatchEvent(new MessageEvent("message", { data: { type: "tabOrder", order, tabs } }));
   }
 
+  private lastClearHost = LOCAL; // where the most recent askClear routed — undoClear follows it
+
   // browser → kernel: route each message to the owning kernel, prefix stripped.
   outbound(m: any): void {
-    for (const r of routeOutbound(m, new Set(this.hostSeq.filter((h) => h !== LOCAL)))) {
+    // undoClear undoes the LAST clear, which may have gone to a remote kernel — follow it there.
+    // (The kernel keeps its own cleared.jsonl; only the kernel that took the clear can undo it.)
+    if (m && m.type === "undoClear" && this.lastClearHost !== LOCAL) {
+      const c = this.conns.get(this.lastClearHost);
+      if (c && c.ws && c.ws.readyState === 1) c.ws.send(JSON.stringify(m));
+      this.lastClearHost = LOCAL;
+      return;
+    }
+    const routes = routeOutbound(m, new Set(this.hostSeq.filter((h) => h !== LOCAL)));
+    if (m && m.type === "askClear") this.lastClearHost = routes[0] ? routes[0].host : LOCAL;
+    for (const r of routes) {
       if (r.host === LOCAL) {
         const s = (window as any).__rompLocalSend;
         if (typeof s === "function") s(r.msg);
