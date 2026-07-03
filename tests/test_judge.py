@@ -3251,12 +3251,14 @@ class FollowUp(unittest.TestCase):
                                 "trail": ["s0"], "t": T0 - 100, "mt": T0 - 100, "doneWhy": "shipped"}}}
 
     def test_followup_reopens_completed_goal_and_forces_sub_under_it(self):
+        # the STRONG default (the user 2026-07-03: a strong prior, not a straitjacket): a non-mint reply
+        # (here a sub aimed at the wrong number) still files UNDER the tagged goal, reopened.
         gid = SID + ":g1"
         records = [uline(T0, "actually also handle the edge case <!-- romp-goal-id: %s -->" % gid, "u1", ps="typed"),
                    aline(T0 + 10, "handled it", "a1", "u1", stop="end_turn")]
         self._setup(records, self._completed_top(gid))
         # the planner describes the work; the parent is forced to the tagged goal regardless of "under"
-        jd.plan_llm = lambda text, menu, human=False, **_kw: '{"ops":[{"why":"covered the edge case","do":"mint","text":"edge case handled"}]}'
+        jd.plan_llm = lambda text, menu, human=False, **_kw: '{"ops":[{"why":"covered the edge case","do":"sub","under":1,"text":"edge case handled"}]}'
         jd.run_plan(now=T0 + 5000)
         st = jd.load_goals(SID)
         self.assertFalse(st["nodes"][gid]["nodeComplete"], "the tagged goal was reopened")
@@ -3264,6 +3266,41 @@ class FollowUp(unittest.TestCase):
         self.assertEqual(len(subs), 1, "the follow-up work was filed UNDER the tagged goal (forced), not as a new top")
         self.assertEqual(subs[0]["text"], "edge case handled", "reuses the planner's description for the step")
         self.assertEqual(st["status"][gid], "working", "the reopened goal is working again")
+
+    def test_followup_pivot_mints_its_own_top_and_leaves_the_target_sealed(self):
+        # promote-on-pivot (the user 2026-07-03): the user replies to cards out of habit, so a cited reply
+        # the model judges to be a DIFFERENT thread mints its own top (pivotFrom provenance) instead of
+        # being buried as a sub — and the completed target is NOT reopened (no working-flicker).
+        gid = SID + ":g1"
+        records = [uline(T0, "unrelated: rework the export flow <!-- romp-goal-id: %s -->" % gid, "u1", ps="typed"),
+                   aline(T0 + 10, "on it", "a1", "u1", stop="end_turn")]
+        self._setup(records, self._completed_top(gid))
+        jd.plan_llm = lambda text, menu, human=False, **_kw: '{"ops":[{"why":"a new thread, not this goal","do":"mint","text":"Rework the export flow"}]}'
+        jd.run_plan(now=T0 + 5000)
+        st = jd.load_goals(SID)
+        self.assertTrue(st["nodes"][gid]["nodeComplete"], "the cited goal stays completed — no reopen on a pivot")
+        self.assertEqual(st["status"][gid], "completed")
+        self.assertEqual([nd for nd in st["nodes"].values() if nd["parentId"] == gid], [],
+                         "nothing was buried under the cited goal")
+        top = next(nd for nd in st["nodes"].values() if nd["parentId"] is None and nd["id"] != gid)
+        self.assertEqual(top["text"], "Rework the export flow")
+        self.assertEqual(top["pivotFrom"], gid, "the minted top remembers which card the reply cited")
+
+    def test_followup_parse_failure_keeps_the_forced_sub_floor(self):
+        # ambiguity never pivots: an unparseable planner reply falls to the forced-sub default, so an
+        # accidental cite still files safely under the target (the strong prior holds).
+        gid = SID + ":g1"
+        records = [uline(T0, "hmm one more thing <!-- romp-goal-id: %s -->" % gid, "u1", ps="typed"),
+                   aline(T0 + 10, "sure", "a1", "u1", stop="end_turn")]
+        self._setup(records, self._completed_top(gid))
+        jd.plan_llm = lambda text, menu, human=False, **_kw: "not json at all"
+        jd.run_plan(now=T0 + 5000)
+        st = jd.load_goals(SID)
+        self.assertFalse(st["nodes"][gid]["nodeComplete"], "the tagged goal was reopened (default path)")
+        subs = [nd for nd in st["nodes"].values() if nd["parentId"] == gid]
+        self.assertEqual(len(subs), 1, "the work filed under the target via the floor label")
+        self.assertEqual([nd for nd in st["nodes"].values() if nd["parentId"] is None and nd["id"] != gid], [],
+                         "no top was minted from an unreadable reply")
 
     def test_followup_unblocks_a_blocked_goal(self):
         gid = SID + ":g1"
