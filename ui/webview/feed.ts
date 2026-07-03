@@ -673,6 +673,10 @@ function makeAskCard(it: AskItem): HTMLElement {
   name.onclick = (ev) => { ev.stopPropagation(); openOrReviveSession(it.sid, it.live, it.name); };
   clr.onclick = (ev) => {
     ev.stopPropagation();
+    // Flush this card's cross-surface hover highlight NOW: clearing removes the card, so its own mouseleave
+    // never fires and the timeline/chat highlight stuck until you moved the mouse (the user 2026-07-03). The
+    // synthetic mouseleave runs the exact leave logic (clears the highlight, or restores a pinned card's).
+    card.dispatchEvent(new MouseEvent("mouseleave"));
     pendingCleared.add(it.itemId);   // suppress from incoming pushes until the kernel confirms the clear
     clearedStack.push([it]);         // cache for an instant optimistic Undo clear
     card.classList.add("dismissing");
@@ -1172,6 +1176,7 @@ function makeGroupCard(g: AskGroup): HTMLElement {
   name.onclick = (ev) => { ev.stopPropagation(); const cur = (card as any)._g as AskGroup; if (cur?.sid) openOrReviveSession(cur.sid, cur.live, cur.name); };
   clr.onclick = (ev) => {
     ev.stopPropagation();
+    card.dispatchEvent(new MouseEvent("mouseleave"));   // flush the group's stuck hover highlight (see the ask card's clear)
     const cur = (card as any)._g as AskGroup;
     card.classList.add("dismissing");
     clearedStack.push(cur.members.slice());   // cache the whole batch for an instant optimistic Undo clear
