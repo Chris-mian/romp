@@ -4362,6 +4362,43 @@ class LivePickerBrief(unittest.TestCase):
         self.assertIsNone(jd.load_goals(SID)["nodes"][g].get("blockSummary"), "blockSummary stays null")
 
 
+class QuoteTitleHeal(unittest.TestCase):
+    """Quote-leak titles (the user 2026-07-03): a floor mint during an LLM outage titled a goal with the
+    follow-up's QUOTED context ('> …') instead of the ask. _seg_label now skips quoted/marker lines
+    (prevention); _heal_quote_titles retitles survivors from node['quote'] deterministically (heal),
+    wired into every planner pass."""
+
+    def test_seg_label_skips_quoted_context_and_markers(self):
+        text = ("> the old ask, quoted back as context\n"
+                "> second quoted line\n"
+                "<!-- romp-goal-id: x:g1 -->\n"
+                "fix the clipping between the segment boundaries please")
+        self.assertTrue(jd._seg_label(text).startswith("fix the clipping"),
+                        "the label comes from the ask, never the quote block")
+        self.assertNotIn(">", jd._seg_label(text))
+
+    def test_seg_label_falls_back_when_everything_is_quoted(self):
+        self.assertTrue(jd._seg_label("> only a quote\n> nothing else").startswith("> only a quote"),
+                        "all-quote text still yields a label rather than '(user message)'")
+
+    def test_heal_retitles_quote_leaked_goals_from_their_own_quote(self):
+        g1, g2, g3 = "s:g1", "s:g2", "s:g3"
+        store = {"nodes": {
+            g1: {"id": g1, "text": "> In the same way you can hover on dots…",
+                 "quote": "So when you hover on a segment now, it lights up a larger portion after a split second delay"},
+            g2: {"id": g2, "text": "A perfectly good title", "quote": "whatever"},
+            g3: {"id": g3, "text": "> quote-leaked but no quote field"},
+        }}
+        self.assertEqual(jd._heal_quote_titles(store), 1, "only the healable quote-leak is touched")
+        self.assertTrue(store["nodes"][g1]["text"].startswith("So when you hover on a segment now"),
+                        "the title becomes the user's own words")
+        self.assertLessEqual(len(store["nodes"][g1]["text"]), 72, "capped at a word boundary")
+        self.assertEqual(store["nodes"][g2]["text"], "A perfectly good title", "good titles untouched")
+        self.assertEqual(store["nodes"][g3]["text"], "> quote-leaked but no quote field",
+                         "no quote to heal from → left for the planner's own retitle")
+        self.assertEqual(jd._heal_quote_titles(store), 0, "healed titles never re-enter (event-gated)")
+
+
 class SeamRegrowth(unittest.TestCase):
     """Settle-time seam (design/segment-regrowth.md): a top goal that settles while its placed segment
     keeps GROWING splits that segment at the settle moment — the post-close tail becomes a fresh,
