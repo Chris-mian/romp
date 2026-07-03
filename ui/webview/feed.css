@@ -272,15 +272,12 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
   border: 1px solid var(--card-border); border-radius: 6px; font: inherit; font-size: 0.74em;
   cursor: pointer; white-space: nowrap; transition: color 0.12s ease, border-color 0.12s ease; }
 .fask-secbtn:hover { color: var(--fg); border-color: var(--fg); }
-/* the open sections' collapse control: a SIBLING row after the body, never a child of it — the summary
-   text is a deep-link whose hover underline/fill must not light the button (different click functions;
-   the user 2026-07-02). The full-width row div gives it its own line, bottom-left, without stretching
-   the button box; the button keeps the plain .fask-secbtn size (no nesting, no compounding). */
-.fask-lessrow { flex: 1 1 100%; min-width: 0; margin-top: 2px; }
-/* one empty text line separates the background part from the summary part ONLY while either section
-   is expanded; the margin rides whichever bg element is the section's LAST visible row (.fask-gapend,
-   set in applyDistillSections): the button when collapsed, the less row when open. */
-.fask-secs.gap > .fask-gapend { margin-bottom: 1.2em; }
+/* a PRESSED toggle (its section is showing): bright + filled, so the state reads at a glance
+   (the user 2026-07-02, round 7 — the buttons themselves toggle; no separate "less" control) */
+.fask-secbtn.on { color: var(--fg); border-color: var(--fg); background: rgba(255, 255, 255, 0.07); }
+/* one clear line between the background part and the summary part while the background is open
+   (its body is what stands between the sections; both collapsed → the buttons sit tight, side by side) */
+.fask-bg-body.fask-gapend { margin-bottom: 1.2em; }
 .fask-secs .fask-distill { flex: 1 1 100%; min-width: 0; margin: 0; }
 /* the background body is typographically IDENTICAL to the summary (.fask-distill) — same font size,
    line height, color, opacity (the user 2026-07-02: one text style for both sections) */
