@@ -1508,6 +1508,11 @@ pre.has-copy:hover .code-copy, .code-copy:focus-visible { opacity: 0.9; }
    when a handoff message is hovered, and the bubble itself for dot-less user
    turns. Transient — cleared when the hover ends. */
 .turn.ext-glow .dot { box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.85); }
+/* …and the turn's rail-line slice lights too, so a hovered SEGMENT glows as ONE contiguous band down the
+   rail (the user 2026-07-02: the line looked chopped — only the locally-hovered turn's slice lit, while
+   the kernel's glowTurns fan-back was already marking every turn of the segment). Adjacent .turn boxes
+   touch, so the per-turn ::before slices read as a single unbroken line. */
+.turn.ext-glow::before { box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.85); opacity: 1; }
 .turn.ext-glow .postal-service-card { outline: 1.5px solid rgba(255, 255, 255, 0.75); outline-offset: 1px; }
 .turn.ext-glow:not(:has(.dot)) { outline: 1.5px solid rgba(255, 255, 255, 0.55); outline-offset: -1px; border-radius: 9px; }
 /* overview ruler (link_audit's #4, the user 2026-06-22): a fixed strip over the #content scrollbar gutter

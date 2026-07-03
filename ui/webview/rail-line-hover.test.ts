@@ -27,6 +27,12 @@ test("the line's glow is the dots' expanding white ring, on the ::before segment
   assert.match(CSS, /\.dot\.dot-nav:hover \{ box-shadow: 0 0 0 2px rgba\(255, 255, 255, 0\.85\); \}/);
 });
 
+test("the cross-highlight lights the WHOLE segment's line as one contiguous band", () => {
+  // the kernel's glowTurns fan-back marks every turn of the hovered segment (.ext-glow); each marked
+  // turn's rail slice must glow too, or the band reads chopped (the user 2026-07-02)
+  assert.match(CSS, /\.turn\.ext-glow::before \{ box-shadow: 0 0 0 2px rgba\(255, 255, 255, 0\.85\); opacity: 1; \}/);
+});
+
 test("the strip hugs the line and never steals the dot's hover", () => {
   assert.match(CSS, /\.rail-hit \{ position: absolute; left: 7px; top: 0; bottom: 0; width: 9px; cursor: pointer; z-index: 0; \}/);
   assert.match(CSS, /\.dot\.dot-nav \{ cursor: pointer; z-index: 1; \}/, "the dot stacks above the strip");
