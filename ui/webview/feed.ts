@@ -606,27 +606,19 @@ function makeAskCard(it: AskItem): HTMLElement {
   // context"): BACKGROUND (re-orientation, collapsed by default) above the takeaway (expanded by default),
   // each toggled by a small +/− button. Collapse state lives in module sets keyed by itemId so the keyed
   // incremental re-render never snaps a section shut.
-  // Disclosure in the chat's own visual language (the ↩ Follow-up header's ▸): a BARE muted text row —
-  // "▸ (background)" / "▸ (summary)", caret + parenthesized label at the body's size (the user
-  // 2026-07-02). Open, BOTH sections are symmetric: the label disappears — the text is its own label —
-  // and the collapse control is a small inline "less" button in the Clear button's chrome, trailing the
-  // last line. One empty line always separates the background from the summary (.fask-bg margin).
-  const bgSec = el("div", "fask-sec fask-bg"); bgSec.style.display = "none";
-  const bgBtn = el("button", "fask-sec-head"); bgBtn.title = "expand";
-  const bgTri = el("span", "fask-sec-tri"); bgTri.textContent = "▸";
-  const bgName = el("span"); bgName.textContent = "(background)";
-  bgBtn.append(bgTri, bgName);
-  const bgBody = el("div", "fask-bg-body");
-  const bgLess = el("button", "fask-sec-less"); bgLess.textContent = "less"; bgLess.title = "collapse";
-  bgSec.append(bgBtn, bgBody);
-  const takeSec = el("div", "fask-sec fask-take"); takeSec.style.display = "none";
-  const takeBtn = el("button", "fask-sec-head"); takeBtn.title = "expand";
-  const takeTri = el("span", "fask-sec-tri"); takeTri.textContent = "▸";
-  const takeName = el("span"); takeName.textContent = "(summary)";
-  takeBtn.append(takeTri, takeName);
+  // Collapsed sections are REAL buttons — "background" / "summary" in the Clear button's chrome — and
+  // sit SIDE BY SIDE on one row when both are collapsed (the user 2026-07-02, round 5). The whole thing
+  // is ONE flex-wrap container: the full-width bodies force their own lines, lone buttons share a row.
+  // Open, the body runs the full card width and its collapse control is a block "less" button on its own
+  // line under the text, always bottom-left (the old trailing-inline placement wrapped unpredictably).
+  const secs = el("div", "fask-secs"); secs.style.display = "none";
+  const bgBtn = el("button", "fask-secbtn fask-bg-part"); bgBtn.textContent = "background"; bgBtn.title = "expand";
+  const bgBody = el("div", "fask-bg-body fask-bg-part");
+  const bgLess = el("button", "fask-secbtn fask-less"); bgLess.textContent = "less"; bgLess.title = "collapse";
+  const takeBtn = el("button", "fask-secbtn"); takeBtn.textContent = "summary"; takeBtn.title = "expand";
   const distill = el("div", "fask-distill");
-  const takeLess = el("button", "fask-sec-less"); takeLess.textContent = "less"; takeLess.title = "collapse";
-  takeSec.append(takeBtn, distill);
+  const takeLess = el("button", "fask-secbtn fask-less"); takeLess.textContent = "less"; takeLess.title = "collapse";
+  secs.append(bgBtn, bgBody, takeBtn, distill);
   // ⏳ AWAITING cue (the user 2026-06-29): a small romp swirl spinning in the SAME body spot the distiller line
   // will eventually fill — a completed/blocked card shows its takeaway there; a WORKING card that's awaiting
   // dispatched/delegated work shows the spinning swirl instead, a glanceable "in flight, not stalled" sign.
@@ -635,7 +627,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   const awaitGlyph = el("span", "fask-awaiting-swirl"); awaitGlyph.setAttribute("aria-hidden", "true");
   const awaitWhy = el("span", "fask-awaiting-why");
   awaitSpin.append(awaitGlyph, awaitWhy);
-  main.append(row1, row2, row3, bgSec, takeSec, awaitSpin, checklist, delegations);   // no expand button — body click opens the modal
+  main.append(row1, row2, row3, secs, awaitSpin, checklist, delegations);   // no expand button — body click opens the modal
   card.append(main);
   // Follow-up lives in the modal now (the user 2026-06-10), not on the card.
 
@@ -734,8 +726,8 @@ function makeAskCard(it: AskItem): HTMLElement {
   a._delegations = delegations;
   a._checklist = checklist;
   a._distill = distill;
-  a._bgSec = bgSec; a._bgBtn = bgBtn; a._bgBody = bgBody; a._bgLess = bgLess;
-  a._takeSec = takeSec; a._takeBtn = takeBtn; a._takeLess = takeLess;
+  a._secs = secs; a._bgBtn = bgBtn; a._bgBody = bgBody; a._bgLess = bgLess;
+  a._takeBtn = takeBtn; a._takeLess = takeLess;
   a._awaitSpin = awaitSpin; a._awaitWhy = awaitWhy;
   a._origin = origin;
   return card;
@@ -748,11 +740,12 @@ const bgOpen = new Set<string>();
 const takeClosed = new Set<string>();
 
 // Fill + wire the BACKGROUND and takeaway sections. BACKGROUND shows only alongside a produced
-// takeaway/brief (orientation with no outcome would dangle): a "▸ background" disclosure row whose
-// triangle flips to ▾ with the body below — the row persists as the close control. The takeaway starts
-// expanded (no header; its text is the content) and collapses via the trailing "less" link into a
-// "▸ summary" row. appendChild re-appends the same "less" node after a re-render reset textContent, so
-// nothing accumulates. stopPropagation on every toggle — the card-body click opens the modal.
+// takeaway/brief (orientation with no outcome would dangle). Collapsed = a real "background"/"summary"
+// button (two collapsed buttons share one row — flex-wrap does it, no special casing); open = the text
+// at full card width with a block "less" button on its own line under it. The blank line between the
+// two sections exists only while either is expanded (.gap → margin under whichever bg element shows).
+// appendChild re-appends the same "less" node after a re-render reset textContent, so nothing
+// accumulates. stopPropagation on every toggle — the card-body click opens the modal.
 function applyDistillSections(a: any, it: AskItem, distillShown: boolean): void {
   const id = it.itemId;
   const flipBg = (ev: Event) => {
@@ -766,30 +759,23 @@ function applyDistillSections(a: any, it: AskItem, distillShown: boolean): void 
     applyDistillSections(a, it, distillShown);
   };
   const bg = distillShown && it.background ? it.background : null;
-  a._bgSec.style.display = bg ? "" : "none";
-  // the blank line between the sections exists only while EITHER is expanded; two collapsed rows
-  // fall tight together (the user 2026-07-02)
-  a._bgSec.classList.toggle("gap", !!bg && (bgOpen.has(id) || !takeClosed.has(id)));
-  if (bg) {
-    const open = bgOpen.has(id);
-    a._bgBtn.style.display = open ? "none" : "";   // open → the label disappears; the text is its own label
-    a._bgBody.style.display = open ? "" : "none";
-    if (open) {
-      a._bgBody.textContent = bg;
-      a._bgBody.appendChild(a._bgLess);            // the inline "less" button trailing the last line
-    }
-    a._bgBtn.onclick = flipBg;
-    a._bgLess.onclick = flipBg;
+  a._secs.style.display = distillShown ? "" : "none";
+  const bgIsOpen = !!bg && bgOpen.has(id);
+  const takeIsOpen = !takeClosed.has(id);
+  a._secs.classList.toggle("gap", !!bg && (bgIsOpen || takeIsOpen));
+  a._bgBtn.style.display = bg && !bgIsOpen ? "" : "none";
+  a._bgBody.style.display = bgIsOpen ? "" : "none";
+  if (bgIsOpen) {
+    a._bgBody.textContent = bg as string;
+    a._bgBody.appendChild(a._bgLess);              // block-level: its own line, bottom-left under the text
   }
-  a._takeSec.style.display = distillShown ? "" : "none";
-  if (distillShown) {
-    const open = !takeClosed.has(id);
-    a._takeBtn.style.display = open ? "none" : "";
-    (a._distill as HTMLElement).style.display = open ? "" : "none";
-    if (open) (a._distill as HTMLElement).appendChild(a._takeLess);   // the inline "less" button trailing the last line
-    a._takeBtn.onclick = flipTake;
-    a._takeLess.onclick = flipTake;
-  }
+  a._bgBtn.onclick = flipBg;
+  a._bgLess.onclick = flipBg;
+  a._takeBtn.style.display = distillShown && !takeIsOpen ? "" : "none";
+  (a._distill as HTMLElement).style.display = takeIsOpen ? "" : "none";
+  if (distillShown && takeIsOpen) (a._distill as HTMLElement).appendChild(a._takeLess);
+  a._takeBtn.onclick = flipTake;
+  a._takeLess.onclick = flipTake;
 }
 
 function updateAskCard(card: HTMLElement, it: AskItem) {
@@ -1499,6 +1485,19 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
   // never a generating-state placeholder. pre-wrap (CSS) keeps a copy-pasteable artifact intact across lines.
   const nodeDistill = distillText(node.status === "done", node.status === "question",
                                   node.summary, node.blockSummary);
+  // The card's BACKGROUND section always shows in the MODAL (the user 2026-07-02): the root node renders
+  // both sections in full, labeled "background" / "summary" — no collapsing here, the modal is the
+  // full-detail view. Only the root carries it (it.background is a top-goal field).
+  const modalBg = node.id === it.itemId && nodeDistill && it.background ? it.background : null;
+  if (modalBg) {
+    const bl = el("div", "ftree-seclabel"); bl.textContent = "background";
+    bl.style.paddingLeft = ((depth + 1) * TREE_INDENT_EM) + "em";
+    const bb = el("div", "ftree-summary"); bb.textContent = modalBg;
+    bb.style.paddingLeft = ((depth + 1) * TREE_INDENT_EM) + "em";
+    const sl = el("div", "ftree-seclabel"); sl.textContent = "summary";
+    sl.style.paddingLeft = ((depth + 1) * TREE_INDENT_EM) + "em";
+    box.append(bl, bb, sl);
+  }
   if (nodeDistill) {
     const sum = el("div", "ftree-summary");
     sum.style.paddingLeft = ((depth + 1) * TREE_INDENT_EM) + "em";
