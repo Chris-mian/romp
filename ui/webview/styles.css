@@ -1500,7 +1500,6 @@ pre.has-copy:hover .code-copy, .code-copy:focus-visible { opacity: 0.9; }
    each turn's rail segment (the line is .turn::before — a pseudo can't take pointer events); hovering it
    white-rings the SEGMENT (same expanding ring as the dots) and cross-highlights the timeline/feed. */
 .rail-hit { position: absolute; left: 7px; top: 0; bottom: 0; width: 9px; cursor: pointer; z-index: 0; }
-.turn.rail-glow::before { box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.85); opacity: 1; }
 
 /* composer drop cue: dragging a file over the box shows it will be accepted
    (its path gets inserted at the cursor on drop) */
