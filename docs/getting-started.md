@@ -4,7 +4,11 @@
 
 - macOS or Linux
 - [tmux](https://github.com/tmux/tmux)
-- Python 3.11+ (the `bin/` tools are pure standard library — no third-party deps)
+- Python 3.10+ for the headless (Agent SDK) backend — the kernel picks the newest
+  `python3.x` it can find (a [uv](https://docs.astral.sh/uv/)-managed one in
+  `~/.local/bin` counts), so an older system `python3` alongside is fine. The
+  `bin/` tools are pure standard library — no third-party deps beyond the
+  SDK venv `install.sh` builds.
 - [Claude Code](https://docs.claude.com/en/docs/claude-code) — the `claude` CLI
 - Node.js — only if you want the VS Code / Cursor extension
 
@@ -30,6 +34,27 @@ export PATH="$PATH:$(pwd)/bin"   # add this line to your shell rc
 !!! tip "First run"
     Open `http://127.0.0.1:7433/` in any browser — no VS Code required. From
     there you can watch the fleet and even start sessions.
+
+## Remote hosts (federation)
+
+One dashboard can show sessions from **other machines**, grouped by host —
+`gpu1:mysession` tabs and timeline lanes next to your local ones, with
+cross-machine messaging between sessions. Setup is the same install, then one
+click:
+
+1. On the remote machine: clone romp and run `./install.sh`
+   (`ROMP_NO_EXT=1` skips the editor extension on a headless box). Make sure
+   you can `ssh <host>` to it non-interactively (an entry in `~/.ssh/config`).
+2. In your dashboard: open the network icon (top bar) and attach the host.
+
+That's it. The attach fetches the remote kernel's token over ssh, opens the
+tunnels (dashboard→kernel and remote-sessions→your postal bus), and **starts
+the remote kernel if it isn't running** — a host that has never run romp
+lights up on the first attach. If romp isn't installed there at all, the
+popover says so and names the command to run.
+
+The kernel is found on the remote's `PATH` or in conventional clone spots
+(`~/GitRepos/romp`, `~/romp`, `~/code/romp`, `~/src/romp`).
 
 ## Where things live
 
