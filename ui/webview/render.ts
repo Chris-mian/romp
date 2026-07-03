@@ -104,7 +104,7 @@ type ChatEvent = (
 
 interface TodoTask { id: string; subject: string; activeForm?: string; status: string }
 
-type ChipState = "working" | "ready" | "awaiting" | "idle" | "closed" | "compacting" | "blocked" | "retrying";
+type ChipState = "working" | "ready" | "awaiting" | "idle" | "closed" | "compacting" | "blocked" | "retrying" | "interrupting";
 interface Status { state: ChipState; sinceEpoch: number | null; effort?: string; model?: string; mode?: string; ctx?: string; ctxColor?: number[]; modelColor?: number[]; effortColor?: number[]; faded?: boolean; backend?: string; apiTooLong?: boolean; }   // backend = "tmux" | "sdk"; apiTooLong = the "blocked" is a "prompt is too long" error (on you → red tab) vs a transient API error (amber/retrying); ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side; modelColor/effortColor = the same map's RGB tint for the model name + effort (by capability/effort rank), server-computed
 interface Color { bg: string; fg: string; }
 // A run_in_background task surfaced in the #bg-tasks box (the kernel's _bg_tasks): a one-line summary +
@@ -848,6 +848,18 @@ function scheduleRestamp(): void {
 function renderEventInner(ev: ChatEvent): HTMLElement {
   if (ev.kind === "system") return renderSystem(ev);
   if (ev.kind === "user") {
+    // The CLI's stop record is an EVENT, not a message (the user 2026-07-02): render it as a slim rail
+    // marker in the compact-divider's language — never a person-blue bubble that reads like typed input.
+    if ((ev as any).interruptMarker) {
+      const turn = el("div", "turn turn-interrupt");
+      turn.appendChild(dot("ring"));
+      const line = el("div", "interrupt-line");
+      line.appendChild(el("span", "interrupt-square"));   // the stop button's own glyph, tying cause to effect
+      line.appendChild(document.createTextNode("interrupted"));
+      line.title = "you stopped this turn here (the stop button / Ctrl+C)";
+      turn.appendChild(line);
+      return turn;
+    }
     // Three flavors of a "user-role" turn: a GENUINE typed prompt → the blue right-aligned bubble; a
     // message romp INJECTED (a feed nudge / follow-up — ev.romp) → a GRAY right-aligned bubble with a
     // "romp" tag, so it's clear romp (not you) sent it (the user 2026-06-19); everything else harness-
@@ -4459,6 +4471,7 @@ const CHIP_LABEL: Record<ChipState, string> = {
   working: "WORKING", ready: "READY", awaiting: "BLOCKED",
   idle: "IDLE", closed: "CLOSED", compacting: "COMPACTING", blocked: "API ERROR",
   retrying: "API retrying…",   // a live session stalled on an API rate-limit/overload auto-retry (api 2026-06-23)
+  interrupting: "INTERRUPTING…",   // stop sent, turn not yet settled (the user 2026-07-02) — clears to READY on its own
 };
 
 // A stop/interrupt button that lives beside the state badge in the statusline (the user 2026-06-19):
@@ -4476,8 +4489,14 @@ function stopButton(): HTMLElement {
     e.stopPropagation();
     if (!activeId || !vscodeApi) return;
     vscodeApi.postMessage({ type: "interrupt", id: activeId });
-    btn.classList.add("stop-flash");
-    window.setTimeout(() => btn.classList.remove("stop-flash"), 400);
+    // acknowledge INSTANTLY (the user 2026-07-02: the button just sat there, pressable again): disable +
+    // become the word. The kernel's push flips the chip to INTERRUPTING… a beat later and this whole
+    // statusline rebuilds without the button; this covers the gap.
+    (btn as HTMLButtonElement).disabled = true;
+    btn.replaceChildren();
+    const lbl = el("span", "stop-busy");
+    lbl.textContent = "interrupting…";
+    btn.appendChild(lbl);
   });
   return btn;
 }
@@ -4511,7 +4530,8 @@ function updateStatusline() {
     sl.appendChild(chip);
   }
   // stop/interrupt button, right beside the state badge — ONLY while busy (working/compacting); omitted
-  // entirely in idle states (there's nothing to interrupt) — the user 2026-06-19.
+  // entirely in idle states (there's nothing to interrupt) — the user 2026-06-19 — and omitted while
+  // INTERRUPTING (the stop is already in flight; re-pressing it is a lie — the user 2026-07-02).
   if (s.status.state === "working" || s.status.state === "compacting") sl.appendChild(stopButton());
   // The session's working directory (fixed at creation), leading the right-side cluster — just left of the
   // mode/model/effort controls (the user 2026-06-23). Basename only; full path on hover. It carries the

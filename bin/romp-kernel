@@ -1728,7 +1728,9 @@ def _drive(msg, client):
 
         _send_or_park(be, sid, str(msg["text"]), echo="human"); _push_all()  # instant echo — or a queued bubble mid-compaction
     elif t == "interrupt":
-        be.interrupt(sid); _push_all()                    # Esc/stop AND settle idle (in the backend) → chip → ready
+        be.interrupt(sid)                                 # Esc/stop AND settle idle (in the backend)
+        _interrupt_clicked[str(sid)] = time.time()        # chip → "interrupting" NOW (event-cleared on settle)
+        _push_all()
     elif t in ("compact", "compactSession"):
         be.send(sid, "/compact"); _mark_compacting(sid)   # /compact + the instant 'compacting' cue on every surface
     elif t == "sendCommand" and msg.get("cmd"):
@@ -4032,6 +4034,23 @@ def _ask_fill_chosen(blocks, output):
 
 
 _compact_clicked = {}         # sid -> ts of a compact WE initiated → optimistic cross-surface "compacting"
+# An interrupt WE just sent (the stop button / Ctrl+C relay): the chip flips to "interrupting" AT ONCE
+# instead of sitting on "working" until the stop lands in the transcript (the user 2026-07-02 — the stop
+# could take seconds to reach a stream boundary, and the UI gave zero acknowledgement meanwhile).
+_interrupt_clicked = {}       # sid -> ts; event-cleared the moment the turn is no longer open
+
+
+def _interrupting(sid, open_now, now):
+    """A just-sent interrupt is IN FLIGHT: stop dispatched, turn not yet settled on disk. Event-cleared
+    the instant the turn is no longer open (the interrupt landed / the result settled); a 120s safety cap
+    covers a wedged turn that never settles, so the chip falls back to honest 'working'."""
+    t0 = _interrupt_clicked.get(sid)
+    if t0 is None:
+        return False
+    if not open_now or now - t0 > 120:
+        _interrupt_clicked.pop(sid, None)
+        return False
+    return True
 # Dead-lane dismissals (the user 2026-07-02): a DEAD session lingers in the timeline as a faded/struck lane
 # while it's still in the activity window; its Clear button adds the sid here to drop it. DELIBERATELY in
 # memory only (never persisted) — a kernel restart forgets it, so `romp --refresh` brings a mistakenly-cleared
@@ -4685,6 +4704,11 @@ def build_session(sid, now, tmux=None):
                         if prompt or reminders or imgs:
                             ev = {"kind": "user", "md": prompt, "uuid": a.get("uuid"), "ts": ts,
                                   "human": author == "human" or bool(imgs), "reminders": reminders}
+                            # The CLI's own stop record ("[Request interrupted by user]" / "… for tool use]")
+                            # is an EVENT, not something the user typed — flag it so the chat renders a slim
+                            # interrupt marker on the rail instead of a person-blue bubble (the user 2026-07-02).
+                            if prompt.strip().startswith("[Request interrupted by user"):
+                                ev["interruptMarker"] = True
                             if fu_goal is not None or (author == "human" and "romp-goal-id" in text):
                                 ev["followUp"] = True
                                 if fu_goal:
@@ -5003,7 +5027,9 @@ def build_session(sid, now, tmux=None):
         # compaction stalls. After that, blocked is the strongest signal — the turn ended in an error, so it
         # beats the live tmux states (the session can't simultaneously be at a permission prompt mid-error).
         compacting = _compacting(sid, st, session, now, tm["since"])   # event-corroborated: a stuck @claude-state
-        chip = ("compacting" if compacting else "blocked" if aerr else "awaiting" if st in _NEEDS_INPUT_STATES   # can't pin it
+        chip = ("compacting" if compacting else
+                "interrupting" if _interrupting(sid, open_now, now) else   # stop sent, turn not yet settled (the user 2026-07-02)
+                "blocked" if aerr else "awaiting" if st in _NEEDS_INPUT_STATES   # can't pin it
                 else "retrying" if st == "retrying" else "working" if (open_now or awaiting_why) else "ready")   # api_retry stall (SDK); working = open turn OR awaiting bg work (the user 2026-06-24)
         faded = chip == "ready" and bool(tm["since"]) and now - tm["since"] > 3600
         # apiTooLong distinguishes a "prompt is too long" block (on YOU → red dashed tab) from a TRANSIENT API
