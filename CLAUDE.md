@@ -58,6 +58,22 @@ Every bug fix or feature change must land with a test that covers it (user rule,
 surfaces. Reproduce the bug in a failing test first when practical; fixtures
 live in `tests/fixtures/`.
 
+## Authoritative sources — fail loudly, don't degrade silently (user rule, 2026-07-03)
+Read state from its AUTHORITATIVE source — a designed API, or the live store that
+owns the data — never a lossy reconstruction (scraping a transcript, a heuristic
+guess). When choosing a source, first look for a real API; only fall to reading a
+store/file if none exists, and say so.
+
+When the authoritative source is UNAVAILABLE, **surface an error to the user** —
+do NOT silently fall back to a worse heuristic that can be quietly wrong. A visible
+error we can see and fix beats stale/incorrect data that looks fine and misleads.
+A silent fallback hides the very breakage we need to know about. (Triggered by the
+TO-DO card, which folded the transcript — missing subagent updates — instead of
+reading Claude's task store; the fix reads the store and surfaces an error when it
+can't, rather than quietly folding. There is no SDK API for the to-do checklist —
+verified, not assumed.) This is the same spirit as the event-vs-heuristic rule
+below: don't approximate when the real thing is available; when it isn't, be loud.
+
 ## Design
 Prefer exact event-based mechanisms over time-based heuristics (grace periods,
 debounces, age thresholds). If a time window seems needed, find the event it is

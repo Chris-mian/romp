@@ -3914,15 +3914,22 @@ def _read_task_store(fsid):
     (_fold_tasks) only sees the MAIN agent's TaskCreate/TaskUpdate tool calls, so a task a subagent
     completes updates the store but writes NO TaskUpdate to the main transcript — the card then lags the
     truth indefinitely (the user via `track` 2026-07-03: card said "3/5" while the store, TaskList and
-    TaskGet all said 5/5 completed; the two missing completions were only ever in the store). Reading the
-    store fixes that at the source. Returns [{id,subject,activeForm,status}] in id order, or None when
-    there's no store dir (→ the caller falls back to the transcript fold, so nothing regresses for a
-    session that predates the store or never used the Task tools)."""
-    d = _task_store_dir(fsid) if fsid else None
+    TaskGet all said 5/5 completed; the two missing completions were only ever in the store). There is NO
+    designed SDK read API for the to-do CHECKLIST (verified 2026-07-03: the SDK's task_* messages are
+    subagent/background lifecycle, not the subject/activeForm checklist), so this on-disk store is the only
+    authoritative source.
+
+    Returns a LIST (possibly empty) when the store dir is READABLE — that is the authoritative answer, even
+    when empty (a cleared/never-populated list) — and None ONLY when the store can't be read (dir missing
+    or an OS error). The caller must NOT silently fall back to the lossy fold on None; it surfaces an error
+    instead (repo policy: fail loudly, don't degrade silently — see CLAUDE.md)."""
+    if not fsid:
+        return None                                       # no fsid → can't locate the store (NB os.listdir(None) lists CWD)
     try:
+        d = _task_store_dir(fsid)
         names = [n for n in os.listdir(d) if n.endswith(".json")]
-    except (OSError, TypeError):
-        return None
+    except OSError:
+        return None                                       # store unreadable → the caller surfaces an error
     tasks = []
     for n in names:
         try:
@@ -3937,9 +3944,7 @@ def _read_task_store(fsid):
                       "activeForm": str(af) if af else None,
                       "status": str(t.get("status") or "pending"),
                       "_order": int(tid) if tid.isdigit() else (1 << 30)})
-    if not tasks:
-        return None
-    tasks.sort(key=lambda t: (t["_order"], t["id"]))
+    tasks.sort(key=lambda t: (t["_order"], t["id"]))       # readable dir → authoritative (empty list included)
     return [{"id": t["id"], "subject": t["subject"], "activeForm": t["activeForm"], "status": t["status"]}
             for t in tasks]
 
@@ -5019,14 +5024,22 @@ def build_session(sid, now, tmux=None):
         if ev.get("askAnswer"):                       # AskUserQuestion → fill chosen now the answer's in
             _ask_fill_chosen(ev["askAnswer"], ev.get("output") or "")
     # Claude Code Task to-do list: ONE checklist event (renderTodo), appended last (bottom, by the
-    # composer). Read from the AUTHORITATIVE live task store (updated by every writer incl. subagents),
-    # falling back to the lossy transcript fold only when there's no store (the user via `track`
-    # 2026-07-03: the card lagged the store because subagent completions never wrote a TaskUpdate into the
-    # main transcript — see _read_task_store). Only while work is OUTSTANDING — a fully completed/cancelled
-    # list isn't a live to-do, so drop it rather than let it read as recent (the user 2026-06-10).
+    # composer), from the AUTHORITATIVE live task store (updated by every writer incl. subagents — the
+    # transcript fold misses subagent completions; see _read_task_store, the user via `track` 2026-07-03).
+    # FAIL LOUDLY, don't degrade silently (the user 2026-07-03; now a repo rule in CLAUDE.md): if the store
+    # is UNREADABLE (None) we do NOT quietly show the lossy transcript fold — we SURFACE AN ERROR. Only when
+    # the transcript shows OUTSTANDING task activity, though: a done/absent list is a non-event, not an
+    # error worth alarming on. Only while work is OUTSTANDING does a card show at all — a fully
+    # completed/cancelled list isn't a live to-do (the user 2026-06-10).
     _fsid = os.path.basename(sess["path"]).rsplit(".", 1)[0] if sess.get("path") else ""
-    todo = _read_task_store(_fsid) or _fold_tasks(session)
-    if todo and any(t["status"] not in ("completed", "cancelled") for t in todo):
+    todo = _read_task_store(_fsid)
+    if todo is None:                                  # authoritative store unreadable — never silently fold
+        fold = _fold_tasks(session)
+        if fold and any(t["status"] not in ("completed", "cancelled") for t in fold):
+            events.append({"kind": "todo", "tasks": [],
+                           "error": "Can't read Claude's task store (~/.claude/tasks) for this session, "
+                                    "so the to-do list can't be shown accurately."})
+    elif any(t["status"] not in ("completed", "cancelled") for t in todo):
         events.append({"kind": "todo", "tasks": todo})
     # The queued indicator (computed above, before the live merge) appends LAST — at the bottom by the
     # composer, like the old TS kernel — so it's visible instead of vanishing (the user 2026-06-15;

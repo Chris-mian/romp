@@ -89,7 +89,7 @@ type ChatEvent = (
       uuid?: string;
     }
   // Claude Code's Task to-do list, folded into one live checklist.
-  | { kind: "todo"; tasks: TodoTask[]; ts?: string; uuid?: string }
+  | { kind: "todo"; tasks: TodoTask[]; error?: string; ts?: string; uuid?: string }
   | { kind: "queued"; texts: { md: string; followUp?: boolean; goal?: string; fuCtx?: string; idx?: number; cancelable?: boolean }[]; ts?: string; uuid?: string }
   // The turn stopped on an API error (event-based: transcript isApiErrorMessage). The session is BLOCKED
   // until retried — a red-dot card at the bottom with a Retry button (the user 2026-06-16).
@@ -1181,6 +1181,17 @@ function renderTodo(ev: Extract<ChatEvent, { kind: "todo" }>): HTMLElement {
   const turn = el("div", "turn turn-todo");
   turn.appendChild(dot("ring"));
   const card = el("div", "todo-card");
+  // FAIL LOUDLY (the user 2026-07-03): the kernel couldn't read Claude's authoritative task store, so it
+  // surfaces THIS instead of quietly showing a lossy transcript-folded list that could be wrong.
+  if (ev.error) {
+    card.classList.add("todo-card-error");
+    const head = el("div", "todo-head"); head.textContent = "To-do · unavailable";
+    card.appendChild(head);
+    const msg = el("div", "todo-error-msg"); msg.textContent = ev.error;
+    card.appendChild(msg);
+    turn.appendChild(card);
+    return turn;
+  }
   const done = ev.tasks.filter((t) => t.status === "completed").length;
   const head = el("div", "todo-head"); head.textContent = `To-do · ${done}/${ev.tasks.length}`;
   card.appendChild(head);
