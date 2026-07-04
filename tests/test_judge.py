@@ -1758,6 +1758,25 @@ class PlanRollup(unittest.TestCase):
                          "a re-completed + settled goal completes despite a stale followupPending — no deadlock")
         self.assertNotIn("followupPending", s["nodes"][g], "the stale optimistic flag is cleared")
 
+    def test_blocked_top_clears_a_stale_followup_pending(self):
+        # track g9 (the user 2026-07-03): a follow-up set followupPending optimistically, then the follow-up
+        # turn was compacted / usage-limited so its work-run never ran _reopen to clear the flag, and a later
+        # pass re-blocked a descendant. followupPending is otherwise cleared ONLY in the followupPending
+        # rollup branch, which `blocked` precedence shadows — so the flag stuck forever and the kernel showed
+        # a permanent "Re-judging…" (blocked + followupPending → recheck) on a card no longer being judged.
+        # An authoritative block must drop the stale optimistic flag.
+        s = _store()
+        self._mint(s, "s1", T0, "G")
+        jd.apply_plan(s, "s2", T0 + 10, [{"do": "sub", "why": "x", "under": 1, "text": "a step"}], jd.open_menu(s))
+        ci = next(i for i, nd in enumerate(jd.open_menu(s), 1) if nd["text"] == "a step")
+        jd.apply_plan(s, "s3", T0 + 20, [{"do": "block", "why": "owed a decision", "goal": ci}], jd.open_menu(s))
+        g = s["placements"]["s1"]
+        s["nodes"][g]["followupPending"] = True                  # stale optimistic flag the block now shadows
+        jd.rollup_status(s, session_closed=False)
+        self.assertEqual(s["status"][g], "blocked", "the descendant block still rolls the top up to blocked")
+        self.assertNotIn("followupPending", s["nodes"][g],
+                         "an authoritative block drops the stale optimistic flag (no permanent Re-judging)")
+
     def test_followup_pending_still_shows_working_for_a_genuinely_reopened_goal(self):
         # The optimistic chip is intact: a goal genuinely reopened (nodeComplete cleared) for follow-up work
         # still reads Working until the judge re-files — only a RE-COMPLETED goal escapes the chip.

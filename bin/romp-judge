@@ -1440,6 +1440,17 @@ def rollup_status(store, session_closed, now=None):
         if nodes[nid].get("cleared"):
             status[nid] = "cleared"
         elif any_blocked(nid):
+            # An authoritative block supersedes a stale optimistic reopen (the user 2026-07-03): drop
+            # followupPending here, mirroring the completed branch below. followupPending is otherwise
+            # cleared ONLY in that branch — which `blocked` precedence shadows — so a top that ends a
+            # follow-up episode BLOCKED (its owed question stands, or a descendant re-blocked while the
+            # follow-up turn was compacted / usage-limited and its work-run never ran _reopen to clear
+            # the flag) kept followupPending forever. The kernel reads blocked+followupPending as `recheck`
+            # → a permanent "Re-judging…" swirl on a card no longer being judged (track g9). A genuine
+            # in-flight targeted follow-up isn't affected: optimistic_followup UNBLOCKS the goal, so it
+            # doesn't reach this branch until a judge verdict re-blocks it — at which point the pending IS
+            # resolved and the card correctly returns to Needs-You.
+            nodes[nid].pop("followupPending", None)
             status[nid] = "blocked"
         elif nodes[nid].get("followupPending"):       # optimistic reopen: show WORKING until the judge processes the follow-up
             # ...UNLESS the judge has genuinely RE-COMPLETED it (nodeComplete + settled). A status Nudge sets
