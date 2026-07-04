@@ -2281,6 +2281,74 @@ class OptimisticFollowupStub(unittest.TestCase):
         self.assertNotIn("followupAt", jd.load_goals(SID)["nodes"][gid])
 
 
+class DiscoverWalk(unittest.TestCase):
+    """discover()'s filesystem walk (the user 2026-07-03: cold-start perf). The scandir rewrite must find the
+    SAME sessions as the old pathlib walk: a session's anchor transcript, plus any same-customTitle FORK in its
+    project dir — while excluding a different-title transcript and anything outside WINDOW. Real temp FS."""
+    def setUp(self):
+        self._saved = (jd.NAMES, jd.PROJECTS, jd.WINDOW, dict(jd._discover_cache))
+        self._td = Path(tempfile.mkdtemp())
+        jd.NAMES = self._td / "names"; jd.NAMES.mkdir()
+        jd.PROJECTS = self._td / "projects"; jd.PROJECTS.mkdir()
+        jd.WINDOW = 3600
+        jd._discover_cache["fp"] = None; jd._discover_cache["result"] = None
+
+    def tearDown(self):
+        jd.NAMES, jd.PROJECTS, jd.WINDOW, sc = self._saved
+        jd._discover_cache.clear(); jd._discover_cache.update(sc)
+        shutil.rmtree(str(self._td), ignore_errors=True)
+
+    def _transcript(self, cwd, stem, title=None, mtime=None):
+        proj = jd._proj_dir(cwd); proj.mkdir(parents=True, exist_ok=True)
+        recs = ([{"type": "custom-title", "customTitle": title}] if title else []) + \
+               [{"type": "user", "message": {"role": "user", "content": "hi"}}]
+        p = proj / (stem + ".jsonl"); p.write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+        if mtime is not None:
+            os.utime(p, (mtime, mtime))
+        return p
+
+    def test_anchor_plus_same_title_fork_discovered_others_excluded(self):
+        now = 2_000_000
+        cwd = "/tmp/TESTHOST/proj"
+        sid = "11111111-2222-3333-4444-555555555555"
+        fork = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        diff = "99999999-8888-7777-6666-555555555555"
+        old = "cccccccc-1111-2222-3333-444444444444"
+        (jd.NAMES / sid).write_text("mysession\t" + cwd + "\n")
+        self._transcript(cwd, sid, mtime=now)                                   # anchor (no title needed)
+        self._transcript(cwd, fork, title="mysession", mtime=now)               # same-title fork → included
+        self._transcript(cwd, diff, title="another thread", mtime=now)          # different title → excluded
+        self._transcript(cwd, old, title="mysession", mtime=now - jd.WINDOW - 50)  # same title but stale → excluded
+        stems = {f for f, p, a, n in jd._discover_impl(now)}
+        self.assertIn(sid, stems, "the anchor transcript is discovered")
+        self.assertIn(fork, stems, "the same-customTitle fork is discovered (its own lane)")
+        self.assertNotIn(diff, stems, "a different-customTitle transcript is not a fork of this session")
+        self.assertNotIn(old, stems, "a same-title fork outside WINDOW is excluded")
+
+    def test_out_of_window_anchor_still_excluded(self):
+        now = 2_000_000
+        cwd = "/tmp/TESTHOST/proj2"
+        sid = "22222222-3333-4444-5555-666666666666"
+        (jd.NAMES / sid).write_text("s\t" + cwd + "\n")
+        self._transcript(cwd, sid, mtime=now - jd.WINDOW - 100)                  # stale anchor
+        self.assertEqual([f for f, p, a, n in jd._discover_impl(now)], [],
+                         "a session whose only transcript is outside WINDOW yields nothing")
+
+    def test_shared_project_dir_lists_forks_for_each_session(self):
+        # two named sessions in ONE project dir — the scandir listing is memoized per dir but each session
+        # still resolves its own same-title fork (the memoization must not drop a session's forks).
+        now = 2_000_000
+        cwd = "/tmp/TESTHOST/shared"
+        a, af = "aaaa1111-0000-0000-0000-000000000000", "aaaa2222-0000-0000-0000-000000000000"
+        b, bf = "bbbb1111-0000-0000-0000-000000000000", "bbbb2222-0000-0000-0000-000000000000"
+        (jd.NAMES / a).write_text("alpha\t" + cwd + "\n")
+        (jd.NAMES / b).write_text("beta\t" + cwd + "\n")
+        for stem, title in ((a, None), (af, "alpha"), (b, None), (bf, "beta")):
+            self._transcript(cwd, stem, title=title, mtime=now)
+        stems = {f for f, p, a_, n in jd._discover_impl(now)}
+        self.assertEqual(stems, {a, af, b, bf}, "both sessions AND both their forks are discovered from one dir")
+
+
 class DelegationPropagation(unittest.TestCase):
     """DETERMINISTIC delegation completion link-back (the user 2026-06-22): the courier mints a precise
     '↪ delegated to <peer>' TRACKING node in the SENDER's tree and points the recipient's goal G at it

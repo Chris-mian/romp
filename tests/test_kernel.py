@@ -5082,5 +5082,47 @@ class SlashCommands(unittest.TestCase):
         self.assertIn('.get("commands", [])', src)
 
 
+class BootWarm(unittest.TestCase):
+    """_boot_warm pre-parses the living fleet into the kernel parse cache at STARTUP, during the browser's
+    reconnect/reload gap, so the first connect is warm instead of paying the cold serial parse (the user
+    2026-07-03: local sessions take a long time to load on restart)."""
+    def setUp(self):
+        self._saved = (km._alive_sessions, km._has_parsing_client, km._parse, km._tmux_sessions, km.jd.discover)
+        self.parsed = []
+        km.jd.discover = lambda now: []
+        km._tmux_sessions = lambda: {}
+        km._parse = lambda path, sid, now: self.parsed.append(sid)
+
+    def tearDown(self):
+        (km._alive_sessions, km._has_parsing_client, km._parse, km._tmux_sessions, km.jd.discover) = self._saved
+
+    def _wait(self, pred, timeout=1.0):
+        end = time.time() + timeout
+        while time.time() < end:
+            if pred():
+                return True
+            time.sleep(0.02)
+        return pred()
+
+    def test_boot_warm_parses_every_live_session(self):
+        km._has_parsing_client = lambda: False
+        km._alive_sessions = lambda now, tmux: [{"sid": "s1", "path": "/p1"}, {"sid": "s2", "path": "/p2"}]
+        km._boot_warm()
+        self.assertTrue(self._wait(lambda: sorted(self.parsed) == ["s1", "s2"]),
+                        "boot-warm parsed every live session into the cache")
+
+    def test_boot_warm_stands_down_for_a_live_parsing_client(self):
+        km._has_parsing_client = lambda: True     # the browser already reconnected → its build warms the cache
+        km._alive_sessions = lambda now, tmux: [{"sid": "s1", "path": "/p1"}]
+        km._boot_warm()
+        time.sleep(0.1)
+        self.assertEqual(self.parsed, [], "boot-warm defers to a live parsing client — no GIL contention")
+
+    def test_boot_warm_is_wired_at_startup_before_the_producer(self):
+        src = Path(BIN, "romp-kernel").read_text()
+        self.assertLess(src.rindex("_boot_warm()"), src.index("threading.Thread(target=_producer"),
+                        "the boot warm kicks off at startup, ahead of the producer/pusher threads")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

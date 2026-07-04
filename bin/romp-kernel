@@ -4305,6 +4305,33 @@ def _warm_fleet_bg(now):
     threading.Thread(target=go, daemon=True, name="parse-warm").start()
 
 
+def _boot_warm():
+    """Warm the live fleet's parse cache at kernel STARTUP (the user 2026-07-03: after `romp --refresh`, local
+    sessions take a long time to load while remote ones — served by their own still-warm kernel over federation
+    — appear at once). A fresh kernel has EMPTY caches, so the first connect pays the full cold serial parse
+    (~2-4s: build_timeline bars + every chat tab). But between the restart and that connect there's a 1-2s gap
+    while the browser notices the socket dropped, reconnects, and reloads — during which the kernel is IDLE.
+    Spend it: pre-parse the living sessions into _parse_cache so the first connect finds them WARM. Best-effort;
+    bails the instant a chat/timeline client connects (that connect warms what it needs — no GIL contention),
+    warms discover() first (its own cache, shared by every builder), and never throws. Safe: this only
+    PRE-COMPUTES the same (mtime,size)-keyed cache the connect would build — no new state, no staleness."""
+    def go():
+        try:
+            now = int(time.time())
+            jd.discover(now)                              # warm the shared discover cache (every builder needs it)
+            tmux = _tmux_sessions()
+            for s in _alive_sessions(now, tmux):
+                if _has_parsing_client():                 # the browser reconnected → it warms the rest; stand down
+                    return
+                try:
+                    _parse(s["path"], s["sid"], now)      # warm the kernel parse cache (build_timeline/-session reuse it)
+                except Exception:
+                    pass
+        except Exception:
+            sys.stderr.write("boot-warm: %s\n" % traceback.format_exc())
+    threading.Thread(target=go, daemon=True, name="boot-warm").start()
+
+
 def _ask_fill_chosen(blocks, output):
     """Fill each AskUserQuestion block's `chosen` from the tool_result string, which records the answers
     as `"<question>"="<answer>"` pairs (a multiSelect answer joins the picked labels as 'A, B, C'; a
@@ -10612,6 +10639,7 @@ def main():
     # (a federated host) has no ~/.local/bin on PATH — bare `claude` exec-failed silently there.
     os.environ.setdefault("ROMP_CLAUDE_BIN", _claude_bin())
     _ensure_bundles()
+    _boot_warm()                                              # pre-parse the live fleet during the reconnect gap (fast first paint)
     threading.Thread(target=_producer, daemon=True).start()
     threading.Thread(target=_pusher, daemon=True).start()
     threading.Thread(target=_ask_poll, daemon=True).start()   # scrape live AskUserQuestion pickers → chat

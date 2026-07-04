@@ -1779,11 +1779,41 @@ def discover(now):
 def _discover_impl(now):
     """[(fsid, path, anchor_sid, name)] for every transcript of a romp session touched within
     WINDOW: the session's anchor transcript plus any same-customTitle fork in its project dir.
-    File-based (names/), no tmux — works for headless sessions too."""
+    File-based (names/), no tmux — works for headless sessions too.
+
+    Perf (the user 2026-07-03: cold-kernel startup is slow): this WAS a pathlib walk — `proj.iterdir()`
+    re-listed each project dir ONCE PER SESSION that lives in it, and `.suffix`/`.stem`/`.stat()` re-parsed +
+    re-statted every entry — ~68k stats + ~140k path re-parses, ~0.6s on every cold build (it's on the
+    critical path of EVERY pane's first paint). Now: os.scandir (DirEntry caches name+stat from the dir read,
+    no pathlib), each project dir listed ONCE (dir_jsonl memo), and each fork's title read ONCE (title memo)."""
     out, seen = [], set()
     if not NAMES.is_dir():
         return out
     cutoff = now - WINDOW
+    dir_jsonl = {}      # proj-dir str -> [(stem, path_str, mtime)] for its .jsonl files — scandir'd ONCE
+    title_memo = {}     # path_str -> _custom_title(path_str), memoized (a fork is title-checked once, not per session)
+
+    def _list_jsonl(proj):
+        key = str(proj)
+        cached = dir_jsonl.get(key)
+        if cached is None:
+            cached = []
+            try:
+                with os.scandir(key) as it:
+                    for e in it:
+                        n = e.name
+                        if not n.endswith(".jsonl"):
+                            continue
+                        try:
+                            mt = e.stat().st_mtime      # DirEntry stat — cached from the scandir where the OS allows
+                        except OSError:
+                            continue
+                        cached.append((n[:-6], e.path, mt))   # stem = name without ".jsonl"
+            except OSError:
+                pass
+            dir_jsonl[key] = cached
+        return cached
+
     for f in sorted(NAMES.iterdir()):
         sid = f.name
         try:
@@ -1795,28 +1825,23 @@ def _discover_impl(now):
         if not cdir:
             continue
         proj = _proj_dir(cdir)
-        anchor = proj / (sid + ".jsonl")
-        try:
-            if anchor.exists() and anchor.stat().st_mtime >= cutoff and str(anchor) not in seen:
-                seen.add(str(anchor)); out.append((sid, anchor, sid, name))
-        except OSError:
-            pass
+        listing = _list_jsonl(proj)
+        for stem, path_str, mt in listing:               # anchor (<sid>.jsonl) first — mirrors the old exists()/stat() block
+            if stem == sid:
+                if mt >= cutoff and path_str not in seen:
+                    seen.add(path_str); out.append((sid, Path(path_str), sid, name))
+                break
         if not name:
             continue
-        try:
-            entries = list(proj.iterdir())
-        except Exception:
-            entries = []
-        for fp in entries:                               # same-customTitle forks (each its own lane)
-            if fp.suffix != ".jsonl" or fp.stem == sid or str(fp) in seen:
+        for stem, path_str, mt in listing:               # same-customTitle forks (each its own lane)
+            if stem == sid or path_str in seen or mt < cutoff:
                 continue
-            try:
-                if fp.stat().st_mtime < cutoff:
-                    continue
-            except OSError:
-                continue
-            if _custom_title(fp) == name:
-                seen.add(str(fp)); out.append((fp.stem, fp, sid, name))
+            if path_str in title_memo:
+                t = title_memo[path_str]
+            else:
+                t = _custom_title(path_str); title_memo[path_str] = t
+            if t == name:
+                seen.add(path_str); out.append((stem, Path(path_str), sid, name))
     return out
 
 
