@@ -72,10 +72,20 @@ LOCAL_STDOUT_RE = re.compile(r"^\s*<local-command-stdout>([\s\S]*?)</local-comma
 
 # ───────────────────────── small helpers ─────────────────────────
 def parse_z(s):
-    """Transcript timestamp (ISO-8601 UTC, '…Z') -> epoch int, or None."""
+    """Transcript timestamp (ISO-8601 UTC, '…Z') -> epoch int, or None.
+
+    Every transcript record carries a timestamp, so this runs tens of thousands of times per fleet parse
+    — the C-accelerated datetime.fromisoformat (3.11+, accepts a '+00:00' offset + fractional secs) is
+    ~13x faster than strptime and was a real chunk of "startup is slow" (the user 2026-07-03). strptime
+    stays as a fallback for any exotic form fromisoformat rejects, so behavior is unchanged."""
     if not s:
         return None
-    s = s.strip().replace("Z", "+0000")
+    s = s.strip()
+    try:
+        return int(datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp())
+    except Exception:
+        pass
+    s = s.replace("Z", "+0000")
     for fmt in ("%Y-%m-%dT%H:%M:%S.%f%z", "%Y-%m-%dT%H:%M:%S%z"):
         try:
             return int(datetime.strptime(s, fmt).timestamp())

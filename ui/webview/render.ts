@@ -1893,7 +1893,9 @@ let renderPendingWhilePressed = false;
 // A loading PLACEHOLDER tab (the user 2026-06-26): name + identity color from the kernel's tabOrder push,
 // shown while the session's build_session is still in flight so the strip's full width is reserved up front
 // (no one-by-one pop-in). Non-interactive — no select/close/drag — until the real session arrives and
-// renderTabs swaps in the full tab. A gentle pulse (.tab-placeholder) reads as "loading".
+// renderTabs swaps in the full tab. It wears the MINI romp swirl (spinning glyph) as its "generating" cue
+// (the user 2026-07-03) instead of a whole-tab opacity pulse — the same romp-loader motif as the panes, so a
+// tab still building reads as "romp is working on this," consistent everywhere.
 function makePlaceholderTab(id: string): HTMLElement {
   const meta = tabMeta.get(id);
   const tab = el("div", "tab tab-placeholder");
@@ -1903,6 +1905,9 @@ function makePlaceholderTab(id: string): HTMLElement {
     tab.style.setProperty("--chip-fg", meta.color.fg);
     tab.classList.add("colored");
   }
+  const swirl = el("img", "tab-ph-swirl") as HTMLImageElement;
+  swirl.src = "/media/romp-swirl-glyph.svg"; swirl.alt = ""; swirl.onerror = () => swirl.remove();
+  tab.appendChild(swirl);
   const label = el("span", "tab-label");
   label.textContent = meta?.name || "…";
   tab.appendChild(label);

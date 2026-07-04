@@ -32,6 +32,14 @@ test("_showLoader toggles a wordmark overlay against the SVG", () => {
   assert.match(SRC, /this\.svg\.style\.display = show \? 'none' : '';/);
 });
 
+test("the loader is shown FROM CONSTRUCTION, before any data — no blank timeline on a cold start", () => {
+  // the user 2026-07-03: on a kernel restart the timeline showed nothing until the first payload, because
+  // draw() bails on null data and the loader only lived inside draw(). The constructor now raises it up front
+  // and arms the backstop, so the romp swirl is up the instant the iframe (re)loads.
+  const ctor = SRC.slice(SRC.indexOf("constructor(host)"), SRC.indexOf("destroy()"));
+  assert.match(ctor, /this\._showLoader\(true\);\s*\n\s*this\._armLoaderBackstop\(\);/);
+});
+
 test("the loader is the full ROMP wordmark — R, m, p letters + the reverse-spinning swirl-o + dots", () => {
   assert.match(SRC, /_buildLoader\(\)/);
   assert.match(SRC, /mk\('R', '#1EA1EB'\)/);

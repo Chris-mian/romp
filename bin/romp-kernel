@@ -3922,7 +3922,15 @@ def _hydrate_postal(events, index):
     OUTGOING card; a user/tool event carrying romp-msg-id marker(s) → INCOMING card(s) with the clean
     body from the log. Anything not fully resolved passes through unchanged. Mirrors hydratePostal."""
     out = []
-    msgsum = _msg_summaries()                             # {id: Haiku caption} → show the ≤9-word caption, not the verbose body
+    # {id: Haiku caption} → show the ≤9-word caption, not the verbose body. Computed LAZILY (the user
+    # 2026-07-03: "startup is slow"): _msg_summaries() re-scans the WHOLE fleet's captioned transcripts,
+    # a ~2s cold-cache cost, but MOST sessions carry no incoming postal traffic — so only pay it when this
+    # session actually has an incoming card to caption, never on the first-built tab that has no postal mail.
+    _msgsum = [None]
+    def caption_for(mid):
+        if _msgsum[0] is None:
+            _msgsum[0] = _msg_summaries()
+        return _msgsum[0].get(mid)
     for ev in events:
         if ev.get("kind") == "tool" and _SEND_TOOL_RE.search(ev.get("name") or ""):
             card = _postal_out_card(ev)
@@ -3941,7 +3949,7 @@ def _hydrate_postal(events, index):
                 if rec:
                     cards.append({"kind": "postal-service", "direction": "in", "peer": rec["from"] or "?",
                                   "color": _name_color(rec["fromId"]) if rec["fromId"] else None,
-                                  "body": rec["body"], "summary": msgsum.get(rec["id"]),   # incoming caption (full body on expand)
+                                  "body": rec["body"], "summary": caption_for(rec["id"]),   # incoming caption (full body on expand)
                                   "mid": rec["id"], "t": rec["t"] or None,
                                   "park": rec["park"], "ts": ev.get("ts"), "uuid": ev.get("uuid")})
             if len(cards) == len(ids):                   # all-or-nothing: a partial log never half-renders
@@ -6202,6 +6210,14 @@ def build_feed(now, tmux=None):
                        if nodes[x].get("blocked") and not _closure_done(x)]
                 if bts:
                     disp_t = max(bts)
+            # followupAt = when a follow-up OPTIMISTICALLY moved this card into Working (optimistic_followup
+            # stamps it at the flip). Same idea as the Completed column's settledAt: the column sorts
+            # oldest-at-top, so without this the card sorts by its stale blocked-era mt and appears at the TOP,
+            # then the judge re-files the real follow-up work (≈now) and it lurches to the BOTTOM. Flooring
+            # disp_t to now at the flip lands it at the bottom AT ONCE, where the re-file will keep it — no jump
+            # (the user 2026-07-03). Once real work lands, _fsubmax passes followupAt and this is moot.
+            if col == "working":
+                disp_t = max(disp_t, nodes[nid].get("followupAt") or 0)
             # RE-CHECK (the user 2026-06-27): a SOFT-blocked top you've answered with a TARGETED card-reply/nudge
             # (followupPending on the top — precise, only this card) is no longer on YOU. It de-urgents (dotted,
             # dropped from the needs-you tally) and drops to WORKING until the judge resolves or re-blocks it.
@@ -8457,7 +8473,13 @@ def _pane_spin(cid, ignore_id=""):
     """A per-pane loading overlay (the user 2026-06-26): the romp LOADER (swirl + 'romp' + dots) centered over
     the pane until its content container `cid` gets its first REAL child, then it FADES (kept in the DOM, not
     removed). So each sub-panel shows the romp loader while it loads its data (the chat is the slow one).
-    Self-contained CSS+HTML+JS so it just drops into a page body; an 8s backstop guarantees it never sticks.
+    Self-contained CSS+HTML+JS so it just drops into a page body. Hiding is EVENT-based (the observer fires
+    the instant real content lands); a 30s timeout is a pure FAILSAFE so it can never permanently stick. The
+    old 8s timeout was too short — it fired DURING a normal slow cold start (a fresh kernel builds the fleet
+    serially, and the feed/chat leave their container empty until real data), hiding the loader over a still-
+    blank pane: the "loader stops, then blank for a little while before the stuff shows up" gap (the user
+    2026-07-03). 30s only ever fires when content genuinely never comes (a dead kernel — which also raises
+    wsdown), never in the load path.
 
     It RE-SHOWS on a kernel restart / WS drop (the user 2026-06-29): the shim fires `romp:wsdown` on
     ws.onclose, and the loader un-fades over the stale pane — "romp is reconnecting" — until fresh content
@@ -8475,7 +8497,7 @@ def _pane_spin(cid, ignore_id=""):
             "if(!o)return;function show(){o.classList.remove('gone');}function hide(){o.classList.add('gone');}"
             "function ready(){if(!c)return false;for(var i=0;i<c.children.length;i++){if(!IGN||c.children[i].id!==IGN)return true;}return false;}"
             "if(c){try{new MutationObserver(function(){if(ready())hide();}).observe(c,{childList:true});}catch(e){}"
-            "if(ready())hide();}setTimeout(hide,8000);"
+            "if(ready())hide();}setTimeout(hide,30000);"
             "window.addEventListener('romp:wsdown',show);})();</script>")
 
 

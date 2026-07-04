@@ -33,6 +33,15 @@ class PaneLoaderIgnore(unittest.TestCase):
         src = inspect.getsource(km)
         self.assertIn('_pane_spin("content", "live-ask")', src, "the chat page opts the picker host out of the loader gate")
 
+    def test_loader_hide_is_content_driven_with_only_a_long_failsafe_timeout(self):
+        # the user 2026-07-03: the old 8s timeout fired DURING a normal slow cold start (serial fleet build,
+        # empty-until-data feed/chat), hiding the loader over a still-blank pane. Hiding must be event-driven
+        # (the MutationObserver on real content); the timeout is only a can't-trap failsafe → a long window.
+        js = km._pane_spin("content", "live-ask")
+        self.assertIn("new MutationObserver", js, "content arrival is the real hide signal")
+        self.assertIn("setTimeout(hide,30000)", js, "the timeout is a long failsafe, not an in-load hide")
+        self.assertNotIn("setTimeout(hide,8000)", js, "the premature 8s hide is gone")
+
 
 if __name__ == "__main__":
     unittest.main()
