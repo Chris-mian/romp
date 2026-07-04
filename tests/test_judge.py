@@ -815,11 +815,14 @@ class MintQuote(unittest.TestCase):
                "here is my actual reply text\n\n<!-- romp-goal-id: S:g1 -->")
         self.assertEqual(jd._mint_quote(self._seg(txt)), "here is my actual reply text")
 
-    def test_quote_caps_at_a_word_boundary(self):
-        q = jd._mint_quote(self._seg("wordish " * 80))
-        self.assertLessEqual(len(q), jd.QUOTE_CAP + 2)
-        self.assertTrue(q.endswith(" …"), "over-cap is marked with an ellipsis")
-        self.assertTrue(all(w == "wordish" for w in q[:-2].split()), "cut lands on a word boundary")
+    def test_quote_is_not_truncated(self):
+        # the user 2026-07-03: the chat's expandable ↩ Follow-up header shows this quote as an audit of
+        # what rode along with the message — a silent cap there read as broken ("… Two things in blocked
+        # …" with no way to see the rest), so a long minting message is quoted back IN FULL.
+        long_text = "wordish " * 80
+        q = jd._mint_quote(self._seg(long_text))
+        self.assertEqual(q, long_text.strip())
+        self.assertFalse(q.endswith("…"), "no truncation ellipsis")
 
     def test_autonomous_segment_has_no_quote(self):
         # no user trigger (assistant-only continuation) → '' → apply_plan stores None → title fallback

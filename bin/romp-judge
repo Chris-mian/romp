@@ -1963,26 +1963,24 @@ def plan_units(session, store=None):
     return out
 
 
-QUOTE_CAP = 220                          # verbatim mint-quote cap (chars, cut at a word boundary)
-
-
 def _mint_quote(seg):
     """The minting message's VERBATIM head — the user's (or peer's) own words, cached on every node this
     segment mints as node["quote"] (no LLM call; the promptUuid precedent). Follow-ups and nudges then
     quote the user back in their OWN terminology instead of the planner's ≤10-word paraphrase, which read
     robotic and unfamiliar (the user 2026-07-01, g13). Cleaned of romp plumbing — comment markers, and a
-    leading `> …` context block when the minting message was ITSELF a follow-up — then whitespace-flattened
-    and capped at a word boundary. '' when the trigger carries no prose (an autonomous segment)."""
+    leading `> …` context block when the minting message was ITSELF a follow-up — then whitespace-flattened.
+    UNCAPPED (the user 2026-07-03): the chat's ↩ Follow-up header expands to show exactly this text as an
+    audit of what rode along with the message, and a truncated quote there read as broken, not abbreviated
+    ("… Two things in blocked …" with no way to see the rest). A goal's title-heal path (_heal_quote_titles)
+    caps its OWN way when it borrows this for a short title. '' when the trigger carries no prose (an
+    autonomous segment)."""
     atoms = seg.get("atoms") or []
     trig = next((a for a in atoms if a.get("uuid") == seg.get("trigger")), None) or (atoms[0] if atoms else None)
     if not trig or trig.get("type") != "user":
         return ""
     t = re.sub(r"<!--.*?-->", "", _atom_text(trig), flags=re.S)
     t = " ".join(ln for ln in t.split("\n") if not ln.lstrip().startswith(">"))
-    t = " ".join(t.split()).strip()
-    if len(t) > QUOTE_CAP:
-        t = (t[:QUOTE_CAP].rsplit(" ", 1)[0] or t[:QUOTE_CAP]).rstrip(" ,.;:") + " …"
-    return t
+    return " ".join(t.split()).strip()
 
 
 def _seg_label(text, words=10):
