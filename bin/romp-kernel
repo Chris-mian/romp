@@ -2711,10 +2711,13 @@ def _tunnel_proc_alive(r):
 
 
 def _remote_public(r):
-    """The API view of a remote row — everything the browser needs to open its own WS, minus the Popen."""
+    """The API view of a remote row — everything the browser needs to open its own WS, minus the Popen.
+    kernelSha/localSha/outOfDate let the dashboard flag a remote running older code + offer to update it."""
     return {"host": r["host"], "kernelPort": r["kernel_port"], "localPort": r["local_port"],
             "token": r.get("token") or "", "status": r.get("status") or "down",
-            "detail": r.get("detail") or "", "sids": list(r.get("sids") or [])}
+            "detail": r.get("detail") or "", "sids": list(r.get("sids") or []),
+            "kernelSha": r.get("kernel_sha") or "", "localSha": _kernel_sha() or "",
+            "outOfDate": _remote_out_of_date(r)}
 
 
 def _remotes_save():
@@ -2866,10 +2869,92 @@ def _remote_forward(r, path, body):
         return None
 
 
+def _poll_remote_version(r):
+    """GET the remote kernel's /version THROUGH the -L tunnel and return its `kernel_sha` (the git short-sha
+    the remote is running), or None on any failure. Same transport as _poll_remote_sids — /version is
+    auth-exempt on the remote, but we pass the token anyway. Lets the local kernel tell when a remote is
+    running OLDER code than this one (the user 2026-07-04: keep remotes up to date + prompt to update)."""
+    import urllib.parse
+    try:
+        c = http.client.HTTPConnection("127.0.0.1", int(r["local_port"]), timeout=4)
+        path = "/version" + (("?token=" + urllib.parse.quote(r["token"])) if r.get("token") else "")
+        c.request("GET", path)
+        resp = c.getresponse()
+        data = resp.read()
+        c.close()
+        if resp.status != 200:
+            return None
+        return (json.loads(data.decode("utf-8")) or {}).get("kernel_sha") or None
+    except Exception:
+        return None
+
+
+def _sha_base(s):
+    """A git sha stripped of the '-dirty' suffix — so a locally-DIRTY tree (uncommitted edits on the same
+    commit) doesn't read as a version mismatch against a clean remote at that same commit."""
+    return (str(s or "").split("-", 1)[0]) or None
+
+
+def _remote_out_of_date(r):
+    """True iff this remote is running a DIFFERENT commit than the local kernel — i.e. an update (git pull +
+    restart) would change it. Both shas must be known; the '-dirty' suffix is ignored (same-commit local
+    edits are not a remote-version problem). Direction-agnostic: normally the remote is BEHIND (the user
+    pushes local→origin, remotes pull origin), and a pull on an already-current remote is a harmless no-op."""
+    rsha = _sha_base(r.get("kernel_sha"))
+    lsha = _sha_base(_kernel_sha())
+    return bool(rsha and lsha and rsha != lsha)
+
+
+def _update_remote(host):
+    """Pull the latest romp on `host` and restart its kernel so it picks up the new code (the user 2026-07-04).
+    SSHes in (the SAME BatchMode/no-multiplexing opts as every other remote ssh), finds the romp clone in the
+    conventional locations (mirrors _start_remote_kernel), `git pull --ff-only` (never a merge/rebase — a
+    diverged or dirty remote FAILS LOUDLY rather than half-updating), then `romp --refresh` to restart. Returns
+    (ok, detail) — detail is the git summary on success, or a specific reason on failure (no romp clone, pull
+    conflict, no launcher). Best-effort + guarded, like _start_remote_kernel."""
+    host = str(host or "").strip()
+    if not host:
+        return False, "no host"
+    # --ff-only so a remote with local commits/uncommitted edits refuses instead of silently merging; we report
+    # the git stderr verbatim (fail loudly). After a successful pull, `$R/bin/romp --refresh` restarts the
+    # remote's bus + kernels to load the new code (the standard "picks up new code" command for a normal install).
+    cmd = (
+        'LOGDIR="${XDG_STATE_HOME:-$HOME/.local/state}/romp"; mkdir -p "$LOGDIR"; '
+        'R=""; for d in "$HOME/GitRepos/romp" "$HOME/romp" "$HOME/code/romp" "$HOME/src/romp"; do '
+        'if [ -d "$d/.git" ]; then R="$d"; break; fi; done; '
+        'if [ -z "$R" ]; then echo NOROMP; exit 0; fi; '
+        'OUT="$(cd "$R" && git pull --ff-only 2>&1)"; GS=$?; '
+        'if [ $GS -ne 0 ]; then echo "PULLFAIL:$OUT"; exit 0; fi; '
+        'if printf %s "$OUT" | grep -qi "already up to date"; then echo "NOCHANGE:$OUT"; exit 0; fi; '
+        'if [ -x "$R/bin/romp" ]; then nohup "$R/bin/romp" --refresh >>"$LOGDIR/update.log" 2>&1 </dev/null & echo "UPDATED:$OUT"; '
+        'elif [ -x "$R/bin/romp-serve" ]; then pkill -f "bin/romp-kernel" 2>/dev/null; sleep 1; '
+        'nohup "$R/bin/romp-serve" >>"$LOGDIR/kernel.log" 2>&1 </dev/null & echo "UPDATED:$OUT"; '
+        'else echo "NOLAUNCH:$OUT"; fi')
+    try:
+        res = subprocess.run([SSH_BIN] + _SSH_OPTS + [host, cmd], capture_output=True, text=True, timeout=90)
+        out = (res.stdout or "").strip()
+    except Exception as e:
+        return False, str(e)[:200]
+    tag, _, rest = out.partition(":")
+    rest = rest.strip()
+    if tag == "UPDATED":
+        return True, (rest.splitlines()[-1][:200] if rest else "updated + restarting")
+    if tag == "NOCHANGE":
+        return True, "already up to date"
+    if tag == "NOROMP":
+        return False, "romp not installed on %s (looked in ~/GitRepos/romp, ~/romp, ~/code/romp, ~/src/romp)" % host
+    if tag == "PULLFAIL":
+        return False, "git pull failed: " + (rest[:200] or "diverged or dirty tree — resolve it on the host")
+    if tag == "NOLAUNCH":
+        return False, "pulled, but no romp/romp-serve launcher found to restart the kernel"
+    return False, (res.stderr or out or "ssh failed").strip()[:200]
+
+
 def _tunnel_supervisor():
     """Keep attached tunnels alive (re-spawn a dead ssh), refresh status, and learn which session ids live on
     each host by polling its kernel's /sessions THROUGH the -L tunnel — the host↔sid map the wake-router uses
-    to forward a /deliver to the owning remote kernel."""
+    to forward a /deliver to the owning remote kernel. Also polls each up host's /version so the dashboard can
+    flag (and offer to update) a remote running older code than this local kernel (the user 2026-07-04)."""
     while True:
         _tunnel_wake.clear()
         try:
@@ -2898,6 +2983,7 @@ def _tunnel_supervisor():
                     continue
                 up = _port_open(r["local_port"])              # outside the lock (socket round-trip)
                 sids = _poll_remote_sids(r) if up else None
+                rsha = _poll_remote_version(r) if up else None   # the code the remote is running (drift check)
                 with _remotes_lock:
                     if r["host"] not in _remotes:
                         continue
@@ -2909,6 +2995,8 @@ def _tunnel_supervisor():
                         r["status"] = "down"
                     if sids is not None:
                         r["sids"] = sids
+                    if rsha is not None:
+                        r["kernel_sha"] = rsha
         except Exception:
             sys.stderr.write("tunnel-supervisor: %s\n" % traceback.format_exc())
         _tunnel_wake.wait(15)
@@ -9489,12 +9577,22 @@ ts.forEach(function(t){var row=document.createElement('div');row.className='rnet
 // connected -> solid accent dot (matches the lit rail icon); mid-attach -> hollow accent RING (glanceably
 // "in progress"); down -> grey; error -> red. Word beside it names the phase.
 var dot=t.status==='up'?'background:var(--accent)':t.status==='error'?'background:#E5534B':t.status==='down'?'background:#8a8a8a':'background:transparent;box-shadow:inset 0 0 0 1.5px var(--accent)';
+// version drift: an up remote running an OLDER commit than this kernel shows "update available" + an Update
+// button that pulls + restarts it behind the scenes (the user 2026-07-04). Otherwise show its short sha.
+var ver=t.outOfDate?' \\u00b7 <span class=rnet-old>update available</span>':(t.kernelSha?' \\u00b7 <span class=rnet-sha>'+t.kernelSha+'</span>':'');
+var upd=(t.status==='up'&&t.outOfDate)?'<button class=rnet-upd data-u=\"'+t.host+'\">Update</button>':'';
 row.innerHTML='<span class=rnet-dot style=\"'+dot+'\"></span>'+
-'<span class=nm><b>'+t.host+'</b> <span class=st>'+(LBL[t.status]||t.status)+(t.token?'':' \\u00b7 no token')+'</span></span>'+
-'<button data-h=\"'+t.host+'\">Detach</button>';
+'<span class=nm><b>'+t.host+'</b> <span class=st>'+(LBL[t.status]||t.status)+(t.token?'':' \\u00b7 no token')+ver+'</span></span>'+
+upd+'<button data-h=\"'+t.host+'\">Detach</button>';
 list.appendChild(row);});
 list.querySelectorAll('button[data-h]').forEach(function(b){b.onclick=function(){var h=b.getAttribute('data-h');
-b.disabled=true;fetch('/tunnels/detach',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h})}).then(refresh).catch(function(){});};});}
+b.disabled=true;fetch('/tunnels/detach',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h})}).then(refresh).catch(function(){});};});
+list.querySelectorAll('button[data-u]').forEach(function(b){b.onclick=function(){var h=b.getAttribute('data-u');
+b.disabled=true;b.textContent='Updating\\u2026';
+fetch('/tunnels/update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h})}).then(function(r){return r.json();}).then(function(d){
+if(d&&d.ok){b.textContent='Updated';schedule(2000);}   // the remote restarts + re-polls → the flag clears itself
+else{b.disabled=false;b.textContent='Retry';alert('Update of '+h+' failed: '+((d&&d.detail)||'unknown'));}   // fail LOUDLY (CLAUDE.md)
+}).catch(function(){b.disabled=false;b.textContent='Retry';alert('Update of '+h+' failed to reach the kernel.');});};});}
 attach.onclick=function(){var h=hostSel.value;if(!h)return;
 try{localStorage.setItem('romp:lastRemoteHost',h);}catch(e){}   // remember for MRU-first ordering next time
 attach.disabled=true;attach.textContent='Attaching\\u2026';
@@ -9620,6 +9718,54 @@ def _stale_block(v):
             + "<script>" + _STALE_JS.replace("__LOADEDVER__", str(int(v))) + "</script>")
 
 
+# REMOTE-DRIFT banner (the user 2026-07-04): a proactive "would you like to update the remote?" prompt. On
+# connect / kernel restart it polls /tunnels; when any UP remote is running an older commit than this kernel
+# (outOfDate) it pops a top pill offering to pull+restart it behind the scenes (POST /tunnels/update). Mirrors
+# the #rstale reload banner, sitting just below it so the two never collide. Dismiss suppresses only the
+# CURRENT set of stale hosts — a newly-drifted host re-prompts.
+_RDRIFT_CSS = (
+    "#rdrift{position:fixed;top:60px;left:50%;transform:translateX(-50%);z-index:99998;display:none;"
+    "align-items:center;gap:12px;max-width:92vw;background:#2b2d30;border:1px solid #4a4d51;"
+    "border-radius:10px;padding:10px 14px;color:#e6e6e6;box-shadow:0 10px 30px #0000008a;"
+    "font:13px/1.4 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}"
+    "#rdrift.show{display:flex}#rdrift .rd-msg{font-weight:500}"
+    "#rdrift button{font:inherit;cursor:pointer;border-radius:6px;padding:5px 11px;"
+    "border:1px solid transparent;white-space:nowrap}"
+    "#rdrift .rd-upd{background:var(--accent,#9cd2ff);color:var(--accent-fg,#0c1a2e);font-weight:600}"
+    "#rdrift .rd-upd:disabled{opacity:0.6;cursor:default}"
+    "#rdrift .rd-dismiss{background:none;color:#9aa0a6;border-color:#4a4d51}"
+    "#rdrift .rd-dismiss:hover{color:#e6e6e6}")
+_RDRIFT_HTML = (
+    "<div id=rdrift role=alert><span class=rd-msg></span>"
+    "<button class=rd-upd id=rdrift-upd>Update</button>"
+    "<button class=rd-dismiss id=rdrift-dismiss>Dismiss</button></div>")
+_RDRIFT_JS = (
+    "(function(){var box=document.getElementById('rdrift');if(!box)return;"
+    "var msg=box.querySelector('.rd-msg'),up=document.getElementById('rdrift-upd'),dm=document.getElementById('rdrift-dismiss');"
+    "var stale=[],dismissed='';"
+    "function key(hs){return hs.slice().sort().join(',');}"
+    "function label(hs){return hs.length===1?('Remote '+hs[0]+' is running an older romp build.')"
+    ":(hs.length+' remotes are running an older romp build ('+hs.join(', ')+').');}"
+    "function check(){fetch('/tunnels',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){"
+    "var ts=(d&&d.tunnels)||[];stale=ts.filter(function(t){return t.status==='up'&&t.outOfDate;}).map(function(t){return t.host;});"
+    "if(stale.length&&key(stale)!==dismissed){msg.textContent=label(stale);up.disabled=false;up.textContent='Update';box.classList.add('show');}"
+    "else if(!stale.length){box.classList.remove('show');}}).catch(function(){});}"
+    "up.onclick=function(){var hosts=stale.slice();if(!hosts.length){box.classList.remove('show');return;}"
+    "up.disabled=true;up.textContent='Updating\\u2026';var done=0,fails=[];"
+    "hosts.forEach(function(h){fetch('/tunnels/update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h})})"
+    ".then(function(r){return r.json();}).then(function(x){if(!x||!x.ok)fails.push(h+': '+((x&&x.detail)||'failed'));})"
+    ".catch(function(){fails.push(h+': unreachable');}).then(function(){done++;if(done===hosts.length){"
+    "if(fails.length){up.disabled=false;up.textContent='Retry';alert('Some updates failed:\\n'+fails.join('\\n'));}"    # fail LOUDLY (CLAUDE.md)
+    "else{box.classList.remove('show');setTimeout(check,3000);}}});});};"
+    "dm.onclick=function(){dismissed=key(stale);box.classList.remove('show');};"
+    "check();setInterval(check,30000);})();")
+
+
+def _rdrift_block():
+    return ("<style>" + _RDRIFT_CSS + "</style>" + _RDRIFT_HTML
+            + "<script>" + _RDRIFT_JS + "</script>")
+
+
 def _landing():
     # one flex row of up to FOUR independently-toggled panes (chat | fleet | feed | timeline) behind a far-left
     # rail; draggable gutters between visible panes; the rail also pins the ⛭ settings + ↻ refresh actions at
@@ -9724,6 +9870,10 @@ def _landing():
             ".rnet-row .nm{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}"
             ".rnet-row .st{color:#999;font-size:11px}"
             ".rnet-row button{flex:0 0 auto;background:#2a2a2a;color:#ccc;border:1px solid #3a3a3a;border-radius:6px;padding:2px 8px;cursor:pointer}"
+            ".rnet-row button:disabled{opacity:0.55;cursor:default}"
+            ".rnet-sha{color:#6e7681;font-variant-numeric:tabular-nums}"
+            ".rnet-old{color:var(--accent)}"   # accent-blue "update available" cue (highlight chrome, not a status color)
+            ".rnet-upd{color:var(--accent-fg)!important;background:var(--accent)!important;border-color:var(--accent)!important;font-weight:600}"
             ".rnet-empty{color:#777;font-size:11px}"
             # usage rate-limit bars in the rail (the user 2026-06-26): per window (5h/7d), a used-% bar (colored
             # green/amber/red like the timeline's) beside an elapsed-% bar (slate) — pace at a glance; %-label;
@@ -9939,7 +10089,7 @@ def _landing():
             "<script>" + _LANDING_REMOTES_JS + "</script>"
             "<script>" + _LANDING_MOBILE_JS + "</script>"
             "<script>" + _LANDING_COLLAPSE_JS + "</script>"
-            + _stale_block(v) +
+            + _stale_block(v) + _rdrift_block() +
             "</body></html>")
 
 
@@ -10265,6 +10415,20 @@ class Handler(BaseHTTPRequestHandler):
                 if not host:
                     return self._send(400, json.dumps({"ok": False, "error": "host required"}), "application/json")
                 return self._send(200, json.dumps({"ok": True, "detached": detach_remote(host)}), "application/json")
+            if u.path == "/tunnels/update":
+                # Pull + restart a remote's kernel so it picks up the latest code. Body: {"host": <ssh alias>}.
+                # The blocking ssh (git pull + restart) is fine on the threaded server. Reports the git summary
+                # or a specific failure (fail loudly — no silent half-update). A version re-poll happens on the
+                # supervisor's next tick after the remote comes back, clearing the out-of-date flag.
+                try:
+                    body = json.loads(raw_body or b"{}")
+                except Exception:
+                    body = None
+                host = str((body or {}).get("host") or "").strip() if isinstance(body, dict) else ""
+                if not host:
+                    return self._send(400, json.dumps({"ok": False, "error": "host required"}), "application/json")
+                ok, detail = _update_remote(host)
+                return self._send(200 if ok else 502, json.dumps({"ok": ok, "detail": detail}), "application/json")
             return self._send(404, "not found", "text/plain")
         except (BrokenPipeError, ConnectionResetError):
             pass

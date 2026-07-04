@@ -649,6 +649,16 @@ if [[ "${1:-}" == "--version" ]]; then
     exec romp-version
 fi
 
+# `romp update [host...]` — pull the latest romp on attached REMOTE kernels + restart them so they stop
+# running stale code (the user 2026-07-04). No host → every out-of-date attached remote. Delegates to
+# romp-update (python), which asks the LOCAL kernel to do the ssh git-pull + restart over its tunnel. Both
+# `update` and `--update` work (`update` reserves that bare word — a session literally named "update" is
+# not a real case). To update THIS machine: `git pull` then `romp --refresh`.
+if [[ "${1:-}" == "update" || "${1:-}" == "--update" ]]; then
+    shift
+    exec romp-update "$@"
+fi
+
 # `romp --default-dir [PATH]` — the default working directory for NEW sessions (what the picker prefills).
 # Persisted to ~/.config/romp/default-dir, read FIRST by the kernel's _default_create_dir() (before the
 # install/serve default), so the gear dialog and this CLI share one source of truth. No arg prints the
