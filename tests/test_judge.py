@@ -4084,6 +4084,36 @@ class Distiller(unittest.TestCase):
         self.assertEqual(nd.get("briefedMt"), T0 + 10)
         self.assertEqual(nd.get("briefFails"), 0)
 
+    def test_a_pause_skipped_brief_is_not_counted_toward_give_up(self):
+        # the user 2026-07-03: a brief call SKIPPED because the global retry-pause is on returns "" WITHOUT
+        # asking the API (_judge_run short-circuits and sets _judge_ctx.paused). That must NOT count toward the
+        # give-up cap — else a retry-pause (especially one flapping on/off mid-pass, as a spurious Fable-limit
+        # pause once did) permanently blanks the card's brief to the "" sentinel though the API was never tried,
+        # and the card never recovers. The brief must stay null (re-enters each pass) and land once unpaused.
+        records = [uline(T0, "ship it", "u1", ps="typed"),
+                   aline(T0 + 10, "need your call on the approach", "a1", "u1", stop="end_turn")]
+        path = self._setup(records)
+        now = T0 + 5000
+        s1 = em.segments(jd.parsed_session(SID, [path], now)["turns"][0])[0]["id"]
+        gid = SID + ":g1"
+        jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "status": {gid: "blocked"}, "placements": {},
+                            "nodes": {gid: {"id": gid, "text": "Ship the feature", "parentId": None,
+                                            "nodeComplete": False, "blocked": True, "cleared": False,
+                                            "blockWhy": "Which approach — A or B?", "trail": [s1],
+                                            "t": T0, "mt": T0 + 10}}})
+        # simulate a pause-skip exactly as _judge_run does: mark _judge_ctx.paused and return "" (API not asked)
+        jd.brief_llm = lambda g, w, ow="": (setattr(jd._judge_ctx, "paused", True), "")[1]
+        for _ in range(jd.DISTILL_FAIL_CAP + 2):            # MORE passes than the cap — still must not give up
+            jd.run_distill(now=now)
+            nd = jd.load_goals(SID)["nodes"][gid]
+            self.assertIsNone(nd.get("blockSummary"), "a pause-skip leaves the brief null → re-enters next pass")
+            self.assertIn(nd.get("briefFails"), (None, 0), "a pause-skip never increments the give-up counter")
+            self.assertIsNone(nd.get("briefedMt"), "never stamped → never a permanent give-up while paused")
+        jd.brief_llm = lambda g, w, ow="": (setattr(jd._judge_ctx, "paused", False), "Decide A or B.")[1]
+        jd.run_distill(now=now)                             # pause cleared → the brief lands normally
+        self.assertEqual(jd.load_goals(SID)["nodes"][gid].get("blockSummary"), "Decide A or B.",
+                         "once the pause clears the brief lands — the card was never permanently blanked")
+
     def test_redistills_only_after_mt_advances(self):
         records = [uline(T0, "x", "u1", ps="typed"), aline(T0 + 10, "done", "a1", "u1", stop="end_turn")]
         path = self._setup(records)
