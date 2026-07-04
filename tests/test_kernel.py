@@ -3915,6 +3915,19 @@ class ViewBuilder(unittest.TestCase):
                                            "effort": "high", "context": 20, "compactPct": None, "color": None}}
         self.assertFalse(km.build_session(SID, NOW)["status"].get("modelPending"))
 
+    def test_unify_model_labels_borrows_the_fleet_versioned_name(self):
+        # the user 2026-07-03: some lanes said "Opus", others "Opus 4.8" — a version-less best-effort
+        # label (from a /model switch that hasn't run a turn, incl. a stale-badge heal) sits next to a
+        # real versioned name. The fleet already knows opus == "Opus 4.8", so the short one borrows it.
+        rows = {"a": {"model": "Opus"}, "b": {"model": "Opus 4.8"}, "c": {"model": "Fable"},
+                "d": {"model": "Sonnet 5"}, "e": {"model": "Sonnet"}, "f": {"model": ""}}
+        km._unify_model_labels(rows)
+        self.assertEqual(rows["a"]["model"], "Opus 4.8", "the bare label borrows the fleet's versioned name")
+        self.assertEqual(rows["b"]["model"], "Opus 4.8", "the versioned one is unchanged")
+        self.assertEqual(rows["e"]["model"], "Sonnet 5", "same across families")
+        self.assertEqual(rows["c"]["model"], "Fable", "no versioned variant in the fleet → keep the short label")
+        self.assertEqual(rows["f"]["model"], "", "empty stays empty; never crashes")
+
     def test_timeline_lane_survives_hidden_tab(self):
         # the user 2026-06-17 (reversing d52f69f): ×-hiding a tab is a tab-strip preference and must NOT
         # erase the lane from the timeline — the timeline is a complete activity history. So a dead AND

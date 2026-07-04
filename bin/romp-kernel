@@ -2284,6 +2284,33 @@ class TmuxBackend(sb.SessionBackend):
 _TMUX = TmuxBackend()
 
 
+def _unify_model_labels(rows):
+    """Make every session in the fleet's live map show the SAME display name for the SAME model — so a
+    session on the version-less best-effort label ("Opus", from a /model switch that hasn't run a turn
+    yet, incl. a stale-badge heal) borrows the fleet's real versioned name ("Opus 4.8") when another live
+    session is already reporting it (the user 2026-07-03: "why do some say Opus and others Opus 4.8?").
+    Family = the model's first word (Opus/Opus 4.8 → 'opus'); the VERSIONED variant (has a space) wins.
+    Display-only + in place; a family no live session runs a versioned variant of just keeps its short
+    label. Never merges across families, so it can't relabel one model as another."""
+    best = {}                                         # family -> the richest (versioned) display name seen
+    for r in rows.values():
+        m = (r.get("model") or "").strip()
+        if not m:
+            continue
+        fam = m.split()[0].lower()
+        cur = best.get(fam)
+        # prefer a versioned name (has a space, e.g. "Opus 4.8") over a bare family word ("Opus")
+        if cur is None or (" " in m and " " not in cur) or (" " in m and len(m) > len(cur)):
+            best[fam] = m
+    for r in rows.values():
+        m = (r.get("model") or "").strip()
+        if not m:
+            continue
+        rich = best.get(m.split()[0].lower())
+        if rich and rich != m:
+            r["model"] = rich
+
+
 class Sessions:
     """The kernel's backend-agnostic session API. backend_for(sid) routes a per-sid op to whichever backend
     drives the sid (the SDK backend if it owns sid, else the tmux backend); live() is the fleet-wide liveness
@@ -2315,6 +2342,7 @@ class Sessions:
                                 "subagents": st.get("subagents") or []}   # live Task subagents (SDK only) → lane pill
             except Exception:
                 sys.stderr.write("sdk live_sessions merge: %s\n" % traceback.format_exc())
+        _unify_model_labels(out)
         return out
 
     # coordination — the working-note ("what I'm working on" ownership claim list_agents shows) lives in ONE
