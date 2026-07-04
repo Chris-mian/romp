@@ -9,6 +9,7 @@ import os
 import re
 import tempfile
 import time
+import types
 import unittest
 from datetime import datetime, timezone
 from importlib.machinery import SourceFileLoader
@@ -4010,6 +4011,33 @@ class ViewBuilder(unittest.TestCase):
         km._tmux_sessions = lambda: {SID: {"state": "working", "since": NOW - 10, "model": "Opus 4.8",
                                            "effort": "high", "context": 20, "compactPct": None, "color": None}}
         self.assertFalse(km.build_session(SID, NOW)["status"].get("modelPending"))
+
+    def test_model_pending_from_tmux_reaches_both_surfaces_regardless_of_which_ui_clicked(self):
+        # the user 2026-07-03 (follow-up): tmux tracks NO modelPending of its own (only the SDK backend
+        # does), so switching a tmux session's model used to show dots ONLY on whichever surface's own
+        # LOCAL click heuristic fired — clicking the timeline's picker left the chat chip with no cue at
+        # all, catching up only once the next tmux poll happened to report the new name. Fix: the kernel
+        # stamps ONE shared pending signal (_mark_model_pending) the instant EITHER surface's pick is
+        # accepted (_set_model_or_park is the single funnel both the chat's setModel and the timeline's
+        # sendCommand route through) — so both build_session and build_timeline show it identically.
+        saved_push, km._push_all = km._push_all, lambda: None
+        try:
+            km._model_switch_pending.clear()
+            km._tmux_sessions = lambda: {SID: {"state": "working", "since": NOW - 10, "model": "Haiku",
+                                               "effort": "high", "context": 20, "compactPct": None, "color": None}}
+            fake_be = types.SimpleNamespace(set_model=lambda sid, value: None)
+            km._set_model_or_park(fake_be, SID, "opus")   # accepted, from EITHER surface — same call either way
+            st = km.build_session(SID, NOW)["status"]
+            self.assertTrue(st.get("modelPending"), "the chat chip shows the switching dots too")
+            lane = next(s for s in km.build_timeline(NOW)["sessions"] if s["id"] == SID)
+            self.assertTrue(lane.get("modelPending"), "…and so does the timeline lane, from the SAME stamp")
+            # the live tmux model now reflects the pick (a later poll) → the signal clears on BOTH surfaces
+            km._tmux_sessions = lambda: {SID: {"state": "working", "since": NOW - 10, "model": "Opus 4.8",
+                                               "effort": "high", "context": 20, "compactPct": None, "color": None}}
+            self.assertFalse(km.build_session(SID, NOW)["status"].get("modelPending"), "cleared once the name lands")
+        finally:
+            km._push_all = saved_push
+            km._model_switch_pending.clear()
 
     def test_unify_model_labels_borrows_the_fleet_versioned_name(self):
         # the user 2026-07-03: some lanes said "Opus", others "Opus 4.8" — a version-less best-effort

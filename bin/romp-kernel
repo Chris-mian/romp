@@ -4214,6 +4214,15 @@ _compact_clicked = {}         # sid -> ts of a compact WE initiated → optimist
 # instead of sitting on "working" until the stop lands in the transcript (the user 2026-07-02 — the stop
 # could take seconds to reach a stream boundary, and the UI gave zero acknowledgement meanwhile).
 _interrupt_clicked = {}       # sid -> ts; event-cleared the moment the turn is no longer open
+# A /model pick WE just sent, from EITHER surface (the chat statusline's setModel WS message and the
+# timeline lane's sendCommand both funnel through _set_model_or_park) → ONE server-side pending signal
+# both surfaces read (the user 2026-07-03: switching from the timeline showed dots there but NOT in chat,
+# and chat only caught up once the next tmux poll happened to report the new name — because each surface
+# used to track "pending" with its OWN local click state, so whichever UI's click didn't fire had no cue
+# and no shared urgency to refresh). sid -> {"target": alias, "until": ts}; the SDK backend also reports
+# its own (more precise, event-resolved) modelPending — _model_pending_now ORs the two so a session on
+# either backend, switched from either surface, shows the SAME cue at the SAME moment on both surfaces.
+_model_switch_pending = {}
 
 
 def _interrupting(sid, open_now, now):
@@ -4225,6 +4234,44 @@ def _interrupting(sid, open_now, now):
         return False
     if not open_now or now - t0 > 120:
         _interrupt_clicked.pop(sid, None)
+        return False
+    return True
+
+
+def _alias_reflects(live_pretty, alias):
+    """Does the LIVE model display name reflect the chosen ALIAS — i.e. the switch has taken effect?
+    Duplicated from romp_sdk_backend._model_reflects_alias (kept tiny + dependency-free here so it works
+    even when the SDK module isn't loaded — a tmux-only box has no romp_sdk_backend import at all)."""
+    if not live_pretty:
+        return False
+    if not alias or alias == "default":
+        return True
+    a = alias.lower()
+    a = a.split("-")[1] if a.startswith("claude-") and "-" in a else a   # claude-opus-4-8 → opus
+    return a in live_pretty.lower()
+
+
+def _mark_model_pending(sid, value):
+    """We just sent /model `value` to sid, from EITHER surface → stamp the shared pending signal and push
+    NOW (mirrors _mark_compacting), so both the chat statusline and the timeline lane's dots appear at the
+    same instant regardless of which UI's click fired."""
+    if sid:
+        _model_switch_pending[sid] = {"target": value, "until": time.time() + 20}
+        _push_all()
+
+
+def _model_pending_now(sid, tm):
+    """The ONE modelPending signal both build_session (chat) and build_timeline read: the SDK backend's own
+    (precise, event-resolved the instant its live model reflects the pick) OR'd with the kernel's own stamp
+    from _mark_model_pending (covers tmux, which tracks nothing itself) — cleared here the instant the live
+    model reflects the target, with a 20s cap so a switch that never resolves can't trap the dots forever."""
+    if tm and tm.get("modelPending"):
+        return True
+    p = _model_switch_pending.get(sid)
+    if not p:
+        return False
+    if _alias_reflects((tm or {}).get("model") or "", p["target"]) or time.time() > p["until"]:
+        _model_switch_pending.pop(sid, None)
         return False
     return True
 # Dead-lane dismissals (the user 2026-07-02): a DEAD session lingers in the timeline as a faded/struck lane
@@ -4376,7 +4423,10 @@ def _send_or_park(be, sid, text, echo=None):
 
 
 def _set_model_or_park(be, sid, value):
-    """Apply a model change now — or park it in the sid's FIFO op queue while the session compacts."""
+    """Apply a model change now — or park it in the sid's FIFO op queue while the session compacts. Either
+    way, the pick is ACCEPTED now: stamp the shared pending signal (_mark_model_pending) so chat + timeline
+    both show switching-dots immediately, from whichever surface the click came from (the user 2026-07-03)."""
+    _mark_model_pending(sid, value)
     if _ops_gate(sid):
         _park_op(sid, ("model", value))
     else:
@@ -5285,7 +5335,7 @@ def build_session(sid, now, tmux=None):
                   "apiTooLong": bool(aerr and aerr.get("tooLong")),
                   "backend": _session_backend(sid, tm),
                   "model": tm["model"], "effort": tm["effort"], "mode": tm.get("mode", ""),
-                  "modelPending": bool(tm.get("modelPending")),   # switching-dots on the model badge until the pick lands (the user 2026-07-03)
+                  "modelPending": _model_pending_now(sid, tm),   # switching-dots on the model badge until the pick lands, from EITHER surface (the user 2026-07-03)
                   "ctx": str(tm["context"]) if tm["context"] is not None else "",
                   # model name + effort tinted on the GLOBAL colormap by capability/effort rank (the user
                   # 2026-07-02): the statusline meta buttons just apply these (mirrors ctxColor). None = default.
@@ -7304,7 +7354,7 @@ def build_timeline(now, tmux=None, with_bars=True, live_only=False):
             "since": (tm["since"] if tm and tm["since"] else last_t),
             "color": hexcol,
             "model": (tm["model"] if tm else ""), "effort": (tm["effort"] if tm else ""),
-            "modelPending": bool(tm.get("modelPending")) if tm else False,   # switching-dots until the /model pick lands (the user 2026-07-03)
+            "modelPending": _model_pending_now(sid, tm),   # switching-dots until the /model pick lands, from EITHER surface (the user 2026-07-03)
             # model name + effort tinted on the GLOBAL colormap by capability/effort rank (the user 2026-07-02);
             # the lane just applies these, like ctxColor. None → the lane keeps its default gray text.
             "modelColor": _model_color(tm["model"] if tm else "", ctx_stops),
