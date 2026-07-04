@@ -6215,45 +6215,69 @@ def _usage():
             "limited": limited if any(limited.values()) else None}
 
 
-_msg_sum_cache = {}                               # cached {msg id: caption}, keyed by the transcripts' signature
+_msg_sum_cache = {}                               # {"per": {sid: (mtime, submap)}, "map": union {mid: caption}}
+
+
+def _msg_sum_scan_session(sid, path, now):
+    """Scan ONE session's transcript for its msgId→caption entries (the caption of each peer-message
+    segment it bore). Returns {mid: caption}; {} when it has no captions yet or on error."""
+    caps = _captions(sid)
+    if not caps:                                     # no captions yet → nothing to join, skip the parse
+        return {}
+    sub = {}
+    session = _parse(path, sid, now)
+    mstore = jd.load_goals(sid)
+    for turn in session["turns"]:
+        for seg in _segs_seam(turn, mstore):
+            cap = caps.get(seg["id"], {}).get("caption")
+            if not cap:
+                continue
+            for mid in _seg_mids(seg):               # a peer-message segment carries its msgId marker
+                sub[mid] = cap
+    return sub
 
 
 def _msg_summaries():
     """{msg id: caption} — the caption of the recipient segment a peer message triggered. Join the
     msgId (its `romp-msg-id` marker, via _seg_mids) to the segment that bore it, then to that segment's
-    caption in captions/. Replaces the old timeline/message-summaries.jsonl the retired backfill wrote;
-    the timeline connectors (_postal_messages) and chat incoming cards (_hydrate_postal) render this
-    ≤9-word gloss over the verbose raw body. Memoized on the live transcripts' (path, mtime) signature,
-    so the scan runs only when a transcript changed — i.e. exactly when a build re-runs anyway; _parse
-    is itself mtime-cached, so a same-cycle re-parse is a hit."""
+    caption in captions/. Rendered as a ≤9-word gloss over the verbose raw body by the timeline
+    connectors (_postal_messages) and the chat incoming cards (_hydrate_postal).
+
+    PER-SESSION incremental cache (the user 2026-07-03: "startup slow, opening each session slow"). The
+    old memo keyed the WHOLE map on the fleet's (path, mtime) signature — so ANY session writing (a busy
+    fleet is always writing) invalidated it and every build_session re-scanned all ~15 transcripts, ~1.2s
+    per chat-open. Now each session's submap is cached against its OWN mtime: a build re-scans only the
+    sessions that actually changed (usually just the one being viewed) and unions the rest from cache. The
+    parses are _parse-mtime-cached too, so an unchanged session costs nothing."""
     now = time.time()
     try:
         sess = _sessions(now)
     except Exception:
         return _msg_sum_cache.get("map", {})
-    sig = tuple((s["path"], s["mtime"]) for s in sess)
-    if _msg_sum_cache.get("sig") == sig:
-        return _msg_sum_cache["map"]
-    m = {}
+    per = _msg_sum_cache.setdefault("per", {})       # sid -> (mtime, submap)
+    live = set()
+    dirty = False
     for s in sess:
-        try:
-            caps = _captions(s["sid"])
-            if not caps:                                 # no captions yet → nothing to join, skip the parse
-                continue
-            session = _parse(s["path"], s["sid"], now)
-            mstore = jd.load_goals(s["sid"])
-            for turn in session["turns"]:
-                for seg in _segs_seam(turn, mstore):
-                    cap = caps.get(seg["id"], {}).get("caption")
-                    if not cap:
-                        continue
-                    for mid in _seg_mids(seg):            # a peer-message segment carries its msgId marker
-                        m[mid] = cap
-        except Exception:
+        sid = s["sid"]
+        live.add(sid)
+        ent = per.get(sid)
+        if ent and ent[0] == s["mtime"]:             # unchanged since last scan → reuse its submap
             continue
-    _msg_sum_cache.clear()
-    _msg_sum_cache["sig"], _msg_sum_cache["map"] = sig, m
-    return m
+        try:
+            sub = _msg_sum_scan_session(sid, s["path"], now)
+        except Exception:
+            sub = ent[1] if ent else {}              # keep last-known on a transient error
+        per[sid] = (s["mtime"], sub)
+        dirty = True
+    for sid in [k for k in per if k not in live]:    # forget dead sessions so `per` can't grow unbounded
+        del per[sid]
+        dirty = True
+    if dirty or "map" not in _msg_sum_cache:         # rebuild the union only when a submap changed
+        m = {}
+        for _mt, sub in per.values():
+            m.update(sub)
+        _msg_sum_cache["map"] = m
+    return _msg_sum_cache["map"]
 
 
 def _postal_messages(now, alive_sids, id2name):

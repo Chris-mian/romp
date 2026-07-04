@@ -3523,6 +3523,37 @@ class ViewBuilder(unittest.TestCase):
             km.time.time, km._sessions = saved_t, saved_sess
             km._msg_sum_cache.clear()
 
+    def test_msg_summaries_rescans_only_changed_sessions(self):
+        # the user 2026-07-03 ("startup slow, opening each session slow"): the old memo keyed the whole
+        # map on the FLEET signature, so any one session writing re-scanned ALL transcripts on every
+        # build_session (~1.2s/open on a busy fleet). Now each session's submap caches against its OWN
+        # mtime — an unchanged peer is never re-scanned, only the session that actually changed is.
+        scanned = []
+        real_scan = km._msg_sum_scan_session
+        km._msg_sum_scan_session = lambda sid, path, now: (scanned.append(sid) or {sid + ":m": "cap"})
+        saved_sess = km._sessions
+        fleet = [{"sid": "A", "name": "a", "path": "/x/a", "mtime": 100},
+                 {"sid": "B", "name": "b", "path": "/x/b", "mtime": 100}]
+        km._sessions = lambda now: fleet
+        try:
+            km._msg_sum_cache.clear()
+            m = km._msg_summaries()
+            self.assertEqual(sorted(scanned), ["A", "B"], "first build scans the whole fleet once")
+            self.assertEqual(m, {"A:m": "cap", "B:m": "cap"}, "the union covers every session")
+            scanned.clear()
+            km._msg_summaries()
+            self.assertEqual(scanned, [], "nothing changed → no re-scan at all (was: re-scan everything)")
+            fleet[1] = {**fleet[1], "mtime": 200}          # only B wrote (the session you opened)
+            km._msg_summaries()
+            self.assertEqual(scanned, ["B"], "only the changed session re-scans; the peer stays cached")
+            fleet.pop()                                     # B died
+            m2 = km._msg_summaries()
+            self.assertEqual(m2, {"A:m": "cap"}, "a dead session drops from the union (per-cache can't grow unbounded)")
+        finally:
+            km._msg_sum_scan_session = real_scan
+            km._sessions = saved_sess
+            km._msg_sum_cache.clear()
+
     def test_seg_mids_extracts_markers(self):
         seg = {"atoms": [
             {"message": {"content": [{"type": "text", "text": "hi <!-- romp-msg-id: m1 -->"}]}},
