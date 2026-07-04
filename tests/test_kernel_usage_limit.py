@@ -101,8 +101,22 @@ class LimitBannerWiring(unittest.TestCase):
         self.assertIn("#romp-limit.show{display:flex}", land)
         js = km._LANDING_USAGE_JS
         self.assertIn("var lb=document.getElementById('romp-limit');", js)
-        self.assertIn("lb.classList.toggle('show',on);", js)
+        self.assertIn("lb.classList.toggle('show',show);", js)
         self.assertIn("usage limit reached", js)
+
+    def test_the_banner_has_a_dismiss_button_gated_on_the_limit_signature(self):
+        land = km._landing()
+        # a ✕ affordance is in the banner + styled
+        self.assertIn("class=rl-x", land)
+        self.assertIn("#romp-limit .rl-x", land)
+        js = km._LANDING_USAGE_JS
+        # dismissal is keyed to WHICH windows are limited (a signature), persisted in localStorage
+        self.assertIn("romp:limitDismiss", js)
+        self.assertIn("_limPut(_limSig)", js)                 # ✕ stores the current signature → hides
+        self.assertIn("sig!==_limGet()", js)                  # a stored signature suppresses re-showing
+        self.assertIn("if(!on){_limPut('');}", js)            # a full clear forgets the dismissal
+        # a NEW limited-window set has a different signature → the banner returns (episode identity, not a timer)
+        self.assertIn("(lim.fiveHour?'5':'')+(lim.sevenDay?'7':'')+(lim.fable?'F':'')", js)
 
 
 if __name__ == "__main__":

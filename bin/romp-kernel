@@ -8906,12 +8906,25 @@ var WINS=[['fiveHour',5*3600,'5h','Session'],
           ['sevenDay',7*86400,'7d','Weekly'],
           ['fable',7*86400,'F5','Fable 5']];
 var LAST={};
+// Banner dismissal (the user 2026-07-03): a maxed window — especially Fable 5's 7-DAY one — lingers for
+// days, and the fixed top banner overlaps the tab strip, so a ✕ must clear it. The dismissal is keyed to
+// the SIGNATURE of which windows are limited (not a timer), persisted in localStorage so it survives a
+// reload for THIS limit episode. A NEW window hitting its cap (or a reset that re-limits) changes the
+// signature → the banner returns with the new info; a full clear drops the stored signature.
+var _limSig='';
+function _limGet(){try{return localStorage.getItem('romp:limitDismiss')||'';}catch(e){return '';}}
+function _limPut(v){try{if(v){localStorage.setItem('romp:limitDismiss',v);}else{localStorage.removeItem('romp:limitDismiss');}}catch(e){}}
+(function(){var lb=document.getElementById('romp-limit');if(!lb)return;var x=lb.querySelector('.rl-x');
+if(x){x.addEventListener('click',function(e){e.stopPropagation();_limPut(_limSig);lb.classList.remove('show');});}})();
 function render(u){
 // LIMIT BANNER (the user 2026-07-01): a top banner whenever a usage window is maxed (kernel `limited`), like
 // the disconnected one. Says which window + that retries are paused (the kernel auto-engages the retry-pause).
 var lb=document.getElementById('romp-limit');
-if(lb){var lim=u&&u.limited,on=!!(lim&&(lim.fiveHour||lim.sevenDay||lim.fable));lb.classList.toggle('show',on);
-if(on){var msg=lb.querySelector('.rl-msg');if(msg){var names=[];if(lim.fiveHour)names.push('Session (5h)');if(lim.sevenDay)names.push('Weekly (7d)');if(lim.fable)names.push('Fable 5 (7d)');
+if(lb){var lim=u&&u.limited,on=!!(lim&&(lim.fiveHour||lim.sevenDay||lim.fable));
+var sig=on?((lim.fiveHour?'5':'')+(lim.sevenDay?'7':'')+(lim.fable?'F':'')):'';
+_limSig=sig;if(!on){_limPut('');}   // fully cleared → forget any dismissal so a future limit shows again
+var show=on&&sig!==_limGet();lb.classList.toggle('show',show);
+if(show){var msg=lb.querySelector('.rl-msg');if(msg){var names=[];if(lim.fiveHour)names.push('Session (5h)');if(lim.sevenDay)names.push('Weekly (7d)');if(lim.fable)names.push('Fable 5 (7d)');
 msg.textContent=names.join(' and ')+' usage limit reached — retries paused until it resets';}}}
 if(!u||(!u.fiveHour&&!u.sevenDay&&!u.fable)){el.innerHTML='';tip.style.display='none';return;}
 var nowS=Math.floor(Date.now()/1000),html='';LAST={};LAST._t=(typeof u.t==='number')?u.t:null;
@@ -9433,10 +9446,12 @@ def _landing():
             "box-shadow:0 3px 12px rgba(0,0,0,.45)}#romp-limit.show{display:flex}"
             "#romp-offline.show ~ #romp-limit.show{top:34px}"   # if both are up, stack the limit banner below
             "#romp-limit .rl-dot{width:8px;height:8px;border-radius:50%;background:#e0a030;flex:0 0 auto}"
+            "#romp-limit .rl-x{cursor:pointer;margin-left:6px;opacity:.6;font-weight:700;font-size:14px;line-height:1;flex:0 0 auto}"
+            "#romp-limit .rl-x:hover{opacity:1}"
             "</style></head><body class='po-chat po-feed po-timeline'>"
             "<div id=romp-boot>" + _loader_inner() + "</div>"
             "<div id=romp-offline><span class=ro-dot></span><span>Disconnected — reconnecting…</span></div>"
-            "<div id=romp-limit><span class=rl-dot></span><span class=rl-msg>Usage limit reached — retries paused until it resets</span></div>"
+            "<div id=romp-limit><span class=rl-dot></span><span class=rl-msg>Usage limit reached — retries paused until it resets</span><span class=rl-x title='Dismiss until the limit changes'>×</span></div>"
             "<div class=col>"
             "<div class=row>"
             # far-left rail (the user 2026-06-26/27): a SCROLLABLE top group (.rail-scroll) — Chat / Fleet / Feed
