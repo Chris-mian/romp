@@ -3884,10 +3884,72 @@ def _hydrate_postal(events, index):
     return out
 
 
+def _tasks_base():
+    """Claude Code's live task-store root (~/.claude/tasks, or under $CLAUDE_CONFIG_DIR). Each session's
+    to-do list lives at <root>/<fsid>/<N>.json — the AUTHORITATIVE state TaskList/TaskGet read."""
+    return Path(os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")) / "tasks"
+
+
+def _task_store_dir(fsid):
+    return _tasks_base() / fsid
+
+
+def _task_store_fp(fsid):
+    """A cheap fingerprint (each N.json's name+mtime) of the fsid's task store, for the chat-build cache —
+    so a store update the MAIN transcript never recorded (a SUBAGENT completing a task) still busts the
+    to-do card's cache and refreshes it. None when the session has no store dir."""
+    if not fsid:
+        return None
+    try:
+        ents = [(e.name, e.stat().st_mtime) for e in os.scandir(_task_store_dir(fsid))
+                if e.name.endswith(".json")]
+    except OSError:
+        return None
+    return tuple(sorted(ents))
+
+
+def _read_task_store(fsid):
+    """The AUTHORITATIVE to-do list from Claude Code's live task store (~/.claude/tasks/<fsid>/<N>.json) —
+    the same state TaskList/TaskGet read, updated by EVERY writer INCLUDING subagents. The transcript fold
+    (_fold_tasks) only sees the MAIN agent's TaskCreate/TaskUpdate tool calls, so a task a subagent
+    completes updates the store but writes NO TaskUpdate to the main transcript — the card then lags the
+    truth indefinitely (the user via `track` 2026-07-03: card said "3/5" while the store, TaskList and
+    TaskGet all said 5/5 completed; the two missing completions were only ever in the store). Reading the
+    store fixes that at the source. Returns [{id,subject,activeForm,status}] in id order, or None when
+    there's no store dir (→ the caller falls back to the transcript fold, so nothing regresses for a
+    session that predates the store or never used the Task tools)."""
+    d = _task_store_dir(fsid) if fsid else None
+    try:
+        names = [n for n in os.listdir(d) if n.endswith(".json")]
+    except (OSError, TypeError):
+        return None
+    tasks = []
+    for n in names:
+        try:
+            t = json.loads((d / n).read_text())
+        except (OSError, ValueError):
+            continue
+        if not isinstance(t, dict):
+            continue
+        tid = str(t.get("id") or n.rsplit(".", 1)[0])
+        af = t.get("activeForm")
+        tasks.append({"id": tid, "subject": str(t.get("subject") or ""),
+                      "activeForm": str(af) if af else None,
+                      "status": str(t.get("status") or "pending"),
+                      "_order": int(tid) if tid.isdigit() else (1 << 30)})
+    if not tasks:
+        return None
+    tasks.sort(key=lambda t: (t["_order"], t["id"]))
+    return [{"id": t["id"], "subject": t["subject"], "activeForm": t["activeForm"], "status": t["status"]}
+            for t in tasks]
+
+
 def _fold_tasks(session):
-    """Fold a session's TaskCreate/TaskUpdate tool calls into ONE checklist (mirrors the old TS
-    transcript.foldTasks the Python rewrite dropped). Task id = the number in TaskCreate's RESULT text
-    ('Task #N created…'); status rides each TaskUpdate {taskId,status}. Returns the tasks in creation
+    """Fold a session's TaskCreate/TaskUpdate tool calls into ONE checklist — the FALLBACK for _read_task_store
+    when a session has no live task store (mirrors the old TS transcript.foldTasks the Python rewrite dropped).
+    Task id = the number in TaskCreate's RESULT text ('Task #N created…'); status rides each TaskUpdate
+    {taskId,status}. NOTE this is lossy — it can't see a completion a subagent wrote only to the store (see
+    _read_task_store). Returns the tasks in creation
     order, or None if there were none. The webview renders this as a todo card (kind:'todo') and hides the
     raw Task* calls (ACK_TOOLS) — so the kernel emits the folded card and skips the raw tool events."""
     out = {}                                              # tool_use_id → result text (carries 'Task #N')
@@ -4035,6 +4097,7 @@ def _chat_build_sig(sess):
     except OSError:
         sig += [0, 0]
     sig.append(_judge_gen[0])     # a judge pass (goal/caption change) busts every tab's cache once
+    sig.append(_task_store_fp(fsid))   # a store update (incl. a subagent completing a task) refreshes the to-do card
     return tuple(sig)
 
 
@@ -4955,10 +5018,14 @@ def build_session(sid, now, tmux=None):
         ev["tlId"] = ((anchors[0] if is_prompt else anchors[1]) or seg) if anchors else seg
         if ev.get("askAnswer"):                       # AskUserQuestion → fill chosen now the answer's in
             _ask_fill_chosen(ev["askAnswer"], ev.get("output") or "")
-    # Claude Code Task to-do list: ONE folded checklist event (renderTodo), appended last (bottom, by the
-    # composer). Only while work is OUTSTANDING — a fully completed/cancelled list isn't a live to-do, so
-    # drop it rather than let it read as recent (the user 2026-06-10, ported from the old TS kernel).
-    todo = _fold_tasks(session)
+    # Claude Code Task to-do list: ONE checklist event (renderTodo), appended last (bottom, by the
+    # composer). Read from the AUTHORITATIVE live task store (updated by every writer incl. subagents),
+    # falling back to the lossy transcript fold only when there's no store (the user via `track`
+    # 2026-07-03: the card lagged the store because subagent completions never wrote a TaskUpdate into the
+    # main transcript — see _read_task_store). Only while work is OUTSTANDING — a fully completed/cancelled
+    # list isn't a live to-do, so drop it rather than let it read as recent (the user 2026-06-10).
+    _fsid = os.path.basename(sess["path"]).rsplit(".", 1)[0] if sess.get("path") else ""
+    todo = _read_task_store(_fsid) or _fold_tasks(session)
     if todo and any(t["status"] not in ("completed", "cancelled") for t in todo):
         events.append({"kind": "todo", "tasks": todo})
     # The queued indicator (computed above, before the live merge) appends LAST — at the bottom by the

@@ -181,6 +181,72 @@ class ViewBuilder(unittest.TestCase):
         self.assertNotEqual(s_off, s_on, "a browser connecting changes the sig → triage runs")
         self.assertIn(str(self.tpath), s_on, "each discovered transcript's mtime is fingerprinted")
 
+    def test_read_task_store_is_authoritative_and_id_ordered(self):
+        # the to-do card's live source: ~/.claude/tasks/<fsid>/<N>.json, the same state TaskList/TaskGet
+        # read. Numeric id order (not lexical), fields mapped, missing store → None (fold fallback).
+        base = Path(self.td.name) / "tasks"
+        saved = km._task_store_dir
+        km._task_store_dir = lambda fsid: base / fsid
+        try:
+            d = base / SID; d.mkdir(parents=True)
+            (d / "2.json").write_text(json.dumps({"id": "2", "subject": "two", "status": "completed"}))
+            (d / "10.json").write_text(json.dumps({"id": "10", "subject": "ten", "status": "pending"}))
+            (d / "1.json").write_text(json.dumps({"id": "1", "subject": "one",
+                                                  "activeForm": "doing one", "status": "in_progress"}))
+            got = km._read_task_store(SID)
+            self.assertEqual([t["id"] for t in got], ["1", "2", "10"], "numeric id order, not lexical '1,10,2'")
+            self.assertEqual(got[0], {"id": "1", "subject": "one", "activeForm": "doing one", "status": "in_progress"})
+            self.assertIsNone(km._read_task_store("no-such-fsid"), "no store dir → None (caller folds the transcript)")
+            self.assertIsNone(km._read_task_store(""), "no fsid → None")
+            self.assertIsNotNone(km._task_store_fp(SID))
+            self.assertIsNone(km._task_store_fp("no-such-fsid"), "fingerprint None when there's no store")
+        finally:
+            km._task_store_dir = saved
+
+    def test_todo_card_prefers_the_live_store_over_the_stale_transcript_fold(self):
+        # THE fix (the user via `track` 2026-07-03): the card said "3/5" while the store said all done,
+        # because a subagent's completion updated the store but wrote NO TaskUpdate into the MAIN
+        # transcript, so the fold couldn't see it. build_session must read the store, not the fold — proven
+        # here by making the two DISAGREE: the fold shows #2 still pending, the store shows #2 completed AND
+        # a store-only #3 the transcript never mentions. The card must reflect the store.
+        stale_fold = [{"id": "1", "subject": "a", "activeForm": None, "status": "completed"},
+                      {"id": "2", "subject": "b", "activeForm": None, "status": "in_progress"}]
+        live_store = [{"id": "1", "subject": "a", "activeForm": None, "status": "completed"},
+                      {"id": "2", "subject": "b", "activeForm": None, "status": "completed"},
+                      {"id": "3", "subject": "c", "activeForm": None, "status": "pending"}]
+        saved = (km._read_task_store, km._fold_tasks)
+        km._read_task_store = lambda fsid: [dict(t) for t in live_store]
+        km._fold_tasks = lambda session: [dict(t) for t in stale_fold]
+        try:
+            todo = next(e for e in km.build_session(SID, NOW)["events"] if e["kind"] == "todo")
+        finally:
+            (km._read_task_store, km._fold_tasks) = saved
+        self.assertEqual([(t["id"], t["status"]) for t in todo["tasks"]],
+                         [("1", "completed"), ("2", "completed"), ("3", "pending")],
+                         "the card is the authoritative store, not the transcript fold")
+
+    def test_todo_card_falls_back_to_the_fold_when_there_is_no_store(self):
+        saved = (km._read_task_store, km._fold_tasks)
+        km._read_task_store = lambda fsid: None            # no live store (older session / non-Task todo)
+        km._fold_tasks = lambda session: [{"id": "1", "subject": "a", "activeForm": None, "status": "pending"}]
+        try:
+            todo = next(e for e in km.build_session(SID, NOW)["events"] if e["kind"] == "todo")
+        finally:
+            (km._read_task_store, km._fold_tasks) = saved
+        self.assertEqual([t["id"] for t in todo["tasks"]], ["1"], "no store → the transcript fold still works")
+
+    def test_fully_completed_store_drops_the_todo_card(self):
+        # a done list is not a live to-do (the user 2026-06-10). At `track`'s screenshot time the store was
+        # already all-completed, so the store-based card is correctly ABSENT — not a stale "3/5".
+        saved = km._read_task_store
+        km._read_task_store = lambda fsid: [{"id": "1", "subject": "a", "activeForm": None, "status": "completed"},
+                                            {"id": "2", "subject": "b", "activeForm": None, "status": "completed"}]
+        try:
+            kinds = [e["kind"] for e in km.build_session(SID, NOW)["events"]]
+        finally:
+            km._read_task_store = saved
+        self.assertNotIn("todo", kinds, "an all-completed store shows no live to-do card")
+
     def test_session_payload_shape(self):
         m = km.build_session(SID, NOW)
         self.assertEqual(m["type"], "session")
