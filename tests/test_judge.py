@@ -3880,6 +3880,9 @@ class Distiller(unittest.TestCase):
             recs = [json.loads(l) for l in jd.ERRORS.read_text().splitlines()]
             self.assertEqual([(r["tier"], r["err"]) for r in recs], [("distiller", "cite-miss")],
                              "the miss is recorded for romp -j, distinct from a call failure")
+            # the developer audit (which SOURCE + reply tail) lives in the error-log note, not the user modal
+            self.assertIn("no SOURCE line", recs[0]["note"])
+            self.assertIn("no citation line", recs[0]["note"], "the note carries the reply tail for the audit")
         finally:
             jd.ERRORS = saved_errors
         nd = jd.load_goals(SID)["nodes"][gid]
@@ -3887,8 +3890,10 @@ class Distiller(unittest.TestCase):
         ws = nd["warns"]
         self.assertEqual([w["kind"] for w in ws], ["cite-miss"], "one live warn, stamped on the node")
         self.assertEqual(ws[0]["t"], now)
-        self.assertIn("SOURCE", ws[0]["detail"], "the detail explains the mechanism that failed")
-        self.assertIn("no citation line", ws[0]["detail"], "…and carries the reply tail for the audit")
+        # the card warn is the concise, user-facing copy: the takeaway, no pipeline jargon
+        self.assertIn("wrong message", ws[0]["msg"])
+        self.assertIn("clears the next time", ws[0]["detail"])
+        self.assertNotIn("SOURCE", ws[0]["detail"], "no jargon in the user modal")
 
     def test_invented_label_counts_as_cite_miss(self):
         # citing a label that was never offered (m99) is the same anomaly as omitting the line: nothing
@@ -3909,12 +3914,14 @@ class Distiller(unittest.TestCase):
             jd.ERRORS = d / "judge-errors.jsonl"
             self.assertEqual(jd.run_distill(now=now), 1)
             self.assertTrue(jd.ERRORS.exists(), "an unresolvable citation is a recorded miss")
+            recs = [json.loads(l) for l in jd.ERRORS.read_text().splitlines()]
+            self.assertIn("m99", recs[0]["note"], "the error-log note names the label that didn't resolve")
         finally:
             jd.ERRORS = saved_errors
         nd = jd.load_goals(SID)["nodes"][gid]
         self.assertIsNone(nd["summaryAnchor"])
         self.assertEqual([w["kind"] for w in nd["warns"]], ["cite-miss"])
-        self.assertIn("m99", nd["warns"][0]["detail"], "the detail names the label that didn't resolve")
+        self.assertNotIn("m99", nd["warns"][0]["detail"], "the label stays out of the user modal")
 
     def test_cite_success_clears_the_stale_warn(self):
         # the warn means "this anomaly is live" — a later re-distill that DOES cite takes the chip off
