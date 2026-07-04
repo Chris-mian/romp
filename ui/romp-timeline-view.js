@@ -422,6 +422,7 @@ class TimelinePanel {
     this.wrap.appendChild(this._compactLayer);
     this._compactBars = new Map();   // sid -> persistent scan-bar div (CSS-animated; repositioned per draw)
     this._workLabels = new Map();    // sid -> persistent WORKING-badge label div (CSS color-pulse; repositioned per draw)
+    this._metaDots = new Map();      // sid -> persistent 3-dot "model switching…" pulse div (mirrors the chat badge's .meta-dots; repositioned per draw)
     try {
       if (typeof document !== 'undefined' && document.head && !document.getElementById('tl-compact-css')) {
         const cst = document.createElement('style'); cst.id = 'tl-compact-css';
@@ -453,6 +454,18 @@ class TimelinePanel {
           + 'animation:romp-tl-workpulse 1.5s cubic-bezier(0.37,0,0.63,1) infinite}'
           + '@keyframes romp-tl-workpulse{0%,100%{color:#1a1a1a}50%{color:#0d9488}}';
         document.head.appendChild(wst);
+      }
+      // "Model switching…" dots (the user 2026-07-03): while a /model pick resolves, the lane shows three
+      // pulsing accent-blue dots where the model name is — the SAME romp loader dot motif the chat badge
+      // uses (.meta-dots), instead of just dimming the stale name. A PERSISTENT overlay div (like the work
+      // label / compacting bar) so the pulse rides the compositor and never restarts on the SVG wipe.
+      if (typeof document !== 'undefined' && document.head && !document.getElementById('tl-metadots-css')) {
+        const dst = document.createElement('style'); dst.id = 'tl-metadots-css';
+        dst.textContent = '.romp-tl-meta-dots{position:absolute;pointer-events:none;display:inline-flex;align-items:center;gap:3px;transform:translateY(-50%)}'
+          + '.romp-tl-meta-dots i{width:4px;height:4px;border-radius:50%;background:' + ROMP_BLUE + ';display:inline-block;animation:romp-tl-metadots 1s ease-in-out infinite}'
+          + '.romp-tl-meta-dots i:nth-child(2){animation-delay:0.16s}.romp-tl-meta-dots i:nth-child(3){animation-delay:0.32s}'
+          + '@keyframes romp-tl-metadots{0%,70%,100%{opacity:0.3}35%{opacity:1}}';
+        document.head.appendChild(dst);
       }
     } catch (e) {}
 
@@ -1699,6 +1712,32 @@ class TimelinePanel {
       if (!keep || !keep.has(sid)) { try { lab.remove(); } catch (e) {} this._workLabels.delete(sid); }
     }
   }
+  // Create-or-reposition this sid's PERSISTENT "model switching…" dots div, left-aligned at (x, cy) in SVG
+  // user coords (x = the model name's start, cy = the lane center). Set once, only repositioned after → the
+  // pulse rides the compositor unbroken by the SVG wipe. Mirrors _positionWorkLabel.
+  _positionMetaDots(sid, x, cy) {
+    if (!this._compactLayer) return;
+    let dots = this._metaDots.get(sid);
+    if (!dots) {
+      dots = document.createElement('div');
+      dots.className = 'romp-tl-meta-dots';
+      dots.appendChild(document.createElement('i'));
+      dots.appendChild(document.createElement('i'));
+      dots.appendChild(document.createElement('i'));
+      this._compactLayer.appendChild(dots);
+      this._metaDots.set(sid, dots);
+    }
+    const m = this._ovScaleNow();
+    dots.style.left = (m.ox + x * m.sx) + 'px';
+    dots.style.top = (m.oy + cy * m.sy) + 'px';
+  }
+  // Remove the switching-dots div for sids no longer resolving a /model pick (or scrolled off / loader up).
+  _reapMetaDots(keep) {
+    if (!this._metaDots) return;
+    for (const [sid, dots] of this._metaDots) {
+      if (!keep || !keep.has(sid)) { try { dots.remove(); } catch (e) {} this._metaDots.delete(sid); }
+    }
+  }
   _compactSession(name) {
     if (!name) return;
     try {
@@ -1865,7 +1904,7 @@ class TimelinePanel {
     // "broken", so suppress the SVG entirely and show the loader until applyBars sets _barsLoaded. (Data that
     // already carries turns — a full one-shot, or a direct draw() — counts as loaded even without the flag.)
     const barsReady = this._barsLoaded || !!(data.turns && Object.keys(data.turns).length);
-    if (!barsReady) { this._showLoader(true); this._reapCompactBars(null); this._reapWorkLabels(null); return; }   // loader up → no lanes, drop any overlays
+    if (!barsReady) { this._showLoader(true); this._reapCompactBars(null); this._reapWorkLabels(null); this._reapMetaDots(null); return; }   // loader up → no lanes, drop any overlays
     this._showLoader(false);
     const svg = this.svg, M = this.M;
     while (svg.firstChild) svg.removeChild(svg.firstChild);
@@ -2053,6 +2092,7 @@ class TimelinePanel {
     const dagOrHoverMsg = (id) => !!id && ((dag && dag.msgs.has(id)) || (hoverSet && hoverSet.has(id)));
     const compactSeen = new Set();   // sids whose compacting scan-bar is live this draw → reconcile the overlay after
     const workSeen = new Set();      // sids whose WORKING label overlay is live this draw → reconcile after (persistent pulse)
+    const metaSeen = new Set();      // sids showing the "model switching…" dots this draw → reconcile the overlay after
     vis.forEach((s, i) => {
       const y = laneY(i);
       // perceptual idle fade: faded lanes blend their colors toward bgRGB to a uniform low luminance.
@@ -2339,6 +2379,10 @@ class TimelinePanel {
           if (s.faded) fadedEls.push({ el: mt, full: MODEL_FG, faded: F(MODEL_FG) });
         } else {
           const pendingOf = (kind) => {
+            // A /model switch is server-driven now (kernel modelPending): show the pending cue until the NEW
+            // name actually lands — event-based, no timeout (the user 2026-07-03). The local _metaPending click
+            // heuristic still covers effort (no server flag) + the sub-second before the first server push.
+            if (kind === 'model' && s.modelPending) return true;
             const p = this._metaPending[s.id + ':' + kind]; if (!p) return false;
             const cur = (kind === 'model' ? s.model : s.effort) || '';
             if (cur !== p.was || nowMs > p.until) { delete this._metaPending[s.id + ':' + kind]; return false; }
@@ -2347,18 +2391,25 @@ class TimelinePanel {
           let px = modelColX;
           const drawPiece = (kind, word) => {
             const pend = pendingOf(kind), ww = this.ctxWidth(word);
+            // A switching MODEL shows the pulsing accent-blue dots (the chat badge's .meta-dots motif) in place
+            // of the stale name, rather than just dimming it (the user 2026-07-03). The name <text> stays (fully
+            // transparent) so it keeps its click target + reserves the column width; the dots overlay stands in.
+            const dots = kind === 'model' && pend;
             // Tint the model name / effort on the GLOBAL colormap by capability/effort rank (kernel modelColor/
             // effortColor, the user 2026-07-02); unknown → the default gray. The caret stays neutral gray, and
             // hover still brightens to META_HOVER_FG — mouseleave restores the TINT, not the gray.
             const tint = kind === 'model' ? s.modelColor : s.effortColor;
             const base = (tint && tint.length === 3) ? ('rgb(' + tint[0] + ',' + tint[1] + ',' + tint[2] + ')') : MODEL_FG;
             const wt = el('text', { x: px, y: y + 3.5, 'text-anchor': 'start', 'font-size': 11, 'font-weight': 600, fill: base, 'pointer-events': 'auto' });
-            wt.textContent = word; wt.style.cursor = 'pointer'; if (pend) wt.setAttribute('opacity', '0.45'); svg.appendChild(wt);
-            const ct = el('text', { x: px + ww, y: y + 3.5, 'text-anchor': 'start', 'font-size': 11, 'font-weight': 600, fill: MODEL_FG, opacity: pend ? '0.45' : '0', 'pointer-events': 'none' });
+            wt.textContent = word; wt.style.cursor = 'pointer';
+            if (dots) wt.setAttribute('opacity', '0'); else if (pend) wt.setAttribute('opacity', '0.45');
+            svg.appendChild(wt);
+            const ct = el('text', { x: px + ww, y: y + 3.5, 'text-anchor': 'start', 'font-size': 11, 'font-weight': 600, fill: MODEL_FG, opacity: (pend && !dots) ? '0.45' : '0', 'pointer-events': 'none' });
             ct.textContent = META_CARET; svg.appendChild(ct);
-            wt.addEventListener('mouseenter', () => { wt.setAttribute('fill', META_HOVER_FG); ct.setAttribute('fill', META_HOVER_FG); ct.setAttribute('opacity', '1'); });
-            wt.addEventListener('mouseleave', () => { wt.setAttribute('fill', base); ct.setAttribute('fill', MODEL_FG); ct.setAttribute('opacity', pendingOf(kind) ? '0.45' : '0'); });
+            wt.addEventListener('mouseenter', () => { if (dots) return; wt.setAttribute('fill', META_HOVER_FG); ct.setAttribute('fill', META_HOVER_FG); ct.setAttribute('opacity', '1'); });
+            wt.addEventListener('mouseleave', () => { if (dots) return; wt.setAttribute('fill', base); ct.setAttribute('fill', MODEL_FG); ct.setAttribute('opacity', pendingOf(kind) ? '0.45' : '0'); });
             wt.addEventListener('click', (e) => { e.stopPropagation(); this._openMetaMenu(kind, s, wt); });
+            if (dots) { this._positionMetaDots(s.id, px, y); metaSeen.add(s.id); }
             px += ww + caretW;
           };
           if (s.model) drawPiece('model', s.model);
@@ -2439,6 +2490,7 @@ class TimelinePanel {
     });
     this._reapCompactBars(compactSeen);   // drop overlay scan-bars for lanes no longer compacting / off-screen
     this._reapWorkLabels(workSeen);        // drop overlay WORKING labels for lanes no longer working / off-screen
+    this._reapMetaDots(metaSeen);          // drop switching-dots overlays for lanes whose /model pick has landed / off-screen
 
     // obstacles for routing — at each event's process-start (a pending event rides `now` via execAt/startAt)
     const obstacles = [];

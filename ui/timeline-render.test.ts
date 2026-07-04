@@ -131,6 +131,34 @@ test("a compacting lane's badge says Compacting — never a percentage (the user
   assert.ok(!findText(panel.svg, "Compacting 74%"), "…with no percentage riding it");
 });
 
+test("a lane resolving a /model switch shows the pulsing dots overlay, not just a dimmed name (the user 2026-07-03)", () => {
+  const panel: any = new TimelinePanel(makeNode("div"));
+  const data: any = synthData();
+  data.sessions[0].modelPending = true;    // server-driven: the kernel flags the switch until the new name lands
+  panel.data = data;
+  assert.doesNotThrow(() => panel.draw());
+  // the switching lane gets a persistent overlay div (3 pulsing accent dots), keyed by sid
+  const dots = panel._metaDots.get(data.sessions[0].id);
+  assert.ok(dots, "the switching lane has a meta-dots overlay div");
+  assert.equal(dots.children.length, 3, "three pulsing dots, the romp loader motif");
+  assert.equal(dots.className, "romp-tl-meta-dots", "styled by the shared dots class");
+  // the settled lane (no pending) gets NO dots overlay
+  assert.ok(!panel._metaDots.get(data.sessions[1].id), "a settled lane shows its name, no dots");
+});
+
+test("the switching-dots overlay is reaped once the /model pick lands (no orphan pulse)", () => {
+  const panel: any = new TimelinePanel(makeNode("div"));
+  const pending: any = synthData();
+  pending.sessions[0].modelPending = true;
+  panel.data = pending; panel.draw();
+  assert.ok(panel._metaDots.get(pending.sessions[0].id), "dots up while pending");
+  // the new model lands → modelPending clears; the next draw drops the overlay
+  const landed: any = synthData();
+  landed.sessions[0].modelPending = false;
+  panel.data = landed; panel.draw();
+  assert.ok(!panel._metaDots.get(landed.sessions[0].id), "overlay reaped once resolved");
+});
+
 test("an optimistic eye-toggle (hideFromFeed) survives a STALE push and clears once confirmed (the user 2026-06-22)", () => {
   const panel: any = new TimelinePanel(makeNode("div"));
   panel.update(synthData());
