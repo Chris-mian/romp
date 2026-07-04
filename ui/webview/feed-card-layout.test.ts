@@ -66,13 +66,14 @@ test("the follow-up badge serves ONLY '↩ re-judging' now — the '↻ Followed
   assert.match(CSS, /\.fask-followedup \{/);
 });
 
-test("session-STATE badges (⏸ approval / ⚠ API error / ⏳ waiting) ride the name row; the footer is buttons only (the user 2026-06-19)", () => {
+test("session-STATE badges (⏸ approval / ⚠ API error) ride the name row; the footer is buttons only (the user 2026-06-19)", () => {
   // the bug: ⏸ approval + buttons + Clear in the SAME footer row shoved them off a narrow card.
   // Fix: the state badges move up beside the session name; the action row holds only the buttons.
-  assert.match(FEED, /idwrap\.append\(waitBadge, apiBadge, blkBadge\)/, "state badges sit beside the name");
+  // The ⏳ "awaiting" chip was REMOVED (the user 2026-07-04) — the body "Awaiting background agents" box says it.
+  assert.match(FEED, /idwrap\.append\(apiBadge, blkBadge\)/, "state badges sit beside the name (no awaiting chip)");
+  assert.doesNotMatch(FEED, /waitBadge/, "the redundant awaiting chip element is gone entirely");
   assert.match(FEED, /actions\.append\(apiRetry, revive, clr\)/, "footer = buttons only (Retry/Revive/Clear) — Nudge + card Follow up removed");
-  // the badges keep their refs so updateAskCard still toggles them by display
-  assert.match(FEED, /a\._blocked = blkBadge; a\._wait = waitBadge;/);
+  assert.match(FEED, /a\._blocked = blkBadge;/);
 });
 
 test("a cleared card CONTRACTS in on itself (scale + collapse), not a slide to one side (the user 2026-06-18)", () => {

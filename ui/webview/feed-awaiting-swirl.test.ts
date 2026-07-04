@@ -24,7 +24,7 @@ test("the swirl + caption covers awaiting, provisional, and re-check — shown w
   // a single computed caption drives the swirl: awaiting → the why; a working provisional placeholder →
   // "Working…"; a targeted-follow-up re-check → "Re-judging…"; a plain-reply rejudging (moved to Working while in flight) →
   // "Re-judging…". The blocked placeholder (needs-input) is NOT covered — it's on you, not in motion.
-  // AWAITING is the PAUSED case: a fixed "Awaiting background agents" label (the user 2026-07-01), NOT the swirl
+  // AWAITING: the boxed "Awaiting background agents" label, with a SPINNING swirl (the user 2026-07-04)
   assert.match(FEED, /if \(aw && !it\.waitingOn\) \{\s*\n\s*awaitingBg = true;\s*\n\s*spinCaption = "Awaiting background agents";/);
   assert.match(FEED, /\} else if \(it\.provisional && it\.column === "working"\) \{\s*\n\s*spinCaption = "Working…";/);
   assert.match(FEED, /\} else if \(it\.recheck\) \{\s*\n\s*spinCaption = "Re-judging…";/);
@@ -52,13 +52,18 @@ test("the swirl's Re-judging caption REPLACES the '↩ re-judging' chip (no doub
   assert.match(FEED, /if \(spinCaption === "Re-judging…"\) a\._followedup\.style\.display = "none";/);
 });
 
-test("the PAUSED awaiting case gets a rounded box + a STATIC (non-spinning) swirl (the user 2026-07-01)", () => {
-  // only the awaiting-background-agents case is paused; the class marks it so
+test("the awaiting case gets a rounded box, its swirl SPINS, and its caption wraps to two lines (the user 2026-07-04)", () => {
+  // the awaiting-background-agents case wears the box (its distinct read); the class marks it so
   assert.match(FEED, /a\._awaitSpin\.classList\.toggle\("await-paused", awaitingBg\);/);
-  // rounded outline box for the paused state
+  // rounded outline box
   assert.match(CSS, /\.fask-awaiting\.await-paused \{[\s\S]*?border: 1px solid var\(--box-border\); border-radius: 8px;/);
-  // and the romp swirl STOPS — a spin only ever means romp/the session is actually working
-  assert.match(CSS, /\.fask-awaiting\.await-paused \.fask-awaiting-swirl \{ animation: none;/);
+  // the swirl now SPINS here too (the user 2026-07-04) — no per-box animation:none override remains
+  assert.doesNotMatch(CSS, /\.fask-awaiting\.await-paused \.fask-awaiting-swirl \{ animation: none/);
+  // the caption WRAPS to up to two lines instead of truncating with an ellipsis, so the full message reads
+  assert.match(CSS, /\.fask-awaiting-why \{[\s\S]*?-webkit-line-clamp: 2;/);
+  assert.doesNotMatch(CSS, /\.fask-awaiting-why \{[^}]*text-overflow: ellipsis; white-space: nowrap;/);
+  // the box top-aligns so a two-line caption sits cleanly beside the glyph
+  assert.match(CSS, /\.fask-awaiting\.await-paused \{[\s\S]*?align-items: flex-start;/);
 });
 
 test("the swirl uses the shared glyph, spins SLOWER (calmer) + reverse like the loader, and respects reduced-motion", () => {

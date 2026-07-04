@@ -573,14 +573,9 @@ function makeAskCard(it: AskItem): HTMLElement {
   const apiBadge = el("span", "fask-apierror"); apiBadge.textContent = "⚠ API error"; apiBadge.style.display = "none";   // red: session stopped on an API error
   const apiRetry = el("button", "fdismiss fretry"); apiRetry.textContent = "Retry"; apiRetry.title = "send “retry” into this session to resume"; apiRetry.style.display = "none";
   const revive = el("button", "fdismiss frevive"); revive.textContent = "Revive"; revive.title = "bring this offline session back so the parked hand-off is delivered"; revive.style.display = "none";
-  // monochrome wireframe hourglass (the SAME line-icon drawn for the queued-messages header — render.ts
-  // hourglassIcon) instead of the ⏳ emoji, which clashed with the app's stroked-icon look (the user 2026-06-29).
-  // stroke=currentColor → it picks up the badge's teal; .fask-wait is inline-flex so the icon + word align.
-  const waitBadge = el("span", "fask-wait"); waitBadge.style.display = "none";
-  waitBadge.innerHTML = '<svg class="fask-wait-glyph" viewBox="0 0 16 16" width="11" height="11" fill="none" '
-    + 'stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
-    + '<path d="M4 3 H12 L8 8 L12 13 H4 L8 8 Z"/></svg><span>awaiting</span>';
-  waitBadge.title = "Waiting on work it started, not on you. Clears when the result lands.";
+  // The header "awaiting" chip was REMOVED (the user 2026-07-04): it duplicated the "Awaiting background
+  // agents" box in the card body, which says the same thing with room for the full "why" — so the chip was
+  // pure redundancy. The awaiting state now reads only from that body box (see the awaitSpin block below).
   const clr = el("button", "fdismiss"); clr.textContent = "Clear"; clr.title = "clear this ask (inbox-zero; the one human-asserted fact)";
   // Manual "Nudge" REMOVED (the user 2026-06-30): once Auto Nudge is robust you never hand-nudge — the
   // background nudge follows up on a stalled working goal automatically, so the manual button (and the whole
@@ -593,7 +588,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   // name — they describe the session's live state, and keeping them OFF the action row stops them shoving
   // the buttons past the card's right edge on a narrow card (the user 2026-06-19; mirrors the ↻ Followed-up
   // chip moved up 2026-06-18). idwrap is flex:1 so the name ellipsizes before the badge is ever clipped.
-  idwrap.append(waitBadge, apiBadge, blkBadge);
+  idwrap.append(apiBadge, blkBadge);
   // The action row holds ONLY buttons now (Retry / Revive / Clear). Card-level follow-up is click-to-cite.
   actions.append(apiRetry, revive, clr);
   // "↪ from <peer>" provenance + the "reopened"/"↻ Followed up" chips ride the name row's right side;
@@ -739,7 +734,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   a._nudgeFailed = nfBadge;
   a._warnChip = warnChip;
   a._waitOn = waitOnBadge;
-  a._blocked = blkBadge; a._wait = waitBadge;
+  a._blocked = blkBadge;
   a._apiBadge = apiBadge; a._apiRetry = apiRetry; a._revive = revive; a._clr = clr;
   a._delegations = delegations;
   a._checklist = checklist;
@@ -904,13 +899,10 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
     a._waitOn.style.display = "none";
   }
   a._clr.style.display = it.provisional ? "none" : "";   // a placeholder has nothing to curate — no Clear
-  // ⏳ awaiting: held in Working, waiting on work it dispatched/delegated (agents, a subagent, a build).
-  // The peer case already shows the "Awaiting <peer>" chip (waitingOn), so suppress the generic badge then.
+  // ⏳ awaiting: held in Working, waiting on work it dispatched/delegated (agents, a subagent, a build). The
+  // peer case already shows the "Awaiting <peer>" chip (waitingOn), so the generic awaiting box is suppressed
+  // then. (The old header "awaiting" chip is gone — the body box below carries it; the user 2026-07-04.)
   const aw = it.awaiting;
-  a._wait.style.display = (aw && !it.waitingOn) ? "" : "none";
-  if (aw && !it.waitingOn) {
-    a._wait.title = aw.why || "Waiting on work it started, not on you. Clears when the result lands.";
-  }
   // SPINNING SWIRL + a short caption in the card body (the user 2026-06-29): a card with a re-evaluation or
   // dispatched work in flight shows the spinning romp swirl where the distiller line will eventually land, with
   // a couple words saying what's happening. Cases:
@@ -927,10 +919,10 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   // motion, so it's still excluded.
   // Each case pairs a short body caption with a FULLER tooltip (hover the swirl/caption) that explains what's
   // actually happening — including, for a provisional card, WHY it's dashed.
-  // AWAITING is the one PAUSED case — the session is held, waiting on background work it dispatched (agents),
-  // NOT romp doing anything. So it reads differently: a boxed "Awaiting background agents" label with a STATIC
-  // (non-spinning) glyph. The spinning romp swirl is reserved for cases where romp/the session is actually
-  // working (provisional / re-judging / distilling), so a spin always means real motion (the user 2026-07-01).
+  // AWAITING — the session is held, waiting on background work it dispatched (agents). It keeps its own read:
+  // a boxed "Awaiting background agents" label. The romp swirl SPINS here too (the user 2026-07-04: a spin reads
+  // as "in flight, not stalled", which is exactly the awaiting state — the box already distinguishes it from
+  // the actively-working cases, so the glyph needn't also freeze). The caption wraps to two lines if long.
   let spinCaption: string | null = null, spinTip = "", awaitingBg = false;
   if (aw && !it.waitingOn) {
     awaitingBg = true;
@@ -959,7 +951,7 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
       : "Writing the decision brief…";
   }
   a._awaitSpin.style.display = spinCaption ? "" : "none";
-  // The paused AWAITING case gets a rounded box + a static glyph; every other case keeps the spinning swirl.
+  // The AWAITING case gets a rounded box (its distinct read); the swirl spins in every case now.
   a._awaitSpin.classList.toggle("await-paused", awaitingBg);
   if (spinCaption) { a._awaitWhy.textContent = spinCaption; a._awaitSpin.title = spinTip || spinCaption; }
   // The swirl's "Re-judging…" caption + tooltip REPLACES the separate "↩ re-judging" chip (the user

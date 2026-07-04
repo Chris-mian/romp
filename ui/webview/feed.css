@@ -300,17 +300,20 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
   background: url(../media/romp-swirl-glyph.svg) center / contain no-repeat;
   animation: fask-swirl-spin 2.4s linear infinite;   /* a calm, unhurried spin (the user 2026-06-29) */
 }
-.fask-awaiting-why { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The caption WRAPS to up to two lines (the user 2026-07-04) instead of truncating with "…", so the full
+   message reads — e.g. "Awaiting background agents" no longer clips to "Awaiting background …". */
+.fask-awaiting-why { min-width: 0; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2; line-clamp: 2; }
 @keyframes fask-swirl-spin { to { transform: rotate(-360deg); } }
 @media (prefers-reduced-motion: reduce) { .fask-awaiting-swirl { animation: none; } }
-/* PAUSED awaiting-background-agents: a rounded outline box so the "held, waiting on dispatched work" state
-   reads as distinct, and the romp swirl STOPS spinning — a spin only ever means romp/the session is actually
-   working, never merely paused (the user 2026-07-01). */
+/* awaiting-background-agents: a rounded outline box so the "held, waiting on dispatched work" state reads as
+   distinct. The romp swirl SPINS here like everywhere else (the user 2026-07-04: a spin reads as "in flight,
+   not stalled" — which is the awaiting state; the box already sets it apart from the working cases). The box
+   aligns to the top so a two-line caption wraps cleanly beside the glyph. */
 .fask-awaiting.await-paused {
-  align-self: flex-start; max-width: 100%; margin: 3px 0 4px;
+  align-self: flex-start; max-width: 100%; margin: 3px 0 4px; align-items: flex-start;
   border: 1px solid var(--box-border); border-radius: 8px; padding: 3px 9px;
 }
-.fask-awaiting.await-paused .fask-awaiting-swirl { animation: none; opacity: 0.6; }
 
 /* "reopened" badge — a cleared ask resurrected by a new question */
 .fask-reopened { flex: 0 0 auto; font-size: 0.64em; font-weight: 700; letter-spacing: 0.04em;
