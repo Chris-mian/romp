@@ -271,7 +271,7 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
    share a row. Open, the body runs the full card width and collapses via a block "less" button on its
    own line under the text, always bottom-left (the trailing-inline placement wrapped unpredictably —
    the user's screenshot). */
-.fask-secs { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 6px; margin-top: 2px; }
+.fask-secs { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 6px; margin-top: 6px; }
 .fask-secbtn { flex: none; padding: 1px 9px; color: var(--dim); background: transparent;
   border: 1px solid var(--card-border); border-radius: 6px; font: inherit; font-size: 0.74em;
   cursor: pointer; white-space: nowrap; transition: color 0.12s ease, border-color 0.12s ease; }

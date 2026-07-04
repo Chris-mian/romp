@@ -23,6 +23,9 @@ test("ONE flex-wrap container holds always-visible toggles + full-width bodies",
   assert.match(FEED, /background\?: string \| null;/, "the AskItem carries the kernel's background field");
   // side-by-side falls out of layout: buttons are flex:none, bodies flex-basis 100%
   assert.match(CSS, /\.fask-secs \{ display: flex; flex-wrap: wrap;/);
+  // the Background/Summary buttons sit a comfortable gap below the Clear row above them (the user
+  // 2026-07-03: 2px read as too tight; 6px matches the button-gap rhythm)
+  assert.match(CSS, /\.fask-secs \{[^}]*margin-top: 6px;/);
 });
 
 test("the buttons wear the Clear chrome with a neutral hover", () => {
