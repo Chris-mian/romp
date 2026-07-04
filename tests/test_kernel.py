@@ -3823,6 +3823,42 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(lane["state"], chip, "one shared derivation — the surfaces cannot disagree")
         self.assertEqual(chip, "ready", "the event model (turn ended) wins over the stale snapshot")
 
+    def test_skeleton_lane_and_chat_chip_share_the_live_merged_input(self):
+        # the user 2026-07-03, second round of the split: the FORMULA was shared (_session_chip) but not
+        # the INPUT — the chat merged the SDK live tail while the lane badge rides the SKELETON build
+        # (the {type:"bars"} message carries no states), which computed over the unmerged cached parse.
+        # A live work atom then read WORKING on the chat and READY on the lane on EVERY push. The
+        # skeleton merges the live tail too now: same input, same formula, same answer — with the live
+        # atom present, and again once the turn-settle retirement clears it.
+        class _FakeBE:
+            def __init__(self, inner):
+                self._inner = inner
+                self.atoms = [{"type": "assistant", "uuid": "live-w1", "t": NOW - 5,
+                               "message": {"role": "assistant", "stop_reason": None,
+                                           "content": [{"type": "text", "text": "streaming"}]}}]
+            def live_atoms(self, sid): return list(self.atoms)
+            def prune_live(self, *a, **k): pass
+            def __getattr__(self, n): return getattr(self._inner, n)
+        saved_bf, saved_tmux = km.Sessions.backend_for, km._tmux_sessions
+        fake = _FakeBE(saved_bf(SID))
+        km._tmux_sessions = lambda: {SID: {"state": "waiting", "since": NOW - 10, "model": "", "effort": "",
+                                           "context": None, "compactPct": None, "color": None}}
+        try:
+            km.Sessions.backend_for = lambda sid: fake
+            km._parse(km._path_of(SID), SID, NOW)          # warm the cache — the skeleton reads _parse_cached
+            chip = km.build_session(SID, NOW)["status"]["state"]
+            lane = next(s for s in km.build_timeline(NOW, with_bars=False)["sessions"] if s["id"] == SID)["state"]
+            self.assertEqual(chip, "working", "a live WORK atom holds the merged turn open")
+            self.assertEqual(lane, chip, "the skeleton lane merges the SAME live tail — no divergence")
+            fake.atoms = []                                # turn settle retired the stream atoms
+            chip2 = km.build_session(SID, NOW)["status"]["state"]
+            lane2 = next(s for s in km.build_timeline(NOW, with_bars=False)["sessions"] if s["id"] == SID)["state"]
+            self.assertEqual((chip2, lane2), ("ready", "ready"),
+                             "both surfaces fall back to the disk truth together")
+        finally:
+            km.Sessions.backend_for = saved_bf
+            km._tmux_sessions = saved_tmux
+
     def test_timeline_includes_dead_sessions_for_scrollback(self):
         # the user 2026-06-16: dead sessions appear as struck lanes so scrolling back surfaces them. The
         # regression was build_timeline feeding only LIVING sessions; it now includes window-dead ones

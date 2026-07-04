@@ -7074,7 +7074,18 @@ def build_timeline(now, tmux=None, with_bars=True, live_only=False):
             # cost; the {type:"bars"} build refines a beat later); a COLD cache falls back to the raw
             # snapshot state — the only moment the two surfaces may briefly differ, self-healing on the
             # next build (the 2026-06-26 fast-first-paint contract).
+            # Same INPUT, not just the same formula (the user 2026-07-03): the chat chip computes over the
+            # LIVE-MERGED session, and the lane badge rides the SKELETON build (the {type:"bars"} message
+            # carries no states) — so the skeleton must merge the live tail onto the cached parse too, or
+            # a live atom that changes the answer splits the two surfaces on EVERY push (chat WORKING /
+            # lane READY, the phantom-working divergence). The merge is dict work on in-memory atoms — no
+            # parse, so the fast-first-paint contract holds.
             comp_sess = session if with_bars else _parse_cached(s["path"])
+            if not with_bars and comp_sess is not None:
+                try:
+                    comp_sess = _merge_live_atoms(comp_sess, sid)
+                except Exception:
+                    pass
             if comp_sess is not None:
                 state = _session_chip(sid, s["path"], comp_sess, tm, now)
             else:

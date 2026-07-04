@@ -809,6 +809,7 @@ class SdkSession:
                 self.inflight = 0
                 self._interrupted = False
                 append_state(self.backend.state_dir, self.sid, "waiting")
+                self.backend.retire_live_work(self.sid)   # the abandoned turn's stream is gone with its client
                 self.backend._poke()
             opts = self.backend._options(self, ClaudeAgentOptions)
             async with ClaudeSDKClient(options=opts) as client:
@@ -911,6 +912,7 @@ class SdkSession:
             self.inflight = max(0, self.inflight - 1)
             if self.inflight == 0:
                 append_state(self.backend.state_dir, self.sid, "waiting")
+                self.backend.retire_live_work(self.sid)   # turn over → a work atom that never landed never will
                 asyncio.ensure_future(self._do_refresh_context())   # refresh ctx % + model from the SDK and
                 #   persist them, so the bar reflects the turn that just landed and survives idle/restart.
                 asyncio.ensure_future(self._do_refresh_usage())     # + the exact /usage snapshot (rail bars)
@@ -1744,6 +1746,25 @@ class SdkBackend:
         if not d:
             self._live.pop(sid, None)
 
+    def retire_live_work(self, sid: str) -> None:
+        """Drop the sid's live-tail WORK atoms (stream messages — not input echoes, not command feedback)
+        at a TURN BOUNDARY: the ResultMessage settle, the reconnect reconcile, or the session process
+        going away. Past any of these the stream that produced them is over — everything the transcript
+        will keep is already on disk (and prune_live retires it by uuid), so a work atom still here
+        belongs to an attempt that produced NO transcript record (an API-errored/rate-limited try, a
+        killed process). Left in place it is merged forever, and its live_work forces the turn open —
+        the chat chip read WORKING with a 3h20m timer on a session whose turn died in a usage-limit
+        retry storm, while the timeline lane said READY (the user 2026-07-03)."""
+        d = self._live.get(sid)
+        if not d:
+            return
+        for k in list(d.keys()):
+            a = d[k]
+            if not a.get("_echo_text") and not a.get("command"):
+                del d[k]
+        if not d:
+            self._live.pop(sid, None)
+
     def _update_reg(self, sid: str, **fields):
         reg = read_reg(self.state_dir, sid) or {"sid": sid}
         reg.update(fields)
@@ -1759,4 +1780,5 @@ class SdkBackend:
         # the thread (and its claude subprocess) is gone, so any background work is too — clear a stale
         # awaiting overlay so the session doesn't read working/awaiting forever (reorder_bug 2026-06-24).
         self._heal_stale_awaiting(sess.sid)
+        self.retire_live_work(sess.sid)   # no stream left → unlanded work atoms must not hold the turn open
         self._poke()
