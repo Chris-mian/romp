@@ -7766,6 +7766,7 @@ def _push(targets, connect=False):
         # builds live sessions only (lanes + bars) so the main UI is up at once; the producer warms the full
         # build (live + dead-within-12h) and the next pusher push folds the dead lanes in, in the background.
         timeline = None
+        tl_warming = False
         if want_tl:
             tl_clients = [c for c in targets if c["app"] == "timeline"]
             live_first = connect and _built_timeline[1] is None     # cold start, nothing warmed yet → live only
@@ -7774,7 +7775,9 @@ def _push(targets, connect=False):
                 _send_client(c, ("timeline",), {"type": "data", "data": skel})
             if live_first:
                 timeline = build_timeline(now, tmux, with_bars=True, live_only=True)   # live bars now (no dead reads)
-                _producer_wake.set()                                # warm the full build (live + dead) in the background
+                tl_warming = True                                   # this is the PARTIAL cold build — the client keeps its loader up
+                _producer_wake.set()                                # ...if it lands empty (SDK/federation not yet merged), rather than flashing
+                #                                                     "no activity"; a later warmed push (tl_warming False) settles it (the user 2026-07-03)
             else:
                 timeline = _cached_timeline(now, tmux, fsig, connect)
     except Exception:
@@ -7786,7 +7789,7 @@ def _push(targets, connect=False):
         elif c["app"] == "timeline" and timeline is not None:
             _send_client(c, ("timelinebars",), {"type": "bars", "turns": timeline["turns"],
                          "judging": timeline["judging"], "messages": timeline["messages"],
-                         "nudges": timeline["nudges"], "now": timeline["now"]})
+                         "nudges": timeline["nudges"], "now": timeline["now"], "warming": tl_warming})
     with _clients_lock:
         _clients[:] = [c for c in _clients if c.get("alive", True)]
 
