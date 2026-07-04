@@ -94,7 +94,8 @@ class OpenFolderRemote(unittest.TestCase):
         self.calls = []
         km.subprocess.Popen = lambda argv, **kw: self.calls.append(list(argv))
         os.environ.pop("ROMP_OPEN_REMOTE_FOLDER", None)
-        os.environ["HOME"] = tempfile.mkdtemp()   # isolate ~/.config/romp/open-remote-folder from the real machine
+        os.environ.pop("ROMP_OPEN_FOLDER", None)          # the local pref feeds the remote derivation — control it
+        os.environ["HOME"] = tempfile.mkdtemp()   # isolate ~/.config/romp/open-{remote-,}folder from the real machine
 
     def tearDown(self):
         km.subprocess.Popen = self._popen
@@ -107,7 +108,7 @@ class OpenFolderRemote(unittest.TestCase):
     def test_default_macos_opens_terminal_via_osascript_running_ssh(self):
         if sys.platform != "darwin":
             self.skipTest("macOS-only default opener")
-        km._open_folder_remote("gpu1", "/work/proj")
+        km._open_folder_remote("gpu1", "/work/proj")   # no local pref → the built-in Terminal.app default
         self.assertEqual(len(self.calls), 1)
         argv = self.calls[0]
         self.assertEqual(argv[0], "osascript")
@@ -115,6 +116,40 @@ class OpenFolderRemote(unittest.TestCase):
         self.assertIn("ssh -t gpu1", joined)
         self.assertIn("cd /work/proj", joined)
         self.assertIn("exec $SHELL -l", joined, "a login shell, not a one-shot command that closes")
+
+    def test_no_remote_config_follows_the_local_ghostty_terminal(self):
+        # the user 2026-07-03: with no explicit remote config, an SSH terminal should open in the SAME terminal
+        # the local folder pref names (Ghostty), not default to Terminal.app.
+        if sys.platform != "darwin":
+            self.skipTest("macOS-only derivation")
+        os.environ["ROMP_OPEN_FOLDER"] = "open -a Ghostty {dir}"
+        km._open_folder_remote("gpu1", "/work/proj")
+        self.assertEqual(len(self.calls), 1)
+        argv = self.calls[0]
+        # `open -na Ghostty --args -e ssh …` — -n (new instance) is required so macOS passes --args to Ghostty
+        self.assertEqual(argv[:6], ["open", "-na", "Ghostty", "--args", "-e", "ssh"])
+        self.assertEqual(argv[6:8], ["-t", "gpu1"])
+        self.assertEqual(argv[8], "cd /work/proj 2>/dev/null; exec $SHELL -l", "cd + login shell, one ssh arg")
+
+    def test_editor_local_pref_does_not_derive_a_terminal(self):
+        # a NON-terminal local opener (an editor) must NOT be misused as an SSH terminal — fall back to the default
+        if sys.platform != "darwin":
+            self.skipTest("macOS-only derivation")
+        os.environ["ROMP_OPEN_FOLDER"] = "code {dir}"
+        km._open_folder_remote("gpu1", "/work/proj")
+        self.assertEqual(self.calls[0][0], "osascript", "an editor pref falls back to the Terminal.app default")
+
+    def test_local_terminal_app_extracts_only_known_terminals(self):
+        os.environ["ROMP_OPEN_FOLDER"] = "open -a Ghostty {dir}"
+        self.assertEqual(km._local_terminal_app(), "Ghostty")
+        os.environ["ROMP_OPEN_FOLDER"] = "open -a Alacritty {dir}"
+        self.assertEqual(km._local_terminal_app(), "Alacritty")
+        os.environ["ROMP_OPEN_FOLDER"] = 'open -a "Visual Studio Code" {dir}'
+        self.assertEqual(km._local_terminal_app(), "", "an editor opened via open -a is NOT a terminal")
+        os.environ["ROMP_OPEN_FOLDER"] = "code {dir}"
+        self.assertEqual(km._local_terminal_app(), "", "a non-`open` opener is not derivable")
+        os.environ.pop("ROMP_OPEN_FOLDER", None)
+        self.assertEqual(km._local_terminal_app(), "", "no local pref → nothing to derive")
 
     def test_default_non_macos_uses_xterm(self):
         saved = sys.platform

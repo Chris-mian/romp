@@ -1899,8 +1899,9 @@ def _remote_folder_opener():
     session's remote host and lands in its cwd — nobody is watching a headless remote machine's own screen.
     Source, first wins: $ROMP_OPEN_REMOTE_FOLDER, then the first non-comment line of
     ~/.config/romp/open-remote-folder. {host}/{dir} placeholders, e.g.:
-      open -a Ghostty --args -e ssh -t {host} 'cd {dir} 2>/dev/null; exec $SHELL -l'
-    Empty → the built-in default (AppleScript Terminal.app on macOS, xterm elsewhere)."""
+      open -na Ghostty --args -e ssh -t {host} 'cd {dir} 2>/dev/null; exec $SHELL -l'
+    Empty → FOLLOW the local folder terminal if it's a known one (see _open_folder_remote), else the built-in
+    default (AppleScript Terminal.app on macOS, xterm elsewhere)."""
     t = os.environ.get("ROMP_OPEN_REMOTE_FOLDER", "").strip()
     if t:
         return t
@@ -1916,17 +1917,56 @@ def _remote_folder_opener():
     return ""
 
 
+# Terminal apps whose macOS `open -a <App>` launch takes a `--args -e <cmd>` to RUN a command in a new window
+# (the Ghostty family). Terminal.app / iTerm want AppleScript instead, so they're NOT here — for those the
+# built-in default (below) already does the right thing; deriving `--args -e ssh` would misfire.
+_ARGS_E_TERMINALS = ("ghostty", "alacritty", "kitty", "wezterm")
+
+
+def _local_terminal_app():
+    """If the LOCAL folder opener (_folder_opener) launches a macOS TERMINAL via `open -a <App>`, return <App>
+    — so the REMOTE (SSH) folder click can honor the SAME terminal the user already picked for the local case
+    (the user 2026-07-03: an SSH terminal should open in Ghostty, which they configured for the non-remote case,
+    not default to Terminal.app). Returns "" when the local opener isn't `open -a <known-terminal>` (unset, an
+    editor like `code {dir}`, or a terminal we can't drive with `--args -e`) — then the built-in default wins."""
+    tmpl = _folder_opener()
+    if not tmpl:
+        return ""
+    try:
+        parts = shlex.split(tmpl)
+    except Exception:
+        return ""
+    if not parts or os.path.basename(parts[0]) != "open":
+        return ""                                        # only the macOS `open -a <App>` form is derivable
+    for i, p in enumerate(parts):
+        if p == "-a" and i + 1 < len(parts):
+            app = parts[i + 1]
+            return app if any(h in app.lower() for h in _ARGS_E_TERMINALS) else ""
+    return ""
+
+
 def _open_folder_remote(host, cwd):
     """SSH into `host` (an ~/.ssh/config alias — the SAME name the federation attach flow already connects
     with, since a session's id is prefixed with exactly that alias) and land in `cwd`, in a NEW terminal on
     THIS machine (the user 2026-07-03: clicking a remote session's folder icon used to run the LOCAL folder
     opener against a path that doesn't exist here — a silent no-op). Runs a login shell after the cd so the
-    terminal stays open and usable, not a one-shot command. Best-effort + guarded, like _open_folder."""
+    terminal stays open and usable, not a one-shot command. Best-effort + guarded, like _open_folder.
+
+    With no explicit remote config it FOLLOWS the local folder terminal (the user 2026-07-03): a local
+    `open -a Ghostty {dir}` pref makes the SSH terminal open in Ghostty too, not Terminal.app."""
     host = str(host or "").strip()
     d = str(cwd or "").strip() or "~"
     if not host:
         return
     tmpl = _remote_folder_opener()
+    if not tmpl and sys.platform == "darwin":
+        # No explicit remote config → FOLLOW the local folder preference's terminal: if the local opener is
+        # `open -a Ghostty {dir}`, SSH out in Ghostty too. `open -na <App> --args -e ssh …` is Ghostty's own
+        # documented form: `-n` (NEW instance) is REQUIRED — without it macOS drops `--args` when the app is
+        # already running, so it would just focus Ghostty and never run the ssh. `-e <cmd>` runs the command.
+        app = _local_terminal_app()
+        if app:
+            tmpl = "open -na %s --args -e ssh -t {host} 'cd {dir} 2>/dev/null; exec $SHELL -l'" % shlex.quote(app)
     try:
         if tmpl:
             parts = shlex.split(tmpl)
