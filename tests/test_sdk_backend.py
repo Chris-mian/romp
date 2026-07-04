@@ -233,6 +233,38 @@ class LiveTail(unittest.TestCase):
         be.prune_live("s", {"a1"}, {"hi"})     # a1 now on disk; echo text "hi" now on disk
         self.assertEqual(be.live_atoms("s"), [])
 
+    def test_turn_settle_retires_unlanded_live_work_atoms(self):
+        """A usage-limit retry storm streams work atoms whose attempt the API errors away — the CLI writes
+        no transcript record for them, so the uuid-match prune can never retire them, and their live_work
+        held the merged turn open FOREVER: the chat chip read WORKING with a 3h+ timer on a settled
+        session (the user 2026-07-03). The turn's ResultMessage proves the stream is over — settle must
+        drop unlanded WORK atoms, and ONLY them: an input echo keeps the dropped-send visibility, and a
+        command atom has its own human-floor retirement."""
+        import asyncio
+        be = sb.SdkBackend(tempfile.mkdtemp(), "/bin/true", lambda *a, **k: None)
+        s = sb.SdkSession(be, {"sid": "11111111-2222-3333-4444-555555555555", "name": "n", "cwd": "/tmp"})
+        be._live[s.sid] = {"w1": {"uuid": "w1", "t": 5},
+                           "echo:hi": {"uuid": "echo:hi", "t": 1, "_echo_text": "hi"},
+                           "c1": {"uuid": "c1", "t": 3, "command": True}}
+        s.inflight = 1
+
+        async def run():
+            s._on_message(_ResultMessage(), _AssistantMessage, _ResultMessage, type("S", (), {}))
+            await asyncio.sleep(0)
+        asyncio.run(run())
+        self.assertEqual(set(be._live[s.sid]), {"echo:hi", "c1"},
+                         "settle drops unlanded WORK atoms; echoes + command feedback survive")
+
+    def test_session_gone_retires_unlanded_live_work_atoms(self):
+        """The process dying mid-turn (laptop sleep, a killed CLI) is the other stream-over event: no
+        ResultMessage is ever coming, so _on_session_gone must retire the work atoms — else the phantom
+        WORKING chip outlives the process indefinitely."""
+        be = sb.SdkBackend(tempfile.mkdtemp(), "/bin/true", lambda *a, **k: None)
+        s = sb.SdkSession(be, {"sid": "11111111-2222-3333-4444-555555555555", "name": "n", "cwd": "/tmp"})
+        be._live[s.sid] = {"w1": {"uuid": "w1", "t": 5}}
+        be._on_session_gone(s)
+        self.assertNotIn(s.sid, be._live, "no stream left → no work atom may hold the turn open")
+
     def test_image_echo_pruned_by_human_floor_when_text_cant_match(self):
         # The screenshots-piling-up bug (the user 2026-06-25): an image send's echo text is the raw composer
         # text (an image path), but the transcript extracts the path into an image block, so the echoed path
