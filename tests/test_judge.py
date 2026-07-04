@@ -3043,6 +3043,37 @@ class JudgeSystemPrompt(unittest.TestCase):
                          "JSON envelope (for per-call usage logging)")
 
 
+class JudgeClaudeBin(unittest.TestCase):
+    """Judges exec the RESOLVED claude binary, never bare `claude` off PATH: a kernel started over
+    non-login ssh (a federated host — jetty 2026-07-03) has no ~/.local/bin on PATH, so every judge
+    call exec-failed silently (goals minted only via the no-LLM fallbacks, the closer never completed
+    a card, judge-usage stayed empty) while SDK sessions — which resolve the binary — kept working."""
+
+    def test_env_override_wins(self):
+        saved = os.environ.get("ROMP_CLAUDE_BIN")
+        os.environ["ROMP_CLAUDE_BIN"] = "/opt/somewhere/claude"
+        try:
+            cmd = jd._judge_cmd("m", "S")
+            self.assertIn("/opt/somewhere/claude", cmd, "the kernel's exported resolution is used")
+            self.assertNotIn("claude", [c for c in cmd if c == "claude"], "never the bare name")
+        finally:
+            if saved is None:
+                os.environ.pop("ROMP_CLAUDE_BIN", None)
+            else:
+                os.environ["ROMP_CLAUDE_BIN"] = saved
+
+    def test_falls_back_to_user_install_when_path_lacks_claude(self):
+        saved_env, saved_which = os.environ.pop("ROMP_CLAUDE_BIN", None), jd.shutil.which
+        jd.shutil.which = lambda name: None            # PATH has no claude (non-login ssh kernel)
+        try:
+            self.assertEqual(jd._judge_claude_bin(), os.path.expanduser("~/.local/bin/claude"),
+                             "the standard user install spot, matching the kernel's _claude_bin")
+        finally:
+            jd.shutil.which = saved_which
+            if saved_env is not None:
+                os.environ["ROMP_CLAUDE_BIN"] = saved_env
+
+
 class JudgeOutputFormat(unittest.TestCase):
     """The TRIAGE judges speak ONE output shape: a single JSON object, parsed by the shared _json_obj
     (the user 2026-06-16). The INDEX judges (captioner/archiver) emit plain text — bare phrase / two

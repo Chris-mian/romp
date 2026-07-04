@@ -14,7 +14,7 @@ CLI:
   romp-judge --once               # one caption pass over the live fleet (writes captions/)
   romp-judge --test <transcript>  # caption one transcript's recent units, print them (no write)
 """
-import json, os, re, sys, time, subprocess, threading
+import json, os, re, shutil, sys, time, subprocess, threading
 from pathlib import Path
 from importlib.machinery import SourceFileLoader
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -234,6 +234,17 @@ def _clean_caption(out):
     return out
 
 
+def _judge_claude_bin():
+    """The claude binary for judge calls: ROMP_CLAUDE_BIN override (the kernel exports its own
+    resolution at boot), else PATH, else the standard user install spot. Judges used to exec bare
+    `claude` and inherit PATH luck: a kernel started over NON-LOGIN ssh (a federated host — jetty,
+    2026-07-03) has no ~/.local/bin on PATH, so EVERY judge call exec-failed silently — goals minted
+    only via the no-LLM fallbacks, the closer never completed a card, and judge-usage stayed empty —
+    while SDK sessions kept working (they resolve the binary: kernel _claude_bin, which this mirrors)."""
+    return (os.environ.get("ROMP_CLAUDE_BIN") or shutil.which("claude")
+            or os.path.expanduser("~/.local/bin/claude"))
+
+
 def _judge_cmd(model, sys_prompt, effort=None):
     """The `claude -p` argv for ONE judge call, isolated so the model sees ONLY its own prompt. Three
     flags do it (verified by token count: a probe call drops 8334 -> ~165 input tokens):
@@ -243,7 +254,7 @@ def _judge_cmd(model, sys_prompt, effort=None):
         CLAUDE.md was otherwise still injected — privacy rules, the Romp Postal section, etc., all
         noise for a zero-tool classifier). --safe-mode keeps auth + model, so subscription billing is
         unchanged. (NOT --bare: that drops the login too.) (the user, 2026-06-16.)"""
-    cmd = ["perl", "-e", "alarm 45; exec @ARGV", "claude", "-p", "--safe-mode", "--model", model,
+    cmd = ["perl", "-e", "alarm 45; exec @ARGV", _judge_claude_bin(), "-p", "--safe-mode", "--model", model,
            "--tools", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
            "--system-prompt", sys_prompt, "--exclude-dynamic-system-prompt-sections",
            "--output-format", "json"]                 # stdout = {"result", "usage", "duration_ms", "total_cost_usd"}

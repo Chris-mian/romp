@@ -10184,6 +10184,10 @@ def _parent_watch():
 
 
 def main():
+    # Export the kernel's claude resolution for every judge call (in-process tiers AND `romp-judge
+    # --once` subprocesses): judges exec the binary directly, and a kernel started over non-login ssh
+    # (a federated host) has no ~/.local/bin on PATH — bare `claude` exec-failed silently there.
+    os.environ.setdefault("ROMP_CLAUDE_BIN", _claude_bin())
     _ensure_bundles()
     threading.Thread(target=_producer, daemon=True).start()
     threading.Thread(target=_pusher, daemon=True).start()
