@@ -123,11 +123,32 @@ function interpNow(baseSec, baseMs, nowMs, live, maxAheadSec) {
 //     (interpNow's clamp left us behind), a seek, or real client↔kernel clock skew → one clean catch-up.
 // Same physical machine → data.now and the local clock share a rate, so a live edge re-anchored once then
 // free-run stays locked to data.now (drift ~0); the constant transport-latency offset is invisible.
-const REANCHOR_SEC = 0.5;   // s of edge↔data.now drift tolerated before a single corrective snap
+const REANCHOR_SEC = 0.5;   // s the edge may fall BEHIND a sample before it catches up forward
 function shouldReanchorEdge(baseSec, baseMs, nowMs, dataNow, live, wasLive) {
   if (baseSec == null || baseMs == null || !live || !wasLive) return true;
   const displayed = interpNow(baseSec, baseMs, nowMs, true, MAX_INTERP_AHEAD);
   return Math.abs(dataNow - displayed) > REANCHOR_SEC;
+}
+
+// Re-anchor the live edge's time-baseline from a fresh sample, keeping the displayed edge MONOTONIC — it
+// never moves backward. The edge free-runs on the local monotonic clock between samples (interpNow off a
+// fixed base); each live poll rebases it:
+//   • first anchor / (re)entering live-follow (wasLive false) → adopt the sample directly.
+//   • the edge fell BEHIND reality by > REANCHOR_SEC (a backgrounded tab whose interp clamped, or real
+//     lag) → catch up FORWARD to the sample.
+//   • otherwise HOLD the current displayed value and continue from it at real rate. This is the
+//     "jumps forward and then jumps back" fix (the user 2026-07-03): the OLD rule rebased baseSec to the
+//     sample on any > 0.5s ABSOLUTE drift, so bursty/jittery delivery (a sample landing BEHIND the
+//     free-run edge, e.g. a backlogged push, a federated re-emit, transport latency variance) snapped the
+//     axis BACKWARD, and a sample landing ahead hopped it FORWARD. Holding at max(sample, displayed) makes
+//     the edge non-decreasing: the only motion is a forward catch-up when genuinely behind; the constant
+//     sub-second lead a burst leaves is invisible and never grows (both advance at 1× real rate).
+// Returns the new {baseSec, baseMs}. Pure + exported for tests.
+function reanchorEdge(baseSec, baseMs, nowMs, dataNow, wasLive) {
+  if (baseSec == null || baseMs == null || !wasLive) return { baseSec: dataNow, baseMs: nowMs };
+  const displayed = interpNow(baseSec, baseMs, nowMs, true, MAX_INTERP_AHEAD);
+  if (dataNow > displayed + REANCHOR_SEC) return { baseSec: dataNow, baseMs: nowMs };   // behind → catch up forward
+  return { baseSec: displayed, baseMs: nowMs };                                          // ahead/steady → hold, never backward
 }
 
 // Is `incoming` a genuinely NEW clock sample — newer than the newest data.now seen this page-lifetime?
@@ -1051,18 +1072,20 @@ class TimelinePanel {
     if (data.cmapGrad) this._cmapGrad = data.cmapGrad;   // compaction-sweep colormap gradient (persists across the lighter {type:bars} pushes)
     this._reconcilePendingFlags();   // hold an optimistic eye-toggle sticky until THIS push (or a later one) confirms it
     this._signalReady();             // first lanes are about to paint → let the shell drop the boot splash
-    // Live-edge baseline: free-run off a FIXED anchor and re-snap only on a genuine step, so the few-ms
-    // poll-arrival jitter no longer hiccups the gliding edge ~1-2px (the user 2026-06-15). See shouldReanchorEdge.
-    // A RE-EMITTED payload (older data.now — see isFreshNowSample) is clamped to the newest sample and,
-    // while continuously live-following, may NOT re-anchor: only a new clock sample moves the edge. Held
-    // or (re)entering live still adopts the clamped now (jump-free — `off` cancels it / first anchor).
-    const _freshNow = isFreshNowSample(this._newestNow, data.now);
-    if (_freshNow) this._newestNow = data.now;
+    // Live-edge baseline: the edge free-runs off a FIXED anchor and each poll rebases it MONOTONICALLY
+    // (reanchorEdge) — it catches up forward when behind but NEVER moves backward, so bursty/jittery/
+    // re-emitted pushes can't snap the axis around (the user 2026-07-03 "jumps forward then back"). A
+    // RE-EMITTED payload (older data.now — federation/cache) is also clamped to the newest sample seen so
+    // the bars/positions it drives don't regress (isFreshNowSample). When held/frozen (not live-following),
+    // `off` cancels the edge's position, so we just keep data.now fresh for off-screen pending items.
+    if (isFreshNowSample(this._newestNow, data.now)) this._newestNow = data.now;
     else if (this._newestNow != null) data.now = this._newestNow;
     const _live = this._liveFollowing(), _tMs = perfNow();
-    if ((_freshNow || this._nowBaseSec == null || !(_live && this._wasLive))
-        && shouldReanchorEdge(this._nowBaseSec, this._nowBaseMs, _tMs, data.now, _live, this._wasLive)) {
-      this._nowBaseSec = data.now; this._nowBaseMs = _tMs;   // monotonic ms when this data.now was observed
+    if (_live) {
+      const _a = reanchorEdge(this._nowBaseSec, this._nowBaseMs, _tMs, data.now, this._wasLive);
+      this._nowBaseSec = _a.baseSec; this._nowBaseMs = _a.baseMs;
+    } else {
+      this._nowBaseSec = data.now; this._nowBaseMs = _tMs;
     }
     this._wasLive = _live;
     if (!this.fitted && Object.keys(this.data.turns || {}).length) { this.fitWindow(); this.fitted = true; }   // fit once bars exist (a skeleton-only first paint waits for applyBars)
@@ -2808,4 +2831,4 @@ class TimelinePanel {
   body(s) { return s ? '<div class="b">' + s + '</div>' : ''; }
 }
 
-module.exports = { TimelinePanel, badgeFor, roundedPath, crossX, workAnchorOf, idleGaps, fmtSpan, dotLit, barLit, interpNow, shouldReanchorEdge, isFreshNowSample, barEndT, dragAxis };
+module.exports = { TimelinePanel, badgeFor, roundedPath, crossX, workAnchorOf, idleGaps, fmtSpan, dotLit, barLit, interpNow, shouldReanchorEdge, reanchorEdge, isFreshNowSample, barEndT, dragAxis };
