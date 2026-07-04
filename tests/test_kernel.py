@@ -183,7 +183,8 @@ class ViewBuilder(unittest.TestCase):
 
     def test_read_task_store_is_authoritative_and_id_ordered(self):
         # the to-do card's live source: ~/.claude/tasks/<fsid>/<N>.json, the same state TaskList/TaskGet
-        # read. Numeric id order (not lexical), fields mapped, missing store → None (fold fallback).
+        # read. Numeric id order (not lexical); a READABLE dir is authoritative (even when empty → []);
+        # None ONLY when the store can't be read (missing dir / OS error) — the signal to surface an error.
         base = Path(self.td.name) / "tasks"
         saved = km._task_store_dir
         km._task_store_dir = lambda fsid: base / fsid
@@ -196,8 +197,10 @@ class ViewBuilder(unittest.TestCase):
             got = km._read_task_store(SID)
             self.assertEqual([t["id"] for t in got], ["1", "2", "10"], "numeric id order, not lexical '1,10,2'")
             self.assertEqual(got[0], {"id": "1", "subject": "one", "activeForm": "doing one", "status": "in_progress"})
-            self.assertIsNone(km._read_task_store("no-such-fsid"), "no store dir → None (caller folds the transcript)")
+            self.assertIsNone(km._read_task_store("no-such-fsid"), "missing store dir → None (→ caller surfaces an error)")
             self.assertIsNone(km._read_task_store(""), "no fsid → None")
+            (base / "empty-fsid").mkdir()
+            self.assertEqual(km._read_task_store("empty-fsid"), [], "a READABLE but empty dir is authoritative-empty, NOT None")
             self.assertIsNotNone(km._task_store_fp(SID))
             self.assertIsNone(km._task_store_fp("no-such-fsid"), "fingerprint None when there's no store")
         finally:
@@ -225,15 +228,42 @@ class ViewBuilder(unittest.TestCase):
                          [("1", "completed"), ("2", "completed"), ("3", "pending")],
                          "the card is the authoritative store, not the transcript fold")
 
-    def test_todo_card_falls_back_to_the_fold_when_there_is_no_store(self):
+    def test_unreadable_store_with_outstanding_tasks_surfaces_an_error_not_the_fold(self):
+        # repo policy (the user 2026-07-03): FAIL LOUDLY, don't degrade silently. When the authoritative
+        # store is unreadable BUT the transcript shows outstanding task activity, the card surfaces an
+        # ERROR — it does NOT quietly show the lossy fold (which could be wrong, the whole bug).
         saved = (km._read_task_store, km._fold_tasks)
-        km._read_task_store = lambda fsid: None            # no live store (older session / non-Task todo)
+        km._read_task_store = lambda fsid: None            # store unreadable
         km._fold_tasks = lambda session: [{"id": "1", "subject": "a", "activeForm": None, "status": "pending"}]
         try:
             todo = next(e for e in km.build_session(SID, NOW)["events"] if e["kind"] == "todo")
         finally:
             (km._read_task_store, km._fold_tasks) = saved
-        self.assertEqual([t["id"] for t in todo["tasks"]], ["1"], "no store → the transcript fold still works")
+        self.assertEqual(todo["tasks"], [], "no lossy fold is shown")
+        self.assertTrue(todo.get("error"), "the unreadable authoritative source is surfaced as an error")
+
+    def test_unreadable_store_with_no_outstanding_tasks_shows_nothing(self):
+        # a done/absent list is a non-event — an unreadable store there is not worth alarming on, so no card.
+        saved = (km._read_task_store, km._fold_tasks)
+        km._read_task_store = lambda fsid: None
+        km._fold_tasks = lambda session: [{"id": "1", "subject": "a", "activeForm": None, "status": "completed"}]
+        try:
+            kinds = [e["kind"] for e in km.build_session(SID, NOW)["events"]]
+        finally:
+            (km._read_task_store, km._fold_tasks) = saved
+        self.assertNotIn("todo", kinds, "no outstanding work + unreadable store → no card, no false alarm")
+
+    def test_readable_empty_store_shows_no_card_even_if_the_transcript_folds_tasks(self):
+        # a readable store is AUTHORITATIVE: if it says there are no (outstanding) tasks, that wins over a
+        # stale transcript fold — no card, and NO error (the store was read fine, it's just empty).
+        saved = (km._read_task_store, km._fold_tasks)
+        km._read_task_store = lambda fsid: []              # authoritative-empty (cleared / none)
+        km._fold_tasks = lambda session: [{"id": "1", "subject": "a", "activeForm": None, "status": "pending"}]
+        try:
+            kinds = [e["kind"] for e in km.build_session(SID, NOW)["events"]]
+        finally:
+            (km._read_task_store, km._fold_tasks) = saved
+        self.assertNotIn("todo", kinds, "authoritative-empty store → no card (the fold does not override it)")
 
     def test_fully_completed_store_drops_the_todo_card(self):
         # a done list is not a live to-do (the user 2026-06-10). At `track`'s screenshot time the store was
@@ -2666,10 +2696,11 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(km._rel_ago(1000 + 7200, 1000), "2h ago")
         self.assertEqual(km._rel_ago(3 * 86400, 0), "3d ago")
 
-    def test_todo_card_folds_taskcreate_taskupdate(self):
-        # TaskCreate/TaskUpdate fold into ONE {kind:"todo"} card (the old TS transcript.foldTasks); the
-        # task id comes from TaskCreate's "Task #N" result; the raw Task* tool calls are NOT emitted (the
-        # webview hides them via ACK_TOOLS, so the kernel skips them and emits only the folded checklist).
+    def test_fold_tasks_reconstructs_the_checklist_and_hides_raw_calls(self):
+        # _fold_tasks reconstructs the checklist from the transcript's TaskCreate/TaskUpdate (id from
+        # TaskCreate's "Task #N" result). It is now the DETECTOR of outstanding tasks + the fallback source
+        # only when there's no authoritative store (see _read_task_store); the raw Task* tool calls are
+        # never shown as tool cards (the webview hides them via ACK_TOOLS, so the kernel skips them).
         def asst(t, uuid, parent, blocks, stop="end_turn"):
             return {"type": "assistant", "timestamp": iso(t), "uuid": uuid, "parentUuid": parent,
                     "message": {"role": "assistant", "content": blocks, "stop_reason": stop}}
@@ -2681,14 +2712,13 @@ class ViewBuilder(unittest.TestCase):
             f.write(json.dumps(asst(T0 + 110, "a3", "u2", [{"type": "text", "text": "Planning."}, tc], stop="tool_use")) + "\n")
             f.write(json.dumps(trline(T0 + 112, "tc1", "r2", "a3", content="Task #1 created successfully: Wire the picker")) + "\n")
             f.write(json.dumps(asst(T0 + 120, "a4", "r2", [tu])) + "\n")
-        m = km.build_session(SID, NOW)
-        todos = [e for e in m["events"] if e["kind"] == "todo"]
-        self.assertEqual(len(todos), 1, "exactly one folded todo card")
-        tasks = todos[0]["tasks"]
+        session = km._parse(str(self.tpath), SID, NOW)
+        tasks = km._fold_tasks(session)
         self.assertEqual([t["id"] for t in tasks], ["1"])
         self.assertEqual(tasks[0]["subject"], "Wire the picker")
         self.assertEqual(tasks[0]["activeForm"], "Wiring the picker")
         self.assertEqual(tasks[0]["status"], "in_progress", "TaskUpdate moved it to in_progress")
+        m = km.build_session(SID, NOW)
         self.assertFalse(any(e["kind"] == "tool" and e["name"] in ("TaskCreate", "TaskUpdate") for e in m["events"]),
                          "raw Task* tool calls are folded away, not shown as tool cards")
 

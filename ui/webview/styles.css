@@ -1096,6 +1096,10 @@ body { display: flex; flex-direction: column; }
 .turn-todo { padding-top: 6px; padding-bottom: 6px; }
 .todo-card { border: 1px solid var(--box-border); border-radius: 6px; padding: 8px 12px; background: var(--box-bg); }
 .todo-head { font-weight: 700; color: var(--dim); font-size: 0.72em; letter-spacing: 0.06em; text-transform: uppercase; margin-bottom: 6px; }
+/* the authoritative task store was unreadable → a surfaced error, not a silently-degraded stale list */
+.todo-card-error { border-color: var(--err); }
+.todo-card-error .todo-head { color: var(--err); }
+.todo-error-msg { color: var(--err); font-size: 0.86em; line-height: 1.4; }
 .todo-item { display: flex; gap: 8px; align-items: baseline; padding: 1px 0; line-height: 1.45; }
 .todo-mark { flex: 0 0 auto; width: 1.1em; text-align: center; font-weight: 700; }
 .todo-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
