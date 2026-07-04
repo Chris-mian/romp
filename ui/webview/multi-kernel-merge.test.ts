@@ -351,3 +351,18 @@ test("routeOutbound: a hover CLEAR broadcasts to every kernel (no sid to route b
   const on = routeOutbound({ type: "timelineHover", sid: "jetty:" + U, segIds: [] }, new Set(["jetty"]));
   assert.deepEqual(on, [{ host: "jetty", msg: { type: "timelineHover", sid: U, segIds: [] } }]);
 });
+
+test("routeOutbound: openFolder ALWAYS stays local, with a remote id's host prefix left INTACT", () => {
+  // the user 2026-07-03: unlike every other id-bearing message, opening a folder means "open a window on
+  // the machine the BROWSER runs on" — routing it to the remote kernel would open it on that headless
+  // machine's own unwatched screen. The id must NOT be stripped either: the local kernel reads the host
+  // prefix to know it should SSH out instead of treating the path as local.
+  const remote = routeOutbound({ type: "openFolder", cwd: "/work/proj", id: "gpu1:" + U });
+  assert.deepEqual(remote, [{ host: "", msg: { type: "openFolder", cwd: "/work/proj", id: "gpu1:" + U } }]);
+  // a local session's click is unaffected — still local, id untouched (was already bare)
+  const local = routeOutbound({ type: "openFolder", cwd: "/work/proj", id: U });
+  assert.deepEqual(local, [{ host: "", msg: { type: "openFolder", cwd: "/work/proj", id: U } }]);
+  // no id at all (an older client / a session with none) still just goes local
+  const bare = routeOutbound({ type: "openFolder", cwd: "/work/proj" });
+  assert.deepEqual(bare, [{ host: "", msg: { type: "openFolder", cwd: "/work/proj" } }]);
+});

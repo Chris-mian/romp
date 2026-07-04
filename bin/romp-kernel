@@ -14,7 +14,7 @@ old). Port status (KEEP/ADAPT/DROP) tracked in design/ui-parity.md + backlog.md.
 
 Run:  python3 ~/GitRepos/romp-event-model/bin/romp-kernel   → opens http://127.0.0.1:7433
 """
-import json, os, re, sys, time, threading, traceback, base64, hashlib, hmac, struct, subprocess, shutil, http.client, uuid
+import json, os, re, sys, time, threading, traceback, base64, hashlib, hmac, struct, subprocess, shutil, shlex, http.client, uuid
 from pathlib import Path
 from datetime import datetime
 from importlib.machinery import SourceFileLoader
@@ -1872,7 +1872,6 @@ def _open_folder(cwd):
     the one portable "open this thing" command on each platform. A user who wants a terminal (or an editor)
     instead sets _folder_opener() (e.g. `open -a Ghostty {dir}`). Best-effort + guarded — a bad path or command
     never throws into the WS loop."""
-    import shlex
     d = os.path.expanduser(str(cwd or "")).rstrip("/") or "/"
     if not os.path.isdir(d):
         return
@@ -1886,6 +1885,67 @@ def _open_folder(cwd):
         subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception:
         sys.stderr.write("openFolder: %s\n" % traceback.format_exc())
+
+
+def _remote_folder_opener():
+    """The CONFIGURED command template for the REMOTE folder-click action (the user 2026-07-03): unlike
+    _folder_opener (which opens a LOCAL directory), this opens a NEW LOCAL terminal that SSHes OUT to the
+    session's remote host and lands in its cwd — nobody is watching a headless remote machine's own screen.
+    Source, first wins: $ROMP_OPEN_REMOTE_FOLDER, then the first non-comment line of
+    ~/.config/romp/open-remote-folder. {host}/{dir} placeholders, e.g.:
+      open -a Ghostty --args -e ssh -t {host} 'cd {dir} 2>/dev/null; exec $SHELL -l'
+    Empty → the built-in default (AppleScript Terminal.app on macOS, xterm elsewhere)."""
+    t = os.environ.get("ROMP_OPEN_REMOTE_FOLDER", "").strip()
+    if t:
+        return t
+    try:
+        p = Path(os.path.expanduser("~/.config/romp/open-remote-folder"))
+        if p.is_file():
+            for line in p.read_text().splitlines():
+                s = line.strip()
+                if s and not s.startswith("#"):
+                    return s
+    except Exception:
+        pass
+    return ""
+
+
+def _open_folder_remote(host, cwd):
+    """SSH into `host` (an ~/.ssh/config alias — the SAME name the federation attach flow already connects
+    with, since a session's id is prefixed with exactly that alias) and land in `cwd`, in a NEW terminal on
+    THIS machine (the user 2026-07-03: clicking a remote session's folder icon used to run the LOCAL folder
+    opener against a path that doesn't exist here — a silent no-op). Runs a login shell after the cd so the
+    terminal stays open and usable, not a one-shot command. Best-effort + guarded, like _open_folder."""
+    host = str(host or "").strip()
+    d = str(cwd or "").strip() or "~"
+    if not host:
+        return
+    tmpl = _remote_folder_opener()
+    try:
+        if tmpl:
+            parts = shlex.split(tmpl)
+            argv = [p.replace("{host}", host).replace("{dir}", d) for p in parts]
+        else:
+            remote_cmd = "cd %s 2>/dev/null; exec $SHELL -l" % shlex.quote(d)
+            if sys.platform == "darwin":
+                script = "ssh -t %s %s" % (shlex.quote(host), shlex.quote(remote_cmd))
+                argv = ["osascript", "-e", 'tell application "Terminal" to do script %s' % json.dumps(script),
+                        "-e", 'tell application "Terminal" to activate']
+            else:
+                argv = ["xterm", "-e", "ssh", "-t", host, remote_cmd]   # the universal Linux fallback (mirrors xdg-open's role for _open_folder)
+        subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        sys.stderr.write("openFolderRemote: %s\n" % traceback.format_exc())
+
+
+def _split_host_id(sid):
+    """(host, bare_id) for a federation-prefixed id ("gpu1:<uuid>"), or ("", sid) for a bare (local) one.
+    Session ids are UUIDs (no colon), so a colon unambiguously marks a host prefix — mirrors federation.ts's
+    hostOf/bareId, the ONLY other place that splits these (the kernel itself is normally host-blind; this
+    one WS handler needs the host name to know which machine to SSH into)."""
+    s = str(sid or "")
+    i = s.find(":")
+    return (s[:i], s[i + 1:]) if i > 0 else ("", s)
 
 
 def _open_or_revive(sid):
@@ -10207,7 +10267,14 @@ class Handler(BaseHTTPRequestHandler):
             # live → reopen the hidden tab + focus; dead → the chat's confirmRevive modal
             _open_or_revive(msg["id"])
         elif msg and msg.get("type") == "openFolder" and msg.get("cwd"):
-            _open_folder(str(msg["cwd"]))               # statusline folder click → configured opener (default: OS opener)
+            # A REMOTE session's folder icon must SSH out, not open a local path that doesn't exist here
+            # (the user 2026-07-03) — federation.ts routes this message type to stay LOCAL with the id's
+            # host prefix INTACT (never stripped), so a host here means "SSH to it", bare means "local".
+            host, _bare = _split_host_id(str(msg.get("id") or ""))
+            if host:
+                _open_folder_remote(host, str(msg["cwd"]))
+            else:
+                _open_folder(str(msg["cwd"]))               # statusline folder click → configured opener (default: OS opener)
 
         elif msg and msg.get("type") == "reviveSession" and msg.get("id"):
             # confirmRevive → "Revive": resume the dead session in the background (the kernel had

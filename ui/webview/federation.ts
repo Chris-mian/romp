@@ -170,6 +170,13 @@ export function routeOutbound(msg: any, knownHosts?: ReadonlySet<string>): Route
   // a hover CLEAR has no session id — broadcast so every kernel drops its highlight.
   if (msg.type === "timelineHover" && msg.off) return [LOCAL, ...(knownHosts || [])].map((h) => ({ host: h, msg }));
 
+  // openFolder ALWAYS stays LOCAL, `id` UNSTRIPPED (the user 2026-07-03): unlike every other id-bearing
+  // message, this one means "open a window on the machine the BROWSER is running on" — routing it to a
+  // remote kernel would open a folder/terminal on that headless machine's own (unwatched) screen. The
+  // local kernel needs the host prefix INTACT to know which remote machine to SSH into instead of treating
+  // the path as local (see bin/romp-kernel's openFolder handler + _split_host_id).
+  if (msg.type === "openFolder") return [{ host: LOCAL, msg }];
+
   // a scalar session id picks the owning host.
   let host = LOCAL;
   for (const k of SCALAR_ID) {

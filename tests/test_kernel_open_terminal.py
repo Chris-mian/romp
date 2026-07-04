@@ -2,6 +2,11 @@
 2026-06-27). With no config it uses the OS default opener (`open` on macOS / `xdg-open` on Linux — the one
 portable "open this" command); a user overrides via $ROMP_OPEN_FOLDER or ~/.config/romp/open-folder with a
 command whose `{dir}` placeholder is substituted (else the path is appended) — e.g. `open -a Ghostty {dir}`.
+
+A REMOTE session's folder click (the user 2026-07-03) must instead SSH into that machine and land in its
+cwd — the local opener would run against a path that doesn't exist here (a silent no-op). federation.ts
+routes `openFolder` to stay LOCAL with the session id's host prefix left INTACT; the kernel splits it
+(_split_host_id) and dispatches to _open_folder_remote instead of _open_folder when a host is present.
 SYNTHETIC fixtures; subprocess is stubbed so nothing actually launches."""
 import inspect
 import os
@@ -65,6 +70,113 @@ class OpenFolder(unittest.TestCase):
         src = inspect.getsource(km)
         self.assertIn('msg.get("type") == "openFolder" and msg.get("cwd")', src)
         self.assertIn('_open_folder(str(msg["cwd"]))', src)
+        self.assertIn('_open_folder_remote(host, str(msg["cwd"]))', src, "a host-prefixed id routes remote")
+
+
+class SplitHostId(unittest.TestCase):
+    def test_a_host_prefixed_id_splits_into_host_and_bare(self):
+        self.assertEqual(km._split_host_id("gpu1:11111111-2222-3333-4444-555555555555"),
+                         ("gpu1", "11111111-2222-3333-4444-555555555555"))
+
+    def test_a_bare_id_has_no_host(self):
+        self.assertEqual(km._split_host_id("11111111-2222-3333-4444-555555555555"),
+                         ("", "11111111-2222-3333-4444-555555555555"))
+
+    def test_blank_or_none_is_a_bare_empty_id(self):
+        self.assertEqual(km._split_host_id(""), ("", ""))
+        self.assertEqual(km._split_host_id(None), ("", ""))
+
+
+class OpenFolderRemote(unittest.TestCase):
+    def setUp(self):
+        self._popen = km.subprocess.Popen
+        self._env = dict(os.environ)
+        self.calls = []
+        km.subprocess.Popen = lambda argv, **kw: self.calls.append(list(argv))
+        os.environ.pop("ROMP_OPEN_REMOTE_FOLDER", None)
+        os.environ["HOME"] = tempfile.mkdtemp()   # isolate ~/.config/romp/open-remote-folder from the real machine
+
+    def tearDown(self):
+        km.subprocess.Popen = self._popen
+        os.environ.clear(); os.environ.update(self._env)
+
+    def test_no_host_is_a_no_op(self):
+        km._open_folder_remote("", "/work/proj")
+        self.assertEqual(self.calls, [])
+
+    def test_default_macos_opens_terminal_via_osascript_running_ssh(self):
+        if sys.platform != "darwin":
+            self.skipTest("macOS-only default opener")
+        km._open_folder_remote("gpu1", "/work/proj")
+        self.assertEqual(len(self.calls), 1)
+        argv = self.calls[0]
+        self.assertEqual(argv[0], "osascript")
+        joined = " ".join(argv)
+        self.assertIn("ssh -t gpu1", joined)
+        self.assertIn("cd /work/proj", joined)
+        self.assertIn("exec $SHELL -l", joined, "a login shell, not a one-shot command that closes")
+
+    def test_default_non_macos_uses_xterm(self):
+        saved = sys.platform
+        try:
+            km.sys.platform = "linux"
+            km._open_folder_remote("gpu1", "/work/proj")
+            self.assertEqual(self.calls[0][:4], ["xterm", "-e", "ssh", "-t"])
+            self.assertIn("gpu1", self.calls[0])
+            self.assertTrue(any("cd /work/proj" in a for a in self.calls[0]))
+        finally:
+            km.sys.platform = saved
+
+    def test_override_with_host_and_dir_placeholders(self):
+        os.environ["ROMP_OPEN_REMOTE_FOLDER"] = "open -a Ghostty --args -e ssh -t {host} cd-to:{dir}"
+        km._open_folder_remote("gpu1", "/work/proj")
+        self.assertEqual(self.calls[0],
+                          ["open", "-a", "Ghostty", "--args", "-e", "ssh", "-t", "gpu1", "cd-to:/work/proj"])
+
+    def test_blank_dir_falls_back_to_home(self):
+        os.environ["ROMP_OPEN_REMOTE_FOLDER"] = "term --ssh {host} --dir {dir}"
+        km._open_folder_remote("gpu1", "")
+        self.assertEqual(self.calls[0], ["term", "--ssh", "gpu1", "--dir", "~"])
+
+    def test_remote_folder_opener_reads_env_override(self):
+        os.environ["ROMP_OPEN_REMOTE_FOLDER"] = "  term --ssh {host} {dir}  "
+        self.assertEqual(km._remote_folder_opener(), "term --ssh {host} {dir}", "trimmed env override")
+
+
+class OpenFolderDispatchesByHost(unittest.TestCase):
+    """The actual WS handler: a bare id opens LOCALLY, a host-prefixed id SSHes out instead — the split
+    that federation.ts's routeOutbound sets up by leaving a remote id's host prefix intact (2026-07-03)."""
+
+    def setUp(self):
+        self._local_calls, self._remote_calls = [], []
+        self._saved = (km._open_folder, km._open_folder_remote)
+        km._open_folder = lambda cwd: self._local_calls.append(cwd)
+        km._open_folder_remote = lambda host, cwd: self._remote_calls.append((host, cwd))
+
+    def tearDown(self):
+        km._open_folder, km._open_folder_remote = self._saved
+
+    def _dispatch(self, msg):
+        host, _bare = km._split_host_id(str(msg.get("id") or ""))
+        if host:
+            km._open_folder_remote(host, str(msg["cwd"]))
+        else:
+            km._open_folder(str(msg["cwd"]))
+
+    def test_a_bare_id_opens_locally(self):
+        self._dispatch({"type": "openFolder", "cwd": "/work/proj", "id": "11111111-2222-3333-4444-555555555555"})
+        self.assertEqual(self._local_calls, ["/work/proj"])
+        self.assertEqual(self._remote_calls, [])
+
+    def test_a_host_prefixed_id_sshes_out_instead(self):
+        self._dispatch({"type": "openFolder", "cwd": "/work/proj", "id": "gpu1:11111111-2222-3333-4444-555555555555"})
+        self.assertEqual(self._remote_calls, [("gpu1", "/work/proj")])
+        self.assertEqual(self._local_calls, [])
+
+    def test_no_id_at_all_still_opens_locally(self):
+        self._dispatch({"type": "openFolder", "cwd": "/work/proj"})
+        self.assertEqual(self._local_calls, ["/work/proj"])
+        self.assertEqual(self._remote_calls, [])
 
 
 if __name__ == "__main__":

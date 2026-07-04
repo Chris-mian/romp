@@ -1013,14 +1013,18 @@ function prettyModel(id: string): string {
 // written to the transcript, so it can't be shown; the closing note says so. Carries no dot/timestamp
 // (no ts/uuid) → renderEvent leaves it off the conversational rail. Its open/closed state is persisted
 // per session (keyed by renderingSid) so a send/turn re-render never snaps it shut.
-// Make `elem` open the local folder `cwd` with the configured opener on click (the user 2026-06-27): used
+// Make `elem` open the folder `cwd` with the configured opener on click (the user 2026-06-27): used
 // EVERYWHERE a folder location is shown (statusline, the System-context Directory row, …). Click-safe — the
 // action rides a data-act caught by the document-level openFolder delegate, so it works under any re-rendering
-// surface without per-node handlers.
-function asFolderLink(elem: HTMLElement, cwd: string): void {
+// surface without per-node handlers. `sid` (the owning session's, possibly host-prefixed, id — the user
+// 2026-07-03) rides along as data-id: for a REMOTE session this is how the kernel knows to SSH out instead
+// of treating a remote path as local (a silent no-op, since that path doesn't exist here). This pane stays
+// host-BLIND as designed (see federation.ts) — sid is just echoed back opaquely, never parsed here.
+function asFolderLink(elem: HTMLElement, cwd: string, sid?: string): void {
   if (!cwd) return;
   elem.dataset.act = "openFolder";
   elem.dataset.cwd = cwd;
+  if (sid) elem.dataset.id = sid;
   elem.classList.add("folder-link");
   elem.title = cwd + "  ·  click to open this folder";
 }
@@ -1057,7 +1061,7 @@ function renderSystem(ev: Extract<ChatEvent, { kind: "system" }>): HTMLElement {
     for (const [k, val] of rows) {
       const ke = el("span", "sys-key"); ke.textContent = k; grid.appendChild(ke);
       const ve = el("span", "sys-val"); ve.textContent = val;
-      if (k === "Directory") asFolderLink(ve, val);   // the cwd path → click to open the folder
+      if (k === "Directory") asFolderLink(ve, val, renderingSid || undefined);   // the cwd path → click to open the folder
       grid.appendChild(ve);
     }
     body.appendChild(grid);
@@ -4611,7 +4615,8 @@ function updateStatusline() {
     // Click → run the configured folder opener for this dir (default: the OS opener — Finder / xdg-open —
     // overridable via ROMP_OPEN_FOLDER or ~/.config/romp/open-folder, e.g. open in Ghostty). asFolderLink wires
     // the data-act caught by the document-level openFolder delegate, so the per-push rebuild can't drop it.
-    asFolderLink(dir, s.cwd);
+    // activeId rides along so a REMOTE session's click SSHes out instead of no-op'ing on a local path (2026-07-03).
+    asFolderLink(dir, s.cwd, activeId || undefined);
   }
   sl.appendChild(dir);
   // The session's git branch, just right of the dir — only when known and only if the user hasn't hidden it
@@ -5453,11 +5458,16 @@ setupSettings();
 })();
 (() => {
   // ONE openFolder delegate for the WHOLE chat (the user 2026-06-27): installed on document.body so EVERY place
-  // that shows a local folder — the statusline 📁, the System-context "Directory" row, anywhere asFolderLink is
+  // that shows a folder — the statusline 📁, the System-context "Directory" row, anywhere asFolderLink is
   // applied — opens that folder on click. Body is stable across every per-push rebuild, so a click is never
   // dropped mid-press. (Only elements carrying data-act="openFolder" are matched; nothing else is affected.)
+  // `id` (data-id, the session's own possibly host-prefixed id) rides along opaquely — see asFolderLink.
   delegate(document.body, {
-    openFolder: (el) => { const cwd = el.dataset.cwd; if (cwd && vscodeApi) vscodeApi.postMessage({ type: "openFolder", cwd }); },
+    openFolder: (el) => {
+      const cwd = el.dataset.cwd; if (!cwd || !vscodeApi) return;
+      const id = el.dataset.id;
+      vscodeApi.postMessage(id ? { type: "openFolder", cwd, id } : { type: "openFolder", cwd });
+    },
   });
 })();
 (() => {
