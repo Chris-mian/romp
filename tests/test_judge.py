@@ -4117,6 +4117,91 @@ class Distiller(unittest.TestCase):
         self.assertEqual(jd.load_goals(SID)["nodes"][gid].get("blockSummary"), "Decide A or B.",
                          "once the pause clears the brief lands — the card was never permanently blanked")
 
+    def _blocked_goal(self, gid_suffix="g1", text="Ship the feature", blockwhy="Which approach — A or B?"):
+        records = [uline(T0, "ship it", "u1", ps="typed"),
+                   aline(T0 + 10, "need your call on the approach", "a1", "u1", stop="end_turn")]
+        path = self._setup(records)
+        now = T0 + 5000
+        s1 = em.segments(jd.parsed_session(SID, [path], now)["turns"][0])[0]["id"]
+        gid = SID + ":" + gid_suffix
+        jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "status": {gid: "blocked"}, "placements": {},
+                            "nodes": {gid: {"id": gid, "text": text, "parentId": None, "nodeComplete": False,
+                                            "blocked": True, "cleared": False, "blockWhy": blockwhy,
+                                            "trail": [s1], "t": T0, "mt": T0 + 10}}})
+        jd._judge_ctx.paused = False                        # a real give-up, not a pause-skip
+        return gid, now
+
+    def test_a_give_up_stamps_a_failed_warn_that_names_a_generic_cause(self):
+        # the user 2026-07-03 ("fail loudly"): a give-up must not blank the card SILENTLY — it stamps a
+        # brief-failed / summary-failed warn (yellow chip → modal) so the failure is followable from the card.
+        (jd.STATE).mkdir(parents=True, exist_ok=True)       # no maxed account window → the generic cause
+        (jd.STATE / "usage.json").write_text(json.dumps({"five_hour": {"pct": 20}, "seven_day": {"pct": 40}}))
+        gid, now = self._blocked_goal()
+        jd.brief_llm = lambda g, w, ow="": ""               # every call fails (real, not a pause-skip)
+        for _ in range(jd.DISTILL_FAIL_CAP):
+            jd.run_distill(now=now)
+        nd = jd.load_goals(SID)["nodes"][gid]
+        self.assertEqual(nd.get("blockSummary"), "", "still settles the sentinel so it stops '(generating…)'")
+        warns = [w for w in (nd.get("warns") or []) if w.get("kind") == "brief-failed"]
+        self.assertEqual(len(warns), 1, "the give-up stamps exactly one brief-failed warn")
+        self.assertIn("couldn't write", warns[0]["msg"])
+        self.assertIn("errors or timeouts", warns[0]["detail"], "no usage limit → generic cause named")
+
+    def test_a_give_up_names_the_account_limit_when_one_is_maxed(self):
+        # when the Session/Weekly window is maxed the modal names it as the cause; Fable-5 is NOT named (it's
+        # model-scoped and doesn't fail the Sonnet summarizer — same reasoning as the retry-pause fix)
+        (jd.STATE).mkdir(parents=True, exist_ok=True)
+        FUT = 4102444800   # far-future reset (year 2100) — _giveup_cause() compares against real time.time()
+        (jd.STATE / "usage.json").write_text(json.dumps({
+            "five_hour": {"pct": 100, "resets_at": FUT},
+            "seven_day": {"pct": 40, "resets_at": FUT},
+            "fable": {"pct": 100, "resets_at": FUT}}))
+        gid, now = self._blocked_goal()
+        jd.brief_llm = lambda g, w, ow="": ""
+        for _ in range(jd.DISTILL_FAIL_CAP):
+            jd.run_distill(now=now)
+        det = [w for w in jd.load_goals(SID)["nodes"][gid].get("warns") or []
+               if w.get("kind") == "brief-failed"][0]["detail"]
+        self.assertIn("Session (5h)", det, "the maxed account window is named as the cause")
+        self.assertNotIn("Fable", det, "Fable-5 is model-scoped — never blamed for a Sonnet-summarizer failure")
+        self.assertIn("resets", det, "rate-limit copy says it retries automatically on reset")
+
+    def test_a_successful_summary_clears_the_failed_warn(self):
+        gid, now = self._blocked_goal()
+        jd.brief_llm = lambda g, w, ow="": ""
+        for _ in range(jd.DISTILL_FAIL_CAP):
+            jd.run_distill(now=now)
+        self.assertTrue(any(w.get("kind") == "brief-failed"
+                            for w in jd.load_goals(SID)["nodes"][gid].get("warns") or []))
+        # re-arm + a working brief → the warn clears
+        st = jd.load_goals(SID); st["nodes"][gid]["blockSummary"] = None; jd.save_goals(SID, st)
+        jd.brief_llm = lambda g, w, ow="": "Decide A or B."
+        jd.run_distill(now=now)
+        nd = jd.load_goals(SID)["nodes"][gid]
+        self.assertEqual(nd.get("blockSummary"), "Decide A or B.")
+        self.assertFalse(any(w.get("kind") == "brief-failed" for w in nd.get("warns") or []),
+                         "a landed brief drops the give-up warn")
+
+    def test_scan_counts_failures_and_rearm_reopens_only_warned_cards(self):
+        gid, now = self._blocked_goal()
+        jd.brief_llm = lambda g, w, ow="": ""
+        for _ in range(jd.DISTILL_FAIL_CAP):
+            jd.run_distill(now=now)
+        scan = jd.judge_failure_scan()
+        self.assertEqual(scan["count"], 1, "the fleet scan counts the given-up card")
+        self.assertIn("cause", scan)
+        # re-arm reopens the warned card (its '' → None); a NON-warned settled '' is left alone
+        st = jd.load_goals(SID)
+        st["nodes"][SID + ":other"] = {"id": SID + ":other", "text": "no-work top", "parentId": None,
+                                       "nodeComplete": True, "blocked": False, "cleared": False, "trail": [],
+                                       "t": T0, "mt": T0 + 10, "summary": ""}   # settled, NO warn
+        st["status"][SID + ":other"] = "completed"
+        jd.save_goals(SID, st)
+        self.assertEqual(jd.rearm_failed_summaries(now), 1, "only the warned card is re-armed")
+        nd = jd.load_goals(SID)["nodes"]
+        self.assertIsNone(nd[gid].get("blockSummary"), "warned card re-armed to null → re-enters the distiller")
+        self.assertEqual(nd[SID + ":other"].get("summary"), "", "a settled no-work card (no warn) is untouched")
+
     def test_redistills_only_after_mt_advances(self):
         records = [uline(T0, "x", "u1", ps="typed"), aline(T0 + 10, "done", "a1", "u1", stop="end_turn")]
         path = self._setup(records)

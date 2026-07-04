@@ -144,3 +144,61 @@ class FableBanner(unittest.TestCase):
         js = km._LANDING_USAGE_JS
         self.assertIn("lim.fiveHour||lim.sevenDay||lim.fable", js, "the banner triggers on the fable window too")
         self.assertIn("names.push('Fable 5 (7d)')", js, "and names it")
+
+
+class JudgeFailureBanner(unittest.TestCase):
+    """The judge-failure surfacing (the user 2026-07-03): a distiller/brief give-up stamps a card warn, and the
+    kernel counts those warns fleet-wide into `judgeFailures` on the usage payload → a top banner like the
+    usage-limit one. _usage_for_client() attaches the count; the landing renders + dismisses the banner."""
+
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory()
+        self.saved = (jd.STATE, jd.GOALDIR)
+        jd.STATE = Path(self.td.name)
+        jd.GOALDIR = jd.STATE / "goals"
+        self._u, self._jf = km._usage, km._judge_failures
+        km._jf_cache["fp"] = None; km._jf_cache["val"] = None
+
+    def tearDown(self):
+        jd.STATE, jd.GOALDIR = self.saved
+        km._usage, km._judge_failures = self._u, self._jf
+        km._jf_cache["fp"] = None; km._jf_cache["val"] = None
+        self.td.cleanup()
+
+    def test_usage_for_client_attaches_judge_failures(self):
+        km._usage = lambda: {"fiveHour": None, "limited": None}
+        km._judge_failures = lambda: {"count": 2, "cause": "the summarizer kept hitting errors or timeouts",
+                                      "ratelimited": False}
+        u = km._usage_for_client()
+        self.assertEqual(u["judgeFailures"]["count"], 2, "the fleet failure count rides the usage payload")
+
+    def test_usage_for_client_omits_the_key_when_nothing_is_failing(self):
+        km._usage = lambda: {"fiveHour": None, "limited": None}
+        km._judge_failures = lambda: None
+        self.assertNotIn("judgeFailures", km._usage_for_client(), "no failures → no key → banner stays down")
+
+    def test_judge_failures_reads_the_scan_and_caches_on_the_goals_fingerprint(self):
+        calls = []
+        saved = jd.judge_failure_scan
+        try:
+            jd.judge_failure_scan = lambda: (calls.append(1),
+                                             {"count": 1, "cause": "x", "ratelimited": False})[1]
+            a = km._judge_failures(); b = km._judge_failures()      # goals dir absent → stable fingerprint
+            self.assertEqual(a["count"], 1)
+            self.assertEqual(len(calls), 1, "an unchanged goals-dir fingerprint serves the cache, no re-scan")
+        finally:
+            jd.judge_failure_scan = saved
+
+    def test_the_landing_has_the_banner_and_render_drives_and_dismisses_it(self):
+        land = km._landing()
+        self.assertIn("<div id=romp-judge-degraded>", land)
+        self.assertIn("#romp-judge-degraded.show{display:flex}", land)
+        js = km._LANDING_USAGE_JS
+        self.assertIn("u.judgeFailures", js)                        # driven off the payload key
+        self.assertIn("couldn't be summarized", js)                # names the count
+        self.assertIn("romp:judgeDegradedDismiss", js)             # signature-keyed dismissal, like the limit one
+        self.assertIn("jf.count+'|'+(jf.cause||'')", js)           # signature = count + cause → re-shows on change
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1148,6 +1148,48 @@ def _warn_cite_miss(nd, judge, t):
                "Minor link issue, not lost work: it clears the next time the source is recorded." % line)
 
 
+# The FAILED kind (the user 2026-07-03): a distiller/brief GIVE-UP used to blank the card SILENTLY (settle to
+# the "" sentinel, no line). That violates "fail loudly, don't degrade silently" — the user couldn't tell a
+# card with nothing to say from one the summarizer kept failing on. Now a give-up ALSO stamps a "*-failed"
+# warn: the card shows a yellow warning chip → click opens a modal that names the likely CAUSE (an account
+# usage limit if one is maxed, else errors/timeouts) and says it retries on recovery. The kernel also counts
+# these live warns fleet-wide to raise a top banner. On the next SUCCESSFUL (re)summarize the warn clears.
+def _giveup_cause():
+    """(cause_phrase, is_ratelimit) for a give-up modal + the fleet banner — name the ACCOUNT usage limit if
+    one that affects the summarizer is maxed right now, else a generic errors/timeouts cause. Only the 5h
+    (Session) and 7d (Weekly) windows count: the summarizer runs on Sonnet, so a maxed FABLE-5 window (which
+    is model-scoped — see the retry-pause fix) does NOT cause its calls to fail and must not be blamed. Reads
+    usage.json (a maxed window whose reset is still in the future = live; past its reset = rolled, ignore)."""
+    names = []
+    try:
+        u = json.loads((STATE / "usage.json").read_text())
+        now = time.time()
+        for key, label in (("five_hour", "Session (5h)"), ("seven_day", "Weekly (7d)")):
+            s = u.get(key) if isinstance(u, dict) else None
+            if isinstance(s, dict) and (s.get("pct") or 0) >= 100 and not (s.get("resets_at") and now > s["resets_at"]):
+                names.append(label)
+    except Exception:
+        pass
+    if names:
+        return ("the account's %s usage limit is maxed out" % " and ".join(names), True)
+    return ("the summarizer kept hitting errors or timeouts", False)
+
+
+def _warn_summary_failed(nd, judge, t):
+    """Stamp this card's summary/brief-FAILED warning after a give-up. Concise, takeaway-first, names the
+    cause; the developer audit (the raw call failures) stays in judge-errors.jsonl."""
+    line = ("summary" if judge == "distiller" else "decision brief")
+    kind = ("summary-failed" if judge == "distiller" else "brief-failed")
+    cause, ratelimited = _giveup_cause()
+    retry = ("romp retries it automatically the moment the limit resets; nudging the session refreshes it sooner."
+             if ratelimited else
+             "Nudge the session to refresh it, or it retries on its own the next time that session works on this goal.")
+    _node_warn(nd, kind, t,
+               "romp couldn't write this card's %s." % line,
+               "romp tried to generate this %s several times and each attempt failed, because %s. No work was "
+               "lost — this is only the summary line. %s" % (line, cause, retry))
+
+
 def _split_sections(text):
     """(background, takeaway) — split a distill/brief reply's two labeled sections (the user 2026-07-02:
     the takeaway alone assumes a reader who remembers the thread; BACKGROUND re-orients one who doesn't).
@@ -3580,6 +3622,7 @@ def _distill_session(fsid, path, now):
                         nodes[top]["blockSummary"] = ""          # "(generating…)" forever (the user 2026-06-24)
                     nodes[top]["briefedMt"] = nodes[top].get("mt"); nodes[top]["briefFails"] = 0
                     _log_judge_error("brief", fsid, "give-up")   # distinct from the retryable "call"
+                    _warn_summary_failed(nodes[top], "brief", now)   # fail LOUDLY: card warn + modal, no silent blank
                 else:
                     nodes[top]["briefFails"] = fails    # keep counting; retry next pass (leave blockSummary null)
                 changed = True                          # persist the counter / the settle
@@ -3598,6 +3641,7 @@ def _distill_session(fsid, path, now):
                 _node_warn_clear(nodes[top], "cite-miss")  # cited (or nothing to cite) → the anomaly is over
             nodes[top]["briefedMt"] = nodes[top].get("mt")
             nodes[top]["briefFails"] = 0                # success → reset the counter (for a future re-open)
+            _node_warn_clear(nodes[top], "brief-failed")   # a brief landed → drop any earlier give-up warn
             n += 1; changed = True
             continue
         if not work:                                   # completed but no resolvable work (e.g. an umbrella /
@@ -3619,6 +3663,7 @@ def _distill_session(fsid, path, now):
                     nodes[top]["summary"] = ""
                 nodes[top]["distilledMt"] = nodes[top].get("mt"); nodes[top]["distillFails"] = 0
                 _log_judge_error("distiller", fsid, "give-up")
+                _warn_summary_failed(nodes[top], "distiller", now)   # fail LOUDLY: card warn + modal, no silent blank
             else:
                 nodes[top]["distillFails"] = fails     # keep counting; retry next pass (leave summary null)
             changed = True
@@ -3637,9 +3682,69 @@ def _distill_session(fsid, path, now):
             _node_warn_clear(nodes[top], "cite-miss")      # cited (or nothing to cite) → the anomaly is over
         nodes[top]["distilledMt"] = nodes[top].get("mt")
         nodes[top]["distillFails"] = 0                 # success → reset the counter
+        _node_warn_clear(nodes[top], "summary-failed") # a summary landed → drop any earlier give-up warn
         n += 1; changed = True
     if changed:
         save_goals(fsid, store)
+    return n
+
+
+# ── failed-summary give-up: fleet count (for the banner) + re-arm on recovery (auto-retry) ──
+_FAILED_WARN_KINDS = ("summary-failed", "brief-failed")
+
+
+def _failed_nodes(store):
+    """Yield (nid, nd, kind) for every node in a store carrying a live give-up warn."""
+    for nid, nd in (store.get("nodes") or {}).items():
+        if not isinstance(nd, dict):
+            continue
+        for w in nd.get("warns") or []:
+            if isinstance(w, dict) and w.get("kind") in _FAILED_WARN_KINDS:
+                yield nid, nd, w["kind"]
+
+
+def judge_failure_scan():
+    """Fleet-wide give-up state for the top banner (the user 2026-07-03): every card whose summary/brief GAVE
+    UP carries a live "*-failed" warn; count them across all goal stores and name the current CAUSE (an
+    account usage limit if one is maxed, else errors/timeouts). Returns {count, cause, ratelimited} or None
+    when nothing is failing. Cheap: read-only, one parse per store; the kernel mtime-caches it."""
+    import glob
+    count = 0
+    for fp in glob.glob(str(GOALDIR / "*.json")):
+        try:
+            store = json.loads(Path(fp).read_text())
+        except Exception:
+            continue
+        count += sum(1 for _ in _failed_nodes(store))
+    if not count:
+        return None
+    cause, ratelimited = _giveup_cause()
+    return {"count": count, "cause": cause, "ratelimited": ratelimited}
+
+
+def rearm_failed_summaries(now=None):
+    """Auto-retry give-up cards on a RECOVERY event (the kernel calls this when the retry-pause clears and once
+    at startup): a genuine transient failure (a timeout under load, a brief rate-limit spike) blanks a card to
+    the "" sentinel + a "*-failed" warn and would otherwise stay blank until the goal's mt advances. Re-arm =
+    put the sentinel back to None so the distiller re-enters and retries; the warn stays until a re-summarize
+    SUCCEEDS (then _node_warn_clear) or FAILS again (re-gives-up, re-warns, visible). Bounded: only nodes with
+    a live give-up warn, and only on discrete recovery events — never a per-pass loop. Returns the count."""
+    import glob
+    n = 0
+    for fp in glob.glob(str(GOALDIR / "*.json")):
+        fsid = Path(fp).stem
+        try:
+            store = load_goals(fsid)
+        except Exception:
+            continue
+        changed = False
+        for nid, nd, kind in _failed_nodes(store):
+            if kind == "summary-failed" and nd.get("summary") == "":
+                nd["summary"] = None; changed = True; n += 1
+            elif kind == "brief-failed" and nd.get("blockSummary") == "":
+                nd["blockSummary"] = None; changed = True; n += 1
+        if changed:
+            save_goals(fsid, store)
     return n
 
 
