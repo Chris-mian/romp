@@ -83,6 +83,28 @@ def model_label(live: str, chosen: str) -> str:
     return pretty_model(chosen) if chosen.startswith("claude-") else chosen.capitalize()
 
 
+def _alias_label(alias: str) -> str:
+    """A best-effort DISPLAY label for a chosen model ALIAS before the real live name lands — the same
+    label model_label falls back to (pretty id, or capitalised alias, '' for default)."""
+    if not alias or alias == "default":
+        return ""
+    return pretty_model(alias) if alias.startswith("claude-") else alias.capitalize()
+
+
+def _model_reflects_alias(live_pretty: str, alias: str) -> bool:
+    """Does the LIVE model display name reflect the chosen ALIAS — i.e. the switch has taken effect? A
+    bare alias ('opus') is a substring of its pretty name ('Opus 4.8'), case-insensitively; 'default'/''
+    matches any real name (the resolved default). Used to clear the switching-dots the instant the new
+    model actually lands (the user 2026-07-03), so the badge never lingers on stale dots OR a stale name."""
+    if not live_pretty:
+        return False
+    if not alias or alias == "default":
+        return True
+    a = alias.lower()
+    a = a.split("-")[1] if a.startswith("claude-") and "-" in a else a   # claude-opus-4-8 → opus
+    return a in live_pretty.lower()
+
+
 def _block_to_dict(b):
     """One SDK content block → the transcript/event-model block dict (by type name, so no SDK import)."""
     n = type(b).__name__
@@ -509,6 +531,10 @@ class SdkSession:
         #   tmux backend never had. Keeps the session 'working' while any run and surfaces a live count on the lane.
         self._sub_lock = threading.Lock()            #   hooks mutate on the loop thread; snapshot() reads from the kernel thread
         self.chosen_model = reg.get("model") or ""   # the alias the user picked (opus/sonnet/…); self.model is the display name
+        self._model_pending = ""                     # target ALIAS while a /model switch is resolving: the badge shows
+        #   animated dots until the LIVE model actually reflects the pick (the user 2026-07-03: a switch stamped the
+        #   chosen alias but left liveModel stale, and model_label PREFERS liveModel → the badge kept the OLD name).
+        #   Cleared the instant _learn_model / _do_refresh_context reports a model matching the alias (event-based).
         self.effort = reg.get("effort") or DEFAULT_EFFORT   # connect-time --effort; tracked since the init msg doesn't echo it
         self.perm_mode = self.mode
         # reconnect machinery: effort changes (a connect-time flag) reconnect the client; _wake breaks the
@@ -645,6 +671,12 @@ class SdkSession:
             await self.client.set_model(model)
         except Exception:
             pass
+        # Pull the real new name NOW rather than waiting for the next turn's assistant message — an idle
+        # session the user switched but doesn't drive again would otherwise sit on the switching-dots
+        # indefinitely (the user 2026-07-03). get_context_usage reports the current model, so this
+        # resolves the pending switch the moment the CLI applies it.
+        await self._do_refresh_context()
+        self.backend._poke()
 
     async def _do_set_mode(self, mode):
         try:
@@ -677,11 +709,14 @@ class SdkSession:
             if v != self._ctx:
                 self._ctx, changed = v, True
         pm = pretty_model(cu.get("model"))
+        if pm and self._resolve_model_pending(pm):
+            changed = True
         if pm and pm != self.model:
             self.model, changed = pm, True
         upd = {}
         if self.model:
             upd["liveModel"] = self.model
+        upd["modelPending"] = bool(self._model_pending)
         if self._ctx is not None:
             upd["liveCtx"] = self._ctx
         if upd:
@@ -850,15 +885,34 @@ class SdkSession:
         shows its model via live_sessions' registry path — the registry's `model` field is the user's CHOSEN
         alias, which is absent for a default-model session, so without this the badge (and, on the timeline,
         the effort too) goes blank whenever the session isn't actively running (the user 2026-06-24). Pokes a
-        push so the badge updates promptly. No-op when unchanged, so it doesn't rewrite the reg every turn."""
-        if not pm or pm == self.model:
+        push so the badge updates promptly. No-op when unchanged, so it doesn't rewrite the reg every turn.
+        Also resolves a pending /model switch: once the observed name reflects the chosen alias, the
+        switching-dots clear (the user 2026-07-03)."""
+        if not pm:
+            return
+        cleared = self._resolve_model_pending(pm)
+        if pm == self.model:
+            if cleared:
+                self.backend._poke()
             return
         self.model = pm
         try:
-            self.backend._update_reg(self.sid, liveModel=pm)
+            self.backend._update_reg(self.sid, liveModel=pm, modelPending=bool(self._model_pending))
         except Exception:
             pass
         self.backend._poke()
+
+    def _resolve_model_pending(self, pm) -> bool:
+        """If a /model switch is pending and the observed live name `pm` now reflects the chosen alias,
+        clear the pending marker (badge stops showing dots) and persist it. Returns True if it cleared."""
+        if not self._model_pending or not _model_reflects_alias(pm, self._model_pending):
+            return False
+        self._model_pending = ""
+        try:
+            self.backend._update_reg(self.sid, modelPending=False)
+        except Exception:
+            pass
+        return True
 
     def _ctx_pct(self):
         """Current context-window fill %, as the SDK reports it via get_context_usage() — the same number the
@@ -1141,6 +1195,7 @@ class SdkSession:
             state, since = ls.get("state") or "waiting", ls.get("t") or 0
         return {"state": state, "since": str(since) if since else "",
                 "model": model_label(self.model, self.chosen_model), "effort": self.effort,
+                "modelPending": bool(self._model_pending),   # a /model switch resolving → the badge shows switching-dots
                 "mode": self.perm_mode, "ctx": self._ctx_pct(), "summary": "",
                 "subagents": subs}   # live Task subagents (count + types) → lane affordance; [] when none
 
@@ -1565,12 +1620,20 @@ class SdkBackend:
         if not reg:
             return False
         reg["model"] = value
-        write_reg(self.state_dir, sid, reg)
         write_sdk_default(self.state_dir, model=value)   # remember as the seed for the NEXT new session (the user 2026-06-27)
         s = self.sessions.get(sid)
         if s:
             s.chosen_model = value
-            s.model = value.capitalize()   # immediate label feedback ("Opus"); next assistant turn republishes "Opus 4.8"
+            # PENDING: show switching-dots, NOT a premature/stale name, until the LIVE model reflects the
+            # pick (the user 2026-07-03). The old code stamped s.model = value.capitalize() ("Opus"), but
+            # left reg.liveModel stale — and model_label PREFERS liveModel, so a session that hadn't yet run
+            # a turn in the new model kept showing the OLD name. Now the pick marks pending; _do_set_model
+            # pulls the real name, which clears it (and the dormant/never-driven trap can't happen — the
+            # refresh resolves an idle session, and _on_session_gone resolves a thread that exits mid-switch).
+            already = _model_reflects_alias(s.model, value)
+            s._model_pending = "" if already else value
+            reg["modelPending"] = bool(s._model_pending)
+            write_reg(self.state_dir, sid, reg)
             s.set_model_live(None if value in ("", "default") else value)
             # Synthesize the INVOCATION atom the CLI never streams (it streams only the stdout
             # confirmation): the chat gets the same "/model sonnet" command chip the tmux path reads from
@@ -1585,6 +1648,13 @@ class SdkBackend:
                 "t": t, "author": "human", "command": "/model", "_echo_text": disp,
                 "message": {"role": "user", "content": [{"type": "text", "text": disp}]}}
             self._wake_push()
+        else:
+            # DORMANT (no live thread): no turn is coming to report a real name, so resolve to the chosen
+            # alias's best-effort label immediately — never leave the badge on a stale liveModel or trapped
+            # on dots. The value applies for real on the next connect (chosen_model → _options).
+            reg["liveModel"] = _alias_label(value)
+            reg["modelPending"] = False
+            write_reg(self.state_dir, sid, reg)
         return True
 
     def set_mode(self, sid: str, mode: str) -> bool:
@@ -1654,6 +1724,7 @@ class SdkBackend:
                             # not running (e.g. post-restart): prefer the last LIVE model we persisted
                             # (liveModel), else the chosen alias — so the badge isn't blank while dormant.
                             "model": model_label(reg.get("liveModel") or "", reg.get("model") or ""),
+                            "modelPending": bool(reg.get("modelPending")),
                             "effort": reg.get("effort", ""),
                             "mode": reg.get("mode", ""),
                             "ctx": lc if isinstance(lc, (int, float)) else "", "summary": ""}
@@ -1781,4 +1852,10 @@ class SdkBackend:
         # awaiting overlay so the session doesn't read working/awaiting forever (reorder_bug 2026-06-24).
         self._heal_stale_awaiting(sess.sid)
         self.retire_live_work(sess.sid)   # no stream left → unlanded work atoms must not hold the turn open
+        if sess._model_pending:           # a switch that never resolved before the thread died → don't trap the dots
+            sess._model_pending = ""
+            try:
+                self._update_reg(sess.sid, liveModel=_alias_label(sess.chosen_model), modelPending=False)
+            except Exception:
+                pass
         self._poke()

@@ -691,6 +691,52 @@ class SetModelModePure(unittest.TestCase):
         self.assertEqual(sb.read_reg(self.d, sid)["model"], "opus")
         self.assertFalse(self.be.set_model("no-such-sid", "opus"))
 
+    def test_set_model_on_a_dormant_session_resolves_the_badge_not_stale(self):
+        # the user 2026-07-03: set_model stamped the chosen alias but left reg.liveModel stale, and
+        # model_label PREFERS liveModel → the badge kept the OLD name (track: chose fable, showed Opus 4.8).
+        # A dormant session (no live thread, no turn coming) resolves to the chosen alias's label NOW —
+        # never stale, never trapped on switching-dots.
+        sid = self.be.spawn("m", self.d)
+        sb.write_reg(self.d, sid, {**sb.read_reg(self.d, sid), "liveModel": "Opus 4.8"})   # a stale prior live name
+        self.assertTrue(self.be.set_model(sid, "fable"))
+        reg = sb.read_reg(self.d, sid)
+        # a bare alias has no version until the real name lands, so the best-effort label is "Fable" — the
+        # point is it reflects the PICK (not the stale "Opus 4.8"); the real "Fable 5" fills in on next connect.
+        self.assertEqual(reg["liveModel"], "Fable", "the dormant badge reflects the pick, not the stale prior")
+        self.assertFalse(reg.get("modelPending"), "nothing is coming to resolve dots → resolve immediately, no trap")
+        self.assertEqual(sb.model_label(reg["liveModel"], reg["model"]), "Fable")
+
+    def test_alias_label_and_model_reflects_alias(self):
+        self.assertEqual(sb._alias_label("opus"), "Opus")
+        self.assertEqual(sb._alias_label("claude-opus-4-8"), "Opus 4.8")
+        self.assertEqual(sb._alias_label("default"), "")
+        self.assertEqual(sb._alias_label(""), "")
+        self.assertTrue(sb._model_reflects_alias("Opus 4.8", "opus"), "the bare alias is a substring of the pretty name")
+        self.assertTrue(sb._model_reflects_alias("Fable 5", "fable"))
+        self.assertTrue(sb._model_reflects_alias("Opus 4.8", "claude-opus-4-8"), "a full id alias matches on its family word")
+        self.assertFalse(sb._model_reflects_alias("Fable 5", "opus"), "the OLD name does not reflect the new pick")
+        self.assertTrue(sb._model_reflects_alias("anything", "default"), "default matches the resolved name")
+        self.assertFalse(sb._model_reflects_alias("", "opus"), "no live name yet → not resolved")
+
+    def test_learn_model_clears_pending_only_when_the_new_name_lands(self):
+        sess = sb.SdkSession(self.be, {"sid": "p", "name": "n", "cwd": self.d, "model": "fable"})
+        sess.model = "Fable 5"
+        sess._model_pending = "opus"                       # a switch to opus is resolving
+        sess._learn_model("Fable 5")                       # a still-in-flight fable turn reports the OLD name
+        self.assertEqual(sess._model_pending, "opus", "the old name does not clear the switch — dots stay")
+        sess._learn_model("Opus 4.8")                      # the new model finally streams
+        self.assertEqual(sess._model_pending, "", "the matching name clears the switch — dots stop")
+        self.assertEqual(sess.model, "Opus 4.8")
+        self.assertFalse(sb.read_reg(self.d, "p").get("modelPending") or False)
+
+    def test_session_gone_mid_switch_does_not_trap_the_dots(self):
+        sess = sb.SdkSession(self.be, {"sid": "g", "name": "n", "cwd": self.d, "model": "opus"})
+        sess._model_pending = "opus"
+        self.be._on_session_gone(sess)
+        self.assertEqual(sess._model_pending, "", "a thread that dies mid-switch resolves the pending marker")
+        self.assertFalse(sb.read_reg(self.d, "g").get("modelPending") or False)
+        self.assertEqual(sb.read_reg(self.d, "g").get("liveModel"), "Opus", "and lands a best-effort label, not blank")
+
     def test_set_mode_persists_to_registry(self):
         sid = self.be.spawn("m", self.d)
         self.assertTrue(self.be.set_mode(sid, "plan"))

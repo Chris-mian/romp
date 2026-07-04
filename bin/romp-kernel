@@ -2309,6 +2309,7 @@ class Sessions:
                     ctx = st.get("ctx")   # SDK context-fill % from usage (None until a turn lands / while dormant)
                     out[sid] = {"state": st.get("state", ""), "since": _num(str(st.get("since") or "")),
                                 "model": st.get("model", ""), "effort": st.get("effort", ""),
+                                "modelPending": bool(st.get("modelPending")),   # a /model switch resolving → badge shows switching-dots
                                 "context": ctx if isinstance(ctx, (int, float)) else None, "compactPct": None,
                                 "color": (st.get("color") or None), "mode": st.get("mode", ""), "backend": "sdk",
                                 "subagents": st.get("subagents") or []}   # live Task subagents (SDK only) → lane pill
@@ -5164,6 +5165,7 @@ def build_session(sid, now, tmux=None):
                   "apiTooLong": bool(aerr and aerr.get("tooLong")),
                   "backend": _session_backend(sid, tm),
                   "model": tm["model"], "effort": tm["effort"], "mode": tm.get("mode", ""),
+                  "modelPending": bool(tm.get("modelPending")),   # switching-dots on the model badge until the pick lands (the user 2026-07-03)
                   "ctx": str(tm["context"]) if tm["context"] is not None else "",
                   # model name + effort tinted on the GLOBAL colormap by capability/effort rank (the user
                   # 2026-07-02): the statusline meta buttons just apply these (mirrors ctxColor). None = default.
@@ -7158,6 +7160,7 @@ def build_timeline(now, tmux=None, with_bars=True, live_only=False):
             "since": (tm["since"] if tm and tm["since"] else last_t),
             "color": hexcol,
             "model": (tm["model"] if tm else ""), "effort": (tm["effort"] if tm else ""),
+            "modelPending": bool(tm.get("modelPending")) if tm else False,   # switching-dots until the /model pick lands (the user 2026-07-03)
             # model name + effort tinted on the GLOBAL colormap by capability/effort rank (the user 2026-07-02);
             # the lane just applies these, like ctxColor. None → the lane keeps its default gray text.
             "modelColor": _model_color(tm["model"] if tm else "", ctx_stops),

@@ -636,6 +636,14 @@ body { display: flex; flex-direction: column; }
 /* waiting for the TUI to confirm the change (tmux var not republished yet) */
 .meta-pending .meta-label { opacity: 0.5; animation: meta-pulse 1.1s ease-in-out infinite; }
 @keyframes meta-pulse { 50% { opacity: 1; } }
+/* a /model switch resolving: three accent-blue dots IN the badge until the new name lands (the user
+   2026-07-03) — the romp loader dot motif. Overrides the .meta-pending dim so the dots read full-strength. */
+.meta-pending .meta-label:has(.meta-dots) { opacity: 1; animation: none; }
+.meta-dots { display: inline-flex; align-items: center; gap: 3px; }
+.meta-dots i { width: 4px; height: 4px; border-radius: 50%; background: var(--accent); display: inline-block; animation: meta-dots 1s ease-in-out infinite; }
+.meta-dots i:nth-child(2) { animation-delay: 0.16s; }
+.meta-dots i:nth-child(3) { animation-delay: 0.32s; }
+@keyframes meta-dots { 0%, 70%, 100% { opacity: 0.3; } 35% { opacity: 1; } }
 .meta-menu {
   position: fixed; z-index: 60; min-width: 96px;
   background: var(--vscode-editorWidget-background, #252526);

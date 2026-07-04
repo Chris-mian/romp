@@ -105,7 +105,7 @@ type ChatEvent = (
 interface TodoTask { id: string; subject: string; activeForm?: string; status: string }
 
 type ChipState = "working" | "ready" | "awaiting" | "idle" | "closed" | "compacting" | "blocked" | "retrying" | "interrupting";
-interface Status { state: ChipState; sinceEpoch: number | null; effort?: string; model?: string; mode?: string; ctx?: string; ctxColor?: number[]; modelColor?: number[]; effortColor?: number[]; faded?: boolean; backend?: string; apiTooLong?: boolean; }   // backend = "tmux" | "sdk"; apiTooLong = the "blocked" is a "prompt is too long" error (on you → red tab) vs a transient API error (amber/retrying); ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side; modelColor/effortColor = the same map's RGB tint for the model name + effort (by capability/effort rank), server-computed
+interface Status { state: ChipState; sinceEpoch: number | null; effort?: string; model?: string; modelPending?: boolean; mode?: string; ctx?: string; ctxColor?: number[]; modelColor?: number[]; effortColor?: number[]; faded?: boolean; backend?: string; apiTooLong?: boolean; }   // backend = "tmux" | "sdk"; apiTooLong = the "blocked" is a "prompt is too long" error (on you → red tab) vs a transient API error (amber/retrying); ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side; modelColor/effortColor = the same map's RGB tint for the model name + effort (by capability/effort rank), server-computed; modelPending = a /model switch is resolving → the badge shows switching-dots until the new name lands (server-driven, event-based, the user 2026-07-03)
 interface Color { bg: string; fg: string; }
 // A run_in_background task surfaced in the #bg-tasks box (the kernel's _bg_tasks): a one-line summary +
 // status, expandable to the command + its output. status = running | completed | failed.
@@ -4361,6 +4361,17 @@ function isMetaPending(kind: MetaKind, st: Status): boolean {
   return true;
 }
 
+// Three pulsing accent-blue dots shown IN the model badge while a /model switch resolves (the user
+// 2026-07-03) — the romp loader's dot motif, so a wait always reads as "something's happening, it's
+// romp". Cleared the instant syncMetaControls sees modelPending drop and the real name lands.
+function metaDots(): HTMLElement {
+  const d = el("span", "meta-dots");
+  d.appendChild(el("i"));
+  d.appendChild(el("i"));
+  d.appendChild(el("i"));
+  return d;
+}
+
 function metaButton(kind: MetaKind, text: string): HTMLElement {
   const btn = el("span", "meta-btn");
   btn.dataset.kind = kind;
@@ -4400,9 +4411,20 @@ function syncMetaControls(meta: HTMLElement, st: Status) {
     const kind = b.dataset.kind as MetaKind;
     const disp = kind === "mode" ? prettyMode(st.mode) : metaCurrent(kind, st);
     const label = b.querySelector(".meta-label") as HTMLElement | null;
-    if (label && label.textContent !== disp) label.textContent = disp;
-    if (label) label.style.color = metaColor(kind, st);   // tint the model name / effort by the colormap rank
-    b.classList.toggle("meta-pending", isMetaPending(kind, st));
+    // A switching MODEL shows animated dots, not the stale/premature name (the user 2026-07-03): the
+    // server drives it (st.modelPending) — event-based, cleared the instant the new model actually lands —
+    // and the local click heuristic (isMetaPending) covers the sub-second before the first server push.
+    const pending = (kind === "model" && !!st.modelPending) || isMetaPending(kind, st);
+    const showDots = kind === "model" && pending;
+    if (label) {
+      if (showDots) {
+        if (!label.querySelector(".meta-dots")) label.replaceChildren(metaDots());
+      } else if (label.textContent !== disp || label.firstElementChild) {
+        label.textContent = disp;
+      }
+      label.style.color = showDots ? "" : metaColor(kind, st);   // tint the model name / effort by the colormap rank
+    }
+    b.classList.toggle("meta-pending", pending);
   }
 }
 
