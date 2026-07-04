@@ -255,6 +255,17 @@ test("mergeHostBars: per-host bars union — one host's push can't clobber anoth
   assert.deepEqual(Object.keys(single.turns), [U]);
 });
 
+test("mergeHostBars: warming is true if ANY host is still the cold partial (keeps the loader up)", () => {
+  // the user 2026-07-03: on a cold restart the timeline flashed "no romp activity" instead of the romp
+  // loader. The kernel's live-first build is PARTIAL (warming); merged warming must be sticky across hosts
+  // so a warmed local + a still-cold remote keeps the loader until the remote settles.
+  const warm = { type: "bars", turns: { [U]: [{ id: "a" }] }, messages: [], judging: [], nudges: [], now: 50, warming: false };
+  const cold = { type: "bars", turns: {}, messages: [], judging: [], nudges: [], now: 50, warming: true };
+  assert.equal(mergeHostBars({ "": warm, jetty: cold }, ["", "jetty"]).warming, true, "any warming host → keep warming");
+  assert.equal(mergeHostBars({ "": warm }, ["", "jetty"]).warming, false, "all settled → warming clears");
+  assert.equal(mergeHostBars({ "": cold }, [""]).warming, true, "the cold local partial is warming");
+});
+
 test("stitchMessages: a cross-host connector lands on both lanes, recipient's copy wins the timing", () => {
   // laptop session U messaged jetty session V. The LOCAL kernel emitted its one-sided copy (toId = the
   // bare foreign sid — it has no lane for it, no exec); JETTY's kernel emitted its own copy, whose

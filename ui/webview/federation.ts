@@ -311,12 +311,13 @@ export function mergeHostTimelines(perHost: Record<string, any>, hostSeq: readon
 export function mergeHostBars(perHost: Record<string, any>, hostSeq: readonly string[],
                               sessions: readonly any[] = []): any {
   const local = perHost[LOCAL] || {};
-  const merged: any = { ...local, type: "bars", turns: {}, messages: [], judging: [], nudges: [] };
+  const merged: any = { ...local, type: "bars", turns: {}, messages: [], judging: [], nudges: [], warming: false };
   for (const h of hostSeq) {
     const b = perHost[h];
     if (!b) continue;
     if (b.turns && typeof b.turns === "object") Object.assign(merged.turns, b.turns);
     for (const k of ["messages", "judging", "nudges"]) if (Array.isArray(b[k])) merged[k].push(...b[k]);
+    if (b.warming) merged.warming = true;   // still warming if ANY host's build is the cold partial (keep the loader)
   }
   merged.messages = stitchMessages(merged.messages, sessions);
   return merged;

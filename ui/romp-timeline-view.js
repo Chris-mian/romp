@@ -346,6 +346,7 @@ class TimelinePanel {
     // so draw() paints the romp swirl loader there. Set true the instant applyBars runs (or a full one-shot
     // data object arrives through update()), and the loader is gone on the next draw. CLAUDE.md loader rule.
     this._barsLoaded = false;
+    this._loaderBackstop = null;   // timer id: force the loader done if a warming build never brings content
     this.M = { left: 130, right: 16, top: 8, bottom: 22 };   // axis labels live in the bottom margin
     this._mc = document.createElement('canvas').getContext('2d');
 
@@ -1098,11 +1099,25 @@ class TimelinePanel {
   // first. The skeleton always lands first (TCP-ordered on the one socket), so this.data.sessions is set.
   applyBars(m) {
     if (!m || !this.data || !this.data.sessions) return;
-    this._barsLoaded = true;   // the bars payload has landed (even if empty) → drop the loader, show the timeline
     this.data.turns = m.turns || {};
     this.data.judging = m.judging || [];
     this.data.messages = m.messages || [];
     this.data.nudges = m.nudges || [];
+    // Keep the romp loader up through the COLD warm-up rather than flashing "no romp activity" (the user
+    // 2026-07-03: on restart the timeline went straight to the empty message instead of the spinning
+    // logo). The kernel's live-first build is PARTIAL (m.warming) — on a cold connect the SDK backend and
+    // any attached remote may not be merged yet, so it can land with zero lanes/turns. Only a payload with
+    // real content — a live lane or any turn — or a SETTLED (non-warming) build finalizes the load; a
+    // warming-and-empty one leaves _barsLoaded false so draw() keeps showing the loader. A backstop timer
+    // drops it regardless, so a genuinely-empty fleet can never trap the loader (CLAUDE.md loader rule).
+    const hasContent = Object.keys(this.data.turns).some((k) => (this.data.turns[k] || []).length)
+      || (this.data.sessions || []).some((s) => s.live);
+    if (!(m && m.warming) || hasContent) {
+      this._barsLoaded = true;
+      if (this._loaderBackstop != null) { clearTimeout(this._loaderBackstop); this._loaderBackstop = null; }
+    } else {
+      this._armLoaderBackstop();
+    }
     // Adopt m.now only when it is a fresh clock sample — a cached/merged bars payload re-serves an OLDER
     // now, and regressing data.now here walked the axis backward between polls (see isFreshNowSample).
     if (typeof m.now === 'number') {
@@ -2679,6 +2694,17 @@ class TimelinePanel {
     if (show && !this._loaderEl) this._buildLoader();
     if (this._loaderEl) this._loaderEl.style.display = show ? 'flex' : 'none';
     if (this.svg) this.svg.style.display = show ? 'none' : '';
+  }
+  // Backstop so a warming-but-empty timeline can NEVER trap the loader (CLAUDE.md loader rule): if no
+  // real content has landed within the window, force the load done so a genuinely-empty fleet shows its
+  // "no romp activity" message. Armed once per cold warm-up; a real content payload clears _barsLoaded's
+  // gate first and this becomes a no-op.
+  _armLoaderBackstop() {
+    if (this._loaderBackstop != null || this._barsLoaded) return;
+    this._loaderBackstop = setTimeout(() => {
+      this._loaderBackstop = null;
+      if (!this._barsLoaded) { this._barsLoaded = true; this.draw(); }
+    }, 12000);
   }
   _buildLoader() {
     if (!document.getElementById('tl-loader-css')) {

@@ -9,9 +9,11 @@ import * as path from "node:path";
 
 const SRC = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "romp-timeline-view.js"), "utf8");
 
-test("the bars-loaded gate starts false and flips true the moment applyBars runs", () => {
+test("the bars-loaded gate starts false and flips true when applyBars lands real (or settled) content", () => {
   assert.match(SRC, /this\._barsLoaded = false;/);
-  assert.match(SRC, /this\._barsLoaded = true;\s+\/\/ the bars payload has landed/);
+  // the user 2026-07-03: applyBars no longer latches unconditionally — a warming-and-empty cold payload
+  // keeps the loader; content or a settled (non-warming) build finalizes the load.
+  assert.match(SRC, /if \(!\(m && m\.warming\) \|\| hasContent\) \{\s*\n\s*this\._barsLoaded = true;/);
 });
 
 test("a full one-shot data object through update() also marks the bars loaded (test harness / older clients)", () => {
