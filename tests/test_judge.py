@@ -3317,6 +3317,28 @@ class FollowUp(unittest.TestCase):
         self.assertEqual(top["text"], "Rework the export flow")
         self.assertEqual(top["pivotFrom"], gid, "the minted top remembers which card the reply cited")
 
+    def test_pivot_clears_followup_pending_on_a_blocked_cited_goal(self):
+        # the user 2026-07-03: the track card sat in Working with a "Re-judging…" swirl for 8+ hours.
+        # The kernel stamps followupPending at send time (optimistic); the judge then processed the
+        # reply as a PIVOT — which skips _reopen — and rollup's self-heal exists only on the
+        # re-COMPLETED branch while `blocked` outranks the followup-pending branch, so a still-blocked
+        # target kept the flag forever (the kernel's recheck = blocked + followupPending = permanent
+        # swirl). The pivot verdict IS the judge processing the follow-up: it drops the flag itself;
+        # the block stands and the card returns to Needs-You.
+        gid = SID + ":g1"
+        records = [uline(T0, "unrelated: polish the docs <!-- romp-goal-id: %s -->" % gid, "u1", ps="typed"),
+                   aline(T0 + 10, "ok", "a1", "u1", stop="end_turn")]
+        store = self._completed_top(gid, blocked=True)
+        store["nodes"][gid]["followupPending"] = True   # the kernel's optimistic send-time stamp
+        self._setup(records, store)
+        jd.plan_llm = lambda text, menu, human=False, **_kw: '{"ops":[{"why":"a different thread","do":"mint","text":"Polish the docs"}]}'
+        jd.run_plan(now=T0 + 5000)
+        st = jd.load_goals(SID)
+        self.assertNotIn("followupPending", st["nodes"][gid],
+                         "the pivot verdict processed the follow-up — the optimistic flag drops")
+        self.assertEqual(st["status"][gid], "blocked",
+                         "the block stands: back to Needs-You, not a permanent Re-judging swirl")
+
     def test_followup_parse_failure_keeps_the_forced_sub_floor(self):
         # ambiguity never pivots: an unparseable planner reply falls to the forced-sub default, so an
         # accidental cite still files safely under the target (the strong prior holds).

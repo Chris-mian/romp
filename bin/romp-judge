@@ -2403,8 +2403,14 @@ def _plan_session(fsid, path, now):
                                            goal_history=hist, goal_num=gi, followup=True), len(menu)) or []
                 if any(o["do"] == "mint" for o in ops):
                     # PIVOT: the model says this reply starts a new thread — honor its own placement. The
-                    # cited goal is NOT reopened (the kernel's optimistic send-time reopen self-heals: rollup
-                    # re-completes a settled goal and drops followupPending when nothing new lands under it).
+                    # cited goal is NOT reopened, and the pivot itself must drop its followupPending: this
+                    # verdict IS the judge processing the follow-up ("that reply wasn't an answer to this
+                    # goal"), so the optimistic chip is resolved. Rollup can't be relied on to heal it —
+                    # its self-heal exists only on the re-COMPLETED branch, and `blocked` outranks the
+                    # followup-pending branch, so a still-BLOCKED target kept the flag forever: the card
+                    # sat in Working with a permanent "Re-judging…" swirl instead of returning to
+                    # Needs-You (the user 2026-07-03, the track card, 8h+).
+                    store["nodes"].get(followup, {}).pop("followupPending", None)
                     ops = _restrict_retitle([o for o in ops if o["do"] != "skip"], gi)
                     apply_plan(store, seg_id, seg_t, ops, menu, prompt_uuid=trig, quote=vq)
                     pv = store["placements"].get(seg_id)
