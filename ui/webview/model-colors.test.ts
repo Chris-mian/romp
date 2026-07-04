@@ -25,6 +25,6 @@ test("the timeline lane tints the model/effort pieces by rank, keeping hover + r
   assert.match(TL, /const tint = kind === 'model' \? s\.modelColor : s\.effortColor;/);
   assert.match(TL, /const base = \(tint && tint\.length === 3\) \? \('rgb\(' \+ tint\[0\]/);
   // the drawn word starts at the tint, and mouseleave restores to `base` (the tint), not the flat gray
-  assert.match(TL, /el\('text', \{ x: px,[^}]*fill: base/);
+  assert.match(TL, /el\('text', \{ x: sx,[^}]*fill: base/);
   assert.match(TL, /mouseleave', \(\) => \{ if \(dots\) return; wt\.setAttribute\('fill', base\)/);
 });

@@ -131,6 +131,24 @@ test("a compacting lane's badge says Compacting — never a percentage (the user
   assert.ok(!findText(panel.svg, "Compacting 74%"), "…with no percentage riding it");
 });
 
+test("effort words left-justify to ONE fixed column regardless of model-name length (the user 2026-07-03)", () => {
+  const panel: any = new TimelinePanel(makeNode("div"));
+  const data: any = synthData();
+  // two lanes, very different model-name widths, distinct effort words so findText can locate each
+  Object.assign(data.sessions[0], { model: "Haiku", effort: "high" });         // short model
+  Object.assign(data.sessions[1], { model: "Claude Opus 4.8", effort: "xhigh" }); // long model
+  panel.data = data;
+  assert.doesNotThrow(() => panel.draw());
+  const e0 = findText(panel.svg, "high");
+  const e1 = findText(panel.svg, "xhigh");
+  assert.ok(e0 && e1, "both effort words render");
+  // their LEFT x is identical — the effort column, not dangling after each model
+  assert.equal(Number(e0.getAttribute("x")), Number(e1.getAttribute("x")), "efforts share one left x");
+  // and it sits to the RIGHT of the (shared) model column start, so it's a real second column
+  const m0 = findText(panel.svg, "Haiku");
+  assert.ok(Number(e0.getAttribute("x")) > Number(m0.getAttribute("x")), "effort column is right of the model column");
+});
+
 test("a lane resolving a /model switch shows the pulsing dots overlay, not just a dimmed name (the user 2026-07-03)", () => {
   const panel: any = new TimelinePanel(makeNode("div"));
   const data: any = synthData();

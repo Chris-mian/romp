@@ -2003,8 +2003,16 @@ class TimelinePanel {
     // model+effort column: each word is a clickable picker drawn as [model ▾] [effort ▾], so reserve the
     // word + caret widths (+ a gap between the two pickers). Same 11px font as ctx (ctxWidth).
     const META_GAP = 6, caretW = this.ctxWidth(META_CARET);
-    const metaWidth = (s) => { let w = 0; if (s.model) w += this.ctxWidth(s.model) + caretW; if (s.effort) w += (w ? META_GAP : 0) + this.ctxWidth(s.effort) + caretW; return w; };
-    const maxModel = Math.max(0, ...vis.map(metaWidth));
+    // model + effort share the meta column, but the EFFORT is LEFT-JUSTIFIED to a FIXED sub-column x (the
+    // user 2026-07-03): every effort word starts at the SAME offset regardless of its lane's model-name length,
+    // so "high"/"xhigh"/… line up as a column instead of dangling right after each model. Reserve the widest
+    // model PIECE (name + caret) and the widest effort PIECE (word + caret) independently.
+    const modelPieceW = (s) => (s.model ? this.ctxWidth(s.model) + caretW : 0);
+    const effortPieceW = (s) => (s.effort ? this.ctxWidth(s.effort) + caretW : 0);
+    const maxModelPiece = Math.max(0, ...vis.map(modelPieceW));
+    const maxEffortPiece = Math.max(0, ...vis.map(effortPieceW));
+    const effortGap = maxEffortPiece > 0 ? META_GAP : 0;
+    const maxModel = Math.ceil(maxModelPiece) + effortGap + Math.ceil(maxEffortPiece);   // whole meta column width
     const maxChip = Math.max(0, ...visB.map((b) => (b ? this.badgeWidth(b.label) + 12 : 0)));
     const maxCtx = (visC.some((c) => c) || vis.some((s) => compactingNow(s))) ? BAT_W : 0;   // ctx column = battery bar
     // gear column: a per-session settings gear between the name and the model, on LIVE lanes (the user
@@ -2014,6 +2022,7 @@ class TimelinePanel {
     const eyeColX = PADL + Math.ceil(maxName) + COLGAP;                              // [name] [✓feed] [📫postal] [model+effort] [chip] [ctx]
     const mailColX = eyeColX + (anyLive ? EYE_W + EYE_GAP : 0);                      // postal-isolation mailbox, just right of the feed checkbox
     const modelColX = mailColX + (anyLive ? EYE_W + EYE_GAP : 0);
+    const effortColX = modelColX + Math.ceil(maxModelPiece) + effortGap;   // fixed left edge for EVERY lane's effort word
     const chipColX = modelColX + (maxModel > 0 ? Math.ceil(maxModel) + COLGAP : 0);
     const ctxColX = chipColX + (maxChip > 0 ? Math.ceil(maxChip) + COLGAP : 0);
     M.left = ctxColX + (maxCtx > 0 ? Math.ceil(maxCtx) + COLGAP : 4);
@@ -2374,9 +2383,15 @@ class TimelinePanel {
       // pick injects /model or /effort into that pane. Dead/historical lanes render it as static text.
       if (s.model || s.effort) {   // a freshly-launched SDK lane has no model for a few seconds, but effort is always known
         if (!s.live) {
-          const mt = el('text', { x: modelColX, y: y + 3.5, 'text-anchor': 'start', 'font-size': 11, 'font-weight': 600, fill: F(MODEL_FG), 'pointer-events': 'none' });
-          mt.textContent = modelLabel(s); svg.appendChild(mt);
-          if (s.faded) fadedEls.push({ el: mt, full: MODEL_FG, faded: F(MODEL_FG) });
+          // static text (no picker), but STILL split model @ modelColX / effort @ effortColX so a dead lane's
+          // effort lines up in the same column as the live lanes' (the user 2026-07-03).
+          const staticPiece = (word, sx) => {
+            const mt = el('text', { x: sx, y: y + 3.5, 'text-anchor': 'start', 'font-size': 11, 'font-weight': 600, fill: F(MODEL_FG), 'pointer-events': 'none' });
+            mt.textContent = word; svg.appendChild(mt);
+            if (s.faded) fadedEls.push({ el: mt, full: MODEL_FG, faded: F(MODEL_FG) });
+          };
+          if (s.model) staticPiece(s.model, modelColX);
+          if (s.effort) staticPiece(s.effort, effortColX);
         } else {
           const pendingOf = (kind) => {
             // A /model switch is server-driven now (kernel modelPending): show the pending cue until the NEW
@@ -2388,8 +2403,7 @@ class TimelinePanel {
             if (cur !== p.was || nowMs > p.until) { delete this._metaPending[s.id + ':' + kind]; return false; }
             return true;
           };
-          let px = modelColX;
-          const drawPiece = (kind, word) => {
+          const drawPiece = (kind, word, sx) => {
             const pend = pendingOf(kind), ww = this.ctxWidth(word);
             // A switching MODEL shows the pulsing accent-blue dots (the chat badge's .meta-dots motif) in place
             // of the stale name, rather than just dimming it (the user 2026-07-03). The name <text> stays (fully
@@ -2400,20 +2414,20 @@ class TimelinePanel {
             // hover still brightens to META_HOVER_FG — mouseleave restores the TINT, not the gray.
             const tint = kind === 'model' ? s.modelColor : s.effortColor;
             const base = (tint && tint.length === 3) ? ('rgb(' + tint[0] + ',' + tint[1] + ',' + tint[2] + ')') : MODEL_FG;
-            const wt = el('text', { x: px, y: y + 3.5, 'text-anchor': 'start', 'font-size': 11, 'font-weight': 600, fill: base, 'pointer-events': 'auto' });
+            const wt = el('text', { x: sx, y: y + 3.5, 'text-anchor': 'start', 'font-size': 11, 'font-weight': 600, fill: base, 'pointer-events': 'auto' });
             wt.textContent = word; wt.style.cursor = 'pointer';
             if (dots) wt.setAttribute('opacity', '0'); else if (pend) wt.setAttribute('opacity', '0.45');
             svg.appendChild(wt);
-            const ct = el('text', { x: px + ww, y: y + 3.5, 'text-anchor': 'start', 'font-size': 11, 'font-weight': 600, fill: MODEL_FG, opacity: (pend && !dots) ? '0.45' : '0', 'pointer-events': 'none' });
+            const ct = el('text', { x: sx + ww, y: y + 3.5, 'text-anchor': 'start', 'font-size': 11, 'font-weight': 600, fill: MODEL_FG, opacity: (pend && !dots) ? '0.45' : '0', 'pointer-events': 'none' });
             ct.textContent = META_CARET; svg.appendChild(ct);
             wt.addEventListener('mouseenter', () => { if (dots) return; wt.setAttribute('fill', META_HOVER_FG); ct.setAttribute('fill', META_HOVER_FG); ct.setAttribute('opacity', '1'); });
             wt.addEventListener('mouseleave', () => { if (dots) return; wt.setAttribute('fill', base); ct.setAttribute('fill', MODEL_FG); ct.setAttribute('opacity', pendingOf(kind) ? '0.45' : '0'); });
             wt.addEventListener('click', (e) => { e.stopPropagation(); this._openMetaMenu(kind, s, wt); });
-            if (dots) { this._positionMetaDots(s.id, px, y); metaSeen.add(s.id); }
-            px += ww + caretW;
+            if (dots) { this._positionMetaDots(s.id, sx, y); metaSeen.add(s.id); }
           };
-          if (s.model) drawPiece('model', s.model);
-          if (s.effort) { if (s.model) px += META_GAP; drawPiece('effort', s.effort); }
+          // model @ its column, effort @ the FIXED effort column — so efforts line up across lanes
+          if (s.model) drawPiece('model', s.model, modelColX);
+          if (s.effort) drawPiece('effort', s.effort, effortColX);
         }
       }
       const bdg = visB[i];
