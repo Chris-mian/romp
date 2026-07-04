@@ -997,6 +997,12 @@ def _auto_resume_retry(now, tmux):
             _set_retry_paused(False)
             sys.stderr.write("retry-pause: auto-cleared — session %s recovered → judges + auto-retry resume\n"
                              % s.get("sid", "?"))
+            try:                                         # recovery edge → re-arm cards the judges gave up on
+                rearmed = jd.rearm_failed_summaries(now)  # while degraded, so their summaries/briefs retry now
+                if rearmed:
+                    sys.stderr.write("distiller: re-armed %d given-up card(s) after recovery\n" % rearmed)
+            except Exception:
+                sys.stderr.write("rearm-failed-summaries: %s\n" % traceback.format_exc())
             _push_all()                                  # globalRetryPaused=false reaches the UI immediately
             return
 
@@ -6385,6 +6391,40 @@ def _usage():
             "limited": limited if any(limited.values()) else None}
 
 
+_jf_cache = {"fp": None, "val": None}                 # judge-failure scan, mtime-fingerprinted over the goals dir
+
+
+def _judge_failures():
+    """Fleet-wide give-up count + cause for the top banner (the user 2026-07-03), or None. mtime-fingerprint
+    cached over goals/*.json (the scan reads every store): an idle poll costs one stat per store, not a parse.
+    A give-up stamps a "*-failed" warn; jd.judge_failure_scan() counts them and names the cause."""
+    try:
+        gd = jd.GOALDIR
+        fp = tuple(sorted((p.name, int(p.stat().st_mtime)) for p in gd.glob("*.json"))) if gd.exists() else ()
+    except Exception:
+        fp = None
+    if fp is not None and _jf_cache["fp"] == fp:
+        return _jf_cache["val"]
+    try:
+        val = jd.judge_failure_scan()
+    except Exception:
+        val = None
+    _jf_cache["fp"], _jf_cache["val"] = fp, val
+    return val
+
+
+def _usage_for_client():
+    """_usage() plus a `judgeFailures` key when the judges are failing — rides the SAME payload the timeline
+    forwards to the shell's usage renderer, so the judge-failure banner is driven exactly like the usage-limit
+    one (no extra wire/handler). Kept out of _usage() itself (which is the pure rate-limit reading)."""
+    u = _usage()
+    jf = _judge_failures()
+    if jf:
+        u = dict(u or {})
+        u["judgeFailures"] = jf
+    return u
+
+
 _msg_sum_cache = {}                               # {"per": {sid: (mtime, submap)}, "map": union {mid: caption}}
 
 
@@ -7392,7 +7432,7 @@ def build_timeline(now, tmux=None, with_bars=True, live_only=False):
     return {"type": "timeline", "now": now, "sessions": sessions, "turns": turns,
             "messages": messages, "judging": judging, "nudges": nudges, "tokens": [],
             "cmapGrad": cmap_grad,
-            "activeChat": None, "focus": None, "hover": None, "usage": _usage()}
+            "activeChat": None, "focus": None, "hover": None, "usage": _usage_for_client()}
 
 
 # ───────────────────────── WebSocket (stdlib, hand-rolled) ─────────────────────────
@@ -9116,7 +9156,23 @@ function _limGet(){try{return localStorage.getItem('romp:limitDismiss')||'';}cat
 function _limPut(v){try{if(v){localStorage.setItem('romp:limitDismiss',v);}else{localStorage.removeItem('romp:limitDismiss');}}catch(e){}}
 (function(){var lb=document.getElementById('romp-limit');if(!lb)return;var x=lb.querySelector('.rl-x');
 if(x){x.addEventListener('click',function(e){e.stopPropagation();_limPut(_limSig);lb.classList.remove('show');});}})();
+var _jdSig='';
+function _jdGet(){try{return localStorage.getItem('romp:judgeDegradedDismiss')||'';}catch(e){return '';}}
+function _jdPut(v){try{if(v){localStorage.setItem('romp:judgeDegradedDismiss',v);}else{localStorage.removeItem('romp:judgeDegradedDismiss');}}catch(e){}}
+(function(){var jb=document.getElementById('romp-judge-degraded');if(!jb)return;var x=jb.querySelector('.rl-x');
+if(x){x.addEventListener('click',function(e){e.stopPropagation();_jdPut(_jdSig);jb.classList.remove('show');});}})();
 function render(u){
+// JUDGE-FAILURE BANNER (the user 2026-07-03): surface at the top when the distiller/brief GAVE UP on cards
+// (kernel `judgeFailures` on the usage payload, count + cause) — like the usage-limit banner, and stacked
+// under it. Names the cause; dismissal is keyed to the count+cause SIGNATURE so a changed situation re-shows.
+// Per-card what-happened detail lives in that card's yellow warning chip → modal.
+var jb=document.getElementById('romp-judge-degraded');
+if(jb){var jf=u&&u.judgeFailures,jon=!!(jf&&jf.count>0);
+var jsig=jon?(jf.count+'|'+(jf.cause||'')):'';
+_jdSig=jsig;if(!jon){_jdPut('');}   // nothing failing → forget any dismissal so a future failure shows again
+var jshow=jon&&jsig!==_jdGet();jb.classList.toggle('show',jshow);
+if(jshow){var jmsg=jb.querySelector('.rl-msg');if(jmsg){var nc=jf.count,noun=(nc===1?'card':'cards');
+jmsg.textContent=nc+' '+noun+" couldn't be summarized — "+(jf.cause||'the summarizer hit errors')+'. Open a flagged card for what happened.';}}}
 // LIMIT BANNER (the user 2026-07-01): a top banner whenever a usage window is maxed (kernel `limited`), like
 // the disconnected one. Says which window + that retries are paused (the kernel auto-engages the retry-pause).
 var lb=document.getElementById('romp-limit');
@@ -9648,10 +9704,22 @@ def _landing():
             "#romp-limit .rl-dot{width:8px;height:8px;border-radius:50%;background:#e0a030;flex:0 0 auto}"
             "#romp-limit .rl-x{cursor:pointer;margin-left:6px;opacity:.6;font-weight:700;font-size:14px;line-height:1;flex:0 0 auto}"
             "#romp-limit .rl-x:hover{opacity:1}"
+            # JUDGE-FAILURE banner (the user 2026-07-03): same look as the usage-limit one, stacked below it
+            "#romp-judge-degraded{position:fixed;top:0;left:50%;transform:translateX(-50%);z-index:9998;display:none;"
+            "align-items:center;gap:8px;background:#3a2f16;color:#ffe6b3;border:1px solid #7a5f24;border-top:none;"
+            "border-radius:0 0 9px 9px;padding:5px 15px;font-size:12.5px;font-family:var(--vscode-font-family);"
+            "box-shadow:0 3px 12px rgba(0,0,0,.45)}#romp-judge-degraded.show{display:flex}"
+            "#romp-offline.show ~ #romp-judge-degraded.show{top:34px}"      # offline above → drop one row
+            "#romp-limit.show ~ #romp-judge-degraded.show{top:34px}"        # limit above → drop one row
+            "#romp-offline.show ~ #romp-limit.show ~ #romp-judge-degraded.show{top:68px}"   # both above → drop two
+            "#romp-judge-degraded .rl-dot{width:8px;height:8px;border-radius:50%;background:#e0a030;flex:0 0 auto}"
+            "#romp-judge-degraded .rl-x{cursor:pointer;margin-left:6px;opacity:.6;font-weight:700;font-size:14px;line-height:1;flex:0 0 auto}"
+            "#romp-judge-degraded .rl-x:hover{opacity:1}"
             "</style></head><body class='po-chat po-feed po-timeline'>"
             "<div id=romp-boot>" + _loader_inner() + "</div>"
             "<div id=romp-offline><span class=ro-dot></span><span>Disconnected — reconnecting…</span></div>"
             "<div id=romp-limit><span class=rl-dot></span><span class=rl-msg>Usage limit reached — retries paused until it resets</span><span class=rl-x title='Dismiss until the limit changes'>×</span></div>"
+            "<div id=romp-judge-degraded><span class=rl-dot></span><span class=rl-msg>Some cards couldn't be summarized</span><span class=rl-x title='Dismiss until this changes'>×</span></div>"
             "<div class=col>"
             "<div class=row>"
             # far-left rail (the user 2026-06-26/27): a SCROLLABLE top group (.rail-scroll) — Chat / Fleet / Feed
