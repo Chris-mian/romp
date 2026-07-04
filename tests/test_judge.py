@@ -2251,6 +2251,32 @@ class OptimisticFollowupStub(unittest.TestCase):
         self.assertEqual([n for n in st["nodes"].values() if n.get("parentId") == gid], [],
                          "a nudge reopens but plants NO stub (the planner resolves it instead)")
 
+    def _blocked_top(self):
+        # a BLOCKED goal whose last activity (mt) is OLD, so build_feed would otherwise sort its card by that
+        # stale time and float it to the top of Working when a follow-up reopens it.
+        gid = SID + ":g1"
+        jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "placements": {}, "status": {gid: "blocked"},
+                            "nodes": {gid: {"id": gid, "text": "Ship it", "parentId": None,
+                                            "nodeComplete": False, "blocked": True, "cleared": False,
+                                            "trail": [], "t": T0, "mt": T0 + 10}}})
+        return gid
+
+    def test_followup_stamps_followupAt_so_the_card_sorts_to_the_bottom(self):
+        # The optimistic move must record WHEN it entered Working (followupAt = now), so build_feed floors the
+        # card's disp_t to now and it lands at the BOTTOM of the column instead of the top on its stale mt,
+        # then lurching down when the real work re-files (the user 2026-07-03).
+        gid = self._blocked_top()
+        jd.optimistic_followup(SID, gid, text="keep going", now=T0 + 500, stub=True)
+        nd = jd.load_goals(SID)["nodes"][gid]
+        self.assertEqual(nd.get("followupAt"), T0 + 500, "followupAt is stamped to now at the optimistic flip")
+        self.assertGreater(nd["followupAt"], nd["mt"], "and it is fresher than the stale blocked-era mt")
+
+    def test_followup_without_now_leaves_followupAt_unset(self):
+        # now=None (a caller with no clock) must not crash or stamp a bogus 0 — the feed floor is a no-op then.
+        gid = self._blocked_top()
+        jd.optimistic_followup(SID, gid, text="keep going", now=None, stub=False)
+        self.assertNotIn("followupAt", jd.load_goals(SID)["nodes"][gid])
+
 
 class DelegationPropagation(unittest.TestCase):
     """DETERMINISTIC delegation completion link-back (the user 2026-06-22): the courier mints a precise

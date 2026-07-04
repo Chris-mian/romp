@@ -26,6 +26,14 @@ test("a predicted card is kept in Working at render, styled like the kernel's re
   assert.match(FEED, /function render\(\) \{\s*\n\s*const list = document\.getElementById\("feed-list"\)!;\s*\n\s*applyFollowMove\(asks\);/);
 });
 
+test("the optimistic move also bumps the card's sort key to now so it lands at the BOTTOM of Working, not the top", () => {
+  // the top→bottom lurch (the user 2026-07-03): the moved card kept its stale blocked-era .t and sorted to
+  // the TOP, then the real work re-filed at ≈now dropped it to the bottom. Stamp now so it's at the bottom
+  // from the instant of the flip; the kernel's followupAt keeps it there when this prediction clears.
+  assert.match(FEED, /const nowSec = Math\.floor\(Date\.now\(\) \/ 1000\);/);
+  assert.match(FEED, /if \(a\.t < nowSec\) a\.t = nowSec;/);
+});
+
 test("the kernel is authoritative: a confirming push clears the prediction, an unconfirmed one is left predicting", () => {
   // reconcile runs against the authoritative incoming payload on every feed push
   assert.match(FEED, /reconcileFollowMove\(incomingAsks\);/);

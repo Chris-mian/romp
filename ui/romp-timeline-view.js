@@ -672,6 +672,14 @@ class TimelinePanel {
       if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) this.hideTip();
     };
     this.wrap.addEventListener('mousemove', this._onTipSweep);
+
+    // Show the romp loader FROM CONSTRUCTION (the user 2026-07-03: "nothing appears in the timeline as it's
+    // starting up, I don't get the ROMP logo with the spinning things"). draw() otherwise bails at its top on
+    // null data (`if (!data...) return`) — so between the iframe (re)loading on a kernel restart and the first
+    // {type:"data"} skeleton arriving, the pane was BLANK, no loader at all. The loader now goes up at once and
+    // draw() clears it once the bars land; _armLoaderBackstop guards a never-arriving payload (CLAUDE.md).
+    this._showLoader(true);
+    this._armLoaderBackstop();
   }
 
   destroy() {

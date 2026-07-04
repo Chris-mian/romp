@@ -452,6 +452,57 @@ class ViewBuilder(unittest.TestCase):
         self.assertFalse(any(a["sid"] == SID for a in km.build_feed(NOW)["asks"]),
                          "un-muting does NOT resurface the view-cleared goal — it stays sealed")
 
+    def test_followupAt_floors_a_working_cards_sort_time_to_now(self):
+        """A follow-up optimistically moved a card into Working; optimistic_followup stamped followupAt=now.
+        build_feed must floor the card's disp_t (`t`) to that, so it sorts to the BOTTOM of the column right
+        away instead of on its stale blocked-era mt (the top→bottom lurch, the user 2026-07-03)."""
+        top = SID + ":g1"
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+            "rompUuid": SID, "seq": 1, "lastNode": top,
+            "nodes": {top: {"id": top, "text": "ship it", "parentId": None, "nodeComplete": False,
+                            "blocked": False, "cleared": False, "trail": [], "t": T0, "mt": T0 + 10,
+                            "followupPending": True, "followupAt": NOW}},
+            "placements": {}, "status": {top: "working"}}))
+        card = next(a for a in km.build_feed(NOW)["asks"] if a["sid"] == SID)
+        self.assertEqual(card["column"], "working", "the followed-up card is in Working")
+        self.assertEqual(card["t"], NOW, "its sort time is floored to followupAt (now), not the stale mt")
+        self.assertGreater(card["t"], T0 + 10, "so it sorts BELOW cards whose real activity is older")
+
+    def test_working_card_without_followupAt_keeps_its_activity_time(self):
+        # no regression for the normal case: a working card with no follow-up stamp still sorts by its real
+        # last activity (subtree-max mt), NOT bumped to now.
+        top = SID + ":g1"
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+            "rompUuid": SID, "seq": 1, "lastNode": top,
+            "nodes": {top: {"id": top, "text": "ship it", "parentId": None, "nodeComplete": False,
+                            "blocked": False, "cleared": False, "trail": [], "t": T0, "mt": T0 + 10}},
+            "placements": {}, "status": {top: "working"}}))
+        card = next(a for a in km.build_feed(NOW)["asks"] if a["sid"] == SID)
+        self.assertEqual(card["t"], T0 + 10, "an un-followed-up working card sorts by real activity, not now")
+
+    def test_hydrate_postal_scans_summaries_lazily_only_when_a_card_needs_a_caption(self):
+        """Startup speed (the user 2026-07-03): _msg_summaries re-parses the WHOLE fleet (~2s cold), so
+        _hydrate_postal must NOT call it for a session with no incoming postal cards — only when it actually
+        has one to caption. Otherwise every first-built tab pays the whole-fleet scan."""
+        calls = [0]
+        saved = km._msg_summaries
+        km._msg_summaries = lambda: (calls.__setitem__(0, calls[0] + 1) or {"m9": "hi there"})
+        try:
+            # no postal traffic → the scan is never triggered
+            plain = [{"kind": "user", "md": "just a normal message", "ts": T0, "uuid": "u1"}]
+            out = km._hydrate_postal(plain, {})
+            self.assertEqual(calls[0], 0, "no incoming postal card → the whole-fleet scan is skipped")
+            self.assertEqual(out, plain, "non-postal events pass through unchanged")
+            # an incoming postal marker → the scan runs ONCE and its caption lands on the card
+            inc = [{"kind": "user", "md": "romp-msg-id: m9", "ts": T0, "uuid": "u2"}]
+            idx = {"m9": {"from": "peer", "fromId": None, "body": "the full body", "id": "m9",
+                          "t": T0, "park": None}}
+            cards = km._hydrate_postal(inc, idx)
+            self.assertEqual(calls[0], 1, "the scan runs exactly once, only now that a caption is needed")
+            self.assertEqual(cards[0]["summary"], "hi there", "the lazy caption still reaches the card")
+        finally:
+            km._msg_summaries = saved
+
     def test_unmuting_fast_forwards_the_planner_so_it_does_not_backfill(self):
         # the user 2026-06-25: re-enabling task tracking must NOT retro-create a burst of goals for the work
         # that happened while muted. Unmuting calls jd.fast_forward_placements (seals the gap); muting must not.

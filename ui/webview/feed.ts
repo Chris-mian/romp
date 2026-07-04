@@ -190,8 +190,13 @@ function reconcileFollowMove(incoming: AskItem[]) {
 // follow-up (recheck + followupPending), so the optimistic card matches the authoritative one with no jump.
 function applyFollowMove(list: AskItem[]) {
   if (!pendingFollowMove.size) return;
+  // now, in the server's epoch-second unit (kernel is local). Bump the predicted card's sort key to now so
+  // the INSTANT optimistic move lands at the BOTTOM of Working, matching where the kernel's authoritative
+  // followupAt stamp keeps it once this prediction clears — no top-flash then lurch-down (the user 2026-07-03).
+  const nowSec = Math.floor(Date.now() / 1000);
   for (const a of list) if (pendingFollowMove.has(a.itemId) && a.column !== "working") {
     a.column = "working"; a.recheck = true; a.followupPending = true;
+    if (a.t < nowSec) a.t = nowSec;   // sort to the bottom (newest); the group's repr follows via buildGroup
   }
 }
 // Group cards keyed by turnId, stored under "g:"+turnId. The focus state

@@ -33,9 +33,15 @@ test("makePlaceholderTab draws name + identity color, non-interactive (no data-a
   assert.doesNotMatch(fn, /dataset\.act/);
 });
 
-test("the placeholder has a loading pulse and is non-interactive in CSS", () => {
-  assert.match(CSS, /\.tab\.tab-placeholder \{ cursor: default; animation: tab-ph-pulse/);
-  assert.match(CSS, /@keyframes tab-ph-pulse/);
+test("the placeholder shows the mini romp swirl loader (not a whole-tab opacity pulse) and is non-interactive", () => {
+  // the user 2026-07-03: a still-building tab shows the spinning romp swirl glyph — the loader motif — rather
+  // than the old .tab-ph-pulse opacity breathing on the whole tab.
+  assert.match(RENDER, /swirl\.src = "\/media\/romp-swirl-glyph\.svg"/);
+  assert.match(RENDER, /tab\.appendChild\(swirl\);/);
+  assert.match(CSS, /\.tab\.tab-placeholder \{ cursor: default; \}/);
+  assert.match(CSS, /\.tab-ph-swirl \{[\s\S]*?animation: tab-ph-swirl-spin/);
+  assert.match(CSS, /@keyframes tab-ph-swirl-spin \{ to \{ transform: rotate\(-360deg\); \} \}/);
+  assert.doesNotMatch(CSS, /tab-ph-pulse/, "the whole-tab opacity pulse is gone");
 });
 
 test("no white focus ring on tabs: .tab suppresses the UA outline and nothing re-adds a solid one", () => {

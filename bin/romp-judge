@@ -2118,6 +2118,12 @@ def optimistic_followup(fsid, gid, text="", now=None, stub=False):
         return False
     _reopen(store, gid, by="optimistic")               # unseal + unblock (also clears any stale followupPending)
     store["nodes"][gid]["followupPending"] = True      # → rollup shows working + the feed shows the chip
+    if now is not None:
+        # Stamp when this card OPTIMISTICALLY entered Working, so the feed sorts it to the BOTTOM of the
+        # column at once (build_feed floors disp_t to followupAt for a working card) instead of leaving it
+        # at the top on its stale blocked-era mt and lurching it down when the real work re-files (the user
+        # 2026-07-03). Mirrors the Completed column's settledAt "entered-this-column-at" stamp.
+        store["nodes"][gid]["followupAt"] = now
     if stub:
         seq = store.get("seq", 0) + 1; store["seq"] = seq
         sid = "%s:fu%d" % (fsid, seq)                  # the provisional follow-up stub (planner replaces it)
