@@ -943,19 +943,31 @@ def _retry_pause_ts():
 
 
 def _auto_pause_on_limit():
-    """Hitting a usage limit (5h Session or 7d Weekly at 100%) auto-engages the global retry-pause (the user
-    2026-07-01): retrying into a rate-limited account just burns failed requests, so stop the auto-retry AND
-    the judges (both gate on this flag) until the window resets. _auto_resume_retry clears it the moment a
-    session serves a request again — which, while the account is genuinely limited, can't happen, so the pause
-    holds exactly as long as the limit does. Idempotent: only writes when it isn't already paused."""
+    """Hitting an ACCOUNT-WIDE usage limit (5h Session or 7d Weekly at 100%) auto-engages the global retry-pause
+    (the user 2026-07-01): retrying into a rate-limited account just burns failed requests, so stop the
+    auto-retry AND the judges (both gate on this flag) until the window resets. _auto_resume_retry clears it the
+    moment a session serves a request again — which, while the account is genuinely limited, can't happen, so
+    the pause holds exactly as long as the limit does. Idempotent: only writes when it isn't already paused.
+
+    Fable-5 is DELIBERATELY excluded (the user 2026-07-03): its window is MODEL-scoped (the included Fable-5
+    weekly allowance), not account-wide, so exhausting it does NOT stop the account from serving the models romp
+    actually uses — the judges run on Sonnet/Haiku and most sessions on Opus. Treating fable=100% as a global
+    pause was pathological: because the account keeps serving requests, _auto_resume_retry cleared the pause the
+    very next tick (a live session's fresh output = "recovered"), then this re-engaged it — a continuous flap
+    (262 cycles observed) that gated the judges on/off every 0.5s and STARVED the distiller (cards stuck
+    'distilling', no background/summary). A Fable-only session that hits the wall is surfaced per-session
+    (api-error → blocked), which is where a model-scoped limit belongs. fable=100% still lights the banner + the
+    rail's third bar (see _usage().limited); it just no longer pauses anything."""
     try:
         u = _usage()
     except Exception:
         return
-    if u and u.get("limited") and not _retry_paused_on():
+    lim = (u or {}).get("limited") or {}
+    account = [k for k, v in lim.items() if v and k != "fable"]     # 5h / 7d only — fable is model-scoped
+    if account and not _retry_paused_on():
         _set_retry_paused(True)
         sys.stderr.write("retry-pause: auto-engaged — usage limit reached (%s) → auto-retry + judges paused until reset\n"
-                         % ",".join(k for k, v in u["limited"].items() if v))
+                         % ",".join(account))
         _push_all()
 
 

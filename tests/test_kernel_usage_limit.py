@@ -55,8 +55,9 @@ class UsageLimitSignal(unittest.TestCase):
         self.assertIsNone(km._usage()["limited"], "below 100% → no limit")
 
     def test_a_maxed_fable_window_is_flagged_limited(self):
-        # the included Fable 5 weekly allowance (the user 2026-07-02) is a limit like the others: at 100%
-        # it flags limited (banner + retry-pause), and the rail's third bar shows it
+        # the included Fable 5 weekly allowance (the user 2026-07-02) still flags `limited` at 100% so the
+        # banner + the rail's third bar light up — but, unlike 5h/7d, it does NOT engage the retry-pause
+        # (the user 2026-07-03; see AutoPauseOnLimit), because it's a MODEL-scoped limit, not account-wide
         self._write(10, 20, fable_pct=100)
         self.assertEqual(km._usage()["limited"], {"fiveHour": False, "sevenDay": False, "fable": True})
 
@@ -91,6 +92,21 @@ class AutoPauseOnLimit(unittest.TestCase):
         km._usage = lambda: {"limited": None}
         km._auto_pause_on_limit()
         self.assertFalse(km._retry_paused_on(), "under the limit → retries keep running")
+
+    def test_a_fable_only_limit_does_not_engage_the_pause(self):
+        # Fable-5 is MODEL-scoped (the user 2026-07-03): exhausting it doesn't stop the account from serving
+        # Sonnet/Haiku (the judges) or Opus (sessions), so it must NOT engage the global pause. Doing so
+        # flapped the judges — the account kept serving requests, so _auto_resume_retry cleared the pause each
+        # tick and this re-engaged it, starving the distiller. fable=100% still lights the banner (above).
+        km._usage = lambda: {"limited": {"fiveHour": False, "sevenDay": False, "fable": True}}
+        km._auto_pause_on_limit()
+        self.assertFalse(km._retry_paused_on(), "a model-scoped Fable limit must not pause the judges")
+
+    def test_an_account_limit_still_engages_even_alongside_fable(self):
+        # a genuine account-wide limit (5h/7d) engages regardless of the fable window's state
+        km._usage = lambda: {"limited": {"fiveHour": True, "sevenDay": False, "fable": True}}
+        km._auto_pause_on_limit()
+        self.assertTrue(km._retry_paused_on(), "a real 5h/7d limit still engages the pause")
 
 
 class LimitBannerWiring(unittest.TestCase):
