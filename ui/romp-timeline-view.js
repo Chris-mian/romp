@@ -130,6 +130,17 @@ function shouldReanchorEdge(baseSec, baseMs, nowMs, dataNow, live, wasLive) {
   return Math.abs(dataNow - displayed) > REANCHOR_SEC;
 }
 
+// Is `incoming` a genuinely NEW clock sample — newer than the newest data.now seen this page-lifetime?
+// A single kernel's clock never runs backward within a page lifetime, so a non-increasing data.now is
+// definitionally a RE-EMISSION of an older payload, not time: federation re-emits the STORED local
+// payload whenever a REMOTE host pushes (its `now` is up to a push interval old), and _cached_timeline
+// re-serves the `now` baked at build time. Anchoring the live edge on those made the axis snap backward
+// on every remote push and forward on every local one — the "jumps forward and then keeps going
+// backwards" oscillation (the user 2026-07-03, first remote host attached). Pure + exported for tests.
+function isFreshNowSample(newestSeen, incoming) {
+  return typeof incoming === 'number' && (newestSeen == null || incoming > newestSeen);
+}
+
 // Right edge a work bar is DRAWN to. An OPEN ("still working") bar has its `end` baked to data.now at
 // emit, so between polls it would sit at the stale now while the axis glides past — then jump forward on
 // the next re-emit (the user saw this 2026-06-13). So draw an open bar to the interpolated live edge
@@ -384,6 +395,12 @@ class TimelinePanel {
     // edge would actually move). Re-armed each poll; self-stops when not live.
     this._nowBaseSec = null; this._nowBaseMs = null; this._wasLive = false;
     this._liveRAF = null; this._lastLiveNow = null;
+    // Newest data.now sample ever seen this page-lifetime (see isFreshNowSample): a push carrying an
+    // OLDER now is a RE-EMISSION — federation re-emits the STORED local payload whenever a remote host
+    // pushes, and _cached_timeline re-serves its build-time now — never a fresh clock sample, so it must
+    // not move the live edge (the user 2026-07-03: the timeline "jumps forward and then keeps going
+    // backwards" the moment a remote host is attached).
+    this._newestNow = null;
 
     this.wrap = host.createDiv({ cls: 'romp-tl-wrap' });
     this.svg = document.createElementNS(SVGNS, 'svg');
@@ -1022,8 +1039,15 @@ class TimelinePanel {
     this._signalReady();             // first lanes are about to paint → let the shell drop the boot splash
     // Live-edge baseline: free-run off a FIXED anchor and re-snap only on a genuine step, so the few-ms
     // poll-arrival jitter no longer hiccups the gliding edge ~1-2px (the user 2026-06-15). See shouldReanchorEdge.
+    // A RE-EMITTED payload (older data.now — see isFreshNowSample) is clamped to the newest sample and,
+    // while continuously live-following, may NOT re-anchor: only a new clock sample moves the edge. Held
+    // or (re)entering live still adopts the clamped now (jump-free — `off` cancels it / first anchor).
+    const _freshNow = isFreshNowSample(this._newestNow, data.now);
+    if (_freshNow) this._newestNow = data.now;
+    else if (this._newestNow != null) data.now = this._newestNow;
     const _live = this._liveFollowing(), _tMs = perfNow();
-    if (shouldReanchorEdge(this._nowBaseSec, this._nowBaseMs, _tMs, data.now, _live, this._wasLive)) {
+    if ((_freshNow || this._nowBaseSec == null || !(_live && this._wasLive))
+        && shouldReanchorEdge(this._nowBaseSec, this._nowBaseMs, _tMs, data.now, _live, this._wasLive)) {
       this._nowBaseSec = data.now; this._nowBaseMs = _tMs;   // monotonic ms when this data.now was observed
     }
     this._wasLive = _live;
@@ -1079,7 +1103,12 @@ class TimelinePanel {
     this.data.judging = m.judging || [];
     this.data.messages = m.messages || [];
     this.data.nudges = m.nudges || [];
-    if (typeof m.now === 'number') this.data.now = m.now;
+    // Adopt m.now only when it is a fresh clock sample — a cached/merged bars payload re-serves an OLDER
+    // now, and regressing data.now here walked the axis backward between polls (see isFreshNowSample).
+    if (typeof m.now === 'number') {
+      if (isFreshNowSample(this._newestNow, m.now)) this._newestNow = m.now;
+      this.data.now = (this._newestNow != null) ? this._newestNow : m.now;
+    }
     if (!this.fitted && Object.keys(this.data.turns).length) { this.fitWindow(); this.fitted = true; }
     // honor the same freeze-on-hover / click-hold guard update() uses (don't relayout under a held pointer/tip)
     if ((this.tip && this.tip.classList && this.tip.classList.contains('show')) || this._pointerHeld) { this._dirtyWhileTip = true; return; }
@@ -2701,4 +2730,4 @@ class TimelinePanel {
   body(s) { return s ? '<div class="b">' + s + '</div>' : ''; }
 }
 
-module.exports = { TimelinePanel, badgeFor, roundedPath, crossX, workAnchorOf, idleGaps, fmtSpan, dotLit, barLit, interpNow, shouldReanchorEdge, barEndT, dragAxis };
+module.exports = { TimelinePanel, badgeFor, roundedPath, crossX, workAnchorOf, idleGaps, fmtSpan, dotLit, barLit, interpNow, shouldReanchorEdge, isFreshNowSample, barEndT, dragAxis };
