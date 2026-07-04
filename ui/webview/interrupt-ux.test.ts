@@ -21,7 +21,7 @@ test("the stop button acknowledges its click instantly and cannot be re-pressed"
 
 test("INTERRUPTING is a first-class chip state: labeled, styled, timerless, buttonless", () => {
   assert.match(SRC, /"interrupting";/, "in the ChipState union");
-  assert.match(SRC, /interrupting: "INTERRUPTING…",/);
+  assert.match(SRC, /interrupting: "Interrupting…",/);
   // the generic chip branch renders it (only working/compacting get the timer / stop button)
   assert.match(SRC, /if \(s\.status\.state === "working" \|\| s\.status\.state === "compacting"\) sl\.appendChild\(stopButton\(\)\);/);
   assert.match(CSS, /\.chip-interrupting \{ background: var\(--st-working-bg\);[^}]*opacity: 0\.75; \}/,

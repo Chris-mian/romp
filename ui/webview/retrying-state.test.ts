@@ -21,7 +21,7 @@ test("chat: 'retrying' is a ChipState with an 'API retrying…' label, an amber 
   assert.match(CSS, /\.tab\.tab-awaiting, \.tab\.tab-blocked, \.tab\.tab-retrying \{ outline: 2px dashed/);
 });
 
-test("timeline: a retrying lane shows an amber RETRYING badge (its own BADGE kind, not red attention)", () => {
-  assert.match(TL, /else if \(s\.state === 'retrying'\) m = \{ label: 'RETRYING', kind: 'retrying' \}/);
+test("timeline: a retrying lane shows an amber Retrying badge (its own BADGE kind, not red attention)", () => {
+  assert.match(TL, /else if \(s\.state === 'retrying'\) m = \{ label: 'Retrying', kind: 'retrying' \}/);
   assert.match(TL, /retrying: \{ bg: '#e67e22', fg: '#2a1500' \}/);
 });

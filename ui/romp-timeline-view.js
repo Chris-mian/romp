@@ -191,21 +191,21 @@ function badgeFor(s) {
     // Live Task-subagent count (SDK only) rides the WORKING badge —
     // so "what's actually running" is glanceable, the transparency the tmux backend never had. Blank when none.
     const n = (s.subagents && s.subagents.length) || 0;
-    m = { label: n ? 'WORKING · ' + n + (n === 1 ? ' agent' : ' agents') : 'WORKING', kind: 'working' };
+    m = { label: n ? 'Working · ' + n + (n === 1 ? ' agent' : ' agents') : 'Working', kind: 'working' };
   }
-  else if (s.state === 'retrying') m = { label: 'RETRYING', kind: 'retrying' };   // amber, distinct from the red BLOCKED — a soft API-retry stall (api 2026-06-23)
+  else if (s.state === 'retrying') m = { label: 'Retrying', kind: 'retrying' };   // amber, distinct from the red BLOCKED — a soft API-retry stall (api 2026-06-23)
   // the lane state IS the chat chip now (the kernel's shared _session_chip, the user 2026-07-03) — the
   // chip vocabulary below; the legacy raw names stay accepted for the cold-skeleton fallback.
-  else if (s.state === 'blocked') m = { label: 'API ERROR', kind: 'attention' };  // same red the chat chip shows
-  else if (s.state === 'interrupting') m = { label: 'INTERRUPTING', kind: 'working' };  // stop in flight
-  else if (s.state === 'permission' || s.state === 'awaiting') m = { label: 'BLOCKED', kind: 'attention' };
+  else if (s.state === 'blocked') m = { label: 'API error', kind: 'attention' };  // same red the chat chip shows
+  else if (s.state === 'interrupting') m = { label: 'Interrupting', kind: 'working' };  // stop in flight
+  else if (s.state === 'permission' || s.state === 'awaiting') m = { label: 'Blocked', kind: 'attention' };
   // AWAITING dispatched/background work (s.awaitingBg, the kernel's _session_awaiting — the SAME signal the
   // chat folds into its yellow working dot): in flight elsewhere, NOT on you, NOT plain READY. Closes the
   // last designed chat/timeline split in the working model (the user 2026-07-01). Working-yellow family so
   // the two surfaces read consistently; distinct label so it never claims the session itself is producing.
   // (The LEGACY lane state 'awaiting' above means blocked-on-you — the new field dodges that name.)
-  else if (s.awaitingBg) m = { label: 'AWAITING', kind: 'working' };
-  else if (s.state === 'ready' || s.state === 'waiting' || s.state === 'idle') m = { label: 'READY', kind: 'ready' };
+  else if (s.awaitingBg) m = { label: 'Awaiting', kind: 'working' };
+  else if (s.state === 'ready' || s.state === 'waiting' || s.state === 'idle') m = { label: 'Ready', kind: 'ready' };
   if (!m) return null;
   return { label: m.label, bg: BADGE[m.kind].bg, fg: BADGE[m.kind].fg };
 }
@@ -1913,7 +1913,7 @@ class TimelinePanel {
     // gutter = name column (left-aligned) + chip column (every chip shares an x,
     // like the dashboard's badge column). Names left-aligned, chips follow.
     const visB = vis.map((s) => compactingNow(s)
-      ? { label: 'COMPACTING', bg: BADGE.compacting.bg, fg: BADGE.compacting.fg }   // NO %: the scraped pct was laggy/inaccurate, and the SDK offers none (compact_progress events are lifecycle-only — investigated 2026-07-02); the scan-bar is the live cue
+      ? { label: 'Compacting', bg: BADGE.compacting.bg, fg: BADGE.compacting.fg }   // NO %: the scraped pct was laggy/inaccurate, and the SDK offers none (compact_progress events are lifecycle-only — investigated 2026-07-02); the scan-bar is the live cue
       : badgeFor(s));
     const visC = vis.map((s) => ctxInfo(s));
     const maxName = Math.max(40, ...(vis.length ? vis : data.sessions).map((s) => this.labelWidth(s.name)));
@@ -2161,6 +2161,24 @@ class TimelinePanel {
       if (!s.live) lblA['text-decoration'] = 'line-through';   // dead lane → strike the name (mirrors the feed)
       const lbl = el('text', lblA); lbl.textContent = s.name; svg.appendChild(lbl);
       if (s.faded) fadedEls.push({ el: lbl, full: s.color, faded: F(s.color) });
+      // Clicking the NAME JUMPS you into that session in the chat — focus and all (the user 2026-07-03).
+      // The empty row (rowHit) only PREVIEWS it (preserveFocus=true, no focus steal); the name is the
+      // "take me there" affordance, so it opens with focus=true. It's still a drag handle: mousedown starts
+      // the same reorder/pan gesture as the rest of the row (a plain click, no movement, falls through to the
+      // click → jump; a real drag sets _suppressClick so it doesn't also jump). The drawn name is
+      // pointer-events:none, so this transparent rect over its box is the real hit target.
+      const nhw = Math.min(Math.ceil(this.labelWidth(s.name)) + 6, (eyeColX - COLGAP) - (PADL - 3));
+      const nhit = el('rect', { x: PADL - 3, y: y - 9, width: Math.max(0, nhw), height: 18, fill: 'transparent', 'pointer-events': 'all' });
+      nhit.style.cursor = 'pointer';
+      nhit.addEventListener('mousedown', (e) => this._beginDrag(s.id, e));   // still drag-to-reorder / pan
+      nhit.addEventListener('click', () => {
+        if (this._suppressClick) { this._suppressClick = false; return; }   // just finished a drag → not a jump
+        this._select(s.id); this.openChat(this._laneTid(s), null, false);   // focus=true → jump into the chat
+      });
+      // keep the row's hover treatment (faint tint + un-fade) while pointing at the name
+      nhit.addEventListener('mouseenter', () => { rowHit.setAttribute('fill', '#ffffff'); rowHit.setAttribute('fill-opacity', '0.035'); for (const f of fadedEls) f.el.setAttribute('fill', f.full); });
+      nhit.addEventListener('mouseleave', () => { rowHit.setAttribute('fill', 'transparent'); rowHit.removeAttribute('fill-opacity'); for (const f of fadedEls) f.el.setAttribute('fill', f.faded); });
+      svg.appendChild(nhit);
       // per-session feed show/hide CHECKBOX (live lanes only): one click toggles hideFromFeed directly —
       // checked = on the feed (default), struck-through + more faded = off it. Always GRAY; the OFF state is
       // de-emphasised (more faded), never highlighted (the user 2026-06-22). No menu.

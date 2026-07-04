@@ -4504,10 +4504,10 @@ function setCtxBar(bar: HTMLElement, ctxStr: string | undefined, compacting = fa
 }
 
 const CHIP_LABEL: Record<ChipState, string> = {
-  working: "WORKING", ready: "READY", awaiting: "BLOCKED",
-  idle: "IDLE", closed: "CLOSED", compacting: "COMPACTING", blocked: "API ERROR",
+  working: "Working", ready: "Ready", awaiting: "Blocked",
+  idle: "Idle", closed: "Closed", compacting: "Compacting", blocked: "API error",
   retrying: "API retrying…",   // a live session stalled on an API rate-limit/overload auto-retry (api 2026-06-23)
-  interrupting: "INTERRUPTING…",   // stop sent, turn not yet settled (the user 2026-07-02) — clears to READY on its own
+  interrupting: "Interrupting…",   // stop sent, turn not yet settled (the user 2026-07-02) — clears to READY on its own
 };
 
 // A stop/interrupt button that lives beside the state badge in the statusline (the user 2026-06-19):
@@ -4562,7 +4562,7 @@ function updateStatusline() {
     sl.appendChild(c);
   } else {
     const chip = el("span", `chip chip-${s.status.state}`);
-    chip.textContent = CHIP_LABEL[s.status.state] ?? s.status.state.toUpperCase();
+    chip.textContent = CHIP_LABEL[s.status.state] ?? (s.status.state[0].toUpperCase() + s.status.state.slice(1).toLowerCase());
     sl.appendChild(chip);
   }
   // stop/interrupt button, right beside the state badge — ONLY while busy (working/compacting); omitted
@@ -4680,9 +4680,8 @@ function openCitePreview(id: string, anchor: HTMLElement): void {
   const draft = (ta?.value || "").trim();
   const pop = el("div", "cite-preview");
   const head = el("div", "cite-preview-head"); head.textContent = "What romp will send the model";
-  const sub = el("div", "cite-preview-sub"); sub.textContent = "the context romp injects around your message — audit it here";
   const body = el("pre", "cite-preview-body"); body.textContent = "loading…";
-  pop.append(head, sub, body);
+  pop.append(head, body);
   document.body.appendChild(pop);
   citePreviewEl = pop;
   // position: above the chip, left-aligned to it, clamped into the viewport

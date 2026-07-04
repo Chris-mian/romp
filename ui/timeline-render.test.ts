@@ -118,7 +118,7 @@ test("a dead lane's name is struck through; a live lane's is not", () => {
   assert.ok(!live.getAttribute("text-decoration"), "the live lane's name is NOT struck");
 });
 
-test("a compacting lane's badge says COMPACTING — never a percentage (the user 2026-07-02)", () => {
+test("a compacting lane's badge says Compacting — never a percentage (the user 2026-07-02)", () => {
   // The scraped tmux pct was laggy/inaccurate, and the SDK offers NO progress number (compact_progress
   // events are lifecycle-only — investigated 2026-07-02). The scan-bar animation is the live cue; the
   // badge is just the state word, even when a stale compactPct still rides the payload.
@@ -127,8 +127,8 @@ test("a compacting lane's badge says COMPACTING — never a percentage (the user
   Object.assign(data.sessions[0], { state: "compacting", compactPct: 74 });
   panel.data = data;
   assert.doesNotThrow(() => panel.draw());
-  assert.ok(findText(panel.svg, "COMPACTING"), "the COMPACTING badge shows");
-  assert.ok(!findText(panel.svg, "COMPACTING 74%"), "…with no percentage riding it");
+  assert.ok(findText(panel.svg, "Compacting"), "the Compacting badge shows");
+  assert.ok(!findText(panel.svg, "Compacting 74%"), "…with no percentage riding it");
 });
 
 test("an optimistic eye-toggle (hideFromFeed) survives a STALE push and clears once confirmed (the user 2026-06-22)", () => {

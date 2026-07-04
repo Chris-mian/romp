@@ -80,8 +80,8 @@ test("an OPEN node no longer shows a creation 'why' line (removed 2026-06-27 —
   assert.doesNotMatch(CSS, /\.ftree-why/);
 });
 
-test("modal BLOCKED node: white-on-red 'BLOCKED' chip + red '?' in a red ring; tooltip says 'marked blocked' (the user 2026-06-17)", () => {
-  assert.match(FEED, /meta\.textContent = node\.status === "question" \? "BLOCKED"/);
+test("modal BLOCKED node: white-on-red 'Blocked' chip + red '?' in a red ring; tooltip says 'marked blocked' (the user 2026-06-17)", () => {
+  assert.match(FEED, /meta\.textContent = node\.status === "question" \? "Blocked"/);
   assert.doesNotMatch(FEED, /"needs you" :/);                                  // the old amber label is gone
   // the BLOCKED label is a white-on-red chip (same red as the feed's Blocked column header)
   assert.match(CSS, /\.st-question \.ftree-meta \{[^}]*background: #c0392b;[^}]*color: #ffffff/);

@@ -1433,9 +1433,9 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
     line.appendChild(who);
   }
   const meta = el("span", "ftree-meta");
-  // a node needing the user reads as "BLOCKED" (red, all-caps) — the marker + this label are the block
+  // a node needing the user reads as "Blocked" (red) — the marker + this label are the block
   // signal, distinct from a recency-tinted age (the user 2026-06-17). Other states show "(Xm ago)".
-  meta.textContent = node.status === "question" ? "BLOCKED" : "(" + relAge(hostNow - node.last) + ")";
+  meta.textContent = node.status === "question" ? "Blocked" : "(" + relAge(hostNow - node.last) + ")";
   if (node.status !== "question" && node.trgb) meta.style.color = "rgb(" + node.trgb.join(",") + ")";   // Hawaii recency tint
   line.appendChild(meta);
   // Whole-line click NAVIGATES into the chat. PREFERRED: node.anchorUuid (kernel 996ebd7) deep-links to
