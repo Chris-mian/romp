@@ -16,8 +16,9 @@ test("Status carries the server-computed modelColor / effortColor", () => {
 test("the statusline meta buttons tint model/effort labels from those colors", () => {
   // metaColor picks modelColor for the model button, effortColor for the effort, "" (default) otherwise
   assert.match(RENDER, /function metaColor\(kind: MetaKind, st: Status\): string \{[\s\S]*?kind === "model" \? st\.modelColor : kind === "effort" \? st\.effortColor/);
-  // applied to the label in the refresh loop (runs on create AND the 1s ticker)
-  assert.match(RENDER, /label\.style\.color = metaColor\(kind, st\)/);
+  // applied to the label in the refresh loop (runs on create AND the 1s ticker); a switching model shows
+  // dots instead, so the tint is skipped only then (the user 2026-07-03)
+  assert.match(RENDER, /label\.style\.color = showDots \? "" : metaColor\(kind, st\);/);
 });
 
 test("the timeline lane tints the model/effort pieces by rank, keeping hover + restoring the tint", () => {

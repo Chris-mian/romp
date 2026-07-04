@@ -3868,6 +3868,22 @@ class ViewBuilder(unittest.TestCase):
         self.assertIn(SID, s, "a window-dead session is still a timeline lane")
         self.assertFalse(s[SID]["live"], "no tmux → a dead lane (the render strikes it)")
 
+    def test_model_pending_flows_to_chat_status_and_timeline_lane(self):
+        # the user 2026-07-03: while a /model switch resolves, BOTH the chat chip and the timeline lane
+        # show switching-dots — so the SDK snapshot's modelPending must reach both surfaces (the kernel
+        # merges it in Sessions.live() and passes it through build_session + build_timeline).
+        km._tmux_sessions = lambda: {SID: {"state": "working", "since": NOW - 10, "model": "Fable 5",
+                                           "effort": "high", "context": 20, "compactPct": None,
+                                           "color": None, "modelPending": True}}
+        st = km.build_session(SID, NOW)["status"]
+        self.assertTrue(st.get("modelPending"), "the chat status carries the switching signal")
+        lane = next(s for s in km.build_timeline(NOW)["sessions"] if s["id"] == SID)
+        self.assertTrue(lane.get("modelPending"), "the timeline lane carries it too")
+        # a snapshot without the key must not crash and reads False (tmux sessions never set it)
+        km._tmux_sessions = lambda: {SID: {"state": "working", "since": NOW - 10, "model": "Opus 4.8",
+                                           "effort": "high", "context": 20, "compactPct": None, "color": None}}
+        self.assertFalse(km.build_session(SID, NOW)["status"].get("modelPending"))
+
     def test_timeline_lane_survives_hidden_tab(self):
         # the user 2026-06-17 (reversing d52f69f): ×-hiding a tab is a tab-strip preference and must NOT
         # erase the lane from the timeline — the timeline is a complete activity history. So a dead AND
