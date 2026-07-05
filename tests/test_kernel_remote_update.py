@@ -165,14 +165,18 @@ class UpdateEndpoint(unittest.TestCase):
 
 
 class UpdateUI(unittest.TestCase):
-    def test_drift_banner_is_injected_and_offers_update(self):
+    def test_drift_banner_uses_the_push_framing(self):
+        # mirrors the #rstale reload banner, but asks to PUSH the local build (the user 2026-07-04)
         self.assertIn("id=rdrift", km._RDRIFT_HTML)
+        self.assertIn(">Push<", km._RDRIFT_HTML, "the action button says Push")
+        self.assertIn("Push your version", km._RDRIFT_JS, "the prompt asks to push your version to the remote")
         self.assertIn("/tunnels/update", km._RDRIFT_JS)
         self.assertIn("outOfDate", km._RDRIFT_JS)
         self.assertIn("_rdrift_block()", inspect_src())
 
-    def test_popover_shows_update_available_and_an_update_button(self):
-        self.assertIn("update available", km._LANDING_REMOTES_JS)
+    def test_popover_shows_behind_and_a_push_button(self):
+        self.assertIn("behind", km._LANDING_REMOTES_JS)
+        self.assertIn(">Push</button>", km._LANDING_REMOTES_JS)
         self.assertIn("/tunnels/update", km._LANDING_REMOTES_JS)
         self.assertIn("data-u=", km._LANDING_REMOTES_JS)
 

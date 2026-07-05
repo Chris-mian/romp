@@ -403,10 +403,12 @@ def _session_backend(sid, tm):
 def _followup_body(iid, title, text, injected=False, auto=False, stalled=False):
     """Pane message for a feed follow-up: QUOTE the ask being followed up ('> <ask>') above the user's
     text, so the recipient session knows what the reply answers. An explicit `title` (the group modal) is
-    used verbatim; otherwise the quote PREFERS the node's cached VERBATIM mint quote (node["quote"], judge
-    _mint_quote) — the user's own words, re-raised the way a person would, with no status tags (the user
-    2026-07-01, g13) — falling back for legacy nodes to the enriched title form: the node's text, the TOP
-    goal it sits under, its status, and the planner's one-line why (the user 2026-06-17). None of these → the text alone (no empty quote).
+    used verbatim; otherwise, for a TYPED follow-up, the quote PREFERS the card's DISTILLED SUMMARY — the
+    takeaway/decision-brief that is the card's visible headline (the user 2026-07-04), so the context matches
+    what you clicked — then falls back to the node's cached VERBATIM mint quote (node["quote"], judge
+    _mint_quote — the user's own words, the user 2026-07-01 g13) when there's no summary yet, then for legacy
+    nodes to the enriched title form: the node's text, the TOP goal it sits under, its status, and the
+    planner's one-line why (the user 2026-06-17). None of these → the text alone (no empty quote).
     When a NUDGE (`injected` — the Nudge button OR the background auto-nudge, which both land here with iid =
     the TOP goal) targets a HIERARCHICAL goal, the quote ENUMERATES its unfinished lower-level nodes and the
     body asks for a status on each, with the top goal as context — so the session reports on the specific
@@ -456,12 +458,19 @@ def _followup_body(iid, title, text, injected=False, auto=False, stalled=False):
                      "tell me which one and exactly what you need from me to finish it.") if stalled else
                     ("For each unfinished piece above: what's done, what's left, and is anything blocked "
                      "waiting on a decision from me? Keep the overall goal in mind, but report per piece."))
+        elif not injected and str(nd.get("summary") or nd.get("blockSummary") or "").strip():
+            # A TYPED follow-up quotes the card's DISTILLED SUMMARY — the takeaway (completed) or decision brief
+            # (blocked) that is the card's visible HEADLINE, the thing you're reading + clicked to follow up on
+            # (the user 2026-07-04). So the context that rides along MATCHES the card, transparently, instead of
+            # your original minting message (which the card no longer shows). The goal-id still travels, so the
+            # session pulls the full thread from its own history. Falls back to the minting quote below when
+            # there's no summary yet (a still-working card). Nudges (injected) keep their own context.
+            quote.append(str(nd.get("summary") or nd.get("blockSummary")).strip())
         elif str(nd.get("quote") or "").strip():
-            # The node cached the minting message's VERBATIM head (judge _mint_quote; the user 2026-07-01,
-            # g13): quote the user's OWN WORDS back — exactly how a person re-raises a thread — instead of
-            # the planner's paraphrased title with "(under X, done)" tags and the planner's why, which read
-            # report-like and used terminology the user never typed. No status annotations: the recipient
-            # has its own history, and the body carries the actual ask.
+            # No distilled summary yet → the node's cached minting-message VERBATIM head (judge _mint_quote; the
+            # user 2026-07-01, g13): quote the user's OWN WORDS back — how a person re-raises a thread — instead
+            # of the planner's paraphrased title with "(under X, done)" tags and why, which read report-like and
+            # used terminology the user never typed. No status annotations: the body carries the actual ask.
             quote.append(str(nd["quote"]).strip())
         elif head:
             # legacy node minted before quotes were cached → the enriched title form (title + place +
@@ -9635,10 +9644,10 @@ ts.forEach(function(t){var row=document.createElement('div');row.className='rnet
 // connected -> solid accent dot (matches the lit rail icon); mid-attach -> hollow accent RING (glanceably
 // "in progress"); down -> grey; error -> red. Word beside it names the phase.
 var dot=t.status==='up'?'background:var(--accent)':t.status==='error'?'background:#E5534B':t.status==='down'?'background:#8a8a8a':'background:transparent;box-shadow:inset 0 0 0 1.5px var(--accent)';
-// version drift: an up remote running an OLDER commit than this kernel shows "update available" + an Update
-// button that pulls + restarts it behind the scenes (the user 2026-07-04). Otherwise show its short sha.
-var ver=t.outOfDate?' \\u00b7 <span class=rnet-old>update available</span>':(t.kernelSha?' \\u00b7 <span class=rnet-sha>'+t.kernelSha+'</span>':'');
-var upd=(t.status==='up'&&t.outOfDate)?'<button class=rnet-upd data-u=\"'+t.host+'\">Update</button>':'';
+// version drift: an up remote running a DIFFERENT commit than this kernel shows "behind" + a Push button that
+// pushes THIS machine's committed build to it + restarts it, peer-to-peer (the user 2026-07-04). Else its sha.
+var ver=t.outOfDate?' \\u00b7 <span class=rnet-old>behind</span>':(t.kernelSha?' \\u00b7 <span class=rnet-sha>'+t.kernelSha+'</span>':'');
+var upd=(t.status==='up'&&t.outOfDate)?'<button class=rnet-upd data-u=\"'+t.host+'\" title=\"Push this machine\\u2019s romp to '+t.host+' + restart it\">Push</button>':'';
 row.innerHTML='<span class=rnet-dot style=\"'+dot+'\"></span>'+
 '<span class=nm><b>'+t.host+'</b> <span class=st>'+(LBL[t.status]||t.status)+(t.token?'':' \\u00b7 no token')+ver+'</span></span>'+
 upd+'<button data-h=\"'+t.host+'\">Detach</button>';
@@ -9646,11 +9655,11 @@ list.appendChild(row);});
 list.querySelectorAll('button[data-h]').forEach(function(b){b.onclick=function(){var h=b.getAttribute('data-h');
 b.disabled=true;fetch('/tunnels/detach',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h})}).then(refresh).catch(function(){});};});
 list.querySelectorAll('button[data-u]').forEach(function(b){b.onclick=function(){var h=b.getAttribute('data-u');
-b.disabled=true;b.textContent='Updating\\u2026';
+b.disabled=true;b.textContent='Pushing\\u2026';
 fetch('/tunnels/update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h})}).then(function(r){return r.json();}).then(function(d){
-if(d&&d.ok){b.textContent='Updated';schedule(2000);}   // the remote restarts + re-polls → the flag clears itself
-else{b.disabled=false;b.textContent='Retry';alert('Update of '+h+' failed: '+((d&&d.detail)||'unknown'));}   // fail LOUDLY (CLAUDE.md)
-}).catch(function(){b.disabled=false;b.textContent='Retry';alert('Update of '+h+' failed to reach the kernel.');});};});}
+if(d&&d.ok){b.textContent='Pushed';schedule(2000);}   // the remote restarts + re-polls → the flag clears itself
+else{b.disabled=false;b.textContent='Retry';alert('Push to '+h+' failed: '+((d&&d.detail)||'unknown'));}   // fail LOUDLY (CLAUDE.md)
+}).catch(function(){b.disabled=false;b.textContent='Retry';alert('Push to '+h+' failed to reach the kernel.');});};});}
 attach.onclick=function(){var h=hostSel.value;if(!h)return;
 try{localStorage.setItem('romp:lastRemoteHost',h);}catch(e){}   // remember for MRU-first ordering next time
 attach.disabled=true;attach.textContent='Attaching\\u2026';
@@ -9795,25 +9804,27 @@ _RDRIFT_CSS = (
     "#rdrift .rd-dismiss:hover{color:#e6e6e6}")
 _RDRIFT_HTML = (
     "<div id=rdrift role=alert><span class=rd-msg></span>"
-    "<button class=rd-upd id=rdrift-upd>Update</button>"
+    "<button class=rd-upd id=rdrift-upd>Push</button>"
     "<button class=rd-dismiss id=rdrift-dismiss>Dismiss</button></div>")
 _RDRIFT_JS = (
     "(function(){var box=document.getElementById('rdrift');if(!box)return;"
     "var msg=box.querySelector('.rd-msg'),up=document.getElementById('rdrift-upd'),dm=document.getElementById('rdrift-dismiss');"
     "var stale=[],dismissed='';"
     "function key(hs){return hs.slice().sort().join(',');}"
-    "function label(hs){return hs.length===1?('Remote '+hs[0]+' is running an older romp build.')"
-    ":(hs.length+' remotes are running an older romp build ('+hs.join(', ')+').');}"
+    # push framing (the user 2026-07-04): the mechanism is a peer-to-peer PUSH of your local build to the remote,
+    # so the prompt reads like the reload banner but asks "push your version to it?" instead of "reload?".
+    "function label(hs){return hs.length===1?(hs[0]+' is on an older romp build. Push your version to it?')"
+    ":(hs.length+' remotes are on an older romp build. Push your version? ('+hs.join(', ')+')');}"
     "function check(){fetch('/tunnels',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){"
     "var ts=(d&&d.tunnels)||[];stale=ts.filter(function(t){return t.status==='up'&&t.outOfDate;}).map(function(t){return t.host;});"
-    "if(stale.length&&key(stale)!==dismissed){msg.textContent=label(stale);up.disabled=false;up.textContent='Update';box.classList.add('show');}"
+    "if(stale.length&&key(stale)!==dismissed){msg.textContent=label(stale);up.disabled=false;up.textContent='Push';box.classList.add('show');}"
     "else if(!stale.length){box.classList.remove('show');}}).catch(function(){});}"
     "up.onclick=function(){var hosts=stale.slice();if(!hosts.length){box.classList.remove('show');return;}"
-    "up.disabled=true;up.textContent='Updating\\u2026';var done=0,fails=[];"
+    "up.disabled=true;up.textContent='Pushing\\u2026';var done=0,fails=[];"
     "hosts.forEach(function(h){fetch('/tunnels/update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h})})"
     ".then(function(r){return r.json();}).then(function(x){if(!x||!x.ok)fails.push(h+': '+((x&&x.detail)||'failed'));})"
     ".catch(function(){fails.push(h+': unreachable');}).then(function(){done++;if(done===hosts.length){"
-    "if(fails.length){up.disabled=false;up.textContent='Retry';alert('Some updates failed:\\n'+fails.join('\\n'));}"    # fail LOUDLY (CLAUDE.md)
+    "if(fails.length){up.disabled=false;up.textContent='Retry';alert('Some pushes failed:\\n'+fails.join('\\n'));}"    # fail LOUDLY (CLAUDE.md)
     "else{box.classList.remove('show');setTimeout(check,3000);}}});});};"
     "dm.onclick=function(){dismissed=key(stale);box.classList.remove('show');};"
     "check();setInterval(check,30000);})();")

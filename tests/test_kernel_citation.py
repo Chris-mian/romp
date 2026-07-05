@@ -106,6 +106,37 @@ class FollowupPreview(unittest.TestCase):
         self.assertIn('p == "/followup-preview"', src)
         self.assertIn("_followup_body(iid, None, text", src, "built from the real send-path builder")
 
+    def test_typed_followup_quotes_the_distilled_summary_not_the_minting_message(self):
+        # the user 2026-07-04: a typed follow-up cites the card's HEADLINE (the distiller's takeaway), so the
+        # context matches what you're reading + clicked — not your original minting message.
+        km.jd.load_goals = lambda fsid: {"nodes": {SID + ":g1": {
+            "text": "Ship the thing", "quote": "please ship the thing by friday",
+            "summary": "Shipped v2 with the new flag defaulted on."}}}
+        body = km._followup_body(SID + ":g1", None, "also update the changelog")
+        self.assertIn("> Shipped v2 with the new flag defaulted on.", body, "quotes the distilled summary")
+        self.assertNotIn("please ship the thing by friday", body, "not the original minting message")
+
+    def test_blocked_card_quotes_its_decision_brief(self):
+        km.jd.load_goals = lambda fsid: {"nodes": {SID + ":g1": {
+            "text": "Pick a DB", "quote": "help me choose a database", "blocked": True,
+            "blockSummary": "Postgres vs SQLite — need your call on scale."}}}
+        body = km._followup_body(SID + ":g1", None, "go with Postgres")
+        self.assertIn("> Postgres vs SQLite", body, "a blocked card quotes its decision brief")
+
+    def test_no_summary_yet_falls_back_to_the_minting_quote(self):
+        km.jd.load_goals = lambda fsid: {"nodes": {SID + ":g1": {
+            "text": "Ship the thing", "quote": "please ship the thing by friday"}}}
+        body = km._followup_body(SID + ":g1", None, "any update?")
+        self.assertIn("> please ship the thing by friday", body, "no summary yet → the minting quote")
+
+    def test_a_nudge_keeps_its_own_context_not_the_summary(self):
+        # only TYPED follow-ups switch to the summary; a nudge (injected) keeps the minting quote
+        km.jd.load_goals = lambda fsid: {"nodes": {SID + ":g1": {
+            "text": "Ship the thing", "quote": "please ship the thing by friday", "summary": "Shipped v2."}}}
+        body = km._followup_body(SID + ":g1", None, "status?", injected=True)
+        self.assertIn("> please ship the thing by friday", body, "a nudge still quotes the minting message")
+        self.assertNotIn("Shipped v2.", body)
+
 
 class ClearDropsCitation(unittest.TestCase):
     """Clearing a card tells the chat to drop any composer citation chip pointing INTO it (the user
