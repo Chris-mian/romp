@@ -3017,13 +3017,17 @@ def _update_remote(host):
         'git -C "$R" reset --hard %s >/dev/null 2>&1 || { git -C "$R" update-ref -d refs/heads/%s 2>/dev/null; echo RESETFAIL; exit 0; }; '
         'git -C "$R" update-ref -d refs/heads/%s 2>/dev/null; '
         'NEW="$(git -C "$R" rev-parse --short HEAD)"; '
-        # RESTART the kernel robustly whether or not a MANAGER supervises this host (the user 2026-07-04: an
-        # attach-bootstrapped host runs a BARE `romp-serve` with no manager, so `romp --refresh` — which needs
-        # romp-manager — no-op'd and the remote never reloaded → "waiting to restart" forever). Kill the kernel;
-        # if a manager supervises it the kernel respawns on its own (the PORT coming back proves it), otherwise
-        # relaunch romp-serve ourselves. The port poll IS the manager-detector, so we never double-launch.
+        # RESTART the kernel THROUGH THE MANAGER (the user 2026-07-04: the manager is romp's durable supervisor —
+        # "there is never an invisible orphan" — so a restart should keep/leave the remote MANAGER-owned, not
+        # launch a bare romp-serve). Kill the kernel, then `romp-manager ensure` (the SAME idempotent auto-start
+        # the SessionStart hook uses): if a manager already supervises this host it respawns the kernel on the new
+        # code; if this host was only ATTACH-bootstrapped (bare kernel, no manager) ensure STARTS the manager,
+        # which spawns a SUPERVISED kernel — UPGRADING the orphan to properly managed. ensure needs node; if it
+        # can't run (or the port never returns) we relaunch romp-serve bare as a last resort so the host isn't
+        # left dead. The port poll confirms whichever path brought it back.
         'if [ ! -x "$R/bin/romp-serve" ]; then echo "NOLAUNCH:$NEW"; exit 0; fi; '
         'pkill -f "bin/romp-kernel" 2>/dev/null; '
+        'if command -v node >/dev/null 2>&1 && [ -x "$R/bin/romp-manager" ]; then "$R/bin/romp-manager" ensure >>"$LOGDIR/update.log" 2>&1 || true; fi; '
         'UP=0; for i in 1 2 3 4 5 6 7 8; do sleep 1; if bash -c "exec 3<>/dev/tcp/127.0.0.1/%d" 2>/dev/null; then UP=1; break; fi; done; '
         'if [ "$UP" = 0 ]; then nohup "$R/bin/romp-serve" >>"$LOGDIR/kernel.log" 2>&1 </dev/null &  sleep 1; fi; '
         'echo "SYNCED:$NEW"'
