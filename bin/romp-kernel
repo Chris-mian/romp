@@ -2896,58 +2896,116 @@ def _sha_base(s):
 
 
 def _remote_out_of_date(r):
-    """True iff this remote is running a DIFFERENT commit than the local kernel — i.e. an update (git pull +
-    restart) would change it. Both shas must be known; the '-dirty' suffix is ignored (same-commit local
-    edits are not a remote-version problem). Direction-agnostic: normally the remote is BEHIND (the user
-    pushes local→origin, remotes pull origin), and a pull on an already-current remote is a harmless no-op."""
+    """True iff this remote is running a DIFFERENT commit than the LOCAL kernel — i.e. an update (push the
+    local code + restart) would change it. Both shas must be known; the '-dirty' suffix is ignored (same-commit
+    local edits are not a remote-version problem). The comparison is against THIS kernel's HEAD (not origin):
+    `romp update` pushes local→remote peer-to-peer, so "up to date" means "matches my local", not "matches
+    GitHub" (the user 2026-07-04)."""
     rsha = _sha_base(r.get("kernel_sha"))
     lsha = _sha_base(_kernel_sha())
     return bool(rsha and lsha and rsha != lsha)
 
 
+def _local_head():
+    """This kernel's committed HEAD (FULL sha), or None outside a checkout — the exact commit `romp update`
+    pushes to a remote. Distinct from _kernel_sha()'s SHORT+'-dirty' form (used for display/drift)."""
+    try:
+        r = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"],
+                           capture_output=True, text=True, timeout=3)
+        return r.stdout.strip() if r.returncode == 0 else None
+    except Exception:
+        return None
+
+
+_P2P_REF = "romp-p2p-sync"   # scratch branch the local kernel force-pushes its HEAD to on the remote
+
+
 def _update_remote(host):
-    """Pull the latest romp on `host` and restart its kernel so it picks up the new code (the user 2026-07-04).
-    SSHes in (the SAME BatchMode/no-multiplexing opts as every other remote ssh), finds the romp clone in the
-    conventional locations (mirrors _start_remote_kernel), `git pull --ff-only` (never a merge/rebase — a
-    diverged or dirty remote FAILS LOUDLY rather than half-updating), then `romp --refresh` to restart. Returns
-    (ok, detail) — detail is the git summary on success, or a specific reason on failure (no romp clone, pull
-    conflict, no launcher). Best-effort + guarded, like _start_remote_kernel."""
+    """PEER-TO-PEER update (the user 2026-07-04: "p2p pushing by default, no GH backstop — just take what is
+    committed on local"). Push THIS kernel's committed HEAD straight to `host` over ssh and restart it, so the
+    remote runs exactly the local code — GitHub/origin is never involved. Three steps, all over the same
+    BatchMode/no-multiplexing ssh every other remote call uses:
+      1. ssh-discover the remote romp clone (conventional dirs, mirrors _start_remote_kernel) + its HEAD; REFUSE
+         on a dirty remote tree (won't silently clobber uncommitted remote work).
+      2. `git push --force` local HEAD to a scratch ref on the remote (a NON-checked-out ref, so no bare-repo /
+         denyCurrentBranch dance).
+      3. ssh: REFUSE if the remote has DIVERGED (its own commits not in local — don't clobber), else reset the
+         remote to that ref, delete the scratch ref, and `romp --refresh` to restart.
+    Returns (ok, detail), fail-loud. Requires a CLEAN local tree — we push COMMITS, so uncommitted local work
+    isn't sent; the caller is told to commit first."""
     host = str(host or "").strip()
     if not host:
         return False, "no host"
-    # --ff-only so a remote with local commits/uncommitted edits refuses instead of silently merging; we report
-    # the git stderr verbatim (fail loudly). After a successful pull, `$R/bin/romp --refresh` restarts the
-    # remote's bus + kernels to load the new code (the standard "picks up new code" command for a normal install).
-    cmd = (
-        'LOGDIR="${XDG_STATE_HOME:-$HOME/.local/state}/romp"; mkdir -p "$LOGDIR"; '
+    lsha = _kernel_sha()
+    if not lsha:
+        return False, "local kernel isn't a git checkout — nothing to push"
+    if lsha.endswith("-dirty"):
+        return False, "commit your local changes first — update pushes COMMITTED code (local tree is dirty)"
+    lfull = _local_head()
+    if not lfull:
+        return False, "couldn't resolve the local HEAD to push"
+    # (1) discover the remote clone + pre-check it's clean
+    disc = (
         'R=""; for d in "$HOME/GitRepos/romp" "$HOME/romp" "$HOME/code/romp" "$HOME/src/romp"; do '
         'if [ -d "$d/.git" ]; then R="$d"; break; fi; done; '
         'if [ -z "$R" ]; then echo NOROMP; exit 0; fi; '
-        'OUT="$(cd "$R" && git pull --ff-only 2>&1)"; GS=$?; '
-        'if [ $GS -ne 0 ]; then echo "PULLFAIL:$OUT"; exit 0; fi; '
-        'if printf %s "$OUT" | grep -qi "already up to date"; then echo "NOCHANGE:$OUT"; exit 0; fi; '
-        'if [ -x "$R/bin/romp" ]; then nohup "$R/bin/romp" --refresh >>"$LOGDIR/update.log" 2>&1 </dev/null & echo "UPDATED:$OUT"; '
-        'elif [ -x "$R/bin/romp-serve" ]; then pkill -f "bin/romp-kernel" 2>/dev/null; sleep 1; '
-        'nohup "$R/bin/romp-serve" >>"$LOGDIR/kernel.log" 2>&1 </dev/null & echo "UPDATED:$OUT"; '
-        'else echo "NOLAUNCH:$OUT"; fi')
+        'echo "DIR:$R"; echo "HEAD:$(git -C "$R" rev-parse HEAD 2>/dev/null)"; '
+        'echo "DIRTY:$(git -C "$R" status --porcelain 2>/dev/null | head -c 1)"')
     try:
-        res = subprocess.run([SSH_BIN] + _SSH_OPTS + [host, cmd], capture_output=True, text=True, timeout=90)
-        out = (res.stdout or "").strip()
+        d = subprocess.run([SSH_BIN] + _SSH_OPTS + [host, disc], capture_output=True, text=True, timeout=25)
     except Exception as e:
         return False, str(e)[:200]
-    tag, _, rest = out.partition(":")
-    rest = rest.strip()
-    if tag == "UPDATED":
-        return True, (rest.splitlines()[-1][:200] if rest else "updated + restarting")
-    if tag == "NOCHANGE":
-        return True, "already up to date"
-    if tag == "NOROMP":
+    out = d.stdout or ""
+    if "NOROMP" in out:
         return False, "romp not installed on %s (looked in ~/GitRepos/romp, ~/romp, ~/code/romp, ~/src/romp)" % host
-    if tag == "PULLFAIL":
-        return False, "git pull failed: " + (rest[:200] or "diverged or dirty tree — resolve it on the host")
+    info = dict((l.split(":", 1) + [""])[:2] for l in out.splitlines() if ":" in l)
+    rdir, rhead, rdirty = info.get("DIR", "").strip(), info.get("HEAD", "").strip(), info.get("DIRTY", "").strip()
+    if not rdir:
+        return False, (d.stderr or "couldn't locate the remote romp clone").strip()[:200]
+    if rdirty:
+        return False, "remote %s has uncommitted changes — commit or discard them there first (won't clobber)" % host
+    if rhead and rhead == lfull:
+        return True, "already up to date (%s)" % _sha_base(lsha)
+    # (2) push local HEAD to a scratch ref on the remote (non-checked-out → no denyCurrentBranch issue)
+    env = dict(os.environ, GIT_SSH_COMMAND="%s %s" % (SSH_BIN, " ".join(_SSH_OPTS)))
+    push_url = "%s:%s" % (host, rdir)
+    try:
+        p = subprocess.run(["git", "-C", str(ROOT), "push", "--force", push_url,
+                            "HEAD:refs/heads/%s" % _P2P_REF],
+                           capture_output=True, text=True, timeout=120, env=env)
+    except Exception as e:
+        return False, "git push to %s failed: %s" % (host, str(e)[:160])
+    if p.returncode != 0:
+        return False, "git push to %s failed: %s" % (host, (p.stderr or p.stdout or "").strip()[:160])
+    # (3) verify no divergence, reset the remote to the pushed HEAD, clean up, restart
+    apply_cmd = (
+        'LOGDIR="${XDG_STATE_HOME:-$HOME/.local/state}/romp"; mkdir -p "$LOGDIR"; R=%s; '
+        'if ! git -C "$R" merge-base --is-ancestor HEAD %s 2>/dev/null; then '
+        'git -C "$R" update-ref -d refs/heads/%s 2>/dev/null; echo DIVERGED; exit 0; fi; '
+        'git -C "$R" reset --hard %s >/dev/null 2>&1 || { git -C "$R" update-ref -d refs/heads/%s 2>/dev/null; echo RESETFAIL; exit 0; }; '
+        'git -C "$R" update-ref -d refs/heads/%s 2>/dev/null; '
+        'NEW="$(git -C "$R" rev-parse --short HEAD)"; '
+        'if [ -x "$R/bin/romp" ]; then nohup "$R/bin/romp" --refresh >>"$LOGDIR/update.log" 2>&1 </dev/null & echo "SYNCED:$NEW"; '
+        'elif [ -x "$R/bin/romp-serve" ]; then pkill -f "bin/romp-kernel" 2>/dev/null; sleep 1; '
+        'nohup "$R/bin/romp-serve" >>"$LOGDIR/kernel.log" 2>&1 </dev/null & echo "SYNCED:$NEW"; '
+        'else echo "NOLAUNCH:$NEW"; fi'
+    ) % (shlex.quote(rdir), _P2P_REF, _P2P_REF, _P2P_REF, _P2P_REF, _P2P_REF)
+    try:
+        a = subprocess.run([SSH_BIN] + _SSH_OPTS + [host, apply_cmd], capture_output=True, text=True, timeout=60)
+    except Exception as e:
+        return False, "pushed, but the remote reset/restart failed: " + str(e)[:150]
+    aout = (a.stdout or "").strip()
+    tag, _, rest = aout.partition(":")
+    tag, rest = tag.strip(), rest.strip()
+    if tag == "SYNCED":
+        return True, "synced to %s + restarting" % (rest or _sha_base(lsha))
+    if tag == "DIVERGED":
+        return False, "remote %s has diverged (its own commits) — not clobbering; reconcile it there first" % host
+    if tag == "RESETFAIL":
+        return False, "pushed, but the remote couldn't check out the new code"
     if tag == "NOLAUNCH":
-        return False, "pulled, but no romp/romp-serve launcher found to restart the kernel"
-    return False, (res.stderr or out or "ssh failed").strip()[:200]
+        return False, "pushed + reset, but found no romp/romp-serve launcher to restart the kernel"
+    return False, (a.stderr or aout or "remote apply failed").strip()[:180]
 
 
 def _tunnel_supervisor():
@@ -10416,10 +10474,11 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(400, json.dumps({"ok": False, "error": "host required"}), "application/json")
                 return self._send(200, json.dumps({"ok": True, "detached": detach_remote(host)}), "application/json")
             if u.path == "/tunnels/update":
-                # Pull + restart a remote's kernel so it picks up the latest code. Body: {"host": <ssh alias>}.
-                # The blocking ssh (git pull + restart) is fine on the threaded server. Reports the git summary
-                # or a specific failure (fail loudly — no silent half-update). A version re-poll happens on the
-                # supervisor's next tick after the remote comes back, clearing the out-of-date flag.
+                # PUSH the local kernel's committed code to a remote (peer-to-peer, no GitHub) + restart it.
+                # Body: {"host": <ssh alias>}. The blocking ssh (git push + reset + restart) is fine on the
+                # threaded server. Reports the synced sha or a specific failure (fail loudly — refuses on a
+                # dirty/diverged remote rather than clobbering). A version re-poll on the supervisor's next tick
+                # after the remote comes back clears the out-of-date flag.
                 try:
                     body = json.loads(raw_body or b"{}")
                 except Exception:

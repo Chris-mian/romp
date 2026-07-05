@@ -52,50 +52,99 @@ class VersionDrift(unittest.TestCase):
 
 
 class UpdateRemote(unittest.TestCase):
+    """PEER-TO-PEER update (the user 2026-07-04): push local committed HEAD to the remote (no GitHub), refuse on
+    a dirty/diverged remote, restart. Three subprocess calls — ssh-discover, git-push, ssh-apply — are dispatched
+    by inspecting argv so each case can drive them independently."""
+    LFULL = "1" * 40                        # local HEAD (full sha) the push sends
+    RHEAD = "2" * 40                         # a remote at a DIFFERENT (older) commit
+
     def setUp(self):
-        self._run = km.subprocess.run
+        self._run, self._sha = km.subprocess.run, km._SHA
+        km._SHA = "1111111"                  # a CLEAN local short sha (so _kernel_sha doesn't subprocess)
 
     def tearDown(self):
-        km.subprocess.run = self._run
+        km.subprocess.run, km._SHA = self._run, self._sha
 
-    def _mock(self, out="", err="", rc=0):
-        km.subprocess.run = lambda argv, **kw: _R(out, err, rc)
+    def _wire(self, rhead=None, dirty="", disc_out=None, push_rc=0, push_err="", apply_out="SYNCED:abcdef0"):
+        """Install a dispatching subprocess mock; returns the list of argv it saw."""
+        if disc_out is None:
+            disc_out = "DIR:/home/u/romp\nHEAD:%s\nDIRTY:%s" % (rhead if rhead is not None else self.RHEAD, dirty)
+        calls = []
+
+        def fake(argv, **kw):
+            calls.append(argv)
+            if argv[0] == "git" and "push" in argv:
+                return _R(err=push_err, rc=push_rc)
+            if argv[0] == "git" and "rev-parse" in argv and "HEAD" in argv:   # _local_head
+                return _R(out=self.LFULL)
+            cmd = argv[-1]                                                     # ssh: dispatch on the remote command
+            if "for d in" in cmd:
+                return _R(out=disc_out)
+            if "merge-base" in cmd or "reset --hard" in cmd:
+                return _R(out=apply_out)
+            return _R()
+        km.subprocess.run = fake
+        return calls
 
     def test_no_host_is_a_no_op(self):
         self.assertEqual(km._update_remote(""), (False, "no host"))
 
-    def test_a_successful_pull_reports_the_git_summary(self):
-        self._mock(out="UPDATED:Updating a1b2c3d..e4f5g6h\n 3 files changed, 40 insertions(+)")
+    def test_a_clean_ancestor_remote_is_pushed_reset_and_restarted(self):
+        calls = self._wire(apply_out="SYNCED:abcdef0")
         ok, detail = km._update_remote("jetty")
         self.assertTrue(ok)
-        self.assertIn("3 files changed", detail)
+        self.assertIn("synced to abcdef0", detail)
+        # it force-pushed local HEAD to a scratch ref at host:remote-dir
+        push = next(a for a in calls if a[0] == "git" and "push" in a)
+        self.assertIn("--force", push)
+        self.assertIn("jetty:/home/u/romp", push)
+        self.assertTrue(any(str(x).startswith("HEAD:refs/heads/") for x in push), "pushes HEAD to a scratch ref")
 
-    def test_already_up_to_date_is_success_no_restart(self):
-        self._mock(out="NOCHANGE:Already up to date.")
-        self.assertEqual(km._update_remote("jetty"), (True, "already up to date"))
+    def test_already_up_to_date_short_circuits(self):
+        self._wire(rhead=self.LFULL)          # remote already at local HEAD
+        ok, detail = km._update_remote("jetty")
+        self.assertTrue(ok)
+        self.assertIn("already up to date", detail)
+
+    def test_refuses_when_the_local_tree_is_dirty(self):
+        km._SHA = "1111111-dirty"
+        ok, detail = km._update_remote("jetty")
+        self.assertFalse(ok)
+        self.assertIn("commit your local changes first", detail)
+
+    def test_refuses_a_dirty_remote_without_clobbering(self):
+        self._wire(dirty="M")
+        ok, detail = km._update_remote("jetty")
+        self.assertFalse(ok)
+        self.assertIn("uncommitted changes", detail)
+
+    def test_refuses_a_diverged_remote(self):
+        self._wire(apply_out="DIVERGED")
+        ok, detail = km._update_remote("jetty")
+        self.assertFalse(ok)
+        self.assertIn("diverged", detail)
 
     def test_no_romp_clone_fails_loudly(self):
-        self._mock(out="NOROMP")
+        self._wire(disc_out="NOROMP")
         ok, detail = km._update_remote("jetty")
         self.assertFalse(ok)
         self.assertIn("not installed", detail)
 
-    def test_a_pull_conflict_surfaces_the_git_error(self):
-        self._mock(out="PULLFAIL:error: Your local changes would be overwritten by merge")
+    def test_a_failed_push_surfaces_the_git_error(self):
+        self._wire(push_rc=1, push_err="Permission denied (publickey)")
         ok, detail = km._update_remote("jetty")
         self.assertFalse(ok)
-        self.assertIn("git pull failed", detail)
-        self.assertIn("overwritten", detail)
+        self.assertIn("git push", detail)
+        self.assertIn("Permission denied", detail)
 
-    def test_uses_ff_only_and_the_conventional_dir_search(self):
-        # the remote command must never MERGE/REBASE (ff-only), and must look in the same dirs _start_remote_kernel does
-        captured = {}
-        km.subprocess.run = lambda argv, **kw: captured.setdefault("argv", argv) or _R(out="NOCHANGE:Already up to date.")
+    def test_no_github_origin_in_the_remote_commands(self):
+        # peer-to-peer: NOTHING should pull from origin / touch GitHub
+        calls = self._wire()
         km._update_remote("jetty")
-        cmd = captured["argv"][-1]
-        self.assertIn("git pull --ff-only", cmd)
-        self.assertIn("$HOME/GitRepos/romp", cmd)
-        self.assertIn("--refresh", cmd, "restarts the remote kernel after pulling")
+        for a in calls:
+            cmd = a[-1] if isinstance(a[-1], str) else ""
+            self.assertNotIn("git pull", cmd, "no pull-from-origin anywhere")
+            self.assertNotIn("origin", cmd)
 
 
 class UpdateEndpoint(unittest.TestCase):

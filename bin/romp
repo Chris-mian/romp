@@ -649,11 +649,11 @@ if [[ "${1:-}" == "--version" ]]; then
     exec romp-version
 fi
 
-# `romp update [host...]` — pull the latest romp on attached REMOTE kernels + restart them so they stop
-# running stale code (the user 2026-07-04). No host → every out-of-date attached remote. Delegates to
-# romp-update (python), which asks the LOCAL kernel to do the ssh git-pull + restart over its tunnel. Both
-# `update` and `--update` work (`update` reserves that bare word — a session literally named "update" is
-# not a real case). To update THIS machine: `git pull` then `romp --refresh`.
+# `romp update [host...]` — PUSH this machine's committed romp to attached REMOTE kernels + restart them, so
+# they run exactly the local code (the user 2026-07-04: peer-to-peer, no GitHub). No host → every out-of-date
+# attached remote. Delegates to romp-update (python), which asks the LOCAL kernel to git-push local HEAD over
+# ssh + restart. Both `update` and `--update` work (`update` reserves that bare word — a session literally
+# named "update" is not a real case). To update THIS machine: `git pull`/checkout then `romp --refresh`.
 if [[ "${1:-}" == "update" || "${1:-}" == "--update" ]]; then
     shift
     exec romp-update "$@"

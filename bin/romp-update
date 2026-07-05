@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""romp-update — pull the latest romp on attached REMOTE kernels + restart them (`romp update [host...]`).
+"""romp-update — push THIS machine's committed romp to attached REMOTE kernels + restart them
+(`romp update [host...]`).
 
-The local kernel already reaches each attached host over its ssh tunnel; this asks it to `git pull --ff-only`
-+ restart the named remote(s) so they stop running stale code (the user 2026-07-04). With NO host it updates
-every attached remote that is out of date. (To update THIS machine, use your own `git pull` then
-`romp --refresh` — the command that "picks up new code" locally.)
+Peer-to-peer, no GitHub (the user 2026-07-04): the local kernel pushes its committed HEAD straight to each
+host over ssh and restarts it, so the remote runs exactly the local code — no `git pull` from origin, no round
+trip through GitHub. With NO host it updates every attached remote that is out of date (running a different
+commit than local). Uncommitted local edits are NOT sent — commit first. (To update THIS machine, use your own
+`git pull`/checkout then `romp --refresh`.)
 """
 import json
 import sys
