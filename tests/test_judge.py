@@ -1687,6 +1687,38 @@ class PlanRollup(unittest.TestCase):
         jd._reopen(s, g1)
         self.assertIsNone(s["nodes"][g1].get("settledAt"), "reopen clears the column-entry stamp")
 
+    def test_reopen_captures_the_prior_settle_as_the_delta_boundary(self):
+        # Delta-scoped summary (the user 2026-07-04): when a completed top is reopened by a follow-up, the
+        # settle that ENDED the prior episode is remembered as deltaSince, so the next distill scopes its
+        # takeaway to the follow-up's work rather than re-summarizing the whole trail the user has seen.
+        s = _store()
+        self._mint(s, "s1", T0, "G1")
+        self._done(s, "s2", T0 + 10, 1)                          # G1 done
+        self._mint(s, "s3", T0 + 20, "G2")                       # focus moves → G1 settles at T0+20
+        g1 = s["placements"]["s1"]
+        jd.rollup_status(s, session_closed=False)
+        self.assertEqual(s["nodes"][g1].get("settledAt"), T0 + 20)
+        jd._reopen(s, g1)                                        # a follow-up reopens it
+        self.assertEqual(s["nodes"][g1].get("deltaSince"), T0 + 20,
+                         "reopen remembers where the prior episode settled as the delta boundary")
+        # a SECOND cycle: re-complete, re-settle, reopen again → the boundary ADVANCES to the newer settle
+        self._done(s, "s4", T0 + 40, 1)
+        self._mint(s, "s5", T0 + 60, "G3")                       # focus moves off G1 again → re-settles at T0+60
+        jd.rollup_status(s, session_closed=False)
+        self.assertEqual(s["nodes"][g1].get("settledAt"), T0 + 60, "re-settle re-stamps at the newer instant")
+        jd._reopen(s, g1)
+        self.assertEqual(s["nodes"][g1].get("deltaSince"), T0 + 60,
+                         "each follow-up advances deltaSince → it always names the CURRENT episode's boundary")
+
+    def test_reopen_of_a_never_settled_node_stamps_no_boundary(self):
+        # A node reopened without ever having settled (no settledAt) gets no deltaSince — nothing to scope
+        # against, so the distiller keeps its whole-history behavior.
+        s = _store()
+        self._mint(s, "s1", T0, "G1")
+        g1 = s["placements"]["s1"]
+        jd._reopen(s, g1)
+        self.assertIsNone(s["nodes"][g1].get("deltaSince"), "no prior settle → no delta boundary")
+
     def test_legacy_completed_top_is_not_retroactively_stamped(self):
         # Safety: a top that settled BEFORE this fix has settledDone but no settledAt. The judge must NOT
         # back-stamp it (only the genuine first-settlement transition stamps), else every pre-existing
@@ -3611,6 +3643,40 @@ class GoalWorkText(unittest.TestCase):
         g = _mknode(s, "G")                                # default trail=[]
         self.assertEqual(jd._goal_work_text(s, {}, g["id"], 1000), "")
 
+    def _two_episode_segs(self):
+        # an original stretch (T0) and a follow-up stretch (T0+100), one goal spanning both
+        records = [uline(T0, "first ask", "u1", ps="typed"),
+                   aline(T0 + 10, "did the first thing", "a1", "u1", stop="end_turn"),
+                   uline(T0 + 100, "follow-up ask", "u2", "a1", ps="typed"),
+                   aline(T0 + 110, "did the follow-up thing", "a2", "u2", stop="end_turn")]
+        seg_by_id, segs = self._seg_by_id(records)
+        s = _store()
+        g = _mknode(s, "G"); g["trail"] = [sg["id"] for sg in segs]
+        return s, seg_by_id, g
+
+    def test_boundary_splices_the_followup_divider_between_episodes(self):
+        # deltaSince at T0+50 sits BETWEEN the two stretches → the divider marks where the user re-engaged,
+        # with the earlier work above it and the follow-up work below (the user 2026-07-04).
+        s, seg_by_id, g = self._two_episode_segs()
+        work = jd._goal_work_text(s, seg_by_id, g["id"], 10000, boundary_t=T0 + 50)
+        self.assertIn(jd.FOLLOWUP_DIVIDER, work, "a boundary with work on both sides splices the divider")
+        self.assertLess(work.index("did the first thing"), work.index(jd.FOLLOWUP_DIVIDER),
+                        "the earlier stretch is above the divider")
+        self.assertLess(work.index(jd.FOLLOWUP_DIVIDER), work.index("did the follow-up thing"),
+                        "the follow-up stretch is below the divider")
+
+    def test_no_divider_when_the_boundary_has_no_work_on_one_side(self):
+        s, seg_by_id, g = self._two_episode_segs()
+        after_all = jd._goal_work_text(s, seg_by_id, g["id"], 10000, boundary_t=T0 + 500)
+        self.assertNotIn(jd.FOLLOWUP_DIVIDER, after_all, "boundary past all work → nothing newer to scope, no divider")
+        before_all = jd._goal_work_text(s, seg_by_id, g["id"], 10000, boundary_t=T0 - 10)
+        self.assertNotIn(jd.FOLLOWUP_DIVIDER, before_all, "boundary before all work → it is all one episode, no divider")
+
+    def test_no_boundary_is_unchanged_behavior(self):
+        s, seg_by_id, g = self._two_episode_segs()
+        self.assertNotIn(jd.FOLLOWUP_DIVIDER, jd._goal_work_text(s, seg_by_id, g["id"], 10000),
+                         "boundary_t=None → the pre-fix whole-history join, no divider")
+
     def test_menu_history_labels_each_goal_by_number(self):
         records = [uline(T0, "first ask", "u1", ps="typed"), aline(T0 + 10, "did first", "a1", "u1", stop="end_turn"),
                    uline(T0 + 100, "second ask", "u2", "a1", ps="typed"),
@@ -3629,6 +3695,60 @@ class GoalWorkText(unittest.TestCase):
         s = _store()
         g1 = _mknode(s, "Goal one")                        # default trail=[] -> no captured segments
         self.assertEqual(jd._menu_history_text(s, {}, [g1], 1000), "")
+
+
+class DeltaScopedDistill(unittest.TestCase):
+    """End-to-end: _distill_session threads a goal's deltaSince into the distiller's <work>, so a top that
+    was finished, followed up, and finished AGAIN gets its takeaway scoped to the follow-up stretch (the
+    user 2026-07-04). The LLM call is stubbed to capture the exact work text it was handed."""
+
+    def setUp(self):
+        self._saved_state = jd.STATE
+        self._saved_distill = jd.distill_llm
+        self._td = tempfile.mkdtemp()
+        jd.STATE = Path(self._td)
+
+    def tearDown(self):
+        jd.STATE = self._saved_state
+        jd.distill_llm = self._saved_distill
+        shutil.rmtree(self._td, ignore_errors=True)
+
+    def _run(self, deltaSince):
+        records = [uline(T0, "first ask", "u1", ps="typed"),
+                   aline(T0 + 10, "did the first thing", "a1", "u1", stop="end_turn"),
+                   uline(T0 + 100, "follow-up ask", "u2", "a1", ps="typed"),
+                   aline(T0 + 110, "did the follow-up thing", "a2", "u2", stop="end_turn")]
+        segs = [sg for turn in build_session(records)["turns"] for sg in em.segments(turn)]
+        path = Path(self._td) / (SID + ".jsonl")
+        path.write_text("\n".join(json.dumps(r) for r in records) + "\n")
+        g = SID + ":g1"
+        store = {"rompUuid": SID, "seq": 1, "lastNode": g, "placements": {},
+                 "status": {g: "completed"},
+                 "nodes": {g: {"id": g, "text": "the goal", "parentId": None, "nodeComplete": True,
+                               "blocked": False, "cleared": False, "settledDone": True,
+                               "trail": [sg["id"] for sg in segs], "t": T0, "mt": T0 + 120,
+                               "summary": None, "doneWhy": "finished it"}}}
+        if deltaSince is not None:
+            store["nodes"][g]["deltaSince"] = deltaSince
+        jd.save_goals(SID, store)
+        captured = {}
+        jd.distill_llm = lambda goal_text, work_text, done_why="": (
+            captured.__setitem__("work", work_text) or "BACKGROUND: b.\nTAKEAWAY: t.\nSOURCE: m2")
+        jd._distill_session(SID, str(path), NOW)
+        return captured.get("work", ""), jd.load_goals(SID)["nodes"][g]
+
+    def test_deltaSince_scopes_the_distiller_input_to_the_followup(self):
+        work, node = self._run(deltaSince=T0 + 50)
+        self.assertIn(jd.FOLLOWUP_DIVIDER, work, "the distiller was handed the follow-up boundary marker")
+        self.assertLess(work.index("did the first thing"), work.index(jd.FOLLOWUP_DIVIDER))
+        self.assertLess(work.index(jd.FOLLOWUP_DIVIDER), work.index("did the follow-up thing"))
+        self.assertEqual(node["summary"], "t.", "the takeaway still lands on the card")
+
+    def test_no_deltaSince_feeds_the_whole_history_unmarked(self):
+        work, node = self._run(deltaSince=None)
+        self.assertNotIn(jd.FOLLOWUP_DIVIDER, work, "no boundary → the pre-fix whole-history input")
+        self.assertIn("did the first thing", work)
+        self.assertIn("did the follow-up thing", work)
 
 
 class KnownTargetContext(unittest.TestCase):
