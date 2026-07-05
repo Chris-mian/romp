@@ -109,6 +109,20 @@ def _turn_romp_injected(turn):
     return bool(a and a.get("author") == "romp")
 
 
+def _turn_user_interrupted(turn):
+    """True if the turn's last substantive atom is the CLI's interrupt record — the USER stopped this
+    turn. An interrupt is the user actively at the controls (they'll follow up themselves), NOT an
+    orphaned stall: auto-nudge must never fire off it (the user 2026-07-05: a nudge landed 37s after
+    their interrupt, opened a 2-minute turn on the old model, and held their parked /model pick behind
+    it). Tail-substantive mirrors _session_working's walk: skip trailing command confirmations and idle
+    spans (the states overlay lands an idle atom after the interrupt record)."""
+    atoms = turn.get("atoms") or []
+    i = len(atoms) - 1
+    while i >= 0 and (atoms[i].get("command") or atoms[i].get("type") == "idle"):
+        i -= 1
+    return i >= 0 and em.is_interrupt_record(atoms[i])
+
+
 def _last_plain_user_turn_t(turns):
     """Timestamp of the most recent GENUINE PLAIN human prompt on this thread — a turn whose trigger atom
     is author 'human' AND carries no `romp-goal-id` marker. That marker rides on BOTH a romp nudge and a
@@ -1267,6 +1281,10 @@ def _auto_nudge_tick(now, tmux):
         lt = turns[-1]
         if _session_working(turns):                      # still actively working (event model) → not orphaned
             continue
+        if _turn_user_interrupted(lt):                   # the USER stopped this turn (the CLI's interrupt record) →
+            continue                                     # they're driving, not stalled; never nudge off an interrupt
+        if _pending_ops.get(str(sid)):                   # the user has drive ops PARKED (a queued send / model pick) →
+            continue                                     # queued intent; a nudge would jump their queue (the user 2026-07-05)
         ls_val, ls_t = _last_state(sid)
         if ls_val in _PROGRESSING_STATES and ls_t >= lt.get("end", lt.get("t", 0)):
             # GENUINE-STOP GATE (the user 2026-06-25, obsidian): the AUTHORITATIVE state log (Stop hook / SDK
@@ -4554,14 +4572,17 @@ _interrupt_clicked = {}       # sid -> ts; event-cleared the moment the turn is 
 _model_switch_pending = {}
 
 
-def _interrupting(sid, open_now, now):
+def _interrupting(sid, open_now, now, turn_t=None):
     """A just-sent interrupt is IN FLIGHT: stop dispatched, turn not yet settled on disk. Event-cleared
-    the instant the turn is no longer open (the interrupt landed / the result settled); a 120s safety cap
-    covers a wedged turn that never settles, so the chip falls back to honest 'working'."""
+    the instant the turn is no longer open (the interrupt landed / the result settled) OR the open turn
+    STARTED after the click (`turn_t` > t0): a fresh turn is by definition not the one being interrupted,
+    so the stamp must not re-latch onto it — without this, a new turn opening inside the cap (the user
+    2026-07-05: an auto-nudge 37s after their stop) wore 'Interrupting…' for work nobody tried to stop.
+    A 120s safety cap covers a wedged turn that never settles, so the chip falls back to honest 'working'."""
     t0 = _interrupt_clicked.get(sid)
     if t0 is None:
         return False
-    if not open_now or now - t0 > 120:
+    if not open_now or now - t0 > 120 or (turn_t is not None and turn_t > t0):
         _interrupt_clicked.pop(sid, None)
         return False
     return True
@@ -4672,7 +4693,8 @@ def _session_chip(sid, path, session, tm, now):
     st = (tm or {}).get("state", "") or ""
     compacting = _compacting(sid, st, session, now, (tm or {}).get("since"))
     return ("compacting" if compacting else
-            "interrupting" if _interrupting(sid, open_now, now) else   # stop sent, turn not yet settled
+            "interrupting" if _interrupting(sid, open_now, now,
+                                            turns[-1]["t"] if turns else None) else   # stop sent, THAT turn not yet settled
             "blocked" if aerr else
             "awaiting" if st in _NEEDS_INPUT_STATES else               # a live permission/picker prompt
             "retrying" if st == "retrying" else

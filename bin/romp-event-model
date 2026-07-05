@@ -498,6 +498,19 @@ def synthesize_idle(states, atoms, now):
 
 
 # ═════════════════════════ SUBSTRATE-NEUTRAL: turns over atoms ═════════════════════════
+def is_interrupt_record(atom):
+    """The CLI's own stop record — a user atom reading '[Request interrupted by user]' (Esc) or
+    '[Request interrupted by user for tool use]' (a permission prompt dismissed). It is the interrupt
+    EVENT itself, written by the CLI whether the stop came from romp's Stop button or a raw Esc in the
+    pane — so it must END its turn (the user 2026-07-05: without this, the dangling user atom read as
+    an OPEN turn, so the chip latched 'Interrupting…' for the full 120s cap and _ops_gate parked a
+    /model pick against a session that was actually idle). Public: the kernel's auto-nudge gate keys
+    on the same event."""
+    if atom.get("type") != "user":
+        return False
+    return _text_of(_content(atom.get("message"))).startswith("[Request interrupted by user")
+
+
 def _is_opener(atom):
     """A genuine new prompt opens a turn: author human / sdk / peer / romp. `system`
     (`<task-notification>`) and tool_result-only atoms fold in, never open. A romp follow-up
@@ -558,6 +571,8 @@ def segment_turns(atoms, rompuuid):
             ended = sr in END_STOPS
         if atom["type"] == "user" and atom.get("command"):
             ended = True   # a slash-command invocation is self-contained → ends its turn so the NEXT prompt opens fresh
+        if atom["type"] == "user" and is_interrupt_record(atom):
+            ended = True   # the CLI's stop record — the interrupted turn is OVER; the next prompt opens fresh
     for turn in turns:
         _finalize_turn(turn, rompuuid)
     turns.sort(key=lambda t: t["t"])
@@ -582,6 +597,18 @@ def _finalize_turn(turn, rompuuid):
     # catches the bare-invocation case. (Working-during-execution is the live backend state's job, not this.)
     if not turn["ended"] and atoms[0].get("command") and not any(a["type"] == "assistant" for a in atoms):
         turn["ended"] = True
+    # an INTERRUPT record at the turn's tail ends it (the user 2026-07-05): the CLI's stop record is the
+    # interrupt event — the aborted assistant work before it never wrote an end_turn, so without this the
+    # turn read open forever (stuck 'Interrupting…' chip, /model picks parked against an idle session).
+    # Tail = last atom ignoring idle spans (a states overlay lands one after the record) and command
+    # confirmations (a completed exchange, same skip _session_working does). An interrupt record MID-turn
+    # (later work follows) means the turn resumed — that later work decides `ended`, so only the tail counts.
+    if not turn["ended"]:
+        i = len(atoms) - 1
+        while i >= 0 and (atoms[i].get("command") or atoms[i]["type"] == "idle"):
+            i -= 1
+        if i >= 0 and is_interrupt_record(atoms[i]):
+            turn["ended"] = True
     turn["id"] = _turn_id(rompuuid, turn)
 
 
