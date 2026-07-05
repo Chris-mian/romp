@@ -28,6 +28,24 @@ test("appendActive snaps only when the user is already near the bottom", () => {
     "tail-append follows the live edge only if the reader was already at the bottom");
 });
 
+// Scrolled-up re-renders anchor on a TURN, not a pixel offset (the user 2026-07-05): chatTail deep-fills
+// rewrite EARLIER cards in place — a running subagent's Task report above the viewport grows on every
+// update — so restoring the raw scrollTop let the text being read drift. appendActive now captures the
+// first turn visible at the viewport top (stable data-uuid) and puts THAT element back at its exact
+// offset after the rebuild; the raw scrollTop remains only as the eviction fallback.
+test("a scrolled-up append restores by turn ANCHOR (data-uuid), raw scrollTop only as fallback", () => {
+  const fn = RENDER.slice(RENDER.indexOf("function appendActive"), RENDER.indexOf("window.addEventListener(\"resize\", scheduleRestamp)"));
+  assert.match(fn, /const anchor = !stick && v \? captureScrollAnchor\(content, v\) : null;/,
+    "the anchor is captured BEFORE the rebuild, only when scrolled up");
+  assert.match(fn, /else if \(!\(v && restoreScrollAnchor\(content, v, anchor\)\)\) content\.scrollTop = before;/,
+    "anchor-relative restore first; the raw pixel offset only when the anchor was evicted");
+  assert.match(RENDER, /function captureScrollAnchor\(content: HTMLElement, v: View\)/);
+  assert.match(RENDER, /r\.bottom > cTop \+ 1/, "the anchor is the first turn still visible at the viewport top");
+  assert.match(RENDER, /querySelector\(`\[data-uuid="\$\{cssEscape\(a\.uuid\)\}"\]`\)/,
+    "the anchor re-resolves by its stable uuid after the rebuild");
+  assert.match(RENDER, /content\.scrollTop = yNow - a\.y;/, "the anchor turn keeps its exact on-screen offset");
+});
+
 // BY-ID landing only — NO time-based fallback anywhere (the user 2026-06-20: "shrink the 29%, then remove
 // the time fallback"). Prompt-intent jumps resolve by id (promptAnchorUuid → a user turn OR a peer's postal
 // card, see the kind-guard test below); the genuinely-unanchorable (autonomous / pruned-or-compacted) honest-
@@ -98,17 +116,17 @@ test("a deep-link into a HIDDEN chat pane defers the land until the pane is visi
   assert.match(RENDER, /window\.addEventListener\("resize", fire\)/);
 });
 
-// Tab-bar wrap must not jump the chat text (the user 2026-06-30). #tabbar (flex 0 0 auto) sits directly
-// above the flex 1 1 auto #content scroll area, so a working dot that wraps the strip 1→2 rows grows
-// #tabbar by a row and shoves #content — and every line under it — down. A ResizeObserver on #tabbar
-// cancels that by shifting #content.scrollTop by the same height delta (unless stuck to the bottom /
-// pane hidden). Source-pin.
-test("a ResizeObserver on #tabbar compensates #content.scrollTop by the height delta so text stays put", () => {
-  assert.match(RENDER, /const tb = document\.getElementById\("tabbar"\)/, "it observes the tab bar");
-  assert.match(RENDER, /const tro = new ResizeObserver/, "via a dedicated tab-bar ResizeObserver");
-  // shift scrollTop by (new - old) tab-bar height — only when not stuck to bottom and the pane is visible
+// Boxes above the transcript must not jump the chat text (the user 2026-06-30 for #tabbar; #ledger added
+// 2026-07-05). Both are flex 0 0 auto directly above the flex 1 1 auto #content scroll area, so a working
+// dot wrapping the strip — or a ledger item deepening the summary box — shoves #content and every line
+// under it down. A ResizeObserver per box cancels that by shifting #content.scrollTop by the same height
+// delta (unless stuck to the bottom / pane hidden). Source-pin.
+test("ResizeObservers on #tabbar AND #ledger compensate #content.scrollTop by the height delta", () => {
+  assert.match(RENDER, /for \(const boxId of \["tabbar", "ledger"\]\)/, "both boxes above the transcript are observed");
+  assert.match(RENDER, /const tro = new ResizeObserver/, "via a dedicated per-box ResizeObserver");
+  // shift scrollTop by (new - old) box height — only when not stuck to bottom and the pane is visible
   assert.match(RENDER, /content\.clientHeight > 0 && !nearBottom\(content\)/,
     "skipped when stuck to the bottom or the pane is hidden");
-  assert.match(RENDER, /content\.scrollTop \+= h - lastTabbarH/, "compensates by the exact height delta");
+  assert.match(RENDER, /content\.scrollTop \+= h - lastH/, "compensates by the exact height delta");
   assert.match(RENDER, /if \(v\) v\.scrollTop = content\.scrollTop/, "keeps the per-view saved scroll in sync");
 });

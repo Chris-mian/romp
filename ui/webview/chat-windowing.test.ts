@@ -92,13 +92,15 @@ test("syncView: compact / an in-place change re-renders the CURRENT window; a br
 });
 
 test("a new message while scrolled UP keeps the viewport put (no backwards jump)", () => {
-  // appendActive: at the bottom → follow it; scrolled up → restore the exact scrollTop after the sync, and
+  // appendActive: at the bottom → follow it; scrolled up → restore ANCHOR-relative after the sync (the
+  // turn at the viewport top keeps its exact offset — raw scrollTop only when the anchor was evicted; the
+  // user 2026-07-05, subagent report cards growing ABOVE the viewport moved the raw offset's meaning), and
   // tell syncView atBottom=stick so a compact append KEEPS winStart (content above the viewport unchanged)
   // instead of evicting the top — which (with the compact full-rebuild that resets scrollTop) was jumping
   // the view "backwards" when messages arrived (the user 2026-06-25).
   assert.match(RENDER, /const before = content\.scrollTop;/);
   assert.match(RENDER, /syncView\(activeId, stick\);/);
-  assert.match(RENDER, /else content\.scrollTop = before;/);
+  assert.match(RENDER, /else if \(!\(v && restoreScrollAnchor\(content, v, anchor\)\)\) content\.scrollTop = before;/);
   // the compact branch keeps winStart on a scrolled-up append
   assert.match(RENDER, /const keepTop = wasAtTail && atBottom === false;/);
   assert.match(RENDER, /const ws = keepTop \? \(v\.winStart \?\? 0\)/);

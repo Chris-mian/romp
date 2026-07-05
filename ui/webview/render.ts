@@ -3339,20 +3339,53 @@ function landActive(content: HTMLElement | null, v: View): void {
   scheduleRestamp();
 }
 
+// Scroll ANCHORING for scrolled-up re-renders (the user 2026-07-05). "Appended content is below the
+// viewport, so the raw scrollTop still means the same place" stopped being true once chatTail deep-fills
+// started rewriting EARLIER cards in place: a running subagent's Task report card ABOVE the viewport grows
+// on every update, so a raw pixel restore let the text being read drift down the screen (worst with many
+// subagents — every one of their updates re-renders the transcript). Anchor instead on the first rendered
+// turn still visible at the viewport top, keyed by its STABLE data-uuid, and after the rebuild put THAT
+// element back at its exact offset — then content changing anywhere else, above or below, cannot move what
+// the user is reading. The raw scrollTop stays as the fallback for an anchor the render window evicted.
+function captureScrollAnchor(content: HTMLElement, v: View): { uuid: string; y: number } | null {
+  const cTop = content.getBoundingClientRect().top;
+  const turns = v.el.querySelectorAll("[data-uuid]");
+  for (let i = 0; i < turns.length; i++) {
+    const t = turns[i] as HTMLElement;
+    const r = t.getBoundingClientRect();
+    if (r.bottom > cTop + 1) {                 // the first turn still (partly) visible at/below the viewport top
+      const uuid = t.dataset.uuid || "";
+      return uuid ? { uuid, y: r.top - cTop } : null;
+    }
+  }
+  return null;
+}
+
+function restoreScrollAnchor(content: HTMLElement, v: View, a: { uuid: string; y: number } | null): boolean {
+  if (!a) return false;
+  const el = v.el.querySelector(`[data-uuid="${cssEscape(a.uuid)}"]`) as HTMLElement | null;
+  if (!el) return false;
+  const yNow = el.getBoundingClientRect().top - content.getBoundingClientRect().top + content.scrollTop;
+  content.scrollTop = yNow - a.y;              // the anchor turn keeps its exact on-screen offset
+  return true;
+}
+
 // Live tail-append to the ACTIVE view. At the bottom → follow it. Scrolled UP reading → keep the viewport
 // exactly where it is: a new message must NOT move what you're looking at (the user 2026-06-25 — incoming
 // messages were jumping the view "backwards"; the compact path FULL-REBUILDS on append, clearing the DOM and
-// resetting scrollTop). Pass atBottom=false so the rebuild keeps winStart (content above the viewport
-// unchanged), then restore the exact scrollTop.
+// resetting scrollTop). Pass atBottom=false so the rebuild keeps winStart, then restore ANCHOR-relative
+// (captureScrollAnchor) — the raw scrollTop only as the eviction fallback.
 function appendActive() {
   const content = document.getElementById("content");
   if (!content || !activeId) { showActive(); return; }
+  const v = views.get(activeId);
   const stick = nearBottom(content);
   const before = content.scrollTop;
+  const anchor = !stick && v ? captureScrollAnchor(content, v) : null;
   syncView(activeId, stick);
   updateStatusline();
   if (stick) content.scrollTop = content.scrollHeight;
-  else content.scrollTop = before;   // appended content is BELOW the viewport → its position is unchanged
+  else if (!(v && restoreScrollAnchor(content, v, anchor))) content.scrollTop = before;
   scheduleRestamp();
 }
 
@@ -3368,27 +3401,31 @@ if (typeof ResizeObserver === "function") {
   const c = document.getElementById("content");
   if (c) ro.observe(c);
 }
-// Tab-bar wrap → keep the chat text visually anchored (the user 2026-06-30). #tabbar is `flex: 0 0 auto`
-// directly above the `flex: 1 1 auto` #content scroll area, so when a working dot appears and pushes the
-// strip from one row to two, #tabbar grows by a row and shoves #content down by that Δ — every line under
-// it jumped down. Compensate by shifting #content.scrollTop by the SAME Δ (box moved down by Δ → scroll the
-// content up by Δ to cancel it), so the line you were reading stays fixed on screen. Symmetric: when the
-// dot leaves and the strip collapses back to one row, Δ is negative and the text holds too. Skipped when
-// stuck to the bottom (that view follows the tail anyway) or when the pane is hidden (clientHeight 0).
+// Boxes ABOVE the transcript grow/shrink → keep the chat text visually anchored (the user 2026-06-30 for
+// #tabbar; extended to #ledger 2026-07-05). Both are `flex: 0 0 auto` directly above the `flex: 1 1 auto`
+// #content scroll area, so when one grows — a working dot wraps the tab strip to a second row, a ledger
+// item lands and deepens the summary box — it shoves #content down by that Δ and every line under it
+// jumps. Compensate by shifting #content.scrollTop by the SAME Δ (box moved down by Δ → scroll the content
+// up by Δ to cancel it), so the line being read stays fixed on screen. Symmetric on shrink (Δ negative).
+// Skipped when stuck to the bottom (that view follows the tail anyway) or when the pane is hidden
+// (clientHeight 0).
 if (typeof ResizeObserver === "function") {
-  let lastTabbarH = 0;
-  const tro = new ResizeObserver((entries) => {
-    const h = entries[0]?.contentRect?.height ?? 0;
-    const content = document.getElementById("content");
-    if (content && lastTabbarH && h !== lastTabbarH && content.clientHeight > 0 && !nearBottom(content)) {
-      content.scrollTop += h - lastTabbarH;
-      const v = activeId ? views.get(activeId) : null;
-      if (v) v.scrollTop = content.scrollTop;                 // keep the per-view saved position in sync
-    }
-    lastTabbarH = h;
-  });
-  const tb = document.getElementById("tabbar");
-  if (tb) tro.observe(tb);
+  for (const boxId of ["tabbar", "ledger"]) {
+    const box = document.getElementById(boxId);
+    if (!box) continue;
+    let lastH = -1;                                           // -1 = not yet measured (observe fires once on attach)
+    const tro = new ResizeObserver((entries) => {
+      const h = entries[0]?.contentRect?.height ?? 0;
+      const content = document.getElementById("content");
+      if (content && lastH >= 0 && h !== lastH && content.clientHeight > 0 && !nearBottom(content)) {
+        content.scrollTop += h - lastH;
+        const v = activeId ? views.get(activeId) : null;
+        if (v) v.scrollTop = content.scrollTop;               // keep the per-view saved position in sync
+      }
+      lastH = h;
+    });
+    tro.observe(box);
+  }
 }
 
 // Keep the rendered window over the viewport as the user scrolls — a steady scroll-back OR a scrollbar JUMP
