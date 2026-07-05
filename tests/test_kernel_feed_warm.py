@@ -25,7 +25,8 @@ class FeedCacheOnly(unittest.TestCase):
         self.assertIn("cold_parse = True", src)
         self.assertIn("_warm_fleet_bg(now)", src, "an unparsed living session kicks the background warmer")
         # the parse-derived enrichments are all gated on `ps` (cached) so the cold first paint is just cards
-        self.assertIn("if (ps and not who_working) else None", src)        # API-error floor
+        # API-error floor — gated on awaiting too since 2026-07-05 (yields to live background agents)
+        self.assertIn("if (ps and not who_working and not sess_awaiting_why) else None", src)
         self.assertIn("if ps else None", src)                              # awaiting badge
         self.assertIn("if not had_working and perm_top is None and ps:", src)   # provisional card (still gated on the cached parse)
 
