@@ -2725,7 +2725,7 @@ def _remote_public(r):
     return {"host": r["host"], "kernelPort": r["kernel_port"], "localPort": r["local_port"],
             "token": r.get("token") or "", "status": r.get("status") or "down",
             "detail": r.get("detail") or "", "sids": list(r.get("sids") or []),
-            "kernelSha": r.get("kernel_sha") or "", "localSha": _kernel_sha() or "",
+            "kernelSha": r.get("kernel_sha") or "", "localSha": (_local_head(short=True) or _kernel_sha() or ""),
             "outOfDate": _remote_out_of_date(r)}
 
 
@@ -2904,26 +2904,48 @@ def _sha_base(s):
     return (str(s or "").split("-", 1)[0]) or None
 
 
+_HEAD_CACHE = {"ts": 0.0, "full": None, "short": None}   # ~2s TTL: HEAD is read per-remote on every /tunnels poll
+
+
+def _local_head(short=False):
+    """This kernel's committed HEAD sha (FULL, or --short when short=True), or None outside a checkout — the
+    commit `romp update` PUSHES to a remote AND the reference the drift is measured against, so the push and
+    the drift check AGREE. (The old drift compared the remote to _kernel_sha()'s cached STARTUP sha while the
+    push sent live HEAD; once HEAD moved ahead of the running kernel they never reconciled and the "behind"
+    banner never cleared — the user 2026-07-04.) Cached ~2s since it's read on every /tunnels poll but HEAD
+    rarely moves."""
+    now = time.time()
+    if now - _HEAD_CACHE["ts"] > 2:
+        full = short_s = None
+        try:
+            r = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"],
+                               capture_output=True, text=True, timeout=3)
+            if r.returncode == 0:
+                full = r.stdout.strip() or None
+            if full:
+                s = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--short", "HEAD"],
+                                   capture_output=True, text=True, timeout=3)
+                short_s = (s.stdout.strip() if s.returncode == 0 else "") or full[:8]
+        except Exception:
+            pass
+        _HEAD_CACHE.update(ts=now, full=full, short=short_s)
+    return _HEAD_CACHE["short"] if short else _HEAD_CACHE["full"]
+
+
+def _shas_agree(a, b):
+    """Whether two git shas name the SAME commit, tolerant of differing --short lengths (one a prefix of the
+    other — the remote and local shorten independently). Both must be non-empty; '-dirty' is ignored."""
+    a, b = _sha_base(a), _sha_base(b)
+    return bool(a and b and (a.startswith(b) or b.startswith(a)))
+
+
 def _remote_out_of_date(r):
-    """True iff this remote is running a DIFFERENT commit than the LOCAL kernel — i.e. an update (push the
-    local code + restart) would change it. Both shas must be known; the '-dirty' suffix is ignored (same-commit
-    local edits are not a remote-version problem). The comparison is against THIS kernel's HEAD (not origin):
-    `romp update` pushes local→remote peer-to-peer, so "up to date" means "matches my local", not "matches
-    GitHub" (the user 2026-07-04)."""
-    rsha = _sha_base(r.get("kernel_sha"))
-    lsha = _sha_base(_kernel_sha())
-    return bool(rsha and lsha and rsha != lsha)
-
-
-def _local_head():
-    """This kernel's committed HEAD (FULL sha), or None outside a checkout — the exact commit `romp update`
-    pushes to a remote. Distinct from _kernel_sha()'s SHORT+'-dirty' form (used for display/drift)."""
-    try:
-        r = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"],
-                           capture_output=True, text=True, timeout=3)
-        return r.stdout.strip() if r.returncode == 0 else None
-    except Exception:
-        return None
+    """True iff this remote is running a DIFFERENT commit than the local kernel's HEAD — i.e. a push would
+    change it. Compared against the LIVE HEAD (what `_update_remote` actually pushes), NOT the kernel's cached
+    startup sha, so pushing HEAD makes the remote match HEAD and the flag CLEARS afterward (the user 2026-07-04
+    — mixing the cached compare with a live-HEAD push is exactly why the banner never went away)."""
+    return bool(r.get("kernel_sha") and _local_head(short=True)
+                and not _shas_agree(r.get("kernel_sha"), _local_head(short=True)))
 
 
 _P2P_REF = "romp-p2p-sync"   # scratch branch the local kernel force-pushes its HEAD to on the remote
@@ -2945,14 +2967,11 @@ def _update_remote(host):
     host = str(host or "").strip()
     if not host:
         return False, "no host"
-    lsha = _kernel_sha()
-    if not lsha:
-        return False, "local kernel isn't a git checkout — nothing to push"
-    if lsha.endswith("-dirty"):
-        return False, "commit your local changes first — update pushes COMMITTED code (local tree is dirty)"
     lfull = _local_head()
     if not lfull:
-        return False, "couldn't resolve the local HEAD to push"
+        return False, "local kernel isn't a git checkout — nothing to push"
+    # We push the committed HEAD; uncommitted local edits are not sent ("just take what is committed on local"
+    # — the user 2026-07-04). A dirty local tree is NOT refused: it just means HEAD, not the working tree.
     # (1) discover the remote clone + pre-check it's clean
     disc = (
         'R=""; for d in "$HOME/GitRepos/romp" "$HOME/romp" "$HOME/code/romp" "$HOME/src/romp"; do '
@@ -2974,7 +2993,7 @@ def _update_remote(host):
     if rdirty:
         return False, "remote %s has uncommitted changes — commit or discard them there first (won't clobber)" % host
     if rhead and rhead == lfull:
-        return True, "already up to date (%s)" % _sha_base(lsha)
+        return True, "already up to date (%s)" % (_local_head(short=True) or lfull[:8])
     # (2) push local HEAD to a scratch ref on the remote (non-checked-out → no denyCurrentBranch issue)
     env = dict(os.environ, GIT_SSH_COMMAND="%s %s" % (SSH_BIN, " ".join(_SSH_OPTS)))
     push_url = "%s:%s" % (host, rdir)
@@ -3007,7 +3026,7 @@ def _update_remote(host):
     tag, _, rest = aout.partition(":")
     tag, rest = tag.strip(), rest.strip()
     if tag == "SYNCED":
-        return True, "synced to %s + restarting" % (rest or _sha_base(lsha))
+        return True, "synced to %s + restarting" % (rest or _local_head(short=True) or "HEAD")
     if tag == "DIVERGED":
         return False, "remote %s has diverged (its own commits) — not clobbering; reconcile it there first" % host
     if tag == "RESETFAIL":
@@ -9785,17 +9804,24 @@ def _stale_block(v):
             + "<script>" + _STALE_JS.replace("__LOADEDVER__", str(int(v))) + "</script>")
 
 
-# REMOTE-DRIFT banner (the user 2026-07-04): a proactive "would you like to update the remote?" prompt. On
-# connect / kernel restart it polls /tunnels; when any UP remote is running an older commit than this kernel
-# (outOfDate) it pops a top pill offering to pull+restart it behind the scenes (POST /tunnels/update). Mirrors
-# the #rstale reload banner, sitting just below it so the two never collide. Dismiss suppresses only the
-# CURRENT set of stale hosts — a newly-drifted host re-prompts.
+# REMOTE-DRIFT banner (the user 2026-07-04): a proactive "push your build to the remote?" prompt with LIVE
+# PROGRESS. It polls /tunnels; when any UP remote is on a different commit than this kernel's HEAD (outOfDate)
+# it pops a top pill (mirrors the #rstale reload banner, just below it). Clicking Push runs the peer-to-peer
+# push behind the scenes and the banner STAYS UP through the whole thing — a spinner + status while pushing,
+# "waiting for it to restart" while the remote comes back, "✓ Up to date" on success, or a specific persistent
+# error on failure — so you always know what's happening and what to do (the earlier version flipped straight
+# back to the prompt with no feedback, so a push looked like it did nothing). Dismiss suppresses only the
+# CURRENT stale set — a newly-drifted host re-prompts.
 _RDRIFT_CSS = (
     "#rdrift{position:fixed;top:60px;left:50%;transform:translateX(-50%);z-index:99998;display:none;"
-    "align-items:center;gap:12px;max-width:92vw;background:#2b2d30;border:1px solid #4a4d51;"
+    "align-items:center;gap:10px;max-width:92vw;background:#2b2d30;border:1px solid #4a4d51;"
     "border-radius:10px;padding:10px 14px;color:#e6e6e6;box-shadow:0 10px 30px #0000008a;"
     "font:13px/1.4 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}"
     "#rdrift.show{display:flex}#rdrift .rd-msg{font-weight:500}"
+    "#rdrift .rd-spin{width:14px;height:14px;flex:0 0 auto;display:none;"
+    "background:url(/media/romp-swirl-glyph.svg) center/contain no-repeat;animation:rd-spin 2.4s linear infinite}"
+    "#rdrift.rd-busy .rd-spin{display:block}"
+    "@keyframes rd-spin{to{transform:rotate(-360deg)}}"
     "#rdrift button{font:inherit;cursor:pointer;border-radius:6px;padding:5px 11px;"
     "border:1px solid transparent;white-space:nowrap}"
     "#rdrift .rd-upd{background:var(--accent,#9cd2ff);color:var(--accent-fg,#0c1a2e);font-weight:600}"
@@ -9803,31 +9829,43 @@ _RDRIFT_CSS = (
     "#rdrift .rd-dismiss{background:none;color:#9aa0a6;border-color:#4a4d51}"
     "#rdrift .rd-dismiss:hover{color:#e6e6e6}")
 _RDRIFT_HTML = (
-    "<div id=rdrift role=alert><span class=rd-msg></span>"
+    "<div id=rdrift role=alert><span class=rd-spin aria-hidden=true></span><span class=rd-msg></span>"
     "<button class=rd-upd id=rdrift-upd>Push</button>"
     "<button class=rd-dismiss id=rdrift-dismiss>Dismiss</button></div>")
 _RDRIFT_JS = (
     "(function(){var box=document.getElementById('rdrift');if(!box)return;"
     "var msg=box.querySelector('.rd-msg'),up=document.getElementById('rdrift-upd'),dm=document.getElementById('rdrift-dismiss');"
-    "var stale=[],dismissed='';"
+    "var stale=[],dismissed='',phase='idle',pushed=[],vtick=0;"   # phase: idle|pushing|verifying|failed|done
     "function key(hs){return hs.slice().sort().join(',');}"
-    # push framing (the user 2026-07-04): the mechanism is a peer-to-peer PUSH of your local build to the remote,
-    # so the prompt reads like the reload banner but asks "push your version to it?" instead of "reload?".
-    "function label(hs){return hs.length===1?(hs[0]+' is on an older romp build. Push your version to it?')"
+    # ONE renderer for every state: message + spinner + which buttons show. Keeps the banner UP the whole flow.
+    "function set(text,busy,showPush,showDismiss){msg.textContent=text;box.classList.toggle('rd-busy',!!busy);"
+    "up.style.display=showPush?'':'none';dm.style.display=showDismiss?'':'none';box.classList.add('show');}"
+    "function prompt(hs){return hs.length===1?(hs[0]+' is on an older romp build. Push your version to it?')"
     ":(hs.length+' remotes are on an older romp build. Push your version? ('+hs.join(', ')+')');}"
     "function check(){fetch('/tunnels',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){"
     "var ts=(d&&d.tunnels)||[];stale=ts.filter(function(t){return t.status==='up'&&t.outOfDate;}).map(function(t){return t.host;});"
-    "if(stale.length&&key(stale)!==dismissed){msg.textContent=label(stale);up.disabled=false;up.textContent='Push';box.classList.add('show');}"
+    "if(phase==='pushing'||phase==='failed'||phase==='done')return;"   # an active/terminal state owns the banner
+    "if(phase==='verifying'){var still=pushed.filter(function(h){return stale.indexOf(h)>=0;});"
+    "if(!still.length){set('\\u2713 Up to date.',false,false,false);phase='done';"
+    "setTimeout(function(){if(phase==='done'){phase='idle';box.classList.remove('show');}},2500);return;}"
+    "if(++vtick>18){set('Pushed, but '+still.join(', ')+' still reports the old build \\u2014 it may still be restarting, or check it directly.',false,false,true);phase='failed';return;}"
+    "set('Pushed \\u2014 waiting for '+still.join(', ')+' to restart\\u2026',true,false,false);return;}"
+    "if(stale.length&&key(stale)!==dismissed){up.textContent='Push';up.disabled=false;set(prompt(stale),false,true,true);}"
     "else if(!stale.length){box.classList.remove('show');}}).catch(function(){});}"
     "up.onclick=function(){var hosts=stale.slice();if(!hosts.length){box.classList.remove('show');return;}"
-    "up.disabled=true;up.textContent='Pushing\\u2026';var done=0,fails=[];"
+    "phase='pushing';vtick=0;up.disabled=true;up.textContent='Pushing\\u2026';"
+    "set('Pushing your build to '+hosts.join(', ')+' over SSH\\u2026',true,false,false);"
+    "var done=0,fails=[],oks=[];"
     "hosts.forEach(function(h){fetch('/tunnels/update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:h})})"
-    ".then(function(r){return r.json();}).then(function(x){if(!x||!x.ok)fails.push(h+': '+((x&&x.detail)||'failed'));})"
-    ".catch(function(){fails.push(h+': unreachable');}).then(function(){done++;if(done===hosts.length){"
-    "if(fails.length){up.disabled=false;up.textContent='Retry';alert('Some pushes failed:\\n'+fails.join('\\n'));}"    # fail LOUDLY (CLAUDE.md)
-    "else{box.classList.remove('show');setTimeout(check,3000);}}});});};"
-    "dm.onclick=function(){dismissed=key(stale);box.classList.remove('show');};"
-    "check();setInterval(check,30000);})();")
+    ".then(function(r){return r.json();}).then(function(x){if(x&&x.ok){oks.push(h);}else{fails.push(h+': '+((x&&x.detail)||'failed'));}})"
+    ".catch(function(){fails.push(h+': couldn\\u2019t reach the kernel');})"
+    ".then(function(){done++;if(done!==hosts.length)return;up.textContent='Retry';"
+    "if(fails.length&&!oks.length){up.disabled=false;set('Push failed \\u2014 '+fails.join('; '),false,true,true);phase='failed';}"    # fail LOUDLY (CLAUDE.md)
+    "else if(fails.length){up.disabled=false;pushed=oks;set('Pushed '+oks.join(', ')+'; failed '+fails.join('; '),false,true,true);phase='failed';}"
+    "else{pushed=oks;phase='verifying';vtick=0;set('Pushed to '+oks.join(', ')+'. Waiting for '+(oks.length===1?'it':'them')+' to restart\\u2026',true,false,false);setTimeout(check,1500);}"
+    "});});};"
+    "dm.onclick=function(){dismissed=key(stale);phase='idle';box.classList.remove('show');};"
+    "check();setInterval(check,4000);})();")   # 4s so progress feels live (was 30s)
 
 
 def _rdrift_block():

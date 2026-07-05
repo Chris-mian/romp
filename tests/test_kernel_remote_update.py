@@ -21,11 +21,11 @@ class _R:
 
 class VersionDrift(unittest.TestCase):
     def setUp(self):
-        self._sha = km._SHA
-        km._SHA = "abc1234"     # pin THIS kernel's sha
+        self._hc = dict(km._HEAD_CACHE)
+        km._HEAD_CACHE.update(ts=9e18, full="abc12340000", short="abc1234")   # pin local HEAD, skip the subprocess
 
     def tearDown(self):
-        km._SHA = self._sha
+        km._HEAD_CACHE.clear(); km._HEAD_CACHE.update(self._hc)
 
     def test_sha_base_strips_dirty(self):
         self.assertEqual(km._sha_base("abc1234-dirty"), "abc1234")
@@ -33,21 +33,27 @@ class VersionDrift(unittest.TestCase):
         self.assertIsNone(km._sha_base(""))
         self.assertIsNone(km._sha_base(None))
 
-    def test_out_of_date_only_on_a_different_commit(self):
-        self.assertTrue(km._remote_out_of_date({"kernel_sha": "def5678"}), "a different commit → out of date")
-        self.assertFalse(km._remote_out_of_date({"kernel_sha": "abc1234"}), "same commit → current")
-        # a LOCALLY-dirty tree on the same commit must NOT read as drift (the '-dirty' is ignored)
-        km._SHA = "abc1234-dirty"
-        self.assertFalse(km._remote_out_of_date({"kernel_sha": "abc1234"}), "same commit, local dirty → current")
-        km._SHA = "abc1234"
-        self.assertFalse(km._remote_out_of_date({}), "unknown remote sha → not flagged (no false prompt)")
+    def test_shas_agree_tolerates_different_short_lengths(self):
+        self.assertTrue(km._shas_agree("abc1234", "abc1234567"), "one a prefix of the other → same commit")
+        self.assertTrue(km._shas_agree("abc1234-dirty", "abc1234"), "'-dirty' ignored")
+        self.assertFalse(km._shas_agree("abc1234", "def5678"))
+        self.assertFalse(km._shas_agree("abc1234", ""))
+
+    def test_drift_is_measured_against_live_HEAD_and_CLEARS_when_matched(self):
+        # the fix (the user 2026-07-04): drift compares the remote to the LIVE HEAD — the SAME thing the push
+        # sends — so once the remote is pushed to HEAD the flag goes away (it used to compare to the kernel's
+        # cached startup sha while the push sent HEAD, so it never reconciled → banner stuck forever).
+        self.assertTrue(km._remote_out_of_date({"kernel_sha": "def5678"}), "different commit → out of date")
+        self.assertFalse(km._remote_out_of_date({"kernel_sha": "abc1234"}), "remote pushed to HEAD → CLEARS")
+        self.assertFalse(km._remote_out_of_date({"kernel_sha": "abc12345"}), "same commit, longer short → clears")
+        self.assertFalse(km._remote_out_of_date({}), "unknown remote sha → not flagged")
         self.assertFalse(km._remote_out_of_date({"kernel_sha": ""}), "blank remote sha → not flagged")
 
     def test_remote_public_exposes_version_fields(self):
         pub = km._remote_public({"host": "jetty", "kernel_port": 7433, "local_port": 8801, "token": "t",
                                  "status": "up", "sids": [], "kernel_sha": "def5678"})
         self.assertEqual(pub["kernelSha"], "def5678")
-        self.assertEqual(pub["localSha"], "abc1234")
+        self.assertEqual(pub["localSha"], "abc1234", "localSha is the live HEAD short (what a push would send)")
         self.assertTrue(pub["outOfDate"])
 
 
@@ -59,11 +65,12 @@ class UpdateRemote(unittest.TestCase):
     RHEAD = "2" * 40                         # a remote at a DIFFERENT (older) commit
 
     def setUp(self):
-        self._run, self._sha = km.subprocess.run, km._SHA
-        km._SHA = "1111111"                  # a CLEAN local short sha (so _kernel_sha doesn't subprocess)
+        self._run, self._hc = km.subprocess.run, dict(km._HEAD_CACHE)
+        km._HEAD_CACHE.update(ts=0.0, full=None, short=None)   # force _local_head to consult the mocked git
 
     def tearDown(self):
-        km.subprocess.run, km._SHA = self._run, self._sha
+        km.subprocess.run = self._run
+        km._HEAD_CACHE.clear(); km._HEAD_CACHE.update(self._hc)
 
     def _wire(self, rhead=None, dirty="", disc_out=None, push_rc=0, push_err="", apply_out="SYNCED:abcdef0"):
         """Install a dispatching subprocess mock; returns the list of argv it saw."""
@@ -106,11 +113,24 @@ class UpdateRemote(unittest.TestCase):
         self.assertTrue(ok)
         self.assertIn("already up to date", detail)
 
-    def test_refuses_when_the_local_tree_is_dirty(self):
-        km._SHA = "1111111-dirty"
+    def test_a_dirty_local_is_not_refused_it_pushes_committed_head(self):
+        # "just take what is committed on local" (the user 2026-07-04): a dirty working tree is NOT a blocker —
+        # _update_remote pushes the committed HEAD and never asks you to commit first.
+        self._wire(apply_out="SYNCED:abcdef0")
+        ok, detail = km._update_remote("jetty")
+        self.assertTrue(ok)
+        self.assertNotIn("commit", detail.lower())
+
+    def test_no_local_checkout_fails_cleanly(self):
+        def fake(argv, **kw):
+            if argv[0] == "git" and "rev-parse" in argv:
+                return _R(rc=1)                            # not a git checkout
+            return _R()
+        km.subprocess.run = fake
+        km._HEAD_CACHE.update(ts=0.0, full=None, short=None)
         ok, detail = km._update_remote("jetty")
         self.assertFalse(ok)
-        self.assertIn("commit your local changes first", detail)
+        self.assertIn("git checkout", detail)
 
     def test_refuses_a_dirty_remote_without_clobbering(self):
         self._wire(dirty="M")
@@ -173,6 +193,17 @@ class UpdateUI(unittest.TestCase):
         self.assertIn("/tunnels/update", km._RDRIFT_JS)
         self.assertIn("outOfDate", km._RDRIFT_JS)
         self.assertIn("_rdrift_block()", inspect_src())
+
+    def test_drift_banner_shows_live_progress_success_and_failure(self):
+        # the user 2026-07-04: the banner must stay up through the push with a spinner + status, a success
+        # confirmation, and a persistent actionable error — not silently flip back to the prompt.
+        self.assertIn("rd-spin", km._RDRIFT_HTML)
+        self.assertIn("romp-swirl-glyph.svg", km._RDRIFT_CSS)   # the spinner is the romp loader glyph
+        self.assertIn("Pushing your build", km._RDRIFT_JS, "a 'pushing…' progress message")
+        self.assertIn("waiting for", km._RDRIFT_JS, "a 'waiting for it to restart' verify phase")
+        self.assertIn("Up to date", km._RDRIFT_JS, "a success confirmation")
+        self.assertIn("Push failed", km._RDRIFT_JS, "a persistent, specific failure message")
+        self.assertIn("phase", km._RDRIFT_JS, "a state machine drives the flow")
 
     def test_popover_shows_behind_and_a_push_button(self):
         self.assertIn("behind", km._LANDING_REMOTES_JS)
