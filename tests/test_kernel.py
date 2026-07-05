@@ -1242,6 +1242,61 @@ class ViewBuilder(unittest.TestCase):
         self.assertTrue(km._live_replanned({"seg1#live": None}, "seg1"))
         self.assertFalse(km._live_replanned({"seg1#p": "s:g1"}, "seg1"))
 
+    def test_feed_api_error_floor_yields_to_awaiting_background_agents(self):
+        # the user 2026-07-05 (the jld_audit inconsistency): the main thread hit content-filter API errors
+        # while two background agents kept working. The feed card wore a red "API error" + "stalled" chip
+        # while the chat chip said Working — build_feed's _api_error read was the ONE without the awaiting
+        # gate (_session_chip and build_session both have it), and the api_top floor then suppressed the
+        # very "Awaiting background agents" flip that told the truth, which also kept col=="working" so the
+        # stalled chip showed. One formula: awaiting wins; the floor applies only when truly dead in the water.
+        recs = [uline(T0, "audit the essay structure", "u1", ps="typed"),
+                aline(T0 + 20, "Dispatching two reviewers.", "a1", "u1", tools=("Task",), stop="tool_use"),
+                apierr_line(NOW - 60, "e1", "a1",
+                            text="API Error: 400 Output blocked by content filtering policy", status=400,
+                            category="invalid_request")]
+        self.tpath.write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+        self._warm_tpath()
+        g1 = SID + ":g1"
+        self._goal_store({g1: {"id": g1, "text": "Audit the essay structure", "parentId": None,
+                               "nodeComplete": False, "blocked": False, "cleared": False,
+                               "trail": [], "t": T0}}, {g1: "working"}, last=g1)
+        (jd.STATE / "auto-nudge.json").write_text(json.dumps(
+            {"enabled": True, "nudged": {g1: {"count": 1, "failed": True}}}))
+        km._autonudge_cache.clear(); km._nudge_times_cache.clear()
+        # the LIVE SubagentStart/Stop count rides the backend snapshot (the designed signal) — 2 agents running
+        km._tmux_sessions = lambda: {SID: {"state": "waiting", "since": NOW - 100, "model": "",
+                                           "effort": "", "context": None, "compactPct": None, "color": None,
+                                           "subagents": 2}}
+        c = {a["itemId"]: a for a in km.build_feed(NOW)["asks"]}[g1]
+        self.assertIn("2 background agents", (c.get("awaiting") or {}).get("why") or "",
+                      "the card says the agents are still working — the session is in motion")
+        self.assertIsNone(c.get("blocked"), "no red apiError floor while agents run")
+        self.assertFalse(c.get("nudgeFailed"), "no stalled chip while agents run")
+        # control: the SAME transcript with no live agents is genuinely dead in the water → the floor applies
+        km._tmux_sessions = lambda: {SID: {"state": "waiting", "since": NOW - 100, "model": "",
+                                           "effort": "", "context": None, "compactPct": None, "color": None}}
+        c = {a["itemId"]: a for a in km.build_feed(NOW)["asks"]}[g1]
+        self.assertEqual((c.get("blocked") or {}).get("state"), "apiError",
+                         "without agents in flight the red badge + Retry still surface")
+        self.assertFalse(c.get("awaiting"))
+
+    def test_awaiting_survives_an_interleaved_turn_via_live_subagent_count(self):
+        # the supersede hole itself (the user 2026-07-05): the overlay's awaiting:true is treated as stale
+        # once ANY later 'working' state row lands — but a mid-wait turn (the auto-nudge status check)
+        # writes exactly that row while the agents still run. The live snapshot count outranks the file.
+        sdir = jd.STATE / "states"; sdir.mkdir(parents=True, exist_ok=True)
+        (sdir / (SID + ".jsonl")).write_text(
+            json.dumps({"t": NOW - 300, "awaiting": True, "why": "2 background task(s) running"}) + "\n"
+            + json.dumps({"t": NOW - 60, "state": "working"}) + "\n"     # the nudge turn interleaving
+            + json.dumps({"t": NOW - 30, "state": "waiting"}) + "\n")
+        ov = km._states_awaiting_overlay(SID)
+        self.assertFalse(ov and ov.get("awaiting"), "the overlay alone still reads superseded (the hole)")
+        km._tmux_sessions = lambda: {SID: {"state": "waiting", "since": NOW - 100, "model": "",
+                                           "effort": "", "context": None, "compactPct": None, "color": None,
+                                           "subagents": 2}}
+        self.assertIn("2 background agents", km._session_awaiting(SID, str(self.tpath), True) or "",
+                      "the live SubagentStart/Stop count restores the truth over the superseded overlay")
+
     def test_card_carries_the_auto_nudge_history(self):
         # the stalled chip's EVIDENCE (the user 2026-07-02): a card whose goal the auto-nudge ledger has
         # fired on carries nudged {count, times} — the chip tooltip + modal line say romp DID follow up,

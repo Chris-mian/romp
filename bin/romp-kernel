@@ -3661,6 +3661,16 @@ def _session_awaiting(sid, path, idle):
          launched that is still in flight. Postal peer-waits are handled separately in build_feed."""
     if not idle:
         return None
+    # Source 0 (the user 2026-07-05, jld_audit): the backend snapshot's LIVE subagent count — the designed
+    # SubagentStart/Stop signal, held in memory, independent of any turn. It outranks the overlay because
+    # the overlay's stale-supersede heuristic reads ANY later 'working' state row as proof awaiting ended —
+    # but a turn interleaving mid-wait (the auto-nudge asking for status) writes exactly that row while the
+    # agents are still running, falsely clearing the verdict; the API-error floor then painted a red
+    # "API error" + "stalled" card over a session with two agents mid-flight. Tmux sessions carry no
+    # subagents field → None → fall through unchanged.
+    n = (_tmux_sessions().get(str(sid)) or {}).get("subagents")
+    if n:
+        return "%d background agent%s still working" % (n, "" if n == 1 else "s")
     ov = _states_awaiting_overlay(sid)
     if ov is not None:                                # the SDK producer is writing overlay records → trust it
         return (ov.get("why") or "waiting on dispatched work") if ov.get("awaiting") else None
@@ -6290,6 +6300,9 @@ def build_feed(now, tmux=None):
         ps = _parse_cached(s["path"])
         if ps is None:
             cold_parse = True
+        else:
+            ps = _merge_live_atoms(ps, fsid)         # the same LIVE-MERGED session the chat chip + timeline lane read
+            #                                          (the feed was the one surface deriving from the bare cache, 2026-07-05)
         try:                                             # WORKING from the EVENT MODEL (open turn), not tmux state —
             who_working = _session_working(ps["turns"]) if ps else False   # one backend-agnostic dot signal
         except Exception:
@@ -6437,10 +6450,21 @@ def build_feed(now, tmux=None):
                 f = nodes[f]["parentId"]
             if f in nodes and status.get(f) not in ("completed", "cleared"):
                 perm_top = f
+        # AWAITING signal (event-model, the user 2026-06-22): the session is paused on work it dispatched or
+        # delegated — a WORKING flavor, never needs-input. Sourced from the SDK producer's states overlay
+        # (api, branch headless-sdk-backend) or the transcript bg-tool stopgap; None when actively working.
+        # Computed BEFORE the API-error floor, which must yield to it (the user 2026-07-05).
+        sess_awaiting_why = _session_awaiting(fsid, s["path"], not who_working) if ps else None   # cache-only: fills in after the warm
         # API-error floor: a session stopped on an API error (transcript isApiErrorMessage, event-based)
         # floors its focus top-goal under BLOCKED with an apiError reason → the feed card shows a red
         # "API error" badge + a Retry button (the user 2026-06-16). Same focus-goal walk as the perm floor.
-        aerr = _api_error(s["path"]) if (ps and not who_working) else None   # cache-only: the badge fills in after the warm
+        # GATED on awaiting, like _session_chip (4699) and build_session (5512) — this was the ONE ungated
+        # _api_error read (the user 2026-07-05, jld_audit): a main thread erroring BETWEEN agent waits is
+        # still IN MOTION, but the raw floor made the feed card wear red "API error" + "stalled" while the
+        # chat chip said Working — and api_top then suppressed the very awaiting flip that would have told
+        # the truth. One formula, one truth: awaiting wins; the floor applies only to a session truly dead
+        # in the water.
+        aerr = _api_error(s["path"]) if (ps and not who_working and not sess_awaiting_why) else None   # cache-only: fills in after the warm
         api_top = None
         if aerr:
             f = store.get("lastNode")
@@ -6448,10 +6472,6 @@ def build_feed(now, tmux=None):
                 f = nodes[f]["parentId"]
             if f in nodes and status.get(f) not in ("completed", "cleared"):   # rollup status, not raw nodeComplete (see perm floor)
                 api_top = f
-        # AWAITING signal (event-model, the user 2026-06-22): the session is paused on work it dispatched or
-        # delegated — a WORKING flavor, never needs-input. Sourced from the SDK producer's states overlay
-        # (api, branch headless-sdk-backend) or the transcript bg-tool stopgap; None when actively working.
-        sess_awaiting_why = _session_awaiting(fsid, s["path"], not who_working) if ps else None   # cache-only: fills in after the warm
         plain_user_t = _last_plain_user_turn_t(ps["turns"]) if ps else 0   # re-check: a plain reply after a soft block de-urgents it
         echo_send_t = _latest_human_send_t(fsid)     # a JUST-SENT reply still in the echo (not yet a turn)
         plain_user_t = max(plain_user_t, echo_send_t)  # → instant, not a push or two later (the user 2026-06-29)
