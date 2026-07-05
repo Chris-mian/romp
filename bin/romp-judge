@@ -1009,8 +1009,9 @@ def save_goals(fsid, store):
 def load_goal_archive(fsid):
     """The CLEARED-goal archive for a session (goals-archive/<fsid>.json) — dismissed top goals + their
     subtrees moved out of the live store by the kernel's compaction sweep. Same shape as the live store
-    (nodes/status). The judge never reads this (its placements dedup + view-cleared sealing already keep it
-    from re-minting an archived node); only the kernel's undo-clear restore and the ledger merge touch it."""
+    (nodes/status). The judge reads this ONLY as read-only context (_cleared_context, for the live re-plan's
+    <recently-cleared> block) — its placements dedup + view-cleared sealing keep it from ever re-minting an
+    archived node; the kernel's undo-clear restore and the ledger merge are the mutating readers."""
     try:
         return json.loads((GOALARCHDIR / (fsid + ".json")).read_text())
     except Exception:
@@ -1643,7 +1644,8 @@ def _sync_declared_plan(store, session, seg_id, seg_t):
 
 
 def plan_llm(segment_text, menu_text, model=None, effort=None, human=False, nudge=False,
-             goal_history="", goal_num=None, agent_open_nums=None, followup=False):
+             goal_history="", goal_num=None, agent_open_nums=None, followup=False,
+             live=False, cleared_context=""):
     """One JSON goal-plan from the TRIAGE-tier model (Sonnet) over a segment + the open-goals menu.
     '' on failure. model/effort override the tier + enable thinking (the classification A/B). When `human`
     (a real user message) a <note> forbids skip. When `nudge` (a romp status-check on a 'working' goal, not
@@ -1654,8 +1656,10 @@ def plan_llm(segment_text, menu_text, model=None, effort=None, human=False, nudg
     delegation, or the WORK-run's own earlier PROMPT-run placement), goal_history is that goal's own raw
     work-so-far (see _goal_work_text, '' when there's none yet) and goal_num is its <open-goals> index —
     richer grounding than the goal's one-line title alone, PLUS it's the only goal `retitle` may target
-    this call (the caller then enforces that restriction when applying ops). Cap is generous (a multi-op
-    reply is long)."""
+    this call (the caller then enforces that restriction when applying ops). When `live` (the user cleared
+    this OPEN segment's card mid-work, the user 2026-07-05) a <note> demands one fresh mint-or-sub NOW,
+    with cleared_context riding as <recently-cleared> so a dismissed card is never re-created as if it
+    were a new ask. Cap is generous (a multi-op reply is long)."""
     user = "<segment>\n%s\n</segment>\n<open-goals>\n%s\n</open-goals>" % (segment_text, menu_text)
     if goal_num:
         if goal_history:
@@ -1674,7 +1678,18 @@ def plan_llm(segment_text, menu_text, model=None, effort=None, human=False, nudg
                  "of work, unrelated to #%d's, mint a new top-level goal for it instead — the user often "
                  "replies out of habit when starting something new. Never both for the same ask.</note>"
                  % (goal_num, goal_num, goal_num))
-    if nudge:
+    if live:
+        if cleared_context:
+            user += "\n<recently-cleared>\n%s\n</recently-cleared>" % cleared_context
+        user += ("\n<note>LIVE RE-PLAN: the session is STILL WORKING this segment, but the user just "
+                 "CLEARED its card off their board, so the work has NO card right now. Place it NOW — "
+                 "exactly one mint or sub — so the board shows what the session is actually doing. Judge "
+                 "FRESH from the work itself: the cleared card's title may have been wrong, and this is the "
+                 "second look it never got. <recently-cleared> lists what the user just dismissed: never "
+                 "re-create one of those as if it were a new ask — if this work merely continues one, title "
+                 "the goal as a continuation (e.g. \"Continuing: <what it is doing now>\") so the user can "
+                 "tell at a glance. Never skip, never done/block (the work is mid-flight).</note>")
+    elif nudge:
         user += ("\n<note>This segment is a romp NUDGE — an automated status check on goal #1 still showing "
                  "'working', NOT a real user request. RESOLVE goal #1: mark it DONE if its outcome is already "
                  "delivered with nothing left for the user — INCLUDING when the reply merely REPORTS the goal "
@@ -1988,7 +2003,10 @@ def plan_units(session, store=None):
     differ on TEXT, not just timestamp):
       - the OPEN final segment (work in progress) yields a 'prompt' unit only — its opening user MESSAGE,
         so the PROMPT-run places the ask on the board IMMEDIATELY (mint-or-amend), before the work lands.
-        Human, non-followup segments only; `text` is the raw prompt gist.
+        Human, non-followup segments only; `text` is the raw prompt gist. If the user CLEARED that open
+        segment's card out from under it mid-work (_live_anchor_gone), it ALSO yields a 'live' re-plan
+        unit (the user 2026-07-05) — full work text, once per segment — so a working session never sits
+        on a blank board.
       - every ENDED segment yields a 'work' unit (exactly as before) — WHAT IT DID, placed once its work
         is known; `text` is the full unit text.
     Earliness only exists WHILE a segment is open, so the prompt-run fires there and nowhere else: an ended
@@ -2037,6 +2055,16 @@ def plan_units(session, store=None):
                     ptext = _prompt_text(seg["atoms"])
                     if ptext:
                         out.append((seg["id"], "prompt", seg["t"], ptext, human, followup, trig, vq))
+                if (human and store is not None and not _seg_nudge(seg)
+                        and _live_anchor_gone(store, seg["id"], followup)):
+                    # LIVE RE-PLAN (the user 2026-07-05): the user CLEARED this open segment's card out from
+                    # under it mid-work, so the still-working session would sit on a BLANK board until the
+                    # turn ends. A 'live' unit takes a fresh mint-or-sub look at the in-flight work — a
+                    # working session always shows a card. Once per segment (seg#live dedup). NEVER for a
+                    # NUDGE segment (_seg_nudge): a nudge is an automated status check, and its reply
+                    # re-minting a card the user just cleared would be the nudge system resurrecting
+                    # dismissed work — the loop-interaction the design must rule out.
+                    out.append((seg["id"], "live", seg["t"], work_text, human, followup, trig, vq))
                 continue                                  # no work unit yet — its work hasn't ended
             if _seg_nudge(seg) and followup:              # a romp NUDGE on a goal → RESOLVE it (done/block), not a plain step
                 out.append((seg["id"], "nudge", seg["t"], work_text, False, followup, trig, vq))
@@ -2114,6 +2142,91 @@ def _coerce_place(menu, text):
     if menu:
         return [{"do": "sub", "under": len(menu), "text": label, "why": why}]
     return [{"do": "mint", "text": label, "why": why}]
+
+
+def _cleared_under(store, nid):
+    """Is node `nid`'s card GONE from the board — absent from the live store (the compaction sweep archived
+    its subtree) or cleared on itself OR ANY ANCESTOR? The user's cross-off lands the `cleared` flag on the
+    card's TOP node only, so a placement onto a child must walk up — mirroring open_menu's subtree sealing.
+    View-cleared counts too (the flag and the cleared.jsonl row are written together at clear time, but be
+    robust to reading between the two)."""
+    nodes = store.get("nodes", {})
+    if nid not in nodes:
+        return True                                    # archived → its card left the board
+    vc = _view_cleared()
+    seen, x = set(), nid
+    while x is not None and x not in seen:
+        seen.add(x)
+        nd = nodes.get(x)
+        if nd is None:
+            return True
+        if nd.get("cleared") or x in vc:
+            return True
+        x = nd.get("parentId")
+    return False
+
+
+def _live_anchor_gone(store, seg_id, followup):
+    """Did the user clear this OPEN segment's card out from under it mid-work? The segment's board ANCHOR —
+    the node its prompt-run placed it on, or its follow-up target — no longer shows a card (_cleared_under),
+    so the still-working session has nothing on the board. This is the trigger for the 'live' re-plan unit
+    (the user 2026-07-05): usually the cleared card was MIS-TITLED and cleared on false pretenses, so the
+    re-plan judges the in-flight work FRESH — the second look the misclassified card never got. Fires ONCE
+    per segment: a recorded seg#live key, even one whose own card the user cleared AGAIN, means the re-plan
+    already ran — a second clear of the same in-flight work is final ('stop showing me this'), not another
+    re-mint. A None-valued placement (retired / fast-forwarded) is a standing planner ruling, not an anchor;
+    and a segment whose work-run already placed (or sealed) is moot."""
+    placements = store.get("placements", {})
+    if _placed_key(placements, seg_id + "#live"):      # one-shot: the re-plan already ran for this segment
+        return False
+    if _placed_key(placements, seg_id):                # work-run placed/sealed (incl. fast-forward) → moot
+        return False
+    anchor = followup
+    if not anchor:
+        p = _placement_of(placements, seg_id + "#p")
+        anchor = p if isinstance(p, str) else None     # None-valued #p = a ruling, not an anchor
+    return bool(anchor) and _cleared_under(store, anchor)
+
+
+def _cleared_context(fsid, store, cap=6):
+    """The user's MOST RECENTLY cleared cards for this session, as '- title — takeaway' lines (newest clear
+    first, capped) — handed to the live re-plan as <recently-cleared> CONTEXT ONLY, so the planner never
+    re-creates a dismissed card as if it were a new ask and a continuation SAYS it's continuing. Clear
+    recency comes from cleared.jsonl (a node's mt is its last WORK, not the clear); nodes resolve from the
+    live store (flagged, pre-sweep) or the archive (post-sweep). Strictly read-only: the archive stays
+    sealed — nothing here regroups, revives, or re-mints archived nodes."""
+    times = {}
+    try:
+        for line in (STATE / "cleared.jsonl").read_text().splitlines():
+            try:
+                o = json.loads(line)
+            except Exception:
+                continue
+            iid = o.get("id")
+            if not iid:
+                continue
+            if o.get("op") == "undo":
+                times.pop(iid, None)                   # undone → not cleared context (its card is back)
+            else:
+                times[iid] = o.get("t", 0)
+    except OSError:
+        pass
+    mine = [iid for iid in times if iid.startswith(fsid + ":")]
+    if not mine:
+        return ""
+    arch = load_goal_archive(fsid).get("nodes", {})
+    nodes = store.get("nodes", {})
+    out = []
+    for iid in sorted(mine, key=lambda i: times[i], reverse=True)[:cap]:
+        nd = nodes.get(iid) or arch.get(iid)
+        if not nd:
+            continue
+        gloss = str(nd.get("summary") or nd.get("blockSummary") or nd.get("doneWhy") or nd.get("blockWhy") or "").strip()
+        line = "- " + str(nd.get("text") or "?").strip()
+        if gloss:
+            line += " — " + " ".join(gloss.split())[:160]
+        out.append(line)
+    return "\n".join(out)
 
 
 def _nudge_diag(event, **fields):
@@ -2233,6 +2346,8 @@ def _unit_key(seg_id, phase):
         return seg_id
     if phase == "delegation":
         return seg_id + "#d"
+    if phase == "live":                             # the clear-mid-work LIVE re-plan (once per segment)
+        return seg_id + "#live"
     return seg_id + "#p"
 
 
@@ -2354,8 +2469,8 @@ def _plan_session(fsid, path, now):
         key = _unit_key(seg_id, phase)
         if _placed_key(store["placements"], key):     # drift-safe: a recorded key whose parse t has since
             continue                                  # shifted still dedups (this phase already placed)
-        if phase == "prompt" and _placed_key(store["placements"], seg_id):
-            continue                                  # work already placed (legacy/fast segment) → prompt-run is moot
+        if phase in ("prompt", "live") and _placed_key(store["placements"], seg_id):
+            continue                                  # work already placed (legacy/fast segment) → the run is moot
         if phase == "delegation":
             tgt = _placement_of(store["placements"], seg_id)   # the COURIER's verdict for this peer segment
             if _placed_key(store["placements"], seg_id) and not (isinstance(tgt, str) and tgt in store["nodes"]):
@@ -2381,6 +2496,23 @@ def _plan_session(fsid, path, now):
             if not ops:
                 ops = _coerce_place(menu, text)       # MUST place: a prompted goal never stays unplaced
             apply_plan(store, seg_id, seg_t, ops, menu, place_key=seg_id + "#p", prompt_uuid=trig, quote=vq)
+            placed += 1
+            _group_store(store, fsid, now)
+            save_goals(fsid, store)
+            continue
+        if phase == "live":                           # LIVE re-plan: the user cleared this OPEN segment's card
+            # mid-work (plan_units/_live_anchor_gone), so the still-working session sits on a blank board. A
+            # fresh mint-or-sub look at the in-flight work — same shape as the PROMPT-run (places only, hard
+            # floor), keyed seg#live so it runs exactly once. The work-run reconciles at turn end: it prefers
+            # this placement as its retitle target and finds the live goal on its menu, so it files under it
+            # instead of re-minting. <recently-cleared> keeps the fresh look honest: a continuation of a
+            # dismissed card says so instead of re-creating it as if new (the user 2026-07-05).
+            ops = _parse_plan(plan_llm(text, _menu_text(store, menu), human=human, live=True,
+                                       cleared_context=_cleared_context(fsid, store)), len(menu)) or []
+            ops = [o for o in ops if o["do"] in ("mint", "sub")]   # places only; drop any stray done/block/skip
+            if not ops:
+                ops = _coerce_place(menu, text)       # invariant: a WORKING session always shows a card
+            apply_plan(store, seg_id, seg_t, ops, menu, place_key=seg_id + "#live", prompt_uuid=trig, quote=vq)
             placed += 1
             _group_store(store, fsid, now)
             save_goals(fsid, store)
@@ -2543,7 +2675,8 @@ def _plan_session(fsid, path, now):
         # The WORK-run may correct its OWN earlier PROMPT-run guess (the user 2026-07-01): if this exact
         # segment already has a prompt-run placement, that node's current menu # is the one goal `retitle`
         # may target here — no goal_history (its trail is just this same segment, nothing new to show).
-        p_target = store["placements"].get(seg_id + "#p")
+        # A LIVE re-plan placement (clear-mid-work) supersedes the prompt-run's as the freshest guess.
+        p_target = store["placements"].get(seg_id + "#live") or store["placements"].get(seg_id + "#p")
         pgi = (next((i for i, nd in enumerate(menu, 1) if nd["id"] == p_target), None)
                if isinstance(p_target, str) else None)
         ops = _parse_plan(plan_llm(text, _menu_text(store, menu), human=human, goal_num=pgi), len(menu))

@@ -1179,6 +1179,69 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(p["tree"], [], "a placeholder carries no goal node")
         self.assertTrue(any(a["itemId"] == g1 for a in asks), "the real completed card is untouched")
 
+    def test_provisional_card_resurrects_when_the_card_is_cleared_mid_turn(self):
+        # the user 2026-07-05: clearing a card whose segment was STILL WORKING left the session on a blank
+        # board until the turn ended — the placement tombstone suppressed the placeholder while the placed
+        # node itself was gone. The placed-gate now sees through that: placed-but-cleared-out-from-under
+        # RESURRECTS the placeholder (until the judge's one-shot live re-plan lands a fresh card).
+        self._open_turn_transcript(ended=False)
+        session = em.parse_session(str(self.tpath), rompuuid=SID, candidate_files=[str(self.tpath)], now=NOW)
+        held = em.segments(session["turns"][-1])[-1]
+        g1 = SID + ":g1"
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+            "rompUuid": SID, "seq": 1, "lastNode": g1,
+            "nodes": {g1: {"id": g1, "text": "a mis-titled card", "parentId": None, "nodeComplete": False,
+                           "blocked": False, "cleared": True, "trail": [held["id"]], "t": T0}},
+            "placements": {held["id"] + "#p": g1}, "status": {g1: "cleared"}}))
+        self._working_tmux()
+        asks = km.build_feed(NOW)["asks"]
+        prov = [a for a in asks if a.get("provisional")]
+        self.assertEqual(len(prov), 1, "the placeholder resurrects: a working session never shows a blank board")
+        self.assertNotIn(g1, {a["itemId"] for a in asks}, "the cleared card itself stays off the board")
+
+    def test_placeholder_drops_once_the_live_replan_lands_and_stays_out_after_a_second_clear(self):
+        self._open_turn_transcript(ended=False)
+        session = em.parse_session(str(self.tpath), rompuuid=SID, candidate_files=[str(self.tpath)], now=NOW)
+        held = em.segments(session["turns"][-1])[-1]
+        g1, g3 = SID + ":g1", SID + ":g3"
+        def write(g3_cleared):
+            (jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+                "rompUuid": SID, "seq": 3, "lastNode": g3,
+                "nodes": {g1: {"id": g1, "text": "a mis-titled card", "parentId": None, "nodeComplete": False,
+                               "blocked": False, "cleared": True, "trail": [], "t": T0},
+                          g3: {"id": g3, "text": "Continuing: the real work", "parentId": None,
+                               "nodeComplete": False, "blocked": False, "cleared": g3_cleared,
+                               "trail": [held["id"]], "t": T0 + 100}},
+                "placements": {held["id"] + "#p": g1, held["id"] + "#live": g3},
+                "status": {g1: "cleared", g3: "cleared" if g3_cleared else "working"}}))
+        self._working_tmux()
+        write(g3_cleared=False)                        # the live re-plan landed its fresh card
+        asks = km.build_feed(NOW)["asks"]
+        self.assertFalse([a for a in asks if a.get("provisional")],
+                         "the fresh live card replaces the placeholder")
+        self.assertIn(g3, {a["itemId"] for a in asks})
+        write(g3_cleared=True)                         # …and the user clears the fresh card TOO
+        asks = km.build_feed(NOW)["asks"]
+        self.assertFalse([a for a in asks if a.get("provisional")],
+                         "a second clear of the same in-flight work is FINAL — no phantom placeholder forever")
+
+    def test_live_cleared_under_helper_truth_table(self):
+        nodes = {"s:g1": {"id": "s:g1", "parentId": None, "cleared": True},
+                 "s:g2": {"id": "s:g2", "parentId": "s:g1", "cleared": False},
+                 "s:g4": {"id": "s:g4", "parentId": None, "cleared": False}}
+        self.assertTrue(km._card_gone(nodes, "s:g2"), "cleared ancestor → gone (the cross-off flags the TOP)")
+        self.assertTrue(km._card_gone(nodes, "s:g9"), "absent from the live store (archived) → gone")
+        self.assertFalse(km._card_gone(nodes, "s:g4"))
+        self.assertTrue(km._live_cleared_under({"seg1#p": "s:g1"}, nodes, "seg1"),
+                        "placed onto a cleared card → the clear-mid-work window is open")
+        self.assertFalse(km._live_cleared_under({"seg1#p": "s:g4"}, nodes, "seg1"), "alive target → normal gate")
+        self.assertFalse(km._live_cleared_under({"seg1#p": None}, nodes, "seg1"), "a None placement is a ruling")
+        self.assertFalse(km._live_cleared_under({}, nodes, "seg1"), "unplaced → the normal gates apply")
+        self.assertFalse(km._live_cleared_under({"seg1#p": "s:g1", "seg1#live": "s:g3"}, nodes, "seg1"),
+                         "a recorded #live key closes the window, whatever became of its card")
+        self.assertTrue(km._live_replanned({"seg1#live": None}, "seg1"))
+        self.assertFalse(km._live_replanned({"seg1#p": "s:g1"}, "seg1"))
+
     def test_card_carries_the_auto_nudge_history(self):
         # the stalled chip's EVIDENCE (the user 2026-07-02): a card whose goal the auto-nudge ledger has
         # fired on carries nudged {count, times} — the chip tooltip + modal line say romp DID follow up,
