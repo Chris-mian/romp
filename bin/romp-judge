@@ -126,6 +126,10 @@ DISTILL_FAIL_CAP = 3                      # consecutive distill/brief CALL fails
 DISTILL_WORK_CHARS = 24000               # cap the work history fed to a distill/brief call (keep the most
                                          # recent tail): an unbounded subtree could time out the Sonnet call
                                          # (logged "call"); the recent work is what the brief needs anyway.
+# Spliced into a distiller's <work> at the episode boundary (deltaSince) so the takeaway scopes to the most
+# recent stretch — the follow-up — instead of re-summarizing the whole trail (the user 2026-07-04).
+FOLLOWUP_DIVIDER = ("--- The user FOLLOWED UP here. They have already seen a summary of everything above this "
+                    "line; everything below is the most recent stretch of work, done in response. ---")
 GOAL_HISTORY_CHARS = 4000                # a single KNOWN-target goal's raw history, given to the planner
                                          # alongside its menu title on a follow-up/nudge/delegation continuation
                                          # (the user 2026-07-01): smaller than DISTILL_WORK_CHARS since this runs
@@ -1202,14 +1206,17 @@ def _split_sections(text):
     return None, re.sub(r"^\s*TAKEAWAY:\s*", "", text).strip()
 
 
-def _goal_work_text(store, seg_by_id, nid, char_cap, subtree=True, marks=None):
+def _goal_work_text(store, seg_by_id, nid, char_cap, subtree=True, marks=None, boundary_t=None):
     """The raw work already logged under goal `nid` — its own trail segments, plus its whole subtree's if
     `subtree` (the same gather the distiller uses for a goal's history), oldest-first, deduped, bounded to
     the most recent char_cap chars. '' if nid has no captured segments. Lets a judge that already knows
     WHICH goal it's acting on (a tagged follow-up, a nudge, a delegation, a turn-end close) see that goal's
     real history, not just its compressed ≤10-word title (the user 2026-07-01: the menu title alone loses
     whatever the title left out, e.g. a constraint or approach settled a few turns back). `marks` (a
-    _CiteMarks, distill/brief only) labels each assistant message inline so the call can cite its source."""
+    _CiteMarks, distill/brief only) labels each assistant message inline so the call can cite its source.
+    `boundary_t` (the goal's deltaSince): when a prior episode settled at that time and there is genuinely
+    both earlier and later work, splice FOLLOWUP_DIVIDER between them so the distiller can scope its takeaway
+    to the most recent stretch (the follow-up) rather than re-summarizing history the user already saw."""
     nodes = store["nodes"]
     ids = [nid]
     if subtree:
@@ -1225,7 +1232,15 @@ def _goal_work_text(store, seg_by_id, nid, char_cap, subtree=True, marks=None):
             if sid not in seen:
                 seen.add(sid); seg_ids.append(sid)
     segs = sorted(_segs_for(seg_by_id, seg_ids), key=lambda sg: sg.get("t", 0))   # drift-safe trail resolution
-    work = "\n\n".join(_unit_text(sg["atoms"], marker=marks) for sg in segs).strip()
+    parts = [_unit_text(sg["atoms"], marker=marks) for sg in segs]   # marks label in sorted order — keep it
+    if boundary_t is not None:
+        # Insert the divider AFTER the last segment at/under the boundary. `segs` is sorted, so the split index
+        # is the count of pre-boundary segments; only splice when there's work on BOTH sides (else the marker
+        # would be a no-op header or trailer).
+        cut = sum(1 for sg in segs if sg.get("t", 0) <= boundary_t)
+        if 0 < cut < len(parts):
+            parts = parts[:cut] + [FOLLOWUP_DIVIDER] + parts[cut:]
+    work = "\n\n".join(parts).strip()
     if len(work) > char_cap:                            # keep the most recent tail (matches the distiller's bound)
         work = "…\n\n" + work[-char_cap:]
     return work
@@ -2144,7 +2159,14 @@ def _reopen(store, gid, by="?"):
     while x is not None:
         nodes[x]["blocked"] = False
         nodes[x].pop("settledDone", None)              # genuine reopen clears the sticky-completed marker → back to working
-        nodes[x].pop("settledAt", None)                # ...and its column-entry stamp, so a re-completion re-stamps (back to the bottom)
+        prev = nodes[x].pop("settledAt", None)         # ...and its column-entry stamp, so a re-completion re-stamps (back to the bottom)
+        # DELTA-SUMMARY BOUNDARY (the user 2026-07-04): remember where the episode that just ENDED settled, so
+        # when this goal is finished AGAIN the distiller can scope its takeaway to the follow-up's work rather
+        # than re-summarizing the whole trail (which the user has already seen). Each reopen overwrites it, so
+        # deltaSince always names the boundary of the CURRENT (latest) episode. Only tops carry settledAt, so in
+        # practice this lands on the top being distilled; a never-settled node stamps nothing → no delta scoping.
+        if prev:
+            nodes[x]["deltaSince"] = prev
         x = nodes.get(x, {}).get("parentId")
     # Un-resolve the steps rollup_status auto-rolled under this goal (rolledUp) — else they'd stay
     # complete/cleared and bottom-up is_complete would immediately RE-complete the reopened top. Only the
@@ -3479,6 +3501,12 @@ DISTILL_SYS = (
     "<work> log can be thin or capture mostly the back-and-forth from BEFORE the goal was finished, but it "
     "is finished regardless, so never describe it as still open, pending, undecided, in design, or "
     "blocked: say what came of it.\n\n"
+    "The <work> may contain a line that reads '--- The user FOLLOWED UP here ...'. When it does, the user "
+    "has already seen a summary of everything ABOVE that line; what they want now is what came of the most "
+    "recent stretch BELOW it. Make the TAKEAWAY about that recent work — the outcome of their follow-up, "
+    "often a specific piece of the goal rather than the whole thing — not a recap of the entire history. "
+    "Fold the earlier thread into BACKGROUND as orientation. When there is no such line, summarize the whole "
+    "<work> as usual.\n\n"
     "Reply with two labeled sections and nothing else: no JSON, no preamble, no markdown. Both sections "
     "use plain declarative sentences from the user's vantage, no self-narration, no filler, no em dashes. "
     "Skip the mechanics: commit hashes, file paths, line numbers, code, commands, and quoted snippets.\n\n"
@@ -3628,7 +3656,11 @@ def _distill_session(fsid, path, now):
         # cited label resolves to the exact transcript atom, stored as node["summaryAnchor"]: the summary
         # line's deep-link then lands on what the summary was GROUNDED IN, by the same reader that wrote
         # it, not on a length heuristic (the user 2026-07-01).
-        work = _goal_work_text(store, seg_by_id, top, DISTILL_WORK_CHARS, marks=marks)   # the goal's own work, subtree included
+        # deltaSince (a prior settle boundary from an intervening follow-up) → splice the FOLLOWUP_DIVIDER so the
+        # done-distiller scopes its takeaway to the most recent stretch. Only for the DONE side: the block brief
+        # already leads with the recent owed question, and BLOCK_BRIEF_SYS isn't taught to read the marker.
+        boundary_t = None if blocked else nodes[top].get("deltaSince")
+        work = _goal_work_text(store, seg_by_id, top, DISTILL_WORK_CHARS, marks=marks, boundary_t=boundary_t)
         if blocked:
             blkd = [nodes[x] for x in sub if nodes[x].get("blocked") and nodes[x].get("blockWhy")]
             owed = max(blkd, key=lambda d: d.get("mt", d.get("t", 0)))["blockWhy"] if blkd else ""
