@@ -1225,6 +1225,16 @@ class OptionsAssembly(unittest.TestCase):
         opts = be._options(self._sess(be), _sdk.ClaudeAgentOptions)
         self.assertIsNone(opts.system_prompt, "no harness prompt → leave the CLI's default system prompt")
 
+    def test_raises_max_buffer_size_well_above_the_1mb_default(self):
+        # A single >1MB stdout message (a big Read / grep result / echoed image) would otherwise crash the
+        # receive loop → tear down the client → close stdin → the CLI rejects any PENDING picker with "Tool
+        # permission stream closed before response received" (the user 2026-07-04, reproduced live).
+        be = sb.SdkBackend(self.d, "/bin/true", lambda *a, **k: None)
+        opts = be._options(self._sess(be), _sdk.ClaudeAgentOptions)
+        self.assertEqual(opts.max_buffer_size, sb.SDK_MAX_BUFFER, "romp sets the buffer cap explicitly")
+        self.assertGreaterEqual(opts.max_buffer_size, 32 * 1024 * 1024,
+                                "well past any realistic single message, so a picker never dies on overflow")
+
 
 @unittest.skipUnless(_HAVE_SDK, "claude_agent_sdk not installed")
 class ApiRetryState(unittest.TestCase):
