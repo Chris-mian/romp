@@ -181,13 +181,28 @@ class InterruptRecordEndsTurn(unittest.TestCase):
         self.assertFalse(turns[-1]["ended"])
         self.assertTrue(km._session_working(turns), "an open turn without a stop record still reads working")
 
-    def test_turn_user_interrupted_skips_trailing_idle_and_commands(self):
-        # the judge-side parse folds a states idle atom AFTER the stop record — the tail-walk must skip it
+    def test_suppression_holds_through_trailing_idle_atoms(self):
+        # the judge-side parse folds a states idle atom AFTER the stop record — the scan must not care
         turns = self._turns(self._interrupted(), states=[{"t": T0 + 61, "state": "idle"}])
-        self.assertTrue(km._turn_user_interrupted(turns[-1]),
-                        "interrupt record behind an idle span still marks the turn user-stopped")
+        self.assertTrue(km._interrupt_suppresses_nudge(turns),
+                        "interrupt behind an idle span still reads as the user's last action")
         normal = self._turns([uline(T0, "ask", "u1"), aline(T0 + 10, "done", "a1", "u1", "end_turn")])
-        self.assertFalse(km._turn_user_interrupted(normal[-1]), "a normally-ended turn is not user-stopped")
+        self.assertFalse(km._interrupt_suppresses_nudge(normal), "a normally-ended turn is not user-stopped")
+
+    def test_a_peer_message_does_not_lift_suppression(self):
+        # requirement (the user 2026-07-05 via ui): suppressed until the USER's next message — a peer
+        # postal turn (author {"peer": …} via the romp-msg-id marker) ending in between must not re-arm
+        recs = self._interrupted() + [
+            uline(T0 + 200, "QUESTION: which port?\nromp-msg-id: 1111.2_3.TESTHOST", "u3", "u2"),
+            aline(T0 + 220, "answered the peer", "a2", "u3", "end_turn")]
+        self.assertTrue(km._interrupt_suppresses_nudge(self._turns(recs)),
+                        "a peer's postal message is not the user speaking — still suppressed")
+
+    def test_the_users_next_message_lifts_suppression(self):
+        recs = self._interrupted() + [uline(T0 + 200, "ok, take the other approach", "u3", "u2"),
+                                      aline(T0 + 220, "on it", "a2", "u3", "end_turn")]
+        self.assertFalse(km._interrupt_suppresses_nudge(self._turns(recs)),
+                         "the user spoke after the interrupt → the user-message event re-arms the nudge")
 
 
 class InterruptStampNoRelatch(unittest.TestCase):
@@ -312,3 +327,51 @@ class AutoNudgeInterruptGate(unittest.TestCase):
             self.assertEqual(sent, [], "queued user intent outranks a nudge — never jump the user's queue")
         finally:
             restore()
+
+    def _append(self, recs):
+        with open(self.tpath, "a") as f:
+            f.write("\n".join(json.dumps(r) for r in recs) + "\n")
+
+    def test_a_peer_turn_after_the_interrupt_stays_suppressed(self):
+        # requirement (the user 2026-07-05 via ui): suppression lifts on the USER-message event only — a
+        # peer postal exchange ending after the interrupt used to make the latest turn read 'genuine' and
+        # re-arm the nudge.
+        self._transcript(interrupted=True)
+        self._append([uline(T0 + 200, "COORDINATE: heads-up\nromp-msg-id: 1111.2_3.TESTHOST", "u4", "u3"),
+                      aline(T0 + 220, "acknowledged", "a4", "u4", "end_turn")])
+        self._goal()
+        sent, restore = self._stub()
+        try:
+            km._auto_nudge_tick(NOW, self.tmux)
+            self.assertEqual(sent, [], "a peer spoke, the user didn't — still their pause, still suppressed")
+        finally:
+            restore()
+
+    def test_the_users_message_after_the_interrupt_rearms_the_nudge(self):
+        self._transcript(interrupted=True)
+        self._append([uline(T0 + 200, "keep going with plan B", "u4", "u3"),
+                      aline(T0 + 220, "resuming with plan B", "a4", "u4", "end_turn")])
+        self._goal()
+        sent, restore = self._stub()
+        try:
+            km._auto_nudge_tick(NOW, self.tmux)
+            self.assertEqual(len(sent), 1, "the user re-engaged and the goal re-stalled → nudging resumes")
+        finally:
+            restore()
+
+    def test_feed_card_wears_the_interrupted_badge(self):
+        # the floated badge (the user 2026-07-05): a working card whose session the user stopped says
+        # "interrupted" instead of sitting silent like an orphaned goal. Cache-only like the working dot.
+        self._transcript(interrupted=True)
+        self._goal()
+        km._parse(str(self.tpath), SID, NOW)                       # warm the cache (stands in for _warm_fleet_bg)
+        card = next(a for a in km.build_feed(NOW, self.tmux)["asks"] if a["itemId"] == SID + ":gw")
+        self.assertTrue(card.get("interrupted"), "user-stopped + no message since → interrupted badge")
+
+    def test_feed_badge_clears_once_the_user_re_engages(self):
+        self._transcript(interrupted=True)
+        self._append([uline(T0 + 200, "keep going with plan B", "u4", "u3")])   # user spoke; turn back open
+        self._goal()
+        km._parse(str(self.tpath), SID, NOW)
+        card = next(a for a in km.build_feed(NOW, self.tmux)["asks"] if a["itemId"] == SID + ":gw")
+        self.assertFalse(card.get("interrupted"), "the user's next message retires the badge")

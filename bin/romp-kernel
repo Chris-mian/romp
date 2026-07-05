@@ -109,18 +109,25 @@ def _turn_romp_injected(turn):
     return bool(a and a.get("author") == "romp")
 
 
-def _turn_user_interrupted(turn):
-    """True if the turn's last substantive atom is the CLI's interrupt record — the USER stopped this
-    turn. An interrupt is the user actively at the controls (they'll follow up themselves), NOT an
-    orphaned stall: auto-nudge must never fire off it (the user 2026-07-05: a nudge landed 37s after
-    their interrupt, opened a 2-minute turn on the old model, and held their parked /model pick behind
-    it). Tail-substantive mirrors _session_working's walk: skip trailing command confirmations and idle
-    spans (the states overlay lands an idle atom after the interrupt record)."""
-    atoms = turn.get("atoms") or []
-    i = len(atoms) - 1
-    while i >= 0 and (atoms[i].get("command") or atoms[i].get("type") == "idle"):
-        i -= 1
-    return i >= 0 and em.is_interrupt_record(atoms[i])
+def _interrupt_suppresses_nudge(turns):
+    """True while the session's most recent USER action is an INTERRUPT: the user stopped the agent and
+    hasn't spoken since, so they're at the controls — auto-nudge stays suppressed until their NEXT
+    message (the user 2026-07-05, refined via ui: re-engage on the user-message EVENT, never a timer or
+    merely "a newer turn ended"). Concretely: the newest interrupt record outranks the newest genuine
+    HUMAN prompt. A peer postal message or romp injection opening a turn in between does NOT lift it —
+    only the user speaking does. The interrupt record itself authors 'human', so it's classified FIRST.
+    Also drives the feed's "interrupted" badge: the card's quiet is user-chosen, and says so."""
+    last_intr = last_human = 0
+    for turn in turns:
+        for a in turn.get("atoms") or []:
+            if a.get("type") != "user":
+                continue
+            t = a.get("t", 0)
+            if em.is_interrupt_record(a):
+                last_intr = max(last_intr, t)
+            elif a.get("author") == "human":
+                last_human = max(last_human, t)
+    return last_intr > last_human
 
 
 def _last_plain_user_turn_t(turns):
@@ -1281,8 +1288,8 @@ def _auto_nudge_tick(now, tmux):
         lt = turns[-1]
         if _session_working(turns):                      # still actively working (event model) → not orphaned
             continue
-        if _turn_user_interrupted(lt):                   # the USER stopped this turn (the CLI's interrupt record) →
-            continue                                     # they're driving, not stalled; never nudge off an interrupt
+        if _interrupt_suppresses_nudge(turns):           # the user's LAST action was an interrupt → they're driving;
+            continue                                     # suppressed until their NEXT message, not merely a newer turn
         if _pending_ops.get(str(sid)):                   # the user has drive ops PARKED (a queued send / model pick) →
             continue                                     # queued intent; a nudge would jump their queue (the user 2026-07-05)
         ls_val, ls_t = _last_state(sid)
@@ -6289,6 +6296,14 @@ def build_feed(now, tmux=None):
             who_working = False
         if who_working:
             working.append(name)
+        # The user's LAST action on this session was an INTERRUPT (no message from them since): its quiet
+        # is user-chosen, not a stall — auto-nudge is suppressed (same predicate, _auto_nudge_tick) and
+        # the working card wears an "interrupted" badge saying so (the user 2026-07-05). Cache-only,
+        # like the working dot: the badge snaps in once _warm_fleet_bg fills the parse.
+        try:
+            sess_interrupted = bool(ps) and not who_working and _interrupt_suppresses_nudge(ps["turns"])
+        except Exception:
+            sess_interrupted = False
         store = _feed_goals(fsid)                # pre-pass snapshot while a judge pass is mid-flight → the card's
                                                  # status never shows a half-applied intermediate (atomic visibility)
         nodes, status = store.get("nodes", {}), store.get("status", {})
@@ -6630,6 +6645,7 @@ def build_feed(now, tmux=None):
                                            "from you")} if stalled_floor
                             else None),
                 "nudgeFailed": nudge_failed,         # the one auto-nudge didn't resolve the stall → "nudge failed" chip; never re-nudged (design/stalled-open-todos-nudge.md)
+                "interrupted": bool(sess_interrupted and column == "working"),   # the user stopped this session and hasn't re-engaged → "interrupted" badge; nudge suppressed until their next message (the user 2026-07-05)
                 "column": column,
                 "recheck": recheck,                  # targeted follow-up on a soft-block → de-urgented (dotted), moved to Working, pending re-judge
                 "rejudging": rejudging,              # plain thread reply after a block → STAYS in Needs-You, "Re-judging…" swirl while a turn is in flight (the user 2026-06-30)

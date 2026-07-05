@@ -76,6 +76,7 @@ interface AskItem {
   recheck?: boolean;                               // soft-block you answered with a TARGETED follow-up → de-urgented (dotted), moved to Working, dropped from the "need input" count, until the judge resolves or re-blocks it (kernel build_feed; the user 2026-06-27)
   rejudging?: boolean;                             // soft-block + a PLAIN thread reply after it → moves to WORKING while the reply is in flight (echo/open turn), with a "Re-judging…" swirl; returns to Needs-You on its own if the judge leaves it blocked (kernel build_feed; the user 2026-07-02, immediate)
   nudgeFailed?: boolean;                           // the ONE auto-nudge on this stalled goal didn't resolve it (response turn ended, still working) → "nudge failed" chip; never re-nudged — a fork-flavored failure also floors the card via blocked.state "stalled" (kernel build_feed; design/stalled-open-todos-nudge.md)
+  interrupted?: boolean;                           // the user STOPPED this session mid-turn and hasn't messaged it since → "interrupted" badge; its quiet is user-chosen, auto-nudge holds off until their next message (kernel build_feed; the user 2026-07-05)
   autoFiled?: boolean;                             // settled → moved to COMPLETED by the auto-filing rule (keeps the green ring)
   explicitDone?: boolean;                          // every path explicitly DONE-stamped → blue ring (blue+green when settled agrees)
   turnIds?: string[];                              // typed turns that minted/amended this card
@@ -557,6 +558,12 @@ function makeAskCard(it: AskItem): HTMLElement {
   const nfBadge = el("span", "fask-nudgefailed"); nfBadge.textContent = "stalled";
   nfBadge.title = "romp followed up on this stalled goal once; the response didn't resolve it and it won't be re-asked — it's waiting on you";
   nfBadge.style.display = "none";
+  // "interrupted" (the user 2026-07-05): the user stopped this session mid-turn and hasn't messaged it
+  // since — its quiet is user-chosen, not a stall. Auto-nudge holds off until their next message, and
+  // the card says why it's sitting still instead of reading like an orphaned working goal.
+  const intBadge = el("span", "fask-interrupted"); intBadge.textContent = "interrupted";
+  intBadge.title = "you stopped this session mid-turn; romp won't follow up on its own until you message it again";
+  intBadge.style.display = "none";
   // yellow "warning" chip (the user 2026-07-02): a judge stamped an anomaly on this goal (kernel `warns`,
   // judge _node_warn — e.g. a distiller cite-miss). Click → the warn-detail overlay: what happened and why
   // it's unexpected, per warn. A BUTTON (not a span) so it's focusable; the element survives re-renders
@@ -594,7 +601,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   // "↪ from <peer>" provenance + the "reopened"/"↻ Followed up" chips ride the name row's right side;
   // row2 wraps them onto a new line when there isn't room, so the provenance never overlaps a chip
   // (the user 2026-06-20). origin sits left of the chips, matching the "from … · Followed up" reading order.
-  row2.append(idwrap, origin, reBadge, fupBadge, nfBadge, warnChip, waitOnBadge);
+  row2.append(idwrap, origin, reBadge, fupBadge, nfBadge, intBadge, warnChip, waitOnBadge);
   // ROW 3 — timestamp bottom-left · action buttons bottom-right
   const row3 = el("div", "fask-row3"); row3.append(time, actions);
   // the user's handoff spec (2026-06-10): below the main session, list the OTHER
@@ -732,6 +739,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   const a = card as any;
   a._title = title; a._name = name; a._time = time; a._reopened = reBadge; a._followedup = fupBadge;
   a._nudgeFailed = nfBadge;
+  a._interrupted = intBadge;
   a._warnChip = warnChip;
   a._waitOn = waitOnBadge;
   a._blocked = blkBadge;
@@ -863,6 +871,11 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   // with the "⏸ stalled" badge — the badge already says it, so the chip yields to avoid a double
   // "stalled" (the user 2026-07-02); a regular-flavor failure stays in Working with just this chip.
   a._nudgeFailed.style.display = (it.nudgeFailed && it.blocked?.state !== "stalled") ? "" : "none";
+  // "interrupted" — the user stopped this session and hasn't re-engaged; quiet is user-chosen (the
+  // user 2026-07-05). The stalled/nudge-failed chips outrank it: they carry a romp-ask outcome, while
+  // this only explains silence — never show both.
+  (a._interrupted as HTMLElement).style.display =
+    (it.interrupted && !it.nudgeFailed && it.blocked?.state !== "stalled") ? "" : "none";
   // the chip label says "stalled"; its tooltip carries the EVIDENCE — romp did follow up, and when
   // (the user 2026-07-02: the bare label read like a state romp observed, not a nudge outcome)
   a._nudgeFailed.title = it.nudged && it.nudged.times.length
