@@ -1,8 +1,10 @@
 // The interrupt's whole arc is immediately responsive (the user 2026-07-02). Click the stop button →
-// it disables and becomes the word "interrupting…" on the spot; the kernel's push then flips the chip
-// to INTERRUPTING… (no timer, no re-pressable button) until the stop settles on disk and the chip
-// reads READY again. The CLI's "[Request interrupted by user]" stop record renders as a slim rail
-// marker in the compact-divider's language — never a person-blue bubble. Source pins (no jsdom).
+// the CHIP flips to Interrupting… on the spot and the button + timer REMOVE themselves (the user
+// 2026-07-05: the old ack stuffed the word "interrupting…" INTO the fixed-width button, overflowing
+// onto the elapsed timer — the "4m 1interrupting…" screenshot; the chip, not the button, owns the
+// state); the kernel's push then rebuilds the statusline in that same shape until the stop settles on
+// disk and the chip reads READY again. The CLI's "[Request interrupted by user]" stop record renders
+// as a slim rail marker in the compact-divider's language — never a person-blue bubble. Source pins.
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
@@ -11,12 +13,18 @@ import * as path from "node:path";
 const SRC = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
 
-test("the stop button acknowledges its click instantly and cannot be re-pressed", () => {
+test("the stop button acknowledges its click instantly: chip flips, button + timer vanish", () => {
   const fn = SRC.slice(SRC.indexOf("function stopButton"), SRC.indexOf("function updateStatusline"));
-  assert.match(fn, /\(btn as HTMLButtonElement\)\.disabled = true;/);
-  assert.match(fn, /lbl\.textContent = "interrupting…";/, "the button becomes the word");
+  assert.match(fn, /chip\.className = "chip chip-interrupting"; chip\.textContent = CHIP_LABEL\.interrupting;/,
+               "the chip carries the state, optimistically, before the kernel push");
+  assert.match(fn, /document\.getElementById\("work-timer"\)\?\.remove\(\);\s*\n\s*btn\.remove\(\);/,
+               "the timer and the button remove themselves — nothing left to overflow or re-press");
   assert.doesNotMatch(fn, /stop-flash/, "the old 400ms flash (which left the button pressable) is gone");
-  assert.match(CSS, /\.stop-btn:disabled \{ opacity: 0\.6; cursor: default; \}/);
+  // the word never rides the fixed-width button again, and its dead styles are gone with it
+  assert.doesNotMatch(fn, /textContent = "interrupting…"/, "no label is stuffed into the button");
+  assert.doesNotMatch(SRC, /stop-busy/);
+  assert.doesNotMatch(CSS, /\.stop-busy/);
+  assert.doesNotMatch(CSS, /\.stop-btn:disabled/);
 });
 
 test("INTERRUPTING is a first-class chip state: labeled, styled, timerless, buttonless", () => {

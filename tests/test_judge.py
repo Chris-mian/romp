@@ -5005,5 +5005,225 @@ class SeamRegrowth(unittest.TestCase):
                          "an open tail is withheld, exactly like any in-progress segment")
 
 
+class LiveReplan(unittest.TestCase):
+    """The clear-mid-work LIVE re-plan (the user 2026-07-05): clearing an OPEN segment's card out from
+    under it must not leave a still-working session on a blank board. plan_units emits a one-shot 'live'
+    unit (seg#live) whose planner call takes a FRESH mint-or-sub look at the in-flight work, with
+    <recently-cleared> as context so a dismissed card is never re-created as if new; the turn-end work-run
+    then reconciles onto the live goal instead of duplicating it. All fixtures synthetic."""
+
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory()
+        td = Path(self.td.name)
+        self.saved = (jd.GOALDIR, jd.GOALARCHDIR, jd.PCACHE, jd.STATE,
+                      jd.plan_llm, jd.plan_prompt_llm, jd._group_store)
+        jd.GOALDIR, jd.GOALARCHDIR = td / "goals", td / "goals-archive"
+        jd.PCACHE, jd.STATE = td / "pcache", td
+        jd.GOALDIR.mkdir()
+        jd._group_store = lambda *a, **k: None           # never fire the real grouper model
+        jd.plan_prompt_llm = self._boom                  # the deduped prompt-run must never re-fire
+        jd._PARSE_CACHE.clear()
+
+    def tearDown(self):
+        (jd.GOALDIR, jd.GOALARCHDIR, jd.PCACHE, jd.STATE,
+         jd.plan_llm, jd.plan_prompt_llm, jd._group_store) = self.saved
+        self.td.cleanup()
+
+    @staticmethod
+    def _boom(*a, **k):
+        raise AssertionError("this planner run must not fire")
+
+    # ── fixtures ─────────────────────────────────────────────────────────
+    OPEN_RECS = [uline(T0, "polish the settings page", "u1", ps="typed"),
+                 aline(T0 + 20, "Refactoring the layout grid instead.", "a1", "u1",
+                       tools=("Edit",), stop="tool_use")]                   # turn still OPEN
+
+    def _held_seg_id(self, recs):
+        s = build_session(recs)
+        return em.segments(s["turns"][-1])[-1]["id"]
+
+    def _store(self, seg, cleared=True, live_placed=False, work_placed=False, anchor="g1"):
+        """A goal store whose held open segment was prompt-run-placed onto g1, with g1 optionally cleared
+        out from under it (the trigger condition)."""
+        g1 = SID + ":" + anchor
+        st = {"rompUuid": SID, "seq": 1, "lastNode": g1,
+              "nodes": {g1: {"id": g1, "text": "Polish the settings page", "parentId": None,
+                             "nodeComplete": False, "blocked": False, "cleared": cleared,
+                             "blockWhy": "which spacing scale?", "trail": [seg], "t": T0}},
+              "placements": {seg + "#p": g1}, "status": {g1: "cleared" if cleared else "working"}}
+        if live_placed:
+            st["placements"][seg + "#live"] = SID + ":g2"
+        if work_placed:
+            st["placements"][seg] = g1
+        return st
+
+    # ── the trigger predicate + unit emission ────────────────────────────
+    def test_unit_key_live_phase(self):
+        self.assertEqual(jd._unit_key("s1", "live"), "s1#live", "the live re-plan dedups independently")
+
+    def test_cleared_under_walks_ancestors_and_sees_archived(self):
+        gp, gc = SID + ":g1", SID + ":g2"
+        store = {"nodes": {gp: {"id": gp, "parentId": None, "cleared": True},
+                           gc: {"id": gc, "parentId": gp, "cleared": False}}}
+        self.assertTrue(jd._cleared_under(store, gc),
+                        "the cross-off flags the TOP only — a child placement must walk up")
+        self.assertTrue(jd._cleared_under(store, SID + ":g9"), "absent from the live store = archived = gone")
+        store["nodes"][gp]["cleared"] = False
+        self.assertFalse(jd._cleared_under(store, gc), "an alive branch is not gone")
+
+    def test_live_anchor_gone_truth_table(self):
+        seg = self._held_seg_id(self.OPEN_RECS)
+        self.assertTrue(jd._live_anchor_gone(self._store(seg, cleared=True), seg, None),
+                        "prompt-run target cleared mid-work → the live re-plan triggers")
+        self.assertFalse(jd._live_anchor_gone(self._store(seg, cleared=False), seg, None),
+                         "target alive → no re-plan")
+        self.assertFalse(jd._live_anchor_gone(self._store(seg, cleared=True, live_placed=True), seg, None),
+                         "seg#live recorded → the one-shot already ran (a second clear is final)")
+        self.assertFalse(jd._live_anchor_gone(self._store(seg, cleared=True, work_placed=True), seg, None),
+                         "work-run placed/sealed → moot")
+        st = self._store(seg, cleared=True)
+        st["placements"][seg + "#p"] = None
+        self.assertFalse(jd._live_anchor_gone(st, seg, None),
+                         "a None-valued placement is a planner ruling, not an anchor")
+        st2 = self._store(seg, cleared=True)
+        del st2["placements"][seg + "#p"]
+        self.assertFalse(jd._live_anchor_gone(st2, seg, None),
+                         "never placed → the normal prompt-run covers it, no re-plan")
+        self.assertTrue(jd._live_anchor_gone(st2, seg, SID + ":g1"),
+                        "a FOLLOW-UP's anchor is its target goal — cleared target triggers too")
+
+    def test_plan_units_emits_a_live_unit_when_the_card_was_cleared_mid_work(self):
+        seg = self._held_seg_id(self.OPEN_RECS)
+        s = build_session(self.OPEN_RECS)
+        units = jd.plan_units(s, self._store(seg, cleared=True))
+        self.assertEqual([u[1] for u in units], ["prompt", "live"],
+                         "the open segment yields its prompt unit (deduped later) PLUS the live re-plan")
+        live = units[-1]
+        self.assertEqual(live[0], seg)
+        self.assertIn("Refactoring the layout grid", live[3],
+                      "the live unit carries the FULL work text — the fresh look judges the actual work")
+        self.assertEqual([u[1] for u in jd.plan_units(s, self._store(seg, cleared=False))],
+                         ["prompt"], "target alive → no live unit")
+        self.assertEqual([u[1] for u in jd.plan_units(s, self._store(seg, cleared=True, live_placed=True))],
+                         ["prompt"], "one-shot: a recorded seg#live never re-emits")
+
+    def test_a_nudge_segment_never_emits_a_live_unit(self):
+        # The nudge-interaction guard (the user 2026-07-05): a nudge is an AUTOMATED status check — its
+        # reply re-minting a card the user just cleared would be the nudge system resurrecting dismissed
+        # work (and a step toward nudge→mint→nudge loops). A nudge segment gets no live re-plan, ever.
+        g1 = SID + ":g1"
+        recs = [uline(T0, "Status check.\n\n<!-- romp-injected --><!-- romp-goal-id: %s -->" % g1,
+                      "u1", ps="typed"),
+                aline(T0 + 20, "Still verifying the fix.", "a1", "u1", tools=("Bash",), stop="tool_use")]
+        seg = self._held_seg_id(recs)
+        store = self._store(seg, cleared=True)
+        store["placements"] = {}                       # anchor = the nudge's own cleared TARGET goal
+        units = jd.plan_units(build_session(recs), store)
+        self.assertEqual([u[1] for u in units], [],
+                         "cleared target + open nudge turn → still no live unit (and no prompt unit)")
+
+    # ── the live planner phase itself ────────────────────────────────────
+    def _run_live(self, store, llm, recs=None, now=NOW):
+        tpath = Path(self.td.name) / (SID + ".jsonl")
+        tpath.write_text("\n".join(json.dumps(r) for r in (recs or self.OPEN_RECS)) + "\n")
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps(store))
+        jd.plan_llm = llm
+        jd._PARSE_CACHE.clear()
+        jd._plan_session(SID, str(tpath), now)
+        return jd.load_goals(SID)
+
+    def test_live_phase_mints_fresh_with_cleared_context_and_dedups(self):
+        seg = self._held_seg_id(self.OPEN_RECS)
+        (Path(self.td.name) / "cleared.jsonl").write_text(
+            json.dumps({"id": SID + ":g1", "t": NOW - 30, "op": "clear"}) + "\n")
+        calls = []
+        def llm(text, menu, **k):
+            calls.append((text, menu, k))
+            return '{"ops":[{"why":"still on the settings page","do":"mint",' \
+                   '"text":"Continuing: reworking the settings layout grid"}]}'
+        store = self._run_live(self._store(seg, cleared=True), llm)
+        self.assertEqual(len(calls), 1, "exactly one live planner call")
+        text, menu, k = calls[0]
+        self.assertTrue(k.get("live"), "the live flag rides the call (the LIVE RE-PLAN note)")
+        self.assertIn("Polish the settings page", k.get("cleared_context", ""),
+                      "<recently-cleared> names the card the user just dismissed")
+        self.assertIn("which spacing scale?", k.get("cleared_context", ""),
+                      "…with its takeaway, so a continuation is recognizable")
+        tops = [nd for nd in store["nodes"].values()
+                if nd["parentId"] is None and not nd.get("cleared")]
+        self.assertEqual([nd["text"] for nd in tops], ["Continuing: reworking the settings layout grid"],
+                         "the fresh look mints ONE new top; the cleared card stays cleared")
+        self.assertEqual(store["placements"].get(seg + "#live"), tops[0]["id"],
+                         "keyed seg#live so it runs exactly once")
+        jd.plan_llm = self._boom                        # a second pass must not re-fire the live run
+        jd._PARSE_CACHE.clear()
+        jd._plan_session(SID, str(Path(self.td.name) / (SID + ".jsonl")), NOW + 5)
+
+    def test_live_phase_skip_is_coerced_the_invariant_is_hard(self):
+        seg = self._held_seg_id(self.OPEN_RECS)
+        store = self._run_live(self._store(seg, cleared=True),
+                               lambda *a, **k: '{"ops":[{"why":"nothing new","do":"skip"}]}')
+        tops = [nd for nd in store["nodes"].values()
+                if nd["parentId"] is None and not nd.get("cleared")]
+        self.assertEqual(len(tops), 1,
+                         "a skip verdict is coerced to a placement — a WORKING session always shows a card")
+        self.assertTrue(jd._placed_key(store["placements"], seg + "#live"))
+
+    def test_work_run_reconciles_onto_the_live_goal_not_a_duplicate(self):
+        # Turn 1: live re-plan mints the fresh goal mid-work. Turn end: the work-run must treat that live
+        # goal as its own earlier guess (goal_num) and file under it — never mint a competing top.
+        seg = self._held_seg_id(self.OPEN_RECS)
+        live_json = ('{"ops":[{"why":"fresh look","do":"mint",'
+                     '"text":"Continuing: reworking the settings layout grid"}]}')
+        self._run_live(self._store(seg, cleared=True), lambda *a, **k: live_json)
+        ended = self.OPEN_RECS + [aline(T0 + 900, "Grid rework finished.", "a2", "a1", stop="end_turn")]
+        tpath = Path(self.td.name) / (SID + ".jsonl")
+        tpath.write_text("\n".join(json.dumps(r) for r in ended) + "\n")
+        calls = []
+        def work_llm(text, menu, **k):
+            calls.append(k)
+            return '{"ops":[{"why":"the work landed","do":"sub","under":%d,"text":"Reworked the grid"}]}' % k["goal_num"]
+        jd.plan_llm = work_llm
+        jd._PARSE_CACHE.clear()
+        jd._plan_session(SID, str(tpath), NOW + 1000)
+        store = jd.load_goals(SID)
+        self.assertEqual(len(calls), 1, "one work-run call for the ended segment")
+        self.assertIsNotNone(calls[0].get("goal_num"),
+                             "the live placement is handed to the work-run as its own earlier guess")
+        live_top = next(nd for nd in store["nodes"].values()
+                        if nd["parentId"] is None and not nd.get("cleared"))
+        subs = [nd for nd in store["nodes"].values() if nd.get("parentId") == live_top["id"]]
+        self.assertEqual([nd["text"] for nd in subs], ["Reworked the grid"],
+                         "the ended work files UNDER the live goal")
+        tops = [nd for nd in store["nodes"].values()
+                if nd["parentId"] is None and not nd.get("cleared")]
+        self.assertEqual(len(tops), 1, "no duplicate top for the same thread")
+
+    # ── the <recently-cleared> context builder ───────────────────────────
+    def test_cleared_context_newest_first_undo_excluded_archive_read(self):
+        g1, g2, g3 = SID + ":g1", SID + ":g2", SID + ":g3"
+        (Path(self.td.name) / "cleared.jsonl").write_text(
+            json.dumps({"id": g1, "t": 100, "op": "clear"}) + "\n"
+            + json.dumps({"id": g2, "t": 200, "op": "clear"}) + "\n"
+            + json.dumps({"id": g3, "t": 300, "op": "clear"}) + "\n"
+            + json.dumps({"id": g3, "t": 400, "op": "undo"}) + "\n")
+        store = {"nodes": {g2: {"id": g2, "text": "Ship the exporter", "parentId": None, "cleared": True,
+                                "summary": "Exporter shipped behind a flag."},
+                           g3: {"id": g3, "text": "Un-cleared card", "parentId": None, "cleared": False}}}
+        jd.save_goal_archive(SID, {"rompUuid": SID, "status": {}, "nodes": {
+            g1: {"id": g1, "text": "Fix the importer", "parentId": None, "cleared": True,
+                 "blockSummary": "Needs the schema decision."}}})
+        ctx = jd._cleared_context(SID, store)
+        lines = ctx.splitlines()
+        self.assertEqual(len(lines), 2, "the undone clear is excluded — its card is back on the board")
+        self.assertIn("Ship the exporter", lines[0])
+        self.assertIn("Exporter shipped behind a flag.", lines[0], "the takeaway rides along")
+        self.assertIn("Fix the importer", lines[1])
+        self.assertIn("Needs the schema decision.", lines[1], "archived cards resolve from the archive (read-only)")
+        self.assertNotIn("Un-cleared card", ctx)
+        other = jd._cleared_context("99999999-8888-7777-6666-555555555555", store)
+        self.assertEqual(other, "", "another session's clears are not this session's context")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

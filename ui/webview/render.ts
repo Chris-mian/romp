@@ -4567,14 +4567,15 @@ function stopButton(): HTMLElement {
     e.stopPropagation();
     if (!activeId || !vscodeApi) return;
     vscodeApi.postMessage({ type: "interrupt", id: activeId });
-    // acknowledge INSTANTLY (the user 2026-07-02: the button just sat there, pressable again): disable +
-    // become the word. The kernel's push flips the chip to INTERRUPTING… a beat later and this whole
-    // statusline rebuilds without the button; this covers the gap.
-    (btn as HTMLButtonElement).disabled = true;
-    btn.replaceChildren();
-    const lbl = el("span", "stop-busy");
-    lbl.textContent = "interrupting…";
-    btn.appendChild(lbl);
+    // acknowledge INSTANTLY, then get out of the way (the user 2026-07-05): the old ack swapped the square
+    // for the word "interrupting…", which overflowed the fixed-width button onto the elapsed timer. The
+    // CHIP owns this state — flip it to Interrupting… optimistically and REMOVE the button + timer; the
+    // kernel's push rebuilds the statusline in this same shape (chip only, no button) a beat later.
+    const sl = document.getElementById("statusline");
+    const chip = sl ? (sl.querySelector(".chip") as HTMLElement | null) : null;
+    if (chip) { chip.className = "chip chip-interrupting"; chip.textContent = CHIP_LABEL.interrupting; }
+    document.getElementById("work-timer")?.remove();
+    btn.remove();
   });
   return btn;
 }

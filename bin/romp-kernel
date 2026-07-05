@@ -6091,19 +6091,37 @@ def _provisional_card(s, name, color, fsid, live, now, store=None):
     if jd._seg_command(held):                        # a SLASH-COMMAND turn is never classified into a goal (the planner
         return None                                  # skips it), so it would NEVER place → the placeholder would hang
                                                      # forever (the JLD /usage case). No placeholder for a command. (2026-06-29)
-    if jd._seg_followup(held):                       # a FOLLOW-UP (carries romp-goal-id) files UNDER its target goal,
-        return None                                  # which the send already reopened optimistically — so a SEPARATE
-                                                     # provisional card just FLASHES: a new dotted goal appears, then
-                                                     # vanishes as the target moves to Working. Skip it; the reopened
-                                                     # target IS the card (the user 2026-07-01).
+    placements = (store or {}).get("placements") or {}
+    nodes = (store or {}).get("nodes") or {}
+    # Is the held segment actually IN-FLIGHT? The clear-mid-work resurrect below applies ONLY then — the
+    # invariant is "a WORKING session always shows a card". An idle session cleared to zero is inbox zero:
+    # its blank board is CORRECT, and a resurrect there would be the phantom-'Analyzing' bug all over.
+    # Mirrors plan_units' turn_open (the judge's live unit gates on the same event).
+    turn_open = not lt.get("ended") and not any(a["type"] == "idle" for a in lt["atoms"])
+    fu = jd._seg_followup(held)
+    if fu:                                           # a FOLLOW-UP (carries romp-goal-id) files UNDER its target goal,
+        # which the send already reopened optimistically — so a SEPARATE provisional card just FLASHES: a
+        # new dotted goal appears, then vanishes as the target moves to Working. Skip it; the reopened
+        # target IS the card (the user 2026-07-01). UNLESS the target is GONE — cleared/archived mid-turn
+        # (the user 2026-07-05): then there is no card at all, and the placeholder must resurrect until the
+        # judge's one-shot live re-plan lands a fresh one (a recorded #live key = it already ran → stay out).
+        # An ABSENT target needs clear-EVIDENCE (its id in cleared.jsonl — every real cross-off logs one):
+        # a bogus cite or a not-yet-written store must not flash a placeholder.
+        fu_gone = _card_gone(nodes, fu) if fu in nodes else fu in _cleared_ids()
+        if not (turn_open and fu_gone) or _live_replanned(placements, held["id"]):
+            return None
     # PLACED already? the planner stamps placements the moment it classifies this segment — its prompt-run
     # (#p, fired while the turn is open) or its work-run (bare id, fired once the turn ends), set even for a
     # SKIP. Either means the real card (or none) is on the board → stop the placeholder. This is the true
     # "replaced the instant the planner places the segment" gate the docstring always promised, now keyed on
     # the placement EVENT instead of the open-turn proxy — so it persists across turn-end and never gaps.
-    placements = (store or {}).get("placements") or {}
-    if _seg_placed(placements, held["id"]):            # timestamp-invariant: the judge's recorded key can
-        return None                                    # carry a drifted t for the SAME segment (SDK echo)
+    # EXCEPTION (the user 2026-07-05): placed-but-cleared-out-from-under — every placed node's card is gone
+    # and no live re-plan has run — is the clear-mid-work window; the placeholder RESURRECTS for it so a
+    # working session never shows a blank board (_live_cleared_under). Open turns only (turn_open above):
+    # an ENDED turn's cleared cards are settled history, not work with nowhere to show.
+    if (_seg_placed(placements, held["id"])            # timestamp-invariant: the judge's recorded key can
+            and not (turn_open and _live_cleared_under(placements, nodes, held["id"]))):   # drifted t (SDK echo)
+        return None
     prompt = _split_reminders(_seg_prompt(held))[0].strip()
     if not prompt and not held.get("seam"):
         return None
@@ -7022,17 +7040,61 @@ def _seg_key(seg_id):
 
 def _seg_placed(placements, seg_id):
     """Is this LIVE-parse segment already placed by the planner (any phase: bare work key, '#p' prompt-run,
-    '#d' delegation)? Timestamp-INVARIANT, like every other kernel read of a judge-written seg key: the
+    '#d' delegation, '#live' clear-mid-work re-plan)? Timestamp-INVARIANT, like every other kernel read of a judge-written seg key: the
     judge records placement keys from ITS OWN parse, whose middle `t` can differ from this parse's for the
     SAME segment (the SDK optimistic echo lands at SEND time, the real transcript atom at PROCESS time — a
     queued message drifts by however long it waited). A raw `in placements` then misses forever, so the
     provisional placeholder never dropped: an idle session kept a phantom dotted "working" card for hours
     (the user 2026-07-01, session at rest since 17:34 still 'Analyzing' at 20:35). A RETIRED placement
     (value None) still counts as placed — the planner ruled; nothing is pending."""
-    if seg_id in placements or (seg_id + "#p") in placements or (seg_id + "#d") in placements:
+    if (seg_id in placements or (seg_id + "#p") in placements or (seg_id + "#d") in placements
+            or (seg_id + "#live") in placements):
         return True                                    # exact hit — the common, no-drift case
-    want = {_seg_key(seg_id), _seg_key(seg_id + "#p"), _seg_key(seg_id + "#d")}
+    want = {_seg_key(seg_id), _seg_key(seg_id + "#p"), _seg_key(seg_id + "#d"), _seg_key(seg_id + "#live")}
     return any(_seg_key(k) in want for k in placements)
+
+
+def _card_gone(nodes, nid):
+    """Is node `nid`'s card GONE from the board — absent from the live store (the compaction sweep archived
+    its subtree) or cleared on itself OR ANY ANCESTOR? The user's cross-off lands the `cleared` flag on the
+    card's TOP node only, so a placement onto a child walks up (the judge's _cleared_under twin)."""
+    seen = set()
+    while nid is not None and nid not in seen:
+        seen.add(nid)
+        nd = nodes.get(nid)
+        if nd is None:
+            return True
+        if nd.get("cleared"):
+            return True
+        nid = nd.get("parentId")
+    return False
+
+
+def _live_replanned(placements, seg_id):
+    """Has the judge's one-shot LIVE re-plan (seg#live) already run for this segment? Drift-safe like
+    _seg_placed. Whatever became of its card — even a SECOND clear — the re-plan never repeats, so the
+    placeholder must not resurrect either (a phantom 'Analyzing' nothing will ever replace)."""
+    if (seg_id + "#live") in placements:
+        return True
+    want = _seg_key(seg_id + "#live")
+    return any(_seg_key(k) == want for k in placements)
+
+
+def _live_cleared_under(placements, nodes, seg_id):
+    """True when this OPEN segment counts as 'placed' yet every goal node its placements point at is GONE
+    from the board (_card_gone) — the user cleared the card out from under the live work — and the judge's
+    one-shot LIVE re-plan (seg#live) hasn't recorded yet. That's the clear-mid-work window (the user
+    2026-07-05): the provisional placeholder RESURRECTS for exactly it, so a working session never shows a
+    blank board, and drops again the moment the re-plan lands a real card (its target is alive → not gone).
+    A None-valued placement is a planner ruling ('processed, no goal') and blocks the resurrect; so does a
+    recorded #live key (a second clear of the same in-flight work is final, not another placeholder)."""
+    if _live_replanned(placements, seg_id):
+        return False
+    fam = {_seg_key(seg_id), _seg_key(seg_id + "#p"), _seg_key(seg_id + "#d")}
+    vals = [v for k, v in placements.items() if _seg_key(k) in fam]
+    if not vals or any(v is None for v in vals):
+        return False                                   # unplaced (normal gates apply) / a standing ruling
+    return all(isinstance(v, str) and _card_gone(nodes, v) for v in vals)
 
 
 def _seg_caption(caps, seg_id):

@@ -68,7 +68,10 @@ class PaneSpinner(unittest.TestCase):
             self.assertIn("rotate(-360deg)", html, "%s swirl spins (reverse, matching the splash)" % name)
             self.assertIn("getElementById('%s')" % cid, html, "%s observes its content container" % name)
             self.assertIn("MutationObserver", html, "%s hides the spinner on first content" % name)
-            self.assertIn("setTimeout(hide,8000)", html, "%s has a backstop" % name)
+            # 30s failsafe (the user 2026-07-04, was 8s): content arrival via the MutationObserver is the
+            # real hide signal; the timeout exists only so the loader can never trap the user — 8s fired
+            # DURING slow cold starts, dropping the loader onto a still-blank pane (the very gap it covers).
+            self.assertIn("setTimeout(hide,30000)", html, "%s has a can't-trap failsafe" % name)
 
 
 if __name__ == "__main__":
