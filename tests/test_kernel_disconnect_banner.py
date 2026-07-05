@@ -24,10 +24,32 @@ class DisconnectBanner(unittest.TestCase):
         self.assertIn('ws.onclose=function(){netState("down");', js)   # reconnects on close (wsdown loader + retry follow)
         self.assertIn("setTimeout(connect,1500);", js)
         self.assertIn("ws.onerror=function(){try{ws.close();}catch(e){}};", js)
-        # a RECONNECT reloads to resync, but only once the socket actually reopened (not a blind reload on close)
-        self.assertIn("if(everConnected){location.reload();return;}", js)
+        # a RECONNECT no longer silently reloads (the user 2026-07-05): it PROMPTS via raiseStale, and the fresh
+        # socket resyncs live. The old auto-reload-on-reopen is gone.
+        self.assertIn("if(wasReconn)raiseStale();", js)
+        self.assertNotIn("if(everConnected){location.reload();return;}", js,
+                         "the silent auto-reload-on-reconnect is replaced by a reload PROMPT")
         self.assertNotIn("ws.onclose=function(){setTimeout(function(){location.reload();},1500);};", js,
                          "the old blind-reload-on-close is gone")
+
+    def test_shim_prompts_reload_on_reconnect_and_stale_foreground(self):
+        js = km._shim("feed")
+        # raiseStale routes to the shell's #rstale banner when embedded (a pane iframe), else self-injects.
+        self.assertIn('window.parent.postMessage({romp:"wsStale"}', js, "embedded pane hands off to the shell banner")
+        self.assertIn("function selfStale()", js, "standalone page (no shell) gets its own reload bar")
+        self.assertIn("romp-stale-self", js)
+        # visibility fast-path: a foregrounded tab whose socket is dead/quiet prompts at once (not after the
+        # throttled 5s watchdog), and forces a reconnect to resync.
+        self.assertIn('document.addEventListener("visibilitychange"', js)
+        self.assertIn("Date.now()-lastRecv>STALE_MS){raiseStale();", js)
+
+    def test_shell_rstale_banner_shows_on_ws_stale_message(self):
+        # the #rstale reload banner (formerly build-drift only) now ALSO shows on a pane's wsStale post, with a
+        # connection-specific message, latched so the /version poll can't clear it out from under the user.
+        self.assertIn("m.romp==='wsStale'", km._STALE_JS)
+        self.assertIn("connStale=true", km._STALE_JS)
+        self.assertIn("served<=loaded&&!connStale", km._STALE_JS, "the version poll must not hide a live-conn prompt")
+        self.assertIn("connStale=false", km._STALE_JS, "Dismiss clears the latch")
 
     def test_timeline_page_uses_the_shared_shim(self):
         # The timeline used to hand-roll its own WebSocket in _TIMELINE_BOOT (a copy of _shim's
