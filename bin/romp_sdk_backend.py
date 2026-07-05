@@ -53,6 +53,15 @@ def pick_identity_color(sid: str) -> tuple[str, str]:
 # can't show a true value). "high" suits agentic coding; the user changes it per session via the picker.
 DEFAULT_EFFORT = "high"
 EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+# Cap on a SINGLE stdout JSON message from the CLI. The SDK default is 1 MB, and one message routinely
+# exceeds that in a coding session (a big file Read, a large Bash/grep result, a base64 image echoed in a
+# tool_result). When it does, the SDK transport raises "JSON message exceeded maximum buffer size", which
+# kills our receive loop (drain) → the client tears down → the CLI's stdin closes → every PENDING permission
+# request (an AskUserQuestion picker or an Allow/Deny) is rejected with "Tool permission stream closed before
+# response received". The symptom: a picker renders and instantly returns without ever asking (the user
+# 2026-07-04, reproduced live). Raise the ceiling well past any realistic single message; it's a transient
+# per-message buffer, not a standing allocation, so a high cap costs nothing until a message actually needs it.
+SDK_MAX_BUFFER = 100 * 1024 * 1024
 
 
 def pretty_model(raw: str) -> str:
@@ -1424,6 +1433,7 @@ class SdkBackend:
             permission_mode=sess.mode,
             include_partial_messages=False,
             effort=sess.effort or DEFAULT_EFFORT,   # connect-time --effort (no runtime control); a change reconnects
+            max_buffer_size=SDK_MAX_BUFFER,   # a >1MB stdout message would crash the receive loop → kill any live picker
         )
         # romp's harness prompt is APPENDED via the SDK's DESIGNED system_prompt field — the Claude Code preset
         # plus an `append` (types.py SystemPromptPreset) — NOT extra_args={"append-system-prompt"}. Same effect
