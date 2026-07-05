@@ -166,6 +166,19 @@ class UpdateRemote(unittest.TestCase):
             self.assertNotIn("git pull", cmd, "no pull-from-origin anywhere")
             self.assertNotIn("origin", cmd)
 
+    def test_restart_is_manager_agnostic(self):
+        # the user 2026-07-04: a manager-less (attach-bootstrapped) host must still reload. The restart kills the
+        # kernel, polls the port (a manager respawn = the port returns → don't double-launch), else relaunches
+        # romp-serve. It must NOT depend on `romp --refresh` (which needs a manager) — that was the stuck-forever bug.
+        km._remotes = {"jetty": {"host": "jetty", "kernel_port": 7433}}
+        calls = self._wire()
+        km._update_remote("jetty")
+        apply = next(a[-1] for a in calls if isinstance(a[-1], str) and "merge-base" in a[-1])
+        self.assertIn("pkill -f", apply, "kills the running kernel")
+        self.assertIn("/dev/tcp/127.0.0.1/7433", apply, "polls the remote's kernel port to detect a manager respawn")
+        self.assertIn("romp-serve", apply, "relaunches romp-serve if nothing respawned it")
+        self.assertNotIn("--refresh", apply, "does NOT rely on `romp --refresh` (needs a manager) — the stuck bug")
+
 
 class UpdateEndpoint(unittest.TestCase):
     def test_post_tunnels_update_calls_update_remote_and_reports(self):

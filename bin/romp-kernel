@@ -2967,6 +2967,9 @@ def _update_remote(host):
     host = str(host or "").strip()
     if not host:
         return False, "no host"
+    with _remotes_lock:
+        _rr = _remotes.get(host)
+    kport = int((_rr or {}).get("kernel_port") or _REMOTE_KERNEL_PORT)   # for the restart's port poll
     lfull = _local_head()
     if not lfull:
         return False, "local kernel isn't a git checkout — nothing to push"
@@ -3013,11 +3016,17 @@ def _update_remote(host):
         'git -C "$R" reset --hard %s >/dev/null 2>&1 || { git -C "$R" update-ref -d refs/heads/%s 2>/dev/null; echo RESETFAIL; exit 0; }; '
         'git -C "$R" update-ref -d refs/heads/%s 2>/dev/null; '
         'NEW="$(git -C "$R" rev-parse --short HEAD)"; '
-        'if [ -x "$R/bin/romp" ]; then nohup "$R/bin/romp" --refresh >>"$LOGDIR/update.log" 2>&1 </dev/null & echo "SYNCED:$NEW"; '
-        'elif [ -x "$R/bin/romp-serve" ]; then pkill -f "bin/romp-kernel" 2>/dev/null; sleep 1; '
-        'nohup "$R/bin/romp-serve" >>"$LOGDIR/kernel.log" 2>&1 </dev/null & echo "SYNCED:$NEW"; '
-        'else echo "NOLAUNCH:$NEW"; fi'
-    ) % (shlex.quote(rdir), _P2P_REF, _P2P_REF, _P2P_REF, _P2P_REF, _P2P_REF)
+        # RESTART the kernel robustly whether or not a MANAGER supervises this host (the user 2026-07-04: an
+        # attach-bootstrapped host runs a BARE `romp-serve` with no manager, so `romp --refresh` — which needs
+        # romp-manager — no-op'd and the remote never reloaded → "waiting to restart" forever). Kill the kernel;
+        # if a manager supervises it the kernel respawns on its own (the PORT coming back proves it), otherwise
+        # relaunch romp-serve ourselves. The port poll IS the manager-detector, so we never double-launch.
+        'if [ ! -x "$R/bin/romp-serve" ]; then echo "NOLAUNCH:$NEW"; exit 0; fi; '
+        'pkill -f "bin/romp-kernel" 2>/dev/null; '
+        'UP=0; for i in 1 2 3 4 5 6 7 8; do sleep 1; if bash -c "exec 3<>/dev/tcp/127.0.0.1/%d" 2>/dev/null; then UP=1; break; fi; done; '
+        'if [ "$UP" = 0 ]; then nohup "$R/bin/romp-serve" >>"$LOGDIR/kernel.log" 2>&1 </dev/null &  sleep 1; fi; '
+        'echo "SYNCED:$NEW"'
+    ) % (shlex.quote(rdir), _P2P_REF, _P2P_REF, _P2P_REF, _P2P_REF, _P2P_REF, kport)
     try:
         a = subprocess.run([SSH_BIN] + _SSH_OPTS + [host, apply_cmd], capture_output=True, text=True, timeout=60)
     except Exception as e:
