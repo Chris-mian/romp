@@ -59,10 +59,13 @@ class ShimWatchdogSourcePins(unittest.TestCase):
         # ONE shim serves every pane — the timeline's former hand-rolled copy (a second lastRecv/STALE_MS
         # watchdog) is gone; it now rides _shim("timeline") + federation like chat/feed/fleet. Pin the
         # watchdog wiring in the shared shim AND that no second copy has crept back in.
-        self.assertEqual(KSRC.count("var lastRecv=0;var STALE_MS=30000;"), 1)
+        self.assertEqual(KSRC.count("var lastRecv=0;var STALE_MS=30000;"), 1,
+                         "still ONE shim — the anti-duplicate guard (no second hand-rolled copy)")
         self.assertGreaterEqual(KSRC.count("lastRecv=Date.now()"), 2)   # onopen + onmessage
-        # a stale-but-open socket is force-closed so onclose → reconnect → reload fires.
-        self.assertEqual(KSRC.count("Date.now()-lastRecv>STALE_MS"), 1)
+        # the staleness threshold is used TWICE within the one shim: the 5s interval watchdog AND the
+        # visibilitychange fast-path (a foregrounded tab checks freshness at once). Both live in _shim, so the
+        # single-shim guard above still holds.
+        self.assertEqual(KSRC.count("Date.now()-lastRecv>STALE_MS"), 2)
         self.assertNotIn("new WebSocket", km._TIMELINE_BOOT, "the timeline boot owns no socket of its own")
 
     def test_shim_ignores_the_keepalive_frame(self):

@@ -8585,12 +8585,28 @@ var APP="%s";var lastRecv=0;var STALE_MS=30000;   // watchdog: no frame (incl. k
 // Tell the shell this pane's WS state so it can show ONE "disconnected" banner (the user 2026-06-27): a real
 // network drop used to blind-reload into a dead page, leaving the pane silently frozen with no explanation.
 function netState(s){try{if(window.parent!==window)window.parent.postMessage({romp:"wsState",app:APP,state:s},"*");}catch(e){}}
+// raiseStale: the live connection dropped-and-reconnected (or a foregrounded tab found its socket dead), so
+// what's rendered may be frozen behind the kernel's real state (the user 2026-07-05: a feed card sat on a stale
+// "Re-judging" frame long after the kernel had moved on). PROMPT the user to reload rather than silently
+// auto-reloading (foisted, jarring) or leaving them staring at stale content. In the dashboard the pane rides
+// in an iframe, so hand it to the shell's ONE #rstale reload banner; a standalone page (feed/timeline opened
+// directly) has no shell, so self-inject a minimal top bar with the same Reload action.
+function selfStale(){try{if(document.getElementById("romp-stale-self"))return;
+var b=document.createElement("div");b.id="romp-stale-self";
+b.style.cssText="position:fixed;top:0;left:0;right:0;z-index:99999;display:flex;gap:12px;align-items:center;justify-content:center;background:#2b2d30;color:#e6e6e6;border-bottom:1px solid #4a4d51;padding:9px 14px;font:13px/1.4 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif";
+b.innerHTML="<span>romp lost the live connection, so what you see may be stale.</span>";
+var r=document.createElement("button");r.textContent="Reload";
+r.style.cssText="font:inherit;cursor:pointer;border-radius:6px;padding:4px 11px;font-weight:600;background:#54B204;color:#0c1a00;border:1px solid #3f8a00";
+r.onclick=function(){location.reload();};b.appendChild(r);
+(document.body||document.documentElement).appendChild(b);}catch(e){}}
+function raiseStale(){if(window.parent!==window){try{window.parent.postMessage({romp:"wsStale"},"*");}catch(e){}}else{selfStale();}}
 function connect(){var proto=location.protocol==="https:"?"wss://":"ws://";
 var active="";try{var st0=JSON.parse(localStorage.getItem(SK)||"null");active=(st0&&st0.activeId)||"";}catch(e){}
 ws=new WebSocket(proto+location.host+"/ws?app=%s"+(wid?"&wid="+encodeURIComponent(wid):"")+(active?"&active="+encodeURIComponent(active):""));
-// onopen: first connect → flush the queue; a RECONNECT (after a drop) → reload to resync, since the kernel
-// lost this client's push state while we were gone — but only NOW that the socket is actually back.
-ws.onopen=function(){lastRecv=Date.now();netState("up");if(everConnected){location.reload();return;}everConnected=true;for(var i=0;i<queue.length;i++)ws.send(queue[i]);queue=[];};
+// onopen: flush the queue; a RECONNECT (after a drop) also PROMPTS a reload — the fresh socket resyncs live via
+// the kernel's next push, and the banner offers a full reload for anything a live push doesn't cover. This
+// replaces the old silent location.reload() (the user: don't foist a reload; let me click — [[prefer-reload-banner-not-auto]]).
+ws.onopen=function(){lastRecv=Date.now();netState("up");var wasReconn=everConnected;everConnected=true;for(var i=0;i<queue.length;i++)ws.send(queue[i]);queue=[];if(wasReconn)raiseStale();};
 ws.onmessage=function(ev){lastRecv=Date.now();var msg;try{msg=JSON.parse(ev.data);}catch(e){return;}
 if(msg&&msg.type==="ka")return;   // keepalive: stamped lastRecv above; nothing for the bundle to render
 if(window.__rompFed){window.__rompFed.inbound("",msg);}else{window.dispatchEvent(new MessageEvent("message",{data:msg}));}};
@@ -8606,7 +8622,13 @@ getState:function(){try{return JSON.parse(localStorage.getItem(SK)||"null");}cat
 setState:function(s){try{localStorage.setItem(SK,JSON.stringify(s));}catch(e){}}};};connect();
 // staleness watchdog: a half-open socket fires no onclose, so poll lastRecv — if the keepalive (and all
 // frames) stopped arriving, force-close to trigger onclose → reconnect → reload-resync (the user 2026-06-29).
-setInterval(function(){if(everConnected&&ws&&ws.readyState===1&&Date.now()-lastRecv>STALE_MS){try{ws.close();}catch(e){}}},5000);})();
+setInterval(function(){if(everConnected&&ws&&ws.readyState===1&&Date.now()-lastRecv>STALE_MS){try{ws.close();}catch(e){}}},5000);
+// visibility fast-path (the user 2026-07-05): a BACKGROUNDED tab has its timers throttled, so the 5s watchdog
+// above can lag and the browser may have quietly dropped the socket while it slept. The instant the tab is
+// foregrounded, if the socket isn't open or has gone quiet past the watchdog window, treat the view as stale —
+// prompt at once AND force a reconnect (which resyncs live), rather than leaving the user on a frozen frame.
+document.addEventListener("visibilitychange",function(){if(document.visibilityState!=="visible"||!everConnected)return;
+if(!ws||ws.readyState!==1||Date.now()-lastRecv>STALE_MS){raiseStale();try{if(ws&&ws.readyState===1)ws.close();}catch(e){}}});})();
 """ % (app, app, app)
 
 
@@ -9771,15 +9793,25 @@ _STALE_HTML = (
     "<button class=rs-reload id=rstale-reload>Reload</button>"
     "<button class=rs-dismiss id=rstale-dismiss>Dismiss</button></div>")
 _STALE_JS = (
-    "(function(){var box=document.getElementById('rstale'),"
+    "(function(){var box=document.getElementById('rstale'),msg=box.querySelector('.rs-msg'),"
     "rl=document.getElementById('rstale-reload'),dm=document.getElementById('rstale-dismiss');"
-    "var loaded=__LOADEDVER__,dismissed=0,served=0;"
+    "var loaded=__LOADEDVER__,dismissed=0,served=0,connStale=false;"
+    "var BUILDMSG='A newer romp build is available.',"
+    "CONNMSG='romp lost the live connection to the dashboard, so what you see may be stale.';"
+    "function show(m){msg.textContent=m;box.classList.add('show');}"
     "function check(){fetch('/version',{cache:'no-store'}).then(function(r){return r.json();}).then(function(v){"
     "served=v.dist_ver||0;"
-    "if(loaded&&served>loaded&&served!==dismissed)box.classList.add('show');"
-    "else if(served<=loaded)box.classList.remove('show');}).catch(function(){});}"
+    "if(loaded&&served>loaded&&served!==dismissed)show(BUILDMSG);"
+    "else if(served<=loaded&&!connStale)box.classList.remove('show');}).catch(function(){});}"
+    # A pane whose WebSocket dropped-and-reconnected (or a foregrounded tab that found its socket dead) posts
+    # {romp:'wsStale'} — the same shell-coalesced channel as the disconnect banner, but a RELOAD PROMPT rather
+    # than a silent auto-reload (the user 2026-07-05: a stale feed card showed 'Re-judging' while the kernel had
+    # long since moved on, with no cue the view was frozen). connStale latches so the /version poll can't clear
+    # the prompt out from under it; Dismiss (or a reload) clears it.
+    "window.addEventListener('message',function(e){var m=e&&e.data;"
+    "if(m&&m.romp==='wsStale'){connStale=true;show(CONNMSG);}});"
     "rl.onclick=function(){location.reload();};"
-    "dm.onclick=function(){dismissed=served;box.classList.remove('show');};"
+    "dm.onclick=function(){dismissed=served;connStale=false;box.classList.remove('show');};"
     "check();setInterval(check,30000);})();")
 
 
