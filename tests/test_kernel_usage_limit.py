@@ -132,7 +132,7 @@ class LimitBannerWiring(unittest.TestCase):
         self.assertIn("sig!==_limGet()", js)                  # a stored signature suppresses re-showing
         self.assertIn("if(!on){_limPut('');}", js)            # a full clear forgets the dismissal
         # a NEW limited-window set has a different signature → the banner returns (episode identity, not a timer)
-        self.assertIn("(lim.fiveHour?'5':'')+(lim.sevenDay?'7':'')+(lim.fable?'F':'')", js)
+        self.assertIn("(lim.fiveHour?'5':'')+(lim.sevenDay?'7':'')", js)
 
 
 if __name__ == "__main__":
@@ -140,10 +140,19 @@ if __name__ == "__main__":
 
 
 class FableBanner(unittest.TestCase):
-    def test_the_banner_names_a_maxed_fable_window(self):
+    def test_the_top_banner_does_NOT_fire_on_a_fable_only_limit(self):
+        # the user 2026-07-04: a maxed Fable-5 window is MODEL-scoped — it doesn't pause anything and isn't
+        # actionable for someone not on Fable, so the proactive top banner (which popped every refresh for the
+        # 7-day window) must NOT trigger on it. It's surfaced when you actually USE Fable (api-error → blocked)
+        # and shown passively on the rail's third bar.
         js = km._LANDING_USAGE_JS
-        self.assertIn("lim.fiveHour||lim.sevenDay||lim.fable", js, "the banner triggers on the fable window too")
-        self.assertIn("names.push('Fable 5 (7d)')", js, "and names it")
+        self.assertIn("on=!!(lim&&(lim.fiveHour||lim.sevenDay))", js, "the banner fires only on account-wide 5h/7d")
+        self.assertNotIn("lim.fiveHour||lim.sevenDay||lim.fable", js, "no longer triggers on the fable window")
+        self.assertNotIn("names.push('Fable 5 (7d)')", js, "and no longer names it in the banner")
+
+    def test_fable_is_still_flagged_limited_for_the_rail_bar(self):
+        # the passive third rail bar still reflects the Fable window — only the proactive BANNER is suppressed
+        self.assertIn("['fable',7*86400,'F5','Fable 5']", km._LANDING_USAGE_JS, "the rail still has the Fable bar")
 
 
 class JudgeFailureBanner(unittest.TestCase):

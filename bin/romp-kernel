@@ -965,8 +965,9 @@ def _auto_pause_on_limit():
     very next tick (a live session's fresh output = "recovered"), then this re-engaged it — a continuous flap
     (262 cycles observed) that gated the judges on/off every 0.5s and STARVED the distiller (cards stuck
     'distilling', no background/summary). A Fable-only session that hits the wall is surfaced per-session
-    (api-error → blocked), which is where a model-scoped limit belongs. fable=100% still lights the banner + the
-    rail's third bar (see _usage().limited); it just no longer pauses anything."""
+    (api-error → blocked), which is where a model-scoped limit belongs. fable=100% no longer lights the top
+    banner either (the user 2026-07-04: it popped every refresh for the 7-day window and wasn't actionable) —
+    only the rail's passive third bar shows it (see _usage().limited); it pauses nothing and warns nothing."""
     try:
         u = _usage()
     except Exception:
@@ -9505,14 +9506,19 @@ _jdSig=jsig;if(!jon){_jdPut('');}   // nothing failing → forget any dismissal 
 var jshow=jon&&jsig!==_jdGet();jb.classList.toggle('show',jshow);
 if(jshow){var jmsg=jb.querySelector('.rl-msg');if(jmsg){var nc=jf.count,noun=(nc===1?'card':'cards');
 jmsg.textContent=nc+' '+noun+" couldn't be summarized — "+(jf.cause||'the summarizer hit errors')+'. Open a flagged card for what happened.';}}}
-// LIMIT BANNER (the user 2026-07-01): a top banner whenever a usage window is maxed (kernel `limited`), like
-// the disconnected one. Says which window + that retries are paused (the kernel auto-engages the retry-pause).
+// LIMIT BANNER (the user 2026-07-01): a top banner when an ACCOUNT-WIDE window (5h Session / 7d Weekly) is
+// maxed — those pause retries + the judges, so a proactive heads-up is warranted. Fable 5 is DELIBERATELY
+// EXCLUDED (the user 2026-07-04): its window is MODEL-scoped, so exhausting it doesn't stop the models romp
+// uses (Opus/Sonnet/Haiku) and doesn't pause anything — a "Fable limit reached" banner popping every refresh
+// for the 7-day window was pure noise for someone not on Fable. A Fable-only session that hits the wall is
+// surfaced WHEN YOU ACTUALLY USE IT (api-error → blocked on that session), and the rail's third bar still
+// shows the Fable usage passively; the proactive banner just no longer fires on it.
 var lb=document.getElementById('romp-limit');
-if(lb){var lim=u&&u.limited,on=!!(lim&&(lim.fiveHour||lim.sevenDay||lim.fable));
-var sig=on?((lim.fiveHour?'5':'')+(lim.sevenDay?'7':'')+(lim.fable?'F':'')):'';
+if(lb){var lim=u&&u.limited,on=!!(lim&&(lim.fiveHour||lim.sevenDay));
+var sig=on?((lim.fiveHour?'5':'')+(lim.sevenDay?'7':'')):'';
 _limSig=sig;if(!on){_limPut('');}   // fully cleared → forget any dismissal so a future limit shows again
 var show=on&&sig!==_limGet();lb.classList.toggle('show',show);
-if(show){var msg=lb.querySelector('.rl-msg');if(msg){var names=[];if(lim.fiveHour)names.push('Session (5h)');if(lim.sevenDay)names.push('Weekly (7d)');if(lim.fable)names.push('Fable 5 (7d)');
+if(show){var msg=lb.querySelector('.rl-msg');if(msg){var names=[];if(lim.fiveHour)names.push('Session (5h)');if(lim.sevenDay)names.push('Weekly (7d)');
 msg.textContent=names.join(' and ')+' usage limit reached — retries paused until it resets';}}}
 if(!u||(!u.fiveHour&&!u.sevenDay&&!u.fable)){el.innerHTML='';tip.style.display='none';return;}
 var nowS=Math.floor(Date.now()/1000),html='';LAST={};LAST._t=(typeof u.t==='number')?u.t:null;
