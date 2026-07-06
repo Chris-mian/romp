@@ -1369,7 +1369,11 @@ def _auto_nudge_tick(now, tmux):
         if _session_flag(sid, "hideFromFeed"):           # muted from the feed → no auto-nudges either; a nudge IS a
             continue                                     # feed feature, so opting out of the feed opts out of nudges (the user)
         st = (tmux.get(sid) or {}).get("state", "")
-        if st in _NEEDS_INPUT_STATES or st == "compacting":   # awaiting your input/approval / compacting → not orphaned
+        # awaiting your input/approval / compacting → not orphaned. The tmux `st` is EMPTY for SDK sessions
+        # (no tmux), so the raw-state "compacting" check MISSES them — corroborate with _compacting_now (the
+        # same signal the chip/timeline/chat use), or a /compact on an SDK session gets nudged mid-compaction
+        # ("nudge got called after compact" — the user 2026-07-06).
+        if st in _NEEDS_INPUT_STATES or st == "compacting" or _compacting_now(sid):
             continue
         if _api_error(s["path"]):                        # stopped on an API error → not orphaned
             continue
