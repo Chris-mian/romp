@@ -29,6 +29,9 @@ input=$(cat)
 [[ "$input" =~ \"notification_type\":\"([^\"]+)\" ]] && NOTIF_TYPE="${BASH_REMATCH[1]}" || NOTIF_TYPE=""
 [[ "$input" =~ \"cwd\":\"([^\"]+)\" ]] && WORK_DIR="${BASH_REMATCH[1]}" || WORK_DIR=""
 [[ "$input" =~ \"source\":\"([^\"]+)\" ]] && SOURCE="${BASH_REMATCH[1]}" || SOURCE=""
+# The LIVE transcript fsid for this event (Claude Code's own session UUID = the transcript filename). Used
+# to re-anchor @romp-session-id across a /clear, which forks the transcript to a new fsid (see below).
+[[ "$input" =~ \"session_id\":\"([^\"]+)\" ]] && HOOK_SID="${BASH_REMATCH[1]}" || HOOK_SID=""
 # Current permission mode (default|plan|acceptEdits|auto|dontAsk|bypassPermissions).
 # Not every event carries it — leave empty when absent so we never clobber a good
 # value with "". Consumers use it to tell a GENUINE permission block from auto
@@ -77,6 +80,22 @@ now=$(date +%s)
 # below are display only).
 if [[ "$DISPLAY_TMUX" == 1 ]]; then
     sid=$(tmux show -t "$session_name" -v @romp-session-id 2>/dev/null || true)
+    # RE-ANCHOR across a /clear (the user 2026-07-06): a /clear (or a resume that forks) starts a NEW
+    # transcript fsid, but @romp-session-id was written ONCE at launch (bin/romp) and never rewritten — so
+    # the kernel keeps keying liveness/name/state on the STALE creation fsid, and the picker shows the LIVE
+    # forked session as dead → "Revive" (while a duplicate stale row reads running). On any SessionStart
+    # whose payload session_id differs from the stored anchor, re-point the var to the live fsid and MIRROR
+    # the names entry (name/cwd/color/identity are all anchor-keyed under names/<sid>) so every surface
+    # resolves the live transcript. Event-based; a no-op when they already match. Fully guarded — a failure
+    # here can never break status reporting.
+    if [[ "$EVENT" == "SessionStart" && -n "$HOOK_SID" && -n "$sid" && "$HOOK_SID" != "$sid" ]]; then
+        ndir="${XDG_STATE_HOME:-$HOME/.local/state}/romp/names"
+        if [[ -f "$ndir/$sid" && ! -e "$ndir/$HOOK_SID" ]]; then
+            cp "$ndir/$sid" "$ndir/$HOOK_SID" 2>/dev/null || true
+        fi
+        tmux set -t "$session_name" @romp-session-id "$HOOK_SID" 2>/dev/null || true
+        sid="$HOOK_SID"                                 # everything below (state log, etc.) uses the LIVE fsid now
+    fi
     prev=$(tmux show -t "$session_name" -v @claude-state 2>/dev/null || true)
 else
     sid="$ROMP_SESSION_ID"

@@ -324,3 +324,66 @@ run_hook() {
     [ "$status" -eq 0 ]
     ! grep -q '"awaiting"' "$TEST_DIR/state/romp/states/headless-aw-1.jsonl"
 }
+
+# ─── re-anchor @romp-session-id across a /clear (the user 2026-07-06) ──────────
+# A /clear forks the transcript to a NEW fsid but @romp-session-id stays frozen on the creation fsid, so
+# the kernel keys liveness on a stale transcript and the picker shows the LIVE session as dead → Revive. On
+# a SessionStart whose payload session_id differs from the anchor, the hook re-points the var to the live
+# fsid and mirrors the anchor-keyed names entry so every surface resolves the live transcript.
+
+@test "SessionStart with a NEW session_id re-anchors @romp-session-id + mirrors the names entry" {
+    export MOCK_SESSION_ID="anchor-old"
+    export XDG_STATE_HOME="$TEST_DIR/state"
+    mkdir -p "$TEST_DIR/state/romp/names"
+    printf 'DEMO\t/tmp/project\t#aabbcc\tblue' > "$TEST_DIR/state/romp/names/anchor-old"
+    run run_hook '{"hook_event_name":"SessionStart","source":"clear","session_id":"fork-new","cwd":"/tmp/project"}'
+    [ "$status" -eq 0 ]
+    grep -q 'set -t test @romp-session-id fork-new' "$MOCK_LOG"
+    [ -f "$TEST_DIR/state/romp/names/fork-new" ]
+    # the mirror is a faithful copy — the live fork resolves the same name/cwd/color
+    [ "$(cat "$TEST_DIR/state/romp/names/fork-new")" = "$(cat "$TEST_DIR/state/romp/names/anchor-old")" ]
+    # the durable state log is now written under the LIVE fsid, not the stale anchor
+    grep -q '"state":"waiting"' "$TEST_DIR/state/romp/states/fork-new.jsonl"
+}
+
+@test "SessionStart whose session_id MATCHES the anchor is a no-op (normal startup/resume)" {
+    export MOCK_SESSION_ID="same-sid"
+    export XDG_STATE_HOME="$TEST_DIR/state"
+    mkdir -p "$TEST_DIR/state/romp/names"
+    printf 'DEMO\t/tmp/x' > "$TEST_DIR/state/romp/names/same-sid"
+    run run_hook '{"hook_event_name":"SessionStart","source":"startup","session_id":"same-sid","cwd":"/tmp"}'
+    [ "$status" -eq 0 ]
+    ! grep -q 'set -t test @romp-session-id' "$MOCK_LOG"   # the var is never REWRITTEN when it already matches (a read is fine)
+}
+
+@test "no re-anchor when @romp-session-id is unset (never clobber a session with no anchor)" {
+    export MOCK_SESSION_ID=""                        # anchor not set yet
+    export XDG_STATE_HOME="$TEST_DIR/state"
+    run run_hook '{"hook_event_name":"SessionStart","source":"clear","session_id":"fork-new","cwd":"/tmp"}'
+    [ "$status" -eq 0 ]
+    ! grep -q 'set -t test @romp-session-id' "$MOCK_LOG"
+    [ ! -e "$TEST_DIR/state/romp/names/fork-new" ]
+}
+
+@test "re-anchor never overwrites an existing names entry for the live fsid" {
+    export MOCK_SESSION_ID="anchor-old"
+    export XDG_STATE_HOME="$TEST_DIR/state"
+    mkdir -p "$TEST_DIR/state/romp/names"
+    printf 'DEMO\t/tmp/project' > "$TEST_DIR/state/romp/names/anchor-old"
+    printf 'ALREADY\t/tmp/other' > "$TEST_DIR/state/romp/names/fork-new"   # the fork already has its own name
+    run run_hook '{"hook_event_name":"SessionStart","source":"clear","session_id":"fork-new","cwd":"/tmp/project"}'
+    [ "$status" -eq 0 ]
+    grep -q 'set -t test @romp-session-id fork-new' "$MOCK_LOG"            # still re-points the var
+    [ "$(cat "$TEST_DIR/state/romp/names/fork-new")" = "$(printf 'ALREADY\t/tmp/other')" ]   # but keeps the existing name
+}
+
+@test "a NON-SessionStart event with a differing session_id does NOT re-anchor" {
+    export MOCK_SESSION_ID="anchor-old"
+    export XDG_STATE_HOME="$TEST_DIR/state"
+    mkdir -p "$TEST_DIR/state/romp/names"
+    printf 'DEMO\t/tmp/project' > "$TEST_DIR/state/romp/names/anchor-old"
+    run run_hook '{"hook_event_name":"Stop","session_id":"fork-new","cwd":"/tmp/project"}'
+    [ "$status" -eq 0 ]
+    ! grep -q '@romp-session-id fork-new' "$MOCK_LOG"    # only SessionStart re-anchors
+    [ ! -e "$TEST_DIR/state/romp/names/fork-new" ]
+}
