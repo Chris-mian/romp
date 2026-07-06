@@ -3826,8 +3826,8 @@ def _distill_session(fsid, path, now):
             raw = out
             out, src = _split_source(out)
             bg, out = _split_sections(out)
-            nodes[top]["blockSummary"] = out[:600]
-            nodes[top]["background"] = bg[:600] if bg else None   # re-orientation for a reader who forgot the thread (2026-07-02)
+            nodes[top]["blockSummary"] = out            # full text — NEVER truncate a brief mid-word (the user 2026-07-06)
+            nodes[top]["background"] = bg if bg else None   # re-orientation for a reader who forgot the thread (2026-07-02)
             nodes[top]["summaryAnchor"] = marks.map.get(src)   # the brief's cited source (None → kernel's deterministic fallback)
             if marks.map and marks.map.get(src) is None:   # labels offered, no usable citation → card warn + log
                 _warn_cite_miss(nodes[top], "brief", now)
@@ -3867,8 +3867,8 @@ def _distill_session(fsid, path, now):
         raw = out
         out, src = _split_source(out)
         bg, out = _split_sections(out)
-        nodes[top]["summary"] = out[:600]
-        nodes[top]["background"] = bg[:600] if bg else None   # re-orientation for a reader who forgot the thread (2026-07-02)
+        nodes[top]["summary"] = out                 # full text — NEVER truncate a takeaway mid-word (the user 2026-07-06)
+        nodes[top]["background"] = bg if bg else None   # re-orientation for a reader who forgot the thread (2026-07-02)
         nodes[top]["summaryAnchor"] = marks.map.get(src)   # the takeaway's cited source (None → kernel's deterministic fallback)
         if marks.map and marks.map.get(src) is None:       # labels offered, no usable citation → card warn + log
             _warn_cite_miss(nodes[top], "distiller", now)

@@ -5225,5 +5225,27 @@ class LiveReplan(unittest.TestCase):
         self.assertEqual(other, "", "another session's clears are not this session's context")
 
 
+class DistillerStoresFullTextTest(unittest.TestCase):
+    """The distiller's key takeaway (summary) and decision brief (blockSummary) are stored in FULL — never
+    truncated mid-word to a fixed char count — so a long takeaway shows as long text, not a cut-off fragment
+    (the user 2026-07-06). Guards against re-introducing the old `out[:600]` cap in _distill_session; the
+    reply is already bounded upstream (JUDGE_JSON_CAP + the LLM's token limit), so no per-field cap is needed.
+    A source pin: _distill_session is a heavy store+parse integration, and the only unit is the assignment."""
+
+    def setUp(self):
+        with open(os.path.join(BIN, "romp-judge"), encoding="utf-8") as f:
+            self.src = f.read()
+
+    def test_takeaway_and_brief_are_not_capped_at_600(self):
+        # the takeaway/brief are assigned the FULL distiller output...
+        self.assertIn('nodes[top]["summary"] = out', self.src)
+        self.assertIn('nodes[top]["blockSummary"] = out', self.src)
+        # ...and NOT the old fixed-length slices (those cut long summaries mid-word, no ellipsis)
+        self.assertNotIn('summary"] = out[:600]', self.src)
+        self.assertNotIn('blockSummary"] = out[:600]', self.src)
+        # the re-orientation background rode the same cap — it's gone too
+        self.assertNotIn("bg[:600]", self.src)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
