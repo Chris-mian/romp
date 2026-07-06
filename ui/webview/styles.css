@@ -258,10 +258,11 @@ body { display: flex; flex-direction: column; }
 #content::-webkit-scrollbar-track { background: rgba(255, 255, 255, 0.04); }
 #content::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.24); border-radius: 5px; min-height: 36px; }
 #content::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.36); }
-/* The rail time-markers (.time-marker) + the "worked" footer hang ~55px LEFT of each turn. The
-   column now fills the pane (var(--chat-col)), so we ALWAYS reserve that left gutter as real padding
-   (54px) — otherwise the HH:MM timestamps overflow left and get clipped by overflow-x:hidden. */
-.thread { max-width: var(--chat-col); margin: 0 auto; padding: 0 24px 0 54px; position: relative; }   /* .rail-band anchors here */
+/* The rail time-markers (.time-marker) hang ~45px LEFT of each turn. The column fills the pane
+   (var(--chat-col)), so we ALWAYS reserve that left gutter as real padding — otherwise the HH:MM
+   timestamps overflow left and get clipped by overflow-x:hidden. Tightened 54→44px (the user 2026-07-05)
+   so the times sit nearer the left margin and the prose column gains width. */
+.thread { max-width: var(--chat-col); margin: 0 auto; padding: 0 24px 0 44px; position: relative; }   /* .rail-band anchors here */
 /* the transcript "No session open" placeholder (#empty-state). Scoped to its OWN class — a bare
    `.empty` selector here used to bleed `padding: 40px` onto every leaf-row tree spacer (the ledger's
    `ledger-tri empty` + the feed's `ftree-tri empty`, both zero-content spans), blowing them up to
@@ -443,7 +444,7 @@ body { display: flex; flex-direction: column; }
   background: var(--vscode-editor-background, var(--bg));
 }
 .statusline {
-  max-width: var(--chat-col); margin: 0 auto; padding: 7px 24px 0 54px;
+  max-width: var(--chat-col); margin: 0 auto; padding: 7px 24px 0 44px;   /* left matches .thread's 44px gutter so the controls align with the transcript column */
   display: flex; align-items: center; gap: 10px;
 }
 #composer { position: relative; max-width: var(--chat-col); margin: 0 auto; padding: 8px 24px 6px; }
@@ -736,7 +737,7 @@ body { display: flex; flex-direction: column; }
 /* scroll-margin-top: a jump lands the turn at the TOP of the viewport (landOn uses
    block:"start") — a few px of breathing room so it isn't glued to the edge and the
    anchor-flash border isn't clipped. */
-.turn { position: relative; padding-left: 30px; padding-top: 9px; padding-bottom: 9px; scroll-margin-top: 10px; }
+.turn { position: relative; padding-left: 24px; padding-top: 9px; padding-bottom: 9px; scroll-margin-top: 10px; }   /* text indent from the rail; tightened 30→24 for more prose width (the user 2026-07-05) — the dot/rail (left:6/10.5) are unaffected */
 /* Tail-windowing spacer (render.ts): stands in for the older head [0, winStart) that isn't rendered as real
    .turn nodes, sized to its estimated height so the scrollbar is honest. Invisible, non-interactive — it's
    pure vertical space. (content-visibility:auto was tried here first but REVERTED: it made content.scrollHeight
@@ -797,7 +798,7 @@ body { display: flex; flex-direction: column; }
    minute/day advanced since the previous timed event. Absolute (no layout shift), bg
    interrupts the rail so it reads as a tick on the timeline. .day adds the date+bold. */
 .time-marker {
-  position: absolute; top: 15px; left: -55px; width: 58px; z-index: 2;
+  position: absolute; top: 15px; left: -45px; width: 48px; z-index: 2;
   text-align: right; white-space: nowrap; line-height: 1;       /* right edge sits ~3px LEFT of the dot (dot is at 6px); text fills the empty gutter to its left, aligned to the dot's row */
   font-size: 0.76em; font-variant-numeric: tabular-nums; letter-spacing: 0.02em;
   color: var(--dim);

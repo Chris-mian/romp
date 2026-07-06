@@ -46,6 +46,19 @@ class RailUsage(unittest.TestCase):
         self.assertIn("#ru-tip{", self.html, "a styled hover tooltip panel")
         self.assertIn("resets in", self.html, "the panel includes the reset countdown")
 
+    def test_each_usage_window_is_a_row_with_the_text_left_of_the_bars(self):
+        # the user 2026-07-05: in the bottom bar each window rotates to a ROW — the % + tag stacked in a
+        # left-hand text block (.ru-txt), the bar-pair to its right — so a window is only bar-height tall and
+        # the whole bottom bar stays short (height:30px).
+        self.assertIn(".ru-w{display:flex;flex-direction:row;align-items:center;gap:5px}", self.html)
+        self.assertIn(".ru-txt{display:flex;flex-direction:column;align-items:flex-end", self.html)
+        # render() emits the text block BEFORE the bars, so the % + tag sit to the LEFT of the bar-pair
+        self.assertLess(self.html.index("<div class=ru-txt>"), self.html.index("<div class=ru-bars>"),
+                        "the text block comes before the bars in the per-window markup")
+        # the bars themselves are unchanged (used bar over/beside elapsed bar)
+        self.assertIn("ru-lab>'+pct+'%", self.html)
+        self.assertIn("ru-win>'+w[2]", self.html)
+
     def test_the_usage_tooltip_is_one_shared_panel_reproducing_both_windows_bars(self):
         # a SINGLE tooltip on the whole rail-usage area (mouseenter on el), not a per-window panel
         self.assertIn("el.addEventListener('mouseenter',showTip)", self.html, "one shared tooltip for the area")

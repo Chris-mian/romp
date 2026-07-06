@@ -9697,10 +9697,11 @@ var rolled=seg.resetsAt&&nowS>seg.resetsAt,pct=rolled?0:(seg.pct||0);
 var col=(seg.color&&seg.color.length===3)?('rgb('+seg.color.join(',')+')'):'#54B204';   // selected colormap (server-computed)
 var tp=(seg.resetsAt&&w[1])?Math.max(0,Math.min(100,Math.round((nowS-(seg.resetsAt-w[1]))/w[1]*100))):null;
 LAST[w[0]]={name:w[3],span:w[2],pct:pct,col:col,tp:tp,reset:seg.resetsAt?fmtR(seg.resetsAt):null};
-html+='<div class=ru-w data-w="'+w[0]+'"><div class=ru-bars>'
+html+='<div class=ru-w data-w="'+w[0]+'">'
++'<div class=ru-txt><div class=ru-lab>'+pct+'%</div><div class=ru-win>'+w[2]+'</div></div>'
++'<div class=ru-bars>'
 +'<div class=ru-bar><i style="height:'+pct+'%;background:'+col+'"></i></div>'
-+'<div class=ru-bar><i style="height:'+(tp||0)+'%;background:#6b7a8c"></i></div></div>'
-+'<div class=ru-lab>'+pct+'%</div><div class=ru-win>'+w[2]+'</div></div>';});
++'<div class=ru-bar><i style="height:'+(tp||0)+'%;background:#6b7a8c"></i></div></div></div>';});
 el.innerHTML=html;}
 // ONE shared tooltip for BOTH windows: per window, the used bar (colormap) over the elapsed bar (slate) +
 // the % + reset — the exact set of bars that used to sit under the timeline, nothing more.
@@ -10128,7 +10129,7 @@ def _landing():
             # (fitRail → data-ruc) is now a dormant fallback: the bar's height comfortably holds the level-0 bars,
             # so fit stays at level 0 unless the row's content ever exceeds the bar height.
             ".pane-rail{flex:0 0 auto;box-sizing:border-box;display:flex;flex-direction:row;align-items:center;gap:14px;"
-            "padding:0 12px;height:44px;background:#202021;border-top:1px solid #2c2c2d;z-index:10;overflow:hidden}"
+            "padding:0 12px;height:30px;background:#202021;border-top:1px solid #2c2c2d;z-index:10;overflow:hidden}"
             ".rail-scroll{flex:0 1 auto;min-width:0;display:flex;flex-direction:row;align-items:center;gap:12px;"
             "overflow-x:auto;overflow-y:hidden;scrollbar-width:none}"
             ".rail-scroll::-webkit-scrollbar{width:0;height:0}"
@@ -10145,9 +10146,9 @@ def _landing():
             "#rail-usage[data-ruc='3'] .ru-win{display:none}"
             "#rail-usage[data-ruc='4']{display:none}"
             ".rail-acts{flex:0 0 auto;display:flex;flex-direction:row;align-items:center;gap:6px;margin-left:auto}"   # compact: tight row of refresh/network/settings   # pinned to the RIGHT of the bottom bar, always visible
-            ".rail-btn{flex:0 0 auto;letter-spacing:.04em;"
+            ".rail-btn{flex:0 0 auto;letter-spacing:.04em;line-height:1;"
             "font:600 11px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#8a8a8a;margin:0;"
-            "padding:5px 9px;border-radius:5px;cursor:pointer;user-select:none;display:flex;align-items:center;"
+            "padding:4px 9px;border-radius:5px;cursor:pointer;user-select:none;display:flex;align-items:center;"
             "justify-content:center;transition:color .1s,background .1s}"
             ".rail-btn:hover{color:#cfe6ff;background:rgba(255,255,255,0.06)}"
             ".rail-btn.on{color:var(--accent);background:rgba(156,210,255,0.10)}"
@@ -10191,10 +10192,12 @@ def _landing():
             ".rnet-empty{color:#777;font-size:11px}"
             # usage rate-limit bars in the rail (the user 2026-06-26): per window (5h/7d), a used-% bar (colored
             # green/amber/red like the timeline's) beside an elapsed-% bar (slate) — pace at a glance; %-label;
-            # window tag; full detail on hover (native title). Now the three windows sit side-by-side (row) in the
-            # bottom bar; each stays a compact vertical bar-pair with the % + tag stacked under it (.ru-w column).
+            # window tag; full detail on hover (native title). In the bottom bar the three windows sit side-by-side
+            # (row); each window is itself a ROW — the % + tag stacked to the LEFT (.ru-txt) of its bar-pair — so a
+            # window is only bar-height TALL, keeping the whole bottom bar short (the user 2026-07-05).
             "#rail-usage{flex:0 0 auto;display:flex;flex-direction:row;align-items:center;gap:14px}"
-            ".ru-w{display:flex;flex-direction:column;align-items:center;gap:2px}"
+            ".ru-w{display:flex;flex-direction:row;align-items:center;gap:5px}"
+            ".ru-txt{display:flex;flex-direction:column;align-items:flex-end;gap:1px;line-height:1}"
             ".ru-bars{display:flex;gap:2px;height:20px;align-items:flex-end}"
             ".ru-bar{width:7px;height:100%;background:rgba(255,255,255,0.10);border-radius:2px;display:flex;align-items:flex-end;overflow:hidden}"
             ".ru-bar i{display:block;width:100%;border-radius:2px;transition:height .3s ease}"

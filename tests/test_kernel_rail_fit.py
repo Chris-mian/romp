@@ -2,7 +2,7 @@
 (toggles + usage, scrolling SIDEWAYS on a narrow window) and a FIXED group (refresh + network + gear), pinned
 to the RIGHT (margin-left:auto) so the actions never get pushed off. The usage bars' vertical DEGRADE ladder
 (fitRail bumps data-ruc: shorter bars -> drop % -> drop 5h/7d labels -> hidden last, the user 2026-07-01) is
-now a dormant fallback — the 44px bar comfortably holds the level-0 bars, so fit stays at level 0."""
+now a dormant fallback — the 30px bar comfortably holds the level-0 bars, so fit stays at level 0."""
 import os
 import unittest
 from importlib.machinery import SourceFileLoader
@@ -32,7 +32,7 @@ class RailFit(unittest.TestCase):
         self.assertIn(".rail-scroll::-webkit-scrollbar{width:0;height:0}", land)
         self.assertIn(".rail-acts{flex:0 0 auto;display:flex;flex-direction:row;align-items:center;gap:6px;margin-left:auto}", land)
         self.assertIn(".pane-rail{flex:0 0 auto;box-sizing:border-box;display:flex;flex-direction:row;align-items:center;gap:14px;"
-                      "padding:0 12px;height:44px;background:#202021;border-top:1px solid #2c2c2d;z-index:10;overflow:hidden}", land)
+                      "padding:0 12px;height:30px;background:#202021;border-top:1px solid #2c2c2d;z-index:10;overflow:hidden}", land)
 
     def test_usage_bars_degrade_gracefully_when_tight(self):
         land = km._landing()
