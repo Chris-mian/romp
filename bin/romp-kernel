@@ -9754,12 +9754,15 @@ window.addEventListener('message',function(e){var m=e.data;if(m&&m.romp==='usage
 """
 
 
-# Settings full-screen bridge (the user 2026-06-23): the feed iframe's gear posts {romp:'settings',on} when
-# its modal opens/closes; the shell lifts the feed iframe over the whole window (body.settings-open) so the
-# modal's backdrop covers the full screen, and restores it on close.
+# Full-screen bridges (the user 2026-06-23; picker 2026-07-05): an iframe posts {romp:'settings',on} (feed
+# gear) or {romp:'picker',on} (chat new-session picker) when its modal opens/closes; the shell lifts that
+# iframe over the whole window (body.settings-open / body.picker-open) so the modal's backdrop covers the full
+# screen, and restores it on close.
 _LANDING_SETTINGS_JS = """
-(function(){window.addEventListener('message',function(e){var m=e.data;
-if(m&&m.romp==='settings')document.body.classList.toggle('settings-open',!!m.on);});
+(function(){window.addEventListener('message',function(e){var m=e.data;if(!m)return;
+if(m.romp==='settings')document.body.classList.toggle('settings-open',!!m.on);
+// the /chat iframe's new-session picker asks the shell to lift it full-window (see body.picker-open CSS)
+if(m.romp==='picker')document.body.classList.toggle('picker-open',!!m.on);});
 // the rail's ⛭ opens the feed iframe's settings modal (the feed owns the modal); the CSS lifts the iframe
 // full-window while body.settings-open, so it works even when the feed pane is toggled off (the user 2026-06-25).
 var gear=document.getElementById('rail-gear');
@@ -10108,17 +10111,26 @@ def _landing():
             # 2026-06-25) — un-hide the pane and pin the iframe full-screen while the modal is open.
             "body.settings-open #feed-pane{display:block!important}"
             "body.settings-open #f-feed{position:fixed;inset:0;z-index:200;width:100vw;height:100vh}"
-            # ── far-left pane rail (the user 2026-06-24): a thin vertical toolbar with Chat / Fleet / Feed
-            # toggles (rotated labels). Each is an independent on/off; the lit one is in the romp accent.
-            # SHORT-WINDOW behavior (the user 2026-06-27): the rail splits into a SCROLLABLE top (toggles +
-            # usage) and a FIXED bottom (refresh + gear). The gear/refresh never get pushed off — they stay
-            # pinned at the bottom; the usage bars DEGRADE gracefully (fitRail → data-ruc) when room runs out;
-            # only if even the toggles don't fit do THEY scroll (hidden scrollbar — the gear used to spill over
-            # the feed). So the gear can never collide with the toggle labels.
-            ".pane-rail{flex:0 0 30px;box-sizing:border-box;display:flex;flex-direction:column;gap:6px;"
-            "padding:8px 0;background:#202021;border-right:1px solid #2c2c2d;z-index:10;overflow:hidden}"
-            ".rail-scroll{flex:0 1 auto;min-height:0;display:flex;flex-direction:column;gap:6px;"
-            "overflow-y:auto;overflow-x:hidden;scrollbar-width:none}"
+            # New-session PICKER full-screen (the user 2026-07-05): the picker lives INSIDE the /chat iframe, so
+            # its position:fixed;inset:0 only covered the chat PANE — a short pane couldn't scroll the session
+            # list. Same bridge as settings: render.ts posts {romp:'picker',on} and the shell lifts the chat
+            # iframe over the whole window (body.picker-open) so the overlay fills the screen and the list gets
+            # the full height to scroll. Restored on close.
+            "body.picker-open #chat-pane{display:block!important}"
+            "body.picker-open #f-chat{position:fixed;inset:0;z-index:200;width:100vw;height:100vh}"
+            # ── pane rail (the user 2026-06-24; rotated to a BOTTOM BAR the user 2026-07-05): a thin toolbar with
+            # Chat / Outline / Feed / Timeline toggles. It used to be a vertical strip on the far LEFT; it now runs
+            # HORIZONTALLY across the bottom of .col, BELOW the timeline band (last child of .col). Each toggle is
+            # an independent on/off; the lit one is in the romp accent.
+            # It keeps the SCROLLABLE group (.rail-scroll: toggles + usage, now a horizontal row that scrolls
+            # sideways on a narrow window) and a FIXED group (.rail-acts: refresh + network + gear), pinned to the
+            # RIGHT (margin-left:auto) so the actions never get pushed off. The usage bars' vertical DEGRADE ladder
+            # (fitRail → data-ruc) is now a dormant fallback: the bar's height comfortably holds the level-0 bars,
+            # so fit stays at level 0 unless the row's content ever exceeds the bar height.
+            ".pane-rail{flex:0 0 auto;box-sizing:border-box;display:flex;flex-direction:row;align-items:center;gap:14px;"
+            "padding:0 12px;height:44px;background:#202021;border-top:1px solid #2c2c2d;z-index:10;overflow:hidden}"
+            ".rail-scroll{flex:0 1 auto;min-width:0;display:flex;flex-direction:row;align-items:center;gap:12px;"
+            "overflow-x:auto;overflow-y:hidden;scrollbar-width:none}"
             ".rail-scroll::-webkit-scrollbar{width:0;height:0}"
             # GRADED degrade as vertical room runs out (fitRail bumps data-ruc), instead of vanishing at once:
             # 1 = shorter bars, 2 = drop the % readout, 3 = bars only (drop 5h/7d labels), 4 = hidden last (the user 2026-07-01).
@@ -10132,15 +10144,15 @@ def _landing():
             "#rail-usage[data-ruc='3'] .ru-lab{display:none}"
             "#rail-usage[data-ruc='3'] .ru-win{display:none}"
             "#rail-usage[data-ruc='4']{display:none}"
-            ".rail-acts{flex:0 0 auto;display:flex;flex-direction:column;gap:2px;margin-top:auto;padding-bottom:2px}"   # compact: tight stack of refresh/network/settings   # pinned to the bottom, always visible
-            ".rail-btn{flex:0 0 auto;writing-mode:vertical-rl;text-orientation:mixed;letter-spacing:.04em;"
-            "font:600 11px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#8a8a8a;margin:0 4px;"
-            "padding:8px 0;border-radius:5px;cursor:pointer;user-select:none;display:flex;align-items:center;"
+            ".rail-acts{flex:0 0 auto;display:flex;flex-direction:row;align-items:center;gap:6px;margin-left:auto}"   # compact: tight row of refresh/network/settings   # pinned to the RIGHT of the bottom bar, always visible
+            ".rail-btn{flex:0 0 auto;letter-spacing:.04em;"
+            "font:600 11px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#8a8a8a;margin:0;"
+            "padding:5px 9px;border-radius:5px;cursor:pointer;user-select:none;display:flex;align-items:center;"
             "justify-content:center;transition:color .1s,background .1s}"
             ".rail-btn:hover{color:#cfe6ff;background:rgba(255,255,255,0.06)}"
             ".rail-btn.on{color:var(--accent);background:rgba(156,210,255,0.10)}"
-            # the ↻ refresh + ⛭ settings actions sit in .rail-acts, pinned to the BOTTOM (margin-top:auto on the
-            # wrapper) and ALWAYS visible — settings (⛭, last in the DOM) at the very bottom, refresh just above.
+            # the ↻ refresh + ⛭ settings actions sit in .rail-acts, pinned to the RIGHT (margin-left:auto on the
+            # wrapper) of the bottom bar and ALWAYS visible — settings (⛭, last in the DOM) at the far right.
             ".rail-act{flex:0 0 auto;display:flex;align-items:center;justify-content:center;margin:1px 4px;padding:4px 0;"
             "border-radius:5px;cursor:pointer;color:#8a8a8a;font-size:15px;line-height:1;user-select:none;transition:color .1s,background .1s}"
             ".rail-act:hover{color:#fff;background:rgba(255,255,255,0.06)}"
@@ -10179,10 +10191,11 @@ def _landing():
             ".rnet-empty{color:#777;font-size:11px}"
             # usage rate-limit bars in the rail (the user 2026-06-26): per window (5h/7d), a used-% bar (colored
             # green/amber/red like the timeline's) beside an elapsed-% bar (slate) — pace at a glance; %-label;
-            # window tag; full detail on hover (native title). Compact to fit the 30px rail.
-            "#rail-usage{flex:0 0 auto;display:flex;flex-direction:column;align-items:center;gap:9px;margin-top:12px}"
+            # window tag; full detail on hover (native title). Now the three windows sit side-by-side (row) in the
+            # bottom bar; each stays a compact vertical bar-pair with the % + tag stacked under it (.ru-w column).
+            "#rail-usage{flex:0 0 auto;display:flex;flex-direction:row;align-items:center;gap:14px}"
             ".ru-w{display:flex;flex-direction:column;align-items:center;gap:2px}"
-            ".ru-bars{display:flex;gap:2px;height:38px;align-items:flex-end}"
+            ".ru-bars{display:flex;gap:2px;height:20px;align-items:flex-end}"
             ".ru-bar{width:7px;height:100%;background:rgba(255,255,255,0.10);border-radius:2px;display:flex;align-items:flex-end;overflow:hidden}"
             ".ru-bar i{display:block;width:100%;border-radius:2px;transition:height .3s ease}"
             ".ru-lab{font:600 9px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#cfe6ff;font-variant-numeric:tabular-nums;line-height:1}"
@@ -10323,21 +10336,32 @@ def _landing():
             "<div id=romp-judge-degraded><span class=rl-dot></span><span class=rl-msg>Some cards couldn't be summarized</span><span class=rl-x title='Dismiss until this changes'>×</span></div>"
             "<div class=col>"
             "<div class=row>"
-            # far-left rail (the user 2026-06-26/27): a SCROLLABLE top group (.rail-scroll) — Chat / Fleet / Feed
-            # / Timeline toggles, then the /usage rate-limit bars — and a FIXED bottom group (.rail-acts) with
-            # the ↻ refresh + ⛭ settings, pinned to the bottom and always visible. On a short window the usage
-            # bars disappear first (fitRail), then the toggles scroll; the actions never get pushed off.
+            "<div class=pane id=chat-pane><iframe id=f-chat class=m-on src=/chat></iframe></div>"
+            "<div class=gv id=gv-a></div>"
+            "<div class=pane id=fleet-pane><iframe id=f-fleet src=/fleet></iframe></div>"
+            "<div class=gv id=gv-b></div>"
+            "<div class=pane id=feed-pane><iframe id=f-feed src=/feed></iframe></div>"
+            "</div>"
+            # the timeline BOTTOM BAND: full-width below the pane row, with a row-resize gutter above it. Both
+            # are hidden (CSS) unless po-timeline (the rail's Timeline toggle).
+            "<div class=gh id=gh></div>"
+            "<div class=pane id=tl-pane><iframe id=f-timeline src=/timeline></iframe></div>"
+            # pane rail as a BOTTOM BAR (the user 2026-07-05): the toolbar runs horizontally across the very
+            # bottom of .col, BELOW the timeline band. A SCROLLABLE group (.rail-scroll) — Chat / Outline / Feed /
+            # Timeline toggles, then the /usage rate-limit bars, scrolling sideways on a narrow window — and a
+            # FIXED group (.rail-acts, pinned RIGHT via margin-left:auto) with the ↻ refresh + network + ⛭ gear,
+            # always visible.
             "<div class=pane-rail>"
             "<div class=rail-scroll>"
             "<div class=rail-btn data-pane=chat>Chat</div>"
             "<div class=rail-btn data-pane=fleet>Outline</div>"   # data-pane key stays 'fleet' (internal); the user-facing label is Outline
             "<div class=rail-btn data-pane=feed>Feed</div>"
             "<div class=rail-btn data-pane=timeline>Timeline</div>"
-            # the Claude /usage rate-limit bars (Pro/Max): two compact vertical bar-pairs (used % colored +
-            # elapsed % slate), %-label, full detail on hover.
+            # the Claude /usage rate-limit bars (Pro/Max): three compact vertical bar-pairs (used % colored +
+            # elapsed % slate), %-label, full detail on hover — side-by-side in the bottom bar.
             "<div id=rail-usage></div>"
             "</div>"   # /.rail-scroll
-            # refresh + settings, pinned to the very bottom (settings last), always visible:
+            # refresh + network + settings, pinned to the far RIGHT (settings last), always visible:
             "<div class=rail-acts>"
             "<div class=rail-act id=rail-refresh title='Restart the romp kernel' aria-label=Refresh>↻</div>"
             # remote-kernels (federation): a LAN glyph — one device wired down a bus to two below. Goes
@@ -10353,17 +10377,7 @@ def _landing():
             "<rect x='11' y='11' width='4' height='4' rx='0.6' fill='currentColor'/></svg></div>"
             "<div class=rail-act id=rail-gear title=Settings aria-label=Settings>⛭</div>"   # ⛭ (gear-without-hub): the bigger, bolder gear the user prefers (restored 2026-06-29)
             "</div>"   # /.rail-acts
-            "</div>"
-            "<div class=pane id=chat-pane><iframe id=f-chat class=m-on src=/chat></iframe></div>"
-            "<div class=gv id=gv-a></div>"
-            "<div class=pane id=fleet-pane><iframe id=f-fleet src=/fleet></iframe></div>"
-            "<div class=gv id=gv-b></div>"
-            "<div class=pane id=feed-pane><iframe id=f-feed src=/feed></iframe></div>"
-            "</div>"
-            # the timeline BOTTOM BAND: full-width below the pane row, with a row-resize gutter above it. Both
-            # are hidden (CSS) unless po-timeline (the rail's Timeline toggle).
-            "<div class=gh id=gh></div>"
-            "<div class=pane id=tl-pane><iframe id=f-timeline src=/timeline></iframe></div>"
+            "</div>"   # /.pane-rail (bottom bar)
             "</div>"
             "<nav id=mtabs>"
             "<button data-pane=chat class=on>Chat</button>"

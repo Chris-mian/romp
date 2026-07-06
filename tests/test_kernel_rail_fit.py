@@ -1,8 +1,8 @@
-"""On a SHORT window the far-left rail used to overflow — the ⚙ gear spilled off the bottom over the feed (the
-user 2026-06-27). Fix: the rail splits into a SCROLLABLE top (toggles + usage) and a FIXED bottom (refresh +
-gear, always visible). The usage bars DEGRADE GRACEFULLY when room runs out (fitRail bumps data-ruc: shorter
-bars -> drop % -> drop 5h/7d labels -> hidden last, the user 2026-07-01); only if even the toggles don't fit do
-they scroll (hidden scrollbar). So the gear/refresh never collide with the labels."""
+"""The pane rail (rotated to a horizontal BOTTOM BAR, the user 2026-07-05) splits into a SCROLLABLE group
+(toggles + usage, scrolling SIDEWAYS on a narrow window) and a FIXED group (refresh + network + gear), pinned
+to the RIGHT (margin-left:auto) so the actions never get pushed off. The usage bars' vertical DEGRADE ladder
+(fitRail bumps data-ruc: shorter bars -> drop % -> drop 5h/7d labels -> hidden last, the user 2026-07-01) is
+now a dormant fallback — the 44px bar comfortably holds the level-0 bars, so fit stays at level 0."""
 import os
 import unittest
 from importlib.machinery import SourceFileLoader
@@ -15,23 +15,24 @@ km = SourceFileLoader("romp_kernel", os.path.join(BIN, "romp-kernel")).load_modu
 
 
 class RailFit(unittest.TestCase):
-    def test_rail_splits_into_scroll_top_and_fixed_actions(self):
+    def test_rail_splits_into_scroll_group_and_fixed_actions(self):
         land = km._landing()
-        # the toggles + usage live in a scrollable wrapper; the actions in a fixed, bottom-pinned one
+        # the toggles + usage live in a scrollable wrapper; the actions in a fixed, right-pinned one
         self.assertIn("<div class=rail-scroll>", land)
         self.assertIn("<div class=rail-acts>", land)
-        # the actions are AFTER the scroll wrapper in the DOM (so they're the fixed bottom group)
+        # the actions are AFTER the scroll wrapper in the DOM (so they're the fixed right-hand group)
         self.assertLess(land.index("class=rail-scroll"), land.index("class=rail-acts"))
         self.assertLess(land.index("id=rail-usage"), land.index("class=rail-acts"), "usage scrolls; actions are fixed")
 
     def test_scroll_group_styling_and_hidden_scrollbar(self):
         land = km._landing()
-        self.assertIn(".rail-scroll{flex:0 1 auto;min-height:0;display:flex;flex-direction:column;gap:6px;"
-                      "overflow-y:auto;overflow-x:hidden;scrollbar-width:none}", land)
+        # the bottom bar is a HORIZONTAL row now; the scroll group scrolls sideways, the actions pin RIGHT
+        self.assertIn(".rail-scroll{flex:0 1 auto;min-width:0;display:flex;flex-direction:row;align-items:center;gap:12px;"
+                      "overflow-x:auto;overflow-y:hidden;scrollbar-width:none}", land)
         self.assertIn(".rail-scroll::-webkit-scrollbar{width:0;height:0}", land)
-        self.assertIn(".rail-acts{flex:0 0 auto;display:flex;flex-direction:column;gap:2px;margin-top:auto;padding-bottom:2px}", land)
-        self.assertIn(".pane-rail{flex:0 0 30px;box-sizing:border-box;display:flex;flex-direction:column;gap:6px;"
-                      "padding:8px 0;background:#202021;border-right:1px solid #2c2c2d;z-index:10;overflow:hidden}", land)
+        self.assertIn(".rail-acts{flex:0 0 auto;display:flex;flex-direction:row;align-items:center;gap:6px;margin-left:auto}", land)
+        self.assertIn(".pane-rail{flex:0 0 auto;box-sizing:border-box;display:flex;flex-direction:row;align-items:center;gap:14px;"
+                      "padding:0 12px;height:44px;background:#202021;border-top:1px solid #2c2c2d;z-index:10;overflow:hidden}", land)
 
     def test_usage_bars_degrade_gracefully_when_tight(self):
         land = km._landing()

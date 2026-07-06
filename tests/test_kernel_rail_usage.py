@@ -20,16 +20,16 @@ class RailUsage(unittest.TestCase):
     def setUp(self):
         self.html = km._landing()
 
-    def test_the_rail_usage_sticks_to_the_top_with_refresh_and_settings_at_the_bottom(self):
-        # the user 2026-06-26/27: usage sits in the scrollable TOP group (under the toggles); refresh + settings
-        # are in the FIXED .rail-acts at the BOTTOM, settings (⛭ rail-gear) at the very bottom, refresh above it.
+    def test_the_rail_usage_leads_the_scroll_group_with_refresh_and_settings_pinned_right(self):
+        # the user 2026-06-26/27; bottom bar 2026-07-05: usage sits in the scrollable group (after the toggles);
+        # refresh + network + settings are in the FIXED .rail-acts pinned to the RIGHT, settings (⛭ rail-gear) last.
         self.assertIn("id=rail-usage", self.html, "a usage container sits in the rail")
         self.assertLess(self.html.index("id=rail-usage"), self.html.index("id=rail-refresh"),
-                        "usage is above refresh (top group)")
+                        "usage comes before refresh (scroll group precedes the actions)")
         self.assertLess(self.html.index("id=rail-refresh"), self.html.index("id=rail-gear"),
-                        "refresh is above settings (settings is the very bottom)")
-        self.assertIn(".rail-acts{flex:0 0 auto;display:flex;flex-direction:column;gap:2px;margin-top:auto;padding-bottom:2px}",
-                      self.html, "the bottom action group is pinned down")
+                        "refresh is before settings (settings is the far-right action)")
+        self.assertIn(".rail-acts{flex:0 0 auto;display:flex;flex-direction:row;align-items:center;gap:6px;margin-left:auto}",
+                      self.html, "the action group is pinned to the right of the bottom bar")
         self.assertIn(".ru-bar{", self.html, "the compact vertical bar styling")
         self.assertIn(".ru-lab{", self.html, "the percentage label styling")
 

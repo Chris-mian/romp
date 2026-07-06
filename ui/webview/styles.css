@@ -1406,7 +1406,11 @@ pre.has-copy:hover .code-copy, .code-copy:focus-visible { opacity: 0.9; }
 
 .picker-box {
   width: min(560px, 96%);
-  max-height: 72vh;
+  /* The picker is lifted full-window while open (shell body.picker-open lifts #f-chat), so this vh now
+     measures the FULL viewport, not the chat pane. Cap it to the viewport minus the overlay's top+bottom
+     padding so the actions row is always on screen and .picker-list scrolls the rest (the user 2026-07-05,
+     fixing "can't scroll through the sessions" on a short window). */
+  max-height: calc(100vh - 88px);
   display: flex; flex-direction: column;
   background: var(--vscode-editorWidget-background, #252526);
   border: 1px solid var(--vscode-widget-border, var(--box-border));

@@ -2366,6 +2366,15 @@ function hideOpeningModal() {
   document.getElementById("opening")?.remove();
 }
 
+// Full-screen bridge (the user 2026-07-05): the picker is rendered inside the /chat iframe, so its
+// position:fixed;inset:0 only covered the chat PANE — on a short pane the session list couldn't scroll.
+// Mirror the settings bridge: tell the shell to lift #f-chat over the whole window (body.picker-open) while
+// the picker is up, so the overlay fills the screen and the list gets the full viewport height. Standalone
+// (no parent) is a no-op.
+function signalPickerOverlay(on: boolean) {
+  try { if (window.parent && window.parent !== window) window.parent.postMessage({ romp: "picker", on }, "*"); } catch (e) { /* standalone: no shell to lift */ }
+}
+
 function openPicker(pick = false, prompt?: string, allowNew = false) {
   pickMode = pick;
   pickAllowNew = pick && allowNew;
@@ -2459,6 +2468,7 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
     document.addEventListener("keydown", pickerKey);
   }
   overlay.style.display = "flex";
+  signalPickerOverlay(true);   // lift the chat iframe full-window so the picker covers the whole screen
   const actions = overlay.querySelector(".picker-actions") as HTMLElement | null;
   if (actions) actions.style.display = pick ? "none" : "";
   const dirWrap = overlay.querySelector(".picker-dir") as HTMLElement | null;
@@ -2607,6 +2617,7 @@ function pickerError(msg: string | null) {
 function closePicker() {
   const o = document.getElementById("picker");
   if (o) o.style.display = "none";
+  signalPickerOverlay(false);   // release the full-window lift — the chat iframe returns to its pane
   if (pickMode) {
     if (vscodeApi) vscodeApi.postMessage({ type: "pickResult", id: null });
     pickMode = false;

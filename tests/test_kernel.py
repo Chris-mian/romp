@@ -4640,6 +4640,19 @@ class ServeSecurity(unittest.TestCase):
         self.assertIn("m.romp==='settings'", html)
         self.assertIn("document.body.classList.toggle('settings-open',!!m.on)", html)
 
+    def test_picker_is_a_fullscreen_modal(self):
+        # the user 2026-07-05: the new-session picker lives INSIDE the /chat iframe, so its position:fixed;inset:0
+        # only covered the chat PANE — a short pane couldn't scroll the session list. Same bridge as settings:
+        # render.ts posts {romp:'picker',on} and the shell lifts the chat iframe over the whole window
+        # (body.picker-open), so the overlay fills the screen and the list gets the full height to scroll.
+        html = km._landing()
+        self.assertIn("body.picker-open #f-chat{position:fixed;inset:0;z-index:200", html)  # lift the chat iframe full-window
+        self.assertIn("body.picker-open #chat-pane{display:block!important}", html)         # un-hide it even if chat is toggled off
+        self.assertIn("m.romp==='picker'", html)                                            # the shell listens for the picker post
+        self.assertIn("document.body.classList.toggle('picker-open',!!m.on)", html)
+        # the settings bridge is untouched (both share the one message handler)
+        self.assertIn("document.body.classList.toggle('settings-open',!!m.on)", html)
+
     def test_fleet_page_served(self):
         # Fleet (the user 2026-06-23): /fleet serves the by-session open-work view, rendered by dist/fleet.js.
         import urllib.request

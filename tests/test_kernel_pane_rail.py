@@ -1,10 +1,10 @@
-"""Far-left pane rail in the shell (the user 2026-06-24).
+"""Pane rail in the shell (the user 2026-06-24; rotated to a BOTTOM BAR, the user 2026-07-05).
 
-Replaces the two per-pane vertical strips between the top panes with ONE thin vertical toolbar on the far
-left, holding Chat / Fleet / Feed toggles. Each pane is an independent binary on/off, in a fixed visual
-order — Chat leftmost, Fleet middle, Feed rightmost — and any subset (or none, or all) can be shown at
-once. Fleet is its OWN pane now (no longer an overlay swapped inside the chat pane). The timeline keeps its
-own separate minimize (the opaque top-right cut-out). Source-level pin against km._landing().
+ONE thin toolbar holding Chat / Outline / Feed / Timeline toggles. It began as a vertical strip on the far
+left; it now runs HORIZONTALLY across the bottom of .col, BELOW the timeline band (its last child). Each pane
+is an independent binary on/off, in a fixed order (Chat, Outline, Feed, Timeline), and any subset (or none, or
+all) can be shown at once. Fleet/Outline is its OWN pane (no longer an overlay swapped inside the chat pane).
+Source-level pin against km._landing().
 """
 import os
 import unittest
@@ -21,8 +21,8 @@ class PaneRailTest(unittest.TestCase):
     def setUp(self):
         self.html = km._landing()
 
-    def test_far_left_rail_holds_chat_fleet_feed_timeline_toggles_in_fixed_order(self):
-        # one thin toolbar on the far left; FOUR toggle buttons, ordered to match the panes' left→right order
+    def test_bottom_bar_rail_holds_chat_fleet_feed_timeline_toggles_in_fixed_order(self):
+        # one thin toolbar (now the bottom bar); FOUR toggle buttons, ordered to match the panes' left→right order
         self.assertIn("<div class=pane-rail>", self.html)
         self.assertIn("<div class=rail-btn data-pane=chat>Chat</div>", self.html)
         # the by-session view is labelled "Outline" (the user 2026-06-29); the data-pane KEY stays 'fleet' internally
@@ -46,6 +46,10 @@ class PaneRailTest(unittest.TestCase):
         idxs = [self.html.index(tok) for tok in order]
         self.assertEqual(idxs, sorted(idxs), "row panes, then the gh gutter, then the timeline band")
         self.assertNotIn("id=gv-c", self.html)                   # no 4th-pane gutter
+        # the pane rail is the BOTTOM BAR (the user 2026-07-05): LAST child of .col, AFTER the timeline band —
+        # no longer the first child of .row. So its markup falls after #tl-pane.
+        self.assertGreater(self.html.index("class=pane-rail"), self.html.index("id=tl-pane"),
+                           "the rail runs across the bottom, below the timeline")
         # each pane/band is shown/hidden independently by its own body.po-* class
         self.assertIn("body:not(.po-chat) #chat-pane{display:none}", self.html)
         self.assertIn("body:not(.po-fleet) #fleet-pane{display:none}", self.html)
