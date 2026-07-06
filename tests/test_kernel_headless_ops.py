@@ -7,7 +7,10 @@
   * POST /interrupt + /end — the headless control routes mirroring the WS drive ops (before this a
     session could be FED without a browser but never STOPPED);
   * wiring pins — main() installs the SIGTERM drain handler and constructs the SDK backend eagerly
-    with reconcile=True (source-pinned, same style as test_sdk_kernel's dispatch pins).
+    with reconcile=True (source-pinned, same style as test_sdk_kernel's dispatch pins);
+  * _sdk() single-flight — the eager boot thread races handler threads, and an unlocked
+    check-then-act built 2-3 duplicate SdkBackends whose reconciles reaped each other's live CLIs
+    (2026-07-06 kill storm: sessions dying with exit 143 mid-turn).
 
 XDG_STATE_HOME is pointed at a temp dir BEFORE the kernel module loads, so jd.STATE — and with it
 pending-ops.json and every state write — stays out of the live user state (see
@@ -115,6 +118,46 @@ class HeadlessRoutes(unittest.TestCase):
         code, resp = self._post("/interrupt", {})
         self.assertEqual(code, 400)
         self.assertFalse(resp.get("ok"))
+
+
+class SdkSingleFlight(unittest.TestCase):
+    """Concurrent _sdk() calls must construct exactly ONE backend. The 2026-07-06 storm: the eager
+    boot thread + handler threads each passed the unlocked `if _sdk_backend is None` check and built
+    their own SdkBackend; every duplicate ran its own boot reconcile, and each reconcile reaped the
+    others' freshly-resumed LIVE CLIs (no ppid filter then), killing sessions mid-turn."""
+
+    def test_concurrent_calls_build_one_backend(self):
+        import threading
+        built = []
+        gate = threading.Event()
+
+        class FakeBackend:
+            def __init__(self):
+                gate.wait(2)                       # hold construction open so every racer arrives
+                built.append(self)
+
+        fake_mod = mock.Mock()
+        fake_mod.SdkBackend = lambda *a, **k: FakeBackend()
+        fake_loader = mock.Mock()
+        fake_loader.load_module.return_value = fake_mod
+        prev = km._sdk_backend
+        try:
+            km._sdk_backend = None
+            results = [None] * 6
+            with mock.patch.object(km, "SourceFileLoader", return_value=fake_loader), \
+                 mock.patch.object(km, "_ensure_sdk_on_path", return_value=True):
+                ts = [threading.Thread(target=lambda i=i: results.__setitem__(i, km._sdk()))
+                      for i in range(6)]
+                for t in ts:
+                    t.start()
+                gate.set()
+                for t in ts:
+                    t.join(5)
+            self.assertEqual(len(built), 1, "one construction, however many racers")
+            self.assertTrue(all(r is built[0] for r in results),
+                            "every caller gets the same singleton")
+        finally:
+            km._sdk_backend = prev
 
 
 class WiringPins(unittest.TestCase):

@@ -7,8 +7,9 @@ Covers the backend half:
     re-seeded from it, so a kernel death can DELAY queued turns but never lose them;
   * last_state_value — the cut-turn discriminator reads the last STATE record through the
     interleaved awaiting overlays (the boot heal itself appends one);
-  * find_orphan_clis — matches only SDK-driven CLIs (--resume <ours> + stream-json), never a
-    tmux session's interactive `claude --resume`;
+  * find_orphan_clis — matches only ORPHANED (ppid 1) SDK-driven CLIs (--resume <ours> +
+    stream-json), never a tmux session's interactive `claude --resume` and never a LIVE CLI still
+    parented to a kernel (2026-07-06: a duplicate backend's reconcile reaped live sessions);
   * _boot_reconcile — resumes exactly the cut-turn / queued sessions (a user-interrupted or
     cleanly-finished session stays lazy), prepends the visible continuation nudge, reaps orphans;
   * drain — the SIGTERM path stops every running session, counts in-flight turns, and writes NO
@@ -63,19 +64,29 @@ class FindOrphanClis(unittest.TestCase):
 
     def test_matches_only_sdk_clis_resuming_ours(self):
         lines = [
-            # ours, SDK-driven (stream-json) → matched
-            " 4242 /x/claude --output-format stream-json --resume %s --input-format stream-json" % self.SID,
+            # ours, SDK-driven (stream-json), re-parented to launchd → a true orphan, matched
+            " 4242 1 /x/claude --output-format stream-json --resume %s --input-format stream-json" % self.SID,
             # a TMUX session's interactive resume (no stream-json mark) → never touched
-            " 4243 claude --resume %s --name termsess" % self.SID,
+            " 4243 1 claude --resume %s --name termsess" % self.SID,
             # SDK-driven but a sid we don't own → not ours to reap
-            " 4244 /x/claude --resume ffffffff-0000-1111-2222-333333333333 --input-format stream-json",
+            " 4244 1 /x/claude --resume ffffffff-0000-1111-2222-333333333333 --input-format stream-json",
             # junk / short lines are skipped, not crashed on
-            "garbage", " 99", "",
+            "garbage", " 99", " 99 100", "",
         ]
         self.assertEqual(sb.find_orphan_clis(lines, [self.SID]), [4242])
 
+    def test_live_children_are_never_orphans(self):
+        # Same command line as a true orphan, but still parented to a running kernel (ppid != 1):
+        # a LIVE session's CLI. Reaping these was the 2026-07-06 kill storm — a duplicate backend's
+        # reconcile SIGTERM'd freshly-resumed sessions mid-turn (exit 143).
+        lines = [
+            " 4242 38438 /x/claude --output-format stream-json --resume %s --input-format stream-json" % self.SID,
+            " 4245 1 /x/claude --output-format stream-json --resume %s --input-format stream-json" % self.SID,
+        ]
+        self.assertEqual(sb.find_orphan_clis(lines, [self.SID]), [4245])
+
     def test_empty_sids_match_nothing(self):
-        lines = [" 1 claude --resume  --input-format stream-json"]
+        lines = [" 1 1 claude --resume  --input-format stream-json"]
         self.assertEqual(sb.find_orphan_clis(lines, [""]), [])
 
 
@@ -150,14 +161,17 @@ class BootReconcile(unittest.TestCase):
         sid = "11111111-aaaa-0000-0000-00000000000b"
         _reg(d, sid)
         sb.append_state(Path(d), sid, "working")
-        ps = ("  555 /x/claude --output-format stream-json --resume %s --input-format stream-json\n"
-              "  556 claude --resume %s --name termsess\n") % (sid, sid)
+        ps = ("  555 1 /x/claude --output-format stream-json --resume %s --input-format stream-json\n"
+              "  556 1 claude --resume %s --name termsess\n"
+              "  557 90210 /x/claude --output-format stream-json --resume %s --input-format stream-json\n"
+              ) % (sid, sid, sid)
         killed = []
         with mock.patch.object(sb.subprocess, "run", return_value=mock.Mock(stdout=ps)), \
              mock.patch.object(sb.os, "kill", side_effect=lambda p, s: killed.append((p, s))):
             be._boot_reconcile([sb.read_reg(Path(d), sid)])
         self.assertEqual(killed, [(555, sb.signal.SIGTERM)],
-                         "the SDK orphan is reaped; the tmux CLI on the same sid is untouched")
+                         "the SDK orphan is reaped; the tmux CLI and the live (parented) CLI "
+                         "on the same sid are untouched")
 
     def test_reconcile_is_opt_in(self):
         # Constructing the backend plain (tests, ad-hoc) must NOT spawn a reconcile thread; the
