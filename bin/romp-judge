@@ -2571,10 +2571,14 @@ def _plan_session(fsid, path, now):
     live = set(seg_by_id)                             # current parse's seg ids: the _placed_key live-twin guard —
     #                                                   an identical-text twin (crash-heal restart resumes) must
     #                                                   not be swallowed as a "drift" of an already-placed one
-    units, retired = [], False
+    units, retired, seen = [], False, set()
     for u in plan_units(session, store):
         seg_id, phase = u[0], u[1]
         key = _unit_key(seg_id, phase)
+        if key in seen:                               # plan_units yields one unit per TURN, so a same-second
+            continue                                  # identical-prompt burst (an auto-retry storm) repeats ONE
+        #                                               seg id hundreds of times — each copy would get its own
+        #                                               LLM call and file its own duplicate node (2026-07-06)
         if _placed_key(store["placements"], key, live):   # drift-safe: a recorded key whose parse t has since
             continue                                  # shifted still dedups (this phase already placed)
         if phase in ("prompt", "live") and _placed_key(store["placements"], seg_id, live):
@@ -2591,12 +2595,17 @@ def _plan_session(fsid, path, now):
                 store["placements"][key] = None
                 retired = True
                 continue
+        seen.add(key)
         units.append(u)
     if retired:
         save_goals(fsid, store)                       # persist the retirements so they dedup out next pass
     units = units[:PLAN_FAIRNESS]
     placed = 0
     for seg_id, phase, seg_t, text, human, followup, trig, vq in units:
+        if _placed_key(store["placements"], _unit_key(seg_id, phase), live):
+            continue                                  # placed while THIS pass applied an earlier unit — the
+        #                                               apply loop must uphold the same idempotence the
+        #                                               collection loop checked at pass START (2026-07-06)
         menu = open_menu(store)
         if phase == "prompt":                         # PROMPT-run: place the ask NOW (mint-or-amend), before the work
             ops = _parse_plan(plan_prompt_llm(text, _menu_text(store, menu)), len(menu)) or []
