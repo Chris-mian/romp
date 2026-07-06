@@ -913,15 +913,16 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
     const hasImgs = !!(ev.images && ev.images.length);
     if (ev.md || hasImgs) {
       if (romp) {
-        // every romp bubble carries the "romp" tag; the swirl LOGO is drawn ONLY on an AUTO-nudge (ev.rompAuto)
-        // — NOT a Nudge-button click / typed follow-up, which are your actions (the user 2026-06-23). Served at
-        // /media on the web dashboard; in a sandbox without it the img self-removes (alt stays empty).
+        // every romp bubble carries the "romp" tag WITH the swirl LOGO next to it, so any message from romp reads
+        // as romp at a glance — incl. system notices like the kernel-restart resume (the user 2026-07-05). This
+        // supersedes the 2026-06-23 rule that drew the logo ONLY on auto-nudges (ev.rompAuto): at the data level
+        // a romp system notice is indistinguishable from a Nudge-button click (both romp-injected, no romp-auto),
+        // so the logo now marks the romp tag wherever it appears. Served at /media on the web dashboard; in a
+        // sandbox without it the img self-removes (alt stays empty).
         const tag = el("div", "romp-tag");
-        if (ev.rompAuto) {
-          const logo = el("img", "romp-tag-logo") as HTMLImageElement;
-          logo.src = "/media/romp-swirl-glyph.svg"; logo.alt = ""; logo.onerror = () => logo.remove();
-          tag.appendChild(logo);
-        }
+        const logo = el("img", "romp-tag-logo") as HTMLImageElement;
+        logo.src = "/media/romp-swirl-glyph.svg"; logo.alt = ""; logo.onerror = () => logo.remove();
+        tag.appendChild(logo);
         tag.appendChild(document.createTextNode("romp"));
         turn.appendChild(tag);
       }

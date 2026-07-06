@@ -28,10 +28,12 @@ test("a romp event renders the gray romp-bubble + a romp tag, NOT the blue or th
   assert.match(RENDER, /"green" \| "ring" \| "user" \| "red" \| "romp"/, "the dot helper knows the romp variant");
 });
 
-test("the swirl LOGO is gated on rompAuto (auto-nudge); the 'romp' tag stays on every romp bubble (the user 2026-06-23)", () => {
+test("the swirl LOGO is on EVERY romp bubble, next to the 'romp' tag (the user 2026-07-05; supersedes the 2026-06-23 auto-nudge-only gating)", () => {
   assert.match(RENDER, /kind: "user";[^}]*rompAuto\?: boolean/);
-  // the <img> logo appends ONLY inside the rompAuto branch; the "romp" textnode is OUTSIDE it (always shown)
-  assert.match(RENDER, /if \(ev\.rompAuto\) \{[\s\S]*?el\("img", "romp-tag-logo"\)[\s\S]*?tag\.appendChild\(logo\);\s*\}\s*tag\.appendChild\(document\.createTextNode\("romp"\)\)/);
+  // the <img> logo appends UNCONDITIONALLY inside the romp branch (no `if (ev.rompAuto)` gate), immediately
+  // before the "romp" textnode — so any romp-tagged message (system notice, auto-nudge, or Nudge click) shows it
+  assert.doesNotMatch(RENDER, /if \(ev\.rompAuto\) \{[\s\S]*?el\("img", "romp-tag-logo"\)/);
+  assert.match(RENDER, /const tag = el\("div", "romp-tag"\);\s*const logo = el\("img", "romp-tag-logo"\)[\s\S]*?tag\.appendChild\(logo\);\s*tag\.appendChild\(document\.createTextNode\("romp"\)\)/);
 });
 
 test("a postal card carries the romp swirl (postal is 'from romp' too — the user 2026-06-23)", () => {
