@@ -4613,17 +4613,32 @@ _interrupt_clicked = {}       # sid -> ts; event-cleared the moment the turn is 
 _model_switch_pending = {}
 
 
-def _interrupting(sid, open_now, now, turn_t=None):
-    """A just-sent interrupt is IN FLIGHT: stop dispatched, turn not yet settled on disk. Event-cleared
-    the instant the turn is no longer open (the interrupt landed / the result settled) OR the open turn
-    STARTED after the click (`turn_t` > t0): a fresh turn is by definition not the one being interrupted,
-    so the stamp must not re-latch onto it — without this, a new turn opening inside the cap (the user
-    2026-07-05: an auto-nudge 37s after their stop) wore 'Interrupting…' for work nobody tried to stop.
-    A 120s safety cap covers a wedged turn that never settles, so the chip falls back to honest 'working'."""
+def _interrupting(sid, session, open_now, now):
+    """A just-sent interrupt is IN FLIGHT: the stop was dispatched and hasn't landed yet, so the chip reads
+    'Interrupting…' from the click until it LANDS — never flickering to 'working' in between (the user
+    2026-07-05: they hit stop, it flashed 'Interrupting…', then flipped back to 'Working'). The land is an
+    EVENT: the CLI writes its stop record ('[Request interrupted by user]') when the interrupt reaches a
+    stream boundary — which can take SECONDS mid-stream — and that record ends the interrupted turn. Cleared
+    the instant EITHER the interrupted turn is no longer open (the stop landed with nothing queued behind it
+    → the chip falls to honest 'ready') OR that stop record has landed at/after the click (covers a message
+    queued behind the stop: the interrupted turn's record is on disk even though the queued turn reopened
+    `open_now` → the chip falls to 'working' for the genuine new work). A 120s safety cap covers a wedged
+    turn whose stop never lands, so the chip can't trap on 'Interrupting…'.
+
+    Earlier this cleared on `turn_t > t0` (the open turn STARTED after the click). But that fired DURING the
+    settle — the SDK's queued-turn release and live-tail flicker both push turns[-1].t past t0 before the
+    stop lands — so the chip flipped to 'working' prematurely (the bug above). Keying on the stop RECORD
+    holds 'Interrupting…' for the whole in-flight window; the later-turn case that guard was written for (an
+    auto-nudge 37s after the stop wearing the stamp) is still covered, because the record clears the stamp
+    the moment the stop lands, so any turn opening afterward never sees it."""
     t0 = _interrupt_clicked.get(sid)
     if t0 is None:
         return False
-    if not open_now or now - t0 > 120 or (turn_t is not None and turn_t > t0):
+    # the CLI's stop record at/after the click == this interrupt has landed (int(t0) so a record in the same
+    # second as the click still counts; a record from a PRIOR interrupt, seconds earlier, correctly does not)
+    landed = any(em.is_interrupt_record(a) and (a.get("t") or 0) >= int(t0)
+                 for turn in session.get("turns", []) for a in turn.get("atoms") or [])
+    if not open_now or landed or now - t0 > 120:
         _interrupt_clicked.pop(sid, None)
         return False
     return True
@@ -4734,8 +4749,7 @@ def _session_chip(sid, path, session, tm, now):
     st = (tm or {}).get("state", "") or ""
     compacting = _compacting(sid, st, session, now, (tm or {}).get("since"))
     return ("compacting" if compacting else
-            "interrupting" if _interrupting(sid, open_now, now,
-                                            turns[-1]["t"] if turns else None) else   # stop sent, THAT turn not yet settled
+            "interrupting" if _interrupting(sid, session, open_now, now) else   # stop sent, not yet landed on disk
             "blocked" if aerr else
             "awaiting" if st in _NEEDS_INPUT_STATES else               # a live permission/picker prompt
             "retrying" if st == "retrying" else

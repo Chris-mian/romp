@@ -102,16 +102,19 @@ class InterruptingChip(unittest.TestCase):
 
     def test_stamp_reads_interrupting_while_the_turn_is_still_open(self):
         km._interrupt_clicked[SID] = NOW - 2
-        self.assertTrue(km._interrupting(SID, True, NOW), "stop sent + turn still open → interrupting")
+        self.assertTrue(km._interrupting(SID, {"turns": [{"atoms": []}]}, True, NOW),
+                        "stop sent + turn still open, no stop record yet → interrupting")
 
     def test_clears_the_instant_the_turn_settles(self):
         km._interrupt_clicked[SID] = NOW - 2
-        self.assertFalse(km._interrupting(SID, False, NOW), "turn no longer open → the stop landed")
+        self.assertFalse(km._interrupting(SID, {"turns": [{"atoms": []}]}, False, NOW),
+                         "turn no longer open → the stop landed")
         self.assertNotIn(SID, km._interrupt_clicked, "stamp consumed — never sticks")
 
     def test_wedged_turn_falls_back_after_the_safety_cap(self):
         km._interrupt_clicked[SID] = NOW - 121
-        self.assertFalse(km._interrupting(SID, True, NOW), "a wedged turn falls back to honest 'working'")
+        self.assertFalse(km._interrupting(SID, {"turns": [{"atoms": []}]}, True, NOW),
+                         "a wedged turn falls back to honest 'working'")
         self.assertNotIn(SID, km._interrupt_clicked)
 
     def test_the_ws_interrupt_handler_stamps_and_pushes(self):
@@ -119,8 +122,8 @@ class InterruptingChip(unittest.TestCase):
             src = f.read()
         self.assertIn('_interrupt_clicked[str(sid)] = time.time()', src,
                       "the interrupt op stamps the optimistic state")
-        self.assertIn('"interrupting" if _interrupting(sid, open_now, now,', src,
-                      "the chip formula reads the stamp (with the open turn's start), right under compacting")
+        self.assertIn('"interrupting" if _interrupting(sid, session, open_now, now)', src,
+                      "the chip formula reads the stamp, right under compacting")
 
 
 class InterruptMarker(unittest.TestCase):
@@ -205,10 +208,13 @@ class InterruptRecordEndsTurn(unittest.TestCase):
                          "the user spoke after the interrupt → the user-message event re-arms the nudge")
 
 
-class InterruptStampNoRelatch(unittest.TestCase):
-    """The 'Interrupting…' stamp belongs to the turn the user STOPPED, not to whatever turn happens to be
-    open (the user 2026-07-05): an auto-nudge opened a new turn 37s after their stop and the chip wore
-    'Interrupting…' for work nobody tried to stop. A turn that STARTED after the click clears the stamp."""
+class InterruptStampHoldsUntilLanded(unittest.TestCase):
+    """The 'Interrupting…' chip holds from the click until the stop LANDS (its CLI stop record), never
+    flipping to 'working' in between (the user 2026-07-05: they hit stop, saw 'Interrupting…', then it
+    flipped back to 'Working' before the stop had landed). An earlier `turn_t > t0` guard cleared the stamp
+    the moment the open turn's start postdated the click — but the SDK's queued-turn release and live-tail
+    flicker push that start past the click DURING the settle, so the chip flipped early. Keying on the stop
+    RECORD holds it for the whole in-flight window and still covers a genuinely later turn."""
 
     def setUp(self):
         km._interrupt_clicked.clear()
@@ -216,16 +222,40 @@ class InterruptStampNoRelatch(unittest.TestCase):
     def tearDown(self):
         km._interrupt_clicked.clear()
 
-    def test_a_turn_opened_after_the_click_clears_the_stamp(self):
-        km._interrupt_clicked[SID] = NOW - 30
-        self.assertFalse(km._interrupting(SID, True, NOW, NOW - 10),
-                         "the open turn began AFTER the stop click → it is not the interrupted turn")
+    def _intr(self, t):
+        return {"type": "user", "t": t, "message": {"role": "user", "content": "[Request interrupted by user]"}}
+
+    def test_open_turn_no_record_yet_stays_interrupting_even_when_it_started_after_the_click(self):
+        # the regression: a live-merged / queued-turn start postdates the click, but the stop hasn't landed —
+        # the OLD guard cleared here (turn_t NOW-2 > t0 NOW-5) and the chip fell to 'working' prematurely.
+        km._interrupt_clicked[SID] = NOW - 5
+        sess = {"turns": [{"atoms": [{"type": "assistant", "t": NOW - 2}]}]}   # open, started after the click, NO stop record
+        self.assertTrue(km._interrupting(SID, sess, True, NOW),
+                        "no stop record yet → still in flight → Interrupting…, not a premature 'working'")
+        self.assertIn(SID, km._interrupt_clicked, "stamp survives — the stop hasn't landed")
+
+    def test_the_stop_record_landing_clears_the_stamp(self):
+        # a message queued behind the stop reopened the turn (open_now True), but the interrupted turn's stop
+        # record is on disk → the stop landed → the chip falls to honest 'working' for the genuine new work
+        km._interrupt_clicked[SID] = NOW - 5
+        sess = {"turns": [{"atoms": [self._intr(NOW - 3)]}, {"atoms": [{"type": "assistant", "t": NOW - 1}]}]}
+        self.assertFalse(km._interrupting(SID, sess, True, NOW),
+                         "the CLI's stop record landed → the interrupt is done, the new work is genuine 'working'")
         self.assertNotIn(SID, km._interrupt_clicked, "stamp consumed, never re-latches")
 
     def test_the_interrupted_turn_itself_keeps_the_stamp(self):
         km._interrupt_clicked[SID] = NOW - 30
-        self.assertTrue(km._interrupting(SID, True, NOW, NOW - 100),
-                        "the turn that was running at the click still wears the stamp until it settles")
+        sess = {"turns": [{"atoms": [{"type": "assistant", "t": NOW - 60}]}]}   # the running turn, no stop record yet
+        self.assertTrue(km._interrupting(SID, sess, True, NOW),
+                        "the turn that was running at the click wears the stamp until its stop lands")
+
+    def test_a_stale_record_from_a_prior_interrupt_does_not_clear(self):
+        # an interrupt record from BEFORE this click (an earlier stop of an earlier turn) must not count as
+        # THIS stop landing — only a record at/after the click does
+        km._interrupt_clicked[SID] = NOW - 5
+        sess = {"turns": [{"atoms": [self._intr(NOW - 600)]}, {"atoms": []}]}   # old record, current turn still open
+        self.assertTrue(km._interrupting(SID, sess, True, NOW),
+                        "only a stop record at/after the click marks THIS interrupt landed")
 
 
 class AutoNudgeInterruptGate(unittest.TestCase):
