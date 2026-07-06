@@ -30,8 +30,9 @@ class RailUsage(unittest.TestCase):
                         "refresh is before settings (settings is the far-right action)")
         self.assertIn(".rail-acts{flex:0 0 auto;display:flex;flex-direction:row;align-items:center;gap:6px;margin-left:auto}",
                       self.html, "the action group is pinned to the right of the bottom bar")
-        self.assertIn(".ru-bar{", self.html, "the compact vertical bar styling")
-        self.assertIn(".ru-lab{", self.html, "the percentage label styling")
+        self.assertIn(".ru-track{", self.html, "the horizontal bar track styling")
+        self.assertIn(".ru-fill{", self.html, "the colored used-% fill styling")
+        self.assertIn(".ru-pct{", self.html, "the percentage readout styling")
 
     def test_the_shell_renders_the_posted_usage_colormapped_with_a_hover_panel(self):
         self.assertIn("romp==='usage'", self.html, "the shell listens for the timeline's usage post")
@@ -46,18 +47,22 @@ class RailUsage(unittest.TestCase):
         self.assertIn("#ru-tip{", self.html, "a styled hover tooltip panel")
         self.assertIn("resets in", self.html, "the panel includes the reset countdown")
 
-    def test_each_usage_window_is_a_row_with_the_text_left_of_the_bars(self):
-        # the user 2026-07-05: in the bottom bar each window rotates to a ROW — the % + tag stacked in a
-        # left-hand text block (.ru-txt), the bar-pair to its right — so a window is only bar-height tall and
-        # the whole bottom bar stays short (height:30px).
-        self.assertIn(".ru-w{display:flex;flex-direction:row;align-items:center;gap:5px}", self.html)
-        self.assertIn(".ru-txt{display:flex;flex-direction:column;align-items:flex-end", self.html)
-        # render() emits the text block BEFORE the bars, so the % + tag sit to the LEFT of the bar-pair
-        self.assertLess(self.html.index("<div class=ru-txt>"), self.html.index("<div class=ru-bars>"),
-                        "the text block comes before the bars in the per-window markup")
-        # the bars themselves are unchanged (used bar over/beside elapsed bar)
-        self.assertIn("ru-lab>'+pct+'%", self.html)
-        self.assertIn("ru-win>'+w[2]", self.html)
+    def test_each_usage_window_is_an_inline_horizontal_fill_bar(self):
+        # the user 2026-07-05: each window is one ROW — an expanded label, a HORIZONTAL track (colored fill =
+        # used-%, thin tick = elapsed-%), then the % readout. No vertical bars, no stacked text.
+        self.assertIn(".ru-w{display:flex;flex-direction:row;align-items:center;gap:7px;cursor:default}", self.html)
+        self.assertIn(".ru-track{position:relative;width:72px;height:6px", self.html, "a horizontal track")
+        self.assertIn(".ru-fill{position:absolute;left:0;top:0;height:100%", self.html, "the fill grows in WIDTH")
+        # the used-% fill width is driven by pct, the elapsed-% pace tick's left by tp
+        self.assertIn("ru-fill style=\"width:'+pct+'%;background:'+col", self.html)
+        self.assertIn("ru-mark style=\"left:'+tp+'%", self.html, "the elapsed-% pace tick")
+        # order within a window: label, then track, then % — all inline
+        one = self.html[self.html.index("<div class=ru-name>"):]
+        self.assertLess(one.index("ru-name"), one.index("ru-track"))
+        self.assertLess(one.index("ru-track"), one.index("ru-pct"))
+        # expanded labels use the 5th WINS field (plenty of horizontal room)
+        self.assertIn("'5 hours'", self.html)
+        self.assertIn("'7 days'", self.html)
 
     def test_the_usage_tooltip_is_one_shared_panel_reproducing_both_windows_bars(self):
         # a SINGLE tooltip on the whole rail-usage area (mouseenter on el), not a per-window panel
@@ -83,7 +88,7 @@ class RailUsage(unittest.TestCase):
         # the included Fable 5 weekly allowance (the user 2026-07-02): a third bar in the rail, a third
         # window in the tooltip, and a third pair on the timeline's standalone toolbar copy
         import inspect
-        self.assertIn("['fable',7*86400,'F5','Fable 5']", self.html, "the rail renders a Fable 5 bar")
+        self.assertIn("['fable',7*86400,'F5','Fable 5','Fable 5']", self.html, "the rail renders a Fable 5 bar (expanded bottom-bar label)")
         self.assertIn("['fiveHour','sevenDay','fable'].filter", self.html, "the tooltip covers it")
         self.assertIn('"fable": fable', inspect.getsource(km._usage), "_usage serves the fable window")
         tv = (pathlib.Path(BIN).parent / "ui" / "romp-timeline-view.js").read_text()

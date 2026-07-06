@@ -9645,9 +9645,10 @@ function fmtAgo(ep){var dt=Math.max(0,Math.floor(Date.now()/1000)-ep);if(dt<90)r
 var m=Math.round(dt/60);if(m<60)return m+'m ago';var h=Math.floor(m/60);m-=h*60;
 return(h<24?h+'h '+(m?m+'m ':''):Math.floor(h/24)+'d ')+'ago';}
 function esc(s){return String(s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
-var WINS=[['fiveHour',5*3600,'5h','Session'],
-          ['sevenDay',7*86400,'7d','Weekly'],
-          ['fable',7*86400,'F5','Fable 5']];
+// [key, spanSec, shortTag (tooltip), name (tooltip), label (bottom-bar, expanded — plenty of horizontal room)]
+var WINS=[['fiveHour',5*3600,'5h','Session','5 hours'],
+          ['sevenDay',7*86400,'7d','Weekly','7 days'],
+          ['fable',7*86400,'F5','Fable 5','Fable 5']];
 var LAST={};
 // Banner dismissal (the user 2026-07-03): a maxed window — especially Fable 5's 7-DAY one — lingers for
 // days, and the fixed top banner overlaps the tab strip, so a ✕ must clear it. The dismissal is keyed to
@@ -9697,11 +9698,15 @@ var rolled=seg.resetsAt&&nowS>seg.resetsAt,pct=rolled?0:(seg.pct||0);
 var col=(seg.color&&seg.color.length===3)?('rgb('+seg.color.join(',')+')'):'#54B204';   // selected colormap (server-computed)
 var tp=(seg.resetsAt&&w[1])?Math.max(0,Math.min(100,Math.round((nowS-(seg.resetsAt-w[1]))/w[1]*100))):null;
 LAST[w[0]]={name:w[3],span:w[2],pct:pct,col:col,tp:tp,reset:seg.resetsAt?fmtR(seg.resetsAt):null};
+// Horizontal fill bar (the user 2026-07-05): an expanded label, then a horizontal track whose colored fill
+// = used-% and a thin white tick = elapsed-% (the pace marker — fill past the tick = burning too fast), then
+// the % readout. All inline (label · bar · %), no vertical stacking.
 html+='<div class=ru-w data-w="'+w[0]+'">'
-+'<div class=ru-txt><div class=ru-lab>'+pct+'%</div><div class=ru-win>'+w[2]+'</div></div>'
-+'<div class=ru-bars>'
-+'<div class=ru-bar><i style="height:'+pct+'%;background:'+col+'"></i></div>'
-+'<div class=ru-bar><i style="height:'+(tp||0)+'%;background:#6b7a8c"></i></div></div></div>';});
++'<div class=ru-name>'+w[4]+'</div>'
++'<div class=ru-track><i class=ru-fill style="width:'+pct+'%;background:'+col+'"></i>'
++(tp!=null?'<span class=ru-mark style="left:'+tp+'%"></span>':'')
++'</div>'
++'<div class=ru-pct>'+pct+'%</div></div>';});
 el.innerHTML=html;}
 // ONE shared tooltip for BOTH windows: per window, the used bar (colormap) over the elapsed bar (slate) +
 // the % + reset — the exact set of bars that used to sit under the timeline, nothing more.
@@ -9738,19 +9743,9 @@ fetch('/usage',{cache:'no-store'}).then(function(r){return r.ok?r.json():null;})
 el.addEventListener('click',function(){pull(true);});
 setInterval(function(){pull(false);},60000);     // backup auto-refresh: re-read usage.json every 60s
 pull(false);                                     // fill on load, independent of the timeline-forward path
-// Vertical-fit (the user 2026-06-27): when the scrollable top group can't hold the toggles + usage bars, the
-// USAGE bars degrade by level (data-ruc; see fitRail below) rather than vanishing. The refresh/gear live in the
-// FIXED .rail-acts below, so they're never pushed off; if even the toggles don't fit, .rail-scroll scrolls them
-// (hidden scrollbar). Re-checked on resize and whenever the usage data re-renders.
-var sc=el.parentNode;   // the .rail-scroll wrapper (#rail-usage's parent)
-// GRADED vertical fit (the user 2026-07-01): when the top group can't hold the toggles + usage bars, the bars
-// don't vanish all at once — they DEGRADE by level (data-ruc): 1 = shorter bars, 2 = drop the % readout, 3 =
-// drop the 5h/7d labels (compressed bars only), 4 = hidden (last resort). Bump the level until it fits.
-function fitRail(){if(!sc)return;
-for(var lvl=0;lvl<=4;lvl++){el.dataset.ruc=String(lvl);if(sc.scrollHeight<=sc.clientHeight+1)break;}}
-window.addEventListener('resize',fitRail);
-var _render=render;render=function(u){_render(u);fitRail();};   // re-fit after the bars change height
-requestAnimationFrame(fitRail);
+// (The old vertical-fit degrade ladder (fitRail/data-ruc, the user 2026-06-27/07-01) is gone: it shrank the
+// VERTICAL bars when the left rail ran out of height. The bars are HORIZONTAL in the bottom bar now and only
+// ~text-height tall, so they always fit — nothing to degrade.)
 window.addEventListener('message',function(e){var m=e.data;if(m&&m.romp==='usage')render(m.usage);});})();
 """
 
@@ -10123,28 +10118,15 @@ def _landing():
             # Chat / Outline / Feed / Timeline toggles. It used to be a vertical strip on the far LEFT; it now runs
             # HORIZONTALLY across the bottom of .col, BELOW the timeline band (last child of .col). Each toggle is
             # an independent on/off; the lit one is in the romp accent.
-            # It keeps the SCROLLABLE group (.rail-scroll: toggles + usage, now a horizontal row that scrolls
-            # sideways on a narrow window) and a FIXED group (.rail-acts: refresh + network + gear), pinned to the
-            # RIGHT (margin-left:auto) so the actions never get pushed off. The usage bars' vertical DEGRADE ladder
-            # (fitRail → data-ruc) is now a dormant fallback: the bar's height comfortably holds the level-0 bars,
-            # so fit stays at level 0 unless the row's content ever exceeds the bar height.
+            # It keeps the SCROLLABLE group (.rail-scroll: toggles + usage, a horizontal row that scrolls sideways
+            # on a narrow window) and a FIXED group (.rail-acts: refresh + network + gear), pinned to the RIGHT
+            # (margin-left:auto) so the actions never get pushed off. The usage bars are horizontal fill bars only
+            # ~text-height tall, so they always fit — no vertical degrade ladder anymore.
             ".pane-rail{flex:0 0 auto;box-sizing:border-box;display:flex;flex-direction:row;align-items:center;gap:14px;"
             "padding:0 12px;height:30px;background:#202021;border-top:1px solid #2c2c2d;z-index:10;overflow:hidden}"
             ".rail-scroll{flex:0 1 auto;min-width:0;display:flex;flex-direction:row;align-items:center;gap:12px;"
             "overflow-x:auto;overflow-y:hidden;scrollbar-width:none}"
             ".rail-scroll::-webkit-scrollbar{width:0;height:0}"
-            # GRADED degrade as vertical room runs out (fitRail bumps data-ruc), instead of vanishing at once:
-            # 1 = shorter bars, 2 = drop the % readout, 3 = bars only (drop 5h/7d labels), 4 = hidden last (the user 2026-07-01).
-            "#rail-usage[data-ruc='1']{gap:7px}"
-            "#rail-usage[data-ruc='1'] .ru-bars{height:24px}"
-            "#rail-usage[data-ruc='2']{gap:6px;margin-top:8px}"
-            "#rail-usage[data-ruc='2'] .ru-bars{height:19px}"
-            "#rail-usage[data-ruc='2'] .ru-lab{display:none}"
-            "#rail-usage[data-ruc='3']{gap:5px;margin-top:6px}"
-            "#rail-usage[data-ruc='3'] .ru-bars{height:14px}"
-            "#rail-usage[data-ruc='3'] .ru-lab{display:none}"
-            "#rail-usage[data-ruc='3'] .ru-win{display:none}"
-            "#rail-usage[data-ruc='4']{display:none}"
             ".rail-acts{flex:0 0 auto;display:flex;flex-direction:row;align-items:center;gap:6px;margin-left:auto}"   # compact: tight row of refresh/network/settings   # pinned to the RIGHT of the bottom bar, always visible
             ".rail-btn{flex:0 0 auto;letter-spacing:.04em;line-height:1;"
             "font:600 11px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#8a8a8a;margin:0;"
@@ -10190,20 +10172,18 @@ def _landing():
             ".rnet-old{color:var(--accent)}"   # accent-blue "update available" cue (highlight chrome, not a status color)
             ".rnet-upd{color:var(--accent-fg)!important;background:var(--accent)!important;border-color:var(--accent)!important;font-weight:600}"
             ".rnet-empty{color:#777;font-size:11px}"
-            # usage rate-limit bars in the rail (the user 2026-06-26): per window (5h/7d), a used-% bar (colored
-            # green/amber/red like the timeline's) beside an elapsed-% bar (slate) — pace at a glance; %-label;
-            # window tag; full detail on hover (native title). In the bottom bar the three windows sit side-by-side
-            # (row); each window is itself a ROW — the % + tag stacked to the LEFT (.ru-txt) of its bar-pair — so a
-            # window is only bar-height TALL, keeping the whole bottom bar short (the user 2026-07-05).
-            "#rail-usage{flex:0 0 auto;display:flex;flex-direction:row;align-items:center;gap:14px}"
-            ".ru-w{display:flex;flex-direction:row;align-items:center;gap:5px}"
-            ".ru-txt{display:flex;flex-direction:column;align-items:flex-end;gap:1px;line-height:1}"
-            ".ru-bars{display:flex;gap:2px;height:20px;align-items:flex-end}"
-            ".ru-bar{width:7px;height:100%;background:rgba(255,255,255,0.10);border-radius:2px;display:flex;align-items:flex-end;overflow:hidden}"
-            ".ru-bar i{display:block;width:100%;border-radius:2px;transition:height .3s ease}"
-            ".ru-lab{font:600 9px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#cfe6ff;font-variant-numeric:tabular-nums;line-height:1}"
-            ".ru-win{font:600 8px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#6e7681;letter-spacing:.04em;line-height:1}"
-            ".ru-w{cursor:default}"
+            # usage rate-limit bars in the bottom bar (the user 2026-06-26; HORIZONTAL redesign 2026-07-05): per
+            # window, an expanded label ("5 hours" / "7 days" / "Fable 5"), then a HORIZONTAL track whose colored
+            # fill (.ru-fill, green/amber/red colormap) = used-% and a thin white tick (.ru-mark) = elapsed-% (the
+            # pace marker — fill past the tick = burning too fast), then the % readout. All inline on one row; the
+            # windows sit side-by-side. Full detail (elapsed %, reset countdown, age) stays in the hover panel.
+            "#rail-usage{flex:0 0 auto;display:flex;flex-direction:row;align-items:center;gap:16px}"
+            ".ru-w{display:flex;flex-direction:row;align-items:center;gap:7px;cursor:default}"
+            ".ru-name{font:600 10px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#9aa4ad;letter-spacing:.02em;white-space:nowrap}"
+            ".ru-track{position:relative;width:72px;height:6px;background:rgba(255,255,255,0.12);border-radius:3px;overflow:hidden;flex:0 0 auto}"
+            ".ru-fill{position:absolute;left:0;top:0;height:100%;border-radius:3px;transition:width .3s ease}"
+            ".ru-mark{position:absolute;top:0;height:100%;width:2px;background:rgba(255,255,255,0.65)}"   # elapsed-% pace tick
+            ".ru-pct{font:600 10px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#cfe6ff;font-variant-numeric:tabular-nums;white-space:nowrap}"
             # ONE shared hover panel for BOTH windows (the user 2026-06-26): it reproduces exactly the used/
             # elapsed bars that used to sit under the timeline — per window, a "used" bar (selected colormap)
             # over an "elapsed" bar (slate) with the % + reset countdown, and nothing else (no prose).
