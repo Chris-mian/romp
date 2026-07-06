@@ -47,19 +47,21 @@ class RailUsage(unittest.TestCase):
         self.assertIn("#ru-tip{", self.html, "a styled hover tooltip panel")
         self.assertIn("resets in", self.html, "the panel includes the reset countdown")
 
-    def test_each_usage_window_is_an_inline_horizontal_fill_bar(self):
-        # the user 2026-07-05: each window is one ROW — an expanded label, a HORIZONTAL track (colored fill =
-        # used-%, thin tick = elapsed-%), then the % readout. No vertical bars, no stacked text.
+    def test_each_usage_window_has_two_stacked_horizontal_bars(self):
+        # the user 2026-07-05: each window is one ROW — an expanded label, then TWO stacked horizontal tracks
+        # (used-% colormap fill OVER elapsed-% slate fill), then the used-% readout. Bars are ~75% as wide (54px).
         self.assertIn(".ru-w{display:flex;flex-direction:row;align-items:center;gap:7px;cursor:default}", self.html)
-        self.assertIn(".ru-track{position:relative;width:72px;height:6px", self.html, "a horizontal track")
+        self.assertIn(".ru-bars{display:flex;flex-direction:column;gap:2px", self.html, "the two bars stack vertically")
+        self.assertIn(".ru-track{position:relative;width:54px;height:5px", self.html, "narrower horizontal track")
         self.assertIn(".ru-fill{position:absolute;left:0;top:0;height:100%", self.html, "the fill grows in WIDTH")
-        # the used-% fill width is driven by pct, the elapsed-% pace tick's left by tp
-        self.assertIn("ru-fill style=\"width:'+pct+'%;background:'+col", self.html)
-        self.assertIn("ru-mark style=\"left:'+tp+'%", self.html, "the elapsed-% pace tick")
-        # order within a window: label, then track, then % — all inline
+        self.assertNotIn(".ru-mark{", self.html, "the single-track pace tick is gone (two bars now)")
+        # both fills render: used-% (colormap col) on top, elapsed-% (slate #6b7a8c) below
+        self.assertIn("ru-fill style=\"width:'+pct+'%;background:'+col", self.html, "the used-% bar")
+        self.assertIn("ru-fill style=\"width:'+(tp||0)+'%;background:#6b7a8c", self.html, "the elapsed-% bar below it")
+        # order within a window: label, then the bars, then % — all inline
         one = self.html[self.html.index("<div class=ru-name>"):]
-        self.assertLess(one.index("ru-name"), one.index("ru-track"))
-        self.assertLess(one.index("ru-track"), one.index("ru-pct"))
+        self.assertLess(one.index("ru-name"), one.index("ru-bars"))
+        self.assertLess(one.index("ru-bars"), one.index("ru-pct"))
         # expanded labels use the 5th WINS field (plenty of horizontal room)
         self.assertIn("'5 hours'", self.html)
         self.assertIn("'7 days'", self.html)

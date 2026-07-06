@@ -9698,13 +9698,14 @@ var rolled=seg.resetsAt&&nowS>seg.resetsAt,pct=rolled?0:(seg.pct||0);
 var col=(seg.color&&seg.color.length===3)?('rgb('+seg.color.join(',')+')'):'#54B204';   // selected colormap (server-computed)
 var tp=(seg.resetsAt&&w[1])?Math.max(0,Math.min(100,Math.round((nowS-(seg.resetsAt-w[1]))/w[1]*100))):null;
 LAST[w[0]]={name:w[3],span:w[2],pct:pct,col:col,tp:tp,reset:seg.resetsAt?fmtR(seg.resetsAt):null};
-// Horizontal fill bar (the user 2026-07-05): an expanded label, then a horizontal track whose colored fill
-// = used-% and a thin white tick = elapsed-% (the pace marker — fill past the tick = burning too fast), then
-// the % readout. All inline (label · bar · %), no vertical stacking.
+// Horizontal fill bars (the user 2026-07-05): an expanded label, then TWO stacked horizontal tracks — the
+// used-% bar (colormap colour) ON TOP of the elapsed-% bar (slate) so you can compare pace at a glance (used
+// ahead of elapsed = burning too fast) — then the used-% readout. All inline (label · bars · %).
 html+='<div class=ru-w data-w="'+w[0]+'">'
 +'<div class=ru-name>'+w[4]+'</div>'
-+'<div class=ru-track><i class=ru-fill style="width:'+pct+'%;background:'+col+'"></i>'
-+(tp!=null?'<span class=ru-mark style="left:'+tp+'%"></span>':'')
++'<div class=ru-bars>'
++'<div class=ru-track><i class=ru-fill style="width:'+pct+'%;background:'+col+'"></i></div>'
++'<div class=ru-track><i class=ru-fill style="width:'+(tp||0)+'%;background:#6b7a8c"></i></div>'
 +'</div>'
 +'<div class=ru-pct>'+pct+'%</div></div>';});
 el.innerHTML=html;}
@@ -10173,16 +10174,16 @@ def _landing():
             ".rnet-upd{color:var(--accent-fg)!important;background:var(--accent)!important;border-color:var(--accent)!important;font-weight:600}"
             ".rnet-empty{color:#777;font-size:11px}"
             # usage rate-limit bars in the bottom bar (the user 2026-06-26; HORIZONTAL redesign 2026-07-05): per
-            # window, an expanded label ("5 hours" / "7 days" / "Fable 5"), then a HORIZONTAL track whose colored
-            # fill (.ru-fill, green/amber/red colormap) = used-% and a thin white tick (.ru-mark) = elapsed-% (the
-            # pace marker — fill past the tick = burning too fast), then the % readout. All inline on one row; the
-            # windows sit side-by-side. Full detail (elapsed %, reset countdown, age) stays in the hover panel.
+            # window, an expanded label ("5 hours" / "7 days" / "Fable 5"), then TWO stacked horizontal tracks — the
+            # used-% bar (.ru-fill in the colormap colour) OVER the elapsed-% bar (slate) so you can compare pace at
+            # a glance (used ahead of elapsed = burning too fast) — then the used-% readout. All inline on one row;
+            # the windows sit side-by-side. Full detail (elapsed %, reset countdown, age) stays in the hover panel.
             "#rail-usage{flex:0 0 auto;display:flex;flex-direction:row;align-items:center;gap:16px}"
             ".ru-w{display:flex;flex-direction:row;align-items:center;gap:7px;cursor:default}"
             ".ru-name{font:600 10px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#9aa4ad;letter-spacing:.02em;white-space:nowrap}"
-            ".ru-track{position:relative;width:72px;height:6px;background:rgba(255,255,255,0.12);border-radius:3px;overflow:hidden;flex:0 0 auto}"
+            ".ru-bars{display:flex;flex-direction:column;gap:2px;flex:0 0 auto}"   # used bar stacked over elapsed bar
+            ".ru-track{position:relative;width:54px;height:5px;background:rgba(255,255,255,0.12);border-radius:3px;overflow:hidden;flex:0 0 auto}"
             ".ru-fill{position:absolute;left:0;top:0;height:100%;border-radius:3px;transition:width .3s ease}"
-            ".ru-mark{position:absolute;top:0;height:100%;width:2px;background:rgba(255,255,255,0.65)}"   # elapsed-% pace tick
             ".ru-pct{font:600 10px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#cfe6ff;font-variant-numeric:tabular-nums;white-space:nowrap}"
             # ONE shared hover panel for BOTH windows (the user 2026-06-26): it reproduces exactly the used/
             # elapsed bars that used to sit under the timeline — per window, a "used" bar (selected colormap)
