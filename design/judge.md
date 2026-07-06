@@ -1,5 +1,8 @@
 # The summarizer layer: the engine and the judges
 
+> **Historical** (2026-06-13/14 design; four judges). For what runs today —
+> seven roles, ten prompts — see `docs/judges.md` (2026-07-06).
+
 Internal design doc (not user-facing). The layer above the event model
 (`design/event-model.md`): it attaches *meaning* to the event tree so the read side
 has something worth showing. Working units are the **segment** and the **turn**
