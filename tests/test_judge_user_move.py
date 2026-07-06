@@ -120,18 +120,27 @@ class StaleDoneGuard(unittest.TestCase):
     def test_closer_stale_done_void_fresh_done_lands(self):
         store = self._moved_store()
         menu = [store["nodes"][G1]]
-        # replayed verdict, evidence at the move time → void (== is stale, the move owns it)
-        self.assertEqual(jd.apply_close(store, menu, {"done": {1: "did it"}}, t=NOW), [])
+        # replayed verdict, evidence STRICTLY before the move → void
+        self.assertEqual(jd.apply_close(store, menu, {"done": {1: "did it"}}, t=NOW - 30), [])
         self.assertFalse(store["nodes"][G1]["nodeComplete"])
         # genuinely newer evidence → completes normally (the floor, never a pin)
         self.assertEqual(jd.apply_close(store, menu, {"done": {1: "did it"}}, t=NOW + 60), [G1])
+        self.assertTrue(store["nodes"][G1]["nodeComplete"])
+
+    def test_done_at_exactly_the_stamp_lands(self):
+        # the deliberate </<= asymmetry vs _block_is_stale (the user 2026-07-06): a nudge/follow-up's own
+        # turn carries trigger t == followupAt, and its work RESOLVING the goal must land — with <= the
+        # resolving turn voided itself and the card wedged in Working (the stuck 'drag' card).
+        store = self._moved_store()
+        menu = [store["nodes"][G1]]
+        self.assertEqual(jd.apply_close(store, menu, {"done": {1: "did it"}}, t=NOW), [G1])
         self.assertTrue(store["nodes"][G1]["nodeComplete"])
 
     def test_planner_stale_done_void_fresh_done_lands(self):
         store = self._moved_store()
         menu = [{"id": G1, "text": "Build the exporter"}]
         ops = [{"do": "done", "goal": 1, "why": "already finished"}]
-        jd.apply_plan(store, "seg-stale", NOW, list(ops), menu, place_key="seg-stale")
+        jd.apply_plan(store, "seg-stale", NOW - 30, list(ops), menu, place_key="seg-stale")
         self.assertFalse(store["nodes"][G1]["nodeComplete"])
         jd.apply_plan(store, "seg-fresh", NOW + 60, list(ops), menu, place_key="seg-fresh")
         self.assertTrue(store["nodes"][G1]["nodeComplete"])

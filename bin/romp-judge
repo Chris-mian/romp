@@ -678,7 +678,7 @@ def tasks_for(fsid, leaf, files, now):
     cf = PCACHE / (fsid + ".json")
     try:
         o = json.loads(cf.read_text())
-        if o.get("key") == key and o.get("v") == 4:    # v4 = no work caption for work-less units (the user 2026-06-22); older caches regenerate
+        if o.get("key") == key and o.get("v") == 5:    # v5 = absorbed SDK-injection atoms carry real text (2026-07-06); older caches regenerate
             return o["tasks"]
     except Exception:
         pass
@@ -694,7 +694,7 @@ def tasks_for(fsid, leaf, files, now):
     try:
         PCACHE.mkdir(parents=True, exist_ok=True)
         tmp = cf.with_suffix(".tmp.%d" % os.getpid())
-        tmp.write_text(json.dumps({"key": key, "v": 4, "tasks": tasks}))
+        tmp.write_text(json.dumps({"key": key, "v": 5, "tasks": tasks}))
         tmp.rename(cf)
     except Exception:
         pass
@@ -2408,9 +2408,16 @@ def _done_is_stale(nd, ev_t):
     Working (user_move). A done verdict computed from evidence AT/BEFORE that stamp would snap the card
     straight back to Completed on the next pass (a judge catch-up replays exactly such stale segments).
     A verdict from genuinely NEWER evidence — fresh work on the reopened goal — completes it normally:
-    the user's action is a FLOOR on evidence time, never a pin."""
+    the user's action is a FLOOR on evidence time, never a pin.
+
+    STRICT `<` where _block_is_stale keeps `<=`, and the asymmetry is the point (the user 2026-07-06):
+    the reply/nudge segment's own trigger time EQUALS followupAt (both stamp the same event), and for a
+    BLOCK that equality means "computed from the ask the user just answered" → void; but for a DONE it
+    means "the work that answered the follow-up resolved the goal" → must LAND, else the resolving turn
+    itself is voided and the card wedges in Working. Genuinely replayed stale evidence always predates
+    the user's action strictly, so the replay guard is intact."""
     fa = nd.get("followupAt")
-    return bool(fa) and ev_t is not None and ev_t <= fa
+    return bool(fa) and ev_t is not None and ev_t < fa
 
 
 def _unit_key(seg_id, phase):
@@ -2442,24 +2449,46 @@ def _seg_key(seg_id):
     return (parts[0] + ":" + parts[-1]) if len(parts) >= 3 else seg_id
 
 
-def _placed_key(placements, key):
+def _placed_key(placements, key, live=None):
     """Timestamp-invariant membership: is `key` (a seg id, bare or '#p'/'#d'-suffixed) already recorded in
     placements? Exact hit first (the common no-drift case), else via _seg_key — so a segment whose parse t
-    drifted after its placement was recorded still dedups instead of being re-planned (double-minted)."""
+    drifted after its placement was recorded still dedups instead of being re-planned (double-minted).
+
+    `live` (optional): the CURRENT parse's seg-id set (bare ids as written). A fuzzy (t-dropped) hit then
+    counts ONLY when the recorded key is ORPHANED — not itself some OTHER live segment. Without this,
+    byte-identical prompts in DIFFERENT turns hash identically (three crash-heal "kernel restarted"
+    resumes), so the first placed twin swallowed every later twin's work-run forever — whole turns of
+    real work never reached the goal tree (the user 2026-07-06, the stuck 'drag' card). Drift is exactly
+    the orphan case (a drifted old id no longer parses out), so the double-mint protection is intact —
+    event-based, no time window."""
     if key in placements:
         return True
     want = _seg_key(key)
-    return any(_seg_key(k) == want for k in placements)
+    kb = key.split("#")[0]
+    for k in placements:
+        if _seg_key(k) != want:
+            continue
+        rb = k.split("#")[0]
+        if live is not None and rb != kb and rb in live:
+            continue                                   # the recorded key IS another live segment (a twin), not our drift
+        return True
+    return False
 
 
-def _placement_of(placements, seg_id):
-    """placements[seg_id], timestamp-invariant (see _placed_key). None when absent — indistinguishable from
-    a RETIRED (None-valued) placement by design: both mean 'no goal node here'; callers needing pure
-    membership use _placed_key."""
+def _placement_of(placements, seg_id, live=None):
+    """placements[seg_id], timestamp-invariant with the same live-twin guard as _placed_key. None when
+    absent — indistinguishable from a RETIRED (None-valued) placement by design: both mean 'no goal node
+    here'; callers needing pure membership use _placed_key."""
     if seg_id in placements:
         return placements[seg_id]
     want = _seg_key(seg_id)
-    return next((v for k, v in placements.items() if _seg_key(k) == want), None)
+    for k, v in placements.items():
+        if _seg_key(k) != want:
+            continue
+        if live is not None and k.split("#")[0] != seg_id.split("#")[0] and k.split("#")[0] in live:
+            continue
+        return v
+    return None
 
 
 def _segs_for(seg_by_id, seg_ids):
@@ -2539,17 +2568,20 @@ def _plan_session(fsid, path, now):
     # planner that one goal's own raw history alongside its menu title (the user 2026-07-01) — no LLM
     # call, just an index over already-parsed atoms. Seam-aware (_segs) so a settle-split tail resolves.
     seg_by_id = {seg["id"]: seg for turn in session["turns"] for seg in _segs(turn, store)}
+    live = set(seg_by_id)                             # current parse's seg ids: the _placed_key live-twin guard —
+    #                                                   an identical-text twin (crash-heal restart resumes) must
+    #                                                   not be swallowed as a "drift" of an already-placed one
     units, retired = [], False
     for u in plan_units(session, store):
         seg_id, phase = u[0], u[1]
         key = _unit_key(seg_id, phase)
-        if _placed_key(store["placements"], key):     # drift-safe: a recorded key whose parse t has since
+        if _placed_key(store["placements"], key, live):   # drift-safe: a recorded key whose parse t has since
             continue                                  # shifted still dedups (this phase already placed)
-        if phase in ("prompt", "live") and _placed_key(store["placements"], seg_id):
+        if phase in ("prompt", "live") and _placed_key(store["placements"], seg_id, live):
             continue                                  # work already placed (legacy/fast segment) → the run is moot
         if phase == "delegation":
-            tgt = _placement_of(store["placements"], seg_id)   # the COURIER's verdict for this peer segment
-            if _placed_key(store["placements"], seg_id) and not (isinstance(tgt, str) and tgt in store["nodes"]):
+            tgt = _placement_of(store["placements"], seg_id, live)   # the COURIER's verdict for this peer segment
+            if _placed_key(store["placements"], seg_id, live) and not (isinstance(tgt, str) and tgt in store["nodes"]):
                 # The courier RESOLVED this peer segment as COORDINATION ("fyi") — a FINAL verdict, never
                 # work to file under a goal. RETIRE the #d phase here (mark it processed, the user 2026-06-22
                 # via link_audit) so it stops being re-collected and re-skipped EVERY pass. (Historically this

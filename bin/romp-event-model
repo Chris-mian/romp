@@ -318,6 +318,8 @@ class FileAdapter:
         self.parent_of = {}      # uuid -> parentUuid (or logicalParentUuid, for the compaction stitch)
         self.queue_ops = []      # (ts, op, content, seq) — no uuid on disk; for absorb derivation
         self.qattach = {}        # normalized queued_command text -> [attachment uuids] (FIFO)
+        self.qattach_text = {}   # attachment uuid -> full prompt text (markers intact, for absorbed atoms)
+        self.qattach_ts = {}     # enqueue timestamp -> [attachment uuids] (the null-content SDK join)
         self.leaf_uuid = None
         leaf_stem = Path(leaf_path).stem
         seq = 0
@@ -347,8 +349,17 @@ class FileAdapter:
                 elif t == "attachment":
                     a = r.get("attachment") or {}
                     if a.get("type") == "queued_command" and a.get("prompt"):
-                        key = " ".join(str(a["prompt"]).split())
+                        # the prompt can be a plain string OR a content-block LIST (the SDK injection
+                        # path) — extract the TEXT either way; str() of a list keyed the Python repr,
+                        # which no enqueue content ever matches (the user 2026-07-06)
+                        ptext = a["prompt"] if isinstance(a["prompt"], str) else _text_of(a["prompt"])
+                        key = " ".join(ptext.split())
                         self.qattach.setdefault(key, []).append(u)
+                        self.qattach_text[u] = ptext
+                        # ts-index too: an SDK-queued injection's enqueue op carries NO content (null),
+                        # so text-pairing can't find it — the attachment written at the SAME enqueue
+                        # timestamp is the designed join (verified on the live corpus, the user 2026-07-06)
+                        self.qattach_ts.setdefault(parse_z(r.get("timestamp")), []).append(u)
         self._repair_compaction_stitches()
 
     def _repair_compaction_stitches(self):
@@ -445,17 +456,31 @@ class FileAdapter:
             text = e["text"]
             lst = self.qattach.get(text)
             auid = lst.pop(0) if lst else None
+            if auid is None and not text:
+                # SDK-queued injection (the user 2026-07-06): the enqueue op carries NO content (null), so
+                # the text pairing above can't see it — but the queued_command attachment is written at the
+                # SAME enqueue timestamp with the FULL prompt (romp markers intact). Join on that event.
+                # Without this the absorbed atom synthesized EMPTY: no text, no author, no rompAuto — an
+                # auto-nudge became an anonymous blank prompt (plain timeline dot, and the judge planned
+                # its reply as ordinary work instead of resolving the nudged goal).
+                tlst = self.qattach_ts.get(e["ts"])
+                auid = tlst.pop(0) if tlst else None
+                if auid is not None:
+                    text = " ".join(self.qattach_text.get(auid, "").split())
             if auid is not None and auid not in kept:
                 continue   # the fold happened on a rewound branch
             blocks = [{"type": "text", "text": text}]
-            atoms.append({
+            atom = {
                 "type": "user", "uuid": auid, "session_id": rompuuid,
                 "t": e["proc"], "fsid": self.fsid_of.get(auid),
                 "parentUuid": (self.by_uuid.get(auid) or {}).get("parentUuid"),
                 "message": {"role": "user", "content": blocks},
                 "author": author_of(blocks, None, postal_index, getattr(self, "sdk_human", False)),
                 "_seq": e["seq"],
-            })
+            }
+            if ROMP_AUTO_RE.search(text):   # an AUTO-nudge → flag it, mirroring the native user-record path
+                atom["rompAuto"] = True
+            atoms.append(atom)
         return atoms
 
     def atoms(self, rompuuid, postal_index):

@@ -328,12 +328,13 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 .fask-nudgefailed { flex: 0 0 auto; font-size: 0.64em; font-weight: 700; letter-spacing: 0.04em;
   padding: 1px 6px; border-radius: 999px; line-height: 1.4;
   color: #ff6a6a; border: 1px solid rgba(255, 106, 106, 0.6); }
-/* "interrupted" — the user stopped this session mid-turn and hasn't re-engaged; its quiet is
-   user-chosen (auto-nudge holds off until their next message). Neutral gray pill: informational,
-   not an alarm — nothing here needs the user, they chose the pause (the user 2026-07-05) */
+/* "interrupted" — the user stopped this session mid-turn and hasn't re-engaged; auto-nudge holds
+   off until their next message. WARNING yellow (the user 2026-07-06, was neutral gray and too easy
+   to miss): the pause is user-chosen but the thread IS dangling — same yellow as the warn chip,
+   one warning treatment across the card (see .fask-warnchip) */
 .fask-interrupted { flex: 0 0 auto; font-size: 0.64em; font-weight: 700; letter-spacing: 0.04em;
   padding: 1px 6px; border-radius: 999px; line-height: 1.4;
-  color: #9aa0a6; border: 1px solid rgba(154, 160, 166, 0.6); }
+  color: #ffd166; border: 1px solid rgba(255, 209, 102, 0.6); }
 /* "warning" — a judge stamped an anomaly on this goal (judge _node_warn; the user 2026-07-02): yellow
    pill, a BUTTON — click opens the warn-detail overlay (what happened + why it's unexpected) */
 .fask-warnchip { flex: 0 0 auto; font-size: 0.64em; font-weight: 700; letter-spacing: 0.04em;
