@@ -1659,6 +1659,9 @@ def _spawn_session(name, cwd=None):
 _SDK_MCP = Path(os.path.expanduser("~/.claude/romp-postal.mcp.json"))
 _SDK_PROMPT = Path(os.path.expanduser("~/.claude/romp-session-prompt.md"))
 _sdk_backend = None   # None = not built yet, False = unavailable, else the SdkBackend
+_sdk_lock = threading.Lock()   # single-flight construction: the eager boot thread races handler
+                               # threads, and an unlocked check-then-act built 2-3 duplicate backends
+                               # whose reconciles reaped each other's live CLIs (2026-07-06)
 
 
 def _claude_bin():
@@ -1682,6 +1685,11 @@ def _ensure_sdk_on_path():
 
 def _sdk():
     """The SdkBackend singleton, or None when the module/dependency is unavailable."""
+    with _sdk_lock:
+        return _sdk_locked()
+
+
+def _sdk_locked():
     global _sdk_backend
     if _sdk_backend is None:
         try:

@@ -503,16 +503,21 @@ _SDK_CLI_MARK = "--input-format stream-json"
 
 
 def find_orphan_clis(ps_lines: list[str], lastsids: list[str]) -> list[int]:
-    """PIDs of SDK-driven `claude` CLIs resuming one of OUR sessions (`--resume <lastSid>` + the
-    stream-json mark). At kernel boot we have started no sessions yet, so every match is a leftover
-    of a dead kernel — an orphaned writer that would fight the resume for the transcript. Pure
-    (takes `ps -axo pid=,command=` lines) so tests need no live processes."""
+    """PIDs of ORPHANED SDK-driven `claude` CLIs resuming one of OUR sessions (`--resume <lastSid>`
+    + the stream-json mark). Orphaned = re-parented to launchd (ppid 1): a live SDK CLI is always a
+    child of the kernel that spawned it, so only a dead kernel's leftover — a zombie writer that
+    would fight the resume for the transcript — reaches ppid 1. The parent check is load-bearing:
+    matching on the command line alone let a duplicate backend's reconcile reap freshly-resumed
+    LIVE sessions mid-turn (2026-07-06). Pure (takes `ps -axo pid=,ppid=,command=` lines) so tests
+    need no live processes."""
     out = []
     for ln in ps_lines:
-        parts = ln.strip().split(None, 1)
-        if len(parts) < 2 or not parts[0].isdigit():
+        parts = ln.strip().split(None, 2)
+        if len(parts) < 3 or not parts[0].isdigit() or not parts[1].isdigit():
             continue
-        pid, cmd = int(parts[0]), parts[1]
+        pid, ppid, cmd = int(parts[0]), int(parts[1]), parts[2]
+        if ppid != 1:
+            continue
         if _SDK_CLI_MARK not in cmd:
             continue
         if any(s and ("--resume " + s) in cmd for s in lastsids):
@@ -1376,7 +1381,7 @@ class SdkBackend:
             lastsids = [str(r.get("lastSid") or "") for r in alive if r.get("lastSid")]
             if lastsids:
                 try:
-                    ps = subprocess.run(["ps", "-axo", "pid=,command="],
+                    ps = subprocess.run(["ps", "-axo", "pid=,ppid=,command="],
                                         capture_output=True, text=True, timeout=10).stdout
                     for pid in find_orphan_clis(ps.splitlines(), lastsids):
                         if pid == os.getpid():
