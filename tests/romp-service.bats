@@ -87,6 +87,48 @@ teardown() { rm -rf "$TEST_DIR"; }
     [ ! -f "$ROMP_LAUNCHD_DIR/com.romp.manager.plist" ]
 }
 
+# The install's bootstrap races the preceding bootout (launchd rejects with
+# "Input/output error" while the old job drains). ROMP_LAUNCHCTL stubs launchctl
+# to exercise that path: install must RETRY until launchd accepts, and fail
+# loudly — never silently — if it never does (a swallowed failure leaves no
+# agent loaded and a dead kernel with nothing saying why).
+
+@test "install (macOS): bootstrap retries through the bootout drain race" {
+    unset ROMP_SERVICE_NO_LOAD
+    local stub="$TEST_DIR/launchctl-stub" calls="$TEST_DIR/launchctl-calls"
+    cat > "$stub" <<EOF
+#!/bin/sh
+echo "\$1" >> "$calls"
+[ "\$1" = bootout ] && exit 0
+[ "\$(grep -c bootstrap "$calls")" -ge 3 ] && exit 0
+echo "Bootstrap failed: 5: Input/output error" >&2
+exit 5
+EOF
+    chmod +x "$stub"
+    ROMP_LAUNCHCTL="$stub" ROMP_OS_OVERRIDE=Darwin run "$SVC" install
+    [ "$status" -eq 0 ]
+    grep -q bootout "$calls"
+    [ "$(grep -c bootstrap "$calls")" -eq 3 ]
+    [[ "$output" == *"Installed launchd agent"* ]]
+}
+
+@test "install (macOS): a bootstrap that never lands fails LOUDLY, not silently" {
+    unset ROMP_SERVICE_NO_LOAD
+    local stub="$TEST_DIR/launchctl-stub"
+    cat > "$stub" <<'EOF'
+#!/bin/sh
+[ "$1" = bootout ] && exit 0
+echo "Bootstrap failed: 5: Input/output error" >&2
+exit 5
+EOF
+    chmod +x "$stub"
+    ROMP_LAUNCHCTL="$stub" ROMP_OS_OVERRIDE=Darwin run "$SVC" install
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"FAILED to load the login agent"* ]]
+    [[ "$output" == *"Input/output error"* ]]
+    [[ "$output" == *"Retry by hand"* ]]
+}
+
 @test "unsupported OS fails cleanly" {
     ROMP_OS_OVERRIDE=Plan9 run "$SVC" install
     [ "$status" -eq 1 ]
