@@ -659,6 +659,35 @@ if [[ "${1:-}" == "update" || "${1:-}" == "--update" ]]; then
     exec romp-update "$@"
 fi
 
+# `romp send|interrupt|end <session> [text]` — headless session control through the kernel HTTP API
+# (the kernel owns the transport and routes to whichever backend drives the session, tmux or SDK).
+# Before this, interrupt/end existed only as browser WS ops: a session could be FED headlessly but
+# never STOPPED (2026-07-05). Both bare and double-dash forms work, like `update`. Exit 0 only when
+# the kernel acked ok — a dead kernel or unknown session fails LOUDLY, never silently.
+if [[ "${1:-}" =~ ^(--)?(send|interrupt|end)$ ]]; then
+    _verb="${1#--}"; shift
+    _who="${1:-}"
+    if [[ -z "$_who" ]]; then echo "usage: romp $_verb <session> $([[ "$_verb" == send ]] && echo '<text>')" >&2; exit 2; fi
+    shift
+    _kport="${ROMP_KERNEL_PORT:-7433}"
+    if [[ "$_verb" == "send" ]]; then
+        _text="$*"
+        if [[ -z "$_text" ]]; then echo "usage: romp send <session> <text>" >&2; exit 2; fi
+        _payload="$(python3 -c 'import json,sys; print(json.dumps({"name": sys.argv[1], "text": sys.argv[2]}))' "$_who" "$_text")"
+    else
+        _payload="$(python3 -c 'import json,sys; print(json.dumps({"name": sys.argv[1]}))' "$_who")"
+    fi
+    _resp="$(curl -sf -m 10 -X POST "http://127.0.0.1:$_kport/$_verb" \
+                  -H 'Content-Type: application/json' -d "$_payload")" \
+        || { echo "romp $_verb: kernel not reachable on :$_kport (is romp running?)" >&2; exit 1; }
+    if [[ "$_resp" == *'"ok": true'* || "$_resp" == *'"ok":true'* ]]; then
+        echo "romp $_verb: ok ($_who)"
+        exit 0
+    fi
+    echo "romp $_verb: kernel refused: $_resp" >&2
+    exit 1
+fi
+
 # `romp --default-dir [PATH]` — the default working directory for NEW sessions (what the picker prefills).
 # Persisted to ~/.config/romp/default-dir, read FIRST by the kernel's _default_create_dir() (before the
 # install/serve default), so the gear dialog and this CLI share one source of truth. No arg prints the
