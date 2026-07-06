@@ -35,6 +35,12 @@ input=$(cat)
 # mode's transient permission notifications (which the classifier allows moments
 # later) — an event-based replacement for the feed's old time-threshold debounce.
 [[ "$input" =~ \"permission_mode\":\"([^\"]+)\" ]] && PERM_MODE="${BASH_REMATCH[1]}" || PERM_MODE=""
+# The AUTHORITATIVE current session id — every hook payload carries it. A relaunch, /clear, or
+# --resume inside the SAME tmux session mints a NEW id, but @romp-session-id was written once at
+# launch — so every downstream consumer (kernel liveness/lanes, states/<sid>.jsonl, send routing,
+# idle dots, resume picker) kept following the DEAD transcript while the live one was invisible
+# (2026-07-06: a tab rendering yesterday's conversation while tmux showed today's).
+[[ "$input" =~ \"session_id\":\"([^\"]+)\" ]] && HOOK_SID="${BASH_REMATCH[1]}" || HOOK_SID=""
 
 case "$EVENT" in
     SessionStart)          state="waiting" ;;
@@ -77,6 +83,19 @@ now=$(date +%s)
 # below are display only).
 if [[ "$DISPLAY_TMUX" == 1 ]]; then
     sid=$(tmux show -t "$session_name" -v @romp-session-id 2>/dev/null || true)
+    # Follow a session-id change (relaunch / clear / resume in this pane) the moment a hook reports
+    # it: re-point @romp-session-id at the CURRENT id and carry the names/ identity entry (name, dir,
+    # color) over to it, so the kernel's lanes, tabs, and send routing all track the live transcript
+    # instead of the abandoned one. Event-based — keyed on the hook's own session_id, no heuristics.
+    # (Headless/SDK sessions are untouched: the SDK backend owns identity via its registry's lastSid.)
+    if [[ -n "$HOOK_SID" && -n "$sid" && "$HOOK_SID" != "$sid" ]]; then
+        ndir="${XDG_STATE_HOME:-$HOME/.local/state}/romp/names"
+        if [[ -f "$ndir/$sid" && ! -f "$ndir/$HOOK_SID" ]]; then
+            cp "$ndir/$sid" "$ndir/$HOOK_SID" 2>/dev/null || true
+        fi
+        tmux set -t "$session_name" @romp-session-id "$HOOK_SID"
+        sid="$HOOK_SID"
+    fi
     prev=$(tmux show -t "$session_name" -v @claude-state 2>/dev/null || true)
 else
     sid="$ROMP_SESSION_ID"

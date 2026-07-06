@@ -324,3 +324,53 @@ run_hook() {
     [ "$status" -eq 0 ]
     ! grep -q '"awaiting"' "$TEST_DIR/state/romp/states/headless-aw-1.jsonl"
 }
+
+# ─── session-id follow (relaunch / clear / resume in the same pane) ────────────────────────────
+# A hook payload's session_id is AUTHORITATIVE; @romp-session-id was written once at launch. When
+# they differ the pane is running a NEW transcript (relaunch//clear/--resume) and every consumer of
+# the var (kernel lanes/tabs, states file, send routing) must follow it — before this fix they all
+# tracked the dead transcript while the live one was invisible (2026-07-06).
+
+@test "a changed hook session_id re-points @romp-session-id and carries the names entry" {
+    export MOCK_SESSION_ID="11111111-2222-3333-4444-aaaaaaaaaaaa"
+    export XDG_STATE_HOME="$TEST_DIR/state"
+    ndir="$TEST_DIR/state/romp/names"
+    mkdir -p "$ndir"
+    printf 'FRO\t/tmp/proj\t#112233\t#ffffff\n' > "$ndir/11111111-2222-3333-4444-aaaaaaaaaaaa"
+    run run_hook '{"hook_event_name":"SessionStart","session_id":"11111111-2222-3333-4444-bbbbbbbbbbbb","cwd":"/tmp/proj"}'
+    [ "$status" -eq 0 ]
+    grep -q 'tmux set -t test @romp-session-id 11111111-2222-3333-4444-bbbbbbbbbbbb' "$MOCK_LOG"
+    # identity (name/dir/color) carried over so _name_of/_name_color resolve the new id
+    [ "$(cat "$ndir/11111111-2222-3333-4444-bbbbbbbbbbbb")" = "$(printf 'FRO\t/tmp/proj\t#112233\t#ffffff')" ]
+    # the state transition lands in the NEW id's states file, not the abandoned one's
+    grep -q '"state":"waiting"' "$TEST_DIR/state/romp/states/11111111-2222-3333-4444-bbbbbbbbbbbb.jsonl"
+    [ ! -f "$TEST_DIR/state/romp/states/11111111-2222-3333-4444-aaaaaaaaaaaa.jsonl" ]
+}
+
+@test "an unchanged session_id never rewrites the var" {
+    export MOCK_SESSION_ID="11111111-2222-3333-4444-aaaaaaaaaaaa"
+    export XDG_STATE_HOME="$TEST_DIR/state"
+    run run_hook '{"hook_event_name":"SessionStart","session_id":"11111111-2222-3333-4444-aaaaaaaaaaaa","cwd":"/tmp"}'
+    [ "$status" -eq 0 ]
+    ! grep -q '@romp-session-id 11111111' "$MOCK_LOG"
+}
+
+@test "a payload without session_id leaves the var alone" {
+    export MOCK_SESSION_ID="11111111-2222-3333-4444-aaaaaaaaaaaa"
+    export XDG_STATE_HOME="$TEST_DIR/state"
+    run run_hook '{"hook_event_name":"SessionStart","cwd":"/tmp"}'
+    [ "$status" -eq 0 ]
+    ! grep -q 'set -t test @romp-session-id' "$MOCK_LOG"
+}
+
+@test "an existing names entry for the new id is never clobbered" {
+    export MOCK_SESSION_ID="11111111-2222-3333-4444-aaaaaaaaaaaa"
+    export XDG_STATE_HOME="$TEST_DIR/state"
+    ndir="$TEST_DIR/state/romp/names"
+    mkdir -p "$ndir"
+    printf 'FRO\t/tmp/proj\t#112233\t#ffffff\n' > "$ndir/11111111-2222-3333-4444-aaaaaaaaaaaa"
+    printf 'other\t/tmp/other\t#445566\t#000000\n' > "$ndir/11111111-2222-3333-4444-bbbbbbbbbbbb"
+    run run_hook '{"hook_event_name":"SessionStart","session_id":"11111111-2222-3333-4444-bbbbbbbbbbbb","cwd":"/tmp"}'
+    [ "$status" -eq 0 ]
+    [ "$(cat "$ndir/11111111-2222-3333-4444-bbbbbbbbbbbb")" = "$(printf 'other\t/tmp/other\t#445566\t#000000')" ]
+}

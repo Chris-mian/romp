@@ -498,6 +498,14 @@ BOOT_RESUME_NUDGE = (
     "conversation and pick the work back up where it stopped. Any messages queued before the restart "
     "follow this one.")
 
+# Same recovery, different death: the session's OWN claude process died mid-turn (killed or crashed)
+# while the kernel stayed up, so the kernel itself resumes it (_heal_cut_session) instead of waiting
+# for the next boot's reconcile.
+CRASH_RESUME_NUDGE = (
+    "<!-- romp-injected --><!-- romp-system -->[romp] This session's claude process died mid-turn "
+    "(killed or crashed); the session has been resumed with its history intact. Re-read the tail of "
+    "the conversation and pick the work back up where it stopped.")
+
 # The marker only SDK-driven claude CLIs carry (the kernel drives them over stdin); a tmux session's
 # interactive `claude --resume` never has it, so the orphan reap can never touch a tmux CLI.
 _SDK_CLI_MARK = "--input-format stream-json"
@@ -1067,6 +1075,7 @@ class SdkSession:
             self.retrying = False
             self._interrupted = False              # this turn's result settled it (whether it finished or was interrupted)
             self.inflight = max(0, self.inflight - 1)
+            self.backend._turn_completed(self.sid)   # a landed result re-arms the crash-resume budget
             if self.inflight == 0:
                 append_state(self.backend.state_dir, self.sid, "waiting")
                 self.backend.retire_live_work(self.sid)   # turn over → a work atom that never landed never will
@@ -1329,6 +1338,9 @@ class SdkBackend:
         self._pending_ask: dict[str, bool] = {}   # sid -> has an ask awaiting answer
         self._live: dict[str, dict] = {}          # sid -> {key -> atom}: the in-memory LIVE TAIL (ahead of disk)
         self._rl_lock = threading.Lock()          # serializes usage.json read-merge-write (_record_rate_limit)
+        self._heal_attempts: dict[str, int] = {}  # sid -> crash-resume attempts since its last COMPLETED turn
+        #                                           (bounds _heal_cut_session to one resume per cut; a completed
+        #                                           turn resets it, so a crash LOOP can't respawn forever)
         # Kernel-restart heal: nothing is running yet, so any alive session still reading awaiting:true is stale
         # — its background tasks (and the Stop hook that clears the overlay) died with the previous kernel. Left
         # uncleared it reads working/awaiting forever, climbing a ghost work-timer (reorder_bug 2026-06-24).
@@ -2070,8 +2082,16 @@ class SdkBackend:
             if self.sessions.get(sess.sid) is sess:
                 self.sessions.pop(sess.sid, None)
         if not sess.ended:
-            # process exited on its own (crash / EOF) — settle state; next send resumes
-            append_state(self.state_dir, sess.sid, "waiting")
+            if sess.inflight > 0 and not sess._interrupted:
+                # ABNORMAL death mid-turn (killed / crashed — not a user interrupt, not a clean
+                # ResultMessage finish, not our own shutdown). Do NOT settle 'waiting': that masked
+                # the cut (2026-07-06: reaped sessions settled 'waiting', so last_state_value never
+                # read 'working' and nothing ever resumed them — the silent stall). The trailing
+                # 'working' IS the cut marker; heal by resuming, bounded.
+                self._heal_cut_session(sess)
+            else:
+                # process exited on its own while idle (crash / EOF) — settle state; next send resumes
+                append_state(self.state_dir, sess.sid, "waiting")
         # the thread (and its claude subprocess) is gone, so any background work is too — clear a stale
         # awaiting overlay so the session doesn't read working/awaiting forever (reorder_bug 2026-06-24).
         self._heal_stale_awaiting(sess.sid)
@@ -2083,3 +2103,38 @@ class SdkBackend:
             except Exception:
                 pass
         self._poke()
+
+    def _heal_cut_session(self, sess: SdkSession):
+        """A session's claude process died ABNORMALLY mid-turn while the kernel stayed up (killed by
+        something external, OOM, a transport crash — the boot reconcile only heals cuts across a
+        kernel RESTART, so without this the session stalls until the next restart). Resume it the
+        same way the reconcile does: prepend the visible crash nudge to the persisted queue and
+        re-ensure. BOUNDED to one resume per cut — the counter only resets when a turn COMPLETES
+        (_turn_completed), so a CLI that keeps dying before finishing a turn is a crash loop and is
+        left cut (loudly) for the next boot reconcile instead of respawning forever."""
+        sid = sess.sid
+        with self._lock:
+            attempts = self._heal_attempts.get(sid, 0)
+            self._heal_attempts[sid] = attempts + 1
+        if attempts >= 1:
+            self._log("session %s: claude process died mid-turn AGAIN before completing a turn — "
+                      "crash loop; NOT resuming again, turn left cut for the next kernel restart"
+                      % sess.name)
+            return
+        self._log("session %s: claude process died mid-turn — resuming with history intact" % sess.name)
+        try:
+            with self._reg_lock:
+                reg = read_reg(self.state_dir, sid) or {"sid": sid}
+                reg["queue"] = [CRASH_RESUME_NUDGE] + [t for t in (reg.get("queue") or [])
+                                                       if isinstance(t, str) and t and t != CRASH_RESUME_NUDGE]
+                write_reg(self.state_dir, sid, reg)
+            self._ensure(sid)
+        except Exception:
+            self._log("session %s: crash-resume FAILED (turn left cut for the next kernel restart): %s"
+                      % (sess.name, traceback.format_exc()))
+
+    def _turn_completed(self, sid: str):
+        """A turn's ResultMessage landed — the session is demonstrably able to finish turns again, so
+        re-arm the crash-resume budget (_heal_cut_session's one-resume-per-cut bound)."""
+        with self._lock:
+            self._heal_attempts.pop(sid, None)
