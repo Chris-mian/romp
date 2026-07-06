@@ -51,7 +51,7 @@ marked.use({
 type AskAnswerBlock = { question: string; header?: string; options: { label: string; description?: string }[]; chosen: string[] };
 
 type ChatEvent = (
-  | { kind: "user"; md: string; uuid?: string; ts?: string; reminders?: string[]; human?: boolean; romp?: boolean; rompAuto?: boolean; followUp?: boolean; goal?: string; fuCtx?: string; images?: { src: string; path?: string }[] }
+  | { kind: "user"; md: string; uuid?: string; ts?: string; reminders?: string[]; human?: boolean; romp?: boolean; rompAuto?: boolean; rompSystem?: boolean; followUp?: boolean; goal?: string; fuCtx?: string; images?: { src: string; path?: string }[] }
   | { kind: "assistant"; md: string; uuid?: string; ts?: string }
   | { kind: "thinking"; text: string; encrypted: boolean; uuid?: string; ts?: string }
   | {
@@ -413,21 +413,61 @@ function foldable(label: string, content: HTMLElement, key?: string): HTMLElemen
   return wrap;
 }
 
-// Render an agent's completion (<task-notification>) as an informative, collapsed card: the agent name +
-// status on the fold head, its final message (markdown) as the body — no raw XML, no internal ids (the user
-// 2026-06-30). The pure parse lives in agent-notif.ts (testable); this owns the DOM.
-function renderAgentNotif(a: AgentNotif, key?: string): HTMLElement {
-  const body = el("div", "agent-notif-body");
-  if (a.result) {
-    const m = el("div", "agent-notif-md md"); m.innerHTML = md(a.result); highlight(m); body.appendChild(m);
-  } else {
-    const p = el("div", "agent-notif-summary"); p.textContent = a.summary; body.appendChild(p);
+// THE shared "notice card" — informational transcript notices (a backgrounded agent's report, a romp
+// system notice, folded system-reminders) each get their OWN boxed card with a type CHIP, a one-line gist
+// head, and a keyed collapse→expand body. One family, inspired by the postal/teammate cards but distinct:
+// each `variant` carries its own color (agent = accent blue, romp = the swirl + faded-accent, reminder =
+// muted). Distinct from postal (per-peer color) and teammate (dashed neutral). Collapse is KEYED (survives
+// the chat's re-renders via openFolds), unlike the postal/teammate hand-rolled toggle (the user 2026-07-06).
+function noticeCard(o: { variant: "agent" | "romp" | "reminder"; chip: string; logo?: boolean;
+                        head: string; body: HTMLElement; collapsible?: boolean; key?: string }): HTMLElement {
+  const turn = el("div", "turn turn-notice notice-" + o.variant);
+  const d = dot("ring"); d.classList.add("notice-dot", "notice-dot-" + o.variant);
+  turn.appendChild(d);
+  const card = el("div", "notice-card notice-card-" + o.variant);
+  const collapsible = o.collapsible !== false;
+
+  const headEl = el("div", "notice-head");
+  const caret = collapsible ? el("span", "notice-caret") : null;
+  if (caret) headEl.appendChild(caret);
+  const chip = el("span", "notice-chip notice-chip-" + o.variant);
+  if (o.logo) {   // the romp swirl marks a romp notice as "from romp", the way the postal card does
+    const logo = el("img", "notice-chip-logo") as HTMLImageElement;
+    logo.src = "/media/romp-swirl-glyph.svg"; logo.alt = ""; logo.onerror = () => logo.remove();
+    chip.appendChild(logo);
   }
-  // No emoji anywhere (the user 2026-06-30): the accent-coloured "Agent" prefix is the cue, not a glyph.
-  const head = `Agent "${a.label}" · ${a.status || "returned"}`;
-  const f = foldable(head, body, key);
-  f.classList.add("agent-notif-fold");
-  return f;
+  chip.appendChild(document.createTextNode(o.chip));
+  headEl.appendChild(chip);
+  if (o.head) { const h = el("span", "notice-head-text"); h.textContent = o.head; headEl.appendChild(h); }
+  card.appendChild(headEl);
+
+  const bodyEl = el("div", "notice-body"); bodyEl.appendChild(o.body);
+  card.appendChild(bodyEl);
+
+  if (collapsible) {
+    card.classList.add("notice-collapsible");
+    applyFold(card, "notice-open", o.key);                 // keyed: an expanded card stays open across pushes
+    if (caret) caret.textContent = card.classList.contains("notice-open") ? "▾" : "▸";
+    headEl.addEventListener("click", () => {
+      rememberFold(card, "notice-open", o.key);
+      if (caret) caret.textContent = card.classList.contains("notice-open") ? "▾" : "▸";
+    });
+  }
+  turn.appendChild(card);
+  return turn;
+}
+
+// A backgrounded agent's completion (<task-notification>) → an accent-blue notice card: an "agent" chip +
+// the agent name·status gist on the head, its final message (markdown) as the collapsed body — no raw XML,
+// no internal ids (the user 2026-06-30). The pure parse lives in agent-notif.ts (testable); this owns the DOM.
+function renderAgentNotif(a: AgentNotif, key?: string): HTMLElement {
+  const gist = `"${a.label}" · ${a.status || "returned"}`;
+  const body = el("div", "notice-md md");
+  if (a.result) { body.innerHTML = md(a.result); highlight(body); }
+  else { const p = el("div", "notice-plain"); p.textContent = a.summary; body.appendChild(p); }
+  // collapsible only when there's more than the gist to show (a bare summary IS the gist → show it flat)
+  return noticeCard({ variant: "agent", chip: "agent", head: gist, body, key,
+                      collapsible: !!a.result });
 }
 
 // ---- path-source pasted images ----
@@ -957,6 +997,20 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
       turn.appendChild(line);
       return turn;
     }
+    // A romp SYSTEM notice (kernel restart/resume, Retry) — flagged server-side (ev.rompSystem) so it's
+    // separable from a feed NUDGE, which shares the same author (the user 2026-07-06). It gets its OWN romp
+    // notice card (swirl chip + faded-accent box), NOT the gray nudge bubble: it's status, not a prompt.
+    if ((ev as any).rompSystem && ev.md) {
+      // strip the invisible <!-- romp-* --> markers, then the leading "[romp]" (the chip already says who it's from)
+      const text = ev.md.replace(/<!--[\s\S]*?-->/g, "").replace(/^\s*\[romp\]\s*/i, "").trim();
+      const firstLine = (text.split("\n").find((l) => l.trim()) || text).trim();
+      const gist = firstLine.length > 90 ? firstLine.slice(0, 88).replace(/\s+\S*$/, "") + "…" : firstLine;
+      const body = el("div", "notice-md md");
+      body.innerHTML = md(text);
+      return noticeCard({ variant: "romp", chip: "romp", logo: true, head: gist, body,
+                          collapsible: collapseWs(text) !== collapseWs(gist),
+                          key: ev.uuid ? "rsys:" + ev.uuid : undefined });
+    }
     // Three flavors of a "user-role" turn: a GENUINE typed prompt → the blue right-aligned bubble; a
     // message romp INJECTED (a feed nudge / follow-up — ev.romp) → a GRAY right-aligned bubble with a
     // "romp" tag, so it's clear romp (not you) sent it (the user 2026-06-19); everything else harness-
@@ -1017,9 +1071,9 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
         const body = el("div", "reminder-body");
         for (const r of plain) body.appendChild(preEl(r));
         const n = plain.length;
-        const f = foldable(`ⓘ ${n} system reminder${n > 1 ? "s" : ""}`, body, ev.uuid ? "rem:" + ev.uuid : undefined);
-        f.classList.add("reminder-fold");
-        turn.appendChild(f);
+        turn.appendChild(noticeCard({ variant: "reminder", chip: "system",
+          head: `${n} reminder${n > 1 ? "s" : ""}`, body,
+          key: ev.uuid ? "rem:" + ev.uuid : undefined }));
       }
     }
     return turn;
