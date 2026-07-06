@@ -1,0 +1,53 @@
+#!/bin/sh
+# romp-node-launch — start romp-manager under a romp-OWNED copy of node, named
+# "romp-node", so macOS Full Disk Access can be granted to romp ALONE.
+#
+# Why: romp-manager is the launchd-rooted process that starts the tmux server,
+# so macOS TCC treats it as the "responsible process" for every session's
+# protected-folder access (see bin/romp-manager's startTmuxServer note). Run
+# straight from `#!/usr/bin/env node`, that responsible process is the shared
+# /opt/homebrew/bin/node — so the Full Disk Access grant reads "node" and every
+# OTHER script that node runs inherits it. Running the manager under a COPY of
+# node at a romp-owned path makes TCC key the grant to THAT path (client_type=1,
+# validated by the copy's code hash): the entry reads "romp-node" and covers
+# romp only. `exec`ing the copy makes it the process image, so TCC blames it.
+#
+# The copy is content-checked against the live `node` on every launch and
+# refreshed when they differ (e.g. after a node upgrade), so it never goes stale
+# or links a removed dependency. That refresh changes the binary's code hash, so
+# macOS re-prompts for Full Disk Access once per node upgrade — inherent to any
+# copy-based approach (a signed romp.app would avoid it; that's the heavier
+# "Path B"). Falls back to the system node if the copy can't be made or used, so
+# a botched copy can never take the manager — and thus the whole kernel — down.
+#
+# Usage: romp-node-launch <manager-path> [args...]   (the login agent passes "up")
+set -eu
+
+MANAGER="${1:?romp-node-launch: manager path required}"
+shift
+
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/romp"
+ROMP_NODE="$STATE/romp-node"
+sys_node="$(command -v node 2>/dev/null || true)"
+
+# (Re)create the romp-node copy when it is missing or differs from the system
+# node. cmp follows the /opt/homebrew/bin/node symlink and compares real bytes,
+# so a node upgrade (new bytes) triggers a fresh copy. Atomic rename so a
+# concurrent launch never sees a half-written binary.
+if [ -n "$sys_node" ]; then
+    if [ ! -x "$ROMP_NODE" ] || ! cmp -s "$sys_node" "$ROMP_NODE"; then
+        mkdir -p "$STATE" 2>/dev/null || true
+        if cp "$sys_node" "$ROMP_NODE.tmp" 2>/dev/null && chmod +x "$ROMP_NODE.tmp" 2>/dev/null; then
+            mv -f "$ROMP_NODE.tmp" "$ROMP_NODE" 2>/dev/null || rm -f "$ROMP_NODE.tmp" 2>/dev/null || true
+        else
+            rm -f "$ROMP_NODE.tmp" 2>/dev/null || true
+        fi
+    fi
+fi
+
+# Prefer the labeled copy; fall back to the system node so a bad/missing copy
+# never blocks startup.
+if [ -x "$ROMP_NODE" ]; then
+    exec "$ROMP_NODE" "$MANAGER" "$@"
+fi
+exec "${sys_node:-node}" "$MANAGER" "$@"
