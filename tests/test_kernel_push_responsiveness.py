@@ -143,3 +143,38 @@ class OptimisticMutationsDirtyTheViews(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ModelPickerFlashSuppression(unittest.TestCase):
+    """A kernel-driven /model switch pops the CLI's TUI picker for a beat before the confirm Enter lands
+    (tmux; the user 2026-07-06, FRO: 'something popped up and then disappeared') — romp's own action, not
+    a decision the human owes. _ask_poll suppresses a MODEL-titled ask while the switch is pending; the
+    20s pending cap means a genuinely-stuck picker still surfaces for rescue."""
+
+    def tearDown(self):
+        km._model_switch_pending.clear()
+
+    def test_model_picker_suppressed_while_the_switch_is_pending(self):
+        km._model_switch_pending[SID] = {"target": "fable", "until": 1000 + 20}
+        ask = {"title": "Switch model?", "options": ["Fable 5", "Opus 4.8"]}
+        self.assertTrue(km._suppress_kernel_driven_ask(SID, ask, now=1005))
+
+    def test_a_real_permission_ask_still_surfaces_mid_switch(self):
+        km._model_switch_pending[SID] = {"target": "fable", "until": 1000 + 20}
+        ask = {"title": "Bash command", "options": ["Yes", "No"]}
+        self.assertFalse(km._suppress_kernel_driven_ask(SID, ask, now=1005),
+                         "only the switch's own picker is romp's — a racing permission prompt is the human's")
+
+    def test_expired_pending_surfaces_the_stuck_picker(self):
+        km._model_switch_pending[SID] = {"target": "fable", "until": 1000 + 20}
+        ask = {"title": "Switch model?"}
+        self.assertFalse(km._suppress_kernel_driven_ask(SID, ask, now=1030),
+                         "past the cap the confirm evidently failed → the human must see the picker")
+
+    def test_no_pending_never_suppresses(self):
+        self.assertFalse(km._suppress_kernel_driven_ask(SID, {"title": "Switch model?"}, now=1005))
+
+    def test_ask_poll_wires_the_suppression(self):
+        import inspect
+        src = inspect.getsource(km._ask_poll)
+        self.assertIn("_suppress_kernel_driven_ask(sid, ask)", src)

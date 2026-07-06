@@ -405,3 +405,66 @@ class AutoNudgeInterruptGate(unittest.TestCase):
         km._parse(str(self.tpath), SID, NOW)
         card = next(a for a in km.build_feed(NOW, self.tmux)["asks"] if a["itemId"] == SID + ":gw")
         self.assertFalse(card.get("interrupted"), "the user's next message retires the badge")
+
+
+class AutoNudgeArming(AutoNudgeInterruptGate):
+    """Arming keys on the newest GENUINE ended turn (arm_id), not the latest turn (the user 2026-07-06,
+    business): a kernel-restart resume banner (romp-injected) opened a session's last turn and the old
+    `_turn_romp_injected(latest)` gate then suppressed every FIRST nudge until some genuine turn ended —
+    an idle session with a working card that could never be nudged. A romp-injected turn must neither
+    RE-ARM a nudge (the 2026-07-01 runaway stays fixed) nor BLOCK a first one."""
+
+    def _write(self, recs):
+        self.tpath.write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+
+    def _genuine_then_romp_banner(self):
+        self._write([
+            uline(T0, "please wire the thing", "u1"),
+            aline(T0 + 20, "on it — paused here", "a1", "u1", "end_turn"),
+            uline(T0 + 100, "<!-- romp-injected -->[romp] The romp kernel restarted and cut this "
+                            "session's in-flight turn; resumed with history intact.", "u2", "a1"),
+            aline(T0 + 120, "resumed.", "a2", "u2", "end_turn")])
+
+    def test_a_restart_banner_last_turn_does_not_block_the_first_nudge(self):
+        self._genuine_then_romp_banner()
+        g = self._goal()
+        sent, restore = self._stub()
+        try:
+            km._auto_nudge_tick(NOW, self.tmux)
+            self.assertEqual(len(sent), 1, "the working goal takes its FIRST nudge even though the "
+                                           "latest turn is romp-injected (the restart banner)")
+            self.assertIn("romp-goal-id: " + g, sent[0][1])
+        finally:
+            restore()
+
+    def test_a_nudge_response_turn_never_refires(self):
+        # the 2026-07-01 runaway guard, restated on arm_id: after a nudge, the agent's romp-triggered
+        # response turn ends — arm_id hasn't moved, so the second tick marks nudge-failed, never re-sends.
+        self._genuine_then_romp_banner()
+        self._goal()
+        sent, restore = self._stub()
+        try:
+            km._auto_nudge_tick(NOW, self.tmux)
+            self.assertEqual(len(sent), 1)
+            self._write([
+                uline(T0, "please wire the thing", "u1"),
+                aline(T0 + 20, "on it — paused here", "a1", "u1", "end_turn"),
+                uline(T0 + 100, "<!-- romp-injected -->[romp] status check follow-up", "u2", "a1"),
+                aline(T0 + 120, "still where I left it.", "a2", "u2", "end_turn")])
+            km._parse_cache.clear()
+            km._auto_nudge_tick(NOW + 10, self.tmux)
+            self.assertEqual(len(sent), 1, "a romp-triggered response turn does not move arm_id → no re-fire")
+        finally:
+            restore()
+
+    def test_romp_only_history_never_fires(self):
+        self._write([
+            uline(T0 + 100, "<!-- romp-injected -->[romp] The romp kernel restarted.", "u1"),
+            aline(T0 + 120, "resumed.", "a1", "u1", "end_turn")])
+        self._goal()
+        sent, restore = self._stub()
+        try:
+            km._auto_nudge_tick(NOW, self.tmux)
+            self.assertEqual(sent, [], "no genuine ended turn to arm off → never fires")
+        finally:
+            restore()

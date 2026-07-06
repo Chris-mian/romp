@@ -1311,6 +1311,15 @@ def _auto_nudge_tick(now, tmux):
         if _session_awaiting(sid, s["path"], True):      # AWAITING dispatched/delegated work (SDK overlay / bg-tool) →
             continue                                     # in flight, not stalled (the user 2026-06-22); idle is True here
         lt_id = lt.get("id")
+        # ARMING TURN (the user 2026-07-06, business): arm/dedup off the newest ended turn with a GENUINE
+        # trigger (human/sdk/peer). A romp-injected turn — a nudge's own response, a kernel-restart resume
+        # banner, any romp injection — neither RE-ARMS a nudge (the 2026-07-01 runaway) nor BLOCKS a first
+        # one: the old `_turn_romp_injected(lt)` gate keyed on the LATEST turn, so a restart banner opening
+        # a session's last turn suppressed every future first-nudge until some genuine turn ended — a
+        # working card that could never be nudged (business, found idle+working with nudged=None).
+        arm = next((tn for tn in reversed(turns) if tn.get("ended") and not _turn_romp_injected(tn)), None)
+        arm_id = arm.get("id") if arm else None          # None (romp-only history) → never FIRE; an already-
+        #                                                  nudged goal still takes its nudge-failed stamp below
         store = jd.load_goals(sid)
         # Don't nudge until the CLOSER has classified this turn AT ITS CURRENT SIZE (session-level gate). A turn
         # that ENDS by asking you a question is "working" only in the window before the closer marks its goal
@@ -1340,16 +1349,17 @@ def _auto_nudge_tick(now, tmux):
             if sid in waitfor and nd.get("t", 0) <= waitfor[sid]["since"]:
                 continue                                 # awaiting a live peer's reply to a question this goal predates
             rec = nudged.get(gid) or {}
-            # Fire at most ONCE per GENUINE stall. Skip if we already nudged this exact turn, OR if the latest
-            # ended turn is the agent's OWN response to a nudge (its trigger is romp-authored) — NEVER re-arm off
-            # our own nudge. Re-arming on the nudge-response is the ~5s runaway that burned tokens (the user
-            # 2026-07-01, track: count climbed to 82). A response either folds into the nudged turn (caught by
-            # lastTurnId==lt_id) or opens a new romp-injected turn (caught by _turn_romp_injected); either way it
-            # must not re-fire. Re-arm ONLY on a genuine (human/sdk/peer-opened) NEW ended turn that re-stalls —
-            # a stall that persists WITHOUT genuine new work is surfaced as blocked + a "nudge failed" chip
-            # instead of being nudged forever (the user 2026-07-01, replacing the 2026-06-25 "keep nudging til
-            # resolved" rule, which was the loop).
-            if rec.get("lastTurnId") == lt_id or _turn_romp_injected(lt):
+            # Fire at most ONCE per GENUINE stall — keyed on arm_id, the newest genuinely-triggered ended
+            # turn. NEVER re-arm off romp's own turns: re-arming on the nudge-response was the ~5s runaway
+            # that burned tokens (the user 2026-07-01, track: count climbed to 82). A response either folds
+            # into the nudged turn or opens a new romp-injected turn — NEITHER moves arm_id, so
+            # lastTurnId==arm_id catches both. Re-arm ONLY on a genuine (human/sdk/peer-opened) NEW ended
+            # turn that re-stalls — a stall that persists WITHOUT genuine new work is surfaced as blocked +
+            # a "nudge failed" chip instead of being nudged forever (the user 2026-07-01, replacing the
+            # 2026-06-25 "keep nudging til resolved" rule, which was the loop).
+            if arm_id is None or rec.get("lastTurnId") == arm_id:   # already nudged this genuine stall (a romp
+                #                                          response turn doesn't move arm_id → can never re-fire),
+                #                                          or nothing genuine to arm off at all
                 # NUDGE FAILED (design/stalled-open-todos-nudge.md): we already nudged, the agent's response
                 # turn has ENDED (the session-level gates above passed: not working, genuine stop, closer
                 # settled — and the closer runs LAST among the judge tiers, so the planner has processed the
@@ -1385,9 +1395,9 @@ def _auto_nudge_tick(now, tmux):
             stalled = gid in _agent_open_set(nodes, _diag_kids)
             text = AUTO_NUDGE_STALLED_TEXT if stalled else AUTO_NUDGE_TEXT
             Sessions.backend_for(sid).send(sid, _followup_body(gid, None, text, injected=True, auto=True, stalled=stalled))   # gray romp bubble + romp-logo (both backends)
-            _mark_auto_nudged(gid, lt_id, count, stalled=stalled)   # {count, lastTurnId[, stalled]} → re-arm only on the next GENUINE ended-working turn; a fresh record resets `failed`
+            _mark_auto_nudged(gid, arm_id, count, stalled=stalled)   # {count, lastTurnId[, stalled]} → re-arm only on the next GENUINE ended-working turn; a fresh record resets `failed`
             _log_nudge_event(sid, gid, now, count)       # timeline romp-logo dot + escalation count
-            nudged[gid] = dict({"count": count, "lastTurnId": lt_id}, **({"stalled": True} if stalled else {}))   # mirror in-memory for the rest of this tick
+            nudged[gid] = dict({"count": count, "lastTurnId": arm_id}, **({"stalled": True} if stalled else {}))   # mirror in-memory for the rest of this tick
             fired = True
     if fired:
         _push_all()
@@ -3985,6 +3995,19 @@ def _api_error(path):
     return err
 
 
+def _suppress_kernel_driven_ask(sid, ask, now=None):
+    """True if this live ask is the CLI's own /model picker popped by a KERNEL-driven model switch (tmux:
+    we type /model, the TUI picker opens, our confirm Enter lands a beat later — the user 2026-07-06, FRO:
+    'something popped up and then disappeared'). That picker is romp's own action mid-flight, not a decision
+    the human owes, so flashing it as an actionable card is a false interrupt. Suppress a MODEL-titled ask
+    while the switch is pending (the same 20s-capped _model_switch_pending stamp the badge dots ride):
+    anything else — a real permission prompt racing the switch — still surfaces, and if the confirm never
+    lands the cap expires and the genuinely-stuck picker surfaces for rescue."""
+    p = _model_switch_pending.get(str(sid))
+    return bool(ask and p and (now if now is not None else time.time()) <= p.get("until", 0)
+                and "model" in str(ask).lower())
+
+
 def _ask_poll():
     """Surface each live session's in-flight AskUserQuestion/permission prompt to chat. ONE check per session
     per ~1.2s tick. tmux sessions are pane-SCRAPED; SDK sessions have no pane, so we read the ask the SDK
@@ -4001,6 +4024,8 @@ def _ask_poll():
                     # the owning backend resolves the live ask: tmux SCRAPES its pane, the SDK reads the ask it
                     # stored in _emit_ask (no pane). One uniform call — no backend fork here.
                     ask = Sessions.backend_for(sid).current_ask(sid)
+                    if _suppress_kernel_driven_ask(sid, ask):
+                        ask = None                     # romp's own /model picker mid-switch — not the human's
                     payload = ({"type": "askLive", "id": sid, "ask": ask} if ask
                                else {"type": "askLiveClear", "id": sid})
                     for c in chat_clients:

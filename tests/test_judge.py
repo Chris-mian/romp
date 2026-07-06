@@ -5249,3 +5249,43 @@ class DistillerStoresFullTextTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class StaleBlockGuard(unittest.TestCase):
+    """A block verdict computed from evidence AT/BEFORE the user's follow-up (node.followupAt) is STALE —
+    the user already answered that ask (the user 2026-07-06: obsid/nimbus replied-to blocked cards
+    snapped straight back to needs_input while the agent worked the answer; judge catch-up after a
+    kernel restart replays exactly such stale segments). Newer evidence still blocks."""
+
+    def test_block_is_stale_semantics(self):
+        nd = {"followupAt": 100}
+        self.assertTrue(jd._block_is_stale(nd, 100), "evidence AT the follow-up (the reply IS the segment trigger) is stale")
+        self.assertTrue(jd._block_is_stale(nd, 50), "older evidence is stale")
+        self.assertFalse(jd._block_is_stale(nd, 101), "newer evidence (the answering turn's own new ask) blocks")
+        self.assertFalse(jd._block_is_stale({}, 50), "no follow-up → nothing to protect")
+        self.assertFalse(jd._block_is_stale(nd, None), "no evidence time → fail open (block as before)")
+
+    def test_closer_block_older_than_the_followup_is_skipped(self):
+        # the obsid replay: the closer sweeps the ASK turn after the user already replied — its verdict
+        # must not clobber the reply's optimistic reopen.
+        s = _store()
+        g = _mknode(s, "G")
+        g["followupAt"] = T0 + 100                      # user replied at T0+100
+        jd.apply_close(s, [g], {"done": {}, "block": {1: "the old question"}}, t=T0 + 50)
+        self.assertFalse(g["blocked"], "a block from pre-reply evidence is skipped — the reply owns the verdict")
+        self.assertNotIn("blockWhy", g)
+
+    def test_closer_block_newer_than_the_followup_applies(self):
+        # the correct end state: the turn that ANSWERS the reply ends by asking a NEW question.
+        s = _store()
+        g = _mknode(s, "G")
+        g["followupAt"] = T0 + 100
+        jd.apply_close(s, [g], {"done": {}, "block": {1: "please verify the result"}}, t=T0 + 200)
+        self.assertTrue(g["blocked"], "genuinely newer evidence still blocks")
+        self.assertEqual(g["blockWhy"], "please verify the result")
+
+    def test_planner_block_op_is_guarded(self):
+        import inspect
+        src = inspect.getsource(jd)
+        self.assertIn('if t and not _block_is_stale(nodes[t], seg_t):', src,
+                      "the planner's block op must skip stale evidence exactly like the closer")

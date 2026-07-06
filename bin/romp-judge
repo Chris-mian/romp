@@ -1368,7 +1368,7 @@ def apply_plan(store, seg_id, seg_t, ops, menu, place_key=None, prompt_uuid=None
                 _complete(t, o["why"]); touched = t
         elif do == "block":
             t = _target(o)
-            if t:
+            if t and not _block_is_stale(nodes[t], seg_t):
                 nodes[t]["blocked"] = True; nodes[t]["blockWhy"] = o["why"]
                 nodes[t]["mt"] = seg_t; touched = t
         elif do == "retitle":
@@ -2335,6 +2335,19 @@ def optimistic_followup(fsid, gid, text="", now=None, stub=False):
     rollup_status(store, False)                        # the user just acted → not idle/closed → working
     save_goals(fsid, store)
     return True
+
+
+def _block_is_stale(nd, ev_t):
+    """True if a block verdict for this node was computed from evidence AT/BEFORE the user's last
+    follow-up on it (followupAt) — the user already ANSWERED that ask, so re-imposing the block would
+    clobber their reply's optimistic reopen and pin the card back on needs_input while the agent works
+    the answer (the user 2026-07-06: obsid/nimbus replied-to blocked cards snapped straight back to
+    blocked; a judge catch-up after a kernel restart replays exactly such stale segments). A verdict
+    from genuinely NEWER evidence — e.g. the turn that answers the reply ends by asking a new question
+    (its ev_t > followupAt) — still blocks, which is the correct end state. `<=` (not `<`): the reply
+    IS the segment's trigger, so a verdict stamped at exactly followupAt was computed from it."""
+    fa = nd.get("followupAt")
+    return bool(fa) and ev_t is not None and ev_t <= fa
 
 
 def _unit_key(seg_id, phase):
@@ -3351,6 +3364,8 @@ def apply_close(store, menu, verdicts, t=None):
                 nd["mt"] = t
             newly.append(nd["id"])
         elif i in block:
+            if _block_is_stale(nd, t):                 # the user's follow-up postdates this turn's evidence —
+                continue                               # their reply owns the verdict now, not this stale close
             nd["blocked"] = True
             nd["negBlock"] = True                      # closer-set block (turn-end), mirrors negComplete — for timeline attribution
             if block[i]:
