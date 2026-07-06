@@ -88,6 +88,10 @@ type ChatEvent = (
       ts?: string;
       uuid?: string;
     }
+  // Claude Code's NATIVE teammate/agent-message channel (one agent messaged this session) — distinct from
+  // romp's postal service, so it gets its OWN neutral collapsed card, NOT the per-peer-colored postal card
+  // and NOT a blue "you typed this" bubble. blocks = one per sending agent {id, summary?, body}.
+  | { kind: "teammate"; blocks: { id: string; summary?: string; body: string }[]; ts?: string; uuid?: string }
   // Claude Code's Task to-do list, folded into one live checklist.
   | { kind: "todo"; tasks: TodoTask[]; error?: string; ts?: string; uuid?: string }
   | { kind: "queued"; texts: { md: string; followUp?: boolean; goal?: string; fuCtx?: string; idx?: number; cancelable?: boolean }[]; ts?: string; uuid?: string }
@@ -988,6 +992,7 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
     return turn;
   }
   if (ev.kind === "postal-service") return renderPostalService(ev);
+  if (ev.kind === "teammate") return renderTeammate(ev);
   if (ev.kind === "todo") return renderTodo(ev);
   if (ev.kind === "queued") return renderQueued(ev);
   if (ev.kind === "apiError") return renderApiError(ev);
@@ -1675,6 +1680,70 @@ function renderPostalService(ev: Extract<ChatEvent, { kind: "postal-service" }>)
     body.appendChild(full);
   } else {
     body.innerHTML = md(ev.body);
+    highlight(body);
+  }
+  card.appendChild(body);
+
+  turn.appendChild(card);
+  return turn;
+}
+
+// A NATIVE Claude Code teammate message (another agent messaged this session) — deliberately its OWN look,
+// NOT the romp postal card: no per-peer color, no romp swirl, no from/to arrow, no session-color chip. A
+// plain neutral card with a "teammate" tag + the sending agent name(s) + a collapsed→expand body, so it's
+// tellable apart from a romp-postal message at a glance while sharing the same collapse affordance (the
+// user 2026-07-05). Before this, these rendered as a blue "you typed this" bubble full of coordination JSON.
+function renderTeammate(ev: Extract<ChatEvent, { kind: "teammate" }>): HTMLElement {
+  const turn = el("div", "turn turn-teammate");
+  const d = dot("ring");
+  d.classList.add("teammate");
+  turn.appendChild(d);
+
+  const card = el("div", "teammate-card");
+
+  const head = el("div", "teammate-head");
+  const tag = el("span", "teammate-tag");
+  tag.textContent = "teammate";
+  tag.title = "a message from another Claude agent — not from you, not the romp postal service";
+  head.appendChild(tag);
+  // the sending agent name(s) as PLAIN text — no colored session chip (that's the postal card's language)
+  const ids = (ev.blocks || []).map((b) => b.id).filter(Boolean);
+  if (ids.length) {
+    const names = el("span", "teammate-names");
+    names.textContent = ids.length <= 3 ? ids.join(", ") : ids.slice(0, 2).join(", ") + ", +" + (ids.length - 2);
+    names.title = ids.join(", ");
+    head.appendChild(names);
+  }
+  card.appendChild(head);
+
+  // Collapsed summary line → click to expand the full body/bodies (same affordance as the postal card).
+  // Summary = the first block's summary attr, else "N messages" for a multi-agent batch, else the first
+  // non-empty line of the single body.
+  const body = el("div", "teammate-body md");
+  const blocks = ev.blocks || [];
+  const fullText = blocks.map((b) => b.body || "").join("\n\n").trim();
+  const firstSummary = (blocks.find((b) => b.summary && b.summary.trim()) || {}).summary || "";
+  let summaryText = firstSummary.trim();
+  if (!summaryText) {
+    summaryText = blocks.length > 1 ? blocks.length + " messages" : (fullText.split("\n").find((l) => l.trim()) || "").slice(0, 140);
+  }
+  const fullMd = blocks.map((b) => (b.id ? "**" + b.id + "**\n\n" : "") + (b.body || "")).join("\n\n---\n\n");
+  const expandable = !!summaryText && !!fullText && collapseWs(fullText) !== collapseWs(summaryText);
+  if (expandable) {
+    const sum = el("div", "teammate-summary");
+    const caret = el("span", "teammate-expand-caret"); caret.textContent = "▸"; sum.appendChild(caret);
+    const sumText = el("span", "teammate-summary-text"); sumText.textContent = summaryText; sum.appendChild(sumText);
+    const full = el("div", "teammate-full md"); full.innerHTML = md(fullMd); highlight(full);
+    sum.title = "click to expand the full message";
+    sum.addEventListener("click", () => {
+      const open = body.classList.toggle("expanded");
+      caret.textContent = open ? "▾" : "▸";
+    });
+    body.classList.add("teammate-expandable");
+    body.appendChild(sum);
+    body.appendChild(full);
+  } else {
+    body.innerHTML = md(fullText || summaryText);
     highlight(body);
   }
   card.appendChild(body);

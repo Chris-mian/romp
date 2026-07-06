@@ -61,6 +61,16 @@ ROMP_AUTO_RE = re.compile(r"romp-auto\b")
 # the planner force-pins a junk goal titled "<task-notification>" (the user 2026-06-30, screenshot). Anchored
 # at the START so a real user message with a reminder APPENDED isn't caught (the kernel splits those off).
 SYSTEM_WRAPPER_RE = re.compile(r"^\s*<(?:task-notification|system-reminder)\b")
+# Claude Code's NATIVE teammate/agent-message channel — one agent messages another, DISTINCT from romp's
+# own postal bus (no romp-msg-id). It's delivered as a promptSource "sdk" user record whose text is a
+# <prompt> wrapper: "Another Claude session sent a message:" + one or more <teammate-message
+# teammate_id="…" color="…" [summary="…"]>body</teammate-message> blocks + a fixed "permission laundering"
+# boilerplate. We recognize it so the chat renders it as its OWN collapsed card, not a blue "you typed
+# this" bubble (the user 2026-07-05: idle_notification coordination JSON showed as a human message).
+# Anchored at the START (optionally inside a one-level <prompt>/<unit> wrapper) so it matches a real
+# DELIVERY and NOT a conversation SUMMARY that merely quotes one ("<turn>\nUSER ASKED: Another Claude…").
+TEAMMATE_MSG_RE = re.compile(r"^\s*(?:<\w+>\s*)?Another Claude session sent a message:", re.I)
+TEAMMATE_BLOCK_RE = re.compile(r"<teammate-message\b([^>]*)>(.*?)</teammate-message>", re.S)
 # Claude Code's slash-command transcript wrappers. The INVOCATION (`<command-name>`) and its OUTPUT
 # (`<local-command-stdout>`) become a tracked COMMAND TURN (the user 2026-06-29) — see atoms(); the rest
 # (`<command-message|args|contents>`, `<local-command-caveat>`) stay skipped as harness noise.
@@ -173,6 +183,10 @@ def author_of(blocks, prompt_source, postal_index, sdk_human=False):
     if text:
         if SYSTEM_WRAPPER_RE.match(text):         # a harness <task-notification> / <system-reminder>, not the user
             return "system"                       # → author 'system' so _is_opener folds it in, never a goal
+        if TEAMMATE_MSG_RE.match(text):           # Claude Code's native agent-to-agent delivery, not the user typing
+            return "teammate"                     # → its own collapsed chat card; a non-opener (like 'system'), so
+            #   high-frequency coordination pings never pin a junk goal. Checked before the postal marker: the
+            #   OUTER native wrapper wins even if a forwarded body happened to carry a romp-msg-id.
         mids = POSTAL_RE.findall(text)
         if mids:
             peer = None
@@ -195,6 +209,22 @@ def author_of(blocks, prompt_source, postal_index, sdk_human=False):
     if _is_real_prompt(blocks):
         return "human"
     return None
+
+
+def parse_teammate_message(text):
+    """Split a native Claude Code teammate-message delivery (see TEAMMATE_MSG_RE) into per-sender blocks
+    for the chat to render its own way: a list of {"id", "summary", "body"}. `color` is DELIBERATELY
+    dropped — these get a neutral treatment, NOT the per-peer color chrome of a romp postal card, so the
+    two are tellable apart (the user 2026-07-05). The fixed "permission laundering" boilerplate and the
+    <prompt> wrapper fall away naturally (only the <teammate-message> block contents are kept). Returns []
+    when there are no blocks (a delivery with no parseable block → caller shows the raw text)."""
+    out = []
+    for attrs, body in TEAMMATE_BLOCK_RE.findall(text or ""):
+        a = dict(re.findall(r'(\w+)="([^"]*)"', attrs))
+        out.append({"id": (a.get("teammate_id") or "").strip(),
+                    "summary": (a.get("summary") or "").strip(),
+                    "body": body.strip()})
+    return out
 
 
 # ═════════════════════════ FILE ADAPTER: graph recovery, quarantined ═════════════════════════

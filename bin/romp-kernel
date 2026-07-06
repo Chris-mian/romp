@@ -5375,6 +5375,14 @@ def build_session(sid, now, tmux=None):
                     text = " ".join(b.get("text", "") for b in blocks if b.get("type") == "text").strip() \
                            if blocks else (msg.get("content") if isinstance(msg.get("content"), str) else "")
                     if text:                                     # a peer message → swapped to a clean card by _hydrate_postal
+                        if author == "teammate":                 # Claude Code's native agent-to-agent delivery → its own
+                            #   collapsed card (renderTeammate), never a blue "you typed this" bubble. blocks carry the
+                            #   per-sender id/summary/body; the "permission laundering" boilerplate is stripped out.
+                            tblocks = em.parse_teammate_message(text)
+                            events.append({"kind": "teammate", "uuid": a.get("uuid"), "ts": ts,
+                                           "blocks": tblocks or [{"id": "", "summary": "",
+                                                                  "body": _split_reminders(text)[0]}]})
+                            continue
                         prompt, reminders = _split_reminders(text)
                         imgs = _user_images(blocks, prompt, author == "human")
                         if imgs and prompt:
@@ -5475,7 +5483,7 @@ def build_session(sid, now, tmux=None):
         # work (assistant/tool/sent message) → the BAR (segment workId). Falls back to the segment id.
         seg = uuid2seg.get(ev.get("uuid"))
         anchors = seg_anchors.get(seg)
-        is_prompt = ev.get("kind") == "user" or (ev.get("kind") == "postal-service" and ev.get("direction") == "in")
+        is_prompt = ev.get("kind") in ("user", "teammate") or (ev.get("kind") == "postal-service" and ev.get("direction") == "in")
         ev["tlId"] = ((anchors[0] if is_prompt else anchors[1]) or seg) if anchors else seg
         if ev.get("askAnswer"):                       # AskUserQuestion → fill chosen now the answer's in
             _ask_fill_chosen(ev["askAnswer"], ev.get("output") or "")

@@ -1179,6 +1179,28 @@ body { display: flex; flex-direction: column; }
 .postal-service-full { display: none; margin-top: 7px; }
 .postal-service-expandable.expanded .postal-service-full { display: block; }
 
+/* NATIVE Claude Code teammate/agent message (renderTeammate) — its OWN neutral look, deliberately UNLIKE
+   the romp postal card above: a DASHED monochrome frame (no per-peer colour bar, no colour-mix wash, no
+   session-colour chip, no romp swirl), so a Claude-native agent message never reads as a romp-postal one or
+   as something you typed (the user 2026-07-05). Shares only the collapse→expand affordance + its sizes. */
+.turn-teammate { padding-top: 11px; padding-bottom: 11px; }
+.dot.teammate { border-style: dashed; }
+.teammate-card { border: 1px dashed var(--box-border); border-radius: 6px; padding: 8px 13px; background: var(--box-bg); }
+.teammate-head { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin-bottom: 6px; font-size: 0.9em; }
+.teammate-tag { font-size: 0.7em; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+  padding: 1px 7px; border-radius: 9px; border: 1px dashed var(--dim); color: var(--dim); }
+.teammate-names { font-size: 0.82em; font-weight: 600; color: var(--fg); opacity: 0.85; overflow-wrap: anywhere; }
+.teammate-body { color: var(--fg); }
+.teammate-body.md > :first-child { margin-top: 0; }
+.teammate-body.md > :last-child { margin-bottom: 0; }
+.teammate-summary { display: flex; align-items: baseline; gap: 6px; }
+.teammate-expandable .teammate-summary { cursor: pointer; }
+.teammate-expandable .teammate-summary:hover .teammate-summary-text { text-decoration: underline; text-underline-offset: 2px; }
+.teammate-expand-caret { flex: 0 0 auto; font-size: 0.78em; opacity: 0.7; }
+.teammate-summary-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; color: var(--dim); }
+.teammate-full { display: none; margin-top: 7px; }
+.teammate-expandable.expanded .teammate-full { display: block; }
+
 /* ---------- progressive disclosure + tool vocabulary ---------- */
 /* error tool: hollow red dot + red name (consistent "this failed" cue) */
 /* error = a red disc with a white ✗, mirroring the green ✓ disc (.dot.green). The rail dot
