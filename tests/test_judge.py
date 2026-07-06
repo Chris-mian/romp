@@ -1305,24 +1305,24 @@ class Grouper(unittest.TestCase):
         jd.apply_group(s, tops, [{"do": "group", "why": "x", "goal": 2, "under": 1}], T0 + 60)
         self.assertLessEqual(jd._depth(s["nodes"], b), jd.MAX_DEPTH, "B's relink is clamped to MAX_DEPTH")
 
-    def test_once_done_node_is_forever_grouper_exempt(self):
-        # the user 2026-06-18 (via bugs): a node that EVER reached done keeps its standalone card identity —
-        # the grouper must never relink it as a SOURCE, even after a follow-up reopens it (nodeComplete False,
-        # everDone True). Repro: a done goal was reopened by a follow-up, then the next grouper pass nested it
-        # under a broad umbrella and its card vanished from the feed.
+    def test_reopened_once_done_node_is_groupable_again(self):
+        # INVERTED 2026-07-06 (the user): the old never-move-an-everDone-node guard is REMOVED — a reopened
+        # once-done top is live work again, so an erroneously split pair the user pushes back into Working
+        # can be re-merged by the grouper. (The guard's original motive — a done card vanishing under an
+        # umbrella — can't recur from the candidate side: _group_tops only ever lists OPEN tops.)
         s, a, b = self._two_tops()
         di = next(i for i, nd in enumerate(jd.open_menu(s), 1) if nd["id"] == b)
         jd.apply_plan(s, "sd", T0 + 15, [{"do": "done", "why": "shipped", "goal": di}], jd.open_menu(s))
         self.assertTrue(s["nodes"][b].get("everDone"), "completing B stamps the durable everDone marker")
         jd._reopen(s, b)                                          # a follow-up reopens B
         self.assertFalse(s["nodes"][b]["nodeComplete"], "the follow-up reopened B")
-        self.assertTrue(s["nodes"][b].get("everDone"), "everDone persists through the reopen (never unset)")
+        self.assertTrue(s["nodes"][b].get("everDone"), "everDone persists through the reopen (provenance)")
         tops = jd._group_tops(s)                                  # B is an open top again
         ai = next(i for i, nd in enumerate(tops, 1) if nd["id"] == a)
         bi = next(i for i, nd in enumerate(tops, 1) if nd["id"] == b)
         n = jd.apply_group(s, tops, [{"do": "group", "why": "both serve X", "goal": bi, "under": ai}], T0 + 30)
-        self.assertEqual(n, 0, "a once-done node is never relinked as a group source")
-        self.assertIsNone(s["nodes"][b]["parentId"], "B keeps its standalone identity, not nested under A")
+        self.assertEqual(n, 1, "a reopened once-done top relinks like any other open top")
+        self.assertEqual(s["nodes"][b]["parentId"], a, "B nests under A — the split re-merges")
 
     def test_once_done_node_can_still_be_an_umbrella_parent(self):
         # the exemption blocks MOVING a once-done node, not nesting OTHERS under it: A (never done) groups
@@ -1563,15 +1563,16 @@ class Consolidator(unittest.TestCase):
         ids = {nd["id"] for nd in jd._consolidate_tops(s)}
         self.assertEqual(ids, {SID + ":g2"}, "a top the user crossed off the feed is never re-grouped")
 
-    # ── apply-level: the allow_done lift ──
-    def test_apply_group_allow_done_moves_an_everdone_node(self):
+    # ── apply-level: done nodes relink unconditionally (the allow_done lift is gone with its guard) ──
+    def test_apply_group_moves_an_everdone_node(self):
+        # 2026-07-06 (the user): apply_group no longer carries the everDone guard or the allow_done
+        # parameter — the consolidator (all-done candidates) and the working grouper (open candidates,
+        # possibly reopened-once-done) both relink through the same unconditional path.
         s = self._completed_store([("g1", "A", ["sA"]), ("g2", "B", ["sB"])])
         tops = jd._consolidate_tops(s)
         ops = [{"do": "group", "why": "both done parts of X", "goal": 2, "under": 1}]
-        self.assertEqual(jd.apply_group(s, tops, ops, T0 + 20, allow_done=False), 0,
-                         "without allow_done the once-done node is NOT moved (working-grouper guard)")
-        self.assertEqual(jd.apply_group(s, tops, ops, T0 + 20, allow_done=True), 1,
-                         "allow_done lifts the guard so the consolidator can group a completed node")
+        self.assertEqual(jd.apply_group(s, tops, ops, T0 + 20), 1,
+                         "a completed (everDone) node relinks with no special lift")
         self.assertEqual(s["nodes"][SID + ":g2"]["parentId"], SID + ":g1")
 
     # ── the session pass ──
@@ -1600,7 +1601,7 @@ class Consolidator(unittest.TestCase):
         tops = jd._consolidate_tops(s)
         jd.apply_group(s, tops, [{"do": "mint", "why": "x", "text": "Umb"},
                                  {"do": "group", "why": "x", "goal": 1, "ref": 1},
-                                 {"do": "group", "why": "x", "goal": 2, "ref": 1}], T0 + 20, allow_done=True)
+                                 {"do": "group", "why": "x", "goal": 2, "ref": 1}], T0 + 20)
         jd.rollup_status(s, True)
         um = next(nd for nd in s["nodes"].values() if nd.get("umbrella"))
         self.assertEqual(s["status"][um["id"]], "completed", "all children done → umbrella completed")

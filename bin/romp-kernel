@@ -1945,6 +1945,19 @@ def _drive(msg, client):
                     #                                       the store write is invisible to the fleet sig
             except Exception:
                 sys.stderr.write("followup reopen: %s\n" % traceback.format_exc())
+    elif t == "cardMove":
+        # USER recategorize (the user 2026-07-06): the feed card's "Move to Working" button — a follow-up
+        # WITHOUT a message. Nothing is sent to the session; the judge-side user_move reopens/unblocks the
+        # goal, stamps the followupAt evidence floor (stale done/block verdicts are void, newer evidence
+        # wins), and rollup shows it in Working on the next push. Only "working" is a legal target: moving
+        # TO blocked/completed has no use case (the user 2026-07-06) — Clear covers retiring a card.
+        iid = str(msg.get("itemId") or "")
+        if iid and (msg.get("to") or "working") == "working":
+            try:
+                if jd.user_move(sid, iid, now=int(time.time())):
+                    _mark_views_dirty()               # the store write is invisible to the fleet sig
+            except Exception:
+                sys.stderr.write("cardMove: %s\n" % traceback.format_exc())
     elif t == "answerAsk" and msg.get("target") is not None:
         be.on_ask(sid, "answer", msg["target"])
     elif t == "navAsk" and msg.get("target") is not None:

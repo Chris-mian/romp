@@ -160,9 +160,8 @@ GROUPER_ON = os.environ.get("ROMP_GROUPER", "1") != "0"
 # vs mt): it re-distills only when the goal (re-)completes. Toggleable: set ROMP_DISTILLER=0 to disable.
 DISTILLER_ON = os.environ.get("ROMP_DISTILLER", "1") != "0"
 # The CONSOLIDATOR (the user 2026-06-19): the grouper's twin for the COMPLETED column. The working grouper
-# only ever sees OPEN tops and never MOVES an everDone node, so related goals that finish before they get
-# grouped land as separate cards (and an umbrella minted over already-done tops adopts nothing — an empty
-# header stuck on "(generating…)"). The consolidator groups related ALL-COMPLETED sibling tops under a
+# only ever sees OPEN tops, so related goals that finish before they get
+# grouped land as separate cards. The consolidator groups related ALL-COMPLETED sibling tops under a
 # completed umbrella (safe: every child is done, so the umbrella rolls up to completed — nothing reverts to
 # working), and clears any umbrella that ended up empty. A later reopen of a grouped child reverts the whole
 # umbrella to working via rollup_status (the user's choice). Toggle: ROMP_CONSOLIDATE=0 to disable.
@@ -1371,7 +1370,7 @@ def apply_plan(store, seg_id, seg_t, ops, menu, place_key=None, prompt_uuid=None
             _unblock_branch(nid); focus = touched = nid
         elif do == "done":
             t = _target(o)
-            if t:
+            if t and not _done_is_stale(nodes[t], seg_t):
                 _complete(t, o["why"]); touched = t
         elif do == "block":
             t = _target(o)
@@ -2332,13 +2331,59 @@ def optimistic_followup(fsid, gid, text="", now=None, stub=False):
         # 2026-07-03). Mirrors the Completed column's settledAt "entered-this-column-at" stamp.
         store["nodes"][gid]["followupAt"] = now
     if stub:
-        seq = store.get("seq", 0) + 1; store["seq"] = seq
-        sid = "%s:fu%d" % (fsid, seq)                  # the provisional follow-up stub (planner replaces it)
-        t = now if now is not None else (store["nodes"][gid].get("mt") or store["nodes"][gid].get("t", 0))
-        store["nodes"][sid] = {"id": sid, "text": _seg_label(text) if text else "Following up",
-                               "parentId": gid, "nodeComplete": False, "blocked": False, "cleared": False,
-                               "provisional": True, "trail": [], "t": t}
-        store.setdefault("status", {})[sid] = "working"
+        _plant_stub(store, gid, _seg_label(text) if text else "Following up", now)
+    rollup_status(store, False)                        # the user just acted → not idle/closed → working
+    save_goals(fsid, store)
+    return True
+
+
+def _plant_stub(store, gid, text, now):
+    """Plant a PROVISIONAL open sub-goal under gid (the follow-up stub — the user 2026-06-24): a reopened
+    top whose children are all genuinely done would be RE-completed at once by bottom-up is_complete; the
+    open stub makes it genuinely open through the normal rollup, no special-casing. Hidden from open_menu;
+    the planner's follow-up pass drops it and files its own sub in its place, and an explicit later done
+    rolls it up via rollup_status (_roll_down)."""
+    seq = store.get("seq", 0) + 1; store["seq"] = seq
+    sid = "%s:fu%d" % (store.get("rompUuid") or gid.split(":")[0], seq)   # gid = "<rompUuid>:gN"
+    t = now if now is not None else (store["nodes"][gid].get("mt") or store["nodes"][gid].get("t", 0))
+    store["nodes"][sid] = {"id": sid, "text": text,
+                           "parentId": gid, "nodeComplete": False, "blocked": False, "cleared": False,
+                           "provisional": True, "trail": [], "t": t}
+    store.setdefault("status", {})[sid] = "working"
+
+
+def user_move(fsid, gid, now=None):
+    """USER recategorize from the feed (the user 2026-07-06): the card's "Move to Working" button asserts
+    this goal is NOT done / NOT waiting on the user — it belongs in Working. A move is a follow-up WITHOUT
+    a message, so it reuses the follow-up machinery end to end: _reopen (unseal, unblock the ancestor
+    chain, deltaSince for the delta-scoped re-distill) + a subtree unblock (a block can sit on a
+    DESCENDANT, which _reopen doesn't reach) + the followupAt stamp (the Working-column sort floor, and
+    the _block_is_stale/_done_is_stale evidence FLOOR — verdicts from evidence at/before the move are
+    void, genuinely newer work re-completes or re-blocks the card normally) + the provisional open stub
+    when the subtree is all-done. It does NOT set followupPending: no message is in flight, so no
+    "Followed up" chip and no re-judge treatment. Returns True if the card moved."""
+    gid = str(gid)
+    store = load_goals(fsid)
+    nodes = store.get("nodes", {})
+    if gid not in nodes:
+        return False
+    if gid in _view_cleared():                         # crossed off the feed → sealed; the feed hides it anyway
+        return False
+    _reopen(store, gid, by="user-move")
+    kids = {}
+    for k, v in nodes.items():
+        kids.setdefault(v.get("parentId"), []).append(k)
+    stack = [gid]                                      # "not blocked" means the whole card: clear descendant blocks
+    while stack:
+        x = stack.pop()
+        nodes[x]["blocked"] = False
+        stack.extend(kids.get(x, []))
+    if now is not None:
+        nodes[gid]["followupAt"] = now                 # sort to the bottom of Working + arm the staleness floors
+    ch = kids.get(gid, [])
+    has_open_stub = any(nodes[c].get("provisional") and not nodes[c].get("nodeComplete") for c in ch)
+    if ch and not has_open_stub and all(_subtree_done(nodes, kids, c) for c in ch):
+        _plant_stub(store, gid, "Reopened by the user", now)   # else bottom-up is_complete re-completes at once
     rollup_status(store, False)                        # the user just acted → not idle/closed → working
     save_goals(fsid, store)
     return True
@@ -2353,6 +2398,17 @@ def _block_is_stale(nd, ev_t):
     from genuinely NEWER evidence — e.g. the turn that answers the reply ends by asking a new question
     (its ev_t > followupAt) — still blocks, which is the correct end state. `<=` (not `<`): the reply
     IS the segment's trigger, so a verdict stamped at exactly followupAt was computed from it."""
+    fa = nd.get("followupAt")
+    return bool(fa) and ev_t is not None and ev_t <= fa
+
+
+def _done_is_stale(nd, ev_t):
+    """Mirror of _block_is_stale for DONE verdicts (the user 2026-07-06, "Move to Working"): followupAt is
+    the user's last assertion that this goal is NOT resolved — a card follow-up or a feed move back to
+    Working (user_move). A done verdict computed from evidence AT/BEFORE that stamp would snap the card
+    straight back to Completed on the next pass (a judge catch-up replays exactly such stale segments).
+    A verdict from genuinely NEWER evidence — fresh work on the reopened goal — completes it normally:
+    the user's action is a FLOOR on evidence time, never a pin."""
     fa = nd.get("followupAt")
     return bool(fa) and ev_t is not None and ev_t <= fa
 
@@ -2973,19 +3029,17 @@ def group_llm(menu_text):
     return _judge_run(_triage_model(), GROUP_SYS, user, judge="grouper").strip()[:JUDGE_JSON_CAP]
 
 
-def apply_group(store, tops, ops, t, allow_done=False):
+def apply_group(store, tops, ops, t):
     """Apply the grouper's ORDERED ops over the session's open top goals (the pre-snapshot `tops` list, so
     indices are stable across the reply): mint umbrella tops and RELINK a top (its whole subtree comes
     with it) under another top or a same-reply umbrella ("ref"). Cycle- and depth-guarded. A minted
     umbrella inherits its earliest grouped child's anchor (trail/t) so it deep-links to where that work
-    began. Returns the number of relinks applied. `allow_done` lifts the never-move-an-everDone-node guard:
-    the working grouper keeps it (a once-done card stays standalone), but the COMPLETED-column consolidator
-    sets it, because every node it moves is done by construction and the umbrella stays completed."""
+    began. Returns the number of relinks applied. There is no longer a never-move-an-everDone-node guard
+    (the user 2026-07-06, removed to try): a reopened once-done top is live work again, so an erroneous
+    split the user pushes back into Working can be re-merged; the candidate forests still keep the columns
+    apart (the working grouper sees only OPEN tops, the consolidator only ALL-COMPLETED ones)."""
     nodes = store["nodes"]
     created = []
-    for nd in nodes.values():                          # backfill: any currently-done node is everDone (covers legacy nodes)
-        if nd.get("nodeComplete"):
-            nd["everDone"] = True
 
     def new_umbrella(text, why):
         store["seq"] = store.get("seq", 0) + 1
@@ -3011,9 +3065,6 @@ def apply_group(store, tops, ops, t, allow_done=False):
             continue
         # group: relink top #goal under #under (a menu top) or a same-reply umbrella (ref)
         child = tops[o["goal"] - 1]["id"]
-        if nodes[child].get("everDone") and not allow_done:   # working grouper: a once-done node keeps its
-            continue                                          # standalone identity, never MOVED (the consolidator
-            #                                                   passes allow_done — it groups done nodes on purpose)
         if "under" in o:
             parent = tops[o["under"] - 1]["id"]
         else:
@@ -3126,7 +3177,7 @@ def _consolidate_tops(store, cap=20):
 def _clear_empty_umbrellas(store):
     """Mark cleared any umbrella goal that has no live (non-cleared, non-view-cleared) children — an umbrella
     groups nothing once empty, so it is pure clutter. Heals an umbrella minted over tops it could not adopt
-    (e.g. all everDone at mint time → an empty header stuck on "(generating…)") and one whose children were
+    (e.g. every group op skipped as a would-be cycle) and one whose children were
     all cleared. Returns True if it cleared any."""
     nodes = store["nodes"]
     vc = _view_cleared()
@@ -3146,8 +3197,8 @@ def _clear_empty_umbrellas(store):
 def _consolidate_store(store, fsid, now):
     """Group the session's COMPLETED tops in place + clear empty umbrellas; return True on any change (caller
     persists + re-rolls status). EVENT-GATED by store["consolidatedSig"] (the completed-top id set) so a
-    stable completed column never re-asks the model. Reuses the grouper model/menu/parse + apply_group with
-    allow_done=True (every candidate is done by construction)."""
+    stable completed column never re-asks the model. Reuses the grouper model/menu/parse + apply_group
+    (every candidate is done by construction, so the umbrella rolls up to completed)."""
     if not CONSOLIDATE_ON:
         return False
     changed = _clear_empty_umbrellas(store)            # heal empties every pass, gated or not (no model call)
@@ -3160,7 +3211,7 @@ def _consolidate_store(store, fsid, now):
     if ops is None:
         _log_judge_error("consolidator", fsid, "parse")
         return changed                                 # leave consolidatedSig stale → retry next pass
-    relinks = apply_group(store, comp, ops, now, allow_done=True)
+    relinks = apply_group(store, comp, ops, now)
     store["consolidatedSig"] = sorted(nd["id"] for nd in _consolidate_tops(store))   # snapshot the NEW set
     return changed or relinks > 0
 
@@ -3361,8 +3412,10 @@ def apply_close(store, menu, verdicts, t=None):
         if nd.get("nodeComplete"):
             continue
         if i in done:
+            if _done_is_stale(nd, t):                  # the user's follow-up/move postdates this turn's evidence —
+                continue                               # their action owns the verdict now, not this stale close
             nd["nodeComplete"] = True
-            nd["everDone"] = True                      # durable once-done marker → forever grouper-exempt (never unset)
+            nd["everDone"] = True                      # durable once-done marker (provenance; see _done_is_stale)
             nd["blocked"] = False
             nd["negComplete"] = True
             if done[i]:

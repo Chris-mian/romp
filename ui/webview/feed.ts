@@ -166,12 +166,19 @@ const pendingRestored = new Map<string, AskItem>();
 // show a transient toast, so a behavior change is apparent rather than silently masked. Mirrors pendingCleared.
 const FOLLOW_MOVE_MS = 4000;
 const pendingFollowMove = new Map<string, number>();   // card itemId → revert/toast timer id
-function optimisticFollowMove(itemId: string) {
+// ids whose pending move is a PLAIN recategorize (the "Move to Working" button, the user 2026-07-06):
+// same optimistic column flip, but no message is in flight, so the prediction must NOT wear the follow-up
+// styling (recheck dot + "Followed up" chip) and the revert toast says "move", not "follow-up".
+const pendingMovePlain = new Set<string>();
+function optimisticFollowMove(itemId: string, plain = false) {
   const prev = pendingFollowMove.get(itemId); if (prev) clearTimeout(prev);
+  if (plain) pendingMovePlain.add(itemId); else pendingMovePlain.delete(itemId);
   const timer = window.setTimeout(() => {
     if (!pendingFollowMove.has(itemId)) return;        // a push already confirmed the move → nothing to do
     pendingFollowMove.delete(itemId);                  // give the kernel authority: drop the prediction
-    feedToast("That follow-up didn’t move the card to Working — the session may not have picked it up. Check it.");
+    feedToast(pendingMovePlain.delete(itemId)
+      ? "That move didn’t stick — the card didn’t reach Working. Check it."
+      : "That follow-up didn’t move the card to Working — the session may not have picked it up. Check it.");
     render();                                          // fall back to the kernel-authoritative state
   }, FOLLOW_MOVE_MS);
   pendingFollowMove.set(itemId, timer);
@@ -183,7 +190,7 @@ function reconcileFollowMove(incoming: AskItem[]) {
     const a = incoming.find((x) => x.itemId === id);
     if (!a || a.column === "working") {
       const t = pendingFollowMove.get(id); if (t) clearTimeout(t);
-      pendingFollowMove.delete(id);
+      pendingFollowMove.delete(id); pendingMovePlain.delete(id);
     }
   }
 }
@@ -196,7 +203,8 @@ function applyFollowMove(list: AskItem[]) {
   // followupAt stamp keeps it once this prediction clears — no top-flash then lurch-down (the user 2026-07-03).
   const nowSec = Math.floor(Date.now() / 1000);
   for (const a of list) if (pendingFollowMove.has(a.itemId) && a.column !== "working") {
-    a.column = "working"; a.recheck = true; a.followupPending = true;
+    a.column = "working";
+    if (!pendingMovePlain.has(a.itemId)) { a.recheck = true; a.followupPending = true; }   // plain move: no chip
     if (a.t < nowSec) a.t = nowSec;   // sort to the bottom (newest); the group's repr follows via buildGroup
   }
 }
@@ -1627,8 +1635,11 @@ function renderModal() {
     const age = el("span", "ftime feed-modal-age"); age.id = "feed-modal-age";
     const fup = el("button", "fdismiss ffollow feed-modal-follow"); fup.id = "feed-modal-follow"; fup.textContent = "Follow up"; fup.title = "send a follow-up to this session — the card returns to ASKS"; fup.style.display = "none";
     // (Nudge moved OUT of the modal footer onto the working CARD itself — the user 2026-06-18.)
+    // "Move to Working" (the user 2026-07-06): a follow-up WITHOUT a message — "this card isn't
+    // blocked/done". Shown only on a needs-input or completed single-ask card (the it branch wires it).
+    const mv = el("button", "fdismiss feed-modal-move"); mv.id = "feed-modal-move"; mv.textContent = "Move to Working"; mv.title = "this card isn’t blocked/done — move it back to Working (sends no message)"; mv.style.display = "none";
     const clr = el("button", "fdismiss feed-modal-clear"); clr.id = "feed-modal-clear"; clr.textContent = "Clear";
-    const footRow = el("div", "feed-modal-foot-row"); footRow.append(age, fup, clr);
+    const footRow = el("div", "feed-modal-foot-row"); footRow.append(age, fup, mv, clr);
     const fubox = el("div", "ffollow-box feed-modal-follow-box"); fubox.id = "feed-modal-follow-box"; fubox.style.display = "none";
     const fuin = el("textarea", "fq-input feed-modal-follow-input") as HTMLTextAreaElement; fuin.id = "feed-modal-follow-input"; fuin.placeholder = "follow up on this…"; fuin.rows = 1;
     fuin.addEventListener("input", () => growFollowUp(fuin));
@@ -1714,6 +1725,7 @@ function renderModal() {
   const agent = document.getElementById("feed-modal-agent") as HTMLElement;
   const ageEl = document.getElementById("feed-modal-age") as HTMLElement;
   const clrEl = document.getElementById("feed-modal-clear") as HTMLElement;
+  const mvEl = document.getElementById("feed-modal-move") as HTMLButtonElement | null;
   const fupEl = document.getElementById("feed-modal-follow") as HTMLButtonElement;
   const fuboxEl = document.getElementById("feed-modal-follow-box") as HTMLElement;
   const fuinEl = document.getElementById("feed-modal-follow-input") as HTMLTextAreaElement;
@@ -1747,6 +1759,8 @@ function renderModal() {
   ttlEl.style.display = "";    // default shown (group / standalone); the single-ask branch hides it — its
                                // top-level goal IS the first line of the tree, not a separate header title
   clrEl.style.display = "";   // re-shown here because the blocked branch below hides it
+  // default-hidden + reset every render; only the single-ask branch shows it (group/standalone never do)
+  if (mvEl) { mvEl.style.display = "none"; mvEl.disabled = false; mvEl.textContent = "Move to Working"; }
   let titleHoverId: string | null = null;   // the originating typed turn → chat/timeline hover highlight
   if (grp) {
     ttlEl.textContent = grp.title;
@@ -1775,6 +1789,19 @@ function renderModal() {
     ageEl.textContent = relAge(hostNow - it.t);
     ageEl.style.color = "rgb(" + it.trgb.join(",") + ")";   // tint the age by recency (the time colour scheme)
     clrEl.onclick = () => { vscodeApi?.postMessage({ type: "askClear", itemId: it.itemId, sid: it.sid }); fullscreenAskId = null; renderModal(); };
+    // "Move to Working" (the user 2026-07-06): only when the card is OUT of Working — needs-input
+    // (blocked) or completed. Acknowledges on click (disable + relabel, before the kernel round-trip);
+    // the optimistic flip slides the card into Working behind the modal at once, and the re-render
+    // hides the button once the column reads working.
+    if (mvEl && (it.column === "needs_input" || it.column === "completed")) {
+      mvEl.style.display = "";
+      mvEl.onclick = () => {
+        mvEl.disabled = true; mvEl.textContent = "Moving…";
+        vscodeApi?.postMessage({ type: "cardMove", itemId: it.itemId, sid: it.sid, to: "working" });
+        optimisticFollowMove(it.itemId, true);
+        render();
+      };
+    }
     // follow-up works in ANY state (the user 2026-06-10) — asks, awaiting, or completed;
     // toggling the button reveals the composer.
     wireFollowUp(fupEl, fuboxEl, fuinEl, fusendEl, (txt) => postFollowUp(txt, it.itemId, it.sid));

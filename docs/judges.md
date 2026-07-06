@@ -91,15 +91,16 @@ under another or mint an umbrella when several tops serve one outcome — and
 its own pass and inline after each planner placement, but the model is only
 called when the open-top id set actually changed (`groupedSig` event gate).
 
-Hard rules in `apply_group` (2976): never move an `everDone` node (a
-once-completed card keeps its standalone identity), never touch a view-cleared
-card, no cycles, depth clamp 4, same-session only.
+Hard rules in `apply_group` (2976): never touch a view-cleared card, no
+cycles, depth clamp 4, same-session only. (The old never-move-an-`everDone`-
+node rule was removed 2026-07-06 — a reopened once-done top is live work
+again, so a user-corrected split can re-merge; `everDone` remains as stamped
+provenance.)
 
 The **consolidator** (3103) is the same prompt/parser run over the COMPLETED
-column: groups related all-completed sibling tops under a done umbrella
-(`allow_done=True` lifts the everDone guard there), gated by its own
-`consolidatedSig`. So "the grouper" = one prompt, two passes over disjoint
-column domains.
+column: groups related all-completed sibling tops under a done umbrella,
+gated by its own `consolidatedSig`. So "the grouper" = one prompt, two passes
+over disjoint column domains.
 
 ### closer (triage tier, Sonnet)
 
@@ -159,8 +160,9 @@ goal, the sender's tracking node is marked done through the origin pointer.
 
 - **planner done/block vs closer done/block** — the real overlap, by design:
   planner is eager per-segment (high precision), closer is the turn-end
-  backstop (high recall). Same flags, provenance-tagged. Both defer to
-  `_block_is_stale` so a user follow-up outranks a replayed stale verdict.
+  backstop (high recall). Same flags, provenance-tagged. Both defer to the
+  `followupAt` evidence floor (`_block_is_stale`/`_done_is_stale`) so a user
+  follow-up or "Move to Working" outranks a replayed stale verdict.
 - **planner nudge-phase vs closer** — both resolve; the nudge phase force-
   resolves one named goal, the closer sweeps the turn.
 - **grouper vs consolidator** — same prompt, disjoint columns.

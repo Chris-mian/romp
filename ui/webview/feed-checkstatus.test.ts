@@ -19,10 +19,10 @@ test("the manual Nudge button is gone (Auto Nudge replaces it)", () => {
   assert.match(FEED, /actions\.append\(apiRetry, revive, clr\)/);
 });
 
-test("the modal footer is age · Follow up · Clear (no check-status control)", () => {
+test("the modal footer is age · Follow up · Move to Working · Clear (no check-status control)", () => {
   assert.doesNotMatch(FEED, /feed-modal-checkstatus/);
   assert.doesNotMatch(FEED, /wireCheckStatus/);
-  assert.match(FEED, /footRow\.append\(age, fup, clr\)/);
+  assert.match(FEED, /footRow\.append\(age, fup, mv, clr\)/);   // mv = Move to Working (the user 2026-07-06)
 });
 
 test("the card's own 'Follow up' button is removed — click-to-cite covers it (the user 2026-07-01)", () => {

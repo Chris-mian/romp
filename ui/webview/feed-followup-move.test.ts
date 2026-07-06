@@ -21,7 +21,9 @@ test("submitting a follow-up registers the optimistic move and re-renders the fe
 
 test("a predicted card is kept in Working at render, styled like the kernel's re-checked follow-up", () => {
   assert.match(FEED, /function applyFollowMove\(list: AskItem\[\]\)/);
-  assert.match(FEED, /a\.column = "working"; a\.recheck = true; a\.followupPending = true;/);
+  // a follow-up prediction wears the re-check styling; a PLAIN move (the Move to Working button,
+  // the user 2026-07-06) flips the column only — no chip, nothing is in flight
+  assert.match(FEED, /if \(!pendingMovePlain\.has\(a\.itemId\)\) \{ a\.recheck = true; a\.followupPending = true; \}/);
   // applied at the top of render so EVERY render (push, modal close) reflects the prediction
   assert.match(FEED, /function render\(\) \{\s*\n\s*const list = document\.getElementById\("feed-list"\)!;\s*\n\s*applyFollowMove\(asks\);/);
 });

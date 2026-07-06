@@ -1,6 +1,9 @@
 # Manual drag-to-recategorize + user-licensed regrouping
 
-Design investigation, 2026-07-06. Not yet built. The ask: drag a feed card to
+Design investigation, 2026-07-06; first increment BUILT same day (see "What
+shipped" at the end — the user's decisions there supersede two proposals in the
+body: no `userMovedAt` field, and the everDone guard was removed outright
+rather than licensed). The ask: drag a feed card to
 another column ("this blocked card shouldn't be blocked — put it in Working";
 "pull this completed card back to Working"), have it auto-sort into place, and
 have the system smoothly re-incorporate the user's verdict instead of fighting
@@ -162,3 +165,36 @@ column background = recategorize, card body = nest; distinct hover cues.
    `regroupOk` gets grouped; without it, untouched.
 4. Desktop drag gesture (column targets) with render-deferral during drag.
 5. `cardNest` (drop-on-card) last — separate op, separate tests.
+
+## What shipped (2026-07-06, the user's decisions)
+
+Steps 1-3 above, built with three decisions that amend the body:
+
+- **No new `userMovedAt` field — `followupAt` is THE user-action stamp.** The
+  chip concern that motivated a separate field was misplaced: the "Followed
+  up"/re-check styling keys on the `followupPending` FLAG, which `user_move`
+  never sets. One stamp now drives the Working sort floor, `_block_is_stale`,
+  and the new `_done_is_stale`, for follow-ups and moves alike.
+- **The everDone grouper guard is REMOVED outright** ("let's try removing that
+  rule and see how it works"), not gated behind a `regroupOk` license. The
+  `allow_done` parameter went with it; the consolidator is unchanged in
+  behavior (its candidates are all-completed by construction). `everDone`
+  itself remains as stamped provenance, so reverting the experiment is one
+  guard line.
+- **Moving TO blocked/completed is ruled out**, not just deferred: blocked
+  means needs-the-user (nobody demands of themselves), and Clear covers
+  retiring a card.
+- **The gesture is a modal BUTTON, not a drag yet**: "Move to Working" in the
+  card modal footer (single-ask cards in needs-input/completed), which also
+  works on touch. It posts `cardMove`, acknowledges before the round-trip
+  (disable + relabel), and reuses the optimistic follow-move flip in a "plain"
+  variant (no chip styling, its own revert toast). The desktop drag gesture
+  (steps 4-5) stays future work.
+- The completed→working path plants the "Reopened by the user" provisional
+  stub only when the subtree would re-complete bottom-up, and never stacks a
+  second stub. An untouched reopened card parks in Working as an orphaned
+  working top — auto-nudge's existing territory.
+
+Tests: `tests/test_judge_user_move.py` (judge semantics + staleness floors +
+grouper), `ui/webview/feed-move-button.test.ts` (modal button + plain
+optimistic move + kernel/judge source pins).
