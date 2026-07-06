@@ -31,12 +31,14 @@ LOG="$STATE/manager.log"
 LAUNCHER="$ROMP_DIR/bin/romp-node-launch"
 ROMP_NODE="$STATE/romp-node"
 
-# Seams: OS, where the unit is written, and whether to actually (un)load it (tests set
-# ROMP_SERVICE_NO_LOAD=1 and point the dirs at a tmp path to assert unit content).
+# Seams: OS, where the unit is written, whether to actually (un)load it (tests set
+# ROMP_SERVICE_NO_LOAD=1 and point the dirs at a tmp path to assert unit content),
+# and which launchctl to call (tests stub it to exercise the bootstrap retry path).
 os="${ROMP_OS_OVERRIDE:-$(uname -s)}"
 LAUNCHD_DIR="${ROMP_LAUNCHD_DIR:-$HOME/Library/LaunchAgents}"
 SYSTEMD_DIR="${ROMP_SYSTEMD_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user}"
 NO_LOAD="${ROMP_SERVICE_NO_LOAD:-}"
+LAUNCHCTL="${ROMP_LAUNCHCTL:-launchctl}"
 PLIST="$LAUNCHD_DIR/$LABEL.plist"
 UNIT="$SYSTEMD_DIR/romp-manager.service"
 
@@ -113,8 +115,23 @@ case "${1:-status}" in
         write_plist
         ensure_romp_node
         if [[ -z "$NO_LOAD" ]]; then
-            launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true   # drop any prior copy
-            launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>/dev/null || launchctl load -w "$PLIST"
+            "$LAUNCHCTL" bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true   # drop any prior copy
+            # A bootstrap issued right after bootout races the old job's teardown —
+            # launchd rejects it ("Input/output error") until the drain finishes.
+            # Retry until launchd accepts, and fail LOUDLY if it never does:
+            # swallowing this error once left NO agent loaded at all (no manager,
+            # no kernel, dead dashboard) with nothing saying why.
+            loaded=""
+            for _ in $(seq 1 10); do
+                if err="$("$LAUNCHCTL" bootstrap "gui/$(id -u)" "$PLIST" 2>&1)"; then loaded=1; break; fi
+                sleep 0.3
+            done
+            if [[ -z "$loaded" ]]; then
+                echo "romp-service: FAILED to load the login agent — romp-manager is NOT running." >&2
+                echo "  launchctl bootstrap: ${err:-unknown error}" >&2
+                echo "  Retry by hand: launchctl bootstrap gui/$(id -u) \"$PLIST\"" >&2
+                exit 1
+            fi
         fi
         echo "  Installed launchd agent: $PLIST"
         echo "  romp-manager now auto-starts at login — just open the browser."
@@ -140,7 +157,7 @@ case "${1:-status}" in
     case "$os" in
       Darwin)
         if [[ -z "$NO_LOAD" ]]; then
-            launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || launchctl unload "$PLIST" 2>/dev/null || true
+            "$LAUNCHCTL" bootout "gui/$(id -u)/$LABEL" 2>/dev/null || "$LAUNCHCTL" unload "$PLIST" 2>/dev/null || true
         fi
         rm -f "$PLIST"
         echo "  Removed launchd agent." ;;
@@ -157,7 +174,7 @@ case "${1:-status}" in
     case "$os" in
       Darwin)
         if [[ -f "$PLIST" ]]; then echo "installed: $PLIST"; else echo "not installed"; fi
-        if [[ -z "$NO_LOAD" ]] && launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; then echo "running"; fi ;;
+        if [[ -z "$NO_LOAD" ]] && "$LAUNCHCTL" print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; then echo "running"; fi ;;
       Linux)
         if [[ -f "$UNIT" ]]; then echo "installed: $UNIT"; else echo "not installed"; fi
         if [[ -z "$NO_LOAD" ]] && [[ "$(systemctl --user is-active romp-manager.service 2>/dev/null || true)" == "active" ]]; then echo "running"; fi ;;
