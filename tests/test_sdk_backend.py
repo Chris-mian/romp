@@ -310,6 +310,33 @@ class LiveTail(unittest.TestCase):
         self.assertEqual(echoes[0]["author"], "human", "a typed message echoes as a human (blue) bubble")
         self.assertEqual(echoes[0]["message"]["content"], [{"type": "text", "text": "type this"}])
 
+    def test_set_effort_synthesizes_the_command_atom(self):
+        """The effort reconnect leaves NO transcript record — without a synthesized "/effort X" atom an
+        idle-session effort change showed nothing in the chat while a busy (parked) one showed a queued
+        chip: the same pick, acknowledged or not depending on timing (the user 2026-07-05). Mirrors the
+        set_model synthesis exactly."""
+        d = tempfile.mkdtemp()
+        be = sb.SdkBackend(d, "/bin/true", lambda *a, **k: None)
+        sid = "11111111-2222-3333-4444-555555555555"
+        sb.write_reg(d, sid, {"sid": sid, "name": "n", "cwd": "/tmp", "alive": True})
+        s = sb.SdkSession(be, {"sid": sid, "name": "n", "cwd": "/tmp"})
+        be.sessions[sid] = s
+        self.assertTrue(be.set_effort(sid, "high"))
+        cmds = [a for a in be.live_atoms(sid) if a.get("command") == "/effort"]
+        self.assertEqual(len(cmds), 1, "one live '/effort high' invocation atom, like set_model's '/model X'")
+        self.assertEqual(cmds[0]["_echo_text"], "/effort high")
+        self.assertEqual(cmds[0]["message"]["content"], [{"type": "text", "text": "/effort high"}])
+        self.assertEqual(cmds[0]["author"], "human")
+
+    def test_set_effort_on_a_dormant_session_stays_quiet(self):
+        # no live thread → the value applies on the next connect; nothing to echo into (no _live entry)
+        d = tempfile.mkdtemp()
+        be = sb.SdkBackend(d, "/bin/true", lambda *a, **k: None)
+        sid = "11111111-2222-3333-4444-666666666666"
+        sb.write_reg(d, sid, {"sid": sid, "name": "n", "cwd": "/tmp", "alive": True})
+        self.assertTrue(be.set_effort(sid, "low"))
+        self.assertEqual(be.live_atoms(sid), [])
+
     def test_send_echo_authors_a_romp_nudge_as_romp_not_human(self):
         # the bug (the user 2026-06-28): an auto-nudge sent through send() echoed as a BLUE HUMAN "Follow-up"
         # instead of the GRAY "from romp" auto-nudge it is, because the echo hardcoded author="human". The echo

@@ -14,7 +14,7 @@ old). Port status (KEEP/ADAPT/DROP) tracked in design/ui-parity.md + backlog.md.
 
 Run:  python3 ~/GitRepos/romp-event-model/bin/romp-kernel   → opens http://127.0.0.1:7433
 """
-import json, os, re, sys, time, threading, traceback, base64, hashlib, hmac, struct, subprocess, shutil, shlex, http.client, uuid
+import json, os, re, signal, sys, time, threading, traceback, base64, hashlib, hmac, struct, subprocess, shutil, shlex, http.client, uuid
 from pathlib import Path
 from datetime import datetime
 from importlib.machinery import SourceFileLoader
@@ -1694,7 +1694,8 @@ def _sdk():
                 poke=_producer_wake.set, push=_pusher_wake.set,
                 mcp_config=(str(_SDK_MCP) if _SDK_MCP.exists() else None),
                 append_prompt_path=(str(_SDK_PROMPT) if _SDK_PROMPT.exists() else None),
-                log=lambda m: sys.stderr.write("sdk-backend: %s\n" % m))
+                log=lambda m: sys.stderr.write("sdk-backend: %s\n" % m),
+                reconcile=True)   # boot reconcile: reap orphaned CLIs, resume cut turns, deliver persisted queues
         except Exception:
             sys.stderr.write("sdk-backend unavailable: %s\n" % traceback.format_exc())
             _sdk_backend = False
@@ -1779,11 +1780,11 @@ def _drive(msg, client):
     be = Sessions.backend_for(sid)
     if t == "sendMessage" and msg.get("text"):
 
-        _send_or_park(be, sid, str(msg["text"]), echo="human"); _push_all()  # idle → instant echo; busy → a queued bubble, delivered in press order
+        _send_or_park(be, sid, str(msg["text"]), echo="human"); _push_soon()  # idle → instant echo; busy → a queued bubble, delivered in press order
     elif t == "interrupt":
         be.interrupt(sid)                                 # Esc/stop AND settle idle (in the backend)
         _interrupt_clicked[str(sid)] = time.time()        # chip → "interrupting" NOW (event-cleared on settle)
-        _push_all()
+        _mark_views_dirty()                               # the stamp lives in memory — no sig sees it
     elif t in ("compact", "compactSession"):
         # Mid-turn (or behind an existing queue) the click PARKS as a queued /compact chip and fires when
         # the turn ends (the user 2026-07-02: the icon "blinked and nothing happened" while working — now
@@ -1821,7 +1822,8 @@ def _drive(msg, client):
             try:
                 if jd.optimistic_followup(sid, iid, text=str(msg["text"]), now=int(time.time()),
                                           stub=not bool(msg.get("nudge"))):   # typed → open stub; nudge → resolve
-                    _push_all()                           # a reopen pushes the "Followed up" board at once
+                    _mark_views_dirty()                   # a reopen pushes the "Followed up" board at once —
+                    #                                       the store write is invisible to the fleet sig
             except Exception:
                 sys.stderr.write("followup reopen: %s\n" % traceback.format_exc())
     elif t == "answerAsk" and msg.get("target") is not None:
@@ -1840,7 +1842,7 @@ def _drive(msg, client):
         be.on_ask(sid, "text", str(msg["text"]))
     elif t == "cancelQueued" and msg.get("idx") is not None and hasattr(be, "unqueue"):
         be.unqueue(sid, int(msg["idx"]))                  # pull a queued (not-yet-started) message back out; the
-        _push_all()                                       # webview already refilled the composer with its text
+        _push_soon()                                      # webview already refilled the composer with its text
     elif t == "apiRetry":
         if _retry_paused_on():
             return
@@ -1852,13 +1854,13 @@ def _drive(msg, client):
         # so the echo + transcript render gray and the planner skips a work-less retry instead of minting a goal.
         be.send(sid, "retry\n\n<!-- romp-injected -->")
     elif t == "setModel" and msg.get("value"):
-        _set_model_or_park(be, sid, str(msg["value"])); _push_all()   # mid-compaction → parked as a queued command
+        _set_model_or_park(be, sid, str(msg["value"])); _push_soon()   # mid-compaction → parked as a queued command
     elif t == "setEffort" and msg.get("value"):
-        _set_effort_or_park(be, sid, str(msg["value"])); _push_all()   # tmux: /effort; SDK: reconnect with --effort; mid-compaction → parked
+        _set_effort_or_park(be, sid, str(msg["value"])); _push_soon()   # tmux: /effort; SDK: reconnect with --effort; mid-compaction → parked
     elif t == "setMode" and msg.get("value"):
-        be.set_mode(sid, str(msg["value"])); _push_all()
+        be.set_mode(sid, str(msg["value"])); _push_soon()
     elif t == "endSession":
-        be.kill(sid); _send_to_app("chat", {"type": "closed", "id": sid}); _push_all()
+        be.kill(sid); _send_to_app("chat", {"type": "closed", "id": sid}); _push_soon()
     elif t == "renameSession" and msg.get("name"):
         new = str(msg["name"]).strip()
         if not NAME_RE.match(new):
@@ -4663,7 +4665,7 @@ def _mark_model_pending(sid, value):
     same instant regardless of which UI's click fired."""
     if sid:
         _model_switch_pending[sid] = {"target": value, "until": time.time() + 20}
-        _push_all()
+        _mark_views_dirty()           # the stamp lives in memory — the timeline's dots need a dirty rebuild
 
 
 def _model_pending_now(sid, tm):
@@ -4691,7 +4693,7 @@ def _mark_compacting(sid):
     """A compact we just sent /compact for → show 'compacting' on every surface AT ONCE, now."""
     if sid:
         _compact_clicked[sid] = time.time()
-        _push_all()
+        _mark_views_dirty()           # in-memory stamp: dirty-rebuild the views so 'compacting' shows at once
 
 
 def _compacting_optimistic(sid, session, now):
@@ -4762,7 +4764,37 @@ def _session_chip(sid, path, session, tm, now):
 # chat renders them as queued bubbles IN THAT ORDER and _apply_pending_ops delivers them IN THAT ORDER
 # the moment compaction ends. A repeated model/effort pick REPLACES its earlier parked op in place (last
 # pick wins — one queued chip, not a pile), since only the final setting can matter.
-_pending_ops = {}             # sid -> [("send", text, echo) | ("model", v) | ("effort", v) | ("compact",), …] in park order
+_PENDING_OPS_FILE = Path(jd.STATE) / "pending-ops.json"
+
+
+def _load_pending_ops():
+    """Restore the parked-ops queues a previous kernel mirrored to disk (_save_pending_ops) — a kernel
+    restart used to drop them SILENTLY (in-memory only), losing every message/pick the user queued
+    against a busy session (2026-07-05: the LaunchAgent outage ate all of them). Best-effort: an
+    unreadable file logs and starts empty rather than blocking boot."""
+    try:
+        d = json.loads(_PENDING_OPS_FILE.read_text())
+        return {str(k): [tuple(o) for o in v if isinstance(o, list) and o]
+                for k, v in d.items() if isinstance(v, list) and v}
+    except OSError:
+        return {}                                     # first boot / nothing parked — normal
+    except Exception:
+        sys.stderr.write("pending-ops load: %s\n" % traceback.format_exc())
+        return {}
+
+
+def _save_pending_ops():
+    """Mirror _pending_ops to disk on every mutation, atomically, so parked ops survive a kernel
+    death. Tiny file, mutation-rate writes (a park or a delivery), not a hot path."""
+    try:
+        tmp = _PENDING_OPS_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps({k: [list(o) for o in v] for k, v in _pending_ops.items() if v}))
+        os.replace(tmp, _PENDING_OPS_FILE)
+    except Exception:
+        sys.stderr.write("pending-ops save: %s\n" % traceback.format_exc())
+
+
+_pending_ops = _load_pending_ops()   # sid -> [("send", text, echo) | ("model", v) | ("effort", v) | ("compact",), …] in park order
 
 
 def _compacting_now(sid):
@@ -4811,7 +4843,8 @@ def _park_op(sid, op):
             q.append(op)
     else:
         q.append(op)
-    _push_all()
+    _save_pending_ops()               # mirror the park to disk (survives a kernel death)
+    _mark_views_dirty()               # the queue lives in memory — no sig sees it; the woken push renders the chip
 
 
 def _send_or_park(be, sid, text, echo=None):
@@ -4892,7 +4925,8 @@ def _apply_pending_ops():
             _pending_ops.pop(sid, None)               # a dead session's queue is dropped, never retried
         if not _pending_ops.get(sid):
             _pending_ops.pop(sid, None)
-        _push_all()
+        _save_pending_ops()               # every delivery/drop shrinks the disk mirror too
+        _mark_views_dirty()               # the queue shrank (in-memory) → rebuild past the sig so chips retire
 
 
 # ── the chat's pinned "system context" card (the user 2026-06-19) ──────────────────────────────────
@@ -8540,6 +8574,28 @@ _producer_wake = threading.Event()
 # instead of waiting out the 4s poll — the SDK stream leads the transcript on disk, so an immediate push
 # of the in-memory live atoms makes messages appear instantly. 4s stays as the backstop.
 _pusher_wake = threading.Event()
+# The last kernel-side OPTIMISTIC mutation (a parked-op chip, a follow-up card reopen, a model-pending
+# stamp, an interrupt click): state that lives in MEMORY or a goal store, which NO file-mtime signature
+# sees. _cached_feed/_cached_timeline must rebuild past this mark — even inside REBUILD_MIN_S and even on
+# an unchanged fleet sig — or the very push meant to show the change serves the stale pre-change payload
+# (the user 2026-07-05: a reply on a distilled card lagged its fly-to-Working by the 5s sig time-bucket).
+_views_dirty = [0.0]
+
+
+def _push_soon():
+    """Ack-fast push: wake the pusher thread (which coalesces bursts) instead of building the whole
+    fleet's payload synchronously on the WS handler thread. A drive op's state is already mutated by the
+    time this is called, so the woken push carries it; meanwhile the handler returns in microseconds and
+    the client's NEXT message isn't stuck behind a multi-hundred-ms build (the user 2026-07-05: every
+    click paid a full synchronous _push_all before the UI heard anything)."""
+    _pusher_wake.set()
+
+
+def _mark_views_dirty():
+    """An optimistic kernel-side mutation just changed what the feed/timeline should show → stamp the
+    dirty mark (see _views_dirty) and wake the pusher so the rebuilt view ships now."""
+    _views_dirty[0] = time.time()
+    _pusher_wake.set()
 
 
 def _producer_sig(browser):
@@ -8615,9 +8671,12 @@ def _fleet_view_sig(now, tmux):
 
 def _cached_feed(now, tmux, sig, connect=False):
     # connect (a fresh client) NEVER triggers a rebuild — it serves whatever the pusher has warmed, so startup
-    # is instant; the pusher refreshes it within a tick. Else: reuse on an unchanged sig OR a recent rebuild.
+    # is instant; the pusher refreshes it within a tick. Else: reuse on an unchanged sig OR a recent rebuild —
+    # UNLESS an optimistic kernel-side mutation postdates the build (_views_dirty): that state is invisible
+    # to the sig AND must not wait out REBUILD_MIN_S, or the push meant to show it serves the stale payload.
     e = _built_feed
-    if e[1] is not None and (connect or e[0] == sig or (time.time() - e[2]) < REBUILD_MIN_S):
+    dirty = not connect and _views_dirty[0] > e[2]        # connect still serves the warmed build (never rebuilds)
+    if e[1] is not None and not dirty and (connect or e[0] == sig or (time.time() - e[2]) < REBUILD_MIN_S):
         return e[1]
     feed = build_feed(now, tmux)
     _built_feed[:] = [sig, feed, time.time()]
@@ -8626,7 +8685,8 @@ def _cached_feed(now, tmux, sig, connect=False):
 
 def _cached_timeline(now, tmux, sig, connect=False):
     e = _built_timeline
-    if e[1] is not None and (connect or e[0] == sig or (time.time() - e[2]) < REBUILD_MIN_S):
+    dirty = not connect and _views_dirty[0] > e[2]
+    if e[1] is not None and not dirty and (connect or e[0] == sig or (time.time() - e[2]) < REBUILD_MIN_S):
         return e[1]
     tl = build_timeline(now, tmux)
     _built_timeline[:] = [sig, tl, time.time()]
@@ -10138,7 +10198,7 @@ def _landing():
             "body.picker-open #chat-pane{display:block!important}"
             "body.picker-open #f-chat{position:fixed;inset:0;z-index:200;width:100vw;height:100vh}"
             # ── pane rail (the user 2026-06-24; rotated to a BOTTOM BAR the user 2026-07-05): a thin toolbar with
-            # Chat / Outline / Feed / Timeline toggles. It used to be a vertical strip on the far LEFT; it now runs
+            # Chat / Timeline / Outline / Feed toggles. It used to be a vertical strip on the far LEFT; it now runs
             # HORIZONTALLY across the bottom of .col, BELOW the timeline band (last child of .col). Each toggle is
             # an independent on/off; the lit one is in the romp accent.
             # It keeps the SCROLLABLE group (.rail-scroll: toggles + usage, a horizontal row that scrolls sideways
@@ -10353,16 +10413,16 @@ def _landing():
             "<div class=gh id=gh></div>"
             "<div class=pane id=tl-pane><iframe id=f-timeline src=/timeline></iframe></div>"
             # pane rail as a BOTTOM BAR (the user 2026-07-05): the toolbar runs horizontally across the very
-            # bottom of .col, BELOW the timeline band. A SCROLLABLE group (.rail-scroll) — Chat / Outline / Feed /
-            # Timeline toggles, then the /usage rate-limit bars, scrolling sideways on a narrow window — and a
-            # FIXED group (.rail-acts, pinned RIGHT via margin-left:auto) with the ↻ refresh + network + ⛭ gear,
-            # always visible.
+            # bottom of .col, BELOW the timeline band. A SCROLLABLE group (.rail-scroll) — Chat / Timeline / Outline /
+            # Feed toggles (this rail order is user-chosen, the user 2026-07-05, independent of the panes' layout
+            # order), then the /usage rate-limit bars, scrolling sideways on a narrow window — and a FIXED group
+            # (.rail-acts, pinned RIGHT via margin-left:auto) with the ↻ refresh + network + ⛭ gear, always visible.
             "<div class=pane-rail>"
             "<div class=rail-scroll>"
             "<div class=rail-btn data-pane=chat>Chat</div>"
+            "<div class=rail-btn data-pane=timeline>Timeline</div>"
             "<div class=rail-btn data-pane=fleet>Outline</div>"   # data-pane key stays 'fleet' (internal); the user-facing label is Outline
             "<div class=rail-btn data-pane=feed>Feed</div>"
-            "<div class=rail-btn data-pane=timeline>Timeline</div>"
             # the Claude /usage rate-limit bars (Pro/Max): three compact vertical bar-pairs (used % colored +
             # elapsed % slate), %-label, full detail on hover — side-by-side in the bottom bar.
             "<div id=rail-usage></div>"
@@ -10641,6 +10701,33 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(200, json.dumps({"ok": True}), "application/json")
                 Sessions.backend_for(sid).send(sid, body["text"])   # no optimistic echo: an external/postal
                 return self._send(200, json.dumps({"ok": True}), "application/json")   # send isn't a human composer bubble
+            if u.path in ("/interrupt", "/end"):
+                # Headless session control (2026-07-05): interrupt/end existed ONLY as WS drive ops, so
+                # a session could be FED without a browser (POST /send, postal) but never STOPPED — a
+                # runaway had no headless escape hatch. These mirror the WS handlers exactly (same
+                # backend calls, same chip/close events). Body: {"id"|"name": <session>}; remote
+                # sessions forward over their tunnel like /send.
+                try:
+                    b = json.loads(raw_body or b"{}")
+                    who = str(b.get("id") or b.get("name") or "") if isinstance(b, dict) else ""
+                except Exception:
+                    who = ""
+                if not who:
+                    return self._send(400, json.dumps({"ok": False, "error": "id or name required"}), "application/json")
+                sid = _sid_of(who)
+                r = _host_for_sid(sid)
+                if r is not None:                               # remote session → forward over its -L tunnel
+                    _remote_forward(r, u.path, {"id": sid})
+                    return self._send(200, json.dumps({"ok": True}), "application/json")
+                be = Sessions.backend_for(sid)
+                if u.path == "/interrupt":
+                    be.interrupt(sid)                           # Esc/stop AND settle idle (in the backend)
+                    _interrupt_clicked[str(sid)] = time.time()  # chip → "interrupting" NOW, same as the WS op
+                else:
+                    be.kill(sid)
+                    _send_to_app("chat", {"type": "closed", "id": sid})
+                _push_all()
+                return self._send(200, json.dumps({"ok": True}), "application/json")
             if u.path == "/working":
                 # Publish/clear a session's working-note in the backend-agnostic store, so the postal bus's
                 # set_working goes through the kernel (no tmux @romp-working) and an SDK session can publish a
@@ -10790,7 +10877,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if msg and msg.get("type") == "setGlobalRetryPaused":
             _set_retry_paused(msg.get("value"))
-            _push_all()
+            _mark_views_dirty()
             return
         if msg and msg.get("type") == "ready":
             self._push_one(client)
@@ -10810,12 +10897,12 @@ class Handler(BaseHTTPRequestHandler):
             # timeline lane gear → toggle a per-session view flag (e.g. hideFromFeed). Persisted +
             # re-broadcast so the feed drops/restores that session's cards immediately.
             _set_session_flag(str(msg["id"]), str(msg["flag"]), bool(msg.get("value")))
-            _push_all()
+            _mark_views_dirty()
         elif msg and msg.get("type") == "setSessionColor" and msg.get("id") and msg.get("bg"):
             # tab right-click color picker → override the session's identity color (persisted to the names
             # registry); re-broadcast so every tab/lane/card repaints in the new color at once.
             if _set_session_color(str(msg["id"]), str(msg["bg"])):
-                _push_all()
+                _mark_views_dirty()
         elif msg and msg.get("type") == "setAutoNudge" and msg.get("enabled") is not None:
             _set_auto_nudge(bool(msg["enabled"]))   # feed gear → server-side Auto Nudge on/off
             _auto_nudge_tick(int(time.time()), _tmux_sessions())   # act immediately on turn-on (don't wait 4s)
@@ -10827,26 +10914,26 @@ class Handler(BaseHTTPRequestHandler):
             _gone = _subtree_item_ids(str(msg["itemId"]))
             _clear_ask(msg["itemId"])
             _send_to_app("chat", {"type": "dropCitation", "itemId": str(msg["itemId"]), "itemIds": _gone})
-            _push_all()                        # reflect the clear on every feed client now
+            _mark_views_dirty()                # cleared.jsonl is invisible to the fleet sig → dirty-rebuild now
         elif msg and msg.get("type") == "nodeOverride" and msg.get("sid") and msg.get("nodeId"):
             # modal surgical override: cross a node off (op:resolve → nodeComplete). Other ops can
             # extend this later; resolve is the one the user asked for (2026-06-17).
             if msg.get("op") == "resolve" and _resolve_node(str(msg["sid"]), str(msg["nodeId"])):
-                _push_all()
+                _mark_views_dirty()
         elif msg and msg.get("type") == "clearAll":
             d = build_feed(int(time.time()))
             _clear_all([a["itemId"] for a in d["asks"]] + [c["itemId"] for c in d["items"]])
             _send_to_app("chat", {"type": "dropCitationsAll"})   # every card cleared → drop every composer chip
-            _push_all()
+            _mark_views_dirty()
         elif msg and msg.get("type") == "undoClear":
             _undo_clear()
-            _push_all()
+            _mark_views_dirty()
         elif msg and msg.get("type") == "dismissLane" and msg.get("id"):
             # timeline: clear a DEAD lane's leftover row (the user 2026-07-02). IN-MEMORY only — a kernel
             # restart forgets it, so a mistakenly-cleared lane comes back on `romp --refresh`. Only dead lanes
             # carry the Clear button; build_timeline drops the sid only while it's dead, so a revived one returns.
             _dismissed_lanes.add(str(msg["id"]))
-            _push_all()
+            _mark_views_dirty()
         elif msg and msg.get("type") == "orderAudit":
             # a CLIENT detected its rendered tab order permuting (render.ts auditTabOrder) → same audit log
             # as the kernel's own order mutations, with the client's JS stack, so one file tells the whole
@@ -11120,13 +11207,36 @@ def _parent_watch():
     os._exit(0)
 
 
+def _graceful_term(signum, frame):
+    """SIGTERM = the manager stopping/refreshing us (it grants no grace of its own). Drain instead of
+    dying mid-flight: SDK sessions are stopped cleanly so their claude children exit with us instead
+    of orphaning to launchd as zombie transcript-writers, and any in-flight turn is interrupted so
+    its state settles honestly. Parked ops + SDK queues are already mirrored to disk on every
+    mutation, and a cut turn keeps its 'working' state tail — the NEXT kernel's boot reconcile
+    resumes exactly those. Bounded (~2s) so `romp --refresh` stays snappy. Never construct the
+    backend here — no SDK sessions were running if it doesn't exist."""
+    try:
+        sys.stderr.write("romp-kernel: SIGTERM — draining SDK sessions\n")
+        be = _sdk_backend or None
+        if be is not None and hasattr(be, "drain"):
+            be.drain(2.0)
+    except Exception:
+        sys.stderr.write("romp-kernel: drain failed: %s\n" % traceback.format_exc())
+    finally:
+        os._exit(0)
+
+
 def main():
     # Export the kernel's claude resolution for every judge call (in-process tiers AND `romp-judge
     # --once` subprocesses): judges exec the binary directly, and a kernel started over non-login ssh
     # (a federated host) has no ~/.local/bin on PATH — bare `claude` exec-failed silently there.
     os.environ.setdefault("ROMP_CLAUDE_BIN", _claude_bin())
+    signal.signal(signal.SIGTERM, _graceful_term)             # drain, don't die mid-flight (see _graceful_term)
     _ensure_bundles()
     _boot_warm()                                              # pre-parse the live fleet during the reconnect gap (fast first paint)
+    threading.Thread(target=_sdk, daemon=True).start()        # construct the SDK backend NOW so its boot
+    #                                                           reconcile (cut turns, queues, orphans) runs at
+    #                                                           boot, not on the first lazy touch
     threading.Thread(target=_producer, daemon=True).start()
     threading.Thread(target=_pusher, daemon=True).start()
     threading.Thread(target=_ask_poll, daemon=True).start()   # scrape live AskUserQuestion pickers → chat
