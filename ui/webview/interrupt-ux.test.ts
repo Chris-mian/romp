@@ -30,8 +30,10 @@ test("the stop button acknowledges its click instantly: chip flips, button + tim
 test("INTERRUPTING is a first-class chip state: labeled, styled, timerless, buttonless", () => {
   assert.match(SRC, /"interrupting";/, "in the ChipState union");
   assert.match(SRC, /interrupting: "Interrupting…",/);
-  // the generic chip branch renders it (only working/compacting get the timer / stop button)
-  assert.match(SRC, /if \(s\.status\.state === "working" \|\| s\.status\.state === "compacting"\) sl\.appendChild\(stopButton\(\)\);/);
+  // the generic chip branch renders it; the stop button is drawn for working/compacting AND the stuck
+  // retrying/blocked states — but NEVER for interrupting (the stop is already in flight)
+  assert.match(SRC, /state === "working" \|\| s\.status\.state === "compacting"\s*\n\s*\|\| s\.status\.state === "retrying" \|\| s\.status\.state === "blocked"\) sl\.appendChild\(stopButton\(s\.status\.state\)\)/);
+  assert.doesNotMatch(SRC, /=== "interrupting"\) sl\.appendChild\(stopButton/, "no stop button while interrupting");
   assert.match(CSS, /\.chip-interrupting \{ background: var\(--st-working-bg\);[^}]*opacity: 0\.75; \}/,
                "busy-yellow but dimmed + static — in flight, not still grinding");
 });

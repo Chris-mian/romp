@@ -109,7 +109,7 @@ type ChatEvent = (
 interface TodoTask { id: string; subject: string; activeForm?: string; status: string }
 
 type ChipState = "working" | "ready" | "awaiting" | "idle" | "closed" | "compacting" | "blocked" | "retrying" | "interrupting";
-interface Status { state: ChipState; sinceEpoch: number | null; effort?: string; model?: string; modelPending?: boolean; mode?: string; ctx?: string; ctxColor?: number[]; modelColor?: number[]; effortColor?: number[]; faded?: boolean; backend?: string; apiTooLong?: boolean; }   // backend = "tmux" | "sdk"; apiTooLong = the "blocked" is a "prompt is too long" error (on you → red tab) vs a transient API error (amber/retrying); ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side; modelColor/effortColor = the same map's RGB tint for the model name + effort (by capability/effort rank), server-computed; modelPending = a /model switch is resolving → the badge shows switching-dots until the new name lands (server-driven, event-based, the user 2026-07-03)
+interface Status { state: ChipState; sinceEpoch: number | null; effort?: string; model?: string; modelPending?: boolean; mode?: string; ctx?: string; ctxColor?: number[]; modelColor?: number[]; effortColor?: number[]; faded?: boolean; backend?: string; apiTooLong?: boolean; retrySuppressed?: boolean; }   // retrySuppressed = the user interrupted this thread's API-error storm → romp's auto-retry stays OFF for it until a successful turn re-arms (the user 2026-07-06). backend = "tmux" | "sdk"; apiTooLong = the "blocked" is a "prompt is too long" error (on you → red tab) vs a transient API error (amber/retrying); ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side; modelColor/effortColor = the same map's RGB tint for the model name + effort (by capability/effort rank), server-computed; modelPending = a /model switch is resolving → the badge shows switching-dots until the new name lands (server-driven, event-based, the user 2026-07-03)
 interface Color { bg: string; fg: string; }
 // A run_in_background task surfaced in the #bg-tasks box (the kernel's _bg_tasks): a one-line summary +
 // status, expandable to the command + its output. status = running | completed | failed.
@@ -1447,7 +1447,11 @@ function renderApiError(ev: Extract<ChatEvent, { kind: "apiError" }>): HTMLEleme
   head.appendChild(retry);
   // Global auto-retry pause (the user 2026-06-30) — no per-session off-switch. "Retry now" + sending a message still work.
   const paused = globalRetryPaused;
+  // Per-thread suppression (the user 2026-07-06): the user interrupted THIS thread's storm → its auto-retry is
+  // held off until a successful turn re-arms it. Distinct from the global pause; "Retry now" + a message still work.
+  const suppressed = activeId ? !!sessions.get(activeId)?.status.retrySuppressed : false;
   if (paused) countdown.textContent = "auto-retry off (global)";
+  else if (suppressed) countdown.textContent = "auto-retry stopped for this session — send a message to resume";
   const stop = el("button", "apierror-stop") as HTMLButtonElement;
   stop.textContent = paused ? "Resume all auto-retries" : "Stop all auto-retries";
   stop.title = paused ? "resume auto-retrying globally" : "stop the auto-retry loop for all errors globally";
@@ -1486,8 +1490,10 @@ function apiRetryTick(): void {
   if (globalRetryPaused) return;                  // user stopped retrying globally
   const now = Date.now();
   const blocked = new Set<string>();
-  sessions.forEach((s, id) => { if (s.status.state === "blocked") blocked.add(id); });
-  apiRetryNext.forEach((_, id) => { if (!blocked.has(id)) apiRetryNext.delete(id); });   // recovered → stop
+  // A thread the user interrupted (status.retrySuppressed) is left OUT of the retry set — same as a recovered
+  // one: romp won't re-fire "retry" into it until a successful turn re-arms it (the user 2026-07-06).
+  sessions.forEach((s, id) => { if (s.status.state === "blocked" && !s.status.retrySuppressed) blocked.add(id); });
+  apiRetryNext.forEach((_, id) => { if (!blocked.has(id)) apiRetryNext.delete(id); });   // recovered / suppressed → stop
   blocked.forEach((id) => {
     if (!apiRetryNext.has(id)) apiRetryNext.set(id, now + API_RETRY_MS);
     if (now >= (apiRetryNext.get(id) as number)) {
@@ -1498,8 +1504,13 @@ function apiRetryTick(): void {
   // live "retrying in Ns" on the active session's card, if it's the blocked one being viewed
   const cd = document.querySelector(".apierror-countdown") as HTMLElement | null;
   if (cd) {
-    const at = activeId ? apiRetryNext.get(activeId) : undefined;
-    cd.textContent = at ? `retrying in ${Math.max(0, Math.ceil((at - now) / 1000))}s` : "retrying soon…";
+    const active = activeId ? sessions.get(activeId) : null;
+    if (active?.status.retrySuppressed) {
+      cd.textContent = "auto-retry stopped for this session — send a message to resume";
+    } else {
+      const at = activeId ? apiRetryNext.get(activeId) : undefined;
+      cd.textContent = at ? `retrying in ${Math.max(0, Math.ceil((at - now) / 1000))}s` : "retrying soon…";
+    }
   }
 }
 setInterval(apiRetryTick, 1000);
@@ -4787,14 +4798,19 @@ const CHIP_LABEL: Record<ChipState, string> = {
 
 // A stop/interrupt button that lives beside the state badge in the statusline (the user 2026-06-19):
 // it sends the SAME interrupt the composer's Ctrl+C does (host → Esc into the pane) — a less fiddly way
-// to halt a run than Ctrl+C in this surface. It ONLY renders while the session is busy (working/
-// compacting) — there's nothing to interrupt otherwise, so it's not drawn at all (the user 2026-06-19);
-// updateStatusline omits it in every idle state. A neutral white square; hovering reveals the red stop tint.
-function stopButton(): HTMLElement {
+// to halt a run than Ctrl+C in this surface. It renders while the session is busy (working/compacting) AND
+// while it's stuck retrying / blocked on an API error (the user 2026-07-06): there the interrupt both aborts
+// the CLI's in-flight retry AND pauses romp's auto-retry into this ONE thread until the user lands a
+// successful turn again (kernel _suppress_session_retry). Omitted in the truly idle states (ready/idle/
+// awaiting — nothing to stop). A neutral white square; hovering reveals the red stop tint.
+function stopButton(state?: ChipState): HTMLElement {
   const btn = el("button", "stop-btn");
   (btn as HTMLButtonElement).type = "button";
-  btn.title = "Stop — interrupt this session (same as Ctrl+C)";
-  btn.setAttribute("aria-label", "Interrupt session");
+  const stuck = state === "retrying" || state === "blocked";
+  btn.title = stuck
+    ? "Stop retrying — interrupt this thread and hold its auto-retry off until you send it a message"
+    : "Stop — interrupt this session (same as Ctrl+C)";
+  btn.setAttribute("aria-label", stuck ? "Stop retrying this session" : "Interrupt session");
   btn.appendChild(el("span", "stop-icon"));   // a filled square (CSS), the universal stop glyph
   btn.addEventListener("click", (e) => {
     e.stopPropagation();
@@ -4841,10 +4857,12 @@ function updateStatusline() {
     chip.textContent = CHIP_LABEL[s.status.state] ?? (s.status.state[0].toUpperCase() + s.status.state.slice(1).toLowerCase());
     sl.appendChild(chip);
   }
-  // stop/interrupt button, right beside the state badge — ONLY while busy (working/compacting); omitted
-  // entirely in idle states (there's nothing to interrupt) — the user 2026-06-19 — and omitted while
+  // stop/interrupt button, right beside the state badge — while busy (working/compacting) AND while stuck
+  // retrying / blocked on an API error, where it doubles as the per-thread auto-retry off-switch (the user
+  // 2026-07-06). Omitted in idle states (nothing to interrupt) — the user 2026-06-19 — and while
   // INTERRUPTING (the stop is already in flight; re-pressing it is a lie — the user 2026-07-02).
-  if (s.status.state === "working" || s.status.state === "compacting") sl.appendChild(stopButton());
+  if (s.status.state === "working" || s.status.state === "compacting"
+      || s.status.state === "retrying" || s.status.state === "blocked") sl.appendChild(stopButton(s.status.state));
   // The session's working directory (fixed at creation), leading the right-side cluster — just left of the
   // mode/model/effort controls (the user 2026-06-23). Basename only; full path on hover. It carries the
   // right-justify margin so it anchors the cluster; empty (rare, no cwd) it's a zero-width spacer.

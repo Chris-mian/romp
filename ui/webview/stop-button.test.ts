@@ -11,23 +11,26 @@ const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview"
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
 
 test("the stop button posts the same interrupt message as the composer's Ctrl+C", () => {
-  assert.match(RENDER, /function stopButton\(\)/);
+  assert.match(RENDER, /function stopButton\(state\?: ChipState\)/);
   assert.match(RENDER, /vscodeApi\.postMessage\(\{ type: "interrupt", id: activeId \}\)/);
   // there are exactly two interrupt senders now: the composer Ctrl+C and this button
   const senders = RENDER.match(/postMessage\(\{ type: "interrupt", id: activeId \}\)/g) || [];
   assert.equal(senders.length, 2, "Ctrl+C and the stop button — same interrupt path");
 });
 
-test("the button renders ONLY while the session is busy (working/compacting), never when idle", () => {
-  assert.match(RENDER, /if \(s\.status\.state === "working" \|\| s\.status\.state === "compacting"\) sl\.appendChild\(stopButton\(\)\)/);
-  // no busy/idle CLASS toggle anymore — it's drawn only when busy, so the bare .stop-btn is the live look
+test("the button renders while busy (working/compacting) AND while stuck retrying/blocked, never when idle", () => {
+  // retrying/blocked were added (the user 2026-07-06): there the interrupt doubles as the per-thread
+  // auto-retry off-switch. Still omitted in ready/idle/awaiting/interrupting — nothing to stop.
+  assert.match(RENDER, /s\.status\.state === "working" \|\| s\.status\.state === "compacting"\s*\n\s*\|\| s\.status\.state === "retrying" \|\| s\.status\.state === "blocked"\) sl\.appendChild\(stopButton\(s\.status\.state\)\)/);
+  // no busy/idle CLASS toggle — it's drawn only when there's something to stop, so the bare .stop-btn is the live look
   assert.ok(!/"stop-btn" \+ \(busy \? " active" : ""\)/.test(RENDER), "no idle variant — omitted, not grayed");
 });
 
-test("it carries a stop icon + a Ctrl+C-equivalent tooltip and aria-label", () => {
+test("it carries a stop icon + a state-aware tooltip and aria-label", () => {
   assert.match(RENDER, /el\("span", "stop-icon"\)/);
   assert.match(RENDER, /same as Ctrl\+C/);
-  assert.match(RENDER, /setAttribute\("aria-label", "Interrupt session"\)/);
+  // idle-busy states keep the plain label; the stuck states get the retry-specific one
+  assert.match(RENDER, /setAttribute\("aria-label", stuck \? "Stop retrying this session" : "Interrupt session"\)/);
 });
 
 test("it's a white square that reveals the pale-red stop tint ONLY on hover, with a press flash", () => {

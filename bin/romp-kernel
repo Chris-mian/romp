@@ -130,6 +130,20 @@ def _interrupt_suppresses_nudge(turns):
     return last_intr > last_human
 
 
+def _last_human_msg_t(turns):
+    """Timestamp of the most recent GENUINE human message on this thread — author 'human', NOT an interrupt
+    record. Excludes romp injections (a retry / auto-nudge) and peer postal, so it's exactly "the user
+    spoke". Drives the per-session retry-suppression re-arm (the user 2026-07-06): a suppressed thread only
+    re-arms once the user has re-engaged AND that turn landed cleanly."""
+    last = 0
+    for turn in turns:
+        for a in turn.get("atoms") or []:
+            if (a.get("type") == "user" and a.get("author") == "human"
+                    and not em.is_interrupt_record(a)):
+                last = max(last, a.get("t", 0))
+    return last
+
+
 def _last_plain_user_turn_t(turns):
     """Timestamp of the most recent GENUINE PLAIN human prompt on this thread — a turn whose trigger atom
     is author 'human' AND carries no `romp-goal-id` marker. That marker rides on BOTH a romp nudge and a
@@ -1038,6 +1052,90 @@ def _auto_resume_retry(now, tmux):
             return
 
 
+# ── Per-session auto-retry suppression (the user 2026-07-06) ───────────────────────────────────────
+# The GLOBAL retry-pause (retry-paused.json, above) is account-wide and flap-prone; it also only stops
+# romp's own 10s "send retry" loop, not the CLI's INTERNAL api_retry backoff. When ONE thread is stuck in a
+# usage-limit / API-error storm, the user wants to just INTERRUPT it: the interrupt aborts the in-flight CLI
+# retry, and this suppression then keeps romp from re-firing "retry" into that thread — so the storm stays
+# dead FOR THAT THREAD ONLY, until the user lands a successful turn again, then it re-arms. Exactly mirrors
+# how an interrupt already suppresses auto-NUDGE (_interrupt_suppresses_nudge). State:
+# STATE/retry-suppressed.json {sid: stop_ts}. A sid present = suppressed; stop_ts is the re-arm floor (only a
+# successful turn AFTER it lifts the suppression). _auto_resume_session_retry clears re-armed sids each tick.
+_retry_suppress_cache = {}   # str(path) -> ((mtime_ns,size), dict)
+
+
+def _retry_suppress_data():
+    p = jd.STATE / "retry-suppressed.json"
+    try:
+        stt = p.stat()
+        key = (stt.st_mtime_ns, stt.st_size)
+    except OSError:
+        return {}
+    hit = _retry_suppress_cache.get(str(p))
+    if hit and hit[0] == key:
+        return hit[1]
+    try:
+        d = json.loads(p.read_text())
+        if not isinstance(d, dict):
+            d = {}
+    except Exception:
+        d = {}
+    _retry_suppress_cache[str(p)] = (key, d)
+    return d
+
+
+def _session_retry_suppressed(sid):
+    """True while auto-retry is suppressed for this ONE session (the user interrupted its retry/API-error
+    storm and hasn't landed a successful turn since). Cheap membership read — the re-arm/clear lives in
+    _auto_resume_session_retry; the apiRetry gate + the chat status flag both read this."""
+    return str(sid) in _retry_suppress_data()
+
+
+def _suppress_session_retry(sid):
+    """Arm per-session retry-suppression at NOW (the re-arm floor). Every interrupt refreshes the floor, so
+    "suppressed since your most recent interrupt" is the invariant."""
+    d = dict(_retry_suppress_data())
+    d[str(sid)] = time.time()
+    _atomic_write(jd.STATE / "retry-suppressed.json", json.dumps(d))
+
+
+def _clear_session_retry_suppress(sid):
+    d = dict(_retry_suppress_data())
+    if d.pop(str(sid), None) is not None:
+        _atomic_write(jd.STATE / "retry-suppressed.json", json.dumps(d))
+        return True
+    return False
+
+
+def _auto_resume_session_retry(now, tmux):
+    """Per-session mirror of _auto_resume_retry: clear a thread's retry-suppression once it lands a
+    SUCCESSFUL user turn again. Re-arm signal (event-based, no timer): the user spoke on the thread AFTER the
+    suppression floor AND the session settled to a healthy, non-API-error chip (ready/idle/awaiting/closed) —
+    proof the message "went through". A FAILED re-engagement leaves the chip 'blocked', so it stays
+    suppressed (auto-retry stays off — exactly what the user asked for); an in-flight 'working'/'retrying'
+    just waits."""
+    d = _retry_suppress_data()
+    if not d:
+        return
+    changed = False
+    for s in _alive_sessions(now, tmux):
+        sid = str(s.get("sid"))
+        floor = d.get(sid)
+        if not floor:
+            continue
+        path = s.get("path")
+        session = (_parse_cached(path) if path else None) or {"turns": []}
+        if _last_human_msg_t(session["turns"]) <= floor:
+            continue                                      # user hasn't re-engaged since the stop → still hands-off
+        chip = _session_chip(sid, path, session, tmux.get(sid), now)
+        if chip in ("ready", "idle", "awaiting", "closed"):   # re-engaged turn settled clean → the message went through
+            if _clear_session_retry_suppress(sid):
+                changed = True
+                sys.stderr.write("retry-suppress: re-armed session %s — a successful turn landed\n" % sid)
+    if changed:
+        _mark_views_dirty()      # the flag lives in a file the fleet sig doesn't watch → dirty-rebuild the chat status
+
+
 def _mark_auto_nudged(gid, turn_id, count, stalled=False):
     """Record an auto-nudge of `gid`: {count, lastTurnId[, stalled]}. `count` is the TOTAL fired (the climbing
     escalation alert); `lastTurnId` is the turn this fired on, so the tick nudges each turn id at most ONCE and
@@ -1802,6 +1900,9 @@ def _drive(msg, client):
     elif t == "interrupt":
         be.interrupt(sid)                                 # Esc/stop AND settle idle (in the backend)
         _interrupt_clicked[str(sid)] = time.time()        # chip → "interrupting" NOW (event-cleared on settle)
+        _suppress_session_retry(sid)                      # interrupting a thread STOPS romp's auto-retry into it until a
+                                                          # successful turn re-arms (the user 2026-07-06) — the interrupt
+                                                          # already aborted any in-flight CLI retry; this stops the relapse
         _mark_views_dirty()                               # the stamp lives in memory — no sig sees it
     elif t in ("compact", "compactSession"):
         # Mid-turn (or behind an existing queue) the click PARKS as a queued /compact chip and fires when
@@ -1862,7 +1963,7 @@ def _drive(msg, client):
         be.unqueue(sid, int(msg["idx"]))                  # pull a queued (not-yet-started) message back out; the
         _push_soon()                                      # webview already refilled the composer with its text
     elif t == "apiRetry":
-        if _retry_paused_on():
+        if _retry_paused_on() or _session_retry_suppressed(sid):   # global pause OR this thread was interrupted → don't relapse
             return
         # ALWAYS mark the retry romp-injected → GRAY romp bubble on BOTH backends (the user 2026-06-30): an
         # auto-retry is romp's action, not the human's. Without the marker the SDK retry was authored 'human'
@@ -5814,6 +5915,9 @@ def build_session(sid, now, tmux=None):
         # so the client auto-retry still fires + recovers the transient ones (the user 2026-06-29).
         status = {"state": chip, "sinceEpoch": since_ms, "faded": faded,
                   "apiTooLong": bool(aerr and aerr.get("tooLong")),
+                  # user interrupted this thread's retry/API-error storm → romp's auto-retry stays OFF for it
+                  # until a successful turn re-arms (the user 2026-07-06); the card + retry loop read this
+                  "retrySuppressed": _session_retry_suppressed(sid),
                   "backend": _session_backend(sid, tm),
                   "model": tm["model"], "effort": tm["effort"], "mode": tm.get("mode", ""),
                   "modelPending": _model_pending_now(sid, tm),   # switching-dots on the model badge until the pick lands, from EITHER surface (the user 2026-07-03)
@@ -8811,6 +8915,10 @@ def _pusher():
             _auto_resume_retry(int(time.time()), _tmux_sessions())
         except Exception:
             sys.stderr.write("auto-resume-retry: %s\n" % traceback.format_exc())
+        try:                                  # a per-session interrupt-suppressed retry re-arms once that thread lands a clean turn
+            _auto_resume_session_retry(int(time.time()), _tmux_sessions())
+        except Exception:
+            sys.stderr.write("auto-resume-session-retry: %s\n" % traceback.format_exc())
         try:                                  # expire stale set_working notes once a session goes idle + done (cheap when no notes)
             _clear_done_working_notes(int(time.time()), _tmux_sessions())
         except Exception:
