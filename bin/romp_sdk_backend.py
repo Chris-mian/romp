@@ -473,9 +473,19 @@ def read_reg(state_dir: Path, sid: str) -> dict | None:
 def write_reg(state_dir: Path, sid: str, reg: dict) -> None:
     p = _reg_path(state_dir, sid)
     p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(".tmp")
-    tmp.write_text(json.dumps(reg))
-    os.replace(tmp, p)
+    # Writer-unique temp name: during a kernel restart the OUTGOING kernel's session machinery and
+    # the incoming kernel's boot reconcile can write the same sid's registry concurrently, and a
+    # SHARED "<sid>.tmp" let one writer's os.replace steal the other's temp file mid-write
+    # (FileNotFoundError, seen live 2026-07-06). os.replace stays atomic; last writer wins.
+    tmp = p.with_name("%s.%d.%s.tmp" % (p.name, os.getpid(), uuid.uuid4().hex[:8]))
+    try:
+        tmp.write_text(json.dumps(reg))
+        os.replace(tmp, p)
+    finally:
+        try:                                        # never leave a stray temp on a failed write
+            os.unlink(tmp)
+        except OSError:
+            pass
 
 
 # The continuation nudge the boot reconcile prepends to a CUT session's queue (a turn the previous
@@ -1380,22 +1390,30 @@ class SdkBackend:
                     self._log("boot reconcile: orphan reap failed: %s" % traceback.format_exc())
             resumed, restored = 0, 0
             for r in alive:
-                sid = str(r["sid"])
-                queued = [t for t in (r.get("queue") or []) if isinstance(t, str) and t]
-                cut = last_state_value(self.state_dir, sid) == "working"
-                if not (cut or queued):
-                    continue                       # idle and empty-queued → stays lazy, exactly as before
-                if cut:
-                    # Prepend the nudge to the PERSISTED queue (not enqueue()) so it is fed FIRST,
-                    # before the restored backlog, and survives even a death mid-reconcile.
-                    with self._reg_lock:
-                        reg = read_reg(self.state_dir, sid) or dict(r)
-                        reg["queue"] = [BOOT_RESUME_NUDGE] + [t for t in (reg.get("queue") or [])
-                                                              if isinstance(t, str) and t and t != BOOT_RESUME_NUDGE]
-                        write_reg(self.state_dir, sid, reg)
-                    resumed += 1
-                restored += len(queued)
-                self._ensure(sid)
+                # Per-session isolation: one session's hiccup (a reg-write race with the outgoing
+                # kernel, a corrupt state file) must not abort the sweep and strand the REST —
+                # exactly that happened live 2026-07-06: a write_reg FileNotFoundError on the first
+                # session killed two whole reconcile passes.
+                try:
+                    sid = str(r["sid"])
+                    queued = [t for t in (r.get("queue") or []) if isinstance(t, str) and t]
+                    cut = last_state_value(self.state_dir, sid) == "working"
+                    if not (cut or queued):
+                        continue                   # idle and empty-queued → stays lazy, exactly as before
+                    if cut:
+                        # Prepend the nudge to the PERSISTED queue (not enqueue()) so it is fed FIRST,
+                        # before the restored backlog, and survives even a death mid-reconcile.
+                        with self._reg_lock:
+                            reg = read_reg(self.state_dir, sid) or dict(r)
+                            reg["queue"] = [BOOT_RESUME_NUDGE] + [t for t in (reg.get("queue") or [])
+                                                                  if isinstance(t, str) and t and t != BOOT_RESUME_NUDGE]
+                            write_reg(self.state_dir, sid, reg)
+                        resumed += 1
+                    restored += len(queued)
+                    self._ensure(sid)
+                except Exception:
+                    self._log("boot reconcile: session %s failed (sweep continues): %s"
+                              % (r.get("sid"), traceback.format_exc()))
             if reaped or resumed or restored:
                 self._log("boot reconcile: resumed %d cut turn(s), restored %d queued message(s), "
                           "reaped %d orphaned CLI(s)" % (resumed, restored, reaped))

@@ -176,6 +176,63 @@ class BootReconcile(unittest.TestCase):
             self.assertEqual(br.call_count, 1)
 
 
+class WriteRegConcurrency(unittest.TestCase):
+    def test_temp_names_are_writer_unique(self):
+        """During a kernel restart the OUTGOING kernel and the incoming boot reconcile write the
+        SAME sid's registry concurrently; a shared '<sid>.tmp' let one os.replace steal the other's
+        temp mid-write (FileNotFoundError, live 2026-07-06). Pin: concurrent writers never collide
+        and the final registry is one of the written values, with no stray temps left behind."""
+        d = tempfile.mkdtemp()
+        sid = "11111111-2222-3333-4444-888888888888"
+        errs = []
+
+        def hammer(tag):
+            try:
+                for i in range(50):
+                    sb.write_reg(Path(d), sid, {"sid": sid, "writer": tag, "i": i})
+            except Exception as e:
+                errs.append(e)
+
+        ts = [threading.Thread(target=hammer, args=(t,)) for t in ("a", "b", "c")]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join()
+        self.assertEqual(errs, [], "no writer may crash on another's temp file")
+        self.assertIn(sb.read_reg(Path(d), sid).get("writer"), ("a", "b", "c"))
+        strays = [f for f in os.listdir(os.path.join(d, "sdk")) if f.endswith(".tmp")]
+        self.assertEqual(strays, [], "failed/completed writes leave no temp litter")
+
+
+class BootReconcileResilience(unittest.TestCase):
+    def test_one_bad_session_does_not_strand_the_rest(self):
+        """Live 2026-07-06: a write_reg race on the FIRST session aborted two whole reconcile
+        passes, stranding every later session. One session's failure must log and continue."""
+        d = tempfile.mkdtemp()
+        be = _backend(d)
+        be._ensured = []
+        be._ensure = lambda sid: be._ensured.append(sid)
+        logs = []
+        be._log_cb = logs.append
+        bad = "11111111-aaaa-0000-0000-0000000000e1"
+        good = "11111111-aaaa-0000-0000-0000000000e2"
+        regs = [_reg(d, bad), _reg(d, good)]
+        for s in (bad, good):
+            sb.append_state(Path(d), s, "working")
+        real_write = sb.write_reg
+
+        def exploding_write(state_dir, sid, reg):
+            if sid == bad:
+                raise FileNotFoundError("simulated temp-steal race")
+            real_write(state_dir, sid, reg)
+
+        with mock.patch.object(sb.subprocess, "run", return_value=mock.Mock(stdout="")), \
+             mock.patch.object(sb, "write_reg", side_effect=exploding_write):
+            be._boot_reconcile(regs)
+        self.assertEqual(be._ensured, [good], "the sweep continued past the failing session")
+        self.assertTrue(any("sweep continues" in m for m in logs), "the failure is loud, not silent")
+
+
 class Drain(unittest.TestCase):
     def test_drain_stops_sessions_and_writes_no_state(self):
         d = tempfile.mkdtemp()
