@@ -535,6 +535,61 @@ function linkifyImgPaths(root: HTMLElement, paths: string[]): void {
   }
 }
 
+// A file:// URI → its local filesystem path: strip the scheme, percent-decode. file:///a/b → /a/b.
+function fileUriToPath(uri: string): string {
+  let p = uri.replace(/^file:\/\//i, "");   // file:///Users/… → /Users/… (host is empty for file:///)
+  try { p = decodeURIComponent(p); } catch { /* malformed %-escape — use verbatim */ }
+  return p;
+}
+// A clickable, VERBATIM file:// URL that opens the file in the host's default app — the SAME open-the-file
+// path the caption/image links use ({type:"openFile"} → the kernel runs `open <path>`, so e.g. a PDF opens
+// in the viewer). A bare file:// can't be followed by the browser from the http dashboard (it blocks the
+// scheme) and a VS Code editor won't render a PDF, so it's routed to the host opener instead of navigated.
+function fileUriLink(uri: string): HTMLElement {
+  const a = el("span", "file-uri-link");
+  a.textContent = uri;                       // shown exactly as written, selectable/copyable in place
+  const path = fileUriToPath(uri);
+  a.title = "Open " + path;
+  a.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (vscodeApi) vscodeApi.postMessage({ type: "openFile", path });
+  });
+  return a;
+}
+// Make bare file:// URLs inside a rendered CHAT message clickable (assistant replies + your own bubbles).
+// marked doesn't autolink the file: scheme and DOMPurify strips it, so without this they read as dead text.
+// Deliberately NOT applied to tool-use summaries (the user 2026-07-06). Skips code/pre (literal) and text
+// already inside a link; trailing sentence punctuation is left out of the link, not swallowed into the path.
+const FILE_URI_RE = /file:\/\/\/?[^\s<>"'`)]+/gi;
+function linkifyFileUris(root: HTMLElement): void {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const nodes: Text[] = [];
+  let n: Node | null;
+  while ((n = walker.nextNode())) nodes.push(n as Text);
+  for (const tn of nodes) {
+    if (tn.parentElement?.closest("a, .file-uri-link, code, pre")) continue;   // already a link, or literal code
+    const text = tn.data;
+    if (!/file:\/\//i.test(text)) continue;
+    const re = new RegExp(FILE_URI_RE.source, "gi");
+    const frag = document.createDocumentFragment();
+    let last = 0, any = false, m: RegExpExecArray | null;
+    while ((m = re.exec(text))) {
+      let uri = m[0];
+      const trail = uri.match(/[.,;:!?)\]}>"'`]+$/);   // don't grab a sentence's closing punctuation
+      if (trail) uri = uri.slice(0, uri.length - trail[0].length);
+      if (!uri) continue;
+      if (m.index > last) frag.appendChild(document.createTextNode(text.slice(last, m.index)));
+      frag.appendChild(fileUriLink(uri));
+      last = m.index + uri.length;
+      re.lastIndex = last;
+      any = true;
+    }
+    if (!any) continue;
+    if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
+    tn.replaceWith(frag);
+  }
+}
+
 function renderEvent(ev: ChatEvent, prevEpoch?: number | null, worked?: number | null): HTMLElement {
   const turn = renderEventInner(ev);
   // Deep-link anchor. An AskUserQuestion widget carries the ANSWER-line (tool_result
@@ -937,6 +992,7 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
         /* rendered as a command chip */
       } else if (ev.md) {
         bubble.innerHTML = md(ev.md);
+        linkifyFileUris(bubble);   // bare file:// URLs in a message → clickable (open in the host's default app)
       }
       // images, IN the bubble (part of his message): thumbnail + open/copy caption;
       // a literal path in the typed text becomes the same open-link inline.
@@ -972,6 +1028,7 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
     const body = el("div", "assistant md");
     body.innerHTML = md(ev.md);
     highlight(body);
+    linkifyFileUris(body);   // bare file:// URLs in the reply → clickable (open in the host's default app)
     turn.appendChild(body);
     return turn;
   }

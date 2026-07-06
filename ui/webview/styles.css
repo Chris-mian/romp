@@ -937,6 +937,13 @@ body { display: flex; flex-direction: column; }
   text-decoration: underline dotted; text-underline-offset: 2px;
 }
 .img-link:hover { text-decoration: underline; }
+/* a bare file:// URL in a chat message, made clickable (opens in the host's default app) — the romp
+   accent so it reads as a followable link; a long path wraps inside the bubble */
+.file-uri-link {
+  cursor: pointer; overflow-wrap: anywhere; color: var(--accent);
+  text-decoration: underline dotted; text-underline-offset: 2px;
+}
+.file-uri-link:hover { text-decoration: underline; }
 .img-copy { flex: 0 0 auto; cursor: pointer; padding: 0 3px; border-radius: 3px; }
 .img-copy:hover { background: rgba(255, 255, 255, 0.18); }
 /* the injected-note variant keeps captions readable on its dim background */
