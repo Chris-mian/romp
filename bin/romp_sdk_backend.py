@@ -1482,12 +1482,17 @@ class SdkBackend:
         return sid
 
     def resume(self, name: str, sid: str, cwd: str | None = None) -> bool:
+        """Mark a dormant/dead SDK session alive again so _ensure/connect restarts it. PRESERVE the
+        registry (spread) and especially its lastSid when set — lastSid tracks the NEWEST transcript
+        fsid (a /clear or relaunch mints new fsids under the same romp sid) and SdkSession resumes from
+        it; stamping the original sid here would silently resume an OLD conversation state (the
+        picker-revive fix, the user 2026-07-05)."""
         reg = read_reg(self.state_dir, sid) or {}
         cwd = cwd or reg.get("cwd") or os.path.expanduser("~")
-        write_reg(self.state_dir, sid, {"sid": sid, "name": name, "cwd": cwd,
+        write_reg(self.state_dir, sid, {**reg, "sid": sid, "name": name, "cwd": cwd,
                                         "mode": reg.get("mode", "acceptEdits"),
                                         "effort": reg.get("effort", DEFAULT_EFFORT),
-                                        "lastSid": sid, "alive": True})
+                                        "lastSid": reg.get("lastSid") or sid, "alive": True})
         append_state(self.state_dir, sid, "waiting")
         self._poke()
         return True

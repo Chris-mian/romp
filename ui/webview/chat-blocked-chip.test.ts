@@ -42,5 +42,6 @@ test("the chip reads 'working' for an open turn OR awaiting background work (not
 test("the FEED's blocked column still gates _api_error on `not who_working` (+ cache-only `ps`)", () => {
   // the feed is cache-only on a cold start (the user 2026-06-26): the API-error floor reads the parse only
   // when it's already cached (`ps`), still gated on `not who_working` — the badge fills in after the warm.
-  assert.match(KERNEL, /aerr = _api_error\(s\["path"\]\) if \(ps and not who_working\) else None/);
+  // b4d639e added the awaiting arm (live background agents outrank the stale error floor); the pin follows.
+  assert.match(KERNEL, /aerr = _api_error\(s\["path"\]\) if \(ps and not who_working and not sess_awaiting_why\) else None/);
 });

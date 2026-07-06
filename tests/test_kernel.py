@@ -3562,20 +3562,25 @@ class ViewBuilder(unittest.TestCase):
             km._reveal_chat = orig_rc; km._tmux_sessions = orig_tx; km._push_all = orig_pa
 
     def test_revive_session_resumes_and_unhides_tab(self):
-        # confirming the modal's "Revive" must actually resume the session (romp-postal-service revive → romp
-        # --resume --detach) AND un-hide its tab. Regression: the kernel had no reviveSession handler,
-        # so the modal's Revive did nothing — "it didn't revive it" (the user 2026-06-16).
+        # confirming the modal's "Revive" must actually resume the session AND un-hide its tab. The
+        # kernel owns the resume now (`romp <name> --resume <sid> --detach`): the old
+        # `romp-postal-service revive` subcommand was REMOVED in 2b5e181 but _revive_session kept
+        # shelling it — the CLI exits 0 on unknown commands with output DEVNULL'd, so the picker's
+        # Revive silently did nothing (the user 2026-07-05). Full coverage: tests/test_kernel_revive.py.
+        import subprocess as _sp
         km._set_hidden_tab("deadsid000", True)            # it was hidden when closed
         calls, saved = [], km.subprocess.run
-        km.subprocess.run = lambda *a, **k: calls.append(list(a[0]))
+        km.subprocess.run = (lambda *a, **k:
+                             calls.append(list(a[0])) or _sp.CompletedProcess(a[0], 0, "", ""))
         try:
             km._revive_session("deadsid000")
         finally:
             km.subprocess.run = saved
         self.assertTrue(calls, "revive must shell out to the resume path")
         argv = calls[0]
-        self.assertTrue(str(argv[0]).endswith("romp-postal-service"))
-        self.assertEqual(argv[-2:], ["revive", "deadsid000"])
+        self.assertTrue(str(argv[0]).endswith("/romp"),
+                        "the kernel owns the resume (bin/romp), never the removed postal subcommand")
+        self.assertEqual(argv[-3:], ["--resume", "deadsid000", "--detach"])
         self.assertNotIn("deadsid000", km._hidden_tabs(), "the revived tab is un-hidden")
 
     def test_split_reminders(self):

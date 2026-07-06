@@ -2045,16 +2045,40 @@ def _open_or_revive(sid):
 
 
 def _revive_session(sid):
-    """Bring a DEAD session back: `romp-postal-service revive <sid>` (→ romp <name> --resume <sid> --detach in
-    the session's recorded dir, reusing the SAME UUID), then un-hide its tab and focus the chat on it.
-    Reuses the battle-tested postal revive path (dir resolution, picker-grace, parked-mail wake). Runs
-    in a thread off the WS recv loop — the ~seconds-long resume must not block it; the sid is unchanged,
-    so the focus lands on the same tab once the periodic pusher delivers it. (the user 2026-06-16)"""
+    """Bring a DEAD session back, per backend, then un-hide its tab and focus the chat on it. SDK-owned
+    (registry entry exists) → SdkBackend.resume + connect: alive again, resuming its newest transcript
+    (lastSid) with history intact. Otherwise tmux → `romp <name> --resume <sid> --detach` in the session's
+    recorded dir (dir resolution, picker-grace via bin/romp's own picker-check). Runs in a thread off the
+    WS recv loop — the ~seconds-long resume must not block it; the sid is unchanged, so the focus lands on
+    the same tab once the pusher delivers it. (the user 2026-06-16.)
+
+    FAILURE IS LOUD (the user 2026-07-05): this used to shell `romp-postal-service revive`, a subcommand
+    2b5e181 removed (live-only addressing) — the CLI printed 'unknown command' and EXITED 0, output was
+    DEVNULL'd, and the code below focused a still-dead session, so the picker's Revive silently did
+    nothing for a week. Now the revive result is checked and a failure sends the chat a reviveFailed
+    event (clears the client's revive loader, shows the reason) instead of pretending it worked."""
+    name = _name_of(sid) or sid
+    be = _sdk()
+    ok, detail = False, ""
     try:
-        subprocess.run([str(HERE / "romp-postal-service"), "revive", sid], timeout=40,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except Exception:
-        sys.stderr.write("revive '%s': %s\n" % (sid, traceback.format_exc()))
+        if be and be.owns(sid):
+            ok = bool(be.resume(name, sid) and be.connect(sid))
+            detail = "" if ok else "the SDK backend could not resume it (see the kernel log)"
+        else:
+            cwd = _cwd_of(sid)
+            workdir = cwd if cwd and os.path.isdir(cwd) else os.path.expanduser("~")
+            r = subprocess.run([str(HERE / "romp"), name, "--resume", sid, "--detach"],
+                               cwd=workdir, capture_output=True, text=True, timeout=40)
+            ok = r.returncode == 0
+            if not ok:
+                detail = (r.stderr or r.stdout or "romp exited %d" % r.returncode).strip()[:200]
+    except Exception as e:
+        ok, detail = False, str(e)[:200]
+    if not ok:
+        sys.stderr.write("revive '%s' (%s): %s\n" % (name, sid, detail))
+        _send_to_app("chat", {"type": "reviveFailed", "id": sid, "name": name,
+                              "text": detail or "unknown error"})
+        return
     _kept_open.discard(sid)       # it's live again → no longer a read-only kept tab
     _set_hidden_tab(sid, False)   # it was hidden when closed; show the revived tab
     _push_all()                   # surface it promptly (the 4s pusher would catch it anyway)

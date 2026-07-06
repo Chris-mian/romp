@@ -2501,6 +2501,62 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
   if (vscodeApi) vscodeApi.postMessage({ type: "requestSessions" });
 }
 
+// ---- revive loader (the user 2026-07-05) ----
+// Reviving a dead session takes seconds (relaunch + resume), and the Revive click used to give ZERO
+// feedback. Per the repo's loading rule the FIRST thing up is the romp loader — spinning swirl +
+// wordmark + three pulsing dots, the same .rl-* treatment as the boot/pane loaders (their styles are
+// already on this page) — over the chat, with a "reviving <name>…" caption. EVENT-cleared: the
+// kernel's focus for that sid (revive succeeded) or reviveFailed (the loader morphs into the error
+// notice — fail loudly, never silently back to nothing). A 60s backstop can never trap the user.
+let revivePending: string | null = null;
+let reviveBackstop: number | undefined;
+
+function clearReviveLoader() {
+  revivePending = null;
+  if (reviveBackstop !== undefined) { clearTimeout(reviveBackstop); reviveBackstop = undefined; }
+  document.getElementById("revive-loader")?.remove();
+}
+
+function showReviveLoader(id: string, name: string) {
+  clearReviveLoader();
+  revivePending = id;
+  const o = el("div", ""); o.id = "revive-loader";
+  const inner = el("div", "rl-in");
+  const word = el("div", "rl-word");
+  const r = el("span", ""); (r as HTMLElement).style.color = "#1EA1EB"; r.textContent = "R";
+  const swirl = el("img", "rl-o") as HTMLImageElement;
+  swirl.src = "/media/romp-swirl-o.svg"; swirl.alt = "o"; swirl.onerror = () => swirl.remove();
+  const mm = el("span", ""); (mm as HTMLElement).style.color = "#54B204"; mm.textContent = "m";
+  const p = el("span", ""); (p as HTMLElement).style.color = "#4EA8A9"; p.textContent = "p";
+  word.append(r, swirl, mm, p);
+  const dots = el("div", "rl-dots");
+  dots.append(el("i", ""), el("i", ""), el("i", ""));
+  const cap = el("div", "revive-cap");
+  cap.textContent = `reviving “${name}”…`;
+  inner.append(word, dots, cap);
+  o.appendChild(inner);
+  document.body.appendChild(o);
+  reviveBackstop = window.setTimeout(
+    () => showReviveError(name, "still waiting — the resume may be stuck; check the kernel log"), 60000);
+}
+
+function showReviveError(name: string, text: string) {
+  // Morph the loader into the failure notice (fail loudly); build the overlay if it's already gone.
+  revivePending = null;
+  if (reviveBackstop !== undefined) { clearTimeout(reviveBackstop); reviveBackstop = undefined; }
+  let o = document.getElementById("revive-loader");
+  if (!o) { o = el("div", ""); o.id = "revive-loader"; document.body.appendChild(o); }
+  o.replaceChildren();
+  const box = el("div", "revive-err");
+  const msg = el("div", "revive-err-text");
+  msg.textContent = `Couldn’t revive “${name}”: ${text}`;
+  const btn = el("button", "revive-err-dismiss");
+  btn.textContent = "Dismiss";
+  btn.addEventListener("click", () => clearReviveLoader());
+  box.append(msg, btn);
+  o.appendChild(box);
+}
+
 // ---- in-webview confirm dialog (replaces the host's native modals) ----
 // One overlay at a time; Esc / backdrop click cancels (cb(null)). Buttons carry
 // a value handed to cb. Reuses the picker overlay's backdrop styling.
@@ -5074,6 +5130,7 @@ window.addEventListener("message", (e: MessageEvent) => {
   else if (m.type === "update") update(m);
   else if (m.type === "status") statusOnly(m);
   else if (m.type === "focus") {
+    if (revivePending && m.id === revivePending) clearReviveLoader();   // the revive landed — the loader's success event
     setActive(m.id, m.anchor, typeof m.anchorT === "number" ? m.anchorT : undefined, typeof m.anchorKind === "string" ? m.anchorKind : undefined);
     // A feed card click that resolved to a live goal → seed the composer citation chip (the user 2026-07-01).
     if (m.cite && typeof m.cite.itemId === "string" && typeof m.cite.title === "string") setCitation(m.id, { itemId: m.cite.itemId, title: m.cite.title });
@@ -5118,9 +5175,15 @@ window.addEventListener("message", (e: MessageEvent) => {
       "Revive restarts the session and resumes its conversation. Read-only just shows the transcript.",
       [{ label: "Revive", value: "revive" }, { label: "View read-only", value: "ro" }, { label: "Cancel", value: "" }],
       (v) => {
-        if (v === "revive") vscodeApi?.postMessage({ type: "reviveSession", id: m.id });
+        // acknowledge the click at once (the repo's loading rule): the romp loader goes up BEFORE the
+        // seconds-long resume, and clears event-based on the kernel's focus/reviveFailed reply.
+        if (v === "revive") { vscodeApi?.postMessage({ type: "reviveSession", id: m.id }); showReviveLoader(m.id, nm); }
         else if (v === "ro") vscodeApi?.postMessage({ type: "viewReadOnly", id: m.id });
       });
+  }
+  else if (m.type === "reviveFailed" && m.id) {
+    // the kernel's loud revive failure → the loader morphs into the reason (never a silent no-op)
+    showReviveError(String(m.name || m.id), String(m.text || "unknown error"));
   }
   else if (m.type === "focusComposer") { const ta = document.getElementById("composer-input") as HTMLTextAreaElement | null; ta?.focus(); }
   else if (m.type === "glowTurns") applyGlow(Array.isArray(m.groups) ? m.groups : [], Array.isArray(m.mids) ? m.mids : []);
