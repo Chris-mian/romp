@@ -29,8 +29,10 @@ test("linkify runs on BOTH chat message bodies (assistant reply + user bubble) a
   assert.equal(uses.length, 3, "linkifyFileUris is defined once and applied to exactly the two chat bodies");
 });
 
-test("linkify leaves code/existing-links alone and doesn't swallow trailing sentence punctuation", () => {
-  assert.match(RENDER, /closest\("a, \.file-uri-link, code, pre"\)/);
+test("linkify works inside INLINE backticks (agents backtick paths), skips only fenced code + existing links, trims trailing punctuation", () => {
+  // inline <code> is NOT skipped — a `file://…` path in backticks still linkifies; only fenced <pre> + links are skipped
+  assert.match(RENDER, /closest\("a, \.file-uri-link, pre"\)/);
+  assert.doesNotMatch(RENDER, /closest\("a, \.file-uri-link, code, pre"\)/);
   assert.match(RENDER, /uri = uri\.slice\(0, uri\.length - trail\[0\]\.length\)/);
 });
 

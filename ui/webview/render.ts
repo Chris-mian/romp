@@ -558,8 +558,10 @@ function fileUriLink(uri: string): HTMLElement {
 }
 // Make bare file:// URLs inside a rendered CHAT message clickable (assistant replies + your own bubbles).
 // marked doesn't autolink the file: scheme and DOMPurify strips it, so without this they read as dead text.
-// Deliberately NOT applied to tool-use summaries (the user 2026-07-06). Skips code/pre (literal) and text
-// already inside a link; trailing sentence punctuation is left out of the link, not swallowed into the path.
+// Deliberately NOT applied to tool-use summaries (the user 2026-07-06). Linkifies inside INLINE <code> too —
+// agents routinely wrap a path in backticks, and the user shouldn't have to tell them how to render links
+// (the user 2026-07-06); only FENCED <pre> code blocks (literal code samples, and syntax-highlighted) and
+// text already inside a link are skipped. Trailing sentence punctuation is left out, not swallowed.
 const FILE_URI_RE = /file:\/\/\/?[^\s<>"'`)]+/gi;
 function linkifyFileUris(root: HTMLElement): void {
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
@@ -567,7 +569,7 @@ function linkifyFileUris(root: HTMLElement): void {
   let n: Node | null;
   while ((n = walker.nextNode())) nodes.push(n as Text);
   for (const tn of nodes) {
-    if (tn.parentElement?.closest("a, .file-uri-link, code, pre")) continue;   // already a link, or literal code
+    if (tn.parentElement?.closest("a, .file-uri-link, pre")) continue;   // already a link, or a fenced code block
     const text = tn.data;
     if (!/file:\/\//i.test(text)) continue;
     const re = new RegExp(FILE_URI_RE.source, "gi");
