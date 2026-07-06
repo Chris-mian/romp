@@ -44,15 +44,18 @@ test("falls back gracefully when the summary isn't the canonical Agent \"…\" s
 const RENDER = fs.readFileSync(path.join(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
 const CSS = fs.readFileSync(path.join(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
 
-test("render.ts splits agent notifications out of the reminders fold into agent cards", () => {
+test("render.ts splits agent notifications out of the reminders into agent notice cards", () => {
   assert.match(RENDER, /const a = parseAgentNotif\(r\);/);
   assert.match(RENDER, /turn\.appendChild\(renderAgentNotif\(a,/);
   assert.match(RENDER, /else plain\.push\(r\);/);
-  assert.match(RENDER, /\$\{n\} system reminder/, "the leftover plain reminders still get the fold");
-  assert.match(RENDER, /f\.classList\.add\("agent-notif-fold"\)/);
+  // the leftover plain reminders now get their OWN muted notice card too (not the old italic fold)
+  assert.match(RENDER, /noticeCard\(\{ variant: "reminder", chip: "system"/);
+  assert.match(RENDER, /\$\{n\} reminder/);
+  // an agent notif IS a notice card now (the accent-blue variant), not a bare foldable
+  assert.match(RENDER, /noticeCard\(\{ variant: "agent", chip: "agent"/);
 });
 
-test("styles define the agent-notif card in the romp accent", () => {
-  assert.match(CSS, /\.agent-notif-fold \.fold-head \{[^}]*var\(--accent\)/);
-  assert.match(CSS, /\.agent-notif-body \{/);
+test("styles define the agent notice card in the romp accent", () => {
+  assert.match(CSS, /\.notice-card-agent \{ border-left-color: var\(--accent\); \}/);
+  assert.match(CSS, /\.notice-chip-agent \{ color: var\(--accent\)/);
 });

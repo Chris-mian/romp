@@ -493,9 +493,10 @@ def write_reg(state_dir: Path, sid: str, reg: dict) -> None:
 # silent, and instructing the model — whose transcript tail is an unanswered user message — to pick
 # the work back up. romp-injected → author 'romp' (gray bubble), skipped by the planner as a goal.
 BOOT_RESUME_NUDGE = (
-    "<!-- romp-injected -->[romp] The romp kernel restarted and cut this session's in-flight turn; "
-    "the session has been resumed with its history intact. Re-read the tail of the conversation and "
-    "pick the work back up where it stopped. Any messages queued before the restart follow this one.")
+    "<!-- romp-injected --><!-- romp-system -->[romp] The romp kernel restarted and cut this session's "
+    "in-flight turn; the session has been resumed with its history intact. Re-read the tail of the "
+    "conversation and pick the work back up where it stopped. Any messages queued before the restart "
+    "follow this one.")
 
 # The marker only SDK-driven claude CLIs carry (the kernel drives them over stdin); a tmux session's
 # interactive `claude --resume` never has it, so the orphan reap can never touch a tmux CLI.

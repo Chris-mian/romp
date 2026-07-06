@@ -1263,17 +1263,47 @@ body { display: flex; flex-direction: column; }
   background: var(--box-bg); padding: 10px 13px;
 }
 .reminder-body .fold-pre + .fold-pre { margin-top: 6px; }
-.reminder-fold .fold-head { font-style: italic; }
 
-/* a backgrounded agent's completion (<task-notification>) → an informative card, not raw XML (the user
-   2026-06-30): the fold head names the agent + status in the romp accent; the body is its final message. */
-.agent-notif-fold .fold-head { color: var(--accent); font-weight: 600; }
-.agent-notif-fold .fold-head:hover { color: var(--accent); filter: brightness(1.15); }
-.agent-notif-body {
-  margin: 5px 0 0; border: 1px solid var(--box-border); border-left: 2px solid var(--accent);
-  border-radius: 6px; background: var(--box-bg); padding: 9px 12px; max-height: 420px; overflow: auto;
+/* THE notice-card family (noticeCard, the user 2026-07-06): informational transcript notices — a
+   backgrounded agent's report, a romp system notice, folded system-reminders — each a boxed card with a
+   type CHIP + a one-line gist head + a keyed collapse→expand body. Own look, inspired by the postal/teammate
+   cards but distinct from BOTH: a per-VARIANT color (agent = accent blue, romp = swirl + faded-accent,
+   reminder = muted) instead of postal's per-peer color or teammate's dashed neutral. The clickable head IS
+   the collapse toggle (like the `foldable` disclosure), so the box never needs a redundant summary line. */
+.notice-card {
+  border: 1px solid var(--box-border); border-left: 2px solid var(--dim); border-radius: 6px;
+  background: var(--box-bg); padding: 7px 12px; overflow: hidden;
 }
-.agent-notif-summary { color: var(--dim); }
+.notice-head { display: flex; align-items: baseline; gap: 7px; font-size: 0.9em; }
+.notice-collapsible .notice-head { cursor: pointer; }
+.notice-caret { flex: 0 0 auto; font-size: 0.74em; opacity: 0.7; }
+.notice-chip {
+  flex: 0 0 auto; display: inline-flex; align-items: center; gap: 4px;
+  font-size: 0.7em; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+  padding: 1px 7px; border-radius: 9px; border: 1px solid var(--dim); color: var(--dim);
+}
+.notice-chip-logo { width: 12px; height: 12px; display: block; flex: 0 0 auto; }
+.notice-head-text { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--fg); opacity: 0.9; }
+.notice-collapsible .notice-head:hover .notice-head-text { text-decoration: underline; text-underline-offset: 2px; }
+.notice-body { margin-top: 7px; max-height: 420px; overflow: auto; }
+.notice-collapsible:not(.notice-open) .notice-body { display: none; }
+.notice-md { color: var(--fg); }
+.notice-md.md > :first-child { margin-top: 0; }
+.notice-md.md > :last-child { margin-bottom: 0; }
+.notice-plain { color: var(--dim); }
+
+/* agent notices — the romp accent blue (a backgrounded agent came to rest) */
+.notice-card-agent { border-left-color: var(--accent); }
+.notice-chip-agent { color: var(--accent); border-color: var(--accent); }
+.notice-dot-agent { border-color: var(--accent); }
+/* romp system notices — the swirl carries the identity; a FADED accent ties it to "the romp blue" without
+   competing with the bright agent card. NOT the gray nudge bubble. */
+.notice-card-romp { border-left-color: rgba(156, 210, 255, 0.45); }
+.notice-chip-romp { color: var(--fg); opacity: 0.85; border-color: rgba(156, 210, 255, 0.45); }
+/* reminders — the most muted: a plain dim frame, no logo, dimmest of the three */
+.notice-card-reminder { opacity: 0.9; }
+.notice-chip-reminder { font-style: italic; }
 
 /* the pinned "system context" card (the user 2026-06-19): a proper bordered BOX at the very top of the
    transcript that looks complete even when collapsed (a ⚙ header + one-line summary + caret), expanding
