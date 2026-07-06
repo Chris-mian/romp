@@ -110,6 +110,80 @@ def _read_jsonl(path):
         return
 
 
+# Append-incremental transcript reads (the user 2026-07-05: the dashboard re-parsed a 40MB streaming
+# transcript FROM BYTE ZERO on every push — ~0.6s of json.loads per append, saturating the push loop and
+# queueing every click behind it). Transcripts are append-only, so cache each file's parsed records with
+# the byte offset of the last COMPLETE line: a grown file loads only the appended bytes. Guards, in order:
+#  - same (mtime, size)   → serve the cached records as-is (the common no-change poll);
+#  - grew                 → verify the cached tail bytes still sit before the cached offset (a REWRITE that
+#                           happens to be larger would otherwise serve a corrupt splice), then parse just
+#                           the new bytes. Mismatch → full re-read;
+#  - shrank / same-size-new-mtime → full re-read (a rewrite, not an append).
+# A trailing line with no "\n" yet (a writer caught mid-append) is NOT consumed — the offset stays before
+# it, so the next read picks the completed line up. Records are treated as IMMUTABLE by every consumer
+# (FileAdapter builds fresh atom dicts; nothing writes into a record), matching the kernel's existing
+# whole-parse cache contract. The cached list itself is never extended in place — a grown file stores a
+# NEW list — so a concurrent reader holding the old list is never surprised mid-iteration.
+_JSONL_CACHE = {}                 # path -> (mtime, size, offset, tail_bytes, records)
+_JSONL_CACHE_MAX = 64             # bounded by fleet size; wholesale clear is fine (one cold re-read each)
+_JSONL_TAIL_GUARD = 64            # bytes of pre-offset content re-verified before an incremental read
+
+
+def _scan_jsonl_bytes(data, base_offset):
+    """(records, consumed) for a bytes blob of jsonl starting at base_offset: parsed objects of every
+    COMPLETE line, and the byte offset just past the last complete line (a trailing partial is left)."""
+    end = data.rfind(b"\n")
+    if end < 0:
+        return [], base_offset
+    records = []
+    for line in data[:end + 1].splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            records.append(json.loads(line.decode("utf-8", "replace")))
+        except Exception:
+            continue
+    return records, base_offset + end + 1
+
+
+def _read_jsonl_incremental(path):
+    """The parsed records of `path` (a list, NOT a generator), served append-incrementally per the cache
+    contract above. Falls back to a full read on any surprise; [] on any error, like _read_jsonl."""
+    path = str(path)
+    try:
+        st = os.stat(path)
+    except OSError:
+        _JSONL_CACHE.pop(path, None)
+        return []
+    hit = _JSONL_CACHE.get(path)
+    if hit is not None and hit[0] == st.st_mtime and hit[1] == st.st_size:
+        return hit[4]
+    try:
+        with open(path, "rb") as fh:
+            if hit is not None and st.st_size > hit[1]:
+                _, _, offset, tail, records = hit
+                fh.seek(max(0, offset - len(tail)))
+                if fh.read(len(tail)) == tail:            # the file really is our cached prefix + more
+                    new, offset = _scan_jsonl_bytes(fh.read(), offset)
+                    records = records + new               # a NEW list — never extend the served one in place
+                else:
+                    fh.seek(0)                            # prefix changed → a rewrite → full re-read
+                    records, offset = _scan_jsonl_bytes(fh.read(), 0)
+            else:
+                records, offset = _scan_jsonl_bytes(fh.read(), 0)
+            tail_from = max(0, offset - _JSONL_TAIL_GUARD)
+            fh.seek(tail_from)
+            tail = fh.read(offset - tail_from)
+    except OSError:
+        _JSONL_CACHE.pop(path, None)
+        return []
+    if len(_JSONL_CACHE) > _JSONL_CACHE_MAX:
+        _JSONL_CACHE.clear()
+    _JSONL_CACHE[path] = (st.st_mtime, st.st_size, offset, tail, records)
+    return records
+
+
 def _content(message):
     """The content[] of a message, normalized: a bare string becomes one text block,
     so every atom carries a list of blocks (the 'one atom, many blocks' shape)."""
@@ -223,7 +297,7 @@ class FileAdapter:
         for fp in files:
             fsid = Path(fp).stem
             is_leaf = (fsid == leaf_stem)
-            for r in _read_jsonl(fp):
+            for r in _read_jsonl_incremental(fp):   # append-incremental: a streaming transcript costs only its delta
                 seq += 1
                 t = r.get("type")
                 u = r.get("uuid")

@@ -1704,6 +1704,19 @@ class SdkBackend:
         if s:
             s.effort = value        # picker label reflects it now; the reconnect makes it real
             s.request_reconnect()
+            # Synthesize the "/effort X" invocation atom, exactly as set_model does for "/model X": the
+            # reconnect leaves NO transcript record at all, so without this an idle-session effort change
+            # showed nothing in the chat while a busy one (parked) showed a queued chip — the same pick,
+            # visibly acknowledged or not depending on timing (the user 2026-07-05: "somewhat
+            # inconsistent"). One chip, both paths.
+            t = int(time.time())
+            disp = "/effort " + value
+            uid = "cmd:%d:effort" % t
+            self._live.setdefault(sid, {})[uid] = {
+                "type": "user", "uuid": uid, "session_id": sid, "fsid": s.resume_sid, "parentUuid": None,
+                "t": t, "author": "human", "command": "/effort", "_echo_text": disp,
+                "message": {"role": "user", "content": [{"type": "text", "text": disp}]}}
+            self._wake_push()
         return True
 
     def owns(self, sid: str) -> bool:

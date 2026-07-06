@@ -193,15 +193,19 @@ class KernelWiring(unittest.TestCase):
     def test_askfollowup_optimistically_reopens_the_card(self):
         # SDK parity with the tmux path (the user 2026-06-23): a follow-up on an SDK card reopens its goal NOW
         # (optimistic_followup → board jumps to WORKING + a "Followed up" chip), not just sends the text. A
-        # reopen (True) triggers a push so the board updates immediately.
+        # reopen (True) dirty-marks the views + wakes the pusher (the store write is invisible to the fleet
+        # sig, so a plain push would have served the stale cached feed — the user 2026-07-05).
         km.jd.optimistic_followup = lambda sid, gid, **kw: (self.fu_calls.append((sid, gid)), True)[1]   # **kw tolerates text=/now=/stub=
-        self.pushes.clear()
+        dirty_before = km._views_dirty[0]
+        km._pusher_wake.clear()
         self.assertTrue(self._route({"type": "askFollowUp", "itemId": "sid-sdk:g1", "nudge": True, "text": "status?"}))
         sent = self._sent_to("sid-sdk")
         self.assertTrue(sent and "status?" in sent[0], "the follow-up body carries the text")
         self.assertIn("<!-- romp-injected -->", sent[0], "a nudge is romp-authored → gray bubble marker")
         self.assertIn(("sid-sdk", "sid-sdk:g1"), self.fu_calls, "the SDK follow-up reopens the goal optimistically")
-        self.assertTrue(self.pushes, "a reopen pushes the refreshed board at once")
+        self.assertGreater(km._views_dirty[0], dirty_before, "a reopen dirty-marks the views past the cache")
+        self.assertTrue(km._pusher_wake.is_set(), "…and wakes the pusher so the board updates at once")
+        km._pusher_wake.clear()
 
     def test_askfollowup_without_itemid_just_sends(self):
         # a raw follow-up with no goal id (e.g. a typed message routed as askFollowUp) sends only — no reopen.
