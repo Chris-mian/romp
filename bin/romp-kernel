@@ -14,7 +14,7 @@ old). Port status (KEEP/ADAPT/DROP) tracked in design/ui-parity.md + backlog.md.
 
 Run:  python3 ~/GitRepos/romp-event-model/bin/romp-kernel   → opens http://127.0.0.1:7433
 """
-import json, os, re, sys, time, threading, traceback, base64, hashlib, hmac, struct, subprocess, shutil, shlex, http.client, uuid
+import json, os, re, signal, sys, time, threading, traceback, base64, hashlib, hmac, struct, subprocess, shutil, shlex, http.client, uuid
 from pathlib import Path
 from datetime import datetime
 from importlib.machinery import SourceFileLoader
@@ -1694,7 +1694,8 @@ def _sdk():
                 poke=_producer_wake.set, push=_pusher_wake.set,
                 mcp_config=(str(_SDK_MCP) if _SDK_MCP.exists() else None),
                 append_prompt_path=(str(_SDK_PROMPT) if _SDK_PROMPT.exists() else None),
-                log=lambda m: sys.stderr.write("sdk-backend: %s\n" % m))
+                log=lambda m: sys.stderr.write("sdk-backend: %s\n" % m),
+                reconcile=True)   # boot reconcile: reap orphaned CLIs, resume cut turns, deliver persisted queues
         except Exception:
             sys.stderr.write("sdk-backend unavailable: %s\n" % traceback.format_exc())
             _sdk_backend = False
@@ -4762,7 +4763,37 @@ def _session_chip(sid, path, session, tm, now):
 # chat renders them as queued bubbles IN THAT ORDER and _apply_pending_ops delivers them IN THAT ORDER
 # the moment compaction ends. A repeated model/effort pick REPLACES its earlier parked op in place (last
 # pick wins — one queued chip, not a pile), since only the final setting can matter.
-_pending_ops = {}             # sid -> [("send", text, echo) | ("model", v) | ("effort", v) | ("compact",), …] in park order
+_PENDING_OPS_FILE = Path(jd.STATE) / "pending-ops.json"
+
+
+def _load_pending_ops():
+    """Restore the parked-ops queues a previous kernel mirrored to disk (_save_pending_ops) — a kernel
+    restart used to drop them SILENTLY (in-memory only), losing every message/pick the user queued
+    against a busy session (2026-07-05: the LaunchAgent outage ate all of them). Best-effort: an
+    unreadable file logs and starts empty rather than blocking boot."""
+    try:
+        d = json.loads(_PENDING_OPS_FILE.read_text())
+        return {str(k): [tuple(o) for o in v if isinstance(o, list) and o]
+                for k, v in d.items() if isinstance(v, list) and v}
+    except OSError:
+        return {}                                     # first boot / nothing parked — normal
+    except Exception:
+        sys.stderr.write("pending-ops load: %s\n" % traceback.format_exc())
+        return {}
+
+
+def _save_pending_ops():
+    """Mirror _pending_ops to disk on every mutation, atomically, so parked ops survive a kernel
+    death. Tiny file, mutation-rate writes (a park or a delivery), not a hot path."""
+    try:
+        tmp = _PENDING_OPS_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps({k: [list(o) for o in v] for k, v in _pending_ops.items() if v}))
+        os.replace(tmp, _PENDING_OPS_FILE)
+    except Exception:
+        sys.stderr.write("pending-ops save: %s\n" % traceback.format_exc())
+
+
+_pending_ops = _load_pending_ops()   # sid -> [("send", text, echo) | ("model", v) | ("effort", v) | ("compact",), …] in park order
 
 
 def _compacting_now(sid):
@@ -4811,6 +4842,7 @@ def _park_op(sid, op):
             q.append(op)
     else:
         q.append(op)
+    _save_pending_ops()
     _push_all()
 
 
@@ -4892,6 +4924,7 @@ def _apply_pending_ops():
             _pending_ops.pop(sid, None)               # a dead session's queue is dropped, never retried
         if not _pending_ops.get(sid):
             _pending_ops.pop(sid, None)
+        _save_pending_ops()                           # every delivery/drop shrinks the disk mirror too
         _push_all()
 
 
@@ -10633,6 +10666,33 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(200, json.dumps({"ok": True}), "application/json")
                 Sessions.backend_for(sid).send(sid, body["text"])   # no optimistic echo: an external/postal
                 return self._send(200, json.dumps({"ok": True}), "application/json")   # send isn't a human composer bubble
+            if u.path in ("/interrupt", "/end"):
+                # Headless session control (2026-07-05): interrupt/end existed ONLY as WS drive ops, so
+                # a session could be FED without a browser (POST /send, postal) but never STOPPED — a
+                # runaway had no headless escape hatch. These mirror the WS handlers exactly (same
+                # backend calls, same chip/close events). Body: {"id"|"name": <session>}; remote
+                # sessions forward over their tunnel like /send.
+                try:
+                    b = json.loads(raw_body or b"{}")
+                    who = str(b.get("id") or b.get("name") or "") if isinstance(b, dict) else ""
+                except Exception:
+                    who = ""
+                if not who:
+                    return self._send(400, json.dumps({"ok": False, "error": "id or name required"}), "application/json")
+                sid = _sid_of(who)
+                r = _host_for_sid(sid)
+                if r is not None:                               # remote session → forward over its -L tunnel
+                    _remote_forward(r, u.path, {"id": sid})
+                    return self._send(200, json.dumps({"ok": True}), "application/json")
+                be = Sessions.backend_for(sid)
+                if u.path == "/interrupt":
+                    be.interrupt(sid)                           # Esc/stop AND settle idle (in the backend)
+                    _interrupt_clicked[str(sid)] = time.time()  # chip → "interrupting" NOW, same as the WS op
+                else:
+                    be.kill(sid)
+                    _send_to_app("chat", {"type": "closed", "id": sid})
+                _push_all()
+                return self._send(200, json.dumps({"ok": True}), "application/json")
             if u.path == "/working":
                 # Publish/clear a session's working-note in the backend-agnostic store, so the postal bus's
                 # set_working goes through the kernel (no tmux @romp-working) and an SDK session can publish a
@@ -11112,13 +11172,36 @@ def _parent_watch():
     os._exit(0)
 
 
+def _graceful_term(signum, frame):
+    """SIGTERM = the manager stopping/refreshing us (it grants no grace of its own). Drain instead of
+    dying mid-flight: SDK sessions are stopped cleanly so their claude children exit with us instead
+    of orphaning to launchd as zombie transcript-writers, and any in-flight turn is interrupted so
+    its state settles honestly. Parked ops + SDK queues are already mirrored to disk on every
+    mutation, and a cut turn keeps its 'working' state tail — the NEXT kernel's boot reconcile
+    resumes exactly those. Bounded (~2s) so `romp --refresh` stays snappy. Never construct the
+    backend here — no SDK sessions were running if it doesn't exist."""
+    try:
+        sys.stderr.write("romp-kernel: SIGTERM — draining SDK sessions\n")
+        be = _sdk_backend or None
+        if be is not None and hasattr(be, "drain"):
+            be.drain(2.0)
+    except Exception:
+        sys.stderr.write("romp-kernel: drain failed: %s\n" % traceback.format_exc())
+    finally:
+        os._exit(0)
+
+
 def main():
     # Export the kernel's claude resolution for every judge call (in-process tiers AND `romp-judge
     # --once` subprocesses): judges exec the binary directly, and a kernel started over non-login ssh
     # (a federated host) has no ~/.local/bin on PATH — bare `claude` exec-failed silently there.
     os.environ.setdefault("ROMP_CLAUDE_BIN", _claude_bin())
+    signal.signal(signal.SIGTERM, _graceful_term)             # drain, don't die mid-flight (see _graceful_term)
     _ensure_bundles()
     _boot_warm()                                              # pre-parse the live fleet during the reconnect gap (fast first paint)
+    threading.Thread(target=_sdk, daemon=True).start()        # construct the SDK backend NOW so its boot
+    #                                                           reconcile (cut turns, queues, orphans) runs at
+    #                                                           boot, not on the first lazy touch
     threading.Thread(target=_producer, daemon=True).start()
     threading.Thread(target=_pusher, daemon=True).start()
     threading.Thread(target=_ask_poll, daemon=True).start()   # scrape live AskUserQuestion pickers → chat

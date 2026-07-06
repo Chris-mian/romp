@@ -22,6 +22,8 @@ import difflib
 import json
 import os
 import re
+import signal
+import subprocess
 import threading
 import time
 import traceback
@@ -394,6 +396,30 @@ def last_state(state_dir: Path, sid: str) -> dict:
         return {}
 
 
+def last_state_value(state_dir: Path, sid: str) -> str:
+    """The latest STATE record's value in states/<sid>.jsonl, skipping the interleaved awaiting
+    OVERLAY records ('' if none). last_state() returns the literal last LINE — which can be an
+    overlay (the boot heal itself appends awaiting:false) — so anything keying on the state tail
+    (the boot reconcile's cut-turn detector) must read through the overlays, not the last line."""
+    p = Path(state_dir) / "states" / (sid + ".jsonl")
+    val = ""
+    try:
+        with open(p) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(rec, dict) and "state" in rec:
+                    val = str(rec["state"])
+    except OSError:
+        pass
+    return val
+
+
 def last_awaiting(state_dir: Path, sid: str) -> bool | None:
     """The latest awaiting-OVERLAY value in states/<sid>.jsonl — the most recent line carrying an
     "awaiting" key (state records interleave with overlays, so the very last line isn't necessarily one).
@@ -450,6 +476,38 @@ def write_reg(state_dir: Path, sid: str, reg: dict) -> None:
     tmp = p.with_suffix(".tmp")
     tmp.write_text(json.dumps(reg))
     os.replace(tmp, p)
+
+
+# The continuation nudge the boot reconcile prepends to a CUT session's queue (a turn the previous
+# kernel's death interrupted): visible in the chat as a gray romp card, so the recovery is never
+# silent, and instructing the model — whose transcript tail is an unanswered user message — to pick
+# the work back up. romp-injected → author 'romp' (gray bubble), skipped by the planner as a goal.
+BOOT_RESUME_NUDGE = (
+    "<!-- romp-injected -->[romp] The romp kernel restarted and cut this session's in-flight turn; "
+    "the session has been resumed with its history intact. Re-read the tail of the conversation and "
+    "pick the work back up where it stopped. Any messages queued before the restart follow this one.")
+
+# The marker only SDK-driven claude CLIs carry (the kernel drives them over stdin); a tmux session's
+# interactive `claude --resume` never has it, so the orphan reap can never touch a tmux CLI.
+_SDK_CLI_MARK = "--input-format stream-json"
+
+
+def find_orphan_clis(ps_lines: list[str], lastsids: list[str]) -> list[int]:
+    """PIDs of SDK-driven `claude` CLIs resuming one of OUR sessions (`--resume <lastSid>` + the
+    stream-json mark). At kernel boot we have started no sessions yet, so every match is a leftover
+    of a dead kernel — an orphaned writer that would fight the resume for the transcript. Pure
+    (takes `ps -axo pid=,command=` lines) so tests need no live processes."""
+    out = []
+    for ln in ps_lines:
+        parts = ln.strip().split(None, 1)
+        if len(parts) < 2 or not parts[0].isdigit():
+            continue
+        pid, cmd = int(parts[0]), parts[1]
+        if _SDK_CLI_MARK not in cmd:
+            continue
+        if any(s and ("--resume " + s) in cmd for s in lastsids):
+            out.append(pid)
+    return out
 
 
 def list_regs(state_dir: Path) -> list[dict]:
@@ -557,7 +615,10 @@ class SdkSession:
         # in-flight turn ends, so the kernel can render them as the chat's "queued" indicator
         # (pending_queued). One turn in flight at a time; the not-yet-started turns persist here
         # across a reconnect. _input_wake is set whenever a turn may have become releasable.
-        self._pending: list[str] = []
+        # Seeded from the registry's persisted queue (mirrored on every mutation — _persist_queue)
+        # so a kernel death can DELAY queued messages but never lose them; the boot reconcile
+        # resumes any session with a non-empty persisted queue and this seed delivers it.
+        self._pending: list[str] = [t for t in (reg.get("queue") or []) if isinstance(t, str) and t]
         self._input_wake: asyncio.Event | None = None
         self._cur_ask_fut: asyncio.Future | None = None
         self._lock = threading.Lock()
@@ -576,6 +637,7 @@ class SdkSession:
         with self._lock:
             self._pending.append(text)
             loop, wake = self.loop, self._input_wake
+        self._persist_queue()
         if loop is not None and wake is not None:
             loop.call_soon_threadsafe(wake.set)
 
@@ -592,9 +654,24 @@ class SdkSession:
         Only pending (not-yet-started) turns are cancelable; once the input generator has fed a turn to
         the SDK it's gone from _pending and no longer listed, so there's nothing to mis-cancel."""
         with self._lock:
-            if 0 <= idx < len(self._pending):
-                return self._pending.pop(idx)
-        return None
+            item = self._pending.pop(idx) if 0 <= idx < len(self._pending) else None
+        if item is not None:
+            self._persist_queue()
+        return item
+
+    def _persist_queue(self):
+        """Mirror _pending to the registry (reg['queue']) so queued turns survive a kernel death —
+        the boot reconcile resumes any session whose persisted queue is non-empty and the __init__
+        seed re-delivers it. Called on every mutation (enqueue / unqueue / the input generator's
+        pop), from the kernel thread AND the loop thread — _update_reg serializes the writes. A
+        turn already FED to the SDK is out of the persisted queue by design: it reaches the
+        transcript as a user atom, which is the cut-turn resume's territory, not replay's."""
+        with self._lock:
+            snap = list(self._pending)
+        try:
+            self.backend._update_reg(self.sid, queue=snap)
+        except Exception:
+            self.backend._log("persist queue (%s): %s" % (self.name, traceback.format_exc()))
 
     def interrupt(self):
         if self.loop and self.client:
@@ -812,6 +889,7 @@ class SdkSession:
                 if item is None:
                     await self._input_wake.wait()   # idle, or holding behind a wedged turn → wait for a change
                     continue
+                self._persist_queue()               # the fed turn leaves the persisted queue (it lands in the transcript)
                 if fresh:
                     self.since = int(time.time())    # a new turn starts now (mid-turn forwards keep the turn's clock)
                     self._interrupted = False        # a fresh turn → clear any stale interrupt flag
@@ -1219,7 +1297,7 @@ class SdkBackend:
 
     def __init__(self, state_dir, claude_bin: str, notify, poke=None, push=None,
                  mcp_config: str | None = None, append_prompt_path: str | None = None,
-                 log=None):
+                 log=None, reconcile: bool = False):
         self.state_dir = Path(state_dir)
         self.claude_bin = claude_bin
         self._notify = notify              # notify(app, msg) -> push to clients (kernel._send_to_app)
@@ -1230,15 +1308,25 @@ class SdkBackend:
         self._log_cb = log
         self.sessions: dict[str, SdkSession] = {}
         self._lock = threading.Lock()
+        self._reg_lock = threading.Lock()         # serializes _update_reg read-modify-writes (queue mirror
+        #                                           writes come from kernel AND loop threads)
         self._pending_ask: dict[str, bool] = {}   # sid -> has an ask awaiting answer
         self._live: dict[str, dict] = {}          # sid -> {key -> atom}: the in-memory LIVE TAIL (ahead of disk)
         self._rl_lock = threading.Lock()          # serializes usage.json read-merge-write (_record_rate_limit)
         # Kernel-restart heal: nothing is running yet, so any alive session still reading awaiting:true is stale
         # — its background tasks (and the Stop hook that clears the overlay) died with the previous kernel. Left
         # uncleared it reads working/awaiting forever, climbing a ghost work-timer (reorder_bug 2026-06-24).
-        for reg in list_regs(self.state_dir):
+        regs = list_regs(self.state_dir)
+        for reg in regs:
             if reg.get("alive"):
                 self._heal_stale_awaiting(reg["sid"])
+        # Boot reconcile (reconcile=True: the KERNEL passes it at boot; tests and ad-hoc constructions
+        # opt in explicitly): recover what the previous kernel's death left behind — reap orphaned
+        # CLIs, resume cut turns, deliver persisted queues. In a thread: it spawns claude processes
+        # and must not block construction (the WS handler constructs this backend lazily).
+        if reconcile:
+            threading.Thread(target=self._boot_reconcile, args=(regs,),
+                             name="sdk-boot-reconcile", daemon=True).start()
         # NOTE: we deliberately do NOT heal a stale in-flight STATE ("working"/…) on restart. A session whose
         # turn was killed by the kernel restart (e.g. the user hit Refresh mid-turn) keeps its last "working" in
         # the log, so the auto-nudge GENUINE-STOP GATE (_last_state_value in _PROGRESSING_STATES) correctly SKIPS
@@ -1257,6 +1345,89 @@ class SdkBackend:
                 append_awaiting(self.state_dir, sid, False)
         except Exception:
             pass
+
+    def _boot_reconcile(self, regs: list[dict]) -> None:
+        """The kernel just booted — reconcile what the previous kernel's death left behind. Event-keyed
+        on the boot itself plus each session's state tail, never on ages or timers:
+          * REAP orphaned SDK CLIs still resuming our sessions: a dead kernel's children re-parent to
+            launchd and keep writing the transcript, so a resume would give the conversation two writers.
+          * A session whose state tail is 'working' had its turn CUT by the kernel death — a user
+            interrupt writes 'idle', a finished turn 'waiting'; only a kill leaves 'working' — so resume
+            it with a visible continuation nudge (BOOT_RESUME_NUDGE) ahead of its restored queue. The
+            same marker makes the auto-nudge genuine-stop gate skip these sessions, which is correct for
+            a USER interrupt but was exactly the silent purgatory for a kernel-death cut (2026-07-05:
+            every SDK session stranded mid-turn until hand-resumed).
+          * A session with a persisted queue (reg['queue'], the _persist_queue mirror): resume it so the
+            queue delivers via the __init__ seed.
+        Everything else stays lazy/dormant. Loud one-line summary whenever anything was recovered."""
+        try:
+            alive = [r for r in regs if r.get("alive") and r.get("sid")]
+            reaped = 0
+            lastsids = [str(r.get("lastSid") or "") for r in alive if r.get("lastSid")]
+            if lastsids:
+                try:
+                    ps = subprocess.run(["ps", "-axo", "pid=,command="],
+                                        capture_output=True, text=True, timeout=10).stdout
+                    for pid in find_orphan_clis(ps.splitlines(), lastsids):
+                        if pid == os.getpid():
+                            continue
+                        try:
+                            os.kill(pid, signal.SIGTERM)
+                            reaped += 1
+                        except (ProcessLookupError, PermissionError):
+                            pass
+                except Exception:
+                    self._log("boot reconcile: orphan reap failed: %s" % traceback.format_exc())
+            resumed, restored = 0, 0
+            for r in alive:
+                sid = str(r["sid"])
+                queued = [t for t in (r.get("queue") or []) if isinstance(t, str) and t]
+                cut = last_state_value(self.state_dir, sid) == "working"
+                if not (cut or queued):
+                    continue                       # idle and empty-queued → stays lazy, exactly as before
+                if cut:
+                    # Prepend the nudge to the PERSISTED queue (not enqueue()) so it is fed FIRST,
+                    # before the restored backlog, and survives even a death mid-reconcile.
+                    with self._reg_lock:
+                        reg = read_reg(self.state_dir, sid) or dict(r)
+                        reg["queue"] = [BOOT_RESUME_NUDGE] + [t for t in (reg.get("queue") or [])
+                                                              if isinstance(t, str) and t and t != BOOT_RESUME_NUDGE]
+                        write_reg(self.state_dir, sid, reg)
+                    resumed += 1
+                restored += len(queued)
+                self._ensure(sid)
+            if reaped or resumed or restored:
+                self._log("boot reconcile: resumed %d cut turn(s), restored %d queued message(s), "
+                          "reaped %d orphaned CLI(s)" % (resumed, restored, reaped))
+                self._poke()
+        except Exception:
+            self._log("boot reconcile failed: %s" % traceback.format_exc())
+
+    def drain(self, timeout: float = 2.0) -> dict:
+        """Graceful-shutdown drain (the kernel's SIGTERM handler): stop every running session cleanly
+        within `timeout` — interrupt any in-flight turn and close the SDK clients so the claude
+        subprocesses exit with us instead of being orphaned to launchd as zombie transcript-writers.
+        Queued turns are already mirrored to the registry (_persist_queue). A cut turn's state log
+        keeps its trailing 'working' (shutdown() writes no idle/waiting; _on_session_gone skips the
+        settle when ended is set) — exactly the marker the NEXT kernel's boot reconcile resumes by.
+        Bounded so a routine `romp --refresh` stays snappy."""
+        with self._lock:
+            sessions = list(self.sessions.values())
+        inflight = sum(1 for s in sessions if s.inflight)
+        for s in sessions:
+            try:
+                s.shutdown()
+            except Exception:
+                pass
+        deadline = time.time() + timeout
+        for s in sessions:
+            s.thread.join(max(0.05, deadline - time.time()))
+        unjoined = [s.name for s in sessions if s.thread.is_alive()]
+        if sessions:
+            self._log("drain: stopped %d session(s), %d in-flight turn(s) interrupted%s"
+                      % (len(sessions), inflight,
+                         "; still closing: " + ", ".join(unjoined) if unjoined else ""))
+        return {"stopped": len(sessions), "inflight": inflight, "unjoined": len(unjoined)}
 
     def refresh_usage(self):
         """Best-effort: ask ONE live connected session for the exact /usage snapshot (get_usage control
@@ -1852,9 +2023,10 @@ class SdkBackend:
             self._live.pop(sid, None)
 
     def _update_reg(self, sid: str, **fields):
-        reg = read_reg(self.state_dir, sid) or {"sid": sid}
-        reg.update(fields)
-        write_reg(self.state_dir, sid, reg)
+        with self._reg_lock:                       # kernel + loop threads both write (queue mirror);
+            reg = read_reg(self.state_dir, sid) or {"sid": sid}   # unserialized RMWs would drop fields
+            reg.update(fields)
+            write_reg(self.state_dir, sid, reg)
 
     def _on_session_gone(self, sess: SdkSession):
         with self._lock:
