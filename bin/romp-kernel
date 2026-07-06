@@ -9873,8 +9873,16 @@ setTimeout(hide,5000);})();
 # hit exactly this, network gone, timeline stopped moving, no idea why). It clears once every pane is back.
 _LANDING_NET_JS = """
 (function(){var bn=document.getElementById('romp-offline');if(!bn)return;var st={};
-function refresh(){var down=false;for(var k in st){if(st[k]==='down'){down=true;break;}}bn.classList.toggle('show',down);}
-window.addEventListener('message',function(e){var m=e&&e.data;if(!m||m.romp!=='wsState')return;st[m.app]=(m.state==='up')?'up':'down';refresh();});})();
+// Only a VISIBLE pane raises the banner (the user 2026-07-06): a pane toggled OFF still holds a live socket
+// (the Fleet pane is hidden by default, its iframe always loaded), so a blip on a pane you can't even see
+// shouldn't cry "Disconnected" while the chat pane you interact through is up. Gate on the pane-enabled body
+// class the toggle sets (po-chat/po-feed/po-timeline/po-fleet), and re-check on toggle so hiding a down pane
+// clears the banner and showing one raises it. A genuinely-down VISIBLE pane still shows it — that pane IS
+// frozen and a reload resyncs it.
+function shown(k){return document.body.classList.contains('po-'+k);}
+function refresh(){var down=false;for(var k in st){if(st[k]==='down'&&shown(k)){down=true;break;}}bn.classList.toggle('show',down);}
+window.addEventListener('message',function(e){var m=e&&e.data;if(!m||m.romp!=='wsState')return;st[m.app]=(m.state==='up')?'up':'down';refresh();});
+window.addEventListener('romp-panes',refresh);})();
 """
 
 

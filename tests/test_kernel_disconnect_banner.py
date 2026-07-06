@@ -76,6 +76,21 @@ class DisconnectBanner(unittest.TestCase):
         self.assertIn("#romp-offline.show{display:flex}", land, "hidden until a pane drops")
         self.assertIn("_LANDING_NET_JS", land, "the listener script is injected into the shell")
 
+    def test_only_visible_panes_raise_the_banner(self):
+        # a pane toggled OFF still holds a live socket (the Fleet pane is hidden by default, its iframe always
+        # loaded), so a blip on a pane you can't even see must NOT raise the global "Disconnected" alarm while
+        # the chat pane you interact through is up (the user 2026-07-06). Gate on the pane-enabled body class
+        # the toggle sets (po-chat/po-feed/po-timeline/po-fleet), and re-check when panes toggle.
+        js = km._LANDING_NET_JS
+        self.assertIn("function shown(k){return document.body.classList.contains('po-'+k);}", js)
+        self.assertIn("if(st[k]==='down'&&shown(k))", js, "a down pane counts only while its pane is visible")
+        self.assertIn("window.addEventListener('romp-panes',refresh)", js, "re-check the banner on pane toggle")
+        # the pane toggle actually fires the romp-panes event this listens for, and both scripts ride the shell
+        self.assertIn("new Event('romp-panes')", km._LANDING_COLLAPSE_JS)
+        land = inspect.getsource(km._landing)
+        self.assertIn("_LANDING_COLLAPSE_JS", land)
+        self.assertIn("_LANDING_NET_JS", land)
+
 
 if __name__ == "__main__":
     unittest.main()
