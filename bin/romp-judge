@@ -503,11 +503,11 @@ def _unit_text(atoms, marker=None):
             t = _FOLLOWUP_MARKER_RE.sub("", _atom_text(a)).strip()   # the follow-up marker is plumbing, not user text
             if t:
                 user_said.append(t)
-        elif a["type"] == "assistant":
+        elif a["type"] == "assistant" and not a.get("isApiError"):   # skip API-error records — a retry / usage-limit storm's noise, never captionable work (the user 2026-07-06)
             t = _atom_text(a)
             if t:
-                if marker is not None and a.get("uuid") and not a.get("isApiError"):
-                    t = "%s %s" % (marker.label(a["uuid"]), t)   # never label an API error: not a jump target
+                if marker is not None and a.get("uuid"):
+                    t = "%s %s" % (marker.label(a["uuid"]), t)
                 asst_said.append(t)
             for b in (a.get("message") or {}).get("content", []):
                 if isinstance(b, dict) and b.get("type") == "tool_use":
@@ -549,12 +549,19 @@ def _prompt_text(atoms):
 
 
 def _has_asst_work(atoms):
-    """True if a unit has any ASSISTANT output — its own text or a tool_use. The captioner has nothing to
-    gloss without it (it refuses or returns empty), so a work-less unit (a bare user message, an
+    """True if a unit has any real ASSISTANT output — its own text or a tool_use. The captioner has nothing
+    to gloss without it (it refuses or returns empty), so a work-less unit (a bare user message, an
     aborted/API-errored 'retry' turn) gets NO work caption — only its #p message caption (the user
-    2026-06-22). Prevents the captioner refusing on an empty unit and re-asking it forever."""
+    2026-06-22). Prevents the captioner refusing on an empty unit and re-asking it forever.
+
+    An API-error record is EXCLUDED (the user 2026-07-06): it's an assistant atom that carries the error's
+    TEXT ('overloaded', 'Request timed out'), so the bare text check counted it as work — and during a
+    usage-limit / auto-nudge storm the captioner (and the archiver behind it) then fired a call per errored
+    retry turn, a flood of judge calls captioning nothing but error noise. Skipping isApiError atoms means a
+    turn whose only assistant output is the error is work-less → no caption; a turn that did real work THEN
+    errored still captions the real work."""
     for a in atoms:
-        if a.get("type") == "assistant":
+        if a.get("type") == "assistant" and not a.get("isApiError"):
             if _atom_text(a):
                 return True
             for b in (a.get("message") or {}).get("content", []):
