@@ -80,15 +80,17 @@ now=$(date +%s)
 # below are display only).
 if [[ "$DISPLAY_TMUX" == 1 ]]; then
     sid=$(tmux show -t "$session_name" -v @romp-session-id 2>/dev/null || true)
-    # RE-ANCHOR across a /clear (the user 2026-07-06): a /clear (or a resume that forks) starts a NEW
-    # transcript fsid, but @romp-session-id was written ONCE at launch (bin/romp) and never rewritten — so
-    # the kernel keeps keying liveness/name/state on the STALE creation fsid, and the picker shows the LIVE
-    # forked session as dead → "Revive" (while a duplicate stale row reads running). On any SessionStart
-    # whose payload session_id differs from the stored anchor, re-point the var to the live fsid and MIRROR
-    # the names entry (name/cwd/color/identity are all anchor-keyed under names/<sid>) so every surface
-    # resolves the live transcript. Event-based; a no-op when they already match. Fully guarded — a failure
-    # here can never break status reporting.
-    if [[ "$EVENT" == "SessionStart" && -n "$HOOK_SID" && -n "$sid" && "$HOOK_SID" != "$sid" ]]; then
+    # RE-ANCHOR across a session-id change (the user 2026-07-06): a /clear, relaunch, or --resume in
+    # this pane starts a NEW transcript fsid, but @romp-session-id was written ONCE at launch
+    # (bin/romp) and never rewritten — so every consumer (kernel liveness/lanes/tabs, states file,
+    # send routing, resume picker) kept keying on the STALE fsid while the live transcript was
+    # invisible. On ANY event whose payload session_id differs from the stored anchor (not just
+    # SessionStart — a missed start still heals on the next event), re-point the var to the live fsid
+    # and MIRROR the names entry (name/cwd/color are anchor-keyed under names/<sid>) so every surface
+    # resolves the live transcript. Event-based; a no-op when they already match. Fully guarded — a
+    # failure here can never break status reporting. (Headless/SDK sessions are untouched: the SDK
+    # backend owns identity via its registry's lastSid.)
+    if [[ -n "$HOOK_SID" && -n "$sid" && "$HOOK_SID" != "$sid" ]]; then
         ndir="${XDG_STATE_HOME:-$HOME/.local/state}/romp/names"
         if [[ -f "$ndir/$sid" && ! -e "$ndir/$HOOK_SID" ]]; then
             cp "$ndir/$sid" "$ndir/$HOOK_SID" 2>/dev/null || true

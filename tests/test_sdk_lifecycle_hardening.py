@@ -247,6 +247,80 @@ class BootReconcileResilience(unittest.TestCase):
         self.assertTrue(any("sweep continues" in m for m in logs), "the failure is loud, not silent")
 
 
+class CrashHeal(unittest.TestCase):
+    """_on_session_gone on an ABNORMAL mid-turn death (CLI killed/crashed; not user-interrupted,
+    not our shutdown) must NOT settle 'waiting' — that masked the cut and stranded the session
+    until the next kernel restart (2026-07-06: reaped sessions wrote triple 'waiting' and stalled).
+    Instead it keeps the trailing 'working' and resumes ONCE via _heal_cut_session; the budget
+    re-arms only when a turn completes."""
+
+    SID = "11111111-2222-3333-4444-777777777777"
+
+    def _dead_session(self, be, d, inflight=1, interrupted=False):
+        reg = sb.read_reg(Path(d), self.SID) or _reg(d, self.SID)   # keep a prior heal's queue intact
+        s = sb.SdkSession(be, reg)          # never started: pure object surface
+        sb.append_state(Path(d), self.SID, "working")
+        s.inflight = inflight
+        s._interrupted = interrupted
+        return s
+
+    def test_midturn_death_keeps_cut_marker_and_resumes(self):
+        d = tempfile.mkdtemp()
+        be = _backend(d)
+        s = self._dead_session(be, d)
+        with mock.patch.object(be, "_ensure") as ens:
+            be._on_session_gone(s)
+        self.assertEqual(sb.last_state_value(Path(d), self.SID), "working",
+                         "no 'waiting' settle — the trailing 'working' IS the cut marker")
+        q = sb.read_reg(Path(d), self.SID).get("queue")
+        self.assertEqual(q, [sb.CRASH_RESUME_NUDGE],
+                         "the visible crash nudge is queued so the resume is never silent")
+        ens.assert_called_once_with(self.SID)
+
+    def test_second_death_without_completed_turn_is_a_crash_loop(self):
+        d = tempfile.mkdtemp()
+        be = _backend(d)
+        logs = []
+        be._log_cb = logs.append
+        with mock.patch.object(be, "_ensure") as ens:
+            be._on_session_gone(self._dead_session(be, d))
+            be._on_session_gone(self._dead_session(be, d))   # died again before any ResultMessage
+        self.assertEqual(ens.call_count, 1, "one resume per cut — no respawn loop")
+        self.assertEqual(sb.read_reg(Path(d), self.SID).get("queue"), [sb.CRASH_RESUME_NUDGE],
+                         "the nudge is not stacked by the refused second heal")
+        self.assertTrue(any("crash loop" in m for m in logs), "the give-up is loud")
+        self.assertEqual(sb.last_state_value(Path(d), self.SID), "working",
+                         "still cut — the next kernel restart's reconcile picks it up")
+
+    def test_completed_turn_rearms_the_heal_budget(self):
+        d = tempfile.mkdtemp()
+        be = _backend(d)
+        with mock.patch.object(be, "_ensure") as ens:
+            be._on_session_gone(self._dead_session(be, d))
+            be._turn_completed(self.SID)                     # a ResultMessage landed in between
+            be._on_session_gone(self._dead_session(be, d))
+        self.assertEqual(ens.call_count, 2, "a completed turn re-arms one resume for the next cut")
+
+    def test_user_interrupted_death_still_settles_waiting(self):
+        d = tempfile.mkdtemp()
+        be = _backend(d)
+        s = self._dead_session(be, d, inflight=1, interrupted=True)
+        with mock.patch.object(be, "_ensure") as ens:
+            be._on_session_gone(s)
+        self.assertEqual(sb.last_state_value(Path(d), self.SID), "waiting",
+                         "a user-interrupted turn's death is not a cut — settle as before")
+        ens.assert_not_called()
+
+    def test_idle_death_still_settles_waiting(self):
+        d = tempfile.mkdtemp()
+        be = _backend(d)
+        s = self._dead_session(be, d, inflight=0)
+        with mock.patch.object(be, "_ensure") as ens:
+            be._on_session_gone(s)
+        self.assertEqual(sb.last_state_value(Path(d), self.SID), "waiting")
+        ens.assert_not_called()
+
+
 class Drain(unittest.TestCase):
     def test_drain_stops_sessions_and_writes_no_state(self):
         d = tempfile.mkdtemp()

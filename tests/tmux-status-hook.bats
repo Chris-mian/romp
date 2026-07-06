@@ -377,13 +377,21 @@ run_hook() {
     [ "$(cat "$TEST_DIR/state/romp/names/fork-new")" = "$(printf 'ALREADY\t/tmp/other')" ]   # but keeps the existing name
 }
 
-@test "a NON-SessionStart event with a differing session_id does NOT re-anchor" {
+@test "a NON-SessionStart event with a differing session_id ALSO re-anchors (a missed start heals late)" {
     export MOCK_SESSION_ID="anchor-old"
     export XDG_STATE_HOME="$TEST_DIR/state"
     mkdir -p "$TEST_DIR/state/romp/names"
     printf 'DEMO\t/tmp/project' > "$TEST_DIR/state/romp/names/anchor-old"
     run run_hook '{"hook_event_name":"Stop","session_id":"fork-new","cwd":"/tmp/project"}'
     [ "$status" -eq 0 ]
-    ! grep -q '@romp-session-id fork-new' "$MOCK_LOG"    # only SessionStart re-anchors
-    [ ! -e "$TEST_DIR/state/romp/names/fork-new" ]
+    grep -q 'set -t test @romp-session-id fork-new' "$MOCK_LOG"   # any event heals — SessionStart is just the usual first
+    [ -e "$TEST_DIR/state/romp/names/fork-new" ]
+}
+
+@test "a payload without session_id leaves the var alone" {
+    export MOCK_SESSION_ID="anchor-old"
+    export XDG_STATE_HOME="$TEST_DIR/state"
+    run run_hook '{"hook_event_name":"SessionStart","cwd":"/tmp"}'
+    [ "$status" -eq 0 ]
+    ! grep -q 'set -t test @romp-session-id' "$MOCK_LOG"
 }
