@@ -1,9 +1,10 @@
 """Pane rail in the shell (the user 2026-06-24; rotated to a BOTTOM BAR, the user 2026-07-05).
 
-ONE thin toolbar holding Chat / Outline / Feed / Timeline toggles. It began as a vertical strip on the far
+ONE thin toolbar holding Chat / Timeline / Outline / Feed toggles. It began as a vertical strip on the far
 left; it now runs HORIZONTALLY across the bottom of .col, BELOW the timeline band (its last child). Each pane
-is an independent binary on/off, in a fixed order (Chat, Outline, Feed, Timeline), and any subset (or none, or
-all) can be shown at once. Fleet/Outline is its OWN pane (no longer an overlay swapped inside the chat pane).
+is an independent binary on/off, in a fixed, user-chosen order (Chat, Timeline, Outline, Feed — the user
+2026-07-05, independent of the panes' layout order), and any subset (or none, or all) can be shown at once.
+Fleet/Outline is its OWN pane (no longer an overlay swapped inside the chat pane).
 Source-level pin against km._landing().
 """
 import os
@@ -21,17 +22,17 @@ class PaneRailTest(unittest.TestCase):
     def setUp(self):
         self.html = km._landing()
 
-    def test_bottom_bar_rail_holds_chat_fleet_feed_timeline_toggles_in_fixed_order(self):
-        # one thin toolbar (now the bottom bar); FOUR toggle buttons, ordered to match the panes' left→right order
+    def test_bottom_bar_rail_holds_chat_timeline_fleet_feed_toggles_in_fixed_order(self):
+        # one thin toolbar (now the bottom bar); FOUR toggle buttons, in a user-chosen order (the user 2026-07-05)
         self.assertIn("<div class=pane-rail>", self.html)
         self.assertIn("<div class=rail-btn data-pane=chat>Chat</div>", self.html)
         # the by-session view is labelled "Outline" (the user 2026-06-29); the data-pane KEY stays 'fleet' internally
         self.assertIn("<div class=rail-btn data-pane=fleet>Outline</div>", self.html)
         self.assertIn("<div class=rail-btn data-pane=feed>Feed</div>", self.html)
         self.assertIn("<div class=rail-btn data-pane=timeline>Timeline</div>", self.html)
-        # Chat before Fleet before Feed before Timeline in the rail (fixed top-to-bottom order)
-        idxs = [self.html.index("data-pane=" + k) for k in ("chat", "fleet", "feed", "timeline")]
-        self.assertEqual(idxs, sorted(idxs), "rail order must be Chat, Outline, Feed, Timeline")
+        # Chat before Timeline before Outline(fleet) before Feed in the rail (fixed user-chosen order)
+        idxs = [self.html.index("data-pane=" + k) for k in ("chat", "timeline", "fleet", "feed")]
+        self.assertEqual(idxs, sorted(idxs), "rail order must be Chat, Timeline, Outline, Feed")
         # the old per-pane strips + the show-fleet swap + the timeline minimize bar are gone
         self.assertNotIn("pane-strip", self.html)
         self.assertNotIn("strip-toggle", self.html)

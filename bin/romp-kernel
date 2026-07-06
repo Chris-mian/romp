@@ -10130,7 +10130,7 @@ def _landing():
             "body.picker-open #chat-pane{display:block!important}"
             "body.picker-open #f-chat{position:fixed;inset:0;z-index:200;width:100vw;height:100vh}"
             # ── pane rail (the user 2026-06-24; rotated to a BOTTOM BAR the user 2026-07-05): a thin toolbar with
-            # Chat / Outline / Feed / Timeline toggles. It used to be a vertical strip on the far LEFT; it now runs
+            # Chat / Timeline / Outline / Feed toggles. It used to be a vertical strip on the far LEFT; it now runs
             # HORIZONTALLY across the bottom of .col, BELOW the timeline band (last child of .col). Each toggle is
             # an independent on/off; the lit one is in the romp accent.
             # It keeps the SCROLLABLE group (.rail-scroll: toggles + usage, a horizontal row that scrolls sideways
@@ -10345,16 +10345,16 @@ def _landing():
             "<div class=gh id=gh></div>"
             "<div class=pane id=tl-pane><iframe id=f-timeline src=/timeline></iframe></div>"
             # pane rail as a BOTTOM BAR (the user 2026-07-05): the toolbar runs horizontally across the very
-            # bottom of .col, BELOW the timeline band. A SCROLLABLE group (.rail-scroll) — Chat / Outline / Feed /
-            # Timeline toggles, then the /usage rate-limit bars, scrolling sideways on a narrow window — and a
-            # FIXED group (.rail-acts, pinned RIGHT via margin-left:auto) with the ↻ refresh + network + ⛭ gear,
-            # always visible.
+            # bottom of .col, BELOW the timeline band. A SCROLLABLE group (.rail-scroll) — Chat / Timeline / Outline /
+            # Feed toggles (this rail order is user-chosen, the user 2026-07-05, independent of the panes' layout
+            # order), then the /usage rate-limit bars, scrolling sideways on a narrow window — and a FIXED group
+            # (.rail-acts, pinned RIGHT via margin-left:auto) with the ↻ refresh + network + ⛭ gear, always visible.
             "<div class=pane-rail>"
             "<div class=rail-scroll>"
             "<div class=rail-btn data-pane=chat>Chat</div>"
+            "<div class=rail-btn data-pane=timeline>Timeline</div>"
             "<div class=rail-btn data-pane=fleet>Outline</div>"   # data-pane key stays 'fleet' (internal); the user-facing label is Outline
             "<div class=rail-btn data-pane=feed>Feed</div>"
-            "<div class=rail-btn data-pane=timeline>Timeline</div>"
             # the Claude /usage rate-limit bars (Pro/Max): three compact vertical bar-pairs (used % colored +
             # elapsed % slate), %-label, full detail on hover — side-by-side in the bottom bar.
             "<div id=rail-usage></div>"
