@@ -99,6 +99,10 @@ type ChatEvent = (
   // until retried — a red-dot card at the bottom with a Retry button (the user 2026-06-16).
   | { kind: "apiError"; text: string; status?: number; category?: string; ts?: string; uuid?: string }
   | { kind: "compact"; trigger?: string; preTokens?: number; postTokens?: number; ts?: string; uuid?: string }
+  // LIVE compaction in progress (kernel-driven, event-based): an animated inline element while the session
+  // compacts — sits above any queued/provisional message, and is replaced by the "compact" divider above
+  // once the boundary lands and compacting clears (the user 2026-07-06). No ts → off the rail (transient).
+  | { kind: "compacting"; ts?: string; uuid?: string }
   // Pinned, collapsed "system context" card at the top of the transcript (the user 2026-06-19): the
   // CLAUDE.md instructions in effect + session config. NOT the verbatim harness prompt — it's never
   // recorded, so it can't be shown (renderSystem says so). No ts/uuid → off the rail (no dot/hover).
@@ -1110,6 +1114,7 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
   if (ev.kind === "todo") return renderTodo(ev);
   if (ev.kind === "queued") return renderQueued(ev);
   if (ev.kind === "apiError") return renderApiError(ev);
+  if (ev.kind === "compacting") return renderCompacting();
   if (ev.kind === "compact") return renderCompact(ev);
   return renderTool(ev);
 }
@@ -1351,6 +1356,26 @@ function renderCompact(ev: Extract<ChatEvent, { kind: "compact" }>): HTMLElement
     const meta = el("span", "compact-meta"); meta.textContent = "· " + bits.join(" · ");
     line.appendChild(meta);
   }
+  turn.appendChild(line);
+  return turn;
+}
+
+// LIVE compaction in progress (the user 2026-07-06): an animated inline element in the chat flow while the
+// session compacts — the SAME compressing-teal-bar motion as the statusline ctx-bar (@keyframes ctx-compress),
+// styled to rhyme with the "✦ Context compacted" divider (renderCompact) it becomes once the boundary lands.
+// The kernel appends kind:"compacting" BEFORE kind:"queued", so a message sent mid-compaction stacks BELOW
+// this instead of clobbering it. Event-based: it vanishes the instant the session stops compacting.
+function renderCompacting(): HTMLElement {
+  const turn = el("div", "turn turn-compacting");
+  turn.appendChild(dot("ring"));
+  const line = el("div", "compacting-inline");
+  const bar = el("span", "compacting-bar");
+  bar.appendChild(el("span", "compacting-bar-fill"));   // runs @keyframes ctx-compress (flat teal, no colormap vars)
+  line.appendChild(bar);
+  const txt = el("span", "compacting-text");
+  txt.textContent = "Compacting context…";
+  line.appendChild(txt);
+  line.title = "compacting — compressing the conversation to free up context; any queued message sends once it finishes";
   turn.appendChild(line);
   return turn;
 }

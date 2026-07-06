@@ -5497,8 +5497,8 @@ def build_session(sid, now, tmux=None):
     # discriminator.) Keys on the EVENT MODEL (_session_working / _compacting), never the tmux pane state — and
     # an echo-only merge keeps the turn's real ended state.
     tm0 = tmux.get(sid)
-    busy = _session_working(parsed["turns"]) or _compacting(sid, (tm0 or {}).get("state", ""), parsed, now,
-                                                            (tm0 or {}).get("since"))
+    compacting_now = _compacting(sid, (tm0 or {}).get("state", ""), parsed, now, (tm0 or {}).get("since"))
+    busy = _session_working(parsed["turns"]) or compacting_now
     if not hasattr(be, "unqueue") and busy:
         already = {q.strip() for q in queued}
         tx_user = {t for turn in parsed["turns"] for a in turn["atoms"] if (t := _atom_user_text(a))}
@@ -5692,6 +5692,13 @@ def build_session(sid, now, tmux=None):
     # composer, like the old TS kernel — so it's visible instead of vanishing (the user 2026-06-15;
     # pane-scrape dropped a 2nd queued message → both vanished, 2026-06-16). The matching input echo (if any)
     # was suppressed at merge time, so a queued message shows exactly once, here.
+    # Live COMPACTION indicator (the user 2026-07-06): while the session compacts, an animated inline element
+    # in the chat FLOW (not only the statusline/tab) — appended BEFORE the queued bubble so a message sent
+    # mid-compaction stacks BELOW it instead of clobbering it. Event-based: it vanishes the instant compaction
+    # ends, when the transcript's boundary lands as the "✦ Context compacted" divider (kind:"compact") it
+    # visually becomes. Corroborated `_compacting` signal (same one the chip/timeline use), never raw tmux.
+    if compacting_now:
+        events.append({"kind": "compacting"})
     pending_ops = _pending_ops.get(sid) or []
     if queued or pending_ops:
         # Each pending message is rendered like a landed one (markdown) — and a follow-up is cleaned of the

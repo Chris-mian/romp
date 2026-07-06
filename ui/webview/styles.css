@@ -760,6 +760,16 @@ body { display: flex; flex-direction: column; }
 .turn-compact .dot { background: var(--st-compacting-bg, #14b8a6); border: none; }
 .compact-line { color: var(--st-compacting-bg, #14b8a6); font-size: 0.9em; font-weight: 600; letter-spacing: 0.02em; }
 .compact-meta { margin-left: 6px; color: var(--dim); font-weight: 400; letter-spacing: normal; }
+/* LIVE compaction — animated inline element that becomes the .compact-line divider above once done. Same
+   teal + type as the divider (reads as one element maturing); the bar reuses @keyframes ctx-compress (the
+   statusline ctx-scan motion), flat teal since the colormap --cmp* vars aren't set here. */
+.turn-compacting { padding-top: 4px; padding-bottom: 4px; }
+.turn-compacting .dot, .turn-compacting .time-marker { top: 10px; }
+.turn-compacting .dot { background: var(--st-compacting-bg, #14b8a6); border: none; }
+.compacting-inline { display: inline-flex; align-items: center; gap: 8px; color: var(--st-compacting-bg, #14b8a6); font-size: 0.9em; font-weight: 600; letter-spacing: 0.02em; }
+.compacting-bar { position: relative; display: inline-block; width: 42px; height: 11px; border-radius: 2px; overflow: hidden; background: color-mix(in srgb, var(--st-compacting-bg, #14b8a6) 18%, transparent); }
+.compacting-bar-fill { position: absolute; left: 1px; top: 1px; bottom: 1px; width: calc(100% - 2px); border-radius: 1px; background: var(--st-compacting-bg, #14b8a6); transform-origin: left center; animation: ctx-compress 3.2s linear infinite; }
+.compacting-text { letter-spacing: 0.02em; }
 /* compact-mode collapsed tool run → one line ("▸ 3 Edits, 2 Reads"); click to expand/collapse */
 .turn-toolgroup .dot, .turn-toolgroup .time-marker { top: 10px; }
 .toolgroup-line { color: var(--dim); font-size: 0.9em; line-height: 1.4; cursor: pointer; width: fit-content; padding-right: 6px; }
