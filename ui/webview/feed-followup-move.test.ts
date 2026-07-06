@@ -24,8 +24,14 @@ test("a predicted card is kept in Working at render, styled like the kernel's re
   // a follow-up prediction wears the re-check styling; a PLAIN move (the Move to Working button,
   // the user 2026-07-06) flips the column only — no chip, nothing is in flight
   assert.match(FEED, /if \(!pendingMovePlain\.has\(a\.itemId\)\) \{ a\.recheck = true; a\.followupPending = true; \}/);
-  // applied at the top of render so EVERY render (push, modal close) reflects the prediction
-  assert.match(FEED, /function render\(\) \{\s*\n\s*const list = document\.getElementById\("feed-list"\)!;\s*\n\s*applyFollowMove\(asks\);/);
+  // applied at the top of render so EVERY render (push, modal close) reflects the prediction — right
+  // after the drag-in-flight deferral guard (feed-drag.test.ts), which must come first
+  assert.match(FEED, /const list = document\.getElementById\("feed-list"\)!;\s*\n\s*applyFollowMove\(asks\);/);
+  const renderTop = FEED.indexOf("function render() {");
+  const dragGuard = FEED.indexOf("if (dragAskId) { dragDeferredRender = true; return; }", renderTop);
+  const applyAt = FEED.indexOf("applyFollowMove(asks);", renderTop);
+  assert.ok(renderTop >= 0 && dragGuard > renderTop && applyAt > dragGuard,
+    "render(): drag deferral guard first, then the follow-move prediction");
 });
 
 test("the optimistic move also bumps the card's sort key to now so it lands at the BOTTOM of Working, not the top", () => {

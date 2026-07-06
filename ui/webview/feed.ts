@@ -208,6 +208,39 @@ function applyFollowMove(list: AskItem[]) {
     if (a.t < nowSec) a.t = nowSec;   // sort to the bottom (newest); the group's repr follows via buildGroup
   }
 }
+// ── drag-to-Working (the user 2026-07-06): a Blocked/Completed card DRAGS onto the Working column —
+// the same cardMove op as the modal's "Move to Working" button, as the desktop gesture (the button
+// remains the touch path; HTML5 drag doesn't exist on phones). Cards are REUSED DOM nodes (askEls),
+// but a reconcile mid-drag still moves/removes nodes and the browser CANCELS an in-flight drag whose
+// source node moved — so render() DEFERS while a drag is in flight and flushes on dragend/drop
+// (event-based; the timeline _pointerHeld pattern, per the click-safety rule).
+let dragAskId: string | null = null;
+let dragDeferredRender = false;
+// The LANDING SLOT: a placeholder that opens at the BOTTOM of the Working list while a drag hovers the
+// column — the true landing spot (Working sorts oldest-top; the followupAt stamp lands the moved card
+// last), so the column visibly makes room exactly where the card will slot in. Honest by design: the
+// board auto-sorts, so the slot never follows the pointer pretending free placement exists.
+function openDropSlot() {
+  const body = document.getElementById("col-asks-list");
+  if (!body) return;
+  let slot = document.getElementById("fdrop-slot");
+  if (!slot) {
+    slot = el("div", "fdrop-slot"); slot.id = "fdrop-slot";
+    body.appendChild(slot);
+    requestAnimationFrame(() => { slot!.classList.add("open"); slot!.scrollIntoView({ block: "nearest" }); });
+  }
+}
+function closeDropSlot() {
+  document.getElementById("fdrop-slot")?.remove();
+}
+function finishAskDrag() {
+  dragAskId = null;
+  document.body.classList.remove("feed-dragging");
+  document.querySelector(".feed-col.col-asks")?.classList.remove("drop-hot");
+  document.querySelector(".fitem.ask.dragging")?.classList.remove("dragging");
+  closeDropSlot();
+  if (dragDeferredRender) { dragDeferredRender = false; render(); }
+}
 // Group cards keyed by turnId, stored under "g:"+turnId. The focus state
 // (hoverAskId/pinnedAskId) holds EITHER a raw ask itemId OR a group key
 // "g:"+turnId; applyFocus + focusAnchorId understand both.
@@ -533,6 +566,18 @@ function renderExpandInto(slot: HTMLElement, it: FeedItem) {
 function makeAskCard(it: AskItem): HTMLElement {
   const card = el("div", "fitem ask");
   card.dataset.key = "a:" + it.itemId;
+  // drag source (the user 2026-07-06): whether the card is draggable is set per-render by updateAskCard
+  // (only a needs-input/completed card is); the handlers are wired ONCE here — the element is reused for
+  // the card's whole life, so the listeners never re-attach across reconciles.
+  card.addEventListener("dragstart", (ev) => {
+    dragAskId = it.itemId;
+    document.body.classList.add("feed-dragging");
+    try { ev.dataTransfer!.setData("text/plain", it.itemId); ev.dataTransfer!.effectAllowed = "move"; } catch { /* dataTransfer optional */ }
+    // dim + dash the source AFTER the browser snapshots the drag image, so the picture under the
+    // pointer stays a full-opacity card while the one left behind clearly reads "being moved"
+    requestAnimationFrame(() => card.classList.add("dragging"));
+  });
+  card.addEventListener("dragend", finishAskDrag);
 
   const main = el("div", "fitem-main");
   // ROW 1 — ask title, full width across the top (the user 2026-06-14); hit-area still
@@ -812,6 +857,11 @@ function applyDistillSections(a: any, it: AskItem, distillShown: boolean): void 
 function updateAskCard(card: HTMLElement, it: AskItem) {
   const a = card as any;
   card.className = "fitem ask" + (it.live ? " live" : " dead") + (it.itemId === (hoverAskId ?? pinnedAskId) ? " focused" : "") + (it.itemId === pinnedAskId ? " pinned" : "") + (it.provisional ? " provisional" : "");
+  // drag-to-Working (the user 2026-07-06): only a card OUT of Working drags (same gate as the modal
+  // button); handlers were wired once in makeAskCard, this just arms/disarms the gesture per state
+  const movable = !it.provisional && (it.column === "needs_input" || it.column === "completed");
+  card.draggable = movable;
+  card.classList.toggle("draggable", movable);
   // PROVISIONAL placeholder: a dim, italic, non-interactive card from the live prompt while the planner
   // hasn't classified the in-progress turn yet. No Clear/Nudge (nothing to curate), no auto-line, no tree.
   card.style.opacity = it.provisional ? ".62" : "";
@@ -2045,6 +2095,35 @@ function ensureCols(list: HTMLElement) {
       head.append(name, count);
       const body = el("div", "feed-col-list"); body.id = "col-" + key + "-list";
       col.append(head, body);
+      if (key === "asks") {
+        // drop target for drag-to-Working (the user 2026-07-06). The col element is built ONCE and
+        // survives every reconcile (only the card nodes inside its body swap) — a stable ancestor, so
+        // the drop always lands (the click-safety rule). Highlight = accent chrome (var(--accent)).
+        col.addEventListener("dragover", (ev) => {
+          if (!dragAskId) return;
+          ev.preventDefault();
+          if (ev.dataTransfer) ev.dataTransfer.dropEffect = "move";
+          col.classList.add("drop-hot");
+          openDropSlot();                                  // the column makes room at the landing spot
+        });
+        col.addEventListener("dragleave", (ev) => {
+          const rt = (ev as DragEvent).relatedTarget as Node | null;
+          if (rt && col.contains(rt)) return;              // still inside the column → keep the cue
+          col.classList.remove("drop-hot");
+          closeDropSlot();
+        });
+        col.addEventListener("drop", (ev) => {
+          ev.preventDefault();
+          const id = dragAskId;
+          finishAskDrag();                                 // clears the drag state; flushes any deferred render
+          if (!id) return;
+          const dropped = asks.find((x) => x.itemId === id);
+          if (!dropped || dropped.column === "working") return;
+          vscodeApi?.postMessage({ type: "cardMove", itemId: id, sid: dropped.sid, to: "working" });
+          optimisticFollowMove(id, true);                  // same plain optimistic flip as the modal button
+          render();
+        });
+      }
       cols.appendChild(col);
     }
     list.appendChild(cols);
@@ -2203,6 +2282,9 @@ function feedToast(text: string) {
 }
 
 function render() {
+  if (dragAskId) { dragDeferredRender = true; return; }   // mid-drag reconcile moves/removes the dragged
+  //                                                         node and the browser cancels the drag — the
+  //                                                         deferred render flushes on dragend/drop
   const list = document.getElementById("feed-list")!;
   applyFollowMove(asks);   // keep optimistically-moved follow-up cards in Working until the kernel confirms (or reverts)
   const prevScroll = list.scrollTop;

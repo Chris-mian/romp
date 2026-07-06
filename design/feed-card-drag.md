@@ -184,12 +184,18 @@ Steps 1-3 above, built with three decisions that amend the body:
 - **Moving TO blocked/completed is ruled out**, not just deferred: blocked
   means needs-the-user (nobody demands of themselves), and Clear covers
   retiring a card.
-- **The gesture is a modal BUTTON, not a drag yet**: "Move to Working" in the
-  card modal footer (single-ask cards in needs-input/completed), which also
-  works on touch. It posts `cardMove`, acknowledges before the round-trip
-  (disable + relabel), and reuses the optimistic follow-move flip in a "plain"
-  variant (no chip styling, its own revert toast). The desktop drag gesture
-  (steps 4-5) stays future work.
+- **Both the modal BUTTON and the desktop DRAG shipped** (button first, drag
+  same day): "Move to Working" in the card modal footer (single-ask cards in
+  needs-input/completed) is the touch path; the drag gesture is the desktop
+  path over the same `cardMove` op. Drag affordances: the source card dims +
+  dashes, the Working column outlines in accent while a drag is in flight, and
+  a LANDING SLOT animates open at the column's BOTTOM — the honest landing
+  spot, since the column auto-sorts by recency and the followupAt stamp lands
+  the moved card last (the slot never follows the pointer pretending free
+  placement exists). render() defers while a drag is in flight and flushes on
+  dragend/drop (the timeline _pointerHeld pattern) — cards are reused DOM
+  nodes, but a mid-drag reconcile would still cancel the browser drag.
+  Step 5 (`cardNest`, drop-on-card manual nesting) stays future work.
 - The completed→working path plants the "Reopened by the user" provisional
   stub only when the subtree would re-complete bottom-up, and never stacks a
   second stub. An untouched reopened card parks in Working as an orphaned
