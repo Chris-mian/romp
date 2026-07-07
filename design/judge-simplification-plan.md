@@ -134,11 +134,24 @@ instrumentation riding existing logs.
 
 ## Phasing — what ships at each step
 
-Status 2026-07-06 evening: P0a, P1 (+E1 census, in may_apply's docstring), P2, and the E2
-telemetry are SHIPPED; P0b closed by diagnosis (the brief's call-fail bursts were account
-rate-limit windows — its give-up already handles them; no code needed). E5 found the archiver
-"parse" storm was the same outage mislabeled (call vs parse now logged distinctly). Next:
-E3 offline reconstruction, then P3.1 dual-write.
+Status 2026-07-06 night: P0a, P1, P2, E2, **P3.1 and P3.2** are SHIPPED. P0b closed by
+diagnosis (the brief's call-fail bursts were account rate-limit windows — its give-up already
+copes). E5: the archiver "parse" storm was the same outage mislabeled (call vs parse now logged
+distinctly). E3 ran offline over 4118 archived nodes: the fold reproduced stored verdicts 99.6%,
+with all 17 divergences in exactly the cases where reconstruction LOSES ordering (overwritten
+mt, the block boundary) — which the live log records precisely; fold design validated.
+
+P3.1 shipped as a FUSED seam (deviation from the sketch, deliberate): `record_verdict()` = gate
+AND recorder in one call — a writer cannot pass the gate yet skip the history. All verdict
+writers route through it (planner done/block, closer done/block, every _reopen flavor incl.
+optimistic/user-move/delegation/nudge/followup, the agent-mirror done, propagate's link-back,
+the umbrella housekeeping clear, and the kernel's user clear/undo). Events: {ev_t, src, kind,
+why, seg, at}, per-node, LOG_CAP 64. P3.2: `_fold_node_state` (evidence-time ordering, arrival
+tie-break, the user floor as ONE rule) + `_shadow_fold_check` in every rollup pass comparing
+fold vs flags for logBorn tops (nodes minted post-dual-write, whose whole history is in the
+log) → fold-divergence.jsonl is the E4 gate. The E6 eager-done sampler is armed
+(eager-done-samples.jsonl: focusHeld per planner done). Next: let E2/E4/E6 accrue, then the
+P3.3 flip when fold-divergence is quiet.
 
 - **P0 (hours):** 0a archiver give-up cap + parse fix per E5 (kills ~1200 wasted calls/48h);
   0b brief-writer failure triage (80 call-fails + 25 give-ups/48h).

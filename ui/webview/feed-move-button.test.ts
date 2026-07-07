@@ -49,12 +49,12 @@ test("kernel: cardMove routes to jd.user_move with 'working' as the only legal t
 
 test("judge: user_move reuses the follow-up machinery — reopen + followupAt floor + stub, NO followupPending", () => {
   assert.match(JUDGE, /def user_move\(fsid, gid, now=None\):/);
-  assert.match(JUDGE, /_reopen\(store, gid, by="user-move"\)/);
+  assert.match(JUDGE, /_reopen\(store, gid, by="user-move", now=now\)/);
   // the same stamp drives the Working sort floor and BOTH staleness floors (block + done),
-  // routed through THE arbitration gate since P1 (may_apply, 2026-07-06)
+  // routed through the fused gate+recorder since P3.1 (record_verdict, 2026-07-06)
   assert.match(JUDGE, /def _done_is_stale\(nd, ev_t\):/);
-  assert.match(JUDGE, /may_apply\(store, nodes\[t\], "judge", "done", seg_t\)/);   // planner done guard
-  assert.match(JUDGE, /if not may_apply\(store, nd, "judge", "done", t\):/);       // closer done guard
+  assert.match(JUDGE, /record_verdict\(store, nodes\[t\], "judge", "done", seg_t/);   // planner done guard
+  assert.match(JUDGE, /if not record_verdict\(store, nd, "judge", "done", t/);        // closer done guard
   // user_move itself never sets the followupPending chip
   const um = JUDGE.slice(JUDGE.indexOf("def user_move("), JUDGE.indexOf("def user_move(") + 3200);
   assert.ok(!um.includes('followupPending"] = True'), "user_move must not set the follow-up chip flag");

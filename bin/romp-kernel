@@ -6038,6 +6038,11 @@ def _mark_nodes_cleared(item_ids, value):
         for iid in ids:
             nd = nodes.get(iid)
             if nd is not None and bool(nd.get("cleared")) != value:
+                # DUAL-WRITE (judge plan P3.1): the user's cross-off / undo is a top-authority verdict —
+                # record it in the node's log alongside the flag (clear; reopen for an undo-restore, whose
+                # gate passes because _undo_clear appends the cleared.jsonl undo rows BEFORE this runs)
+                jd.record_verdict(store, nd, "user", "clear" if value else "reopen", now,
+                                  why="cleared from the feed" if value else "undo clear")
                 nd["cleared"] = value
                 touched = True
         if not touched:

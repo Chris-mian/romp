@@ -1340,7 +1340,7 @@ def apply_plan(store, seg_id, seg_t, ops, menu, place_key=None, prompt_uuid=None
         nodes[nid] = {"id": nid, "text": text, "parentId": parent, "nodeComplete": False,
                       "blocked": False, "cleared": False, "trail": [seg_id], "promptUuid": prompt_uuid,
                       "quote": quote or None,             # the minting message's verbatim head (g13)
-                      "t": seg_t, "mt": seg_t, "why": why}   # mt = last-modified (create/done/block); t stays create
+                      "t": seg_t, "mt": seg_t, "why": why, "logBorn": True}   # mt = last-modified; logBorn: full verdict history in the log (P3.2)
         created.append(nid)
         return nid
 
@@ -1389,11 +1389,12 @@ def apply_plan(store, seg_id, seg_t, ops, menu, place_key=None, prompt_uuid=None
             _unblock_branch(nid); focus = touched = nid
         elif do == "done":
             t = _target(o)
-            if t and may_apply(store, nodes[t], "judge", "done", seg_t):
+            if t and record_verdict(store, nodes[t], "judge", "done", seg_t, why=o["why"], seg=seg_id):
                 _complete(t, o["why"]); touched = t
+                _eager_done_sample(store, t, seg_t)   # E6: was this eager done on the FOCUS top? (gates P4)
         elif do == "block":
             t = _target(o)
-            if t and may_apply(store, nodes[t], "judge", "block", seg_t):
+            if t and record_verdict(store, nodes[t], "judge", "block", seg_t, why=o["why"], seg=seg_id):
                 nodes[t]["blocked"] = True; nodes[t]["blockWhy"] = o["why"]
                 nodes[t]["mt"] = seg_t; touched = t
         elif do == "retitle":
@@ -1440,6 +1441,28 @@ def _stamp_seam(store, top, now):
     seams.append({"t": int(now), "top": top, "text": (nodes.get(top, {}).get("text") or "")[:120],
                   "segs": sorted(segs)})
     del seams[:-SEAM_CAP]
+
+
+def _eager_done_sample(store, nid, seg_t):
+    """E6 sampler (gates P4, the user 2026-07-06): for each PLANNER-set eager done, record whether the
+    resolved goal's top was the session's ACTIVE FOCUS at verdict time. If it was, the settled gate
+    would have held the card out of Completed until the turn ended anyway — the closer would have
+    delivered identical UX, so the planner's eagerness bought nothing visible. A high focus-held rate
+    over a few weeks green-lights consolidating resolution into the closer (P4); a low one keeps both
+    resolvers. Best-effort; never raises."""
+    try:
+        nodes = store.get("nodes", {})
+        def top(x):
+            seen = set()
+            while x in nodes and nodes[x].get("parentId") is not None and x not in seen:
+                seen.add(x); x = nodes[x]["parentId"]
+            return x
+        focus = store.get("lastNode")
+        with (STATE / "eager-done-samples.jsonl").open("a") as f:
+            f.write(json.dumps({"t": seg_t, "sid": store.get("rompUuid"), "nid": nid,
+                                "focusHeld": bool(focus and top(focus) == top(nid))}) + "\n")
+    except Exception:
+        pass
 
 
 def _heal_log(heal, store, nid):
@@ -1617,6 +1640,7 @@ def rollup_status(store, session_closed, now=None):
             nodes[nid].pop("blockWhy", None)
             _heal_log("moot-block", store, nid)
     store["status"] = status
+    _shadow_fold_check(store)                          # P3.2: fold-vs-flags divergence telemetry (E4)
 
 
 def _sync_declared_plan(store, session, seg_id, seg_t):
@@ -1660,8 +1684,8 @@ def _sync_declared_plan(store, session, seg_id, seg_t):
                 nd["mt"] = seg_t
                 changed = True
         elif nd.get("agentBornOpen"):                       # watched-open item that has now COMPLETED → authoritative-done (kept)
-            if at.get("status") != "done" and may_apply(store, nd, "agent", "done", seg_t):
-                # routed through the gate for E1-census coverage; agent verdicts always pass (their own list)
+            if at.get("status") != "done" and record_verdict(store, nd, "agent", "done", seg_t,
+                                                             why="the agent crossed it off its own list"):
                 nd["agentTask"] = {"key": key, "status": "done", "raw": (it or {}).get("status") or "completed"}
                 nd["nodeComplete"] = True; nd["agentDone"] = True; nd["mt"] = seg_t
                 changed = True
@@ -1681,7 +1705,7 @@ def _sync_declared_plan(store, session, seg_id, seg_t):
                       "parentId": None, "nodeComplete": False, "blocked": False, "cleared": False,
                       "trail": [seg_id] if seg_id else [], "promptUuid": None, "t": seg_t, "mt": seg_t,
                       "why": "declared in the agent's own to-do list",
-                      "agentTask": {"key": key, "status": "open", "raw": it["status"]}, "agentBornOpen": True}
+                      "agentTask": {"key": key, "status": "open", "raw": it["status"]}, "agentBornOpen": True, "logBorn": True}
         by_key[key] = nid
         changed = True
     return changed
@@ -2304,7 +2328,7 @@ def _nudge_diag(event, **fields):
         pass
 
 
-def _reopen(store, gid, by="?"):
+def _reopen(store, gid, by="?", now=None):
     """Reopen a completed/blocked goal so a tagged FOLLOW-UP can accrue more work under it: clear
     nodeComplete + cleared on the node (unsealing its subtree from open_menu) and unblock it and its
     ancestors. Clears followupPending — the OFFICIAL reopen supersedes the kernel's optimistic one. The
@@ -2316,8 +2340,13 @@ def _reopen(store, gid, by="?"):
     nodes = store["nodes"]
     if gid not in nodes:
         return
-    if not may_apply(store, nodes[gid], "user", "reopen"):   # view-cleared → stays sealed; don't un-seal it
-        return
+    # DUAL-WRITE: the gate + the reopen event in one call (P3.1). Source maps from the caller: the
+    # user's own actions (a typed follow-up, the optimistic flip, Move to Working) are "user"; a
+    # delegation/nudge unseal is judge machinery. ev_t = the action moment when the caller knows it.
+    src = "judge" if by in ("delegation", "nudge") else "user"
+    if not record_verdict(store, nodes[gid], src, "reopen",
+                          now if now is not None else int(time.time()), why="reopened (%s)" % by):
+        return                                         # view-cleared → stays sealed; don't un-seal it
     if nodes[gid].get("nodeComplete"):                 # reopening a DONE node: stamp the durable everDone marker
         _nudge_diag("reopen-done", gid=gid, by=by)     # INSTRUMENTATION: a COMPLETED goal is being un-completed — by whom?
         nodes[gid]["everDone"] = True                  # BEFORE clearing nodeComplete, so the grouper never relinks it
@@ -2372,7 +2401,7 @@ def optimistic_followup(fsid, gid, text="", now=None, stub=False):
     store = load_goals(fsid)
     if gid not in store.get("nodes", {}):
         return False
-    _reopen(store, gid, by="optimistic")               # unseal + unblock (also clears any stale followupPending)
+    _reopen(store, gid, by="optimistic", now=now)               # unseal + unblock (also clears any stale followupPending)
     store["nodes"][gid]["followupPending"] = True      # → rollup shows working + the feed shows the chip
     if now is not None:
         # Stamp when this card OPTIMISTICALLY entered Working, so the feed sorts it to the BOTTOM of the
@@ -2398,7 +2427,7 @@ def _plant_stub(store, gid, text, now):
     t = now if now is not None else (store["nodes"][gid].get("mt") or store["nodes"][gid].get("t", 0))
     store["nodes"][sid] = {"id": sid, "text": text,
                            "parentId": gid, "nodeComplete": False, "blocked": False, "cleared": False,
-                           "provisional": True, "trail": [], "t": t}
+                           "provisional": True, "trail": [], "t": t, "logBorn": True}
     store.setdefault("status", {})[sid] = "working"
 
 
@@ -2419,7 +2448,7 @@ def user_move(fsid, gid, now=None):
         return False
     if not may_apply(store, nodes[gid], "user", "reopen"):   # view-cleared → sealed; the feed hides it anyway
         return False
-    _reopen(store, gid, by="user-move")
+    _reopen(store, gid, by="user-move", now=now)
     kids = {}
     for k, v in nodes.items():
         kids.setdefault(v.get("parentId"), []).append(k)
@@ -2497,6 +2526,85 @@ def may_apply(store, nd, src, kind, ev_t=None):
         if kind == "block":
             return not _block_is_stale(nd, ev_t)
     return True
+
+
+LOG_CAP = 64                             # per-node verdict-log bound (a node rarely sees >10 verdicts; the cap
+#                                          is a runaway backstop — oldest drop, logTrunc marks the loss)
+
+
+def record_verdict(store, nd, src, kind, ev_t=None, why=None, seg=None):
+    """P3.1 DUAL-WRITE (the user 2026-07-06): the gate AND the recorder, fused into the one seam every
+    verdict write goes through. Asks may_apply; when allowed, appends the event to the node's
+    append-only verdict LOG and returns True — the caller then writes the flags exactly as before
+    (flags stay AUTHORITATIVE until the P3.3 flip; the log is the shadow history the fold reads).
+    Fusing gate+record means a future writer cannot pass the gate yet skip the history — one call does
+    both. `ev_t` = EVIDENCE time (segment/turn/user-action moment); `at` = arrival, forensics only."""
+    if not may_apply(store, nd, src, kind, ev_t):
+        return False
+    log = nd.setdefault("log", [])
+    log.append({"ev_t": ev_t, "src": src, "kind": kind,
+                **({"why": why} if why else {}), **({"seg": seg} if seg else {}),
+                "at": int(time.time())})
+    if len(log) > LOG_CAP:
+        del log[:len(log) - LOG_CAP]
+        nd["logTrunc"] = True
+    return True
+
+
+def _fold_node_state(nd):
+    """P3.2 SHADOW FOLD (the user 2026-07-06): a node's own verdict state (open/done/blocked) as a PURE
+    fold over its log — the future authority, running in shadow now. Order by evidence time (arrival
+    breaks ties); a USER action floors judge evidence exactly as may_apply does at write time: a judge
+    done needs ev_t >= the floor, a judge block needs ev_t > it. Because record_verdict already gated
+    each append, replaying the fold reproduces the same decisions from history alone — and shuffling
+    the log never changes the result (the ordering is reconstructed, not assumed)."""
+    state, floor = "open", 0
+    for e in sorted(nd.get("log") or [], key=lambda e: (e.get("ev_t") or 0, e.get("at") or 0)):
+        src, kind, t = e.get("src"), e.get("kind"), e.get("ev_t") or 0
+        if kind == "reopen":
+            state = "open"
+            if src == "user":
+                floor = max(floor, t)
+        elif kind == "done":
+            if src != "judge" or t >= floor:
+                state = "done"
+        elif kind == "block":
+            if src != "judge" or t > floor:
+                state = "blocked"
+        elif kind == "clear":
+            state = "cleared"
+    return state
+
+
+def _flag_node_state(nd):
+    """The node's verdict state as the FLAGS tell it — the shadow fold's comparison target."""
+    if nd.get("cleared"):
+        return "cleared"
+    if nd.get("nodeComplete"):
+        return "done"
+    if nd.get("blocked"):
+        return "blocked"
+    return "open"
+
+
+def _shadow_fold_check(store):
+    """E4 divergence telemetry (gates the P3.3 flip): for every TOP whose whole verdict history is in
+    the log (logBorn — minted after dual-write began; pre-existing nodes have flag state the log never
+    saw), compare the fold to the flags and record any disagreement. Skips rolledUp nodes (their flags
+    were written by the roll-down heal, which is tree-level shadowing the NODE fold deliberately
+    doesn't model). Best-effort; never raises."""
+    try:
+        for nid, nd in store.get("nodes", {}).items():
+            if nd.get("parentId") is not None or not nd.get("logBorn") or nd.get("rolledUp"):
+                continue
+            got, want = _fold_node_state(nd), _flag_node_state(nd)
+            if got != want:
+                with (STATE / "fold-divergence.jsonl").open("a") as f:
+                    f.write(json.dumps({"t": int(time.time()), "sid": store.get("rompUuid"),
+                                        "nid": nid, "fold": got, "flags": want,
+                                        "log": nd.get("log")}) + "\n")
+    except Exception:
+        pass
 
 
 def _unit_key(seg_id, phase):
@@ -2741,7 +2849,7 @@ def _plan_session(fsid, path, now):
             if not (isinstance(target, str) and target in store["nodes"]):
                 continue                              # courier hasn't run yet (UNSET) → stay re-examinable ('fyi' was
                 #                                       already retired in the collection loop, so it never reaches here)
-            _reopen(store, target, by="delegation")    # unseal if the closer already flat-completed G (refused if view-cleared)
+            _reopen(store, target, by="delegation", now=seg_t)    # unseal if the closer already flat-completed G (refused if view-cleared)
             sub = [nd for nd in open_menu(store)       # SCOPED menu: G + its open descendants, G first (menu #1)
                    if nd["id"] == target or _top_ancestor(store["nodes"], nd["id"]) == target]
             sub.sort(key=lambda nd: (nd["id"] != target, nd.get("t", 0)))
@@ -2799,7 +2907,7 @@ def _plan_session(fsid, path, now):
                 store["placements"][seg_id] = None
                 save_goals(fsid, store)
                 continue
-            _reopen(store, target, by="nudge")         # unseal if the closer already completed it (refused if view-cleared)
+            _reopen(store, target, by="nudge", now=seg_t)         # unseal if the closer already completed it (refused if view-cleared)
             sub = [nd for nd in open_menu(store)       # SCOPED menu: the goal + its open descendants, goal first (#1)
                    if nd["id"] == target or _top_ancestor(store["nodes"], nd["id"]) == target]
             sub.sort(key=lambda nd: (nd["id"] != target, nd.get("t", 0)))
@@ -2873,7 +2981,7 @@ def _plan_session(fsid, path, now):
                     continue
                 # CONTINUATION (the strong default, behavior unchanged): reopen the target, force the work
                 # UNDER it, reusing the model's own description + optional retitle from the SAME call.
-                _reopen(store, followup, by="followup")
+                _reopen(store, followup, by="followup", now=seg_t)
                 menu = open_menu(store)                # rebuilt: the reopen just unsealed the target
                 gi2 = next((i for i, nd in enumerate(menu, 1) if nd["id"] == followup), None)
                 if gi2:
@@ -3189,7 +3297,7 @@ def apply_group(store, tops, ops, t):
         nid = "%s:g%d" % (store["rompUuid"], store["seq"])
         nodes[nid] = {"id": nid, "text": text or "(umbrella)", "parentId": None, "nodeComplete": False,
                       "blocked": False, "cleared": False, "trail": [], "t": t, "mt": t, "why": why,
-                      "umbrella": True}
+                      "umbrella": True, "logBorn": True}
         created.append(nid)
         return nid
 
@@ -3332,6 +3440,7 @@ def _clear_empty_umbrellas(store):
     changed = False
     for nd in nodes.values():
         if nd.get("umbrella") and not nd.get("cleared") and live.get(nd["id"], 0) == 0:
+            record_verdict(store, nd, "judge", "clear", int(time.time()), why="empty umbrella")
             nd["cleared"] = True
             changed = True
     return changed
@@ -3555,8 +3664,8 @@ def apply_close(store, menu, verdicts, t=None):
         if nd.get("nodeComplete"):
             continue
         if i in done:
-            if not may_apply(store, nd, "judge", "done", t):   # the user's follow-up/move postdates this turn's
-                continue                                       # evidence — their action owns the verdict now
+            if not record_verdict(store, nd, "judge", "done", t, why=done[i] or None):
+                continue                              # the user's follow-up/move postdates this turn's evidence
             nd["nodeComplete"] = True
             nd["everDone"] = True                      # durable once-done marker (provenance; see _done_is_stale)
             nd["blocked"] = False
@@ -3567,7 +3676,7 @@ def apply_close(store, menu, verdicts, t=None):
                 nd["mt"] = t
             newly.append(nd["id"])
         elif i in block:
-            if not may_apply(store, nd, "judge", "block", t):   # the user's follow-up postdates this turn's evidence —
+            if not record_verdict(store, nd, "judge", "block", t, why=block[i] or None):   # the user's follow-up postdates this turn's evidence —
                 continue                               # their reply owns the verdict now, not this stale close
             nd["blocked"] = True
             nd["negBlock"] = True                      # closer-set block (turn-end), mirrors negComplete — for timeline attribution
@@ -4327,7 +4436,7 @@ def apply_courier(store, seg_id, seg_t, text, origin):
     nid = "%s:g%d" % (store["rompUuid"], store["seq"])
     nodes[nid] = {"id": nid, "text": (text or "(delegation)")[:120], "parentId": None,
                   "nodeComplete": False, "blocked": False, "cleared": False,
-                  "trail": [seg_id], "t": seg_t, "origin": origin}
+                  "trail": [seg_id], "t": seg_t, "origin": origin, "logBorn": True}
     placements[seg_id] = nid
     store["lastNode"] = nid                            # the delegation is now the active focus
     return nid
@@ -4350,7 +4459,7 @@ def _plant_handoff_track(store, parent_id, text, peer_sid, peer_name, t, mid):
     label = "↪ delegated to %s: %s" % (peer_name or peer_sid[:8], text or "(work)")
     nodes[nid] = {"id": nid, "text": label[:120], "parentId": parent_id,
                   "nodeComplete": False, "blocked": False, "cleared": False,
-                  "trail": [], "t": t, "mt": t, "handoff": {"peer": peer_sid, "msgId": mid}}
+                  "trail": [], "t": t, "mt": t, "handoff": {"peer": peer_sid, "msgId": mid}, "logBorn": True}
     return nid
 
 
@@ -4375,6 +4484,8 @@ def run_propagate(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY,
             a_node = a_store.get("nodes", {}).get(a_gid)
             if not a_node or a_node.get("nodeComplete"):
                 continue                                # sender's tracking node gone or already done → idempotent
+            record_verdict(a_store, a_store["nodes"][a_gid], "judge", "done", now,
+                           why="completed by %s (delegated)" % (name or fsid[:8]))
             _mark_node_done(a_store, a_gid, "completed by %s (delegated)" % (name or fsid[:8]), now)
             rollup_status(a_store, False)               # sender just had work close → recompute its columns
             save_goals(a_sid, a_store)
