@@ -1,6 +1,7 @@
 # The judges — a field guide
 
-Current as of **2026-07-06**. This is the working reference for what each judge
+Current as of **2026-07-06** (see `docs/goal-state.md` for the STATE model — the diary/fold/ladder
+and every chip — current 2026-07-07). This is the working reference for what each judge
 actually is today: its prompts, triggers, inputs/outputs, and where the roles
 overlap. The original design rationale lives in `design/judge.md` (written
 2026-06-13/14, when only four judges existed); this doc describes what shipped.
