@@ -294,6 +294,34 @@ class LiveTailAndOpen(unittest.TestCase):
         alive = km._alive_sessions(1000, {"sid-sdk": {"state": "waiting"}})
         self.assertIn("sid-sdk", [s["sid"] for s in alive])             # still opens
 
+    def test_interrupt_record_does_not_floor_out_an_unlanded_echo(self):
+        # A just-sent message shows via the optimistic echo before it hits disk. The interrupt record authors
+        # 'human' but is a STOP event — it must NOT raise the echo-retirement floor (human_floor), or an
+        # interrupted send that got a partial reply VANISHES on the next push (the user 2026-07-07). Give the
+        # FakeBackend the REAL stale_echo prune so the regression is behavioural, and capture the floor.
+        captured = {}
+        def prune(sid, tx_uuids, tx_texts=(), human_floor=0):
+            captured["hf"] = human_floor
+            d = self.be._live.get(sid, [])
+            self.be._live[sid] = [a for a in d if not (
+                (a.get("uuid") in tx_uuids or (a.get("_echo_text") and a["_echo_text"] in tx_texts))
+                or (a.get("_echo_text") and human_floor and a.get("t", 0) <= human_floor))]
+        self.be.prune_live = prune
+        self.be._live = {"sid-sdk": [{"type": "user", "uuid": "echo:x", "t": 50, "author": "human",
+                                      "_echo_text": "please refactor everything",
+                                      "message": {"role": "user", "content": [{"type": "text", "text": "please refactor everything"}]}}]}
+        # transcript: a genuine human turn (t=10), then the interrupt record (t=100, author 'human'). The
+        # sent message is NOT on disk yet — it lives only in the echo above.
+        session = {"turns": [{"id": "t", "ended": True, "atoms": [
+            {"type": "user", "uuid": "u0", "t": 10, "author": "human",
+             "message": {"role": "user", "content": [{"type": "text", "text": "earlier task"}]}},
+            {"type": "user", "uuid": "int1", "t": 100, "author": "human",
+             "message": {"role": "user", "content": [{"type": "text", "text": "[Request interrupted by user]"}]}}]}]}
+        km._merge_live_atoms(session, "sid-sdk")
+        self.assertEqual(captured["hf"], 10, "human_floor floors on the genuine turn (10), NOT the interrupt (100)")
+        surviving = [a.get("_echo_text") for a in self.be._live.get("sid-sdk", [])]
+        self.assertIn("please refactor everything", surviving, "the unlanded echo survives the interrupt")
+
 
 class Responsiveness(unittest.TestCase):
     """The chat pusher is event-driven + short-poll so BOTH backends feel snappy (the user 2026-06-22):

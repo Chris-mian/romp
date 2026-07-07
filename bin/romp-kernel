@@ -5310,8 +5310,13 @@ def _merge_live_atoms(session, sid, shown_texts=()):
     # match because the transcript extracted an image path out of it (screenshots piling up at the bottom, the
     # user 2026-06-25). SDK-only semantics: TmuxBackend.prune_live IGNORES the floor, since a tmux echo must
     # SURVIVE a later turn to keep a dropped send visible (it keeps the text/uuid-only prune).
+    # EXCLUDE the interrupt record (the user 2026-07-07): it authors 'human' but is a STOP event, not a message
+    # that landed and processed the echo. When a just-sent message hadn't hit disk yet, the interrupt's
+    # timestamp floored past the echo and retired it — so an interrupted send that got a partial reply then
+    # VANISHED on the next push. Mirror _last_genuine_turn_t, which floors on genuine turns only.
     human_floor = max((a.get("t", 0) for turn in session["turns"] for a in turn["atoms"]
-                       if a.get("type") == "user" and a.get("author") == "human"), default=0)
+                       if a.get("type") == "user" and a.get("author") == "human"
+                       and not em.is_interrupt_record(a)), default=0)
     be.prune_live(sid, tx_uuids, tx_texts, human_floor)
     hide = tx_texts | {t.strip() for t in shown_texts if t}    # transcript dups + already-shown queued msgs
     fresh = [a for a in live if a.get("uuid") not in tx_uuids
