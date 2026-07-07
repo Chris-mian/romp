@@ -192,6 +192,21 @@ class DualWriteThroughTheSites(unittest.TestCase):
         kinds = [(e["src"], e["kind"], e["ev_t"]) for e in st["nodes"][G1]["log"]]
         self.assertIn(("user", "reopen", T + 500), kinds)
 
+    def test_placement_unblock_is_event_backed(self):
+        # newest-wins: filing new work on a blocked branch un-blocks it — and post-P3.3 that clear must
+        # be an EVENT, or the next materialize re-blocks from the diary (found 2026-07-07).
+        store = {"rompUuid": SID, "nodes": {G1: node()}, "placements": {}, "status": {}}
+        jd.apply_close(store, [store["nodes"][G1]], {"block": {1: "pick a name"}}, t=T)
+        jd.rollup_status(store, False)
+        self.assertEqual(store["status"][G1], "blocked")
+        menu = [{"id": G1, "text": "Ship it"}]
+        jd.apply_plan(store, "seg-w", T + 60, [{"do": "sub", "under": 1, "text": "did the pick", "why": "answered"}],
+                      menu, place_key="seg-w")
+        jd.rollup_status(store, False)
+        self.assertEqual(store["status"][G1], "working", "new work on the branch un-blocks it and it STAYS un-blocked")
+        kinds = [(e["src"], e["kind"]) for e in store["nodes"][G1]["log"]]
+        self.assertIn(("planner", "unblock"), kinds)
+
     def test_closer_verdicts_record(self):
         store = {"rompUuid": SID, "nodes": {G1: node()}, "placements": {}, "status": {}}
         jd.apply_close(store, [store["nodes"][G1]], {"block": {1: "pick a name"}}, t=T)

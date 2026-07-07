@@ -1350,8 +1350,13 @@ def apply_plan(store, seg_id, seg_t, ops, menu, place_key=None, prompt_uuid=None
         # UN-BLOCK (newest-wins, SURGICAL): a placement clears stale blocks only on its OWN BRANCH —
         # the node + its ancestor chain — so a still-owed block on an unrelated SIBLING survives. A
         # later block op in the SAME reply re-blocks (ops apply in order, block usually comes after).
+        # EVENT-BACKED since P3.3 (found 2026-07-07 wiring interrupted→blocked): the diary is the
+        # authority, so a bare flag clear would be re-blocked by the next materialize.
         x = nid
         while x is not None:
+            if nodes[x].get("blocked"):
+                record_verdict(store, nodes[x], "planner", "unblock", seg_t,
+                               why="new work filed on this branch")
             nodes[x]["blocked"] = False
             x = nodes.get(x, {}).get("parentId")
 
