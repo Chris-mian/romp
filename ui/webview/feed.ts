@@ -469,14 +469,18 @@ function makeAskCard(it: AskItem): HTMLElement {
   // the buttons past the card's right edge on a narrow card (the user 2026-06-19; mirrors the ↻ Followed-up
   // chip moved up 2026-06-18). idwrap is flex:1 so the name ellipsizes before the badge is ever clipped.
   idwrap.append(apiBadge, blkBadge);
-  // The action row holds ONLY buttons now (Retry / Revive / Clear). Card-level follow-up is click-to-cite.
-  actions.append(apiRetry, revive, clr);
+  // COMPACTNESS (the user 2026-07-07): Clear rides the NAME row (right side, after the chips) and the
+  // Background/Summary toggles ride the TIME row — freeing a whole action row. So the action row holds only
+  // Retry / Revive (rare states); both rows flex-WRAP so nothing overflows or overlaps on a narrow card.
+  actions.append(apiRetry, revive);
   // "↪ from <peer>" provenance + the "reopened"/"↻ Followed up" chips ride the name row's right side;
   // row2 wraps them onto a new line when there isn't room, so the provenance never overlaps a chip
   // (the user 2026-06-20). origin sits left of the chips, matching the "from … · Followed up" reading order.
-  row2.append(idwrap, origin, fupBadge, nfBadge, intBadge, warnChip, waitOnBadge);
-  // ROW 3 — timestamp bottom-left · action buttons bottom-right
-  const row3 = el("div", "fask-row3"); row3.append(time, actions);
+  // Clear is the rightmost, always-present control on this row (idwrap flex:1 pushes it to the edge).
+  row2.append(idwrap, origin, fupBadge, nfBadge, intBadge, warnChip, waitOnBadge, clr);
+  // ROW 3 — timestamp (left) · Background/Summary toggles + Retry/Revive (right). Populated below, once the
+  // toggle buttons exist (they're declared with the distiller sections).
+  const row3 = el("div", "fask-row3");
   // the user's handoff spec (2026-06-10): below the main session, list the OTHER
   // sessions this ask was handed to — but only while they are LIVE-WORKING on
   // an unfinished branch. Idle or finished recipients disappear; presence on
@@ -507,7 +511,9 @@ function makeAskCard(it: AskItem): HTMLElement {
   const bgBody = el("div", "fask-bg-body");
   const takeBtn = el("button", "fask-secbtn"); takeBtn.textContent = "Summary";
   const distill = el("div", "fask-distill");
-  secs.append(bgBtn, bgBody, takeBtn, distill);
+  secs.append(bgBody, distill);   // the BODIES only; the toggles ride row3 (below), one body shows at a time
+  // now that the toggles exist, populate row3: time (left) · Background/Summary toggles · Retry/Revive (right)
+  row3.append(time, bgBtn, takeBtn, actions);
   // ⏳ AWAITING cue (the user 2026-06-29): a small romp swirl spinning in the SAME body spot the distiller line
   // will eventually fill — a completed/blocked card shows its takeaway there; a WORKING card that's awaiting
   // dispatched/delegated work shows the spinning swirl instead, a glanceable "in flight, not stalled" sign.
@@ -629,8 +635,11 @@ function makeAskCard(it: AskItem): HTMLElement {
 // Collapse state for the card's two distiller sections (the user 2026-07-02), keyed by itemId in module
 // sets so the keyed incremental re-render never snaps a section shut: BACKGROUND is closed unless the
 // user opened it; the takeaway is open unless the user closed it.
-const bgOpen = new Set<string>();
-const takeClosed = new Set<string>();
+// Which distiller section a card shows — MUTUALLY EXCLUSIVE (the user 2026-07-07): "bg" | "summary" | "none".
+// Absent = the DEFAULT (summary open, so a completed card's takeaway shows). Clicking a toggle that's already
+// showing closes it to "none"; clicking the other switches to it. One body shows at a time, or neither.
+const secChoice = new Map<string, "bg" | "summary" | "none">();
+function resolveSec(id: string): "bg" | "summary" | "none" { return secChoice.get(id) ?? "summary"; }
 
 // Fill + wire the BACKGROUND and takeaway sections. BACKGROUND shows only alongside a produced
 // takeaway/brief (orientation with no outcome would dangle). Collapsed = a real "background"/"summary"
@@ -641,37 +650,33 @@ const takeClosed = new Set<string>();
 // accumulates. stopPropagation on every toggle — the card-body click opens the modal.
 function applyDistillSections(a: any, it: AskItem, distillShown: boolean): void {
   const id = it.itemId;
-  const flipBg = (ev: Event) => {
-    ev.stopPropagation();
-    if (bgOpen.has(id)) bgOpen.delete(id); else bgOpen.add(id);
-    applyDistillSections(a, it, distillShown);
-  };
-  const flipTake = (ev: Event) => {
-    ev.stopPropagation();
-    if (takeClosed.has(id)) takeClosed.delete(id); else takeClosed.add(id);
-    applyDistillSections(a, it, distillShown);
-  };
   const bg = distillShown && it.background ? it.background : null;
-  a._secs.style.display = distillShown ? "" : "none";
-  const bgIsOpen = !!bg && bgOpen.has(id);
-  const takeIsOpen = !takeClosed.has(id);
-  // both toggles are ALWAYS visible (side by side while nothing splits them); pressed = .on
+  // resolve the selection (default = summary open), falling back to "none" if the chosen content is absent
+  let choice = resolveSec(id);
+  if (choice === "bg" && !bg) choice = "none";
+  if (choice === "summary" && !distillShown) choice = "none";
+  const pick = (want: "bg" | "summary") => (ev: Event) => {
+    ev.stopPropagation();
+    secChoice.set(id, choice === want ? "none" : want);   // click the showing one → off; else switch to it
+    applyDistillSections(a, it, distillShown);
+  };
+  // the body container shows only when a section is actually open (no empty-container gap while "none")
+  a._secs.style.display = distillShown && choice !== "none" ? "" : "none";
+  // Background toggle — visible only when there IS background; pressed (.on) when its body is showing
   a._bgBtn.style.display = bg ? "" : "none";
-  a._bgBtn.classList.toggle("on", bgIsOpen);
-  a._bgBtn.setAttribute("aria-pressed", bgIsOpen ? "true" : "false");
-  a._bgBtn.title = bgIsOpen ? "hide the background" : "show the background";
-  a._bgBody.style.display = bgIsOpen ? "" : "none";
-  if (bgIsOpen) a._bgBody.textContent = bg as string;
-  // one clear line between the background part and the summary part, only when the background is open
-  // (its body is what stands between the two sections; collapsed, the buttons sit tight side by side)
-  a._bgBody.classList.toggle("fask-gapend", bgIsOpen);
-  a._bgBtn.onclick = flipBg;
+  a._bgBtn.classList.toggle("on", choice === "bg");
+  a._bgBtn.setAttribute("aria-pressed", choice === "bg" ? "true" : "false");
+  a._bgBtn.title = choice === "bg" ? "hide the background" : "show the background";
+  a._bgBody.style.display = choice === "bg" ? "" : "none";
+  if (choice === "bg") a._bgBody.textContent = bg as string;
+  a._bgBtn.onclick = pick("bg");
+  // Summary toggle
   a._takeBtn.style.display = distillShown ? "" : "none";
-  a._takeBtn.classList.toggle("on", takeIsOpen);
-  a._takeBtn.setAttribute("aria-pressed", takeIsOpen ? "true" : "false");
-  a._takeBtn.title = takeIsOpen ? "hide the summary" : "show the summary";
-  (a._distill as HTMLElement).style.display = takeIsOpen ? "" : "none";
-  a._takeBtn.onclick = flipTake;
+  a._takeBtn.classList.toggle("on", choice === "summary");
+  a._takeBtn.setAttribute("aria-pressed", choice === "summary" ? "true" : "false");
+  a._takeBtn.title = choice === "summary" ? "hide the summary" : "show the summary";
+  (a._distill as HTMLElement).style.display = choice === "summary" ? "" : "none";
+  a._takeBtn.onclick = pick("summary");
 }
 
 function updateAskCard(card: HTMLElement, it: AskItem) {
@@ -1048,11 +1053,9 @@ function makeGroupCard(g: AskGroup): HTMLElement {
   const idwrap = el("div", "fask-id");
   const name = el("a", "fname"); name.title = "open this session";
   idwrap.append(name);   // no "· N parts" label — the member checklist below already shows the count
-  row2.append(idwrap);
-  const actions = el("div", "fask-actions");
   const clr = el("button", "fdismiss"); clr.textContent = "Clear"; clr.title = "clear ALL sub-asks of this request (inbox-zero)";
-  actions.append(clr);
-  const row3 = el("div", "fask-row3"); row3.append(time, actions);   // time bottom-left · Clear bottom-right
+  row2.append(idwrap, clr);   // Clear rides the name row (the user 2026-07-07, compactness) — matches the ask card
+  const row3 = el("div", "fask-row3"); row3.append(time);   // time on its own row (Clear moved up to row2)
   const memberList = el("div", "fgroup-members");
   main.append(row1, row2, row3, memberList);
   card.append(main);
@@ -1750,7 +1753,7 @@ function ensureClearAll(): HTMLElement {
 // nothing is left open it reads "Expand", which restores the DEFAULTS (summaries open, backgrounds
 // closed) — it never force-opens every background. View-only: nothing is cleared or sent.
 function anySectionOpen(): boolean {
-  return asks.some((it) => !takeClosed.has(it.itemId) || bgOpen.has(it.itemId));
+  return asks.some((it) => resolveSec(it.itemId) !== "none");
 }
 function makeCollapseAllBtn(): HTMLElement {
   const b = el("button", "fdismiss ffollow");   // view action → blue hover, same chrome as Undo clear
@@ -1758,10 +1761,9 @@ function makeCollapseAllBtn(): HTMLElement {
   b.onclick = (ev) => {
     ev.stopPropagation();
     if (anySectionOpen()) {
-      bgOpen.clear();
-      for (const it of asks) takeClosed.add(it.itemId);
+      for (const it of asks) secChoice.set(it.itemId, "none");   // collapse every card's section
     } else {
-      takeClosed.clear();                        // back to defaults: summaries open, backgrounds closed
+      secChoice.clear();                         // back to defaults: summaries open
     }
     render();
   };

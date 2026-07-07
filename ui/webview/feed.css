@@ -178,11 +178,13 @@ body.feed-dragging .feed-col.col-asks { outline: 1.5px dashed color-mix(in srgb,
    lines when they don't fit — so Retry/Nudge/Follow up/Clear can never run off the card's edge. Flexbox
    detects the per-line overflow and adds lines on its own; no per-button width math, no card-specific tuning.
    min-width:0 lets it shrink to the card so the wrap actually triggers instead of overflowing. */
-.fask-actions { flex: 1 1 auto; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; }
-/* row 3 — age bottom-left, buttons bottom-right. Also wraps (backstop): if the action row can't even sit
-   beside the age, it drops to its own line below it rather than overflowing. */
-.fask-row3 { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; row-gap: 6px; margin-top: 6px; }
-.fask-row3 .ftime { flex: 0 0 auto; }
+.fask-actions { flex: 0 1 auto; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; }
+/* row 3 — the time on the LEFT; the Background/Summary toggles + Retry/Revive pushed to the RIGHT (the user
+   2026-07-07, compactness): `margin-right:auto` on the time claims the free space, so everything after it
+   right-aligns on the time's line. flex-wrap is the backstop — a tight card drops the toggles to their own
+   line under the time rather than overflowing or overlapping. */
+.fask-row3 { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; row-gap: 6px; margin-top: 6px; }
+.fask-row3 .ftime { flex: 0 0 auto; margin-right: auto; }
 /* card body is clickable (single → modal, double → pin). Hover lights a white
    ring + the timeline journey; pin persists it. Order matters: .focused after
    .pinned so a pinned-AND-focused card shows the bright ring. */
@@ -220,15 +222,11 @@ body.feed-dragging .feed-col.col-asks { outline: 1.5px dashed color-mix(in srgb,
    when it's wired (the user 2026-06-29). A subtle rounded hover fill, like the modal's nav zones. */
 .fask-distill-link { cursor: pointer; border-radius: 6px; margin-left: -4px; margin-right: -4px; padding-left: 4px; padding-right: 4px; transition: background 0.1s ease; }
 .fask-distill-link:hover { background: rgba(255, 255, 255, 0.07); opacity: 1; text-decoration: underline; text-underline-offset: 2px; }
-/* the card's TWO collapsible distiller sections (the user 2026-07-02, round 5): BACKGROUND (collapsed
-   by default, re-orientation for a reader who forgot the thread) above the takeaway (expanded by
-   default). Collapsed sections are REAL buttons — "background" / "summary" in the Clear button's chrome
-   (border, radius, muted text; NEUTRAL hover, not Clear's destructive red) — and ONE flex-wrap container
-   holds everything: the full-width bodies force their own lines, so two collapsed buttons naturally
-   share a row. Open, the body runs the full card width and collapses via a block "less" button on its
-   own line under the text, always bottom-left (the trailing-inline placement wrapped unpredictably —
-   the user's screenshot). */
-.fask-secs { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 6px; margin-top: 6px; }
+/* the card's distiller sections (the user 2026-07-07, compactness): the Background/Summary TOGGLES now ride
+   the time row (row3) and are MUTUALLY EXCLUSIVE — one body shows at a time, or neither — so .fask-secs is
+   just the body container (a plain block; whichever body is open runs the full card width). The toggles are
+   REAL buttons in the Clear button's chrome (border, radius, muted text; NEUTRAL hover, not Clear's red). */
+.fask-secs { margin-top: 4px; }
 .fask-secbtn { flex: none; padding: 1px 9px; color: var(--dim); background: transparent;
   border: 1px solid var(--card-border); border-radius: 6px; font: inherit; font-size: 0.74em;
   cursor: pointer; white-space: nowrap; transition: color 0.12s ease, border-color 0.12s ease; }
@@ -239,10 +237,7 @@ body.feed-dragging .feed-col.col-asks { outline: 1.5px dashed color-mix(in srgb,
    rail's .rail-btn.on. */
 .fask-secbtn.on { color: var(--accent); border-color: var(--accent);
   background: rgba(156, 210, 255, 0.10); font-weight: 600; }
-/* one clear line between the background part and the summary part while the background is open
-   (its body is what stands between the sections; both collapsed → the buttons sit tight, side by side) */
-.fask-bg-body.fask-gapend { margin-bottom: 1.2em; }
-.fask-secs .fask-distill { flex: 1 1 100%; min-width: 0; margin: 0; }
+.fask-secs .fask-distill { min-width: 0; margin: 0; }
 /* the background body is typographically IDENTICAL to the summary (.fask-distill) — same font size,
    line height, color, opacity (the user 2026-07-02: one text style for both sections) */
 .fask-bg-body { flex: 1 1 100%; min-width: 0; font-size: 0.86em; line-height: 1.4; color: var(--fg);

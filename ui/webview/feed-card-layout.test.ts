@@ -12,10 +12,15 @@ import * as path from "node:path";
 const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.css"), "utf8");
 
-test("all three main cards build a row3 with the age (left) and actions (right)", () => {
-  const row3s = FEED.match(/const row3 = el\("div", "fask-row3"\); row3\.append\(time, actions\)/g) || [];
-  assert.equal(row3s.length, 2, "ask + group each get a row3 (the standalone card was removed 2026-07-07)");
-  // the title row no longer carries the time in those builders (it moved to row3)
+test("COMPACTNESS (the user 2026-07-07): Clear rides the name row; Background/Summary toggles ride the time row", () => {
+  // ask card: row3 = time (left) + the Background/Summary toggles + Retry/Revive (right)
+  assert.match(FEED, /row3\.append\(time, bgBtn, takeBtn, actions\)/, "ask card: the toggles moved up onto the time row");
+  assert.match(FEED, /actions\.append\(apiRetry, revive\)/, "…so the action row is Retry/Revive only (Clear + toggles moved up)");
+  // Clear is the rightmost control on the NAME row now (both ask + group cards)
+  assert.match(FEED, /row2\.append\(idwrap, origin, fupBadge, nfBadge, intBadge, warnChip, waitOnBadge, clr\)/, "ask card: Clear on the name row");
+  assert.match(FEED, /row2\.append\(idwrap, clr\)/, "group card: Clear on the name row");
+  // group card's row3 is just the time (its Clear moved up), so nothing sits alone on an action row
+  assert.match(FEED, /const row3 = el\("div", "fask-row3"\); row3\.append\(time\);/, "group card: time-only row3");
   assert.match(FEED, /row1\.append\(title\);/);
 });
 
@@ -43,7 +48,7 @@ test("courier handoff: the '↪ from <sender>' origin marker is wired and styled
   assert.match(FEED, /const origin = el\("a", "fask-origin"\); origin\.style\.display = "none"/);
   // it's a direct child of the wrapping row2 (NOT nested in idwrap) so a narrow card wraps it under the
   // name instead of overlapping the chips (the user 2026-06-20)
-  assert.match(FEED, /row2\.append\(idwrap, origin, fupBadge, nfBadge, intBadge, warnChip, waitOnBadge\)/, "the origin marker rides the name row beside the chips");
+  assert.match(FEED, /row2\.append\(idwrap, origin, fupBadge, nfBadge, intBadge, warnChip, waitOnBadge, clr\)/, "the origin marker rides the name row beside the chips");
   assert.doesNotMatch(FEED, /idwrap\.append\(name, origin\)/, "origin is no longer nested inside idwrap");
   // populated from it.origin in the update path: a dim gray "↪ from" + the peer in the bold session-name
   // style (its own identity colour); click opens the sender (the user 2026-06-16)
@@ -58,7 +63,7 @@ test("courier handoff: the '↪ from <sender>' origin marker is wired and styled
 test("the follow-up badge serves ONLY '↩ re-judging' now — the '↻ Followed up' chip was removed (the user 2026-07-01)", () => {
   assert.match(FEED, /el\("span", "fask-followedup"\); fupBadge\.textContent = "↩ re-judging"/);
   // the badge rides the SESSION-NAME row (right-justified), NOT the bottom action row
-  assert.match(FEED, /row2\.append\(idwrap, origin, fupBadge, nfBadge, intBadge, warnChip, waitOnBadge\)/);
+  assert.match(FEED, /row2\.append\(idwrap, origin, fupBadge, nfBadge, intBadge, warnChip, waitOnBadge, clr\)/);
   // the CARD badge block is now recheck-only: recheck → "↩ re-judging", else hidden. No followupPending branch.
   // (The modal tree's per-node "↻ Followed up" chip, ftree-followedup, is a separate thing and stays.)
   assert.match(FEED, /if \(it\.recheck\) \{\s*\n\s*a\._followedup\.style\.display = "";\s*\n\s*a\._followedup\.textContent = "↩ re-judging";[\s\S]*?\} else \{\s*\n\s*a\._followedup\.style\.display = "none";\s*\n\s*\}/);
@@ -72,7 +77,7 @@ test("session-STATE badges (⏸ approval / ⚠ API error) ride the name row; the
   // The ⏳ "awaiting" chip was REMOVED (the user 2026-07-04) — the body "Awaiting background agents" box says it.
   assert.match(FEED, /idwrap\.append\(apiBadge, blkBadge\)/, "state badges sit beside the name (no awaiting chip)");
   assert.doesNotMatch(FEED, /waitBadge/, "the redundant awaiting chip element is gone entirely");
-  assert.match(FEED, /actions\.append\(apiRetry, revive, clr\)/, "footer = buttons only (Retry/Revive/Clear) — Nudge + card Follow up removed");
+  assert.match(FEED, /actions\.append\(apiRetry, revive\)/, "action row = Retry/Revive only (Clear moved to the name row 2026-07-07)");
   assert.match(FEED, /a\._blocked = blkBadge;/);
 });
 
@@ -88,11 +93,11 @@ test("the footer action row WRAPS its buttons so they can NEVER run off the card
   // ROBUST, GENERAL mechanism (not per-button width tuning, which kept regressing): .fask-actions takes the
   // width left after the age, right-aligns, and flex-WRAPS its buttons onto extra lines when they don't fit;
   // .fask-row3 wraps as a backstop. min-width:0 lets it shrink to the card so the wrap actually triggers.
-  // Verified headless: 4 footer buttons on a 230px card wrap to 2 lines with ZERO overflow.
-  assert.match(CSS, /\.fask-actions \{[^}]*flex: 1 1 auto;[^}]*min-width: 0;[^}]*flex-wrap: wrap;[^}]*justify-content: flex-end/);
+  // Verified headless: the toggles + buttons wrap to their own line under the time on a narrow card, zero overflow.
+  assert.match(CSS, /\.fask-actions \{[^}]*flex: 0 1 auto;[^}]*min-width: 0;[^}]*flex-wrap: wrap;[^}]*justify-content: flex-end/);
   assert.match(CSS, /\.fask-row3 \{[^}]*flex-wrap: wrap/);
-  // margin-left:auto is GONE — justify-content:flex-end right-aligns the (now wrapping) buttons instead
-  assert.doesNotMatch(CSS, /\.fask-actions \{[^}]*margin-left: auto/);
+  // the time claims the free space (margin-right:auto) so everything after it right-aligns, then wraps below
+  assert.match(CSS, /\.fask-row3 \.ftime \{[^}]*margin-right: auto/);
 });
 
 test("a long no-space token (file/func/type name) WRAPS instead of overflowing the card (the user 2026-06-23)", () => {
