@@ -141,8 +141,10 @@ goal, the sender's tracking node is marked done through the origin pointer.
 
 ## Not judges, but often confused with them
 
-- **`rollup_status`** (1427) — pure code, no LLM. The single authority that
-  turns node flags into each top card's column. Precedence: `cleared` >
+- **`rollup_status`** — pure code, no LLM. Since 2026-07-06 (P3.3) each node's
+  verdict state is a FOLD over its append-only verdict log (the flags are a
+  materialized cache rewritten from history every pass); rollup then turns
+  those states into each top card's column. Precedence: `cleared` >
   `blocked` > `followupPending` (optimistic) > `completed`(+settled) >
   `working`. Self-healing on every pass: drops moot blocks on completed
   subtrees, clears stale optimistic chips, rolls completion down to orphaned

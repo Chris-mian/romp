@@ -1490,8 +1490,17 @@ def rollup_status(store, session_closed, now=None):
     a command goal gets a discharging segment → top-done → completes once settled; an accreting
     umbrella never gets one → top stays open → stays working. The settled gate holds an in-focus
     top-done goal working until the session moves on (no flicker), and reopens a completed goal if
-    new work makes it the active focus again."""
+    new work makes it the active focus again.
+
+    Since P3.3 (the user 2026-07-06) the VERDICT LOG is the node-level authority: every store
+    self-migrates on first touch (_backfill_log) and the flags are re-materialized from each node's
+    fold (_materialize_from_log) before any tree logic runs — flags are a read-side cache of history,
+    never a competing truth. The tree layers (roll-down, moot-block clearing, settled/sticky,
+    followupPending) run after, as cache maintenance over the fold's node states."""
     nodes = store["nodes"]
+    for nd in nodes.values():
+        _backfill_log(nd)                              # P3.3: one-time synth log for pre-dual-write nodes
+    _materialize_from_log(nodes)                       # P3.3: history → flags; the log is the authority
     children = {}
     for nid, nd in nodes.items():
         children.setdefault(nd.get("parentId"), []).append(nid)
@@ -1640,7 +1649,6 @@ def rollup_status(store, session_closed, now=None):
             nodes[nid].pop("blockWhy", None)
             _heal_log("moot-block", store, nid)
     store["status"] = status
-    _shadow_fold_check(store)                          # P3.2: fold-vs-flags divergence telemetry (E4)
 
 
 def _sync_declared_plan(store, session, seg_id, seg_t):
@@ -2344,8 +2352,13 @@ def _reopen(store, gid, by="?", now=None):
     # user's own actions (a typed follow-up, the optimistic flip, Move to Working) are "user"; a
     # delegation/nudge unseal is judge machinery. ev_t = the action moment when the caller knows it.
     src = "judge" if by in ("delegation", "nudge") else "user"
-    if not record_verdict(store, nodes[gid], src, "reopen",
-                          now if now is not None else int(time.time()), why="reopened (%s)" % by):
+    if now is None:
+        # default the event time to the STORE's latest known moment, not the wall clock: a wall stamp in
+        # a store whose evidence times are older (tests; replayed history) would out-order every later
+        # genuine verdict and pin the node open. Production callers pass the real action time.
+        now = max((max(n.get("mt", 0) or 0, n.get("t", 0) or 0) for n in nodes.values()),
+                  default=int(time.time()))
+    if not record_verdict(store, nodes[gid], src, "reopen", now, why="reopened (%s)" % by):
         return                                         # view-cleared → stays sealed; don't un-seal it
     if nodes[gid].get("nodeComplete"):                 # reopening a DONE node: stamp the durable everDone marker
         _nudge_diag("reopen-done", gid=gid, by=by)     # INSTRUMENTATION: a COMPLETED goal is being un-completed — by whom?
@@ -2355,6 +2368,9 @@ def _reopen(store, gid, by="?", now=None):
     nodes[gid].pop("followupPending", None)            # official reopen → drop the optimistic chip flag
     x = gid                                            # unblock + un-stick completion on the node + its ancestor chain
     while x is not None:
+        if x != gid and nodes[x].get("blocked"):       # event-backed (P3.3), mirroring user_move: gid's own
+            record_verdict(store, nodes[x], src, "unblock", now,      # reopen event covers gid; ancestors need
+                           why="unblocked by reopen (%s)" % by)             # their own unblock or they re-block
         nodes[x]["blocked"] = False
         nodes[x].pop("settledDone", None)              # genuine reopen clears the sticky-completed marker → back to working
         prev = nodes[x].pop("settledAt", None)         # ...and its column-entry stamp, so a re-completion re-stamps (back to the bottom)
@@ -2455,7 +2471,10 @@ def user_move(fsid, gid, now=None):
     stack = [gid]                                      # "not blocked" means the whole card: clear descendant blocks
     while stack:
         x = stack.pop()
-        nodes[x]["blocked"] = False
+        if x != gid and nodes[x].get("blocked"):       # event-backed (P3.3): the log is the authority, so an
+            record_verdict(store, nodes[x], "user", "unblock", now,   # eventless flag-clear would re-block on
+                           why="moved to Working by the user")        # the next materialize; gid's own reopen
+        nodes[x]["blocked"] = False                    #                 event already covers the top itself
         stack.extend(kids.get(x, []))
     if now is not None:
         nodes[gid]["followupAt"] = now                 # sort to the bottom of Working + arm the staleness floors
@@ -2571,40 +2590,62 @@ def _fold_node_state(nd):
         elif kind == "block":
             if src != "judge" or t > floor:
                 state = "blocked"
+        elif kind == "unblock":
+            if state == "blocked":
+                state = "open"
         elif kind == "clear":
             state = "cleared"
     return state
 
 
-def _flag_node_state(nd):
-    """The node's verdict state as the FLAGS tell it — the shadow fold's comparison target."""
-    if nd.get("cleared"):
-        return "cleared"
+def _backfill_log(nd):
+    """P3.3 one-time per-node migration (the user 2026-07-06: "let's just go to the new one"): for a
+    node minted BEFORE dual-write (no logBorn), synthesize the minimal verdict log whose fold equals
+    the node's current flag state — so the authority flip changes NOTHING visible by construction.
+    Events are tagged synth:True (forensics: reconstructed, not witnessed). Runs inside rollup_status,
+    so every store self-migrates the first time it is touched; idempotent via logBorn."""
+    if nd.get("logBorn"):
+        return
+    mt = nd.get("mt") or nd.get("t") or 0
+    fa = nd.get("followupAt")
+    log = nd.setdefault("log", [])
+
+    def ev(kind, t, src="judge"):
+        log.append({"ev_t": t, "src": src, "kind": kind, "at": int(time.time()), "synth": True})
+
+    if fa:
+        if nd.get("everDone"):
+            ev("done", fa - 1)                        # preserves the once-done history the reopen implies
+        ev("reopen", fa, src="user")
+    elif nd.get("everDone") and not nd.get("nodeComplete"):
+        ev("done", mt - 1)
+        ev("reopen", mt)
     if nd.get("nodeComplete"):
-        return "done"
-    if nd.get("blocked"):
-        return "blocked"
-    return "open"
+        ev("done", max(mt, fa or 0), src="agent" if nd.get("agentDone") else "judge")
+    elif nd.get("blocked"):
+        ev("block", max(mt, (fa + 1) if fa else 0))   # strictly past the user floor, so the fold keeps it
+    if nd.get("cleared"):
+        ev("clear", max(mt, fa or 0) + 1, src="user")
+    nd["logBorn"] = True
 
 
-def _shadow_fold_check(store):
-    """E4 divergence telemetry (gates the P3.3 flip): for every TOP whose whole verdict history is in
-    the log (logBorn — minted after dual-write began; pre-existing nodes have flag state the log never
-    saw), compare the fold to the flags and record any disagreement. Skips rolledUp nodes (their flags
-    were written by the roll-down heal, which is tree-level shadowing the NODE fold deliberately
-    doesn't model). Best-effort; never raises."""
-    try:
-        for nid, nd in store.get("nodes", {}).items():
-            if nd.get("parentId") is not None or not nd.get("logBorn") or nd.get("rolledUp"):
-                continue
-            got, want = _fold_node_state(nd), _flag_node_state(nd)
-            if got != want:
-                with (STATE / "fold-divergence.jsonl").open("a") as f:
-                    f.write(json.dumps({"t": int(time.time()), "sid": store.get("rompUuid"),
-                                        "nid": nid, "fold": got, "flags": want,
-                                        "log": nd.get("log")}) + "\n")
-    except Exception:
-        pass
+def _materialize_from_log(nodes):
+    """P3.3 AUTHORITY (the user 2026-07-06): the verdict log IS the node's verdict state; the flags are
+    a materialized cache the read side keeps consuming unchanged. Rewriting them from the fold every
+    rollup gives the flip its teeth — any flag mutation that bypassed record_verdict is overwritten by
+    history on the next pass. Tree-level effects (roll-down display, moot-block clearing, the settled /
+    sticky / followupPending machinery) run AFTER this in rollup_status, layering tree truth over node
+    truth — they are cache maintenance now, not competing authorities. rolledUp children keep their
+    tree-derived cache (their flags were never node-level verdicts)."""
+    for nd in nodes.values():
+        if nd.get("rolledUp"):
+            continue                                   # tree-derived display state; roll-down owns it
+        st = _fold_node_state(nd)
+        nd["nodeComplete"] = st == "done"
+        nd["blocked"] = st == "blocked"
+        nd["cleared"] = st == "cleared"
+        if st != "blocked":
+            nd.pop("blockWhy", None)                   # cache hygiene: the why goes with the block
 
 
 def _unit_key(seg_id, phase):

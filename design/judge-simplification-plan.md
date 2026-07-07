@@ -149,9 +149,24 @@ the umbrella housekeeping clear, and the kernel's user clear/undo). Events: {ev_
 why, seg, at}, per-node, LOG_CAP 64. P3.2: `_fold_node_state` (evidence-time ordering, arrival
 tie-break, the user floor as ONE rule) + `_shadow_fold_check` in every rollup pass comparing
 fold vs flags for logBorn tops (nodes minted post-dual-write, whose whole history is in the
-log) → fold-divergence.jsonl is the E4 gate. The E6 eager-done sampler is armed
-(eager-done-samples.jsonl: focusHeld per planner done). Next: let E2/E4/E6 accrue, then the
-P3.3 flip when fold-divergence is quiet.
+log) → fold-divergence.jsonl is the E4 gate. The E6 eager-done sampler is armed.
+
+**P3.3 SHIPPED same night (the user: "let's just go to the new one").** The shadow wait was
+replaced by a stronger construction: every node self-migrates on first rollup touch
+(_backfill_log synthesizes the minimal log whose fold equals its current flags, tagged synth),
+then _materialize_from_log rewrites the flags from the fold every pass — the LOG IS THE
+AUTHORITY; an out-of-band flag write is overwritten by history on the next pass. Proven against
+the live fleet before deploy: all 136 stores' status maps byte-identical under the flip. The
+shadow comparator was deleted (obsolete: fold and cache are definitionally in step now). The
+flip surfaced and fixed two latent gaps: subtree/ancestor unblocks were EVENTLESS (user_move and
+_reopen now record `unblock` events, added to the fold), and _reopen's default event time now
+derives from the store's latest moment, never the wall clock. Tree-level machinery (roll-down,
+settled/sticky, followupPending) remains as cache maintenance over fold states — that was
+always its KEEP disposition.
+
+CLEANUP NOTE (the user, due ~2026-07-13): review heal-fire/eager-done telemetry, then the P3.4
+sweep — retire now-redundant provenance fields (negComplete/everDone as flags), the heal
+telemetry itself if quiet, and the dead fairness-cap config.
 
 - **P0 (hours):** 0a archiver give-up cap + parse fix per E5 (kills ~1200 wasted calls/48h);
   0b brief-writer failure triage (80 call-fails + 25 give-ups/48h).

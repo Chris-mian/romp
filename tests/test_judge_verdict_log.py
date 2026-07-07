@@ -111,32 +111,59 @@ class TheFold(unittest.TestCase):
         self.assertEqual(jd._fold_node_state(nd), "cleared")
 
 
-class ShadowCheck(unittest.TestCase):
+class TheFlip(unittest.TestCase):
+    """P3.3: the log is the authority; flags are a materialized cache rollup rewrites from history."""
+
     def setUp(self):
         self.td = tempfile.mkdtemp()
         jd._rebind_state(Path(self.td))
 
-    def _div_lines(self):
-        p = jd.STATE / "fold-divergence.jsonl"
-        return [json.loads(l) for l in p.read_text().splitlines()] if p.exists() else []
-
-    def test_divergence_logged_only_for_logborn_tops(self):
-        agree = node(logBorn=True, nodeComplete=True,
-                     log=[{"ev_t": T, "src": "judge", "kind": "done", "at": T}])
-        diverge = dict(node(logBorn=True), id=SID + ":g2", nodeComplete=True, log=[])  # flags say done, log empty
-        legacy = dict(node(), id=SID + ":g3", nodeComplete=True, log=[])               # not logBorn → skipped
-        store = {"rompUuid": SID, "placements": {}, "status": {},
-                 "nodes": {G1: agree, SID + ":g2": diverge, SID + ":g3": legacy}}
-        jd._shadow_fold_check(store)
-        rows = self._div_lines()
-        self.assertEqual([r["nid"] for r in rows], [SID + ":g2"])
-        self.assertEqual((rows[0]["fold"], rows[0]["flags"]), ("open", "done"))
-
-    def test_wired_into_rollup(self):
-        store = {"rompUuid": SID, "placements": {}, "status": {}, "lastNode": G1,
-                 "nodes": {G1: node(logBorn=True, nodeComplete=True, log=[])}}
+    def test_backfill_preserves_every_legacy_state(self):
+        # pre-dual-write stores (no logBorn): the flip must change NOTHING visible, by construction
+        legacy = {
+            SID + ":g1": dict(node(), id=SID + ":g1", nodeComplete=True),                       # done
+            SID + ":g2": dict(node(), id=SID + ":g2", blocked=True, followupAt=T - 100),        # blocked past a follow-up
+            SID + ":g3": dict(node(), id=SID + ":g3", cleared=True),                            # user-cleared
+            SID + ":g4": dict(node(), id=SID + ":g4", everDone=True),                           # reopened once-done, open
+        }
+        store = {"rompUuid": SID, "placements": {}, "status": {}, "nodes": legacy}
         jd.rollup_status(store, True)
-        self.assertTrue(self._div_lines(), "rollup_status runs the shadow check every pass")
+        st = store["status"]
+        self.assertEqual((st[SID + ":g1"], st[SID + ":g2"], st[SID + ":g3"], st[SID + ":g4"]),
+                         ("completed", "blocked", "cleared", "working"))
+        for nd in store["nodes"].values():
+            self.assertTrue(nd.get("logBorn"), "every node self-migrated")
+            self.assertTrue(all(e.get("synth") for e in nd["log"]), "backfilled events are tagged synth")
+        before = {nid: (nd["nodeComplete"], nd["blocked"], nd["cleared"]) for nid, nd in store["nodes"].items()}
+        jd.rollup_status(store, True)                 # idempotent: a second pass changes nothing
+        after = {nid: (nd["nodeComplete"], nd["blocked"], nd["cleared"]) for nid, nd in store["nodes"].items()}
+        self.assertEqual(before, after)
+
+    def test_history_overwrites_an_out_of_band_flag_write(self):
+        # THE TEETH: a flag mutated without an event is restored from history on the next rollup
+        nd = node(logBorn=True, nodeComplete=False,
+                  log=[{"ev_t": T, "src": "judge", "kind": "done", "at": T}])
+        store = {"rompUuid": SID, "placements": {}, "status": {}, "nodes": {G1: nd}}
+        jd.rollup_status(store, True)
+        self.assertTrue(nd["nodeComplete"], "the log's done outranks the wiped flag")
+        self.assertEqual(store["status"][G1], "completed")
+        # and the reverse: a hand-set done with NO history is demoted
+        ghost = dict(node(), id=SID + ":g2", logBorn=True, nodeComplete=True, log=[])
+        store["nodes"][SID + ":g2"] = ghost
+        jd.rollup_status(store, True)
+        self.assertFalse(ghost["nodeComplete"], "a flag with no history behind it does not survive")
+        self.assertEqual(store["status"][SID + ":g2"], "working")
+
+    def test_rolled_up_children_keep_their_tree_derived_cache(self):
+        top = node(logBorn=True, nodeComplete=True,
+                   log=[{"ev_t": T, "src": "judge", "kind": "done", "at": T}])
+        kid = dict(node(), id=SID + ":g2", parentId=G1, logBorn=True, log=[])
+        store = {"rompUuid": SID, "placements": {}, "status": {}, "nodes": {G1: top, SID + ":g2": kid}}
+        jd.rollup_status(store, True)                 # roll-down resolves the open child under the done top
+        self.assertTrue(kid["nodeComplete"] and kid["rolledUp"])
+        jd.rollup_status(store, True)                 # materialize must not fight roll-down across passes
+        self.assertTrue(kid["nodeComplete"] and kid["rolledUp"])
+        self.assertEqual(store["status"][G1], "completed")
 
 
 class DualWriteThroughTheSites(unittest.TestCase):

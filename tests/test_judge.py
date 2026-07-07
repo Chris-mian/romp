@@ -1605,9 +1605,9 @@ class Consolidator(unittest.TestCase):
         jd.rollup_status(s, True)
         um = next(nd for nd in s["nodes"].values() if nd.get("umbrella"))
         self.assertEqual(s["status"][um["id"]], "completed", "all children done → umbrella completed")
-        s["nodes"][SID + ":g1"]["nodeComplete"] = False           # a follow-up reopens child A
-        s["nodes"][SID + ":g1"]["settledDone"] = False
-        jd.rollup_status(s, True)
+        jd._reopen(s, SID + ":g1", by="followup")     # a follow-up reopens child A — the REAL reopen:
+        jd.rollup_status(s, True)                     # post-P3.3, a hand-flipped flag with no event is
+        #                                               simply restored from the verdict log
         self.assertEqual(s["status"][um["id"]], "working",
                          "one reopened child reverts the whole umbrella to working")
 
@@ -2811,8 +2811,8 @@ class BlockCompletionCorrectness(unittest.TestCase):
         self._sub(s, "s2", T0 + 1, "G", "c1")
         self._sub(s, "s3", T0 + 2, "G", "c2")
         g = s["placements"]["s1"]
-        for c in [nd for nd in s["nodes"].values() if nd["parentId"] == g]:
-            c["nodeComplete"] = True
+        kids = [nd for nd in s["nodes"].values() if nd["parentId"] == g]
+        jd.apply_close(s, kids, {"done": {1: "did c1", 2: "did c2"}}, t=T0 + 2)   # REAL event-backed dones
         self.assertFalse(s["nodes"][g]["nodeComplete"], "the top itself was never DONE'd")
         self._mint(s, "s4", T0 + 3, "G2")                 # a newer top is the focus → G settles
         jd.rollup_status(s, session_closed=False)
