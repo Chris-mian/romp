@@ -1909,7 +1909,6 @@ class ViewBuilder(unittest.TestCase):
         st = km.jd.load_goals(SID)
         km.jd.record_verdict(st, st["nodes"][g], "agent", "done", NOW + 5,
                              why="the agent crossed off the last item")   # ...then the agent finishes
-        st["nodes"][g]["nodeComplete"] = True
         km.jd.rollup_status(st, True)
         km.jd.save_goals(SID, st)
         card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)

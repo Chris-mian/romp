@@ -176,6 +176,22 @@ verdict (src "nudge") so the card moves to Needs-you through the normal ladder i
 idling in Working with a chip (the user's rule), and the dead "reopened" chip was deleted
 (unreachable since cleared-is-sealed, 2026-06-22).
 
+**P3.4 CLOSED OUT 2026-07-07 evening (the user: stragglers + retirement + the write seam, all
+same day).** Everything the table above marked ELIMINATED is now eliminated: followupPending/
+followupAt/settledAt/settledDone/deltaSince/doneWhy/blockWhy all derive from the fold (`settle`
+became an event; a `msg`-marked reopen drives the chip; an unanswered user reopen HOLDS the top
+open — the provisional stub node is deleted); the migration window is closed (boot sweep
+`migrate_all_stores`, logBorn retired — an empty `"log": []` at mint is the era marker; a
+flagged no-diary node freezes loudly instead of deriving-and-wiping); and the ratchet got teeth:
+every node is a `GuardedNode`, so a diary-owned key written outside record_verdict/the rollup
+cache layer RAISES at the write site. record_verdict now materializes the node itself — callers
+keep no flag mirrors. New event kinds from the close-out: `dismiss` (the pivot verdict restores
+what the optimistic msg-reopen displaced) and `undo`-marked reopens (an undo-clear restores the
+pre-clear state by snapshot). The seam immediately caught one real bug: the modal's user Resolve
+had been a silent no-op since the flip (flags with no event, reverted by its own rollup).
+Validated the same way as the flip: live-fleet copy, 139 stores, top-status byte-identical;
+sweep idempotent (second pass rewrites 0).
+
 - **P0 (hours):** 0a archiver give-up cap + parse fix per E5 (kills ~1200 wasted calls/48h);
   0b brief-writer failure triage (80 call-fails + 25 give-ups/48h).
 - **P1 (a day):** E1 census → `may_apply(store, node, src, kind, ev_t)` encoding the whole

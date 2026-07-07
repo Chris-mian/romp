@@ -14,7 +14,7 @@ CLI:
   romp-judge --once               # one caption pass over the live fleet (writes captions/)
   romp-judge --test <transcript>  # caption one transcript's recent units, print them (no write)
 """
-import json, os, re, shutil, sys, time, subprocess, threading
+import contextlib, json, os, re, shutil, sys, time, subprocess, threading
 from pathlib import Path
 from importlib.machinery import SourceFileLoader
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -1015,9 +1015,79 @@ def _parse_plan(raw, menu_len):
     return ops or None
 
 
+# ── The write seam: diary-owned node keys are UNWRITABLE outside the diary/cache layer ────────────
+# (the user 2026-07-07: "shouldn't the architecture make it impossible?"). Every node loaded from disk
+# (and every mint) is a GuardedNode: assigning a PROTECTED key raises TypeError unless the write comes
+# from inside _authority() — held only by record_verdict (event append + immediate materialize) and the
+# rollup cache layers (settle stamp, roll-down, the un-resolve). A stray `nd["blocked"] = False` is now
+# a crash at the write site, not a silent corruption for materialize to quietly re-fight later.
+
+PROTECTED = frozenset((
+    "nodeComplete", "blocked", "cleared",              # the verdict flags (fold-derived cache)
+    "blockWhy", "doneWhy",                             # rationale (the landing event's why)
+    "log", "logTrunc",                                 # the diary itself
+    "followupPending", "followupAt",                   # user-action stamps (reopen-event-derived)
+    "settledAt", "settledDone", "deltaSince",          # settle stamps (settle-event-derived)
+    "rolledUp",                                        # roll-down's tree-derived marker
+))
+
+_AUTH = threading.local()
+
+
+@contextlib.contextmanager
+def _authority():
+    """The cache layer's write token (thread-local, re-entrant)."""
+    _AUTH.n = getattr(_AUTH, "n", 0) + 1
+    try:
+        yield
+    finally:
+        _AUTH.n -= 1
+
+
+class GuardedNode(dict):
+    """A goal node whose diary-owned keys only the diary/cache layer may write. Construction is free
+    (json.loads / a mint literal builds the initial state); MUTATION of a PROTECTED key outside
+    _authority() raises. JSON-serializes like a plain dict."""
+    def __setitem__(self, k, v):
+        if k in PROTECTED and not getattr(_AUTH, "n", 0):
+            raise TypeError("diary-owned key %r written outside the diary/cache layer — record a "
+                            "verdict (record_verdict) instead of writing the flag" % k)
+        dict.__setitem__(self, k, v)
+
+    def __delitem__(self, k):
+        if k in PROTECTED and not getattr(_AUTH, "n", 0):
+            raise TypeError("diary-owned key %r deleted outside the diary/cache layer" % k)
+        dict.__delitem__(self, k)
+
+    def pop(self, k, *a):
+        if k in PROTECTED and not getattr(_AUTH, "n", 0) and k in self:
+            raise TypeError("diary-owned key %r popped outside the diary/cache layer" % k)
+        return dict.pop(self, k, *a)
+
+    def setdefault(self, k, default=None):
+        if k in PROTECTED and not getattr(_AUTH, "n", 0) and k not in self:
+            raise TypeError("diary-owned key %r written outside the diary/cache layer" % k)
+        return dict.setdefault(self, k, default)
+
+    def update(self, *a, **kw):
+        for src_map in a + (kw,):
+            for k, v in dict(src_map).items():
+                self[k] = v                            # route through the guard
+
+
+def _guard_nodes(store):
+    """Wrap every node of a freshly loaded store in GuardedNode (idempotent)."""
+    nodes = store.get("nodes")
+    if isinstance(nodes, dict):
+        for nid, nd in nodes.items():
+            if not isinstance(nd, GuardedNode) and isinstance(nd, dict):
+                nodes[nid] = GuardedNode(nd)
+    return store
+
+
 def load_goals(fsid):
     try:
-        return json.loads((GOALDIR / (fsid + ".json")).read_text())
+        return _guard_nodes(json.loads((GOALDIR / (fsid + ".json")).read_text()))
     except Exception:
         return {"rompUuid": fsid, "seq": 0, "nodes": {}, "placements": {}, "status": {}}
 
@@ -1036,7 +1106,7 @@ def load_goal_archive(fsid):
     <recently-cleared> block) — its placements dedup + view-cleared sealing keep it from ever re-minting an
     archived node; the kernel's undo-clear restore and the ledger merge are the mutating readers."""
     try:
-        return json.loads((GOALARCHDIR / (fsid + ".json")).read_text())
+        return _guard_nodes(json.loads((GOALARCHDIR / (fsid + ".json")).read_text()))
     except Exception:
         return {"rompUuid": fsid, "nodes": {}, "status": {}}
 
@@ -1302,9 +1372,8 @@ def _mark_node_done(store, nid, why, t, src="planner"):
     nodes = store["nodes"]
     if nid not in nodes:
         return
-    nodes[nid]["nodeComplete"] = True
-    nodes[nid]["doneWhy"] = why
-    nodes[nid]["mt"] = t                               # a done bumps last-modified (for recency ordering)
+    nodes[nid]["mt"] = t                               # a done bumps last-modified (for recency ordering);
+    #                                                    the flags/doneWhy came from the caller's done EVENT
     kids = {}
     for x, nd in nodes.items():
         kids.setdefault(nd.get("parentId"), []).append(x)
@@ -1314,7 +1383,6 @@ def _mark_node_done(store, nid, why, t, src="planner"):
         if x != nid and nodes[x].get("blocked"):
             record_verdict(store, nodes[x], src, "unblock", t,
                            why="discharged with the completed parent")
-        nodes[x]["blocked"] = False
         stack.extend(kids.get(x, []))
 
 
@@ -1345,10 +1413,10 @@ def apply_plan(store, seg_id, seg_t, ops, menu, place_key=None, prompt_uuid=None
             # every ancestor walk (found 2026-07-07 — the frozen full-suite runs)
             store["seq"] += 1
         nid = "%s:g%d" % (store["rompUuid"], store["seq"])
-        nodes[nid] = {"id": nid, "text": text, "parentId": parent, "nodeComplete": False,
+        nodes[nid] = GuardedNode({"id": nid, "text": text, "parentId": parent, "nodeComplete": False,
                       "blocked": False, "cleared": False, "trail": [seg_id], "promptUuid": prompt_uuid,
                       "quote": quote or None,             # the minting message's verbatim head (g13)
-                      "t": seg_t, "mt": seg_t, "why": why, "log": []}   # an empty diary at birth = diary-era node (2026-07-07)
+                      "t": seg_t, "mt": seg_t, "why": why, "log": []})  # an empty diary at birth = diary-era node (2026-07-07)
         created.append(nid)
         return nid
 
@@ -1368,7 +1436,6 @@ def apply_plan(store, seg_id, seg_t, ops, menu, place_key=None, prompt_uuid=None
             if nodes[x].get("blocked"):
                 record_verdict(store, nodes[x], "planner", "unblock", seg_t,
                                why="new work filed on this branch")
-            nodes[x]["blocked"] = False
             x = nodes.get(x, {}).get("parentId")
 
     def _target(o):                                   # a done/block target: a menu node or a same-reply mint
@@ -1408,7 +1475,7 @@ def apply_plan(store, seg_id, seg_t, ops, menu, place_key=None, prompt_uuid=None
         elif do == "block":
             t = _target(o)
             if t and record_verdict(store, nodes[t], "planner", "block", seg_t, why=o["why"], seg=seg_id):
-                nodes[t]["blocked"] = True; nodes[t]["blockWhy"] = o["why"]
+                pass                               # the event materialized the flags (blockWhy = why)
                 nodes[t]["mt"] = seg_t; touched = t
         elif do == "retitle":
             t = _target(o)                              # the caller has already restricted `goal` to the
@@ -1584,8 +1651,6 @@ def rollup_status(store, session_closed, now=None):
         elif is_complete(nid) and (settled or nodes[nid].get("settledDone")):
             if not nodes[nid].get("settledDone"):         # the FIRST settlement of this episode → the settle
                 record_verdict(store, nodes[nid], "romp", "settle", latest_t)   # event freezes column entry
-                nodes[nid]["settledAt"] = latest_t        # cache kept in step mid-pass (materialize already ran)
-                nodes[nid]["settledDone"] = True
                 _stamp_seam(store, nid, now if now is not None else time.time())   # settle moment → seam point (segment-regrowth)
             status[nid] = "completed"
         else:
@@ -1604,8 +1669,9 @@ def rollup_status(store, session_closed, now=None):
                 continue                                   # authoritative-open subtree: never auto-done it
             nd = nodes[c]
             if not nd.get("cleared") and not nd.get("nodeComplete"):
-                nd[field] = True
-                nd["rolledUp"] = True
+                with _authority():                         # tree-derived display cache (roll-down owns it)
+                    nd[field] = True
+                    nd["rolledUp"] = True
             _roll_down(c, field)
     for nid in children.get(None, []):
         if status[nid] == "cleared":
@@ -1621,9 +1687,7 @@ def rollup_status(store, session_closed, now=None):
     for nid in nodes:
         if nodes[nid].get("blocked") and is_complete(nid):
             record_verdict(store, nodes[nid], "romp", "unblock", latest_t,   # evented (2026-07-07): heal ONCE —
-                           why="moot: the subtree is complete")   # an eventless clear re-blocked every pass
-            nodes[nid]["blocked"] = False
-            nodes[nid].pop("blockWhy", None)
+                           why="moot: the subtree is complete")   # the event materializes the clear
     store["status"] = status
 
 
@@ -1666,14 +1730,14 @@ def _sync_declared_plan(store, session, seg_id, seg_t):
                 if nd.get("agentDone"):                     # agent RE-OPENED it → an agent reopen EVENT (an
                     record_verdict(store, nd, "agent", "reopen", seg_t,   # eventless un-done would be re-DONE'd
                                    why="the agent re-opened its own to-do")   # by the next materialize)
-                    nd["nodeComplete"] = False; nd["agentDone"] = False
+                    nd["agentDone"] = False
                 nd["mt"] = seg_t
                 changed = True
         elif nd.get("agentBornOpen"):                       # watched-open item that has now COMPLETED → authoritative-done (kept)
             if at.get("status") != "done" and record_verdict(store, nd, "agent", "done", seg_t,
                                                              why="the agent crossed it off its own list"):
                 nd["agentTask"] = {"key": key, "status": "done", "raw": (it or {}).get("status") or "completed"}
-                nd["nodeComplete"] = True; nd["agentDone"] = True; nd["mt"] = seg_t
+                nd["agentDone"] = True; nd["mt"] = seg_t
                 changed = True
         elif nid not in has_child:                          # born-DONE backlog leaf (pre-fix) → self-heal it away
             nodes.pop(nid, None)
@@ -1687,11 +1751,11 @@ def _sync_declared_plan(store, session, seg_id, seg_t):
             continue
         store["seq"] = store.get("seq", 0) + 1
         nid = "%s:g%d" % (store["rompUuid"], store["seq"])
-        nodes[nid] = {"id": nid, "text": it["text"] or it.get("activeForm") or "(declared step)",
+        nodes[nid] = GuardedNode({"id": nid, "text": it["text"] or it.get("activeForm") or "(declared step)",
                       "parentId": None, "nodeComplete": False, "blocked": False, "cleared": False,
                       "trail": [seg_id] if seg_id else [], "promptUuid": None, "t": seg_t, "mt": seg_t,
                       "why": "declared in the agent's own to-do list",
-                      "agentTask": {"key": key, "status": "open", "raw": it["status"]}, "agentBornOpen": True, "log": []}
+                      "agentTask": {"key": key, "status": "open", "raw": it["status"]}, "agentBornOpen": True, "log": []})
         by_key[key] = nid
         changed = True
     return changed
@@ -2314,7 +2378,9 @@ def _reopen(store, gid, by="?", now=None, msg=False):
     # Source maps from the caller: the user's own actions (a typed follow-up, the optimistic flip,
     # Move to Working) are "user"; a delegation/nudge unseal is judge machinery. ev_t = the action
     # moment when the caller knows it.
-    src = {"delegation": "courier", "nudge": "planner"}.get(by, "user")
+    src = {"delegation": "courier", "nudge": "planner", "followup": "planner"}.get(by, "user")
+    # ("followup" = the planner's OFFICIAL file-under reopen: judge-rank, so it ANSWERS the user's
+    #  optimistic msg-reopen in the fold — the chip drops the moment the reply is actually processed)
     if now is None:
         # default the event time to the STORE's latest known moment, not the wall clock: a wall stamp in
         # a store whose evidence times are older (tests; replayed history) would out-order every later
@@ -2323,14 +2389,12 @@ def _reopen(store, gid, by="?", now=None, msg=False):
                   default=int(time.time()))
     if not record_verdict(store, nodes[gid], src, "reopen", now, why="reopened (%s)" % by, msg=msg):
         return                                         # view-cleared → stays sealed; don't un-seal it
-    x = gid                                            # unblock the node + its ancestor chain
-    while x is not None:
-        if x != gid and nodes[x].get("blocked"):       # event-backed (P3.3), mirroring user_move: gid's own
-            record_verdict(store, nodes[x], src, "unblock", now,      # reopen event covers gid; ancestors need
-                           why="unblocked by reopen (%s)" % by)             # their own unblock or they re-block
-        if not nodes[x].get("rolledUp"):
-            _materialize_node(nodes[x])                # cache in step NOW: same-pass readers (the nudge
-        x = nodes.get(x, {}).get("parentId")           # path's open_menu seal check) see the reopen
+    x = gid                                            # unblock the node + its ancestor chain (each event
+    while x is not None:                               # materializes its node — cache in step for same-pass
+        if x != gid and nodes[x].get("blocked"):       # readers like the nudge path's open_menu seal check)
+            record_verdict(store, nodes[x], src, "unblock", now,
+                           why="unblocked by reopen (%s)" % by)
+        x = nodes.get(x, {}).get("parentId")
     # Un-resolve the steps rollup_status auto-rolled under this goal (rolledUp) — else they'd stay
     # complete/cleared and bottom-up is_complete would immediately RE-complete the reopened top. Only the
     # auto-rolled ones: a genuinely-DONE leaf (no rolledUp marker) keeps its state across the reopen.
@@ -2341,8 +2405,9 @@ def _reopen(store, gid, by="?", now=None, msg=False):
     while stack:
         c = stack.pop()
         nd = nodes.get(c)
-        if nd and nd.pop("rolledUp", None):
-            nd["nodeComplete"] = nd["blocked"] = nd["cleared"] = False   # undo roll-down's tree-derived cache
+        if nd and dict.pop(nd, "rolledUp", None):  # (dict.pop: the guarded pop needs authority)
+            with _authority():
+                nd["nodeComplete"] = nd["blocked"] = nd["cleared"] = False   # undo roll-down's tree cache
             if "log" in nd:
                 _materialize_node(nd)                  # back under fold ownership: its own history (usually
         stack.extend(kids.get(c, []))                  # none → open; a rolled-away block resurfaces) rules
@@ -2392,10 +2457,9 @@ def user_move(fsid, gid, now=None):
     stack = [gid]                                      # "not blocked" means the whole card: clear descendant blocks
     while stack:
         x = stack.pop()
-        if x != gid and nodes[x].get("blocked"):       # event-backed (P3.3): the log is the authority, so an
-            record_verdict(store, nodes[x], "user", "unblock", now,   # eventless flag-clear would re-block on
-                           why="moved to Working by the user")        # the next materialize; gid's own reopen
-        nodes[x]["blocked"] = False                    #                 event already covers the top itself
+        if x != gid and nodes[x].get("blocked"):       # event-backed (P3.3): the log is the authority; the
+            record_verdict(store, nodes[x], "user", "unblock", now,   # event materializes the clear. gid's
+                           why="moved to Working by the user")        # own reopen event covers the top itself
         stack.extend(kids.get(x, []))
     rollup_status(store, False)                        # the user just acted → not idle/closed → working
     save_goals(fsid, store)
@@ -2466,7 +2530,7 @@ LOG_CAP = 64                             # per-node verdict-log bound (a node ra
 #                                          is a runaway backstop — oldest drop, logTrunc marks the loss)
 
 
-def record_verdict(store, nd, src, kind, ev_t=None, why=None, seg=None, msg=False):
+def record_verdict(store, nd, src, kind, ev_t=None, why=None, seg=None, msg=False, undo=False):
     """P3.1 DUAL-WRITE (the user 2026-07-06): the gate AND the recorder, fused into the one seam every
     verdict write goes through. Asks may_apply; when allowed, appends the event to the node's
     append-only verdict LOG and returns True — the caller then writes the flags exactly as before
@@ -2478,21 +2542,28 @@ def record_verdict(store, nd, src, kind, ev_t=None, why=None, seg=None, msg=Fals
     boot, so an unmigrated node here means the sweep missed one — surface it loudly (judge-errors.jsonl)
     rather than silently synthesizing history in a hot path; the append still proceeds (the event is
     real), with the node's pre-diary state unrepresented until someone looks."""
-    if "log" not in nd and (nd.get("nodeComplete") or nd.get("blocked") or nd.get("cleared")):
+    frozen = "log" not in nd and (nd.get("nodeComplete") or nd.get("blocked") or nd.get("cleared"))
+    if frozen:
         _log_judge_error("unmigrated-node", str(nd.get("id") or "?").split(":")[0],
                          "verdict %s/%s appended to a flagged node with no diary (%s) — the boot sweep"
                          " missed it; its pre-diary state is not in the log" % (src, kind, nd.get("id")))
     if not may_apply(store, nd, src, kind, ev_t):
         return False
-    log = nd.setdefault("log", [])
-    log.append({"ev_t": ev_t, "src": src, "kind": kind,
-                **({"why": why} if why else {}), **({"seg": seg} if seg else {}),
-                **({"msg": True} if msg else {}),      # a user message rides this reopen (chip derivation)
-                "at": int(time.time())})
-    if len(log) > LOG_CAP:
-        del log[:len(log) - LOG_CAP]
-        nd["logTrunc"] = True
-    return True
+    with _authority():
+        log = nd.setdefault("log", [])
+        log.append({"ev_t": ev_t, "src": src, "kind": kind,
+                    **({"why": why} if why else {}), **({"seg": seg} if seg else {}),
+                    **({"msg": True} if msg else {}),  # a user message rides this reopen (chip derivation)
+                    **({"undo": True} if undo else {}),   # an undo-restore reopen: not a "not done" assertion
+                    "at": int(time.time())})
+        if len(log) > LOG_CAP:
+            del log[:len(log) - LOG_CAP]
+            nd["logTrunc"] = True
+        if not nd.get("rolledUp") and not frozen:
+            _materialize_node(nd)                      # the event IS the write: the flag/stamp cache is
+    return True                                        # updated here, so callers keep NO mirror writes
+    #                                                    (a FROZEN unmigrated node keeps its flags — deriving
+    #                                                     from its partial log would wipe real legacy state)
 
 
 def _fold_node(nd):
@@ -2510,42 +2581,76 @@ def _fold_node(nd):
       held       — the node's last-landed event is a USER reopen no judge verdict has answered yet: the
                    user asserted "not done / not waiting", so rollup must not bottom-up re-complete it
                    (replaces the provisional stub node the old code planted to the same effect)
-      heldMsg    — that reopen carried a user MESSAGE (a typed follow-up / nudge, event field `msg`):
+      pending    — an unanswered msg-marked reopen (a typed follow-up / nudge, event field `msg`):
                    the "Followed up" chip + re-judge treatment (was the followupPending flag); a plain
-                   Move-to-Working reopen holds the node open but wears no chip
+                   Move-to-Working reopen holds the node open but wears no chip. A msg reopen is
+                   PROVISIONAL: a later planner `dismiss` (the pivot verdict) restores what it displaced
       settledAt  — the newest `settle` event not undone by a later reopen (was the settledAt/settledDone
                    stamps: the Completed-column entry time + the sticky anti-flicker marker)
       deltaSince — the settle the latest reopen ENDED (was the deltaSince stamp: the prior episode's
                    boundary, scoping the re-distilled takeaway to the follow-up's work)"""
     state, floor = "open", 0
-    last_set = None                       # the event that last SET state (held derivation)
     cur_settle, prev_settle = None, None
+    done_why = block_why = None           # the landing verdicts' rationale (doneWhy/blockWhy derivation)
+    held = pending = False                # held: an unanswered USER reopen pins the node open (no bottom-up
+    #                                       re-completion); pending: an unanswered msg-reopen wears the chip.
+    #                                       "Answered" = ANY later non-user event — the judges looked.
+    reopen_snap = None                    # (state, settles) just before the last msg-reopen applied: a msg
+    #                                       reopen is romp's PROVISIONAL flip; a later `dismiss` (the pivot
+    #                                       verdict: "that reply wasn't about this goal") restores it
+    clear_snap = None                     # symmetric snapshot at `clear`: an undo-reopen restores the state
+    #                                       the cross-off displaced (a cleared COMPLETED card comes back
+    #                                       completed, never "open"), instead of blindly opening
     for e in sorted(nd.get("log") or [], key=lambda e: (e.get("ev_t") or 0, e.get("at") or 0)):
         src, kind, t = e.get("src"), e.get("kind"), e.get("ev_t") or 0
         if kind == "reopen":
-            state, last_set = "open", e
+            if e.get("undo") and clear_snap is not None:
+                state, cur_settle, prev_settle = clear_snap      # restore what the cross-off displaced
+                clear_snap = None
+                if src == "user":
+                    floor = max(floor, t)
+                continue
+            if e.get("msg"):
+                reopen_snap = (state, cur_settle, prev_settle)
+            state = "open"
             if src == "user":
                 floor = max(floor, t)
+                if not e.get("undo"):     # an undo-clear restores; it asserts nothing about doneness
+                    held = True
+            if e.get("msg"):
+                pending = True
             if cur_settle is not None:    # this reopen ends a settled episode → its settle becomes the
                 prev_settle, cur_settle = cur_settle, None       # delta boundary; a re-settle re-stamps
         elif kind == "done":
             if src in ("user", "agent") or t >= floor:
-                state, last_set = "done", e
+                state = "done"
+                done_why = e.get("why") or done_why
+                reopen_snap = None
         elif kind == "block":
             if src in ("user", "agent") or t > floor:
-                state, last_set = "blocked", e
+                state = "blocked"
+                block_why = e.get("why") or block_why
+                reopen_snap = None
         elif kind == "unblock":
             if state == "blocked":
-                state, last_set = "open", e
+                state = "open"
         elif kind == "clear":
-            state, last_set = "cleared", e
+            clear_snap = (state, cur_settle, prev_settle)
+            state = "cleared"
+            reopen_snap = None
         elif kind == "settle":            # display annotation: WHEN the card entered Completed; never state
             cur_settle = t
-    held = (state == "open" and last_set is not None
-            and last_set.get("kind") == "reopen" and last_set.get("src") == "user")
+        elif kind == "dismiss":           # the judge rejected the provisional msg-reopen: restore what the
+            if reopen_snap is not None:   # optimistic flip displaced (a pivoted completed card returns to
+                state, cur_settle, prev_settle = reopen_snap     # Completed with its original settledAt)
+                reopen_snap = None
+        if src != "user":                 # any judge/agent/romp event ANSWERS an open user reopen: the
+            held = pending = False        # judges processed the thread; the hold and the chip both end
+    held = held and state == "open"
     return {"state": state, "floor": floor or None, "held": held,
-            "heldMsg": held and bool(last_set.get("msg")),
-            "settledAt": cur_settle, "deltaSince": prev_settle}
+            "pending": pending and state == "open",
+            "settledAt": cur_settle, "deltaSince": prev_settle,
+            "doneWhy": done_why, "blockWhy": block_why}
 
 
 def _fold_node_state(nd):
@@ -2572,8 +2677,9 @@ def migrate_store(store):
         nodes.pop(k, None)
         (store.get("status") or {}).pop(k, None)
         changed = True
-    for nd in nodes.values():
-        changed = _migrate_node(nd) or changed
+    with _authority():                                # migration IS the cache layer for legacy stores
+        for nd in nodes.values():
+            changed = _migrate_node(nd) or changed
     return changed
 
 
@@ -2597,8 +2703,9 @@ def _synth_log(nd):
     fa = nd.get("followupAt")
     log = nd.setdefault("log", [])
 
-    def ev(kind, t, src="judge"):
-        log.append({"ev_t": t, "src": src, "kind": kind, "at": int(time.time()), "synth": True})
+    def ev(kind, t, src="judge", why=None):
+        log.append({"ev_t": t, "src": src, "kind": kind,
+                    **({"why": why} if why else {}), "at": int(time.time()), "synth": True})
 
     if nd.get("deltaSince"):
         ev("settle", nd["deltaSince"], src="romp")    # the PRIOR episode's settle, ended by the reopen below
@@ -2611,10 +2718,11 @@ def _synth_log(nd):
     elif nd.get("everDone") and not nd.get("nodeComplete"):
         ev("done", mt - 1)
         ev("reopen", mt)
-    if nd.get("nodeComplete"):
-        ev("done", max(mt, fa or 0), src="agent" if nd.get("agentDone") else "judge")
+    if nd.get("nodeComplete"):                        # the legacy rationale rides the synth event, so the
+        ev("done", max(mt, fa or 0), src="agent" if nd.get("agentDone") else "judge",
+           why=nd.get("doneWhy"))                     # derived doneWhy/blockWhy reproduce the old text
     elif nd.get("blocked"):
-        ev("block", max(mt, (fa + 1) if fa else 0))   # strictly past the user floor, so the fold keeps it
+        ev("block", max(mt, (fa + 1) if fa else 0), why=nd.get("blockWhy"))   # strictly past the user floor
     if nd.get("cleared"):
         ev("clear", max(mt, fa or 0) + 1, src="user")
     if nd.get("settledDone") or nd.get("settledAt"):
@@ -2650,7 +2758,7 @@ def _synth_settle_topup(nd):
             log.append({"ev_t": want, "src": "romp", "kind": "settle",
                         "at": int(time.time()), "synth": True})
             changed = True
-    if nd.get("followupPending") and not f["heldMsg"]:
+    if nd.get("followupPending") and not f["pending"]:
         ur = [e for e in log if e.get("kind") == "reopen" and e.get("src") == "user"]
         if ur and not max(ur, key=lambda e: (e.get("ev_t") or 0, e.get("at") or 0)).get("msg"):
             max(ur, key=lambda e: (e.get("ev_t") or 0, e.get("at") or 0))["msg"] = True
@@ -2722,25 +2830,31 @@ def _materialize_node(nd):
         return None
     f = _fold_node(nd)
     st = f["state"]
-    nd["nodeComplete"] = st == "done"
-    nd["blocked"] = st == "blocked"
-    nd["cleared"] = st == "cleared"
-    if st != "blocked":
-        nd.pop("blockWhy", None)                       # cache hygiene: the why goes with the block
-    for key, val in (("followupAt", f["floor"]), ("settledAt", f["settledAt"]),
-                     ("deltaSince", f["deltaSince"])):
-        if val:
-            nd[key] = val
+    with _authority():
+        nd["nodeComplete"] = st == "done"
+        nd["blocked"] = st == "blocked"
+        nd["cleared"] = st == "cleared"
+        if st == "blocked":
+            if f["blockWhy"]:
+                nd["blockWhy"] = f["blockWhy"]         # the landing block's rationale; a why-less event
+        else:                                          # (legacy synth) keeps whatever text is already there
+            nd.pop("blockWhy", None)                   # cache hygiene: the why goes with the block
+        if st == "done" and f["doneWhy"]:
+            nd["doneWhy"] = f["doneWhy"]
+        for key, val in (("followupAt", f["floor"]), ("settledAt", f["settledAt"]),
+                         ("deltaSince", f["deltaSince"])):
+            if val:
+                nd[key] = val
+            else:
+                nd.pop(key, None)
+        if f["settledAt"]:
+            nd["settledDone"] = True
         else:
-            nd.pop(key, None)
-    if f["settledAt"]:
-        nd["settledDone"] = True
-    else:
-        nd.pop("settledDone", None)
-    if f["heldMsg"]:
-        nd["followupPending"] = True                   # user reply in flight, unjudged → the chip
-    else:
-        nd.pop("followupPending", None)
+            nd.pop("settledDone", None)
+        if f["pending"]:
+            nd["followupPending"] = True               # user reply in flight, unjudged → the chip
+        else:
+            nd.pop("followupPending", None)
     return f
 
 
@@ -3104,8 +3218,12 @@ def _plan_session(fsid, path, now):
                     # its self-heal exists only on the re-COMPLETED branch, and `blocked` outranks the
                     # followup-pending branch, so a still-BLOCKED target kept the flag forever: the card
                     # sat in Working with a permanent "Re-judging…" swirl instead of returning to
-                    # Needs-You (the user 2026-07-03, the track card, 8h+).
-                    store["nodes"].get(followup, {}).pop("followupPending", None)
+                    # Needs-You (the user 2026-07-03, the track card, 8h+). Since the diary owns the
+                    # chip (2026-07-07) the drop is an EVENT: dismiss restores whatever state the
+                    # optimistic msg-reopen displaced (done stays done, blocked returns to Needs-You).
+                    if followup in store["nodes"]:
+                        record_verdict(store, store["nodes"][followup], "planner", "dismiss", seg_t,
+                                       why="the reply started its own thread — this goal is unchanged")
                     ops = _restrict_retitle([o for o in ops if o["do"] != "skip"], gi)
                     apply_plan(store, seg_id, seg_t, ops, menu, prompt_uuid=trig, quote=vq)
                     pv = store["placements"].get(seg_id)
@@ -3431,9 +3549,9 @@ def apply_group(store, tops, ops, t):
     def new_umbrella(text, why):
         store["seq"] = store.get("seq", 0) + 1
         nid = "%s:g%d" % (store["rompUuid"], store["seq"])
-        nodes[nid] = {"id": nid, "text": text or "(umbrella)", "parentId": None, "nodeComplete": False,
+        nodes[nid] = GuardedNode({"id": nid, "text": text or "(umbrella)", "parentId": None, "nodeComplete": False,
                       "blocked": False, "cleared": False, "trail": [], "t": t, "mt": t, "why": why,
-                      "umbrella": True, "log": []}
+                      "umbrella": True, "log": []})
         created.append(nid)
         return nid
 
@@ -3577,7 +3695,6 @@ def _clear_empty_umbrellas(store):
     for nd in nodes.values():
         if nd.get("umbrella") and not nd.get("cleared") and live.get(nd["id"], 0) == 0:
             record_verdict(store, nd, "grouper", "clear", int(time.time()), why="empty umbrella")
-            nd["cleared"] = True
             changed = True
     return changed
 
@@ -3802,20 +3919,13 @@ def apply_close(store, menu, verdicts, t=None):
         if i in done:
             if not record_verdict(store, nd, "closer", "done", t, why=done[i] or None):
                 continue                              # the user's follow-up/move postdates this turn's evidence
-            nd["nodeComplete"] = True
-            nd["blocked"] = False
-            if done[i]:
-                nd["doneWhy"] = done[i]
-            if t is not None:
+            if t is not None:                         # (the event materialized the flags + doneWhy)
                 nd["mt"] = t
             newly.append(nd["id"])
         elif i in block:
             if not record_verdict(store, nd, "closer", "block", t, why=block[i] or None):   # the user's follow-up postdates this turn's evidence —
                 continue                               # their reply owns the verdict now, not this stale close
-            nd["blocked"] = True
-            if block[i]:
-                nd["blockWhy"] = block[i]
-            if t is not None:
+            if t is not None:                         # (the event materialized the flags + blockWhy)
                 nd["mt"] = t
     return newly
 
@@ -4567,9 +4677,9 @@ def apply_courier(store, seg_id, seg_t, text, origin):
                 return nid
     store["seq"] = store.get("seq", 0) + 1
     nid = "%s:g%d" % (store["rompUuid"], store["seq"])
-    nodes[nid] = {"id": nid, "text": (text or "(delegation)")[:120], "parentId": None,
+    nodes[nid] = GuardedNode({"id": nid, "text": (text or "(delegation)")[:120], "parentId": None,
                   "nodeComplete": False, "blocked": False, "cleared": False,
-                  "trail": [seg_id], "t": seg_t, "origin": origin, "log": []}
+                  "trail": [seg_id], "t": seg_t, "origin": origin, "log": []})
     placements[seg_id] = nid
     store["lastNode"] = nid                            # the delegation is now the active focus
     return nid
@@ -4590,9 +4700,9 @@ def _plant_handoff_track(store, parent_id, text, peer_sid, peer_name, t, mid):
     store["seq"] = store.get("seq", 0) + 1
     nid = "%s:g%d" % (store["rompUuid"], store["seq"])
     label = "↪ delegated to %s: %s" % (peer_name or peer_sid[:8], text or "(work)")
-    nodes[nid] = {"id": nid, "text": label[:120], "parentId": parent_id,
+    nodes[nid] = GuardedNode({"id": nid, "text": label[:120], "parentId": parent_id,
                   "nodeComplete": False, "blocked": False, "cleared": False,
-                  "trail": [], "t": t, "mt": t, "handoff": {"peer": peer_sid, "msgId": mid}, "log": []}
+                  "trail": [], "t": t, "mt": t, "handoff": {"peer": peer_sid, "msgId": mid}, "log": []})
     return nid
 
 

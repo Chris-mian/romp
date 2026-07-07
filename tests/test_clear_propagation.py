@@ -108,7 +108,8 @@ class ClearPropagation(unittest.TestCase):
     # --- a blocked delegated piece surfaces needs-you on the RECIPIENT only, never twice ---
     def test_block_surfaces_only_on_the_recipient_not_the_sender(self):
         r = jd.load_goals(RECIP)
-        r["nodes"]["%s:g1" % RECIP]["blocked"] = True
+        jd.record_verdict(r, r["nodes"]["%s:g1" % RECIP], "closer", "block",
+                          int(__import__("time").time()), why="pick a name")
         jd.rollup_status(r, False)
         self.assertEqual(r["status"]["%s:g1" % RECIP], "blocked", "the recipient shows needs-you")
         s = jd.load_goals(SENDER)

@@ -1181,9 +1181,7 @@ def _mark_nudge_failed(gid):
         why = ("romp followed up once and the response didn't resolve this; "
                "it won't be re-asked — it needs your direction")
         if nd is not None and jd.record_verdict(store, nd, "nudge", "block", int(time.time()), why=why):
-            nd["blocked"] = True
-            nd["blockWhy"] = why
-            nd["mt"] = int(time.time())
+            nd["mt"] = int(time.time())               # the event materialized blocked + blockWhy
             jd.rollup_status(store, False)
             jd.save_goals(sid, store)
             _mark_views_dirty()
@@ -1218,7 +1216,7 @@ def _record_interrupt_block(sid):
     why = "you stopped this session mid-turn — it's waiting on your next instruction"
     if not jd.record_verdict(store, nd, "interrupt", "block", int(time.time()), why=why):
         return None
-    nd["blocked"] = True; nd["blockWhy"] = why; nd["mt"] = int(time.time())
+    nd["mt"] = int(time.time())                       # the event materialized blocked + blockWhy
     jd.rollup_status(store, False)
     jd.save_goals(sid, store)
     _mark_views_dirty()
@@ -1237,7 +1235,6 @@ def _lift_interrupt_block(sid, gid):
     lastblk = next((e.get("src") for e in reversed(nd.get("log") or []) if e.get("kind") == "block"), None)
     if lastblk == "interrupt" and nd.get("blocked"):
         jd.record_verdict(store, nd, "user", "unblock", int(time.time()), why="you re-engaged")
-        nd["blocked"] = False
         jd.rollup_status(store, False)
         jd.save_goals(sid, store)
         _mark_views_dirty()
@@ -6085,9 +6082,17 @@ def _mark_nodes_cleared(item_ids, value):
                 # DUAL-WRITE (judge plan P3.1): the user's cross-off / undo is a top-authority verdict —
                 # record it in the node's log alongside the flag (clear; reopen for an undo-restore, whose
                 # gate passes because _undo_clear appends the cleared.jsonl undo rows BEFORE this runs)
+                was_done = nd.get("parentId") is None and (
+                    store.get("status", {}).get(iid) == "completed" or nd.get("nodeComplete"))
                 jd.record_verdict(store, nd, "user", "clear" if value else "reopen", now,
-                                  why="cleared from the feed" if value else "undo clear")
-                nd["cleared"] = value
+                                  why="cleared from the feed" if value else "undo clear",
+                                  undo=not value)     # an undo-restore asserts nothing about doneness
+                if not value and was_done and not nd.get("settledDone"):
+                    # restore COMPLETION stickily (the user 2026-06-27): the undo-reopen restored the
+                    # pre-clear state from its snapshot, but a top that had never settled (the ≈5% gap)
+                    # still needs its settle event or the re-roll demotes it to working. Recorded AFTER
+                    # the reopen so the fold keeps it. (was_done: captured BEFORE the record re-derived.)
+                    jd.record_verdict(store, nd, "romp", "settle", now)
                 touched = True
         if not touched:
             continue
@@ -6317,22 +6322,8 @@ def _restore_goal_archive(item_ids):
             nodes[nid] = a_nodes.pop(nid)
             if nid in a_status:
                 status[nid] = a_status.pop(nid)
-        # Restore COMPLETION stickily (the user 2026-06-27): a top that was in the Completed column when cleared
-        # must come back completed. rollup_status only KEEPS a top completed when it's `settled` (no longer the
-        # session's focus, or the session is closed) OR carries the durable settledDone cache. A completed top
-        # that lacks it (≈5% of the archive) whose session is now OPEN and re-focusing it would be demoted to
-        # "working" by the re-roll in _mark_nodes_cleared — which build_feed's awaiting floor then renders as
-        # "⏳ awaiting" before later churn drops the card (the UndoClear bug the user hit). Since settle became
-        # a DIARY event (2026-07-07) a bare settledDone write would be wiped by the next materialize, so record
-        # the settle event instead; the cache re-derives from it. Blocked/working tops carry no completed
-        # status here, so they re-derive normally.
-        for iid in ids:
-            nd = nodes.get(iid)
-            if nd is not None and nd.get("parentId") is None and (status.get(iid) == "completed" or nd.get("nodeComplete")):
-                if not nd.get("settledDone"):
-                    jd.record_verdict(store, nd, "romp", "settle",
-                                      nd.get("settledAt") or nd.get("mt") or nd.get("t") or 0)
-                    nd["settledDone"] = True           # cache in step until the next rollup re-derives
+        # (Sticky completion restore lives in _mark_nodes_cleared now — 2026-07-07: the settle event must
+        # land AFTER the undo reopen it records, or the fold consumes it and the card returns to Working.)
         jd.save_goals(sid, store)
         jd.save_goal_archive(sid, arch)
         _compact_seen.pop(sid, None)                   # force a re-stat next sweep (we just changed the live file)
@@ -6353,10 +6344,8 @@ def _resolve_node(sid, node_id):
     now = int(time.time())
     # The event is the write (found 2026-07-07): without it the rollup two lines down re-derives the
     # flags from the diary and REVERTS the user's own resolve — the flip made eventless writes no-ops.
-    jd.record_verdict(store, nd, "user", "done", now, why="Resolved by the user.")
-    nd["nodeComplete"] = True
-    nd["blocked"] = False
-    nd["doneWhy"] = nd.get("doneWhy") or "Resolved by the user."
+    jd.record_verdict(store, nd, "user", "done", now,
+                      why=nd.get("doneWhy") or "Resolved by the user.")
     nd["mt"] = now                                    # deep-link / recency land on the resolution moment
     try:                                              # session_closed gate for the rollup, same as run_plan
         path = next((s["path"] for s in _sessions(now) if s["sid"] == sid), None)
