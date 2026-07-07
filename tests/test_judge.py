@@ -1738,6 +1738,7 @@ class PlanRollup(unittest.TestCase):
         g1 = s["placements"]["s1"]
         s["nodes"][g1]["settledDone"] = True                     # already settled in a prior (pre-stamp) pass
         s["nodes"][g1].pop("settledAt", None)
+        jd.migrate_store(s)                                      # the boot sweep adopts the legacy stamp
         jd.rollup_status(s, session_closed=False)
         self.assertEqual(s["status"][g1], "completed")
         self.assertEqual(s["nodes"][g1].get("settledAt"), T0 + 10,

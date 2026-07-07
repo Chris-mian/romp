@@ -118,8 +118,10 @@ class TheFlip(unittest.TestCase):
         self.td = tempfile.mkdtemp()
         jd._rebind_state(Path(self.td))
 
-    def test_backfill_preserves_every_legacy_state(self):
-        # pre-dual-write stores (no logBorn): the flip must change NOTHING visible, by construction
+    def test_migration_preserves_every_legacy_state(self):
+        # pre-dual-write stores (flags, no diaries): migrate_store — the boot sweep's per-store step —
+        # must change NOTHING visible, by construction (was the lazy in-rollup backfill; window closed
+        # 2026-07-07, so tests model legacy stores by calling it explicitly).
         legacy = {
             SID + ":g1": dict(node(), id=SID + ":g1", nodeComplete=True),                       # done
             SID + ":g2": dict(node(), id=SID + ":g2", blocked=True, followupAt=T - 100),        # blocked past a follow-up
@@ -127,19 +129,34 @@ class TheFlip(unittest.TestCase):
             SID + ":g4": dict(node(), id=SID + ":g4", everDone=True),                           # reopened once-done, open
         }
         store = {"rompUuid": SID, "placements": {}, "status": {}, "nodes": legacy}
+        self.assertTrue(jd.migrate_store(store))
         jd.rollup_status(store, True)
         st = store["status"]
         self.assertEqual((st[SID + ":g1"], st[SID + ":g2"], st[SID + ":g3"], st[SID + ":g4"]),
                          ("completed", "blocked", "cleared", "working"))
         for nd in store["nodes"].values():
-            self.assertTrue(nd.get("logBorn"), "every node self-migrated")
+            self.assertIn("log", nd, "every node leaves migration with a diary")
+            self.assertNotIn("logBorn", nd, "the logBorn marker is retired — the diary key IS the marker")
             self.assertTrue(all(e.get("synth") for e in nd["log"] if e["kind"] != "settle"),
-                            "backfilled VERDICT events are tagged synth (the completed top's settle is a"
+                            "migrated VERDICT events are tagged synth (the completed top's settle is a"
                             " REAL event — this pass genuinely settled it for the first time)")
         before = {nid: (nd["nodeComplete"], nd["blocked"], nd["cleared"]) for nid, nd in store["nodes"].items()}
         jd.rollup_status(store, True)                 # idempotent: a second pass changes nothing
         after = {nid: (nd["nodeComplete"], nd["blocked"], nd["cleared"]) for nid, nd in store["nodes"].items()}
         self.assertEqual(before, after)
+        self.assertFalse(jd.migrate_store(store), "a second migrate is a no-op")
+
+    def test_unmigrated_flagged_node_is_frozen_not_wiped(self):
+        # FAIL LOUDLY: a verdict-flagged node with NO diary key means the boot sweep missed it. Deriving
+        # would wipe its state (an empty fold is open) — instead the flags freeze and the error surfaces.
+        legacy = dict(node(), nodeComplete=True)      # no log key at all
+        store = {"rompUuid": SID, "placements": {}, "status": {}, "nodes": {G1: legacy}}
+        jd.rollup_status(store, True)
+        self.assertTrue(legacy["nodeComplete"], "frozen, not wiped")
+        self.assertEqual(store["status"][G1], "completed")
+        errs = (jd.STATE / "judge-errors.jsonl")
+        self.assertTrue(errs.exists() and "unmigrated-node" in errs.read_text(),
+                        "…and the miss is surfaced in judge-errors.jsonl")
 
     def test_history_overwrites_an_out_of_band_flag_write(self):
         # THE TEETH: a flag mutated without an event is restored from history on the next rollup
@@ -252,15 +269,17 @@ class DualWriteThroughTheSites(unittest.TestCase):
         # hand-written settledDone/settledAt stamps; deriving from the log alone would WIPE them and a
         # completed card would flicker back through the settle gate. _backfill_settle synthesizes the
         # missing settle event once.
-        nd = node(logBorn=True, nodeComplete=True, settledDone=True, settledAt=T + 80,
+        nd = node(nodeComplete=True, settledDone=True, settledAt=T + 80,
                   log=[{"ev_t": T + 50, "src": "closer", "kind": "done", "at": T + 50}])
         store = {"rompUuid": SID, "seq": 1, "nodes": {G1: nd}, "placements": {}, "status": {}}
+        jd.migrate_store(store)                       # the boot sweep runs the settle top-up
         jd.rollup_status(store, True)
         self.assertEqual(nd.get("settledAt"), T + 80, "the legacy stamp survives via the synth settle event")
         self.assertTrue(nd.get("settledDone"))
         settles = [e for e in nd["log"] if e["kind"] == "settle"]
         self.assertEqual([e["ev_t"] for e in settles], [T + 80])
-        jd.rollup_status(store, True)                 # idempotent: no second synth
+        self.assertFalse(jd.migrate_store(store), "idempotent: no second synth")
+        jd.rollup_status(store, True)
         self.assertEqual(len([e for e in nd["log"] if e["kind"] == "settle"]), 1)
 
     def test_agent_reopen_is_evented(self):

@@ -67,6 +67,7 @@ class UserMoveBlocked(unittest.TestCase):
                  "nodes": {G1: node(G1, "Build the exporter", done=True, settledDone=True,
                                     settledAt=NOW - 100, everDone=True),
                            G2: node(G2, "Write the writer", parent=G1, done=True)}}
+        jd.migrate_store(store)                        # legacy-flag fixture → the boot sweep adopts it
         jd.rollup_status(store, True)
         self.assertEqual(store["status"][G1], "completed")
         self._write(store)

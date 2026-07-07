@@ -1348,7 +1348,7 @@ def apply_plan(store, seg_id, seg_t, ops, menu, place_key=None, prompt_uuid=None
         nodes[nid] = {"id": nid, "text": text, "parentId": parent, "nodeComplete": False,
                       "blocked": False, "cleared": False, "trail": [seg_id], "promptUuid": prompt_uuid,
                       "quote": quote or None,             # the minting message's verbatim head (g13)
-                      "t": seg_t, "mt": seg_t, "why": why, "logBorn": True}   # mt = last-modified; logBorn: full verdict history in the log (P3.2)
+                      "t": seg_t, "mt": seg_t, "why": why, "log": []}   # an empty diary at birth = diary-era node (2026-07-07)
         created.append(nid)
         return nid
 
@@ -1498,9 +1498,8 @@ def rollup_status(store, session_closed, now=None):
     never a competing truth. The tree layers (roll-down, moot-block clearing, settled/sticky,
     followupPending) run after, as cache maintenance over the fold's node states."""
     nodes = store["nodes"]
-    for nd in nodes.values():
-        _backfill_log(nd)                              # P3.3: one-time synth log for pre-dual-write nodes
     folds = _materialize_from_log(nodes)               # P3.3: history → flags; the log is the authority
+    #                                                    (migration is a BOOT sweep now — migrate_all_stores)
     children = {}
     for nid, nd in nodes.items():
         children.setdefault(nd.get("parentId"), []).append(nid)
@@ -1692,7 +1691,7 @@ def _sync_declared_plan(store, session, seg_id, seg_t):
                       "parentId": None, "nodeComplete": False, "blocked": False, "cleared": False,
                       "trail": [seg_id] if seg_id else [], "promptUuid": None, "t": seg_t, "mt": seg_t,
                       "why": "declared in the agent's own to-do list",
-                      "agentTask": {"key": key, "status": "open", "raw": it["status"]}, "agentBornOpen": True, "logBorn": True}
+                      "agentTask": {"key": key, "status": "open", "raw": it["status"]}, "agentBornOpen": True, "log": []}
         by_key[key] = nid
         changed = True
     return changed
@@ -2343,7 +2342,9 @@ def _reopen(store, gid, by="?", now=None, msg=False):
         c = stack.pop()
         nd = nodes.get(c)
         if nd and nd.pop("rolledUp", None):
-            _materialize_node(nd)                      # back under fold ownership: its own history (usually
+            nd["nodeComplete"] = nd["blocked"] = nd["cleared"] = False   # undo roll-down's tree-derived cache
+            if "log" in nd:
+                _materialize_node(nd)                  # back under fold ownership: its own history (usually
         stack.extend(kids.get(c, []))                  # none → open; a rolled-away block resurfaces) rules
 
 
@@ -2473,11 +2474,14 @@ def record_verdict(store, nd, src, kind, ev_t=None, why=None, seg=None, msg=Fals
     Fusing gate+record means a future writer cannot pass the gate yet skip the history — one call does
     both. `ev_t` = EVIDENCE time (segment/turn/user-action moment); `at` = arrival, forensics only.
 
-    Migrates the node FIRST if it predates dual-write (no logBorn): appending to an unmigrated node let
-    the next rollup's backfill re-synthesize its flag state as a SECOND event AFTER this one, flipping
-    the diary's provenance order (found 2026-07-07 via the stalled-block chip)."""
-    if not nd.get("logBorn"):
-        _backfill_log(nd)
+    The migration window is CLOSED (2026-07-07): every store was swept by migrate_all_stores at kernel
+    boot, so an unmigrated node here means the sweep missed one — surface it loudly (judge-errors.jsonl)
+    rather than silently synthesizing history in a hot path; the append still proceeds (the event is
+    real), with the node's pre-diary state unrepresented until someone looks."""
+    if "log" not in nd and (nd.get("nodeComplete") or nd.get("blocked") or nd.get("cleared")):
+        _log_judge_error("unmigrated-node", str(nd.get("id") or "?").split(":")[0],
+                         "verdict %s/%s appended to a flagged node with no diary (%s) — the boot sweep"
+                         " missed it; its pre-diary state is not in the log" % (src, kind, nd.get("id")))
     if not may_apply(store, nd, src, kind, ev_t):
         return False
     log = nd.setdefault("log", [])
@@ -2549,15 +2553,46 @@ def _fold_node_state(nd):
     return _fold_node(nd)["state"]
 
 
-def _backfill_log(nd):
-    """P3.3 one-time per-node migration (the user 2026-07-06: "let's just go to the new one"): for a
-    node minted BEFORE dual-write (no logBorn), synthesize the minimal verdict log whose fold equals
-    the node's current flag state — so the authority flip changes NOTHING visible by construction.
-    Events are tagged synth:True (forensics: reconstructed, not witnessed). Runs inside rollup_status,
-    so every store self-migrates the first time it is touched; idempotent via logBorn."""
-    if nd.get("logBorn"):
-        _backfill_settle(nd)                          # stamps predate settle EVENTS → top up (2026-07-07)
-        return
+def migrate_store(store):
+    """The DIARY MIGRATION, one store (2026-07-07 — the window is closed): everything the old lazy
+    per-touch backfill did, applied in one sweep so the hot paths carry zero migration logic.
+      - a flagged node with no log gets the minimal synth history whose fold equals its flags
+        (the P3.3 backfill, verbatim semantics; events tagged synth:True)
+      - hand-written settle-era stamps (settledAt/settledDone/deltaSince/followupPending) that predate
+        settle EVENTS get their synth settle / msg-marker top-up
+      - provisional follow-up STUB nodes are deleted (retired: the reopen event holds tops open)
+      - the logBorn marker is stripped (its job — "is this node migrated?" — is now answered by the
+        flags-vs-log invariant: a verdict-flagged node with no log is by definition unmigrated)
+    Idempotent; returns True if the store changed (caller persists). Kernel boot runs migrate_all_stores
+    over live + archived stores every start (cheap no-op once clean); tests with legacy-flag fixtures
+    call this explicitly."""
+    changed = False
+    nodes = store.get("nodes") or {}
+    for k in [k for k, v in nodes.items() if v.get("provisional")]:
+        nodes.pop(k, None)
+        (store.get("status") or {}).pop(k, None)
+        changed = True
+    for nd in nodes.values():
+        changed = _migrate_node(nd) or changed
+    return changed
+
+
+def _migrate_node(nd):
+    changed = nd.pop("logBorn", None) is not None
+    if not nd.get("log") and (nd.get("nodeComplete") or nd.get("blocked") or nd.get("cleared")
+                              or nd.get("everDone") or nd.get("followupAt")):
+        _synth_log(nd)
+        changed = True
+    if "log" not in nd:
+        nd["log"] = []                                # adopted: an empty diary marks a diary-era node
+        changed = True
+    return _synth_settle_topup(nd) or changed
+
+
+def _synth_log(nd):
+    """Synthesize the minimal verdict log whose fold equals the node's current flag state — so the
+    authority flip changed NOTHING visible by construction (P3.3). synth:True = reconstructed, not
+    witnessed."""
     mt = nd.get("mt") or nd.get("t") or 0
     fa = nd.get("followupAt")
     log = nd.setdefault("log", [])
@@ -2584,28 +2619,68 @@ def _backfill_log(nd):
         ev("clear", max(mt, fa or 0) + 1, src="user")
     if nd.get("settledDone") or nd.get("settledAt"):
         ev("settle", nd.get("settledAt") or max(mt, fa or 0), src="romp")
-    nd["logBorn"] = True
 
 
-def _backfill_settle(nd):
+def _synth_settle_topup(nd):
     """Settle-event top-up for nodes migrated BEFORE settle/stamp derivation existed (2026-07-07): their
-    logs are real (logBorn) but the settledAt/settledDone/deltaSince/followupPending stamps were still
-    hand-written, so deriving from the log alone would WIPE them — a completed card would flicker back
-    through the settle gate, a pending chip would drop. Synthesizes the missing settle events (and the
-    msg marker on the newest user reopen) so the fold reproduces the stamps; idempotent by construction
-    (each synth only fires when the fold disagrees with the legacy stamp)."""
+    logs are real but the settledAt/settledDone/deltaSince/followupPending stamps were still hand-written,
+    so deriving from the log alone would WIPE them — a completed card would flicker back through the
+    settle gate, a pending chip would drop. Synthesizes the missing settle events (and the msg marker on
+    the newest user reopen); idempotent (each synth fires only while the fold disagrees with the stamp).
+    Returns True if it changed the node."""
+    if not (nd.get("settledDone") or nd.get("settledAt") or nd.get("deltaSince")
+            or nd.get("followupPending")):
+        return False
     f = _fold_node(nd)
     log = nd.setdefault("log", [])
-    if nd.get("deltaSince") and f["deltaSince"] != nd["deltaSince"]:
+    changed = False
+
+    def _synthed(t):                                  # already synthesized once? Some legacy stamps are
+        return any(e.get("kind") == "settle" and e.get("ev_t") == t for e in log)   # CONTRADICTED by a
+    #                                                   later reopen in the log — the fold rightly ignores
+    #                                                   the synth, and re-appending it every sweep would
+    #                                                   break idempotence (found on 3 real stores)
+    if nd.get("deltaSince") and f["deltaSince"] != nd["deltaSince"] and not _synthed(nd["deltaSince"]):
         log.append({"ev_t": nd["deltaSince"], "src": "romp", "kind": "settle",
                     "at": int(time.time()), "synth": True})
+        changed = True
     if (nd.get("settledDone") or nd.get("settledAt")) and not f["settledAt"]:
-        log.append({"ev_t": nd.get("settledAt") or nd.get("mt") or nd.get("t") or 0, "src": "romp",
-                    "kind": "settle", "at": int(time.time()), "synth": True})
+        want = nd.get("settledAt") or nd.get("mt") or nd.get("t") or 0
+        if not _synthed(want):
+            log.append({"ev_t": want, "src": "romp", "kind": "settle",
+                        "at": int(time.time()), "synth": True})
+            changed = True
     if nd.get("followupPending") and not f["heldMsg"]:
         ur = [e for e in log if e.get("kind") == "reopen" and e.get("src") == "user"]
-        if ur:
+        if ur and not max(ur, key=lambda e: (e.get("ev_t") or 0, e.get("at") or 0)).get("msg"):
             max(ur, key=lambda e: (e.get("ev_t") or 0, e.get("at") or 0))["msg"] = True
+            changed = True
+    return changed
+
+
+def migrate_all_stores():
+    """The kernel-boot diary sweep (2026-07-07): migrate every live goal store AND every cleared-goal
+    archive (undo restores archived nodes into live stores, so they must carry diaries too). Runs every
+    boot — idempotent and cheap once clean (a fleet of ~140 stores folds in well under a second) — so a
+    store file that APPEARS later (a restored backup) is adopted on the next restart rather than never.
+    Returns the number of files rewritten."""
+    n = 0
+    for d in (GOALDIR, GOALARCHDIR):
+        if not d.is_dir():
+            continue
+        for p in d.glob("*.json"):
+            try:
+                store = json.loads(p.read_text())
+            except Exception:
+                continue                              # unreadable → leave for the owner path to surface
+            if not isinstance(store, dict):
+                continue
+            if migrate_store(store):
+                tmp = p.with_name(p.name + ".tmp.%d" % os.getpid())
+                tmp.write_text(json.dumps(store))
+                tmp.rename(p)                         # atomic publish
+                n += 1
+    return n
 
 
 def _materialize_from_log(nodes):
@@ -2626,14 +2701,25 @@ def _materialize_from_log(nodes):
     for nid, nd in nodes.items():
         if nd.get("rolledUp"):
             continue                                   # tree-derived display state; roll-down owns it
-        folds[nid] = _materialize_node(nd)
+        f = _materialize_node(nd)
+        if f is not None:
+            folds[nid] = f
     return folds
 
 
 def _materialize_node(nd):
     """Rewrite ONE node's flag/stamp cache from its fold — the shared kernel of _materialize_from_log,
     also called by mid-pass writers (_reopen) whose same-pass readers (the nudge path's open_menu seal
-    check) need the cache fresh BEFORE the next full materialize. Returns the fold."""
+    check) need the cache fresh BEFORE the next full materialize. Returns the fold.
+
+    FAIL-LOUD GUARD (the migration window closed 2026-07-07): a verdict-flagged node with NO diary is
+    an unmigrated straggler the boot sweep missed. Deriving would WIPE its state (an empty fold is
+    open), so freeze it — skip the rewrite, surface the error — a visible wrong beats a silent one."""
+    if "log" not in nd and (nd.get("nodeComplete") or nd.get("blocked") or nd.get("cleared")):
+        _log_judge_error("unmigrated-node", str(nd.get("id") or "?").split(":")[0],
+                         "flagged node with no diary (%s) — flags frozen, not derived; run the boot"
+                         " sweep (migrate_all_stores)" % nd.get("id"))
+        return None
     f = _fold_node(nd)
     st = f["state"]
     nd["nodeComplete"] = st == "done"
@@ -3347,7 +3433,7 @@ def apply_group(store, tops, ops, t):
         nid = "%s:g%d" % (store["rompUuid"], store["seq"])
         nodes[nid] = {"id": nid, "text": text or "(umbrella)", "parentId": None, "nodeComplete": False,
                       "blocked": False, "cleared": False, "trail": [], "t": t, "mt": t, "why": why,
-                      "umbrella": True, "logBorn": True}
+                      "umbrella": True, "log": []}
         created.append(nid)
         return nid
 
@@ -4483,7 +4569,7 @@ def apply_courier(store, seg_id, seg_t, text, origin):
     nid = "%s:g%d" % (store["rompUuid"], store["seq"])
     nodes[nid] = {"id": nid, "text": (text or "(delegation)")[:120], "parentId": None,
                   "nodeComplete": False, "blocked": False, "cleared": False,
-                  "trail": [seg_id], "t": seg_t, "origin": origin, "logBorn": True}
+                  "trail": [seg_id], "t": seg_t, "origin": origin, "log": []}
     placements[seg_id] = nid
     store["lastNode"] = nid                            # the delegation is now the active focus
     return nid
@@ -4506,7 +4592,7 @@ def _plant_handoff_track(store, parent_id, text, peer_sid, peer_name, t, mid):
     label = "↪ delegated to %s: %s" % (peer_name or peer_sid[:8], text or "(work)")
     nodes[nid] = {"id": nid, "text": label[:120], "parentId": parent_id,
                   "nodeComplete": False, "blocked": False, "cleared": False,
-                  "trail": [], "t": t, "mt": t, "handoff": {"peer": peer_sid, "msgId": mid}, "logBorn": True}
+                  "trail": [], "t": t, "mt": t, "handoff": {"peer": peer_sid, "msgId": mid}, "log": []}
     return nid
 
 

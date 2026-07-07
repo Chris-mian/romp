@@ -11457,6 +11457,12 @@ def main():
     os.environ.setdefault("ROMP_CLAUDE_BIN", _claude_bin())
     signal.signal(signal.SIGTERM, _graceful_term)             # drain, don't die mid-flight (see _graceful_term)
     _ensure_bundles()
+    try:                                                      # the diary boot sweep (2026-07-07): migrate every
+        _n = jd.migrate_all_stores()                          # goal store/archive BEFORE any judge pass runs —
+        if _n:                                                # the hot paths carry no migration logic anymore
+            sys.stderr.write("romp-kernel: diary sweep migrated %d store file(s)\n" % _n)
+    except Exception:
+        sys.stderr.write("diary sweep: %s\n" % traceback.format_exc())
     _boot_warm()                                              # pre-parse the live fleet during the reconnect gap (fast first paint)
     threading.Thread(target=_sdk, daemon=True).start()        # construct the SDK backend NOW so its boot
     #                                                           reconcile (cut turns, queues, orphans) runs at
