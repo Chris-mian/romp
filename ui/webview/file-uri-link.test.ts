@@ -14,8 +14,10 @@ const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "
 test("a bare file:// URL becomes a clickable .file-uri-link that opens the file in the host app", () => {
   assert.match(RENDER, /function linkifyFileUris\(root: HTMLElement\): void/);
   assert.match(RENDER, /el\("span", "file-uri-link"\)/);
-  // clicking routes to the host opener (kernel `open <path>`), NOT a blocked window.open(file://)
-  assert.match(RENDER, /vscodeApi\.postMessage\(\{ type: "openFile", path \}\)/);
+  // clicking routes to the host opener (kernel `open <path>`), NOT a blocked window.open(file://) — a file://
+  // URI is absolute, so it goes through the shared fileLink's no-session-id branch
+  assert.match(RENDER, /function fileUriLink\(uri: string\): HTMLElement \{ return fileLink\(uri, fileUriToPath\(uri\)\); \}/);
+  assert.match(RENDER, /\{ type: "openFile", path: open \}/);
   // the URL is turned into a real filesystem path: scheme stripped, percent-decoded
   assert.match(RENDER, /\.replace\(\/\^file:/);
   assert.match(RENDER, /decodeURIComponent\(p\)/);
@@ -33,7 +35,7 @@ test("linkify works inside INLINE backticks (agents backtick paths), skips only 
   // inline <code> is NOT skipped — a `file://…` path in backticks still linkifies; only fenced <pre> + links are skipped
   assert.match(RENDER, /closest\("a, \.file-uri-link, pre"\)/);
   assert.doesNotMatch(RENDER, /closest\("a, \.file-uri-link, code, pre"\)/);
-  assert.match(RENDER, /uri = uri\.slice\(0, uri\.length - trail\[0\]\.length\)/);
+  assert.match(RENDER, /tok = tok\.slice\(0, tok\.length - trail\[0\]\.length\)/);
 });
 
 test(".file-uri-link is styled as a wrapping accent link", () => {

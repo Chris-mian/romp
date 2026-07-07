@@ -8558,10 +8558,23 @@ def _save_dropped_file(name, b64):
         return None
 
 
-def _open_file(p):
+def _resolve_open_path(p, sid=None):
+    """Resolve a click-to-open path to an absolute one: expand ~, and resolve a RELATIVE path against the
+    SESSION's cwd — a linkified `design/foo.md` is relative to the repo the agent runs in, NOT the kernel's
+    launch cwd (the user 2026-07-06). An absolute path (incl. a file:// caption link) passes through. Best
+    effort: unknown sid / no cwd leaves a relative path as-is."""
+    p = os.path.expanduser(str(p))
+    if not os.path.isabs(p) and sid:
+        base = _cwd_of(sid)
+        if base:
+            p = os.path.join(base, p)
+    return p
+
+
+def _open_file(p, sid=None):
     """Open a path in the user's default app/editor (macOS `open`); best-effort, never raises."""
     try:
-        subprocess.Popen(["open", str(p)], stdin=subprocess.DEVNULL,
+        subprocess.Popen(["open", _resolve_open_path(p, sid)], stdin=subprocess.DEVNULL,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except OSError:
         pass
@@ -11254,7 +11267,7 @@ class Handler(BaseHTTPRequestHandler):
             if fp:
                 _reply(client, {"type": "droppedPath", "path": fp})
         elif msg and msg.get("type") == "openFile" and msg.get("path"):
-            _open_file(str(msg["path"]))                          # caption / linkified path click → open it
+            _open_file(str(msg["path"]), sid=msg.get("id"))       # caption / linkified path click → open it (relative → resolved vs the session cwd)
         elif msg and msg.get("type") == "pickFile":
             def _pf(c=client):                                    # 📎 → native dialog (blocks) → insert the picked path
                 fp = _pick_file()

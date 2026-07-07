@@ -585,28 +585,42 @@ function fileUriToPath(uri: string): string {
   try { p = decodeURIComponent(p); } catch { /* malformed %-escape — use verbatim */ }
   return p;
 }
-// A clickable, VERBATIM file:// URL that opens the file in the host's default app — the SAME open-the-file
-// path the caption/image links use ({type:"openFile"} → the kernel runs `open <path>`, so e.g. a PDF opens
-// in the viewer). A bare file:// can't be followed by the browser from the http dashboard (it blocks the
-// scheme) and a VS Code editor won't render a PDF, so it's routed to the host opener instead of navigated.
-function fileUriLink(uri: string): HTMLElement {
+// A clickable, VERBATIM file link that opens in the host's default app — the SAME open-the-file path the
+// caption/image links use ({type:"openFile"} → the kernel runs `open <path>`, so e.g. a PDF opens in the
+// viewer). `raw` is shown as written; `open` is what the host opens. A bare file:// can't be followed by the
+// browser from the http dashboard (blocked scheme) and a VS Code editor won't render a PDF, so it's routed to
+// the host opener instead of navigated. `relative` bare paths carry the active session id so the KERNEL
+// resolves them against THAT session's cwd — a relative `design/foo.md` is relative to the repo the agent
+// runs in, not the kernel's cwd (the user 2026-07-06).
+function fileLink(raw: string, open: string, relative = false): HTMLElement {
   const a = el("span", "file-uri-link");
-  a.textContent = uri;                       // shown exactly as written, selectable/copyable in place
-  const path = fileUriToPath(uri);
-  a.title = "Open " + path;
+  a.textContent = raw;                       // shown exactly as written, selectable/copyable in place
+  a.title = "Open " + open;
   a.addEventListener("click", (e) => {
     e.stopPropagation();
-    if (vscodeApi) vscodeApi.postMessage({ type: "openFile", path });
+    if (vscodeApi) vscodeApi.postMessage(relative
+      ? { type: "openFile", path: open, id: activeId }   // kernel resolves against this session's cwd
+      : { type: "openFile", path: open });
   });
   return a;
 }
-// Make bare file:// URLs inside a rendered CHAT message clickable (assistant replies + your own bubbles).
-// marked doesn't autolink the file: scheme and DOMPurify strips it, so without this they read as dead text.
-// Deliberately NOT applied to tool-use summaries (the user 2026-07-06). Linkifies inside INLINE <code> too —
-// agents routinely wrap a path in backticks, and the user shouldn't have to tell them how to render links
-// (the user 2026-07-06); only FENCED <pre> code blocks (literal code samples, and syntax-highlighted) and
-// text already inside a link are skipped. Trailing sentence punctuation is left out, not swallowed.
-const FILE_URI_RE = /file:\/\/\/?[^\s<>"'`)]+/gi;
+function fileUriLink(uri: string): HTMLElement { return fileLink(uri, fileUriToPath(uri)); }
+// Is this bare token (trailing punctuation already stripped) a file path worth linkifying? Requires a slash
+// and EITHER an absolute/anchored start (/, ~/, ./, ../) OR a file extension on the final segment — so
+// "and/or", "TCP/IP", "24/7", "read/write" stay as prose. URL-ish tokens (a ':' or '//') are rejected;
+// http(s) links are already <a> (skipped) — this just guards a rare un-autolinked one.
+function looksLikeFilePath(tok: string): boolean {
+  if (tok.includes(":") || tok.includes("//") || !tok.includes("/")) return false;
+  if (/^(?:~\/|\.{1,2}\/|\/)/.test(tok)) return true;                        // absolute or anchored (/, ~/, ./, ../)
+  return /\.[A-Za-z0-9]{1,8}$/.test(tok.slice(tok.lastIndexOf("/") + 1));    // relative → the last segment has an extension
+}
+// Make bare file:// URLs AND bare file paths inside a rendered CHAT message clickable (assistant replies +
+// your own bubbles) — a relative `design/foo.md` opens too, resolved against the session's cwd (the user
+// 2026-07-06). marked doesn't autolink these and DOMPurify strips the file: scheme, so without this they read
+// as dead text. Deliberately NOT applied to tool-use summaries. Linkifies inside INLINE <code> too — agents
+// routinely wrap a path in backticks; only FENCED <pre> blocks and text already inside a link are skipped.
+// Trailing sentence punctuation is left out, not swallowed.
+const CLICKABLE_PATH_RE = /file:\/\/\/?[^\s<>"'`)]+|[~.\w\-]*\/[~.\w\-/]*[\w\-]/gi;
 function linkifyFileUris(root: HTMLElement): void {
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   const nodes: Text[] = [];
@@ -615,18 +629,20 @@ function linkifyFileUris(root: HTMLElement): void {
   for (const tn of nodes) {
     if (tn.parentElement?.closest("a, .file-uri-link, pre")) continue;   // already a link, or a fenced code block
     const text = tn.data;
-    if (!/file:\/\//i.test(text)) continue;
-    const re = new RegExp(FILE_URI_RE.source, "gi");
+    if (!text.includes("/")) continue;                                   // cheap pre-filter: no slash → nothing here
+    const re = new RegExp(CLICKABLE_PATH_RE.source, "gi");
     const frag = document.createDocumentFragment();
     let last = 0, any = false, m: RegExpExecArray | null;
     while ((m = re.exec(text))) {
-      let uri = m[0];
-      const trail = uri.match(/[.,;:!?)\]}>"'`]+$/);   // don't grab a sentence's closing punctuation
-      if (trail) uri = uri.slice(0, uri.length - trail[0].length);
-      if (!uri) continue;
+      let tok = m[0];
+      const trail = tok.match(/[.,;:!?)\]}>"'`]+$/);   // don't grab a sentence's closing punctuation
+      if (trail) tok = tok.slice(0, tok.length - trail[0].length);
+      if (!tok) continue;
+      const isUri = /^file:\/\//i.test(tok);
+      if (!isUri && !looksLikeFilePath(tok)) continue;                   // a bare "and/or" etc. — leave as prose
       if (m.index > last) frag.appendChild(document.createTextNode(text.slice(last, m.index)));
-      frag.appendChild(fileUriLink(uri));
-      last = m.index + uri.length;
+      frag.appendChild(isUri ? fileUriLink(tok) : fileLink(tok, tok, true));
+      last = m.index + tok.length;
       re.lastIndex = last;
       any = true;
     }
