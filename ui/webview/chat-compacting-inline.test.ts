@@ -2,7 +2,7 @@
 // inline element ("Compacting context…" + the compressing teal bar) renders in the transcript — not only in
 // the statusline/tab. The kernel appends kind:"compacting" BEFORE kind:"queued", so a message sent
 // mid-compaction stacks BELOW it instead of clobbering it; once the boundary lands, the {kind:"compact"}
-// divider ("✦ Context compacted") it visually becomes takes over. Source pins (render.ts has no jsdom harness).
+// "Context compacted" notice card it visually becomes (via the shared teal) takes over. Source pins.
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
@@ -47,35 +47,35 @@ test("the chat bar sweeps the context colormap like the statusline/tab bars (the
   assert.match(body, /applyCompactSweep\(fill, 3200\)/);
 });
 
-// ── the compaction boundary is a COLLAPSIBLE box showing the model's summary (the user 2026-07-07) ──
+// ── the compaction boundary is a DEFAULT-COLLAPSED notice card showing the model's summary (the user 2026-07-07) ──
 test("the compact ChatEvent carries the model's summary text", () => {
   assert.match(RENDER, /kind: "compact";[^}]*summary\?: string/);
 });
 
-test("renderCompact draws a collapsible summary box when a summary is present", () => {
-  const body = RENDER.slice(RENDER.indexOf("function renderCompact("), RENDER.indexOf("function toggleCompact"));
+test("renderCompact routes the summary through the shared 'compact' notice card as its collapsible body", () => {
+  const body = RENDER.slice(RENDER.indexOf("function renderCompact("), RENDER.indexOf("function renderCompacting"));
   assert.match(body, /const summary = \(ev\.summary \|\| ""\)\.trim\(\)/);
-  assert.match(body, /compactExpanded\.has\(uuid\)/);                 // per-uuid open state
-  assert.match(body, /el\("span", "compact-caret"\)/);               // ▸/▾ caret only when there's a summary
-  assert.match(body, /car\.textContent = open \? "▾" : "▸"/);
-  assert.match(body, /line\.classList\.add\("compact-clickable"\)/);
-  assert.match(body, /toggleCompact\(uuid\)/);                        // header click toggles
-  assert.match(body, /el\("div", "compact-summary md"\)/);           // the summary body, markdown-rendered
-  assert.match(body, /body\.innerHTML = md\(summary\)/);
+  assert.match(body, /body\.innerHTML = md\(summary\)/);                            // the summary, markdown-rendered
+  assert.match(body, /noticeCard\(\{ variant: "compact", chip: "compacted", head, body,/);
+  // collapsible ONLY when there's a summary; keyed by the boundary uuid so open state survives re-renders
+  assert.match(body, /collapsible: !!summary, key: uuid \? "compact:" \+ uuid : undefined/);
 });
 
-test("toggleCompact repaints in place with scroll preserved, like toggleToolGroup", () => {
-  const body = RENDER.slice(RENDER.indexOf("function toggleCompact"), RENDER.indexOf("function toggleCompact") + 500);
-  assert.match(body, /compactExpanded\.has\(uuid\)\) compactExpanded\.delete\(uuid\); else compactExpanded\.add\(uuid\)/);
-  assert.match(body, /if \(v\) v\.stale = true; syncView\(activeId\)/);
-  assert.match(body, /content\.scrollTop = top/);
+test("the card is DEFAULT COLLAPSED via the shared keyed fold — the bespoke Set + toggle are gone", () => {
+  // noticeCard applies the open class only if the key was remembered open (applyFold → openFolds) → collapsed
+  // by default; the head click toggles + persists. No per-uuid compactExpanded Set, no toggleCompact.
+  assert.doesNotMatch(RENDER, /compactExpanded/, "the bespoke open-state Set was replaced by the shared fold");
+  assert.doesNotMatch(RENDER, /function toggleCompact/, "no bespoke toggle — the notice head IS the toggle");
+  const nc = RENDER.slice(RENDER.indexOf("function noticeCard("), RENDER.indexOf("function noticeCard(") + 1500);
+  assert.match(nc, /applyFold\(card, "notice-open", o\.key\)/, "collapsed unless the key is remembered open");
 });
 
 test("the default window opens at the last compaction boundary (pre-compaction history scrubbed)", () => {
   assert.match(RENDER, /function lastCompactUnit\(s: Session, items: DisplayItem\[\]\): number/);
   assert.match(RENDER, /if \(s\.events\[i\]\.kind === "compact"\) \{ evIdx = i; break; \}/);
-  // the summary box + its caret + clickable header are styled
-  assert.match(CSS, /\.compact-summary \{[^}]*border-left: 2px solid var\(--st-compacting-bg/);
-  assert.match(CSS, /\.compact-caret \{/);
-  assert.match(CSS, /\.compact-line\.compact-clickable \{ cursor: pointer; \}/);
+});
+
+test("the card wears the compaction TEAL as its notice-card variant accent — a system event, not a bespoke rail line", () => {
+  assert.match(CSS, /\.notice-card-compact \{[^}]*border-left-color: var\(--st-compacting-bg/);
+  assert.match(CSS, /\.notice-chip-compact \{[^}]*color: var\(--st-compacting-bg/);
 });

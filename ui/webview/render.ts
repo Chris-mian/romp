@@ -135,7 +135,6 @@ const vscodeApi =
 
 let settings: RompSettings = loadSettings();   // global webview settings (compact mode, …) — see settings.ts
 const expandedGroups = new Set<string>();      // compact mode: tool-group keys the user clicked open
-const compactExpanded = new Set<string>();     // compaction-boundary uuids whose summary box is expanded open
 
 const sessions = new Map<string, Session>();
 const order: string[] = [];           // positional tab order (for cycling)
@@ -434,7 +433,7 @@ function foldable(label: string, content: HTMLElement, key?: string): HTMLElemen
 // detached from the timeline. Nested → return the bare card; it sits in the parent turn's rail column under
 // its single dot (connected, like any in-turn card). A standalone notice (romp system) IS its own top-level
 // turn, so it keeps the .turn wrapper + dot.
-function noticeCard(o: { variant: "agent" | "romp" | "reminder"; chip: string; logo?: boolean;
+function noticeCard(o: { variant: "agent" | "romp" | "reminder" | "compact"; chip: string; logo?: boolean;
                         head: string; body: HTMLElement; collapsible?: boolean; key?: string;
                         nested?: boolean }): HTMLElement {
   const card = el("div", "notice-card notice-card-" + o.variant + (o.nested ? " notice-nested" : ""));
@@ -1370,62 +1369,36 @@ function renderTodo(ev: Extract<ChatEvent, { kind: "todo" }>): HTMLElement {
 // A context compaction → one clean teal rail marker (the user 2026-06-14): replaces the raw /compact
 // stdout (leaked ANSI dim codes + hook-completion noise). renderEvent adds the rail time-marker +
 // hover wiring (this turn has a .dot); in compact mode it passes through unchanged → the same marker.
-// A context-compaction boundary → a collapsible teal BOX (the user 2026-07-07): the "✦ Context compacted"
-// header (trigger + token win) is glanceable, and — when the parser captured it — the model's SUMMARY of
-// what it kept expands beneath it. Everything before the boundary is compacted out of the agent's context,
-// so the default window opens AT this box (see lastCompactUnit); older history stays reachable on scroll-back.
+// A context-compaction boundary → a NOTICE CARD in romp's system-event family (the user 2026-07-07): the same
+// boxed, chip-headed, default-collapsed treatment as every other system event (agent/romp/reminder notices),
+// so a compaction reads as one of them rather than a bespoke rail line. Its ONE distinction is the COMPACTION
+// TEAL accent (--st-compacting-bg) — the status color it already shares with the live compacting bar and the
+// statusline battery, never a new hue. The head says WHY at a glance (trigger + token win); the model's
+// SUMMARY of what it kept is the collapsible body — DEFAULT COLLAPSED, expands to the whole thing (keyed fold,
+// so it survives re-renders). Everything before the boundary is compacted out of the agent's context, so the
+// default window opens AT this card (see lastCompactUnit); older history stays reachable on scroll-back.
 function renderCompact(ev: Extract<ChatEvent, { kind: "compact" }>): HTMLElement {
-  const turn = el("div", "turn turn-compact");
-  turn.appendChild(dot("ring"));
   const summary = (ev.summary || "").trim();
   const uuid = ev.uuid || "";
-  const open = !!summary && !!uuid && compactExpanded.has(uuid);
-  const line = el("div", "compact-line");
-  if (summary) {   // a caret only when there's a summary to reveal
-    const car = el("span", "compact-caret"); car.textContent = open ? "▾" : "▸"; line.appendChild(car);
-  }
-  line.appendChild(document.createTextNode("✦ Context compacted"));
-  line.title = "the conversation was compacted here — earlier context was summarized to free the window"
-    + (summary ? "; click to view the summary the agent kept" : "");
-  // A muted meta suffix, when the boundary carried it: the trigger (auto vs. the user's /compact) and the
-  // token win (before → after), so the header says WHY at a glance.
+  // A muted meta suffix on the head, when the boundary carried it: the trigger (auto vs. the user's /compact)
+  // and the token win (before → after), so the head says WHY at a glance.
   const bits: string[] = [];
   if (ev.trigger === "auto") bits.push("auto");
   else if (ev.trigger === "manual") bits.push("manual");
   if (ev.preTokens) bits.push(ev.postTokens ? `${compactTokens(ev.preTokens)} → ${compactTokens(ev.postTokens)}` : `${compactTokens(ev.preTokens)} freed`);
-  if (bits.length) {
-    const meta = el("span", "compact-meta"); meta.textContent = "· " + bits.join(" · ");
-    line.appendChild(meta);
-  }
-  if (summary) {
-    line.classList.add("compact-clickable");
-    line.addEventListener("click", (e) => { e.stopPropagation(); toggleCompact(uuid); });   // mirrors toggleToolGroup
-  }
-  turn.appendChild(line);
-  if (open) {
-    const body = el("div", "compact-summary md");
-    body.innerHTML = md(summary);
-    highlight(body);
-    turn.appendChild(body);
-  }
-  return turn;
-}
-
-// Toggle a compaction-summary box open/closed and repaint the active view in place (scroll preserved) —
-// same shape as toggleToolGroup: the event set is unchanged, so mark the view stale to force the rebuild.
-function toggleCompact(uuid: string): void {
-  if (!uuid) return;
-  if (compactExpanded.has(uuid)) compactExpanded.delete(uuid); else compactExpanded.add(uuid);
-  const content = document.getElementById("content");
-  const top = content ? content.scrollTop : 0;
-  if (activeId) { const v = views.get(activeId); if (v) v.stale = true; syncView(activeId); }
-  if (content) content.scrollTop = top;
-  scheduleRestamp();
+  const head = "Context compacted" + (bits.length ? " · " + bits.join(" · ") : "");
+  const body = el("div", "notice-md md");
+  if (summary) { body.innerHTML = md(summary); highlight(body); }
+  else { const p = el("div", "notice-plain"); p.textContent = "No summary was captured for this compaction."; body.appendChild(p); }
+  // collapsible only when there's a summary to reveal; the "compacted" chip carries identity (no ✦ glyph)
+  return noticeCard({ variant: "compact", chip: "compacted", head, body,
+                      collapsible: !!summary, key: uuid ? "compact:" + uuid : undefined });
 }
 
 // LIVE compaction in progress (the user 2026-07-06): an animated inline element in the chat flow while the
 // session compacts — the SAME compressing-teal-bar motion as the statusline ctx-bar (@keyframes ctx-compress),
-// styled to rhyme with the "✦ Context compacted" divider (renderCompact) it becomes once the boundary lands.
+// styled to rhyme (via the compaction teal) with the "Context compacted" notice card (renderCompact) it
+// becomes once the boundary lands.
 // The kernel appends kind:"compacting" BEFORE kind:"queued", so a message sent mid-compaction stacks BELOW
 // this instead of clobbering it. Event-based: it vanishes the instant the session stops compacting.
 function renderCompacting(): HTMLElement {

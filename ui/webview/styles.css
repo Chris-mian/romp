@@ -775,22 +775,9 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
   box-shadow: 0 1px 6px rgba(0, 0, 0, 0.4); border: 1px solid rgba(156, 210, 255, 0.25);
 }
 /* tool + thinking rows pack tighter than prose turns (the user: ~half the spacing) */
-.turn-tool, .turn-thinking, .turn-toolgroup, .turn-compact { padding-top: 4px; padding-bottom: 4px; }
-/* context-compaction marker — one clean teal line on the rail (replaces the raw /compact stdout) */
-.turn-compact .dot, .turn-compact .time-marker { top: 10px; }
-.turn-compact .dot { background: var(--st-compacting-bg, #14b8a6); border: none; }
-.compact-line { color: var(--st-compacting-bg, #14b8a6); font-size: 0.9em; font-weight: 600; letter-spacing: 0.02em; }
-.compact-line.compact-clickable { cursor: pointer; }
-.compact-line.compact-clickable:hover { text-decoration: underline; text-underline-offset: 2px; }
-.compact-caret { display: inline-block; width: 10px; margin-right: 4px; color: var(--st-compacting-bg, #14b8a6); font-size: 0.85em; }
-.compact-meta { margin-left: 6px; color: var(--dim); font-weight: 400; letter-spacing: normal; }
-/* the model's compaction SUMMARY ("what it kept"), revealed under the header — a teal-edged box, its own
-   scroll region so a long summary never runs the whole thread; markdown rendered like other message bodies */
-.compact-summary { margin: 6px 0 4px; padding: 8px 12px; border-left: 2px solid var(--st-compacting-bg, #14b8a6);
-  background: color-mix(in srgb, var(--st-compacting-bg, #14b8a6) 8%, transparent); border-radius: 0 6px 6px 0;
-  max-height: 340px; overflow: auto; overscroll-behavior: contain; font-size: 0.9em; }
-.compact-summary > :first-child { margin-top: 0; }
-.compact-summary > :last-child { margin-bottom: 0; }
+.turn-tool, .turn-thinking, .turn-toolgroup { padding-top: 4px; padding-bottom: 4px; }
+/* the compaction boundary now renders as a notice card in the system-event family (renderCompact → noticeCard,
+   variant "compact") — its teal accent lives with the other .notice-card-* variants below. */
 /* LIVE compaction — animated inline element that becomes the .compact-line divider above once done. Same
    teal + type as the divider (reads as one element maturing); the bar reuses @keyframes ctx-compress (the
    statusline ctx-scan motion) and — like the statusline/tab bars — sweeps through the context colormap
@@ -1346,6 +1333,12 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 /* reminders — the most muted: a plain dim frame, no logo, dimmest of the three */
 .notice-card-reminder { opacity: 0.9; }
 .notice-chip-reminder { font-style: italic; }
+/* context compaction — the COMPACTION TEAL (--st-compacting-bg), the status color it shares with the live
+   compacting bar + the statusline battery. Same card family as the others; teal is its identity, the way
+   agent=blue. The summary body scrolls (notice-body's own max-height) so a long recap never runs the thread. */
+.notice-card-compact { border-left-color: var(--st-compacting-bg, #14b8a6); }
+.notice-chip-compact { color: var(--st-compacting-bg, #14b8a6); border-color: var(--st-compacting-bg, #14b8a6); }
+.notice-dot-compact { border-color: var(--st-compacting-bg, #14b8a6); }
 
 /* the pinned "system context" card (the user 2026-06-19): a proper bordered BOX at the very top of the
    transcript that looks complete even when collapsed (a ⚙ header + one-line summary + caret), expanding
