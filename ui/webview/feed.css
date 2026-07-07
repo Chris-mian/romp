@@ -162,8 +162,13 @@ body.feed-dragging .feed-col.col-asks { outline: 1.5px dashed color-mix(in srgb,
 /* row 1 — ask title, full width across the top. Hit-area still fits its TEXT (the title must
    NOT flex-grow, else clicking blank space right of it triggers locate instead of the modal —
    the user's hover hit-area bug); with the age moved to row 3, a long title runs the full width. */
-.fask-row1 { display: flex; align-items: baseline; gap: 10px; }
+/* the TIME trails the title on its LAST line, right-justified (the user 2026-07-07): `last baseline` sits it
+   on the title's final line's baseline (a plain `baseline` fallback for older engines sits it on the first);
+   margin-left:auto pushes it to the right edge. The title keeps flex:0 1 auto so its hit-area is its text
+   (blank space right of it opens the modal, not locate). */
+.fask-row1 { display: flex; align-items: baseline; align-items: last baseline; gap: 10px; }
 .fask-row1 .fcard-title { flex: 0 1 auto; min-width: 0; }
+.fask-row1 .ftime { margin-left: auto; }
 /* row 2 — the session name on its own row below the title; sized to its text so blank space
    to its right stays card-body (opens the modal), and wrapping so a long name can't overflow. */
 /* wraps: when the name + "↪ from <peer>" provenance + the reopened/Followed-up chips can't all fit on
@@ -184,7 +189,11 @@ body.feed-dragging .feed-col.col-asks { outline: 1.5px dashed color-mix(in srgb,
    right-aligns on the time's line. flex-wrap is the backstop — a tight card drops the toggles to their own
    line under the time rather than overflowing or overlapping. */
 .fask-row3 { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; row-gap: 6px; margin-top: 6px; }
-.fask-row3 .ftime { flex: 0 0 auto; margin-right: auto; }
+/* Background sits LEFT, Summary RIGHT (the user 2026-07-07): the second toggle (Summary) claims the free
+   space via margin-left:auto, so it stays right-justified even when Background is hidden. Rare Retry/Revive
+   ride the right too. On a card too narrow to fit both, flex-wrap drops Summary to its own line. */
+.fask-row3 .fask-secbtn ~ .fask-secbtn { margin-left: auto; }
+.fask-row3 .fask-actions { margin-left: auto; }
 /* card body is clickable (single → modal, double → pin). Hover lights a white
    ring + the timeline journey; pin persists it. Order matters: .focused after
    .pinned so a pinned-AND-focused card shows the bright ring. */

@@ -399,12 +399,14 @@ function makeAskCard(it: AskItem): HTMLElement {
   card.addEventListener("dragend", finishAskDrag);
 
   const main = el("div", "fitem-main");
-  // ROW 1 — ask title, full width across the top (the user 2026-06-14); hit-area still
-  // fits its text (it must NOT flex-grow, or blank space right of it triggers locate)
+  // ROW 1 — ask title (left, wraps) with the TIME trailing it, right-justified on the title's LAST line
+  // (the user 2026-07-07): small + faded so it reads as metadata, not part of the title. The title still
+  // must NOT flex-grow (blank space right of it would trigger locate) — the time's margin-left:auto right-
+  // aligns it instead. Freeing the time from row3 lets Background/Summary own that row (one on each side).
   const row1 = el("div", "fask-row1");
   const title = el("div", "fcard-title nav"); title.title = "locate this in the text";
   const time = el("span", "ftime");
-  row1.append(title);
+  row1.append(title, time);
   // ROW 2 — the session name on its own row, directly below the title
   const row2 = el("div", "fask-row2");
   const idwrap = el("div", "fask-id");
@@ -478,8 +480,8 @@ function makeAskCard(it: AskItem): HTMLElement {
   // (the user 2026-06-20). origin sits left of the chips, matching the "from … · Followed up" reading order.
   // Clear is the rightmost, always-present control on this row (idwrap flex:1 pushes it to the edge).
   row2.append(idwrap, origin, fupBadge, nfBadge, intBadge, warnChip, waitOnBadge, clr);
-  // ROW 3 — timestamp (left) · Background/Summary toggles + Retry/Revive (right). Populated below, once the
-  // toggle buttons exist (they're declared with the distiller sections).
+  // ROW 3 — Background (left) · Summary (right), always one line, opposite sides. Populated below, once the
+  // toggle buttons exist (they're declared with the distiller sections). The time now trails the title (row1).
   const row3 = el("div", "fask-row3");
   // the user's handoff spec (2026-06-10): below the main session, list the OTHER
   // sessions this ask was handed to — but only while they are LIVE-WORKING on
@@ -512,8 +514,9 @@ function makeAskCard(it: AskItem): HTMLElement {
   const takeBtn = el("button", "fask-secbtn"); takeBtn.textContent = "Summary";
   const distill = el("div", "fask-distill");
   secs.append(bgBody, distill);   // the BODIES only; the toggles ride row3 (below), one body shows at a time
-  // now that the toggles exist, populate row3: time (left) · Background/Summary toggles · Retry/Revive (right)
-  row3.append(time, bgBtn, takeBtn, actions);
+  // now that the toggles exist, populate row3: Background (left) · Summary (right); the two always share one
+  // line, on opposite sides (the user 2026-07-07). Retry/Revive (rare) ride the right with Summary.
+  row3.append(bgBtn, takeBtn, actions);
   // ⏳ AWAITING cue (the user 2026-06-29): a small romp swirl spinning in the SAME body spot the distiller line
   // will eventually fill — a completed/blocked card shows its takeaway there; a WORKING card that's awaiting
   // dispatched/delegated work shows the spinning swirl instead, a glanceable "in flight, not stalled" sign.
@@ -1048,16 +1051,15 @@ function makeGroupCard(g: AskGroup): HTMLElement {
   const row1 = el("div", "fask-row1");
   const title = el("div", "fcard-title nav"); title.title = "locate this in the text";
   const time = el("span", "ftime");
-  row1.append(title);
+  row1.append(title, time);   // time trails the title, right-justified (the user 2026-07-07) — matches the ask card
   const row2 = el("div", "fask-row2");
   const idwrap = el("div", "fask-id");
   const name = el("a", "fname"); name.title = "open this session";
   idwrap.append(name);   // no "· N parts" label — the member checklist below already shows the count
   const clr = el("button", "fdismiss"); clr.textContent = "Clear"; clr.title = "clear ALL sub-asks of this request (inbox-zero)";
   row2.append(idwrap, clr);   // Clear rides the name row (the user 2026-07-07, compactness) — matches the ask card
-  const row3 = el("div", "fask-row3"); row3.append(time);   // time on its own row (Clear moved up to row2)
-  const memberList = el("div", "fgroup-members");
-  main.append(row1, row2, row3, memberList);
+  const memberList = el("div", "fgroup-members");   // no row3: the group card has no time-row content left
+  main.append(row1, row2, memberList);
   card.append(main);
 
   const m0 = () => ((card as any)._g as AskGroup | undefined)?.members?.[0];

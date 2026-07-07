@@ -12,16 +12,17 @@ import * as path from "node:path";
 const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.css"), "utf8");
 
-test("COMPACTNESS (the user 2026-07-07): Clear rides the name row; Background/Summary toggles ride the time row", () => {
-  // ask card: row3 = time (left) + the Background/Summary toggles + Retry/Revive (right)
-  assert.match(FEED, /row3\.append\(time, bgBtn, takeBtn, actions\)/, "ask card: the toggles moved up onto the time row");
+test("COMPACTNESS (the user 2026-07-07): time trails the title; Clear on the name row; Background left / Summary right", () => {
+  // the TIME now trails the title on row1 (both cards); row3 holds only the Background/Summary toggles
+  assert.match(FEED, /row1\.append\(title, time\)/, "the time trails the title on row1");
+  assert.match(FEED, /row3\.append\(bgBtn, takeBtn, actions\)/, "ask card: row3 is Background/Summary (+ rare Retry/Revive), no time");
   assert.match(FEED, /actions\.append\(apiRetry, revive\)/, "…so the action row is Retry/Revive only (Clear + toggles moved up)");
   // Clear is the rightmost control on the NAME row now (both ask + group cards)
   assert.match(FEED, /row2\.append\(idwrap, origin, fupBadge, nfBadge, intBadge, warnChip, waitOnBadge, clr\)/, "ask card: Clear on the name row");
   assert.match(FEED, /row2\.append\(idwrap, clr\)/, "group card: Clear on the name row");
-  // group card's row3 is just the time (its Clear moved up), so nothing sits alone on an action row
-  assert.match(FEED, /const row3 = el\("div", "fask-row3"\); row3\.append\(time\);/, "group card: time-only row3");
-  assert.match(FEED, /row1\.append\(title\);/);
+  // the group card has no row3 anymore (its only content, the time, moved to row1)
+  assert.match(FEED, /main\.append\(row1, row2, memberList\)/, "group card: no row3 (time moved to row1)");
+  assert.doesNotMatch(FEED, /const row3 = el\("div", "fask-row3"\); row3\.append\(time\)/, "the group card's time-only row3 is gone");
 });
 
 test("row3 + name row are styled", () => {
@@ -96,8 +97,11 @@ test("the footer action row WRAPS its buttons so they can NEVER run off the card
   // Verified headless: the toggles + buttons wrap to their own line under the time on a narrow card, zero overflow.
   assert.match(CSS, /\.fask-actions \{[^}]*flex: 0 1 auto;[^}]*min-width: 0;[^}]*flex-wrap: wrap;[^}]*justify-content: flex-end/);
   assert.match(CSS, /\.fask-row3 \{[^}]*flex-wrap: wrap/);
-  // the time claims the free space (margin-right:auto) so everything after it right-aligns, then wraps below
-  assert.match(CSS, /\.fask-row3 \.ftime \{[^}]*margin-right: auto/);
+  // Summary claims the free space (margin-left:auto) so it right-aligns opposite Background, then wraps below
+  assert.match(CSS, /\.fask-row3 \.fask-secbtn ~ \.fask-secbtn \{ margin-left: auto; \}/);
+  // and the time now trails the title on row1, right-justified on its last line
+  assert.match(CSS, /\.fask-row1 \.ftime \{ margin-left: auto; \}/);
+  assert.match(CSS, /\.fask-row1 \{[^}]*align-items: last baseline/);
 });
 
 test("a long no-space token (file/func/type name) WRAPS instead of overflowing the card (the user 2026-06-23)", () => {
