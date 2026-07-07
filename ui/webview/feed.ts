@@ -181,6 +181,10 @@ function applyFollowMove(list: AskItem[]) {
 // but a reconcile mid-drag still moves/removes nodes and the browser CANCELS an in-flight drag whose
 // source node moved — so render() DEFERS while a drag is in flight and flushes on dragend/drop
 // (event-based; the timeline _pointerHeld pattern, per the click-safety rule).
+// TEMPORARILY DISABLED (the user 2026-07-06): card dragging is turned off for now — set this back to true
+// to restore it. No card is ever armed draggable (see updateAskCard), so the wired dragstart/dragover/drop
+// handlers stay dormant; the modal's "Move to Working" button remains the way to move a card.
+const DRAG_CARDS_ENABLED = false;
 let dragAskId: string | null = null;
 let dragDeferredRender = false;
 // The LANDING SLOT: a placeholder that opens at the BOTTOM of the Working list while a drag hovers the
@@ -675,7 +679,7 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   card.className = "fitem ask" + (it.live ? " live" : " dead") + (it.itemId === (hoverAskId ?? pinnedAskId) ? " focused" : "") + (it.itemId === pinnedAskId ? " pinned" : "") + (it.provisional ? " provisional" : "");
   // drag-to-Working (the user 2026-07-06): only a card OUT of Working drags (same gate as the modal
   // button); handlers were wired once in makeAskCard, this just arms/disarms the gesture per state
-  const movable = !it.provisional && (it.column === "needs_input" || it.column === "completed");
+  const movable = DRAG_CARDS_ENABLED && !it.provisional && (it.column === "needs_input" || it.column === "completed");
   card.draggable = movable;
   card.classList.toggle("draggable", movable);
   // PROVISIONAL placeholder: a dim, italic, non-interactive card from the live prompt while the planner

@@ -13,11 +13,14 @@ import * as path from "node:path";
 const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.css"), "utf8");
 
-test("only a needs-input/completed card arms the drag; handlers wired once in makeAskCard", () => {
-  assert.match(FEED, /const movable = !it\.provisional && \(it\.column === "needs_input" \|\| it\.column === "completed"\);/);
+test("card dragging is TEMPORARILY DISABLED — no card is ever armed draggable (the user 2026-07-06)", () => {
+  // a single flag turns the gesture off for now; the handlers stay wired but dormant. Flip it back on to
+  // restore drag-to-Working (the modal's "Move to Working" button remains the way to move a card meanwhile).
+  assert.match(FEED, /const DRAG_CARDS_ENABLED = false;/);
+  assert.match(FEED, /const movable = DRAG_CARDS_ENABLED && !it\.provisional && \(it\.column === "needs_input" \|\| it\.column === "completed"\);/);
   assert.match(FEED, /card\.draggable = movable;/);
   assert.match(FEED, /card\.classList\.toggle\("draggable", movable\);/);
-  // wired ONCE on the reused card element (makeAskCard), never per render
+  // the machinery stays wired (dormant) on the reused card element (makeAskCard), for the re-enable
   assert.match(FEED, /card\.addEventListener\("dragstart", \(ev\) => \{/);
   assert.match(FEED, /card\.addEventListener\("dragend", finishAskDrag\);/);
 });
