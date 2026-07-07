@@ -103,6 +103,10 @@ type ChatEvent = (
   // compacts — sits above any queued/provisional message, and is replaced by the "compact" divider above
   // once the boundary lands and compacting clears (the user 2026-07-06). No ts → off the rail (transient).
   | { kind: "compacting"; ts?: string; uuid?: string }
+  // LIVE session reconnect in progress (kernel-driven): an /effort switch reconnects the session to apply
+  // (--effort is connect-time), so an animated "Reloading session…" element shows while it re-reads the
+  // transcript, clearing when the new client connects (the user 2026-07-06). No ts → off the rail (transient).
+  | { kind: "reconnecting"; effort?: string; ts?: string; uuid?: string }
   // Pinned, collapsed "system context" card at the top of the transcript (the user 2026-06-19): the
   // CLAUDE.md instructions in effect + session config. NOT the verbatim harness prompt — it's never
   // recorded, so it can't be shown (renderSystem says so). No ts/uuid → off the rail (no dot/hover).
@@ -113,7 +117,7 @@ type ChatEvent = (
 interface TodoTask { id: string; subject: string; activeForm?: string; status: string }
 
 type ChipState = "working" | "ready" | "awaiting" | "idle" | "closed" | "compacting" | "blocked" | "retrying" | "interrupting";
-interface Status { state: ChipState; sinceEpoch: number | null; effort?: string; model?: string; modelPending?: boolean; mode?: string; ctx?: string; ctxColor?: number[]; modelColor?: number[]; effortColor?: number[]; faded?: boolean; backend?: string; apiTooLong?: boolean; retrySuppressed?: boolean; }   // retrySuppressed = the user interrupted this thread's API-error storm → romp's auto-retry stays OFF for it until a successful turn re-arms (the user 2026-07-06). backend = "tmux" | "sdk"; apiTooLong = the "blocked" is a "prompt is too long" error (on you → red tab) vs a transient API error (amber/retrying); ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side; modelColor/effortColor = the same map's RGB tint for the model name + effort (by capability/effort rank), server-computed; modelPending = a /model switch is resolving → the badge shows switching-dots until the new name lands (server-driven, event-based, the user 2026-07-03)
+interface Status { state: ChipState; sinceEpoch: number | null; effort?: string; model?: string; modelPending?: boolean; effortPending?: boolean; mode?: string; ctx?: string; ctxColor?: number[]; modelColor?: number[]; effortColor?: number[]; faded?: boolean; backend?: string; apiTooLong?: boolean; retrySuppressed?: boolean; }   // retrySuppressed = the user interrupted this thread's API-error storm → romp's auto-retry stays OFF for it until a successful turn re-arms (the user 2026-07-06). backend = "tmux" | "sdk"; apiTooLong = the "blocked" is a "prompt is too long" error (on you → red tab) vs a transient API error (amber/retrying); ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side; modelColor/effortColor = the same map's RGB tint for the model name + effort (by capability/effort rank), server-computed; modelPending = a /model switch is resolving → the badge shows switching-dots until the new name lands (server-driven, event-based, the user 2026-07-03)
 interface Color { bg: string; fg: string; }
 // A run_in_background task surfaced in the #bg-tasks box (the kernel's _bg_tasks): a one-line summary +
 // status, expandable to the command + its output. status = running | completed | failed.
@@ -1139,6 +1143,7 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
   if (ev.kind === "queued") return renderQueued(ev);
   if (ev.kind === "apiError") return renderApiError(ev);
   if (ev.kind === "compacting") return renderCompacting();
+  if (ev.kind === "reconnecting") return renderReconnecting(ev);
   if (ev.kind === "compact") return renderCompact(ev);
   return renderTool(ev);
 }
@@ -1400,6 +1405,25 @@ function renderCompacting(): HTMLElement {
   txt.textContent = "Compacting context…";
   line.appendChild(txt);
   line.title = "compacting — compressing the conversation to free up context; any queued message sends once it finishes";
+  turn.appendChild(line);
+  return turn;
+}
+
+// LIVE session reconnect (the user 2026-07-06): an /effort switch has no SDK runtime control, so romp applies
+// it by RECONNECTING the session (resume = the CLI re-reads the transcript) — otherwise invisible in the chat.
+// While the reconnect is pending, an animated "Reloading session — applying <effort> effort…" element shows
+// (the romp-accent pulsing dots, the loader motif), so the user sees the "rereading transcript" step the TUI
+// narrates; it clears the instant the new client connects (kernel drops effortPending). Sibling of the
+// compacting element; appended before the queued bubble.
+function renderReconnecting(ev: Extract<ChatEvent, { kind: "reconnecting" }>): HTMLElement {
+  const turn = el("div", "turn turn-reconnecting");
+  turn.appendChild(dot("ring"));
+  const line = el("div", "reconnecting-line");
+  line.appendChild(metaDots());   // the same pulsing accent-blue dots as the switching-dots badge — "it's romp, working"
+  const txt = el("span", "reconnecting-text");
+  txt.textContent = ev.effort ? `Reloading session — applying ${ev.effort} effort…` : "Reloading session…";
+  line.appendChild(txt);
+  line.title = "applying the effort change — reloading the session (it re-reads the transcript); any message you send lands once it's back";
   turn.appendChild(line);
   return turn;
 }
@@ -4781,8 +4805,11 @@ function syncMetaControls(meta: HTMLElement, st: Status) {
     // A switching MODEL shows animated dots, not the stale/premature name (the user 2026-07-03): the
     // server drives it (st.modelPending) — event-based, cleared the instant the new model actually lands —
     // and the local click heuristic (isMetaPending) covers the sub-second before the first server push.
-    const pending = (kind === "model" && !!st.modelPending) || isMetaPending(kind, st);
-    const showDots = kind === "model" && pending;
+    // model resolves live; effort reconnects to apply (--effort is connect-time) — both drive the switching-
+    // dots from the server (st.modelPending / st.effortPending), with isMetaPending covering the sub-second
+    // before the first server push (the user 2026-07-06).
+    const pending = (kind === "model" && !!st.modelPending) || (kind === "effort" && !!st.effortPending) || isMetaPending(kind, st);
+    const showDots = pending && (kind === "model" || kind === "effort");
     if (label) {
       if (showDots) {
         if (!label.querySelector(".meta-dots")) label.replaceChildren(metaDots());

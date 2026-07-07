@@ -2660,6 +2660,7 @@ class Sessions:
                     out[sid] = {"state": st.get("state", ""), "since": _num(str(st.get("since") or "")),
                                 "model": st.get("model", ""), "effort": st.get("effort", ""),
                                 "modelPending": bool(st.get("modelPending")),   # a /model switch resolving → badge shows switching-dots
+                                "effortPending": bool(st.get("effortPending")),   # an /effort switch reconnecting → effort-badge dots + "Reloading session…"
                                 "context": ctx if isinstance(ctx, (int, float)) else None, "compactPct": None,
                                 "color": (st.get("color") or None), "mode": st.get("mode", ""), "backend": "sdk",
                                 "subagents": st.get("subagents") or []}   # live Task subagents (SDK only) → lane pill
@@ -5711,6 +5712,13 @@ def build_session(sid, now, tmux=None):
     # visually becomes. Corroborated `_compacting` signal (same one the chip/timeline use), never raw tmux.
     if compacting_now:
         events.append({"kind": "compacting"})
+    # Live RECONNECT indicator (the user 2026-07-06): an /effort switch has no SDK runtime control, so romp
+    # applies it by RECONNECTING the session (resume = the CLI re-reads the transcript) — which otherwise
+    # leaves NO record in the chat. While that reconnect is pending, show an animated "Reloading session…"
+    # element (mirrors the compacting one) so the user sees the "rereading transcript" step the TUI narrates;
+    # it clears the instant the new client connects (effortPending drops). Appended before the queued bubble.
+    if (tm0 or {}).get("effortPending"):
+        events.append({"kind": "reconnecting", "effort": (tm0 or {}).get("effort") or ""})
     pending_ops = _pending_ops.get(sid) or []
     if queued or pending_ops:
         # Each pending message is rendered like a landed one (markdown) — and a follow-up is cleaned of the
@@ -5955,6 +5963,7 @@ def build_session(sid, now, tmux=None):
                   "backend": _session_backend(sid, tm),
                   "model": tm["model"], "effort": tm["effort"], "mode": tm.get("mode", ""),
                   "modelPending": _model_pending_now(sid, tm),   # switching-dots on the model badge until the pick lands, from EITHER surface (the user 2026-07-03)
+                  "effortPending": bool(tm.get("effortPending")),   # switching-dots on the effort badge while the /effort reconnect applies (SDK-only; the user 2026-07-06)
                   "ctx": str(tm["context"]) if tm["context"] is not None else "",
                   # model name + effort tinted on the GLOBAL colormap by capability/effort rank (the user
                   # 2026-07-02): the statusline meta buttons just apply these (mirrors ctxColor). None = default.

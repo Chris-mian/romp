@@ -627,6 +627,10 @@ class SdkSession:
         #   chosen alias but left liveModel stale, and model_label PREFERS liveModel → the badge kept the OLD name).
         #   Cleared the instant _learn_model / _do_refresh_context reports a model matching the alias (event-based).
         self.effort = reg.get("effort") or DEFAULT_EFFORT   # connect-time --effort; tracked since the init msg doesn't echo it
+        self._effort_pending = ""                    # target LEVEL while an /effort switch RECONNECTS to apply (--effort is
+        #   a connect-time flag, no runtime control): the effort badge shows the switching-dots + the chat shows a
+        #   "Reloading session…" notice until the reconnect completes (the user 2026-07-06). Cleared the instant the
+        #   new client connects (reconnect loop) — event-based, mirroring _model_pending's dots.
         self.perm_mode = self.mode
         # reconnect machinery: effort changes (a connect-time flag) reconnect the client; _wake breaks the
         # receive loop cleanly for shutdown OR reconnect even when idle (a bare async-for would block forever).
@@ -960,6 +964,14 @@ class SdkSession:
             opts = self.backend._options(self, ClaudeAgentOptions)
             async with ClaudeSDKClient(options=opts) as client:
                 self.client = client
+                # A pending /effort switch is APPLIED the instant this (re)connect lands (--effort rode _options
+                # above) → clear the switching-dots + "Reloading session…" notice (the user 2026-07-06). Covers
+                # the immediate (idle) reconnect, the deferred (turn-end) one, and a first connect that picked up
+                # a pending value from the reg. Event-based on the connect itself; pokes a push so it clears now.
+                if self._effort_pending:
+                    self._effort_pending = ""
+                    self.backend._update_reg(self.sid, effortPending=False)
+                    self.backend._poke()
                 # PRE-TURN PUBLISH (the user 2026-06-27): pull the live model + context % the INSTANT we
                 # connect — before any turn — so a freshly-created SDK session shows its model and context on
                 # OPEN, like a tmux session does on launch. The old path keyed model/ctx resolution off the
@@ -1308,6 +1320,7 @@ class SdkSession:
         return {"state": state, "since": str(since) if since else "",
                 "model": model_label(self.model, self.chosen_model), "effort": self.effort,
                 "modelPending": bool(self._model_pending),   # a /model switch resolving → the badge shows switching-dots
+                "effortPending": bool(self._effort_pending),   # an /effort switch reconnecting → effort-badge dots + "Reloading session…"
                 "mode": self.perm_mode, "ctx": self._ctx_pct(), "summary": "",
                 "subagents": subs}   # live Task subagents (count + types) → lane affordance; [] when none
 
@@ -1905,11 +1918,13 @@ class SdkBackend:
         if not reg:
             return False
         reg["effort"] = value
+        reg["effortPending"] = True   # the reconnect that applies it hasn't completed yet → dots + "Reloading session…"
         write_reg(self.state_dir, sid, reg)
         write_sdk_default(self.state_dir, effort=value)   # remember as the seed for the NEXT new session (the user 2026-06-27)
         s = self.sessions.get(sid)
         if s:
             s.effort = value        # picker label reflects it now; the reconnect makes it real
+            s._effort_pending = value   # switching-dots on the effort badge + "Reloading session…" notice until the reconnect lands
             s.request_reconnect()
             # Synthesize the "/effort X" invocation atom, exactly as set_model does for "/model X": the
             # reconnect leaves NO transcript record at all, so without this an idle-session effort change
@@ -1960,6 +1975,7 @@ class SdkBackend:
                             # (liveModel), else the chosen alias — so the badge isn't blank while dormant.
                             "model": model_label(reg.get("liveModel") or "", reg.get("model") or ""),
                             "modelPending": bool(reg.get("modelPending")),
+                            "effortPending": bool(reg.get("effortPending")),
                             "effort": reg.get("effort", ""),
                             "mode": reg.get("mode", ""),
                             "ctx": lc if isinstance(lc, (int, float)) else "", "summary": ""}
@@ -2100,6 +2116,12 @@ class SdkBackend:
             sess._model_pending = ""
             try:
                 self._update_reg(sess.sid, liveModel=_alias_label(sess.chosen_model), modelPending=False)
+            except Exception:
+                pass
+        if sess._effort_pending:          # an /effort reconnect that never landed before the thread died → clear the dots/notice
+            sess._effort_pending = ""
+            try:
+                self._update_reg(sess.sid, effortPending=False)
             except Exception:
                 pass
         self._poke()

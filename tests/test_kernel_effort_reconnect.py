@@ -1,0 +1,59 @@
+"""Effort-switch UX (the user 2026-07-06): /effort has no SDK runtime control, so romp applies it by
+RECONNECTING the session (resume) — which otherwise leaves nothing in the chat. Now the effort badge shows
+switching-dots and the chat shows a transient "Reloading session…" element while the reconnect is pending,
+both driven by an `effortPending` flag that mirrors `modelPending` end-to-end and clears when the new client
+connects. Source pins on build_session + the SDK backend."""
+import inspect
+import os
+import unittest
+from importlib.machinery import SourceFileLoader
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+BIN = os.path.join(os.path.dirname(HERE), "bin")
+os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
+os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
+km = SourceFileLoader("romp_kernel_efr", os.path.join(BIN, "romp-kernel")).load_module()
+BACKEND_SRC = open(os.path.join(BIN, "romp_sdk_backend.py")).read()
+
+
+class EffortReconnect(unittest.TestCase):
+    def test_build_session_emits_a_reconnecting_event_while_effort_pending(self):
+        src = inspect.getsource(km.build_session)
+        self.assertIn('if (tm0 or {}).get("effortPending"):', src)
+        self.assertIn('events.append({"kind": "reconnecting", "effort": (tm0 or {}).get("effort") or ""})', src)
+
+    def test_the_reconnecting_notice_precedes_the_queued_bubble(self):
+        # like the compacting element, it must sit ABOVE any queued/provisional message
+        src = inspect.getsource(km.build_session)
+        i_recon = src.index('events.append({"kind": "reconnecting"')
+        i_queued = src.index('events.append({"kind": "queued"')
+        self.assertGreater(i_recon, 0)
+        self.assertGreater(i_queued, i_recon)
+
+    def test_status_dict_carries_effortPending_for_the_badge_dots(self):
+        src = inspect.getsource(km.build_session)
+        self.assertIn('"effortPending": bool(tm.get("effortPending")),', src)
+
+    def test_sessions_live_passes_effortPending_through_from_the_sdk_backend(self):
+        src = inspect.getsource(km.Sessions.live)
+        self.assertIn('"effortPending": bool(st.get("effortPending")),', src)
+
+    def test_backend_set_effort_arms_the_pending_flag_and_reconnects(self):
+        self.assertIn('s._effort_pending = value', BACKEND_SRC)
+        self.assertIn('reg["effortPending"] = True', BACKEND_SRC)
+        self.assertIn('s.request_reconnect()', BACKEND_SRC)
+
+    def test_backend_clears_the_pending_flag_when_the_reconnect_lands(self):
+        # cleared the instant the new client connects (reconnect loop) — event-based, mirrors _model_pending
+        self.assertIn('if self._effort_pending:', BACKEND_SRC)
+        self.assertIn('self.backend._update_reg(self.sid, effortPending=False)', BACKEND_SRC)
+        # exposed on both the live snapshot and the reg-backed live_sessions (for dormant/all sessions)
+        self.assertIn('"effortPending": bool(self._effort_pending),', BACKEND_SRC)
+        self.assertIn('"effortPending": bool(reg.get("effortPending")),', BACKEND_SRC)
+
+    def test_backend_clears_pending_on_thread_death_so_the_dots_never_trap(self):
+        self.assertIn('if sess._effort_pending:', BACKEND_SRC)
+
+
+if __name__ == "__main__":
+    unittest.main()
