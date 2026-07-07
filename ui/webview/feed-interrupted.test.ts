@@ -21,8 +21,8 @@ test("the interrupted badge is built once and rides the wrapping chip row", () =
 
 test("it.interrupted toggles the badge, yielding to the stalled chips", () => {
   assert.match(FEED,
-    /\(it\.interrupted && !it\.nudgeFailed && it\.blocked\?\.state !== "stalled"\) \? "" : "none";/,
-    "shown only when no stalled/nudge-failed story already covers the card");
+    /\(it\.interrupted && !it\.nudgeFailed\) \? "" : "none";/,
+    "shown only when no nudge-failed story already covers the card (the stalled FLOOR retired 2026-07-07)");
   assert.match(FEED, /interrupted\?: boolean;/, "the card payload carries the kernel flag");
 });
 

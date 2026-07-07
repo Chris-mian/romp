@@ -14,7 +14,7 @@ const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "
 
 test("all three main cards build a row3 with the age (left) and actions (right)", () => {
   const row3s = FEED.match(/const row3 = el\("div", "fask-row3"\); row3\.append\(time, actions\)/g) || [];
-  assert.equal(row3s.length, 3, "standalone + ask + group each get a row3");
+  assert.equal(row3s.length, 2, "ask + group each get a row3 (the standalone card was removed 2026-07-07)");
   // the title row no longer carries the time in those builders (it moved to row3)
   assert.match(FEED, /row1\.append\(title\);/);
 });

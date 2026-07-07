@@ -1292,7 +1292,7 @@ def _top_ancestor(nodes, nid):
 
 
 def _mark_node_done(store, nid, why, t):
-    """Mark a node complete (record `why`, bump `mt`, stamp the durable everDone marker) and clear
+    """Mark a node complete (record `why`, bump `mt`) and clear
     `blocked` across its WHOLE subtree (a checked-off goal's child-blocks are moot). The planner's done op
     (apply_plan) AND the deterministic cross-session delegation link-back (run_propagate) both route through
     here — one definition of 'done'. No-op if the node is gone."""
@@ -2516,7 +2516,13 @@ def record_verdict(store, nd, src, kind, ev_t=None, why=None, seg=None):
     append-only verdict LOG and returns True — the caller then writes the flags exactly as before
     (flags stay AUTHORITATIVE until the P3.3 flip; the log is the shadow history the fold reads).
     Fusing gate+record means a future writer cannot pass the gate yet skip the history — one call does
-    both. `ev_t` = EVIDENCE time (segment/turn/user-action moment); `at` = arrival, forensics only."""
+    both. `ev_t` = EVIDENCE time (segment/turn/user-action moment); `at` = arrival, forensics only.
+
+    Migrates the node FIRST if it predates dual-write (no logBorn): appending to an unmigrated node let
+    the next rollup's backfill re-synthesize its flag state as a SECOND event AFTER this one, flipping
+    the diary's provenance order (found 2026-07-07 via the stalled-block chip)."""
+    if not nd.get("logBorn"):
+        _backfill_log(nd)
     if not may_apply(store, nd, src, kind, ev_t):
         return False
     log = nd.setdefault("log", [])
@@ -2530,8 +2536,8 @@ def record_verdict(store, nd, src, kind, ev_t=None, why=None, seg=None):
 
 
 def _fold_node_state(nd):
-    """P3.2 SHADOW FOLD (the user 2026-07-06): a node's own verdict state (open/done/blocked) as a PURE
-    fold over its log — the future authority, running in shadow now. Order by evidence time (arrival
+    """THE AUTHORITY (P3.3, the user 2026-07-06): a node's own verdict state (open/done/blocked/cleared)
+    as a PURE fold over its log — _materialize_from_log rewrites the flag cache from this every rollup. Order by evidence time (arrival
     breaks ties); a USER action floors judge evidence exactly as may_apply does at write time: a judge
     done needs ev_t >= the floor, a judge block needs ev_t > it. Because record_verdict already gated
     each append, replaying the fold reproduces the same decisions from history alone — and shuffling
@@ -3654,8 +3660,8 @@ def apply_close(store, menu, verdicts, t=None):
     """Apply the closer's turn-end verdicts over the touched open tops: COMPLETE each in verdicts["done"]
     (recording doneWhy, clearing any soft block) and BLOCK each in verdicts["block"] (recording blockWhy =
     the question owed to the user). Both map a 1-based menu index → reason; omitted goals stay open.
-    negComplete / negBlock tag the provenance (closer-set done / closer-set block — vs a planner done /
-    block — for the A/B sample and the timeline's judging-band attribution); t (the turn time) bumps mt so
+    Provenance rides the DIARY (each event's src is "closer" here; the negComplete/negBlock flags were
+    retired 2026-07-07 — the timeline's judging band reads the events); t (the turn time) bumps mt so
     the node deep-links to where it resolved. Returns the node ids newly COMPLETED by this sweep."""
     done, block = verdicts.get("done", {}), verdicts.get("block", {})
     newly = []

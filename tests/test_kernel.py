@@ -791,12 +791,15 @@ class ViewBuilder(unittest.TestCase):
             },
             "placements": {}, "status": {top: "blocked"}}))
         card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == top)
-        self.assertEqual(card["blockWhy"], "waiting on the user's choice",
+        st = km.jd.load_goals(SID)
+        self.assertEqual(st["nodes"][card["itemId"]].get("blockWhy") or next(
+            nd["blockWhy"] for nd in st["nodes"].values() if nd.get("blockWhy")), "waiting on the user's choice",
                          "the card surfaces the latest still-blocked node's blockWhy")
         nodes = {n["text"]: n for n in card["tree"]}
-        self.assertEqual(nodes["the goal"]["why"], "user asked for the goal")
-        self.assertEqual(nodes["a blocked step"]["blockWhy"], "waiting on the user's choice")
-        self.assertEqual(nodes["a finished step"]["doneWhy"], "shipped the fix")
+        stn = {nd["text"]: nd for nd in km.jd.load_goals(SID)["nodes"].values()}
+        self.assertEqual(stn["the goal"]["why"], "user asked for the goal")          # rationales live on the STORE
+        self.assertEqual(stn["a blocked step"]["blockWhy"], "waiting on the user's choice")   # nodes now (the payload
+        self.assertEqual(stn["a finished step"]["doneWhy"], "shipped the fix")       # copies were never consumed)
 
     def test_tmux_send_while_working_echoes_as_QUEUED_not_a_sent_bubble(self):
         # The flicker (the user 2026-06-29): a composer send while a tmux session is WORKING flashed as a
@@ -1055,8 +1058,9 @@ class ViewBuilder(unittest.TestCase):
             "placements": {}, "status": {top: "completed"}}))
         card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == top)
         self.assertEqual(card["column"], "completed")
-        self.assertEqual(card["doneWhy"], "shipped the fix",
-                         "the completed card surfaces the most-recently-completed node's doneWhy")
+        whys = [nd.get("doneWhy") for nd in km.jd.load_goals(SID)["nodes"].values()]
+        self.assertIn("shipped the fix", whys,
+                      "the rationale lives on the STORE nodes (the payload copy was never consumed)")
 
     def test_feed_completed_card_time_is_when_it_entered_the_column_not_the_done_mt(self):
         # Completed-column ordering (the user 2026-06-29): the column sorts by card.t oldest-at-top, so a
@@ -1081,7 +1085,6 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(card["column"], "completed")
         self.assertEqual(card["t"], T0 + 500,
                          "the card sorts by when it ENTERED Completed (settledAt), not the older done mt (T0+40)")
-        self.assertEqual(card["created"], T0, "created still records the true mint time")
 
     def test_feed_distiller_summary_rides_modal_tree_node(self):
         # The distiller's key takeaway shows in the MODAL, not as the card subline (the user 2026-06-17):
@@ -1101,7 +1104,7 @@ class ViewBuilder(unittest.TestCase):
             },
             "placements": {}, "status": {top: "completed"}}))
         card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == top)
-        self.assertEqual(card["doneWhy"], "shipped the fix", "card subline stays the closer's doneWhy")
+        self.assertEqual(km.jd.load_goals(SID)["nodes"][card["itemId"]]["doneWhy"], "shipped the fix")
         node = next(n for n in card["tree"] if n["id"] == top)
         self.assertEqual(node["summary"], "Reworked the parser to stream tokens, cutting latency in half.",
                          "the distiller takeaway rides the modal tree node so the modal can show it")
@@ -1125,7 +1128,7 @@ class ViewBuilder(unittest.TestCase):
         card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == top)
         self.assertEqual(card["blockSummary"], "Decide: Redis or Postgres for the session store.",
                          "the blocked card carries the decision brief")
-        self.assertEqual(card["blockWhy"], "which store?", "blockWhy stays emitted (becomes the tooltip)")
+        self.assertEqual(km.jd.load_goals(SID)["nodes"][card["itemId"]]["blockWhy"], "which store?")
         node = next(n for n in card["tree"] if n["id"] == top)
         self.assertEqual(node["blockSummary"], "Decide: Redis or Postgres for the session store.",
                          "the modal tree node carries the decision brief too")
@@ -1779,8 +1782,8 @@ class ViewBuilder(unittest.TestCase):
             self.assertIn("tell me which one and exactly what you need from me", sent[0][1])
             self.assertIn("hook up the adapter", sent[0][1], "the open item is named in the quote")
             self.assertNotIn(km.AUTO_NUDGE_TEXT, sent[0][1])
-            self.assertTrue(km._auto_nudge_data()["nudged"][g].get("stalled"),
-                            "the record marks the fork flavor")
+            self.assertNotIn("stalled", km._auto_nudge_data()["nudged"][g],
+                             "the record flavor flag was retired 2026-07-07 (the block verdict supersedes it)")
         finally:
             restore()
 
@@ -1819,12 +1822,12 @@ class ViewBuilder(unittest.TestCase):
                 "atoms": [{"type": "user", "uuid": "u1", "author": "romp", "t": T0},   # our nudge opened it
                           {"type": "assistant", "t": NOW}]}
         km._write_auto_nudge({"enabled": True, "nudged": {
-            SID + ":gw": {"count": 1, "lastTurnId": SID + ":t0", "stalled": True}}})
+            SID + ":gw": {"count": 1, "lastTurnId": SID + ":t0"}}})
         sent = self._drive_nudge_over(turn, last_state=("waiting", NOW))
         self.assertEqual(sent, [], "no re-nudge off our own response")
         rec = km._auto_nudge_data()["nudged"][SID + ":gw"]
         self.assertTrue(rec.get("failed"), "the unresolved response stamps `failed`")
-        self.assertTrue(rec.get("stalled"), "the fork flavor is preserved on the record")
+        self.assertNotIn("stalled", rec, "the flavor flag is retired (2026-07-07)")
 
     def test_auto_nudge_stamps_failed_on_a_folded_response_too(self):
         # the SDK folds the nudge-response into the SAME turn id (no new turn) — the lastTurnId==lt_id arm
@@ -1881,11 +1884,13 @@ class ViewBuilder(unittest.TestCase):
                  "agentTask": {"key": "1", "status": "open", "raw": "pending"}, "agentBornOpen": True}},
             {g: "working"}, last=g)
         km._write_auto_nudge({"enabled": True, "nudged": {
-            g: {"count": 1, "lastTurnId": "x", "failed": True, "stalled": True}}})
+            g: {"count": 1, "lastTurnId": "x"}}})
+        km._mark_nudge_failed(g)   # 2026-07-07: the failure records a real BLOCK verdict (no read-side floor)
         card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
-        self.assertEqual(card["column"], "needs_input", "the failed fork nudge floors the card")
-        self.assertEqual((card["blocked"] or {}).get("state"), "stalled", "with the stalled badge")
+        self.assertEqual(card["column"], "needs_input", "the failed nudge blocks the card via the normal ladder")
         self.assertTrue(card["nudgeFailed"])
+        ev = [e for e in km.jd.load_goals(SID)["nodes"][g]["log"] if e["kind"] == "block"]
+        self.assertEqual([e["src"] for e in ev], ["nudge"], "the block is a diary verdict, src nudge")
 
     def test_stalled_floor_self_heals_when_the_todos_are_crossed_off(self):
         # the floor requires open to-dos AT DISPLAY TIME: the instant the agent crosses the items off, the
@@ -1899,9 +1904,16 @@ class ViewBuilder(unittest.TestCase):
                  "agentTask": {"key": "1", "status": "done", "raw": "completed"}, "agentBornOpen": True}},
             {g: "working"}, last=g)
         km._write_auto_nudge({"enabled": True, "nudged": {
-            g: {"count": 1, "lastTurnId": "x", "failed": True, "stalled": True}}})
+            g: {"count": 1, "lastTurnId": "x"}}})
+        km._mark_nudge_failed(g)   # records the block verdict...
+        st = km.jd.load_goals(SID)
+        km.jd.record_verdict(st, st["nodes"][g], "agent", "done", NOW + 5,
+                             why="the agent crossed off the last item")   # ...then the agent finishes
+        st["nodes"][g]["nodeComplete"] = True
+        km.jd.rollup_status(st, True)
+        km.jd.save_goals(SID, st)
         card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
-        self.assertEqual(card["column"], "working", "crossed-off to-dos lift the floor")
+        self.assertEqual(card["column"], "completed", "the agent finishing outranks the stalled block")
         self.assertIsNone(card["blocked"])
 
     def test_nudge_failed_is_suppressed_once_the_goal_resolves(self):
@@ -1917,7 +1929,7 @@ class ViewBuilder(unittest.TestCase):
         card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
         self.assertFalse(card["nudgeFailed"], "a resolved (blocked) goal drops the nudge-failed chip")
         self.assertEqual(card["column"], "needs_input", "the ordinary soft-block path files it")
-        self.assertEqual(card["blockWhy"], "needs the staging credentials")
+        self.assertEqual(km.jd.load_goals(SID)["nodes"][g]["blockWhy"], "needs the staging credentials")
 
     def _stall_transcript(self, recs):
         # write a transcript, clear the parse cache, and (re)create the working goal with ALL its turn ids
@@ -2542,7 +2554,6 @@ class ViewBuilder(unittest.TestCase):
                          {g: "working"}, last=g)
         card = {a["itemId"]: a for a in km.build_feed(NOW)["asks"]}[g]
         self.assertEqual(card["t"], NOW - 120, "working card time = last activity (mt), so a reply freshens it")
-        self.assertEqual(card["created"], NOW - 900, "created keeps the true mint time for the record")
         root = next(n for n in card["tree"] if n["id"] == g)
         self.assertEqual(root["last"], NOW - 120, "the modal root row age freshens to last activity too")
 
@@ -3090,7 +3101,7 @@ class ViewBuilder(unittest.TestCase):
         # captions as standalone DETAILS cards is the bug that flooded the columns.
         d = km.build_feed(NOW)
         self.assertEqual(d["type"], "feed")
-        self.assertEqual(d["items"], [], "no caption stream — feed cards are top-level goals only")
+        self.assertNotIn("items", d, "the standalone-items channel is gone (2026-07-07) — goal cards only")
         comp = [a for a in d["asks"] if a["column"] == "completed"]
         self.assertEqual(len(comp), 1)
         self.assertEqual(comp[0]["text"], "Fix the feed flicker")
@@ -3133,7 +3144,6 @@ class ViewBuilder(unittest.TestCase):
                                            "effort": "", "context": None, "compactPct": None, "color": None}}
         card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
         self.assertEqual(card["blocked"]["state"], "permission", "a live permission prompt floors the focus card")
-        self.assertEqual(card["blocked"]["since"], NOW - 30)
         self.assertEqual(card["column"], "needs_input", "the kernel files the floored card under BLOCKED directly")
 
     def test_feed_live_picker_floors_focus_card_to_blocked(self):
@@ -3151,7 +3161,6 @@ class ViewBuilder(unittest.TestCase):
                                            "effort": "", "context": None, "compactPct": None, "color": None}}
         card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
         self.assertEqual(card["blocked"]["state"], "picker", "a live picker floors the focus card to blocked")
-        self.assertEqual(card["blocked"]["since"], NOW - 30)
         self.assertEqual(card["column"], "needs_input", "a picker-floored card files under BLOCKED directly")
         self.assertIn("input", card["blocked"]["what"], "picker wording reflects a question, not an approval")
         # the session chip (build_session payload) also reads "awaiting" on a picker, like a permission
@@ -3502,11 +3511,11 @@ class ViewBuilder(unittest.TestCase):
 
     def test_feed_clear_all_then_undo_restores_the_batch(self):
         d0 = km.build_feed(NOW)
-        ids = [a["itemId"] for a in d0["asks"]] + [c["itemId"] for c in d0["items"]]
+        ids = [a["itemId"] for a in d0["asks"]]
         self.assertTrue(ids, "fixture has cards to clear")
         km._clear_all(ids)
         d1 = km.build_feed(NOW)
-        self.assertEqual(len(d1["asks"]) + len(d1["items"]), 0, "clear-all empties the feed")
+        self.assertEqual(len(d1["asks"]), 0, "clear-all empties the feed")
         self.assertTrue(d1["canUndoClear"])
         km._undo_clear()
         d2 = km.build_feed(NOW)

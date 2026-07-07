@@ -37,8 +37,11 @@ test("the broken collectHoverIds path (emitted goal-node ids the timeline can't 
   assert.doesNotMatch(FEED, /function collectHoverIds/);
 });
 
-test("clicking the CARD title locates the originating user message (anchor:prompt), like the modal", () => {
-  assert.match(FEED, /title\.onclick = .*showOnTimeline".*itemId: it\.itemId.*anchor: "prompt"/);
+test("clicking the CARD title locates the originating user message (prompt-intent), like the modal", () => {
+  // the ask card computes titleAnchor ("prompt", falling back to "work" for origin/unresolvable cards);
+  // the old literal anchor:"prompt" pin actually matched the removed standalone card (2026-07-07)
+  assert.match(FEED, /let titleAnchor = it\.origin \? "work" : "prompt";/);
+  assert.match(FEED, /title\.onclick = .*showOnTimeline".*itemId: it\.itemId.*anchor: titleAnchor/);
   assert.doesNotMatch(FEED, /title\.onclick = .*showAskPath", itemId: it\.itemId/, "the card title no longer just lights the timeline");
 });
 

@@ -23,6 +23,7 @@ test("Revive posts reviveSession for the OFFLINE recipient (toSid); Clear still 
   assert.match(FEED, /type: "askClear", itemId: it\.itemId/);
 });
 
-test("the blocked type carries the parked-handoff fields", () => {
-  assert.match(FEED, /toName\?: string; toSid\?: string; fromName\?: string; msgId\?: string; body\?: string/);
+test("the blocked type carries the parked-handoff fields the UI actually reads", () => {
+  // fromName/msgId/body were produced-but-never-consumed — retired in the 2026-07-07 contract audit
+  assert.match(FEED, /toName\?: string; toSid\?: string/);
 });

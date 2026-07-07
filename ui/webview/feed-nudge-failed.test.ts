@@ -20,14 +20,11 @@ test("the stalled chip is built once and rides the wrapping chip row", () => {
   assert.match(FEED, /a\._nudgeFailed = nfBadge;/);
 });
 
-test("it.nudgeFailed toggles the chip, yielding to the '⏸ stalled' badge (no double 'stalled')", () => {
-  assert.match(FEED,
-    /a\._nudgeFailed\.style\.display = \(it\.nudgeFailed && it\.blocked\?\.state !== "stalled"\) \? "" : "none";/);
-});
-
-test("a stalled floor renders its own '⏸ stalled' badge, not the picker fallback", () => {
-  assert.match(FEED, /it\.blocked\.state === "stalled" \? "⏸ stalled" : "⏸ picker"/,
-    "the blocked-badge three-way names the stalled state");
+test("it.nudgeFailed toggles the chip (the stalled FLOOR retired 2026-07-07: a failed nudge records a real block)", () => {
+  assert.match(FEED, /a\._nudgeFailed\.style\.display = it\.nudgeFailed \? "" : "none";/);
+  // the '⏸ stalled' badge + the blocked.state "stalled" three-way went with the floor: the card now
+  // reaches Needs-you via the normal ladder (block verdict + decision brief), wearing only the chip
+  assert.doesNotMatch(FEED, /⏸ stalled/);
 });
 
 test("the chip has its own red pill style (waiting on the human now)", () => {
