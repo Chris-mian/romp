@@ -1,7 +1,8 @@
-// When a collapsed tool group ("▸ 3 Edits, 2 Reads") is EXPANDED, its children indent onto their own
-// rail, 24px right of the main session rail — leaving two disjoint vertical lines. Bracket them back
-// together with a top + bottom horizontal connector in the SAME rail colour so the line reads as one
-// continuous path that detours through the children (the user 2026-06-22). Source-level pin (no jsdom).
+// An expanded tool group's children sit on the SAME main rail as every other turn — ONE continuous straight
+// line of dots that terminates at the last child's dot (the last-turn 16px ::before stub), NOT an indented
+// side-rail bracketed by horizontal connector arms (the user 2026-07-07): the bottom arm read as a floating
+// horizontal stub, and the hover-highlight band — drawn straight down the main rail — couldn't follow the
+// indent detour, so it sat off to the side of the children. No indent, no connectors. Source-level pin (no jsdom).
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
@@ -10,21 +11,21 @@ import * as path from "node:path";
 const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
 
-test("the LAST expanded child is tagged so the bottom rail-elbow can hang off it", () => {
-  // the expansion walks the grouped tool indices; the last one carries .tg-last (see toolgroup-expand.test.ts)
-  assert.match(RENDER, /if \(j === it\.indices\.length - 1\) child\.classList\.add\("tg-last"\)/);
+test("expanded children share the MAIN rail — not indented onto a side-rail", () => {
+  assert.match(CSS, /\.tg-child \{ margin-left: 0; \}/);
 });
 
-test("two horizontal connectors bracket the children onto the main rail, in the rail colour", () => {
-  // TOP arm: off the expanded summary line's bottom, reaching from the main rail (x≈10.5) to the child rail
-  assert.match(CSS, /\.turn-toolgroup\.expanded::after \{[^}]*left: 10\.5px;[^}]*bottom: 0;[^}]*width: 26px;[^}]*height: 2px/);
-  // BOTTOM arm: off the last child (indented 24px → left:-13.5px lands it back on the main rail at x≈10.5)
-  assert.match(CSS, /\.tg-child\.tg-last::after \{[^}]*left: -13\.5px;[^}]*bottom: 0;[^}]*width: 26px;[^}]*height: 2px/);
-  // both arms are the SAME colour + opacity as the main vertical rail (.turn::before)
-  assert.match(CSS, /\.turn::before \{[^}]*background: var\(--active-accent, var\(--rail\)\);[^}]*opacity: 0\.7/);
-  assert.match(CSS, /\.turn-toolgroup\.expanded::after \{[^}]*background: var\(--active-accent, var\(--rail\)\);[^}]*opacity: 0\.7/);
-  assert.match(CSS, /\.tg-child\.tg-last::after \{[^}]*background: var\(--active-accent, var\(--rail\)\);[^}]*opacity: 0\.7/);
-  // and stay out of the way of clicks
-  assert.match(CSS, /\.turn-toolgroup\.expanded::after \{[^}]*pointer-events: none/);
-  assert.match(CSS, /\.tg-child\.tg-last::after \{[^}]*pointer-events: none/);
+test("the horizontal connector ARMS are gone (they read as a floating stub + broke the highlight alignment)", () => {
+  assert.doesNotMatch(CSS, /\.turn-toolgroup\.expanded::after \{/);
+  assert.doesNotMatch(CSS, /\.tg-child\.tg-last::after \{/);
+});
+
+test("the rail is one straight line that terminates at the LAST turn's dot (the 16px ::before stub)", () => {
+  assert.match(CSS, /\.turn:not\(:has\(~ \.turn\)\)::before \{ bottom: auto; height: 16px; \}/);
+});
+
+test("the hover-highlight band hugs the main rail — now aligned since children share it (no detour to miss)", () => {
+  // drawRailBand pins the band at the reference turn's x + 10.5 (the .turn::before x); with children on the
+  // main rail, every turn shares that x, so the band lines up with the rail through the whole group
+  assert.match(RENDER, /xRef\.getBoundingClientRect\(\)\.left - hostR\.left \+ 10\.5/);
 });
