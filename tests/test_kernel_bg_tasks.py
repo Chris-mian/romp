@@ -1,8 +1,9 @@
 """Background-task box (the user 2026-06-26): surface run_in_background tasks in the chat — a launch (a
 tool_use with run_in_background:true) paired with its <task-notification> result. The kernel extracts them
 (_bg_tasks) into structured rows {id,status,summary,command,output} for a dedicated box between the
-transcript and the composer. A running task persists while in flight; a finished one self-clears once the
-user sends another prompt. SYNTHETIC fixtures only (placeholder ids, no real data)."""
+transcript and the composer. The box is a live "what's running now" indicator: a task shows ONLY while
+RUNNING and drops out the instant its result lands (its completion is shown separately as the agent notice
+card), so it never lingers when nothing is running (the user 2026-07-06). SYNTHETIC fixtures only."""
 import json
 import os
 import tempfile
@@ -44,17 +45,16 @@ def _write(recs):
 
 
 class BgTasks(unittest.TestCase):
-    def test_a_finished_background_task_is_parsed_into_a_row(self):
+    def test_a_finished_background_task_is_NOT_surfaced(self):
+        # its result landed → the task is done → the box drops it AT ONCE (no lingering "empty" line, even
+        # before the user sends another message); its completion is shown as the agent notice card instead
         path = _write([_launch(), _notif(status="failed")])
         try:
             res = km._bg_tasks(path)
         finally:
             os.unlink(path)
-        self.assertEqual(res["count"], 1, "the header count")
-        t = res["tasks"][0]
-        self.assertEqual(t["status"], "failed")
-        self.assertIn("exit code 1", t["summary"])
-        self.assertEqual(t["command"], "sleep 5 && false", "the launch command is the expand-to-details body")
+        self.assertEqual(res["count"], 0, "a finished task is not in the box")
+        self.assertEqual(res["tasks"], [])
 
     def test_an_unmatched_launch_is_running(self):
         path = _write([_launch()])
@@ -65,14 +65,14 @@ class BgTasks(unittest.TestCase):
         self.assertEqual(res["tasks"][0]["status"], "running")
         self.assertEqual(res["tasks"][0]["summary"], "Restart server after test", "running shows the launch description")
 
-    def test_a_finished_task_self_clears_after_a_later_genuine_prompt(self):
-        # completed, THEN the user sends another message → the user moved on → drop it from the box
+    def test_a_finished_task_stays_cleared_regardless_of_a_later_prompt(self):
+        # a completed task is gone whether or not the user has moved on — it never lingers
         path = _write([_launch(), _notif(status="completed"), _prompt()])
         try:
             res = km._bg_tasks(path)
         finally:
             os.unlink(path)
-        self.assertEqual(res["count"], 0, "a finished task before the last prompt is cleared")
+        self.assertEqual(res["count"], 0, "a finished task is cleared")
         self.assertEqual(res["tasks"], [])
 
     def test_a_running_task_persists_across_a_later_prompt(self):
@@ -99,16 +99,16 @@ class BgTasks(unittest.TestCase):
         self.assertEqual(len(res["tasks"]), 30, "the list is capped")
 
     def test_output_file_tail_is_read_for_the_details(self):
+        # the details body reads the task's output FILE tail; test the helper directly (a finished task is no
+        # longer surfaced in the box, so this decouples the output-reading from the surfacing rule)
         out = tempfile.NamedTemporaryFile(mode="w", suffix=".output", delete=False)
         out.write("line one\nline two\nboom: exit 1\n")
         out.close()
-        path = _write([_launch(), _notif(status="failed", outfile=out.name)])
         try:
-            res = km._bg_tasks(path)
+            tail = km._read_task_output(out.name)
         finally:
-            os.unlink(path)
             os.unlink(out.name)
-        self.assertIn("boom: exit 1", res["tasks"][0]["output"], "the output file's tail is the details body")
+        self.assertIn("boom: exit 1", tail, "the output file's tail is the details body")
 
     def test_parse_task_notification_keys_on_exact_tags(self):
         note = km._parse_task_notification("<task-notification><status>completed</status><summary>done</summary></task-notification>")

@@ -3988,16 +3988,17 @@ def _read_task_output(of):
 
 
 def _scan_bg_tasks(path):
-    """Walk the transcript pairing run_in_background launches with their <task-notification> results. Show a
-    task when it's still RUNNING (in flight across turns) OR it finished AFTER the last genuine prompt — so a
-    finished task self-clears once the user moves on (sends another message), while a running one persists.
-    Newest-launched first, capped. No output content here (read fresh in _bg_tasks — a running task's output
-    grows independently of the transcript). Returns [{id,status,summary,command,outputFile}]."""
-    tasks, order, last_prompt, pos = {}, [], -1, 0
+    """Walk the transcript pairing run_in_background launches with their <task-notification> results, and
+    surface a task ONLY while it's still RUNNING (in flight across turns). A finished task drops out of the box
+    the instant its result lands — the box is a live "what's running now" indicator, and a task's COMPLETION is
+    already shown in the chat as its AGENT notice card (renderAgentNotif), so keeping it here lingered as an
+    "empty" bordered line the user didn't want (the user 2026-07-06). Newest-launched first, capped. No output
+    content here (read fresh in _bg_tasks — a running task's output grows independently of the transcript).
+    Returns [{id,status,summary,command,outputFile}]."""
+    tasks, order = {}, []
     try:
         with open(path, errors="replace") as f:
             for line in f:
-                pos += 1
                 if '"type"' not in line:
                     continue
                 try:
@@ -4013,25 +4014,19 @@ def _scan_bg_tasks(path):
                             if tid and tid not in tasks:
                                 tasks[tid] = {"id": tid, "status": "running",
                                               "summary": (inp.get("description") or b.get("name") or "Background task"),
-                                              "command": inp.get("command") or "", "outputFile": "", "notePos": -1}
+                                              "command": inp.get("command") or "", "outputFile": ""}
                                 order.append(tid)
                 elif t == "user" and isinstance(c, list):
-                    had_result = False
                     for b in c:
                         if isinstance(b, dict) and b.get("type") == "tool_result":
-                            had_result = True
                             tid = b.get("tool_use_id")
                             note = _parse_task_notification(_result_text(b.get("content")))
-                            if tid in tasks and note:
-                                tasks[tid].update(status=note["status"], outputFile=note["output_file"], notePos=pos,
+                            if tid in tasks and note:      # its result landed → mark it done; the keep-filter drops it
+                                tasks[tid].update(status=note["status"], outputFile=note["output_file"],
                                                   summary=note["summary"] or tasks[tid]["summary"])
-                    if not had_result and any(isinstance(b, dict) and b.get("type") == "text" and b.get("text", "").strip() for b in c):
-                        last_prompt = pos
-                elif t == "user" and isinstance(c, str) and c.strip():
-                    last_prompt = pos
     except OSError:
         return []
-    keep = [tasks[tid] for tid in order if tasks[tid]["status"] == "running" or tasks[tid]["notePos"] > last_prompt]
+    keep = [tasks[tid] for tid in order if tasks[tid]["status"] == "running"]
     keep.reverse()
     return keep[:60]
 
