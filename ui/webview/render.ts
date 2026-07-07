@@ -1568,8 +1568,15 @@ function renderApiError(ev: Extract<ChatEvent, { kind: "apiError" }>): HTMLEleme
   retry.textContent = "Retry now";
   retry.title = "send “retry” into this session right now (also resets the auto-retry countdown)";
   retry.addEventListener("click", () => {
-    if (vscodeApi) vscodeApi.postMessage({ type: "apiRetry", id: activeId });
+    // manual:true → an explicit override that fires even when auto-retry is paused/suppressed for this thread
+    // (the kernel gate is for the auto-loop only); without it "Retry now" was a dead no-op on a suppressed
+    // session (the user 2026-07-06). Acknowledge the click AT ONCE — disable + "Retrying…" — so it never
+    // reads as unresponsive; the next render (a fresh error card, or the turn resuming) restores it.
+    if (vscodeApi) vscodeApi.postMessage({ type: "apiRetry", id: activeId, manual: true });
     if (activeId) apiRetryNext.set(activeId, Date.now() + API_RETRY_MS);   // restart the countdown
+    retry.disabled = true;
+    retry.textContent = "Retrying…";
+    setTimeout(() => { if (retry.isConnected) { retry.disabled = false; retry.textContent = "Retry now"; } }, 2500);
   });
   head.appendChild(retry);
   // Global auto-retry pause (the user 2026-06-30) — no per-session off-switch. "Retry now" + sending a message still work.

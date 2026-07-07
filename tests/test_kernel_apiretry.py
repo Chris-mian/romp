@@ -25,6 +25,14 @@ class ApiRetryRendersAsRomp(unittest.TestCase):
         self.assertIn('be.send(sid, "retry\\n\\n<!-- romp-injected -->")', ap,
                       "marked on BOTH backends — never a bare retry")
 
+    def test_manual_retry_bypasses_the_auto_retry_pause_suppression_gate(self):
+        # the gate (global pause / interrupted-thread suppression) stops the AUTO-retry loop only; a MANUAL
+        # "Retry now" click (msg.manual) is an explicit one-shot override that ALWAYS fires, so the button is
+        # never a dead no-op on a suppressed/paused thread (the user 2026-07-06, SDK backend)
+        ap = SRC.split('t == "apiRetry"', 1)[1].split("elif t ==", 1)[0]
+        self.assertIn('if not msg.get("manual") and (_retry_paused_on() or _session_retry_suppressed(sid)):', ap,
+                      "the auto-retry gate is skipped for a manual click")
+
     def test_that_injected_retry_is_authored_romp_not_human(self):
         # end-to-end: the exact text romp pastes → author 'romp' (the gray bubble), NOT 'human', even though
         # it arrives via a paste+Enter that Claude Code records as promptSource='typed'

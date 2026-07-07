@@ -1985,7 +1985,12 @@ def _drive(msg, client):
         be.unqueue(sid, int(msg["idx"]))                  # pull a queued (not-yet-started) message back out; the
         _push_soon()                                      # webview already refilled the composer with its text
     elif t == "apiRetry":
-        if _retry_paused_on() or _session_retry_suppressed(sid):   # global pause OR this thread was interrupted → don't relapse
+        # The GATE is for the AUTO-retry loop only (romp's 10s tick): a global pause or a thread the user
+        # interrupted must not relapse into the storm. But a MANUAL "Retry now" click (msg.manual) is an
+        # explicit one-shot override — it ALWAYS fires so the button is never a dead no-op on a suppressed/
+        # paused thread (the user 2026-07-06: "Retry now did nothing on the SDK backend"). It fires ONE retry
+        # without clearing the suppression, so it doesn't re-arm the auto-loop the user turned off.
+        if not msg.get("manual") and (_retry_paused_on() or _session_retry_suppressed(sid)):
             return
         # ALWAYS mark the retry romp-injected → GRAY romp bubble on BOTH backends (the user 2026-06-30): an
         # auto-retry is romp's action, not the human's. Without the marker the SDK retry was authored 'human'
