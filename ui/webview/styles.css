@@ -1284,6 +1284,10 @@ body { display: flex; flex-direction: column; }
   border: 1px solid var(--box-border); border-left: 2px solid var(--dim); border-radius: 6px;
   background: var(--box-bg); padding: 7px 12px; overflow: hidden;
 }
+/* a NESTED notice (agent / reminder) sits inside its parent turn's rail column — no own dot/rail; just space
+   it from the content above (the turn's own padding no longer wraps it). A standalone romp notice keeps its
+   .turn dot. */
+.notice-nested { margin-top: 8px; }
 .notice-head { display: flex; align-items: baseline; gap: 7px; font-size: 0.9em; }
 .notice-collapsible .notice-head { cursor: pointer; }
 .notice-caret { flex: 0 0 auto; font-size: 0.74em; opacity: 0.7; }

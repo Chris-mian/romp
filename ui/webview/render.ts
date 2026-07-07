@@ -423,12 +423,16 @@ function foldable(label: string, content: HTMLElement, key?: string): HTMLElemen
 // each `variant` carries its own color (agent = accent blue, romp = the swirl + faded-accent, reminder =
 // muted). Distinct from postal (per-peer color) and teammate (dashed neutral). Collapse is KEYED (survives
 // the chat's re-renders via openFolds), unlike the postal/teammate hand-rolled toggle (the user 2026-07-06).
+// `nested` (the user 2026-07-06): the AGENT/REMINDER notices are appended INSIDE the parent user turn that
+// carried the <task-notification>/reminder, so they must NOT bring their own .turn (rail + dot) — a turn
+// nested in a turn drew a SECOND rail + dot, indented another 24px, so the card floated off to the right
+// detached from the timeline. Nested → return the bare card; it sits in the parent turn's rail column under
+// its single dot (connected, like any in-turn card). A standalone notice (romp system) IS its own top-level
+// turn, so it keeps the .turn wrapper + dot.
 function noticeCard(o: { variant: "agent" | "romp" | "reminder"; chip: string; logo?: boolean;
-                        head: string; body: HTMLElement; collapsible?: boolean; key?: string }): HTMLElement {
-  const turn = el("div", "turn turn-notice notice-" + o.variant);
-  const d = dot("ring"); d.classList.add("notice-dot", "notice-dot-" + o.variant);
-  turn.appendChild(d);
-  const card = el("div", "notice-card notice-card-" + o.variant);
+                        head: string; body: HTMLElement; collapsible?: boolean; key?: string;
+                        nested?: boolean }): HTMLElement {
+  const card = el("div", "notice-card notice-card-" + o.variant + (o.nested ? " notice-nested" : ""));
   const collapsible = o.collapsible !== false;
 
   const headEl = el("div", "notice-head");
@@ -457,6 +461,10 @@ function noticeCard(o: { variant: "agent" | "romp" | "reminder"; chip: string; l
       if (caret) caret.textContent = card.classList.contains("notice-open") ? "▾" : "▸";
     });
   }
+  if (o.nested) return card;                               // sits inside the parent turn — no own rail/dot
+  const turn = el("div", "turn turn-notice notice-" + o.variant);
+  const d = dot("ring"); d.classList.add("notice-dot", "notice-dot-" + o.variant);
+  turn.appendChild(d);
   turn.appendChild(card);
   return turn;
 }
@@ -471,7 +479,7 @@ function renderAgentNotif(a: AgentNotif, key?: string): HTMLElement {
   else { const p = el("div", "notice-plain"); p.textContent = a.summary; body.appendChild(p); }
   // collapsible only when there's more than the gist to show (a bare summary IS the gist → show it flat)
   return noticeCard({ variant: "agent", chip: "agent", head: gist, body, key,
-                      collapsible: !!a.result });
+                      collapsible: !!a.result, nested: true });   // rendered inside the carrying user turn
 }
 
 // ---- path-source pasted images ----
@@ -1092,7 +1100,7 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
         for (const r of plain) body.appendChild(preEl(r));
         const n = plain.length;
         turn.appendChild(noticeCard({ variant: "reminder", chip: "system",
-          head: `${n} reminder${n > 1 ? "s" : ""}`, body,
+          head: `${n} reminder${n > 1 ? "s" : ""}`, body, nested: true,   // rendered inside the carrying user turn
           key: ev.uuid ? "rem:" + ev.uuid : undefined }));
       }
     }

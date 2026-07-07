@@ -17,14 +17,26 @@ function fn(name: string): string {
 const NOTICE = fn("noticeCard");
 const AGENT = fn("renderAgentNotif");
 
-test("noticeCard is a boxed card: rail dot + .notice-card + a head with a type chip", () => {
+test("noticeCard is a boxed card: rail dot (standalone) + .notice-card + a head with a type chip", () => {
   assert.ok(NOTICE, "noticeCard is defined");
-  assert.match(NOTICE, /el\("div", "turn turn-notice notice-" \+ o\.variant\)/);
-  assert.match(NOTICE, /el\("div", "notice-card notice-card-" \+ o\.variant\)/);
+  assert.match(NOTICE, /el\("div", "turn turn-notice notice-" \+ o\.variant\)/);   // standalone-only wrapper
+  assert.match(NOTICE, /el\("div", "notice-card notice-card-" \+ o\.variant/);
   assert.match(NOTICE, /el\("span", "notice-chip notice-chip-" \+ o\.variant\)/);
   // the romp swirl only when asked (the romp variant)
   assert.match(NOTICE, /if \(o\.logo\)/);
   assert.match(NOTICE, /romp-swirl-glyph\.svg/);
+});
+
+test("agent + reminder notices are NESTED (bare card, no inner turn/dot) so they connect to the parent turn's rail", () => {
+  // the fix (the user 2026-07-06): these are appended INSIDE the carrying user turn, so a turn-in-a-turn drew
+  // a 2nd rail + dot, indented another 24px → the card floated off the timeline. Nested = bare card.
+  assert.match(NOTICE, /if \(o\.nested\) return card;/);
+  assert.match(RENDER, /variant: "agent", chip: "agent"[\s\S]*?nested: true/);
+  assert.match(RENDER, /variant: "reminder", chip: "system"[\s\S]*?nested: true/);
+  assert.match(CSS, /\.notice-nested \{ margin-top: 8px; \}/);
+  // the standalone (romp system) path still keeps its own rail dot
+  assert.match(NOTICE, /el\("div", "turn turn-notice notice-" \+ o\.variant\)/);
+  assert.match(NOTICE, /d\.classList\.add\("notice-dot", "notice-dot-" \+ o\.variant\)/);
 });
 
 test("the collapse is KEYED (survives re-render) and driven by the head, not a separate summary line", () => {
