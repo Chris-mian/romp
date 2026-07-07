@@ -9773,7 +9773,9 @@ def _chat_body():
             # transcript and scrolls WITH the chat history, instead of a fixed mini-window below it.
             '<div id="content"><div id="live-ask" style="display:none"></div></div>'
             '<div id="bg-tasks" style="display:none"></div>'   # background-task box: sits between the transcript and the composer
-            '<div id="footer"><div id="statusline" class="statusline"></div>'
+            '<div id="footer">'
+            '<div id="composer-resize" title="Drag to resize the message box"></div>'   # drag the divider to grow/shrink the message box (the user 2026-07-07)
+            '<div id="statusline" class="statusline"></div>'
             '<div id="composer"><div id="composer-chips" style="display:none"></div>'   # click-to-cite chip strip (the user 2026-07-01)
             '<textarea id="composer-input" rows="1" '
             'placeholder="Message this session…"></textarea>'

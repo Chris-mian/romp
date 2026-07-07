@@ -3093,6 +3093,15 @@ class ViewBuilder(unittest.TestCase):
         self.assertLess(body.index("composer-attach"), body.index("composer-send"),
                         "send sits to the RIGHT of the 📎 attach button")
 
+    def test_chat_body_has_the_composer_resize_handle(self):
+        # The web dashboard's HTML is a SECOND copy of page-skeleton.chatBody (this is the copy the browser
+        # actually loads) — so the drag-to-resize handle must live HERE too, not only in page-skeleton, or the
+        # render.ts wiring finds no #composer-resize element and the handle never appears (the user 2026-07-07).
+        body = km._chat_body()
+        self.assertIn('id="composer-resize"', body)
+        self.assertLess(body.index('id="footer"'), body.index('id="composer-resize"'), "inside the footer")
+        self.assertLess(body.index('id="composer-resize"'), body.index('id="statusline"'), "on the top-edge divider, above the statusline")
+
     def test_feed_cards_are_top_level_goals_only(self):
         # The feed's cards are top-level GOALS only (read-side.md, the user 2026-06-16). A completed
         # goal → its own COMPLETED card; the blocked goal → a BLOCKED card. Turn captions are NOT cards:
