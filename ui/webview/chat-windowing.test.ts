@@ -76,8 +76,10 @@ test("a loading pill shows while history renders, pinned top-center of the chat 
   assert.match(CSS, /\.tx-loading-pill \{[\s\S]*position: fixed[\s\S]*\}/);
 });
 
-test("syncView: a fresh build / rewind renders just the TAIL window", () => {
-  assert.match(RENDER, /if \(firstBuild \|\| rewind\) \{\s*\n\s*renderWindowItems\(v, s, items, Math\.max\(0, total - WINDOW_TAIL\), total, working\);/);
+test("syncView: a fresh build / rewind renders the TAIL window, clamped to the last compaction boundary", () => {
+  // the default window opens AT (never below) the newest compaction — pre-compaction history is scrubbed
+  // from the default view (the user 2026-07-07); lastCompactUnit floors the window start.
+  assert.match(RENDER, /if \(firstBuild \|\| rewind\) \{\s*\n\s*const start = Math\.max\(0, total - WINDOW_TAIL, lastCompactUnit\(s, items\)\);\s*\n\s*renderWindowItems\(v, s, items, start, total, working\);/);
 });
 
 test("syncView: a pure tab switch is a NO-OP render (reveal the cached DOM)", () => {
