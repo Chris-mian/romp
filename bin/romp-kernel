@@ -5786,7 +5786,16 @@ def build_session(sid, now, tmux=None):
                 qmsgs.append({"md": "/compact"})
             else:
                 qmsgs.append({"md": "/%s %s" % (op[0], op[1])})
-        events.append({"kind": "queued", "texts": qmsgs})
+        # While the session is COMPACTING, the live "Compacting context…" element (above) already represents
+        # the running /compact — so drop ONE "/compact" from the queue so it isn't shown twice (the user
+        # 2026-07-07). A genuinely-SECOND parked /compact still shows (only the first, running one is folded).
+        if compacting_now:
+            for i, m in enumerate(qmsgs):
+                if (m.get("md") or "").strip() == "/compact":
+                    del qmsgs[i]
+                    break
+        if qmsgs:                                         # don't emit an empty "queued" (folding the running /compact could empty it)
+            events.append({"kind": "queued", "texts": qmsgs})
     # WORKING from the event model (open turn, no idle atom) — the one shared signal. Computed up here so the
     # API-error gate just below can use it (it's also read later for the chip + work-timer base).
     open_now = _session_working(session["turns"])

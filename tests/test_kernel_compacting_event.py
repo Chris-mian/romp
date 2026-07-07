@@ -39,6 +39,17 @@ class CompactingEvent(unittest.TestCase):
         self.assertGreater(i_queued, i_compacting,
                            "the queued bubble must be appended AFTER the compacting element")
 
+    def test_the_running_compact_is_folded_from_the_queue_while_compacting(self):
+        # the live "Compacting context…" element already represents the running /compact, so it must NOT
+        # ALSO show as a queued bubble (the user 2026-07-07) — drop ONE "/compact" from the queue when
+        # compacting_now, and never emit an empty queued event if that fold emptied the list.
+        self.assertIn('(m.get("md") or "").strip() == "/compact":', self.src)
+        self.assertIn('del qmsgs[i]', self.src)
+        self.assertIn('if qmsgs:', self.src)   # guard: don't emit an empty "queued"
+        i_fold = self.src.index('del qmsgs[i]')
+        i_queued = self.src.index('events.append({"kind": "queued"')
+        self.assertGreater(i_queued, i_fold, "the /compact fold must run before the queued event is built")
+
 
 if __name__ == "__main__":
     unittest.main()
