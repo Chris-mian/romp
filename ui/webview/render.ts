@@ -5217,6 +5217,15 @@ function firstUuid(events: ChatEvent[]): string | null {
   for (const e of events) if (e.uuid) return e.uuid;
   return null;
 }
+// Do the two event lists share at least one uuid? Then one is a windowed/continued view of the SAME
+// transcript (an append, or a tail-window slide that dropped older events off the front) — NOT a wholesale
+// replacement (a /clear-style fork, which reuses no uuid). Used to tell a fork from a mere window slide.
+function sharesAnyUuid(a: ChatEvent[], b: ChatEvent[]): boolean {
+  const seen = new Set<string>();
+  for (const e of b) if (e.uuid) seen.add(e.uuid);
+  for (const e of a) if (e.uuid && seen.has(e.uuid)) return true;
+  return false;
+}
 
 function upsert(msg: any) {
   const existed = sessions.has(msg.id);
@@ -5247,8 +5256,23 @@ function upsert(msg: any) {
   // rebuilds; an append lets syncView add just the new turns AND keeps the user's scroll position —
   // so new content no longer snaps the view to the bottom (the user 2026-06-15). Fork = the
   // transcript identity (first event's uuid) changed; an append keeps it.
-  const forked = !!(existed && msg.events && prev && prev.events.length && msg.events.length
-                    && firstUuid(msg.events) !== firstUuid(prev.events));
+  // A true FORK replaces the transcript wholesale (a /clear-style re-point) → the new events share NO uuid
+  // with what we had. Comparing only the FIRST uuid mis-fired on a mere WINDOW SLIDE: once a session passes
+  // WIRE_TAIL events, a full-session push re-windows to the last N, so the first uuid changes though it's the
+  // same transcript — which dropped the DOM and snapped the view to the bottom (the user 2026-07-06). Detect a
+  // fork by the ABSENCE of any shared event uuid instead.
+  const forked = !!(existed && msg.events && msg.events.length && prev && prev.events.length
+                    && !sharesAnyUuid(msg.events, prev.events));
+  // Preserve the reader's position across ANY active-tab rebuild (fork OR slid tail-window): capture whether
+  // they were at the bottom + their anchor turn BEFORE we drop/rebuild the DOM, so a push never SNAPS a
+  // scrolled-up reader down (the user 2026-07-06). Only a genuinely-at-bottom reader follows new content.
+  let _scrollContent: HTMLElement | null = null, _scrollAnchor: { uuid: string; y: number } | null = null, _wasNear = true;
+  if (msg.id === activeId && !(existed && !forked)) {   // only the rebuild branch (appendActive preserves on its own)
+    _scrollContent = document.getElementById("content");
+    const _v0 = views.get(msg.id);
+    _wasNear = !_scrollContent || !_v0 || !_v0.shown || nearBottom(_scrollContent);
+    _scrollAnchor = (!_wasNear && _scrollContent && _v0) ? captureScrollAnchor(_scrollContent, _v0) : null;
+  }
   if (forked) {
     const v = views.get(msg.id);
     if (v) { v.el.remove(); views.delete(msg.id); }
@@ -5260,7 +5284,20 @@ function upsert(msg: any) {
   renderTabs();                                   // a new id appended to `order` above → strip repaints in kernel order
   // Active tab: a content refresh appends + preserves scroll (appendActive); a new tab or a fork
   // lands at the bottom/anchor (showActive). This is what keeps new pushes from snapping to bottom.
-  if (msg.id === activeId) { if (existed && !forked) appendActive(); else showActive(); renderBgTasks(); }
+  if (msg.id === activeId) {
+    if (existed && !forked) {
+      appendActive();
+    } else {
+      showActive();
+      // a scrolled-up reader keeps their spot across the rebuild; a true fork's anchor uuid isn't in the new
+      // transcript, so restoreScrollAnchor no-ops there and the fresh view stays at the bottom (correct)
+      if (!_wasNear && _scrollAnchor && _scrollContent) {
+        const v1 = views.get(msg.id);
+        if (v1) restoreScrollAnchor(_scrollContent, v1, _scrollAnchor);
+      }
+    }
+    renderBgTasks();
+  }
   // A non-active session's view is left to sync lazily when it's next shown.
   // The session the user just created has arrived → drop the "Opening…" cue and
   // focus its fresh tab (the whole point of opening it).

@@ -10,17 +10,44 @@ import * as path from "node:path";
 
 const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
 
-test("upsert tells append from fork by transcript identity (firstUuid)", () => {
-  assert.match(RENDER, /function firstUuid\(/, "a helper identifies the transcript by its first event uuid");
-  assert.match(RENDER, /const forked = [\s\S]*?firstUuid\(msg\.events\) !== firstUuid\(prev\.events\)/,
-    "fork = the transcript identity changed (not just any full payload)");
+test("upsert tells append from fork by transcript OVERLAP, not the first uuid (survives a tail-window slide)", () => {
+  // firstUuid mis-fired: once a session passes WIRE_TAIL, a full-session push re-windows to the last N, so the
+  // first uuid changes though it's the same transcript → a false fork dropped the DOM + snapped to the bottom
+  // (the user 2026-07-06). A fork = the events share NO uuid (a wholesale /clear-style replacement).
+  assert.match(RENDER, /function sharesAnyUuid\(/, "a helper tells a continuation from a wholesale replacement");
+  assert.match(RENDER, /const forked = [\s\S]*?!sharesAnyUuid\(msg\.events, prev\.events\)/,
+    "fork = NO shared uuid, so a mere tail-window slide is NOT a fork");
 });
 
 test("a content refresh appends (preserves scroll); only a fork drops the DOM", () => {
   assert.match(RENDER, /if \(forked\) \{[\s\S]{0,120}?v\.el\.remove\(\)/,
     "the cached DOM is dropped only on a fork, not on every push");
-  assert.match(RENDER, /if \(existed && !forked\) appendActive\(\); else showActive\(\)/,
+  assert.match(RENDER, /if \(existed && !forked\) \{\s*appendActive\(\);/,
     "a refresh of the active tab appends instead of snapping to the bottom");
+});
+
+test("a rebuild NEVER snaps a scrolled-up reader to the bottom — it captures + restores their anchor", () => {
+  // even a genuine rebuild (new tab / fork / slid tail-window) preserves position for a scrolled-up reader:
+  // capture nearBottom + the anchor BEFORE dropping the DOM, restore after (the user 2026-07-06). A true
+  // fork's anchor uuid isn't in the new transcript, so restoreScrollAnchor no-ops → it stays at the bottom.
+  assert.match(RENDER, /_wasNear = !_scrollContent \|\| !_v0 \|\| !_v0\.shown \|\| nearBottom\(_scrollContent\);/);
+  assert.match(RENDER, /_scrollAnchor = \(!_wasNear && _scrollContent && _v0\) \? captureScrollAnchor\(_scrollContent, _v0\) : null;/);
+  assert.match(RENDER, /if \(!_wasNear && _scrollAnchor && _scrollContent\) \{[\s\S]*?restoreScrollAnchor\(_scrollContent, v1, _scrollAnchor\)/);
+});
+
+// executed: mirror sharesAnyUuid to guard its intent — a slide/append shares uuids, a fork shares none
+test("sharesAnyUuid: a continuation shares a uuid, a wholesale fork shares none", () => {
+  const sharesAnyUuid = (a: { uuid?: string }[], b: { uuid?: string }[]): boolean => {
+    const seen = new Set<string>();
+    for (const e of b) if (e.uuid) seen.add(e.uuid);
+    for (const e of a) if (e.uuid && seen.has(e.uuid)) return true;
+    return false;
+  };
+  const slidWindow = [{ uuid: "c" }, { uuid: "d" }, { uuid: "e" }];   // window advanced: dropped a/b, kept c/d, added e
+  const before = [{ uuid: "a" }, { uuid: "b" }, { uuid: "c" }, { uuid: "d" }];
+  assert.equal(sharesAnyUuid(slidWindow, before), true, "a tail-window slide overlaps → NOT a fork");
+  assert.equal(sharesAnyUuid([{ uuid: "z1" }, { uuid: "z2" }], before), false, "a /clear-style replacement → a fork");
+  assert.equal(sharesAnyUuid([{}, {}], before), false, "no uuids to match (live tail-only) → treated as a fork-ish rebuild");
 });
 
 test("appendActive snaps only when the user is already near the bottom", () => {
