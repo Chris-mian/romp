@@ -405,13 +405,18 @@ body { display: flex; flex-direction: column; }
    lines (no per-task boxes) that grows to fill the window (up to 70vh) and scrolls beyond, so a busy session
    with many agents shows them all. status tints the dot/label, keeping status meaning (running =
    working-yellow, failed = red, completed = ready-blue — NOT the accent). */
-#bg-tasks { flex: 0 1 auto; min-height: 0; max-height: 70vh; overflow: hidden;
+/* flex: 0 0 auto (was 0 1 auto) so the box HOLDS its content — a shrink-1 box got squeezed by the flex
+   column on a constrained pane and its expanded rows were CLIPPED behind the composer, so a click "slightly
+   expanded" into something you couldn't see (the user 2026-07-07). Capped at min(50vh, 340px) so it never
+   crowds out the composer/transcript, and the inner .bg-list scrolls when a run has many tasks. */
+#bg-tasks { flex: 0 0 auto; min-height: 0; max-height: min(50vh, 340px); overflow: hidden;
   max-width: var(--chat-col); width: 100%; margin: 0 auto; box-sizing: border-box;
   padding: 4px 24px 0; display: flex; flex-direction: column; }
-/* level 1: the count header ("N background tasks" / "Background task · name") — the ONE box */
+/* level 1: the count header ("N background tasks" / "Background task · name") — the ONE box. A DISTINCT
+   card background (was the page bg → it read as a faint borderless "line" the user couldn't identify). */
 .bg-fold-head { --bgt: var(--st-working-bg); flex: 0 0 auto; display: flex; align-items: center; gap: 7px;
   padding: 5px 9px; cursor: pointer; user-select: none; font-size: 12px; border: 1px solid var(--box-border);
-  border-radius: 7px; background: var(--vscode-editor-background, var(--bg)); }
+  border-radius: 7px; background: var(--box-bg); }
 .bg-fold-head:hover { background: rgba(255, 255, 255, 0.04); }
 .bg-fold-head.bg-failed { --bgt: var(--st-blocked-bg); }
 .bg-fold-head.bg-completed { --bgt: var(--st-ready-bg); }

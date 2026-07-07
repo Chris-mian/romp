@@ -51,8 +51,8 @@ test("the list and the detail bodies scroll independently (overscroll-contain) â
   assert.match(CSS, /\.bg-cmd, \.bg-out \{[\s\S]*overflow: auto; overscroll-behavior: contain;/);
 });
 
-test("expanded list fills the window (up to 70vh) and scrolls; tasks are flat lines, not boxes", () => {
-  assert.match(CSS, /#bg-tasks \{[^}]*max-height: 70vh;/);
+test("expanded list is capped (never crowds the composer) and scrolls; tasks are flat lines, not boxes", () => {
+  assert.match(CSS, /#bg-tasks \{ flex: 0 0 auto;[^}]*max-height: min\(50vh, 340px\);/);
   assert.match(CSS, /\.bg-list \{[^}]*flex: 1 1 auto; min-height: 0; overflow-y: auto;/);
   // a task is a flat line now â€” the .bg-task rule carries no border/background box
   const taskRule = CSS.slice(CSS.indexOf(".bg-task {"), CSS.indexOf(".bg-task.bg-failed"));
