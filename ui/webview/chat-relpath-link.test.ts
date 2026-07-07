@@ -16,11 +16,11 @@ test("the linkifier matches file:// URIs AND bare paths, and gates bare tokens t
   assert.ok(RENDER.includes("const CLICKABLE_PATH_RE = /file:"), "regex still handles file:// URIs");
   assert.ok(RENDER.includes("[~.\\w\\-]"), "regex has the bare-path alternative");
   assert.match(RENDER, /if \(!isUri && !looksLikeFilePath\(tok\)\) continue;/);
-  assert.match(RENDER, /frag\.appendChild\(isUri \? fileUriLink\(tok\) : fileLink\(tok, tok, true\)\);/);
+  assert.match(RENDER, /frag\.appendChild\(isUri \? fileUriLink\(tok\) : openPathLink\(tok, tok, true\)\);/);
 });
 
 test("a relative path click carries the active session id so the kernel resolves against its cwd", () => {
-  assert.match(RENDER, /function fileLink\(raw: string, open: string, relative = false\)/);
+  assert.match(RENDER, /function openPathLink\(raw: string, open: string, relative = false\)/);
   assert.match(RENDER, /\{ type: "openFile", path: open, id: activeId \}/);   // relative → send the session id
   assert.match(RENDER, /\{ type: "openFile", path: open \}/);                 // absolute/file:// → no id needed
 });

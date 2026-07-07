@@ -592,7 +592,7 @@ function fileUriToPath(uri: string): string {
 // the host opener instead of navigated. `relative` bare paths carry the active session id so the KERNEL
 // resolves them against THAT session's cwd — a relative `design/foo.md` is relative to the repo the agent
 // runs in, not the kernel's cwd (the user 2026-07-06).
-function fileLink(raw: string, open: string, relative = false): HTMLElement {
+function openPathLink(raw: string, open: string, relative = false): HTMLElement {
   const a = el("span", "file-uri-link");
   a.textContent = raw;                       // shown exactly as written, selectable/copyable in place
   a.title = "Open " + open;
@@ -604,7 +604,7 @@ function fileLink(raw: string, open: string, relative = false): HTMLElement {
   });
   return a;
 }
-function fileUriLink(uri: string): HTMLElement { return fileLink(uri, fileUriToPath(uri)); }
+function fileUriLink(uri: string): HTMLElement { return openPathLink(uri, fileUriToPath(uri)); }
 // Is this bare token (trailing punctuation already stripped) a file path worth linkifying? Requires a slash
 // and EITHER an absolute/anchored start (/, ~/, ./, ../) OR a file extension on the final segment — so
 // "and/or", "TCP/IP", "24/7", "read/write" stay as prose. URL-ish tokens (a ':' or '//') are rejected;
@@ -641,7 +641,7 @@ function linkifyFileUris(root: HTMLElement): void {
       const isUri = /^file:\/\//i.test(tok);
       if (!isUri && !looksLikeFilePath(tok)) continue;                   // a bare "and/or" etc. — leave as prose
       if (m.index > last) frag.appendChild(document.createTextNode(text.slice(last, m.index)));
-      frag.appendChild(isUri ? fileUriLink(tok) : fileLink(tok, tok, true));
+      frag.appendChild(isUri ? fileUriLink(tok) : openPathLink(tok, tok, true));
       last = m.index + tok.length;
       re.lastIndex = last;
       any = true;

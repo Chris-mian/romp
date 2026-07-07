@@ -15,8 +15,8 @@ test("a bare file:// URL becomes a clickable .file-uri-link that opens the file 
   assert.match(RENDER, /function linkifyFileUris\(root: HTMLElement\): void/);
   assert.match(RENDER, /el\("span", "file-uri-link"\)/);
   // clicking routes to the host opener (kernel `open <path>`), NOT a blocked window.open(file://) — a file://
-  // URI is absolute, so it goes through the shared fileLink's no-session-id branch
-  assert.match(RENDER, /function fileUriLink\(uri: string\): HTMLElement \{ return fileLink\(uri, fileUriToPath\(uri\)\); \}/);
+  // URI is absolute, so it goes through the shared openPathLink's no-session-id branch
+  assert.match(RENDER, /function fileUriLink\(uri: string\): HTMLElement \{ return openPathLink\(uri, fileUriToPath\(uri\)\); \}/);
   assert.match(RENDER, /\{ type: "openFile", path: open \}/);
   // the URL is turned into a real filesystem path: scheme stripped, percent-decoded
   assert.match(RENDER, /\.replace\(\/\^file:/);
