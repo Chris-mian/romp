@@ -694,14 +694,18 @@ class StateAndRegistryFiles(unittest.TestCase):
         self.assertEqual(rec["awaiting"], False)
         self.assertNotIn("why", rec)               # false clears, no why
 
-    def test_stop_hook_emits_from_background_tasks(self):
+    def test_stop_hook_clears_awaiting_ignoring_bg_shell_tasks(self):
+        # The Stop hook CLEARS awaiting (false), even with run_in_background SHELL tasks still outstanding
+        # (the user 2026-07-07): a leftover backgrounded shell task must not pin an idle session to a
+        # working flavor. Only real subagents (the live snapshot) leave a session awaiting, so the Stop
+        # hook ignores inp['background_tasks'] and just clears any stale awaiting:true.
         import asyncio
         be = sb.SdkBackend(self.d, "/bin/true", lambda *a, **k: None)
         sess = sb.SdkSession(be, {"sid": "h1", "name": "n", "cwd": self.d, "mode": "acceptEdits"})
         asyncio.run(sess._stop_hook({"background_tasks": [{"id": "t1"}, {"id": "t2"}]}, None, None))
-        self.assertEqual(self._last_awaiting("h1"), {"t": self._last_awaiting("h1")["t"],
-                                                     "awaiting": True, "why": "2 background task(s) running"})
-        asyncio.run(sess._stop_hook({"background_tasks": []}, None, None))   # tasks finished
+        self.assertEqual(self._last_awaiting("h1")["awaiting"], False,
+                         "leftover run_in_background shell tasks do NOT make the session awaiting")
+        asyncio.run(sess._stop_hook({"background_tasks": []}, None, None))   # nothing outstanding → still cleared
         self.assertEqual(self._last_awaiting("h1")["awaiting"], False)
 
 

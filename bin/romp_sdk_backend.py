@@ -1243,21 +1243,17 @@ class SdkSession:
             # single-select that received a toggle, or vice versa: re-emit.
             emit()
 
-    # ---- the awaiting producer (bugz's event-model overlay) ----
+    # ---- the awaiting overlay (bugz's event-model overlay) ----
 
     async def _stop_hook(self, inp, tool_use_id, context):
-        """At turn-end, emit the awaiting overlay: awaiting:true while background work is still
-        outstanding (run_in_background tasks survive the turn), awaiting:false otherwise. The Stop
-        hook fires again on the follow-up turn a task-completion notification triggers, so this
-        self-corrects to awaiting:false when the work finishes. The kernel reader only honours
-        awaiting while the session is IDLE, so mid-turn (working) it's ignored — Stop is the right
-        and sufficient hook."""
-        bg = inp.get("background_tasks") if isinstance(inp, dict) else None
-        n = len(bg) if isinstance(bg, (list, tuple)) else (1 if bg else 0)
-        if n:
-            append_awaiting(self.backend.state_dir, self.sid, True, "%d background task(s) running" % n)
-        else:
-            append_awaiting(self.backend.state_dir, self.sid, False)
+        """At turn-end, CLEAR the awaiting overlay (awaiting:false). A leftover `run_in_background`
+        SHELL task — a dev server, a `tail -f`, a hung command the agent backgrounded and never reaped —
+        is NOT awaiting-worthy work (the user 2026-07-07): it must not pin an idle, available session to
+        a working flavor. Those tasks are surfaced in the #bg-tasks box for transparency but never drive
+        status; only real SUBAGENTS (SubagentStart/Stop → live snapshot) leave an idle session 'working'.
+        So we ignore inp['background_tasks'] here and just clear any stale awaiting:true — keeping the
+        overlay channel available should a genuine idle-awaiting signal ever want it."""
+        append_awaiting(self.backend.state_dir, self.sid, False)
         self.backend._poke()
         return {}
 

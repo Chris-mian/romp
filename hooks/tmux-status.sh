@@ -123,29 +123,18 @@ fi
 # push. A headless session has none of these surfaces.
 [[ "$DISPLAY_TMUX" == 1 ]] || exit 0
 
-# AWAITING overlay (tmux backend, the user 2026-06-22): at turn-end, mirror what the SDK backend's Stop
-# hook does for its own sessions (bin/romp_sdk_backend.py append_awaiting) — read the Stop payload's
-# `background_tasks` (run_in_background work still outstanding) and write the SAME {"awaiting":bool,"why":…}
-# overlay to states/<sid>.jsonl, which the kernel's _session_awaiting reads (idle-only) for the ⏳ awaiting
-# badge + the auto-nudge exemption. Tmux-only (the SDK backend writes its own, so no double-write).
-# Transition-only — emit a row only when true↔false actually changes — so the log stays lean. A FOREGROUND
-# subagent keeps the turn open (state=working), so it never reaches this idle-time overlay; only a genuinely
-# backgrounded task survives the Stop.
+# AWAITING overlay (tmux backend): at turn-end, CLEAR awaiting (false). A leftover `run_in_background`
+# SHELL task — a dev server, a `tail -f`, a hung command the agent backgrounded and never reaped — is NOT
+# awaiting-worthy work (the user 2026-07-07): it must not pin an idle, available session to a working flavor.
+# Those tasks show in the #bg-tasks box but never drive status; only real SUBAGENTS (the SDK backend's live
+# SubagentStart/Stop snapshot) leave an idle session 'working'. So we ignore the Stop payload's
+# `background_tasks` and only clear a stale awaiting:true (transition-only, so the log stays lean).
 if [[ "$EVENT" == "Stop" && -n "$sid" ]]; then
-    if [[ "$input" =~ \"background_tasks\":[[:space:]]*\[[[:space:]]*[^][:space:]] ]]; then
-        awaiting="true"
-    else
-        awaiting="false"
-    fi
     sdir="${XDG_STATE_HOME:-$HOME/.local/state}/romp/states"
     prev_aw=$(grep -oE '"awaiting":(true|false)' "$sdir/$sid.jsonl" 2>/dev/null | tail -1 | sed 's/.*://' || true)
-    if [[ "$awaiting" != "$prev_aw" && ( "$awaiting" == "true" || "$prev_aw" == "true" ) ]]; then
+    if [[ "$prev_aw" == "true" ]]; then
         mkdir -p "$sdir"
-        if [[ "$awaiting" == "true" ]]; then
-            printf '{"t":%s,"awaiting":true,"why":"background work still running"}\n' "$now" >> "$sdir/$sid.jsonl"
-        else
-            printf '{"t":%s,"awaiting":false}\n' "$now" >> "$sdir/$sid.jsonl"
-        fi
+        printf '{"t":%s,"awaiting":false}\n' "$now" >> "$sdir/$sid.jsonl"
     fi
 fi
 

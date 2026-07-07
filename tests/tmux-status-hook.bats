@@ -283,37 +283,38 @@ run_hook() {
     [ ! -d "$TEST_DIR/state/romp/states" ]
 }
 
-# ─── awaiting overlay from the Stop hook's background_tasks (tmux backend) ─────
-# At turn-end the hook reads the Stop payload's `background_tasks` (run_in_background work still
-# outstanding) and writes the same {"awaiting":bool,"why":…} overlay the SDK backend writes, which the
-# kernel's _session_awaiting reads for the ⏳ badge. Tmux-only, transition-only.
+# ─── awaiting overlay: leftover background SHELL tasks do NOT count (the user 2026-07-07) ─────
+# At turn-end the hook no longer treats the Stop payload's `background_tasks` (run_in_background shell
+# work) as awaiting — a leftover backgrounded shell task (a dev server, a tail -f, a hung command the
+# agent never reaped) must not pin an idle session to a working flavor. Only real subagents (the SDK
+# backend's live snapshot) leave a session awaiting. The hook only CLEARS a stale awaiting:true
+# (transition-only), so the ⏳ badge never lights from a shell task.
 
-@test "Stop with background_tasks writes an awaiting:true overlay" {
+@test "Stop with background_tasks does NOT write an awaiting overlay" {
     export MOCK_SESSION_ID="tmux-aw-1"
     export XDG_STATE_HOME="$TEST_DIR/state"
     run run_hook '{"hook_event_name":"Stop","cwd":"/tmp","background_tasks":[{"id":"t1"}]}'
     [ "$status" -eq 0 ]
-    grep -q '"awaiting":true' "$TEST_DIR/state/romp/states/tmux-aw-1.jsonl"
+    ! grep -q '"awaiting"' "$TEST_DIR/state/romp/states/tmux-aw-1.jsonl" 2>/dev/null
 }
 
-@test "Stop with EMPTY background_tasks writes no awaiting record (nothing to clear)" {
+@test "a stale awaiting:true is cleared to false on the next Stop (even with a shell task 'running')" {
     export MOCK_SESSION_ID="tmux-aw-2"
+    export XDG_STATE_HOME="$TEST_DIR/state"
+    f="$TEST_DIR/state/romp/states/tmux-aw-2.jsonl"
+    mkdir -p "$(dirname "$f")"
+    printf '{"t":1,"awaiting":true,"why":"legacy"}\n' > "$f"   # a stale true (e.g. written before this change)
+    run run_hook '{"hook_event_name":"Stop","cwd":"/tmp","background_tasks":[{"id":"t1"}]}'
+    [ "$status" -eq 0 ]
+    grep -q '"awaiting":false' "$f"
+}
+
+@test "no stale true → nothing to clear, no awaiting record written" {
+    export MOCK_SESSION_ID="tmux-aw-3"
     export XDG_STATE_HOME="$TEST_DIR/state"
     run run_hook '{"hook_event_name":"Stop","cwd":"/tmp","background_tasks":[]}'
     [ "$status" -eq 0 ]
-    ! grep -q '"awaiting"' "$TEST_DIR/state/romp/states/tmux-aw-2.jsonl"
-}
-
-@test "awaiting clears (false) only after it was true — transition-only, no dupes" {
-    export MOCK_SESSION_ID="tmux-aw-3"
-    export XDG_STATE_HOME="$TEST_DIR/state"
-    f="$TEST_DIR/state/romp/states/tmux-aw-3.jsonl"
-    run_hook '{"hook_event_name":"Stop","cwd":"/tmp","background_tasks":[{"id":"t1"}]}'   # → true
-    run_hook '{"hook_event_name":"Stop","cwd":"/tmp","background_tasks":[{"id":"t1"}]}'   # still running → NO dup
-    [ "$(grep -c '"awaiting":true' "$f")" -eq 1 ]
-    run_hook '{"hook_event_name":"Stop","cwd":"/tmp","background_tasks":[]}'              # finished → clear
-    grep -q '"awaiting":false' "$f"
-    [ "$(grep -c '"awaiting"' "$f")" -eq 2 ]                                              # exactly true then false
+    ! grep -q '"awaiting"' "$TEST_DIR/state/romp/states/tmux-aw-3.jsonl" 2>/dev/null
 }
 
 @test "headless (SDK) sessions get NO tmux-side awaiting overlay (the SDK backend writes its own)" {

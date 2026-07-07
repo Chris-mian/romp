@@ -968,30 +968,30 @@ class ViewBuilder(unittest.TestCase):
         self.assertIsNotNone(card["waitingOn"], "the 'Awaiting <peer>' chip is restored (no longer suppressed by the block)")
         self.assertEqual(card["waitingOn"]["peerSid"], "peerY")
 
-    def test_inflight_bg_tool_detects_an_unresolved_background_launch(self):
-        # the transcript stopgap (the user 2026-06-22): a run_in_background tool with no tool_result is in
-        # flight; its result resolves it; a genuine new prompt means the session moved on.
-        def recs(resolved=False, later_prompt=False):
-            out = [{"type": "user", "uuid": "u1", "timestamp": iso(T0),
-                    "message": {"role": "user", "content": [{"type": "text", "text": "kick off a long job"}]}},
-                   {"type": "assistant", "uuid": "a1", "parentUuid": "u1", "timestamp": iso(T0 + 5),
-                    "message": {"role": "assistant", "stop_reason": "end_turn", "content": [
-                        {"type": "tool_use", "id": "tu_bg", "name": "Bash",
-                         "input": {"command": "sleep 999", "run_in_background": True}}]}}]
-            if resolved:
-                out.append({"type": "user", "uuid": "r1", "parentUuid": "a1", "timestamp": iso(T0 + 9),
-                            "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tu_bg", "content": "ok"}]}})
-            if later_prompt:
-                out.append({"type": "user", "uuid": "u2", "parentUuid": "a1", "timestamp": iso(T0 + 50),
-                            "message": {"role": "user", "content": [{"type": "text", "text": "never mind, do this instead"}]}})
-            return out
-        p = Path(self.td.name) / "bg.jsonl"
-        p.write_text("\n".join(json.dumps(r) for r in recs()) + "\n"); km._bgtool_cache.clear()
-        self.assertIsNotNone(km._inflight_bg_tool(str(p)), "an unresolved run_in_background launch → in flight")
-        p.write_text("\n".join(json.dumps(r) for r in recs(resolved=True)) + "\n"); km._bgtool_cache.clear()
-        self.assertIsNone(km._inflight_bg_tool(str(p)), "its tool_result resolves it → not awaiting")
-        p.write_text("\n".join(json.dumps(r) for r in recs(later_prompt=True)) + "\n"); km._bgtool_cache.clear()
-        self.assertIsNone(km._inflight_bg_tool(str(p)), "a genuine new prompt → the session moved on, not awaiting")
+    def test_leftover_bg_shell_task_is_not_awaiting_but_a_subagent_is(self):
+        # A leftover run_in_background SHELL task must NOT pin an idle session to a working flavor (the
+        # user 2026-07-07: "these background tasks are just leftover things that maybe never finish").
+        # Only real SUBAGENTS leave an idle session 'awaiting'. This transcript holds an unresolved
+        # run_in_background Bash launch; with no awaiting overlay and no live subagents the session reads
+        # NOT awaiting. Add a live subagent (source 0) and it flips to awaiting.
+        recs = [{"type": "user", "uuid": "u1", "timestamp": iso(T0),
+                 "message": {"role": "user", "content": [{"type": "text", "text": "kick off a long job"}]}},
+                {"type": "assistant", "uuid": "a1", "parentUuid": "u1", "timestamp": iso(T0 + 5),
+                 "message": {"role": "assistant", "stop_reason": "end_turn", "content": [
+                     {"type": "tool_use", "id": "tu_bg", "name": "Bash",
+                      "input": {"command": "tail -f server.log", "run_in_background": True}}]}}]
+        p = Path(self.td.name) / "bgshell.jsonl"
+        p.write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+        saved = km._tmux_sessions
+        try:
+            km._tmux_sessions = lambda: {}                         # no live subagents
+            self.assertIsNone(km._session_awaiting(SID, str(p), True),
+                              "a leftover run_in_background shell task alone is NOT awaiting")
+            km._tmux_sessions = lambda: {SID: {"subagents": 2}}    # source 0: real subagents in flight
+            self.assertEqual(km._session_awaiting(SID, str(p), True), "2 background agents still working",
+                             "a live subagent DOES leave an idle session awaiting (a working flavor)")
+        finally:
+            km._tmux_sessions = saved
 
     def test_session_awaiting_reads_the_states_overlay(self):
         # the SDK channel (api 2026-06-22): the kernel reads an {"awaiting":bool,"why":…} overlay from

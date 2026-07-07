@@ -59,7 +59,6 @@ class TimelineAwaiting(unittest.TestCase):
         (td / "states").mkdir()
         self.states = td / "states" / (SID + ".jsonl")
         km._parse_cache.pop(str(self.tpath), None)
-        km._bgtool_cache.clear()
 
     def tearDown(self):
         (km.jd.NAMES, km.jd.PROJECTS, km.jd.GOALDIR, km.jd.STATE, km.NAMES, km._tmux_sessions) = self.saved
