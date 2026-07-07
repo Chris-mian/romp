@@ -5286,7 +5286,9 @@ class StaleBlockGuard(unittest.TestCase):
         self.assertEqual(g["blockWhy"], "please verify the result")
 
     def test_planner_block_op_is_guarded(self):
+        # the guard now routes through THE arbitration gate (may_apply, P1 2026-07-06) — the ladder
+        # itself is tested once in test_judge_may_apply.py; this pin just keeps the planner routed.
         import inspect
         src = inspect.getsource(jd)
-        self.assertIn('if t and not _block_is_stale(nodes[t], seg_t):', src,
-                      "the planner's block op must skip stale evidence exactly like the closer")
+        self.assertIn('if t and may_apply(store, nodes[t], "judge", "block", seg_t):', src,
+                      "the planner's block op must ask may_apply exactly like the closer")

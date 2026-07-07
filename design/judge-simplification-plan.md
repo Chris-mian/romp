@@ -134,6 +134,12 @@ instrumentation riding existing logs.
 
 ## Phasing — what ships at each step
 
+Status 2026-07-06 evening: P0a, P1 (+E1 census, in may_apply's docstring), P2, and the E2
+telemetry are SHIPPED; P0b closed by diagnosis (the brief's call-fail bursts were account
+rate-limit windows — its give-up already handles them; no code needed). E5 found the archiver
+"parse" storm was the same outage mislabeled (call vs parse now logged distinctly). Next:
+E3 offline reconstruction, then P3.1 dual-write.
+
 - **P0 (hours):** 0a archiver give-up cap + parse fix per E5 (kills ~1200 wasted calls/48h);
   0b brief-writer failure triage (80 call-fails + 25 give-ups/48h).
 - **P1 (a day):** E1 census → `may_apply(store, node, src, kind, ev_t)` encoding the whole
