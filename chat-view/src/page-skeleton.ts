@@ -23,6 +23,7 @@ export function chatBody(attachTitle: string): string {
   <div id="ledger" style="display:none"></div>
   <div id="content"><div id="live-ask" style="display:none"></div></div>
   <div id="footer">
+    <div id="composer-resize" title="Drag to resize the message box"></div>
     <div id="statusline" class="statusline"></div>
     <div id="composer"><div id="composer-chips" style="display:none"></div><textarea id="composer-input" rows="1" placeholder="Message this session…  (⏎ send · ⇧⏎ newline)"></textarea><button id="composer-attach" title="${attachTitle}" aria-label="Attach file">📎</button><button id="composer-send" title="Send (⏎)" aria-label="Send">➤</button></div>
   </div>`;

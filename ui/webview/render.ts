@@ -5616,9 +5616,15 @@ function flashInterrupted(ta: HTMLTextAreaElement) {
   if (interruptFlashT) window.clearTimeout(interruptFlashT);
   interruptFlashT = window.setTimeout(() => ta.classList.remove("interrupted-flash"), 650);
 }
+// px height the user set by dragging #composer-resize; null = auto. It raises the auto-grow cap so a long
+// message shows in full, and is cleared on send so the box snaps back to one line (the user 2026-07-07).
+let composerManualH: number | null = null;
+const COMPOSER_MIN_H = 38;                                  // ~one line + padding (matches the CSS min-height floor)
+const composerMaxH = () => Math.max(120, Math.round(window.innerHeight * 0.6));   // never eat the whole chat
 function growComposer(ta: HTMLTextAreaElement) {
   ta.style.height = "auto";
-  ta.style.height = Math.min(ta.scrollHeight, 120) + "px";
+  const cap = composerManualH ?? 120;                      // dragged cap, else the default ~6-line cap
+  ta.style.height = Math.min(ta.scrollHeight, cap) + "px";
 }
 
 // One slash command from the kernel's /commands (the Agent SDK's get_server_info): the name (no leading "/"),
@@ -5648,12 +5654,50 @@ function setupComposer() {
     if (cite) { composerCitations.delete(activeId); renderComposerChips(activeId); }   // consumed on send
     drafts.delete(activeId); persistDrafts();   // sent — no draft to restore on a later switch-back
     ta.value = "";
+    composerManualH = null;   // a drag-expanded box snaps back to one line after a send (the user 2026-07-07)
     ta.style.height = "";
   };
   // an explicit send button on the right of the box (touch devices have no easy ⏎; desktop gets a click
   // affordance too). mousedown, not click, so the textarea keeps focus and a follow-up keeps typing.
   const sendBtn = document.getElementById("composer-send") as HTMLButtonElement | null;
   sendBtn?.addEventListener("mousedown", (e) => { e.preventDefault(); sendComposer(); ta.focus(); });
+
+  // ── drag-to-resize the message box (the user 2026-07-07) ── the #composer-resize handle straddles the
+  // top-edge divider; dragging it UP grows the composer (to see a long message in full), DOWN shrinks it.
+  // Sets composerManualH (the auto-grow cap) and the height directly for immediate feedback; a send clears
+  // it (above) so the box snaps back to one line. Pointer capture → the drag survives leaving the handle.
+  const grip = document.getElementById("composer-resize");
+  if (grip) {
+    let startY = 0, startH = 0, dragging = false;
+    const onMove = (e: PointerEvent) => {
+      if (!dragging) return;
+      const h = Math.max(COMPOSER_MIN_H, Math.min(composerMaxH(), startH + (startY - e.clientY)));
+      composerManualH = h;
+      ta.style.height = h + "px";
+    };
+    const onUp = () => {
+      if (!dragging) return;
+      dragging = false;
+      grip.classList.remove("dragging");
+      document.body.classList.remove("composer-resizing");
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+    };
+    grip.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      dragging = true;
+      startY = e.clientY;
+      startH = ta.getBoundingClientRect().height;
+      grip.classList.add("dragging");
+      document.body.classList.add("composer-resizing");
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+      window.addEventListener("pointercancel", onUp);
+    });
+    // a double-click on the handle resets to auto (one line) — a quick escape hatch without sending
+    grip.addEventListener("dblclick", () => { composerManualH = null; growComposer(ta); });
+  }
 
   // ── slash-command autocomplete (the user 2026-06-29) ── a "/" at the START of the box opens a filterable,
   // arrow-navigable menu of THIS session's slash commands (name + description + arg hint), sourced from the
