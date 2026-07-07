@@ -2662,7 +2662,13 @@ class PlanTuning(unittest.TestCase):
         # menu cap is wide enough that an old topic-matching goal doesn't scroll off.
         self.assertIn("Scan the whole", jd.PLAN_SYS)
         self.assertIn("never default to the most recent", jd.PLAN_SYS)
-        self.assertIn("mint only when no open goal matches", jd.PLAN_SYS)
+        # the mint-vs-sub test is the OUTCOME, not topic overlap (the buried-SwiftBar fix, 2026-07-07 via
+        # ui): a distinct deliverable mints its own top even mid-conversation; sub only when the work
+        # advances that goal's own outcome. Both planner prompts carry the rule.
+        self.assertIn("DISTINCT DELIVERABLE", jd.PLAN_SYS)
+        self.assertIn("whose OUTCOME this work advances", jd.PLAN_SYS)
+        self.assertIn("OWN finish line", jd.PLAN_PROMPT_SYS)
+        self.assertIn("prefer mint", jd.PLAN_PROMPT_SYS)
         self.assertGreaterEqual(jd.open_menu.__defaults__[0], 20, "menu cap covers old goals (≥20)")
 
     def test_user_message_must_be_placed_never_skipped(self):

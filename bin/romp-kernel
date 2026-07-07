@@ -6209,6 +6209,26 @@ def _clear_all(item_ids):
         return
     seen = set(item_ids)
     item_ids = item_ids + [i for i in _delegation_linked_ids(item_ids) if i not in seen]   # + the delegation's peer copy
+    # AUTO-SPLIT distinct nested deliverables BEFORE the clear lands (the user 2026-07-07, via ui): a
+    # follow-up filed deep under an unrelated parent (the buried-SwiftBar case) must not be silently
+    # archived with it — jd.split_distinct_subtrees promotes each such subtree to its own top-level
+    # card (Completed/Working per its own state). Split over warn: reversible, zero dialogs, the
+    # appearing card is the notice.
+    _by_sid = {}
+    for iid in item_ids:
+        _by_sid.setdefault(iid.rsplit(":", 1)[0], []).append(iid)
+    for _sid, _ids in _by_sid.items():
+        try:
+            _st = jd.load_goals(_sid)
+            _moved = [m for _iid in _ids if _iid in _st.get("nodes", {})
+                      for m in jd.split_distinct_subtrees(_st, _iid)]
+            if _moved:
+                jd.rollup_status(_st, False)
+                jd.save_goals(_sid, _st)
+                sys.stderr.write("clear-split: promoted %d buried subtree(s) in %s: %s\n"
+                                 % (len(_moved), _sid[:8], ", ".join(m.split(":")[-1] for m in _moved)))
+        except Exception:
+            sys.stderr.write("clear-split: %s\n" % traceback.format_exc())
     p = jd.STATE / "cleared.jsonl"
     p.parent.mkdir(parents=True, exist_ok=True)
     t = time.time()

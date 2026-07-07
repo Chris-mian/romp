@@ -873,12 +873,19 @@ PLAN_SYS = (
     "guesses, say it once. Most segments do one thing, but emit more ops when the segment actually did "
     "more (e.g. finished one goal and started another). Op kinds:\n"
     '- {\"why\",\"do\":\"mint\",\"text\":\"<outcome ≤10 words>\"}: a new top-level request from the '
-    "user. Be selective: only a real new ask mints a top-level goal.\n"
+    "user. Be selective: only a real new ask mints a top-level goal — but a DISTINCT DELIVERABLE always "
+    "does: when the user asks for something with its own finish line (a new tool, widget, script, "
+    "feature, document, build), mint it even mid-conversation while other goals are in flight, and even "
+    "when it shares a project or theme with an open goal. Sharing context is not the test; sharing an "
+    "outcome is. Work filed as a sub disappears into its parent's card, so burying a separate "
+    "deliverable hides it from the user.\n"
     '- {\"why\",\"do\":\"sub\",\"under\":<n>,\"text\":\"<step ≤10 words>\"}: a step or progress on open '
-    "goal #n. This is the default, since most segments are steps under an existing goal. Scan the whole "
-    "open-goals list and file under the goal whose topic matches, even if it is older or lower-numbered; "
-    "never default to the most recent. File as a sibling of that goal's other steps, not chained under "
-    "the latest step. mint only when no open goal matches. (\"ref\":<k> files under a node you minted "
+    "goal #n. This is the default for the agent's continuing work, since most segments are steps under "
+    "an existing goal. File under the goal whose OUTCOME this work advances — topic or project overlap "
+    "is not enough; ask: does finishing this move goal #n toward done? If no open goal passes that "
+    "test, mint. Scan the whole open-goals list, even older or lower-numbered goals; never default to "
+    "the most recent. File as a sibling of that goal's other steps, not chained under "
+    "the latest step. (\"ref\":<k> files under a node you minted "
     "earlier in this reply instead of \"under\", e.g. a fresh umbrella goal.) "
     f"Keep the tree shallow: do not nest more than {MAX_DEPTH} levels deep under a top goal.\n"
     '- {\"why\",\"do\":\"done\",\"goal\":<n>}: open goal/step #n is now finished. Mark done eagerly: '
@@ -923,7 +930,9 @@ PLAN_SYS = (
     "You place each segment's work; you do not reorganize the board (a separate grouper judge nests "
     "related top goals afterward). Keep filing under the matching open goal and minting only a real new "
     "top.\n"
-    "When unsure between mint and sub, prefer sub; when unsure whether to skip, place it. Output only "
+    "When unsure between mint and sub for the agent's own continuing work, prefer sub; when a USER "
+    "message asks for something no open goal's outcome covers, prefer mint. When unsure whether to "
+    "skip, place it. Output only "
     "the JSON object: nothing before it, and nothing after the closing brace. No notes, no markdown fences.")
 
 
@@ -946,13 +955,17 @@ PLAN_PROMPT_SYS = (
     "user's vantage (it is shown to the user): the ask or the outcome, concrete verbs, no self-narration "
     "(\"The user…\"), no filler, no em dashes. Op kinds:\n"
     '- {\"why\",\"do\":\"sub\",\"under\":<n>,\"text\":\"<step ≤10 words>\"}: this message continues or '
-    "refines open goal #n. This is the DEFAULT: a mid-turn or follow-on message is usually more work on an "
-    "existing goal, not a new one. Scan the WHOLE open-goals list and file under the goal whose topic "
-    "matches, even an older or lower-numbered one; never default to the most recent.\n"
-    '- {\"why\",\"do\":\"mint\",\"text\":\"<outcome ≤10 words>\"}: a genuinely NEW top-level request, '
-    "only when no open goal matches. Be selective: do not mint a new top for what refines existing work.\n"
-    "When unsure between mint and sub, prefer sub. Output only the JSON object: nothing before it, nothing "
-    "after the closing brace.")
+    "refines open goal #n. The default for a message that asks for more of the SAME outcome. File under "
+    "the goal whose OUTCOME this message advances — topic or project overlap is not enough; ask: does "
+    "this move goal #n toward done? Scan the WHOLE open-goals list, even an older or lower-numbered "
+    "goal; never default to the most recent.\n"
+    '- {\"why\",\"do\":\"mint\",\"text\":\"<outcome ≤10 words>\"}: a request with its OWN finish line '
+    "(a new tool, widget, script, feature, document, build) — mint it even mid-conversation and even in "
+    "the same project, whenever no open goal's own outcome covers it. A deliverable filed as a sub "
+    "disappears into its parent's card and never gets one of its own.\n"
+    "When unsure whether this message extends an open goal's outcome or starts its own, prefer mint: an "
+    "extra card costs a glance; a buried deliverable vanishes. Output only the JSON object: nothing "
+    "before it, nothing after the closing brace.")
 
 
 def _parse_plan(raw, menu_len):
@@ -2466,6 +2479,69 @@ def user_move(fsid, gid, now=None):
     return True
 
 
+def split_distinct_subtrees(store, top_id):
+    """AUTO-SPLIT at clear time (the user 2026-07-07, via ui — the buried-SwiftBar case): a follow-up
+    that arrived while another goal held focus can get filed as a deep sub of an UNRELATED parent, where
+    a whole distinct deliverable goes invisible and is silently archived when that parent is cleared.
+    Before a top is cleared, promote each DISTINCT nested deliverable to its own top-level goal so it
+    gets the card it never had (its own column: Completed for finished work, Working for open) instead
+    of vanishing with a stranger. Split over warn, deliberately: a clear is reversible and a wrong split
+    costs one glance at one extra card, while a silent sweep costs real work — and no confirm dialog
+    interrupts the user (an appearing card IS the notice).
+
+    "Distinct" is exact and event-based, never a similarity heuristic:
+      - the subtree root was born from its OWN user ask (promptUuid set, != the top's) — agent-decomposed
+        steps carry no promptUuid and never split;
+      - AND it either grew its own children (it became a build) or is still open (open work is never
+        silently swept) — a childless done leaf ("also add tests") sweeps with its parent normally;
+      - EXCEPT a node the user explicitly CITED onto this card (the follow-up path stamps `cited`):
+        that subtree is part of the card by the user's own declaration.
+    The HIGHEST qualifying node takes its whole subtree; the walk does not descend into it. Split
+    subtrees are un-rolled (roll-down display cache popped; their own diaries rule again) and stamped
+    `splitFrom` for provenance. Returns the promoted root ids; caller re-rolls + persists."""
+    nodes = store.get("nodes", {})
+    top = nodes.get(top_id)
+    if top is None or top.get("parentId") is not None:
+        return []
+    kids = {}
+    for nid, nd in nodes.items():
+        kids.setdefault(nd.get("parentId"), []).append(nid)
+    top_pu = top.get("promptUuid")
+
+    def qualifies(nd):
+        pu = nd.get("promptUuid")
+        if not pu or pu == top_pu or nd.get("cited"):
+            return False
+        grown = bool(kids.get(nd["id"]))
+        open_self = not nd.get("nodeComplete") and not nd.get("cleared")
+        return grown or open_self
+
+    split = []
+    stack = list(kids.get(top_id, []))
+    while stack:
+        nid = stack.pop()
+        nd = nodes.get(nid)
+        if nd is None:
+            continue
+        if qualifies(nd):
+            nd["parentId"] = None
+            nd["splitFrom"] = top_id                   # provenance: which clear promoted it
+            sub = [nid]
+            while sub:                                 # un-roll the promoted subtree: its own history rules
+                x = sub.pop()
+                xd = nodes.get(x)
+                if xd is not None and dict.pop(xd, "rolledUp", None):
+                    with _authority():
+                        xd["nodeComplete"] = xd["blocked"] = xd["cleared"] = False
+                    if "log" in xd:
+                        _materialize_node(xd)
+                sub.extend(kids.get(x, []))
+            split.append(nid)
+            continue                                   # the whole subtree moved; don't descend into it
+        stack.extend(kids.get(nid, []))
+    return split
+
+
 def _block_is_stale(nd, ev_t):
     """True if a block verdict for this node was computed from evidence AT/BEFORE the user's last
     follow-up on it (followupAt) — the user already ANSWERED that ask, so re-imposing the block would
@@ -3249,6 +3325,11 @@ def _plan_session(fsid, path, now):
                         forced.append(dict(retitle, goal=gi2))   # the model may ALSO retitle the target itself
                         #                                          (re-pointed at the rebuilt menu's index)
                     apply_plan(store, seg_id, seg_t, forced, menu, prompt_uuid=trig, quote=vq)
+                    _pv = store["placements"].get(seg_id)
+                    if isinstance(_pv, str) and _pv in store["nodes"]:
+                        store["nodes"][_pv]["cited"] = True   # the user explicitly CITED this card: its
+                        #                                       subtree is part of it by declaration, so the
+                        #                                       clear-time auto-split leaves it in place
                     placed += 1
                     _group_store(store, fsid, now)
                     save_goals(fsid, store)
