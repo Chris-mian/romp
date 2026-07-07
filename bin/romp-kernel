@@ -1191,6 +1191,74 @@ def _mark_nudge_failed(gid):
         sys.stderr.write("nudge-failed block: %s\n" % traceback.format_exc())
 
 
+def _interrupt_focus_top(store):
+    """The top-level goal the interrupt actually stopped: the session's active-focus top, if it is
+    currently working. None when there's no working focus to block (nothing owed)."""
+    nodes = store.get("nodes", {})
+    x = store.get("lastNode")
+    seen = set()
+    while x in nodes and nodes[x].get("parentId") is not None and x not in seen:
+        seen.add(x); x = nodes[x]["parentId"]
+    if x in nodes and store.get("status", {}).get(x, "working") == "working":
+        return x
+    return None
+
+
+def _record_interrupt_block(sid):
+    """Interrupted → Blocked (the user 2026-07-07, extending the stalled rule): the user stopped the
+    session mid-turn and nothing will move until they speak, so by definition the focus goal needs
+    them. Record a block verdict (src "interrupt") in the goal's diary — the same normal ladder every
+    block rides — and remember the gid in auto-nudge.json so the LIFT on re-engage is cheap (only
+    sessions we blocked get their store re-checked). Returns the gid blocked, or None."""
+    store = jd.load_goals(sid)
+    gid = _interrupt_focus_top(store)
+    if not gid:
+        return None
+    nd = store["nodes"][gid]
+    why = "you stopped this session mid-turn — it's waiting on your next instruction"
+    if not jd.record_verdict(store, nd, "interrupt", "block", int(time.time()), why=why):
+        return None
+    nd["blocked"] = True; nd["blockWhy"] = why; nd["mt"] = int(time.time())
+    jd.rollup_status(store, False)
+    jd.save_goals(sid, store)
+    _mark_views_dirty()
+    return gid
+
+
+def _lift_interrupt_block(sid, gid):
+    """The user re-engaged (their next message — the same event that re-arms auto-nudge): the interrupt
+    block is lifted with an explicit unblock event, so the diary stays the authority (an eventless flag
+    clear would be re-blocked by the next materialize). Only lifts a block WE placed (the diary's latest
+    block has src "interrupt") — a real judge verdict recorded since then owns the card and stays."""
+    store = jd.load_goals(sid)
+    nd = store.get("nodes", {}).get(gid)
+    if nd is None:
+        return
+    lastblk = next((e.get("src") for e in reversed(nd.get("log") or []) if e.get("kind") == "block"), None)
+    if lastblk == "interrupt" and nd.get("blocked"):
+        jd.record_verdict(store, nd, "user", "unblock", int(time.time()), why="you re-engaged")
+        nd["blocked"] = False
+        jd.rollup_status(store, False)
+        jd.save_goals(sid, store)
+        _mark_views_dirty()
+
+
+def _intr_blocked(sid=None):
+    m = _auto_nudge_data().get("intrBlocked") or {}
+    return m.get(str(sid)) if sid is not None else m
+
+
+def _set_intr_blocked(sid, gid):
+    d = dict(_auto_nudge_data())
+    m = dict(d.get("intrBlocked") or {})
+    if gid:
+        m[str(sid)] = gid
+    else:
+        m.pop(str(sid), None)
+    d["intrBlocked"] = m
+    _write_auto_nudge(d)
+
+
 def _log_nudge_event(sid, gid, t, count):
     """Append one auto-nudge fire to STATE/nudge-events.jsonl — {sid, gid, t, count} — for the timeline's
     DEBUG judging band to render a per-nudge ⚡ marker and escalate at high counts (the view is business's)."""
@@ -1408,7 +1476,19 @@ def _auto_nudge_tick(now, tmux):
         if _session_working(turns):                      # still actively working (event model) → not orphaned
             continue
         if _interrupt_suppresses_nudge(turns):           # the user's LAST action was an interrupt → they're driving;
+            # ...and (the user 2026-07-07) the stopped focus goal is BLOCKED on them: record the verdict
+            # once per interrupt episode (the intrBlocked marker), exactly like a stalled nudge-failure.
+            if not _intr_blocked(sid):
+                _g = _record_interrupt_block(sid)
+                if _g:
+                    _set_intr_blocked(sid, _g)
+                    fired = True
             continue                                     # suppressed until their NEXT message, not merely a newer turn
+        _ib = _intr_blocked(sid)
+        if _ib:                                          # they re-engaged → lift OUR block (a real judge verdict stays)
+            _lift_interrupt_block(sid, _ib)
+            _set_intr_blocked(sid, None)
+            fired = True
         if _pending_ops.get(str(sid)):                   # the user has drive ops PARKED (a queued send / model pick) →
             continue                                     # queued intent; a nudge would jump their queue (the user 2026-07-05)
         ls_val, ls_t = _last_state(sid)
@@ -6910,7 +6990,7 @@ def build_feed(now, tmux=None):
                                            else "this session is stopped awaiting your approval")} if nid == perm_top
                             else None),
                 "nudgeFailed": nudge_failed,         # the one auto-nudge didn't resolve the stall → "nudge failed" chip; never re-nudged (design/stalled-open-todos-nudge.md)
-                "interrupted": bool(sess_interrupted and column == "working"),   # the user stopped this session and hasn't re-engaged → "interrupted" badge; nudge suppressed until their next message (the user 2026-07-05)
+                "interrupted": bool(sess_interrupted and (column == "working" or (col == "blocked" and _lastblk == "interrupt"))),   # the user stopped this session and hasn't re-engaged → "interrupted" badge; nudge suppressed until their next message (the user 2026-07-05)
                 "column": column,
                 "recheck": recheck,                  # targeted follow-up on a soft-block → de-urgented (dotted), moved to Working, pending re-judge
                 "rejudging": rejudging,              # plain thread reply after a block → STAYS in Needs-You, "Re-judging…" swirl while a turn is in flight (the user 2026-06-30)

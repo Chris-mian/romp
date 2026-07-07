@@ -192,11 +192,39 @@ class DualWriteThroughTheSites(unittest.TestCase):
         kinds = [(e["src"], e["kind"], e["ev_t"]) for e in st["nodes"][G1]["log"]]
         self.assertIn(("user", "reopen", T + 500), kinds)
 
+    def test_placement_unblock_is_event_backed(self):
+        # newest-wins: filing new work on a blocked branch un-blocks it — and post-P3.3 that clear must
+        # be an EVENT, or the next materialize re-blocks from the diary (found 2026-07-07).
+        store = {"rompUuid": SID, "seq": 1, "nodes": {G1: node()}, "placements": {}, "status": {}}
+        jd.apply_close(store, [store["nodes"][G1]], {"block": {1: "pick a name"}}, t=T)
+        jd.rollup_status(store, False)
+        self.assertEqual(store["status"][G1], "blocked")
+        menu = [{"id": G1, "text": "Ship it"}]
+        jd.apply_plan(store, "seg-w", T + 60, [{"do": "sub", "under": 1, "text": "did the pick", "why": "answered"}],
+                      menu, place_key="seg-w")
+        jd.rollup_status(store, False)
+        self.assertEqual(store["status"][G1], "working", "new work on the branch un-blocks it and it STAYS un-blocked")
+        kinds = [(e["src"], e["kind"]) for e in store["nodes"][G1]["log"]]
+        self.assertIn(("planner", "unblock"), kinds)
+
     def test_closer_verdicts_record(self):
         store = {"rompUuid": SID, "nodes": {G1: node()}, "placements": {}, "status": {}}
         jd.apply_close(store, [store["nodes"][G1]], {"block": {1: "pick a name"}}, t=T)
         self.assertEqual([(e["src"], e["kind"], e["why"]) for e in store["nodes"][G1]["log"]],
                          [("closer", "block", "pick a name")])
+
+    def test_a_stale_seq_never_mints_over_a_live_node(self):
+        # found 2026-07-07: a store with a stale/absent `seq` minted …:g1 OVER the live G1, whose
+        # parent was G1 itself — a self-parent cycle that hung every ancestor walk (the frozen
+        # full-suite runs). The mint must skip occupied ids; the live node survives untouched.
+        store = {"rompUuid": SID, "nodes": {G1: node()}, "placements": {}, "status": {}}
+        menu = [{"id": G1, "text": "Ship it"}]
+        jd.apply_plan(store, "seg-c", T + 60, [{"do": "sub", "under": 1, "text": "a step", "why": "w"}],
+                      menu, place_key="seg-c")
+        self.assertEqual(store["nodes"][G1]["text"], "Ship it", "the live node is not overwritten")
+        kids = [n for n in store["nodes"].values() if n.get("parentId") == G1]
+        self.assertEqual([k["text"] for k in kids], ["a step"])
+        self.assertNotEqual(kids[0]["id"], G1)
 
 
 if __name__ == "__main__":
