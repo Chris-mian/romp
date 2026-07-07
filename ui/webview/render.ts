@@ -4153,7 +4153,7 @@ function renderBgTasks() {
   const worst = tasks.reduce((w, t) => (BG_RANK[t.status] || 0) > (BG_RANK[w] || 0) ? t.status : w, "completed");
   const head = el("div", "bg-fold-head bg-" + worst + (open ? " open" : ""));
   head.dataset.act = "bg-fold"; head.dataset.id = sid;
-  const car = el("span", "bg-caret"); car.textContent = open ? "▾" : "▸"; head.appendChild(car);
+  const car = el("span", "bg-caret"); car.textContent = open ? "▾" : "▴"; head.appendChild(car);   // ▴ = expands UPWARD into the box
   head.appendChild(el("span", "bg-dot"));
   const lab = el("span", "bg-fold-label");
   lab.textContent = count === 1 ? "Background task · " + (tasks[0].summary || "running")

@@ -405,33 +405,35 @@ body { display: flex; flex-direction: column; }
    lines (no per-task boxes) that grows to fill the window (up to 70vh) and scrolls beyond, so a busy session
    with many agents shows them all. status tints the dot/label, keeping status meaning (running =
    working-yellow, failed = red, completed = ready-blue — NOT the accent). */
-/* flex: 0 0 auto (was 0 1 auto) so the box HOLDS its content — a shrink-1 box got squeezed by the flex
-   column on a constrained pane and its expanded rows were CLIPPED behind the composer, so a click "slightly
-   expanded" into something you couldn't see (the user 2026-07-07). Capped at min(50vh, 340px) so it never
-   crowds out the composer/transcript, and the inner .bg-list scrolls when a run has many tasks. */
+/* ONE dedicated full-width rounded box just above the statusline (the user 2026-07-07): the header BAR
+   ("N background tasks") sits at the BOTTOM of the box, and the list expands UPWARD inside the SAME box —
+   column-reverse puts the first child (header) at the bottom and the list above it, so everything stays
+   within the one bordered rectangle (nothing spills below it). flex 0 0 auto HOLDS its content; capped at
+   min(50vh, 340px) so it never crowds the composer, with the inner .bg-list scrolling. A top+side gap sets it
+   off from the transcript (the "little divider"). */
 #bg-tasks { flex: 0 0 auto; min-height: 0; max-height: min(50vh, 340px); overflow: hidden;
-  max-width: var(--chat-col); width: 100%; margin: 0 auto; box-sizing: border-box;
-  padding: 4px 24px 0; display: flex; flex-direction: column; }
-/* level 1: the count header ("N background tasks" / "Background task · name") — the ONE box. A DISTINCT
-   card background (was the page bg → it read as a faint borderless "line" the user couldn't identify). */
+  box-sizing: border-box; margin: 8px 10px 6px; border: 1px solid var(--box-border); border-radius: 8px;
+  background: var(--box-bg); display: flex; flex-direction: column-reverse; }
+/* level 1: the header BAR at the bottom of the box ("N background tasks" / "Background task · name"). No own
+   border/radius — the box provides them; a top border appears when expanded, separating it from the list above. */
 .bg-fold-head { --bgt: var(--st-working-bg); flex: 0 0 auto; display: flex; align-items: center; gap: 7px;
-  padding: 5px 9px; cursor: pointer; user-select: none; font-size: 12px; border: 1px solid var(--box-border);
-  border-radius: 7px; background: var(--box-bg); }
+  padding: 7px 11px; cursor: pointer; user-select: none; font-size: 12px; }
+.bg-fold-head.open { border-top: 1px solid var(--box-border); }
 .bg-fold-head:hover { background: rgba(255, 255, 255, 0.04); }
 .bg-fold-head.bg-failed { --bgt: var(--st-blocked-bg); }
 .bg-fold-head.bg-completed { --bgt: var(--st-ready-bg); }
 .bg-fold-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }
-/* level 2: a flat list of task LINES (no boxes), fills the remaining height and scrolls */
-.bg-list { margin-top: 4px; flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
-  display: flex; flex-direction: column; }
+/* level 2: a flat list of task LINES (no boxes) ABOVE the header, fills the box and scrolls when many */
+.bg-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+  display: flex; flex-direction: column; padding: 4px 2px; }
 .bg-task { --bgt: var(--st-working-bg); }
 .bg-task.bg-failed { --bgt: var(--st-blocked-bg); }
 .bg-task.bg-completed { --bgt: var(--st-ready-bg); }
 .bg-head { display: flex; align-items: center; gap: 8px; padding: 5px 9px; cursor: pointer; user-select: none; border-radius: 5px; }
 .bg-head:hover { background: rgba(255, 255, 255, 0.04); }
+/* SOLID status dot — no pulse (the user 2026-07-07: the pulsating yellow was distracting; a running dot is
+   just solid working-yellow, like the rest of the dashboard's status dots). */
 .bg-dot { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; background: var(--bgt); }
-.bg-running .bg-dot { animation: bg-pulse 1.2s ease-in-out infinite; }
-@keyframes bg-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 .bg-sum { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--fg); }
 .bg-status { flex: 0 0 auto; font-size: 10px; text-transform: uppercase; letter-spacing: .04em; font-weight: 600; color: var(--bgt); }
 .bg-caret { flex: 0 0 auto; color: var(--dim); font-size: 10px; width: 10px; }
