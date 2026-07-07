@@ -437,6 +437,37 @@ class LiveTail(unittest.TestCase):
                         "the snapshot already read 'waiting' BEFORE the blocking control request")
         self.assertEqual(s.snapshot()["state"], "waiting", "an interrupted in-flight turn reads 'waiting', not 'working'")
 
+    def test_snapshot_exposes_the_in_flight_interrupt_flag(self):
+        """The kernel's chip + feed 'interrupting' badge keys on this snapshot field (== _interrupted), NOT the
+        transcript tail — the tail retires at the ResultMessage BEFORE the stop record lands, so keying on it
+        flickered 'Interrupting…' → 'Working' (the user 2026-07-07). The flag spans the whole in-flight window:
+        True from dispatch, False once the aborted turn's ResultMessage settles it."""
+        be = sb.SdkBackend(tempfile.mkdtemp(), "/bin/true", lambda *a, **k: None)
+        s = sb.SdkSession(be, {"sid": "11111111-2222-3333-4444-555555555555", "name": "n", "cwd": "/tmp"})
+        self.assertFalse(s.snapshot()["interrupting"], "idle → not interrupting")
+        s._interrupted = True
+        self.assertTrue(s.snapshot()["interrupting"], "an in-flight interrupt surfaces on the snapshot")
+        s._interrupted = False
+        self.assertFalse(s.snapshot()["interrupting"], "cleared once the ResultMessage settles it")
+
+    def test_interrupt_sets_the_flag_synchronously_at_dispatch(self):
+        """interrupt() schedules the async _do_interrupt, but the kernel stamps _interrupt_clicked and pushes
+        the instant it returns — so _interrupted must already be True SYNCHRONOUSLY, not one event-loop tick
+        later (else the first snapshot after the click misses it and the badge flickers, the user 2026-07-07)."""
+        import asyncio
+        be = sb.SdkBackend(tempfile.mkdtemp(), "/bin/true", lambda *a, **k: None)
+        s = sb.SdkSession(be, {"sid": "11111111-2222-3333-4444-555555555555", "name": "n", "cwd": "/tmp"})
+        loop = asyncio.new_event_loop()
+        try:
+            s.loop = loop
+            s.client = object()   # truthy — interrupt() only guards on `self.loop and self.client`
+            self.assertFalse(s._interrupted)
+            s.interrupt()         # loop never runs → the scheduled _do_interrupt does NOT execute
+            self.assertTrue(s._interrupted, "the flag flips synchronously, before the scheduled _do_interrupt")
+            self.assertTrue(s.snapshot()["interrupting"], "so the very next snapshot already reads 'interrupting'")
+        finally:
+            loop.close()
+
 
 class LiveSubagents(unittest.TestCase):
     """SubagentStart/SubagentStop hooks track the Task subagents running RIGHT NOW — the transparency the tmux

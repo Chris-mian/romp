@@ -292,6 +292,13 @@ body.feed-dragging .feed-col.col-asks { outline: 1.5px dashed color-mix(in srgb,
 .fask-interrupted { flex: 0 0 auto; font-size: 0.64em; font-weight: 700; letter-spacing: 0.04em;
   padding: 1px 6px; border-radius: 999px; line-height: 1.4;
   color: #ffd166; border: 1px solid rgba(255, 209, 102, 0.6); }
+/* "interrupting…" — a stop is IN FLIGHT (the user 2026-07-07): the turn is still winding down, so this
+   wears the WORKING treatment (filled yellow, faded) exactly like the chat chip's .chip-interrupting —
+   an active state, visually distinct from the interrupted OUTLINE badge (paused/done). It holds steady
+   from the click until the interrupt settles, then yields to .fask-interrupted. */
+.fask-interrupting { flex: 0 0 auto; font-size: 0.64em; font-weight: 700; letter-spacing: 0.04em;
+  padding: 1px 6px; border-radius: 999px; line-height: 1.4;
+  background: var(--st-working-bg); color: var(--st-working-fg); opacity: 0.75; }
 /* "warning" — a judge stamped an anomaly on this goal (judge _node_warn; the user 2026-07-02): yellow
    pill, a BUTTON — click opens the warn-detail overlay (what happened + why it's unexpected) */
 .fask-warnchip { flex: 0 0 auto; font-size: 0.64em; font-weight: 700; letter-spacing: 0.04em;

@@ -703,6 +703,12 @@ class SdkSession:
 
     def interrupt(self):
         if self.loop and self.client:
+            # Flip the in-flight flag SYNCHRONOUSLY, here on the kernel thread, before scheduling the async
+            # _do_interrupt. The kernel stamps _interrupt_clicked and pushes the instant it returns from this
+            # call, and the very next snapshot() must already read 'interrupting' — otherwise the chip/feed
+            # badge would miss the click and only catch up an event-loop tick later (the flicker this whole
+            # signal exists to kill). _do_interrupt sets it again (harmless); the ResultMessage clears it.
+            self._interrupted = True
             self.loop.call_soon_threadsafe(
                 lambda: asyncio.ensure_future(self._do_interrupt()))
 
@@ -1318,6 +1324,9 @@ class SdkSession:
                 "modelPending": bool(self._model_pending),   # a /model switch resolving → the badge shows switching-dots
                 "effortPending": bool(self._effort_pending),   # an /effort switch reconnecting → effort-badge dots + "Reloading session…"
                 "mode": self.perm_mode, "ctx": self._ctx_pct(), "summary": "",
+                "interrupting": bool(self._interrupted),   # a user interrupt is IN FLIGHT: set at dispatch,
+                #   cleared EXACTLY when the aborted turn's ResultMessage settles → the kernel holds the chip +
+                #   feed badge on 'interrupting' across that whole window, no dependence on the flickering tail
                 "subagents": subs}   # live Task subagents (count + types) → lane affordance; [] when none
 
 

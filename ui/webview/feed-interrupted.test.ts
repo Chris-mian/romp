@@ -15,14 +15,14 @@ const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "
 test("the interrupted badge is built once and rides the wrapping chip row", () => {
   assert.match(FEED, /const intBadge = el\("span", "fask-interrupted"\)/);
   assert.match(FEED, /intBadge\.textContent = "interrupted"/, "text label, no emoji/glyph");
-  assert.match(FEED, /row2\.append\(idwrap, origin, fupBadge, nfBadge, intBadge, warnChip, waitOnBadge, clr\)/);
+  assert.match(FEED, /row2\.append\(idwrap, origin, fupBadge, nfBadge, intingBadge, intBadge, warnChip, waitOnBadge, clr\)/);
   assert.match(FEED, /a\._interrupted = intBadge;/);
 });
 
-test("it.interrupted toggles the badge, yielding to the stalled chips", () => {
+test("it.interrupted toggles the badge, yielding to the stalled chips and the in-flight interrupting badge", () => {
   assert.match(FEED,
-    /\(it\.interrupted && !it\.nudgeFailed\) \? "" : "none";/,
-    "shown only when no nudge-failed story already covers the card (the stalled FLOOR retired 2026-07-07)");
+    /\(it\.interrupted && !it\.interrupting && !it\.nudgeFailed\) \? "" : "none";/,
+    "past-tense badge shows only once the interrupt has SETTLED (not while interrupting) and no nudge-failed story covers the card");
   assert.match(FEED, /interrupted\?: boolean;/, "the card payload carries the kernel flag");
 });
 

@@ -46,6 +46,7 @@ interface AskItem {
   recheck?: boolean;                               // soft-block you answered with a TARGETED follow-up → de-urgented (dotted), moved to Working, dropped from the "need input" count, until the judge resolves or re-blocks it (kernel build_feed; the user 2026-06-27)
   rejudging?: boolean;                             // soft-block + a PLAIN thread reply after it → moves to WORKING while the reply is in flight (echo/open turn), with a "Re-judging…" swirl; returns to Needs-You on its own if the judge leaves it blocked (kernel build_feed; the user 2026-07-02, immediate)
   nudgeFailed?: boolean;                           // the ONE auto-nudge on this stalled goal didn't resolve it → "stalled" chip; the failure also records a BLOCK verdict, so the card reaches Needs-you via the normal ladder (kernel _mark_nudge_failed, 2026-07-07)
+  interrupting?: boolean;                          // a user interrupt is IN FLIGHT (dispatched, not yet settled) → steady "interrupting…" badge from the click until it settles, THEN yields to `interrupted` — never flickering to "working" in between (kernel build_feed; the user 2026-07-07)
   interrupted?: boolean;                           // the user STOPPED this session mid-turn and hasn't messaged it since → "interrupted" badge; its quiet is user-chosen, auto-nudge holds off until their next message (kernel build_feed; the user 2026-07-05)
   autoFiled?: boolean;                             // settled → moved to COMPLETED by the auto-filing rule (keeps the green ring)
   explicitDone?: boolean;                          // every path explicitly DONE-stamped → blue ring (blue+green when settled agrees)
@@ -442,6 +443,13 @@ function makeAskCard(it: AskItem): HTMLElement {
   const intBadge = el("span", "fask-interrupted"); intBadge.textContent = "interrupted";
   intBadge.title = "you stopped this session mid-turn; romp won't follow up on its own until you message it again";
   intBadge.style.display = "none";
+  // "interrupting…" (the user 2026-07-07): a stop is IN FLIGHT — the CLI hasn't reached a stream boundary
+  // yet — so the card holds this steady from the click until the interrupt settles, then swaps to the
+  // past-tense "interrupted" badge. Working-yellow + faded (matches the chat chip's chip-interrupting), so
+  // it reads as "still winding down" rather than a done state.
+  const intingBadge = el("span", "fask-interrupting"); intingBadge.textContent = "interrupting…";
+  intingBadge.title = "stop sent — waiting for this session to reach a stopping point";
+  intingBadge.style.display = "none";
   // yellow "warning" chip (the user 2026-07-02): a judge stamped an anomaly on this goal (kernel `warns`,
   // judge _node_warn — e.g. a distiller cite-miss). Click → the warn-detail overlay: what happened and why
   // it's unexpected, per warn. A BUTTON (not a span) so it's focusable; the element survives re-renders
@@ -482,7 +490,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   // row2 wraps them onto a new line when there isn't room, so the provenance never overlaps a chip
   // (the user 2026-06-20). origin sits left of the chips, matching the "from … · Followed up" reading order.
   // Clear is the rightmost, always-present control on this row (idwrap flex:1 pushes it to the edge).
-  row2.append(idwrap, origin, fupBadge, nfBadge, intBadge, warnChip, waitOnBadge, clr);
+  row2.append(idwrap, origin, fupBadge, nfBadge, intingBadge, intBadge, warnChip, waitOnBadge, clr);
   // ROW 3 — Background (left) · Summary (right), always one line, opposite sides. Populated below, once the
   // toggle buttons exist (they're declared with the distiller sections). The time now trails the title (row1).
   const row3 = el("div", "fask-row3");
@@ -624,6 +632,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   const a = card as any;
   a._title = title; a._name = name; a._time = time; a._followedup = fupBadge;
   a._nudgeFailed = nfBadge;
+  a._interrupting = intingBadge;
   a._interrupted = intBadge;
   a._warnChip = warnChip;
   a._waitOn = waitOnBadge;
@@ -761,11 +770,17 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   // it is never re-asked — the card says so. The failure also records a BLOCK verdict (2026-07-07), so
   // the card reaches Needs-you via the normal ladder; this chip rides along as the explanation.
   a._nudgeFailed.style.display = it.nudgeFailed ? "" : "none";
+  // "interrupting…" — a stop is IN FLIGHT (the user 2026-07-07): steady from the click until the interrupt
+  // settles, at which point the kernel drops `interrupting` and (if still quiet) sets `interrupted`. The
+  // stalled chip still outranks it; the two interrupt badges are mutually exclusive by construction (the
+  // kernel never sets both), and we hide the past-tense one while interrupting for belt-and-suspenders.
+  (a._interrupting as HTMLElement).style.display =
+    (it.interrupting && !it.nudgeFailed) ? "" : "none";
   // "interrupted" — the user stopped this session and hasn't re-engaged; quiet is user-chosen (the
   // user 2026-07-05). The stalled/nudge-failed chips outrank it: they carry a romp-ask outcome, while
-  // this only explains silence — never show both.
+  // this only explains silence — never show both; nor alongside the in-flight "interrupting…" badge.
   (a._interrupted as HTMLElement).style.display =
-    (it.interrupted && !it.nudgeFailed) ? "" : "none";
+    (it.interrupted && !it.interrupting && !it.nudgeFailed) ? "" : "none";
   // the chip label says "stalled"; its tooltip carries the EVIDENCE — romp did follow up, and when
   // (the user 2026-07-02: the bare label read like a state romp observed, not a nudge outcome)
   a._nudgeFailed.title = it.nudged && it.nudged.times.length

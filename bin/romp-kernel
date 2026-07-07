@@ -4799,32 +4799,45 @@ _interrupt_clicked = {}       # sid -> ts; event-cleared the moment the turn is 
 _model_switch_pending = {}
 
 
-def _interrupting(sid, session, open_now, now):
-    """A just-sent interrupt is IN FLIGHT: the stop was dispatched and hasn't landed yet, so the chip reads
-    'Interrupting…' from the click until it LANDS — never flickering to 'working' in between (the user
-    2026-07-05: they hit stop, it flashed 'Interrupting…', then flipped back to 'Working'). The land is an
-    EVENT: the CLI writes its stop record ('[Request interrupted by user]') when the interrupt reaches a
-    stream boundary — which can take SECONDS mid-stream — and that record ends the interrupted turn. Cleared
-    the instant EITHER the interrupted turn is no longer open (the stop landed with nothing queued behind it
-    → the chip falls to honest 'ready') OR that stop record has landed at/after the click (covers a message
-    queued behind the stop: the interrupted turn's record is on disk even though the queued turn reopened
-    `open_now` → the chip falls to 'working' for the genuine new work). A 120s safety cap covers a wedged
-    turn whose stop never lands, so the chip can't trap on 'Interrupting…'.
+def _interrupting(sid, session, now, tm):
+    """A just-sent interrupt is IN FLIGHT: the stop was dispatched and hasn't settled yet, so the chip + feed
+    badge read 'Interrupting…' from the click until it settles — never flickering to 'working'/'interrupted'
+    in between (the user 2026-07-05, again 2026-07-07: they hit stop, it flashed 'Interrupting…', then flipped
+    back to 'Working', then finally settled). Cleared only by a DEFINITIVE settle event or the 120s wedge cap
+    — NEVER by the open/closed state of the turn, which is exactly what flickers during an SDK interrupt.
 
-    Earlier this cleared on `turn_t > t0` (the open turn STARTED after the click). But that fired DURING the
-    settle — the SDK's queued-turn release and live-tail flicker both push turns[-1].t past t0 before the
-    stop lands — so the chip flipped to 'working' prematurely (the bug above). Keying on the stop RECORD
-    holds 'Interrupting…' for the whole in-flight window; the later-turn case that guard was written for (an
-    auto-nudge 37s after the stop wearing the stamp) is still covered, because the record clears the stamp
-    the moment the stop lands, so any turn opening afterward never sees it."""
+    Two backends, two settle events:
+    - SDK (AUTHORITATIVE): the backend's own `interrupting` flag (== SdkSession._interrupted) — set the instant
+      the stop is dispatched, cleared EXACTLY when the aborted turn's ResultMessage settles. It spans the whole
+      in-flight window with zero dependence on the transcript tail (the tail retires at the ResultMessage
+      BEFORE the '[Request interrupted by user]' record lands, so keying on the tail dropped us to 'working'
+      mid-interrupt — the reported bug). When the snapshot exposes it, trust it: True → interrupting; False →
+      settled → clear.
+    - tmux (no such flag): the CLI's stop record ('[Request interrupted by user]') at/after the click IS the
+      settle. int(t0) so a record in the same second as the click still counts; a record from a PRIOR
+      interrupt, seconds earlier, correctly does not.
+
+    Earlier this ALSO cleared on `not open_now` — meant to fall to honest 'ready' when the stop landed with
+    nothing queued. But that fired DURING the SDK settle flicker (live-tail retires before the stop record
+    lands) and popped the stamp for good, so the next open push read 'working'. The settle events above cover
+    the clean-close case (SDK flag False / stop record on disk both mean settled), so the open/closed state is
+    no longer consulted at all.
+
+    Safe to call from multiple builders in ONE push (chat chip, timeline lane, feed card): the stamp is popped
+    ONLY on the False-returning path, and within a push the facts (flag/record/now) are constant — so every
+    caller returns the same value, and once one pops, the rest read no-stamp → False → agree."""
     t0 = _interrupt_clicked.get(sid)
     if t0 is None:
         return False
-    # the CLI's stop record at/after the click == this interrupt has landed (int(t0) so a record in the same
-    # second as the click still counts; a record from a PRIOR interrupt, seconds earlier, correctly does not)
+    inflight = (tm or {}).get("interrupting")     # SDK exposes True/False; tmux has no such key → None
+    if inflight is not None:
+        if not inflight or now - t0 > 120:
+            _interrupt_clicked.pop(sid, None)
+            return False
+        return True
     landed = any(em.is_interrupt_record(a) and (a.get("t") or 0) >= int(t0)
                  for turn in session.get("turns", []) for a in turn.get("atoms") or [])
-    if not open_now or landed or now - t0 > 120:
+    if landed or now - t0 > 120:
         _interrupt_clicked.pop(sid, None)
         return False
     return True
@@ -4935,7 +4948,7 @@ def _session_chip(sid, path, session, tm, now):
     st = (tm or {}).get("state", "") or ""
     compacting = _compacting(sid, st, session, now, (tm or {}).get("since"))
     return ("compacting" if compacting else
-            "interrupting" if _interrupting(sid, session, open_now, now) else   # stop sent, not yet landed on disk
+            "interrupting" if _interrupting(sid, session, now, tm) else   # stop dispatched, not yet settled
             "blocked" if aerr else
             "awaiting" if st in _NEEDS_INPUT_STATES else               # a live permission/picker prompt
             "retrying" if st == "retrying" else
@@ -6619,6 +6632,12 @@ def build_feed(now, tmux=None):
             sess_interrupted = bool(ps) and not who_working and _interrupt_suppresses_nudge(ps["turns"])
         except Exception:
             sess_interrupted = False
+        # A user interrupt still IN FLIGHT (dispatched, not yet settled): the card wears a steady
+        # "interrupting…" badge from the click until it settles, THEN falls to the past-tense "interrupted"
+        # badge — never flickering between "working" and "interrupted" while the SDK live-tail retires mid-
+        # settle (the user 2026-07-07). Same derivation as the chat chip + timeline lane (_interrupting):
+        # SDK's own in-flight flag for SDK sessions, the stop record for tmux. Safe to call again in this push.
+        sess_interrupting = _interrupting(fsid, ps or {}, now, tm)
         store = _feed_goals(fsid)                # pre-pass snapshot while a judge pass is mid-flight → the card's
                                                  # status never shows a half-applied intermediate (atomic visibility)
         nodes, status = store.get("nodes", {}), store.get("status", {})
@@ -6951,7 +6970,8 @@ def build_feed(now, tmux=None):
                                            else "this session is stopped awaiting your approval")} if nid == perm_top
                             else None),
                 "nudgeFailed": nudge_failed,         # the one auto-nudge didn't resolve the stall → "nudge failed" chip; never re-nudged (design/stalled-open-todos-nudge.md)
-                "interrupted": bool(sess_interrupted and (column == "working" or (col == "blocked" and _lastblk == "interrupt"))),   # the user stopped this session and hasn't re-engaged → "interrupted" badge; nudge suppressed until their next message (the user 2026-07-05)
+                "interrupting": bool(sess_interrupting and (column == "working" or (col == "blocked" and _lastblk == "interrupt"))),   # a user interrupt is IN FLIGHT → steady "interrupting…" badge until it settles (the user 2026-07-07)
+                "interrupted": bool(sess_interrupted and not sess_interrupting and (column == "working" or (col == "blocked" and _lastblk == "interrupt"))),   # the user stopped this session and hasn't re-engaged → "interrupted" badge (only ONCE the interrupt has settled); nudge suppressed until their next message (the user 2026-07-05)
                 "column": column,
                 "recheck": recheck,                  # targeted follow-up on a soft-block → de-urgented (dotted), moved to Working, pending re-judge
                 "rejudging": rejudging,              # plain thread reply after a block → STAYS in Needs-You, "Re-judging…" swirl while a turn is in flight (the user 2026-06-30)
