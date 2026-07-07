@@ -53,8 +53,8 @@ test("judge: user_move reuses the follow-up machinery — reopen + followupAt fl
   // the same stamp drives the Working sort floor and BOTH staleness floors (block + done),
   // routed through the fused gate+recorder since P3.1 (record_verdict, 2026-07-06)
   assert.match(JUDGE, /def _done_is_stale\(nd, ev_t\):/);
-  assert.match(JUDGE, /record_verdict\(store, nodes\[t\], "judge", "done", seg_t/);   // planner done guard
-  assert.match(JUDGE, /if not record_verdict\(store, nd, "judge", "done", t/);        // closer done guard
+  assert.match(JUDGE, /record_verdict\(store, nodes\[t\], "planner", "done", seg_t/);   // planner done guard
+  assert.match(JUDGE, /if not record_verdict\(store, nd, "closer", "done", t/);        // closer done guard
   // user_move itself never sets the followupPending chip
   const um = JUDGE.slice(JUDGE.indexOf("def user_move("), JUDGE.indexOf("def user_move(") + 3200);
   assert.ok(!um.includes('followupPending"] = True'), "user_move must not set the follow-up chip flag");

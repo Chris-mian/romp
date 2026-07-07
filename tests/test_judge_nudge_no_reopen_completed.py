@@ -167,20 +167,17 @@ class NudgeNoReopenCompleted(unittest.TestCase):
         self.assertEqual([nd["id"] for nd in menu], [], "a user-cleared umbrella seals its live to-dos too")
 
     def test_reopen_of_a_completed_goal_writes_an_instrumentation_line(self):
-        # TEMP instrumentation: _reopen un-completing a done goal logs a 'reopen-done' line tagged by caller,
-        # so a completed→blocked flip is attributable in the wild. (Remove with the instrumentation.)
+        # The reopen of a completed goal is attributable from the goal's own DIARY now (the nudge-diag
+        # side-log was retired with the P3.4 sweep, 2026-07-07): the reopen event carries the caller in why.
         Gx = SID + ":gx"
         st = {"rompUuid": SID, "seq": 1,
               "nodes": {Gx: {"id": Gx, "text": "x", "parentId": None, "nodeComplete": True,
                              "blocked": False, "cleared": False, "trail": [], "t": 1}},
               "placements": {}, "status": {}}
         jd._reopen(st, Gx, by="followup")
-        diag = Path(self.td) / "nudge-diag.jsonl"
-        lines = [json.loads(l) for l in diag.read_text().splitlines()] if diag.exists() else []
-        rd = [l for l in lines if l.get("event") == "reopen-done"]
-        self.assertEqual(len(rd), 1)
-        self.assertEqual(rd[0]["by"], "followup")
-        self.assertEqual(rd[0]["gid"], Gx)
+        ev = [e for e in st["nodes"][Gx]["log"] if e["kind"] == "reopen"]
+        self.assertEqual(len(ev), 1)
+        self.assertIn("followup", ev[0]["why"])
 
 
 if __name__ == "__main__":

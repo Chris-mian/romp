@@ -164,9 +164,17 @@ derives from the store's latest moment, never the wall clock. Tree-level machine
 settled/sticky, followupPending) remains as cache maintenance over fold states — that was
 always its KEEP disposition.
 
-CLEANUP NOTE (the user, due ~2026-07-13): review heal-fire/eager-done telemetry, then the P3.4
-sweep — retire now-redundant provenance fields (negComplete/everDone as flags), the heal
-telemetry itself if quiet, and the dead fairness-cap config.
+**P3.4 DONE EARLY (the user 2026-07-07: "just do the cleanup now").** Retired: everDone and
+negComplete/negBlock writes (the diary's src IS the provenance; the timeline's judging band now
+reads verdict events directly — precise sources planner/closer/courier/grouper/nudge in every
+event), the _nudge_diag/heal-fire side-logs (the diary is the audit trail), the dead
+PLAN_FAIRNESS cap. _backfill_log still READS legacy everDone flags to reconstruct dormant
+stores' history. Kept: the eager-done sampler (it gates P4, the one open decision) and the
+tree-level cache maintenance (roll-down / settled / sticky / followupPending — display logic,
+not old-system remnants). Rider fixes the same day: a FAILED AUTO-NUDGE now records a block
+verdict (src "nudge") so the card moves to Needs-you through the normal ladder instead of
+idling in Working with a chip (the user's rule), and the dead "reopened" chip was deleted
+(unreachable since cleared-is-sealed, 2026-06-22).
 
 - **P0 (hours):** 0a archiver give-up cap + parse fix per E5 (kills ~1200 wasted calls/48h);
   0b brief-writer failure triage (80 call-fails + 25 give-ups/48h).

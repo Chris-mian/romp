@@ -1161,9 +1161,14 @@ def _mark_auto_nudged(gid, turn_id, count, stalled=False):
 def _mark_nudge_failed(gid):
     """Stamp `failed` on `gid`'s nudge record — the nudge-RESPONSE turn completed (closer-settled, so the
     planner has processed it too) and the goal is STILL working-stalled: the one ask didn't resolve it, and
-    per the anti-loop rule we never re-ask. The feed surfaces it instead (the "nudge failed" chip; a FORK
-    nudge additionally floors the card to needs-you). Event-based — stamped at the tick's re-arm gate, whose
-    session-level gates ARE "response turn ended + judged"; cleared by the next genuine fire's fresh record."""
+    per the anti-loop rule we never re-ask. Event-based — stamped at the tick's re-arm gate, whose
+    session-level gates ARE "response turn ended + judged"; cleared by the next genuine fire's fresh record.
+
+    AND (the user 2026-07-07): a failed nudge IS a block — romp asked, the answer didn't resolve it, romp
+    won't ask again, so by definition the goal now needs the user. Record the block verdict so the card
+    moves to Needs-you through the NORMAL ladder (decision brief and all) instead of sitting in Working
+    wearing a chip; the user's reply then unblocks it exactly like any other block. (Previously only the
+    FORK flavor floored to needs-you read-side; the common case idled in Working — the user's complaint.)"""
     d = dict(_auto_nudge_data())
     nudged = dict(d.get("nudged", {}))
     rec = nudged.get(gid)
@@ -1172,6 +1177,21 @@ def _mark_nudge_failed(gid):
     nudged[gid] = dict(rec, failed=True)
     d["nudged"] = nudged
     _write_auto_nudge(d)
+    try:
+        sid = gid.rsplit(":", 1)[0]
+        store = jd.load_goals(sid)
+        nd = store.get("nodes", {}).get(gid)
+        why = ("romp followed up once and the response didn't resolve this; "
+               "it won't be re-asked — it needs your direction")
+        if nd is not None and jd.record_verdict(store, nd, "nudge", "block", int(time.time()), why=why):
+            nd["blocked"] = True
+            nd["blockWhy"] = why
+            nd["mt"] = int(time.time())
+            jd.rollup_status(store, False)
+            jd.save_goals(sid, store)
+            _mark_views_dirty()
+    except Exception:
+        sys.stderr.write("nudge-failed block: %s\n" % traceback.format_exc())
 
 
 def _log_nudge_event(sid, gid, t, count):
@@ -1431,9 +1451,9 @@ def _auto_nudge_tick(now, tmux):
             continue
         nodes, status = store.get("nodes", {}), store.get("status", {})
         cleared = _cleared_ids()
-        _diag_kids = {}                                  # TEMP INSTRUMENTATION (jd._nudge_diag): child map for the
-        for _nid, _nd in nodes.items():                  # actual-completeness check logged at fire time below
-            _diag_kids.setdefault(_nd.get("parentId"), []).append(_nid)
+        _kids = {}                                       # child map for the FORK-stalled check below
+        for _nid, _nd in nodes.items():
+            _kids.setdefault(_nd.get("parentId"), []).append(_nid)
         # Nudge EVERY still-'working' TOP goal — not just the first (the user 2026-06-28): all of a session's
         # working goals get nudged each time it stops, re-arming PER GOAL on each genuinely-new ended turn (one
         # per turn, count climbing), until the session moves each to blocked/completed. Skip a top whose only
@@ -1474,27 +1494,15 @@ def _auto_nudge_tick(now, tmux):
                     fired = True                           # push so the chip/floor reaches the feed now
                 continue
             count = rec.get("count", 0) + 1
-            # INSTRUMENTATION (the user 2026-06-30, see jd._nudge_diag): record the goal's ACTUAL completeness
-            # vs its status label at fire time. A 'nudge-fire' with nodeComplete/subtreeDone True proves the
-            # firing-side bug — the nudge fired on a done goal whose status column still read 'working'.
-            _lt_atoms = lt.get("atoms") or []
-            jd._nudge_diag("nudge-fire", sid=sid, gid=gid, status=status.get(gid, "working"),
-                           nodeComplete=bool(nd.get("nodeComplete")),
-                           subtreeDone=bool(jd._subtree_done(nodes, _diag_kids, gid)),
-                           settledDone=bool(nd.get("settledDone")), count=count,
-                           # WORKING-GUARD inputs (the user 2026-06-30): so a "fired while working" case is
-                           # diagnosable from the log alone — the live snapshot state, the parsed turn's
-                           # tail/end, and the last_state (val,t) the genuine-stop gate compared against.
-                           liveState=st, lastAtomType=(_lt_atoms[-1].get("type") if _lt_atoms else ""),
-                           ltEnd=lt.get("end"), ltId=lt_id, nTurns=len(turns),
-                           lsVal=ls_val, lsT=ls_t)
+            # (the nudge-fire forensics side-log was retired with the P3.4 sweep, 2026-07-07 — the goal's
+            # verdict diary is the audit trail now)
             # FORK vs regular text (design/stalled-open-todos-nudge.md): a goal whose subtree holds an item
             # the agent's OWN to-do list still marks open gets the STALLED fork — "continue these, or tell me
             # which are blocked and what you need" — instead of the plain status check. The agent can't
             # self-mark a to-do blocked (Claude Code has no such state), so the fork elicits the blocker the
             # planner's nudge-mode note then applies as a block. _followup_body's quote already enumerates the
             # goal's unfinished sub-nodes, naming the open items.
-            stalled = gid in _agent_open_set(nodes, _diag_kids)
+            stalled = gid in _agent_open_set(nodes, _kids)
             text = AUTO_NUDGE_STALLED_TEXT if stalled else AUTO_NUDGE_TEXT
             Sessions.backend_for(sid).send(sid, _followup_body(gid, None, text, injected=True, auto=True, stalled=stalled))   # gray romp bubble + romp-logo (both backends)
             _mark_auto_nudged(gid, arm_id, count, stalled=stalled)   # {count, lastTurnId[, stalled]} → re-arm only on the next GENUINE ended-working turn; a fresh record resets `failed`
@@ -7521,18 +7529,17 @@ def _derive_judging(sid, caps, goals, t0, out, seg_ends=None):
         elif t >= t0:                                         # planner placed it (top = mint, else a step)
             out.append({"judge": "planner", "sid": sid, "t": t,
                         "kind": ("mint" if not n.get("parentId") else "sub"), "text": text})
-        if n.get("negComplete") and mt >= t0:                 # closer completed this top at turn-end
-            out.append({"judge": "closer", "sid": sid, "t": endt(mt), "kind": "close",
-                        "text": n.get("doneWhy") or text})
-        elif n.get("negBlock") and mt >= t0:                  # closer BLOCKED this top at turn-end (mirrors negComplete)
-            out.append({"judge": "closer", "sid": sid, "t": endt(mt), "kind": "block",
-                        "text": n.get("blockWhy") or text})
-        elif n.get("nodeComplete") and n.get("doneWhy") and mt >= t0 and not n.get("origin"):
-            out.append({"judge": "planner", "sid": sid, "t": endt(mt), "kind": "done",
-                        "text": n.get("doneWhy") or text})
-        elif n.get("blocked") and n.get("blockWhy") and mt >= t0:
-            out.append({"judge": "planner", "sid": sid, "t": endt(mt), "kind": "block",
-                        "text": n.get("blockWhy") or text})
+        # done/block attribution reads the DIARY now (P3.4 2026-07-07): the event's src field IS the
+        # provenance (negComplete/negBlock flags retired), each verdict gets its own mark at its own
+        # evidence time, and reconstructed (synth) history never fakes a judging mark.
+        for _e in (n.get("log") or []):
+            if _e.get("synth") or (_e.get("ev_t") or 0) < t0:
+                continue
+            if _e.get("src") in ("planner", "closer") and _e.get("kind") in ("done", "block"):
+                out.append({"judge": _e["src"] if _e["src"] == "planner" else "closer", "sid": sid,
+                            "t": endt(_e["ev_t"]),
+                            "kind": ("done" if _e["src"] == "planner" else "close") if _e["kind"] == "done" else "block",
+                            "text": _e.get("why") or text})
         # distiller — key takeaway on a completed top goal. distilledMt == the goal's completion mt (the
         # completing segment's START); endt() lands the mark at that segment's work-END, just after the bar.
         # (The distiller LLM runs a pass later; the mark shows the work it summarizes, aligned to that work's

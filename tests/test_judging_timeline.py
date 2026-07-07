@@ -3,7 +3,10 @@
 
 `_derive_judging` reshapes the REAL artifacts the summarizer judges write — captions/<sid>.jsonl,
 the goal tree's nodes, archive/<sid>.json — into {judge, sid, t, kind, text} marks the timeline view
-draws as a second timeline. Synthetic data only (placeholder UUID, invented captions/goals)."""
+draws as a second timeline. Since the P3.4 sweep (2026-07-07) done/block attribution reads each
+node's verdict DIARY (the event's src field is the provenance; negComplete/negBlock retired), one
+mark per witnessed verdict at its own evidence time; reconstructed (synth) history never fakes a
+mark. Synthetic data only (placeholder UUID, invented captions/goals)."""
 import os
 import unittest
 from importlib.machinery import SourceFileLoader
@@ -51,20 +54,23 @@ class DeriveJudging(unittest.TestCase):
             "g1": {"id": "g1", "parentId": None, "t": NOW - 200, "text": "Top goal"},          # mint
             "g2": {"id": "g2", "parentId": "g1", "t": NOW - 150, "text": "a step"},             # sub
             "g3": {"id": "g3", "parentId": "g1", "t": NOW - 300, "text": "ship it",
-                   "nodeComplete": True, "doneWhy": "shipped", "mt": NOW - 90},                 # sub + done
+                   "nodeComplete": True, "doneWhy": "shipped", "mt": NOW - 90,                  # sub + done
+                   "log": [{"ev_t": NOW - 90, "src": "planner", "kind": "done", "why": "shipped"}]},
             "g4": {"id": "g4", "parentId": "g1", "t": NOW - 250, "text": "blocked one",
-                   "blocked": True, "blockWhy": "needs a key", "mt": NOW - 80},                 # sub + block
+                   "blocked": True, "blockWhy": "needs a key", "mt": NOW - 80,                  # sub + block
+                   "log": [{"ev_t": NOW - 80, "src": "planner", "kind": "block", "why": "needs a key"}]},
         }
         kinds = {m["kind"] for m in marks({}, nodes) if m["judge"] == "planner"}
         self.assertEqual(kinds, {"mint", "sub", "done", "block"})
 
-    def test_grouper_courier_closer_keyed_off_node_flags(self):
+    def test_grouper_courier_closer_keyed_off_node_artifacts(self):
         nodes = {
             "u": {"id": "u", "parentId": None, "t": NOW - 100, "text": "umbrella", "umbrella": True},
             "h": {"id": "h", "parentId": None, "t": NOW - 90, "text": "handoff goal",
                   "origin": {"peer": "PEER", "msgId": "m1"}},
             "c": {"id": "c", "parentId": "x", "t": NOW - 300, "text": "swept goal",
-                  "negComplete": True, "nodeComplete": True, "doneWhy": "no work left", "mt": NOW - 70},
+                  "nodeComplete": True, "doneWhy": "no work left", "mt": NOW - 70,
+                  "log": [{"ev_t": NOW - 70, "src": "closer", "kind": "done", "why": "no work left"}]},
         }
         out = marks({}, nodes)
         by_judge = {m["judge"] for m in out}
@@ -79,11 +85,21 @@ class DeriveJudging(unittest.TestCase):
         self.assertNotIn("umbrella", planner_texts)
         self.assertNotIn("handoff goal", planner_texts)
 
-    def test_closer_wins_over_planner_done_for_a_swept_node(self):
+    def test_the_diary_src_is_the_provenance(self):
+        # one done, two ways: the closer swept it → its mark is the closer's, never the planner's
         nodes = {"c": {"id": "c", "parentId": "x", "t": NOW - 300, "text": "swept",
-                       "negComplete": True, "nodeComplete": True, "doneWhy": "done", "mt": NOW - 70}}
+                       "nodeComplete": True, "doneWhy": "done", "mt": NOW - 70,
+                       "log": [{"ev_t": NOW - 70, "src": "closer", "kind": "done", "why": "done"}]}}
         completions = [m for m in marks({}, nodes) if m["kind"] in ("close", "done")]
-        self.assertEqual([m["judge"] for m in completions], ["closer"], "negComplete → closer, not planner-done")
+        self.assertEqual([m["judge"] for m in completions], ["closer"],
+                         "the diary's src field attributes the verdict (negComplete retired)")
+
+    def test_synth_history_never_fakes_a_judging_mark(self):
+        # a backfilled (reconstructed) done is history bookkeeping, not a witnessed judge run
+        nodes = {"c": {"id": "c", "parentId": "x", "t": NOW - 300, "text": "migrated",
+                       "nodeComplete": True, "mt": NOW - 70,
+                       "log": [{"ev_t": NOW - 70, "src": "judge", "kind": "done", "synth": True}]}}
+        self.assertEqual([m for m in marks({}, nodes) if m["kind"] in ("close", "done")], [])
 
     def test_node_without_t_is_skipped(self):
         self.assertEqual(marks({}, {"bad": {"id": "bad", "parentId": None, "text": "no t"}}), [])
@@ -99,11 +115,12 @@ class DeriveJudging(unittest.TestCase):
         self.assertEqual(dj[0]["text"], "The key takeaway.", "the distiller mark carries the goal's summary")
 
     def test_completion_marks_land_at_the_work_END_not_the_prompt(self):
-        # A goal's mt is the completing SEGMENT'S START (its prompt/trigger time). A completion-flavoured
-        # mark (done/close/block/distill/brief) must plot at that segment's work-END — passed via seg_ends —
-        # so it sits AFTER the work bar, not on the prompt with the work trailing (the user 2026-06-19).
+        # A goal's verdict ev_t is the completing SEGMENT'S START (its prompt/trigger time). A completion-
+        # flavoured mark (done/close/block/distill/brief) must plot at that segment's work-END — passed via
+        # seg_ends — so it sits AFTER the work bar, not on the prompt (the user 2026-06-19).
         nodes = {"g1": {"id": "g1", "parentId": None, "t": NOW - 300, "text": "Top", "nodeComplete": True,
-                        "doneWhy": "shipped", "mt": NOW - 200, "distilledMt": NOW - 200, "summary": "key"}}
+                        "doneWhy": "shipped", "mt": NOW - 200, "distilledMt": NOW - 200, "summary": "key",
+                        "log": [{"ev_t": NOW - 200, "src": "planner", "kind": "done", "why": "shipped"}]}}
         seg_ends = {NOW - 200: NOW - 140}                 # completing segment: started at mt, finished 60s later
         out = []
         km._derive_judging(SID, {}, {"nodes": nodes}, T0, out, seg_ends)
@@ -119,10 +136,11 @@ class DeriveJudging(unittest.TestCase):
         self.assertEqual(next(m for m in out if m["kind"] == "mint")["t"], NOW - 200, "a mint stays at the prompt")
         self.assertEqual(next(m for m in out if m["judge"] == "captioner")["t"], NOW - 200, "a caption stays at its segment")
 
-    def test_seg_ends_absent_falls_back_to_mt(self):
-        # No seg_ends (the bare unit-test call) → completion marks keep the old mt placement.
+    def test_seg_ends_absent_falls_back_to_the_evidence_time(self):
+        # No seg_ends (the bare unit-test call) → completion marks keep the event's own ev_t placement.
         nodes = {"g1": {"id": "g1", "parentId": None, "t": NOW - 300, "text": "Top", "nodeComplete": True,
-                        "doneWhy": "x", "mt": NOW - 80}}
+                        "doneWhy": "x", "mt": NOW - 80,
+                        "log": [{"ev_t": NOW - 80, "src": "planner", "kind": "done", "why": "x"}]}}
         self.assertEqual(next(m for m in marks({}, nodes) if m["kind"] == "done")["t"], NOW - 80)
 
     def test_block_distiller_keyed_off_briefedMt_with_the_decision_brief(self):
@@ -148,18 +166,20 @@ class DeriveJudging(unittest.TestCase):
         kinds = sorted(m["kind"] for m in marks({}, nodes) if m["judge"] == "distiller")
         self.assertEqual(kinds, ["brief", "distill"], "both the brief and the takeaway mark the timeline")
 
-    def test_closer_block_via_negBlock_attributed_to_closer(self):
+    def test_closer_block_attributed_via_the_diary(self):
         nodes = {"b": {"id": "b", "parentId": "x", "t": NOW - 300, "text": "blocked top",
-                       "blocked": True, "blockWhy": "needs a key", "negBlock": True, "mt": NOW - 70}}
+                       "blocked": True, "blockWhy": "needs a key", "mt": NOW - 70,
+                       "log": [{"ev_t": NOW - 70, "src": "closer", "kind": "block", "why": "needs a key"}]}}
         blocks = [m for m in marks({}, nodes) if m["kind"] == "block"]
-        self.assertEqual([m["judge"] for m in blocks], ["closer"], "negBlock → closer block, not planner")
+        self.assertEqual([m["judge"] for m in blocks], ["closer"], "the block event's src → closer")
         self.assertEqual(blocks[0]["text"], "needs a key")
 
-    def test_planner_block_when_no_negBlock(self):
+    def test_planner_block_attributed_via_the_diary(self):
         nodes = {"b": {"id": "b", "parentId": "x", "t": NOW - 300, "text": "blocked top",
-                       "blocked": True, "blockWhy": "needs input", "mt": NOW - 70}}
+                       "blocked": True, "blockWhy": "needs input", "mt": NOW - 70,
+                       "log": [{"ev_t": NOW - 70, "src": "planner", "kind": "block", "why": "needs input"}]}}
         blocks = [m for m in marks({}, nodes) if m["kind"] == "block"]
-        self.assertEqual([m["judge"] for m in blocks], ["planner"], "blocked without negBlock → planner block")
+        self.assertEqual([m["judge"] for m in blocks], ["planner"], "the block event's src → planner")
 
 
 if __name__ == "__main__":

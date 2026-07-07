@@ -118,8 +118,6 @@ PLAN_SESSIONS = None                     # per-pass session cap — REMOVED (the
                                          # nudge stuck behind a full per-pass window), never clearly needed.
                                          # None → fleet[:None] is the whole fleet (advance EVERY session each
                                          # pass). Parses are cached, so an unchanged session still costs ~0.
-PLAN_FAIRNESS = None                     # per-session segment cap — REMOVED (the user 2026-06-30): None →
-                                         # units[:None] is all units (plan EVERY un-placed segment each pass)
 PLAN_PARSE_RETRIES = 3                    # parse-fails on ONE segment before we stop retrying it: a reply
                                          # that never parses can't storm the error log / burn Sonnet calls
                                          # forever — a human message is then hard-placed, a non-user
@@ -1302,7 +1300,6 @@ def _mark_node_done(store, nid, why, t):
     if nid not in nodes:
         return
     nodes[nid]["nodeComplete"] = True
-    nodes[nid]["everDone"] = True                      # durable: a once-done node is FOREVER grouper-exempt
     nodes[nid]["doneWhy"] = why
     nodes[nid]["mt"] = t                               # a done bumps last-modified (for recency ordering)
     kids = {}
@@ -1389,12 +1386,12 @@ def apply_plan(store, seg_id, seg_t, ops, menu, place_key=None, prompt_uuid=None
             _unblock_branch(nid); focus = touched = nid
         elif do == "done":
             t = _target(o)
-            if t and record_verdict(store, nodes[t], "judge", "done", seg_t, why=o["why"], seg=seg_id):
+            if t and record_verdict(store, nodes[t], "planner", "done", seg_t, why=o["why"], seg=seg_id):
                 _complete(t, o["why"]); touched = t
                 _eager_done_sample(store, t, seg_t)   # E6: was this eager done on the FOCUS top? (gates P4)
         elif do == "block":
             t = _target(o)
-            if t and record_verdict(store, nodes[t], "judge", "block", seg_t, why=o["why"], seg=seg_id):
+            if t and record_verdict(store, nodes[t], "planner", "block", seg_t, why=o["why"], seg=seg_id):
                 nodes[t]["blocked"] = True; nodes[t]["blockWhy"] = o["why"]
                 nodes[t]["mt"] = seg_t; touched = t
         elif do == "retitle":
@@ -1464,19 +1461,6 @@ def _eager_done_sample(store, nid, seg_t):
     except Exception:
         pass
 
-
-def _heal_log(heal, store, nid):
-    """E2 telemetry (plan gate for P3, the user 2026-07-06): one JSONL line each time a rollup HEAL
-    actually changes something — which heal, which store/node. The verdict-log fold claims to subsume
-    these heals; a week of this log either confirms each heal fires only for reasons the fold covers
-    (safe to delete at P3.3) or surfaces an unknown dependency BEFORE deletion. Best-effort, never
-    raises; remove with the heals themselves."""
-    try:
-        with (STATE / "heal-fire.jsonl").open("a") as f:
-            f.write(json.dumps({"t": int(time.time()), "heal": heal,
-                                "sid": store.get("rompUuid"), "nid": nid}) + "\n")
-    except Exception:
-        pass
 
 
 def rollup_status(store, session_closed, now=None):
@@ -1575,8 +1559,7 @@ def rollup_status(store, session_closed, now=None):
             # in-flight targeted follow-up isn't affected: optimistic_followup UNBLOCKS the goal, so it
             # doesn't reach this branch until a judge verdict re-blocks it — at which point the pending IS
             # resolved and the card correctly returns to Needs-You.
-            if nodes[nid].pop("followupPending", None):
-                _heal_log("fp-blocked", store, nid)
+            nodes[nid].pop("followupPending", None)
             status[nid] = "blocked"
         elif nodes[nid].get("followupPending"):       # optimistic reopen: show WORKING until the judge processes the follow-up
             # ...UNLESS the judge has genuinely RE-COMPLETED it (nodeComplete + settled). A status Nudge sets
@@ -1595,8 +1578,7 @@ def rollup_status(store, session_closed, now=None):
                     nodes[nid]["settledAt"] = latest_t    # (transition only; a legacy completed top keeps the mt fallback)
                     _stamp_seam(store, nid, now if now is not None else time.time())   # settle moment → seam point (segment-regrowth)
                 nodes[nid]["settledDone"] = True
-                if nodes[nid].pop("followupPending", None):   # resolved → drop the stale optimistic chip
-                    _heal_log("fp-recomplete", store, nid)
+                nodes[nid].pop("followupPending", None)   # resolved → drop the stale optimistic chip
                 status[nid] = "completed"
             else:
                 status[nid] = "working"
@@ -1630,7 +1612,6 @@ def rollup_status(store, session_closed, now=None):
             if not nd.get("cleared") and not nd.get("nodeComplete"):
                 nd[field] = True
                 nd["rolledUp"] = True
-                _heal_log("roll-down", store, c)
             _roll_down(c, field)
     for nid in children.get(None, []):
         if status[nid] == "cleared":
@@ -1647,7 +1628,6 @@ def rollup_status(store, session_closed, now=None):
         if nodes[nid].get("blocked") and is_complete(nid):
             nodes[nid]["blocked"] = False
             nodes[nid].pop("blockWhy", None)
-            _heal_log("moot-block", store, nid)
     store["status"] = status
 
 
@@ -2317,24 +2297,6 @@ def _cleared_context(fsid, store, cap=6):
     return "\n".join(out)
 
 
-def _nudge_diag(event, **fields):
-    """TEMP INSTRUMENTATION (the user 2026-06-30) — append one JSON line to STATE/nudge-diag.jsonl to catch
-    the completed→blocked flip IN THE WILD. We could not reproduce it synthetically: the open question is
-    whether an auto-nudge ever FIRES on a goal that is actually done (nodeComplete / subtree-complete) while
-    its rolled-up STATUS still reads 'working' (a settledDone-never-stamped window) — and, separately, which
-    code path ever _reopen's an already-completed goal. Two events are recorded:
-      'nudge-fire'  (logged in the kernel's _auto_nudge_tick) — the goal's nodeComplete / subtreeDone /
-                    status / settledDone at the instant a nudge fires. A fire with nodeComplete=True proves
-                    the firing-side bug is real.
-      'reopen-done' (logged here) — a _reopen UN-COMPLETED a goal that was nodeComplete, tagged with the
-                    caller (`by`) so we see WHICH path (nudge / followup / optimistic / delegation) did it.
-    Remove once the cause is found. Best-effort; never raises into the caller."""
-    try:
-        with (STATE / "nudge-diag.jsonl").open("a") as f:
-            f.write(json.dumps({"event": event, "t": int(time.time()), **fields}) + "\n")
-    except Exception:
-        pass
-
 
 def _reopen(store, gid, by="?", now=None):
     """Reopen a completed/blocked goal so a tagged FOLLOW-UP can accrue more work under it: clear
@@ -2343,15 +2305,15 @@ def _reopen(store, gid, by="?", now=None):
     settled gate re-completes it once the follow-up work is done. This is the ONLY exception to the
     sealed-completed-subtree rule (the user 2026-06-17) — EXCEPT a goal the user crossed off the feed
     (view-cleared): that stays sealed, a follow-up to it must NOT revive it, so the caller places the work
-    as a fresh goal instead (the user 2026-06-22). `by` is a TEMP instrumentation tag (see _nudge_diag)
-    naming the caller, so a reopen of an already-completed goal is attributed to its source."""
+    as a fresh goal instead (the user 2026-06-22). `by` names the caller; it feeds the reopen event's
+    src mapping and why-text (the diary is the audit trail)."""
     nodes = store["nodes"]
     if gid not in nodes:
         return
     # DUAL-WRITE: the gate + the reopen event in one call (P3.1). Source maps from the caller: the
     # user's own actions (a typed follow-up, the optimistic flip, Move to Working) are "user"; a
     # delegation/nudge unseal is judge machinery. ev_t = the action moment when the caller knows it.
-    src = "judge" if by in ("delegation", "nudge") else "user"
+    src = {"delegation": "courier", "nudge": "planner"}.get(by, "user")
     if now is None:
         # default the event time to the STORE's latest known moment, not the wall clock: a wall stamp in
         # a store whose evidence times are older (tests; replayed history) would out-order every later
@@ -2360,9 +2322,6 @@ def _reopen(store, gid, by="?", now=None):
                   default=int(time.time()))
     if not record_verdict(store, nodes[gid], src, "reopen", now, why="reopened (%s)" % by):
         return                                         # view-cleared → stays sealed; don't un-seal it
-    if nodes[gid].get("nodeComplete"):                 # reopening a DONE node: stamp the durable everDone marker
-        _nudge_diag("reopen-done", gid=gid, by=by)     # INSTRUMENTATION: a COMPLETED goal is being un-completed — by whom?
-        nodes[gid]["everDone"] = True                  # BEFORE clearing nodeComplete, so the grouper never relinks it
     nodes[gid]["nodeComplete"] = False
     nodes[gid]["cleared"] = False
     nodes[gid].pop("followupPending", None)            # official reopen → drop the optimistic chip flag
@@ -2539,7 +2498,7 @@ def may_apply(store, nd, src, kind, ev_t=None):
     the nudge-phase target check)."""
     if kind == "reopen":
         return nd.get("id") not in _view_cleared()
-    if src == "judge":
+    if src not in ("user", "agent"):               # judge-RANK: planner/closer/courier/grouper/nudge...
         if kind == "done":
             return not _done_is_stale(nd, ev_t)
         if kind == "block":
@@ -2585,10 +2544,10 @@ def _fold_node_state(nd):
             if src == "user":
                 floor = max(floor, t)
         elif kind == "done":
-            if src != "judge" or t >= floor:
+            if src in ("user", "agent") or t >= floor:
                 state = "done"
         elif kind == "block":
-            if src != "judge" or t > floor:
+            if src in ("user", "agent") or t > floor:
                 state = "blocked"
         elif kind == "unblock":
             if state == "blocked":
@@ -2850,7 +2809,6 @@ def _plan_session(fsid, path, now):
         units.append(u)
     if retired:
         save_goals(fsid, store)                       # persist the retirements so they dedup out next pass
-    units = units[:PLAN_FAIRNESS]
     placed = 0
     for seg_id, phase, seg_t, text, human, followup, trig, vq in units:
         if _placed_key(store["placements"], _unit_key(seg_id, phase), live):
@@ -3481,7 +3439,7 @@ def _clear_empty_umbrellas(store):
     changed = False
     for nd in nodes.values():
         if nd.get("umbrella") and not nd.get("cleared") and live.get(nd["id"], 0) == 0:
-            record_verdict(store, nd, "judge", "clear", int(time.time()), why="empty umbrella")
+            record_verdict(store, nd, "grouper", "clear", int(time.time()), why="empty umbrella")
             nd["cleared"] = True
             changed = True
     return changed
@@ -3705,22 +3663,19 @@ def apply_close(store, menu, verdicts, t=None):
         if nd.get("nodeComplete"):
             continue
         if i in done:
-            if not record_verdict(store, nd, "judge", "done", t, why=done[i] or None):
+            if not record_verdict(store, nd, "closer", "done", t, why=done[i] or None):
                 continue                              # the user's follow-up/move postdates this turn's evidence
             nd["nodeComplete"] = True
-            nd["everDone"] = True                      # durable once-done marker (provenance; see _done_is_stale)
             nd["blocked"] = False
-            nd["negComplete"] = True
             if done[i]:
                 nd["doneWhy"] = done[i]
             if t is not None:
                 nd["mt"] = t
             newly.append(nd["id"])
         elif i in block:
-            if not record_verdict(store, nd, "judge", "block", t, why=block[i] or None):   # the user's follow-up postdates this turn's evidence —
+            if not record_verdict(store, nd, "closer", "block", t, why=block[i] or None):   # the user's follow-up postdates this turn's evidence —
                 continue                               # their reply owns the verdict now, not this stale close
             nd["blocked"] = True
-            nd["negBlock"] = True                      # closer-set block (turn-end), mirrors negComplete — for timeline attribution
             if block[i]:
                 nd["blockWhy"] = block[i]
             if t is not None:
@@ -4525,7 +4480,7 @@ def run_propagate(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY,
             a_node = a_store.get("nodes", {}).get(a_gid)
             if not a_node or a_node.get("nodeComplete"):
                 continue                                # sender's tracking node gone or already done → idempotent
-            record_verdict(a_store, a_store["nodes"][a_gid], "judge", "done", now,
+            record_verdict(a_store, a_store["nodes"][a_gid], "courier", "done", now,
                            why="completed by %s (delegated)" % (name or fsid[:8]))
             _mark_node_done(a_store, a_gid, "completed by %s (delegated)" % (name or fsid[:8]), now)
             rollup_status(a_store, False)               # sender just had work close → recompute its columns

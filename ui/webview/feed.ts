@@ -71,7 +71,6 @@ interface AskItem {
   column: "working" | "needs_input" | "completed";   // RAW kernel value (build_feed): working/needs_input/completed. askColumn() maps it to the local Column. NOT "asks" — that was a stale lie that silently broke `it.column === "asks"` checks.
   openQuestions: AskQuestion[];                    // live unanswered DECISIONs → decision sub-cards
   openPaths: AskPath[];                            // open leaves → "waiting on X" drop-point lines
-  reopened?: boolean;                              // resurrected: a question arrived AFTER the user cleared it
   followupPending?: boolean;                       // you followed up on a settled card → optimistically reopened, awaiting the judge's re-file (kernel)
   recheck?: boolean;                               // soft-block you answered with a TARGETED follow-up → de-urgented (dotted), moved to Working, dropped from the "need input" count, until the judge resolves or re-blocks it (kernel build_feed; the user 2026-06-27)
   rejudging?: boolean;                             // soft-block + a PLAIN thread reply after it → moves to WORKING while the reply is in flight (echo/open turn), with a "Re-judging…" swirl; returns to Needs-You on its own if the judge leaves it blocked (kernel build_feed; the user 2026-07-02, immediate)
@@ -600,7 +599,8 @@ function makeAskCard(it: AskItem): HTMLElement {
   origin.title = "this work was delegated from another session — click to open it";
   idwrap.append(name);
   const actions = el("div", "fask-actions");
-  const reBadge = el("span", "fask-reopened"); reBadge.textContent = "reopened"; reBadge.title = "a question arrived after you cleared this"; reBadge.style.display = "none";
+  // (the "reopened" chip was DELETED 2026-07-07: dead since cleared-is-sealed-forever made a follow-up
+  // to a cleared card a FRESH goal (2026-06-22) — the kernel never produced the flag again.)
   // Now serves ONLY the "↩ re-judging" recheck state — the plain "↻ Followed up" (reopened-to-Working) badge
   // was removed (the user 2026-07-01: click-to-cite makes follow-up routine, so the ack is noise). updateAskCard
   // sets the text/title when it shows for recheck.
@@ -654,7 +654,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   // "↪ from <peer>" provenance + the "reopened"/"↻ Followed up" chips ride the name row's right side;
   // row2 wraps them onto a new line when there isn't room, so the provenance never overlaps a chip
   // (the user 2026-06-20). origin sits left of the chips, matching the "from … · Followed up" reading order.
-  row2.append(idwrap, origin, reBadge, fupBadge, nfBadge, intBadge, warnChip, waitOnBadge);
+  row2.append(idwrap, origin, fupBadge, nfBadge, intBadge, warnChip, waitOnBadge);
   // ROW 3 — timestamp bottom-left · action buttons bottom-right
   const row3 = el("div", "fask-row3"); row3.append(time, actions);
   // the user's handoff spec (2026-06-10): below the main session, list the OTHER
@@ -790,7 +790,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   });
 
   const a = card as any;
-  a._title = title; a._name = name; a._time = time; a._reopened = reBadge; a._followedup = fupBadge;
+  a._title = title; a._name = name; a._time = time; a._followedup = fupBadge;
   a._nudgeFailed = nfBadge;
   a._interrupted = intBadge;
   a._warnChip = warnChip;
@@ -910,7 +910,6 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
     og.style.display = "none";
   }
   a._time.textContent = relAge(hostNow - it.t);
-  a._reopened.style.display = it.reopened ? "" : "none";
   // RE-CHECK chip (the user 2026-06-27): a soft-block you answered with a TARGETED follow-up (kernel `recheck`).
   // Reads "↩ re-judging" so you know it registered and isn't on you, pending the judge's verdict. (A PLAIN reply
   // is `rejudging`, not `recheck` — it stays in Needs-You, so no chip here; its swirl says "Re-judging…".)

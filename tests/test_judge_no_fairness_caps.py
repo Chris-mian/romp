@@ -34,9 +34,8 @@ class NoFairnessCaps(unittest.TestCase):
     def test_caps_are_unbounded(self):
         # None → list[:None] is the whole list, so no per-pass/per-session throttle survives.
         self.assertIsNone(jd.PLAN_SESSIONS)
-        self.assertIsNone(jd.PLAN_FAIRNESS)
+        self.assertFalse(hasattr(jd, "PLAN_FAIRNESS"), "cap constant deleted outright (P3.4 2026-07-07)")
         self.assertIsNone(jd.CLOSE_FAIRNESS)
-        self.assertEqual(list(range(20))[:jd.PLAN_FAIRNESS], list(range(20)))   # the slice keeps everything
         self.assertEqual(list(range(20))[:jd.PLAN_SESSIONS], list(range(20)))
 
     def test_close_session_handles_none_cap_over_many_ended_turns(self):

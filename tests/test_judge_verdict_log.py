@@ -176,7 +176,7 @@ class DualWriteThroughTheSites(unittest.TestCase):
         menu = [{"id": G1, "text": "Ship it"}]
         jd.apply_plan(store, "seg-x", T, [{"do": "done", "goal": 1, "why": "shipped"}], menu, place_key="seg-x")
         log = store["nodes"][G1]["log"]
-        self.assertEqual([(e["src"], e["kind"]) for e in log], [("judge", "done")])
+        self.assertEqual([(e["src"], e["kind"]) for e in log], [("planner", "done")])
         self.assertEqual(log[0]["seg"], "seg-x")
         samples = [json.loads(l) for l in (jd.STATE / "eager-done-samples.jsonl").read_text().splitlines()]
         self.assertEqual(len(samples), 1)
@@ -196,7 +196,7 @@ class DualWriteThroughTheSites(unittest.TestCase):
         store = {"rompUuid": SID, "nodes": {G1: node()}, "placements": {}, "status": {}}
         jd.apply_close(store, [store["nodes"][G1]], {"block": {1: "pick a name"}}, t=T)
         self.assertEqual([(e["src"], e["kind"], e["why"]) for e in store["nodes"][G1]["log"]],
-                         [("judge", "block", "pick a name")])
+                         [("closer", "block", "pick a name")])
 
 
 if __name__ == "__main__":

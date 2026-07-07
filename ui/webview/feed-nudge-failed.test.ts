@@ -16,7 +16,7 @@ const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "
 test("the stalled chip is built once and rides the wrapping chip row", () => {
   assert.match(FEED, /const nfBadge = el\("span", "fask-nudgefailed"\)/);
   assert.match(FEED, /nfBadge\.textContent = "stalled"/, "the label is 'stalled' (the user 2026-07-02), no emoji/glyph");
-  assert.match(FEED, /row2\.append\(idwrap, origin, reBadge, fupBadge, nfBadge, intBadge, warnChip, waitOnBadge\)/);
+  assert.match(FEED, /row2\.append\(idwrap, origin, fupBadge, nfBadge, intBadge, warnChip, waitOnBadge\)/);
   assert.match(FEED, /a\._nudgeFailed = nfBadge;/);
 });
 
@@ -52,4 +52,10 @@ test("the modal shows the follow-up history line for a single ask", () => {
   assert.match(FEED, /nudEl\.textContent = `romp followed up \$\{nu\.count\}× — \$\{nu\.times\.map\(clockHM\)\.join\(", "\)\}`;/);
   assert.match(FEED, /nudEl\.style\.display = "none";/, "hidden when the target has no recorded fires");
   assert.match(CSS, /\.feed-modal-nudges \{[^}]*color: var\(--dim\)/, "dim meta text, not a shouting banner");
+});
+
+test("the dead 'reopened' chip is gone (2026-07-07): cleared-is-sealed made it unreachable", () => {
+  assert.doesNotMatch(FEED, /fask-reopened/);
+  assert.doesNotMatch(FEED, /it\.reopened/);
+  assert.doesNotMatch(CSS, /fask-reopened/);
 });

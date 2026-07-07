@@ -1121,7 +1121,8 @@ class ClearedSeal(unittest.TestCase):
         s["nodes"][gid]["nodeComplete"] = True
         jd._reopen(s, gid)
         self.assertFalse(s["nodes"][gid]["nodeComplete"], "a normal completed goal still reopens (no view-clear)")
-        self.assertTrue(s["nodes"][gid].get("everDone"), "and the durable everDone marker is stamped")
+        self.assertTrue(any(e["kind"] == "reopen" for e in s["nodes"][gid]["log"]),
+                        "and the reopen is in the diary (everDone flag retired, P3.4 2026-07-07)")
 
 
 class PlanRef(unittest.TestCase):
@@ -1313,10 +1314,12 @@ class Grouper(unittest.TestCase):
         s, a, b = self._two_tops()
         di = next(i for i, nd in enumerate(jd.open_menu(s), 1) if nd["id"] == b)
         jd.apply_plan(s, "sd", T0 + 15, [{"do": "done", "why": "shipped", "goal": di}], jd.open_menu(s))
-        self.assertTrue(s["nodes"][b].get("everDone"), "completing B stamps the durable everDone marker")
+        self.assertTrue(any(e["kind"] == "done" for e in s["nodes"][b]["log"]),
+                        "completing B is in the diary (everDone flag retired, P3.4 2026-07-07)")
         jd._reopen(s, b)                                          # a follow-up reopens B
         self.assertFalse(s["nodes"][b]["nodeComplete"], "the follow-up reopened B")
-        self.assertTrue(s["nodes"][b].get("everDone"), "everDone persists through the reopen (provenance)")
+        self.assertTrue(any(e["kind"] == "reopen" for e in s["nodes"][b]["log"]),
+                        "and the reopen is in the diary too — history persists by construction")
         tops = jd._group_tops(s)                                  # B is an open top again
         ai = next(i for i, nd in enumerate(tops, 1) if nd["id"] == a)
         bi = next(i for i, nd in enumerate(tops, 1) if nd["id"] == b)
@@ -2900,7 +2903,8 @@ class SweepApply(unittest.TestCase):
         self.assertFalse(g2["nodeComplete"], "a goal not listed stays open")
         self.assertEqual(g1["doneWhy"], "shipped G1", "the closer's reason is persisted as doneWhy")
         self.assertEqual(g1["mt"], T0 + 50, "the close bumps mt so the done node deep-links to the turn")
-        self.assertTrue(g1.get("negComplete"), "closer-completed nodes are tagged for the A/B sample")
+        self.assertEqual([e["src"] for e in g1["log"] if e["kind"] == "done"], ["closer"],
+                         "the diary's src IS the provenance (negComplete flag retired, P3.4 2026-07-07)")
 
     def test_blocks_listed_goals_with_the_question_as_blockwhy(self):
         # the user 2026-06-17: the closer can BLOCK a touched top (needs-you), recording the question.
@@ -2911,7 +2915,8 @@ class SweepApply(unittest.TestCase):
         self.assertTrue(g2["blocked"], "the blocked goal is marked needs-you")
         self.assertEqual(g2["blockWhy"], "Approve the rename?", "the question rides in blockWhy")
         self.assertFalse(g2["nodeComplete"], "a blocked goal is not completed")
-        self.assertTrue(g2["negBlock"], "a closer-set block is tagged negBlock (vs a planner block) for attribution")
+        self.assertEqual([e["src"] for e in g2["log"] if e["kind"] == "block"], ["closer"],
+                         "the diary's src distinguishes a closer block from a planner one (negBlock retired)")
 
     def test_empty_completes_and_blocks_nothing(self):
         s = _store()
@@ -5291,5 +5296,5 @@ class StaleBlockGuard(unittest.TestCase):
         # this pin just keeps the planner on the one seam.
         import inspect
         src = inspect.getsource(jd)
-        self.assertIn('if t and record_verdict(store, nodes[t], "judge", "block", seg_t', src,
+        self.assertIn('if t and record_verdict(store, nodes[t], "planner", "block", seg_t', src,
                       "the planner's block op must go through record_verdict exactly like the closer")
