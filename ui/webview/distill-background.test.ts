@@ -41,9 +41,10 @@ test("the buttons ARE the toggles: pressed state reads at a glance, mutually exc
   assert.doesNotMatch(FEED, /fask-less/, "the less control is gone");
 });
 
-test("state: a single mutually-exclusive secChoice (bg | summary | none), default summary open", () => {
+test("state: a single mutually-exclusive secChoice (bg | summary | none); default follows the Collapsed mode", () => {
   assert.match(FEED, /const secChoice = new Map<string, "bg" \| "summary" \| "none">\(\);/);
-  assert.match(FEED, /function resolveSec\(id: string\): "bg" \| "summary" \| "none" \{ return secChoice\.get\(id\) \?\? "summary"; \}/);
+  // absent from the map → the DEFAULT, set by the footer "Collapsed" toggle (off → summary, on → none)
+  assert.match(FEED, /return secChoice\.get\(id\) \?\? \(feedPrefs\(\)\.collapsed \? "none" : "summary"\);/);
   // click the showing section → off; click the other → switch (one body at a time)
   assert.match(FEED, /secChoice\.set\(id, choice === want \? "none" : want\)/);
   assert.match(FEED, /a\._bgBtn\.onclick = pick\("bg"\);/);

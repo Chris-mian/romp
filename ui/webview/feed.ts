@@ -240,11 +240,14 @@ const vscodeApi =
 // Card-display prefs read straight from the shared 'romp:settings' (the kernel's ⛭ gear writes it; same
 // document as this feed bundle). Default ON. These gate the CARDS only — the modal always shows everything
 // (the user 2026-06-17). `!== false` so a missing key defaults to shown.
-function feedPrefs(): { subgoals: boolean } {
+function feedPrefs(): { subgoals: boolean; newestFirst: boolean; collapsed: boolean } {
   try {
     const s = JSON.parse(localStorage.getItem("romp:settings") || "{}");
-    return { subgoals: s.subgoals !== false };
-  } catch { return { subgoals: true }; }
+    // newestFirst + collapsed default OFF (=== true): the feed's natural order is oldest-first, and cards
+    // arrive with their summary open (the user 2026-07-07). collapsed is the DEFAULT section state new cards
+    // inherit — a per-card expand overrides just that card without turning the mode off.
+    return { subgoals: s.subgoals !== false, newestFirst: s.newestFirst === true, collapsed: s.collapsed === true };
+  } catch { return { subgoals: true, newestFirst: false, collapsed: false }; }
 }
 // names of sessions currently WORKING → a working dot before that name everywhere
 // it renders (card titles, modal title, group name). Pushed in each feed message.
@@ -639,10 +642,13 @@ function makeAskCard(it: AskItem): HTMLElement {
 // sets so the keyed incremental re-render never snaps a section shut: BACKGROUND is closed unless the
 // user opened it; the takeaway is open unless the user closed it.
 // Which distiller section a card shows — MUTUALLY EXCLUSIVE (the user 2026-07-07): "bg" | "summary" | "none".
-// Absent = the DEFAULT (summary open, so a completed card's takeaway shows). Clicking a toggle that's already
-// showing closes it to "none"; clicking the other switches to it. One body shows at a time, or neither.
+// Absent from the map = the DEFAULT, which the footer "Collapsed" toggle sets: OFF → "summary" open (a
+// completed card's takeaway shows); ON → "none" (collapsed), so NEW cards arrive collapsed too. Clicking a
+// toggle sets an explicit per-card override (one body shows at a time, or neither) that survives the mode.
 const secChoice = new Map<string, "bg" | "summary" | "none">();
-function resolveSec(id: string): "bg" | "summary" | "none" { return secChoice.get(id) ?? "summary"; }
+function resolveSec(id: string): "bg" | "summary" | "none" {
+  return secChoice.get(id) ?? (feedPrefs().collapsed ? "none" : "summary");
+}
 
 // Fill + wire the BACKGROUND and takeaway sections. BACKGROUND shows only alongside a produced
 // takeaway/brief (orientation with no outcome would dangle). Collapsed = a real "background"/"summary"
@@ -1750,31 +1756,48 @@ function ensureClearAll(): HTMLElement {
   return b;
 }
 
-// Collapse/expand ALL cards' distiller sections at once (the user 2026-07-02): a footer button so a
-// crowded feed compacts in one click. "Collapse" closes every card's background AND summary; when
-// nothing is left open it reads "Expand", which restores the DEFAULTS (summaries open, backgrounds
-// closed) — it never force-opens every background. View-only: nothing is cleared or sent.
-function anySectionOpen(): boolean {
-  return asks.some((it) => resolveSec(it.itemId) !== "none");
-}
-function makeCollapseAllBtn(): HTMLElement {
-  const b = el("button", "fdismiss ffollow");   // view action → blue hover, same chrome as Undo clear
-  b.id = "feed-collapseall";
+// A persisted toggle-button helper for the footer (the user 2026-07-07): a small pressed-state button that
+// writes a boolean into the shared romp:settings and re-renders. Used for "Newest first" and "Collapsed".
+// `after` runs BEFORE the re-render (e.g. drop per-card overrides), on the NEW value.
+function makeFeedToggle(id: string, label: string, get: () => boolean, key: string, after?: (on: boolean) => void): HTMLElement {
+  const b = el("button", "fdismiss ffollow feed-modetoggle");   // view action → blue hover; .on = accent (pressed)
+  b.id = id; b.textContent = label;
   b.onclick = (ev) => {
     ev.stopPropagation();
-    if (anySectionOpen()) {
-      for (const it of asks) secChoice.set(it.itemId, "none");   // collapse every card's section
-    } else {
-      secChoice.clear();                         // back to defaults: summaries open
-    }
-    render();
+    const on = !get();
+    try {
+      const s = JSON.parse(localStorage.getItem("romp:settings") || "{}");
+      s[key] = on;
+      localStorage.setItem("romp:settings", JSON.stringify(s));
+    } catch { /* ignore */ }
+    after?.(on);
+    window.dispatchEvent(new Event("romp:settings"));   // same-doc signal → re-render (order / default section)
   };
   return b;
 }
-function ensureCollapseAll(): HTMLElement {
-  let b = document.getElementById("feed-collapseall");
-  if (!b) { b = makeCollapseAllBtn(); (document.getElementById("feed-foot") || document.body).appendChild(b); }
+function ensureFeedToggle(id: string, label: string, get: () => boolean, key: string, onTitle: string, offTitle: string, after?: (on: boolean) => void): HTMLElement {
+  let b = document.getElementById(id) as HTMLElement | null;
+  if (!b) { b = makeFeedToggle(id, label, get, key, after); (document.getElementById("feed-foot") || document.body).appendChild(b); }
+  const on = get();
+  b.classList.toggle("on", on);
+  b.setAttribute("aria-pressed", on ? "true" : "false");
+  b.title = on ? onTitle : offTitle;
   return b;
+}
+// "Newest first" — reverse each column to newest-at-top (default OFF; the feed is naturally oldest-first).
+function ensureNewestFirst(): HTMLElement {
+  return ensureFeedToggle("feed-newestfirst", "Newest first", () => feedPrefs().newestFirst, "newestFirst",
+    "showing newest first — click for the default oldest-first order",
+    "show the newest cards at the top (default: oldest first)");
+}
+// "Collapsed" — the DEFAULT section state cards inherit (the user 2026-07-07): ON collapses every card and
+// makes NEW cards arrive collapsed; a per-card expand overrides just that card WITHOUT turning the mode off.
+// Toggling drops the per-card overrides so the mode visibly re-flows every card to the new default.
+function ensureCollapsedToggle(): HTMLElement {
+  return ensureFeedToggle("feed-collapsed", "Collapsed", () => feedPrefs().collapsed, "collapsed",
+    "new cards arrive collapsed; expanding one is a per-card override — click to expand by default",
+    "collapse every card and have new ones arrive collapsed",
+    () => secChoice.clear());
 }
 
 // Sub-goals toggle (the user 2026-06-18): moved OUT of the ⛭ gear and INTO the feed footer, beside Clear
@@ -2018,12 +2041,8 @@ function render() {
   // footer pane (below the cards, no overlap): Sub-goals toggle (left) · Clear all · UndoClear (right)
   const showCA = !!asks.length;
   ensureSubgoalsToggle();   // the toggle lives in the footer now; visible whenever the footer is
-  const collapseAll = ensureCollapseAll();
-  collapseAll.style.display = showCA ? "" : "none";
-  collapseAll.textContent = anySectionOpen() ? "Collapse" : "Expand";
-  collapseAll.title = anySectionOpen()
-    ? "collapse every card's background + summary (compact cards)"
-    : "restore the default sections (summaries open)";
+  ensureNewestFirst().style.display = showCA ? "" : "none";       // reverse the column order
+  ensureCollapsedToggle().style.display = showCA ? "" : "none";   // default section state (collapsed / expanded)
   ensureClearAll().style.display = showCA ? "" : "none";
   ensureUndoClear().style.display = canUndoClear ? "" : "none";
   const foot = document.getElementById("feed-foot");
@@ -2063,9 +2082,11 @@ function render() {
     buckets[g.column].push({ kind: "group", t: g.t, group: g });
   }
   for (const a of asks) { if (grouped.has(a.itemId)) continue; buckets[askColumn(a)].push({ kind: "ask", t: a.t, ask: a }); }
-  // ALWAYS oldest-at-top (the user 2026-06-27): the newest work sits at the BOTTOM of each column, nearest the
-  // eye, and new/moved cards stack onto the bottom (matches the fly animation). No toggle — this is the behavior.
-  for (const k of Object.keys(buckets) as Column[]) buckets[k].sort((x, y) => x.t - y.t);
+  // Oldest-at-top by default (the user 2026-06-27): the newest work sits at the BOTTOM of each column, and
+  // new/moved cards stack onto the bottom (matches the fly animation). The footer "Newest first" toggle
+  // (default off, the user 2026-07-07) reverses each column to newest-at-top.
+  const newestFirst = feedPrefs().newestFirst;
+  for (const k of Object.keys(buckets) as Column[]) buckets[k].sort((x, y) => newestFirst ? y.t - x.t : x.t - y.t);
 
   // FLIP-across-identity bookkeeping (the user 2026-06-29): map every goal itemId this render → the card KEY
   // that renders it, so the next render can slide a card whose IDENTITY changed (group↔solo, umbrella absorb)

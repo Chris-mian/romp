@@ -9,10 +9,11 @@ import * as path from "node:path";
 
 const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
 
-test("feed reads the sub-goals pref from romp:settings, defaulting ON; explanations is gone", () => {
+test("feed reads sub-goals (default ON) + newestFirst/collapsed (default OFF) from romp:settings", () => {
   assert.match(FEED, /function feedPrefs\(\)/);
   assert.match(FEED, /localStorage\.getItem\("romp:settings"\)/);
-  assert.match(FEED, /return \{ subgoals: s\.subgoals !== false \};/);   // oldestFirst pref removed (always oldest-first now)
+  // subgoals defaults ON (!== false); the two 2026-07-07 mode toggles default OFF (=== true)
+  assert.match(FEED, /return \{ subgoals: s\.subgoals !== false, newestFirst: s\.newestFirst === true, collapsed: s\.collapsed === true \};/);
   assert.doesNotMatch(FEED, /explanations/);   // every trace of the old pref is gone from the feed
 });
 
