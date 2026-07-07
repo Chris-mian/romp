@@ -1028,16 +1028,19 @@ class PlanApply(unittest.TestCase):
         self.assertFalse(s["nodes"][s["placements"]["s2"]]["nodeComplete"], "the child is still open in the store")
         self.assertEqual(jd.open_menu(s), [], "the completed top AND its still-open child are sealed out of the menu")
 
-    def test_open_menu_excludes_provisional_stubs(self):
-        # a provisional follow-up STUB is a UI-only placeholder — hidden from the planner's menu so it never
-        # becomes a planner target (the user 2026-06-24).
+    def test_open_menu_includes_a_reopened_sticky_completed_top(self):
+        # stub retirement (2026-07-07): a reopened goal must be plannable IMMEDIATELY — _reopen refreshes
+        # the node's derived cache mid-pass (settledDone would otherwise stay sticky until the next full
+        # materialize and _sealed would hide the goal from the very pass processing the follow-up).
         s = _store()
         top = _mknode(s, "top")
-        stub = _mknode(s, "Following up: also handle X", parent=top["id"]); stub["provisional"] = True
-        s["status"][stub["id"]] = "working"
+        jd.record_verdict(s, top, "closer", "done", T0 + 10, why="shipped")
+        jd.rollup_status(s, session_closed=True)                 # completed + settled (sticky)
+        self.assertTrue(s["nodes"][top["id"]].get("settledDone"))
+        self.assertEqual(jd.open_menu(s), [], "settled-completed → sealed")
+        jd._reopen(s, top["id"], now=T0 + 50)
         labels = {nd["text"] for nd in jd.open_menu(s)}
-        self.assertIn("top", labels)
-        self.assertNotIn("Following up: also handle X", labels, "the provisional stub is hidden from the planner")
+        self.assertIn("top", labels, "the reopen unseals it in the SAME pass, before any rollup")
 
 
 class RestrictRetitle(unittest.TestCase):
@@ -1108,7 +1111,7 @@ class ClearedSeal(unittest.TestCase):
         s = _store()
         jd.apply_plan(s, "s1", T0, [{"do": "mint", "why": "x", "text": "G"}], [])
         gid = s["placements"]["s1"]
-        s["nodes"][gid]["nodeComplete"] = True                   # completed, node-cleared flag left False (the g8 state)
+        jd.record_verdict(s, s["nodes"][gid], "closer", "done", T0 + 10, why="shipped")   # the g8 state
         self._view_clear(gid)
         jd._reopen(s, gid)
         self.assertTrue(s["nodes"][gid]["nodeComplete"], "a view-cleared goal is NOT reopened by a follow-up")
@@ -1118,8 +1121,8 @@ class ClearedSeal(unittest.TestCase):
         s = _store()
         jd.apply_plan(s, "s1", T0, [{"do": "mint", "why": "x", "text": "G"}], [])
         gid = s["placements"]["s1"]
-        s["nodes"][gid]["nodeComplete"] = True
-        jd._reopen(s, gid)
+        jd.record_verdict(s, s["nodes"][gid], "closer", "done", T0 + 10, why="shipped")
+        jd._reopen(s, gid, now=T0 + 20)
         self.assertFalse(s["nodes"][gid]["nodeComplete"], "a normal completed goal still reopens (no view-clear)")
         self.assertTrue(any(e["kind"] == "reopen" for e in s["nodes"][gid]["log"]),
                         "and the reopen is in the diary (everDone flag retired, P3.4 2026-07-07)")
@@ -1359,7 +1362,7 @@ class Grouper(unittest.TestCase):
     def test_a_settled_done_top_is_not_a_grouper_candidate(self):
         # sticky completion (settledDone) is a "done" signal too — exclude it, keep the still-open top.
         s, a, b = self._two_tops()
-        s["nodes"][a]["settledDone"] = True
+        jd.record_verdict(s, s["nodes"][a], "romp", "settle", T0 + 50)
         tops = [nd["id"] for nd in jd._group_tops(s)]
         self.assertNotIn(a, tops, "a sticky-completed (settledDone) top is excluded from grouping")
         self.assertIn(b, tops, "the still-open top B is still a candidate")
@@ -1626,6 +1629,7 @@ class Consolidator(unittest.TestCase):
         s["nodes"][SID + ":g3"] = {"id": SID + ":g3", "text": "child", "parentId": SID + ":g2",
                                    "nodeComplete": True, "blocked": False, "cleared": False, "trail": ["s"],
                                    "t": T0, "mt": T0}
+        jd.migrate_store(s)                                # legacy-shaped fixture: adopt diaries first
         self.assertTrue(jd._clear_empty_umbrellas(s), "an empty umbrella is cleared")
         self.assertTrue(s["nodes"][SID + ":g1"]["cleared"], "the childless umbrella is crossed off")
         self.assertFalse(s["nodes"][SID + ":g2"]["cleared"], "the umbrella with a live child is left alone")
@@ -1723,21 +1727,24 @@ class PlanRollup(unittest.TestCase):
         jd._reopen(s, g1)
         self.assertIsNone(s["nodes"][g1].get("deltaSince"), "no prior settle → no delta boundary")
 
-    def test_legacy_completed_top_is_not_retroactively_stamped(self):
-        # Safety: a top that settled BEFORE this fix has settledDone but no settledAt. The judge must NOT
-        # back-stamp it (only the genuine first-settlement transition stamps), else every pre-existing
-        # completed card would jump to the bottom at once on the next pass. It keeps the done-mt fallback.
+    def test_legacy_completed_top_keeps_its_mt_order_on_migration(self):
+        # Safety: a top that settled BEFORE settledAt existed has settledDone but no stamp; the feed sorted
+        # it by its completion mt. The settle-event backfill (2026-07-07) synthesizes its settle AT THAT mt,
+        # so the derived settledAt equals the fallback the column already sorted by — the card keeps its
+        # position; no mass reshuffle on deploy (the original intent of not back-stamping, preserved).
         s = _store()
         self._mint(s, "s1", T0, "G1")
         self._done(s, "s2", T0 + 10, 1)
         self._mint(s, "s3", T0 + 20, "G2")
         g1 = s["placements"]["s1"]
-        s["nodes"][g1]["settledDone"] = True                     # already settled in a prior (pre-fix) pass
-        s["nodes"][g1].pop("settledAt", None)
+        with jd._authority():                                    # fabricate the legacy stamp (pre-event store)
+            s["nodes"][g1]["settledDone"] = True                 # already settled in a prior (pre-stamp) pass
+            s["nodes"][g1].pop("settledAt", None)
+        jd.migrate_store(s)                                      # the boot sweep adopts the legacy stamp
         jd.rollup_status(s, session_closed=False)
         self.assertEqual(s["status"][g1], "completed")
-        self.assertIsNone(s["nodes"][g1].get("settledAt"),
-                          "a legacy already-settled top is left unstamped — no mass reshuffle on deploy")
+        self.assertEqual(s["nodes"][g1].get("settledAt"), T0 + 10,
+                         "derived settledAt == the done-mt the feed's fallback already used — same order")
 
     def test_focus_complete_goal_held_until_session_closed(self):
         s = _store()
@@ -1785,17 +1792,21 @@ class PlanRollup(unittest.TestCase):
     def test_stale_followup_pending_does_not_deadlock_a_re_completed_settled_goal(self):
         # The user 2026-06-20 (g70): a status Nudge set followupPending optimistically; the judge then
         # answered + RE-DONED the top. The stale flag must not keep a nodeComplete + settled goal stuck
-        # Working — followupPending forcing 'working' would block the very branch that clears it (deadlock).
+        # Working — the old STORED flag could deadlock that way; the derived chip cannot: a landed
+        # judge verdict on the top ANSWERS the msg-reopen in the fold, so chip and column agree by
+        # construction (2026-07-07).
         s = _store()
         self._mint(s, "s1", T0, "G")
-        self._done(s, "s2", T0 + 10, 1)                          # G re-completed (nodeComplete)
-        self._mint(s, "s3", T0 + 20, "G2")                       # G2 is the focus → G is settled
         g = s["placements"]["s1"]
-        s["nodes"][g]["followupPending"] = True                  # stale optimistic flag from a status Nudge
+        jd._reopen(s, g, by="optimistic", now=T0 + 12, msg=True)   # a status Nudge's optimistic flip
+        jd.rollup_status(s, session_closed=False)
+        self.assertTrue(s["nodes"][g].get("followupPending"), "chip up while the reply is unjudged")
+        self._done(s, "s2", T0 + 15, 1)                          # the reply's work re-completes G (newer evidence)
+        self._mint(s, "s3", T0 + 20, "G2")                       # G2 is the focus → G is settled
         jd.rollup_status(s, session_closed=False)
         self.assertEqual(s["status"][g], "completed",
-                         "a re-completed + settled goal completes despite a stale followupPending — no deadlock")
-        self.assertNotIn("followupPending", s["nodes"][g], "the stale optimistic flag is cleared")
+                         "the landed re-done completes the goal — the chip cannot deadlock it in Working")
+        self.assertNotIn("followupPending", s["nodes"][g], "…and answers the msg-reopen, dropping the chip")
 
     def test_blocked_top_clears_a_stale_followup_pending(self):
         # track g9 (the user 2026-07-03): a follow-up set followupPending optimistically, then the follow-up
@@ -1807,14 +1818,20 @@ class PlanRollup(unittest.TestCase):
         s = _store()
         self._mint(s, "s1", T0, "G")
         jd.apply_plan(s, "s2", T0 + 10, [{"do": "sub", "why": "x", "under": 1, "text": "a step"}], jd.open_menu(s))
+        g = s["placements"]["s1"]
+        jd._reopen(s, g, by="optimistic", now=T0 + 15, msg=True)   # the follow-up's optimistic flip; its
+        #                                                            work-run then never processed the reply
         ci = next(i for i, nd in enumerate(jd.open_menu(s), 1) if nd["text"] == "a step")
         jd.apply_plan(s, "s3", T0 + 20, [{"do": "block", "why": "owed a decision", "goal": ci}], jd.open_menu(s))
-        g = s["placements"]["s1"]
-        s["nodes"][g]["followupPending"] = True                  # stale optimistic flag the block now shadows
         jd.rollup_status(s, session_closed=False)
         self.assertEqual(s["status"][g], "blocked", "the descendant block still rolls the top up to blocked")
-        self.assertNotIn("followupPending", s["nodes"][g],
-                         "an authoritative block drops the stale optimistic flag (no permanent Re-judging)")
+        # the TOP's chip stays — HONEST now: that reply really was never processed; build_feed renders
+        # blocked+followupPending as the de-urgented Needs-You (dotted), never a permanent Re-judging swirl
+        self.assertTrue(s["nodes"][g].get("followupPending"))
+        jd.record_verdict(s, s["nodes"][g], "planner", "dismiss", T0 + 30,
+                          why="follow-up finally processed")     # any later judge event on the top answers it
+        jd.rollup_status(s, session_closed=False)
+        self.assertNotIn("followupPending", s["nodes"][g], "…and the judge finally processing it clears the chip")
 
     def test_followup_pending_still_shows_working_for_a_genuinely_reopened_goal(self):
         # The optimistic chip is intact: a goal genuinely reopened (nodeComplete cleared) for follow-up work
@@ -1823,10 +1840,10 @@ class PlanRollup(unittest.TestCase):
         self._mint(s, "s1", T0, "G")
         self._done(s, "s2", T0 + 10, 1)
         g = s["placements"]["s1"]
-        jd._reopen(s, g)                                         # genuine reopen → nodeComplete cleared
-        s["nodes"][g]["followupPending"] = True
+        jd._reopen(s, g, by="optimistic", now=T0 + 15, msg=True)   # genuine follow-up reopen, reply in flight
         jd.rollup_status(s, session_closed=False)
         self.assertEqual(s["status"][g], "working", "a reopened (incomplete) goal stays Working with the chip")
+        self.assertTrue(s["nodes"][g].get("followupPending"))
 
     def test_bottom_up_completed_top_is_sealed_so_new_work_mints_a_card(self):
         # The bug (the user 2026-06-18): a top that rolled up to "completed" via the BOTTOM-UP path — its
@@ -1903,6 +1920,7 @@ class PlanRollup(unittest.TestCase):
         c2 = _mknode(s, "c2", parent=g["id"], complete=True)
         c2["blocked"] = True                                    # a DONE child also carrying a stale block
         s["lastNode"] = g["id"]
+        jd.migrate_store(s)                                # legacy-shaped fixture: adopt diaries first
         jd.rollup_status(s, session_closed=True)
         self.assertFalse(s["nodes"][g["id"]]["blocked"], "a complete top must not keep a stale block (no ⏸ on done)")
         self.assertNotIn("blockWhy", s["nodes"][g["id"]], "the stale block reason is dropped too")
@@ -2005,8 +2023,8 @@ class PostalDelegation(unittest.TestCase):
                     gid = jd.apply_courier(store, seg_id, peer["t"], courier,
                                            {"peer": "SENDER", "goalId": None, "msgId": "m-courier"})
                     if complete_g:                         # the closer flat-completed it before the planner runs
-                        store["nodes"][gid]["nodeComplete"] = True
-                        store["nodes"][gid]["everDone"] = True
+                        jd.record_verdict(store, store["nodes"][gid], "closer", "done",
+                                          peer["t"], why="delegated work done")
                 jd.save_goals(SID, store)
                 if view_cleared and gid:
                     jd._view_cleared = lambda g=gid: {g}   # the user crossed G off the feed → _reopen won't unseal it
@@ -2212,10 +2230,10 @@ class NudgeMustResolve(unittest.TestCase):
         self.assertEqual(len([nd for nd in store["nodes"].values() if nd.get("parentId") == gid]), 1,
                          "the typed follow-up's work is a sub under the goal")
 
-    def test_typed_followup_drops_provisional_stub_then_files_real_sub(self):
-        # the user 2026-06-24: optimistic_followup plants a provisional open stub so the tree shows open work
-        # at once; when the planner processes the typed follow-up it DROPS that stub and files its OWN sub in
-        # its place — no duplicate, no lingering placeholder. (End-to-end: optimistic plant → planner replace.)
+    def test_typed_followup_holds_open_then_planner_files_real_sub(self):
+        # 2026-07-07 (stub retirement): optimistic_followup reopens with a msg-marked user reopen EVENT —
+        # no stub node — and the unanswered reopen holds the top open/working through the optimistic
+        # window; when the planner processes the typed follow-up it files its real sub under it.
         gid = "%s:g1" % SID
         recs = [self._line(T0 + 100, "also add tests", "u2", gid, injected=False),
                 aline(T0 + 120, "Added tests.", "a2", "u2", stop="end_turn")]
@@ -2233,25 +2251,27 @@ class NudgeMustResolve(unittest.TestCase):
                                     "nodes": {gid: {"id": gid, "text": "Ship the feature", "parentId": None,
                                                     "nodeComplete": True, "blocked": False, "cleared": False,
                                                     "trail": ["seed"], "t": T0, "mt": T0}}})
-                jd.optimistic_followup(SID, gid, text="also add tests", now=T0 + 90, stub=True)
-                self.assertEqual(len([n for n in jd.load_goals(SID)["nodes"].values() if n.get("provisional")]),
-                                 1, "the optimistic stub is planted")
+                jd.optimistic_followup(SID, gid, text="also add tests", now=T0 + 90)
+                mid = jd.load_goals(SID)
+                self.assertEqual([n for n in mid["nodes"].values() if n.get("parentId") == gid], [],
+                                 "no stub node is minted — the reopen event alone holds the top open")
+                self.assertEqual(mid["status"][gid], "working", "held at working through the optimistic window")
                 jd._PARSE_CACHE.clear()
                 jd._plan_session(SID, str(tpath), NOW)
                 store = jd.load_goals(SID)
-                self.assertEqual([n for n in store["nodes"].values() if n.get("provisional")], [],
-                                 "the provisional stub is DROPPED once the planner files real work")
                 subs = [n for n in store["nodes"].values() if n.get("parentId") == gid]
-                self.assertEqual(len(subs), 1, "exactly one real sub — the planner's, not a duplicate")
-                self.assertEqual(subs[0]["text"], "added tests", "and it's the planner's sub, not the stub")
+                self.assertEqual(len(subs), 1, "exactly one real sub — the planner's")
+                self.assertEqual(subs[0]["text"], "added tests")
             finally:
                 (jd.GOALDIR, jd.PCACHE, jd.plan_llm, jd.plan_prompt_llm, jd._group_store) = saved
 
 
-class OptimisticFollowupStub(unittest.TestCase):
-    """optimistic_followup(stub=True) — a typed follow-up on a COMPLETED goal must show OPEN work in the tree
-    at once, not a 'working' card over an all-✓ tree (the user 2026-06-24). It plants a provisional open sub
-    (hidden from the planner); a NUDGE plants none (the planner resolves it). Sandboxes GOALDIR (no leak)."""
+class OptimisticFollowupHold(unittest.TestCase):
+    """optimistic_followup — a typed follow-up on a COMPLETED goal must show the card back at WORKING at
+    once and STAY there until a judge verdict lands. Since 2026-07-07 the reopen EVENT does all of it
+    through the fold: msg=True derives the followupPending chip, its ev_t derives followupAt (the sort/
+    staleness floor), and the unanswered user reopen HOLDS the top open against bottom-up re-completion —
+    the provisional stub node is retired. Sandboxes GOALDIR (no leak)."""
     def setUp(self):
         self._saved = (jd.GOALDIR, jd.STATESDIR)
         self._td = Path(tempfile.mkdtemp())
@@ -2262,33 +2282,49 @@ class OptimisticFollowupStub(unittest.TestCase):
         (jd.GOALDIR, jd.STATESDIR) = self._saved
         shutil.rmtree(str(self._td), ignore_errors=True)
 
-    def _completed_top(self):
-        gid = SID + ":g1"
-        jd.save_goals(SID, {"rompUuid": SID, "seq": 1, "placements": {}, "status": {gid: "completed"},
-                            "nodes": {gid: {"id": gid, "text": "Build the thing", "parentId": None,
-                                            "nodeComplete": True, "blocked": False, "cleared": False,
-                                            "trail": [], "t": T0, "mt": T0 + 10}}})
+    def _completed_top(self, with_done_child=False):
+        gid, kid = SID + ":g1", SID + ":g2"
+        nodes = {gid: {"id": gid, "text": "Build the thing", "parentId": None,
+                       "nodeComplete": True, "blocked": False, "cleared": False,
+                       "trail": [], "t": T0, "mt": T0 + 10}}
+        if with_done_child:
+            nodes[kid] = {"id": kid, "text": "the step", "parentId": gid,
+                          "nodeComplete": True, "blocked": False, "cleared": False,
+                          "trail": [], "t": T0, "mt": T0 + 5}
+        jd.save_goals(SID, {"rompUuid": SID, "seq": 2, "placements": {}, "status": {gid: "completed"},
+                            "nodes": nodes})
         return gid
 
-    def test_typed_followup_plants_a_provisional_open_sub(self):
-        gid = self._completed_top()
-        self.assertTrue(jd.optimistic_followup(SID, gid, text="also handle the empty case",
-                                               now=T0 + 100, stub=True))
+    def test_typed_followup_holds_the_top_open_without_a_stub(self):
+        # the all-✓ tree case the stub existed for: every child genuinely done, top reopened — bottom-up
+        # is_complete must NOT re-complete it while the user's reopen stands unanswered.
+        gid = self._completed_top(with_done_child=True)
+        self.assertTrue(jd.optimistic_followup(SID, gid, text="also handle the empty case", now=T0 + 100))
         st = jd.load_goals(SID)
         self.assertFalse(st["nodes"][gid]["nodeComplete"], "the top is reopened")
-        subs = [n for n in st["nodes"].values() if n.get("parentId") == gid]
-        self.assertEqual(len(subs), 1, "exactly one provisional stub planted")
-        self.assertTrue(subs[0]["provisional"] and not subs[0]["nodeComplete"], "an OPEN provisional sub")
-        self.assertIn("empty case", subs[0]["text"], "labeled from the follow-up text")
-        self.assertEqual(st["status"][gid], "working", "the open child rolls the top up to working")
-        self.assertNotIn(subs[0]["id"], {nd["id"] for nd in jd.open_menu(st)}, "stub hidden from the planner")
+        self.assertEqual([n for n in st["nodes"].values()
+                          if n.get("parentId") == gid and n["id"] != SID + ":g2"], [],
+                         "NO stub node is minted")
+        self.assertEqual(st["status"][gid], "working",
+                         "the unanswered user reopen holds it at working over the all-done child")
+        self.assertTrue(st["nodes"][gid].get("followupPending"), "msg reopen → the Followed-up chip")
+        self.assertIn(gid, {nd["id"] for nd in jd.open_menu(st)}, "and it is plannable at once")
 
-    def test_nudge_plants_no_stub(self):
+    def test_a_landed_verdict_releases_the_hold(self):
+        gid = self._completed_top(with_done_child=True)
+        jd.optimistic_followup(SID, gid, text="also handle the empty case", now=T0 + 100)
+        st = jd.load_goals(SID)
+        jd.apply_close(st, [st["nodes"][gid]], {"done": {1: "handled the empty case"}}, t=T0 + 200)
+        jd.rollup_status(st, session_closed=True)      # newer evidence lands → done again, and it settles
+        self.assertEqual(st["status"][gid], "completed", "a landed judge verdict ends the hold")
+        self.assertFalse(st["nodes"][gid].get("followupPending"), "…and the chip, with no heal needed")
+
+    def test_nudge_reopen_mints_no_nodes(self):
         gid = self._completed_top()
-        jd.optimistic_followup(SID, gid, text="status?", now=T0 + 100, stub=False)
+        jd.optimistic_followup(SID, gid, text="status?", now=T0 + 100)
         st = jd.load_goals(SID)
         self.assertEqual([n for n in st["nodes"].values() if n.get("parentId") == gid], [],
-                         "a nudge reopens but plants NO stub (the planner resolves it instead)")
+                         "a reopen mints nothing — the planner resolves or files real work later")
 
     def _blocked_top(self):
         # a BLOCKED goal whose last activity (mt) is OLD, so build_feed would otherwise sort its card by that
@@ -2300,21 +2336,22 @@ class OptimisticFollowupStub(unittest.TestCase):
                                             "trail": [], "t": T0, "mt": T0 + 10}}})
         return gid
 
-    def test_followup_stamps_followupAt_so_the_card_sorts_to_the_bottom(self):
-        # The optimistic move must record WHEN it entered Working (followupAt = now), so build_feed floors the
-        # card's disp_t to now and it lands at the BOTTOM of the column instead of the top on its stale mt,
-        # then lurching down when the real work re-files (the user 2026-07-03).
+    def test_followup_derives_followupAt_so_the_card_sorts_to_the_bottom(self):
+        # The reopen event's ev_t IS followupAt now: build_feed floors the card's disp_t to it and the card
+        # lands at the BOTTOM of Working instead of the top on its stale mt (the user 2026-07-03).
         gid = self._blocked_top()
-        jd.optimistic_followup(SID, gid, text="keep going", now=T0 + 500, stub=True)
+        jd.optimistic_followup(SID, gid, text="keep going", now=T0 + 500)
         nd = jd.load_goals(SID)["nodes"][gid]
-        self.assertEqual(nd.get("followupAt"), T0 + 500, "followupAt is stamped to now at the optimistic flip")
+        self.assertEqual(nd.get("followupAt"), T0 + 500, "followupAt derives from the reopen event")
         self.assertGreater(nd["followupAt"], nd["mt"], "and it is fresher than the stale blocked-era mt")
 
-    def test_followup_without_now_leaves_followupAt_unset(self):
-        # now=None (a caller with no clock) must not crash or stamp a bogus 0 — the feed floor is a no-op then.
+    def test_followup_without_now_floors_to_the_stores_latest_moment(self):
+        # now=None (a caller with no clock): the reopen event defaults to the store's latest known moment,
+        # so the derived floor equals the mt the feed already sorts by — a no-op floor, never a bogus 0.
         gid = self._blocked_top()
-        jd.optimistic_followup(SID, gid, text="keep going", now=None, stub=False)
-        self.assertNotIn("followupAt", jd.load_goals(SID)["nodes"][gid])
+        jd.optimistic_followup(SID, gid, text="keep going", now=None)
+        nd = jd.load_goals(SID)["nodes"][gid]
+        self.assertEqual(nd.get("followupAt"), T0 + 10, "floor = the store's latest moment (the mt)")
 
 
 class DiscoverWalk(unittest.TestCase):
@@ -3421,6 +3458,7 @@ class FollowUp(unittest.TestCase):
         self._saved = (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.plan_llm, jd.group_llm)
         jd.NAMES, jd.PROJECTS, jd.GOALDIR = names, proj, td / "goals"
         jd._PARSE_CACHE.clear()
+        jd.migrate_store(store)                        # fixtures are legacy-shaped: adopt their diaries
         jd.save_goals(SID, store)
 
     def tearDown(self):
@@ -3482,9 +3520,9 @@ class FollowUp(unittest.TestCase):
         gid = SID + ":g1"
         records = [uline(T0, "unrelated: polish the docs <!-- romp-goal-id: %s -->" % gid, "u1", ps="typed"),
                    aline(T0 + 10, "ok", "a1", "u1", stop="end_turn")]
-        store = self._completed_top(gid, blocked=True)
-        store["nodes"][gid]["followupPending"] = True   # the kernel's optimistic send-time stamp
-        self._setup(records, store)
+        self._setup(records, self._completed_top(gid, blocked=True))
+        jd.optimistic_followup(SID, gid, text="unrelated: polish the docs", now=T0)   # the real send-time flip
+        self.assertTrue(jd.load_goals(SID)["nodes"][gid].get("followupPending"), "chip up pre-judge")
         jd.plan_llm = lambda text, menu, human=False, **_kw: '{"ops":[{"why":"a different thread","do":"mint","text":"Polish the docs"}]}'
         jd.run_plan(now=T0 + 5000)
         st = jd.load_goals(SID)
@@ -3543,7 +3581,7 @@ class FollowUp(unittest.TestCase):
             self.assertTrue(st["nodes"][gid]["followupPending"], "followupPending set (drives the chip)")
             self.assertFalse(st["nodes"][gid]["nodeComplete"], "reopened — nodeComplete cleared")
             self.assertEqual(st["status"][gid], "working", "rollup shows WORKING immediately, not completed")
-            jd._reopen(st, gid)                         # the judge's OFFICIAL reopen supersedes the optimistic one
+            jd._reopen(st, gid, by="followup", now=T0 + 50)   # the judge's OFFICIAL reopen answers the optimistic one
             self.assertNotIn("followupPending", st["nodes"][gid], "_reopen drops the optimistic flag")
             self.assertFalse(jd.optimistic_followup(SID, SID + ":g99"), "unknown goal → no-op (False)")
         finally:

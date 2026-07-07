@@ -62,7 +62,6 @@ class InterruptBlocks(unittest.TestCase):
         kern._record_interrupt_block(SID)
         st = jd.load_goals(SID)
         jd.record_verdict(st, st["nodes"][GID], "closer", "block", NOW + 10, why="pick a name")
-        st["nodes"][GID]["blocked"] = True; st["nodes"][GID]["blockWhy"] = "pick a name"
         jd.rollup_status(st, False)
         jd.save_goals(SID, st)
         kern._lift_interrupt_block(SID, GID)

@@ -1181,9 +1181,7 @@ def _mark_nudge_failed(gid):
         why = ("romp followed up once and the response didn't resolve this; "
                "it won't be re-asked — it needs your direction")
         if nd is not None and jd.record_verdict(store, nd, "nudge", "block", int(time.time()), why=why):
-            nd["blocked"] = True
-            nd["blockWhy"] = why
-            nd["mt"] = int(time.time())
+            nd["mt"] = int(time.time())               # the event materialized blocked + blockWhy
             jd.rollup_status(store, False)
             jd.save_goals(sid, store)
             _mark_views_dirty()
@@ -1218,7 +1216,7 @@ def _record_interrupt_block(sid):
     why = "you stopped this session mid-turn — it's waiting on your next instruction"
     if not jd.record_verdict(store, nd, "interrupt", "block", int(time.time()), why=why):
         return None
-    nd["blocked"] = True; nd["blockWhy"] = why; nd["mt"] = int(time.time())
+    nd["mt"] = int(time.time())                       # the event materialized blocked + blockWhy
     jd.rollup_status(store, False)
     jd.save_goals(sid, store)
     _mark_views_dirty()
@@ -1237,7 +1235,6 @@ def _lift_interrupt_block(sid, gid):
     lastblk = next((e.get("src") for e in reversed(nd.get("log") or []) if e.get("kind") == "block"), None)
     if lastblk == "interrupt" and nd.get("blocked"):
         jd.record_verdict(store, nd, "user", "unblock", int(time.time()), why="you re-engaged")
-        nd["blocked"] = False
         jd.rollup_status(store, False)
         jd.save_goals(sid, store)
         _mark_views_dirty()
@@ -2028,8 +2025,8 @@ def _drive(msg, client):
                       echo=("romp" if msg.get("nudge") else "human") if be is _TMUX else None)
         if iid:                                           # optimistic: reopen the card NOW, before the judge pass
             try:
-                if jd.optimistic_followup(sid, iid, text=str(msg["text"]), now=int(time.time()),
-                                          stub=not bool(msg.get("nudge"))):   # typed → open stub; nudge → resolve
+                if jd.optimistic_followup(sid, iid, text=str(msg["text"]), now=int(time.time())):
+                    # (the reopen event holds the top open + wears the chip; stub nodes retired 2026-07-07)
                     _mark_views_dirty()                   # a reopen pushes the "Followed up" board at once —
                     #                                       the store write is invisible to the fleet sig
             except Exception:
@@ -6099,9 +6096,17 @@ def _mark_nodes_cleared(item_ids, value):
                 # DUAL-WRITE (judge plan P3.1): the user's cross-off / undo is a top-authority verdict —
                 # record it in the node's log alongside the flag (clear; reopen for an undo-restore, whose
                 # gate passes because _undo_clear appends the cleared.jsonl undo rows BEFORE this runs)
+                was_done = nd.get("parentId") is None and (
+                    store.get("status", {}).get(iid) == "completed" or nd.get("nodeComplete"))
                 jd.record_verdict(store, nd, "user", "clear" if value else "reopen", now,
-                                  why="cleared from the feed" if value else "undo clear")
-                nd["cleared"] = value
+                                  why="cleared from the feed" if value else "undo clear",
+                                  undo=not value)     # an undo-restore asserts nothing about doneness
+                if not value and was_done and not nd.get("settledDone"):
+                    # restore COMPLETION stickily (the user 2026-06-27): the undo-reopen restored the
+                    # pre-clear state from its snapshot, but a top that had never settled (the ≈5% gap)
+                    # still needs its settle event or the re-roll demotes it to working. Recorded AFTER
+                    # the reopen so the fold keeps it. (was_done: captured BEFORE the record re-derived.)
+                    jd.record_verdict(store, nd, "romp", "settle", now)
                 touched = True
         if not touched:
             continue
@@ -6331,18 +6336,8 @@ def _restore_goal_archive(item_ids):
             nodes[nid] = a_nodes.pop(nid)
             if nid in a_status:
                 status[nid] = a_status.pop(nid)
-        # Restore COMPLETION stickily (the user 2026-06-27): a top that was in the Completed column when cleared
-        # must come back completed. rollup_status only KEEPS a top completed when it's `settled` (no longer the
-        # session's focus, or the session is closed) OR carries the durable `settledDone` flag. A completed top
-        # that lacks settledDone (≈5% of the archive) whose session is now OPEN and re-focusing it would be
-        # demoted to "working" by the re-roll in _mark_nodes_cleared — which build_feed's awaiting floor then
-        # renders as "⏳ awaiting" before later churn drops the card (the UndoClear bug the user hit). Stamp
-        # settledDone on each restored completed TOP so the re-roll holds it completed. Blocked/working tops
-        # carry no completed status here, so they re-derive normally.
-        for iid in ids:
-            nd = nodes.get(iid)
-            if nd is not None and nd.get("parentId") is None and (status.get(iid) == "completed" or nd.get("nodeComplete")):
-                nd["settledDone"] = True
+        # (Sticky completion restore lives in _mark_nodes_cleared now — 2026-07-07: the settle event must
+        # land AFTER the undo reopen it records, or the fold consumes it and the card returns to Working.)
         jd.save_goals(sid, store)
         jd.save_goal_archive(sid, arch)
         _compact_seen.pop(sid, None)                   # force a re-stat next sweep (we just changed the live file)
@@ -6361,9 +6356,10 @@ def _resolve_node(sid, node_id):
     if not nd or nd.get("nodeComplete"):
         return False
     now = int(time.time())
-    nd["nodeComplete"] = True
-    nd["blocked"] = False
-    nd["doneWhy"] = nd.get("doneWhy") or "Resolved by the user."
+    # The event is the write (found 2026-07-07): without it the rollup two lines down re-derives the
+    # flags from the diary and REVERTS the user's own resolve — the flip made eventless writes no-ops.
+    jd.record_verdict(store, nd, "user", "done", now,
+                      why=nd.get("doneWhy") or "Resolved by the user.")
     nd["mt"] = now                                    # deep-link / recency land on the resolution moment
     try:                                              # session_closed gate for the rollup, same as run_plan
         path = next((s["path"] for s in _sessions(now) if s["sid"] == sid), None)
@@ -11464,6 +11460,12 @@ def main():
     os.environ.setdefault("ROMP_CLAUDE_BIN", _claude_bin())
     signal.signal(signal.SIGTERM, _graceful_term)             # drain, don't die mid-flight (see _graceful_term)
     _ensure_bundles()
+    try:                                                      # the diary boot sweep (2026-07-07): migrate every
+        _n = jd.migrate_all_stores()                          # goal store/archive BEFORE any judge pass runs —
+        if _n:                                                # the hot paths carry no migration logic anymore
+            sys.stderr.write("romp-kernel: diary sweep migrated %d store file(s)\n" % _n)
+    except Exception:
+        sys.stderr.write("diary sweep: %s\n" % traceback.format_exc())
     _boot_warm()                                              # pre-parse the live fleet during the reconnect gap (fast first paint)
     threading.Thread(target=_sdk, daemon=True).start()        # construct the SDK backend NOW so its boot
     #                                                           reconcile (cut turns, queues, orphans) runs at

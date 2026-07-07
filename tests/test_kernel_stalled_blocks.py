@@ -55,6 +55,7 @@ class StalledBlocks(unittest.TestCase):
                  "nodes": {GID: {"id": GID, "text": "Ship the widget", "parentId": None,
                                  "nodeComplete": False, "blocked": False, "cleared": False,
                                  "followupAt": NOW + 3600, "trail": [], "t": NOW - 600, "mt": NOW - 300}}}
+        jd.migrate_store(store)                        # legacy followupAt stamp → its synth reopen event
         jd.rollup_status(store, False)
         jd.save_goals(SID, store)
         kern._write_auto_nudge({"nudged": {GID: {"count": 1, "lastTurnId": "tid1"}}})

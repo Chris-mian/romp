@@ -1,11 +1,11 @@
 """UndoClear of a COMPLETED card must bring it back COMPLETED — not flicker through "working"/"⏳ awaiting"
-and vanish (the user 2026-06-27). rollup_status only keeps a top completed when it's `settled` or carries the
-durable `settledDone` flag; a completed top that lacks settledDone, restored into an OPEN session that
-re-focuses it, gets demoted to "working" by the re-roll and then picked up by build_feed's awaiting floor.
-_restore_goal_archive now stamps settledDone on each restored completed TOP so completion is sticky. SYNTHETIC
-fixtures only (placeholder ids)."""
+and vanish (the user 2026-06-27). Since the diary owns state (2026-07-07) the mechanism is event-shaped:
+the cross-off `clear` snapshots the state it displaces, the undo-reopen (undo:True) RESTORES that snapshot,
+and _mark_nodes_cleared records a late `settle` for a completed top that had never settled (the ≈5% gap),
+so the re-roll keeps it completed. SYNTHETIC fixtures only (placeholder ids)."""
 import inspect
 import os
+import time
 import unittest
 from importlib.machinery import SourceFileLoader
 
@@ -16,60 +16,74 @@ os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")
 km = SourceFileLoader("romp_kernel", os.path.join(BIN, "romp-kernel")).load_module()
 
 SID = "11111111-2222-3333-4444-555555555555"
+IID = SID + ":n1"
+KID = SID + ":n2"
+NOW = int(time.time())
 
 
-def _run_restore(archive):
-    """Drive _restore_goal_archive with in-memory goal-store accessors; return the resulting live store."""
+def _run_undo(archive):
+    """Drive the real undo pair (_restore_goal_archive → _mark_nodes_cleared False) with in-memory
+    goal-store accessors; return the resulting live store."""
     jd = km.jd
-    live = {"nodes": {}, "status": {}}
-    captured = {}
+    jd.migrate_store(archive)                          # archives are legacy-shaped: adopt their diaries
+    live = {"rompUuid": SID, "nodes": {}, "placements": {}, "status": {}}
     orig = {n: getattr(jd, n) for n in ("load_goal_archive", "save_goal_archive", "load_goals", "save_goals")}
     jd.load_goal_archive = lambda sid: archive
     jd.save_goal_archive = lambda sid, a: None
     jd.load_goals = lambda sid: live
-    jd.save_goals = lambda sid, s: captured.update(store=s)
+    jd.save_goals = lambda sid, s: None
     try:
-        km._restore_goal_archive([SID + ":n1"])
+        km._restore_goal_archive([IID])
+        km._mark_nodes_cleared([IID], False)
     finally:
         for n, fn in orig.items():
             setattr(jd, n, fn)
-    return captured.get("store", live)
+    return live
 
 
 class UndoRestoreCompleted(unittest.TestCase):
     def test_completed_top_comes_back_with_sticky_settledDone(self):
-        iid = SID + ":n1"
-        # an archived COMPLETED top that LACKS settledDone (the ≈5% gap) — the case that used to flicker
-        archive = {"nodes": {iid: {"id": iid, "parentId": None, "nodeComplete": False, "text": "x"}},
-                   "status": {iid: "completed"}}
-        store = _run_restore(archive)
-        self.assertIn(iid, store["nodes"], "the node is moved back to the live store")
-        self.assertEqual(store["status"].get(iid), "completed", "its archived completed status is restored")
-        self.assertTrue(store["nodes"][iid].get("settledDone"),
-                        "a restored completed top is stamped settledDone so the re-roll keeps it completed")
+        # a roll-down-completed top that LACKS settledDone (the ≈5% gap) — the case that used to flicker:
+        # the top's own nodeComplete is False; its rolled-up done child carries the completion bottom-up
+        archive = {"nodes": {IID: {"id": IID, "parentId": None, "nodeComplete": False, "cleared": True,
+                                   "text": "x", "t": NOW - 900, "mt": NOW - 600},
+                             KID: {"id": KID, "parentId": IID, "nodeComplete": True, "cleared": False,
+                                   "rolledUp": True, "text": "step", "t": NOW - 900, "mt": NOW - 700}},
+                   "status": {IID: "completed"}}
+        store = _run_undo(archive)
+        self.assertIn(IID, store["nodes"], "the node is moved back to the live store")
+        self.assertFalse(store["nodes"][IID].get("cleared"), "…un-cleared")
+        self.assertTrue(store["nodes"][IID].get("settledDone"),
+                        "a restored completed top gains its settle so the re-roll keeps it completed")
+        self.assertEqual(store["status"].get(IID), "completed", "…and the re-roll agrees")
 
     def test_explicit_nodeComplete_top_is_also_stamped(self):
-        iid = SID + ":n1"
-        archive = {"nodes": {iid: {"id": iid, "parentId": None, "nodeComplete": True, "text": "x"}},
-                   "status": {iid: "completed"}}
-        store = _run_restore(archive)
-        self.assertTrue(store["nodes"][iid].get("settledDone"))
+        archive = {"nodes": {IID: {"id": IID, "parentId": None, "nodeComplete": True, "cleared": True,
+                                   "text": "x", "t": NOW - 900, "mt": NOW - 600}},
+                   "status": {IID: "completed"}}
+        store = _run_undo(archive)
+        self.assertTrue(store["nodes"][IID].get("nodeComplete"),
+                        "the undo-reopen restores the pre-clear DONE from its snapshot — never 'open'")
+        self.assertTrue(store["nodes"][IID].get("settledDone"))
+        self.assertEqual(store["status"].get(IID), "completed")
 
     def test_a_blocked_top_is_NOT_force_completed(self):
-        iid = SID + ":n1"
-        archive = {"nodes": {iid: {"id": iid, "parentId": None, "nodeComplete": False, "text": "x"}},
-                   "status": {iid: "blocked"}}
-        store = _run_restore(archive)
-        self.assertFalse(store["nodes"][iid].get("settledDone"),
+        archive = {"nodes": {IID: {"id": IID, "parentId": None, "nodeComplete": False, "blocked": True,
+                                   "cleared": True, "blockWhy": "pick a name", "text": "x",
+                                   "t": NOW - 900, "mt": NOW - 600}},
+                   "status": {IID: "blocked"}}
+        store = _run_undo(archive)
+        self.assertFalse(store["nodes"][IID].get("settledDone"),
                          "a blocked/working top re-derives normally — never force-completed on restore")
+        self.assertTrue(store["nodes"][IID].get("blocked"), "the pre-clear block is restored")
 
     def test_undo_still_restores_then_unclears_in_order(self):
-        # the fix lives in _restore_goal_archive, which _undo_clear calls BEFORE _mark_nodes_cleared(False)
+        # the pair's ORDER carries the fix: restore first, so the un-clear pass finds the nodes
         src = inspect.getsource(km._undo_clear)
         self.assertIn("_restore_goal_archive(restored)", src)
         self.assertIn("_mark_nodes_cleared(restored, False)", src)
         self.assertLess(src.index("_restore_goal_archive"), src.index("_mark_nodes_cleared"),
-                        "restore FIRST so the un-clear re-roll finds the nodes (with settledDone) and holds completed")
+                        "restore FIRST so the un-clear re-roll finds the nodes and holds completed")
 
 
 if __name__ == "__main__":
