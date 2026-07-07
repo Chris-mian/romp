@@ -766,7 +766,17 @@ body { display: flex; flex-direction: column; }
 .turn-compact .dot, .turn-compact .time-marker { top: 10px; }
 .turn-compact .dot { background: var(--st-compacting-bg, #14b8a6); border: none; }
 .compact-line { color: var(--st-compacting-bg, #14b8a6); font-size: 0.9em; font-weight: 600; letter-spacing: 0.02em; }
+.compact-line.compact-clickable { cursor: pointer; }
+.compact-line.compact-clickable:hover { text-decoration: underline; text-underline-offset: 2px; }
+.compact-caret { display: inline-block; width: 10px; margin-right: 4px; color: var(--st-compacting-bg, #14b8a6); font-size: 0.85em; }
 .compact-meta { margin-left: 6px; color: var(--dim); font-weight: 400; letter-spacing: normal; }
+/* the model's compaction SUMMARY ("what it kept"), revealed under the header — a teal-edged box, its own
+   scroll region so a long summary never runs the whole thread; markdown rendered like other message bodies */
+.compact-summary { margin: 6px 0 4px; padding: 8px 12px; border-left: 2px solid var(--st-compacting-bg, #14b8a6);
+  background: color-mix(in srgb, var(--st-compacting-bg, #14b8a6) 8%, transparent); border-radius: 0 6px 6px 0;
+  max-height: 340px; overflow: auto; overscroll-behavior: contain; font-size: 0.9em; }
+.compact-summary > :first-child { margin-top: 0; }
+.compact-summary > :last-child { margin-bottom: 0; }
 /* LIVE compaction — animated inline element that becomes the .compact-line divider above once done. Same
    teal + type as the divider (reads as one element maturing); the bar reuses @keyframes ctx-compress (the
    statusline ctx-scan motion) and — like the statusline/tab bars — sweeps through the context colormap

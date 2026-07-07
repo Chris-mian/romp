@@ -550,6 +550,31 @@ class Compaction(unittest.TestCase):
         uuids = [a.get("uuid") for t in out["turns"] for a in t["atoms"]]
         self.assertNotIn("cs1", uuids, "the isCompactSummary payload is not an atom")
 
+    def test_compaction_summary_is_attached_to_the_boundary_atom(self):
+        # the summary payload is not its own atom, but its TEXT rides the boundary atom so the chat can show
+        # it in a collapsible box (the user 2026-07-07).
+        out = run_scenario("compaction_atom")
+        comp = [a for t in out["turns"] for a in t["atoms"] if a.get("subtype") == "compact_boundary"]
+        self.assertEqual(len(comp), 1)
+        self.assertEqual(comp[0].get("summary"), "summary of the conversation so far")
+
+    def test_long_compaction_summary_is_capped(self):
+        with tempfile.TemporaryDirectory() as td:
+            recs = [uline(T0, "do task X", "u1", ps="typed"),
+                    aline(T0 + 30, "did X", "a1", "u1", stop="end_turn"),
+                    compact_line(T0 + 500, "c1", logical_parent="a1"),
+                    {"type": "user", "timestamp": iso(T0 + 505), "uuid": "cs1", "parentUuid": "c1",
+                     "isCompactSummary": True, "message": {"role": "user", "content": "x" * 9000}}]
+            p = Path(td) / (SID + ".jsonl")
+            p.write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+            out = em.parse_session(str(p), rompuuid=SID, dir="/TESTDIR", candidate_files=[str(p)],
+                                   postal_log=[], now=NOW)
+        comp = [a for t in out["turns"] for a in t["atoms"] if a.get("subtype") == "compact_boundary"]
+        self.assertEqual(len(comp), 1)
+        s = comp[0]["summary"]
+        self.assertTrue(s.endswith("…(summary truncated)"), "an over-cap summary is truncated with a marker")
+        self.assertLessEqual(len(s), em.SUMMARY_CAP + 40, "capped near SUMMARY_CAP")
+
     def test_post_compaction_replay_is_deduped(self):
         # the user 2026-06-22: compaction RESTORES the recent message tail verbatim (new uuids + timestamps).
         # Those replayed user prompts are NOT new work — without dedup the judges re-process them and re-mint

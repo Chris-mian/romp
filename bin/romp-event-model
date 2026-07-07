@@ -78,6 +78,8 @@ CMD_WRAP_RE = re.compile(r"^\s*<(?:command-(?:name|message|args|contents)|local-
 COMMAND_NAME_RE = re.compile(r"^\s*<command-name>([^<]*)</command-name>")           # the slash command itself, e.g. "/usage"
 COMMAND_ARGS_RE = re.compile(r"<command-args>([\s\S]*?)</command-args>")            # its arguments (often empty)
 LOCAL_STDOUT_RE = re.compile(r"^\s*<local-command-stdout>([\s\S]*?)</local-command-stdout>")   # the command's output
+SUMMARY_CAP = 8000                # cap the compaction-summary text attached to a compact_boundary atom (a raw
+#   summary runs ~16k chars; the head carries the key sections, and it re-ships with the tail — keep it bounded)
 
 
 # ───────────────────────── small helpers ─────────────────────────
@@ -494,6 +496,9 @@ class FileAdapter:
         # already-done (even CLEARED) goal. Identify replays in CHRONOLOGICAL order (the main emit loop below
         # is leaf-first) so we keep the ORIGINAL and drop the later replay — then placements dedup still holds.
         replay_uuids, _seen_text, _compacted = set(), set(), False
+        summaries, last_boundary = {}, None   # boundary_uuid -> the compaction SUMMARY text (the isCompactSummary
+        #   user record that FOLLOWS each compact_boundary — Claude's "what it kept"; captured here to attach to
+        #   the boundary atom, so the chat can show it in a collapsible box, the user 2026-07-07).
         for u in sorted(kept, key=lambda x: (parse_z((self.by_uuid.get(x) or {}).get("timestamp")) or 0,
                                              self.seq_of.get(x, 0))):
             r = self.by_uuid.get(u)
@@ -501,7 +506,13 @@ class FileAdapter:
                 continue
             if r.get("type") == "system" and r.get("subtype") == "compact_boundary":
                 _compacted = True
-            elif r.get("type") == "user" and not r.get("isMeta") and not r.get("isCompactSummary"):
+                last_boundary = u
+            elif r.get("type") == "user" and r.get("isCompactSummary") is True:
+                stext = _text_of(_content(r.get("message")))
+                if last_boundary and stext:            # attach to the boundary just seen; cap for transport
+                    summaries[last_boundary] = stext[:SUMMARY_CAP] + (
+                        "\n\n…(summary truncated)" if len(stext) > SUMMARY_CAP else "")
+            elif r.get("type") == "user" and not r.get("isMeta"):
                 txt = _text_of(_content(r.get("message")))
                 if txt:
                     replay_uuids.add(u) if (_compacted and txt in _seen_text) else _seen_text.add(txt)
@@ -585,6 +596,7 @@ class FileAdapter:
                             "compact_metadata": {"trigger": cm.get("trigger"),
                                                  "pre_tokens": cm.get("preTokens") or cm.get("pre_tokens"),
                                                  "post_tokens": cm.get("postTokens") or cm.get("post_tokens")},
+                            "summary": summaries.get(u),   # the compaction SUMMARY captured in the pre-pass (or None)
                             "_seq": seq})
             # other system subtypes (turn_duration, stop_hook_summary, local_command,
             # away_summary) are harness bookkeeping, not conversational messages -> skipped.

@@ -50,6 +50,11 @@ class CompactingEvent(unittest.TestCase):
         i_queued = self.src.index('events.append({"kind": "queued"')
         self.assertGreater(i_queued, i_fold, "the /compact fold must run before the queued event is built")
 
+    def test_the_compact_event_carries_the_model_summary(self):
+        # the boundary event ships the summary the parser captured, so the chat can show it in the
+        # collapsible "Context compacted" box (the user 2026-07-07).
+        self.assertIn('"summary": a.get("summary")', self.src)
+
 
 if __name__ == "__main__":
     unittest.main()

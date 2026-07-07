@@ -5692,14 +5692,14 @@ def build_session(sid, now, tmux=None):
                         by_tool[b.get("id")] = ev
                         events.append(ev)
             elif a["type"] == "system" and a.get("subtype") == "compact_boundary":
-                # A context compaction → a dedicated {kind:"compact"} DIVIDER (the client draws a clean teal
-                # rail marker), NOT a plain assistant paragraph — the summary payload + hook stdout are already
-                # dropped, so this glanceable line is all the user needs (the user 2026-07-01). Carries the
-                # trigger (manual/auto) + token before/after so the divider can note the win.
+                # A context compaction → a dedicated {kind:"compact"} boundary the client draws as a collapsible
+                # teal box: the "✦ Context compacted" header + the trigger (manual/auto) + token win, and — when
+                # the parser captured it — the SUMMARY the model produced ("what it kept"), shown on expand (the
+                # user 2026-07-07: show the compaction box with what it comes up with, pinned as the thread top).
                 cmeta = a.get("compact_metadata") or {}   # NOT `cm` — that name is the colormap module below
                 events.append({"kind": "compact", "uuid": a.get("uuid"), "ts": ts,
                                "trigger": cmeta.get("trigger"), "preTokens": cmeta.get("pre_tokens"),
-                               "postTokens": cmeta.get("post_tokens")})
+                               "postTokens": cmeta.get("post_tokens"), "summary": a.get("summary")})
     events = _hydrate_postal(events, _postal_index())   # swap postal traffic for clean in/out cards (no boilerplate)
     for ev in events:
         # tlId = the timeline atom a chat hover lights: a message/prompt → the DOT (segment promptId),

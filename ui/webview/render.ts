@@ -98,7 +98,7 @@ type ChatEvent = (
   // The turn stopped on an API error (event-based: transcript isApiErrorMessage). The session is BLOCKED
   // until retried — a red-dot card at the bottom with a Retry button (the user 2026-06-16).
   | { kind: "apiError"; text: string; status?: number; category?: string; ts?: string; uuid?: string }
-  | { kind: "compact"; trigger?: string; preTokens?: number; postTokens?: number; ts?: string; uuid?: string }
+  | { kind: "compact"; trigger?: string; preTokens?: number; postTokens?: number; summary?: string; ts?: string; uuid?: string }
   // LIVE compaction in progress (kernel-driven, event-based): an animated inline element while the session
   // compacts — sits above any queued/provisional message, and is replaced by the "compact" divider above
   // once the boundary lands and compacting clears (the user 2026-07-06). No ts → off the rail (transient).
@@ -135,6 +135,7 @@ const vscodeApi =
 
 let settings: RompSettings = loadSettings();   // global webview settings (compact mode, …) — see settings.ts
 const expandedGroups = new Set<string>();      // compact mode: tool-group keys the user clicked open
+const compactExpanded = new Set<string>();     // compaction-boundary uuids whose summary box is expanded open
 
 const sessions = new Map<string, Session>();
 const order: string[] = [];           // positional tab order (for cycling)
@@ -1369,14 +1370,25 @@ function renderTodo(ev: Extract<ChatEvent, { kind: "todo" }>): HTMLElement {
 // A context compaction → one clean teal rail marker (the user 2026-06-14): replaces the raw /compact
 // stdout (leaked ANSI dim codes + hook-completion noise). renderEvent adds the rail time-marker +
 // hover wiring (this turn has a .dot); in compact mode it passes through unchanged → the same marker.
+// A context-compaction boundary → a collapsible teal BOX (the user 2026-07-07): the "✦ Context compacted"
+// header (trigger + token win) is glanceable, and — when the parser captured it — the model's SUMMARY of
+// what it kept expands beneath it. Everything before the boundary is compacted out of the agent's context,
+// so the default window opens AT this box (see lastCompactUnit); older history stays reachable on scroll-back.
 function renderCompact(ev: Extract<ChatEvent, { kind: "compact" }>): HTMLElement {
   const turn = el("div", "turn turn-compact");
   turn.appendChild(dot("ring"));
+  const summary = (ev.summary || "").trim();
+  const uuid = ev.uuid || "";
+  const open = !!summary && !!uuid && compactExpanded.has(uuid);
   const line = el("div", "compact-line");
+  if (summary) {   // a caret only when there's a summary to reveal
+    const car = el("span", "compact-caret"); car.textContent = open ? "▾" : "▸"; line.appendChild(car);
+  }
   line.appendChild(document.createTextNode("✦ Context compacted"));
-  line.title = "the conversation was compacted here — earlier context was summarized to free the window";
+  line.title = "the conversation was compacted here — earlier context was summarized to free the window"
+    + (summary ? "; click to view the summary the agent kept" : "");
   // A muted meta suffix, when the boundary carried it: the trigger (auto vs. the user's /compact) and the
-  // token win (before → after), so the divider says WHY at a glance without dumping the raw summary.
+  // token win (before → after), so the header says WHY at a glance.
   const bits: string[] = [];
   if (ev.trigger === "auto") bits.push("auto");
   else if (ev.trigger === "manual") bits.push("manual");
@@ -1385,8 +1397,30 @@ function renderCompact(ev: Extract<ChatEvent, { kind: "compact" }>): HTMLElement
     const meta = el("span", "compact-meta"); meta.textContent = "· " + bits.join(" · ");
     line.appendChild(meta);
   }
+  if (summary) {
+    line.classList.add("compact-clickable");
+    line.addEventListener("click", (e) => { e.stopPropagation(); toggleCompact(uuid); });   // mirrors toggleToolGroup
+  }
   turn.appendChild(line);
+  if (open) {
+    const body = el("div", "compact-summary md");
+    body.innerHTML = md(summary);
+    highlight(body);
+    turn.appendChild(body);
+  }
   return turn;
+}
+
+// Toggle a compaction-summary box open/closed and repaint the active view in place (scroll preserved) —
+// same shape as toggleToolGroup: the event set is unchanged, so mark the view stale to force the rebuild.
+function toggleCompact(uuid: string): void {
+  if (!uuid) return;
+  if (compactExpanded.has(uuid)) compactExpanded.delete(uuid); else compactExpanded.add(uuid);
+  const content = document.getElementById("content");
+  const top = content ? content.scrollTop : 0;
+  if (activeId) { const v = views.get(activeId); if (v) v.stale = true; syncView(activeId); }
+  if (content) content.scrollTop = top;
+  scheduleRestamp();
 }
 
 // LIVE compaction in progress (the user 2026-07-06): an animated inline element in the chat flow while the
@@ -3202,9 +3236,13 @@ function syncView(id: string, atBottom?: boolean): View {
   const len = s.events.length;
   const firstBuild = v.rendered === 0 || v.el.childNodes.length === 0;
   const rewind = len < v.rendered;
-  // A fresh build / rewind shows just the TAIL window (bounded → instant switch + small DOM).
+  // A fresh build / rewind shows just the TAIL window (bounded → instant switch + small DOM) — but never
+  // opens BELOW the newest compaction boundary: pre-compaction history is out of the agent's context, so the
+  // default view starts AT the "✦ Context compacted" box (the user 2026-07-07). Older events stream in on
+  // scroll-back. When post-compaction work already exceeds the tail window, the tail wins (compaction is above).
   if (firstBuild || rewind) {
-    renderWindowItems(v, s, items, Math.max(0, total - WINDOW_TAIL), total, working); v.stale = false; return v;
+    const start = Math.max(0, total - WINDOW_TAIL, lastCompactUnit(s, items));
+    renderWindowItems(v, s, items, start, total, working); v.stale = false; return v;
   }
   // No-op fast path — a tab SWITCH / repaint with no event change: reveal the cached DOM, re-render nothing.
   // WITHOUT this, every showActive() re-built the trailing window (markdown + highlight.js) — the big-session
@@ -3272,6 +3310,19 @@ function displayItems(s: Session): DisplayItem[] {
   return compactDisplay(s.events.map((e) => e.kind), s.events.map((e) => e.kind === "tool" ? e.name : undefined));
 }
 function itemFirstEvent(it: DisplayItem): number { return it.kind === "toolgroup" ? it.indices[0] : it.index; }
+
+// The display-unit index of the most recent compaction boundary in the loaded events, or 0 if none. The
+// default render window opens at (never below) this unit so pre-compaction history is scrubbed from the
+// default view (the user 2026-07-07); older events remain reachable on scroll-back via the top spacer.
+function lastCompactUnit(s: Session, items: DisplayItem[]): number {
+  let evIdx = -1;
+  for (let i = s.events.length - 1; i >= 0; i--) { if (s.events[i].kind === "compact") { evIdx = i; break; } }
+  if (evIdx < 0) return 0;
+  for (let u = 0; u < items.length; u++) {
+    if (itemFirstEvent(items[u]) <= evIdx && (u + 1 >= items.length || itemFirstEvent(items[u + 1]) > evIdx)) return u;
+  }
+  return 0;
+}
 
 // Append one display unit's DOM to v.el (a turn, or a folded toolgroup + its expansion), tagging every node
 // with data-unit = u for the scroll↔unit map. Returns the advanced prevEpoch.
