@@ -1,120 +1,177 @@
-# Simplifying the judge layer — a measured plan
+# Simplifying the judge layer — the comprehensive plan
 
-2026-07-06. Companion to `docs/judges.md` (what the judges are today). The user's ask: is the
-system's complication masking a simpler model underneath — and if so, what's the concrete path
-that doesn't break existing behavior?
+2026-07-06 (v2, supersedes the same-day v1 sketch; approved direction: "store the history,
+derive the conclusions"). Companion docs: `docs/judges.md` (what the judges are),
+`design/feed-card-drag.md` (the user-action machinery that motivated this).
 
-## Diagnosis
+## The thesis
 
-The seven judges themselves are fine: each is one small prompt with one job, and the history is
-clear that DECOMPOSED prompts beat the old fused ones. The complexity lives in the **state model
-underneath them**: a goal node carries ~16 mutable flags and stamps, mutated by five kinds of
-writers (planner, closer, courier, kernel optimistic ops, user ops), reconciled by a precedence
-ladder plus six healing passes plus two staleness floors — and every new feature adds a flag or a
-floor. The 2026-07-06 "Move to Working" work was diagnostic: it required a second staleness floor
-byte-similar to the first (`_done_is_stale` / `_block_is_stale`), which is the classic smell of a
-missing abstraction. The same day's replay storm (4cdbe44 → 199118f) showed the other soft spot:
-placement identity is parse-derived and unversioned, so any seg-id-derivation change silently
-invalidates recorded state.
+The goal store keeps only CONCLUSIONS (mutable flags) about a history it throws away, so it
+needs guards before every write and heals after — machinery that exists only to compensate for
+the missing history, re-implemented per write site, exercised daily (reopens ~daily; two of its
+bugs cost an afternoon on 2026-07-06). The plan: store the history per node (an append-only
+VERDICT LOG), derive the conclusions with one fold, and delete the compensation machinery as it
+becomes redundant. The judges' prompts, cadence, and the read side do not change.
 
-## Measurements (2026-07-06, live fleet; scripts run read-only against `$XDG_STATE_HOME/romp`)
+Non-goals, permanently out of scope here: prompt re-fusing (decomposed prompts beat the old
+fused ones — settled), index-tier redesign beyond the Phase-0 bug, any change to columns /
+sorting / feed semantics.
 
-**Verdict provenance** — who actually resolves goals:
-- Archived history (4094 nodes): planner-positive dones **1946 (71%)** vs closer-backstop **793
-  (29%)**. Live top-level cards: 18 planner vs 13 closer.
-- Both resolvers are load-bearing. The closer is not a rarely-fired safety net; the planner is
-  not redundant eagerness.
+## Current-state inventory (what exists and why)
 
-**Flag usage** (135 live stores, 291 nodes): nodeComplete 131, everDone 104, settledDone 46,
-negComplete 35, blocked 29, negBlock 22, origin 22, settledAt 12, umbrella 11, cleared 9,
-rolledUp 8, followupAt 2, followupPending 1, agentTask 1, warns 1, deltaSince 1.
-The long tail is telling: most special-case flags are ALMOST NEVER live at once, yet each one is
-permanent code — a write site, a rollup branch, a healing rule, and a test surface.
+### The flag zoo — and each flag's disposition
 
-**Reopens are a hot path, not an edge case**: 391 lifetime `reopen-done` events (optimistic 183,
-follow-up 55, delegation 35, nudge 1, untagged 117). The reopen/staleness machinery runs daily;
-investment there pays.
+Every flag is a hand-maintained cache of one question about lost history. Live counts from the
+2026-07-06 fleet scan (291 live nodes / 4094 archived) in parentheses.
 
-**Call volume, 48h**: captioner 2250 + archiver 1759 (Haiku; 71% of all calls) — planner 738,
-closer 543, distiller 231, grouper 145, courier 11 (Sonnet). Mean latency: planner 6.4s,
-distiller 7.6s, courier 4.9s, closer 4.2s, grouper 3.7s.
+| Flag | Caches the question | Disposition |
+|---|---|---|
+| `nodeComplete` (131) | done verdict with no reopen since? | KEPT as materialized cache of the fold |
+| `blocked` (29) | block verdict with no answer since? | KEPT as materialized cache of the fold |
+| `cleared` (9) | user crossed it off? | KEPT (kernel-owned; also a `clear` event for audit) |
+| `everDone` (104) | ever done, at any point? | ELIMINATED → derived ("any done in log") |
+| `settledDone` (46) | completion displayed once (anti-flicker)? | KEPT in v1 (settle stays code); revisit in P3.4 |
+| `settledAt` (12) | when it entered Completed (sort) | KEPT (display stamp, not a verdict) |
+| `negComplete`/`negBlock` (35/22) | which judge said it? | ELIMINATED → the event's `source` field |
+| `followupAt` (2) | user's last action time | ELIMINATED → the latest user event's `ev_t` |
+| `followupPending` (1) | user reply in flight, unjudged? | ELIMINATED → derived ("latest = user reopen, no judge verdict after") |
+| `rolledUp` (8) | child closed by parent, not on merits? | ELIMINATED → parent-done SHADOWS open children in the fold; reopen unshadows |
+| `deltaSince` (1) | where the prior episode ended | ELIMINATED → derived (previous done→reopen pair's `ev_t`) |
+| `doneWhy`/`blockWhy` | rationale text | MOVED into the event (`why`); read side keeps seeing them via the cache |
+| `agentTask` (1) | agent's own to-do mirror | KEPT — a live overlay input to the fold, not an event (it self-heals from the agent's store) |
+| `provisional` (stubs) | optimistic open placeholder | ELIMINATED in P3.4 — a user `reopen` event holds the top open in the fold, no stub node needed |
+| `warns`, `summary`, `blockSummary`, `background`, `summaryAnchor`, `retitle` | distiller/display artifacts | KEPT — content, not state |
+| `umbrella`, `origin`, `promptUuid`, `quote`, `trail`, `t`, `mt` | structure/anchors | KEPT — tree shape and provenance, not verdicts |
 
-**Failure rates, 48h** (judge-errors.jsonl):
-- **Archiver: 1195 parse failures out of 1759 calls (68%)**, concentrated in 8 sessions,
-  retrying every pass — the archiver has NO give-up cap (the distiller does: DISTILL_FAIL_CAP).
-  This is the single largest waste in the pipeline right now.
-- Block-brief writer: 80 call failures + 25 give-ups + 41 cite-misses.
-- Planner parse 5% (38/738), closer parse 4% (22/543) — healthy.
+### The referee machinery — and each piece's disposition
 
-## The plan
+| Mechanism | Job today | Disposition |
+|---|---|---|
+| `_block_is_stale` (2 sites) | void replayed block vs user action | ELIMINATED — ordering is inherent in the fold |
+| `_done_is_stale` (2 sites) | void replayed done vs user action | ELIMINATED — same; the `<`-vs-`<=` boundary becomes ONE tie rule in the fold |
+| view-clear checks (5 sites) | user's cross-off seals everything | COMBINED into `may_apply` (P1), then the fold's top authority rank (P3) |
+| `agentTask` authority (in rollup) | agent's open to-do forces working | COMBINED into the fold's rank order |
+| moot-block heal | drop stale block on completed subtree | ELIMINATED — can't occur under the fold |
+| followupPending-deadlock heal | drop stranded optimistic chip | ELIMINATED — the derived value can't strand |
+| roll-down heal + `_reopen`'s un-resolve | close children under a done parent, reversibly | ELIMINATED — shadowing (see below) |
+| sticky completion (`settledDone`) | anti-flicker | KEPT in v1 |
+| `_reopen` | the multi-flag reopen dance | SHRINKS to "append a reopen event" + the P3.4 leftovers |
+| `_nudge_diag`, `by=` tags | reopen forensics | ELIMINATED — the log IS the audit trail |
+| optimistic vs official reopen split | kernel acts now, judge confirms | ELIMINATED as a distinction — both are just events from different sources |
 
-### Phase 0 — quick wins the measurements exposed (small, independent, do first)
-- **0a. Archiver give-up + leniency.** Cap repeated parse failures per session (mirror
-  DISTILL_FAIL_CAP's escape hatch) and make `_parse_archive` tolerant of the actual Haiku drift
-  (inspect the 8 failing sessions' outputs first — fix the cause, cap as the backstop). Kills
-  ~1200 wasted calls/48h.
-- **0b. Brief-writer failures.** Diagnose the 80 call-fails (timeout? size?); same give-up
-  hygiene.
+### Also eliminated/combined while we're in there (small, independent)
 
-### Phase 1 — one arbitration seam (no behavior change)
-The authority policy — **user > agent's own to-do list > judges; within a rank, newer evidence
-beats older** — is real but scattered: two staleness floors at four call sites, view-clear seals
-in five places, the agentTask override inside rollup, optimistic-vs-official reopen rules.
-Introduce ONE gate:
+- Dead config: the removed fairness caps (`PLAN_FAIRNESS = None` etc., romp-judge:101-140) —
+  delete the constants and the `[:None]` slices.
+- `apply_group`'s legacy `everDone` backfill remnants and grouper-guard comments already stale
+  after the 2026-07-06 rule removal.
+- The judge's `_seg_key` and the kernel's twin copy: extract to one shared helper both load
+  (they must never drift; today they are literal copies).
+- Distiller's two prompts share their BACKGROUND/TAKEAWAY/SOURCE scaffolding as one template
+  with a done/blocked insert (cosmetic; only if touching the distiller anyway).
 
-    may_apply(store, node, source, verdict, evidence_t) -> bool
+## The verdict log design (Phase 3's target state)
 
-Every writer (apply_plan, apply_close, courier, user_move, optimistic_followup, propagate) asks
-it before setting a flag. The ladder gets stated once, tested once. New writers inherit it
-instead of remembering N floors (the failure mode "Move to Working" nearly shipped with). Pure
-refactor: existing tests must pass unchanged.
+Per node, append-only:
 
-### Phase 2 — placement identity hardening (the replay-storm lesson)
-Placements are keyed by parse-derived seg ids with no version. Add `placementsV` to the store and
-a deploy-time rule: any change to seg-id derivation (t or text hash) ships with a
-seal-or-migrate sweep (like the caption cache's v4→v5 bump), plus the twin-burst regression
-suite (tests/test_judge_retry_burst.py) as the gatekeeper. Institutionalizes 199118f.
+    {"ev_t": <evidence unix-s>, "src": "planner"|"closer"|"courier"|"user"|"agent",
+     "kind": "done"|"reopen"|"block"|"unblock"|"clear", "why": "...",
+     "at": <wall-clock appended>, "seg": <segment id, when judge-derived>}
 
-### Phase 3 — the simpler model underneath: a per-node verdict log
-The event-based model the flags are approximating. Each node accrues append-only verdict events:
+`ev_t` is EVIDENCE time (the segment/turn/user-action moment); `at` is arrival time, kept for
+forensics only. The fold, per node:
 
-    {source: planner|closer|courier|user|agent, kind: done|reopen|block|unblock|clear,
-     ev_t, why}
+1. Order events by (authority rank: user > agent > judge), then `ev_t`, then `at` as the tie
+   break — the old per-guard `<`/`<=` asymmetry becomes this ONE explicitly-tested tie rule.
+2. The latest-winning verdict determines the node's own state (open / done / blocked).
+3. Parent shadowing: a top's `done` shadows its OPEN descendants for rollup purposes (they
+   count complete without ever being written); a later `reopen` on the top unshadows exactly
+   them. Replaces the roll-down/rolledUp write-remember-unwrite cycle.
+4. Tree rollup (bottom-up completeness, any-blocked, the settled gate, ladder precedence) is
+   UNCHANGED code operating on fold outputs instead of raw flags.
 
-and status = a pure fold over the log ordered by (authority rank, evidence time). Migration is
-incremental and safe:
-1. **Dual-write** (flags stay authoritative; every flag write also appends its verdict event).
-2. **Shadow fold**: compute status from the log alongside `rollup_status`; log every divergence
-   on the live fleet until quiet.
-3. **Flip**: rollup becomes the fold; flags remain as a materialized cache for the read side.
-4. **Retire heals one at a time** — moot-block heal, followupPending-deadlock heal, roll-down
-   orphan heal each become properties of the fold rather than repair passes.
+Kept OUTSIDE the log, deliberately: settledness (a function of session focus at read time,
+plus the settledAt/settledDone display stamps), the agentTask overlay (a live mirror of the
+agent's own store — it self-corrects, so freezing it into events would be wrong), and
+view-clear's authoritative copy (cleared.jsonl, kernel-owned). The fold consumes all three as
+inputs alongside the log.
 
-What dissolves: both staleness floors (an old-evidence verdict simply loses the fold — replay
-becomes naturally idempotent, which also shrinks the Phase-2 blast radius), most derived flags
-(everDone/settledDone/followupPending are questions you ask the log), and the debugging
-side-channels (negComplete, `by=` diag tags, nudge-diag.jsonl) — the log IS the audit trail.
-Given reopens run ~daily (391 events), this machinery is exercised enough to justify the build.
+## Experiments — test the assumptions against the store BEFORE building on them
 
-### Phase 4 — resolver consolidation, ONLY if the A/B says so
-The tempting cut — demote the planner to placement-only and let the closer own done/block — is
-NOT supported by default: the planner lands 71% of dones first. The honest question is whether
-that eagerness ever reaches the USER earlier (the settled gate usually delays display to
-turn-end anyway; the exception is non-focus tops completing mid-turn). The closer's existing
-`samples` A/B hook can measure exactly that: log, for each planner-done, whether display would
-have waited for turn-end anyway. If eagerness almost never shows, consolidating saves ~40% of
-triage Sonnet calls (738+543 → ~740) and deletes the negComplete/negBlock provenance split; if
-it shows, keep both — they're cheap enough.
+Each phase has a gate experiment. E1-E3 and E7 are cheap read-only scripts over
+`$XDG_STATE_HOME/romp` (the pattern used for the 2026-07-06 fleet scan); E2/E4/E6 are
+instrumentation riding existing logs.
 
-### Non-goals
-- **No prompt re-fusing** (decomposed-from-fused is settled history; quality dropped fused).
-- **No index-tier redesign** beyond 0a — cheap, working, and 71% of volume is fine to leave.
-- **Grouper/consolidator** — already one prompt, two candidate sets; nothing to merge.
+- **E1 (gates P1) — write-site census.** Static inventory of every site that writes each
+  verdict flag and every guard call. Assumption tested: the may_apply seam covers ALL writers
+  (miss one and the seam is a lie). Output: a checklist table in the P1 change.
+- **E2 (gates P3 scope) — heal-fire telemetry.** A JSONL counter line per heal firing (which
+  heal, which store); run the fleet ~1 week. Assumption tested: "the heals exist for
+  flag-mutation races and dissolve under the fold" — if any heal fires for a reason the fold
+  does NOT subsume, we learn it BEFORE deleting the heal, not after.
+- **E3 (gates P3 design) — offline reconstruction dry run.** For every ARCHIVED store (4094
+  nodes with known-final states): reconstruct a synthetic verdict log from the provenance that
+  DID survive (nodeComplete/negComplete/everDone/mt/deltaSince), fold it, compare to the
+  stored rollup verdicts. Assumption tested: the fold's rank + tie rules reproduce reality on
+  historical data. Divergences are design feedback at zero live risk.
+- **E4 (gates the P3 flip) — live shadow fold.** During dual-write, compute fold-status beside
+  rollup_status on every producer pass; log every divergence with the node's log + flags. Flip
+  only after N quiet days. The main safety gate.
+- **E5 (gates P0a) — archiver failure autopsy.** Capture raw model output on the next parse
+  failures in the 8 looping sessions (68% fail rate, 1195 calls/48h). Assumption tested:
+  format drift fixable by parser leniency, vs. something pathological in those sessions'
+  caption history (then the give-up cap alone is the fix).
+- **E6 (gates P4; may never run) — planner-eagerness display benefit.** In the closer's
+  existing `samples` hook, log for each planner-set done whether that goal was the session's
+  active focus at verdict time (if yes, the settled gate delayed display to turn-end anyway —
+  the closer would have delivered identical UX). Assumption tested: "eager dones reach the
+  user earlier often enough to justify a second resolver" (the planner lands 71% of dones
+  first, but firstness ≠ visible earliness). Only a clear "almost never" green-lights P4.
+- **E7 (informs the P3.3 cache contract) — read-side flag census.** Which flags do
+  build_feed/build_session actually read? The materialized cache exports exactly that set and
+  nothing else. (Known so far: nodeComplete, blocked, cleared, followupPending, settledAt,
+  followupAt, provisional, umbrella, warns, the summaries, origin.)
 
-## Sequencing
+## Phasing — what ships at each step
 
-0a/0b now (hours each). Phase 1 next (a day, pure refactor, big safety payoff). Phase 2 rides
-the next judge change that touches parsing (the rule + version field are an hour; the sweep
-script exists from the 199118f cleanup). Phase 3 is the real project (days, but each step is
-shippable and reversible; the shadow-fold stage produces divergence data before any behavior
-changes). Phase 4 waits for its measurement.
+- **P0 (hours):** 0a archiver give-up cap + parse fix per E5 (kills ~1200 wasted calls/48h);
+  0b brief-writer failure triage (80 call-fails + 25 give-ups/48h).
+- **P1 (a day):** E1 census → `may_apply(store, node, src, kind, ev_t)` encoding the whole
+  ladder (user > agent > judges; newer evidence wins; view-clear seals) → every writer calls
+  it → delete the scattered guard calls. Zero behavior change; existing suites pass untouched;
+  new tests state the ladder once.
+- **P2 (an hour + a standing rule):** `placementsV` schema version + the deploy rule: any
+  seg-id-derivation change ships a seal-or-migrate sweep (the 199118f replay-storm lesson),
+  gated by the twin-burst regression suite.
+- **P3.1 (a day):** event append inside may_apply (dual-write; flags stay authoritative) + E2
+  telemetry + the E3 offline report.
+- **P3.2 (days, mostly waiting):** shadow fold + E4 divergence telemetry on the live fleet.
+- **P3.3 (the flip):** the fold becomes authoritative; flags become the materialized cache
+  (E7 contract); both staleness guards deleted; heals deleted one per change as E2 confirms
+  each is silent.
+- **P3.4 (follow-ups):** provisional stubs → reopen-event semantics; settledDone into the fold
+  if the anti-flicker property provably holds; `_nudge_diag`/`by=` forensics removed; the
+  dead-config sweep; the shared `_seg_key` helper.
+- **P4 (only if E6 says so):** the planner sheds its done/block ops; the closer owns
+  resolution and absorbs the nudge phase. Saves ~40% of triage Sonnet calls (planner 738 +
+  closer 543 per 48h today). Parked until then — both resolvers are load-bearing on today's
+  numbers.
+
+## Ratchets — how it stays simple afterward
+
+- A new "what happened before?" question is answered by a fold derivation, never a new flag
+  (a flag addition to the store is a review red flag).
+- A new writer goes through may_apply/the log; a lint test greps for direct verdict-flag
+  writes outside the materialized-cache layer and fails on any.
+- A seg-id-derivation change without a placements migration fails the P2 deploy rule.
+
+## Success criteria
+
+- **Bug-class removal:** replay/out-of-order writes cannot change board state (property test:
+  shuffling a log never changes its fold).
+- **Code removal:** both staleness guards, ≥3 heals, ≥6 flags, and the reopen forensics gone —
+  a net-negative diff in bin/romp-judge by P3.4.
+- **Behavior:** the E4 divergence log quiet; the full existing suites pass unchanged at every
+  phase boundary.
+- **Ops:** archiver error rate 68% → <2%; judge-errors.jsonl quiet enough that a new entry
+  means something.
