@@ -2028,8 +2028,8 @@ def _drive(msg, client):
                       echo=("romp" if msg.get("nudge") else "human") if be is _TMUX else None)
         if iid:                                           # optimistic: reopen the card NOW, before the judge pass
             try:
-                if jd.optimistic_followup(sid, iid, text=str(msg["text"]), now=int(time.time()),
-                                          stub=not bool(msg.get("nudge"))):   # typed → open stub; nudge → resolve
+                if jd.optimistic_followup(sid, iid, text=str(msg["text"]), now=int(time.time())):
+                    # (the reopen event holds the top open + wears the chip; stub nodes retired 2026-07-07)
                     _mark_views_dirty()                   # a reopen pushes the "Followed up" board at once —
                     #                                       the store write is invisible to the fleet sig
             except Exception:
@@ -6319,16 +6319,20 @@ def _restore_goal_archive(item_ids):
                 status[nid] = a_status.pop(nid)
         # Restore COMPLETION stickily (the user 2026-06-27): a top that was in the Completed column when cleared
         # must come back completed. rollup_status only KEEPS a top completed when it's `settled` (no longer the
-        # session's focus, or the session is closed) OR carries the durable `settledDone` flag. A completed top
-        # that lacks settledDone (≈5% of the archive) whose session is now OPEN and re-focusing it would be
-        # demoted to "working" by the re-roll in _mark_nodes_cleared — which build_feed's awaiting floor then
-        # renders as "⏳ awaiting" before later churn drops the card (the UndoClear bug the user hit). Stamp
-        # settledDone on each restored completed TOP so the re-roll holds it completed. Blocked/working tops
-        # carry no completed status here, so they re-derive normally.
+        # session's focus, or the session is closed) OR carries the durable settledDone cache. A completed top
+        # that lacks it (≈5% of the archive) whose session is now OPEN and re-focusing it would be demoted to
+        # "working" by the re-roll in _mark_nodes_cleared — which build_feed's awaiting floor then renders as
+        # "⏳ awaiting" before later churn drops the card (the UndoClear bug the user hit). Since settle became
+        # a DIARY event (2026-07-07) a bare settledDone write would be wiped by the next materialize, so record
+        # the settle event instead; the cache re-derives from it. Blocked/working tops carry no completed
+        # status here, so they re-derive normally.
         for iid in ids:
             nd = nodes.get(iid)
             if nd is not None and nd.get("parentId") is None and (status.get(iid) == "completed" or nd.get("nodeComplete")):
-                nd["settledDone"] = True
+                if not nd.get("settledDone"):
+                    jd.record_verdict(store, nd, "romp", "settle",
+                                      nd.get("settledAt") or nd.get("mt") or nd.get("t") or 0)
+                    nd["settledDone"] = True           # cache in step until the next rollup re-derives
         jd.save_goals(sid, store)
         jd.save_goal_archive(sid, arch)
         _compact_seen.pop(sid, None)                   # force a re-stat next sweep (we just changed the live file)
@@ -6347,6 +6351,9 @@ def _resolve_node(sid, node_id):
     if not nd or nd.get("nodeComplete"):
         return False
     now = int(time.time())
+    # The event is the write (found 2026-07-07): without it the rollup two lines down re-derives the
+    # flags from the diary and REVERTS the user's own resolve — the flip made eventless writes no-ops.
+    jd.record_verdict(store, nd, "user", "done", now, why="Resolved by the user.")
     nd["nodeComplete"] = True
     nd["blocked"] = False
     nd["doneWhy"] = nd.get("doneWhy") or "Resolved by the user."

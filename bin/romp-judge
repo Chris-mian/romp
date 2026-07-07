@@ -1098,9 +1098,9 @@ def open_menu(store, cap=20):
             nid = nd.get("parentId")                   # stale part — skip them but KEEP climbing (a cleared/
         return False                                   # view-cleared ancestor above still seals)
 
-    opens = [nd for nid, nd in nodes.items() if not _sealed(nid) and not nd.get("provisional")]
-    opens.sort(key=lambda nd: nd.get("t", 0))           # provisional = a kernel follow-up STUB (UI-only): never a
-    return opens[-cap:]                                 # planner target — it drops the stub + files its own sub
+    opens = [nd for nid, nd in nodes.items() if not _sealed(nid)]
+    opens.sort(key=lambda nd: nd.get("t", 0))           # (follow-up stub nodes retired 2026-07-07: an
+    return opens[-cap:]                                 # unanswered user reopen holds the top open instead)
 
 
 def _menu_text(store, menu):
@@ -1291,11 +1291,14 @@ def _top_ancestor(nodes, nid):
     return nid
 
 
-def _mark_node_done(store, nid, why, t):
+def _mark_node_done(store, nid, why, t, src="planner"):
     """Mark a node complete (record `why`, bump `mt`) and clear
     `blocked` across its WHOLE subtree (a checked-off goal's child-blocks are moot). The planner's done op
     (apply_plan) AND the deterministic cross-session delegation link-back (run_propagate) both route through
-    here — one definition of 'done'. No-op if the node is gone."""
+    here — one definition of 'done'. No-op if the node is gone. The descendant unblocks are EVENT-BACKED
+    (P3.4 follow-through, the user 2026-07-07): the node's own done event covers itself in the fold, but a
+    blocked DESCENDANT cleared without an event re-blocks on the next materialize and wears a stale ⏸ until
+    settle rolls it up — the same eventless-write gap user_move/_reopen already closed."""
     nodes = store["nodes"]
     if nid not in nodes:
         return
@@ -1308,6 +1311,9 @@ def _mark_node_done(store, nid, why, t):
     stack = [nid]
     while stack:
         x = stack.pop()
+        if x != nid and nodes[x].get("blocked"):
+            record_verdict(store, nodes[x], src, "unblock", t,
+                           why="discharged with the completed parent")
         nodes[x]["blocked"] = False
         stack.extend(kids.get(x, []))
 
@@ -1494,7 +1500,7 @@ def rollup_status(store, session_closed, now=None):
     nodes = store["nodes"]
     for nd in nodes.values():
         _backfill_log(nd)                              # P3.3: one-time synth log for pre-dual-write nodes
-    _materialize_from_log(nodes)                       # P3.3: history → flags; the log is the authority
+    folds = _materialize_from_log(nodes)               # P3.3: history → flags; the log is the authority
     children = {}
     for nid, nd in nodes.items():
         children.setdefault(nd.get("parentId"), []).append(nid)
@@ -1542,6 +1548,12 @@ def rollup_status(store, session_closed, now=None):
         if nid in open_task:
             return False
         kids = children.get(nid, [])
+        # HELD OPEN (P3.4 follow-through, the user 2026-07-07): an unanswered USER reopen on this node
+        # ("move to Working", a typed follow-up) means the user asserted it is NOT done — bottom-up
+        # completion from its still-done children must not overrule that; only a LANDED judge verdict
+        # (which ends the held state in the fold) re-completes it. Replaces the provisional stub node.
+        if folds.get(nid, {}).get("held"):
+            return False
         return nodes[nid].get("nodeComplete") or (bool(kids) and all(is_complete(c) for c in kids))
 
     focus = top_ancestor(store["lastNode"]) if store.get("lastNode") in nodes else None
@@ -1559,50 +1571,23 @@ def rollup_status(store, session_closed, now=None):
         if nodes[nid].get("cleared"):
             status[nid] = "cleared"
         elif any_blocked(nid):
-            # An authoritative block supersedes a stale optimistic reopen (the user 2026-07-03): drop
-            # followupPending here, mirroring the completed branch below. followupPending is otherwise
-            # cleared ONLY in that branch — which `blocked` precedence shadows — so a top that ends a
-            # follow-up episode BLOCKED (its owed question stands, or a descendant re-blocked while the
-            # follow-up turn was compacted / usage-limited and its work-run never ran _reopen to clear
-            # the flag) kept followupPending forever. The kernel reads blocked+followupPending as `recheck`
-            # → a permanent "Re-judging…" swirl on a card no longer being judged (track g9). A genuine
-            # in-flight targeted follow-up isn't affected: optimistic_followup UNBLOCKS the goal, so it
-            # doesn't reach this branch until a judge verdict re-blocks it — at which point the pending IS
-            # resolved and the card correctly returns to Needs-You.
-            nodes[nid].pop("followupPending", None)
-            status[nid] = "blocked"
-        elif nodes[nid].get("followupPending"):       # optimistic reopen: show WORKING until the judge processes the follow-up
-            # ...UNLESS the judge has genuinely RE-COMPLETED it (nodeComplete + settled). A status Nudge sets
-            # followupPending optimistically; once the judge answers and re-dones the top, that flag is stale.
-            # Without this it DEADLOCKS: followupPending forces 'working', which blocks the completed branch
-            # below — the only place that would clear followupPending — so a done goal sticks in Working
-            # forever (the user 2026-06-20: g70 was nodeComplete+settled yet stuck Working with the chip).
-            # The re-completion test is the TOP's EXPLICIT nodeComplete, NOT bottom-up is_complete (the user
-            # 2026-06-23): a fresh follow-up to a goal whose leaves are all genuinely DONE must still jump to
-            # WORKING — _reopen cleared the top's nodeComplete but (rightly) left the done leaves, so bottom-up
-            # is_complete would re-complete it INSTANTLY and defeat the optimistic reopen. The g70 stale case
-            # the judge clears by re-asserting the TOP's nodeComplete (top-down done verdict), so this still
-            # drops the stale flag there.
-            if nodes[nid].get("nodeComplete") and (settled or nodes[nid].get("settledDone")) and nid not in open_task:
-                if not nodes[nid].get("settledDone"):     # the FIRST settlement → freeze its column-entry time
-                    nodes[nid]["settledAt"] = latest_t    # (transition only; a legacy completed top keeps the mt fallback)
-                    _stamp_seam(store, nid, now if now is not None else time.time())   # settle moment → seam point (segment-regrowth)
-                nodes[nid]["settledDone"] = True
-                nodes[nid].pop("followupPending", None)   # resolved → drop the stale optimistic chip
-                status[nid] = "completed"
-            else:
-                status[nid] = "working"
+            status[nid] = "blocked"                   # a landed block also ended any held/pending state in
+            #                                           the fold, so the chip cleans itself (no pop needed)
+        elif nodes[nid].get("followupPending"):       # user reply in flight (fold-derived): WORKING until a
+            status[nid] = "working"                   # judge verdict LANDS on the top, which ends it — the
+            #                                           old stale-chip deadlock heals can't trigger anymore
         # STICKY completion (the user 2026-06-18): once a top has settled-completed, it STAYS completed
         # even when the session starts another turn that re-focuses it (a status QUESTION, an unrelated
         # poke), so the card no longer flickers working↔done every turn. `session_closed` flaps per turn;
-        # `settledDone` is event-stamped once and only cleared by a genuine planner _reopen (which also
-        # clears nodeComplete). The FIRST completion still needs the real settled gate, so nothing
-        # completes prematurely while the session is actively working under it pre-settle.
+        # settledness is durable: the settle EVENT (P3.4 follow-through) — settledDone/settledAt are its
+        # fold-derived cache, undone only by a later reopen event. The FIRST completion still needs the
+        # real settled gate, so nothing completes prematurely while the session works under it pre-settle.
         elif is_complete(nid) and (settled or nodes[nid].get("settledDone")):
-            if not nodes[nid].get("settledDone"):         # the FIRST settlement → freeze its column-entry time
-                nodes[nid]["settledAt"] = latest_t        # (transition only; a legacy completed top keeps the mt fallback)
+            if not nodes[nid].get("settledDone"):         # the FIRST settlement of this episode → the settle
+                record_verdict(store, nodes[nid], "romp", "settle", latest_t)   # event freezes column entry
+                nodes[nid]["settledAt"] = latest_t        # cache kept in step mid-pass (materialize already ran)
+                nodes[nid]["settledDone"] = True
                 _stamp_seam(store, nid, now if now is not None else time.time())   # settle moment → seam point (segment-regrowth)
-            nodes[nid]["settledDone"] = True
             status[nid] = "completed"
         else:
             status[nid] = "working"
@@ -1636,6 +1621,8 @@ def rollup_status(store, session_closed, now=None):
     # _roll_down so nodes just rolled up to nodeComplete are covered.
     for nid in nodes:
         if nodes[nid].get("blocked") and is_complete(nid):
+            record_verdict(store, nodes[nid], "romp", "unblock", latest_t,   # evented (2026-07-07): heal ONCE —
+                           why="moot: the subtree is complete")   # an eventless clear re-blocked every pass
             nodes[nid]["blocked"] = False
             nodes[nid].pop("blockWhy", None)
     store["status"] = status
@@ -1677,7 +1664,9 @@ def _sync_declared_plan(store, session, seg_id, seg_t):
             if at.get("status") != "open" or at.get("raw") != it["status"] or not nd.get("agentBornOpen"):
                 nd["agentTask"] = {"key": key, "status": "open", "raw": it["status"]}
                 nd["agentBornOpen"] = True                  # adopt: watched-open now → protected from the done-heal
-                if nd.get("agentDone"):                     # agent RE-OPENED it → drop the done WE stamped
+                if nd.get("agentDone"):                     # agent RE-OPENED it → an agent reopen EVENT (an
+                    record_verdict(store, nd, "agent", "reopen", seg_t,   # eventless un-done would be re-DONE'd
+                                   why="the agent re-opened its own to-do")   # by the next materialize)
                     nd["nodeComplete"] = False; nd["agentDone"] = False
                 nd["mt"] = seg_t
                 changed = True
@@ -2308,21 +2297,24 @@ def _cleared_context(fsid, store, cap=6):
 
 
 
-def _reopen(store, gid, by="?", now=None):
+def _reopen(store, gid, by="?", now=None, msg=False):
     """Reopen a completed/blocked goal so a tagged FOLLOW-UP can accrue more work under it: clear
     nodeComplete + cleared on the node (unsealing its subtree from open_menu) and unblock it and its
-    ancestors. Clears followupPending — the OFFICIAL reopen supersedes the kernel's optimistic one. The
-    settled gate re-completes it once the follow-up work is done. This is the ONLY exception to the
-    sealed-completed-subtree rule (the user 2026-06-17) — EXCEPT a goal the user crossed off the feed
-    (view-cleared): that stays sealed, a follow-up to it must NOT revive it, so the caller places the work
-    as a fresh goal instead (the user 2026-06-22). `by` names the caller; it feeds the reopen event's
-    src mapping and why-text (the diary is the audit trail)."""
+    ancestors. The settled gate re-completes it once the follow-up work is done. This is the ONLY
+    exception to the sealed-completed-subtree rule (the user 2026-06-17) — EXCEPT a goal the user
+    crossed off the feed (view-cleared): that stays sealed, a follow-up to it must NOT revive it, so the
+    caller places the work as a fresh goal instead (the user 2026-06-22). `by` names the caller; it
+    feeds the reopen event's src mapping and why-text (the diary is the audit trail). `msg` marks a
+    reopen a user MESSAGE rides along with (a typed follow-up / nudge reply in flight) — the fold
+    derives the followupPending chip from it. The old per-flag dance (followupPending pop, the
+    settledDone/settledAt un-stick, the deltaSince stamp) is gone: the reopen EVENT drives all of it
+    through the fold (P3.4 follow-through, the user 2026-07-07)."""
     nodes = store["nodes"]
     if gid not in nodes:
         return
-    # DUAL-WRITE: the gate + the reopen event in one call (P3.1). Source maps from the caller: the
-    # user's own actions (a typed follow-up, the optimistic flip, Move to Working) are "user"; a
-    # delegation/nudge unseal is judge machinery. ev_t = the action moment when the caller knows it.
+    # Source maps from the caller: the user's own actions (a typed follow-up, the optimistic flip,
+    # Move to Working) are "user"; a delegation/nudge unseal is judge machinery. ev_t = the action
+    # moment when the caller knows it.
     src = {"delegation": "courier", "nudge": "planner"}.get(by, "user")
     if now is None:
         # default the event time to the STORE's latest known moment, not the wall clock: a wall stamp in
@@ -2330,27 +2322,16 @@ def _reopen(store, gid, by="?", now=None):
         # genuine verdict and pin the node open. Production callers pass the real action time.
         now = max((max(n.get("mt", 0) or 0, n.get("t", 0) or 0) for n in nodes.values()),
                   default=int(time.time()))
-    if not record_verdict(store, nodes[gid], src, "reopen", now, why="reopened (%s)" % by):
+    if not record_verdict(store, nodes[gid], src, "reopen", now, why="reopened (%s)" % by, msg=msg):
         return                                         # view-cleared → stays sealed; don't un-seal it
-    nodes[gid]["nodeComplete"] = False
-    nodes[gid]["cleared"] = False
-    nodes[gid].pop("followupPending", None)            # official reopen → drop the optimistic chip flag
-    x = gid                                            # unblock + un-stick completion on the node + its ancestor chain
+    x = gid                                            # unblock the node + its ancestor chain
     while x is not None:
         if x != gid and nodes[x].get("blocked"):       # event-backed (P3.3), mirroring user_move: gid's own
             record_verdict(store, nodes[x], src, "unblock", now,      # reopen event covers gid; ancestors need
                            why="unblocked by reopen (%s)" % by)             # their own unblock or they re-block
-        nodes[x]["blocked"] = False
-        nodes[x].pop("settledDone", None)              # genuine reopen clears the sticky-completed marker → back to working
-        prev = nodes[x].pop("settledAt", None)         # ...and its column-entry stamp, so a re-completion re-stamps (back to the bottom)
-        # DELTA-SUMMARY BOUNDARY (the user 2026-07-04): remember where the episode that just ENDED settled, so
-        # when this goal is finished AGAIN the distiller can scope its takeaway to the follow-up's work rather
-        # than re-summarizing the whole trail (which the user has already seen). Each reopen overwrites it, so
-        # deltaSince always names the boundary of the CURRENT (latest) episode. Only tops carry settledAt, so in
-        # practice this lands on the top being distilled; a never-settled node stamps nothing → no delta scoping.
-        if prev:
-            nodes[x]["deltaSince"] = prev
-        x = nodes.get(x, {}).get("parentId")
+        if not nodes[x].get("rolledUp"):
+            _materialize_node(nodes[x])                # cache in step NOW: same-pass readers (the nudge
+        x = nodes.get(x, {}).get("parentId")           # path's open_menu seal check) see the reopen
     # Un-resolve the steps rollup_status auto-rolled under this goal (rolledUp) — else they'd stay
     # complete/cleared and bottom-up is_complete would immediately RE-complete the reopened top. Only the
     # auto-rolled ones: a genuinely-DONE leaf (no rolledUp marker) keeps its state across the reopen.
@@ -2362,70 +2343,40 @@ def _reopen(store, gid, by="?", now=None):
         c = stack.pop()
         nd = nodes.get(c)
         if nd and nd.pop("rolledUp", None):
-            nd["nodeComplete"] = False
-            nd["cleared"] = False
-            nd["blocked"] = False
-        stack.extend(kids.get(c, []))
+            _materialize_node(nd)                      # back under fold ownership: its own history (usually
+        stack.extend(kids.get(c, []))                  # none → open; a rolled-away block resurfaces) rules
 
 
-def optimistic_followup(fsid, gid, text="", now=None, stub=False):
+def optimistic_followup(fsid, gid, text="", now=None):
     """OPTIMISTIC reopen for a feed follow-up (the user 2026-06-17): the instant the user submits a
-    follow-up on a card, reopen its goal and flag it followupPending so the board shows it back at WORKING
-    with a 'Followed up' chip IMMEDIATELY — before the next judge pass officially processes the tagged
-    segment (which then re-files the work and clears followupPending via _reopen). The kernel's follow-up
-    handler calls this; the judge confirms it. Returns True if a node was reopened, else False.
+    follow-up on a card, reopen its goal so the board shows it back at WORKING with a 'Followed up' chip
+    IMMEDIATELY — before the next judge pass officially processes the tagged segment. The kernel's
+    follow-up handler calls this; the judge confirms it. Returns True if the goal exists.
 
-    When `stub` (a TYPED follow-up, which the planner will file as new work UNDER the goal — NOT a nudge,
-    which the planner RESOLVES), also plant a PROVISIONAL open sub-goal so the goal TREE shows real open
-    work AT ONCE (the user 2026-06-24): without it the card flips to WORKING but the tree still rolls the
-    top up to done from its still-done children — a "working" card over an all-✓ tree. The open stub makes
-    the top genuinely open through the normal rollup (no special-casing). It's hidden from open_menu and the
-    planner's follow-up pass DROPS it and files its own sub in its place, so it never duplicates or confuses
-    planning — it just fills the optimistic window until the planner catches up."""
+    Everything downstream is the reopen EVENT (msg=True) through the fold (P3.4 follow-through, the
+    user 2026-07-07): followupPending (the chip + forced-working) and followupAt (the sort/staleness
+    floor) are derived by materialize, and the unanswered user reopen HOLDS the top open through
+    rollup's bottom-up completion — the provisional stub node this used to plant is retired."""
     gid = str(gid)
     store = load_goals(fsid)
     if gid not in store.get("nodes", {}):
         return False
-    _reopen(store, gid, by="optimistic", now=now)               # unseal + unblock (also clears any stale followupPending)
-    store["nodes"][gid]["followupPending"] = True      # → rollup shows working + the feed shows the chip
-    if now is not None:
-        # Stamp when this card OPTIMISTICALLY entered Working, so the feed sorts it to the BOTTOM of the
-        # column at once (build_feed floors disp_t to followupAt for a working card) instead of leaving it
-        # at the top on its stale blocked-era mt and lurching it down when the real work re-files (the user
-        # 2026-07-03). Mirrors the Completed column's settledAt "entered-this-column-at" stamp.
-        store["nodes"][gid]["followupAt"] = now
-    if stub:
-        _plant_stub(store, gid, _seg_label(text) if text else "Following up", now)
+    _reopen(store, gid, by="optimistic", now=now, msg=True)     # unseal + unblock; the event carries the rest
     rollup_status(store, False)                        # the user just acted → not idle/closed → working
     save_goals(fsid, store)
     return True
-
-
-def _plant_stub(store, gid, text, now):
-    """Plant a PROVISIONAL open sub-goal under gid (the follow-up stub — the user 2026-06-24): a reopened
-    top whose children are all genuinely done would be RE-completed at once by bottom-up is_complete; the
-    open stub makes it genuinely open through the normal rollup, no special-casing. Hidden from open_menu;
-    the planner's follow-up pass drops it and files its own sub in its place, and an explicit later done
-    rolls it up via rollup_status (_roll_down)."""
-    seq = store.get("seq", 0) + 1; store["seq"] = seq
-    sid = "%s:fu%d" % (store.get("rompUuid") or gid.split(":")[0], seq)   # gid = "<rompUuid>:gN"
-    t = now if now is not None else (store["nodes"][gid].get("mt") or store["nodes"][gid].get("t", 0))
-    store["nodes"][sid] = {"id": sid, "text": text,
-                           "parentId": gid, "nodeComplete": False, "blocked": False, "cleared": False,
-                           "provisional": True, "trail": [], "t": t, "logBorn": True}
-    store.setdefault("status", {})[sid] = "working"
 
 
 def user_move(fsid, gid, now=None):
     """USER recategorize from the feed (the user 2026-07-06): the card's "Move to Working" button asserts
     this goal is NOT done / NOT waiting on the user — it belongs in Working. A move is a follow-up WITHOUT
     a message, so it reuses the follow-up machinery end to end: _reopen (unseal, unblock the ancestor
-    chain, deltaSince for the delta-scoped re-distill) + a subtree unblock (a block can sit on a
-    DESCENDANT, which _reopen doesn't reach) + the followupAt stamp (the Working-column sort floor, and
-    the _block_is_stale/_done_is_stale evidence FLOOR — verdicts from evidence at/before the move are
-    void, genuinely newer work re-completes or re-blocks the card normally) + the provisional open stub
-    when the subtree is all-done. It does NOT set followupPending: no message is in flight, so no
-    "Followed up" chip and no re-judge treatment. Returns True if the card moved."""
+    chain; the reopen event derives followupAt — the Working-column sort floor and the evidence FLOOR:
+    verdicts from evidence at/before the move are void, genuinely newer work re-completes or re-blocks
+    the card normally) + a subtree unblock (a block can sit on a DESCENDANT, which _reopen doesn't
+    reach). The unanswered reopen event holds the top open through rollup (no stub node), and it is NOT
+    msg-marked: no message is in flight, so no "Followed up" chip and no re-judge treatment. Returns
+    True if the card moved."""
     gid = str(gid)
     store = load_goals(fsid)
     nodes = store.get("nodes", {})
@@ -2445,12 +2396,6 @@ def user_move(fsid, gid, now=None):
                            why="moved to Working by the user")        # the next materialize; gid's own reopen
         nodes[x]["blocked"] = False                    #                 event already covers the top itself
         stack.extend(kids.get(x, []))
-    if now is not None:
-        nodes[gid]["followupAt"] = now                 # sort to the bottom of Working + arm the staleness floors
-    ch = kids.get(gid, [])
-    has_open_stub = any(nodes[c].get("provisional") and not nodes[c].get("nodeComplete") for c in ch)
-    if ch and not has_open_stub and all(_subtree_done(nodes, kids, c) for c in ch):
-        _plant_stub(store, gid, "Reopened by the user", now)   # else bottom-up is_complete re-completes at once
     rollup_status(store, False)                        # the user just acted → not idle/closed → working
     save_goals(fsid, store)
     return True
@@ -2520,7 +2465,7 @@ LOG_CAP = 64                             # per-node verdict-log bound (a node ra
 #                                          is a runaway backstop — oldest drop, logTrunc marks the loss)
 
 
-def record_verdict(store, nd, src, kind, ev_t=None, why=None, seg=None):
+def record_verdict(store, nd, src, kind, ev_t=None, why=None, seg=None, msg=False):
     """P3.1 DUAL-WRITE (the user 2026-07-06): the gate AND the recorder, fused into the one seam every
     verdict write goes through. Asks may_apply; when allowed, appends the event to the node's
     append-only verdict LOG and returns True — the caller then writes the flags exactly as before
@@ -2538,6 +2483,7 @@ def record_verdict(store, nd, src, kind, ev_t=None, why=None, seg=None):
     log = nd.setdefault("log", [])
     log.append({"ev_t": ev_t, "src": src, "kind": kind,
                 **({"why": why} if why else {}), **({"seg": seg} if seg else {}),
+                **({"msg": True} if msg else {}),      # a user message rides this reopen (chip derivation)
                 "at": int(time.time())})
     if len(log) > LOG_CAP:
         del log[:len(log) - LOG_CAP]
@@ -2545,32 +2491,62 @@ def record_verdict(store, nd, src, kind, ev_t=None, why=None, seg=None):
     return True
 
 
-def _fold_node_state(nd):
-    """THE AUTHORITY (P3.3, the user 2026-07-06): a node's own verdict state (open/done/blocked/cleared)
-    as a PURE fold over its log — _materialize_from_log rewrites the flag cache from this every rollup. Order by evidence time (arrival
-    breaks ties); a USER action floors judge evidence exactly as may_apply does at write time: a judge
-    done needs ev_t >= the floor, a judge block needs ev_t > it. Because record_verdict already gated
-    each append, replaying the fold reproduces the same decisions from history alone — and shuffling
-    the log never changes the result (the ordering is reconstructed, not assumed)."""
+def _fold_node(nd):
+    """THE AUTHORITY (P3.3, the user 2026-07-06): a node's verdict state AND its derived user-action /
+    display stamps, as ONE pure fold over its log — _materialize_from_log rewrites the whole flag cache
+    from this every rollup. Order by evidence time (arrival breaks ties); a USER action floors judge
+    evidence exactly as may_apply does at write time: a judge done needs ev_t >= the floor, a judge
+    block needs ev_t > it. Because record_verdict already gated each append, replaying the fold
+    reproduces the same decisions from history alone — and shuffling the log never changes the result
+    (the ordering is reconstructed, not assumed).
+
+    Beyond `state`, the fold derives what used to be hand-maintained stamps (P3.4 follow-through, the
+    user 2026-07-07 "fold in all the stragglers"):
+      floor      — the user's newest reopen ev_t (was the followupAt stamp: sort floor + staleness floor)
+      held       — the node's last-landed event is a USER reopen no judge verdict has answered yet: the
+                   user asserted "not done / not waiting", so rollup must not bottom-up re-complete it
+                   (replaces the provisional stub node the old code planted to the same effect)
+      heldMsg    — that reopen carried a user MESSAGE (a typed follow-up / nudge, event field `msg`):
+                   the "Followed up" chip + re-judge treatment (was the followupPending flag); a plain
+                   Move-to-Working reopen holds the node open but wears no chip
+      settledAt  — the newest `settle` event not undone by a later reopen (was the settledAt/settledDone
+                   stamps: the Completed-column entry time + the sticky anti-flicker marker)
+      deltaSince — the settle the latest reopen ENDED (was the deltaSince stamp: the prior episode's
+                   boundary, scoping the re-distilled takeaway to the follow-up's work)"""
     state, floor = "open", 0
+    last_set = None                       # the event that last SET state (held derivation)
+    cur_settle, prev_settle = None, None
     for e in sorted(nd.get("log") or [], key=lambda e: (e.get("ev_t") or 0, e.get("at") or 0)):
         src, kind, t = e.get("src"), e.get("kind"), e.get("ev_t") or 0
         if kind == "reopen":
-            state = "open"
+            state, last_set = "open", e
             if src == "user":
                 floor = max(floor, t)
+            if cur_settle is not None:    # this reopen ends a settled episode → its settle becomes the
+                prev_settle, cur_settle = cur_settle, None       # delta boundary; a re-settle re-stamps
         elif kind == "done":
             if src in ("user", "agent") or t >= floor:
-                state = "done"
+                state, last_set = "done", e
         elif kind == "block":
             if src in ("user", "agent") or t > floor:
-                state = "blocked"
+                state, last_set = "blocked", e
         elif kind == "unblock":
             if state == "blocked":
-                state = "open"
+                state, last_set = "open", e
         elif kind == "clear":
-            state = "cleared"
-    return state
+            state, last_set = "cleared", e
+        elif kind == "settle":            # display annotation: WHEN the card entered Completed; never state
+            cur_settle = t
+    held = (state == "open" and last_set is not None
+            and last_set.get("kind") == "reopen" and last_set.get("src") == "user")
+    return {"state": state, "floor": floor or None, "held": held,
+            "heldMsg": held and bool(last_set.get("msg")),
+            "settledAt": cur_settle, "deltaSince": prev_settle}
+
+
+def _fold_node_state(nd):
+    """The state-only view of _fold_node (the property-test surface: shuffle-invariance etc.)."""
+    return _fold_node(nd)["state"]
 
 
 def _backfill_log(nd):
@@ -2580,6 +2556,7 @@ def _backfill_log(nd):
     Events are tagged synth:True (forensics: reconstructed, not witnessed). Runs inside rollup_status,
     so every store self-migrates the first time it is touched; idempotent via logBorn."""
     if nd.get("logBorn"):
+        _backfill_settle(nd)                          # stamps predate settle EVENTS → top up (2026-07-07)
         return
     mt = nd.get("mt") or nd.get("t") or 0
     fa = nd.get("followupAt")
@@ -2588,10 +2565,14 @@ def _backfill_log(nd):
     def ev(kind, t, src="judge"):
         log.append({"ev_t": t, "src": src, "kind": kind, "at": int(time.time()), "synth": True})
 
+    if nd.get("deltaSince"):
+        ev("settle", nd["deltaSince"], src="romp")    # the PRIOR episode's settle, ended by the reopen below
     if fa:
         if nd.get("everDone"):
             ev("done", fa - 1)                        # preserves the once-done history the reopen implies
         ev("reopen", fa, src="user")
+        if nd.get("followupPending"):
+            log[-1]["msg"] = True                     # the chip's flag ↦ the msg-marked reopen it derives from
     elif nd.get("everDone") and not nd.get("nodeComplete"):
         ev("done", mt - 1)
         ev("reopen", mt)
@@ -2601,7 +2582,30 @@ def _backfill_log(nd):
         ev("block", max(mt, (fa + 1) if fa else 0))   # strictly past the user floor, so the fold keeps it
     if nd.get("cleared"):
         ev("clear", max(mt, fa or 0) + 1, src="user")
+    if nd.get("settledDone") or nd.get("settledAt"):
+        ev("settle", nd.get("settledAt") or max(mt, fa or 0), src="romp")
     nd["logBorn"] = True
+
+
+def _backfill_settle(nd):
+    """Settle-event top-up for nodes migrated BEFORE settle/stamp derivation existed (2026-07-07): their
+    logs are real (logBorn) but the settledAt/settledDone/deltaSince/followupPending stamps were still
+    hand-written, so deriving from the log alone would WIPE them — a completed card would flicker back
+    through the settle gate, a pending chip would drop. Synthesizes the missing settle events (and the
+    msg marker on the newest user reopen) so the fold reproduces the stamps; idempotent by construction
+    (each synth only fires when the fold disagrees with the legacy stamp)."""
+    f = _fold_node(nd)
+    log = nd.setdefault("log", [])
+    if nd.get("deltaSince") and f["deltaSince"] != nd["deltaSince"]:
+        log.append({"ev_t": nd["deltaSince"], "src": "romp", "kind": "settle",
+                    "at": int(time.time()), "synth": True})
+    if (nd.get("settledDone") or nd.get("settledAt")) and not f["settledAt"]:
+        log.append({"ev_t": nd.get("settledAt") or nd.get("mt") or nd.get("t") or 0, "src": "romp",
+                    "kind": "settle", "at": int(time.time()), "synth": True})
+    if nd.get("followupPending") and not f["heldMsg"]:
+        ur = [e for e in log if e.get("kind") == "reopen" and e.get("src") == "user"]
+        if ur:
+            max(ur, key=lambda e: (e.get("ev_t") or 0, e.get("at") or 0))["msg"] = True
 
 
 def _materialize_from_log(nodes):
@@ -2609,18 +2613,49 @@ def _materialize_from_log(nodes):
     a materialized cache the read side keeps consuming unchanged. Rewriting them from the fold every
     rollup gives the flip its teeth — any flag mutation that bypassed record_verdict is overwritten by
     history on the next pass. Tree-level effects (roll-down display, moot-block clearing, the settled /
-    sticky / followupPending machinery) run AFTER this in rollup_status, layering tree truth over node
-    truth — they are cache maintenance now, not competing authorities. rolledUp children keep their
-    tree-derived cache (their flags were never node-level verdicts)."""
-    for nd in nodes.values():
+    sticky machinery) run AFTER this in rollup_status, layering tree truth over node truth — they are
+    cache maintenance now, not competing authorities. rolledUp children keep their tree-derived cache
+    (their flags were never node-level verdicts).
+
+    Since the P3.4 follow-through (the user 2026-07-07) the DERIVED STAMPS are cache too: followupAt,
+    followupPending, settledAt/settledDone, deltaSince are rewritten from the fold here — their old
+    write/pop sites (optimistic_followup, user_move, _reopen's un-stick dance, rollup's deadlock heals)
+    are gone. Returns {nid: fold} so rollup_status reuses the folds (the held-open rule) without
+    re-folding."""
+    folds = {}
+    for nid, nd in nodes.items():
         if nd.get("rolledUp"):
             continue                                   # tree-derived display state; roll-down owns it
-        st = _fold_node_state(nd)
-        nd["nodeComplete"] = st == "done"
-        nd["blocked"] = st == "blocked"
-        nd["cleared"] = st == "cleared"
-        if st != "blocked":
-            nd.pop("blockWhy", None)                   # cache hygiene: the why goes with the block
+        folds[nid] = _materialize_node(nd)
+    return folds
+
+
+def _materialize_node(nd):
+    """Rewrite ONE node's flag/stamp cache from its fold — the shared kernel of _materialize_from_log,
+    also called by mid-pass writers (_reopen) whose same-pass readers (the nudge path's open_menu seal
+    check) need the cache fresh BEFORE the next full materialize. Returns the fold."""
+    f = _fold_node(nd)
+    st = f["state"]
+    nd["nodeComplete"] = st == "done"
+    nd["blocked"] = st == "blocked"
+    nd["cleared"] = st == "cleared"
+    if st != "blocked":
+        nd.pop("blockWhy", None)                       # cache hygiene: the why goes with the block
+    for key, val in (("followupAt", f["floor"]), ("settledAt", f["settledAt"]),
+                     ("deltaSince", f["deltaSince"])):
+        if val:
+            nd[key] = val
+        else:
+            nd.pop(key, None)
+    if f["settledAt"]:
+        nd["settledDone"] = True
+    else:
+        nd.pop("settledDone", None)
+    if f["heldMsg"]:
+        nd["followupPending"] = True                   # user reply in flight, unjudged → the chip
+    else:
+        nd.pop("followupPending", None)
+    return f
 
 
 def _unit_key(seg_id, phase):
@@ -2917,8 +2952,11 @@ def _plan_session(fsid, path, now):
                 if (store["nodes"].get(_x, {}).get("agentTask") or {}).get("status") == "open":
                     _open_items.append(_x)
                 _stack.extend(_nkids.get(_x, []))
-            if not _open_items and (_subtree_done(store["nodes"], _nkids, target)
-                                    or store["nodes"][target].get("settledDone")):
+            if (not _open_items and not _fold_node(store["nodes"][target])["held"]
+                    and (_subtree_done(store["nodes"], _nkids, target)
+                         or store["nodes"][target].get("settledDone"))):
+                # (held check 2026-07-07: a user reopen no verdict has answered means the user asserted
+                # NOT done — an all-done subtree under it is exactly why they were asked; never moot.)
                 store["placements"][seg_id] = None
                 save_goals(fsid, store)
                 continue
@@ -2958,9 +2996,6 @@ def _plan_session(fsid, path, now):
             # pivotFrom provenance) instead of burying the new ask as a sub of the cited goal. The verdict
             # is the model's; every ambiguous outcome (no mint, empty ops, parse failure) falls through to
             # the forced-sub default, so an accidental cite still files safely under the target.
-            for k in [k for k, v in list(store["nodes"].items())   # drop the kernel's provisional follow-up STUB:
-                      if v.get("provisional") and v.get("parentId") == followup]:   # the real placement below supersedes it
-                store["nodes"].pop(k, None); store.get("status", {}).pop(k, None)
             menu = open_menu(store)
             gi = next((i for i, nd in enumerate(menu, 1) if nd["id"] == followup), None)
             if gi is None and followup not in _view_cleared():
@@ -4498,7 +4533,8 @@ def run_propagate(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY,
                 continue                                # sender's tracking node gone or already done → idempotent
             record_verdict(a_store, a_store["nodes"][a_gid], "courier", "done", now,
                            why="completed by %s (delegated)" % (name or fsid[:8]))
-            _mark_node_done(a_store, a_gid, "completed by %s (delegated)" % (name or fsid[:8]), now)
+            _mark_node_done(a_store, a_gid, "completed by %s (delegated)" % (name or fsid[:8]), now,
+                            src="courier")
             rollup_status(a_store, False)               # sender just had work close → recompute its columns
             save_goals(a_sid, a_store)
             n += 1

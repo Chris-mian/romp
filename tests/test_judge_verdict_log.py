@@ -133,7 +133,9 @@ class TheFlip(unittest.TestCase):
                          ("completed", "blocked", "cleared", "working"))
         for nd in store["nodes"].values():
             self.assertTrue(nd.get("logBorn"), "every node self-migrated")
-            self.assertTrue(all(e.get("synth") for e in nd["log"]), "backfilled events are tagged synth")
+            self.assertTrue(all(e.get("synth") for e in nd["log"] if e["kind"] != "settle"),
+                            "backfilled VERDICT events are tagged synth (the completed top's settle is a"
+                            " REAL event — this pass genuinely settled it for the first time)")
         before = {nid: (nd["nodeComplete"], nd["blocked"], nd["cleared"]) for nid, nd in store["nodes"].items()}
         jd.rollup_status(store, True)                 # idempotent: a second pass changes nothing
         after = {nid: (nd["nodeComplete"], nd["blocked"], nd["cleared"]) for nid, nd in store["nodes"].items()}
@@ -212,6 +214,67 @@ class DualWriteThroughTheSites(unittest.TestCase):
         jd.apply_close(store, [store["nodes"][G1]], {"block": {1: "pick a name"}}, t=T)
         self.assertEqual([(e["src"], e["kind"], e["why"]) for e in store["nodes"][G1]["log"]],
                          [("closer", "block", "pick a name")])
+
+    def test_mark_node_done_events_descendant_unblocks(self):
+        # 2026-07-07: _mark_node_done cleared descendant blocks EVENTLESSLY — the fold re-blocked them on
+        # the next materialize and the ledger showed a stale ⏸ under a ✓ parent until settle rolled it up.
+        store = {"rompUuid": SID, "seq": 3, "nodes": {G1: node()}, "placements": {}, "status": {}}
+        kid = dict(node(), id=SID + ":g2", parentId=G1)
+        store["nodes"][SID + ":g2"] = kid
+        jd.apply_close(store, [kid], {"block": {1: "pick a name"}}, t=T)
+        jd.rollup_status(store, False)
+        self.assertTrue(kid["blocked"])
+        jd.record_verdict(store, store["nodes"][G1], "planner", "done", T + 60, why="shipped")
+        jd._mark_node_done(store, G1, "shipped", T + 60)
+        jd.rollup_status(store, False)
+        self.assertFalse(kid["blocked"], "the child's unblock survives materialize — it is an EVENT now")
+        self.assertIn(("planner", "unblock"), [(e["src"], e["kind"]) for e in kid["log"]])
+
+    def test_moot_block_heal_is_evented_and_heals_once(self):
+        # the rollup heal that clears a stale block on a completed subtree now records an unblock event,
+        # so it fires ONCE instead of re-fighting the fold every pass.
+        store = {"rompUuid": SID, "seq": 2, "nodes": {G1: node()}, "placements": {}, "status": {}}
+        jd.apply_close(store, [store["nodes"][G1]], {"block": {1: "pick a name"}}, t=T)
+        # a bottom-up completion path that never touches the node's own block: an agent-done child + an
+        # explicit done on the top via a plain record (no _mark_node_done subtree walk)
+        jd.record_verdict(store, store["nodes"][G1], "closer", "done", T + 60, why="shipped")
+        store["nodes"][G1]["nodeComplete"] = True
+        jd.rollup_status(store, False)
+        self.assertFalse(store["nodes"][G1]["blocked"])
+        kinds = [(e["src"], e["kind"]) for e in store["nodes"][G1]["log"]]
+        self.assertEqual(kinds.count(("romp", "unblock")), 0,
+                         "the done itself outranks the older block in the fold — no heal needed here")
+        jd.rollup_status(store, False)                # and a second pass appends nothing new
+        self.assertEqual([(e["src"], e["kind"]) for e in store["nodes"][G1]["log"]], kinds)
+
+    def test_settle_topup_preserves_stamps_of_already_migrated_nodes(self):
+        # nodes migrated during the week BEFORE settle became an event (logBorn, real logs) still carry
+        # hand-written settledDone/settledAt stamps; deriving from the log alone would WIPE them and a
+        # completed card would flicker back through the settle gate. _backfill_settle synthesizes the
+        # missing settle event once.
+        nd = node(logBorn=True, nodeComplete=True, settledDone=True, settledAt=T + 80,
+                  log=[{"ev_t": T + 50, "src": "closer", "kind": "done", "at": T + 50}])
+        store = {"rompUuid": SID, "seq": 1, "nodes": {G1: nd}, "placements": {}, "status": {}}
+        jd.rollup_status(store, True)
+        self.assertEqual(nd.get("settledAt"), T + 80, "the legacy stamp survives via the synth settle event")
+        self.assertTrue(nd.get("settledDone"))
+        settles = [e for e in nd["log"] if e["kind"] == "settle"]
+        self.assertEqual([e["ev_t"] for e in settles], [T + 80])
+        jd.rollup_status(store, True)                 # idempotent: no second synth
+        self.assertEqual(len([e for e in nd["log"] if e["kind"] == "settle"]), 1)
+
+    def test_agent_reopen_is_evented(self):
+        # the agent re-opening its own to-do used to drop OUR done flag eventlessly — the fold re-DONE'd
+        # it on the next materialize. Now it records an agent reopen event.
+        store = {"rompUuid": SID, "seq": 1, "nodes": {G1: node(logBorn=True, agentDone=True)},
+                 "placements": {}, "status": {}}
+        nd = store["nodes"][G1]
+        jd.record_verdict(store, nd, "agent", "done", T, why="crossed off")
+        jd.rollup_status(store, True)
+        self.assertTrue(nd["nodeComplete"])
+        jd.record_verdict(store, nd, "agent", "reopen", T + 10, why="the agent re-opened its own to-do")
+        jd.rollup_status(store, True)
+        self.assertFalse(nd["nodeComplete"], "the agent reopen event survives materialize")
 
     def test_a_stale_seq_never_mints_over_a_live_node(self):
         # found 2026-07-07: a store with a stale/absent `seq` minted …:g1 OVER the live G1, whose

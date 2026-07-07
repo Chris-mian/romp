@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """The feed's "Move to Working" recategorize (the user 2026-07-06): user_move is a follow-up WITHOUT a
-message — reopen/unblock the goal, stamp the followupAt evidence floor, plant the provisional stub when
-the subtree is all-done — plus the _done_is_stale guard (a done verdict from evidence at/before the move
-must not snap the card back to Completed) and the grouper's everDone guard REMOVAL (a reopened once-done
-top is groupable again). All fixtures are SYNTHETIC (placeholder UUIDs)."""
+message — reopen/unblock the goal; the reopen event derives the followupAt evidence floor and HOLDS the
+top open when the subtree is all-done (stub nodes retired 2026-07-07) — plus the _done_is_stale guard (a
+done verdict from evidence at/before the move must not snap the card back to Completed) and the grouper's
+everDone guard REMOVAL (a reopened once-done top is groupable again). All fixtures SYNTHETIC."""
 import json
 import shutil
 import tempfile
@@ -60,8 +60,9 @@ class UserMoveBlocked(unittest.TestCase):
         # an open sub exists, so no stub was needed
         self.assertFalse(any(n.get("provisional") for n in st["nodes"].values()))
 
-    def test_completed_to_working_plants_stub_and_stays_working(self):
-        # all children genuinely done → without the stub, bottom-up is_complete re-completes at once
+    def test_completed_to_working_holds_open_and_stays_working(self):
+        # all children genuinely done — the exact shape the retired stub node covered: the unanswered
+        # user reopen EVENT must hold the top at working against bottom-up is_complete (2026-07-07).
         store = {"rompUuid": SID, "seq": 2, "placements": {}, "status": {},
                  "nodes": {G1: node(G1, "Build the exporter", done=True, settledDone=True,
                                     settledAt=NOW - 100, everDone=True),
@@ -73,18 +74,19 @@ class UserMoveBlocked(unittest.TestCase):
         self.assertTrue(jd.user_move(SID, G1, now=NOW))
         st = jd.load_goals(SID)
         self.assertEqual(st["status"][G1], "working")
-        stubs = [n for n in st["nodes"].values() if n.get("provisional")]
-        self.assertEqual(len(stubs), 1)
-        self.assertEqual(stubs[0]["parentId"], G1)
-        self.assertFalse(stubs[0]["nodeComplete"])
+        self.assertEqual(sorted(st["nodes"]), [G1, G2],
+                         "no stub node is minted — the reopen event alone holds the top open")
+        self.assertFalse(st["nodes"][G1].get("followupPending"),
+                         "a move is a follow-up WITHOUT a message: held open, but no chip")
         # _reopen effects rode along: everDone provenance, settledAt → deltaSince for the delta re-distill
         self.assertTrue(st["nodes"][G1]["everDone"])
         self.assertNotIn("settledAt", st["nodes"][G1])
         self.assertEqual(st["nodes"][G1]["deltaSince"], NOW - 100)
-        # a SECOND move must not stack a second stub
+        # a SECOND move is idempotent: still working, still exactly the same two nodes
         self.assertTrue(jd.user_move(SID, G1, now=NOW + 5))
         st = jd.load_goals(SID)
-        self.assertEqual(len([n for n in st["nodes"].values() if n.get("provisional")]), 1)
+        self.assertEqual(st["status"][G1], "working")
+        self.assertEqual(sorted(st["nodes"]), [G1, G2])
 
     def test_view_cleared_refused(self):
         store = {"rompUuid": SID, "seq": 1, "placements": {}, "status": {},
