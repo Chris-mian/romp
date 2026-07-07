@@ -1333,6 +1333,11 @@ def apply_plan(store, seg_id, seg_t, ops, menu, place_key=None, prompt_uuid=None
 
     def new_node(text, parent, why):
         store["seq"] = store.get("seq", 0) + 1
+        while "%s:g%d" % (store["rompUuid"], store["seq"]) in nodes:
+            # a stale/absent seq must never mint OVER a live node: the overwrite is silent data
+            # loss, and a sub minted over its own parent becomes a self-parent cycle that hangs
+            # every ancestor walk (found 2026-07-07 — the frozen full-suite runs)
+            store["seq"] += 1
         nid = "%s:g%d" % (store["rompUuid"], store["seq"])
         nodes[nid] = {"id": nid, "text": text, "parentId": parent, "nodeComplete": False,
                       "blocked": False, "cleared": False, "trail": [seg_id], "promptUuid": prompt_uuid,
