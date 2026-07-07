@@ -1399,7 +1399,13 @@ function renderCompacting(): HTMLElement {
   turn.appendChild(dot("ring"));
   const line = el("div", "compacting-inline");
   const bar = el("span", "compacting-bar");
-  bar.appendChild(el("span", "compacting-bar-fill"));   // runs @keyframes ctx-compress (flat teal, no colormap vars)
+  const fill = el("span", "compacting-bar-fill");
+  // Sweep through the SAME context colormap the statusline/tab compacting bars use (the user 2026-07-07:
+  // "the bar that's moving should change colour just like it does in other parts of the UI"), not a flat
+  // teal — applyCompactSweep sets --cmp0..4 the @keyframes ctx-compress read, and phase-syncs the animation
+  // to the wall clock so it resumes seamlessly across the chat's per-push rebuilds (fresh element each time).
+  applyCompactSweep(fill, 3200);   // duration MUST match the .compacting-bar-fill @keyframes (ctx-compress 3.2s)
+  bar.appendChild(fill);
   line.appendChild(bar);
   const txt = el("span", "compacting-text");
   txt.textContent = "Compacting context…";

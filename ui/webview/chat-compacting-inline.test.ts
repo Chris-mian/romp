@@ -39,3 +39,10 @@ test("the animated bar reuses the statusline ctx-compress motion, in the compact
   assert.match(CSS, /\.turn-compacting \.dot \{[^}]*background: var\(--st-compacting-bg/);
   assert.match(CSS, /@keyframes ctx-compress/);   // the reused keyframe still exists
 });
+
+test("the chat bar sweeps the context colormap like the statusline/tab bars (the user 2026-07-07)", () => {
+  // renderCompacting hands its fill to applyCompactSweep (which sets --cmp0..4 the ctx-compress keyframes
+  // read) so the bar changes colour through the map, not a flat teal — at the SAME 3200ms as the keyframe.
+  const body = RENDER.slice(RENDER.indexOf("function renderCompacting"), RENDER.indexOf("function renderReconnecting"));
+  assert.match(body, /applyCompactSweep\(fill, 3200\)/);
+});

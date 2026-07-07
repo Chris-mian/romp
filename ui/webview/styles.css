@@ -769,7 +769,8 @@ body { display: flex; flex-direction: column; }
 .compact-meta { margin-left: 6px; color: var(--dim); font-weight: 400; letter-spacing: normal; }
 /* LIVE compaction — animated inline element that becomes the .compact-line divider above once done. Same
    teal + type as the divider (reads as one element maturing); the bar reuses @keyframes ctx-compress (the
-   statusline ctx-scan motion), flat teal since the colormap --cmp* vars aren't set here. */
+   statusline ctx-scan motion) and — like the statusline/tab bars — sweeps through the context colormap
+   (renderCompacting calls applyCompactSweep, which sets --cmp0..4). Teal is only the fallback if unset. */
 .turn-compacting { padding-top: 4px; padding-bottom: 4px; }
 .turn-compacting .dot, .turn-compacting .time-marker { top: 10px; }
 .turn-compacting .dot { background: var(--st-compacting-bg, #14b8a6); border: none; }
