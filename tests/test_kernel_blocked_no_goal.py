@@ -32,7 +32,6 @@ class BlockedNoGoal(unittest.TestCase):
         self.assertEqual(c["column"], "needs_input", "filed under the Blocked column")
         self.assertEqual(c["blocked"]["state"], "picker", "carries the live picker block badge")
         self.assertTrue(c["provisional"], "a lightweight placeholder (dim + dashed, no clear/modal)")
-        self.assertEqual(c["needsYou"], 1)
         self.assertEqual(c["tree"], [], "no goal node")
         self.assertTrue(c["itemId"].startswith("blocked:"), "stable per-session id, distinct from provisional:")
         self.assertEqual(c["text"], "Awaiting your input", "generic fallback when the prompt can't be parsed")
@@ -86,8 +85,7 @@ class BlockedNoGoal(unittest.TestCase):
         # card (minted once the ask is answered and the planner places the work) supersedes it.
         c = _card("picker")
         self.assertIsNone(c["turnId"])
-        self.assertEqual(c["turnIds"], [])
-        self.assertIsNone(c["blockWhy"])
+        self.assertNotIn("turnIds", c)   # scaffolding keys retired in the 2026-07-07 contract audit
 
 
 if __name__ == "__main__":

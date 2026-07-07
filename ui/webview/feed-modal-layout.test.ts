@@ -42,10 +42,9 @@ test("the root goal reads larger; node times are parenthesized and pulled in (fi
   assert.match(CSS, /\.ftree \{[^}]*width: fit-content/);
 });
 
-test("the age is recency-tinted in every modal variant (ask / group / standalone)", () => {
+test("the age is recency-tinted in both modal variants (ask / group)", () => {
   assert.match(FEED, /ageEl\.style\.color = "rgb\(" \+ it\.trgb\.join\(","\) \+ "\)"/);
   assert.match(FEED, /ageEl\.style\.color = "rgb\(" \+ grp\.trgb\.join\(","\) \+ "\)"/);
-  assert.match(FEED, /ageEl\.style\.color = "rgb\(" \+ fitem\.trgb\.join\(","\) \+ "\)"/);
 });
 
 test("modal marks: not-yet-done is a hollow RING the size of the ✓ disc; derived done is the OUTLINED ✓", () => {

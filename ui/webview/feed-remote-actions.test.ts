@@ -10,14 +10,12 @@ const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", 
 
 test("every askClear send carries the card's sid (routes a remote clear to its kernel)", () => {
   const sends = FEED.match(/type: "askClear"[^}]*/g) || [];
-  assert.ok(sends.length >= 6, `found ${sends.length} askClear sends — expected the 6 known sites`);
-  for (const s of sends) assert.match(s, /sid: (it|m|mem|fitem)\.sid/, `askClear send missing sid: ${s}`);
+  assert.ok(sends.length >= 4, `found ${sends.length} askClear sends — expected the 4 known sites (standalone card removed 2026-07-07)`);
+  for (const s of sends) assert.match(s, /sid: (it|m|mem)\.sid/, `askClear send missing sid: ${s}`);
 });
 
-test("expand and askFollowUp carry sid too (remote summaries + follow-ups)", () => {
-  const expands = FEED.match(/type: "expand"[^}]*/g) || [];
-  assert.ok(expands.length >= 2);
-  for (const s of expands) assert.match(s, /sid: (it\?|fitem)\.sid/, `expand send missing sid: ${s}`);
+test("askFollowUp carries sid too (remote follow-ups); the expand/detail channel died with FeedItem", () => {
+  assert.doesNotMatch(FEED, /type: "expand"/);
   assert.match(FEED, /type: "askFollowUp"[^}]*sid: fbSid/);
   // both modal call sites hand postFollowUp the card's sid
   assert.match(FEED, /postFollowUp\(txt, grp\.members\[0\]\.itemId, grp\.members\[0\]\.sid, grp\.title\)/);

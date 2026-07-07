@@ -8,42 +8,16 @@
 // when the fleet streams new deliverables in.
 import { distillText, applyDistillLine, distillPending } from "./distiller-line";
 
-interface FeedItem {
-  itemId: string;
-  sid: string;
-  name: string;
-  color: { bg: string; fg: string } | null;
-  did: string;
-  ask: string;
-  t: number;            // epoch seconds
-  live: boolean;
-  trgb: [number, number, number];   // hawaii recency color — tints the CARD background
-  relevance: "DONE" | "DECISION" | "DETAILS" | "UNTAGGED";
-  origin?: "user" | "agent";        // who prompted the turn: the user typed vs a peer's message
-  inAsk?: boolean;                  // this reply is linked into some ask → renders inside it, not standalone
-  standalone?: boolean;             // host-computed standalone-card eligibility (user-origin + DONE/DECISION + unlinked + past REQUESTS_FLOOR)
-}
-
-// Relevance: a per-card colored label (DONE/DECISION/DETAILS; UNTAGGED gets none)
-// PLUS header toggle "badges" that turn each class off/on. All on by default;
-// UNTAGGED is always visible (no toggle). Per-card dismiss is separate curation.
-const RELEVANCES = ["DONE", "DECISION", "DETAILS"] as const;
-const RELEVANCE_LABEL: Record<string, string> = { DONE: "done", DECISION: "decision", DETAILS: "details" };
-const relevanceFilter = new Set<string>(RELEVANCES);
-
-// Origin: agent-prompted turns (peer postal messages, not the user's asks) are
-// HIDDEN by default — the feed is the user's inbox, not the fleet's internal chatter.
-// The header "internal N" chip toggles them back on.
-let showInternal = false;
+// (The standalone-deliverable "FeedItem" subsystem was REMOVED 2026-07-07: the kernel had emitted
+// items: [] permanently — goal cards are the only feed unit — so its types, renderers, expand/detail
+// machinery, and CSS were all unreachable. Payload-contract audit.)
 
 // Asks inbox (the DEFAULT view; request registry REQUESTS.md): one persistent
 // card per OPEN ask of the user's, sorted into THREE state columns derived from each
 // ask's newest link. Clear (the user-only, binary) removes it — inbox-zero. The
 // deliverables stream is the safety-net behind the header toggle.
-interface AskLinked { did: string; relevance: string; t: number; reply_id: string; status: "done" | "question" | "update"; sid: string; name: string; color?: { bg: string; fg: string } | null; trgb?: [number, number, number]; answer?: boolean }
 interface DecisionBrief { context: string; question: string; options: string[] | null; sid: string; t: number }
 interface AskQuestion { reply_id: string; sid: string; name: string; t: number; brief: DecisionBrief | null; qtype?: "decision" | "action" | "idea"; nodeId?: string }
-interface AskPath { name: string; sid: string; color: { bg: string; fg: string } | null; since: number; lastPhrase: string }
 // One node of the ask's request DAG (flat list, root first; nest via children ids;
 // a node under two parents appears in both → render twice, dim the repeat).
 interface AskTreeNode {
@@ -54,38 +28,32 @@ interface AskTreeNode {
   mt?: number;                                                   // last-modified (done/block segment) → blocked/done nodes deep-link to where they RESOLVED, not where they were minted
   anchorUuid?: string | null;                                    // EXACT turn uuid for this node's WORK target (where it resolved — an assistant turn); mark/time zones jump here. null when unresolvable
   promptAnchorUuid?: string | null;                              // EXACT turn uuid for this node's PROMPT target = the user's minting message (a user turn) → prompt-intent jumps (title, text) resolve BY ID (kernel 92e23ff)
-  why?: string; blockWhy?: string; doneWhy?: string;             // planner's one-sentence rationales — revealed on hover in the modal
   derived?: boolean;                                             // done by roll-up/roll-down (kernel), not explicit → DIMMED ✓ disc
   auth?: "open" | "done";                                        // AUTHORITATIVE tier: mirrors an item on the agent's OWN to-do list → solidity=authority disc (open = bold accent ring; done = heaviest check). Absent = plain judge-inferred node.
   followupPending?: boolean;                                     // this sub was optimistically reopened by a per-sub follow-up → "↻ Followed up" chip (kernel flatten, judges 047264f)
   summary?: string | null;                                       // the DISTILLER's key takeaway for a completed goal (artifact or 1-3 sentences) → the modal's auto-line for a DONE node (kernel flatten 78fc97b)
   blockSummary?: string | null;                                  // the BLOCK-distiller's decision brief for a blocked goal → the modal's auto-line for a BLOCKED node (kernel 466393c); null until produced
   trgb?: [number, number, number];                               // last-activity recency tint (timestamp)
-  children: string[]; rows: AskLinked[];
+  children: string[];
 }
 interface AskItem {
   itemId: string; sid: string; name: string; color: { bg: string; fg: string } | null;
-  text: string; t: number; created: number; live: boolean;
-  done: number; needsYou: number; linked: AskLinked[]; turnId: string;
+  text: string; t: number; live: boolean;
+  turnId: string;
   trgb: [number, number, number];
   column: "working" | "needs_input" | "completed";   // RAW kernel value (build_feed): working/needs_input/completed. askColumn() maps it to the local Column. NOT "asks" — that was a stale lie that silently broke `it.column === "asks"` checks.
-  openQuestions: AskQuestion[];                    // live unanswered DECISIONs → decision sub-cards
-  openPaths: AskPath[];                            // open leaves → "waiting on X" drop-point lines
   followupPending?: boolean;                       // you followed up on a settled card → optimistically reopened, awaiting the judge's re-file (kernel)
   recheck?: boolean;                               // soft-block you answered with a TARGETED follow-up → de-urgented (dotted), moved to Working, dropped from the "need input" count, until the judge resolves or re-blocks it (kernel build_feed; the user 2026-06-27)
   rejudging?: boolean;                             // soft-block + a PLAIN thread reply after it → moves to WORKING while the reply is in flight (echo/open turn), with a "Re-judging…" swirl; returns to Needs-You on its own if the judge leaves it blocked (kernel build_feed; the user 2026-07-02, immediate)
-  nudgeFailed?: boolean;                           // the ONE auto-nudge on this stalled goal didn't resolve it (response turn ended, still working) → "nudge failed" chip; never re-nudged — a fork-flavored failure also floors the card via blocked.state "stalled" (kernel build_feed; design/stalled-open-todos-nudge.md)
+  nudgeFailed?: boolean;                           // the ONE auto-nudge on this stalled goal didn't resolve it → "stalled" chip; the failure also records a BLOCK verdict, so the card reaches Needs-you via the normal ladder (kernel _mark_nudge_failed, 2026-07-07)
   interrupted?: boolean;                           // the user STOPPED this session mid-turn and hasn't messaged it since → "interrupted" badge; its quiet is user-chosen, auto-nudge holds off until their next message (kernel build_feed; the user 2026-07-05)
   autoFiled?: boolean;                             // settled → moved to COMPLETED by the auto-filing rule (keeps the green ring)
   explicitDone?: boolean;                          // every path explicitly DONE-stamped → blue ring (blue+green when settled agrees)
-  turnIds?: string[];                              // typed turns that minted/amended this card
   // the owning session is live-blocked (permission/picker, or stopped on an API error) ON this card's
   // work → the card itself files under BLOCKED (the user's ruling 2026-06-11; apiError 2026-06-16).
-  blocked?: { state: string; since?: number; what: string; status?: number; category?: string; text?: string;
+  blocked?: { state: string; what: string; status?: number; text?: string;
               tooLong?: boolean;   // apiError: a "prompt is too long" error (on you → compact) vs a transient API error
-              toName?: string; toSid?: string; fromName?: string; msgId?: string; body?: string };   // parkedHandoff adds to*/from*
-  blockWhy?: string;                               // planner's one-sentence "why blocked" → now the HOVER tooltip on the blocked card's auto-line (the user 2026-06-18)
-  doneWhy?: string;                                // planner's one-sentence "why done" → now the HOVER tooltip on the completed card's auto-line (the user 2026-06-18)
+              toName?: string; toSid?: string };   // parkedHandoff adds to*
   summary?: string | null;                         // distiller's key takeaway for a COMPLETED goal → the done card's one auto-written line (kernel asks.append); null until produced
   blockSummary?: string | null;                    // block-distiller's decision brief for a BLOCKED goal → the blocked card's one auto-written line (kernel 466393c); null until produced
   background?: string | null;                      // distiller's BACKGROUND section: re-orientation for a reader who forgot the thread → the card's collapsed-by-default section above the takeaway (the user 2026-07-02)
@@ -262,13 +230,9 @@ function askColumn(it: AskItem): Column {
 // How opaque the recency tint is over the (black) page — low = a faint, very
 // see-through wash of the hawaii color; the colormap itself darkens with age.
 const TINT_ALPHA = 0.22;
-interface Detail { id: string; t?: number; paragraph: string; next_steps?: string[]; src?: string; }
-type DetailState = { state: "loading" | "ready" | "failed"; reason?: string; data?: Detail };
-
 const vscodeApi =
   typeof (window as any).acquireVsCodeApi === "function" ? (window as any).acquireVsCodeApi() : undefined;
 
-let items: FeedItem[] = [];
 // Card-display prefs read straight from the shared 'romp:settings' (the kernel's ⛭ gear writes it; same
 // document as this feed bundle). Default ON. These gate the CARDS only — the modal always shows everything
 // (the user 2026-06-17). `!== false` so a missing key defaults to shown.
@@ -295,11 +259,6 @@ let hostNow = Math.floor(Date.now() / 1000);
 let showDismissed = false;
 let dismissedCount = 0;
 let canUndoClear = false;   // host: cleared.jsonl has rows → the UndoClear button shows
-// Expand-for-detail: which items are open, plus the per-item detail we've fetched.
-// Both survive a host re-render (render() reconstructs the open blocks from these).
-const expanded = new Set<string>();
-const details = new Map<string, DetailState>();
-const cardEls = new Map<string, HTMLElement>();   // itemId -> live card element (reused)
 // FLIP-across-identity (the user 2026-06-29): which render KEY covered each goal itemId on the LAST render.
 // A goal's card can change identity — a group ("g:"+turnId) dissolving to a solo ask ("a:"+itemId), a goal
 // absorbed under an umbrella ("a:"+umbrellaId) — which is a DIFFERENT DOM node, so the normal FLIP (reuse one
@@ -409,149 +368,6 @@ function ensureHeader() {
   elMeta = el("span", "fh-meta");
   head.append(elTitle, elMeta);    // no toggles, chips, or buttons — one view, nothing clickable
   headerBuilt = true;
-}
-
-// Standalone deliverable cards: a user-origin reply NOT linked to any ask, tagged
-// DONE or DECISION (the granular/unexpected work the user never explicitly asked
-// for). Linked replies, agent-internal turns, and routine (details) turns never
-// get their own card.
-function standaloneItems(): FeedItem[] {
-  return items.filter((i) => i.standalone);   // host-computed (gated by REQUESTS_FLOOR) — avoids flooding the columns with pre-registry backlog
-}
-
-function updateHeader() {
-  ensureHeader();
-  // "N need input" = the actionable count: asks whose newest link is a DECISION
-  // plus standalone DECISION deliverables (everything sitting in column 2).
-  const needInput = asks.filter((a) => askColumn(a) === "needsInput" && !a.recheck).length   // re-check cards aren't on you anymore → out of the count
-    + standaloneItems().filter((i) => i.relevance === "DECISION").length;
-  const liveN = new Set([
-    ...asks.filter((a) => a.live).map((a) => a.sid),
-    ...items.filter((i) => i.live).map((i) => i.sid),
-  ]).size;
-  elMeta.innerHTML = `<span class="fh-need">${needInput} need input</span>`
-    + (liveN ? ` · <span class="fh-live">${liveN} live</span>` : ``);
-}
-
-// ---- standalone deliverable card (same v3 anatomy as an ask card) ----
-// row 1 = deliverable text (full width); row 2 = owner name; row 3 = age (bottom-left)
-// + [Clear] (bottom-right). (No tally — a standalone deliverable has no subgraph.) Clear
-// shares the asks' cleared.jsonl (reply ids work in askClear). Whole-card click locates the turn.
-function makeCard(it: FeedItem): HTMLElement {
-  const card = el("div", "fitem");
-  card.dataset.key = "i:" + it.itemId;
-  card.dataset.id = it.itemId;
-  card.title = "click for detail";
-
-  const main = el("div", "fitem-main");
-  const row1 = el("div", "fask-row1");
-  const title = el("div", "fcard-title nav");      // the deliverable phrase (headline)
-  title.title = "jump to this on the timeline";
-  const time = el("span", "ftime");
-  row1.append(title);
-  const row2 = el("div", "fask-row2");
-  const idwrap = el("div", "fask-id");
-  const name = el("a", "fname"); name.title = "open this session";
-  idwrap.append(name);
-  row2.append(idwrap);
-  const actions = el("div", "fask-actions");
-  const clr = el("button", "fdismiss"); clr.textContent = "Clear"; clr.title = "clear this item (inbox-zero)";
-  actions.append(clr);
-  const row3 = el("div", "fask-row3"); row3.append(time, actions);   // time bottom-left · Clear bottom-right
-  main.append(row1, row2, row3);
-  card.append(main);
-
-  // same click model as ask cards: body → modal, title → locate the originating
-  // REQUEST (anchor:'prompt'), i.e. where the user wrote it — not the agent's work line.
-  // The deliverable's itemId IS its typed turn (request + reply share the id), so the
-  // anchor just selects the prompt glyph over the work bar.
-  card.onclick = () => { fullscreenAskId = "i:" + it.itemId; renderModal(); };
-  title.onclick = (ev) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: it.itemId, sid: it.sid, t: it.t, anchor: "prompt" }); };
-  name.onclick = (ev) => { ev.stopPropagation(); openOrReviveSession(it.sid, it.live, it.name); };
-  clr.onclick = (ev) => {
-    ev.stopPropagation();
-    pendingCleared.add(it.itemId);   // suppress until the kernel confirms — no mid-dismiss pop-back
-    clearedStack.push([it]);         // cache for an instant optimistic Undo clear
-    card.classList.add("dismissing");
-    vscodeApi?.postMessage({ type: "askClear", itemId: it.itemId, sid: it.sid });   // reply ids share cleared.jsonl; sid routes a REMOTE card's clear to its owning kernel
-    setTimeout(() => { if (cardEls.get(it.itemId) === card && card.classList.contains("dismissing")) { card.remove(); cardEls.delete(it.itemId); } }, 180);
-  };
-
-  const a = card as any;
-  a._time = time; a._name = name; a._title = title;
-  return card;
-}
-
-function updateCard(card: HTMLElement, it: FeedItem) {
-  const a = card as any;
-  card.className = "fitem" + (it.live ? " live" : " dead");
-  const [r, g, b] = it.trgb;
-  card.style.background = `rgba(${r}, ${g}, ${b}, ${TINT_ALPHA})`;
-  card.style.borderColor = `rgba(${r}, ${g}, ${b}, ${Math.min(TINT_ALPHA + 0.2, 0.9)})`;
-  a._title.textContent = it.did;
-  a._name.textContent = it.name;
-  if (it.color) a._name.style.color = it.color.bg;
-  setWorkDot(a._name, workingSet.has(it.name));   // working dot before the session name
-  a._time.textContent = relAge(hostNow - it.t);
-}
-
-// ---- expand → detail ----
-function toggleExpand(id: string) {
-  if (expanded.has(id)) { expanded.delete(id); render(); return; }
-  expanded.add(id);
-  const d = details.get(id);
-  if (!d || d.state === "failed") {       // not fetched yet, or retry after a failure
-    const it = items.find((i) => i.itemId === id);
-    // Only DONE/DECISION get a generated paragraph; DETAILS/UNTAGGED don't, so the
-    // host reads cache-only for them and never spawns (no "generating…" wait).
-    const generate = it ? (it.relevance === "DONE" || it.relevance === "DECISION") : false;
-    details.set(id, { state: "loading" });
-    vscodeApi?.postMessage({ type: "expand", itemId: id, generate, sid: it?.sid });   // sid → the owning kernel (remote cards)
-  }
-  render();
-}
-
-// Expanded view: the ASK (original request) on top, the RESPONSE below it.
-// Response = the generated detail paragraph for DONE/DECISION; for routine items
-// (no paragraph) it falls back to the deliverable summary. Signature-guarded so an
-// open, hovered card never flickers on a host repush.
-function renderExpandInto(slot: HTMLElement, it: FeedItem) {
-  const d = details.get(it.itemId);
-  const respSig = !d || d.state === "loading" ? "loading"
-    : d.state === "failed" ? "f:" + (d.reason || "")
-    : "r:" + (d.data?.paragraph || "") + "¦" + (d.data?.next_steps || []).join("¦");
-  const sig = "a:" + it.ask + "||" + respSig;
-  if ((slot as any)._sig === sig) return;
-  (slot as any)._sig = sig;
-  slot.innerHTML = "";
-  const box = el("div", "fexpand");
-
-  // ASK (top)
-  const askWrap = el("div", "fx-ask");
-  const askLab = el("div", "fx-label"); askLab.textContent = "Ask";
-  const askBody = el("div", "fx-body"); askBody.textContent = it.ask || "(no recorded request)";
-  askWrap.append(askLab, askBody);
-  box.appendChild(askWrap);
-
-  // RESPONSE (below)
-  const respWrap = el("div", "fx-resp");
-  const respLab = el("div", "fx-label"); respLab.textContent = "Response";
-  respWrap.appendChild(respLab);
-  if (!d || d.state === "loading") {
-    const b = el("div", "fx-body loading"); b.textContent = "Generating…"; respWrap.appendChild(b);
-  } else if (d.state === "failed") {
-    // routine/legacy → no paragraph; the deliverable summary IS the response
-    const b = el("div", "fx-body"); b.textContent = it.did; respWrap.appendChild(b);
-  } else {
-    const para = el("div", "fx-body"); para.textContent = d.data!.paragraph; respWrap.appendChild(para);
-    if (Array.isArray(d.data!.next_steps) && d.data!.next_steps.length) {
-      const ul = el("ul", "fdetail-steps");
-      for (const s of d.data!.next_steps) { const li = document.createElement("li"); li.textContent = s; ul.appendChild(li); }
-      respWrap.appendChild(ul);
-    }
-  }
-  box.appendChild(respWrap);
-  slot.appendChild(box);
 }
 
 // ---- ask card (the inbox unit) ----
@@ -924,15 +740,14 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
     a._followedup.style.display = "none";
   }
   // "stalled" chip (design/stalled-open-todos-nudge.md): the one auto-nudge didn't resolve the stall and
-  // it is never re-asked — the card says so. A fork-flavored failure ALSO floors the card to Needs-you
-  // with the "⏸ stalled" badge — the badge already says it, so the chip yields to avoid a double
-  // "stalled" (the user 2026-07-02); a regular-flavor failure stays in Working with just this chip.
-  a._nudgeFailed.style.display = (it.nudgeFailed && it.blocked?.state !== "stalled") ? "" : "none";
+  // it is never re-asked — the card says so. The failure also records a BLOCK verdict (2026-07-07), so
+  // the card reaches Needs-you via the normal ladder; this chip rides along as the explanation.
+  a._nudgeFailed.style.display = it.nudgeFailed ? "" : "none";
   // "interrupted" — the user stopped this session and hasn't re-engaged; quiet is user-chosen (the
   // user 2026-07-05). The stalled/nudge-failed chips outrank it: they carry a romp-ask outcome, while
   // this only explains silence — never show both.
   (a._interrupted as HTMLElement).style.display =
-    (it.interrupted && !it.nudgeFailed && it.blocked?.state !== "stalled") ? "" : "none";
+    (it.interrupted && !it.nudgeFailed) ? "" : "none";
   // the chip label says "stalled"; its tooltip carries the EVIDENCE — romp did follow up, and when
   // (the user 2026-07-02: the bare label read like a state romp observed, not a nudge outcome)
   a._nudgeFailed.title = it.nudged && it.nudged.times.length
@@ -1035,7 +850,7 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
     // "stalled" (design/stalled-open-todos-nudge.md): not a live prompt — the session stopped with its own
     // to-do items open and the one fork nudge didn't get them moving, so the card floors to Needs-you.
     a._blocked.textContent = it.blocked.state === "permission" ? "⏸ approval"
-      : it.blocked.state === "stalled" ? "⏸ stalled" : "⏸ picker";
+      : "⏸ picker";
     a._blocked.title = it.blocked.what + " — click to open the session";
     a._blocked.onclick = (ev: Event) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "openSession", id: it.sid }); };
   }
@@ -1371,8 +1186,7 @@ function hasQuestionDescendant(node: AskTreeNode, byId: Map<string, AskTreeNode>
 // Re-render trigger: per-node expansion + node states + which questions have briefs.
 function treeSig(it: AskItem): string {
   return it.tree.map((n) =>
-    n.id + n.status + n.rows.length + (n.whoWorking ? "W" : "") + (collapsedNodes.has(it.itemId + ":" + n.id) ? "c" : "")).join("|")
-    + "‖" + it.openQuestions.map((q) => q.reply_id + (q.brief ? "b" : "")).join(",");
+    n.id + n.status + (n.whoWorking ? "W" : "") + (collapsedNodes.has(it.itemId + ":" + n.id) ? "c" : "")).join("|");
 }
 
 // Render the DAG as a Linux-style node tree (modal body only). Sig-guarded so a
@@ -1386,7 +1200,7 @@ function renderTreeBody(host: HTMLElement, it: AskItem, skipRoot = false) {
   if (!it.tree.length) { const b = el("div", "fx-body"); b.textContent = "No work yet."; host.appendChild(b); return; }
   const box = el("div", "ftree");
   const byId = new Map(it.tree.map((n) => [n.id, n] as const));
-  const briefs = new Map(it.openQuestions.map((q) => [q.reply_id, q] as const));
+  const briefs = new Map<string, AskQuestion>();   // decision sub-cards retired with openQuestions (2026-07-07)
   const seen = new Set<string>();
   const root = it.tree[0];
   if (skipRoot) {
@@ -1472,7 +1286,7 @@ function wireNodeZones(it: AskItem, node: AskTreeNode, mark: HTMLElement, txt: H
 function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: Map<string, AskTreeNode>, briefs: Map<string, AskQuestion>, seen: Set<string>, depth: number, parentWho: string) {
   const repeat = seen.has(node.id);
   const nodeKey = it.itemId + ":" + node.id;
-  const expandable = !repeat && (node.rows.length > 0 || (node.children || []).length > 0);
+  const expandable = !repeat && (node.children || []).length > 0;
   const line = el("div", "ftree-node st-" + nodeStatusClass(node) + (repeat ? " repeat" : "") + (depth === 0 ? " ftree-root" : "") + (node.derived ? " derived" : "") + (node.auth ? " auth-" + node.auth : ""));
   // the event this line stands for (handoff → its postal msg id; root → the typed
   // turn) — lets a chat rail-dot hover ring this line back (applyExtHover)
@@ -1613,23 +1427,6 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
     // reads oldest → newest; deeper levels re-sort within their own parent
     // (cross-branch disorder when expanded is accepted).
     const entries: { t: number; render: () => void }[] = [];
-    for (const r of node.rows) {
-      entries.push({ t: r.t, render: () => {
-        const row = el("div", "frow nav st-" + r.status + (r.answer ? " st-answer" : ""));
-        row.dataset.eid = r.reply_id;   // chat rail-dot hover rings this row back
-        row.style.paddingLeft = ((depth + 1) * TREE_INDENT_EM + 1) + "em";
-        // ↩ = the user's recorded ANSWER (an explicit child event, not agent work)
-        const rm = el("span", "frow-mark"); rm.textContent = r.answer ? "↩" : r.status === "question" ? "⏸" : "●"; row.appendChild(rm);
-        const rt = el("span", "flinked-did"); rt.textContent = r.did; row.appendChild(rt);
-        const ra = el("span", "ftime"); ra.textContent = relAge(hostNow - r.t);
-        if (r.trgb) ra.style.color = "rgb(" + r.trgb.join(",") + ")";   // Hawaii recency tint
-        row.appendChild(ra);
-        row.title = "jump to this on the timeline";
-        row.onclick = (ev) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: r.reply_id, sid: r.sid || r.reply_id.split(":")[0], t: r.t, anchorUuid: r.reply_id, anchor: "work" }); };   // reply_id IS the assistant reply turn's data-uuid → land BY ID (chat nav is id-only now; without anchorUuid the row honest-failed)
-        row.addEventListener("mouseenter", () => hoverEmit(r.reply_id)); row.addEventListener("mouseleave", () => hoverEmit(null));   // transient timeline highlight
-        box.appendChild(row);
-      } });
-    }
     // collapsed node hides its WHOLE subtree — descendants render only when this
     // node is expanded. This is what makes the collapse "deep".
     const kids = (node.children || []).map((c) => byId.get(c)).filter(Boolean) as AskTreeNode[];
@@ -1661,15 +1458,11 @@ function renderModal() {
   const gMembers = isGroup ? asks.filter((a) => a.turnId === tid).sort((a, b) => a.t - b.t) : [];
   if (isGroup && gMembers.length === 1) fullscreenAskId = gMembers[0].itemId;
   const grp = isGroup && gMembers.length >= 2 ? buildGroup(tid, gMembers) : null;
-  // …OR a standalone deliverable ("i:<itemId>") — same modal chrome, body = the
-  // ask/response detail that used to inline under the old [+] button.
-  const fitem = (fullscreenAskId && fullscreenAskId.startsWith("i:"))
-    ? items.find((i) => i.itemId === fullscreenAskId!.slice(2)) : null;
   // …OR a synthetic blocked-session card ("b:<sid>") — its modal is the ERROR
   // explanation (what's suspicious + what to note for a correction), nothing else.
   const it = (fullscreenAskId && !fullscreenAskId.startsWith("g:") && !fullscreenAskId.startsWith("i:"))
     ? asks.find((a) => a.itemId === fullscreenAskId) : null;
-  if (!it && !grp && !fitem) { if (m) { m.remove(); hoverEmit(null); } modalRenderedId = null; return; }   // closed / dissolved → clear hover highlight
+  if (!it && !grp) { if (m) { m.remove(); hoverEmit(null); } modalRenderedId = null; return; }   // closed / dissolved → clear hover highlight
   if (!m) {
     m = el("div", ""); m.id = "feed-modal";
     const inner = el("div", "feed-modal-inner");
@@ -1855,23 +1648,6 @@ function renderModal() {
     // toggling the button reveals the composer.
     wireFollowUp(fupEl, fuboxEl, fuinEl, fusendEl, (txt) => postFollowUp(txt, it.itemId, it.sid));
     renderTreeBody(body, it, false);   // root goal IS the first list line; sub-goals render beneath it
-  } else if (fitem) {
-    ttlEl.textContent = fitem.did;
-    ttlEl.onclick = () => vscodeApi?.postMessage({ type: "showOnTimeline", itemId: fitem.itemId, sid: fitem.sid, t: fitem.t, anchor: "prompt" });
-    agent.textContent = fitem.name; if (fitem.color) agent.style.color = fitem.color.bg; setWorkDot(agent, workingSet.has(fitem.name)); agent.classList.toggle("dead", !fitem.live);
-    agent.onclick = () => vscodeApi?.postMessage({ type: "openSession", id: fitem.sid });
-    ageEl.textContent = relAge(hostNow - fitem.t);
-    ageEl.style.color = "rgb(" + fitem.trgb.join(",") + ")";   // tint the age by recency (the time colour scheme)
-    clrEl.onclick = () => { vscodeApi?.postMessage({ type: "askClear", itemId: fitem.itemId, sid: fitem.sid }); fullscreenAskId = null; renderModal(); };
-    fupEl.style.display = "none"; fuboxEl.style.display = "none";   // standalone deliverable: no follow-up
-    // fetch the detail once (same machinery the old inline [+] used)
-    const d = details.get(fitem.itemId);
-    if (!d || d.state === "failed") {
-      details.set(fitem.itemId, { state: "loading" });
-      vscodeApi?.postMessage({ type: "expand", itemId: fitem.itemId, sid: fitem.sid,
-        generate: fitem.relevance === "DONE" || fitem.relevance === "DECISION" });
-    }
-    renderStandaloneTreeInto(body, fitem);
   }
   // The bottom bar always shows (every modal has an age + Clear); the Follow-up button inside it hides
   // itself for standalone deliverables (no follow-up), and the composer stays collapsed until toggled.
@@ -1884,56 +1660,6 @@ function renderModal() {
   ttlEl.onmouseleave = titleHoverId ? () => hoverEmit(null) : null;
 }
 
-
-// Standalone completion rendered in the SAME visual language as ask cards
-// (the user 2026-06-10: "I would prefer if that particular simple card had a
-// consistent formatting to all the other ones"): a one-node tree — root line
-// = the prompt that caused it, one green ● report row = the deliverable,
-// pending next-steps as hollow ○ rows, and the written paragraph beneath as
-// secondary detail instead of the old ASK/RESPONSE block.
-function renderStandaloneTreeInto(host: HTMLElement, fitem: FeedItem) {
-  const d = details.get(fitem.itemId);
-  const det = d && d.data ? d.data : undefined;
-  const sig = "st:" + fitem.itemId + ":" + fitem.relevance + ":" + (det ? (det.paragraph || "") + "¦" + (det.next_steps || []).join("¦") : "…");
-  if ((host as any)._sig === sig) return;
-  (host as any)._sig = sig;
-  host.innerHTML = "";
-  const box = el("div", "ftree");
-  // root = the typed prompt this work answered (● — the work is finished)
-  const root = el("div", "ftree-node st-done nav");
-  root.appendChild(el("span", "ftree-tri empty"));
-  const mark = el("span", "ftree-mark"); mark.textContent = "●"; root.appendChild(mark);
-  const txt = el("span", "ftree-text"); txt.textContent = fitem.ask || fitem.did; root.appendChild(txt);
-  const meta = el("span", "ftree-meta"); meta.textContent = relAge(hostNow - fitem.t);
-  meta.style.color = "rgb(" + fitem.trgb.join(",") + ")";
-  root.appendChild(meta);
-  root.onclick = () => vscodeApi?.postMessage({ type: "showOnTimeline", itemId: fitem.itemId, sid: fitem.sid, t: fitem.t, anchor: "prompt" });
-  box.appendChild(root);
-  // the deliverable = one green report row (same vocabulary as ask trees)
-  const row = el("div", "frow nav st-done");
-  row.style.paddingLeft = (TREE_INDENT_EM + 1) + "em";
-  const rm = el("span", "frow-mark"); rm.textContent = "●"; row.appendChild(rm);
-  const rt = el("span", "flinked-did"); rt.textContent = fitem.did; row.appendChild(rt);
-  const ra = el("span", "ftime"); ra.textContent = relAge(hostNow - fitem.t); row.appendChild(ra);
-  row.title = "jump to this on the timeline";
-  row.onclick = (ev) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: fitem.itemId, sid: fitem.sid, t: fitem.t }); };
-  box.appendChild(row);
-  // what's still pending (next-steps) = hollow circles, like any open path
-  if (det && Array.isArray(det.next_steps)) {
-    for (const s of det.next_steps) {
-      const nr = el("div", "frow st-open");
-      nr.style.paddingLeft = (TREE_INDENT_EM + 1) + "em";
-      const nm = el("span", "frow-mark"); nm.textContent = "○"; nr.appendChild(nm);
-      const nt = el("span", "flinked-did"); nt.textContent = s; nr.appendChild(nt);
-      box.appendChild(nr);
-    }
-  }
-  host.appendChild(box);
-  // the JLD paragraph stays, dimmer, as secondary detail under the tree
-  const par = el("div", "fx-body fstandalone-par");
-  par.textContent = det && det.paragraph ? det.paragraph : d && d.state === "loading" ? "…" : "";
-  if (par.textContent) host.appendChild(par);
-}
 
 // Group modal body: each member's own flat tree stacked, member text as its root
 // line, chronological. Sig-guarded (member set + per-member tree sigs) so a host
@@ -1951,12 +1677,11 @@ function renderGroupModalBody(host: HTMLElement, members: AskItem[]) {
   }
 }
 
-// A column entry is an ask card or a standalone deliverable card; the reconcile
-// picks the right builder + cache map by kind.
+// A column entry is an ask card or a group card; the reconcile picks the right
+// builder + cache map by kind.
 type Entry =
   | { kind: "ask"; t: number; ask: AskItem }
-  | { kind: "group"; t: number; group: AskGroup }
-  | { kind: "item"; t: number; item: FeedItem };
+  | { kind: "group"; t: number; group: AskGroup };
 
 // UndoClear (top right): restore the most recently cleared card — the host pops
 // the newest cleared.jsonl row. Built fresh wherever the top strip renders: on
@@ -2155,16 +1880,11 @@ function reconcileCol(listEl: HTMLElement, entries: Entry[], globalDesired: Set<
       card = askEls.get(e.ask.itemId) || makeAskCard(e.ask);
       askEls.set(e.ask.itemId, card);
       updateAskCard(card, e.ask);
-    } else if (e.kind === "group") {
+    } else {
       key = "g:" + e.group.turnId;
       card = groupEls.get(e.group.turnId) || makeGroupCard(e.group);
       groupEls.set(e.group.turnId, card);
       updateGroupCard(card, e.group);
-    } else {
-      key = "i:" + e.item.itemId;
-      card = cardEls.get(e.item.itemId) || makeCard(e.item);
-      cardEls.set(e.item.itemId, card);
-      updateCard(card, e.item);
     }
     globalDesired.add(key); colDesired.add(key);
     ordered.push(card);
@@ -2287,9 +2007,8 @@ function render() {
   const list = document.getElementById("feed-list")!;
   applyFollowMove(asks);   // keep optimistically-moved follow-up cards in Working until the kernel confirms (or reverts)
   const prevScroll = list.scrollTop;
-  const standalone = standaloneItems();
   // footer pane (below the cards, no overlap): Sub-goals toggle (left) · Clear all · UndoClear (right)
-  const showCA = !!(asks.length || standalone.length);
+  const showCA = !!asks.length;
   ensureSubgoalsToggle();   // the toggle lives in the footer now; visible whenever the footer is
   const collapseAll = ensureCollapseAll();
   collapseAll.style.display = showCA ? "" : "none";
@@ -2304,7 +2023,7 @@ function render() {
   if (foot) foot.style.display = (showCA || canUndoClear) ? "" : "none";
 
   if (!asks.length && !standalone.length) {
-    askEls.clear(); groupEls.clear(); cardEls.clear();
+    askEls.clear(); groupEls.clear();
     // inbox zero → the romp wordmark (a CSS background). role/aria-label + title keep the meaning for hover /
     // screen readers, since a background image carries no accessible text. Created ONCE (idempotent): on the
     // transition from cards→empty we mint it (its CSS fade-in plays once, the user 2026-06-25), and every
@@ -2336,7 +2055,6 @@ function render() {
     buckets[g.column].push({ kind: "group", t: g.t, group: g });
   }
   for (const a of asks) { if (grouped.has(a.itemId)) continue; buckets[askColumn(a)].push({ kind: "ask", t: a.t, ask: a }); }
-  for (const it of standalone) buckets[it.relevance === "DONE" ? "completed" : "needsInput"].push({ kind: "item", t: it.t, item: it });
   // ALWAYS oldest-at-top (the user 2026-06-27): the newest work sits at the BOTTOM of each column, nearest the
   // eye, and new/moved cards stack onto the bottom (matches the fly animation). No toggle — this is the behavior.
   for (const k of Object.keys(buckets) as Column[]) buckets[k].sort((x, y) => x.t - y.t);
@@ -2390,7 +2108,6 @@ function render() {
     askEls.delete(id);
   }
   for (const tid of Array.from(groupEls.keys())) if (!desired.has("g:" + tid) && undismissed(groupEls.get(tid))) { groupEls.get(tid)?.remove(); groupEls.delete(tid); }
-  for (const id of Array.from(cardEls.keys())) if (!desired.has("i:" + id) && undismissed(cardEls.get(id))) { cardEls.get(id)?.remove(); cardEls.delete(id); }
 
   list.scrollTop = prevScroll;
   // FLIP-across-identity: a card whose KEY is new this render (group→solo, solo→group, umbrella absorb) has no
@@ -2522,7 +2239,6 @@ window.addEventListener("message", (e: MessageEvent) => {
   if (!m) return;
   if (m.romp === "paneFocus") { kbEnterCards(); return; }   // the shell handed us keyboard focus → arm card nav
   if (m.type === "feed") {
-    items = Array.isArray(m.items) ? m.items : [];
     const incomingAsks: AskItem[] = Array.isArray(m.asks) ? m.asks : [];
     // A clear is CONFIRMED once the kernel's payload no longer lists it → stop suppressing it. Then drop
     // any still-pending (kernel hasn't caught up) from this payload so a stale push can't resurrect them.
@@ -2542,15 +2258,6 @@ window.addEventListener("message", (e: MessageEvent) => {
     if (typeof m.showDismissed === "boolean") showDismissed = m.showDismissed;
     if (typeof m.canUndoClear === "boolean") canUndoClear = m.canUndoClear;
     render();
-  } else if (m.type === "detail" && m.itemId) {
-    details.set(m.itemId, { state: "ready", data: m.detail });
-    if (expanded.has(m.itemId) || fullscreenAskId === "i:" + m.itemId) render();
-  } else if (m.type === "detailPending" && m.itemId) {
-    if (details.get(m.itemId)?.state !== "ready") details.set(m.itemId, { state: "loading" });
-    if (expanded.has(m.itemId) || fullscreenAskId === "i:" + m.itemId) render();
-  } else if (m.type === "detailFailed" && m.itemId) {
-    details.set(m.itemId, { state: "failed", reason: m.reason });
-    if (expanded.has(m.itemId) || fullscreenAskId === "i:" + m.itemId) render();
   } else if (m.type === "hoverCards") {
     // rail-dot hover in the CHAT panel → white-outline the card(s) built from
     // that turn, plus the matching ROWS inside an open modal (eid). The host
@@ -2620,11 +2327,6 @@ function applyExtHover() {
 // Keep "Xm ago" honest between host pushes (host reposts ~1×/min for color fade).
 setInterval(() => {
   const now = Math.floor(Date.now() / 1000);
-  for (const [id, card] of cardEls) {
-    const it = items.find((i) => i.itemId === id);
-    const t = (card as any)._time as HTMLElement | undefined;
-    if (it && t) t.textContent = relAge(now - it.t);
-  }
   for (const [id, card] of askEls) {
     const it = asks.find((a) => a.itemId === id);
     const t = (card as any)._time as HTMLElement | undefined;

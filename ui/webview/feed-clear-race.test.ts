@@ -17,7 +17,7 @@ test("there is a pendingCleared suppression set", () => {
 test("Clear marks the id pending so a stale push can't resurrect the dismissing card", () => {
   // every Clear handler records the id before posting askClear
   const adds = FEED.match(/pendingCleared\.add\(/g) || [];
-  assert.ok(adds.length >= 3, "ask card, standalone item, and group-member clears all suppress");
+  assert.ok(adds.length >= 2, "ask card and group-member clears both suppress (the standalone card was removed 2026-07-07)");
 });
 
 test("incoming feed payloads drop still-pending ids, and release once the kernel confirms the clear", () => {
@@ -38,7 +38,7 @@ test("Undo clear is OPTIMISTIC + acknowledges instantly (the user 2026-06-27)", 
   // every Clear caches the card data so Undo can restore it without a round-trip
   assert.match(FEED, /const clearedStack: AskItem\[\]\[\] = \[\];/);
   const caches = FEED.match(/clearedStack\.push\(/g) || [];
-  assert.ok(caches.length >= 3, "single item, ask card, and group-member clears all cache their data");
+  assert.ok(caches.length >= 2, "ask card and group-member clears both cache their data (standalone card removed 2026-07-07)");
   // instant press acknowledgment before any round-trip
   assert.match(FEED, /b\.classList\.add\("romp-acted"\);/);
   // pop the latest batch, un-suppress + re-insert it NOW, then re-render

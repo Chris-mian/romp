@@ -17,8 +17,8 @@ test("a dead session's feed-card name is struck through", () => {
 
 test("the modal's agent name is struck through for a dead session", () => {
   assert.match(CSS, /\.feed-modal-agent\.dead \{[^}]*text-decoration: line-through/);
-  // ask / group / standalone-deliverable modals carry the strike when their session is dead
+  // ask / group modals carry the strike when their session is dead (the standalone modal was
+  // removed 2026-07-07 with the dead FeedItem subsystem)
   assert.match(FEED, /agent\.classList\.toggle\("dead", !grp\.live\)/);
   assert.match(FEED, /agent\.classList\.toggle\("dead", !it\.live\)/);
-  assert.match(FEED, /agent\.classList\.toggle\("dead", !fitem\.live\)/);
 });

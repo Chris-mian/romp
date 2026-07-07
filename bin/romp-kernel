@@ -1136,22 +1136,19 @@ def _auto_resume_session_retry(now, tmux):
         _mark_views_dirty()      # the flag lives in a file the fleet sig doesn't watch → dirty-rebuild the chat status
 
 
-def _mark_auto_nudged(gid, turn_id, count, stalled=False):
-    """Record an auto-nudge of `gid`: {count, lastTurnId[, stalled]}. `count` is the TOTAL fired (the climbing
+def _mark_auto_nudged(gid, turn_id, count):
+    """Record an auto-nudge of `gid`: {count, lastTurnId}. `count` is the TOTAL fired (the climbing
     escalation alert); `lastTurnId` is the turn this fired on, so the tick nudges each turn id at most ONCE and
     re-arms only on a genuinely NEW ended turn — and NEVER on the agent's own nudge-response turn (see the
-    tick's _turn_romp_injected gate). A stall that persists without genuine new work is surfaced as blocked + a
-    "nudge failed" chip rather than nudged forever (the user 2026-07-01, replacing the 2026-06-25 loop).
-    `stalled` marks a FORK nudge (open authoritative to-dos → AUTO_NUDGE_STALLED_TEXT): if it fails, build_feed
-    floors the card to needs-you. A fresh fire writes a fresh record, so any earlier `failed` flag resets with
-    the new episode. Bounded to recent goals."""
+    tick's _turn_romp_injected gate). A stall that persists without genuine new work becomes a real BLOCK
+    (_mark_nudge_failed records the verdict, 2026-07-07) rather than being nudged forever. A fresh fire
+    writes a fresh record, so any earlier `failed` flag resets with the new episode. Bounded to recent
+    goals. (The old per-record `stalled` flag fed build_feed's needs-you floor; both retired 2026-07-07 —
+    the block verdict supersedes them.)"""
     d = dict(_auto_nudge_data())
     nudged = dict(d.get("nudged", {}))
     nudged.pop(gid, None)
-    rec = {"count": count, "lastTurnId": turn_id}
-    if stalled:
-        rec["stalled"] = True
-    nudged[gid] = rec                                       # reinsert → most-recent
+    nudged[gid] = {"count": count, "lastTurnId": turn_id}   # reinsert → most-recent
     if len(nudged) > 3000:                                  # bounded; drop the oldest
         nudged = dict(list(nudged.items())[-3000:])
     d["nudged"] = nudged
@@ -1505,9 +1502,9 @@ def _auto_nudge_tick(now, tmux):
             stalled = gid in _agent_open_set(nodes, _kids)
             text = AUTO_NUDGE_STALLED_TEXT if stalled else AUTO_NUDGE_TEXT
             Sessions.backend_for(sid).send(sid, _followup_body(gid, None, text, injected=True, auto=True, stalled=stalled))   # gray romp bubble + romp-logo (both backends)
-            _mark_auto_nudged(gid, arm_id, count, stalled=stalled)   # {count, lastTurnId[, stalled]} → re-arm only on the next GENUINE ended-working turn; a fresh record resets `failed`
+            _mark_auto_nudged(gid, arm_id, count)   # {count, lastTurnId} → re-arm only on the next GENUINE ended-working turn; a fresh record resets `failed`
             _log_nudge_event(sid, gid, now, count)       # timeline romp-logo dot + escalation count
-            nudged[gid] = dict({"count": count, "lastTurnId": arm_id}, **({"stalled": True} if stalled else {}))   # mirror in-memory for the rest of this tick
+            nudged[gid] = {"count": count, "lastTurnId": arm_id}   # mirror in-memory for the rest of this tick
             fired = True
     if fired:
         _push_all()
@@ -6420,10 +6417,10 @@ def _provisional_card(s, name, color, fsid, live, now, store=None):
         text = "Analyzing: " + g if g else prompt[:140].strip()
     t = held.get("t", lt["t"])
     return {"itemId": "provisional:" + fsid, "sid": fsid, "name": name, "color": color, "text": text,
-            "t": t, "created": t, "live": live, "trgb": list(cm.age_rgb(now - t, _colormap())),
-            "done": 0, "needsYou": 0, "linked": [], "turnId": None, "turnIds": [], "origin": None,
-            "blockWhy": None, "doneWhy": None, "followupPending": None, "summary": None, "blockSummary": None, "background": None,
-            "blocked": None, "column": "working", "openQuestions": [], "openPaths": [],
+            "t": t, "live": live, "trgb": list(cm.age_rgb(now - t, _colormap())),
+            "turnId": None, "origin": None, "followupPending": None,
+            "summary": None, "blockSummary": None, "background": None,
+            "blocked": None, "column": "working",
             "provisional": True, "tree": []}
 
 
@@ -6476,13 +6473,13 @@ def _blocked_placeholder(s, name, color, fsid, live, now, perm_state, since):
     if not text:
         text = "Awaiting your input" if perm_state == "picker" else "Awaiting your approval"
     return {"itemId": "blocked:" + fsid, "sid": fsid, "name": name, "color": color, "text": text,
-            "t": t, "created": t, "live": live, "trgb": list(cm.age_rgb(now - t, _colormap())),
-            "done": 0, "needsYou": 1, "linked": [], "turnId": None, "turnIds": [], "origin": None,
-            "blockWhy": None, "doneWhy": None, "followupPending": None, "summary": None, "blockSummary": None, "background": None,
-            "blocked": {"state": perm_state, "since": since,
+            "t": t, "live": live, "trgb": list(cm.age_rgb(now - t, _colormap())),
+            "turnId": None, "origin": None, "followupPending": None,
+            "summary": None, "blockSummary": None, "background": None,
+            "blocked": {"state": perm_state,
                         "what": ("this session is stopped awaiting your input" if perm_state == "picker"
                                  else "this session is stopped awaiting your approval")},
-            "column": "needs_input", "openQuestions": [], "openPaths": [],
+            "column": "needs_input",
             "provisional": True, "tree": []}
 
 
@@ -6689,13 +6686,10 @@ def build_feed(now, tmux=None):
                         # landing on the user turn (no kind-restricted nearest-time needed). (2026-06-17.)
                         "anchorUuid": _wa,
                         "promptAnchorUuid": _pa,
-                        # the planner's one-sentence rationales — the modal reveals these (why a node
-                        # exists / was blocked / was completed). (the user 2026-06-16.)
-                        "why": nd.get("why"), "blockWhy": nd.get("blockWhy"), "doneWhy": nd.get("doneWhy"),
-                        "summary": nd.get("summary"),                   # distiller's key takeaway — shown in the MODAL only (card keeps doneWhy) — the user 2026-06-17
+                        "summary": nd.get("summary"),                   # distiller's key takeaway — shown in the MODAL only — the user 2026-06-17
                         "blockSummary": nd.get("blockSummary"),         # block-distiller's DECISION BRIEF (MODAL); null until produced — the user 2026-06-18
                         "followupPending": nd.get("followupPending"),   # per-node "Followed up" chip in the modal tree (business 2026-06-17)
-                        "children": kids, "rows": []})
+                        "children": kids})
             for c in kids:
                 flatten(c, out, ancestor_done=done)
             return out
@@ -6769,18 +6763,6 @@ def build_feed(now, tmux=None):
                 sgoal = jd.load_goals(psid).get("nodes", {}).get(gid) if gid else None
                 if sgoal and not sgoal.get("nodeComplete") and not sgoal.get("cleared") and gid not in cleared:
                     origin = {"peer": _name_of(psid) or psid[:8], "peerSid": psid, "color": _name_color(psid)}
-            block_why = None
-            if col == "blocked":                     # SOFT-block reason: the latest still-blocked node's why
-                blkd = [nodes[x] for x in _subtree(nid)
-                        if nodes[x].get("blocked") and not _closure_done(x) and nodes[x].get("blockWhy")]
-                if blkd:
-                    block_why = max(blkd, key=lambda d: d.get("mt", d.get("t", 0)))["blockWhy"]
-            done_why = None
-            if col == "completed":                   # DONE rationale: the most-recently-completed node's "why done"
-                dnz = [nodes[x] for x in _subtree(nid)
-                       if _closure_done(x) and nodes[x].get("doneWhy")]
-                if dnz:
-                    done_why = max(dnz, key=lambda d: d.get("mt", d.get("t", 0)))["doneWhy"]
             await_why = sess_awaiting_why if col == "awaiting" else None   # the ⏳ awaiting badge's "why" (None for the postal-only case → the waitingOn chip names the peer)
             # The card's TIME reflects its CURRENT STATE, not when the goal was minted: a COMPLETED card
             # shows when it was completed, a BLOCKED card when it was blocked — the mt of the most-recent
@@ -6853,15 +6835,19 @@ def build_feed(now, tmux=None):
             # so it self-heals the instant the agent crosses the items off; the live api/permission floors
             # still win (the present event).
             nrec = _auto_nudge_data().get("nudged", {}).get(nid) or {}
-            nudge_failed = bool(nrec.get("failed")) and col == "working"
-            stalled_floor = bool(nudge_failed and nrec.get("stalled") and nid in agent_open
-                                 and nid != api_top and nid != perm_top)
+            # the chip shows while the failure is the live story: the goal still working, OR blocked BY the
+            # failure itself (the diary's latest block has src "nudge", 2026-07-07). A real judge verdict
+            # (planner/closer block, or completion) takes the story over and the chip yields.
+            _lastblk = next((e.get("src") for e in reversed(nodes[nid].get("log") or [])
+                             if e.get("kind") == "block"), None)
+            nudge_failed = bool(nrec.get("failed")) and (col == "working"
+                                                         or (col == "blocked" and _lastblk == "nudge"))
             # A live picker/permission floor (perm_top) is a GENUINE block, so the kernel reports its column as
             # needs_input — NOT "working" with the client re-routing it by it.blocked (which was crafty + split
             # the truth: build_feed said working while the card showed under Blocked, and the distiller line,
             # keyed on it.column, then stayed hidden). Now it.column is authoritative: the card IS blocked, the
             # client files by it.column, and the distiller line shows (the user 2026-06-29).
-            column = ("needs_input" if (api_block or nid == perm_top or stalled_floor
+            column = ("needs_input" if (api_block or nid == perm_top
                                         or (col == "blocked" and not recheck and not rejudging))
                       else "completed" if col == "completed" else "working")
             had_working = had_working or column == "working"
@@ -6901,11 +6887,9 @@ def build_feed(now, tmux=None):
                         break
             asks.append({
                 "itemId": nid, "sid": fsid, "name": name, "color": color, "text": nodes[nid]["text"],
-                "t": disp_t, "created": nodes[nid]["t"], "live": live,
+                "t": disp_t, "live": live,
                 "trgb": list(cm.age_rgb(now - disp_t, _colormap())),
-                "done": 0, "needsYou": 0, "linked": [], "turnId": nid, "turnIds": [nid], "origin": origin,
-                "blockWhy": block_why,               # one-sentence "why blocked" on the card (soft planner block)
-                "doneWhy": done_why,                 # one-sentence "why done" on a completed card (the done page)
+                "turnId": nid, "origin": origin,
                 "followupPending": nodes[nid].get("followupPending"),   # optimistic reopen → "Followed up" chip until the judge catches up
                 "waitingOn": (wmap.get(fsid) if (column == "working" and _peer_wait) else None),   # 'waiting on <peer>' chip: unanswered outbound to a live peer, only on a goal that predates the question (the user 2026-06-22/28)
                 "awaiting": ({"why": await_why} if col == "awaiting" else None),   # awaiting flavor: held in Working with a ⏳ awaiting badge (waiting on dispatched/delegated work) — the user 2026-06-22
@@ -6916,25 +6900,21 @@ def build_feed(now, tmux=None):
                 "warns": nodes[nid].get("warns") or None,   # judge-stamped anomalies (judge _node_warn) → yellow "warning" chip; click shows each warn's what/why detail (the user 2026-07-02)
                 "nudged": ({"count": int(nrec.get("count", 0)), "times": _nudge_times().get(nid, [])[-8:]}
                            if nrec.get("count") else None),   # auto-nudge HISTORY (fires + when) → the stalled chip's evidence, on the chip tooltip + modal (the user 2026-07-02)
-                "blocked": ({"state": "apiError", "since": (tm.get("since") if tm else None),
-                             "status": aerr.get("status"), "category": aerr.get("category"),
+                "blocked": ({"state": "apiError",
+                             "status": aerr.get("status"),
                              "text": aerr.get("text"), "tooLong": bool(aerr.get("tooLong")),
                              "what": ("this session's prompt is too long — compact it to continue" if aerr.get("tooLong")
                                       else "this session stopped on an API error — Retry to resume")} if nid == api_top
-                            else {"state": perm_state, "since": tm.get("since"),
+                            else {"state": perm_state,
                                   "what": ("this session is stopped awaiting your input" if perm_state == "picker"
                                            else "this session is stopped awaiting your approval")} if nid == perm_top
-                            else {"state": "stalled", "since": None,
-                                  "what": ("this session stopped with its own to-do items still open — a "
-                                           "follow-up didn't get them moving, so it likely needs something "
-                                           "from you")} if stalled_floor
                             else None),
                 "nudgeFailed": nudge_failed,         # the one auto-nudge didn't resolve the stall → "nudge failed" chip; never re-nudged (design/stalled-open-todos-nudge.md)
                 "interrupted": bool(sess_interrupted and column == "working"),   # the user stopped this session and hasn't re-engaged → "interrupted" badge; nudge suppressed until their next message (the user 2026-07-05)
                 "column": column,
                 "recheck": recheck,                  # targeted follow-up on a soft-block → de-urgented (dotted), moved to Working, pending re-judge
                 "rejudging": rejudging,              # plain thread reply after a block → STAYS in Needs-You, "Re-judging…" swirl while a turn is in flight (the user 2026-06-30)
-                "openQuestions": [], "openPaths": [], "tree": flatten(nid, [])})
+                "tree": flatten(nid, [])})
         # A session actively working a brand-new ask shows NO card until the planner classifies the held
         # segment at turn-end — surface a live-prompt placeholder so it isn't invisible. Only when nothing
         # already covers it (no working card); replaced by the real card once the planner places it.
@@ -6970,21 +6950,18 @@ def build_feed(now, tmux=None):
         asks.append({
             "itemId": item_id, "sid": ph["toId"], "name": ph["toName"], "color": _name_color(ph["toId"]),
             "text": "Hand-off parked for %s (offline)" % ph["toName"],
-            "t": ph["t"], "created": ph["t"], "live": False,
+            "t": ph["t"], "live": False,
             "trgb": list(cm.age_rgb(now - ph["t"], _colormap())),
-            "done": 0, "needsYou": 1, "linked": [], "turnId": item_id, "turnIds": [item_id], "origin": None,
-            "blockWhy": "%s tried to hand off to %s, which is offline — revive it to deliver, or dismiss."
-                        % (ph["fromName"], ph["toName"]),
-            "doneWhy": None, "followupPending": None, "waitingOn": None,
+            "turnId": item_id, "origin": None,
+            "followupPending": None, "waitingOn": None,
             "summary": None, "blockSummary": None, "background": None, "summaryAnchorUuid": None, "warns": None,
             "nudged": None,
-            "blocked": {"state": "parkedHandoff", "fromName": ph["fromName"], "toSid": ph["toId"],
-                        "toName": ph["toName"], "msgId": ph["msgId"], "body": ph["body"],
+            "blocked": {"state": "parkedHandoff", "toSid": ph["toId"], "toName": ph["toName"],
                         "what": "a handoff from %s is parked — revive %s to deliver it"
                                 % (ph["fromName"], ph["toName"])},
             "column": "needs_input",
-            "openQuestions": [], "openPaths": [], "tree": []})
-    return {"type": "feed", "asks": asks, "items": [], "blocked": [], "now": now,
+            "tree": []})
+    return {"type": "feed", "asks": asks, "now": now,
             "working": working, "dismissedCount": len(cleared), "showDismissed": False,
             "canUndoClear": len(cleared) > 0}
 
@@ -7506,7 +7483,7 @@ def _derive_judging(sid, caps, goals, t0, out, seg_ends=None):
       captioner ← captions/<sid>.jsonl   (one mark per segment/turn unit)
       planner   ← goal nodes             (a mint/sub at the node's t; a done/block at its mt)
       grouper   ← nodes flagged umbrella  · courier ← nodes carrying origin (a peer handoff)
-      closer    ← nodes flagged negComplete (its turn-end sweep) · archiver ← archive/<sid>.json
+      closer    ← diary events with src 'closer' (its turn-end sweep) · archiver ← archive/<sid>.json
     Each mark = {judge, sid, t, kind, text}; the view colours it by the SESSION (sid) being judged.
     A judge runs within seconds of the unit/node, so the unit time is its run time to within the push
     interval. This is the goal tree's FINAL state, not a per-call log, so the planner lane shows its

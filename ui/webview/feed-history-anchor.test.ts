@@ -9,10 +9,11 @@ import * as path from "node:path";
 
 const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
 
-test("a modal history row passes reply_id as anchorUuid (work intent) so it lands by id", () => {
+test("history rows are gone with the AskLinked subsystem; node nav still lands by id (2026-07-07)", () => {
+  assert.doesNotMatch(FEED, /node\.rows/);   // the rows/AskLinked machinery was dead (kernel always sent rows: []) and is removed
   assert.match(
     FEED,
-    /showOnTimeline", itemId: r\.reply_id, sid: r\.sid \|\| r\.reply_id\.split\(":"\)\[0\], t: r\.t, anchorUuid: r\.reply_id, anchor: "work"/,
-    "the row's showOnTimeline carries anchorUuid: r.reply_id + anchor: 'work'",
+    /anchorUuid: node\.anchorUuid/,
+    "tree-node navigation still passes an exact anchor uuid",
   );
 });

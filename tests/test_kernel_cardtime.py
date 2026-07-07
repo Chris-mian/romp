@@ -88,7 +88,6 @@ class CardTime(unittest.TestCase):
             {top: "completed"})
         card = self._card(top)
         self.assertEqual(card["t"], NOW - 600, "card time = COMPLETION (mt), not the 8h-ago mint")
-        self.assertEqual(card["created"], NOW - 8 * 3600, "`created` keeps the true mint time")
         self.assertEqual(card["trgb"], list(km.cm.age_rgb(NOW - card["t"])),
                          "the recency tint follows completion, not mint")
 
@@ -102,7 +101,6 @@ class CardTime(unittest.TestCase):
             {top: "blocked"})
         card = self._card(top)
         self.assertEqual(card["t"], NOW - 300, "blocked card time = when it BLOCKED (mt), not the 5h-ago mint")
-        self.assertEqual(card["created"], NOW - 5 * 3600)
 
     def test_working_card_time_is_last_activity_not_mint(self):
         # A still-working card shows its LAST ACTIVITY (the newest mt anywhere in its subtree, _fsubmax),
@@ -116,7 +114,6 @@ class CardTime(unittest.TestCase):
             {top: "working"})
         card = self._card(top)
         self.assertEqual(card["t"], NOW - 60, "a working card freshens to its last activity (mt)")
-        self.assertEqual(card["created"], NOW - 1800)
 
 
 if __name__ == "__main__":
