@@ -6958,6 +6958,7 @@ def build_feed(now, tmux=None):
                 "summary": nodes[nid].get("summary"),    # the distiller's key takeaway for a completed goal (modal) — the user 2026-06-17
                 "blockSummary": nodes[nid].get("blockSummary"),    # the block-distiller's decision brief for a blocked goal (modal); null until produced — the user 2026-06-18
                 "background": nodes[nid].get("background"),    # the distiller's BACKGROUND section: re-orientation for a reader who forgot the thread — collapsed by default on the card (the user 2026-07-02)
+                "artifacts": _feed_artifacts(nodes[nid].get("artifacts"), fsid),   # files the work PRODUCED (distiller ARTIFACTS line), existence-filtered NOW — "N artifacts" under the summary; previews in the modal (the user 2026-07-08)
                 "summaryAnchorUuid": _sa_u,    # click the summary line → the biggest text block in the work span (the user 2026-06-22)
                 "warns": nodes[nid].get("warns") or None,   # judge-stamped anomalies (judge _node_warn) → yellow "warning" chip; click shows each warn's what/why detail (the user 2026-07-02)
                 "nudged": ({"count": int(nrec.get("count", 0)), "times": _nudge_times().get(nid, [])[-8:]}
@@ -8520,6 +8521,15 @@ _IMG_MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
 _IMG_MAX_BYTES = 8_000_000
 _img_cache = {}                                  # "path:mtime:size" → dataURL | None
 
+# ---- /file preview serving (the user 2026-07-08): chat path-thumbnails + feed artifact strips load
+#      the actual bytes over HTTP (behind _authorize, like everything else) instead of a data-URL round
+#      trip — the browser lazy-loads, caches, and renders a PDF natively in the lightbox iframe. The
+#      allowlist is RENDERABLE media only; anything else 404s and the client shows a plain link. SVG is
+#      served as an image (an <img> never runs its scripts); the files are the user's own, written by
+#      their own agents, on their own machine.
+_PREVIEW_MIME = dict(_IMG_MIME, **{".pdf": "application/pdf"})
+_PREVIEW_MAX_BYTES = 50_000_000                  # a plot/report, not a dataset — bigger 413s (fail loudly)
+
 
 def _img_data_url(p0):
     """A `path:<abs>` image → a data: URL the webview can <img src>. ~ expanded; absolute + known image
@@ -8572,6 +8582,25 @@ def _resolve_open_path(p, sid=None):
         if base:
             p = os.path.join(base, p)
     return p
+
+
+def _feed_artifacts(paths, sid):
+    """The distiller's ARTIFACTS paths → the files a feed card may actually show. Resolved like a
+    click-to-open (~ expanded, relative → the session's cwd) and existence-checked HERE, at feed build —
+    the authoritative filter that keeps a hallucinated or since-deleted path off the card (the distiller
+    only transcribes what it read in <work>; the filesystem decides what's real). None when nothing
+    survives, so the client renders no artifacts line at all."""
+    out = []
+    for p in paths or []:
+        if not isinstance(p, str) or not p.strip():
+            continue
+        try:
+            ap = _resolve_open_path(p.strip(), sid)
+            if os.path.isabs(ap) and os.path.isfile(ap) and ap not in out:
+                out.append(ap)
+        except Exception:
+            continue
+    return out or None
 
 
 def _open_file(p, sid=None):
@@ -10739,6 +10768,51 @@ class Handler(BaseHTTPRequestHandler):
             return True, None, ""                    # local, same-origin → no token needed
         return False, None, "token required for non-local access"
 
+    def _file_preview(self, q, head=False):
+        """GET/HEAD /file — the preview bytes behind a chat path-thumbnail / feed artifact strip (the
+        user 2026-07-08). Same path resolution as click-to-open (~ expanded, relative → the session's
+        cwd — _resolve_open_path); RENDERABLE media only (_PREVIEW_MIME), anything else 404s and the
+        client keeps its plain link. Oversize 413s rather than silently truncating. HEAD is the
+        existence probe for a chip that can't self-verify like an <img> (a PDF): headers only, so a
+        since-deleted file costs no download and never shows a dead chip."""
+        fp = _resolve_open_path((q.get("path") or [""])[0], (q.get("sid") or [None])[0])
+        mime = _PREVIEW_MIME.get(os.path.splitext(fp)[1].lower())
+        if not mime or not os.path.isabs(fp) or not os.path.isfile(fp):
+            return self._send(404, b"" if head else "not found", "text/plain")
+        size = os.path.getsize(fp)
+        if size > _PREVIEW_MAX_BYTES:
+            return self._send(413, b"" if head else "too large to preview", "text/plain")
+        if head:
+            self.send_response(200)
+            self.send_header("Content-Type", mime)
+            self.send_header("Content-Length", str(size))   # the real length, no body (HEAD semantics)
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            return
+        with open(fp, "rb") as f:
+            return self._send(200, f.read(), mime, cache="no-cache")
+
+    def do_HEAD(self):
+        # HEAD exists for ONE route: /file (the preview existence probe). Without this the base handler
+        # 501s every HEAD, which the client would read as "gone" and hide a live chip.
+        u = urlparse(self.path)
+        q = parse_qs(u.query)
+        self._set_cookie = None
+        try:
+            ok, self._set_cookie, why = self._authorize(q)
+            if not ok:
+                return self._send(403, b"", "text/plain")
+            if u.path == "/file":
+                return self._file_preview(q, head=True)
+            return self._send(404, b"", "text/plain")
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        except Exception:
+            try:
+                self._send(500, b"", "text/plain")
+            except Exception:
+                pass
+
     def do_GET(self):
         u = urlparse(self.path)
         p = u.path
@@ -10792,6 +10866,8 @@ class Handler(BaseHTTPRequestHandler):
                 text = (q.get("text") or [""])[0].strip()
                 body = _followup_body(iid, None, text or "‹your message will go here›") if iid else ""
                 return self._send(200, json.dumps({"body": body}), "application/json", cache="no-cache")
+            if p == "/file":                                  # preview bytes for a chat path-thumbnail / feed artifact
+                return self._file_preview(q)
             if p == "/ssh-hosts":                             # ~/.ssh/config Host aliases for the attach-a-remote UI
                 return self._send(200, json.dumps({"hosts": _ssh_config_hosts()}),
                                   "application/json", cache="no-cache")

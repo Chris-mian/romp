@@ -16,7 +16,7 @@ test("the section BODIES live in .fask-secs; the toggles moved to the time row (
   assert.match(FEED, /const secs = el\("div", "fask-secs"\); secs\.style\.display = "none";/);
   assert.match(FEED, /bgBtn\.textContent = "Background"/, "capitalized like Clear");
   assert.match(FEED, /takeBtn\.textContent = "Summary"/);
-  assert.match(FEED, /secs\.append\(bgBody, distill\)/, "secs holds the BODIES only — the toggles ride row3 now");
+  assert.match(FEED, /secs\.append\(bgBody, distill, artline\)/, "secs holds the BODIES only (incl. the artifacts line) — the toggles ride row3 now");
   assert.match(FEED, /a\._secs = secs; a\._bgBtn = bgBtn; a\._bgBody = bgBody; a\._takeBtn = takeBtn;/);
   assert.match(FEED, /background\?: string \| null;/, "the AskItem carries the kernel's background field");
   // just a body container now (a plain block; one full-width body shows at a time)

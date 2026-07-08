@@ -1380,6 +1380,21 @@ def _warn_summary_failed(nd, judge, t):
                "lost — this is only the summary line. %s" % (line, cause, retry))
 
 
+def _split_artifacts(text):
+    """(body, paths) — split a distill reply's optional trailing `ARTIFACTS: p1, p2` line (the user
+    2026-07-08: a completed goal that PRODUCED files — a plot, a PDF report — lists them so the feed
+    card can show/preview them). Anchored to the END of the body (after _split_source peeled the
+    citation), so prose that merely mentions the word is never mistaken for the line. Paths are the
+    model's transcription of <work> — the kernel existence-checks them against the filesystem at feed
+    build, so a hallucinated path never reaches a card. Absent line → (text, [])."""
+    text = (text or "").strip()
+    m = re.search(r"(?:^|\n)\s*ARTIFACTS:\s*(\S[^\n]*)$", text)
+    if not m:
+        return text, []
+    paths = [p.strip() for p in m.group(1).split(",") if p.strip()]
+    return text[:m.start()].strip(), paths[:5]
+
+
 def _split_sections(text):
     """(background, takeaway) — split a distill/brief reply's two labeled sections (the user 2026-07-02:
     the takeaway alone assumes a reader who remembers the thread; BACKGROUND re-orients one who doesn't).
@@ -4399,6 +4414,14 @@ DISTILL_SYS = (
     "the idea or reasoning behind it when that's the interesting part. Write for someone who wants the "
     "point, not the process. If the goal was a question, give the answer. Be as brief as the point "
     "allows, usually one sentence and at most two or three; the user can click through for detail.\n\n"
+    "When the work PRODUCED standalone output files the user would open to see a result — a plot image, "
+    "a PDF report, an exported document, a generated screenshot — add one line after the takeaway that "
+    "is exactly ARTIFACTS: followed by their paths, comma-separated, transcribed character-for-character "
+    "from <work>, the most important first, at most five. Only deliverable outputs: never source code "
+    "that was edited, never tests or configs, never a path that was merely read or mentioned, never a "
+    "path you cannot see verbatim in <work>. Most goals produce none — then omit the line entirely. "
+    "This line is parsed off and shown as file previews, so the file-path ban above does not apply to "
+    "it.\n\n"
     "Assistant messages in <work> may carry [mN] labels. When they do, your reply is complete **only** "
     "with a third element after the takeaway: a final line that is exactly SOURCE: mN, nothing before "
     "it on the line and nothing after it — never omit it while labels are present, and never invent a "
@@ -4615,8 +4638,10 @@ def _distill_session(fsid, path, now):
             continue
         raw = out
         out, src = _split_source(out)
+        out, arts = _split_artifacts(out)           # optional produced-files line (before the section split — it trails the takeaway)
         bg, out = _split_sections(out)
         nodes[top]["summary"] = out                 # full text — NEVER truncate a takeaway mid-word (the user 2026-07-06)
+        nodes[top]["artifacts"] = arts or None      # files the work PRODUCED (paths as written in <work>) — the kernel existence-filters at feed build (the user 2026-07-08)
         nodes[top]["background"] = bg if bg else None   # re-orientation for a reader who forgot the thread (2026-07-02)
         nodes[top]["summaryAnchor"] = marks.map.get(src)   # the takeaway's cited source (None → kernel's deterministic fallback)
         if marks.map and marks.map.get(src) is None:       # labels offered, no usable citation → card warn + log
