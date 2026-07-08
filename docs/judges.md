@@ -1,5 +1,9 @@
 # The judges — a field guide
 
+> Want the picture first? [judge-pipeline.md](judge-pipeline.md) is the
+> one-page diagram map (mermaid): segments → planner units → card-first
+> filing, the triage pass order, the node state machine, and the postal flow.
+
 Current as of **2026-07-06** (see `docs/goal-state.md` for the STATE model — the diary/fold/ladder
 and every chip — current 2026-07-07). This is the working reference for what each judge
 actually is today: its prompts, triggers, inputs/outputs, and where the roles
