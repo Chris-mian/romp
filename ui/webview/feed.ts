@@ -246,8 +246,8 @@ function feedPrefs(): { newestFirst: boolean; collapsed: boolean } {
     const s = JSON.parse(localStorage.getItem("romp:settings") || "{}");
     // newestFirst + collapsed default OFF (=== true): the feed's natural order is oldest-first, and cards
     // arrive with their summary open (the user 2026-07-07). collapsed is the DEFAULT section state new cards
-    // inherit — a per-card expand overrides just that card without turning the mode off. (Sub-goals moved to a
-    // per-card button 2026-07-08; its default also follows `collapsed` — see resolveSub.)
+    // inherit — a per-card expand overrides just that card without turning the mode off. (Sub-goals is now one
+    // of the mutually-exclusive sections 2026-07-08; the same `collapsed` default applies — see resolveSec.)
     return { newestFirst: s.newestFirst === true, collapsed: s.collapsed === true };
   } catch { return { newestFirst: false, collapsed: false }; }
 }
@@ -525,9 +525,9 @@ function makeAskCard(it: AskItem): HTMLElement {
   const bgBody = el("div", "fask-bg-body");
   const takeBtn = el("button", "fask-secbtn"); takeBtn.textContent = "Summary";
   const distill = el("div", "fask-distill");
-  // "Sub-goals" — an INDEPENDENT toggle (the user 2026-07-08, moved off the footer): shows/hides the inline
-  // sub-goal tree (the checklist below). Sits right of Summary; hidden when the card has no sub-goals. Wired
-  // in applySubgoals. NOT part of the bg/summary mutual exclusion.
+  // "Sub-goals" — the THIRD mutually-exclusive section (the user 2026-07-08, moved off the footer): shows/hides
+  // the inline sub-goal tree (the checklist below). Sits right of Summary; hidden when the card has no
+  // sub-goals. Wired in applySections alongside Background/Summary (one open at a time, or none).
   const subBtn = el("button", "fask-secbtn"); subBtn.textContent = "Sub-goals"; subBtn.style.display = "none";
   secs.append(bgBody, distill);   // the BODIES only; the toggles ride row3 (below), one body shows at a time
   // now that the toggles exist, populate row3: Background · Summary · Sub-goals — GROUPED left, wrapping
@@ -652,52 +652,48 @@ function makeAskCard(it: AskItem): HTMLElement {
   return card;
 }
 
-// Collapse state for the card's two distiller sections (the user 2026-07-02), keyed by itemId in module
-// sets so the keyed incremental re-render never snaps a section shut: BACKGROUND is closed unless the
-// user opened it; the takeaway is open unless the user closed it.
-// Which distiller section a card shows — MUTUALLY EXCLUSIVE (the user 2026-07-07): "bg" | "summary" | "none".
-// Absent from the map = the DEFAULT, which the footer "Collapsed" toggle sets: OFF → "summary" open (a
-// completed card's takeaway shows); ON → "none" (collapsed), so NEW cards arrive collapsed too. Clicking a
-// toggle sets an explicit per-card override (one body shows at a time, or neither) that survives the mode.
-const secChoice = new Map<string, "bg" | "summary" | "none">();
-function resolveSec(id: string): "bg" | "summary" | "none" {
+// Which card section a card shows — the three sections are MUTUALLY EXCLUSIVE (the user 2026-07-08, was
+// bg/summary only): "bg" | "summary" | "subgoals" | "none". At most ONE open at a time, or none. Keyed by
+// itemId in a module map so the keyed incremental re-render never snaps a section shut. Absent = the DEFAULT,
+// which the footer "Collapsed" toggle sets: OFF → "summary" open (a completed card's takeaway shows); ON →
+// "none" (collapsed), so NEW cards arrive collapsed too. Clicking a toggle sets an explicit per-card override
+// (click the open one → off; click another → switch) that survives the mode.
+const secChoice = new Map<string, "bg" | "summary" | "subgoals" | "none">();
+function resolveSec(id: string): "bg" | "summary" | "subgoals" | "none" {
   return secChoice.get(id) ?? (feedPrefs().collapsed ? "none" : "summary");
 }
-// Sub-goals is an INDEPENDENT per-card toggle (NOT part of the mutually-exclusive bg/summary section; the
-// user 2026-07-08): a "Sub-goals" button beside Summary shows/hides the inline sub-goal tree. Its default
-// follows the Collapsed mode exactly like resolveSec — expanded → shown, collapsed → hidden — and a click
-// sets a per-card override that survives the mode. Toggling Collapsed clears these (see ensureCollapsedToggle).
-const subChoice = new Map<string, boolean>();
-function resolveSub(id: string): boolean {
-  return subChoice.get(id) ?? !feedPrefs().collapsed;
-}
-// Per-node collapse state for a CARD's inline sub-goal tree, keyed "itemId:nodeId" (the user 2026-07-08 —
-// "the little triangle-y icons" from the outline view). SEPARATE from the modal's `collapsedNodes` (which
-// seeds a one-level view on open): the card tree defaults to FULLY EXPANDED (the whole tree, per the earlier
-// ask) and you fold individual branches here; the empty default = nothing collapsed.
-const cardTreeCollapsed = new Set<string>();
+// Per-node EXPAND state for a CARD's inline sub-goal tree, keyed "itemId:nodeId" (the user 2026-07-08 — "the
+// little triangle-y icons" from the outline view). A node is COLLAPSED by default; membership here means the
+// user clicked its triangle open. So the tree opens showing only the top level and expands on demand — like
+// the modal's one-level view. Empty default = everything collapsed. (Its OWN state, not the modal's
+// `collapsedNodes`, which uses the inverse sense + its own seeding.)
+const cardTreeExpanded = new Set<string>();
 
-// Fill + wire the BACKGROUND and takeaway sections. BACKGROUND shows only alongside a produced
-// takeaway/brief (orientation with no outcome would dangle). Collapsed = a real "background"/"summary"
-// button (two collapsed buttons share one row — flex-wrap does it, no special casing); open = the text
-// at full card width with a block "less" button on its own line under it. The blank line between the
-// two sections exists only while either is expanded (.gap → margin under whichever bg element shows).
-// appendChild re-appends the same "less" node after a re-render reset textContent, so nothing
-// accumulates. stopPropagation on every toggle — the card-body click opens the modal.
-function applyDistillSections(a: any, it: AskItem, distillShown: boolean): void {
+// Fill + wire the card's THREE mutually-exclusive sections — Background, Summary, Sub-goals (the user
+// 2026-07-08). At most ONE open at a time (or none): clicking the open one closes it, clicking another
+// switches. Each button shows only when it has content to reveal — bg present / a produced takeaway/brief /
+// the goal has sub-goals — so an unavailable choice falls back to "none". The bg/summary BODIES live in
+// `_secs`; the sub-goal TREE lives in `_checklist` below. stopPropagation on every toggle — the card-body
+// click opens the modal.
+function applySections(a: any, it: AskItem, distillShown: boolean): void {
   const id = it.itemId;
   const bg = distillShown && it.background ? it.background : null;
-  // resolve the selection (default = summary open), falling back to "none" if the chosen content is absent
+  // does the card have a sub-goal tree to show? (the root has a non-handoff child — handoffs live in the
+  // delegations section). byId/root are reused by the tree builder below.
+  const tree = it.tree || [];
+  const byId = new Map(tree.map((n) => [n.id, n] as const));
+  const root = tree.find((n) => n.id === it.itemId) || tree[0];
+  const hasSubs = !!root && (root.children || []).some((cid) => { const n = byId.get(cid); return !!n && n.kind !== "handoff"; });
+  // resolve the selection (default = summary open), falling back to "none" if the chosen section is empty
   let choice = resolveSec(id);
   if (choice === "bg" && !bg) choice = "none";
   if (choice === "summary" && !distillShown) choice = "none";
-  const pick = (want: "bg" | "summary") => (ev: Event) => {
+  if (choice === "subgoals" && !hasSubs) choice = "none";
+  const pick = (want: "bg" | "summary" | "subgoals") => (ev: Event) => {
     ev.stopPropagation();
     secChoice.set(id, choice === want ? "none" : want);   // click the showing one → off; else switch to it
-    applyDistillSections(a, it, distillShown);
+    applySections(a, it, distillShown);
   };
-  // the body container shows only when a section is actually open (no empty-container gap while "none")
-  a._secs.style.display = distillShown && choice !== "none" ? "" : "none";
   // Background toggle — visible only when there IS background; pressed (.on) when its body is showing
   a._bgBtn.style.display = bg ? "" : "none";
   a._bgBtn.classList.toggle("on", choice === "bg");
@@ -713,6 +709,69 @@ function applyDistillSections(a: any, it: AskItem, distillShown: boolean): void 
   a._takeBtn.title = choice === "summary" ? "hide the summary" : "show the summary";
   (a._distill as HTMLElement).style.display = choice === "summary" ? "" : "none";
   a._takeBtn.onclick = pick("summary");
+  // Sub-goals toggle — visible only when the goal HAS sub-goals; pressed when the tree is showing
+  const subBtn = a._subBtn as HTMLElement;
+  subBtn.style.display = hasSubs ? "" : "none";
+  subBtn.classList.toggle("on", choice === "subgoals");
+  subBtn.setAttribute("aria-pressed", choice === "subgoals" ? "true" : "false");
+  subBtn.title = choice === "subgoals" ? "hide the sub-goals" : "show the sub-goals";
+  subBtn.onclick = pick("subgoals");
+  // the bg/summary BODIES container shows only when one of those two is open (the tree is a separate element)
+  a._secs.style.display = (choice === "bg" || choice === "summary") ? "" : "none";
+  // the inline sub-goal TREE (in _checklist), shown only when choice === "subgoals". Whole subtree, indented
+  // by depth, with the outline's ▶/▼ disclosure triangles to fold branches (the user 2026-07-08). Same
+  // inclusion rules as the modal's renderTreeNode: skip handoffs, a node reached under two parents renders
+  // ONCE (dim ".repeat", not re-descended). renderTree() re-runs itself on a triangle toggle (collapse state
+  // changed) without touching the buttons.
+  const cl = a._checklist as HTMLElement;
+  const renderTree = () => {
+    cl.innerHTML = "";
+    if (choice !== "subgoals" || !root) { cl.style.display = "none"; return; }
+    const rows: { node: AskTreeNode; depth: number; repeat: boolean; expandable: boolean; collapsed: boolean }[] = [];
+    const seen = new Set<string>([root.id]);   // a child linking back to the root counts as a repeat (as the modal)
+    const walk = (nid: string, depth: number) => {
+      const n = byId.get(nid);
+      if (!n || n.kind === "handoff") return;   // delegations render in their own section, not the checklist
+      const repeat = seen.has(n.id);
+      const expandable = !repeat && (n.children || []).some((c) => { const cn = byId.get(c); return !!cn && cn.kind !== "handoff"; });
+      // DEFAULT COLLAPSED (the user 2026-07-08): the tree opens showing only the top level; a branch is
+      // expanded only once its triangle was clicked (in cardTreeExpanded), just like the modal's one-level view.
+      const collapsed = expandable && !cardTreeExpanded.has(id + ":" + n.id);
+      rows.push({ node: n, depth, repeat, expandable, collapsed });
+      if (repeat || collapsed) return;           // a repeat is dim + NOT re-descended; a collapsed branch is hidden
+      seen.add(n.id);
+      for (const c of n.children || []) walk(c, depth + 1);
+    };
+    for (const c of root.children || []) walk(c, 0);
+    for (const { node: s, depth, repeat, expandable, collapsed } of rows) {
+      const row = el("div", "fcheck " + nodeStatusClass(s) + (s.auth ? " auth-" + s.auth : "") + (repeat ? " repeat" : ""));
+      if (depth) row.style.paddingLeft = (depth * TREE_INDENT_EM) + "em";   // same per-level indent as the modal outline
+      // disclosure triangle: ▶ collapsed / ▼ expanded; a non-expandable node gets a blank same-width spacer so
+      // marks stay aligned. Only the triangle toggles (stopPropagation so the row click still opens the modal).
+      const tri = el("span", "fcheck-tri" + (expandable ? " nav" : " empty"));
+      tri.textContent = expandable ? (collapsed ? "▶" : "▼") : "";
+      if (expandable) tri.onclick = (ev: Event) => {
+        ev.stopPropagation();
+        const k = id + ":" + s.id;
+        if (cardTreeExpanded.has(k)) cardTreeExpanded.delete(k); else cardTreeExpanded.add(k);
+        renderTree();
+      };
+      const mark = el("span", "fcheck-mark");
+      // ✓ blue disc (done) / ⏸ red pause (question = blocked) / empty ring (not done) — the SAME notation as the
+      // ledger checklist + Fleet (the user 2026-06-24). The OPEN mark is an empty element the CSS draws as a
+      // 13px hollow circle matching the done disc's size (the user 2026-07-08: the ○ glyph read too small);
+      // AUTHORITATIVE keeps the glyph, .auth-* only rings it.
+      mark.textContent = s.status === "done" ? "✓" : s.status === "question" ? "⏸" : "";
+      const txt = el("span", "fcheck-text"); txt.textContent = s.text;
+      row.append(tri, mark, txt);
+      // clicks match the modal tree node exactly (text → the message, checkbox → where it resolved) via the
+      // SAME wireNodeZones; a dim repeat is display-only (wire=false).
+      wireNodeZones(it, s, mark, txt, null, !repeat);
+      cl.appendChild(row);
+    }
+    cl.style.display = cl.children.length ? "" : "none";
+  };
+  renderTree();
 }
 
 function updateAskCard(card: HTMLElement, it: AskItem) {
@@ -931,7 +990,7 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   }
   // TWO collapsible distiller sections (the user 2026-07-02): BACKGROUND (re-orientation for a reader who
   // forgot the thread, collapsed by default) above the takeaway (expanded by default), each with a +/−.
-  applyDistillSections(a, it, !!distillShown);   // applyDistillLine returns the line's TEXT (string) — coerce to "has content"
+  applySections(a, it, !!distillShown);   // bg/summary/sub-goals (mutually exclusive) — applyDistillLine returns the line's TEXT (string), coerce to "has content"
   // API error → a red "API error" badge + a Retry button that pastes "retry" into the session to resume
   // the stalled turn (the user 2026-06-16). The card STAYS in Working (the user 2026-06-29) — an API error is
   // a transient stall, not a block — so this badge + Retry are the only API-error cue; no column move.
@@ -987,87 +1046,7 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   }
   ho.style.display = ho.children.length ? "" : "none";
 
-  // Inline sub-goal tree + its per-card "Sub-goals" toggle button (applySubgoals, below).
-  applySubgoals(a, it);
-}
-
-// The inline sub-goal tree (the user 2026-06-16; deepened to the WHOLE tree 2026-07-08) and its per-card
-// "Sub-goals" toggle button (2026-07-08 — moved off the footer). The top-level goal IS the card title, so
-// its sub-goals render below as a ✓ done / ⏸ blocked / ○ open list; when the toggle is ON, the ENTIRE subtree
-// shows — indented by depth, SAME inclusion rules as the modal/outline tree (renderTreeNode): most-recent-
-// first order (the kernel sorts children so), a node reached under two parents renders ONCE (dim ".repeat",
-// not re-descended), delegation nodes (kind "handoff") skipped (they render in the delegations section). The
-// button is an INDEPENDENT on/off (not part of the mutually-exclusive bg/summary section), default follows
-// the Collapsed mode (resolveSub), and is HIDDEN when the card has no sub-goals to show.
-function applySubgoals(a: any, it: AskItem): void {
-  const id = it.itemId;
-  const cl = a._checklist as HTMLElement;
-  const subBtn = a._subBtn as HTMLElement;
-  const tree = it.tree || [];
-  const byId = new Map(tree.map((n) => [n.id, n] as const));
-  const root = tree.find((n) => n.id === it.itemId) || tree[0];
-  const hasSubs = !!root && (root.children || []).some((cid) => {
-    const n = byId.get(cid); return !!n && n.kind !== "handoff";
-  });
-  // the button appears ONLY when there ARE sub-goals; independent on/off; default follows Collapsed mode
-  subBtn.style.display = hasSubs ? "" : "none";
-  const on = hasSubs && resolveSub(id);
-  subBtn.classList.toggle("on", on);
-  subBtn.setAttribute("aria-pressed", on ? "true" : "false");
-  subBtn.title = on ? "hide the sub-goals" : "show the sub-goals";
-  subBtn.onclick = (ev: Event) => { ev.stopPropagation(); subChoice.set(id, !resolveSub(id)); applySubgoals(a, it); };
-  // (re)build the tree rows only when the toggle is on. Each expandable node carries a disclosure triangle;
-  // a collapsed node's subtree is skipped (not descended), exactly like the modal's renderTreeNode.
-  cl.innerHTML = "";
-  const rows: { node: AskTreeNode; depth: number; repeat: boolean; expandable: boolean; collapsed: boolean }[] = [];
-  if (on && root) {
-    const seen = new Set<string>([root.id]);   // a child linking back to the root counts as a repeat (as the modal)
-    const walk = (nid: string, depth: number) => {
-      const n = byId.get(nid);
-      if (!n || n.kind === "handoff") return;   // delegations render in their own section, not the checklist
-      const repeat = seen.has(n.id);
-      // expandable = has a NON-handoff child to reveal (handoff children never render here); a repeat never
-      // re-descends, so it isn't expandable either.
-      const expandable = !repeat && (n.children || []).some((c) => { const cn = byId.get(c); return !!cn && cn.kind !== "handoff"; });
-      const collapsed = expandable && cardTreeCollapsed.has(id + ":" + n.id);
-      rows.push({ node: n, depth, repeat, expandable, collapsed });
-      if (repeat || collapsed) return;           // a repeat is dim + NOT re-descended; a collapsed branch is hidden
-      seen.add(n.id);
-      for (const c of n.children || []) walk(c, depth + 1);
-    };
-    for (const c of root.children || []) walk(c, 0);
-  }
-  for (const { node: s, depth, repeat, expandable, collapsed } of rows) {
-    const row = el("div", "fcheck " + nodeStatusClass(s) + (s.auth ? " auth-" + s.auth : "") + (repeat ? " repeat" : ""));
-    if (depth) row.style.paddingLeft = (depth * TREE_INDENT_EM) + "em";   // same per-level indent as the modal outline
-    // disclosure triangle (the user 2026-07-08 — "like the outline view, incl. the collapse triangles"):
-    // ▶ collapsed / ▼ expanded; a non-expandable node gets a blank same-width spacer so the marks stay
-    // aligned. Only the triangle toggles (stopPropagation so the row click still opens the modal); it flips
-    // the card's OWN collapse state and re-renders the tree in place.
-    const tri = el("span", "fcheck-tri" + (expandable ? " nav" : " empty"));
-    tri.textContent = expandable ? (collapsed ? "▶" : "▼") : "";
-    if (expandable) tri.onclick = (ev: Event) => {
-      ev.stopPropagation();
-      const k = id + ":" + s.id;
-      if (cardTreeCollapsed.has(k)) cardTreeCollapsed.delete(k); else cardTreeCollapsed.add(k);
-      applySubgoals(a, it);
-    };
-    const mark = el("span", "fcheck-mark");
-    // ✓ blue disc (done) / ⏸ red pause (question = blocked) / hollow ○ (not done) — the SAME notation as the
-    // ledger checklist + Fleet (the user 2026-06-24: the red ⏸ replaces the amber ? everywhere, for consistency).
-    // AUTHORITATIVE (the agent's own to-do item) keeps the SAME glyph — the .auth-* class only adds a white
-    // ring around the edge (a bolder, agent-asserted version of the ordinary mark; the user 2026-07-01).
-    mark.textContent = s.status === "done" ? "✓" : s.status === "question" ? "⏸" : "○";
-    const txt = el("span", "fcheck-text"); txt.textContent = s.text;
-    row.append(tri, mark, txt);
-    // a card sub-goal clicks EXACTLY like the modal tree node (the user 2026-06-17): text → the message,
-    // checkbox → where it got checked off — separate links — via the SAME wireNodeZones. No time cell here.
-    // A dim repeat is display-only (wire=false), like renderTreeNode. (stopPropagation in the handlers keeps
-    // a sub-goal click from also opening the card's modal.)
-    wireNodeZones(it, s, mark, txt, null, !repeat);
-    cl.appendChild(row);
-  }
-  cl.style.display = cl.children.length ? "" : "none";
+  // (bg / summary / sub-goals are wired above in applySections — one mutually-exclusive selection.)
 }
 
 // Resolve a focus key (set on hoverAskId/pinnedAskId) to the itemId the timeline
@@ -1890,11 +1869,11 @@ function ensureCollapsedToggle(): HTMLElement {
   return ensureFeedToggle("feed-collapsed", "Collapsed", () => feedPrefs().collapsed, "collapsed",
     "new cards arrive collapsed; expanding one is a per-card override — click to expand by default",
     "collapse every card and have new ones arrive collapsed",
-    () => { secChoice.clear(); subChoice.clear(); });   // re-flow both the section AND the sub-goal defaults
+    () => secChoice.clear());   // drop per-card section overrides so every card re-flows to the new default
 }
 
 // (The footer "Sub-goals" checkbox was removed 2026-07-08: sub-goals is now a per-card "Sub-goals" button
-// beside Summary — see applySubgoals — whose default follows the Collapsed mode.)
+// beside Summary — wired in applySections as the third mutually-exclusive section.)
 
 // Build the three columns (Asks | Awaiting | Completed) inside #feed-list once;
 // rebuild if torn down (empty state). "Awaiting" (the user's ruling 2026-06-10):

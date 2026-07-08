@@ -32,15 +32,16 @@ test("the card shows the DISTILLER's line (summary/blockSummary) but NO why/gene
   assert.doesNotMatch(FEED, /showWhy/);
 });
 
-test("Sub-goals is a PER-CARD button whose default follows the Collapsed mode; no footer checkbox", () => {
-  // the per-card button (right of Summary) drives an independent on/off; default = !collapsed (mirrors resolveSec)
+test("Sub-goals is a PER-CARD button — the THIRD mutually-exclusive section; no footer checkbox", () => {
+  // the per-card button (right of Summary) is wired through the SAME secChoice/pick as bg/summary (one at a time)
   assert.match(FEED, /const subBtn = el\("button", "fask-secbtn"\); subBtn\.textContent = "Sub-goals";/);
-  assert.match(FEED, /function resolveSub\(id: string\): boolean \{\s*\n\s*return subChoice\.get\(id\) \?\? !feedPrefs\(\)\.collapsed;/);
-  // applySubgoals gates the tree on the resolved per-card state and hides the button when there are no sub-goals
-  assert.match(FEED, /const on = hasSubs && resolveSub\(id\);/);
+  assert.match(FEED, /subBtn\.classList\.toggle\("on", choice === "subgoals"\);/);
+  assert.match(FEED, /subBtn\.onclick = pick\("subgoals"\);/);
+  // the button hides when there are no sub-goals; the tree renders only when this section is selected
   assert.match(FEED, /subBtn\.style\.display = hasSubs \? "" : "none";/);
-  assert.match(FEED, /if \(on && root\) \{/, "the tree walks only when the toggle is on");
-  // the OLD footer Sub-goals checkbox is gone
+  assert.match(FEED, /if \(choice !== "subgoals" \|\| !root\) \{ cl\.style\.display = "none"; return; \}/);
+  // no separate sub-goals state, no footer checkbox, no feed-wide pref
+  assert.doesNotMatch(FEED, /subChoice|resolveSub/, "no separate sub-goals toggle map — folded into secChoice");
   assert.doesNotMatch(FEED, /makeSubgoalsToggle|ensureSubgoalsToggle/, "no footer sub-goals toggle");
   assert.doesNotMatch(FEED, /feedPrefs\(\)\.subgoals/, "the tree no longer gates on a feed-wide subgoals pref");
 });

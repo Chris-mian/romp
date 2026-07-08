@@ -10,18 +10,18 @@ import * as path from "node:path";
 const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.css"), "utf8");
 
-test("ask cards render the goal's WHOLE sub-goal tree (gated on the per-card Sub-goals button), not just level 1", () => {
+test("ask cards render the goal's WHOLE sub-goal tree (the 'subgoals' section), not just level 1", () => {
   assert.match(FEED, /a\._checklist/);                       // the card carries a checklist element
   assert.match(FEED, /el\("div", "fask-checklist"\)/);
-  assert.match(FEED, /function applySubgoals\(a: any, it: AskItem\): void/);
-  assert.match(FEED, /const on = hasSubs && resolveSub\(id\);/);   // the per-card toggle (default follows Collapsed)
-  assert.match(FEED, /if \(on && root\) \{/, "the tree walks only when the toggle is on");
+  assert.match(FEED, /function applySections\(a: any, it: AskItem, distillShown: boolean\): void/);
+  // the tree renders only when the 'subgoals' section is selected
+  assert.match(FEED, /if \(choice !== "subgoals" \|\| !root\) \{ cl\.style\.display = "none"; return; \}/);
   // a RECURSIVE walk from the root's children, descending every level (was root.children only)
   assert.match(FEED, /const walk = \(nid: string, depth: number\) =>/);
   assert.match(FEED, /for \(const c of root\.children \|\| \[\]\) walk\(c, 0\)/);
   assert.match(FEED, /for \(const c of n\.children \|\| \[\]\) walk\(c, depth \+ 1\)/);
   assert.doesNotMatch(FEED, /root\.children\.map/, "no longer capped at the direct children");
-  assert.match(FEED, /s\.status === "done" \? "✓"/);         // ✓ done / ⏸ question(blocked) / ○ open mark
+  assert.match(FEED, /s\.status === "done" \? "✓"/);         // ✓ done / ⏸ question(blocked) / empty-ring open mark
   assert.match(FEED, /s\.status === "question" \? "⏸"/);     // blocked → the red ⏸ (was an amber ?), the user 2026-06-24
 });
 
@@ -34,15 +34,25 @@ test("the inline tree follows the SAME rules as the modal outline: handoffs, rep
   assert.match(CSS, /\.fcheck\.repeat \{[^}]*opacity: 0\.5/);   // dim, mirroring .ftree-node.repeat
 });
 
-test("each expandable node carries the outline's disclosure triangle (▶/▼), toggling the card's own collapse state", () => {
-  assert.match(FEED, /const cardTreeCollapsed = new Set<string>\(\);/);   // card-own, default-expanded collapse state
+test("each expandable node carries the outline's disclosure triangle (▶/▼); the tree opens DEFAULT-COLLAPSED", () => {
+  // per-node EXPAND state (default collapsed — a node is open only once its triangle was clicked, the user 2026-07-08)
+  assert.match(FEED, /const cardTreeExpanded = new Set<string>\(\);/);
+  assert.match(FEED, /const collapsed = expandable && !cardTreeExpanded\.has\(id \+ ":" \+ n\.id\);/);
   assert.match(FEED, /el\("span", "fcheck-tri" \+ \(expandable \? " nav" : " empty"\)\)/);
   assert.match(FEED, /tri\.textContent = expandable \? \(collapsed \? "▶" : "▼"\) : "";/);
-  assert.match(FEED, /if \(cardTreeCollapsed\.has\(k\)\) cardTreeCollapsed\.delete\(k\); else cardTreeCollapsed\.add\(k\);/);
+  assert.match(FEED, /if \(cardTreeExpanded\.has\(k\)\) cardTreeExpanded\.delete\(k\); else cardTreeExpanded\.add\(k\);/);
+  assert.match(FEED, /renderTree\(\);/, "a triangle toggle re-renders the tree in place");
   assert.match(FEED, /row\.append\(tri, mark, txt\)/);        // triangle leads the row, then mark + text
   // styled like the modal's .ftree-tri
   assert.match(CSS, /\.fcheck-tri \{[^}]*width: 1em/);
   assert.match(CSS, /\.fcheck-tri\.nav \{ cursor: pointer; \}/);
+});
+
+test("the not-done OPEN mark is a 13px hollow ring the same size as the done ✓ disc (the user 2026-07-08)", () => {
+  // the ○ glyph read too small next to the checkbox → an empty element the CSS draws as a 13px ring
+  assert.match(FEED, /s\.status === "done" \? "✓" : s\.status === "question" \? "⏸" : "";/);
+  assert.match(CSS, /\.fcheck\.open \.fcheck-mark \{[^}]*width: 13px; height: 13px/);
+  assert.match(CSS, /\.fcheck\.open \.fcheck-mark \{[^}]*border-radius: 50%; border: 1\.5px solid var\(--dim\)/);
 });
 
 test("the sub-goal checklist is styled (done = blue ✓ disc, dimmed but NOT struck; question = red ⏸)", () => {

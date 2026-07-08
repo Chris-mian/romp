@@ -663,6 +663,13 @@ body.feed-dragging .feed-col.col-asks { outline: 1.5px dashed color-mix(in srgb,
   color: var(--err); font-size: 9px; font-weight: 700; line-height: 1;
   display: inline-flex; align-items: center; justify-content: center; align-self: center;
 }
+/* not-done = an empty 13px HOLLOW RING, the SAME size as the done ✓ disc + the modal's .st-open ring (the
+   user 2026-07-08: the old ○ glyph read noticeably smaller than the checkbox). The mark element is empty —
+   the border IS the circle. */
+.fcheck.open .fcheck-mark {
+  width: 13px; height: 13px; min-width: 13px; box-sizing: border-box; align-self: center;
+  border-radius: 50%; border: 1.5px solid var(--dim); background: transparent;
+}
 /* AUTHORITATIVE tier (the user 2026-07-01): a node that mirrors the agent's OWN to-do item keeps the
    EXACT ordinary mark and is emphasised with WHITE — but tight, NOT a big ring (the user found the fat
    ring too large / too filled-looking). NOT-checked → the hollow ring recoloured a BOLD WHITE stroke at

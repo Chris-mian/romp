@@ -41,23 +41,25 @@ test("the buttons ARE the toggles: pressed state reads at a glance, mutually exc
   assert.doesNotMatch(FEED, /fask-less/, "the less control is gone");
 });
 
-test("state: a single mutually-exclusive secChoice (bg | summary | none); default follows the Collapsed mode", () => {
-  assert.match(FEED, /const secChoice = new Map<string, "bg" \| "summary" \| "none">\(\);/);
+test("state: a single mutually-exclusive secChoice (bg | summary | subgoals | none); default follows Collapsed", () => {
+  // Sub-goals joined Background/Summary as the THIRD mutually-exclusive section (the user 2026-07-08)
+  assert.match(FEED, /const secChoice = new Map<string, "bg" \| "summary" \| "subgoals" \| "none">\(\);/);
   // absent from the map → the DEFAULT, set by the footer "Collapsed" toggle (off → summary, on → none)
   assert.match(FEED, /return secChoice\.get\(id\) \?\? \(feedPrefs\(\)\.collapsed \? "none" : "summary"\);/);
-  // click the showing section → off; click the other → switch (one body at a time)
+  // click the showing section → off; click another → switch (one at a time)
   assert.match(FEED, /secChoice\.set\(id, choice === want \? "none" : want\)/);
   assert.match(FEED, /a\._bgBtn\.onclick = pick\("bg"\);/);
   assert.match(FEED, /a\._takeBtn\.onclick = pick\("summary"\);/);
+  assert.match(FEED, /subBtn\.onclick = pick\("subgoals"\);/);
   assert.doesNotMatch(FEED, /const bgOpen = new Set/, "the old two-set model is gone");
-  assert.doesNotMatch(FEED, /takeClosed/, "…including takeClosed");
+  assert.doesNotMatch(FEED, /subChoice/, "the separate sub-goals toggle map is gone — folded into secChoice");
 });
 
 test("only ONE body shows at a time (or neither); no between-sections gap", () => {
   assert.match(FEED, /a\._bgBody\.style\.display = choice === "bg" \? "" : "none";/);
   assert.match(FEED, /\(a\._distill as HTMLElement\)\.style\.display = choice === "summary" \? "" : "none";/);
-  // the body container itself hides when nothing's open, so a collapsed card has no empty gap
-  assert.match(FEED, /a\._secs\.style\.display = distillShown && choice !== "none" \? "" : "none";/);
+  // the bg/summary body container hides unless one of THOSE two is open (the sub-goal tree is a separate el)
+  assert.match(FEED, /a\._secs\.style\.display = \(choice === "bg" \|\| choice === "summary"\) \? "" : "none";/);
   assert.doesNotMatch(FEED, /fask-gapend/, "the between-sections gap is gone — only one body ever shows");
   assert.doesNotMatch(CSS, /fask-gapend/);
 });
@@ -75,7 +77,7 @@ test("the MODAL always shows BOTH sections, labeled background / summary", () =>
 
 test("background shows only alongside a produced takeaway, and the takeaway keeps its deep-link", () => {
   assert.match(FEED, /const bg = distillShown && it\.background \? it\.background : null;/);
-  assert.match(FEED, /applyDistillSections\(a, it, distillShown\);/);
+  assert.match(FEED, /applySections\(a, it, distillShown\);/);   // the recursive re-apply inside pick()
   assert.match(FEED, /dl\.classList\.add\("fask-distill-link"\)/);
   // the background body stays typographically identical to the summary
   assert.match(CSS, /\.fask-bg-body \{[^}]*font-size: 0\.86em/);
