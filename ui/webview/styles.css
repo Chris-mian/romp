@@ -960,11 +960,9 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 /* a FAILED tool's fold toggle reads in red, so a collapsed error stays loud at a glance (the user 2026-06-22) */
 .turn-tool.tool-err .tool-fold-toggle { color: var(--err); text-decoration-color: var(--err); }
 .turn-tool.tool-err .tool-fold-toggle:hover { color: var(--err); opacity: 0.82; }
-/* Subagent (Task/Agent) dispatch — collapses to ONE line; the prompt + report tuck inside .agent-fold
-   (a .tool-fold-body), hidden until the head toggle is clicked (the user 2026-06-22). Each section gets a
-   small dim label; the report keeps its faded, green-edged sub-transcript look (the user 2026-06-14). */
-.agent-fold-label { color: var(--dim); font-size: 0.78em; text-transform: uppercase; letter-spacing: 0.04em; opacity: 0.65; margin: 6px 0 2px; }
-.agent-fold-label:first-child { margin-top: 0; }
+/* Subagent (Task/Agent) dispatch — the prompt and the report each get their OWN caret fold (.fold),
+   collapsed by default (the user 2026-07-08). Each fold's body is an .agent-report: a faded, green-edged
+   sub-transcript look, markdown-rendered (the user 2026-06-14). */
 .agent-report { padding: 6px 11px; color: var(--dim); font-size: 0.95em; border-left: 2px solid rgba(87, 181, 15, 0.5); background: rgba(87, 181, 15, 0.06); border-radius: 0 6px 6px 0; }
 .agent-report > :first-child { margin-top: 0; }
 .agent-report > :last-child { margin-bottom: 0; }

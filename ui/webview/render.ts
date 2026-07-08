@@ -1717,26 +1717,23 @@ function renderTool(ev: Extract<ChatEvent, { kind: "tool" }>): HTMLElement {
   } else if (!ack && (ev.input || ev.output)) {
     const signal = ev.name === "Task" || ev.name === "Agent";
     if (signal) {
-      // Subagent (Task/Agent) = a delegated mini-conversation. Collapse the WHOLE dispatch to ONE line, like
-      // Bash/Read (the user 2026-06-22): the PROMPT and the agent's REPORT both tuck below the head behind a
-      // single toggle, hidden until clicked. The report is the meatier half, so the head summary is its line
-      // count once it's back (else just "prompt"). The report still renders as a faded, green-edged
-      // sub-transcript when expanded (the user 2026-06-14: not a big text box — and now not a big block).
-      const body = el("div", "agent-fold");
+      // Subagent (Task/Agent) = a delegated mini-conversation. The PROMPT and the agent's REPORT each get their
+      // OWN nicely-rendered (markdown), collapsed-by-default caret box (the user 2026-07-08). Was a plain <pre>
+      // prompt + md report BOTH hidden behind one "running…" head toggle — but that toggle just duplicated the
+      // box it revealed (its only content while running WAS the prompt), so the prompt read twice, once in a
+      // worse font. The amber WORKING rail dot already signals "still going", so the head needs no toggle.
+      const akey = fkey ? fkey + ":agent" : undefined;
       if (ev.input) {
         let promptText = ev.input;   // ev.input is the tool's full JSON; show just the prompt the agent was given
         try { const o = JSON.parse(ev.input); if (o && typeof o.prompt === "string") promptText = o.prompt; } catch { /* truncated JSON → show raw */ }
-        const lab = el("div", "agent-fold-label"); lab.textContent = "prompt";
-        body.appendChild(lab); body.appendChild(preEl(promptText));
+        const box = el("div", "agent-report md"); box.innerHTML = md(promptText); highlight(box);
+        turn.appendChild(foldable("prompt", box, akey ? akey + ":prompt" : undefined));
       }
       if (ev.output) {
-        const lab = el("div", "agent-fold-label"); lab.textContent = "report";
-        const report = el("div", "agent-report md"); report.innerHTML = md(ev.output); highlight(report);
-        body.appendChild(lab); body.appendChild(report);
+        // the report is the meatier half → its line count rides the fold label (else just "report")
+        const box = el("div", "agent-report md"); box.innerHTML = md(ev.output); highlight(box);
+        turn.appendChild(foldable(`report · ${countLines(ev.output)} lines`, box, akey ? akey + ":report" : undefined));
       }
-      // running (no report yet) reads as "running…", a clear in-progress state; once it reports → its line count
-      const summary = ev.output ? `report · ${countLines(ev.output)} lines` : "running…";
-      inlineFold(head, turn, summary, body, fkey ? fkey + ":agent" : undefined);
     } else if (!ev.output) {
       const io = el("div", "tool-io"); if (ev.input) io.appendChild(ioRow("IN", ev.input, false)); turn.appendChild(io);
     } else {

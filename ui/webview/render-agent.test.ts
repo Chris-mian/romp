@@ -1,8 +1,9 @@
-// Subagent (Task/Agent) display: the WHOLE dispatch collapses to ONE line like Bash/Read (the user
-// 2026-06-22) — the prompt AND the agent's report both tuck below the head behind a single toggle, hidden
-// until clicked. The report still renders as a faded, green-edged sub-transcript when expanded (the user
-// 2026-06-14: not a big text box — and now not a big block). No jsdom harness for the chat renderer, so —
-// like the other webview tests — pin it at the source level.
+// Subagent (Task/Agent) display: the PROMPT and the agent's REPORT each get their OWN caret fold, collapsed
+// by default and markdown-rendered (the user 2026-07-08). Was a plain <pre> prompt + md report both hidden
+// behind ONE "running…" head toggle — but while running that toggle's only content WAS the prompt, so it
+// duplicated the box it revealed (and in a worse, monospace font). Now: no head toggle (the amber working
+// dot already signals "still going"); each half is a `foldable(...)`. No jsdom harness for the chat
+// renderer, so — like the other webview tests — pin it at the source level.
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
@@ -11,32 +12,32 @@ import * as path from "node:path";
 const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
 
-test("a Task/Agent dispatch collapses to ONE line: prompt + report behind a single head toggle", () => {
-  // ONE inlineFold for the whole dispatch (not a separate prompt fold + a 300px report clamp). Default
-  // collapsed; click the head toggle to reveal both halves.
-  assert.match(RENDER, /const body = el\("div", "agent-fold"\);/);
-  assert.match(RENDER, /inlineFold\(head, turn, summary, body, fkey \? fkey \+ ":agent" : undefined\)/);
-  // head summary = the report's line count once it's back, else "running…" (in-flight) — clearer than "prompt"
-  assert.match(RENDER, /const summary = ev\.output \? `report · \$\{countLines\(ev\.output\)\} lines` : "running…";/);
-  // the prompt shown is the actual prompt field (not the raw tool JSON), each half gets a small label
+test("the PROMPT gets its own collapsed, markdown-rendered caret fold (not a plain <pre> behind the head toggle)", () => {
+  // the prompt shown is the actual prompt field (not the raw tool JSON)…
   assert.match(RENDER, /try \{ const o = JSON\.parse\(ev\.input\); if \(o && typeof o\.prompt === "string"\) promptText = o\.prompt; \}/);
-  assert.match(RENDER, /el\("div", "agent-fold-label"\)/);
-  // the report still renders as the green-edged agent-report sub-transcript
-  assert.match(RENDER, /el\("div", "agent-report md"\)/);
-  // the big 300px preview block is GONE — no more io-clamp agent-clamp on the signal path
+  // …rendered as markdown into an agent-report box (the "nicer font" — no more preEl(promptText))…
+  assert.match(RENDER, /const box = el\("div", "agent-report md"\); box\.innerHTML = md\(promptText\); highlight\(box\);/);
+  // …wrapped in its OWN keyed, collapsed-by-default caret fold labeled "prompt".
+  assert.match(RENDER, /turn\.appendChild\(foldable\("prompt", box, akey \? akey \+ ":prompt" : undefined\)\);/);
+  // the prompt is NOT rendered as a monospace <pre> anymore, and the whole-dispatch head toggle is gone
+  assert.doesNotMatch(RENDER, /body\.appendChild\(preEl\(promptText\)\)/, "the plain <pre> prompt is gone");
+  assert.doesNotMatch(RENDER, /inlineFold\(head, turn, summary, body/, "the single head toggle for the dispatch is gone");
+  assert.doesNotMatch(RENDER, /el\("div", "agent-fold"\)/, "the shared agent-fold body wrapper is gone");
+});
+
+test("the REPORT gets its own caret fold, line-count in the label, still the green-edged sub-transcript", () => {
+  assert.match(RENDER, /turn\.appendChild\(foldable\(`report · \$\{countLines\(ev\.output\)\} lines`, box, akey \? akey \+ ":report" : undefined\)\);/);
+  assert.match(CSS, /\.agent-report \{[^}]*border-left: 2px solid rgba\(87, 181, 15/);
+  // the old per-section uppercase label + the 300px preview clamp are both gone
+  assert.doesNotMatch(RENDER, /agent-fold-label/, "the per-section labels are gone (the caret fold labels them)");
+  assert.doesNotMatch(CSS, /\.agent-fold-label \{/, "the .agent-fold-label rule is gone");
   assert.doesNotMatch(RENDER, /el\("div", "io-clamp agent-clamp"\)/, "the 300px report clamp block is removed");
 });
 
 test("a still-running agent (dispatched, no report yet) reads as RUNNING — amber working dot, not green ✓ (the user 2026-06-24)", () => {
   // mirrors the TUI's clearer running/done split: an Agent/Task with no output yet is still going, so it gets
-  // a solid amber working dot instead of the green success dot, and its summary says "running…".
+  // a solid amber working dot instead of the green success dot.
   assert.match(RENDER, /const agentRunning = \(ev\.name === "Task" \|\| ev\.name === "Agent"\) && !ev\.output && !ev\.isError;/);
   assert.match(RENDER, /dot\(ev\.isError \? "ring" : agentRunning \? "working" : "green"\)/);
   assert.match(CSS, /\.dot\.working \{ background: var\(--st-working-bg\)/);
-});
-
-test("the agent report keeps its faded green-edged styling, now inside the fold", () => {
-  assert.match(CSS, /\.agent-report \{[^}]*border-left: 2px solid rgba\(87, 181, 15/);
-  assert.match(CSS, /\.agent-fold-label \{/);
-  assert.doesNotMatch(CSS, /\.io-clamp\.agent-clamp \{/, "the agent-clamp rule is gone");
 });
