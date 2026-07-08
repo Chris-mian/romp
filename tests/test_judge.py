@@ -2665,10 +2665,13 @@ class PlanTuning(unittest.TestCase):
         # the mint-vs-sub test is the OUTCOME, not topic overlap (the buried-SwiftBar fix, 2026-07-07 via
         # ui): a distinct deliverable mints its own top even mid-conversation; sub only when the work
         # advances that goal's own outcome. Both planner prompts carry the rule.
-        self.assertIn("DISTINCT DELIVERABLE", jd.PLAN_SYS)
-        self.assertIn("whose OUTCOME this work advances", jd.PLAN_SYS)
-        self.assertIn("OWN finish line", jd.PLAN_PROMPT_SYS)
-        self.assertIn("prefer mint", jd.PLAN_PROMPT_SYS)
+        self.assertIn("**distinct deliverable**", jd.PLAN_SYS)
+        self.assertIn("whose **outcome** this work advances", jd.PLAN_SYS)
+        self.assertIn("**own** finish line", jd.PLAN_PROMPT_SYS)
+        # the mint-vs-sub tiebreak is SYMMETRIC (the user 2026-07-08, over-minting): decide by the finish
+        # line, no standing thumb on the mint side — "prefer mint" caused follow-up-shaped messages to
+        # mint their own tops ("Get alternate shorter version of last paragraph").
+        self.assertIn("decide by the finish line, never by topic overlap", jd.PLAN_PROMPT_SYS)
         self.assertGreaterEqual(jd.open_menu.__defaults__[0], 20, "menu cap covers old goals (≥20)")
 
     def test_user_message_must_be_placed_never_skipped(self):
@@ -2680,14 +2683,14 @@ class PlanTuning(unittest.TestCase):
         import unittest.mock as mock
         with mock.patch.object(jd, "_judge_run", return_value="{}") as m:
             jd.plan_llm("seg", "menu", human=True)
-            self.assertIn("MUST be placed", m.call_args.args[2])
+            self.assertIn("**must** be placed", m.call_args.args[2])
             jd.plan_llm("seg", "menu")
             self.assertNotIn("MUST be placed", m.call_args.args[2])
 
     def test_max_depth_is_4_and_stated_in_the_prompt(self):
         self.assertEqual(jd.MAX_DEPTH, 4, "planning hierarchy capped at 4 (the user, 2026-06-16)")
-        self.assertIn("%d levels deep" % jd.MAX_DEPTH, jd.PLAN_SYS,
-                      "the depth budget is embedded in the planner prompt, kept in sync with MAX_DEPTH")
+        self.assertIn("%d levels deep" % jd.MAX_DEPTH, jd.PLACE_SYS,
+                      "the depth budget is embedded in the placer prompt, kept in sync with MAX_DEPTH")
 
     def test_why_messages_get_concise_writing_guidance(self):
         # The user's planner "why" is shown on the feed cards (why / blockWhy / doneWhy), so the prompt
@@ -2810,7 +2813,7 @@ class BlockCompletionCorrectness(unittest.TestCase):
             self.assertIn(phrase, jd.CLOSER_SYS, "closer: " + phrase)
         # the carve-out lives on the DONE side too (not only restated in block), so the two rules don't compete
         done_clause = jd.CLOSER_SYS.split("- blocked:", 1)[0]
-        self.assertIn("is NOT done", done_clause, "the closer done rule itself defers the approval-ask to block")
+        self.assertIn("is **not** done", done_clause, "the closer done rule itself defers the approval-ask to block")
         self.assertIn("is a block, not a done", jd.PLAN_SYS, "the planner done op defers the approval-ask to block")
 
     def test_answer_goal_completes_with_the_answer_as_donewhy(self):
@@ -2931,7 +2934,7 @@ class SweepParse(unittest.TestCase):
         # decision): run X yourself, or tell me to do Y", yet the closer left the goal 'working' — so it
         # read as working + was auto-nudge-eligible when it was really NEEDS-YOU. The closer must take the
         # assistant's own stated hand-back to the user at face value, even as prose (no formal question).
-        for phrase in ("ENDS by handing the decision back to the user", "even as plain prose",
+        for phrase in ("**ends** by handing the decision back to the user", "even as plain prose",
                        "at face value"):
             self.assertIn(phrase, jd.CLOSER_SYS, phrase)
 
@@ -4007,7 +4010,7 @@ class SourceCitation(unittest.TestCase):
         # is exactly the citation — not an advisory "add one final line" the model can skim past. Both
         # judges also forbid inventing an unshown label (the other observed miss flavor).
         for sys_prompt in (jd.DISTILL_SYS, jd.BLOCK_BRIEF_SYS):
-            self.assertIn("complete ONLY", sys_prompt, "the line is required, not suggested")
+            self.assertIn("complete **only**", sys_prompt, "the line is required, not suggested")
             self.assertIn("never omit it while labels are present", sys_prompt)
             self.assertIn("never invent a label", sys_prompt)
 
@@ -5039,7 +5042,7 @@ class SeamRegrowth(unittest.TestCase):
         seg_id, phase, seg_t, text, human, followup, trig, vq = units[tail_id]
         self.assertEqual(phase, "work")
         self.assertFalse(human)
-        self.assertTrue(text.startswith('NOTE: everything below happened AFTER the goal "fix A, B and C"'),
+        self.assertTrue(text.startswith('Note: everything below happened **after** the goal "fix A, B and C"'),
                         "the planner is told this is post-close work: wrap-up → skip, pivot → mint")
         self.assertIn("flaky auth", text, "…followed by the tail's real work text")
 

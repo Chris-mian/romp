@@ -66,13 +66,30 @@ simplicity (2026-06-21):
 
 - **Prompt-run, `PLAN_PROMPT_SYS`** (919): fires the moment the user's message
   lands on a still-open segment. Exactly ONE op, and it must place — `mint` a
-  new top goal or `sub` under an open one; never done/block (no work yet).
+  new top goal or `sub` under an open card; never done/block (no work yet).
 - **Work-run, `PLAN_SYS`** (842): fires when the segment's work ends. Emits a
   JSON op list: `mint` (selective), `sub` (default — file under the matching
-  open goal), `done` (eager; "an answer counts as done", but ending by asking
+  open card), `done` (eager; "an answer counts as done", but ending by asking
   the user to approve is a block, not done), `block` (**only the human
   blocks** — waiting on a peer/CI/build/agents stays working), `retitle`,
   `skip` (only when there is neither message nor work).
+
+**Card-first filing** (2026-07-08): `<open-goals>` renders as an indented
+tree grouped under top-level cards (`open_menu` DFS order), and a `sub` names
+the **card**, never a nested node — the test is "can this card be called done
+without this work?", judged where the user actually experiences the board.
+`_card_route_subs` walks any nested target up to its card; then, only when
+that card has open sub-goals, a second scoped call — the **placer**,
+`PLACE_SYS` — picks the spot inside it, biased to "the highest level of the
+tree that makes sense" (the card itself is the default; any placer failure
+attaches at the card). Most cards have no open sub-goals, so most placements
+stay one call; the prompt/live runs skip the placer entirely (card-level,
+latency-sensitive). This replaced the clear-time auto-split (2026-07-07 to
+2026-07-08, deleted): its promptUuid provenance trigger was unreliable —
+messages and deliverables are many-to-many — and correcting a filing mistake
+at clear time made the fix read as a side effect of the user's own tidying.
+Misfiling is now prevented at creation instead; Clear is a dumb sweep again
+(archive + undo remain the safety net).
 
 The work-run engine is reused, mode-switched by `<note>` injections
 (1670-1724), for the other phases: **live** re-plan after a user Clear ("place
