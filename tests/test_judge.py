@@ -768,6 +768,34 @@ class TwoRunPlanner(unittest.TestCase):
                        work=work)
         self.assertEqual(calls, [1], "the work-run is told goal #1 (its own prompt-run mint) is retitle-eligible")
 
+    def test_work_run_skip_on_placed_segment_adds_nothing(self):
+        # the never-lose floor exists for a message with NO placement; this segment's prompt-run already
+        # placed it, so a work-run skip records the phase and adds nothing — re-placing the same message
+        # was a duplicate source (the user 2026-07-08)
+        open_recs = [uline(T0, "fix the flaky test", "u1", ps="typed"),
+                     aline(T0 + 10, "on it…", "a1", "u1", stop=None)]
+        ended_recs = [uline(T0, "fix the flaky test", "u1", ps="typed"),
+                      aline(T0 + 10, "Still looking.", "a1", "u1", stop="end_turn")]
+        store = self._plan_two(open_recs, ended_recs,
+                               prompt=lambda *a, **k: '{"ops":[{"why":"ask","do":"mint","text":"Fix the flaky test"}]}',
+                               work=lambda *a, **k: '{"ops":[{"why":"nothing new","do":"skip"}]}')
+        self.assertEqual(len(store["nodes"]), 1, "skip on an already-placed user segment files nothing extra")
+
+    def test_work_run_echo_sub_lands_on_the_existing_card(self):
+        # the two-run echo (the user 2026-07-08, the same-title screenshot): the work-run restates the
+        # card's own title as its "step" → the sub lands ON the card as trail evidence, minting nothing
+        open_recs = [uline(T0, "build the export feature", "u1", ps="typed"),
+                     aline(T0 + 10, "on it…", "a1", "u1", stop=None)]
+        ended_recs = [uline(T0, "build the export feature", "u1", ps="typed"),
+                      aline(T0 + 10, "Started the export feature.", "a1", "u1", stop="end_turn")]
+        store = self._plan_two(open_recs, ended_recs,
+                               prompt=lambda *a, **k: '{"ops":[{"why":"ask","do":"mint","text":"Export feature"}]}',
+                               work=lambda *a, **k: '{"ops":[{"why":"work","do":"sub","under":1,"text":"Export feature"}]}')
+        self.assertEqual(len(store["nodes"]), 1, "a step that restates the card's title mints nothing")
+        top = next(iter(store["nodes"].values()))
+        vals = set(store["placements"].values())
+        self.assertEqual(vals, {top["id"]}, "both phases resolve onto the one card — the echo landed, not minted")
+
     def test_no_prompt_run_means_no_retitle_eligibility(self):
         calls = []
 

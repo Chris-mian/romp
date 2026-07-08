@@ -683,7 +683,23 @@ function applySections(a: any, it: AskItem, distillShown: boolean): void {
   const tree = it.tree || [];
   const byId = new Map(tree.map((n) => [n.id, n] as const));
   const root = tree.find((n) => n.id === it.itemId) || tree[0];
-  const hasSubs = !!root && (root.children || []).some((cid) => { const n = byId.get(cid); return !!n && n.kind !== "handoff"; });
+  // whole-tree count, every depth (the user 2026-07-08): the button reads "5 sub-goals" so the size of
+  // what's underneath is glanceable without expanding. Distinct non-handoff descendants, repeats once.
+  let subCount = 0;
+  if (root) {
+    const seenC = new Set<string>([root.id]);
+    const stack = [...(root.children || [])];
+    while (stack.length) {
+      const cid = stack.pop() as string;
+      if (seenC.has(cid)) continue;
+      seenC.add(cid);
+      const n = byId.get(cid);
+      if (!n || n.kind === "handoff") continue;
+      subCount++;
+      stack.push(...(n.children || []));
+    }
+  }
+  const hasSubs = subCount > 0;
   // resolve the selection (default = summary open), falling back to "none" if the chosen section is empty
   let choice = resolveSec(id);
   if (choice === "bg" && !bg) choice = "none";
@@ -712,6 +728,7 @@ function applySections(a: any, it: AskItem, distillShown: boolean): void {
   // Sub-goals toggle — visible only when the goal HAS sub-goals; pressed when the tree is showing
   const subBtn = a._subBtn as HTMLElement;
   subBtn.style.display = hasSubs ? "" : "none";
+  subBtn.textContent = subCount === 1 ? "1 sub-goal" : subCount + " sub-goals";
   subBtn.classList.toggle("on", choice === "subgoals");
   subBtn.setAttribute("aria-pressed", choice === "subgoals" ? "true" : "false");
   subBtn.title = choice === "subgoals" ? "hide the sub-goals" : "show the sub-goals";
