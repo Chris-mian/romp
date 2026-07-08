@@ -1958,6 +1958,11 @@ def _commands_for_cwd(cwd):
         return (ent or {}).get("commands", []), True
 
 
+# The auto-retry / "Retry now" message romp injects into an API-error-blocked session (the apiRetry route).
+# The romp-injected marker makes author_of return 'romp' (gray bubble) and the planner skip a work-less retry.
+RETRY_MSG = "retry\n\n<!-- romp-injected -->"
+
+
 def _drive(msg, client):
     """Route a per-session DRIVE op — send / interrupt / compact / ask picker / model·effort·mode / rename /
     end / follow-up — to whichever backend OWNS the sid (Sessions.backend_for(sid)), and return True. UI /
@@ -2069,13 +2074,24 @@ def _drive(msg, client):
         # without clearing the suppression, so it doesn't re-arm the auto-loop the user turned off.
         if not msg.get("manual") and (_retry_paused_on() or _session_retry_suppressed(sid)):
             return
+        # IDEMPOTENCY (the user 2026-07-08): don't stack a fresh auto-"retry" when the one romp already sent is
+        # still QUEUED and unconsumed — the session is blocked, so the previous retry hasn't run yet and another
+        # only piles up. Without this the 10s auto-loop enqueued N bare "retry"s into the SDK queue during one
+        # API-error storm — the "retry retry retry retry…" card. A MANUAL "Retry now" still ALWAYS fires: it's an
+        # explicit user override (mirrors the pause/suppression gate above), and it resets the client countdown.
+        if not msg.get("manual"):
+            try:
+                if any(q == RETRY_MSG for q in be.pending_queued(sid)):
+                    return
+            except Exception:
+                pass                                          # a backend without a live queue → fall through, send
         # ALWAYS mark the retry romp-injected → GRAY romp bubble on BOTH backends (the user 2026-06-30): an
         # auto-retry is romp's action, not the human's. Without the marker the SDK retry was authored 'human'
         # (promptSource 'sdk' + sdk_human → blue bubble) AND the planner mis-read each bare "retry" as a user
         # message, force-pinning a junk goal per retry via the never-skip hard guard ("retry — kept on the
         # board…", 71 of them in one API-error storm). The marker makes author_of return 'romp' (ROMP_INJECT_RE)
         # so the echo + transcript render gray and the planner skips a work-less retry instead of minting a goal.
-        be.send(sid, "retry\n\n<!-- romp-injected -->")
+        be.send(sid, RETRY_MSG)
     elif t == "setModel" and msg.get("value"):
         _set_model_or_park(be, sid, str(msg["value"])); _push_soon()   # mid-compaction → parked as a queued command
     elif t == "setEffort" and msg.get("value"):

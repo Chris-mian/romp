@@ -19,8 +19,10 @@ class RetryAuthorship(unittest.TestCase):
         self.src = open(KERNEL).read()
 
     def test_retry_is_always_romp_injected_on_both_backends(self):
-        # the apiRetry handler sends the MARKED retry unconditionally (no tmux/SDK split)
-        self.assertIn('be.send(sid, "retry\\n\\n<!-- romp-injected -->")', self.src)
+        # the apiRetry handler sends the MARKED retry unconditionally (no tmux/SDK split) — via the shared
+        # RETRY_MSG constant, which carries the romp-injected marker
+        self.assertIn('be.send(sid, RETRY_MSG)', self.src)
+        self.assertIn(r'RETRY_MSG = "retry\n\n<!-- romp-injected -->"', self.src)
 
     def test_the_old_backend_split_is_gone(self):
         # the bare-"retry"-for-SDK branch (which authored it human) must not survive

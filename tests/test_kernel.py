@@ -4367,9 +4367,11 @@ class ApiRetryAndTabOrderRoutes(unittest.TestCase):
     def test_routes_present(self):
         src = Path(BIN, "romp-kernel").read_text()
         self.assertIn('t == "apiRetry"', src, "Retry button → apiRetry, handled in the unified _drive")
-        self.assertIn(r'be.send(sid, "retry\n\n<!-- romp-injected -->")', src,
-                      "apiRetry pastes 'retry' tagged romp-injected on BOTH backends (→ a gray romp bubble; the "
-                      "planner skips a work-less retry instead of minting a junk goal — the user 2026-06-30)")
+        self.assertIn('be.send(sid, RETRY_MSG)', src,
+                      "apiRetry pastes RETRY_MSG on BOTH backends (→ a gray romp bubble; the planner skips a "
+                      "work-less retry instead of minting a junk goal — the user 2026-06-30)")
+        self.assertIn(r'RETRY_MSG = "retry\n\n<!-- romp-injected -->"', src,
+                      "RETRY_MSG is the shared, romp-injected-tagged retry text")
         self.assertIn('"type": "tabOrder"', src,
                       "kernel pushes the saved tab order on connect so the UI stops reordering (#11)")
 
