@@ -3556,7 +3556,12 @@ class ViewBuilder(unittest.TestCase):
             self.assertEqual(cap[0]["id"], "deadsid000")
             cap.clear(); km._open_or_revive(SID)
             self.assertFalse(any(m.get("type") == "confirmRevive" for m in cap), "a live session reopens, no prompt")
-            self.assertTrue(any(m.get("type") == "focus" and m.get("id") == SID for m in cap))
+            focus = next(m for m in cap if m.get("type") == "focus" and m.get("id") == SID)
+            self.assertNotIn("live", focus, "a plain open focuses without forcing the live tail")
+            # `live=True` (a blocked card's picker chip) → the focus carries live so the chat lands on the prompt
+            cap.clear(); km._open_or_revive(SID, live=True)
+            live_focus = next(m for m in cap if m.get("type") == "focus" and m.get("id") == SID)
+            self.assertTrue(live_focus.get("live"), "live open lands the chat on its live tail (the picker prompt)")
         finally:
             km._reveal_chat = orig_rc; km._tmux_sessions = orig_tx; km._push_all = orig_pa
 

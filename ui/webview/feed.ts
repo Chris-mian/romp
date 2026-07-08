@@ -903,8 +903,10 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
     // to-do items open and the one fork nudge didn't get them moving, so the card floors to Needs-you.
     a._blocked.textContent = it.blocked.state === "permission" ? "⏸ approval"
       : "⏸ picker";
-    a._blocked.title = it.blocked.what + " — click to open the session";
-    a._blocked.onclick = (ev: Event) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "openSession", id: it.sid }); };
+    a._blocked.title = it.blocked.what + " — click to jump to the prompt in the chat";
+    // the prompt (a picker / permission approval) is the session's LIVE bottom → `live` lands the chat right
+    // on it, not wherever it was last scrolled (the user 2026-07-08).
+    a._blocked.onclick = (ev: Event) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "openSession", id: it.sid, live: true }); };
   }
   // The DISTILLER's line (restored 2026-06-29): completed card → takeaway (it.summary), blocked card → decision
   // brief (it.blockSummary), shown ONLY when produced; never a generating placeholder, never the planner's why.

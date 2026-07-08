@@ -2254,9 +2254,11 @@ def _split_host_id(sid):
     return (s[:i], s[i + 1:]) if i > 0 else ("", s)
 
 
-def _open_or_revive(sid):
+def _open_or_revive(sid, live=False):
     """openSession routing: a LIVE session → un-hide its tab + focus the chat; a DEAD one → the
-    confirmRevive modal (no silent reopen, no auto read-only tab — the user 2026-06-17)."""
+    confirmRevive modal (no silent reopen, no auto read-only tab — the user 2026-06-17). `live` (the user
+    2026-07-08): land the chat on its LIVE TAIL, not the last scroll — a blocked card's picker/permission
+    prompt is the live bottom, so its feed chip drops you right on it."""
     if sid in _tmux_sessions():
         _set_hidden_tab(sid, False)
         be = _sdk()
@@ -2266,7 +2268,10 @@ def _open_or_revive(sid):
                               # is changeable BEFORE the first message — not only after one (the user 2026-06-24:
                               # opening an SDK session showed no model/effort until a message was sent).
         _push_all()
-    _reveal_or_confirm(sid, {"type": "focus", "id": sid})
+    focus = {"type": "focus", "id": sid}
+    if live:
+        focus["live"] = True
+    _reveal_or_confirm(sid, focus)
 
 
 def _revive_session(sid):
@@ -11166,8 +11171,9 @@ class Handler(BaseHTTPRequestHandler):
             _send_to_app("chat", {"type": "closed", "id": msg["id"]})   # prune it in the live view now
             _push_all()
         elif msg and msg.get("type") == "openSession" and msg.get("id"):
-            # live → reopen the hidden tab + focus; dead → the chat's confirmRevive modal
-            _open_or_revive(msg["id"])
+            # live → reopen the hidden tab + focus; dead → the chat's confirmRevive modal. `live` lands on the
+            # chat's LIVE TAIL (a blocked card's picker chip → right on the prompt, the user 2026-07-08).
+            _open_or_revive(msg["id"], live=bool(msg.get("live")))
         elif msg and msg.get("type") == "openFolder" and msg.get("cwd"):
             # A REMOTE session's folder icon must SSH out, not open a local path that doesn't exist here
             # (the user 2026-07-03) — federation.ts routes this message type to stay LOCAL with the id's

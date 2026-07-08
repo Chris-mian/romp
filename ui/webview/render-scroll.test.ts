@@ -157,3 +157,10 @@ test("ResizeObservers on #tabbar AND #ledger compensate #content.scrollTop by th
   assert.match(RENDER, /content\.scrollTop \+= h - lastH/, "compensates by the exact height delta");
   assert.match(RENDER, /if \(v\) v\.scrollTop = content\.scrollTop/, "keeps the per-view saved scroll in sync");
 });
+
+test("a focus with `live` lands on the live tail — a blocked card's picker/permission prompt (the user 2026-07-08)", () => {
+  // stick the target view to bottom so showActive scrolls there
+  assert.match(RENDER, /if \(m\.live\) \{ const v = views\.get\(m\.id\); if \(v\) v\.stick = true; \}/);
+  // cover the ALREADY-ACTIVE case, where setActive early-returns (activeId === id, no anchor) → jump to bottom now
+  assert.match(RENDER, /if \(m\.live && activeId === m\.id\) \{\s*\n\s*const c = document\.getElementById\("content"\); if \(c\) c\.scrollTop = c\.scrollHeight;/);
+});

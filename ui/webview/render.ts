@@ -5303,7 +5303,16 @@ window.addEventListener("message", (e: MessageEvent) => {
   else if (m.type === "status") statusOnly(m);
   else if (m.type === "focus") {
     if (revivePending && m.id === revivePending) clearReviveLoader();   // the revive landed — the loader's success event
-    setActive(m.id, m.anchor, typeof m.anchorT === "number" ? m.anchorT : undefined, typeof m.anchorKind === "string" ? m.anchorKind : undefined);
+    // `live` (the user 2026-07-08): land on the LIVE TAIL. A blocked card's picker/permission prompt IS the
+    // live bottom of the chat, so its feed chip drops the user right on it. Stick the target view to bottom so
+    // showActive scrolls there; and cover the ALREADY-ACTIVE case, where setActive early-returns (activeId ===
+    // id, no anchor) and would otherwise leave a scrolled-up chat parked in history, not at the prompt.
+    if (m.live) { const v = views.get(m.id); if (v) v.stick = true; }
+    if (m.live && activeId === m.id) {
+      const c = document.getElementById("content"); if (c) c.scrollTop = c.scrollHeight;
+    } else {
+      setActive(m.id, m.anchor, typeof m.anchorT === "number" ? m.anchorT : undefined, typeof m.anchorKind === "string" ? m.anchorKind : undefined);
+    }
     // A feed card click that resolved to a live goal → seed the composer citation chip (the user 2026-07-01).
     if (m.cite && typeof m.cite.itemId === "string" && typeof m.cite.title === "string") setCitation(m.id, { itemId: m.cite.itemId, title: m.cite.title });
   }

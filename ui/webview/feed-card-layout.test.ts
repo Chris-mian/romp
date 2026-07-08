@@ -44,6 +44,12 @@ test("the ⏸ blocked (permission/picker) badge is a rounded-rect pill outlined 
   assert.doesNotMatch(CSS, /\.fask-blocked:hover \{[^}]*text-decoration: underline/);
 });
 
+test("the ⏸ picker/approval chip jumps to the LIVE prompt in the chat (openSession + live, the user 2026-07-08)", () => {
+  // the prompt is the session's live bottom, so the chip posts `live: true` → the chat lands right on it
+  assert.match(FEED, /vscodeApi\?\.postMessage\(\{ type: "openSession", id: it\.sid, live: true \}\);/);
+  assert.match(FEED, /a\._blocked\.title = it\.blocked\.what \+ " — click to jump to the prompt in the chat";/);
+});
+
 test("courier handoff: the '↪ from <sender>' origin marker is wired and styled", () => {
   // a chip beside the session name, hidden until the card carries a courier origin
   assert.match(FEED, /const origin = el\("a", "fask-origin"\); origin\.style\.display = "none"/);
