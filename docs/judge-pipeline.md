@@ -140,7 +140,7 @@ sequenceDiagram
     participant C as courier judge
     A->>BUS: send_message(to, body, kind) — kind required:<br/>delegate | coordinate | question
     BUS->>B: deliver — body + msg-id + msg-kind markers
-    Note over B: delivery becomes a peer segment<br/>(the planner skips it; the courier owns it)
+    Note over B: delivery becomes a peer segment<br/>(the planner skips it — the courier owns it)
     C->>C: classify — declared kind is a strong prior,<br/>the body can overrule it
     alt delegating
         C->>B: plant goal G in the recipient's tree
