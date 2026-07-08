@@ -147,16 +147,17 @@ retirement, evented subtree unblocks), and the migration-window close (boot swee
 the modal's user Resolve was a silent no-op since the flip; a pivot now records `dismiss`; an
 undo-clear restores the pre-clear state by snapshot.
 
+DONE 2026-07-07 (late evening): rate-limit-aware judging (the `_judge_run` gate skips every
+judge LLM call while a usage window is exhausted — self-expiring via resets_at, skips never
+count as failures), the chat + timeline payload audits (bullets/current-subfields/auth/recent
+flags/apiError.category/askAnswer.multiSelect off the chat contract; backend/compactPct/
+pendingMail/stale lanes, nudge/mids/reply bars, parked/toGoal/fromOrig connectors, the whole
+nudges array + tokens off the timeline contract; the in-chat ledger's dead reader functions and
+19 orphaned CSS rules removed), and `_seg_key` unified (the kernel delegates to the judge's).
+
 1. **P4 — one resolver?** The eager-done sampler (`eager-done-samples.jsonl`, focusHeld rate)
    decides whether the closer absorbs the planner's done/block (~40% fewer triage calls) or
    both stay. Review with a few weeks of data (snoozed to ~2026-07-14).
-2. **Rate-limit-aware judging**: an account-limit window burns retries fleet-wide (the archiver
-   postmortem); one global gate — skip judge passes while `usage.json` says limited — would
-   quiet every judge at once, event-based.
-3. **Audit the other payload contracts**: this round only swept the FEED; the chat (render.ts)
-   and timeline payloads deserve the same three-way audit — the feed found two dead subsystems,
-   the priors are similar.
-4. **Unify `_seg_key`** (judge + kernel carry literal copies that must never drift).
-5. Dated cleanups: order-audit instrumentation (~Aug 2026), the eager-done sampler after P4's
+2. Dated cleanups: order-audit instrumentation (~Aug 2026), the eager-done sampler after P4's
    call, the boot sweep itself once judge-errors.jsonl shows no unmigrated-node lines for a
    few weeks.

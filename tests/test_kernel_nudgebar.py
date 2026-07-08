@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
-"""build_timeline tags each prompt bar with `nudge` (the user 2026-06-22): a segment opened by a romp
-INJECTION (auto-nudge / Nudge button / retry — its trigger carries the romp-injected marker, so the event
-model authors it 'romp') gets nudge=True, and the timeline view draws a ⚡ INSIDE that prompt dot plus a
-'romp · nudge' tooltip (with the swirl logo) instead of the session name. A genuine human/peer prompt gets
-nudge=False. Event-based (keys on the trigger atom's author), never a time heuristic. Self-contained
-build_timeline harness; synthetic transcript only — no real session data.
+"""build_timeline's per-bar romp-injection tagging (the user 2026-06-22; slimmed 2026-07-07 payload
+audit): the broad `nudge` flag (any romp injection) shipped but the view read only `nudgeAuto` (the
+AUTO-nudge swirl-dot), so `nudge` was dropped — bars now carry nudgeAuto alone, keyed on the trigger's
+rompAuto marker. Event-based, never a time heuristic. Self-contained harness; synthetic transcript.
 """
 import json
 import os
@@ -81,11 +79,12 @@ class NudgeBar(unittest.TestCase):
         bars = km.build_timeline(NOW)["turns"][SID]
         return {b["id"]: b for b in bars}
 
-    def test_human_prompt_is_not_a_nudge_but_the_injected_one_is(self):
+    def test_bars_carry_only_the_auto_nudge_flag(self):
         bars = self._bars()
         human, nudge = self.segs[0], self.segs[1]
-        self.assertFalse(bars[human["id"]]["nudge"], "a genuine human prompt is NOT a nudge")
-        self.assertTrue(bars[nudge["id"]]["nudge"], "the romp-injected segment's bar is flagged nudge")
+        self.assertNotIn("nudge", bars[human["id"]], "the broad injection flag no longer ships (unread)")
+        self.assertNotIn("nudge", bars[nudge["id"]])
+        self.assertFalse(bars[human["id"]].get("nudgeAuto"), "a genuine human prompt is never an auto-nudge")
 
 
 if __name__ == "__main__":

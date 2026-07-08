@@ -5473,10 +5473,7 @@ def _archive_roots(sid):
     except Exception:
         arch = {}
     nodes, status = arch.get("nodes", {}), arch.get("status", {})
-    out = [{"text": nd.get("text", ""), "t": nd.get("mt", nd.get("t", 0)),
-            "done": bool(nd.get("nodeComplete")) or status.get(nid) == "completed",
-            "cleared": bool(nd.get("cleared")) or status.get(nid) == "cleared",
-            "blocked": bool(nd.get("blocked"))}
+    out = [{"text": nd.get("text", ""), "t": nd.get("mt", nd.get("t", 0))}
            for nid, nd in nodes.items()
            if nd.get("parentId") is None and (nd.get("text") or "").strip()]
     if len(_arch_roots_cache) > 256:
@@ -5699,7 +5696,6 @@ def build_session(sid, now, tmux=None):
                             # tool_result (the answer) is in. Built from the UNTRUNCATED input.
                             ev["askAnswer"] = [{"question": str(q.get("question") or ""),
                                                 "header": str(q.get("header")) if q.get("header") else None,
-                                                "multiSelect": bool(q.get("multiSelect")),
                                                 "options": [{"label": str(o.get("label") or ""),
                                                              "description": str(o.get("description") or "")}
                                                             for o in (q.get("options") or [])],
@@ -5828,35 +5824,17 @@ def build_session(sid, now, tmux=None):
     # as a working flavor (build_feed).
     aerr = _api_error(sess["path"]) if not (open_now or awaiting_why) else None
     if aerr:
-        events.append({"kind": "apiError", "text": aerr["text"], "status": aerr["status"],
-                       "category": aerr["category"]})
-    # TOC ledger: archiver headline + turn captions (click-to-jump via the turn's anchor uuid)
+        events.append({"kind": "apiError", "text": aerr["text"], "status": aerr["status"]})
+    # TOC ledger: archiver headline (the tab tooltip's Summary; the bullets list retired 2026-07-07 —
+    # its in-chat readers were deleted with the ledger box, and the tooltip reads recent/tree instead)
     arch = jd.load_archive(sid) or {}
-    bullets = []
-    for turn in session["turns"]:
-        cap = caps.get(turn["id"], {}).get("caption")
-        anchor = next((x.get("uuid") for x in turn["atoms"] if x.get("uuid")), None)
-        if cap:
-            _seg = uuid2seg.get(anchor)
-            _anc = seg_anchors.get(_seg)
-            bullets.append({"text": cap, "t": turn["t"], "id": anchor, "sid": sid,
-                            "tlId": (_anc[0] if _anc else _seg)})   # a TOC entry → the turn's start DOT
-    # newest-first: render shows bullets[0] at the TOP (and reads it as "the newest" for the summary
-    # hue) — turns iterate oldest→newest, so reverse. Matches state.ts recentReplyBullets' "newest first".
-    bullets.sort(key=lambda b: b["t"], reverse=True)
     last_turn = session["turns"][-1] if session["turns"] else None
     # "working on" — what the session is doing RIGHT NOW: the in-progress turn's caption if it has one
     # yet, else its prompt (≤140 chars), matching the timeline work-bar's `working on:` hover. Only while
     # actually working; idle/ready → no current line (the user 2026-06-16).
-    current = None
-    if open_now and last_turn:
-        ctext = (caps.get(last_turn["id"], {}).get("caption")
-                 or _split_reminders(_seg_prompt(last_turn))[0][:140].strip())
-        if ctext:
-            _ca = next((x.get("uuid") for x in last_turn["atoms"] if x.get("uuid")), None)
-            _cax = seg_anchors.get(uuid2seg.get(_ca))
-            current = {"text": ctext, "t": last_turn["t"], "id": _ca, "sid": sid,
-                       "tlId": (_cax[0] if _cax else uuid2seg.get(_ca))}
+    # `current` = the in-progress turn's start, for the Fleet recency stamp (its ONLY reader reads .t —
+    # the old text/id/tlId subfields' readers died with the in-chat ledger box; 2026-07-07 payload audit)
+    current = {"t": last_turn["t"]} if (open_now and last_turn) else None
     # Goal-graph overview TREE (the user's "that view", 2026-06-16): render every top-level goal and
     # recurse — but expand a node's children ONLY if the node itself isn't done. A done node is a pruned
     # LEAF: its descendants are hidden even if open. Skip cleared nodes. `current` marks the focus node
@@ -5951,13 +5929,12 @@ def build_session(sid, now, tmux=None):
                                       explicit or derived or clr or bool(nd.get("blocked")))
         tree.append({"id": nid, "text": nd["text"], "depth": depth,
                      "done": explicit or derived or clr, "derived": derived, "cleared": clr,
-                     "auth": (nd.get("agentTask") or {}).get("status"),   # authoritative tier (agent's own to-do); see build_feed
                      "blocked": bool(nd.get("blocked")), "t": nd["t"],
                      # mt = the segment where this node was last touched (resolved/blocked) — the click-
                      # to-jump nav lands done/blocked goals on their mt (the assistant turn that finished
                      # them), open goals on t (where they began). Matches build_feed (the user 2026-06-16).
                      "mt": nd.get("mt", nd["t"]), "current": nid == focus,
-                     "recent": nid == recent, "onpath": nid in onpath,
+                     "onpath": nid in onpath,
                      "promptAnchorUuid": _pa, "anchorUuid": _wa,
                      # the distiller's takeaway (done) / the block-distiller's decision brief (blocked),
                      # null until produced — the ledger row's ⊕ expander reveals it inline (the user 2026-06-21)
@@ -5971,16 +5948,14 @@ def build_session(sid, now, tmux=None):
     # the LIVE store AND the archive, REGARDLESS of status (done / blocked / cleared) — so a session whose tops
     # were all crossed off still lists the last 5 things it did, not just its summary. Roots only (tasks, not
     # steps). The live tree usually holds ≤1 open top; the rest are cleared+archived, hence the archive merge.
-    _live_roots = [{"text": nd["text"], "t": nd.get("mt", nd.get("t", 0)),
-                    "done": bool(nd.get("nodeComplete")), "cleared": _cleared(nid), "blocked": bool(nd.get("blocked"))}
+    _live_roots = [{"text": nd["text"], "t": nd.get("mt", nd.get("t", 0))}
                    for nid, nd in gnodes.items()
                    if nd.get("parentId") is None and (nd.get("text") or "").strip()]
     recent_tops = sorted(_live_roots + _archive_roots(sid), key=lambda r: r["t"] or 0, reverse=True)[:5]
-    # bullets kept as a fallback for goal-less sessions (render shows the tree when it's non-empty).
     if _session_flag(sid, "hideFromFeed"):       # muted → out of task tracking: the ledger shows no goal tree / current task
         tree, current, recent_tops = [], None, []
     ledger = {"summary": arch.get("headline", ""), "tree": tree[:80],
-              "current": current, "bullets": bullets, "recent": recent_tops}
+              "current": current, "recent": recent_tops}
     # work-timer base, in MILLISECONDS (render's elapsedMs does Date.now()ms - sinceEpoch; a seconds
     # value showed ~494,000h — the user's "400,000 hours" bug): the current open turn's start while
     # working, else the last activity; None when unknown (render then shows no timer).
@@ -7244,21 +7219,6 @@ def _postal_messages(now, alive_sids, id2name):
             execd[o["id"]] = o.get("t")
     cutoff, out = now - TL_HORIZON, []
     msgsum = _msg_summaries()                           # {id: Haiku caption} → the timeline shows it over the raw body
-    goalcache = {}                                     # recipient sid → goal nodes (loaded once per build)
-
-    def planted(recip, mid):
-        """The courier-planted goal id in the recipient's tree for this message (origin.msgId match),
-        or None — binds the connector to the goal it created (the read side highlights both together)."""
-        if recip not in goalcache:
-            try:
-                goalcache[recip] = jd.load_goals(recip).get("nodes", {})
-            except Exception:
-                goalcache[recip] = {}
-        for nid, nd in goalcache[recip].items():
-            o = nd.get("origin")
-            if isinstance(o, dict) and o.get("msgId") == mid:
-                return nid
-        return None
     for mid, e in sent.items():
         f, t, st = e.get("from_id"), e.get("to_id"), e.get("t")
         # both endpoints must EXIST (bus-origin mail — bounces from the Romp Postal Service itself —
@@ -7271,8 +7231,7 @@ def _postal_messages(now, alive_sids, id2name):
                     "fromOrig": e.get("from", id2name.get(f, f)),
                     "sent": st, "exec": ex if ex else st, "hasExec": ex is not None,
                     "pending": ex is None and (now - st) < MSG_INFLIGHT_MAX,
-                    "text": (e.get("body", "") or "").strip()[:240], "summary": msgsum.get(mid), "parked": False,
-                    "toGoal": planted(t, mid)})           # courier delegation: the goal this message planted
+                    "text": (e.get("body", "") or "").strip()[:240], "summary": msgsum.get(mid)})
     out.sort(key=lambda m: m["sent"])
     return out
 
@@ -7311,18 +7270,6 @@ def _parked_handoffs(now, alive_sids):
                     "body": (o.get("body") or "")[:240], "t": int(o.get("t") or now)})
     out.sort(key=lambda h: h["t"])
     return out
-
-
-def _pending_mail(sid):
-    """Unread/parked postal count for a lane (the 📬 flag, esp. on dead lanes), from
-    postal/mail-pending/<sid> (presence gate) + postal/mail/<sid>/new (count)."""
-    try:
-        base = jd.STATE / "postal"
-        if not (base / "mail-pending" / sid).exists():
-            return 0
-        return sum(1 for f in (base / "mail" / sid / "new").iterdir() if not f.name.startswith("."))
-    except Exception:
-        return 0
 
 
 def _seg_anchors(atoms):
@@ -7992,25 +7939,6 @@ def _nudge_times():
     return idx
 
 
-def _nudge_marks(t0, alive_sids):
-    """Auto-nudge fires in the horizon, for alive sessions — {sid, gid, t, count} per fire — read from
-    STATE/nudge-events.jsonl (bugz's _log_nudge_event). The timeline's DEBUG band renders each as a ⚡ at its
-    fire time, coloured by the nudged session, escalating to a warning at count>=4 (the user 2026-06-22).
-    Best-effort []."""
-    out = []
-    try:
-        for line in (jd.STATE / "nudge-events.jsonl").read_text(errors="replace").splitlines():
-            try:
-                o = json.loads(line)
-            except Exception:
-                continue
-            if o.get("t", 0) >= t0 and o.get("sid") in alive_sids:
-                out.append({"sid": o["sid"], "gid": o.get("gid"), "t": int(o["t"]), "count": int(o.get("count", 1))})
-    except OSError:
-        pass
-    return out
-
-
 def build_timeline(now, tmux=None, with_bars=True, live_only=False):
     """A {type:"timeline"} message the ported timeline bundle consumes (ui-parity.md: timeline =
     ADAPT). Lanes per session; work bars are SEGMENTS [t,end] from the event model (not the deleted
@@ -8128,10 +8056,9 @@ def build_timeline(now, tmux=None, with_bars=True, live_only=False):
                         "start": bstart, "end": bend,
                         "open": turn_open and si == len(segs) - 1 and sj == len(spans) - 1 and bend == seg["end"],
                         "cont": sj > 0,                   # a post-sleep continuation piece: NO new prompt dot (the one prompt was at the first piece)
-                        "prompt": _seg_prompt(seg), "summary": cap, "msgCaption": msg_cap, "reply": "",
+                        "prompt": _seg_prompt(seg), "summary": cap, "msgCaption": msg_cap,
                         "src": src, "mids": _seg_mids(seg), "pending": False,
                         "tid": sid, "uuid": seg.get("trigger"),
-                        "nudge": author == "romp",            # a romp INJECTION (auto-nudge / Nudge / retry)
                         "nudgeAuto": bool((trig or {}).get("rompAuto")),   # ONLY an AUTO-nudge (not the Nudge button / retry) →
                         #                                       the view marks it as a romp message (swirl on a black dot)
                         "workUuid": work_uuid, "replyUuid": reply_uuid})
@@ -8164,38 +8091,36 @@ def build_timeline(now, tmux=None, with_bars=True, live_only=False):
             # the lane just applies these, like ctxColor. None → the lane keeps its default gray text.
             "modelColor": _model_color(tm["model"] if tm else "", ctx_stops),
             "effortColor": _effort_color(tm["effort"] if tm else "", ctx_stops),
-            "backend": _session_backend(sid, tm),
             "context": (tm["context"] if tm else None),
             "ctxColor": (list(cm.ramp((tm["context"] or 0) / 100.0, ctx_stops))
                          if tm and tm["context"] is not None else None),   # context% on the GLOBAL colormap (bright = full)
-            "compactPct": (tm["compactPct"] if tm else None),
             "subagents": ((tm.get("subagents") if tm else None) or []),   # live Task subagents (SDK) → lane pill
             "awaiting": _state_intervals(sid, _NEEDS_INPUT_STATES, now),
             "compacting": _state_intervals(sid, "compacting", now),
-            "compactions": compactions, "pendingMail": _pending_mail(sid),
-            "stale": faded, "faded": faded,
+            "compactions": compactions,
+            "faded": faded,
             "hideFromFeed": _session_flag(sid, "hideFromFeed"),    # lane checkbox → mute from feed (timeline-only)
             "postalServiceOff": _session_flag(sid, "postalServiceOff") or _session_flag(sid, "postalOff")})  # lane mailbox → isolate from the Romp Postal Service (bin/romp-postal-service)
     if with_bars:
         messages = _postal_messages(now, set(id2name), id2name)
         _bind_message_execs(messages, turns)             # connector exec → the recipient's process-start (real transit)
+        for _bs in turns.values():                       # mids/fromOrig are the binder's INPUTS, not payload
+            for _b in _bs:                               # (2026-07-07 payload audit: no client ever read them)
+                _b.pop("mids", None)
+        for _m in messages:
+            _m.pop("fromOrig", None)
         # The band's marks are the per-call RUN SPANS (g70): each judge call plotted at its real [sent, recv],
         # glossed by the nearest artifact mark — so a judge that ran shows up WHEN it ran (incl. distiller lag +
         # coordinating-courier classifications the artifact marks miss), not back-placed onto the work.
         judging = _run_judging(now - TL_HORIZON, set(id2name), semantic)
-        nudges = _nudge_marks(now - TL_HORIZON, set(id2name))
     else:                                                # SKELETON: the heavy time-plotted detail rides the {type:"bars"} message
-        messages, judging, nudges = [], [], []
-    # `tokens` (the per-rate-limit-window token totals) is DEAD payload — the view dropped its token-count
-    # display and reads only `usage` now (romp-timeline-view.js: "nothing reads it"). Computing it cost ~184ms
-    # PER BUILD (it summed usage.jsonl across every session) — the single biggest slice of the timeline build,
-    # paid on every cold connect. Ship []; re-add it LAZILY + CACHED if the token display ever returns.
+        messages, judging = [], []
     # compaction-sweep gradient (widest→narrowest): the timeline's scan-bar has no client-side colormap, so
     # ship the GLOBAL map sampled at the same scaleX stops the chat surface uses (render.ts applyCompactSweep),
     # letting the bar slide through the map's hues as it compresses — mirroring the context battery fill.
     cmap_grad = [list(cm.ramp(v, ctx_stops)) for v in (0.12, 0.34, 0.56, 0.78, 1.0)]
     return {"type": "timeline", "now": now, "sessions": sessions, "turns": turns,
-            "messages": messages, "judging": judging, "nudges": nudges, "tokens": [],
+            "messages": messages, "judging": judging,
             "cmapGrad": cmap_grad,
             "activeChat": None, "focus": None, "hover": None, "usage": _usage_for_client()}
 
@@ -8801,7 +8726,7 @@ def _push(targets, connect=False):
         elif c["app"] == "timeline" and timeline is not None:
             _send_client(c, ("timelinebars",), {"type": "bars", "turns": timeline["turns"],
                          "judging": timeline["judging"], "messages": timeline["messages"],
-                         "nudges": timeline["nudges"], "now": timeline["now"], "warming": tl_warming})
+                         "now": timeline["now"], "warming": tl_warming})
     with _clients_lock:
         _clients[:] = [c for c in _clients if c.get("alive", True)]
 

@@ -84,7 +84,7 @@ function _prefixIdBearing(host: string, o: any, idKey: string): any {
 
 /** Prefix the per-sid DETAIL shared by {type:"data"}.data and {type:"bars"}: `turns` (an object keyed
  *  by sid whose bars carry `tid` = their sid), postal `messages` (fromId/toId), and the `judging` +
- *  `nudges` marks (sid). Event uuids (bar id/promptId/workId, hover ids) are globally unique already
+ *  Event uuids (bar id/promptId/workId, hover ids) are globally unique already
  *  and stay bare. */
 function _prefixTimelineDetail(host: string, d: any): any {
   const out: any = { ...d };
@@ -104,7 +104,7 @@ function _prefixTimelineDetail(host: string, d: any): any {
       if (typeof c.toId === "string") c.toId = prefixId(host, c.toId);
       return c;
     });
-  for (const k of ["judging", "nudges"])
+  for (const k of ["judging"])
     if (Array.isArray(out[k]))
       out[k] = out[k].map((e: any) => (e && typeof e === "object" && typeof e.sid === "string" ? { ...e, sid: prefixId(host, e.sid) } : e));
   return out;
@@ -298,13 +298,13 @@ export function stitchMessages(messages: any[], sessions: readonly any[]): any[]
  *  clock + chrome authority, same as the feed merge. */
 export function mergeHostTimelines(perHost: Record<string, any>, hostSeq: readonly string[]): any {
   const local = perHost[LOCAL] || {};
-  const merged: any = { ...local, sessions: [], turns: {}, messages: [], judging: [], nudges: [] };
+  const merged: any = { ...local, sessions: [], turns: {}, messages: [], judging: [] };
   for (const h of hostSeq) {
     const d = perHost[h];
     if (!d) continue;
     if (Array.isArray(d.sessions)) merged.sessions.push(...d.sessions.map((s: any) => ({ ...s, host: h })));
     if (d.turns && typeof d.turns === "object") Object.assign(merged.turns, d.turns);
-    for (const k of ["messages", "judging", "nudges"]) if (Array.isArray(d[k])) merged[k].push(...d[k]);
+    for (const k of ["messages", "judging"]) if (Array.isArray(d[k])) merged[k].push(...d[k]);
   }
   merged.messages = stitchMessages(merged.messages, merged.sessions);
   return merged;
@@ -318,7 +318,7 @@ export function mergeHostTimelines(perHost: Record<string, any>, hostSeq: readon
 export function mergeHostBars(perHost: Record<string, any>, hostSeq: readonly string[],
                               sessions: readonly any[] = []): any {
   const local = perHost[LOCAL] || {};
-  const merged: any = { ...local, type: "bars", turns: {}, messages: [], judging: [], nudges: [], warming: false };
+  const merged: any = { ...local, type: "bars", turns: {}, messages: [], judging: [], warming: false };
   for (const h of hostSeq) {
     const b = perHost[h];
     if (!b) continue;

@@ -530,26 +530,7 @@ class ViewBuilder(unittest.TestCase):
     def test_ledger_is_toc_from_archive_and_captions(self):
         m = km.build_session(SID, NOW)
         self.assertEqual(m["ledger"]["summary"], "Fixing the feed")
-        self.assertTrue(any(b["text"] == "Fixed the feed flicker" for b in m["ledger"]["bullets"]))
-
-    def test_ledger_bullets_are_newest_first(self):
-        # A second, LATER captioned turn → the ledger must list newest-first: render shows bullets[0] at
-        # the TOP and reads it as "the newest" for the summary hue. Regression for the oldest-on-top bug.
-        # u2's parentUuid chains to the prior turn's last assistant (a2) so the leaf (a3) traces back
-        # through BOTH turns — that's how a real transcript tree links successive prompts.
-        with self.tpath.open("a") as f:
-            f.write(json.dumps(uline(T0 + 100, "now fix the sort order", "u2", parent="a2", ps="typed")) + "\n")
-            f.write(json.dumps(aline(T0 + 120, "Sorted it.", "a3", "u2", stop="end_turn")) + "\n")
-        session = em.parse_session(str(self.tpath), rompuuid=SID, candidate_files=[str(self.tpath)], now=NOW)
-        turns = session["turns"]
-        self.assertGreaterEqual(len(turns), 2, "fixture should now span two turns")
-        caps = [{"id": turns[0]["id"], "grain": "turn", "t": turns[0]["t"], "caption": "Fixed the feed flicker"},
-                {"id": turns[1]["id"], "grain": "turn", "t": turns[1]["t"], "caption": "Sorted the ledger"}]
-        (jd.CAPDIR / (SID + ".jsonl")).write_text("\n".join(json.dumps(c) for c in caps) + "\n")
-        bullets = km.build_session(SID, NOW)["ledger"]["bullets"]
-        ts = [b["t"] for b in bullets]
-        self.assertEqual(ts, sorted(ts, reverse=True), "ledger bullets must be newest-first")
-        self.assertEqual(bullets[0]["text"], "Sorted the ledger", "newest caption sits on top")
+        self.assertNotIn("bullets", m["ledger"], "the bullets list retired with its readers (2026-07-07 audit)")
 
     def test_ledger_tree_and_current(self):
         # The overview's goal TREE: top-level goals, done nodes kept as timed leaves, open nodes expanded.
@@ -568,8 +549,8 @@ class ViewBuilder(unittest.TestCase):
             f.write(json.dumps(uline(NOW, "wire the ledger overview strip", "uOpen", parent="a2")) + "\n")
         km._parse_cache.clear()
         cur = km.build_session(SID, NOW)["ledger"]["current"]
-        self.assertIsNotNone(cur, "an open (unfinished) turn → a working-on line")
-        self.assertEqual(cur["text"], "wire the ledger overview strip")
+        self.assertIsNotNone(cur, "an open (unfinished) turn → the Fleet recency stamp")
+        self.assertEqual(cur, {"t": NOW}, "slimmed to the one field its reader (fleet stamp) uses")
 
     def test_host_sleep_closes_a_turn_left_open(self):
         # A turn still open when the laptop slept must NOT keep reading as "working": the kernel records the
@@ -2325,10 +2306,11 @@ class ViewBuilder(unittest.TestCase):
         texts = [n["text"] for n in tree]
         self.assertLess(texts.index("fresher top"), texts.index("older top"), "freshest top goal still sorts first (ordering unchanged)")
         byid = {n["text"]: n for n in tree}
-        # the highlight (current) and the → arrow (recent) are the SAME node — the cursor (told), NOT the max-mt leaf
-        self.assertTrue(byid["older top"]["current"] and byid["older top"]["recent"], "cursor carries BOTH the highlight and the arrow")
-        self.assertFalse(byid["freshly done leaf"].get("recent"), "the arrow no longer follows the freshest-mt node")
-        self.assertEqual(next(n for n in tree if n.get("recent"))["text"], "older top", "exactly one arrow, on the cursor")
+        # ONE "here" marker: the highlight (current) marks the cursor; the separate `recent` arrow flag
+        # was collapsed onto it long ago and the redundant key stopped shipping (2026-07-07 payload audit)
+        self.assertTrue(byid["older top"]["current"], "the cursor carries the highlight")
+        self.assertNotIn("recent", byid["older top"], "the redundant arrow flag no longer ships")
+        self.assertFalse(byid["freshly done leaf"]["current"], "the freshest-mt node is NOT the marker")
         # onpath follows the cursor; an off-cursor branch is off-path (render folds it) but still EMITTED
         self.assertTrue(byid["older top"]["onpath"])
         self.assertFalse(byid["freshly done leaf"]["onpath"], "the freshest leaf is off the cursor's expand path now")
@@ -3737,23 +3719,16 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(msgs["m2"]["toId"], "foreignsid")
         self.assertEqual(msgs["m2"]["to"], "", "foreign recipient: no local name — the merge fills it")
 
-    def test_postal_connector_binds_to_planted_goal(self):
-        # a courier connector carries toGoal = the goal it planted in the recipient (origin.msgId match)
+    def test_postal_connector_ships_no_dead_goal_binding(self):
+        # toGoal (the courier-planted goal id) shipped on every connector but no view ever rendered it —
+        # dropped (2026-07-07 payload audit), along with the hardcoded-False `parked`.
         md = jd.STATE / "timeline"; md.mkdir(parents=True, exist_ok=True)
         a, b = "aaaa1111", "bbbb2222"
         (md / "messages.jsonl").write_text(
-            json.dumps({"ev": "sent", "id": "m1", "from_id": a, "to_id": b, "t": NOW - 30, "from": "alpha", "body": "do X"}) + "\n"
-            + json.dumps({"ev": "exec", "id": "m1", "t": NOW - 20}) + "\n"
-            + json.dumps({"ev": "sent", "id": "m9", "from_id": a, "to_id": b, "t": NOW - 25, "from": "alpha", "body": "fyi"}) + "\n")
-        gb = "%s:g1" % b
-        (jd.GOALDIR / (b + ".json")).write_text(json.dumps({
-            "rompUuid": b, "seq": 1, "nodes": {gb: {"id": gb, "text": "Handed-off work", "parentId": None,
-                "nodeComplete": False, "blocked": False, "cleared": False, "trail": [], "t": NOW - 20,
-                "origin": {"peer": a, "goalId": a + ":g1", "msgId": "m1"}}},
-            "placements": {}, "status": {gb: "working"}}))
+            json.dumps({"ev": "sent", "id": "m1", "from_id": a, "to_id": b, "t": NOW - 30, "from": "alpha", "body": "do X"}) + "\n")
         msgs = {m["id"]: m for m in km._postal_messages(NOW, {a, b}, {a: "alpha", b: "beta"})}
-        self.assertEqual(msgs["m1"]["toGoal"], gb, "the connector binds to the goal it planted")
-        self.assertIsNone(msgs["m9"]["toGoal"], "a message that planted no goal has toGoal None")
+        self.assertNotIn("toGoal", msgs["m1"])
+        self.assertNotIn("parked", msgs["m1"])
 
     def test_postal_connector_summary_from_captions(self):
         # the connector carries the caption (from _msg_summaries, now sourced from captions/); the
@@ -3906,8 +3881,6 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(u["tlId"], prompt_id, "a user message lights the DOT (promptId)")
         work = [e for e in m["events"] if e["kind"] in ("assistant", "tool")]
         self.assertTrue(work and all(e["tlId"] == work_id for e in work), "work events light the BAR (workId)")
-        self.assertTrue(m["ledger"]["bullets"] and all(b.get("tlId") == prompt_id for b in m["ledger"]["bullets"]),
-                        "a TOC bullet lights the turn's start dot")
 
     def test_timeline_bars_carry_prompt_and_work_ids(self):
         """Timeline bars carry promptId (the dot atom) + workId (the bar atom) — the targets the chat
@@ -4059,7 +4032,7 @@ class ViewBuilder(unittest.TestCase):
             self.assertEqual(km._session_backend("x", None), "sdk")                  # dead SDK lane → sdk via ownership
             km._sdk = lambda: None
             lane = next(s for s in km.build_timeline(NOW)["sessions"] if s["id"] == SID)
-            self.assertEqual(lane["backend"], "tmux", "the fixture session is tmux (no SDK registry)")
+            self.assertNotIn("backend", lane, "the lane never read it — dropped (2026-07-07 payload audit)")
             self.assertEqual(km.build_session(SID, NOW)["status"]["backend"], "tmux")
         finally:
             km._sdk = saved

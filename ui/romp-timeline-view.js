@@ -1074,7 +1074,7 @@ class TimelinePanel {
     const prev = this.data;
     if (prev && (!data.turns || !Object.keys(data.turns).length)) {
       data.turns = prev.turns || {}; data.judging = prev.judging || [];
-      data.messages = prev.messages || []; data.nudges = prev.nudges || [];
+      data.messages = prev.messages || [];
     }
     this.data = data;
     if (data.cmapGrad) this._cmapGrad = data.cmapGrad;   // compaction-sweep colormap gradient (persists across the lighter {type:bars} pushes)
@@ -1146,7 +1146,7 @@ class TimelinePanel {
     this.data.turns = m.turns || {};
     this.data.judging = m.judging || [];
     this.data.messages = m.messages || [];
-    this.data.nudges = m.nudges || [];
+    // (nudges array retired 2026-07-07 payload audit: auto-nudges render from the bar's nudgeAuto)
     // Keep the romp loader up through the COLD warm-up rather than flashing "no romp activity" (the user
     // 2026-07-03: on restart the timeline went straight to the empty message instead of the spinning
     // logo). The kernel's live-first build is PARTIAL (m.warming) — on a cold connect the SDK backend and
@@ -1391,7 +1391,7 @@ class TimelinePanel {
   _buildCompressMap(turns, gapCT, now) {
     const iv = [];
     for (const sid in turns) for (const t of (turns[sid] || [])) {
-      const s0 = (t.proc != null ? t.proc : t.start), a = s0, b = Math.max(t.end || s0, s0);
+      const s0 = t.start, a = s0, b = Math.max(t.end || s0, s0);
       if (b > a) iv.push([a, b]);
     }
     if (!iv.length) return null;
@@ -1516,7 +1516,7 @@ class TimelinePanel {
     // typed/queued/enqueue = the user's prompt (dot); drain/absorbed/decision = peer/queue work (bar). This
     // is the fix for the user landing on "an edit" or "my own message" (the start glyph of a drain turn is a
     // tool-use boundary or the coincident message-arrival dot), never the work.
-    const kindWork = !!(byId && byId.src && byId.src !== 'typed' && byId.src !== 'queued' && byId.src !== 'enqueue');
+    const kindWork = !!(byId && byId.src && byId.src !== 'typed' && byId.src !== 'queued');
     const onWork = !!byId && (f.anchor === 'work' ? true : (f.anchor === 'prompt' ? false : kindWork));
     const sid = byId ? byId.sid : this._laneForFocusSid(f.sid);  // else fall back to sid (fork-aware)
     const t = byId ? byId.t : f.t;                               // else the written time (turn START)
@@ -1920,7 +1920,6 @@ class TimelinePanel {
     const ts = (this.data && this.data.turns && this.data.turns[sid]) || [];
     let best = null, bestd = Infinity;
     for (const x of ts) {
-      if (x.src === 'enqueue') continue;
       const d = (t >= x.start && t <= x.end) ? 0 : Math.min(Math.abs(t - x.start), Math.abs(t - x.end));
       if (d < bestd) { bestd = d; best = x; }
     }
@@ -1985,9 +1984,8 @@ class TimelinePanel {
     // An event is positioned at its PROCESS-START (when it began affecting the workflow). While still
     // pending (queued / in-flight, not yet worked) it rides the live `now` edge (nowS); once processed
     // the data carries a FIXED past time so it can never equal now again (anti-"perpetual-just-landing").
-    // A resolved enqueue snaps to its resolution time (t.proc), not submission.
     const execAt = (mm) => mm.pending ? nowS : mm.exec;
-    const startAt = (t) => t.pending ? nowS : (t.proc != null ? t.proc : t.start);
+    const startAt = (t) => t.pending ? nowS : t.start;
     // LANE IDENTITY IS THE SID (data.turns + vidx + connectors all key by session.id, since two
     // live sessions can share a name and a rename keeps the id). `name` is display-only.
     const turnsOf = (sid) => data.turns[sid] || [];
@@ -2206,7 +2204,7 @@ class TimelinePanel {
         const BRIDGE = 180;
         let pe = null, ns = null;
         for (const t of turnsOf(s.id)) {
-          if (t.src === 'enqueue' || t.end <= t.start) continue;
+          if (t.end <= t.start) continue;
           if (t.end <= a0 + 1 && (pe == null || t.end > pe)) pe = t.end;
           if (t.start >= b0 - 1 && (ns == null || t.start < ns)) ns = t.start;
         }
@@ -2262,7 +2260,7 @@ class TimelinePanel {
       const CCAP = 300;
       for (const cp of (s.compactions || [])) {
         if (cp.t < t0 || cp.t > t1) continue;
-        const cs = Math.max(cp.prev != null ? cp.prev : cp.t, cp.t - CCAP, t0);
+        const cs = Math.max(cp.t - CCAP, t0);
         const ce = Math.min(cp.t, t1);
         const cx = x(cs), cw = Math.max(6, x(ce) - cx), eh = BAR_H + 5;
         const cback = el('rect', { x: cx, y: y - BAR_H / 2, width: cw, height: BAR_H, rx: 2, fill: s.color, opacity: 0.9 });
@@ -2647,7 +2645,7 @@ class TimelinePanel {
         // 2026-06-23, replacing the old white ⚡ bolt). A button/retry nudge renders as a normal prompt dot.
         const tip = t.nudgeAuto
           ? () => '<div class="r"><img src="/media/romp-swirl-glyph.svg" width="13" height="13" style="vertical-align:-2px;margin-right:5px;border-radius:2px"><span class="who" style="color:#fff">romp · nudge</span><span class="t">' + clock(startAt(t)) + '</span></div>' + this.body('romp nudged ' + esc(s.name))
-          : () => '<div class="r"><span class="chip" style="background:' + s.color + '"></span><span class="who" style="color:' + s.color + '">' + esc(s.name) + '</span><span class="t">' + clock(startAt(t)) + '</span>' + (t.src === 'enqueue' ? (t.pending ? '<span class="k">queued</span>' : '') : '') + '</div>' + this.body(this.req(t));
+          : () => '<div class="r"><span class="chip" style="background:' + s.color + '"></span><span class="who" style="color:' + s.color + '">' + esc(s.name) + '</span><span class="t">' + clock(startAt(t)) + '</span></div>' + this.body(this.req(t));
         dot(dx, y, t.nudgeAuto ? '#000' : s.color, tip, () => { this._select(s.id); this.openChat(t.tid || s.id, t.uuid, false, false, startAt(t), 'user'); });   // auto-nudge → a black dot (the swirl reads on it); prompt-intent → time fallback restricted to user turns
         if (t.nudgeAuto) {                               // the romp favicon swirl INSIDE the black dot; pointer-events:none → the dot keeps its hover/click
           const sz = DOT_R * 1.9;
@@ -2840,11 +2838,11 @@ class TimelinePanel {
   // WORK (t.summary — what the agent DID); the two are now separate captions, dot vs line.
   req(t) { return t.msgCaption ? esc(t.msgCaption) : (t.prompt ? esc(t.prompt.slice(0, 120)) : ''); }
   // activity-bar hover = what the agent DID: the work period's own caption (t.summary), or a readable
-  // reply line (t.reply) if the kernel supplied one. Only when there's NO work caption yet do we fall
+  // Only when there's NO work caption yet do we fall
   // back to the request (the prompt) — "working on… <prompt>" in progress, else "request: <prompt>"
   // muted — so we never invent a result the summarizer hasn't produced.
   barBody(t, ongoing) {
-    const work = t.reply ? esc(t.reply) : (t.summary ? esc(t.summary) : '');
+    const work = t.summary ? esc(t.summary) : '';
     if (work) return '<div class="b">' + work + '</div>';
     const reqp = t.prompt ? esc(t.prompt.slice(0, 120)) : '';
     if (ongoing) return '<div class="b"><span style="opacity:.55;font-style:italic">working on: </span>' + (reqp || 'awaiting summary') + '</div>';

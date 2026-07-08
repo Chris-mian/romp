@@ -184,7 +184,6 @@ test("prefixInbound: timeline {type:data} payload — sessions, turns keys + bar
       turns: { [U]: [{ id: "ev-1", tid: U, start: 1, end: 2 }] },
       messages: [{ id: "m1", fromId: U, toId: V, sent: 1, exec: 2 }],
       judging: [{ judge: "planner", sid: U, t: 1 }],
-      nudges: [{ sid: U, t: 2, count: 1 }],
       activeChat: { tid: U, name: "sess1" },
       now: 1000,
     },
@@ -198,7 +197,6 @@ test("prefixInbound: timeline {type:data} payload — sessions, turns keys + bar
   assert.equal(d.messages[0].fromId, "jetty:" + U);
   assert.equal(d.messages[0].toId, "jetty:" + V);
   assert.equal(d.judging[0].sid, "jetty:" + U);
-  assert.equal(d.nudges[0].sid, "jetty:" + U);
   assert.equal(d.activeChat.tid, "jetty:" + U, "the active-chat cue lights the prefixed lane");
   assert.equal(d.now, 1000, "scalar fields untouched");
 });
@@ -209,7 +207,6 @@ test("prefixInbound: timeline {type:bars} detail message (top-level turns/marks)
     turns: { [U]: [{ id: "ev-1", tid: U }] },
     judging: [{ judge: "closer", sid: U, t: 5 }],
     messages: [],
-    nudges: [],
     now: 7,
   });
   assert.deepEqual(Object.keys(out.turns), ["jetty:" + U]);
@@ -225,17 +222,16 @@ test("prefixTimelineData: local host is the identity transform", () => {
 
 test("mergeHostTimelines: local lanes first, host stamped per session, turns/marks unioned, chrome local", () => {
   const perHost = {
-    "": { sessions: [{ id: U, name: "loc" }], turns: {}, messages: [], judging: [], nudges: [],
+    "": { sessions: [{ id: U, name: "loc" }], turns: {}, messages: [], judging: [],
           now: 1000, usage: { u: 1 }, focus: { nonce: 3 } },
     jetty: { sessions: [{ id: "jetty:" + V, name: "jetty:rem" }], turns: { ["jetty:" + V]: [{ id: "e" }] },
-             messages: [{ fromId: "jetty:" + V }], judging: [], nudges: [{ sid: "jetty:" + V, t: 1 }], now: 999 },
+             messages: [{ fromId: "jetty:" + V }], judging: [], now: 999 },
   };
   const m = mergeHostTimelines(perHost, ["", "jetty"]);
   assert.deepEqual(m.sessions.map((s: any) => s.id), [U, "jetty:" + V], "local group first, remote below");
   assert.deepEqual(m.sessions.map((s: any) => s.host), ["", "jetty"], "owning host stamped (drives the lane-group gap)");
   assert.deepEqual(Object.keys(m.turns), ["jetty:" + V]);
   assert.equal(m.messages.length, 1);
-  assert.equal(m.nudges[0].sid, "jetty:" + V);
   assert.equal(m.now, 1000, "the LOCAL kernel is the clock authority");
   assert.deepEqual(m.usage, { u: 1 }, "usage (account rate-limit bars) stays local");
   assert.deepEqual(m.focus, { nonce: 3 }, "cross-pane focus stays local");
@@ -243,8 +239,8 @@ test("mergeHostTimelines: local lanes first, host stamped per session, turns/mar
 
 test("mergeHostBars: per-host bars union — one host's push can't clobber another's (applyBars replaces wholesale)", () => {
   const perHost = {
-    "": { type: "bars", turns: { [U]: [{ id: "a" }] }, messages: [], judging: [{ judge: "planner", sid: U, t: 1 }], nudges: [], now: 50 },
-    jetty: { type: "bars", turns: { ["jetty:" + V]: [{ id: "b" }] }, messages: [], judging: [], nudges: [], now: 49 },
+    "": { type: "bars", turns: { [U]: [{ id: "a" }] }, messages: [], judging: [{ judge: "planner", sid: U, t: 1 }], now: 50 },
+    jetty: { type: "bars", turns: { ["jetty:" + V]: [{ id: "b" }] }, messages: [], judging: [], now: 49 },
   };
   const m = mergeHostBars(perHost, ["", "jetty"]);
   assert.deepEqual(Object.keys(m.turns).sort(), [U, "jetty:" + V].sort());
@@ -259,8 +255,8 @@ test("mergeHostBars: warming is true if ANY host is still the cold partial (keep
   // the user 2026-07-03: on a cold restart the timeline flashed "no romp activity" instead of the romp
   // loader. The kernel's live-first build is PARTIAL (warming); merged warming must be sticky across hosts
   // so a warmed local + a still-cold remote keeps the loader until the remote settles.
-  const warm = { type: "bars", turns: { [U]: [{ id: "a" }] }, messages: [], judging: [], nudges: [], now: 50, warming: false };
-  const cold = { type: "bars", turns: {}, messages: [], judging: [], nudges: [], now: 50, warming: true };
+  const warm = { type: "bars", turns: { [U]: [{ id: "a" }] }, messages: [], judging: [], now: 50, warming: false };
+  const cold = { type: "bars", turns: {}, messages: [], judging: [], now: 50, warming: true };
   assert.equal(mergeHostBars({ "": warm, jetty: cold }, ["", "jetty"]).warming, true, "any warming host → keep warming");
   assert.equal(mergeHostBars({ "": warm }, ["", "jetty"]).warming, false, "all settled → warming clears");
   assert.equal(mergeHostBars({ "": cold }, [""]).warming, true, "the cold local partial is warming");

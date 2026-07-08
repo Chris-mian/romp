@@ -10,7 +10,7 @@ import { fleetVisibleRoots } from "./fleet-roots";
 type Color = { bg: string; fg: string } | null;
 interface LedgerNode {
   id: string; text: string; depth: number; done: boolean; blocked: boolean;
-  t: number; mt?: number; current: boolean; derived?: boolean; recent?: boolean;
+  t: number; mt?: number; current: boolean; derived?: boolean;
   cleared?: boolean; onpath?: boolean; children?: string[];
   summary?: string | null; blockSummary?: string | null; _rec?: number;
   // EXACT turn uuids the kernel already sends per node (build_session tree) — let the fleet deep-link a node to

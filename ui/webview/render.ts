@@ -47,7 +47,7 @@ marked.use({
 
 // One answered (or pending) question on an AskUserQuestion turn: the prompt + its options, plus the
 // user's answer TEXT per question (`chosen`). Answer text may name an option label OR be free-text
-// ("Other"), and is empty while the question is still pending. multiSelect → chosen has >1 entry.
+// ("Other"), and is empty while the question is still pending (multi-select answers arrive pre-split).
 type AskAnswerBlock = { question: string; header?: string; options: { label: string; description?: string }[]; chosen: string[] };
 
 type ChatEvent = (
@@ -97,7 +97,7 @@ type ChatEvent = (
   | { kind: "queued"; texts: { md: string; followUp?: boolean; goal?: string; fuCtx?: string; idx?: number; cancelable?: boolean }[]; ts?: string; uuid?: string }
   // The turn stopped on an API error (event-based: transcript isApiErrorMessage). The session is BLOCKED
   // until retried — a red-dot card at the bottom with a Retry button (the user 2026-06-16).
-  | { kind: "apiError"; text: string; status?: number; category?: string; ts?: string; uuid?: string }
+  | { kind: "apiError"; text: string; status?: number; ts?: string; uuid?: string }
   | { kind: "compact"; trigger?: string; preTokens?: number; postTokens?: number; summary?: string; ts?: string; uuid?: string }
   // LIVE compaction in progress (kernel-driven, event-based): an animated inline element while the session
   // compacts — sits above any queued/provisional message, and is replaced by the "compact" divider above
@@ -192,19 +192,17 @@ const views = new Map<string, View>();
 // no entry at all = not awaiting → hidden.
 const liveAsks = new Map<string, ParsedAsk | null>();
 
-// Per-session rolling digest (purpose + a few timestamped bullets), shown in the
-// #ledger box just below the tabs. Swaps with the active tab; pushed by the host.
-interface LedgerBullet { text: string; t?: number; id?: string; sid?: string; tlId?: string; }   // id/sid = locate anchor; tlId = the timeline atom (turn DOT) to light on hover
+// Per-session rolling digest (headline + goal tree + Recent), feeding the tab tooltip and the
+// Fleet view. (The in-chat #ledger box and its bullets list are retired — 2026-07-07 payload audit.)
 // A node of the goal-graph overview tree: open paths are expanded, done nodes are pruned to leaves.
 // `current` = the focus node being worked on (gets a pointer + the live elapsed); a `done` node shows
 // its completion time, recency-coloured, on the right (the user 2026-06-16).
 // `derived` = this node is done only because all its children are (the kernel propagates completion up
 // the tree), as opposed to an explicitly-asserted done. Rendered as the blue ✓ disc dimmed (the user
 // 2026-06-16). Empty/false → explicit done (full disc).
-interface LedgerTreeNode { id: string; text: string; depth: number; done: boolean; blocked: boolean; t?: number; mt?: number; current: boolean; derived?: boolean; recent?: boolean; cleared?: boolean; onpath?: boolean; promptAnchorUuid?: string | null; anchorUuid?: string | null; children?: string[]; summary?: string | null; blockSummary?: string | null; _rec?: number; }   // summary/blockSummary = the distiller's takeaway / decision brief, revealed by the row's ⊕ expander; _rec = render-stamped subtree-rolled-up recency
-// tree = the goal overview (preferred view); bullets = captioned-turn fallback for goal-less sessions.
-interface LedgerRecent { text: string; t: number; done?: boolean; cleared?: boolean; blocked?: boolean; }   // tab-hover "Recent": up-to-5 most-recent TOP tasks across live + archive, any status (the user 2026-06-30)
-interface Ledger { summary: string; tree?: LedgerTreeNode[]; bullets: LedgerBullet[]; current?: LedgerBullet | null; recent?: LedgerRecent[]; }
+interface LedgerTreeNode { id: string; text: string; depth: number; done: boolean; blocked: boolean; t?: number; mt?: number; current: boolean; derived?: boolean; cleared?: boolean; onpath?: boolean; promptAnchorUuid?: string | null; anchorUuid?: string | null; children?: string[]; summary?: string | null; blockSummary?: string | null; _rec?: number; }   // summary/blockSummary = the distiller's takeaway / decision brief, revealed by the row's ⊕ expander; _rec = render-stamped subtree-rolled-up recency
+interface LedgerRecent { text: string; t: number; }   // tab-hover "Recent": up-to-5 most-recent TOP tasks across live + archive, any status (the user 2026-06-30)
+interface Ledger { summary: string; tree?: LedgerTreeNode[]; current?: { t?: number } | null; recent?: LedgerRecent[]; }
 const ledgers = new Map<string, Ledger | null>();
 
 function el(tag: string, cls?: string): HTMLElement {
@@ -2110,9 +2108,7 @@ function showTabTip(tab: HTMLElement, s: Session): void {
     const bar = ctxBar(); setCtxBar(bar, s.status.ctx, s.status.state === "compacting", s.status.ctxColor);
     cr.appendChild(bar); tip.appendChild(cr);
   }
-  // ledger rows, LABELLED + aligned with the rows above (the user 2026-06-23 v3): the summary, then the
-  // collapsed ledger's current-top-goal with its recency-coloured "(Xm ago)" — the same line the ledger
-  // shows when collapsed (currentTopGoal + nodeRecency, via the same stamp the active ledger uses).
+  // ledger rows, LABELLED + aligned with the rows above (the user 2026-06-23 v3): the summary, then Recent.
   const lg = ledgers.get(s.id);
   if (lg?.summary) {
     const r = el("div", "tab-tip-row");
@@ -4032,120 +4028,6 @@ function toggleLedgerCollapsed() {
   renderTabs(); // refresh the ▾/▸ glyph
 }
 
-// FLIP the collapsed goal text into its pinned row, then fade the title + the other rows in AROUND it
-// (the user 2026-06-18) — so the compact line visibly settles where it belongs. Fully guarded: any missing
-// piece, no movement, or prefers-reduced-motion → it just shows, no animation.
-function morphLedgerExpand(host: HTMLElement, wrap: HTMLElement, from: { left: number; top: number }) {
-  if (typeof requestAnimationFrame !== "function") return;
-  try { if (typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches) return; } catch { /* ignore */ }
-  const curRow = wrap.querySelector(".ledger-tnode.ledger-curtop") as HTMLElement | null;
-  const curText = curRow?.querySelector(".ledger-ttext") as HTMLElement | null;
-  if (!curText || !curText.getBoundingClientRect) return;
-  const to = curText.getBoundingClientRect();
-  const dx = from.left - to.left, dy = from.top - to.top;
-  if (!dx && !dy) return;
-  // hide EVERYTHING except the gliding text — including the curTop row's OWN checkbox / time / caret, so
-  // nothing but the text moves until it's home; it ALL fades in only after the morph lands (the user 2026-06-18).
-  const fade: HTMLElement[] = [];
-  const sumEl = host.querySelector(".ledger-summary") as HTMLElement | null;
-  if (sumEl) fade.push(sumEl);
-  wrap.querySelectorAll(".ledger-tnode").forEach((r) => {
-    const row = r as HTMLElement;
-    if (row !== curRow) { fade.push(row); return; }
-    Array.from(row.children).forEach((c) => { if (c !== curText) fade.push(c as HTMLElement); });   // curRow's mark/time/caret
-  });
-  fade.forEach((e) => { e.style.opacity = "0"; });
-  // The collapsed line sits ABOVE the scroll-clipped tree, so animating the real text would either get
-  // clipped mid-flight OR (if we un-clip the tree) flash the whole uncropped list — the bug the user hit.
-  // Instead glide a CLONE in a non-clipped fixed layer; the real text stays hidden in its (still-cropped)
-  // row and is revealed the instant the clone lands (the user 2026-06-18).
-  const clone = curText.cloneNode(true) as HTMLElement;
-  let cs: CSSStyleDeclaration | null = null;
-  try { cs = (typeof getComputedStyle === "function") ? getComputedStyle(curText) : null; } catch { /* ignore */ }
-  clone.style.cssText = "";
-  clone.style.position = "fixed"; clone.style.left = to.left + "px"; clone.style.top = to.top + "px";
-  clone.style.width = to.width + "px"; clone.style.margin = "0"; clone.style.zIndex = "9999"; clone.style.pointerEvents = "none";
-  if (cs) { clone.style.font = cs.font; clone.style.color = cs.color; clone.style.fontWeight = cs.fontWeight; clone.style.letterSpacing = cs.letterSpacing; }
-  clone.style.transformOrigin = "left top";
-  clone.style.transition = "none";
-  clone.style.transform = `translate(${dx}px, ${dy}px)`;   // INVERT: start at the collapsed line's spot
-  document.body.appendChild(clone);   // body = never scroll-clipped
-  curText.style.opacity = "0";        // hide the real text while the clone flies
-  void clone.offsetWidth;             // commit the FROM transform
-  // PLAY: glide to the real slot; the rest fades in the INSTANT it lands (delay == glide duration, no pause)
-  clone.style.transition = "transform 0.45s cubic-bezier(0.22, 0.61, 0.36, 1)";
-  clone.style.transform = "translate(0px, 0px)";
-  fade.forEach((e) => { e.style.transition = "opacity 0.2s ease 0.45s"; e.style.opacity = ""; });
-  setTimeout(() => { clone.remove(); curText.style.opacity = ""; }, 470);   // swap clone → real text when it lands
-  setTimeout(() => { fade.forEach((e) => { e.style.transition = ""; e.style.opacity = ""; }); }, 720);
-}
-
-// Reverse of the above (the user 2026-06-18): on COLLAPSE the tree is gone, so just GLIDE the now-compact
-// summary line UP from where the curTop row's text sat in the expanded tree — the goal text "collects back"
-// into the collapsed line. The summary lives in the head (not the scroll-clipped tree), so no overflow tweak.
-function morphLedgerCollapse(sumEl: HTMLElement, from: { left: number; top: number }) {
-  if (typeof requestAnimationFrame !== "function") return;
-  try { if (typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches) return; } catch { /* ignore */ }
-  if (!sumEl.getBoundingClientRect) return;
-  const to = sumEl.getBoundingClientRect();
-  const dx = from.left - to.left, dy = from.top - to.top;
-  if (!dx && !dy) return;
-  sumEl.style.transition = "none";
-  sumEl.style.transformOrigin = "left top";
-  sumEl.style.transform = `translate(${dx}px, ${dy}px)`;
-  void sumEl.offsetWidth;
-  sumEl.style.transition = "transform 0.42s cubic-bezier(0.22, 0.61, 0.36, 1)";
-  sumEl.style.transform = "translate(0px, 0px)";
-  setTimeout(() => { for (const p of ["transition", "transform", "transformOrigin"]) (sumEl.style as any)[p] = ""; }, 600);
-}
-
-// (Relevance categorization — colored labels + filter checkboxes — was removed
-// from the ledger per the user; that lives in the FEED panel now. The ledger keeps
-// the plain newest-first bullets, no "·", live-refresh.)
-// A small dim section header inside the overview (goals / working on / done).
-function ledgerLabel(text: string): HTMLElement {
-  const lab = el("div", "ledger-label");
-  lab.textContent = text;
-  return lab;
-}
-
-// The ONE goal the collapsed ledger shows: the depth-0 root on the active path (its subtree holds the
-// `current` node), else the freshest unfinished root, else the first root. Shared by renderLedger (the
-// collapsed line + the pinned-on-expand row) and refreshLedgerAges (ticking the collapsed line's time).
-function currentTopGoal(tree: LedgerTreeNode[]): LedgerTreeNode | null {
-  const roots0 = tree.filter((n) => n.depth === 0);
-  return roots0.find((r) => r.current || r.onpath)
-    || roots0.filter((r) => !r.done).sort((a, b) => ((b.mt ?? b.t) || 0) - ((a.mt ?? a.t) || 0))[0]
-    || roots0[0] || null;
-}
-
-// The recency a node DISPLAYS / sorts by: its subtree-rolled-up freshness (_rec, stamped below), falling
-// back to its own mt/t before the stamp exists. So a parent reflects the most recent activity ANYWHERE in
-// its subtree, not just its own last-touch (the user 2026-06-22).
-function nodeRecency(n: LedgerTreeNode): number { return (n._rec ?? n.mt ?? n.t) || 0; }
-
-// Roll the freshest activity up to every node: _rec = max(own mt/t, every descendant's, and — for the live
-// CURRENT node — the working timer cur.t). The bug it fixes: a top goal whose deep child was active 12m ago
-// read "(2d ago)" because the label used the node's OWN mt while the ordering already used subtree-max — so
-// the freshest row sorted to the top yet showed a stale time (the user 2026-06-22). All timestamps, so it's
-// clock-invariant: stamped once per full render, reused by refreshLedgerAges's same-content ticks.
-function stampSubtreeRecency(tree: LedgerTreeNode[], cur: LedgerBullet | null): void {
-  const byId = new Map(tree.map((n) => [n.id, n] as const));
-  const eff = (n: LedgerTreeNode) => (n.current && cur && cur.t) ? Math.max(cur.t, (n.mt ?? n.t) || 0) : ((n.mt ?? n.t) || 0);
-  const inflight = new Set<string>();
-  const calc = (n: LedgerTreeNode): number => {
-    if (n._rec != null) return n._rec;
-    if (inflight.has(n.id)) return eff(n);   // cycle guard (a malformed graph can't hang the render)
-    inflight.add(n.id);
-    let r = eff(n);
-    for (const cid of n.children || []) { const c = byId.get(cid); if (c) r = Math.max(r, calc(c)); }
-    n._rec = r;
-    return r;
-  };
-  for (const n of tree) n._rec = undefined;   // fresh stamp each full render (a new payload reuses no objects, but be safe)
-  for (const n of tree) calc(n);
-}
-
 function renderLedger() {
   // The in-chat ledger box was REMOVED (the user 2026-06-24): the per-session work digest now lives in the
   // tab hover tooltip (Summary + last-5 worked-on items) and the Fleet view, so the box was redundant. Keep
@@ -4211,78 +4093,6 @@ function renderBgTasks() {
     list.appendChild(row);
   }
   host.appendChild(list);
-}
-
-// A tree node's right-side time: the CURRENT node shows its live elapsed "(Xm)" (how long it's been
-// worked on, from the in-progress turn's start); a DONE node shows when it finished "(Xm ago)". Both
-// recency-tinted. Open non-current nodes show nothing. Factored out so refreshLedgerAges ticks it too.
-function setTnodeTime(time: HTMLElement, n: LedgerTreeNode, cur: LedgerBullet | null, now: number) {
-  if (n.current && cur && cur.t) {
-    time.textContent = `(${agehms(now - cur.t)})`; time.style.color = ageColorReadable(now - cur.t);
-  } else if (n.done && nodeRecency(n)) {
-    // a finished task's "(Xm ago)" is time since the freshest activity in ITS SUBTREE (rolled-up recency,
-    // the user 2026-06-22) — so a done parent reflects deep child work, not just its own resolution mt.
-    const dt = nodeRecency(n);
-    time.textContent = `(${agehms(now - dt)} ago)`; time.style.color = ageColorReadable(now - dt);
-  } else {
-    time.textContent = "";
-  }
-}
-
-// Same-content tick: refresh the existing bullets' "Xm ago" ages + recency colors
-// in place (rows kept alive so a hover/click survives). Order matches bullets[0..8).
-function refreshLedgerAges(host: HTMLElement, l: Ledger, now: number) {
-  const tree = l.tree || [];
-  const bullets = l.bullets || [];
-  // title hue tracks the freshest activity across the whole overview
-  const newestT = Math.max(l.current && l.current.t ? l.current.t : 0,
-    ...tree.map((n) => n.t || 0), ...bullets.map((b) => b.t || 0));
-  const sum = host.querySelector(".ledger-summary") as HTMLElement | null;
-  if (sum && newestT) sum.style.color = ageColorReadable(now - newestT);
-  // the collapsed line's "(Xm)" time ticks with the clock too (present only while collapsed)
-  const ctime = sum ? (sum.querySelector(".ledger-summary-time") as HTMLElement | null) : null;
-  if (ctime) { const ct = currentTopGoal(tree); if (ct) setTnodeTime(ctime, ct, l.current || null, now); }
-  // tree node times ("(Xm)" live current + "(Xm ago)" done) tick with the wall clock
-  host.querySelectorAll(".ledger-tnode").forEach((row, i) => {
-    const n = tree[i]; const time = row.querySelector(".ledger-ttime") as HTMLElement | null;
-    if (n && time) setTnodeTime(time, n, l.current || null, now);
-    // keep a done item's text colour in step with its (recency-tinted) time as the clock ticks
-    const txt = row.querySelector(".ledger-ttext") as HTMLElement | null;
-    if (n && txt && n.done && nodeRecency(n)) txt.style.color = ageColorReadable(now - nodeRecency(n));
-  });
-  // fallback bullets (goal-less sessions)
-  const bs = bullets.slice(0, LEDGER_BULLET_CAP);
-  host.querySelectorAll(".ledger-bullet").forEach((row, i) => {
-    const b = bs[i]; if (!b) return;
-    const col = b.t ? ageColorReadable(now - b.t) : "";
-    const age = row.querySelector(".ledger-bullet-age") as HTMLElement | null;
-    const txt = row.querySelector(".ledger-bullet-text") as HTMLElement | null;
-    if (age) { age.textContent = b.t ? `${agehms(now - b.t)} ago` : ""; if (col) age.style.color = col; }
-    if (txt && col) txt.style.color = col;
-  });
-}
-
-// Wire a ledger bullet exactly like a goal-tree zone: hover (120ms intent debounce)
-// → transient timeline highlight of the bullet's event; leave → clear; click →
-// land on the bullet's turn IN THE CHAT by uuid. b.id is the turn's atom uuid
-// (build_session), a real .turn[data-uuid] — so scroll to it directly, no host
-// round-trip. (The old `ledgerLocate` host message was never handled — a dead
-// click — and would have been time-based anyway; the user 2026-06-19.)
-function wireBulletNav(row: HTMLElement, b: LedgerBullet) {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  row.title = b.id ? "jump to this message" : "jump to this on the timeline";
-  row.addEventListener("mouseenter", () => {
-    timer = setTimeout(() => { timer = undefined; vscodeApi?.postMessage({ type: "ledgerHover", id: b.id, tlId: b.tlId }); }, 120);
-  });
-  row.addEventListener("mouseleave", () => {
-    if (timer) { clearTimeout(timer); timer = undefined; }
-    vscodeApi?.postMessage({ type: "ledgerHover", id: null });
-  });
-  row.addEventListener("click", () => {
-    if (!b.id) return;
-    pendingAnchorIntent = null;                 // a bullet has no kind intent (captioned turn, user or assistant)
-    if (!scrollToAnchor(b.id) && !anchorPendingOlder) landToast("couldn't locate this in the transcript");  // fetching older → re-lands on chatHead
-  });
 }
 
 // ---- live "awaiting your input" widgets (structured: radio / checkbox / submit / text) ----

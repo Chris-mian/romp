@@ -281,16 +281,8 @@ body { display: flex; flex-direction: column; }
   padding: 7px 24px 9px; border-bottom: 1px solid var(--box-border); font-size: 0.95em;
   background: rgba(255, 255, 255, 0.05); border-radius: 0 0 7px 7px; /* subtle dark panel → max contrast for the bright, constant-lightness recency bullets (ageColorReadable) */
 }
-/* title strip: caret + headline, always visible (even collapsed); a click toggles the overview below */
-.ledger-head { display: flex; align-items: baseline; column-gap: 6px; cursor: pointer; border-radius: 4px; margin: 0 -4px; padding: 0 4px; }
-.ledger-head:hover { background: rgba(255, 255, 255, 0.04); }
-.ledger-caret { flex: 0 0 auto; color: var(--fg); font-size: 1.3em; line-height: 1; opacity: 0.8; }
-.ledger-summary { flex: 1 1 auto; min-width: 0; color: var(--fg); font-weight: 600; overflow-wrap: anywhere; }
-/* the "(Xm)" time on the collapsed line — lighter than the bold goal text; its colour is the recency tint
-   set inline by setTnodeTime, matching the tree rows (the user 2026-06-21). */
-.ledger-summary-time { font-weight: 400; margin-left: 0.45em; font-size: 0.85em; font-variant-numeric: tabular-nums; white-space: nowrap; }
-/* dim section header inside the overview (used by the goal-less fallback: working on / done) */
-.ledger-label { color: var(--dim); font-size: 0.78em; text-transform: uppercase; letter-spacing: 0.04em; margin: 7px 0 2px; }
+/* (the in-chat ledger box's head/caret/summary/label rules were removed with their DOM — 2026-07-07
+   CSS audit; the live .ledger-* subset below serves the Fleet tree, which builds its own rows.) */
 /* ---- goal-graph overview tree: open paths expanded, done nodes pruned to timed leaves ---- */
 /* width:fit-content hugs the widest row so the right-aligned "(Xm ago)" times sit just past the longest
    checklist item instead of way out at the box's right edge (the user 2026-06-16); max-width keeps a long
@@ -325,7 +317,6 @@ body { display: flex; flex-direction: column; }
 .ledger-tri { flex: 0 0 auto; width: 0.85em; margin-right: 3px; text-align: center; color: var(--dim); font-size: 0.7em; line-height: 1; }
 .ledger-tri.nav { cursor: pointer; }
 .ledger-tri.nav:hover { color: var(--fg); }
-.ledger-tree.flat .ledger-tri { display: none; }
 /* thin separator between top-level goals so distinct goals read apart (the user 2026-06-16); the first
    top goal gets none. */
 .ledger-tnode.ledger-top { border-top: 1px solid var(--box-border); margin-top: 9px; padding-top: 6px; }
@@ -376,28 +367,6 @@ body { display: flex; flex-direction: column; }
    to every other item — no filled dot overwriting the mark, no bold/recolour. The highlight is the ROW,
    never the glyph or the text (the user 2026-06-17). */
 .ledger-tnode.current { background: rgba(255, 255, 255, 0.06); box-shadow: inset 2px 0 0 var(--fg); }
-/* the CURRENT top goal — pinned to the top of the expanded tree and given a calm blue left-accent + tint,
-   so the collapsed ledger line maps right onto it the instant you expand (the user 2026-06-18). Distinct
-   from the white .current accent above, which marks the exact active sub-node deeper in the tree. */
-.ledger-tnode.ledger-curtop { background: rgba(143, 179, 255, 0.08); box-shadow: inset 2px 0 0 #8fb3ff; }
-/* working on — the live in-progress turn (italic), shown in the goal-less fallback view */
-.ledger-current { font-style: italic; line-height: 1.45; overflow-wrap: anywhere; border-radius: 4px; padding: 1px 5px; margin: 0 -5px; }
-.ledger-current.nav { cursor: pointer; }
-.ledger-current.nav:hover { background: rgba(255, 255, 255, 0.06); }
-/* two LEFT-aligned columns (no "·" markers): the "(X ago)" timestamps form a
-   left column (col 1 = max-content → sized to the widest timestamp), and the
-   bullet text lines up in a consistent column to their right, past a fixed gap.
-   age + text are direct grid cells; each is recency-tinted inline. */
-/* scroll-pane: ~6 bullets tall, the rest scroll into view (the user 2026-06-12). The title
-   (.ledger-summary) sits ABOVE this box so it stays put while the bullets scroll. */
-.ledger-bullets { display: flex; flex-direction: column; row-gap: 3px; margin-top: 1px; max-height: 9.4em; overflow-y: auto; overflow-x: hidden; }
-/* each bullet is a real row → one clean hover bg; the -5px margin/5px padding lets
-   the highlight breathe without shifting content. age column aligned via min-width. */
-.ledger-bullet { display: flex; align-items: baseline; column-gap: 22px; border-radius: 4px; padding: 1px 5px; margin: 0 -5px; }
-.ledger-bullet.nav { cursor: pointer; }
-.ledger-bullet.nav:hover { background: rgba(255, 255, 255, 0.06); }
-.ledger-bullet-age { flex: 0 0 auto; min-width: 5em; white-space: nowrap; text-align: left; font-size: 0.85em; font-variant-numeric: tabular-nums; }
-.ledger-bullet-text { flex: 1 1 auto; min-width: 0; line-height: 1.45; overflow-wrap: anywhere; }
 
 /* ---------- fixed footer: status line + composer ---------- */
 /* Background-task box (the user 2026-06-26): run_in_background tasks the kernel surfaced, between the
@@ -613,7 +582,6 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 }
 .stop-btn:hover { color: var(--st-blocked-bg); background: rgba(229, 72, 77, 0.12); border-color: rgba(229, 72, 77, 0.45); }
 .stop-btn:active { transform: scale(0.88); }
-.stop-btn.stop-flash { color: var(--st-blocked-bg); background: rgba(229, 72, 77, 0.22); border-color: rgba(229, 72, 77, 0.4); }
 .stop-icon { width: 8px; height: 8px; border-radius: 1.5px; background: currentColor; }
 /* WORKING chip: the letters are ONE solid color that breathes between two tones on a sine ease (no
    moving rainbow). Both tones contrast the yellow pill (--st-working-bg). cubic-bezier(0.37,0,0.63,1)
@@ -1061,7 +1029,6 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 }
 .ask-live-opt.focus { background: rgba(255, 255, 255, 0.10); box-shadow: inset 2px 0 0 var(--st-awaiting-bg); }
 .ask-live-opt .ask-optlabel { flex: 0 0 auto; font-weight: 600; }
-.ask-live-note { color: var(--dim); font-size: 0.82em; margin-top: 7px; }
 /* The focused option's side-by-side TUI preview box, reproduced verbatim (the user
    2026-06-13). Monospace + preserved whitespace so the box-drawing/ASCII aligns;
    never wraps (wrapping would shear the layout) — scroll sideways when wider than

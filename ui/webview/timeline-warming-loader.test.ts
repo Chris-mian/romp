@@ -34,5 +34,5 @@ test("a backstop timer guarantees the loader can never trap (CLAUDE.md loader ru
 
 test("the kernel tags the live-first bars build as warming (partial), settled builds as not", () => {
   assert.match(KERNEL, /tl_warming = True\s+# this is the PARTIAL cold build/);
-  assert.match(KERNEL, /"nudges": timeline\["nudges"\], "now": timeline\["now"\], "warming": tl_warming\}/);
+  assert.match(KERNEL, /"now": timeline\["now"\], "warming": tl_warming\}/);
 });

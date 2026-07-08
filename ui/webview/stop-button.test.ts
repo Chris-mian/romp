@@ -41,6 +41,6 @@ test("it's a white square that reveals the pale-red stop tint ONLY on hover, wit
   const hoverRule = (CSS.match(/\.stop-btn:hover \{[^}]*\}/) || [""])[0];
   assert.match(hoverRule, /color: var\(--st-blocked-bg\)/, "pale red square on hover");
   assert.match(hoverRule, /background: rgba\(229, 72, 77/, "pale red background on hover");
-  assert.match(CSS, /\.stop-btn\.stop-flash \{/, "a press-feedback flash");
+  assert.doesNotMatch(CSS, /stop-flash/, "the old flash rule is fully gone (its JS was removed; 2026-07-07 CSS audit)");
   assert.match(CSS, /\.stop-icon \{[^}]*background: currentColor/, "the square stop glyph");
 });

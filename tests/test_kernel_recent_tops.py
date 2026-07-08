@@ -45,9 +45,10 @@ class ArchiveRoots(unittest.TestCase):
         }, status={"g2": "cleared"})
         roots = km._archive_roots(sid)
         texts = sorted(r["text"] for r in roots)
-        self.assertEqual(texts, ["remove emojis", "usage refresh button"], "roots only, blanks dropped, both statuses kept")
-        g2 = next(r for r in roots if r["text"] == "remove emojis")
-        self.assertTrue(g2["cleared"], "a bare-cleared top is INCLUDED (this is what _fleet_archived_tops drops)")
+        self.assertEqual(texts, ["remove emojis", "usage refresh button"],
+                         "roots only, blanks dropped, both statuses kept — a bare-cleared top is INCLUDED"
+                         " (this is what _fleet_archived_tops drops); entries are {text,t} only, the"
+                         " tooltip's exact needs (2026-07-07 payload audit)")
 
     def test_missing_archive_is_empty(self):
         self.assertEqual(km._archive_roots("nope"), [])
