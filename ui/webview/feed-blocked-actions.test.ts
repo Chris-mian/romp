@@ -37,7 +37,7 @@ test("(A) MODAL-ONLY: the buttons are added AROUND wireNodeZones; the MARK stays
   const after = FEED.indexOf("const goWork = wireNodeZones(it, node, mark, txt, meta, !repeat);");
   const acts = FEED.indexOf('el("span", "ftree-node-acts")');
   assert.ok(after > 0 && acts > after, "the action buttons are built after wireNodeZones returns");
-  assert.match(FEED, /wireNodeZones\(it, s, mark, txt, null, true\);/);   // card sub-goal row, unchanged
+  assert.match(FEED, /wireNodeZones\(it, s, mark, txt, null, !repeat\);/);   // card sub-goal row (wire=false for a dim repeat)
   // the mark is never re-bound to an override (no .ftree-mark-resolve anywhere)
   assert.doesNotMatch(FEED, /ftree-mark-resolve/);
   assert.doesNotMatch(CSS, /ftree-mark-resolve/);

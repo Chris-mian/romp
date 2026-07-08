@@ -31,8 +31,8 @@ test("the card shows the DISTILLER's line (summary/blockSummary) but NO why/gene
   assert.doesNotMatch(FEED, /showWhy/);
 });
 
-test("the Sub-goals pref gates the inline checklist on the card", () => {
-  assert.match(FEED, /const subs = \(root && feedPrefs\(\)\.subgoals\)/);
+test("the Sub-goals pref gates the inline sub-goal tree on the card", () => {
+  assert.match(FEED, /if \(root && feedPrefs\(\)\.subgoals\) \{/);   // on → the whole subtree walks; off → no rows
 });
 
 test("the Sub-goals toggle lives in the feed FOOTER (moved out of the gear), writing the shared pref", () => {

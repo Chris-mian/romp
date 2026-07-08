@@ -631,6 +631,9 @@ body.feed-dragging .feed-col.col-asks { outline: 1.5px dashed color-mix(in srgb,
 .fcheck { display: flex; align-items: baseline; column-gap: 7px; line-height: 1.4; font-size: 0.9em; }
 .fcheck-mark { flex: 0 0 auto; width: 1em; text-align: center; color: var(--dim); font-size: 0.9em; }
 .fcheck-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; color: var(--fg); }
+/* a node reached under two parents renders ONCE at full weight and dim on the repeat — same as the modal
+   tree's .ftree-node.repeat, so the card's full sub-goal tree reads identically to the outline. */
+.fcheck.repeat { opacity: 0.5; }
 /* done = the SAME blue ✓ disc as the chat view's to-do checklist (.todo-completed .todo-mark): a white
    ✓ on --check-bg (the user 2026-06-16). The sub-goal text dims to recede but is NOT struck through. */
 .fcheck.done .fcheck-mark {

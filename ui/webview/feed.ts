@@ -966,19 +966,36 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   }
   ho.style.display = ho.children.length ? "" : "none";
 
-  // Inline sub-goal checklist (the user 2026-06-16): the top-level goal IS the card title, so show its
-  // DIRECT sub-goals (the top 2 levels) as a ✓ done / ? question / ▢ open list — the deeper steps stay
-  // in the modal. Skips delegation nodes (kind "handoff"; those render in the delegations section above).
+  // Inline sub-goal tree (the user 2026-06-16; deepened to the WHOLE tree 2026-07-08): the top-level goal IS
+  // the card title, so its sub-goals render below as a ✓ done / ⏸ blocked / ○ open list. When "Sub-goals" is
+  // on, the ENTIRE subtree shows — indented by depth, with the SAME inclusion rules as the modal/outline tree
+  // (renderTreeNode): most-recent-first order (the kernel already sorts children so), a node reached under two
+  // parents renders ONCE (dim ".repeat", not re-descended), and delegation nodes (kind "handoff") are skipped
+  // here — they render in the delegations section above. No time cell / per-node follow-up: those stay in the
+  // modal; the card keeps the compact rows and the same INDENT scale as the modal (TREE_INDENT_EM).
   const cl = a._checklist as HTMLElement;
   cl.innerHTML = "";
   const tree = it.tree || [];
+  const byId = new Map(tree.map((n) => [n.id, n] as const));
   const root = tree.find((n) => n.id === it.itemId) || tree[0];
-  // the "Sub goals" toggle gates the inline checklist on CARDS (the modal always shows the full tree)
-  const subs = (root && feedPrefs().subgoals)
-    ? root.children.map((id) => tree.find((n) => n.id === id)).filter((n): n is AskTreeNode => !!n && n.kind !== "handoff")
-    : [];
-  for (const s of subs.slice(0, 8)) {
-    const row = el("div", "fcheck " + nodeStatusClass(s) + (s.auth ? " auth-" + s.auth : ""));
+  // the "Sub goals" toggle gates the inline tree on CARDS (the modal always shows the full tree)
+  const rows: { node: AskTreeNode; depth: number; repeat: boolean }[] = [];
+  if (root && feedPrefs().subgoals) {
+    const seen = new Set<string>([root.id]);   // a child linking back to the root counts as a repeat (as the modal)
+    const walk = (id: string, depth: number) => {
+      const n = byId.get(id);
+      if (!n || n.kind === "handoff") return;   // delegations render in their own section, not the checklist
+      const repeat = seen.has(n.id);
+      rows.push({ node: n, depth, repeat });
+      if (repeat) return;                        // a repeat is dim + NOT re-descended — mirrors renderTreeNode
+      seen.add(n.id);
+      for (const c of n.children || []) walk(c, depth + 1);
+    };
+    for (const c of root.children || []) walk(c, 0);
+  }
+  for (const { node: s, depth, repeat } of rows) {
+    const row = el("div", "fcheck " + nodeStatusClass(s) + (s.auth ? " auth-" + s.auth : "") + (repeat ? " repeat" : ""));
+    if (depth) row.style.paddingLeft = (depth * TREE_INDENT_EM) + "em";   // same per-level indent as the modal outline
     const mark = el("span", "fcheck-mark");
     // ✓ blue disc (done) / ⏸ red pause (question = blocked) / hollow ○ (not done) — the SAME notation as the
     // ledger checklist + Fleet (the user 2026-06-24: the red ⏸ replaces the amber ? everywhere, for consistency).
@@ -989,8 +1006,9 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
     row.append(mark, txt);
     // a card sub-goal clicks EXACTLY like the modal tree node (the user 2026-06-17): text → the message,
     // checkbox → where it got checked off — separate links — via the SAME wireNodeZones. No time cell here.
-    // (stopPropagation in the handlers keeps a sub-goal click from also opening the card's modal.)
-    wireNodeZones(it, s, mark, txt, null, true);
+    // A dim repeat is display-only (wire=false), like renderTreeNode. (stopPropagation in the handlers keeps
+    // a sub-goal click from also opening the card's modal.)
+    wireNodeZones(it, s, mark, txt, null, !repeat);
     cl.appendChild(row);
   }
   cl.style.display = cl.children.length ? "" : "none";

@@ -56,7 +56,7 @@ test("card sub-goals click EXACTLY like the modal — same wireNodeZones, separa
   // the modal tree node and the card's inline sub-goal checklist BOTH call wireNodeZones, so they navigate
   // identically; the card has no time cell so it passes null for meta.
   assert.match(FEED, /const goWork = wireNodeZones\(it, node, mark, txt, meta, !repeat\);/);   // modal
-  assert.match(FEED, /wireNodeZones\(it, s, mark, txt, null, true\);/);                        // card sub-goal row
+  assert.match(FEED, /wireNodeZones\(it, s, mark, txt, null, !repeat\);/);                     // card sub-goal row
   assert.match(CSS, /\.fcheck \.lz-nav \{[^}]*cursor: pointer/);
   assert.match(CSS, /\.fcheck-mark\.lz-hl \{[^}]*box-shadow/);                                 // checkbox = halo
   assert.match(CSS, /\.fcheck-text\.lz-hl \{[^}]*background/);                                  // text = fill
