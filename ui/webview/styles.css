@@ -225,7 +225,6 @@ body { display: flex; flex-direction: column; }
      positioner (render.ts) clamps it to a small left margin once it's this wide; short tips stay content-sized. */
   max-width: calc(100vw - 12px);
 }
-.tab-tip-be { font-weight: 700; margin-bottom: 4px; }   /* colour set inline = the session's romp identity colour */
 .tab-tip-path { color: var(--dim); word-break: break-all; margin-bottom: 4px; }
 .tab-tip-row { display: flex; gap: 8px; align-items: baseline; }   /* baseline so a wrapping Summary/Latest value aligns to its label */
 .tab-tip-ctx { margin: 4px 0; align-items: center; }   /* the context battery is tall → give it vertical breathing room */

@@ -2067,10 +2067,10 @@ function reorderTo(dragId: string, targetId: string, after: boolean) {
 }
 
 // Rich tab hover tooltip (the user 2026-06-23): a CUSTOM DOM tooltip (a native `title` can't colour/bold).
-// Shows the backend BOLD in the session's own romp identity colour, the full directory path, the git
-// branch, mode / model / effort, the context battery, a labelled "Summary" row, and a labelled "Latest"
-// row = the collapsed ledger's current-top-goal recency-coloured "(Xm ago)". One shared element,
-// repositioned under the hovered tab and clamped on-screen.
+// Shows the full directory path, then labelled field rows — git branch, mode / model / effort, backend —
+// the context battery, a labelled "Summary" row, and a labelled "Latest" row = the collapsed ledger's
+// current-top-goal recency-coloured "(Xm ago)". One shared element, repositioned under the hovered tab and
+// clamped on-screen.
 let tabTipEl: HTMLElement | null = null;
 function hideTabTip(): void { if (tabTipEl) tabTipEl.style.display = "none"; }
 function showTabTip(tab: HTMLElement, s: Session): void {
@@ -2078,23 +2078,18 @@ function showTabTip(tab: HTMLElement, s: Session): void {
   const tip = tabTipEl;
   tip.replaceChildren();
   const now = Date.now() / 1000;
-  // backend, BOLD, coloured BY BACKEND — tmux → green, SDK → blue, the canonical romp _palette shades
-  // (the user 2026-06-23: thematic consistency over the session's identity colour, which v2 had used)
   const be = s.status.backend;
-  if (be === "sdk" || be === "tmux") {
-    const b = el("div", "tab-tip-be");
-    b.textContent = (be === "sdk" ? "SDK" : "tmux") + " backend";
-    b.style.color = be === "tmux" ? "#54B204" : "#1EA1EB";
-    tip.appendChild(b);
-  }
   if (s.cwd) { const d = el("div", "tab-tip-path"); d.textContent = s.cwd; tip.appendChild(d); }
   // labelled rows: git branch (top-level session field, resident even when the head system event is windowed
-  // out of the wire tail — the user 2026-06-30) + mode / model / effort
+  // out of the wire tail — the user 2026-06-30) + mode / model / effort + backend
   const rows: Array<[string, string]> = [];
   if (s.gitBranch) rows.push(["Branch", s.gitBranch]);
   if (s.status.mode) rows.push(["Mode", prettyMode(s.status.mode)]);
   if (s.status.model) rows.push(["Model", s.status.model]);
   if (s.status.effort) rows.push(["Effort", s.status.effort]);
+  // Backend is a plain labelled FIELD now, under the others (the user 2026-07-08 — no longer a coloured
+  // "SDK backend" badge at the top of the tooltip; it reads as one of the session's config fields).
+  if (be === "sdk" || be === "tmux") rows.push(["Backend", be === "sdk" ? "SDK" : "tmux"]);
   for (const [k, v] of rows) {
     const r = el("div", "tab-tip-row");
     const ke = el("span", "tab-tip-k"); ke.textContent = k;

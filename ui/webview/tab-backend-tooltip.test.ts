@@ -1,8 +1,7 @@
-// The chat tab's hover tooltip — a CUSTOM DOM tooltip (a native `title` can't colour/bold). The backend label
-// is BOLD and coloured BY BACKEND (tmux → green #54B204, SDK → blue #1EA1EB — the canonical romp _palette
-// shades; the user 2026-06-23, superseding v2's session-identity colour). Plus the full directory path, the
-// git branch, mode/model/effort, the context BATTERY (not a text %), and the ledger's latest line
-// recency-coloured with "(Xm ago)". Source-pin over render.ts + css.
+// The chat tab's hover tooltip — a CUSTOM DOM tooltip (a native `title` can't colour/bold). It shows the full
+// directory path, then labelled field rows — git branch, mode/model/effort, and BACKEND (a plain field now,
+// the user 2026-07-08 — no longer a coloured "SDK backend" badge at the top) — the context BATTERY (not a
+// text %), and the ledger's latest line recency-coloured with "(Xm ago)". Source-pin over render.ts + css.
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
@@ -22,13 +21,13 @@ test("the tab tooltip is a custom DOM tooltip shown on hover, not a native title
   assert.doesNotMatch(RENDER, /tab\.title = s\.name \+ " · " \+ beLabel/);
 });
 
-test("backend is bold and coloured BY BACKEND — tmux green / SDK blue, the canonical _palette shades (the user 2026-06-23)", () => {
-  // tmux → green #54B204, SDK → blue #1EA1EB (bin/romp _palette); supersedes v2's session-identity colour
-  assert.match(RENDER, /b\.style\.color = be === "tmux" \? "#54B204" : "#1EA1EB";/);
-  assert.doesNotMatch(RENDER, /b\.style\.color = s\.color\.bg/);   // identity colour dropped (v2 reversed)
-  assert.match(CSS, /\.tab-tip-be \{[\s\S]*?font-weight: 700/);
+test("backend is a plain labelled FIELD ROW under the others — no coloured top badge (the user 2026-07-08)", () => {
+  // it's just another "Backend: SDK|tmux" row alongside Branch/Mode/Model/Effort, not a bold coloured badge
+  assert.match(RENDER, /rows\.push\(\["Backend", be === "sdk" \? "SDK" : "tmux"\]\)/);
+  assert.doesNotMatch(RENDER, /"tab-tip-be"/, "no dedicated backend-badge element");
+  assert.doesNotMatch(RENDER, /be === "tmux" \? "#54B204" : "#1EA1EB"/, "no per-backend colour on the tooltip");
+  assert.doesNotMatch(CSS, /\.tab-tip-be \b/, "the badge's CSS rule is gone");
   assert.doesNotMatch(RENDER, /tab-tip-name/);             // session name still dropped
-  assert.doesNotMatch(CSS, /\.be-sdk|\.be-tmux/);          // inline hex, not per-backend CSS classes
 });
 
 test("v4: git branch + context battery + Summary row + the last 5 worked-on items, recency-coloured (the user 2026-06-24)", () => {
