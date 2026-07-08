@@ -14,7 +14,12 @@ import * as path from "node:path";
 const SRC_PATH = path.resolve(process.cwd(), "..", "ui", "romp-timeline-view.js");
 const SRC = fs.readFileSync(SRC_PATH, "utf8");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { isFreshNowSample, reanchorEdge, interpNow } = require(SRC_PATH);
+const { isFreshNowSample, reanchorEdge, interpNow } = require(SRC_PATH) as {
+  isFreshNowSample: (newestSeen: number | null, incoming: number | undefined) => boolean;
+  reanchorEdge: (baseSec: number | null, baseMs: number | null, nowMs: number, dataNow: number,
+                 wasLive: boolean) => { baseSec: number; baseMs: number };
+  interpNow: (baseSec: number, baseMs: number, nowMs: number, live: boolean, maxAheadSec: number) => number;
+};
 
 test("isFreshNowSample: only a strictly newer now is a fresh clock sample", () => {
   assert.equal(isFreshNowSample(null, 1000), true, "first sample is fresh");

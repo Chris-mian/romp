@@ -1674,3 +1674,34 @@ pre.has-copy:hover .code-copy, .code-copy:focus-visible { opacity: 0.9; }
 #revive-loader .revive-err-dismiss { font: inherit; font-size: 0.86em; cursor: pointer;
   padding: 4px 14px; border-radius: 6px; background: var(--vscode-input-background, #3c3c3c);
   color: var(--vscode-foreground, #ccc); border: 1px solid var(--vscode-widget-border, #303031); }
+
+/* ── path previews in the chat (the user 2026-07-08): a mentioned image/PDF renders as a click-to-expand
+   thumbnail strip under the message (render.ts linkifyFileUris → preview.ts previewThumb). .path-thumb /
+   the lightbox are SHARED with the feed and defined in BOTH sheets — each page loads only its own css
+   (the .romp-acted precedent). ── */
+.path-thumbs { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+.path-thumb { display: inline-flex; align-items: center; gap: 6px; cursor: zoom-in; border-radius: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.14); overflow: hidden; background: rgba(0, 0, 0, 0.25); }
+.path-thumb:hover { border-color: var(--accent); }
+.path-thumb-img { display: block; max-width: 220px; max-height: 140px; object-fit: contain; }
+.path-thumb.pdf { padding: 5px 9px; cursor: pointer; }
+.path-thumb-tag { font-size: 0.74em; font-weight: 700; letter-spacing: 0.04em; color: var(--accent); flex: 0 0 auto; }
+.path-thumb-name { font-size: 0.74em; color: var(--fg); overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; max-width: 200px; }
+
+/* full-view lightbox (preview.ts openLightbox): image at natural-but-capped size, or the PDF in the
+   browser's native viewer. Above every overlay layer. Backdrop click / Esc / ✕ closes. */
+#romp-lightbox { position: fixed; inset: 0; z-index: 1300; background: rgba(0, 0, 0, 0.72);
+  display: flex; align-items: center; justify-content: center; }
+.romp-lightbox-inner { display: flex; flex-direction: column; gap: 8px; max-width: 92vw; max-height: 90vh; }
+.romp-lightbox-img { max-width: 92vw; max-height: 82vh; object-fit: contain; border-radius: 8px;
+  box-shadow: 0 12px 44px rgba(0, 0, 0, 0.6); }
+.romp-lightbox-inner.pdf { width: 88vw; height: 88vh; }
+.romp-lightbox-frame { flex: 1 1 auto; width: 100%; border: 0; border-radius: 8px; background: #fff; }
+.romp-lightbox-bar { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.romp-lightbox-name { flex: 1 1 auto; font-size: 0.86em; color: var(--fg); opacity: 0.85;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.romp-lightbox-close { font: inherit; font-size: 0.86em; cursor: pointer; flex: 0 0 auto;
+  padding: 2px 9px; border-radius: 6px; background: rgba(255, 255, 255, 0.1); color: var(--fg);
+  border: 1px solid rgba(255, 255, 255, 0.18); }
+.romp-lightbox-close:hover { border-color: var(--accent); }

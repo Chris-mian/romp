@@ -21,6 +21,7 @@ import { prebuildPlan, type ViewState } from "./prebuild";
 import { reconcileTabOrder } from "./tab-order";
 import { numberDiff, type DiffRow } from "./diff-lines";
 import { parseAgentNotif, type AgentNotif } from "./agent-notif";
+import { previewKind, previewThumb, canPreview } from "./preview";
 
 for (const [name, lang] of Object.entries({
   bash, sh: bash, shell: bash, python, py: python, javascript, js: javascript,
@@ -636,6 +637,7 @@ function linkifyFileUris(root: HTMLElement): void {
   const nodes: Text[] = [];
   let n: Node | null;
   while ((n = walker.nextNode())) nodes.push(n as Text);
+  const previewable: string[] = [];   // renderable paths found in this message → a thumbnail strip below it
   for (const tn of nodes) {
     if (tn.parentElement?.closest("a, .file-uri-link, pre")) continue;   // already a link, or a fenced code block
     const text = tn.data;
@@ -652,6 +654,8 @@ function linkifyFileUris(root: HTMLElement): void {
       if (!isUri && !looksLikeFilePath(tok)) continue;                   // a bare "and/or" etc. — leave as prose
       if (m.index > last) frag.appendChild(document.createTextNode(text.slice(last, m.index)));
       frag.appendChild(isUri ? fileUriLink(tok) : openPathLink(tok, tok, true));
+      const open = isUri ? fileUriToPath(tok) : tok;
+      if (previewKind(open) && !previewable.includes(open)) previewable.push(open);
       last = m.index + tok.length;
       re.lastIndex = last;
       any = true;
@@ -659,6 +663,19 @@ function linkifyFileUris(root: HTMLElement): void {
     if (!any) continue;
     if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
     tn.replaceWith(frag);
+  }
+  // A mentioned image/PDF also renders as a click-to-expand THUMBNAIL under the message (the user
+  // 2026-07-08: "I produced this plot" should SHOW the plot) — web dashboard only (canPreview; the
+  // VS Code webview keeps the plain click-to-open link). Each thumb removes itself when the kernel
+  // can't serve the file, so a stale or hallucinated mention costs nothing. Capped so a message that
+  // enumerates a directory of images doesn't wallpaper the chat; every path stays clickable regardless.
+  if (previewable.length && canPreview()) {
+    const strip = el("div", "path-thumbs");
+    for (const p of previewable.slice(0, 4)) {
+      const th = previewThumb(p, activeId);   // a relative path resolves against the ACTIVE session's cwd, as openPathLink
+      if (th) strip.appendChild(th);
+    }
+    if (strip.childElementCount) root.appendChild(strip);
   }
 }
 
@@ -2373,7 +2390,7 @@ function copyToClipboard(text: string) {
 // reflects it before the next push (the kernel reconciles).
 function setSessionFlag(id: string, flag: "hideFromFeed" | "postalServiceOff", value: boolean) {
   const s = sessions.get(id);
-  if (s) (s as Record<string, unknown>)[flag] = value;
+  if (s) s[flag] = value;   // both flags are declared optional booleans on Session — no cast needed
   if (vscodeApi) vscodeApi.postMessage({ type: "setSessionFlag", id, flag, value });
 }
 // Override a session's identity color from the tab menu's swatches (the user 2026-06-29). Optimistically paint
