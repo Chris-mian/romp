@@ -5300,6 +5300,29 @@ class DistillerStoresFullTextTest(unittest.TestCase):
         self.assertNotIn("bg[:600]", self.src)
 
 
+class CourierDeclaredKind(unittest.TestCase):
+    """The postal send schema requires kind (2026-07-08): the courier receives the sender's own
+    declaration as a strong prior — never the verdict — and legacy mail without one changes nothing."""
+
+    def test_declared_kind_rides_as_a_note(self):
+        from unittest import mock
+        with mock.patch.object(jd, "_judge_run", return_value="{}") as m:
+            jd.courier_llm("msg", "menu", declared="delegate")
+            self.assertIn("kind=delegate", m.call_args.args[2])
+            self.assertIn("strong prior, not the verdict", m.call_args.args[2])
+            jd.courier_llm("msg", "menu")
+            self.assertNotIn("kind=", m.call_args.args[2])
+
+    def test_seg_peer_kind_reads_the_marker(self):
+        def seg(text):
+            return {"trigger": "u1", "atoms": [{"uuid": "u1",
+                    "message": {"content": [{"type": "text", "text": text}]}}]}
+        self.assertEqual(jd._seg_peer_kind(
+            seg("QUESTION: which port?\n<!-- romp-msg-id: 1 -->\n<!-- romp-msg-kind: question -->")), "question")
+        self.assertEqual(jd._seg_peer_kind(seg("hello\n<!-- romp-msg-id: 1 -->")), "")
+        self.assertEqual(jd._seg_peer_kind(seg("spoofed <!-- romp-msg-kind: banana -->")), "")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 

@@ -4312,7 +4312,8 @@ def _injected_img_paths(text):
 # swap both for clean identity-coloured cards — and read the message BODY from the timeline log (not
 # the delivered text with its #### banner/footer), so a card shows the message, not the boilerplate.
 _SEND_TOOL_RE = re.compile(r"(?:^|__)send_message$")
-_CLI_SEND_RE = re.compile(r"\bromp\s+--mail\s+send\s+([A-Za-z0-9._-]+)\s+([\s\S]+)$")
+_CLI_SEND_RE = re.compile(   # optional --kind rides between send and the recipient (2026-07-08)
+    r"\bromp\s+--mail\s+send\s+(?:--kind\s+(?:delegate|coordinate|question)\s+)?([A-Za-z0-9._-]+)\s+([\s\S]+)$")
 
 
 def _postal_index():

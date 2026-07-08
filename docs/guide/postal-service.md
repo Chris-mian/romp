@@ -8,7 +8,7 @@ messages the recipient can act on from the first line.
 
 | Tool | What it does |
 |---|---|
-| `send_message(to, body)` | Message another session by its name. |
+| `send_message(to, body, kind)` | Message another session by its name. `kind` is required — `delegate` (they own the work now), `coordinate` (aligning/heads-up), or `question` (you need an answer). The declaration travels with the message and the courier judge treats it as a strong prior, overriding only when the body clearly does something else. |
 | `check_inbox()` | Read messages sent to you (also delivered at the end of each turn). |
 | `list_agents()` | List the sessions you can reach, each with its branch and what it's working on. |
 | `set_working(text)` | Publish what you're working on so peers see it. |
@@ -20,7 +20,7 @@ messages the recipient can act on from the first line.
 The same surface is on the command line, for you and for scripts:
 
 ```bash
-romp --mail send <name> "<text>"
+romp --mail send [--kind delegate|coordinate|question] <name> "<text>"
 romp --mail inbox
 romp --mail agents
 romp --mail working "<note>"

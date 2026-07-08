@@ -80,8 +80,8 @@ ORPHAN_GRACE = int(os.environ.get("ROMP_POSTAL_ORPHAN_GRACE", "900"))  # bounce 
 STUCK_GRACE = int(os.environ.get("ROMP_POSTAL_STUCK_GRACE", "600"))  # warn the SENDER when a LIVE-but-idle recipient still hasn't read after N s
 
 REPLY_HINT = ('To reply (only if you have something substantive to add, not just to '
-              'acknowledge): romp --mail send <name> "<text>" — lead with DELEGATE:/COORDINATE:/QUESTION: '
-              'and put the whole point in your first sentence.')
+              'acknowledge): romp --mail send --kind delegate|coordinate|question <name> "<text>" — '
+              'put the whole point in your first sentence.')
 
 # The bus no longer shells tmux: session enumeration, the working-note, mail delivery/wake, the resume-picker
 # check, and the status-bar chrome all go through the kernel (the SessionBackend API), which owns the one tmux
@@ -172,7 +172,7 @@ def _tl_append(fname, obj):
     except Exception:
         pass
 
-def deliver(to_id, from_name, from_id, body, park=False):
+def deliver(to_id, from_name, from_id, body, park=False, kind=""):
     # park=True marks a HANDOFF parked for a session that's currently dead. The
     # maildir is keyed by the session UUID (which `romp --resume` reuses), so the
     # message simply waits on disk until that session is revived — delivered then,
@@ -184,6 +184,8 @@ def deliver(to_id, from_name, from_id, body, park=False):
     hdr = "From: %s\nFrom-Id: %s\nDate: %s\n" % (from_name, from_id, _iso_now())
     if park:
         hdr += "X-Park: 1\n"
+    if kind:
+        hdr += "X-Kind: %s\n" % kind                # sender-declared delegate|coordinate|question (2026-07-08)
     tmp.write_text(hdr + "\n" + body + "\n")
     tmp.rename(mb / "new" / name)   # atomic within the same filesystem
     _mark_pending(to_id)            # new/ is now non-empty -> raise the marker (covers park + live)
@@ -193,6 +195,8 @@ def deliver(to_id, from_name, from_id, body, park=False):
           "from": from_name, "from_id": from_id, "to_id": to_id, "body": body}
     if park:
         ev["park"] = True
+    if kind:
+        ev["kind"] = kind                            # additive (consumer contract above)
     _tl_append("messages.jsonl", ev)
     return name   # the message id (maildir filename); joins to the log + status-bar prefix
 
@@ -219,7 +223,7 @@ def read_box(sid, consume):
             meta[k.lower()] = v
         out.append({"from": meta.get("from", "?"), "from_id": meta.get("from-id", ""),
                     "date": meta.get("date", ""), "body": body.rstrip("\n"), "id": f.name,
-                    "park": bool(meta.get("x-park"))})
+                    "park": bool(meta.get("x-park")), "kind": meta.get("x-kind", "")})
         if consume:
             f.rename(mb / "cur" / f.name)
             _tl_append("messages.jsonl", {"t": int(time.time()), "ev": "exec", "id": f.name})
@@ -246,6 +250,8 @@ def format_inbox(msgs):
         d = " (%s)" % m["date"] if m.get("date") else ""
         pk = "  ⏸ parked while you were offline — may be stale" if m.get("park") else ""
         mid = ("\n<!-- romp-msg-id: %s -->" % m["id"]) if m.get("id") else ""   # exact id for the timeline join
+        if m.get("kind"):
+            mid += "\n<!-- romp-msg-kind: %s -->" % m["kind"]   # sender-declared kind, read by the courier
         out.append("\n— from %s%s%s:\n%s%s" % (m.get("from", "?"), d, pk, m.get("body", ""), mid))
     out.append("\n" + REPLY_HINT)
     return "\n".join(out)
@@ -674,8 +680,10 @@ def format_push(msgs):
         out += [bar, head, bar, m.get("body", "")]
         if m.get("id"):
             out.append("<!-- romp-msg-id: %s -->" % m["id"])   # exact id for the timeline join
+        if m.get("kind"):
+            out.append("<!-- romp-msg-kind: %s -->" % m["kind"])   # sender-declared kind, read by the courier
         out.append(bar)
-    out.append('(to reply, only if substantive: romp --mail send %s "..." — lead with DELEGATE:/COORDINATE:/QUESTION:)'
+    out.append('(to reply, only if substantive: romp --mail send --kind delegate|coordinate|question %s "...")'
                % msgs[0].get("from", ""))
     return "\n".join(out)
 
@@ -704,7 +712,7 @@ def _push(sid, agent):
         if resp and resp.get("injected"):
             return True
         for m in msgs:                                        # not injected → put it back for the drain
-            deliver(sid, m.get("from", "?"), m.get("from_id", ""), m.get("body", ""))
+            deliver(sid, m.get("from", "?"), m.get("from_id", ""), m.get("body", ""), kind=m.get("kind", ""))
         _log("push to %s deferred; %d msg(s) restored for the drain backstop" % (sid, len(msgs)))
         return False
     except Exception as e:
@@ -794,6 +802,9 @@ class Handler(BaseHTTPRequestHandler):
             to = data.get("to", "")
             frm, frm_id = data.get("from", "unknown"), data.get("from_id", "")
             body = data.get("body", "")
+            kind = str(data.get("kind", "")).strip().lower()
+            if kind not in ("delegate", "coordinate", "question"):
+                kind = ""                              # legacy/CLI mail may be undeclared; never invent one
             if _postal_off(frm_id):                # the sender is in isolation → sending is disabled
                 return self._send({"error": "isolation: YOUR OWN mailbox is OFF. This session is in postal "
                                    "isolation (its mailbox icon is toggled off on its timeline lane), so it "
@@ -812,7 +823,7 @@ class Handler(BaseHTTPRequestHandler):
                                        "be reachable once the user toggles ITS mailbox back on." % to}, 403)
                 return self._send({"error": "no live romp session named '%s'" % to}, 404)
             a0 = match[0]
-            mid = deliver(a0["id"], frm, frm_id, body)
+            mid = deliver(a0["id"], frm, frm_id, body, kind=kind)
             if not a0.get("remote", False):
                 # All through the kernel (it owns the tmux status bar + the wake), off-thread so send latency
                 # stays low: paint the recipient's "📬 from X" badge; record correspondence (peer chips) + the
@@ -1125,7 +1136,7 @@ Messaging peer romp sessions. A peer shares none of your context, only the bytes
 Message a peer only for something substantive: a question, information they need, or a result worth sharing. A message wakes the recipient and costs it a turn, so never send just to acknowledge, and stop once the exchange is done.
 
 Write so the recipient can act from your first line:
-- Lead with DELEGATE: (you own this now), COORDINATE: (aligning/heads-up, reply optional), or QUESTION: (reply required).
+- Declare the message kind via the required `kind` parameter: delegate (the recipient owns this now), coordinate (aligning/heads-up, reply optional), or question (reply required).
 - First sentence is the whole point (the ask or conclusion), not how you got there.
 - Name things exactly: files by path, sessions by name. Mark verified vs. suspected, and whose ask it is.
 - End with the reply you need, or that none is. One point per message.
@@ -1137,11 +1148,13 @@ Addressing is live-only: you can message only currently-live sessions (list_agen
 
 MCP_TOOLS = [
     {"name": "send_message",
-     "description": "Message a live romp session by name; it arrives at the end of the recipient's current turn. They share none of your context, so lead with DELEGATE:/COORDINATE:/QUESTION: and put the whole point first. Live-only (see list_agents).",
+     "description": "Message a live romp session by name; it arrives at the end of the recipient's current turn. They share none of your context, so put the whole point in your first sentence. Live-only (see list_agents).",
      "inputSchema": {"type": "object",
                      "properties": {"to": {"type": "string", "description": "recipient romp session name"},
-                                    "body": {"type": "string", "description": "message text"}},
-                     "required": ["to", "body"]}},
+                                    "body": {"type": "string", "description": "message text"},
+                                    "kind": {"type": "string", "enum": ["delegate", "coordinate", "question"],
+                                             "description": "what this message does: delegate = the recipient owns the work now; coordinate = aligning or a heads-up, reply optional; question = you need an answer"}},
+                     "required": ["to", "body", "kind"]}},
     {"name": "check_inbox",
      "description": "Read and clear any messages other romp sessions have sent you. Messages are also delivered automatically at the end of each turn, so you rarely need to call this.",
      "inputSchema": {"type": "object", "properties": {}}},
@@ -1167,10 +1180,15 @@ def _mcp_call(name, args):
     _heartbeat(mid, me)
     if name == "send_message":
         to, body = args.get("to", ""), args.get("body", "")
+        kind = str(args.get("kind", "")).strip().lower()
         if not to or not body:
             return "Need both 'to' and 'body'.", True
+        if kind not in ("delegate", "coordinate", "question"):
+            return ("Need 'kind': one of delegate (the recipient owns the work now), "
+                    "coordinate (aligning/heads-up), or question (you need an answer).", True)
         try:
-            _http("POST", "/send", {"to": to, "from": me or "unknown", "from_id": mid or "", "body": body})
+            _http("POST", "/send", {"to": to, "from": me or "unknown", "from_id": mid or "", "body": body,
+                                    "kind": kind})
             return "Delivered to '%s'." % to, False
         except BusError as e:
             return str(e), True
@@ -1264,8 +1282,14 @@ def mcp():
 # ───────────────────────── CLI client modes ─────────────────────────
 
 def cli_send(argv):
+    kind = ""
+    if argv and argv[0] == "--kind":
+        kind = (argv[1].strip().lower() if len(argv) > 1 else "")
+        argv = argv[2:]
+        if kind not in ("delegate", "coordinate", "question"):
+            sys.stderr.write("[romp mail] --kind must be delegate, coordinate, or question\n"); return 2
     if len(argv) < 2:
-        sys.stderr.write('usage: romp --mail send <session> <text>\n'); return 2
+        sys.stderr.write('usage: romp --mail send [--kind delegate|coordinate|question] <session> <text>\n'); return 2
     to, body = argv[0], " ".join(argv[1:])
     if not body.strip():
         sys.stderr.write("[romp mail] refusing to send an empty message\n"); return 2
@@ -1273,7 +1297,8 @@ def cli_send(argv):
         sys.stderr.write("[romp mail] %s\n" % _unreachable_hint()); return 1
     me, mid = my_name(), my_id()
     try:
-        _http("POST", "/send", {"to": to, "from": me or "unknown", "from_id": mid or "", "body": body})
+        _http("POST", "/send", {"to": to, "from": me or "unknown", "from_id": mid or "", "body": body,
+                                "kind": kind})
     except BusError as e:
         sys.stderr.write("[romp mail] %s\n" % e); return 1
     print("[romp mail] delivered to '%s'" % to)

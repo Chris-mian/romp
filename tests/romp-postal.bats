@@ -222,7 +222,8 @@ iso() { mkdir -p "$XDG_STATE_HOME/romp"; printf '{"%s":{"postalServiceOff":true}
 {"jsonrpc":"2.0","method":"notifications/initialized"}
 {"jsonrpc":"2.0","id":2,"method":"tools/list"}
 {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_agents","arguments":{}}}
-{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"send_message","arguments":{"to":"beta","body":"via tool"}}}'
+{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"send_message","arguments":{"to":"beta","body":"via tool","kind":"coordinate"}}}
+{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"send_message","arguments":{"to":"beta","body":"no kind"}}}'
     out="$(printf '%s\n' "$req" | CLAUDE_CODE_SESSION_ID=uuid-a "$POSTAL" mcp 2>/dev/null)"
     [[ "$out" == *'"protocolVersion": "2025-06-18"'* ]]
     [[ "$out" == *"send_message"* ]]
@@ -231,7 +232,9 @@ iso() { mkdir -p "$XDG_STATE_HOME/romp"; printf '{"%s":{"postalServiceOff":true}
     [[ "$out" == *"inputSchema"* ]]
     [[ "$out" == *"alpha (you)"* ]]
     [[ "$out" == *"Delivered to 'beta'"* ]]
+    [[ "$out" == *"Need 'kind'"* ]]
     [ "$(cnt "$(mb uuid-b)/new")" -ge 1 ]
+    grep -q "X-Kind: coordinate" "$(mb uuid-b)/new/"*
 }
 
 @test "bus self-stops when no romp clients remain" {
