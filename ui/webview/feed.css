@@ -156,19 +156,26 @@ body.feed-dragging .feed-col.col-asks { outline: 1.5px dashed color-mix(in srgb,
    sit side by side — prevents thin columns that break words mid-word ("Shippe/d") */
 @container (max-width: 540px) {
   .feed-cols { flex-direction: column; }
+  /* stacked, the columns read TOP-DOWN as Blocked (needs you) → Completed → Working (the user 2026-07-08):
+     what needs you first, then what's done, then what's still running. DOM order stays Working/Blocked/
+     Completed (unchanged for the side-by-side layout); `order` only re-sequences the stacked case. */
+  .feed-col.col-needsInput { order: 1; }
+  .feed-col.col-completed  { order: 2; }
+  .feed-col.col-asks       { order: 3; }
 }
 
 /* ---------- ask card (the inbox unit): three rows (the user 2026-06-14) ---------- */
 /* row 1 — ask title, full width across the top. Hit-area still fits its TEXT (the title must
    NOT flex-grow, else clicking blank space right of it triggers locate instead of the modal —
    the user's hover hit-area bug); with the age moved to row 3, a long title runs the full width. */
-/* the TIME trails the title on its LAST line, right-justified (the user 2026-07-07): `last baseline` sits it
-   on the title's final line's baseline (a plain `baseline` fallback for older engines sits it on the first);
-   margin-left:auto pushes it to the right edge. The title keeps flex:0 1 auto so its hit-area is its text
-   (blank space right of it opens the modal, not locate). */
-.fask-row1 { display: flex; align-items: baseline; align-items: last baseline; gap: 10px; }
-.fask-row1 .fcard-title { flex: 0 1 auto; min-width: 0; }
-.fask-row1 .ftime { margin-left: auto; }
+/* the title text fills the FULL card width and wraps; the TIME trails it INLINE, right after the last word
+   (the user 2026-07-08). The old flex row reserved the time's column on EVERY title line, so a narrow card
+   wrapped the title short and left empty space top-right. As inline flow in a block, the text uses the whole
+   width and the time follows wherever the text ends. The title's hit-area stays its text alone (blank space
+   isn't part of the inline element → a click there opens the modal, not locate). */
+.fask-row1 { display: block; }
+.fask-row1 .fcard-title { display: inline; }
+.fask-row1 .ftime { margin-left: 8px; }
 /* row 2 — the session name on its own row below the title; sized to its text so blank space
    to its right stays card-body (opens the modal), and wrapping so a long name can't overflow. */
 /* wraps: when the name + "↪ from <peer>" provenance + the reopened/Followed-up chips can't all fit on
@@ -189,10 +196,10 @@ body.feed-dragging .feed-col.col-asks { outline: 1.5px dashed color-mix(in srgb,
    right-aligns on the time's line. flex-wrap is the backstop — a tight card drops the toggles to their own
    line under the time rather than overflowing or overlapping. */
 .fask-row3 { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; row-gap: 6px; margin-top: 6px; }
-/* Background sits LEFT, Summary RIGHT (the user 2026-07-07): the second toggle (Summary) claims the free
-   space via margin-left:auto, so it stays right-justified even when Background is hidden. Rare Retry/Revive
-   ride the right too. On a card too narrow to fit both, flex-wrap drops Summary to its own line. */
-.fask-row3 .fask-secbtn ~ .fask-secbtn { margin-left: auto; }
+/* the section toggles (Background · Summary · Sub-goals) GROUP left and wrap TOGETHER as a block (the user
+   2026-07-08) — they used to spread to opposite edges (Background left, Summary right), which read as
+   mis-aligned once they wrapped on a narrow card. They now flow left-to-right in reading order, aligned, and
+   wrap as a unit. Rare Retry/Revive (actions) still trail on the right. */
 .fask-row3 .fask-actions { margin-left: auto; }
 /* card body is clickable (single → modal, double → pin). Hover lights a white
    ring + the timeline journey; pin persists it. Order matters: .focused after
@@ -611,7 +618,6 @@ body.feed-dragging .feed-col.col-asks { outline: 1.5px dashed color-mix(in srgb,
   display: flex; align-items: center; gap: 8px; padding: 6px 12px;
   border-top: 1px solid var(--card-border);
   background: var(--vscode-editorWidget-background, #252526); }   /* opaque panel so it reads as a dedicated bar */
-#feed-foot #feed-subgoals { margin-right: auto; }   /* far-left; the toggles + clear/undo group to the right */
 #feed-foot .fdismiss { font-size: 10.5px; padding: 1px 9px; opacity: 0.95; }
 /* the "Newest first" / "Collapsed" MODE toggles: pressed (.on) wears the accent language (blue text + border
    + faint wash), the same selected-state look the card section toggles use (the user 2026-07-07) */
@@ -629,6 +635,11 @@ body.feed-dragging .feed-col.col-asks { outline: 1.5px dashed color-mix(in srgb,
 /* inline sub-goal checklist on a card: the goal's DIRECT sub-goals (top 2 levels) — ✓ done / ? / ▢ open */
 .fask-checklist { display: flex; flex-direction: column; row-gap: 1px; margin: 4px 0 1px; padding-left: 2px; }
 .fcheck { display: flex; align-items: baseline; column-gap: 7px; line-height: 1.4; font-size: 0.9em; }
+/* disclosure triangle — same treatment as the modal outline's .ftree-tri (the user 2026-07-08): ▶/▼ on an
+   expandable node, a blank same-width spacer otherwise so the marks stay aligned down a level. */
+.fcheck-tri { flex: 0 0 auto; width: 1em; text-align: center; color: var(--dim); font-size: 0.72em; }
+.fcheck-tri.nav { cursor: pointer; }
+.fcheck-tri.nav:hover { color: var(--fg); }
 .fcheck-mark { flex: 0 0 auto; width: 1em; text-align: center; color: var(--dim); font-size: 0.9em; }
 .fcheck-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; color: var(--fg); }
 /* a node reached under two parents renders ONCE at full weight and dim on the repeat — same as the modal

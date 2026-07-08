@@ -28,6 +28,13 @@ test("the empty state stays accessible (role + aria-label, since a background im
   assert.match(FEED, /e\.setAttribute\("aria-label", "All tasks complete"\)/);   // the user 2026-06-25
 });
 
+test("an EMPTY feed doesn't crash on the removed 'standalone' field (payload-audit fallout, the user 2026-07-08)", () => {
+  // the inbox-zero branch keys on `!asks.length` ALONE; the old `&& !standalone.length` referenced the removed
+  // FeedItem array → a ReferenceError on an empty feed aborted the render, so the wordmark never appeared.
+  assert.match(FEED, /if \(!asks\.length\) \{/);
+  assert.doesNotMatch(FEED, /standalone\.length/, "no reader of the removed FeedItem 'standalone' array");
+});
+
 test("the wordmark ships in the served + packaged media dir; the otter is gone", () => {
   assert.ok(fs.existsSync(path.resolve(process.cwd(), "media", "romp-wordmark.png")), "media/romp-wordmark.png must exist (kernel serves /media; .vscodeignore keeps media/)");
   assert.ok(!fs.existsSync(path.resolve(process.cwd(), "media", "romp-otter.png")), "the otter image was deleted (the user 2026-06-15)");

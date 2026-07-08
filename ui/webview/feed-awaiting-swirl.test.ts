@@ -27,8 +27,8 @@ test("the swirl + caption covers awaiting, provisional, and re-check — shown w
   // AWAITING: the boxed "Awaiting background agents" label, with a SPINNING swirl (the user 2026-07-04)
   assert.match(FEED, /if \(aw && !it\.waitingOn\) \{\s*\n\s*awaitingBg = true;\s*\n\s*spinCaption = "Awaiting background agents";/);
   assert.match(FEED, /\} else if \(it\.provisional && it\.column === "working"\) \{\s*\n\s*spinCaption = "Working…";/);
-  assert.match(FEED, /\} else if \(it\.recheck\) \{\s*\n\s*spinCaption = "Re-judging…";/);
-  assert.match(FEED, /\} else if \(it\.rejudging\) \{\s*\n\s*spinCaption = "Re-judging…";/);
+  assert.match(FEED, /\} else if \(it\.recheck\) \{\s*\n\s*spinCaption = "Analyzing…";/);
+  assert.match(FEED, /\} else if \(it\.rejudging\) \{\s*\n\s*spinCaption = "Analyzing…";/);
   // a resolved card awaiting its distiller line → "Distilling…" (the user 2026-06-29) — the executable rule is
   // distillPending (distiller-line.test.ts); here we just pin that the card branch uses it + sets the caption
   assert.match(FEED, /\} else if \(distillPending\(it\.column === "completed", it\.column === "needs_input", it\.summary, it\.blockSummary, !!it\.blocked\)\) \{[\s\S]*?spinCaption = "Distilling…";/);
@@ -48,8 +48,8 @@ test("each case carries a concise tooltip on the swirl (hover → the key idea, 
   assert.match(FEED, /a\._awaitSpin\.title = spinTip \|\| spinCaption;/);
 });
 
-test("the swirl's Re-judging caption REPLACES the '↩ re-judging' chip (no double-labeling)", () => {
-  assert.match(FEED, /if \(spinCaption === "Re-judging…"\) a\._followedup\.style\.display = "none";/);
+test("the swirl's Analyzing caption REPLACES the '↩ re-judging' chip (no double-labeling)", () => {
+  assert.match(FEED, /if \(spinCaption === "Analyzing…"\) a\._followedup\.style\.display = "none";/);
 });
 
 test("the awaiting case gets a rounded box, its swirl SPINS, and its caption wraps to two lines (the user 2026-07-04)", () => {

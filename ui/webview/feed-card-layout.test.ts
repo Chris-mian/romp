@@ -12,10 +12,10 @@ import * as path from "node:path";
 const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.css"), "utf8");
 
-test("COMPACTNESS (the user 2026-07-07): time trails the title; Clear on the name row; Background left / Summary right", () => {
-  // the TIME now trails the title on row1 (both cards); row3 holds only the Background/Summary toggles
+test("COMPACTNESS (the user 2026-07-07): time trails the title; Clear on the name row; toggles grouped on row3", () => {
+  // the TIME now trails the title on row1 (both cards); row3 holds the Background/Summary/Sub-goals toggles
   assert.match(FEED, /row1\.append\(title, time\)/, "the time trails the title on row1");
-  assert.match(FEED, /row3\.append\(bgBtn, takeBtn, actions\)/, "ask card: row3 is Background/Summary (+ rare Retry/Revive), no time");
+  assert.match(FEED, /row3\.append\(bgBtn, takeBtn, subBtn, actions\)/, "ask card: row3 is Background/Summary/Sub-goals (+ rare Retry/Revive)");
   assert.match(FEED, /actions\.append\(apiRetry, revive\)/, "…so the action row is Retry/Revive only (Clear + toggles moved up)");
   // Clear is the rightmost control on the NAME row now (both ask + group cards)
   assert.match(FEED, /row2\.append\(idwrap, origin, fupBadge, nfBadge, intingBadge, intBadge, warnChip, waitOnBadge, clr\)/, "ask card: Clear on the name row");
@@ -97,11 +97,14 @@ test("the footer action row WRAPS its buttons so they can NEVER run off the card
   // Verified headless: the toggles + buttons wrap to their own line under the time on a narrow card, zero overflow.
   assert.match(CSS, /\.fask-actions \{[^}]*flex: 0 1 auto;[^}]*min-width: 0;[^}]*flex-wrap: wrap;[^}]*justify-content: flex-end/);
   assert.match(CSS, /\.fask-row3 \{[^}]*flex-wrap: wrap/);
-  // Summary claims the free space (margin-left:auto) so it right-aligns opposite Background, then wraps below
-  assert.match(CSS, /\.fask-row3 \.fask-secbtn ~ \.fask-secbtn \{ margin-left: auto; \}/);
-  // and the time now trails the title on row1, right-justified on its last line
-  assert.match(CSS, /\.fask-row1 \.ftime \{ margin-left: auto; \}/);
-  assert.match(CSS, /\.fask-row1 \{[^}]*align-items: last baseline/);
+  // the section toggles GROUP left and wrap together (the user 2026-07-08) — no longer spread to opposite
+  // edges; the old `margin-left:auto` on a trailing secbtn is gone.
+  assert.doesNotMatch(CSS, /\.fask-row3 \.fask-secbtn ~ \.fask-secbtn \{ margin-left: auto; \}/);
+  // the title fills the full card width (block row1 + inline title, the user 2026-07-08) and the time trails
+  // it INLINE right after the last word — no reserved column, no empty space top-right.
+  assert.match(CSS, /\.fask-row1 \{ display: block; \}/);
+  assert.match(CSS, /\.fask-row1 \.fcard-title \{ display: inline; \}/);
+  assert.match(CSS, /\.fask-row1 \.ftime \{ margin-left: 8px; \}/);
 });
 
 test("a long no-space token (file/func/type name) WRAPS instead of overflowing the card (the user 2026-06-23)", () => {

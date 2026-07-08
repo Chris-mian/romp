@@ -1,6 +1,6 @@
-// The "Sub-goals" toggle (now in the feed FOOTER, the user 2026-06-18) gates the inline sub-goal checklist
-// on feed CARDS; the MODAL is never gated. The old "Explanations" toggle is GONE — cards show the
-// distiller's summary as their one auto-line, not the planner's why. The feed reads the shared
+// Sub-goals is a PER-CARD "Sub-goals" button (the user 2026-07-08, moved off the footer), whose default
+// follows the Collapsed mode; the MODAL is never gated. The old "Explanations" toggle is GONE — cards show
+// the distiller's summary as their one auto-line, not the planner's why. The feed reads the shared
 // 'romp:settings' directly and re-renders when the gear / footer (same document) flips it. Source-level pin.
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
@@ -9,11 +9,12 @@ import * as path from "node:path";
 
 const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
 
-test("feed reads sub-goals (default ON) + newestFirst/collapsed (default OFF) from romp:settings", () => {
+test("feed reads newestFirst/collapsed (default OFF) from romp:settings; the subgoals pref is gone", () => {
   assert.match(FEED, /function feedPrefs\(\)/);
   assert.match(FEED, /localStorage\.getItem\("romp:settings"\)/);
-  // subgoals defaults ON (!== false); the two 2026-07-07 mode toggles default OFF (=== true)
-  assert.match(FEED, /return \{ subgoals: s\.subgoals !== false, newestFirst: s\.newestFirst === true, collapsed: s\.collapsed === true \};/);
+  // the two mode toggles default OFF (=== true); `subgoals` is no longer a feed-wide pref (per-card button now)
+  assert.match(FEED, /return \{ newestFirst: s\.newestFirst === true, collapsed: s\.collapsed === true \};/);
+  assert.doesNotMatch(FEED, /s\.subgoals/, "no feed-wide subgoals pref — it's a per-card toggle now");
   assert.doesNotMatch(FEED, /explanations/);   // every trace of the old pref is gone from the feed
 });
 
@@ -31,16 +32,17 @@ test("the card shows the DISTILLER's line (summary/blockSummary) but NO why/gene
   assert.doesNotMatch(FEED, /showWhy/);
 });
 
-test("the Sub-goals pref gates the inline sub-goal tree on the card", () => {
-  assert.match(FEED, /if \(root && feedPrefs\(\)\.subgoals\) \{/);   // on → the whole subtree walks; off → no rows
-});
-
-test("the Sub-goals toggle lives in the feed FOOTER (moved out of the gear), writing the shared pref", () => {
-  assert.match(FEED, /function makeSubgoalsToggle\(\)/);
-  assert.match(FEED, /function ensureSubgoalsToggle\(\)/);
-  assert.match(FEED, /ensureSubgoalsToggle\(\);/);                            // called in render()
-  assert.match(FEED, /s\.subgoals = cb\.checked;[\s\S]*localStorage\.setItem\("romp:settings"/);
-  assert.match(FEED, /window\.dispatchEvent\(new Event\("romp:settings"\)\)/);  // re-gate cards live
+test("Sub-goals is a PER-CARD button whose default follows the Collapsed mode; no footer checkbox", () => {
+  // the per-card button (right of Summary) drives an independent on/off; default = !collapsed (mirrors resolveSec)
+  assert.match(FEED, /const subBtn = el\("button", "fask-secbtn"\); subBtn\.textContent = "Sub-goals";/);
+  assert.match(FEED, /function resolveSub\(id: string\): boolean \{\s*\n\s*return subChoice\.get\(id\) \?\? !feedPrefs\(\)\.collapsed;/);
+  // applySubgoals gates the tree on the resolved per-card state and hides the button when there are no sub-goals
+  assert.match(FEED, /const on = hasSubs && resolveSub\(id\);/);
+  assert.match(FEED, /subBtn\.style\.display = hasSubs \? "" : "none";/);
+  assert.match(FEED, /if \(on && root\) \{/, "the tree walks only when the toggle is on");
+  // the OLD footer Sub-goals checkbox is gone
+  assert.doesNotMatch(FEED, /makeSubgoalsToggle|ensureSubgoalsToggle/, "no footer sub-goals toggle");
+  assert.doesNotMatch(FEED, /feedPrefs\(\)\.subgoals/, "the tree no longer gates on a feed-wide subgoals pref");
 });
 
 test("the feed re-renders when the prefs change (storage cross-pane + same-doc romp:settings event)", () => {

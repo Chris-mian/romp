@@ -241,14 +241,15 @@ const vscodeApi =
 // Card-display prefs read straight from the shared 'romp:settings' (the kernel's ⛭ gear writes it; same
 // document as this feed bundle). Default ON. These gate the CARDS only — the modal always shows everything
 // (the user 2026-06-17). `!== false` so a missing key defaults to shown.
-function feedPrefs(): { subgoals: boolean; newestFirst: boolean; collapsed: boolean } {
+function feedPrefs(): { newestFirst: boolean; collapsed: boolean } {
   try {
     const s = JSON.parse(localStorage.getItem("romp:settings") || "{}");
     // newestFirst + collapsed default OFF (=== true): the feed's natural order is oldest-first, and cards
     // arrive with their summary open (the user 2026-07-07). collapsed is the DEFAULT section state new cards
-    // inherit — a per-card expand overrides just that card without turning the mode off.
-    return { subgoals: s.subgoals !== false, newestFirst: s.newestFirst === true, collapsed: s.collapsed === true };
-  } catch { return { subgoals: true, newestFirst: false, collapsed: false }; }
+    // inherit — a per-card expand overrides just that card without turning the mode off. (Sub-goals moved to a
+    // per-card button 2026-07-08; its default also follows `collapsed` — see resolveSub.)
+    return { newestFirst: s.newestFirst === true, collapsed: s.collapsed === true };
+  } catch { return { newestFirst: false, collapsed: false }; }
 }
 // names of sessions currently WORKING → a working dot before that name everywhere
 // it renders (card titles, modal title, group name). Pushed in each feed message.
@@ -524,10 +525,14 @@ function makeAskCard(it: AskItem): HTMLElement {
   const bgBody = el("div", "fask-bg-body");
   const takeBtn = el("button", "fask-secbtn"); takeBtn.textContent = "Summary";
   const distill = el("div", "fask-distill");
+  // "Sub-goals" — an INDEPENDENT toggle (the user 2026-07-08, moved off the footer): shows/hides the inline
+  // sub-goal tree (the checklist below). Sits right of Summary; hidden when the card has no sub-goals. Wired
+  // in applySubgoals. NOT part of the bg/summary mutual exclusion.
+  const subBtn = el("button", "fask-secbtn"); subBtn.textContent = "Sub-goals"; subBtn.style.display = "none";
   secs.append(bgBody, distill);   // the BODIES only; the toggles ride row3 (below), one body shows at a time
-  // now that the toggles exist, populate row3: Background (left) · Summary (right); the two always share one
-  // line, on opposite sides (the user 2026-07-07). Retry/Revive (rare) ride the right with Summary.
-  row3.append(bgBtn, takeBtn, actions);
+  // now that the toggles exist, populate row3: Background · Summary · Sub-goals — GROUPED left, wrapping
+  // together as a block (the user 2026-07-08). Retry/Revive (rare) trail on the right (actions).
+  row3.append(bgBtn, takeBtn, subBtn, actions);
   // ⏳ AWAITING cue (the user 2026-06-29): a small romp swirl spinning in the SAME body spot the distiller line
   // will eventually fill — a completed/blocked card shows its takeaway there; a WORKING card that's awaiting
   // dispatched/delegated work shows the spinning swirl instead, a glanceable "in flight, not stalled" sign.
@@ -641,7 +646,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   a._delegations = delegations;
   a._checklist = checklist;
   a._distill = distill;
-  a._secs = secs; a._bgBtn = bgBtn; a._bgBody = bgBody; a._takeBtn = takeBtn;
+  a._secs = secs; a._bgBtn = bgBtn; a._bgBody = bgBody; a._takeBtn = takeBtn; a._subBtn = subBtn;
   a._awaitSpin = awaitSpin; a._awaitWhy = awaitWhy;
   a._origin = origin;
   return card;
@@ -658,6 +663,19 @@ const secChoice = new Map<string, "bg" | "summary" | "none">();
 function resolveSec(id: string): "bg" | "summary" | "none" {
   return secChoice.get(id) ?? (feedPrefs().collapsed ? "none" : "summary");
 }
+// Sub-goals is an INDEPENDENT per-card toggle (NOT part of the mutually-exclusive bg/summary section; the
+// user 2026-07-08): a "Sub-goals" button beside Summary shows/hides the inline sub-goal tree. Its default
+// follows the Collapsed mode exactly like resolveSec — expanded → shown, collapsed → hidden — and a click
+// sets a per-card override that survives the mode. Toggling Collapsed clears these (see ensureCollapsedToggle).
+const subChoice = new Map<string, boolean>();
+function resolveSub(id: string): boolean {
+  return subChoice.get(id) ?? !feedPrefs().collapsed;
+}
+// Per-node collapse state for a CARD's inline sub-goal tree, keyed "itemId:nodeId" (the user 2026-07-08 —
+// "the little triangle-y icons" from the outline view). SEPARATE from the modal's `collapsedNodes` (which
+// seeds a one-level view on open): the card tree defaults to FULLY EXPANDED (the whole tree, per the earlier
+// ask) and you fold individual branches here; the empty default = nothing collapsed.
+const cardTreeCollapsed = new Set<string>();
 
 // Fill + wire the BACKGROUND and takeaway sections. BACKGROUND shows only alongside a produced
 // takeaway/brief (orientation with no outcome would dangle). Collapsed = a real "background"/"summary"
@@ -852,10 +870,10 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
     spinCaption = "Working…";
     spinTip = "A new prompt, not yet sorted into a goal. Placeholder until it is.";
   } else if (it.recheck) {
-    spinCaption = "Re-judging…";
+    spinCaption = "Analyzing…";
     spinTip = "You followed up. Reopened to Working; the judge will resolve it or re-block it.";
   } else if (it.rejudging) {
-    spinCaption = "Re-judging…";
+    spinCaption = "Analyzing…";
     spinTip = "You replied on this thread. Moved to Working while the reply runs; it comes back if the judge re-confirms the block.";
   } else if (distillPending(it.column === "completed", it.column === "needs_input", it.summary, it.blockSummary, !!it.blocked)) {
     //  • DISTILLING (the user 2026-06-29) — a resolved card whose distiller hasn't produced its line yet:
@@ -872,9 +890,10 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   // The AWAITING case gets a rounded box (its distinct read); the swirl spins in every case now.
   a._awaitSpin.classList.toggle("await-paused", awaitingBg);
   if (spinCaption) { a._awaitWhy.textContent = spinCaption; a._awaitSpin.title = spinTip || spinCaption; }
-  // The swirl's "Re-judging…" caption + tooltip REPLACES the separate "↩ re-judging" chip (the user
+  // The swirl's "Analyzing…" caption + tooltip REPLACES the separate "↩ re-judging" chip (the user
   // 2026-06-29: don't show both) — drop the chip the recheck branch set above when the swirl is saying it.
-  if (spinCaption === "Re-judging…") a._followedup.style.display = "none";
+  // ("Analyzing…" is the user-facing label for the re-judging spin, the user 2026-07-08.)
+  if (spinCaption === "Analyzing…") a._followedup.style.display = "none";
   // ⏸ live block badge: the session is stopped mid-turn on a permission prompt /
   // picker FOR THIS CARD's work — the card files under BLOCKED while it lasts
   const isApiErr = it.blocked?.state === "apiError";
@@ -910,7 +929,7 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   }
   // TWO collapsible distiller sections (the user 2026-07-02): BACKGROUND (re-orientation for a reader who
   // forgot the thread, collapsed by default) above the takeaway (expanded by default), each with a +/−.
-  applyDistillSections(a, it, distillShown);
+  applyDistillSections(a, it, !!distillShown);   // applyDistillLine returns the line's TEXT (string) — coerce to "has content"
   // API error → a red "API error" badge + a Retry button that pastes "retry" into the session to resume
   // the stalled turn (the user 2026-06-16). The card STAYS in Working (the user 2026-06-29) — an API error is
   // a transient stall, not a block — so this badge + Retry are the only API-error cue; no column move.
@@ -966,36 +985,71 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   }
   ho.style.display = ho.children.length ? "" : "none";
 
-  // Inline sub-goal tree (the user 2026-06-16; deepened to the WHOLE tree 2026-07-08): the top-level goal IS
-  // the card title, so its sub-goals render below as a ✓ done / ⏸ blocked / ○ open list. When "Sub-goals" is
-  // on, the ENTIRE subtree shows — indented by depth, with the SAME inclusion rules as the modal/outline tree
-  // (renderTreeNode): most-recent-first order (the kernel already sorts children so), a node reached under two
-  // parents renders ONCE (dim ".repeat", not re-descended), and delegation nodes (kind "handoff") are skipped
-  // here — they render in the delegations section above. No time cell / per-node follow-up: those stay in the
-  // modal; the card keeps the compact rows and the same INDENT scale as the modal (TREE_INDENT_EM).
+  // Inline sub-goal tree + its per-card "Sub-goals" toggle button (applySubgoals, below).
+  applySubgoals(a, it);
+}
+
+// The inline sub-goal tree (the user 2026-06-16; deepened to the WHOLE tree 2026-07-08) and its per-card
+// "Sub-goals" toggle button (2026-07-08 — moved off the footer). The top-level goal IS the card title, so
+// its sub-goals render below as a ✓ done / ⏸ blocked / ○ open list; when the toggle is ON, the ENTIRE subtree
+// shows — indented by depth, SAME inclusion rules as the modal/outline tree (renderTreeNode): most-recent-
+// first order (the kernel sorts children so), a node reached under two parents renders ONCE (dim ".repeat",
+// not re-descended), delegation nodes (kind "handoff") skipped (they render in the delegations section). The
+// button is an INDEPENDENT on/off (not part of the mutually-exclusive bg/summary section), default follows
+// the Collapsed mode (resolveSub), and is HIDDEN when the card has no sub-goals to show.
+function applySubgoals(a: any, it: AskItem): void {
+  const id = it.itemId;
   const cl = a._checklist as HTMLElement;
-  cl.innerHTML = "";
+  const subBtn = a._subBtn as HTMLElement;
   const tree = it.tree || [];
   const byId = new Map(tree.map((n) => [n.id, n] as const));
   const root = tree.find((n) => n.id === it.itemId) || tree[0];
-  // the "Sub goals" toggle gates the inline tree on CARDS (the modal always shows the full tree)
-  const rows: { node: AskTreeNode; depth: number; repeat: boolean }[] = [];
-  if (root && feedPrefs().subgoals) {
+  const hasSubs = !!root && (root.children || []).some((cid) => {
+    const n = byId.get(cid); return !!n && n.kind !== "handoff";
+  });
+  // the button appears ONLY when there ARE sub-goals; independent on/off; default follows Collapsed mode
+  subBtn.style.display = hasSubs ? "" : "none";
+  const on = hasSubs && resolveSub(id);
+  subBtn.classList.toggle("on", on);
+  subBtn.setAttribute("aria-pressed", on ? "true" : "false");
+  subBtn.title = on ? "hide the sub-goals" : "show the sub-goals";
+  subBtn.onclick = (ev: Event) => { ev.stopPropagation(); subChoice.set(id, !resolveSub(id)); applySubgoals(a, it); };
+  // (re)build the tree rows only when the toggle is on. Each expandable node carries a disclosure triangle;
+  // a collapsed node's subtree is skipped (not descended), exactly like the modal's renderTreeNode.
+  cl.innerHTML = "";
+  const rows: { node: AskTreeNode; depth: number; repeat: boolean; expandable: boolean; collapsed: boolean }[] = [];
+  if (on && root) {
     const seen = new Set<string>([root.id]);   // a child linking back to the root counts as a repeat (as the modal)
-    const walk = (id: string, depth: number) => {
-      const n = byId.get(id);
+    const walk = (nid: string, depth: number) => {
+      const n = byId.get(nid);
       if (!n || n.kind === "handoff") return;   // delegations render in their own section, not the checklist
       const repeat = seen.has(n.id);
-      rows.push({ node: n, depth, repeat });
-      if (repeat) return;                        // a repeat is dim + NOT re-descended — mirrors renderTreeNode
+      // expandable = has a NON-handoff child to reveal (handoff children never render here); a repeat never
+      // re-descends, so it isn't expandable either.
+      const expandable = !repeat && (n.children || []).some((c) => { const cn = byId.get(c); return !!cn && cn.kind !== "handoff"; });
+      const collapsed = expandable && cardTreeCollapsed.has(id + ":" + n.id);
+      rows.push({ node: n, depth, repeat, expandable, collapsed });
+      if (repeat || collapsed) return;           // a repeat is dim + NOT re-descended; a collapsed branch is hidden
       seen.add(n.id);
       for (const c of n.children || []) walk(c, depth + 1);
     };
     for (const c of root.children || []) walk(c, 0);
   }
-  for (const { node: s, depth, repeat } of rows) {
+  for (const { node: s, depth, repeat, expandable, collapsed } of rows) {
     const row = el("div", "fcheck " + nodeStatusClass(s) + (s.auth ? " auth-" + s.auth : "") + (repeat ? " repeat" : ""));
     if (depth) row.style.paddingLeft = (depth * TREE_INDENT_EM) + "em";   // same per-level indent as the modal outline
+    // disclosure triangle (the user 2026-07-08 — "like the outline view, incl. the collapse triangles"):
+    // ▶ collapsed / ▼ expanded; a non-expandable node gets a blank same-width spacer so the marks stay
+    // aligned. Only the triangle toggles (stopPropagation so the row click still opens the modal); it flips
+    // the card's OWN collapse state and re-renders the tree in place.
+    const tri = el("span", "fcheck-tri" + (expandable ? " nav" : " empty"));
+    tri.textContent = expandable ? (collapsed ? "▶" : "▼") : "";
+    if (expandable) tri.onclick = (ev: Event) => {
+      ev.stopPropagation();
+      const k = id + ":" + s.id;
+      if (cardTreeCollapsed.has(k)) cardTreeCollapsed.delete(k); else cardTreeCollapsed.add(k);
+      applySubgoals(a, it);
+    };
     const mark = el("span", "fcheck-mark");
     // ✓ blue disc (done) / ⏸ red pause (question = blocked) / hollow ○ (not done) — the SAME notation as the
     // ledger checklist + Fleet (the user 2026-06-24: the red ⏸ replaces the amber ? everywhere, for consistency).
@@ -1003,7 +1057,7 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
     // ring around the edge (a bolder, agent-asserted version of the ordinary mark; the user 2026-07-01).
     mark.textContent = s.status === "done" ? "✓" : s.status === "question" ? "⏸" : "○";
     const txt = el("span", "fcheck-text"); txt.textContent = s.text;
-    row.append(mark, txt);
+    row.append(tri, mark, txt);
     // a card sub-goal clicks EXACTLY like the modal tree node (the user 2026-06-17): text → the message,
     // checkbox → where it got checked off — separate links — via the SAME wireNodeZones. No time cell here.
     // A dim repeat is display-only (wire=false), like renderTreeNode. (stopPropagation in the handlers keeps
@@ -1579,7 +1633,11 @@ function renderModal() {
       for (const n of mem.tree) {
         const key = mem.itemId + ":" + n.id;
         if (n.id === rootId) collapsedNodes.delete(key);
-        else if (n.rows.length || (n.children || []).length) collapsedNodes.add(key);
+        // fold any non-root node that HAS a subtree to hide (one-level default view). `n.rows` was removed
+        // from AskTreeNode in the payload audit — reading `.length` off the now-undefined field threw and
+        // ABORTED the whole modal render → a blank modal (the user 2026-07-08; the typecheck flagged it but
+        // esbuild doesn't type-check, so it shipped). Children alone decide foldability now.
+        else if ((n.children || []).length) collapsedNodes.add(key);
       }
       // EXCEPTION to one-level (the user): expand the branch DOWN to each pending
       // question so its reply box is reachable without manual unfolding — only that
@@ -1830,38 +1888,11 @@ function ensureCollapsedToggle(): HTMLElement {
   return ensureFeedToggle("feed-collapsed", "Collapsed", () => feedPrefs().collapsed, "collapsed",
     "new cards arrive collapsed; expanding one is a per-card override — click to expand by default",
     "collapse every card and have new ones arrive collapsed",
-    () => secChoice.clear());
+    () => { secChoice.clear(); subChoice.clear(); });   // re-flow both the section AND the sub-goal defaults
 }
 
-// Sub-goals toggle (the user 2026-06-18): moved OUT of the ⛭ gear and INTO the feed footer, beside Clear
-// all / Undo clear. Gates each card's inline sub-goal checklist. Writes the SHARED romp:settings.subgoals
-// and fires the same 'romp:settings' event the gear does, so flipping it re-gates the cards live (and
-// live-syncs to any open gear via the storage event). Sits far-left in the footer pane (prepended).
-function makeSubgoalsToggle(): HTMLElement {
-  const lab = el("label", "feed-subtoggle");
-  lab.style.cssText = "display:inline-flex;align-items:center;gap:4px;cursor:pointer;font-size:10.5px;opacity:.85;user-select:none";
-  lab.title = "show each card's inline sub-goal checklist (the modal always shows the full tree)";
-  const cb = el("input") as HTMLInputElement; cb.type = "checkbox"; cb.id = "feed-subgoals-cb"; cb.checked = feedPrefs().subgoals;
-  const span = el("span"); span.textContent = "Sub-goals";
-  cb.addEventListener("change", (ev) => {
-    ev.stopPropagation();
-    try {
-      const s = JSON.parse(localStorage.getItem("romp:settings") || "{}");
-      s.subgoals = cb.checked;
-      localStorage.setItem("romp:settings", JSON.stringify(s));
-      window.dispatchEvent(new Event("romp:settings"));   // same-doc signal → re-gate cards now
-    } catch { /* ignore */ }
-  });
-  lab.append(cb, span);
-  return lab;
-}
-function ensureSubgoalsToggle(): HTMLElement {
-  let l = document.getElementById("feed-subgoals");
-  if (!l) { l = makeSubgoalsToggle(); l.id = "feed-subgoals"; (document.getElementById("feed-foot") || document.body).prepend(l); }
-  const cb = document.getElementById("feed-subgoals-cb") as HTMLInputElement | null;
-  if (cb) cb.checked = feedPrefs().subgoals;   // re-sync (the gear or another tab may have changed it)
-  return l;
-}
+// (The footer "Sub-goals" checkbox was removed 2026-07-08: sub-goals is now a per-card "Sub-goals" button
+// beside Summary — see applySubgoals — whose default follows the Collapsed mode.)
 
 // Build the three columns (Asks | Awaiting | Completed) inside #feed-list once;
 // rebuild if torn down (empty state). "Awaiting" (the user's ruling 2026-06-10):
@@ -2071,9 +2102,8 @@ function render() {
   const list = document.getElementById("feed-list")!;
   applyFollowMove(asks);   // keep optimistically-moved follow-up cards in Working until the kernel confirms (or reverts)
   const prevScroll = list.scrollTop;
-  // footer pane (below the cards, no overlap): Sub-goals toggle (left) · Clear all · UndoClear (right)
+  // footer pane (below the cards, no overlap): Newest first · Collapsed · Clear all · UndoClear
   const showCA = !!asks.length;
-  ensureSubgoalsToggle();   // the toggle lives in the footer now; visible whenever the footer is
   ensureNewestFirst().style.display = showCA ? "" : "none";       // reverse the column order
   ensureCollapsedToggle().style.display = showCA ? "" : "none";   // default section state (collapsed / expanded)
   ensureClearAll().style.display = showCA ? "" : "none";
@@ -2082,7 +2112,10 @@ function render() {
   // show the footer whenever there are cards (so the Sub-goals toggle is reachable) or an undo is available
   if (foot) foot.style.display = (showCA || canUndoClear) ? "" : "none";
 
-  if (!asks.length && !standalone.length) {
+  if (!asks.length) {   // the removed FeedItem subsystem left a stale second operand here (a read of the gone
+    //                     `standalone` array) that threw a ReferenceError on an EMPTY feed → the inbox-zero
+    //                     wordmark never rendered (the user 2026-07-08; payload-audit fallout). Goal cards are
+    //                     the only feed unit now, so an empty asks list IS an empty feed.
     askEls.clear(); groupEls.clear();
     // inbox zero → the romp wordmark (a CSS background). role/aria-label + title keep the meaning for hover /
     // screen readers, since a background image carries no accessible text. Created ONCE (idempotent): on the
@@ -2130,7 +2163,7 @@ function render() {
   for (const k of Object.keys(buckets) as Column[]) for (const e of buckets[k]) {
     if (e.kind === "ask") coverInto("a:" + e.ask.itemId, [e.ask.itemId, ...(e.ask.tree || []).map((n) => n.id)]);
     else if (e.kind === "group") coverInto("g:" + e.group.turnId, e.group.members.flatMap((m) => [m.itemId, ...(m.tree || []).map((n) => n.id)]));
-    else coverInto("i:" + e.item.itemId, [e.item.itemId]);
+    // (the "item"/standalone bucket kind was removed with the FeedItem subsystem — no third branch)
   }
 
   // FLIP step 1 (the user 2026-06-27): record every visible card's position + column BEFORE the reconcile, so

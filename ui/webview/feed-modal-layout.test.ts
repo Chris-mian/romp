@@ -68,3 +68,10 @@ test("sending a follow-up (Send or ⏎) auto-closes the modal back to the feed (
   assert.match(FEED, /fusendEl\.onclick = submit;/);
   assert.match(FEED, /if \(ev\.key === "Enter" && !ev\.shiftKey\) \{ ev\.preventDefault\(\); ev\.stopPropagation\(\); submit\(\); \}/);
 });
+
+test("the modal's one-level seeding folds by children, never the REMOVED n.rows (blank-modal fix, the user 2026-07-08)", () => {
+  // reading `.length` off the removed AskTreeNode.rows threw and ABORTED renderModal → the modal opened blank.
+  // Foldability is decided by children alone now.
+  assert.match(FEED, /else if \(\(n\.children \|\| \[\]\)\.length\) collapsedNodes\.add\(key\);/);
+  assert.doesNotMatch(FEED, /n\.rows\.length/, "the removed-field reader (n.rows.length) is gone");
+});

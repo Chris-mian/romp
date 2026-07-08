@@ -21,12 +21,21 @@ test("#feed-foot DOCKS as a dedicated in-flow bottom bar (the user 2026-06-29), 
   assert.match(CSS, /#feed-foot \{[^}]*border-top: 1px solid var\(--card-border\)/);  // a docked bar with a top edge
   assert.doesNotMatch(CSS, /#feed-foot \{[^}]*position: absolute/);   // no longer floats
   assert.doesNotMatch(CSS, /#feed-foot \{[^}]*width: fit-content/);   // spans the bar, doesn't hug the buttons
-  // the Sub-goals toggle pins far-left so Clear all / Undo clear group to the right
-  assert.match(CSS, /#feed-foot #feed-subgoals \{ margin-right: auto; \}/);
+  // (the footer Sub-goals checkbox was removed 2026-07-08 — sub-goals is a per-card button now)
+  assert.doesNotMatch(CSS, /#feed-subgoals/);
 });
 
 test("the docked footer leaves the list a proper scroll container with no float clearance", () => {
   assert.match(CSS, /body \{ display: flex; flex-direction: column; position: relative; \}/);   // column flex
   assert.match(CSS, /#feed-list \{[^}]*min-height: 0;/);          // proper scroll container
   assert.match(CSS, /#feed-list \{[^}]*padding: 12px;/);          // no reserved band for a float anymore
+});
+
+test("when the feed stacks (narrow), the columns read Blocked → Completed → Working (the user 2026-07-08)", () => {
+  // the side-by-side DOM order stays Working/Blocked/Completed; a container query stacks them and `order`
+  // re-sequences ONLY the stacked case: needs-you first, then done, then still-running.
+  assert.match(CSS, /@container \(max-width: 540px\) \{[\s\S]*?\.feed-cols \{ flex-direction: column; \}/);
+  assert.match(CSS, /\.feed-col\.col-needsInput \{ order: 1; \}/);
+  assert.match(CSS, /\.feed-col\.col-completed\s+\{ order: 2; \}/);
+  assert.match(CSS, /\.feed-col\.col-asks\s+\{ order: 3; \}/);
 });

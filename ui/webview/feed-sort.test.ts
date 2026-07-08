@@ -20,7 +20,7 @@ test("each column sorts oldest-at-top by default; the 'Newest first' toggle reve
 test("the 'Collapsed' toggle sets the default section state; a per-card expand overrides without leaving the mode", () => {
   // ON → new/at-default cards collapse (resolveSec default = none); toggling drops per-card overrides
   assert.match(FEED, /ensureFeedToggle\("feed-collapsed", "Collapsed", \(\) => feedPrefs\(\)\.collapsed, "collapsed"/);
-  assert.match(FEED, /\(\) => secChoice\.clear\(\)\)/, "toggling the mode clears per-card overrides so it re-flows every card");
+  assert.match(FEED, /\(\) => \{ secChoice\.clear\(\); subChoice\.clear\(\); \}/, "toggling the mode clears BOTH the section and sub-goal per-card overrides so every card re-flows");
   assert.doesNotMatch(FEED, /anySectionOpen/, "the old Collapse/Expand-all button is gone");
 });
 
