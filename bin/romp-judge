@@ -1478,6 +1478,30 @@ def _mark_node_done(store, nid, why, t, src="planner"):
         stack.extend(kids.get(x, []))
 
 
+def _norm_title(t):
+    return re.sub(r"\W+", " ", (t or "").lower()).strip()
+
+
+def _same_title_site(nodes, parent, text):
+    """The echo/twin guard (the user 2026-07-08): the node a new `sub` under `parent` would merely
+    duplicate — the parent itself (a "step" that restates its parent's title adds zero information; the
+    two-run echo filed a card's ask as a child of itself), or an **open** same-titled sibling (a twin
+    mint; the step lands as fresh evidence on the existing node's trail instead). Exact normalized
+    equality only, never a similarity heuristic. A completed/cleared sibling never matches, so a
+    genuinely repeated step gets its own node rather than resurrecting a finished one."""
+    t = _norm_title(text)
+    if not t:
+        return None
+    nd = nodes.get(parent)
+    if nd is not None and _norm_title(nd.get("text")) == t:
+        return parent
+    for cid, c in nodes.items():
+        if (c.get("parentId") == parent and _norm_title(c.get("text")) == t
+                and not c.get("nodeComplete") and not c.get("cleared")):
+            return cid
+    return None
+
+
 def apply_plan(store, seg_id, seg_t, ops, menu, place_key=None, prompt_uuid=None, quote=None):
     """Apply an ORDERED list of planner ops for one segment (idempotent per place_key via placements).
     Each op's one-sentence rationale is PERSISTED: a created node carries `why`; a block carries
@@ -1557,6 +1581,13 @@ def apply_plan(store, seg_id, seg_t, ops, menu, place_key=None, prompt_uuid=None
             else:
                 while _depth(nodes, parent) >= MAX_DEPTH:  # never chain past MAX_DEPTH; re-parent up
                     parent = nodes[parent]["parentId"]
+                dup = _same_title_site(nodes, parent, o["text"])
+                if dup is not None:                    # echo/twin: land on the existing node, mint nothing
+                    if seg_id and seg_id not in (nodes[dup].get("trail") or []):
+                        nodes[dup].setdefault("trail", []).append(seg_id)
+                    nodes[dup]["mt"] = seg_t
+                    _unblock_branch(dup); focus = touched = dup
+                    continue
                 nid = new_node(o["text"] or "(step)", parent, o["why"])
             _unblock_branch(nid); focus = touched = nid
         elif do == "done":
@@ -1877,7 +1908,10 @@ def plan_llm(segment_text, menu_text, model=None, effort=None, human=False, nudg
                      "so far — richer than its one-line title in <open-goals>. Weigh it, not just the title, "
                      "when placing or resolving #%d.</note>" % (goal_history, goal_num, goal_num))
         user += ("\n<note>This segment is about goal #%d specifically — \"retitle\" is valid **only** on #%d, "
-                 "never on any other listed goal.</note>" % (goal_num, goal_num))
+                 "never on any other listed goal. The ask itself is already recorded as #%d: a sub you add "
+                 "must describe what the **work** contributed beyond it, never restate #%d's own title — and "
+                 "if nothing beyond the ask has happened yet, add no sub at all (done/block/retitle "
+                 "suffice).</note>" % (goal_num, goal_num, goal_num, goal_num))
     if followup and goal_num:
         # promote-on-pivot (the user 2026-07-03): filing under the cited goal is a STRONG PRIOR, not a
         # straitjacket — the user replies to cards out of habit, so a reply that clearly starts a
@@ -3411,15 +3445,15 @@ def _plan_session(fsid, path, now):
             # Sonnet call every pass). Resolve deterministically — a user message lands via the hard
             # guard; a non-user segment we still can't read is dropped (place nothing).
             fails.pop(seg_id, None)
-            if not human:
-                store["placements"][seg_id] = None
+            if not human or p_target:                 # already placed by its prompt/live run → can't vanish;
+                store["placements"][seg_id] = None    #  re-placing it was the duplicate (the user 2026-07-08)
                 save_goals(fsid, store)
                 continue
             ops = _coerce_place(menu, text)           # HARD GUARD: a user message never silently vanishes
         if len(ops) == 1 and ops[0]["do"] == "skip":
-            if not human:                             # non-user no-work segment → record processed, place nothing
-                store["placements"][seg_id] = None    # so it's not re-judged every pass (idempotent)
-                save_goals(fsid, store)
+            if not human or p_target:                 # no-work segment, or a message its prompt/live run already
+                store["placements"][seg_id] = None    #  placed (re-placing it was the duplicate, 2026-07-08) →
+                save_goals(fsid, store)               #  record processed, place nothing (idempotent)
                 continue
             ops = _coerce_place(menu, text)           # HARD GUARD: a user message never silently vanishes
         store.get("parseFails", {}).pop(seg_id, None)  # placed → forget any earlier parse-fails on it
@@ -3535,7 +3569,10 @@ GROUP_SYS = (
     f"#m. Keep trees shallow: do not nest more than {MAX_DEPTH} levels deep.\n"
     "Be aggressive about grouping a real shared purpose, since a few real trees beat a flat list of "
     "every request, but never group on look-alike wording alone, and leave a standalone goal as its "
-    "own top. Reuse an existing umbrella rather than minting a duplicate. Doing nothing is a valid, "
+    "own top. A top marked \"from the agent's own to-do list\" is a to-do mirror: it always starts "
+    "flat by design, and nesting it is your job — when it reads as a step of another open top's "
+    "outcome (wrap-up, verification, a task the agent queued for that work), group it under that "
+    "top. Reuse an existing umbrella rather than minting a duplicate. Doing nothing is a valid, "
     "common outcome: if no clear cluster stands out, because the tops are already well-organized or "
     'simply unrelated, return {\"ops\": []} and change nothing. Never invent a grouping just to act.\n'
     "Write each \"why\" plainly: the real reason first, concrete verbs, the words a person actually "
@@ -3612,6 +3649,8 @@ def _group_menu_text(store, tops):
     out = []
     for i, nd in enumerate(tops, 1):
         line = "%d. %s" % (i, nd["text"])
+        if nd.get("agentTask"):
+            line += "  · from the agent's own to-do list"
         children = sorted((c for c in kids.get(nd["id"], [])
                            if not c.get("nodeComplete") and not c.get("cleared")),
                           key=lambda c: c.get("t", 0))

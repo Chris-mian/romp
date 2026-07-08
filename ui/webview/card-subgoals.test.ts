@@ -61,3 +61,11 @@ test("the sub-goal checklist is styled (done = blue ✓ disc, dimmed but NOT str
   assert.match(CSS, /\.fcheck\.question \.fcheck-mark \{[^}]*border: 1\.5px solid var\(--err\)/);
   assert.match(CSS, /\.fcheck\.question \.fcheck-mark \{[^}]*border-radius: 50%/);
 });
+
+test("the Sub-goals button leads with the WHOLE-tree count — every node, every depth (the user 2026-07-08)", () => {
+  assert.match(FEED, /let subCount = 0;/);
+  assert.match(FEED, /const stack = \[\.\.\.\(root\.children \|\| \[\]\)\];/);   // full descent, not level 1
+  assert.match(FEED, /stack\.push\(\.\.\.\(n\.children \|\| \[\]\)\);/);
+  assert.match(FEED, /const hasSubs = subCount > 0;/);
+  assert.match(FEED, /subBtn\.textContent = subCount === 1 \? "1 sub-goal" : subCount \+ " sub-goals";/);
+});

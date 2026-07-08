@@ -169,5 +169,65 @@ class PlacePromptPins(unittest.TestCase):
                           "both planner runs file subs against top-level cards")
 
 
+class EchoTwinGuard(unittest.TestCase):
+    """apply_plan's echo/twin guard (the user 2026-07-08): a sub that exactly restates its parent's
+    title lands ON the parent; a sub identical to an OPEN sibling reuses that sibling's node; a
+    completed sibling never matches (a repeated step is new work, not a resurrection)."""
+
+    def setUp(self):
+        self.td = tempfile.mkdtemp()
+        jd._rebind_state(Path(self.td))
+
+    def tearDown(self):
+        shutil.rmtree(self.td, ignore_errors=True)
+
+    def _apply(self, st, ops, key):
+        jd.apply_plan(st, key, NOW, ops, jd.open_menu(st), place_key=key)
+
+    def test_parent_echo_lands_on_the_parent(self):
+        st = store(node(gid(1), "Fix the rejudge bug", t=100))
+        self._apply(st, [{"do": "sub", "under": 1, "text": "Fix the  REJUDGE bug!", "why": "w"}], "segA")
+        self.assertEqual(len(st["nodes"]), 1, "a step restating its parent (any case/punctuation) mints nothing")
+        self.assertEqual(st["placements"]["segA"], gid(1))
+        self.assertIn("segA", st["nodes"][gid(1)]["trail"])
+
+    def test_open_twin_sibling_is_reused(self):
+        st = store(node(gid(1), "Card A", t=100),
+                   node(gid(2), "Diagnose the bump", parent=gid(1), t=200))
+        self._apply(st, [{"do": "sub", "under": 1, "text": "Diagnose the bump", "why": "w"}], "segB")
+        self.assertEqual(len(st["nodes"]), 2, "no twin sibling minted")
+        self.assertIn("segB", st["nodes"][gid(2)]["trail"], "the step lands as evidence on the existing node")
+
+    def test_completed_sibling_is_not_resurrected(self):
+        st = store(node(gid(1), "Card A", t=100),
+                   node(gid(2), "run the tests", parent=gid(1), t=200, done=True))
+        self._apply(st, [{"do": "sub", "under": 1, "text": "run the tests", "why": "w"}], "segC")
+        self.assertEqual(len(st["nodes"]), 3, "a repeated step next to a FINISHED twin gets its own node")
+
+    def test_distinct_title_still_mints(self):
+        st = store(node(gid(1), "Card A", t=100))
+        self._apply(st, [{"do": "sub", "under": 1, "text": "wire the tests", "why": "w"}], "segD")
+        self.assertEqual(len(st["nodes"]), 2)
+
+
+class PromptAndGrouperPins(unittest.TestCase):
+    def test_goal_num_note_forbids_restating_the_ask(self):
+        from unittest import mock
+        with mock.patch.object(jd, "_judge_run", return_value="{}") as m:
+            jd.plan_llm("seg", "menu", goal_num=2)
+            note = m.call_args.args[2]
+        self.assertIn("already recorded as #2", note)
+        self.assertIn("never restate #2's own title", note)
+
+    def test_grouper_marks_and_owns_todo_mirrors(self):
+        self.assertIn("to-do mirror", jd.GROUP_SYS)
+        self.assertIn("nesting it is your job", jd.GROUP_SYS)
+        st = store(node(gid(1), "Tests green, merge, push", t=100, agentTask={"key": "k1", "status": "open"}),
+                   node(gid(2), "Build the widget", t=200))
+        text = jd._group_menu_text(st, jd._group_tops(st))
+        self.assertIn("Tests green, merge, push  · from the agent's own to-do list", text)
+        self.assertNotIn("Build the widget  ·", text, "only to-do mirrors wear the mark")
+
+
 if __name__ == "__main__":
     unittest.main()

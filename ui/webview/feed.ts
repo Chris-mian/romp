@@ -1006,11 +1006,26 @@ function applySubgoals(a: any, it: AskItem): void {
   const tree = it.tree || [];
   const byId = new Map(tree.map((n) => [n.id, n] as const));
   const root = tree.find((n) => n.id === it.itemId) || tree[0];
-  const hasSubs = !!root && (root.children || []).some((cid) => {
-    const n = byId.get(cid); return !!n && n.kind !== "handoff";
-  });
+  // whole-tree count, every depth (the user 2026-07-08): the button reads "5 sub-goals" so the size of
+  // what's underneath is glanceable without expanding. Distinct non-handoff descendants, repeats once.
+  let subCount = 0;
+  if (root) {
+    const seen = new Set<string>([root.id]);
+    const stack = [...(root.children || [])];
+    while (stack.length) {
+      const cid = stack.pop() as string;
+      if (seen.has(cid)) continue;
+      seen.add(cid);
+      const n = byId.get(cid);
+      if (!n || n.kind === "handoff") continue;
+      subCount++;
+      stack.push(...(n.children || []));
+    }
+  }
+  const hasSubs = subCount > 0;
   // the button appears ONLY when there ARE sub-goals; independent on/off; default follows Collapsed mode
   subBtn.style.display = hasSubs ? "" : "none";
+  subBtn.textContent = subCount === 1 ? "1 sub-goal" : subCount + " sub-goals";
   const on = hasSubs && resolveSub(id);
   subBtn.classList.toggle("on", on);
   subBtn.setAttribute("aria-pressed", on ? "true" : "false");
