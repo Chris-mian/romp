@@ -91,6 +91,34 @@ class CardTime(unittest.TestCase):
         self.assertEqual(card["trgb"], list(km.cm.age_rgb(NOW - card["t"])),
                          "the recency tint follows completion, not mint")
 
+    def test_completed_card_time_ignores_a_no_op_rejudge_touch_of_the_umbrella(self):
+        # An hours-old completed card must NOT jump to "moments ago" when a later no-op re-judge re-touches
+        # the UMBRELLA node's mt without changing the work (the user 2026-07-08: it read "3m ago" while the
+        # done children + settle time were hours old). The time stays the settle time / the done DESCENDANTS'
+        # completion mt — both stable — never the umbrella's re-touched mt.
+        top, sub = SID + ":top", SID + ":sub"
+        self._store(
+            {top: {"id": top, "text": "a shipped feature", "parentId": None, "nodeComplete": True,
+                   "blocked": False, "cleared": False, "trail": [], "t": NOW - 8 * 3600,
+                   "mt": NOW - 120, "settledAt": NOW - 7 * 3600},         # umbrella mt bumped to 2m ago (no-op re-judge)
+             sub: {"id": sub, "text": "the finishing step", "parentId": top, "nodeComplete": True,
+                   "blocked": False, "cleared": False, "trail": [], "t": NOW - 7 * 3600, "mt": NOW - 7 * 3600}},
+            {top: "completed"})
+        card = self._card(top)
+        self.assertEqual(card["t"], NOW - 7 * 3600,
+                         "completed card time = the stable settle time, NOT the umbrella's re-touched mt")
+
+    def test_childless_completed_goal_without_settledat_falls_back_to_its_own_mt(self):
+        # legacy/simple path: a completed goal with no children and no settledAt has no stable descendant or
+        # settle signal, so its own completion mt is the only evidence (behavior unchanged).
+        top = SID + ":top"
+        self._store(
+            {top: {"id": top, "text": "a one-shot fix", "parentId": None, "nodeComplete": True,
+                   "blocked": False, "cleared": False, "trail": [], "t": NOW - 3 * 3600, "mt": NOW - 400}},
+            {top: "completed"})
+        card = self._card(top)
+        self.assertEqual(card["t"], NOW - 400, "no children + no settledAt → the node's own completion mt")
+
     def test_blocked_card_time_is_when_it_blocked_not_mint(self):
         # Same for a BLOCKED card: it shows when the still-open block was set (the blocked node's mt).
         top = SID + ":top"

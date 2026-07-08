@@ -6828,15 +6828,20 @@ def build_feed(now, tmux=None):
             # mt, so the card must too (the user 2026-07-01). `created` keeps the true mint time for the record.
             disp_t = _fsubmax(nid)
             if col == "completed":
-                dts = [nodes[x].get("mt", nodes[x]["t"]) for x in _subtree(nid) if _closure_done(x)]
-                if dts:
-                    disp_t = max(dts)
-                # settledAt = when the card actually ENTERED the Completed column (the judge stamps it at
-                # settlement, which can lag the done op's mt by many segments). The column sorts by `t`
-                # oldest-at-top, so using settledAt drops a just-settled card to the BOTTOM where the eye
-                # expects it, instead of above older completions whose stale `mt` was even further back (the
-                # user 2026-06-29). Falls back to the completion mt for legacy stores with no settledAt.
-                disp_t = max(disp_t, nodes[nid].get("settledAt") or 0)
+                # A completed card's time is when the WORK finished / it SETTLED — NEVER a later re-judge that
+                # re-touches the UMBRELLA node's own mt without changing anything (the user 2026-07-08: an
+                # hours-old completed card jumped to "3m ago" after a no-op re-judge re-stamped the top node's
+                # mt; a re-materialize can advance mt even when nothing changed). So derive ONLY from stable
+                # evidence: the settle time + the done DESCENDANTS' completion mt — excluding the top node `nid`
+                # itself, whose (re-touchable) mt _fsubmax had already folded in.
+                dts = [nodes[x].get("mt", nodes[x]["t"]) for x in _subtree(nid) if x != nid and _closure_done(x)]
+                # settledAt = when the card actually ENTERED the Completed column (the judge stamps it ONCE at
+                # settlement — NOT re-bumped by a no-op re-judge, verified stable while the umbrella mt drifted;
+                # it can lag the done op's mt by many segments). The column sorts by `t` oldest-at-top, so a
+                # just-settled card drops to the BOTTOM where the eye expects it, above older completions whose
+                # stale mt was even further back (the user 2026-06-29).
+                cand = max([nodes[nid].get("settledAt") or 0] + dts)   # settle time OR a real late-completing leaf
+                disp_t = cand or disp_t                                # both absent (legacy/childless) → keep _fsubmax
             elif col == "blocked":
                 bts = [nodes[x].get("mt", nodes[x]["t"]) for x in _subtree(nid)
                        if nodes[x].get("blocked") and not _closure_done(x)]
