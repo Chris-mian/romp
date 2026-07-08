@@ -7383,18 +7383,10 @@ def _seg_last_text(atoms):
 
 
 def _seg_key(seg_id):
-    """A timestamp-INVARIANT segment key (`rompuuid:texthash`) — the seg id with its volatile middle
-    `seg.t` dropped. A goal's RECORDED trail seg id can carry a different timestamp than the LIVE parse's
-    seg id for the same segment: an SDK optimistic echo lands at SEND time, the real transcript atom at
-    PROCESS time (often 30s+ later when the message was queued/forwarded), and _segment_id embeds that t —
-    same session, same trigger-text hash, different t. Keying anchor lookups on this stable key keeps
-    deep-link resolution (summary / title / card click) working across that drift, instead of silently
-    failing to a no-link / "couldn't locate" (the user 2026-06-27). None-safe; non-conforming ids pass
-    through unchanged."""
-    if not seg_id:
-        return seg_id
-    parts = seg_id.split(":")
-    return (parts[0] + ":" + parts[-1]) if len(parts) >= 3 else seg_id
+    """A timestamp-INVARIANT segment key — THE JUDGE'S `_seg_key`, one definition (unified 2026-07-07:
+    these were literal twin copies that had to never drift; now the kernel delegates, so they cannot).
+    See jd._seg_key for the full rationale (SDK echo vs transcript t-drift; the user 2026-06-27/07-01)."""
+    return jd._seg_key(seg_id)
 
 
 def _seg_placed(placements, seg_id):

@@ -362,6 +362,9 @@ def _judge_env(tier):
     return env
 
 
+_RATE_GATE_LOGGED = {}                   # bucket -> resets_at already announced (one line per window)
+
+
 def _judge_run(model, sys_prompt, user, effort=None, judge=None, tier="triage"):
     """Run ONE judge model call. ..."""
     _judge_ctx.paused = False                         # a SKIPPED-because-paused call is not a failure: the
@@ -370,6 +373,27 @@ def _judge_run(model, sys_prompt, user, effort=None, judge=None, tier="triage"):
         if p.exists() and json.loads(p.read_text()).get("paused"):
             _judge_ctx.paused = True                  # the caller reads this to tell a pause-skip "" apart
             return ""                                 # from a real call failure — event-based, no time window
+    except Exception:
+        pass
+    try:
+        # RATE-LIMIT GATE (the user 2026-07-07): while the ACCOUNT is limit-exhausted, every judge call
+        # fleet-wide just burns a doomed API retry (the archiver postmortem: ~1160 wasted calls in one
+        # 90-min window). usage.json (the SDK backend's /usage poll) says so exactly; `resets_at` makes
+        # the gate self-expiring — a stale "limited" stops gating the moment the window resets, no age
+        # heuristics. Skips ride the SAME paused flag, so no give-up counter ever counts one as a
+        # failure. The `fable` bucket is deliberately ignored (judges run Sonnet). Unreadable/absent
+        # usage.json → never gate: the gate is an optimization, judging is the job.
+        u = json.loads((STATE / "usage.json").read_text())
+        for _b in ("five_hour", "seven_day"):
+            _lim = u.get(_b) or {}
+            if (_lim.get("pct") or 0) >= 100 and (_lim.get("resets_at") or 0) > time.time():
+                _judge_ctx.paused = True
+                if _RATE_GATE_LOGGED.get(_b) != _lim.get("resets_at"):   # one log line per limit window
+                    _RATE_GATE_LOGGED[_b] = _lim.get("resets_at")
+                    _log_judge_error(tier, None, "rate-limited",
+                                     note="%s at %d%% — judge calls skipped until the window resets"
+                                          % (_b, _lim.get("pct") or 0))
+                return ""
     except Exception:
         pass
     env = _judge_env(tier)
