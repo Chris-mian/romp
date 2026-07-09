@@ -2411,6 +2411,32 @@ class OptimisticFollowupHold(unittest.TestCase):
         self.assertEqual([n for n in st["nodes"].values() if n.get("parentId") == gid], [],
                          "a reopen mints nothing — the planner resolves or files real work later")
 
+    def test_reply_floors_blocks_across_the_whole_subtree(self):
+        # the user 2026-07-09: "in practice if it's blocked on something I will send it back — I'm not
+        # individually replying to blocked sub-goals." A reply to the card clears blocks wherever they
+        # sit in its subtree, exactly like Move to Working (the g593 case: the closer's block sat on a
+        # grandchild, the user's reply reopened only the cited node, and the card stayed in Needs-You).
+        gid, mid, leaf = SID + ":g1", SID + ":g2", SID + ":g3"
+        jd.save_goals(SID, {"rompUuid": SID, "seq": 3, "placements": {}, "status": {gid: "blocked"},
+                            "nodes": {gid: {"id": gid, "text": "Explain the placeholder", "parentId": None,
+                                            "nodeComplete": False, "blocked": False, "cleared": False,
+                                            "trail": [], "t": T0, "mt": T0},
+                                      mid: {"id": mid, "text": "the middle goal", "parentId": gid,
+                                            "nodeComplete": False, "blocked": False, "cleared": False,
+                                            "trail": [], "t": T0, "mt": T0},
+                                      leaf: {"id": leaf, "text": "timeline reconstructed; asks approval",
+                                             "parentId": mid, "nodeComplete": False, "blocked": True,
+                                             "cleared": False, "trail": [], "t": T0, "mt": T0,
+                                             "log": [{"ev_t": T0 + 50, "src": "closer", "kind": "block",
+                                                      "at": T0 + 50, "why": "turn ended asking approval"}]}}})
+        self.assertTrue(jd.optimistic_followup(SID, gid, text="yes, keep going", now=T0 + 100))
+        st = jd.load_goals(SID)
+        self.assertFalse(st["nodes"][leaf]["blocked"], "the reply cleared the grandchild's block")
+        ub = [e for e in st["nodes"][leaf]["log"] if e["kind"] == "unblock"]
+        self.assertEqual([e["src"] for e in ub], ["user"], "event-backed: a user unblock in the diary")
+        self.assertIn("reply to the card", ub[0]["why"])
+        self.assertEqual(st["status"][gid], "working", "the card leaves Needs-You the moment you reply")
+
     def _blocked_top(self):
         # a BLOCKED goal whose last activity (mt) is OLD, so build_feed would otherwise sort its card by that
         # stale time and float it to the top of Working when a follow-up reopens it.

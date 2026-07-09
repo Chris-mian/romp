@@ -2737,6 +2737,13 @@ def optimistic_followup(fsid, gid, text="", now=None):
     if gid not in store.get("nodes", {}):
         return False
     _reopen(store, gid, by="optimistic", now=now, msg=True)     # unseal + unblock; the event carries the rest
+    # A reply to the card answers its blocks WHEREVER they sit (the user 2026-07-09): in practice the
+    # user replies to the card, never to individual blocked sub-goals — "if it's blocked on something I
+    # will send it back". So the reply floors blocks across the whole subtree, exactly like Move to
+    # Working (the g593 case: the closer's block sat on a grandchild, the reply reopened the cited node,
+    # and the block never cleared). src user: a judge may re-block only from genuinely newer evidence —
+    # the fold's evidence-time replay keeps any catch-up block older than this unblock from winning.
+    _unblock_subtree(store, gid, now, "answered by the user's reply to the card")
     rollup_status(store, False)                        # the user just acted → not idle/closed → working
     save_goals(fsid, store)
     return True
@@ -2760,19 +2767,28 @@ def user_move(fsid, gid, now=None):
     if not may_apply(store, nodes[gid], "user", "reopen"):   # view-cleared → sealed; the feed hides it anyway
         return False
     _reopen(store, gid, by="user-move", now=now)
-    kids = {}
-    for k, v in nodes.items():
-        kids.setdefault(v.get("parentId"), []).append(k)
-    stack = [gid]                                      # "not blocked" means the whole card: clear descendant blocks
-    while stack:
-        x = stack.pop()
-        if x != gid and nodes[x].get("blocked"):       # event-backed (P3.3): the log is the authority; the
-            record_verdict(store, nodes[x], "user", "unblock", now,   # event materializes the clear. gid's
-                           why="moved to Working by the user")        # own reopen event covers the top itself
-        stack.extend(kids.get(x, []))
+    _unblock_subtree(store, gid, now, "moved to Working by the user")
     rollup_status(store, False)                        # the user just acted → not idle/closed → working
     save_goals(fsid, store)
     return True
+
+
+def _unblock_subtree(store, gid, now, why):
+    """Clear every blocked DESCENDANT of `gid` with a user unblock event — the shared floor behind both
+    user gestures that assert "this card is not waiting on me": Move to Working (2026-07-06) and a reply
+    to the card (2026-07-09). _reopen covers gid itself and its ancestor chain; a block can sit anywhere
+    below, which the user never addresses node-by-node. Event-backed (P3.3): the log is the authority,
+    record_verdict materializes the clear."""
+    nodes = store.get("nodes", {})
+    kids = {}
+    for k, v in nodes.items():
+        kids.setdefault(v.get("parentId"), []).append(k)
+    stack = [gid]
+    while stack:
+        x = stack.pop()
+        if x != gid and nodes[x].get("blocked"):
+            record_verdict(store, nodes[x], "user", "unblock", now, why=why)
+        stack.extend(kids.get(x, []))
 
 
 def _block_is_stale(nd, ev_t):
