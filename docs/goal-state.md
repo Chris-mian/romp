@@ -1,7 +1,7 @@
 # How a card gets its state
 
 The state model, the "constitution": what moves a card, every chip it can
-wear, and the edge-case rules. Current as of **2026-07-08**. Companions:
+wear, and the edge-case rules. Current as of **2026-07-09**. Companions:
 [judge-pipeline.md](judge-pipeline.md) (the diagram map) and
 [judges.md](judges.md) (who the judges are); design history in
 `design/judge-simplification-plan.md` (git history — the plan shipped and the
@@ -151,7 +151,9 @@ within a beat it reverts with a toast, never silently.
    only the new stretch (`deltaSince`).
 7. Identity: identical prompts in different turns are different work
    (twins); same-second identical bursts plan once; any seg-id-derivation
-   change ships a placements migration (`placementsV`).
+   change ships a placements migration (`placementsV`, at v2 since
+   2026-07-09, when an unbumped hash change replayed cleared cards;
+   `tests/test_placements_canary.py` now pins the derivation).
 8. The auto-nudge fires once per genuine stall, never re-arms off romp's
    own turns, is suppressed while interrupted, and its failure becomes a
    block.

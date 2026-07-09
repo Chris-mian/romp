@@ -1,23 +1,28 @@
-# The judges — a field guide
+# The judges: a field guide
 
 > The picture first: [judge-pipeline.md](judge-pipeline.md) is the one-page
 > diagram map (when each judge runs, card-first filing, the state machine,
-> the postal flow). This page is the per-judge detail behind it.
+> the postal flow). This page is the per-judge detail behind it, plus the
+> failure contract. The state model itself (the diary, the fold, every chip)
+> lives in [goal-state.md](goal-state.md).
 
-Current as of **2026-07-08**. One judge per distinct system prompt, one name
-per judge: what each one is, when it fires, what it reads and writes. The
-state model (the diary, the fold, every chip) lives in
-[goal-state.md](goal-state.md). Prompts are named by their constant in
-`bin/romp-judge` (grep the constant; line numbers drift).
+Current as of **2026-07-09**.
+
+romp keeps two live artifacts per session without you curating either: a
+readable text record (chat captions, the session TOC, the timeline) and the
+goal board (the cards on the feed). Judges maintain both. A judge is one
+small LLM call with one narrow job, one system prompt, and one name. It
+fires on an event in the session's life, writes its verdict to an
+append-only record, and plain code does the rest. No judge owns state: a
+wrong verdict is one bad event in a log, outvoted by later evidence, never a
+corrupted fact.
+
+The twelve judges run in two tiers. The index tier (Haiku, cheap) writes
+text only and never touches goals. The triage tier (Sonnet) maintains the
+board. Both run continuously from the kernel producer and are event-gated,
+so an idle fleet costs file stats, not model calls.
 
 ## The roster
-
-Twelve judges, eleven prompts (the consolidator reuses the grouper's).
-Usage and error logs attribute one name per prompt (2026-07-08; rows
-before that date carry the family names). The timeline band keeps five
-family rows and folds the fine names onto them (`_JUDGE_FAMILY`,
-`bin/romp-kernel`): gister onto captioner, opener and placer onto
-planner, briefer onto distiller, consolidator onto grouper.
 
 | Judge | Tier | Prompt | Fires when |
 |---|---|---|---|
@@ -27,123 +32,200 @@ planner, briefer onto distiller, consolidator onto grouper.
 | opener | triage (Sonnet) | `OPENER_SYS` | a message lands, work still running |
 | planner | triage | `PLAN_SYS` | a segment's work ends |
 | placer | triage | `PLACE_SYS` | the planner filed under a card with open sub-goals |
-| grouper | triage | `GROUP_SYS` | the set of open cards changed |
-| consolidator | triage | `GROUP_SYS` (shared) | the set of completed cards changed |
 | closer | triage | `CLOSER_SYS` | a turn ends |
 | distiller | triage | `DISTILL_SYS` | a card completed and settled |
 | briefer | triage | `BLOCK_BRIEF_SYS` | a card blocked |
+| grouper | triage | `GROUP_SYS` | the set of open cards changed |
+| consolidator | triage | `GROUP_SYS` (shared) | the set of completed cards changed |
 | courier | triage | `COURIER_SYS` | a peer message arrives |
 
-Both tiers run continuously from the kernel producer, event-gated, so an
-idle fleet costs file stats, not model calls. The index tier (`run_index`)
-maintains the durable text record; the triage tier (`run_triage`, one
-ordered unit: planner, closer, courier, propagate, grouper, consolidator,
-distiller + briefer) maintains the live goal board. Every call goes through
-one entrypoint, `_judge_run(..., judge=<name>)`: an isolated `claude -p`
-subprocess with a hard timeout, rate-window gating, and per-call cost
-logging.
+Eleven prompts back the twelve names: the consolidator reuses the grouper's
+prompt over a different column, under its own name. Usage and error logs
+carry one name per prompt; the timeline band keeps five family rows and
+folds the fine names onto them (`_JUDGE_FAMILY` in `bin/romp-kernel`).
+Naming history: log rows before 2026-07-08 use the family names, and the
+opener was "prompt-planner" for one day (07-08 to 07-09). Prompts are named
+by their constant in `bin/romp-judge`; grep the constant, line numbers
+drift.
 
-## The index tier
+## A turn through the judges
 
-**captioner.** The readable activity log: per finished segment or turn,
-one short past-tense phrase (~4-7 words) that leads with the result and
-never names a tool. An empty reply means "no finished work", skip. Appends
-to `captions/<fsid>.jsonl`; feeds the chat, the feed cards, the timeline.
+A segment is one input and the work it causes; a turn holds one or more
+segments (your message, then perhaps a peer's, each with its own work).
+
+The moment your message lands, the gister captions what it is about and the
+opener puts the ask on the board, before any work exists. When a segment's
+work ends, the captioner writes its one finished line and the planner files
+what the work actually did, calling the placer when a spot inside a card
+needs picking. When the turn ends, the closer audits the goals the turn
+touched for quiet completions and the archiver refreshes the session's
+headline. From there the board keeps itself: a completed card settles and
+gets the distiller's takeaway, a blocked card gets the briefer's decision
+brief, a changed set of top cards may get nested by the grouper (open
+column) or the consolidator (done column), and a peer message goes to the
+courier instead of the planners. Every section below is one of those
+moments in detail.
+
+## The index tier: the text record
+
+Three Haiku judges write the words you read in the chat, the timeline, and
+search. They are write-only: nothing they emit changes a card's state.
+
+**captioner.** The readable activity log. Per finished segment or turn, one
+short past-tense phrase (4 to 7 words) that leads with the result and never
+names a tool. An empty reply means "no finished work", skip. Appends to
+`captions/<fsid>.jsonl`; feeds the chat, the feed cards, the timeline.
 
 **gister.** The captioner's sibling for a request still in progress: a
 present-tense topic phrase ("a dark-mode toggle for settings"), not a
 result. Feeds the "Analyzing:" placeholder card and the timeline dot the
 moment a message lands.
 
-**archiver.** Per-session headline + abstract, re-run when the session
-gains a turn. Reads the session's turn captions oldest-first; replies
-exactly two lines, `HEADLINE:` and `ABSTRACT:`. Written to
+**archiver.** The per-session headline and abstract, re-run when the
+session gains a turn. Reads the session's turn captions oldest-first;
+replies exactly two lines, `HEADLINE:` and `ABSTRACT:`. Written to
 `archive/<fsid>.json`; feeds the chat TOC and the search index.
 
-## The planners
+## Filing: the opener, the planner, the placer
 
-**opener.** Fires the moment your message lands on a still-open
-segment, so the board shows the ask before the work exists. Exactly one op,
-and it must place: mint a new card or file under an open one, card level
-only, never done/block. A reply that never parses is logged and the ask is
-hard-placed anyway; a prompted goal never stays unplaced.
+Filing answers one question: which card does this belong to? Three judges
+answer it at different moments. The opener places your ask the instant it
+lands. The planner places the finished work and rules on it. The placer
+picks the depth inside a card when that is still open.
 
-**planner.** Fires when a segment's work ends; the full op list: `mint`,
-`sub`, `done` (eager: an answer counts as done, but ending by asking you to
-approve is a block), `block` (only the human blocks; peer/CI/build waits
-stay working), `retitle`, `skip`. Its verdicts append diary events; the
-same engine, mode-switched by note injections, handles four more phases:
-live re-plan after you clear a card mid-work, nudge resolution (resolve the
-named goal, done or block, no plain step), delegation follow-on (files the
-recipient's work under the courier's plant), and tagged follow-ups (file
-under the cited goal unless the reply starts a different thread). A segment
-opened by an untargeted kernel notice (restart/resume) carries a
-housekeeping note: pure resume/verification sweeps file nothing
-(2026-07-08).
+All three file **card-first** (2026-07-08). The open-goal menu renders as a
+tree grouped under top-level cards, and filing names a card, never a nested
+line; the test is "can this card be called done without this work?", judged
+where you actually experience the board. Only the placer ever goes deeper
+than the card.
 
-**Card-first filing** (2026-07-08). The open-goal menu renders as an
-indented tree grouped under top-level cards, and a `sub` names the card,
-never a nested line; the test is "can this card be called done without this
-work?", judged where you actually experience the board. This replaced the
-clear-time auto-split, whose promptUuid provenance was unreliable (messages
-and deliverables are many-to-many). Clear is a dumb sweep again.
+**opener.** Fires the moment your message lands on a still-open segment, so
+the board shows the ask before the work exists. It is the closer's mirror:
+it may only open (mint a new card or file under an open one, card level,
+never done or block), as the closer may only close. A reply that never
+parses is logged and the ask is hard-placed anyway; a prompted goal never
+stays unplaced.
 
-**placer.** The second, scoped call: only when the chosen card already has
-open sub-goals, it sees just that card's subtree and picks the spot, biased
+**planner.** Fires when a segment's work ends, and holds the full op list:
+`mint`, `sub`, `done`, `block`, `retitle`, `skip`. Done is eager (an answer
+counts as done), but ending by asking you to approve is a block, and only
+the human blocks: peer, CI, and build waits stay working. Its verdicts
+append diary events. The same engine, mode-switched by note injections,
+handles four more phases: a live re-plan after you clear a card mid-work,
+nudge resolution (resolve the named goal, done or block, no plain step),
+delegation follow-on (file the recipient's work under the courier's plant),
+and tagged follow-ups (file under the cited goal unless the reply starts a
+different thread). A segment opened by an untargeted kernel notice (restart
+or resume) carries a housekeeping note: pure verification sweeps file
+nothing.
+
+**placer.** The second, scoped call, only when the chosen card already has
+open sub-goals: it sees just that card's subtree and picks the spot, biased
 to the highest level that makes sense. Most cards have no open sub-goals,
-so most placements stay one call; the prompt/live phases always stay card
-level. Any failure attaches at the card and logs to `judge-errors.jsonl`.
+so most placements stay one call; the opener's and the live re-plan's
+placements always stay card level.
 
-The planners never reorganize the board; that is the grouper's job, and the
-prompt says so.
+None of the three reorganizes the board; that is the grouper's job, and the
+prompts say so.
 
-## The board keepers
+## Status and summaries: the closer, the distiller, the briefer
+
+A card should say so when it is finished or stuck, without the agent having
+to narrate it. The closer supplies the missing verdicts; the distiller and
+the briefer write what you read on the resolved card.
+
+**closer.** The turn-end completion backstop; it exists because agents
+rarely say "done". It audits only the goals the turn actually touched;
+verdict done, blocked, or omit, with "when in doubt, omit". Idempotent per
+turn. Its diary events carry src `closer`, so planner and closer verdicts
+stay distinguishable, and both defer to the user floor: a verdict computed
+from evidence at or before your last reply loses.
+
+**distiller.** When a top card completes and settles: `BACKGROUND:`
+(re-orientation for a reader who lost the thread) plus `TAKEAWAY:` (the one
+thing you would most want to know now that it is done), consuming the
+closer's done-reason as ground truth. After a follow-up re-completes a
+card, the prior summary is handed back and the work text is cut to the
+stretch after your follow-up, so the takeaway is the update, never a recap.
+May cite a `SOURCE: mN` line, parsed into the summary's deep link; a cite
+that misses logs and chips the card instead of failing.
+
+**briefer.** When a top card blocks (and live for the focused picker or
+permission goal): a decision brief that leads with exactly what you must
+decide or provide, then options and tradeoffs. Same `SOURCE:` contract as
+the distiller.
+
+## Board shape: the grouper and the consolidator
+
+As cards accumulate, related tops nest under umbrellas so the board stays
+glanceable. Both judges move whole subtrees and append no diary events:
+structure, never status.
 
 **grouper.** Given the open top-level cards: nest one under another, or
 mint an umbrella when several serve one outcome, and "doing nothing is a
-valid, common outcome". Ops move whole subtrees; it appends no diary events
-(structure, never status). Called only when the open-top set actually
-changed. Hard rules in `apply_group`: never touch a view-cleared card, no
-cycles, depth clamp 4, same-session only. A to-do-mirror top (planted flat
-by plan-sync) is explicitly the grouper's to nest. (The old
-never-move-a-once-done-node rule was removed 2026-07-06; the `everDone`
-flag itself was retired 2026-07-08, once-done history now lives in the
-diary's done events.)
+valid, common outcome". Called only when the open-top set actually changed.
+Hard rules in `apply_group`: never touch a view-cleared card, no cycles,
+depth clamp 4, same-session only. A to-do-mirror top (planted flat by
+plan-sync) is explicitly the grouper's to nest.
 
-**consolidator.** The same prompt over the completed column: groups related
-all-completed sibling tops under a done umbrella, gated by its own
-signature, logged under its own name.
+**consolidator.** The same prompt over the completed column: it groups
+related all-completed sibling tops under a done umbrella. It exists because
+the grouper only ever sees open tops, so related goals that finish before
+they get grouped would pile up flat in Completed forever, and an umbrella
+minted over already-done tops adopts nothing (the 2026-06-19 empty-umbrella
+bug). Safe by construction: every child is done, so the umbrella rolls up
+completed. Gated by its own signature, logged under its own name.
 
-**closer.** The turn-end completion backstop; it exists because agents
-rarely narrate "done". Audits only the goals the turn actually touched;
-verdict done, blocked, or omit, with "when in doubt, omit". Idempotent per
-turn. Its diary events carry src `closer`, so planner and closer verdicts
-stay distinguishable. Both defer to the user floor: a verdict computed from
-evidence at or before your last reply loses.
+## Peer mail: the courier
 
-**distiller.** When a top card completes and settles: `BACKGROUND:` (re-
-orientation for a reader who lost the thread) + `TAKEAWAY:` (the one thing
-you would most want to know now that it is done), consuming the closer's
-done-reason as ground truth. After a follow-up re-completes a card, the
-prior summary is handed back and the work text is cut to the stretch after
-your follow-up, so the takeaway is the update, never a recap. May cite a
-`SOURCE: mN` line, parsed into the summary's deep link; a cite that misses
-logs and chips the card instead of failing.
+The courier owns peer-message segments; the planners skip them. The sender
+declared each message delegate, coordinate, or question at send time
+(schema-required); the courier takes that as a strong prior and reads the
+body for whether work actually changed hands. Delegating plants a real goal
+in the recipient's tree (origin-stamped) plus a "delegated to" tracking
+node in the sender's; coordinating makes no card. The companion
+`run_propagate` is deterministic: when the recipient completes the plant,
+the sender's tracker checks itself off through the origin pointer.
 
-**briefer.** When a top card blocks (and live for the focused
-picker/permission goal): a decision brief that leads with exactly what you
-must decide or provide, then options and tradeoffs. Same `SOURCE:`
-contract. Three call failures on one card is a loud give-up, re-armed on
-recovery.
+## When a judge fails
 
-**courier.** Owns peer-message segments; the planners skip them. The sender
-declared delegate/coordinate/question at send time (schema-required,
-2026-07-08); the courier takes that as a strong prior and reads the body
-for whether work actually changed hands. Delegating: a real goal planted in
-the recipient's tree (origin-stamped) plus a "delegated to" tracking node
-in the sender's. Coordinating: no card. The companion `run_propagate` is
-deterministic: when the recipient completes the plant, the sender's tracker
-checks off through the origin pointer.
+Every failure logs one row to `judge-errors.jsonl` that answers who, where,
+what, and why on its own (2026-07-09): `judge` (the one-per-prompt name),
+`fsid`, `err` (the kind), and `note` (the evidence: a reply tail, the API's
+own error message, an exception name, or a give-up's scope and re-arm
+event).
+
+- **A failed call is not a parse failure.** Every call goes through one
+  entrypoint, `_judge_run`: an isolated `claude -p` subprocess with a hard
+  timeout. That entrypoint owns all call-level logging: a dead subprocess,
+  a timeout, or an API **error envelope** (the CLI answering with an error
+  string instead of a model reply) logs one `call` row and hands the caller
+  an empty reply. Error text never reaches a parser. One API incident once
+  became 2,352 phantom "parse" errors in a single hour because every parser
+  rejected the same error message and every caller retried; this rule is
+  why that cannot recur.
+- **An empty reply never counts.** `parse` means the model's own text was
+  rejected, and the row carries the reply tail so the log says why. Empty
+  replies (the rate gate, a failed call) log nothing at the caller and
+  never burn a retry cap.
+- **Every judge is capped.** Three genuine parse rejects on the same work
+  item (`JUDGE_FAIL_CAP`) and the judge gives up loudly, one `give-up` row
+  naming the re-arm event, instead of retrying every pass forever:
+
+| Judge | On failure | Re-arms |
+|---|---|---|
+| opener, live re-plan | hard-places at card level immediately | (no retries needed) |
+| planner (work run) | 3 tries, then hard-place a user message / drop a non-user segment | on its next segment |
+| placer | files at the card immediately | (no retries needed) |
+| closer | 3 tries, then skips the turn | when the turn gains atoms |
+| archiver | 3 tries, then keeps serving the old headline | when the session gains a turn |
+| grouper, consolidator | 3 tries, then leaves the board shape as is | when the top set changes |
+| courier | 3 tries, then resolves from the sender's declared kind | (terminal; never orphans a message) |
+| distiller, briefer | 3 tries, then a blank summary plus a card warn | on recovery, or a fresh completion/block |
+
+While the account usage window is exhausted, the rate gate skips every call
+fleet-wide and logs one `rate-limited` row per window; gate skips count
+toward nothing.
 
 ## Not judges, but often confused with them
 
@@ -164,6 +246,9 @@ checks off through the origin pointer.
 - **planner vs closer** on done/block: by design. The planner is eager per
   segment (precision), the closer is the turn-end backstop (recall); diary
   src tells them apart, and both yield to the user floor.
+- **opener vs planner**: the same segment, two moments. The opener's
+  placement is the instant guess; the planner's work run may correct it
+  (retitle, refine) but never duplicates it.
 - **grouper vs consolidator**: same prompt, disjoint columns, separate
   names in the logs.
 - **distiller vs closer**: consumer relationship; the distiller treats the
@@ -176,7 +261,7 @@ checks off through the origin pointer.
 - Toggles: `CLOSER_ON`, `GROUPER_ON`, `DISTILLER_ON`, `CONSOLIDATE_ON`.
   Models: `STATE/judge-model` (triage), `STATE/index-model`.
 - Logs: `STATE/judge-usage.jsonl` (per-call cost, one name per prompt),
-  `STATE/judge-errors.jsonl` (parse / call / give-up / cite-miss /
-  rate-limited).
+  `STATE/judge-errors.jsonl` (the row contract above; kinds are parse,
+  call, give-up, cite-miss, rate-limited).
 - Debugging: run the judge's own code against the live store
   (`SourceFileLoader` on `bin/romp-judge`) rather than inferring from logs.

@@ -5,7 +5,7 @@ actions append, and nothing edits state in place, so any behavior can be
 walked back to the events that produced it. This page shows who appends what,
 in which order, and where each record lives. Companion detail:
 [judges.md](judges.md) (per-judge prompts and triggers) and
-[goal-state.md](goal-state.md) (the event model). Current as of 2026-07-08.
+[goal-state.md](goal-state.md) (the event model). Current as of 2026-07-09.
 
 Reading the diagrams: blue = an LLM judge, gray = deterministic code,
 yellow = data at rest, pink = you.
@@ -43,7 +43,10 @@ flowchart LR
 Order within one pass: planner, closer, courier, propagate (deterministic
 check-off of delegated work), grouper, consolidator, distiller + briefer.
 Every LLM call goes through one door that skips calls while an account usage
-window is exhausted and logs cost per judge, one name per distinct prompt. A
+window is exhausted, turns an API error reply into a logged call failure
+(never parser input), and logs cost per judge, one name per distinct prompt.
+Every judge gives up loudly after three rejected replies on the same work
+item and re-arms on its own event (judges.md, "When a judge fails"). A
 separate Haiku tier (captioner, gister, archiver) writes the chat and
 timeline captions; it never touches goals.
 
@@ -111,9 +114,9 @@ flowchart TD
 ```
 
 Timing details that matter when auditing: a user message is placed twice.
-The prompt-run files it the moment it lands (card level only, so the board
-updates instantly); the work-run refines at turn end and may add, complete,
-block, or retitle. A placer or opener failure files at the card,
+The opener files it the moment it lands (card level only, so the board
+updates instantly); the planner's work run refines at turn end and may add,
+complete, block, or retitle. A placer or opener failure files at the card,
 never nowhere, and logs to judge-errors.jsonl. The same-title guard is exact
 string equality, and a completed sibling never matches, so repeated steps
 still get their own nodes.
@@ -188,6 +191,6 @@ flowchart TD
 | why is this card in this state? | the node's `log` in `goals/<sid>.json`: every event has source, kind, reason, time |
 | why was this work filed here? | `placements` in the store, plus the node's `why` and `trail` |
 | why did this mint at top level? | the node's `why`: "declared in the agent's own to-do list" means the plan-sync mirror, and nesting it is the grouper's job; anything else is the planner |
-| did a judge fail or get skipped? | `judge-errors.jsonl`: parse failures, give-ups, rate-gate skips, one name per prompt (rows before 2026-07-08 use the family names) |
+| did a judge fail or get skipped? | `judge-errors.jsonl`: every row carries judge, session, kind (parse, call, give-up, cite-miss, rate-limited), and the evidence (reply tail, API message, re-arm event); rows before 2026-07-08 use the family names |
 | what did a judge call cost, and when? | `judge-usage.jsonl`, per judge and session |
 | what happened to a peer message? | `timeline/messages.jsonl` by message id, plus the delivered markers in the transcript |
