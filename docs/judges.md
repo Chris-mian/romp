@@ -115,9 +115,10 @@ handles four more phases: a live re-plan after you clear a card mid-work,
 nudge resolution (resolve the named goal, done or block, no plain step),
 delegation follow-on (file the recipient's work under the courier's plant),
 and tagged follow-ups (file under the cited goal unless the reply starts a
-different thread). A segment opened by an untargeted kernel notice (restart
-or resume) carries a housekeeping note: pure verification sweeps file
-nothing.
+different thread — and even then the new goal groups with the cited card
+under one umbrella: the follow-up tie, 2026-07-09). A segment opened by an
+untargeted kernel notice (restart or resume) carries a housekeeping note:
+pure verification sweeps file nothing.
 
 **placer.** The second, scoped call, only when the chosen card already has
 open sub-goals: it sees just that card's subtree and picks the spot, biased

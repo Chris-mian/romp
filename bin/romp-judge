@@ -3545,7 +3545,9 @@ def _plan_session(fsid, path, now):
                     apply_plan(store, seg_id, seg_t, ops, menu, prompt_uuid=trig, quote=vq)
                     pv = store["placements"].get(seg_id)
                     if isinstance(pv, str) and pv in store["nodes"]:   # provenance: the minted top remembers
-                        store["nodes"][_top_ancestor(store["nodes"], pv)]["pivotFrom"] = followup
+                        ytop = _top_ancestor(store["nodes"], pv)
+                        store["nodes"][ytop]["pivotFrom"] = followup
+                        _tie_pivot(store, ytop, followup, seg_t)   # ...and stays GROUPED with the cited card
                     placed += 1
                     _group_store(store, fsid, now)
                     save_goals(fsid, store)
@@ -3866,6 +3868,38 @@ def group_llm(menu_text, judge="grouper"):
     completed-column consolidator, which logs under its own name (the user 2026-07-08)."""
     user = "<open-goals>\n%s\n</open-goals>" % menu_text
     return _judge_run(_triage_model(), GROUP_SYS, user, judge=judge).strip()[:JUDGE_JSON_CAP]
+
+
+def _tie_pivot(store, ytop, cited, now):
+    """The follow-up tie (the user 2026-07-09): work born from a follow-up on a card must stay structurally
+    grouped with that card — the judge picks the FORM (a step under it, or a pivot's own goal), never
+    WHETHER they stay together. The continuation path files under the card by construction; this handles
+    the pivot: the fresh top `ytop` groups with the cited card's top — under its existing umbrella when it
+    already lives in one, else under a new umbrella wearing the cited card's title (the thread as the user
+    knows it; the grouper, which owns structure, may retitle or refine later). The cited card's own STATE
+    is untouched — the dismiss already restored it, so a done card stays done inside the umbrella while the
+    pivot works beside it, and the umbrella's rollup carries the live story. Deterministic and idempotent;
+    cleared cards never reach here (a follow-up to a cleared card is a fresh goal by rule)."""
+    nodes = store["nodes"]
+    if cited not in nodes or ytop not in nodes:
+        return
+    xtop = _top_ancestor(nodes, cited)
+    if xtop == ytop or xtop not in nodes:
+        return                                        # routed into the cited card's tree already
+    x, y = nodes[xtop], nodes[ytop]
+    if x.get("cleared") or y.get("parentId"):
+        return                                        # sealed thread, or Y already nested by routing
+    if x.get("umbrella"):
+        apply_group(store, [x, y], [{"do": "group", "goal": 2, "under": 1,
+                                     "why": "follow-up work stays with the card it replied to"}], now)
+    else:
+        apply_group(store, [x, y],
+                    [{"do": "mint", "text": x.get("text") or "Follow-up thread",
+                      "why": "follow-up work stays with the card it replied to"},
+                     {"do": "group", "goal": 1, "ref": 1,
+                      "why": "follow-up work stays with the card it replied to"},
+                     {"do": "group", "goal": 2, "ref": 1,
+                      "why": "follow-up work stays with the card it replied to"}], now)
 
 
 def apply_group(store, tops, ops, t):

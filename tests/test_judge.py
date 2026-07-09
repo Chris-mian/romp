@@ -3579,6 +3579,8 @@ class FollowUp(unittest.TestCase):
         # promote-on-pivot (the user 2026-07-03): the user replies to cards out of habit, so a cited reply
         # the model judges to be a DIFFERENT thread mints its own top (pivotFrom provenance) instead of
         # being buried as a sub — and the completed target is NOT reopened (no working-flicker).
+        # AND the follow-up tie (the user 2026-07-09): the pivot's new goal never drifts off as an
+        # unrelated card — it groups with the cited card under one umbrella, deterministically.
         gid = SID + ":g1"
         records = [uline(T0, "unrelated: rework the export flow <!-- romp-goal-id: %s -->" % gid, "u1", ps="typed"),
                    aline(T0 + 10, "on it", "a1", "u1", stop="end_turn")]
@@ -3587,12 +3589,37 @@ class FollowUp(unittest.TestCase):
         jd.run_plan(now=T0 + 5000)
         st = jd.load_goals(SID)
         self.assertTrue(st["nodes"][gid]["nodeComplete"], "the cited goal stays completed — no reopen on a pivot")
-        self.assertEqual(st["status"][gid], "completed")
-        self.assertEqual([nd for nd in st["nodes"].values() if nd["parentId"] == gid], [],
-                         "nothing was buried under the cited goal")
-        top = next(nd for nd in st["nodes"].values() if nd["parentId"] is None and nd["id"] != gid)
+        self.assertEqual([nd["id"] for nd in st["nodes"].values() if nd["parentId"] == gid], [],
+                         "nothing was buried under the cited goal itself")
+        top = next(nd for nd in st["nodes"].values() if nd.get("pivotFrom") == gid)
         self.assertEqual(top["text"], "Rework the export flow")
-        self.assertEqual(top["pivotFrom"], gid, "the minted top remembers which card the reply cited")
+        umb = st["nodes"][top["parentId"]]
+        self.assertTrue(umb.get("umbrella"), "the pivot goal lives under an umbrella, not loose on the board")
+        self.assertEqual(st["nodes"][gid]["parentId"], umb["id"],
+                         "the cited card sits under the same umbrella — followed-up work stays together")
+        self.assertEqual(umb["text"], "Ship the release", "the umbrella wears the cited card's title")
+        self.assertIsNone(umb["parentId"])
+
+    def test_followup_pivot_joins_the_cited_cards_existing_umbrella(self):
+        # the tie reuses an existing roof: when the cited card already lives under an umbrella, the pivot's
+        # goal relinks under THAT umbrella — no umbrella-of-umbrellas.
+        gid, uid = SID + ":g1", SID + ":g9"
+        store = self._completed_top(gid)
+        store["nodes"][uid] = {"id": uid, "text": "Release work", "parentId": None, "umbrella": True,
+                               "nodeComplete": False, "blocked": False, "cleared": False,
+                               "trail": [], "t": T0 - 200, "mt": T0 - 200}
+        store["nodes"][gid]["parentId"] = uid
+        store["status"] = {uid: "completed"}
+        records = [uline(T0, "unrelated: rework the export flow <!-- romp-goal-id: %s -->" % gid, "u1", ps="typed"),
+                   aline(T0 + 10, "on it", "a1", "u1", stop="end_turn")]
+        self._setup(records, store)
+        jd.plan_llm = lambda text, menu, human=False, **_kw: '{"ops":[{"why":"a new thread","do":"mint","text":"Rework the export flow"}]}'
+        jd.run_plan(now=T0 + 5000)
+        st = jd.load_goals(SID)
+        top = next(nd for nd in st["nodes"].values() if nd.get("pivotFrom") == gid)
+        self.assertEqual(top["parentId"], uid, "the pivot goal joined the existing umbrella")
+        self.assertEqual(sum(1 for nd in st["nodes"].values() if nd.get("umbrella")), 1,
+                         "no second umbrella was minted")
 
     def test_pivot_clears_followup_pending_on_a_blocked_cited_goal(self):
         # the user 2026-07-03: the track card sat in Working with a "Re-judging…" swirl for 8+ hours.
@@ -3613,8 +3640,10 @@ class FollowUp(unittest.TestCase):
         st = jd.load_goals(SID)
         self.assertNotIn("followupPending", st["nodes"][gid],
                          "the pivot verdict processed the follow-up — the optimistic flag drops")
-        self.assertEqual(st["status"][gid], "blocked",
-                         "the block stands: back to Needs-You, not a permanent Re-judging swirl")
+        self.assertTrue(st["nodes"][gid]["blocked"], "the block stands on the cited goal")
+        umb = st["nodes"][st["nodes"][gid]["parentId"]]   # the 07-09 tie grouped the pivot with the cited card
+        self.assertEqual(st["status"][umb["id"]], "blocked",
+                         "the umbrella card carries the block to Needs-You, not a permanent Re-judging swirl")
 
     def test_followup_parse_failure_keeps_the_forced_sub_floor(self):
         # ambiguity never pivots: an unparseable planner reply falls to the forced-sub default, so an

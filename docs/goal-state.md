@@ -46,7 +46,11 @@ Sort events by evidence time (`ev_t`; arrival `at` breaks ties) and replay:
   cleared completed card comes back completed, never "open". A msg-reopen
   (the optimistic flip when you reply to a card) snapshots too, and a
   planner `dismiss` (the pivot verdict: that reply started its own thread)
-  restores the original state and settle stamp.
+  restores the original state and settle stamp. The pivot's new goal still
+  stays with the card it replied to (the follow-up tie, 2026-07-09): it
+  groups under the cited card's umbrella, or a fresh one wearing its title —
+  the judge picks the form of follow-up work, never whether it stays
+  together.
 - **Settle is an event** (the moment the card entered the Completed
   column). `settledAt`, `settledDone`, and `deltaSince` derive from it:
   the newest un-reopened settle is the column-entry stamp, and the settle
