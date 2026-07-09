@@ -2063,9 +2063,14 @@ def _drive(msg, client):
         be.on_ask(sid, "cancel")
     elif t == "askText" and msg.get("text"):
         be.on_ask(sid, "text", str(msg["text"]))
+    elif t == "cancelQueued" and msg.get("park") is not None:
+        _cancel_parked(sid, int(msg["park"]), str(msg.get("md") or ""))   # ✕ on a PARKED op (compaction/model queue — romp-owned, any backend)
+        _push_soon()
     elif t == "cancelQueued" and msg.get("idx") is not None and hasattr(be, "unqueue"):
-        be.unqueue(sid, int(msg["idx"]))                  # pull a queued (not-yet-started) message back out; the
-        _push_soon()                                      # webview already refilled the composer with its text
+        # ✕ on a backend-queue message: pull it back out (drift-guarded by the bubble's body); the
+        # webview already refilled the composer with its text
+        _cancel_backend_queued(be, sid, int(msg["idx"]), str(msg.get("md") or ""))
+        _push_soon()
     elif t == "apiRetry":
         # The GATE is for the AUTO-retry loop only (romp's 10s tick): a global pause or a thread the user
         # interrupted must not relapse into the storm. But a MANUAL "Retry now" click (msg.manual) is an
@@ -5093,6 +5098,52 @@ def _park_op(sid, op):
     _mark_views_dirty()               # the queue lives in memory — no sig sees it; the woken push renders the chip
 
 
+def _parked_md(op):
+    """The queued-bubble BODY a parked op renders as — build_session and the cancel path share this so
+    the ✕ handshake can't drift from the display: cancelParked verifies the clicked bubble's body still
+    matches the park slot before removing it (the user 2026-07-08)."""
+    if op[0] == "send":
+        return _split_followup(op[1])[1]
+    if op[0] == "compact":
+        return "/compact"
+    return "/%s %s" % (op[0], op[1])
+
+
+def _cancel_parked(sid, park, md):
+    """Remove ONE parked op — the queued bubble's ✕ (the user 2026-07-08). Verified by body text: if the
+    park list shifted between the push and the click (ops applied / another cancel), the index alone
+    would remove the WRONG op — re-locate by md, and no-op when it's gone (it already ran; the next push
+    clears the bubble). Persists + wakes the pusher like every queue mutation."""
+    sid = str(sid)
+    ops = _pending_ops.get(sid) or []
+    if not (0 <= park < len(ops)) or (md and _parked_md(ops[park]) != md):
+        park = next((j for j, op in enumerate(ops) if _parked_md(op) == md), -1) if md else -1
+        if park < 0:
+            return
+    ops.pop(park)
+    if not ops:
+        _pending_ops.pop(sid, None)
+    _save_pending_ops()
+    _mark_views_dirty()
+
+
+def _cancel_backend_queued(be, sid, idx, md):
+    """unqueue with the same DRIFT GUARD as _cancel_parked: the click carries the bubble's body; if the
+    backend queue moved between the push and the click (the input generator consumed the head), the raw
+    index would cancel the WRONG message — re-locate by body, no-op when it's gone. A client that sends
+    no md (older bundle) keeps the raw-index behavior."""
+    try:
+        pending = be.pending_queued(sid)
+    except Exception:
+        pending = []
+    if md:
+        if not (0 <= idx < len(pending)) or _split_followup(pending[idx])[1] != md:
+            idx = next((i for i, q in enumerate(pending) if _split_followup(q)[1] == md), -1)
+            if idx < 0:
+                return
+    be.unqueue(sid, idx)
+
+
 def _send_or_park(be, sid, text, echo=None):
     """Deliver `text` now — or PARK it while the session compacts (the user 2026-07-02: a mid-compaction
     send rendered instantly as a landed bubble — no queued cue — and its live-tail echo opened a turn that
@@ -5854,22 +5905,20 @@ def build_session(sid, now, tmux=None):
         # IS the execution order. A message gets the same _split_followup treatment as the backend's own
         # queue (a parked follow-up matches a landed one); a model/effort pick renders as its slash-command
         # chip ("/model …" / "/effort …"). Appended AFTER the real queue (idx positions must keep matching
-        # the backend's _pending for cancelQueued) and NOT cancelable (they live in _pending_ops).
-        for op in pending_ops:
+        # the backend's _pending for cancelQueued). CANCELABLE too (the user 2026-07-08): these are
+        # romp-owned on EVERY backend — `park` is the op's _pending_ops position, and the body doubles as
+        # the ✕ handshake (_parked_md/_cancel_parked verify it so a shifted queue never drops the wrong op).
+        for j, op in enumerate(pending_ops):
+            m = {"md": _parked_md(op), "park": j, "cancelable": True}
             if op[0] == "send":
-                goal, body, fu, ctx = _split_followup(op[1])
-                m = {"md": body}
+                goal, _, fu, ctx = _split_followup(op[1])
                 if fu:
                     m["followUp"] = True
                     if goal:
                         m["goal"] = goal
                     if ctx:
                         m["fuCtx"] = ctx
-                qmsgs.append(m)
-            elif op[0] == "compact":
-                qmsgs.append({"md": "/compact"})
-            else:
-                qmsgs.append({"md": "/%s %s" % (op[0], op[1])})
+            qmsgs.append(m)
         # While the session is COMPACTING, the live "Compacting context…" element (above) already represents
         # the running /compact — so drop ONE "/compact" from the queue so it isn't shown twice (the user
         # 2026-07-07). A genuinely-SECOND parked /compact still shows (only the first, running one is folded).

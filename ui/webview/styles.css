@@ -903,13 +903,19 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
   background: rgba(43, 108, 239, 0.10); border: 1px dashed rgba(43, 108, 239, 0.65);
   border-radius: 14px; padding: 7px 13px; color: var(--fg); opacity: 0.85;
 }
-/* A CANCELABLE queued bubble (SDK queue): clickable to pull it back to the composer. The cursor + a hover
-   lift (accent-blue ring, fuller opacity) advertise it; a tooltip spells it out (the user 2026-06-27). */
-.queued-bubble.cancelable { cursor: pointer; transition: opacity .1s, border-color .1s, background .1s; }
-.queued-bubble.cancelable:hover {
-  opacity: 1; border-color: var(--accent); border-style: solid;
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
+/* A CANCELABLE queued bubble carries an explicit ✕ (the user 2026-07-08 — the old whole-bubble click was
+   undiscoverable and re-render-fragile). The bubble itself is no longer clickable; only the ✕ acts. It sits
+   in the top-right corner (the bubble reserves padding for it) — dim until the bubble is hovered, red on
+   its own hover, matching the "remove" reading everywhere else. */
+.queued-bubble.cancelable { position: relative; padding-right: 30px; transition: opacity .1s, border-color .1s, background .1s; }
+.queued-bubble.cancelable:hover { opacity: 1; border-color: var(--accent); }
+.queued-x {
+  position: absolute; top: 3px; right: 4px; width: 20px; height: 20px;
+  display: flex; align-items: center; justify-content: center;
+  font: inherit; font-size: 0.78em; line-height: 1; cursor: pointer;
+  color: var(--dim); background: transparent; border: 0; border-radius: 6px; padding: 0;
 }
+.queued-x:hover { color: var(--vscode-errorForeground, #f48771); background: rgba(255, 255, 255, 0.08); }
 /* compact "↩ Follow-up · <goal>" header above a message that resumed a goal — landed user turns AND pending
    queued messages, so the two render the same (the user 2026-06-27). Right-aligned with the outgoing bubble. */
 /* ONE font size across the whole header + its context box (the user 2026-07-02: the header was a soup of

@@ -193,9 +193,103 @@ class QueuedBubble(unittest.TestCase):
         self.assertIn("pending_ops = _pending_ops.get(sid) or []", src)
         self.assertIn("if queued or pending_ops:", src,
                       "the queued indicator shows even when a parked op is the only pending item")
-        self.assertIn("for op in pending_ops:", src, "ONE loop, park order — rendering IS execution order")
-        self.assertIn("_split_followup(op[1])", src,
-                      "a parked message renders like a queued message (same follow-up treatment)")
+        self.assertIn("for j, op in enumerate(pending_ops):", src,
+                      "ONE loop, park order — rendering IS execution order")
+        self.assertIn('{"md": _parked_md(op), "park": j, "cancelable": True}', src,
+                      "parked ops are CANCELABLE (the user 2026-07-08): park index + shared body renderer")
+
+    def test_drive_routes_park_cancels(self):
+        import inspect
+        src = inspect.getsource(km._drive)
+        self.assertIn('t == "cancelQueued" and msg.get("park") is not None', src)
+        self.assertIn('_cancel_parked(sid, int(msg["park"]), str(msg.get("md") or ""))', src)
+        self.assertIn('_cancel_backend_queued(be, sid, int(msg["idx"]), str(msg.get("md") or ""))', src,
+                      "the backend-queue cancel goes through the drift guard now")
+
+
+class CancelParked(unittest.TestCase):
+    """The queued bubble's X on a PARKED op (the user 2026-07-08): _cancel_parked removes exactly the op
+    the user clicked — verified by the bubble's body (md), so a queue that shifted between the push and
+    the click (ops applied, another cancel) re-locates by text and a gone op is a silent no-op, never a
+    wrong-op removal."""
+
+    def setUp(self):
+        km._pending_ops.clear()
+
+    def tearDown(self):
+        km._pending_ops.clear()
+
+    def test_removes_the_indexed_op(self):
+        km._pending_ops[SID] = [("model", "opus"), ("send", "now do the thing", "human")]
+        km._cancel_parked(SID, 0, "/model opus")
+        self.assertEqual(km._pending_ops.get(SID), [("send", "now do the thing", "human")])
+
+    def test_md_mismatch_relocates_by_body(self):
+        # the head op fired while the click was in flight -> index 0 now holds a DIFFERENT op
+        km._pending_ops[SID] = [("send", "first", "human"), ("send", "second", "human")]
+        km._cancel_parked(SID, 0, "second")
+        self.assertEqual(km._pending_ops.get(SID), [("send", "first", "human")],
+                         "the clicked body wins over the stale index")
+
+    def test_gone_op_is_a_noop(self):
+        km._pending_ops[SID] = [("send", "still here", "human")]
+        km._cancel_parked(SID, 0, "/compact")
+        self.assertEqual(km._pending_ops.get(SID), [("send", "still here", "human")],
+                         "an already-applied op cancels nothing (the next push clears the bubble)")
+
+    def test_last_op_removed_drops_the_key(self):
+        km._pending_ops[SID] = [("compact",)]
+        km._cancel_parked(SID, 0, "/compact")
+        self.assertNotIn(SID, km._pending_ops)
+
+    def test_parked_md_mirrors_the_bubble_rendering(self):
+        self.assertEqual(km._parked_md(("model", "opus")), "/model opus")
+        self.assertEqual(km._parked_md(("effort", "high")), "/effort high")
+        self.assertEqual(km._parked_md(("compact",)), "/compact")
+        self.assertEqual(km._parked_md(("send", "plain text", "human")), "plain text")
+
+
+class _FakeQueueBackend:
+    """A backend that owns its queue (exposes unqueue), for the drift-guard tests."""
+
+    def __init__(self, pending):
+        self._p = list(pending)
+        self.unqueued = []
+
+    def pending_queued(self, sid):
+        return list(self._p)
+
+    def unqueue(self, sid, idx):
+        self.unqueued.append(idx)
+        return self._p.pop(idx) if 0 <= idx < len(self._p) else None
+
+
+class CancelBackendQueued(unittest.TestCase):
+    """The X on a backend-queue message: _cancel_backend_queued re-verifies the index against the
+    bubble's body before unqueueing — the input generator consuming the head between push and click
+    must never make the X cancel the WRONG message."""
+
+    def test_exact_match_unqueues_the_index(self):
+        be = _FakeQueueBackend(["alpha", "beta"])
+        km._cancel_backend_queued(be, SID, 1, "beta")
+        self.assertEqual(be.unqueued, [1])
+        self.assertEqual(be._p, ["alpha"])
+
+    def test_drifted_index_relocates_by_body(self):
+        # the push showed [consumed, alpha, beta]; by click time the head is gone -> idx 2 is stale
+        be = _FakeQueueBackend(["alpha", "beta"])
+        km._cancel_backend_queued(be, SID, 2, "beta")
+        self.assertEqual(be.unqueued, [1], "re-located by body, not the stale index")
+
+    def test_gone_message_is_a_noop(self):
+        be = _FakeQueueBackend(["alpha"])
+        km._cancel_backend_queued(be, SID, 0, "beta")
+        self.assertEqual(be.unqueued, [], "already sent -> nothing to cancel")
+
+    def test_no_md_keeps_raw_index_backcompat(self):
+        be = _FakeQueueBackend(["alpha", "beta"])
+        km._cancel_backend_queued(be, SID, 0, "")
+        self.assertEqual(be.unqueued, [0])
 
 
 if __name__ == "__main__":

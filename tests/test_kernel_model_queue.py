@@ -119,8 +119,9 @@ class QueuedBubble(unittest.TestCase):
         import inspect
         src = inspect.getsource(km.build_session)
         self.assertIn("pending_ops = _pending_ops.get(sid) or []", src)
-        self.assertIn('qmsgs.append({"md": "/%s %s" % (op[0], op[1])})', src,
-                      "a parked model/effort renders as its slash-command chip, in park order")
+        self.assertIn('{"md": _parked_md(op), "park": j, "cancelable": True}', src,
+                      "a parked model/effort renders as its slash-command chip, in park order — "
+                      "cancelable since 2026-07-08 (_parked_md is the shared body renderer)")
         self.assertIn("if queued or pending_ops:", src,
                       "the queued indicator shows even when a park is the only pending item")
 

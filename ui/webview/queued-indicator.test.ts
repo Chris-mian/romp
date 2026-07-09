@@ -11,7 +11,8 @@ const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview"
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
 
 test("a queued ChatEvent carries the pending messages (backend-agnostic, per-message md)", () => {
-  assert.match(RENDER, /kind: "queued"; texts: \{ md: string; followUp\?: boolean; goal\?: string; fuCtx\?: string; idx\?: number; cancelable\?: boolean \}\[\]/);
+  // idx = backend-queue position (SDK); park = _pending_ops position (compaction/model parking, any backend)
+  assert.match(RENDER, /kind: "queued"; texts: \{ md: string; followUp\?: boolean; goal\?: string; fuCtx\?: string; idx\?: number; park\?: number; cancelable\?: boolean \}\[\]/);
 });
 
 test("renderQueued draws a wireframe-hourglass header (singular/plural) + one markdown bubble per queued message", () => {
@@ -28,7 +29,7 @@ test("renderQueued draws a wireframe-hourglass header (singular/plural) + one ma
   assert.match(RENDER, /el\("div", "queued-head"\)/);
   // one faint "you" bubble per pending message, rendered as markdown (like a landed message)
   assert.match(RENDER, /for \(const t of ev\.texts\)[\s\S]*?el\("div", "queued-bubble md" \+ \(t\.cancelable \? " cancelable" : ""\)\)/);
-  assert.match(RENDER, /if \(!renderSlashCmd\(bubble, t\.md\)\) bubble\.innerHTML = md\(t\.md\)/);
+  assert.match(RENDER, /if \(!isCmd\) bubble\.innerHTML = md\(t\.md\)/);
 });
 
 test("a queued slash command renders as a command chip, not a plain 'message' (the user 2026-07-01)", () => {
@@ -39,19 +40,34 @@ test("a queued slash command renders as a command chip, not a plain 'message' (t
   assert.match(RENDER, /const nCmd = ev\.texts\.filter\(\(t\) => SLASH_CMD_RE\.test\(t\.md\)\)\.length;/);
 });
 
-test("a cancelable queued bubble is clickable → cancelQueued + restore to the composer (the user 2026-06-27)", () => {
-  // only SDK-owned queues are cancelable; click posts the idx and pulls the text back into the composer
-  assert.match(RENDER, /if \(t\.cancelable && t\.idx !== undefined\)/);
-  assert.match(RENDER, /type: "cancelQueued", id: activeId, idx: t\.idx/);
-  assert.match(RENDER, /restoreToComposer\(t\.md\)/);
-  assert.match(RENDER, /bubble\.remove\(\)/, "optimistic removal before the next push");
+test("a cancelable queued bubble carries an explicit ✕ — messages AND parked commands (the user 2026-07-08)", () => {
+  // both queues cancel: the backend's own (idx) and ops parked during compaction/model switches (park)
+  assert.match(RENDER, /if \(t\.cancelable && \(t\.idx !== undefined \|\| t\.park !== undefined\)\)/);
+  assert.match(RENDER, /el\("button", "queued-x"\)/);
+  assert.match(RENDER, /x\.dataset\.act = "qx";/, "the ✕ routes through the stable document.body delegate");
+  assert.match(RENDER, /if \(t\.idx !== undefined\) x\.dataset\.qidx = String\(t\.idx\);/);
+  assert.match(RENDER, /if \(t\.park !== undefined\) x\.dataset\.qpark = String\(t\.park\);/);
+  // the OLD whole-bubble click is gone — it was undiscoverable and a per-render listener (mid-press
+  // rebuilds ate the click); the bubble itself must carry no listener now
+  assert.doesNotMatch(RENDER, /bubble\.addEventListener\("click"/);
+  assert.doesNotMatch(CSS, /\.queued-bubble\.cancelable \{ cursor: pointer/);
+  assert.match(CSS, /\.queued-x \{/);
+  assert.match(CSS, /\.queued-x:hover \{ color: var\(--vscode-errorForeground/, "red on hover = the remove reading");
+});
+
+test("the delegated qx handler cancels click-safely: kernel op + composer restore for messages only", () => {
+  // one handler on document.body (stable across every per-push rebuild) — never a per-render listener
+  assert.match(RENDER, /qx: \(el\) => \{/);
+  assert.match(RENDER, /\{ type: "cancelQueued", id: activeId, md: qmd \}/, "the body rides along as the kernel's drift guard");
+  assert.match(RENDER, /if \(el\.dataset\.qidx !== undefined\) msg\.idx = Number\(el\.dataset\.qidx\);/);
+  assert.match(RENDER, /if \(el\.dataset\.qpark !== undefined\) msg\.park = Number\(el\.dataset\.qpark\);/);
+  // a MESSAGE returns to the composer to re-edit; a slash COMMAND (qcmd) just cancels
+  assert.match(RENDER, /if \(qmd && el\.dataset\.qcmd !== "1"\) restoreToComposer\(qmd\);/);
+  assert.match(RENDER, /el\.closest\("\.queued-bubble"\)\?\.remove\(\)/, "optimistic removal before the next push");
   // restoreToComposer fills the composer textarea, fires input (autosize/enable), focuses, caret to end
   assert.match(RENDER, /function restoreToComposer\(text: string\)/);
   assert.match(RENDER, /getElementById\("composer-input"\)/);
   assert.match(RENDER, /dispatchEvent\(new Event\("input"/);
-  // the affordance is advertised: pointer cursor + a hover lift
-  assert.match(CSS, /\.queued-bubble\.cancelable \{ cursor: pointer/);
-  assert.match(CSS, /\.queued-bubble\.cancelable:hover/);
 });
 
 test("the queued-header hourglass uses the accent blue, like the feed/mail toggle icons", () => {

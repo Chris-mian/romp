@@ -95,7 +95,7 @@ type ChatEvent = (
   | { kind: "teammate"; blocks: { id: string; summary?: string; body: string }[]; ts?: string; uuid?: string }
   // Claude Code's Task to-do list, folded into one live checklist.
   | { kind: "todo"; tasks: TodoTask[]; error?: string; ts?: string; uuid?: string }
-  | { kind: "queued"; texts: { md: string; followUp?: boolean; goal?: string; fuCtx?: string; idx?: number; cancelable?: boolean }[]; ts?: string; uuid?: string }
+  | { kind: "queued"; texts: { md: string; followUp?: boolean; goal?: string; fuCtx?: string; idx?: number; park?: number; cancelable?: boolean }[]; ts?: string; uuid?: string }
   // The turn stopped on an API error (event-based: transcript isApiErrorMessage). The session is BLOCKED
   // until retried — a red-dot card at the bottom with a Retry button (the user 2026-06-16).
   | { kind: "apiError"; text: string; status?: number; ts?: string; uuid?: string }
@@ -1595,18 +1595,24 @@ function renderQueued(ev: Extract<ChatEvent, { kind: "queued" }>): HTMLElement {
   for (const t of ev.texts) {
     if (t.followUp) turn.appendChild(followUpHeader(t.goal, t.fuCtx, t.idx !== undefined ? "q:" + t.idx : undefined));
     const bubble = el("div", "queued-bubble md" + (t.cancelable ? " cancelable" : ""));
-    if (!renderSlashCmd(bubble, t.md)) bubble.innerHTML = md(t.md);
-    // CANCELABLE (SDK queue, romp owns it): click a still-queued message to pull it BACK OUT — cancels it
-    // and drops its text into the composer to re-edit/re-send (the user 2026-06-27). Hover highlight + a
-    // tooltip advertise that it's clickable. tmux queues aren't cancelable (Claude Code owns them), so those
-    // bubbles render plain.
-    if (t.cancelable && t.idx !== undefined) {
-      bubble.title = "click to cancel this queued message and move it back to the composer";
-      bubble.addEventListener("click", () => {
-        if (activeId && vscodeApi) vscodeApi.postMessage({ type: "cancelQueued", id: activeId, idx: t.idx });
-        restoreToComposer(t.md);
-        bubble.remove();                                   // optimistic; the next push rebuilds without it
-      });
+    const isCmd = renderSlashCmd(bubble, t.md);
+    if (!isCmd) bubble.innerHTML = md(t.md);
+    // CANCELABLE — an explicit ✕ on the bubble (the user 2026-07-08; the old whole-bubble click was
+    // undiscoverable AND hung on a node every push rebuilds, so mid-press rebuilds silently ate the
+    // click). The ✕ carries data-act="qx" → the ONE document.body delegate (click-safe per CLAUDE.md);
+    // a MESSAGE returns to the composer to re-edit, a slash COMMAND just cancels. Covers both queues:
+    // the backend's own (idx; SDK only — tmux's queue lives inside Claude Code, no recall) and ops
+    // PARKED during compaction/model switches (park; romp-owned on every backend).
+    if (t.cancelable && (t.idx !== undefined || t.park !== undefined)) {
+      const x = el("button", "queued-x");
+      x.textContent = "✕";
+      x.title = isCmd ? "cancel this queued command" : "cancel this queued message and move it back to the composer";
+      x.dataset.act = "qx";
+      if (t.idx !== undefined) x.dataset.qidx = String(t.idx);
+      if (t.park !== undefined) x.dataset.qpark = String(t.park);
+      if (isCmd) x.dataset.qcmd = "1";
+      (x as any)._qmd = t.md;   // the bubble's body — the kernel's drift guard + the composer restore read it
+      bubble.appendChild(x);
     }
     turn.appendChild(bubble);
   }
@@ -5855,6 +5861,21 @@ setupSettings();
       const cwd = el.dataset.cwd; if (!cwd || !vscodeApi) return;
       const id = el.dataset.id;
       vscodeApi.postMessage(id ? { type: "openFolder", cwd, id } : { type: "openFolder", cwd });
+    },
+    // ✕ on a queued bubble (the user 2026-07-08): cancel the queued message/command. Delegated here —
+    // NOT a per-render listener on the bubble — because the transcript tail rebuilds on every push and
+    // a rebuilt node eats a mid-press click (the "had to click it several times" class; CLAUDE.md).
+    // The md body rides along so the kernel can verify it's still cancelling the RIGHT entry even if
+    // the queue shifted between the push and the click.
+    qx: (el) => {
+      if (!activeId || !vscodeApi) return;
+      const qmd = (el as any)._qmd as string | undefined;
+      const msg: Record<string, unknown> = { type: "cancelQueued", id: activeId, md: qmd };
+      if (el.dataset.qidx !== undefined) msg.idx = Number(el.dataset.qidx);
+      if (el.dataset.qpark !== undefined) msg.park = Number(el.dataset.qpark);
+      vscodeApi.postMessage(msg);
+      if (qmd && el.dataset.qcmd !== "1") restoreToComposer(qmd);   // a message returns to the composer; a command just cancels
+      el.closest(".queued-bubble")?.remove();   // optimistic; the next push rebuilds the queue without it
     },
   });
 })();
