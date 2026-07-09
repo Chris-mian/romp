@@ -4006,7 +4006,7 @@ class DistillArtifacts(unittest.TestCase):
                                 "nodes": {gid: {"id": gid, "text": "Plot the results", "parentId": None,
                                                 "nodeComplete": True, "blocked": False, "cleared": False,
                                                 "trail": [s1], "t": T0, "mt": T0 + 10}}})
-            jd.distill_llm = lambda g, w, dw="": ("BACKGROUND: You asked for a results plot.\n"
+            jd.distill_llm = lambda g, w, dw="", prior_summary="": ("BACKGROUND: You asked for a results plot.\n"
                                                   "TAKEAWAY: The plot is saved and ready.\n"
                                                   "ARTIFACTS: /tmp/out/plot.png\nSOURCE: m1")
             self.assertEqual(jd.run_distill(now=now), 1)
@@ -4030,7 +4030,7 @@ class DistillArtifacts(unittest.TestCase):
                                 "nodes": {gid: {"id": gid, "text": "Do it", "parentId": None,
                                                 "nodeComplete": True, "blocked": False, "cleared": False,
                                                 "trail": [s1], "t": T0, "mt": T0 + 10}}})
-            jd.distill_llm = lambda g, w, dw="": "TAKEAWAY: Delivered."
+            jd.distill_llm = lambda g, w, dw="", prior_summary="": "TAKEAWAY: Delivered."
             self.assertEqual(jd.run_distill(now=now), 1)
             self.assertIsNone(jd.load_goals(SID)["nodes"][gid]["artifacts"])
         finally:
