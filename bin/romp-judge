@@ -5064,10 +5064,17 @@ def _seg_peer_kind(seg):
 def _seg_human(seg):
     """True if this segment was opened by a real HUMAN prompt (trigger author == 'human') — the
     signal that it carries a real user message, which must be placed and never skipped. sdk/peer/system
-    triggers are not the user. Mirrors _seg_peer's trigger lookup."""
+    triggers are not the user. Mirrors _seg_peer's trigger lookup.
+
+    An INTERRUPT record is not an ask (the user 2026-07-09, the g159 junk card): the CLI writes
+    '[Request interrupted by user...]' as a user atom, so it reads author 'human' — but it is the stop
+    EVENT, already owned end-to-end by the interrupt machinery. Counting it as a human message walked
+    it into the never-skip hard floor: the planner correctly replied skip, and _coerce_place minted a
+    goal literally titled '[Request interrupted by user for tool use]'. The floor exists so a real ask
+    never silently vanishes; an interrupt has nothing to vanish."""
     atoms = seg.get("atoms") or []
     trig = next((a for a in atoms if a.get("uuid") == seg.get("trigger")), None) or (atoms[0] if atoms else None)
-    return bool(trig and trig.get("author") == "human")
+    return bool(trig and trig.get("author") == "human" and not em.is_interrupt_record(trig))
 
 
 def _seg_command(seg):
