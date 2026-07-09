@@ -41,13 +41,13 @@ class NudgeNoReopenCompleted(unittest.TestCase):
         jd.save_goals(SID, self.store)
         # stubs: a nudge resolution that, if it ran, would BLOCK the goal (so the bug would manifest)
         self._plan_calls = []
-        self._saved = (jd.plan_llm, jd.plan_prompt_llm, jd._group_store)
+        self._saved = (jd.plan_llm, jd.opener_llm, jd._group_store)
         jd.plan_llm = lambda *a, **k: self._plan_calls.append(k) or '{"ops":[{"do":"block","n":1,"why":"waiting on the user"}]}'
-        jd.plan_prompt_llm = lambda *a, **k: ""
+        jd.opener_llm = lambda *a, **k: ""
         jd._group_store = lambda *a, **k: None
 
     def tearDown(self):
-        jd.plan_llm, jd.plan_prompt_llm, jd._group_store = self._saved
+        jd.plan_llm, jd.opener_llm, jd._group_store = self._saved
 
     def _nudge_transcript(self, declared_todo=None):
         """One ENDED turn opened by an AUTO-nudge message (romp-injected + romp-auto + romp-goal-id) targeting

@@ -7921,12 +7921,13 @@ def _token_analytics(now, window):
     return {"window": window, "now": now, "sessions": s, "judges": _judge_usage(t0)}
 
 
-# Usage/error logs carry one name per distinct prompt (the user 2026-07-08): gister, prompt-planner,
-# placer, briefer, consolidator. The timeline band keeps ROLE-FAMILY rows, so fold fine labels to their
-# family wherever usage rows meet band marks — this is what keeps a briefer call's time/tokens attached
-# to its mark on the distiller row (the 2026-06-19 orphaned-'brief' lesson).
-_JUDGE_FAMILY = {"gister": "captioner", "prompt-planner": "planner", "placer": "planner",
-                 "briefer": "distiller", "consolidator": "grouper"}
+# Usage/error logs carry one name per distinct prompt (the user 2026-07-08): gister, opener, placer,
+# briefer, consolidator. The timeline band keeps ROLE-FAMILY rows, so fold fine labels to their family
+# wherever usage rows meet band marks — this is what keeps a briefer call's time/tokens attached to its
+# mark on the distiller row (the 2026-06-19 orphaned-'brief' lesson). "prompt-planner" was the opener's
+# name for one day (2026-07-08 → 07-09); the key stays so that day's rows keep folding.
+_JUDGE_FAMILY = {"gister": "captioner", "opener": "planner", "prompt-planner": "planner",
+                 "placer": "planner", "briefer": "distiller", "consolidator": "grouper"}
 
 
 def _attach_run_usage(judging, t0, alive_sids):
