@@ -1978,6 +1978,12 @@ def _drive(msg, client):
         sid = _sid_of(str(msg["name"]))                   # the timeline keys these by session NAME
     elif t == "askFollowUp" and (msg.get("itemId") or msg.get("id")) and msg.get("text"):
         sid = str(msg["itemId"]).rsplit(":", 1)[0] if msg.get("itemId") else str(msg["id"])
+    elif t == "cardMove" and msg.get("itemId"):
+        # Move to Working (the user 2026-07-06). The routing arm was MISSING (the user 2026-07-09): the
+        # feed sends itemId/sid (no `id`), cardMove is not in ID_OPS, so every click fell to the
+        # "not a drive op" return below and the handler further down was dead code — the optimistic flip
+        # then reverted with the error toast. Same itemId-derived sid as askFollowUp.
+        sid = str(msg["itemId"]).rsplit(":", 1)[0]
     else:
         return False                                      # not a drive op (UI/nav) → _dispatch_ws handles it
     be = Sessions.backend_for(sid)
