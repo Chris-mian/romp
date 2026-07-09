@@ -785,6 +785,19 @@ body.feed-dragging .feed-col.col-asks { outline: 1.5px dashed color-mix(in srgb,
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fmodal-art-chip:hover { border-color: var(--accent); }
 
+/* debug-mode judge warnings (the user 2026-07-09): the card modal's failure-inspection section.
+   Sizes reuse the artifact strip's (labels match labels): 0.72em heads, 0.82em body rows. */
+.fmodal-warns { margin-top: 12px; padding-top: 8px; border-top: 1px solid rgba(255, 255, 255, 0.08); }
+.fmodal-warns-head { font-size: 0.72em; text-transform: uppercase; letter-spacing: 0.06em; color: #e0b341; margin-bottom: 6px; }
+.fmodal-warn-row { margin-bottom: 6px; }
+.fmodal-warn-line { font-size: 0.82em; color: var(--fg); overflow-wrap: anywhere; }
+.fmodal-warn-det { margin: 2px 0 0 14px; }
+.fmodal-warn-det > summary { font-size: 0.72em; color: var(--dim); cursor: pointer; }
+.fmodal-warn-cap { font-size: 0.72em; text-transform: uppercase; letter-spacing: 0.06em; color: var(--dim); margin-top: 4px; }
+.fmodal-warn-pre { font-size: 0.82em; margin: 2px 0; padding: 6px 8px; border-radius: 6px;
+  background: rgba(0, 0, 0, 0.25); border: 1px solid rgba(255, 255, 255, 0.08);
+  white-space: pre-wrap; overflow-wrap: anywhere; max-height: 300px; overflow-y: auto; }
+
 /* a renderable file mentioned by path → a click-to-expand thumbnail (preview.ts previewThumb) */
 .path-thumb { display: inline-flex; align-items: center; gap: 6px; cursor: zoom-in; border-radius: 7px;
   border: 1px solid rgba(255, 255, 255, 0.14); overflow: hidden; background: rgba(0, 0, 0, 0.25); }

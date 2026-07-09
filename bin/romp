@@ -738,6 +738,34 @@ if [[ "${1:-}" == "--serve" ]]; then
     exit 0
 fi
 
+# ── romp --debug [on|off|status]: judge debug mode ──────────────────────────────
+# When on, every judge-failure row in judge-errors.jsonl carries the failing call's
+# full input + reply, and the feed joins those rows onto each card: the card modal
+# grows a "Warnings (debug)" section showing every rejection as it happens (the user
+# 2026-07-09). Read live by the kernel + judge (mtime-cached) — no restart needed.
+if [[ "${1:-}" == "--debug" ]]; then
+    shift
+    _dbg_conf="${XDG_STATE_HOME:-$HOME/.local/state}/romp/debug-mode.json"
+    case "${1:-status}" in
+        on)
+            mkdir -p "$(dirname "$_dbg_conf")"
+            printf '{"on": true}\n' > "$_dbg_conf"
+            echo "[romp] debug mode ON — judge rejections carry input+reply; card modals show a Warnings section" ;;
+        off)
+            rm -f "$_dbg_conf"
+            echo "[romp] debug mode OFF" ;;
+        status)
+            if [[ -r "$_dbg_conf" ]] && grep -q 'true' "$_dbg_conf"; then
+                echo "debug mode: on"
+            else
+                echo "debug mode: off"
+            fi ;;
+        *)
+            echo "usage: romp --debug [on|off|status]" >&2; exit 2 ;;
+    esac
+    exit 0
+fi
+
 # Kernel-MANAGER control flags. The manager (bin/romp-manager) is the thin, durable supervisor you
 # launch yourself, à la `jupyter lab`: it owns + supervises the romp kernel(s); front ends (VS Code,
 # the web dashboard, Obsidian) ATTACH rather than spawn. `romp --on` is PURELY "start the manager" — the

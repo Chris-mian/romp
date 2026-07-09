@@ -172,6 +172,18 @@ within a beat it reverts with a toast, never silently.
    focusHeld rate) decides whether the closer absorbs the planner's
    done/block (~40% fewer triage calls) or both stay. Review with a few
    weeks of data (snoozed to ~2026-07-14).
-2. Dated cleanups: order-audit instrumentation (~Aug 2026), the eager-done
+2. **Re-run the failure-rate numbers (decide ~July 16+).** The 2026-07-09
+   failure contract made judge-errors.jsonl trustworthy for the first time:
+   one name per prompt in both logs, call vs parse attributed correctly
+   (error envelopes can no longer masquerade as parse failures), and every
+   row carries its evidence. Rows before 07-09 conflate all of that, so
+   per-judge failure rates computed over them mislead. After a week of
+   normal use: tally rows per judge and kind against judge-usage.jsonl call
+   counts (ask any session). Expect well under 1% genuine parse rejects per
+   judge; a judge sitting meaningfully above that now has inspectable
+   evidence (reply tails, `romp --debug on` captures) — fix its prompt or
+   parser. Give-up rows should be near zero; any cluster means a cap is
+   too tight or a prompt drifted.
+3. Dated cleanups: order-audit instrumentation (~Aug 2026), the eager-done
    sampler after P4's call, the boot sweep once judge-errors.jsonl shows no
    unmigrated-node lines for a few weeks.
