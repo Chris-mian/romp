@@ -369,6 +369,18 @@ def append_state(state_dir: Path, sid: str, state: str, t: int | None = None) ->
         f.write(json.dumps(rec) + "\n")
 
 
+def append_retry_recovered(state_dir: Path, sid: str, retries: int, t: int | None = None) -> None:
+    """Record that a stalled api_retry turn RESUMED real output after `retries` backoff attempts — a durable
+    marker in states/<sid>.jsonl the kernel turns into a persistent "Recovered after N retries" chat note.
+    Same file/format as append_state, with its own key ("retriesRecovered") so the state/awaiting readers,
+    which filter by their own keys, skip it."""
+    p = Path(state_dir) / "states" / (sid + ".jsonl")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    rec = {"t": int(time.time()) if t is None else int(t), "retriesRecovered": int(retries)}
+    with open(p, "a") as f:
+        f.write(json.dumps(rec) + "\n")
+
+
 def append_awaiting(state_dir: Path, sid: str, awaiting: bool, why: str = "") -> None:
     """Append an "awaiting" OVERLAY record to states/<sid>.jsonl (interleaved with the state
     records; the kernel reader scans for the latest line carrying an "awaiting" key). "Awaiting" =
@@ -616,6 +628,7 @@ class SdkSession:
         self._ctx_refreshing = False             # one get_context_usage control request in flight at a time
         self._usage_refreshing = False           # one get_usage control request in flight at a time
         self.retrying = False                        # an api_retry storm (API rate-limit/overload) is stalling the turn → 'retrying', not 'working'
+        self.retry_count = 0                          # api_retry backoff attempts in the CURRENT storm; → the live 'attempt N' + the 'Recovered after N retries' note, reset each turn
         self._interrupted = False                    # user interrupted the in-flight turn → snapshot reads 'waiting' (display only; inflight stays event-driven)
         self._subagents: dict[str, dict] = {}        # LIVE Task-spawned subagents: agent_id -> {"type","since"}. Fed
         #   by the SubagentStart/SubagentStop hooks — the exact, event-based "what's running right now" signal the
@@ -1078,10 +1091,14 @@ class SdkSession:
             # Surface a distinct 'retrying' state so a stall reads as an API issue, not a silent hang (the
             # user 2026-06-23). Cleared the moment real output flows again (assistant text / result).
             self.retrying = True
+            self.retry_count += 1                      # one backoff attempt → the live 'attempt N' count
             append_state(self.backend.state_dir, self.sid, "retrying")
             self.backend._poke()
         elif isinstance(msg, AssistantMessage):
+            if self.retrying and self.retry_count:     # first real output after a storm → durable recovery marker
+                append_retry_recovered(self.backend.state_dir, self.sid, self.retry_count)
             self.retrying = False                      # real output is flowing → the API recovered
+            self.retry_count = 0
             m = getattr(msg, "model", None)
             # Only adopt a REAL model id. Injected / synthetic assistant turns carry model="<synthetic>" (and
             # the CLI writes it to the transcript too); pretty_model passes unrecognised ids through verbatim,
@@ -1091,6 +1108,7 @@ class SdkSession:
                 self._learn_model(pretty_model(m))
         elif isinstance(msg, ResultMessage):
             self.retrying = False
+            self.retry_count = 0                    # turn over → clear the storm count (a turn that errored out without recovering leaves no "recovered" note)
             self._interrupted = False              # this turn's result settled it (whether it finished or was interrupted)
             self.inflight = max(0, self.inflight - 1)
             self.backend._turn_completed(self.sid)   # a landed result re-arms the crash-resume budget
@@ -1324,6 +1342,7 @@ class SdkSession:
                 "modelPending": bool(self._model_pending),   # a /model switch resolving → the badge shows switching-dots
                 "effortPending": bool(self._effort_pending),   # an /effort switch reconnecting → effort-badge dots + "Reloading session…"
                 "mode": self.perm_mode, "ctx": self._ctx_pct(), "summary": "",
+                "retryCount": self.retry_count,   # api_retry backoff attempts in the current storm → the live 'attempt N' in the chat's retrying element
                 "interrupting": bool(self._interrupted),   # a user interrupt is IN FLIGHT: set at dispatch,
                 #   cleared EXACTLY when the aborted turn's ResultMessage settles → the kernel holds the chip +
                 #   feed badge on 'interrupting' across that whole window, no dependence on the flickering tail

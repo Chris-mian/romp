@@ -108,6 +108,15 @@ type ChatEvent = (
   // (--effort is connect-time), so an animated "Reloading session…" element shows while it re-reads the
   // transcript, clearing when the new client connects (the user 2026-07-06). No ts → off the rail (transient).
   | { kind: "reconnecting"; effort?: string; ts?: string; uuid?: string }
+  // LIVE api_retry in progress (kernel-driven, event-based, SDK-only): the API returned a retryable error
+  // (rate-limit / overload) and the CLI is backing off + retrying, so the turn stalls. An animated "API
+  // retrying…" element (the amber retrying status color) with the live attempt count; clears the instant
+  // output resumes. No ts → off the rail (transient). Was visible ONLY as the amber tab border (the user
+  // 2026-07-08: "the border says retrying but the chat shows no sign").
+  | { kind: "retrying"; retries?: number; ts?: string; uuid?: string }
+  // A stalled api_retry turn RECOVERED — a persistent, rail-anchored "Recovered after N retries" note left
+  // where output resumed, the historical counterpart of the transient element above (the user 2026-07-08).
+  | { kind: "retried"; retries: number; ts?: string; uuid?: string }
   // Pinned, collapsed "system context" card at the top of the transcript (the user 2026-06-19): the
   // CLAUDE.md instructions in effect + session config. NOT the verbatim harness prompt — it's never
   // recorded, so it can't be shown (renderSystem says so). No ts/uuid → off the rail (no dot/hover).
@@ -1159,6 +1168,8 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
   if (ev.kind === "apiError") return renderApiError(ev);
   if (ev.kind === "compacting") return renderCompacting();
   if (ev.kind === "reconnecting") return renderReconnecting(ev);
+  if (ev.kind === "retrying") return renderRetrying(ev);
+  if (ev.kind === "retried") return renderRetried(ev);
   if (ev.kind === "compact") return renderCompact(ev);
   return renderTool(ev);
 }
@@ -1452,6 +1463,43 @@ function renderReconnecting(ev: Extract<ChatEvent, { kind: "reconnecting" }>): H
   txt.textContent = ev.effort ? `Reloading session — applying ${ev.effort} effort…` : "Reloading session…";
   line.appendChild(txt);
   line.title = "applying the effort change — reloading the session (it re-reads the transcript); any message you send lands once it's back";
+  turn.appendChild(line);
+  return turn;
+}
+
+// LIVE api_retry (the user 2026-07-08): the API returned a retryable error (rate-limit / overload) and the
+// CLI is backing off + retrying, so the turn stalls. This used to be visible ONLY as the amber tab border,
+// with nothing in the chat ("the border says retrying but the chat shows no sign"). Now an animated element
+// — the loader dots (it's mid-operation) + an AMBER "API retrying…" line (the retrying status color, so it
+// reads as the SAME state the border shows) — with the live attempt count. Sibling of the compacting /
+// reconnecting elements; event-based, it clears the instant output resumes (then the "Recovered after N
+// retries" note lands above). Appended before the queued bubble.
+function renderRetrying(ev: Extract<ChatEvent, { kind: "retrying" }>): HTMLElement {
+  const turn = el("div", "turn turn-retrying");
+  turn.appendChild(dot("ring"));
+  const line = el("div", "retrying-line");
+  line.appendChild(metaDots());
+  const txt = el("span", "retrying-text");
+  const n = ev.retries || 0;
+  txt.textContent = n > 1 ? `API retrying — attempt ${n}…` : "API retrying…";
+  line.appendChild(txt);
+  line.title = "the API returned a retryable error (rate-limit / overload); the CLI is backing off and retrying — any message you send lands once it recovers";
+  turn.appendChild(line);
+  return turn;
+}
+
+// The persistent counterpart of renderRetrying (the user 2026-07-08): once a stalled api_retry turn resumes
+// output, a muted, rail-anchored "Recovered after N retries" note is left where the recovery happened, so the
+// history records that the turn weathered an API storm. Static (no animation, no expand) — a one-line marker.
+function renderRetried(ev: Extract<ChatEvent, { kind: "retried" }>): HTMLElement {
+  const turn = el("div", "turn turn-retried");
+  turn.appendChild(dot("ring"));
+  const line = el("div", "retried-line");
+  const n = ev.retries || 0;
+  const txt = el("span", "retried-text");
+  txt.textContent = `Recovered after ${n} ${n === 1 ? "retry" : "retries"}`;
+  line.appendChild(txt);
+  line.title = "the API returned a retryable error (rate-limit / overload); the CLI backed off and retried, then output resumed";
   turn.appendChild(line);
   return turn;
 }

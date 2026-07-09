@@ -762,6 +762,18 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 .turn-reconnecting .dot, .turn-reconnecting .time-marker { top: 10px; }
 .turn-reconnecting .dot { background: var(--accent); border: none; }
 .reconnecting-line { display: inline-flex; align-items: center; gap: 8px; color: var(--dim); font-size: 0.9em; font-weight: 600; letter-spacing: 0.02em; }
+/* LIVE api_retry (rate-limit/overload backoff) — the loader dots + an AMBER "API retrying…" line, tinted the
+   SAME retrying status color as the tab border (#e67e22 — a STATUS color, not accent chrome) so the chat
+   element reads as that state; a transient sibling of the compacting/reconnecting elements. */
+.turn-retrying { padding-top: 4px; padding-bottom: 4px; }
+.turn-retrying .dot, .turn-retrying .time-marker { top: 10px; }
+.turn-retrying .dot { background: #e67e22; border: none; }
+.turn-retrying .meta-dots i { background: #e67e22; }   /* tint the loader dots amber to match the state (default is accent blue) */
+.retrying-line { display: inline-flex; align-items: center; gap: 8px; color: #e67e22; font-size: 0.9em; font-weight: 600; letter-spacing: 0.02em; }
+/* the persistent "Recovered after N retries" marker left where output resumed — muted, static, one line */
+.turn-retried { padding-top: 4px; padding-bottom: 4px; }
+.turn-retried .dot, .turn-retried .time-marker { top: 10px; }
+.retried-line { display: inline-flex; align-items: center; gap: 8px; color: var(--dim); font-size: 0.9em; letter-spacing: 0.02em; }
 /* compact-mode collapsed tool run → one line ("▸ 3 Edits, 2 Reads"); click to expand/collapse */
 .turn-toolgroup .dot, .turn-toolgroup .time-marker { top: 10px; }
 .toolgroup-line { color: var(--dim); font-size: 0.9em; line-height: 1.4; cursor: pointer; width: fit-content; padding-right: 6px; }

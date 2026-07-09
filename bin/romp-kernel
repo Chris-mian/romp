@@ -2761,6 +2761,7 @@ class Sessions:
                                 "model": st.get("model", ""), "effort": st.get("effort", ""),
                                 "modelPending": bool(st.get("modelPending")),   # a /model switch resolving → badge shows switching-dots
                                 "effortPending": bool(st.get("effortPending")),   # an /effort switch reconnecting → effort-badge dots + "Reloading session…"
+                                "retryCount": int(st.get("retryCount") or 0),   # api_retry backoff attempts → the chat's "API retrying — attempt N…" element
                                 "context": ctx if isinstance(ctx, (int, float)) else None, "compactPct": None,
                                 "color": (st.get("color") or None), "mode": st.get("mode", ""), "backend": "sdk",
                                 "subagents": st.get("subagents") or []}   # live Task subagents (SDK only) → lane pill
@@ -3984,6 +3985,32 @@ def _states_awaiting_overlay(sid):
     if last is not None and last.get("awaiting") and working_after:
         return {"awaiting": False, "why": None}            # stale true — superseded by a later work turn
     return last
+
+
+def _retry_recoveries(sid):
+    """Durable recovery markers from states/<sid>.jsonl — {"t":…,"retriesRecovered":N} lines the SDK backend
+    writes when a stalled api_retry turn resumes real output (append_retry_recovered). Returns
+    [{"t":epoch,"retries":N}, …] oldest first, so build_session can interleave a persistent "Recovered after N
+    retries" note at the recovered turn. SDK-only — tmux has no api_retry signal, so its state files carry no
+    such records and this is []."""
+    p = jd.STATE / "states" / ("%s.jsonl" % sid)
+    out = []
+    try:
+        with open(p, errors="replace") as f:
+            for line in f:
+                if '"retriesRecovered"' not in line:       # cheap prefilter — most lines are plain state records
+                    continue
+                try:
+                    o = json.loads(line)
+                except Exception:
+                    continue
+                n = o.get("retriesRecovered")
+                if isinstance(n, int) and n > 0 and o.get("t"):
+                    out.append({"t": int(o["t"]), "retries": n})
+    except OSError:
+        return []
+    out.sort(key=lambda r: r["t"])
+    return out
 
 
 # ── background-task box (the user 2026-06-26) ───────────────────────────────────────────────────────
@@ -5597,9 +5624,23 @@ def build_session(sid, now, tmux=None):
                     uuid2seg[at["uuid"]] = seg["id"]
     last_t = None
     last_model = ""                           # the model on the most recent assistant message (system-card meta)
+    # Persistent "Recovered after N retries" notes (the user 2026-07-08): interleave each durable recovery
+    # marker just before the first atom at/after its timestamp — i.e. right at the turn whose output resumed
+    # once the api_retry storm cleared. Anchored by time (retries leave no transcript atom of their own), so
+    # they survive scroll-back like the compact divider. Any recovery on the still-open tail turn (t past the
+    # last atom) is flushed after the loop.
+    recoveries = _retry_recoveries(sid); _ri = 0
+    def _flush_recoveries(upto):
+        nonlocal _ri
+        while _ri < len(recoveries) and (upto is None or recoveries[_ri]["t"] <= upto):
+            _r = recoveries[_ri]; _ri += 1
+            events.append({"kind": "retried", "retries": _r["retries"], "ts": iso(_r["t"]),
+                           "uuid": "retried:%d" % _r["t"]})
     for turn in session["turns"]:
         for a in turn["atoms"]:
             t = a.get("t"); ts = iso(t) if t else None
+            if t:
+                _flush_recoveries(t)
             last_t = t or last_t
             msg = a.get("message") or {}
             if a["type"] == "assistant" and msg.get("model"):
@@ -5733,6 +5774,7 @@ def build_session(sid, now, tmux=None):
                 events.append({"kind": "compact", "uuid": a.get("uuid"), "ts": ts,
                                "trigger": cmeta.get("trigger"), "preTokens": cmeta.get("pre_tokens"),
                                "postTokens": cmeta.get("post_tokens"), "summary": a.get("summary")})
+    _flush_recoveries(None)                             # a recovery on the still-open tail turn (t past the last atom) → bottom of the flow
     events = _hydrate_postal(events, _postal_index())   # swap postal traffic for clean in/out cards (no boilerplate)
     for ev in events:
         # tlId = the timeline atom a chat hover lights: a message/prompt → the DOT (segment promptId),
@@ -5779,6 +5821,15 @@ def build_session(sid, now, tmux=None):
     # it clears the instant the new client connects (effortPending drops). Appended before the queued bubble.
     if (tm0 or {}).get("effortPending"):
         events.append({"kind": "reconnecting", "effort": (tm0 or {}).get("effort") or ""})
+    # Live API-RETRY indicator (the user 2026-07-08): while the CLI backs off + retries a rate-limited /
+    # overloaded request the turn stalls in 'retrying' — which was visible ONLY as the amber tab border, with
+    # NOTHING in the chat ("the border says retrying but the chat shows no sign"). Show an animated "API
+    # retrying…" element here, a sibling of the compacting/reconnecting ones, carrying the live attempt count.
+    # Event-based: it clears the instant real output flows again (the SDK backend drops 'retrying'); the
+    # recovery then lands as the persistent "Recovered after N retries" note above. SDK-only (tmux has no
+    # api_retry signal). Appended before the queued bubble so a mid-retry message stacks below it.
+    if (tm0 or {}).get("state") == "retrying":
+        events.append({"kind": "retrying", "retries": int((tm0 or {}).get("retryCount") or 0)})
     pending_ops = _pending_ops.get(sid) or []
     if queued or pending_ops:
         # Each pending message is rendered like a landed one (markdown) — and a follow-up is cleaned of the
