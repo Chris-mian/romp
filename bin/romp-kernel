@@ -6523,9 +6523,15 @@ def _provisional_card(s, name, color, fsid, live, now, store=None):
     if not segs:
         return None
     held = segs[-1]                                  # the latest segment — the ask the planner withholds / just got
-    if not jd._seg_human(held) and not held.get("seam"):   # a real user prompt warrants a placeholder (peer/sdk don't)…
-        return None                                  # …and so does a settle-SEAM tail: it exists only because real
-                                                     # post-close work exists (design/segment-regrowth.md)
+    # A real user prompt warrants a placeholder; a settle-SEAM tail does too (it exists only because real
+    # post-close work exists, design/segment-regrowth.md); and so does a kernel RESUME (_seg_system: the
+    # romp-system restart/resume notice, the user 2026-07-09). A restart is the USER'S action (romp --refresh
+    # / a crash heal), and the resumed turn is continued user work — leaving that actively-working session
+    # cardless breaks the "a WORKING session always shows a card" invariant. Safe because plan_units PLACES a
+    # system segment when it ends (the housekeeping-note 'work' unit, placed even on a skip → the placeholder
+    # drops), unlike a command segment which is never placed. Genuine peer/sdk triggers stay excluded.
+    if not jd._seg_human(held) and not held.get("seam") and not jd._seg_system(held):
+        return None
     if jd._seg_command(held):                        # a SLASH-COMMAND turn is never classified into a goal (the planner
         return None                                  # skips it), so it would NEVER place → the placeholder would hang
                                                      # forever (the JLD /usage case). No placeholder for a command. (2026-06-29)
