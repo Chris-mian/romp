@@ -49,6 +49,7 @@ interface AskItem {
   nudgeFailed?: boolean;                           // the ONE auto-nudge on this stalled goal didn't resolve it → "stalled" chip; the failure also records a BLOCK verdict, so the card reaches Needs-you via the normal ladder (kernel _mark_nudge_failed, 2026-07-07)
   interrupting?: boolean;                          // a user interrupt is IN FLIGHT (dispatched, not yet settled) → steady "interrupting…" badge from the click until it settles, THEN yields to `interrupted` — never flickering to "working" in between (kernel build_feed; the user 2026-07-07)
   interrupted?: boolean;                           // the user STOPPED this session mid-turn and hasn't messaged it since → "interrupted" badge; its quiet is user-chosen, auto-nudge holds off until their next message (kernel build_feed; the user 2026-07-05)
+  retrying?: { since?: number | null; count?: number } | null;   // the OPEN turn is inside an api-retry storm (kernel _session_retrying, live backend state) → "⚠ retrying since HH:MM" chip on the working card; without it a storm reads as plain healthy Working (the user 2026-07-09)
   autoFiled?: boolean;                             // settled → moved to COMPLETED by the auto-filing rule (keeps the green ring)
   explicitDone?: boolean;                          // every path explicitly DONE-stamped → blue ring (blue+green when settled agrees)
   // the owning session is live-blocked (permission/picker, or stopped on an API error) ON this card's
@@ -468,6 +469,12 @@ function makeAskCard(it: AskItem): HTMLElement {
   const waitOnBadge = el("span", "fask-waiton"); waitOnBadge.style.display = "none";   // "Awaiting <peer>" / "Deadlock <peer>", peer name in native colour (the user 2026-06-22)
   const blkBadge = el("a", "fask-blocked"); blkBadge.style.display = "none";   // ⏸ live permission/picker block → click opens the session
   const apiBadge = el("span", "fask-apierror"); apiBadge.textContent = "⚠ API error"; apiBadge.style.display = "none";   // red: session stopped on an API error
+  // "⚠ retrying since HH:MM" (the user 2026-07-09): the session's OPEN turn is inside an api-retry storm —
+  // still in motion, so the card stays in Working, but the storm must be visible: the API-error badge above
+  // only fires once the session is idle-stalled, and nimbus's card read plain healthy "Working" through an
+  // ~80-minute storm. Same red api-trouble family, faded (in motion, not stopped); no Retry button — the
+  // auto-retry is already doing that.
+  const retryBadge = el("span", "fask-retrying"); retryBadge.style.display = "none";
   const apiRetry = el("button", "fdismiss fretry"); apiRetry.textContent = "Retry"; apiRetry.title = "send “retry” into this session to resume"; apiRetry.style.display = "none";
   const revive = el("button", "fdismiss frevive"); revive.textContent = "Revive"; revive.title = "bring this offline session back so the parked hand-off is delivered"; revive.style.display = "none";
   // The header "awaiting" chip was REMOVED (the user 2026-07-04): it duplicated the "Awaiting background
@@ -485,7 +492,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   // name — they describe the session's live state, and keeping them OFF the action row stops them shoving
   // the buttons past the card's right edge on a narrow card (the user 2026-06-19; mirrors the ↻ Followed-up
   // chip moved up 2026-06-18). idwrap is flex:1 so the name ellipsizes before the badge is ever clipped.
-  idwrap.append(apiBadge, blkBadge);
+  idwrap.append(retryBadge, apiBadge, blkBadge);
   // COMPACTNESS (the user 2026-07-07): Clear rides the NAME row (right side, after the chips) and the
   // Background/Summary toggles ride the TIME row — freeing a whole action row. So the action row holds only
   // Retry / Revive (rare states); both rows flex-WRAP so nothing overflows or overlaps on a narrow card.
@@ -649,7 +656,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   a._warnChip = warnChip;
   a._waitOn = waitOnBadge;
   a._blocked = blkBadge;
-  a._apiBadge = apiBadge; a._apiRetry = apiRetry; a._revive = revive; a._clr = clr;
+  a._apiBadge = apiBadge; a._apiRetry = apiRetry; a._retryBadge = retryBadge; a._revive = revive; a._clr = clr;
   a._delegations = delegations;
   a._checklist = checklist;
   a._distill = distill; a._artline = artline;
@@ -1043,6 +1050,19 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
       vscodeApi?.postMessage({ type: "apiRetry", id: it.sid });
       a._apiRetry.disabled = true; a._apiRetry.textContent = "Retrying…";
     };
+  }
+  // "⚠ retrying since HH:MM" — the OPEN turn is inside an api-retry storm (kernel `retrying`: the live
+  // backend state, with the storm's start from the states log). The card stays in Working — the storm is
+  // in motion, not a block — but says so instead of reading as plain healthy Working for the storm's whole
+  // life (the user 2026-07-09: an ~80-minute storm was invisible on the card). The stopped-on-error badge
+  // (isApiErr) outranks it; the kernel never sets both, this is belt-and-suspenders.
+  const rt = it.retrying;
+  (a._retryBadge as HTMLElement).style.display = (rt && !isApiErr) ? "" : "none";
+  if (rt && !isApiErr) {
+    a._retryBadge.textContent = rt.since ? `⚠ retrying since ${clockHM(rt.since)}` : "⚠ retrying";
+    a._retryBadge.title = "this session's turn keeps hitting API errors and is auto-retrying"
+      + (rt.count ? ` (attempt ${rt.count})` : "")
+      + " — still in motion, not stalled; it resumes on its own when the API recovers";
   }
   // PARKED HANDOFF → a "Revive" button that brings the offline recipient back so the parked message is
   // delivered; the existing Clear button dismisses it (rides cleared.jsonl). (the user 2026-06-22.)
