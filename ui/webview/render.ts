@@ -2619,9 +2619,10 @@ function focusActiveTab() {
   (bar?.querySelector(`.tab[data-id="${activeId}"]`) as HTMLElement | null)?.focus();
 }
 // "Enter to start typing" lands on whatever's actually showing below the transcript: when a live
-// AskUserQuestion picker is up the composer is hidden and the PICKER CARD owns the keyboard (↑/↓ step the
-// options, Enter confirms), so focus that; otherwise focus the message box (the user 2026-06-27). Returns
-// whether it focused something (so the caller can preventDefault only then).
+// AskUserQuestion picker is up the PICKER CARD owns the keyboard (↑/↓ step the options, Enter confirms), so
+// focus that — the message box stays visible below (it's the picker's "add your own" field) and a click lands
+// there to type a free-text answer; otherwise focus the message box (the user 2026-06-27). Returns whether it
+// focused something (so the caller can preventDefault only then).
 function focusComposerOrAsk(): boolean {
   if (activeId && liveAsks.has(activeId)) {
     const card = document.querySelector("#live-ask .ask-card") as HTMLElement | null;
@@ -4192,11 +4193,47 @@ let sendingTimer: ReturnType<typeof setTimeout> | undefined;
 let liveAskFocus = 0;
 let liveAskFocusKey = "";
 
+// The composer's resting placeholder — mirrors chatBody()'s skeleton. Restored whenever no free-text
+// picker is active. (Kept here, not read from the DOM, so an "answering" placeholder never leaks back
+// as the default after a picker resolves.)
+const COMPOSER_PLACEHOLDER = "Message this session…  (⏎ send · ⇧⏎ newline)";
+
+// How a message typed into the NORMAL composer should be routed while a live picker is up — the picker's
+// dropped inline "add your own" field, now served by the composer (the user 2026-07-09). null → no active
+// free-text path, so the composer sends a normal message as usual (a permission Allow/Deny prompt, or an
+// ExitPlanMode review, offers no free text).
+//   "custom" → an AskUserQuestion option list with a "Type something" slot: single-select submits the typed
+//              answer immediately; multi-select adds it as a checked custom row (then the card's Submit sends).
+//   "text"   → a raw free-text prompt the panel couldn't structure (askText).
+function composerAnswersAsk(): "custom" | "text" | null {
+  if (!activeId || !liveAsks.has(activeId)) return null;
+  const ask = liveAsks.get(activeId) ?? null;
+  if (!ask) return "text";
+  if ((ask.kind === "single" || ask.kind === "multi")
+      && ask.options.some((o) => isTypeSomething(o.label))) return "custom";
+  return null;
+}
+
+// Put the composer into (or out of) "answer this picker" mode: a picker with a free-text path relabels the
+// box "add your own answer…" and tints it, so it's discoverable that typing here answers the prompt.
+// Called on every renderLiveAsk (the single owner of picker↔composer coupling), so it self-heals.
+function setComposerAskMode() {
+  const ta = document.getElementById("composer-input") as HTMLTextAreaElement | null;
+  if (!ta) return;
+  if (composerAnswersAsk()) {
+    ta.placeholder = "add your own answer…  (⏎ submit)";
+    ta.classList.add("answering");
+  } else {
+    ta.placeholder = COMPOSER_PLACEHOLDER;
+    ta.classList.remove("answering");
+  }
+}
+
 // Render the widget matching the active session's pending prompt. It lives at the BOTTOM of the transcript
 // (the last child of #content) and scrolls WITH the chat history (the user 2026-06-27) — so a tall picker
-// never buries the context above it; scroll up and the question's context is still right there. It still takes
-// over the message box (the composer hides). single → radio rows, multi → checkboxes + Submit/Cancel,
-// submit → review + action buttons, null → free-text input.
+// never buries the context above it; scroll up and the question's context is still right there. The footer
+// (message box + controls) stays VISIBLE beneath it; the composer doubles as the "add your own" field.
+// single → radio rows, multi → checkboxes + Submit/Cancel, submit → review + action buttons, null → warning.
 function renderLiveAsk() {
   const host = document.getElementById("live-ask");
   const footer = document.getElementById("footer");
@@ -4211,15 +4248,20 @@ function renderLiveAsk() {
   sendingGuard = false; // a fresh render = the previous action resolved; re-enable
   const cur = activeId ? liveAsks.get(activeId) : undefined;
   if (cur) liveTextValue = ""; // leaving the free-text field (a structured screen is up)
+  // The footer (statusline: working chip / interrupt / model selector + the message box) stays VISIBLE
+  // while a picker is up (the user 2026-07-09): the picker no longer TAKES OVER the box — it drops its own
+  // inline "add your own" field, and the NORMAL composer becomes that field (see composerAnswersAsk /
+  // sendComposer). So you keep every control in view and can still type a free-text answer.
+  if (footer) footer.style.display = "";
   if (!activeId || !liveAsks.has(activeId)) {
     host.style.display = "none";
     liveTextValue = "";
-    if (footer) footer.style.display = ""; // restore the message box
+    setComposerAskMode();   // no picker → the composer's normal placeholder + behavior
     return;
   }
   host.style.display = "";
-  if (footer) footer.style.display = "none"; // the prompt takes over the message box
   const ask = liveAsks.get(activeId) ?? null;
+  setComposerAskMode();   // picker with a free-text path → the composer becomes "add your own answer…"
   if (!ask) renderUnknownCard();
   else if (ask.kind === "multi") renderMultiCard(ask);
   else if (ask.kind === "submit") renderSubmitCard(ask);
@@ -4314,25 +4356,29 @@ function renderSingleCard(ask: ParsedAsk) {
     row.addEventListener("mousemove", () => { if (liveAskFocus !== i) { liveAskFocus = i; paintLiveAskFocus(); } });
     card.appendChild(row);
   });
-  if (ask.options.some((o) => isTypeSomething(o.label))) {
-    const row = el("div", "ask-custom");
-    const plus = el("span", "ask-custom-plus"); plus.textContent = "+"; row.appendChild(plus);
-    const inp = document.createElement("input");
-    inp.type = "text"; inp.className = "ask-custom-input"; inp.placeholder = "add your own answer…";
-    inp.value = liveTextValue;
-    inp.addEventListener("input", () => { liveTextValue = inp.value; });
-    // stop ALL keys from bubbling to onSingleKey (digits would jump-confirm rows)
-    inp.addEventListener("keydown", (e) => {
-      e.stopPropagation();
-      if (e.key === "Enter") { e.preventDefault(); const v = inp.value.trim(); if (v) addCustomLiveAsk(v); }
-    });
-    wirePasteFallback(inp);
-    row.appendChild(inp);
-    card.appendChild(row);
-  }
+  if (ask.options.some((o) => isTypeSomething(o.label))) card.appendChild(customHintRow());
   card.tabIndex = 0;
   card.addEventListener("keydown", onSingleKey);
-  card.focus({ preventScroll: true });
+  focusCardUnlessTyping(card);
+}
+
+// The "+ add your own" affordance is no longer an inline input — it points at the NORMAL message box below,
+// which now doubles as the free-text answer field (the user 2026-07-09). A static, non-interactive hint so
+// the option is still discoverable on the card; the actual typing happens in the composer.
+function customHintRow(): HTMLElement {
+  const row = el("div", "ask-custom ask-custom-hint");
+  const plus = el("span", "ask-custom-plus"); plus.textContent = "+"; row.appendChild(plus);
+  const lab = el("span", "ask-custom-hint-text");
+  lab.textContent = "add your own — type it in the message box below";
+  row.appendChild(lab);
+  return row;
+}
+
+// Keep the picker card's keyboard alive across re-renders (each render rebuilds the card), but NEVER yank
+// focus from a user typing in the composer or any input — the footer stays visible now, so a re-mirror must
+// not steal the caret mid-word (the user 2026-07-09).
+function focusCardUnlessTyping(card: HTMLElement) {
+  if (!isTypingTarget(document.activeElement)) card.focus({ preventScroll: true });
 }
 
 // "Type something" is the inline free-text slot (handled by the +custom field) and "Submit" is the dedicated
@@ -4372,20 +4418,9 @@ function renderMultiCard(ask: ParsedAsk) {
     row.addEventListener("mousemove", () => { if (liveAskFocus !== i) { liveAskFocus = i; paintMultiFocus(); } });
     card.appendChild(row);
   });
-  // Inline custom-answer field — only while the TUI still offers a Type-something slot.
-  if (ask.options.some((o) => isTypeSomething(o.label))) {
-    const row = el("div", "ask-custom");
-    const plus = el("span", "ask-custom-plus"); plus.textContent = "+"; row.appendChild(plus);
-    const inp = document.createElement("input");
-    inp.type = "text"; inp.className = "ask-custom-input"; inp.placeholder = "add your own answer…";
-    inp.value = liveTextValue;
-    inp.addEventListener("input", () => { liveTextValue = inp.value; });
-    // stop card-level arrow/Space/Enter nav from firing while typing a custom answer
-    inp.addEventListener("keydown", (e) => { e.stopPropagation(); if (e.key === "Enter") { e.preventDefault(); const v = inp.value.trim(); if (v) addCustomLiveAsk(v); } });
-    wirePasteFallback(inp);
-    row.appendChild(inp);
-    card.appendChild(row);
-  }
+  // "add your own" is served by the message box below (see customHintRow) — type there + ⏎ to add a checked
+  // custom row, then Submit. Only while the TUI still offers a Type-something slot.
+  if (ask.options.some((o) => isTypeSomething(o.label))) card.appendChild(customHintRow());
   const actions = el("div", "ask-actions");
   const sIdx = checkOpts.length, cIdx = checkOpts.length + 1;   // Submit / Cancel positions in the combined nav list
   const submit = el("button", "ask-btn ask-btn-primary" + (liveAskFocus === sIdx ? " focus" : "")); submit.textContent = "Submit";
@@ -4399,7 +4434,7 @@ function renderMultiCard(ask: ParsedAsk) {
   card.appendChild(actions);
   card.tabIndex = 0;
   card.addEventListener("keydown", onMultiKey);
-  card.focus({ preventScroll: true });
+  focusCardUnlessTyping(card);
 }
 // MULTI-select keyboard: ↑/↓ move the highlight, Space toggles the focused checkbox, Enter submits, a digit
 // jumps to + toggles its row. The actual toggle is still the optimistic toggleLiveAsk (host re-mirrors).
@@ -4507,16 +4542,11 @@ function renderUnknownCard() {
   const warn = el("div", "ask-warn");
   warn.textContent = "⚠ Waiting on a prompt the panel can’t read — answer it in the terminal.";
   card.appendChild(warn);
-  const input = document.createElement("input");
-  input.type = "text"; input.className = "ask-text-input"; input.placeholder = "…or, if it’s a text prompt, type here + Enter";
-  input.value = liveTextValue;
-  input.addEventListener("input", () => { liveTextValue = input.value; });
-  input.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") { e.preventDefault(); const v = input.value.trim(); if (v) sendTextLiveAsk(v); }
-  });
-  wirePasteFallback(input);
-  card.appendChild(input);
-  const len = input.value.length; try { input.setSelectionRange(len, len); } catch { /* ignore */ }
+  // Free text goes through the NORMAL message box below now (composerAnswersAsk → "text" → askText); no
+  // separate inline input (the user 2026-07-09).
+  const hint = el("div", "ask-custom-hint-text");
+  hint.textContent = "…or, if it’s a text prompt, type it in the message box below + ⏎.";
+  card.appendChild(hint);
 }
 
 function paintLiveAskFocus() {
@@ -5514,6 +5544,18 @@ function setupComposer() {
   const sendComposer = () => {
     const text = ta.value.trim();
     if (!text || !activeId) return;
+    // A live picker with a free-text path is up → the composer IS its "add your own" field now (the user
+    // 2026-07-09): route the typed text to the picker instead of sending a normal message. "custom" fills the
+    // AskUserQuestion Type-something slot (single submits, multi adds a checked row + you Submit); "text"
+    // answers a raw free-text prompt. A picker WITHOUT free text (permission Allow/Deny, plan review) returns
+    // null here, so the box keeps its normal send — the controls just stay in view alongside it.
+    const askRoute = composerAnswersAsk();
+    if (askRoute) {
+      if (askRoute === "custom") addCustomLiveAsk(text); else sendTextLiveAsk(text);
+      drafts.delete(activeId); persistDrafts();
+      ta.value = ""; composerManualH = null; ta.style.height = "";
+      return;
+    }
     lastSent.set(activeId, text);   // remembered for a possible Ctrl+C restore
     // A pending citation chip → send as a FOLLOW-UP on that goal (the user 2026-07-01): askFollowUp wraps the
     // text with the goal's context + the romp-goal-id marker (kernel side), so the goal reopens (done→working,
