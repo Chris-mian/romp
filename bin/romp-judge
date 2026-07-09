@@ -495,6 +495,8 @@ def _atom_text(atom):
 # node id, so the planner reopens that exact goal and files the new work UNDER it (the user 2026-06-17).
 FOLLOWUP_RE = re.compile(r"romp-goal-id:\s*([^\s>]+)")              # the tagged target goal-node id
 NUDGE_MARKER_RE = re.compile(r"<!--\s*romp-injected\s*-->")        # a romp NUDGE (auto-nudge / Nudge button), the user 2026-06-22
+ROMP_SYSTEM_RE = re.compile(r"<!--\s*romp-system\s*-->")           # a kernel STATUS notice (restart/resume) — untargeted, no goal;
+                                                                   #   its segment gets the housekeeping note (the user 2026-07-08, g133)
 _FOLLOWUP_MARKER_RE = re.compile(r"<!--\s*romp-(?:goal-id:[^>]*|injected|note:[^>]*)\s*-->")  # romp markers, stripped from model-facing text
 
 
@@ -2348,6 +2350,14 @@ def plan_units(session, store=None):
             if _seg_nudge(seg) and followup:              # a romp NUDGE on a goal → RESOLVE it (done/block), not a plain step
                 out.append((seg["id"], "nudge", seg["t"], work_text, False, followup, trig, vq))
             else:
+                if _seg_system(seg):                      # a kernel status notice woke this stretch, not the user —
+                    # post-restart housekeeping files nowhere (the user 2026-07-08, g133: a resume-notice
+                    # verification sweep minted its own top-level card)
+                    work_text = ("Note: this stretch was triggered by an automated romp notice (a kernel "
+                                 "restart or session resume), not by the user. If it is merely resuming, "
+                                 "re-verifying, or tidying up after the interruption, **skip** it — file "
+                                 "nothing and mint nothing. Only work that advances an open goal, or a "
+                                 "genuinely **new** thread of work, belongs on the board.\n\n") + work_text
                 out.append((seg["id"], "work", seg["t"], work_text, human, followup, trig, vq))   # ENDED segment → WORK-run
     return out
 
@@ -4896,6 +4906,16 @@ def _seg_nudge(seg):
     atoms = seg.get("atoms") or []
     trig = next((a for a in atoms if a.get("uuid") == seg.get("trigger")), None) or (atoms[0] if atoms else None)
     return bool(trig and NUDGE_MARKER_RE.search(_atom_text(trig)))
+
+
+def _seg_system(seg):
+    """True if this segment's trigger is a romp SYSTEM notice — a kernel status injection (restart/resume,
+    the romp-system marker). Unlike a goal nudge it is untargeted: no romp-goal-id, so it would otherwise
+    plan as ordinary agent work. plan_units prepends the housekeeping note instead (the user 2026-07-08,
+    g133 — a post-restart verification sweep minted its own card). Mirrors _seg_nudge's lookup."""
+    atoms = seg.get("atoms") or []
+    trig = next((a for a in atoms if a.get("uuid") == seg.get("trigger")), None) or (atoms[0] if atoms else None)
+    return bool(trig and ROMP_SYSTEM_RE.search(_atom_text(trig)))
 
 
 def _parse_courier(raw, menu_len):

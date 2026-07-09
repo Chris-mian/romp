@@ -823,6 +823,54 @@ class TwoRunPlanner(unittest.TestCase):
         self.assertNotIn("seg1", s["placements"], "the prompt-run dedups under seg#p, leaving the work key (seg) free")
 
 
+class SystemNoticeSegments(unittest.TestCase):
+    """A kernel status notice (the romp-system marker: restart/resume injections) is untargeted — no
+    romp-goal-id — so its segment planned as ordinary agent work and a post-restart verification sweep
+    minted its own top-level card (the user 2026-07-08, g133). The work unit now carries a housekeeping
+    note: resume/re-verify/tidy-up stretches are skipped, only genuinely new work files or mints."""
+
+    NOTICE = ("<!-- romp-injected --><!-- romp-system -->[romp] The kernel restarted and cut this "
+              "session's in-flight turn; pick the work back up where it stopped.")
+
+    def test_seg_system_detects_the_marker(self):
+        recs = [uline(T0, self.NOTICE, "u1", ps="sdk"),
+                aline(T0 + 10, "Verified the repo state; all clean.", "a1", "u1", stop="end_turn")]
+        seg = em.segments(build_session(recs)["turns"][0])[0]
+        self.assertTrue(jd._seg_system(seg), "the romp-system marker is detected")
+        self.assertTrue(jd._seg_nudge(seg), "a system notice also carries romp-injected (it is untargeted, "
+                                            "so the nudge-resolve path never claims it)")
+
+    def test_system_notice_work_unit_carries_the_housekeeping_note(self):
+        recs = [uline(T0, self.NOTICE, "u1", ps="sdk"),
+                aline(T0 + 10, "Verified the repo state; all clean.", "a1", "u1", stop="end_turn")]
+        units = jd.plan_units(build_session(recs))
+        self.assertEqual([u[1] for u in units], ["work"], "an untargeted system notice still plans as a work unit")
+        text = units[0][3]
+        self.assertTrue(text.startswith("Note: this stretch was triggered by an automated romp notice"),
+                        "the housekeeping note leads the unit text")
+        self.assertIn("**skip** it", text)
+        self.assertIn("Verified the repo state", text, "the real work text follows the note")
+        self.assertFalse(units[0][4], "a system notice is not a human unit (no hard-place floor)")
+
+    def test_plain_human_segment_gets_no_note(self):
+        recs = [uline(T0, "please verify the repo state", "u1", ps="typed"),
+                aline(T0 + 10, "Verified; all clean.", "a1", "u1", stop="end_turn")]
+        units = jd.plan_units(build_session(recs))
+        self.assertEqual([u[1] for u in units], ["work"])
+        self.assertNotIn("automated romp notice", units[0][3])
+
+    def test_goal_nudge_still_resolves_not_noted(self):
+        # a TARGETED nudge (romp-injected + romp-goal-id) keeps the nudge-resolve path; the note is only
+        # for untargeted system notices
+        gid = "%s:g1" % SID
+        recs = [uline(T0, "Status check.\n\n<!-- romp-injected --><!-- romp-goal-id: %s -->" % gid,
+                      "u1", ps="typed"),
+                aline(T0 + 10, "Still going.", "a1", "u1", stop="end_turn")]
+        units = jd.plan_units(build_session(recs))
+        self.assertEqual([u[1] for u in units], ["nudge"])
+        self.assertNotIn("automated romp notice", units[0][3])
+
+
 class MintQuote(unittest.TestCase):
     """g13 (the user 2026-07-01): every node the planner mints caches the minting message's VERBATIM head
     (node["quote"], _mint_quote — no LLM call, the promptUuid precedent), so a follow-up/nudge can quote
